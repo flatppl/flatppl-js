@@ -115,9 +115,27 @@ function measure(domain: any, opts?: any) {
     if (opts.sampleShape !== undefined) t.sampleShape = opts.sampleShape;
     if (opts.batchShape  !== undefined) t.batchShape  = opts.batchShape;
     if (opts.eventShape  !== undefined) t.eventShape  = opts.eventShape;
+    // Total-mass class (spec §11 `(%measure … (%mass m))`): the
+    // strongest statically known class of the measure's total mass
+    // (`MASS_*` below). Additive metadata like the shape triple —
+    // unify ignores it (domains only); inference fills it (typeinfer
+    // `inferMassClass`). Absent ⇒ MASS_DEFERRED (not yet inferred).
+    if (opts.mass !== undefined) t.mass = opts.mass;
   }
   return t;
 }
+
+// Total-mass classes (spec §11 "Total-mass classes"; mirrors the Rust
+// `Mass` enum + engine-concepts §17.3 normalization domain). A strict
+// hierarchy: LOCALLY_FINITE means *infinite* total mass that is finite
+// on every bounded set (a locally-finite measure with finite total
+// mass is FINITE).
+const MASS_DEFERRED      = 'deferred';       // not yet inferred
+const MASS_NULL          = 'null';           // the zero measure
+const MASS_NORMALIZED    = 'normalized';     // total mass one (a probability measure)
+const MASS_FINITE        = 'finite';         // finite total mass (possibly zero)
+const MASS_LOCALLY_FINITE = 'locallyfinite'; // infinite total mass, finite on bounded sets
+const MASS_UNKNOWN       = 'unknown';        // nothing beyond s-finiteness known
 
 /** Type variable, used inside polymorphic signatures (e.g. weighted's T).
  *  `id` is a string identifier; instantiation gives every signature a
@@ -276,6 +294,7 @@ function substitute(t: any, subst: Map<any, any>): any {
     if (t.sampleShape !== undefined) opts.sampleShape = t.sampleShape;
     if (t.batchShape  !== undefined) opts.batchShape  = t.batchShape;
     if (t.eventShape  !== undefined) opts.eventShape  = t.eventShape;
+    if (t.mass        !== undefined) opts.mass        = t.mass;
     return measure(substitute(t.domain, subst), opts);
   }
   if (t.kind === 'tuple')   return tuple(t.elems.map((e: any) => substitute(e, subst)));
@@ -1373,6 +1392,7 @@ function signatureOf(opName: string) {
       if (t.sampleShape !== undefined) opts.sampleShape = t.sampleShape;
       if (t.batchShape  !== undefined) opts.batchShape  = t.batchShape;
       if (t.eventShape  !== undefined) opts.eventShape  = t.eventShape;
+      if (t.mass        !== undefined) opts.mass        = t.mass;
       return measure(fresh(t.domain), opts);
     }
     if (t.kind === 'array')   return array(t.rank, t.shape.slice(), fresh(t.elem));
@@ -1405,6 +1425,8 @@ module.exports = {
   deferred, failed, any, scalar, array, tvector, record, table, tuple, measure, rngstate, tvar,
   funcType, kernelType, likelihood,
   REAL, INTEGER, BOOLEAN, COMPLEX, STRING, RNGSTATE,
+  // Total-mass classes (spec §11)
+  MASS_DEFERRED, MASS_NULL, MASS_NORMALIZED, MASS_FINITE, MASS_LOCALLY_FINITE, MASS_UNKNOWN,
   // Operations
   equal, substitute, unify, unifyArith, show, isMeasure, isValue, isCallable,
   // Signatures

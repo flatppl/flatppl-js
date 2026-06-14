@@ -179,18 +179,41 @@ function _typeToSexpr(t: any): string {
       const elems = Array.isArray(t.elems) ? t.elems : [];
       return '(%tuple ' + elems.map(_typeToSexpr).join(' ') + ')';
     }
-    case 'measure': return '(%measure (%domain ' + _typeToSexpr(t.domain) + '))';
+    case 'measure': {
+      const mass = _massToSexpr(t.mass);
+      return '(%measure (%domain ' + _typeToSexpr(t.domain) + ')'
+        + (mass ? ' (%mass ' + mass + ')' : '') + ')';
+    }
     case 'function':
     case 'kernel': {
       const names = Array.isArray(t.inputs)
         ? t.inputs.map((i: any) => i && i.name).filter(Boolean) : [];
       if (names.length === 0) return '%deferred';   // inputs unknown
-      return '(%' + t.kind + ' (%inputs ' + names.join(' ') + '))';
+      // A kernel's total-mass class (spec §11) is its output measure's
+      // class — read it off the engine-internal `result` measure type.
+      const mass = (t.kind === 'kernel' && t.result && t.result.kind === 'measure')
+        ? _massToSexpr(t.result.mass) : null;
+      return '(%' + t.kind + ' (%inputs ' + names.join(' ') + ')'
+        + (mass ? ' (%mass ' + mass + ')' : '') + ')';
     }
     // likelihood: the spec category requires (%inputs …) AND (%obstype
     // <type>); the engine's likelihood type carries no obstype, so a
     // conformant emission isn't possible yet — downgrade.
     default: return '%deferred';
+  }
+}
+
+// Total-mass class (spec §11) → `%mass` slot symbol, or null when the
+// class is deferred / absent (the canonical form omits `(%mass …)`
+// for an un-inferred mass, per "absent ⇒ %deferred").
+function _massToSexpr(mass: any): string | null {
+  switch (mass) {
+    case 'null':          return '%null';
+    case 'normalized':    return '%normalized';
+    case 'finite':        return '%finite';
+    case 'locallyfinite': return '%locallyfinite';
+    case 'unknown':       return '%unknown';
+    default:              return null;   // 'deferred' / undefined
   }
 }
 

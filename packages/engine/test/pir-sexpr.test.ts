@@ -275,13 +275,16 @@ b ~ Normal(mu = 0.0, sigma = 2.0)
     'elementof annotation matches the spec example: ' + out);
   assert.ok(out.includes('(%bind shifted_value (add (%meta (%scalar real) %parameterized) (%ref self center) 1.0))'),
     'outermost-call annotation matches the spec example: ' + out);
-  assert.ok(out.includes('(functionof (%meta (%kernel (%inputs center spread x)) %fixed)'),
-    'reification head annotation: kernel type with CALL-names, %fixed phase: ' + out);
+  // Kernel/measure types carry the §11 `(%mass …)` class slot (the
+  // output measure of `obs_kernel` is a probability measure → normalized).
+  assert.ok(out.includes('(functionof (%meta (%kernel (%inputs center spread x) (%mass %normalized)) %fixed)'),
+    'reification head annotation: kernel type with CALL-names + mass, %fixed phase: ' + out);
   assert.ok(out.includes('(draw (%meta (%scalar real) %stochastic)'),
     'draw binding carries %stochastic: ' + out);
-  // Inner calls: type-only (phase %deferred) — valid per spec.
-  assert.ok(out.includes('(Normal (%meta (%measure (%domain (%scalar real))) %deferred)'),
-    'inner call annotation is type-only: ' + out);
+  // Inner calls: type-only (phase %deferred) — valid per spec; the
+  // measure type carries the inferred (%mass %normalized) class.
+  assert.ok(out.includes('(Normal (%meta (%measure (%domain (%scalar real)) (%mass %normalized)) %deferred)'),
+    'inner call annotation is type-only, with mass: ' + out);
   // The annotated text reads back cleanly (the reader tolerates %meta).
   const { diagnostics } = pirSexpr.fromSexpr(pirSexpr.toSexpr(mod, { meta: true }));
   assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);

@@ -108,6 +108,10 @@ const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
 function inferTypes(loweredModule: any, opts?: { resolveFixed?: any }) {
   const ctx = createInferenceContext(loweredModule, opts);
   for (const [name] of loweredModule.bindings) ctx.inferBinding(name);
+  // Mass-class domain (spec §11; engine-concepts §17.3): a second pass
+  // over the type-inferred module — fills the `mass` slot on measure
+  // types and raises the normalize-of-infinite/null static error.
+  ctx.fillMasses();
   return ctx.diagnostics;
   // NOTE: no eager post-binding const-eval pass. The resolver is
   // demand-driven (engine-concepts §17.1) — it's invoked only from
@@ -2720,7 +2724,297 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     return T.failed(op + ' kwarg type');
   }
 
-  return { diagnostics, inferBinding, inferExpr };
+  // ===================================================================
+  // Mass-class inference (spec §11 "Total-mass classes"; engine-concepts
+  // §17.3 normalization domain). A second pass after the type walk: for
+  // every measure-typed binding, classify its total mass by composing
+  // the per-op rules over the measure expression, and emit the spec-§06
+  // static error when `normalize` is applied to a measure whose mass is
+  // null or (locally-)infinite. Mirrors flatppl-rust's `flatppl-infer`
+  // `fill_mass`; the structural recursion parallels the numeric
+  // `derivations.closedFormLogTotalmass` (two domains over the same §17
+  // walk — a class here, a log-number there; a property test pins their
+  // agreement). Conservative throughout: an unrecognised shape is
+  // MASS_UNKNOWN, never a guessed class, so the normalize diagnostic
+  // cannot false-positive.
+  // ===================================================================
+  const massCache = new Map<string, any>();
+  const massInProgress = new Set<string>();
+
+  // Boundedness of a set expression (spec §03), for the Lebesgue /
+  // Counting mass rule. true = bounded, false = unbounded, null =
+  // statically unknown. Mirrors Rust `ValueSet::is_bounded`.
+  function setBounded(setIR: any): boolean | null {
+    if (!setIR) return null;
+    if ((setIR.kind === 'const' || setIR.kind === 'ref')
+        && typeof setIR.name === 'string') {
+      switch (setIR.name) {
+        case 'unitinterval': case 'booleans': return true;
+        case 'reals': case 'posreals': case 'nonnegreals':
+        case 'integers': case 'posintegers': case 'nonnegintegers':
+        case 'complexes': return false;
+        default: return null;             // anything / rngstates / unknown
+      }
+    }
+    if (setIR.kind !== 'call') return null;
+    switch (setIR.op) {
+      case 'stdsimplex': return true;
+      case 'interval': {
+        const a = setIR.args || [];
+        const lo = resolveSetBound(a[0]);
+        const hi = resolveSetBound(a[1]);
+        if (lo == null || hi == null) return null;
+        return Number.isFinite(lo) && Number.isFinite(hi);
+      }
+      case 'cartpow': return setBounded((setIR.args || [])[0]);
+      case 'cartprod': {
+        const comps = Array.isArray(setIR.fields)
+          ? setIR.fields.map((f: any) => f.value)
+          : (setIR.args || []);
+        let allBounded = true;
+        for (const c of comps) {
+          const b = setBounded(c);
+          if (b === false) return false;
+          if (b == null) allBounded = false;
+        }
+        return allBounded ? true : null;
+      }
+    }
+    return null;
+  }
+
+  // Resolve an interval bound to a JS number, or null. Handles the
+  // `inf` constant and the `-inf` form (`neg(inf)`).
+  function resolveSetBound(ir: any): number | null {
+    if (!ir) return null;
+    if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
+    if ((ir.kind === 'const' || ir.kind === 'ref') && ir.name === 'inf') return Infinity;
+    if (ir.kind === 'call' && ir.op === 'neg' && ir.args && ir.args.length === 1) {
+      const inner = resolveSetBound(ir.args[0]);
+      return inner == null ? null : -inner;
+    }
+    return null;
+  }
+
+  // Lebesgue/Counting take their support as a `support` kwarg or a lone
+  // positional arg (spec §06).
+  function supportArgOf(ir: any): any {
+    if (ir.kwargs && ir.kwargs.support) return ir.kwargs.support;
+    return (ir.args || [])[0] || null;
+  }
+
+  // A fixed-phase scalar weight rescales by a constant — preserving the
+  // mass class (modulo normalized→finite). A parameterised / stochastic
+  // / function / inline weight does not qualify (spec §06 + Rust rule).
+  function isFixedScalarWeight(weightIR: any): boolean {
+    if (!weightIR) return false;
+    if (weightIR.kind === 'lit' && typeof weightIR.value === 'number') return true;
+    if (weightIR.kind === 'ref' && loweredModule.bindings.has(weightIR.name)) {
+      const b = loweredModule.bindings.get(weightIR.name);
+      return !!(b && b.phase === 'fixed'
+        && b.inferredType && b.inferredType.kind === 'scalar');
+    }
+    return false;
+  }
+
+  // Mass class of a measure expression, composing the per-op rules.
+  // Wrapper: memoise on the node (so a measure node is classified — and
+  // its normalize diagnostic fired — exactly once across both fill
+  // passes) and stamp the class onto the call's `meta.type` for %meta
+  // emission.
+  function massOfExpr(ir: any): any {
+    if (ir && ir.kind === 'call' && ir.meta && ir.meta.type
+        && ir.meta.type.kind === 'measure' && ir.meta.type.mass !== undefined) {
+      return ir.meta.type.mass;
+    }
+    const m = _computeMass(ir);
+    if (ir && ir.kind === 'call' && ir.meta && ir.meta.type
+        && ir.meta.type.kind === 'measure') {
+      ir.meta.type.mass = m;
+    }
+    return m;
+  }
+
+  function _computeMass(ir: any): any {
+    if (!ir) return T.MASS_UNKNOWN;
+    if (ir.kind === 'ref' && loweredModule.bindings.has(ir.name)) {
+      return massOfBinding(ir.name);
+    }
+    if (ir.kind !== 'call') return T.MASS_UNKNOWN;
+    const op = ir.op;
+    const args = ir.args || [];
+
+    // Reference measures: finite on a bounded support, locally finite
+    // on an unbounded one.
+    if (op === 'Lebesgue' || op === 'Counting') {
+      const b = setBounded(supportArgOf(ir));
+      return b === true ? T.MASS_FINITE
+        : b === false ? T.MASS_LOCALLY_FINITE
+        : T.MASS_UNKNOWN;
+    }
+    // Every other distribution constructor — incl. Dirac, the named §08
+    // distributions, and the Poisson processes (proper probability
+    // measures over point configurations) — is normalized.
+    if (builtins.DISTRIBUTIONS.has(op)) return T.MASS_NORMALIZED;
+
+    switch (op) {
+      // `lawof(x)` reifies the total law of a variate: a probability measure.
+      case 'lawof': return T.MASS_NORMALIZED;
+      case 'normalize': {
+        const base = massOfExpr(args[0]);
+        if (base === T.MASS_NULL) {
+          diagnostics.push({ severity: 'error',
+            message: 'normalize: a measure with zero total mass cannot be normalized (spec §06)',
+            loc: ir.loc });
+        } else if (base === T.MASS_LOCALLY_FINITE) {
+          diagnostics.push({ severity: 'error',
+            message: 'normalize: a measure with infinite total mass cannot be normalized (spec §06)',
+            loc: ir.loc });
+        }
+        return T.MASS_NORMALIZED;
+      }
+      // iid is a homomorphism on the mass class (Nᵗʰ power preserves it).
+      case 'iid': {
+        const base = massOfExpr(args[0]);
+        return (base === T.MASS_NORMALIZED || base === T.MASS_NULL
+          || base === T.MASS_FINITE || base === T.MASS_LOCALLY_FINITE)
+          ? base : T.MASS_UNKNOWN;
+      }
+      // Pushforward is mass-preserving: (f∗M)(whole) = M(whole). Measure
+      // is arg 1 (`pushfwd(f, M)`); `locscale(m, …)` carries it at arg 0.
+      case 'pushfwd':  return massOfExpr(args[1]);
+      case 'locscale': return massOfExpr(args[0]);
+      // weighted(w, M) / logweighted(g, M): a fixed scalar weight keeps
+      // the class (normalized demotes to finite — the scale is no longer
+      // one); any other weight is unknown.
+      case 'weighted':
+      case 'logweighted': {
+        const base = massOfExpr(args[1]);
+        if (base === T.MASS_NULL) return T.MASS_NULL;
+        if (isFixedScalarWeight(args[0])) {
+          if (base === T.MASS_NORMALIZED || base === T.MASS_FINITE) return T.MASS_FINITE;
+          if (base === T.MASS_LOCALLY_FINITE) return T.MASS_LOCALLY_FINITE;
+          return T.MASS_UNKNOWN;
+        }
+        return T.MASS_UNKNOWN;
+      }
+      // truncate(M, S) demotes a finite/normalized measure to finite;
+      // a locally finite measure becomes finite only on a bounded S.
+      case 'truncate': {
+        const base = massOfExpr(args[0]);
+        if (base === T.MASS_NULL) return T.MASS_NULL;
+        if (base === T.MASS_NORMALIZED || base === T.MASS_FINITE) return T.MASS_FINITE;
+        if (base === T.MASS_LOCALLY_FINITE) {
+          return setBounded(args[1]) === true ? T.MASS_FINITE : T.MASS_UNKNOWN;
+        }
+        return T.MASS_UNKNOWN;
+      }
+      // superpose is measure addition; select is its discrete-mixture
+      // sibling — both combine additively.
+      case 'superpose': return additiveMass(args.map(massOfExpr));
+      case 'select': {
+        const br = ir.branches || [];
+        const masses = br.map((b: any) =>
+          massOfExpr(b && b.ir ? b.ir : (b && b.kind ? b
+            : (b && b.ref ? { kind: 'ref', ns: 'self', name: b.ref } : null))));
+        return additiveMass(masses);
+      }
+      // Independent product (joint / record-of-measures).
+      case 'joint':
+      case 'record': {
+        const comps = Array.isArray(ir.fields)
+          ? ir.fields.map((f: any) => f.value) : args;
+        return productMass(comps.map(massOfExpr));
+      }
+      // bayesupdate's mass is the evidence integral — statically unknown.
+      // Dependent chains: conservative (the kernel arg is kernel-typed,
+      // so its output mass isn't reachable here without unwrapping —
+      // matches Rust's effective behaviour; refine when a consumer needs
+      // it).
+      case 'bayesupdate':
+      case 'jointchain':
+      case 'kchain':
+        return T.MASS_UNKNOWN;
+    }
+    return T.MASS_UNKNOWN;
+  }
+
+  // Mass of a measure binding (memoised, cycle-guarded — refs resolve here).
+  function massOfBinding(name: string): any {
+    if (massCache.has(name)) return massCache.get(name);
+    if (massInProgress.has(name)) return T.MASS_UNKNOWN;     // cycle → conservative
+    const b = loweredModule.bindings.get(name);
+    if (!b || !b.inferredType || b.inferredType.kind !== 'measure') {
+      massCache.set(name, T.MASS_UNKNOWN);
+      return T.MASS_UNKNOWN;
+    }
+    massInProgress.add(name);
+    const m = massOfExpr(b.rhs);
+    massInProgress.delete(name);
+    massCache.set(name, m);
+    return m;
+  }
+
+  // Fill the `mass` slot on every measure node and run the normalize
+  // diagnostic. Idempotent; run once after the type walk.
+  function fillMasses() {
+    const irWalk = require('./ir-walk.ts');
+    // Pass 1 — measure / kernel bindings. A measure binding's class
+    // fills its top `inferredType`; a kernel's reified body (whose
+    // `meta.type` aliases the kernel's `result` measure) fills the
+    // kernel's output-mass class.
+    for (const [name, b] of loweredModule.bindings) {
+      if (b.inferredType && b.inferredType.kind === 'measure') {
+        b.inferredType.mass = massOfBinding(name);
+      } else if (b.inferredType && b.inferredType.kind === 'kernel'
+          && b.inferredType.result && b.inferredType.result.kind === 'measure'
+          && b.rhs && b.rhs.body) {
+        massOfExpr(b.rhs.body);
+      }
+    }
+    // Pass 2 — every remaining inner measure node (the distribution
+    // inside a `draw`, a likelihood / bayesupdate arg, a kernel body's
+    // sub-measures) for complete %meta emission, and so a normalize
+    // nested in a value binding still raises its diagnostic. The node
+    // memo in `massOfExpr` keeps this idempotent with pass 1.
+    const visit = (ir: any) => {
+      if (!ir || typeof ir !== 'object') return;
+      if (ir.kind === 'call' && ir.meta && ir.meta.type
+          && ir.meta.type.kind === 'measure' && ir.meta.type.mass === undefined) {
+        massOfExpr(ir);
+      }
+      irWalk.forEachIRChild(ir, visit);
+    };
+    for (const [, b] of loweredModule.bindings) visit(b.rhs);
+  }
+
+  return { diagnostics, inferBinding, inferExpr, fillMasses };
+}
+
+// Mass of an independent product of components (spec §11; Rust
+// `product_mass`). Null taints; all-normalized stays normalized; a
+// finite factor demotes to finite; a locally-finite factor to locally
+// finite; anything unknown is unknown.
+function productMass(masses: any[]): any {
+  if (masses.some((m) => m === T.MASS_NULL)) return T.MASS_NULL;
+  if (masses.every((m) => m === T.MASS_NORMALIZED)) return T.MASS_NORMALIZED;
+  if (masses.every((m) => m === T.MASS_NORMALIZED || m === T.MASS_FINITE)) return T.MASS_FINITE;
+  if (masses.every((m) =>
+    m === T.MASS_NORMALIZED || m === T.MASS_FINITE || m === T.MASS_LOCALLY_FINITE)) {
+    return T.MASS_LOCALLY_FINITE;
+  }
+  return T.MASS_UNKNOWN;
+}
+
+// Mass of a measure SUM (superpose / select). Unlike the product, a sum
+// of unit masses is k (finite, not normalized): any unknown → unknown;
+// any locally-finite → locally finite; all null → null; otherwise finite.
+function additiveMass(masses: any[]): any {
+  if (masses.length === 0) return T.MASS_NULL;
+  if (masses.some((m) => m === T.MASS_UNKNOWN || m === undefined)) return T.MASS_UNKNOWN;
+  if (masses.some((m) => m === T.MASS_LOCALLY_FINITE)) return T.MASS_LOCALLY_FINITE;
+  if (masses.every((m) => m === T.MASS_NULL)) return T.MASS_NULL;
+  return T.MASS_FINITE;
 }
 
 // Internal "set" marker — not a user-facing type. elementof handles it.
