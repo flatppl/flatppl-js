@@ -257,6 +257,24 @@ test('discrete kernels refuse all four transports (spec §07)', () => {
   }
 });
 
+test('discrete-kernel transport is refused STATICALLY at inference (spec §07)', () => {
+  // The runtime _rejectDiscreteTransport refusal (above) is lifted to a
+  // typeinfer-time diagnostic so the error points at the source rather
+  // than only firing when the worker evaluates the transport.
+  const base = 'flatppl_compat = "0.1"\ns = rnginit([0, 1, 2, 3])\n';
+  const transportErr = (src: any) => engine.processSource(src).diagnostics
+    .filter((d: any) => d.severity === 'error')
+    .some((d: any) => /is a discrete kernel/.test(d.message));
+  // Each of the four transports, on a discrete kernel → flagged.
+  assert.ok(transportErr(base + 'u = builtin_touniform(Poisson, record(rate = 3.0), 2)'));
+  assert.ok(transportErr(base + 'x = builtin_fromuniform(Poisson, record(rate = 3.0), 0.5)'));
+  assert.ok(transportErr(base + 'z = builtin_tonormal(Bernoulli, record(p = 0.3), 1)'));
+  assert.ok(transportErr(base + 'b = builtin_fromnormal(Bernoulli, record(p = 0.3), 0.0)'));
+  // Continuous kernels are clean — no false positive.
+  assert.ok(!transportErr(base + 'u = builtin_touniform(Normal, record(mu = 0.0, sigma = 1.0), 0.5)'));
+  assert.ok(!transportErr(base + 'x = builtin_fromuniform(Beta, record(alpha = 2.0, beta = 3.0), 0.5)'));
+});
+
 test('multivariate-non-MvNormal kernels report not-yet-implemented', () => {
   for (const fn of ['Touniform', 'Fromuniform', 'Tonormal', 'Fromnormal']) {
     const f = densityPrims['builtin' + fn];

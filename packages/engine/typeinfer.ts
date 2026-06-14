@@ -84,6 +84,11 @@ const UNARY_ARITH_OPS  = new Set([
   'sin', 'cos', 'floor', 'ceil', 'round',
 ]);
 const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
+// The four FlatPDL transports (spec §07) — undefined on discrete kernels.
+const TRANSPORT_OPS = new Set([
+  'builtin_touniform', 'builtin_fromuniform',
+  'builtin_tonormal', 'builtin_fromnormal',
+]);
 
 // =====================================================================
 // Public entry
@@ -511,6 +516,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       case 'locscale':    return write(inferLocscale(expr, scopes), expr);
       case 'checked':     return write(inferChecked(expr, scopes), expr);
     }
+    // Static refusal: the four FlatPDL transports (touniform / fromuniform
+    // / tonormal / fromnormal) are undefined on a DISCRETE kernel — there
+    // is no continuous CDF/quantile to map through (spec §07). Lift the
+    // runtime `density-prims._rejectDiscreteTransport` refusal to inference
+    // time so the diagnostic points at the source. Type is unchanged
+    // (the generic `any`-result signature still applies below).
+    if (TRANSPORT_OPS.has(expr.op)) checkTransportKernelContinuous(expr);
     // Numeric arithmetic with shape polymorphism: both scalars,
     // both arrays of matching shape, or scalar/array broadcast.
     if (BINARY_ARITH_OPS.has(expr.op)) return write(inferArith2(expr, scopes), expr);
@@ -667,6 +679,36 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // Accepts the canonical kwarg form `checked(value = ..., condition =
   // ...)`, the positional value `checked(value_expr, condition = ...)`,
   // and the fully-positional `checked(value_expr, condition_expr)`.
+  // The kernel name of a FlatPDL transport / eval-prim — args[0] is a
+  // bare distribution name in one of three shapes (mirrors sampler's
+  // `_resolveKernelName`): a string literal, a kernel call (read its op),
+  // or a bare identifier ref. Returns null when it isn't statically a
+  // plain name (e.g. a user binding the check can't resolve — skip it).
+  function _transportKernelName(expr: any): string | null {
+    const k = (expr.args || [])[0];
+    if (!k) return null;
+    if (k.kind === 'lit' && typeof k.value === 'string') return k.value;
+    if (k.kind === 'call' && typeof k.op === 'string')   return k.op;
+    if (k.kind === 'ref'  && typeof k.name === 'string')  return k.name;
+    return null;
+  }
+
+  function checkTransportKernelContinuous(expr: any): void {
+    const name = _transportKernelName(expr);
+    if (name == null) return;
+    const irShared = require('./ir-shared.ts');
+    if (irShared.DISCRETE_DISTRIBUTIONS && irShared.DISCRETE_DISTRIBUTIONS.has(name)) {
+      diagnostics.push({
+        severity: 'error',
+        message: `${expr.op}: '${name}' is a discrete kernel; the four FlatPDL `
+          + `transports (touniform / fromuniform / tonormal / fromnormal) are `
+          + `defined only on continuous kernels (spec §07 — no continuous `
+          + `CDF/quantile to map through).`,
+        loc: ((expr.args || [])[0] && (expr.args || [])[0].loc) || expr.loc,
+      });
+    }
+  }
+
   function inferChecked(expr: any, scopes: any): any {
     const args = expr.args || [];
     const kwargs = expr.kwargs || {};
