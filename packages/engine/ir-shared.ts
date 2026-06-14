@@ -556,6 +556,13 @@ const EVALUABLE_OPS = new Set([
   // a=x, b=y)` constructors. Both are pure value computations the
   // evaluator handles.
   'get_field', 'record',
+  // checked(value, condition) — spec §07 value-preserving assertion.
+  // sampler.evaluateCall dispatches it inline (it carries a `condition`
+  // kwarg the positional ARITH_OPS shape doesn't); listed here so a
+  // fixed-phase `checked(...)` const-folds through the evaluator (and a
+  // false condition raises its load-time static error) instead of
+  // dead-ending as unsupported.
+  'checked',
   // Unified element/subset/slice access (spec §07). `v[i]`, `A[i,j]`,
   // `A[:,j]`, `v[[1,3]]`, `get(r,"a")` all lower to `get` (1-based);
   // `get0` is the 0-based variant. Pure deterministic value ops —

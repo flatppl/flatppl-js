@@ -3101,6 +3101,60 @@ function analyze(ast: any, source: string) {
     }
   }
 
+  // Phase check: per spec §07, `checked(value, condition)` requires
+  // `condition` to be a fixed-phase boolean — it is "evaluated at
+  // load/inference time" and a false result is a STATIC error. A
+  // parametric / stochastic condition can't be settled at load time, so
+  // the assertion semantics don't apply. This is the phase half of the
+  // contract (validated here, the phase authority, alongside the
+  // functionof-boundary check above); arg shape is validated earlier in
+  // `validateSpecialOperation`, and the condition-is-boolean type check
+  // lives in typeinfer. Walk every binding's RHS (a `checked` can nest,
+  // e.g. `y = 2 * checked(x, condition = ...)`).
+  {
+    const condPhaseOf = (name: string) => phases.get(name) || 'fixed';
+    const checkCheckedCondition = (ast: any) => {
+      if (!ast || typeof ast !== 'object') return;
+      if (ast.type === 'CallExpr' && ast.callee
+          && ast.callee.type === 'Identifier' && ast.callee.name === 'checked') {
+        const args = ast.args || [];
+        let condAst: any = null;
+        let condLoc: any = ast.loc;
+        for (const a of args) {
+          if (a && a.type === 'KeywordArg' && a.name === 'condition') {
+            condAst = a.value;
+            condLoc = a.loc || (a.value && a.value.loc) || ast.loc;
+          }
+        }
+        if (!condAst) {
+          // Positional condition: the second positional (non-kwarg) arg.
+          const positional = args.filter((a: any) => !(a && a.type === 'KeywordArg'));
+          if (positional.length >= 2) { condAst = positional[1]; condLoc = condAst.loc; }
+        }
+        if (condAst) {
+          const ph = phaseOfAstExpr(condAst, bindings, condPhaseOf);
+          if (ph !== 'fixed') {
+            diagnostics.push({
+              severity: 'error',
+              message: `checked(): condition must be fixed-phase — spec §07 evaluates it `
+                + `at load/inference time — but it has ${ph} phase.`,
+              loc: condLoc,
+            });
+          }
+        }
+      }
+      for (const k in ast) {
+        if (k === 'loc') continue;
+        const v = ast[k];
+        if (Array.isArray(v)) v.forEach(checkCheckedCondition);
+        else if (v && typeof v === 'object') checkCheckedCondition(v);
+      }
+    };
+    for (const [, b] of bindings) {
+      if (b.node && b.node.value) checkCheckedCondition(b.node.value);
+    }
+  }
+
   // Lower to FlatPIR-aligned in-memory module. The LoweredModule is
   // the single source of truth for the program's executable form;
   // all subsequent passes (type inference now, derivation building

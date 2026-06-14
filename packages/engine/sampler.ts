@@ -2255,6 +2255,32 @@ function evaluateCall(ir: any, env: any): any {
     }
     return evaluateExpr(args[0], env);
   }
+  // checked(value, condition) — spec §07 value-preserving assertion.
+  // Returns `value` unchanged when `condition` is true, else throws.
+  // The condition is fixed-phase (a constant across draws), so the
+  // intended failure mode is the load-time static error raised when the
+  // condition const-folds to false during fixed-phase evaluation; this
+  // runtime guard is defense-in-depth for the case where `value` (and
+  // hence the whole `checked`) is stochastic and re-evaluated per draw.
+  // Handled inline (not via ARITH_OPS) because `condition` arrives as a
+  // kwarg the positional-spread ARITH_OPS shape doesn't carry.
+  if (op === 'checked') {
+    const args = ir.args || [];
+    const kwargs = ir.kwargs || {};
+    const valueIR = ('value' in kwargs) ? kwargs.value : args[0];
+    const condIR  = ('condition' in kwargs) ? kwargs.condition : args[1];
+    if (valueIR == null) {
+      throw new Error('evaluateExpr: checked() requires a value argument');
+    }
+    if (condIR != null) {
+      const cond: any = evaluateExpr(condIR, env);
+      if (cond !== true && cond !== 1) {
+        throw new Error(
+          `checked() assertion failed: condition evaluated to ${cond}`);
+      }
+    }
+    return evaluateExpr(valueIR, env);
+  }
   // get_field(obj, "name") — record field access. Lowered from
   // surface `obj.field`. Second arg is always a literal string.
   if (op === 'get_field') {

@@ -505,6 +505,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       // lowering, not the scalar expansion). Its type follows the base
       // measure — an affine pushforward changes neither domain nor shape.
       case 'locscale':    return write(inferLocscale(expr, scopes), expr);
+      case 'checked':     return write(inferChecked(expr, scopes), expr);
     }
     // Numeric arithmetic with shape polymorphism: both scalars,
     // both arrays of matching shape, or scalar/array broadcast.
@@ -654,6 +655,44 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   // REAL or a function type (any inputs → real result), and reject
   // anything else (notably measures — that's a common user mistake
   // the old signature already caught).
+  // checked(value, condition) — spec §07 value-preserving assertion.
+  // Result type/phase is IDENTICAL to `value` (it threads `value`
+  // through unchanged), so we return value's inferred type directly. The
+  // `condition` must be a boolean (the type half of the contract; the
+  // fixed-phase half is enforced in the analyzer, the phase authority).
+  // Accepts the canonical kwarg form `checked(value = ..., condition =
+  // ...)`, the positional value `checked(value_expr, condition = ...)`,
+  // and the fully-positional `checked(value_expr, condition_expr)`.
+  function inferChecked(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    const kwargs = expr.kwargs || {};
+    const valueExpr = ('value' in kwargs) ? kwargs.value : args[0];
+    const condExpr  = ('condition' in kwargs) ? kwargs.condition : args[1];
+    if (valueExpr == null) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'checked(): requires a value argument',
+        loc: expr.loc,
+      });
+      return T.failed('checked: no value');
+    }
+    const vt: any = inferExpr(valueExpr, scopes);
+    if (condExpr != null) {
+      const ct: any = inferExpr(condExpr, scopes);
+      // Cascades (already-failed condition) don't pile on a second error.
+      const isCascade = ct && ct.kind === 'failed';
+      if (!isCascade && T.unify(T.BOOLEAN, ct, new Map()) == null) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'checked(): condition must be a boolean, got ' + T.show(ct),
+          loc: (condExpr.loc || expr.loc),
+        });
+      }
+    }
+    // Value passes through with identical type (and phase, set upstream).
+    return vt;
+  }
+
   function inferWeighted(expr: any, scopes: any): any {
     const op = expr.op;
     const args = expr.args || [];
