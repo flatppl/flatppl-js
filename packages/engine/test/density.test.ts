@@ -119,6 +119,33 @@ test('density: joint(a=N(0,1), b=N(0,1)) at {a:0,b:1} sums field logps', () => {
   assert.ok(Math.abs(logp - expected) < 1e-12);
 });
 
+test('density: MIXED continuous-discrete joint multiplies Lebesgue × Counting refs', () => {
+  // Spec §06: a product measure combines its components' reference
+  // measures multiplicatively. A joint of a continuous (Lebesgue-ref)
+  // and a discrete (Counting-ref) component is well-formed — its
+  // density w.r.t. Lebesgue⊗Counting is the product (sum in log-space)
+  // of the per-component densities. (Contrast superpose, where mixing
+  // continuous⊕discrete is correctly refused — no common reference.)
+  // Oracle: independent closed forms, not the engine's own output.
+  const Poisson = (rate: any) =>
+    ({ kind: 'call', op: 'Poisson', kwargs: { rate: lit(rate) } });
+  const logfact = (n: any) => { let s = 0; for (let i = 2; i <= n; i++) s += Math.log(i); return s; };
+  const lnNormal = (x: any, m: any, s: any) =>
+    -0.5 * LOG_TWO_PI - Math.log(s) - 0.5 * ((x - m) / s) ** 2;
+  const lnPoisson = (k: any, r: any) => k * Math.log(r) - r - logfact(k);
+
+  const ir = callOp('joint', null, [
+    { name: 'c', value: Normal(0, 1) },
+    { name: 'k', value: Poisson(3) },
+  ]);
+  for (const [c, k] of [[0.5, 2], [0, 0], [-2, 1], [1.5, 5]]) {
+    const logp = density.logDensity(ir, { c, k }, {});
+    const oracle = lnNormal(c, 0, 1) + lnPoisson(k, 3);
+    assert.ok(Math.abs(logp - oracle) < 1e-12,
+      `joint density at (c=${c},k=${k}): engine ${logp} vs oracle ${oracle}`);
+  }
+});
+
 test('density: kwarg-joint with missing field throws', () => {
   // Consuming 'a' empties the record; the next iteration can't find
   // 'b' because there's nothing left to consume from. Either error
