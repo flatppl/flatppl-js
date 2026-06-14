@@ -864,8 +864,20 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     const prng = makeMainThreadPrng(nameSeed(name, ctx.rootKey));
     const out = new Float64Array(sc);
 
-    const K = ctx.repeatBlock;
-    const blockAware = typeof K === 'number' && K > 1 && sc % K === 0
+    // Block-aware resampling is the GENERAL case, not just the repeat
+    // axis: each contiguous K-block draws only from its own component
+    // pool, preserving per-atom correspondence. K = the iid repeat block
+    // when present (`iid(superpose,k)`), else 1 — the base case, where
+    // out[i] selects among atom i's OWN per-component draws rather than
+    // the global N·P pool. This is correct for per-atom-parameterized
+    // superpose (weights/components depend on a per-atom draw) and only
+    // differs from a global pool-resample by which equally-valid atoms
+    // are kept for ordinary population mixtures. Falls back to a global
+    // resample only when the parents aren't all the output length (e.g.
+    // pooling populations of different sizes).
+    const K = (typeof ctx.repeatBlock === 'number' && ctx.repeatBlock > 1)
+      ? ctx.repeatBlock : 1;
+    const blockAware = sc % K === 0
       && lifted.every((l: any) => l.samples.length === sc);
     if (blockAware) {
       // Per-atom mixture: resample each k-block from its own

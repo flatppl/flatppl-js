@@ -224,3 +224,61 @@ y = iid(shifted, ${k})
   assert.ok(std(rows.map(mean)) > 7,
     'across-atom std tracks the mu-prior (~10); got ' + std(rows.map(mean)).toFixed(3));
 });
+
+// ---------------------------------------------------------------------
+// 4. BASE-LEVEL (non-iid) superpose — the SAME per-atom-correspondence
+//    concern at block=1. matSuperpose is now always block-aware, so a
+//    base `superpose` whose components depend on a per-atom draw selects
+//    among atom i's OWN component draws, not a global N·P pool. With the
+//    old global pool-resample, out[i] would take some atom j≠i's
+//    component value, decorrelating it from mu_i. (Greenlit decision:
+//    accept the exact-sample change for ordinary mixtures to close this.)
+// ---------------------------------------------------------------------
+
+test('superpose base case: out[i] tracks atom i\'s own per-atom component (corr ≈ 1)', async () => {
+  const N = 3000;
+  // Both branches near-Dirac at the per-atom mu ⇒ out[i] ≈ mu_i iff the
+  // resample stays within atom i. A global pool would give out[i] ≈ mu_j.
+  const src = `
+mu = draw(Normal(0, 10))
+m = superpose(weighted(0.5, Normal(mu, 0.001)), weighted(0.5, Normal(mu, 0.001)))
+`;
+  const { ctx } = setupCtx(src, N);
+  const mM = await ctx.getMeasure('m');
+  const muM = await ctx.getMeasure('mu');
+  const x: number[] = Array.from(mM.samples as Float64Array);
+  const mu: number[] = Array.from(muM.samples as Float64Array);
+  assert.equal(x.length, N);
+
+  // Per-atom: |out[i] − mu_i| ≈ component sd (0.001), NOT the prior width.
+  let maxDev = 0;
+  for (let i = 0; i < N; i++) maxDev = Math.max(maxDev, Math.abs(x[i] - mu[i]));
+  assert.ok(maxDev < 0.05,
+    'out[i] must equal atom i\'s own component draw (≈ mu_i); got max '
+    + 'deviation ' + maxDev.toFixed(4) + ' (a global pool would be O(10))');
+
+  // Pearson correlation between out[i] and mu_i ≈ 1.
+  const mx = mean(x), mm = mean(mu);
+  let cov = 0, vx = 0, vm = 0;
+  for (let i = 0; i < N; i++) {
+    const dx = x[i] - mx, dm = mu[i] - mm;
+    cov += dx * dm; vx += dx * dx; vm += dm * dm;
+  }
+  assert.ok(cov / Math.sqrt(vx * vm) > 0.99,
+    'out tracks the shared per-atom mu (corr ≈ 1); got '
+    + (cov / Math.sqrt(vx * vm)).toFixed(4));
+});
+
+test('superpose base case: marginal preserved (the fix changes the joint, not the marginal)', async () => {
+  const N = 4000;
+  const src = `
+mu = draw(Normal(0, 10))
+m = superpose(weighted(0.5, Normal(mu, 0.001)), weighted(0.5, Normal(mu, 0.001)))
+`;
+  const { ctx } = setupCtx(src, N);
+  const mM = await ctx.getMeasure('m');
+  const x: number[] = Array.from(mM.samples as Float64Array);
+  // Each draw is mu + tiny noise, mu ~ Normal(0,10) ⇒ pooled ~ Normal(0,10).
+  assert.ok(Math.abs(mean(x)) < 1.0, 'pooled mean ≈ 0; got ' + mean(x).toFixed(3));
+  assert.ok(Math.abs(std(x) - 10) < 1.5, 'pooled std ≈ 10; got ' + std(x).toFixed(3));
+});
