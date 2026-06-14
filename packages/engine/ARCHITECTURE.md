@@ -196,6 +196,21 @@ after the table.
 optional `fields` (record) / `elems` (tuple) / `dims`. Composite measures
 recurse via `ctx.getMeasure(name)`; the orchestrator caches per name-per-context.
 
+**Ragged-per-atom value (planned — engine-concepts §2.3).** For non-uniform
+per-atom length (`PoissonProcess`: atom *i* draws *Nᵢ* points), `value`'s
+uniform `[N,…]` doesn't hold; the realisation is a ragged Value kind —
+`{ data: Float64Array (all atoms' points concatenated), offsets: Int32Array
+(length N+1; atom i = data[offsets[i]:offsets[i+1]]), kernelShape:number[]
+(fixed leading per-point dims) }`. It is the uniform Value's sibling
+(`ArrayOfSimilarArrays` ↔ uniform `[N,k]`; `VectorOfArrays` ↔ ragged), so a
+length-preserving elementwise broadcast reuses the flat fast path verbatim
+with `offsets` carried as metadata; only segmented-reduce / length-changing
+ops need offset-aware kernels. Build surface (when `PoissonProcess` lands):
+the value kind + slice/map-over-atoms ops, `matPoissonProcess`, per-atom
+ragged density, the worker `{data,offsets}` transfer contract, viewer
+rendering. Start with the `VectorOfVectors` case (scalar points,
+`kernelShape=[]`); generalise `kernelShape` only when a d-dim process needs it.
+
 **Deterministic-evaluation authority.** There is exactly ONE deterministic
 evaluator: `sampler.evaluateExpr` / `evaluateExprN`. Everything routes through
 it; `orchestrator.resolveIRToValue` is a thin adapter (static fast paths for
