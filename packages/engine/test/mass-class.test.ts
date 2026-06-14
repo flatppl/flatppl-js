@@ -49,12 +49,12 @@ function sexprOf(src: string): string {
 // =====================================================================
 
 test('mass: every distribution constructor is normalized', () => {
-  // Scalar distributions + Dirac — the constructors typeinfer types as
-  // measures today. (Multivariate dists, PoissonProcess, and
-  // bayesupdate still type as `deferred` — a pre-existing typeinfer
-  // type-coverage gap, separate from mass: with no measure type there
-  // is no `%mass` slot to fill. Tracked in TODO-flatppl-js.md as a
-  // cross-engine parity item.)
+  // Scalar distributions + Dirac + the MULTIVARIATE / PROCESS constructors
+  // (MvNormal / Dirichlet / Multinomial / Wishart-family / LKJ-family /
+  // PoissonProcess / BinnedPoissonProcess) — all probability measures, so
+  // `fillMasses` (DISTRIBUTIONS → normalized) tags them once typeinfer types
+  // them as measures (the multivariates gained measure-typed signatures —
+  // they were `deferred` before, the JS↔Rust %meta type-coverage gap).
   for (const [src, name] of [
     ['m = Normal(mu = 0.0, sigma = 1.0)', 'm'],
     ['m = Beta(alpha = 1.0, beta = 1.0)', 'm'],
@@ -62,9 +62,46 @@ test('mass: every distribution constructor is normalized', () => {
     ['m = Bernoulli(p = 0.5)', 'm'],
     ['m = Exponential(rate = 1.0)', 'm'],
     ['m = Dirac(value = 2.0)', 'm'],
+    ['m = MvNormal(mu = [0.0, 0.0], cov = [[1.0, 0.0], [0.0, 1.0]])', 'm'],
+    ['m = Dirichlet(alpha = [1.0, 1.0, 1.0])', 'm'],
+    ['m = Multinomial(n = 5, p = [0.2, 0.3, 0.5])', 'm'],
+    ['m = Wishart(nu = 3.0, scale = [[1.0, 0.0], [0.0, 1.0]])', 'm'],
+    ['m = InverseWishart(nu = 3.0, scale = [[1.0, 0.0], [0.0, 1.0]])', 'm'],
+    ['m = LKJ(n = 2, eta = 1.0)', 'm'],
+    ['m = LKJCholesky(n = 2, eta = 1.0)', 'm'],
+    ['m = BinnedPoissonProcess(rates = [1.0, 2.0, 3.0])', 'm'],
+    ['m = PoissonProcess(intensity = weighted(5.0, Normal(0.0, 1.0)))', 'm'],
   ] as [string, string][]) {
     assert.equal(massOf(src, name), 'normalized', src);
   }
+});
+
+test('mass: multivariate/process dists carry an array measure-domain', () => {
+  // The measure type now has an array domain (the per-atom shape), so the
+  // %meta export carries (%measure (%domain (%array …))). Exact length stays
+  // %dynamic; the precise extent is the valueset (cartpow/stdsimplex).
+  for (const [src, name] of [
+    ['m = Dirichlet(alpha = [1.0, 1.0, 1.0])', 'm'],
+    ['m = PoissonProcess(intensity = weighted(5.0, Normal(0.0, 1.0)))', 'm'],
+  ] as [string, string][]) {
+    const r = processSource(src);
+    const t = r.loweredModule.bindings.get(name).inferredType;
+    assert.equal(t.kind, 'measure', src);
+    assert.equal(t.domain.kind, 'array', src + ' domain');
+  }
+});
+
+test('mass: bayesupdate over a multivariate prior is a measure', () => {
+  // Previously deferred (the prior was deferred ⇒ bayesupdate fell through);
+  // with the prior measure-typed, bayesupdate(L, prior) returns the prior's
+  // measure type (spec §06: unnormalized posterior over the prior's domain).
+  const r = processSource(`
+L = likelihoodof(fn(Normal(_, 1.0)), 0.5)
+post = bayesupdate(L, Dirichlet(alpha = [1.0, 1.0, 1.0]))
+`);
+  const t = r.loweredModule.bindings.get('post').inferredType;
+  assert.equal(t.kind, 'measure');
+  assert.equal(t.domain.kind, 'array');
 });
 
 // =====================================================================
