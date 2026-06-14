@@ -144,18 +144,78 @@ function _chebyshev(n: number, x: number): number {
   return cur;
 }
 
+// `legendre(n, x)` — Legendre polynomial P_n(x), three-term recurrence
+//
+//   P_0 = 1,  P_1 = x,  n·P_n = (2n−1)·x·P_{n−1} − (n−1)·P_{n−2}.
+//
+// (spec §09; oracle: matches the explicit closed forms P_2=(3x²−1)/2,
+// P_3=(5x³−3x)/2, P_4=(35x⁴−30x²+3)/8 to machine precision.)
+function _legendre(n: number, x: number): number {
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error('legendre: n must be a non-negative integer (got ' + n + ')');
+  }
+  if (n === 0) return 1;
+  if (n === 1) return x;
+  let prev = 1, cur = x;
+  for (let k = 2; k <= n; k++) {
+    const next = ((2 * k - 1) * x * cur - (k - 1) * prev) / k;
+    prev = cur;
+    cur = next;
+  }
+  return cur;
+}
+
+// `hermite(n, x)` — physicist's Hermite polynomial H_n(x) (spec §09
+// names the physicist's variant explicitly), three-term recurrence
+//
+//   H_0 = 1,  H_1 = 2x,  H_n = 2x·H_{n−1} − 2(n−1)·H_{n−2}.
+//
+// (oracle: matches H_2=4x²−2, H_3=8x³−12x, H_4=16x⁴−48x²+12.)
+function _hermite(n: number, x: number): number {
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error('hermite: n must be a non-negative integer (got ' + n + ')');
+  }
+  if (n === 0) return 1;
+  if (n === 1) return 2 * x;
+  let prev = 1, cur = 2 * x;
+  for (let k = 2; k <= n; k++) {
+    const next = 2 * x * cur - 2 * (k - 1) * prev;
+    prev = cur;
+    cur = next;
+  }
+  return cur;
+}
+
+// `laguerre(n, x)` — Laguerre polynomial L_n(x), three-term recurrence
+//
+//   L_0 = 1,  L_1 = 1−x,  n·L_n = (2n−1−x)·L_{n−1} − (n−1)·L_{n−2}.
+//
+// (oracle: matches L_2=(x²−4x+2)/2, L_3=(−x³+9x²−18x+6)/6.)
+function _laguerre(n: number, x: number): number {
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error('laguerre: n must be a non-negative integer (got ' + n + ')');
+  }
+  if (n === 0) return 1;
+  if (n === 1) return 1 - x;
+  let prev = 1, cur = 1 - x;
+  for (let k = 2; k <= n; k++) {
+    const next = ((2 * k - 1 - x) * cur - (k - 1) * prev) / k;
+    prev = cur;
+    cur = next;
+  }
+  return cur;
+}
+
 function _registerPolynomials() {
   const bindings = new Map<string, BindingDescriptor>();
-  bindings.set('chebyshev', {
-    kind: 'function',
-    sig: T.funcType(
-      [{ name: 'n', type: T.INTEGER }, { name: 'x', type: T.REAL }],
-      T.REAL,
-    ),
-    impl: _chebyshev,
-  });
-  // legendre / hermite / laguerre are also in the spec but deferred
-  // until a consumer needs them.
+  const polySig = () => T.funcType(
+    [{ name: 'n', type: T.INTEGER }, { name: 'x', type: T.REAL }],
+    T.REAL,
+  );
+  bindings.set('chebyshev', { kind: 'function', sig: polySig(), impl: _chebyshev });
+  bindings.set('legendre',  { kind: 'function', sig: polySig(), impl: _legendre });
+  bindings.set('hermite',   { kind: 'function', sig: polySig(), impl: _hermite });
+  bindings.set('laguerre',  { kind: 'function', sig: polySig(), impl: _laguerre });
   registerStandardModule({
     name: 'polynomials',
     compat: '0.1',
@@ -479,6 +539,9 @@ module.exports = {
   // Exported for tests
   _internal: {
     _chebyshev,
+    _legendre,
+    _hermite,
+    _laguerre,
     _resonanceBreitwigner,
     _breakupMomentum,
     _breakupMomentumMass,
