@@ -89,3 +89,8 @@ test('function def: params are bare names, not keyword args', () => {
 test('function def: a bare call is still not a statement', () => {
   assert.ok(errors('f(a, b)\n').length > 0, '`f(a, b)` must be rejected');
 });
+
+test('function def: a reserved name cannot be defined', () => {
+  // `all` is reserved at binding; the defined name follows binding-name rules.
+  assert.ok(errors('all(x) = x + 1\n').length > 0, '`all(x) = …` must be rejected');
+});

@@ -217,7 +217,8 @@ function parse(tokens: any[], variant: any) {
         continue;
       }
       if (tokens[i] && tokens[i].type === T.RPAREN) {
-        if (nameCount < 1) return false;
+        // nameCount ≥ 1 here (we only arrive after consuming a Name above), so
+        // a function definition is confirmed iff a `=` follows the `)`.
         return tokens[i + 1] != null && tokens[i + 1].type === T.EQUALS;
       }
       return false;
