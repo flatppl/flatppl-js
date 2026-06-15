@@ -169,15 +169,9 @@ function parse(tokens: any[], variant: any) {
     const t = advance();  // IDENT
     advance();            // ARROW
     const body = parseExpr();
-    const llocEnd = body.loc;
     const lloc = AST.loc(t.loc.start.line, t.loc.start.col,
-                         llocEnd.end.line, llocEnd.end.col);
-    const argSet = new Set([t.value]);
-    const rewritten = rewriteFreeIdsToPlaceholders(body, argSet);
-    return AST.CallExpr(
-      AST.Identifier('functionof', lloc),
-      [rewritten, AST.KeywordArg(t.value, AST.Placeholder(t.value, t.loc), t.loc)],
-      lloc);
+                         body.loc.end.line, body.loc.end.col);
+    return desugarLambdaToFunctionof([t.value], [t.loc], body, lloc);
   }
 
   // Parse `(arg1, arg2, ...) -> expr`. By the time we get here,
@@ -199,17 +193,78 @@ function parse(tokens: any[], variant: any) {
     expect(T.RPAREN);
     expect(T.ARROW);
     const body = parseExpr();  // right-associative: body extends as far right as possible
-    const llocEnd = body.loc;
     const lloc = AST.loc(lparen.loc.start.line, lparen.loc.start.col,
-                         llocEnd.end.line, llocEnd.end.col);
+                         body.loc.end.line, body.loc.end.col);
+    return desugarLambdaToFunctionof(argNames, argLocs, body, lloc);
+  }
 
-    // Capture-avoiding rewrite of free identifier refs in `body`.
-    // Skip into binders that re-bind the same name (inner lambdas
-    // already desugared to functionof, plus user-written
-    // functionof/kernelof).
+  // Look ahead from a statement-leading Name to decide if it begins a
+  // FunctionDefinition `Name "(" Name ("," Name)* ")" "="` (spec §05). Requires
+  // ≥ 1 bare Name and a `=` after the `)`, so `f(x = a)` (a keyword call) and a
+  // bare call `f(a, b)` (no trailing `=`) are NOT matched. Nullary `f()` fails
+  // the IDENT check below and falls through (it is rejected downstream).
+  function lookaheadIsFunctionDef() {
+    if (!at(T.IDENT)) return false;
+    if (!tokens[pos + 1] || tokens[pos + 1].type !== T.LPAREN) return false;
+    let i = pos + 2;  // first token after `(`
+    let nameCount = 0;
+    while (i < tokens.length) {
+      if (!tokens[i] || tokens[i].type !== T.IDENT) return false;
+      i++;
+      nameCount++;
+      if (tokens[i] && tokens[i].type === T.COMMA) {
+        i++;
+        continue;
+      }
+      if (tokens[i] && tokens[i].type === T.RPAREN) {
+        // nameCount ≥ 1 here (we only arrive after consuming a Name above), so
+        // a function definition is confirmed iff a `=` follows the `)`.
+        return tokens[i + 1] != null && tokens[i + 1].type === T.EQUALS;
+      }
+      return false;
+    }
+    return false;
+  }
+
+  // Parse `Name "(" Name ("," Name)* ")" "=" Expression` and desugar to the
+  // lambda binding `Name = (args) -> Expression` (spec §05). lookaheadIsFunctionDef
+  // has confirmed the shape (≥ 1 bare name, closing `)` then `=`), so this
+  // produces the same `functionof` AST as the explicit lambda binding.
+  function parseFunctionDef(): any {
+    const nameTok = advance();  // Name
+    // The defined name follows ordinary binding-name rules.
+    if (v.reservedAtBinding && v.reservedAtBinding.has(nameTok.value)) {
+      diagnostics.push({
+        severity: 'error',
+        message: `'${nameTok.value}' is a reserved name in ${v.id} and cannot be bound`,
+        loc: nameTok.loc,
+      });
+    }
+    advance();  // (
+    const argNames: string[] = [];
+    const argLocs: any[] = [];
+    while (at(T.IDENT)) {
+      const t = advance();
+      argNames.push(t.value);
+      argLocs.push(t.loc);
+      if (at(T.COMMA)) advance();
+    }
+    expect(T.RPAREN);
+    expect(T.EQUALS);
+    const body = parseExpr();  // body extends as far right as possible
+    const lloc = AST.loc(nameTok.loc.start.line, nameTok.loc.start.col,
+                         body.loc.end.line, body.loc.end.col);
+    const value = desugarLambdaToFunctionof(argNames, argLocs, body, lloc);
+    return AST.AssignStatement([AST.Identifier(nameTok.value, nameTok.loc)], value, lloc);
+  }
+
+  // Shared desugaring for lambdas and function definitions (spec §04/§05):
+  // build `functionof(body', arg1 = _arg1_, ...)` where body' has every free
+  // occurrence of each arg rewritten to its placeholder. `f(args) = expr` and
+  // `f = (args) -> expr` go through this same path, producing identical output.
+  function desugarLambdaToFunctionof(argNames: string[], argLocs: any[], body: any, lloc: any): any {
     const argSet = new Set(argNames);
     const rewritten = rewriteFreeIdsToPlaceholders(body, argSet);
-
     const kwargs: any[] = [];
     for (let i = 0; i < argNames.length; i++) {
       kwargs.push(AST.KeywordArg(
@@ -1035,6 +1090,17 @@ function parse(tokens: any[], variant: any) {
     if (at(T.IDENT) && tokens[pos + 1] && tokens[pos + 1].type === T.LBRACKET
         && lookaheadIsAggregateBinding()) {
       return parseAggregateBinding();
+    }
+
+    // FunctionDefinition (spec §05 "Function definition syntax"):
+    //   Name "(" Name ("," Name)* ")" "=" Expression
+    // Sugar for binding `Name` to the lambda `(args) -> Expression`; desugars
+    // at parse time to the same `functionof` the lambda form produces. The
+    // `Name "(" <bare names> ")" "="` shape (checked by lookahead) distinguishes
+    // it from a call expression, so `f(x = a)` and bare `f(a, b)` fall through.
+    if (at(T.IDENT) && tokens[pos + 1] && tokens[pos + 1].type === T.LPAREN
+        && lookaheadIsFunctionDef()) {
+      return parseFunctionDef();
     }
 
     // Collect LHS names: name1, name2, ... = rhs. Reserved names
