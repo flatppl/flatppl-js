@@ -495,6 +495,13 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
       && Array.isArray(ir.args) && ir.args.length === 1) {
     return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
   }
+  // relabel(M, names) attaches axis labels (spec §04); it is transparent to the
+  // density — the per-point log-density of M is unchanged by its axis names —
+  // so peel to M. (The importer wraps `gaussian_dist` etc. as
+  // `relabel(Normal(…), ["x"])` to carry the HS3 variate name.)
+  if (op === 'relabel' && Array.isArray(ir.args) && ir.args.length >= 1) {
+    return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+  }
   const handler: any = op != null ? (OP_HANDLERS as any)[op] : null;
   if (handler) return handler(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
 
