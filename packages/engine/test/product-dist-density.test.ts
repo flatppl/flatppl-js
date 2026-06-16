@@ -82,6 +82,30 @@ test('product_dist: iid unbinned likelihood is the sum of per-entry closed-form 
     `Σ score ${m.samples[0]} = Σ logN(x_i | μ*, σ*) = ${expect}`);
 });
 
+test('product_dist: non-Gaussian factors fall back to numeric quadrature of the normalizer', async () => {
+  // Normal × Cauchy over the SAME observable x: no closed-form product, so the
+  // normalizer −logZ = −log ∫ N(x|0,1)·Cauchy(x|0.5,1) dx is computed by
+  // quadrature over the variate's declared domain x ∈ [-40, 40].
+  const src = `
+mu = elementof(reals)
+loc = elementof(reals)
+g1 = Normal(mu = mu, sigma = 1.0)
+g2 = Cauchy(location = loc, scale = 1.0)
+prod = normalize(logweighted(x -> logdensityof(g2, x), g1))
+dom = cartprod(x = interval(-40.0, 40.0))
+L = likelihoodof(prod, 0.7)
+ld = logdensityof(L, record(mu = 0.0, loc = 0.5))
+`;
+  // Independent oracle: scipy integral of the same integrand over the same
+  // bounds — logN(0.7|0,1) + logCauchy(0.7|0.5,1) − logsumexp ∫ over [-40,40].
+  // (python: norm.logpdf + cauchy.logpdf − logsumexp(grid) − log dx.)
+  const SCIPY = -0.7221686750374490;
+  const ctx = buildCtx(src, 1);
+  const m = await ctx.getMeasure('ld');
+  assert.ok(Math.abs(m.samples[0] - SCIPY) < 1e-6,
+    `Normal×Cauchy score ${m.samples[0]} ≈ scipy numeric ${SCIPY}`);
+});
+
 test('product_dist: three-factor product folds the log-weight and normalizer', async () => {
   const src = `
 a = elementof(reals)

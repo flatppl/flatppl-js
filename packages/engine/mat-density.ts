@@ -24,6 +24,7 @@ const orchestrator = require('./orchestrator.ts');
 const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
+const densityPrims = require('./density-prims.ts');
 
 const {
   nameSeed,
@@ -242,7 +243,7 @@ function matLikelihoodDensity(d: any, ctx: any) {
   // −log Z = −log ∫ ∏ᵢ gᵢ has no massFrom (it isn't a reweighted ensemble),
   // so resolve it HERE — at the fixed point θ — and rewrite the normalize to a
   // constant logweighted shift, before scoring.
-  resolveProductNormalizers(node.body, theta);
+  resolveProductNormalizers(node.body, theta, ctx);
   const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
   return matScore(node, ctx, { observed })
     .then((reply: any) => applyReduce(reply, node));
@@ -259,13 +260,13 @@ function matLikelihoodDensity(d: any, ctx: any) {
 // (the product of Gaussians is Gaussian); other recognised reference measures
 // fall to numeric quadrature. An unrecognised factor mix throws (loud, not a
 // silently-unnormalized density).
-function resolveProductNormalizers(node: any, theta: any, seen?: any) {
+function resolveProductNormalizers(node: any, theta: any, ctx: any, seen?: any) {
   if (!node || typeof node !== 'object') return;
   seen = seen || new Set();
   if (seen.has(node)) return;
   seen.add(node);
   if (Array.isArray(node)) {
-    for (const x of node) resolveProductNormalizers(x, theta, seen);
+    for (const x of node) resolveProductNormalizers(x, theta, ctx, seen);
     return;
   }
   if (node.kind === 'call' && node.op === 'normalize'
@@ -273,23 +274,24 @@ function resolveProductNormalizers(node: any, theta: any, seen?: any) {
     const inner = node.args[0];
     const fold = sharedVariateProductFold(inner);
     if (fold) {
-      const negLogZ = -productLogZ(fold.factors, theta);
+      const negLogZ = -productLogZ(fold.factors, fold.variate, theta, ctx);
       // Rewrite IN PLACE: normalize(inner) → logweighted(−logZ, inner).
       node.op = 'logweighted';
       node.args = [{ kind: 'lit', value: negLogZ }, inner];
       delete node.massFrom;
-      resolveProductNormalizers(inner, theta, seen);
+      resolveProductNormalizers(inner, theta, ctx, seen);
       return;
     }
   }
   for (const k in node) {
     const v = node[k];
-    if (v && typeof v === 'object') resolveProductNormalizers(v, theta, seen);
+    if (v && typeof v === 'object') resolveProductNormalizers(v, theta, ctx, seen);
   }
 }
 
 // Recognise `logweighted(functionof(Σ logdensityof(Mᵢ, x)), M0)` and return the
-// ordered factor measure IRs [M0, M1, …]; null if it isn't that shape.
+// ordered factor measure IRs [M0, M1, …] plus the shared variate name; null if
+// it isn't that shape.
 function sharedVariateProductFold(inner: any): any {
   if (!inner || inner.kind !== 'call' || inner.op !== 'logweighted'
       || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
@@ -308,49 +310,112 @@ function sharedVariateProductFold(inner: any): any {
     }
     return false;
   };
-  return collect(fn.body) ? { factors } : null;
+  const variate = Array.isArray(fn.paramKwargs) ? fn.paramKwargs[0] : undefined;
+  return collect(fn.body) ? { factors, variate } : null;
 }
 
-// −log Z for a shared-variate product of reference measures, at point `theta`.
-function productLogZ(factorIRs: any[], theta: any): number {
-  const normals = factorIRs.map((m) => asNormalFactor(m, theta));
-  if (normals.every((n) => n != null)) {
+// log Z for a shared-variate product of reference measures, at point `theta`.
+// Closed form when every factor is a Normal (the product of Gaussians is
+// Gaussian); otherwise numeric quadrature of ∫ ∏ᵢ gᵢ over the variate's
+// declared domain.
+function productLogZ(factorIRs: any[], variate: any, theta: any, ctx: any): number {
+  const kernels = factorIRs.map((m) => asScalarFactor(m, theta));
+  if (kernels.some((k) => k == null)) {
+    throw new Error('density: shared-variate product_dist factor is not a '
+      + 'recognised scalar reference measure — cannot resolve its normalizer');
+  }
+  if (kernels.every((k: any) => k.kernel === 'Normal')) {
     // Product of Gaussians is Gaussian: log ∫ ∏ N(x|μᵢ,σᵢ) dx.
     //   τ = Σ 1/σᵢ²,  μ* = (Σ μᵢ/σᵢ²)/τ,  C = Σ μᵢ²/σᵢ² − τ·μ*²
     //   logZ = −½ Σ ln(2π σᵢ²) + ½ ln(2π/τ) − ½ C
     let tau = 0, wmu = 0, sumMuSqOverVar = 0, sumLogTerm = 0;
-    for (const n of normals as any[]) {
-      const inv = 1 / (n.sigma * n.sigma);
+    for (const k of kernels as any[]) {
+      const mu = +k.input.mu, sigma = +k.input.sigma;
+      const inv = 1 / (sigma * sigma);
       tau += inv;
-      wmu += n.mu * inv;
-      sumMuSqOverVar += n.mu * n.mu * inv;
-      sumLogTerm += Math.log(2 * Math.PI * n.sigma * n.sigma);
+      wmu += mu * inv;
+      sumMuSqOverVar += mu * mu * inv;
+      sumLogTerm += Math.log(2 * Math.PI * sigma * sigma);
     }
     const muStar = wmu / tau;
     const C = sumMuSqOverVar - tau * muStar * muStar;
     return -0.5 * sumLogTerm + 0.5 * Math.log(2 * Math.PI / tau) - 0.5 * C;
   }
-  throw new Error('density: shared-variate product_dist normalizer is only '
-    + 'closed-form for Normal factors so far; numeric quadrature for mixed '
-    + 'reference measures is not yet implemented');
+  return numericProductLogZ(kernels, variate, ctx);
 }
 
-// If `m` (a factor measure IR) is a Normal over the shared variate, return its
-// resolved {mu, sigma} at `theta`; else null. Peels the record/relabel wrapper
-// the §12 lowering puts around each variate-keyed factor.
-function asNormalFactor(m: any, theta: any): any {
+// Numeric log ∫ ∏ᵢ gᵢ(x) dx over the variate's declared domain [lo, hi], by
+// composite-midpoint quadrature of the (log-summed) integrand. The declared
+// domain (HS3 `domains`) is the same bounded support ROOT integrates over.
+const QUAD_POINTS = 8192;
+function numericProductLogZ(kernels: any[], variate: any, ctx: any): number {
+  const dom = resolveVariateInterval(ctx, variate);
+  if (!dom) {
+    throw new Error('density: numeric shared-variate product_dist normalizer '
+      + 'needs the variate `' + variate + '` declared domain (an interval in a '
+      + 'cartprod), which is not present in the model');
+  }
+  const [lo, hi] = dom;
+  const dx = (hi - lo) / QUAD_POINTS;
+  const logIntegrand = new Float64Array(QUAD_POINTS);
+  for (let j = 0; j < QUAD_POINTS; j++) {
+    const x = lo + (j + 0.5) * dx;
+    let s = 0;
+    for (const k of kernels as any[]) {
+      s += densityPrims.builtinLogdensityof(k.kernel, k.input, x);
+    }
+    logIntegrand[j] = s;
+  }
+  // log ∫ ≈ log( Σ exp(logf_j) · dx ) = logsumexp(logf) + log(dx).
+  return empirical.logSumExp(logIntegrand) + Math.log(dx);
+}
+
+// If `m` (a factor measure IR) is a scalar reference-measure kernel over the
+// shared variate, return { kernel, input } where `input` is the kernel-input
+// record resolved at `theta` (a plain {param: value} map). Peels the
+// record/relabel wrapper the §12 lowering may put around a variate-keyed
+// factor. Returns null for an unrecognised / multivariate factor.
+function asScalarFactor(m: any, theta: any): any {
   let k = m;
   while (k && k.kind === 'call' && (k.op === 'relabel' || k.op === 'record')) {
     if (k.op === 'relabel') { k = k.args && k.args[0]; continue; }
-    // record: a single variate-keyed field.
     if (Array.isArray(k.fields) && k.fields.length === 1) { k = k.fields[0].value; continue; }
     return null;
   }
-  if (!k || k.kind !== 'call' || k.op !== 'Normal' || !k.kwargs) return null;
-  const mu = resolveScalarAtPoint(k.kwargs.mu, theta);
-  const sigma = resolveScalarAtPoint(k.kwargs.sigma, theta);
-  if (!Number.isFinite(mu) || !Number.isFinite(sigma)) return null;
-  return { mu, sigma };
+  if (!k || k.kind !== 'call' || typeof k.op !== 'string' || !k.kwargs) return null;
+  const input: Record<string, number> = {};
+  for (const name in k.kwargs) {
+    const v = resolveScalarAtPoint(k.kwargs[name], theta);
+    if (!Number.isFinite(v)) return null;
+    input[name] = v;
+  }
+  return { kernel: k.op, input };
+}
+
+// Resolve the variate's declared domain [lo, hi] from a `cartprod` binding
+// whose field for `variate` is an `interval(lo, hi)` (HS3 `domains`). Returns
+// null if no such interval is declared.
+function resolveVariateInterval(ctx: any, variate: any): [number, number] | null {
+  if (!ctx || !ctx.bindings || typeof ctx.bindings.forEach !== 'function' || variate == null) {
+    return null;
+  }
+  let found: [number, number] | null = null;
+  ctx.bindings.forEach((binding: any) => {
+    if (found) return;
+    const ir = binding && (binding.ir || binding.rhs || binding.value);
+    if (!ir || ir.kind !== 'call' || ir.op !== 'cartprod' || !Array.isArray(ir.fields)) return;
+    for (const f of ir.fields) {
+      if (f.name === variate && f.value && f.value.op === 'interval'
+          && Array.isArray(f.value.args) && f.value.args.length === 2) {
+        const lo = f.value.args[0], hi = f.value.args[1];
+        if (lo && lo.kind === 'lit' && hi && hi.kind === 'lit') {
+          found = [+lo.value, +hi.value];
+          return;
+        }
+      }
+    }
+  });
+  return found;
 }
 
 // Resolve a scalar kwarg IR (a literal or a parameter ref) against the fixed
