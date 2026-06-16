@@ -237,9 +237,132 @@ function matLikelihoodDensity(d: any, ctx: any) {
     return Promise.reject(new Error(
       'logdensityof(L, θ): cannot expand the likelihood body into measure IR'));
   }
+  // §12 shared-variate product_dist: the body is
+  // normalize(logweighted(x -> Σ logdensityof(Mᵢ, x), M0)). The normalizer
+  // −log Z = −log ∫ ∏ᵢ gᵢ has no massFrom (it isn't a reweighted ensemble),
+  // so resolve it HERE — at the fixed point θ — and rewrite the normalize to a
+  // constant logweighted shift, before scoring.
+  resolveProductNormalizers(node.body, theta);
   const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
   return matScore(node, ctx, { observed })
     .then((reply: any) => applyReduce(reply, node));
+}
+
+// =====================================================================
+// Shared-variate product_dist normalizer (§12)
+// =====================================================================
+
+// Walk a measure IR and rewrite every shared-variate product_dist normalizer
+// `normalize(logweighted(functionof(Σ logdensityof(Mᵢ, x)), M0))` to the
+// constant shift `logweighted(−logZ, <inner>)` evaluated at the point `theta`.
+// −logZ is closed-form when every factor is a Normal over the shared variate
+// (the product of Gaussians is Gaussian); other recognised reference measures
+// fall to numeric quadrature. An unrecognised factor mix throws (loud, not a
+// silently-unnormalized density).
+function resolveProductNormalizers(node: any, theta: any, seen?: any) {
+  if (!node || typeof node !== 'object') return;
+  seen = seen || new Set();
+  if (seen.has(node)) return;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const x of node) resolveProductNormalizers(x, theta, seen);
+    return;
+  }
+  if (node.kind === 'call' && node.op === 'normalize'
+      && Array.isArray(node.args) && node.args.length === 1) {
+    const inner = node.args[0];
+    const fold = sharedVariateProductFold(inner);
+    if (fold) {
+      const negLogZ = -productLogZ(fold.factors, theta);
+      // Rewrite IN PLACE: normalize(inner) → logweighted(−logZ, inner).
+      node.op = 'logweighted';
+      node.args = [{ kind: 'lit', value: negLogZ }, inner];
+      delete node.massFrom;
+      resolveProductNormalizers(inner, theta, seen);
+      return;
+    }
+  }
+  for (const k in node) {
+    const v = node[k];
+    if (v && typeof v === 'object') resolveProductNormalizers(v, theta, seen);
+  }
+}
+
+// Recognise `logweighted(functionof(Σ logdensityof(Mᵢ, x)), M0)` and return the
+// ordered factor measure IRs [M0, M1, …]; null if it isn't that shape.
+function sharedVariateProductFold(inner: any): any {
+  if (!inner || inner.kind !== 'call' || inner.op !== 'logweighted'
+      || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
+  const fn = inner.args[0];
+  if (!fn || fn.kind !== 'call' || fn.op !== 'functionof' || !fn.body) return null;
+  const factors = [inner.args[1]];
+  const collect = (n: any): boolean => {
+    if (n && n.kind === 'call' && n.op === 'add'
+        && Array.isArray(n.args) && n.args.length === 2) {
+      return collect(n.args[0]) && collect(n.args[1]);
+    }
+    if (n && n.kind === 'call' && n.op === 'logdensityof'
+        && Array.isArray(n.args) && n.args.length === 2) {
+      factors.push(n.args[0]);
+      return true;
+    }
+    return false;
+  };
+  return collect(fn.body) ? { factors } : null;
+}
+
+// −log Z for a shared-variate product of reference measures, at point `theta`.
+function productLogZ(factorIRs: any[], theta: any): number {
+  const normals = factorIRs.map((m) => asNormalFactor(m, theta));
+  if (normals.every((n) => n != null)) {
+    // Product of Gaussians is Gaussian: log ∫ ∏ N(x|μᵢ,σᵢ) dx.
+    //   τ = Σ 1/σᵢ²,  μ* = (Σ μᵢ/σᵢ²)/τ,  C = Σ μᵢ²/σᵢ² − τ·μ*²
+    //   logZ = −½ Σ ln(2π σᵢ²) + ½ ln(2π/τ) − ½ C
+    let tau = 0, wmu = 0, sumMuSqOverVar = 0, sumLogTerm = 0;
+    for (const n of normals as any[]) {
+      const inv = 1 / (n.sigma * n.sigma);
+      tau += inv;
+      wmu += n.mu * inv;
+      sumMuSqOverVar += n.mu * n.mu * inv;
+      sumLogTerm += Math.log(2 * Math.PI * n.sigma * n.sigma);
+    }
+    const muStar = wmu / tau;
+    const C = sumMuSqOverVar - tau * muStar * muStar;
+    return -0.5 * sumLogTerm + 0.5 * Math.log(2 * Math.PI / tau) - 0.5 * C;
+  }
+  throw new Error('density: shared-variate product_dist normalizer is only '
+    + 'closed-form for Normal factors so far; numeric quadrature for mixed '
+    + 'reference measures is not yet implemented');
+}
+
+// If `m` (a factor measure IR) is a Normal over the shared variate, return its
+// resolved {mu, sigma} at `theta`; else null. Peels the record/relabel wrapper
+// the §12 lowering puts around each variate-keyed factor.
+function asNormalFactor(m: any, theta: any): any {
+  let k = m;
+  while (k && k.kind === 'call' && (k.op === 'relabel' || k.op === 'record')) {
+    if (k.op === 'relabel') { k = k.args && k.args[0]; continue; }
+    // record: a single variate-keyed field.
+    if (Array.isArray(k.fields) && k.fields.length === 1) { k = k.fields[0].value; continue; }
+    return null;
+  }
+  if (!k || k.kind !== 'call' || k.op !== 'Normal' || !k.kwargs) return null;
+  const mu = resolveScalarAtPoint(k.kwargs.mu, theta);
+  const sigma = resolveScalarAtPoint(k.kwargs.sigma, theta);
+  if (!Number.isFinite(mu) || !Number.isFinite(sigma)) return null;
+  return { mu, sigma };
+}
+
+// Resolve a scalar kwarg IR (a literal or a parameter ref) against the fixed
+// point θ (a record of the kernel's free parameters).
+function resolveScalarAtPoint(ir: any, theta: any): number {
+  if (!ir) return NaN;
+  if (ir.kind === 'lit') return +ir.value;
+  if (ir.kind === 'ref' && theta && typeof theta === 'object'
+      && Object.prototype.hasOwnProperty.call(theta, ir.name)) {
+    return +theta[ir.name];
+  }
+  return NaN;
 }
 
 function matJointLikelihoodDensity(d: any, ctx: any) {
