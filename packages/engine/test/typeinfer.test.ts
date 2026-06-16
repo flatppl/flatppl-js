@@ -620,13 +620,13 @@ test('broadcasted via-binding: bc = broadcasted(f); bc(A, B) types via broadcast
     add2 = (a, b) -> a + b
     A = [1.0, 2.0, 3.0]
     B = [10.0, 20.0, 30.0]
-    bcadd = broadcasted(add2)
-    C = bcadd(A, B)
+    vadd = broadcasted(add2)
+    C = vadd(A, B)
   `);
   assert.equal(errors.length, 0);
-  // bcadd itself: deferred (no useful type at definition; the wrapper
+  // vadd itself: deferred (no useful type at definition; the wrapper
   // is fully polymorphic and types at the call site).
-  const tBc = typeOf(bindings, 'bcadd');
+  const tBc = typeOf(bindings, 'vadd');
   assert.equal(tBc.kind, 'deferred');
   // The call: properly typed array via inferBroadcast routing.
   const tC = typeOf(bindings, 'C');

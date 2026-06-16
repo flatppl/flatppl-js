@@ -251,7 +251,8 @@ export type DerivationKind =
   | 'lkjcholesky'
   | 'lkj'
   | 'binnedpoissonprocess'
-  | 'likelihood_density';
+  | 'likelihood_density'
+  | 'joint_likelihood_density';
 
 /**
  * Base derivation shape. Each per-kind interface below extends this
@@ -449,6 +450,24 @@ export interface DerivationLikelihoodDensity {
   pointIR: IRNode;
 }
 
+/** `logdensityof(joint_likelihood(L1, …, Lk), θ)` — the joint likelihood is
+ *  a product of independent terms, so its log-density at θ is the SUM of the
+ *  per-term log-densities. `subs` carries one resolved likelihood payload per
+ *  term (the same shape DerivationLikelihoodDensity scores); matJointLikelihoodDensity
+ *  scores each at θ and sums. */
+export interface DerivationJointLikelihoodDensity {
+  kind: 'joint_likelihood_density';
+  name?: string;
+  subs: Array<{
+    bodyName: string | null;
+    bodyIR: IRNode | null;
+    obsIR: IRNode;
+    paramKwargs: string[];
+    params: string[];
+  }>;
+  pointIR: IRNode;
+}
+
 /** `totalmass(M)` — surface measure's tracked totalmass as scalar value. */
 export interface DerivationTotalmass {
   kind: 'totalmass';
@@ -585,6 +604,7 @@ export type Derivation =
   | DerivationBayesupdate
   | DerivationLogdensityof
   | DerivationLikelihoodDensity
+  | DerivationJointLikelihoodDensity
   | DerivationTotalmass
   | DerivationBroadcastLogdensity
   | DerivationSelect

@@ -31,6 +31,7 @@ const {
   collectRefArrays,
   prepareDensityRefs,
   pushFixedEnv,
+  pushModuleRegistry,
   measureFromValue,
   measureFromReply,
   measureToRefValue,
@@ -86,7 +87,11 @@ function matScore(node: any, ctx: any, opts?: any): Promise<any> {
   // and walkNormalize refuses an unresolved spec loudly. node.body is
   // freshly built per lowerMeasure call (no cache), so the in-place
   // resolution is safe (mutation hazard — plan critique).
-  const bodyP = resolveNormalizeMasses(node.body, ctx);
+  // A measure body may call standard-module functions (e.g. the
+  // `hepphys.interp_*` systematics in a HistFactory expected-rate); the
+  // worker resolves `(call target={ns,…})` through `env.__moduleRegistry`,
+  // so thread it (idempotent) before scoring.
+  const bodyP = pushModuleRegistry(ctx).then(() => resolveNormalizeMasses(node.body, ctx));
   return bodyP.then((body: any) =>
     clm.feedInputs(node, ctx).then((fed: any) => {
       // extraRefArrays carries columns the declared inputs can't source via a
@@ -206,11 +211,20 @@ function matLikelihoodDensity(d: any, ctx: any) {
   // (the kernel's input space is the cat of its params, spec §04).
   const kwargs: string[] = d.paramKwargs || [];
   const boundaries: Record<string, any> = {};
-  if (kwargs.length === 1) {
+  // A resolved record θ is a plain object (no Value `.shape`/`.data`); a
+  // scalar/vector point is a number / array / Value.
+  const isRecord = theta !== null && typeof theta === 'object'
+    && !Array.isArray(theta)
+    && (theta as any).shape === undefined && (theta as any).data === undefined;
+  if (kwargs.length === 1 && !(isRecord && (kwargs[0] in (theta as any)))) {
+    // Single kernel input fed the whole θ value (scalar/vector point).
     boundaries[kwargs[0]] = theta;
   } else {
+    // Record θ: project each kernel input from its field (the multi-param
+    // case, and any single-param term whose θ is a record — e.g. a
+    // joint_likelihood sub-term declaring fewer params than θ carries).
     for (const k of kwargs) {
-      if (theta === null || typeof theta !== 'object' || !(k in theta)) {
+      if (!isRecord || !(k in (theta as any))) {
         return Promise.reject(new Error(
           'logdensityof(L, θ): θ must be a record with a "' + k
           + '" field (kernel inputs: ' + kwargs.join(', ') + ')'));
@@ -226,6 +240,30 @@ function matLikelihoodDensity(d: any, ctx: any) {
   const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
   return matScore(node, ctx, { observed })
     .then((reply: any) => applyReduce(reply, node));
+}
+
+function matJointLikelihoodDensity(d: any, ctx: any) {
+  // logdensityof(joint_likelihood(L1, …, Lk), θ): a joint likelihood is the
+  // product of independent terms, so its log-density at θ is the SUM of the
+  // per-term log-densities (spec §06). Each sub is scored by the standalone
+  // likelihood-density path; θ is projected onto each sub's own params
+  // inside matLikelihoodDensity (a sub may declare fewer params than θ
+  // carries — e.g. an auxiliary constraint touching one nuisance).
+  const N = ctx.sampleCount;
+  return Promise.all((d.subs || []).map((sub: any) =>
+    matLikelihoodDensity({
+      kind: 'likelihood_density',
+      bodyName: sub.bodyName, bodyIR: sub.bodyIR, obsIR: sub.obsIR,
+      paramKwargs: sub.paramKwargs, params: sub.params, pointIR: d.pointIR,
+    }, ctx)
+  )).then((measures: any[]) => {
+    const out = new Float64Array(N);
+    for (const m of measures) {
+      const s = m.samples;
+      for (let i = 0; i < N; i++) out[i] += s[i];
+    }
+    return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: N });
+  });
 }
 
 // =====================================================================
@@ -489,6 +527,7 @@ module.exports = {
   matBayesupdate,
   matLogdensityof,
   matLikelihoodDensity,
+  matJointLikelihoodDensity,
   matBroadcastLogdensity,
   matTotalmass,
 };

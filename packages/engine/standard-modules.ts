@@ -332,8 +332,106 @@ function _blattWeisskopf(l: number, p: number, d: number): number {
   return Math.sqrt(Math.pow(z, l) * _blattWeisskopfSquared(l, z));
 }
 
+// --- systematic-interpolation functions (spec §09 hepphys.interp_*) ----
+// All share the signature (left, center, right, alpha): anchor outputs at
+// alpha = −1, 0, +1, evaluated at alpha. These match the pyhf interpcodes
+// (verified against pyhf's interpolators to machine precision):
+//   pwlin → code0, pwexp → code1, poly2_lin → code2,
+//   poly6_lin → code4p (histosys default), poly6_exp → code4 (normsys default).
+
+function _interpPwlin(left: number, center: number, right: number, alpha: number): number {
+  return alpha >= 0 ? center + alpha * (right - center)
+                    : center + alpha * (center - left);
+}
+function _interpPwexp(left: number, center: number, right: number, alpha: number): number {
+  // interp_pwlin applied in log-space (requires left, center, right > 0).
+  return Math.exp(_interpPwlin(Math.log(left), Math.log(center), Math.log(right), alpha));
+}
+function _interpPoly2Lin(left: number, center: number, right: number, alpha: number): number {
+  const S = (right - left) / 2;
+  const A = (right + left) / 2 - center;
+  if (alpha > 1) return (center + S + A) + (alpha - 1) * (S + 2 * A);
+  if (alpha < -1) return (center - S + A) + (alpha + 1) * (S - 2 * A);
+  return center + S * alpha + A * alpha * alpha;
+}
+// 6th-order interpolation: A⁻¹ (pyhf code4/code4p, α0 = 1) maps the boundary
+// vector b to the polynomial coefficients a₁…a₆ for |α| < 1.
+const _POLY6_AINV = [
+  [15 / 16, -15 / 16, -7 / 16, -7 / 16, 1 / 16, -1 / 16],
+  [3 / 2, 3 / 2, -9 / 16, 9 / 16, 1 / 16, 1 / 16],
+  [-5 / 8, 5 / 8, 5 / 8, 5 / 8, -1 / 8, 1 / 8],
+  [-3 / 2, -3 / 2, 7 / 8, -7 / 8, -1 / 8, -1 / 8],
+  [3 / 16, -3 / 16, -3 / 16, -3 / 16, 1 / 16, -1 / 16],
+  [1 / 2, 1 / 2, -5 / 16, 5 / 16, 1 / 16, 1 / 16],
+];
+// pyhf code4: multiplicative factor, polynomial inside [−1,1], EXPONENTIAL
+// continuation outside. f(α) = center · I(α) with I built from the ratios.
+function _interpPoly6Exp(left: number, center: number, right: number, alpha: number): number {
+  const du = right / center, dd = left / center;
+  if (alpha >= 1) return center * Math.pow(du, alpha);
+  if (alpha <= -1) return center * Math.pow(dd, -alpha);
+  const ldu = Math.log(du), ldd = Math.log(dd);
+  const b = [du - 1, dd - 1, ldu * du, -ldd * dd, ldu * ldu * du, ldd * ldd * dd];
+  let fac = 1;
+  for (let i = 0; i < 6; i++) {
+    let ci = 0;
+    for (let j = 0; j < 6; j++) ci += _POLY6_AINV[i][j] * b[j];
+    fac += ci * Math.pow(alpha, i + 1);
+  }
+  return center * fac;
+}
+// pyhf code4p: ADDITIVE delta, polynomial inside [−1,1], LINEAR continuation
+// outside. f(α) = center + Δ(α).
+function _interpPoly6Lin(left: number, center: number, right: number, alpha: number): number {
+  const du = right - center, dd = center - left;
+  if (alpha > 1) return center + alpha * du;
+  if (alpha < -1) return center + alpha * dd;
+  const S = 0.5 * (du + dd), A = 0.0625 * (du - dd);
+  const a2 = alpha * alpha;
+  return center + alpha * S + A * (3 * a2 * a2 * a2 - 10 * a2 * a2 + 15 * a2);
+}
+
+// The interp functions are scalar in the spec §09 signature, but HistFactory
+// applies them to PER-BIN histogram vectors (spec §12 histosys: vector
+// anchors, scalar α). Wrap the scalar core so a Value/array anchor broadcasts
+// elementwise (scalar args broadcast across bins), returning a Value vector;
+// all-scalar calls (normsys: scalar lo/hi factors) stay scalar.
+const _valueLib = require('./value.ts');
+function _interpElementwise(
+  core: (l: number, c: number, r: number, a: number) => number,
+): (l: any, c: any, r: any, a: any) => any {
+  const asArr = (x: any): number[] | null =>
+    _valueLib.isValue(x) ? Array.from(x.data as Float64Array)
+      : (Array.isArray(x) ? x : null);
+  return (left, center, right, alpha) => {
+    const aL = asArr(left), aC = asArr(center), aR = asArr(right), aA = asArr(alpha);
+    if (!aL && !aC && !aR && !aA) return core(left, center, right, alpha);
+    const n = (aL || aC || aR || aA)!.length;
+    const el = (x: any, xa: number[] | null, i: number) => (xa ? xa[i] : x);
+    const out = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      out[i] = core(el(left, aL, i), el(center, aC, i), el(right, aR, i), el(alpha, aA, i));
+    }
+    return _valueLib.vector(out);
+  };
+}
+
 function _registerParticlePhysics() {
   const bindings = new Map<string, BindingDescriptor>();
+  const interpSig = T.funcType(
+    [{ name: 'left', type: T.REAL }, { name: 'center', type: T.REAL },
+     { name: 'right', type: T.REAL }, { name: 'alpha', type: T.REAL }],
+    T.REAL,
+  );
+  for (const [name, impl] of [
+    ['interp_pwlin', _interpPwlin],
+    ['interp_pwexp', _interpPwexp],
+    ['interp_poly2_lin', _interpPoly2Lin],
+    ['interp_poly6_lin', _interpPoly6Lin],
+    ['interp_poly6_exp', _interpPoly6Exp],
+  ] as Array<[string, (l: number, c: number, r: number, a: number) => number]>) {
+    bindings.set(name, { kind: 'function', sig: interpSig, impl: _interpElementwise(impl) });
+  }
   bindings.set('resonance_breitwigner', {
     kind: 'function',
     sig: T.funcType(
@@ -374,10 +472,10 @@ function _registerParticlePhysics() {
     ),
     impl: _blattWeisskopf,
   });
-  // Remaining particle-physics bindings (interp_*, CrystalBall, Argus, wignerd,
-  // …) are deferred until a consumer needs them. blatt_weisskopf supports
-  // ℓ=0..4 (the underlying barrier polynomials); ℓ=5..7 from the spec are not
-  // yet implemented.
+  // interp_* land here; the §09 distributions (CrystalBall, Argus, Voigtian,
+  // …) live in the sampler REGISTRY (density layer) and dispatch by name.
+  // Remaining deferred bindings: wignerd, and blatt_weisskopf ℓ=5..7 (the
+  // implemented barrier polynomials cover ℓ=0..4).
   registerStandardModule({
     name: 'particle-physics',
     compat: '0.1',

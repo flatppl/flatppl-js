@@ -35,6 +35,9 @@ const stdlibGammaln     = require('@stdlib/math-base-special-gammaln');
 const stdlibLn          = require('@stdlib/math-base-special-ln');
 const stdlibErfc        = require('@stdlib/math-base-special-erfc');
 const stdlibErfcinv     = require('@stdlib/math-base-special-erfcinv');
+// Regularized lower incomplete gamma P(s, x): `gammainc(x, s)` (x = upper
+// limit of integration, s = shape). Used for the Argus normalization.
+const stdlibGammainc    = require('@stdlib/math-base-special-gammainc');
 
 // Distribution constructors (analytical PDF/CDF/quantile/mean/etc.)
 const Normal      = require('@stdlib/stats-base-dists-normal-ctor');
@@ -913,6 +916,161 @@ function randNLogNormal(state: any, params: any, n: number, out?: Float64Array) 
   return r;
 }
 
+// ContinuedPoisson is density-only (spec §09): the continuous extension of
+// Poisson to the reals is not a probability measure and has no generator, so
+// every sampling entry point throws rather than returning a bogus draw.
+function _continuedPoissonNonGenerative(): never {
+  throw new Error('ContinuedPoisson is density-only (spec §09): the continuous '
+    + 'Poisson extension is not a probability measure and has no sampler — '
+    + 'rand/draw(ContinuedPoisson) is undefined.');
+}
+
+// =====================================================================
+// particle-physics distribution densities (spec §09). DENSITY-ONLY for now
+// (logpdf landed; samplers deferred) — all are absent from
+// SAMPLEABLE_DISTRIBUTIONS and carry `densityOnly: true`, so a draw throws.
+// Each `logpdf` is the spec's normalized density; normalizations are
+// closed-form (verified against scipy / numerical quadrature to ≲1e-12).
+// =====================================================================
+
+const _SQRT_HALF_PI = Math.sqrt(Math.PI / 2);  // ∫ e^{-z²/2} half-Gaussian scale
+const _SQRT_2 = Math.SQRT2;
+const _erf = (x: number): number => 1 - stdlibErfc(x);
+
+function _hepDensityOnly(name: string) {
+  return function (): never {
+    throw new Error(`${name}: density-only in flatppl-js (spec §09) — the `
+      + `logpdf is implemented but the sampler is not yet; draw/rand is unavailable.`);
+  };
+}
+
+// One-sided Crystal Ball log-density (left power-law tail). Normalization
+// N = σ·(C + D): C the tail integral (needs n > 1), D the Gaussian-core
+// integral. Matches scipy.stats.crystalball to ~1e-12.
+function _crystalBallLogpdf(x: number, m0: number, sigma: number, alpha: number, n: number): number {
+  const aAbs = Math.abs(alpha);
+  const A = Math.pow(n / aAbs, n) * Math.exp(-aAbs * aAbs / 2);
+  const B = n / aAbs - aAbs;
+  const C = (n / aAbs) * (1 / (n - 1)) * Math.exp(-aAbs * aAbs / 2);
+  const D = _SQRT_HALF_PI * (1 + _erf(aAbs / _SQRT_2));
+  const logN = Math.log(sigma * (C + D));
+  const z = (x - m0) / sigma;
+  const core = z < -aAbs
+    ? Math.log(A) - n * Math.log(B - z)
+    : -0.5 * z * z;
+  return core - logN;
+}
+
+// Double-sided Crystal Ball: independent power-law tails on both sides,
+// each with its own σ. Normalization sums the two tail integrals and the
+// two half-Gaussian core integrals.
+function _doubleSidedCrystalBallLogpdf(
+  x: number, m0: number, sigmaL: number, sigmaR: number,
+  alphaL: number, nL: number, alphaR: number, nR: number,
+): number {
+  const aL = Math.abs(alphaL), aR = Math.abs(alphaR);
+  const AL = Math.pow(nL / aL, nL) * Math.exp(-aL * aL / 2), BL = nL / aL - aL;
+  const AR = Math.pow(nR / aR, nR) * Math.exp(-aR * aR / 2), BR = nR / aR - aR;
+  const tailL = sigmaL * (nL / aL) * (1 / (nL - 1)) * Math.exp(-aL * aL / 2);
+  const coreL = sigmaL * _SQRT_HALF_PI * _erf(aL / _SQRT_2);
+  const coreR = sigmaR * _SQRT_HALF_PI * _erf(aR / _SQRT_2);
+  const tailR = sigmaR * (nR / aR) * (1 / (nR - 1)) * Math.exp(-aR * aR / 2);
+  const logN = Math.log(tailL + coreL + coreR + tailR);
+  const zL = (x - m0) / sigmaL, zR = (x - m0) / sigmaR;
+  let core: number;
+  if (zL < -aL) core = Math.log(AL) - nL * Math.log(BL - zL);
+  else if (zL <= 0) core = -0.5 * zL * zL;
+  else if (zR <= aR) core = -0.5 * zR * zR;
+  else core = Math.log(AR) - nR * Math.log(BR + zR);
+  return core - logN;
+}
+
+// ARGUS log-density on (0, m0). Normalization (slope c < 0): with a = −c,
+// M = (m0²/2)·a^{−(p+1)}·γ(p+1, a), γ the lower incomplete gamma =
+// P(p+1, a)·Γ(p+1). Outside (0, m0) the density is 0 → −∞.
+function _argusLogpdf(x: number, resonance: number, slope: number, power: number): number {
+  if (x <= 0 || x >= resonance) return -Infinity;
+  const m0 = resonance, c = slope, p = power;
+  const a = -c;
+  const gLower = stdlibGammainc(a, p + 1) * stdlibGamma(p + 1);  // γ(p+1, a)
+  const logM = Math.log(m0 * m0 / 2) - (p + 1) * Math.log(a) + Math.log(gLower);
+  const u = 1 - (x / m0) * (x / m0);
+  return Math.log(x) + p * Math.log(u) + c * u - logM;
+}
+
+// Relativistic Breit–Wigner log-density on x > 0. Normalization M is
+// closed-form (spec §09): M = π√(m²+γ)/(2√2·m·Γ·γ), γ = √(m²(m²+Γ²)).
+function _relativisticBreitWignerLogpdf(x: number, mean: number, width: number): number {
+  if (x <= 0) return -Infinity;
+  const m = mean, G = width;
+  const gamma = Math.sqrt(m * m * (m * m + G * G));
+  const logM = Math.log(Math.PI * Math.sqrt(m * m + gamma) / (2 * _SQRT_2 * m * G * gamma));
+  return -Math.log((x * x - m * m) ** 2 + m * m * G * G) - logM;
+}
+
+// Split (bifurcated) normal log-density — already normalized.
+function _bifurcatedNormalLogpdf(x: number, mean: number, sigmaL: number, sigmaR: number): number {
+  const s = x < mean ? sigmaL : sigmaR;
+  return 0.5 * Math.log(2 / Math.PI) - Math.log(sigmaL + sigmaR)
+    - (x - mean) * (x - mean) / (2 * s * s);
+}
+
+// Faddeeva function w(z) = e^{−z²}·erfc(−iz), real part only, for z in the
+// upper half-plane (Im z > 0 — always true for a Voigt argument with Γ,σ > 0).
+// Weideman (1994) rational approximation; coefficients precomputed for N=32
+// (max |Re error| vs scipy.wofz ≈ 2.4e-14 over the relevant region).
+const _FADDEEVA_L = 4.756828460010884;
+const _FADDEEVA_A = [
+  -1.3031797863050087e-12, 3.741077554722698e-12, 8.03033538228436e-12,
+  -2.154353731437607e-11, -5.5442356114348654e-11, 1.1658254682023323e-10,
+  4.153742716146919e-10, -5.231021437249246e-10, -3.208015140788758e-09,
+  8.124888965682105e-10, 2.3797556759384297e-08, 2.2930439119439287e-08,
+  -1.4813078912439695e-07, -4.1840763705308403e-07, 4.255833137922926e-07,
+  4.401531731590925e-06, 6.821031944024978e-06, -2.1409619201869843e-05,
+  -0.00013075449254623973, -0.00024532980270020207, 0.00039259136070070517,
+  0.004519541105349235, 0.019006155784845408, 0.05730440352983719,
+  0.1406071622689377, 0.29544451071508726, 0.5460139720639342,
+  0.9019254893648, 1.345544169234545, 1.8256696296324815,
+  2.2635372999002676, 2.5722534081245696,
+];
+
+function _faddeevaWRe(zr: number, zi: number): number {
+  const L = _FADDEEVA_L;
+  // L + i·z  and  L − i·z  (with i·z = −zi + i·zr).
+  const numR = L - zi, numI = zr;     // L + i z
+  const denR = L + zi, denI = -zr;    // L − i z
+  const denMag = denR * denR + denI * denI;
+  // Z = (L + i z)/(L − i z)
+  const Zr = (numR * denR + numI * denI) / denMag;
+  const Zi = (numI * denR - numR * denI) / denMag;
+  // p = polyval(A, Z) — A[0] highest degree, Horner.
+  let pr = _FADDEEVA_A[0], pi = 0;
+  for (let k = 1; k < _FADDEEVA_A.length; k++) {
+    const nr = pr * Zr - pi * Zi + _FADDEEVA_A[k];
+    const ni = pr * Zi + pi * Zr;
+    pr = nr; pi = ni;
+  }
+  // (L − i z)²
+  const sqR = denR * denR - denI * denI, sqI = 2 * denR * denI;
+  const sqMag = sqR * sqR + sqI * sqI;
+  // 2p/(L − i z)²  (real part)
+  const t1r = (2 * pr * sqR + 2 * pi * sqI) / sqMag;
+  // (1/√π)/(L − i z)  (real part)
+  const c = 1 / Math.sqrt(Math.PI);
+  const t2r = c * denR / denMag;
+  return t1r + t2r;
+}
+
+// Voigt profile log-density: Re(w((x−μ+iΓ/2)/(σ√2)))/(σ√(2π)). Already
+// normalized (the Faddeeva form is the pdf). Matches scipy.special.voigt_profile.
+function _voigtianLogpdf(x: number, mean: number, width: number, sigma: number): number {
+  const denom = sigma * _SQRT_2;
+  const zr = (x - mean) / denom;
+  const zi = (width / 2) / denom;
+  const val = _faddeevaWRe(zr, zi) / (sigma * Math.sqrt(2 * Math.PI));
+  return Math.log(val);
+}
+
 const REGISTRY = {
   Normal: {
     params:   ['mu', 'sigma'],
@@ -1138,6 +1296,75 @@ const REGISTRY = {
     Ctor:     Poisson,
     randFn:   randPoisson,
     logpdfFn: logpmfPoisson,
+  },
+  ContinuedPoisson: {
+    params:   ['rate'],
+    aliases:  {},
+    discrete: false,
+    // Density-only: no sampler, so exempt from the REGISTRY ⊆
+    // SAMPLEABLE_DISTRIBUTIONS invariant (it is deliberately absent there).
+    densityOnly: true,
+    // Density-only (spec §09): logpdf(x; rate) = x·ln(rate) − rate − ln Γ(x+1),
+    // the continuous extension that agrees with Poisson's logpmf on integer x.
+    // Not normalized, not generative — the sampler stubs throw (see above).
+    Ctor:     _continuedPoissonNonGenerative,
+    randFn:   { factory: _continuedPoissonNonGenerative },
+    logpdfFn: (x: number, rate: number) =>
+      x * Math.log(rate) - rate - stdlibGammaln(x + 1),
+  },
+  CrystalBall: {
+    params:   ['m0', 'sigma', 'alpha', 'n'],
+    aliases:  {},
+    discrete: false,
+    densityOnly: true,
+    Ctor:     _hepDensityOnly('CrystalBall'),
+    randFn:   { factory: _hepDensityOnly('CrystalBall') },
+    logpdfFn: _crystalBallLogpdf,
+  },
+  DoubleSidedCrystalBall: {
+    params:   ['m0', 'sigmaL', 'sigmaR', 'alphaL', 'nL', 'alphaR', 'nR'],
+    aliases:  {},
+    discrete: false,
+    densityOnly: true,
+    Ctor:     _hepDensityOnly('DoubleSidedCrystalBall'),
+    randFn:   { factory: _hepDensityOnly('DoubleSidedCrystalBall') },
+    logpdfFn: _doubleSidedCrystalBallLogpdf,
+  },
+  Argus: {
+    params:   ['resonance', 'slope', 'power'],
+    aliases:  {},
+    discrete: false,
+    densityOnly: true,
+    Ctor:     _hepDensityOnly('Argus'),
+    randFn:   { factory: _hepDensityOnly('Argus') },
+    logpdfFn: _argusLogpdf,
+  },
+  RelativisticBreitWigner: {
+    params:   ['mean', 'width'],
+    aliases:  {},
+    discrete: false,
+    densityOnly: true,
+    Ctor:     _hepDensityOnly('RelativisticBreitWigner'),
+    randFn:   { factory: _hepDensityOnly('RelativisticBreitWigner') },
+    logpdfFn: _relativisticBreitWignerLogpdf,
+  },
+  Voigtian: {
+    params:   ['mean', 'width', 'sigma'],
+    aliases:  {},
+    discrete: false,
+    densityOnly: true,
+    Ctor:     _hepDensityOnly('Voigtian'),
+    randFn:   { factory: _hepDensityOnly('Voigtian') },
+    logpdfFn: _voigtianLogpdf,
+  },
+  BifurcatedNormal: {
+    params:   ['mean', 'sigmaL', 'sigmaR'],
+    aliases:  {},
+    discrete: false,
+    densityOnly: true,
+    Ctor:     _hepDensityOnly('BifurcatedNormal'),
+    randFn:   { factory: _hepDensityOnly('BifurcatedNormal') },
+    logpdfFn: _bifurcatedNormalLogpdf,
   },
   Dirac: {
     params:   ['value'],

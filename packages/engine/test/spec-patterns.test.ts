@@ -799,10 +799,10 @@ cums  = scan(add_op, 0.0, xs)
 
 test('higher-order: broadcasted curried form', () => {
   parsesCleanly(`
-bcadd = broadcasted(add)
+vadd = broadcasted(add)
 A = [1.0, 2.0, 3.0]
 B = [10.0, 20.0, 30.0]
-out = bcadd(A, B)
+out = vadd(A, B)
 `);
 });
 

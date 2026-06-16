@@ -74,7 +74,7 @@ import type {
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr, computePhases } = require('./analyzer.ts');
-const { MEASURE_PRODUCING } = require('./builtins.ts');
+const { MEASURE_PRODUCING, ALL_KNOWN } = require('./builtins.ts');
 const { isEvaluable, liftInlineSubexpressions, classifyRandTuple } = require('./lift.ts');
 const { dissolveBindings } = require('./dissolver.ts');
 const { signatureOf } = require('./signatures.ts');
@@ -365,7 +365,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // engine gap, not a modelling choice. (Fixed phase rules out draws;
   // callable / measure-object binding types are excluded — those are
   // legitimately underived.) This precisely names the root cause —
-  // e.g. `bcadd = broadcasted(add)` in the explicit-`broadcasted` +
+  // e.g. `vadd = broadcasted(add)` in the explicit-`broadcasted` +
   // `disintegrate` model whose whole downstream graph silently
   // vanished — instead of the user hitting a confusing plot-time
   // error far from the cause. The broader stochastic-side overloading
@@ -1445,6 +1445,25 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): Derivatio
       pointIR: obsIR,
     };
   }
+  // `logdensityof(joint_likelihood(L1, …, Lk), θ)`: a joint likelihood is
+  // the product of independent terms (spec §06), so its log-density folds
+  // to the SUM of the per-term log-densities. Each term is itself a
+  // `likelihoodof(K, obs)` — a self-ref to an L binding or an inline call
+  // (the form the pyhf/HS3 importer emits). All terms must resolve, else
+  // we can't honour the whole joint and defer (return null).
+  const Lir = (bindings.get(Mref.name) as any)?.ir;
+  if (Lir && Lir.kind === 'call' && Lir.op === 'joint_likelihood'
+      && Array.isArray(Lir.args) && Lir.args.length > 0) {
+    const subs: any[] = [];
+    for (const arg of Lir.args) {
+      const sub = isSelfRef(arg)
+        ? _resolveLikelihood(arg, bindings)
+        : _resolveLikelihoodIR(arg, bindings);
+      if (!sub) return null;
+      subs.push(sub);
+    }
+    return { kind: 'joint_likelihood_density', subs, pointIR: obsIR } as any;
+  }
   // Hold the obs IR — the materialiser resolves it to a concrete JS
   // value at sample time, consulting fixedValues for any binding
   // refs. Classification cares only that an obs argument exists in
@@ -2123,7 +2142,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       // measure position must keep pruning: expandMeasure would happily
       // peel through a kernelof, hiding the layer violation).
       if (d.kind === 'bayesupdate' && !resolvable((d as any).from)) return false;
-      if ((d as any).bodyName && !resolvable((d as any).bodyName)) return false;
+      if ((d as any).bodyName && !_bodyNameResolvable((d as any).bodyName, bindings, resolvable)) return false;
       input = (d as any).bodyIR || (d as any).bodyName;
       opts = { derivation: d };
     } else if (d.kind === 'logdensityof') {
@@ -2292,7 +2311,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     for (const r of collectSelfRefs(d.pointIR)) {
       if (!resolvable(r)) return false;
     }
-    if (d.bodyName) return resolvable(d.bodyName);
+    if (d.bodyName) return _bodyNameResolvable(d.bodyName, bindings, resolvable);
     if (d.bodyIR) {
       for (const r of collectSelfRefs(d.bodyIR)) {
         const rb = bindings.get(r);
@@ -2302,6 +2321,34 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       return true;
     }
     return false;
+  }
+  // Joint likelihood density: valid iff every sub-term is (same body-ref
+  // rules as the standalone case) and the point θ's refs are resolvable.
+  if ((d as any).kind === 'joint_likelihood_density') {
+    for (const r of collectSelfRefs((d as any).pointIR)) {
+      if (!resolvable(r)) return false;
+    }
+    for (const sub of ((d as any).subs || [])) {
+      if (sub.bodyName) {
+        if (!_bodyNameResolvable(sub.bodyName, bindings, resolvable)) return false;
+        continue;
+      }
+      if (sub.bodyIR) {
+        const heads = _collectCallableHeadRefs(sub.bodyIR);
+        for (const r of collectSelfRefs(sub.bodyIR)) {
+          const rb = bindings.get(r);
+          if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
+          // Builtin distribution / op heads (Poisson, broadcast, …) and
+          // callable-bound heads resolve by name at dispatch, never via a
+          // derivation — exactly as clm `_enumerateInputs` treats them.
+          if (ALL_KNOWN.has(r) || heads.has(r)) continue;
+          if (!resolvable(r)) return false;
+        }
+        continue;
+      }
+      return false;
+    }
+    return true;
   }
   if (d.kind === 'totalmass') {
     return resolvable(d.measureName);
@@ -3561,35 +3608,127 @@ function _resolveLikelihood(Lref: any, bindings: any): {
 } | null {
   if (!isSelfRef(Lref)) return null;
   const Lbinding = bindings.get(Lref.name);
-  const Lir = Lbinding && Lbinding.ir;
+  return _resolveLikelihoodIR(Lbinding && Lbinding.ir, bindings);
+}
+
+// Resolve a single likelihood term to its scoreable shape, given the
+// `likelihoodof(K, obs)` IR directly. Used both for a top-level `L`
+// binding (via `_resolveLikelihood`) and for each inline term of a
+// `joint_likelihood(...)`. Returns null if K is neither an explicit
+// kernel (Path A) nor a point-free measure with elementof params (Path B).
+function _resolveLikelihoodIR(Lir: any, bindings: any): {
+  bodyName: string | null; bodyIR: any; obsIR: any;
+  paramKwargs: string[]; params: string[];
+} | null {
   if (!isCallOp(Lir, 'likelihoodof', 2)) return null;
   const Kref = Lir.args[0];
   const obsIR = Lir.args[1];
-  if (!isSelfRef(Kref)) return null;
 
-  const Kbinding = bindings.get(Kref.name);
-  const Kir = Kbinding && Kbinding.ir;
-  if (!Kir || Kir.kind !== 'call' || Kir.op !== 'functionof' || !Kir.body) return null;
+  // Path A — explicit kernel: K is a named `functionof` binding (surface
+  // `kernelof`/`functionof` both lower to functionof). The kernel's
+  // declared kwargs ARE the params θ feeds.
+  if (isSelfRef(Kref)) {
+    const Kbinding = bindings.get(Kref.name);
+    const Kir = Kbinding && Kbinding.ir;
+    if (Kir && Kir.kind === 'call' && Kir.op === 'functionof' && Kir.body) {
+      const bodyIRArg = Kir.body;
+      let bodyName = null;
+      let bodyIR = null;
+      if (isSelfRef(bodyIRArg)) {
+        if (!bindings.has(bodyIRArg.name)) return null;
+        bodyName = bodyIRArg.name;
+      } else if (bodyIRArg && bodyIRArg.kind === 'call') {
+        bodyIR = bodyIRArg;
+      } else {
+        return null;
+      }
+      return {
+        bodyName,
+        bodyIR,
+        obsIR,
+        paramKwargs: Array.isArray(Kir.paramKwargs) ? Kir.paramKwargs.slice()
+          : (Array.isArray(Kir.params) ? Kir.params.slice() : []),
+        params: Array.isArray(Kir.params) ? Kir.params.slice() : [],
+      };
+    }
+  }
 
-  const bodyIRArg = Kir.body;
-  let bodyName = null;
-  let bodyIR = null;
-  if (isSelfRef(bodyIRArg)) {
-    if (!bindings.has(bodyIRArg.name)) return null;
-    bodyName = bodyIRArg.name;
-  } else if (bodyIRArg && bodyIRArg.kind === 'call') {
-    bodyIR = bodyIRArg;
+  // Path B — point-free: K is a measure (a self-ref to a measure binding,
+  // or an inline measure call) that references free `elementof` params
+  // directly, with no `kernelof` wrap — the form the pyhf/HS3 importer
+  // emits. The params are the measure's parameterized (elementof) leaves;
+  // θ feeds them through the SAME explicit-boundary contract the kernel
+  // path uses (clm `_enumerateInputs` source.kind:'explicit'). Callable Ks
+  // are excluded (handled by Path A or not a measure at all).
+  //
+  // A NAMED measure becomes bodyName (the materialiser expands it via
+  // clm.lowerMeasure → expandMeasureIR, robust even when the binding's `.ir`
+  // was dropped — e.g. a measure body that calls a standard-module function
+  // like `hepphys.interp_*`, which nulls `.ir`). An INLINE measure call is
+  // its own bodyIR.
+  let startRefs: string[];
+  let bodyName: string | null = null;
+  let bodyIR: any = null;
+  if (isSelfRef(Kref)) {
+    const Kbinding = bindings.get(Kref.name);
+    if (!Kbinding || isCallableLikeBindingType(Kbinding.type)) return null;
+    bodyName = Kref.name;
+    startRefs = _measureRefSeeds(Kbinding);
+  } else if (Kref && Kref.kind === 'call') {
+    bodyIR = Kref;
+    startRefs = Array.from(collectSelfRefs(Kref));
   } else {
     return null;
   }
-  return {
-    bodyName,
-    bodyIR,
-    obsIR,
-    paramKwargs: Array.isArray(Kir.paramKwargs) ? Kir.paramKwargs.slice()
-      : (Array.isArray(Kir.params) ? Kir.params.slice() : []),
-    params: Array.isArray(Kir.params) ? Kir.params.slice() : [],
-  };
+  const params = _freeElementofParams(startRefs, bindings);
+  if (params.length === 0) return null;
+  return { bodyName, bodyIR, obsIR, paramKwargs: params, params };
+}
+
+// A point-free likelihood's measure `bodyName` is "resolvable" for cascade-
+// pruning either when it has its own derivation/fixed value (resolvable), OR
+// when it is a parameterized/stochastic MEASURE binding — its open internals
+// are fed from θ by matLikelihoodDensity (via clm.lowerMeasure), so it needs
+// no derivation of its own (mirrors the bodyIR parameterized-tolerant branch).
+function _bodyNameResolvable(name: string, bindings: any, resolvable: (n: string) => boolean): boolean {
+  if (resolvable(name)) return true;
+  const b = bindings && bindings.get ? bindings.get(name) : null;
+  return !!(b && (b.phase === 'parameterized' || b.phase === 'stochastic'));
+}
+
+// Initial reference names to seed the elementof-param walk from a measure
+// BINDING. Prefer the AST-derived `deps`/`bodyDeps` (always present, robust to
+// a dropped `.ir`); fall back to the lowered IR's self-refs.
+function _measureRefSeeds(binding: any): string[] {
+  if (Array.isArray(binding.deps) && binding.deps.length) return binding.deps.slice();
+  if (Array.isArray(binding.bodyDeps) && binding.bodyDeps.length) return binding.bodyDeps.slice();
+  return binding.ir ? Array.from(collectSelfRefs(binding.ir)) : [];
+}
+
+// Collect the free `elementof` (parameterized-phase input) leaves a measure
+// transitively references — the implicit kernel inputs of a point-free
+// likelihood (spec §04 sec:functionof: only parameterized leaves become
+// inputs; fixed-phase `external`/`load_data` are closed over). Walks binding
+// `deps` (AST-derived, robust to dropped `.ir`); mirrors the leaf rule in
+// `implicitKernelSignature`. Returns names in first-seen order.
+function _freeElementofParams(startRefs: string[], bindings: any): string[] {
+  if (!Array.isArray(startRefs) || !bindings || !bindings.get) return [];
+  const seen = new Set<string>();
+  const queue: string[] = startRefs.slice();
+  const out: string[] = [];
+  while (queue.length > 0) {
+    const refName = queue.shift() as string;
+    if (seen.has(refName)) continue;
+    seen.add(refName);
+    const target = bindings.get(refName);
+    if (!target) continue;
+    if (target.type === 'input' && target.phase === 'parameterized') {
+      out.push(refName);
+      continue;
+    }
+    for (const inner of _measureRefSeeds(target)) queue.push(inner);
+  }
+  return out;
 }
 
 function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate | null {

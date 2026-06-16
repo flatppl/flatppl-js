@@ -2,11 +2,6 @@
 
 hepphys = standard_module("particle-physics", "0.1")
 
-# ===== Broadcasted operations =====
-
-bcadd = broadcasted(add)
-bcmul = broadcasted(mul)
-
 # ===== Nominal templates and uncertainties =====
 sig = [12.0, 11.0]
 bkg = [50.0, 52.0]
@@ -20,12 +15,12 @@ mu = elementof(nonnegreals)
 gamma = elementof(cartpow(posreals, 2))
 
 # ===== Observation draws =====
-expected = bcadd(bcmul(mu, sig), bcmul(gamma, bkg))
-obs = draw(broadcast(Poisson, expected))
+expected = mu .* sig .+ gamma .* bkg
+obs = draw(Poisson.(expected))
 
 # ===== Auxiliary draws (constraint measurements) =====
-tau = broadcast(pow, broadcast(divide, bkg, dbkg), 2)
-aux = draw(broadcast(hepphys.ContinuedPoisson, bcmul(gamma, tau)))
+tau = (bkg ./ dbkg) .^ 2
+aux = draw(hepphys.ContinuedPoisson.(gamma .* tau))
 
 # ===== Likelihoods =====
 L_obs = likelihoodof(kernelof(obs), obs_data)

@@ -3565,13 +3565,13 @@ test('diagnostics: fixed-phase dead end is surfaced (named at the cause)', () =>
   // classified — previously the whole downstream graph vanished
   // silently. Now the root cause is named.
   const { bindings } = processSource(
-    'bcadd = broadcasted(add)\n' +
+    'vadd = broadcasted(add)\n' +
     'xs = [1.0, 2.0, 3.0]\n' +
-    'ys = bcadd(xs, 1.0)\n');
+    'ys = vadd(xs, 1.0)\n');
   const { diagnostics } = buildDerivations(bindings);
   const dead = diagnostics.filter((d: any) => d.severity === 'error'
-    && /Fixed-phase binding 'bcadd' produced no value/.test(d.message));
-  assert.equal(dead.length, 1, 'bcadd flagged once as fixed-phase dead end');
+    && /Fixed-phase binding 'vadd' produced no value/.test(d.message));
+  assert.equal(dead.length, 1, 'vadd flagged once as fixed-phase dead end');
   assert.ok(dead[0].loc, 'diagnostic carries a source location');
 });
 

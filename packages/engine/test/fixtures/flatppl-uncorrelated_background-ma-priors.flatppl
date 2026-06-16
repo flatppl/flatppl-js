@@ -1,8 +1,3 @@
-# ===== Broadcasted operations =====
-
-bcadd = broadcasted(add)
-bcmul = broadcasted(mul)
-
 # ===== Nominal templates and uncertainties =====
 sig = [12.0, 11.0]
 bkg = [50.0, 52.0]
@@ -16,18 +11,18 @@ mu = elementof(nonnegreals)
 gamma = elementof(cartpow(posreals, 2))
 
 # ===== Observation model =====
-expected = bcadd(bcmul(mu, sig), bcmul(gamma, bkg))
-obs_model = broadcast(Poisson, expected)
+expected = mu .* sig .+ gamma .* bkg
+obs_model = Poisson.(expected)
 obs_kernel = functionof(obs_model, mu = mu, gamma = gamma)
 
 # ===== Likelihood =====
 L_obs = likelihoodof(obs_kernel, obs_data)
 
 # ===== Prior: Gamma on gamma, improper flat on mu =====
-tau = broadcast(pow, broadcast(divide, bkg, dbkg), 2)
+tau = (bkg ./ dbkg) .^ 2
 prior = joint(
     mu = Lebesgue(support = nonnegreals),
-    gamma = broadcast(Gamma, bcadd(tau, 1.0), tau)
+    gamma = Gamma.(tau .+ 1.0, tau)
 )
 
 # ===== Unnormalized posterior =====

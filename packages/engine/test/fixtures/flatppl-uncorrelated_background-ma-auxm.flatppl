@@ -2,11 +2,6 @@
 
 hepphys = standard_module("particle-physics", "0.1")
 
-# ===== Broadcasted operations =====
-
-bcadd = broadcasted(add)
-bcmul = broadcasted(mul)
-
 # ===== Nominal templates and uncertainties =====
 sig = [12.0, 11.0]
 bkg = [50.0, 52.0]
@@ -20,13 +15,13 @@ mu = elementof(nonnegreals)
 gamma = elementof(cartpow(posreals, 2))
 
 # ===== Observation model =====
-expected = bcadd(bcmul(mu, sig), bcmul(gamma, bkg))
-obs_model = broadcast(Poisson, expected)
+expected = mu .* sig .+ gamma .* bkg
+obs_model = Poisson.(expected)
 obs_kernel = functionof(obs_model, mu = mu, gamma = gamma)
 
 # ===== Auxiliary constraint model =====
-tau = broadcast(pow, broadcast(divide, bkg, dbkg), 2)
-aux_model = broadcast(hepphys.ContinuedPoisson, bcmul(gamma, tau))
+tau = (bkg ./ dbkg) .^ 2
+aux_model = hepphys.ContinuedPoisson.(gamma .* tau)
 aux_kernel = functionof(aux_model, gamma = gamma)
 
 # ===== Likelihoods =====

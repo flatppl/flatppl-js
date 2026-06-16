@@ -555,6 +555,29 @@ function _lowerCallExpr(node: any, ctx: any): any {
       if (hasKw) lowered.kwargs = kw;
       return lowered;
     }
+    // Module-member call `mod.fn(args)` (mod a loaded/standard module):
+    // lower to the ref-headed user-call `target` form `{ns, name}` — the
+    // same shape `_evaluateStandardModuleCall` dispatches at runtime. Mirrors
+    // the value-position `mod.X → (%ref mod X)` rule in the FieldAccess case.
+    if (node.callee && node.callee.type === 'FieldAccess'
+        && node.callee.object && node.callee.object.type === 'Identifier'
+        && ctx && ctx.moduleNames && ctx.moduleNames.has(node.callee.object.name)) {
+      const lowered: any = {
+        kind: 'call',
+        target: { ns: node.callee.object.name, name: node.callee.field },
+        loc: node.loc,
+      };
+      const posArgs: any[] = [];
+      const kw: Record<string, any> = {};
+      let hasKw = false;
+      for (const a of node.args || []) {
+        if (a.type === 'KeywordArg') { kw[a.name] = _lowerExpr(a.value, ctx); hasKw = true; }
+        else posArgs.push(_lowerExpr(a, ctx));
+      }
+      lowered.args = posArgs;
+      if (hasKw) lowered.kwargs = kw;
+      return lowered;
+    }
     // Otherwise: refuse loudly (a computed callee shape outside the
     // grammar — e.g. an indexing-produced callable — has no IR form yet).
     throw new Error(`lower: unsupported callee type '${node.callee?.type}'`);

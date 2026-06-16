@@ -40,6 +40,9 @@ test('invariant: orchestrator.SAMPLEABLE_DISTRIBUTIONS ⊆ sampler.REGISTRY', ()
 
 test('invariant: sampler.REGISTRY ⊆ orchestrator.SAMPLEABLE_DISTRIBUTIONS', () => {
   for (const name of sampler.listDistributions()) {
+    // Density-only entries (spec §09 ContinuedPoisson) have no sampler and are
+    // deliberately absent from SAMPLEABLE_DISTRIBUTIONS — exempt them.
+    if (sampler._internal.REGISTRY[name].densityOnly) continue;
     assert.ok(orchestrator.SAMPLEABLE_DISTRIBUTIONS.has(name),
       `sampler.REGISTRY has '${name}' but SAMPLEABLE_DISTRIBUTIONS doesn't list it`);
   }
@@ -387,6 +390,7 @@ const ALL_DERIVATION_KINDS = new Set([
   'alias', 'array', 'tuple', 'record', 'sample', 'evaluate',
   'weighted', 'normalize', 'superpose', 'iid', 'randsample', 'jointchain',
   'truncate', 'pushfwd', 'bayesupdate', 'logdensityof', 'likelihood_density',
+  'joint_likelihood_density',
   'totalmass', 'broadcast_logdensity', 'select', 'kernelbroadcast',
   'mvnormal', 'dirichlet', 'multinomial', 'wishart', 'inversewishart',
   'lkjcholesky', 'lkj', 'binnedpoissonprocess', 'poissonprocess',

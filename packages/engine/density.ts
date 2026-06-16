@@ -1329,6 +1329,12 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   const hd: any = args[0];
   let kernelName: string | null = null;
   if (hd && hd.kind === 'ref' && hd.ns === 'self') kernelName = hd.name;
+  // Module-qualified distribution head (e.g. `hepphys.ContinuedPoisson`,
+  // ns:'particle-physics'): resolve by name — a distribution's density lives
+  // in the shared REGISTRY regardless of its spec §09 module membership.
+  // Gated on isKnownDistribution so a module FUNCTION ref can never be
+  // mistaken for a kernel head.
+  else if (hd && hd.kind === 'ref' && hd.name && samplerLib.isKnownDistribution(hd.name)) kernelName = hd.name;
   else if (hd && hd.kind === 'lit' && typeof hd.value === 'string') kernelName = hd.value;
   if (!kernelName || !samplerLib.isKnownDistribution(kernelName)) {
     // A user-kernel head (not a built-in distribution) reaching the density
