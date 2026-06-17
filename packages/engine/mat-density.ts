@@ -287,13 +287,26 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
         && Array.isArray(inner.args) && inner.args.length === 2) {
       const bounds = truncateSetBounds(inner.args[1]);
       if (bounds) {
-        const base = asScalarFactor(inner.args[0], theta);
-        if (!base) {
-          throw new Error('density: normalize(truncate(M, S)) — base measure M '
-            + 'is not a recognised scalar reference measure, cannot resolve its '
-            + 'support-restricted normalizer');
-        }
-        const logZ = truncateLogMass(base, bounds, ctx);
+        // A generic_dist (§12) lowers to
+        // `normalize(truncate(weighted(w, Lebesgue(reals)), S))`: its base
+        // is an unnormalized density `w(x)` over the bounded set S, NOT a
+        // scalar reference measure. Recognise the weighted base first and
+        // quadrature its support-restricted normalizer Z = ∫_S w(x) dx;
+        // a recognised scalar reference measure (Normal closed-form / its
+        // narrow midpoint path) falls through to truncateLogMass.
+        const weightFn = weightedBaseWeightFn(inner.args[0]);
+        const logZ = weightFn != null
+          ? weightedBaseLogMass(weightFn, bounds, theta)
+          : (() => {
+              const base = asScalarFactor(inner.args[0], theta);
+              if (!base) {
+                throw new Error('density: normalize(truncate(M, S)) — base '
+                  + 'measure M is not a recognised scalar reference measure '
+                  + 'nor a weighted(<weight-fn>, Lebesgue) density, cannot '
+                  + 'resolve its support-restricted normalizer');
+              }
+              return truncateLogMass(base, bounds, ctx);
+            })();
         node.op = 'logweighted';
         node.args = [{ kind: 'lit', value: -logZ }, inner];
         resolveTruncateNormalizers(inner, theta, ctx, seen);
@@ -339,6 +352,69 @@ function truncateLogMass(base: any, bounds: [number, number], ctx: any): number 
     logIntegrand[j] = densityPrims.builtinLogdensityof(base.kernel, base.input, x);
   }
   return empirical.logSumExp(logIntegrand) + Math.log(dx);
+}
+
+// Recognise a `weighted(<weight-fn>, Lebesgue(reals|interval))` base — the
+// §12 generic_dist lowering — and return its weight FUNCTION as a single-
+// parameter `functionof` IR { paramName, body }; null for any other base.
+// The Lebesgue density is ≡ 1, so the base density is the weight `w` itself
+// and Z = ∫_S w(x) dx. A constant-weight `weighted` (no function, just a
+// log-mass shift) is NOT this shape and returns null (it falls through to
+// the scalar-reference path, which already handles plain reference bases).
+function weightedBaseWeightFn(baseIR: any): { paramName: string; body: any } | null {
+  if (!baseIR || baseIR.kind !== 'call' || baseIR.op !== 'weighted'
+      || !Array.isArray(baseIR.args) || baseIR.args.length !== 2) return null;
+  const ref = baseIR.args[1];
+  // Reference measure must be Lebesgue (its density ≡ 1, so the weight is
+  // the full density). `Lebesgue(reals)` or `Lebesgue(interval(...))`.
+  if (!ref || ref.kind !== 'call' || ref.op !== 'Lebesgue') return null;
+  const fn = baseIR.args[0];
+  if (!fn || fn.kind !== 'call' || fn.op !== 'functionof'
+      || !Array.isArray(fn.params) || fn.params.length !== 1 || !fn.body) {
+    return null;
+  }
+  return { paramName: fn.params[0], body: fn.body };
+}
+
+// log Z = log ∫_lo^hi w(x) dx for a `weighted(w, Lebesgue)` base, where `w`
+// is the (non-log) density. Composite-midpoint quadrature over S at the
+// fixed point θ, mirroring numericProductLogZ's QUAD_POINTS midpoint rule —
+// but evaluating the weight expression `w(x; θ)` per node via the sampler's
+// per-expr evaluator (the variate param bound to the node, θ's params bound
+// to their values). The weight is the density, NOT a log-density, so it is
+// summed directly (not exponentiated): Z = Σ w(x_j) · dx.
+function weightedBaseLogMass(
+  weightFn: { paramName: string; body: any }, bounds: [number, number], theta: any,
+): number {
+  const samplerLib = require('./sampler.ts');
+  const [lo, hi] = bounds;
+  const dx = (hi - lo) / QUAD_POINTS;
+  // env binds θ's free params (e.g. `alpha`) plus the variate param to the
+  // current quadrature node; evaluateExpr resolves refs by name (ns-agnostic).
+  const env: Record<string, any> = {};
+  if (theta && typeof theta === 'object') {
+    for (const k in theta) env[k] = theta[k];
+  }
+  let Z = 0;
+  let nonFinite = 0;
+  for (let j = 0; j < QUAD_POINTS; j++) {
+    env[weightFn.paramName] = lo + (j + 0.5) * dx;
+    const wj = samplerLib.evaluateExpr(weightFn.body, env);
+    const v = +wj;
+    if (Number.isFinite(v) && v > 0) Z += v;
+    else if (v < 0 || !Number.isFinite(v)) nonFinite++;
+  }
+  if (nonFinite > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('normalize(truncate(weighted(w, Lebesgue), S)): ' + nonFinite
+      + ' quadrature node(s) with non-positive/non-finite weight treated as 0');
+  }
+  if (!(Z > 0)) {
+    throw new Error('density: normalize(truncate(weighted(w, Lebesgue), S)) — '
+      + 'normalizer Z = ∫_S w dx is 0 (an everywhere-zero weight over S has no '
+      + 'normalized density per spec §06)');
+  }
+  return Math.log(Z) + Math.log(dx);
 }
 
 // =====================================================================

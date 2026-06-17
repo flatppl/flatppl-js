@@ -719,7 +719,40 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   // collapse the atom's logp to -Infinity.
   const wIR = ir.args[0];
   const rest: any = walkAcc(ir.args[1], value, refArrays, N, opts, acc, baseEnv, overlay);
+  // A `functionof` weight is a function of the SAME variate the base just
+  // consumed — the §12 generic_dist lowering
+  // `weighted(x -> w(x), Lebesgue(reals))`, where `w` is the (non-log)
+  // density of the variate. Bind the lambda's parameter to the consumed
+  // scalar and evaluate the weight body per atom, adding log(w). (A plain
+  // atom-scalar weight — a constant or env/ref expression — takes the
+  // original evaluateExprN path.)
+  if (wIR && wIR.kind === 'call' && wIR.op === 'functionof'
+      && Array.isArray(wIR.params) && wIR.params.length === 1 && wIR.body) {
+    // Substitute the lambda's single parameter with the consumed scalar (a
+    // literal) and score the resulting weight expression through the normal
+    // atom-scalar path — so any OTHER refs in the weight body (model params
+    // fed as θ, e.g. `alpha`) resolve via refArrays / baseEnv / overlay
+    // exactly as they do for a leaf's kwargs.
+    const consumed = inferConsumedScalar(value, rest);
+    const pName = wIR.params[0];
+    const { mapIR } = require('./ir-walk.ts');
+    const wBody = mapIR(wIR.body, (n: any) =>
+      (n && n.kind === 'ref' && n.name === pName) ? { kind: 'lit', value: consumed } : n);
+    applyAtomScalar(wBody, refArrays, N, baseEnv, overlay, acc, addLogW);
+    return rest;
+  }
   applyAtomScalar(wIR, refArrays, N, baseEnv, overlay, acc, addLogW);
+  return rest;
+}
+
+function walkLebesgue(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
+  // Lebesgue(S): the reference measure on the reals. Its density w.r.t.
+  // itself is ≡ 1, so it contributes log 1 = 0 to the accumulator — it is
+  // the trivial base of a `weighted(w, Lebesgue(...))` generic density
+  // (§12 generic_dist), where the weight carries the whole density. Consume
+  // one scalar (the variate) so rest-threading and the enclosing truncate's
+  // support gate (which reads the consumed scalar) work as for a leaf.
+  const { rest } = consumeScalar(value);
   return rest;
 }
 
@@ -1849,6 +1882,7 @@ const OP_HANDLERS = {
   logweighted: walkLogWeighted,
   truncate:    walkTruncate,
   normalize:   walkNormalize,
+  Lebesgue:    walkLebesgue,
   joint:       walkJointFieldsOrPositional,
   record:      walkJointFieldsOrPositional,
   iid:         walkIid,
