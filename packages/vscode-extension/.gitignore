@@ -1,2 +1,3 @@
 bin/
 src/lspClient.js
+src/lspHelpers.js

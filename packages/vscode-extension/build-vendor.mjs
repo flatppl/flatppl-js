@@ -194,7 +194,13 @@ await downloadServerBinaries();
 const EXTENSION_TS_SOURCES = [
   { in: 'extension.ts',       out: 'extension.js' },
   { in: 'src/visualPanel.ts', out: 'src/visualPanel.js' },
-  { in: 'src/lspClient.ts',   out: 'src/lspClient.js' },
+  // The pure LSP helpers import only Node built-ins, so type-stripping is
+  // enough (and lets the unit tests require them without a vscode stub).
+  { in: 'src/lspHelpers.ts',  out: 'src/lspHelpers.js' },
+  // NOTE: src/lspClient.ts is NOT type-stripped here — it imports the
+  // `vscode-languageclient` npm package, which must be BUNDLED into the
+  // output (the packaged .vsix ships no node_modules; vsce runs with
+  // --no-dependencies). It is built as a Node-CJS esbuild bundle below.
 ];
 
 for (const { in: inRel, out: outRel } of EXTENSION_TS_SOURCES) {
@@ -292,6 +298,23 @@ const mathBuildOpts = {
   legalComments: 'inline',
 };
 
+// The LSP client. Bundles `vscode-languageclient` (a real npm runtime
+// dependency) into a single Node-loadable CommonJS file so extension.ts can
+// `require('./src/lspClient')` without node_modules at runtime — the packaged
+// .vsix ships none (vsce runs with --no-dependencies). `vscode` itself is
+// provided by the extension host, so it stays external. Not minified: the
+// file is small and its named exports are unit-tested directly.
+const lspClientBuildOpts = {
+  entryPoints: [join(here, 'src', 'lspClient.ts')],
+  outfile: join(here, 'src', 'lspClient.js'),
+  bundle: true,
+  format: 'cjs',
+  platform: 'node',
+  target: ['node16'],
+  external: ['vscode'],
+  legalComments: 'inline',
+};
+
 if (WATCH) {
   // Watch mode: rebuild both bundles on every change under packages/engine/.
   // The process keeps running until killed (Ctrl+C). Reload the VS Code
@@ -300,14 +323,16 @@ if (WATCH) {
   const workerCtx = await esbuild.context(samplerWorkerBuildOpts);
   const viewerCtx = await esbuild.context(viewerBuildOpts);
   const mathCtx   = await esbuild.context(mathBuildOpts);
+  const lspCtx    = await esbuild.context(lspClientBuildOpts);
   await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(),
-                     viewerCtx.rebuild(), mathCtx.rebuild()]);
+                     viewerCtx.rebuild(), mathCtx.rebuild(), lspCtx.rebuild()]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
   console.log('  bundled math          -> lib/math.cjs');
+  console.log('  bundled lsp-client    -> src/lspClient.js');
   await Promise.all([engineCtx.watch(), workerCtx.watch(),
-                     viewerCtx.watch(), mathCtx.watch()]);
+                     viewerCtx.watch(), mathCtx.watch(), lspCtx.watch()]);
   console.log('  watching packages/engine/ + packages/viewer/ for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
@@ -315,11 +340,13 @@ if (WATCH) {
     esbuild.build(samplerWorkerBuildOpts),
     esbuild.build(viewerBuildOpts),
     esbuild.build(mathBuildOpts),
+    esbuild.build(lspClientBuildOpts),
   ]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
   console.log('  bundled math          -> lib/math.cjs');
+  console.log('  bundled lsp-client    -> src/lspClient.js');
 }
 
 // ---------------------------------------------------------------------

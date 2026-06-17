@@ -1,23 +1,8 @@
-// Stub VS Code host APIs so lspClient.js can be loaded outside the extension host.
-const Module = require('module');
-const _origResolve = Module._resolveFilename;
-Module._resolveFilename = function (req, ...rest) {
-  if (req === 'vscode') return '__vscode_stub__';
-  if (req === 'vscode-languageclient/node') return '__vscode_lc_stub__';
-  return _origResolve.call(this, req, ...rest);
-};
-require.cache['__vscode_stub__'] = {
-  id: '__vscode_stub__', filename: '__vscode_stub__', loaded: true,
-  exports: {
-    workspace: { getConfiguration: () => ({ get: () => '' }) },
-    window: { showWarningMessage: () => {} },
-  },
-};
-require.cache['__vscode_lc_stub__'] = {
-  id: '__vscode_lc_stub__', filename: '__vscode_lc_stub__', loaded: true,
-  exports: { LanguageClient: class {}, TransportKind: { stdio: 'stdio' } },
-};
-
+// Unit tests for the pure LSP helpers. These live in src/lspHelpers.ts, which
+// imports only Node built-ins (no vscode, no vscode-languageclient), so they
+// can be required directly here with no host stubbing. The vscode-coupled
+// lifecycle (createClient/LspClientManager in lspClient.ts) needs the VS Code
+// host and is exercised by manual/CI smoke, not here.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
@@ -25,7 +10,7 @@ const {
   bundledBinaryName,
   resolveServerBinary,
   readCatalogues,
-} = require('../src/lspClient.js');
+} = require('../src/lspHelpers.js');
 
 test('hostTriple maps known hosts', () => {
   assert.deepEqual(hostTriple('darwin', 'arm64'), {
