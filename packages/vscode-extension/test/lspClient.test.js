@@ -10,8 +10,6 @@ const {
   bundledBinaryName,
   resolveServerBinary,
   readCatalogues,
-  makeSerialQueue,
-  makeDebounced,
 } = require('../src/lspHelpers.js');
 
 test('hostTriple maps known hosts', () => {
@@ -85,33 +83,6 @@ test('readCatalogues returns [] for empty/missing dir', () => {
   );
 });
 
-test('makeSerialQueue runs overlapping ops strictly sequentially (no interleave)', async () => {
-  const enqueue = makeSerialQueue();
-  let active = 0;
-  let maxActive = 0;
-  const order = [];
-  const mkOp = (id) => async () => {
-    active++; maxActive = Math.max(maxActive, active);
-    order.push(`start${id}`);
-    await new Promise((r) => setTimeout(r, 5)); // force a tick where interleave could happen
-    order.push(`end${id}`);
-    active--;
-  };
-  // Fire 4 overlapping (do not await between enqueues).
-  const ps = [enqueue(mkOp(1)), enqueue(mkOp(2)), enqueue(mkOp(3)), enqueue(mkOp(4))];
-  await Promise.all(ps);
-  assert.equal(maxActive, 1, 'at most one op active at a time (no overlap)');
-  assert.deepEqual(order, ['start1','end1','start2','end2','start3','end3','start4','end4']);
-});
-
-test('makeSerialQueue keeps the chain alive after a rejecting op', async () => {
-  const enqueue = makeSerialQueue();
-  const seen = [];
-  await enqueue(async () => { throw new Error('boom'); }).catch(() => seen.push('caught'));
-  await enqueue(async () => { seen.push('next-ran'); });
-  assert.deepEqual(seen, ['caught', 'next-ran']);
-});
-
 test('readCatalogues warns and skips an unreadable file', () => {
   const warnings = [];
   const out = readCatalogues(
@@ -129,22 +100,4 @@ test('readCatalogues warns and skips an unreadable file', () => {
   assert.deepEqual(out, ['OK']);
   assert.equal(warnings.length, 1);
   assert.match(warnings[0], /bad\.ron/);
-});
-
-test('makeDebounced collapses a burst of calls into one invocation', async () => {
-  let count = 0;
-  const d = makeDebounced(() => { count++; }, 20);
-  d.call(); d.call(); d.call(); d.call(); d.call();   // 5 rapid calls
-  assert.equal(count, 0, 'no invocation before the window elapses');
-  await new Promise((r) => setTimeout(r, 40));
-  assert.equal(count, 1, '5 rapid calls collapse to exactly 1 invocation');
-});
-
-test('makeDebounced cancel prevents a pending invocation', async () => {
-  let count = 0;
-  const d = makeDebounced(() => { count++; }, 20);
-  d.call();
-  d.cancel();
-  await new Promise((r) => setTimeout(r, 40));
-  assert.equal(count, 0);
 });

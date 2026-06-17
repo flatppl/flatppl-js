@@ -40,15 +40,7 @@ flatppl-js/
 │   │   └── src/                         ← ~24 TS modules, ~9 KLOC
 │   ├── vscode-extension/                ← thin VS Code wrapper
 │   │   ├── extension.ts                 ← extension host
-│   │   ├── src/visualPanel.ts           ← webview panel singleton
-│   │   ├── src/lspClient.ts             ← LSP language-client lifecycle (spawns the
-│   │   │                                  bundled `flatppl-lsp` binary over stdio);
-│   │   │                                  esbuild-bundled (inlines vscode-languageclient)
-│   │   │                                  into src/lspClient.js
-│   │   └── src/lspHelpers.ts            ← pure helpers: host→triple resolution, binary
-│   │                                      resolution, catalogue reading, serial-queue /
-│   │                                      debounce utilities; type-stripped to
-│   │                                      src/lspHelpers.js; unit-tested directly
+│   │   └── src/visualPanel.ts           ← webview panel singleton
 │   └── web/                             ← standalone gallery shell for static hosts
 │       ├── src/                         ← page entry, app, resolver, router,
 │       │                                  manifest loader, syntax highlighter
@@ -173,13 +165,6 @@ These are the things that catch out first-time contributors. Read each one.
   `npm run build:vendor` alone only refreshes the extension's `lib/` (it is
   an alias for `npm run --workspace=packages/vscode-extension build:vendor`).
   Don't assume the user is testing one host — rebuild all.
-
-  **Binary download (`build-vendor.mjs`).** As part of `build:vendor`,
-  `packages/vscode-extension/build-vendor.mjs` downloads per-platform
-  `flatppl-lsp` binaries from the `flatppl-rust` nightly GitHub release into
-  `packages/vscode-extension/bin/`. For offline development or to test a local
-  Rust build, set `FLATPPL_LSP_LOCAL=/path/to/flatppl-lsp`; the script then
-  copies that binary for the host triple instead of downloading.
 
 - **Webview escape traps in `vscode-extension/src/visualPanel.ts`.** The
   webview HTML lives inside the outer template literal returned by

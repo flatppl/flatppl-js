@@ -97,39 +97,3 @@ export function readCatalogues(
   }
   return sources;
 }
-
-/** A serial task queue: each enqueued async op runs only after all previously
- *  enqueued ops have settled, so they never overlap. Returns a promise that
- *  resolves when this op finishes. A failing op does not break the chain. */
-export function makeSerialQueue(): (op: () => Promise<void>) => Promise<void> {
-  let tail: Promise<void> = Promise.resolve();
-  return (op) => {
-    const run = tail.then(op, op); // run `op` whether or not the prior op rejected
-    // keep the chain alive even if `op` rejects
-    tail = run.catch(() => {});
-    return run;
-  };
-}
-
-/** Wrap `fn` so that rapid calls within `ms` collapse into a single trailing
- *  invocation. Returns the debounced function plus a `cancel` to clear a
- *  pending call (e.g. on dispose). */
-export function makeDebounced(
-  fn: () => void,
-  ms: number,
-): { call: () => void; cancel: () => void } {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  return {
-    call() {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => {
-        timer = undefined;
-        fn();
-      }, ms);
-    },
-    cancel() {
-      if (timer) clearTimeout(timer);
-      timer = undefined;
-    },
-  };
-}

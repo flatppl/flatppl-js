@@ -53,11 +53,10 @@ ships inside the extension.
   diagnostics, hover, and completion. Leave empty to use the built-in catalogue
   only.
 
-  Changing either setting restarts the server. When a catalogue directory is
-  configured, `*.ron` files in that directory are watched and trigger a live
-  reload when edited (debounced to avoid redundant restarts). The watcher
-  targets the configured `flatppl.catalogues.path` directly, so it works even
-  when that directory is outside the open workspace.
+  Changing either setting restarts the server. Catalogue files inside the open
+  workspace are watched and trigger a live reload when edited; a catalogue
+  directory outside the workspace is read once on server start/restart and is
+  not auto-watched.
 
 ### Other editors
 
@@ -166,14 +165,6 @@ The symlink name *must* be `flatppl.flatppl` (matching `publisher.name` from
 
 For active engine development, `npm run watch:vendor` rebuilds the engine
 bundle on save (sub-second). Reload the VS Code window after each rebuild.
-
-### Binary download
-
-`build-vendor.mjs` downloads per-platform `flatppl-lsp` binaries into `bin/`
-from the `flatppl-rust` nightly GitHub release. To use a local Rust build
-instead (for offline development or testing), set
-`FLATPPL_LSP_LOCAL=/path/to/flatppl-lsp`; the script copies that binary for
-the host triple rather than downloading.
 
 ### Fast grammar iteration
 

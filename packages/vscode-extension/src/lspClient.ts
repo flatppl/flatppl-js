@@ -9,7 +9,7 @@ import {
   ServerOptions,
   TransportKind,
 } from 'vscode-languageclient/node';
-import { resolveServerBinary, readCatalogues, makeSerialQueue } from './lspHelpers';
+import { resolveServerBinary, readCatalogues } from './lspHelpers';
 
 const OUTPUT_CHANNEL = 'FlatPPL Language Server';
 
@@ -36,25 +36,26 @@ export function createClient(
   );
 }
 
-export interface LspManager {
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  restart(): Promise<void>;
-}
+/** Owns the running client and the lifecycle: read config → resolve binary →
+ *  read catalogues → start. `restart` tears down and rebuilds (used on
+ *  catalogue/config change). Errors surface as a VS Code warning, not a throw. */
+export class LspClientManager {
+  private client: LanguageClient | undefined;
 
-/** Owns the running client lifecycle: read config → resolve binary → read
- *  catalogues → start. Errors surface as a VS Code warning, not a throw. */
-export function createLspManager(extRoot: string): LspManager {
-  let client: LanguageClient | undefined;
-  const enqueue = makeSerialQueue();
+  constructor(private readonly extRoot: string) {}
 
-  async function start(): Promise<void> {
+  async start(): Promise<void> {
     const cfg = vscode.workspace.getConfiguration('flatppl');
     const serverPathSetting = cfg.get<string>('server.path', '');
     const cataloguesDir = cfg.get<string>('catalogues.path', '');
     let bin: { path: string; source: string };
     try {
-      bin = resolveServerBinary(extRoot, serverPathSetting, process.platform, process.arch);
+      bin = resolveServerBinary(
+        this.extRoot,
+        serverPathSetting,
+        process.platform,
+        process.arch,
+      );
     } catch (e) {
       vscode.window.showWarningMessage(
         `FlatPPL language server not started: ${(e as Error).message}`,
@@ -64,29 +65,18 @@ export function createLspManager(extRoot: string): LspManager {
     const catalogues = readCatalogues(cataloguesDir, (m) =>
       vscode.window.showWarningMessage(`FlatPPL: ${m}`),
     );
-    const c = createClient(bin.path, catalogues);
-    try {
-      await c.start();
-      client = c;
-    } catch (e) {
-      vscode.window.showWarningMessage(
-        `FlatPPL language server failed to start: ${(e as Error).message}`,
-      );
-    }
+    this.client = createClient(bin.path, catalogues);
+    await this.client.start();
   }
 
-  async function stop(): Promise<void> {
-    const c = client;
-    client = undefined;
+  async stop(): Promise<void> {
+    const c = this.client;
+    this.client = undefined;
     if (c) await c.stop();
   }
 
-  function restart(): Promise<void> {
-    return enqueue(async () => {
-      await stop();
-      await start();
-    });
+  async restart(): Promise<void> {
+    await this.stop();
+    await this.start();
   }
-
-  return { start, stop, restart };
 }
