@@ -19,9 +19,18 @@
 //
 // Not yet: cross-module loading; %meta READER reconstruction —
 // emission is opt-in via `toSexpr(mod, { meta: true })` (see
-// `_metaToSexpr` below), while the reader parses-and-skips %meta
-// forms rather than converting them back into engine `meta.type`
-// objects (consumers re-run inference today).
+// `_wrapMeta` below), while the reader skips the `(%meta …)` wrapper
+// (reading straight through to the annotated expression) rather than
+// converting the slot group back into engine `meta.type` objects
+// (consumers re-run inference today).
+//
+// Spec §11: `%meta` is a TRANSPARENT WRAPPER `(%meta (<type> <phase>
+// <valueset>) <expr>)` over any expression (incl. an annotated literal
+// or the `%bind` RHS), with the three slots grouped — NOT a positional
+// element inside a call. The engine's internal IR keeps the annotation
+// as fields on the node (`e.meta`, `binding.phase`, `inferredType`),
+// the field representation the spec explicitly permits; only this
+// serialization layer renders the wrapper form.
 //
 // Spec mapping (high level):
 //   IR { kind: 'lit', value: x }      → bare literal (number / string /
@@ -31,8 +40,10 @@
 //   IR { kind: 'const', name }        → bare symbol (pi, inf, im, etc.)
 //   IR { kind: 'axis', name }         → (%axis <name>)
 //   IR { kind: 'call', op, args,
-//         kwargs, fields, assigns }   → (<op> [%meta]? args... %kwarg...
+//         kwargs, fields, assigns }   → (<op> args... %kwarg...
 //                                              %field... %assign...)
+//                                       wrapped in (%meta (T P V) …) when
+//                                       annotated (opt-in; see _wrapMeta)
 //   IR { kind: 'call', op:'functionof',
 //         params, paramKwargs,
 //         paramSources, body }        → (functionof <output> %specinputs
@@ -104,7 +115,11 @@ function _exprToSexpr(e: any, ind: string, mopts?: any): string {
       return '(%axis ' + e.name + ')';
     }
     case 'ref':   return '(%ref ' + e.ns + ' ' + e.name + ')';
-    case 'call':  return _callToSexpr(e, ind, mopts);
+    // Calls are the only nodes that carry an `e.meta` annotation; the
+    // `(%meta …)` wrapper (spec §11) goes AROUND the whole call. Literals
+    // stay self-typing and bare. `_wrapMeta` no-ops without `mopts` or
+    // when all slots are %deferred.
+    case 'call':  return _wrapMeta(_callToSexpr(e, ind, mopts), e, mopts);
     default:
       throw new Error('pir-sexpr: unknown IR kind ' + JSON.stringify(e.kind));
   }
@@ -126,17 +141,22 @@ function _docToSexpr(doc: any): string | null {
 }
 
 // ---------------------------------------------------------------------
-// %meta emission (spec §11 "Type and phase annotations") — opt-in via
-// toSexpr(mod, {meta: true}). The TYPE slot renders the engine type the
+// %meta emission (spec §11 "Annotations") — opt-in via
+// toSexpr(mod, {meta: true}). The annotation is a TRANSPARENT WRAPPER
+// `(%meta (<type> <phase> <valueset>) <expr>)` over the call, with the
+// three slots GROUPED. The TYPE slot renders the engine type the
 // typeinfer pass wrote on the call (`meta.type`); the PHASE slot carries
 // the binding-level phase on the OUTERMOST call of each binding's RHS
 // (the spec explicitly allows annotating only the outermost call) and
-// %deferred on inner calls. Anything without a clean spec category
-// (rngstate, type vars, set markers, callables with unknown inputs)
-// downgrades to %deferred — semantically equivalent to omission, never
-// wrong. A call where both slots would be %deferred emits NO %meta.
+// %deferred on inner calls; the VALUESET slot is typeinfer's third slot.
+// Anything without a clean spec category (rngstate, type vars, set
+// markers, callables with unknown inputs) downgrades to %deferred —
+// semantically equivalent to omission, never wrong. A call where all
+// three slots would be %deferred emits NO wrapper (bare ≡ all-deferred).
 
-function _metaToSexpr(e: any, mopts: any): string | null {
+// Build the grouped slot list `(<type> <phase> <valueset>)`, or null
+// when all three slots are %deferred (a bare expression is equivalent).
+function _metaSlots(e: any, mopts: any): string | null {
   const t = e.meta && e.meta.type;
   const phase = (mopts && mopts.outerPhase) ? '%' + mopts.outerPhase : '%deferred';
   const tStr = _typeToSexpr(t);
@@ -144,7 +164,17 @@ function _metaToSexpr(e: any, mopts: any): string | null {
   // by typeinfer's valueset pass. `%deferred` when un-inferred.
   const vsStr = _valuesetToSexpr(e.meta && e.meta.valueset);
   if (tStr === '%deferred' && phase === '%deferred' && vsStr === '%deferred') return null;
-  return '(%meta ' + tStr + ' ' + phase + ' ' + vsStr + ')';
+  return '(' + tStr + ' ' + phase + ' ' + vsStr + ')';
+}
+
+// Wrap an already-emitted expression string in `(%meta <slots> <expr>)`
+// (spec §11). Returns the expression UNWRAPPED without `mopts` (bare
+// emission) or when the node carries no inferred metadata.
+function _wrapMeta(exprStr: string, e: any, mopts: any): string {
+  if (!mopts) return exprStr;
+  const slots = _metaSlots(e, mopts);
+  if (!slots) return exprStr;
+  return '(%meta ' + slots + ' ' + exprStr + ')';
 }
 
 function _valuesetToSexpr(vs: any): string {
@@ -273,14 +303,11 @@ function _callToSexpr(e: any, ind: string, mopts?: any): string {
   } else {
     parts.push(e.op);
   }
-  // Optional `(%meta <type> <phase>)` immediately after the head (spec
-  // §11 — calls and only calls). Skipped when both slots would be
-  // %deferred (a missing annotation is equivalent).
+  // `%meta` is NOT emitted inside the call — it wraps the whole call
+  // (spec §11; applied by `_exprToSexpr` via `_wrapMeta`). Inner exprs
+  // still receive `{meta:true}` so their own wrappers carry types (with
+  // %deferred phase — only the outermost call carries the binding phase).
   const inner = mopts ? { meta: true } : null;
-  if (mopts) {
-    const m = _metaToSexpr(e, mopts);
-    if (m) parts.push(m);
-  }
   // Positional args
   if (e.args) {
     for (const a of e.args) parts.push(_exprToSexpr(a, ind, inner));
@@ -348,12 +375,10 @@ function _reificationToSexpr(e: any, ind: string, mopts?: any): string {
     return isPlaceholderName(p) ? p.slice(1, -1) : p;
   };
   const parts: string[] = [e.op === 'kernelof' ? 'kernelof' : 'functionof'];
-  // Optional %meta after the head (the spec's annotated example puts the
-  // reification's own kernel/function annotation here).
-  if (mopts) {
-    const m = _metaToSexpr(e, mopts);
-    if (m) parts.push(m);
-  }
+  // The reification's own kernel/function annotation wraps the whole
+  // `(functionof …)` form (spec §11; applied by `_exprToSexpr` via
+  // `_wrapMeta`), not the head. The body's inner exprs keep their own
+  // wrappers via {meta:true}.
   parts.push(_exprToSexpr(e.body, ind, mopts ? { meta: true } : null));
   if (params.length === 0) {
     parts.push('%autoinputs', '%deferred');
@@ -609,21 +634,18 @@ function fromSexpr(text: any) {
   // (functionof <output> %specinputs ((<name> <ref>) ...)) |
   // (functionof <output> %autoinputs (%deferred | ((<name> <ref>) ...)))
   // — spec §11 "Reified callables", fixed arity after the head. Called
-  // with the head symbol already eaten. An optional %meta may appear
-  // immediately after the head, before the output.
+  // with the head symbol already eaten. (A `%meta` annotation on the
+  // reification wraps the whole `(functionof …)` form and is stripped by
+  // `readMetaForm` before this runs, so none appears here.)
   function readReificationTail(op: string): any {
     const callShape: any = { kind: 'call', op: 'functionof' };
     let body: any = null;
-    // Output (+ optional leading %meta).
+    // Output expression.
     while (!eof() && peek().type !== ')') {
       const t = peek();
       if (t.type === '%kw'
           && (t.value === '%specinputs' || t.value === '%autoinputs')) break;
       const part = readForm();
-      if (part && part.__kind === 'meta') {
-        callShape.meta = { type: part.type, phase: part.phase };
-        continue;
-      }
       if (body == null) { body = part; continue; }
       diagnostics.push({ severity: 'error',
         message: 'pir-sexpr: ' + op + ' has more than one output form '
@@ -738,17 +760,36 @@ function fromSexpr(text: any) {
   }
 
   function readMetaForm(): any {
-    // Spec §11: (%meta <type> <phase> [<valueset>]). We round-trip the
-    // raw forms but don't currently re-feed them to inference. Consume
-    // every slot up to the close paren, so 2-slot and 3-slot forms
-    // (and any future slot) parse alike.
+    // Spec §11: `(%meta (<type> <phase> <valueset>) <expr>)` — a
+    // TRANSPARENT WRAPPER over any expression. The slots are grouped in a
+    // single list. We don't yet reconstruct that slot group into engine
+    // `meta.*` objects (the engine re-infers — "%meta READER
+    // reconstruction" TODO); skip the grouped slots and read straight
+    // through to the wrapped expression.
     eat(); // %meta
-    const typ = readForm();
-    const ph  = readForm();
-    const extra: any[] = [];
-    while (peek() && peek().type !== ')') extra.push(readForm());
+    skipBalanced();           // (<type> <phase> <valueset>) slot group — dropped
+    const inner = readForm(); // the wrapped expression
     if (peek() && peek().type === ')') eat();
-    return { __kind: 'meta', type: typ, phase: ph, valueset: extra[0] || null };
+    return inner;
+  }
+
+  // Consume one balanced form (an atom, or a balanced `(...)` list)
+  // without interpreting it — used to drop the `%meta` slot group, whose
+  // shape (nested type lists, set expressions) is not the engine IR
+  // grammar `readForm` parses.
+  function skipBalanced(): void {
+    if (eof()) return;
+    if (peek().type === '(') {
+      eat();
+      let depth = 1;
+      while (!eof() && depth > 0) {
+        const x = eat();
+        if (x.type === '(') depth++;
+        else if (x.type === ')') depth--;
+      }
+    } else {
+      eat();
+    }
   }
 
   function readCallForm(): any {
@@ -759,18 +800,14 @@ function fromSexpr(text: any) {
     // inline callable expression such as a reification — kept as a `callee`
     // child node. The "must evaluate to a callable" condition is
     // inference's job; the reader stays liberal. Remaining parts are
-    // ordinary positional args / %kwarg entries (and an optional %meta,
-    // which may appear before or after the head).
+    // ordinary positional args / %kwarg entries. (A `%meta` annotation
+    // wraps the whole `(%call …)` and is stripped by `readMetaForm`.)
     eat(); // %call
     const callShape: any = { kind: 'call', args: [], kwargs: {} };
     let headDone = false;
     while (!eof() && peek().type !== ')') {
       const part = readForm();
       if (part == null) continue;
-      if (part.__kind === 'meta') {
-        callShape.meta = { type: part.type, phase: part.phase };
-        continue;
-      }
       if (!headDone) {
         headDone = true;
         if (part.kind === 'ref') callShape.target = { ns: part.ns, name: part.name };
@@ -794,7 +831,6 @@ function fromSexpr(text: any) {
     if (part.__kind === 'kwarg')  { call.kwargs[part.name] = part.value; return; }
     if (part.__kind === 'field')  { (call.fields ||= []).push({ name: part.name, value: part.value }); return; }
     if (part.__kind === 'assign') { (call.assigns ||= []).push({ name: part.name, value: part.value }); return; }
-    if (part.__kind === 'meta')   { call.meta = { type: part.type, phase: part.phase }; return; }
     // Reified callables (the only body-carrying form) never reach this
     // absorb loop — they parse through readReificationTail; aggregate
     // and every other op are plain args-based.

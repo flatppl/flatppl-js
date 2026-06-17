@@ -252,14 +252,14 @@ y = 1.5
 
 test('%meta emission (opt-in): annotated output matches the spec §11 annotated examples', () => {
   // Spec §11 "Annotated FlatPIR" (helpers/model worked examples). Emission
-  // is OPT-IN — bare FlatPIR stays the canonical default shape. The
-  // `%meta` is the full 3-slot `(%meta <type> <phase> <valueset>)` (mass
-  // rides the measure/kernel type). The outermost call of each binding's
-  // RHS carries the binding-level phase; inner calls carry %deferred
-  // phase but still a type + valueset (the spec allows annotating only
-  // the outermost call's phase). Unrepresentable slots downgrade to
-  // %deferred (≡ omitted); a call where all three would be %deferred
-  // emits no %meta at all.
+  // is OPT-IN — bare FlatPIR stays the canonical default shape. `%meta` is
+  // a TRANSPARENT WRAPPER `(%meta (<type> <phase> <valueset>) <expr>)`
+  // around the annotated call, with the three slots grouped (mass rides
+  // the measure/kernel type). The outermost call of each binding's RHS
+  // carries the binding-level phase; inner calls carry %deferred phase but
+  // still a type + valueset (the spec allows annotating only the outermost
+  // call's phase). Unrepresentable slots downgrade to %deferred (≡
+  // omitted); a call where all three would be %deferred emits no wrapper.
   const mod = buildModule(`
 center = elementof(reals)
 spread = elementof(posreals)
@@ -272,23 +272,24 @@ b ~ Normal(mu = 0.0, sigma = 2.0)
   const bare = pirSexpr.toSexpr(mod);
   assert.ok(!bare.includes('%meta'), 'default emission stays bare (canonical)');
   const out = pirSexpr.toSexpr(mod, { meta: true }).replace(/\s+/g, ' ');
-  // The spec's own annotated lines, byte-for-byte (3-slot %meta — the
-  // value-set third slot matches the spec example exactly here):
-  assert.ok(out.includes('(%bind center (elementof (%meta (%scalar real) %parameterized reals) reals))'),
+  // The spec's own annotated lines, byte-for-byte (grouped 3-slot %meta
+  // wrapper — the value-set third slot matches the spec example here):
+  assert.ok(out.includes('(%bind center (%meta ((%scalar real) %parameterized reals) (elementof reals)))'),
     'elementof annotation matches the spec example: ' + out);
-  assert.ok(out.includes('(%bind shifted_value (add (%meta (%scalar real) %parameterized reals) (%ref self center) 1.0))'),
+  assert.ok(out.includes('(%bind shifted_value (%meta ((%scalar real) %parameterized reals) (add (%ref self center) 1.0)))'),
     'outermost-call annotation matches the spec example: ' + out);
   // Kernel type carries the §11 `(%mass …)` class slot; a callable's
-  // value set is %unknown (not a value).
-  assert.ok(out.includes('(functionof (%meta (%kernel (%inputs center spread x) (%mass %normalized)) %fixed %unknown)'),
-    'reification head annotation: kernel type with mass, %fixed phase, %unknown valueset: ' + out);
-  assert.ok(out.includes('(draw (%meta (%scalar real) %stochastic reals)'),
+  // value set is %unknown (not a value). The wrapper goes AROUND the
+  // whole `(functionof …)` form.
+  assert.ok(out.includes('(%meta ((%kernel (%inputs center spread x) (%mass %normalized)) %fixed %unknown) (functionof'),
+    'reification annotation: kernel type with mass, %fixed phase, %unknown valueset: ' + out);
+  assert.ok(out.includes('(%meta ((%scalar real) %stochastic reals) (draw'),
     'draw binding carries %stochastic + reals support: ' + out);
   // Inner calls: phase %deferred (valid per spec) but a full type +
   // (%mass …) class + value-set support.
-  assert.ok(out.includes('(Normal (%meta (%measure (%domain (%scalar real)) (%mass %normalized)) %deferred reals)'),
+  assert.ok(out.includes('(%meta ((%measure (%domain (%scalar real)) (%mass %normalized)) %deferred reals) (Normal'),
     'inner call annotation: type + mass + valueset: ' + out);
-  // The annotated text reads back cleanly (the reader tolerates %meta).
+  // The annotated text reads back cleanly (the reader skips the wrapper).
   const { diagnostics } = pirSexpr.fromSexpr(pirSexpr.toSexpr(mod, { meta: true }));
   assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);
 });

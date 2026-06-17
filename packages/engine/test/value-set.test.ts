@@ -136,9 +136,10 @@ test('valueset: toSexpr emits the third %meta slot (golden parity)', () => {
   assert.ok(out.includes('%stochastic (stdsimplex 3)'),
     'Dirichlet draw → (stdsimplex 3): ' + out);
   // softmax matches the Rust golden byte-for-byte on BOTH slots — the
-  // type (length-preserving → concrete 2) and the value-set.
-  assert.ok(out.includes('(softmax (%meta (%array 1 (2) (%scalar real)) %fixed (stdsimplex 2))'),
+  // type (length-preserving → concrete 2) and the value-set. The grouped
+  // wrapper goes around the whole softmax call (spec §11).
+  assert.ok(out.includes('(%meta ((%array 1 (2) (%scalar real)) %fixed (stdsimplex 2)) (softmax'),
     'softmax → (%array 1 (2) real) %fixed (stdsimplex 2): ' + out);
-  assert.ok(/\(Categorical \(%meta .*\) %stochastic posintegers\)/.test(out),
+  assert.ok(/%stochastic posintegers\) \(Categorical/.test(out),
     'Categorical support → posintegers: ' + out);
 });
