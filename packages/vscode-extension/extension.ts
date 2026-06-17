@@ -21,7 +21,7 @@ const { processSource, findBindingAtLine, builtins,
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges, variants } = require('./lib/engine.min.js');
 const { FlatPPLPanel } = require('./src/visualPanel');
-const { createLspManager } = require('./src/lspClient');
+const { LspClientManager } = require('./src/lspClient');
 // Math fallback for the editor hover — replaces `$…$` / `$$…$$`
 // regions with CommonMark code (inline backticks / fenced
 // ```math``` blocks). See src/math.ts for the rationale: VS Code's
@@ -296,7 +296,7 @@ function remapWorkspaceEdit(vscode: any, edit: any, dl: any) {
   return out;
 }
 
-let lspManager: import('./src/lspClient').LspManager | undefined;
+let lspManager: any;
 
 function activate(context: any) {
   // Cache parsed results to avoid re-parsing on every cursor move
@@ -313,44 +313,25 @@ function activate(context: any) {
   // correct before anything is armed.
   vscode.commands.executeCommand('setContext', 'flatppl.embeddedActive', false);
 
-  lspManager = createLspManager(context.extensionPath);
-  void lspManager?.start();
+  lspManager = new LspClientManager(context.extensionPath);
+  void lspManager.start();
 
   // Restart the server when catalogue *.ron files change, or when the
   // relevant settings change — the server reads catalogues only at
   // initialize, so a restart is how new/edited catalogues take effect.
-  const { makeDebounced } = require('./src/lspHelpers');
-  const debouncedRestart = makeDebounced(() => void lspManager?.restart(), 400);
-  let catWatcher: ReturnType<typeof vscode.workspace.createFileSystemWatcher> | undefined = undefined;
-  const installCatWatcher = () => {
-    if (catWatcher) catWatcher.dispose();
-    catWatcher = undefined;
-    const dir = vscode.workspace
-      .getConfiguration('flatppl')
-      .get('catalogues.path', '')
-      .trim();
-    if (!dir) return;
-    // Watch only *.ron in the configured catalogue directory (not the whole
-    // workspace — RON is a generic format used elsewhere).
-    const pattern = new vscode.RelativePattern(vscode.Uri.file(dir), '*.ron');
-    catWatcher = vscode.workspace.createFileSystemWatcher(pattern);
-    catWatcher.onDidChange(() => debouncedRestart.call());
-    catWatcher.onDidCreate(() => debouncedRestart.call());
-    catWatcher.onDidDelete(() => debouncedRestart.call());
-  };
-  installCatWatcher();
+  const catWatcher = vscode.workspace.createFileSystemWatcher('**/*.ron');
+  const restart = () => void lspManager?.restart();
+  catWatcher.onDidChange(restart);
+  catWatcher.onDidCreate(restart);
+  catWatcher.onDidDelete(restart);
   const cfgWatcher = vscode.workspace.onDidChangeConfiguration((e: any) => {
-    if (e.affectsConfiguration('flatppl.server.path')) void lspManager?.restart();
-    if (e.affectsConfiguration('flatppl.catalogues.path')) {
-      installCatWatcher();
+    if (
+      e.affectsConfiguration('flatppl.server.path') ||
+      e.affectsConfiguration('flatppl.catalogues.path')
+    )
       void lspManager?.restart();
-    }
   });
-  context.subscriptions.push(cfgWatcher, {
-    dispose: () => debouncedRestart.cancel(),
-  }, {
-    dispose: () => { if (catWatcher) catWatcher.dispose(); },
-  });
+  context.subscriptions.push(catWatcher, cfgWatcher);
 
   function getParsed(document: any) {
     const uri = document.uri.toString();
