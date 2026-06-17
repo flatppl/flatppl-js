@@ -33,7 +33,7 @@
 // cloned alongside this one. If absent (CI), we fetch the pinned ref from
 // github.com/flatppl/flatppl-grammars instead.
 
-import { readFile, writeFile, copyFile, readdir, mkdir, rm } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, readdir, mkdir, rm, chmod } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -116,6 +116,68 @@ const viewerPkg = join(here, '..', 'viewer');
 //    Sibling-clone first (fastest dev loop), GitHub fetch otherwise.
 
 await syncGrammars();
+
+// ---------------------------------------------------------------------
+// 2c. Fetch the per-platform flatppl-lsp binaries from the flatppl-rust
+//     rolling `nightly` release into ./bin. The extension's lspClient
+//     picks bin/flatppl-lsp-<host-triple> at activation. Set
+//     FLATPPL_LSP_LOCAL=/path/to/flatppl-lsp to use a local build for the
+//     host triple instead of downloading (offline dev).
+const LSP_TRIPLES = [
+  { triple: 'aarch64-apple-darwin',      exe: '' },
+  { triple: 'x86_64-apple-darwin',       exe: '' },
+  { triple: 'x86_64-unknown-linux-musl', exe: '' },
+  { triple: 'aarch64-unknown-linux-musl',exe: '' },
+  { triple: 'x86_64-pc-windows-msvc',    exe: '.exe' },
+];
+const LSP_RELEASE_BASE =
+  'https://github.com/flatppl/flatppl-rust/releases/download/nightly';
+
+// Node host -> release triple (mirror of lspClient.hostTriple; kept local to
+// the build script to avoid importing TS).
+function hostTripleForNode(platform, arch) {
+  const exe = platform === 'win32' ? '.exe' : '';
+  if (platform === 'darwin' && arch === 'arm64') return { triple: 'aarch64-apple-darwin', exe };
+  if (platform === 'darwin' && arch === 'x64')   return { triple: 'x86_64-apple-darwin', exe };
+  if (platform === 'linux'  && arch === 'x64')   return { triple: 'x86_64-unknown-linux-musl', exe };
+  if (platform === 'linux'  && arch === 'arm64') return { triple: 'aarch64-unknown-linux-musl', exe };
+  if (platform === 'win32'  && arch === 'x64')   return { triple: 'x86_64-pc-windows-msvc', exe };
+  return null;
+}
+
+async function downloadServerBinaries() {
+  const binDir = join(here, 'bin');
+  await mkdir(binDir, { recursive: true });
+
+  const local = process.env.FLATPPL_LSP_LOCAL;
+  if (local) {
+    const h = hostTripleForNode(process.platform, process.arch);
+    if (h) {
+      const dest = join(binDir, `flatppl-lsp-${h.triple}${h.exe}`);
+      await copyFile(local, dest);
+      await chmod(dest, 0o755);
+      console.log(`  copied local flatppl-lsp -> ${dest}`);
+      return;
+    }
+  }
+
+  for (const { triple, exe } of LSP_TRIPLES) {
+    const name = `flatppl-lsp-${triple}${exe}`;
+    const dest = join(binDir, name);
+    try {
+      const res = await fetch(`${LSP_RELEASE_BASE}/${name}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      await writeFile(dest, buf);
+      if (!exe) await chmod(dest, 0o755);
+      console.log(`  downloaded ${name}`);
+    } catch (e) {
+      console.warn(`  WARNING: could not fetch ${name}: ${e.message}`);
+    }
+  }
+}
+
+await downloadServerBinaries();
 
 // ---------------------------------------------------------------------
 // 2b. Transpile the extension's own TypeScript sources into the CommonJS
