@@ -302,12 +302,13 @@ const mathBuildOpts = {
 // dependency) into a single Node-loadable CommonJS file so extension.ts can
 // `require('./src/lspClient')` without node_modules at runtime — the packaged
 // .vsix ships none (vsce runs with --no-dependencies). `vscode` itself is
-// provided by the extension host, so it stays external. Not minified: the
-// file is small and its named exports are unit-tested directly.
+// provided by the extension host, so it stays external.
+// Minified: nothing imports this bundle directly (tests use lspHelpers.js).
 const lspClientBuildOpts = {
   entryPoints: [join(here, 'src', 'lspClient.ts')],
   outfile: join(here, 'src', 'lspClient.js'),
   bundle: true,
+  minify: true,
   format: 'cjs',
   platform: 'node',
   target: ['node16'],

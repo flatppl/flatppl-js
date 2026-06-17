@@ -509,13 +509,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
       case 'weighted':
       case 'logweighted': return write(inferWeighted(expr, scopes), expr);
       case 'pushfwd':     return write(inferPushfwd(expr, scopes), expr);
-      // relabel(X, names) — output-side axis renaming (spec §04). Kind-
-      // transparent: a relabel'd measure stays a measure (so iid /
-      // truncate / normalize / likelihoodof accept it), a relabel'd
-      // function/kernel stays callable, a relabel'd value becomes a
-      // record. Without this rule relabel infers `deferred` and iid's
-      // measure guard rejects `iid(relabel(M), n)`.
-      case 'relabel':     return write(inferRelabel(expr, scopes), expr);
       // A non-scalar locscale survives the analyzer pre-pass as an
       // `{op:'locscale'}` node (it routes through lift's affine-registry
       // lowering, not the scalar expansion). Its type follows the base
@@ -2193,80 +2186,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // (e.g. inside a `fn(...)` body whose arg-types haven't been
     // resolved yet) defers rather than erroring.
     return T.deferred();
-  }
-
-  // relabel(X, names) — output-side axis renaming (spec §04 "Interface
-  // adaptation"). It is KIND-TRANSPARENT: the result has the same type
-  // KIND as X (only axis labels change), so the spec equivalence
-  // `named_M = relabel(M, names) ≡ pushfwd(fn(relabel(_, names)), M)`
-  // holds and relabel'd measures flow into iid / truncate / normalize /
-  // likelihoodof exactly like a bare measure. Cases:
-  //   - measure  → measure (preserve domain + sampleShape/batch/event;
-  //                the rename touches labels only, not shape).
-  //   - function → function, kernel → kernel (callable lifts).
-  //   - value    → record. Per spec lines 482-507 relabel of a value is
-  //                a record construction (array→record by position,
-  //                scalar→single-field record). lift.inlineRelabel rewrites
-  //                the statically-resolvable value cases to `record(...)`
-  //                before typeinfer, so we usually see relabel only over a
-  //                measure/kernel; for any value-typed arg that survives
-  //                (dynamic names, etc.) we still report `record` so the
-  //                kind is correct and never regresses to a measure.
-  //   - deferred/failed → propagate (don't fabricate a measure).
-  function inferRelabel(expr: any, scopes: any): any {
-    const args = expr.args || [];
-    if (args.length !== 2) return arityError('relabel', '2', args.length, expr.loc);
-    const baseT: any = inferExpr(args[0], scopes);
-    inferExpr(args[1], scopes);  // names — infer so any refs resolve
-    if (T.isMeasure(baseT)) return baseT;      // labels only — shape unchanged
-    if (baseT && baseT.kind === 'function')    return baseT;
-    if (baseT && baseT.kind === 'kernel')      return baseT;
-    if (baseT && baseT.kind === 'failed')      return T.failed('relabel cascade');
-    if (baseT && (baseT.kind === 'deferred' || baseT.kind === 'any')) return T.deferred();
-    // value → record (spec §04 lines 482-507). When the names arg is a
-    // literal [n1, n2, ...] (lowered as `vector(<string lit>, …)`) build a
-    // field-typed record so downstream `get_field` sees the actual fields:
-    //   - array base   → field per name, each the array element type;
-    //   - record base  → rename existing field types by position;
-    //   - scalar base  → single field carrying the scalar type.
-    // Without literal names (dynamic), DEFER (permissive — matches the
-    // pre-rule behaviour) rather than fabricating an empty / wrong record.
-    if (T.isValue(baseT)) {
-      const names = literalStringVector(args[1]);
-      if (names == null || names.length === 0) return T.deferred();
-      const fields: Record<string, any> = {};
-      if (baseT.kind === 'array') {
-        const elemT = baseT.elem || T.deferred();
-        for (const n of names) fields[n] = elemT;
-        return T.record(fields);
-      }
-      if (baseT.kind === 'record') {
-        const oldVals = Object.values(baseT.fields || {});
-        if (oldVals.length !== names.length) return T.deferred();
-        names.forEach((n: string, i: number) => { fields[n] = oldVals[i]; });
-        return T.record(fields);
-      }
-      // scalar (or other single value) → single-field record.
-      if (names.length === 1) { fields[names[0]] = baseT; return T.record(fields); }
-      return T.deferred();
-    }
-    return T.deferred();
-  }
-
-  // Read a names argument that is a literal string vector — the lowered
-  // form `vector(<string lit>, …)` (or a bare array IR). The `call`/`vector`
-  // shape is the lowerer's output for a string ArrayLiteral (e.g. `["x","y"]`).
-  // Returns the list of names, or null when any element isn't a static string literal.
-  function literalStringVector(arg: any): string[] | null {
-    if (!arg || arg.kind !== 'call' || arg.op !== 'vector' || !Array.isArray(arg.args)) {
-      return null;
-    }
-    const out: string[] = [];
-    for (const el of arg.args) {
-      if (!el || el.kind !== 'lit' || typeof el.value !== 'string') return null;
-      out.push(el.value);
-    }
-    return out;
   }
 
   function inferIid(expr: any, scopes: any): any {
