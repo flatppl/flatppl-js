@@ -21,6 +21,7 @@ const { processSource, findBindingAtLine, builtins,
   planRename, isValidBindingName, isValidPlaceholderText,
   findEnclosingRanges, variants } = require('./lib/engine.min.js');
 const { FlatPPLPanel } = require('./src/visualPanel');
+const { LspClientManager } = require('./src/lspClient');
 // Math fallback for the editor hover — replaces `$…$` / `$$…$$`
 // regions with CommonMark code (inline backticks / fenced
 // ```math``` blocks). See src/math.ts for the rationale: VS Code's
@@ -295,6 +296,8 @@ function remapWorkspaceEdit(vscode: any, edit: any, dl: any) {
   return out;
 }
 
+let lspManager: any;
+
 function activate(context: any) {
   // Cache parsed results to avoid re-parsing on every cursor move
   let cachedUri = '';
@@ -309,6 +312,26 @@ function activate(context: any) {
   // the Activate command's `!flatppl.embeddedActive` palette gate is
   // correct before anything is armed.
   vscode.commands.executeCommand('setContext', 'flatppl.embeddedActive', false);
+
+  lspManager = new LspClientManager(context.extensionPath);
+  void lspManager.start();
+
+  // Restart the server when catalogue *.ron files change, or when the
+  // relevant settings change — the server reads catalogues only at
+  // initialize, so a restart is how new/edited catalogues take effect.
+  const catWatcher = vscode.workspace.createFileSystemWatcher('**/*.ron');
+  const restart = () => void lspManager?.restart();
+  catWatcher.onDidChange(restart);
+  catWatcher.onDidCreate(restart);
+  catWatcher.onDidDelete(restart);
+  const cfgWatcher = vscode.workspace.onDidChangeConfiguration((e: any) => {
+    if (
+      e.affectsConfiguration('flatppl.server.path') ||
+      e.affectsConfiguration('flatppl.catalogues.path')
+    )
+      void lspManager?.restart();
+  });
+  context.subscriptions.push(catWatcher, cfgWatcher);
 
   function getParsed(document: any) {
     const uri = document.uri.toString();
@@ -1156,6 +1179,8 @@ function activate(context: any) {
   );
 }
 
-function deactivate() {}
+function deactivate(): Thenable<void> | undefined {
+  return lspManager?.stop();
+}
 
 module.exports = { activate, deactivate };
