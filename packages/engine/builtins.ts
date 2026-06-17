@@ -216,6 +216,14 @@ const MEASURE_OPS = new Set([
 // NB: `totalmass`, `densityof`, `logdensityof`, `likelihoodof`,
 // `joint_likelihood`, and `disintegrate` are excluded —
 // they return scalars, density functions, or tuples, not measures.
+//
+// CO-MAINTENANCE NOTE: any measure-producing op added to MEASURE_OPS above
+// must also appear here. lift.ts `inlineRelabel` calls `isMeasureLikeArg`,
+// which gates on MEASURE_PRODUCING, to decide whether `relabel(<op>(...), [...])`
+// stays as a `relabel` node (measure-relabel, correct — density walkers peel it)
+// or is rewritten to a `record` (scalar-relabel). Omitting an op here silently
+// converts a measure-relabel into a record and reintroduces the runtime bug
+// that the iid-accepts-relabel fix was designed to close.
 const MEASURE_PRODUCING = new Set([
   ...DISTRIBUTIONS,
   'lawof',

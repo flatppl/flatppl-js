@@ -10,7 +10,7 @@
 // functions, measures, and kernels" and "for measures it is equivalent
 // to pushfwd(fn(relabel(_, names)), M)". So relabel(M) IS a measure and
 // iid(relabel(M), n) must type-check. Density evaluation already treats
-// relabel as transparent (density.ts walkPushfwd peels it), so inference
+// relabel as transparent (density.ts walkAcc peels it), so inference
 // is the only inconsistent layer.
 //
 // Two checks:

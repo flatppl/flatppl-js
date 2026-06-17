@@ -2254,8 +2254,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
   }
 
   // Read a names argument that is a literal string vector — the lowered
-  // form `vector(<string lit>, …)` (or a bare array IR). Returns the list
-  // of names, or null when any element isn't a static string literal.
+  // form `vector(<string lit>, …)` (or a bare array IR). The `call`/`vector`
+  // shape is the lowerer's output for a string ArrayLiteral (e.g. `["x","y"]`).
+  // Returns the list of names, or null when any element isn't a static string literal.
   function literalStringVector(arg: any): string[] | null {
     if (!arg || arg.kind !== 'call' || arg.op !== 'vector' || !Array.isArray(arg.args)) {
       return null;
