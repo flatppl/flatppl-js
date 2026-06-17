@@ -132,6 +132,7 @@ await syncGrammars();
 const EXTENSION_TS_SOURCES = [
   { in: 'extension.ts',       out: 'extension.js' },
   { in: 'src/visualPanel.ts', out: 'src/visualPanel.js' },
+  { in: 'src/lspClient.ts',   out: 'src/lspClient.js' },
 ];
 
 for (const { in: inRel, out: outRel } of EXTENSION_TS_SOURCES) {
