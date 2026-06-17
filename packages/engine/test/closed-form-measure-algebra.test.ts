@@ -418,6 +418,37 @@ lp = logdensityof(m, 0.5)
     `normalize(weighted(2, trunc)) logp: got ${m.samples[0]}, expected ${expected}`);
 });
 
+test('likelihoodof(iid(normalize(truncate(Normal(θ), S)))) applies −logZ(θ) per atom', async () => {
+  // Inline normalize(truncate(M, S)) where M's params are the fed θ (the HS3
+  // check-time likelihood, spec §06 `model_R = normalize(truncate(model, R))`).
+  // This Path B body reaches the scorer with no massFrom ref, so the −logZ(θ)
+  // = −log[Φ((hi−μ)/σ) − Φ((lo−μ)/σ)] normalization must be resolved at the
+  // fixed point. Previously it was dropped, scoring the UNNORMALIZED truncated
+  // density (off by Σᵢ logZ — a parameter-dependent, non-cancelling error).
+  const ctx = makeCtx(`
+mean = elementof(reals)
+sigma = elementof(posreals)
+m = normalize(truncate(Normal(mu = mean, sigma = sigma), interval(-2.0, 2.0)))
+obs = [0.5, -0.3]
+L = likelihoodof(iid(m, lengthof(obs)), obs)
+lp = logdensityof(L, record(mean = 0.0, sigma = 1.0))
+`);
+  const m = await ctx.getMeasure('lp');
+  // Independent oracle: truncated-Normal(0,1) on [-2,2]. Z = ∫_{-2}^{2} φ(x) dx
+  // by fine composite-midpoint quadrature of the standard-normal pdf — fully
+  // independent of the engine's CDF path under test.
+  const N = 200000, lo = -2, hi = 2, dx = (hi - lo) / N;
+  let Z = 0;
+  for (let j = 0; j < N; j++) {
+    Z += Math.exp(normalLogpdf(lo + (j + 0.5) * dx, 0, 1)) * dx;
+  }
+  const logZ = Math.log(Z);
+  const expected = [0.5, -0.3]
+    .reduce((s, x) => s + (normalLogpdf(x, 0, 1) - logZ), 0);
+  assert.ok(Math.abs(m.samples[0] - expected) < 1e-9,
+    `iid normalize(truncate(N(θ))) logp: got ${m.samples[0]}, expected ${expected}`);
+});
+
 test('superpose density: log p(x) = log[ p_A(x) + p_B(x) ] (raw additive)', async () => {
   const ctx = makeCtx(`
 A = Normal(mu = 0.0, sigma = 1.0)
