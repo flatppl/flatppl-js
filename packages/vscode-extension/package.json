@@ -20,7 +20,11 @@
     "build:vendor":    "node ./build-vendor.mjs",
     "watch:vendor":    "node ./build-vendor.mjs --watch",
     "typecheck":       "tsc -p tsconfig.json",
-    "typecheck:watch": "tsc -p tsconfig.json --watch"
+    "typecheck:watch": "tsc -p tsconfig.json --watch",
+    "test":            "node --test 'test/*.test.js'"
+  },
+  "dependencies": {
+    "vscode-languageclient": "^8.1.0"
   },
   "devDependencies": {
     "@flatppl/engine": "*",
@@ -193,6 +197,16 @@
           "minimum": 1,
           "maximum": 1000000,
           "markdownDescription": "Per-atom rejection-redraw budget for `truncate(M, S)` when the parent measure isn't CDF-invertible. The visualizer redraws from the underlying distribution up to this many times per atom before giving up and emitting `NaN`. Higher values trade compute for less ESS loss on tightly-truncated measures; lower values keep large-N plots responsive. Changing this clears the visualizer's sample cache."
+        },
+        "flatppl.server.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to a `flatppl-lsp` binary to use instead of the one bundled with the extension. Leave empty to use the bundled per-platform binary. Useful for running a locally built server (`cargo build --release -p flatppl-lsp`)."
+        },
+        "flatppl.catalogues.path": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Absolute path to a directory of external standard-module catalogue files (`*.ron`). Every `*.ron` in this directory is read and supplied to the language server, so third-party modules' distribution signatures resolve in diagnostics, hover, and completion. Leave empty to use only the built-in catalogue. Changes restart the language server."
         }
       }
     }
