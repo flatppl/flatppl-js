@@ -244,9 +244,94 @@ function matLikelihoodDensity(d: any, ctx: any) {
   // so resolve it HERE — at the fixed point θ — and rewrite the normalize to a
   // constant logweighted shift, before scoring.
   resolveProductNormalizers(node.body, theta, ctx);
+  // normalize(truncate(M, S)): the inline support-restriction normalizer. Per
+  // spec §06 truncate carries M(S) as its totalmass and normalize divides by
+  // it — but an INLINE normalize(truncate(…)) (the kernel-density Path B body,
+  // M's params open as the fed θ) reaches the scorer without a massFrom ref the
+  // by-name resolveNormalizeMasses can materialise. −log Z = −log M(S) is a
+  // function of θ, so resolve it HERE at the fixed point, the same way the §12
+  // product normalizer above does, before scoring.
+  resolveTruncateNormalizers(node.body, theta, ctx);
   const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
   return matScore(node, ctx, { observed })
     .then((reply: any) => applyReduce(reply, node));
+}
+
+// Walk a measure IR and rewrite every inline support-restriction normalizer
+// `normalize(truncate(M, interval(lo, hi)))` to the constant shift
+// `logweighted(−log Z, truncate(M, …))` evaluated at the point θ, where
+// Z = M([lo, hi]) is the base measure's mass over the truncation set. The
+// truncate node is kept as the inner (its walkTruncate gates out-of-support
+// points to −∞); only the missing −log Z normalization factor is supplied.
+function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any) {
+  if (!node || typeof node !== 'object') return;
+  seen = seen || new Set();
+  if (seen.has(node)) return;
+  seen.add(node);
+  if (Array.isArray(node)) {
+    for (const x of node) resolveTruncateNormalizers(x, theta, ctx, seen);
+    return;
+  }
+  if (node.kind === 'call' && node.op === 'normalize'
+      && !node.massFrom
+      && Array.isArray(node.args) && node.args.length === 1) {
+    const inner = node.args[0];
+    if (inner && inner.kind === 'call' && inner.op === 'truncate'
+        && Array.isArray(inner.args) && inner.args.length === 2) {
+      const bounds = truncateSetBounds(inner.args[1]);
+      if (bounds) {
+        const base = asScalarFactor(inner.args[0], theta);
+        if (!base) {
+          throw new Error('density: normalize(truncate(M, S)) — base measure M '
+            + 'is not a recognised scalar reference measure, cannot resolve its '
+            + 'support-restricted normalizer');
+        }
+        const logZ = truncateLogMass(base, bounds, ctx);
+        node.op = 'logweighted';
+        node.args = [{ kind: 'lit', value: -logZ }, inner];
+        resolveTruncateNormalizers(inner, theta, ctx, seen);
+        return;
+      }
+    }
+  }
+  for (const k in node) {
+    const v = node[k];
+    if (v && typeof v === 'object') resolveTruncateNormalizers(v, theta, ctx, seen);
+  }
+}
+
+// Resolve an `interval(lo, hi)` set IR (literal bounds) to [lo, hi]; null for
+// any other set shape (dynamic / named sets defer to the by-name materialiser).
+function truncateSetBounds(setIR: any): [number, number] | null {
+  if (!setIR || setIR.kind !== 'call' || setIR.op !== 'interval'
+      || !Array.isArray(setIR.args) || setIR.args.length !== 2) return null;
+  const lo = setIR.args[0], hi = setIR.args[1];
+  if (lo && lo.kind === 'lit' && hi && hi.kind === 'lit') return [+lo.value, +hi.value];
+  return null;
+}
+
+// log Z = log ∫_lo^hi f_base(x) dx for a scalar reference-measure base resolved
+// at θ. Closed-form via the CDF for a Normal base (exact); composite-midpoint
+// quadrature of the base log-density otherwise (matching numericProductLogZ).
+function truncateLogMass(base: any, bounds: [number, number], ctx: any): number {
+  const [lo, hi] = bounds;
+  if (base.kernel === 'Normal') {
+    const mu = +base.input.mu, sigma = +base.input.sigma;
+    const normalCdf = require('@stdlib/stats-base-dists-normal-cdf');
+    const Z = normalCdf(hi, mu, sigma) - normalCdf(lo, mu, sigma);
+    if (!(Z > 0)) {
+      throw new Error('density: normalize(truncate(Normal, S)) — mass over the '
+        + 'truncation set is 0 (Z = 0 is undefined per spec §06)');
+    }
+    return Math.log(Z);
+  }
+  const dx = (hi - lo) / QUAD_POINTS;
+  const logIntegrand = new Float64Array(QUAD_POINTS);
+  for (let j = 0; j < QUAD_POINTS; j++) {
+    const x = lo + (j + 0.5) * dx;
+    logIntegrand[j] = densityPrims.builtinLogdensityof(base.kernel, base.input, x);
+  }
+  return empirical.logSumExp(logIntegrand) + Math.log(dx);
 }
 
 // =====================================================================
