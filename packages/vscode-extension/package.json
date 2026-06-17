@@ -21,7 +21,7 @@
     "watch:vendor":    "node ./build-vendor.mjs --watch",
     "typecheck":       "tsc -p tsconfig.json",
     "typecheck:watch": "tsc -p tsconfig.json --watch",
-    "test":            "node --test test/"
+    "test":            "node --test 'test/*.test.js'"
   },
   "dependencies": {
     "vscode-languageclient": "^8.1.0"
