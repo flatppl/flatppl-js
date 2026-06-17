@@ -28,7 +28,6 @@ const {
   EVALUABLE_OPS,
   SAMPLEABLE_DISTRIBUTIONS,
 } = require('./ir-shared.ts');
-const { MEASURE_PRODUCING } = require('./builtins.ts');
 
 // =====================================================================
 // Inline-subexpression lifting
@@ -2061,28 +2060,6 @@ function liftInlineSubexpressions(bindings: any) {
    * through (and ends up "not derivable" if no other classifier handles
    * it).
    */
-  // Whether an AST arg in relabel's first position denotes a measure (or
-  // kernel) rather than a value. A direct call to a measure-producing op /
-  // distribution, or an Identifier whose bound RHS is one (peeling a nested
-  // relabel). Conservative: anything else is treated as a value, preserving
-  // the existing array/record/scalar → record rewrite.
-  function isMeasureLikeArg(node: any): boolean {
-    if (!node) return false;
-    if (node.type === 'CallExpr' && node.callee && node.callee.type === 'Identifier') {
-      const op = node.callee.name;
-      if (op === 'relabel' && Array.isArray(node.args) && node.args.length >= 1) {
-        return isMeasureLikeArg(node.args[0]);
-      }
-      return MEASURE_PRODUCING.has(op);
-    }
-    if (node.type === 'Identifier') {
-      const target = out.get(node.name);
-      const targetAst = target && (target.effectiveValue || (target.node && target.node.value));
-      if (targetAst && targetAst !== node) return isMeasureLikeArg(targetAst);
-    }
-    return false;
-  }
-
   function inlineRelabel(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
@@ -2102,17 +2079,6 @@ function liftInlineSubexpressions(bindings: any) {
       names.push(el.value);
     }
     if (names.length === 0) return astArg;
-
-    // relabel of a MEASURE (or kernel) is the output-side axis renaming of
-    // spec §04 — it stays a `relabel(...)` measure node so the density
-    // walkers peel it transparently (density.walkAcc / mat-density
-    // asScalarFactor). Only relabel of a VALUE rewrites to `record(...)`.
-    // Without this guard the single-name scalar-wrap below turns
-    // `relabel(Normal(…), ["x"])` into `record(x = Normal(…))`, which the
-    // iid/joint density walker then treats as a named-field joint and tries
-    // to consume a field `x` from each scalar observation — wrong, and the
-    // source of "cannot consume named field 'x' from non-record value".
-    if (isMeasureLikeArg(argExpr)) return astArg;
 
     const loc = astArg.loc;
     const kw = (name: string, value: any) => ({ type: 'KeywordArg', name, value, loc });

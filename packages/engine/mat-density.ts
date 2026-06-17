@@ -126,13 +126,6 @@ function matScore(node: any, ctx: any, opts?: any): Promise<any> {
 // logsumexp_i − log N (engine-concepts §6). Broadcasts the scalar marginal back
 // across N so the result is a plain scalar measure. reduce=null ⇒ pass through.
 function applyReduce(reply: any, node: any): any {
-  // Surface a worker-side density failure loudly instead of dereferencing a
-  // missing `samples` (which masked the real error as a cryptic
-  // "Cannot read properties of undefined (reading 'length')").
-  if (reply && reply.type === 'error') {
-    throw new Error('density: worker failed scoring likelihood body: '
-      + (reply.message || 'unknown worker error'));
-  }
   const perAtom = reply.samples;
   if (!node.reduce || node.reduce.kind !== 'marginal') {
     return scalarMeasureN(perAtom, {
