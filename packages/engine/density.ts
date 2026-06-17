@@ -297,6 +297,39 @@ function consumeField(value: any, name: any) {
   return { head, rest: isEmptyRest(rest) ? null : rest };
 }
 
+// A plain record observation: an object that is neither a typed array, a
+// JS array, nor a shape-explicit Value. These are the obs shapes a relabel
+// axis-projection (walkAcc relabel branch) must peel by field name; anything
+// else is a positional value that passes through the peel unchanged.
+function isRecordValue(value: any): boolean {
+  return value != null && typeof value === 'object'
+    && !Array.isArray(value)
+    && !value.BYTES_PER_ELEMENT
+    && !valueLib.isValue(value);
+}
+
+// Extract the literal axis labels from a relabel's names argument. The lowerer
+// emits the `["x", …]` string ArrayLiteral as `vector("x", …)` (a call whose
+// args are string literals); a bare literal is also tolerated. Returns null if
+// the names arg isn't a static list of string literals (a dynamic relabel —
+// the peel then stays label-agnostic and passes the value through).
+function relabelAxisNames(namesIR: any): string[] | null {
+  if (!namesIR) return null;
+  let elems: any[] | null = null;
+  if (namesIR.kind === 'call' && namesIR.op === 'vector' && Array.isArray(namesIR.args)) {
+    elems = namesIR.args;
+  } else if (namesIR.kind === 'lit') {
+    elems = [namesIR];
+  }
+  if (!elems) return null;
+  const names: string[] = [];
+  for (const e of elems) {
+    if (!e || e.kind !== 'lit' || typeof e.value !== 'string') return null;
+    names.push(e.value);
+  }
+  return names;
+}
+
 // =====================================================================
 // Foundation: batched recursive walker
 // =====================================================================
@@ -499,7 +532,53 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
   // density — the per-point log-density of M is unchanged by its axis names —
   // so peel to M. (The importer wraps `gaussian_dist` etc. as
   // `relabel(Normal(…), ["x"])` to carry the HS3 variate name.)
+  //
+  // Two observation shapes reach this peel:
+  //
+  //   (a) A positional value (scalar / vector / array) — e.g. the per-copy
+  //       footprint inside `iid(relabel(M), n)`, or a bare draw scored at a
+  //       number. The labels are inert; recurse on M with the value verbatim.
+  //
+  //   (b) A RECORD keyed by the variate name(s) — the single-observation
+  //       `likelihoodof(relabel(M, ["x"]), record(x = v))` form. Here the
+  //       labels name which record field(s) carry M's observation. Project the
+  //       named axes off the record (in label order, the same consume/rest
+  //       protocol walkJointFieldsOrPositional uses) and recurse on M with that
+  //       projection, returning the residual record as the rest. Without this
+  //       the record object falls through to M's scalar leaf, which cannot
+  //       consume an object → "cannot consume scalar from value of type object".
   if (op === 'relabel' && Array.isArray(ir.args) && ir.args.length >= 1) {
+    const names = relabelAxisNames(ir.args[1]);
+    if (names && names.length > 0 && isRecordValue(value)) {
+      let cur: any = value;
+      // Single axis: hand M the scalar field directly (the scalar-leaf case).
+      // Multiple axes: peel each named field in order, recursing on M once per
+      // axis is wrong (M is one measure over the cat of axes), so instead build
+      // the label-ordered projection M expects. M consumes scalars in label
+      // order via its own walk, so feed the named heads as an ordered array;
+      // a single name degenerates to that scalar.
+      if (names.length === 1) {
+        const { head, rest } = consumeField(cur, names[0]);
+        const innerRest = walkAcc(ir.args[0], head, refArrays, N, opts, acc, baseEnv, overlay);
+        if (!isEmptyRest(innerRest)) {
+          throw new Error('density: relabel axis \'' + names[0]
+            + '\' did not fully consume its record field');
+        }
+        return rest;
+      }
+      const heads: any[] = [];
+      for (let i = 0; i < names.length; i++) {
+        const { head, rest } = consumeField(cur, names[i]);
+        heads.push(head);
+        cur = rest;
+      }
+      const innerRest = walkAcc(ir.args[0], heads, refArrays, N, opts, acc, baseEnv, overlay);
+      if (!isEmptyRest(innerRest)) {
+        throw new Error('density: relabel axes [' + names.join(', ')
+          + '] did not fully consume their record fields');
+      }
+      return cur;
+    }
     return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
   }
   const handler: any = op != null ? (OP_HANDLERS as any)[op] : null;
