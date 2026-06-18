@@ -22,6 +22,7 @@ const { processSource, findBindingAtLine, builtins,
   findEnclosingRanges, variants } = require('./lib/engine.min.js');
 const { FlatPPLPanel } = require('./src/visualPanel');
 const { createLspManager } = require('./src/lspClient');
+const { registerInferenceLens } = require('./src/inferenceLens');
 // Math fallback for the editor hover — replaces `$…$` / `$$…$$`
 // regions with CommonMark code (inline backticks / fenced
 // ```math``` blocks). See src/math.ts for the rationale: VS Code's
@@ -315,6 +316,10 @@ function activate(context: any) {
 
   lspManager = createLspManager(context.extensionPath);
   void lspManager?.start();
+
+  // Inference annotation: CodeLens-above display, off by default, toggled by
+  // flatppl.toggleInference. Registers its own provider/command/listeners.
+  registerInferenceLens(context);
 
   // Restart the server when catalogue *.ron files change, or when the
   // relevant settings change — the server reads catalogues only at
