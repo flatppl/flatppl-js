@@ -233,10 +233,7 @@
       }
     },
     "configurationDefaults": {
-      "[flatppl]": {
-        "editor.inlayHints.enabled": "off",
-        "editor.codeLensFontSize": 11
-      }
+      "[flatppl]": { "editor.inlayHints.enabled": "off" }
     }
   },
   "cspell": {
