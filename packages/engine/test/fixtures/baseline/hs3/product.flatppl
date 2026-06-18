@@ -1,0 +1,38 @@
+mu1 = elementof(reals)
+sigma1 = elementof(posreals)
+mu2 = elementof(reals)
+sigma2 = elementof(posreals)
+% HS3 product_dist (shared variate) → normalize(logweighted …): pointwise density product
+prod = normalize(logweighted(x -> logdensityof(g2, x), g1))
+g1 = Normal(mu = mu1, sigma = sigma1)
+g2 = Normal(mu = mu2, sigma = sigma2)
+nuisance_parameters = cartprod(
+  mu2 = interval(-5.0, 5.0),
+  sigma1 = interval(0.1, 10.0),
+  sigma2 = interval(0.1, 10.0),
+)
+parameters_of_interest = cartprod(mu1 = interval(-5.0, 5.0))
+default_domain = cartprod(
+  mu1 = interval(-5.0, 5.0),
+  mu2 = interval(-5.0, 5.0),
+  sigma1 = interval(0.1, 10.0),
+  sigma2 = interval(0.1, 10.0),
+  x = interval(-10.0, 10.0),
+)
+default_values = record(x = 0.0, mu1 = 0.0, sigma1 = 1.0, mu2 = 1.0, sigma2 = 2.0)
+nominal_poi = record(mu1 = 0.0)
+nominal_nuisance = record(mu2 = 1.0, sigma1 = 1.0, sigma2 = 2.0)
+ModelConfig__snapshot = record(mu1 = 0.0)
+toy = [
+  -0.028567328469794265,
+  -0.0975895992436726,
+  0.8301414329794277,
+  -0.18001364208465098,
+  0.8853988033587967,
+  -0.2791754160017632,
+  1.168603380508273,
+  2.290388749097474,
+  0.18297688463530193,
+  1.8448742587493427,
+]
+likelihood = likelihoodof(iid(prod, 10), toy)

@@ -1,0 +1,53 @@
+%%%
+# Rasch model (1PL item-response theory)
+
+The Rasch / one-parameter-logistic model for binary test responses. Each
+person $p$ has an ability $\theta_p$ and each item $i$ a difficulty $b_i$;
+the probability that person $p$ answers item $i$ correctly depends only on
+the gap between the two:
+
+$$\Pr(y_{p,i} = 1) = \operatorname{invlogit}(\theta_p - b_i).$$
+
+The data are stored in **long format** — one row per (person, item) pair —
+so the $P \times I$ response grid becomes flat index vectors plus a flat
+boolean outcome vector, which is the loop-free FlatPPL idiom (gather each
+row's ability and difficulty, then broadcast the link and the Bernoulli).
+
+Placeholder data: $P = 4$ persons (low to high ability) $\times$ $I = 5$
+items (easy to hard), $N = 20$ responses, with a little noise off the
+perfect Guttman pattern.
+
+Identifiability: $\theta_p - b_i$ is unchanged if a constant is added to
+every ability and every difficulty, so the location is fixed only softly,
+by the zero-centred priors on both.
+%%%
+
+# --- Dimensions ---
+P = 4
+I = 5
+
+# --- Data (placeholders, long format: one entry per person*item pair) ---
+# person[k] / item[k] are 1-based labels gathering each response's ability
+# and difficulty. y_data[k] is that response (true = correct).
+person = [1, 1, 1, 1, 1,  2, 2, 2, 2, 2,  3, 3, 3, 3, 3,  4, 4, 4, 4, 4]
+item   = [1, 2, 3, 4, 5,  1, 2, 3, 4, 5,  1, 2, 3, 4, 5,  1, 2, 3, 4, 5]
+y_data = [true, true, false, false, false, true, true, true, false, false, true, false, true, true, false, true, true, true, true, true]
+
+# --- Priors ---
+% Person abilities and item difficulties, both on the logit scale.
+theta ~ iid(Normal(0.0, 1.5), P)
+b     ~ iid(Normal(0.0, 1.5), I)
+
+prior = lawof(record(theta = theta, b = b))
+
+# --- Linear predictor and likelihood ---
+# Gather each response's ability and difficulty, take the gap through the
+# link, and broadcast a Bernoulli over all N responses.
+prob = invlogit.(theta[person] .- b[item])
+
+y ~ Bernoulli.(prob)
+
+# --- Posterior assembly ---
+forward_kernel = kernelof(record(y = y), theta = theta, b = b)
+L              = likelihoodof(forward_kernel, record(y = y_data))
+posterior      = bayesupdate(L, prior)

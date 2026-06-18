@@ -340,6 +340,47 @@ function bfsImplicitElementofLeavesAst(bodyAst: any, bindings: any) {
   }
 }
 
+// =====================================================================
+// C5: Broadcast-of-broadcast fusion (engine-concepts §05)
+// =====================================================================
+// Collapse `broadcast(K, outer…)` where K is a binding whose IR is
+// `functionof(broadcast(<bareDist>, p₁,…), kw)` (after peeling an
+// optional `lawof`) and each inner arg pᵢ is EXACTLY the i-th kernel
+// parameter (1:1 match, no closed-over refs).  Rewrites to
+// `broadcast(<bareDist>, outer…)` so it routes through the C2/C3
+// multi-axis kernel-broadcast executor rather than the composite path.
+//
+// Fires ONLY on the clean 1:1 case.  Any partial or closed-over
+// inner arg leaves the call untouched (composite executor handles it).
+function tryFuseBroadcastOfBroadcast(callIR: any, bindings: Map<string, any>): any {
+  if (!callIR || callIR.op !== 'broadcast') return null;
+  const head = callIR.args && callIR.args[0];
+  if (!head || head.kind !== 'ref') return null;
+  const kb = bindings.get(head.name);
+  if (!kb || !kb.ir || kb.ir.op !== 'functionof') return null;
+  let body = kb.ir.body;
+  if (body && body.op === 'lawof') body = body.args && body.args[0];
+  if (!body || body.op !== 'broadcast') return null;
+  const innerHead = body.args && body.args[0];
+  // innerHead must be a bare-distribution ref (not a user binding, not a
+  // %local-namespace placeholder — a bare distribution head is never local).
+  if (!innerHead || innerHead.kind !== 'ref' || bindings.has(innerHead.name)
+      || innerHead.ns === '%local') return null;
+  const params: any[] = kb.ir.params || [];
+  const innerArgs: any[] = body.args ? body.args.slice(1) : [];
+  // innerArgs must be exactly the params, in order, as %local refs.
+  if (innerArgs.length !== params.length || params.length === 0) return null;
+  for (let i = 0; i < params.length; i++) {
+    const a = innerArgs[i];
+    if (!a || a.kind !== 'ref' || a.name !== params[i]) return null;
+  }
+  const outerArgs = callIR.args.slice(1);
+  // broadcast(Dist) with no data axes is degenerate; don't fuse to it.
+  if (outerArgs.length === 0) return null;
+  return { kind: 'call', op: 'broadcast', loc: callIR.loc,
+    args: [innerHead, ...outerArgs] };
+}
+
 function liftInlineSubexpressions(bindings: any) {
   // Canonicalise implicit-boundary functionof / kernelof first.
   // After this, the lifted IR carries explicit ir.params, so every
@@ -532,6 +573,15 @@ function liftInlineSubexpressions(bindings: any) {
   }
   const { resolveAliasesOnBindings } = require('./alias-resolution.ts');
   resolveAliasesOnBindings(out, 'ir');
+  // C5 fusion pass: collapse broadcast(K, outer…) where K is a
+  // functionof whose body is broadcast(<bareDist>, params…) and every
+  // inner arg is exactly the matching kernel param (1:1, in order).
+  // Runs after alias-resolution so K refs are fully resolved.
+  for (const [, b] of out) {
+    if (!b || !b.ir) continue;
+    const fused = tryFuseBroadcastOfBroadcast(b.ir, out);
+    if (fused) b.ir = fused;
+  }
   // Rewrite the state half of a composite `rand` to the value-domain
   // `rand_succ` successor (engine-concepts §11). After the IR-cache
   // loop + alias-resolution, so every `b.ir` and inner-measure ref resolves.

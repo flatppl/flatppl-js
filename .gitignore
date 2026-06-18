@@ -32,3 +32,4 @@ packages/web/dist/
 # produces real per-file data). Uploaded to Codecov by the CI workflow;
 # not committed.
 packages/*/coverage/
+node_modules

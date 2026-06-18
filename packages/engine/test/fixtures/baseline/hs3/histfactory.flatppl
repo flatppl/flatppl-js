@@ -1,0 +1,36 @@
+hepphys = standard_module("particle-physics", "0.1")
+syst1 = elementof(reals)
+mu = elementof(reals)
+syst2 = elementof(reals)
+mcstat = elementof(cartpow(posreals, 2))
+syst3 = elementof(reals)
+% HS3 histfactory channel 'model_channel1': samples × modifiers → broadcast(Poisson, expected)
+obs_model_model_channel1 = Poisson.(
+  [20.0, 10.0] .* hepphys.interp_poly6_exp(0.95, 1.0, 1.05, syst1) .* mu
+  .+ [100.0, 0.0] .* hepphys.interp_poly6_exp(0.95, 1.0, 1.05, syst2) .* mcstat
+  .+ [0.0, 100.0] .* hepphys.interp_poly6_exp(0.95, 1.0, 1.05, syst3) .* mcstat,
+)
+% HS3 histfactory likelihood: main Poisson term + auxiliary constraint terms (joint_likelihood)
+L_model_channel1 = joint_likelihood(
+  likelihoodof(obs_model_model_channel1, [122.0, 112.0]),
+  likelihoodof(hepphys.ContinuedPoisson.(mcstat .* [400.0, 100.0]), [400.0, 100.0]),
+  likelihoodof(Normal(mu = syst1, sigma = 1.0), 0.0),
+  likelihoodof(Normal(mu = syst2, sigma = 1.0), 0.0),
+  likelihoodof(Normal(mu = syst3, sigma = 1.0), 0.0),
+)
+default_domain = cartprod(
+  mu = interval(0.0, 10.0),
+  syst1 = interval(-5.0, 5.0),
+  syst2 = interval(-5.0, 5.0),
+  syst3 = interval(-5.0, 5.0),
+  mcstat_0 = interval(0.0, 10.0),
+  mcstat_1 = interval(0.0, 10.0),
+)
+default_values = record(
+  mu = 1.0,
+  syst1 = 0.0,
+  syst2 = 0.0,
+  syst3 = 0.0,
+  mcstat_0 = 1.0,
+  mcstat_1 = 1.0,
+)

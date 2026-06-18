@@ -1,0 +1,51 @@
+%%%
+# Hierarchical logistic regression
+
+Per-group random intercepts $a_g$ with a shared mean $\mu_a$ and a
+group-level scale $\sigma_a$, plus a single shared slope $b$ on covariate
+$x$. For observation $i$ in group $g_i$:
+
+$$\eta_i = a_{g_i} + b\,x_i,\qquad p_i = \operatorname{invlogit}(\eta_i),\qquad y_i \sim \mathrm{Bernoulli}(p_i).$$
+
+Ported from a PyMC model. Placeholder data: $G = 3$ groups, $N = 6$
+observations.
+%%%
+
+# --- Data (placeholders) ---
+G = 3
+x_data     = [-1.2, 0.4, 1.1, -0.3, 0.8, 2.0]
+group_data = [1, 2, 3, 1, 2, 3]          # group label in 1..G for each obs
+y_data     = [0, 1, 1, 0, 1, 1]          # binary outcome for each obs
+
+# --- Priors ---
+mu_a ~ Normal(0.0, 1.0)
+
+%%%
+Group-intercept scale. PyMC specified Gamma by MEAN/SD (mu=2, sigma=1);
+FlatPPL's Gamma is shape/rate, so convert: shape = mu^2/sigma^2 = 4,
+rate = mu/sigma^2 = 2.
+%%%
+sigma_a ~ Gamma(shape = 4.0, rate = 2.0)
+
+% Per-group intercepts: G iid draws sharing mean mu_a and scale sigma_a.
+a ~ iid(Normal(mu_a, sigma_a), G)
+
+% Heavy-tailed slope prior: location-scale Student-t, nu=3, mu=0, sigma=2.5.
+b ~ locscale(StudentT(3.0), 0.0, 2.5)
+
+prior = lawof(record(mu_a = mu_a, sigma_a = sigma_a, a = a, b = b))
+
+# --- Linear predictor and likelihood ---
+%%%
+a[group_data] gathers each observation's group intercept (array-of-indices
+subset selection); broadcast the affine map and the link over observations.
+%%%
+eta = a[group_data] .+ b .* x_data
+p   = invlogit.(eta)
+
+y ~ Bernoulli.(p)
+
+# --- Posterior assembly ---
+forward_kernel = kernelof(record(y = y), mu_a = mu_a, sigma_a = sigma_a, a = a, b = b)
+L              = likelihoodof(forward_kernel, record(y = y_data))
+posterior      = bayesupdate(L, prior)

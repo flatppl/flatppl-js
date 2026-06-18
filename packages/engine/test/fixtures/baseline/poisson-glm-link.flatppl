@@ -1,0 +1,37 @@
+%%%
+# Poisson GLM with named link and predictor functions
+
+The linear predictor and the inverse log-link are written as **function
+definitions** (spec §05 "Function definition syntax") — sugar for lambdas.
+Being first-class `functionof` values, they are used in higher-order
+position: `predict` is broadcast over the covariate array with `broadcast`,
+and the inverse-link `rate` is applied elementwise via dot-call (`rate.(…)`).
+
+For each observation $i$:
+
+$$\eta_i = a + b\,x_i,\qquad \mu_i = \exp(\eta_i),\qquad y_i \sim \mathrm{Poisson}(\mu_i).$$
+%%%
+
+x_data = [-1.0, 0.2, 0.5, 1.3, 2.1]
+y_data = [0, 1, 2, 3, 8]
+
+# --- Priors on the GLM coefficients ---
+intercept ~ Normal(0.0, 1.0)
+slope     ~ Normal(0.0, 1.0)
+
+prior = lawof(record(intercept = intercept, slope = slope))
+
+# --- Named linear predictor and inverse log-link (spec §05) ---
+predict(a, b, x) = a + b * x
+rate(eta)        = exp(eta)
+
+# `predict` is a first-class function broadcast over the covariate array;
+# `rate` is applied elementwise via dot-call.
+eta = broadcast(predict, a = intercept, b = slope, x = x_data)
+mu  = rate.(eta)
+
+y ~ Poisson.(mu)
+
+forward_kernel = kernelof(record(y = y), intercept = intercept, slope = slope)
+L = likelihoodof(forward_kernel, record(y = y_data))
+posterior = bayesupdate(L, prior)
