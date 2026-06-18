@@ -1,0 +1,53 @@
+%%%
+# Hierarchical partial pooling — batting averages
+
+The classic baseball example (after Efron & Morris 1975; Gelman et al.).
+Each player $i$ has $n_i$ at-bats and $y_i$ hits, with an unknown true
+batting rate $\theta_i$. The rates are *partially pooled*: they share a
+common Beta population, so a player with few at-bats is shrunk toward the
+league mean while a player with many at-bats stays close to his raw rate.
+
+The Beta population is parameterized by its mean $\phi$ and concentration
+$\kappa$ (rather than raw $\alpha, \beta$), which is what makes pooling
+interpretable — $\phi$ is the league-wide rate, $\kappa$ controls how
+tightly individual rates cluster around it:
+
+$$\theta_i \sim \mathrm{Beta}\big(\phi\kappa,\ (1-\phi)\kappa\big),\qquad
+y_i \sim \mathrm{Binomial}(n_i,\ \theta_i).$$
+
+Placeholder data: $N = 8$ players with deliberately uneven at-bats, so the
+shrinkage differs across players.
+%%%
+
+# --- Data (placeholders) ---
+at_bats_data = [45, 45, 45, 60, 20, 100, 15, 250]
+hits_data    = [12, 15, 10, 18,  8,  29,  6,  71]
+N = 8
+
+# --- Population hyperpriors ---
+% League-wide mean batting rate, on the unit interval.
+phi ~ Uniform(interval(0.0, 1.0))
+
+%%%
+Concentration of individual rates around $\phi$. A broad Gamma (mean
+$\approx 40$): small $\kappa$ pools the players hard toward $\phi$, large
+$\kappa$ lets each $\theta_i$ follow its own data.
+%%%
+kappa ~ Gamma(2.0, 0.05)
+
+# Mean/concentration -> standard Beta shape parameters.
+alpha = phi * kappa
+beta  = (1.0 - phi) * kappa
+
+# --- Per-player rates (partially pooled) ---
+theta ~ iid(Beta(alpha, beta), N)
+
+prior = lawof(record(phi = phi, kappa = kappa, theta = theta))
+
+# --- Likelihood: hits out of at-bats, broadcast over players ---
+y ~ Binomial.(at_bats_data, theta)
+
+# --- Posterior assembly ---
+forward_kernel = kernelof(record(y = y), phi = phi, kappa = kappa, theta = theta)
+L              = likelihoodof(forward_kernel, record(y = hits_data))
+posterior      = bayesupdate(L, prior)

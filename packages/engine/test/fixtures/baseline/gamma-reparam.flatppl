@@ -1,0 +1,39 @@
+%%%
+# Multi-output function: Gamma reparameterization
+
+A named **function definition** (spec §05 "Function definition syntax")
+whose body is a record is a *multi-output* function: the record fields
+become the function's outputs.
+
+`gamma_shape_rate` converts a Gamma specified by its mean and standard
+deviation into FlatPPL's native shape/rate parameters. Because the output
+record has fields named `shape` and `rate`, it auto-splats straight into
+`Gamma(...)` — the conversion lives in one reusable place instead of inline
+arithmetic at every call site.
+
+`f(args) = expr` is exactly the lambda binding `f = (args) -> expr`, so it
+introduces no new machinery; the record body is what makes it multi-output.
+%%%
+
+y_data = [1.8, 2.3, 1.1, 2.9, 2.0]
+n = lengthof(y_data)
+
+# Mean/sd → shape/rate. The record body is the function's output type, so
+# this is a multi-output function (spec §05).
+gamma_shape_rate(mu, sd) = record(shape = mu^2 / sd^2, rate = mu / sd^2)
+
+# --- Priors ---
+mu ~ Normal(0.0, 5.0)
+
+# Observation scale, specified by mean and sd and reparameterized on the
+# fly: the result record auto-splats into Gamma's shape/rate arguments.
+sigma ~ Gamma(gamma_shape_rate(2.0, 1.0))
+
+prior = lawof(record(mu = mu, sigma = sigma))
+
+# --- Likelihood ---
+y ~ iid(Normal(mu, sigma), n)
+
+forward_kernel = kernelof(record(y = y), mu = mu, sigma = sigma)
+L = likelihoodof(forward_kernel, record(y = y_data))
+posterior = bayesupdate(L, prior)

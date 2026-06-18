@@ -1,0 +1,8 @@
+mu = elementof(reals)
+sigma = elementof(posreals)
+gauss_x = relabel(Normal(mu = mu, sigma = sigma), ["x"])
+obs_parameters_of_interest = cartprod(mu = interval(-10.0, 10.0))
+default_domain = cartprod(mu = interval(-10.0, 10.0), x = interval(-10.0, 10.0))
+default_values = record(x = 1.27, mu = 0.0, sigma = fixed(1.0))
+obs_gaussian_channel = record(x = 1.27)
+obs = likelihoodof(gauss_x, obs_gaussian_channel)
