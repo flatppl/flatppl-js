@@ -44,6 +44,44 @@ function colMean(m: any, K: any, j: any, N: any) {
   return s / N;
 }
 
+test('measure-returning lambda kernel: iid-body, positional dot-call broadcasts', async () => {
+  // `(a, b) -> iid(Beta(a, b), K)` desugars to a functionof whose body is
+  // a BARE `iid(...)` measure (no lawof wrapper) using POSITIONAL inner
+  // dist args. Broadcasting it with a POSITIONAL dot-call must classify as
+  // a kernelbroadcast and sample, not crash with "iid not evaluable" /
+  // "Beta missing parameter alpha" / "unbound %local _a_". The three gaps:
+  //   - composite recognizers peel an optional lawof (lambda vs kernelof),
+  //   - inner positional dist args map onto the dist's param names,
+  //   - positional broadcast args map onto the kernel's surface params.
+  // Oracle (Distributions.jl): group 0 ~ Beta(2,5) mean 2/7 ≈ 0.2857,
+  // group 1 ~ Beta(3,1) mean 3/4 = 0.75.
+  const N = 20000;
+  const m = await materialise(
+    'K = (a_g, b_g) -> iid(Beta(a_g, b_g), 8)\n' +
+    'q ~ K.([2.0, 3.0], [5.0, 1.0])\n', 'q', N);
+  assert.deepEqual(m.value.shape, [N, 2, 8], 'shape [N_atom, G=2, K=8]');
+  const s = m.value.data; const G = 2, K = 8;
+  const gmean = (g: number) => {
+    let sum = 0, cnt = 0;
+    for (let a = 0; a < N; a++) for (let k = 0; k < K; k++) { sum += s[a * G * K + g * K + k]; cnt++; }
+    return sum / cnt;
+  };
+  assert.ok(Math.abs(gmean(0) - 2 / 7) < 0.01, `group0 mean ${gmean(0)} ≈ 0.2857`);
+  assert.ok(Math.abs(gmean(1) - 0.75) < 0.01, `group1 mean ${gmean(1)} ≈ 0.75`);
+});
+
+test('measure-returning lambda kernel ≡ canonical kernelof form (kwarg)', async () => {
+  // The lambda form and the canonical `kernelof(iid(Normal(mu=mu, …), n),
+  // mu=mu)` form must both classify + sample — guards the lawof-peel
+  // against regressing the existing kwarg path.
+  const N = 4000;
+  const m = await materialise(
+    'mu_g ~ iid(Normal(0, 5), 3)\n' +
+    'Kf = m -> iid(Normal(m, 1), 4)\n' +
+    'q ~ Kf.(mu_g)\n', 'q', N);
+  assert.deepEqual(m.value.shape, [N, 3, 4], 'lambda kernel over a stochastic mu vector');
+});
+
 test('broadcast(Normal, means, sigmas) → [N,K] array measure', async () => {
   const N = 4000;
   const m = await materialise(
@@ -435,4 +473,80 @@ test('materialiseKernelBroadcastIR: rejects unknown distribution head', async ()
         args: [{ kind: 'ref', ns: 'self', name: 'NotADist' }] },
       ctx),
     /not a sampleable distribution/);
+});
+
+// iid OVER a stochastic kernel-broadcast — `iid(Normal.(mu, sigma), L)`.
+// The broadcast base is itself an array-valued measure (spec §04
+// "Stochastic broadcast"); iid replicates it L times (§06 `iid(M, size)`
+// = M^⊗N). Previously the iid binding went UNCLASSIFIED ("no derivation"):
+// resolveMeasureBaseName → isMeasureExpr did not recognise
+// `broadcast(Dist, …)` as a measure, so the whole `beta` draw failed to
+// lower. isMeasureExpr now treats a distribution-headed broadcast as a
+// measure. Sampling layout is [N draws, L*D]; column d pools mu[d]/sigma[d].
+test('iid(Normal.(mu, sigma), L): the broadcast base classifies + samples', async () => {
+  const N = 40000;
+  const m = await materialise(
+    `beta ~ iid(Normal.([0.5, -1.0], [1.0, 2.0]), 3)`, 'beta', N);
+  // L=3 rows × D=2 → 6 columns per draw; column parity selects predictor d.
+  assert.ok(m.samples && m.samples.length === N * 6,
+    `expected ${N * 6} atoms, got ${m.samples && m.samples.length}`);
+  // Pool every (row, draw) by predictor index d = i % 2. Oracle
+  // (Distributions.jl): d=0 ~ Normal(0.5, 1), d=1 ~ Normal(-1, 2).
+  const mean = [0, 0]; const cnt = [0, 0];
+  for (let i = 0; i < m.samples.length; i++) { const d = i % 2; mean[d] += m.samples[i]; cnt[d]++; }
+  mean[0] /= cnt[0]; mean[1] /= cnt[1];
+  const va = [0, 0];
+  for (let i = 0; i < m.samples.length; i++) { const d = i % 2; va[d] += (m.samples[i] - mean[d]) ** 2; }
+  va[0] /= cnt[0]; va[1] /= cnt[1];
+  assert.ok(Math.abs(mean[0] - 0.5) < 0.05, `col0 mean ${mean[0]} ≈ 0.5`);
+  assert.ok(Math.abs(Math.sqrt(va[0]) - 1.0) < 0.05, `col0 sd ${Math.sqrt(va[0])} ≈ 1.0`);
+  assert.ok(Math.abs(mean[1] - (-1.0)) < 0.06, `col1 mean ${mean[1]} ≈ -1.0`);
+  assert.ok(Math.abs(Math.sqrt(va[1]) - 2.0) < 0.06, `col1 sd ${Math.sqrt(va[1])} ≈ 2.0`);
+});
+
+test('iid(Normal.(mu, sigma), L): closed-form density of the nested L×D variate', async () => {
+  // The variate of `iid(broadcast(Dist), L)` is `array(L) of array(D)`
+  // (nested), so the density walk must peel one D-vector sub-value per
+  // iid copy, not flat-consume D scalars. Previously this threw
+  // "vector leaf wants 2 entries, only 1 available".
+  // INDEPENDENT ORACLE — Distributions.jl: Σ_{ℓ,d} logpdf(Normal(mu[d],
+  // sigma[d]), beta[ℓ][d]) for mu=[0.5,-1], sigma=[1,2] and the value below.
+  const ORACLE = -8.513072740907871;
+  const SRC = `ld = logdensityof(iid(Normal.([0.5, -1.0], [1.0, 2.0]), 3), `
+    + `[[0.2, -0.8], [1.1, 0.4], [-0.3, -2.0]])`;
+  const m = await materialise(SRC, 'ld', 1);
+  assert.ok(Math.abs(m.samples[0] - ORACLE) < 1e-9,
+    `iid-broadcast density ${m.samples[0]} ≈ oracle ${ORACLE} (Δ ${Math.abs(m.samples[0] - ORACLE)})`);
+});
+
+test('iid(Normal.(mu, sigma), 1) density ≡ the single un-plated broadcast row', async () => {
+  // iid(M, 1) = M, so the L=1 nested form must score identically to the
+  // bare broadcast row. Guards the peel against an off-by-one on L=1.
+  const plated = await materialise(
+    `ld = logdensityof(iid(Normal.([0.5, -1.0], [1.0, 2.0]), 1), [[0.2, -0.8]])`, 'ld', 1);
+  const bare = await materialise(
+    `ld = logdensityof(Normal.([0.5, -1.0], [1.0, 2.0]), [0.2, -0.8])`, 'ld', 1);
+  assert.ok(Math.abs(plated.samples[0] - bare.samples[0]) < 1e-12,
+    `L=1 plated ${plated.samples[0]} ≡ bare ${bare.samples[0]}`);
+});
+
+test('iid(Normal, n) scalar-leaf density is unchanged by the nested-footprint branch', async () => {
+  // Regression guard: the flat scalar-stream path must stay byte-identical.
+  // Oracle: Σ logpdf(Normal(0,1), x) for x ∈ {0.2, 1.1, -0.3} = -3.4268155996140184.
+  const ORACLE = -3.4268155996140184;
+  const m = await materialise(`ld = logdensityof(iid(Normal(0, 1), 3), [0.2, 1.1, -0.3])`, 'ld', 1);
+  assert.ok(Math.abs(m.samples[0] - ORACLE) < 1e-12,
+    `scalar iid density ${m.samples[0]} ≈ ${ORACLE}`);
+});
+
+test('iid(Normal.(mu, sigma), L) with stochastic mu/sigma materialises end-to-end', async () => {
+  // The reported repro shape: hyperpriors feed the broadcast, then iid
+  // over groups. The whole prior + bayesupdate posterior must materialise.
+  const SRC = `mu ~ iid(Normal(0, 100), 2)
+sigma ~ iid(Exponential(1), 2)
+beta ~ iid(Normal.(mu, sigma), 3)
+prior = lawof(record(mu = mu, sigma = sigma, beta = beta))`;
+  const m = await materialise(SRC, 'beta', 500);
+  assert.ok(m.samples && m.samples.length === 500 * 6,
+    `beta materialises with stochastic hyperprior params (got ${m.samples && m.samples.length})`);
 });
