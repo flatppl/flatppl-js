@@ -225,7 +225,7 @@ test('broadcast: incompatible collection lengths is an error', async () => {
     materialise('p = [1.0, 2.0, 3.0]\n' +
                 'q = [0.1, 0.2]\n' +
                 'e ~ broadcast(Normal, p, q)\n', 'e', 100),
-    /incompatible collection lengths/);
+    /incompatible collection (lengths|sizes)/);
 });
 
 // =====================================================================

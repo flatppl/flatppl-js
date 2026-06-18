@@ -1,0 +1,30 @@
+[
+  {
+    "name": "Binomial grid [2,3]",
+    "src": "n = [[20,20,20],[20,20,20]]\np = [[0.1,0.5,0.9],[0.2,0.4,0.6]]\n__score__ = logdensityof(Binomial.(n, p), [[2,10,18],[4,8,12]])\n",
+    "point": [[2,10,18],[4,8,12]],
+    "expected": -9.20063759004987,
+    "oracle": "Distributions.jl: sum(logpdf(Binomial(n[g][k],p[g][k]),r[g][k]) for g in 1:2, k in 1:3)"
+  },
+  {
+    "name": "Binomial singleton-expanded [2,1]x[2,3]",
+    "src": "n = [[20],[40]]\np = [[0.1,0.5,0.9],[0.2,0.4,0.6]]\n__score__ = logdensityof(Binomial.(n, p), [[2,10,18],[8,16,24]])\n",
+    "point": [[2,10,18],[8,16,24]],
+    "expected": -10.216275613175544,
+    "oracle": "Distributions.jl: n=[[20],[40]],p=[[0.1,0.5,0.9],[0.2,0.4,0.6]], obs=[[2,10,18],[8,16,24]]; n expands across axis 1"
+  },
+  {
+    "name": "Normal grid [2,3]",
+    "src": "mu = [[0.0,1.0,2.0],[3.0,4.0,5.0]]\n__score__ = logdensityof(Normal.(mu, 1.0), [[0.5,1.5,2.5],[3.5,4.5,5.5]])\n",
+    "point": [[0.5,1.5,2.5],[3.5,4.5,5.5]],
+    "expected": -6.263631199228035,
+    "oracle": "Distributions.jl: sum(logpdf(Normal(mu[g][k],1.0),obs[g][k]) for g in 1:2, k in 1:3)"
+  },
+  {
+    "name": "Normal rank-3 grid [2,2,2]",
+    "src": "mu = [[[0.0,1.0],[2.0,3.0]],[[4.0,5.0],[6.0,7.0]]]\n__score__ = logdensityof(Normal.(mu, 1.0), [[[0.1,1.1],[2.1,3.1]],[[4.1,5.1],[6.1,7.1]]])\n",
+    "point": [[[0.1,1.1],[2.1,3.1]],[[4.1,5.1],[6.1,7.1]]],
+    "expected": -7.391508265637383,
+    "oracle": "Distributions.jl: mu=[[[0.0,1.0],[2.0,3.0]],[[4.0,5.0],[6.0,7.0]]], obs same structure shifted +0.1; sum all 8 logpdf"
+  }
+]

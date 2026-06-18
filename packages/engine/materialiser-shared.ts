@@ -1000,6 +1000,12 @@ function elemScalarAtJ(v: any, j: number, _N: number): number {
     if (shape.length === 1) {
       return v.data[shape[0] === 1 ? 0 : j];
     }
+    // rank-≥2 atom-independent value (e.g. [G, K] or [d1, d2, …] grid):
+    // the flat row-major element at index j. Mirrors collectionAxesOf
+    // (which returns the full shape as collection axes for atom-indep vals).
+    if (shape.length >= 2) {
+      return v.data[j];
+    }
   }
   if (v && v.BYTES_PER_ELEMENT !== undefined
       && typeof v.length === 'number') {
@@ -1016,8 +1022,12 @@ function perAtomColumnAtJ(v: any, j: number, N: number): Float64Array {
     const data = v.data;
     if (valueLib.isAtomBatched(v, N) && shape.length === 1) {
       col.set(data);
-    } else if (valueLib.isAtomBatched(v, N) && shape.length === 2) {
-      const stride = shape[1];
+    } else if (valueLib.isAtomBatched(v, N) && shape.length >= 2) {
+      // [N, d1, …, dk] — atom-batched multi-axis param. Flatten trailing
+      // (collection) axes into a single per-atom stride; flat row-major
+      // cell offset `j` indexes into the trailing product.
+      let stride = 1;
+      for (let a = 1; a < shape.length; a++) stride *= shape[a];
       const off = stride === 1 ? 0 : j;
       for (let i = 0; i < N; i++) col[i] = data[i * stride + off];
     } else {
@@ -1110,6 +1120,24 @@ function perAtomColumnAtJR(
       + (typeof v) + ' at (j=' + j + ',r=' + r + ')');
   }
   return col;
+}
+
+// Broadcast (grid) axes of a resolved arg: its value shape with the leading
+// atom batch axis removed when atom-batched, [] for a scalar. Returns null for
+// a non-numeric/uninterpretable value. Arbitrary rank (spec §04 N-D grids).
+// NOTE: for a SCALAR-output distribution every non-atom axis is a grid axis.
+// Vector-PARAM dists (MvNormal mu, Dirichlet alpha) would carry a trailing
+// EVENT axis that is NOT a grid axis — out of scope for v1 (see plan Scope).
+function collectionAxesOf(v: any, N: number, usesAtom: boolean): number[] | null {
+  if (typeof v === 'number' || typeof v === 'boolean') return [];
+  let shape: number[];
+  if (valueLib.isValue(v)) shape = v.shape;
+  else if (v && v.BYTES_PER_ELEMENT !== undefined && typeof v.length === 'number') shape = [v.length];
+  else if (Array.isArray(v)) shape = [v.length];
+  else return null;
+  if (shape.length === 0) return [];
+  const atomBatched = usesAtom && valueLib.isAtomBatched(v, N);
+  return atomBatched ? shape.slice(1) : shape.slice();
 }
 
 // Classify a broadcast-arg or param Value's shape relative to atom N
@@ -1208,6 +1236,7 @@ module.exports = {
   perAtomColumnAtJ,
   elemScalarAtJR,
   perAtomColumnAtJR,
+  collectionAxesOf,
   classifyBroadcastArg,
   resolveFnBody,
 };

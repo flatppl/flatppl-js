@@ -68,6 +68,8 @@ import type { IRNode } from './engine-types';
 const samplerLib = require('./sampler.ts');
 const valueLib   = require('./value.ts');
 const densityPrims = require('./density-prims.ts');
+const bcAxes = require('./kernel-broadcast-axes.ts');
+const shared  = require('./materialiser-shared.ts');
 
 // =====================================================================
 // Shape helpers — atom-independent consume/rest splitting
@@ -210,6 +212,93 @@ function consumeVector(value: any, n: any) {
   }
   throw new Error('density: cannot consume vector from value of type '
     + (typeof value));
+}
+
+/**
+ * Recursively peel `axes.length` nesting levels off `value`, filling
+ * `cells` (Float64Array of length Ktot = ∏axes) in row-major order.
+ * Returns { cells, rest } where `rest` is the unconsumed residual
+ * (null when value is exactly the grid).
+ *
+ * Each level expects an Array or a rank-1 Value of length axes[depth].
+ * The innermost elements are scalars consumed into cells[idx].
+ */
+function flattenNestedVariate(value: any, axes: number[]): { cells: Float64Array; rest: any } {
+  const Ktot = axes.reduce((a: number, b: number) => a * b, 1);
+  const cells = new Float64Array(Ktot);
+  let idx = 0;
+
+  function peel(node: any, depth: number): any {
+    if (depth === axes.length) {
+      // leaf: consume one scalar
+      if (typeof node === 'number') {
+        cells[idx++] = node;
+        return null;
+      }
+      if (valueLib.isValue(node) && node.shape.length === 0) {
+        cells[idx++] = node.data[0];
+        return null;
+      }
+      // rank-1 Value: consume its first element as a scalar
+      if (valueLib.isValue(node) && node.shape.length === 1) {
+        cells[idx++] = node.data[0];
+        const rest = node.shape[0] > 1
+          ? { shape: [node.shape[0] - 1], data: node.data.subarray(1) }
+          : null;
+        return rest;
+      }
+      // Float64Array
+      if (node && node.BYTES_PER_ELEMENT !== undefined) {
+        cells[idx++] = node[0];
+        return node.length > 1 ? node.subarray(1) : null;
+      }
+      throw new Error('density: flattenNestedVariate: unexpected leaf type at depth '
+        + depth + ': ' + (typeof node));
+    }
+    const dim = axes[depth];
+    // Expect an Array of length >= dim at this level
+    if (Array.isArray(node)) {
+      if (node.length < dim) {
+        throw new Error('density: flattenNestedVariate: axis ' + depth
+          + ' wants dim=' + dim + ' but got Array of length ' + node.length);
+      }
+      for (let k = 0; k < dim; k++) {
+        // intermediate-depth residual is not surfaced — only the top-level rest threads out (grid shape is param-driven; the resolver rejects ragged).
+        peel(node[k], depth + 1);
+      }
+      return node.length > dim ? node.slice(dim) : null;
+    }
+    // rank-1 Value: treat as flat vector at this depth? No — if value is nested
+    // it comes in as JS arrays. But handle a rank-1 flat Value as a special case
+    // (1-D grid): forward to existing consumeVector logic.
+    if (valueLib.isValue(node) && node.shape.length === 1 && axes.length === 1) {
+      const n = axes[0];
+      if (node.shape[0] < n) {
+        throw new Error('density: flattenNestedVariate: wants ' + n
+          + ' entries, only ' + node.shape[0] + ' available');
+      }
+      for (let k = 0; k < n; k++) cells[idx++] = node.data[k];
+      const rest = node.shape[0] > n
+        ? { shape: [node.shape[0] - n], data: node.data.subarray(n) }
+        : null;
+      return rest;
+    }
+    // Float64Array flat — only valid for 1-D axes
+    if (node && node.BYTES_PER_ELEMENT !== undefined && axes.length === 1) {
+      const n = axes[0];
+      if (node.length < n) {
+        throw new Error('density: flattenNestedVariate: wants ' + n
+          + ' entries, only ' + node.length + ' available');
+      }
+      for (let k = 0; k < n; k++) cells[idx++] = node[k];
+      return node.length > n ? node.subarray(n) : null;
+    }
+    throw new Error('density: flattenNestedVariate: expected Array at depth '
+      + depth + ', got ' + (node == null ? 'null' : (typeof node)));
+  }
+
+  const rest = peel(value, 0);
+  return { cells, rest: rest === undefined ? null : rest };
 }
 
 /**
@@ -1599,15 +1688,17 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   const evalOpts = overlay ? { overlay } : undefined;
   const accessors: Array<(i: number, j: number) => number> = new Array(paramNames.length);
   const perAtomFlags: boolean[] = new Array(paramNames.length);
-  let K = 1;
+  const paramVals: any[] = new Array(paramNames.length);
+  const paramUsesAtom: boolean[] = new Array(paramNames.length);
   let anyAtomDep = false;
   for (let pi = 0; pi < paramNames.length; pi++) {
     const pIR = paramIRs[pi];
     const usesAtom = _exprUsesAny(pIR, refNames);
     perAtomFlags[pi] = usesAtom;
+    paramUsesAtom[pi] = usesAtom;
     if (usesAtom) anyAtomDep = true;
     const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
-    let intrinsicK = 1;
+    paramVals[pi] = v;
     let access: (i: number, j: number) => number;
     if (typeof v === 'number') {
       const val = +v;
@@ -1629,26 +1720,40 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
         if (usesAtom && valueLib.isAtomBatched(v, N)) {
           access = (i, _j) => data[i];
         } else {
-          intrinsicK = shape[0];
-          if (intrinsicK === 1) {
+          const K1 = shape[0];
+          if (K1 === 1) {
             const val = data[0];
             access = (_i, _j) => val;
           } else {
             access = (_i, j) => data[j];
           }
         }
-      } else if (valueLib.isAtomBatched(v, N) && shape.length === 2) {
-        intrinsicK = shape[1];
-        if (intrinsicK === 1) {
+      } else if (valueLib.isAtomBatched(v, N) && shape.length >= 2) {
+        // Atom-batched: shape = [N, d1, ..., dm]. Collection axes = shape[1..].
+        // Pi = d1 * d2 * ... * dm (flat size per atom).
+        let Pi = 1;
+        for (let k = 1; k < shape.length; k++) Pi *= shape[k];
+        if (Pi === 1) {
           access = (i, _j) => data[i];
         } else {
-          const stride = intrinsicK;
+          const stride = Pi;
           access = (i, j) => data[i * stride + j];
+        }
+      } else if (!valueLib.isAtomBatched(v, N) && shape.length >= 2) {
+        // Atom-indep multi-dim: shape = [d1, ..., dm].
+        // Pi = ∏ shape (flat size).
+        let Pi = 1;
+        for (let k = 0; k < shape.length; k++) Pi *= shape[k];
+        if (Pi === 1) {
+          const val = data[0];
+          access = (_i, _j) => val;
+        } else {
+          access = (_i, j) => data[j];
         }
       } else {
         throw new Error("density: broadcast(" + kernelName + ") parameter '"
           + paramNames[pi] + "' resolved to unsupported shape "
-          + JSON.stringify(shape) + ' (v1 supports scalar / [K] / [N] / [N, K])');
+          + JSON.stringify(shape) + ' (expected scalar / [K] / [N] / [N, K] / [d1,d2,...] / [N,d1,...])');
       }
     } else if (v && v.BYTES_PER_ELEMENT !== undefined
                 && typeof v.length === 'number') {
@@ -1656,8 +1761,8 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
       if (usesAtom && valueLib.isAtomBatched(v, N)) {
         access = (i, _j) => data[i];
       } else {
-        intrinsicK = data.length;
-        if (intrinsicK === 1) {
+        const Kv = data.length;
+        if (Kv === 1) {
           const val = data[0];
           access = (_i, _j) => val;
         } else {
@@ -1665,8 +1770,8 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
         }
       }
     } else if (Array.isArray(v)) {
-      intrinsicK = v.length;
-      if (intrinsicK === 1) {
+      const Karr = v.length;
+      if (Karr === 1) {
         const val = +v[0];
         access = (_i, _j) => val;
       } else {
@@ -1678,37 +1783,44 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
         + paramNames[pi] + "' resolved to non-numeric value (type " + (typeof v) + ')');
     }
     accessors[pi] = access;
-    if (intrinsicK > 1) {
-      if (K === 1) K = intrinsicK;
-      else if (K !== intrinsicK) {
-        throw new Error("density: broadcast(" + kernelName + ") incompatible "
-          + 'collection lengths (' + K + ' vs ' + intrinsicK + ") on parameter '"
-          + paramNames[pi] + "'");
-      }
-    }
   }
-  // Variate footprint is K scalars consumed from the head of `value`.
-  const { head, rest } = consumeVector(value, K);
+  // Build collection axes per param, resolve broadcast axes, get output axes + strides.
+  const resolved = bcAxes.resolveBroadcastAxes(
+    paramNames.map((p: string, pi: number) => ({
+      name: p,
+      collectionAxes: shared.collectionAxesOf(paramVals[pi], N, paramUsesAtom[pi]) || [],
+    })));
+  const axes: number[] = resolved.axes;
+  const Ktot: number = axes.reduce((a: number, b: number) => a * b, 1);
+
+  // Consume the nested [d1]...[dm] variate into a flat row-major scalar buffer.
+  const { cells, rest } = flattenNestedVariate(value, axes);
   const blp = densityPrims.builtinLogdensityofPositional;
   const P = paramNames.length;
   const params = new Array(P);
+
   if (!anyAtomDep) {
-    // Atom-indep parameters across the entire batch: compute the
-    // per-element sum once, fan out into acc[i].
+    // Atom-indep: compute the sum once, fan out.
     let total = 0;
-    for (let j = 0; j < K; j++) {
-      for (let pi = 0; pi < P; pi++) params[pi] = accessors[pi](0, j);
-      total += blp(kernelName, params, head[j]);
+    for (let cell = 0; cell < Ktot; cell++) {
+      const coord = bcAxes.cellToCoord(cell, axes);
+      for (let pi = 0; pi < P; pi++) {
+        params[pi] = accessors[pi](0, bcAxes.coordToOffset(coord, resolved.strides[paramNames[pi]]));
+      }
+      total += blp(kernelName, params, cells[cell]);
     }
     if (total !== 0) for (let i = 0; i < N; i++) acc[i] += total;
     return rest;
   }
-  // Per-atom × per-element loop. K is the inner axis (densest stride).
+  // Per-atom × per-cell loop.
   for (let i = 0; i < N; i++) {
     let total = 0;
-    for (let j = 0; j < K; j++) {
-      for (let pi = 0; pi < P; pi++) params[pi] = accessors[pi](i, j);
-      total += blp(kernelName, params, head[j]);
+    for (let cell = 0; cell < Ktot; cell++) {
+      const coord = bcAxes.cellToCoord(cell, axes);
+      for (let pi = 0; pi < P; pi++) {
+        params[pi] = accessors[pi](i, bcAxes.coordToOffset(coord, resolved.strides[paramNames[pi]]));
+      }
+      total += blp(kernelName, params, cells[cell]);
     }
     acc[i] += total;
   }

@@ -29,6 +29,7 @@ const axisStackMod = require('./axis-stack.ts');
 // handlers (Normal etc.) as a side effect. The dispatch helper is
 // looked up below before falling through to the general per-cell path.
 const fastPaths    = require('./kernel-broadcast-handlers.ts');
+const bcAxes       = require('./kernel-broadcast-axes.ts');
 // Loading this module registers the built-in COMPOSITE_BODY_RECOGNIZERS
 // (iid etc.) as a side effect. matKernelBroadcast dispatches into the
 // table when d.distOp resolves to a user kernel binding (i.e. not in
@@ -163,23 +164,12 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     // The shape disambiguates: per-atom vs atom-indep; scalar vs
     // length-K vector. Mirrors density.walkBroadcast's classification.
     //
-    // **axisStack (authoritative):** if the binding's IR carries a
-    // kernel-broadcast axisStack entry (`source: 'kernel_broadcast'`
-    // with a literal-integer size), that K is the TRUSTED static fact
-    // — we seed K from it and the per-param ladder below VALIDATES
-    // against it. A param with intrinsicK > 1 that disagrees is then a
-    // producer/runtime drift (engine invariant violation), reported as
-    // such rather than as a user collection-length error. When the
-    // axisStack is absent or symbolic ('%dynamic' / a binding-ref name
-    // — e.g. dynamic-D, PoissonProcess ragged), there is no static
-    // fact to trust and the ladder discovers K from the first param
-    // with intrinsicK > 1 (the runtime shape-sniff fallback).
-    const _bindingStack = axisStackMod.bindingAxisStack(name, ctx);
-    const _axisStackK = axisStackMod.outerAxisSize(_bindingStack, 'kernel_broadcast');
-    const _kFromAxisStack = !!(_axisStackK && _axisStackK > 1);
+    // Collection axes come from `collectionAxesOf` per param, aligned
+    // by `resolveBroadcastAxes` into the output axis vector + per-arg
+    // strides (see kernel-broadcast-axes.ts).
     const usesAtomBy: Record<string, boolean> = {};
     const paramVals: Record<string, any> = {};
-    let K = _kFromAxisStack ? (_axisStackK as number) : 1;
+    const collAxes: Record<string, number[]> = {};
     for (const pn of pnames) {
       const paramRefs = orchestrator.collectSelfRefs(paramIRs[pn]);
       const usesAtom = refNames.some((n) => paramRefs.has(n));
@@ -191,54 +181,23 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
         return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
       paramVals[pn] = v;
-      // Determine intrinsic K from this param (the non-batch axis).
-      let intrinsicK = 1;
-      if (typeof v === 'number' || typeof v === 'boolean') {
-        intrinsicK = 1;
-      } else if (valueLib.isValue(v)) {
-        const shape = v.shape;
-        if (shape.length === 0) intrinsicK = 1;
-        else if (shape.length === 1) {
-          // shape=[N] is atom-batched scalar (K=1) ONLY when this param
-          // references an atom-batched ref (`usesAtom`); a stand-alone
-          // length-N vector that doesn't ref any atom-batched ref is
-          // K=N (a true length-N collection arg). The canonical
-          // `value.isAtomBatched` would flag both as "shape match";
-          // here the name-based guard is the disambiguator.
-          intrinsicK = (usesAtom && valueLib.isAtomBatched(v, N)) ? 1 : shape[0];
-        } else if (valueLib.isAtomBatched(v, N) && shape.length === 2) {
-          intrinsicK = shape[1];
-        } else {
-          return Promise.reject(new Error('broadcast(' + d.distOp
-            + '): parameter \'' + pn + '\' resolved to unsupported shape '
-            + JSON.stringify(shape) + ' (v1 supports scalar / [K] / [N] / [N, K])'));
-        }
-      } else if (v && v.BYTES_PER_ELEMENT !== undefined
-                  && typeof v.length === 'number') {
-        intrinsicK = (usesAtom && valueLib.isAtomBatched(v, N)) ? 1 : v.length;
-      } else if (Array.isArray(v)) {
-        intrinsicK = v.length;
-      } else {
+      const ca = shared.collectionAxesOf(v, N, usesAtom);
+      if (ca == null) {
         return Promise.reject(new Error('broadcast(' + d.distOp
-          + '): parameter \'' + pn + '\' resolved to non-numeric value'));
+          + '): parameter \'' + pn + '\' resolved to an unsupported value shape'));
       }
-      if (intrinsicK > 1) {
-        if (K === 1) K = intrinsicK;
-        else if (K !== intrinsicK) {
-          return Promise.reject(new Error('broadcast(' + d.distOp + '): '
-            + (_kFromAxisStack
-              ? 'internal: static axisStack kernel-broadcast axis (' + K
-                + ') disagrees with runtime collection length (' + intrinsicK
-                + ') on parameter \'' + pn + '\' — producer/runtime drift'
-              : 'incompatible collection lengths (' + K + ' vs '
-                + intrinsicK + ') on parameter \'' + pn + '\'')));
-        }
-      }
+      collAxes[pn] = ca;
     }
-    if (K < 1) {
-      return Promise.reject(new Error('broadcast(' + d.distOp
-        + '): empty collection argument'));
+    let resolved: { axes: number[]; strides: Record<string, number[]> };
+    try {
+      resolved = bcAxes.resolveBroadcastAxes(
+        pnames.map((pn: string) => ({ name: pn, collectionAxes: collAxes[pn] })));
+    } catch (err) {
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
     }
+    const axes: number[] = resolved.axes;   // [] for the all-scalar / K=1 case
+    const Ktot: number = axes.reduce((a: number, b: number) => a * b, 1);
+    const K = Ktot;                         // kept for fast-path API compat below
     const anyAtomDep = pnames.some((pn) => usesAtomBy[pn]);
 
     // CLOSED-FORM FAST PATHS via the KERNEL_BROADCAST_FAST_PATHS
@@ -249,63 +208,68 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     // cell path below. See kernel-broadcast-handlers.ts for the
     // registry surface + currently-registered handlers (Normal as of
     // Phase 1.1).
-    const fastResult = fastPaths.tryKernelBroadcastFastPath({
-      d, ctx, name, K, N, paramVals, anyAtomDep,
-    });
+    //
+    // IMPORTANT: only invoke the fast-path for at most ONE broadcast
+    // axis. For 2-D+ grids (axes.length >= 2) the fast-path returns a
+    // flat [N, Ktot] measure, losing the grid structure. The general
+    // per-cell path below produces the correct [N, ...axes] shape via
+    // arrayMeasure(out, axes, null).
+    const fastResult = axes.length <= 1
+      ? fastPaths.tryKernelBroadcastFastPath({ d, ctx, name, K, N, paramVals, anyAtomDep })
+      : null;
     if (fastResult) return fastResult;
 
-    // GENERAL PATH: K worker sampleN calls, each with per-atom
-    // refArrays carrying the (i, j) value of each per-atom parameter.
-    // Atom-indep params pass as lit kwargs. Param-shape contract
-    // (scalar / [K] / [N] / [N, K]) and the per-atom column / scalar
-    // extractors live in materialiser-shared so the density side and
-    // any other per-atom materialiser path can share them. Result is a
-    // [N, K] vector-atom measure (builtin-distribution head; the
-    // iid-composite [N, K, D] case is handled by batch-flatten above).
-    const cols = new Array(K);
+    // GENERAL PATH: Ktot worker sampleN calls over the flat product of
+    // `axes` (spec §04 N-D grid). Each cell is addressed by a row-major
+    // coordinate; per-arg element reads use the strided offsets from
+    // resolveBroadcastAxes. Atom-indep params pass as lit kwargs;
+    // atom-dep params flow through perAtomRefs. Result shape [N, ...axes]
+    // (arrayMeasure builds value.shape = [N, ...axes]; axes=[] reduces to
+    // the all-scalar / K=1 degenerate path — one cell, shape [N]).
+    const cols = new Array(Ktot);
     let chain = Promise.resolve();
-    for (let j = 0; j < K; j++) {
-      const jj = j;
+    for (let cell = 0; cell < Ktot; cell++) {
+      const cc = cell;
+      const coord = bcAxes.cellToCoord(cc, axes);   // row-major over `axes`
       chain = chain.then(() => {
         const kwargs: Record<string, any> = {};
         const perAtomRefs: Record<string, any> = {};
         let safeIdx = 0;
         for (const pn of pnames) {
+          const off = bcAxes.coordToOffset(coord, resolved.strides[pn]);
           if (usesAtomBy[pn]) {
             const refName = '__bc_' + pn + '_' + (safeIdx++);
             try {
-              const col = shared.perAtomColumnAtJ(paramVals[pn], jj, N);
+              const col = shared.perAtomColumnAtJ(paramVals[pn], off, N);
               perAtomRefs[refName] = valueLib.batchedScalar(col);
             } catch (err) {
               throw err instanceof Error ? err : new Error(String(err));
             }
             kwargs[pn] = { kind: 'ref', ns: 'self', name: refName };
           } else {
-            kwargs[pn] = { kind: 'lit', value: shared.elemScalarAtJ(paramVals[pn], jj, N) };
+            kwargs[pn] = { kind: 'lit', value: shared.elemScalarAtJ(paramVals[pn], off, N) };
           }
         }
-        const distIR = { kind: 'call', op: effectiveDistOp, kwargs: kwargs };
-        const workerMsg: any = {
-          type: 'sampleN', ir: distIR, count: N,
+        const distIR = { kind: 'call', op: effectiveDistOp, kwargs };
+        return ctx.sendWorker({ type: 'sampleN', ir: distIR, count: N,
           refArrays: perAtomRefs,
-          seed: nameSeed(name + ':' + jj, ctx.rootKey),
-        };
-        return ctx.sendWorker(workerMsg).then((reply: any) => {
-          cols[jj] = reply.samples;
+          seed: nameSeed(name + ':' + cc, ctx.rootKey) }).then((reply: any) => {
+          cols[cc] = reply.samples;
         });
       });
     }
     return pushFixedEnv(ctx, fixedEnv).then(() => chain).then(() => {
-      // out shape [N, K] atom-major (builtin-distribution head).
-      const out = new Float64Array(N * K);
-      for (let j = 0; j < K; j++) {
-        const col = cols[j];
-        for (let i = 0; i < N; i++) out[i * K + j] = col[i];
+      const out = new Float64Array(N * Ktot);
+      for (let cell = 0; cell < Ktot; cell++) {
+        const col = cols[cell];
+        for (let i = 0; i < N; i++) out[i * Ktot + cell] = col[i];
       }
-      const value = { shape: [N | 0, K], data: out };
+      // arrayMeasure builds value.shape = [N, ...axes]; axes=[K] reduces to
+      // the 1-D case. When axes=[] (all-scalar / Ktot=1 degenerate) pass
+      // [1] so the dims.length>0 guard in arrayMeasure still sets .value.
       return Object.assign(
-        empirical.arrayMeasure(out, [K], null),
-        { value: value, logTotalmass: 0, n_eff: N },
+        empirical.arrayMeasure(out, axes.length === 0 ? [1] : axes, null),
+        { logTotalmass: 0, n_eff: N },
       );
     });
   });
