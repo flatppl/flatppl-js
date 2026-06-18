@@ -8,7 +8,12 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 /** Map a Node host (process.platform + process.arch) to the release target
- *  triple and executable suffix. Returns null for unsupported hosts. */
+ *  triple and executable suffix. Returns null for unsupported hosts.
+ *
+ *  INTENTIONAL DUPLICATE: `hostTripleForNode` in `../build-lsp-source.cjs`
+ *  mirrors this table. The build script needs the mapping in plain JS (no TS
+ *  transpile step), so the two are kept separate by design — change both
+ *  together if the triple set ever changes. */
 export function hostTriple(
   platform: NodeJS.Platform,
   arch: string,
