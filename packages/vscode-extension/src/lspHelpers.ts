@@ -138,3 +138,19 @@ export function makeDebounced(
     },
   };
 }
+
+/** Convert a `textDocument/inlayHint` label (the FlatPPL server emits
+ *  `": <type>"`, as a plain string or as label parts) into a CodeLens title
+ *  `"<glyph> <type>"`. Strips a single leading colon and surrounding
+ *  whitespace. Returns `''` when the type is empty so callers can skip it.
+ *  Pure (no `vscode` import) so it is unit-tested directly. */
+export function inferenceLensTitle(
+  label: string | Array<{ value: string }>,
+  glyph = '▷',
+): string {
+  const raw = typeof label === 'string'
+    ? label
+    : label.map((p) => p.value).join('');
+  const type = raw.replace(/^\s*:\s*/, '').trim();
+  return type ? `${glyph} ${type}` : '';
+}
