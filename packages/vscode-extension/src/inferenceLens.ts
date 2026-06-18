@@ -72,8 +72,20 @@ export function registerInferenceLens(context: vscode.ExtensionContext): void {
     if (e.document.languageId === 'flatppl') refresh.call();
   });
 
+  // Server analysis can settle without a subsequent keystroke (e.g. on file
+  // open): diagnostic changes signal that analysis is complete, so we refresh
+  // to pick up the now-available inlay hints.
+  const diagListener = vscode.languages.onDidChangeDiagnostics((e) => {
+    const openUris = new Set(
+      vscode.workspace.textDocuments
+        .filter((d) => d.languageId === 'flatppl')
+        .map((d) => d.uri.toString()),
+    );
+    if (e.uris.some((u) => openUris.has(u.toString()))) refresh.call();
+  });
+
   context.subscriptions.push(
-    providerReg, toggleCmd, cfgListener, docListener, emitter,
+    providerReg, toggleCmd, cfgListener, docListener, diagListener, emitter,
     { dispose: () => refresh.cancel() },
   );
 }

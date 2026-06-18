@@ -276,11 +276,11 @@ await provisionServerBinaries();
 // The two outputs are gitignored — regenerated on every build.
 
 const EXTENSION_TS_SOURCES = [
-  { in: 'extension.ts',       out: 'extension.js' },
-  { in: 'src/visualPanel.ts', out: 'src/visualPanel.js' },
+  { in: 'extension.ts',         out: 'extension.js' },
+  { in: 'src/visualPanel.ts',   out: 'src/visualPanel.js' },
   // The pure LSP helpers import only Node built-ins, so type-stripping is
   // enough (and lets the unit tests require them without a vscode stub).
-  { in: 'src/lspHelpers.ts',  out: 'src/lspHelpers.js' },
+  { in: 'src/lspHelpers.ts',    out: 'src/lspHelpers.js' },
   // Inference CodeLens feature: vscode is provided by the extension host at
   // runtime; lspHelpers is already transpiled. Type-stripping is sufficient
   // (no npm runtime deps to bundle here).
