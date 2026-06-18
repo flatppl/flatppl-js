@@ -33,7 +33,7 @@
 // cloned alongside this one. If absent (CI), we fetch the pinned ref from
 // github.com/flatppl/flatppl-grammars instead.
 
-import { readFile, writeFile, copyFile, readdir, mkdir, rm, chmod, mkdtemp } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, readdir, mkdir, rm, chmod, mkdtemp, rename } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -142,6 +142,29 @@ function run(cmd, args, opts = {}) {
   });
 }
 
+// Place a binary at `dest`, tolerating a dest that is a currently-RUNNING
+// executable. Overwriting a running binary in place fails with ETXTBSY on
+// Linux ("text file busy" — you cannot truncate a file mapped as a live
+// process's text segment), which bites every rebuild while the VS Code
+// extension has the previous flatppl-lsp spawned. rename(2) swaps only the
+// directory entry, so the running process keeps its old inode while new
+// spawns pick up the fresh binary. We therefore stage into a sibling temp
+// file (same directory ⇒ same filesystem ⇒ rename is atomic, never EXDEV)
+// and rename over dest. `source` is { file } (copy) or { buffer } (write);
+// `mkExecutable` chmods 0o755 (unix binaries).
+async function placeBinary(dest, source, mkExecutable) {
+  const tmp = `${dest}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    if (source.buffer !== undefined) await writeFile(tmp, source.buffer);
+    else await copyFile(source.file, tmp);
+    if (mkExecutable) await chmod(tmp, 0o755);
+    await rename(tmp, dest);
+  } catch (err) {
+    await rm(tmp, { force: true }).catch(() => {});
+    throw err;
+  }
+}
+
 async function hasCargo() {
   try {
     await new Promise((resolve, reject) => {
@@ -167,8 +190,7 @@ async function buildLspFromRust(rustDir, binDir, host, { locked = false } = {}) 
   await run('cargo', args, { cwd: rustDir });
   const built = join(rustDir, 'target', 'release', `flatppl-lsp${host.exe}`);
   const dest = join(binDir, `flatppl-lsp-${host.triple}${host.exe}`);
-  await copyFile(built, dest);
-  if (!host.exe) await chmod(dest, 0o755);
+  await placeBinary(dest, { file: built }, !host.exe);
   return dest;
 }
 
@@ -196,16 +218,14 @@ async function provisionServerBinaries() {
       if (names.length < 5) console.warn(`  WARNING: only ${names.length} LSP binaries in ${choice.dir}`);
       for (const name of names) {
         const dest = join(binDir, name);
-        await copyFile(join(choice.dir, name), dest);
-        if (!name.endsWith('.exe')) await chmod(dest, 0o755);
+        await placeBinary(dest, { file: join(choice.dir, name) }, !name.endsWith('.exe'));
       }
       console.log(`  staged ${names.length} flatppl-lsp binaries from ${choice.dir}`);
       break;
     }
     case 'local': {
       const dest = join(binDir, `flatppl-lsp-${host.triple}${host.exe}`);
-      await copyFile(choice.path, dest);
-      if (!host.exe) await chmod(dest, 0o755);
+      await placeBinary(dest, { file: choice.path }, !host.exe);
       console.log(`  copied prebuilt flatppl-lsp -> ${dest}`);
       break;
     }
@@ -234,8 +254,7 @@ async function provisionServerBinaries() {
       console.log(`  flatppl-lsp: no toolchain — downloading ${name} from nightly`);
       const res = await fetch(`${LSP_RELEASE_BASE}/${name}`);
       if (!res.ok) throw new Error(`download ${name}: HTTP ${res.status}`);
-      await writeFile(dest, Buffer.from(await res.arrayBuffer()));
-      if (!host.exe) await chmod(dest, 0o755);
+      await placeBinary(dest, { buffer: Buffer.from(await res.arrayBuffer()) }, !host.exe);
       console.log(`  downloaded ${name}`);
       break;
     }
