@@ -319,7 +319,22 @@ function activate(context: any) {
 
   // Inference annotation: CodeLens-above display, off by default, toggled by
   // flatppl.toggleInference. Registers its own provider/command/listeners.
-  registerInferenceLens(context);
+  // The resolver maps an inlay hint (placed at the binding's RHS end) back to
+  // the line the binding STARTS on, so a multi-line assignment's lens sits
+  // above its first line rather than above the RHS's last line. We pick the
+  // binding whose start line is the greatest one at or before the hint line
+  // (bindings are non-overlapping and ordered), using the parser already used
+  // for diagnostics/visualization.
+  registerInferenceLens(context, (document: any, position: any) => {
+    const { bindings } = getParsed(document);
+    let start: number | undefined;
+    for (const b of bindings.values()) {
+      if (b.line <= position.line && (start === undefined || b.line > start)) {
+        start = b.line;
+      }
+    }
+    return start;
+  });
 
   // Restart the server when catalogue *.ron files change, or when the
   // relevant settings change — the server reads catalogues only at

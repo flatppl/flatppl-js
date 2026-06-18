@@ -11,7 +11,21 @@ import { inferenceLensTitle, makeDebounced } from './lspHelpers';
 
 const SETTING = 'inference.show';
 
-export function registerInferenceLens(context: vscode.ExtensionContext): void {
+/** Maps an inlay-hint position (the server places the hint at the END of a
+ *  binding's RHS) to the line where that binding STARTS. For a single-line
+ *  binding the two coincide; for a multi-line RHS they differ, and the lens
+ *  must sit above the binding's first line — not above the RHS's last line.
+ *  Returns `undefined` when no binding can be resolved (lens falls back to the
+ *  hint's own line). */
+export type LensLineResolver = (
+  document: vscode.TextDocument,
+  position: vscode.Position,
+) => number | undefined;
+
+export function registerInferenceLens(
+  context: vscode.ExtensionContext,
+  resolveLensLine?: LensLineResolver,
+): void {
   const emitter = new vscode.EventEmitter<void>();
 
   const provider: vscode.CodeLensProvider = {
@@ -36,7 +50,10 @@ export function registerInferenceLens(context: vscode.ExtensionContext): void {
       for (const h of hints) {
         const title = inferenceLensTitle(h.label as string | Array<{ value: string }>);
         if (!title) continue;
-        const line = h.position.line;
+        // Place the lens above the binding's FIRST line. The hint sits at the
+        // RHS end, which for a multi-line assignment is the last line — so we
+        // resolve back to the binding's start; fall back to the hint's line.
+        const line = resolveLensLine?.(document, h.position) ?? h.position.line;
         // Empty command string => non-clickable, label-only lens. Already
         // resolved (has a command), so no resolveCodeLens pass is needed.
         lenses.push(new vscode.CodeLens(
