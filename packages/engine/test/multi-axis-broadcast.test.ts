@@ -67,6 +67,19 @@ test('collectionAxesOf: [N,d1,d2] atom-batched → [d1,d2]', () => {
   assert.deepEqual(shared.collectionAxesOf(v, N, true), [2, 4]);
 });
 
+test('collectionAxesOf: plain JS array → [length]', () => {
+  // A param can resolve to a bare JS array (not a Value); its single axis
+  // is its length.
+  assert.deepEqual(shared.collectionAxesOf([0.1, 0.2, 0.3], 99, false), [3]);
+});
+
+test('collectionAxesOf: non-numeric value (record/object) → null (unsupported)', () => {
+  // The guard that the sampler turns into "resolved to an unsupported value
+  // shape": anything that is not a scalar / Value / typed-array / Array.
+  assert.equal(shared.collectionAxesOf({ a: 1 }, 99, false), null);
+  assert.equal(shared.collectionAxesOf('nope', 99, false), null);
+});
+
 // =====================================================================
 // perAtomColumnAtJ generalization: rank-≥2 atom-batched
 // =====================================================================

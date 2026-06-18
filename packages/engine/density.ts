@@ -2493,5 +2493,5 @@ module.exports = {
   _runDensityPipeline,
   // Test/debug surface — exposes the shape helpers in case callers
   // outside the dispatch want to compose their own consumers.
-  _internal: { consumeScalar, consumeField, consumeVector, isEmptyRest, inSet },
+  _internal: { consumeScalar, consumeField, consumeVector, isEmptyRest, inSet, flattenNestedVariate },
 };
