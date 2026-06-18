@@ -146,7 +146,7 @@ export function makeDebounced(
  *  Pure (no `vscode` import) so it is unit-tested directly. */
 export function inferenceLensTitle(
   label: string | Array<{ value: string }>,
-  glyph = '▷',
+  glyph = '|',
 ): string {
   const raw = typeof label === 'string'
     ? label

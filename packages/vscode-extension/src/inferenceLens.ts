@@ -1,6 +1,6 @@
 // FlatPPL inference annotation. Renders each binding's inferred type — sourced
 // from the language server's inlay hints — as a label-only CodeLens ABOVE the
-// binding (`▷ <type>`), instead of VSCode's inline inlay-hint rendering (which
+// binding (`| <type>`), instead of VSCode's inline inlay-hint rendering (which
 // is turned off for `flatppl` via configurationDefaults in package.json).
 //
 // Off by default: gated on the `flatppl.inference.show` setting. The toggle

@@ -6,22 +6,22 @@ const assert = require('node:assert/strict');
 const { inferenceLensTitle } = require('../src/lspHelpers.js');
 
 test('string label: strips leading ": " and prefixes the glyph', () => {
-  assert.equal(inferenceLensTitle(': Real'), '▷ Real');
+  assert.equal(inferenceLensTitle(': Real'), '| Real');
 });
 
 test('label parts: joins values then strips and prefixes', () => {
   assert.equal(
     inferenceLensTitle([{ value: ': ' }, { value: 'Real' }]),
-    '▷ Real',
+    '| Real',
   );
 });
 
 test('tolerates a bare colon with no space', () => {
-  assert.equal(inferenceLensTitle(':Real'), '▷ Real');
+  assert.equal(inferenceLensTitle(':Real'), '| Real');
 });
 
 test('tolerates a label with no leading colon', () => {
-  assert.equal(inferenceLensTitle('Real'), '▷ Real');
+  assert.equal(inferenceLensTitle('Real'), '| Real');
 });
 
 test('custom glyph is honored', () => {
