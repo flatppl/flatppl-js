@@ -74,6 +74,11 @@
       {
         "command": "flatppl.deactivateEmbedded",
         "title": "FlatPPL: Deactivate Embedded Support"
+      },
+      {
+        "command": "flatppl.toggleInference",
+        "title": "FlatPPL: Toggle Inference Display",
+        "icon": "$(symbol-parameter)"
       }
     ],
     "menus": {
@@ -93,6 +98,10 @@
         {
           "command": "flatppl.deactivateEmbedded",
           "when": "flatppl.embeddedActive"
+        },
+        {
+          "command": "flatppl.toggleInference",
+          "when": "editorLangId == flatppl || ((editorLangId == python || editorLangId == julia) && flatppl.embeddedActive)"
         }
       ],
       "editor/context": [
@@ -117,6 +126,11 @@
           "command": "flatppl.visualizeModule",
           "when": "editorLangId == flatppl || ((editorLangId == python || editorLangId == julia) && flatppl.embeddedActive)",
           "group": "navigation@2"
+        },
+        {
+          "command": "flatppl.toggleInference",
+          "when": "editorLangId == flatppl || ((editorLangId == python || editorLangId == julia) && flatppl.embeddedActive)",
+          "group": "navigation@3"
         }
       ]
     },
@@ -210,8 +224,16 @@
           "type": "string",
           "default": "",
           "markdownDescription": "Absolute path to a directory of external standard-module catalogue files (`*.ron`). Every `*.ron` in this directory is read and supplied to the language server, so third-party modules' distribution signatures resolve in diagnostics, hover, and completion. Leave empty to use only the built-in catalogue. Changes restart the language server."
+        },
+        "flatppl.inference.show": {
+          "type": "boolean",
+          "default": false,
+          "markdownDescription": "Show each binding's inferred type as a CodeLens (`▷ type`) on the line above it. Off by default. Toggle with the editor-title button or the `FlatPPL: Toggle Inference Display` command.\n\n**Note:** this flag controls *display only*. When off, the language server still computes the inferred types (it just isn't shown). Disabling the inference computation itself is a separate, future server-side change."
         }
       }
+    },
+    "configurationDefaults": {
+      "[flatppl]": { "editor.inlayHints.enabled": "off" }
     }
   },
   "cspell": {
