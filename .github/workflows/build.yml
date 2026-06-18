@@ -9,21 +9,79 @@ on:
 env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
-# Only one VSIX build per ref. cancel-in-progress so a rapid run of
-# pushes to main doesn't leave two jobs racing to push the shared
-# `nightly` release tag (action-gh-release below) — the later commit
-# wins, the earlier is cancelled.
+# One VSIX build per ref; a later push to main cancels an in-flight one so two
+# jobs don't race to push the shared `nightly` release tag.
 concurrency:
   group: build-vsix-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  build:
+  # Build flatppl-lsp from flatppl-rust SOURCE (tip of main) for every target,
+  # each on its native runner (macOS/Windows can't be cross-built from Linux).
+  # Hand the binaries to the package job as artifacts — NOT via the published
+  # nightly release.
+  lsp:
+    name: lsp (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: x86_64-unknown-linux-musl, os: ubuntu-latest }
+          - { target: aarch64-unknown-linux-musl, os: ubuntu-24.04-arm }
+          - { target: x86_64-apple-darwin, os: macos-latest }
+          - { target: aarch64-apple-darwin, os: macos-latest }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    steps:
+      - name: Check out flatppl-rust (tip of main)
+        uses: actions/checkout@v6
+        with:
+          repository: flatppl/flatppl-rust
+          ref: main
+
+      - name: Install musl linker
+        if: contains(matrix.target, 'musl')
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: lsp-${{ matrix.target }}
+
+      - name: Build flatppl-lsp
+        run: cargo build --release --locked -p flatppl-lsp --target ${{ matrix.target }}
+
+      - name: Stage binary under its triple name
+        shell: bash
+        run: |
+          mkdir -p dist
+          case "${{ matrix.target }}" in
+            *windows*) cp "target/${{ matrix.target }}/release/flatppl-lsp.exe" "dist/flatppl-lsp-${{ matrix.target }}.exe" ;;
+            *)         cp "target/${{ matrix.target }}/release/flatppl-lsp"     "dist/flatppl-lsp-${{ matrix.target }}" ;;
+          esac
+
+      - name: Upload LSP binary artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: flatppl-lsp-${{ matrix.target }}
+          path: dist/flatppl-lsp-*
+
+  package:
+    name: Package universal VSIX
+    needs: lsp
     runs-on: ubuntu-latest
     permissions:
       contents: write
     env:
       GRAMMARS_DIR: ${{ github.workspace }}/.grammars
+      FLATPPL_LSP_BIN_DIR: ${{ github.workspace }}/.lsp-bin
     steps:
       - uses: actions/checkout@v6
 
@@ -34,26 +92,25 @@ jobs:
           ref: main
           path: .grammars
 
+      - name: Collect LSP binaries
+        uses: actions/download-artifact@v8
+        with:
+          path: .lsp-bin
+          pattern: flatppl-lsp-*
+          merge-multiple: true
+
       - uses: actions/setup-node@v6
         with:
           node-version: 22
           cache: npm
 
-      - run: npm install -g @vscode/vsce
-
       - name: Install workspace dev dependencies
         run: npm ci
 
-      # NOTE: engine correctness is covered by the separate `Test` workflow
-      # (test.yml). This job only needs the engine to BUNDLE, not pass tests —
-      # `build:vendor` below is the real packaging prerequisite.
-      - name: Build vendored libs + engine bundle + grammars
-        run: npm run build:vendor
-
-      - name: Package extension
-        run: |
-          cd packages/vscode-extension
-          vsce package -o ../../flatppl-vscode-extension-nightly.vsix --no-git-tag-version --no-dependencies
+      - name: Build + package universal VSIX
+        # package:vsix runs build:vendor (bundles engine/grammars + stages the
+        # five LSP binaries from FLATPPL_LSP_BIN_DIR) then `vsce package`.
+        run: npm run package:vsix --workspace=flatppl
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v7
@@ -71,7 +128,7 @@ jobs:
           files: flatppl-vscode-extension-nightly.vsix
           body: |
             Nightly build of the FlatPPL VS Code extension.
-            Built from commit ${{ github.sha }}.
+            Built from commit ${{ github.sha }}; LSP built from flatppl-rust@main.
 
             Install with:
             ```

@@ -163,17 +163,32 @@ The symlink name *must* be `flatppl.flatppl` (matching `publisher.name` from
 - After dependency changes in any `package.json`
 - After grammar changes in
   [`flatppl-grammars`](https://github.com/flatppl/flatppl-grammars)
+- After changes to the `flatppl-rust` LSP (when using a sibling checkout — the
+  binary is rebuilt from it on the next `build:vendor`)
 
 For active engine development, `npm run watch:vendor` rebuilds the engine
 bundle on save (sub-second). Reload the VS Code window after each rebuild.
 
-### Binary download
+### Where the LSP binary comes from
 
-`build-vendor.mjs` downloads per-platform `flatppl-lsp` binaries into `bin/`
-from the `flatppl-rust` nightly GitHub release. To use a local Rust build
-instead (for offline development or testing), set
-`FLATPPL_LSP_LOCAL=/path/to/flatppl-lsp`; the script copies that binary for
-the host triple rather than downloading.
+`build-vendor.mjs` provisions `flatppl-lsp` into `bin/` by precedence:
+
+1. `FLATPPL_LSP_BIN_DIR` — copy every `flatppl-lsp-*` found there (CI stages the
+   five per-target binaries this way).
+2. `FLATPPL_LSP_LOCAL=/path/to/flatppl-lsp` — use that exact prebuilt host
+   binary.
+3. A sibling `flatppl-rust` checkout (`FLATPPL_RUST_DIR`, else
+   `../../../flatppl-rust`) — `cargo build --release -p flatppl-lsp` and use the
+   host-triple result.
+4. No sibling, `cargo` on PATH — shallow-clone `flatppl-rust@main` to a temp
+   dir, build, copy the host binary into `bin/`, delete the clone.
+5. No sibling, no `cargo` — download the prebuilt host binary from the
+   flatppl-rust `nightly` release (keeps `npm install && npm run build:vendor`
+   working with no Rust toolchain).
+
+Routes 2–5 produce the host triple only. The binary is copied into `bin/`, so a
+local vsix keeps working after the sibling/clone is deleted. CI builds all five
+triples from source (one universal vsix); it never downloads from `nightly`.
 
 ### Fast grammar iteration
 

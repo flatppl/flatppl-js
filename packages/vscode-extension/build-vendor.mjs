@@ -33,11 +33,14 @@
 // cloned alongside this one. If absent (CI), we fetch the pinned ref from
 // github.com/flatppl/flatppl-grammars instead.
 
-import { readFile, writeFile, copyFile, readdir, mkdir, rm, chmod } from 'node:fs/promises';
+import { readFile, writeFile, copyFile, readdir, mkdir, rm, chmod, mkdtemp } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
+import { hostTripleForNode, chooseLspSource } from './build-lsp-source.cjs';
 
 const here     = dirname(fileURLToPath(import.meta.url));   // packages/vscode-extension/
 const repoRoot = dirname(dirname(here));                     // flatppl-js/
@@ -118,66 +121,128 @@ const viewerPkg = join(here, '..', 'viewer');
 await syncGrammars();
 
 // ---------------------------------------------------------------------
-// 2c. Fetch the per-platform flatppl-lsp binaries from the flatppl-rust
-//     rolling `nightly` release into ./bin. The extension's lspClient
-//     picks bin/flatppl-lsp-<host-triple> at activation. Set
-//     FLATPPL_LSP_LOCAL=/path/to/flatppl-lsp to use a local build for the
-//     host triple instead of downloading (offline dev).
-const LSP_TRIPLES = [
-  { triple: 'aarch64-apple-darwin',      exe: '' },
-  { triple: 'x86_64-apple-darwin',       exe: '' },
-  { triple: 'x86_64-unknown-linux-musl', exe: '' },
-  { triple: 'aarch64-unknown-linux-musl',exe: '' },
-  { triple: 'x86_64-pc-windows-msvc',    exe: '.exe' },
-];
+// 2c. Provision the flatppl-lsp binary into ./bin. Source is chosen by
+//     chooseLspSource() precedence (see build-lsp-source.cjs):
+//       FLATPPL_LSP_BIN_DIR (CI staged, all triples)
+//       FLATPPL_LSP_LOCAL   (prebuilt host binary)
+//       sibling flatppl-rust → cargo build (host triple)
+//       no sibling + cargo  → clone flatppl-rust@main, build, delete clone
+//       no sibling + no cargo → download host binary from nightly
+//     The binary is copied INTO bin/, so the vsix is self-contained: the
+//     sibling/clone can be deleted afterwards and the extension still runs.
 const LSP_RELEASE_BASE =
   'https://github.com/flatppl/flatppl-rust/releases/download/nightly';
 
-// Node host -> release triple (mirror of lspClient.hostTriple; kept local to
-// the build script to avoid importing TS).
-function hostTripleForNode(platform, arch) {
-  const exe = platform === 'win32' ? '.exe' : '';
-  if (platform === 'darwin' && arch === 'arm64') return { triple: 'aarch64-apple-darwin', exe };
-  if (platform === 'darwin' && arch === 'x64')   return { triple: 'x86_64-apple-darwin', exe };
-  if (platform === 'linux'  && arch === 'x64')   return { triple: 'x86_64-unknown-linux-musl', exe };
-  if (platform === 'linux'  && arch === 'arm64') return { triple: 'aarch64-unknown-linux-musl', exe };
-  if (platform === 'win32'  && arch === 'x64')   return { triple: 'x86_64-pc-windows-msvc', exe };
-  return null;
+function run(cmd, args, opts = {}) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, { stdio: 'inherit', ...opts });
+    p.on('error', reject);
+    p.on('exit', (code) =>
+      code === 0 ? resolve() : reject(new Error(`${cmd} ${args.join(' ')} exited ${code}`)));
+  });
 }
 
-async function downloadServerBinaries() {
+async function hasCargo() {
+  try {
+    await new Promise((resolve, reject) => {
+      const p = spawn('cargo', ['--version'], { stdio: 'ignore' });
+      p.on('error', reject);
+      p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error('cargo failed'))));
+    });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// cargo build -p flatppl-lsp inside `rustDir`, then copy the release binary to
+// bin/flatppl-lsp-<host-triple>. Throws loudly on build failure.
+//
+// `locked` adds --locked (matching CI): used for the throwaway clone of a known
+// `main` tip, where Cargo.lock should be respected exactly. A developer sibling
+// checkout builds without --locked, since it may be mid-edit with a Cargo.toml
+// change not yet reflected in Cargo.lock.
+async function buildLspFromRust(rustDir, binDir, host, { locked = false } = {}) {
+  const args = ['build', '--release', ...(locked ? ['--locked'] : []), '-p', 'flatppl-lsp'];
+  await run('cargo', args, { cwd: rustDir });
+  const built = join(rustDir, 'target', 'release', `flatppl-lsp${host.exe}`);
+  const dest = join(binDir, `flatppl-lsp-${host.triple}${host.exe}`);
+  await copyFile(built, dest);
+  if (!host.exe) await chmod(dest, 0o755);
+  return dest;
+}
+
+async function provisionServerBinaries() {
   const binDir = join(here, 'bin');
   await mkdir(binDir, { recursive: true });
 
-  const local = process.env.FLATPPL_LSP_LOCAL;
-  if (local) {
-    const h = hostTripleForNode(process.platform, process.arch);
-    if (h) {
-      const dest = join(binDir, `flatppl-lsp-${h.triple}${h.exe}`);
-      await copyFile(local, dest);
-      await chmod(dest, 0o755);
-      console.log(`  copied local flatppl-lsp -> ${dest}`);
-      return;
-    }
+  const siblingDir = process.env.FLATPPL_RUST_DIR || join(dirname(repoRoot), 'flatppl-rust');
+  const host = hostTripleForNode(process.platform, process.arch);
+  const choice = chooseLspSource({
+    binDir: process.env.FLATPPL_LSP_BIN_DIR,
+    localBin: process.env.FLATPPL_LSP_LOCAL,
+    siblingExists: existsSync(siblingDir),
+    cargoAvailable: await hasCargo(),
+  });
+
+  // Routes other than bin-dir need a known host triple.
+  if (choice.route !== 'bin-dir' && !host) {
+    throw new Error(`unsupported host ${process.platform}/${process.arch}: cannot place flatppl-lsp`);
   }
 
-  for (const { triple, exe } of LSP_TRIPLES) {
-    const name = `flatppl-lsp-${triple}${exe}`;
-    const dest = join(binDir, name);
-    try {
+  switch (choice.route) {
+    case 'bin-dir': {
+      const names = (await readdir(choice.dir)).filter((n) => n.startsWith('flatppl-lsp-'));
+      if (names.length < 5) console.warn(`  WARNING: only ${names.length} LSP binaries in ${choice.dir}`);
+      for (const name of names) {
+        const dest = join(binDir, name);
+        await copyFile(join(choice.dir, name), dest);
+        if (!name.endsWith('.exe')) await chmod(dest, 0o755);
+      }
+      console.log(`  staged ${names.length} flatppl-lsp binaries from ${choice.dir}`);
+      break;
+    }
+    case 'local': {
+      const dest = join(binDir, `flatppl-lsp-${host.triple}${host.exe}`);
+      await copyFile(choice.path, dest);
+      if (!host.exe) await chmod(dest, 0o755);
+      console.log(`  copied prebuilt flatppl-lsp -> ${dest}`);
+      break;
+    }
+    case 'sibling': {
+      console.log(`  flatppl-lsp: building from sibling ${siblingDir}`);
+      const dest = await buildLspFromRust(siblingDir, binDir, host);
+      console.log(`  built flatppl-lsp -> ${dest}`);
+      break;
+    }
+    case 'clone': {
+      const tmp = await mkdtemp(join(tmpdir(), 'flatppl-rust-'));
+      console.log(`  flatppl-lsp: cloning flatppl-rust@main into ${tmp}`);
+      try {
+        await run('git', ['clone', '--depth', '1', '--branch', 'main',
+          'https://github.com/flatppl/flatppl-rust', tmp]);
+        const dest = await buildLspFromRust(tmp, binDir, host, { locked: true });
+        console.log(`  built flatppl-lsp -> ${dest}`);
+      } finally {
+        await rm(tmp, { recursive: true, force: true });
+      }
+      break;
+    }
+    case 'download': {
+      const name = `flatppl-lsp-${host.triple}${host.exe}`;
+      const dest = join(binDir, name);
+      console.log(`  flatppl-lsp: no toolchain — downloading ${name} from nightly`);
       const res = await fetch(`${LSP_RELEASE_BASE}/${name}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const buf = Buffer.from(await res.arrayBuffer());
-      await writeFile(dest, buf);
-      if (!exe) await chmod(dest, 0o755);
+      if (!res.ok) throw new Error(`download ${name}: HTTP ${res.status}`);
+      await writeFile(dest, Buffer.from(await res.arrayBuffer()));
+      if (!host.exe) await chmod(dest, 0o755);
       console.log(`  downloaded ${name}`);
-    } catch (e) {
-      console.warn(`  WARNING: could not fetch ${name}: ${e.message}`);
+      break;
     }
   }
 }
 
-await downloadServerBinaries();
+await provisionServerBinaries();
 
 // ---------------------------------------------------------------------
 // 2b. Transpile the extension's own TypeScript sources into the CommonJS
@@ -431,8 +496,7 @@ async function fetchAndExtractGrammars(url, dstDir) {
   // patterns in member names, while bsdtar / macOS tar handles them
   // differently. Letting tar extract everything and using JS to pick the
   // wanted subdir works the same on every platform.
-  const { tmpdir } = await import('node:os');
-  const { spawn } = await import('node:child_process');
+  // (tmpdir/spawn are imported at the top of this module.)
 
   const res = await fetch(url, { redirect: 'follow' });
   if (!res.ok) {

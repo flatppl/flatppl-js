@@ -174,12 +174,21 @@ These are the things that catch out first-time contributors. Read each one.
   an alias for `npm run --workspace=packages/vscode-extension build:vendor`).
   Don't assume the user is testing one host — rebuild all.
 
-  **Binary download (`build-vendor.mjs`).** As part of `build:vendor`,
-  `packages/vscode-extension/build-vendor.mjs` downloads per-platform
-  `flatppl-lsp` binaries from the `flatppl-rust` nightly GitHub release into
-  `packages/vscode-extension/bin/`. For offline development or to test a local
-  Rust build, set `FLATPPL_LSP_LOCAL=/path/to/flatppl-lsp`; the script then
-  copies that binary for the host triple instead of downloading.
+  **LSP provisioning (`build-vendor.mjs`).** As part of `build:vendor`,
+  `packages/vscode-extension/build-vendor.mjs` puts a `flatppl-lsp` binary into
+  `packages/vscode-extension/bin/`, choosing a source by precedence (decision
+  logic in the pure module `build-lsp-source.cjs`): (1) `FLATPPL_LSP_BIN_DIR` —
+  copy every `flatppl-lsp-*` found there (CI stages the five per-target binaries
+  this way); (2) `FLATPPL_LSP_LOCAL=/path/to/flatppl-lsp` — copy that prebuilt
+  host binary; (3) a sibling `flatppl-rust` checkout (`FLATPPL_RUST_DIR`, else
+  `../../../flatppl-rust`) — `cargo build --release -p flatppl-lsp`; (4) no
+  sibling but `cargo` on PATH — shallow-clone `flatppl-rust@main` to a temp dir,
+  build, copy the host binary, delete the clone; (5) no sibling, no `cargo` —
+  download the host binary from the `flatppl-rust` nightly release. Routes 2–5
+  produce the host triple only; CI (route 1) bundles all five into one universal
+  vsix. The binary is copied *into* `bin/`, so the vsix is self-contained — the
+  sibling/clone may be deleted afterward. A real cargo failure on routes 3/4
+  errors loudly; it never silently falls back to a download.
 
 - **Webview escape traps in `vscode-extension/src/visualPanel.ts`.** The
   webview HTML lives inside the outer template literal returned by
