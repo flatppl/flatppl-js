@@ -944,6 +944,42 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
     }
   }
   if (total < 0) throw new Error('density: iid size negative: ' + total);
+  // Two value shapes reach an iid plate (spec §06 `iid(M, size)` =
+  // M^⊗N over arrays of M's footprint):
+  //
+  //   (a) M's footprint is a SCALAR (the common `iid(Normal, n)`): the
+  //       value is a flat scalar stream and each copy consumes one
+  //       entry from its head, threading `rest` — the historical path.
+  //
+  //   (b) M's footprint is itself a VECTOR/array (e.g.
+  //       `iid(Normal.(mu, sigma), L)` — a stochastic kernel-broadcast,
+  //       or `iid(MvNormal(…), L)`): the variate type is `array(L) of
+  //       array(D)` (per the type checker), so the value is a NESTED
+  //       collection of L sub-values. A flat head-consume would slice L
+  //       sub-rows where the base wants D scalars from ONE row, so peel
+  //       exactly one sub-value per copy and require the base to consume
+  //       it fully. (The scalar path's element is a number, which the
+  //       base leaf consumes whole — so this branch is correct there too,
+  //       but we keep the rest-threading path for it untouched to avoid
+  //       disturbing the many flat-iid callers.)
+  const nestedFootprint = Array.isArray(value) && value.length > 0
+    && value.every((el: any) =>
+      Array.isArray(el) || valueLib.isValue(el)
+      || (el && el.BYTES_PER_ELEMENT && typeof el.length === 'number'));
+  if (nestedFootprint) {
+    if (value.length < total) {
+      throw new Error('density: iid wants ' + total + ' sub-values, only '
+        + value.length + ' available');
+    }
+    for (let i = 0; i < total; i++) {
+      const innerRest = walkAcc(args[0], value[i], refArrays, N, opts, acc, baseEnv, overlay);
+      if (!isEmptyRest(innerRest)) {
+        throw new Error('density: iid element ' + i
+          + ' did not fully consume its sub-value');
+      }
+    }
+    return value.length === total ? null : value.slice(total);
+  }
   let cur = value;
   for (let i = 0; i < total; i++) {
     cur = walkAcc(args[0], cur, refArrays, N, opts, acc, baseEnv, overlay);

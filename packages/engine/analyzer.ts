@@ -1,6 +1,6 @@
 'use strict';
 
-const { isKnownName, MEASURE_PRODUCING } = require('./builtins.ts');
+const { isKnownName, MEASURE_PRODUCING, DISTRIBUTIONS } = require('./builtins.ts');
 const AST = require('./ast.ts');
 // Lazy require to avoid a circular load (disintegrate requires analyzer).
 let _disintegratePlan: ((...a: any[]) => any) | null = null;
@@ -45,6 +45,23 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
       const name = node.callee.name;
       if (name === 'lawof') return true;
       if (MEASURE_PRODUCING.has(name)) return true;
+      // `broadcast` is dual (spec §04 "Stochastic broadcast"):
+      // `broadcast(f, …)` over a value function is an array VALUE, but
+      // `broadcast(K, …)` over a distribution/kernel is an array-valued
+      // MEASURE — the independent product of the kernel applications.
+      // It is therefore measure-producing iff the kernel arg (args[0])
+      // is a distribution constructor or itself a measure-typed
+      // expression (mirrors classifyKernelBroadcast). Without this an
+      // `iid(Normal.(mu, sigma), L)` base fails resolveMeasureBaseName
+      // and the whole iid binding goes unclassified.
+      if (name === 'broadcast' && Array.isArray(node.args) && node.args.length >= 1) {
+        const k = node.args[0];
+        if (k && k.type === 'Identifier'
+            && DISTRIBUTIONS.has(k.name) && !bindings.has(k.name)) {
+          return true;
+        }
+        return isMeasureExpr(k, bindings, seen);
+      }
       // `record(field = expr, ...)` with every field value resolving
       // to a draw / lawof / measure-typed call is a record-measure —
       // matches the engine's `classifyRecordOrJoint` derivation

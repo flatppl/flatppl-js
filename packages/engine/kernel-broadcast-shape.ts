@@ -82,6 +82,25 @@ interface IidKernelDescriptor {
  * KernelBroadcast`'s sub-helper and `mat-broadcast._detectIid-
  * KernelBody` delegate here.
  */
+
+// A user kernel's measure body reaches the composite recognizers in
+// two equivalent shapes (spec §04: `kernelof(M, kw) ≡ functionof(lawof(M),
+// kw)`):
+//   - `functionof(lawof(M), kw)` — the canonical `kernelof` lowering.
+//   - `functionof(M, kw)`        — a measure-returning lambda/fn (e.g.
+//     `(a, b) -> iid(Beta(a, b), N)`), whose body desugars to the BARE
+//     measure M with no `lawof` wrapper.
+// Both denote the same kernel, so peel an optional leading `lawof` and
+// let each recogniser assert the composite op (iid / joint / …) on the
+// result. Without this, lambda-form kernels miss every recogniser, fall
+// through to a value `evaluate`, and crash on the measure op in the
+// sampler ("call op 'iid' not evaluable in sampler context").
+function _peelKernelBody(body: any): any {
+  if (!body || body.kind !== 'call') return null;
+  if (body.op === 'lawof') return (body.args && body.args[0]) || null;
+  return body;
+}
+
 function detectIidKernelBinding(
   name: string, bindings: any, fixedValues?: any,
 ): IidKernelDescriptor | null {
@@ -95,8 +114,7 @@ function detectIidKernelBinding(
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
   const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = _peelKernelBody(body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'iid') return null;
   const iidArgs = innerMeasure.args || [];
@@ -168,13 +186,29 @@ function detectIidKernelBinding(
   } catch (_) {
     // sampler not loadable — fall through with distParams empty.
   }
+  // Normalise the inner dist's arguments to a kwargs map keyed by the
+  // builtin's parameter names. A measure-returning lambda writes the
+  // inner dist POSITIONALLY (`Beta(a_g, b_g)` → positional args), whereas
+  // the canonical kernelof/lift form carries kwargs (`Beta(alpha = …,
+  // beta = …)`). The composite executor consumes `distKwargs` by param
+  // name, so map any positional args onto `distParams` in order (kwargs
+  // win on overlap). When the sampler REGISTRY wasn't loaded (classify-
+  // time yes/no only), `distParams` is empty and positional args can't
+  // be named yet — harmless, since that caller ignores `distKwargs`.
+  const distKwargs: Record<string, any> = Object.assign({}, distCall.kwargs || {});
+  const posArgs = Array.isArray(distCall.args) ? distCall.args : [];
+  for (let i = 0; i < posArgs.length && i < distParams.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(distKwargs, distParams[i])) {
+      distKwargs[distParams[i]] = posArgs[i];
+    }
+  }
   return {
     binding: b,
     params,
     paramKwargs,
     distOp: distCall.op,
     distParams,
-    distKwargs: distCall.kwargs || {},
+    distKwargs,
     n: nLit,
   };
 }
@@ -286,8 +320,7 @@ function detectJointKernelBinding(
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
   const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = _peelKernelBody(body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'joint') return null;
 
@@ -558,8 +591,7 @@ function detectJointChainKernelBinding(
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
   const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = _peelKernelBody(body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'jointchain') return null;
   // MVP: positional layout only. Keyword (record-typed variate) defers.
@@ -762,8 +794,7 @@ function detectNestedBroadcastKernelBinding(
   const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
     ? ir.paramKwargs : params;
   const body = ir.body;
-  if (!body || body.kind !== 'call' || body.op !== 'lawof') return null;
-  const innerMeasure = body.args && body.args[0];
+  const innerMeasure = _peelKernelBody(body);
   if (!innerMeasure || innerMeasure.kind !== 'call'
       || innerMeasure.op !== 'broadcast') return null;
 

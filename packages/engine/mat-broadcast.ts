@@ -520,6 +520,21 @@ function _executeIidCompositeBatchFlatten(
   const D = compositeBody.n;          // inner iid axis size
   const distOp = compositeBody.distOp;
 
+  // Effective broadcast kwargs: a dot-call `K.(a, b)` passes its args
+  // POSITIONALLY (`d.argIRs`), whereas the kwarg form `K.(a_g = a, b_g =
+  // b)` fills `d.kwargIRs`. The substitution + layout below key off the
+  // kernel's surface param names, so map any positional args onto
+  // `paramKwargs` in order (kwargs win on overlap).
+  const effBcKwargs: Record<string, any> = Object.assign({}, d.kwargIRs || {});
+  if (Array.isArray(d.argIRs)) {
+    const _pk: string[] = compositeBody.paramKwargs || [];
+    for (let i = 0; i < d.argIRs.length && i < _pk.length; i++) {
+      if (!Object.prototype.hasOwnProperty.call(effBcKwargs, _pk[i])) {
+        effBcKwargs[_pk[i]] = d.argIRs[i];
+      }
+    }
+  }
+
   // Surface every free name (broadcast args + closed-over self-refs) to
   // prepareDensityRefs in one pass via the body kwargs with kernel
   // formals substituted to the broadcast args.
@@ -527,7 +542,7 @@ function _executeIidCompositeBatchFlatten(
   for (const pn of Object.keys(compositeBody.distKwargs)) {
     subBodyKwargs[pn] = _substituteKernelParams(
       compositeBody.distKwargs[pn], compositeBody.params,
-      compositeBody.paramKwargs, d.kwargIRs || {});
+      compositeBody.paramKwargs, effBcKwargs);
   }
   const aggregateIR: any = {
     kind: 'call', op: 'broadcast',
@@ -552,8 +567,8 @@ function _executeIidCompositeBatchFlatten(
     // Evaluate + classify each broadcast arg over the atom batch.
     const argVals: Record<string, any> = {};
     const argCls: Record<string, any> = {};
-    for (const argName of Object.keys(d.kwargIRs || {})) {
-      const argIR = d.kwargIRs[argName];
+    for (const argName of Object.keys(effBcKwargs)) {
+      const argIR = effBcKwargs[argName];
       const argRefs = orchestrator.collectSelfRefs(argIR);
       const usesAtom = refNames.some((n) => argRefs.has(n));
       let v: any;
@@ -599,7 +614,7 @@ function _executeIidCompositeBatchFlatten(
     const axes = [K, D];                // parallel axes: cell K, inner-iid D
     const flatRefs: Record<string, any> = {};
     const bcKwargs: Record<string, any> = {};
-    for (const argName of Object.keys(d.kwargIRs || {})) {
+    for (const argName of Object.keys(effBcKwargs)) {
       const flatName = '__bf_' + argName;
       const sp = _spanOf(argCls[argName], 2, 0, 1);
       flatRefs[flatName] = valueLib.batchedScalar(
