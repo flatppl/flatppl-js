@@ -20,8 +20,9 @@ build-vendor.mjs
 tsconfig.json
 types/
 
-# Build/CI helper: imported only by build-vendor.mjs + tests, never at runtime.
+# Build/CI helpers: imported only by build-vendor.mjs + tests, never at runtime.
 build-lsp-source.cjs
+build-stdlib-stub.cjs
 
 # Test suites + grammar test harness: run via `node --test`/CI, not by VSCode.
 test/

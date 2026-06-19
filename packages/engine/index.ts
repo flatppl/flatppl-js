@@ -27,12 +27,12 @@ const pirSexpr = require('./pir-sexpr.ts');
 const standardModules = require('./standard-modules.ts');
 const dataload = require('./dataload.ts');
 const perfConfig = require('./perf-config.ts');
-// NOTE: ./sampler and ./worker are NOT re-exported here. They pull in
-// stdlib's distribution packages (~1 MB after bundling) and are intended
-// for the sampler-worker bundle only. Main-thread / extension-host code
-// that needs to drive sampling should send messages to the worker over
-// its postMessage protocol — see engine/worker.js for the protocol and
-// vscode-extension/lib/sampler-worker.min.js for the bundled worker.
+// NOTE: ./sampler and ./worker are NOT re-exported here. The main-thread
+// engine bundle (lib/engine.min.js) is kept small by stubbing @stdlib at
+// build time via build-vendor.mjs + build-stdlib-stub.cjs; the sampler-
+// worker bundle (lib/sampler-worker.min.js) carries the real numerics.
+// Main-thread code that needs sampling must route through the worker's
+// postMessage protocol — see engine/worker.ts for the protocol.
 
 /**
  * Parse and analyze a FlatPPL source text in one call.
