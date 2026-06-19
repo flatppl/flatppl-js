@@ -81,7 +81,6 @@ const COPY_LIBS = [
   { pkg: 'cytoscape-dagre',      src: 'cytoscape-dagre/dist/cytoscape-dagre.js',  dst: 'cytoscape-dagre.js' },
   { pkg: 'cytoscape-bubblesets', src: 'cytoscape-bubblesets/build/index.umd.min.js', dst: 'cytoscape-bubblesets.min.js' },
   { pkg: 'cytoscape-layers',     src: 'cytoscape-layers/build/index.umd.min.js',  dst: 'cytoscape-layers.min.js' },
-  { pkg: 'echarts',              src: 'echarts/dist/echarts.min.js',              dst: 'echarts.min.js' },
   // Temml: MathML styling + the (small, optional) script-capital
   // font. Loaded by the webview from a `<link>` tag in
   // src/visualPanel.ts so the DAG hover-tooltip's Temml-emitted
@@ -375,6 +374,20 @@ const samplerWorkerBuildOpts = {
   legalComments: 'inline',
 };
 
+// Custom echarts build (replaces the full-UMD copy) — see echarts-entry.mjs.
+// Tree-shaken IIFE with only the chart types + components the viewer uses;
+// globalName 'echarts' so the webview's <script> load is unchanged.
+const echartsCustomBuildOpts = {
+  entryPoints: [join(here, 'echarts-entry.mjs')],
+  outfile: join(libDir, 'echarts.min.js'),
+  bundle: true,
+  minify: true,
+  format: 'iife',
+  globalName: 'echarts',
+  platform: 'browser',
+  target: ['es2020'],
+};
+
 // Math pre-renderer used by the extension's hover provider. Bundles
 // Temml (LaTeX → MathML) into a Node-loadable CommonJS artifact so
 // extension.ts can `require('./lib/math.cjs')` without depending on
@@ -415,20 +428,24 @@ if (WATCH) {
   // Watch mode: rebuild both bundles on every change under packages/engine/.
   // The process keeps running until killed (Ctrl+C). Reload the VS Code
   // window after a rebuild to pick up the new bundles in the webview.
-  const engineCtx = await esbuild.context(engineBuildOpts);
-  const workerCtx = await esbuild.context(samplerWorkerBuildOpts);
-  const viewerCtx = await esbuild.context(viewerBuildOpts);
-  const mathCtx   = await esbuild.context(mathBuildOpts);
-  const lspCtx    = await esbuild.context(lspClientBuildOpts);
+  const engineCtx  = await esbuild.context(engineBuildOpts);
+  const workerCtx  = await esbuild.context(samplerWorkerBuildOpts);
+  const viewerCtx  = await esbuild.context(viewerBuildOpts);
+  const mathCtx    = await esbuild.context(mathBuildOpts);
+  const lspCtx     = await esbuild.context(lspClientBuildOpts);
+  const echartsCtx = await esbuild.context(echartsCustomBuildOpts);
   await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(),
-                     viewerCtx.rebuild(), mathCtx.rebuild(), lspCtx.rebuild()]);
+                     viewerCtx.rebuild(), mathCtx.rebuild(), lspCtx.rebuild(),
+                     echartsCtx.rebuild()]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
   console.log('  bundled math          -> lib/math.cjs');
   console.log('  bundled lsp-client    -> src/lspClient.js');
+  console.log('  bundled echarts       -> lib/echarts.min.js');
   await Promise.all([engineCtx.watch(), workerCtx.watch(),
-                     viewerCtx.watch(), mathCtx.watch(), lspCtx.watch()]);
+                     viewerCtx.watch(), mathCtx.watch(), lspCtx.watch(),
+                     echartsCtx.watch()]);
   console.log('  watching packages/engine/ + packages/viewer/ for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
@@ -437,12 +454,14 @@ if (WATCH) {
     esbuild.build(viewerBuildOpts),
     esbuild.build(mathBuildOpts),
     esbuild.build(lspClientBuildOpts),
+    esbuild.build(echartsCustomBuildOpts),
   ]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
   console.log('  bundled math          -> lib/math.cjs');
   console.log('  bundled lsp-client    -> src/lspClient.js');
+  console.log('  bundled echarts       -> lib/echarts.min.js');
 }
 
 // ---------------------------------------------------------------------
@@ -453,6 +472,8 @@ if (WATCH) {
 //    will pick it up); .gitignored, regenerated on every build.
 
 const bundledNames = new Set(COPY_LIBS.map(c => c.pkg));
+// echarts is now bundled via esbuild (not copied), so add it explicitly.
+bundledNames.add('echarts');
 
 let out = '# Third-Party Licenses\n\n';
 out += 'This extension bundles the following third-party libraries into the\n';
