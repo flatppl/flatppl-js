@@ -28,7 +28,7 @@ This monorepo contains:
 The monorepo is an npm workspace; root-level scripts fan out to every
 package via `--workspaces --if-present`.
 
-**Prerequisites:** Node.js + npm, and a **Rust toolchain (`cargo`)** — the
+**Prerequisites:** Node.js + `npm`, and a Rust toolchain (`cargo`) — the
 build compiles the native `flatppl-lsp` (and, when convert is enabled, the
 `flatppl-wasm-api` wasm) from source; there is no prebuilt-binary download
 fallback. `cargo` builds the gallery's optional convert artifact too, which
