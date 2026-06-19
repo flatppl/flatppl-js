@@ -817,8 +817,9 @@
   }
 
   /** Ingest a list of files (from an `<input type="file">` change
-   *  or a drag-drop on the file tree) into the user store. Only
-   *  `.flatppl` files are accepted; everything else is silently
+   *  or a drag-drop on the file tree) into the user store. Files whose
+   *  type the gallery has a surface for (Phase 1: `.flatppl` + `.md`,
+   *  per surfaces.typeForPath) are accepted; everything else is silently
    *  skipped with a single combined toast at the end. A 1 MB
    *  per-file size cap protects localStorage's ~5 MB total quota.
    *  Collision-avoidance is delegated to userStore.pathForUpload
@@ -835,7 +836,12 @@
     let oversized = 0;
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
-      if (!f || !f.name.endsWith('.flatppl')) { skipped += 1; continue; }
+      if (!f) { skipped += 1; continue; }
+      // Accept any file the gallery has a surface for. Single source of
+      // truth is surfaces.typeForPath ('unknown' = no surface registered),
+      // so upload acceptance tracks the surface registry automatically as
+      // new types are added — no separate extension list to keep in sync.
+      if (window.FlatPPLWebSurfaces.typeForPath(f.name) === 'unknown') { skipped += 1; continue; }
       if (f.size > 1024 * 1024) { oversized += 1; continue; }
       try {
         // File.text() is widely supported (Chrome ≥ 76, Firefox ≥ 69,
@@ -853,7 +859,7 @@
     }
     const notes: string[] = [];
     if (accepted.length > 0) notes.push('Uploaded ' + accepted.length + ' file' + (accepted.length > 1 ? 's' : ''));
-    if (skipped > 0)         notes.push('skipped ' + skipped + ' non-.flatppl');
+    if (skipped > 0)         notes.push('skipped ' + skipped + ' unsupported');
     if (oversized > 0)       notes.push('skipped ' + oversized + ' over 1 MB');
     if (notes.length > 0) showToast(notes.join('; ') + '.');
     if (accepted.length > 0) {
@@ -869,7 +875,7 @@
   function onUploadClick() {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.flatppl';
+    input.accept = '.flatppl,.md,.markdown';
     input.multiple = true;
     input.style.display = 'none';
     document.body.appendChild(input);
