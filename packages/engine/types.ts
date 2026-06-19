@@ -907,7 +907,11 @@ const SIGNATURE_FACTORIES = {
   mul:    () => arith2(),
   div:    () => ({ args: [INTEGER, INTEGER], kwargs: {}, result: INTEGER }),  // spec §07: ⌊a/b⌋, integer
   divide: () => ({ args: [REAL, REAL], kwargs: {}, result: REAL }),
-  mod:    () => arith2(),
+  // mod(a, b) = a − b·⌊a/b⌋, spec §07: domain `integers`, `b ≠ 0`, result
+  // integer (floor-modulo, NOT JS `%` truncated remainder). Mirrors `div`
+  // above; the prior `arith2()` typed it `(real, real) → real`, disagreeing
+  // with the spec's integer domain.
+  mod:    () => ({ args: [INTEGER, INTEGER], kwargs: {}, result: INTEGER }),
   pow:    () => arith2(),
   neg:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
   pos:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
