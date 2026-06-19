@@ -50,7 +50,6 @@ const COPY_LIBS = [
   { pkg: 'cytoscape-dagre',      src: 'cytoscape-dagre/dist/cytoscape-dagre.js',     dst: 'cytoscape-dagre.js' },
   { pkg: 'cytoscape-bubblesets', src: 'cytoscape-bubblesets/build/index.umd.min.js', dst: 'cytoscape-bubblesets.min.js' },
   { pkg: 'cytoscape-layers',     src: 'cytoscape-layers/build/index.umd.min.js',     dst: 'cytoscape-layers.min.js' },
-  { pkg: 'echarts',              src: 'echarts/dist/echarts.min.js',                 dst: 'echarts.min.js' },
 ];
 
 for (const { pkg, src, dst } of COPY_LIBS) {
@@ -72,6 +71,20 @@ for (const { pkg, src, dst } of COPY_LIBS) {
 //    via <script src="vendor/viewer.js"> (no module-loader needed). The
 //    embed page loads it alongside the other vendored bundles. Engine
 //    and sampler-worker mirror the vscode-extension's bundling config.
+
+// Custom echarts build (replaces the full-UMD copy).
+// Single-sources the entry from packages/vscode-extension/echarts-entry.mjs
+// so the chart/component registration list is maintained in one place.
+const echartsCustomBuildOpts = {
+  entryPoints: [join(repoRoot, 'packages', 'vscode-extension', 'echarts-entry.mjs')],
+  outfile: join(vendorDir, 'echarts.min.js'),
+  bundle: true,
+  minify: true,
+  format: 'iife',
+  globalName: 'echarts',
+  platform: 'browser',
+  target: ['es2020'],
+};
 
 const engineBuildOpts = {
   entryPoints: [join(enginePkg, 'index.ts')],
@@ -118,22 +131,28 @@ const viewerBuildOpts = {
 };
 
 if (WATCH) {
-  const engineCtx = await esbuild.context(engineBuildOpts);
-  const workerCtx = await esbuild.context(samplerWorkerBuildOpts);
-  const viewerCtx = await esbuild.context(viewerBuildOpts);
-  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(), viewerCtx.rebuild()]);
+  const engineCtx  = await esbuild.context(engineBuildOpts);
+  const workerCtx  = await esbuild.context(samplerWorkerBuildOpts);
+  const viewerCtx  = await esbuild.context(viewerBuildOpts);
+  const echartsCtx = await esbuild.context(echartsCustomBuildOpts);
+  await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(), viewerCtx.rebuild(),
+                     echartsCtx.rebuild()]);
   console.log('  bundled engine        -> vendor/engine.min.js');
   console.log('  bundled sampler-worker -> vendor/sampler-worker.min.js');
   console.log('  bundled viewer        -> vendor/viewer.js');
-  await Promise.all([engineCtx.watch(), workerCtx.watch(), viewerCtx.watch()]);
+  console.log('  bundled echarts       -> vendor/echarts.min.js');
+  await Promise.all([engineCtx.watch(), workerCtx.watch(), viewerCtx.watch(),
+                     echartsCtx.watch()]);
   console.log('  watching packages/engine/ and packages/viewer/src/ for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
     esbuild.build(engineBuildOpts),
     esbuild.build(samplerWorkerBuildOpts),
     esbuild.build(viewerBuildOpts),
+    esbuild.build(echartsCustomBuildOpts),
   ]);
   console.log('  bundled engine        -> vendor/engine.min.js');
   console.log('  bundled sampler-worker -> vendor/sampler-worker.min.js');
   console.log('  bundled viewer        -> vendor/viewer.js');
+  console.log('  bundled echarts       -> vendor/echarts.min.js');
 }

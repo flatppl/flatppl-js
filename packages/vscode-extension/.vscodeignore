@@ -12,6 +12,7 @@ package-lock.json
 
 # Build inputs — only build outputs (lib/* and grammars/*) ship in the vsix.
 build-vendor.mjs
+echarts-entry.mjs
 
 # --- non-runtime sources & build inputs (compiled outputs ship instead) ---
 # TypeScript sources/config: compiled into extension.js, src/*.js, lib/math.cjs.
