@@ -186,9 +186,12 @@ async function hasCargo() {
 // checkout builds without --locked, since it may be mid-edit with a Cargo.toml
 // change not yet reflected in Cargo.lock.
 async function buildLspFromRust(rustDir, binDir, host, { locked = false } = {}) {
-  const args = ['build', '--release', ...(locked ? ['--locked'] : []), '-p', 'flatppl-lsp'];
+  // Build the SHIPPED binary with the size-optimized profile (see flatppl-rust
+  // Cargo.toml [profile.release-size]); the binary then lands under
+  // target/release-size/ instead of target/release/.
+  const args = ['build', '--profile', 'release-size', ...(locked ? ['--locked'] : []), '-p', 'flatppl-lsp'];
   await run('cargo', args, { cwd: rustDir });
-  const built = join(rustDir, 'target', 'release', `flatppl-lsp${host.exe}`);
+  const built = join(rustDir, 'target', 'release-size', `flatppl-lsp${host.exe}`);
   const dest = join(binDir, `flatppl-lsp-${host.triple}${host.exe}`);
   await placeBinary(dest, { file: built }, !host.exe);
   return dest;
@@ -215,7 +218,7 @@ async function provisionServerBinaries() {
   switch (choice.route) {
     case 'bin-dir': {
       const names = (await readdir(choice.dir)).filter((n) => n.startsWith('flatppl-lsp-'));
-      if (names.length < 5) console.warn(`  WARNING: only ${names.length} LSP binaries in ${choice.dir}`);
+      if (names.length === 0) console.warn(`  WARNING: no LSP binaries in ${choice.dir}`);
       for (const name of names) {
         const dest = join(binDir, name);
         await placeBinary(dest, { file: join(choice.dir, name) }, !name.endsWith('.exe'));

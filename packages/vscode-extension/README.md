@@ -118,11 +118,20 @@ strings manually in their LSP client configuration.
 
 ### Nightly build
 
+One command — it detects your platform and installs the matching build:
+
 ```sh
-curl -L https://github.com/flatppl/flatppl-js/releases/download/nightly/flatppl-vscode-extension-nightly.vsix \
-    -o flatppl-vscode-extension-nightly.vsix
-code --install-extension flatppl-vscode-extension-nightly.vsix
+curl -fsSL https://github.com/flatppl/flatppl-js/releases/download/nightly/install.sh | sh
 ```
+
+Windows (PowerShell):
+
+```powershell
+irm https://github.com/flatppl/flatppl-js/releases/download/nightly/install.ps1 | iex
+```
+
+Requires the `code` CLI on your PATH. On an unsupported platform, build
+`flatppl-lsp` from source and set the `flatppl.server.path` setting.
 
 ## Development
 
