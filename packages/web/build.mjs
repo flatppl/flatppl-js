@@ -56,12 +56,12 @@ const MODEL_EXTENSIONS = ['.flatppl', '.md', '.markdown', '.hs3.json', '.pyhf.js
 
 // flatppl-wasm-api convert artifact (the `wasm-pack --target web` output:
 // an ESM glue + the wasm binary). Provisioned into dist/vendor/ by
-// provisionWasmConvert() — sibling-build or download, mirroring the LSP.
-// Absent is fine: the gallery hides the Convert command when it's missing.
+// provisionWasmConvert() — staged (CI) or built from the flatppl-rust sibling
+// with wasm-pack. No download fallback (same no-magic stance as the LSP
+// build): convert is built from source, or REQUIRED-but-absent fails the
+// build unless FLATPPL_CONVERT=off.
 const WASM_GLUE = 'flatppl_wasm_api.js';
 const WASM_BIN  = 'flatppl_wasm_api_bg.wasm';
-const WASM_RELEASE_BASE =
-  'https://github.com/flatppl/flatppl-rust/releases/download/nightly';
 
 // flatppl-examples sibling: the natural sibling layout where developers
 // clone all FlatPPL repos next to each other. When this exists we copy
@@ -482,17 +482,9 @@ async function tryProvisionWasm() {
       console.warn(`  flatppl-wasm-api: wasm-pack build failed (${e.message}); trying download`);
     }
   }
-  try {
-    for (const name of [WASM_GLUE, WASM_BIN]) {
-      const res = await fetch(`${WASM_RELEASE_BASE}/${name}`);
-      if (!res.ok) throw new Error(`HTTP ${res.status} for ${name}`);
-      await writeFile(join(vendorDir, name), Buffer.from(await res.arrayBuffer()));
-    }
-    return 'downloaded from nightly';
-  } catch (e) {
-    console.warn(`  flatppl-wasm-api: download unavailable (${e.message})`);
-    return null;
-  }
+  // No prebuilt-download fallback (same no-magic stance as the LSP build):
+  // convert is built from source via wasm-pack, or staged, or it fails.
+  return null;
 }
 
 // Bake the build-time convert flag into the page (no runtime probe):
