@@ -891,7 +891,11 @@ function activate(context: any) {
         }
       }
       const md = new vscode.MarkdownString(lines.join('\n'));
-      md.isTrusted = true;
+      // Intentionally NOT trusted: the doc-comment text is attacker-controlled
+      // (.flatppl / embedded blocks), and a trusted MarkdownString would let a
+      // crafted `[x](command:…)` / `javascript:` link execute in the extension
+      // host on hover+click. The hover content (bold, fenced code, math
+      // fallback) renders fine untrusted. See test/hover-untrusted.test.js.
       return new vscode.Hover(md, wordRange);
     }
   };
