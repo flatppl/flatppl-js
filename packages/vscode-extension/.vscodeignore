@@ -26,3 +26,7 @@ build-lsp-source.cjs
 # Test suites + grammar test harness: run via `node --test`/CI, not by VSCode.
 test/
 grammars/textmate/test/
+
+# Release-asset install scripts — attached to the GitHub release, not shipped in the vsix.
+install.sh
+install.ps1
