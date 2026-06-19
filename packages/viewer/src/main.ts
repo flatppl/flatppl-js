@@ -1444,7 +1444,10 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   //   - the initial-source bootstrap (opts.source / opts.target on
   //     mount)
 
-  window.addEventListener('message', function(event) {
+  // Stored on ctx so dispose() can removeEventListener it — a host that
+  // swaps this surface out (the gallery's per-file-type pane dispatch)
+  // must not leave a dangling window 'message' listener behind.
+  ctx._onWindowMessage = function(event: any) {
     const msg = event.data;
     if (!msg) return;
 
@@ -1508,7 +1511,8 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
 
     if (msg.type !== 'sourceUpdate' && msg.type !== 'showModule') return;
     applySourceUpdate(ctx, msg);
-  });
+  };
+  window.addEventListener('message', ctx._onWindowMessage);
 
   initCy(ctx);
 
@@ -1534,9 +1538,10 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     // ResizeObserver / window resize callbacks invoke their handlers
     // with no args, so the bare function reference would receive
     // `undefined` as ctx and throw.
-    const plotResizeObserver = new ResizeObserver(function () { resizeAllEchartsInPlot(ctx); });
+    // Stored on ctx so dispose() can disconnect it (surface swap).
+    ctx._plotResizeObserver = new ResizeObserver(function () { resizeAllEchartsInPlot(ctx); });
     const plotRoot = document.getElementById('plot-content');
-    if (plotRoot) plotResizeObserver.observe(plotRoot);
+    if (plotRoot) ctx._plotResizeObserver.observe(plotRoot);
   } else {
     window.addEventListener('resize', function () { resizeAllEchartsInPlot(ctx); });
   }
@@ -1551,9 +1556,9 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // window.resize, which cytoscape already handles internally; the
   // standalone web host (CSS Grid + flex) needs the explicit observer.
   if (typeof ResizeObserver === 'function') {
-    const cyResizeObserver = new ResizeObserver(function () { resizeAndFitCy(ctx); });
+    ctx._cyResizeObserver = new ResizeObserver(function () { resizeAndFitCy(ctx); });
     const cyRoot = document.getElementById('cy');
-    if (cyRoot) cyResizeObserver.observe(cyRoot);
+    if (cyRoot) ctx._cyResizeObserver.observe(cyRoot);
   } else {
     window.addEventListener('resize', function () { resizeAndFitCy(ctx); });
   }
@@ -1588,7 +1593,6 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // (e.g. the gallery's hash-based router) set this on user-driven
   // navigations so the in-viewer back button stays usable for
   // target-only steps within one model.
-  // dispose() is a placeholder for now.
   return {
     update: function(source: any, target: any, opts: any) {
       applySourceUpdate(ctx, {
@@ -1599,6 +1603,22 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
         variant: opts && opts.variant,
       });
     },
-    dispose: function() {},
+    // Release every resource mount() acquired, so a host can swap this
+    // surface out (the gallery's per-file-type right-pane dispatch)
+    // without leaking a sampler worker, a cytoscape/echarts instance, or
+    // the window 'message' listener. Idempotent and exception-safe — each
+    // teardown is independent so one failure never blocks the rest.
+    dispose: function() {
+      try { cancelAllSampling(ctx); } catch (_) {}  // terminate sampler worker + reject in-flight
+      if (ctx.cy) { try { ctx.cy.destroy(); } catch (_) {} ctx.cy = null; }
+      if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
+      if (ctx._plotResizeObserver) { try { ctx._plotResizeObserver.disconnect(); } catch (_) {} ctx._plotResizeObserver = null; }
+      if (ctx._cyResizeObserver) { try { ctx._cyResizeObserver.disconnect(); } catch (_) {} ctx._cyResizeObserver = null; }
+      if (ctx._onWindowMessage) {
+        try { window.removeEventListener('message', ctx._onWindowMessage); } catch (_) {}
+        ctx._onWindowMessage = null;
+      }
+      if (container) { try { container.innerHTML = ''; } catch (_) {} }
+    },
   };
   }
