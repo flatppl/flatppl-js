@@ -86,13 +86,20 @@
     const renderDoc = globalScope.FlatPPLViewer && globalScope.FlatPPLViewer.renderDoc;
     return {
       update: function (input: any) {
-        const md = input && input.source != null ? input.source : '';
+        const md = input && input.source != null ? String(input.source) : '';
         if (!host) return;
+        // renderDoc takes a DocComment ({ markup, lines }), NOT a raw
+        // string — it is the FlatPPL doc-comment renderer (marked + Temml
+        // MathML). Wrap the file body as a `md` doc-comment so the whole
+        // document (headings / tables / code / $math$) rides the same
+        // pipeline. It returns null for empty content → plain-text fallback.
         if (typeof renderDoc === 'function') {
-          try { host.innerHTML = renderDoc(md); return; }
-          catch (_) { /* fall through to plain text */ }
+          try {
+            const html = renderDoc({ markup: 'md', lines: md.split(/\r?\n/) });
+            if (html != null) { host.innerHTML = html; return; }
+          } catch (_) { /* fall through to plain text */ }
         }
-        host.textContent = md;  // no renderer / render error → readable fallback
+        host.textContent = md;  // no renderer / empty / error → readable fallback
       },
       dispose: function () { try { container.innerHTML = ''; } catch (_) {} },
     };
