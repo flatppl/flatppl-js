@@ -54,6 +54,15 @@ const nm        = join(repoRoot, 'node_modules');
 // Declared at top-level so it's initialized before the manifest pass runs.
 const MODEL_EXTENSIONS = ['.flatppl', '.md', '.markdown', '.hs3.json', '.pyhf.json'];
 
+// flatppl-wasm-api convert artifact (the `wasm-pack --target web` output:
+// an ESM glue + the wasm binary). Provisioned into dist/vendor/ by
+// provisionWasmConvert() — sibling-build or download, mirroring the LSP.
+// Absent is fine: the gallery hides the Convert command when it's missing.
+const WASM_GLUE = 'flatppl_wasm_api.js';
+const WASM_BIN  = 'flatppl_wasm_api_bg.wasm';
+const WASM_RELEASE_BASE =
+  'https://github.com/flatppl/flatppl-rust/releases/download/nightly';
+
 // flatppl-examples sibling: the natural sibling layout where developers
 // clone all FlatPPL repos next to each other. When this exists we copy
 // from it directly; otherwise we fetch the pinned ref from GitHub. Same
@@ -110,6 +119,10 @@ for (const { pkg, src, dst } of COPY_LIBS) {
   await copyFile(from, to);
   console.log(`  copied ${pkg} -> dist/vendor/${dst}`);
 }
+
+// ---------------------------------------------------------------------
+// 1b. Provision the flatppl-wasm-api convert artifact into dist/vendor/.
+await provisionWasmConvert();
 
 // ---------------------------------------------------------------------
 // 2. Viewer bundle. From Phase 4 the viewer lives as ES modules
@@ -409,6 +422,65 @@ function watchDirDebounced(dir, options, onChange) {
         console.error(`  ! watcher error for ${dir}/${filename}:`, err.message);
       }
     }, DELAY_MS));
+  });
+}
+
+// flatppl-wasm-api convert artifact provisioning — mirrors the LSP
+// "sibling-build or download" pattern (vscode-extension/build-vendor.mjs).
+// Order: CI-staged dir → sibling build (wasm-pack) → download from nightly.
+// Any failure is NON-FATAL: the gallery hides the Convert command when the
+// glue is absent, so a build without the wasm toolchain (and before the
+// nightly asset exists) still yields a working gallery.
+async function provisionWasmConvert() {
+  const rustSibling = process.env.FLATPPL_RUST_DIR
+    || join(dirname(repoRoot), 'flatppl-rust');
+  const staged = process.env.FLATPPL_WASM_DIR;
+  if (staged && existsSync(join(staged, WASM_GLUE))) {
+    await copyFile(join(staged, WASM_GLUE), join(vendorDir, WASM_GLUE));
+    await copyFile(join(staged, WASM_BIN), join(vendorDir, WASM_BIN));
+    console.log('  flatppl-wasm-api: staged convert artifact copied');
+    return;
+  }
+  const crateDir = join(rustSibling, 'crates', 'wasm-api');
+  if (existsSync(crateDir) && (await hasCmd('wasm-pack'))) {
+    const pkg = join(crateDir, 'pkg');
+    try {
+      await runCmd('wasm-pack', ['build', '--target', 'web', '--release',
+        '--no-typescript', '--out-dir', pkg, crateDir]);
+      await copyFile(join(pkg, WASM_GLUE), join(vendorDir, WASM_GLUE));
+      await copyFile(join(pkg, WASM_BIN), join(vendorDir, WASM_BIN));
+      console.log('  flatppl-wasm-api: built convert wasm from sibling flatppl-rust');
+      return;
+    } catch (e) {
+      console.warn(`  flatppl-wasm-api: wasm-pack build failed (${e.message}); trying download`);
+    }
+  }
+  try {
+    for (const name of [WASM_GLUE, WASM_BIN]) {
+      const res = await fetch(`${WASM_RELEASE_BASE}/${name}`);
+      if (!res.ok) throw new Error(`HTTP ${res.status} for ${name}`);
+      await writeFile(join(vendorDir, name), Buffer.from(await res.arrayBuffer()));
+    }
+    console.log('  flatppl-wasm-api: downloaded convert wasm from nightly');
+  } catch (e) {
+    console.warn(`  flatppl-wasm-api: convert artifact unavailable (${e.message})`
+      + ' — the gallery Convert command is disabled this build');
+  }
+}
+
+function hasCmd(cmd) {
+  return new Promise((resolve) => {
+    const p = spawn(cmd, ['--version'], { stdio: 'ignore' });
+    p.on('error', () => resolve(false));
+    p.on('exit', (code) => resolve(code === 0));
+  });
+}
+
+function runCmd(cmd, args) {
+  return new Promise((resolve, reject) => {
+    const p = spawn(cmd, args, { stdio: 'inherit' });
+    p.on('error', reject);
+    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}`))));
   });
 }
 

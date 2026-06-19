@@ -158,6 +158,14 @@
         ? window.FlatPPLWebSurfaces.typeForPath(cur.model) : 'flatppl';
       showModuleBtn.hidden = !cur.model || type !== 'flatppl';
     }
+    // Convert-to-FlatPPL: shown for pyhf / HS3 files when the wasm convert
+    // artifact is present (convertAvailable, set by the boot probe).
+    const convertBtn = document.getElementById('convert-btn');
+    if (convertBtn) {
+      const t = window.FlatPPLWebSurfaces
+        ? window.FlatPPLWebSurfaces.typeForPath(cur.model) : 'unknown';
+      convertBtn.hidden = !(convertAvailable && (t === 'pyhf' || t === 'hs3'));
+    }
     // The header filename is click/F2-renamable for user/ files only.
     if (sourceHeader) {
       sourceHeader.classList.toggle('renamable', isUserFile);
@@ -251,6 +259,60 @@
       else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
     });
     input.addEventListener('blur', function () { finish(false); });
+  }
+
+  // --- Convert pyhf / HS3 → FlatPPL (via flatppl-wasm-api, lazy wasm) -----
+  //
+  // The wasm convert artifact is provisioned into vendor/ by the build ONLY
+  // when available (sibling wasm-pack build, or the nightly download).
+  // Absent ⇒ convertAvailable stays false and every Convert affordance stays
+  // hidden, so the gallery degrades cleanly with no broken button.
+  let convertAvailable = false;
+  let _wasmConvert: any = null;
+  // Glue path in a variable so tsc treats the import as runtime-only (no
+  // compile-time resolution of the build-provisioned, possibly-absent glue).
+  const _wasmGluePath = './vendor/flatppl_wasm_api.js';
+
+  async function loadWasmConvert() {
+    if (_wasmConvert) return _wasmConvert;
+    // Dynamic ESM import of the wasm-pack `--target web` glue, resolved at
+    // runtime against the page (app.js is a classic script; esbuild's
+    // transform leaves import() untouched). default() runs the wasm init.
+    const mod: any = await import(_wasmGluePath);
+    if (mod && typeof mod.default === 'function') await mod.default();
+    _wasmConvert = mod.convert;
+    return _wasmConvert;
+  }
+
+  /** Destination basename for a converted file: strip the import extension
+   *  and add `.flatppl` (uniquified into user/ by the caller). */
+  function convertedFlatpplName(srcPath: any): string {
+    return basenameOf(srcPath).replace(/\.(pyhf|hs3)\.json$/i, '') + '.flatppl';
+  }
+
+  /** Convert a pyhf / HS3 file to FlatPPL and drop the result into the user
+   *  area (always writable), then open it. The source may be a user upload
+   *  or a read-only corpus entry — the output uniformly lands in user/. */
+  async function convertToFlatppl(srcPath: any) {
+    const S = window.FlatPPLWebSurfaces;
+    const userStore = window.FlatPPLWebUserStore;
+    const type = S ? S.typeForPath(srcPath) : 'unknown';
+    const from = type === 'pyhf' ? 'pyhf' : (type === 'hs3' ? 'hs3' : null);
+    if (!from || !userStore) return;
+    try {
+      const bundle = await window.FlatPPLWebResolver.resolveBundle(srcPath);
+      const input = bundle && bundle.primarySource;
+      if (typeof input !== 'string') { showToast('Could not read ' + srcPath + '.'); return; }
+      const convert = await loadWasmConvert();
+      const out = convert(input, from, 'flatppl');   // throws on importer error
+      const dest = userStore.pathForUpload(convertedFlatpplName(srcPath));
+      userStore.save(dest, out, { parent: null });
+      showToast('Converted → ' + dest + '.');
+      window.FlatPPLWebRouter.navigateTo({ model: dest });
+    } catch (e: any) {
+      console.error('[@flatppl/web] convert failed:', e);
+      showToast('Convert failed: ' + ((e && e.message) || e));
+    }
   }
 
   /** Click handler for the inline save (💾) icon next to a dirty
@@ -819,6 +881,14 @@
     menu.innerHTML = '';
 
     const items: Array<{ label: string; action: () => void }> = [];
+    const cvType = window.FlatPPLWebSurfaces
+      ? window.FlatPPLWebSurfaces.typeForPath(info.path) : 'unknown';
+    if (convertAvailable && (cvType === 'pyhf' || cvType === 'hs3')) {
+      items.push({
+        label: 'Convert to FlatPPL',
+        action: function () { convertToFlatppl(info.path); },
+      });
+    }
     items.push({
       label: 'Download',
       action: function () { downloadFile(info.path); },
@@ -1229,6 +1299,26 @@
         window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: null });
       });
     }
+
+    // Convert-to-FlatPPL button (pyhf / HS3 → user/<stem>.flatppl). Shown by
+    // updateHeaderButtons only when the wasm artifact is present.
+    const convertBtn = document.getElementById('convert-btn');
+    if (convertBtn) {
+      convertBtn.addEventListener('click', function () {
+        const cur = window.FlatPPLWebRouter.parseHash();
+        if (cur && cur.model) convertToFlatppl(cur.model);
+      });
+    }
+
+    // Probe for the convert wasm artifact once at boot; reveal the Convert
+    // affordances only if present (the build may omit it — see
+    // provisionWasmConvert in build.mjs). HEAD avoids fetching the glue body.
+    fetch('vendor/flatppl_wasm_api.js', { method: 'HEAD' })
+      .then(function (r) {
+        convertAvailable = !!(r && r.ok);
+        if (convertAvailable) updateHeaderButtons();
+      })
+      .catch(function () { /* absent → convert stays disabled */ });
 
     // Source-pane header buttons for the currently-loaded file:
     //   Download — always visible when a file is loaded; same
