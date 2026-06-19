@@ -109,7 +109,13 @@
     <section class="pane" id="viewer-pane">
       <div class="pane-header">Visualization</div>
       <div class="pane-body">
-        <div id="flatppl-viewer-root"></div>
+        <!-- Neutral surface container: the PaneController mounts a
+             file-type-dependent surface here (FlatPPL viewer / Markdown
+             preview / placeholder). Renamed from #flatppl-viewer-root so
+             no type is privileged AND the viewer's auto-mount (keyed on
+             that id) stays inert in the gallery — the controller owns
+             mounting. -->
+        <div id="surface-root"></div>
       </div>
     </section>
   </div>
@@ -157,6 +163,7 @@
   <script src="ephemeral.js"></script>
   <script src="user-store.js"></script>
   <script src="resolver.js"></script>
+  <script src="surfaces.js"></script>
   <script src="router.js"></script>
   <script src="manifest.js"></script>
   <script src="layout.js"></script>

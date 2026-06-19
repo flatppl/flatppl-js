@@ -469,7 +469,7 @@ html, body {
   text-align: center;
 }
 
-#flatppl-viewer-root {
+#surface-root {
   width: 100%;
   height: 100%;
   /* The viewer was originally written for the VS Code webview, where
@@ -479,18 +479,18 @@ html, body {
      overflow the column, pushing the DAG and plot content off to the
      right. The rules below override the viewer's outer layout
      (#header / #main / #info) into a flex column that fills
-     #flatppl-viewer-root instead of the viewport. Selector
+     #surface-root instead of the viewport. Selector
      specificity (0,2,0,0 vs the viewer's 0,1,0,0) makes the override
      win without !important. */
   display: flex;
   flex-direction: column;
   overflow: hidden;
 }
-#flatppl-viewer-root > #header,
-#flatppl-viewer-root > #info {
+#surface-root > #header,
+#surface-root > #info {
   flex: 0 0 auto;
 }
-#flatppl-viewer-root > #main {
+#surface-root > #main {
   flex: 1 1 auto;
   width: 100%;     /* override viewer's 100vw */
   height: auto;    /* override viewer's calc(100vh - 86px) */
@@ -500,7 +500,7 @@ html, body {
 
 /* DAG-view hover tooltip — gallery-specific override.
    The viewer injects its own `<div id="tooltip">` (inside
-   `#flatppl-viewer-root`) and ships matching CSS with `position:
+   `#surface-root`) and ships matching CSS with `position:
    absolute`. In the VS Code webview that's fine because the viewer
    fills the viewport, so the tooltip's viewport-coord math (from
    `cy.getBoundingClientRect()` + cytoscape's renderedPosition)
@@ -512,4 +512,39 @@ html, body {
    tooltip off-screen to the right. Switching to `position: fixed`
    (always viewport-relative) restores the original math without
    patching the viewer. */
-#flatppl-viewer-root #tooltip { position: fixed; }
+#surface-root #tooltip { position: fixed; }
+
+/* Non-FlatPPL surfaces mounted into #surface-root by the PaneController
+   (surfaces.ts). #surface-root is a flex column; these fill it. */
+.surface-markdown {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem 1.25rem;
+  line-height: 1.5;
+}
+.surface-markdown > :first-child { margin-top: 0; }
+.surface-markdown pre,
+.surface-markdown code {
+  font-family: var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+  font-size: 0.92em;
+}
+.surface-markdown pre {
+  overflow: auto;
+  padding: 0.6em 0.8em;
+  background: rgba(127, 127, 127, 0.12);
+  border-radius: 4px;
+}
+.surface-markdown table { border-collapse: collapse; }
+.surface-markdown th,
+.surface-markdown td { border: 1px solid rgba(127, 127, 127, 0.35); padding: 0.3em 0.6em; }
+.surface-placeholder {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+  text-align: center;
+  opacity: 0.6;
+  font-style: italic;
+}

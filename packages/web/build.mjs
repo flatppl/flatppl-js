@@ -46,6 +46,14 @@ const distDir   = join(here, 'dist');
 const vendorDir = join(distDir, 'vendor');
 const nm        = join(repoRoot, 'node_modules');
 
+// Model/representation file types the gallery surfaces (Phase 1: FlatPPL +
+// Markdown). The surface registry (src/surfaces.ts) routes each to its
+// right-pane surface; KEEP THIS IN STEP with surfaces.ts `typeForPath`.
+// Later types (pyhf / HS3 / Stan / Julia / Python) are a one-line
+// extension here once their surfaces (or the convert command) land.
+// Declared at top-level so it's initialized before the manifest pass runs.
+const MODEL_EXTENSIONS = ['.flatppl', '.md', '.markdown'];
+
 // flatppl-examples sibling: the natural sibling layout where developers
 // clone all FlatPPL repos next to each other. When this exists we copy
 // from it directly; otherwise we fetch the pinned ref from GitHub. Same
@@ -549,11 +557,20 @@ async function syncGrammars() {
   }
 }
 
-/** Recursively list FlatPPL source files under rootDir, sorted
+// MODEL_EXTENSIONS is declared at top-level (above) so it's initialized
+// before the manifest pass; `modelTypeForPath` mirrors surfaces.ts.
+function modelTypeForPath(path) {
+  const p = path.toLowerCase();
+  if (p.endsWith('.flatppl')) return 'flatppl';
+  if (p.endsWith('.md') || p.endsWith('.markdown')) return 'markdown';
+  return 'unknown';
+}
+
+/** Recursively list model/representation files under rootDir, sorted
     alphabetically. Paths are relative to rootDir (forward slashes).
-    Canonical FlatPPL is the only surface form (spec §05), so we
-    match a single `.flatppl` extension. */
-async function listFlatpplLikeFiles(rootDir) {
+    Matches MODEL_EXTENSIONS — the gallery is multi-format, no longer
+    FlatPPL-only. */
+async function listModelFiles(rootDir) {
   const out = [];
   async function walk(dir, prefix) {
     if (!existsSync(dir)) return;
@@ -562,7 +579,8 @@ async function listFlatpplLikeFiles(rootDir) {
       const childRelPath = prefix ? prefix + '/' + ent.name : ent.name;
       if (ent.isDirectory()) {
         await walk(join(dir, ent.name), childRelPath);
-      } else if (ent.isFile() && ent.name.endsWith('.flatppl')) {
+      } else if (ent.isFile()
+          && MODEL_EXTENSIONS.some((e) => ent.name.toLowerCase().endsWith(e))) {
         out.push(childRelPath);
       }
     }
@@ -581,15 +599,19 @@ function basenameTitle(path) {
 }
 
 async function generateManifest() {
-  const demoFiles     = await listFlatpplLikeFiles(join(distDir, 'demo'));
-  const exampleFiles  = await listFlatpplLikeFiles(join(distDir, 'examples'));
+  const demoFiles     = await listModelFiles(join(distDir, 'demo'));
+  const exampleFiles  = await listModelFiles(join(distDir, 'examples'));
 
+  // `type` is carried for the gallery (surface routing / future icons +
+  // model→representations grouping). The runtime still derives type from
+  // the path via surfaces.ts `typeForPath`, so a hand-written manifest
+  // without `type` keeps working.
   const entries = [];
   for (const path of demoFiles) {
-    entries.push({ path: 'demo/' + path,     title: basenameTitle(path) });
+    entries.push({ path: 'demo/' + path,     title: basenameTitle(path), type: modelTypeForPath(path) });
   }
   for (const path of exampleFiles) {
-    entries.push({ path: 'examples/' + path, title: basenameTitle(path) });
+    entries.push({ path: 'examples/' + path, title: basenameTitle(path), type: modelTypeForPath(path) });
   }
 
   const manifest = {

@@ -1151,6 +1151,7 @@
     }
     const missing: string[] = [];
     if (!window.FlatPPLWebResolver) missing.push('resolver');
+    if (!window.FlatPPLWebSurfaces) missing.push('surfaces');
     if (!window.FlatPPLWebRouter)   missing.push('router');
     if (!window.FlatPPLWebManifest) missing.push('manifest');
     if (missing.length) {
@@ -1249,7 +1250,7 @@
       });
     }
 
-    const viewerRoot = document.getElementById('flatppl-viewer-root');
+    const surfaceRoot = document.getElementById('surface-root');
 
     // Web host adapter for the viewer. The viewer calls these
     // host-side hooks for IDE-only concerns it can't perform itself
@@ -1364,7 +1365,21 @@
       },
     };
 
-    viewer = window.FlatPPLViewer.mount(viewerRoot, { host: webHost });
+    // Right-pane surface dispatch (surfaces.ts): the FlatPPL viewer is
+    // ONE registered surface, not the default. The controller derives the
+    // active file type from the router (the source of truth for "what's
+    // shown"), disposes-and-remounts on a cross-type switch (e.g.
+    // .flatppl ↔ .md), and keeps a same-type switch a cheap update().
+    // Every `viewer.update(source, target, opts)` call site stays
+    // unchanged — the controller preserves that signature.
+    viewer = window.FlatPPLWebSurfaces.createPaneController(
+      surfaceRoot,
+      { host: webHost, config: window.__FLATPPL_CONFIG__ || {} },
+      function () {
+        const cur = window.FlatPPLWebRouter.parseHash();
+        return (cur && cur.model) || null;
+      }
+    );
 
     // The source editor handles its own click navigation:
     //   - Plain click: caret placement → cursor-driven onNavigate
