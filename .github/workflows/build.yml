@@ -36,7 +36,7 @@ jobs:
           - { target: x86_64-pc-windows-msvc, os: windows-latest }
     steps:
       - name: Check out flatppl-rust (tip of main)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: flatppl/flatppl-rust
           ref: main
@@ -83,10 +83,10 @@ jobs:
       GRAMMARS_DIR: ${{ github.workspace }}/.grammars
       FLATPPL_LSP_BIN_DIR: ${{ github.workspace }}/.lsp-bin
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Check out flatppl-grammars (deterministic grammar source)
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: flatppl/flatppl-grammars
           ref: main
