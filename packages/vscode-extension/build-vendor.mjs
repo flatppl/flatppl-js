@@ -125,15 +125,14 @@ await syncGrammars();
 // ---------------------------------------------------------------------
 // 2c. Provision the flatppl-lsp binary into ./bin. Source is chosen by
 //     chooseLspSource() precedence (see build-lsp-source.cjs):
-//       FLATPPL_LSP_BIN_DIR (CI staged, all triples)
-//       FLATPPL_LSP_LOCAL   (prebuilt host binary)
+//       FLATPPL_LSP_BIN_DIR (CI staged, all triples) — prebuilt, no cargo
+//       FLATPPL_LSP_LOCAL   (prebuilt host binary)    — prebuilt, no cargo
 //       sibling flatppl-rust → cargo build (host triple)
 //       no sibling + cargo  → clone flatppl-rust@main, build, delete clone
-//       no sibling + no cargo → download host binary from nightly
-//     The binary is copied INTO bin/, so the vsix is self-contained: the
-//     sibling/clone can be deleted afterwards and the extension still runs.
-const LSP_RELEASE_BASE =
-  'https://github.com/flatppl/flatppl-rust/releases/download/nightly';
+//       no cargo + no prebuilt → ERROR (cargo is required; no download magic)
+//     cargo is a REQUIRED part of the flatppl-js build toolchain. The binary
+//     is copied INTO bin/, so the vsix is self-contained: the sibling/clone
+//     can be deleted afterwards and the extension still runs.
 
 function run(cmd, args, opts = {}) {
   return new Promise((resolve, reject) => {
@@ -212,6 +211,15 @@ async function provisionServerBinaries() {
     cargoAvailable: await hasCargo(),
   });
 
+  if (choice.route === 'none') {
+    throw new Error(
+      'flatppl-lsp: cargo not found. cargo is a REQUIRED part of the flatppl-js '
+      + 'build toolchain — flatppl-lsp is built from source (the sibling '
+      + 'flatppl-rust if present, else a throwaway clone of main). Install the '
+      + 'Rust toolchain (https://rustup.rs), or supply a prebuilt binary via '
+      + 'FLATPPL_LSP_BIN_DIR / FLATPPL_LSP_LOCAL.');
+  }
+
   // Routes other than bin-dir need a known host triple.
   if (choice.route !== 'bin-dir' && !host) {
     throw new Error(`unsupported host ${process.platform}/${process.arch}: cannot place flatppl-lsp`);
@@ -251,16 +259,6 @@ async function provisionServerBinaries() {
       } finally {
         await rm(tmp, { recursive: true, force: true });
       }
-      break;
-    }
-    case 'download': {
-      const name = `flatppl-lsp-${host.triple}${host.exe}`;
-      const dest = join(binDir, name);
-      console.log(`  flatppl-lsp: no toolchain — downloading ${name} from nightly`);
-      const res = await fetch(`${LSP_RELEASE_BASE}/${name}`);
-      if (!res.ok) throw new Error(`download ${name}: HTTP ${res.status}`);
-      await placeBinary(dest, { buffer: Buffer.from(await res.arrayBuffer()) }, !host.exe);
-      console.log(`  downloaded ${name}`);
       break;
     }
   }

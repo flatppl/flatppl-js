@@ -21,14 +21,14 @@ test('chooseLspSource honours precedence: bin-dir first', () => {
   );
 });
 
-test('chooseLspSource: local override beats sibling/clone/download', () => {
+test('chooseLspSource: local override beats sibling/clone', () => {
   assert.deepEqual(
     chooseLspSource({ localBin: '/my/flatppl-lsp', siblingExists: true, cargoAvailable: true }),
     { route: 'local', path: '/my/flatppl-lsp' },
   );
 });
 
-test('chooseLspSource: sibling beats clone/download', () => {
+test('chooseLspSource: sibling beats clone', () => {
   assert.deepEqual(
     chooseLspSource({ siblingExists: true, cargoAvailable: true }),
     { route: 'sibling' },
@@ -42,9 +42,26 @@ test('chooseLspSource: no sibling + cargo → clone', () => {
   );
 });
 
-test('chooseLspSource: no sibling + no cargo → download', () => {
+test('chooseLspSource: no cargo → none (cargo required; no download fallback)', () => {
+  // From-source builds (sibling or clone) need cargo. Without it — and with no
+  // staged/local prebuilt — there is no route; the caller errors out.
+  assert.deepEqual(
+    chooseLspSource({ siblingExists: true, cargoAvailable: false }),
+    { route: 'none' },
+  );
   assert.deepEqual(
     chooseLspSource({ siblingExists: false, cargoAvailable: false }),
-    { route: 'download' },
+    { route: 'none' },
+  );
+});
+
+test('chooseLspSource: a staged/local prebuilt needs no cargo', () => {
+  assert.deepEqual(
+    chooseLspSource({ binDir: '/staged', cargoAvailable: false }),
+    { route: 'bin-dir', dir: '/staged' },
+  );
+  assert.deepEqual(
+    chooseLspSource({ localBin: '/x/flatppl-lsp', cargoAvailable: false }),
+    { route: 'local', path: '/x/flatppl-lsp' },
   );
 });

@@ -19,12 +19,19 @@ function hostTripleForNode(platform, arch) {
 
 // Decide where the host LSP binary comes from, by precedence. Pure: callers
 // pass already-probed signals (env strings, existsSync result, cargo probe).
+//
+// A staged (`bin-dir`, CI) or `local` prebuilt wins and needs no toolchain.
+// Otherwise the binary is BUILT FROM SOURCE — `sibling` if flatppl-rust is
+// checked out next door, else a throwaway `clone` of main — and both require
+// cargo, a REQUIRED part of the flatppl-js build toolchain. There is no
+// prebuilt-binary download fallback (too magical: you build what you run), so
+// without cargo and without a prebuilt the route is `none` and the caller
+// stops with an actionable error.
 function chooseLspSource({ binDir, localBin, siblingExists, cargoAvailable } = {}) {
-  if (binDir)        return { route: 'bin-dir', dir: binDir };
-  if (localBin)      return { route: 'local', path: localBin };
-  if (siblingExists) return { route: 'sibling' };
-  if (cargoAvailable) return { route: 'clone' };
-  return { route: 'download' };
+  if (binDir)   return { route: 'bin-dir', dir: binDir };
+  if (localBin) return { route: 'local', path: localBin };
+  if (!cargoAvailable) return { route: 'none' };
+  return { route: siblingExists ? 'sibling' : 'clone' };
 }
 
 module.exports = { hostTripleForNode, chooseLspSource };
