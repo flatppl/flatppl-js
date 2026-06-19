@@ -218,7 +218,7 @@ async function provisionServerBinaries() {
   switch (choice.route) {
     case 'bin-dir': {
       const names = (await readdir(choice.dir)).filter((n) => n.startsWith('flatppl-lsp-'));
-      if (names.length < 5) console.warn(`  WARNING: only ${names.length} LSP binaries in ${choice.dir}`);
+      if (names.length === 0) console.warn(`  WARNING: no LSP binaries in ${choice.dir}`);
       for (const name of names) {
         const dest = join(binDir, name);
         await placeBinary(dest, { file: join(choice.dir, name) }, !name.endsWith('.exe'));

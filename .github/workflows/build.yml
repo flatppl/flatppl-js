@@ -73,12 +73,24 @@ jobs:
           name: flatppl-lsp-${{ matrix.target }}
           path: dist/flatppl-lsp-*
 
+  # Package ONE platform-specific vsix per target — each bundles only its own
+  # flatppl-lsp binary (vsce --target). VS Code installs the matching one; the
+  # install.sh/install.ps1 scripts pick it for manual installs.
   package:
-    name: Package universal VSIX
+    name: Package VSIX (${{ matrix.vsce_target }})
     needs: lsp
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { triple: x86_64-unknown-linux-musl,  vsce_target: linux-x64 }
+          - { triple: aarch64-unknown-linux-musl, vsce_target: linux-arm64 }
+          - { triple: x86_64-apple-darwin,        vsce_target: darwin-x64 }
+          - { triple: aarch64-apple-darwin,       vsce_target: darwin-arm64 }
+          - { triple: x86_64-pc-windows-msvc,     vsce_target: win32-x64 }
     env:
       GRAMMARS_DIR: ${{ github.workspace }}/.grammars
       FLATPPL_LSP_BIN_DIR: ${{ github.workspace }}/.lsp-bin
@@ -92,11 +104,11 @@ jobs:
           ref: main
           path: .grammars
 
-      - name: Collect LSP binaries
+      - name: Collect this target's LSP binary only
         uses: actions/download-artifact@v8
         with:
           path: .lsp-bin
-          pattern: flatppl-lsp-*
+          pattern: flatppl-lsp-${{ matrix.triple }}
           merge-multiple: true
 
       - uses: actions/setup-node@v6
@@ -107,31 +119,59 @@ jobs:
       - name: Install workspace dev dependencies
         run: npm ci
 
-      - name: Build + package universal VSIX
-        # package:vsix runs build:vendor (bundles engine/grammars + stages the
-        # five LSP binaries from FLATPPL_LSP_BIN_DIR) then `vsce package`.
-        run: npm run package:vsix --workspace=flatppl
+      - name: Build vendor bundle (stages the single binary from FLATPPL_LSP_BIN_DIR)
+        run: npm run build:vendor --workspace=flatppl
+
+      - name: Package platform-specific VSIX
+        # vsce (@vscode/vsce) is a root devDependency; npx resolves it from the
+        # hoisted node_modules. Run from the package dir so it packages this pkg.
+        run: npx vsce package --target ${{ matrix.vsce_target }} -o flatppl-vscode-${{ matrix.vsce_target }}-nightly.vsix --no-dependencies
+        working-directory: packages/vscode-extension
 
       - name: Upload VSIX artifact
         uses: actions/upload-artifact@v7
         with:
-          name: flatppl-vscode-extension-nightly
-          path: flatppl-vscode-extension-nightly.vsix
+          name: vsix-${{ matrix.vsce_target }}
+          path: packages/vscode-extension/flatppl-vscode-${{ matrix.vsce_target }}-nightly.vsix
+
+  # Single release job: collect all platform vsixes + the install scripts and
+  # attach them to the nightly release in ONE write (avoids matrix jobs racing
+  # on the shared release tag).
+  release:
+    name: Update nightly release
+    needs: package
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Collect all platform vsixes
+        uses: actions/download-artifact@v8
+        with:
+          path: .vsix
+          pattern: vsix-*
+          merge-multiple: true
 
       - name: Update nightly release
-        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
         uses: softprops/action-gh-release@v3
         with:
           tag_name: nightly
           name: Nightly Build
           prerelease: true
-          files: flatppl-vscode-extension-nightly.vsix
+          files: |
+            .vsix/flatppl-vscode-*-nightly.vsix
+            packages/vscode-extension/install.sh
+            packages/vscode-extension/install.ps1
           body: |
-            Nightly build of the FlatPPL VS Code extension.
-            Built from commit ${{ github.sha }}; LSP built from flatppl-rust@main.
+            Nightly build of the FlatPPL VS Code extension (built from ${{ github.sha }}; LSP from flatppl-rust@main).
 
-            Install with:
+            Install (auto-detects your platform):
             ```
-            curl -L https://github.com/${{ github.repository }}/releases/download/nightly/flatppl-vscode-extension-nightly.vsix -o flatppl-vscode-extension-nightly.vsix
-            code --install-extension flatppl-vscode-extension-nightly.vsix
+            curl -fsSL https://github.com/${{ github.repository }}/releases/download/nightly/install.sh | sh
+            ```
+            Windows (PowerShell):
+            ```
+            irm https://github.com/${{ github.repository }}/releases/download/nightly/install.ps1 | iex
             ```
