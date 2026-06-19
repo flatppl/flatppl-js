@@ -183,12 +183,13 @@ These are the things that catch out first-time contributors. Read each one.
   host binary; (3) a sibling `flatppl-rust` checkout (`FLATPPL_RUST_DIR`, else
   `../../../flatppl-rust`) — `cargo build --release -p flatppl-lsp`; (4) no
   sibling but `cargo` on PATH — shallow-clone `flatppl-rust@main` to a temp dir,
-  build, copy the host binary, delete the clone; (5) no sibling, no `cargo` —
-  download the host binary from the `flatppl-rust` nightly release. Routes 2–5
-  produce the host triple only; CI (route 1) bundles all five into one universal
-  vsix. The binary is copied *into* `bin/`, so the vsix is self-contained — the
-  sibling/clone may be deleted afterward. A real cargo failure on routes 3/4
-  errors loudly; it never silently falls back to a download.
+  build, copy the host binary, delete the clone. There is **no
+  prebuilt-download fallback** — `cargo` is a REQUIRED part of the build
+  toolchain; without it (and with no staged/local prebuilt) the route is `none`
+  and the build errors out actionably. Routes 2–4 produce the host triple only;
+  CI (route 1) bundles all five into one universal vsix. The binary is copied
+  *into* `bin/`, so the vsix is self-contained — the sibling/clone may be
+  deleted afterward.
 
 - **Webview escape traps in `vscode-extension/src/visualPanel.ts`.** The
   webview HTML lives inside the outer template literal returned by

@@ -191,13 +191,16 @@ bundle on save (sub-second). Reload the VS Code window after each rebuild.
    host-triple result.
 4. No sibling, `cargo` on PATH — shallow-clone `flatppl-rust@main` to a temp
    dir, build, copy the host binary into `bin/`, delete the clone.
-5. No sibling, no `cargo` — download the prebuilt host binary from the
-   flatppl-rust `nightly` release (keeps `npm install && npm run build:vendor`
-   working with no Rust toolchain).
 
-Routes 2–5 produce the host triple only. The binary is copied into `bin/`, so a
+There is **no prebuilt-download fallback** (too magical — you build what you
+run): **`cargo` is a required part of the build toolchain.** Without it — and
+with no staged/local prebuilt (routes 1–2) — the build stops with an actionable
+error (install Rust via rustup, or supply `FLATPPL_LSP_BIN_DIR` /
+`FLATPPL_LSP_LOCAL`).
+
+Routes 2–4 produce the host triple only. The binary is copied into `bin/`, so a
 local vsix keeps working after the sibling/clone is deleted. CI builds all five
-triples from source (one universal vsix); it never downloads from `nightly`.
+triples from source (one universal vsix) and stages them via route 1.
 
 ### Fast grammar iteration
 
