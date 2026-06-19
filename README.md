@@ -31,21 +31,21 @@ package via `--workspaces --if-present`.
 **Prerequisites**
 
 - **Node.js + `npm`** — the workspace tooling.
-- **A Rust toolchain (`cargo`) on `PATH`** — the build compiles `flatppl-lsp`
-  (and the convert wasm) from source; there is no prebuilt-binary download
-  fallback. Without `cargo`, `npm run build` stops with an actionable error.
-- **The wasm toolchain — for the gallery's _Convert to FlatPPL_ (on by
-  default):** `wasm-pack` and the `wasm32-unknown-unknown` target on `PATH`. The
-  build uses them but never installs them — toolchain setup affects your whole
-  Rust installation, so it is left to you. One-time setup:
+
+- **A Rust toolchain (`cargo`)** — the build compiles the Rust crates
+  `flatppl-lsp` (native target) and `flatppl-wasm-api` (WASM target) from
+  source.
+
+  Rust `wasm-pack` and the `wasm32-unknown-unknown` target must be installed:
 
   ```sh
   rustup target add wasm32-unknown-unknown
   cargo install wasm-pack
   ```
 
-  Or build the gallery convert-less with `FLATPPL_CONVERT=off` (no wasm toolchain
-  needed).
+  Or build the flatppl-js web package without FlatPPL convert (`FLATPPL_CONVERT=off`) — no wasm toolchain needed.
+
+**Build**
 
 ```sh
 npm install                  # install all workspace deps
