@@ -547,3 +547,19 @@ html, body {
   text-align: center;
   opacity: 0.7;          /* normal font, just a quiet muted tone */
 }
+
+/* Inline rename of the source-pane header filename (user/ files only).
+   #source-header gets `.renamable` from updateHeaderButtons; clicking it (or
+   F2) swaps the text for `.rename-input` with the `user/` prefix kept static. */
+#source-header.renamable { cursor: text; }
+#source-header.renamable:hover { text-decoration: underline dotted; text-underline-offset: 2px; }
+.rename-prefix { opacity: 0.6; }
+.rename-input {
+  font: inherit;
+  color: inherit;
+  padding: 0 3px;
+  min-width: 8em;
+  border: 1px solid rgba(127, 127, 127, 0.6);
+  border-radius: 3px;
+  background: rgba(127, 127, 127, 0.12);
+}

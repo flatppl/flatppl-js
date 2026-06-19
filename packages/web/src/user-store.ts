@@ -227,6 +227,32 @@
     emit();
   }
 
+  /** Rename `oldPath` → `newPath`, preserving source + parent and the
+   *  sidebar position (swap-in-place, so the entry doesn't jump to the
+   *  end). Returns false (no-op) when `oldPath` is absent, `newPath`
+   *  isn't user/-prefixed, or `newPath` already exists — the caller
+   *  decides how to surface a collision. */
+  function rename(oldPath: string, newPath: string): boolean {
+    if (!entries.has(oldPath)) return false;
+    if (newPath.indexOf(USER_PREFIX) !== 0) return false;
+    if (newPath === oldPath) return true;
+    if (entries.has(newPath)) return false;
+    const existing = entries.get(oldPath)!;
+    const entry: Entry = {
+      source: existing.source,
+      parent: existing.parent,
+      modifiedAt: new Date().toISOString(),
+    };
+    entries.set(newPath, entry);
+    entries.delete(oldPath);
+    pathOrder = pathOrder.map(function (p) { return p === oldPath ? newPath : p; });
+    writeEntry(newPath, entry);
+    lsRemoveItem(ENTRY_KEY_PREFIX + oldPath);
+    writeIndex(pathOrder);
+    emit();
+    return true;
+  }
+
   /** Decide a user/-prefixed path for a freshly-uploaded or
    *  freshly-promoted file. Suffix bumps avoid collisions with
    *  unrelated existing entries (e.g. an upload of `foo.flatppl`
@@ -276,6 +302,7 @@
     save:          save,
     updateSource:  updateSource,
     remove:        remove,
+    rename:        rename,
     pathForUpload: pathForUpload,
     subscribe:     subscribe,
   };

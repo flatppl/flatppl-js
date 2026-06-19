@@ -142,15 +142,13 @@
     const cur = window.FlatPPLWebRouter
       ? window.FlatPPLWebRouter.parseHash() : { model: null };
     const userStore = window.FlatPPLWebUserStore;
+    const isUserFile = !!(userStore && cur.model
+      && cur.model.indexOf(userStore.USER_PREFIX) === 0
+      && userStore.has(cur.model));
     const downloadBtn = document.getElementById('download-btn');
     const deleteBtn   = document.getElementById('delete-btn');
     if (downloadBtn) downloadBtn.hidden = !cur.model;
-    if (deleteBtn) {
-      const isUserFile = !!(userStore && cur.model
-        && cur.model.indexOf(userStore.USER_PREFIX) === 0
-        && userStore.has(cur.model));
-      deleteBtn.hidden = !isUserFile;
-    }
+    if (deleteBtn) deleteBtn.hidden = !isUserFile;
     // The whole-module graph view only makes sense for FlatPPL — hide it for
     // Markdown / hs3 / pyhf (and anything without a graph surface) so the
     // button doesn't promise a view those file types can't deliver.
@@ -159,6 +157,11 @@
       const type = window.FlatPPLWebSurfaces
         ? window.FlatPPLWebSurfaces.typeForPath(cur.model) : 'flatppl';
       showModuleBtn.hidden = !cur.model || type !== 'flatppl';
+    }
+    // The header filename is click/F2-renamable for user/ files only.
+    if (sourceHeader) {
+      sourceHeader.classList.toggle('renamable', isUserFile);
+      sourceHeader.title = isUserFile ? 'Rename (F2)' : '';
     }
   }
 
@@ -172,6 +175,82 @@
     if (!cur || !cur.model) return;
     if (!window.confirm('Delete "' + cur.model + '"? This cannot be undone.')) return;
     deleteUserFile(cur.model, /* navigateTo */ null);
+  }
+
+  /** Rename a user/ file to a new basename. The extension/type is kept
+   *  (renaming user/x.flatppl → user/x.md would silently swap the surface),
+   *  collisions are refused with a toast, and the active view follows the
+   *  file if it was the one renamed. Entry point for the tree context
+   *  menu, F2, and the inline-editable header. */
+  function renameUserFile(oldPath: any, newBase: any) {
+    const userStore = window.FlatPPLWebUserStore;
+    const S = window.FlatPPLWebSurfaces;
+    if (!userStore || !oldPath) return;
+    newBase = (newBase == null ? '' : String(newBase)).trim();
+    if (!newBase) return;
+    const newPath = userStore.USER_PREFIX + newBase;
+    if (newPath === oldPath) return;
+    if (S && S.typeForPath(newPath) !== S.typeForPath(oldPath)) {
+      showToast('Keep the same file extension when renaming.');
+      return;
+    }
+    if (userStore.has(newPath)) {
+      showToast('"' + newBase + '" already exists.');
+      return;
+    }
+    if (!userStore.rename(oldPath, newPath)) {
+      showToast('Rename failed.');
+      return;
+    }
+    const cur = window.FlatPPLWebRouter.parseHash();
+    if (cur && cur.model === oldPath) {
+      window.FlatPPLWebRouter.navigateTo({ model: newPath, target: cur.target || null });
+    }
+  }
+
+  /** Turn the source-pane header's filename into an inline editor for the
+   *  active user/ file (triggered by F2 or a click on the header). Enter
+   *  commits, Escape / blur cancels. No-op for read-only / non-user files.
+   *  The `user/` prefix shows as static text; only the basename is edited. */
+  function startHeaderRename() {
+    if (!sourceHeader) return;
+    const userStore = window.FlatPPLWebUserStore;
+    const cur = window.FlatPPLWebRouter.parseHash();
+    const model = cur && cur.model;
+    if (!userStore || !model
+        || model.indexOf(userStore.USER_PREFIX) !== 0 || !userStore.has(model)) return;
+    if (sourceHeader.querySelector('input')) return;  // already editing
+    const base = basenameOf(model);
+    const prevText = sourceHeader.textContent;
+    sourceHeader.textContent = '';
+    const prefix = document.createElement('span');
+    prefix.className = 'rename-prefix';
+    prefix.textContent = userStore.USER_PREFIX;       // "user/" shown static
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'rename-input';
+    input.value = base;
+    input.spellcheck = false;
+    sourceHeader.appendChild(prefix);
+    sourceHeader.appendChild(input);
+    input.focus();
+    const dot = base.lastIndexOf('.');
+    input.setSelectionRange(0, dot > 0 ? dot : base.length);   // select the stem
+    let done = false;
+    function finish(commit: boolean) {
+      if (done) return;
+      done = true;
+      const val = input.value;
+      // Restore the static header; a successful rename re-navigates and
+      // re-labels it anyway, so this only matters on cancel.
+      if (sourceHeader) sourceHeader.textContent = prevText;
+      if (commit) renameUserFile(model, val);
+    }
+    input.addEventListener('keydown', function (e: any) {
+      if (e.key === 'Enter') { e.preventDefault(); finish(true); }
+      else if (e.key === 'Escape') { e.preventDefault(); finish(false); }
+    });
+    input.addEventListener('blur', function () { finish(false); });
   }
 
   /** Click handler for the inline save (💾) icon next to a dirty
@@ -746,6 +825,13 @@
     });
     if (info.isUser) {
       items.push({
+        label: 'Rename',
+        action: function () {
+          const nb = window.prompt('Rename to:', basenameOf(info.path));
+          if (nb != null) renameUserFile(info.path, nb);
+        },
+      });
+      items.push({
         label: 'Delete',
         action: function () {
           if (!window.confirm('Delete "' + info.path + '"? This cannot be undone.')) return;
@@ -1103,6 +1189,20 @@
     sourceHeader = document.getElementById('source-header');
     fileTree     = document.getElementById('file-tree');
     titleEl      = document.getElementById('app-title');
+
+    // Inline rename of the active user/ file: click the header filename, or
+    // press F2 anywhere outside a form field. Both no-op for read-only /
+    // non-user files (gated inside startHeaderRename).
+    if (sourceHeader) {
+      sourceHeader.addEventListener('click', function () { startHeaderRename(); });
+    }
+    document.addEventListener('keydown', function (ev: any) {
+      if (ev.key !== 'F2') return;
+      const tag = ev.target && ev.target.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+      ev.preventDefault();
+      startHeaderRename();
+    });
 
     // Back / forward navigate through the browser's URL-hash
     // history. Hash navigation pushes entries automatically on every
