@@ -151,6 +151,15 @@
         && userStore.has(cur.model));
       deleteBtn.hidden = !isUserFile;
     }
+    // The whole-module graph view only makes sense for FlatPPL — hide it for
+    // Markdown / hs3 / pyhf (and anything without a graph surface) so the
+    // button doesn't promise a view those file types can't deliver.
+    const showModuleBtn = document.getElementById('show-module-btn');
+    if (showModuleBtn) {
+      const type = window.FlatPPLWebSurfaces
+        ? window.FlatPPLWebSurfaces.typeForPath(cur.model) : 'flatppl';
+      showModuleBtn.hidden = !cur.model || type !== 'flatppl';
+    }
   }
 
   function onDownloadClick() {
