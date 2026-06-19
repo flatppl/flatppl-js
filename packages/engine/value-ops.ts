@@ -890,10 +890,29 @@ const sub = _makeElementwiseBinop((a: any, b: any) => a - b, 'sub');
 // broadcasts via `_scalarBroadcastBinop`; shapes must otherwise
 // match.
 
+// Canonical spec-§07 integer arithmetic, shared by every dispatch path
+// (scalar sampler ARITH_OPS, aggregate-broadcast, IR constant-fold, and
+// the elementwise prims below) so they cannot drift apart.
+//
+//   floorMod(a, b) = a − b·⌊a/b⌋  — floor-modulo, result carries the SIGN
+//     OF THE DIVISOR: floorMod(-7, 3) === 2, distinct from JS truncated
+//     remainder (`-7 % 3 === -1`, sign of the dividend).
+//   floorDiv(a, b) = ⌊a/b⌋        — integer floor-division, distinct from
+//     real division `a/b` (the separate `divide` op / `/` operator).
+//
+// No `b === 0` guard (spec lists `b ≠ 0` as a precondition): a zero divisor
+// yields a non-finite IEEE result (mod → NaN; div → ±Inf for a ≠ 0, NaN for
+// 0/0), surfaced rather than masked.
+function floorMod(a: number, b: number): number { return a - b * Math.floor(a / b); }
+function floorDiv(a: number, b: number): number { return Math.floor(a / b); }
+
 const mulElem = _makeElementwiseBinop((a: any, b: any) => a * b, 'mulElem');
+// Real/complex division for the `divide` op (spec §07). The integer `div`
+// op routes to `floorDivElem` instead — kept separate so `divide` stays real.
 const divElem = _makeElementwiseBinop((a: any, b: any) => a / b, 'divElem');
+const floorDivElem = _makeElementwiseBinop((a: any, b: any) => floorDiv(a, b), 'floorDivElem');
 const powElem = _makeElementwiseBinop((a: any, b: any) => Math.pow(a, b), 'powElem');
-const modElem = _makeElementwiseBinop((a: any, b: any) => a % b, 'modElem');
+const modElem = _makeElementwiseBinop((a: any, b: any) => floorMod(a, b), 'modElem');
 
 // Unary elementwise factory: same shape as `_makeElementwiseBinop` but
 // for one-argument scalar functions. Applies `scalarFn` pointwise over
@@ -1865,8 +1884,11 @@ module.exports = {
   // dispatcher's fast path when the head is a known scalar primitive.
   mulElem,
   divElem,
+  floorDivElem,
   powElem,
   modElem,
+  floorMod,
+  floorDiv,
   expElem,
   logElem,
   sqrtElem,

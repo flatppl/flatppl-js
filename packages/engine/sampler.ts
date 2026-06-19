@@ -607,7 +607,9 @@ const ARITH_OPS = {
     }
     return a / b;
   },
-  mod: (a: any, b: any) => a % b,
+  // spec §07: mod(a, b) = a − b·⌊a/b⌋ (floor-modulo, sign of divisor),
+  // NOT JS `%` truncated remainder. Mirrors value-ops.floorMod.
+  mod: (a: any, b: any) => a - b * Math.floor(a / b),
   neg: (a: any) => {
     if (_isComplex(a)) return _cNeg(a);
     if (valueLib.isValue(a)) return valueOps.neg(a);

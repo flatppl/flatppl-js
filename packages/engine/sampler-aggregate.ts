@@ -1013,7 +1013,7 @@ const _AGG_BIN: Record<string, (x: number, y: number) => number> = {
   add:    (x, y) => x + y,
   sub:    (x, y) => x - y,
   mul:    (x, y) => x * y,
-  div:    (x, y) => x / y,
+  div:    (x, y) => Math.floor(x / y),   // spec §07 ⌊a/b⌋ (integer floor-division)
   divide: (x, y) => x / y,
   pow:    (x, y) => {
     // Math.pow is ~100 ns per call; for the common integer-exponent
@@ -1029,7 +1029,7 @@ const _AGG_BIN: Record<string, (x: number, y: number) => number> = {
     }
     return Math.pow(x, y);
   },
-  mod:    (x, y) => x % y,
+  mod:    (x, y) => x - y * Math.floor(x / y),   // spec §07 a − b·⌊a/b⌋ (floor-mod)
 };
 
 const _AGG_UN: Record<string, (x: number) => number> = {
