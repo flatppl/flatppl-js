@@ -29,6 +29,6 @@ if command -v code >/dev/null 2>&1; then
   echo "Installed. Reload VS Code (Command Palette -> Developer: Reload Window)."
 else
   echo "Downloaded $vsix, but 'code' is not on PATH." >&2
-  echo "Install manually: code --install-extension $vsix" >&2
+  echo "Install manually: code --install-extension \"$vsix\"" >&2
   exit 1
 fi

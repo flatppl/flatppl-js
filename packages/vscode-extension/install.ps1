@@ -7,7 +7,7 @@ $target = "win32-x64"
 $vsix = "flatppl-vscode-$target-nightly.vsix"
 
 Write-Host "Downloading $vsix ..."
-Invoke-WebRequest "$base/$vsix" -OutFile $vsix
+Invoke-WebRequest "$base/$vsix" -OutFile $vsix -UseBasicParsing
 
 if (Get-Command code -ErrorAction SilentlyContinue) {
   code --install-extension $vsix --force
