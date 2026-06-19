@@ -56,15 +56,15 @@ jobs:
           key: lsp-${{ matrix.target }}
 
       - name: Build flatppl-lsp
-        run: cargo build --release --locked -p flatppl-lsp --target ${{ matrix.target }}
+        run: cargo build --profile release-size --locked -p flatppl-lsp --target ${{ matrix.target }}
 
       - name: Stage binary under its triple name
         shell: bash
         run: |
           mkdir -p dist
           case "${{ matrix.target }}" in
-            *windows*) cp "target/${{ matrix.target }}/release/flatppl-lsp.exe" "dist/flatppl-lsp-${{ matrix.target }}.exe" ;;
-            *)         cp "target/${{ matrix.target }}/release/flatppl-lsp"     "dist/flatppl-lsp-${{ matrix.target }}" ;;
+            *windows*) cp "target/${{ matrix.target }}/release-size/flatppl-lsp.exe" "dist/flatppl-lsp-${{ matrix.target }}.exe" ;;
+            *)         cp "target/${{ matrix.target }}/release-size/flatppl-lsp"     "dist/flatppl-lsp-${{ matrix.target }}" ;;
           esac
 
       - name: Upload LSP binary artifact
