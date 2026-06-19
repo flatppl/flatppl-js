@@ -1452,8 +1452,8 @@ function _registerScalarLogicals(): void {
     pow: (a: any, b: any) => (_isC(a) || _isC(b))
       ? cx._cPow(cx._toComplex(a), cx._toComplex(b)) : Math.pow(a, b),
     // Family 4: pure-real binary / pairwise.
-    div: (a: any, b: any) => Math.floor(a / b),   // spec §07 ⌊a/b⌋
-    mod: (a: any, b: any) => a % b,
+    div: (a: any, b: any) => Math.floor(a / b),       // spec §07 ⌊a/b⌋
+    mod: (a: any, b: any) => a - b * Math.floor(a / b), // spec §07 a − b·⌊a/b⌋ (floor-mod)
     min: (a: any, b: any) => Math.min(a, b),
     max: (a: any, b: any) => Math.max(a, b),
     atan2: (y: any, x: any) => Math.atan2(y, x),
@@ -1513,7 +1513,9 @@ function _ensureBroadcastedRegistered(): void {
     // Binary multiplicative (spec has matrix semantics on rank ≥ 1;
     // engine primitives are separate elementwise impls).
     ['mul',    2, (vs) => vo.mulElem(vs[0], vs[1])],
-    ['div',    2, (vs) => vo.divElem(vs[0], vs[1])],
+    // `div` is integer floor-division (spec §07 ⌊a/b⌋) → floorDivElem;
+    // `divide` is real division → divElem. Distinct ops, kept separate.
+    ['div',    2, (vs) => vo.floorDivElem(vs[0], vs[1])],
     ['divide', 2, (vs) => vo.divElem(vs[0], vs[1])],
     ['pow',    2, (vs) => vo.powElem(vs[0], vs[1])],
     ['mod',    2, (vs) => vo.modElem(vs[0], vs[1])],
