@@ -41,6 +41,9 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import { hostTripleForNode, chooseLspSource } from './build-lsp-source.cjs';
+import { createRequire } from 'node:module';
+const _require = createRequire(import.meta.url);
+const { stubStdlibPlugin } = _require('./build-stdlib-stub.cjs');
 
 const here     = dirname(fileURLToPath(import.meta.url));   // packages/vscode-extension/
 const repoRoot = dirname(dirname(here));                     // flatppl-js/
@@ -328,6 +331,7 @@ const engineBuildOpts = {
   platform: 'browser',
   target: ['es2020'],
   legalComments: 'inline',
+  plugins: [stubStdlibPlugin],
   footer: {
     js: 'if(typeof module!=="undefined"&&module.exports){module.exports=FlatPPLEngine;}'
        + 'if(typeof globalThis!=="undefined"){globalThis.FlatPPLEngine=FlatPPLEngine;}',
