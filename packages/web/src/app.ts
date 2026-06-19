@@ -1310,15 +1310,12 @@
       });
     }
 
-    // Probe for the convert wasm artifact once at boot; reveal the Convert
-    // affordances only if present (the build may omit it — see
-    // provisionWasmConvert in build.mjs). HEAD avoids fetching the glue body.
-    fetch('vendor/flatppl_wasm_api.js', { method: 'HEAD' })
-      .then(function (r) {
-        convertAvailable = !!(r && r.ok);
-        if (convertAvailable) updateHeaderButtons();
-      })
-      .catch(function () { /* absent → convert stays disabled */ });
+    // Convert availability is decided at BUILD TIME — build-flags.js sets
+    // __FLATPPL_CONFIG__.convert (true when the build provisioned the wasm
+    // artifact; false for a FLATPPL_CONVERT=off build). No runtime probe: the
+    // flag and the artifact are produced together, so the UI never promises a
+    // command the build didn't ship.
+    convertAvailable = !!((window.__FLATPPL_CONFIG__ || {}).convert);
 
     // Source-pane header buttons for the currently-loaded file:
     //   Download — always visible when a file is loaded; same
