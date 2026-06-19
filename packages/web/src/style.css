@@ -545,6 +545,5 @@ html, body {
   justify-content: center;
   padding: 1rem;
   text-align: center;
-  opacity: 0.6;
-  font-style: italic;
+  opacity: 0.7;          /* normal font, just a quiet muted tone */
 }

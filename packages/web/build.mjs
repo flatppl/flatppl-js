@@ -52,7 +52,7 @@ const nm        = join(repoRoot, 'node_modules');
 // Later types (pyhf / HS3 / Stan / Julia / Python) are a one-line
 // extension here once their surfaces (or the convert command) land.
 // Declared at top-level so it's initialized before the manifest pass runs.
-const MODEL_EXTENSIONS = ['.flatppl', '.md', '.markdown'];
+const MODEL_EXTENSIONS = ['.flatppl', '.md', '.markdown', '.hs3.json', '.pyhf.json'];
 
 // flatppl-examples sibling: the natural sibling layout where developers
 // clone all FlatPPL repos next to each other. When this exists we copy
@@ -563,6 +563,8 @@ function modelTypeForPath(path) {
   const p = path.toLowerCase();
   if (p.endsWith('.flatppl')) return 'flatppl';
   if (p.endsWith('.md') || p.endsWith('.markdown')) return 'markdown';
+  if (p.endsWith('.hs3.json')) return 'hs3';
+  if (p.endsWith('.pyhf.json')) return 'pyhf';
   return 'unknown';
 }
 

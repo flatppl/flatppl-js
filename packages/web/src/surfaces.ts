@@ -42,13 +42,13 @@
     const p = String(path).toLowerCase();
     if (p.endsWith('.flatppl')) return 'flatppl';
     if (p.endsWith('.md') || p.endsWith('.markdown')) return 'markdown';
+    // Recognised but not (yet) given a visualising surface — they route to
+    // the placeholder via resolveSurface's fallback. Naming them as distinct
+    // types (rather than 'unknown') makes them uploadable AND reserves the
+    // slot for a future native pyhf / HS3 surface that just registers here.
+    if (p.endsWith('.hs3.json')) return 'hs3';
+    if (p.endsWith('.pyhf.json')) return 'pyhf';
     return 'unknown';
-  }
-
-  function escapeHtml(s: any): string {
-    return String(s == null ? '' : s)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;');
   }
 
   // ---- surfaces ------------------------------------------------------
@@ -110,11 +110,9 @@
   // reserved slot a future native surface drops into.
   function placeholderSurface(container: any, _ctx: any): any {
     return {
-      update: function (input: any) {
-        const name = input && input.fileName ? escapeHtml(input.fileName) : 'this file';
+      update: function (_input: any) {
         container.innerHTML =
-          '<div class="surface-placeholder"><p>No visualization for '
-          + name + ' yet.</p></div>';
+          '<div class="surface-placeholder"><p>No visualization available.</p></div>';
       },
       dispose: function () { try { container.innerHTML = ''; } catch (_) {} },
     };

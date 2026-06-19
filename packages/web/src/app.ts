@@ -817,10 +817,11 @@
   }
 
   /** Ingest a list of files (from an `<input type="file">` change
-   *  or a drag-drop on the file tree) into the user store. Files whose
-   *  type the gallery has a surface for (Phase 1: `.flatppl` + `.md`,
-   *  per surfaces.typeForPath) are accepted; everything else is silently
-   *  skipped with a single combined toast at the end. A 1 MB
+   *  or a drag-drop on the file tree) into the user store. Files of a
+   *  recognised type (`.flatppl`, `.md`, `.hs3.json`, `.pyhf.json` — per
+   *  surfaces.typeForPath; the last two render a placeholder for now) are
+   *  accepted; everything else is silently skipped with a single combined
+   *  toast at the end. A 1 MB
    *  per-file size cap protects localStorage's ~5 MB total quota.
    *  Collision-avoidance is delegated to userStore.pathForUpload
    *  so an existing `user/<basename>` doesn't get clobbered. The
@@ -875,7 +876,7 @@
   function onUploadClick() {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.flatppl,.md,.markdown';
+    input.accept = '.flatppl,.md,.markdown,.hs3.json,.pyhf.json';
     input.multiple = true;
     input.style.display = 'none';
     document.body.appendChild(input);
