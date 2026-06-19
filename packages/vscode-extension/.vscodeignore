@@ -12,3 +12,17 @@ package-lock.json
 
 # Build inputs — only build outputs (lib/* and grammars/*) ship in the vsix.
 build-vendor.mjs
+
+# --- non-runtime sources & build inputs (compiled outputs ship instead) ---
+# TypeScript sources/config: compiled into extension.js, src/*.js, lib/math.cjs.
+# No runtime require resolves to a .ts (the .js are the entrypoints).
+**/*.ts
+tsconfig.json
+types/
+
+# Build/CI helper: imported only by build-vendor.mjs + tests, never at runtime.
+build-lsp-source.cjs
+
+# Test suites + grammar test harness: run via `node --test`/CI, not by VSCode.
+test/
+grammars/textmate/test/
