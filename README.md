@@ -28,12 +28,24 @@ This monorepo contains:
 The monorepo is an npm workspace; root-level scripts fan out to every
 package via `--workspaces --if-present`.
 
-**Prerequisites:** Node.js + `npm`, and a Rust toolchain (`cargo`) — the
-build compiles the native `flatppl-lsp` (and, when convert is enabled, the
-`flatppl-wasm-api` wasm) from source; there is no prebuilt-binary download
-fallback. `cargo` builds the gallery's optional convert artifact too, which
-additionally needs `wasm-pack` + the `wasm32-unknown-unknown` target (or build
-the gallery convert-less with `FLATPPL_CONVERT=off`).
+**Prerequisites**
+
+- **Node.js + `npm`** — the workspace tooling.
+- **A Rust toolchain (`cargo`) on `PATH`** — the build compiles `flatppl-lsp`
+  (and the convert wasm) from source; there is no prebuilt-binary download
+  fallback. Without `cargo`, `npm run build` stops with an actionable error.
+- **The wasm toolchain — for the gallery's _Convert to FlatPPL_ (on by
+  default):** `wasm-pack` and the `wasm32-unknown-unknown` target on `PATH`. The
+  build uses them but never installs them — toolchain setup affects your whole
+  Rust installation, so it is left to you. One-time setup:
+
+  ```sh
+  rustup target add wasm32-unknown-unknown
+  cargo install wasm-pack
+  ```
+
+  Or build the gallery convert-less with `FLATPPL_CONVERT=off` (no wasm toolchain
+  needed).
 
 ```sh
 npm install                  # install all workspace deps

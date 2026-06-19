@@ -425,11 +425,14 @@ function watchDirDebounced(dir, options, onChange) {
   });
 }
 
-// flatppl-wasm-api convert artifact provisioning. Convert is REQUIRED by
-// default: provision the artifact (CI-staged dir → sibling wasm-pack build →
-// nightly download) and bake the build-time flag, OR FAIL THE BUILD with an
-// actionable message. No silent degradation — a build that exits 0 has a
-// PREDICTABLE convert state. Opt out explicitly with FLATPPL_CONVERT=off for a
+// flatppl-wasm-api convert artifact provisioning. Convert is ON by default:
+// copy a CI-staged artifact, else build it from the flatppl-rust sibling using
+// the wasm toolchain ON PATH (cargo + wasm-pack + the wasm32 target). The build
+// does NOT install any of that — adding a target / installing wasm-pack mutates
+// the user's whole Rust installation, which is their responsibility, not a
+// project build's. A missing prerequisite FAILS THE BUILD with the exact
+// one-time setup commands — no silent degradation, so a build that exits 0 has
+// a PREDICTABLE convert state. Opt out with FLATPPL_CONVERT=off for a
 // deterministic convert-less gallery. The page reads the flag from the
 // generated build-flags.js (no runtime probe).
 async function provisionWasmConvert() {
@@ -441,50 +444,49 @@ async function provisionWasmConvert() {
     console.log('  flatppl-wasm-api: convert DISABLED (FLATPPL_CONVERT=off)');
     return;
   }
-  const source = await tryProvisionWasm();
-  if (source) {
-    await writeConvertFlag(true);
-    console.log(`  flatppl-wasm-api: convert ENABLED (${source})`);
-    return;
-  }
-  throw new Error(
-    'flatppl-wasm-api: convert is required but its wasm artifact could not be provisioned.\n'
-    + '  Provide it one of these ways:\n'
-    + '    - install the wasm toolchain so it builds from the flatppl-rust sibling:\n'
-    + '        rustup target add wasm32-unknown-unknown && cargo install wasm-pack\n'
-    + '    - or point FLATPPL_WASM_DIR at a directory holding a prebuilt artifact\n'
-    + '  Or build a convert-less gallery explicitly:\n'
-    + '        FLATPPL_CONVERT=off npm run build');
-}
 
-// Place the convert artifact into dist/vendor/ from the first working source.
-// Returns a short description of that source, or null if none worked. Never
-// throws — the caller decides whether "none" is fatal.
-async function tryProvisionWasm() {
+  // (a) A CI-staged prebuilt artifact wins and needs no toolchain.
   const staged = process.env.FLATPPL_WASM_DIR;
   if (staged && existsSync(join(staged, WASM_GLUE))) {
     await copyFile(join(staged, WASM_GLUE), join(vendorDir, WASM_GLUE));
     await copyFile(join(staged, WASM_BIN), join(vendorDir, WASM_BIN));
-    return 'staged ' + staged;
+    await writeConvertFlag(true);
+    console.log(`  flatppl-wasm-api: convert ENABLED (staged ${staged})`);
+    return;
   }
+
+  // (b) Build from the flatppl-rust sibling, using the wasm toolchain ON PATH.
+  // The build NEVER installs it — `rustup target add` / `cargo install` mutate
+  // the user's whole Rust installation, which is the user's job, not a project
+  // build's. It uses what's on PATH and errors with the exact one-time setup
+  // commands when a piece is missing.
   const rustSibling = process.env.FLATPPL_RUST_DIR
     || join(dirname(repoRoot), 'flatppl-rust');
   const crateDir = join(rustSibling, 'crates', 'wasm-api');
-  if (existsSync(crateDir) && (await hasCmd('wasm-pack'))) {
-    const pkg = join(crateDir, 'pkg');
-    try {
-      await runCmd('wasm-pack', ['build', '--target', 'web', '--release',
-        '--no-typescript', '--out-dir', pkg, crateDir]);
-      await copyFile(join(pkg, WASM_GLUE), join(vendorDir, WASM_GLUE));
-      await copyFile(join(pkg, WASM_BIN), join(vendorDir, WASM_BIN));
-      return 'built from sibling flatppl-rust';
-    } catch (e) {
-      console.warn(`  flatppl-wasm-api: wasm-pack build failed (${e.message}); trying download`);
-    }
+  if (!existsSync(crateDir)) {
+    throw new Error(
+      'flatppl-wasm-api: convert is on but the wasm-api crate was not found at\n'
+      + `      ${crateDir}\n`
+      + '  Clone flatppl-rust as a sibling (or set FLATPPL_RUST_DIR), point '
+      + 'FLATPPL_WASM_DIR at a prebuilt artifact, or build convert-less with '
+      + 'FLATPPL_CONVERT=off.');
   }
-  // No prebuilt-download fallback (same no-magic stance as the LSP build):
-  // convert is built from source via wasm-pack, or staged, or it fails.
-  return null;
+  if (!(await hasCmd('wasm-pack'))) {
+    throw new Error(
+      'flatppl-wasm-api: wasm-pack not found on PATH — needed to build the convert '
+      + 'wasm. Set up the wasm build toolchain once yourself (the build will not '
+      + 'mutate your global Rust install):\n'
+      + '      rustup target add wasm32-unknown-unknown\n'
+      + '      cargo install wasm-pack\n'
+      + '  Or build convert-less with FLATPPL_CONVERT=off.');
+  }
+  const pkg = join(crateDir, 'pkg');
+  await runCmd('wasm-pack', ['build', '--target', 'web', '--release',
+    '--no-typescript', '--out-dir', pkg, crateDir]);
+  await copyFile(join(pkg, WASM_GLUE), join(vendorDir, WASM_GLUE));
+  await copyFile(join(pkg, WASM_BIN), join(vendorDir, WASM_BIN));
+  await writeConvertFlag(true);
+  console.log('  flatppl-wasm-api: convert ENABLED (built from sibling flatppl-rust)');
 }
 
 // Bake the build-time convert flag into the page (no runtime probe):
