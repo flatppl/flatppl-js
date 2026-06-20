@@ -14,6 +14,13 @@
 import type { Ctx } from './types';
 import { getMeasure } from './engine-facade.js';
 import { arrayInputLength, defaultRangeForLeafType, defaultValueForLeafType, filterOverrideToAxes, rangeFromSetDescriptor } from './util.js';
+
+// Sentinel preset name for the labelled `auto (MLE)` default point on
+// likelihood plots. ':' can't appear in a user binding identifier (same
+// trick as MODULE_TARGET), so it never collides with a real preset; its
+// base values come from ctx.modeCenterCache rather than matchedPresets.
+export const MLE_PRESET = ':mle';
+
 export function overrideEntryFor(ctx: Ctx, plan: any) {
   if (plan.presetName == null) return plan.autoOverride;
   return ctx.presetOverrides.get(plan.presetName) || null;
@@ -60,6 +67,14 @@ export function activePresetFor(ctx: Ctx, plan: any) {
 }
 
 export function baseValuesFor(ctx: Ctx, plan: any) {
+  // `auto (MLE)`: base values are the cached MLE point. If it isn't ready
+  // (pending / failed / cleared by a rebuild) return {} — effectiveInputValues
+  // then falls through to the prior-draw `auto`, so selecting MLE before it's
+  // computed degrades gracefully rather than blanking the pivot.
+  if (plan.presetName === MLE_PRESET) {
+    const e = ctx.modeCenterCache && ctx.modeCenterCache.get(plan.name);
+    return (e && e.status === 'ready' && e.values) ? e.values : {};
+  }
   if (plan.presetName != null && plan.matchedPresets) {
     for (let i = 0; i < plan.matchedPresets.length; i++) {
       if (plan.matchedPresets[i].name === plan.presetName) {
@@ -229,7 +244,12 @@ export function applyRememberedSelections(ctx: Ctx, plan: any) {
   }
   plan.autoOverride = filterOverrideToAxes(mem.autoOverride, axisKwargs, 'values');
   plan.domainAutoOverride = filterOverrideToAxes(mem.domainAutoOverride, axisKwargs, 'ranges');
-  if (mem.presetName != null
+  if (mem.presetName === MLE_PRESET) {
+    // `auto (MLE)` isn't a matchedPreset; restore it directly. If its cache
+    // entry was cleared (source edit), baseValuesFor falls through to the
+    // prior-draw `auto`, so this is always safe.
+    plan.presetName = MLE_PRESET;
+  } else if (mem.presetName != null
       && plan.matchedPresets
       && plan.matchedPresets.some(function(p: any) { return p.name === mem.presetName; })) {
     plan.presetName = mem.presetName;

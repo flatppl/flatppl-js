@@ -266,6 +266,15 @@ export interface Ctx {
    *  `fromAuto: true` indicates the range was computed by resolveSweepRange
    *  rather than user-set. */
   profileRangeCache: Map<string, { lo: number; hi: number; fromAuto?: boolean }>;
+  /** Per-binding MLE point for likelihood plots, populated best-effort in the
+   *  background (populateModeCache) and offered as the labelled `auto (MLE)`
+   *  preset. 'failed' (incl. timeout) → the option is omitted. Cleared on every
+   *  source rebuild. */
+  modeCenterCache?: Map<string, {
+    status: 'pending' | 'ready' | 'failed';
+    values?: Record<string, number>;
+    reason?: string;
+  }>;
   /** Memoised plan-selection state per binding name. */
   planMemoryByName: Map<string, any>;
   presetOverrides: Map<string, any>;

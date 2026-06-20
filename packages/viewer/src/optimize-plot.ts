@@ -40,12 +40,24 @@ function domainFromDescriptor(desc: any): any {
   return { kind: 'real' };
 }
 
+/** Result of computeMaximum: the fit plus the per-kwarg argmax (rounded for
+ *  integer axes), or a refusal carrying a user-facing message. */
+type MaxResult =
+  | { ok: true; fit: any;
+      free: Array<{ kwarg: string; param: string; isInt: boolean }>;
+      modeValues: Record<string, number> }
+  | { ok: false; message: string; hint?: boolean };
+
 /**
- * Run the optimizer for the current profile plan, mutate the plan's override
- * entry with the argmax, and invoke `rerender` to redraw. Resolves to a short
- * status string (also surfaced as a plot message). Errors are caught and shown.
+ * Optimise a profile plan's free scalar inputs from the current pivot and
+ * return the argmax (CMA-ES + FD polish) — WITHOUT touching the UI or the
+ * override store. Shared by two callers:
+ *   - runFindMaximum (the ⛰ button) writes the result as the modified pivot;
+ *   - populateModeCache caches it as the labelled `auto (MLE)` default point.
+ * Refusals (no free inputs / un-lowerable / marginalised) come back as
+ * { ok:false, message } so each caller decides whether to surface them.
  */
-export async function runFindMaximum(ctx: Ctx, plan: any, rerender: () => void): Promise<void> {
+export async function computeMaximum(ctx: Ctx, plan: any): Promise<MaxResult> {
   const sig = plan.signature;
   const mode = sig.kind === 'function' ? 'function' : 'logdensity';
   const dst = ctx.derivationsState!;
@@ -83,9 +95,8 @@ export async function runFindMaximum(ctx: Ctx, plan: any, rerender: () => void):
   }
 
   if (free.length === 0) {
-    showPlotMessage(ctx, 'Find maximum: no free scalar inputs to optimize '
-      + '(all inputs are <code>fixed(...)</code> or non-scalar).', { hint: true });
-    return;
+    return { ok: false, hint: true, message: 'Find maximum: no free scalar inputs '
+      + 'to optimize (all inputs are <code>fixed(...)</code> or non-scalar).' };
   }
 
   // --- 2. Objective IR (CLM lowering; free inputs left unbaked) ---------
@@ -112,20 +123,18 @@ export async function runFindMaximum(ctx: Ctx, plan: any, rerender: () => void):
       { boundaries, freeInputs: freeParams });
   } catch (e) { clmErr = e; }
   if (!clmNode) {
-    showPlotMessage(ctx, 'Find maximum: cannot lower <strong>' + esc(plan.name)
+    return { ok: false, message: 'Find maximum: cannot lower <strong>' + esc(plan.name)
       + '</strong> to a canonical measure'
-      + (clmErr ? ' — ' + esc(clmErr.message || String(clmErr)) : '') + '.');
-    return;
+      + (clmErr ? ' — ' + esc(clmErr.message || String(clmErr)) : '') + '.' };
   }
   ir = clmNode.body;
 
   // Marginalised (Monte-Carlo) targets: deferred to the next step (the K×M
   // density batch). Fail gracefully rather than silently mis-optimising.
   if (clmNode.mc) {
-    showPlotMessage(ctx, 'Find maximum: this target is internally marginalised '
-      + '(Monte-Carlo). Maximisation of marginalised targets lands in the next '
-      + 'step; closed-form functions and likelihoods work today.', { hint: true });
-    return;
+    return { ok: false, hint: true, message: 'Find maximum: this target is internally '
+      + 'marginalised (Monte-Carlo). Maximisation of marginalised targets lands in the '
+      + 'next step; closed-form functions and likelihoods work today.' };
   }
 
   // --- 3. Bake boundary (non-free) values + body self-refs --------------
@@ -192,7 +201,6 @@ export async function runFindMaximum(ctx: Ctx, plan: any, rerender: () => void):
   };
 
   // --- 5. Optimize ------------------------------------------------------
-  showPlotMessage(ctx, 'Finding maximum…', { hint: true });
   if (Object.keys(sessionEnv).length > 0) {
     await sendWorker(ctx, { type: 'setEnv', env: sessionEnv, merge: true });
   }
@@ -201,22 +209,87 @@ export async function runFindMaximum(ctx: Ctx, plan: any, rerender: () => void):
     opts: { seed: 0xf1a7, starts: free.length <= 4 ? 3 : 2 },
   });
 
-  // --- 6. Write the argmax back as the modified pivot ------------------
-  const entry = ensureOverrideFor(ctx, plan);
-  entry.values = Object.assign({}, entry.values || {});
+  const modeValues: Record<string, number> = {};
   for (let j = 0; j < free.length; j++) {
-    let mj = fit.mode[j];
-    if (free[j].isInt) mj = Math.round(mj);
-    entry.values[free[j].kwarg] = mj;
+    modeValues[free[j].kwarg] = free[j].isInt ? Math.round(fit.mode[j]) : fit.mode[j];
   }
+  return { ok: true, fit, free, modeValues };
+}
+
+/**
+ * The ⛰ "find maximum" button: optimise the free inputs and write the argmax
+ * as the modified pivot (Save to keep), then `rerender`. Refusals / errors
+ * surface as a plot message.
+ */
+export async function runFindMaximum(ctx: Ctx, plan: any, rerender: () => void): Promise<void> {
+  showPlotMessage(ctx, 'Finding maximum…', { hint: true });
+  const r = await computeMaximum(ctx, plan);
+  if (!r.ok) {
+    showPlotMessage(ctx, r.message, r.hint ? { hint: true } : undefined);
+    return;
+  }
+  const entry = ensureOverrideFor(ctx, plan);
+  entry.values = Object.assign({}, entry.values || {}, r.modeValues);
   setOverrideFor(ctx, plan, entry);
 
-  const where = free.map((f, j) => esc(f.kwarg) + ' = '
-    + formatScalar(free[j].isInt ? Math.round(fit.mode[j]) : fit.mode[j])).join(', ');
-  const noteBoundary = fit.boundaryActive && fit.boundaryActive.some((b: boolean) => b)
+  const mode = plan.signature.kind === 'function' ? 'function' : 'logdensity';
+  const where = r.free.map((f) => esc(f.kwarg) + ' = '
+    + formatScalar(r.modeValues[f.kwarg])).join(', ');
+  const noteBoundary = r.fit.boundaryActive && r.fit.boundaryActive.some((b: boolean) => b)
     ? ' (on a boundary)' : '';
   rerender();
   showPlotMessage(ctx, 'Maximum: ' + (mode === 'function' ? 'f' : 'log p') + ' = '
-    + formatScalar(fit.value) + ' at ' + where + noteBoundary
-    + ' — ' + fit.nBatches + ' batches. Save to keep.', { hint: true });
+    + formatScalar(r.fit.value) + ' at ' + where + noteBoundary
+    + ' — ' + r.fit.nBatches + ' batches. Save to keep.', { hint: true });
+}
+
+// Best-effort budget for the background MLE so a slow / pathological target
+// can't stall the labelled `auto (MLE)` default — on timeout we just fall back
+// to the normal prior-draw `auto` pivot.
+const MLE_TIMEOUT_MS = 4000;
+
+/**
+ * Populate `ctx.modeCenterCache[plan.name]` with the MLE point for a
+ * likelihood plot (obsIR-bearing), so buildPresetControl can offer a labelled
+ * `auto (MLE)` default. Best-effort and fire-and-forget: it runs AFTER the
+ * plot has been posted (the worker is FIFO, so the visible sweep goes first),
+ * races a timeout, and on failure OR timeout marks the entry 'failed' so the
+ * option simply never appears — the normal `auto` pivot remains. Idempotent
+ * per binding (the cache is cleared on every source rebuild).
+ */
+export function populateModeCache(ctx: Ctx, plan: any, rerender: () => void): void {
+  const sig = plan && plan.signature;
+  if (!sig || sig.obsIR == null) return;            // likelihoods only — see note
+  if (!ctx.modeCenterCache) ctx.modeCenterCache = new Map();
+  const name = plan.name;
+  if (ctx.modeCenterCache.has(name)) return;        // pending / ready / failed already
+  ctx.modeCenterCache.set(name, { status: 'pending' });
+
+  let timer: any = null;
+  const timeout = new Promise<{ kind: 'timeout' }>(function(res) {
+    timer = setTimeout(function() { res({ kind: 'timeout' }); }, MLE_TIMEOUT_MS);
+  });
+  const work = computeMaximum(ctx, plan)
+    .then(function(r) { return { kind: 'done' as const, r: r }; })
+    .catch(function(e) { return { kind: 'error' as const, e: e }; });
+
+  Promise.race([work, timeout]).then(function(outcome: any) {
+    if (timer) clearTimeout(timer);
+    const entry = ctx.modeCenterCache!.get(name);
+    if (!entry || entry.status !== 'pending') return;   // superseded by a rebuild
+    if (outcome.kind === 'done' && outcome.r.ok) {
+      ctx.modeCenterCache!.set(name, { status: 'ready', values: outcome.r.modeValues });
+      rerender();                                        // redraw so the row appears
+    } else {
+      const reason = outcome.kind === 'timeout' ? 'timeout'
+        : outcome.kind === 'error' ? 'error'
+        : (outcome.r && outcome.r.message) || 'refused';
+      ctx.modeCenterCache!.set(name, { status: 'failed', reason: reason });
+      // No rerender: nothing to show — the normal prior-draw `auto` stays.
+    }
+  }).catch(function() {
+    // Best-effort: a throwing rerender must not surface as an unhandled
+    // rejection. The cache entry is already settled; the normal auto pivot
+    // is always available regardless.
+  });
 }

@@ -14,7 +14,7 @@ import { buildDomainControl, buildPresetControl } from './render-controls.js';
 import { makeGlyphButton, setGlyphButtonEnabled, showPlotMessage } from './render-frame.js';
 import { arrayInputLength, defaultRangeForLeafType, defaultValueForLeafType, esc, formatScalar } from './util.js';
 import { sendWorker } from './worker.js';
-import { runFindMaximum } from './optimize-plot.js';
+import { populateModeCache, runFindMaximum } from './optimize-plot.js';
 import { runAutoDomain } from './autodomain.js';
 import { nameSeed } from './orchestration.js';
 import { renderPlotFrame } from './render-frame.js';
@@ -427,6 +427,10 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     if (!reply) return;
     if (ctx.currentPlotPlan !== planForCall) return;
     renderProfileLine(ctx, reply.samples, rangeRef[0], plan, sweepAxis);
+    // Plot is painted — now kick off the best-effort MLE for the labelled
+    // `auto (MLE)` default point (likelihoods only; no-op for functions /
+    // already-cached). The worker is FIFO so the visible sweep went first.
+    populateModeCache(ctx, plan, function() { renderProfilePlotForCurrent(ctx); });
   }).catch(function(err) {
     if (ctx.currentPlotPlan !== planForCall) return;
     showPlotMessage(ctx, 'Profile plot failed: ' + esc(err && err.message || String(err)));
@@ -458,16 +462,13 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
   // right of the domain selector — it acts on the RANGE. Both are wired here
   // as closures so they can be appended at those exact spots.
 
-  // ⛰ Find maximum — optimise the free inputs (CMA-ES + FD polish) from the
+  // Find maximum — optimise the free inputs (CMA-ES + FD polish) from the
   // current pivot; the argmax becomes the modified pivot (Save to keep).
   // ︎ forces text (monochrome) presentation of the mountain glyph so it
   // matches the toolbar rather than rendering as a colour emoji.
   function appendFindMaxButton(): void {
-    const maxBtn = makeGlyphButton('⛰︎',
-      'Find maximum — optimise the free inputs (CMA-ES) to maximise this '
-      + (isLogDensity ? 'log-likelihood' : 'function')
-      + ' from the current point. Inputs pinned with fixed(...) are held '
-      + 'constant; the result becomes the modified point (Save to keep).');
+    const maxBtn = makeGlyphButton('🏔',
+      'Find maximum, starting at current point');
     maxBtn.style.marginLeft = '0.3em';
     maxBtn.addEventListener('click', function() {
       if (maxBtn.disabled) return;
@@ -488,10 +489,7 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
   // pivot (the existing auto-fit frames the prior, so this re-centres the
   // plot after the point moves manually or via find-maximum).
   function appendAutoDomainButton(): void {
-    const fitBtn = makeGlyphButton('✨',
-      'Auto-fit domain — re-frame the x-axis range(s) around the current '
-      + 'point. Useful after moving the point (by hand or via find-maximum); '
-      + 'the new range becomes a domain override (Save to keep).');
+    const fitBtn = makeGlyphButton('✨', 'Auto-fit domain');
     fitBtn.style.marginLeft = '0.3em';
     fitBtn.addEventListener('click', function() {
       if (fitBtn.disabled) return;

@@ -15,6 +15,7 @@ export function rebuildDerivations(ctx: Ctx) {
     ctx.measureCache = new Map();
     ctx.histogramCache = new Map();
     ctx.profileRangeCache = new Map();
+    ctx.modeCenterCache = new Map();
     return;
   }
   try {
@@ -49,6 +50,8 @@ export function rebuildDerivations(ctx: Ctx) {
   ctx.measureCache = new Map();
   ctx.histogramCache = new Map();
   ctx.profileRangeCache = new Map();
+  // MLE points are downstream of the model + data; recompute next render.
+  ctx.modeCenterCache = new Map();
 
   // Reconcile module-wide preset overrides against the new
   // source. For each existing override:

@@ -6,7 +6,7 @@
 // to source, or reset to the source's declared values.
 
 import type { Ctx } from './types';
-import { computeAutoValues, hasDomainOverrides, hasOverrides, setDomainOverrideFor, setOverrideFor } from './overrides.js';
+import { MLE_PRESET, computeAutoValues, hasDomainOverrides, hasOverrides, setDomainOverrideFor, setOverrideFor } from './overrides.js';
 import { canPersistActive, canPersistDomain, persistActive, persistDomain } from './persist.js';
 import { makeActionButton } from './render-frame.js';
 import { domainBoundsText, presetValuesText } from './util.js';
@@ -18,6 +18,32 @@ type ControlEntry = {
   longLabel: string;
 };
 type OutsideClickHandler = ((ev: MouseEvent) => void) | null;
+
+/**
+ * The labelled `auto (MLE)` entry for likelihood plots, present only once the
+ * background optimiser (populateModeCache) has a mode for this binding. On
+ * failure / timeout the cache entry is 'failed' (or absent) and this returns
+ * null, so the option simply doesn't appear and the normal prior-draw `auto`
+ * stays the pivot. The MLE is a computed *base*, override-able like any preset
+ * (a dragged point shows `auto (MLE) (modified)` with a reset button).
+ */
+function mleControlEntry(ctx: Ctx, plan: any): ControlEntry | null {
+  const sig = plan && plan.signature;
+  if (!sig || sig.obsIR == null) return null;            // likelihoods only
+  const cached = ctx.modeCenterCache && ctx.modeCenterCache.get(plan.name);
+  if (!cached || cached.status !== 'ready' || !cached.values) return null;
+  const override = ctx.presetOverrides.get(MLE_PRESET);
+  const modified = !!(override && override.values
+    && Object.keys(override.values).length > 0);
+  const combined = Object.assign({}, cached.values, (override && override.values) || {});
+  const tag = modified ? ' (modified)' : '';
+  return {
+    name: MLE_PRESET,
+    modified: modified,
+    shortLabel: 'auto (MLE)' + tag,
+    longLabel: 'auto (MLE)' + tag + ': ' + presetValuesText(combined),
+  };
+}
 
 export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): DocumentFragment {
   const frag = document.createDocumentFragment();
@@ -49,6 +75,10 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): D
   }
 
   entries.push(buildEntry(null, autoValues, true));
+  // Labelled `auto (MLE)` sits right after `auto` when the background
+  // optimiser has a mode for this likelihood; absent otherwise.
+  const mleEntry = mleControlEntry(ctx, plan);
+  if (mleEntry) entries.push(mleEntry);
   for (let pi = 0; pi < presets.length; pi++) {
     entries.push(buildEntry(presets[pi].name, presets[pi].values || {}, false));
   }

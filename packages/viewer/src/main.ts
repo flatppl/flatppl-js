@@ -638,6 +638,8 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // resolveSweepRange (auto) vs. user-edited (override) — used
   // for tooltip / debug; the renderer treats both the same.
   ctx.profileRangeCache = new Map();
+  // Per-binding MLE point for likelihood plots (best-effort, background).
+  ctx.modeCenterCache = new Map();
   // Module-wide overrides on named preset (record-point) bindings.
   // Persists across binding navigation, so tuning pars1 on a
   // likelihood plot applies the same overrides when the user visits
