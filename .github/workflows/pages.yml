@@ -43,6 +43,8 @@ jobs:
       # flatppl-rust sibling for the convert wasm-api build (web/build.mjs
       # honours FLATPPL_RUST_DIR over the default ../flatppl-rust location).
       FLATPPL_RUST_DIR: ${{ github.workspace }}/.flatppl-rust
+      # Pinned so the wasm-pack cache key is stable and the install reproducible.
+      WASM_PACK_VERSION: '0.15.0'
     steps:
       - uses: actions/checkout@v7
 
@@ -68,13 +70,21 @@ jobs:
       - name: Install workspace dependencies
         run: npm ci
 
+      - name: Cache wasm-pack (skip the from-source rebuild on repeat runs)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-pack
+          key: wasm-pack-${{ runner.os }}-${{ env.WASM_PACK_VERSION }}
+
       - name: Install the wasm build toolchain (for the Convert command)
         # Convert is ON by default; the deployed gallery cross-compiles
         # flatppl-wasm-api to wasm32 from the flatppl-rust sibling. Add the
-        # wasm32 target + wasm-pack (cargo + rustup are preinstalled).
+        # wasm32 target, and build wasm-pack from source unless the cache above
+        # restored it (cargo + rustup are preinstalled).
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo install wasm-pack --locked
+          command -v wasm-pack >/dev/null \
+            || cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
 
       - name: Build web package
         run: npm run build --workspace=packages/web

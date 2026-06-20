@@ -34,6 +34,8 @@ jobs:
       # convert wasm-api (web build). build-vendor.mjs + web/build.mjs honour
       # FLATPPL_RUST_DIR over the default ../flatppl-rust sibling location.
       FLATPPL_RUST_DIR: ${{ github.workspace }}/.flatppl-rust
+      # Pinned so the wasm-pack cache key is stable and the install reproducible.
+      WASM_PACK_VERSION: '0.15.0'
     steps:
       - uses: actions/checkout@v7
 
@@ -99,15 +101,23 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      - name: Cache wasm-pack (skip the from-source rebuild on repeat runs)
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/wasm-pack
+          key: wasm-pack-${{ runner.os }}-${{ env.WASM_PACK_VERSION }}
+
       - name: Install the wasm build toolchain (for the Convert command)
         # Convert is ON by default; the web build cross-compiles
         # flatppl-wasm-api to wasm32 from the flatppl-rust sibling. cargo +
-        # rustup are preinstalled on the runner — add the wasm32 target and
-        # wasm-pack (built from source: no prebuilt download, matching the
-        # local build). The build itself never installs toolchain components.
+        # rustup are preinstalled on the runner — add the wasm32 target, and
+        # build wasm-pack from source (matching the local build's no-prebuilt
+        # stance) unless the cache above already restored it. The build itself
+        # never installs toolchain components.
         run: |
           rustup target add wasm32-unknown-unknown
-          cargo install wasm-pack --locked
+          command -v wasm-pack >/dev/null \
+            || cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
 
       - name: Build web package
         # End-to-end smoke: confirms the resolver, bundler, and
