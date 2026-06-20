@@ -237,6 +237,9 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         });
         // post.diagnostics is { acceptRate, perParam:{name:{rHat,essBulk}} } — attach as-is.
         nDraws = post.drawsByName[mv.names[0]].length;
+        // Record the TRUE draw count so the viewer shows it rather than the
+        // sampleCount the output is resampled to for plotting.
+        post.diagnostics.nSamples = nDraws;
         const total = total0 > 0 ? total0 : nDraws;
         idx = new Int32Array(total);
         for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;

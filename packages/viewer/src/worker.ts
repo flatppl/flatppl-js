@@ -177,6 +177,10 @@ function poolMeasures(measures: any[]): any {
     for (const a of arrs) { out.set(a, o); o += a.length; }
     return out;
   };
+  // True total draws across the pooled runs (each worker reports its own count),
+  // surfaced in the combined diagnostics so the viewer shows real draws, not the
+  // atom count the fields concatenate to (= sampleCount).
+  let nSamp = 0; for (const m of measures) nSamp += ((m.diagnostics || {}).nSamples || 0);
   const fields: any = {};
   for (const fn of Object.keys(first.fields)) {
     const parts = measures.map((m) => m.fields[fn]);
@@ -207,9 +211,9 @@ function poolMeasures(measures: any[]): any {
   // Elliptical slice: chains pooled like MH (R̂ worst, ESS summed via perParam
   // above), but keep the ess-slice tag + mode + mean shrinks for the readout.
   if (first.diagnostics && first.diagnostics.method === 'ess-slice') {
-    let shr = 0, k = 0; for (const m of measures) { const d = m.diagnostics || {}; if (Number.isFinite(d.meanShrinks)) { shr += d.meanShrinks; k++; } }
+    let shr = 0, k = 0, nS = 0; for (const m of measures) { const d = m.diagnostics || {}; if (Number.isFinite(d.meanShrinks)) { shr += d.meanShrinks; k++; } nS += (d.nSamples || 0); }
     return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
-      diagnostics: { method: 'ess-slice', mode: first.diagnostics.mode, meanShrinks: k > 0 ? shr / k : NaN, perParam } };
+      diagnostics: { method: 'ess-slice', mode: first.diagnostics.mode, meanShrinks: k > 0 ? shr / k : NaN, perParam, nSamples: nS } };
   }
   // AMIS is an importance sampler, not MCMC: report combined IS quality
   // (effective sample sizes add across independent runs) and the worst auto-K,
@@ -235,7 +239,7 @@ function poolMeasures(measures: any[]): any {
       diagnostics: { method: 'amis', ess: essSum, essFrac: nSum > 0 ? essSum / nSum : 0, K: kMax, nSamples: nSum, perParam } };
   }
   return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
-    diagnostics: { acceptRate: accSum / measures.length, perParam } };
+    diagnostics: { acceptRate: accSum / measures.length, perParam, nSamples: nSamp } };
 }
 
 // Run an MCMC posterior off the main thread, parallelised across a worker pool.
