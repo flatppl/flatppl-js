@@ -281,7 +281,12 @@ export interface Ctx {
    *  source rebuild. */
   modeCenterCache?: Map<string, {
     status: 'pending' | 'ready' | 'failed';
-    values?: Record<string, number>;
+    /** Per-kwarg MLE: a scalar input → number; an array input → number[]. */
+    values?: Record<string, number | number[]>;
+    /** Per-AXIS-KEY Laplace curvature std (x-space) at the MLE — keyed like
+     *  distributeAxes (`mu`, `theta[3]`) — the half-width a likelihood plot
+     *  uses to auto-frame each sweep axis's peak (mode ± k·sd). */
+    sd?: Record<string, number>;
     reason?: string;
   }>;
   /** Memoised plan-selection state per binding name. */

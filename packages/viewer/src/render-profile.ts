@@ -208,11 +208,19 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   // them via samples[0] of a materialised constant-atom measure
   // collapses array literals to a scalar and breaks every downstream
   // broadcast that consumes them.
-  const { perAtomNames: selfRefs } =
+  const { perAtomNames: allSelfRefs } =
     FlatPPLEngine.materialiser.classifyProfileSelfRefs(
       ir,
       ctx.derivationsState!.bindings,
       ctx.derivationsState!.fixedValues);
+  // CRITICAL: never bake the SWEPT parameter. classifyProfileSelfRefs returns
+  // every stochastic self-ref in the body — including the very parameter we are
+  // sweeping (a latent like `intercept` has a prior, so it looks random-phase).
+  // Baking it to samples[0] pins the swept axis at one prior draw (the pivot),
+  // so the profile is CONSTANT and the plot is a flat line (the longstanding
+  // "likelihood looks flat in basically all models"). The swept param must stay
+  // a live ref, driven per-grid-point by profileN's __sweep__ substitution.
+  const selfRefs = allSelfRefs.filter((n: any) => n !== sweepParamName);
   // Range resolution per (binding, axis, domain):
   //   1. Active domain has a range for the sweep kwarg (named
   //      source binding, override, or both) → use it.
@@ -231,10 +239,41 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   const domainRangeForSweep = domainRanges[plan.sweepKey]
     || (sweepAxis.kwargName ? domainRanges[sweepAxis.kwargName] : undefined);
   const cacheKey = plan.name + '|' + plan.sweepKey + '|D=' + (plan.domainName || '');
+  // A likelihood is a sharp spike; framing it with the prior-width auto-fit
+  // renders it flat (the longstanding "likelihood looks flat" complaint). When
+  // the background optimiser (populateModeCache) has a Laplace curvature width
+  // for this axis, frame the PEAK instead: mode ± k·sd, honouring the axis
+  // support. This takes priority OVER the cached prior-width auto-fit — the
+  // first render (MLE not ready yet) caches the wide range, and the rerender
+  // after the MLE lands must override that stale entry rather than reuse it.
+  const curvRange = (function(): [number, number] | null {
+    if (!sig || sig.obsIR == null) return null;        // likelihoods only
+    const mc = ctx.modeCenterCache && ctx.modeCenterCache.get(plan.name);
+    if (!mc || mc.status !== 'ready' || !mc.values || !mc.sd) return null;
+    const kw = sweepAxis.kwargName;
+    if (kw == null) return null;
+    // sd is keyed by AXIS key (`mu`, `theta[3]`); the mode value is per-kwarg —
+    // a vector for an array input, so index the swept slot.
+    const slot = (sweepAxis.path && sweepAxis.path.length > 0 && Array.isArray(sweepAxis.path[0].idx))
+      ? sweepAxis.path[0].idx[0] - 1 : -1;
+    const mv = mc.values[kw];
+    const c = slot >= 0 ? (Array.isArray(mv) ? mv[slot] : NaN) : (mv as number);
+    const hw = mc.sd[sweepAxis.key];
+    if (!Number.isFinite(c) || !Number.isFinite(hw) || !(hw > 0)) return null;
+    const K_SIGMA = 4;
+    const descr = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
+      sweepAxis.source, ctx.derivationsState && ctx.derivationsState.bindings);
+    const kind = (descr && descr.kind) || 'reals';
+    return FlatPPLEngine.orchestrator.pivotCenteredRange(
+      c, c - K_SIGMA * hw, c + K_SIGMA * hw, { kind });
+  })();
   let rangePromise;
   if (domainRangeForSweep) {
     rangePromise = Promise.resolve(
       [domainRangeForSweep.lo, domainRangeForSweep.hi]);
+  } else if (curvRange) {
+    ctx.profileRangeCache.set(cacheKey, { lo: curvRange[0], hi: curvRange[1], fromAuto: true });
+    rangePromise = Promise.resolve(curvRange);
   } else {
     const cached = ctx.profileRangeCache.get(cacheKey);
     rangePromise = cached
@@ -256,6 +295,14 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     const measures = arr[1];
     for (let i = 0; i < selfRefs.length; i++) {
       const m = measures[i];
+      // Don't clobber a value already held for this name. A non-swept plot
+      // axis (e.g. the latent `slope` while sweeping `intercept`) has its held
+      // value set above from the active preset — which for a likelihood is the
+      // MLE (mode). It is also a stochastic self-ref, so without this guard the
+      // samples[0] prior draw would overwrite the mode and the slice would pass
+      // through an arbitrary prior point, not the maximum. Only bake refs with
+      // no held value (true nuisance random parents not on an axis).
+      if (Object.prototype.hasOwnProperty.call(fixedEnv, selfRefs[i])) continue;
       if (m && m.samples && m.samples.length > 0) {
         fixedEnv[selfRefs[i]] = m.samples[0];
       }

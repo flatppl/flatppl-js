@@ -140,6 +140,28 @@ async function optimize(spec: any): Promise<any> {
   }
 
   const mode = coords.toX(coords.project(z));
+
+  // Per-axis marginal std in ORIGINAL (x) space — the Laplace curvature width
+  // a viewer plot uses to frame the peak (mode ± k·sd) instead of the much
+  // wider prior. `covariance` is the z-space (normalised) Laplace fit; map its
+  // per-axis 1σ displacement through the local coordinate jacobian (affine for
+  // reals/interval, log for posreals — so the symmetric z step gives the right
+  // x half-width even on the nonlinear axes). null when curvature is unavailable.
+  let sd: number[] | null = null;
+  if (covariance) {
+    const zc = coords.toZ(mode);
+    sd = covariance.map((row: number[], i: number) => {
+      const sz = Math.sqrt(Math.max(0, row[i]));
+      if (!(sz > 0) || !Number.isFinite(sz)) return 0;
+      const zp = zc.slice(); zp[i] += sz;
+      const zm = zc.slice(); zm[i] -= sz;
+      const xp = coords.toX(coords.project(zp))[i];
+      const xm = coords.toX(coords.project(zm))[i];
+      const w = 0.5 * Math.abs(xp - xm);
+      return Number.isFinite(w) ? w : 0;
+    });
+  }
+
   const boundaryActive = domains.map((d: any, i: number) => {
     if (d.kind !== 'interval') return false;
     const eps = 1e-6 * Math.max(1, Math.abs(d.hi - d.lo));
@@ -154,7 +176,7 @@ async function optimize(spec: any): Promise<any> {
   }
 
   return {
-    mode, value, covariance, curvatureSource, conditioning, boundaryActive,
+    mode, sd, value, covariance, curvatureSource, conditioning, boundaryActive,
     noisy: !!opts.noisy, scale: coords.scales.slice(),
     nEvals, nBatches, generations: bestRun.generations,
     terminationReason: bestRun.reason, optimizer: optName,
