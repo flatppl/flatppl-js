@@ -17,7 +17,7 @@ const assert = require('node:assert/strict');
 const { optimize, registerOptimizer } = require('../optimizer/optimize.ts');
 
 test('optimize finds the interior maximum over a box domain, with a Laplace covariance', async () => {
-  const evalCloud = async (cloud) => cloud.map(([x]) => -((x - 2) ** 2));
+  const evalCloud = async (cloud: number[][]) => cloud.map(([x]) => -((x - 2) ** 2));
   const fit = await optimize({
     evalCloud, x0: [0], domains: [{ kind: 'interval', lo: -5, hi: 5 }], scales: [5],
     opts: { seed: 1 },
@@ -31,7 +31,7 @@ test('optimize finds the interior maximum over a box domain, with a Laplace cova
 });
 
 test('optimize reaches a boundary maximum and flags it active', async () => {
-  const evalCloud = async (cloud) => cloud.map(([x]) => x); // increasing → max at hi
+  const evalCloud = async (cloud: number[][]) => cloud.map(([x]) => x); // increasing → max at hi
   const fit = await optimize({
     evalCloud, x0: [0.2], domains: [{ kind: 'interval', lo: 0, hi: 1 }], scales: [1],
     opts: { seed: 2 },
@@ -41,7 +41,7 @@ test('optimize reaches a boundary maximum and flags it active', async () => {
 });
 
 test('optimize over posreals finds a positive-domain maximum', async () => {
-  const evalCloud = async (cloud) => cloud.map(([x]) => -((x - 5) ** 2));
+  const evalCloud = async (cloud: number[][]) => cloud.map(([x]) => -((x - 5) ** 2));
   const fit = await optimize({
     evalCloud, x0: [1], domains: [{ kind: 'posreals' }], scales: [5], opts: { seed: 3 },
   });
@@ -51,7 +51,7 @@ test('optimize over posreals finds a positive-domain maximum', async () => {
 
 test('multi-start finds the global max of a bimodal objective from a bad start', async () => {
   // tall bump at +3 (value 2), short bump at -3 (value 1); start at the short one.
-  const evalCloud = async (cloud) => cloud.map(([x]) =>
+  const evalCloud = async (cloud: number[][]) => cloud.map(([x]) =>
     Math.max(2.0 - 0.5 * (x - 3) ** 2, 1.0 - 0.5 * (x + 3) ** 2));
   const fit = await optimize({
     evalCloud, x0: [-3], domains: [{ kind: 'interval', lo: -6, hi: 6 }], scales: [3],
@@ -63,11 +63,11 @@ test('multi-start finds the global max of a bimodal objective from a bad start',
 
 test('registerOptimizer makes a custom optimizer selectable via opts.optimizer', async () => {
   let seen = null;
-  registerOptimizer('stub', async (zspec) => {
+  registerOptimizer('stub', async (zspec: any) => {
     seen = zspec.x0.slice();
     return { x: zspec.x0.slice(), value: 0, evals: 1, generations: 1, reason: 'stub' };
   });
-  const evalCloud = async (cloud) => cloud.map(() => 0);
+  const evalCloud = async (cloud: number[][]) => cloud.map(() => 0);
   const fit = await optimize({
     evalCloud, x0: [1], domains: [{ kind: 'real' }], scales: [1],
     opts: { optimizer: 'stub', polish: false },

@@ -19,7 +19,7 @@ const { cmaes } = require('../optimizer/cmaes.ts');
 
 test('cmaes maximises a concave quadratic to its centre', async () => {
   const c = [2, -1];
-  const evalCloud = async (cloud) =>
+  const evalCloud = async (cloud: number[][]) =>
     cloud.map((x) => -((x[0] - c[0]) ** 2 + (x[1] - c[1]) ** 2));
   const res = await cmaes({ evalCloud, x0: [0, 0], sigma0: 1, opts: { seed: 1 } });
   assert.ok(Math.abs(res.x[0] - 2) < 1e-3, `x0=${res.x[0]}`);
@@ -31,7 +31,7 @@ test('cmaes maximises a concave quadratic to its centre', async () => {
 test('cmaes solves an ill-conditioned quadratic (covariance adaptation)', async () => {
   // condition number 1000 between the two axes — isotropic σ alone stalls;
   // the rank-µ/rank-one C update is what makes this converge.
-  const evalCloud = async (cloud) =>
+  const evalCloud = async (cloud: number[][]) =>
     cloud.map((x) => -(1000 * (x[0] - 3) ** 2 + (x[1] - 4) ** 2));
   const res = await cmaes({
     evalCloud, x0: [0, 0], sigma0: 1, opts: { seed: 2, maxGenerations: 500 },
@@ -41,7 +41,7 @@ test('cmaes solves an ill-conditioned quadratic (covariance adaptation)', async 
 });
 
 test('cmaes finds the 2-D Rosenbrock optimum at (1,1)', async () => {
-  const evalCloud = async (cloud) =>
+  const evalCloud = async (cloud: number[][]) =>
     cloud.map(([a, b]) => -(100 * (b - a * a) ** 2 + (1 - a) ** 2));
   const res = await cmaes({
     evalCloud, x0: [-1, 1], sigma0: 0.5, opts: { seed: 3, maxGenerations: 800 },
@@ -51,7 +51,7 @@ test('cmaes finds the 2-D Rosenbrock optimum at (1,1)', async () => {
 });
 
 test('cmaes is reproducible for a fixed seed', async () => {
-  const evalCloud = async (cloud) => cloud.map((x) => -(x[0] ** 2 + x[1] ** 2));
+  const evalCloud = async (cloud: number[][]) => cloud.map((x) => -(x[0] ** 2 + x[1] ** 2));
   const a = await cmaes({ evalCloud, x0: [3, 3], sigma0: 1, opts: { seed: 7 } });
   const b = await cmaes({ evalCloud, x0: [3, 3], sigma0: 1, opts: { seed: 7 } });
   assert.equal(a.x[0], b.x[0]);
@@ -60,7 +60,7 @@ test('cmaes is reproducible for a fixed seed', async () => {
 
 test('cmaes treats NaN / -Inf fitness as worst (stays in the feasible region)', async () => {
   // A quadratic peak at (1,1), but the half-plane x0<0 is "invalid" (-Inf).
-  const evalCloud = async (cloud) => cloud.map((x) =>
+  const evalCloud = async (cloud: number[][]) => cloud.map((x) =>
     x[0] < 0 ? -Infinity : -((x[0] - 1) ** 2 + (x[1] - 1) ** 2));
   const res = await cmaes({ evalCloud, x0: [0.5, 0.5], sigma0: 0.5, opts: { seed: 4 } });
   assert.ok(res.x[0] >= 0, `stayed feasible: x0=${res.x[0]}`);

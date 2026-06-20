@@ -14,7 +14,7 @@ const assert = require('node:assert/strict');
 
 const la = require('../optimizer/linalg.ts');
 
-function matvec(A, v) {
+function matvec(A: any, v: any) {
   const n = A.length;
   const out = new Array(n).fill(0);
   for (let i = 0; i < n; i++) for (let j = 0; j < n; j++) out[i] += A[i][j] * v[j];
@@ -23,7 +23,7 @@ function matvec(A, v) {
 
 test('symEig: diagonal matrix returns its diagonal as eigenvalues', () => {
   const { values } = la.symEig([[3, 0], [0, 7]]);
-  const sorted = values.slice().sort((a, b) => a - b);
+  const sorted = values.slice().sort((a: number, b: number) => a - b);
   assert.ok(Math.abs(sorted[0] - 3) < 1e-9, `got ${sorted[0]}`);
   assert.ok(Math.abs(sorted[1] - 7) < 1e-9, `got ${sorted[1]}`);
 });
@@ -35,18 +35,18 @@ test('symEig: satisfies the eigen-equation A·vⱼ = λⱼ·vⱼ with orthonorma
   const n = 3;
   // Each column j of `vectors` is an eigenvector for values[j].
   for (let j = 0; j < n; j++) {
-    const vj = vectors.map((row) => row[j]);
+    const vj = vectors.map((row: any) => row[j]);
     const Av = matvec(A, vj);
     for (let i = 0; i < n; i++) {
       assert.ok(Math.abs(Av[i] - values[j] * vj[i]) < 1e-7,
         `eigen-eq fail col ${j} row ${i}: ${Av[i]} vs ${values[j] * vj[i]}`);
     }
     // unit norm
-    const norm2 = vj.reduce((s, x) => s + x * x, 0);
+    const norm2 = vj.reduce((s: number, x: number) => s + x * x, 0);
     assert.ok(Math.abs(norm2 - 1) < 1e-7, `vector ${j} not unit: ${norm2}`);
   }
   // columns orthogonal
-  const dot01 = vectors.reduce((s, row) => s + row[0] * row[1], 0);
+  const dot01 = vectors.reduce((s: number, row: any) => s + row[0] * row[1], 0);
   assert.ok(Math.abs(dot01) < 1e-7, `cols 0,1 not orthogonal: ${dot01}`);
 });
 
