@@ -148,7 +148,7 @@ export function setPlotEnabled(ctx: Ctx, enabled: any) {
   plot.style.flex = '';
   // Persist across panel reopens. VS Code restores webview state
   // automatically when the panel is shown again.
-  if (ctx.host.saveState) { try { ctx.host.saveState({ plotEnabled: ctx.plotEnabled }); } catch (_) {} }
+  if (ctx.host.saveState) { try { ctx.host.saveState({ plotEnabled: ctx.plotEnabled, inferenceOpts: ctx.inferenceOpts }); } catch (_) {} }
   if (ctx.plotEnabled) {
     // Render whatever the current plan says — including the
     // "not plottable" message if the focused binding isn't

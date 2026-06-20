@@ -378,6 +378,7 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
     sampleCount: count,
     rootSeed:    seed != null ? seed : ctx.rootSeed,
     rejectionBudget: ctx.REJECTION_BUDGET,
+    inferenceOpts: ctx.inferenceOpts,
   };
   return FlatPPLEngine.materialiser.materialiseMeasureIR(ir, matCtx);
 }
@@ -408,6 +409,7 @@ export function materialiseAppliedKernelByName(ctx: Ctx, applied: any, count: nu
     rootSeed:    seed != null ? seed : ctx.rootSeed,
     rootKey:     seed != null ? seed : ctx.rootSeed,
     rejectionBudget: ctx.REJECTION_BUDGET,
+    inferenceOpts: ctx.inferenceOpts,
   };
   return matCtx.getMeasure(applied.name);
 }

@@ -376,6 +376,37 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
     // only appears when it actually carries information
     // (importance-reweighted measures: bayesupdate / weighted /
     // logweighted / posterior outputs).
+    //
+    // MCMC posterior (backend mh / emcee): equal-weight draws (so kHat is NaN,
+    // the IS readout below is skipped) carrying a `diagnostics` object instead.
+    // Surface acceptance + the worst-across-parameters split-R̂ / bulk-ESS,
+    // colour-coded with the same is-quality classes as the IS readout.
+    if (measure && measure.diagnostics) {
+      const d = measure.diagnostics;
+      const pp = d.perParam || {};
+      let maxRhat = 0, minEss = Infinity;
+      for (const k of Object.keys(pp)) {
+        if (Number.isFinite(pp[k].rHat)) maxRhat = Math.max(maxRhat, pp[k].rHat);
+        if (Number.isFinite(pp[k].essBulk)) minEss = Math.min(minEss, pp[k].essBulk);
+      }
+      const label = (maxRhat <= 1.01 && minEss >= 400) ? 'good'
+                  : (maxRhat <= 1.05 && minEss >= 100) ? 'ok'
+                  : (maxRhat <= 1.10)                  ? 'bad'
+                  :                                      'unusable';
+      const acc = Number.isFinite(d.acceptRate) ? (d.acceptRate * 100).toFixed(0) + '%' : '—';
+      const rh  = maxRhat > 0 ? maxRhat.toFixed(3) : '—';
+      const es  = Number.isFinite(minEss) ? formatSampleCount(Math.round(minEss)) : '—';
+      const mc = document.createElement('span');
+      mc.className = 'is-quality is-' + label;
+      mc.textContent = 'accept ' + acc + ', R̂ ' + rh + ', ESS ' + es;
+      mc.title = 'MCMC diagnostics (worst across parameters):'
+        + '\nacceptance rate ' + acc
+        + '\nmax split-R̂ ' + rh + ' (want < 1.01)'
+        + '\nmin bulk ESS ' + es;
+      wrap.appendChild(mc);
+      return wrap;
+    }
+
     if (!Number.isFinite(q.kHat)) return wrap;
 
     const diag = document.createElement('span');

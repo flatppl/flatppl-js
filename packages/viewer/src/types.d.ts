@@ -205,6 +205,10 @@ export interface Ctx {
    *  SAMPLE_COUNT. VS Code: flatppl.visualization.marginalizationSampleCount. */
   MARGINALIZATION_COUNT: number;
   REJECTION_BUDGET: number;
+  /** Inference backend + knobs for posterior (bayesupdate) measures. The
+   *  engine's matBayesupdate reads this off the matCtx; 'is' (default) is the
+   *  importance-sampling path, 'mh'/'emcee' run the MCMC driver. */
+  inferenceOpts: { backend: string; chains: number; walkers: number | null; warmup: number; draws: number; seed: number | null };
   SAMPLER_WORKER_URL: string;
   HISTORY_CAP: number;
   CORRELATIONS_MAX_AXES: number;

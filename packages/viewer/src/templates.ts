@@ -40,7 +40,7 @@ body {
 
    Heights subtract header(~32px) + info(60px). */
 #plot-toggle {
-  margin-left: auto;
+  margin-left: 0.4em;
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
   border: 1px solid var(--vscode-button-border, transparent);
@@ -325,6 +325,7 @@ export var VIEWER_BODY_HTML = `
 <div id="header">
 <button id="back-btn">&larr; Back</button>
 <span id="header-expr"></span>
+<span id="inference-controls"></span>
 <button id="plot-toggle" title="Toggle the plot panel">Plot: off</button>
 </div>
 <div id="main">

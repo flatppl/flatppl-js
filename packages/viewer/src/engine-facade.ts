@@ -44,6 +44,10 @@ export function getMeasure(ctx: Ctx, name: any) {
     sampleCount: ctx.SAMPLE_COUNT,
     rootSeed:    ctx.rootSeed,
     rejectionBudget: ctx.REJECTION_BUDGET,
+    // Posterior backend selection (read by the engine's matBayesupdate).
+    // Propagated to child materialisations too; only bayesupdate bindings act
+    // on it, so forward measures are unaffected.
+    inferenceOpts: ctx.inferenceOpts,
   });
   promise.then(function(m: any) { ctx.measureCache.set(name, m); });
   return promise;
