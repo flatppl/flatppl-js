@@ -88,6 +88,45 @@ export function makeActionButton(ctx: Ctx, iconKey: any, title: any) {
   return b;
 }
 
+/**
+ * Action button whose face is a Unicode glyph rather than a codicon SVG.
+ * Same subtle styling as `makeActionButton` so the two read as one button
+ * family in the toolbar. Used for the profile-plot "find maximum" (⛰) and
+ * "auto-fit domain" (✨) actions, which sit next to the input / domain
+ * selectors. Disabling drops opacity and blocks pointer events; re-enable
+ * with `setGlyphButtonEnabled`.
+ */
+export function makeGlyphButton(glyph: string, title: string) {
+  const b = document.createElement('button');
+  b.type = 'button';
+  b.title = title;
+  b.setAttribute('aria-label', title);
+  b.style.background = 'transparent';
+  b.style.color = 'var(--vscode-foreground, #cccccc)';
+  b.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
+  b.style.borderRadius = '3px';
+  b.style.padding = '1px 5px';
+  b.style.display = 'inline-flex';
+  b.style.alignItems = 'center';
+  b.style.justifyContent = 'center';
+  b.style.cursor = 'pointer';
+  b.style.opacity = '0.75';
+  b.style.fontSize = '1.05em';
+  b.style.lineHeight = '1';
+  b.textContent = glyph;
+  b.addEventListener('mouseenter', function() { if (!b.disabled) b.style.opacity = '1'; });
+  b.addEventListener('mouseleave', function() { if (!b.disabled) b.style.opacity = '0.75'; });
+  return b;
+}
+
+/** Toggle a glyph action button's enabled state (used while its async
+    action runs so it can't be double-fired). */
+export function setGlyphButtonEnabled(b: HTMLButtonElement, enabled: boolean) {
+  b.disabled = !enabled;
+  b.style.opacity = enabled ? '0.75' : '0.4';
+  b.style.pointerEvents = enabled ? '' : 'none';
+}
+
 export function setPlotEnabled(ctx: Ctx, enabled: any) {
   ctx.plotEnabled = !!enabled;
   const plot    = $('plot-panel');

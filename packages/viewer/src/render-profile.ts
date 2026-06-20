@@ -11,10 +11,11 @@ import { tryGetMeasure } from './engine-facade.js';
 import { activeDomainRangesFor, activeFixedNamesFor, activeInputDomain, activeInputValues, activePresetFor, computeAutoValues, ensureDomainOverrideFor, ensureOverrideFor, resolveSweepRange, setDomainOverrideFor, setOverrideFor } from './overrides.js';
 import { colorForBinding } from './palette.js';
 import { buildDomainControl, buildPresetControl } from './render-controls.js';
-import { showPlotMessage } from './render-frame.js';
+import { makeGlyphButton, setGlyphButtonEnabled, showPlotMessage } from './render-frame.js';
 import { arrayInputLength, defaultRangeForLeafType, defaultValueForLeafType, esc, formatScalar } from './util.js';
 import { sendWorker } from './worker.js';
 import { runFindMaximum } from './optimize-plot.js';
+import { runAutoDomain } from './autodomain.js';
 import { nameSeed } from './orchestration.js';
 import { renderPlotFrame } from './render-frame.js';
 import { plotZoomOptions } from './util.js';
@@ -451,39 +452,60 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
   // surfaces the values being used.
   const hasInputs = plan.axes && plan.axes.length > 0;
   const hasMultiOutput = plan.outputs && plan.outputs.length > 1;
-  // "Find maximum" — optimise the free inputs (CMA-ES + FD polish) to
-  // maximise this function / likelihood from the current pivot; the argmax
-  // becomes the modified pivot (Save to keep). Leftmost in the toolbar.
-  if (hasInputs) {
-    const maxBtn = document.createElement('button');
-    maxBtn.type = 'button';
-    maxBtn.textContent = '⤒ Find max';
-    maxBtn.title = 'Find maximum — optimise the free inputs (CMA-ES) to maximise this '
+  // Two glyph action buttons sit beside the input / domain selectors (built
+  // below in the `hasInputs` block): a "find maximum" button right of the
+  // input selector — it acts on the POINT — and an "auto-fit domain" button
+  // right of the domain selector — it acts on the RANGE. Both are wired here
+  // as closures so they can be appended at those exact spots.
+
+  // ⛰ Find maximum — optimise the free inputs (CMA-ES + FD polish) from the
+  // current pivot; the argmax becomes the modified pivot (Save to keep).
+  // ︎ forces text (monochrome) presentation of the mountain glyph so it
+  // matches the toolbar rather than rendering as a colour emoji.
+  function appendFindMaxButton(): void {
+    const maxBtn = makeGlyphButton('⛰︎',
+      'Find maximum — optimise the free inputs (CMA-ES) to maximise this '
       + (isLogDensity ? 'log-likelihood' : 'function')
-      + ' from the current point. Inputs pinned with fixed(...) are held constant; '
-      + 'the result becomes the modified point (Save to keep).';
-    maxBtn.style.cursor = 'pointer';
-    maxBtn.style.background = 'var(--vscode-button-background, #0e639c)';
-    maxBtn.style.color = 'var(--vscode-button-foreground, #ffffff)';
-    maxBtn.style.border = '1px solid var(--vscode-button-border, transparent)';
-    maxBtn.style.borderRadius = '3px';
-    maxBtn.style.padding = '2px 8px';
-    maxBtn.style.fontSize = '1em';
-    maxBtn.style.marginRight = '0.5em';
+      + ' from the current point. Inputs pinned with fixed(...) are held '
+      + 'constant; the result becomes the modified point (Save to keep).');
+    maxBtn.style.marginLeft = '0.3em';
     maxBtn.addEventListener('click', function() {
       if (maxBtn.disabled) return;
-      maxBtn.disabled = true;
-      maxBtn.style.opacity = '0.6';
+      setGlyphButtonEnabled(maxBtn, false);
       Promise.resolve(runFindMaximum(ctx, plan, function() {
         renderProfilePlotForCurrent(ctx);
       })).catch(function(err: any) {
         showPlotMessage(ctx, 'Find maximum failed: '
           + esc(err && err.message || String(err)));
       }).then(function() {
-        maxBtn.disabled = false; maxBtn.style.opacity = '1';
+        setGlyphButtonEnabled(maxBtn, true);
       });
     });
     frag.appendChild(maxBtn);
+  }
+
+  // ✨ Auto-fit domain — re-frame each axis's x-range around the current
+  // pivot (the existing auto-fit frames the prior, so this re-centres the
+  // plot after the point moves manually or via find-maximum).
+  function appendAutoDomainButton(): void {
+    const fitBtn = makeGlyphButton('✨',
+      'Auto-fit domain — re-frame the x-axis range(s) around the current '
+      + 'point. Useful after moving the point (by hand or via find-maximum); '
+      + 'the new range becomes a domain override (Save to keep).');
+    fitBtn.style.marginLeft = '0.3em';
+    fitBtn.addEventListener('click', function() {
+      if (fitBtn.disabled) return;
+      setGlyphButtonEnabled(fitBtn, false);
+      Promise.resolve(runAutoDomain(ctx, plan, function() {
+        renderProfilePlotForCurrent(ctx);
+      })).catch(function(err: any) {
+        showPlotMessage(ctx, 'Auto-fit domain failed: '
+          + esc(err && err.message || String(err)));
+      }).then(function() {
+        setGlyphButtonEnabled(fitBtn, true);
+      });
+    });
+    frag.appendChild(fitBtn);
   }
   // Output selector — appears for callables whose specialized
   // output is multi-leaf (record / tuple / array). Single-leaf
@@ -559,12 +581,18 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
     frag.appendChild(buildPresetControl(ctx, plan, function() {
       renderProfilePlotForCurrent(ctx);
     }));
+    // Find-maximum acts on the POINT (the input/preset selector) → sits
+    // immediately to its right.
+    appendFindMaxButton();
     // Domain selector — same row, drives x-axis ranges from
     // cartprod(...) bindings. Falls back to a no-op fragment when
     // the binding has no axes; we already returned early for that.
     frag.appendChild(buildDomainControl(ctx, plan, function() {
       renderProfilePlotForCurrent(ctx);
     }));
+    // Auto-fit domain acts on the RANGE (the domain selector) → sits
+    // immediately to its right.
+    appendAutoDomainButton();
   }
   // The lo/hi limit inputs live under the plot now (see
   // buildProfileBottomRow). The toolbar carries only the axis
