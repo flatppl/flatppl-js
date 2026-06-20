@@ -38,7 +38,6 @@ const {
   foldIn,
   randSplitLanes,
   philoxNUniform,
-  philoxNNormal,
   _internal: { mulhilo32 },
 } = require('../rng.ts');
 
@@ -571,37 +570,10 @@ test('philoxNUniform: partial-block sizes match scalar prefix', () => {
 });
 
 // ---------------------------------------------------------------------
-// philoxNNormal — bulk Box-Muller fast-path. NOT bit-equivalent to
-// scalar nextNormal; only a moments-based smoke test.
+// Normal sampling is not an rng.ts primitive — it lives in the sampler
+// registry (one uniform per draw through Φ⁻¹). Its scalar-vs-batched
+// bit-exactness is pinned in sampler-batched.test.ts, not here.
 // ---------------------------------------------------------------------
-
-test('philoxNNormal: 1000-sample mean ≈ 0, variance ≈ 1', () => {
-  const state = stateFromKey(0xFEEDFACE, 0x0BADCAFE);
-  const n = 1000;
-  const { out } = philoxNNormal(state, n);
-  assert.equal(out.length, n);
-
-  let sum = 0;
-  for (let i = 0; i < n; i++) sum += out[i];
-  const mean = sum / n;
-
-  let sqsum = 0;
-  for (let i = 0; i < n; i++) {
-    const d = out[i] - mean;
-    sqsum += d * d;
-  }
-  const variance = sqsum / n;
-
-  // 1000 draws from N(0,1): σ_mean = 1/√n ≈ 0.0316, so 3σ ≈ 0.095.
-  // The |mean| < 0.1 envelope is just outside 3σ — comfortable for a CI
-  // test, fails on outright distributional bugs.
-  assert.ok(Math.abs(mean) < 0.1,
-    `sample mean ${mean} outside |mean| < 0.1 envelope`);
-  // Sample-variance σ for N(0,1) is √(2/n) ≈ 0.045 at n=1000; ~3σ ≈ 0.135.
-  // |var - 1| < 0.15 sits just outside 3σ — same rationale.
-  assert.ok(Math.abs(variance - 1) < 0.15,
-    `sample variance ${variance} outside |var - 1| < 0.15 envelope`);
-});
 
 // ---------------------------------------------------------------------
 // keyFromSeed — derives a PhiloxKey from a numeric seed or byte vector.
