@@ -25,6 +25,7 @@ const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
+const diagnostics  = require('./diagnostics.ts');
 
 const {
   nameSeed,
@@ -171,24 +172,23 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       draws:   o.draws   || 1000,
       seed:    (o.seed ?? 0),
     });
-    const diag = require('./diagnostics.ts');
     // Compute per-latent diagnostics from per-chain draw arrays.
     const perParam: any = {};
     for (const nm of mv.names) {
       const paramChains: Float64Array[] = post.chains[nm];
       perParam[nm] = {
-        rHat:     diag.splitRHat(paramChains),
-        essBulk:  diag.essBulk(paramChains),
+        rHat:     diagnostics.splitRHat(paramChains),
+        essBulk:  diagnostics.essBulk(paramChains),
       };
     }
-    const diagnostics = { acceptRate: post.acceptRate, perParam };
+    const diagResult = { acceptRate: post.acceptRate, perParam };
     if (mv.dim === 1) {
       // Single-latent: scalar measure with equal weights.
       const nm = mv.names[0];
       const m = scalarMeasureN(post.drawsByName[nm], {
         logWeights: null, logTotalmass: 0, n_eff: post.drawsByName[nm].length,
       });
-      m.diagnostics = diagnostics;
+      m.diagnostics = diagResult;
       return Promise.resolve(m);
     }
     // Multi-latent: record measure, one scalar field per latent.
@@ -199,7 +199,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       });
     }
     const recM = empirical.recordMeasure(fields, null);
-    recM.diagnostics = diagnostics;
+    recM.diagnostics = diagResult;
     return Promise.resolve(recM);
   }
 

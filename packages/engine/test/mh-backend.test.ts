@@ -107,39 +107,28 @@ test('mh result carries diagnostics with acceptRate and rHat', async () => {
   assert.ok(Number.isFinite(essBulk) && essBulk > 0, `essBulk ${essBulk} should be positive finite`);
 });
 
-test('mismatched kwarg name throws rather than silently using 0', async () => {
+test('mismatched kwarg name throws rather than silently using 0', () => {
+  // Exercise the REAL guard in model-spec.ts buildPosteriorSpec's logLikelihood.
+  // Parse the canonical conjugate model, extract the real bayesupdate derivation,
+  // call buildPosteriorSpec(d, ctx) to get the production logLikelihood, then
+  // assert it throws when theta is missing the required kwarg 'mu'.
   const modelSpec = require('../model-spec.ts');
-  // Build a minimal spec with a kwarg name that does not appear in theta.
-  const fakeSpec = {
-    latents: [],
-    logLikelihood: null as any,
-  };
-  // Directly test buildPosteriorSpec's logLikelihood with a mismatched kwarg.
-  // Construct a dummy logLikelihood that has paramNames=['mu'] but theta has key 'x'.
-  // We do this by calling the guard path directly via a reconstructed function.
-  const paramNames = ['mu'];
-  function logLikelihoodWithGuard(theta: any) {
-    for (const nm of paramNames) {
-      if (!(nm in theta)) {
-        throw new Error(
-          `logLikelihood: required kernel kwarg '${nm}' has no corresponding `
-          + `latent value in theta (available: ${Object.keys(theta).join(', ') || '(none)'}). `
-          + `Kwarg names must match latent names in the model.`,
-        );
-      }
-    }
-    return 0;
-  }
-  fakeSpec.logLikelihood = logLikelihoodWithGuard;
-  // Calling with { x: 1 } instead of { mu: 1 } must throw.
+  const { errs, ctx } = setupCtx(MODEL, 100);
+  assert.equal(errs.length, 0, `parse errors: ${errs.map((e: any) => e.message).join('; ')}`);
+  // The real bayesupdate derivation produced by orchestrator.buildDerivations.
+  const d = ctx.derivations['posterior'];
+  assert.ok(d && d.kind === 'bayesupdate', 'posterior derivation must be bayesupdate');
+  const spec = modelSpec.buildPosteriorSpec(d, ctx);
+  assert.ok(typeof spec.logLikelihood === 'function', 'spec must carry logLikelihood');
+  // Calling with { x: 1 } (missing required kwarg 'mu') must throw the guard error.
   assert.throws(
-    () => fakeSpec.logLikelihood({ x: 1 }),
+    () => spec.logLikelihood({ x: 1 }),
     (err: any) => err.message.includes("kwarg 'mu'"),
-    'mismatched kwarg name should throw a clear error',
+    'mismatched kwarg name should throw a clear error from the real guard',
   );
   // Calling with the correct key must not throw.
   assert.doesNotThrow(
-    () => fakeSpec.logLikelihood({ mu: 1 }),
+    () => spec.logLikelihood({ mu: 1 }),
     'matched kwarg name must not throw',
   );
 });
