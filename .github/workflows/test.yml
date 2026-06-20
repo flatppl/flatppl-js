@@ -30,6 +30,10 @@ jobs:
       contents: read
     env:
       GRAMMARS_DIR: ${{ github.workspace }}/.grammars
+      # flatppl-rust sibling, used to build BOTH the LSP (build:vendor) and the
+      # convert wasm-api (web build). build-vendor.mjs + web/build.mjs honour
+      # FLATPPL_RUST_DIR over the default ../flatppl-rust sibling location.
+      FLATPPL_RUST_DIR: ${{ github.workspace }}/.flatppl-rust
     steps:
       - uses: actions/checkout@v7
 
@@ -39,6 +43,13 @@ jobs:
           repository: flatppl/flatppl-grammars
           ref: main
           path: .grammars
+
+      - name: Check out flatppl-rust (LSP + convert wasm-api source)
+        uses: actions/checkout@v7
+        with:
+          repository: flatppl/flatppl-rust
+          ref: main
+          path: .flatppl-rust
 
       - uses: actions/setup-node@v6
         with:
@@ -88,9 +99,20 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      - name: Install the wasm build toolchain (for the Convert command)
+        # Convert is ON by default; the web build cross-compiles
+        # flatppl-wasm-api to wasm32 from the flatppl-rust sibling. cargo +
+        # rustup are preinstalled on the runner — add the wasm32 target and
+        # wasm-pack (built from source: no prebuilt download, matching the
+        # local build). The build itself never installs toolchain components.
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo install wasm-pack --locked
+
       - name: Build web package
         # End-to-end smoke: confirms the resolver, bundler, and
-        # vendored-asset paths all line up. No tests here yet —
+        # vendored-asset paths all line up. Builds the convert wasm-api from the
+        # flatppl-rust sibling (FLATPPL_RUST_DIR). No tests here yet —
         # add them under packages/web/test when they land.
         run: npm run build --workspace=packages/web
 
