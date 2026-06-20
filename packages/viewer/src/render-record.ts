@@ -384,6 +384,22 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
     if (measure && measure.diagnostics) {
       const d = measure.diagnostics;
 
+      // SMC: equal-weight particles (no IS weights / R̂). Headline the log
+      // marginal likelihood (evidence) plus ladder length and move acceptance.
+      if (d.method === 'smc') {
+        const acc = Number.isFinite(d.acceptRate) ? (d.acceptRate * 100).toFixed(0) + '%' : '—';
+        const label = (d.acceptRate >= 0.15 && d.acceptRate <= 0.6) ? 'good' : (d.acceptRate >= 0.08) ? 'ok' : 'bad';
+        const sm = document.createElement('span');
+        sm.className = 'is-quality is-' + label;
+        sm.textContent = 'SMC: logZ ' + (Number.isFinite(d.logZ) ? d.logZ.toFixed(2) : '—') + ', ' + (d.rungs != null ? d.rungs : '—') + ' rungs, accept ' + acc;
+        sm.title = 'Sequential Monte Carlo (adaptive-tempered, waste-free):'
+          + '\nlog marginal likelihood (evidence) ' + (Number.isFinite(d.logZ) ? d.logZ.toFixed(3) : '—')
+          + '\ntemperature rungs ' + (d.rungs != null ? d.rungs : '—')
+          + '\nmove acceptance ' + acc + ' (healthy ~0.2–0.4)';
+        wrap.appendChild(sm);
+        return wrap;
+      }
+
       // AMIS (adaptive importance sampling) is not MCMC — report the combined
       // effective-sample-size fraction (its IS quality) and the auto-detected
       // mixture-freeze iteration K, not acceptance / R̂.

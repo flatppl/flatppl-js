@@ -207,6 +207,16 @@ function poolMeasures(measures: any[]): any {
   // AMIS is an importance sampler, not MCMC: report combined IS quality
   // (effective sample sizes add across independent runs) and the worst auto-K,
   // not an accept rate. essBulk per param already summed above.
+  if (first.diagnostics && first.diagnostics.method === 'smc') {
+    // Independent SMC runs: average evidence in log-space (log-mean-exp of the
+    // per-run logZ), worst-case rung count, mean acceptance.
+    let mx = -Infinity; for (const m of measures) { const z = (m.diagnostics || {}).logZ; if (Number.isFinite(z) && z > mx) mx = z; }
+    let s = 0, k = 0, accS = 0, rMax = 0;
+    for (const m of measures) { const d = m.diagnostics || {}; if (Number.isFinite(d.logZ)) { s += Math.exp(d.logZ - mx); k++; } accS += (d.acceptRate || 0); rMax = Math.max(rMax, d.rungs || 0); }
+    const logZ = k > 0 ? mx + Math.log(s / k) : NaN;
+    return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
+      diagnostics: { method: 'smc', logZ, rungs: rMax, acceptRate: accS / measures.length, nSamples: totalN } };
+  }
   if (first.diagnostics && first.diagnostics.method === 'amis') {
     let essSum = 0, kMax = 0, nSum = 0;
     for (const m of measures) {
@@ -238,7 +248,7 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
   // estimator's variance — independent ensembles / IS runs add effective
   // sample size. MH partitions its independent chains across workers instead.
   const shares: any[] = [];
-  if (opts.backend === 'emcee' || opts.backend === 'amis') {
+  if (opts.backend === 'emcee' || opts.backend === 'amis' || opts.backend === 'smc') {
     const P = cap;
     for (let i = 0; i < P; i++) {
       shares.push({ inferenceOpts: Object.assign({}, opts, { seed: baseSeed + i * 7919 }),

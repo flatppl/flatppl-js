@@ -696,7 +696,9 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // `walkers` by emcee (null → engine default of max(4, 2*dim+2)).
   // amisIters (T) / amisSamples (M) drive the adaptive-importance-sampling
   // backend ('amis'): T proposal-adaptation iterations of M samples each.
-  ctx.inferenceOpts = { backend: 'is', chains: 4, walkers: null, warmup: 1000, draws: 4000, seed: null, amisIters: 30, amisSamples: 300 };
+  // smcParticles (N) / smcSteps (chain length P) / smcCESS (ρ, the CESS target
+  // fraction) drive the sequential-Monte-Carlo backend ('smc').
+  ctx.inferenceOpts = { backend: 'is', chains: 4, walkers: null, warmup: 1000, draws: 4000, seed: null, amisIters: 30, amisSamples: 300, smcParticles: 2000, smcSteps: 12, smcCESS: 0.7 };
 
 
 

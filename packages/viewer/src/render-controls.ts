@@ -460,7 +460,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   lbl.style.opacity = '0.6';
 
   const sel = document.createElement('select');
-  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['emcee', 'emcee'], ['amis', 'AMIS']]) {
+  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC']]) {
     const o = document.createElement('option');
     o.value = v; o.textContent = t;
     sel.appendChild(o);
@@ -468,7 +468,8 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   sel.value = opts.backend;
   styleControl(sel);
   sel.title = 'Posterior inference backend. IS = importance sampling (default); '
-    + 'MH / emcee run MCMC; AMIS = adaptive multiple importance sampling.';
+    + 'MH / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
+    + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence).';
 
   const gear = document.createElement('button');
   gear.type = 'button';
@@ -564,6 +565,9 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   rows.push({ el: countRow, backends: ['mh', 'emcee'] });
   numRow('iterations', ['amis'], function () { return opts.amisIters; }, function (v) { opts.amisIters = v == null ? 30 : v; });
   numRow('samples/iter', ['amis'], function () { return opts.amisSamples; }, function (v) { opts.amisSamples = v == null ? 300 : v; });
+  numRow('particles', ['smc'], function () { return opts.smcParticles; }, function (v) { opts.smcParticles = v == null ? 2000 : v; });
+  numRow('chain', ['smc'], function () { return opts.smcSteps; }, function (v) { opts.smcSteps = v == null ? 12 : v; });
+  numRow('CESS ratio', ['smc'], function () { return opts.smcCESS; }, function (v) { opts.smcCESS = v == null ? 0.7 : v; });
   numRow('seed', ['mh', 'emcee', 'amis'], function () { return opts.seed; }, function (v) { opts.seed = v; });
   refreshCountRow();
 

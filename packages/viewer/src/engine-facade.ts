@@ -32,7 +32,7 @@ export function getMeasure(ctx: Ctx, name: any) {
   // worker. Other bindings under any backend use the main-thread path below.
   const io = ctx.inferenceOpts;
   const deriv = ctx.derivationsState.derivations[name];
-  if (io && (io.backend === 'mh' || io.backend === 'emcee' || io.backend === 'amis')
+  if (io && (io.backend === 'mh' || io.backend === 'emcee' || io.backend === 'amis' || io.backend === 'smc')
       && deriv && deriv.kind === 'bayesupdate' && (ctx as any).currentSource) {
     const p = runMcmcPool(ctx, name, io);
     p.then((m: any) => ctx.measureCache.set(name, m), () => {});

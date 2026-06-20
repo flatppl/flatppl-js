@@ -153,7 +153,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
   // return an equal-weight empirical measure. IS path (default) is below.
   const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
-  if (backend === 'mh' || backend === 'nuts' || backend === 'emcee' || backend === 'amis') {
+  if (backend === 'mh' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc') {
     const MV              = require('./model-view.ts');
     const driver          = require('./mcmc-driver.ts');
     const { mhKernel }         = require('./mh-kernel.ts');
@@ -210,6 +210,22 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         const perParam: Record<string, any> = {};
         for (let d2 = 0; d2 < mv.dim; d2++) perParam[mv.names[d2]] = { rHat: NaN, essBulk: ess };
         post = { drawsByName, diagnostics: { method: 'amis', ess, essFrac: ess / nDraws, K: res.K, nSamples: nDraws, perParam } };
+      } else if (backend === 'smc') {
+        const { smcSample } = require('./smc-sample.ts');
+        const res = smcSample(mv, Object.assign({}, o, { onProgress }));
+        nDraws = res.samples.length;
+        // SMC's final particles are EQUAL weight (already resampled), so build
+        // per-coordinate draws and resample uniformly (like MH/emcee).
+        const drawsByName: Record<string, Float64Array> = {};
+        for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]] = new Float64Array(nDraws);
+        for (let a = 0; a < nDraws; a++) {
+          const flat = mv.constrainAll(res.samples[a]);
+          for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]][a] = flat[mv.names[d2]];
+        }
+        const total = total0 > 0 ? total0 : nDraws;
+        idx = new Int32Array(total);
+        for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
+        post = { drawsByName, diagnostics: { method: 'smc', logZ: res.logZ, rungs: res.rungs, acceptRate: res.acceptRate, nSamples: nDraws } };
       } else {
         const kernel = backend === 'emcee' ? makeEmceeKernel(o.a) : mhKernel;
         const nWalkers = o.walkers ?? o.chains ?? (backend === 'emcee' ? Math.max(4, 2 * mv.dim + 2) : 4);

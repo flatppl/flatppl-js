@@ -152,8 +152,8 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   const dim = coordNames.length;
   const coordTransforms = coordSupports.map((s: any) => T.transformFor(s));
 
-  // 4. Async setup: build logPi / logPiBatch / priorOf / likOf from mcmc-density.ts.
-  const { logPi, logPiBatch, probePrior } = await buildLogPi(ctx, posteriorDeriv);
+  // 4. Async setup: build logPi / logPiBatch / priorLikBatch / probePrior.
+  const { logPi, logPiBatch, priorLikBatch, probePrior } = await buildLogPi(ctx, posteriorDeriv);
 
   // 4a. Prior-tractability probe. MCMC/AMIS need to SCORE the prior; if a draw's
   //     density is a static error (e.g. an unannotated pushfwd, spec §06) the
@@ -295,6 +295,27 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     return lp;
   }
 
+  // 8c. logPriorLikBatch: N unconstrained vectors → { prior, lik } per atom,
+  // where prior INCLUDES the change-of-variables Jacobian (so a tempered target
+  // log π_β = prior + β·lik is correct for any β, and at β=1 reproduces
+  // logPosteriorBatch). Used by the SMC sampler to re-temper a population by
+  // arithmetic on cached `lik` with no re-evaluation.
+  function logPriorLikBatch(ys: Float64Array[]): { prior: Float64Array; lik: Float64Array } {
+    const N = ys.length;
+    const pts = new Array(N);
+    const jac = new Float64Array(N);
+    for (let a = 0; a < N; a++) {
+      const y = ys[a];
+      pts[a] = flatToScorerPt(constrainAll(y));
+      let j = 0;
+      for (let i = 0; i < dim; i++) j += coordTransforms[i].logDetJ(y[i]);
+      jac[a] = j;
+    }
+    const { prior, lik } = priorLikBatch(pts);
+    for (let a = 0; a < N; a++) prior[a] = Number.isFinite(prior[a]) ? prior[a] + jac[a] : -Infinity;
+    return { prior, lik };
+  }
+
   return {
     dim,
     names: coordNames,        // per-coordinate expanded names (length = dim)
@@ -303,6 +324,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     unconstrainAll,
     logPosterior,
     logPosteriorBatch,
+    logPriorLikBatch,
     logPosteriorConstrained,
     initFromPrior,
     latentNames,

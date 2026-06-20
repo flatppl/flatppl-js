@@ -213,11 +213,12 @@ async function buildLogPi(
   ctx: any,
   d: any,
 ): Promise<{
-  logPi:      (pt: Record<string, any>) => number;
-  logPiBatch: (pts: Array<Record<string, any>>) => Float64Array;
-  priorOf:    (pt: Record<string, any>) => number;
-  likOf:      (pt: Record<string, any>) => number;
-  probePrior: (pt: Record<string, any>) => void;
+  logPi:         (pt: Record<string, any>) => number;
+  logPiBatch:    (pts: Array<Record<string, any>>) => Float64Array;
+  priorLikBatch: (pts: Array<Record<string, any>>) => { prior: Float64Array; lik: Float64Array };
+  priorOf:       (pt: Record<string, any>) => number;
+  likOf:         (pt: Record<string, any>) => number;
+  probePrior:    (pt: Record<string, any>) => void;
 }> {
   if (!d || d.kind !== 'bayesupdate') {
     throw new Error('buildLogPi: derivation must be kind=bayesupdate');
@@ -493,65 +494,73 @@ async function buildLogPi(
     return Number.isFinite(lp) ? lp : -Infinity;
   }
 
-  // Batched logπ over N points: ONE logDensityN(count=N) for the likelihood
-  // (per-atom latents supplied via refArrays, observed value atom-independent),
-  // plus the per-atom scalar prior. Equals [logPi(p) for p in pts] (verified by
-  // batched-scorer.test.ts); on any batched-likelihood failure it falls back to
-  // the scalar likelihood for every point so the result is always correct.
-  function logPiBatch(pts: Array<Record<string, any>>): Float64Array {
+  // Batched likelihood over N points: when the body references only draws (the
+  // common case — clm inlines derived), pack its refArrays straight from the
+  // points and score all N in ONE logDensityN(count=N) pass with NO per-atom
+  // buildEnv. Returns null when the body needs a derived value (caller falls
+  // back to the scalar likWith).
+  function batchLik(pts: Array<Record<string, any>>): Float64Array | null {
     const N = pts.length;
-    const out = new Float64Array(N);
-    if (N === 0) return out;
-
-    // Batched likelihood: when the body references only draws (the common case —
-    // derived bindings are inlined by clm), pack its refArrays straight from the
-    // points, scoring all N in ONE logDensityN(count=N) pass with NO per-atom
-    // buildEnv. Otherwise leave logL null and fall back to the scalar likWith.
-    let logL: Float64Array | null = null;
-    if (likPerAtomAllDraws) {
-      const refArrays: Record<string, any> = {};
-      for (const nm of likPerAtom) {
-        const v0 = pts[0][nm];
-        if (typeof v0 === 'number') {
-          const a = new Float64Array(N);
-          for (let i = 0; i < N; i++) a[i] = +pts[i][nm];
-          refArrays[nm] = a;
-        } else {
-          const d0 = flatData(v0);
-          if (!d0) { logL = null; break; }
-          const D = d0.length | 0;
-          const data = new Float64Array(N * D);
-          for (let i = 0; i < N; i++) { const vi = flatData(pts[i][nm]); for (let j = 0; j < D; j++) data[i * D + j] = +vi[j]; }
-          refArrays[nm] = { shape: [N, D], data };
-        }
+    if (!likPerAtomAllDraws) return null;
+    const refArrays: Record<string, any> = {};
+    for (const nm of likPerAtom) {
+      const v0 = pts[0][nm];
+      if (typeof v0 === 'number') {
+        const a = new Float64Array(N);
+        for (let i = 0; i < N; i++) a[i] = +pts[i][nm];
+        refArrays[nm] = a;
+      } else {
+        const d0 = flatData(v0);
+        if (!d0) return null;
+        const D = d0.length | 0;
+        const data = new Float64Array(N * D);
+        for (let i = 0; i < N; i++) { const vi = flatData(pts[i][nm]); for (let j = 0; j < D; j++) data[i * D + j] = +vi[j]; }
+        refArrays[nm] = { shape: [N, D], data };
       }
-      try {
-        const opts = { parseSet: constParseSet, resolveMeasureRef: NULL_REF, baseEnv: baseEnvConst };
-        const r = density.logDensityN(likBodyIR, observed, refArrays, N, opts);
-        if (r && r.length === N) logL = r as Float64Array;
-      } catch (_err) { logL = null; }
     }
+    try {
+      const opts = { parseSet: constParseSet, resolveMeasureRef: NULL_REF, baseEnv: baseEnvConst };
+      const r = density.logDensityN(likBodyIR, observed, refArrays, N, opts);
+      return (r && r.length === N) ? (r as Float64Array) : null;
+    } catch (_err) { return null; }
+  }
 
-    if (logL === null) {
-      // No batched likelihood (body needs a derived value, or it errored) —
-      // fall back to the scalar logπ, which shares ONE buildEnv between the
-      // prior and likelihood. (Splitting here would build the env twice.)
-      for (let i = 0; i < N; i++) out[i] = logPi(pts[i]);
-      return out;
-    }
-    // Batched likelihood succeeded: score the prior per atom (cheap), with a
-    // lean env when no prior draw needs an atom-dependent derived value.
+  // Batched prior + likelihood over N points, as SEPARATE per-atom arrays (no
+  // Jacobian). Tempering — π_β = prior + β·lik — needs the two terms apart so a
+  // population can be re-tempered to a new β by arithmetic on cached `lik`, with
+  // no re-evaluation (SMC). Same batched-likelihood / lean-prior path as
+  // logPiBatch; non-finite entries are −Infinity.
+  function priorLikBatch(pts: Array<Record<string, any>>): { prior: Float64Array; lik: Float64Array } {
+    const N = pts.length;
+    const prior = new Float64Array(N);
+    const lik = new Float64Array(N);
+    if (N === 0) return { prior, lik };
+    const logL = batchLik(pts);
     for (let i = 0; i < N; i++) {
-      const env = priorNeedsDerived ? buildEnv(pts[i]) : leanEnvOf(pts[i]);
-      const prior = priorWith(env, pts[i]);
-      if (!Number.isFinite(prior)) { out[i] = -Infinity; continue; }
-      const lp = prior + logL[i];
+      // One buildEnv shared by both terms on the fallback path; lean env for the
+      // prior when the likelihood was batched and no prior draw needs derived.
+      const env = (logL === null || priorNeedsDerived) ? buildEnv(pts[i]) : leanEnvOf(pts[i]);
+      const pr = priorWith(env, pts[i]);
+      prior[i] = Number.isFinite(pr) ? pr : -Infinity;
+      const lk = (logL !== null) ? logL[i] : likWith(env, pts[i]);
+      lik[i] = Number.isFinite(lk) ? lk : -Infinity;
+    }
+    return { prior, lik };
+  }
+
+  // Batched logπ over N points = prior + lik. Equals [logPi(p) for p in pts]
+  // (verified by batched-scorer.test.ts).
+  function logPiBatch(pts: Array<Record<string, any>>): Float64Array {
+    const { prior, lik } = priorLikBatch(pts);
+    const out = new Float64Array(prior.length);
+    for (let i = 0; i < out.length; i++) {
+      const lp = prior[i] + lik[i];
       out[i] = Number.isFinite(lp) ? lp : -Infinity;
     }
     return out;
   }
 
-  return { logPi, logPiBatch, priorOf, likOf, probePrior };
+  return { logPi, logPiBatch, priorLikBatch, priorOf, likOf, probePrior };
 }
 
 module.exports = { buildLogPi, evaluateDerivedBindings };
