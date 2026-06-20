@@ -101,6 +101,17 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
+      - name: Cache Rust deps (flatppl-rust LSP + convert wasm builds)
+        # Caches the cargo registry + .flatppl-rust/target so the LSP
+        # (build:vendor) and the wasm crate builds don't recompile serde /
+        # salsa / wasm-bindgen / … every run. Same action flatppl-rust's own CI
+        # uses. cache-bin: false — wasm-pack is cached separately, below, on a
+        # stable version key (so an unrelated Cargo.lock change won't evict it).
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .flatppl-rust
+          cache-bin: false
+
       - name: Cache wasm-pack (skip the from-source rebuild on repeat runs)
         uses: actions/cache@v4
         with:
