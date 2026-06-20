@@ -167,4 +167,92 @@ function buildPosteriorSpec(d: any, ctx: any): { latents: any[]; logLikelihood: 
   return { latents, logLikelihood };
 }
 
-module.exports = { buildPosteriorSpec, collectLatents };
+// ---------------------------------------------------------------------------
+// enumerateLatents(d, ctx) — new vector-aware latent enumerator for the
+// async ModelView path.  Uses d.paramKwargs (the kernel's parametric input
+// names — confirmed at derivations.ts:3649-3651) as the ordered latent list.
+//
+// Key insight: latent derivations may be alias chains (e.g. theta → __anon5
+// (iid) → __anon4 (sample)); tau may be alias → normalize → truncate →
+// sample.  We walk the chain to find the effective kind (iid or scalar) and
+// to determine the support.
+//
+// For each param name:
+//   • Effective kind is 'iid'  → vector with dims from the iid derivation
+//   • Otherwise               → scalar
+//
+// Support: walkDerivChainForSupport follows alias/normalize links and reads
+// the setDescr from a truncate node (positive/interval) or falls back to
+// supportOf on the leaf distribution.
+// ---------------------------------------------------------------------------
+
+// Walk the derivation chain starting at `name` and return support info.
+// Returns { isIid, dims, elementBaseName } for an iid latent, or a support
+// object { kind: 'real'|'positive'|'interval', a?, b? } for a scalar.
+function walkDerivChain(name: string, derivations: any): any {
+  const visited = new Set<string>();
+  let cur: string = name;
+  while (cur && !visited.has(cur)) {
+    visited.add(cur);
+    const d = derivations[cur];
+    if (!d) return { kind: 'real' };
+    if (d.kind === 'alias') { cur = d.from; continue; }
+    if (d.kind === 'normalize') { cur = d.from; continue; }
+    if (d.kind === 'iid') {
+      return { isIid: true, dims: d.dims as number[], elementBaseName: d.from as string };
+    }
+    if (d.kind === 'truncate') {
+      const s = d.setDescr;
+      if (s) {
+        const lo = (s.lo != null && Number.isFinite(+s.lo)) ? +s.lo : -Infinity;
+        const hi = (s.hi != null && Number.isFinite(+s.hi)) ? +s.hi : Infinity;
+        if (lo === 0 && !Number.isFinite(hi)) return { kind: 'positive' };
+        if (!Number.isFinite(lo) && hi === 0) return { kind: 'real' }; // negative half-line: no standard transform; use real as fallback
+        if (Number.isFinite(lo) && Number.isFinite(hi)) return { kind: 'interval', a: lo, b: hi };
+      }
+      cur = d.from; continue;
+    }
+    if (d.kind === 'sample') {
+      const distIR = d.distIR;
+      if (!distIR) return { kind: 'real' };
+      try {
+        return transforms.supportOf(distIR.op, {});
+      } catch (_) { return { kind: 'real' }; }
+    }
+    // Unrecognised kind: treat as scalar real
+    return { kind: 'real' };
+  }
+  return { kind: 'real' };
+}
+
+// Infer support for an element of an iid latent from the iid's base name.
+// The base derivation should be 'sample' with a distIR.
+function elementSupportOf(elementBaseName: string, derivations: any): any {
+  return walkDerivChain(elementBaseName, derivations);
+}
+
+function enumerateLatents(d: any, ctx: any): any[] {
+  const paramNames: string[] = d.paramKwargs || [];
+  const derivations = ctx.derivations || {};
+  const result: any[] = [];
+
+  for (const name of paramNames) {
+    const info = walkDerivChain(name, derivations);
+
+    if (info && info.isIid) {
+      // Vector latent
+      const dims: number[] = info.dims || [1];
+      const totalDim = dims.reduce((a: number, b: number) => a * b, 1);
+      const support = elementSupportOf(info.elementBaseName, derivations);
+      result.push({ name, shape: { kind: 'vector', dims: [totalDim] }, support });
+    } else {
+      // Scalar latent — support from chain walk
+      const support = info || { kind: 'real' };
+      result.push({ name, shape: { kind: 'scalar' }, support });
+    }
+  }
+
+  return result;
+}
+
+module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents };
