@@ -45,7 +45,10 @@ function mleControlEntry(ctx: Ctx, plan: any): ControlEntry | null {
   };
 }
 
-export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): DocumentFragment {
+// `trailing`, when given, is placed immediately right of the dropdown and
+// LEFT of the reset/save action group — so a caller's action button (e.g. the
+// profile plot's ⛰ find-max) sits next to the selector, not after the icons.
+export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void, trailing?: Node): DocumentFragment {
   const frag = document.createDocumentFragment();
   if (!plan.axes || plan.axes.length === 0) return frag;
 
@@ -185,6 +188,7 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): D
   wrap.appendChild(panel);
 
   frag.appendChild(wrap);
+  if (trailing) frag.appendChild(trailing);
 
   // Reset / save action buttons live in a tight inline-flex group
   // so the two icons read as a single control rather than each
@@ -236,7 +240,7 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void): D
   return frag;
 }
 
-export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void): DocumentFragment {
+export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void, trailing?: Node): DocumentFragment {
   const frag = document.createDocumentFragment();
   if (!plan.axes || plan.axes.length === 0) return frag;
 
@@ -388,6 +392,7 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void): D
   wrap.appendChild(btn);
   wrap.appendChild(panel);
   frag.appendChild(wrap);
+  if (trailing) frag.appendChild(trailing);
 
   // Reset / save / save-as icons mirror the Inputs control,
   // grouped in a tight inline-flex span so they read as one

@@ -456,19 +456,13 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
   // surfaces the values being used.
   const hasInputs = plan.axes && plan.axes.length > 0;
   const hasMultiOutput = plan.outputs && plan.outputs.length > 1;
-  // Two glyph action buttons sit beside the input / domain selectors (built
-  // below in the `hasInputs` block): a "find maximum" button right of the
-  // input selector — it acts on the POINT — and an "auto-fit domain" button
-  // right of the domain selector — it acts on the RANGE. Both are wired here
-  // as closures so they can be appended at those exact spots.
-
-  // Find maximum — optimise the free inputs (CMA-ES + FD polish) from the
-  // current pivot; the argmax becomes the modified pivot (Save to keep).
-  // ︎ forces text (monochrome) presentation of the mountain glyph so it
-  // matches the toolbar rather than rendering as a colour emoji.
-  function appendFindMaxButton(): void {
-    const maxBtn = makeGlyphButton('🏔',
-      'Find maximum, starting at current point');
+  // Two glyph action buttons sit immediately right of the input / domain
+  // selectors: 🏔 find-maximum (acts on the POINT) and ✨ auto-fit domain
+  // (acts on the RANGE). They're passed into buildPresetControl /
+  // buildDomainControl as the `trailing` slot so the reset/save icons stay to
+  // the RIGHT of them rather than between selector and glyph.
+  function makeFindMaxButton(): HTMLButtonElement {
+    const maxBtn = makeGlyphButton('🏔', 'Find maximum, starting at current point');
     maxBtn.style.marginLeft = '0.3em';
     maxBtn.addEventListener('click', function() {
       if (maxBtn.disabled) return;
@@ -482,14 +476,12 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
         setGlyphButtonEnabled(maxBtn, true);
       });
     });
-    frag.appendChild(maxBtn);
+    return maxBtn;
   }
 
-  // ✨ Auto-fit domain — re-frame each axis's x-range around the current
-  // pivot (the existing auto-fit frames the prior, so this re-centres the
-  // plot after the point moves manually or via find-maximum).
-  function appendAutoDomainButton(): void {
-    const fitBtn = makeGlyphButton('✨', 'Auto-fit domain');
+  function makeAutoDomainButton(): HTMLButtonElement {
+    // ︎ = text-presentation selector → render ✨ monochrome, not colour emoji.
+    const fitBtn = makeGlyphButton('✨︎', 'Auto-fit domain');
     fitBtn.style.marginLeft = '0.3em';
     fitBtn.addEventListener('click', function() {
       if (fitBtn.disabled) return;
@@ -503,7 +495,7 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
         setGlyphButtonEnabled(fitBtn, true);
       });
     });
-    frag.appendChild(fitBtn);
+    return fitBtn;
   }
   // Output selector — appears for callables whose specialized
   // output is multi-leaf (record / tuple / array). Single-leaf
@@ -576,21 +568,16 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
     // path. Always shown when there are input axes — the "auto"
     // option carries the default values even without user-
     // declared presets.
+    // Find-maximum acts on the POINT → passed as the preset control's
+    // trailing slot so it sits right of the selector, left of reset/save.
     frag.appendChild(buildPresetControl(ctx, plan, function() {
       renderProfilePlotForCurrent(ctx);
-    }));
-    // Find-maximum acts on the POINT (the input/preset selector) → sits
-    // immediately to its right.
-    appendFindMaxButton();
-    // Domain selector — same row, drives x-axis ranges from
-    // cartprod(...) bindings. Falls back to a no-op fragment when
-    // the binding has no axes; we already returned early for that.
+    }, makeFindMaxButton()));
+    // Domain selector — same row, drives x-axis ranges from cartprod(...)
+    // bindings. Auto-fit domain acts on the RANGE → its trailing slot.
     frag.appendChild(buildDomainControl(ctx, plan, function() {
       renderProfilePlotForCurrent(ctx);
-    }));
-    // Auto-fit domain acts on the RANGE (the domain selector) → sits
-    // immediately to its right.
-    appendAutoDomainButton();
+    }, makeAutoDomainButton()));
   }
   // The lo/hi limit inputs live under the plot now (see
   // buildProfileBottomRow). The toolbar carries only the axis
