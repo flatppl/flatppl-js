@@ -27,6 +27,7 @@ const pirSexpr = require('./pir-sexpr.ts');
 const standardModules = require('./standard-modules.ts');
 const dataload = require('./dataload.ts');
 const perfConfig = require('./perf-config.ts');
+const optimizer = require('./optimizer/index.ts');
 // NOTE: ./sampler and ./worker are NOT re-exported here. The main-thread
 // engine bundle (lib/engine.min.js) is kept small by stubbing @stdlib at
 // build time via build-vendor.mjs + build-stdlib-stub.cjs; the sampler-
@@ -115,4 +116,6 @@ module.exports = {
   types, typeinfer, pir, pirSexpr, standardModules, dataload,
   // Optimization toggles for dual-mode testing (engine-concepts §15).
   perfConfig,
+  // Plot-pane "Find maximum" optimizer (CMA-ES + FD polish → ModeFit).
+  optimizer,
 };
