@@ -126,9 +126,126 @@ export function cancelAllSampling(ctx: Ctx) {
     ctx.samplerWorker = null;
     ctx.samplerWorkerPromise = null;
   }
+  for (const w of (ctx.mcmcPool || [])) { try { w.terminate(); } catch (_) {} }
+  ctx.mcmcPool = [];
   const entries = ctx.pendingRequests.values();
   ctx.pendingRequests = new Map();
   for (const entry of entries) {
     try { entry.reject(new Error('cancelled')); } catch (_) {}
+  }
+}
+
+// Spawn ONE fresh worker (direct, blob fallback), wired to ctx.pendingRequests
+// and initialised. Used to build the MCMC pool — each worker runs an
+// independent share of chains/ensembles off the main thread.
+async function spawnWorker(ctx: Ctx, seed: number): Promise<any> {
+  let w: any = null;
+  try { w = new Worker(ctx.SAMPLER_WORKER_URL); } catch (_) { /* blob fallback */ }
+  if (!w) {
+    const resp = await fetch(ctx.SAMPLER_WORKER_URL);
+    if (!resp.ok) throw new Error('failed to fetch worker bundle: ' + resp.status);
+    const url = URL.createObjectURL(new Blob([await resp.text()], { type: 'application/javascript' }));
+    w = new Worker(url);
+    setTimeout(function () { try { URL.revokeObjectURL(url); } catch (_) {} }, 5000);
+  }
+  wireWorker(ctx, w);
+  sendWorkerNow(ctx, w, { type: 'init', seed });
+  return w;
+}
+
+function sendTo(ctx: Ctx, w: any, msg: any): Promise<any> {
+  const id = ++ctx.samplerReqId;
+  return new Promise(function (resolve, reject) {
+    ctx.pendingRequests.set(id, { resolve, reject });
+    w.postMessage(Object.assign({ id }, msg));
+  });
+}
+
+// Concatenate per-worker posterior measures (each a record of scalar/array
+// field measures) into one, and combine diagnostics: acceptRate averaged,
+// per-parameter R̂ taken as the worst (conservative) across the independent
+// runs, bulk-ESS summed (ESS is additive across independent chains/ensembles).
+function poolMeasures(measures: any[]): any {
+  if (measures.length === 1) return measures[0];
+  const first = measures[0];
+  const cat = (key: string, arrs: Float64Array[]) => {
+    let n = 0; for (const a of arrs) n += a.length;
+    const out = new Float64Array(n); let o = 0;
+    for (const a of arrs) { out.set(a, o); o += a.length; }
+    return out;
+  };
+  const fields: any = {};
+  for (const fn of Object.keys(first.fields)) {
+    const parts = measures.map((m) => m.fields[fn]);
+    const samples = cat(fn, parts.map((p: any) => p.samples));
+    if (parts[0].shape === 'array') {
+      const dims = parts[0].dims;
+      const stride = dims.reduce((a: number, b: number) => a * b, 1);
+      fields[fn] = { shape: 'array', dims, samples, logWeights: null, logTotalmass: 0,
+        n_eff: samples.length / stride, value: { shape: [samples.length / stride].concat(dims), data: samples } };
+    } else {
+      fields[fn] = { samples, logWeights: null, logTotalmass: 0, n_eff: samples.length,
+        value: { shape: [samples.length], data: samples } };
+    }
+  }
+  // Combine diagnostics.
+  let accSum = 0; const perParam: any = {};
+  for (const m of measures) {
+    const dg = m.diagnostics || {};
+    accSum += (dg.acceptRate || 0);
+    for (const k of Object.keys(dg.perParam || {})) {
+      const e = dg.perParam[k];
+      if (!perParam[k]) perParam[k] = { rHat: 0, essBulk: 0 };
+      perParam[k].rHat = Math.max(perParam[k].rHat, e.rHat || 0);
+      perParam[k].essBulk += (e.essBulk || 0);
+    }
+  }
+  const totalN = fields[Object.keys(fields)[0]].samples.length;
+  return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
+    diagnostics: { acceptRate: accSum / measures.length, perParam } };
+}
+
+// Run an MCMC posterior off the main thread, parallelised across a worker pool.
+// `name` is the bayesupdate binding; `opts` is ctx.inferenceOpts. MH partitions
+// its independent chains across workers; emcee runs one independent ensemble
+// per worker (P× the draws in P× less wall-clock). Each worker gets a distinct
+// seed and produces sampleCount/P atoms; the results are pooled.
+export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<any> {
+  const source = ctx.currentSource;
+  const sampleCount = ctx.SAMPLE_COUNT;
+  const baseSeed = (opts.seed != null ? opts.seed : (ctx.rootSeed || 1)) | 0;
+  const hw = (typeof navigator !== 'undefined' && (navigator as any).hardwareConcurrency) || 4;
+  const cap = Math.max(1, Math.min(opts.parallel || hw, 8));
+
+  // Partition: shares = per-worker { inferenceOpts, sampleCount }.
+  const shares: any[] = [];
+  if (opts.backend === 'emcee') {
+    const P = cap;
+    for (let i = 0; i < P; i++) {
+      shares.push({ inferenceOpts: Object.assign({}, opts, { seed: baseSeed + i * 7919 }),
+        sampleCount: Math.ceil(sampleCount / P) });
+    }
+  } else {
+    const chains = opts.chains || 4;
+    const P = Math.max(1, Math.min(cap, chains));
+    const per = Math.ceil(chains / P);
+    for (let i = 0; i < P; i++) {
+      shares.push({ inferenceOpts: Object.assign({}, opts, { chains: per, seed: baseSeed + i * 7919 }),
+        sampleCount: Math.ceil(sampleCount / P) });
+    }
+  }
+
+  const workers = await Promise.all(shares.map((_, i) => spawnWorker(ctx, baseSeed + i * 7919)));
+  ctx.mcmcPool = workers;
+  try {
+    const replies = await Promise.all(shares.map((s, i) =>
+      sendTo(ctx, workers[i], {
+        type: 'mcmcRun', source, name,
+        inferenceOpts: s.inferenceOpts, sampleCount: s.sampleCount, seed: s.inferenceOpts.seed,
+      })));
+    return poolMeasures(replies.map((r: any) => r.measure));
+  } finally {
+    for (const w of workers) { try { w.terminate(); } catch (_) {} }
+    ctx.mcmcPool = [];
   }
 }

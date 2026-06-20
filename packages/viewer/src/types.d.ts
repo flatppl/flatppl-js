@@ -235,6 +235,7 @@ export interface Ctx {
   samplerWorkerError: Error | null;
   samplerReqId: number;
   pendingRequests: Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>;
+  mcmcPool?: any[];   // transient worker pool for an in-flight MCMC posterior run
 
   // ---- current-render state ----
   plotEchart: any;

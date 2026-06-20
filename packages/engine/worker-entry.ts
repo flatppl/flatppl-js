@@ -43,7 +43,12 @@ if (isBrowserWorker) {
   // overwritten.
   self.addEventListener('message', (e: MessageEvent) => {
     const reply = handler.handle(e.data);
-    if (reply) {
+    if (reply && typeof (reply as any).then === 'function') {
+      // Async handler (e.g. mcmcRun): await, then post. Structured-clone (no
+      // transfer list) — the measure shares buffers across nested fields, so
+      // transferring would detach them mid-structure.
+      (reply as any).then((r: any) => { if (r) self.postMessage(r); });
+    } else if (reply) {
       const transfer = transferablesOf(reply);
       // postMessage's second argument is the transferList; passing an
       // empty array is harmless but explicit. Float64Array buffers are
@@ -71,7 +76,9 @@ if (isBrowserWorker) {
     if (parentPort) {
       parentPort.on('message', (msg: any) => {
         const reply = handler.handle(msg);
-        if (reply) {
+        if (reply && typeof reply.then === 'function') {
+          reply.then((r: any) => { if (r) parentPort.postMessage(r); });
+        } else if (reply) {
           // Node's parentPort.postMessage takes a transferList in the
           // second argument too, but only ArrayBuffers (not typed arrays)
           // are valid entries. transferablesOf returns buffers already.

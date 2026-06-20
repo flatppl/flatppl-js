@@ -207,6 +207,47 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           env = { ...(msg.env ?? {}) };
           return { type: 'ready', id };
         }
+        case 'mcmcRun': {
+          // Run a whole MCMC posterior IN the worker (off the UI thread). The
+          // main thread sends the model SOURCE + inference options + the
+          // chain/walker share + seed for THIS worker; we rebuild a
+          // self-contained ctx and materialise the named posterior, whose
+          // matBayesupdate MH/emcee branch runs runMcmc here. Returns a
+          // PROMISE — the entry shim awaits it before postMessage. Each worker
+          // runs only its assigned chains (parallel pool); the main thread
+          // pools the per-chain stats + concatenates the draws.
+          const idx = require('./index.ts');
+          const orchestratorLib = require('./orchestrator.ts');
+          const materialiserLib = require('./materialiser.ts');
+          const proc = idx.processSource(msg.source, msg.processOpts || {});
+          const built = orchestratorLib.buildDerivations(proc.bindings);
+          const cache = new Map();
+          const subCtx: any = {
+            derivations: built.derivations,
+            bindings: built.bindings,
+            fixedValues: built.fixedValues || new Map(),
+            sampleCount: msg.sampleCount,
+            rootSeed: msg.seed,
+            rootKey: msg.seed,
+            moduleRegistry: proc.loweredModule && proc.loweredModule.moduleRegistry,
+            inferenceOpts: msg.inferenceOpts,
+            getMeasure(n: string) {
+              if (cache.has(n)) return cache.get(n);
+              const m = materialiserLib.materialiseMeasure(n, subCtx);
+              cache.set(n, m);
+              return m;
+            },
+            sendWorker(m: any) {
+              const r = handle(m);
+              if (r && typeof r.then === 'function') return r;
+              return (r && r.type === 'error') ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+            },
+          };
+          return Promise.resolve(subCtx.getMeasure(msg.name)).then(
+            (measure: any) => ({ type: 'mcmcResult', id, measure }),
+            (err: any) => ({ type: 'error', id, message: err && err.message ? err.message : String(err) }),
+          );
+        }
         case 'setEnv': {
           env = msg.merge === false ? { ...(msg.env ?? {}) } : { ...env, ...(msg.env ?? {}) };
           return { type: 'ok', id };
