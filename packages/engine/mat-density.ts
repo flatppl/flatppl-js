@@ -264,28 +264,51 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         };
 
         if (parent && parent.fields) {
-          // Accumulate each prior-record field across the nDraws unique atoms,
-          // reading it from the per-atom env, then resample to `total`.
+          // Build each prior-record field, resampled to `total`. A field that IS
+          // a latent (mu, tau, theta) is read DIRECTLY from the sampled draws —
+          // no per-atom evaluation. Only genuinely-derived fields (e.g.
+          // sigma = sqrt(sigma2)) need the env, and then we evaluate ONLY those,
+          // and only over the unique resampled atoms — not all nDraws × every
+          // binding (the per-atom buildEnv that made this O(nDraws) interpreted).
           const fieldNames = Object.keys(parent.fields);
-          const acc: any = {};   // name → { scalar:Float64Array } | { vec:Float64Array, d }
-          for (let a = 0; a < nDraws; a++) {
-            const env = mcmcDensity.evaluateDerivedBindings(ctx, drawPtAt(a));
-            for (const fn of fieldNames) {
-              const v = env[fn];
-              if (!(fn in acc)) {
-                acc[fn] = (typeof v === 'number')
-                  ? { scalar: new Float64Array(nDraws) }
-                  : { vec: new Float64Array(nDraws * ((v && v.length) || 1)), d: (v && v.length) || 1 };
-              }
-              const e = acc[fn];
-              if (e.scalar) { e.scalar[a] = (typeof v === 'number') ? v : NaN; }
-              else { for (let j = 0; j < e.d; j++) e.vec[a * e.d + j] = (v && v[j] != null) ? +v[j] : NaN; }
+          const latentShape: Record<string, any> = {};
+          for (let li = 0; li < mv.latentNames.length; li++) latentShape[mv.latentNames[li]] = mv.latentShapes[li];
+          const fields: any = {};
+          const derivedFields: string[] = [];
+          for (const fn of fieldNames) {
+            const shp = latentShape[fn];
+            if (!shp) { derivedFields.push(fn); continue; }
+            if (shp.kind === 'scalar') {
+              fields[fn] = buildScalar(post.drawsByName[fn]);
+            } else {
+              const dlen = shp.dims[0];
+              const flat = new Float64Array(nDraws * dlen);
+              for (let a = 0; a < nDraws; a++) for (let j = 0; j < dlen; j++) flat[a * dlen + j] = post.drawsByName[`${fn}[${j}]`][a];
+              fields[fn] = buildArray(flat, dlen);
             }
           }
-          const fields: any = {};
-          for (const fn of fieldNames) {
-            const e = acc[fn];
-            fields[fn] = e.scalar ? buildScalar(e.scalar) : buildArray(e.vec, e.d);
+          if (derivedFields.length > 0) {
+            // Evaluate derived fields only at the atoms the resample actually
+            // selects (deduped), then scatter back through `idx`.
+            const uniq: number[] = []; const seen = new Int32Array(nDraws).fill(0);
+            for (let i = 0; i < total; i++) { const a = idx[i]; if (!seen[a]) { seen[a] = 1; uniq.push(a); } }
+            const acc: any = {};
+            for (const a of uniq) {
+              const env = mcmcDensity.evaluateDerivedBindings(ctx, drawPtAt(a));
+              for (const fn of derivedFields) {
+                const v = env[fn];
+                if (!(fn in acc)) acc[fn] = (typeof v === 'number')
+                  ? { scalar: new Float64Array(nDraws) }
+                  : { vec: new Float64Array(nDraws * ((v && v.length) || 1)), d: (v && v.length) || 1 };
+                const e = acc[fn];
+                if (e.scalar) { e.scalar[a] = (typeof v === 'number') ? v : NaN; }
+                else { for (let j = 0; j < e.d; j++) e.vec[a * e.d + j] = (v && v[j] != null) ? +v[j] : NaN; }
+              }
+            }
+            for (const fn of derivedFields) {
+              const e = acc[fn];
+              fields[fn] = e.scalar ? buildScalar(e.scalar) : buildArray(e.vec, e.d);
+            }
           }
           const recM = empirical.recordMeasure(fields, null);
           recM.diagnostics = post.diagnostics;

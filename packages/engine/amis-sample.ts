@@ -143,6 +143,11 @@ function amisSample(mv: any, opts: any) {
   const X: Float64Array[] = [];         // all samples
   const logTarget: number[] = [];       // logπ(x) per sample
   const tau: number[] = [];             // generating iteration (1-based) per sample
+  // logQ[i][j] = log q(X_i; θ_j). A sample's density under a proposal never
+  // changes, so cache it: each entry is computed ONCE. Recomputing it every
+  // iteration (as the naive temporal-mixture loop does) is O(M·T³) Gaussian
+  // evals and dominated the run; caching makes it O(M·T²) computed-once.
+  const logQ: number[][] = [];
   let K: number | null = null;          // frozen when adaptation stalls
   let prevMu: Float64Array | null = null;
   let finalLogW = new Float64Array(0);
@@ -150,6 +155,9 @@ function amisSample(mv: any, opts: any) {
   for (let t = 1; t <= T; t++) {
     const p = makeProposal(mu, Sigma, dim);
     proposals.push(p);
+    const pIdx = t - 1;                  // 0-based index of this proposal
+    // New proposal's column for all EXISTING samples.
+    for (let i = 0; i < X.length; i++) logQ[i].push(mvnLogpdf(X[i], p, dim));
 
     // a. Draw M samples from the current proposal, then score them. AMIS's M
     // samples are independent, so score the whole iteration's batch in ONE pass
@@ -170,7 +178,14 @@ function amisSample(mv: any, opts: any) {
     const lt = (typeof mv.logPosteriorBatch === 'function')
       ? mv.logPosteriorBatch(batch)
       : batch.map((x: Float64Array) => mv.logPosterior(x));
-    for (let m = 0; m < M; m++) { X.push(batch[m]); tau.push(t); logTarget.push(lt[m]); }
+    for (let m = 0; m < M; m++) {
+      const x = batch[m];
+      X.push(x); tau.push(t); logTarget.push(lt[m]);
+      // This new sample's density under every proposal so far (0..pIdx).
+      const row: number[] = new Array(pIdx + 1);
+      for (let j = 0; j <= pIdx; j++) row[j] = mvnLogpdf(x, proposals[j], dim);
+      logQ.push(row);
+    }
 
     // Auto-K (§IV-D): once the proposal mean stops moving, freeze K = t−1 and
     // switch to the reduced (efficient) mixture for subsequent re-weightings.
@@ -186,16 +201,15 @@ function amisSample(mv: any, opts: any) {
     const useApprox = (K !== null && t > K);
     const logT = Math.log(t);
     for (let i = 0; i < X.length; i++) {
+      const lq = logQ[i];                          // cached log q(X_i; θ_j), j=0..t-1
       let logmix: number;
       if (!useApprox) {
-        const lqs: number[] = new Array(t);
-        for (let j = 0; j < t; j++) lqs[j] = mvnLogpdf(X[i], proposals[j], dim);
-        logmix = logsumexp(lqs) - logT;            // (1/t) Σ_{j=1}^t q_j
+        logmix = logsumexp(lq) - logT;             // (1/t) Σ_{j=1}^t q_j
       } else {
         const lstar = Math.max(tau[i], K as number);
         const comps: number[] = [];
-        for (let j = 0; j < (K as number) - 1; j++) comps.push(mvnLogpdf(X[i], proposals[j], dim));
-        comps.push(Math.log(t - (K as number) + 1) + mvnLogpdf(X[i], proposals[lstar - 1], dim));
+        for (let j = 0; j < (K as number) - 1; j++) comps.push(lq[j]);
+        comps.push(Math.log(t - (K as number) + 1) + lq[lstar - 1]);
         logmix = logsumexp(comps) - logT;          // (1/t)(Σ_{j<K} q_j + (t−K+1) q_{ℓ*})
       }
       logW[i] = logTarget[i] - logmix;
