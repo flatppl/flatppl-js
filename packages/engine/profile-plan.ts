@@ -741,6 +741,50 @@ function effectiveInputDomain(
   return out;
 }
 
+/**
+ * Re-center a plot's x-axis window on a moved pivot. Given the current
+ * pivot value `center` and the source/prior auto-width `[autoLo, autoHi]`
+ * (whatever `resolveSweepRange` / `fourSigmaQuantileRange` produced — a
+ * pivot-INDEPENDENT spread), return a window of that same width centered
+ * on the pivot, honoring the support `kind`:
+ *
+ *   - bounded interval / unitinterval → keep `[autoLo, autoHi]` verbatim
+ *     (a bounded axis's natural domain IS the interval; re-centering
+ *     would clip it);
+ *   - posreals / nonnegreals → center, then clamp the low edge at 0;
+ *   - reals / empirical / unbounded → center symmetrically;
+ *   - `opts.isInt` → snap the bounds outward to integers.
+ *
+ * This is the pure core of the viewer's "auto-fit domain" button: the
+ * existing auto-fit frames the prior, so after the pivot moves (manually
+ * or via Find-maximum) the user re-frames the plot around the new point.
+ * A degenerate auto-width (≤0 / non-finite) falls back to |center| (or 1).
+ * A non-finite `center` returns `[autoLo, autoHi]` unchanged (no-op).
+ */
+function pivotCenteredRange(
+  center: number,
+  autoLo: number,
+  autoHi: number,
+  opts?: { kind?: string; isInt?: boolean },
+): [number, number] {
+  const kind = (opts && opts.kind) || 'reals';
+  if (kind === 'interval' || kind === 'unitinterval') return [autoLo, autoHi];
+  if (!Number.isFinite(center)) return [autoLo, autoHi];
+  let w = autoHi - autoLo;
+  if (!(w > 0 && Number.isFinite(w))) w = center !== 0 ? Math.abs(center) : 1;
+  let lo = center - w / 2;
+  let hi = center + w / 2;
+  if (kind === 'posreals' || kind === 'nonnegreals') {
+    if (lo < 0) lo = 0;
+  }
+  if (opts && opts.isInt) {
+    lo = Math.floor(lo);
+    hi = Math.ceil(hi);
+    if (hi <= lo) hi = lo + 1;
+  }
+  return [lo, hi];
+}
+
 function fourSigmaQuantileRange(samples: ArrayLike<number>) {
   if (!samples || samples.length === 0) return null;
   if (samples.length === 1) return [samples[0], samples[0]];
@@ -762,6 +806,7 @@ module.exports = {
   findMatchingPresets,
   findMatchingDomains,
   fourSigmaQuantileRange,
+  pivotCenteredRange,
   arrayInputLength,
   defaultValueForLeafType,
   computeAutoInputs,
