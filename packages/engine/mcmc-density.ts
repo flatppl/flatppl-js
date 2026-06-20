@@ -351,6 +351,36 @@ async function buildLogPi(
   const likPerAtom: string[] = Array.from(likRefSet).filter((n) => atomDep.has(n));
   const constParseSet = makeParseSet(baseEnvConst);
 
+  // Fast-batch eligibility (lets the batched scorer skip per-atom buildEnv —
+  // the interpreted re-evaluation of every derived binding, N times, which the
+  // breakdown showed dominates BOTH the prior and likelihood terms):
+  //   • likPerAtomAllDraws — the likelihood references only draws (derived are
+  //     inlined by clm), so its refArrays can be packed straight from the
+  //     points, no env.
+  //   • priorNeedsDerived — some prior draw measure (or any composite draw)
+  //     references an atom-dependent derived value, so the prior needs the full
+  //     env; otherwise a lean env (fixed + const-derived + draws) suffices.
+  const drawSet = new Set<string>(drawNames);
+  const likPerAtomAllDraws = likPerAtom.every((n) => drawSet.has(n));
+  let priorNeedsDerived = false;
+  for (const nm of drawNames) {
+    if (compositeDesc[nm]) { priorNeedsDerived = true; break; }   // scoreComposite needs derived params
+    const refs = new Set<string>(); collectRefNames(drawMeasures[nm], refs);
+    for (const r of refs) { if (atomDep.has(r) && !drawSet.has(r)) { priorNeedsDerived = true; break; } }
+    if (priorNeedsDerived) break;
+  }
+  // Lean per-atom env: fixed + atom-independent derived + this point's draws,
+  // skipping the (expensive) atom-dependent derived evaluation.
+  function leanEnvOf(pt: Record<string, any>): Record<string, any> {
+    const env: Record<string, any> = Object.assign({}, baseEnvConst);
+    for (const k in pt) {
+      const v = pt[k];
+      env[k] = (v instanceof Float64Array) ? Array.from(v)
+        : (v && v.data instanceof Float64Array) ? Array.from(v.data) : v;
+    }
+    return env;
+  }
+
   // ── SYNC closures ─────────────────────────────────────────────────────────
 
   // Score a composite-iid draw (a [G,N] block of `distOp` whose per-row params
@@ -472,38 +502,50 @@ async function buildLogPi(
     const N = pts.length;
     const out = new Float64Array(N);
     if (N === 0) return out;
-    const envs = new Array(N);
-    for (let i = 0; i < N; i++) envs[i] = buildEnv(pts[i]);
 
-    // Per-atom refArrays for the names the likelihood references.
-    const refArrays: Record<string, any> = {};
-    for (const nm of likPerAtom) {
-      const v0 = envs[0][nm];
-      if (typeof v0 === 'number') {
-        const a = new Float64Array(N);
-        for (let i = 0; i < N; i++) a[i] = +envs[i][nm];
-        refArrays[nm] = a;
-      } else if (v0 && (v0.length != null)) {
-        const D = v0.length | 0;
-        const data = new Float64Array(N * D);
-        for (let i = 0; i < N; i++) { const vi = envs[i][nm]; for (let j = 0; j < D; j++) data[i * D + j] = +vi[j]; }
-        refArrays[nm] = { shape: [N, D], data };
+    // Batched likelihood: when the body references only draws (the common case —
+    // derived bindings are inlined by clm), pack its refArrays straight from the
+    // points, scoring all N in ONE logDensityN(count=N) pass with NO per-atom
+    // buildEnv. Otherwise leave logL null and fall back to the scalar likWith.
+    let logL: Float64Array | null = null;
+    if (likPerAtomAllDraws) {
+      const refArrays: Record<string, any> = {};
+      for (const nm of likPerAtom) {
+        const v0 = pts[0][nm];
+        if (typeof v0 === 'number') {
+          const a = new Float64Array(N);
+          for (let i = 0; i < N; i++) a[i] = +pts[i][nm];
+          refArrays[nm] = a;
+        } else {
+          const d0 = flatData(v0);
+          if (!d0) { logL = null; break; }
+          const D = d0.length | 0;
+          const data = new Float64Array(N * D);
+          for (let i = 0; i < N; i++) { const vi = flatData(pts[i][nm]); for (let j = 0; j < D; j++) data[i * D + j] = +vi[j]; }
+          refArrays[nm] = { shape: [N, D], data };
+        }
       }
+      try {
+        const opts = { parseSet: constParseSet, resolveMeasureRef: NULL_REF, baseEnv: baseEnvConst };
+        const r = density.logDensityN(likBodyIR, observed, refArrays, N, opts);
+        if (r && r.length === N) logL = r as Float64Array;
+      } catch (_err) { logL = null; }
     }
 
-    // Batched likelihood (atom-independent observed; per-atom params via refs).
-    let logL: Float64Array | null = null;
-    try {
-      const opts = { parseSet: constParseSet, resolveMeasureRef: NULL_REF, baseEnv: baseEnvConst };
-      const r = density.logDensityN(likBodyIR, observed, refArrays, N, opts);
-      if (r && r.length === N) logL = r as Float64Array;
-    } catch (_err) { logL = null; }
-
+    if (logL === null) {
+      // No batched likelihood (body needs a derived value, or it errored) —
+      // fall back to the scalar logπ, which shares ONE buildEnv between the
+      // prior and likelihood. (Splitting here would build the env twice.)
+      for (let i = 0; i < N; i++) out[i] = logPi(pts[i]);
+      return out;
+    }
+    // Batched likelihood succeeded: score the prior per atom (cheap), with a
+    // lean env when no prior draw needs an atom-dependent derived value.
     for (let i = 0; i < N; i++) {
-      const prior = priorWith(envs[i], pts[i]);
+      const env = priorNeedsDerived ? buildEnv(pts[i]) : leanEnvOf(pts[i]);
+      const prior = priorWith(env, pts[i]);
       if (!Number.isFinite(prior)) { out[i] = -Infinity; continue; }
-      const lik = (logL && Number.isFinite(logL[i])) ? logL[i] : likWith(envs[i], pts[i]);
-      const lp = prior + lik;
+      const lp = prior + logL[i];
       out[i] = Number.isFinite(lp) ? lp : -Infinity;
     }
     return out;
