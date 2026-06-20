@@ -76,7 +76,17 @@ function scheduleReload() {
 }
 
 try {
-  watch(root, { recursive: true }, (_eventType, _filename) => scheduleReload());
+  const watcher = watch(root, { recursive: true }, (_eventType, _filename) => scheduleReload());
+  // The recursive watcher emits an async 'error' (ENOENT scandir) when a
+  // rebuild removes+recopies a dist/ subdir mid-watch (build.mjs clean-copies
+  // demo/ and examples/). That 'error' is asynchronous, so the try/catch above
+  // never sees it — left unhandled it crashes the whole dev server. Swallow it
+  // and schedule a reload; the top-level watch survives the transient removal.
+  watcher.on('error', (err) => {
+    if (err && err.code === 'ENOENT') { scheduleReload(); return; }
+    console.warn('@flatppl/web dev server: live-reload watcher error:',
+      err && err.message || err);
+  });
 } catch (err) {
   console.warn('@flatppl/web dev server: live-reload watcher failed to start:',
     err && err.message || err);
