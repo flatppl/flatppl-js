@@ -64,15 +64,10 @@ async function optimize(spec: any): Promise<any> {
   };
 
   const sigma0 = opts.sigma0 ?? 0.3; // normalised z-units ≈ a fraction of a plot scale
-  // Multi-start by default: a single CMA run gets stuck on sharply-peaked or
-  // multimodal objectives (e.g. a tight-data likelihood — a small σ makes a
-  // narrow ridge the lone run can disperse off and never climb back). Start 0 is
-  // the pivot; the rest are dispersed across the domain. Scales mildly with
-  // dimension, capped. Callers can override via opts.starts.
-  const starts = Math.max(1, opts.starts || Math.min(8, 3 + n));
   const seed = (opts.seed ?? 0x51ed) >>> 0;
   const rng = mulberry32(seed);
   const spread = opts.startSpread ?? 1.5;
+  const lambdaDef = opts.lambda || (4 + Math.floor(3 * Math.log(Math.max(n, 1))));
 
   const sampleStartX = (): number[] => {
     const x = new Array(n);
@@ -87,20 +82,45 @@ async function optimize(spec: any): Promise<any> {
     return x;
   };
 
-  // Run the optimizer from each start (start 0 = pivot); keep the best.
-  // (v1 keeps only the global best; collecting all distinct modes for a
-  // mixture proposal is the adaptive-IS extension.)
+  // BIPOP-CMA-ES restart regime (Hansen 2009 — the BBOB front-runner). Restart 0
+  // runs from the pivot at the default population. Subsequent restarts interleave
+  // two regimes, always feeding the one that has spent LESS budget:
+  //   • LARGE (IPOP): population doubled each time — global / multimodal coverage.
+  //   • SMALL: a smaller population with a small random σ — local refinement of
+  //     narrow peaks (the sharply-peaked-likelihood case a single run misses).
+  // Budget-adaptive: capped by restart count, an optional eval budget, and an
+  // early stop once several restarts in a row fail to improve. Strictly better
+  // than a fixed count of equal-size starts. (v1 keeps only the global best;
+  // collecting all distinct modes for a mixture proposal is the adaptive-IS
+  // extension.)
+  const maxRestarts = Math.max(0, opts.starts != null ? opts.starts - 1 : (opts.maxRestarts ?? 9));
+  const maxEvals = opts.maxEvals ?? (2000 * (n + 1));
+  const stagnateStop = opts.stagnateRestarts ?? 3;
   let bestRun: any = null;
-  for (let s = 0; s < starts; s++) {
-    const zStart = s === 0 ? coords.toZ(x0) : coords.toZ(sampleStartX());
+  let budgetLarge = 0, budgetSmall = 0, iLarge = 0, stagnant = 0;
+  for (let restart = 0; restart <= maxRestarts; restart++) {
+    if (restart > 0 && (nEvals >= maxEvals || stagnant >= stagnateStop)) break;
+    let lambda = lambdaDef, sig = sigma0, large = true;
+    let zStart = coords.toZ(x0);
+    if (restart > 0) {
+      zStart = coords.toZ(sampleStartX());
+      large = budgetLarge <= budgetSmall;
+      if (large) { iLarge++; lambda = Math.floor(lambdaDef * Math.pow(2, iLarge)); }
+      else {
+        const u = rng();
+        const lambdaLarge = lambdaDef * Math.pow(2, Math.max(1, iLarge));
+        lambda = Math.max(2, Math.floor(lambdaDef * Math.pow(0.5 * lambdaLarge / lambdaDef, u * u)));
+        sig = sigma0 * Math.pow(10, -2 * rng());   // small σ for fine local search
+      }
+    }
+    const before = nEvals;
     const run = await optFn({
-      evalCloud: evalZ, x0: zStart, sigma0,
-      opts: {
-        lambda: opts.lambda, maxGenerations: opts.maxGenerations,
-        seed: (seed + 1013 * (s + 1)) >>> 0,
-      },
+      evalCloud: evalZ, x0: zStart, sigma0: sig,
+      opts: { lambda, maxGenerations: opts.maxGenerations, seed: (seed + 1013 * (restart + 1)) >>> 0 },
     });
-    if (!bestRun || run.value > bestRun.value) bestRun = run;
+    if (restart > 0) { if (large) budgetLarge += (nEvals - before); else budgetSmall += (nEvals - before); }
+    if (!bestRun || run.value > bestRun.value + 1e-12) { bestRun = run; stagnant = 0; }
+    else stagnant++;
   }
 
   let z = bestRun.x;
