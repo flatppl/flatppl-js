@@ -66,8 +66,9 @@ test('backend:mh recovers the conjugate posterior mean via public API', async ()
   const m = await materialiser.materialiseMeasure('posterior', ctx, {
     backend: 'mh', chains: 4, warmup: 1000, draws: 1000, seed: 1,
   });
-  // m is a scalar measure from mhSample; draws live in m.samples
-  const draws = m.samples;
+  // The prior is lawof(record(mu=mu)), so the posterior is a record measure
+  // (drop-in with the IS path); the mu draws live in m.fields.mu.samples.
+  const draws = m.fields.mu.samples;
   assert.ok(draws && draws.length > 0, 'mh posterior produced samples');
   let mean = 0;
   for (let i = 0; i < draws.length; i++) mean += draws[i];
@@ -111,7 +112,7 @@ test('backend emcee recovers the conjugate posterior mean and returns diagnostic
   const { ctx, errs } = setupCtx(MODEL, 4000);   // MODEL: the conjugate mu~Normal(0,10); posterior=bayesupdate(...)
   assert.equal(errs.length, 0);
   const m = await materialiser.materialiseMeasure('posterior', ctx, { backend: 'emcee', walkers: 10, warmup: 1000, draws: 1000, seed: 5 });
-  const draws = m.value ? m.value.data : m.samples;
+  const draws = m.fields.mu.samples;
   let mean = 0; for (let i = 0; i < draws.length; i++) mean += draws[i]; mean /= draws.length;
   const postVar = 1/(1+1/100), postMean = 5*postVar;
   assert.ok(Math.abs(mean - postMean) < 0.15, `emcee mean ${mean} vs ${postMean}`);

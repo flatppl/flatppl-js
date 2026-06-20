@@ -211,15 +211,38 @@ async function buildLogPi(
     throw new Error('buildLogPi: derivation must be kind=bayesupdate');
   }
 
-  // ── SETUP: prior IR ───────────────────────────────────────────────────────
-  // expandMeasure: same call as matBroadcastLogdensity (mat-density.ts:865)
-  // resolveNormalizeMasses: inline copy of mat-density.ts:730
+  // ── SETUP: per-draw prior measures ────────────────────────────────────────
+  // Parameterise the prior by its stochastic draws and score each draw's OWN
+  // measure: logπ_prior(θ) = Σ_draw logdensityof(draw_i's measure | env). This
+  // equals logdensityof(prior_record) for an all-stochastic record (the joint
+  // factorises — the regression-baseline oracle notes ARE these per-draw sums),
+  // AND it handles a prior record that contains a DERIVED field (e.g.
+  // sigma=sqrt(sigma2)): we never densify the record (the walker can't walk
+  // `sqrt` as a measure op) — we score sigma2's InverseGamma directly and feed
+  // the derived sigma through the env. Each draw's measure has its normalize
+  // masses resolved once (e.g. tau's normalize(truncate(Cauchy,…))).
   const priorName = d.from as string;
-  const rawPriorIR = orchestrator.expandMeasure(
-    priorName, { derivations: ctx.derivations, bindings: ctx.bindings },
-  );
-  if (!rawPriorIR) throw new Error(`buildLogPi: cannot expand prior '${priorName}'`);
-  const priorIR = await resolveNormalizeMasses(rawPriorIR, ctx);
+  const drawNames: string[] = (function collect(root: string): string[] {
+    const seen = new Set<string>(); const out: string[] = [];
+    (function v(n: string) {
+      if (seen.has(n)) return; seen.add(n);
+      const b = ctx.bindings.get(n); if (!b) return;
+      for (const dep of (b.deps || [])) v(dep);
+      if (b.type === 'draw') out.push(n);
+    })(root);
+    return out;
+  })(priorName);
+  if (drawNames.length === 0) {
+    throw new Error(`buildLogPi: prior '${priorName}' has no stochastic draws to sample`);
+  }
+  const drawMeasures: Record<string, any> = {};
+  for (const nm of drawNames) {
+    const raw = orchestrator.expandMeasure(
+      nm, { derivations: ctx.derivations, bindings: ctx.bindings },
+    );
+    if (!raw) throw new Error(`buildLogPi: cannot expand draw measure '${nm}'`);
+    drawMeasures[nm] = await resolveNormalizeMasses(raw, ctx);
+  }
 
   // ── SETUP: likelihood body IR ─────────────────────────────────────────────
   // clm.lowerMeasure: same call as mat-density.ts:210 (IS path in matBayesupdate)
@@ -238,25 +261,36 @@ async function buildLogPi(
   // ── SYNC closures ─────────────────────────────────────────────────────────
 
   function priorOf(pt: Record<string, any>): number {
-    // Build an env that includes: fixedValues + stochastic latents at pt
-    // + all derived bindings evaluated at pt.
+    // Build an env that includes: fixedValues + stochastic draws at pt
+    // + all derived bindings evaluated at pt (so a draw whose params reference
+    // a derived quantity — e.g. alpha ~ Normal(0, sigma*3) — resolves sigma).
     const callEnv = evaluateDerivedBindings(ctx, pt);
     if (ctx.moduleRegistry) callEnv.__moduleRegistry = ctx.moduleRegistry;
     const { refArrays, vectorEnv } = pointToRefArrays(pt);
-    // Merge vector latents into baseEnv (they can't go through refArrays[k][i]).
+    // Merge vector draws into baseEnv (they can't go through refArrays[k][i]).
     Object.assign(callEnv, vectorEnv);
     const opts = {
       parseSet: makeParseSet(callEnv),
       resolveMeasureRef: (_name: string) => null as any,
       baseEnv: callEnv,
     };
-    try {
-      const logps = density.logDensityN(priorIR, pt, refArrays, 1, opts);
-      const v = logps[0];
-      return Number.isFinite(v) ? v : -Infinity;
-    } catch (_err) {
-      return -Infinity;
+    // Σ over draws: score each draw's own measure at its value. Hierarchical
+    // params (mu, tau for theta) come from refArrays/baseEnv (the other draws);
+    // derived params (sigma) from baseEnv.
+    let total = 0;
+    for (const nm of drawNames) {
+      const val = pt[nm];
+      if (val === undefined) return -Infinity;
+      try {
+        const logps = density.logDensityN(drawMeasures[nm], val, refArrays, 1, opts);
+        const v = logps[0];
+        if (!Number.isFinite(v)) return -Infinity;
+        total += v;
+      } catch (_err) {
+        return -Infinity;
+      }
     }
+    return total;
   }
 
   function likOf(pt: Record<string, any>): number {
@@ -286,4 +320,4 @@ async function buildLogPi(
   return { logPi, priorOf, likOf };
 }
 
-module.exports = { buildLogPi };
+module.exports = { buildLogPi, evaluateDerivedBindings };

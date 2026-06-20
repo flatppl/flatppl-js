@@ -20,13 +20,28 @@ body {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: var(--vscode-editor-font-size, 14px);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
   opacity: 0.8;
   min-height: 26px;
   display: flex;
   align-items: center;
+  gap: 0.4em;
+  /* Own stacking context above the graph canvas (#main paints after #header
+     in DOM order); without this a cytoscape layer can sit over the header and
+     swallow clicks on the sampler controls. */
+  position: relative;
+  z-index: 10;
 }
+/* The expression is the element that shrinks/ellipsizes — NOT the controls.
+   Without this a long model expression pushed the right-aligned sampler
+   selector off-screen (header overflow), making it unclickable. */
+#header-expr {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#inference-controls { flex: 0 0 auto; }
 #header .target-name { font-weight: 600; }
 #header .target-eq { opacity: 0.5; margin: 0 4px; }
 /* Vertical split layout: graph on top, plot on bottom. The header

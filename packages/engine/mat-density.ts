@@ -171,14 +171,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       const post = driver.runMcmc(mv, kernel, {
         nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a,
       });
-      // post.diagnostics is already { acceptRate, perParam:{name:{rHat,essBulk}} } — attach as-is.
-      // Reshape MCMC draws into the SAME EmpiricalMeasure shape the IS path
-      // returns for this posterior, so the viewer plots it as a drop-in: a
-      // scalar latent → scalar measure, a vector latent → array measure (NOT
-      // one scalar field per coordinate), a record prior → record of those.
-      // The driver's drawsByName is keyed by per-coordinate names ('mu','tau',
-      // 'theta[0]'…'theta[7]'); regroup per structured latent (mv.latentNames /
-      // mv.latentShapes). Equal weights ⇒ logWeights null.
+      // post.diagnostics is { acceptRate, perParam:{name:{rHat,essBulk}} } — attach as-is.
       const nDraws = post.drawsByName[mv.names[0]].length;
 
       // Emit exactly `ctx.sampleCount` atoms — the count the viewer's forward
@@ -186,49 +179,96 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       // plot path treats a measure as a fixed/constant literal when its sample
       // length differs from SAMPLE_COUNT (render-record.measureIsConstant), so
       // a raw nWalkers*draws length would be shown as text instead of plotted.
-      // Map the MCMC draws onto `total` atoms with ONE shared stratified index
-      // (preserves the joint posterior across latents); resampling equal-weight
-      // draws is distribution-preserving. Diagnostics stay on the real chains.
+      // ONE shared stratified index over the draws preserves the joint.
       const total = (ctx.sampleCount | 0) > 0 ? (ctx.sampleCount | 0) : nDraws;
       const idx = new Int32Array(total);
       for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
 
-      // Field measure for one latent, rebuilt from its coordinate streams.
-      const fieldFor = (nm: string, shp: any) => {
-        if (shp.kind === 'scalar') {
-          const src = post.drawsByName[nm];
-          const out = new Float64Array(total);
-          for (let i = 0; i < total; i++) out[i] = src[idx[i]];
-          return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: nDraws });
+      // Reconstruct the draw scorer-point at atom `a` (group vector coords).
+      const drawPtAt = (a: number) => {
+        const pt: any = {};
+        for (let li = 0; li < mv.latentNames.length; li++) {
+          const nm = mv.latentNames[li], shp = mv.latentShapes[li];
+          if (shp.kind === 'scalar') { pt[nm] = post.drawsByName[nm][a]; }
+          else {
+            const dd = shp.dims[0]; const v = new Float64Array(dd);
+            for (let j = 0; j < dd; j++) v[j] = post.drawsByName[`${nm}[${j}]`][a];
+            pt[nm] = v;
+          }
         }
-        // Vector latent: atom-major samples (atom i → [c0,…,c_{d-1}]).
-        const d = shp.dims[0];
-        const cols: Float64Array[] = [];
-        for (let j = 0; j < d; j++) cols.push(post.drawsByName[`${nm}[${j}]`]);
-        const s = new Float64Array(total * d);
-        for (let i = 0; i < total; i++) {
-          const a = idx[i];
-          for (let j = 0; j < d; j++) s[i * d + j] = cols[j][a];
-        }
-        const am = empirical.arrayMeasure(s, shp.dims, null);
-        am.logTotalmass = 0; am.n_eff = nDraws;
-        return am;
+        return pt;
       };
 
-      // Single latent → that measure directly (matches IS one-variate shape).
-      if (mv.latentNames.length === 1) {
-        const m = fieldFor(mv.latentNames[0], mv.latentShapes[0]);
+      // Output = the PRIOR RECORD's fields, evaluated from the sampled draws —
+      // identical field names/shapes to the IS posterior (drop-in). The fields
+      // may be draws (alpha, beta, mu, tau, theta) OR deterministic transforms
+      // of draws (sigma = sqrt(sigma2)); evaluateDerivedBindings yields all of
+      // them in one env per atom. We fetch the prior measure ONLY for its field
+      // structure (names + per-field shape), then fill with MCMC values.
+      const mcmcDensity = require('./mcmc-density.ts');
+      return Promise.resolve(ctx.getMeasure(d.from)).then((parent: any) => {
+        const buildScalar = (stream: Float64Array) => {
+          const out = new Float64Array(total);
+          for (let i = 0; i < total; i++) out[i] = stream[idx[i]];
+          return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: nDraws });
+        };
+        const buildArray = (flat: Float64Array, dlen: number) => {
+          const s = new Float64Array(total * dlen);
+          for (let i = 0; i < total; i++) {
+            const a = idx[i];
+            for (let j = 0; j < dlen; j++) s[i * dlen + j] = flat[a * dlen + j];
+          }
+          const am = empirical.arrayMeasure(s, [dlen], null);
+          am.logTotalmass = 0; am.n_eff = nDraws;
+          return am;
+        };
+
+        if (parent && parent.fields) {
+          // Accumulate each prior-record field across the nDraws unique atoms,
+          // reading it from the per-atom env, then resample to `total`.
+          const fieldNames = Object.keys(parent.fields);
+          const acc: any = {};   // name → { scalar:Float64Array } | { vec:Float64Array, d }
+          for (let a = 0; a < nDraws; a++) {
+            const env = mcmcDensity.evaluateDerivedBindings(ctx, drawPtAt(a));
+            for (const fn of fieldNames) {
+              const v = env[fn];
+              if (!(fn in acc)) {
+                acc[fn] = (typeof v === 'number')
+                  ? { scalar: new Float64Array(nDraws) }
+                  : { vec: new Float64Array(nDraws * ((v && v.length) || 1)), d: (v && v.length) || 1 };
+              }
+              const e = acc[fn];
+              if (e.scalar) { e.scalar[a] = (typeof v === 'number') ? v : NaN; }
+              else { for (let j = 0; j < e.d; j++) e.vec[a * e.d + j] = (v && v[j] != null) ? +v[j] : NaN; }
+            }
+          }
+          const fields: any = {};
+          for (const fn of fieldNames) {
+            const e = acc[fn];
+            fields[fn] = e.scalar ? buildScalar(e.scalar) : buildArray(e.vec, e.d);
+          }
+          const recM = empirical.recordMeasure(fields, null);
+          recM.diagnostics = post.diagnostics;
+          return recM;
+        }
+
+        // Non-record (single scalar/array latent) prior: the sole draw is the
+        // measure. Scalar → scalar measure; vector → array measure.
+        const nm = mv.latentNames[0], shp = mv.latentShapes[0];
+        let m: any;
+        if (shp.kind === 'scalar') {
+          m = buildScalar(post.drawsByName[nm]);
+        } else {
+          const dlen = shp.dims[0];
+          const flat = new Float64Array(nDraws * dlen);
+          for (let a = 0; a < nDraws; a++) {
+            for (let j = 0; j < dlen; j++) flat[a * dlen + j] = post.drawsByName[`${nm}[${j}]`][a];
+          }
+          m = buildArray(flat, dlen);
+        }
         m.diagnostics = post.diagnostics;
         return m;
-      }
-      // Record prior → record measure of per-latent field measures.
-      const fields: any = {};
-      for (let li = 0; li < mv.latentNames.length; li++) {
-        fields[mv.latentNames[li]] = fieldFor(mv.latentNames[li], mv.latentShapes[li]);
-      }
-      const recM = empirical.recordMeasure(fields, null);
-      recM.diagnostics = post.diagnostics;
-      return recM;
+      });
     });
   }
 

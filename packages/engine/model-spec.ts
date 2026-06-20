@@ -231,12 +231,37 @@ function elementSupportOf(elementBaseName: string, derivations: any): any {
   return walkDerivChain(elementBaseName, derivations);
 }
 
+// Collect the STOCHASTIC `draw`-type bindings transitively feeding `rootName`,
+// in dependency order. These — NOT the kernel's parametric inputs
+// (d.paramKwargs) — are the model's free latents. The distinction matters when
+// a kernel input is a DERIVED quantity: e.g. `sigma = sqrt(sigma2)` with
+// `sigma2 ~ InverseGamma(...)` makes `sigma2` the latent and `sigma` a
+// deterministic transform. Parameterising by draws (sigma2) rather than kernel
+// inputs (sigma) is what lets the per-draw scorer evaluate the prior without
+// densifying `sqrt` in a `lawof` record.
+function collectDrawNames(rootName: string, ctx: any): string[] {
+  const bindings = ctx.bindings;
+  const seen = new Set<string>();
+  const out: string[] = [];
+  (function visit(n: string) {
+    if (seen.has(n)) return;
+    seen.add(n);
+    const b = bindings.get(n);
+    if (!b) return;
+    for (const dep of (b.deps || [])) visit(dep);
+    if (b.type === 'draw') out.push(n);
+  })(rootName);
+  return out;
+}
+
 function enumerateLatents(d: any, ctx: any): any[] {
-  const paramNames: string[] = d.paramKwargs || [];
+  // Latents are the prior's stochastic draws (transitive), not the kernel's
+  // parametric inputs. d.from is the prior (a lawof binding); walk its deps.
+  const drawNames: string[] = collectDrawNames(d.from, ctx);
   const derivations = ctx.derivations || {};
   const result: any[] = [];
 
-  for (const name of paramNames) {
+  for (const name of drawNames) {
     const info = walkDerivChain(name, derivations);
 
     if (info && info.isIid) {
@@ -255,4 +280,4 @@ function enumerateLatents(d: any, ctx: any): any[] {
   return result;
 }
 
-module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents };
+module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents, collectDrawNames };
