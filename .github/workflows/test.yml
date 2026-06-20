@@ -101,34 +101,25 @@ jobs:
           fail_ci_if_error: false
           token: ${{ secrets.CODECOV_TOKEN }}
 
-      - name: Cache Rust deps (flatppl-rust LSP + convert wasm builds)
-        # Caches the cargo registry + .flatppl-rust/target so the LSP
-        # (build:vendor) and the wasm crate builds don't recompile serde /
-        # salsa / wasm-bindgen / … every run. Same action flatppl-rust's own CI
-        # uses. cache-bin: false — wasm-pack is cached separately, below, on a
-        # stable version key (so an unrelated Cargo.lock change won't evict it).
+      # Convert is ON by default; the web build cross-compiles flatppl-wasm-api
+      # to wasm32 (and build:vendor builds the LSP) from the flatppl-rust
+      # sibling. Same toolchain conventions as flatppl-rust's own CI.
+      - name: Install Rust toolchain (+ wasm32 target for the convert build)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry and build artifacts
+        # Caches the registry + .flatppl-rust/target so the LSP + wasm crate
+        # builds don't recompile serde / salsa / wasm-bindgen / … every run.
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: .flatppl-rust
-          cache-bin: false
 
-      - name: Cache wasm-pack (skip the from-source rebuild on repeat runs)
-        uses: actions/cache@v4
+      - name: Install wasm-pack (prebuilt, for the Convert command)
+        uses: taiki-e/install-action@v2.79.1
         with:
-          path: ~/.cargo/bin/wasm-pack
-          key: wasm-pack-${{ runner.os }}-${{ env.WASM_PACK_VERSION }}
-
-      - name: Install the wasm build toolchain (for the Convert command)
-        # Convert is ON by default; the web build cross-compiles
-        # flatppl-wasm-api to wasm32 from the flatppl-rust sibling. cargo +
-        # rustup are preinstalled on the runner — add the wasm32 target, and
-        # build wasm-pack from source (matching the local build's no-prebuilt
-        # stance) unless the cache above already restored it. The build itself
-        # never installs toolchain components.
-        run: |
-          rustup target add wasm32-unknown-unknown
-          command -v wasm-pack >/dev/null \
-            || cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
 
       - name: Build web package
         # End-to-end smoke: confirms the resolver, bundler, and

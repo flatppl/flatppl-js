@@ -70,31 +70,23 @@ jobs:
       - name: Install workspace dependencies
         run: npm ci
 
-      - name: Cache Rust deps (convert wasm build)
-        # Caches the cargo registry + .flatppl-rust/target so the wasm crate
-        # build doesn't recompile its deps every deploy. Same action
-        # flatppl-rust's own CI uses. cache-bin: false — wasm-pack is cached
-        # separately, below, on a stable version key.
+      # Convert is ON by default; the deployed gallery cross-compiles
+      # flatppl-wasm-api to wasm32 from the flatppl-rust sibling. Same toolchain
+      # conventions as flatppl-rust's own CI.
+      - name: Install Rust toolchain (+ wasm32 target for the convert build)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry and build artifacts
         uses: Swatinem/rust-cache@v2
         with:
           workspaces: .flatppl-rust
-          cache-bin: false
 
-      - name: Cache wasm-pack (skip the from-source rebuild on repeat runs)
-        uses: actions/cache@v4
+      - name: Install wasm-pack (prebuilt, for the Convert command)
+        uses: taiki-e/install-action@v2.79.1
         with:
-          path: ~/.cargo/bin/wasm-pack
-          key: wasm-pack-${{ runner.os }}-${{ env.WASM_PACK_VERSION }}
-
-      - name: Install the wasm build toolchain (for the Convert command)
-        # Convert is ON by default; the deployed gallery cross-compiles
-        # flatppl-wasm-api to wasm32 from the flatppl-rust sibling. Add the
-        # wasm32 target, and build wasm-pack from source unless the cache above
-        # restored it (cargo + rustup are preinstalled).
-        run: |
-          rustup target add wasm32-unknown-unknown
-          command -v wasm-pack >/dev/null \
-            || cargo install wasm-pack --version "$WASM_PACK_VERSION" --locked
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
 
       - name: Build web package
         run: npm run build --workspace=packages/web
