@@ -150,6 +150,45 @@ function applyReduce(reply: any, node: any): any {
 // =====================================================================
 
 function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
+  // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
+  // return an equal-weight empirical measure. IS path (default) is below.
+  const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
+  if (backend === 'mh' || backend === 'nuts') {
+    const modelSpec = require('./model-spec.ts');
+    const MV        = require('./model-view.ts');
+    const MH        = require('./mh-sample.ts');
+    const spec = modelSpec.buildPosteriorSpec(d, ctx);
+    const mv = MV.buildModelView(spec);
+    if (backend === 'nuts' && mv.hasDiscrete) {
+      return Promise.reject(new Error(
+        "backend 'nuts' cannot sample discrete latents; use 'mh' or 'is'",
+      ));
+    }
+    const o = ctx.inferenceOpts || {};
+    const post = MH.mhSample(mv, {
+      chains:  o.chains  || 4,
+      warmup:  o.warmup  || 1000,
+      draws:   o.draws   || 1000,
+      seed:    o.seed    || 1,
+    });
+    if (mv.dim === 1) {
+      // Single-latent: scalar measure with equal weights.
+      const nm = mv.names[0];
+      return Promise.resolve(scalarMeasureN(post.drawsByName[nm], {
+        logWeights: null, logTotalmass: 0, n_eff: post.drawsByName[nm].length,
+      }));
+    }
+    // Multi-latent: record measure, one scalar field per latent.
+    const fields: any = {};
+    for (const nm of mv.names) {
+      fields[nm] = scalarMeasureN(post.drawsByName[nm], {
+        logWeights: null, logTotalmass: 0, n_eff: post.drawsByName[nm].length,
+      });
+    }
+    return Promise.resolve(empirical.recordMeasure(fields, null));
+  }
+
+  // IS path (default, untouched below).
   // Per spec: posterior = bayesupdate(L, prior), L = likelihoodof(K, obs).
   // For each prior atom θ_i, logw_i = logdensityof(K(θ_i), obs); the atoms
   // are the prior's, logWeights = prior.logWeights + per-i logp.
