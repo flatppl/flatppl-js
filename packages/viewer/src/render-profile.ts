@@ -457,10 +457,11 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
   const hasInputs = plan.axes && plan.axes.length > 0;
   const hasMultiOutput = plan.outputs && plan.outputs.length > 1;
   // Two glyph action buttons sit immediately right of the input / domain
-  // selectors: 🏔 find-maximum (acts on the POINT) and ✨ auto-fit domain
-  // (acts on the RANGE). They're passed into buildPresetControl /
-  // buildDomainControl as the `trailing` slot so the reset/save icons stay to
-  // the RIGHT of them rather than between selector and glyph.
+  // selectors: 🏔 find-maximum (acts on the POINT) and [ ] auto-fit domain
+  // (acts on the RANGE — brackets read as the fitted interval). They're passed
+  // into buildPresetControl / buildDomainControl as the `trailing` slot so the
+  // reset/save icons stay to the RIGHT of them rather than between selector
+  // and glyph.
   function makeFindMaxButton(): HTMLButtonElement {
     const maxBtn = makeGlyphButton('🏔', 'Find maximum, starting at current point');
     maxBtn.style.marginLeft = '0.3em';
@@ -480,8 +481,7 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
   }
 
   function makeAutoDomainButton(): HTMLButtonElement {
-    // ︎ = text-presentation selector → render ✨ monochrome, not colour emoji.
-    const fitBtn = makeGlyphButton('✨︎', 'Auto-fit domain');
+    const fitBtn = makeGlyphButton('[ ]', 'Auto-fit domain');
     fitBtn.style.marginLeft = '0.3em';
     fitBtn.addEventListener('click', function() {
       if (fitBtn.disabled) return;
