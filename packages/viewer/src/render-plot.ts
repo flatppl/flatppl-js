@@ -101,7 +101,7 @@ export function renderPlotForCurrent(ctx: Ctx) {
   // to warrant one.
   const io = ctx.inferenceOpts;
   const sampling = !(arrayMode || matrixMode);
-  const showBar = sampling && io && (io.backend === 'mh' || io.backend === 'emcee' || io.backend === 'amis' || io.backend === 'smc');
+  const showBar = sampling && io && (io.backend === 'mh' || io.backend === 'emcee' || io.backend === 'amis' || io.backend === 'smc' || io.backend === 'elliptical-slice-sampler');
   showPlotMessage(ctx,
     (arrayMode || matrixMode) ? 'Loading…' : 'Sampling…',
     { cancellable: sampling, hint: true, progress: showBar });

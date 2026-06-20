@@ -384,6 +384,26 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
     if (measure && measure.diagnostics) {
       const d = measure.diagnostics;
 
+      // Elliptical slice: equal-weight MCMC draws, but no accept rate (it's
+      // near-rejection-free) — report split-R̂ + bulk ESS (disambiguated from the
+      // sampler's "ESS" name), mean shrink steps, and the reference mode.
+      if (d.method === 'ess-slice') {
+        const pp = d.perParam || {};
+        let maxRhat = 0, minEss = Infinity;
+        for (const k of Object.keys(pp)) { if (Number.isFinite(pp[k].rHat)) maxRhat = Math.max(maxRhat, pp[k].rHat); if (Number.isFinite(pp[k].essBulk)) minEss = Math.min(minEss, pp[k].essBulk); }
+        const label = (maxRhat <= 1.01 && minEss >= 400) ? 'good' : (maxRhat <= 1.05 && minEss >= 100) ? 'ok' : (maxRhat <= 1.10) ? 'bad' : 'unusable';
+        const es = document.createElement('span');
+        es.className = 'is-quality is-' + label;
+        es.textContent = 'ESS-slice: R̂ ' + (maxRhat > 0 ? maxRhat.toFixed(3) : '—') + ', ESS(eff) ' + (Number.isFinite(minEss) ? formatSampleCount(Math.round(minEss)) : '—') + ', ~' + (Number.isFinite(d.meanShrinks) ? d.meanShrinks.toFixed(1) : '—') + ' shrinks, ' + (d.mode || '');
+        es.title = 'Elliptical slice sampling (gradient- and tuning-free):'
+          + '\nmax split-R̂ ' + (maxRhat > 0 ? maxRhat.toFixed(3) : '—') + ' (want < 1.01)'
+          + '\nmin bulk effective sample size ' + (Number.isFinite(minEss) ? Math.round(minEss) : '—')
+          + '\nmean shrink steps/iteration ' + (Number.isFinite(d.meanShrinks) ? d.meanShrinks.toFixed(2) : '—')
+          + '\nGaussian reference: ' + (d.mode === 'exact' ? 'exact (Normal prior)' : 'fitted to the population');
+        wrap.appendChild(es);
+        return wrap;
+      }
+
       // SMC: equal-weight particles (no IS weights / R̂). Headline the log
       // marginal likelihood (evidence) plus ladder length and move acceptance.
       if (d.method === 'smc') {

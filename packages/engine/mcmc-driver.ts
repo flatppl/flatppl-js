@@ -46,7 +46,7 @@ function runMcmc(mv: any, kernel: any, opts: any) {
     logp[w] = mv.logPosterior(y);
   }
 
-  const adaptState = kernel.init ? kernel.init(nWalkers, dim, opts) : {};
+  const adaptState = kernel.init ? kernel.init(nWalkers, dim, opts, mv) : {};
   const collected = new Array(nWalkers);
   for (let w = 0; w < nWalkers; w++) collected[w] = [];
   let acceptTotal = 0, proposalTotal = 0;

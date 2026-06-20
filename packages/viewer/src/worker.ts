@@ -204,6 +204,13 @@ function poolMeasures(measures: any[]): any {
     }
   }
   const totalN = fields[Object.keys(fields)[0]].samples.length;
+  // Elliptical slice: chains pooled like MH (R̂ worst, ESS summed via perParam
+  // above), but keep the ess-slice tag + mode + mean shrinks for the readout.
+  if (first.diagnostics && first.diagnostics.method === 'ess-slice') {
+    let shr = 0, k = 0; for (const m of measures) { const d = m.diagnostics || {}; if (Number.isFinite(d.meanShrinks)) { shr += d.meanShrinks; k++; } }
+    return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
+      diagnostics: { method: 'ess-slice', mode: first.diagnostics.mode, meanShrinks: k > 0 ? shr / k : NaN, perParam } };
+  }
   // AMIS is an importance sampler, not MCMC: report combined IS quality
   // (effective sample sizes add across independent runs) and the worst auto-K,
   // not an accept rate. essBulk per param already summed above.

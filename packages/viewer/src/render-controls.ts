@@ -460,7 +460,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   lbl.style.opacity = '0.6';
 
   const sel = document.createElement('select');
-  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC']]) {
+  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC'], ['elliptical-slice-sampler', 'ESS']]) {
     const o = document.createElement('option');
     o.value = v; o.textContent = t;
     sel.appendChild(o);
@@ -469,7 +469,8 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   styleControl(sel);
   sel.title = 'Posterior inference backend. IS = importance sampling (default); '
     + 'MH / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
-    + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence).';
+    + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence); '
+    + 'ESS = elliptical slice sampling (gradient- and tuning-free).';
 
   const gear = document.createElement('button');
   gear.type = 'button';
@@ -559,16 +560,16 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
     onChange();
   });
 
-  numRow('draws', ['mh', 'emcee'], function () { return opts.draws; }, function (v) { opts.draws = v == null ? 1000 : v; });
-  numRow('warmup', ['mh', 'emcee'], function () { return opts.warmup; }, function (v) { opts.warmup = v == null ? 1000 : v; });
+  numRow('draws', ['mh', 'emcee', 'elliptical-slice-sampler'], function () { return opts.draws; }, function (v) { opts.draws = v == null ? 1000 : v; });
+  numRow('warmup', ['mh', 'emcee', 'elliptical-slice-sampler'], function () { return opts.warmup; }, function (v) { opts.warmup = v == null ? 1000 : v; });
   panel.appendChild(countRow);
-  rows.push({ el: countRow, backends: ['mh', 'emcee'] });
+  rows.push({ el: countRow, backends: ['mh', 'emcee', 'elliptical-slice-sampler'] });
   numRow('iterations', ['amis'], function () { return opts.amisIters; }, function (v) { opts.amisIters = v == null ? 30 : v; });
   numRow('samples/iter', ['amis'], function () { return opts.amisSamples; }, function (v) { opts.amisSamples = v == null ? 300 : v; });
   numRow('particles', ['smc'], function () { return opts.smcParticles; }, function (v) { opts.smcParticles = v == null ? 2000 : v; });
   numRow('chain', ['smc'], function () { return opts.smcSteps; }, function (v) { opts.smcSteps = v == null ? 12 : v; });
   numRow('CESS ratio', ['smc'], function () { return opts.smcCESS; }, function (v) { opts.smcCESS = v == null ? 0.7 : v; });
-  numRow('seed', ['mh', 'emcee', 'amis'], function () { return opts.seed; }, function (v) { opts.seed = v; });
+  numRow('seed', ['mh', 'emcee', 'amis', 'smc', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
   refreshCountRow();
 
   // IS has no sampler knobs — disable the gear so the advanced panel is clearly

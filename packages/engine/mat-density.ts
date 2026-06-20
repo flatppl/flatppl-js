@@ -153,11 +153,12 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
   // return an equal-weight empirical measure. IS path (default) is below.
   const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
-  if (backend === 'mh' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc') {
+  if (backend === 'mh' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler') {
     const MV              = require('./model-view.ts');
     const driver          = require('./mcmc-driver.ts');
     const { mhKernel }         = require('./mh-kernel.ts');
     const { makeEmceeKernel }  = require('./emcee-kernel.ts');
+    const { makeEllipticalSliceKernel } = require('./elliptical-slice-kernel.ts');
     // Use the new async vector-aware ModelView (wires mcmc-density.ts scorer).
     return MV.buildModelViewFromCtx(ctx, d).then((mv: any) => {
       if (backend === 'nuts' && mv.hasDiscrete) {
@@ -227,16 +228,26 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
         post = { drawsByName, diagnostics: { method: 'smc', logZ: res.logZ, rungs: res.rungs, acceptRate: res.acceptRate, nSamples: nDraws } };
       } else {
-        const kernel = backend === 'emcee' ? makeEmceeKernel(o.a) : mhKernel;
+        const isEss = backend === 'elliptical-slice-sampler';
+        const kernel = backend === 'emcee' ? makeEmceeKernel(o.a)
+          : isEss ? makeEllipticalSliceKernel() : mhKernel;
         const nWalkers = o.walkers ?? o.chains ?? (backend === 'emcee' ? Math.max(4, 2 * mv.dim + 2) : 4);
         post = driver.runMcmc(mv, kernel, {
-          nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a, onProgress,
+          nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a, essMaxShrink: o.essMaxShrink, onProgress,
         });
         // post.diagnostics is { acceptRate, perParam:{name:{rHat,essBulk}} } — attach as-is.
         nDraws = post.drawsByName[mv.names[0]].length;
         const total = total0 > 0 ? total0 : nDraws;
         idx = new Int32Array(total);
         for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
+        if (isEss) {
+          // Elliptical slice is near-rejection-free; the driver's acceptRate is
+          // really (sweeps·N)/(shrink evals) = 1/mean-shrinks-per-step. Re-tag.
+          const ar = post.diagnostics.acceptRate;
+          post.diagnostics.method = 'ess-slice';
+          post.diagnostics.mode = mv.gaussianPrior ? 'exact' : 'fitted';
+          post.diagnostics.meanShrinks = (ar > 0) ? 1 / ar : NaN;
+        }
       }
       const total = idx.length;
 

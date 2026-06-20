@@ -152,6 +152,26 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   const dim = coordNames.length;
   const coordTransforms = coordSupports.map((s: any) => T.transformFor(s));
 
+  // Per-coordinate (μ,σ) of the unconstrained prior IFF it is exactly an
+  // independent Gaussian with constant params (every latent Normal-literal,
+  // real support) — the elliptical slice sampler's EXACT reference. null ⇒
+  // non-Gaussian prior ⇒ that sampler fits a Gaussian reference instead.
+  let gaussianPrior: { mu: Float64Array; sigma: Float64Array } | null = null;
+  {
+    const det = modelSpec.detectGaussianPrior(posteriorDeriv, ctx);
+    if (det) {
+      const mu = new Float64Array(dim), sigma = new Float64Array(dim);
+      let i = 0, ok = true;
+      for (let li = 0; li < leafLatents.length && ok; li++) {
+        const l = leafLatents[li]; const g = det[l.name];
+        if (!g) { ok = false; break; }
+        const w = l.shape.kind === 'scalar' ? 1 : l.shape.dims[0];
+        for (let j = 0; j < w; j++) { mu[i] = g.mu; sigma[i] = g.sigma; i++; }
+      }
+      if (ok && i === dim) gaussianPrior = { mu, sigma };
+    }
+  }
+
   // 4. Async setup: build logPi / logPiBatch / priorLikBatch / probePrior.
   const { logPi, logPiBatch, priorLikBatch, probePrior } = await buildLogPi(ctx, posteriorDeriv);
 
@@ -327,6 +347,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     logPriorLikBatch,
     logPosteriorConstrained,
     initFromPrior,
+    gaussianPrior,
     latentNames,
     latentShapes,
   };

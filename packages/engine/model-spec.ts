@@ -295,4 +295,45 @@ function enumerateLatents(d: any, ctx: any): any[] {
   return result;
 }
 
-module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents, collectDrawNames };
+// Detect whether the UNCONSTRAINED prior is an independent Gaussian with
+// constant parameters — i.e. every latent is Normal(μ,σ) with numeric-literal
+// μ,σ and real support (so the identity transform leaves it Normal). Returns a
+// per-latent { name → { mu, sigma } } map (a vector latent shares one μ,σ across
+// its iid elements), or null if any latent disqualifies. Used by the elliptical
+// slice sampler to pick its EXACT Gaussian reference; null ⇒ the fitted path.
+function leafSampleDist(name: string, derivations: any): any {
+  let cur = name; const seen = new Set<string>();
+  while (cur && !seen.has(cur)) {
+    seen.add(cur);
+    const d = derivations[cur];
+    if (!d) return null;
+    if (d.kind === 'alias' || d.kind === 'normalize' || d.kind === 'iid') { cur = d.from; continue; }
+    if (d.kind === 'sample') return d.distIR || null;
+    return null;   // truncate / pushfwd / kernelbroadcast / … → not a plain Normal
+  }
+  return null;
+}
+
+function detectGaussianPrior(d: any, ctx: any): Record<string, { mu: number; sigma: number }> | null {
+  const latents = enumerateLatents(d, ctx);
+  const derivations = ctx.derivations || {};
+  const out: Record<string, { mu: number; sigma: number }> = {};
+  const lit = (ir: any) => (ir && ir.kind === 'lit' && typeof ir.value === 'number') ? ir.value : null;
+  for (const l of latents) {
+    if (l.discrete) return null;
+    if (!(l.support && l.support.kind === 'real')) return null;   // Normal latents are real-support
+    const dist = leafSampleDist(l.name, derivations);
+    if (!dist || dist.op !== 'Normal') return null;
+    let muIR: any, sigIR: any;
+    const kw = dist.kwargs || dist.kwargIRs;
+    if (kw) { muIR = kw.mu ?? kw.loc ?? kw.mean; sigIR = kw.sigma ?? kw.scale ?? kw.sd; }
+    const args = dist.args || dist.argIRs;
+    if (Array.isArray(args)) { if (muIR == null) muIR = args[0]; if (sigIR == null) sigIR = args[1]; }
+    const mu = lit(muIR), sigma = lit(sigIR);
+    if (mu == null || sigma == null || !(sigma > 0)) return null;
+    out[l.name] = { mu, sigma };
+  }
+  return Object.keys(out).length > 0 ? out : null;
+}
+
+module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents, collectDrawNames, detectGaussianPrior };
