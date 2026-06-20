@@ -258,25 +258,48 @@ async function buildLogPi(
     throw new Error('buildLogPi: cannot resolve observed value from obsIR');
   }
 
+  // ── SETUP: hot-path precompute ────────────────────────────────────────────
+  // The per-step cost is dominated by (a) re-lowering every derived binding's
+  // RHS on every call and (b) rebuilding the env twice per logπ. Hoist both:
+  // lower each derived (non-draw value) binding's IR ONCE here; per call only
+  // evaluateExpr them into a fresh env, built ONCE per logπ and shared by the
+  // prior and likelihood terms.
+  const fixedEnvObj: Record<string, any> = {};
+  if (ctx.fixedValues) ctx.fixedValues.forEach((v: any, k: string) => { fixedEnvObj[k] = v; });
+  const derivedBindings: Array<{ name: string; ir: any }> = [];
+  if (ctx.bindings) {
+    ctx.bindings.forEach((b: any, k: string) => {
+      if (!b || b.type === 'draw' || (k in fixedEnvObj)) return;
+      const rhsNode = (b.node || b).value || (b.node || b).effectiveValue;
+      if (!rhsNode) return;
+      try { derivedBindings.push({ name: k, ir: lower.lowerExpr(rhsNode) }); } catch (_) { /* skip */ }
+    });
+  }
+  const moduleReg = ctx.moduleRegistry;
+  const NULL_REF = (_n: string) => null as any;
+
+  // Build the scoring env at a point: fixed + draws + derived (eval only, no
+  // lowering). Vector draws land as plain arrays so index ops resolve.
+  function buildEnv(pt: Record<string, any>): Record<string, any> {
+    const env: Record<string, any> = Object.assign({}, fixedEnvObj);
+    for (const k in pt) {
+      const v = pt[k];
+      env[k] = (v instanceof Float64Array) ? Array.from(v) : v;
+    }
+    for (let i = 0; i < derivedBindings.length; i++) {
+      const db = derivedBindings[i];
+      if (db.name in env) continue;
+      try { env[db.name] = sampler.evaluateExpr(db.ir, env); } catch (_) { /* skip */ }
+    }
+    if (moduleReg) env.__moduleRegistry = moduleReg;
+    return env;
+  }
+
   // ── SYNC closures ─────────────────────────────────────────────────────────
 
-  function priorOf(pt: Record<string, any>): number {
-    // Build an env that includes: fixedValues + stochastic draws at pt
-    // + all derived bindings evaluated at pt (so a draw whose params reference
-    // a derived quantity — e.g. alpha ~ Normal(0, sigma*3) — resolves sigma).
-    const callEnv = evaluateDerivedBindings(ctx, pt);
-    if (ctx.moduleRegistry) callEnv.__moduleRegistry = ctx.moduleRegistry;
-    const { refArrays, vectorEnv } = pointToRefArrays(pt);
-    // Merge vector draws into baseEnv (they can't go through refArrays[k][i]).
-    Object.assign(callEnv, vectorEnv);
-    const opts = {
-      parseSet: makeParseSet(callEnv),
-      resolveMeasureRef: (_name: string) => null as any,
-      baseEnv: callEnv,
-    };
-    // Σ over draws: score each draw's own measure at its value. Hierarchical
-    // params (mu, tau for theta) come from refArrays/baseEnv (the other draws);
-    // derived params (sigma) from baseEnv.
+  function priorWith(env: any, pt: Record<string, any>): number {
+    const { refArrays } = pointToRefArrays(pt);
+    const opts = { parseSet: makeParseSet(env), resolveMeasureRef: NULL_REF, baseEnv: env };
     let total = 0;
     for (const nm of drawNames) {
       const val = pt[nm];
@@ -286,34 +309,30 @@ async function buildLogPi(
         const v = logps[0];
         if (!Number.isFinite(v)) return -Infinity;
         total += v;
-      } catch (_err) {
-        return -Infinity;
-      }
+      } catch (_err) { return -Infinity; }
     }
     return total;
   }
 
-  function likOf(pt: Record<string, any>): number {
-    const callEnv = evaluateDerivedBindings(ctx, pt);
-    if (ctx.moduleRegistry) callEnv.__moduleRegistry = ctx.moduleRegistry;
-    const { refArrays, vectorEnv } = pointToRefArrays(pt);
-    Object.assign(callEnv, vectorEnv);
-    const opts = {
-      parseSet: makeParseSet(callEnv),
-      resolveMeasureRef: (_name: string) => null as any,
-      baseEnv: callEnv,
-    };
+  function likWith(env: any, pt: Record<string, any>): number {
+    const { refArrays } = pointToRefArrays(pt);
+    const opts = { parseSet: makeParseSet(env), resolveMeasureRef: NULL_REF, baseEnv: env };
     try {
       const logps = density.logDensityN(likBodyIR, observed, refArrays, 1, opts);
       const v = logps[0];
       return Number.isFinite(v) ? v : -Infinity;
-    } catch (_err) {
-      return -Infinity;
-    }
+    } catch (_err) { return -Infinity; }
   }
 
+  function priorOf(pt: Record<string, any>): number { return priorWith(buildEnv(pt), pt); }
+  function likOf(pt: Record<string, any>): number { return likWith(buildEnv(pt), pt); }
+
   function logPi(pt: Record<string, any>): number {
-    const lp = priorOf(pt) + likOf(pt);
+    const env = buildEnv(pt);                 // built ONCE, shared by both terms
+    const prior = priorWith(env, pt);
+    if (!Number.isFinite(prior)) return -Infinity;
+    const lik = likWith(env, pt);
+    const lp = prior + lik;
     return Number.isFinite(lp) ? lp : -Infinity;
   }
 
