@@ -105,7 +105,11 @@ function smcSample(mv: any, opts: any) {
   };
 
   while (beta < 1) {
-    if (++rungs > maxRungs) break;
+    if (++rungs > maxRungs) {
+      throw new Error('backend \'smc\': temperature ladder did not reach β=1 in '
+        + maxRungs + ' rungs (stuck at β=' + beta.toFixed(3) + ') — raise the rung '
+        + 'cap / particle count, or use backend \'mh\'/\'emcee\'');
+    }
     const target = rho * N;
 
     // Adapt the next β: largest step that keeps CESS ≥ target, capped at β=1.

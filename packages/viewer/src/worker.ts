@@ -208,8 +208,9 @@ function poolMeasures(measures: any[]): any {
   // (effective sample sizes add across independent runs) and the worst auto-K,
   // not an accept rate. essBulk per param already summed above.
   if (first.diagnostics && first.diagnostics.method === 'smc') {
-    // Independent SMC runs: average evidence in log-space (log-mean-exp of the
-    // per-run logZ), worst-case rung count, mean acceptance.
+    // Independent SMC runs each give an unbiased estimate Ẑ_r of the evidence;
+    // the pooled unbiased estimate is their ARITHMETIC mean, reported as its log
+    // (= log-sum-exp(logZ_r) − log k). Worst-case rung count, mean acceptance.
     let mx = -Infinity; for (const m of measures) { const z = (m.diagnostics || {}).logZ; if (Number.isFinite(z) && z > mx) mx = z; }
     let s = 0, k = 0, accS = 0, rMax = 0;
     for (const m of measures) { const d = m.diagnostics || {}; if (Number.isFinite(d.logZ)) { s += Math.exp(d.logZ - mx); k++; } accS += (d.acceptRate || 0); rMax = Math.max(rMax, d.rungs || 0); }
@@ -247,6 +248,12 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
   // their per-worker results are concatenated, which lowers the combined
   // estimator's variance — independent ensembles / IS runs add effective
   // sample size. MH partitions its independent chains across workers instead.
+  // NOTE: each worker runs a FULL independent instance at the user's knob
+  // settings (emcee walkers / amisSamples,amisIters / smcParticles) — these are
+  // per-worker, deliberately NOT divided by P. The runs are pooled for variance
+  // reduction (more independent samples), so total compute is ≈ P× the knob but
+  // wall-clock stays parallel and each run is full quality. Only `sampleCount`
+  // (the final atom budget) is split, since the pool concatenates to it.
   const shares: any[] = [];
   if (opts.backend === 'emcee' || opts.backend === 'amis' || opts.backend === 'smc') {
     const P = cap;
@@ -286,6 +293,9 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
     return poolMeasures(replies.map((r: any) => r.measure));
   } finally {
     for (const w of workers) { try { w.terminate(); } catch (_) {} }
-    ctx.mcmcPool = [];
+    // Only clear the shared pool if it still points at OUR workers — a run that
+    // was cancelled while a later run already started must not wipe the live
+    // pool reference (which would leak the new run's workers).
+    if (ctx.mcmcPool === workers) ctx.mcmcPool = [];
   }
 }

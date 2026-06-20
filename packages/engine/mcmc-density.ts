@@ -514,7 +514,14 @@ async function buildLogPi(
         if (!d0) return null;
         const D = d0.length | 0;
         const data = new Float64Array(N * D);
-        for (let i = 0; i < N; i++) { const vi = flatData(pts[i][nm]); for (let j = 0; j < D; j++) data[i * D + j] = +vi[j]; }
+        for (let i = 0; i < N; i++) {
+          const vi = flatData(pts[i][nm]);
+          // Per-atom vector length must be constant; if a point disagrees, bail
+          // to the verified scalar path rather than truncate/pad into a wrong
+          // (but finite) density.
+          if (!vi || vi.length !== D) return null;
+          for (let j = 0; j < D; j++) data[i * D + j] = +vi[j];
+        }
         refArrays[nm] = { shape: [N, D], data };
       }
     }
