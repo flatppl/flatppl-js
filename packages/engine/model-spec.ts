@@ -24,7 +24,6 @@ const density       = require('./density.ts');
 const clm           = require('./clm.ts');
 
 const { lowerExpr }             = require('./lower.ts');
-const { classifyForChain }      = (orchestrator._internal || orchestrator);
 const { DISCRETE_DISTRIBUTIONS } = orchestrator;
 
 // Collect transitively-required `draw`-type bindings of `rootName`.
@@ -146,6 +145,13 @@ function buildPosteriorSpec(d: any, ctx: any): { latents: any[]; logLikelihood: 
     // The density walker resolves boundary refs from refArrays per atom (count=1).
     const refArrays: Record<string, Float64Array> = {};
     for (const nm of paramNames) {
+      if (!(nm in theta)) {
+        throw new Error(
+          `logLikelihood: required kernel kwarg '${nm}' has no corresponding `
+          + `latent value in theta (available: ${Object.keys(theta).join(', ') || '(none)'}). `
+          + `Kwarg names must match latent names in the model.`,
+        );
+      }
       const val = theta[nm];
       refArrays[nm] = Float64Array.from([typeof val === 'number' ? val : 0]);
     }

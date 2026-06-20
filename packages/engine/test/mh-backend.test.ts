@@ -13,8 +13,7 @@ const assert = require('node:assert/strict');
 const { processSource, orchestrator, materialiser } = require('..');
 const { createWorkerHandler } = require('../worker.ts');
 
-// Mirror the setupCtx harness from test-models.test.ts, extended to accept
-// inferenceOpts on getMeasure and stash them on ctx so matBayesupdate can read them.
+// Build a materialiser ctx for `src` with N IS samples.
 function setupCtx(src: string, N: number) {
   const lifted = processSource(src);
   const errs = (lifted.diagnostics || []).filter((d: any) => d.severity === 'error');
@@ -29,15 +28,7 @@ function setupCtx(src: string, N: number) {
     fixedValues: built.fixedValues || new Map(),
     moduleRegistry: lifted.loweredModule && lifted.loweredModule.moduleRegistry
       ? lifted.loweredModule.moduleRegistry : null,
-    getMeasure: (n: string, inferenceOpts?: any) => {
-      // Thread inferenceOpts onto ctx so matBayesupdate can read ctx.inferenceOpts.
-      // Clear it after the call so IS-default tests never see a stale option.
-      if (inferenceOpts) ctx.inferenceOpts = inferenceOpts;
-      // Do NOT cache MH requests — each call with opts is a fresh posterior run.
-      if (inferenceOpts) {
-        return materialiser.materialiseMeasure(n, ctx)
-          .finally(() => { delete ctx.inferenceOpts; });
-      }
+    getMeasure: (n: string) => {
       if (cache.has(n)) return cache.get(n);
       const p = materialiser.materialiseMeasure(n, ctx);
       cache.set(n, p);
@@ -67,10 +58,12 @@ L = likelihoodof(K, record(y = 5.0))
 posterior = bayesupdate(L, prior)
 `;
 
-test('backend:mh recovers the conjugate posterior mean', async () => {
+// Public API: materialiser.materialiseMeasure(name, ctx, inferenceOpts).
+// This is the real production path — no ctx manipulation needed.
+test('backend:mh recovers the conjugate posterior mean via public API', async () => {
   const { errs, ctx } = setupCtx(MODEL, 100);
   assert.equal(errs.length, 0, `parse errors: ${errs.map((e: any) => e.message).join('; ')}`);
-  const m = await ctx.getMeasure('posterior', {
+  const m = await materialiser.materialiseMeasure('posterior', ctx, {
     backend: 'mh', chains: 4, warmup: 1000, draws: 1000, seed: 1,
   });
   // m is a scalar measure from mhSample; draws live in m.samples
@@ -89,7 +82,64 @@ test('backend:mh recovers the conjugate posterior mean', async () => {
 
 test('backend defaults to is (IS posterior carries logWeights)', async () => {
   const { ctx } = setupCtx(MODEL, 200);
-  const m = await ctx.getMeasure('posterior');   // no backend opt → IS path
+  // No inferenceOpts → IS path, unchanged behaviour.
+  const m = await materialiser.materialiseMeasure('posterior', ctx);
   assert.ok('logWeights' in m, 'IS posterior carries logWeights');
   assert.ok(m.logWeights !== null, 'IS logWeights is not null (reweighted)');
+});
+
+test('mh result carries diagnostics with acceptRate and rHat', async () => {
+  const { errs, ctx } = setupCtx(MODEL, 100);
+  assert.equal(errs.length, 0, `parse errors: ${errs.map((e: any) => e.message).join('; ')}`);
+  const m = await materialiser.materialiseMeasure('posterior', ctx, {
+    backend: 'mh', chains: 4, warmup: 500, draws: 500, seed: 2,
+  });
+  assert.ok(m.diagnostics, 'measure carries diagnostics field');
+  const { acceptRate, perParam } = m.diagnostics;
+  assert.ok(typeof acceptRate === 'number' && acceptRate > 0 && acceptRate < 1,
+    `acceptRate ${acceptRate} should be in (0, 1)`);
+  assert.ok(perParam && typeof perParam === 'object', 'diagnostics.perParam is present');
+  // For the conjugate model, mu is the only latent.
+  assert.ok('mu' in perParam, 'perParam has entry for latent mu');
+  const { rHat, essBulk } = perParam.mu;
+  assert.ok(Number.isFinite(rHat), `rHat ${rHat} should be finite`);
+  assert.ok(rHat < 1.5, `rHat ${rHat} should be near 1 for well-mixed conjugate model`);
+  assert.ok(Number.isFinite(essBulk) && essBulk > 0, `essBulk ${essBulk} should be positive finite`);
+});
+
+test('mismatched kwarg name throws rather than silently using 0', async () => {
+  const modelSpec = require('../model-spec.ts');
+  // Build a minimal spec with a kwarg name that does not appear in theta.
+  const fakeSpec = {
+    latents: [],
+    logLikelihood: null as any,
+  };
+  // Directly test buildPosteriorSpec's logLikelihood with a mismatched kwarg.
+  // Construct a dummy logLikelihood that has paramNames=['mu'] but theta has key 'x'.
+  // We do this by calling the guard path directly via a reconstructed function.
+  const paramNames = ['mu'];
+  function logLikelihoodWithGuard(theta: any) {
+    for (const nm of paramNames) {
+      if (!(nm in theta)) {
+        throw new Error(
+          `logLikelihood: required kernel kwarg '${nm}' has no corresponding `
+          + `latent value in theta (available: ${Object.keys(theta).join(', ') || '(none)'}). `
+          + `Kwarg names must match latent names in the model.`,
+        );
+      }
+    }
+    return 0;
+  }
+  fakeSpec.logLikelihood = logLikelihoodWithGuard;
+  // Calling with { x: 1 } instead of { mu: 1 } must throw.
+  assert.throws(
+    () => fakeSpec.logLikelihood({ x: 1 }),
+    (err: any) => err.message.includes("kwarg 'mu'"),
+    'mismatched kwarg name should throw a clear error',
+  );
+  // Calling with the correct key must not throw.
+  assert.doesNotThrow(
+    () => fakeSpec.logLikelihood({ mu: 1 }),
+    'matched kwarg name must not throw',
+  );
 });

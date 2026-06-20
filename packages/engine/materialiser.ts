@@ -1378,13 +1378,22 @@ function _ensureRootKey(ctx: any): void {
   }
 }
 
-function materialiseMeasure(name: string, ctx: any): Promise<EmpiricalMeasure> {
+function materialiseMeasure(name: string, ctx: any, opts?: any): Promise<EmpiricalMeasure> {
   // Pre-dispatch guards (callable-layer rejection, fixed-phase
   // short-circuit) plus the terminal kindDispatch all live in the
   // pipeline now. Each concern composes orthogonally; new concerns
   // (tracing, MCMC handlers, gradient capture) add stages without
   // touching this function.
   _ensureRootKey(ctx);
+  // Thread optional inferenceOpts (e.g. { backend:'mh', chains, warmup, draws, seed })
+  // onto ctx so matBayesupdate can read ctx.inferenceOpts. A shallow clone is used so
+  // the caller's ctx is not mutated when opts is cleared after the call. IS path
+  // (no opts) goes through unchanged — no allocation, no behaviour change.
+  if (opts && opts.backend) {
+    const runCtx = Object.assign({}, ctx, { inferenceOpts: opts });
+    // Worker-session-env precondition: push module registry once per ctx.
+    return pushModuleRegistry(runCtx).then(() => _runPipeline(name, runCtx));
+  }
   // Worker-session-env precondition: push the module registry once
   // per ctx so any downstream `evaluateN`/`logDensityN`/`sampleN`
   // call that traverses a `(call target=({ns: <alias>, …}) …)` can

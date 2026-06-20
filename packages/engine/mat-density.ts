@@ -169,14 +169,27 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       chains:  o.chains  || 4,
       warmup:  o.warmup  || 1000,
       draws:   o.draws   || 1000,
-      seed:    o.seed    || 1,
+      seed:    (o.seed ?? 0),
     });
+    const diag = require('./diagnostics.ts');
+    // Compute per-latent diagnostics from per-chain draw arrays.
+    const perParam: any = {};
+    for (const nm of mv.names) {
+      const paramChains: Float64Array[] = post.chains[nm];
+      perParam[nm] = {
+        rHat:     diag.splitRHat(paramChains),
+        essBulk:  diag.essBulk(paramChains),
+      };
+    }
+    const diagnostics = { acceptRate: post.acceptRate, perParam };
     if (mv.dim === 1) {
       // Single-latent: scalar measure with equal weights.
       const nm = mv.names[0];
-      return Promise.resolve(scalarMeasureN(post.drawsByName[nm], {
+      const m = scalarMeasureN(post.drawsByName[nm], {
         logWeights: null, logTotalmass: 0, n_eff: post.drawsByName[nm].length,
-      }));
+      });
+      m.diagnostics = diagnostics;
+      return Promise.resolve(m);
     }
     // Multi-latent: record measure, one scalar field per latent.
     const fields: any = {};
@@ -185,7 +198,9 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         logWeights: null, logTotalmass: 0, n_eff: post.drawsByName[nm].length,
       });
     }
-    return Promise.resolve(empirical.recordMeasure(fields, null));
+    const recM = empirical.recordMeasure(fields, null);
+    recM.diagnostics = diagnostics;
+    return Promise.resolve(recM);
   }
 
   // IS path (default, untouched below).
