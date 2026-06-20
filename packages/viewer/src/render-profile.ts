@@ -14,6 +14,7 @@ import { buildDomainControl, buildPresetControl } from './render-controls.js';
 import { showPlotMessage } from './render-frame.js';
 import { arrayInputLength, defaultRangeForLeafType, defaultValueForLeafType, esc, formatScalar } from './util.js';
 import { sendWorker } from './worker.js';
+import { runFindMaximum } from './optimize-plot.js';
 import { nameSeed } from './orchestration.js';
 import { renderPlotFrame } from './render-frame.js';
 import { plotZoomOptions } from './util.js';
@@ -450,6 +451,40 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
   // surfaces the values being used.
   const hasInputs = plan.axes && plan.axes.length > 0;
   const hasMultiOutput = plan.outputs && plan.outputs.length > 1;
+  // "Find maximum" — optimise the free inputs (CMA-ES + FD polish) to
+  // maximise this function / likelihood from the current pivot; the argmax
+  // becomes the modified pivot (Save to keep). Leftmost in the toolbar.
+  if (hasInputs) {
+    const maxBtn = document.createElement('button');
+    maxBtn.type = 'button';
+    maxBtn.textContent = '⤒ Find max';
+    maxBtn.title = 'Find maximum — optimise the free inputs (CMA-ES) to maximise this '
+      + (isLogDensity ? 'log-likelihood' : 'function')
+      + ' from the current point. Inputs pinned with fixed(...) are held constant; '
+      + 'the result becomes the modified point (Save to keep).';
+    maxBtn.style.cursor = 'pointer';
+    maxBtn.style.background = 'var(--vscode-button-background, #0e639c)';
+    maxBtn.style.color = 'var(--vscode-button-foreground, #ffffff)';
+    maxBtn.style.border = '1px solid var(--vscode-button-border, transparent)';
+    maxBtn.style.borderRadius = '3px';
+    maxBtn.style.padding = '2px 8px';
+    maxBtn.style.fontSize = '1em';
+    maxBtn.style.marginRight = '0.5em';
+    maxBtn.addEventListener('click', function() {
+      if (maxBtn.disabled) return;
+      maxBtn.disabled = true;
+      maxBtn.style.opacity = '0.6';
+      Promise.resolve(runFindMaximum(ctx, plan, function() {
+        renderProfilePlotForCurrent(ctx);
+      })).catch(function(err: any) {
+        showPlotMessage(ctx, 'Find maximum failed: '
+          + esc(err && err.message || String(err)));
+      }).then(function() {
+        maxBtn.disabled = false; maxBtn.style.opacity = '1';
+      });
+    });
+    frag.appendChild(maxBtn);
+  }
   // Output selector — appears for callables whose specialized
   // output is multi-leaf (record / tuple / array). Single-leaf
   // outputs (scalar functions) skip this control. Picking a
