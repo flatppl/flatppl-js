@@ -105,4 +105,13 @@ test('sampler output evaluates a derived record field (sigma = sqrt(sigma2))', a
   const s = m.fields.sigma.samples || (m.fields.sigma.value && m.fields.sigma.value.data);
   assert.ok(s && s.length > 0, 'sigma has samples');
   for (let i = 0; i < s.length; i++) assert.ok(s[i] > 0, `sigma[${i}] = ${s[i]} > 0`);
+  // Each FIELD measure carries the sampler diagnostics (true draw count), not
+  // just the top record — the viewer renders a single field on its own and must
+  // label it with the draw count, not the resampled plot-atom count.
+  const recN = m.diagnostics && m.diagnostics.nSamples;
+  assert.ok(Number.isFinite(recN) && recN > 0, 'record carries nSamples');
+  for (const fn of Object.keys(m.fields)) {
+    const fd = m.fields[fn].diagnostics;
+    assert.ok(fd && fd.nSamples === recN, `field '${fn}' carries the same nSamples (${fd && fd.nSamples} vs ${recN})`);
+  }
 });

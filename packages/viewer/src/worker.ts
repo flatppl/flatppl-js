@@ -208,17 +208,16 @@ function poolMeasures(measures: any[]): any {
     }
   }
   const totalN = fields[Object.keys(fields)[0]].samples.length;
-  // Elliptical slice: chains pooled like MH (R̂ worst, ESS summed via perParam
-  // above), but keep the ess-slice tag + mode + mean shrinks for the readout.
+  // Per-method combined diagnostics. nSamples is ALWAYS the summed TRUE draw
+  // count (`nSamp`), never `totalN` — the latter is the concatenated atom count
+  // (= pool size × sampleCount), which would mislabel the run with ~10^5.
+  let diag: any;
   if (first.diagnostics && first.diagnostics.method === 'ess-slice') {
-    let shr = 0, k = 0, nS = 0; for (const m of measures) { const d = m.diagnostics || {}; if (Number.isFinite(d.meanShrinks)) { shr += d.meanShrinks; k++; } nS += (d.nSamples || 0); }
-    return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
-      diagnostics: { method: 'ess-slice', mode: first.diagnostics.mode, meanShrinks: k > 0 ? shr / k : NaN, perParam, nSamples: nS } };
-  }
-  // AMIS is an importance sampler, not MCMC: report combined IS quality
-  // (effective sample sizes add across independent runs) and the worst auto-K,
-  // not an accept rate. essBulk per param already summed above.
-  if (first.diagnostics && first.diagnostics.method === 'smc') {
+    // Elliptical slice: chains pooled like MH (R̂ worst, ESS summed via perParam
+    // above), but keep the ess-slice tag + mode + mean shrinks for the readout.
+    let shr = 0, k = 0; for (const m of measures) { const d = m.diagnostics || {}; if (Number.isFinite(d.meanShrinks)) { shr += d.meanShrinks; k++; } }
+    diag = { method: 'ess-slice', mode: first.diagnostics.mode, meanShrinks: k > 0 ? shr / k : NaN, perParam, nSamples: nSamp };
+  } else if (first.diagnostics && first.diagnostics.method === 'smc') {
     // Independent SMC runs each give an unbiased estimate Ẑ_r of the evidence;
     // the pooled unbiased estimate is their ARITHMETIC mean, reported as its log
     // (= log-sum-exp(logZ_r) − log k). Worst-case rung count, mean acceptance.
@@ -226,20 +225,20 @@ function poolMeasures(measures: any[]): any {
     let s = 0, k = 0, accS = 0, rMax = 0;
     for (const m of measures) { const d = m.diagnostics || {}; if (Number.isFinite(d.logZ)) { s += Math.exp(d.logZ - mx); k++; } accS += (d.acceptRate || 0); rMax = Math.max(rMax, d.rungs || 0); }
     const logZ = k > 0 ? mx + Math.log(s / k) : NaN;
-    return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
-      diagnostics: { method: 'smc', logZ, rungs: rMax, acceptRate: accS / measures.length, nSamples: totalN } };
+    diag = { method: 'smc', logZ, rungs: rMax, acceptRate: accS / measures.length, nSamples: nSamp };
+  } else if (first.diagnostics && first.diagnostics.method === 'amis') {
+    // AMIS is an importance sampler, not MCMC: report combined IS quality
+    // (effective sample sizes add across independent runs) and the worst auto-K.
+    let essSum = 0, kMax = 0;
+    for (const m of measures) { const dg = m.diagnostics || {}; essSum += (dg.ess || 0); kMax = Math.max(kMax, dg.K || 0); }
+    diag = { method: 'amis', ess: essSum, essFrac: nSamp > 0 ? essSum / nSamp : 0, K: kMax, nSamples: nSamp, perParam };
+  } else {
+    diag = { acceptRate: accSum / measures.length, perParam, nSamples: nSamp };
   }
-  if (first.diagnostics && first.diagnostics.method === 'amis') {
-    let essSum = 0, kMax = 0, nSum = 0;
-    for (const m of measures) {
-      const dg = m.diagnostics || {};
-      essSum += (dg.ess || 0); kMax = Math.max(kMax, dg.K || 0); nSum += (dg.nSamples || 0);
-    }
-    return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
-      diagnostics: { method: 'amis', ess: essSum, essFrac: nSum > 0 ? essSum / nSum : 0, K: kMax, nSamples: nSum, perParam } };
-  }
-  return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
-    diagnostics: { acceptRate: accSum / measures.length, perParam, nSamples: nSamp } };
+  // Attach to the record AND every field measure: the viewer renders a single
+  // field on its own and reads its diagnostics for the draw-count label.
+  for (const fn in fields) { if (fields[fn]) fields[fn].diagnostics = diag; }
+  return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN, diagnostics: diag };
 }
 
 // Run an MCMC posterior off the main thread, parallelised across a worker pool.

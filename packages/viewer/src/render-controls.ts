@@ -500,7 +500,8 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   // One labelled number input row. `get` reads the current value, `set` writes
   // it back (empty string → null for the optional seed). `backends` lists which
   // samplers the row applies to. Returns the input so the caller can refresh it.
-  function numRow(label: string, backends: string[], get: () => number | null, set: (v: number | null) => void): HTMLInputElement {
+  function numRow(label: string, backends: string[], get: () => number | null, set: (v: number | null) => void,
+                  opt?: { step?: number; min?: number; max?: number }): HTMLInputElement {
     const row = document.createElement('div');
     row.style.display = 'flex';
     row.style.justifyContent = 'space-between';
@@ -513,6 +514,11 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
     const inp = document.createElement('input');
     inp.type = 'number';
     inp.style.width = '5.5em';
+    // Default integer step (counts); callers override for fractional knobs (the
+    // spinner buttons then move by `step`, not to the nearest integer).
+    inp.step = opt && opt.step != null ? String(opt.step) : '1';
+    if (opt && opt.min != null) inp.min = String(opt.min);
+    if (opt && opt.max != null) inp.max = String(opt.max);
     styleControl(inp);
     const cur = get();
     inp.value = cur == null ? '' : String(cur);
@@ -568,7 +574,8 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   numRow('samples/iter', ['amis'], function () { return opts.amisSamples; }, function (v) { opts.amisSamples = v == null ? 300 : v; });
   numRow('particles', ['smc'], function () { return opts.smcParticles; }, function (v) { opts.smcParticles = v == null ? 2000 : v; });
   numRow('chain', ['smc'], function () { return opts.smcSteps; }, function (v) { opts.smcSteps = v == null ? 12 : v; });
-  numRow('CESS ratio', ['smc'], function () { return opts.smcCESS; }, function (v) { opts.smcCESS = v == null ? 0.7 : v; });
+  numRow('CESS ratio', ['smc'], function () { return opts.smcCESS; }, function (v) { opts.smcCESS = v == null ? 0.7 : v; },
+    { step: 0.05, min: 0.05, max: 0.99 });
   numRow('seed', ['mh', 'emcee', 'amis', 'smc', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
   refreshCountRow();
 

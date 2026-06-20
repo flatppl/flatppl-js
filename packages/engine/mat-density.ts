@@ -340,6 +340,14 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
               fields[fn] = e.scalar ? buildScalar(e.scalar) : buildArray(e.vec, e.d);
             }
           }
+          // Carry the sampler diagnostics onto BOTH the record measure and each
+          // field measure: the viewer renders a single field on its own (e.g.
+          // gamma-reparam's derived scalar), and without this the field has no
+          // diagnostics.nSamples, so the count label falls back to the resampled
+          // atom count (~10^5) instead of the true draw count.
+          for (const fn in fields) {
+            if (fields[fn] && typeof fields[fn] === 'object') fields[fn].diagnostics = post.diagnostics;
+          }
           const recM = empirical.recordMeasure(fields, null);
           recM.diagnostics = post.diagnostics;
           return recM;
