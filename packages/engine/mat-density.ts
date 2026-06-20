@@ -181,18 +181,34 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       // mv.latentShapes). Equal weights ⇒ logWeights null.
       const nDraws = post.drawsByName[mv.names[0]].length;
 
+      // Emit exactly `ctx.sampleCount` atoms — the count the viewer's forward
+      // (IS) measures carry — so the output is a true drop-in: the viewer's
+      // plot path treats a measure as a fixed/constant literal when its sample
+      // length differs from SAMPLE_COUNT (render-record.measureIsConstant), so
+      // a raw nWalkers*draws length would be shown as text instead of plotted.
+      // Map the MCMC draws onto `total` atoms with ONE shared stratified index
+      // (preserves the joint posterior across latents); resampling equal-weight
+      // draws is distribution-preserving. Diagnostics stay on the real chains.
+      const total = (ctx.sampleCount | 0) > 0 ? (ctx.sampleCount | 0) : nDraws;
+      const idx = new Int32Array(total);
+      for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
+
       // Field measure for one latent, rebuilt from its coordinate streams.
       const fieldFor = (nm: string, shp: any) => {
         if (shp.kind === 'scalar') {
-          return scalarMeasureN(post.drawsByName[nm], {
-            logWeights: null, logTotalmass: 0, n_eff: nDraws,
-          });
+          const src = post.drawsByName[nm];
+          const out = new Float64Array(total);
+          for (let i = 0; i < total; i++) out[i] = src[idx[i]];
+          return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: nDraws });
         }
         // Vector latent: atom-major samples (atom i → [c0,…,c_{d-1}]).
         const d = shp.dims[0];
-        const s = new Float64Array(nDraws * d);
-        for (let i = 0; i < nDraws; i++) {
-          for (let j = 0; j < d; j++) s[i * d + j] = post.drawsByName[`${nm}[${j}]`][i];
+        const cols: Float64Array[] = [];
+        for (let j = 0; j < d; j++) cols.push(post.drawsByName[`${nm}[${j}]`]);
+        const s = new Float64Array(total * d);
+        for (let i = 0; i < total; i++) {
+          const a = idx[i];
+          for (let j = 0; j < d; j++) s[i * d + j] = cols[j][a];
         }
         const am = empirical.arrayMeasure(s, shp.dims, null);
         am.logTotalmass = 0; am.n_eff = nDraws;
