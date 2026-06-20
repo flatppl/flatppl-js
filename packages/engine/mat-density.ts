@@ -25,7 +25,6 @@ const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
-const diagnostics  = require('./diagnostics.ts');
 
 const {
   nameSeed,
@@ -154,10 +153,12 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
   // return an equal-weight empirical measure. IS path (default) is below.
   const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
-  if (backend === 'mh' || backend === 'nuts') {
-    const modelSpec = require('./model-spec.ts');
-    const MV        = require('./model-view.ts');
-    const MH        = require('./mh-sample.ts');
+  if (backend === 'mh' || backend === 'nuts' || backend === 'emcee') {
+    const modelSpec       = require('./model-spec.ts');
+    const MV              = require('./model-view.ts');
+    const driver          = require('./mcmc-driver.ts');
+    const { mhKernel }         = require('./mh-kernel.ts');
+    const { makeEmceeKernel }  = require('./emcee-kernel.ts');
     const spec = modelSpec.buildPosteriorSpec(d, ctx);
     const mv = MV.buildModelView(spec);
     if (backend === 'nuts' && mv.hasDiscrete) {
@@ -166,29 +167,19 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       ));
     }
     const o = ctx.inferenceOpts || {};
-    const post = MH.mhSample(mv, {
-      chains:  o.chains  || 4,
-      warmup:  o.warmup  || 1000,
-      draws:   o.draws   || 1000,
-      seed:    (o.seed ?? 0),
+    const kernel = backend === 'emcee' ? makeEmceeKernel(o.a) : mhKernel;
+    const nWalkers = o.walkers ?? o.chains ?? (backend === 'emcee' ? Math.max(4, 2 * mv.dim + 2) : 4);
+    const post = driver.runMcmc(mv, kernel, {
+      nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a,
     });
-    // Compute per-latent diagnostics from per-chain draw arrays.
-    const perParam: any = {};
-    for (const nm of mv.names) {
-      const paramChains: Float64Array[] = post.chains[nm];
-      perParam[nm] = {
-        rHat:     diagnostics.splitRHat(paramChains),
-        essBulk:  diagnostics.essBulk(paramChains),
-      };
-    }
-    const diagResult = { acceptRate: post.acceptRate, perParam };
+    // post.diagnostics is already { acceptRate, perParam:{name:{rHat,essBulk}} } — attach as-is.
     if (mv.dim === 1) {
       // Single-latent: scalar measure with equal weights.
       const nm = mv.names[0];
       const m = scalarMeasureN(post.drawsByName[nm], {
         logWeights: null, logTotalmass: 0, n_eff: post.drawsByName[nm].length,
       });
-      m.diagnostics = diagResult;
+      m.diagnostics = post.diagnostics;
       return Promise.resolve(m);
     }
     // Multi-latent: record measure, one scalar field per latent.
@@ -199,7 +190,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       });
     }
     const recM = empirical.recordMeasure(fields, null);
-    recM.diagnostics = diagResult;
+    recM.diagnostics = post.diagnostics;
     return Promise.resolve(recM);
   }
 

@@ -107,6 +107,17 @@ test('mh result carries diagnostics with acceptRate and rHat', async () => {
   assert.ok(Number.isFinite(essBulk) && essBulk > 0, `essBulk ${essBulk} should be positive finite`);
 });
 
+test('backend emcee recovers the conjugate posterior mean and returns diagnostics', async () => {
+  const { ctx, errs } = setupCtx(MODEL, 4000);   // MODEL: the conjugate mu~Normal(0,10); posterior=bayesupdate(...)
+  assert.equal(errs.length, 0);
+  const m = await materialiser.materialiseMeasure('posterior', ctx, { backend: 'emcee', walkers: 10, warmup: 1000, draws: 1000, seed: 5 });
+  const draws = m.value ? m.value.data : m.samples;
+  let mean = 0; for (let i = 0; i < draws.length; i++) mean += draws[i]; mean /= draws.length;
+  const postVar = 1/(1+1/100), postMean = 5*postVar;
+  assert.ok(Math.abs(mean - postMean) < 0.15, `emcee mean ${mean} vs ${postMean}`);
+  assert.ok(m.diagnostics && typeof m.diagnostics.acceptRate === 'number', 'emcee result carries diagnostics');
+});
+
 test('mismatched kwarg name throws rather than silently using 0', () => {
   // Exercise the REAL guard in model-spec.ts buildPosteriorSpec's logLikelihood.
   // Parse the canonical conjugate model, extract the real bayesupdate derivation,
