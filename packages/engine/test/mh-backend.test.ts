@@ -61,7 +61,10 @@ posterior = bayesupdate(L, prior)
 // Public API: materialiser.materialiseMeasure(name, ctx, inferenceOpts).
 // This is the real production path — no ctx manipulation needed.
 test('backend:mh recovers the conjugate posterior mean via public API', async () => {
-  const { errs, ctx } = setupCtx(MODEL, 100);
+  // sampleCount must be ≥ the MCMC draw count (chains×draws = 4000) so the
+  // posterior is reported at full resolution; a smaller sampleCount downsamples
+  // the draws and the reported mean picks up subsample noise (~sd/√N).
+  const { errs, ctx } = setupCtx(MODEL, 4000);
   assert.equal(errs.length, 0, `parse errors: ${errs.map((e: any) => e.message).join('; ')}`);
   const m = await materialiser.materialiseMeasure('posterior', ctx, {
     backend: 'mh', chains: 4, warmup: 1000, draws: 1000, seed: 1,
