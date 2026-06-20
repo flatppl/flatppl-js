@@ -43,8 +43,13 @@ jobs:
       # flatppl-rust sibling for the convert wasm-api build (web/build.mjs
       # honours FLATPPL_RUST_DIR over the default ../flatppl-rust location).
       FLATPPL_RUST_DIR: ${{ github.workspace }}/.flatppl-rust
-      # Pinned so the wasm-pack cache key is stable and the install reproducible.
+      # Pinned so the wasm-pack install is reproducible.
       WASM_PACK_VERSION: '0.15.0'
+      # Harden cargo downloads against transient crates.io HTTP/2 flakiness
+      # ("[16] Error in the HTTP2 framing layer"): retry more, and drop HTTP/2
+      # multiplexing (the documented workaround for that specific curl error).
+      CARGO_NET_RETRY: '10'
+      CARGO_HTTP_MULTIPLEXING: 'false'
     steps:
       - uses: actions/checkout@v7
 
