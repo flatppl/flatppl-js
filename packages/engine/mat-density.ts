@@ -172,27 +172,43 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a,
       });
       // post.diagnostics is already { acceptRate, perParam:{name:{rHat,essBulk}} } — attach as-is.
-      // Build output fields: expand per-coordinate names from mv.names.
-      // The driver's drawsByName keys are the per-coordinate expanded names
-      // (e.g. 'theta[0]', 'theta[1]', … for vector latents).
-      if (mv.dim === 1) {
-        // Single scalar-latent: scalar measure with equal weights.
-        const nm = mv.names[0];
-        const m = scalarMeasureN(post.drawsByName[nm], {
-          logWeights: null, logTotalmass: 0, n_eff: post.drawsByName[nm].length,
-        });
+      // Reshape MCMC draws into the SAME EmpiricalMeasure shape the IS path
+      // returns for this posterior, so the viewer plots it as a drop-in: a
+      // scalar latent → scalar measure, a vector latent → array measure (NOT
+      // one scalar field per coordinate), a record prior → record of those.
+      // The driver's drawsByName is keyed by per-coordinate names ('mu','tau',
+      // 'theta[0]'…'theta[7]'); regroup per structured latent (mv.latentNames /
+      // mv.latentShapes). Equal weights ⇒ logWeights null.
+      const nDraws = post.drawsByName[mv.names[0]].length;
+
+      // Field measure for one latent, rebuilt from its coordinate streams.
+      const fieldFor = (nm: string, shp: any) => {
+        if (shp.kind === 'scalar') {
+          return scalarMeasureN(post.drawsByName[nm], {
+            logWeights: null, logTotalmass: 0, n_eff: nDraws,
+          });
+        }
+        // Vector latent: atom-major samples (atom i → [c0,…,c_{d-1}]).
+        const d = shp.dims[0];
+        const s = new Float64Array(nDraws * d);
+        for (let i = 0; i < nDraws; i++) {
+          for (let j = 0; j < d; j++) s[i * d + j] = post.drawsByName[`${nm}[${j}]`][i];
+        }
+        const am = empirical.arrayMeasure(s, shp.dims, null);
+        am.logTotalmass = 0; am.n_eff = nDraws;
+        return am;
+      };
+
+      // Single latent → that measure directly (matches IS one-variate shape).
+      if (mv.latentNames.length === 1) {
+        const m = fieldFor(mv.latentNames[0], mv.latentShapes[0]);
         m.diagnostics = post.diagnostics;
         return m;
       }
-      // Multi-latent (or vector latent): record measure.
-      // For scalar latents the coord name == latent name (e.g. 'mu', 'tau').
-      // For vector latents we emit one scalar field per coordinate element
-      // (e.g. 'theta[0]', …, 'theta[7]') so downstream can still index them.
+      // Record prior → record measure of per-latent field measures.
       const fields: any = {};
-      for (const nm of mv.names) {
-        fields[nm] = scalarMeasureN(post.drawsByName[nm], {
-          logWeights: null, logTotalmass: 0, n_eff: post.drawsByName[nm].length,
-        });
+      for (let li = 0; li < mv.latentNames.length; li++) {
+        fields[mv.latentNames[li]] = fieldFor(mv.latentNames[li], mv.latentShapes[li]);
       }
       const recM = empirical.recordMeasure(fields, null);
       recM.diagnostics = post.diagnostics;
