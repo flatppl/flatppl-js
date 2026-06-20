@@ -75,6 +75,17 @@ export function baseValuesFor(ctx: Ctx, plan: any) {
     const e = ctx.modeCenterCache && ctx.modeCenterCache.get(plan.name);
     return (e && e.status === 'ready' && e.values) ? e.values : {};
   }
+  // DEFAULT pivot for a likelihood (no explicit preset) = the MLE (mode) when
+  // known. A likelihood's natural reference is its maximum, not an arbitrary
+  // prior draw: holding the non-swept params at the mode makes the plotted
+  // slice pass through the optimiser's maximum, so the profile's peak coincides
+  // with the "Find maximum" result instead of sitting at a conditional argmax
+  // for some unrelated slope. Falls through to the prior-draw auto until the
+  // background optimiser (populateModeCache) is ready.
+  if (plan.presetName == null && plan.signature && plan.signature.obsIR != null) {
+    const e = ctx.modeCenterCache && ctx.modeCenterCache.get(plan.name);
+    if (e && e.status === 'ready' && e.values) return e.values;
+  }
   if (plan.presetName != null && plan.matchedPresets) {
     for (let i = 0; i < plan.matchedPresets.length; i++) {
       if (plan.matchedPresets[i].name === plan.presetName) {

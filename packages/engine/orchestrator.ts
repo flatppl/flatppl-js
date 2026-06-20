@@ -522,6 +522,7 @@ module.exports = {
   expandMeasureIR,
   expandMeasureRefsInIR,
   resolveIRToValue,
+  valueToPlain,
   implicitKernelSignature,
   implicitFunctionSignature,
   signatureOf,

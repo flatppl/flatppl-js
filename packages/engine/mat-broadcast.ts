@@ -2138,4 +2138,4 @@ function _executeMvNormalBroadcast(
   });
 }
 
-module.exports = { matKernelBroadcast };
+module.exports = { matKernelBroadcast, substituteKernelParams: _substituteKernelParams };

@@ -428,3 +428,200 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void, tr
 
   return frag;
 }
+
+// Global inference-backend selector for the header. Posterior (bayesupdate)
+// measures default to importance sampling ('is'); this lets the user switch
+// to the MCMC driver ('mh' / 'emcee'). Writes onto ctx.inferenceOpts and calls
+// onChange (which clears the measure cache and re-renders) on any change. The
+// engine reads ctx.inferenceOpts via the matCtx — see engine-facade.getMeasure.
+export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLElement {
+  const opts = ctx.inferenceOpts;
+
+  function styleControl(el: HTMLElement) {
+    el.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+    el.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+    el.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+    el.style.padding = '1px 4px';
+    el.style.fontSize = '1em';
+    el.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+    el.style.borderRadius = '2px';
+    el.style.cursor = 'pointer';
+  }
+
+  const wrap = document.createElement('span');
+  wrap.style.position = 'relative';
+  wrap.style.display = 'inline-flex';
+  wrap.style.alignItems = 'center';
+  wrap.style.gap = '0.3em';
+  wrap.style.marginLeft = 'auto';   // right-align the group within the header flex
+
+  const lbl = document.createElement('label');
+  lbl.textContent = 'Sampler:';
+  lbl.style.opacity = '0.6';
+
+  const sel = document.createElement('select');
+  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC'], ['elliptical-slice-sampler', 'ESS']]) {
+    const o = document.createElement('option');
+    o.value = v; o.textContent = t;
+    sel.appendChild(o);
+  }
+  sel.value = opts.backend;
+  styleControl(sel);
+  sel.title = 'Posterior inference backend. IS = importance sampling (default); '
+    + 'MH / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
+    + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence); '
+    + 'ESS = elliptical slice sampling (gradient- and tuning-free).';
+
+  const gear = document.createElement('button');
+  gear.type = 'button';
+  gear.textContent = '⚙';
+  gear.title = 'Sampler settings';
+  styleControl(gear);
+
+  // Advanced popup. Position:fixed (not absolute) so it escapes the header's
+  // `overflow: hidden` clip and renders above the graph canvas's stacking
+  // context; coordinates are set from the gear button's rect on open.
+  const panel = document.createElement('div');
+  panel.style.position = 'fixed';
+  panel.style.zIndex = '9999';
+  panel.style.padding = '0.5em';
+  panel.style.background = 'var(--vscode-editorWidget-background, #252526)';
+  panel.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))';
+  panel.style.borderRadius = '3px';
+  panel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+  panel.style.display = 'none';
+  panel.style.fontSize = '0.9em';
+  panel.style.minWidth = '12em';
+
+  // Rows tagged with the backends they apply to, so the popup shows only the
+  // knobs relevant to the current sampler (MCMC vs AMIS have different params).
+  const rows: { el: HTMLElement; backends: string[] }[] = [];
+
+  // One labelled number input row. `get` reads the current value, `set` writes
+  // it back (empty string → null for the optional seed). `backends` lists which
+  // samplers the row applies to. Returns the input so the caller can refresh it.
+  function numRow(label: string, backends: string[], get: () => number | null, set: (v: number | null) => void,
+                  opt?: { step?: number; min?: number; max?: number }): HTMLInputElement {
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.justifyContent = 'space-between';
+    row.style.alignItems = 'center';
+    row.style.gap = '0.6em';
+    row.style.margin = '0.15em 0';
+    const rl = document.createElement('label');
+    rl.textContent = label;
+    rl.style.opacity = '0.7';
+    const inp = document.createElement('input');
+    inp.type = 'number';
+    inp.style.width = '5.5em';
+    // Default integer step (counts); callers override for fractional knobs (the
+    // spinner buttons then move by `step`, not to the nearest integer).
+    inp.step = opt && opt.step != null ? String(opt.step) : '1';
+    if (opt && opt.min != null) inp.min = String(opt.min);
+    if (opt && opt.max != null) inp.max = String(opt.max);
+    styleControl(inp);
+    const cur = get();
+    inp.value = cur == null ? '' : String(cur);
+    inp.addEventListener('change', function () {
+      const raw = inp.value.trim();
+      set(raw === '' ? null : Number(raw));
+      onChange();
+    });
+    row.append(rl, inp);
+    panel.appendChild(row);
+    rows.push({ el: row, backends });
+    return inp;
+  }
+
+  // The latent-count knob means "chains" for MH and "walkers" for emcee.
+  const countRow = document.createElement('div');
+  const countLabel = document.createElement('label');
+  countLabel.style.opacity = '0.7';
+  const countInput = document.createElement('input');
+  countInput.type = 'number';
+  countInput.style.width = '5.5em';
+  styleControl(countInput);
+  countRow.style.display = 'flex';
+  countRow.style.justifyContent = 'space-between';
+  countRow.style.alignItems = 'center';
+  countRow.style.gap = '0.6em';
+  countRow.style.margin = '0.15em 0';
+  countRow.append(countLabel, countInput);
+
+  function refreshCountRow() {
+    if (opts.backend === 'emcee') {
+      countLabel.textContent = 'walkers';
+      countInput.value = opts.walkers == null ? '' : String(opts.walkers);
+      countInput.placeholder = 'auto';
+    } else {
+      countLabel.textContent = 'chains';
+      countInput.value = String(opts.chains);
+      countInput.placeholder = '';
+    }
+  }
+  countInput.addEventListener('change', function () {
+    const raw = countInput.value.trim();
+    if (opts.backend === 'emcee') opts.walkers = raw === '' ? null : Number(raw);
+    else opts.chains = raw === '' ? 4 : Number(raw);
+    onChange();
+  });
+
+  numRow('draws', ['mh', 'emcee', 'elliptical-slice-sampler'], function () { return opts.draws; }, function (v) { opts.draws = v == null ? 1000 : v; });
+  numRow('warmup', ['mh', 'emcee', 'elliptical-slice-sampler'], function () { return opts.warmup; }, function (v) { opts.warmup = v == null ? 1000 : v; });
+  panel.appendChild(countRow);
+  rows.push({ el: countRow, backends: ['mh', 'emcee', 'elliptical-slice-sampler'] });
+  numRow('iterations', ['amis'], function () { return opts.amisIters; }, function (v) { opts.amisIters = v == null ? 30 : v; });
+  numRow('samples/iter', ['amis'], function () { return opts.amisSamples; }, function (v) { opts.amisSamples = v == null ? 300 : v; });
+  numRow('particles', ['smc'], function () { return opts.smcParticles; }, function (v) { opts.smcParticles = v == null ? 2000 : v; });
+  numRow('chain', ['smc'], function () { return opts.smcSteps; }, function (v) { opts.smcSteps = v == null ? 12 : v; });
+  numRow('CESS ratio', ['smc'], function () { return opts.smcCESS; }, function (v) { opts.smcCESS = v == null ? 0.7 : v; },
+    { step: 0.05, min: 0.05, max: 0.99 });
+  numRow('seed', ['mh', 'emcee', 'amis', 'smc', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
+  refreshCountRow();
+
+  // IS has no sampler knobs — disable the gear so the advanced panel is clearly
+  // inert in the default mode. For MH/emcee/AMIS, show only the rows that apply
+  // to the selected backend.
+  function refreshEnabled() {
+    const isIS = opts.backend === 'is';
+    gear.disabled = isIS;
+    gear.style.opacity = isIS ? '0.4' : '1';
+    gear.style.cursor = isIS ? 'default' : 'pointer';
+    if (isIS) panel.style.display = 'none';
+    for (const r of rows) r.el.style.display = r.backends.indexOf(opts.backend) >= 0 ? 'flex' : 'none';
+  }
+
+  let outside: ((ev: MouseEvent) => void) | null = null;
+  function closePanel() {
+    panel.style.display = 'none';
+    if (outside) { document.removeEventListener('mousedown', outside); outside = null; }
+  }
+  gear.addEventListener('click', function () {
+    if (gear.disabled) return;
+    if (panel.style.display === 'none') {
+      refreshCountRow();
+      // Anchor the fixed popup under the gear's right edge (viewport coords).
+      const r = gear.getBoundingClientRect();
+      panel.style.top = (r.bottom + 4) + 'px';
+      panel.style.right = Math.max(4, window.innerWidth - r.right) + 'px';
+      panel.style.display = 'block';
+      outside = function (ev: MouseEvent) {
+        if (!wrap.contains(ev.target as Node)) closePanel();
+      };
+      document.addEventListener('mousedown', outside);
+    } else {
+      closePanel();
+    }
+  });
+
+  sel.addEventListener('change', function () {
+    opts.backend = sel.value;
+    refreshEnabled();
+    refreshCountRow();
+    onChange();
+  });
+
+  refreshEnabled();
+  wrap.append(lbl, sel, gear, panel);
+  return wrap;
+}

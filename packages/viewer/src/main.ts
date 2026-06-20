@@ -159,6 +159,7 @@ import {
 } from './plot-plan.js';
 import {
   buildDomainControl,
+  buildInferenceControl,
   buildPresetControl,
 } from './render-controls.js';
 import {
@@ -688,6 +689,16 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // pushes a new value through configUpdate when the user changes
   // the corresponding setting (VS Code: flatppl.truncate.rejectionBudget).
   ctx.REJECTION_BUDGET = 1000;
+
+  // Inference backend for posterior (bayesupdate) measures. 'is' is the
+  // default importance-sampling path (unchanged); the selector in the header
+  // switches to the MCMC driver ('mh' / 'emcee'). `chains` is used by MH,
+  // `walkers` by emcee (null → engine default of max(4, 2*dim+2)).
+  // amisIters (T) / amisSamples (M) drive the adaptive-importance-sampling
+  // backend ('amis'): T proposal-adaptation iterations of M samples each.
+  // smcParticles (N) / smcSteps (chain length P) / smcCESS (ρ, the CESS target
+  // fraction) drive the sequential-Monte-Carlo backend ('smc').
+  ctx.inferenceOpts = { backend: 'is', chains: 4, walkers: null, warmup: 1000, draws: 4000, seed: null, amisIters: 30, amisSamples: 300, smcParticles: 2000, smcSteps: 12, smcCESS: 0.7 };
 
 
 
@@ -1325,6 +1336,29 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   $('plot-toggle').addEventListener('click', function() {
     setPlotEnabled(ctx, !ctx.plotEnabled);
   });
+
+  // Inference-backend selector. Switching backend (or a sampler knob) makes
+  // every cached posterior measure stale — it was materialised under the old
+  // backend/seed — so drop the caches, persist the choice, and re-render.
+  const inferenceHost = $('inference-controls');
+  if (inferenceHost) {
+    // Restore a persisted backend choice before building the control so the
+    // dropdown + knobs reflect the saved state.
+    if (ctx.host.loadState) {
+      try {
+        const st = ctx.host.loadState();
+        if (st && st.inferenceOpts) Object.assign(ctx.inferenceOpts, st.inferenceOpts);
+      } catch (_) {}
+    }
+    inferenceHost.appendChild(buildInferenceControl(ctx, function () {
+      ctx.measureCache = new Map();
+      ctx.histogramCache = new Map();
+      if (ctx.host.saveState) {
+        try { ctx.host.saveState({ plotEnabled: ctx.plotEnabled, inferenceOpts: ctx.inferenceOpts }); } catch (_) {}
+      }
+      if (ctx.plotEnabled) renderPlotForCurrent(ctx);
+    }));
+  }
 
   // Drag handle between the DAG and plot panes. Lets the user
   // redistribute vertical space; both panes have a min-height clamp

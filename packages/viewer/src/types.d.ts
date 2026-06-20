@@ -205,6 +205,10 @@ export interface Ctx {
    *  SAMPLE_COUNT. VS Code: flatppl.visualization.marginalizationSampleCount. */
   MARGINALIZATION_COUNT: number;
   REJECTION_BUDGET: number;
+  /** Inference backend + knobs for posterior (bayesupdate) measures. The
+   *  engine's matBayesupdate reads this off the matCtx; 'is' (default) is the
+   *  importance-sampling path, 'mh'/'emcee' run the MCMC driver. */
+  inferenceOpts: { backend: string; chains: number; walkers: number | null; warmup: number; draws: number; seed: number | null; amisIters: number; amisSamples: number; smcParticles: number; smcSteps: number; smcCESS: number };
   SAMPLER_WORKER_URL: string;
   HISTORY_CAP: number;
   CORRELATIONS_MAX_AXES: number;
@@ -230,7 +234,12 @@ export interface Ctx {
   samplerWorkerPromise: Promise<Worker> | null;
   samplerWorkerError: Error | null;
   samplerReqId: number;
-  pendingRequests: Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>;
+  pendingRequests: Map<number, { resolve: (v: any) => void; reject: (e: any) => void; onProgress?: (m: any) => void }>;
+  /** Set by render-plot before an MCMC/AMIS run; runMcmcPool calls it with an
+   *  aggregated fraction in [0,1] and phase string so a determinate progress
+   *  bar can be drawn. Cleared when the run settles. */
+  onSamplingProgress?: ((frac: number, phase: string) => void) | null;
+  mcmcPool?: any[];   // transient worker pool for an in-flight MCMC posterior run
 
   // ---- current-render state ----
   plotEchart: any;
@@ -272,7 +281,12 @@ export interface Ctx {
    *  source rebuild. */
   modeCenterCache?: Map<string, {
     status: 'pending' | 'ready' | 'failed';
-    values?: Record<string, number>;
+    /** Per-kwarg MLE: a scalar input → number; an array input → number[]. */
+    values?: Record<string, number | number[]>;
+    /** Per-AXIS-KEY Laplace curvature std (x-space) at the MLE — keyed like
+     *  distributeAxes (`mu`, `theta[3]`) — the half-width a likelihood plot
+     *  uses to auto-frame each sweep axis's peak (mode ± k·sd). */
+    sd?: Record<string, number>;
     reason?: string;
   }>;
   /** Memoised plan-selection state per binding name. */

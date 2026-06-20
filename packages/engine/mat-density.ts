@@ -150,6 +150,230 @@ function applyReduce(reply: any, node: any): any {
 // =====================================================================
 
 function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
+  // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
+  // return an equal-weight empirical measure. IS path (default) is below.
+  const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
+  if (backend === 'mh' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler') {
+    const MV              = require('./model-view.ts');
+    const driver          = require('./mcmc-driver.ts');
+    const { mhKernel }         = require('./mh-kernel.ts');
+    const { makeEmceeKernel }  = require('./emcee-kernel.ts');
+    const { makeEllipticalSliceKernel } = require('./elliptical-slice-kernel.ts');
+    // Use the new async vector-aware ModelView (wires mcmc-density.ts scorer).
+    return MV.buildModelViewFromCtx(ctx, d).then((mv: any) => {
+      if (backend === 'nuts' && mv.hasDiscrete) {
+        return Promise.reject(new Error(
+          "backend 'nuts' cannot sample discrete latents; use 'mh' or 'is'",
+        ));
+      }
+      const o = ctx.inferenceOpts || {};
+
+      // post: { drawsByName (per-coord, length nDraws), diagnostics }. MCMC
+      // backends collect equal-weight chains; AMIS produces weighted IS samples
+      // re-expressed as the same per-coordinate constrained draws so the output
+      // reshape below is shared. `idx` resamples to exactly `ctx.sampleCount`
+      // atoms — the count IS measures carry — so the result is a true drop-in
+      // (the viewer treats a measure whose length ≠ SAMPLE_COUNT as a constant
+      // literal; render-record.measureIsConstant). For MCMC `idx` is a uniform
+      // stratified map; for AMIS it is a WEIGHTED systematic resample over the
+      // importance weights, so the equal-weight output represents q-weighted π.
+      let post: any, nDraws: number, idx: Int32Array;
+      const total0 = (ctx.sampleCount | 0);
+
+      const onProgress = typeof ctx.onProgress === 'function' ? ctx.onProgress : null;
+      if (backend === 'amis') {
+        const { amisSample } = require('./amis-sample.ts');
+        const res = amisSample(mv, Object.assign({}, o, { onProgress }));
+        nDraws = res.samples.length;
+        // Per-coordinate constrained draws from the unconstrained samples.
+        const drawsByName: Record<string, Float64Array> = {};
+        for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]] = new Float64Array(nDraws);
+        for (let a = 0; a < nDraws; a++) {
+          const flat = mv.constrainAll(res.samples[a]);
+          for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]][a] = flat[mv.names[d2]];
+        }
+        // Self-normalised weights + Kish ESS = (Σw)² / Σw² = 1 / Σ w̄².
+        const lw = res.logW; let mx = -Infinity;
+        for (let i = 0; i < nDraws; i++) if (lw[i] > mx) mx = lw[i];
+        let sw = 0; for (let i = 0; i < nDraws; i++) sw += Math.exp(lw[i] - mx);
+        const wbar = new Float64Array(nDraws); let sumSq = 0;
+        for (let i = 0; i < nDraws; i++) { wbar[i] = Math.exp(lw[i] - mx) / sw; sumSq += wbar[i] * wbar[i]; }
+        const ess = sumSq > 0 ? 1 / sumSq : 0;
+        const total = total0 > 0 ? total0 : nDraws;
+        // Systematic resample of `total` indices over the weight CDF.
+        idx = new Int32Array(total);
+        let c = wbar[0], j = 0;
+        for (let i = 0; i < total; i++) {
+          const u = (i + 0.5) / total;
+          while (u > c && j < nDraws - 1) { j++; c += wbar[j]; }
+          idx[i] = j;
+        }
+        const perParam: Record<string, any> = {};
+        for (let d2 = 0; d2 < mv.dim; d2++) perParam[mv.names[d2]] = { rHat: NaN, essBulk: ess };
+        post = { drawsByName, diagnostics: { method: 'amis', ess, essFrac: ess / nDraws, K: res.K, nSamples: nDraws, perParam } };
+      } else if (backend === 'smc') {
+        const { smcSample } = require('./smc-sample.ts');
+        const res = smcSample(mv, Object.assign({}, o, { onProgress }));
+        nDraws = res.samples.length;
+        // SMC's final particles are EQUAL weight (already resampled), so build
+        // per-coordinate draws and resample uniformly (like MH/emcee).
+        const drawsByName: Record<string, Float64Array> = {};
+        for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]] = new Float64Array(nDraws);
+        for (let a = 0; a < nDraws; a++) {
+          const flat = mv.constrainAll(res.samples[a]);
+          for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]][a] = flat[mv.names[d2]];
+        }
+        const total = total0 > 0 ? total0 : nDraws;
+        idx = new Int32Array(total);
+        for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
+        post = { drawsByName, diagnostics: { method: 'smc', logZ: res.logZ, rungs: res.rungs, acceptRate: res.acceptRate, nSamples: nDraws } };
+      } else {
+        const isEss = backend === 'elliptical-slice-sampler';
+        const kernel = backend === 'emcee' ? makeEmceeKernel(o.a)
+          : isEss ? makeEllipticalSliceKernel() : mhKernel;
+        const nWalkers = o.walkers ?? o.chains ?? (backend === 'emcee' ? Math.max(4, 2 * mv.dim + 2) : 4);
+        post = driver.runMcmc(mv, kernel, {
+          nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a, essMaxShrink: o.essMaxShrink, onProgress,
+        });
+        // post.diagnostics is { acceptRate, perParam:{name:{rHat,essBulk}} } — attach as-is.
+        nDraws = post.drawsByName[mv.names[0]].length;
+        // Record the TRUE draw count so the viewer shows it rather than the
+        // sampleCount the output is resampled to for plotting.
+        post.diagnostics.nSamples = nDraws;
+        const total = total0 > 0 ? total0 : nDraws;
+        idx = new Int32Array(total);
+        for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
+        if (isEss) {
+          // Elliptical slice is near-rejection-free; the driver's acceptRate is
+          // really (sweeps·N)/(shrink evals) = 1/mean-shrinks-per-step. Re-tag.
+          const ar = post.diagnostics.acceptRate;
+          post.diagnostics.method = 'ess-slice';
+          post.diagnostics.mode = mv.gaussianPrior ? 'exact' : 'fitted';
+          post.diagnostics.meanShrinks = (ar > 0) ? 1 / ar : NaN;
+        }
+      }
+      const total = idx.length;
+
+      // Reconstruct the draw scorer-point at atom `a` (group vector coords).
+      const drawPtAt = (a: number) => {
+        const pt: any = {};
+        for (let li = 0; li < mv.latentNames.length; li++) {
+          const nm = mv.latentNames[li], shp = mv.latentShapes[li];
+          if (shp.kind === 'scalar') { pt[nm] = post.drawsByName[nm][a]; }
+          else {
+            const dd = shp.dims[0]; const v = new Float64Array(dd);
+            for (let j = 0; j < dd; j++) v[j] = post.drawsByName[`${nm}[${j}]`][a];
+            pt[nm] = v;
+          }
+        }
+        return pt;
+      };
+
+      // Output = the PRIOR RECORD's fields, evaluated from the sampled draws —
+      // identical field names/shapes to the IS posterior (drop-in). The fields
+      // may be draws (alpha, beta, mu, tau, theta) OR deterministic transforms
+      // of draws (sigma = sqrt(sigma2)); evaluateDerivedBindings yields all of
+      // them in one env per atom. We fetch the prior measure ONLY for its field
+      // structure (names + per-field shape), then fill with MCMC values.
+      const mcmcDensity = require('./mcmc-density.ts');
+      return Promise.resolve(ctx.getMeasure(d.from)).then((parent: any) => {
+        const buildScalar = (stream: Float64Array) => {
+          const out = new Float64Array(total);
+          for (let i = 0; i < total; i++) out[i] = stream[idx[i]];
+          return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: nDraws });
+        };
+        const buildArray = (flat: Float64Array, dlen: number) => {
+          const s = new Float64Array(total * dlen);
+          for (let i = 0; i < total; i++) {
+            const a = idx[i];
+            for (let j = 0; j < dlen; j++) s[i * dlen + j] = flat[a * dlen + j];
+          }
+          const am = empirical.arrayMeasure(s, [dlen], null);
+          am.logTotalmass = 0; am.n_eff = nDraws;
+          return am;
+        };
+
+        if (parent && parent.fields) {
+          // Build each prior-record field, resampled to `total`. A field that IS
+          // a latent (mu, tau, theta) is read DIRECTLY from the sampled draws —
+          // no per-atom evaluation. Only genuinely-derived fields (e.g.
+          // sigma = sqrt(sigma2)) need the env, and then we evaluate ONLY those,
+          // and only over the unique resampled atoms — not all nDraws × every
+          // binding (the per-atom buildEnv that made this O(nDraws) interpreted).
+          const fieldNames = Object.keys(parent.fields);
+          const latentShape: Record<string, any> = {};
+          for (let li = 0; li < mv.latentNames.length; li++) latentShape[mv.latentNames[li]] = mv.latentShapes[li];
+          const fields: any = {};
+          const derivedFields: string[] = [];
+          for (const fn of fieldNames) {
+            const shp = latentShape[fn];
+            if (!shp) { derivedFields.push(fn); continue; }
+            if (shp.kind === 'scalar') {
+              fields[fn] = buildScalar(post.drawsByName[fn]);
+            } else {
+              const dlen = shp.dims[0];
+              const flat = new Float64Array(nDraws * dlen);
+              for (let a = 0; a < nDraws; a++) for (let j = 0; j < dlen; j++) flat[a * dlen + j] = post.drawsByName[`${fn}[${j}]`][a];
+              fields[fn] = buildArray(flat, dlen);
+            }
+          }
+          if (derivedFields.length > 0) {
+            // Evaluate derived fields only at the atoms the resample actually
+            // selects (deduped), then scatter back through `idx`.
+            const uniq: number[] = []; const seen = new Int32Array(nDraws).fill(0);
+            for (let i = 0; i < total; i++) { const a = idx[i]; if (!seen[a]) { seen[a] = 1; uniq.push(a); } }
+            const acc: any = {};
+            for (const a of uniq) {
+              const env = mcmcDensity.evaluateDerivedBindings(ctx, drawPtAt(a));
+              for (const fn of derivedFields) {
+                const v = env[fn];
+                if (!(fn in acc)) acc[fn] = (typeof v === 'number')
+                  ? { scalar: new Float64Array(nDraws) }
+                  : { vec: new Float64Array(nDraws * ((v && v.length) || 1)), d: (v && v.length) || 1 };
+                const e = acc[fn];
+                if (e.scalar) { e.scalar[a] = (typeof v === 'number') ? v : NaN; }
+                else { for (let j = 0; j < e.d; j++) e.vec[a * e.d + j] = (v && v[j] != null) ? +v[j] : NaN; }
+              }
+            }
+            for (const fn of derivedFields) {
+              const e = acc[fn];
+              fields[fn] = e.scalar ? buildScalar(e.scalar) : buildArray(e.vec, e.d);
+            }
+          }
+          // Carry the sampler diagnostics onto BOTH the record measure and each
+          // field measure: the viewer renders a single field on its own (e.g.
+          // gamma-reparam's derived scalar), and without this the field has no
+          // diagnostics.nSamples, so the count label falls back to the resampled
+          // atom count (~10^5) instead of the true draw count.
+          for (const fn in fields) {
+            if (fields[fn] && typeof fields[fn] === 'object') fields[fn].diagnostics = post.diagnostics;
+          }
+          const recM = empirical.recordMeasure(fields, null);
+          recM.diagnostics = post.diagnostics;
+          return recM;
+        }
+
+        // Non-record (single scalar/array latent) prior: the sole draw is the
+        // measure. Scalar → scalar measure; vector → array measure.
+        const nm = mv.latentNames[0], shp = mv.latentShapes[0];
+        let m: any;
+        if (shp.kind === 'scalar') {
+          m = buildScalar(post.drawsByName[nm]);
+        } else {
+          const dlen = shp.dims[0];
+          const flat = new Float64Array(nDraws * dlen);
+          for (let a = 0; a < nDraws; a++) {
+            for (let j = 0; j < dlen; j++) flat[a * dlen + j] = post.drawsByName[`${nm}[${j}]`][a];
+          }
+          m = buildArray(flat, dlen);
+        }
+        m.diagnostics = post.diagnostics;
+        return m;
+      });
+    });
+  }
+
+  // IS path (default, untouched below).
   // Per spec: posterior = bayesupdate(L, prior), L = likelihoodof(K, obs).
   // For each prior atom θ_i, logw_i = logdensityof(K(θ_i), obs); the atoms
   // are the prior's, logWeights = prior.logWeights + per-i logp.

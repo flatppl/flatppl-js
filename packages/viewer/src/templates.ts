@@ -20,13 +20,28 @@ body {
   font-family: var(--vscode-editor-font-family, monospace);
   font-size: var(--vscode-editor-font-size, 14px);
   white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  overflow: visible;
   opacity: 0.8;
   min-height: 26px;
   display: flex;
   align-items: center;
+  gap: 0.4em;
+  /* Own stacking context above the graph canvas (#main paints after #header
+     in DOM order); without this a cytoscape layer can sit over the header and
+     swallow clicks on the sampler controls. */
+  position: relative;
+  z-index: 10;
 }
+/* The expression is the element that shrinks/ellipsizes — NOT the controls.
+   Without this a long model expression pushed the right-aligned sampler
+   selector off-screen (header overflow), making it unclickable. */
+#header-expr {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#inference-controls { flex: 0 0 auto; }
 #header .target-name { font-weight: 600; }
 #header .target-eq { opacity: 0.5; margin: 0 4px; }
 /* Vertical split layout: graph on top, plot on bottom. The header
@@ -40,7 +55,7 @@ body {
 
    Heights subtract header(~32px) + info(60px). */
 #plot-toggle {
-  margin-left: auto;
+  margin-left: 0.4em;
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
   border: 1px solid var(--vscode-button-border, transparent);
@@ -137,6 +152,23 @@ body {
 #plot-content .plot-stop-btn:hover {
   background: var(--vscode-button-secondaryHoverBackground, #505355);
   opacity: 1;
+}
+/* Determinate progress bar for off-thread samplers (MH / emcee / AMIS),
+   updated by updatePlotProgress as the worker streams progress. */
+#plot-content .plot-progress {
+  margin: 14px auto 4px;
+  width: 220px; height: 6px;
+  background: var(--vscode-progressBar-background, rgba(255,255,255,0.12));
+  border-radius: 3px; overflow: hidden;
+}
+#plot-content .plot-progress-fill {
+  width: 0%; height: 100%;
+  background: var(--vscode-progressBar-foreground, #0e70c0);
+  transition: width 0.15s linear;
+}
+#plot-content .plot-progress-label {
+  font-size: 11px; opacity: 0.6; font-style: normal;
+  font-family: var(--vscode-font-family, sans-serif);
 }
 /* Constant-value display: shown when every sample is the same
    value (literal binding, deterministic arithmetic of literals,
@@ -325,6 +357,7 @@ export var VIEWER_BODY_HTML = `
 <div id="header">
 <button id="back-btn">&larr; Back</button>
 <span id="header-expr"></span>
+<span id="inference-controls"></span>
 <button id="plot-toggle" title="Toggle the plot panel">Plot: off</button>
 </div>
 <div id="main">

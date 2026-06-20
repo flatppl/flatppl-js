@@ -359,12 +359,24 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
     const dof = FlatPPLEngine.empirical.estimateDof(measure);
     const q = FlatPPLEngine.empirical.importanceSamplingQuality(measure, dof);
 
+    // Sampler backends (mh/emcee/amis/smc/ess) RESAMPLE their output to
+    // SAMPLE_COUNT atoms for plotting, so q.N is an unconditional ~10^5 that
+    // misrepresents the run. Their record carries diagnostics.nSamples = the TRUE
+    // draw count — show that, labelled "draws", with the resample noted in the
+    // title. Plain measures keep the atom-count "samples".
     const nLabel = document.createElement('span');
-    nLabel.textContent = formatSampleCount(q.N) + ' samples';
-    nLabel.title = 'Total atom count in the empirical measure'
-                 + (q.N >= 100 && Math.log10(q.N) === Math.floor(Math.log10(q.N))
-                    ? ' (' + formatCount(q.N) + ')'
-                    : '');
+    const dg: any = measure && measure.diagnostics;
+    const trueN = (dg && Number.isFinite(dg.nSamples) && dg.nSamples > 0) ? dg.nSamples : null;
+    if (trueN != null) {
+      nLabel.textContent = formatSampleCount(trueN) + ' draws';
+      nLabel.title = trueN + ' sampler draws (resampled to ' + formatCount(q.N) + ' atoms for plotting)';
+    } else {
+      nLabel.textContent = formatSampleCount(q.N) + ' samples';
+      nLabel.title = 'Total atom count in the empirical measure'
+                   + (q.N >= 100 && Math.log10(q.N) === Math.floor(Math.log10(q.N))
+                      ? ' (' + formatCount(q.N) + ')'
+                      : '');
+    }
     wrap.appendChild(nLabel);
 
     // Effectively-uniform measures (no logWeights, or logWeights
@@ -376,6 +388,93 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
     // only appears when it actually carries information
     // (importance-reweighted measures: bayesupdate / weighted /
     // logweighted / posterior outputs).
+    //
+    // MCMC posterior (backend mh / emcee): equal-weight draws (so kHat is NaN,
+    // the IS readout below is skipped) carrying a `diagnostics` object instead.
+    // Surface acceptance + the worst-across-parameters split-R̂ / bulk-ESS,
+    // colour-coded with the same is-quality classes as the IS readout.
+    if (measure && measure.diagnostics) {
+      const d = measure.diagnostics;
+
+      // Elliptical slice: equal-weight MCMC draws, but no accept rate (it's
+      // near-rejection-free) — report split-R̂ + bulk ESS (disambiguated from the
+      // sampler's "ESS" name), mean shrink steps, and the reference mode.
+      if (d.method === 'ess-slice') {
+        const pp = d.perParam || {};
+        let maxRhat = 0, minEss = Infinity;
+        for (const k of Object.keys(pp)) { if (Number.isFinite(pp[k].rHat)) maxRhat = Math.max(maxRhat, pp[k].rHat); if (Number.isFinite(pp[k].essBulk)) minEss = Math.min(minEss, pp[k].essBulk); }
+        const label = (maxRhat <= 1.01 && minEss >= 400) ? 'good' : (maxRhat <= 1.05 && minEss >= 100) ? 'ok' : (maxRhat <= 1.10) ? 'bad' : 'unusable';
+        const es = document.createElement('span');
+        es.className = 'is-quality is-' + label;
+        es.textContent = 'ESS-slice: R̂ ' + (maxRhat > 0 ? maxRhat.toFixed(3) : '—') + ', ESS(eff) ' + (Number.isFinite(minEss) ? formatSampleCount(Math.round(minEss)) : '—') + ', ~' + (Number.isFinite(d.meanShrinks) ? d.meanShrinks.toFixed(1) : '—') + ' shrinks, ' + (d.mode || '');
+        es.title = 'Elliptical slice sampling (gradient- and tuning-free):'
+          + '\nmax split-R̂ ' + (maxRhat > 0 ? maxRhat.toFixed(3) : '—') + ' (want < 1.01)'
+          + '\nmin bulk effective sample size ' + (Number.isFinite(minEss) ? Math.round(minEss) : '—')
+          + '\nmean shrink steps/iteration ' + (Number.isFinite(d.meanShrinks) ? d.meanShrinks.toFixed(2) : '—')
+          + '\nGaussian reference: ' + (d.mode === 'exact' ? 'exact (Normal prior)' : 'fitted to the population');
+        wrap.appendChild(es);
+        return wrap;
+      }
+
+      // SMC: equal-weight particles (no IS weights / R̂). Headline the log
+      // marginal likelihood (evidence) plus ladder length and move acceptance.
+      if (d.method === 'smc') {
+        const acc = Number.isFinite(d.acceptRate) ? (d.acceptRate * 100).toFixed(0) + '%' : '—';
+        const label = (d.acceptRate >= 0.15 && d.acceptRate <= 0.6) ? 'good' : (d.acceptRate >= 0.08) ? 'ok' : 'bad';
+        const sm = document.createElement('span');
+        sm.className = 'is-quality is-' + label;
+        sm.textContent = 'SMC: logZ ' + (Number.isFinite(d.logZ) ? d.logZ.toFixed(2) : '—') + ', ' + (d.rungs != null ? d.rungs : '—') + ' rungs, accept ' + acc;
+        sm.title = 'Sequential Monte Carlo (adaptive-tempered, waste-free):'
+          + '\nlog marginal likelihood (evidence) ' + (Number.isFinite(d.logZ) ? d.logZ.toFixed(3) : '—')
+          + '\ntemperature rungs ' + (d.rungs != null ? d.rungs : '—')
+          + '\nmove acceptance ' + acc + ' (healthy ~0.2–0.4)';
+        wrap.appendChild(sm);
+        return wrap;
+      }
+
+      // AMIS (adaptive importance sampling) is not MCMC — report the combined
+      // effective-sample-size fraction (its IS quality) and the auto-detected
+      // mixture-freeze iteration K, not acceptance / R̂.
+      if (d.method === 'amis') {
+        const frac = Number.isFinite(d.essFrac) ? d.essFrac : 0;
+        const label = frac >= 0.5 ? 'good' : frac >= 0.1 ? 'ok' : frac >= 0.01 ? 'bad' : 'unusable';
+        const pct = frac >= 0.1 ? (frac * 100).toFixed(0) : (frac * 100).toFixed(1);
+        const am = document.createElement('span');
+        am.className = 'is-quality is-' + label;
+        am.textContent = 'AMIS: ESS ' + pct + '%, K ' + (d.K != null ? d.K : '—');
+        am.title = 'Adaptive multiple importance sampling (EAMIS):'
+          + '\neffective sample size ' + (Number.isFinite(d.ess) ? formatSampleCount(Math.round(d.ess)) : '—')
+          + ' of ' + (d.nSamples != null ? formatSampleCount(d.nSamples) : '—') + ' (' + pct + '%)'
+          + '\nlow ESS ⇒ the single-Gaussian proposal fits the posterior poorly; try emcee'
+          + '\nK = iteration where the proposal adaptation froze (auto-detected)';
+        wrap.appendChild(am);
+        return wrap;
+      }
+
+      const pp = d.perParam || {};
+      let maxRhat = 0, minEss = Infinity;
+      for (const k of Object.keys(pp)) {
+        if (Number.isFinite(pp[k].rHat)) maxRhat = Math.max(maxRhat, pp[k].rHat);
+        if (Number.isFinite(pp[k].essBulk)) minEss = Math.min(minEss, pp[k].essBulk);
+      }
+      const label = (maxRhat <= 1.01 && minEss >= 400) ? 'good'
+                  : (maxRhat <= 1.05 && minEss >= 100) ? 'ok'
+                  : (maxRhat <= 1.10)                  ? 'bad'
+                  :                                      'unusable';
+      const acc = Number.isFinite(d.acceptRate) ? (d.acceptRate * 100).toFixed(0) + '%' : '—';
+      const rh  = maxRhat > 0 ? maxRhat.toFixed(3) : '—';
+      const es  = Number.isFinite(minEss) ? formatSampleCount(Math.round(minEss)) : '—';
+      const mc = document.createElement('span');
+      mc.className = 'is-quality is-' + label;
+      mc.textContent = 'accept ' + acc + ', R̂ ' + rh + ', ESS ' + es;
+      mc.title = 'MCMC diagnostics (worst across parameters):'
+        + '\nacceptance rate ' + acc
+        + '\nmax split-R̂ ' + rh + ' (want < 1.01)'
+        + '\nmin bulk ESS ' + es;
+      wrap.appendChild(mc);
+      return wrap;
+    }
+
     if (!Number.isFinite(q.kHat)) return wrap;
 
     const diag = document.createElement('span');

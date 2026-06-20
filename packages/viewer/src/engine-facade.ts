@@ -12,7 +12,7 @@
 // closures at the engine boundary — see the wrap inside getMeasure.
 // sendWorker is imported from ./worker.js.
 
-import { sendWorker } from './worker.js';
+import { sendWorker, runMcmcPool } from './worker.js';
 import type { Ctx } from './types';
 
 export function tryGetMeasure(ctx: Ctx, name: any) {
@@ -24,6 +24,20 @@ export function tryGetMeasure(ctx: Ctx, name: any) {
 export function getMeasure(ctx: Ctx, name: any) {
   if (ctx.measureCache.has(name)) return Promise.resolve(ctx.measureCache.get(name));
   if (!ctx.derivationsState) return Promise.reject(new Error('no model loaded'));
+
+  // MCMC backends (mh / emcee) for a bayesupdate posterior run OFF the main
+  // thread in a worker pool — non-blocking, and parallel across independent
+  // chains (MH) / ensembles (emcee). Only the posterior binding takes this
+  // path; its sub-measures (priors, etc.) materialise normally inside each
+  // worker. Other bindings under any backend use the main-thread path below.
+  const io = ctx.inferenceOpts;
+  const deriv = ctx.derivationsState.derivations[name];
+  if (io && (io.backend === 'mh' || io.backend === 'emcee' || io.backend === 'amis' || io.backend === 'smc' || io.backend === 'elliptical-slice-sampler')
+      && deriv && deriv.kind === 'bayesupdate' && (ctx as any).currentSource) {
+    const p = runMcmcPool(ctx, name, io);
+    p.then((m: any) => ctx.measureCache.set(name, m), () => {});
+    return p;
+  }
   // All per-kind materialisation lives in the engine — the viewer's
   // job here is just to memoise the result against the cache. The
   // engine-side materialiser dispatches by derivation kind, computes
@@ -44,6 +58,10 @@ export function getMeasure(ctx: Ctx, name: any) {
     sampleCount: ctx.SAMPLE_COUNT,
     rootSeed:    ctx.rootSeed,
     rejectionBudget: ctx.REJECTION_BUDGET,
+    // Posterior backend selection (read by the engine's matBayesupdate).
+    // Propagated to child materialisations too; only bayesupdate bindings act
+    // on it, so forward measures are unaffected.
+    inferenceOpts: ctx.inferenceOpts,
   });
   promise.then(function(m: any) { ctx.measureCache.set(name, m); });
   return promise;

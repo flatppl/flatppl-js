@@ -37,13 +37,21 @@ const isBrowserWorker =
   typeof self.addEventListener === 'function';
 
 if (isBrowserWorker) {
+  // Stream mid-run progress messages straight to the host (separate from the
+  // final result, which is posted when the handler's promise resolves).
+  handler.setProgressSink((m: any) => self.postMessage(m));
   // Web Worker path. `self` is the global scope inside the worker.
   // We attach via addEventListener (rather than self.onmessage =) so a
   // host that already attached a listener for handshake purposes isn't
   // overwritten.
   self.addEventListener('message', (e: MessageEvent) => {
     const reply = handler.handle(e.data);
-    if (reply) {
+    if (reply && typeof (reply as any).then === 'function') {
+      // Async handler (e.g. mcmcRun): await, then post. Structured-clone (no
+      // transfer list) — the measure shares buffers across nested fields, so
+      // transferring would detach them mid-structure.
+      (reply as any).then((r: any) => { if (r) self.postMessage(r); });
+    } else if (reply) {
       const transfer = transferablesOf(reply);
       // postMessage's second argument is the transferList; passing an
       // empty array is harmless but explicit. Float64Array buffers are
@@ -69,9 +77,12 @@ if (isBrowserWorker) {
       : eval('require');
     const { parentPort } = nodeRequire('worker_threads');
     if (parentPort) {
+      handler.setProgressSink((m: any) => parentPort.postMessage(m));
       parentPort.on('message', (msg: any) => {
         const reply = handler.handle(msg);
-        if (reply) {
+        if (reply && typeof reply.then === 'function') {
+          reply.then((r: any) => { if (r) parentPort.postMessage(r); });
+        } else if (reply) {
           // Node's parentPort.postMessage takes a transferList in the
           // second argument too, but only ArrayBuffers (not typed arrays)
           // are valid entries. transferablesOf returns buffers already.
