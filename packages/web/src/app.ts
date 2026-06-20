@@ -158,13 +158,11 @@
         ? window.FlatPPLWebSurfaces.typeForPath(cur.model) : 'flatppl';
       showModuleBtn.hidden = !cur.model || type !== 'flatppl';
     }
-    // Convert-to-FlatPPL: shown for pyhf / HS3 files when the wasm convert
-    // artifact is present (convertAvailable, set by the boot probe).
-    const convertBtn = document.getElementById('convert-btn');
-    if (convertBtn) {
-      const t = window.FlatPPLWebSurfaces
-        ? window.FlatPPLWebSurfaces.typeForPath(cur.model) : 'unknown';
-      convertBtn.hidden = !(convertAvailable && (t === 'pyhf' || t === 'hs3'));
+    // Editor tools button (wrench) — shown when the active file has any
+    // applicable tool (currently Convert to FlatPPL for pyhf / hs3).
+    const toolsBtn = document.getElementById('tools-btn');
+    if (toolsBtn) {
+      toolsBtn.hidden = toolsForFile(cur.model).length === 0;
     }
     // The header filename is click/F2-renamable for user/ files only.
     if (sourceHeader) {
@@ -865,6 +863,8 @@
     document.addEventListener('mousedown', function (ev: any) {
       if (!_ctxMenu || _ctxMenu.style.display === 'none') return;
       if (_ctxMenu.contains(ev.target)) return;
+      const toolsBtn = document.getElementById('tools-btn');
+      if (toolsBtn && toolsBtn.contains(ev.target)) return;  // let the button toggle
       hideTreeContextMenu();
     });
     document.addEventListener('keydown', function (ev: any) {
@@ -876,19 +876,46 @@
   function hideTreeContextMenu() {
     if (_ctxMenu) _ctxMenu.style.display = 'none';
   }
-  function showTreeContextMenu(ev: any, info: any) {
-    const menu = getTreeContextMenu();
-    menu.innerHTML = '';
-
-    const items: Array<{ label: string; action: () => void }> = [];
-    const cvType = window.FlatPPLWebSurfaces
-      ? window.FlatPPLWebSurfaces.typeForPath(info.path) : 'unknown';
-    if (convertAvailable && (cvType === 'pyhf' || cvType === 'hs3')) {
-      items.push({
+  /** Tools applicable to `path` — appended LAST in menus so the common /
+   *  destructive actions stay on top. Grows as more conversions/tools land;
+   *  the single source the context menu and the editor tools dropdown share. */
+  function toolsForFile(path: any): Array<{ label: string; action: () => void }> {
+    const tools: Array<{ label: string; action: () => void }> = [];
+    const t = window.FlatPPLWebSurfaces
+      ? window.FlatPPLWebSurfaces.typeForPath(path) : 'unknown';
+    if (convertAvailable && (t === 'pyhf' || t === 'hs3')) {
+      tools.push({
         label: 'Convert to FlatPPL',
-        action: function () { convertToFlatppl(info.path); },
+        action: function () { convertToFlatppl(path); },
       });
     }
+    return tools;
+  }
+
+  /** Render `items` as rows into the floating menu element; each row hides the
+   *  menu and runs its action on click. Shared by the tree context menu and
+   *  the editor tools dropdown. */
+  function renderMenuItems(menu: HTMLElement,
+                           items: Array<{ label: string; action: () => void }>) {
+    menu.innerHTML = '';
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      const row = document.createElement('div');
+      row.className = 'tree-ctx-item';
+      row.textContent = it.label;
+      row.addEventListener('click', function () {
+        hideTreeContextMenu();
+        try { it.action(); }
+        catch (e) { console.error('[@flatppl/web] menu action failed:', e); }
+      });
+      menu.appendChild(row);
+    }
+  }
+
+  function showTreeContextMenu(ev: any, info: any) {
+    const menu = getTreeContextMenu();
+
+    const items: Array<{ label: string; action: () => void }> = [];
     items.push({
       label: 'Download',
       action: function () { downloadFile(info.path); },
@@ -926,28 +953,38 @@
         },
       });
     }
+    // Tools (Convert to FlatPPL, …) come LAST.
+    const tools = toolsForFile(info.path);
+    for (let i = 0; i < tools.length; i++) items.push(tools[i]);
 
-    for (let i = 0; i < items.length; i++) {
-      const it = items[i];
-      const row = document.createElement('div');
-      row.className = 'tree-ctx-item';
-      row.textContent = it.label;
-      row.addEventListener('click', function () {
-        hideTreeContextMenu();
-        try { it.action(); }
-        catch (e) { console.error('[@flatppl/web] context-menu action failed:', e); }
-      });
-      menu.appendChild(row);
-    }
+    renderMenuItems(menu, items);
 
-    // Position at the mouse, clamped so the menu doesn't fall off
-    // the right edge of the viewport.
+    // Position at the mouse, clamped so the menu doesn't fall off the edge.
     menu.style.display = 'block';
     const rect = menu.getBoundingClientRect();
     let x = ev.clientX;
     let y = ev.clientY;
     if (x + rect.width  > window.innerWidth)  x = window.innerWidth  - rect.width  - 4;
     if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 4;
+    menu.style.left = x + 'px';
+    menu.style.top  = y + 'px';
+  }
+
+  /** Open the editor's tools dropdown (the wrench button) anchored below
+   *  `btn`, listing the tools applicable to the active file. No-op if none. */
+  function showToolsMenu(btn: HTMLElement) {
+    const cur = window.FlatPPLWebRouter.parseHash();
+    const tools = toolsForFile(cur && cur.model);
+    if (tools.length === 0) return;
+    const menu = getTreeContextMenu();
+    renderMenuItems(menu, tools);
+    menu.style.display = 'block';
+    const br = btn.getBoundingClientRect();
+    const mr = menu.getBoundingClientRect();
+    let x = br.left;
+    let y = br.bottom + 2;
+    if (x + mr.width  > window.innerWidth)  x = window.innerWidth - mr.width - 4;
+    if (y + mr.height > window.innerHeight) y = br.top - mr.height - 2;  // flip above
     menu.style.left = x + 'px';
     menu.style.top  = y + 'px';
   }
@@ -1300,13 +1337,14 @@
       });
     }
 
-    // Convert-to-FlatPPL button (pyhf / HS3 → user/<stem>.flatppl). Shown by
-    // updateHeaderButtons only when the wasm artifact is present.
-    const convertBtn = document.getElementById('convert-btn');
-    if (convertBtn) {
-      convertBtn.addEventListener('click', function () {
-        const cur = window.FlatPPLWebRouter.parseHash();
-        if (cur && cur.model) convertToFlatppl(cur.model);
+    // Editor tools button (wrench): toggles a dropdown of tools for the active
+    // file (currently Convert to FlatPPL). Visibility is set by
+    // updateHeaderButtons; the menu is reused from the tree context menu.
+    const toolsBtn = document.getElementById('tools-btn');
+    if (toolsBtn) {
+      toolsBtn.addEventListener('click', function () {
+        if (_ctxMenu && _ctxMenu.style.display === 'block') { hideTreeContextMenu(); return; }
+        showToolsMenu(toolsBtn);
       });
     }
 
