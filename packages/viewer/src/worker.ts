@@ -269,13 +269,13 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
         sampleCount: Math.ceil(sampleCount / P) });
     }
   } else {
-    const chains = opts.chains || 4;
-    const P = Math.max(1, Math.min(cap, chains));
-    const per = Math.ceil(chains / P);
-    for (let i = 0; i < P; i++) {
-      shares.push({ inferenceOpts: Object.assign({}, opts, { chains: per, seed: baseSeed + i * 7919 }),
-        sampleCount: Math.ceil(sampleCount / P) });
-    }
+    // Chain-based backends (mh / nuts / elliptical-slice) run ALL chains in ONE
+    // worker. Splitting chains across workers would make split-R̂ and bulk-ESS
+    // degenerate — each worker would hold a single chain (R̂ can't compare
+    // chains it never sees; 1-chain essBulk is NaN→0), and pooling max/sum gives
+    // a falsely-good R̂ and ESS=0. The batched scorer keeps one worker fast; we
+    // keep the off-thread (non-blocking) benefit, just not cross-worker chains.
+    shares.push({ inferenceOpts: Object.assign({}, opts, { seed: baseSeed }), sampleCount });
   }
 
   const workers = await Promise.all(shares.map((_, i) => spawnWorker(ctx, baseSeed + i * 7919)));
