@@ -53,10 +53,13 @@ const Binomial    = require('@stdlib/stats-base-dists-binomial-ctor');
 const Poisson     = require('@stdlib/stats-base-dists-poisson-ctor');
 
 // Random-sample factories.
-const randNormal      = require('@stdlib/random-base-normal');
+// Normal / LogNormal sample via the spec-canonical inverse-CDF transport
+// (`probit`, Φ⁻¹) defined below — NOT stdlib's ziggurat normal — so the
+// scalar randFn loop and the batched randNFn kernel consume the same
+// Philox uniform stream and agree byte-for-byte (see randNormal /
+// randNNormal below). The other dists keep their stdlib samplers.
 const randExponential = require('@stdlib/random-base-exponential');
 const randUniform     = require('@stdlib/random-base-uniform');
-const randLogNormal   = require('@stdlib/random-base-lognormal');
 const randBeta        = require('@stdlib/random-base-beta');
 const randGamma       = require('@stdlib/random-base-gamma');
 const randCauchy      = require('@stdlib/random-base-cauchy');
@@ -124,6 +127,49 @@ function uClip(u: any) {
   if (u >= 1 - 1e-16)    return 1 - Number.EPSILON;
   return u;
 }
+
+// Standard-normal quantile Φ⁻¹ (spec §07 `probit`): Φ⁻¹(p) = −√2·erfc⁻¹(2p).
+// This is the one normal-sampling primitive shared by the scalar randFn
+// factories and the batched randNNormal kernel — driving both off the
+// same Φ⁻¹ over the same Philox uniform stream is what makes the two
+// paths bit-exact (the same role stdlibLn plays for Exponential). The
+// uniform is uClip'd first: nextUniform ∈ [0, 1−2⁻³²] can return exactly
+// 0, and Φ⁻¹(0) = −∞; uClip maps that to the smallest positive double so
+// a draw stays finite. Both paths clip identically, so they still agree.
+function _probit(u: number): number {
+  return -Math.SQRT2 * stdlibErfcinv(2 * uClip(u));
+}
+
+// Inverse-CDF Normal / LogNormal sample factories — drop-in replacements
+// for stdlib's ziggurat `random-base-normal` / `-lognormal`, matching the
+// dual factory API the sampler relies on (sampler.ts):
+//
+//   factory(mu, sigma, { prng })  → () => draw          (rand / makeSampler /
+//                                                         bulk-uniform adapter)
+//   factory({ prng })             → (mu, sigma) => draw  (makeParametricSampler,
+//                                                         per-draw params)
+//
+// One uniform per draw → x = μ + σ·Φ⁻¹(u); LogNormal exponentiates. The
+// per-draw transform is byte-identical to randNNormal's vectorised form.
+function _makeInvCdfNormalFactory(xform: (z: number, mu: number, sigma: number) => number) {
+  return {
+    factory: function () {
+      const args = Array.prototype.slice.call(arguments);
+      const prng = args[args.length - 1].prng;
+      if (args.length === 1) {
+        // Parametric form: params supplied at each draw.
+        return (mu: number, sigma: number) => xform(_probit(prng()), mu, sigma);
+      }
+      // Baked-param form.
+      const mu = args[0];
+      const sigma = args[1];
+      return () => xform(_probit(prng()), mu, sigma);
+    },
+  };
+}
+
+const randNormal    = _makeInvCdfNormalFactory((z, mu, sigma) => mu + sigma * z);
+const randLogNormal = _makeInvCdfNormalFactory((z, mu, sigma) => Math.exp(mu + sigma * z));
 
 // Logistic(mu, s): pdf = exp(-z)/(s·(1+exp(-z))²), Q(p) = μ + s·log(p/(1−p))
 const randLogistic = {
@@ -828,11 +874,11 @@ function logpdfDirac(x: any, value: any) {
 // (optionally fed by `makeBulkUniformPrngAdapter` for cipher
 // amortization alone).
 //
-// Pairing convention for Normal (and LogNormal, which exponentiates
-// Normal): philoxNNormal already documents that pair `i` of two
-// uniforms produces normal `i` = r*cos(theta) (first output) and
-// `i+1` = r*sin(theta) (second output). We inherit that ordering
-// without further reshuffling.
+// Normal (and LogNormal, which exponentiates Normal) draw one uniform per
+// sample and map it through Φ⁻¹ (`_probit`), so uniform `i` produces
+// normal `i` with no pairing or reshuffling — the same one-uniform-per-draw
+// ordering as Uniform / Exponential, which is what keeps the batched and
+// scalar paths bit-exact.
 
 // Per-element parameter read for the randNFn transforms. A param column
 // is either a plain number (the STATIC case — one value shared by every
@@ -861,14 +907,18 @@ function _p(c: any, i: number): number {
 
 function randNNormal(state: any, params: any, n: number, out?: Float64Array) {
   // params = [mu, sigma]; each is a scalar (static) or a Float64Array(n)
-  // column (per-i). The raw Box-Muller draw is unchanged — only the
-  // affine transform reads params per element.
+  // column (per-i). Inverse-CDF transport: x = mu + sigma·Φ⁻¹(u), one
+  // uniform per draw. Bit-exact equivalent to the scalar randFn loop under
+  // the same Philox state because (a) philoxNUniform is bit-exact
+  // equivalent to n scalar nextUniform calls (same uniform stream + order),
+  // (b) per-i changes only the affine params, and (c) both paths apply the
+  // SAME `_probit` primitive (`uClip` + stdlib erfcinv) — exactly the
+  // discipline that makes Exponential bit-exact via the shared `ln`.
   const mu = params[0];
   const sigma = params[1];
   const dest = out ?? new Float64Array(n);
-  const r = rng.philoxNNormal(state, n, dest);
-  // Vectorised affine: x = mu + sigma * z. Inplace.
-  for (let i = 0; i < n; i++) r.out[i] = _p(mu, i) + _p(sigma, i) * r.out[i];
+  const r = rng.philoxNUniform(state, n, dest);
+  for (let i = 0; i < n; i++) r.out[i] = _p(mu, i) + _p(sigma, i) * _probit(r.out[i]);
   return r;
 }
 
@@ -909,8 +959,8 @@ function randNUniform(state: any, params: any, n: number, out?: Float64Array) {
 }
 
 function randNLogNormal(state: any, params: any, n: number, out?: Float64Array) {
-  // params = [mu, sigma]; x = exp(mu + sigma * z), z ~ Normal(0,1).
-  // Reuses the Box-Muller path via randNNormal then exp-in-place.
+  // params = [mu, sigma]; x = exp(mu + sigma * z), z = Φ⁻¹(u) ~ Normal(0,1).
+  // Reuses the inverse-CDF Normal kernel then exp-in-place.
   const r = randNNormal(state, params, n, out);
   for (let i = 0; i < n; i++) r.out[i] = Math.exp(r.out[i]);
   return r;
@@ -1078,12 +1128,11 @@ const REGISTRY = {
     discrete: false,
     Ctor:     Normal,
     randFn:   randNormal,
-    // Explicit batched path: Box-Muller via philoxNNormal. NOT
-    // bit-equivalent to scalar randNormal (which uses ziggurat) —
-    // produces different sample bytes from the same key. The
-    // engine's seed→sample mapping was already broken in commit 2
-    // (PhiloxKey rework); commit 3 documents that ziggurat→Box-Muller
-    // is the additional reason scalar and batched paths differ.
+    // Explicit batched path: x = mu + sigma·Φ⁻¹(u), one uniform per draw.
+    // Bit-exact equivalent to the scalar randFn under the same initial
+    // Philox state — both consume the same uniform stream (philoxNUniform
+    // contract) and apply the same `_probit`, exactly as Exponential does
+    // with its shared `ln`.
     randNFn:  randNNormal,
     logpdfFn: logpdfNormal,
   },
@@ -1155,9 +1204,9 @@ const REGISTRY = {
     discrete: false,
     Ctor:     LogNormal,
     randFn:   randLogNormal,
-    // Explicit batched path: exp(Normal(mu, sigma)) via Box-Muller.
-    // Same bit-equivalence caveat as Normal (Box-Muller ≠ scalar
-    // ziggurat-based randLogNormal).
+    // Explicit batched path: exp(mu + sigma·Φ⁻¹(u)). Bit-exact equivalent
+    // to the scalar randFn — inherits Normal's shared-uniform, shared-Φ⁻¹
+    // guarantee, then exponentiates in place.
     randNFn:  randNLogNormal,
     logpdfFn: logpdfLogNormal,
   },

@@ -591,9 +591,10 @@ function randSplitLanes(key: PhiloxKey): { drawKey: PhiloxKey, succKey: PhiloxKe
 //   same `lane / 2^32` mapping, same counter advance, same cache
 //   semantics on the trailing partial block.
 //
-// philoxNNormal is a separate Box-Muller kernel and does NOT match
-// any scalar normal sampler bit-for-bit; it draws m = 2*ceil(n/2)
-// uniforms via philoxNUniform and pairs them into (cos, sin) outputs.
+// Normal sampling is NOT a primitive here: it lives in the sampler
+// registry as one uniform per draw mapped through Φ⁻¹ (`_probit`), so the
+// scalar and batched normal paths both consume this uniform stream and
+// agree bit-for-bit. There is deliberately no normal kernel in rng.ts.
 
 interface PhiloxState {
   key:      [number, number];
@@ -670,48 +671,6 @@ function philoxNUniform(
   };
 }
 
-// Bulk normal sampling via paired Box-Muller. Draws `m = 2*ceil(n/2)`
-// uniforms then pairs them into (r*cos(theta), r*sin(theta)). The
-// `max(u1, 2^-32)` floor avoids log(0) when the uniform draws the
-// smallest representable value (a 1-in-2^32 event, but worth guarding
-// since log(0) would silently produce -Inf -> NaN).
-//
-// Bit-equivalence to scalar nextNormal is NOT required: we'll wire
-// this in as a separate fast-path in commit 3 alongside a similarly
-// re-keyed scalar normal. Until then it's exported as a kernel only.
-
-const _BM_FLOOR = Math.pow(2, -32);    // smallest possible uniform draw
-
-function philoxNNormal(
-  state: PhiloxState,
-  n: number,
-  out?: Float64Array,
-): PhiloxBulkResult {
-  const dest = out ?? new Float64Array(n);
-  if (n <= 0) {
-    return { state, out: dest };
-  }
-
-  const m = 2 * Math.ceil(n / 2);
-  // Draw the uniforms into a scratch buffer; reusing `dest` would
-  // require `dest.length >= m`, which we can't assume when n is odd.
-  const uniforms = new Float64Array(m);
-  const { state: nextState } = philoxNUniform(state, m, uniforms);
-
-  for (let i = 0; i < n; i += 2) {
-    const u1Raw = uniforms[i];
-    const u2    = uniforms[i + 1];
-    const u1    = u1Raw < _BM_FLOOR ? _BM_FLOOR : u1Raw;
-    const r     = Math.sqrt(-2 * Math.log(u1));
-    const theta = 2 * Math.PI * u2;
-    dest[i] = r * Math.cos(theta);
-    if (i + 1 < n) {
-      dest[i + 1] = r * Math.sin(theta);
-    }
-  }
-
-  return { state: nextState, out: dest };
-}
 
 module.exports = {
   // Core cipher
@@ -735,7 +694,6 @@ module.exports = {
   foldIn,
   randSplitLanes,
   philoxNUniform,
-  philoxNNormal,
 
   // Internal — exported for tests; not part of the public surface.
   _internal: { mulhilo32, philox4x32Round, PHILOX_M_4x32_0, PHILOX_M_4x32_1 },

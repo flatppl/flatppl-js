@@ -219,6 +219,52 @@ test('makeBulkSampler Exponential: bit-exact to scalar rand loop', () => {
   assertStatesEquivalent(r.state, s);
 });
 
+// Normal / LogNormal sample via the spec-canonical inverse-CDF transport
+// (`probit`, Φ⁻¹), one uniform per draw — so the scalar randFn loop and
+// the batched randNFn kernel consume the SAME Philox uniform stream and
+// agree byte-for-byte, exactly as Uniform / Exponential already do. This
+// gate pins that: same seed → same samples → same trailing state, across
+// the scalar `rand` path and the batched `makeBulkSampler` path.
+test('makeBulkSampler Normal: bit-exact to scalar rand loop', () => {
+  const state = rng.seedFromBytes([2, 71, 82]);
+  const ir = distIR('Normal', { mu: 0.5, sigma: 2 });
+  const n = 1024;
+
+  let s = state;
+  const scalar = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const [v, next] = sampler.rand(s, ir, {});
+    scalar[i] = v;
+    s = next;
+  }
+  const r = sampler.makeBulkSampler(state, ir, {}, n);
+  for (let i = 0; i < n; i++) {
+    assert.equal(r.samples[i], scalar[i],
+      `Normal mismatch at i=${i}: batched=${r.samples[i]} scalar=${scalar[i]}`);
+  }
+  assertStatesEquivalent(r.state, s, 'trailing state differs between batched and scalar');
+});
+
+test('makeBulkSampler LogNormal: bit-exact to scalar rand loop', () => {
+  const state = rng.seedFromBytes([16, 18, 3]);
+  const ir = distIR('LogNormal', { mu: -0.25, sigma: 1.5 });
+  const n = 1024;
+
+  let s = state;
+  const scalar = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const [v, next] = sampler.rand(s, ir, {});
+    scalar[i] = v;
+    s = next;
+  }
+  const r = sampler.makeBulkSampler(state, ir, {}, n);
+  for (let i = 0; i < n; i++) {
+    assert.equal(r.samples[i], scalar[i],
+      `LogNormal mismatch at i=${i}: batched=${r.samples[i]} scalar=${scalar[i]}`);
+  }
+  assertStatesEquivalent(r.state, s, 'trailing state differs between batched and scalar');
+});
+
 // =====================================================================
 // Bulk-uniform adapter — fallback path for dists without randNFn
 // =====================================================================
@@ -301,25 +347,22 @@ test('makeBulkSampler Bernoulli (no randNFn → bulk-adapter path): fraction of 
 });
 
 // =====================================================================
-// Box-Muller orientation pin: paired output ordering
+// Inverse-CDF transform pin: no directional bias
 // =====================================================================
 //
-// philoxNNormal documents that pair (i, i+1) of uniforms produces
-// (r*cos(theta), r*sin(theta)). The Normal randNFn applies the affine
-// mu + sigma * z inplace, preserving that pairing. With sigma > 0 the
-// distribution is symmetric, so a one-sided sign bias would surface as
-// the mean drifting away from mu by more than the stderr envelope —
-// this is the test that catches an inadvertent cos/sin swap or a
-// missing `2 * Math.PI` factor (which would compress all outputs to a
-// narrow angular wedge and skew the mean).
-test('Box-Muller pairing: large-N Normal sample mean tracks mu to within 5σ', () => {
+// The Normal randNFn maps each uniform through Φ⁻¹ then applies the
+// affine mu + sigma * z. Φ⁻¹ is antisymmetric about u = 0.5, so a sign
+// error or a wrong constant in `_probit` would surface as the mean
+// drifting from mu by more than the stderr envelope. This complements
+// the byte-for-byte gate above with a large-N distributional check.
+test('Normal inverse-CDF: large-N sample mean tracks mu to within 5σ', () => {
   const state = rng.seedFromBytes([1234, 5678, 9012]);
   const ir = distIR('Normal', { mu: 7.5, sigma: 2 });
   const n = 100_000;
   const r = sampler.makeBulkSampler(state, ir, {}, n);
   const stderrOfMean = 2 / Math.sqrt(n);
   assert.ok(Math.abs(mean(r.samples) - 7.5) < 5 * stderrOfMean,
-    `Box-Muller orientation: mean ${mean(r.samples)} drifted from 7.5 by `
+    `inverse-CDF bias: mean ${mean(r.samples)} drifted from 7.5 by `
     + `${Math.abs(mean(r.samples) - 7.5)} (5σ envelope = ${5 * stderrOfMean})`);
 });
 
@@ -348,15 +391,16 @@ test('makeBulkSampler: caller-supplied `out` is filled in place', () => {
 // makeBulkSampler(..., out, perI) draws with PER-ATOM parameter columns:
 // resolveParamsN evaluates each param expr over the batch, randNFn runs
 // one philoxN* draw + the per-element transform. This replaces the
-// worker's per-draw stdlib randFn.factory loop (ziggurat for Normal/
-// LogNormal) for the randNFn family with the single batched leaf math.
+// worker's per-draw stdlib randFn.factory loop for the randNFn family
+// with the single batched leaf math.
 //
 // What this pins:
 //   - Uniform / Exponential per-i are BIT-EXACT to the old per-atom
 //     makeParametricSampler.drawWith loop (same uniform stream + same
 //     per-draw transform, atom-major order), incl. repeat>1.
-//   - Normal / LogNormal per-i preserve the distribution (per-atom mean
-//     tracks mu_i) — the accepted ziggurat→Box-Muller shift.
+//   - Normal / LogNormal per-i now share that property: the inverse-CDF
+//     transport draws one uniform per sample, so the per-atom mean tracks
+//     mu_i with no algorithm-dependent shift.
 //   - resolveParamsN normalisation: scalar passthrough, ref→column,
 //     Uniform interval support, non-interval fall-through; hasRandNFn.
 
