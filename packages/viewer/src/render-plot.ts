@@ -11,7 +11,7 @@ import { renderFixedRecord, renderKernelSampleForCurrent } from './render-kernel
 
 import { getMeasure } from './engine-facade.js';
 import { applyRememberedSelections, rememberPlanSelections } from './overrides.js';
-import { showPlotMessage } from './render-frame.js';
+import { showPlotMessage, updatePlotProgress } from './render-frame.js';
 import { renderProfilePlotForCurrent } from './render-profile.js';
 import { esc } from './util.js';
 import { errorsForBinding } from './render-frame.js';
@@ -96,9 +96,16 @@ export function renderPlotForCurrent(ctx: Ctx) {
   // operations (per-i ref chains under huge sample counts).
   const arrayMode = ctx.currentPlotPlan.mode === 'array';
   const matrixMode = ctx.currentPlotPlan.mode === 'matrix';
+  // Off-thread samplers (MH / emcee / AMIS) stream progress; show a determinate
+  // bar for them. IS and array/matrix loads finish too fast (or aren't pooled)
+  // to warrant one.
+  const io = ctx.inferenceOpts;
+  const sampling = !(arrayMode || matrixMode);
+  const showBar = sampling && io && (io.backend === 'mh' || io.backend === 'emcee' || io.backend === 'amis');
   showPlotMessage(ctx,
     (arrayMode || matrixMode) ? 'Loading…' : 'Sampling…',
-    { cancellable: !(arrayMode || matrixMode), hint: true });
+    { cancellable: sampling, hint: true, progress: showBar });
+  if (showBar) ctx.onSamplingProgress = function (frac: number, phase: string) { updatePlotProgress(ctx, frac, phase); };
   // Cast to any: the remaining plan modes here (samples / array /
   // fixed-scalar) have differing fields; renderEmpiricalMeasure
   // dispatches on opts.mode inside, so reading `.discrete` /
@@ -136,7 +143,8 @@ export function renderPlotForCurrent(ctx: Ctx) {
         // Real errors are actionable; not italic/dimmed.
         showPlotMessage(ctx, 'Could not compute plot: ' + esc(msg));
       }
-    });
+    })
+    .then(function () { ctx.onSamplingProgress = null; }, function () { ctx.onSamplingProgress = null; });
 }
 
 export function updatePlotForBinding(ctx: Ctx, bindingName: string | null) {

@@ -192,6 +192,10 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
   // call seed and doesn't touch this.
   let philox: any = _stateFromSeed(opts.seed);
   let env: Record<string, unknown> | null = { ...(opts.env ?? {}) };
+  // Optional progress channel: worker-entry wires this to postMessage so a
+  // long mcmcRun can stream {type:'mcmcProgress', id, frac, phase} to the host
+  // mid-computation (Web Workers deliver these while the handler is still busy).
+  let progressSink: ((m: any) => void) | null = null;
 
   function handle(msg: any) {
     const id = msg.id;
@@ -231,6 +235,11 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             rootKey: msg.seed,
             moduleRegistry: proc.loweredModule && proc.loweredModule.moduleRegistry,
             inferenceOpts: msg.inferenceOpts,
+            // Streamed to the host as mcmcProgress; the samplers call it with
+            // (frac in [0,1], phase). No-op when no sink is wired (tests).
+            onProgress(frac: number, phase: string) {
+              if (progressSink) progressSink({ type: 'mcmcProgress', id, frac, phase });
+            },
             getMeasure(n: string) {
               if (cache.has(n)) return cache.get(n);
               const m = materialiserLib.materialiseMeasure(n, subCtx);
@@ -762,7 +771,9 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
     return { philox, env };
   }
 
-  return { handle, _inspect };
+  function setProgressSink(fn: ((m: any) => void) | null) { progressSink = fn; }
+
+  return { handle, _inspect, setProgressSink };
 }
 
 // Map a structural set descriptor (orchestrator.parseSetIR shape) to

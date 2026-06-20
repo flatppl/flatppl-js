@@ -694,7 +694,9 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // default importance-sampling path (unchanged); the selector in the header
   // switches to the MCMC driver ('mh' / 'emcee'). `chains` is used by MH,
   // `walkers` by emcee (null → engine default of max(4, 2*dim+2)).
-  ctx.inferenceOpts = { backend: 'is', chains: 4, walkers: null, warmup: 1000, draws: 4000, seed: null };
+  // amisIters (T) / amisSamples (M) drive the adaptive-importance-sampling
+  // backend ('amis'): T proposal-adaptation iterations of M samples each.
+  ctx.inferenceOpts = { backend: 'is', chains: 4, walkers: null, warmup: 1000, draws: 4000, seed: null, amisIters: 30, amisSamples: 300 };
 
 
 

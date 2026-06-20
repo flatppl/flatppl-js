@@ -153,7 +153,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
   // return an equal-weight empirical measure. IS path (default) is below.
   const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
-  if (backend === 'mh' || backend === 'nuts' || backend === 'emcee') {
+  if (backend === 'mh' || backend === 'nuts' || backend === 'emcee' || backend === 'amis') {
     const MV              = require('./model-view.ts');
     const driver          = require('./mcmc-driver.ts');
     const { mhKernel }         = require('./mh-kernel.ts');
@@ -166,23 +166,63 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         ));
       }
       const o = ctx.inferenceOpts || {};
-      const kernel = backend === 'emcee' ? makeEmceeKernel(o.a) : mhKernel;
-      const nWalkers = o.walkers ?? o.chains ?? (backend === 'emcee' ? Math.max(4, 2 * mv.dim + 2) : 4);
-      const post = driver.runMcmc(mv, kernel, {
-        nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a,
-      });
-      // post.diagnostics is { acceptRate, perParam:{name:{rHat,essBulk}} } — attach as-is.
-      const nDraws = post.drawsByName[mv.names[0]].length;
 
-      // Emit exactly `ctx.sampleCount` atoms — the count the viewer's forward
-      // (IS) measures carry — so the output is a true drop-in: the viewer's
-      // plot path treats a measure as a fixed/constant literal when its sample
-      // length differs from SAMPLE_COUNT (render-record.measureIsConstant), so
-      // a raw nWalkers*draws length would be shown as text instead of plotted.
-      // ONE shared stratified index over the draws preserves the joint.
-      const total = (ctx.sampleCount | 0) > 0 ? (ctx.sampleCount | 0) : nDraws;
-      const idx = new Int32Array(total);
-      for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
+      // post: { drawsByName (per-coord, length nDraws), diagnostics }. MCMC
+      // backends collect equal-weight chains; AMIS produces weighted IS samples
+      // re-expressed as the same per-coordinate constrained draws so the output
+      // reshape below is shared. `idx` resamples to exactly `ctx.sampleCount`
+      // atoms — the count IS measures carry — so the result is a true drop-in
+      // (the viewer treats a measure whose length ≠ SAMPLE_COUNT as a constant
+      // literal; render-record.measureIsConstant). For MCMC `idx` is a uniform
+      // stratified map; for AMIS it is a WEIGHTED systematic resample over the
+      // importance weights, so the equal-weight output represents q-weighted π.
+      let post: any, nDraws: number, idx: Int32Array;
+      const total0 = (ctx.sampleCount | 0);
+
+      const onProgress = typeof ctx.onProgress === 'function' ? ctx.onProgress : null;
+      if (backend === 'amis') {
+        const { amisSample } = require('./amis-sample.ts');
+        const res = amisSample(mv, Object.assign({}, o, { onProgress }));
+        nDraws = res.samples.length;
+        // Per-coordinate constrained draws from the unconstrained samples.
+        const drawsByName: Record<string, Float64Array> = {};
+        for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]] = new Float64Array(nDraws);
+        for (let a = 0; a < nDraws; a++) {
+          const flat = mv.constrainAll(res.samples[a]);
+          for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]][a] = flat[mv.names[d2]];
+        }
+        // Self-normalised weights + Kish ESS = (Σw)² / Σw² = 1 / Σ w̄².
+        const lw = res.logW; let mx = -Infinity;
+        for (let i = 0; i < nDraws; i++) if (lw[i] > mx) mx = lw[i];
+        let sw = 0; for (let i = 0; i < nDraws; i++) sw += Math.exp(lw[i] - mx);
+        const wbar = new Float64Array(nDraws); let sumSq = 0;
+        for (let i = 0; i < nDraws; i++) { wbar[i] = Math.exp(lw[i] - mx) / sw; sumSq += wbar[i] * wbar[i]; }
+        const ess = sumSq > 0 ? 1 / sumSq : 0;
+        const total = total0 > 0 ? total0 : nDraws;
+        // Systematic resample of `total` indices over the weight CDF.
+        idx = new Int32Array(total);
+        let c = wbar[0], j = 0;
+        for (let i = 0; i < total; i++) {
+          const u = (i + 0.5) / total;
+          while (u > c && j < nDraws - 1) { j++; c += wbar[j]; }
+          idx[i] = j;
+        }
+        const perParam: Record<string, any> = {};
+        for (let d2 = 0; d2 < mv.dim; d2++) perParam[mv.names[d2]] = { rHat: NaN, essBulk: ess };
+        post = { drawsByName, diagnostics: { method: 'amis', ess, essFrac: ess / nDraws, K: res.K, nSamples: nDraws, perParam } };
+      } else {
+        const kernel = backend === 'emcee' ? makeEmceeKernel(o.a) : mhKernel;
+        const nWalkers = o.walkers ?? o.chains ?? (backend === 'emcee' ? Math.max(4, 2 * mv.dim + 2) : 4);
+        post = driver.runMcmc(mv, kernel, {
+          nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a, onProgress,
+        });
+        // post.diagnostics is { acceptRate, perParam:{name:{rHat,essBulk}} } — attach as-is.
+        nDraws = post.drawsByName[mv.names[0]].length;
+        const total = total0 > 0 ? total0 : nDraws;
+        idx = new Int32Array(total);
+        for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
+      }
+      const total = idx.length;
 
       // Reconstruct the draw scorer-point at atom `a` (group vector coords).
       const drawPtAt = (a: number) => {

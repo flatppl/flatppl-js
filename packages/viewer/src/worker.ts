@@ -74,6 +74,9 @@ export function wireWorker(ctx: Ctx, w: any) {
     if (!reply || reply.id == null) return;
     const p = ctx.pendingRequests.get(reply.id);
     if (!p) return;
+    // Progress messages stream mid-run: notify, but keep the request pending
+    // (the final mcmcResult/error reply is what resolves it).
+    if (reply.type === 'mcmcProgress') { if (p.onProgress) p.onProgress(reply); return; }
     ctx.pendingRequests.delete(reply.id);
     if (reply.type === 'error') p.reject(new Error(reply.message || 'worker error'));
     else p.resolve(reply);
@@ -153,10 +156,10 @@ async function spawnWorker(ctx: Ctx, seed: number): Promise<any> {
   return w;
 }
 
-function sendTo(ctx: Ctx, w: any, msg: any): Promise<any> {
+function sendTo(ctx: Ctx, w: any, msg: any, onProgress?: (m: any) => void): Promise<any> {
   const id = ++ctx.samplerReqId;
   return new Promise(function (resolve, reject) {
-    ctx.pendingRequests.set(id, { resolve, reject });
+    ctx.pendingRequests.set(id, { resolve, reject, onProgress });
     w.postMessage(Object.assign({ id }, msg));
   });
 }
@@ -201,6 +204,18 @@ function poolMeasures(measures: any[]): any {
     }
   }
   const totalN = fields[Object.keys(fields)[0]].samples.length;
+  // AMIS is an importance sampler, not MCMC: report combined IS quality
+  // (effective sample sizes add across independent runs) and the worst auto-K,
+  // not an accept rate. essBulk per param already summed above.
+  if (first.diagnostics && first.diagnostics.method === 'amis') {
+    let essSum = 0, kMax = 0, nSum = 0;
+    for (const m of measures) {
+      const dg = m.diagnostics || {};
+      essSum += (dg.ess || 0); kMax = Math.max(kMax, dg.K || 0); nSum += (dg.nSamples || 0);
+    }
+    return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
+      diagnostics: { method: 'amis', ess: essSum, essFrac: nSum > 0 ? essSum / nSum : 0, K: kMax, nSamples: nSum, perParam } };
+  }
   return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN,
     diagnostics: { acceptRate: accSum / measures.length, perParam } };
 }
@@ -218,8 +233,12 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
   const cap = Math.max(1, Math.min(opts.parallel || hw, 8));
 
   // Partition: shares = per-worker { inferenceOpts, sampleCount }.
+  // emcee and AMIS run one independent instance per worker (a distinct seed);
+  // their per-worker results are concatenated, which lowers the combined
+  // estimator's variance — independent ensembles / IS runs add effective
+  // sample size. MH partitions its independent chains across workers instead.
   const shares: any[] = [];
-  if (opts.backend === 'emcee') {
+  if (opts.backend === 'emcee' || opts.backend === 'amis') {
     const P = cap;
     for (let i = 0; i < P; i++) {
       shares.push({ inferenceOpts: Object.assign({}, opts, { seed: baseSeed + i * 7919 }),
@@ -237,12 +256,23 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
 
   const workers = await Promise.all(shares.map((_, i) => spawnWorker(ctx, baseSeed + i * 7919)));
   ctx.mcmcPool = workers;
+  // Per-worker progress fractions, averaged into one bar. Each worker carries an
+  // equal share of the work, so the mean fraction tracks overall completion.
+  const fracs = new Array(shares.length).fill(0);
+  let lastPhase = 'warmup';
+  const report = (i: number, m: any) => {
+    fracs[i] = m.frac || 0; lastPhase = m.phase || lastPhase;
+    if (ctx.onSamplingProgress) {
+      let s = 0; for (const f of fracs) s += f;
+      ctx.onSamplingProgress(s / fracs.length, lastPhase);
+    }
+  };
   try {
     const replies = await Promise.all(shares.map((s, i) =>
       sendTo(ctx, workers[i], {
         type: 'mcmcRun', source, name,
         inferenceOpts: s.inferenceOpts, sampleCount: s.sampleCount, seed: s.inferenceOpts.seed,
-      })));
+      }, (m: any) => report(i, m))));
     return poolMeasures(replies.map((r: any) => r.measure));
   } finally {
     for (const w of workers) { try { w.terminate(); } catch (_) {} }

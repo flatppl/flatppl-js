@@ -46,22 +46,45 @@ export function resetPlotContentStyle(ctx: Ctx) {
   el.style.flexDirection = '';
 }
 
-export function showPlotMessage(ctx: Ctx, html: string, options?: { cancellable?: boolean; hint?: boolean }) {
+export function showPlotMessage(ctx: Ctx, html: string, options?: { cancellable?: boolean; hint?: boolean; progress?: boolean }) {
   if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
   resetPlotContentStyle(ctx);
   const el = $('plot-content');
   const cancellable = options && options.cancellable;
   const hint       = options && options.hint;
+  const progress   = options && options.progress;
+  // A determinate progress bar for off-thread samplers (MH / emcee / AMIS),
+  // updated via updatePlotProgress as the worker streams mcmcProgress. Starts
+  // empty; if no progress arrives the bar simply stays at 0 (the Stop button
+  // still works), so it degrades to the old indeterminate behaviour.
+  const progHtml = progress
+    ? '<div class="plot-progress"><div class="plot-progress-fill" id="plot-progress-fill"></div></div>'
+      + '<div class="plot-progress-label" id="plot-progress-label"></div>'
+    : '';
   const stopHtml = cancellable
     ? '<div><button class="plot-stop-btn" id="plot-stop-btn">Stop</button></div>'
     : '';
   const cls = hint ? ' class="hint"' : '';
-  el.innerHTML = '<div id="plot-empty"' + cls + '>' + html + stopHtml + '</div>';
+  el.innerHTML = '<div id="plot-empty"' + cls + '>' + html + progHtml + stopHtml + '</div>';
   if (cancellable) {
     const btn = document.getElementById('plot-stop-btn');
     // Wrap to bind ctx — the
     // click handler invokes its callback with the MouseEvent.
     if (btn) btn.addEventListener('click', function () { cancelAllSampling(ctx); });
+  }
+}
+
+// Update the determinate progress bar drawn by showPlotMessage({progress:true}).
+// `frac` in [0,1]; `phase` labels the stage ('warmup' / 'sample' / 'amis').
+export function updatePlotProgress(_ctx: Ctx, frac: number, phase: string) {
+  const fill = document.getElementById('plot-progress-fill');
+  const label = document.getElementById('plot-progress-label');
+  if (!fill) return;
+  const pct = Math.max(0, Math.min(1, frac)) * 100;
+  fill.style.width = pct.toFixed(1) + '%';
+  if (label) {
+    const nice = phase === 'amis' ? 'AMIS' : phase === 'warmup' ? 'warmup' : 'sampling';
+    label.textContent = nice + ' ' + pct.toFixed(0) + '%';
   }
 }
 

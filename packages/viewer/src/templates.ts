@@ -153,6 +153,23 @@ body {
   background: var(--vscode-button-secondaryHoverBackground, #505355);
   opacity: 1;
 }
+/* Determinate progress bar for off-thread samplers (MH / emcee / AMIS),
+   updated by updatePlotProgress as the worker streams progress. */
+#plot-content .plot-progress {
+  margin: 14px auto 4px;
+  width: 220px; height: 6px;
+  background: var(--vscode-progressBar-background, rgba(255,255,255,0.12));
+  border-radius: 3px; overflow: hidden;
+}
+#plot-content .plot-progress-fill {
+  width: 0%; height: 100%;
+  background: var(--vscode-progressBar-foreground, #0e70c0);
+  transition: width 0.15s linear;
+}
+#plot-content .plot-progress-label {
+  font-size: 11px; opacity: 0.6; font-style: normal;
+  font-family: var(--vscode-font-family, sans-serif);
+}
 /* Constant-value display: shown when every sample is the same
    value (literal binding, deterministic arithmetic of literals,
    or a degenerate distribution). A histogram of identical values

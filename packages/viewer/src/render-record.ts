@@ -383,6 +383,26 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
     // colour-coded with the same is-quality classes as the IS readout.
     if (measure && measure.diagnostics) {
       const d = measure.diagnostics;
+
+      // AMIS (adaptive importance sampling) is not MCMC — report the combined
+      // effective-sample-size fraction (its IS quality) and the auto-detected
+      // mixture-freeze iteration K, not acceptance / R̂.
+      if (d.method === 'amis') {
+        const frac = Number.isFinite(d.essFrac) ? d.essFrac : 0;
+        const label = frac >= 0.5 ? 'good' : frac >= 0.1 ? 'ok' : frac >= 0.01 ? 'bad' : 'unusable';
+        const pct = frac >= 0.1 ? (frac * 100).toFixed(0) : (frac * 100).toFixed(1);
+        const am = document.createElement('span');
+        am.className = 'is-quality is-' + label;
+        am.textContent = 'AMIS: ESS ' + pct + '%, K ' + (d.K != null ? d.K : '—');
+        am.title = 'Adaptive multiple importance sampling (EAMIS):'
+          + '\neffective sample size ' + (Number.isFinite(d.ess) ? formatSampleCount(Math.round(d.ess)) : '—')
+          + ' of ' + (d.nSamples != null ? formatSampleCount(d.nSamples) : '—') + ' (' + pct + '%)'
+          + '\nlow ESS ⇒ the single-Gaussian proposal fits the posterior poorly; try emcee'
+          + '\nK = iteration where the proposal adaptation froze (auto-detected)';
+        wrap.appendChild(am);
+        return wrap;
+      }
+
       const pp = d.perParam || {};
       let maxRhat = 0, minEss = Infinity;
       for (const k of Object.keys(pp)) {

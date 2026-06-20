@@ -208,7 +208,7 @@ export interface Ctx {
   /** Inference backend + knobs for posterior (bayesupdate) measures. The
    *  engine's matBayesupdate reads this off the matCtx; 'is' (default) is the
    *  importance-sampling path, 'mh'/'emcee' run the MCMC driver. */
-  inferenceOpts: { backend: string; chains: number; walkers: number | null; warmup: number; draws: number; seed: number | null };
+  inferenceOpts: { backend: string; chains: number; walkers: number | null; warmup: number; draws: number; seed: number | null; amisIters: number; amisSamples: number };
   SAMPLER_WORKER_URL: string;
   HISTORY_CAP: number;
   CORRELATIONS_MAX_AXES: number;
@@ -234,7 +234,11 @@ export interface Ctx {
   samplerWorkerPromise: Promise<Worker> | null;
   samplerWorkerError: Error | null;
   samplerReqId: number;
-  pendingRequests: Map<number, { resolve: (v: any) => void; reject: (e: any) => void }>;
+  pendingRequests: Map<number, { resolve: (v: any) => void; reject: (e: any) => void; onProgress?: (m: any) => void }>;
+  /** Set by render-plot before an MCMC/AMIS run; runMcmcPool calls it with an
+   *  aggregated fraction in [0,1] and phase string so a determinate progress
+   *  bar can be drawn. Cleared when the run settles. */
+  onSamplingProgress?: ((frac: number, phase: string) => void) | null;
   mcmcPool?: any[];   // transient worker pool for an in-flight MCMC posterior run
 
   // ---- current-render state ----

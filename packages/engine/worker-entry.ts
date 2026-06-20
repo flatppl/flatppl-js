@@ -37,6 +37,9 @@ const isBrowserWorker =
   typeof self.addEventListener === 'function';
 
 if (isBrowserWorker) {
+  // Stream mid-run progress messages straight to the host (separate from the
+  // final result, which is posted when the handler's promise resolves).
+  handler.setProgressSink((m: any) => self.postMessage(m));
   // Web Worker path. `self` is the global scope inside the worker.
   // We attach via addEventListener (rather than self.onmessage =) so a
   // host that already attached a listener for handshake purposes isn't
@@ -74,6 +77,7 @@ if (isBrowserWorker) {
       : eval('require');
     const { parentPort } = nodeRequire('worker_threads');
     if (parentPort) {
+      handler.setProgressSink((m: any) => parentPort.postMessage(m));
       parentPort.on('message', (msg: any) => {
         const reply = handler.handle(msg);
         if (reply && typeof reply.then === 'function') {

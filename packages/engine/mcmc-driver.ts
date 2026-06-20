@@ -51,10 +51,14 @@ function runMcmc(mv: any, kernel: any, opts: any) {
   for (let w = 0; w < nWalkers; w++) collected[w] = [];
   let acceptTotal = 0, proposalTotal = 0;
 
-  for (let it = 0; it < warmup + draws; it++) {
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  const total = warmup + draws;
+  const progStep = Math.max(1, Math.floor(total / 50));   // ~2% granularity
+  for (let it = 0; it < total; it++) {
     const phase = it < warmup ? 'warmup' : 'sample';
     const r = kernel.step(ensemble, logp, mv, prng, adaptState, phase);
     acceptTotal += r.accepts; proposalTotal += r.proposals;
+    if (onProgress && (it % progStep === 0 || it === total - 1)) onProgress((it + 1) / total, phase);
     if (it >= warmup) {
       for (let w = 0; w < nWalkers; w++) {
         const theta = mv.constrainAll(ensemble[w]);

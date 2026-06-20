@@ -460,14 +460,15 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   lbl.style.opacity = '0.6';
 
   const sel = document.createElement('select');
-  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['emcee', 'emcee']]) {
+  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['emcee', 'emcee'], ['amis', 'AMIS']]) {
     const o = document.createElement('option');
     o.value = v; o.textContent = t;
     sel.appendChild(o);
   }
   sel.value = opts.backend;
   styleControl(sel);
-  sel.title = 'Posterior inference backend. IS = importance sampling (default); MH / emcee run MCMC.';
+  sel.title = 'Posterior inference backend. IS = importance sampling (default); '
+    + 'MH / emcee run MCMC; AMIS = adaptive multiple importance sampling.';
 
   const gear = document.createElement('button');
   gear.type = 'button';
@@ -490,10 +491,14 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   panel.style.fontSize = '0.9em';
   panel.style.minWidth = '12em';
 
+  // Rows tagged with the backends they apply to, so the popup shows only the
+  // knobs relevant to the current sampler (MCMC vs AMIS have different params).
+  const rows: { el: HTMLElement; backends: string[] }[] = [];
+
   // One labelled number input row. `get` reads the current value, `set` writes
-  // it back (empty string → null for the optional seed). Returns the input so
-  // the caller can refresh it when the backend changes the count's meaning.
-  function numRow(label: string, get: () => number | null, set: (v: number | null) => void): HTMLInputElement {
+  // it back (empty string → null for the optional seed). `backends` lists which
+  // samplers the row applies to. Returns the input so the caller can refresh it.
+  function numRow(label: string, backends: string[], get: () => number | null, set: (v: number | null) => void): HTMLInputElement {
     const row = document.createElement('div');
     row.style.display = 'flex';
     row.style.justifyContent = 'space-between';
@@ -516,6 +521,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
     });
     row.append(rl, inp);
     panel.appendChild(row);
+    rows.push({ el: row, backends });
     return inp;
   }
 
@@ -552,20 +558,25 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
     onChange();
   });
 
-  numRow('draws', function () { return opts.draws; }, function (v) { opts.draws = v == null ? 1000 : v; });
-  numRow('warmup', function () { return opts.warmup; }, function (v) { opts.warmup = v == null ? 1000 : v; });
+  numRow('draws', ['mh', 'emcee'], function () { return opts.draws; }, function (v) { opts.draws = v == null ? 1000 : v; });
+  numRow('warmup', ['mh', 'emcee'], function () { return opts.warmup; }, function (v) { opts.warmup = v == null ? 1000 : v; });
   panel.appendChild(countRow);
-  numRow('seed', function () { return opts.seed; }, function (v) { opts.seed = v; });
+  rows.push({ el: countRow, backends: ['mh', 'emcee'] });
+  numRow('iterations', ['amis'], function () { return opts.amisIters; }, function (v) { opts.amisIters = v == null ? 30 : v; });
+  numRow('samples/iter', ['amis'], function () { return opts.amisSamples; }, function (v) { opts.amisSamples = v == null ? 300 : v; });
+  numRow('seed', ['mh', 'emcee', 'amis'], function () { return opts.seed; }, function (v) { opts.seed = v; });
   refreshCountRow();
 
-  // IS has no MCMC knobs — disable the gear so the advanced panel is clearly
-  // inert in the default mode.
+  // IS has no sampler knobs — disable the gear so the advanced panel is clearly
+  // inert in the default mode. For MH/emcee/AMIS, show only the rows that apply
+  // to the selected backend.
   function refreshEnabled() {
     const isIS = opts.backend === 'is';
     gear.disabled = isIS;
     gear.style.opacity = isIS ? '0.4' : '1';
     gear.style.cursor = isIS ? 'default' : 'pointer';
     if (isIS) panel.style.display = 'none';
+    for (const r of rows) r.el.style.display = r.backends.indexOf(opts.backend) >= 0 ? 'flex' : 'none';
   }
 
   let outside: ((ev: MouseEvent) => void) | null = null;
