@@ -92,6 +92,15 @@ async function cmaes(spec: any): Promise<any> {
 
   const best = { x: mean.slice(), value: -Infinity };
   let evals = 0;
+  // Seed the incumbent with the start point itself, so the optimizer can never
+  // return a point WORSE than the pivot it was handed. The cloud is sampled
+  // around the mean but x0 is otherwise never scored — on a sharply-peaked
+  // objective the initial σ disperses off the peak, every sampled point is
+  // worse, and the true start would go unrepresented.
+  {
+    const f0 = await evalCloud([mean]); evals += 1;
+    if (f0 && Number.isFinite(f0[0])) best.value = f0[0];
+  }
   let gen = 0;
   let reason = 'maxGenerations';
   const histBest: number[] = [];

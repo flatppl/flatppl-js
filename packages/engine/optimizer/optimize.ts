@@ -64,7 +64,12 @@ async function optimize(spec: any): Promise<any> {
   };
 
   const sigma0 = opts.sigma0 ?? 0.3; // normalised z-units ≈ a fraction of a plot scale
-  const starts = Math.max(1, opts.starts || 1);
+  // Multi-start by default: a single CMA run gets stuck on sharply-peaked or
+  // multimodal objectives (e.g. a tight-data likelihood — a small σ makes a
+  // narrow ridge the lone run can disperse off and never climb back). Start 0 is
+  // the pivot; the rest are dispersed across the domain. Scales mildly with
+  // dimension, capped. Callers can override via opts.starts.
+  const starts = Math.max(1, opts.starts || Math.min(8, 3 + n));
   const seed = (opts.seed ?? 0x51ed) >>> 0;
   const rng = mulberry32(seed);
   const spread = opts.startSpread ?? 1.5;
