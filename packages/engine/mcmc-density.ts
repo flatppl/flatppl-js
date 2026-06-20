@@ -191,6 +191,16 @@ function pointToRefArrays(
   return { refArrays, vectorEnv };
 }
 
+// Collect the names of all `{kind:'ref'}` nodes in an IR (free identifiers the
+// density walker will resolve from callEnv). Used to partition atom-dependent
+// from atom-independent bindings for the batched scorer.
+function collectRefNames(node: any, out: Set<string>): void {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) { for (const x of node) collectRefNames(x, out); return; }
+  if (node.kind === 'ref' && typeof node.name === 'string') out.add(node.name);
+  for (const k in node) { const v = node[k]; if (v && typeof v === 'object') collectRefNames(v, out); }
+}
+
 // ---------------------------------------------------------------------------
 // PUBLIC: buildLogPi
 //
@@ -203,9 +213,11 @@ async function buildLogPi(
   ctx: any,
   d: any,
 ): Promise<{
-  logPi:   (pt: Record<string, any>) => number;
-  priorOf: (pt: Record<string, any>) => number;
-  likOf:   (pt: Record<string, any>) => number;
+  logPi:      (pt: Record<string, any>) => number;
+  logPiBatch: (pts: Array<Record<string, any>>) => Float64Array;
+  priorOf:    (pt: Record<string, any>) => number;
+  likOf:      (pt: Record<string, any>) => number;
+  probePrior: (pt: Record<string, any>) => void;
 }> {
   if (!d || d.kind !== 'bayesupdate') {
     throw new Error('buildLogPi: derivation must be kind=bayesupdate');
@@ -235,8 +247,18 @@ async function buildLogPi(
   if (drawNames.length === 0) {
     throw new Error(`buildLogPi: prior '${priorName}' has no stochastic draws to sample`);
   }
+  // A draw whose measure is a kernel-broadcast over a user function returning
+  // an iid block (e.g. p ~ beta_row_K.(a,b)) cannot be scored by expandMeasure's
+  // IR directly (its head is a user function, not a built-in distribution). For
+  // those we score the inner built-in as a flat independent product with the
+  // per-row params expanded across the inner iid axis. compositeDesc[nm] holds
+  // { distOp, D, paramNames, sub } when nm is such a draw, else is absent.
+  const { recognizeCompositeIidDraw } = require('./composite-prior.ts');
+  const compositeDesc: Record<string, any> = {};
   const drawMeasures: Record<string, any> = {};
   for (const nm of drawNames) {
+    const comp = recognizeCompositeIidDraw(nm, ctx);
+    if (comp) { compositeDesc[nm] = comp; continue; }
     const raw = orchestrator.expandMeasure(
       nm, { derivations: ctx.derivations, bindings: ctx.bindings },
     );
@@ -295,7 +317,85 @@ async function buildLogPi(
     return env;
   }
 
+  // ── BATCH setup: partition bindings into atom-dependent vs -independent ───
+  // The likelihood term is the costly one (it walks every observation). It is
+  // batchable exactly like the IS path: the observed value is atom-independent,
+  // and per-atom variation enters only through the latents (and any derived
+  // binding that depends on them). So score N points in ONE logDensityN(count=N)
+  // pass instead of N scalar calls. The prior term stays scalar (a few cheap
+  // logpdfs per atom). `likBodyIR` has derived bindings inlined by clm, so the
+  // names it actually references are typically just the draws.
+  // Atom-dependent derived = transitive closure of bindings whose lowered RHS
+  // references a draw or another atom-dependent name.
+  const atomDep = new Set<string>(drawNames);
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const db of derivedBindings) {
+      if (atomDep.has(db.name)) continue;
+      const refs = new Set<string>(); collectRefNames(db.ir, refs);
+      for (const r of refs) { if (atomDep.has(r)) { atomDep.add(db.name); grew = true; break; } }
+    }
+  }
+  // Atom-independent base env: fixed values + derived that depend only on them,
+  // evaluated ONCE. (Atom-dependent values are supplied per call via refArrays.)
+  const baseEnvConst: Record<string, any> = Object.assign({}, fixedEnvObj);
+  for (const db of derivedBindings) {
+    if (atomDep.has(db.name) || db.name in baseEnvConst) continue;
+    try { baseEnvConst[db.name] = sampler.evaluateExpr(db.ir, baseEnvConst); } catch (_) { /* skip */ }
+  }
+  if (moduleReg) baseEnvConst.__moduleRegistry = moduleReg;
+  // Which atom-dependent names the likelihood body actually references — only
+  // those need a per-atom refArray (avoids replicating unused intermediates).
+  const likRefSet = new Set<string>(); collectRefNames(likBodyIR, likRefSet);
+  const likPerAtom: string[] = Array.from(likRefSet).filter((n) => atomDep.has(n));
+  const constParseSet = makeParseSet(baseEnvConst);
+
   // ── SYNC closures ─────────────────────────────────────────────────────────
+
+  // Score a composite-iid draw (a [G,N] block of `distOp` whose per-row params
+  // are the broadcast args): logp = Σ_{g,j} logpdf_distOp(val[g·N+j]; params_g).
+  // Expand each per-row param across the inner iid axis to a flat length-K
+  // vector, then reuse the built-in `broadcast` density path.
+  // Unwrap a Value {shape,data} | Float64Array | Array → a flat numeric array.
+  function flatData(v: any): any {
+    if (v instanceof Float64Array) return v;
+    if (v && v.data instanceof Float64Array) return v.data;   // Value
+    if (Array.isArray(v)) return v;
+    return null;
+  }
+
+  function scoreComposite(desc: any, val: any, env: any): number {
+    const arr = flatData(val);
+    if (!arr) return -Infinity;
+    const K = arr.length, D = desc.D | 0;
+    if (!(D > 0) || K % D !== 0) return -Infinity;
+    const G = K / D;
+    const benv: Record<string, any> = {};
+    const kwargs: Record<string, any> = {};
+    for (const pn of desc.paramNames) {
+      if (!(pn in desc.sub)) return -Infinity;
+      let pvRaw: any;
+      try { pvRaw = sampler.evaluateExpr(desc.sub[pn], env); } catch (_) { return -Infinity; }
+      const pv = (typeof pvRaw === 'number') ? pvRaw : flatData(pvRaw);
+      const flat = new Float64Array(K);
+      if (typeof pv === 'number') { flat.fill(pv); }
+      else if (pv && pv.length === G) { for (let g = 0; g < G; g++) { const x = +pv[g]; for (let j = 0; j < D; j++) flat[g * D + j] = x; } }
+      else if (pv && pv.length === K) { for (let k = 0; k < K; k++) flat[k] = +pv[k]; }
+      else if (pv && pv.length === D) { for (let g = 0; g < G; g++) for (let j = 0; j < D; j++) flat[g * D + j] = +pv[j]; }
+      else return -Infinity;
+      benv['__cb_' + pn] = { shape: [K], data: flat };
+      kwargs[pn] = { kind: 'ref', ns: 'self', name: '__cb_' + pn };
+    }
+    if (moduleReg) benv.__moduleRegistry = moduleReg;
+    const ir = { kind: 'call', op: 'broadcast', args: [{ kind: 'ref', ns: 'self', name: desc.distOp }], kwargs };
+    const opts = { parseSet: makeParseSet(benv), resolveMeasureRef: NULL_REF, baseEnv: benv };
+    try {
+      const r = density.logDensityN(ir, arr, {}, 1, opts);
+      const v = r[0];
+      return Number.isFinite(v) ? v : -Infinity;
+    } catch (_err) { return -Infinity; }
+  }
 
   function priorWith(env: any, pt: Record<string, any>): number {
     const { refArrays } = pointToRefArrays(pt);
@@ -304,6 +404,12 @@ async function buildLogPi(
     for (const nm of drawNames) {
       const val = pt[nm];
       if (val === undefined) return -Infinity;
+      if (compositeDesc[nm]) {
+        const v = scoreComposite(compositeDesc[nm], val, env);
+        if (!Number.isFinite(v)) return -Infinity;
+        total += v;
+        continue;
+      }
       try {
         const logps = density.logDensityN(drawMeasures[nm], val, refArrays, 1, opts);
         const v = logps[0];
@@ -324,6 +430,27 @@ async function buildLogPi(
     } catch (_err) { return -Infinity; }
   }
 
+  // One-time tractability probe at an in-support point: lets the density
+  // walker's errors propagate (annotated with the draw name) instead of being
+  // swallowed to −∞ as priorWith does at runtime. A prior whose density is a
+  // static error (e.g. an unannotated pushfwd, spec §06) makes MCMC/AMIS
+  // impossible — the backend must refuse with the reason, not run stuck chains.
+  function probePrior(pt: Record<string, any>): void {
+    const env = buildEnv(pt);
+    const { refArrays } = pointToRefArrays(pt);
+    const opts = { parseSet: makeParseSet(env), resolveMeasureRef: NULL_REF, baseEnv: env };
+    for (const nm of drawNames) {
+      if (compositeDesc[nm]) continue;          // composite-iid is scorable
+      const val = pt[nm];
+      if (val === undefined) continue;
+      try {
+        density.logDensityN(drawMeasures[nm], val, refArrays, 1, opts);
+      } catch (err: any) {
+        throw new Error(`prior draw '${nm}' has no tractable density: ${err && err.message ? err.message : String(err)}`);
+      }
+    }
+  }
+
   function priorOf(pt: Record<string, any>): number { return priorWith(buildEnv(pt), pt); }
   function likOf(pt: Record<string, any>): number { return likWith(buildEnv(pt), pt); }
 
@@ -336,7 +463,53 @@ async function buildLogPi(
     return Number.isFinite(lp) ? lp : -Infinity;
   }
 
-  return { logPi, priorOf, likOf };
+  // Batched logπ over N points: ONE logDensityN(count=N) for the likelihood
+  // (per-atom latents supplied via refArrays, observed value atom-independent),
+  // plus the per-atom scalar prior. Equals [logPi(p) for p in pts] (verified by
+  // batched-scorer.test.ts); on any batched-likelihood failure it falls back to
+  // the scalar likelihood for every point so the result is always correct.
+  function logPiBatch(pts: Array<Record<string, any>>): Float64Array {
+    const N = pts.length;
+    const out = new Float64Array(N);
+    if (N === 0) return out;
+    const envs = new Array(N);
+    for (let i = 0; i < N; i++) envs[i] = buildEnv(pts[i]);
+
+    // Per-atom refArrays for the names the likelihood references.
+    const refArrays: Record<string, any> = {};
+    for (const nm of likPerAtom) {
+      const v0 = envs[0][nm];
+      if (typeof v0 === 'number') {
+        const a = new Float64Array(N);
+        for (let i = 0; i < N; i++) a[i] = +envs[i][nm];
+        refArrays[nm] = a;
+      } else if (v0 && (v0.length != null)) {
+        const D = v0.length | 0;
+        const data = new Float64Array(N * D);
+        for (let i = 0; i < N; i++) { const vi = envs[i][nm]; for (let j = 0; j < D; j++) data[i * D + j] = +vi[j]; }
+        refArrays[nm] = { shape: [N, D], data };
+      }
+    }
+
+    // Batched likelihood (atom-independent observed; per-atom params via refs).
+    let logL: Float64Array | null = null;
+    try {
+      const opts = { parseSet: constParseSet, resolveMeasureRef: NULL_REF, baseEnv: baseEnvConst };
+      const r = density.logDensityN(likBodyIR, observed, refArrays, N, opts);
+      if (r && r.length === N) logL = r as Float64Array;
+    } catch (_err) { logL = null; }
+
+    for (let i = 0; i < N; i++) {
+      const prior = priorWith(envs[i], pts[i]);
+      if (!Number.isFinite(prior)) { out[i] = -Infinity; continue; }
+      const lik = (logL && Number.isFinite(logL[i])) ? logL[i] : likWith(envs[i], pts[i]);
+      const lp = prior + lik;
+      out[i] = Number.isFinite(lp) ? lp : -Infinity;
+    }
+    return out;
+  }
+
+  return { logPi, logPiBatch, priorOf, likOf, probePrior };
 }
 
 module.exports = { buildLogPi, evaluateDerivedBindings };

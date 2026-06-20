@@ -261,6 +261,8 @@ function enumerateLatents(d: any, ctx: any): any[] {
   const derivations = ctx.derivations || {};
   const result: any[] = [];
 
+  const { recognizeCompositeIidDraw } = require('./composite-prior.ts');
+
   for (const name of drawNames) {
     const info = walkDerivChain(name, derivations);
 
@@ -270,11 +272,24 @@ function enumerateLatents(d: any, ctx: any): any[] {
       const totalDim = dims.reduce((a: number, b: number) => a * b, 1);
       const support = elementSupportOf(info.elementBaseName, derivations);
       result.push({ name, shape: { kind: 'vector', dims: [totalDim] }, support });
-    } else {
-      // Scalar latent — support from chain walk
-      const support = info || { kind: 'real' };
-      result.push({ name, shape: { kind: 'scalar' }, support });
+      continue;
     }
+
+    // A draw whose measure is a kernel-broadcast over a user function returning
+    // an iid block (e.g. p ~ beta_row_K.(a,b), a [G,N] matrix of Betas). The
+    // elementwise support comes from the inner builtin distribution; the total
+    // size is determined from the materialised prior pool in buildModelView.
+    const comp = recognizeCompositeIidDraw(name, ctx);
+    if (comp) {
+      let support: any;
+      try { support = transforms.supportOf(comp.distOp, {}); } catch (_) { support = { kind: 'real' }; }
+      result.push({ name, shape: { kind: 'vector', dims: [0], fromPool: true }, support });
+      continue;
+    }
+
+    // Scalar latent — support from chain walk
+    const support = info || { kind: 'real' };
+    result.push({ name, shape: { kind: 'scalar' }, support });
   }
 
   return result;

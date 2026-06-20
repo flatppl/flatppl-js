@@ -89,8 +89,45 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     }
   }
 
-  // 3. Build per-coordinate structures (coordinates = one slot per scalar
-  //    or per element of a vector latent).
+  // 3a. Prior-draw pools per latent (forward samples). These serve two jobs:
+  //     (a) the per-atom shape is read from the pool's value.shape — the ground
+  //     truth for scalar / vector / MATRIX latents alike (a matrix latent such
+  //     as p ~ beta_row_K.(a,b) has a [G,N] per-atom shape that the derivation
+  //     walk can't infer statically; the materialised measure carries it); and
+  //     (b) a random atom per latent gives an overdispersed prior-distributed
+  //     init for the samplers.
+  const priorPools: any[] = [];   // per latent: { samples, stride, n } or null
+  for (const l of leafLatents) {
+    let pool: any = null;
+    try {
+      const m: any = await ctx.getMeasure(l.name);
+      const s = m && (m.samples || (m.value && m.value.data));
+      if (s && s.length > 0) {
+        // Per-atom size = product of all but the leading (atom) axis.
+        let stride = 1;
+        if (m.value && Array.isArray(m.value.shape) && m.value.shape.length > 1) {
+          for (let k = 1; k < m.value.shape.length; k++) stride *= m.value.shape[k];
+        } else if (l.shape.kind === 'vector' && l.shape.dims[0] > 0) {
+          stride = l.shape.dims[0];
+        }
+        pool = { samples: s, stride, n: Math.floor(s.length / stride) };
+        // Reconcile the latent's shape with the pool: a >1 per-atom size is a
+        // vector latent of that width (fixes matrix/pool-sized latents that the
+        // static walk left as scalar or dims:[0]). `atomShape` keeps the FULL
+        // per-atom shape (e.g. [2,16] for a matrix) so the scorer can rebuild a
+        // correctly-shaped value for indexing — flattening alone would break a
+        // likelihood that indexes p[g][j].
+        const atomShape = (m.value && Array.isArray(m.value.shape) && m.value.shape.length > 1)
+          ? m.value.shape.slice(1) : (stride > 1 ? [stride] : null);
+        if (stride > 1) l.shape = { kind: 'vector', dims: [stride], atomShape };
+        else if (stride === 1 && l.shape.kind === 'vector') l.shape = { kind: 'scalar' };
+      }
+    } catch (_) { /* no pool → keep the statically-inferred shape */ }
+    priorPools.push(pool);
+  }
+
+  // 3b. Build per-coordinate structures (coordinates = one slot per scalar or
+  //     per element of a vector/matrix latent), using the reconciled shapes.
   const coordNames: string[]  = [];   // e.g. ['mu','tau','theta[0]','theta[1]',…]
   const coordSupports: any[]  = [];   // per-coordinate support
   const latentNames: string[] = [];   // unique latent names
@@ -103,7 +140,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
       coordNames.push(l.name);
       coordSupports.push(l.support);
     } else {
-      // vector — expand each coordinate
+      // vector / flattened matrix — expand each coordinate (shared support)
       const d = l.shape.dims[0];
       for (let i = 0; i < d; i++) {
         coordNames.push(`${l.name}[${i}]`);
@@ -115,26 +152,35 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   const dim = coordNames.length;
   const coordTransforms = coordSupports.map((s: any) => T.transformFor(s));
 
-  // 4. Async setup: build logPi / priorOf / likOf from mcmc-density.ts.
-  const { logPi } = await buildLogPi(ctx, posteriorDeriv);
+  // 4. Async setup: build logPi / logPiBatch / priorOf / likOf from mcmc-density.ts.
+  const { logPi, logPiBatch, probePrior } = await buildLogPi(ctx, posteriorDeriv);
 
-  // 4b. Prior-draw pools per latent (forward samples), for in-region init.
-  //     Materialising each latent gives its marginal prior draws; a random
-  //     atom per latent → an overdispersed prior-distributed start, far better
-  //     than the origin when the prior isn't origin-centred (mu~Normal(100,…))
-  //     or has a degenerate corner near it (Student-t nu).
-  const priorPools: any[] = [];   // per latent: { samples, stride } or null
-  for (const l of leafLatents) {
-    let pool: any = null;
-    try {
-      const m: any = await ctx.getMeasure(l.name);
-      const s = m && (m.samples || (m.value && m.value.data));
-      if (s && s.length > 0) {
-        const stride = l.shape.kind === 'vector' ? l.shape.dims[0] : 1;
-        pool = { samples: s, stride, n: Math.floor(s.length / stride) };
+  // 4a. Prior-tractability probe. MCMC/AMIS need to SCORE the prior; if a draw's
+  //     density is a static error (e.g. an unannotated pushfwd, spec §06) the
+  //     samplers would otherwise run stuck chains on a silent −∞. Probe once at
+  //     an in-support point (pool atom 0) and refuse with the reason — pointing
+  //     at backend 'is', which forward-samples the prior instead of scoring it.
+  try {
+    const probePt: Record<string, any> = {};
+    let havePools = leafLatents.length > 0;
+    for (let li = 0; li < leafLatents.length; li++) {
+      const l = leafLatents[li], pool = priorPools[li];
+      if (!pool) { havePools = false; break; }
+      if (l.shape.kind === 'scalar') { probePt[l.name] = pool.samples[0]; }
+      else {
+        const d = pool.stride; const v = new Float64Array(d);
+        for (let j = 0; j < d; j++) v[j] = pool.samples[j];
+        probePt[l.name] = v;
       }
-    } catch (_) { /* no pool → origin fallback for this latent */ }
-    priorPools.push(pool);
+    }
+    if (havePools) probePrior(probePt);
+  } catch (err: any) {
+    const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'mh';
+    const msg = err && err.message ? err.message : String(err);
+    throw new Error(
+      `backend '${backend}': ${msg}. MCMC/AMIS must score the prior; use `
+      + `backend 'is' (which forward-samples the prior rather than scoring it), `
+      + `or annotate the offending transform with bijection(f, f_inv, logvolume).`);
   }
 
   // Build `nWalkers` initial unconstrained positions from prior draws.
@@ -171,7 +217,12 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
         const d = shp.dims[0];
         const vec = new Float64Array(d);
         for (let j = 0; j < d; j++) vec[j] = flatPt[`${nm}[${j}]`];
-        rec[nm] = vec;
+        // A multi-axis latent (e.g. a [2,16] matrix) must keep its shape so the
+        // likelihood/prior can index it (p[g][j]); a bare flat array would lose
+        // the structure. Carry it as a Value of its per-atom shape.
+        rec[nm] = (shp.atomShape && shp.atomShape.length > 1)
+          ? { shape: shp.atomShape.slice(), data: vec }
+          : vec;
       }
     }
     return rec;
@@ -225,6 +276,25 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     return lp;
   }
 
+  // 8b. logPosteriorBatch: N unconstrained vectors → Float64Array(N). Batches
+  // the likelihood through one logDensityN(count=N) pass (see mcmc-density
+  // logPiBatch); the change-of-variables Jacobian is added per atom.
+  function logPosteriorBatch(ys: Float64Array[]): Float64Array {
+    const N = ys.length;
+    const pts = new Array(N);
+    const jac = new Float64Array(N);
+    for (let a = 0; a < N; a++) {
+      const y = ys[a];
+      pts[a] = flatToScorerPt(constrainAll(y));
+      let j = 0;
+      for (let i = 0; i < dim; i++) j += coordTransforms[i].logDetJ(y[i]);
+      jac[a] = j;
+    }
+    const lp = logPiBatch(pts);
+    for (let a = 0; a < N; a++) lp[a] = Number.isFinite(lp[a]) ? lp[a] + jac[a] : -Infinity;
+    return lp;
+  }
+
   return {
     dim,
     names: coordNames,        // per-coordinate expanded names (length = dim)
@@ -232,6 +302,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     constrainAll,
     unconstrainAll,
     logPosterior,
+    logPosteriorBatch,
     logPosteriorConstrained,
     initFromPrior,
     latentNames,

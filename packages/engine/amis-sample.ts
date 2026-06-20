@@ -151,7 +151,11 @@ function amisSample(mv: any, opts: any) {
     const p = makeProposal(mu, Sigma, dim);
     proposals.push(p);
 
-    // a. Draw M samples from the current proposal; score the target.
+    // a. Draw M samples from the current proposal, then score them. AMIS's M
+    // samples are independent, so score the whole iteration's batch in ONE pass
+    // (mv.logPosteriorBatch → one batched likelihood eval) — the reason AMIS
+    // suits the engine's atom-batched evaluator far better than sequential MCMC.
+    const batch: Float64Array[] = new Array(M);
     for (let m = 0; m < M; m++) {
       const z = new Float64Array(dim);
       for (let d = 0; d < dim; d++) z[d] = gaussianNoise(prng);
@@ -161,8 +165,12 @@ function amisSample(mv: any, opts: any) {
         for (let k = 0; k <= i; k++) acc += p.L[i * dim + k] * z[k];
         x[i] = p.mu[i] + acc;
       }
-      X.push(x); tau.push(t); logTarget.push(mv.logPosterior(x));
+      batch[m] = x;
     }
+    const lt = (typeof mv.logPosteriorBatch === 'function')
+      ? mv.logPosteriorBatch(batch)
+      : batch.map((x: Float64Array) => mv.logPosterior(x));
+    for (let m = 0; m < M; m++) { X.push(batch[m]); tau.push(t); logTarget.push(lt[m]); }
 
     // Auto-K (§IV-D): once the proposal mean stops moving, freeze K = t−1 and
     // switch to the reduced (efficient) mixture for subsequent re-weightings.
