@@ -24,14 +24,24 @@ function runMcmc(mv: any, kernel: any, opts: any) {
   const baseKey = rng.keyFromSeed(seed);
   const prng = sampler.makePhiloxPrngAdapter(rng.stateFromKey(baseKey[0], baseKey[1]));
 
-  // Dispersed ensemble init around the unconstrained origin. Dispersion is
-  // REQUIRED for emcee (identical walkers collapse the stretch move); for
-  // independent-walker kernels it is a harmless overdispersed start.
+  // Ensemble init. `opts.initPositions` (one unconstrained Float64Array per
+  // walker) starts each walker from a PRIOR DRAW — in-region and overdispersed,
+  // which matters when the prior isn't centred at the origin (e.g. mu~Normal(100,…))
+  // or has a degenerate corner the origin sits near (Student-t nu). Without it,
+  // fall back to a dispersed ball around the origin (dispersion is required for
+  // emcee so identical walkers don't collapse the stretch move).
+  const init: Float64Array[] | null = opts.initPositions
+    || (typeof mv.initFromPrior === 'function' ? mv.initFromPrior(nWalkers, prng) : null);
   const ensemble = new Array(nWalkers);
   const logp = new Float64Array(nWalkers);
   for (let w = 0; w < nWalkers; w++) {
-    const y = new Float64Array(dim);
-    for (let d = 0; d < dim; d++) y[d] = initSpread * gaussianNoise(prng);
+    let y: Float64Array;
+    if (init && init[w]) {
+      y = Float64Array.from(init[w]);
+    } else {
+      y = new Float64Array(dim);
+      for (let d = 0; d < dim; d++) y[d] = initSpread * gaussianNoise(prng);
+    }
     ensemble[w] = y;
     logp[w] = mv.logPosterior(y);
   }

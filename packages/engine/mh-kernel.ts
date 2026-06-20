@@ -93,29 +93,40 @@ const mhKernel = {
       // Re-estimate the proposal covariance from the warmup samples every 50
       // sweeps once enough have accrued (need > dim for a non-degenerate cov).
       const n = adaptState.count;
-      if (n > dim + 2 && adaptState.iter % 50 === 0) {
+      if (n > dim + 2 && adaptState.iter % 25 === 0) {
         const sum = adaptState.sum, cross = adaptState.cross;
-        const cov = new Float64Array(dim * dim);
-        const eps = 1e-6;
+        const eps = 1e-9;
+        // Per-coordinate variances (floored) — always trustworthy, and the
+        // robust fallback. The diagonal handles SCALE differences (mu~100 vs
+        // logit-σ vs log-ν), which is the dominant mixing obstacle.
+        const variance = new Float64Array(dim);
+        for (let d = 0; d < dim; d++) {
+          const md = sum[d] / n;
+          const v = cross[d * dim + d] / n - md * md;
+          variance[d] = v > eps ? v : eps;
+        }
+        const useFullCov = n > 20 * dim;   // enough samples for a stable correlation estimate
+        const M = new Float64Array(dim * dim);
         for (let i = 0; i < dim; i++) {
-          const mi = sum[i] / n;
-          for (let j = 0; j <= i; j++) {
-            const c = cross[i * dim + j] / n - mi * (sum[j] / n);
-            cov[i * dim + j] = c + (i === j ? eps : 0);
-            cov[j * dim + i] = cov[i * dim + j];
+          M[i * dim + i] = variance[i];
+          if (useFullCov) {
+            const mi = sum[i] / n;
+            for (let j = 0; j < i; j++) {
+              // Shrink off-diagonals (×0.9) so a noisy/degenerate correlation
+              // can't break the whole Cholesky proposal — the diagonal still
+              // dominates (robust), correlation just steers it.
+              const c = (cross[i * dim + j] / n - mi * (sum[j] / n)) * 0.9;
+              M[i * dim + j] = c; M[j * dim + i] = c;
+            }
           }
         }
         const Lnew = new Float64Array(dim * dim);
-        if (cholesky(cov, Lnew, dim)) {
+        if (cholesky(M, Lnew, dim)) {
           adaptState.L = Lnew;
         } else {
-          // Not PD (e.g. a near-degenerate direction): fall back to a diagonal
-          // proposal from the marginal std so we never propose with a broken L.
+          // Not PD: pure diagonal from the marginal std (never a broken L).
           const Ld = new Float64Array(dim * dim);
-          for (let d = 0; d < dim; d++) {
-            const v = cross[d * dim + d] / n - (sum[d] / n) * (sum[d] / n);
-            Ld[d * dim + d] = Math.sqrt(v > eps ? v : eps);
-          }
+          for (let d = 0; d < dim; d++) Ld[d * dim + d] = Math.sqrt(variance[d]);
           adaptState.L = Ld;
         }
       }

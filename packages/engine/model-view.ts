@@ -118,6 +118,47 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   // 4. Async setup: build logPi / priorOf / likOf from mcmc-density.ts.
   const { logPi } = await buildLogPi(ctx, posteriorDeriv);
 
+  // 4b. Prior-draw pools per latent (forward samples), for in-region init.
+  //     Materialising each latent gives its marginal prior draws; a random
+  //     atom per latent → an overdispersed prior-distributed start, far better
+  //     than the origin when the prior isn't origin-centred (mu~Normal(100,…))
+  //     or has a degenerate corner near it (Student-t nu).
+  const priorPools: any[] = [];   // per latent: { samples, stride } or null
+  for (const l of leafLatents) {
+    let pool: any = null;
+    try {
+      const m: any = await ctx.getMeasure(l.name);
+      const s = m && (m.samples || (m.value && m.value.data));
+      if (s && s.length > 0) {
+        const stride = l.shape.kind === 'vector' ? l.shape.dims[0] : 1;
+        pool = { samples: s, stride, n: Math.floor(s.length / stride) };
+      }
+    } catch (_) { /* no pool → origin fallback for this latent */ }
+    priorPools.push(pool);
+  }
+
+  // Build `nWalkers` initial unconstrained positions from prior draws.
+  function initFromPrior(nWalkers: number, prng: () => number): Float64Array[] {
+    const out: Float64Array[] = [];
+    for (let w = 0; w < nWalkers; w++) {
+      const scorerPt: Record<string, any> = {};
+      for (let li = 0; li < leafLatents.length; li++) {
+        const l = leafLatents[li], pool = priorPools[li];
+        if (!pool) { scorerPt[l.name] = l.shape.kind === 'vector' ? new Float64Array(l.shape.dims[0]) : 0; continue; }
+        const a = Math.min(pool.n - 1, Math.floor(prng() * pool.n));
+        if (l.shape.kind === 'vector') {
+          const d = pool.stride; const v = new Float64Array(d);
+          for (let j = 0; j < d; j++) v[j] = pool.samples[a * d + j];
+          scorerPt[l.name] = v;
+        } else {
+          scorerPt[l.name] = pool.samples[a];
+        }
+      }
+      out.push(unconstrainAll(scorerPt));
+    }
+    return out;
+  }
+
   // Helper: flat coord record → scorer-format record { name: scalar | Float64Array }.
   function flatToScorerPt(flatPt: Record<string, any>): Record<string, any> {
     const rec: Record<string, any> = {};
@@ -192,6 +233,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     unconstrainAll,
     logPosterior,
     logPosteriorConstrained,
+    initFromPrior,
     latentNames,
     latentShapes,
   };

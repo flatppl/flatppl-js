@@ -13,9 +13,12 @@ function transformFor(support: any) {
         logDetJ:     (_y: number) => 0,
       };
     case 'positive':
-      // y = log theta ; theta = exp y ; d theta/dy = exp y
+      // y = log theta ; theta = exp y ; d theta/dy = exp y.
+      // Floor theta at a tiny positive so unconstraining a value AT the
+      // boundary (a prior draw of 0, or a proposal that lands there) stays
+      // finite rather than -Infinity.
       return {
-        unconstrain: (theta: number) => Math.log(theta),
+        unconstrain: (theta: number) => Math.log(theta > 1e-300 ? theta : 1e-300),
         constrain:   (y: number) => Math.exp(y),
         logDetJ:     (y: number) => y,
       };
@@ -26,7 +29,11 @@ function transformFor(support: any) {
       const logSig = (x: number) => -Math.log1p(Math.exp(-x)); // log sigmoid(x), stable
       return {
         unconstrain: (theta: number) => {
-          const p = (theta - a) / w;
+          // Clamp the interior proportion away from {0,1} so a boundary value
+          // unconstrains to a large-but-FINITE y (not ±Infinity → NaN logπ).
+          let p = (theta - a) / w;
+          if (!(p > 1e-12)) p = 1e-12;
+          if (p > 1 - 1e-12) p = 1 - 1e-12;
           return Math.log(p / (1 - p));
         },
         constrain: (y: number) => a + w / (1 + Math.exp(-y)),
