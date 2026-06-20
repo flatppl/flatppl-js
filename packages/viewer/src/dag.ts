@@ -327,51 +327,63 @@ export function initCy(ctx: Ctx) {
   });
 
   const tip = $('tooltip');
+  // Hover-intent delay before the tooltip appears. The doc-comment now renders
+  // as full HTML/MathML, so the tooltip can be large enough to sit over the
+  // node beneath; an INSTANT pop made neighbouring nodes hard to aim at while
+  // moving the cursor across to click one. (#tooltip is pointer-events:none so
+  // it never eats the click — this is purely about it not flashing in the way.)
+  const TOOLTIP_DELAY_MS = 450;
+  let tipTimer: any = null;
+  function hideTip() {
+    if (tipTimer) { clearTimeout(tipTimer); tipTimer = null; }
+    tip.style.display = 'none';
+  }
   ctx.cy.on('mouseover', 'node', function(evt: any) {
     const d = evt.target.data();
     const expr = d.expr || '';
     const doc = d.doc;
     const hasDoc = doc && Array.isArray(doc.lines) && doc.lines.length > 0;
     if (!expr && !hasDoc) return;
-    // Tooltip shows the existing `label = expr` line on top; the
-    // attached doc-comment renders below in dimmer styling (spec §04
-    // §sec:documentation). The doc body goes through marked + Temml
-    // (see markdown.ts) so `**bold**`, lists, code, and math
-    // (`$x$`, `$$…$$`) all render as proper HTML/MathML. The
-    // `label = expr` line stays plain-text (textContent) — there's no
-    // markup expected there and using textContent dodges any
-    // accidental HTML in identifier-derived strings.
-    tip.textContent = '';   // clear previous
-    if (expr) {
-      const exprLine = document.createElement('div');
-      exprLine.className = 'tooltip-expr';
-      exprLine.textContent = d.label ? (d.label + ' = ' + expr) : expr;
-      tip.appendChild(exprLine);
-    }
-    if (hasDoc) {
-      const docBlock = document.createElement('div');
-      docBlock.className = 'tooltip-doc';
-      const html = renderDoc(doc);
-      if (html) docBlock.innerHTML = html;
-      else      docBlock.textContent = doc.lines.join('\n');
-      tip.appendChild(docBlock);
-    }
-    tip.style.display = 'block';
-    const pos = evt.renderedPosition;
-    const cRect = $('cy').getBoundingClientRect();
-    let tx = pos.x + cRect.left + 12;
-    let ty = pos.y + cRect.top - 30;
-    if (tx + tip.offsetWidth > cRect.right - 8) tx = cRect.right - tip.offsetWidth - 8;
-    if (ty < cRect.top + 4) ty = pos.y + cRect.top + 16;
-    tip.style.left = tx + 'px';
-    tip.style.top = ty + 'px';
+    if (tipTimer) clearTimeout(tipTimer);
+    const pos = evt.renderedPosition;  // node position; stable until a viewport move (which hides the tip)
+    tipTimer = setTimeout(function() {
+      tipTimer = null;
+      const cyEl = $('cy');
+      if (!cyEl) return;  // viewer torn down mid-hover
+      // Tooltip shows the existing `label = expr` line on top; the attached
+      // doc-comment renders below in dimmer styling (spec §04
+      // §sec:documentation). The doc body goes through marked + Temml (see
+      // markdown.ts) so `**bold**`, lists, code, and math render as
+      // HTML/MathML. The `label = expr` line stays plain-text (textContent) —
+      // no markup expected there, and textContent dodges accidental HTML in
+      // identifier-derived strings.
+      tip.textContent = '';
+      if (expr) {
+        const exprLine = document.createElement('div');
+        exprLine.className = 'tooltip-expr';
+        exprLine.textContent = d.label ? (d.label + ' = ' + expr) : expr;
+        tip.appendChild(exprLine);
+      }
+      if (hasDoc) {
+        const docBlock = document.createElement('div');
+        docBlock.className = 'tooltip-doc';
+        const html = renderDoc(doc);
+        if (html) docBlock.innerHTML = html;
+        else      docBlock.textContent = doc.lines.join('\n');
+        tip.appendChild(docBlock);
+      }
+      tip.style.display = 'block';
+      const cRect = cyEl.getBoundingClientRect();
+      let tx = pos.x + cRect.left + 12;
+      let ty = pos.y + cRect.top - 30;
+      if (tx + tip.offsetWidth > cRect.right - 8) tx = cRect.right - tip.offsetWidth - 8;
+      if (ty < cRect.top + 4) ty = pos.y + cRect.top + 16;
+      tip.style.left = tx + 'px';
+      tip.style.top = ty + 'px';
+    }, TOOLTIP_DELAY_MS);
   });
-  ctx.cy.on('mouseout', 'node', function() {
-    tip.style.display = 'none';
-  });
-  ctx.cy.on('viewport', function() {
-    tip.style.display = 'none';
-  });
+  ctx.cy.on('mouseout', 'node', hideTip);
+  ctx.cy.on('viewport', hideTip);
 }
 
 export function drawReificationLassos(ctx: Ctx, data: any) {
