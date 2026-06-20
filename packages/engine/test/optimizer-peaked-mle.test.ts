@@ -34,6 +34,20 @@ test('optimizer finds the sharply-peaked linreg MLE from a poor start', async ()
   }
 });
 
+// Poisson GLM (poisson-glm-link fixture): log-link → an exp() overflow cliff over
+// the unbounded (intercept, slope) reals. A single CMA run wandered into the
+// cliff; BIPOP must still recover the GLM MLE from far starts.
+test('optimizer finds the Poisson-GLM MLE through the exp-overflow cliff', async () => {
+  const x = [-1.0, 0.2, 0.5, 1.3, 2.1], yc = [0, 1, 2, 3, 8];
+  const ll = (p: number[]) => { const [a, b] = p; let s = 0; for (let i = 0; i < x.length; i++) { const eta = a + b * x[i], mu = Math.exp(eta); if (!Number.isFinite(mu)) return -1e12; s += yc[i] * eta - mu; } return Number.isFinite(s) ? s : -1e12; };
+  const GLM_MLE = [-0.244, 1.111];   // scipy Poisson regression
+  for (const x0 of [[0, 0], [3, 3], [-3, 4]]) {     // origin + far starts into the cliff
+    const r = await optimize({ evalCloud: (pts: number[][]) => pts.map(ll), x0, domains: [{ kind: 'reals' }, { kind: 'reals' }], scales: [6, 6], opts: { seed: 7 } });
+    assert.ok(Math.abs(r.mode[0] - GLM_MLE[0]) < 0.06, `intercept ${r.mode[0]} ≈ ${GLM_MLE[0]} (start ${x0})`);
+    assert.ok(Math.abs(r.mode[1] - GLM_MLE[1]) < 0.06, `slope ${r.mode[1]} ≈ ${GLM_MLE[1]} (start ${x0})`);
+  }
+});
+
 test('optimizer never returns worse than the pivot it was given', async () => {
   // Start AT the MLE: the incumbent-seed fix guarantees the result is ≥ f(x0),
   // even though the sampled cloud disperses off the narrow peak.
