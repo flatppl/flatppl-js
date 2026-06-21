@@ -257,6 +257,31 @@
     }, { dark: true });
   }
 
+  // Surface engine diagnostics (tokenizer/parser/analyzer) as CM lint markers.
+  // Reuses parseCached — adds no new parse. CM debounces linter runs itself.
+  function makeLinter(bundle: any) {
+    return bundle.linter(function (view: any) {
+      const text = view.state.doc.toString();
+      const { processed } = parseCached(text);
+      const diags = (processed && processed.diagnostics) || [];
+      if (!diags.length) return [];
+      const lineStarts = computeLineStarts(text);
+      const out: any[] = [];
+      for (let i = 0; i < diags.length; i++) {
+        const d = diags[i];
+        if (!d || !d.loc || !d.loc.start) continue;
+        let from = offsetOf(d.loc.start, lineStarts);
+        let to = d.loc.end ? offsetOf(d.loc.end, lineStarts) : from;
+        from = Math.max(0, Math.min(from, text.length));
+        to = Math.max(0, Math.min(to, text.length));
+        if (to <= from) to = Math.min(from + 1, text.length);
+        const sev = (d.severity === 'warning' || d.severity === 'info') ? d.severity : 'error';
+        out.push({ from: from, to: to, severity: sev, message: String(d.message || 'error') });
+      }
+      return out;
+    });
+  }
+
   function mountEditor(container: any, opts: any) {
     opts = opts || {};
     const bundle = globalScope.FlatPPLEditorBundle;
@@ -476,6 +501,8 @@
       // makeHighlightPlugin's doc comment.
       bundle.Prec.high(makeHighlightPlugin(bundle)),
       makeHoverTooltip(bundle),
+      makeLinter(bundle),
+      bundle.lintGutter(),
       flashPlugin,
       makeTheme(bundle),
       bundle.EditorView.domEventHandlers(domEventHandlers),
