@@ -74,7 +74,7 @@ import type {
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr, computePhases } = require('./analyzer.ts');
-const { MEASURE_PRODUCING, ALL_KNOWN } = require('./builtins.ts');
+const { MEASURE_PRODUCING, ALL_KNOWN, SET_CONSTRUCTORS } = require('./builtins.ts');
 const { isEvaluable, liftInlineSubexpressions, classifyRandTuple } = require('./lift.ts');
 const { dissolveBindings } = require('./dissolver.ts');
 const { signatureOf } = require('./signatures.ts');
@@ -164,7 +164,64 @@ function _propagateLiftedPhases(bindings: Map<string, any>): Map<string, any> {
   return out;
 }
 
+// Inline a fixed-phase named SET into its use sites. A set constructor
+// (`interval`, `cartprod`, …) is not value-evaluable — `resolveIRToValue` /
+// the sampler's evaluator reject it ("the orchestrator should pre-resolve
+// this") — so a binding like `S = interval(0.1, 20)` produces neither a
+// derivation nor a fixedValues entry. Any draw that uses it as a distribution
+// support (`sigma ~ Uniform(S)`) therefore has an unsatisfiable dep and gets
+// cascade-pruned, taking the whole posterior down silently. Inlining the set's
+// AST into each `S` reference makes the named form identical to the working
+// inline form (`Uniform(interval(0.1, 20))`) for every downstream consumer
+// (classifier, cascade-prune, sampler support, MCMC constraining transform).
+// Value refs are `Identifier` AST nodes; keyword-arg / record-field names are
+// plain strings, and a FieldAccess `.field` is an accessor name, not a ref — so
+// substituting by Identifier name (skipping FieldAccess accessors) is safe.
+function inlineNamedSetBindings(bindings: Map<string, BindingInfo>) {
+  const setDefs = new Map<string, any>();
+  for (const [name, b] of bindings) {
+    if (!b || b.phase !== 'fixed' || !b.node || !b.node.value) continue;
+    const v = b.node.value;
+    if (v.type === 'CallExpr' && v.callee && v.callee.type === 'Identifier'
+        && SET_CONSTRUCTORS.has(v.callee.name)) {
+      setDefs.set(name, v);
+    }
+  }
+  if (setDefs.size === 0) return;
+
+  function cloneAst(node: any): any {
+    if (node == null || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map(cloneAst);
+    const copy: Record<string, any> = {};
+    for (const k in node) copy[k] = cloneAst(node[k]);
+    return copy;
+  }
+  function subst(node: any, selfName: string): any {
+    if (node == null || typeof node !== 'object') return node;
+    if (Array.isArray(node)) return node.map((n) => subst(n, selfName));
+    if (node.type === 'Identifier' && node.name !== selfName && setDefs.has(node.name)) {
+      return cloneAst(setDefs.get(node.name));
+    }
+    if (node.type === 'FieldAccess') {
+      return { ...node, object: subst(node.object, selfName) };  // leave .field accessor
+    }
+    const out: Record<string, any> = {};
+    for (const k in node) out[k] = subst(node[k], selfName);
+    return out;
+  }
+
+  for (const [name, b] of bindings) {
+    if (!b || !b.node || !b.node.value) continue;
+    b.node.value = subst(b.node.value, name);
+  }
+}
+
 function buildDerivations(bindings: Map<string, BindingInfo>) {
+  // Inline named set bindings (Uniform(S) → Uniform(interval(…))) before the
+  // lift/classify passes so a set used as a distribution support survives the
+  // cascade-prune instead of dropping its dependent posterior silently.
+  inlineNamedSetBindings(bindings);
+
   // Pre-pass: lift inline subexpressions so every measure-arg position
   // is a bare ref and every value-arg is evaluable. After lifting, the
   // classifier below handles all forms uniformly — there's no special
