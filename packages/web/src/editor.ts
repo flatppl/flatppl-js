@@ -421,6 +421,10 @@
             if (typeof opts.onSave === 'function') opts.onSave();
             return true;
           },
+        }, {
+          key: 'Mod-/',
+          preventDefault: true,
+          run: function () { return toggleLineComment(); },
         }] as any[]).concat(
           bundle.defaultKeymap || [],
           bundle.historyKeymap || [],
@@ -446,6 +450,58 @@
     });
 
     var view = new bundle.EditorView({ state: state, parent: container });
+
+    // Toggle FlatPPL line comments (`#`) on the active line / selection.
+    // Standard editor behaviour: if every non-blank affected line is already
+    // commented, uncomment; otherwise comment. One transaction → one undo
+    // step. No-op in view mode. FlatPPL's line comment is `#`; `%` doc-comments
+    // and `###` block fences are treated as ordinary text (no special-casing).
+    function toggleLineComment(): boolean {
+      if (view.state.readOnly) return false;
+      const state = view.state;
+      const ranges = state.selection.ranges;
+      const lineNums: number[] = [];
+      const seen: Record<number, boolean> = {};
+      for (let r = 0; r < ranges.length; r++) {
+        const fromLine = state.doc.lineAt(ranges[r].from).number;
+        const toLine   = state.doc.lineAt(ranges[r].to).number;
+        for (let ln = fromLine; ln <= toLine; ln++) {
+          if (!seen[ln]) { seen[ln] = true; lineNums.push(ln); }
+        }
+      }
+      if (lineNums.length === 0) return true;
+
+      // Remove only if EVERY non-blank affected line is already commented.
+      let anyNonBlank = false;
+      let allCommented = true;
+      for (let i = 0; i < lineNums.length; i++) {
+        const text = state.doc.line(lineNums[i]).text;
+        const firstNW = text.search(/\S/);
+        if (firstNW < 0) continue;
+        anyNonBlank = true;
+        if (text.charAt(firstNW) !== '#') { allCommented = false; break; }
+      }
+      if (!anyNonBlank) return true;
+
+      const changes: Array<{ from: number; to: number; insert?: string }> = [];
+      for (let i = 0; i < lineNums.length; i++) {
+        const line = state.doc.line(lineNums[i]);
+        const text = line.text;
+        const firstNW = text.search(/\S/);
+        if (allCommented) {
+          if (firstNW < 0 || text.charAt(firstNW) !== '#') continue;
+          const hashPos = line.from + firstNW;
+          const hasSpace = text.charAt(firstNW + 1) === ' ';
+          changes.push({ from: hashPos, to: hashPos + (hasSpace ? 2 : 1), insert: '' });
+        } else {
+          if (firstNW < 0) continue;             // skip blank lines on add
+          changes.push({ from: line.from + firstNW, to: line.from + firstNW, insert: '# ' });
+        }
+      }
+      if (changes.length === 0) return true;
+      view.dispatch({ changes });
+      return true;
+    }
 
     return {
       setSource: function (text: any) {
