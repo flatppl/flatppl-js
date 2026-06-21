@@ -9,6 +9,8 @@
 
 import type { Ctx } from './types';
 import { renderCornerGrid, renderDensityStrips } from './render-density.js';
+import { renderRecordTable } from './render-table.js';
+import { detectGeneratedQuantities, fixedEnvFor } from './generated-quantities.js';
 
 import { showPlotMessage } from './render-frame.js';
 import { esc, formatCount, formatLogTotalmass, formatSampleCount, formatScalar, formatValue } from './util.js';
@@ -104,7 +106,72 @@ export function renderConstantRecord(ctx: Ctx, measure: any, bindingName: string
 }
 
 export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: string, extraToolbarControls: any) {
-  const axes = listScalarAxes(measure);
+  // Detect whether this binding is a bayesupdate posterior. If so,
+  // generated-quantity detection is available and the toolbar
+  // will offer a "Generated" toggle group.
+  const isBayesupdate = !!(
+    ctx.derivationsState &&
+    ctx.derivationsState.derivations &&
+    ctx.derivationsState.derivations[bindingName] &&
+    ctx.derivationsState.derivations[bindingName].kind === 'bayesupdate'
+  );
+
+  // Compute generated-quantity candidates once (stable across rerenders
+  // of the same focused binding). Empty when not a posterior.
+  const genCandidates = isBayesupdate ? detectGeneratedQuantities(ctx, measure) : [];
+
+  // displayMeasure: the measure passed to chart renderers — either the
+  // raw measure (no generated quantities toggled on) or a shallow clone
+  // with toggled generated-quantity fields appended. Cached per
+  // (measure identity, genQuantities list identity) to avoid recomputing
+  // on every rerenderChart call. The cache invalidates when either the
+  // measure or the toggle list reference changes.
+  let _dmCacheMeasure: any = null;
+  let _dmCacheKey: string = '';
+  let _dmCacheResult: any = null;
+
+  function displayMeasure() {
+    const on = (ctx.recordSelection && ctx.recordSelection.genQuantities) || [];
+    const cacheKey = on.slice().sort().join(',');
+    if (_dmCacheMeasure === measure && _dmCacheKey === cacheKey) return _dmCacheResult;
+    if (!on.length) {
+      _dmCacheMeasure = measure;
+      _dmCacheKey = cacheKey;
+      _dmCacheResult = measure;
+      return measure;
+    }
+    const specs = genCandidates.filter(function(s: any) { return on.indexOf(s.name) >= 0; });
+    if (!specs.length) {
+      _dmCacheMeasure = measure;
+      _dmCacheKey = cacheKey;
+      _dmCacheResult = measure;
+      return measure;
+    }
+    // Plain {name: value} env for any fixed-phase constants the toggled
+    // quantities reference — evaluateExprN reads baseEnv via `name in baseEnv`,
+    // so the FixedValues resolver itself won't do (its names live behind .get).
+    const baseEnv = fixedEnvFor(ctx, measure, specs);
+    let result: any;
+    try {
+      result = FlatPPLEngine.generatedQuantities.appendGeneratedQuantities(measure, specs, baseEnv);
+    } catch (e) {
+      try { console.error('[viewer] generated-quantity eval failed:', e); } catch (_) {}
+      result = measure;
+    }
+    _dmCacheMeasure = measure;
+    _dmCacheKey = cacheKey;
+    _dmCacheResult = result;
+    return result;
+  }
+
+  // Axes for toolbar / selection state come from the DERIVED measure
+  // (displayMeasure()). With genQuantities empty this is the raw measure
+  // (unchanged first render); after a toggle it includes the derived
+  // fields, so allGroups, the per-axis Variates dropdown, the corner
+  // grid (filters by recordSelection.selected) and the marginals strips
+  // (filter by recordSelection.marginalGroups) all see them — not just
+  // the Table (which lists displayMeasure's fields directly).
+  const axes = listScalarAxes(displayMeasure());
   if (axes.length === 0) {
     showPlotMessage(ctx, 'No scalar fields to plot for <strong>' + esc(bindingName) + '</strong>.', { hint: true });
     return;
@@ -137,6 +204,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
       mode: 'correlations',
       selected: axes.slice(0, ctx.CORRELATIONS_MAX_AXES).map(function(a: any) { return a.key; }),
       marginalGroups: allGroups.slice(),
+      genQuantities: [],
     };
   } else {
     // Drop any selections that no longer exist (rare — defensive).
@@ -163,6 +231,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
         function(g: any) { return presentGroups[g]; });
       if (ctx.recordSelection!.marginalGroups.length === 0) ctx.recordSelection!.marginalGroups = allGroups.slice();
     }
+    if (!ctx.recordSelection!.genQuantities) ctx.recordSelection!.genQuantities = [];
   }
 
   // chartHostRef captures the chart-area div from the frame, so
@@ -184,18 +253,29 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     chartHostRef.style.gridTemplateColumns = '';
     chartHostRef.style.gridTemplateRows = '';
     chartHostRef.style.gap = '';
-    if (ctx.recordSelection!.mode === 'marginals') {
+    chartHostRef.style.overflow = '';
+    // Use the derived measure (with any toggled generated quantities
+    // appended as extra fields) for all chart renderers.
+    const dm = displayMeasure();
+    if (ctx.recordSelection!.mode === 'table') {
+      renderRecordTable(ctx, chartHostRef, dm, bindingName);
+    } else if (ctx.recordSelection!.mode === 'marginals') {
       // Marginals mode: filter axes by selected groups (group =
       // axis label's prefix before any "[k]"). Default is all
       // groups → full axis list; users uncheck to narrow.
+      // Re-enumerate axes from the DERIVED measure each draw (not the
+      // outer `axes`): the gen-quantity toggle uses the chart-only
+      // rerender, which does NOT recompute the outer `axes`, so a
+      // freshly-toggled quantity is only visible by re-listing `dm` here.
+      const dmAxes = listScalarAxes(dm);
       const selSet: Record<string, boolean> = {};
       (ctx.recordSelection!.marginalGroups || allGroups).forEach(function(g: any) {
         selSet[g] = true;
       });
-      const picked = axes.filter(function(a: any) { return selSet[axisGroupKey(a.label)]; });
-      renderDensityStrips(ctx, chartHostRef, measure, bindingName, picked);
+      const picked = dmAxes.filter(function(a: any) { return selSet[axisGroupKey(a.label)]; });
+      renderDensityStrips(ctx, chartHostRef, dm, bindingName, picked);
     } else {
-      renderCornerGrid(ctx, chartHostRef, measure, bindingName);
+      renderCornerGrid(ctx, chartHostRef, dm, bindingName);
     }
   }
   function rerenderAll() {
@@ -207,8 +287,9 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     const extra = typeof extraToolbarControls === 'function'
       ? extraToolbarControls()
       : extraToolbarControls;
-    const toolbarControls = renderRecordToolbar(ctx, 
-      axes, allGroups, rerenderAll, rerenderChart, extra);
+    const toolbarControls = renderRecordToolbar(ctx,
+      axes, allGroups, rerenderAll, rerenderChart, extra,
+      isBayesupdate ? genCandidates : []);
     renderPlotFrame(ctx, {
       measure: measure,
       toolbarControls: toolbarControls,
@@ -236,7 +317,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
  * mode buttons reflect active state and the selector visibility
  * tracks the mode.
  */
-export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onModeChange: () => void, onSelectionChange: () => void, extraToolbarControls: any) {
+export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onModeChange: () => void, onSelectionChange: () => void, extraToolbarControls: any, genCandidates?: Array<{ name: string; ir: any }>) {
   const bar = document.createDocumentFragment();
 
   // ---- Mode toggle group ----
@@ -277,6 +358,8 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
     'Pairwise corner plot: marginals on the diagonal, joint scatters below'));
   modeGroup.appendChild(makeModeBtn('marginals', 'Marginals',
     'One column per axis with vertical density shading; plots every axis'));
+  modeGroup.appendChild(makeModeBtn('table', 'Table',
+    'Summary statistics table: per-variate mean, std, mode, median, credible interval, ESS, and an inline histogram'));
   bar.appendChild(modeGroup);
 
   // Axis-level selector in correlations mode (per-leaf
@@ -303,10 +386,28 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
     bar.appendChild(renderGroupDropdown(ctx, groups, onSelectionChange));
   }
 
+  // Generated-quantities toggle group — only for bayesupdate posteriors
+  // when there is at least one qualifying deterministic binding. Toggles
+  // default off; toggling on appends derived fields (sharing posterior
+  // logWeights) before chart rendering so they appear as extra variates.
+  if (genCandidates && genCandidates.length > 0) {
+    const sep3 = document.createElement('div');
+    sep3.style.width = '1px';
+    sep3.style.alignSelf = 'stretch';
+    sep3.style.background = 'rgba(255,255,255,0.1)';
+    bar.appendChild(sep3);
+    // Chart-only rerender (onSelectionChange), same as the Variates /
+    // group dropdowns — keeps THIS popup open across clicks. rerenderChart
+    // re-derives the display measure (displayMeasure() is cache-keyed on
+    // genQuantities) and re-enumerates its axes per draw, so a toggled
+    // quantity still appears in Table + Marginals + Correlations.
+    bar.appendChild(renderGenQuantitiesDropdown(ctx, genCandidates, onSelectionChange));
+  }
+
   // Caller-supplied controls (currently: the kernel-sample
   // preset dropdown) sit after the axis selector so the
   // toolbar reads left-to-right as
-  //   [plot style] [axes] [preset] [...N + ESS pinned right by frame]
+  //   [plot style] [axes] [generated] [preset] [...N + ESS pinned right by frame]
   if (extraToolbarControls) bar.appendChild(extraToolbarControls);
   return bar;
 }
@@ -704,6 +805,135 @@ export function renderGroupDropdown(ctx: Ctx, groups: string[], onChange: () => 
 
     const name = document.createElement('span');
     name.textContent = g;
+    name.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+    label.appendChild(name);
+    panel.appendChild(label);
+  });
+
+  btn.addEventListener('click', function(ev) {
+    ev.stopPropagation();
+    const open = panel.style.display !== 'none';
+    panel.style.display = open ? 'none' : 'block';
+    if (!open) {
+      const off = function(ev2: any) {
+        if (panel.contains(ev2.target) || btn.contains(ev2.target)) return;
+        panel.style.display = 'none';
+        document.removeEventListener('click', off, true);
+      };
+      setTimeout(function() {
+        document.addEventListener('click', off, true);
+      }, 0);
+    }
+  });
+
+  return wrap;
+}
+
+/**
+ * Generated-quantities checkbox dropdown for bayesupdate posterior views.
+ * Lists qualifying deterministic bindings (kind:'evaluate', self-refs ⊆
+ * record fields). Toggling on appends the binding as a derived field
+ * (inheriting posterior logWeights) before chart rendering.
+ * Default: all OFF. State lives in ctx.recordSelection!.genQuantities.
+ */
+export function renderGenQuantitiesDropdown(ctx: Ctx, candidates: Array<{ name: string; ir: any }>, onChange: () => void) {
+  const wrap = document.createElement('div');
+  wrap.style.position = 'relative';
+  wrap.style.display = 'inline-flex';
+  wrap.style.alignItems = 'center';
+  wrap.style.gap = '0.4em';
+
+  const hint = document.createElement('span');
+  hint.textContent = 'Generated:';
+  hint.style.opacity = '0.6';
+  wrap.appendChild(hint);
+
+  const btn = document.createElement('button');
+  btn.style.cursor = 'pointer';
+  btn.style.fontSize = '1em';
+  btn.style.padding = '0.2em 0.6em';
+  btn.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
+  btn.style.borderRadius = '3px';
+  btn.style.background = 'var(--vscode-button-secondaryBackground, #3a3d41)';
+  btn.style.color = 'var(--vscode-button-secondaryForeground, #ccc)';
+  btn.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+  function updateBtn() {
+    const on = ctx.recordSelection!.genQuantities || [];
+    btn.textContent = on.length + ' / ' + candidates.length + '  ▾';
+  }
+  updateBtn();
+  wrap.appendChild(btn);
+
+  const panel = document.createElement('div');
+  panel.style.position = 'absolute';
+  panel.style.top = 'calc(100% + 4px)';
+  panel.style.left = '0';
+  panel.style.zIndex = '50';
+  panel.style.minWidth = '12em';
+  panel.style.maxHeight = '20em';
+  panel.style.overflowY = 'auto';
+  panel.style.padding = '0.4em';
+  panel.style.background = 'var(--vscode-editorWidget-background, #252526)';
+  panel.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))';
+  panel.style.borderRadius = '3px';
+  panel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+  panel.style.display = 'none';
+  wrap.appendChild(panel);
+
+  candidates.forEach(function(c) {
+    const label = document.createElement('label');
+    label.style.display = 'flex';
+    label.style.alignItems = 'center';
+    label.style.gap = '0.4em';
+    label.style.padding = '0.2em 0.4em';
+    label.style.cursor = 'pointer';
+    label.style.userSelect = 'none';
+    label.style.borderRadius = '2px';
+    label.addEventListener('mouseenter', function() { label.style.background = 'rgba(255,255,255,0.05)'; });
+    label.addEventListener('mouseleave', function() { label.style.background = ''; });
+
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = (ctx.recordSelection!.genQuantities || []).indexOf(c.name) >= 0;
+    cb.addEventListener('change', function(ev) {
+      ev.stopPropagation();
+      const sel = ctx.recordSelection!;
+      if (!sel.genQuantities) sel.genQuantities = [];
+      if (!sel.selected) sel.selected = [];
+      if (!sel.marginalGroups) sel.marginalGroups = [];
+      const idx = sel.genQuantities.indexOf(c.name);
+      // A scalar generated quantity surfaces as a single axis whose key
+      // and group prefix are both the bare binding name (no "[k]" suffix).
+      // Seed it on-by-default in BOTH the correlations selection
+      // (recordSelection.selected) and the marginals group selection
+      // (recordSelection.marginalGroups) so the new field shows up in
+      // every view, not just the Table. Toggling off removes it from all
+      // three. The selection-reset else-branch in renderRecordMarginals
+      // re-filters these by present axis keys, so stale entries self-heal.
+      if (cb.checked) {
+        if (idx < 0) sel.genQuantities.push(c.name);
+        if (sel.selected.indexOf(c.name) < 0) sel.selected.push(c.name);
+        if (sel.marginalGroups.indexOf(c.name) < 0) sel.marginalGroups.push(c.name);
+      } else {
+        if (idx >= 0) sel.genQuantities.splice(idx, 1);
+        const si = sel.selected.indexOf(c.name);
+        if (si >= 0) sel.selected.splice(si, 1);
+        const mi = sel.marginalGroups.indexOf(c.name);
+        if (mi >= 0) sel.marginalGroups.splice(mi, 1);
+      }
+      updateBtn();
+      // Chart-only rerender (onChange === onSelectionChange) so this dropdown
+      // stays open across clicks, matching the Variates/group dropdowns.
+      // rerenderChart re-derives the measure + re-enumerates axes from it, so
+      // the toggled field shows in Table/Marginals/Correlations without a full
+      // toolbar rebuild. (Trade-off: the outer Variates/group dropdowns, built
+      // once at rerenderAll, don't list the derived field — deselect it here.)
+      onChange();
+    });
+    label.appendChild(cb);
+
+    const name = document.createElement('span');
+    name.textContent = c.name;
     name.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
     label.appendChild(name);
     panel.appendChild(label);

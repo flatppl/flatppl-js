@@ -32,6 +32,54 @@
 'use strict';
 
 (function (globalScope: any) {
+  // One-entry parse memo. Every per-keystroke consumer (binding overlay,
+  // hover, cursor-binding, go-to-def) shares this so a single document
+  // version is parsed + tokenized once, not once per consumer. Keyed by
+  // exact text; replaced when the text changes. processed may be null
+  // (parse failure) — callers already guard for that.
+  let _memoText: string | null = null;
+  let _memoProcessed: any = null;
+  let _memoTokens: any[] | null = null;
+  function parseCached(text: string): { processed: any; tokens: any[] } {
+    if (text === _memoText && _memoTokens !== null) {
+      return { processed: _memoProcessed, tokens: _memoTokens };
+    }
+    const FE = globalScope.FlatPPLEngine;
+    let processed: any = null;
+    let tokens: any[] = [];
+    if (FE) {
+      try { processed = FE.processSource(text); } catch (_) { processed = null; }
+      try { tokens = (FE.tokenize(text).tokens) || []; } catch (_) { tokens = []; }
+    }
+    _memoText = text; _memoProcessed = processed; _memoTokens = tokens;
+    return { processed, tokens };
+  }
+
+  // Fold multi-line `{ … }` regions (FlatPPL's main block delimiter:
+  // module / record bodies). Heuristic depth-count over raw text — does not
+  // special-case braces inside comments/strings (rare; folding is forgiving).
+  function flatpplFold(bundle: any) {
+    return bundle.foldService.of(function (state: any, lineStart: number, lineEnd: number) {
+      const line = state.doc.sliceString(lineStart, lineEnd);
+      const open = line.lastIndexOf('{');
+      if (open < 0) return null;
+      const docStr = state.doc.toString();
+      let depth = 1;
+      for (let i = lineStart + open + 1; i < docStr.length; i++) {
+        const c = docStr.charCodeAt(i);
+        if (c === 123 /* { */) depth++;
+        else if (c === 125 /* } */) {
+          depth--;
+          if (depth === 0) {
+            if (i <= lineEnd) return null;          // closes on the same line — not foldable
+            return { from: lineStart + open + 1, to: i };
+          }
+        }
+      }
+      return null;
+    });
+  }
+
   function computeLineStarts(src: any) {
     const starts = [0];
     for (let i = 0; i < src.length; i++) {
@@ -71,14 +119,10 @@
       const B = FE && FE.builtins;
       if (!FE || !B) return Decoration.none;
       const text = view.state.doc.toString();
+      const { processed, tokens } = parseCached(text);
       let bindings: Set<unknown> | null = null;
-      try {
-        const processed = FE.processSource(text);
-        if (processed && processed.bindings) bindings = new Set(processed.bindings.keys());
-      } catch (_) { bindings = null; }
+      if (processed && processed.bindings) bindings = new Set(processed.bindings.keys());
       if (!bindings) return Decoration.none;
-
-      const tokens = FE.tokenize(text).tokens || [];
       const lineStarts = computeLineStarts(text);
       const ranges: any[] = [];
       for (let i = 0; i < tokens.length; i++) {
@@ -101,7 +145,7 @@
       function (this: any, view: any) {
         this.decorations = bindingOverlay(view);
         this.update = function (this: any, u: any) {
-          if (u.docChanged || u.viewportChanged) {
+          if (u.docChanged) {
             this.decorations = bindingOverlay(u.view);
           }
         };
@@ -132,11 +176,8 @@
 
     return hoverTooltip(function (view: any, pos: number, side: number) {
       const text = view.state.doc.toString();
-      let processed;
-      try { processed = FE.processSource(text); }
-      catch (_) { return null; }
+      const { processed, tokens } = parseCached(text);
       if (!processed || !processed.bindings) return null;
-      const tokens = FE.tokenize(text).tokens || [];
       const lineStarts = computeLineStarts(text);
       // Locate the IDENT token under `pos`. CodeMirror's hover API
       // gives us a `side`: -1 means the caret is on the left edge
@@ -216,6 +257,75 @@
     }, { dark: true });
   }
 
+  // Surface engine diagnostics (tokenizer/parser/analyzer) as CM lint markers.
+  // Reuses parseCached — adds no new parse. CM debounces linter runs itself.
+  function makeLinter(bundle: any) {
+    return bundle.linter(function (view: any) {
+      const text = view.state.doc.toString();
+      const { processed } = parseCached(text);
+      const diags = (processed && processed.diagnostics) || [];
+      if (!diags.length) return [];
+      const lineStarts = computeLineStarts(text);
+      const out: any[] = [];
+      for (let i = 0; i < diags.length; i++) {
+        const d = diags[i];
+        if (!d || !d.loc || !d.loc.start) continue;
+        let from = offsetOf(d.loc.start, lineStarts);
+        let to = d.loc.end ? offsetOf(d.loc.end, lineStarts) : from;
+        from = Math.max(0, Math.min(from, text.length));
+        to = Math.max(0, Math.min(to, text.length));
+        if (to <= from) to = Math.min(from + 1, text.length);
+        const sev = (d.severity === 'warning' || d.severity === 'info') ? d.severity : 'error';
+        out.push({ from: from, to: to, severity: sev, message: String(d.message || 'error') });
+      }
+      return out;
+    });
+  }
+
+  // Identifier completions: in-scope bindings (from parseCached) first, then
+  // FlatPPL builtins from FlatPPLEngine.builtins. Lists may be arrays or Sets.
+  function makeCompletion(bundle: any) {
+    function names(src: any): string[] {
+      if (!src) return [];
+      if (Array.isArray(src)) return src;
+      if (typeof src.forEach === 'function' && typeof src.size === 'number') return Array.from(src as Set<string>);
+      return Object.keys(src);
+    }
+    return bundle.autocompletion({
+      override: [function (context: any) {
+        const word = context.matchBefore(/[A-Za-z_][A-Za-z0-9_]*/);
+        if (!word || (word.from === word.to && !context.explicit)) return null;
+        const seen: Record<string, boolean> = {};
+        const options: any[] = [];
+        function add(list: any, type: string) {
+          const arr = names(list);
+          for (let i = 0; i < arr.length; i++) {
+            const n = arr[i];
+            if (n && !seen[n]) { seen[n] = true; options.push({ label: n, type: type }); }
+          }
+        }
+        // Bindings first (most relevant), then builtins by category.
+        const { processed } = parseCached(context.state.doc.toString());
+        if (processed && processed.bindings) add(Array.from(processed.bindings.keys()), 'variable');
+        const FE = globalScope.FlatPPLEngine;
+        const B = FE && FE.builtins;
+        if (B) {
+          add(B.DISTRIBUTIONS, 'class');
+          add(B.BUILTIN_FUNCTIONS, 'function');
+          add(B.MEASURE_OPS, 'keyword');
+          add(B.MEASURE_PRODUCING, 'keyword');
+          add(B.SPECIAL_OPERATIONS, 'keyword');
+          add(B.CONSTANTS, 'constant');
+          add(B.BOOL_LITERALS, 'constant');
+          add(B.SETS, 'type');
+          add(B.SET_CONSTRUCTORS, 'type');
+        }
+        if (options.length === 0) return null;
+        return { from: word.from, options: options };
+      }],
+    });
+  }
+
   function mountEditor(container: any, opts: any) {
     opts = opts || {};
     const bundle = globalScope.FlatPPLEditorBundle;
@@ -247,8 +357,7 @@
       const FE = globalScope.FlatPPLEngine;
       if (!FE) return;
       const doc = view.state.doc.toString();
-      let processed;
-      try { processed = FE.processSource(doc); } catch (_) { return; }
+      const { processed } = parseCached(doc);
       if (!processed || !processed.bindings || !processed.bindings.has(name)) return;
       const b = processed.bindings.get(name);
       const nameLoc = b && b.nameLoc && b.nameLoc.start;
@@ -310,15 +419,9 @@
       if (!FE) return null;
       const head = view.state.selection.main.head;
       const doc = view.state.doc.toString();
-      let bindings: Set<unknown> | null = null;
-      try {
-        const processed = FE.processSource(doc);
-        if (processed && processed.bindings) {
-          bindings = new Set(processed.bindings.keys());
-        }
-      } catch (_) { return null; }
-      if (!bindings) return null;
-      const tokens = FE.tokenize(doc).tokens || [];
+      const { processed, tokens } = parseCached(doc);
+      if (!processed || !processed.bindings) return null;
+      const bindings = new Set(processed.bindings.keys());
       const lineStarts = computeLineStarts(doc);
       for (let i = 0; i < tokens.length; i++) {
         const tok = tokens[i];
@@ -407,6 +510,10 @@
       bundle.lineNumbers(),
       bundle.highlightActiveLine(),
       bundle.highlightActiveLineGutter(),
+      bundle.bracketMatching(),
+      bundle.codeFolding(),
+      bundle.foldGutter(),
+      flatpplFold(bundle),
       bundle.history(),
       bundle.keymap.of(
         // The Ctrl/Cmd-S binding gets `preventDefault: true` so the
@@ -421,10 +528,16 @@
             if (typeof opts.onSave === 'function') opts.onSave();
             return true;
           },
+        }, {
+          key: 'Mod-/',
+          preventDefault: true,
+          run: function () { return toggleLineComment(); },
         }] as any[]).concat(
           bundle.defaultKeymap || [],
           bundle.historyKeymap || [],
-          bundle.searchKeymap || []
+          bundle.searchKeymap || [],
+          bundle.foldKeymap || [],
+          bundle.completionKeymap || []
         )
       ),
       ...textmateExt,
@@ -433,6 +546,9 @@
       // makeHighlightPlugin's doc comment.
       bundle.Prec.high(makeHighlightPlugin(bundle)),
       makeHoverTooltip(bundle),
+      makeLinter(bundle),
+      makeCompletion(bundle),
+      bundle.lintGutter(),
       flashPlugin,
       makeTheme(bundle),
       bundle.EditorView.domEventHandlers(domEventHandlers),
@@ -446,6 +562,58 @@
     });
 
     var view = new bundle.EditorView({ state: state, parent: container });
+
+    // Toggle FlatPPL line comments (`#`) on the active line / selection.
+    // Standard editor behaviour: if every non-blank affected line is already
+    // commented, uncomment; otherwise comment. One transaction → one undo
+    // step. No-op in view mode. FlatPPL's line comment is `#`; `%` doc-comments
+    // and `###` block fences are treated as ordinary text (no special-casing).
+    function toggleLineComment(): boolean {
+      if (view.state.readOnly) return false;
+      const state = view.state;
+      const ranges = state.selection.ranges;
+      const lineNums: number[] = [];
+      const seen: Record<number, boolean> = {};
+      for (let r = 0; r < ranges.length; r++) {
+        const fromLine = state.doc.lineAt(ranges[r].from).number;
+        const toLine   = state.doc.lineAt(ranges[r].to).number;
+        for (let ln = fromLine; ln <= toLine; ln++) {
+          if (!seen[ln]) { seen[ln] = true; lineNums.push(ln); }
+        }
+      }
+      if (lineNums.length === 0) return true;
+
+      // Remove only if EVERY non-blank affected line is already commented.
+      let anyNonBlank = false;
+      let allCommented = true;
+      for (let i = 0; i < lineNums.length; i++) {
+        const text = state.doc.line(lineNums[i]).text;
+        const firstNW = text.search(/\S/);
+        if (firstNW < 0) continue;
+        anyNonBlank = true;
+        if (text.charAt(firstNW) !== '#') { allCommented = false; break; }
+      }
+      if (!anyNonBlank) return true;
+
+      const changes: Array<{ from: number; to: number; insert?: string }> = [];
+      for (let i = 0; i < lineNums.length; i++) {
+        const line = state.doc.line(lineNums[i]);
+        const text = line.text;
+        const firstNW = text.search(/\S/);
+        if (allCommented) {
+          if (firstNW < 0 || text.charAt(firstNW) !== '#') continue;
+          const hashPos = line.from + firstNW;
+          const hasSpace = text.charAt(firstNW + 1) === ' ';
+          changes.push({ from: hashPos, to: hashPos + (hasSpace ? 2 : 1), insert: '' });
+        } else {
+          if (firstNW < 0) continue;             // skip blank lines on add
+          changes.push({ from: line.from + firstNW, to: line.from + firstNW, insert: '# ' });
+        }
+      }
+      if (changes.length === 0) return true;
+      view.dispatch({ changes });
+      return true;
+    }
 
     return {
       setSource: function (text: any) {

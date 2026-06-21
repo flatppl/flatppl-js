@@ -404,6 +404,32 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     }
   }
 
+  // Loud-fail a pruned posterior. A `bayesupdate` binding left without a
+  // derivation was cascade-pruned because its prior is not the law of the
+  // likelihood's boundary draws — the H1 boundary-conflation scar zone
+  // (flatppl-dev/measure-algebra-audit.md). The engine materialises only
+  // `bayesupdate(L, lawof(draws))` and the disintegration idiom; a hand-built
+  // `joint` prior over free `elementof` params (the spec's own
+  // 06-measure-algebra.md "Posterior construction" example) otherwise vanishes
+  // SILENTLY. Surface it rather than drop it (TODO-flatppl-js §06). Unlike the
+  // routinely-pruned parameterized stochastic variates, a top-level posterior
+  // disappearing is never an intended modelling outcome.
+  for (const [name, b] of bindings) {
+    if (!b || b.type !== 'bayesupdate') continue;
+    if (derivations[name]) continue;
+    diagnostics.push({
+      severity: 'error',
+      message: `Posterior '${name}' (bayesupdate) could not be materialised: its `
+        + `prior is not the law of the likelihood's boundary draws. The engine `
+        + `supports bayesupdate(L, lawof(draws)) and the disintegration idiom `
+        + `(jointchain → disintegrate → likelihoodof → bayesupdate), but not a `
+        + `hand-built joint prior over free elementof parameters (see `
+        + `flatppl-design 06-measure-algebra.md "Posterior construction"; `
+        + `measure-algebra-audit H1). Rebuild the posterior via disintegration.`,
+      loc: bindingLoc(name),
+    });
+  }
+
   // Fixed-phase dead end (mode b). A fixed-phase value computation
   // must end up either resolvable (fixedValues) or classified
   // (derivations); neither means the engine silently gave up on a

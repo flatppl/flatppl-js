@@ -853,11 +853,27 @@
   // lazily on first show; closed on outside-click, Escape, or
   // pane scroll. Actions are computed per-entry from the same
   // metadata renderFolder already has.
+  // Element to restore focus to when the floating menu closes (the
+  // right-clicked tree row, or the tools button). Set on open.
+  let _ctxMenuTrigger: HTMLElement | null = null;
+
+  function menuItemEls(menu: HTMLElement): HTMLElement[] {
+    return Array.prototype.slice.call(
+      menu.querySelectorAll('.tree-ctx-item')) as HTMLElement[];
+  }
+  function focusMenuItemAt(menu: HTMLElement, idx: number): void {
+    const rows = menuItemEls(menu);
+    if (rows.length === 0) return;
+    const n = ((idx % rows.length) + rows.length) % rows.length;  // wrap
+    rows.forEach(function (r, i) { r.tabIndex = i === n ? 0 : -1; });
+    rows[n].focus();
+  }
   let _ctxMenu: HTMLElement | null = null;
   function getTreeContextMenu(): HTMLElement {
     if (_ctxMenu) return _ctxMenu;
     const m = document.createElement('div');
     m.id = 'tree-context-menu';
+    m.setAttribute('role', 'menu');
     m.style.display = 'none';
     document.body.appendChild(m);
     document.addEventListener('mousedown', function (ev: any) {
@@ -870,11 +886,46 @@
     document.addEventListener('keydown', function (ev: any) {
       if (ev.key === 'Escape') hideTreeContextMenu();
     });
+    m.addEventListener('keydown', function (ev: any) {
+      const rows = menuItemEls(m);
+      if (rows.length === 0) return;
+      const active = document.activeElement as HTMLElement;
+      const cur = rows.indexOf(active);
+      if (ev.key === 'ArrowDown') {
+        ev.preventDefault();
+        focusMenuItemAt(m, cur < 0 ? 0 : cur + 1);
+      } else if (ev.key === 'ArrowUp') {
+        ev.preventDefault();
+        focusMenuItemAt(m, cur < 0 ? rows.length - 1 : cur - 1);
+      } else if (ev.key === 'Home') {
+        ev.preventDefault();
+        focusMenuItemAt(m, 0);
+      } else if (ev.key === 'End') {
+        ev.preventDefault();
+        focusMenuItemAt(m, rows.length - 1);
+      } else if (ev.key === 'Enter' || ev.key === ' ') {
+        ev.preventDefault();
+        if (active && rows.indexOf(active) >= 0) active.click();
+      } else if (ev.key === 'Tab') {
+        hideTreeContextMenu();  // let focus proceed naturally
+      }
+      // Escape is handled by the existing document-level keydown.
+    });
     _ctxMenu = m;
     return m;
   }
   function hideTreeContextMenu() {
     if (_ctxMenu) _ctxMenu.style.display = 'none';
+    if (_ctxMenuTrigger) {
+      const t = _ctxMenuTrigger;
+      _ctxMenuTrigger = null;
+      // Only pull focus back if it's still inside the (now-hidden) menu —
+      // otherwise an outside-click that moved focus elsewhere keeps it.
+      if (!_ctxMenu || _ctxMenu.contains(document.activeElement)
+          || document.activeElement === document.body) {
+        try { t.focus(); } catch (_) {}
+      }
+    }
   }
   /** Tools applicable to `path` — appended LAST in menus so the common /
    *  destructive actions stay on top. Grows as more conversions/tools land;
@@ -902,6 +953,8 @@
       const it = items[i];
       const row = document.createElement('div');
       row.className = 'tree-ctx-item';
+      row.setAttribute('role', 'menuitem');
+      row.tabIndex = -1;  // roving tabindex; opener focuses the first row
       row.textContent = it.label;
       row.addEventListener('click', function () {
         hideTreeContextMenu();
@@ -914,6 +967,8 @@
 
   function showTreeContextMenu(ev: any, info: any) {
     const menu = getTreeContextMenu();
+    _ctxMenuTrigger = (ev && ev.currentTarget instanceof HTMLElement)
+      ? ev.currentTarget : null;
 
     const items: Array<{ label: string; action: () => void }> = [];
     items.push({
@@ -968,6 +1023,7 @@
     if (y + rect.height > window.innerHeight) y = window.innerHeight - rect.height - 4;
     menu.style.left = x + 'px';
     menu.style.top  = y + 'px';
+    focusMenuItemAt(menu, 0);
   }
 
   /** Open the editor's tools dropdown (the wrench button) anchored below
@@ -978,6 +1034,7 @@
     if (tools.length === 0) return;
     const menu = getTreeContextMenu();
     renderMenuItems(menu, tools);
+    _ctxMenuTrigger = btn;
     menu.style.display = 'block';
     const br = btn.getBoundingClientRect();
     const mr = menu.getBoundingClientRect();
@@ -987,6 +1044,7 @@
     if (y + mr.height > window.innerHeight) y = br.top - mr.height - 2;  // flip above
     menu.style.left = x + 'px';
     menu.style.top  = y + 'px';
+    focusMenuItemAt(menu, 0);
   }
 
   /** Trigger a browser download of `path`'s source. Resolves the
@@ -1132,6 +1190,11 @@
     if (!t) {
       t = document.createElement('div');
       t.id = 'gallery-toast';
+      // Announce transient outcomes (upload/convert summaries) to screen
+      // readers. polite = wait for a pause; atomic = read the whole message.
+      t.setAttribute('role', 'status');
+      t.setAttribute('aria-live', 'polite');
+      t.setAttribute('aria-atomic', 'true');
       document.body.appendChild(t);
     }
     t.textContent = msg;
