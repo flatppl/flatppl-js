@@ -256,6 +256,31 @@ function flattenNestedVariate(value: any, axes: number[]): { cells: Float64Array
         + depth + ': ' + (typeof node));
     }
     const dim = axes[depth];
+    // A flat MATRIX value arrives row-major rather than as nested JS arrays: a
+    // rank-≥2 Value {shape, data} (an [L, D] matrix latent from
+    // `iid(Normal.(mu,sigma), L)`, threaded by the scorer's flatToScorerPt), or a
+    // flat typed array spanning ≥2 axes. Consume the product of the remaining
+    // axes (one inner block) directly from its data — row-major order matches the
+    // nested-Array peel order. The Value rest is returned RANK-1 so the next peel
+    // reuses the rank-1 handlers below (which own the Value-rest contract); a
+    // rank-1 Value / single-axis typed array is left entirely to those handlers.
+    const isMatrixVal = valueLib.isValue(node) && node.shape.length >= 2;
+    const isMultiAxisF64 = node && node.BYTES_PER_ELEMENT !== undefined
+      && (axes.length - depth >= 2);
+    if (isMatrixVal || isMultiAxisF64) {
+      const flat = isMatrixVal ? node.data : node;
+      let remaining = 1;
+      for (let a = depth; a < axes.length; a++) remaining *= axes[a];
+      if (flat.length < remaining) {
+        throw new Error('density: flattenNestedVariate: wants ' + remaining
+          + ' entries, only ' + flat.length + ' available');
+      }
+      for (let k = 0; k < remaining; k++) cells[idx++] = flat[k];
+      if (flat.length <= remaining) return null;
+      return isMatrixVal
+        ? { shape: [flat.length - remaining], data: flat.subarray(remaining) }
+        : flat.subarray(remaining);
+    }
     // Expect an Array of length >= dim at this level
     if (Array.isArray(node)) {
       if (node.length < dim) {
