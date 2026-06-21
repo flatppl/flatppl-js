@@ -22,9 +22,11 @@ const orchestrator = require('./orchestrator.ts');
 const transforms    = require('./transforms.ts');
 const density       = require('./density.ts');
 const clm           = require('./clm.ts');
+const sampler       = require('./sampler.ts');
 
 const { lowerExpr }             = require('./lower.ts');
 const { DISCRETE_DISTRIBUTIONS } = orchestrator;
+const bijReg                    = require('./bijection-registry.ts');
 
 // Collect transitively-required `draw`-type bindings of `rootName`.
 // Mirrors the DFS dep walk in orchestrator.buildSampleChain (orchestrator.ts:195–265).
@@ -226,11 +228,131 @@ function uniformSupportFromDistIR(distIR: any, bindings: any, fixedValues: any):
   return null;
 }
 
+// Image support of pushfwd(f, base) for a MONOTONE elementary f, derived by
+// probing f over the base support's bounds. The samplers explore an
+// unconstrained ℝ mapped onto the latent's support; if a pushfwd latent's
+// support is left at the default `real` (e.g. the Pareto `pushfwd(0.1·exp,
+// Exponential)` whose true support is [0.1, ∞)), the unconstraining transform
+// is the identity and the chain proposes out-of-support points where the prior
+// density is −∞ — chains stall and SMC's β=0 cloud loses all mass. Returns a
+// support object, or null when the image can't be confidently derived
+// (non-monotone, NaN, unknown base) → the caller falls back to `real` (never
+// worse than the pre-existing default).
+//
+// Symbolic exact-bounds path (hardening): first attempts bijection-registry
+// invertExpr on fnBody to confirm the function is a provably invertible
+// elementary bijection. If successful, the bijectivity check is exact (no
+// heuristic multi-point probe) and finite base bounds yield exact closed image
+// bounds via direct f evaluation. The numeric magnitude-probe is kept as the
+// fallback for infinite base ends and for functions invertExpr cannot handle.
+function pushfwdImageSupport(fnBody: any, paramName: string, baseSupport: any): any {
+  const f = (x: number): number => {
+    try { const v = sampler.evaluateExpr(fnBody, { [paramName]: x }); return typeof v === 'number' ? v : NaN; }
+    catch (_) { return NaN; }
+  };
+  let blo: number, bhi: number;
+  if (baseSupport.kind === 'positive') { blo = 0; bhi = Infinity; }
+  else if (baseSupport.kind === 'interval') { blo = baseSupport.a; bhi = baseSupport.b; }
+  else if (baseSupport.kind === 'real') { blo = -Infinity; bhi = Infinity; }
+  else return null;
+
+  // --- Symbolic exact-bounds path ---
+  // invertExpr with the %local namespace used for fn-body parameters.
+  const freeRef = { name: paramName, ns: '%local' };
+  const outputValue = { kind: 'lit', value: 0 };   // placeholder; only bijectivity matters here
+  const invResult = bijReg.invertExpr({ outputExpr: fnBody, freeRef, outputValue });
+
+  if (invResult != null) {
+    // Function is a provably-invertible elementary bijection.
+    // Determine monotonicity direction with two evaluation points.
+    const xl = Number.isFinite(blo) ? blo : -1;
+    const xh = Number.isFinite(bhi) ? bhi : 1;
+    if (!(xh > xl)) return null;
+    const fLo = f(xl), fHi = f(xh);
+    if (!Number.isFinite(fLo) || !Number.isFinite(fHi)) return null;
+    const inc = fHi > fLo;
+
+    // Image bound at one base end. Finite base end → exact f(end). Infinite
+    // base end → numeric magnitude-probe (same heuristic as the fallback path,
+    // retained because determining the asymptotic limit symbolically would
+    // require annotating the ELEMENTARY_BIJECTIONS table with limit behaviour).
+    function imageEndSym(bound: number, dir: number): any {
+      if (Number.isFinite(bound)) {
+        const v = f(bound);
+        return Number.isFinite(v) ? { v } : null;
+      }
+      const a = f(dir * 15), b = f(dir * 30), c = f(dir * 60);
+      if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c)) return { inf: dir };
+      const d1 = Math.abs(b - a), d2 = Math.abs(c - b);
+      if (d2 < d1 * 0.5 && d2 < 1e-6) return { v: c };   // finite asymptote
+      return { inf: c >= a ? +1 : -1 };
+    }
+
+    const atLo = imageEndSym(blo, -1);
+    const atHi = imageEndSym(bhi, +1);
+    if (atLo == null || atHi == null) return null;
+
+    const lowImg = inc ? atLo : atHi;
+    const highImg = inc ? atHi : atLo;
+    const lowInf = ('inf' in lowImg), highInf = ('inf' in highImg);
+    if (!lowInf && !highInf) {
+      return (highImg.v > lowImg.v) ? { kind: 'interval', a: lowImg.v, b: highImg.v } : null;
+    }
+    if (!lowInf && highInf) {
+      return (Math.abs(lowImg.v) < 1e-12) ? { kind: 'positive' } : { kind: 'greaterThan', lo: lowImg.v };
+    }
+    if (lowInf && !highInf) {
+      return (Math.abs(highImg.v) < 1e-12) ? { kind: 'real' } : { kind: 'lessThan', hi: highImg.v };
+    }
+    return { kind: 'real' };   // both ends infinite
+  }
+
+  // --- Numeric fallback path (for functions invertExpr cannot handle) ---
+  // Monotonicity over the base support (finite proxies for ±∞).
+  const xl = Number.isFinite(blo) ? blo : -30;
+  const xh = Number.isFinite(bhi) ? bhi : 30;
+  if (!(xh > xl)) return null;
+  const vals = [0, 0.25, 0.5, 0.75, 1].map((t) => f(xl + (xh - xl) * t));
+  if (!vals.every(Number.isFinite)) return null;
+  let inc = true, dec = true;
+  for (let i = 1; i < vals.length; i++) {
+    if (!(vals[i] > vals[i - 1])) inc = false;
+    if (!(vals[i] < vals[i - 1])) dec = false;
+  }
+  if (!inc && !dec) return null;   // non-monotone → no 1-D interval image
+
+  // Image bound at one base end. Finite base end → closed f(end). Infinite base
+  // end → converging (finite asymptote, e.g. exp(−∞)=0) vs diverging (±∞),
+  // judged by whether |Δf| collapses across growing magnitudes.
+  function imageEnd(bound: number, dir: number): any {
+    if (Number.isFinite(bound)) return { v: f(bound) };
+    const a = f(dir * 15), b = f(dir * 30), c = f(dir * 60);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || !Number.isFinite(c)) return { inf: dir };
+    const d1 = Math.abs(b - a), d2 = Math.abs(c - b);
+    if (d2 < d1 * 0.5 && d2 < 1e-6) return { v: c };   // finite asymptote
+    return { inf: c >= a ? +1 : -1 };
+  }
+  const atLo = imageEnd(blo, -1), atHi = imageEnd(bhi, +1);
+  const lowImg = inc ? atLo : atHi;   // image lower end ← base lower end iff increasing
+  const highImg = inc ? atHi : atLo;
+  const lowInf = ('inf' in lowImg), highInf = ('inf' in highImg);
+  if (!lowInf && !highInf) {
+    return (highImg.v > lowImg.v) ? { kind: 'interval', a: lowImg.v, b: highImg.v } : null;
+  }
+  if (!lowInf && highInf) {
+    return (Math.abs(lowImg.v) < 1e-12) ? { kind: 'positive' } : { kind: 'greaterThan', lo: lowImg.v };
+  }
+  if (lowInf && !highInf) {
+    return (Math.abs(highImg.v) < 1e-12) ? { kind: 'real' } : { kind: 'lessThan', hi: highImg.v };
+  }
+  return { kind: 'real' };   // both ends infinite
+}
+
 // Walk the derivation chain starting at `name` and return support info.
 // Returns { isIid, dims, elementBaseName } for an iid latent, or a support
-// object { kind: 'real'|'positive'|'interval', a?, b? } for a scalar.
-// `ctx` (optional) supplies bindings/fixedValues so a Uniform leaf's interval
-// bounds can be resolved; without it, literal-bound Uniforms still resolve.
+// object { kind: 'real'|'positive'|'interval'|'greaterThan'|'lessThan', … } for
+// a scalar. `ctx` (optional) supplies bindings/fixedValues so a Uniform leaf's
+// interval bounds resolve AND enables the pushfwd-image-support derivation.
 function walkDerivChain(name: string, derivations: any, ctx?: any): any {
   const visited = new Set<string>();
   let cur: string = name;
@@ -242,6 +364,21 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
     if (d.kind === 'normalize') { cur = d.from; continue; }
     if (d.kind === 'iid') {
       return { isIid: true, dims: d.dims as number[], elementBaseName: d.from as string };
+    }
+    if (d.kind === 'pushfwd') {
+      // Latent support = image of the base support under f. Without bindings
+      // (no fn body) or for a non-derivable image, fall back to real.
+      const bindings = ctx && ctx.bindings;
+      const fb = bindings && bindings.get(d.fnRef);
+      if (fb && fb.ir && fb.ir.kind === 'call' && fb.ir.op === 'functionof'
+          && Array.isArray(fb.ir.params) && fb.ir.params.length === 1 && fb.ir.body) {
+        const baseSupport = walkDerivChain(d.from, derivations, ctx);
+        if (baseSupport && baseSupport.kind && !baseSupport.isIid) {
+          const img = pushfwdImageSupport(fb.ir.body, fb.ir.params[0], baseSupport);
+          if (img) return img;
+        }
+      }
+      return { kind: 'real' };
     }
     if (d.kind === 'truncate') {
       const s = d.setDescr;
@@ -301,24 +438,53 @@ function collectDrawNames(rootName: string, ctx: any): string[] {
   return out;
 }
 
+// Resolve the prior's latent SOURCES as { latentName, measureName } pairs.
+// `latentName` is the free-variate name the kernel and the point record key on;
+// `measureName` is the binding whose measure scores that variate. They differ
+// only for a joint-of-distributions prior (see below); on the canonical draw
+// path the mapping is identity.
+//
+//   • Canonical draw path: prior = lawof(record-of-draws). Each stochastic
+//     `~` draw transitively feeding the prior IS both the latent and its own
+//     measure (e.g. sigma2 ~ InverseGamma → sigma2 scores sigma2).
+//
+//   • Joint-of-distributions prior: prior = joint(theta1 = D1, theta2 = D2, …)
+//     built directly from distributions, with the variates supplied as
+//     `elementof` boundary inputs (06-measure-algebra.md §joint — "the keyword
+//     form names the component variates"; those named variates are what
+//     bayesupdate combines with the like-named kernel inputs). This classifies
+//     as a `record`-kind derivation whose fields map each variate LABEL to the
+//     distribution binding. There are no `~` draws, so the latents are the field
+//     labels and each label's measure is the binding it points at.
+function priorLatentSources(d: any, ctx: any): Array<{ latentName: string; measureName: string }> {
+  const draws = collectDrawNames(d.from, ctx);
+  if (draws.length > 0) return draws.map((nm) => ({ latentName: nm, measureName: nm }));
+  const der = (ctx.derivations || {})[d.from];
+  if (der && der.kind === 'record' && der.fields && typeof der.fields === 'object') {
+    return Object.keys(der.fields).map((label) => ({ latentName: label, measureName: der.fields[label] }));
+  }
+  return [];
+}
+
 function enumerateLatents(d: any, ctx: any): any[] {
-  // Latents are the prior's stochastic draws (transitive), not the kernel's
-  // parametric inputs. d.from is the prior (a lawof binding); walk its deps.
-  const drawNames: string[] = collectDrawNames(d.from, ctx);
+  // Latents are the prior's free variates — the stochastic draws on the
+  // canonical path, or the joint's named fields for a joint-of-distributions
+  // prior. priorLatentSources resolves both to { latentName, measureName }.
+  const sources = priorLatentSources(d, ctx);
   const derivations = ctx.derivations || {};
   const result: any[] = [];
 
   const { recognizeCompositeIidDraw } = require('./composite-prior.ts');
 
-  for (const name of drawNames) {
-    const info = walkDerivChain(name, derivations, ctx);
+  for (const { latentName, measureName } of sources) {
+    const info = walkDerivChain(measureName, derivations, ctx);
 
     if (info && info.isIid) {
       // Vector latent
       const dims: number[] = info.dims || [1];
       const totalDim = dims.reduce((a: number, b: number) => a * b, 1);
       const support = elementSupportOf(info.elementBaseName, derivations, ctx);
-      result.push({ name, shape: { kind: 'vector', dims: [totalDim] }, support });
+      result.push({ name: latentName, measureName, shape: { kind: 'vector', dims: [totalDim] }, support });
       continue;
     }
 
@@ -326,17 +492,17 @@ function enumerateLatents(d: any, ctx: any): any[] {
     // an iid block (e.g. p ~ beta_row_K.(a,b), a [G,N] matrix of Betas). The
     // elementwise support comes from the inner builtin distribution; the total
     // size is determined from the materialised prior pool in buildModelView.
-    const comp = recognizeCompositeIidDraw(name, ctx);
+    const comp = recognizeCompositeIidDraw(measureName, ctx);
     if (comp) {
       let support: any;
       try { support = transforms.supportOf(comp.distOp, {}); } catch (_) { support = { kind: 'real' }; }
-      result.push({ name, shape: { kind: 'vector', dims: [0], fromPool: true }, support });
+      result.push({ name: latentName, measureName, shape: { kind: 'vector', dims: [0], fromPool: true }, support });
       continue;
     }
 
     // Scalar latent — support from chain walk
     const support = info || { kind: 'real' };
-    result.push({ name, shape: { kind: 'scalar' }, support });
+    result.push({ name: latentName, measureName, shape: { kind: 'scalar' }, support });
   }
 
   return result;
@@ -369,7 +535,7 @@ function detectGaussianPrior(d: any, ctx: any): Record<string, { mu: number; sig
   for (const l of latents) {
     if (l.discrete) return null;
     if (!(l.support && l.support.kind === 'real')) return null;   // Normal latents are real-support
-    const dist = leafSampleDist(l.name, derivations);
+    const dist = leafSampleDist(l.measureName || l.name, derivations);
     if (!dist || dist.op !== 'Normal') return null;
     let muIR: any, sigIR: any;
     const kw = dist.kwargs || dist.kwargIRs;
@@ -383,4 +549,4 @@ function detectGaussianPrior(d: any, ctx: any): Record<string, { mu: number; sig
   return Object.keys(out).length > 0 ? out : null;
 }
 
-module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents, collectDrawNames, detectGaussianPrior, uniformSupportFromDistIR };
+module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents, collectDrawNames, priorLatentSources, detectGaussianPrior, uniformSupportFromDistIR };

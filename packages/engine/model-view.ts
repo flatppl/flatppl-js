@@ -100,7 +100,11 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   for (const l of leafLatents) {
     let pool: any = null;
     try {
-      const m: any = await ctx.getMeasure(l.name);
+      // The latent's prior pool comes from its measure-source binding. On the
+      // draw path that is the latent name; for a joint-of-distributions prior
+      // the latent name is an `elementof` boundary input with no measure, so
+      // we sample the field's distribution binding (l.measureName) instead.
+      const m: any = await ctx.getMeasure(l.measureName || l.name);
       const s = m && (m.samples || (m.value && m.value.data));
       if (s && s.length > 0) {
         // Per-atom size = product of all but the leading (atom) axis.
@@ -175,17 +179,22 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   // 4. Async setup: build logPi / logPiBatch / priorLikBatch / probePrior.
   const { logPi, logPiBatch, priorLikBatch, probePrior } = await buildLogPi(ctx, posteriorDeriv);
 
-  // 4a. Prior-tractability probe. MCMC/AMIS need to SCORE the prior; if a draw's
-  //     density is a static error (e.g. an unannotated pushfwd, spec §06) the
-  //     samplers would otherwise run stuck chains on a silent −∞. Probe once at
-  //     an in-support point (pool atom 0) and refuse with the reason — pointing
-  //     at backend 'is', which forward-samples the prior instead of scoring it.
-  try {
+  // 4a. Prior-tractability probe. Build a probe point from every latent that HAS
+  //     a pool (pool atom 0); latents without a pool are skipped individually but
+  //     MUST NOT suppress the probe of their pooled siblings. probePrior iterates
+  //     ALL draw names and continues when pt[nm] === undefined, so passing all
+  //     pooled latents in one combined point is sufficient: it scores each pooled
+  //     latent's measure (providing its upstream deps in the env via buildEnv)
+  //     while silently skipping the pool-less ones. A static-error prior
+  //     (unannotated non-bijection pushfwd) then refuses loudly instead of running
+  //     stuck chains on a silent −∞.
+  {
     const probePt: Record<string, any> = {};
-    let havePools = leafLatents.length > 0;
+    let anyPool = false;
     for (let li = 0; li < leafLatents.length; li++) {
       const l = leafLatents[li], pool = priorPools[li];
-      if (!pool) { havePools = false; break; }
+      if (!pool) continue;
+      anyPool = true;
       if (l.shape.kind === 'scalar') { probePt[l.name] = pool.samples[0]; }
       else {
         const d = pool.stride; const v = new Float64Array(d);
@@ -193,14 +202,18 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
         probePt[l.name] = v;
       }
     }
-    if (havePools) probePrior(probePt);
-  } catch (err: any) {
-    const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'mh';
-    const msg = err && err.message ? err.message : String(err);
-    throw new Error(
-      `backend '${backend}': ${msg}. MCMC/AMIS must score the prior; use `
-      + `backend 'is' (which forward-samples the prior rather than scoring it), `
-      + `or annotate the offending transform with bijection(f, f_inv, logvolume).`);
+    if (anyPool) {
+      try {
+        probePrior(probePt);
+      } catch (err: any) {
+        const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'mh';
+        const msg = err && err.message ? err.message : String(err);
+        throw new Error(
+          `backend '${backend}': ${msg}. MCMC/AMIS must score the prior; use `
+          + `backend 'is' (which forward-samples the prior rather than scoring it), `
+          + `or annotate the offending transform with bijection(f, f_inv, logvolume).`);
+      }
+    }
   }
 
   // Build `nWalkers` initial unconstrained positions from prior draws.

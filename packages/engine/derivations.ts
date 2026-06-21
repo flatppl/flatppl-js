@@ -3289,8 +3289,40 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         };
         if (bindings) {
           const fBinding = bindings.get(d.fnRef);
-          const bijMeta = fBinding && fBinding.bijection
+          let bijMeta = fBinding && fBinding.bijection
             ? resolveBijectionMeta(fBinding.bijection, bindings) : null;
+          // Spec §06 "Engine contract for pushfwd density evaluation", case 1
+          // (known-bijection registry): exp/log, affine from add/sub/neg/mul/
+          // divide (positive scaling), pow with literal exponent — a conforming
+          // engine MUST evaluate these analytically WITHOUT a bijection(...)
+          // annotation. When f is a plain `fn` (no annotation), try to invert
+          // its straight-line body symbolically (bijection-registry.invertExpr,
+          // the same machinery mc-recipe uses). Success → synthesise the same
+          // { fInv, logVolume } metadata an explicit annotation would produce,
+          // so density.walkPushfwd scores it; failure (non-elementary, or the
+          // free var appears more than once) leaves bijMeta null → walkPushfwd
+          // raises the case-3 "requires a bijection annotation" static error.
+          if (!bijMeta && fBinding && fBinding.ir && fBinding.ir.kind === 'call'
+              && fBinding.ir.op === 'functionof'
+              && Array.isArray(fBinding.ir.params) && fBinding.ir.params.length === 1
+              && fBinding.ir.body) {
+            const holeName = fBinding.ir.params[0];
+            const FINV_PARAM = '__pf_y';
+            const bijReg = require('./bijection-registry.ts');
+            const inv = bijReg.invertExpr({
+              outputExpr: fBinding.ir.body,
+              freeRef: { name: holeName },
+              outputValue: { kind: 'ref', ns: 'self', name: FINV_PARAM },
+            });
+            if (inv) {
+              // fInv body is in terms of FINV_PARAM (= y); logVolume (forward
+              // LADJ) is in terms of holeName (= the preimage x).
+              bijMeta = {
+                fInv: { body: inv.inverseIR, paramName: FINV_PARAM },
+                logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName },
+              };
+            }
+          }
           if (bijMeta) out.bijection = bijMeta;
         }
         return out;

@@ -147,12 +147,19 @@ lp = logdensityof(T, 3.0)
 // Non-bijection pushfwd in density mode: clear error
 // =====================================================================
 
-test('density: pushfwd of a plain (non-bijection) function raises a clear error', async () => {
-  // Sampling works for any f; density requires bijection metadata to
-  // know the inverse + Jacobian. We expect a descriptive error.
+test('density: pushfwd of a genuinely non-invertible function raises a clear error', async () => {
+  // Spec §06 case 1 (known-bijection registry) — exp/log, affine, pow with
+  // literal exponent — ARE auto-derived without annotation (see
+  // pushfwd-elementary-density.test.ts). Case 3 is the residual: a function
+  // that is neither a registry bijection nor a structural projection is a
+  // static error unless wrapped in bijection(...). `z -> z*z` (x²) is
+  // non-injective on ℝ — the free var appears in both factors, so invertExpr
+  // refuses (free var in >1 arg) — and its pushforward density must still
+  // error descriptively. (`fn(_ * _)` would be a TWO-arg function, not x².)
   const ctx = makeCtx(`
 M = Normal(mu = 0.0, sigma = 1.0)
-T = pushfwd(fn(exp(_)), M)
+sq = z -> z * z
+T = pushfwd(sq, M)
 lp = logdensityof(T, 1.5)
 `);
   await assert.rejects(
