@@ -282,6 +282,50 @@
     });
   }
 
+  // Identifier completions: in-scope bindings (from parseCached) first, then
+  // FlatPPL builtins from FlatPPLEngine.builtins. Lists may be arrays or Sets.
+  function makeCompletion(bundle: any) {
+    function names(src: any): string[] {
+      if (!src) return [];
+      if (Array.isArray(src)) return src;
+      if (typeof src.forEach === 'function' && typeof src.size === 'number') return Array.from(src as Set<string>);
+      return Object.keys(src);
+    }
+    return bundle.autocompletion({
+      override: [function (context: any) {
+        const word = context.matchBefore(/[A-Za-z_][A-Za-z0-9_]*/);
+        if (!word || (word.from === word.to && !context.explicit)) return null;
+        const seen: Record<string, boolean> = {};
+        const options: any[] = [];
+        function add(list: any, type: string) {
+          const arr = names(list);
+          for (let i = 0; i < arr.length; i++) {
+            const n = arr[i];
+            if (n && !seen[n]) { seen[n] = true; options.push({ label: n, type: type }); }
+          }
+        }
+        // Bindings first (most relevant), then builtins by category.
+        const { processed } = parseCached(context.state.doc.toString());
+        if (processed && processed.bindings) add(Array.from(processed.bindings.keys()), 'variable');
+        const FE = globalScope.FlatPPLEngine;
+        const B = FE && FE.builtins;
+        if (B) {
+          add(B.DISTRIBUTIONS, 'class');
+          add(B.BUILTIN_FUNCTIONS, 'function');
+          add(B.MEASURE_OPS, 'keyword');
+          add(B.MEASURE_PRODUCING, 'keyword');
+          add(B.SPECIAL_OPERATIONS, 'keyword');
+          add(B.CONSTANTS, 'constant');
+          add(B.BOOL_LITERALS, 'constant');
+          add(B.SETS, 'type');
+          add(B.SET_CONSTRUCTORS, 'type');
+        }
+        if (options.length === 0) return null;
+        return { from: word.from, options: options };
+      }],
+    });
+  }
+
   function mountEditor(container: any, opts: any) {
     opts = opts || {};
     const bundle = globalScope.FlatPPLEditorBundle;
@@ -492,7 +536,8 @@
           bundle.defaultKeymap || [],
           bundle.historyKeymap || [],
           bundle.searchKeymap || [],
-          bundle.foldKeymap || []
+          bundle.foldKeymap || [],
+          bundle.completionKeymap || []
         )
       ),
       ...textmateExt,
@@ -502,6 +547,7 @@
       bundle.Prec.high(makeHighlightPlugin(bundle)),
       makeHoverTooltip(bundle),
       makeLinter(bundle),
+      makeCompletion(bundle),
       bundle.lintGutter(),
       flashPlugin,
       makeTheme(bundle),
