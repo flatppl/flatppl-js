@@ -55,6 +55,31 @@
     return { processed, tokens };
   }
 
+  // Fold multi-line `{ … }` regions (FlatPPL's main block delimiter:
+  // module / record bodies). Heuristic depth-count over raw text — does not
+  // special-case braces inside comments/strings (rare; folding is forgiving).
+  function flatpplFold(bundle: any) {
+    return bundle.foldService.of(function (state: any, lineStart: number, lineEnd: number) {
+      const line = state.doc.sliceString(lineStart, lineEnd);
+      const open = line.lastIndexOf('{');
+      if (open < 0) return null;
+      const docStr = state.doc.toString();
+      let depth = 1;
+      for (let i = lineStart + open + 1; i < docStr.length; i++) {
+        const c = docStr.charCodeAt(i);
+        if (c === 123 /* { */) depth++;
+        else if (c === 125 /* } */) {
+          depth--;
+          if (depth === 0) {
+            if (i <= lineEnd) return null;          // closes on the same line — not foldable
+            return { from: lineStart + open + 1, to: i };
+          }
+        }
+      }
+      return null;
+    });
+  }
+
   function computeLineStarts(src: any) {
     const starts = [0];
     for (let i = 0; i < src.length; i++) {
@@ -416,6 +441,10 @@
       bundle.lineNumbers(),
       bundle.highlightActiveLine(),
       bundle.highlightActiveLineGutter(),
+      bundle.bracketMatching(),
+      bundle.codeFolding(),
+      bundle.foldGutter(),
+      flatpplFold(bundle),
       bundle.history(),
       bundle.keymap.of(
         // The Ctrl/Cmd-S binding gets `preventDefault: true` so the
@@ -437,7 +466,8 @@
         }] as any[]).concat(
           bundle.defaultKeymap || [],
           bundle.historyKeymap || [],
-          bundle.searchKeymap || []
+          bundle.searchKeymap || [],
+          bundle.foldKeymap || []
         )
       ),
       ...textmateExt,
