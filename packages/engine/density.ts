@@ -1718,12 +1718,23 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   let anyAtomDep = false;
   for (let pi = 0; pi < paramNames.length; pi++) {
     const pIR = paramIRs[pi];
-    const usesAtom = _exprUsesAny(pIR, refNames);
+    const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
+    paramVals[pi] = v;
+    // usesAtom: the param varies per atom (so collectionAxesOf strips the
+    // leading N axis and the per-atom loop drives it). Static signal = the
+    // expression references an atom-batched refArrays name. But a derived
+    // per-atom param can be threaded via baseEnv instead — e.g. the IS
+    // likelihood's `p = logit_p.(…)` over a per-atom (matrix/vector) latent,
+    // which the static refArrays scan misses — yielding axes=[N, …] and a
+    // shared [9]-observation mismatch. So ALSO treat a rank-≥2 value whose
+    // leading axis is the atom axis as atom-batched: that is unambiguous (a
+    // genuine collection arg would be [K, D] with K≠N). Rank-1 [N] stays on the
+    // static signal alone, preserving the K===N collection disambiguation.
+    const usesAtom = _exprUsesAny(pIR, refNames)
+      || (valueLib.isValue(v) && v.shape.length >= 2 && valueLib.isAtomBatched(v, N));
     perAtomFlags[pi] = usesAtom;
     paramUsesAtom[pi] = usesAtom;
     if (usesAtom) anyAtomDep = true;
-    const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
-    paramVals[pi] = v;
     let access: (i: number, j: number) => number;
     if (typeof v === 'number') {
       const val = +v;
