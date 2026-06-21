@@ -201,3 +201,15 @@ test('freedmanDiaconisHistogram: weighted quantile-based trim ignores low-weight
   // nearly zero weight so it's well outside the trim range.
   assert.ok(r.support[1] < 100, `hi support = ${r.support[1]} should be << 1000`);
 });
+
+test('normaliseWeights and weightedQuantileSorted are exported and correct', () => {
+  const h = require('../histogram.ts');
+  assert.equal(typeof h.normaliseWeights, 'function');
+  assert.equal(typeof h.weightedQuantileSorted, 'function');
+  // Uniform weights over [0,1,2,3,4]: median ~= 2.
+  const w = h.normaliseWeights(new Float64Array([0, 0, 0, 0, 0])); // logweights all 0 → uniform
+  let sum = 0; for (const x of w) sum += x;
+  assert.ok(Math.abs(sum - 1) < 1e-12);
+  const med = h.weightedQuantileSorted(new Float64Array([0, 1, 2, 3, 4]), w, 0.5);
+  assert.ok(med >= 1.5 && med <= 2.5, `median ${med}`);
+});

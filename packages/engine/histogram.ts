@@ -321,5 +321,7 @@ module.exports = {
   freedmanDiaconisHistogram,
   integerHistogram,
   quantileSorted,
+  weightedQuantileSorted,
+  normaliseWeights,
   meanSd,
 };
