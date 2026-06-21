@@ -56,12 +56,60 @@ test('Uniform(interval) latent keeps its declared bounds, not [0,1]', async () =
   assert.ok(Math.abs(sigmaAtZero - 5.25) < 1e-9, `midpoint 5.25 (got ${sigmaAtZero})`);
 });
 
-test('Uniform(interval) posterior explores above 1 (data scale ≈ 5)', async () => {
+test('Uniform(interval) posterior explores the full [0.5,10] support, not [0,1]', async () => {
   const { ctx } = ctxFor(SRC, 4000);
   const m = await ctx.getMeasure('posterior');
   const fld = m.fields && m.fields.sigma;
   assert.ok(fld && fld.samples && fld.samples.length > 0, 'sigma samples present');
+  const s = fld.samples;
+
   let mx = -Infinity;
-  for (const v of fld.samples) if (v > mx) mx = v;
-  assert.ok(mx > 1.0, `posterior sigma should reach above 1, got max ${mx}`);
+  let above1 = 0;
+  for (const v of s) { if (v > mx) mx = v; if (v > 1) above1++; }
+
+  // Importance-weighted posterior mean (the measure carries logWeights).
+  const lw = m.logWeights || new Array(s.length).fill(0);
+  let lwMax = -Infinity;
+  for (const v of lw) if (v > lwMax) lwMax = v;
+  let z = 0;
+  for (const v of lw) z += Math.exp(v - lwMax);
+  let mean = 0;
+  for (let i = 0; i < s.length; i++) mean += (Math.exp(lw[i] - lwMax) / z) * s[i];
+
+  // The old [0,1] default made all three of these impossible: every sample was
+  // < 1, so mean < 1, the fraction above 1 was 0, and the max could not pass 1.
+  // Data scale ≈ 5 ⇒ posterior concentrates well above 1 and reaches toward the
+  // true upper bound 10 (thresholds are loose vs the seed values mean≈6.2,
+  // frac>1≈0.95, max≈10 — they pin the regression, not exact draws).
+  assert.ok(mean > 3.0, `posterior sigma mean should be well above 1, got ${mean}`);
+  assert.ok(above1 / s.length > 0.7, `most samples should exceed 1, got ${above1 / s.length}`);
+  assert.ok(mx > 8.0, `posterior sigma should reach toward the upper bound 10, got max ${mx}`);
+});
+
+// --- Unit coverage for the bounds extractor (model-spec.uniformSupportFromDistIR).
+// Pins finding #3: a Uniform whose support is NOT a finite interval must return
+// null (caller refuses / falls back) — never silently a [0,1] interval.
+const lit = (v: number) => ({ kind: 'lit', value: v, numType: 'real' });
+const interval = (lo: number, hi: number) => ({ kind: 'call', op: 'interval', args: [lit(lo), lit(hi)] });
+const uni = (supIR: any) => ({ op: 'Uniform', args: [supIR] });
+const supOf = (distIR: any) => modelSpec.uniformSupportFromDistIR(distIR, new Map(), new Map());
+
+test('uniformSupportFromDistIR: finite interval → its bounds', () => {
+  assert.deepEqual(supOf(uni(interval(0.1, 20))), { kind: 'interval', a: 0.1, b: 20 });
+  // kwargs.support spelling is equivalent to the positional arg.
+  assert.deepEqual(
+    supOf({ op: 'Uniform', kwargs: { support: interval(0.1, 20) }, args: [] }),
+    { kind: 'interval', a: 0.1, b: 20 });
+});
+
+test('uniformSupportFromDistIR: unitinterval const → [0,1]', () => {
+  assert.deepEqual(supOf(uni({ kind: 'const', name: 'unitinterval' })), { kind: 'interval', a: 0, b: 1 });
+});
+
+test('uniformSupportFromDistIR: improper / degenerate / missing → null (no silent [0,1])', () => {
+  assert.equal(supOf(uni({ kind: 'const', name: 'posreals' })), null); // half-line: infinite
+  assert.equal(supOf(uni({ kind: 'const', name: 'reals' })), null);     // whole line: infinite
+  assert.equal(supOf(uni(interval(20, 0.1))), null);                    // reversed (hi < lo)
+  assert.equal(supOf(uni(interval(5, 5))), null);                       // degenerate (zero width)
+  assert.equal(supOf({ op: 'Uniform', args: [] }), null);               // missing support
 });

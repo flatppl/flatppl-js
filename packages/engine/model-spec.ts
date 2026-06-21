@@ -207,19 +207,21 @@ function uniformSupportFromDistIR(distIR: any, bindings: any, fixedValues: any):
   const supIR = (distIR.kwargs && distIR.kwargs.support)
     || (Array.isArray(distIR.args) && distIR.args.length > 0 ? distIR.args[0] : null);
   if (!supIR) return null;
-  if (supIR.kind === 'const' && supIR.name === 'unitinterval') {
-    return { kind: 'interval', a: 0, b: 1 };
-  }
-  if (supIR.kind === 'call' && supIR.op === 'interval'
-      && Array.isArray(supIR.args) && supIR.args.length === 2) {
-    try {
-      const fv = fixedValues || new Map();
-      const lo = orchestrator.resolveIRToValue(supIR.args[0], bindings, fv);
-      const hi = orchestrator.resolveIRToValue(supIR.args[1], bindings, fv);
-      if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
-        return { kind: 'interval', a: lo, b: hi };
-      }
-    } catch (_) { /* fall through to null */ }
+  const fv = fixedValues || new Map();
+  let bounds: [number, number] | null = null;
+  try {
+    // Shared region parser (transforms.regionBounds) recognises interval(...)
+    // and the region consts; endpoints resolve in the orchestrator's context.
+    bounds = transforms.regionBounds(
+      supIR, (a: any) => orchestrator.resolveIRToValue(a, bindings, fv));
+  } catch (_) { return null; }       // unresolvable endpoint
+  if (!bounds) return null;          // not a recognised region
+  const [lo, hi] = bounds;
+  // A Uniform needs a finite, non-degenerate interval (0 < λ(S) < ∞); a
+  // half-line/real region (posreals, reals) is improper — fall back rather
+  // than hand the transform infinite bounds.
+  if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
+    return { kind: 'interval', a: lo, b: hi };
   }
   return null;
 }
@@ -381,4 +383,4 @@ function detectGaussianPrior(d: any, ctx: any): Record<string, { mu: number; sig
   return Object.keys(out).length > 0 ? out : null;
 }
 
-module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents, collectDrawNames, detectGaussianPrior };
+module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents, collectDrawNames, detectGaussianPrior, uniformSupportFromDistIR };

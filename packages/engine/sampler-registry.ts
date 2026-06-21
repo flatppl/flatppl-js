@@ -23,6 +23,7 @@
 
 const rng      = require('./rng.ts');
 const valueLib = require('./value.ts');
+const transforms = require('./transforms.ts');
 
 // Math special functions for gamma / loggamma / erf-based math.
 const stdlibGamma       = require('@stdlib/math-base-special-gamma');
@@ -1517,21 +1518,15 @@ function resolveParams(measureIR: any, entry: any, env: any) {
 
 function regionBoundsFromIR(ir: any, env: any) {
   if (!ir) throw new Error('regionBoundsFromIR: missing IR');
-  if (ir.kind === 'call' && ir.op === 'interval'
-      && Array.isArray(ir.args) && ir.args.length === 2) {
-    const evaluateExpr = require('./sampler.ts').evaluateExpr;
-    return [evaluateExpr(ir.args[0], env), evaluateExpr(ir.args[1], env)];
+  const evaluateExpr = require('./sampler.ts').evaluateExpr;
+  // Recognised region shapes live in transforms.regionBounds (shared with the
+  // MCMC constraining transform); endpoints evaluate in the sampler's env.
+  const bounds = transforms.regionBounds(ir, (a: any) => evaluateExpr(a, env));
+  if (!bounds) {
+    throw new Error('regionBoundsFromIR: unsupported region shape (kind='
+      + ir.kind + (ir.op ? ', op=' + ir.op : '') + ')');
   }
-  if (ir.kind === 'const') {
-    switch (ir.name) {
-      case 'reals':       return [-Infinity, Infinity];
-      case 'posreals':    return [0, Infinity];
-      case 'nonnegreals': return [0, Infinity];
-      case 'unitinterval':return [0, 1];
-    }
-  }
-  throw new Error('regionBoundsFromIR: unsupported region shape (kind='
-    + ir.kind + (ir.op ? ', op=' + ir.op : '') + ')');
+  return bounds;
 }
 
 // True iff `measureIR` is a registry distribution that has an explicit
