@@ -105,8 +105,22 @@ const SUPPORT_BY_DIST: Record<string, (params?: any) => any> = {
 
 function supportOf(distOp: string, params?: any) {
   if (distOp === 'Uniform') {
-    const a = params && typeof params.a === 'number' ? params.a : 0;
-    const b = params && typeof params.b === 'number' ? params.b : 1;
+    // Uniform's support is the SET passed as `support` (spec 08-distributions
+    // "Uniform"): `Uniform(interval(0.1, 20))` is supported on [0.1, 20], not
+    // [0, 1]. supportOf only sees resolved scalar params, and an `interval`
+    // set does not resolve to {a, b} here — so a caller that has the
+    // distribution IR must extract the bounds itself (model-spec's
+    // uniformSupportFromDistIR) and pass them in. Refuse rather than silently
+    // default to [0, 1]: that default constrained the MCMC of every
+    // bounded-Uniform latent into (0, 1), capping scale parameters at 1.
+    const a = params && typeof params.a === 'number' ? params.a : NaN;
+    const b = params && typeof params.b === 'number' ? params.b : NaN;
+    if (!Number.isFinite(a) || !Number.isFinite(b)) {
+      throw new Error(
+        "transforms.supportOf: Uniform support bounds unavailable — the caller "
+        + "must extract the interval from the distribution's support set "
+        + '(model-spec.uniformSupportFromDistIR) and pass {a, b}');
+    }
     return { kind: 'interval', a, b };
   }
   if (distOp === 'Dirichlet') return { kind: 'simplex' };

@@ -72,3 +72,12 @@ test('supportOf maps distributions to their support', () => {
 test('supportOf throws for an unsupported (e.g. discrete or unknown) dist', () => {
   assert.throws(() => T.supportOf('Poisson'), /no continuous support/);
 });
+
+test('supportOf(Uniform) uses provided bounds and refuses to default to [0,1]', () => {
+  // With finite bounds it returns the interval as given.
+  assert.deepEqual(T.supportOf('Uniform', { a: 0.1, b: 20 }), { kind: 'interval', a: 0.1, b: 20 });
+  // Without bounds it must NOT silently return [0,1] — that default constrained
+  // every bounded-Uniform latent into (0,1) and capped scale parameters at 1.
+  assert.throws(() => T.supportOf('Uniform', {}), /support bounds unavailable/);
+  assert.throws(() => T.supportOf('Uniform'), /support bounds unavailable/);
+});

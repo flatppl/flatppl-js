@@ -85,12 +85,19 @@ function collectLatents(rootName: string, ctx: any): any[] {
       const discrete = DISCRETE_DISTRIBUTIONS && DISCRETE_DISTRIBUTIONS.has(distIR.op);
       let support: any = null;
       if (!discrete) {
-        try {
-          support = transforms.supportOf(distIR.op, params);
-        } catch (_) {
-          // Unknown distribution: mark discrete to force refusal downstream.
-          latents.push({ name, distOp: distIR.op, params, support: null, discrete: true });
-          return;
+        // Uniform's bounds live in its support SET, which supportOf cannot
+        // read from resolved scalar params — extract them from the IR.
+        if (distIR.op === 'Uniform') {
+          support = uniformSupportFromDistIR(distIR, bindings, fixedValues);
+        }
+        if (!support) {
+          try {
+            support = transforms.supportOf(distIR.op, params);
+          } catch (_) {
+            // Unknown distribution: mark discrete to force refusal downstream.
+            latents.push({ name, distOp: distIR.op, params, support: null, discrete: true });
+            return;
+          }
         }
       }
       latents.push({ name, distOp: distIR.op, params, support, discrete: !!discrete });
@@ -186,10 +193,43 @@ function buildPosteriorSpec(d: any, ctx: any): { latents: any[]; logLikelihood: 
 // supportOf on the leaf distribution.
 // ---------------------------------------------------------------------------
 
+// A `Uniform` draw's support is the SET passed as its `support` argument
+// (spec 08-distributions "Uniform"): `Uniform(interval(0.1, 20))` is supported
+// on [0.1, 20]. transforms.supportOf cannot recover it — resolveIRToValue
+// throws on an `interval` call ("not evaluable"), so the bounds must be read
+// from the distribution IR's support arg here. Resolves the interval's two
+// endpoint exprs (which DO resolve — they are literals or fixed bindings).
+// Returns { kind:'interval', a, b } for a finite interval, else null (caller
+// falls back). `bindings`/`fixedValues` may be undefined when no resolution
+// context is threaded through; literal endpoints still resolve.
+function uniformSupportFromDistIR(distIR: any, bindings: any, fixedValues: any): any {
+  if (!distIR) return null;
+  const supIR = (distIR.kwargs && distIR.kwargs.support)
+    || (Array.isArray(distIR.args) && distIR.args.length > 0 ? distIR.args[0] : null);
+  if (!supIR) return null;
+  if (supIR.kind === 'const' && supIR.name === 'unitinterval') {
+    return { kind: 'interval', a: 0, b: 1 };
+  }
+  if (supIR.kind === 'call' && supIR.op === 'interval'
+      && Array.isArray(supIR.args) && supIR.args.length === 2) {
+    try {
+      const fv = fixedValues || new Map();
+      const lo = orchestrator.resolveIRToValue(supIR.args[0], bindings, fv);
+      const hi = orchestrator.resolveIRToValue(supIR.args[1], bindings, fv);
+      if (Number.isFinite(lo) && Number.isFinite(hi) && hi > lo) {
+        return { kind: 'interval', a: lo, b: hi };
+      }
+    } catch (_) { /* fall through to null */ }
+  }
+  return null;
+}
+
 // Walk the derivation chain starting at `name` and return support info.
 // Returns { isIid, dims, elementBaseName } for an iid latent, or a support
 // object { kind: 'real'|'positive'|'interval', a?, b? } for a scalar.
-function walkDerivChain(name: string, derivations: any): any {
+// `ctx` (optional) supplies bindings/fixedValues so a Uniform leaf's interval
+// bounds can be resolved; without it, literal-bound Uniforms still resolve.
+function walkDerivChain(name: string, derivations: any, ctx?: any): any {
   const visited = new Set<string>();
   let cur: string = name;
   while (cur && !visited.has(cur)) {
@@ -215,6 +255,11 @@ function walkDerivChain(name: string, derivations: any): any {
     if (d.kind === 'sample') {
       const distIR = d.distIR;
       if (!distIR) return { kind: 'real' };
+      if (distIR.op === 'Uniform') {
+        const s = uniformSupportFromDistIR(
+          distIR, ctx && ctx.bindings, ctx && ctx.fixedValues);
+        if (s) return s;
+      }
       try {
         return transforms.supportOf(distIR.op, {});
       } catch (_) { return { kind: 'real' }; }
@@ -227,8 +272,8 @@ function walkDerivChain(name: string, derivations: any): any {
 
 // Infer support for an element of an iid latent from the iid's base name.
 // The base derivation should be 'sample' with a distIR.
-function elementSupportOf(elementBaseName: string, derivations: any): any {
-  return walkDerivChain(elementBaseName, derivations);
+function elementSupportOf(elementBaseName: string, derivations: any, ctx?: any): any {
+  return walkDerivChain(elementBaseName, derivations, ctx);
 }
 
 // Collect the STOCHASTIC `draw`-type bindings transitively feeding `rootName`,
@@ -264,13 +309,13 @@ function enumerateLatents(d: any, ctx: any): any[] {
   const { recognizeCompositeIidDraw } = require('./composite-prior.ts');
 
   for (const name of drawNames) {
-    const info = walkDerivChain(name, derivations);
+    const info = walkDerivChain(name, derivations, ctx);
 
     if (info && info.isIid) {
       // Vector latent
       const dims: number[] = info.dims || [1];
       const totalDim = dims.reduce((a: number, b: number) => a * b, 1);
-      const support = elementSupportOf(info.elementBaseName, derivations);
+      const support = elementSupportOf(info.elementBaseName, derivations, ctx);
       result.push({ name, shape: { kind: 'vector', dims: [totalDim] }, support });
       continue;
     }
