@@ -25,6 +25,7 @@ const density       = require('./density.ts');
 const irShared      = require('./ir-shared.ts');
 const sampler       = require('./sampler.ts');
 const lower         = require('./lower.ts');
+const { totalMassExpr } = require('./normalize-mass.ts');
 
 // ---------------------------------------------------------------------------
 // parseSet — mirrors worker.ts makeParseSet (worker.ts:112-126).
@@ -70,15 +71,37 @@ function collectNormalizeMassNodes(node: any, out: any[], seen: Set<any>) {
   }
 }
 
+
 async function resolveNormalizeMasses(measureIR: any, ctx: any): Promise<any> {
   const nodes: any[] = [];
   collectNormalizeMassNodes(measureIR, nodes, new Set());
   if (nodes.length === 0) return measureIR;
-  const refNames = Array.from(new Set(nodes.map((n: any) => n.massFrom.ref as string)));
+  // First pass: rewrite every node whose inner mass we can express as a
+  // θ-dependent expression (the closed-form superpose-mixture mass). These need
+  // NO materialisation and are correct at every θ.
+  const needMaterialise: any[] = [];
+  for (const node of nodes) {
+    const inner = node.args[0];
+    const massExpr = totalMassExpr(inner);
+    if (massExpr != null) {
+      // normalize(inner) → logweighted(−log Z(θ), inner). walkLogWeighted
+      // evaluates the (non-functionof) weight per atom against θ.
+      node.op = 'logweighted';
+      node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [massExpr] }] }, inner];
+      delete node.massFrom;
+    } else {
+      needMaterialise.push(node);
+    }
+  }
+  if (needMaterialise.length === 0) return measureIR;
+  // Fallback: a normalize whose mass we can't express symbolically. Materialise
+  // the inner measure once and bake the constant −log Z (the pre-existing
+  // approximation; correct only when Z is θ-independent).
+  const refNames = Array.from(new Set(needMaterialise.map((n: any) => n.massFrom.ref as string)));
   const measures = await Promise.all(refNames.map((r) => Promise.resolve(ctx.getMeasure(r))));
   const byName: Record<string, any> = {};
   refNames.forEach((nm, i) => { byName[nm] = measures[i]; });
-  for (const node of nodes) {
+  for (const node of needMaterialise) {
     const M = byName[node.massFrom.ref];
     const logZ = M && typeof M.logTotalmass === 'number' ? M.logTotalmass : null;
     if (logZ == null || !Number.isFinite(logZ)) {
@@ -184,6 +207,14 @@ function pointToRefArrays(
       } else {
         vectorEnv[k] = v;
       }
+    } else if (v && (v as any).data instanceof Float64Array && Array.isArray((v as any).shape)) {
+      // Multi-axis (matrix) latent — a Value {shape,data}, e.g. a [G,N] block
+      // `p ~ beta_row_K.(a,b)`. It must reach the density walker with its FULL
+      // shape (the likelihood broadcasts it against an equally-ranked data
+      // matrix; flattening it to a 1-axis vector — or the +Value=NaN fallback
+      // below — makes the broadcast axis count mismatch). Keep the Value in the
+      // env (same form buildEnv threads), never a scalar refArray.
+      vectorEnv[k] = v;
     } else {
       refArrays[k] = new Float64Array([+(v as any)]);
     }
@@ -235,19 +266,21 @@ async function buildLogPi(
   // the derived sigma through the env. Each draw's measure has its normalize
   // masses resolved once (e.g. tau's normalize(truncate(Cauchy,…))).
   const priorName = d.from as string;
-  const drawNames: string[] = (function collect(root: string): string[] {
-    const seen = new Set<string>(); const out: string[] = [];
-    (function v(n: string) {
-      if (seen.has(n)) return; seen.add(n);
-      const b = ctx.bindings.get(n); if (!b) return;
-      for (const dep of (b.deps || [])) v(dep);
-      if (b.type === 'draw') out.push(n);
-    })(root);
-    return out;
-  })(priorName);
-  if (drawNames.length === 0) {
+  // The prior's free variates as { latentName, measureName } pairs (model-spec):
+  // identity on the canonical draw path, but for a joint-of-distributions prior
+  // (`prior = joint(theta1 = Normal(...), …)`, variates supplied as `elementof`
+  // boundary inputs — 06-measure-algebra.md §joint) the latent is the field
+  // LABEL and its measure is the distribution binding the label points at.
+  const modelSpec = require('./model-spec.ts');
+  const sources: Array<{ latentName: string; measureName: string }> = modelSpec.priorLatentSources(d, ctx);
+  if (sources.length === 0) {
     throw new Error(`buildLogPi: prior '${priorName}' has no stochastic draws to sample`);
   }
+  // drawNames are the point-record keys (latent names); measureOf maps each to
+  // the binding to expand/recognize for its prior measure.
+  const drawNames: string[] = sources.map((s) => s.latentName);
+  const measureOf: Record<string, string> = {};
+  for (const s of sources) measureOf[s.latentName] = s.measureName;
   // A draw whose measure is a kernel-broadcast over a user function returning
   // an iid block (e.g. p ~ beta_row_K.(a,b)) cannot be scored by expandMeasure's
   // IR directly (its head is a user function, not a built-in distribution). For
@@ -258,12 +291,13 @@ async function buildLogPi(
   const compositeDesc: Record<string, any> = {};
   const drawMeasures: Record<string, any> = {};
   for (const nm of drawNames) {
-    const comp = recognizeCompositeIidDraw(nm, ctx);
+    const msrc = measureOf[nm];   // measure-source binding (= nm on the draw path)
+    const comp = recognizeCompositeIidDraw(msrc, ctx);
     if (comp) { compositeDesc[nm] = comp; continue; }
     const raw = orchestrator.expandMeasure(
-      nm, { derivations: ctx.derivations, bindings: ctx.bindings },
+      msrc, { derivations: ctx.derivations, bindings: ctx.bindings },
     );
-    if (!raw) throw new Error(`buildLogPi: cannot expand draw measure '${nm}'`);
+    if (!raw) throw new Error(`buildLogPi: cannot expand draw measure '${msrc}'`);
     drawMeasures[nm] = await resolveNormalizeMasses(raw, ctx);
   }
 
@@ -273,7 +307,15 @@ async function buildLogPi(
   if (!likNode) {
     throw new Error('buildLogPi: cannot expand the likelihood body into measure IR');
   }
-  const likBodyIR = likNode.body;
+  // Resolve any normalize-mass spec in the LIKELIHOOD body, exactly as the IS
+  // path does (mat-density.matScore: "resolve on every matScore path including
+  // bayesupdate"). A normalize(...) in the body (e.g. a normalized mixture
+  // `normalize(superpose(weighted(theta, …), weighted(1-theta, …)))`) lowers to
+  // a node carrying massFrom; left unresolved it reaches walkNormalize, which
+  // refuses an unresolved spec — swallowed to −∞ by likWith, making logπ = −∞
+  // everywhere (every sampler stuck at init; SMC's 0·(−∞)=NaN at β=0 wipes all
+  // weights). Mirrors the per-draw prior resolution above.
+  const likBodyIR = await resolveNormalizeMasses(likNode.body, ctx);
 
   // ── SETUP: observed ───────────────────────────────────────────────────────
   const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
@@ -376,8 +418,17 @@ async function buildLogPi(
     const env: Record<string, any> = Object.assign({}, baseEnvConst);
     for (const k in pt) {
       const v = pt[k];
-      env[k] = (v instanceof Float64Array) ? Array.from(v)
-        : (v && v.data instanceof Float64Array) ? Array.from(v.data) : v;
+      if (v instanceof Float64Array) {
+        env[k] = Array.from(v);
+      } else if (v && v.data instanceof Float64Array && Array.isArray(v.shape) && v.shape.length > 1) {
+        // Multi-axis (matrix) latent: keep the Value so the likelihood broadcast
+        // sees its full rank. Flattening to v.data would collapse [G,M] to 1 axis.
+        env[k] = v;
+      } else if (v && v.data instanceof Float64Array) {
+        env[k] = Array.from(v.data);   // rank-1 vector Value → plain array
+      } else {
+        env[k] = v;
+      }
     }
     return env;
   }
@@ -513,22 +564,27 @@ async function buildLogPi(
         const d0 = flatData(v0);
         if (!d0) return null;
         const D = d0.length | 0;
+        // Per-atom rank: a matrix latent carries shape (e.g. [G,M]); preserve it
+        // so the batched value is [N, ...atomShape], not a collapsed [N, D].
+        const atomShape = (v0 && Array.isArray(v0.shape) && v0.shape.length > 0) ? v0.shape.slice() : [D];
         const data = new Float64Array(N * D);
         for (let i = 0; i < N; i++) {
           const vi = flatData(pts[i][nm]);
-          // Per-atom vector length must be constant; if a point disagrees, bail
-          // to the verified scalar path rather than truncate/pad into a wrong
-          // (but finite) density.
           if (!vi || vi.length !== D) return null;
           for (let j = 0; j < D; j++) data[i * D + j] = +vi[j];
         }
-        refArrays[nm] = { shape: [N, D], data };
+        refArrays[nm] = { shape: [N, ...atomShape], data };
       }
     }
     try {
       const opts = { parseSet: constParseSet, resolveMeasureRef: NULL_REF, baseEnv: baseEnvConst };
       const r = density.logDensityN(likBodyIR, observed, refArrays, N, opts);
-      return (r && r.length === N) ? (r as Float64Array) : null;
+      // If any per-atom result is NaN the density walker hit an unresolvable shape
+      // conflict (e.g. atom-batched vs atom-indep ambiguity in an atom-indep param)
+      // — fall back to the scalar path rather than propagating NaN as −∞.
+      if (!r || r.length !== N) return null;
+      for (let i = 0; i < N; i++) { if (r[i] !== r[i]) return null; }  // NaN check
+      return r as Float64Array;
     } catch (_err) { return null; }
   }
 

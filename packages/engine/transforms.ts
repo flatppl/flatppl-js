@@ -22,6 +22,27 @@ function transformFor(support: any) {
         constrain:   (y: number) => Math.exp(y),
         logDetJ:     (y: number) => y,
       };
+    case 'greaterThan': {
+      // lower-bounded half-line [lo, ∞): theta = lo + exp(y); y = log(theta − lo).
+      // (The shifted `positive` transform — the image of a positive/real base
+      // under a monotone-increasing pushforward with a finite low end, e.g. the
+      // Pareto `pushfwd(0.1·exp, Exponential)` ⇒ [0.1, ∞).)
+      const lo = support.lo;
+      return {
+        unconstrain: (theta: number) => Math.log((theta - lo) > 1e-300 ? (theta - lo) : 1e-300),
+        constrain:   (y: number) => lo + Math.exp(y),
+        logDetJ:     (y: number) => y,
+      };
+    }
+    case 'lessThan': {
+      // upper-bounded half-line (−∞, hi]: theta = hi − exp(y); y = log(hi − theta).
+      const hi = support.hi;
+      return {
+        unconstrain: (theta: number) => Math.log((hi - theta) > 1e-300 ? (hi - theta) : 1e-300),
+        constrain:   (y: number) => hi - Math.exp(y),
+        logDetJ:     (y: number) => y,
+      };
+    }
     case 'interval': {
       const a = support.a, b = support.b, w = b - a;
       // theta = a + w*sigmoid(y) ; y = logit((theta-a)/w)

@@ -62,8 +62,28 @@ for (const model of MODELS) {
 // score the prior, so the ModelView refuses with an actionable message rather
 // than running stuck chains on a silent −∞. (IS forward-samples the prior, so
 // it is unaffected — its baseline golden still passes.)
-test('surgical-failures: MCMC ModelView refuses an intractable (unannotated-pushfwd) prior', async () => {
-  const src = fs.readFileSync(path.join(FIX, 'surgical-failures.flatppl'), 'utf8');
+test('MCMC ModelView refuses an intractable (genuinely non-invertible pushfwd) prior', async () => {
+  // Spec §06 case 3: a pushforward through a function that is neither a
+  // registry bijection nor a structural projection is a static error unless
+  // wrapped in bijection(...). `_ * _` (x²) is non-injective on ℝ —
+  // invertExpr refuses — so the prior is intractable for the score-the-prior
+  // backends. (The litter Beta-Binomial `pushfwd(fn(0.1*exp(_)), …)` that this
+  // test formerly used is NOT intractable — it's case 1 (exp ∘ positive
+  // affine), now auto-derived; see pushfwd-elementary-density.test.ts.)
+  // sq = z -> z*z : a single-arg, non-injective map (the free var appears in
+  // both factors, so invertExpr refuses). Samples fine (z² ≥ 0) so the latent
+  // pools and the tractability probe actually runs.
+  const src = `
+sq = z -> z * z
+weird = pushfwd(sq, Exponential(1.5))
+a_plus_b ~ iid(weird, 2)
+k = (z) -> Normal(z, 1)
+y ~ k.(a_plus_b)
+prior = lawof(record(a_plus_b = a_plus_b))
+forward_kernel = kernelof(record(y = y), a_plus_b = a_plus_b)
+L = likelihoodof(forward_kernel, record(y = [1.0, 2.0]))
+posterior = bayesupdate(L, prior)
+`;
   const ctx = ctxFor(src, 2000).ctx;
   const dv = ctx.lookupDerivation ? ctx.lookupDerivation('posterior') : ctx.derivations.posterior;
   await assert.rejects(

@@ -25,6 +25,7 @@ const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
+const { totalMassExpr } = require('./normalize-mass.ts');
 
 const {
   nameSeed,
@@ -910,12 +911,30 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
   const nodes: any[] = [];
   collectNormalizeMassNodes(measureIR, nodes, new Set());
   if (nodes.length === 0) return Promise.resolve(measureIR);
-  const refNames = Array.from(new Set(nodes.map((n) => n.massFrom.ref)));
+  // First pass: per-θ normalizer when the inner is a recognised
+  // superpose-of-weighted probability measures (Z depends on the latent
+  // weights); rewrite to logweighted(−log Z(θ), inner) without materialising.
+  // Only un-recognised nodes reach the materialise/constant-bake fallback.
+  const needMaterialise: any[] = [];
+  for (const node of nodes) {
+    // Per-θ normalizer when the inner is a recognised superpose-of-weighted
+    // probability measures (Z depends on the latent weights); else materialise.
+    const massExpr = totalMassExpr(node.args[0]);
+    if (massExpr != null) {
+      node.op = 'logweighted';
+      node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [massExpr] }] }, node.args[0]];
+      delete node.massFrom;
+      continue;   // do NOT add this node to the materialise list
+    }
+    needMaterialise.push(node);
+  }
+  if (needMaterialise.length === 0) return Promise.resolve(measureIR);
+  const refNames = Array.from(new Set(needMaterialise.map((n: any) => n.massFrom.ref as string)));
   return Promise.all(refNames.map((r) => Promise.resolve(ctx.getMeasure(r))))
     .then((measures: any[]) => {
       const byName: Record<string, any> = {};
       refNames.forEach((nm: string, i: number) => { byName[nm] = measures[i]; });
-      for (const node of nodes) {
+      for (const node of needMaterialise) {
         const M = byName[node.massFrom.ref];
         const logZ = M && typeof M.logTotalmass === 'number' ? M.logTotalmass : null;
         if (logZ == null || !Number.isFinite(logZ)) {
