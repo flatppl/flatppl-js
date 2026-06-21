@@ -256,6 +256,31 @@ function flattenNestedVariate(value: any, axes: number[]): { cells: Float64Array
         + depth + ': ' + (typeof node));
     }
     const dim = axes[depth];
+    // A flat MATRIX value arrives row-major rather than as nested JS arrays: a
+    // rank-≥2 Value {shape, data} (an [L, D] matrix latent from
+    // `iid(Normal.(mu,sigma), L)`, threaded by the scorer's flatToScorerPt), or a
+    // flat typed array spanning ≥2 axes. Consume the product of the remaining
+    // axes (one inner block) directly from its data — row-major order matches the
+    // nested-Array peel order. The Value rest is returned RANK-1 so the next peel
+    // reuses the rank-1 handlers below (which own the Value-rest contract); a
+    // rank-1 Value / single-axis typed array is left entirely to those handlers.
+    const isMatrixVal = valueLib.isValue(node) && node.shape.length >= 2;
+    const isMultiAxisF64 = node && node.BYTES_PER_ELEMENT !== undefined
+      && (axes.length - depth >= 2);
+    if (isMatrixVal || isMultiAxisF64) {
+      const flat = isMatrixVal ? node.data : node;
+      let remaining = 1;
+      for (let a = depth; a < axes.length; a++) remaining *= axes[a];
+      if (flat.length < remaining) {
+        throw new Error('density: flattenNestedVariate: wants ' + remaining
+          + ' entries, only ' + flat.length + ' available');
+      }
+      for (let k = 0; k < remaining; k++) cells[idx++] = flat[k];
+      if (flat.length <= remaining) return null;
+      return isMatrixVal
+        ? { shape: [flat.length - remaining], data: flat.subarray(remaining) }
+        : flat.subarray(remaining);
+    }
     // Expect an Array of length >= dim at this level
     if (Array.isArray(node)) {
       if (node.length < dim) {
@@ -1693,12 +1718,23 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   let anyAtomDep = false;
   for (let pi = 0; pi < paramNames.length; pi++) {
     const pIR = paramIRs[pi];
-    const usesAtom = _exprUsesAny(pIR, refNames);
+    const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
+    paramVals[pi] = v;
+    // usesAtom: the param varies per atom (so collectionAxesOf strips the
+    // leading N axis and the per-atom loop drives it). Static signal = the
+    // expression references an atom-batched refArrays name. But a derived
+    // per-atom param can be threaded via baseEnv instead — e.g. the IS
+    // likelihood's `p = logit_p.(…)` over a per-atom (matrix/vector) latent,
+    // which the static refArrays scan misses — yielding axes=[N, …] and a
+    // shared [9]-observation mismatch. So ALSO treat a rank-≥2 value whose
+    // leading axis is the atom axis as atom-batched: that is unambiguous (a
+    // genuine collection arg would be [K, D] with K≠N). Rank-1 [N] stays on the
+    // static signal alone, preserving the K===N collection disambiguation.
+    const usesAtom = _exprUsesAny(pIR, refNames)
+      || (valueLib.isValue(v) && v.shape.length >= 2 && valueLib.isAtomBatched(v, N));
     perAtomFlags[pi] = usesAtom;
     paramUsesAtom[pi] = usesAtom;
     if (usesAtom) anyAtomDep = true;
-    const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
-    paramVals[pi] = v;
     let access: (i: number, j: number) => number;
     if (typeof v === 'number') {
       const val = +v;

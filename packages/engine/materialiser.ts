@@ -473,11 +473,23 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       // carries `outerRank=1` so downstream consumers (density walker,
       // pushfwd, kernel-broadcast) distinguish iid's sample axis from
       // a "per-atom k-vector" (where outerRank would be absent or 0).
+      //
+      // When the inner measure is itself VECTOR-valued (e.g. a kernel-
+      // broadcast `Normal.(mu, sigma)` over a D-vector → `iid(…, L)` is an
+      // [L, D] matrix latent), the per-atom shape is d.dims FOLLOWED BY the
+      // inner element's own dims, not d.dims alone — otherwise the recorded
+      // shape ([N, L]) disagrees with the data length (N·L·D) and the density
+      // walker's flattenNestedVariate mis-counts the inner axis. The inner
+      // element dims are innerM.value.shape after its leading count axis;
+      // for a scalar inner this is [] and the shape is unchanged.
+      const innerElemShape = (innerM.value && Array.isArray(innerM.value.shape)
+        && innerM.value.shape.length > 1) ? innerM.value.shape.slice(1) : [];
+      const perAtomDims = d.dims.concat(innerElemShape);
       const value = {
-        shape: [N | 0].concat(d.dims), data: samples, outerRank: 1,
+        shape: [N | 0].concat(perAtomDims), data: samples, outerRank: 1,
       };
       return Object.assign(
-        empirical.arrayMeasure(samples, d.dims, null),
+        empirical.arrayMeasure(samples, perAtomDims, null),
         { value: value, logTotalmass: 0, n_eff: N },
       );
     });
