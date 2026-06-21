@@ -2,14 +2,18 @@
 //
 // A third record-measure view mode alongside corner (Correlations) and
 // strips (Marginals): one row per scalar variate with weighted summary
-// stats and an inline SVG histogram. Stats reuse engine primitives;
-// the histogram cell is translated from LazyReports.jl (SVG <rect> bars,
-// tinted where the mean/median fall).
+// stats and an inline HTML histogram. Stats reuse engine primitives;
+// the histogram cell is translated from LazyReports.jl (bars tinted where
+// the mean/median fall), rendered as HTML <div> bars rather than SVG so the
+// cell inherits surrounding text colour + theming.
 
 import { listScalarAxes, esc } from './util.js';
 
 declare const FlatPPLEngine: any;
-const SVG_NS = 'http://www.w3.org/2000/svg';
+
+// Bin cap for the inline ~120px histogram cell — coarse enough that bars
+// stay legible (FD's natural count can reach 100+).
+const TABLE_HIST_BINS = 32;
 
 /** Index of the histogram bin containing value v, or -1 if outside support. */
 function binIndexOf(hist: any, v: number): number {
@@ -26,7 +30,12 @@ function binIndexOf(hist: any, v: number): number {
 export function variateSummary(samples: Float64Array, logWeights: ArrayLike<number> | null | undefined) {
   const H = FlatPPLEngine.histogram;
   const n = samples.length;
-  const hist = H.freedmanDiaconisHistogram(samples, logWeights ? { logWeights } : {});
+  // Coarse bin cap: the inline cell is ~120px, so FD's natural bin count
+  // (can be 40–100+) renders as unreadable hairlines. Cap at TABLE_HIST_BINS
+  // for legible bars; also coarsens `mode` to the same resolution (fine for
+  // a summary readout).
+  const hist = H.freedmanDiaconisHistogram(samples,
+    logWeights ? { logWeights, maxBins: TABLE_HIST_BINS } : { maxBins: TABLE_HIST_BINS });
 
   // Normalised weights (uniform 1/n when no logWeights).
   let w: Float64Array;
@@ -65,18 +74,21 @@ export function variateSummary(samples: Float64Array, logWeights: ArrayLike<numb
   return { mean, std, mode, median, q05, q95, hist };
 }
 
-/** Inline SVG histogram: <rect> bars, height = ys[i]/max(ys), uniform width 1,
- *  tinted by where the mean/median fall (teal both, green mean, steelblue median). */
-export function inlineHistogramSvg(hist: any, marks: { meanValue: number; medianValue: number }): SVGSVGElement {
+/** Inline HTML histogram: a flex row of <div> bars, each height = ys[i]/max(ys),
+ *  tinted by where the mean/median fall (teal both, green mean, steelblue median).
+ *  HTML (not SVG) so the cell inherits the surrounding text colour + theming and
+ *  has no separate render namespace. */
+export function inlineHistogramHtml(hist: any, marks: { meanValue: number; medianValue: number }): HTMLElement {
   const ys = hist.ys || new Float64Array(0);
   const nb = ys.length;
-  const svg = document.createElementNS(SVG_NS, 'svg') as SVGSVGElement;
-  svg.setAttribute('width', '120');
-  svg.setAttribute('height', '18');
-  svg.setAttribute('viewBox', '0 0 ' + Math.max(nb, 1) + ' 1');
-  svg.setAttribute('preserveAspectRatio', 'none');
-  svg.setAttribute('shape-rendering', 'crispEdges');
-  if (nb === 0) return svg;
+  const box = document.createElement('div');
+  box.style.display = 'inline-flex';
+  box.style.alignItems = 'flex-end';
+  box.style.gap = '0';
+  box.style.width = '120px';
+  box.style.height = '18px';
+  box.style.verticalAlign = 'middle';
+  if (nb === 0) return box;
 
   let maxY = 0;
   for (let i = 0; i < nb; i++) if (ys[i] > maxY) maxY = ys[i];
@@ -87,19 +99,18 @@ export function inlineHistogramSvg(hist: any, marks: { meanValue: number; median
 
   for (let i = 0; i < nb; i++) {
     const h = ys[i] / maxY;
-    const rect = document.createElementNS(SVG_NS, 'rect');
-    rect.setAttribute('x', String(i));
-    rect.setAttribute('y', String(1 - h));
-    rect.setAttribute('width', '1');
-    rect.setAttribute('height', String(h));
-    let fill = 'currentColor';
-    if (i === meanBin && i === medianBin) fill = 'teal';
-    else if (i === meanBin) fill = 'green';
-    else if (i === medianBin) fill = 'steelblue';
-    rect.setAttribute('fill', fill);
-    svg.appendChild(rect);
+    const bar = document.createElement('div');
+    bar.style.flex = '1 1 0';
+    // Min 1px so a non-empty bin is always visible; 0-count bins stay flat.
+    bar.style.height = (ys[i] > 0 ? Math.max(h * 100, 4) : 0) + '%';
+    let color = 'currentColor';
+    if (i === meanBin && i === medianBin) color = 'teal';
+    else if (i === meanBin) color = 'green';
+    else if (i === medianBin) color = 'steelblue';
+    bar.style.background = color;
+    box.appendChild(bar);
   }
-  return svg;
+  return box;
 }
 
 /** Format a number for a stat cell: em-dash for non-finite, else ~4 sig figs. */
@@ -185,7 +196,7 @@ export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, b
     const histTd = document.createElement('td');
     histTd.style.textAlign = 'center';
     histTd.style.padding = '2px 8px';
-    histTd.appendChild(inlineHistogramSvg(s.hist, { meanValue: s.mean, medianValue: s.median }));
+    histTd.appendChild(inlineHistogramHtml(s.hist, { meanValue: s.mean, medianValue: s.median }));
     tr.appendChild(histTd);
 
     tbody.appendChild(tr);
