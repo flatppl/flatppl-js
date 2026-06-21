@@ -121,19 +121,16 @@ function fmt(x: number): string {
   return x.toFixed(a >= 100 ? 1 : a >= 1 ? 3 : 4);
 }
 
-/** Measure-level ESS as a percentage string. Uniform measures (kHat NaN)
- *  carry no IS information → "100%". */
-function essPercent(measure: any): string {
+/** Measure-level effective sample size (Kish ESS; = N for uniform weights).
+ *  Used as the denominator of each variate's MCSE. NaN/≤0 → null (cell em-dash). */
+function measureEss(measure: any): number | null {
   try {
-    const dof = FlatPPLEngine.empirical.estimateDof(measure);
-    const q = FlatPPLEngine.empirical.importanceSamplingQuality(measure, dof);
-    if (!Number.isFinite(q.kHat)) return '100%';
-    const pct = q.ratio * 100;
-    return (pct >= 10 ? pct.toFixed(0) : pct.toFixed(1)) + '%';
-  } catch (_) { return '—'; }
+    const ess = FlatPPLEngine.empirical.effectiveSampleSize(measure);
+    return Number.isFinite(ess) && ess > 0 ? ess : null;
+  } catch (_) { return null; }
 }
 
-const COLS = ['variate', 'mean', 'std', 'mode', 'median', '5%', '95%', 'ESS%', 'histogram'];
+const COLS = ['variate', 'mean', 'std', 'mode', 'median', '5%', '95%', 'mcse', 'histogram'];
 
 /** Third record-measure view mode: a per-variate summary-statistics table. */
 export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, bindingName: string): void {
@@ -150,7 +147,7 @@ export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, b
   }
 
   const logWeights = measure.logWeights;
-  const essStr = essPercent(measure);
+  const ess = measureEss(measure);
 
   const table = document.createElement('table');
   table.style.width = '100%';
@@ -163,9 +160,7 @@ export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, b
   for (let c = 0; c < COLS.length; c++) {
     const th = document.createElement('th');
     th.textContent = COLS[c];
-    // ESS is a single measure-level diagnostic, repeated in every row — flag
-    // that so identical values don't read as a bug.
-    if (COLS[c] === 'ESS%') th.title = 'Effective sample size (measure-level; the same value applies to every variate)';
+    if (COLS[c] === 'mcse') th.title = 'Monte Carlo standard error of the mean ≈ std / √ESS (ArviZ mcse_mean)';
     th.style.textAlign = c === 0 ? 'left' : (c === COLS.length - 1 ? 'center' : 'right');
     th.style.padding = '2px 8px';
     th.style.borderBottom = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.2))';
@@ -187,7 +182,10 @@ export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, b
     nameTd.style.padding = '2px 8px';
     tr.appendChild(nameTd);
 
-    const cells = [fmt(s.mean), fmt(s.std), fmt(s.mode), fmt(s.median), fmt(s.q05), fmt(s.q95), essStr];
+    // MCSE of the mean ≈ sd / √ESS (ArviZ mcse_mean). Per-variate via sd_i,
+    // sharing the measure-level ESS. ess null (zero mass) → em-dash.
+    const mcse = ess != null ? s.std / Math.sqrt(ess) : NaN;
+    const cells = [fmt(s.mean), fmt(s.std), fmt(s.mode), fmt(s.median), fmt(s.q05), fmt(s.q95), fmt(mcse)];
     for (let c = 0; c < cells.length; c++) {
       const td = document.createElement('td');
       td.textContent = cells[c];
