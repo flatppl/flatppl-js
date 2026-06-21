@@ -34,6 +34,50 @@ function posteriorDeriv(ctx: any): any {
   return null;
 }
 
+// Same model with the support bound to a NAME (`S = interval(...); Uniform(S)`).
+// A set constructor is not value-evaluable, so a named set used as a support
+// used to leave the draw with an unsatisfiable dep → the whole posterior was
+// cascade-pruned silently. The named form must now behave exactly like the
+// inline `Uniform(interval(...))` form above.
+const SRC_NAMED = `
+y_data = [5.0, -5.0, 6.0, -6.0, 4.0, -4.0, 5.5, -5.5]
+mu ~ Normal(0.0, 10.0)
+S = interval(0.5, 10.0)
+sigma ~ Uniform(S)
+prior = lawof(record(mu = mu, sigma = sigma))
+y ~ iid(Normal(mu, sigma), 8)
+forward_kernel = kernelof(record(y = y), mu = mu, sigma = sigma)
+L = likelihoodof(forward_kernel, record(y = y_data))
+posterior = bayesupdate(L, prior)
+`;
+
+test('Uniform(namedSet): named interval support builds a posterior with the named bounds', async () => {
+  const { ctx } = ctxFor(SRC_NAMED, 100);
+  const d = posteriorDeriv(ctx);
+  assert.ok(d, 'named-set posterior bayesupdate derivation present (not cascade-pruned)');
+
+  const sig = modelSpec.enumerateLatents(d, ctx).find((l: any) => l.name === 'sigma');
+  assert.ok(sig, 'sigma latent enumerated');
+  assert.deepEqual(sig.support, { kind: 'interval', a: 0.5, b: 10 },
+    'named set S = interval(0.5,10) resolves to its declared bounds, not [0,1]');
+
+  const mv = await buildModelViewFromCtx(ctx, d);
+  const i = mv.names.indexOf('sigma');
+  const y = new Float64Array(mv.dim);
+  y[i] = 0;
+  assert.ok(Math.abs(mv.constrainAll(y).sigma - 5.25) < 1e-9, 'transform spans [0.5,10] (midpoint 5.25)');
+});
+
+test('Uniform(namedSet): posterior samples explore the named support, not [0,1]', async () => {
+  const { ctx } = ctxFor(SRC_NAMED, 4000);
+  const m = await ctx.getMeasure('posterior');
+  const fld = m.fields && m.fields.sigma;
+  assert.ok(fld && fld.samples && fld.samples.length > 0, 'sigma samples present');
+  let mx = -Infinity;
+  for (const v of fld.samples) if (v > mx) mx = v;
+  assert.ok(mx > 8.0, `named-set posterior sigma reaches toward 10, got max ${mx}`);
+});
+
 test('Uniform(interval) latent keeps its declared bounds, not [0,1]', async () => {
   const { ctx } = ctxFor(SRC, 100);
   const d = posteriorDeriv(ctx);
