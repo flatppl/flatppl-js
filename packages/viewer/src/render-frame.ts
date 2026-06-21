@@ -46,6 +46,15 @@ export function resetPlotContentStyle(ctx: Ctx) {
   el.style.flexDirection = '';
 }
 
+/**
+ * Render a message into the plot pane in place of a chart.
+ *
+ * SECURITY CONTRACT: `html` is TRUSTED MARKUP rendered via innerHTML so callers
+ * can emphasise text (`<strong>…</strong>`, `<ul>`, error colouring). Callers
+ * MUST `esc()` any model-derived interpolation (binding names, error messages)
+ * before passing it in. FlatPPL identifiers cannot contain `<`, but error
+ * strings and future inputs can — every current call site escapes; keep it so.
+ */
 export function showPlotMessage(ctx: Ctx, html: string, options?: { cancellable?: boolean; hint?: boolean; progress?: boolean }) {
   if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
   resetPlotContentStyle(ctx);
