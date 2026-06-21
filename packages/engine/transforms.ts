@@ -45,6 +45,33 @@ function transformFor(support: any) {
   }
 }
 
+// Parse a FlatPPL set/region IR to its scalar [lo, hi] endpoints. The single
+// source of truth for "what interval does this region IR denote" — both the
+// sampler's Uniform support (sampler-registry.regionBoundsFromIR) and the
+// MCMC constraining transform's Uniform support (model-spec.uniformSupportFromDistIR)
+// route through here so the recognised region shapes can't drift apart.
+// `resolveArg(argIR) -> number` evaluates an interval endpoint expr in the
+// caller's own context (the sampler uses sampler.evaluateExpr; model-spec uses
+// orchestrator.resolveIRToValue). Returns [lo, hi] (possibly infinite for the
+// half-line/real consts) or null when the IR is not a recognised region — the
+// caller decides whether infinite/missing bounds are acceptable.
+function regionBounds(ir: any, resolveArg: (a: any) => number): [number, number] | null {
+  if (!ir) return null;
+  if (ir.kind === 'call' && ir.op === 'interval'
+      && Array.isArray(ir.args) && ir.args.length === 2) {
+    return [resolveArg(ir.args[0]), resolveArg(ir.args[1])];
+  }
+  if (ir.kind === 'const') {
+    switch (ir.name) {
+      case 'reals':        return [-Infinity, Infinity];
+      case 'posreals':     return [0, Infinity];
+      case 'nonnegreals':  return [0, Infinity];
+      case 'unitinterval': return [0, 1];
+    }
+  }
+  return null;
+}
+
 function simplexTransform(K: number) {
   // Stan stick-breaking: K-simplex <-> R^{K-1}.
   const sig = (x: number) => 1 / (1 + Math.exp(-x));
@@ -105,8 +132,22 @@ const SUPPORT_BY_DIST: Record<string, (params?: any) => any> = {
 
 function supportOf(distOp: string, params?: any) {
   if (distOp === 'Uniform') {
-    const a = params && typeof params.a === 'number' ? params.a : 0;
-    const b = params && typeof params.b === 'number' ? params.b : 1;
+    // Uniform's support is the SET passed as `support` (spec 08-distributions
+    // "Uniform"): `Uniform(interval(0.1, 20))` is supported on [0.1, 20], not
+    // [0, 1]. supportOf only sees resolved scalar params, and an `interval`
+    // set does not resolve to {a, b} here — so a caller that has the
+    // distribution IR must extract the bounds itself (model-spec's
+    // uniformSupportFromDistIR) and pass them in. Refuse rather than silently
+    // default to [0, 1]: that default constrained the MCMC of every
+    // bounded-Uniform latent into (0, 1), capping scale parameters at 1.
+    const a = params && typeof params.a === 'number' ? params.a : NaN;
+    const b = params && typeof params.b === 'number' ? params.b : NaN;
+    if (!Number.isFinite(a) || !Number.isFinite(b)) {
+      throw new Error(
+        "transforms.supportOf: Uniform support bounds unavailable — the caller "
+        + "must extract the interval from the distribution's support set "
+        + '(model-spec.uniformSupportFromDistIR) and pass {a, b}');
+    }
     return { kind: 'interval', a, b };
   }
   if (distOp === 'Dirichlet') return { kind: 'simplex' };
@@ -115,4 +156,4 @@ function supportOf(distOp: string, params?: any) {
   return f(params);
 }
 
-module.exports = { transformFor, simplexTransform, supportOf, SUPPORT_BY_DIST };
+module.exports = { transformFor, simplexTransform, supportOf, SUPPORT_BY_DIST, regionBounds };
