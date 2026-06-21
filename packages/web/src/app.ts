@@ -1132,6 +1132,11 @@
     if (!t) {
       t = document.createElement('div');
       t.id = 'gallery-toast';
+      // Announce transient outcomes (upload/convert summaries) to screen
+      // readers. polite = wait for a pause; atomic = read the whole message.
+      t.setAttribute('role', 'status');
+      t.setAttribute('aria-live', 'polite');
+      t.setAttribute('aria-atomic', 'true');
       document.body.appendChild(t);
     }
     t.textContent = msg;
