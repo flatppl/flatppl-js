@@ -32,6 +32,29 @@
 'use strict';
 
 (function (globalScope: any) {
+  // One-entry parse memo. Every per-keystroke consumer (binding overlay,
+  // hover, cursor-binding, go-to-def) shares this so a single document
+  // version is parsed + tokenized once, not once per consumer. Keyed by
+  // exact text; replaced when the text changes. processed may be null
+  // (parse failure) — callers already guard for that.
+  let _memoText: string | null = null;
+  let _memoProcessed: any = null;
+  let _memoTokens: any[] | null = null;
+  function parseCached(text: string): { processed: any; tokens: any[] } {
+    if (text === _memoText && _memoTokens !== null) {
+      return { processed: _memoProcessed, tokens: _memoTokens };
+    }
+    const FE = globalScope.FlatPPLEngine;
+    let processed: any = null;
+    let tokens: any[] = [];
+    if (FE) {
+      try { processed = FE.processSource(text); } catch (_) { processed = null; }
+      try { tokens = (FE.tokenize(text).tokens) || []; } catch (_) { tokens = []; }
+    }
+    _memoText = text; _memoProcessed = processed; _memoTokens = tokens;
+    return { processed, tokens };
+  }
+
   function computeLineStarts(src: any) {
     const starts = [0];
     for (let i = 0; i < src.length; i++) {
@@ -71,14 +94,10 @@
       const B = FE && FE.builtins;
       if (!FE || !B) return Decoration.none;
       const text = view.state.doc.toString();
+      const { processed, tokens } = parseCached(text);
       let bindings: Set<unknown> | null = null;
-      try {
-        const processed = FE.processSource(text);
-        if (processed && processed.bindings) bindings = new Set(processed.bindings.keys());
-      } catch (_) { bindings = null; }
+      if (processed && processed.bindings) bindings = new Set(processed.bindings.keys());
       if (!bindings) return Decoration.none;
-
-      const tokens = FE.tokenize(text).tokens || [];
       const lineStarts = computeLineStarts(text);
       const ranges: any[] = [];
       for (let i = 0; i < tokens.length; i++) {
@@ -101,7 +120,7 @@
       function (this: any, view: any) {
         this.decorations = bindingOverlay(view);
         this.update = function (this: any, u: any) {
-          if (u.docChanged || u.viewportChanged) {
+          if (u.docChanged) {
             this.decorations = bindingOverlay(u.view);
           }
         };
@@ -132,11 +151,8 @@
 
     return hoverTooltip(function (view: any, pos: number, side: number) {
       const text = view.state.doc.toString();
-      let processed;
-      try { processed = FE.processSource(text); }
-      catch (_) { return null; }
+      const { processed, tokens } = parseCached(text);
       if (!processed || !processed.bindings) return null;
-      const tokens = FE.tokenize(text).tokens || [];
       const lineStarts = computeLineStarts(text);
       // Locate the IDENT token under `pos`. CodeMirror's hover API
       // gives us a `side`: -1 means the caret is on the left edge
@@ -247,8 +263,7 @@
       const FE = globalScope.FlatPPLEngine;
       if (!FE) return;
       const doc = view.state.doc.toString();
-      let processed;
-      try { processed = FE.processSource(doc); } catch (_) { return; }
+      const { processed } = parseCached(doc);
       if (!processed || !processed.bindings || !processed.bindings.has(name)) return;
       const b = processed.bindings.get(name);
       const nameLoc = b && b.nameLoc && b.nameLoc.start;
@@ -310,15 +325,9 @@
       if (!FE) return null;
       const head = view.state.selection.main.head;
       const doc = view.state.doc.toString();
-      let bindings: Set<unknown> | null = null;
-      try {
-        const processed = FE.processSource(doc);
-        if (processed && processed.bindings) {
-          bindings = new Set(processed.bindings.keys());
-        }
-      } catch (_) { return null; }
-      if (!bindings) return null;
-      const tokens = FE.tokenize(doc).tokens || [];
+      const { processed, tokens } = parseCached(doc);
+      if (!processed || !processed.bindings) return null;
+      const bindings = new Set(processed.bindings.keys());
       const lineStarts = computeLineStarts(doc);
       for (let i = 0; i < tokens.length; i++) {
         const tok = tokens[i];
