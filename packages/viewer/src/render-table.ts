@@ -121,13 +121,19 @@ function fmt(x: number): string {
   return x.toFixed(a >= 100 ? 1 : a >= 1 ? 3 : 4);
 }
 
-/** Measure-level effective sample size (Kish ESS; = N for uniform weights).
- *  Used as the denominator of each variate's MCSE. NaN/≤0 → null (cell em-dash). */
-function measureEss(measure: any): number | null {
+/** Measure-level effective sample size (Kish ESS = 1/Σpᵢ² over normalized
+ *  weights; = N for uniform/unweighted). Computed from the shared logWeights
+ *  directly — engine `effectiveSampleSize` assumes a flat `.samples` field a
+ *  record measure doesn't have, so it can't be used here. */
+function measureEss(measure: any, n: number): number {
+  const w = measure && measure.logWeights;
+  if (!w) return n;
   try {
-    const ess = FlatPPLEngine.empirical.effectiveSampleSize(measure);
-    return Number.isFinite(ess) && ess > 0 ? ess : null;
-  } catch (_) { return null; }
+    const nw = FlatPPLEngine.histogram.normaliseWeights(w);
+    let s2 = 0;
+    for (let i = 0; i < nw.length; i++) s2 += nw[i] * nw[i];
+    return s2 > 0 ? 1 / s2 : n;
+  } catch (_) { return n; }
 }
 
 const COLS = ['variate', 'mean', 'std', 'mode', 'median', '5%', '95%', 'mcse', 'histogram'];
@@ -147,7 +153,7 @@ export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, b
   }
 
   const logWeights = measure.logWeights;
-  const ess = measureEss(measure);
+  const ess = measureEss(measure, axes[0].samples.length);
 
   const table = document.createElement('table');
   table.style.width = '100%';
