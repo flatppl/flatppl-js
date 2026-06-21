@@ -177,6 +177,10 @@ export interface RecordSelection {
   selected: string[];
   /** Group-level selection (marginals mode) — list of group keys. */
   marginalGroups: string[];
+  /** Generated-quantity names currently toggled on (bayesupdate posteriors only).
+   *  Default []; toggled names are appended as derived fields via
+   *  appendGeneratedQuantities before axis enumeration and rendering. */
+  genQuantities?: string[];
 }
 
 /**
