@@ -28,23 +28,57 @@ function selfRefs(ir: any, acc: Set<string>): Set<string> {
 }
 
 /** Qualifying deterministic bindings for a focused posterior record.
- *  Returns derivations of kind 'evaluate' whose ns:'self' refs are
- *  all field names of `recordMeasure`, and which are not themselves
- *  already fields of the record. */
+ *  Returns derivations of kind 'evaluate' whose ns:'self' refs each resolve
+ *  to either a field of `recordMeasure` (a posterior variate) or a fixed-phase
+ *  constant (resolvable via fixedValues — evaluateExprN gets it through the
+ *  baseEnv), with at least one variate ref (a binding of constants alone is not
+ *  a function of the posterior). Excludes bindings that are themselves a field. */
 export function detectGeneratedQuantities(ctx: any, recordMeasure: any): Array<{ name: string; ir: any }> {
-  const derivs = ctx.derivationsState && ctx.derivationsState.derivations;
+  const ds = ctx.derivationsState;
+  const derivs = ds && ds.derivations;
   if (!derivs || !recordMeasure || !recordMeasure.fields) return [];
   const variates = new Set(Object.keys(recordMeasure.fields));
+  const fixedValues = ds && ds.fixedValues;
+  function isFixedConst(r: string): boolean {
+    try { return !!(fixedValues && typeof fixedValues.has === 'function' && fixedValues.has(r)); }
+    catch (_) { return false; }
+  }
   const out: Array<{ name: string; ir: any }> = [];
   for (const name in derivs) {
     const d = derivs[name];
     if (!d || d.kind !== 'evaluate' || !d.ir) continue;  // deterministic only
     if (variates.has(name)) continue;                     // already a field
     const refs = selfRefs(d.ir, new Set<string>());
-    if (refs.size === 0) continue;                        // not a function of variates
+    if (refs.size === 0) continue;                        // not a function of anything
     let ok = true;
-    refs.forEach((r) => { if (!variates.has(r)) ok = false; });
-    if (ok) out.push({ name, ir: d.ir });
+    let anyVariate = false;
+    refs.forEach((r) => {
+      if (variates.has(r)) anyVariate = true;
+      else if (!isFixedConst(r)) ok = false;              // a non-variate, non-constant ref disqualifies
+    });
+    if (ok && anyVariate) out.push({ name, ir: d.ir });   // ≥1 variate + every other ref a fixed constant
   }
   return out;
+}
+
+/** Build the plain `{name: value}` baseEnv that `evaluateExprN` needs for the
+ *  fixed-phase constants referenced by `specs` (the non-variate refs). The
+ *  engine resolves a baseEnv ref via `name in baseEnv`, so it must be a plain
+ *  object — NOT the FixedValues resolver (whose names live behind `.get`/`.has`,
+ *  not as own-properties). Variate refs come from the per-atom sample columns
+ *  instead and are omitted here. */
+export function fixedEnvFor(ctx: any, recordMeasure: any, specs: Array<{ name: string; ir: any }>): Record<string, any> {
+  const env: Record<string, any> = {};
+  const ds = ctx.derivationsState;
+  const fixedValues = ds && ds.fixedValues;
+  if (!fixedValues || typeof fixedValues.get !== 'function' || !recordMeasure || !recordMeasure.fields) return env;
+  const variates = new Set(Object.keys(recordMeasure.fields));
+  for (let i = 0; i < specs.length; i++) {
+    const refs = selfRefs(specs[i].ir, new Set<string>());
+    refs.forEach((r) => {
+      if (variates.has(r) || (r in env)) return;          // variate → per-atom column; already done
+      try { if (fixedValues.has(r)) env[r] = fixedValues.get(r); } catch (_) { /* leave unresolved → eval guarded */ }
+    });
+  }
+  return env;
 }

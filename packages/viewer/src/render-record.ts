@@ -10,7 +10,7 @@
 import type { Ctx } from './types';
 import { renderCornerGrid, renderDensityStrips } from './render-density.js';
 import { renderRecordTable } from './render-table.js';
-import { detectGeneratedQuantities } from './generated-quantities.js';
+import { detectGeneratedQuantities, fixedEnvFor } from './generated-quantities.js';
 
 import { showPlotMessage } from './render-frame.js';
 import { esc, formatCount, formatLogTotalmass, formatSampleCount, formatScalar, formatValue } from './util.js';
@@ -147,7 +147,10 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
       _dmCacheResult = measure;
       return measure;
     }
-    const baseEnv = (ctx.derivationsState && ctx.derivationsState.fixedValues) || {};
+    // Plain {name: value} env for any fixed-phase constants the toggled
+    // quantities reference — evaluateExprN reads baseEnv via `name in baseEnv`,
+    // so the FixedValues resolver itself won't do (its names live behind .get).
+    const baseEnv = fixedEnvFor(ctx, measure, specs);
     let result: any;
     try {
       result = FlatPPLEngine.generatedQuantities.appendGeneratedQuantities(measure, specs, baseEnv);
