@@ -39,9 +39,15 @@ export function detectGeneratedQuantities(ctx: any, recordMeasure: any): Array<{
   if (!derivs || !recordMeasure || !recordMeasure.fields) return [];
   const variates = new Set(Object.keys(recordMeasure.fields));
   const fixedValues = ds && ds.fixedValues;
-  function isFixedConst(r: string): boolean {
-    try { return !!(fixedValues && typeof fixedValues.has === 'function' && fixedValues.has(r)); }
-    catch (_) { return false; }
+  // A non-variate ref qualifies only if it's a SCALAR fixed-phase constant.
+  // Generated quantities are scalar-per-atom axes; a non-scalar constant
+  // (vector/record) would make the binding's result non-scalar and throw a
+  // shape error in evaluateExprN, so such bindings must not be offered.
+  function isScalarFixedConst(r: string): boolean {
+    try {
+      if (!fixedValues || typeof fixedValues.has !== 'function' || !fixedValues.has(r)) return false;
+      return typeof fixedValues.get(r) === 'number';
+    } catch (_) { return false; }
   }
   const out: Array<{ name: string; ir: any }> = [];
   for (const name in derivs) {
@@ -54,7 +60,7 @@ export function detectGeneratedQuantities(ctx: any, recordMeasure: any): Array<{
     let anyVariate = false;
     refs.forEach((r) => {
       if (variates.has(r)) anyVariate = true;
-      else if (!isFixedConst(r)) ok = false;              // a non-variate, non-constant ref disqualifies
+      else if (!isScalarFixedConst(r)) ok = false;        // non-variate, non-scalar-constant ref disqualifies
     });
     if (ok && anyVariate) out.push({ name, ir: d.ir });   // ≥1 variate + every other ref a fixed constant
   }
@@ -77,7 +83,11 @@ export function fixedEnvFor(ctx: any, recordMeasure: any, specs: Array<{ name: s
     const refs = selfRefs(specs[i].ir, new Set<string>());
     refs.forEach((r) => {
       if (variates.has(r) || (r in env)) return;          // variate → per-atom column; already done
-      try { if (fixedValues.has(r)) env[r] = fixedValues.get(r); } catch (_) { /* leave unresolved → eval guarded */ }
+      try {
+        if (!fixedValues.has(r)) return;
+        const v = fixedValues.get(r);
+        if (typeof v === 'number') env[r] = v;             // scalar only — matches detection's isScalarFixedConst
+      } catch (_) { /* leave unresolved → eval guarded */ }
     });
   }
   return env;
