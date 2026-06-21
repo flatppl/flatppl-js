@@ -9,6 +9,7 @@
 
 import type { Ctx } from './types';
 import { renderCornerGrid, renderDensityStrips } from './render-density.js';
+import { renderRecordTable } from './render-table.js';
 
 import { showPlotMessage } from './render-frame.js';
 import { esc, formatCount, formatLogTotalmass, formatSampleCount, formatScalar, formatValue } from './util.js';
@@ -184,7 +185,10 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     chartHostRef.style.gridTemplateColumns = '';
     chartHostRef.style.gridTemplateRows = '';
     chartHostRef.style.gap = '';
-    if (ctx.recordSelection!.mode === 'marginals') {
+    chartHostRef.style.overflow = '';
+    if (ctx.recordSelection!.mode === 'table') {
+      renderRecordTable(ctx, chartHostRef, measure, bindingName);
+    } else if (ctx.recordSelection!.mode === 'marginals') {
       // Marginals mode: filter axes by selected groups (group =
       // axis label's prefix before any "[k]"). Default is all
       // groups → full axis list; users uncheck to narrow.
@@ -277,6 +281,8 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
     'Pairwise corner plot: marginals on the diagonal, joint scatters below'));
   modeGroup.appendChild(makeModeBtn('marginals', 'Marginals',
     'One column per axis with vertical density shading; plots every axis'));
+  modeGroup.appendChild(makeModeBtn('table', 'Table',
+    'Summary statistics table: per-variate mean, std, mode, median, credible interval, ESS, and an inline histogram'));
   bar.appendChild(modeGroup);
 
   // Axis-level selector in correlations mode (per-leaf
