@@ -163,6 +163,9 @@ export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, b
   for (let c = 0; c < COLS.length; c++) {
     const th = document.createElement('th');
     th.textContent = COLS[c];
+    // ESS is a single measure-level diagnostic, repeated in every row — flag
+    // that so identical values don't read as a bug.
+    if (COLS[c] === 'ESS%') th.title = 'Effective sample size (measure-level; the same value applies to every variate)';
     th.style.textAlign = c === 0 ? 'left' : (c === COLS.length - 1 ? 'center' : 'right');
     th.style.padding = '2px 8px';
     th.style.borderBottom = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.2))';
