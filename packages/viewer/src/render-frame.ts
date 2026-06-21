@@ -10,7 +10,8 @@
 
 import { renderPlotForCurrent } from './render-plot.js';
 import { renderSampleStats } from './render-record.js';
-import { $, esc } from './util.js';
+import { $, esc, listScalarAxes } from './util.js';
+import { downloadMeasure } from './export-samples.js';
 /**
  * Return the analyzer-level error diagnostics that landed on a
  * binding (typeinfer mismatches, undefined refs, etc.), or null
@@ -159,6 +160,66 @@ export function setGlyphButtonEnabled(b: HTMLButtonElement, enabled: boolean) {
   b.style.pointerEvents = enabled ? '' : 'none';
 }
 
+/** Small popup anchored under `anchor` to pick the sample-export format.
+ *  Both formats are gzip-compressed. Toggles on repeat click; click-outside
+ *  closes; single reused element keyed by id. */
+function openExportMenu(anchor: HTMLElement, measure: any, bindingName: any) {
+  const existing = document.getElementById('flatppl-export-menu');
+  if (existing) { existing.remove(); return; }   // second click on the button toggles it shut
+
+  const menu = document.createElement('div');
+  menu.id = 'flatppl-export-menu';
+  menu.style.position = 'fixed';
+  menu.style.zIndex = '1000';
+  menu.style.minWidth = '150px';
+  menu.style.background = 'var(--vscode-menu-background, #252526)';
+  menu.style.color = 'var(--vscode-menu-foreground, #cccccc)';
+  menu.style.border = '1px solid var(--vscode-menu-border, rgba(255,255,255,0.15))';
+  menu.style.borderRadius = '3px';
+  menu.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+  menu.style.padding = '0.25em 0';
+  menu.style.fontSize = '0.92em';
+  menu.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+
+  function closeMenu() {
+    document.removeEventListener('mousedown', onDown, true);
+    menu.remove();
+  }
+  function onDown(ev: any) {
+    if (menu.contains(ev.target) || anchor.contains(ev.target)) return;
+    closeMenu();
+  }
+
+  const items: Array<{ label: string; fmt: 'csv' | 'json' }> = [
+    { label: 'CSV (.csv.gz)', fmt: 'csv' },
+    { label: 'JSON (.json.gz)', fmt: 'json' },
+  ];
+  for (let i = 0; i < items.length; i++) {
+    const it = items[i];
+    const row = document.createElement('div');
+    row.textContent = it.label;
+    row.style.padding = '0.35em 1em';
+    row.style.cursor = 'pointer';
+    row.addEventListener('mouseenter', function () { row.style.background = 'var(--vscode-menu-selectionBackground, #094771)'; });
+    row.addEventListener('mouseleave', function () { row.style.background = ''; });
+    row.addEventListener('click', function () { closeMenu(); void downloadMeasure(measure, bindingName, it.fmt); });
+    menu.appendChild(row);
+  }
+
+  document.body.appendChild(menu);
+  const r = anchor.getBoundingClientRect();
+  const mr = menu.getBoundingClientRect();
+  let x = r.left;
+  let y = r.bottom + 2;
+  if (x + mr.width > window.innerWidth) x = window.innerWidth - mr.width - 4;
+  if (y + mr.height > window.innerHeight) y = r.top - mr.height - 2;
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+
+  // Defer so the click that opened the menu doesn't immediately close it.
+  setTimeout(function () { document.addEventListener('mousedown', onDown, true); }, 0);
+}
+
 export function setPlotEnabled(ctx: Ctx, enabled: any) {
   ctx.plotEnabled = !!enabled;
   const plot    = $('plot-panel');
@@ -267,6 +328,16 @@ export function renderPlotFrame(ctx: Ctx, opts: any) {
       spacer.style.marginLeft = 'auto';
       bar.appendChild(spacer);
       bar.appendChild(renderSampleStats(ctx, opts.measure));
+      // Download-samples button: shown for any sample-backed measure with at
+      // least one scalar variate. Absent on profile/constant views (no measure).
+      // Click opens a small menu to pick the (always gzip-compressed) format.
+      if (listScalarAxes(opts.measure).length > 0) {
+        const dlBtn = makeActionButton(ctx, 'save-as', 'Download samples (gzipped CSV or JSON)');
+        dlBtn.addEventListener('click', function () {
+          openExportMenu(dlBtn, opts.measure, ctx.currentPlotBindingName);
+        });
+        bar.appendChild(dlBtn);
+      }
     }
     el.appendChild(bar);
   }
