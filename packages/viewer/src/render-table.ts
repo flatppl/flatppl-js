@@ -32,8 +32,7 @@ export function variateSummary(samples: Float64Array, logWeights: ArrayLike<numb
   const n = samples.length;
   // Coarse bin cap: the inline cell is ~120px, so FD's natural bin count
   // (can be 40–100+) renders as unreadable hairlines. Cap at TABLE_HIST_BINS
-  // for legible bars; also coarsens `mode` to the same resolution (fine for
-  // a summary readout).
+  // for legible bars.
   const hist = H.freedmanDiaconisHistogram(samples,
     logWeights ? { logWeights, maxBins: TABLE_HIST_BINS } : { maxBins: TABLE_HIST_BINS });
 
@@ -53,14 +52,6 @@ export function variateSummary(samples: Float64Array, logWeights: ArrayLike<numb
   for (let i = 0; i < n; i++) { const d = samples[i] - mean; varSum += w[i] * d * d; }
   const std = Math.sqrt(varSum);
 
-  // Mode = centre of the tallest histogram bar.
-  let mode = NaN;
-  if (hist.ys && hist.ys.length > 0) {
-    let best = 0;
-    for (let i = 1; i < hist.ys.length; i++) if (hist.ys[i] > hist.ys[best]) best = i;
-    mode = hist.xs[best];
-  }
-
   // Weighted quantiles need samples sorted ascending with weights re-paired.
   const idx = Array.from({ length: n }, (_, i) => i);
   idx.sort((a, b) => samples[a] - samples[b]);
@@ -71,7 +62,7 @@ export function variateSummary(samples: Float64Array, logWeights: ArrayLike<numb
   const q05 = H.weightedQuantileSorted(sortedSamples, sortedW, 0.05);
   const q95 = H.weightedQuantileSorted(sortedSamples, sortedW, 0.95);
 
-  return { mean, std, mode, median, q05, q95, hist };
+  return { mean, std, median, q05, q95, hist };
 }
 
 /** Inline HTML histogram: a flex row of <div> bars, each height = ys[i]/max(ys),
@@ -136,7 +127,19 @@ function measureEss(measure: any, n: number): number {
   } catch (_) { return n; }
 }
 
-const COLS = ['variate', 'mean', 'std', 'mode', 'median', '5%', '95%', 'mcse', 'histogram'];
+/** Per-variate ESS + R̂ for the Table. MCMC backends carry per-parameter
+ *  diagnostics (diagnostics.perParam[name] = { rHat, essBulk }); IS / AMIS /
+ *  SMC / IID priors do not. ESS falls back to the measure-level Kish ESS
+ *  (fallbackEss); R̂ is NaN (rendered as —) when no per-parameter value exists. */
+export function tableDiagnostics(measure: any, label: string, fallbackEss: number): { ess: number; rhat: number } {
+  const pp = measure && measure.diagnostics && measure.diagnostics.perParam;
+  const e = pp && pp[label];
+  const ess = e && Number.isFinite(e.essBulk) ? e.essBulk : fallbackEss;
+  const rhat = e && Number.isFinite(e.rHat) ? e.rHat : NaN;
+  return { ess, rhat };
+}
+
+const COLS = ['variate', 'mean', 'std', 'median', '5%', '95%', 'ess', 'R̂', 'mcse', 'histogram'];
 
 /** Third record-measure view mode: a per-variate summary-statistics table. */
 export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, bindingName: string): void {
@@ -166,6 +169,8 @@ export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, b
   for (let c = 0; c < COLS.length; c++) {
     const th = document.createElement('th');
     th.textContent = COLS[c];
+    if (COLS[c] === 'ess') th.title = 'Effective sample size. Per-variate bulk-ESS for MCMC backends; measure-level Kish ESS (1/Σpᵢ²) for importance-sampled / weighted measures.';
+    if (COLS[c] === 'R̂') th.title = 'Split-R̂ convergence diagnostic (want < 1.01). Only defined for multi-chain MCMC; — for IS, AMIS, SMC and IID priors.';
     if (COLS[c] === 'mcse') th.title = 'Monte Carlo standard error of the mean ≈ std / √ESS (ArviZ mcse_mean)';
     th.style.textAlign = c === 0 ? 'left' : (c === COLS.length - 1 ? 'center' : 'right');
     th.style.padding = '2px 8px';
@@ -189,9 +194,12 @@ export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, b
     tr.appendChild(nameTd);
 
     // MCSE of the mean ≈ sd / √ESS (ArviZ mcse_mean). Per-variate via sd_i,
-    // sharing the measure-level ESS. ess null (zero mass) → em-dash.
-    const mcse = ess != null ? s.std / Math.sqrt(ess) : NaN;
-    const cells = [fmt(s.mean), fmt(s.std), fmt(s.mode), fmt(s.median), fmt(s.q05), fmt(s.q95), fmt(mcse)];
+    // using the per-variate ESS from tableDiagnostics (falls back to measure-
+    // level Kish ESS for IS/weighted/IID measures).
+    const diag = tableDiagnostics(measure, a.label, ess);
+    const mcse = (diag.ess != null && diag.ess > 0) ? s.std / Math.sqrt(diag.ess) : NaN;
+    const cells = [fmt(s.mean), fmt(s.std), fmt(s.median), fmt(s.q05), fmt(s.q95),
+                   fmt(diag.ess), fmt(diag.rhat), fmt(mcse)];
     for (let c = 0; c < cells.length; c++) {
       const td = document.createElement('td');
       td.textContent = cells[c];

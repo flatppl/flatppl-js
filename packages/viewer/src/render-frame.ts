@@ -332,7 +332,7 @@ export function renderPlotFrame(ctx: Ctx, opts: any) {
       // least one scalar variate. Absent on profile/constant views (no measure).
       // Click opens a small menu to pick the (always gzip-compressed) format.
       if (listScalarAxes(opts.measure).length > 0) {
-        const dlBtn = makeActionButton(ctx, 'save-as', 'Download samples (gzipped CSV or JSON)');
+        const dlBtn = makeActionButton(ctx, 'save-as', 'Download draws (gzipped CSV or JSON)');
         dlBtn.addEventListener('click', function () {
           openExportMenu(dlBtn, opts.measure, ctx.currentPlotBindingName);
         });

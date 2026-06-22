@@ -55,7 +55,7 @@ body {
 
    Heights subtract header(~32px) + info(60px). */
 #plot-toggle {
-  margin-left: 0.4em;
+  margin-left: auto;
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
   border: 1px solid var(--vscode-button-border, transparent);

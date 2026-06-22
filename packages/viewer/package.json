@@ -16,6 +16,7 @@
     "directory": "packages/viewer"
   },
   "scripts": {
+    "test": "node --test 'src/**/*.test.ts'",
     "prebuild": "npm run typecheck",
     "build": "node ./build.mjs",
     "watch": "node ./build.mjs --watch",

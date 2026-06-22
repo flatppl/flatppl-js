@@ -453,7 +453,6 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   wrap.style.display = 'inline-flex';
   wrap.style.alignItems = 'center';
   wrap.style.gap = '0.3em';
-  wrap.style.marginLeft = 'auto';   // right-align the group within the header flex
 
   const lbl = document.createElement('label');
   lbl.textContent = 'Sampler:';
