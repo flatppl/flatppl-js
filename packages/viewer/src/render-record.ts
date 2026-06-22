@@ -12,6 +12,8 @@ import { renderCornerGrid, renderDensityStrips } from './render-density.js';
 import { renderRecordTable } from './render-table.js';
 import { detectGeneratedQuantities, fixedEnvFor } from './generated-quantities.js';
 import { buildInferenceControl } from './render-controls.js';
+import { renderRecordPpc } from './render-ppc.js';
+import { sendWorker } from './worker.js';
 
 import { showPlotMessage } from './render-frame.js';
 import { esc, formatCount, formatLogTotalmass, formatSampleCount, formatScalar, formatValue } from './util.js';
@@ -235,6 +237,50 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     if (!ctx.recordSelection!.genQuantities) ctx.recordSelection!.genQuantities = [];
   }
 
+  // PPC state: built lazily on first switch to 'ppc' mode.
+  // ppcAvailable starts false; set to true once a non-null PPC
+  // is successfully built so the dropdown option is shown after
+  // the first successful build. ppcBuilt guards against re-runs.
+  let ppc: any = null;
+  let ppcAvailable = false;
+  let ppcBuilt = false;
+
+  // Build the PPC once — called when the user first selects 'ppc'
+  // mode and ppcBuilt is false. Builds a matCtx mirroring the one
+  // used by engine-facade.getMeasure (same derivations/bindings/
+  // fixedValues/rootKey/sendWorker shape the engine expects).
+  // On success sets ppc + ppcAvailable = true and triggers a full
+  // rerender so the dropdown option appears and the chart renders.
+  // On failure ppc stays null and we fall through to correlations.
+  async function ensurePpc() {
+    if (ppcBuilt) return;
+    ppcBuilt = true;
+    if (!isBayesupdate || !ctx.derivationsState) return;
+    const deriv = ctx.derivationsState.derivations[bindingName];
+    if (!deriv || deriv.kind !== 'bayesupdate') return;
+    const matCtx: any = {
+      derivations: ctx.derivationsState.derivations,
+      bindings:    ctx.derivationsState.bindings,
+      fixedValues: ctx.derivationsState.fixedValues,
+      rootKey:     ctx.rootSeed,
+      sendWorker:  function(m: any) { return sendWorker(ctx, m); },
+    };
+    try {
+      const result = await FlatPPLEngine.posteriorPredictive.buildPosteriorPredictive(
+        deriv, matCtx, measure,
+      );
+      if (result) {
+        ppc = result;
+        ppcAvailable = true;
+        // Full rerender so the toolbar gains the PPC dropdown option
+        // and the chart area switches to the PPC renderer.
+        rerenderAll();
+      }
+    } catch (_) {
+      // Silently ignore — ppc stays null, ppcAvailable stays false.
+    }
+  }
+
   // chartHostRef captures the chart-area div from the frame, so
   // rerenderChart can clear and repopulate it without rebuilding
   // the toolbar (which would close any open dropdown).
@@ -258,7 +304,17 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     // Use the derived measure (with any toggled generated quantities
     // appended as extra fields) for all chart renderers.
     const dm = displayMeasure();
-    if (ctx.recordSelection!.mode === 'table') {
+    if ((ctx.recordSelection!.mode as any) === 'ppc') {
+      if (ppc) {
+        renderRecordPpc(ctx, chartHostRef, ppc);
+      } else {
+        // PPC not yet available (build pending or failed) — fall back
+        // to correlations so the pane is never blank. If the build
+        // completes successfully it triggers a full rerender.
+        if (!ppcBuilt) ensurePpc();
+        renderCornerGrid(ctx, chartHostRef, dm, bindingName);
+      }
+    } else if (ctx.recordSelection!.mode === 'table') {
       renderRecordTable(ctx, chartHostRef, dm, bindingName);
     } else if (ctx.recordSelection!.mode === 'marginals') {
       // Marginals mode: filter axes by selected groups (group =
@@ -290,7 +346,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
       : extraToolbarControls;
     const toolbarControls = renderRecordToolbar(ctx,
       axes, allGroups, rerenderAll, rerenderChart, extra,
-      isBayesupdate, isBayesupdate ? genCandidates : []);
+      isBayesupdate, isBayesupdate ? genCandidates : [], ppcAvailable);
     renderPlotFrame(ctx, {
       measure: measure,
       toolbarControls: toolbarControls,
@@ -302,6 +358,10 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
   }
 
   rerenderAll();
+  // Eagerly kick off the PPC build for bayesupdate posteriors so the
+  // "Posterior predictive" dropdown option appears automatically once
+  // it completes — the user does not need to switch to 'ppc' mode first.
+  if (isBayesupdate) ensurePpc();
 }
 
 /**
@@ -318,7 +378,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
  * mode buttons reflect active state and the selector visibility
  * tracks the mode.
  */
-export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onModeChange: () => void, onSelectionChange: () => void, extraToolbarControls: any, isBayesupdatePosterior: boolean, genCandidates?: Array<{ name: string; ir: any }>) {
+export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onModeChange: () => void, onSelectionChange: () => void, extraToolbarControls: any, isBayesupdatePosterior: boolean, genCandidates?: Array<{ name: string; ir: any }>, ppcAvailable?: boolean) {
   const bar = document.createDocumentFragment();
 
   // ---- Mode dropdown ----
@@ -330,6 +390,9 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
     { key: 'marginals',    label: 'Marginals',    title: 'One column per axis with vertical density shading; plots every axis' },
     { key: 'table',        label: 'Table',        title: 'Summary-statistics table: per-variate mean, std, median, credible interval, ESS, R̂, MCSE, and an inline histogram' },
   ];
+  if (ppcAvailable) {
+    MODE_OPTIONS.push({ key: 'ppc', label: 'Posterior predictive', title: 'Replicated observations forward-sampled at each posterior draw, overlaid on the observed data' });
+  }
   const modeSel = document.createElement('select');
   modeSel.style.cursor = 'pointer';
   modeSel.style.fontSize = '1em';
