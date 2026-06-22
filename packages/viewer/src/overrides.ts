@@ -256,10 +256,11 @@ export function applyRememberedSelections(ctx: Ctx, plan: any) {
   plan.autoOverride = filterOverrideToAxes(mem.autoOverride, axisKwargs, 'values');
   plan.domainAutoOverride = filterOverrideToAxes(mem.domainAutoOverride, axisKwargs, 'ranges');
   if (mem.presetName === MLE_PRESET) {
-    // `auto (MLE)` isn't a matchedPreset; restore it directly. If its cache
-    // entry was cleared (source edit), baseValuesFor falls through to the
-    // prior-draw `auto`, so this is always safe.
-    plan.presetName = MLE_PRESET;
+    // `auto (MLE)` is no longer a separate selectable entry — the MLE is the
+    // value of the single `auto` (null) preset for a likelihood (baseValuesFor).
+    // Migrate a persisted MLE selection to `auto`, which resolves to the same
+    // MLE point when the optimiser is ready (else the prior-draw auto).
+    plan.presetName = null;
   } else if (mem.presetName != null
       && plan.matchedPresets
       && plan.matchedPresets.some(function(p: any) { return p.name === mem.presetName; })) {
