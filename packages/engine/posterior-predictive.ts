@@ -158,6 +158,9 @@ async function buildPosteriorPredictive(
   }
 
   // Posterior atom count: all field columns share the same length.
+  if (!posteriorMeasure || !posteriorMeasure.fields
+      || !posteriorMeasure.fields[d.paramKwargs[0]]
+      || !posteriorMeasure.fields[d.paramKwargs[0]].samples) return null;
   const count: number = posteriorMeasure.fields[d.paramKwargs[0]].samples.length;
 
   const fields: Record<string, PPCField> = {};
@@ -182,7 +185,8 @@ async function buildPosteriorPredictive(
       // Resolve the inner dist — it may be a ref to a named dist binding.
       const rawInnerDistIR = resolvedMIR.args[0];
       const resolvedInner = resolveToMeasureIR(rawInnerDistIR, ctx.bindings, new Set<string>());
-      innerDist = resolvedInner || rawInnerDistIR;
+      innerDist = resolvedInner;
+      if (!innerDist) return null;
       // Resolve repeat count
       try {
         const repeatVal = orchestrator.resolveIRToValue(
