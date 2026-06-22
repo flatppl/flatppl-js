@@ -203,8 +203,7 @@ function appendPpcPanel(
     for (let i = 0; i < rugValues.length; i++) {
       const v = rugValues[i];
       if (!Number.isFinite(v)) continue;
-      const pct = (v - xMin) / xRange;
-      if (pct < 0 || pct > 1) continue;
+      const pct = Math.max(0, Math.min(1, (v - xMin) / xRange));
       const tick = document.createElement('div');
       tick.style.position = 'absolute';
       tick.style.left = (pct * 100) + '%';
@@ -225,7 +224,7 @@ function appendPpcPanel(
     note.style.fontSize = '0.8em';
     note.style.opacity = '0.55';
     note.style.marginTop = '1px';
-    note.textContent = '(showing 200 of ' + observed.length + ' observed values)';
+    note.textContent = '(showing ' + MAX_RUG_TICKS + ' of ' + observed.length + ' observed values)';
     panel.appendChild(note);
   }
 
