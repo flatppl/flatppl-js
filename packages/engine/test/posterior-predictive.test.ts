@@ -52,6 +52,28 @@ test('posterior-predictive matches the closed-form conjugate-Normal predictive',
   assert.ok(Math.abs(got.std - want.std) < 0.05, `predictive std ${got.std} vs ${want.std}`);
 });
 
+const fs = require('node:fs');
+const BEST = fs.readFileSync('/Users/bcox/Code/flatppl/flatppl-examples/examples/best-estimation.flatppl', 'utf8');
+
+test('PPC decomposes best-estimation into y1,y2 with data-scale predictive', async () => {
+  const { ctx } = ctxFor(BEST, 4000);
+  let d = null; for (const n of Object.keys(ctx.derivations)) if (ctx.derivations[n] && ctx.derivations[n].kind === 'bayesupdate') d = ctx.derivations[n];
+  const posterior = await ctx.getMeasure('posterior');
+  const ppc = await pp.buildPosteriorPredictive(d, ctx, posterior);
+  assert.ok(ppc && ppc.fields.y1 && ppc.fields.y2, 'both observed fields present');
+  assert.equal(ppc.fields.y1.observed.length, 8);
+  // group-1 data centres ~101.75; the posterior-predictive should sit near it.
+  // Use the median of finite samples: the BEST model uses an Exponential(1/29)
+  // prior on nu, so IS draws can include very small nu (StudentT with nu≈0.01–0.05
+  // has extremely heavy tails), which produces astronomically large finite samples.
+  // Those extreme-nu atoms carry very low IS logWeights; the median is unaffected
+  // by the small fraction of extreme draws and reliably sits near the data centre.
+  const s: number[] = Array.from(ppc.fields.y1.yRep.samples as Float64Array).filter((v) => isFinite(v));
+  s.sort((a, b) => a - b);
+  const median: number = s[Math.floor(s.length / 2)];
+  assert.ok(median > 98 && median < 106, `y1 predictive median ${median} near data centre ~101.75`);
+});
+
 test('buildPosteriorPredictive returns null when body is not a decomposable record', async () => {
   // A scalar-observation likelihood (no record body) → null, not a throw.
   const src = `
