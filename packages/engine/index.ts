@@ -29,6 +29,7 @@ const dataload = require('./dataload.ts');
 const perfConfig = require('./perf-config.ts');
 const optimizer = require('./optimizer/index.ts');
 const generatedQuantities = require('./generated-quantities.ts');
+const posteriorPredictive = require('./posterior-predictive.ts');
 // NOTE: ./sampler and ./worker are NOT re-exported here. The main-thread
 // engine bundle (lib/engine.min.js) is kept small by stubbing @stdlib at
 // build time via build-vendor.mjs + build-stdlib-stub.cjs; the sampler-
@@ -121,4 +122,6 @@ module.exports = {
   optimizer,
   // Stan-style generated quantities: samplewise evaluation over a record measure.
   generatedQuantities,
+  // Posterior-predictive sampling for plain-distribution likelihoods.
+  posteriorPredictive,
 };
