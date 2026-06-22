@@ -159,7 +159,6 @@ import {
 } from './plot-plan.js';
 import {
   buildDomainControl,
-  buildInferenceControl,
   buildPresetControl,
 } from './render-controls.js';
 import {
@@ -1337,28 +1336,23 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     setPlotEnabled(ctx, !ctx.plotEnabled);
   });
 
-  // Inference-backend selector. Switching backend (or a sampler knob) makes
-  // every cached posterior measure stale — it was materialised under the old
-  // backend/seed — so drop the caches, persist the choice, and re-render.
-  const inferenceHost = $('inference-controls');
-  if (inferenceHost) {
-    // Restore a persisted backend choice before building the control so the
-    // dropdown + knobs reflect the saved state.
-    if (ctx.host.loadState) {
-      try {
-        const st = ctx.host.loadState();
-        if (st && st.inferenceOpts) Object.assign(ctx.inferenceOpts, st.inferenceOpts);
-      } catch (_) {}
-    }
-    inferenceHost.appendChild(buildInferenceControl(ctx, function () {
-      ctx.measureCache = new Map();
-      ctx.histogramCache = new Map();
-      if (ctx.host.saveState) {
-        try { ctx.host.saveState({ plotEnabled: ctx.plotEnabled, inferenceOpts: ctx.inferenceOpts }); } catch (_) {}
-      }
-      if (ctx.plotEnabled) renderPlotForCurrent(ctx);
-    }));
+  // The inference-backend control now lives in the record-measure plot toolbar
+  // (built per-render, bayesupdate-only — see render-record). Its onChange
+  // closure is shared via ctx so the toolbar can rebuild the control.
+  if (ctx.host.loadState) {
+    try {
+      const st = ctx.host.loadState();
+      if (st && st.inferenceOpts) Object.assign(ctx.inferenceOpts, st.inferenceOpts);
+    } catch (_) {}
   }
+  ctx.onInferenceChange = function () {
+    ctx.measureCache = new Map();
+    ctx.histogramCache = new Map();
+    if (ctx.host.saveState) {
+      try { ctx.host.saveState({ plotEnabled: ctx.plotEnabled, inferenceOpts: ctx.inferenceOpts }); } catch (_) {}
+    }
+    if (ctx.plotEnabled) renderPlotForCurrent(ctx);
+  };
 
   // Drag handle between the DAG and plot panes. Lets the user
   // redistribute vertical space; both panes have a min-height clamp

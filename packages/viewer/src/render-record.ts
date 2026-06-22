@@ -11,6 +11,7 @@ import type { Ctx } from './types';
 import { renderCornerGrid, renderDensityStrips } from './render-density.js';
 import { renderRecordTable } from './render-table.js';
 import { detectGeneratedQuantities, fixedEnvFor } from './generated-quantities.js';
+import { buildInferenceControl } from './render-controls.js';
 
 import { showPlotMessage } from './render-frame.js';
 import { esc, formatCount, formatLogTotalmass, formatSampleCount, formatScalar, formatValue } from './util.js';
@@ -289,7 +290,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
       : extraToolbarControls;
     const toolbarControls = renderRecordToolbar(ctx,
       axes, allGroups, rerenderAll, rerenderChart, extra,
-      isBayesupdate ? genCandidates : []);
+      isBayesupdate, isBayesupdate ? genCandidates : []);
     renderPlotFrame(ctx, {
       measure: measure,
       toolbarControls: toolbarControls,
@@ -317,7 +318,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
  * mode buttons reflect active state and the selector visibility
  * tracks the mode.
  */
-export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onModeChange: () => void, onSelectionChange: () => void, extraToolbarControls: any, genCandidates?: Array<{ name: string; ir: any }>) {
+export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onModeChange: () => void, onSelectionChange: () => void, extraToolbarControls: any, isBayesupdatePosterior: boolean, genCandidates?: Array<{ name: string; ir: any }>) {
   const bar = document.createDocumentFragment();
 
   // ---- Mode dropdown ----
@@ -355,6 +356,18 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
     onModeChange();
   });
   bar.appendChild(modeSel);
+
+  // Sampler selector — only for bayesupdate posteriors (the only measures that
+  // use a sampler). Hidden for IID priors and every other measure, so the bar
+  // never shows a stale backend label for a prior that is sampled IID.
+  if (isBayesupdatePosterior && ctx.onInferenceChange) {
+    const sep0 = document.createElement('div');
+    sep0.style.width = '1px';
+    sep0.style.alignSelf = 'stretch';
+    sep0.style.background = 'rgba(255,255,255,0.1)';
+    bar.appendChild(sep0);
+    bar.appendChild(buildInferenceControl(ctx, ctx.onInferenceChange));
+  }
 
   // Axis-level selector in correlations mode (per-leaf
   // checkboxes, capped at CORRELATIONS_MAX_AXES); group-level
