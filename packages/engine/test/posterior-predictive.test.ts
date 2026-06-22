@@ -94,3 +94,34 @@ posterior = bayesupdate(L, prior)
   const ppc = await pp.buildPosteriorPredictive(d, ctx, posterior);
   assert.equal(ppc, null);
 });
+
+test('PPC handles locscale with a named fixed-phase shift constant', async () => {
+  // Regression: the forward-body evaluateN path must inject fixed-phase constants
+  // (like shift0=2.0) via addFixedRefArrays, not just posterior params.
+  // Without the fix, shift0 is absent from fwdRefArrays, the worker evaluates
+  // the bijection body against an empty ref for shift0, and returns NaN.
+  const src = `
+y_data = [3.0, 1.0, 4.0, 2.0, 3.5]
+shift0 = 2.0
+nu = 8.0
+sigma ~ Uniform(interval(0.5, 5.0))
+prior = lawof(record(sigma = sigma))
+y ~ iid(locscale(StudentT(nu), shift0, sigma), 5)
+forward_kernel = kernelof(record(y = y), sigma = sigma)
+L = likelihoodof(forward_kernel, record(y = y_data))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx } = ctxFor(src, 8000);
+  let d = null; for (const n of Object.keys(ctx.derivations)) if (ctx.derivations[n] && ctx.derivations[n].kind === 'bayesupdate') d = ctx.derivations[n];
+  assert.ok(d, 'bayesupdate derivation present');
+  const posterior = await ctx.getMeasure('posterior');
+  const ppc = await pp.buildPosteriorPredictive(d, ctx, posterior);
+  assert.ok(ppc && ppc.fields && ppc.fields.y, 'PPC built with a fixed-const shift');
+  const s = ppc.fields.y.yRep.samples;
+  assert.ok(s.length > 0, 'y_rep samples present');
+  // Every finite sample must be a real number (not NaN-poisoned by the dropped const).
+  // Without the fix, shift0 is missing from the forward-body refArrays and the
+  // worker returns NaN for each sample.
+  const finite = Array.from(s).filter(Number.isFinite);
+  assert.ok(finite.length > s.length * 0.9, `most y_rep finite (got ${finite.length}/${s.length})`);
+});

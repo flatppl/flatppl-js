@@ -85,7 +85,7 @@ function selfRefs(ir: any, acc: Set<string>): Set<string> {
 // This is needed when a base distribution has fixed-phase params (e.g. nu=8.0
 // in StudentT(nu)) that are not sampled but referenced by name in the IR.
 function addFixedRefArrays(
-  ir: any,
+  _ir: any,
   refs: Set<string>,
   refArrays: Record<string, Float64Array>,
   ctx: any,
@@ -378,6 +378,15 @@ async function buildPosteriorPredictive(
           }
         }
       }
+
+      // Inject fixed-phase constants referenced by the forward body
+      // (e.g. a named shift constant like `shift0 = 2.0`) that are neither
+      // posterior params nor the function param.  The broadcast length is
+      // count*repeat — the forward body is evaluated over the full base-sample
+      // column (atom-major, count*repeat elements).
+      // addFixedRefArrays skips names already present in fwdRefArrays (posterior
+      // params tiled above), so it cannot override them.
+      addFixedRefArrays(fwdBody, fwdBodyRefs, fwdRefArrays, ctx, count * repeat);
 
       const fwdReply = await ctx.sendWorker({
         type: 'evaluateN',
