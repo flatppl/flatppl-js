@@ -28,17 +28,22 @@ const { SAMPLEABLE_DISTRIBUTIONS } = require('./ir-shared.ts');
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
-export interface YRepField {
+// Local interfaces (NOT `export`ed): an ESM `export` statement flips esbuild's
+// module classification to ESM, which breaks the CJS `module.exports` at the
+// bottom of this file in the browser engine bundle ("module is not defined").
+// The runtime contract is the `module.exports` below; consumers read the result
+// as `any` via FlatPPLEngine.posteriorPredictive.
+interface YRepField {
   samples: Float64Array;
   logWeights: Float64Array | null;
 }
 
-export interface PPCField {
+interface PPCField {
   yRep: YRepField;
   observed: number[];
 }
 
-export interface PPC {
+interface PPC {
   fields: Record<string, PPCField>;
 }
 
