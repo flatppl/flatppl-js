@@ -1017,7 +1017,7 @@ function _crystalBallLogpdf(x: number, m0: number, sigma: number, alpha: number,
 // two half-Gaussian core integrals.
 function _doubleSidedCrystalBallLogpdf(
   x: number, m0: number, sigmaL: number, sigmaR: number,
-  alphaL: number, nL: number, alphaR: number, nR: number,
+  alphaL: number, alphaR: number, nL: number, nR: number,
 ): number {
   const aL = Math.abs(alphaL), aR = Math.abs(alphaR);
   const AL = Math.pow(nL / aL, nL) * Math.exp(-aL * aL / 2), BL = nL / aL - aL;

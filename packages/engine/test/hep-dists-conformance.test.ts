@@ -58,7 +58,7 @@ test('CrystalBall(m0,sigma,alpha,n) density', () =>
     [-3.0, -3.7228466427263354], [0.5, -1.1182119272953486], [2.0, -2.9932119272953486]]));
 
 test('DoubleSidedCrystalBall density', () =>
-  checkAll('DoubleSidedCrystalBall', 'm0', 0.0, ', 1.0, 1.5, 1.2, 3.0, 2.0, 4.0', [
+  checkAll('DoubleSidedCrystalBall', 'm0', 0.0, ', 1.0, 1.5, 1.2, 2.0, 3.0, 4.0', [
     [-2.0, -2.8065391819655585], [0.3, -1.2736439721707202], [4.0, -4.404372261977843]]));
 
 test('Argus(resonance,slope,power) density', () =>
