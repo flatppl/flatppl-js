@@ -74,6 +74,30 @@ function selfRefs(ir: any, acc: Set<string>): Set<string> {
   return acc;
 }
 
+// Add constant Float64Array entries to refArrays for any self-refs in `ir`
+// that resolve to a finite scalar in ctx.fixedValues, are not already present
+// in refArrays, and are not posterior params (those are handled separately).
+// This is needed when a base distribution has fixed-phase params (e.g. nu=8.0
+// in StudentT(nu)) that are not sampled but referenced by name in the IR.
+function addFixedRefArrays(
+  ir: any,
+  refs: Set<string>,
+  refArrays: Record<string, Float64Array>,
+  ctx: any,
+  n: number,
+): void {
+  if (!ctx.fixedValues || typeof ctx.fixedValues.get !== 'function') return;
+  for (const name of refs) {
+    if (name in refArrays) continue; // already supplied (posterior param)
+    if (!ctx.fixedValues.has || !ctx.fixedValues.has(name)) continue;
+    const val = ctx.fixedValues.get(name);
+    if (typeof val !== 'number' || !isFinite(val)) continue;
+    const arr = new Float64Array(n);
+    arr.fill(val);
+    refArrays[name] = arr;
+  }
+}
+
 // ── IR ref resolution ─────────────────────────────────────────────────────
 
 // Resolve a self-ref (or a `draw(ref(...))` wrapper) through the bindings
@@ -230,7 +254,8 @@ async function buildPosteriorPredictive(
 
     if (SAMPLEABLE_DISTRIBUTIONS.has(innerDist.op)) {
       // ── Leaf distribution path (Task 1) ────────────────────────────────
-      // Build refArrays: include only params that appear as self-refs in innerDist.
+      // Build refArrays: include posterior params and fixed-value scalars
+      // that appear as self-refs in innerDist.
       const distSelfRefs = selfRefs(innerDist, new Set<string>());
       const refArrays: Record<string, Float64Array> = {};
       for (const p of d.paramKwargs) {
@@ -238,6 +263,7 @@ async function buildPosteriorPredictive(
           refArrays[p] = posteriorMeasure.fields[p].samples;
         }
       }
+      addFixedRefArrays(innerDist, distSelfRefs, refArrays, ctx, count);
 
       const reply = await ctx.sendWorker({
         type: 'sampleN',
@@ -293,7 +319,8 @@ async function buildPosteriorPredictive(
       const fwdBody: any = fwdIR.body;
 
       // Step 1: sample from the base distribution.
-      // refArrays for the base dist: self-refs in baseDist that are posterior params.
+      // refArrays for the base dist: posterior params and fixed-value scalars
+      // (e.g. nu = 8.0 in StudentT(nu)) that appear as self-refs in baseDist.
       const baseSelfRefs = selfRefs(baseDist, new Set<string>());
       const baseRefArrays: Record<string, Float64Array> = {};
       for (const p of d.paramKwargs) {
@@ -301,6 +328,7 @@ async function buildPosteriorPredictive(
           baseRefArrays[p] = posteriorMeasure.fields[p].samples;
         }
       }
+      addFixedRefArrays(baseDist, baseSelfRefs, baseRefArrays, ctx, count);
       const baseReply = await ctx.sendWorker({
         type: 'sampleN',
         ir: baseDist,
@@ -314,7 +342,11 @@ async function buildPosteriorPredictive(
       // Step 2: apply the forward transform via evaluateN.
       // Collect self-refs in the forward body (excluding the function param).
       const fwdBodyRefs = selfRefs(fwdBody, new Set<string>());
-      fwdBodyRefs.delete(fwdParamName); // param is not a self-ref, but guard anyway
+      // fwdParamName ('_x_') is a %local placeholder injected by the analyzer, not a
+      // self-ref — selfRefs only collects ns:'self' refs, so fwdParamName is provably
+      // absent from fwdBodyRefs.  The delete is a no-op; the param is supplied
+      // unconditionally via fwdRefArrays[fwdParamName] = baseZ below.
+      fwdBodyRefs.delete(fwdParamName);
 
       // Build refArrays for the forward body:
       //   - fwdParamName → base samples (already count*repeat length)
@@ -348,7 +380,9 @@ async function buildPosteriorPredictive(
         count: count * repeat,
         refArrays: fwdRefArrays,
       });
-      yrSamples = fwdReply.samples || fwdReply.out;
+      const fwdSamples = fwdReply.samples;
+      if (!fwdSamples) return null;
+      yrSamples = fwdSamples;
 
     } else {
       // Composite inner distribution not yet supported (truncate, superpose, …).

@@ -52,26 +52,30 @@ test('posterior-predictive matches the closed-form conjugate-Normal predictive',
   assert.ok(Math.abs(got.std - want.std) < 0.05, `predictive std ${got.std} vs ${want.std}`);
 });
 
-const fs = require('node:fs');
-const BEST = fs.readFileSync('/Users/bcox/Code/flatppl/flatppl-examples/examples/best-estimation.flatppl', 'utf8');
+// Inline composite-likelihood model: locscale(StudentT) with FIXED nu (no
+// heavy-tail explosion), so the IS-weighted predictive mean is stable.
+const COMP = `
+y_data = [2.0, -1.0, 3.0, 0.5, -2.0]
+mu ~ Normal(0.0, 5.0)
+sigma ~ Uniform(interval(0.5, 5.0))
+nu = 8.0
+prior = lawof(record(mu = mu, sigma = sigma))
+y ~ iid(locscale(StudentT(nu), mu, sigma), 5)
+forward_kernel = kernelof(record(y = y), mu = mu, sigma = sigma)
+L = likelihoodof(forward_kernel, record(y = y_data))
+posterior = bayesupdate(L, prior)
+`;
 
-test('PPC decomposes best-estimation into y1,y2 with data-scale predictive', async () => {
-  const { ctx } = ctxFor(BEST, 4000);
+test('PPC handles a composite (locscale StudentT) likelihood, weighted predictive near the data centre', async () => {
+  const { ctx } = ctxFor(COMP, 20000);
   let d = null; for (const n of Object.keys(ctx.derivations)) if (ctx.derivations[n] && ctx.derivations[n].kind === 'bayesupdate') d = ctx.derivations[n];
   const posterior = await ctx.getMeasure('posterior');
   const ppc = await pp.buildPosteriorPredictive(d, ctx, posterior);
-  assert.ok(ppc && ppc.fields.y1 && ppc.fields.y2, 'both observed fields present');
-  assert.equal(ppc.fields.y1.observed.length, 8);
-  // group-1 data centres ~101.75; the posterior-predictive should sit near it.
-  // Use the median of finite samples: the BEST model uses an Exponential(1/29)
-  // prior on nu, so IS draws can include very small nu (StudentT with nu≈0.01–0.05
-  // has extremely heavy tails), which produces astronomically large finite samples.
-  // Those extreme-nu atoms carry very low IS logWeights; the median is unaffected
-  // by the small fraction of extreme draws and reliably sits near the data centre.
-  const s: number[] = Array.from(ppc.fields.y1.yRep.samples as Float64Array).filter((v) => isFinite(v));
-  s.sort((a, b) => a - b);
-  const median: number = s[Math.floor(s.length / 2)];
-  assert.ok(median > 98 && median < 106, `y1 predictive median ${median} near data centre ~101.75`);
+  assert.ok(ppc && ppc.fields && ppc.fields.y, 'PPC built for composite field y');
+  assert.equal(ppc.fields.y.observed.length, 5);
+  const { mean } = weightedMeanStd(ppc.fields.y.yRep.samples, ppc.fields.y.yRep.logWeights);
+  // data centre = 0.5; weighted posterior-predictive mean should land near it.
+  assert.ok(mean > -2 && mean < 3, `composite weighted predictive mean ${mean} near data centre 0.5`);
 });
 
 test('buildPosteriorPredictive returns null when body is not a decomposable record', async () => {
