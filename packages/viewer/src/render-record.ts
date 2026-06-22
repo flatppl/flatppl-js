@@ -479,8 +479,8 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
       nLabel.textContent = formatSampleCount(trueN) + ' draws';
       nLabel.title = trueN + ' sampler draws (resampled to ' + formatCount(q.N) + ' atoms for plotting)';
     } else {
-      nLabel.textContent = formatSampleCount(q.N) + ' samples';
-      nLabel.title = 'Total atom count in the empirical measure'
+      nLabel.textContent = formatSampleCount(q.N) + ' draws';
+      nLabel.title = 'Total draw count in the empirical measure'
                    + (q.N >= 100 && Math.log10(q.N) === Math.floor(Math.log10(q.N))
                       ? ' (' + formatCount(q.N) + ')'
                       : '');
@@ -595,7 +595,7 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
     wrap.appendChild(diag);
   } catch (err) {
     try { console.error('IS-quality classifier failed:', err); } catch (_) {}
-    wrap.textContent = '— samples';
+    wrap.textContent = '— draws';
   }
   return wrap;
 }
