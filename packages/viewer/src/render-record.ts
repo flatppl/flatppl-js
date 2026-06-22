@@ -471,7 +471,7 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
     // SAMPLE_COUNT atoms for plotting, so q.N is an unconditional ~10^5 that
     // misrepresents the run. Their record carries diagnostics.nSamples = the TRUE
     // draw count — show that, labelled "draws", with the resample noted in the
-    // title. Plain measures keep the atom-count "samples".
+    // title. Plain measures keep the atom-count "draws".
     const nLabel = document.createElement('span');
     const dg: any = measure && measure.diagnostics;
     const trueN = (dg && Number.isFinite(dg.nSamples) && dg.nSamples > 0) ? dg.nSamples : null;

@@ -194,9 +194,10 @@ export function renderRecordTable(ctx: any, hostEl: HTMLElement, measure: any, b
     tr.appendChild(nameTd);
 
     // MCSE of the mean ≈ sd / √ESS (ArviZ mcse_mean). Per-variate via sd_i,
-    // sharing the measure-level ESS. ess null (zero mass) → em-dash.
-    const mcse = ess != null ? s.std / Math.sqrt(ess) : NaN;
+    // using the per-variate ESS from tableDiagnostics (falls back to measure-
+    // level Kish ESS for IS/weighted/IID measures).
     const diag = tableDiagnostics(measure, a.label, ess);
+    const mcse = (diag.ess != null && diag.ess > 0) ? s.std / Math.sqrt(diag.ess) : NaN;
     const cells = [fmt(s.mean), fmt(s.std), fmt(s.median), fmt(s.q05), fmt(s.q95),
                    fmt(diag.ess), fmt(diag.rhat), fmt(mcse)];
     for (let c = 0; c < cells.length; c++) {
