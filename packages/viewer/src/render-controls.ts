@@ -6,7 +6,7 @@
 // to source, or reset to the source's declared values.
 
 import type { Ctx } from './types';
-import { MLE_PRESET, computeAutoValues, hasDomainOverrides, hasOverrides, setDomainOverrideFor, setOverrideFor } from './overrides.js';
+import { computeAutoValues, hasDomainOverrides, hasOverrides, setDomainOverrideFor, setOverrideFor } from './overrides.js';
 import { canPersistActive, canPersistDomain, persistActive, persistDomain } from './persist.js';
 import { makeActionButton } from './render-frame.js';
 import { domainBoundsText, presetValuesText } from './util.js';
@@ -18,32 +18,6 @@ type ControlEntry = {
   longLabel: string;
 };
 type OutsideClickHandler = ((ev: MouseEvent) => void) | null;
-
-/**
- * The labelled `auto (MLE)` entry for likelihood plots, present only once the
- * background optimiser (populateModeCache) has a mode for this binding. On
- * failure / timeout the cache entry is 'failed' (or absent) and this returns
- * null, so the option simply doesn't appear and the normal prior-draw `auto`
- * stays the pivot. The MLE is a computed *base*, override-able like any preset
- * (a dragged point shows `auto (MLE) (modified)` with a reset button).
- */
-function mleControlEntry(ctx: Ctx, plan: any): ControlEntry | null {
-  const sig = plan && plan.signature;
-  if (!sig || sig.obsIR == null) return null;            // likelihoods only
-  const cached = ctx.modeCenterCache && ctx.modeCenterCache.get(plan.name);
-  if (!cached || cached.status !== 'ready' || !cached.values) return null;
-  const override = ctx.presetOverrides.get(MLE_PRESET);
-  const modified = !!(override && override.values
-    && Object.keys(override.values).length > 0);
-  const combined = Object.assign({}, cached.values, (override && override.values) || {});
-  const tag = modified ? ' (modified)' : '';
-  return {
-    name: MLE_PRESET,
-    modified: modified,
-    shortLabel: 'auto (MLE)' + tag,
-    longLabel: 'auto (MLE)' + tag + ': ' + presetValuesText(combined),
-  };
-}
 
 // `trailing`, when given, is placed immediately right of the dropdown and
 // LEFT of the reset/save action group — so a caller's action button (e.g. the
@@ -62,12 +36,14 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void, tr
   const presets = plan.matchedPresets || [];
   const autoValues = computeAutoValues(ctx, plan);
 
-  function buildEntry(name: string | null, baseValues: any, isAuto: boolean): ControlEntry {
+  function buildEntry(name: string | null, baseValues: any, isAuto: boolean, autoIsMle?: boolean): ControlEntry {
     const entryOverride = (name == null) ? plan.autoOverride : ctx.presetOverrides.get(name);
     const modified = !!(entryOverride && entryOverride.values
       && Object.keys(entryOverride.values).length > 0);
     const combined = Object.assign({}, baseValues, (entryOverride && entryOverride.values) || {});
-    const displayName = isAuto ? 'auto' : name;
+    // One `auto` row; labelled `auto (MLE)` when its value is the converged MLE
+    // (likelihood mode), plain `auto` otherwise — never both.
+    const displayName = isAuto ? (autoIsMle ? 'auto (MLE)' : 'auto') : name;
     const tag = modified ? ' (modified)' : '';
     return {
       name: name,
@@ -77,11 +53,14 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void, tr
     };
   }
 
-  entries.push(buildEntry(null, autoValues, true));
-  // Labelled `auto (MLE)` sits right after `auto` when the background
-  // optimiser has a mode for this likelihood; absent otherwise.
-  const mleEntry = mleControlEntry(ctx, plan);
-  if (mleEntry) entries.push(mleEntry);
+  // Single `auto` entry. Its value is the converged MLE (mode) when the
+  // background optimiser is ready for this likelihood, else the prior-draw
+  // auto — matching the actual default pivot (overrides.baseValuesFor). There
+  // is no separate `auto (MLE)` row: one auto, labelled (MLE) when MLE-backed.
+  const mleCache = ctx.modeCenterCache && ctx.modeCenterCache.get(plan.name);
+  const autoIsMle = !!(plan.signature && plan.signature.obsIR != null
+    && mleCache && mleCache.status === 'ready' && mleCache.values);
+  entries.push(buildEntry(null, autoIsMle ? mleCache.values : autoValues, true, autoIsMle));
   for (let pi = 0; pi < presets.length; pi++) {
     entries.push(buildEntry(presets[pi].name, presets[pi].values || {}, false));
   }

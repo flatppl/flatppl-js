@@ -239,41 +239,16 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   const domainRangeForSweep = domainRanges[plan.sweepKey]
     || (sweepAxis.kwargName ? domainRanges[sweepAxis.kwargName] : undefined);
   const cacheKey = plan.name + '|' + plan.sweepKey + '|D=' + (plan.domainName || '');
-  // A likelihood is a sharp spike; framing it with the prior-width auto-fit
-  // renders it flat (the longstanding "likelihood looks flat" complaint). When
-  // the background optimiser (populateModeCache) has a Laplace curvature width
-  // for this axis, frame the PEAK instead: mode ± k·sd, honouring the axis
-  // support. This takes priority OVER the cached prior-width auto-fit — the
-  // first render (MLE not ready yet) caches the wide range, and the rerender
-  // after the MLE lands must override that stale entry rather than reuse it.
-  const curvRange = (function(): [number, number] | null {
-    if (!sig || sig.obsIR == null) return null;        // likelihoods only
-    const mc = ctx.modeCenterCache && ctx.modeCenterCache.get(plan.name);
-    if (!mc || mc.status !== 'ready' || !mc.values || !mc.sd) return null;
-    const kw = sweepAxis.kwargName;
-    if (kw == null) return null;
-    // sd is keyed by AXIS key (`mu`, `theta[3]`); the mode value is per-kwarg —
-    // a vector for an array input, so index the swept slot.
-    const slot = (sweepAxis.path && sweepAxis.path.length > 0 && Array.isArray(sweepAxis.path[0].idx))
-      ? sweepAxis.path[0].idx[0] - 1 : -1;
-    const mv = mc.values[kw];
-    const c = slot >= 0 ? (Array.isArray(mv) ? mv[slot] : NaN) : (mv as number);
-    const hw = mc.sd[sweepAxis.key];
-    if (!Number.isFinite(c) || !Number.isFinite(hw) || !(hw > 0)) return null;
-    const K_SIGMA = 4;
-    const descr = FlatPPLEngine.orchestrator.resolveAxisBaseSet(
-      sweepAxis.source, ctx.derivationsState && ctx.derivationsState.bindings);
-    const kind = (descr && descr.kind) || 'reals';
-    return FlatPPLEngine.orchestrator.pivotCenteredRange(
-      c, c - K_SIGMA * hw, c + K_SIGMA * hw, { kind });
-  })();
+  // Auto-range uses the prior-width auto-fit (`resolveSweepRange`) — the
+  // original, pivot-INDEPENDENT algorithm. A likelihood-curvature framing
+  // (mode ± k·sd via `pivotCenteredRange`) was tried to sharpen the
+  // "likelihood looks flat" case but is intentionally reverted: the MLE drives
+  // the default input POINT (see baseValuesFor), not the plotted range. A user
+  // who wants the peak framed uses the [ ] auto-fit-domain button (runAutoDomain).
   let rangePromise;
   if (domainRangeForSweep) {
     rangePromise = Promise.resolve(
       [domainRangeForSweep.lo, domainRangeForSweep.hi]);
-  } else if (curvRange) {
-    ctx.profileRangeCache.set(cacheKey, { lo: curvRange[0], hi: curvRange[1], fromAuto: true });
-    rangePromise = Promise.resolve(curvRange);
   } else {
     const cached = ctx.profileRangeCache.get(cacheKey);
     rangePromise = cached
