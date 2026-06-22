@@ -320,47 +320,41 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
 export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onModeChange: () => void, onSelectionChange: () => void, extraToolbarControls: any, genCandidates?: Array<{ name: string; ir: any }>) {
   const bar = document.createDocumentFragment();
 
-  // ---- Mode toggle group ----
-  const modeGroup = document.createElement('div');
-  modeGroup.style.display = 'flex';
-  modeGroup.style.gap = '0.25em';
-
-  function makeModeBtn(modeKey: any, label: any, title: any) {
-    const b = document.createElement('button');
-    b.textContent = label;
-    b.title = title;
-    b.style.cursor = 'pointer';
-    b.style.fontSize = '1em';
-    b.style.padding = '0.2em 0.8em';
-    b.style.border = '1px solid var(--vscode-button-border, transparent)';
-    b.style.borderRadius = '3px';
-    const active = ctx.recordSelection!.mode === modeKey;
-    b.style.background = active
-      ? 'var(--vscode-button-background, #0e639c)'
-      : 'var(--vscode-button-secondaryBackground, #3a3d41)';
-    b.style.color = active
-      ? 'var(--vscode-button-foreground, #fff)'
-      : 'var(--vscode-button-secondaryForeground, #ccc)';
-    b.addEventListener('click', function() {
-      if (ctx.recordSelection!.mode === modeKey) return;
-      ctx.recordSelection!.mode = modeKey;
-      // Clip selection to correlations cap when switching back.
-      if (modeKey === 'correlations'
-          && ctx.recordSelection!.selected.length > ctx.CORRELATIONS_MAX_AXES) {
-        ctx.recordSelection!.selected = ctx.recordSelection!.selected.slice(0, ctx.CORRELATIONS_MAX_AXES);
-      }
-      // Mode toggle changes button styling → full toolbar rebuild.
-      onModeChange();
-    });
-    return b;
+  // ---- Mode dropdown ----
+  // Single <select> replaces the former Correlations/Marginals/Table button
+  // group to reclaim toolbar width. Option list is data-driven so Spec 2's
+  // "Posterior predictive" (bayesupdate-only) can be appended later.
+  const MODE_OPTIONS: Array<{ key: string; label: string; title: string }> = [
+    { key: 'correlations', label: 'Correlations', title: 'Pairwise corner plot: marginals on the diagonal, joint scatters below' },
+    { key: 'marginals',    label: 'Marginals',    title: 'One column per axis with vertical density shading; plots every axis' },
+    { key: 'table',        label: 'Table',        title: 'Summary-statistics table: per-variate mean, std, median, credible interval, ESS, R̂, MCSE, and an inline histogram' },
+  ];
+  const modeSel = document.createElement('select');
+  modeSel.style.cursor = 'pointer';
+  modeSel.style.fontSize = '1em';
+  modeSel.style.padding = '0.2em 0.4em';
+  modeSel.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+  modeSel.style.color = 'var(--vscode-dropdown-foreground, #ccc)';
+  modeSel.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+  modeSel.style.borderRadius = '3px';
+  for (const o of MODE_OPTIONS) {
+    const opt = document.createElement('option');
+    opt.value = o.key; opt.textContent = o.label; opt.title = o.title;
+    modeSel.appendChild(opt);
   }
-  modeGroup.appendChild(makeModeBtn('correlations', 'Correlations',
-    'Pairwise corner plot: marginals on the diagonal, joint scatters below'));
-  modeGroup.appendChild(makeModeBtn('marginals', 'Marginals',
-    'One column per axis with vertical density shading; plots every axis'));
-  modeGroup.appendChild(makeModeBtn('table', 'Table',
-    'Summary statistics table: per-variate mean, std, mode, median, credible interval, ESS, and an inline histogram'));
-  bar.appendChild(modeGroup);
+  modeSel.value = ctx.recordSelection!.mode;
+  modeSel.title = 'View mode for this record measure';
+  modeSel.addEventListener('change', function () {
+    const modeKey = modeSel.value;
+    if (ctx.recordSelection!.mode === modeKey) return;
+    ctx.recordSelection!.mode = modeKey as any;
+    if (modeKey === 'correlations'
+        && ctx.recordSelection!.selected.length > ctx.CORRELATIONS_MAX_AXES) {
+      ctx.recordSelection!.selected = ctx.recordSelection!.selected.slice(0, ctx.CORRELATIONS_MAX_AXES);
+    }
+    onModeChange();
+  });
+  bar.appendChild(modeSel);
 
   // Axis-level selector in correlations mode (per-leaf
   // checkboxes, capped at CORRELATIONS_MAX_AXES); group-level
