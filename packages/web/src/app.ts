@@ -694,28 +694,17 @@
     const userStore = window.FlatPPLWebUserStore;
     const userEntries = (userStore && userStore.list) ? userStore.list() : [];
 
-    // Bucket manifest entries by top-level prefix. Anything that
-    // doesn't match a known bucket goes into the examples folder by
-    // default (the manifest historically held only demo/ and
-    // examples/; future categories would land here).
+    // Bucket manifest entries into left-pane folders. The path→bucket
+    // decision lives in the shared file-types module (single source of
+    // truth with build.mjs); see window.FlatPPLFileTypes.bucketKeyForPath.
+    const FT = window.FlatPPLFileTypes;
     const buckets: Record<string, any[]> = { examples: [], hs3: [], 'test-cases': [] };
     if (manifest && manifest.entries) {
       for (let i = 0; i < manifest.entries.length; i++) {
         const e = manifest.entries[i];
-        if (typeof e.path === 'string' && e.path.indexOf('test-cases/') === 0) {
-          buckets['test-cases'].push(e);
-        } else if (typeof e.path === 'string' && e.path.indexOf('demo/') === 0) {
-          // Legacy bucket name — keep mapping demo/ → test-cases
-          // until the manifest catches up with the gallery's
-          // user-facing folder labels.
-          buckets['test-cases'].push(e);
-        } else if (typeof e.path === 'string' && e.path.indexOf('examples/hs3/') === 0) {
-          // HS3-derived examples get their own folder rather than being
-          // inlined with the hand-authored examples.
-          buckets.hs3.push(e);
-        } else {
-          buckets.examples.push(e);
-        }
+        if (typeof e.path !== 'string') continue;
+        const key = FT ? FT.bucketKeyForPath(e.path) : 'examples';
+        (buckets[key] || buckets.examples).push(e);
       }
     }
 
@@ -760,22 +749,20 @@
       fileTree.appendChild(ephUl);
     }
 
-    const persisted = readFolderState();
+    // Open/closed defaults are resolved inside renderFolder (persisted
+    // preference, else FlatPPLFileTypes.defaultFolderOpen) so the call
+    // sites and the header-click handler share one source.
     renderFolder('examples',   'Examples',   buckets.examples,
-      persisted.examples !== undefined ? !!persisted.examples : true,
       currentModel, /* italic */ false);
     renderFolder('hs3',        'HS3',        buckets.hs3,
-      persisted.hs3 !== undefined ? !!persisted.hs3 : false,
       currentModel, /* italic */ false);
     if (!hideTestExamples) {
       renderFolder('test-cases', 'Test cases', buckets['test-cases'],
-        persisted['test-cases'] !== undefined ? !!persisted['test-cases'] : false,
         currentModel, /* italic */ false);
     }
     renderFolder('user',       'User',       userEntries.map(function (u: any) {
         return { path: u.path, title: basenameOf(u.path) };
       }),
-      persisted.user !== undefined ? !!persisted.user : (userEntries.length > 0),
       currentModel, /* italic */ false);
 
     // Empty state — only relevant if literally nothing is in any
@@ -800,8 +787,18 @@
    *  for a fresh `user/...` name rather than tying back to the
    *  original). */
   function renderFolder(key: string, label: string, items: any[],
-                        open: boolean, currentModel: any,
-                        italic: boolean) {
+                        currentModel: any, italic: boolean) {
+    // Resolve open/closed once: persisted preference wins, else the shared
+    // default (FlatPPLFileTypes.defaultFolderOpen). The header-click handler
+    // below recomputes the same default so the two never diverge.
+    const FT = window.FlatPPLFileTypes;
+    function defaultOpen(): boolean {
+      return FT ? FT.defaultFolderOpen(key, items.length) : (key === 'examples');
+    }
+    const open = (function () {
+      const st = readFolderState();
+      return st[key] !== undefined ? !!st[key] : defaultOpen();
+    })();
     const folder = document.createElement('div');
     folder.className = 'file-folder' + (open ? ' file-folder--open' : '');
     folder.dataset.key = key;
@@ -823,9 +820,7 @@
     header.appendChild(count);
     header.addEventListener('click', function () {
       const state = readFolderState();
-      const wasOpen = state[key] !== undefined ? !!state[key]
-        : (key === 'examples'
-           || (key === 'user' && items.length > 0));
+      const wasOpen = state[key] !== undefined ? !!state[key] : defaultOpen();
       state[key] = !wasOpen;
       writeFolderState(state as Record<string, boolean>);
       // Cheapest correct redraw — re-render the whole tree, which

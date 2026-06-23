@@ -32,23 +32,15 @@
 
   // ---- file-type detection -------------------------------------------
   //
-  // Derived from the path extension — the single place the gallery maps a
-  // file to its surface. Empty/unknown defaults to 'flatppl' for now (the
-  // gallery is FlatPPL-first today); making the default injectable via
-  // config is the small follow-up that completes neutrality for a
-  // rosetta-stone deployment.
+  // Derived from the path extension. The classification itself lives in the
+  // shared file-types module (window.FlatPPLFileTypes, bundled to
+  // vendor/file-types.js and loaded before this script) so build.mjs and
+  // the runtime can't drift. This wrapper stays the gallery's public API
+  // (window.FlatPPLWebSurfaces.typeForPath) and degrades gracefully to
+  // 'flatppl' if the global is somehow absent.
   function typeForPath(path: any): string {
-    if (!path) return 'flatppl';
-    const p = String(path).toLowerCase();
-    if (p.endsWith('.flatppl')) return 'flatppl';
-    if (p.endsWith('.md') || p.endsWith('.markdown')) return 'markdown';
-    // Recognised but not (yet) given a visualising surface — they route to
-    // the placeholder via resolveSurface's fallback. Naming them as distinct
-    // types (rather than 'unknown') makes them uploadable AND reserves the
-    // slot for a future native pyhf / HS3 surface that just registers here.
-    if (p.endsWith('.hs3.json')) return 'hs3';
-    if (p.endsWith('.pyhf.json')) return 'pyhf';
-    return 'unknown';
+    const ft = (globalScope as any).FlatPPLFileTypes;
+    return ft && typeof ft.typeForPath === 'function' ? ft.typeForPath(path) : 'flatppl';
   }
 
   // ---- surfaces ------------------------------------------------------
