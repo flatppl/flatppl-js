@@ -177,6 +177,10 @@
        build time). Absent if the grammars repo lacks the CM module; the editor
        degrades to plain text + binding overlay. -->
   <script src="vendor/textmate-highlight.js"></script>
+  <!-- Shared file-type / tree-bucket helpers (window.FlatPPLFileTypes),
+       the single source of truth used by both build.mjs and the web
+       sub-modules below. Must load before surfaces.js / app.js. -->
+  <script src="vendor/file-types.js"></script>
   <script src="ephemeral.js"></script>
   <script src="user-store.js"></script>
   <script src="resolver.js"></script>

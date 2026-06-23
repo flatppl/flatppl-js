@@ -32,6 +32,10 @@ interface Window {
     [extra: string]: any;
   };
 
+  // Shared file-type / tree-bucket helpers (bundled from src/file-types.mjs
+  // to vendor/file-types.js; the single source of truth shared with build.mjs).
+  FlatPPLFileTypes?: any;
+
   // Web sub-modules — each src/*.ts file installs its own surface here.
   FlatPPLWebRouter?: any;
   FlatPPLWebManifest?: any;

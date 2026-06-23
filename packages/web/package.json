@@ -14,6 +14,7 @@
     "directory": "packages/web"
   },
   "scripts": {
+    "test": "node --test 'test/**/*.test.mjs'",
     "prebuild": "npm run typecheck",
     "build": "node ./build.mjs",
     "watch": "node ./build.mjs --watch",
