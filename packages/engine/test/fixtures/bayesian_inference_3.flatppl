@@ -12,7 +12,8 @@ theta2 ~ common.theta2_dist
 # Deterministic computation
 c_scaling = 5             % Scaling factor
 a = common.f_a(theta2)
-b = common.f_b(theta1, theta2)
+f_b = common.f_b
+b = f_b(theta1, theta2)
 
 # IID observations from the forward model
 obs ~ iid(Normal(mu = a, sigma = b), 10)
