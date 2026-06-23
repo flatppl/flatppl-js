@@ -244,9 +244,45 @@ function classifyRefUsages(node: any, wrapped: Map<string, any>, direct: Set<str
   // refs, slice-all) carry no Identifier children we care about.
 }
 
-function computeSubDAG(bindings: any, nodeName: string) {
+// Collect cross-module member references `mod.field` (spec §04 Module
+// composition) used INSIDE a binding's RHS, where `mod` is a `load_module`
+// binding (type 'module'). A TOP-LEVEL FieldAccess is skipped: that's an
+// ALIAS (`f_b = common.f_b`, `theta1 = common.theta1_dist`) whose own
+// binding node already stands for the member under its local name. Only
+// genuinely INLINE uses (`common.f_a(theta2)`) become member nodes.
+// Returns Map<moduleName, Set<field>>.
+function collectModuleMemberRefs(value: any, bindings: any) {
+  const out = new Map();
+  (function walk(node: any, isRoot: boolean) {
+    if (!node || typeof node !== 'object') return;
+    if (node.type === 'FieldAccess') {
+      const obj = node.object;
+      if (!isRoot && obj && obj.type === 'Identifier' && typeof node.field === 'string') {
+        const mb = bindings.get(obj.name);
+        if (mb && mb.type === 'module') {
+          if (!out.has(obj.name)) out.set(obj.name, new Set());
+          out.get(obj.name).add(node.field);
+        }
+      }
+      walk(node.object, false);
+      return;
+    }
+    for (const k in node) {
+      const v = node[k];
+      if (Array.isArray(v)) { for (const c of v) walk(c, false); }
+      else if (v && typeof v === 'object' && v.type) walk(v, false);
+    }
+  })(value, true);
+  return out;
+}
+
+function computeSubDAG(bindings: any, nodeName: string, opts?: any) {
   const binding = bindings.get(nodeName);
   if (!binding) return { nodes: [], edges: [] };
+  // Optional linked (cross-module) bindings: when a member node is
+  // synthesised for `mod.field`, its type/kind/phase come from the
+  // linked binding `mod$field` (the spliced module member).
+  const linkedBindings = (opts && opts.linkedBindings) || null;
 
   // Disintegration with an Unsupported plan → plain dep trace using the
   // analyzer-recorded deps (the user's literal disintegrate(...) call).
@@ -291,6 +327,8 @@ function computeSubDAG(bindings: any, nodeName: string) {
     // user's source structure — e.g., descending through `prior2` reaches
     // `joint_model`, not the rewriter's synthesized view of it.
     const e = useEffective ? eff(b) : { value: b && b.node && b.node.value, deps: (b && b.deps) || [], callDeps: (b && b.callDeps) || [] };
+    // Inline cross-module member uses in this RHS → explicit member nodes.
+    const memberRefs = collectModuleMemberRefs(e.value, bindings);
     const isBoundary = boundaryVars.has(name)
       || (implicitKernelRoot && name !== nodeName && b && b.type === 'input');
 
@@ -454,6 +492,44 @@ function computeSubDAG(bindings: any, nodeName: string) {
     const calls = new Set(e.callDeps || []);
     for (const dep of e.deps) {
       if (inlineExprDeps && inlineExprDeps.has(dep)) continue;
+
+      // Cross-module member references (spec §04): a `load_module` binding
+      // used as `mod.field` inside this RHS renders as explicit `mod.field`
+      // member node(s) — not a bare edge to the opaque module node, which
+      // hides which member is used. The substitution path stays visible via
+      // a membership edge `mod → mod.field`. The member's type/kind/phase
+      // come from the linked binding `mod$field`. Aliases (`f_b = common.f_b`)
+      // never reach here — collectModuleMemberRefs skips a top-level access.
+      const memberFields = memberRefs.get(dep);
+      if (memberFields && memberFields.size > 0) {
+        for (const field of memberFields) {
+          const memberId = dep + '.' + field;
+          const lb = linkedBindings && linkedBindings.get(dep + '$' + field);
+          const lbt = lb && lb.type;
+          const memberCallable = lbt === 'functionof' || lbt === 'fn'
+            || lbt === 'kernelof' || lbt === 'bijection' || lbt === 'fchain';
+          if (!visited.has(memberId)) {
+            visited.set(memberId, {
+              id: memberId,
+              label: memberId,
+              type: lb ? lb.type : 'module',
+              kind: lb ? reificationKind(lb, linkedBindings) : undefined,
+              phase: lb ? lb.phase : undefined,
+              expr: lb ? lb.rhs : '',
+              line: -1,
+              isBoundary: false,
+              isTarget: false,
+              // Drill-in target for the dbltap handler (spec §04 navigation).
+              moduleMember: { module: dep, field },
+            });
+          }
+          edges.push({ source: memberId, target: name,
+            edgeType: (memberCallable || calls.has(dep)) ? 'call' : 'data' });
+          edges.push({ source: dep, target: memberId, edgeType: 'data' });
+        }
+        visit(dep, false);
+        continue;
+      }
 
       const wrapper = wrappedRefs.wrapped.get(dep);
       const usedDirectly = wrappedRefs.direct.has(dep);
@@ -783,7 +859,7 @@ function findBindingAtLine(bindings: any, line: number, col?: number) {
  * @param {Map} bindings
  * @returns {{ nodes: object[], edges: object[], reifications: object[] }}
  */
-function computeFullDAG(bindings: any) {
+function computeFullDAG(bindings: any, opts?: any) {
   if (!bindings || bindings.size === 0) {
     return { nodes: [], edges: [], reifications: [] };
   }
@@ -807,7 +883,7 @@ function computeFullDAG(bindings: any) {
   const reifNames = new Set();
 
   for (const root of roots) {
-    const sub = computeSubDAG(bindings, root);
+    const sub = computeSubDAG(bindings, root, opts);
     for (const n of sub.nodes) {
       if (nodesByName.has(n.id)) continue;
       // Drop the per-leaf isTarget flag — there's no global target in

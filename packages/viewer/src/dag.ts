@@ -515,6 +515,9 @@ export function renderDAG(ctx: Ctx, data: any) {
         inferredType: node.inferredType || '',
         hasError: !!(node.errors && node.errors.length > 0),
         isReifAnchor: !!reifAnchorNames[node.id],
+        // Cross-module member node (spec §04): `{ module, field }` drill-in
+        // target for the dbltap handler; null for ordinary bindings.
+        moduleMember: node.moduleMember || null,
         width: width,
       },
     });
@@ -636,7 +639,8 @@ export function focusNode(ctx: Ctx, targetName: any, pushHistory: any) {
       targetName = allNames[allNames.length - 1];
     }
   }
-  const dagData = FlatPPLEngine.computeSubDAG(ctx.currentBindings, targetName);
+  const dagData = FlatPPLEngine.computeSubDAG(ctx.currentBindings, targetName,
+    { linkedBindings: ctx.currentLinkedBindings });
   if (!dagData || dagData.nodes.length === 0) return;
 
   // History grows only when (a) the caller asked us to push, and
@@ -680,7 +684,8 @@ export function focusNode(ctx: Ctx, targetName: any, pushHistory: any) {
  */
 export function enterModuleView(ctx: Ctx, pushHistory: any) {
   if (!ctx.currentBindings) return;
-  const dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings);
+  const dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings,
+    { linkedBindings: ctx.currentLinkedBindings });
   if (!dagData || dagData.nodes.length === 0) return;
 
   if (pushHistory && ctx.currentState && ctx.currentState.targetName !== ctx.MODULE_TARGET) {
