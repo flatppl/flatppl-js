@@ -15,6 +15,15 @@ import { renderDoc } from './markdown.js';
 import { resolveNodeColor } from './palette.js';
 import { errorsForBinding } from './render-frame.js';
 import type { Ctx } from './types';
+// The `load_module` registry entry for a DAG node, if it is a user
+// module-load binding with a resolved path (spec §04) — the handle for
+// cross-module navigation. Returns null for any other node.
+function _loadModuleEntry(ctx: Ctx, nodeId: any): { path: string } | null {
+  const reg = ctx.currentLoweredModule && ctx.currentLoweredModule.moduleRegistry;
+  const e = reg && reg[nodeId];
+  return (e && e.kind === 'load_module' && e.path) ? e : null;
+}
+
 export function showNodeInfo(ctx: Ctx, d: any) {
   const phase = d.phase || 'unknown';
   const phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
@@ -44,11 +53,20 @@ export function showNodeInfo(ctx: Ctx, d: any) {
   const inferTag = d.inferredType
     ? '<span class="infer">' + esc(d.inferredType) + '</span>'
     : '';
+  // A `load_module` node is navigable — surface that it opens another
+  // file on double-click (spec §04 cross-module navigation).
+  let moduleRow = '';
+  const modEntry = _loadModuleEntry(ctx, d.id);
+  if (modEntry) {
+    moduleRow = '<div class="expr" style="color:#80CBC4;">↳ loaded module — '
+      + 'double-click to open ' + esc(modEntry.path) + '</div>';
+  }
   $('info').innerHTML =
     '<div class="row"><span class="name">' + esc(d.label) + '</span>'
     + phaseTag
     + inferTag + '</div>'
     + '<div class="expr">' + esc(d.expr) + '</div>'
+    + moduleRow
     + unsupportedRow
     + errorRow;
 }
@@ -322,6 +340,15 @@ export function initCy(ctx: Ctx) {
     const nodeId = evt.target.data('id');
     // Don't drill into synthetic nodes (placeholder/hole inputs).
     if (nodeId.indexOf(':') !== -1) return;
+    // A user `load_module` node: double-click navigates INTO the loaded
+    // module's file (spec §04 Module composition) rather than drilling a
+    // sub-DAG — a module boundary has none in the primary graph. The
+    // resolved path is the bundle / router key recorded at lowering.
+    const modEntry = _loadModuleEntry(ctx, nodeId);
+    if (modEntry && ctx.host && typeof ctx.host.openModule === 'function') {
+      ctx.host.openModule(modEntry.path);
+      return;
+    }
     focusNode(ctx, nodeId, /* pushHistory */ true);
     if (ctx.host.setTitle) ctx.host.setTitle(nodeId);
   });

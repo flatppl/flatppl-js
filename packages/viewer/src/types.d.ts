@@ -329,6 +329,10 @@ export interface HostAdapter {
   setState?(s: any): void;
   revealSourceLine?(line: number, name?: string): void;
   setTitle?(title: string): void;
+  /** Navigate the host to a loaded module's file (spec §04 load_module).
+   *  `path` is the resolved module path (the bundle / router key). Fired
+   *  by double-clicking a `load_module` node in the DAG. */
+  openModule?(path: string): void;
   [extra: string]: any;
 }
 

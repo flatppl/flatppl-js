@@ -1629,6 +1629,14 @@
           target: name || null,
         });
       },
+      /** Open a loaded module's file (spec §04 cross-module navigation).
+          Fired by double-clicking a `load_module` node in the DAG. `path`
+          is the resolved module path (already the gallery-root-relative
+          key the router uses), so we navigate straight to it. */
+      openModule: function (path: any) {
+        if (!path) return;
+        window.FlatPPLWebRouter.navigateTo({ model: path, target: null });
+      },
       /** Whether the gallery can write to source right now. True
        *  when the source editor is in edit mode; false in view
        *  mode. The unified CodeMirror surface is always present,

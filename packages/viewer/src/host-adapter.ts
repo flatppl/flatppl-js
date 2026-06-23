@@ -27,6 +27,10 @@ export function defaultVscodeHost(): HostAdapter {
   return {
     revealSourceLine: function(line) { api.postMessage({ type: 'navigateTo', line: line }); },
     setTitle:         function(name) { api.postMessage({ type: 'updateTitle', name: name }); },
+    // Cross-module navigation (spec §04 load_module): open the loaded
+    // module's file. `path` is resolved relative to the current document;
+    // the extension host resolves it against the workspace and opens it.
+    openModule:       function(path) { api.postMessage({ type: 'openModule', path: path }); },
     saveState:        function(state: any) { api.setState(state); },
     loadState:        function() { return api.getState(); },
     signalReady:      function() { api.postMessage({ type: 'webviewReady' }); },
