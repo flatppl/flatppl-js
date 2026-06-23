@@ -97,16 +97,46 @@ detects Web Worker vs Node `worker_threads`; bundled with full stdlib. (3)
 includes engine, loads sampler-worker externally. (4) `vscode-extension.js` —
 editor integration.
 
-**Multi-file models (decisions locked 2026-05-10).** Engine stays sync (bundle
-is pre-resolved source text). Eager bundling for `.flatppl` sources, lazy
-fetching for data (separate `dataResolver(path)` callback). Modules don't
-flatten — each compiles to its own `LoweredModule`; cross-module access
-(`mod.x`) lowers to `(ref mod x)`; the viewer navigates between module DAGs.
-Standard modules are engine-provided (a JS registry, not `.flatppl` text).
-Currently implemented: bundle-shape API plumbing + cross-module resolution and
-dispatch for **standard** modules (registry + typeinfer `resolveStandardModuleRef`
-+ sampler `_evaluateStandardModuleCall`). Still TODO: `load_module` end-to-end
-(`.flatppl` cross-module resolution + substitution + host pre-fetch).
+**Multi-file models (decisions locked 2026-05-10; `load_module` LANDED).**
+Engine stays sync (the host pre-resolves `.flatppl` dependency text into
+`opts.bundle.sources`; async I/O is the host's job). In the canonical IR
+modules don't flatten — each compiles to its own `LoweredModule`; cross-module
+access (`mod.x`) lowers to `(ref mod x)`; cross-module type inference reads the
+loaded module's typed bindings (spec §11). Standard modules are engine-provided
+(a JS registry, not `.flatppl` text).
+
+`load_module` end-to-end works as follows:
+- **Compile** — `processSource` reads `opts.bundle.sources`, recursively
+  compiles each `load_module`-referenced dependency into its own
+  `LoweredModule` (`result.modules`, keyed by resolved path), with
+  cycle / missing-source / non-literal-path diagnostics. Path resolution is
+  `module-resolve.ts` (spec §04: `/`-separator, `..`, relative-to-importer,
+  absolute importer preserved). A bundle-LESS call (editor lint) does not flag
+  unresolved deps; a provided bundle does.
+- **Type** — `typeinfer.resolveUserModuleRef` types `mod.x` from the dependency's
+  inferred binding type, enforcing the spec §04 access rules (only public,
+  fixed/parameterized bindings cross the boundary — the stochastic boundary);
+  `analyzer._validateModuleSubstitutions` phase-checks load-time substitutions
+  (external←fixed, elementof←parameterized, never stochastic).
+- **Materialise** — `result.linkedBindings` is the engine-INTERNAL flattened
+  binding map (spec §11 "tooling may flatten internally"): `module-link.ts`
+  splices every transitively-loaded module under namespaced names (`m$x`,
+  `m$s$y`), rewrites refs (`mod.x` → the loaded binding) and rewires
+  substituted inputs as aliases, then re-analyzes the combined AST. The
+  UNCHANGED by-name materialiser / density / sampler then handle everything —
+  the classic linker / symbol-resolution model (cf. `alias-resolution`,
+  `deriveAppliedKernel`). The worker never sees a cross-module `{ns}` ref.
+- **Host** — the web resolver (`packages/web/resolver.ts`) and the VS Code
+  panel (`visualPanel._resolveBundle`) walk `moduleDeps(source)` +
+  `moduleResolve.resolveModulePath` to pre-fetch the dependency tree; the DAG's
+  `load_module` node double-click fires `host.openModule(path)` to navigate
+  between module files. The DAG renders only the primary module
+  (`ctx.currentBindings`); materialisation uses `ctx.currentLinkedBindings`.
+
+Open: `load_data` end-to-end (the `dataResolver(path)` callback path);
+substitution-aware re-typing of a dependency (a fixed substitution sharpening a
+`%dynamic` shape — the standalone-inferred type is sound but not maximally
+precise); threading the bundle into the editors' inline-lint diagnostics.
 
 ## Bundle build gotcha — ESM/CJS mixing (load-bearing)
 
@@ -162,6 +192,8 @@ after the table.
 | `kernel-broadcast-shape.ts` (~1400) | The kernel-broadcast SHAPE analysis behind the recognizers: `detectJointKernelBinding` / `detectNestedBroadcastKernelBinding` / `detectGenerativeKernelBinding` (the generative-pushforward recognizer + near-miss arm consumed by `mc-recipe`). Largest single recognizer module. |
 | `broadcast-shape.ts` (~320) | VALUE-level broadcast shape: `classifyNestedJSArray` (outer-rank of a raw nested array, engine-concepts §2.1) + the outer-axis slot descriptors the value-broadcast loop consumes. Distinct from `kernel-broadcast-shape.ts` (measure/kernel shapes). |
 | `alias-resolution.ts` (~220) | Post-lower IR pass canonicalising references through alias bindings (`x = mod.y` / re-bindings → canonical ref form, once — LLVM `@alias`-like; engine-concepts §19, spec §04). A named pipeline stage, not an internal helper (lift's `rewriteCompositeRandSucc` runs after it). |
+| `module-resolve.ts` (~70) | **One owner** of spec §04 `load_module` path math: `resolveModulePath(importer, rel)` (`/`-separator, `.`/`..` collapse, relative-to-importer-dir, absolute importer/relpath preserved). Dependency-free leaf, shared by the engine bundle compiler AND the host resolvers (web `fetch`, VS Code `workspace.fs`) so they agree on "the same file". |
+| `module-link.ts` (~190) | **Module linking** (spec §04/§11 internal flattening): `linkModules(primary, modules)` → one combined Program AST that splices every transitively-loaded module under namespaced names (`m$x`), rewrites refs (`mod.x` → the loaded binding) and rewires load-time substitutions to importer-value aliases. The caller re-analyzes it (`processSource` → `result.linkedBindings`) so the unchanged by-name materialiser handles cross-module materialisation — the classic linker model (cf. `alias-resolution`). Cycle-guarded; standard-module access inside a loaded module preserved. |
 | `mat-broadcast.ts` (~2200), `mat-density.ts` (~490), `mat-multivariate.ts` (~570), `mat-transformations.ts` (~460) | Materialiser splits: kernel-broadcast composite executors + batch-flatten folds (mat-broadcast); density-routed kinds matScore / matBayesupdate / matLogdensityof (mat-density); multivariate handlers (mat-multivariate); pushfwd / locscale / relabel (mat-transformations). |
 | `perf-config.ts` (~150) | **Optimization toggles & dual-mode testing** (engine-concepts §15): registry of default-true toggles (`aggregate`, `disintegrate.delegate`); `getOptimization(key)` gates each specialised dispatch against its general/reference path; `test/_perf-helpers.ts` `inBothModes(name, key, fn)` runs equivalence tests under both settings. Adding a specialised path = one toggle + a dual-mode test. |
 | `sampler-eval-compile.ts` (~180) | Fused-loop codegen fast path for `evaluateExprN` (pure accelerator; bit-identical to the `_evalN` interpreter, which stays the source of truth; `FLATPPL_NO_EVALN_COMPILE=1` kill switch). |
@@ -457,8 +489,9 @@ test`.
 
 Full list + priorities in `flatppl-dev/TODO-flatppl-js.md` (the checkable source
 of truth — no status duplication here). Shortlist: multi-file `load_module`
-end-to-end (bundle API landed; `.flatppl` cross-module resolution + substitution +
-host pre-fetch pending); standard modules (registry + typeinfer/sampler dispatch
+end-to-end LANDED (compile / typeinfer / materialise-via-linking + web & VS Code
+host wiring + DAG navigation; see "Multi-file models" above) — `load_data`
+end-to-end still pending; standard modules (registry + typeinfer/sampler dispatch
 wired; the named-module contents + semver matching pending); `PoissonProcess`
 (ragged MVP landed — general intensity / d-dim points / per-atom-sampled shapes
 are follow-ups); multivariate transports beyond
