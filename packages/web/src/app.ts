@@ -85,6 +85,18 @@
   function showSource(text: any, label?: any) {
     if (sourceHeader) sourceHeader.textContent = label || 'Source';
     if (!sourceEditor) return;
+    // Pick the editor language pack from the active model's path so a
+    // .md / .json buffer is highlighted (and folded) on its own terms,
+    // not as FlatPPL. The router's model path is authoritative for the
+    // file type; `label` is the path on real loads but can be a transient
+    // status string ("# Loading …", "error"), so prefer the router.
+    if (typeof sourceEditor.setLanguage === 'function') {
+      const S = window.FlatPPLWebSurfaces;
+      const cur = window.FlatPPLWebRouter
+        ? window.FlatPPLWebRouter.parseHash() : { model: null };
+      const p = (cur && cur.model) || label;
+      sourceEditor.setLanguage(S ? S.typeForPath(p) : 'flatppl');
+    }
     sourceEditor.setSource(text);
     lastRenderedSource = text;
     const cur = window.FlatPPLWebRouter
@@ -686,7 +698,7 @@
     // doesn't match a known bucket goes into the examples folder by
     // default (the manifest historically held only demo/ and
     // examples/; future categories would land here).
-    const buckets: Record<string, any[]> = { examples: [], 'test-cases': [] };
+    const buckets: Record<string, any[]> = { examples: [], hs3: [], 'test-cases': [] };
     if (manifest && manifest.entries) {
       for (let i = 0; i < manifest.entries.length; i++) {
         const e = manifest.entries[i];
@@ -697,11 +709,21 @@
           // until the manifest catches up with the gallery's
           // user-facing folder labels.
           buckets['test-cases'].push(e);
+        } else if (typeof e.path === 'string' && e.path.indexOf('examples/hs3/') === 0) {
+          // HS3-derived examples get their own folder rather than being
+          // inlined with the hand-authored examples.
+          buckets.hs3.push(e);
         } else {
           buckets.examples.push(e);
         }
       }
     }
+
+    // The deploy can hide the "Test cases" folder (demo/ + test-cases/)
+    // via the build-time hideTestExamples flag — set in CI (pages.yml),
+    // unset in local dev so the feature tests stay one click away. The
+    // flag is baked into build-flags.js (no runtime probe).
+    const hideTestExamples = !!((window.__FLATPPL_CONFIG__ || {}).hideTestExamples);
 
     // Unsaved (ephemeral) section above the folders.
     if (ephEntries.length > 0) {
@@ -742,9 +764,14 @@
     renderFolder('examples',   'Examples',   buckets.examples,
       persisted.examples !== undefined ? !!persisted.examples : true,
       currentModel, /* italic */ false);
-    renderFolder('test-cases', 'Test cases', buckets['test-cases'],
-      persisted['test-cases'] !== undefined ? !!persisted['test-cases'] : false,
+    renderFolder('hs3',        'HS3',        buckets.hs3,
+      persisted.hs3 !== undefined ? !!persisted.hs3 : false,
       currentModel, /* italic */ false);
+    if (!hideTestExamples) {
+      renderFolder('test-cases', 'Test cases', buckets['test-cases'],
+        persisted['test-cases'] !== undefined ? !!persisted['test-cases'] : false,
+        currentModel, /* italic */ false);
+    }
     renderFolder('user',       'User',       userEntries.map(function (u: any) {
         return { path: u.path, title: basenameOf(u.path) };
       }),
@@ -756,6 +783,7 @@
     // themselves render their own per-folder empty labels.
     if (ephEntries.length === 0
         && buckets.examples.length === 0
+        && buckets.hs3.length === 0
         && buckets['test-cases'].length === 0
         && userEntries.length === 0) {
       const p = document.createElement('div');

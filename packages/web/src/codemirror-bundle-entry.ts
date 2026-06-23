@@ -19,7 +19,12 @@ import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { searchKeymap } from '@codemirror/search';
 import { linter, lintGutter } from '@codemirror/lint';
 import { autocompletion, completionKeymap } from '@codemirror/autocomplete';
-import { bracketMatching, foldGutter, codeFolding, foldKeymap, foldService } from '@codemirror/language';
+import {
+  bracketMatching, foldGutter, codeFolding, foldKeymap, foldService,
+  syntaxHighlighting, defaultHighlightStyle,
+} from '@codemirror/language';
+import { json as langJson } from '@codemirror/lang-json';
+import { markdown as langMarkdown } from '@codemirror/lang-markdown';
 
 window.FlatPPLEditorBundle = {
   EditorState, Compartment, Prec,
@@ -30,4 +35,10 @@ window.FlatPPLEditorBundle = {
   linter, lintGutter,
   autocompletion, completionKeymap,
   bracketMatching, foldGutter, codeFolding, foldKeymap, foldService,
+  // Non-FlatPPL languages: real syntax highlighting + native (foldNodeProp)
+  // folding for .json / .md, so they no longer ride the FlatPPL TextMate
+  // grammar. syntaxHighlighting(defaultHighlightStyle) is what actually
+  // paints the lang parsers' highlight tags.
+  syntaxHighlighting, defaultHighlightStyle,
+  langJson, langMarkdown,
 };

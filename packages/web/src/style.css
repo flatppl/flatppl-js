@@ -377,6 +377,16 @@ html, body {
   100% { background: transparent; }
 }
 
+/* Lint (error/warning) gutter. CodeMirror's base theme gives the
+   diagnostic pip a wide column with generous side padding, leaving the
+   "error ball" floating well off the source. Tighten it so the pip sits
+   snug between the line-number and fold gutters. Scoped under
+   #source-editor so the id selector outranks CodeMirror's
+   runtime-injected base theme (equal class specificity, later in head). */
+#source-editor .cm-gutter-lint { width: 0.9em; }
+#source-editor .cm-gutter-lint .cm-gutterElement { padding: 0; }
+#source-editor .cm-lint-marker { width: 0.8em; height: 0.8em; }
+
 /* Token palette. Roughly tracks VS Code's Dark+ for familiarity, with
    one FlatPPL-specific addition — `tok-ident-binding` (identifiers
    that resolve to a binding in the current module) is rendered with

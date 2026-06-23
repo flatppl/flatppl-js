@@ -50,6 +50,9 @@ jobs:
       # multiplexing (the documented workaround for that specific curl error).
       CARGO_NET_RETRY: '10'
       CARGO_HTTP_MULTIPLEXING: 'false'
+      # Hide the "Test cases" folder (demo/ + test-cases/ feature tests) in the
+      # public deploy; local dev leaves it unset so the tests stay visible.
+      FLATPPL_HIDE_TEST_EXAMPLES: '1'
     steps:
       - uses: actions/checkout@v7
 
