@@ -6,7 +6,7 @@ const vscode = require('vscode');
 // `@flatppl/engine` symlink. isValidBindingName and variants are
 // re-exported by engine/index.js, the IIFE wraps that, and the
 // bundle's footer exposes the same shape to CommonJS require.
-const { isValidBindingName, variants } = require('../lib/engine.min.js');
+const { isValidBindingName, variants, moduleDeps, moduleResolve } = require('../lib/engine.min.js');
 
 /** There is one canonical FlatPPL surface syntax (flatppl-design
     cc81e4b removed FlatPPY/FlatPPJ). Retained as a function so the
@@ -105,6 +105,24 @@ class FlatPPLPanel {
       }
       if (msg.type === 'updateTitle') {
         this._panel.title = `FlatPPL: ${msg.name}`;
+      }
+      // Cross-module navigation (spec §04 load_module): a double-click on
+      // a load_module node in the DAG. Open the loaded module's file in
+      // the editor and re-point the visualizer at it. `msg.path` is the
+      // resolved module path (URI path component); resolve it against the
+      // current document's URI to keep the scheme/authority.
+      if (msg.type === 'openModule' && msg.path && this._sourceUri) {
+        const depUri = this._sourceUri.with({ path: msg.path });
+        vscode.window.showTextDocument(depUri, {
+          viewColumn: vscode.ViewColumn.One,
+          preserveFocus: false,
+        }).then((editor: any) => {
+          this.updateSource(editor.document.getText(), null, depUri, true);
+        }, (err: any) => {
+          vscode.window.showErrorMessage(
+            'FlatPPL: could not open loaded module \'' + msg.path + '\': '
+            + (err && err.message || err));
+        });
       }
       // Two persist primitives matching the viewer's host-adapter
       // contract:
@@ -215,13 +233,66 @@ class FlatPPLPanel {
     this._navUri = null;                // not an embedded snapshot
     if (sourceUri) this._sourceUri = sourceUri;
     if (targetName) this._panel.title = `FlatPPL: ${targetName}`;
-    this._post({
+    const base: any = {
       type: 'sourceUpdate',
       source,
       targetName: targetName || null,
       pushHistory: !!pushHistory,
       variant: variantIdFromUri(this._sourceUri),
+    };
+    // Multi-file (spec §04 load_module): if the source loads other
+    // modules, pre-fetch their `.flatppl` sources via the workspace file
+    // system and ship them in the message as `bundleSources` (keyed by
+    // resolved path) + the primary's own `path`. Single-file sources skip
+    // this entirely and post synchronously (the common case, no async I/O).
+    let rels: string[] = [];
+    try { rels = moduleDeps(source); } catch (_) { rels = []; }
+    if (rels.length === 0 || !this._sourceUri) {
+      this._post(base);
+      return;
+    }
+    this._resolveBundle(source, this._sourceUri).then((bundle: any) => {
+      base.bundleSources = bundle.sources;
+      base.path = bundle.primaryPath;
+      this._post(base);
+    }, () => {
+      // Resolution failed entirely — still render the primary so the
+      // panel is never blank; the engine reports unresolved deps.
+      this._post(base);
     });
+  }
+
+  /**
+   * Pre-fetch the transitive `.flatppl` dependencies a source loads via
+   * `load_module(...)` (spec §04), reading each through the workspace file
+   * system. Returns `{ sources, primaryPath }` where `sources` maps each
+   * dependency's RESOLVED path to its text (the engine's bundle key) and
+   * `primaryPath` is the importing file's own path. Paths use the URI
+   * path component (always `/`-separated, matching spec path resolution);
+   * a missing dependency is left out (the engine reports it).
+   */
+  async _resolveBundle(source: any, sourceUri: any) {
+    const primaryPath = sourceUri.path;
+    const sources: Record<string, string> = Object.create(null);
+    const seen = new Set<string>([primaryPath]);
+    const walk = async (importerPath: string, text: string) => {
+      let rels: string[];
+      try { rels = moduleDeps(text); } catch (_) { return; }
+      for (const rel of rels) {
+        const resolved = moduleResolve.resolveModulePath(importerPath, rel);
+        if (resolved in sources || seen.has(resolved)) continue;
+        seen.add(resolved);
+        let depText: string;
+        try {
+          const bytes = await vscode.workspace.fs.readFile(sourceUri.with({ path: resolved }));
+          depText = Buffer.from(bytes).toString('utf8');
+        } catch (_) { continue; }   // missing dep — the engine diagnoses it
+        sources[resolved] = depText;
+        await walk(resolved, depText);
+      }
+    };
+    await walk(primaryPath, source);
+    return { sources, primaryPath };
   }
 
   /**

@@ -44,6 +44,17 @@ test('absolute relPath (leading /) is used as-is, normalised', () => {
     '/abs/h.flatppl');
 });
 
+test('an absolute importer path resolves siblings as absolute', () => {
+  // The VS Code host passes an absolute URI path as the importer; a
+  // sibling/`..` dep must stay absolute (not silently become relative).
+  assert.equal(resolveModulePath('/proj/model.flatppl', 'helpers.flatppl'),
+    '/proj/helpers.flatppl');
+  assert.equal(resolveModulePath('/proj/sub/model.flatppl', '../helpers.flatppl'),
+    '/proj/helpers.flatppl');
+  assert.equal(resolveModulePath('/a/b/c/m.flatppl', '../../x.flatppl'),
+    '/a/x.flatppl');
+});
+
 test('a null/empty importer path resolves relative to the root', () => {
   assert.equal(resolveModulePath(null, 'helpers.flatppl'), 'helpers.flatppl');
   assert.equal(resolveModulePath('', 'sub/h.flatppl'), 'sub/h.flatppl');

@@ -61,8 +61,13 @@ function resolveModulePath(importerPath: string | null, relPath: string): string
   if (relPath.startsWith('/')) {
     return '/' + _normalize(relPath.split('/'), true).join('/');
   }
+  // An absolute importer (a VS Code URI path, `/proj/model.flatppl`)
+  // resolves its siblings as absolute too — `_dirSegments` drops the
+  // leading slash, so it must be restored.
+  const importerAbsolute = !!(importerPath && String(importerPath).startsWith('/'));
   const base = _dirSegments(importerPath || '');
-  return _normalize(base.concat(relPath.split('/')), false).join('/');
+  const segs = _normalize(base.concat(relPath.split('/')), importerAbsolute);
+  return (importerAbsolute ? '/' : '') + segs.join('/');
 }
 
 module.exports = { resolveModulePath };
