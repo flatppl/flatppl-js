@@ -9,7 +9,15 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { processSource, pirSexpr } = require('../index.ts');
+const { processSource, pirSexpr, moduleDeps } = require('../index.ts');
+
+test('moduleDeps lists load_module relative paths in order, deduplicated', () => {
+  const deps = moduleDeps(
+    'a = load_module("h.flatppl")\n'
+    + 'b = load_module("../shared/x.flatppl", mu = 1)\n'
+    + 'c = load_module("h.flatppl")\nd = 3');
+  assert.deepEqual(deps, ['h.flatppl', '../shared/x.flatppl']);
+});
 
 // ---------------------------------------------------------------------
 // IR shape: substitutions lower to an ARRAY of {name, value} (the spec
@@ -86,11 +94,20 @@ test('the load_module binding records its resolved path in the module registry',
   assert.equal(reg.m.path, 'helpers.flatppl');
 });
 
-test('a missing module source is a clear error on the load_module call', () => {
+test('a missing module source is a clear error when a bundle was provided', () => {
   const r = processSource('m = load_module("nope.flatppl")', { bundle: { sources: {} } });
   assert.ok(errs(r.diagnostics).some((d) => /nope\.flatppl/.test(d.message)
     && /not found|could not (be )?resolve/i.test(d.message)),
   'missing dep source surfaces a diagnostic naming the path');
+});
+
+test('a bundle-less compile does NOT flag an unresolvable load_module (editor lint)', () => {
+  // No opts.bundle: the host has not opted into multi-file resolution
+  // (an inline editor-lint pass), so an unresolved dep is not noise.
+  const r = processSource('m = load_module("helpers.flatppl")');
+  assert.equal(
+    errs(r.diagnostics).filter((d) => /not found|resolve/i.test(d.message)).length, 0,
+    'no spurious "module not found" without a bundle');
 });
 
 test('a module cycle is detected and reported, not infinite-looped', () => {

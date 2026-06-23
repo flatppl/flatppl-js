@@ -1631,6 +1631,11 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
         type: target ? 'sourceUpdate' : 'showModule',
         pushHistory: !!(opts && opts.pushHistory),
         variant: opts && opts.variant,
+        // Multi-file (spec §04): pre-resolved `load_module` dep sources
+        // (resolved-path → text) + the primary's own path, supplied by
+        // the host resolver. Absent for a single-file model.
+        bundleSources: opts && opts.bundleSources,
+        path: opts && opts.path,
       });
     },
     // Release every resource mount() acquired, so a host can swap this

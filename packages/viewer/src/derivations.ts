@@ -19,7 +19,12 @@ export function rebuildDerivations(ctx: Ctx) {
     return;
   }
   try {
-    ctx.derivationsState = FlatPPLEngine.orchestrator.buildDerivations(ctx.currentBindings);
+    // Build derivations from the LINKED (flattened) binding graph so
+    // cross-module `load_module` refs resolve (spec §04); falls back to
+    // the primary bindings for a single-file model. The DAG still renders
+    // `currentBindings` (the primary module alone).
+    ctx.derivationsState = FlatPPLEngine.orchestrator.buildDerivations(
+      ctx.currentLinkedBindings || ctx.currentBindings);
     // Thread the module registry from the lowered module into
     // derivationsState so the cross-module call dispatch path
     // (sampler.ts's `_evaluateStandardModuleCall`) finds it via

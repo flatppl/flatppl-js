@@ -1,22 +1,21 @@
 // @flatppl/web — async resolver for .flatppl sources.
 //
-// Step 1.3 (this file): one-call resolver that fetches a single
-// `.flatppl` file by path/URL and returns its text. Caches by URL so
-// repeat resolutions are free.
+// `resolveBundle(primaryPath)` fetches the primary `.flatppl` file and
+// then recursively walks its `load_module("dep")` dependencies (spec §04
+// Module composition), pre-fetching every transitive `.flatppl` source
+// into a bundle:
+//   { primaryPath, primaryUrl, primarySource, sources: { [resolvedPath]: text } }
+// The engine pipeline stays synchronous; this resolver does the async I/O
+// (the host's job). Dependency paths resolve relative to their importer
+// via the engine's `moduleResolve.resolveModulePath`, keyed by the same
+// resolved path the engine's bundle compiler expects.
 //
-// Future-shape (lands with `load_module` in step 2): the same
-// resolveBundle(rootPath) recursively walks the AST for
-// `load_module(...)` calls and returns
-//   { primaryPath, primarySource, sources: { [path]: text } }
-// with every transitive .flatppl dependency populated. Until then the
-// returned object has `sources: {}` and the caller treats the primary
-// source as the entire bundle. The shape is forward-compatible — new
-// fields land additively, no API break.
-//
-// Errors propagate as rejected promises with a friendly `.message`
-// suitable for surfacing in the UI ("404 Not Found at <path>"). The
-// resolver never silently fails — a missing file or network error
-// should be visible.
+// Source resolution is three-tier per file (ephemeral in-memory → user
+// store → network fetch), so a user-overridden module never falls through
+// to its read-only origin. A missing/broken dependency is left out of the
+// bundle (not fatal) — the engine then surfaces the precise "module source
+// not found" diagnostic at the `load_module` call. A network error on the
+// PRIMARY still rejects (nothing to show).
 //
 // Lives on globalThis as window.FlatPPLWebResolver. Plain global is
 // the simplest pattern for an IIFE-free build pipeline (no bundler,
@@ -54,49 +53,62 @@
   }
 
   /**
-   * Resolve a primary FlatPPL source by path. Path is treated as a
-   * URL relative to the current document base. Returns a bundle
-   * object whose shape is forward-compatible with the load_module
-   * implementation (which will populate `sources` with transitive
-   * `.flatppl` deps).
+   * Resolve one `.flatppl` source by path through the three-tier order
+   * (ephemeral in-memory → user store → network fetch). Returns
+   * `{ source, url }` (url is the path itself for in-memory tiers).
+   * Throws on a network/HTTP error.
+   */
+  async function resolveSource(path: any) {
+    const eph = globalScope.FlatPPLWebEphemeral;
+    if (eph && eph.has && eph.has(path)) return { source: eph.get(path), url: path };
+    const userStore = globalScope.FlatPPLWebUserStore;
+    if (userStore && userStore.has && userStore.has(path)) {
+      return { source: userStore.getSource(path), url: path };
+    }
+    const url = new URL(path, document.baseURI).href;
+    return { source: await fetchSource(url), url: url };
+  }
+
+  /**
+   * Resolve a primary FlatPPL source by path AND every transitive
+   * `.flatppl` dependency it loads via `load_module(...)` (spec §04).
+   * Returns `{ primaryPath, primaryUrl, primarySource, sources }` where
+   * `sources` maps each dependency's RESOLVED path to its text — the
+   * canonical key the engine's bundle compiler expects.
    */
   async function resolveBundle(primaryPath: any) {
-    // Resolution order:
-    //   1. Ephemeral (in-memory, session-only). Populated by the
-    //      "+ New file" button before the user has saved.
-    //   2. User store (localStorage-backed). Populated by saving a
-    //      modified read-only file or uploading.
-    //   3. Network fetch against the document base.
-    // Each in-memory source short-circuits before the next so a
-    // user-overridden path never falls through to its read-only
-    // origin on the network.
-    const eph = globalScope.FlatPPLWebEphemeral;
-    if (eph && eph.has && eph.has(primaryPath)) {
-      return {
-        primaryPath: primaryPath,
-        primaryUrl: primaryPath,
-        primarySource: eph.get(primaryPath),
-        sources: Object.create(null),
-      };
+    const { source: primarySource, url: primaryUrl } = await resolveSource(primaryPath);
+    const sources = Object.create(null);
+    // Walk the dependency tree breadth/depth-first, deduplicating by
+    // resolved path and guarding against cycles. The engine handles a
+    // cyclic *graph* gracefully; here we just avoid re-fetching.
+    await resolveDeps(primaryPath, primarySource, sources, new Set([primaryPath]));
+    return { primaryPath: primaryPath, primaryUrl: primaryUrl,
+      primarySource: primarySource, sources: sources };
+  }
+
+  // Recursively resolve the `load_module` dependencies of one module.
+  async function resolveDeps(importerPath: any, importerSource: any,
+    sources: any, seen: Set<any>) {
+    const FE = globalScope.FlatPPLEngine;
+    if (!FE || !FE.moduleDeps || !FE.moduleResolve) return; // engine not loaded yet
+    let rels;
+    try { rels = FE.moduleDeps(importerSource); } catch (_) { return; }
+    for (const rel of rels) {
+      const resolved = FE.moduleResolve.resolveModulePath(importerPath, rel);
+      if (resolved in sources || seen.has(resolved)) continue;
+      seen.add(resolved);
+      let depSource;
+      try {
+        depSource = (await resolveSource(resolved)).source;
+      } catch (_) {
+        // Missing/broken dependency: leave it out — the engine reports
+        // the precise "module source not found" diagnostic at the call.
+        continue;
+      }
+      sources[resolved] = depSource;
+      await resolveDeps(resolved, depSource, sources, seen);
     }
-    const userStore = globalScope.FlatPPLWebUserStore;
-    if (userStore && userStore.has && userStore.has(primaryPath)) {
-      return {
-        primaryPath: primaryPath,
-        primaryUrl: primaryPath,
-        primarySource: userStore.getSource(primaryPath),
-        sources: Object.create(null),
-      };
-    }
-    const url = new URL(primaryPath, document.baseURI).href;
-    const primarySource = await fetchSource(url);
-    return {
-      primaryPath: primaryPath,
-      primaryUrl: url,
-      primarySource: primarySource,
-      // load_module deps will populate this; empty until step 2.
-      sources: Object.create(null),
-    };
   }
 
   /**

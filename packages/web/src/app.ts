@@ -376,8 +376,10 @@
         const bundle = await window.FlatPPLWebResolver.resolveBundle(path);
         if (bundle && typeof bundle.primarySource === 'string') {
           showSource(bundle.primarySource, path);
-          // Refresh the viewer from the restored source.
-          if (viewer) viewer.update(bundle.primarySource, cur.target || null);
+          // Refresh the viewer from the restored source (+ pre-resolved
+          // load_module deps, spec §04).
+          if (viewer) viewer.update(bundle.primarySource, cur.target || null,
+            { bundleSources: bundle.sources, path: path });
         }
       } catch (e: any) {
         console.error('[@flatppl/web] revert failed:', e);
@@ -1363,7 +1365,8 @@
     try {
       const bundle = await window.FlatPPLWebResolver.resolveBundle(state.model);
       showSourceIfChanged(bundle.primarySource, state.model);
-      if (viewer) viewer.update(bundle.primarySource, state.target || null);
+      if (viewer) viewer.update(bundle.primarySource, state.target || null,
+        { bundleSources: bundle.sources, path: state.model });
       document.title = 'FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : '');
       lastModel = state.model;
     } catch (err) {

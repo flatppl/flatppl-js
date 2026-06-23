@@ -39,9 +39,19 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
   if (sourceChanged) {
     ctx.currentSource = msg.source;
     try {
-      const result = FlatPPLEngine.processSource(msg.source,
-        { variant: ctx.currentVariantId });
+      // Multi-file (spec §04): the host pre-resolves `load_module` deps
+      // into `msg.bundleSources` (keyed by resolved path) and supplies the
+      // primary's own path for relative resolution. `currentBindings`
+      // stays the PRIMARY module (the DAG renders it); `currentLinked
+      // Bindings` is the engine-internal flattened graph that drives
+      // derivation building / materialisation (cross-module refs resolved).
+      const result = FlatPPLEngine.processSource(msg.source, {
+        variant: ctx.currentVariantId,
+        bundle: msg.bundleSources ? { sources: msg.bundleSources } : undefined,
+        path: msg.path || undefined,
+      });
       ctx.currentBindings = result.bindings;
+      ctx.currentLinkedBindings = result.linkedBindings || result.bindings;
       ctx.currentLoweredModule = result.loweredModule;
       // Source change → rebuild derivations and clear sample cache.
       // The orchestrator's derivations key the cache, so any change

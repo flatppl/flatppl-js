@@ -1,0 +1,21 @@
+%%%
+# Reusable normal observation channel
+
+A small reusable observation model loaded by `multi-file-model.flatppl`
+(spec §04 Module composition). The signal mean `mu` is a module input,
+bound at load time by the loading model; the measurement resolution is
+fixed. Exposes `obs_kernel`, the Gaussian observation kernel, for the
+loading model to build a likelihood from.
+%%%
+flatppl_compat = "0.1"
+
+% Signal mean — a module input, bound by the loader via load_module(..., mu = ...).
+mu = elementof(reals)
+
+% Known measurement resolution.
+sigma = 0.5
+
+# `functionof` of a measure reifies it as a kernel parameterized by the
+# free input `mu`, so `obs_kernel` is the observation kernel y | mu.
+% Observation kernel: y | mu ~ Normal(mu, sigma).
+obs_kernel = functionof(Normal(mu = mu, sigma = sigma))

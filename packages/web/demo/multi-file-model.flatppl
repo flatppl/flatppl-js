@@ -1,0 +1,25 @@
+%%%
+# Multi-file model — load_module demo
+
+Demonstrates cross-file model composition (spec §04 Module composition):
+this model loads the reusable `normal-channel` module and pins its `mu`
+input to the parameter of interest `theta`, then builds a likelihood `L`
+that scores an observed datum against the loaded channel's kernel.
+
+Plot `L` to see the log-likelihood profile over `theta` — the curve comes
+from a measure that lives in a *different* file.
+%%%
+flatppl_compat = "0.1"
+
+% Parameter of interest.
+theta = elementof(reals)
+
+# The path is resolved relative to this file (spec §04 path resolution).
+% Load the reusable channel, binding its `mu` input to `theta` (load-time substitution).
+channel = load_module("normal-channel.flatppl", mu = theta)
+
+% Observed datum.
+y_obs = 1.2
+
+% Likelihood of `theta` given the observation, via the loaded kernel.
+L = likelihoodof(channel.obs_kernel, y_obs)

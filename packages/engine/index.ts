@@ -67,6 +67,13 @@ function processSource(source: string, opts?: any) {
   // Normalise the bundle to its canonical shape — every downstream
   // consumer can read `bundle.sources` without null-guarding.
   const bundle = _normaliseBundle(opts && opts.bundle);
+  // Did the host opt into multi-file resolution by supplying a bundle?
+  // A bundle-less call (an editor's inline-lint pass, a unit test) hasn't
+  // pre-fetched the `.flatppl` dependencies, so an unresolvable
+  // `load_module` is NOT reported — it would be spurious noise on a valid
+  // multi-file model. With a bundle present, a genuinely missing
+  // dependency IS an error.
+  const bundleProvided = !!(opts && opts.bundle);
   // The primary module's own path: the importer path against which its
   // `load_module(...)` dependencies resolve (spec §04 "Path resolution").
   // The host supplies it via `opts.path`; a standalone compile (no path)
@@ -74,7 +81,7 @@ function processSource(source: string, opts?: any) {
   const entryPath = (opts && typeof opts.path === 'string' && opts.path)
     ? opts.path : '<entry>';
 
-  const { primary, modules } = _compileModuleGraph(source, entryPath, bundle, variant);
+  const { primary, modules } = _compileModuleGraph(source, entryPath, bundle, variant, bundleProvided);
 
   // `linkedBindings` is the engine-internal FLATTENED binding map (spec
   // §11: tooling may flatten internally) — the primary plus every
@@ -120,6 +127,7 @@ function processSource(source: string, opts?: any) {
 function _compileModuleGraph(
   entrySource: string, entryPath: string,
   bundle: { sources: Record<string, string> }, variant: any,
+  bundleProvided: boolean,
 ): { primary: any; modules: Map<string, any> } {
   // Resolved-path → compiled module. Holds the dependencies only; the
   // primary is returned separately as the top-level result.
@@ -153,10 +161,15 @@ function _compileModuleGraph(
       if (modules.has(resolved)) continue;          // diamond dep — compile once
       const depSource = bundle.sources[resolved];
       if (depSource === undefined) {
-        depDiags.push({ severity: 'error',
-          message: "Module source not found in bundle: could not resolve '"
-            + dep.relPath + "' (looked for '" + resolved + "')",
-          loc: dep.loc });
+        // Only a flagged error when the host opted into bundle
+        // resolution; a bundle-less call (editor lint) just leaves the
+        // dependency unresolved.
+        if (bundleProvided) {
+          depDiags.push({ severity: 'error',
+            message: "Module source not found in bundle: could not resolve '"
+              + dep.relPath + "' (looked for '" + resolved + "')",
+            loc: dep.loc });
+        }
         continue;
       }
       const childStack = new Set(stack); childStack.add(resolved);
@@ -175,6 +188,25 @@ function _compileModuleGraph(
 
   const primary = compile(entryPath, entrySource, new Set([entryPath]));
   return { primary, modules };
+}
+
+// Host helper (spec §04): the relative module paths a source loads via
+// `load_module("path")`, in source order, deduplicated. The host's
+// resolver uses this (with `moduleResolve.resolveModulePath`) to walk the
+// transitive `.flatppl` dependency tree and pre-fetch each into
+// `bundle.sources` before calling `processSource`. Lightweight — tokenize
+// + parse only, no analysis. Non-literal `load_module` paths are skipped
+// (they error at compile time).
+function moduleDeps(source: string, opts?: any): string[] {
+  const variant = variants.resolveVariant(opts);
+  const { tokens } = tokenize(source, variant);
+  const { ast } = parse(tokens, variant);
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const d of _collectLoadModuleDeps(ast)) {
+    if (d.relPath != null && !seen.has(d.relPath)) { seen.add(d.relPath); out.push(d.relPath); }
+  }
+  return out;
 }
 
 // Pre-scan an AST for `load_module("path", …)` calls (spec §04). A
@@ -226,6 +258,10 @@ function _normaliseBundle(b: any): { sources: Record<string, string> } {
 module.exports = {
   // High-level
   processSource,
+  // Multi-file host helpers (spec §04): dependency discovery + path
+  // resolution for the host's bundle pre-fetch (web fetch / vscode fs).
+  moduleDeps,
+  moduleResolve: require('./module-resolve.ts'),
   variants,
   // Components
   tokenize, T,

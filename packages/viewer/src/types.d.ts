@@ -254,8 +254,15 @@ export interface Ctx {
   plotEnabled: boolean;
   currentSource: string | null;
   /** Engine's binding map from processSource — Map<name, BindingInfo>.
-   *  Null at boot before the first source loads. */
+   *  The PRIMARY module alone (the DAG renders this). Null at boot before
+   *  the first source loads. */
   currentBindings: Map<string, any> | null;
+  /** Engine's LINKED (flattened) binding map — primary + every
+   *  transitively-loaded module spliced under namespaced names (spec §04
+   *  load_module). Drives derivation building / materialisation so
+   *  cross-module refs resolve. Equals `currentBindings` for a single-file
+   *  model. Null at boot. */
+  currentLinkedBindings: Map<string, any> | null;
   currentLoweredModule: any;
   currentVariantId: string | null;
   currentPlotBindingName: string | null;
