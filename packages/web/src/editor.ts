@@ -55,20 +55,22 @@
     return { processed, tokens };
   }
 
-  // Fold multi-line `{ … }` regions (FlatPPL's main block delimiter:
-  // module / record bodies). Heuristic depth-count over raw text — does not
-  // special-case braces inside comments/strings (rare; folding is forgiving).
+  // Fold multi-line `[ … ]` regions. FlatPPL's `{ }` are measure/record
+  // literals that read better left open; the bracket-heavy multi-line
+  // constructs worth collapsing are the `[ ]` lists (data vectors, index
+  // sets). Heuristic depth-count over raw text — does not special-case
+  // brackets inside comments/strings (rare; folding is forgiving).
   function flatpplFold(bundle: any) {
     return bundle.foldService.of(function (state: any, lineStart: number, lineEnd: number) {
       const line = state.doc.sliceString(lineStart, lineEnd);
-      const open = line.lastIndexOf('{');
+      const open = line.lastIndexOf('[');
       if (open < 0) return null;
       const docStr = state.doc.toString();
       let depth = 1;
       for (let i = lineStart + open + 1; i < docStr.length; i++) {
         const c = docStr.charCodeAt(i);
-        if (c === 123 /* { */) depth++;
-        else if (c === 125 /* } */) {
+        if (c === 91 /* [ */) depth++;
+        else if (c === 93 /* ] */) {
           depth--;
           if (depth === 0) {
             if (i <= lineEnd) return null;          // closes on the same line — not foldable
@@ -496,15 +498,57 @@
       { decorations: function (v: any) { return v.decorations; } }
     );
 
-    // TextMate base highlighter, when its bundle loaded. init() kicks off the
-    // async grammar/WASM load (fire-and-forget; the plugin repaints on ready).
-    // Must precede the binding overlay below — see makeHighlightPlugin's doc on
-    // span-nesting precedence.
-    let textmateExt: any[] = [];
-    if (globalScope.FlatPPLTextmate) {
-      globalScope.FlatPPLTextmate.init();
-      textmateExt = [globalScope.FlatPPLTextmate.makeHighlightPlugin(bundle)];
+    // Language pack: the file-type-specific extension set, swapped via a
+    // Compartment when the loaded file changes (showSource → setLanguage).
+    // This is the single gate that keeps non-FlatPPL files OFF the FlatPPL
+    // grammar + engine: only `.flatppl` gets the TextMate highlight, the
+    // engine binding overlay, diagnostics + lint gutter, hover, completion,
+    // and the `[ ]` fold. `.json` (incl. .hs3.json / .pyhf.json) and `.md`
+    // get a real language parser — proper highlighting and native
+    // (foldNodeProp) folding, which for JSON collapses both `{}` and `[]`.
+    // Anything else renders as plain text.
+    const languageCompartment = new bundle.Compartment();
+
+    function languagePack(key: string): any[] {
+      if (key === 'json') {
+        return [bundle.langJson(), bundle.syntaxHighlighting(bundle.defaultHighlightStyle)];
+      }
+      if (key === 'markdown') {
+        return [bundle.langMarkdown(), bundle.syntaxHighlighting(bundle.defaultHighlightStyle)];
+      }
+      if (key === 'flatppl') {
+        const fppl: any[] = [];
+        // TextMate base highlighter, when its bundle loaded. init() kicks off
+        // the async grammar/WASM load (fire-and-forget; the plugin repaints on
+        // ready). Must precede the binding overlay — see makeHighlightPlugin's
+        // doc on span-nesting precedence.
+        if (globalScope.FlatPPLTextmate) {
+          globalScope.FlatPPLTextmate.init();
+          fppl.push(globalScope.FlatPPLTextmate.makeHighlightPlugin(bundle));
+        }
+        // Prec.high so the binding overlay nests INSIDE the TextMate base mark
+        // (higher precedence => inner span => its colour wins). See
+        // makeHighlightPlugin's doc comment.
+        fppl.push(bundle.Prec.high(makeHighlightPlugin(bundle)));
+        fppl.push(makeHoverTooltip(bundle));
+        fppl.push(makeLinter(bundle));
+        fppl.push(makeCompletion(bundle));
+        fppl.push(bundle.lintGutter());
+        fppl.push(flatpplFold(bundle));
+        return fppl;
+      }
+      return [];   // plain text (unknown / placeholder file types)
     }
+
+    // Map the gallery's surface type to a language-pack key. hs3/pyhf files
+    // are JSON-shaped (.hs3.json / .pyhf.json), so they ride the json pack.
+    function langKeyFor(type: any): string {
+      if (type === 'flatppl' || type === 'markdown') return type;
+      if (type === 'json' || type === 'hs3' || type === 'pyhf') return 'json';
+      return 'plaintext';
+    }
+
+    const initialLang = langKeyFor(opts.fileType || 'flatppl');
 
     const extensions: any[] = [
       bundle.lineNumbers(),
@@ -513,7 +557,6 @@
       bundle.bracketMatching(),
       bundle.codeFolding(),
       bundle.foldGutter(),
-      flatpplFold(bundle),
       bundle.history(),
       bundle.keymap.of(
         // The Ctrl/Cmd-S binding gets `preventDefault: true` so the
@@ -540,15 +583,7 @@
           bundle.completionKeymap || []
         )
       ),
-      ...textmateExt,
-      // Prec.high so the binding overlay nests INSIDE the TextMate base mark
-      // (higher precedence => inner span => its colour wins). See
-      // makeHighlightPlugin's doc comment.
-      bundle.Prec.high(makeHighlightPlugin(bundle)),
-      makeHoverTooltip(bundle),
-      makeLinter(bundle),
-      makeCompletion(bundle),
-      bundle.lintGutter(),
+      languageCompartment.of(languagePack(initialLang)),
       flashPlugin,
       makeTheme(bundle),
       bundle.EditorView.domEventHandlers(domEventHandlers),
@@ -651,6 +686,16 @@
       setReadOnly: function (ro: boolean) {
         view.dispatch({
           effects: readOnlyCompartment.reconfigure(readOnlyExtensions(!!ro)),
+        });
+      },
+      /** Swap the file-type language pack (highlight + folding +, for
+       *  FlatPPL, the engine overlay/diagnostics). `type` is the gallery's
+       *  surface type (surfaces.typeForPath): 'flatppl' | 'markdown' |
+       *  'hs3' | 'pyhf' | 'unknown'. Called from showSource on every file
+       *  load so a `.md` / `.json` buffer never rides the FlatPPL grammar. */
+      setLanguage: function (type: any) {
+        view.dispatch({
+          effects: languageCompartment.reconfigure(languagePack(langKeyFor(type))),
         });
       },
       /** Scroll the editor to the given source line (zero-indexed,
