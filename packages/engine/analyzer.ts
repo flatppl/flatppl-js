@@ -1832,6 +1832,15 @@ function collectAxisRefsWithVariance(node: any): Map<string, { variance?: string
  */
 function sliceSource(source: string, loc: any) {
   const lines = source.split('\n');
+  // Robustness: a synthetic loc (engine-generated node, e.g. the linked
+  // combined AST) or one out of range for `source` has no slice — return
+  // empty rather than indexing past the end. The rhs display string is a
+  // best-effort convenience, never load-bearing.
+  if (!loc || !loc.start || !loc.end
+      || loc.start.line < 0 || loc.start.line >= lines.length
+      || loc.end.line < 0 || loc.end.line >= lines.length) {
+    return '';
+  }
   if (loc.start.line === loc.end.line) {
     return lines[loc.start.line].slice(loc.start.col, loc.end.col);
   }

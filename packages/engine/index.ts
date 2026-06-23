@@ -27,6 +27,7 @@ const pirSexpr = require('./pir-sexpr.ts');
 const standardModules = require('./standard-modules.ts');
 const dataload = require('./dataload.ts');
 const { resolveModulePath } = require('./module-resolve.ts');
+const { linkModules } = require('./module-link.ts');
 const perfConfig = require('./perf-config.ts');
 const optimizer = require('./optimizer/index.ts');
 const generatedQuantities = require('./generated-quantities.ts');
@@ -75,19 +76,36 @@ function processSource(source: string, opts?: any) {
 
   const { primary, modules } = _compileModuleGraph(source, entryPath, bundle, variant);
 
+  // `linkedBindings` is the engine-internal FLATTENED binding map (spec
+  // §11: tooling may flatten internally) — the primary plus every
+  // transitively-loaded module spliced under namespaced names, with refs
+  // rewritten and load-time substitutions rewired. It feeds
+  // `buildDerivations` so cross-module materialisation works with the
+  // unchanged by-name materialiser. For a single-file source (no
+  // dependencies) it is exactly the primary's bindings — no relink. The
+  // re-analysis diagnostics are dropped: the per-module diagnostics on
+  // `primary`/`modules` are authoritative (the canonical, non-flattened
+  // view), and the DAG uses `bindings` (the primary module alone).
+  let linkedBindings = primary.bindings;
+  if (modules.size > 0) {
+    const linkedAst = linkModules(primary, modules);
+    linkedBindings = analyze(linkedAst, '').bindings;
+  }
+
   // loweredModule is forwarded for downstream consumers that need
   // on-demand type specialization (e.g. typeinfer.inferExprInScope used
   // by the plot dispatcher). `modules` is the registry of compiled
   // dependency modules (resolved-path → compiled module); empty for a
-  // single-file source. Modules do NOT flatten (spec §11) — each is its
-  // own LoweredModule, reached by `(%ref <alias> X)` cross-module refs.
+  // single-file source. Modules do NOT flatten in the canonical IR (spec
+  // §11) — each is its own LoweredModule, reached by `(%ref <alias> X)`
+  // cross-module refs; `linkedBindings` is the internal materialisation view.
   return {
     ast: primary.ast,
     bindings: primary.bindings,
     loweredModule: primary.loweredModule,
     symbols: primary.symbols,
     diagnostics: primary.diagnostics,
-    variant, bundle, modules, path: entryPath,
+    variant, bundle, modules, linkedBindings, path: entryPath,
   };
 }
 
