@@ -106,18 +106,20 @@ class FlatPPLPanel {
       if (msg.type === 'updateTitle') {
         this._panel.title = `FlatPPL: ${msg.name}`;
       }
-      // Cross-module navigation (spec §04 load_module): a double-click on
-      // a load_module node in the DAG. Open the loaded module's file in
-      // the editor and re-point the visualizer at it. `msg.path` is the
-      // resolved module path (URI path component); resolve it against the
-      // current document's URI to keep the scheme/authority.
+      // Cross-module navigation (spec §04 load_module): a double-click on a
+      // load_module node (whole module) or a member / member-alias node
+      // (focused on that member) in the DAG. Open the loaded module's file
+      // in the editor (source-sync) and re-point the visualizer at it,
+      // focusing `msg.member` when present. `msg.path` is the resolved
+      // module path (URI path component); resolve it against the current
+      // document's URI to keep the scheme/authority.
       if (msg.type === 'openModule' && msg.path && this._sourceUri) {
         const depUri = this._sourceUri.with({ path: msg.path });
         vscode.window.showTextDocument(depUri, {
           viewColumn: vscode.ViewColumn.One,
           preserveFocus: false,
         }).then((editor: any) => {
-          this.updateSource(editor.document.getText(), null, depUri, true);
+          this.updateSource(editor.document.getText(), msg.member || null, depUri, true);
         }, (err: any) => {
           vscode.window.showErrorMessage(
             'FlatPPL: could not open loaded module \'' + msg.path + '\': '

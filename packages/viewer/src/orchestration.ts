@@ -30,6 +30,9 @@ export function nameSeed(ctx: Ctx, name: any) {
 
 export function applySourceUpdate(ctx: Ctx, msg: any) {
   const sourceChanged = (msg.source !== ctx.currentSource);
+  // Track which module (source file) the DAG currently belongs to, so a
+  // cross-module back-navigation can re-sync the editor source (spec §04).
+  if (msg.path !== undefined) ctx.currentPath = msg.path;
   // currentVariantId is initialised to 'flatppl' in main.ts and
   // there is only one canonical surface (spec §05); the host MAY
   // override via msg.variant for forward-compatibility but no

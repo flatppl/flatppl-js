@@ -30,7 +30,8 @@ export function defaultVscodeHost(): HostAdapter {
     // Cross-module navigation (spec §04 load_module): open the loaded
     // module's file. `path` is resolved relative to the current document;
     // the extension host resolves it against the workspace and opens it.
-    openModule:       function(path) { api.postMessage({ type: 'openModule', path: path }); },
+    // `member`, when present, focuses the module DAG on that binding.
+    openModule:       function(path, member) { api.postMessage({ type: 'openModule', path: path, member: member }); },
     saveState:        function(state: any) { api.setState(state); },
     loadState:        function() { return api.getState(); },
     signalReady:      function() { api.postMessage({ type: 'webviewReady' }); },

@@ -46,6 +46,23 @@ test('an inline cross-module member use emits a member node, not a bare module e
     'member node carries drill-in metadata');
 });
 
+test('a bare member alias node is tagged with its module member (for drill-in)', () => {
+  // f_alias = common.f_a — a bare callable alias (spec §04). Its own node
+  // carries the {module, field} so a double-click drills into the module at
+  // f_a — and there is NO separate `common.f_a` member node.
+  const r = build([
+    'c_scaling = 5',
+    'common = load_module("dep.flatppl", c = c_scaling)',
+    'f_alias = common.f_a',
+  ].join('\n'));
+  const { nodes } = computeSubDAG(r.bindings, 'f_alias', { linkedBindings: r.linkedBindings });
+  const n = nodes.find((x: any) => x.id === 'f_alias');
+  assert.deepEqual(n.moduleMember, { module: 'common', field: 'f_a' },
+    'the alias node carries its module-member origin');
+  assert.ok(!nodes.some((x: any) => x.id === 'common.f_a'),
+    'a bare alias has no separate member node');
+});
+
 test('a member aliased to a local name stays a local node (no member node)', () => {
   const r = build([
     'c_scaling = 5',

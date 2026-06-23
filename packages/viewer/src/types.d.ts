@@ -253,6 +253,10 @@ export interface Ctx {
   plotEchart: any;
   plotEnabled: boolean;
   currentSource: string | null;
+  /** Resolved path of the module whose DAG is currently shown (the host's
+   *  bundle / router key). Drives cross-module back source-sync (spec §04);
+   *  undefined for hosts that don't supply a path (plain embeds). */
+  currentPath?: string;
   /** Engine's binding map from processSource — Map<name, BindingInfo>.
    *  The PRIMARY module alone (the DAG renders this). Null at boot before
    *  the first source loads. */
@@ -330,9 +334,11 @@ export interface HostAdapter {
   revealSourceLine?(line: number, name?: string): void;
   setTitle?(title: string): void;
   /** Navigate the host to a loaded module's file (spec §04 load_module).
-   *  `path` is the resolved module path (the bundle / router key). Fired
-   *  by double-clicking a `load_module` node in the DAG. */
-  openModule?(path: string): void;
+   *  `path` is the resolved module path (the bundle / router key); `member`,
+   *  when present, focuses the module DAG on that binding. Fired by
+   *  double-clicking a `load_module` node (whole module) or a member /
+   *  member-alias node (that member). */
+  openModule?(path: string, member?: string): void;
   [extra: string]: any;
 }
 

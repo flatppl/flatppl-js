@@ -276,6 +276,22 @@ function collectModuleMemberRefs(value: any, bindings: any) {
   return out;
 }
 
+// If a binding is a BARE alias of a module member (`f_b = common.f_b`,
+// the whole RHS is `mod.field` on a `load_module` binding), return its
+// `{ module, field }` origin so the binding's own node can carry it — a
+// double-click then drills into the module at that member (spec §04),
+// exactly like an inline member node. Returns undefined otherwise.
+function aliasModuleMember(value: any, bindings: any) {
+  if (value && value.type === 'FieldAccess' && value.object
+      && value.object.type === 'Identifier' && typeof value.field === 'string') {
+    const mb = bindings.get(value.object.name);
+    if (mb && mb.type === 'module') {
+      return { module: value.object.name, field: value.field };
+    }
+  }
+  return undefined;
+}
+
 function computeSubDAG(bindings: any, nodeName: string, opts?: any) {
   const binding = bindings.get(nodeName);
   if (!binding) return { nodes: [], edges: [] };
@@ -372,6 +388,9 @@ function computeSubDAG(bindings: any, nodeName: string, opts?: any) {
       inferredType: (b && b.inferredType)
         ? require('./types.ts').show(b.inferredType)
         : undefined,
+      // Bare alias of a module member (`f_b = common.f_b`) → its origin,
+      // so a double-click drills into the module at that member (spec §04).
+      moduleMember: aliasModuleMember(e.value, bindings),
     });
 
     if (isBoundary || !b) return;

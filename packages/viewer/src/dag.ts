@@ -337,13 +337,23 @@ export function initCy(ctx: Ctx) {
   // (no host round-trip). Title sync to the editor still goes via a
   // postMessage to the host since the title is on the VS Code panel.
   ctx.cy.on('dbltap', 'node', function(evt: any) {
-    const nodeId = evt.target.data('id');
+    const node = evt.target;
+    const nodeId = node.data('id');
     // Don't drill into synthetic nodes (placeholder/hole inputs).
     if (nodeId.indexOf(':') !== -1) return;
-    // A user `load_module` node: double-click navigates INTO the loaded
-    // module's file (spec §04 Module composition) rather than drilling a
-    // sub-DAG — a module boundary has none in the primary graph. The
-    // resolved path is the bundle / router key recorded at lowering.
+    // A cross-module member node (`common.f_a`) OR a bare alias of one
+    // (`f_b = common.f_b`): double-click drills INTO the loaded module's
+    // DAG focused on that member (spec §04) — as if its source were opened
+    // and DAG-view selected for it. The owning module's resolved path
+    // comes from the moduleRegistry keyed by the member's module name.
+    const mm = node.data('moduleMember');
+    if (mm && mm.module && ctx.host && typeof ctx.host.openModule === 'function') {
+      const owner = _loadModuleEntry(ctx, mm.module);
+      if (owner) { ctx.host.openModule(owner.path, mm.field); return; }
+    }
+    // The `load_module` binding itself: drill into the WHOLE loaded module
+    // (no member focus). A module boundary has no sub-DAG in the primary
+    // graph; the resolved path is the bundle / router key from lowering.
     const modEntry = _loadModuleEntry(ctx, nodeId);
     if (modEntry && ctx.host && typeof ctx.host.openModule === 'function') {
       ctx.host.openModule(modEntry.path);
@@ -658,7 +668,7 @@ export function focusNode(ctx: Ctx, targetName: any, pushHistory: any) {
     if (ctx.history.length > ctx.HISTORY_CAP) ctx.history.shift();
   }
 
-  ctx.currentState = { data: dagData, targetName: targetName };
+  ctx.currentState = { data: dagData, targetName: targetName, path: ctx.currentPath };
   renderDAG(ctx, dagData);
   updateBackBtn(ctx);
   updatePlotForBinding(ctx, targetName);
@@ -693,7 +703,7 @@ export function enterModuleView(ctx: Ctx, pushHistory: any) {
     if (ctx.history.length > ctx.HISTORY_CAP) ctx.history.shift();
   }
 
-  ctx.currentState = { data: dagData, targetName: ctx.MODULE_TARGET };
+  ctx.currentState = { data: dagData, targetName: ctx.MODULE_TARGET, path: ctx.currentPath };
   renderDAG(ctx, dagData);
   updateBackBtn(ctx);
   // Mirror module-view focus to the host (null = whole module).

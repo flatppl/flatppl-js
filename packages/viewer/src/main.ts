@@ -1450,6 +1450,20 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // when going back.)
   $('back-btn').addEventListener('click', function() {
     if (ctx.history.length === 0) return;
+    // Cross-module back (spec §04): the prior view belongs to a different
+    // source file. The local DAG-only restore below can't move the editor,
+    // so delegate to the host — opening that module's source re-syncs the
+    // editor AND re-renders its DAG (focused on where we left it). A
+    // whole-module prior view (MODULE_TARGET) drills back with no member.
+    const prev = ctx.history[ctx.history.length - 1];
+    if (prev && prev.path != null && prev.path !== ctx.currentPath
+        && ctx.host && typeof ctx.host.openModule === 'function') {
+      ctx.history.pop();
+      ctx.host.openModule(prev.path,
+        prev.targetName === ctx.MODULE_TARGET ? undefined : prev.targetName);
+      updateBackBtn(ctx);
+      return;
+    }
     ctx.currentState = ctx.history.pop();
     renderDAG(ctx, ctx.currentState.data);
     updateBackBtn(ctx);

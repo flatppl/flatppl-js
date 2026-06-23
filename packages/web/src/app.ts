@@ -1630,12 +1630,15 @@
         });
       },
       /** Open a loaded module's file (spec §04 cross-module navigation).
-          Fired by double-clicking a `load_module` node in the DAG. `path`
-          is the resolved module path (already the gallery-root-relative
-          key the router uses), so we navigate straight to it. */
-      openModule: function (path: any) {
+          Fired by double-clicking a `load_module` node (whole module) or a
+          member / member-alias node (focused on that member). `path` is the
+          resolved module path (already the gallery-root-relative key the
+          router uses); `member`, when present, is the binding inside the
+          module to focus the DAG on. The router change also swaps the source
+          editor to the module file (source-sync, spec §04). */
+      openModule: function (path: any, member?: any) {
         if (!path) return;
-        window.FlatPPLWebRouter.navigateTo({ model: path, target: null });
+        window.FlatPPLWebRouter.navigateTo({ model: path, target: member || null });
       },
       /** Whether the gallery can write to source right now. True
        *  when the source editor is in edit mode; false in view
