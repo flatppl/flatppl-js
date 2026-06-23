@@ -1,0 +1,13 @@
+flatppl_compat = "0.1"
+
+% Signal mean — a module input, optionally bound by a loader at load time.
+mu = elementof(reals)
+
+% Known measurement resolution.
+sigma = 0.7
+
+% Parameterized observation measure (depends on the input `mu`).
+dist = Normal(mu, sigma)
+
+% Concrete observation measure — needs no load-time substitution.
+dist0 = Normal(0.0, sigma)

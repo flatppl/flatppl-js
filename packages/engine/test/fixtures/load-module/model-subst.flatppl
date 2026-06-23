@@ -1,0 +1,7 @@
+flatppl_compat = "0.1"
+
+# WITH load-time substitution: pin the loaded channel's `mu` input to a
+# local value, then score the loaded (now-substituted) measure.
+theta = 1.5
+ch = load_module("channel.flatppl", mu = theta)
+lp = logdensityof(ch.dist, 2.0)

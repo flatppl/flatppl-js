@@ -16,14 +16,19 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { processSource, orchestrator, materialiser } = require('..');
+const fs = require('node:fs');
+const path = require('node:path');
+
+const { processSource, orchestrator, materialiser, moduleDeps, moduleResolve } = require('..');
 const { createWorkerHandler } = require('../worker.ts');
 
 const SAMPLE_COUNT = 4096;
 const ROOT_SEED = 0x10AD11; // "loadll"
+const FIXTURES = path.join(__dirname, 'fixtures');
 
-function makeCrossCtx(model: string, deps: Record<string, string>) {
-  const r = processSource(model, { bundle: { sources: deps } });
+// Build a materialiser context over a processSource result (the linked
+// graph), backed by an in-process worker.
+function buildCtx(r: any) {
   const built = orchestrator.buildDerivations(r.linkedBindings);
   const worker = createWorkerHandler();
   worker.handle({ type: 'init', seed: ROOT_SEED });
@@ -46,7 +51,36 @@ function makeCrossCtx(model: string, deps: Record<string, string>) {
     sampleCount: SAMPLE_COUNT,
     rootSeed: ROOT_SEED,
   };
-  return { r, ctx };
+  return ctx;
+}
+
+function makeCrossCtx(model: string, deps: Record<string, string>) {
+  const r = processSource(model, { bundle: { sources: deps } });
+  return { r, ctx: buildCtx(r) };
+}
+
+// Read a fixture `.flatppl` plus its transitive load_module dependencies
+// from disk into a bundle — mirroring exactly what a host resolver does
+// (walk `moduleDeps` + `moduleResolve.resolveModulePath`, fetch each).
+function fixtureBundle(primaryRel: string) {
+  const primarySource = fs.readFileSync(path.join(FIXTURES, primaryRel), 'utf8');
+  const sources: Record<string, string> = {};
+  (function walk(importerRel: string, text: string) {
+    for (const rel of moduleDeps(text)) {
+      const resolved = moduleResolve.resolveModulePath(importerRel, rel);
+      if (sources[resolved]) continue;
+      const depText = fs.readFileSync(path.join(FIXTURES, resolved), 'utf8');
+      sources[resolved] = depText;
+      walk(resolved, depText);
+    }
+  })(primaryRel, primarySource);
+  return { primarySource, primaryPath: primaryRel, sources };
+}
+
+function makeFixtureCtx(primaryRel: string) {
+  const b = fixtureBundle(primaryRel);
+  const r = processSource(b.primarySource, { path: b.primaryPath, bundle: { sources: b.sources } });
+  return { r, ctx: buildCtx(r) };
 }
 
 function normalLogpdf(x: number, mu: number, sigma: number) {
@@ -106,6 +140,33 @@ test('substitution flows: sampling a loaded measure honours the substituted inpu
   const x = await ctx.getMeasure('x');
   assert.ok(Math.abs(mean(x.samples) - 3.0) < 0.05, 'sample mean ≈ substituted mu (3.0)');
   assert.ok(Math.abs(std(x.samples) - 0.5) < 0.05, 'sample std ≈ loaded sigma (0.5)');
+});
+
+// ---------------------------------------------------------------------
+// File-based fixtures (test/fixtures/load-module/): a shared dependency
+// `channel.flatppl` loaded by two primaries — one WITH a load-time
+// substitution, one WITHOUT — read from disk and resolved exactly as a
+// host would. Closed-form (Normal) oracles.
+// ---------------------------------------------------------------------
+
+test('FIXTURE with substitution: model-subst scores N(theta, sigma) cross-module', async () => {
+  const { r, ctx } = makeFixtureCtx('load-module/model-subst.flatppl');
+  assert.equal(r.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+  // The dep was fetched into the bundle by walking moduleDeps off disk.
+  assert.ok(r.modules.get('load-module/channel.flatppl'), 'channel.flatppl compiled');
+  const lp = await ctx.getMeasure('lp');
+  // ch.dist = Normal(mu, 0.7); mu substituted with theta = 1.5; scored at 2.0.
+  assert.ok(Math.abs(lp.samples[0] - normalLogpdf(2.0, 1.5, 0.7)) < 1e-9,
+    'substituted mu = 1.5 flows from model-subst into the loaded measure');
+});
+
+test('FIXTURE without substitution: model-nosubst scores N(0, sigma) cross-module', async () => {
+  const { r, ctx } = makeFixtureCtx('load-module/model-nosubst.flatppl');
+  assert.equal(r.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+  const lp = await ctx.getMeasure('lp');
+  // ch.dist0 = Normal(0, 0.7), concrete (no substitution); scored at 0.5.
+  assert.ok(Math.abs(lp.samples[0] - normalLogpdf(0.5, 0.0, 0.7)) < 1e-9,
+    'the loaded concrete measure scores correctly with no load-time substitution');
 });
 
 test('transitive load: model → A → B materialises a B value through both hops', async () => {

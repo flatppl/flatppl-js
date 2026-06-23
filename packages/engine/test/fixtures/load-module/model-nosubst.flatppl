@@ -1,0 +1,7 @@
+flatppl_compat = "0.1"
+
+# WITHOUT load-time substitution: load the channel as-is and score its
+# concrete measure (dist0, which has no free input). The channel's mu
+# input simply stays a free parameter of the combined model.
+ch = load_module("channel.flatppl")
+lp = logdensityof(ch.dist0, 0.5)
