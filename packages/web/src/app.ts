@@ -698,7 +698,7 @@
     // decision lives in the shared file-types module (single source of
     // truth with build.mjs); see window.FlatPPLFileTypes.bucketKeyForPath.
     const FT = window.FlatPPLFileTypes;
-    const buckets: Record<string, any[]> = { examples: [], hs3: [], 'test-cases': [] };
+    const buckets: Record<string, any[]> = { examples: [], 'test-cases': [] };
     if (manifest && manifest.entries) {
       for (let i = 0; i < manifest.entries.length; i++) {
         const e = manifest.entries[i];
@@ -754,8 +754,6 @@
     // sites and the header-click handler share one source.
     renderFolder('examples',   'Examples',   buckets.examples,
       currentModel, /* italic */ false);
-    renderFolder('hs3',        'HS3',        buckets.hs3,
-      currentModel, /* italic */ false);
     if (!hideTestExamples) {
       renderFolder('test-cases', 'Test cases', buckets['test-cases'],
         currentModel, /* italic */ false);
@@ -770,7 +768,6 @@
     // themselves render their own per-folder empty labels.
     if (ephEntries.length === 0
         && buckets.examples.length === 0
-        && buckets.hs3.length === 0
         && buckets['test-cases'].length === 0
         && userEntries.length === 0) {
       const p = document.createElement('div');
