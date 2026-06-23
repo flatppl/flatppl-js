@@ -499,9 +499,15 @@ test('lower: load_module with substitutions → assigns', () => {
   assert.equal(ir.args.length, 1);
   assert.equal(ir.args[0].kind, 'lit');
   assert.equal(ir.args[0].value, 'helpers.flatppl');
-  assert.ok(ir.assigns);
-  assert.equal(ir.assigns.center.kind, 'ref');
-  assert.equal(ir.assigns.center.name, 'a');
+  // Substitutions lower to an ORDERED array of {name, value} — the spec
+  // §11 `(%assign ...)` shape (mirrors `fields`), the form every IR walker
+  // assumes. (Previously an object, which made the value IRs invisible to
+  // ir-walk and crashed toSexpr.)
+  assert.ok(Array.isArray(ir.assigns));
+  assert.equal(ir.assigns.length, 1);
+  assert.equal(ir.assigns[0].name, 'center');
+  assert.equal(ir.assigns[0].value.kind, 'ref');
+  assert.equal(ir.assigns[0].value.name, 'a');
 });
 
 test('lower: standard_module (positional only)', () => {

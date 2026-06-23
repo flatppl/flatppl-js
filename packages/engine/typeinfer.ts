@@ -353,6 +353,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     // structural shape in ways that don't fit the static signature
     // table.
     switch (expr.op) {
+      // Module loads (spec §11 %module): the binding is a namespace
+      // handle, not a value. Cross-module member access `mod.x` is typed
+      // separately in `inferCrossModuleRef` (it reads the loaded
+      // module's binding type), not here.
+      case 'load_module':     return write(T.moduleType(), expr);
+      case 'standard_module': return write(T.moduleType(), expr);
       case 'elementof': return write(inferElementof(expr, scopes), expr);
       case 'lawof':     return write(inferLawof(expr, scopes), expr);
       case 'record':    return write(inferRecord(expr, scopes), expr);

@@ -2802,7 +2802,14 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
  * @param {object} ast - Program AST node
  * @param {string} source - original source text (for expression slicing)
  */
-function analyze(ast: any, source: string) {
+function analyze(ast: any, source: string, opts?: any) {
+  // `opts` (optional) carries the multi-file compilation context (spec
+  // §04 Module composition): `opts.modulePath` is this module's own
+  // resolved path (importer path for its `load_module` deps); `opts.modules`
+  // is the registry of already-compiled sibling modules (resolved-path →
+  // compiled module) that cross-module type inference reads. Both are
+  // absent for a standalone single-file compile.
+  const moduleCtx = opts || {};
   const diagnostics: any[] = [];
   const bindings = new Map<string, any>();
   const symbols: any[] = [];
@@ -3179,7 +3186,7 @@ function analyze(ast: any, source: string) {
   // for source-level concerns (DAG display, source-located
   // diagnostics).
   const pir = require('./pir.ts');
-  const loweredModule = pir.lowerToModule(bindings);
+  const loweredModule = pir.lowerToModule(bindings, { modulePath: moduleCtx.modulePath });
 
   // Alias resolution (engine-concepts §19 / spec §04 "Aliasing is
   // just assignment"). Bindings whose RHS is a single ref node — pure

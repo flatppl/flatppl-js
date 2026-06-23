@@ -73,9 +73,9 @@
 // implicit parameters; we don't extract a params list.
 //
 // Module loads (`load_module`, `standard_module`) carry their substitution
-// kwargs as `assigns` (object), distinct from `kwargs` because they're
-// resolved at load time, not call time.
-//   { kind: 'call', op: 'load_module', args: ["..."], assigns: {…}, loc }
+// kwargs as `assigns` (array of {name, value}), distinct from `kwargs`
+// because they're resolved at load time, not call time.
+//   { kind: 'call', op: 'load_module', args: ["..."], assigns: [{name,value}…], loc }
 //
 // =====================================================================
 // Operator desugaring
@@ -1000,25 +1000,30 @@ function _lowerFieldsForm(op: string, node: any, ctx: any) {
 // `load_module("path", <kwargs as substitutions>)` — kwargs are the
 // `%assign` substitutions for the loaded module's free inputs. They're
 // resolved at load time, distinct from runtime call kwargs, so we use a
-// dedicated `assigns` field rather than `kwargs`.
+// dedicated `assigns` field (array of {name, value}) rather than `kwargs`.
 //
 // `standard_module(name, version)` — purely positional (just the path/version).
 
 function _lowerModuleLoad(op: string, node: any, ctx: any) {
   const args: any[] = [];
-  const assigns: Record<string, any> = {};
-  let hasAssigns = false;
+  // Substitution kwargs lower to an ORDERED array of {name, value} — the
+  // spec §11 `(%assign ...)` entry shape, mirroring `fields` on record /
+  // joint. This is the shape every IR walker (`ir-walk` child descent,
+  // `pir-sexpr` writer/reader) already assumes; an object here would make
+  // the substitution value IRs invisible to those walkers (and crash
+  // toSexpr). Order is source order — `(%assign ...)` is unordered by
+  // name semantically, but a stable order keeps round-tripping faithful.
+  const assigns: Array<{ name: string; value: any }> = [];
   for (const arg of node.args) {
     if (arg.type === 'KeywordArg') {
-      assigns[arg.name] = _lowerExpr(arg.value, ctx);
-      hasAssigns = true;
+      assigns.push({ name: arg.name, value: _lowerExpr(arg.value, ctx) });
     } else {
       args.push(_lowerExpr(arg, ctx));
     }
   }
   const out: any = { kind: 'call', op, loc: node.loc };
-  if (args.length > 0) out.args = args;
-  if (hasAssigns)      out.assigns = assigns;
+  if (args.length > 0)    out.args = args;
+  if (assigns.length > 0) out.assigns = assigns;
   return out;
 }
 

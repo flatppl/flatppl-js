@@ -196,7 +196,7 @@ export interface IRCall extends IRBase {
   args?: IRNode[];
   kwargs?: Record<string, IRNode>;
   fields?: Array<{ name: string; value: IRNode }>;
-  assigns?: Record<string, IRNode>;
+  assigns?: Array<{ name: string; value: IRNode }>;
   // Reification-specific:
   params?: string[];
   paramKwargs?: string[];

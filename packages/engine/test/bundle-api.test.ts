@@ -57,16 +57,19 @@ test('processSource: variant resolution still works alongside bundle', () => {
   assert.deepEqual(r.bundle, { sources: {} });
 });
 
-test('processSource: bundle does not yet affect analysis (no resolution yet)', () => {
-  // Until load_module end-to-end lands, a bundle is held but not
-  // consumed by analyzer/lower. This test pins the explicit
-  // non-behavior — once the resolution path lands, this should
-  // start showing the resolved bindings.
+test('processSource: bundle is resolved — load_module deps compile into the module registry', () => {
+  // The resolution path has landed (spec §04 Module composition): a
+  // `load_module("helpers.flatppl")` dependency is compiled from the
+  // bundle into its own LoweredModule, reachable via `result.modules`.
+  // (The deep cross-module behaviour — `mod.x` typing + materialisation —
+  // is exercised in load-module.test.ts.)
   const r = processSource(
     'h = load_module("helpers.flatppl")',
     { bundle: { sources: { 'helpers.flatppl': 'h_inner = 99' } } });
-  // The current engine reports a load_module call but doesn't yet
-  // resolve through the bundle. We just assert no crash + bundle
-  // carried through.
+  // The bundle is still carried through on the result …
   assert.deepEqual(r.bundle.sources['helpers.flatppl'], 'h_inner = 99');
+  // … and the dependency now compiles into its own module.
+  const dep = r.modules.get('helpers.flatppl');
+  assert.ok(dep && dep.loweredModule.bindings.has('h_inner'),
+    'helpers.flatppl compiled with its binding h_inner');
 });

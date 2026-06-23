@@ -186,6 +186,18 @@ function likelihood(inputs?: any) {
  */
 function rngstate() { return { kind: 'rngstate' }; }
 
+/**
+ * Module reference (spec §11 `%module`): the type of a `load_module(...)`
+ * / `standard_module(...)` binding. A module is a namespace handle, NOT a
+ * value — it carries no value set, is not callable / measure-typed, and
+ * cannot be passed as an argument or stored in a container (spec §02
+ * "Modules"). Opaque at the type level: the alias→loaded-module mapping
+ * lives in the LoweredModule's `moduleRegistry`, not in the type. Named
+ * `moduleType` (not `module`) to avoid shadowing the CommonJS `module`
+ * global within this file.
+ */
+function moduleType() { return { kind: 'module' }; }
+
 // Convenience constants for the most common scalar types. Use these
 // rather than re-allocating scalar('real') everywhere — equality is
 // structural so the savings are micro, but it reads better.
@@ -255,6 +267,9 @@ function equal(a: any, b: any): boolean {
       return true;
     case 'likelihood':
       // Opaque object at the type level — kind match suffices.
+      return true;
+    case 'module':
+      // Module references are opaque at the type level (kind match only).
       return true;
     case 'function':
     case 'kernel': {
@@ -418,6 +433,9 @@ function unify(a: any, b: any, subst: any): any {
       // unify. Same kind already matches above; this case is here for
       // clarity / future extension.
       return subst;
+    case 'module':
+      // Opaque module references — kind match (above) suffices.
+      return subst;
   }
   return null;
 }
@@ -501,6 +519,7 @@ function show(t: any): string {
     case 'function': return showCallable('function', t);
     case 'kernel':   return showCallable('kernel',   t);
     case 'likelihood': return 'likelihood';
+    case 'module':   return 'module';
     case 'var':      return 'any';  // unresolved → user-facing "any"
   }
   return '<unknown>';
@@ -1460,7 +1479,7 @@ function hasSignature(opName: string) {
 module.exports = {
   // Constructors
   deferred, failed, any, scalar, array, tvector, record, table, tuple, measure, rngstate, tvar,
-  funcType, kernelType, likelihood,
+  funcType, kernelType, likelihood, moduleType,
   REAL, INTEGER, BOOLEAN, COMPLEX, STRING, RNGSTATE,
   // Total-mass classes (spec §11)
   MASS_DEFERRED, MASS_NULL, MASS_NORMALIZED, MASS_FINITE, MASS_LOCALLY_FINITE, MASS_UNKNOWN,

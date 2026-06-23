@@ -26,6 +26,7 @@ const pir = require('./pir.ts');
 const pirSexpr = require('./pir-sexpr.ts');
 const standardModules = require('./standard-modules.ts');
 const dataload = require('./dataload.ts');
+const { resolveModulePath } = require('./module-resolve.ts');
 const perfConfig = require('./perf-config.ts');
 const optimizer = require('./optimizer/index.ts');
 const generatedQuantities = require('./generated-quantities.ts');
@@ -65,20 +66,126 @@ function processSource(source: string, opts?: any) {
   // Normalise the bundle to its canonical shape — every downstream
   // consumer can read `bundle.sources` without null-guarding.
   const bundle = _normaliseBundle(opts && opts.bundle);
-  const { tokens, diagnostics: tokenDiags } = tokenize(source, variant);
-  const { ast, diagnostics: parseDiags } = parse(tokens, variant);
-  const { bindings, loweredModule, diagnostics: analyzeDiags, symbols }
-    = analyze(ast, source);
+  // The primary module's own path: the importer path against which its
+  // `load_module(...)` dependencies resolve (spec §04 "Path resolution").
+  // The host supplies it via `opts.path`; a standalone compile (no path)
+  // resolves deps relative to the bundle root.
+  const entryPath = (opts && typeof opts.path === 'string' && opts.path)
+    ? opts.path : '<entry>';
 
-  const diagnostics = [...tokenDiags, ...parseDiags, ...analyzeDiags];
+  const { primary, modules } = _compileModuleGraph(source, entryPath, bundle, variant);
 
   // loweredModule is forwarded for downstream consumers that need
-  // on-demand type specialization (e.g. typeinfer.inferExprInScope
-  // used by the plot dispatcher to compute the output shape of a
-  // polymorphic function at a specific call site — module-level
-  // inference produces best-effort with `any` inputs, which under-
-  // specifies in general).
-  return { ast, bindings, loweredModule, symbols, diagnostics, variant, bundle };
+  // on-demand type specialization (e.g. typeinfer.inferExprInScope used
+  // by the plot dispatcher). `modules` is the registry of compiled
+  // dependency modules (resolved-path → compiled module); empty for a
+  // single-file source. Modules do NOT flatten (spec §11) — each is its
+  // own LoweredModule, reached by `(%ref <alias> X)` cross-module refs.
+  return {
+    ast: primary.ast,
+    bindings: primary.bindings,
+    loweredModule: primary.loweredModule,
+    symbols: primary.symbols,
+    diagnostics: primary.diagnostics,
+    variant, bundle, modules, path: entryPath,
+  };
+}
+
+// Compile the primary source plus, transitively, every `.flatppl` module
+// it loads via `load_module(...)`. The host has already pre-resolved the
+// dependency text into `bundle.sources` (keyed by resolved path); this
+// stays synchronous. Dependencies compile BEFORE their importer so that
+// cross-module type inference can read each dep's typed bindings.
+// Resolution failures (missing source, dependency cycle, non-literal
+// path) become diagnostics on the importing module — never crashes or
+// infinite loops.
+function _compileModuleGraph(
+  entrySource: string, entryPath: string,
+  bundle: { sources: Record<string, string> }, variant: any,
+): { primary: any; modules: Map<string, any> } {
+  // Resolved-path → compiled module. Holds the dependencies only; the
+  // primary is returned separately as the top-level result.
+  const modules = new Map<string, any>();
+
+  // `stack` is the active ancestor chain (importer paths currently being
+  // compiled) — used for cycle detection. A path already in `modules` is a
+  // diamond dependency (compile once), distinct from a path on `stack`
+  // (a cycle).
+  function compile(path: string, src: string, stack: Set<string>): any {
+    const { tokens, diagnostics: tokenDiags } = tokenize(src, variant);
+    const { ast, diagnostics: parseDiags } = parse(tokens, variant);
+
+    const depDiags: any[] = [];
+    for (const dep of _collectLoadModuleDeps(ast)) {
+      if (dep.relPath == null) {
+        depDiags.push({ severity: 'error',
+          message: 'load_module(...) requires a string-literal path '
+            + '(module paths are resolved at load time, spec §04)',
+          loc: dep.loc });
+        continue;
+      }
+      const resolved = resolveModulePath(path, dep.relPath);
+      if (stack.has(resolved)) {
+        depDiags.push({ severity: 'error',
+          message: "Module dependency cycle detected: '" + resolved
+            + "' is already being loaded (via '" + path + "')",
+          loc: dep.loc });
+        continue;
+      }
+      if (modules.has(resolved)) continue;          // diamond dep — compile once
+      const depSource = bundle.sources[resolved];
+      if (depSource === undefined) {
+        depDiags.push({ severity: 'error',
+          message: "Module source not found in bundle: could not resolve '"
+            + dep.relPath + "' (looked for '" + resolved + "')",
+          loc: dep.loc });
+        continue;
+      }
+      const childStack = new Set(stack); childStack.add(resolved);
+      modules.set(resolved, compile(resolved, depSource, childStack));
+    }
+
+    const a = analyze(ast, src, { modulePath: path, modules });
+    return {
+      path, ast,
+      bindings: a.bindings,
+      loweredModule: a.loweredModule,
+      symbols: a.symbols,
+      diagnostics: [...tokenDiags, ...parseDiags, ...depDiags, ...a.diagnostics],
+    };
+  }
+
+  const primary = compile(entryPath, entrySource, new Set([entryPath]));
+  return { primary, modules };
+}
+
+// Pre-scan an AST for `load_module("path", …)` calls (spec §04). A
+// `load_module` result is a module reference, not a value (it cannot be
+// passed to functions or stored), so in practice it appears only as a
+// binding RHS — but we walk the whole tree defensively. Returns one entry
+// per call: `relPath` is the string-literal path, or null when the path
+// argument is not a literal (an error, surfaced by the caller).
+function _collectLoadModuleDeps(ast: any): Array<{ relPath: string | null; loc: any }> {
+  const out: Array<{ relPath: string | null; loc: any }> = [];
+  function visit(node: any) {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { for (const c of node) visit(c); return; }
+    if (node.type === 'CallExpr' && node.callee
+        && node.callee.type === 'Identifier' && node.callee.name === 'load_module') {
+      const first = node.args && node.args[0];
+      out.push({
+        relPath: (first && first.type === 'StringLiteral') ? String(first.value) : null,
+        loc: node.loc,
+      });
+    }
+    for (const k in node) {
+      if (k === 'loc') continue;
+      const v = node[k];
+      if (v && typeof v === 'object') visit(v);
+    }
+  }
+  visit(ast);
+  return out;
 }
 
 // Canonicalise the bundle: accept undefined / empty / partial shapes
