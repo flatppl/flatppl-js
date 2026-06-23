@@ -3,7 +3,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
-const { processSource, computeSubDAG } = require('../index.ts');
+const { processSource, computeSubDAG, moduleDeps, moduleResolve } = require('../index.ts');
 
 // Integration tests run against bundled flatppl source files copied from
 // the flatppl-examples and statsmodel-rosetta-stone sibling repos. Update
@@ -11,10 +11,34 @@ const { processSource, computeSubDAG } = require('../index.ts');
 
 const FIXTURES_DIR = path.join(__dirname, 'fixtures');
 
+// Read a fixture plus any transitive `load_module` dependencies it pulls
+// in (spec §04), mirroring a host resolver: walk `moduleDeps` +
+// `resolveModulePath`, read each sibling from the fixtures dir. Returns
+// the args for `processSource` — `{ source, opts }` with the assembled
+// bundle (empty for a single-file fixture).
+function loadFixture(name: string) {
+  const source = fs.readFileSync(path.join(FIXTURES_DIR, name), 'utf8');
+  const sources: Record<string, string> = {};
+  (function walk(importer: string, text: string) {
+    for (const rel of moduleDeps(text)) {
+      const resolved = moduleResolve.resolveModulePath(importer, rel);
+      if (sources[resolved]) continue;
+      sources[resolved] = fs.readFileSync(path.join(FIXTURES_DIR, resolved), 'utf8');
+      walk(resolved, sources[resolved]);
+    }
+  })(name, source);
+  const hasDeps = Object.keys(sources).length > 0;
+  return { source, opts: hasDeps ? { path: name, bundle: { sources } } : { path: name } };
+}
+
 const PARSE_FIXTURES = [
   'bayesian_inference_1.flatppl',
   'bayesian_inference_2.flatppl',
+  // 3 (disintegrate) + 4 (restrict) are multi-file: they load_module a
+  // shared `bayesian_inference_common.flatppl` (loadFixture assembles the
+  // bundle).
   'bayesian_inference_3.flatppl',
+  'bayesian_inference_4.flatppl',
   'flatppl-uncorrelated_background-ma-auxm.flatppl',
   'flatppl-uncorrelated_background-ma-priors.flatppl',
   'flatppl-uncorrelated_background-draws-auxm.flatppl',
@@ -31,8 +55,8 @@ const PARSE_FIXTURES = [
 
 for (const name of PARSE_FIXTURES) {
   test(`integration: ${name} parses without errors`, () => {
-    const src = fs.readFileSync(path.join(FIXTURES_DIR, name), 'utf8');
-    const { diagnostics } = processSource(src, { path: name });
+    const f = loadFixture(name);
+    const { diagnostics } = processSource(f.source, f.opts);
     const errors = diagnostics.filter((d: any) => d.severity === 'error');
     if (errors.length > 0) {
       for (const e of errors) {
@@ -121,10 +145,14 @@ test('integration: bayesian_inference_3 posterior derivation cascade', () => {
   // classifier must read the body via Kir.body, not Kir.args[0]. The
   // A1 IR-migration originally read .args[0], silently nulling the
   // posterior derivation and breaking the visualization.
+  // bayesian_inference_3 is now multi-file (loads the shared common
+  // module), so derivations must be built from the LINKED graph.
   const { buildDerivations } = require('../orchestrator.ts');
-  const src = fs.readFileSync(path.join(FIXTURES_DIR, 'bayesian_inference_3.flatppl'), 'utf8');
-  const { bindings } = processSource(src);
-  const { derivations } = buildDerivations(bindings);
+  const f = loadFixture('bayesian_inference_3.flatppl');
+  const r = processSource(f.source, f.opts);
+  assert.equal(r.diagnostics.filter((d: any) => d.severity === 'error').length, 0,
+    'bayesian_inference_3 (multi-file) resolves without errors');
+  const { derivations } = buildDerivations(r.linkedBindings);
 
   assert.ok(derivations.posterior, 'posterior should classify');
   assert.equal(derivations.posterior.kind, 'bayesupdate');

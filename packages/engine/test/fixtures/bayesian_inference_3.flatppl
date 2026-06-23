@@ -2,20 +2,17 @@
 # disintegration: build the joint model first, then disintegrate into
 # forward model kernel and prior.
 
-# Prior distributions
-theta1_dist = Normal(0, 1)
-theta2_dist = Exponential(1)
+% Common module
+common = load_module("bayesian_inference_common.flatppl", c = c_scaling)
 
 # Prior variates
-theta1 ~ theta1_dist
-theta2 ~ theta2_dist
+theta1 ~ common.theta1_dist
+theta2 ~ common.theta2_dist
 
 # Deterministic computation
-c = 5                   % Scaling factor
-f_a = par -> c * par    % Scale by c
-f_b = fn(abs(_) * _)    % abs(arg1) * arg2
-a = f_a(theta2)
-b = f_b(theta1, theta2)
+c_scaling = 5             % Scaling factor
+a = common.f_a(theta2)
+b = common.f_b(theta1, theta2)
 
 # IID observations from the forward model
 obs ~ iid(Normal(mu = a, sigma = b), 10)

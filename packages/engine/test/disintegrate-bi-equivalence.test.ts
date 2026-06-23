@@ -34,7 +34,7 @@ const path = require('node:path');
 const fs = require('node:fs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource } = require('../index.ts');
+const { processSource, moduleDeps, moduleResolve } = require('../index.ts');
 const { liftInlineSubexpressions } = require('../orchestrator.ts');
 const { inBothModes } = require('./_perf-helpers.ts');
 
@@ -44,6 +44,29 @@ const examplesRoot = path.join(__dirname, '..', '..', '..', '..',
 function loadIfPresent(name: string): string | null {
   const p = path.join(examplesRoot, name);
   return fs.existsSync(p) ? fs.readFileSync(p, 'utf8') : null;
+}
+
+// Load an example plus any transitive `load_module` dependencies (spec
+// §04 — bayesian_inference_3/4 now load a shared common module). Returns
+// `{ source, opts }` for processSource with the bundle assembled, or null
+// if the example (or a dependency) is absent.
+function loadExampleBundle(name: string): { source: string; opts: any } | null {
+  const source = loadIfPresent(name);
+  if (source == null) return null;
+  const sources: Record<string, string> = {};
+  let missing = false;
+  (function walk(importer: string, text: string) {
+    for (const rel of moduleDeps(text)) {
+      const resolved = moduleResolve.resolveModulePath(importer, rel);
+      if (sources[resolved]) continue;
+      const depSrc = loadIfPresent(resolved);
+      if (depSrc == null) { missing = true; continue; }
+      sources[resolved] = depSrc;
+      walk(resolved, depSrc);
+    }
+  })(name, source);
+  if (missing) return null;
+  return { source, opts: { path: name, bundle: { sources } } };
 }
 
 // Strip source locations + synthetic markers from an IR tree so two
@@ -183,14 +206,16 @@ inBothModes('BI1 prior (direct lawof) ≡ BI2 prior (disintegrate result)',
 inBothModes('BI1 posterior derivation kind = BI2 posterior derivation kind',
   'disintegrate.delegate', () => {
   const bi1Src = loadIfPresent('bayesian_inference_2.flatppl');
-  const bi2Src = loadIfPresent('bayesian_inference_3.flatppl');
-  if (!bi1Src || !bi2Src) return;
+  // BI2 (bayesian_inference_3) is multi-file — derivations must build from
+  // its LINKED graph so the cross-module posterior chain classifies.
+  const bi2 = loadExampleBundle('bayesian_inference_3.flatppl');
+  if (!bi1Src || !bi2) return;
 
   const { buildDerivations } = require('../orchestrator.ts');
   const ctx1 = processSource(bi1Src);
-  const ctx2 = processSource(bi2Src);
+  const ctx2 = processSource(bi2.source, bi2.opts);
   const dctx1 = buildDerivations(ctx1.bindings, ctx1.diagnostics);
-  const dctx2 = buildDerivations(ctx2.bindings, ctx2.diagnostics);
+  const dctx2 = buildDerivations(ctx2.linkedBindings, ctx2.diagnostics);
 
   // Both should classify posterior as bayesupdate, with the same
   // bodyName ('obs' — the iid Normal binding) and structurally equal
