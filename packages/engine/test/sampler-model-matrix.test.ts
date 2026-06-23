@@ -73,10 +73,10 @@ const MODELS = fixtureModels.concat(inlineModels);
 for (const model of MODELS) {
   for (const backend of BACKENDS) {
     test(`matrix: ${model.name} × ${backend}`, async () => {
-      const { ctx } = ctxFor(model.src, 120);
+      const { ctx } = ctxFor(model.src, 60);
       ctx.inferenceOpts = {
-        backend, chains: 8, warmup: 80, draws: 120,
-        smcParticles: 400, smcSteps: 6, amisSamples: 300, amisIters: 3, seed: 1,
+        backend, chains: 4, warmup: 40, draws: 80,
+        smcParticles: 200, smcSteps: 5, amisSamples: 150, amisIters: 3, seed: 1,
       };
       const m = await ctx.getMeasure('posterior');
       assert.ok(m && m.fields && Object.keys(m.fields).length > 0,

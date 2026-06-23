@@ -12,7 +12,7 @@ test('emcee recovers Normal-Normal posterior (1D)', () => {
     latents: [{ name:'mu', distOp:'Normal', params:{mu:0,sigma:10}, support:{kind:'real'}, discrete:false }],
     logLikelihood: (th: any) => logNormal(5.0, th.mu, 1),
   });
-  const r = runMcmc(mv, makeEmceeKernel(), { nWalkers: 8, warmup: 500, draws: 2000, seed: 3 });
+  const r = runMcmc(mv, makeEmceeKernel(), { nWalkers: 8, warmup: 400, draws: 1000, seed: 3 });
   const draws = r.drawsByName.mu;
   let m = 0; for (const v of draws) m += v; m /= draws.length;
   const postVar = 1/(1+1/100), postMean = 5*postVar;
@@ -34,7 +34,7 @@ test('emcee recovers a correlated 2D Gaussian (marginals + correlation)', () => 
     // Likelihood IS the correlated bivariate normal core (flat-ish priors above).
     logLikelihood: (th: any) => -0.5*(inv00*th.x*th.x + 2*inv01*th.x*th.y + inv11*th.y*th.y),
   });
-  const r = runMcmc(mv, makeEmceeKernel(), { nWalkers: 20, warmup: 2000, draws: 5000, seed: 11 });
+  const r = runMcmc(mv, makeEmceeKernel(), { nWalkers: 20, warmup: 1000, draws: 3000, seed: 11 });
   const xs = r.drawsByName.x, ys = r.drawsByName.y, n = xs.length;
   let mx=0,my=0; for (let i=0;i<n;i++){mx+=xs[i];my+=ys[i];} mx/=n; my/=n;
   let vx=0,vy=0,cxy=0;

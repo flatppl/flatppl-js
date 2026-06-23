@@ -24,9 +24,10 @@ test('typeForPath maps extensions to surface types', () => {
   // Plain .json / unrecognised extensions are 'unknown' (placeholder surface).
   assert.equal(typeForPath('data.json'), 'unknown');
   assert.equal(typeForPath('notes.txt'), 'unknown');
-  // A bare .hs3 (no .json) is NOT recognised — documents the current corpus
-  // mismatch rather than silently classifying it.
-  assert.equal(typeForPath('examples/hs3/gaussian.hs3'), 'unknown');
+  // The corpus also carries HS3 / pyhf models as bare .hs3 / .pyhf (JSON
+  // content); these classify the same as their .hs3.json / .pyhf.json forms.
+  assert.equal(typeForPath('examples/hs3/gaussian.hs3'), 'hs3');
+  assert.equal(typeForPath('uploads/model.pyhf'), 'pyhf');
 });
 
 test('typeForPath is case-insensitive and FlatPPL-defaults on empty', () => {
@@ -49,6 +50,7 @@ test('every MODEL_EXTENSIONS entry classifies to a non-unknown type', () => {
 test('bucketKeyForPath groups manifest entries into folders', () => {
   assert.equal(bucketKeyForPath('examples/minimal.flatppl'), 'examples');
   assert.equal(bucketKeyForPath('examples/hs3/gaussian.flatppl'), 'hs3');
+  assert.equal(bucketKeyForPath('examples/hs3/gaussian.hs3'), 'hs3');
   // HS3 must win over the generic examples/ prefix.
   assert.equal(bucketKeyForPath('examples/linear-regression.flatppl'), 'examples');
   // demo/ is the legacy prefix for the "Test cases" folder; test-cases/ is

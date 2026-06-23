@@ -99,8 +99,12 @@ test('recognizeCompositeIidDraw returns null for a non-composite draw', async ()
 
 test('sampler output evaluates a derived record field (sigma = sqrt(sigma2))', async () => {
   const src = fs.readFileSync(path.join(FIX, 'linear-regression.flatppl'), 'utf8');
-  const m = await materialiser.materialiseMeasure('posterior', ctxFor(src, 2000).ctx,
-    { backend: 'mh', chains: 4, warmup: 300, draws: 500, seed: 1 });
+  // This test only checks that the derived field `sigma` is present, positive,
+  // and carries consistent nSamples diagnostics — none of which needs heavy
+  // inference. Keep the workload small (like the sibling cases) so it isn't
+  // the slowest test in the suite: a tiny dataset + a short MH run suffice.
+  const m = await materialiser.materialiseMeasure('posterior', ctxFor(src, 50).ctx,
+    { backend: 'mh', chains: 2, warmup: 100, draws: 200, seed: 1 });
   assert.ok(m.fields && m.fields.sigma, 'derived field sigma present');
   const s = m.fields.sigma.samples || (m.fields.sigma.value && m.fields.sigma.value.data);
   assert.ok(s && s.length > 0, 'sigma has samples');
