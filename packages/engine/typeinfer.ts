@@ -111,7 +111,7 @@ const TRANSPORT_OPS = new Set([
  * integer is embedded in type annotations; the source IR is left
  * intact in either case.
  */
-function inferTypes(loweredModule: any, opts?: { resolveFixed?: any }) {
+function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: any }) {
   const ctx = createInferenceContext(loweredModule, opts);
   for (const [name] of loweredModule.bindings) ctx.inferBinding(name);
   // Refinement domains over the type-inferred module (engine-concepts
@@ -171,11 +171,16 @@ function inferExprInScope(loweredModule: any, expr: IRNode, paramTypes: any) {
  * rules. Cycle detection (visiting/visited) is per-context, so
  * separate contexts don't interfere.
  */
-function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any }) {
+function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any; modules?: any }) {
   const diagnostics: any[] = [];
   const visiting = new Set();
   const visited  = new Set();
   const resolveFixed = opts && opts.resolveFixed;
+  // Registry of compiled sibling modules (resolved-path → compiled
+  // module), for cross-module `load_module` ref resolution (spec §04/§11).
+  // Absent for a standalone single-file compile or an on-demand
+  // inferExprInScope call — then `mod.x` stays `deferred`.
+  const modules = opts && opts.modules;
 
   function inferBinding(name: any): any {
     const b = loweredModule.bindings.get(name);
@@ -279,8 +284,52 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any 
     if (modRhs.op === 'standard_module') {
       return resolveStandardModuleRef(modRhs, expr.name, modAlias);
     }
-    // load_module path — pending the multi-file end-to-end wiring.
-    return T.deferred();
+    return resolveUserModuleRef(expr, modAlias);
+  }
+
+  // Resolve `(%ref <alias> <name>)` through a user `load_module(...)`
+  // dependency (spec §04 Module composition + §11 cross-module
+  // inference). The dependency was compiled (and type-inferred) before
+  // this module, so its binding's `inferredType` is already available in
+  // the `modules` registry. Enforces the spec §04 access rules — only
+  // PUBLIC, fixed/parameterized bindings cross the module boundary
+  // (stochastic boundary) — emitting a diagnostic on the offending ref.
+  function resolveUserModuleRef(expr: any, modAlias: string): any {
+    if (!modules) return T.deferred();          // no compile ctx (e.g. inferExprInScope)
+    const reg = loweredModule.moduleRegistry && loweredModule.moduleRegistry[modAlias];
+    const path = reg && reg.path;
+    if (!path) return T.deferred();             // unresolved path — already diagnosed by the bundle compiler
+    const dep = modules.get(path);
+    if (!dep) return T.deferred();              // missing source — already diagnosed
+    const bindingName = expr.name;
+    const depBinding = dep.loweredModule.bindings.get(bindingName);
+    if (!depBinding) {
+      diagnostics.push({ severity: 'error',
+        message: "'" + bindingName + "' is not a binding of module '" + modAlias
+          + "' (loaded from '" + path + "')",
+        loc: expr.loc });
+      return T.failed("'" + bindingName + "' not in module '" + modAlias + "'");
+    }
+    // Spec §04 "Binding names": only public bindings form the module's
+    // interface; underscore-private bindings are not accessible.
+    if (!dep.loweredModule.publicSet.has(bindingName)) {
+      diagnostics.push({ severity: 'error',
+        message: "'" + bindingName + "' is private to module '" + modAlias
+          + "' and not accessible across the module boundary",
+        loc: expr.loc });
+      return T.failed("'" + bindingName + "' is private to '" + modAlias + "'");
+    }
+    // Spec §04 "Stochastic boundary": stochastic bindings (direct draws
+    // or unreified draw-descendants) are invisible to the loading module.
+    if (depBinding.phase === 'stochastic') {
+      diagnostics.push({ severity: 'error',
+        message: "'" + bindingName + "' is a stochastic binding of module '"
+          + modAlias + "' — only fixed or parameterized bindings cross the "
+          + 'module boundary (spec §04). Reify it via lawof / kernelof first.',
+        loc: expr.loc });
+      return T.failed("'" + bindingName + "' is stochastic (module boundary)");
+    }
+    return depBinding.inferredType || T.deferred();
   }
 
   function resolveStandardModuleRef(stdModCall: any, bindingName: string, modAlias: string): any {

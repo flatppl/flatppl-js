@@ -122,3 +122,93 @@ test('single-file source: modules registry is an empty Map', () => {
   const r = processSource('x = 1');
   assert.ok(r.modules instanceof Map && r.modules.size === 0);
 });
+
+// ---------------------------------------------------------------------
+// Stage 2 — cross-module type inference (spec §04 + §11). `mod.x` resolves
+// through the loaded module's typed bindings; only public, fixed/
+// parameterized bindings cross the boundary (stochastic boundary, spec
+// §04); load-time substitutions are phase-compat-checked.
+// ---------------------------------------------------------------------
+
+function bundleOf(model: string, deps: Record<string, string>) {
+  return processSource(model, { bundle: { sources: deps } });
+}
+
+test('cross-module value ref types as the loaded binding type', () => {
+  const r = bundleOf('m = load_module("h.flatppl")\ny = m.pub', {
+    'h.flatppl': 'pub = 42',
+  });
+  const y = r.loweredModule.bindings.get('y');
+  assert.equal(y.inferredType.kind, 'scalar');
+  assert.equal(y.inferredType.prim, 'integer');
+  assert.equal(errs(r.diagnostics).length, 0);
+});
+
+test('cross-module function ref types as a function', () => {
+  const r = bundleOf('m = load_module("h.flatppl")\ng = m.dbl', {
+    'h.flatppl': 'dbl(x) = x * 2',
+  });
+  const g = r.loweredModule.bindings.get('g');
+  assert.equal(g.inferredType.kind, 'function');
+  assert.equal(errs(r.diagnostics).length, 0);
+});
+
+test('stochastic boundary: a stochastic binding is not accessible cross-module', () => {
+  const r = bundleOf('m = load_module("h.flatppl")\nw = m.z', {
+    'h.flatppl': 'z ~ Normal(0, 1)',
+  });
+  const w = r.loweredModule.bindings.get('w');
+  assert.equal(w.inferredType.kind, 'failed');
+  assert.ok(errs(r.diagnostics).some((d: any) => /stochastic/i.test(d.message)),
+    'a clear stochastic-boundary diagnostic (spec §04)');
+});
+
+test('private binding is not accessible cross-module', () => {
+  const r = bundleOf('m = load_module("h.flatppl")\nw = m._secret', {
+    'h.flatppl': '_secret = 5',
+  });
+  const w = r.loweredModule.bindings.get('w');
+  assert.equal(w.inferredType.kind, 'failed');
+  assert.ok(errs(r.diagnostics).some((d: any) => /private|not (a )?public|accessible/i.test(d.message)));
+});
+
+test('unknown cross-module binding is a clear error', () => {
+  const r = bundleOf('m = load_module("h.flatppl")\nw = m.nope', {
+    'h.flatppl': 'pub = 1',
+  });
+  const w = r.loweredModule.bindings.get('w');
+  assert.equal(w.inferredType.kind, 'failed');
+  assert.ok(errs(r.diagnostics).some((d: any) => /nope/.test(d.message)));
+});
+
+test('substitution to an unknown input is an error', () => {
+  const r = bundleOf('m = load_module("h.flatppl", bogus = 5)', {
+    'h.flatppl': 'mu = elementof(reals)\nobs = Normal(mu, 1)',
+  });
+  assert.ok(errs(r.diagnostics).some((d: any) => /bogus/.test(d.message)
+    && /not an input|input of/i.test(d.message)),
+  'substituting a name that is not an input of the loaded module errors');
+});
+
+test('substitution phase-compat: stochastic value into an elementof input errors', () => {
+  const r = bundleOf('a ~ Normal(0, 1)\nm = load_module("h.flatppl", mu = a)', {
+    'h.flatppl': 'mu = elementof(reals)\nobs = Normal(mu, 1)',
+  });
+  assert.ok(errs(r.diagnostics).some((d: any) => /stochastic/i.test(d.message)),
+    'binding a stochastic value to a module input is rejected (referential transparency)');
+});
+
+test('substitution phase-compat: parameterized value into an external input errors', () => {
+  const r = bundleOf('p = elementof(posintegers)\nm = load_module("h.flatppl", n = p)', {
+    'h.flatppl': 'n = external(posintegers)\nv = iid(Normal(0, 1), n)',
+  });
+  assert.ok(errs(r.diagnostics).some((d: any) => /external|fixed/i.test(d.message)),
+    'an external input requires a fixed-phase value (spec §04)');
+});
+
+test('valid substitution (parameterized → elementof input) is accepted', () => {
+  const r = bundleOf('a = elementof(reals)\nm = load_module("h.flatppl", mu = a)', {
+    'h.flatppl': 'mu = elementof(reals)\nobs = Normal(mu, 1)',
+  });
+  assert.equal(errs(r.diagnostics).length, 0, 'a compatible substitution produces no error');
+});

@@ -3217,12 +3217,22 @@ function analyze(ast: any, source: string, opts?: any) {
   const fixedEval = require('./fixed-eval.ts');
   const resolveFixed = fixedEval.makeResolver({ loweredModule });
   const typeDiagnostics = require('./typeinfer.ts')
-    .inferTypes(loweredModule, { resolveFixed });
+    .inferTypes(loweredModule, { resolveFixed, modules: moduleCtx.modules });
   for (const [name, lb] of loweredModule.bindings) {
     const b = bindings.get(name);
     if (b) b.inferredType = lb.inferredType;
   }
   for (const d of typeDiagnostics) diagnostics.push(d);
+
+  // Validate load-time `load_module(…, input = value)` substitutions
+  // against the loaded module's inputs (spec §04 "Load-time
+  // substitution"): the LHS must name an input (elementof / external) of
+  // the loaded module, and the RHS phase must be compatible — external
+  // inputs take fixed values, elementof inputs take parameterized (or
+  // fixed) values, and a stochastic value is never substitutable
+  // (referential transparency). Runs after type inference so the
+  // dependency modules are fully compiled.
+  _validateModuleSubstitutions(loweredModule, moduleCtx.modules, diagnostics);
 
   // Bin diagnostics back onto their bindings so downstream consumers
   // (DAG view, plot pane) can answer "does this binding have an
@@ -3243,6 +3253,79 @@ function analyze(ast: any, source: string, opts?: any) {
   }
 
   return { bindings, loweredModule, diagnostics, symbols };
+}
+
+// Phase ordering helper: fixed < parameterized < stochastic.
+function _maxPhase(a: string, b: any): string {
+  const rank: Record<string, number> = { fixed: 0, parameterized: 1, stochastic: 2 };
+  const ra = rank[a] != null ? rank[a] : 0;
+  const rb = rank[b] != null ? rank[b] : 0;
+  return ra >= rb ? a : (b as string);
+}
+
+// The phase of a substitution VALUE expression (spec §04 phases). Direct
+// phase-bearing ops short-circuit; otherwise the phase is the dominant
+// phase of the loading-module bindings the expression references.
+function _irPhase(ir: any, loweredModule: any): string {
+  if (ir && ir.kind === 'call') {
+    if (ir.op === 'draw')      return 'stochastic';
+    if (ir.op === 'elementof') return 'parameterized';
+    if (ir.op === 'external')  return 'fixed';
+  }
+  const irShared = require('./ir-shared.ts');
+  let ph = 'fixed';
+  for (const refName of irShared.collectSelfRefs(ir)) {
+    const b = loweredModule.bindings.get(refName);
+    ph = _maxPhase(ph, b && b.phase);
+  }
+  return ph;
+}
+
+// Validate `load_module("…", input = value)` substitutions against the
+// loaded module's declared inputs (spec §04). Emits diagnostics; mutates
+// nothing else.
+function _validateModuleSubstitutions(loweredModule: any, modules: any, diagnostics: any[]) {
+  if (!modules || modules.size === 0) return;
+  const reg = loweredModule.moduleRegistry || {};
+  for (const [name, lb] of loweredModule.bindings) {
+    const rhs = lb.rhs;
+    if (!rhs || rhs.kind !== 'call' || rhs.op !== 'load_module') continue;
+    if (!Array.isArray(rhs.assigns) || rhs.assigns.length === 0) continue;
+    const path = reg[name] && reg[name].path;
+    if (!path) continue;            // unresolved / non-literal path — already diagnosed
+    const dep = modules.get(path);
+    if (!dep) continue;             // missing source — already diagnosed
+    for (const a of rhs.assigns) {
+      const inputBinding = dep.loweredModule.bindings.get(a.name);
+      const inputRhs = inputBinding && inputBinding.rhs;
+      const inputOp = (inputRhs && inputRhs.kind === 'call') ? inputRhs.op : null;
+      const loc = (a.value && a.value.loc) || rhs.loc;
+      if (inputOp !== 'elementof' && inputOp !== 'external') {
+        diagnostics.push({ severity: 'error',
+          message: "'" + a.name + "' is not an input (elementof / external) of module '"
+            + name + "' (loaded from '" + path + "'); only module inputs may be "
+            + 'substituted at load time (spec §04)',
+          loc });
+        continue;
+      }
+      const vphase = _irPhase(a.value, loweredModule);
+      if (vphase === 'stochastic') {
+        diagnostics.push({ severity: 'error',
+          message: "cannot bind a stochastic value to module input '" + a.name
+            + "' of '" + name + "' — load-time substitution values must be fixed or "
+            + 'parameterized (spec §04, referential transparency)',
+          loc });
+        continue;
+      }
+      if (inputOp === 'external' && vphase !== 'fixed') {
+        diagnostics.push({ severity: 'error',
+          message: "external input '" + a.name + "' of module '" + name
+            + "' requires a fixed-phase value, got " + vphase
+            + ' (spec §04: external ← fixed)',
+          loc });
+      }
+    }
+  }
 }
 
 /**
