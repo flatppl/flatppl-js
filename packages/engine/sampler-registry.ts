@@ -1066,6 +1066,75 @@ function _bifurcatedNormalLogpdf(x: number, mean: number, sigmaL: number, sigmaR
     - (x - mean) * (x - mean) / (2 * s * s);
 }
 
+// Landau density φ((x−x0)/xi)/xi. CERN G110 DENLAN rational approximation
+// (Kölbig & Schorr), the algorithm behind ROOT's TMath::Landau — matched to it
+// to machine epsilon (≤5e-16) on the conformance points. φ has no elementary
+// closed form (it is an inverse-Laplace integral); the standard density (xi=1,
+// x0=0) peaks at φ(−0.22278) and equals 0.1788541609 at 0.
+const _LANDAU_P1 = [0.4259894875, -0.1249762550, 0.03984243700, -0.006298287635, 0.001511162253];
+const _LANDAU_Q1 = [1.0, -0.3388260629, 0.09594393323, -0.01608042283, 0.003778942063];
+const _LANDAU_P2 = [0.1788541609, 0.1173957403, 0.01488850518, -0.001394989411, 0.0001283617211];
+const _LANDAU_Q2 = [1.0, 0.7428795082, 0.3153932961, 0.06694219548, 0.008790609714];
+const _LANDAU_P3 = [0.1788544503, 0.09359161662, 0.006325387654, 0.00006611667319, -0.000002031049101];
+const _LANDAU_Q3 = [1.0, 0.6097809921, 0.2560616665, 0.04746722384, 0.006957301675];
+const _LANDAU_P4 = [0.9874054407, 118.6723273, 849.2794360, -743.7792444, 427.0262186];
+const _LANDAU_Q4 = [1.0, 106.8615961, 337.6496214, 2016.712389, 1597.063511];
+const _LANDAU_P5 = [1.003675074, 167.5702434, 4789.711289, 21217.86767, -22324.94910];
+const _LANDAU_Q5 = [1.0, 156.9424537, 3745.310488, 9834.698876, 66924.28357];
+const _LANDAU_P6 = [1.000827619, 664.9143136, 62972.92665, 475554.6998, -5743609.109];
+const _LANDAU_Q6 = [1.0, 651.4101098, 56974.73333, 165917.4725, -2815759.939];
+const _LANDAU_A1 = [0.04166666667, -0.01996527778, 0.02709538966];
+const _LANDAU_A2 = [-1.845568670, -4.284640743];
+
+// Horner evaluation of degree-4 ratio p(t)/q(t) with the DENLAN coefficient
+// layout (constant term first).
+function _landauRatio(p: number[], q: number[], t: number): number {
+  const num = p[0] + (p[1] + (p[2] + (p[3] + p[4] * t) * t) * t) * t;
+  const den = q[0] + (q[1] + (q[2] + (q[3] + q[4] * t) * t) * t) * t;
+  return num / den;
+}
+
+function _landauPdf(x: number, xi: number, x0: number): number {
+  if (xi <= 0) return 0;
+  const v = (x - x0) / xi;
+  let den: number;
+  if (v < -5.5) {
+    const u = Math.exp(v + 1.0);
+    if (u < 1e-10) return 0;
+    den = 0.3989422803 * (Math.exp(-1 / u) / Math.sqrt(u))
+      * (1 + (_LANDAU_A1[0] + (_LANDAU_A1[1] + _LANDAU_A1[2] * u) * u) * u);
+  } else if (v < -1) {
+    const u = Math.exp(-v - 1);
+    den = Math.exp(-u) * Math.sqrt(u) * _landauRatio(_LANDAU_P1, _LANDAU_Q1, v);
+  } else if (v < 1) {
+    den = _landauRatio(_LANDAU_P2, _LANDAU_Q2, v);
+  } else if (v < 5) {
+    den = _landauRatio(_LANDAU_P3, _LANDAU_Q3, v);
+  } else if (v < 12) {
+    const u = 1 / v;
+    den = u * u * _landauRatio(_LANDAU_P4, _LANDAU_Q4, u);
+  } else if (v < 50) {
+    const u = 1 / v;
+    den = u * u * _landauRatio(_LANDAU_P5, _LANDAU_Q5, u);
+  } else if (v < 300) {
+    const u = 1 / v;
+    den = u * u * _landauRatio(_LANDAU_P6, _LANDAU_Q6, u);
+  } else {
+    const u = 1 / (v - v * Math.log(v) / (v + 1));
+    den = u * u * (1 + (_LANDAU_A2[0] + _LANDAU_A2[1] * u) * u);
+  }
+  return den / xi;
+}
+
+// Landau log-density: location-scale family over the standard Landau density,
+// (1/s)φ((x−ℓ)/s). `loc`/`scale` are the location/scale arguments (the true mean
+// and variance are undefined — heavy 1/x² tail), so `loc` is named for what it
+// is, not `mean`. Spec §09.
+function _landauLogpdf(x: number, loc: number, scale: number): number {
+  const den = _landauPdf(x, scale, loc);
+  return den > 0 ? Math.log(den) : -Infinity;
+}
+
 // Faddeeva function w(z) = e^{−z²}·erfc(−iz), real part only, for z in the
 // upper half-plane (Im z > 0 — always true for a Voigt argument with Γ,σ > 0).
 // Weideman (1994) rational approximation; coefficients precomputed for N=32
@@ -1406,6 +1475,15 @@ const REGISTRY = {
     Ctor:     _hepDensityOnly('Voigtian'),
     randFn:   { factory: _hepDensityOnly('Voigtian') },
     logpdfFn: _voigtianLogpdf,
+  },
+  Landau: {
+    params:   ['loc', 'scale'],
+    aliases:  {},
+    discrete: false,
+    densityOnly: true,
+    Ctor:     _hepDensityOnly('Landau'),
+    randFn:   { factory: _hepDensityOnly('Landau') },
+    logpdfFn: _landauLogpdf,
   },
   BifurcatedNormal: {
     params:   ['mean', 'sigmaL', 'sigmaR'],

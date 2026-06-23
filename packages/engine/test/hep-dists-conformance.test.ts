@@ -76,3 +76,14 @@ test('BifurcatedNormal(mean,sigmaL,sigmaR) density', () =>
 test('Voigtian(mean,width,sigma) density', () =>
   checkAll('Voigtian', 'mean', 0.0, ', 2.0, 1.5', [
     [0.0, -1.7854078235037398], [1.0, -1.9173918837847361], [3.0, -2.850585580865787]]));
+
+// Oracle: ROOT TMath::Landau (CERN G110 DENLAN), cross-checked against
+// scipy.stats.landau under loc=mean+0.45158·sigma, scale=(π/2)·sigma (<1e-9).
+test('Landau(loc,scale) density — standard', () =>
+  checkAll('Landau', 'loc', 0.0, ', 1.0', [
+    [-1.0, -1.887883365037381], [0.0, -1.721184548800736],
+    [1.0, -1.929597467368479], [3.0, -2.600349090259338]]));
+
+test('Landau(loc,scale) density — shifted/scaled', () =>
+  checkAll('Landau', 'loc', 5.0, ', 2.0', [
+    [3.0, -2.581030545597326], [5.0, -2.414331729360681], [8.0, -2.778839465045783]]));
