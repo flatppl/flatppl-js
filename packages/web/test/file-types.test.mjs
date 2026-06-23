@@ -19,14 +19,13 @@ test('typeForPath maps extensions to surface types', () => {
   assert.equal(typeForPath('readme.markdown'), 'markdown');
   // .hs3.json / .pyhf.json are distinct types (NOT generic json), and the
   // double extension must win over a naive `.json` check.
-  assert.equal(typeForPath('examples/hs3/gaussian.hs3.json'), 'hs3');
+  assert.equal(typeForPath('uploads/gaussian.hs3.json'), 'hs3');
   assert.equal(typeForPath('uploads/model.pyhf.json'), 'pyhf');
   // Plain .json / unrecognised extensions are 'unknown' (placeholder surface).
   assert.equal(typeForPath('data.json'), 'unknown');
   assert.equal(typeForPath('notes.txt'), 'unknown');
-  // The corpus also carries HS3 / pyhf models as bare .hs3 / .pyhf (JSON
-  // content); these classify the same as their .hs3.json / .pyhf.json forms.
-  assert.equal(typeForPath('examples/hs3/gaussian.hs3'), 'hs3');
+  // Bare .hs3 / .pyhf (user-uploaded files) classify the same as .hs3.json / .pyhf.json.
+  assert.equal(typeForPath('uploads/gaussian.hs3'), 'hs3');
   assert.equal(typeForPath('uploads/model.pyhf'), 'pyhf');
 });
 
@@ -49,9 +48,6 @@ test('every MODEL_EXTENSIONS entry classifies to a non-unknown type', () => {
 
 test('bucketKeyForPath groups manifest entries into folders', () => {
   assert.equal(bucketKeyForPath('examples/minimal.flatppl'), 'examples');
-  assert.equal(bucketKeyForPath('examples/hs3/gaussian.flatppl'), 'hs3');
-  assert.equal(bucketKeyForPath('examples/hs3/gaussian.hs3'), 'hs3');
-  // HS3 must win over the generic examples/ prefix.
   assert.equal(bucketKeyForPath('examples/linear-regression.flatppl'), 'examples');
   // demo/ is the legacy prefix for the "Test cases" folder; test-cases/ is
   // the current one — both land in test-cases.
@@ -65,7 +61,6 @@ test('defaultFolderOpen: examples open, user opens with content, rest closed', (
   assert.equal(defaultFolderOpen('examples', 5), true);
   assert.equal(defaultFolderOpen('user', 0), false);
   assert.equal(defaultFolderOpen('user', 3), true);
-  assert.equal(defaultFolderOpen('hs3', 9), false);
   assert.equal(defaultFolderOpen('test-cases', 9), false);
 });
 

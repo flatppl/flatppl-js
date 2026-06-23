@@ -21,8 +21,8 @@
 // Model/representation file types the gallery surfaces. Adding a new format
 // (a `.stan`, …) is a one-line change HERE — both the build's manifest filter
 // and the runtime's surface routing pick it up. HS3 / pyhf models are JSON;
-// the corpus carries them as bare `.hs3` / `.pyhf` as well as the explicit
-// `.hs3.json` / `.pyhf.json`, so both spellings are recognised.
+// both `.hs3.json` / `.pyhf.json` and the bare `.hs3` / `.pyhf` spellings are
+// recognised so that user-uploaded files work regardless of which name was used.
 export const MODEL_EXTENSIONS = [
   '.flatppl', '.md', '.markdown', '.hs3.json', '.pyhf.json', '.hs3', '.pyhf',
 ];
@@ -42,21 +42,19 @@ export function typeForPath(path) {
   return 'unknown';
 }
 
-/** Map a manifest entry path to its left-pane folder bucket. HS3-derived
- *  examples (examples/hs3/) get their own folder; demo/ + test-cases/ are
- *  the feature-test "Test cases" folder (demo/ is the legacy prefix);
+/** Map a manifest entry path to its left-pane folder bucket. demo/ + test-cases/
+ *  land in the feature-test "Test cases" folder (demo/ is the legacy prefix);
  *  everything else is a plain example. */
 export function bucketKeyForPath(path) {
   const p = String(path || '');
   if (p.indexOf('test-cases/') === 0) return 'test-cases';
   if (p.indexOf('demo/') === 0) return 'test-cases';
-  if (p.indexOf('examples/hs3/') === 0) return 'hs3';
   return 'examples';
 }
 
 /** Default open/closed state for a folder when the user has no persisted
  *  preference. Examples open by default; User opens when it has content;
- *  everything else (HS3, Test cases) starts collapsed. */
+ *  everything else (Test cases) starts collapsed. */
 export function defaultFolderOpen(key, itemCount) {
   if (key === 'examples') return true;
   if (key === 'user') return itemCount > 0;
