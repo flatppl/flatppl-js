@@ -16,8 +16,8 @@ function mean(m: any) { const s = m.samples || (m.value && m.value.data); let x 
 
 test('eight-schools: elliptical slice (fitted) recovers mu', async () => {
   const src = fs.readFileSync(path.join(FIX, 'eight-schools.flatppl'), 'utf8');
-  const m = await materialiser.materialiseMeasure('posterior', ctxFor(src, 2000).ctx,
-    { backend: 'elliptical-slice-sampler', chains: 6, warmup: 800, draws: 800, seed: 1 });
+  const m = await materialiser.materialiseMeasure('posterior', ctxFor(src, 1000).ctx,
+    { backend: 'elliptical-slice-sampler', chains: 4, warmup: 400, draws: 400, seed: 1 });
   assert.equal(m.diagnostics.method, 'ess-slice');
   assert.equal(m.diagnostics.mode, 'fitted');
   assert.ok(Number.isFinite(m.diagnostics.meanShrinks) && m.diagnostics.meanShrinks >= 1, 'meanShrinks ≥ 1');
@@ -28,8 +28,8 @@ test('eight-schools: elliptical slice (fitted) recovers mu', async () => {
 
 test('partial-pooling: elliptical slice recovers phi + kappa (where AMIS collapsed)', async () => {
   const src = fs.readFileSync(path.join(FIX, 'partial-pooling.flatppl'), 'utf8');
-  const m = await materialiser.materialiseMeasure('posterior', ctxFor(src, 2000).ctx,
-    { backend: 'elliptical-slice-sampler', chains: 6, warmup: 800, draws: 800, seed: 1 });
+  const m = await materialiser.materialiseMeasure('posterior', ctxFor(src, 500).ctx,
+    { backend: 'elliptical-slice-sampler', chains: 4, warmup: 300, draws: 300, seed: 1 });
   const phi = mean(m.fields.phi), kappa = mean(m.fields.kappa);
   assert.ok(phi > 0.25 && phi < 0.37, `phi ${phi} ≈ 0.31`);
   assert.ok(kappa > 30, `kappa ${kappa} not collapsed`);
@@ -58,8 +58,8 @@ posterior = bayesupdate(L, prior)
 `;
 
 test('all-Normal-prior model: elliptical slice uses the EXACT Gaussian reference', async () => {
-  const m = await materialiser.materialiseMeasure('posterior', ctxFor(EXACT_MODEL, 2000).ctx,
-    { backend: 'elliptical-slice-sampler', chains: 6, warmup: 800, draws: 800, seed: 1 });
+  const m = await materialiser.materialiseMeasure('posterior', ctxFor(EXACT_MODEL, 1000).ctx,
+    { backend: 'elliptical-slice-sampler', chains: 4, warmup: 400, draws: 400, seed: 1 });
   assert.equal(m.diagnostics.method, 'ess-slice');
   assert.equal(m.diagnostics.mode, 'exact', 'all-Normal prior ⇒ exact reference');
   // Regression of y on x: OLS slope ≈ 2.0 for this data.

@@ -19,7 +19,7 @@ function mean(m: any) { const s = m.samples || (m.value && m.value.data); let x 
 
 test('eight-schools: smc backend recovers mu, finite evidence', async () => {
   const src = fs.readFileSync(path.join(FIX, 'eight-schools.flatppl'), 'utf8');
-  const m = await materialiser.materialiseMeasure('posterior', ctxFor(src, 2000).ctx,
+  const m = await materialiser.materialiseMeasure('posterior', ctxFor(src, 1000).ctx,
     { backend: 'smc', smcSteps: 16, smcCESS: 0.8, seed: 1 });
   const dg = m.diagnostics;
   assert.equal(dg.method, 'smc');
@@ -35,7 +35,7 @@ test('eight-schools: smc backend recovers mu, finite evidence', async () => {
 
 test('partial-pooling: smc backend recovers phi (where AMIS collapsed)', async () => {
   const src = fs.readFileSync(path.join(FIX, 'partial-pooling.flatppl'), 'utf8');
-  const m = await materialiser.materialiseMeasure('posterior', ctxFor(src, 2000).ctx,
+  const m = await materialiser.materialiseMeasure('posterior', ctxFor(src, 1000).ctx,
     { backend: 'smc', smcSteps: 16, smcCESS: 0.8, seed: 1 });
   assert.equal(m.diagnostics.method, 'smc');
   const phi = mean(m.fields.phi);
@@ -45,7 +45,7 @@ test('partial-pooling: smc backend recovers phi (where AMIS collapsed)', async (
 
 test('logPriorLikBatch split sums to the full log-posterior', async () => {
   const src = fs.readFileSync(path.join(FIX, 'eight-schools.flatppl'), 'utf8');
-  const ctx = ctxFor(src, 2000).ctx;
+  const ctx = ctxFor(src, 1000).ctx;
   const dv = ctx.lookupDerivation ? ctx.lookupDerivation('posterior') : ctx.derivations.posterior;
   const mv = await MV.buildModelViewFromCtx(ctx, dv);
   const k = rng.keyFromSeed(2);

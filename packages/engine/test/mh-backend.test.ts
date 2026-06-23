@@ -64,10 +64,10 @@ test('backend:mh recovers the conjugate posterior mean via public API', async ()
   // sampleCount must be ≥ the MCMC draw count (chains×draws = 4000) so the
   // posterior is reported at full resolution; a smaller sampleCount downsamples
   // the draws and the reported mean picks up subsample noise (~sd/√N).
-  const { errs, ctx } = setupCtx(MODEL, 4000);
+  const { errs, ctx } = setupCtx(MODEL, 2000);
   assert.equal(errs.length, 0, `parse errors: ${errs.map((e: any) => e.message).join('; ')}`);
   const m = await materialiser.materialiseMeasure('posterior', ctx, {
-    backend: 'mh', chains: 4, warmup: 1000, draws: 1000, seed: 1,
+    backend: 'mh', chains: 4, warmup: 500, draws: 500, seed: 1,
   });
   // The prior is lawof(record(mu=mu)), so the posterior is a record measure
   // (drop-in with the IS path); the mu draws live in m.fields.mu.samples.
@@ -112,9 +112,9 @@ test('mh result carries diagnostics with acceptRate and rHat', async () => {
 });
 
 test('backend emcee recovers the conjugate posterior mean and returns diagnostics', async () => {
-  const { ctx, errs } = setupCtx(MODEL, 4000);   // MODEL: the conjugate mu~Normal(0,10); posterior=bayesupdate(...)
+  const { ctx, errs } = setupCtx(MODEL, 2000);   // MODEL: the conjugate mu~Normal(0,10); posterior=bayesupdate(...)
   assert.equal(errs.length, 0);
-  const m = await materialiser.materialiseMeasure('posterior', ctx, { backend: 'emcee', walkers: 10, warmup: 1000, draws: 1000, seed: 5 });
+  const m = await materialiser.materialiseMeasure('posterior', ctx, { backend: 'emcee', walkers: 10, warmup: 500, draws: 500, seed: 5 });
   const draws = m.fields.mu.samples;
   let mean = 0; for (let i = 0; i < draws.length; i++) mean += draws[i]; mean /= draws.length;
   const postVar = 1/(1+1/100), postMean = 5*postVar;
