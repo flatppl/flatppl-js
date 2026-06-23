@@ -174,6 +174,40 @@ function isCallableLikeBindingType(t: string | undefined): boolean {
 }
 
 /**
+ * Resolve a binding name through a chain of BARE ALIASES to its canonical
+ * target (spec §04 "Aliasing is just assignment": `g = f` makes `g` a new
+ * name for the SAME object). A bare alias is a binding whose AST value is a
+ * single `Identifier`, so `g = f; h = g` resolves `h → g → f`, stopping at
+ * the first non-alias binding (or a self-alias `g = g`). On a cycle
+ * (`g = h; h = g`) it returns the ORIGINAL name so the caller refuses
+ * cleanly instead of looping.
+ *
+ * THE one alias-chain follow shared by the callable consumers — inlineOnce's
+ * call-head resolution (a call THROUGH an alias inlines the real callable)
+ * and signatureOf (introspecting an aliased callable) — so an alias of a
+ * callable IS callable everywhere, with no per-consumer chase. (Value /
+ * measure refs are already canonicalised in the IR by alias-resolution; this
+ * is the AST-level sibling for the callable layer, which classifies before
+ * that IR pass runs.)
+ */
+function resolveCallableAlias(name: string, bindings: any): string {
+  if (!bindings) return name;
+  const seen = new Set<string>();
+  let cur = name;
+  while (!seen.has(cur)) {
+    seen.add(cur);
+    const b = bindings.get(cur);
+    const v = b && b.node && b.node.value;
+    if (v && v.type === 'Identifier' && typeof v.name === 'string' && v.name !== cur) {
+      cur = v.name;
+      continue;
+    }
+    return cur;
+  }
+  return name;   // cycle — caller resolves `name` (still an alias) and refuses
+}
+
+/**
  * Convert a lowered IR expression to a concrete JS value (number,
  * array of values, plain object). Used by the viewer's bayesupdate /
  * logdensityof / likelihood materialisers to translate a recorded
@@ -714,6 +748,7 @@ module.exports = {
   isCallOp,
   isSelfRef,
   isCallableLikeBindingType,
+  resolveCallableAlias,
   resolveIRToValue,
   valueToPlain,
   collectSelfRefs,

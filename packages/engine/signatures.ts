@@ -29,11 +29,16 @@
 
 import type { IRNode } from './engine-types';
 
-const { isSelfRef, resolveIRToValue, SAMPLEABLE_DISTRIBUTIONS } = require('./ir-shared.ts');
+const { isSelfRef, resolveIRToValue, SAMPLEABLE_DISTRIBUTIONS, resolveCallableAlias } = require('./ir-shared.ts');
 const { mapIR, mapIRScoped } = require('./ir-walk.ts');
 
 function signatureOf(name: string, bindings: any): any {
   if (!bindings) return null;
+  // Resolve through any callable-alias chain (spec §04 "Aliasing is just
+  // assignment"): the signature of an alias `g = f` IS f's signature. The
+  // same shared resolver inlineOnce uses, so an aliased callable is
+  // introspectable (the viewer plots it) exactly like the original.
+  name = resolveCallableAlias(name, bindings);
   const b = bindings.get(name);
   if (!b) return null;
 

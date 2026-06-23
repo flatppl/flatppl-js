@@ -27,6 +27,7 @@ const {
   parseSetIR,
   EVALUABLE_OPS,
   SAMPLEABLE_DISTRIBUTIONS,
+  resolveCallableAlias,
 } = require('./ir-shared.ts');
 const { MEASURE_PRODUCING } = require('./builtins.ts');
 
@@ -2299,7 +2300,18 @@ function liftInlineSubexpressions(bindings: any) {
         { type: astArg.callee.callee.name }, astArg.callee);
     }
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
-    const fnName = astArg.callee.name;
+    // Callable ALIAS (spec §04 "Aliasing is just assignment"): resolve the
+    // call head through any chain of bare aliases (`g = f; b = g(x)`) to the
+    // canonical callable, then recurse so the bijection / inlining logic
+    // below operates on the REAL callable. Without this a call THROUGH an
+    // alias never inlines (the alias's binding-type is the fallback 'call')
+    // and the binding gets no derivation; the cross-module idiom
+    // `f_b = common.f_b` reduces to this after linking. `resolveCallableAlias`
+    // is the ONE alias-chain follow (shared with signatureOf), cycle-guarded.
+    const fnName = resolveCallableAlias(astArg.callee.name, out);
+    if (fnName !== astArg.callee.name) {
+      return inlineOnce(Object.assign({}, astArg, { callee: makeIdent(fnName, astArg.loc) }));
+    }
     // Use `out`, not `bindings`, so synthesized anon bindings created
     // during the lift pass are visible to inlineOnce too.
     const fnBinding = out.get(fnName);
