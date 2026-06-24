@@ -346,17 +346,28 @@ export function initCy(ctx: Ctx) {
     // DAG focused on that member (spec §04) — as if its source were opened
     // and DAG-view selected for it. The owning module's resolved path
     // comes from the moduleRegistry keyed by the member's module name.
+    // Drilling INTO a loaded module pushes the loader's CURRENT state first so
+    // the in-DAG back-button can return here: the host's openModule REPLACES
+    // the model (web router / VS Code editor) and its cross-model re-render
+    // does NOT push (the hosts pass pushHistory=false on that re-render), so
+    // without this the loader drops out of history and there's no way back.
+    const pushLoaderState = function () {
+      if (ctx.currentState) {
+        ctx.history.push(ctx.currentState);
+        if (ctx.history.length > ctx.HISTORY_CAP) ctx.history.shift();
+      }
+    };
     const mm = node.data('moduleMember');
     if (mm && mm.module && ctx.host && typeof ctx.host.openModule === 'function') {
       const owner = _loadModuleEntry(ctx, mm.module);
-      if (owner) { ctx.host.openModule(owner.path, mm.field); return; }
+      if (owner) { pushLoaderState(); ctx.host.openModule(owner.path, mm.field); return; }
     }
     // The `load_module` binding itself: drill into the WHOLE loaded module
     // (no member focus). A module boundary has no sub-DAG in the primary
     // graph; the resolved path is the bundle / router key from lowering.
     const modEntry = _loadModuleEntry(ctx, nodeId);
     if (modEntry && ctx.host && typeof ctx.host.openModule === 'function') {
-      ctx.host.openModule(modEntry.path);
+      pushLoaderState(); ctx.host.openModule(modEntry.path);
       return;
     }
     focusNode(ctx, nodeId, /* pushHistory */ true);

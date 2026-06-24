@@ -129,7 +129,10 @@ class FlatPPLPanel {
           viewColumn: vscode.ViewColumn.One,
           preserveFocus: false,
         }).then((editor: any) => {
-          this.updateSource(editor.document.getText(), msg.member || null, depUri, true);
+          // pushHistory=false: the viewer's dbltap already pushed the loader's
+          // state before openModule (so the back-button can return to it).
+          // Pushing again here would double-stack the loader / oscillate.
+          this.updateSource(editor.document.getText(), msg.member || null, depUri, false);
         }, (err: any) => {
           vscode.window.showErrorMessage(
             'FlatPPL: could not open loaded module \'' + msg.path + '\': '
