@@ -292,6 +292,11 @@ const EXTENSION_TS_SOURCES = [
   // commands. No vscode import (host deps injected), so type-stripping is
   // enough and the unit tests require it directly with no host stub.
   { in: 'src/dependencyPrefetch.ts', out: 'src/dependencyPrefetch.js' },
+  // URL-source feed for the flatppl-rust LSP: walks the active model's
+  // transitive URL load_module closure from the cache (no fetch) into the
+  // `flatppl/urlSources` payload. No vscode import (host deps injected), so
+  // type-stripping is enough and the unit tests require it directly.
+  { in: 'src/lspUrlFeed.ts',    out: 'src/lspUrlFeed.js' },
   // NOTE: src/lspClient.ts is NOT type-stripped here — it imports the
   // `vscode-languageclient` npm package, which must be BUNDLED into the
   // output (the packaged .vsix ships no node_modules; vsce runs with

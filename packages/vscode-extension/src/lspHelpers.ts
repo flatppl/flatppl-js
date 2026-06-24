@@ -139,6 +139,22 @@ export function makeDebounced(
   };
 }
 
+/** Decide whether a `flatppl/urlSources` feed should be sent, and what
+ *  signature to remember if so. Returns the new signature (a string) when the
+ *  feed should be sent, or `null` to skip it: an empty payload carries nothing,
+ *  and a payload identical to `lastSig` is a no-op the server would otherwise
+ *  pay for by re-running cross-module inference (its salsa `parse` edge fires on
+ *  any re-feed). Pure (no `vscode` import) so the skip/send rule is unit-tested
+ *  directly; the thin notification send stays in `lspClient.ts`. */
+export function urlSourcesFeedSig(
+  sources: Array<{ uri: string; text: string }>,
+  lastSig: string | undefined,
+): string | null {
+  if (!sources || sources.length === 0) return null;
+  const sig = JSON.stringify(sources);
+  return sig === lastSig ? null : sig;
+}
+
 /** Convert a `textDocument/inlayHint` label (the FlatPPL server emits
  *  `": <type>"`, as a plain string or as label parts) into a CodeLens title
  *  `"<glyph> <type>"`. Strips a single leading colon and surrounding

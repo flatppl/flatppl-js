@@ -9,7 +9,9 @@ import {
   ServerOptions,
   TransportKind,
 } from 'vscode-languageclient/node';
-import { resolveServerBinary, readCatalogues, makeSerialQueue } from './lspHelpers';
+import {
+  resolveServerBinary, readCatalogues, makeSerialQueue, urlSourcesFeedSig,
+} from './lspHelpers';
 
 const OUTPUT_CHANNEL = 'FlatPPL Language Server';
 
@@ -40,12 +42,24 @@ export interface LspManager {
   start(): Promise<void>;
   stop(): Promise<void>;
   restart(): Promise<void>;
+  /** Push client-fetched URL `load_module` sources into the server's FileSet
+   *  (`flatppl/urlSources`). The server resolves URL deps but never fetches —
+   *  the extension is the sole fetcher+truster (spec §04 #sec:url-cache). No-op
+   *  when no server is running or the payload is empty/unchanged. */
+  feedUrlSources(sources: Array<{ uri: string; text: string }>): Promise<void>;
 }
 
 /** Owns the running client lifecycle: read config → resolve binary → read
- *  catalogues → start. Errors surface as a VS Code warning, not a throw. */
-export function createLspManager(extRoot: string): LspManager {
+ *  catalogues → start. Errors surface as a VS Code warning, not a throw.
+ *  `onStart` (if given) fires after each successful (re)start — the host uses
+ *  it to (re)feed URL sources, since a fresh server starts with an empty
+ *  FileSet. */
+export function createLspManager(
+  extRoot: string,
+  onStart?: () => void,
+): LspManager {
   let client: LanguageClient | undefined;
+  let lastUrlSig: string | undefined;   // dedup identical re-feeds (per client)
   const enqueue = makeSerialQueue();
 
   async function start(): Promise<void> {
@@ -68,6 +82,7 @@ export function createLspManager(extRoot: string): LspManager {
     try {
       await c.start();
       client = c;
+      onStart?.();   // fresh FileSet ⇒ host re-feeds URL sources
     } catch (e) {
       vscode.window.showWarningMessage(
         `FlatPPL language server failed to start: ${(e as Error).message}`,
@@ -78,7 +93,23 @@ export function createLspManager(extRoot: string): LspManager {
   async function stop(): Promise<void> {
     const c = client;
     client = undefined;
+    lastUrlSig = undefined;   // next client's FileSet is empty ⇒ force a re-feed
     if (c) await c.stop();
+  }
+
+  async function feedUrlSources(
+    sources: Array<{ uri: string; text: string }>,
+  ): Promise<void> {
+    const c = client;
+    if (!c) return;                       // server not running ⇒ nothing to feed
+    const sig = urlSourcesFeedSig(sources, lastUrlSig);
+    if (sig === null) return;             // empty, or unchanged since last feed
+    lastUrlSig = sig;
+    try {
+      await c.sendNotification('flatppl/urlSources', { sources });
+    } catch (_e) {
+      lastUrlSig = undefined;             // delivery failed ⇒ allow a retry
+    }
   }
 
   function restart(): Promise<void> {
@@ -88,5 +119,5 @@ export function createLspManager(extRoot: string): LspManager {
     });
   }
 
-  return { start, stop, restart };
+  return { start, stop, restart, feedUrlSources };
 }

@@ -12,6 +12,7 @@ const {
   readCatalogues,
   makeSerialQueue,
   makeDebounced,
+  urlSourcesFeedSig,
 } = require('../src/lspHelpers.js');
 
 test('hostTriple maps known hosts', () => {
@@ -147,4 +148,33 @@ test('makeDebounced cancel prevents a pending invocation', async () => {
   d.cancel();
   await new Promise((r) => setTimeout(r, 40));
   assert.equal(count, 0);
+});
+
+// urlSourcesFeedSig — the skip/send decision behind the LSP urlSources feed.
+// Empty payloads and re-feeds of identical content are skipped (re-feeding
+// identical sources would needlessly re-run the server's cross-module
+// inference); a changed payload yields a fresh signature to remember.
+
+test('urlSourcesFeedSig skips an empty payload', () => {
+  assert.equal(urlSourcesFeedSig([], undefined), null);
+  assert.equal(urlSourcesFeedSig([], 'whatever'), null);
+});
+
+test('urlSourcesFeedSig returns a signature for the first non-empty feed', () => {
+  const sig = urlSourcesFeedSig([{ uri: 'https://h/a', text: 'a = 1' }], undefined);
+  assert.equal(typeof sig, 'string');
+  assert.ok(sig.length > 0);
+});
+
+test('urlSourcesFeedSig skips a re-feed of identical content', () => {
+  const sources = [{ uri: 'https://h/a', text: 'a = 1' }];
+  const sig = urlSourcesFeedSig(sources, undefined);
+  assert.equal(urlSourcesFeedSig(sources, sig), null, 'unchanged ⇒ skip');
+});
+
+test('urlSourcesFeedSig sends again when the content changes', () => {
+  const sig1 = urlSourcesFeedSig([{ uri: 'https://h/a', text: 'a = 1' }], undefined);
+  const sig2 = urlSourcesFeedSig([{ uri: 'https://h/a', text: 'a = 2' }], sig1);
+  assert.equal(typeof sig2, 'string');
+  assert.notEqual(sig2, sig1);
 });

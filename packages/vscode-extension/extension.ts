@@ -26,6 +26,10 @@ const { processSource, findBindingAtLine, builtins,
 // walk/counter over it that backs the Download/Update Dependencies commands.
 const urlCache = require('./lib/url-cache.cjs');
 const { prefetchDependencies } = require('./src/dependencyPrefetch');
+// lspUrlFeed walks the same cache to gather the model's transitive URL closure
+// for the flatppl-rust LSP, which resolves URL load_module deps but cannot
+// fetch them (the extension is the sole fetcher+truster).
+const { collectUrlSources } = require('./src/lspUrlFeed');
 const { FlatPPLPanel } = require('./src/visualPanel');
 const { createLspManager } = require('./src/lspClient');
 const { registerInferenceLens } = require('./src/inferenceLens');
@@ -320,7 +324,58 @@ function activate(context: any) {
   // correct before anything is armed.
   vscode.commands.executeCommand('setContext', 'flatppl.embeddedActive', false);
 
-  lspManager = createLspManager(context.extensionPath);
+  // --- LSP URL-source feed (spec §04 #sec:url-cache) ---
+  // The flatppl-rust LSP resolves URL load_module deps but never fetches them
+  // (it can't prompt for trust over the protocol). The extension already
+  // fetches+trusts them into the on-disk cache (visualize / Download
+  // Dependencies); this pushes that cached content to the server via the
+  // `flatppl/urlSources` notification, so URL deps resolve in-editor with zero
+  // double-download and no second trust prompt. The walk is the SAME
+  // resolveBundle the visualizer + Download Dependencies use (so editor and
+  // server agree on "the same file"); the read is cache-ONLY (offline) — a
+  // not-yet-cached URL is skipped (the LSP reports "source not available")
+  // until the user populates the cache, after which the next feed (open / save
+  // / Download Dependencies / server restart) resolves it.
+  async function feedUrlSourcesForDoc(doc: any) {
+    if (!lspManager || !isFlatPPLDoc(doc)) return;
+    try {
+      const { sources } = await collectUrlSources({
+        primaryPath: doc.uri.path,
+        primarySource: doc.getText(),
+        resolveBundle,
+        isUrl: urlCache.isUrl,
+        // offline ⇒ return cached bytes if present, else throw → null (never
+        // fetch, never prompt: this runs on open/save/restart, not on a user
+        // action). Download/Update Dependencies is the explicit fetch path.
+        readUrlCached: async (url: any) => {
+          try {
+            const r = await urlCache.fetchToCache(url, { offline: true });
+            return r.content.toString('utf8');
+          } catch (_e) { return null; }
+        },
+        // Same workspace read the visualizer / prefetch use (scheme + authority
+        // preserved for remote / WSL); locals are read to recurse THROUGH them
+        // to deeper URL deps, but the LSP reads local files itself.
+        readLocal: async (resolved: any) => {
+          try {
+            const bytes = await vscode.workspace.fs.readFile(
+              doc.uri.with({ path: resolved }));
+            return Buffer.from(bytes).toString('utf8');
+          } catch (_e) { return null; }
+        },
+      });
+      await lspManager.feedUrlSources(sources);
+    } catch (_e) { /* never throw from a listener / lifecycle hook */ }
+  }
+  // Re-feed every open FlatPPL doc — used after each server (re)start, whose
+  // FileSet starts empty (wired as the manager's onStart hook below).
+  function feedAllOpenDocs() {
+    for (const d of vscode.workspace.textDocuments) {
+      if (isFlatPPLDoc(d)) void feedUrlSourcesForDoc(d);
+    }
+  }
+
+  lspManager = createLspManager(context.extensionPath, () => feedAllOpenDocs());
   void lspManager?.start();
 
   // Inference annotation: CodeLens-above display, off by default, toggled by
@@ -793,6 +848,9 @@ function activate(context: any) {
     } else {
       vscode.window.showInformationMessage(summary);
     }
+    // The cache was just (re)populated — feed the server so the freshly-cached
+    // URL deps resolve in-editor without waiting for the next open/save.
+    void feedUrlSourcesForDoc(doc);
   }
 
   // --- Commands ---
@@ -890,7 +948,15 @@ function activate(context: any) {
   const openListener = vscode.workspace.onDidOpenTextDocument((doc: any) => {
     if (isFlatPPLDoc(doc)) {
       getParsed(doc);
+      void feedUrlSourcesForDoc(doc);
     }
+  });
+
+  // Re-feed URL sources on save — a natural re-sync point (the user may have
+  // edited a load_module URL, or populated the cache meanwhile), at a far lower
+  // frequency than keystrokes, so no debounce is needed.
+  const saveListener = vscode.workspace.onDidSaveTextDocument((doc: any) => {
+    if (isFlatPPLDoc(doc)) void feedUrlSourcesForDoc(doc);
   });
 
   // --- Go-to-definition ---
@@ -1288,7 +1354,7 @@ function activate(context: any) {
   context.subscriptions.push(
     showDagCmd, showModuleCmd, activateEmbeddedCmd, deactivateEmbeddedCmd,
     downloadDepsCmd, updateDepsCmd,
-    selectionListener, changeListener, openListener, closeListener,
+    selectionListener, changeListener, openListener, saveListener, closeListener,
     defProvider, hoverProvider, symbolProvider, completionProvider,
     renameProvider, referenceProvider, highlightProvider, selectionRangeProvider,
     configListener,
