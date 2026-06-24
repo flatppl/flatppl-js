@@ -102,17 +102,19 @@ async function atomicWrite(cacheDir: string, destPath: string, data: any): Promi
 // Resolve a URL to its cached bytes, fetching and caching on a miss (spec
 // "Resolve and fetch" + "Trust"). Returns { content: Buffer, meta, fromCache }.
 //
-// opts: { cacheDir?, env?, offline?, trustAll?, approve?(url)=>bool|Promise<bool>,
+// opts: { cacheDir?, env?, offline?, trustAll?, force?, approve?(url)=>bool|Promise<bool>,
 //         fetchImpl?, now?()=>string }. `offline` / `trustAll` default to the
-// FLATPPL_CACHE_OFFLINE / FLATPPL_TRUST environment variables.
+// FLATPPL_CACHE_OFFLINE / FLATPPL_TRUST environment variables; `force` performs
+// the spec's explicit update (re-fetch + atomic replace, ignoring a cache hit).
 async function fetchToCache(url: string, opts: any): Promise<any> {
   opts = opts || {};
   const env = opts.env || process.env;
   const cacheDir = opts.cacheDir || resolveCacheDir(opts);
   const p = cachePaths(cacheDir, url);
 
-  // Cache hit — never revalidated against the network.
-  if (fssync.existsSync(p.object)) {
+  // Cache hit — never revalidated against the network, unless opts.force
+  // requests an explicit update (re-fetch + atomic replace; spec "update").
+  if (!opts.force && fssync.existsSync(p.object)) {
     const content = await fs.readFile(p.object);
     let meta: any = null;
     try { meta = JSON.parse(await fs.readFile(p.meta, 'utf8')); } catch (_e) { /* meta optional on read */ }

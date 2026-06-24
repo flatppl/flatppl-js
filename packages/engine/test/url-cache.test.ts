@@ -31,6 +31,7 @@ const ROUTES: any = {
   '/untrusted.flatppl': { body: 'x = 1' },
   '/approve.flatppl': { body: 'x = 1' },
   '/trustall.flatppl': { body: 'x = 1' },
+  '/force.flatppl': { body: 'x = 1' },
 };
 let SRV: any;
 before(async () => {
@@ -173,4 +174,14 @@ test('fetchToCache: FLATPPL_TRUST (trustAll) fetches but creates NO trust marker
   const url = SRV.base + '/trustall.flatppl';
   await fetchToCache(url, { cacheDir, trustAll: true });
   assert.ok(!fs.existsSync(cachePaths(cacheDir, url).trust), 'no marker under trustAll');
+});
+
+test('fetchToCache: opts.force re-fetches and replaces even on a cache hit (update)', async () => {
+  const cacheDir = await tmpCacheDir();
+  const url = SRV.base + '/force.flatppl';
+  await fetchToCache(url, { cacheDir, trustAll: true });
+  assert.equal(SRV.hits['/force.flatppl'], 1);
+  const r2 = await fetchToCache(url, { cacheDir, trustAll: true, force: true });
+  assert.equal(r2.fromCache, false);
+  assert.equal(SRV.hits['/force.flatppl'], 2, 'force triggers a fresh fetch');
 });
