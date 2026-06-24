@@ -10,7 +10,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
-const { resolveModulePath } = require('../module-resolve.ts');
+const { resolveModulePath, isUrl } = require('../module-resolve.ts');
 
 test('sibling file resolves against the importer directory', () => {
   // importer at repo root → dirname is "" → sibling stays bare.
@@ -65,4 +65,34 @@ test('leading ".." that escapes the root is preserved (not silently dropped)', (
   // segment rather than collapse it into a wrong same-dir path.
   assert.equal(resolveModulePath('model.flatppl', '../h.flatppl'),
     '../h.flatppl');
+});
+
+// --- URL sources (#sec:url-cache): http/https deps + relative deps inside a
+// URL-loaded module. resolveModulePath stays the single owner, so a URL dep
+// keys identically for the host bundle walk and the engine bundle compiler.
+
+test('isUrl recognizes http/https, rejects local paths and file://', () => {
+  assert.ok(isUrl('http://h/x') && isUrl('https://h/x') && isUrl('HTTPS://h/x'));
+  assert.ok(!isUrl('./x.flatppl') && !isUrl('/abs/x.flatppl') && !isUrl('rel/x.flatppl') && !isUrl('file:///x'));
+});
+
+test('an absolute URL dependency is used verbatim (from a local importer)', () => {
+  assert.equal(resolveModulePath('/proj/main.flatppl', 'https://h/lib/m.flatppl'),
+    'https://h/lib/m.flatppl');
+  assert.equal(resolveModulePath('a/model.flatppl', 'http://h/m.flatppl'),
+    'http://h/m.flatppl');
+});
+
+test('a relative dep inside a URL module resolves against the importer URL', () => {
+  assert.equal(resolveModulePath('https://h/a/main.flatppl', 'helper.flatppl'),
+    'https://h/a/helper.flatppl');
+  assert.equal(resolveModulePath('https://h/a/main.flatppl', '../b/x.flatppl'),
+    'https://h/b/x.flatppl');
+  assert.equal(resolveModulePath('https://h/a/main.flatppl', './sub/h.flatppl'),
+    'https://h/a/sub/h.flatppl');
+});
+
+test('an absolute URL dep from a URL importer overrides the base', () => {
+  assert.equal(resolveModulePath('https://h/a/main.flatppl', 'https://other/y.flatppl'),
+    'https://other/y.flatppl');
 });

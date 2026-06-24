@@ -56,8 +56,19 @@ function _normalize(segments: string[], isAbsolute: boolean): string[] {
  *        to the importer's directory.
  * @returns the normalised path, the canonical key into `bundle.sources`.
  */
+// A `load_module` / `load_data` source is a remote URL iff it is http(s).
+// Shared by the path resolver below and the Node host cache (url-cache.ts).
+function isUrl(s: any): boolean {
+  return /^https?:\/\//i.test(String(s == null ? '' : s));
+}
+
 function resolveModulePath(importerPath: string | null, relPath: string): string {
   relPath = String(relPath == null ? '' : relPath);
+  // URL sources (spec §04 #sec:url-cache): an absolute http(s) dependency is
+  // used verbatim (it is its own request URL / cache key); a relative
+  // dependency inside a URL-loaded module resolves against the importer URL.
+  if (isUrl(relPath)) return relPath;
+  if (isUrl(importerPath)) return new URL(relPath, String(importerPath)).href;
   if (relPath.startsWith('/')) {
     return '/' + _normalize(relPath.split('/'), true).join('/');
   }
@@ -70,4 +81,4 @@ function resolveModulePath(importerPath: string | null, relPath: string): string
   return (importerAbsolute ? '/' : '') + segs.join('/');
 }
 
-module.exports = { resolveModulePath };
+module.exports = { resolveModulePath, isUrl };
