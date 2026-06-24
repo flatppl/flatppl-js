@@ -119,10 +119,19 @@ export function resizeAllEchartsInPlot(ctx: Ctx) {
 
 export function resizeAndFitCy(ctx: Ctx) {
   if (!ctx.cy) return;
-  // requestAnimationFrame so the layout pass that triggered the
-  // resize has settled before we ask cytoscape for the new size.
-  requestAnimationFrame(function () {
-    try { ctx.cy.resize(); ctx.cy.fit(undefined, 40); }
-    catch (_) {}
-  });
+  // Resize the canvas PROMPTLY (so rendering matches the container) but
+  // DEBOUNCE the re-fit. The container settles its size in several steps
+  // during page/flex layout, and firing cy.fit() on each step re-centers
+  // the graph — shifting node screen positions repeatedly. A double-click
+  // landing in that window has its second tap miss the moved node (the
+  // node never moves once settled — layout is animate:false). cy.resize()
+  // alone preserves pan/zoom (no node movement); the single trailing
+  // cy.fit() re-centers once, after resizes have stopped.
+  try { ctx.cy.resize(); } catch (_) {}
+  if (ctx._cyFitTimer) { try { clearTimeout(ctx._cyFitTimer); } catch (_) {} }
+  ctx._cyFitTimer = setTimeout(function () {
+    ctx._cyFitTimer = null;
+    if (!ctx.cy) return;
+    try { ctx.cy.fit(undefined, 40); } catch (_) {}
+  }, 150);
 }
