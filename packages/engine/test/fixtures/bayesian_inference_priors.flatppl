@@ -1,0 +1,5 @@
+# Common definitions for some Bayesian inference examples
+
+# Prior distributions
+theta1_dist = Normal(0, 1)    % prior for theta1
+theta2_dist = Exponential(1)  % prior for theta2

@@ -1,8 +1,9 @@
 # Common definitions for some Bayesian inference examples
 
+priors = load_module("bayesian_inference_priors.flatppl")
 # Prior distributions
-theta1_dist = Normal(0, 1)
-theta2_dist = Exponential(1)
+theta1_dist = priors.theta1_dist
+theta2_dist = priors.theta2_dist
 
 # Deterministic functions
 c = elementof(reals)    % Scaling factor
