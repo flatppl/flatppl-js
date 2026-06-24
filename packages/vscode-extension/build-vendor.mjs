@@ -404,6 +404,22 @@ const mathBuildOpts = {
   legalComments: 'inline',
 };
 
+// The URL cache (spec §04 Remote file caching) — the Node host primitive for
+// fetching http/https load_module / load_data sources into the shared on-disk
+// cache. Bundled as a Node-CJS artifact so visualPanel.ts can
+// `require('../lib/url-cache.cjs')` without node_modules at runtime; node
+// built-ins stay external (platform: 'node'), and `fetch` is a Node global.
+const urlCacheBuildOpts = {
+  entryPoints: [join(enginePkg, 'url-cache.ts')],
+  outfile: join(libDir, 'url-cache.cjs'),
+  bundle: true,
+  minify: true,
+  format: 'cjs',
+  platform: 'node',
+  target: ['node18'],
+  legalComments: 'inline',
+};
+
 // The LSP client. Bundles `vscode-languageclient` (a real npm runtime
 // dependency) into a single Node-loadable CommonJS file so extension.ts can
 // `require('./src/lspClient')` without node_modules at runtime — the packaged
@@ -432,18 +448,20 @@ if (WATCH) {
   const mathCtx    = await esbuild.context(mathBuildOpts);
   const lspCtx     = await esbuild.context(lspClientBuildOpts);
   const echartsCtx = await esbuild.context(echartsCustomBuildOpts);
+  const urlCacheCtx = await esbuild.context(urlCacheBuildOpts);
   await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(),
                      viewerCtx.rebuild(), mathCtx.rebuild(), lspCtx.rebuild(),
-                     echartsCtx.rebuild()]);
+                     echartsCtx.rebuild(), urlCacheCtx.rebuild()]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
   console.log('  bundled math          -> lib/math.cjs');
   console.log('  bundled lsp-client    -> src/lspClient.js');
   console.log('  bundled echarts       -> lib/echarts.min.js');
+  console.log('  bundled url-cache     -> lib/url-cache.cjs');
   await Promise.all([engineCtx.watch(), workerCtx.watch(),
                      viewerCtx.watch(), mathCtx.watch(), lspCtx.watch(),
-                     echartsCtx.watch()]);
+                     echartsCtx.watch(), urlCacheCtx.watch()]);
   console.log('  watching packages/engine/ + packages/viewer/ for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
@@ -453,6 +471,7 @@ if (WATCH) {
     esbuild.build(mathBuildOpts),
     esbuild.build(lspClientBuildOpts),
     esbuild.build(echartsCustomBuildOpts),
+    esbuild.build(urlCacheBuildOpts),
   ]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
@@ -460,6 +479,7 @@ if (WATCH) {
   console.log('  bundled math          -> lib/math.cjs');
   console.log('  bundled lsp-client    -> src/lspClient.js');
   console.log('  bundled echarts       -> lib/echarts.min.js');
+  console.log('  bundled url-cache     -> lib/url-cache.cjs');
 }
 
 // ---------------------------------------------------------------------

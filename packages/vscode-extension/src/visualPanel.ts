@@ -7,6 +7,10 @@ const vscode = require('vscode');
 // re-exported by engine/index.js, the IIFE wraps that, and the
 // bundle's footer exposes the same shape to CommonJS require.
 const { isValidBindingName, variants, moduleDeps, resolveBundle } = require('../lib/engine.min.js');
+// The Node-side URL cache (spec §04 Remote file caching): fetches http/https
+// load_module sources into the shared on-disk cache. Vendored separately — it
+// is Node-only and deliberately NOT part of the browser engine bundle.
+const urlCache = require('../lib/url-cache.cjs');
 
 /** There is one canonical FlatPPL surface syntax (flatppl-design
     cc81e4b removed FlatPPY/FlatPPJ). Retained as a function so the
@@ -300,10 +304,34 @@ class FlatPPLPanel {
     // owns the moduleDeps + resolveModulePath + dedupe + tolerate-missing
     // structure, identical to the web host's.
     const readSource = async (resolved: string) => {
+      // A URL dependency (spec §04 #sec:url-cache) goes through the shared
+      // on-disk cache, prompting for trust on a first, unknown URL; a local
+      // dependency is read through the workspace file system.
+      if (urlCache.isUrl(resolved)) {
+        try {
+          return await urlCache.readText(resolved, { approve: (u: string) => this._approveUrl(u) });
+        } catch (e: any) {
+          vscode.window.showWarningMessage(
+            'FlatPPL: could not load ' + resolved + ' — ' + (e && e.message || e));
+          return null;   // left out of the bundle; the engine reports the dep at its call
+        }
+      }
       const bytes = await vscode.workspace.fs.readFile(sourceUri.with({ path: resolved }));
       return Buffer.from(bytes).toString('utf8');
     };
     return resolveBundle(sourceUri.path, source, readSource);
+  }
+
+  /**
+   * Trust prompt for a not-yet-cached remote module URL (spec §04
+   * #sec:url-cache: interactive tooling must obtain the user's approval before
+   * fetching). Returns true to fetch and persist a `trust/<kk>/<key>` marker.
+   */
+  async _approveUrl(url: string) {
+    const pick = await vscode.window.showWarningMessage(
+      'FlatPPL: fetch and trust the remote module?\n' + url,
+      { modal: false }, 'Trust', 'Cancel');
+    return pick === 'Trust';
   }
 
   /**
