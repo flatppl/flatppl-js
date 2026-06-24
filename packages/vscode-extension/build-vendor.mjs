@@ -288,6 +288,10 @@ const EXTENSION_TS_SOURCES = [
   // runtime; lspHelpers is already transpiled. Type-stripping is sufficient
   // (no npm runtime deps to bundle here).
   { in: 'src/inferenceLens.ts', out: 'src/inferenceLens.js' },
+  // Dependency-prefetch orchestration for the Download/Update Dependencies
+  // commands. No vscode import (host deps injected), so type-stripping is
+  // enough and the unit tests require it directly with no host stub.
+  { in: 'src/dependencyPrefetch.ts', out: 'src/dependencyPrefetch.js' },
   // NOTE: src/lspClient.ts is NOT type-stripped here — it imports the
   // `vscode-languageclient` npm package, which must be BUNDLED into the
   // output (the packaged .vsix ships no node_modules; vsce runs with

@@ -2,3 +2,4 @@ bin/
 src/lspClient.js
 src/lspHelpers.js
 src/inferenceLens.js
+src/dependencyPrefetch.js

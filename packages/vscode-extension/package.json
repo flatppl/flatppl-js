@@ -79,6 +79,14 @@
         "command": "flatppl.toggleInference",
         "title": "FlatPPL: Toggle Inference Display",
         "icon": "$(symbol-parameter)"
+      },
+      {
+        "command": "flatppl.downloadDependencies",
+        "title": "FlatPPL: Download Dependencies"
+      },
+      {
+        "command": "flatppl.updateDependencies",
+        "title": "FlatPPL: Update Dependencies"
       }
     ],
     "menus": {
@@ -102,6 +110,14 @@
         {
           "command": "flatppl.toggleInference",
           "when": "editorLangId == flatppl || ((editorLangId == python || editorLangId == julia) && flatppl.embeddedActive)"
+        },
+        {
+          "command": "flatppl.downloadDependencies",
+          "when": "editorLangId == flatppl"
+        },
+        {
+          "command": "flatppl.updateDependencies",
+          "when": "editorLangId == flatppl"
         }
       ],
       "editor/context": [

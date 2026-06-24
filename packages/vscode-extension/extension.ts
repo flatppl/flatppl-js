@@ -19,7 +19,13 @@ const vscode = require('vscode');
 // watch task keeps it fresh.
 const { processSource, findBindingAtLine, builtins,
   planRename, isValidBindingName, isValidPlaceholderText,
-  findEnclosingRanges, variants } = require('./lib/engine.min.js');
+  findEnclosingRanges, variants, resolveBundle } = require('./lib/engine.min.js');
+// URL cache (spec §04 #sec:url-cache): the Node host primitive for fetching
+// http/https load_module sources into the shared on-disk cache — the same
+// vendored bundle the visualizer uses. dependencyPrefetch is the host-agnostic
+// walk/counter over it that backs the Download/Update Dependencies commands.
+const urlCache = require('./lib/url-cache.cjs');
+const { prefetchDependencies } = require('./src/dependencyPrefetch');
 const { FlatPPLPanel } = require('./src/visualPanel');
 const { createLspManager } = require('./src/lspClient');
 const { registerInferenceLens } = require('./src/inferenceLens');
@@ -729,6 +735,66 @@ function activate(context: any) {
     renderToPanel(r.opts);
   }
 
+  // Trust prompt for a not-yet-cached remote module URL (spec §04
+  // #sec:url-cache), shared by the dependency commands; mirrors the
+  // visualizer panel's prompt. Returns true to fetch + persist the marker.
+  function approveUrl(url: any) {
+    return Promise.resolve(vscode.window.showWarningMessage(
+      'FlatPPL: fetch and trust the remote module?\n' + url,
+      { modal: false }, 'Trust', 'Cancel')).then((pick: any) => pick === 'Trust');
+  }
+
+  // "Download Dependencies" / "Update Dependencies": prefetch the active
+  // file's transitive load_module URL sources into the on-disk cache
+  // (force=true is the spec's explicit update — re-fetch + atomic replace).
+  // The walk + counting live in the host-agnostic prefetchDependencies; here
+  // we supply only the host pieces (engine walk, cache primitive, trust
+  // prompt, workspace reader) and report a summary. New URLs prompt for trust
+  // once; already-cached/trusted ones are silent. (load_data sources are not
+  // yet walked — that arrives with load_data end-to-end.)
+  async function runDependencyFetch(force: any) {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || !isFlatPPLDoc(editor.document)) {
+      vscode.window.showInformationMessage(
+        'FlatPPL: open a .flatppl file to '
+        + (force ? 'update' : 'download') + ' its dependencies.');
+      return;
+    }
+    const doc = editor.document;
+    const { fetched, cached, failed } = await vscode.window.withProgress(
+      { location: vscode.ProgressLocation.Notification,
+        title: force ? 'FlatPPL: updating dependencies…'
+                     : 'FlatPPL: downloading dependencies…' },
+      () => prefetchDependencies({
+        primaryPath: doc.uri.path,
+        primarySource: doc.getText(),
+        resolveBundle,
+        isUrl: urlCache.isUrl,
+        fetchToCache: urlCache.fetchToCache,
+        approve: (u: any) => approveUrl(u),
+        // A resolved path is a URI path component, so it rides
+        // `doc.uri.with({ path })` to keep scheme + authority (remote / WSL
+        // too) — the same read the visualizer's readSource uses.
+        readLocal: async (resolved: any) => {
+          const bytes = await vscode.workspace.fs.readFile(doc.uri.with({ path: resolved }));
+          return Buffer.from(bytes).toString('utf8');
+        },
+        force: !!force,
+      }));
+
+    const parts: any[] = [];
+    if (fetched) parts.push(fetched + (force ? ' updated' : ' downloaded'));
+    if (cached && !force) parts.push(cached + ' already cached');
+    const summary = 'FlatPPL: '
+      + (parts.length ? parts.join(', ') : 'no remote dependencies') + '.';
+    if (failed.length) {
+      vscode.window.showWarningMessage(
+        summary + ' Failed: ' + failed.map((f: any) => f.url).join(', '));
+    } else {
+      vscode.window.showInformationMessage(summary);
+    }
+  }
+
   // --- Commands ---
 
   const showDagCmd = vscode.commands.registerCommand(
@@ -751,6 +817,12 @@ function activate(context: any) {
       vscode.window.showInformationMessage(
         'FlatPPL embedded support disabled for this window.');
     });
+
+  const downloadDepsCmd = vscode.commands.registerCommand(
+    'flatppl.downloadDependencies', () => runDependencyFetch(false));
+
+  const updateDepsCmd = vscode.commands.registerCommand(
+    'flatppl.updateDependencies', () => runDependencyFetch(true));
 
   // --- Live DAG update on cursor move ---
 
@@ -1215,6 +1287,7 @@ function activate(context: any) {
 
   context.subscriptions.push(
     showDagCmd, showModuleCmd, activateEmbeddedCmd, deactivateEmbeddedCmd,
+    downloadDepsCmd, updateDepsCmd,
     selectionListener, changeListener, openListener, closeListener,
     defProvider, hoverProvider, symbolProvider, completionProvider,
     renameProvider, referenceProvider, highlightProvider, selectionRangeProvider,
