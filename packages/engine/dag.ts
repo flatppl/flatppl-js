@@ -1,6 +1,26 @@
 'use strict';
 
 const { extractBoundaries, collectDeps, isMeasureExpr, computePhasesForScope } = require('./analyzer.ts');
+const { resolveCallableAlias } = require('./ir-shared.ts');
+
+// Effective doc-comment for a binding (spec §04 doc-comments): the binding's
+// OWN doc wins; otherwise, if it is a bare alias — including a cross-module one
+// like `theta1_dist = priors.theta1_dist`, which the linker rewrites to a
+// namespaced ref — inherit the canonical target's doc, recursively across
+// module hops (resolveCallableAlias follows the whole chain in the linked
+// graph). So the DAG hover shows the doc that lives on the originating binding.
+// Returns null when none is found.
+function effectiveDoc(name: string, bindings: any): any {
+  if (!bindings) return null;
+  const b = bindings.get(name);
+  if (b && b.node && b.node.doc) return b.node.doc;
+  const canon = resolveCallableAlias(name, bindings);
+  if (canon !== name) {
+    const cb = bindings.get(canon);
+    if (cb && cb.node && cb.node.doc) return cb.node.doc;
+  }
+  return null;
+}
 
 // Resolve a binding's "effective" RHS view. For most bindings this is
 // just the literal RHS; for disintegration results that have a
@@ -374,7 +394,7 @@ function computeSubDAG(bindings: any, nodeName: string, opts?: any) {
       // Doc-comment attached by the parser (spec §04 §sec:documentation;
       // shape: `{ markup, lines }` or null). Surfaced by the DAG-view
       // hover-info renderer below the existing label/expr line.
-      doc: b && b.node && b.node.doc ? b.node.doc : null,
+      doc: effectiveDoc(name, linkedBindings || bindings),
       line: b ? b.line : -1,
       isBoundary,
       isTarget: name === nodeName,
@@ -538,6 +558,9 @@ function computeSubDAG(bindings: any, nodeName: string, opts?: any) {
               line: -1,
               isBoundary: false,
               isTarget: false,
+              // Doc-comment from the resolved member, recursively (an alias
+              // member inherits its target's doc, even across module hops).
+              doc: effectiveDoc(dep + '$' + field, linkedBindings),
               // Drill-in target for the dbltap handler (spec §04 navigation).
               moduleMember: { module: dep, field },
             });

@@ -63,6 +63,43 @@ test('a bare member alias node is tagged with its module member (for drill-in)',
     'a bare alias has no separate member node');
 });
 
+// Doc-comment inheritance (spec §04): an alias with no own doc inherits its
+// target's doc, including across module boundaries, recursively — so the DAG
+// hover shows the doc that lives on the originating binding.
+
+test('an alias inherits the doc-comment of its cross-module target', () => {
+  const r = processSource(
+    'pr = load_module("priors.flatppl")\nd1 = pr.dist1',
+    { bundle: { sources: { 'priors.flatppl': 'dist1 = Normal(0, 1)  % prior for dist1' } } });
+  const { nodes } = computeSubDAG(r.bindings, 'd1', { linkedBindings: r.linkedBindings });
+  const d1 = nodes.find((n: any) => n.id === 'd1');
+  assert.ok(d1 && d1.doc && d1.doc.lines.join(' ') === 'prior for dist1',
+    'alias d1 inherits the doc from pr.dist1');
+});
+
+test('a cross-module member node shows the doc recursively (two-level)', () => {
+  const r = processSource(
+    'c = load_module("common.flatppl")\ntheta ~ c.d1',
+    { bundle: { sources: {
+      'common.flatppl': 'pr = load_module("priors.flatppl")\nd1 = pr.dist1',
+      'priors.flatppl': 'dist1 = Normal(0, 1)  % prior for dist1',
+    } } });
+  const { nodes } = computeSubDAG(r.bindings, 'theta', { linkedBindings: r.linkedBindings });
+  const member = nodes.find((n: any) => n.id === 'c.d1');
+  assert.ok(member, 'c.d1 member node exists');
+  assert.ok(member.doc && member.doc.lines.join(' ') === 'prior for dist1',
+    'member node c.d1 inherits the doc from priors.dist1, two modules deep');
+});
+
+test("a binding's own doc is not overridden by inheritance", () => {
+  const r = processSource(
+    'pr = load_module("priors.flatppl")\nd1 = pr.dist1  % my own doc',
+    { bundle: { sources: { 'priors.flatppl': 'dist1 = Normal(0, 1)  % prior for dist1' } } });
+  const { nodes } = computeSubDAG(r.bindings, 'd1', { linkedBindings: r.linkedBindings });
+  const d1 = nodes.find((n: any) => n.id === 'd1');
+  assert.ok(d1 && d1.doc && d1.doc.lines.join(' ') === 'my own doc', 'own doc wins');
+});
+
 test('a member aliased to a local name stays a local node (no member node)', () => {
   const r = build([
     'c_scaling = 5',

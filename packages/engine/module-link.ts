@@ -129,9 +129,11 @@ function _linkInstance(prefix: string, ast: any, moduleRegistry: any,
     // A substituted input: replace `mu = elementof(...)` with an alias to
     // the importer's substitution value (spec §04 load-time substitution).
     if (aliasName && subs && subs.has(aliasName) && _isInputCall(s.value)) {
-      out.push(AST.AssignStatement(
+      const subStmt = AST.AssignStatement(
         [AST.Identifier(_pfx(prefix, aliasName), s.names[0].loc)],
-        subs.get(aliasName), s.loc));
+        subs.get(aliasName), s.loc);
+      if (s.doc) subStmt.doc = s.doc;   // keep the binding's doc through linking
+      out.push(subStmt);
       continue;
     }
 
@@ -139,7 +141,9 @@ function _linkInstance(prefix: string, ast: any, moduleRegistry: any,
     // standard_module load): emit under namespaced name(s) with refs
     // rewritten.
     const newNames = s.names.map((nm: any) => AST.Identifier(_pfx(prefix, nm.name), nm.loc));
-    out.push(AST.AssignStatement(newNames, rewrite(s.value), s.loc));
+    const stmt = AST.AssignStatement(newNames, rewrite(s.value), s.loc);
+    if (s.doc) stmt.doc = s.doc;         // keep the binding's doc through linking (spec §04)
+    out.push(stmt);
   }
 }
 
