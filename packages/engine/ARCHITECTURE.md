@@ -132,8 +132,16 @@ loaded module's typed bindings (spec §11). Standard modules are engine-provided
   `load_module` node double-click fires `host.openModule(path)` to navigate
   between module files. The DAG renders only the primary module
   (`ctx.currentBindings`); materialisation uses `ctx.currentLinkedBindings`.
+- **URL sources** — an `http`/`https` `load_module` source (spec §04
+  #sec:url-cache) is resolved by the URL-aware `resolveModulePath` and fetched
+  by each host's `readSource`: the VS Code host routes it through the Node
+  on-disk cache (`url-cache.ts`, vendored as `lib/url-cache.cjs`) with a
+  one-time trust prompt; the browser fetches directly (no on-disk cache —
+  CORS-limited, browser-cached).
 
-Open: `load_data` end-to-end (the `dataResolver(path)` callback path);
+Open: `load_data` URL sources (gated on `load_data` end-to-end below); a VS Code
+"update URLs" command over the cache's `force` re-fetch. `load_data` end-to-end
+(the `dataResolver(path)` callback path);
 substitution-aware re-typing of a dependency (a fixed substitution sharpening a
 `%dynamic` shape — the standalone-inferred type is sound but not maximally
 precise); threading the bundle into the editors' inline-lint diagnostics.
@@ -192,7 +200,8 @@ after the table.
 | `kernel-broadcast-shape.ts` (~1400) | The kernel-broadcast SHAPE analysis behind the recognizers: `detectJointKernelBinding` / `detectNestedBroadcastKernelBinding` / `detectGenerativeKernelBinding` (the generative-pushforward recognizer + near-miss arm consumed by `mc-recipe`). Largest single recognizer module. |
 | `broadcast-shape.ts` (~320) | VALUE-level broadcast shape: `classifyNestedJSArray` (outer-rank of a raw nested array, engine-concepts §2.1) + the outer-axis slot descriptors the value-broadcast loop consumes. Distinct from `kernel-broadcast-shape.ts` (measure/kernel shapes). |
 | `alias-resolution.ts` (~220) | Post-lower IR pass canonicalising references through alias bindings (`x = mod.y` / re-bindings → canonical ref form, once — LLVM `@alias`-like; engine-concepts §19, spec §04). A named pipeline stage, not an internal helper (lift's `rewriteCompositeRandSucc` runs after it). |
-| `module-resolve.ts` (~70) | **One owner** of spec §04 `load_module` path math: `resolveModulePath(importer, rel)` (`/`-separator, `.`/`..` collapse, relative-to-importer-dir, absolute importer/relpath preserved). Dependency-free leaf, shared by the engine bundle compiler AND the host resolvers (web `fetch`, VS Code `workspace.fs`) so they agree on "the same file". |
+| `module-resolve.ts` (~70) | **One owner** of spec §04 `load_module` path math: `resolveModulePath(importer, rel)` (`/`-separator, `.`/`..` collapse, relative-to-importer-dir, absolute importer/relpath preserved). Dependency-free leaf, shared by the engine bundle compiler AND the host resolvers (web `fetch`, VS Code `workspace.fs`) so they agree on "the same file". Also URL-aware via `isUrl` (an absolute http(s) dep used verbatim; a relative dep inside a URL module resolved against the importer URL), so a URL dep keys identically for the walk and the compiler. |
+| `url-cache.ts` (~155, **Node-only**) | **Remote file caching** (spec §04 #sec:url-cache): `fetchToCache(url, opts)` resolves an http(s) source to its cached bytes, fetching on a miss after a per-URL trust gate. Per-OS cache dir (+ `FLATPPL_CACHEDIR`), SHA-256 URL keys + full trailing ext, atomic temp+fsync+rename (metadata before object), mandatory `_meta.json`, `trust/<kk>/<key>` (`O_EXCL`), `FLATPPL_CACHE_OFFLINE` / `FLATPPL_TRUST`, redirects followed, `force` re-fetch (update). NOT in the browser bundle (never imported by `index.ts`); vendored into the extension as `lib/url-cache.cjs`, consumed by the VS Code host's `readSource`. `isUrl` is re-exported from `module-resolve`. |
 | `module-link.ts` (~190) | **Module linking** (spec §04/§11 internal flattening): `linkModules(primary, modules)` → one combined Program AST that splices every transitively-loaded module under namespaced names (`m$x`), rewrites refs (`mod.x` → the loaded binding) and rewires load-time substitutions to importer-value aliases. The caller re-analyzes it (`processSource` → `result.linkedBindings`) so the unchanged by-name materialiser handles cross-module materialisation — the classic linker model (cf. `alias-resolution`). Cycle-guarded; standard-module access inside a loaded module preserved. |
 | `mat-broadcast.ts` (~2200), `mat-density.ts` (~490), `mat-multivariate.ts` (~570), `mat-transformations.ts` (~460) | Materialiser splits: kernel-broadcast composite executors + batch-flatten folds (mat-broadcast); density-routed kinds matScore / matBayesupdate / matLogdensityof (mat-density); multivariate handlers (mat-multivariate); pushfwd / locscale / relabel (mat-transformations). |
 | `perf-config.ts` (~150) | **Optimization toggles & dual-mode testing** (engine-concepts §15): registry of default-true toggles (`aggregate`, `disintegrate.delegate`); `getOptimization(key)` gates each specialised dispatch against its general/reference path; `test/_perf-helpers.ts` `inBothModes(name, key, fn)` runs equivalence tests under both settings. Adding a specialised path = one toggle + a dual-mode test. |
