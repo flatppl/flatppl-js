@@ -28,11 +28,41 @@ export function nameSeed(ctx: Ctx, name: any) {
   return (h ^ ctx.rootSeed) >>> 0;
 }
 
+/**
+ * The module context (resolved `path` + dependency `bundleSources`) a
+ * sourceUpdate lowers against. Both are STICKY to the current model: the host
+ * signals a model SWITCH by sending `path` (a string, or `null` for a path-less
+ * module such as an embedded block), which (re)establishes both path and
+ * bundle; a SAME-MODEL update (target navigation, edit) omits `path`, so the
+ * tracked context persists.
+ *
+ * Why sticky: a same-model re-lower that dropped the path would reprocess the
+ * source with an empty modulePath, and the engine would resolve relative
+ * `load_module` deps against an empty base — so a remote module's
+ * `load_module("priors.flatppl")` collapsed to a bare gallery path and the
+ * cross-URL drill-down 404'd (engine registry built in pir.ts via
+ * `resolveModulePath(modulePath, relPath)`).
+ */
+export function moduleContextOnUpdate(
+  prev: { path: any; bundleSources: any },
+  msg: any,
+): { path: any; bundleSources: any } {
+  if (msg.path !== undefined) {
+    return { path: msg.path, bundleSources: msg.bundleSources || null };
+  }
+  return { path: prev.path, bundleSources: prev.bundleSources };
+}
+
 export function applySourceUpdate(ctx: Ctx, msg: any) {
   const sourceChanged = (msg.source !== ctx.currentSource);
-  // Track which module (source file) the DAG currently belongs to, so a
-  // cross-module back-navigation can re-sync the editor source (spec §04).
-  if (msg.path !== undefined) ctx.currentPath = msg.path;
+  // The module's path + dep bundle are STICKY to the current model
+  // (moduleContextOnUpdate): a same-model re-lower (target-nav / edit) keeps
+  // them so relative load_module deps still resolve against THIS module — and
+  // a cross-module back-navigation can re-sync the editor source (spec §04).
+  const modCtx = moduleContextOnUpdate(
+    { path: ctx.currentPath, bundleSources: ctx.currentBundleSources }, msg);
+  ctx.currentPath = modCtx.path;
+  ctx.currentBundleSources = modCtx.bundleSources;
   // currentVariantId is initialised to 'flatppl' in main.ts and
   // there is only one canonical surface (spec §05); the host MAY
   // override via msg.variant for forward-compatibility but no
@@ -50,16 +80,16 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
       // derivation building / materialisation (cross-module refs resolved).
       const result = FlatPPLEngine.processSource(msg.source, {
         variant: ctx.currentVariantId,
-        bundle: msg.bundleSources ? { sources: msg.bundleSources } : undefined,
-        path: msg.path || undefined,
+        bundle: ctx.currentBundleSources ? { sources: ctx.currentBundleSources } : undefined,
+        path: ctx.currentPath || undefined,
       });
       ctx.currentBindings = result.bindings;
       ctx.currentLinkedBindings = result.linkedBindings || result.bindings;
       ctx.currentLoweredModule = result.loweredModule;
-      // Keep the raw bundle (spec §04): the off-thread MCMC pool re-processes
-      // the source in workers and needs it to resolve `load_module` deps —
-      // otherwise a cross-module posterior has no derivation there.
-      ctx.currentBundleSources = msg.bundleSources || null;
+      // ctx.currentBundleSources was set above via moduleContextOnUpdate — the
+      // raw bundle (spec §04) the off-thread MCMC pool re-processes in workers
+      // to resolve `load_module` deps (else a cross-module posterior has no
+      // derivation there).
       // Source change → rebuild derivations and clear sample cache.
       // The orchestrator's derivations key the cache, so any change
       // (renamed bindings, edited dist params, new dependencies)

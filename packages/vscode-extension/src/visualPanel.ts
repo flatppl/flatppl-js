@@ -245,6 +245,11 @@ class FlatPPLPanel {
         targetName: targetName || null,
         pushHistory: !!pushHistory,
         variant: 'flatppl',
+        // Explicit null: an embedded block has no module path. The viewer's
+        // module context is sticky (a same-model update preserves it), so a
+        // path-less surface must CLEAR it rather than omit it (else it would
+        // inherit the previously-viewed module's path).
+        path: null,
       });
       return;
     }
@@ -265,7 +270,9 @@ class FlatPPLPanel {
       // back-button can't tell the DAG left the loader. It also makes the
       // module registry resolve deps against an absolute importer path, so a
       // drill's `openModule` URI stays absolute (never collapses to root).
-      path: this._sourceUri ? this._sourceUri.path : undefined,
+      // Explicit (never undefined): the viewer's module context is sticky, so
+      // a leaf/path-less post must CLEAR it. A native model always has a uri.
+      path: this._sourceUri ? this._sourceUri.path : null,
     };
     // Multi-file (spec §04 load_module): if the source loads other modules,
     // pre-fetch their `.flatppl` sources via the workspace file system and
@@ -380,6 +387,10 @@ class FlatPPLPanel {
       source,
       pushHistory: !!pushHistory,
       variant: variantIdFromUri(this._sourceUri),
+      // Carry the module's path (null when embedded) so the engine resolves the
+      // module's load_module deps against it — the registry powers drill-down
+      // from the whole-module view. Sticky viewer context: never omit.
+      path: this._sourceUri ? this._sourceUri.path : null,
     });
   }
 
