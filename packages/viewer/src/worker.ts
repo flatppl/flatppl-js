@@ -248,6 +248,15 @@ function poolMeasures(measures: any[]): any {
 // seed and produces sampleCount/P atoms; the results are pooled.
 export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<any> {
   const source = ctx.currentSource;
+  // Each worker re-processes `source` to build a self-contained ctx; for a
+  // multi-file model (spec §04 load_module) it must carry the bundle + path,
+  // else the worker's graph leaves `mod.member` refs unresolved and the
+  // posterior has no derivation. Single-file models pass an empty bundle.
+  const processOpts: any = {
+    bundle: (ctx as any).currentBundleSources
+      ? { sources: (ctx as any).currentBundleSources } : undefined,
+    path: ctx.currentPath || undefined,
+  };
   const sampleCount = ctx.SAMPLE_COUNT;
   const baseSeed = (opts.seed != null ? opts.seed : (ctx.rootSeed || 1)) | 0;
   const hw = (typeof navigator !== 'undefined' && (navigator as any).hardwareConcurrency) || 4;
@@ -297,7 +306,7 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
   try {
     const replies = await Promise.all(shares.map((s, i) =>
       sendTo(ctx, workers[i], {
-        type: 'mcmcRun', source, name,
+        type: 'mcmcRun', source, name, processOpts,
         inferenceOpts: s.inferenceOpts, sampleCount: s.sampleCount, seed: s.inferenceOpts.seed,
       }, (m: any) => report(i, m))));
     return poolMeasures(replies.map((r: any) => r.measure));

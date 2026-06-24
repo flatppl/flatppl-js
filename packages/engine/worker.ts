@@ -224,7 +224,12 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           const orchestratorLib = require('./orchestrator.ts');
           const materialiserLib = require('./materialiser.ts');
           const proc = idx.processSource(msg.source, msg.processOpts || {});
-          const built = orchestratorLib.buildDerivations(proc.bindings);
+          // Multi-file (spec §04 load_module): build from the LINKED graph so a
+          // cross-module bayesupdate posterior is derivable (the primary graph
+          // leaves `mod.member` refs unresolved). `processOpts.bundle` (shipped
+          // by runMcmcPool) is what makes linkedBindings cross-module-complete;
+          // single-file models have linkedBindings === bindings.
+          const built = orchestratorLib.buildDerivations(proc.linkedBindings || proc.bindings);
           const cache = new Map();
           const subCtx: any = {
             derivations: built.derivations,

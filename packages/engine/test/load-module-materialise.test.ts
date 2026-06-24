@@ -179,3 +179,25 @@ test('transitive load: model → A → B materialises a B value through both hop
   const y = await ctx.getMeasure('y');
   assert.ok(Math.abs(y.samples[0] - 41.0) < 1e-9, 'b.vb(4)*10 + 1 = 41 across two module hops');
 });
+
+test('mcmcRun resolves a cross-module bayesupdate posterior (load_module) via the linked graph', async () => {
+  // The off-thread MCMC worker re-processes the model SOURCE and must build
+  // derivations from the LINKED (cross-module-resolved) graph + the bundle —
+  // else a load_module posterior has "no derivation for 'posterior'" (the
+  // primary graph leaves `common.*` refs unresolved). This mirrors exactly
+  // what runMcmcPool ships to each worker (source + processOpts.bundle/path).
+  const b = fixtureBundle('bayesian_inference_3.flatppl');
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 1 });
+  const reply: any = await Promise.resolve(worker.handle({
+    type: 'mcmcRun',
+    source: b.primarySource,
+    name: 'posterior',
+    processOpts: { bundle: { sources: b.sources }, path: b.primaryPath },
+    inferenceOpts: { backend: 'mh' },
+    sampleCount: 256, seed: 1,
+  }));
+  assert.notEqual(reply.type, 'error', 'mcmcRun errored: ' + (reply && reply.message));
+  assert.equal(reply.type, 'mcmcResult');
+  assert.ok(reply.measure, 'returns a posterior measure');
+});

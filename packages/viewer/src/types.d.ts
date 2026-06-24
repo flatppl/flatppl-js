@@ -257,6 +257,10 @@ export interface Ctx {
    *  bundle / router key). Drives cross-module back source-sync (spec §04);
    *  undefined for hosts that don't supply a path (plain embeds). */
   currentPath?: string;
+  /** Raw `load_module` bundle (resolved-path → source) from the host, kept so
+   *  the off-thread MCMC pool can re-process the multi-file model in workers
+   *  (spec §04). Null/undefined for a single-file model. */
+  currentBundleSources?: Record<string, string> | null;
   /** Engine's binding map from processSource — Map<name, BindingInfo>.
    *  The PRIMARY module alone (the DAG renders this). Null at boot before
    *  the first source loads. */

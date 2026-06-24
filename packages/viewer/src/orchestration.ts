@@ -56,6 +56,10 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
       ctx.currentBindings = result.bindings;
       ctx.currentLinkedBindings = result.linkedBindings || result.bindings;
       ctx.currentLoweredModule = result.loweredModule;
+      // Keep the raw bundle (spec §04): the off-thread MCMC pool re-processes
+      // the source in workers and needs it to resolve `load_module` deps —
+      // otherwise a cross-module posterior has no derivation there.
+      ctx.currentBundleSources = msg.bundleSources || null;
       // Source change → rebuild derivations and clear sample cache.
       // The orchestrator's derivations key the cache, so any change
       // (renamed bindings, edited dist params, new dependencies)
