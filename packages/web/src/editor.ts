@@ -541,8 +541,7 @@
     }
 
     // Map the gallery's surface type to a language-pack key. hs3/pyhf files
-    // are JSON-shaped (.hs3.json / .pyhf.json and bare .hs3 / .pyhf), so they
-    // ride the json pack.
+    // are JSON-shaped (.hs3.json / .pyhf.json), so they ride the json pack.
     function langKeyFor(type: any): string {
       if (type === 'flatppl' || type === 'markdown') return type;
       if (type === 'json' || type === 'hs3' || type === 'pyhf') return 'json';

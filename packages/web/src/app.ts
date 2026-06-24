@@ -297,7 +297,7 @@
   /** Destination basename for a converted file: strip the import extension
    *  and add `.flatppl` (uniquified into user/ by the caller). */
   function convertedFlatpplName(srcPath: any): string {
-    return basenameOf(srcPath).replace(/\.(pyhf|hs3)(\.json)?$/i, '') + '.flatppl';
+    return basenameOf(srcPath).replace(/\.(pyhf|hs3)\.json$/i, '') + '.flatppl';
   }
 
   /** Convert a pyhf / HS3 file to FlatPPL and drop the result into the user
@@ -1158,7 +1158,7 @@
   function onUploadClick() {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.flatppl,.md,.markdown,.hs3.json,.pyhf.json,.hs3,.pyhf';
+    input.accept = '.flatppl,.md,.markdown,.hs3.json,.pyhf.json';
     input.multiple = true;
     input.style.display = 'none';
     document.body.appendChild(input);

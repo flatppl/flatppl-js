@@ -20,25 +20,23 @@
 
 // Model/representation file types the gallery surfaces. Adding a new format
 // (a `.stan`, …) is a one-line change HERE — both the build's manifest filter
-// and the runtime's surface routing pick it up. HS3 / pyhf models are JSON;
-// both `.hs3.json` / `.pyhf.json` and the bare `.hs3` / `.pyhf` spellings are
-// recognised so that user-uploaded files work regardless of which name was used.
+// and the runtime's surface routing pick it up. HS3 / pyhf models are JSON and
+// carry the explicit `.hs3.json` / `.pyhf.json` extensions.
 export const MODEL_EXTENSIONS = [
-  '.flatppl', '.md', '.markdown', '.hs3.json', '.pyhf.json', '.hs3', '.pyhf',
+  '.flatppl', '.md', '.markdown', '.hs3.json', '.pyhf.json',
 ];
 
 /** Map a path to its surface type. Empty/missing defaults to 'flatppl'
  *  (the gallery is FlatPPL-first); an unrecognised extension is 'unknown'
  *  (routes to the placeholder surface). hs3/pyhf are named distinctly so
- *  they stay uploadable + reserve the slot for a future native surface; the
- *  bare `.hs3` / `.pyhf` are the same JSON models as `.hs3.json` / `.pyhf.json`. */
+ *  they stay uploadable + reserve the slot for a future native surface. */
 export function typeForPath(path) {
   if (!path) return 'flatppl';
   const p = String(path).toLowerCase();
   if (p.endsWith('.flatppl')) return 'flatppl';
   if (p.endsWith('.md') || p.endsWith('.markdown')) return 'markdown';
-  if (p.endsWith('.hs3.json') || p.endsWith('.hs3')) return 'hs3';
-  if (p.endsWith('.pyhf.json') || p.endsWith('.pyhf')) return 'pyhf';
+  if (p.endsWith('.hs3.json')) return 'hs3';
+  if (p.endsWith('.pyhf.json')) return 'pyhf';
   return 'unknown';
 }
 
