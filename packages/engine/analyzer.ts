@@ -3333,6 +3333,17 @@ function _validateModuleSubstitutions(loweredModule: any, modules: any, diagnost
             + ' (spec §04: external ← fixed)',
           loc });
       }
+      // Symmetric to the external rule: an `elementof` input may only be
+      // bound to a PARAMETERIZED value (spec §04). The stochastic case is
+      // already rejected above, so a `fixed` value here is the violation
+      // (e.g. a literal `c_scaling = 5` substituted into `c = elementof(...)`).
+      if (inputOp === 'elementof' && vphase !== 'parameterized') {
+        diagnostics.push({ severity: 'error',
+          message: "elementof input '" + a.name + "' of module '" + name
+            + "' requires a parameterized-phase value, got " + vphase
+            + ' (spec §04: elementof ← parameterized)',
+          loc });
+      }
     }
   }
 }

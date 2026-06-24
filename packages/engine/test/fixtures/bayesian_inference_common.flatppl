@@ -6,6 +6,6 @@ theta1_dist = priors.theta1_dist
 theta2_dist = priors.theta2_dist
 
 # Deterministic functions
-c = elementof(reals)    % Scaling factor
+c = external(reals)    % Scaling factor
 f_a = par -> c * par    % Scale by c
 f_b = fn(abs(_) * _)    % abs(arg1) * arg2

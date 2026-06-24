@@ -223,6 +223,19 @@ test('substitution phase-compat: parameterized value into an external input erro
     'an external input requires a fixed-phase value (spec §04)');
 });
 
+test('substitution phase-compat: fixed value into an elementof input errors', () => {
+  // Spec §04: `elementof` inputs may only be bound to PARAMETERIZED values;
+  // a fixed-phase value (here the literal `k = 5`) is NOT allowed. This is the
+  // `bayesian_inference_common` `c = elementof(reals)` ← `c_scaling = 5` shape
+  // the engine previously accepted silently (the symmetric counterpart of the
+  // `external ← fixed` check above was missing).
+  const r = bundleOf('k = 5\nm = load_module("h.flatppl", mu = k)', {
+    'h.flatppl': 'mu = elementof(reals)\nobs = Normal(mu, 1)',
+  });
+  assert.ok(errs(r.diagnostics).some((d: any) => /elementof|parameterized/i.test(d.message)),
+    'an elementof input requires a parameterized-phase value, not fixed (spec §04: elementof ← parameterized)');
+});
+
 test('valid substitution (parameterized → elementof input) is accepted', () => {
   const r = bundleOf('a = elementof(reals)\nm = load_module("h.flatppl", mu = a)', {
     'h.flatppl': 'mu = elementof(reals)\nobs = Normal(mu, 1)',

@@ -1,12 +1,12 @@
 flatppl_compat = "0.1"
 
-% Signal mean — a module input, optionally bound by a loader at load time.
-mu = elementof(reals)
+% Signal mean — an external module input (a loader pins it to a fixed value, spec §04: external ← fixed).
+mu = external(reals)
 
 % Known measurement resolution.
 sigma = 0.7
 
-% Parameterized observation measure (depends on the input `mu`).
+% Observation measure (depends on the external input `mu`).
 dist = Normal(mu, sigma)
 
 % Concrete observation measure — needs no load-time substitution.

@@ -123,7 +123,7 @@ test('substitution flows: loaded measure density reflects the substituted input'
   // substitution, so logdensityof(mm.dist, 1.5) = N(0.5, 1) logpdf at 1.5.
   const { r, ctx } = makeCrossCtx(
     'theta = 0.5\nmm = load_module("h.flatppl", mu = theta)\nlp = logdensityof(mm.dist, 1.5)', {
-      'h.flatppl': 'mu = elementof(reals)\ndist = Normal(mu, 1.0)',
+      'h.flatppl': 'mu = external(reals)\ndist = Normal(mu, 1.0)',
     });
   assert.equal(r.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
   const lp = await ctx.getMeasure('lp');
@@ -134,7 +134,7 @@ test('substitution flows: loaded measure density reflects the substituted input'
 test('substitution flows: sampling a loaded measure honours the substituted input', async () => {
   const { r, ctx } = makeCrossCtx(
     'mm = load_module("h.flatppl", mu = 3.0)\nx = draw(mm.dist)', {
-      'h.flatppl': 'mu = elementof(reals)\ndist = Normal(mu, 0.5)',
+      'h.flatppl': 'mu = external(reals)\ndist = Normal(mu, 0.5)',
     });
   assert.equal(r.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
   const x = await ctx.getMeasure('x');
