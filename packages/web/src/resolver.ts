@@ -65,6 +65,13 @@
     if (userStore && userStore.has && userStore.has(path)) {
       return { source: userStore.getSource(path), url: path };
     }
+    // An absolute http(s) URL dependency (spec §04 #sec:url-cache) is fetched
+    // directly. The browser has no on-disk FlatPPL cache — that convention is a
+    // Node-host concern — and CORS limits which origins respond; the browser's
+    // own HTTP cache (plus this session's `sourceCache`) provides the caching.
+    if (/^https?:\/\//i.test(path)) {
+      return { source: await fetchSource(path), url: path };
+    }
     const url = new URL(path, document.baseURI).href;
     return { source: await fetchSource(url), url: url };
   }
