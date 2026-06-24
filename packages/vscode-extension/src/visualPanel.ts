@@ -6,7 +6,7 @@ const vscode = require('vscode');
 // `@flatppl/engine` symlink. isValidBindingName and variants are
 // re-exported by engine/index.js, the IIFE wraps that, and the
 // bundle's footer exposes the same shape to CommonJS require.
-const { isValidBindingName, variants, moduleDeps, moduleResolve } = require('../lib/engine.min.js');
+const { isValidBindingName, variants, moduleDeps, resolveBundle } = require('../lib/engine.min.js');
 
 /** There is one canonical FlatPPL surface syntax (flatppl-design
     cc81e4b removed FlatPPY/FlatPPJ). Retained as a function so the
@@ -114,7 +114,17 @@ class FlatPPLPanel {
       // module path (URI path component); resolve it against the current
       // document's URI to keep the scheme/authority.
       if (msg.type === 'openModule' && msg.path && this._sourceUri) {
-        const depUri = this._sourceUri.with({ path: msg.path });
+        // `msg.path` is the engine's RESOLVED module path (spec §04) — an
+        // absolute URI-path under the always-send-path contract, so it rides
+        // the current source's scheme + authority (works under remote / WSL).
+        // Defensive: a non-absolute path (a contract gap) resolves against the
+        // current source's directory instead of collapsing to the FS root
+        // (the old `file:///bayesian_inference_common.flatppl` failure).
+        const cur = this._sourceUri;
+        const absPath = String(msg.path).charAt(0) === '/'
+          ? msg.path
+          : cur.path.replace(/\/[^/]*$/, '') + '/' + msg.path;
+        const depUri = cur.with({ path: absPath });
         vscode.window.showTextDocument(depUri, {
           viewColumn: vscode.ViewColumn.One,
           preserveFocus: false,
@@ -241,12 +251,19 @@ class FlatPPLPanel {
       targetName: targetName || null,
       pushHistory: !!pushHistory,
       variant: variantIdFromUri(this._sourceUri),
+      // ALWAYS carry the primary's resolved path (spec §04). The viewer keys
+      // its cross-module navigation on it — `currentPath` tracking and the
+      // back-button's source re-sync — so even a LEAF module (no further
+      // load_module deps, no bundle) must report its path; otherwise the
+      // back-button can't tell the DAG left the loader. It also makes the
+      // module registry resolve deps against an absolute importer path, so a
+      // drill's `openModule` URI stays absolute (never collapses to root).
+      path: this._sourceUri ? this._sourceUri.path : undefined,
     };
-    // Multi-file (spec §04 load_module): if the source loads other
-    // modules, pre-fetch their `.flatppl` sources via the workspace file
-    // system and ship them in the message as `bundleSources` (keyed by
-    // resolved path) + the primary's own `path`. Single-file sources skip
-    // this entirely and post synchronously (the common case, no async I/O).
+    // Multi-file (spec §04 load_module): if the source loads other modules,
+    // pre-fetch their `.flatppl` sources via the workspace file system and
+    // ship them as `bundleSources` (keyed by resolved path). Single-file
+    // sources skip this and post synchronously (the common case, no I/O).
     let rels: string[] = [];
     try { rels = moduleDeps(source); } catch (_) { rels = []; }
     if (rels.length === 0 || !this._sourceUri) {
@@ -254,8 +271,7 @@ class FlatPPLPanel {
       return;
     }
     this._resolveBundle(source, this._sourceUri).then((bundle: any) => {
-      base.bundleSources = bundle.sources;
-      base.path = bundle.primaryPath;
+      base.bundleSources = bundle.sources;   // base.path already == bundle.primaryPath
       this._post(base);
     }, () => {
       // Resolution failed entirely — still render the primary so the
@@ -274,27 +290,17 @@ class FlatPPLPanel {
    * a missing dependency is left out (the engine reports it).
    */
   async _resolveBundle(source: any, sourceUri: any) {
-    const primaryPath = sourceUri.path;
-    const sources: Record<string, string> = Object.create(null);
-    const seen = new Set<string>([primaryPath]);
-    const walk = async (importerPath: string, text: string) => {
-      let rels: string[];
-      try { rels = moduleDeps(text); } catch (_) { return; }
-      for (const rel of rels) {
-        const resolved = moduleResolve.resolveModulePath(importerPath, rel);
-        if (resolved in sources || seen.has(resolved)) continue;
-        seen.add(resolved);
-        let depText: string;
-        try {
-          const bytes = await vscode.workspace.fs.readFile(sourceUri.with({ path: resolved }));
-          depText = Buffer.from(bytes).toString('utf8');
-        } catch (_) { continue; }   // missing dep — the engine diagnoses it
-        sources[resolved] = depText;
-        await walk(resolved, depText);
-      }
+    // Host primitive only: read one resolved dependency through the
+    // workspace file system (a resolved path is a URI path component, so it
+    // rides `sourceUri.with({ path })` to keep scheme + authority — works
+    // under remote / WSL too). The shared engine walk (`resolveBundle`)
+    // owns the moduleDeps + resolveModulePath + dedupe + tolerate-missing
+    // structure, identical to the web host's.
+    const readSource = async (resolved: string) => {
+      const bytes = await vscode.workspace.fs.readFile(sourceUri.with({ path: resolved }));
+      return Buffer.from(bytes).toString('utf8');
     };
-    await walk(primaryPath, source);
-    return { sources, primaryPath };
+    return resolveBundle(sourceUri.path, source, readSource);
   }
 
   /**

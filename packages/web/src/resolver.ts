@@ -78,37 +78,23 @@
    */
   async function resolveBundle(primaryPath: any) {
     const { source: primarySource, url: primaryUrl } = await resolveSource(primaryPath);
-    const sources = Object.create(null);
-    // Walk the dependency tree breadth/depth-first, deduplicating by
-    // resolved path and guarding against cycles. The engine handles a
-    // cyclic *graph* gracefully; here we just avoid re-fetching.
-    await resolveDeps(primaryPath, primarySource, sources, new Set([primaryPath]));
+    const FE = globalScope.FlatPPLEngine;
+    let sources = Object.create(null);
+    if (FE && FE.resolveBundle) {
+      // Host primitive only: resolve one source by path through the three-tier
+      // order (ephemeral → user store → network fetch); a missing/broken dep
+      // returns null and is left out (the engine reports it at the call). The
+      // shared engine walk (FE.resolveBundle) owns the moduleDeps +
+      // resolveModulePath + dedupe + cycle-safety, identical to the VS Code
+      // host's — neither re-implements it.
+      const readSource = async (resolved: any) => {
+        try { return (await resolveSource(resolved)).source; }
+        catch (_) { return null; }
+      };
+      ({ sources } = await FE.resolveBundle(primaryPath, primarySource, readSource));
+    }
     return { primaryPath: primaryPath, primaryUrl: primaryUrl,
       primarySource: primarySource, sources: sources };
-  }
-
-  // Recursively resolve the `load_module` dependencies of one module.
-  async function resolveDeps(importerPath: any, importerSource: any,
-    sources: any, seen: Set<any>) {
-    const FE = globalScope.FlatPPLEngine;
-    if (!FE || !FE.moduleDeps || !FE.moduleResolve) return; // engine not loaded yet
-    let rels;
-    try { rels = FE.moduleDeps(importerSource); } catch (_) { return; }
-    for (const rel of rels) {
-      const resolved = FE.moduleResolve.resolveModulePath(importerPath, rel);
-      if (resolved in sources || seen.has(resolved)) continue;
-      seen.add(resolved);
-      let depSource;
-      try {
-        depSource = (await resolveSource(resolved)).source;
-      } catch (_) {
-        // Missing/broken dependency: leave it out — the engine reports
-        // the precise "module source not found" diagnostic at the call.
-        continue;
-      }
-      sources[resolved] = depSource;
-      await resolveDeps(resolved, depSource, sources, seen);
-    }
   }
 
   /**

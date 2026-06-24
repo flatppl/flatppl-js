@@ -209,6 +209,49 @@ function moduleDeps(source: string, opts?: any): string[] {
   return out;
 }
 
+// Host-agnostic transitive `load_module` bundle walker (spec §04 Module
+// composition). The web gallery and the VS Code extension share THIS one
+// walk — `moduleDeps` to discover deps, `resolveModulePath` to key each by
+// its resolved path, dedupe by resolved path, tolerate a missing dep — and
+// supply ONLY their own async `readSource(resolvedPath)` primitive (web's
+// three-tier fetch vs VS Code's `workspace.fs`). Owning the structure here
+// is what stops the two host resolvers from drifting apart (the drift caused
+// the cross-module path bugs: a leaf dep that sent no path, a dep URI that
+// collapsed to the filesystem root).
+//
+// `readSource(resolvedPath)` resolves to the dependency's text, or returns
+// null / rejects for a missing dep — left out of the bundle, after which the
+// engine emits the precise "module source not found" diagnostic at the call.
+//
+// Returns `{ primaryPath, primarySource, sources }`; `sources` maps each
+// RESOLVED dependency path to its text — the canonical key `processSource`'s
+// bundle compiler expects, in the SAME path convention the host passes as
+// `primaryPath` (gallery-root-relative for web, URI path for VS Code).
+async function resolveBundle(
+  primaryPath: string,
+  primarySource: string,
+  readSource: (resolvedPath: string) => Promise<string | null | undefined>,
+): Promise<{ primaryPath: string; primarySource: string; sources: Record<string, string> }> {
+  const sources: Record<string, string> = Object.create(null);
+  const seen = new Set<string>([primaryPath]);
+  async function walk(importerPath: string, text: string): Promise<void> {
+    let rels: string[];
+    try { rels = moduleDeps(text); } catch (_) { return; }
+    for (const rel of rels) {
+      const resolved = resolveModulePath(importerPath, rel);
+      if (resolved in sources || seen.has(resolved)) continue;
+      seen.add(resolved);
+      let depText: string | null | undefined;
+      try { depText = await readSource(resolved); } catch (_) { depText = null; }
+      if (depText == null) continue;   // missing dep — engine diagnoses it at the call
+      sources[resolved] = depText;
+      await walk(resolved, depText);
+    }
+  }
+  await walk(primaryPath, primarySource);
+  return { primaryPath, primarySource, sources };
+}
+
 // Pre-scan an AST for `load_module("path", …)` calls (spec §04). A
 // `load_module` result is a module reference, not a value (it cannot be
 // passed to functions or stored), so in practice it appears only as a
@@ -259,8 +302,10 @@ module.exports = {
   // High-level
   processSource,
   // Multi-file host helpers (spec §04): dependency discovery + path
-  // resolution for the host's bundle pre-fetch (web fetch / vscode fs).
+  // resolution + the shared transitive bundle walk for the host's pre-fetch
+  // (web fetch / vscode fs supply only the readSource primitive).
   moduleDeps,
+  resolveBundle,
   moduleResolve: require('./module-resolve.ts'),
   variants,
   // Components
