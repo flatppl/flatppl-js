@@ -256,6 +256,15 @@
       "expect": {
         "density:Binomial-grid@p0.7": -85.69372710973786
       }
+    },
+    {
+      "file": "superpose-iid-mixture.flatppl",
+      "oracle": "sum_x logpdf(MixtureModel([Normal(0,1),Normal(3,1)],[0.5,0.5]), x) over [1,0,2], julia flatppl-misc/julia-oracle, 2026-06-25",
+      "density": [
+        { "name": "L@f=0.5", "score": "__score__ = logdensityof(L, record(f = 0.5))" }
+      ],
+      "samplemean": [],
+      "expect": { "density:L@f=0.5": -5.422382840479756 }
     }
   ]
 }

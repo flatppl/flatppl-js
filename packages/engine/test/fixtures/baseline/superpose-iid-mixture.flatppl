@@ -1,0 +1,4 @@
+f = elementof(unitinterval)
+mix = superpose(weighted(f, Normal(mu = 0.0, sigma = 1.0)), weighted(1.0 - f, Normal(mu = 3.0, sigma = 1.0)))
+obs = [1.0, 0.0, 2.0]
+L = likelihoodof(iid(mix, lengthof(obs)), obs)
