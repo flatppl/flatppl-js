@@ -22,6 +22,19 @@ test('joint_likelihood: plottable signature with unioned axes', () => {
   assert.deepEqual(orchestrator.distributeAxes(sig).map((a: any) => a.key), ['n[1]', 'n[2]']);
 });
 
+test('joint_likelihood: signature satisfies buildPlotPlan\'s callable-branch gate', () => {
+  // buildPlotPlan (viewer plot-plan.ts) rejects a likelihood binding unless its
+  // signature has a body OR terms AND ≥1 axis. A joint signature has NO `body`
+  // (it carries `terms`), so the gate MUST accept `terms` — regressing the
+  // signature to drop `terms`, or the gate to require `body`, makes the joint
+  // unplottable ("Not plottable"). This pins the engine-side half of that gate.
+  const proc = processSource(SRC);
+  const built = orchestrator.buildDerivations(proc.bindings);
+  const sig = orchestrator.signatureOf('J', built.bindings);
+  assert.ok(sig && (sig.body || sig.terms), 'joint sig must satisfy the (body || terms) gate');
+  assert.ok(orchestrator.distributeAxes(sig).length > 0, 'joint sig must have ≥1 sweep axis');
+});
+
 test('joint_likelihood: term-sum equals the joint logdensity (oracle)', async () => {
   // The engine's logdensityof(J, θ) is the independent oracle for the per-term-sum design.
   // Both must agree to 1e-9.
