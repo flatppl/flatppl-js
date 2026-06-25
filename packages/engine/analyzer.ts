@@ -121,6 +121,7 @@ function classifyStatement(valueNode: any) {
       // consumers test via the function-like predicate, not by tag.
       case 'fchain': return 'fchain';
       case 'likelihoodof': return 'likelihood';
+      case 'joint_likelihood': return 'likelihood';
       case 'bayesupdate': return 'bayesupdate';
       case 'load_module': return 'module';
       case 'standard_module': return 'module';
