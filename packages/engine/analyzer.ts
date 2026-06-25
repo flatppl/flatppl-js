@@ -781,8 +781,8 @@ function validateSpecialOperation(valueNode: any) {
       //   cartprod(name1 = S1, name2 = S2, ...)  — named (labels each axis)
       // Mixed is rejected. cartprod is a FIELD_FORM in lower.ts so the
       // named form lowers with `fields: [{name, value}, ...]`.
-      if (args.length < 2) {
-        diags.push({ severity: 'error', message: `cartprod() requires at least two arguments`, loc: valueNode.loc });
+      if (args.length < 1) {
+        diags.push({ severity: 'error', message: `cartprod() requires at least one argument`, loc: valueNode.loc });
         break;
       }
       const allKw  = args.every((a: any) => a.type === 'KeywordArg');

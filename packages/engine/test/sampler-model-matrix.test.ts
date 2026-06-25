@@ -26,7 +26,12 @@ const BACKENDS = ['is', 'mh', 'emcee', 'amis', 'smc', 'elliptical-slice-sampler'
 const FIX = path.join(__dirname, 'fixtures/baseline');
 const fixtureModels = fs.readdirSync(FIX)
   .filter((f: string) => f.endsWith('.flatppl'))
-  .map((f: string) => ({ name: f.replace('.flatppl', ''), src: fs.readFileSync(path.join(FIX, f), 'utf8') }));
+  .map((f: string) => ({ name: f.replace('.flatppl', ''), src: fs.readFileSync(path.join(FIX, f), 'utf8') }))
+  // This matrix scores `posterior` per backend, so only fixtures that DECLARE
+  // a posterior belong here. A density-only baseline fixture (e.g. an iid
+  // likelihood scored at a fixed point) has no posterior to materialise —
+  // skip it rather than fail the whole cross-product on a missing binding.
+  .filter((m: { src: string }) => /\bposterior\b/.test(m.src));
 
 // Inline shape-coverage models (past regression shapes not in the fixture set).
 const inlineModels = [

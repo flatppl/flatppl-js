@@ -2061,6 +2061,25 @@ function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, a
   return rest0;
 }
 
+// Minimal select-shaped node used by walkSuperpose to reuse the walkSelect path.
+interface SuperposeAsSelect { branches: IRNode[]; logweights: null }
+
+function walkSuperpose(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  // superpose(M1, M2, ...) is measure addition (spec §06): density =
+  // Σ_k density(M_k, x). The HS3 mixture lowering wraps each component in
+  // weighted(c_k, M_k), so each component's density already carries log c_k
+  // (walkWeighted); logsumexp across components yields logsumexp_k(log c_k +
+  // logdensity(M_k, x)) — the mixture density. Identical to walkSelect's
+  // logweights:null marginalising path (each component self-carries its
+  // weight). Named superpose bindings are canonicalised to `select` by
+  // _expandByName; this arm is the path the DUMB WORKER takes for an inline
+  // superpose inside an iid-likelihood body (which never runs _expandByName).
+  const asSelect: SuperposeAsSelect = { branches: ir.args as IRNode[], logweights: null };
+  return walkSelect(
+    asSelect as unknown as IRNode,
+    value, refArrays, N, opts, acc, baseEnv, overlay);
+}
+
 const OP_HANDLERS = {
   weighted:    walkWeighted,
   logweighted: walkLogWeighted,
@@ -2074,6 +2093,7 @@ const OP_HANDLERS = {
   pushfwd:     walkPushfwd,
   mcmarginal:  walkMcMarginal,
   select:      walkSelect,
+  superpose:   walkSuperpose,
   broadcast:   walkBroadcast,
   // Multivariate leaves all route through the generic walker that
   // dispatches into `density-prims.builtinLogdensityof`. Per-kernel

@@ -172,6 +172,17 @@ test('analyzer: joint/jointchain/kchain reject mixed positional+keyword', () => 
   }
 });
 
+test('analyzer: single-axis cartprod (named) is valid', () => {
+  // A 1-field cartprod is a valid (degenerate) record set (spec §03); the
+  // converter emits `cartprod(x = interval(...))` for a 1-axis named range.
+  const { diagnostics } = process(`
+x = elementof(reals)
+signal = cartprod(x = interval(-3.0, 3.0))
+`);
+  assert.ok(!diagnostics.some((d: any) => /cartprod\(\)/.test(d.message)),
+    'single-axis cartprod must not error');
+});
+
 test('analyzer: joint(x = M) (single-kwarg form) is valid', () => {
   const { diagnostics } = process(`
 a = elementof(reals)
@@ -270,7 +281,9 @@ test('analyzer: disintegrate first arg must be string literal or array of string
 test('analyzer: interval / cartpow / stdsimplex set constructors', () => {
   assert.ok(process(`s = interval(0)\n`).diagnostics.some((d: any) => /takes exactly two/.test(d.message)));
   assert.ok(process(`s = cartpow(reals)\n`).diagnostics.some((d: any) => /takes exactly two/.test(d.message)));
-  assert.ok(process(`s = cartprod(reals)\n`).diagnostics.some((d: any) => /at least two/.test(d.message)));
+  // cartprod is now ≥1 (a 1-field record set is valid, spec §03); only the
+  // empty form errors.
+  assert.ok(process(`s = cartprod()\n`).diagnostics.some((d: any) => /at least one/.test(d.message)));
   assert.ok(process(`s = stdsimplex()\n`).diagnostics.some((d: any) => /takes exactly one/.test(d.message)));
 });
 

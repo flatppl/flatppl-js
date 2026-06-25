@@ -12,44 +12,10 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { processSource, orchestrator, materialiser } = require('../..');
-const { createWorkerHandler } = require('../../worker.ts');
+const { materialiser } = require('../..');
+const { ctxFor } = require('../_ctx-factory.ts');
 
-const SEED = 0xBA5E;
 const TOL = 1e-9; // density (deterministic); sampling stats use 0.05
-
-// Build a materialiser context for a given source text and sample count.
-// Exported so later tasks can reuse the pattern without copying it.
-function ctxFor(src: string, N: number) {
-  const proc = processSource(src);
-  const built = orchestrator.buildDerivations(proc.bindings);
-  const w = createWorkerHandler();
-  w.handle({ type: 'init', seed: SEED });
-  const cache = new Map();
-  const ctx: any = {
-    derivations: built.derivations,
-    bindings: built.bindings,
-    fixedValues: built.fixedValues || new Map(),
-    sampleCount: N,
-    rootKey: SEED,
-    rootSeed: SEED,
-    marginalizationCount: 64,
-    moduleRegistry: proc.loweredModule && proc.loweredModule.moduleRegistry,
-    getMeasure: (n: string) => {
-      if (cache.has(n)) return cache.get(n);
-      const m = materialiser.materialiseMeasure(n, ctx);
-      cache.set(n, m);
-      return m;
-    },
-    sendWorker: (m: any) => {
-      const r = w.handle(m);
-      return r && r.type === 'error'
-        ? Promise.reject(new Error(r.message))
-        : Promise.resolve(r);
-    },
-  };
-  return { proc, ctx };
-}
 
 // Score one model spec: returns a flat map of { 'density:<name>': value,
 // 'mean:<binding>': value }. Exported for reuse by later tasks.
@@ -109,3 +75,5 @@ for (const spec of GOLDEN.models) {
 }
 
 module.exports = { scoreModel, ctxFor };
+// Re-export ctxFor so callers that import from this module still work.
+// The canonical source is now test/_ctx-factory.ts.

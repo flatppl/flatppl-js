@@ -521,7 +521,7 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
         // narrow midpoint path) falls through to truncateLogMass.
         const weightFn = weightedBaseWeightFn(inner.args[0]);
         const logZ = weightFn != null
-          ? weightedBaseLogMass(weightFn, bounds, theta)
+          ? weightedBaseLogMass(weightFn, bounds, theta, ctx)
           : (() => {
               const base = asScalarFactor(inner.args[0], theta);
               if (!base) {
@@ -610,13 +610,20 @@ function weightedBaseWeightFn(baseIR: any): { paramName: string; body: any } | n
 // summed directly (not exponentiated): Z = Σ w(x_j) · dx.
 function weightedBaseLogMass(
   weightFn: { paramName: string; body: any }, bounds: [number, number], theta: any,
+  ctx: any,
 ): number {
   const samplerLib = require('./sampler.ts');
   const [lo, hi] = bounds;
   const dx = (hi - lo) / QUAD_POINTS;
   // env binds θ's free params (e.g. `alpha`) plus the variate param to the
   // current quadrature node; evaluateExpr resolves refs by name (ns-agnostic).
+  // The weight `w(x)` may call a standard-module function (e.g. the converter's
+  // `poly.chebyshev(k, t)` for a generic_dist chebychev density). evaluateExpr
+  // resolves `(call target={ns:<alias>,…})` through `env.__moduleRegistry`, so
+  // thread it from the ctx — this is a LOCAL quadrature env, not the worker
+  // session, so pushModuleRegistry (worker setEnv) doesn't cover it.
   const env: Record<string, any> = {};
+  if (ctx && ctx.moduleRegistry) env.__moduleRegistry = ctx.moduleRegistry;
   if (theta && typeof theta === 'object') {
     for (const k in theta) env[k] = theta[k];
   }
