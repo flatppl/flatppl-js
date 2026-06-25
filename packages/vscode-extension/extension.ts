@@ -30,6 +30,10 @@ const { prefetchDependencies } = require('./src/dependencyPrefetch');
 // for the flatppl-rust LSP, which resolves URL load_module deps but cannot
 // fetch them (the extension is the sole fetcher+truster).
 const { collectUrlSources } = require('./src/lspUrlFeed');
+// Remote (URL) module drill-down: a URL load_module opens as a read-only
+// `flatppl-remote:` virtual document whose content is served from the on-disk
+// cache (the content provider registered in activate).
+const { REMOTE_SCHEME, urlFromRemoteUri } = require('./src/remoteModule');
 const { FlatPPLPanel } = require('./src/visualPanel');
 const { createLspManager } = require('./src/lspClient');
 const { registerInferenceLens } = require('./src/inferenceLens');
@@ -323,6 +327,23 @@ function activate(context: any) {
   // the Activate command's `!flatppl.embeddedActive` palette gate is
   // correct before anything is armed.
   vscode.commands.executeCommand('setContext', 'flatppl.embeddedActive', false);
+
+  // Remote (URL) module content provider (spec §04 #sec:url-cache): drilling a
+  // URL load_module in the DAG opens a read-only `flatppl-remote:` virtual doc
+  // (visualPanel) whose content is served here from the on-disk cache the
+  // visualizer already fetched to render the parent. The extension stays the
+  // sole fetcher+truster — a cache miss falls through to a one-time trust
+  // prompt (rare: the dep was fetched when the loader DAG rendered).
+  const remoteModuleProvider = {
+    provideTextDocumentContent(uri: any) {
+      const url = urlFromRemoteUri(uri);
+      return urlCache.readText(url, { approve: (u: any) => approveUrl(u) })
+        .catch((e: any) => '# Could not load ' + url + '\n# ' + (e && (e.message || e)));
+    },
+  };
+  context.subscriptions.push(
+    vscode.workspace.registerTextDocumentContentProvider(
+      REMOTE_SCHEME, remoteModuleProvider));
 
   // --- LSP URL-source feed (spec §04 #sec:url-cache) ---
   // The flatppl-rust LSP resolves URL load_module deps but never fetches them

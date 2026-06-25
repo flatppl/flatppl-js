@@ -11,12 +11,25 @@ const { isValidBindingName, variants, moduleDeps, resolveBundle } = require('../
 // load_module sources into the shared on-disk cache. Vendored separately — it
 // is Node-only and deliberately NOT part of the browser engine bundle.
 const urlCache = require('../lib/url-cache.cjs');
+// Remote (URL) module drill-down (spec §04 #sec:url-cache): the vscode-free
+// scheme + URL<->uri-path derivation. A URL load_module opens as a read-only
+// virtual document under the flatppl-remote: scheme; enginePathOf yields the
+// URL (not the virtual uri's path) so relative deps still resolve against it.
+const { REMOTE_SCHEME, enginePathOf } = require('./remoteModule');
 
 /** There is one canonical FlatPPL surface syntax (flatppl-design
     cc81e4b removed FlatPPY/FlatPPJ). Retained as a function so the
     single call sites stay stable. */
 function variantIdFromUri(_uri: any) {
   return 'flatppl';
+}
+
+/** A read-only virtual-document uri for a remote (URL) module: the tab shows
+ *  the URL's basename, and the original URL rides the `query` so the content
+ *  provider (extension.ts) + enginePathOf recover it. Content is served from
+ *  the on-disk cache. */
+function remoteModuleUri(url: any) {
+  return vscode.Uri.parse(String(url)).with({ scheme: REMOTE_SCHEME, query: String(url) });
 }
 
 class FlatPPLPanel {
@@ -33,6 +46,7 @@ class FlatPPLPanel {
   _navUri: any;
   _navBaseLine: any;
   _readOnly: any;
+  _remote: any;
   _webviewReady: any;
   _pendingMessages: any;
 
@@ -118,6 +132,26 @@ class FlatPPLPanel {
       // module path (URI path component); resolve it against the current
       // document's URI to keep the scheme/authority.
       if (msg.type === 'openModule' && msg.path && this._sourceUri) {
+        // A remote (URL) dependency (spec §04 #sec:url-cache) can't be opened as
+        // a file — open it as a READ-ONLY virtual document showing the URL,
+        // served from the on-disk cache (the flatppl-remote content provider).
+        // The URL is the engine resolution path (enginePathOf via the virtual
+        // uri), so a deeper drill into ITS relative deps still resolves against
+        // the URL rather than collapsing to a bare/local path.
+        if (urlCache.isUrl(msg.path)) {
+          const virtUri = remoteModuleUri(msg.path);
+          vscode.window.showTextDocument(virtUri, {
+            viewColumn: vscode.ViewColumn.One, preserveFocus: false,
+          }).then((editor: any) => {
+            this.updateSource(editor.document.getText(), msg.member || null,
+              virtUri, false, { remote: true });
+          }, (err: any) => {
+            vscode.window.showErrorMessage(
+              'FlatPPL: could not open remote module \'' + msg.path + '\': '
+              + (err && err.message || err));
+          });
+          return;
+        }
         // `msg.path` is the engine's RESOLVED module path (spec §04) — an
         // absolute URI-path under the always-send-path contract, so it rides
         // the current source's scheme + authority (works under remote / WSL).
@@ -156,10 +190,12 @@ class FlatPPLPanel {
       // and can miss the change when the webview has focus, so
       // relying on it would leave the viewer with stale source.
       if (msg.type === 'editSource' && this._readOnly) {
-        vscode.window.showInformationMessage(
-          'This FlatPPL DAG is a read-only snapshot of an embedded model — '
-          + 'edit the FlatPPL inside the host Python/Julia file directly, '
-          + 'then re-run "FlatPPL: Visualize Embedded Model".');
+        vscode.window.showInformationMessage(this._remote
+          ? 'This is a read-only cached copy of a remote FlatPPL module — '
+            + 'edits are not written back. Edit it at its source.'
+          : 'This FlatPPL DAG is a read-only snapshot of an embedded model — '
+            + 'edit the FlatPPL inside the host Python/Julia file directly, '
+            + 'then re-run "FlatPPL: Visualize Embedded Model".');
         return;
       }
       if (msg.type === 'editSource' && this._sourceUri != null) {
@@ -235,6 +271,7 @@ class FlatPPLPanel {
       // the snapshot read-only (write-back stays refused) and the
       // reveal-only host nav origin.
       this._readOnly = true;
+      this._remote = false;
       this._sourceUri = null;
       this._navUri = opts.navOrigin ? opts.navOrigin.uri : null;
       this._navBaseLine = opts.navOrigin ? opts.navOrigin.baseLine : 0;
@@ -253,7 +290,11 @@ class FlatPPLPanel {
       });
       return;
     }
-    this._readOnly = false;             // writable host-document path
+    // A remote (URL) module is read-only cached content; a native model is
+    // writable. `opts.remote` distinguishes them — the editSource refusal and
+    // the read-only DAG both read these flags.
+    this._readOnly = !!(opts && opts.remote);
+    this._remote = !!(opts && opts.remote);
     this._navUri = null;                // not an embedded snapshot
     if (sourceUri) this._sourceUri = sourceUri;
     if (targetName) this._panel.title = `FlatPPL: ${targetName}`;
@@ -271,8 +312,10 @@ class FlatPPLPanel {
       // module registry resolve deps against an absolute importer path, so a
       // drill's `openModule` URI stays absolute (never collapses to root).
       // Explicit (never undefined): the viewer's module context is sticky, so
-      // a leaf/path-less post must CLEAR it. A native model always has a uri.
-      path: this._sourceUri ? this._sourceUri.path : null,
+      // a leaf/path-less post must CLEAR it. enginePathOf yields the URL for a
+      // remote (virtual) module — relative deps resolve against it, not the
+      // virtual uri's path (which drops scheme + authority).
+      path: enginePathOf(this._sourceUri),
     };
     // Multi-file (spec §04 load_module): if the source loads other modules,
     // pre-fetch their `.flatppl` sources via the workspace file system and
@@ -326,7 +369,7 @@ class FlatPPLPanel {
       const bytes = await vscode.workspace.fs.readFile(sourceUri.with({ path: resolved }));
       return Buffer.from(bytes).toString('utf8');
     };
-    return resolveBundle(sourceUri.path, source, readSource);
+    return resolveBundle(enginePathOf(sourceUri), source, readSource);
   }
 
   /**
@@ -387,10 +430,11 @@ class FlatPPLPanel {
       source,
       pushHistory: !!pushHistory,
       variant: variantIdFromUri(this._sourceUri),
-      // Carry the module's path (null when embedded) so the engine resolves the
-      // module's load_module deps against it — the registry powers drill-down
-      // from the whole-module view. Sticky viewer context: never omit.
-      path: this._sourceUri ? this._sourceUri.path : null,
+      // Carry the module's path (null when embedded; the URL for a remote
+      // module) so the engine resolves load_module deps against it — the
+      // registry powers drill-down from the whole-module view. Sticky viewer
+      // context: never omit.
+      path: enginePathOf(this._sourceUri),
     });
   }
 

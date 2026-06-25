@@ -297,6 +297,10 @@ const EXTENSION_TS_SOURCES = [
   // `flatppl/urlSources` payload. No vscode import (host deps injected), so
   // type-stripping is enough and the unit tests require it directly.
   { in: 'src/lspUrlFeed.ts',    out: 'src/lspUrlFeed.js' },
+  // Remote-module URI helpers for VS Code cross-URL drill-down (the vscode-free
+  // half: scheme + URL<->uri derivation). No vscode import, so type-stripping is
+  // enough and the unit tests require it directly.
+  { in: 'src/remoteModule.ts',  out: 'src/remoteModule.js' },
   // NOTE: src/lspClient.ts is NOT type-stripped here — it imports the
   // `vscode-languageclient` npm package, which must be BUNDLED into the
   // output (the packaged .vsix ships no node_modules; vsce runs with
