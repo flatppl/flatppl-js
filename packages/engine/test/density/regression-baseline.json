@@ -265,6 +265,19 @@
       ],
       "samplemean": [],
       "expect": { "density:L@f=0.5": -5.422382840479756 }
+    },
+    {
+      "file": "chebychev-iid.flatppl",
+      "oracle": "analytic; normalize(truncate(weighted(x -> poly.chebyshev(1,x), Lebesgue), [1,5])): poly.chebyshev(1,x)=T_1(x)=x; Z=∫₁⁵ x dx=12; pdf(x)=x/12; iid log-score over [2,3,4]=log(2/12)+log(3/12)+log(4/12)=-4.276666119016055 (engine value -4.276666119016057 has ~1.8e-15 midpoint-quadrature error)",
+      "density": [
+        {
+          "name": "L@alpha=0.5",
+          "score": "__score__ = logdensityof(L, 0.5)",
+          "oracle_note": "exercises the support-restricted normalizer quadrature (weightedBaseLogMass) that resolves poly.chebyshev through the threaded module registry; closed-form -4.276666119016055, independent of alpha since cb does not depend on alpha"
+        }
+      ],
+      "samplemean": [],
+      "expect": { "density:L@alpha=0.5": -4.276666119016057 }
     }
   ]
 }

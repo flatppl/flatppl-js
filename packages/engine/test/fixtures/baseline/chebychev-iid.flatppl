@@ -1,0 +1,7 @@
+poly = standard_module("polynomials", "0.1")
+alpha ~ Normal(0, 1)
+cb = normalize(truncate(weighted(x -> poly.chebyshev(1, x), Lebesgue(reals)), interval(1.0, 5.0)))
+obs ~ iid(cb, 3)
+fk = kernelof(record(obs = obs), alpha = alpha)
+observed_data = [2.0, 3.0, 4.0]
+L = likelihoodof(fk, record(obs = observed_data))
