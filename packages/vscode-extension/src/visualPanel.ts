@@ -15,7 +15,7 @@ const urlCache = require('../lib/url-cache.cjs');
 // scheme + URL<->uri-path derivation. A URL load_module opens as a read-only
 // virtual document under the flatppl-remote: scheme; enginePathOf yields the
 // URL (not the virtual uri's path) so relative deps still resolve against it.
-const { REMOTE_SCHEME, enginePathOf } = require('./remoteModule');
+const { REMOTE_SCHEME, enginePathOf, resolveBaseUri } = require('./remoteModule');
 
 /** There is one canonical FlatPPL surface syntax (flatppl-design
     cc81e4b removed FlatPPY/FlatPPJ). Retained as a function so the
@@ -47,6 +47,7 @@ class FlatPPLPanel {
   _navBaseLine: any;
   _readOnly: any;
   _remote: any;
+  _localBaseUri: any;
   _webviewReady: any;
   _pendingMessages: any;
 
@@ -158,7 +159,12 @@ class FlatPPLPanel {
         // Defensive: a non-absolute path (a contract gap) resolves against the
         // current source's directory instead of collapsing to the FS root
         // (the old `file:///bayesian_inference_common.flatppl` failure).
-        const cur = this._sourceUri;
+        // Back-navigation OUT of a remote (flatppl-remote) virtual doc to a
+        // LOCAL module resolves against the last LOCAL source uri, not the
+        // remote one — the remote uri's scheme/authority/query would otherwise
+        // leak into the file uri (`flatppl-remote://<host>/<localpath>`) and the
+        // open would fail, so the back-button never returned.
+        const cur = resolveBaseUri(this._sourceUri, this._localBaseUri);
         const absPath = String(msg.path).charAt(0) === '/'
           ? msg.path
           : cur.path.replace(/\/[^/]*$/, '') + '/' + msg.path;
@@ -297,6 +303,10 @@ class FlatPPLPanel {
     this._remote = !!(opts && opts.remote);
     this._navUri = null;                // not an embedded snapshot
     if (sourceUri) this._sourceUri = sourceUri;
+    // Remember the last LOCAL source uri so a back-navigation out of a remote
+    // (flatppl-remote) module can rebuild a proper file uri from its scheme +
+    // authority, rather than one derived from the remote uri.
+    if (sourceUri && sourceUri.scheme !== REMOTE_SCHEME) this._localBaseUri = sourceUri;
     if (targetName) this._panel.title = `FlatPPL: ${targetName}`;
     const base: any = {
       type: 'sourceUpdate',
@@ -423,6 +433,7 @@ class FlatPPLPanel {
       this._navUri = null;
       this._navBaseLine = 0;
       if (sourceUri) this._sourceUri = sourceUri;
+      if (sourceUri && sourceUri.scheme !== REMOTE_SCHEME) this._localBaseUri = sourceUri;
     }
     this._panel.title = 'FlatPPL: module';
     this._post({

@@ -12,7 +12,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf } = require('../src/remoteModule.js');
+const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri } = require('../src/remoteModule.js');
 
 const URL = 'https://raw.githubusercontent.com/flatppl/flatppl-examples/refs/heads/main/examples/bayesian_inference_common.flatppl';
 const remoteUri = { scheme: REMOTE_SCHEME, path: '/flatppl/.../bayesian_inference_common.flatppl', query: URL };
@@ -38,4 +38,26 @@ test('enginePathOf returns the path for an ordinary (file) uri', () => {
 
 test('enginePathOf tolerates a null uri', () => {
   assert.equal(enginePathOf(null), null);
+});
+
+// resolveBaseUri picks the uri to resolve a cross-module back-target against.
+// Drilling OUT of a remote (flatppl-remote) virtual doc back to a LOCAL module
+// must resolve against the last LOCAL source uri — resolving against the remote
+// uri leaks its scheme/authority/query into the file uri and the open fails (the
+// back-button regression). A local current uri is used as-is.
+
+const fileUri = { scheme: 'file', path: '/home/u/main.flatppl' };
+const remoteUri2 = { scheme: REMOTE_SCHEME, path: '/ex/common.flatppl', query: 'https://h/ex/common.flatppl' };
+
+test('resolveBaseUri uses the local base when the current module is remote', () => {
+  assert.equal(resolveBaseUri(remoteUri2, fileUri), fileUri);
+});
+
+test('resolveBaseUri keeps the current uri when it is already local', () => {
+  const other = { scheme: 'file', path: '/home/u/dep.flatppl' };
+  assert.equal(resolveBaseUri(fileUri, other), fileUri);
+});
+
+test('resolveBaseUri falls back to the (remote) current uri when no local base is known', () => {
+  assert.equal(resolveBaseUri(remoteUri2, undefined), remoteUri2);
 });

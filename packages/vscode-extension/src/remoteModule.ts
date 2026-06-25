@@ -33,4 +33,16 @@ function enginePathOf(uri: any): string | null {
   return uri.scheme === REMOTE_SCHEME ? urlFromRemoteUri(uri) : uri.path;
 }
 
-module.exports = { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf };
+/** The uri to resolve a cross-module back-target against. Drilling OUT of a
+ *  remote (flatppl-remote) virtual doc back to a LOCAL module must resolve
+ *  against the last LOCAL source uri (`localBaseUri`) — resolving against the
+ *  remote uri would leak its scheme/authority/query into the file uri and the
+ *  open would fail (the back-button never returns). A local current uri is used
+ *  as-is; with no known local base, the current uri is the only fallback. */
+function resolveBaseUri(currentUri: any, localBaseUri: any): any {
+  return (currentUri && currentUri.scheme === REMOTE_SCHEME && localBaseUri)
+    ? localBaseUri
+    : currentUri;
+}
+
+module.exports = { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri };
