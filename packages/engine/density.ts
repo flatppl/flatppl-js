@@ -2061,6 +2061,9 @@ function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, a
   return rest0;
 }
 
+// Minimal select-shaped node used by walkSuperpose to reuse the walkSelect path.
+interface SuperposeAsSelect { branches: IRNode[]; logweights: null }
+
 function walkSuperpose(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // superpose(M1, M2, ...) is measure addition (spec §06): density =
   // Σ_k density(M_k, x). The HS3 mixture lowering wraps each component in
@@ -2071,8 +2074,9 @@ function walkSuperpose(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   // weight). Named superpose bindings are canonicalised to `select` by
   // _expandByName; this arm is the path the DUMB WORKER takes for an inline
   // superpose inside an iid-likelihood body (which never runs _expandByName).
+  const asSelect: SuperposeAsSelect = { branches: ir.args as IRNode[], logweights: null };
   return walkSelect(
-    { branches: ir.args, logweights: null } as any,
+    asSelect as unknown as IRNode,
     value, refArrays, N, opts, acc, baseEnv, overlay);
 }
 

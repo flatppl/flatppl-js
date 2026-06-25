@@ -15,41 +15,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource, orchestrator, materialiser } = require('..');
-const { createWorkerHandler } = require('../worker.ts');
-
-const SEED = 0xBA5E;
-
-function ctxFor(src: string, N: number) {
-  const proc = processSource(src);
-  const built = orchestrator.buildDerivations(proc.bindings);
-  const w = createWorkerHandler();
-  w.handle({ type: 'init', seed: SEED });
-  const cache = new Map();
-  const ctx: any = {
-    derivations: built.derivations,
-    bindings: built.bindings,
-    fixedValues: built.fixedValues || new Map(),
-    sampleCount: N,
-    rootKey: SEED,
-    rootSeed: SEED,
-    marginalizationCount: 64,
-    moduleRegistry: proc.loweredModule && proc.loweredModule.moduleRegistry,
-    getMeasure: (n: string) => {
-      if (cache.has(n)) return cache.get(n);
-      const m = materialiser.materialiseMeasure(n, ctx);
-      cache.set(n, m);
-      return m;
-    },
-    sendWorker: (m: any) => {
-      const r = w.handle(m);
-      return r && r.type === 'error'
-        ? Promise.reject(new Error(r.message))
-        : Promise.resolve(r);
-    },
-  };
-  return ctx;
-}
+const { ctxFor } = require('./_ctx-factory.ts');
 
 // Model mirrors the converter's generic_dist chebychev shape: a
 // normalize(truncate(weighted(x -> poly.chebyshev(k, x), Lebesgue(reals)), S))
@@ -70,16 +36,15 @@ ld = logdensityof(L, 0.5)
 `;
 
 test('module registry reaches the truncate-normalizer quadrature env (poly.chebyshev resolves)', async () => {
-  const ctx = ctxFor(SRC, 1);
+  const { ctx } = ctxFor(SRC, 1);
   assert.equal(ctx.derivations['ld'].kind, 'likelihood_density',
     'ld should be a likelihood_density derivation');
   const m = await ctx.getMeasure('ld');
   const s: Float64Array | null = m.samples ?? (m.value && m.value.data) ?? null;
-  assert.ok(s && s.length > 0 && Number.isFinite(s[0]),
-    `chebyshev normalize(truncate(...)) likelihood did not resolve to a finite value; got: ${s}`);
-  const v = (s as Float64Array)[0];
   // Closed-form: T_1(x)=x, Z=∫₁⁵ x dx=12, ld = Σ log(x_i/12) over [2,3,4].
   const oracle = Math.log(2 / 12) + Math.log(3 / 12) + Math.log(4 / 12);
-  assert.ok(Math.abs(v - oracle) < 1e-6,
-    `ld ${v} should match the closed-form oracle ${oracle} (Δ ${Math.abs(v - oracle)})`);
+  assert.ok(
+    s !== null && s.length > 0 && Number.isFinite(s[0]) && Math.abs(s[0] - oracle) < 1e-6,
+    `ld should equal closed-form oracle ${oracle}; got: ${s && s[0]} (Δ ${s ? Math.abs(s[0] - oracle) : 'n/a'})`
+  );
 });
