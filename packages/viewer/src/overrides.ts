@@ -82,7 +82,7 @@ export function baseValuesFor(ctx: Ctx, plan: any) {
   // with the "Find maximum" result instead of sitting at a conditional argmax
   // for some unrelated slope. Falls through to the prior-draw auto until the
   // background optimiser (populateModeCache) is ready.
-  if (plan.presetName == null && plan.signature && plan.signature.obsIR != null) {
+  if (plan.presetName == null && plan.signature && (plan.signature.obsIR != null || plan.signature.terms)) {
     const e = ctx.modeCenterCache && ctx.modeCenterCache.get(plan.name);
     if (e && e.status === 'ready' && e.values) return e.values;
   }

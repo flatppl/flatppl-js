@@ -360,7 +360,7 @@ const MLE_TIMEOUT_MS = 4000;
  */
 export function populateModeCache(ctx: Ctx, plan: any, rerender: () => void): void {
   const sig = plan && plan.signature;
-  if (!sig || sig.obsIR == null) return;            // likelihoods only — see note
+  if (!sig || (sig.obsIR == null && !sig.terms)) return;  // likelihoods: single obsIR, or joint terms
   if (!ctx.modeCenterCache) ctx.modeCenterCache = new Map();
   const name = plan.name;
   if (ctx.modeCenterCache.has(name)) return;        // pending / ready / failed already

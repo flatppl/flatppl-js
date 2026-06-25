@@ -58,7 +58,7 @@ export function buildPresetControl(ctx: Ctx, plan: any, onChange: () => void, tr
   // auto — matching the actual default pivot (overrides.baseValuesFor). There
   // is no separate `auto (MLE)` row: one auto, labelled (MLE) when MLE-backed.
   const mleCache = ctx.modeCenterCache && ctx.modeCenterCache.get(plan.name);
-  const autoIsMle = !!(plan.signature && plan.signature.obsIR != null
+  const autoIsMle = !!(plan.signature && (plan.signature.obsIR != null || plan.signature.terms)
     && mleCache && mleCache.status === 'ready' && mleCache.values);
   entries.push(buildEntry(null, autoIsMle ? mleCache.values : autoValues, true, autoIsMle));
   for (let pi = 0; pi < presets.length; pi++) {
