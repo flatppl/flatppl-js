@@ -208,12 +208,25 @@ export async function computeMaximum(ctx: Ctx, plan: any): Promise<MaxResult> {
       }
     }
   }
-  const irBaked = FlatPPLEngine.orchestrator.substituteBoundaryValues(ir, fixedEnv);
-
-  let observed: any;
-  if (sig.obsIR != null) {
-    observed = FlatPPLEngine.orchestrator.resolveIRToValue(sig.obsIR, dst.bindings, dst.fixedValues);
-  }
+  // Build a per-term list of (irBaked, observed). For a joint_likelihood sig
+  // (sig.terms present) each term's body is lowered and baked independently;
+  // the CLM-lowered `ir` above is NOT used (it was clmNode.body from a single
+  // composite CLM node). For a single likelihood (sig.terms absent) we wrap the
+  // existing `ir` + `sig.obsIR` into a one-element list so evalCloud is uniform.
+  // The shared fixedEnv (non-free boundary values + self-refs) is valid for
+  // every term: baking the full fixedEnv over a term that doesn't reference a
+  // name is a no-op.
+  const evalTerms: Array<{ irBaked: any; observed: any }> = (
+    sig.terms
+      ? (sig.terms as Array<{ body: any; obsIR: any }>)
+      : [{ body: ir, obsIR: sig.obsIR }]
+  ).map((term) => {
+    const tBaked = FlatPPLEngine.orchestrator.substituteBoundaryValues(term.body, fixedEnv);
+    const tObs = term.obsIR != null
+      ? FlatPPLEngine.orchestrator.resolveIRToValue(term.obsIR, dst.bindings, dst.fixedValues)
+      : undefined;
+    return { irBaked: tBaked, observed: tObs };
+  });
 
   // Pivot vectors for array params (held slots that aren't free dims keep these
   // values per atom). Plain JS arrays via valueToPlain.
@@ -252,19 +265,22 @@ export async function computeMaximum(ctx: Ctx, plan: any): Promise<MaxResult> {
         for (let k = 0; k < K; k++) data[k * J + f.slot] = cloud[k][d];
       }
     }
-    // logDensityN in the normal (likelihood) mode: the N-axis indexes the
-    // K candidate PARAMETER points (per-θ params via refArrays), scored
-    // against the shared `observed` — exactly profileN's sweep, generalised
-    // to a cloud. (NOT pointsBatched: that varies the observation instead.)
-    const msg: any = mode === 'function'
-      ? { type: 'evaluateN', ir: irBaked, refArrays, count: K }
-      : { type: 'logDensityN', ir: irBaked, observed, refArrays, count: K };
-    const reply: any = await sendWorker(ctx, msg);
-    const out = reply && reply.samples;
-    const res = new Array(K);
-    for (let k = 0; k < K; k++) {
-      const v = out ? out[k] : NaN;
-      res[k] = Number.isFinite(v) ? v : -Infinity; // out-of-support → worst
+    // Sum log-densities over all terms. For a single likelihood (evalTerms has
+    // one entry) this is identical to the former single logDensityN call.
+    // For a joint_likelihood (multiple terms) the per-atom results are summed;
+    // any term that is out-of-support (non-finite) propagates −Infinity as the
+    // worst-case value, matching the single-term behaviour.
+    const res = new Array(K).fill(0);
+    for (const t of evalTerms) {
+      const msg: any = mode === 'function'
+        ? { type: 'evaluateN', ir: t.irBaked, refArrays, count: K }
+        : { type: 'logDensityN', ir: t.irBaked, observed: t.observed, refArrays, count: K };
+      const reply: any = await sendWorker(ctx, msg);
+      const out = reply && reply.samples;
+      for (let k = 0; k < K; k++) {
+        const v = out ? out[k] : NaN;
+        res[k] += Number.isFinite(v) ? v : -Infinity; // out-of-support → worst
+      }
     }
     return res;
   };
