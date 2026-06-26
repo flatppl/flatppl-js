@@ -436,6 +436,17 @@ function parseSetIR(setIR: any, bindings: any) {
       return { kind: 'interval', lo, hi };
     }
   }
+  // cartpow(base, n): the per-ELEMENT set of an array variate
+  // (`elementof(cartpow(posreals, 2))`). Callers resolving a base/per-slot
+  // set (resolveAxisBaseSet, per-axis range, auto-input defaults) want the
+  // element support, so unwrap to `base` — the array arity is recovered
+  // separately from the input's type/shape. Without this the whole cartpow
+  // falls through to `null` and an array `elementof` silently loses its
+  // element-set restriction (e.g. positivity).
+  if (setIR.kind === 'call' && setIR.op === 'cartpow'
+      && Array.isArray(setIR.args) && setIR.args.length >= 1) {
+    return parseSetIR(setIR.args[0], bindings);
+  }
   return null;
 }
 

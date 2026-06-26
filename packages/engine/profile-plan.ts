@@ -494,6 +494,39 @@ function defaultValueForLeafType(leafType: any): number | boolean {
 }
 
 /**
+ * An in-support representative scalar for a leaf input, given its declared
+ * SET `descriptor` (from `resolveAxisBaseSet`) and static `leafType`. This is
+ * the auto / fallback default for a free input with no materialised prior.
+ *
+ * The default MUST lie inside the declared support. 0 is the natural real
+ * default but is out-of-support for `posreals` — and degenerate as a Poisson /
+ * Gamma rate (density −∞), which silently blanks a profile / likelihood plot
+ * whose held parameter is positivity-constrained (the signature type erases
+ * positivity: `elementof(cartpow(posreals, 2))` lowers to `real[2]`, so the
+ * SET is the only carrier of the constraint). Generalises the existing
+ * integer→count reasoning to the declared support.
+ *
+ *   posreals / nonnegreals / posintegers / nonnegintegers → 1 (positive, valid)
+ *   bounded interval [lo, hi]            → finite midpoint
+ *   half-bounded interval [lo, +∞) / (−∞, hi] → the finite bound
+ *   reals / integers / empirical / unknown → 0   (boolean → false)
+ */
+function representativeValueForSet(descriptor: any, leafType: any): number | boolean {
+  if (leafType && leafType.kind === 'scalar' && leafType.prim === 'boolean') return false;
+  const kind = descriptor && descriptor.kind;
+  if (kind === 'posreals' || kind === 'nonnegreals'
+      || kind === 'posintegers' || kind === 'nonnegintegers') return 1;
+  if (kind === 'interval') {
+    const lo = descriptor.lo, hi = descriptor.hi;
+    const loF = Number.isFinite(lo), hiF = Number.isFinite(hi);
+    if (loF && hiF) return (lo + hi) / 2;
+    if (loF) return lo;
+    if (hiF) return hi;
+  }
+  return 0;
+}
+
+/**
  * Compute per-kwarg "auto" input values for a callable signature.
  *
  * For each kwarg, the returned record entry is:
@@ -528,7 +561,7 @@ function computeAutoInputs(
   fixedValues: any,
   getAtomZero: ((name: string) => any) | null,
 ): Record<string, any> {
-  void bindings; void fixedValues;
+  void fixedValues;
   const out: Record<string, any> = {};
   if (!signature || !Array.isArray(signature.inputs)) return out;
   const seen = new Set<string>();
@@ -540,7 +573,14 @@ function computeAutoInputs(
     const leafType = arrayLen != null && inp.type && inp.type.elem
       ? inp.type.elem
       : inp.type;
-    const leafDef = defaultValueForLeafType(leafType);
+    // Domain-aware leaf default: resolve the input's declared SET and pick an
+    // in-support representative, so a free positivity-constrained input
+    // (`elementof(cartpow(posreals, 2))`) defaults to a valid value rather
+    // than 0 (which is out-of-support for posreals → blanks a likelihood
+    // profile). resolveAxisBaseSet returns the per-element base for cartpow.
+    let baseSet: any = null;
+    try { baseSet = resolveAxisBaseSet(inp.source, bindings); } catch (_) { baseSet = null; }
+    const leafDef = representativeValueForSet(baseSet, leafType);
     let def: any = arrayLen != null
       ? new Array(arrayLen).fill(leafDef)
       : leafDef;
