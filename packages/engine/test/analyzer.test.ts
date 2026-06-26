@@ -36,6 +36,17 @@ g = fn(_ * 2)
   assert.equal(bindings.get('g').type, 'fn');
 });
 
+test('analyzer: joint_likelihood is a likelihood producer', () => {
+  const { bindings } = process(`
+a = elementof(reals)
+m = Normal(mu = a, sigma = 1)
+L1 = likelihoodof(m, 1.0)
+L2 = likelihoodof(m, 2.0)
+J = joint_likelihood(L1, L2)
+`);
+  assert.equal(bindings.get('J').type, 'likelihood');
+});
+
 test('analyzer: classifies likelihood and bayesupdate', () => {
   const { bindings } = process(`
 a = elementof(reals)

@@ -126,24 +126,14 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   // other measure bindings via expandMeasureRefsInIR (the same
   // helper bayesupdate uses). Functions evaluate the body
   // verbatim through evaluateExpr.
-  let ir = sig.body;
-  // Multi-output: extract the sub-IR for the currently-selected
-  // output leaf. For scalar outputs (single leaf, empty path)
-  // this is a no-op pass-through.
-  if (plan.outputs && plan.outputs.length > 1 && plan.outputKey) {
-    let selectedOut: any = null;
-    for (let oj = 0; oj < plan.outputs.length; oj++) {
-      if (plan.outputs[oj].key === plan.outputKey) {
-        selectedOut = plan.outputs[oj];
-        break;
-      }
-    }
-    if (selectedOut) {
-      const extracted = FlatPPLEngine.orchestrator.extractOutputIR(
-        ir, selectedOut.path);
-      if (extracted) ir = extracted;
-    }
-  }
+  //
+  // Joint likelihood: sig.terms holds one {body, obsIR} per term; a
+  // plain likelihoodof has no sig.terms and uses sig.body / sig.obsIR
+  // directly. The profileTerms list normalises both shapes so the
+  // lowering + dispatch loop below is uniform.
+  const rawTerms: Array<{ body: any; obsIR: any }> =
+    sig.terms ? sig.terms : [{ body: sig.body, obsIR: sig.obsIR }];
+
   // PRIMARY (CLM Phase 5b): one canonical lowering for BOTH modes.
   // `lowerMeasure` expands measure refs, applies the MC-marginal form
   // when the body is a generative composite (the transport L), and
@@ -156,6 +146,9 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   // async source lookups land).
   const paramNames = sig.inputs.map(function(inp: any) { return inp.paramName; });
   let isMcForm = false;
+  // Lower each term independently.  For a single-term path (the
+  // historical case) this is a single pass identical to the old code.
+  const loweredTerms: Array<{ ir: any; obsIR: any }> = [];
   {
     const dst = ctx.derivationsState!;
     const lowCtx = {
@@ -167,24 +160,44 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     for (const pn of paramNames) {
       if (pn !== sweepParamName) boundaryNames[pn] = true;
     }
-    let clmNode: any = null;
-    let clmErr: any = null;
-    try {
-      clmNode = FlatPPLEngine.clm.lowerMeasure(ir, lowCtx, {
-        boundaries: boundaryNames, freeInputs: [sweepParamName],
-      });
-    } catch (e) { clmErr = e; }
-    if (!clmNode) {
-      // The legacy inline pipeline is retired (CLM Phase 5b, removed
-      // after interactive gallery verification) — a body the canonical
-      // lowering can't express fails loudly here.
-      showPlotMessage(ctx, 'Profile plot failed: cannot lower <strong>'
-        + esc(plan.name) + '</strong> to a canonical measure'
-        + (clmErr ? ' — ' + esc(clmErr.message || String(clmErr)) : '') + '.');
-      return;
+    for (const term of rawTerms) {
+      let termIr = term.body;
+      // Multi-output: extract the sub-IR for the currently-selected
+      // output leaf.  For scalar outputs (single leaf, empty path)
+      // this is a no-op pass-through.
+      if (plan.outputs && plan.outputs.length > 1 && plan.outputKey) {
+        let selectedOut: any = null;
+        for (let oj = 0; oj < plan.outputs.length; oj++) {
+          if (plan.outputs[oj].key === plan.outputKey) {
+            selectedOut = plan.outputs[oj];
+            break;
+          }
+        }
+        if (selectedOut) {
+          const extracted = FlatPPLEngine.orchestrator.extractOutputIR(
+            termIr, selectedOut.path);
+          if (extracted) termIr = extracted;
+        }
+      }
+      let clmNode: any = null;
+      let clmErr: any = null;
+      try {
+        clmNode = FlatPPLEngine.clm.lowerMeasure(termIr, lowCtx, {
+          boundaries: boundaryNames, freeInputs: [sweepParamName],
+        });
+      } catch (e) { clmErr = e; }
+      if (!clmNode) {
+        // The legacy inline pipeline is retired (CLM Phase 5b, removed
+        // after interactive gallery verification) — a body the canonical
+        // lowering can't express fails loudly here.
+        showPlotMessage(ctx, 'Profile plot failed: cannot lower <strong>'
+          + esc(plan.name) + '</strong> to a canonical measure'
+          + (clmErr ? ' — ' + esc(clmErr.message || String(clmErr)) : '') + '.');
+        return;
+      }
+      if (clmNode.mc) isMcForm = true;
+      loweredTerms.push({ ir: clmNode.body, obsIR: term.obsIR });
     }
-    ir = clmNode.body;
-    isMcForm = !!clmNode.mc;
   }
   const POINT_COUNT = 200;
   showPlotMessage(ctx, 'Profiling…', { cancellable: true, hint: true });
@@ -208,11 +221,19 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   // them via samples[0] of a materialised constant-atom measure
   // collapses array literals to a scalar and breaks every downstream
   // broadcast that consumes them.
-  const { perAtomNames: allSelfRefs } =
-    FlatPPLEngine.materialiser.classifyProfileSelfRefs(
-      ir,
+  // For a joint likelihood, union the stochastic self-refs from all
+  // lowered terms so every random-phase parent across all terms is
+  // pre-materialised into fixedEnv.  For a single-term path this
+  // reduces to the same single call as before.
+  const allSelfRefsSet = new Set<string>();
+  for (const lt of loweredTerms) {
+    const { perAtomNames } = FlatPPLEngine.materialiser.classifyProfileSelfRefs(
+      lt.ir,
       ctx.derivationsState!.bindings,
       ctx.derivationsState!.fixedValues);
+    for (const n of perAtomNames) allSelfRefsSet.add(n);
+  }
+  const allSelfRefs: string[] = Array.from(allSelfRefsSet);
   // CRITICAL: never bake the SWEPT parameter. classifyProfileSelfRefs returns
   // every stochastic self-ref in the body — including the very parameter we are
   // sweeping (a latent like `intercept` has a prior, so it looks random-phase).
@@ -334,36 +355,6 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
         pointCount = Math.min(ihi - ilo + 1, POINT_COUNT);
       }
     }
-    // For likelihood profile plots, resolve the obs IR to a JS
-    // value at sample time. sig.obsIR is set by
-    // signatureOfLikelihood; non-likelihood signatures don't
-    // carry one. Resolution failures (e.g. an observation we
-    // can't materialise) propagate as a clean plot-time error,
-    // same as the bayesupdate path.
-    let observed;
-    if (sig.obsIR != null) {
-      observed = FlatPPLEngine.orchestrator.resolveIRToValue(
-        sig.obsIR, ctx.derivationsState!.bindings, ctx.derivationsState!.fixedValues);
-    }
-    // Bake fixedEnv into the IR via substituteLocals so arrays land
-    // as `vector(lit,…)` and the per-slot sweep's sweep-ref is in
-    // place (substituteLocals walks the IR once; it ignores
-    // %local refs not in env, so the scalar-sweep variable's ref
-    // survives untouched). After substitution the only remaining
-    // %local refs in the IR are: the sweep variable, and any
-    // params for which we don't have a fixedEnv value (shouldn't
-    // happen — caller is supposed to populate every non-sweep
-    // input). Pass an empty fixedEnv to profileN to avoid double
-    // resolution.
-    // Bake the boundary values into the body. substituteBoundaryValues
-    // is the spec-shaped successor of substituteLocals: boundary refs
-    // come in BOTH namespaces (`%local` placeholder formals, plain
-    // `self` refs for identifier-form cuts — spec §11), matched by
-    // NAME, scope-aware (a nested reified callable that re-declares a
-    // name keeps its own inputs). The swept param has no fixedEnv
-    // entry (scalar sweep) so its ref survives for profileN; per-slot
-    // sweep bakes the array WITH the embedded sweep-ref node.
-    const irForWorker = FlatPPLEngine.orchestrator.substituteBoundaryValues(ir, fixedEnv);
     // For per-slot sweep on an array input the sweep variable lives
     // INSIDE the vector(...) IR substituteLocals built — its name is
     // SWEEP_VAR (the synthetic local injected above), not the array
@@ -385,11 +376,14 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     // resolves `(ref self name)` via env[name], exactly as the bulk push
     // did. Random-phase parents are unaffected (they ride the fixedEnv /
     // substituteLocals path, never the bulk push).
+    // For joint likelihoods, union the fixed self-refs from all terms.
     const profileFixedEnv: Record<string, any> = {};
     const fvMap = ctx.derivationsState && ctx.derivationsState.fixedValues;
     if (fvMap) {
-      for (const n of FlatPPLEngine.orchestrator.collectSelfRefs(ir)) {
-        if (fvMap.has(n)) profileFixedEnv[n] = fvMap.get(n);
+      for (const lt of loweredTerms) {
+        for (const n of FlatPPLEngine.orchestrator.collectSelfRefs(lt.ir)) {
+          if (fvMap.has(n)) profileFixedEnv[n] = fvMap.get(n);
+        }
       }
     }
     // MC path (isMcForm): the swept axis must reach the OPAQUE mcmarginal
@@ -422,33 +416,71 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
         && v.some(function(x: any) { return x && typeof x === 'object' && x.kind != null; });
       if (!hasIRNode) envForWorker[k] = v;
     }
-    const profileMsg: any = {
-      type: 'profileN',
-      ir: irForWorker,
-      sweepName: effectiveSweepName,
-      range: rangeRef[0],
-      count: pointCount,
-      mode: mode,
-      fixedEnv: envForWorker,
-      observed: observed,
-      tally: 'clamped',
-    };
-    if (isMcForm) {
-      // M from the VS Code/web setting; a CONSTANT per-render mcSeed → common
-      // random numbers across the sweep → a smooth curve (worker re-keys per
-      // point). Closed-form profiles set neither (worker keeps its batched path).
-      profileMsg.mcMarginalizationCount = (ctx.MARGINALIZATION_COUNT | 0) || 100;
-      profileMsg.mcSeed = nameSeed(ctx, '%mcprofile:' + plan.name);
-      if (mcSweep) profileMsg.mcSweep = mcSweep;
-    }
-    return (Object.keys(profileFixedEnv).length > 0
+    // Build and dispatch one profileN per term (for a plain
+    // likelihoodof, loweredTerms.length === 1 — identical to the old
+    // single-dispatch path). Each term contributes an independent
+    // per-point log-density array; we sum them elementwise to form the
+    // joint log-density profile. A NaN in any term at any point
+    // propagates to the summed value (out-of-support).
+    const setupEnv = Object.keys(profileFixedEnv).length > 0
       ? sendWorker(ctx, { type: 'setEnv', env: profileFixedEnv, merge: true })
-          .then(function() { return sendWorker(ctx, profileMsg); })
-      : sendWorker(ctx, profileMsg));
-  }).then(function(reply: any) {
-    if (!reply) return;
+      : Promise.resolve(undefined);
+    return setupEnv.then(function() {
+      return loweredTerms.reduce(function(acc: Promise<Float64Array | null>, lt) {
+        // For likelihood profile plots, resolve each term's obs IR to a JS
+        // value at dispatch time.  sig.obsIR (single-term) / term.obsIR
+        // (joint) are equivalent — both resolved the same way.
+        let observed: any;
+        if (lt.obsIR != null) {
+          observed = FlatPPLEngine.orchestrator.resolveIRToValue(
+            lt.obsIR, ctx.derivationsState!.bindings, ctx.derivationsState!.fixedValues);
+        }
+        // Bake the boundary values into the body.
+        // substituteBoundaryValues is the spec-shaped successor of
+        // substituteLocals: boundary refs come in BOTH namespaces
+        // (`%local` placeholder formals, plain `self` refs for
+        // identifier-form cuts — spec §11), matched by NAME,
+        // scope-aware (a nested reified callable that re-declares a
+        // name keeps its own inputs). The swept param has no fixedEnv
+        // entry (scalar sweep) so its ref survives for profileN;
+        // per-slot sweep bakes the array WITH the embedded sweep-ref
+        // node.
+        const irForWorker = FlatPPLEngine.orchestrator.substituteBoundaryValues(
+          lt.ir, fixedEnv);
+        const profileMsg: any = {
+          type: 'profileN',
+          ir: irForWorker,
+          sweepName: effectiveSweepName,
+          range: rangeRef[0],
+          count: pointCount,
+          mode: mode,
+          fixedEnv: envForWorker,
+          observed: observed,
+          tally: 'clamped',
+        };
+        if (isMcForm) {
+          // M from the VS Code/web setting; a CONSTANT per-render mcSeed
+          // → common random numbers across the sweep → a smooth curve
+          // (worker re-keys per point). Closed-form profiles set neither
+          // (worker keeps its batched path).
+          profileMsg.mcMarginalizationCount = (ctx.MARGINALIZATION_COUNT | 0) || 100;
+          profileMsg.mcSeed = nameSeed(ctx, '%mcprofile:' + plan.name);
+          if (mcSweep) profileMsg.mcSweep = mcSweep;
+        }
+        return acc.then(function(summed: Float64Array | null) {
+          return sendWorker(ctx, profileMsg).then(function(reply: any) {
+            const s: Float64Array = reply && reply.samples;
+            if (!summed) return Float64Array.from(s);
+            for (let i = 0; i < summed.length; i++) summed[i] += s[i];
+            return summed;
+          });
+        });
+      }, Promise.resolve(null as Float64Array | null));
+    });
+  }).then(function(summed: Float64Array | null) {
+    if (!summed) return;
     if (ctx.currentPlotPlan !== planForCall) return;
-    renderProfileLine(ctx, reply.samples, rangeRef[0], plan, sweepAxis);
+    renderProfileLine(ctx, summed, rangeRef[0], plan, sweepAxis);
     // Plot is painted — now kick off the best-effort MLE for the labelled
     // `auto (MLE)` default point (likelihoods only; no-op for functions /
     // already-cached). The worker is FIFO so the visible sweep went first.

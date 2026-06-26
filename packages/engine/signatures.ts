@@ -152,6 +152,30 @@ function resolveSourceType(source: any, bindings: any) {
 // same as an inline literal.
 function signatureOfLikelihood(b: any, bindings: any): any {
   const ir = b.ir;
+  // joint_likelihood(L1, …, Ln): product of likelihood terms (spec §06).
+  // Each arg must be a self-ref to a likelihood binding; the joint's inputs
+  // are the union (by paramName) of the terms' inputs, and its log-density is
+  // the sum of the per-term log-densities (scored by the viewer evaluators).
+  if (ir && ir.op === 'joint_likelihood' && Array.isArray(ir.args) && ir.args.length >= 2) {
+    const terms: any[] = [];
+    const inputs: any[] = [];
+    const seen = new Set<string>();
+    for (const arg of ir.args) {
+      if (!isSelfRef(arg) || !bindings.has(arg.name)) return null;  // inline arg → not plottable
+      const inner: any = signatureOf(arg.name, bindings);
+      if (!inner || inner.kind !== 'likelihood' || !inner.body || inner.obsIR == null) return null;
+      terms.push({ body: inner.body, obsIR: inner.obsIR, kernelName: inner.kernelName });
+      for (const inp of inner.inputs) {
+        if (!seen.has(inp.paramName)) { seen.add(inp.paramName); inputs.push(inp); }
+      }
+    }
+    return {
+      kind: 'likelihood',
+      inputs,
+      output: { type: { kind: 'scalar', prim: 'real' } },
+      terms,
+    };
+  }
   if (!ir || ir.op !== 'likelihoodof' || !Array.isArray(ir.args) || ir.args.length !== 2) {
     return null;
   }

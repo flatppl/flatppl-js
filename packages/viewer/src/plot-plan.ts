@@ -40,7 +40,10 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
       || binding.type === 'likelihood') {
     if (!ctx.derivationsState.bindings) return null;
     const sig = FlatPPLEngine.orchestrator.signatureOf(name, ctx.derivationsState.bindings);
-    if (!sig || !sig.body) return null;
+    // A joint_likelihood signature carries `terms` (per-term body/obsIR) instead
+    // of a single `body`; the downstream output-type guard (`sig.body && …`)
+    // falls back to sig.output.type, and presets/domains/axes read sig.inputs.
+    if (!sig || (!sig.body && !sig.terms)) return null;
     const axes = FlatPPLEngine.orchestrator.distributeAxes(sig);
     if (axes.length === 0) return null;
     const presets = FlatPPLEngine.orchestrator.findMatchingPresets(
