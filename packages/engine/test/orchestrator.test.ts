@@ -1475,6 +1475,47 @@ test('distributeAxes: empty signature → empty axis list', () => {
 });
 
 // =====================================================================
+// Domain-aware auto-input defaults — a free positivity-constrained input
+// (`elementof(cartpow(posreals, N))`) must default to an in-support value,
+// not 0. 0 is out-of-support for posreals and degenerate as a Poisson /
+// ContinuedPoisson rate, which silently blanks a likelihood profile plot
+// (the held nuisance pins the rate at 0 → log-density -inf at every point).
+// =====================================================================
+
+function liftedOf(source: string) {
+  const { liftInlineSubexpressions } = require('../orchestrator.ts');
+  const { bindings } = processSource(source);
+  return liftInlineSubexpressions(bindings);
+}
+
+test('resolveAxisBaseSet: cartpow elementof surfaces the per-element set', () => {
+  // parseSetIR must unwrap cartpow(base, n) to `base`; without it an array
+  // elementof loses its element restriction and degrades to `empirical`.
+  const lifted = liftedOf(`
+v = elementof(cartpow(posreals, 2))
+f = functionof(v .* 2.0)
+`);
+  const sig = signatureOf('f', lifted);
+  const inp = sig.inputs.find((i: any) => i.paramName === 'v');
+  assert.deepEqual(resolveAxisBaseSet(inp.source, lifted), { kind: 'posreals' });
+});
+
+test('computeAutoInputs: positivity-constrained input defaults in-support, not 0', () => {
+  const lifted = liftedOf(`
+v = elementof(cartpow(posreals, 2))
+s = elementof(posreals)
+r = elementof(reals)
+f = functionof(v .* s .+ r)
+`);
+  const sig = signatureOf('f', lifted);
+  // No materialised priors (free inputs) → the leaf-default fallback fires.
+  const auto = computeAutoInputs(sig, lifted, undefined, () => null);
+  assert.deepEqual(auto.v, [1, 1], 'posreals array → [1,1] (was [0,0])');
+  assert.equal(auto.s, 1, 'posreals scalar → 1');
+  assert.equal(auto.r, 0, 'reals scalar → 0');
+});
+
+// =====================================================================
 // Explicit-boundary lowering — propagate a swept/fed axis through
 // deterministic deps (the live owner of the retired inlineForProfile's
 // job: clm.lowerMeasure with opts.boundaries/freeInputs inlines derived
