@@ -126,42 +126,53 @@ export async function computeMaximum(ctx: Ctx, plan: any): Promise<MaxResult> {
       + 'to optimize (all inputs are <code>fixed(...)</code> or non-scalar).' };
   }
 
-  // --- 2. Objective IR (CLM lowering; free inputs left unbaked) ---------
-  let ir = sig.body;
-  if (plan.outputs && plan.outputs.length > 1 && plan.outputKey) {
-    for (let oj = 0; oj < plan.outputs.length; oj++) {
-      if (plan.outputs[oj].key === plan.outputKey) {
-        const ex = FlatPPLEngine.orchestrator.extractOutputIR(ir, plan.outputs[oj].path);
-        if (ex) ir = ex;
-        break;
-      }
-    }
-  }
+  // --- 2. Objective IR (per-term CLM lowering; free inputs left unbaked) -
+  // A joint_likelihood signature carries one body per term in `sig.terms`; a
+  // plain likelihood / function has a single `sig.body` (+ `sig.obsIR`).
+  // Normalise to a term list and lower EACH term independently — the same
+  // per-term shape render-profile uses. (The former single-`sig.body`
+  // lowering rejected a joint outright: `sig.body` is undefined when
+  // `sig.terms` is present, so lowerMeasure returned null → "cannot lower to
+  // a canonical measure".)
+  const rawTerms: Array<{ body: any; obsIR: any }> = sig.terms
+    ? (sig.terms as Array<{ body: any; obsIR: any }>)
+    : [{ body: sig.body, obsIR: sig.obsIR }];
   const paramNames = sig.inputs.map((inp: any) => inp.paramName);
   const freeParams = free.map((f) => f.param);
   const freeParamSet = new Set(freeParams);
   const boundaries: Record<string, any> = {};
   for (const pn of paramNames) if (!freeParamSet.has(pn)) boundaries[pn] = true;
+  const lowCtx = { derivations: dst.derivations, bindings: dst.bindings, fixedValues: dst.fixedValues };
 
-  let clmNode: any = null, clmErr: any = null;
-  try {
-    clmNode = FlatPPLEngine.clm.lowerMeasure(ir,
-      { derivations: dst.derivations, bindings: dst.bindings, fixedValues: dst.fixedValues },
-      { boundaries, freeInputs: freeParams });
-  } catch (e) { clmErr = e; }
-  if (!clmNode) {
-    return { ok: false, message: 'Find maximum: cannot lower <strong>' + esc(plan.name)
-      + '</strong> to a canonical measure'
-      + (clmErr ? ' — ' + esc(clmErr.message || String(clmErr)) : '') + '.' };
-  }
-  ir = clmNode.body;
-
-  // Marginalised (Monte-Carlo) targets: deferred to the next step (the K×M
-  // density batch). Fail gracefully rather than silently mis-optimising.
-  if (clmNode.mc) {
-    return { ok: false, hint: true, message: 'Find maximum: this target is internally '
-      + 'marginalised (Monte-Carlo). Maximisation of marginalised targets lands in the '
-      + 'next step; closed-form functions and likelihoods work today.' };
+  const loweredTerms: Array<{ ir: any; obsIR: any }> = [];
+  for (const term of rawTerms) {
+    let termIr = term.body;
+    if (plan.outputs && plan.outputs.length > 1 && plan.outputKey) {
+      for (let oj = 0; oj < plan.outputs.length; oj++) {
+        if (plan.outputs[oj].key === plan.outputKey) {
+          const ex = FlatPPLEngine.orchestrator.extractOutputIR(termIr, plan.outputs[oj].path);
+          if (ex) termIr = ex;
+          break;
+        }
+      }
+    }
+    let clmNode: any = null, clmErr: any = null;
+    try {
+      clmNode = FlatPPLEngine.clm.lowerMeasure(termIr, lowCtx, { boundaries, freeInputs: freeParams });
+    } catch (e) { clmErr = e; }
+    if (!clmNode) {
+      return { ok: false, message: 'Find maximum: cannot lower <strong>' + esc(plan.name)
+        + '</strong> to a canonical measure'
+        + (clmErr ? ' — ' + esc(clmErr.message || String(clmErr)) : '') + '.' };
+    }
+    // Marginalised (Monte-Carlo) targets: deferred to the next step (the K×M
+    // density batch). Fail gracefully rather than silently mis-optimising.
+    if (clmNode.mc) {
+      return { ok: false, hint: true, message: 'Find maximum: this target is internally '
+        + 'marginalised (Monte-Carlo). Maximisation of marginalised targets lands in the '
+        + 'next step; closed-form functions and likelihoods work today.' };
+    }
+    loweredTerms.push({ ir: clmNode.body, obsIR: term.obsIR });
   }
 
   // --- 3. Bake boundary (non-free) values + body self-refs --------------
@@ -181,10 +192,15 @@ export async function computeMaximum(ctx: Ctx, plan: any): Promise<MaxResult> {
   // those to samples[0] replaces the free refs with a constant prior draw (the
   // pivot); refArrays then has nothing to drive and the objective is FLAT at
   // the pivot → the optimizer returns its incumbent. The free inputs must stay
-  // as live refs, fed per-atom by refArrays in evalCloud.
-  const { perAtomNames: allSelfRefs } =
-    FlatPPLEngine.materialiser.classifyProfileSelfRefs(ir, dst.bindings, dst.fixedValues);
-  const selfRefs = allSelfRefs.filter((n: string) => !freeParamSet.has(n));
+  // as live refs, fed per-atom by refArrays in evalCloud. For a joint, union
+  // the stochastic self-refs across all lowered terms.
+  const allSelfRefsSet = new Set<string>();
+  for (const lt of loweredTerms) {
+    const { perAtomNames } =
+      FlatPPLEngine.materialiser.classifyProfileSelfRefs(lt.ir, dst.bindings, dst.fixedValues);
+    for (const n of perAtomNames) allSelfRefsSet.add(n);
+  }
+  const selfRefs = Array.from(allSelfRefsSet).filter((n: string) => !freeParamSet.has(n));
   const selfMeasures = await Promise.all(
     selfRefs.map((n: string) => tryGetMeasure(ctx, n)));
   for (let i = 0; i < selfRefs.length; i++) {
@@ -195,35 +211,30 @@ export async function computeMaximum(ctx: Ctx, plan: any): Promise<MaxResult> {
   // reductions) are baked in too, so the objective IR is fully self-contained
   // and does not depend on the worker's session env surviving the optimiser's
   // many round-trips. (The free inputs above are deliberately NOT baked — they
-  // are the search variables, fed per-atom by refArrays in evalCloud.)
+  // are the search variables, fed per-atom by refArrays in evalCloud.) Union
+  // the fixed-phase self-refs across all lowered terms.
   const fvMap = dst.fixedValues;
   if (fvMap) {
-    for (const n of FlatPPLEngine.orchestrator.collectSelfRefs(ir)) {
-      if (fvMap.has(n) && !Object.prototype.hasOwnProperty.call(fixedEnv, n)) {
-        // valueToPlain: fixedValues holds engine Value objects ({shape, data});
-        // substituteBoundaryValues → envValueToIR needs plain arrays/scalars, or
-        // it mis-bakes an array Value as a record(shape, data) and downstream
-        // broadcast/dot-call rejects it.
-        fixedEnv[n] = FlatPPLEngine.orchestrator.valueToPlain(fvMap.get(n));
+    for (const lt of loweredTerms) {
+      for (const n of FlatPPLEngine.orchestrator.collectSelfRefs(lt.ir)) {
+        if (fvMap.has(n) && !Object.prototype.hasOwnProperty.call(fixedEnv, n)) {
+          // valueToPlain: fixedValues holds engine Value objects ({shape, data});
+          // substituteBoundaryValues → envValueToIR needs plain arrays/scalars, or
+          // it mis-bakes an array Value as a record(shape, data) and downstream
+          // broadcast/dot-call rejects it.
+          fixedEnv[n] = FlatPPLEngine.orchestrator.valueToPlain(fvMap.get(n));
+        }
       }
     }
   }
-  // Build a per-term list of (irBaked, observed). For a joint_likelihood sig
-  // (sig.terms present) each term's body is lowered and baked independently;
-  // the CLM-lowered `ir` above is NOT used (it was clmNode.body from a single
-  // composite CLM node). For a single likelihood (sig.terms absent) we wrap the
-  // existing `ir` + `sig.obsIR` into a one-element list so evalCloud is uniform.
-  // The shared fixedEnv (non-free boundary values + self-refs) is valid for
-  // every term: baking the full fixedEnv over a term that doesn't reference a
-  // name is a no-op.
-  const evalTerms: Array<{ irBaked: any; observed: any }> = (
-    sig.terms
-      ? (sig.terms as Array<{ body: any; obsIR: any }>)
-      : [{ body: ir, obsIR: sig.obsIR }]
-  ).map((term) => {
-    const tBaked = FlatPPLEngine.orchestrator.substituteBoundaryValues(term.body, fixedEnv);
-    const tObs = term.obsIR != null
-      ? FlatPPLEngine.orchestrator.resolveIRToValue(term.obsIR, dst.bindings, dst.fixedValues)
+  // Per-term (irBaked, observed): bake the shared fixedEnv (non-free boundary
+  // values + self-refs) into each lowered term body. For a plain likelihood /
+  // function loweredTerms has one entry — identical to the former single path.
+  // For a joint each term scores independently and evalCloud sums them.
+  const evalTerms: Array<{ irBaked: any; observed: any }> = loweredTerms.map((lt) => {
+    const tBaked = FlatPPLEngine.orchestrator.substituteBoundaryValues(lt.ir, fixedEnv);
+    const tObs = lt.obsIR != null
+      ? FlatPPLEngine.orchestrator.resolveIRToValue(lt.obsIR, dst.bindings, dst.fixedValues)
       : undefined;
     return { irBaked: tBaked, observed: tObs };
   });

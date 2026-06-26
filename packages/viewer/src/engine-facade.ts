@@ -63,7 +63,12 @@ export function getMeasure(ctx: Ctx, name: any) {
     // on it, so forward measures are unaffected.
     inferenceOpts: ctx.inferenceOpts,
   });
-  promise.then(function(m: any) { ctx.measureCache.set(name, m); });
+  // Cache-set rides its own subscription; give it a no-op rejection handler
+  // (like the MCMC branch above) so a materialise failure — e.g. getMeasure
+  // on a free `elementof` input with no derivation, which callers reach via
+  // the soft-failing tryGetMeasure — doesn't surface as an unhandled
+  // rejection. The returned `promise` still rejects for the caller.
+  promise.then(function(m: any) { ctx.measureCache.set(name, m); }, function() {});
   return promise;
 }
 
