@@ -92,7 +92,7 @@ jobs:
           workspaces: .flatppl-rust
 
       - name: Install wasm-pack (prebuilt, for the Convert command)
-        uses: taiki-e/install-action@v2.79.1
+        uses: taiki-e/install-action@v2.82.4
         with:
           tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
 
