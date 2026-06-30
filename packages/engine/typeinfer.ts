@@ -1230,7 +1230,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return recT.fields[nameIR.value];
   }
 
-  function inferTupleGet(expr: any, scopes: any): any {
+  // `oneBased` distinguishes the two callers that share this inferrer:
+  //   - the engine-internal `tuple_get` op (multi-LHS decomposition) carries
+  //     a 0-BASED slot — call with oneBased=false (the default);
+  //   - surface `t[i]` lowers to `get(t, i)` with a 1-BASED index (spec §04)
+  //     and is redirected here from `inferGet` with oneBased=true.
+  // The runtime mirrors this: `tuple_get` indexes the JS array directly
+  // (0-based) while `get` on a tuple subtracts one (1-based). Conflating the
+  // two silently shifted heterogeneous/nested tuple element types by one.
+  function inferTupleGet(expr: any, scopes: any, oneBased: boolean = false): any {
     const args = expr.args || [];
     if (args.length !== 2) {
       return arityError('tuple_get', 2, args.length, expr.loc);
@@ -1250,11 +1258,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (!slotIR || slotIR.kind !== 'lit' || typeof slotIR.value !== 'number') {
       return T.failed('tuple_get slot must be a literal index');
     }
-    const i = slotIR.value | 0;
+    const raw = slotIR.value | 0;          // as written (1-based for `get`)
+    const i = oneBased ? raw - 1 : raw;     // resolved 0-based array index
     if (i < 0 || i >= tupleT.elems.length) {
       diagnostics.push({
         severity: 'error',
-        message: `tuple_get index ${i} out of range for ${T.show(tupleT)}`,
+        message: `tuple index ${raw} out of range for ${T.show(tupleT)}`,
         loc: expr.loc,
       });
       return T.failed('tuple_get out of range');
@@ -1296,13 +1305,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const containerT: any = inferExpr(args[0], scopes);
     if (containerT && containerT.kind === 'failed') return T.failed('get cascade');
 
-    // Tuple integer-index: redirect to tuple_get's existing inferrer
-    // (same shape — single integer literal selector).
+    // Tuple integer-index: redirect to tuple_get's existing inferrer.
+    // Surface `t[i]` is 1-based (spec §04), so resolve the slot one-based.
     if (containerT && containerT.kind === 'tuple'
         && args.length === 2
         && args[1].kind === 'lit'
         && typeof args[1].value === 'number') {
-      return inferTupleGet(expr, scopes);
+      return inferTupleGet(expr, scopes, true);
     }
 
     // Record single-field access: redirect to get_field's shape rule.
