@@ -412,6 +412,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'lawof':     return write(inferLawof(expr, scopes), expr);
       case 'record':    return write(inferRecord(expr, scopes), expr);
       case 'table':     return write(inferTable(expr, scopes), expr);
+      case 'cat':       return write(inferCat(expr, scopes), expr);
       case 'joint':     return write(inferJoint(expr, scopes), expr);
       case 'tuple':     return write(inferTuple(expr, scopes), expr);
       // tuple_get(<tuple-expr>, <slot lit>) — internal IR op emitted by
@@ -1106,6 +1107,27 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
     }
     return T.table(columns, nrows);
+  }
+
+  // cat(x, y, …) — structural concatenation (spec §07), via the shared
+  // catShapeType rule: all scalars → a vector, all vectors → a concatenated
+  // vector, all records → a merged record; mixing kinds is a static error.
+  function inferCat(expr: any, scopes: any) {
+    const parts = (expr.args || []).map((a: any) => inferExpr(a, scopes));
+    if (parts.some((t: any) => t && t.kind === 'failed')) return T.failed('cat cascade');
+    if (parts.length === 0) return T.failed('cat: requires at least one argument');
+    const shaped = catShapeType(parts);
+    if (shaped == null) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'cat: arguments must be all scalars, all vectors, or all records '
+          + 'with distinct fields — concatenating a mix of value kinds is not '
+          + 'permitted (spec §07)',
+        loc: expr.loc,
+      });
+      return T.failed('cat mixed kinds');
+    }
+    return shaped;
   }
 
   function inferJoint(expr: any, scopes: any) {

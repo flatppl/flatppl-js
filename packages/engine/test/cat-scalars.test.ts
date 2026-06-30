@@ -30,9 +30,13 @@ test('cat: FlatPPL `x = cat(1, 2, 3)` parses cleanly', () => {
   assert.equal(v.args.length, 3);
 });
 
-test('cat: mixed scalar / vector args still parse (semantic check is downstream)', () => {
-  // The spec rejects mixed-kind cats as a runtime/type error; the
-  // parser doesn't know the kind of each arg. This test pins the
-  // parser-level behavior: accept any call shape.
-  parseOK('x = cat(1, [2, 3])', { variant: 'flatppl' });
+test('cat: mixed scalar / vector args are a static type error (§07)', () => {
+  // §07: "concatenation of a mix of value types … is not permitted." The
+  // parser accepts the call shape (it doesn't know arg kinds), but type
+  // inference now rejects the mix STATICALLY via the shared catShapeType rule —
+  // no longer deferred to runtime (which used to produce `[1, null]`).
+  const r = processSource('x = cat(1, [2, 3])', { variant: 'flatppl' });
+  const errors = r.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.ok(errors.some((e: any) => /mix of value kinds|all scalars, all vectors/.test(e.message)),
+    'expected a mixed-kind cat static error; got ' + JSON.stringify(errors));
 });
