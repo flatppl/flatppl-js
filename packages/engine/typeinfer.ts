@@ -1007,11 +1007,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (args.length !== 1) return null;
     const t: any = inferExpr(args[0], scopes);
     if (!t || t.kind !== 'table') return null;
-    const op = expr.op;
+    return _reduceTableType(t, expr.op);
+  }
+  // The result type of a column-wise reduction over a table: a record of
+  // per-column results. A table-valued column reduces to a NESTED record,
+  // recursively (mirrors the runtime `_tableReduce`, which dispatches the
+  // reduction op into the sub-table).
+  function _reduceTableType(t: any, op: string): any {
     const fields: Record<string, any> = {};
     for (const k in t.columns) {
       const cT = t.columns[k];
-      if (op === 'var' || op === 'std') {
+      if (cT && cT.kind === 'table') {
+        fields[k] = _reduceTableType(cT, op);
+      } else if (op === 'var' || op === 'std') {
         fields[k] = T.REAL;
       } else {
         // sum, prod, mean, maximum, minimum preserve element type.
@@ -1032,29 +1040,41 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const columns: Record<string, any> = {};
     let nrows: number | '%dynamic' = '%dynamic';
     let nrowsBound = false;
+    // Record one column's row count, enforcing equal length across columns
+    // (spec §03). A non-numeric length ('%dynamic') is unconstrained.
+    // Returns false (after pushing a diagnostic) on a mismatch.
+    const noteRowCount = (len: any, fname: string, loc: any): boolean => {
+      if (typeof len !== 'number') return true;
+      if (!nrowsBound) { nrows = len; nrowsBound = true; return true; }
+      if (nrows !== len) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'table: column "' + fname + '" has length ' + len
+            + ', but earlier columns have length ' + nrows
+            + ' (spec §03: all columns must have equal length)',
+          loc,
+        });
+        return false;
+      }
+      return true;
+    };
     for (const f of fields) {
       const ct: any = inferExpr(f.value, scopes);
-      // The value should be a rank-1 array. Deferred / any flow
-      // through with deferred column type — engine still produces
-      // a table at runtime.
+      const loc = f.loc || expr.loc;
+      // A column is a vector (rank-1 array) or a table (spec §03). Deferred /
+      // any flow through with a deferred column type — the engine still
+      // produces a table at runtime.
       if (ct && ct.kind === 'array' && ct.rank === 1) {
         // Spec §04: a table column may not hold measures / kernels / etc.
-        checkContainerElem(ct.elem, f.loc || expr.loc, 'table', "column '" + f.name + "'");
+        checkContainerElem(ct.elem, loc, 'table', "column '" + f.name + "'");
         columns[f.name] = ct.elem;
-        const dim = ct.shape[0];
-        if (typeof dim === 'number') {
-          if (!nrowsBound) { nrows = dim; nrowsBound = true; }
-          else if (nrows !== dim) {
-            diagnostics.push({
-              severity: 'error',
-              message: 'table: column "' + f.name + '" has length ' + dim
-                + ', but earlier columns have length ' + nrows
-                + ' (spec §03: all columns must have equal length)',
-              loc: f.loc || expr.loc,
-            });
-            return T.failed('table column length mismatch');
-          }
-        }
+        if (!noteRowCount(ct.shape[0], f.name, loc)) return T.failed('table column length mismatch');
+      } else if (ct && ct.kind === 'table') {
+        // A table-valued column: store the sub-table type; its row count
+        // must match the other columns. The sub-table's own columns were
+        // already validated when it was constructed.
+        columns[f.name] = ct;
+        if (!noteRowCount(ct.nrows, f.name, loc)) return T.failed('table column length mismatch');
       } else if (ct && (ct.kind === 'deferred' || ct.kind === 'any')) {
         columns[f.name] = T.deferred();
       } else if (ct && ct.kind === 'failed') {
@@ -1062,11 +1082,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       } else {
         diagnostics.push({
           severity: 'error',
-          message: 'table: column "' + f.name + '" must be an array (vector); got '
+          message: 'table: column "' + f.name + '" must be a vector or a table; got '
             + T.show(ct),
-          loc: f.loc || expr.loc,
+          loc,
         });
-        return T.failed('table non-array column');
+        return T.failed('table non-vector column');
       }
     }
     return T.table(columns, nrows);
@@ -1216,7 +1236,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         });
         return T.failed('get_field unknown column');
       }
-      return T.array(1, [recT.nrows], recT.columns[nameIR.value]);
+      // A table-valued column accesses as the sub-table itself; a vector
+      // column accesses as a vector of its element type (spec §03).
+      const colT = recT.columns[nameIR.value];
+      return (colT && colT.kind === 'table') ? colT : T.array(1, [recT.nrows], colT);
     }
     // `any` / `deferred` recipients (common in user-fn bodies where
     // the param's type isn't pinned at definition — the param defaults
@@ -1356,15 +1379,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
       if (args.length === 2 && args[1].kind === 'lit'
           && typeof args[1].value === 'number') {
-        // Row access — returns a record over the same column names.
-        return T.record(containerT.columns);
+        // Row access — a record over the column names (table columns
+        // become nested records; spec §03).
+        return T.rowRecordType(containerT);
       }
       if (args.length === 2) {
         // Row access via expression (axis or computed int). Conservative:
         // a row is a record over the table's columns.
         const selT: any = inferExpr(args[1], scopes);
         if (selT && selT.kind === 'scalar' && selT.prim === 'integer') {
-          return T.record(containerT.columns);
+          return T.rowRecordType(containerT);
         }
       }
       return T.deferred();
@@ -1984,7 +2008,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return {
           collection: true,
           outerShape: [t.nrows],
-          cellType: T.record(t.columns),
+          cellType: T.rowRecordType(t),
         };
       }
       if (t && t.kind === 'scalar') {

@@ -915,9 +915,29 @@ function asBatch(v: any, N: number) {
   return v.data;
 }
 
+// Extract row `idx` (0-based) of a runtime table as a record. A table is the
+// `__table__`-marked value `{ __table__: true, columns, nrows }`. For a plain
+// (vector) column the row entry is the value at that index; for a
+// table-VALUED column (spec §03) the entry is the row record of that
+// sub-table, recursively — so a row of a nested table is a nested record.
+// Single source of truth for table row extraction, shared by the sampler's
+// `get(t, i)` / `get(t, all)` and the broadcast row-wise traversal.
+function tableRow(t: any, idx: number) {
+  const row: Record<string, any> = {};
+  const cols = t.columns;
+  for (const k in cols) {
+    const col = cols[k];
+    row[k] = (col && col.__table__ === true)
+      ? tableRow(col, idx)
+      : (isValue(col) ? col.data[idx] : col[idx]);
+  }
+  return row;
+}
+
 module.exports = {
   // accessors
   getShape: getShape,
+  tableRow: tableRow,
   getData: getData,
   getDType: getDType,
   getTag: getTag,

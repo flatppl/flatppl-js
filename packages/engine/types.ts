@@ -80,13 +80,31 @@ function record(fields: any) { return { kind: 'record', fields }; }
 function tuple(elems: any)   { return { kind: 'tuple', elems }; }
 
 /** Table type per spec §03 §11. `columns` is an ordered object mapping
- *  column name → COLUMN-ELEMENT type (typically a scalar — spec §03 says
- *  "Table columns must be vectors", so each column is a vector of this
- *  element type). `nrows` is the row count (a positive integer or
- *  the literal '%dynamic' when not statically known). Row indexing
- *  yields a record over the same column names; column access yields
- *  an array of the column-element type. */
+ *  column name → COLUMN type. A vector column maps to its ELEMENT type
+ *  (a scalar, or an array for a vector-of-arrays column); a table-valued
+ *  column (spec §03: "each column is a vector or a table") maps to the
+ *  sub-table TYPE (`kind: 'table'`) of the same row count. A column type
+ *  of `kind: 'table'` therefore unambiguously denotes a table column —
+ *  a vector column's element is never a table. `nrows` is the row count
+ *  (a positive integer or the literal '%dynamic' when not statically
+ *  known). Row indexing yields a record over the same column names (table
+ *  columns become nested records — see `rowRecordType`); column access
+ *  yields the column as a vector, or the sub-table for a table column. */
 function table(columns: any, nrows: any) { return { kind: 'table', columns, nrows }; }
+
+/** The record type of a single row of a table (spec §03: "Each row of a
+ *  table is a record; if some columns of the table are tables themselves,
+ *  the corresponding entries of the row records are records themselves").
+ *  A vector column contributes its element type; a table-valued column
+ *  contributes the row record of THAT sub-table, recursively. */
+function rowRecordType(t: any): any {
+  const fields: Record<string, any> = {};
+  for (const k in t.columns) {
+    const c = t.columns[k];
+    fields[k] = (c && c.kind === 'table') ? rowRecordType(c) : c;
+  }
+  return record(fields);
+}
 
 /**
  * Closed measure over a value domain.
@@ -1478,7 +1496,7 @@ function hasSignature(opName: string) {
 
 module.exports = {
   // Constructors
-  deferred, failed, any, scalar, array, tvector, record, table, tuple, measure, rngstate, tvar,
+  deferred, failed, any, scalar, array, tvector, record, table, rowRecordType, tuple, measure, rngstate, tvar,
   funcType, kernelType, likelihood, moduleType,
   REAL, INTEGER, BOOLEAN, COMPLEX, STRING, RNGSTATE,
   // Total-mass classes (spec §11)

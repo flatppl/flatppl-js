@@ -2383,22 +2383,14 @@ function evaluateCall(ir: any, env: any): any {
             throw new Error(`evaluateExpr: ${op} row index ${s} out of `
               + `bounds for table with ${c.nrows} rows`);
           }
-          const row: Record<string, any> = {};
-          for (const k in c.columns) {
-            const col = c.columns[k];
-            row[k] = valueLib.isValue(col) ? col.data[idx] : col[idx];
-          }
-          return applyGet(row, rest);
+          // A row is a record over the columns; table-valued columns become
+          // nested records (valueLib.tableRow recurses).
+          return applyGet(valueLib.tableRow(c, idx), rest);
         }
         if (s === ALL) {
           const rows: any[] = [];
           for (let i = 0; i < c.nrows; i++) {
-            const row: Record<string, any> = {};
-            for (const k in c.columns) {
-              const col = c.columns[k];
-              row[k] = valueLib.isValue(col) ? col.data[i] : col[i];
-            }
-            rows.push(applyGet(row, rest));
+            rows.push(applyGet(valueLib.tableRow(c, i), rest));
           }
           return rows;
         }
@@ -2666,14 +2658,20 @@ function evaluateCall(ir: any, env: any): any {
     let nrows: number | null = null;
     for (const f of ir.fields) {
       const colV = evaluateExpr(f.value, env);
-      const arr = valueLib.isValue(colV) ? colV
+      // A column is a vector (Value / typed array / JS array) or a table
+      // (spec §03: a table-valued column). A sub-table column's length is
+      // its own row count.
+      const isSubTable = colV && colV.__table__ === true;
+      const arr = isSubTable ? colV
+                : valueLib.isValue(colV) ? colV
                 : (colV && colV.BYTES_PER_ELEMENT !== undefined) ? colV
                 : Array.isArray(colV) ? colV
                 : null;
       if (arr === null) {
-        throw new Error(`table: column '${f.name}' must be an array (vector), got ${typeof colV}`);
+        throw new Error(`table: column '${f.name}' must be a vector or a table, got ${typeof colV}`);
       }
-      const len = valueLib.isValue(arr) ? arr.shape[0] : arr.length;
+      const len = isSubTable ? arr.nrows
+                : valueLib.isValue(arr) ? arr.shape[0] : arr.length;
       if (nrows === null) nrows = len;
       else if (nrows !== len) {
         throw new Error(`table: column '${f.name}' has length ${len}, but earlier columns have length ${nrows} (spec §03: all columns must have equal length)`);

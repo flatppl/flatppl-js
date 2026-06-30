@@ -86,19 +86,13 @@ function classifyAxisStructure(v: any): any {
   // axis is iterated); the cell is a record built on demand.
   if (v && v.__table__ === true && v.columns) {
     const nrows = v.nrows || 0;
-    const cols = v.columns;
-    const colNames = Object.keys(cols);
     return {
       coll: true, kind: 'table', table: v,
       outerRank: 1, outerShape: [nrows],
       getCell(idx: number[]) {
-        const i = (nrows === 1) ? 0 : idx[0];
-        const row: Record<string, any> = {};
-        for (let k = 0; k < colNames.length; k++) {
-          const col = cols[colNames[k]];
-          row[colNames[k]] = valueLib.isValue(col) ? col.data[i] : col[i];
-        }
-        return row;
+        // Row-wise: each cell is the row record (table-valued columns become
+        // nested records via valueLib.tableRow).
+        return valueLib.tableRow(v, (nrows === 1) ? 0 : idx[0]);
       },
     };
   }
