@@ -572,10 +572,56 @@ function _shapeAwareBinop(opName: any, scalarFn: any, a: any, b: any, complexFn:
 // reduction-table entries (sum, mean, var, std, prod, maximum, minimum)
 // to dispatch table inputs without each entry re-implementing the
 // column iteration.
-function _tableReduce(t: any, reduceCol: (col: any) => any): any {
+// Column-wise table reduction (spec §07): a record of per-column results,
+// each column reduced over the ROW axis. A scalar-per-row column reduces to a
+// scalar (the flattening ARITH_OPS reducer = axis-0 reduce of a vector); a
+// vector-per-entry column (Value [N, ...cells], spec §03 "3-vector per entry")
+// reduces element-wise over the N rows to a [...cells] Value; a table column
+// recurses to a nested record.
+function _tableReduceOp(t: any, opName: string): any {
   const out: Record<string, any> = {};
-  for (const k in t.columns) out[k] = reduceCol(t.columns[k]);
+  for (const k in t.columns) out[k] = _reduceColumn(t.columns[k], opName);
   return out;
+}
+function _reduceColumn(col: any, opName: string): any {
+  if (col && col.__table__ === true) return _tableReduceOp(col, opName);
+  if (valueLib.isValue(col) && col.shape.length > 1 && !valueLib.isComplexValue(col)) {
+    return _reduceRowAxis(col, opName);
+  }
+  return (ARITH_OPS as any)[opName](col);
+}
+// Per-cell reduction of a dense real Value [N, ...cells] over the leading (row)
+// axis, returning a [...cells] Value. Cell j of row i is data[i*cellLen + j].
+function _reduceRowAxis(col: any, opName: string): any {
+  const dense = (col.struct !== undefined) ? valueLib.densify(col) : col;
+  const N = dense.shape[0];
+  const cells = dense.shape.slice(1);
+  const cellLen = cells.reduce((a: number, b: number) => a * b, 1);
+  const data = dense.data;
+  const out = new Float64Array(cellLen);
+  for (let j = 0; j < cellLen; j++) {
+    if (opName === 'sum' || opName === 'mean') {
+      let s = 0; for (let i = 0; i < N; i++) s += data[i * cellLen + j];
+      out[j] = opName === 'mean' ? s / N : s;
+    } else if (opName === 'prod') {
+      let p = 1; for (let i = 0; i < N; i++) p *= data[i * cellLen + j];
+      out[j] = p;
+    } else if (opName === 'maximum') {
+      let m = -Infinity; for (let i = 0; i < N; i++) { const x = data[i * cellLen + j]; if (x > m) m = x; }
+      out[j] = m;
+    } else if (opName === 'minimum') {
+      let m = Infinity; for (let i = 0; i < N; i++) { const x = data[i * cellLen + j]; if (x < m) m = x; }
+      out[j] = m;
+    } else if (opName === 'var' || opName === 'std') {
+      if (N <= 1) { out[j] = 0; continue; }
+      let s = 0; for (let i = 0; i < N; i++) s += data[i * cellLen + j];
+      const mu = s / N;
+      let v = 0; for (let i = 0; i < N; i++) { const d = data[i * cellLen + j] - mu; v += d * d; }
+      v = v / (N - 1);
+      out[j] = opName === 'std' ? Math.sqrt(v) : v;
+    }
+  }
+  return { shape: cells, data: out };
 }
 
 const ARITH_OPS = {
@@ -1471,7 +1517,7 @@ const ARITH_OPS = {
   // reductions flatten over EVERY entry, so multi-dim inputs reduce
   // to a single scalar.
   sum: (a: any) => {
-    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).sum);
+    if (a && a.__table__ === true) return _tableReduceOp(a, 'sum');
     if (valueLib.isComplexValue(a)) {
       const cplx = valueLib.readComplex(a);
       let sR = 0, sI = 0;
@@ -1486,7 +1532,7 @@ const ARITH_OPS = {
     return s;
   },
   mean: (a: any) => {
-    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).mean);
+    if (a && a.__table__ === true) return _tableReduceOp(a, 'mean');
     if (valueLib.isComplexValue(a)) {
       const cplx = valueLib.readComplex(a);
       const n = cplx.re.length;
@@ -1500,7 +1546,7 @@ const ARITH_OPS = {
     return s / arr.length;
   },
   prod: (a: any) => {
-    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).prod);
+    if (a && a.__table__ === true) return _tableReduceOp(a, 'prod');
     if (valueLib.isComplexValue(a)) {
       const cplx = valueLib.readComplex(a);
       let pR = 1, pI = 0;
@@ -1576,14 +1622,14 @@ const ARITH_OPS = {
   indicesof:  (a: any) => _indicesOfImpl(a, /*zeroBased=*/ false),
   indicesof0: (a: any) => _indicesOfImpl(a, /*zeroBased=*/ true),
   maximum: (a: any) => {
-    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).maximum);
+    if (a && a.__table__ === true) return _tableReduceOp(a, 'maximum');
     const arr = _arrLike(a);
     let m = -Infinity;
     for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
     return m;
   },
   minimum: (a: any) => {
-    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).minimum);
+    if (a && a.__table__ === true) return _tableReduceOp(a, 'minimum');
     const arr = _arrLike(a);
     let m = Infinity;
     for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
@@ -1594,7 +1640,7 @@ const ARITH_OPS = {
   // n. n ≤ 1 has no sample variance; return 0 (matches the existing
   // n=0 sentinel and avoids a NaN from 0/0).
   var: (a: any) => {
-    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).var);
+    if (a && a.__table__ === true) return _tableReduceOp(a, 'var');
     const arr = _arrLike(a);
     const n = arr.length;
     if (n <= 1) return 0;
@@ -1609,7 +1655,7 @@ const ARITH_OPS = {
   // (`std | xs | √var(x)`) so the Bessel correction in `var` flows
   // through.
   std: (a: any) => {
-    if (a && a.__table__ === true) return _tableReduce(a, (ARITH_OPS as any).std);
+    if (a && a.__table__ === true) return _tableReduceOp(a, 'std');
     const arr = _arrLike(a);
     const n = arr.length;
     if (n <= 1) return 0;

@@ -922,14 +922,45 @@ function asBatch(v: any, N: number) {
 // sub-table, recursively — so a row of a nested table is a nested record.
 // Single source of truth for table row extraction, shared by the sampler's
 // `get(t, i)` / `get(t, all)` and the broadcast row-wise traversal.
+// Extract row `idx` (0-based) along the LEADING axis of a dense Value, as the
+// trailing-shape sub-Value. Mirrors the sampler's _sliceLeading (struct
+// densified, rank-2 transpose tag applied physically, im/dtype carried) so a
+// vector-per-entry table column (spec §03 "3-vector per entry") yields the
+// per-row vector rather than a flat-buffer scalar.
+function _sliceRow(v: any, idx: number) {
+  let dense = v;
+  if (v.t === 'T' || v.t === 'A' || v.struct !== undefined) {
+    dense = densify(v);
+    if ((dense.t === 'T' || dense.t === 'A') && dense.shape.length === 2) {
+      const m = dense.shape[0], n = dense.shape[1];
+      const src = dense.data, out = new Float64Array(m * n);
+      for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) out[i * n + j] = src[j * m + i];
+      dense = { shape: [m, n], data: out };
+    }
+  }
+  const tail = dense.shape.slice(1);
+  const tailLen = numel(tail);
+  const row: any = { shape: tail, data: dense.data.subarray(idx * tailLen, (idx + 1) * tailLen) };
+  if (dense.im instanceof Float64Array) row.im = dense.im.subarray(idx * tailLen, (idx + 1) * tailLen);
+  if (dense.dtype) row.dtype = dense.dtype;
+  return row;
+}
+
 function tableRow(t: any, idx: number) {
   const row: Record<string, any> = {};
   const cols = t.columns;
   for (const k in cols) {
     const col = cols[k];
-    row[k] = (col && col.__table__ === true)
-      ? tableRow(col, idx)
-      : (isValue(col) ? col.data[idx] : col[idx]);
+    if (col && col.__table__ === true) { row[k] = tableRow(col, idx); continue; }
+    // A scalar-per-row column (Value rank <= 1) yields the scalar at idx; a
+    // vector-per-entry column (Value with trailing CELL axes, spec §03) yields
+    // the per-row sub-Value via a leading-axis slice. Non-Value columns
+    // (legacy JS arrays of inner values) index directly.
+    if (isValue(col)) {
+      row[k] = (col.shape.length > 1) ? _sliceRow(col, idx) : col.data[idx];
+    } else {
+      row[k] = col[idx];
+    }
   }
   return row;
 }
