@@ -943,15 +943,35 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       default:           return null;
     }
   }
+  // Object-layer kinds and tuples may not be stored in a value container
+  // (array / record / table). Per spec §04 these are first-class OBJECTS,
+  // not values: measures/kernels/functions/likelihoods are barred outright,
+  // and a tuple may appear only inside another tuple (so tuple construction
+  // never calls this). Records nest in records and tables carry table
+  // columns — checked elsewhere. Arrays remain numeric per §03, but
+  // array-of-record / table (a "vector of records" that arguably belongs in
+  // a table) is a separate, pre-existing question the generative executor
+  // currently relies on, and is deliberately NOT enforced here.
+  // Returns the offending noun, or null when `t` is allowed in `container`.
+  function disallowedContainerNoun(t: any): string | null {
+    const obj = objectLayerNoun(t);
+    if (obj) return obj;
+    if (t && t.kind === 'tuple') return 'tuple';
+    return null;
+  }
   function checkContainerElem(t: any, loc: any, container: string, label: string) {
-    const noun = objectLayerNoun(t);
+    const noun = disallowedContainerNoun(t);
     if (!noun) return;
     const art = container === 'array' ? 'an ' : 'a ';
+    const why = (noun === 'tuple')
+      ? 'spec §04 — tuples are objects and nest only inside other tuples, '
+        + 'not inside an array, record, or table'
+      : 'spec §04 — measures, kernels, likelihoods and functions are '
+        + 'first-class objects but cannot be stored in arrays, records, or tables';
     diagnostics.push({
       severity: 'error',
       message: container + ' ' + label + ': a ' + noun + ' may not appear inside ' + art
-        + container + ' (spec §04 — measures, kernels, likelihoods and functions '
-        + 'are first-class objects but cannot be stored in arrays, records, or tables)'
+        + container + ' (' + why + ')'
         + (t.kind === 'measure'
           ? '; use joint(' + (container === 'record' ? 'name = M, …' : 'M, …')
             + ') to build a measure over ' + container + 's' : ''),
