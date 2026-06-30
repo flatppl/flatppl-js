@@ -203,19 +203,28 @@ function measureToPerAtomRecords(m: any, name: string, label: string): any[] {
       + '" has no .fields to expand into per-atom objects');
   }
   const fnames = Object.keys(m.fields);
+  // N (atom count) is taken from the first field that exposes a length — a
+  // scalar leaf (.samples), a vector field (.value), OR a nested-record field
+  // (its per-atom length). A record-of-records (every top-level field a
+  // record) exposes a length only through the nested-record arm; scanning for
+  // .samples/.value alone left N=0 and returned an empty per-atom array.
+  let N = 0;
   // Per-field per-atom accessor, precomputed so the N-loop stays tight.
   const access = fnames.map((f) => {
     const fm = m.fields[f];
     if (fm && fm.samples && fm.samples.BYTES_PER_ELEMENT !== undefined) {
       const s = fm.samples;
+      if (N === 0 && typeof s.length === 'number') N = s.length;
       return (i: number) => s[i];
     }
     if (fm && fm.fields) {
       const sub = measureToPerAtomRecords(fm, name + '.' + f, label);
+      if (N === 0) N = sub.length;
       return (i: number) => sub[i];
     }
     if (fm && fm.value && Array.isArray(fm.value.shape)) {
       const v = fm.value, shape = v.shape, data = v.data;
+      if (N === 0) N = shape[0];
       if (shape.length === 1) return (i: number) => data[i];
       const tail = shape.slice(1);
       const tailLen = tail.reduce((a: number, b: number) => a * b, 1);
@@ -224,13 +233,6 @@ function measureToPerAtomRecords(m: any, name: string, label: string): any[] {
     throw new Error(label + ': record field "' + name + '.' + f
       + '" is neither scalar (.samples), record (.fields), nor vector (.value)');
   });
-  // N from the first scalar/Value field that exposes a length.
-  let N = 0;
-  for (const f of fnames) {
-    const fm = m.fields[f];
-    if (fm && fm.samples && typeof fm.samples.length === 'number') { N = fm.samples.length; break; }
-    if (fm && fm.value && Array.isArray(fm.value.shape)) { N = fm.value.shape[0]; break; }
-  }
   const out = new Array(N);
   for (let i = 0; i < N; i++) {
     const o: Record<string, any> = {};
