@@ -1132,6 +1132,42 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
   function inferJoint(expr: any, scopes: any) {
     const fields = expr.fields || [];
+    const args = expr.args || [];
+    // Positional joint of ALL-SCALAR components: the variate is the `cat` of
+    // the component variates = a vector (spec §06). Scoped (shape-contract S1)
+    // to the all-scalar case, where the type (vector), the drawn value
+    // [x1,…,xn], and the density (which already consumes the cat array) provably
+    // agree. Vector/record/heterogeneous positional joint still need density
+    // work and keep the legacy domain for now (tracked in the shape-contract
+    // refactor). Mixed positional+keyword falls through to the keyword path.
+    if (args.length > 0 && fields.length === 0) {
+      const domains: any[] = [];
+      let allScalar = true;
+      for (const a of args) {
+        const at = inferExpr(a, scopes);
+        if (T.isMeasure(at)) {
+          domains.push(at.domain);
+          if (!at.domain || at.domain.kind !== 'scalar') allScalar = false;
+        } else if (at.kind === 'deferred' || at.kind === 'any') {
+          domains.push(T.deferred()); allScalar = false;
+        } else if (at.kind === 'failed') {
+          return T.failed('joint cascade');
+        } else {
+          diagnostics.push({
+            severity: 'error',
+            message: 'joint expects measures as components, got ' + T.show(at),
+            loc: a.loc || expr.loc,
+          });
+          return T.failed('joint bad component');
+        }
+      }
+      if (allScalar && domains.length > 0) {
+        const shaped = catShapeType(domains);
+        if (shaped && shaped.kind === 'array') return T.measure(shaped);
+      }
+      // Legacy fallback (unchanged behaviour) for the not-yet-migrated cases.
+      return T.measure(T.record({}));
+    }
     const out: Record<string, any> = {};
     for (const f of fields) {
       const at = inferExpr(f.value, scopes);
