@@ -103,3 +103,36 @@ test('array-of-records is currently permitted (pre-existing §03 tension, not en
     'array-of-records is intentionally still permitted by this change; '
     + 'unexpected error: ' + errText(errors));
 });
+
+// =====================================================================
+// Rejected: tables in records/arrays (§03). Unlike array-of-RECORDS (relied
+// on by the generative executor, left as-is), nothing relies on a table in a
+// record/array, so this IS enforced — a table column lives in a table.
+// =====================================================================
+
+test('a table inside a record is rejected (record fields are scalar/array/record, §03)', () => {
+  const { errors } = infer(`
+    t = table(a = [1.0, 2.0], b = [3.0, 4.0])
+    r = record(x = 1.0, sub = t)
+  `);
+  assert.ok(errors.some((e: any) => /table may not appear inside a record/.test(e.message)),
+    'expected a table-in-record error; got ' + errText(errors));
+});
+
+test('a table inside an array is rejected (arrays are numeric, §03)', () => {
+  const { errors } = infer(`
+    s = table(a = [1.0, 2.0])
+    u = table(a = [3.0, 4.0])
+    b = [s, u]
+  `);
+  assert.ok(errors.some((e: any) => /table may not appear inside an array/.test(e.message)),
+    'expected a table-in-array error; got ' + errText(errors));
+});
+
+test('a table-valued table COLUMN is still allowed (legit nesting unaffected by the guard)', () => {
+  const { errors } = infer(`
+    inner = table(p = [1.0, 2.0])
+    outer = table(x = [10.0, 20.0], sub = inner)
+  `);
+  assert.equal(errors.length, 0, 'a sub-table column must stay legal: ' + errText(errors));
+});

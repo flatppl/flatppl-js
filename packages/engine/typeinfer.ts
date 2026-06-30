@@ -957,6 +957,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const obj = objectLayerNoun(t);
     if (obj) return obj;
     if (t && t.kind === 'tuple') return 'tuple';
+    // A table is barred from a value container: arrays are numeric (§03),
+    // record fields are scalar/array/record (§03). A table column lives in a
+    // table — handled by inferTable's own table-column branch, which never
+    // calls this guard, so legitimate nesting is unaffected.
+    if (t && t.kind === 'table') return 'table';
     return null;
   }
   function checkContainerElem(t: any, loc: any, container: string, label: string) {
@@ -966,6 +971,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const why = (noun === 'tuple')
       ? 'spec §04 — tuples are objects and nest only inside other tuples, '
         + 'not inside an array, record, or table'
+      : (noun === 'table')
+      ? 'spec §03 — arrays are numeric and record fields are scalars, arrays, '
+        + 'or records; a table belongs in a table column'
       : 'spec §04 — measures, kernels, likelihoods and functions are '
         + 'first-class objects but cannot be stored in arrays, records, or tables';
     diagnostics.push({
@@ -1020,13 +1028,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (cT && cT.kind === 'table') {
         fields[k] = _reduceTableType(cT, op);
       } else if (op === 'var' || op === 'std') {
-        fields[k] = T.REAL;
+        // var/std are real-valued but reduce over the ROW axis only, so a
+        // vector-per-entry column keeps its cell shape with a real leaf.
+        fields[k] = _realLeafType(cT);
       } else {
         // sum, prod, mean, maximum, minimum preserve element type.
         fields[k] = cT;
       }
     }
     return T.record(fields);
+  }
+  // Replace the scalar leaf of a (possibly nested-array) column type with
+  // `real`, preserving any array shape — the result type of var/std.
+  function _realLeafType(cT: any): any {
+    if (cT && cT.kind === 'array') return T.array(cT.rank, cT.shape, _realLeafType(cT.elem));
+    return T.REAL;
   }
 
   // table(col1 = [...], col2 = [...]) per spec §03. Each column's
@@ -1369,6 +1385,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
     // Table access (spec §03):
     //   - get(t, i) (integer literal/integer expr) → record per row.
+    //   - get(t, all) (whole row axis) → array of the row record, length nrows.
     //   - get(t, "col") → array of column-element type, length = nrows.
     //   - get(t, ["c1","c2"]) → table sub-selection (deferred for v0.1).
     if (containerT && containerT.kind === 'table') {
@@ -1382,6 +1399,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         // Row access — a record over the column names (table columns
         // become nested records; spec §03).
         return T.rowRecordType(containerT);
+      }
+      if (args.length === 2 && args[1].kind === 'const' && args[1].name === 'all') {
+        // Whole row axis (`t[:]`) → array of the row record, length = nrows
+        // (the runtime returns exactly this; sampler get(t, all)).
+        return T.array(1, [containerT.nrows], T.rowRecordType(containerT));
       }
       if (args.length === 2) {
         // Row access via expression (axis or computed int). Conservative:

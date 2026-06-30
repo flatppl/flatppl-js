@@ -98,6 +98,47 @@ test('nested table: row access t[i] makes the table-column entry a record', () =
   assert.ok(T.equal(t.fields.sub.fields.q, T.REAL));
 });
 
+test('var/std over a vector-per-entry column: type is a real-leaf vector (reduce over rows)', () => {
+  // var/std reduce over the ROW axis only, so a 3-vector-per-row column keeps
+  // its cell shape with a real leaf — not a bare scalar real.
+  const { bindings, errors } = infer(`
+    t = table(p = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], w = [10.0, 20.0])
+    v = var(t)
+  `);
+  assert.equal(errors.length, 0, errors.map((e: any) => e.message).join(' | '));
+  const ty = typeOf(bindings, 'v');
+  assert.equal(ty.kind, 'record');
+  assert.equal(ty.fields.p.kind, 'array');
+  assert.deepEqual(ty.fields.p.shape, [3]);
+  assert.ok(T.equal(ty.fields.p.elem, T.REAL));
+  assert.ok(T.equal(ty.fields.w, T.REAL));
+});
+
+test('all-rows access t[:] infers an array of the row record (not deferred)', () => {
+  const { bindings, errors } = infer(`
+    t = table(x = [1.0, 2.0, 3.0], y = [4.0, 5.0, 6.0])
+    rows = t[:]
+  `);
+  assert.equal(errors.length, 0, errors.map((e: any) => e.message).join(' | '));
+  const t = typeOf(bindings, 'rows');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [3]);
+  assert.equal(t.elem.kind, 'record');
+  assert.ok(T.equal(t.elem.fields.x, T.REAL));
+});
+
+test('all-rows access over a NESTED table infers array of nested row records', () => {
+  const { bindings, errors } = infer(NESTED + `\n  rows = outer[:]`);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'rows');
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [3]);
+  assert.equal(t.elem.kind, 'record');
+  // A table column becomes a nested record in each row record.
+  assert.equal(t.elem.fields.sub.kind, 'record');
+  assert.ok(T.equal(t.elem.fields.sub.fields.p, T.REAL));
+});
+
 test('nested table: chained access t.sub.p types as the inner column vector', () => {
   const { bindings, errors } = infer(NESTED + `\n  pcol = outer.sub.p`);
   assert.equal(errors.length, 0, errors.map((e: any) => e.message).join(' | '));
