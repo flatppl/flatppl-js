@@ -3006,6 +3006,48 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // Set-expression value-type resolution (used by elementof)
   // -------------------------------------------------------------------
 
+  // The cat-shape type rule (spec §07 `cat`): concatenating values of the SAME
+  // structural kind. All scalars → a vector of the unified scalar type (length
+  // = count). All vectors (rank-1 arrays) → a vector of the unified element
+  // type (length = Σ lengths). All records → a merged record (distinct fields).
+  // Mixing structural kinds, or an unsupported component (rank ≥ 2 array, or a
+  // duplicate record field), is NOT permitted → returns null (the caller
+  // diagnoses). Under-resolved (deferred/any) components defer. Used by
+  // positional `cartprod` (sets); `cat` (values) and positional `joint`
+  // (variates) share the SAME spec shape and should adopt this rule too so they
+  // can't drift (not yet wired — see TODO).
+  function catShapeType(parts: any[]): any {
+    if (!parts.length) return null;
+    if (parts.some((t: any) => !t || t.kind === 'deferred' || t.kind === 'any')) return T.deferred();
+    const joinLeaf = (a: any, b: any) => {
+      const u = T.unifyArith(a, b, null);
+      return (u && u.result) ? u.result : T.deferred();
+    };
+    if (parts.every((t: any) => t.kind === 'scalar')) {
+      let e = parts[0];
+      for (let i = 1; i < parts.length; i++) e = joinLeaf(e, parts[i]);
+      return T.array(1, [parts.length], e);
+    }
+    if (parts.every((t: any) => t.kind === 'array' && t.rank === 1)) {
+      let e = parts[0].elem, len = 0, dyn = false;
+      for (const p of parts) {
+        e = joinLeaf(e, p.elem);
+        const d = p.shape && p.shape[0];
+        if (typeof d === 'number') len += d; else dyn = true;
+      }
+      return T.array(1, [dyn ? '%dynamic' : len], e);
+    }
+    if (parts.every((t: any) => t.kind === 'record')) {
+      const out: Record<string, any> = {};
+      for (const p of parts) for (const k in p.fields) {
+        if (Object.prototype.hasOwnProperty.call(out, k)) return null;  // duplicate field
+        out[k] = p.fields[k];
+      }
+      return T.record(out);
+    }
+    return null;  // mixed structural kinds / unsupported component
+  }
+
   function setValueType(expr: any, scopes: any): any {
     if (!expr) return null;
     if (expr.kind === 'const' && SET_VALUE_TYPES[expr.name] !== undefined) {
@@ -3062,7 +3104,24 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
         const elems = (expr.args || []).map((a: any) => setValueType(a, scopes));
         if (elems.some((e: any) => e == null)) return null;
-        return elems.length === 1 ? elems[0] : T.tuple(elems);
+        if (elems.length === 1) return elems[0];
+        // Positional cartprod (spec §03): the set of arrays formed by `cat`-ing
+        // one element from each component — NOT a tuple. Per the §07 cat rule,
+        // components must share a structural kind (all scalar / all vector / all
+        // record); mixing is not permitted. (Per-position membership lives in
+        // the value-set layer — %unknown for cartprod today.)
+        const shaped = catShapeType(elems);
+        if (shaped == null) {
+          diagnostics.push({
+            severity: 'error',
+            message: 'cartprod: components must be all scalar sets, all vector '
+              + 'sets, or all record sets with distinct fields — mixing structural '
+              + 'kinds is not permitted (spec §07 cat)',
+            loc: expr.loc,
+          });
+          return T.failed('cartprod mixed component kinds');
+        }
+        return shaped;
       }
     }
     return null;
