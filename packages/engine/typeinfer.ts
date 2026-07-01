@@ -126,6 +126,10 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: a
   // value set is PROVABLY outside the parameter's required domain (spec
   // §08), e.g. `Normal(sigma = -1.0)`. Reads the valuesets filled above.
   ctx.checkDomainContracts();
+  // Spec §04 "Reification and module scope": functionof/kernelof may not
+  // take a cross-module parameterized value as an input. Needs the dep
+  // registry (cross-module phases) — a no-op without a bundle.
+  ctx.checkCrossModuleReification();
   return ctx.diagnostics;
   // NOTE: no eager post-binding const-eval pass. The resolver is
   // demand-driven (engine-concepts §17.1) — it's invoked only from
@@ -3541,6 +3545,151 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   // ===================================================================
+  // Cross-module reification scope (spec §04 "Reification and module
+  // scope"). `functionof` / `kernelof` reify within the CURRENT module
+  // only: a parameterized value reached through a loaded-module reference
+  // cannot become a reified input — neither by the automatic trace nor as
+  // an explicit boundary node (directly or via a pure alias) — so such a
+  // reification is a static error. A loaded module's CALLABLES and FIXED
+  // values may still be used in the reified DAG (applied, or closed over);
+  // only taking a cross-module PARAMETERIZED value as an input is barred.
+  // `lawof` is unrestricted (a measure has no input list), so it is not
+  // checked here — only the functionof/kernelof input surface is.
+  //
+  // The phase of a cross-module binding is read from the dependency's
+  // already-inferred `LoweredModule` (deps compile before this module —
+  // mirrors `resolveUserModuleRef`'s stochastic-boundary check). Only
+  // `load_module` deps carry parameterized values; standard-module members
+  // are engine-provided callables (always fixed), so they are never
+  // flagged. Without a bundle the dep is unresolved → nothing is flagged
+  // (editor-lint tolerance, matching the load_module rule).
+  // ===================================================================
+  function checkCrossModuleReification() {
+    if (!modules) return;                       // no compile ctx — can't resolve deps
+    const irWalk = require('./ir-walk.ts');
+
+    // Phase of a `(%ref <alias> <name>)` cross-module value, via its
+    // load_module dependency — or null if not a resolvable cross-module ref.
+    function xmodRefPhase(node: any): string | null {
+      if (!node || node.kind !== 'ref') return null;
+      const ns = node.ns;
+      if (!ns || ns === 'self' || ns === 'base' || ns === '%local') return null;
+      const reg = loweredModule.moduleRegistry && loweredModule.moduleRegistry[ns];
+      if (!reg || reg.kind !== 'load_module' || !reg.path) return null;
+      const dep = modules.get(reg.path);
+      if (!dep) return null;
+      const db = dep.loweredModule.bindings.get(node.name);
+      return db ? (db.phase || null) : null;
+    }
+
+    // Follow a node through PURE alias bindings (RHS is a bare ref) to its
+    // terminal — so a boundary `p = a` with `a = m.theta` resolves to
+    // `m.theta`, while `p = y` with `y = m.theta * 2` stops at the derived
+    // current-module node `y` (which correctly CUTS the cross-module dep).
+    function resolvePureAlias(node: any): any {
+      const seen = new Set<string>();
+      let cur = node;
+      while (cur && cur.kind === 'ref' && cur.ns === 'self' && !seen.has(cur.name)) {
+        seen.add(cur.name);
+        const b = loweredModule.bindings.get(cur.name);
+        if (!b || !b.rhs || b.rhs.kind !== 'ref') break;
+        cur = b.rhs;
+      }
+      return cur;
+    }
+
+    // The cross-module parameterized value a node designates (after pure
+    // aliasing), or null. Callables (fixed) and fixed values are excluded
+    // by the phase test — exactly the spec's "callables and fixed values
+    // may be used" allowance.
+    function xmodParamTarget(node: any): any {
+      const t = resolvePureAlias(node);
+      return xmodRefPhase(t) === 'parameterized' ? t : null;
+    }
+
+    function reportXmod(t: any, loc: any, how: string) {
+      diagnostics.push({
+        severity: 'error',
+        message: "'" + t.ns + '.' + t.name + "' is a parameterized value from a loaded "
+          + 'module and cannot become a reified input (' + how + '). `functionof` / '
+          + '`kernelof` reify within the current module only — a loaded module’s '
+          + 'callables and fixed values may be used in a reified DAG, but not its '
+          + 'parameterized values (spec §04 "Reification and module scope").',
+        loc,
+      });
+    }
+
+    // Automatic-trace clause (no explicit boundary): the trace back to
+    // parametric leaves would make any cross-module parameterized value an
+    // input. Walk the reified body's ancestor closure WITHIN this module —
+    // follow self-refs into their RHS (which also follows aliases), stop at
+    // cross-module refs / placeholders, and do NOT descend into a nested
+    // reification's body (its own scope, checked when its node is visited).
+    function walkAutoTrace(body: any, reifLoc: any) {
+      const seenBindings = new Set<string>();
+      const reported = new Set<string>();
+      const stack: any[] = [body];
+      while (stack.length) {
+        const node = stack.pop();
+        if (!node || typeof node !== 'object') continue;
+        if (node.kind === 'ref') {
+          if (node.ns === 'self') {
+            if (seenBindings.has(node.name)) continue;
+            seenBindings.add(node.name);
+            const b = loweredModule.bindings.get(node.name);
+            if (b && b.rhs) stack.push(b.rhs);
+            continue;
+          }
+          const t = xmodParamTarget(node);       // cross-module parametric leaf?
+          if (t) {
+            const key = t.ns + '.' + t.name;
+            if (!reported.has(key)) {
+              reported.add(key);
+              reportXmod(t, reifLoc, 'reached by the automatic trace');
+            }
+          }
+          continue;                              // %local / base / cross-module: leaf
+        }
+        if (node.kind === 'call' && node.op === 'functionof') continue;  // nested scope
+        irWalk.forEachIRChild(node, (c: any) => stack.push(c));
+      }
+    }
+
+    const visit = (ir: any) => {
+      if (!ir || typeof ir !== 'object') return;
+      if (ir.kind === 'call' && ir.op === 'functionof') {
+        const hasBoundaries = Array.isArray(ir.params) && ir.params.length > 0;
+        if (hasBoundaries) {
+          // Explicit-boundary clause. A boundary's origin is `paramSources`
+          // (a bare FieldAccess boundary like `p = m.theta` is rejected at
+          // lowering, so a cross-module boundary is always a local-binding
+          // source that pure-aliases the cross-module value, e.g.
+          // `a = m.theta; functionof(…, p = a)`). A `placeholder` source is
+          // a fresh formal — never cross-module. A `binding` source whose
+          // pure-alias chain lands on a cross-module parameterized value
+          // names it as an input → error; a DERIVED local binding
+          // (`y = m.theta * 2`) stops the alias resolution at `y`, correctly
+          // cutting the cross-module dependency.
+          const srcs = ir.paramSources || [];
+          const kws = ir.paramKwargs || [];
+          for (let i = 0; i < srcs.length; i++) {
+            const src = srcs[i];
+            if (!src || src.kind !== 'binding') continue;
+            const t = xmodParamTarget({ kind: 'ref', ns: 'self', name: src.name });
+            if (t) reportXmod(t, ir.loc,
+              "named as the explicit boundary input '" + (kws[i] || src.name) + "'");
+          }
+        } else {
+          walkAutoTrace(ir.body, ir.loc);
+        }
+        // fall through: descend to find NESTED reifications (own scope/check)
+      }
+      irWalk.forEachIRChild(ir, visit);
+    };
+    for (const [, b] of loweredModule.bindings) visit(b.rhs);
+  }
+
+  // ===================================================================
   // Mass-class inference (spec §11 "Total-mass classes"; engine-concepts
   // §17.3 normalization domain). A second pass after the type walk: for
   // every measure-typed binding, classify its total mass by composing
@@ -3757,7 +3906,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const [, b] of loweredModule.bindings) visit(b.rhs);
   }
 
-  return { diagnostics, inferBinding, inferExpr, fillValuesets, fillMasses, checkDomainContracts };
+  return { diagnostics, inferBinding, inferExpr, fillValuesets, fillMasses, checkDomainContracts,
+    checkCrossModuleReification };
 }
 
 // Mass of an independent product of components (spec §11; Rust
