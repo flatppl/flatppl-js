@@ -46,6 +46,7 @@
 import type { IRNode } from './engine-types';
 
 const T = require('./types.ts');
+const SC = require('./shape-contract.ts');
 const builtins = require('./builtins.ts');
 const aggregateShape = require('./aggregate-shape.ts');
 const vsLib = require('./value-set.ts');
@@ -3064,46 +3065,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // Set-expression value-type resolution (used by elementof)
   // -------------------------------------------------------------------
 
-  // The cat-shape type rule (spec §07 `cat`): concatenating values of the SAME
-  // structural kind. All scalars → a vector of the unified scalar type (length
-  // = count). All vectors (rank-1 arrays) → a vector of the unified element
-  // type (length = Σ lengths). All records → a merged record (distinct fields).
-  // Mixing structural kinds, or an unsupported component (rank ≥ 2 array, or a
-  // duplicate record field), is NOT permitted → returns null (the caller
-  // diagnoses). Under-resolved (deferred/any) components defer. Used by
-  // positional `cartprod` (sets); `cat` (values) and positional `joint`
-  // (variates) share the SAME spec shape and should adopt this rule too so they
-  // can't drift (not yet wired — see TODO).
+  // The cat-shape rule (spec §07 `cat` / §06 positional `joint` / §03
+  // positional `cartprod`) now lives in `shape-contract.ts` as the single
+  // owner — reachable from the materialiser / density layers too, which must
+  // not import typeinfer. `catShapeType` is its TYPE projection
+  // (`typeOfShape ∘ catShape`): `null` → mixed-kind / unsupported component
+  // (the caller diagnoses), a deferred type → under-resolved, else the
+  // array/record type. Behaviour-identical to the former inline helper (pinned
+  // by test/shape-contract.test.ts + the cat/joint/cartprod type suites).
   function catShapeType(parts: any[]): any {
-    if (!parts.length) return null;
-    if (parts.some((t: any) => !t || t.kind === 'deferred' || t.kind === 'any')) return T.deferred();
-    const joinLeaf = (a: any, b: any) => {
-      const u = T.unifyArith(a, b, null);
-      return (u && u.result) ? u.result : T.deferred();
-    };
-    if (parts.every((t: any) => t.kind === 'scalar')) {
-      let e = parts[0];
-      for (let i = 1; i < parts.length; i++) e = joinLeaf(e, parts[i]);
-      return T.array(1, [parts.length], e);
-    }
-    if (parts.every((t: any) => t.kind === 'array' && t.rank === 1)) {
-      let e = parts[0].elem, len = 0, dyn = false;
-      for (const p of parts) {
-        e = joinLeaf(e, p.elem);
-        const d = p.shape && p.shape[0];
-        if (typeof d === 'number') len += d; else dyn = true;
-      }
-      return T.array(1, [dyn ? '%dynamic' : len], e);
-    }
-    if (parts.every((t: any) => t.kind === 'record')) {
-      const out: Record<string, any> = {};
-      for (const p of parts) for (const k in p.fields) {
-        if (Object.prototype.hasOwnProperty.call(out, k)) return null;  // duplicate field
-        out[k] = p.fields[k];
-      }
-      return T.record(out);
-    }
-    return null;  // mixed structural kinds / unsupported component
+    return SC.typeOfShape(SC.catShape(parts));
   }
 
   function setValueType(expr: any, scopes: any): any {
