@@ -26,11 +26,11 @@
     "test":            "node --test 'test/*.test.js'"
   },
   "dependencies": {
-    "vscode-languageclient": "^8.1.0"
+    "vscode-languageclient": "^10.0.0"
   },
   "devDependencies": {
     "@flatppl/engine": "*",
-    "@types/vscode": "^1.75.0",
+    "@types/vscode": "^1.125.0",
     "@vscode/vsce": "^3.9.2",
     "esbuild": "^0.28.0",
     "cytoscape": "^3.30.4",
