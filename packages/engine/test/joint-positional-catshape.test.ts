@@ -60,3 +60,52 @@ test('positional joint: drawn values are the cat-vector [x1, x2] (sampler≡type
   assert.ok(Math.abs(mean(comp[0].samples) - 0.0) < 0.06, 'component 0 ~ N(0,1)');
   assert.ok(Math.abs(mean(comp[1].samples) - 5.0) < 0.06, 'component 1 ~ N(5,1)');
 });
+
+// --- S1-complete: route the FULL cat rule (not just all-scalar) through
+//     shape-contract.catShape. §06: a positional joint's variate is the `cat`
+//     of the component variates — all scalars → a vector, all VECTORS → a
+//     concatenated vector, all RECORDS → a merged record; mixing shape classes
+//     is a static error. Before S1-complete every non-all-scalar positional
+//     joint typed as an empty `record({})` (the density already consumes the
+//     right flat/record variate — only the advertised type was wrong).
+
+test('positional joint of vectors → measure over the concatenated vector', () => {
+  const r = processSource('m = joint(iid(Normal(0.0, 1.0), 3), iid(Normal(0.0, 1.0), 2))');
+  const errs = (r.diagnostics || []).filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0, errs.map((e: any) => e.message).join(' | '));
+  const t = r.bindings.get('m').inferredType;
+  assert.equal(t.kind, 'measure');
+  assert.equal(t.domain.kind, 'array', 'domain is a concatenated vector, got ' + T.show(t.domain));
+  assert.deepEqual(t.domain.shape, [5]);
+  assert.ok(T.equal(t.domain.elem, T.REAL));
+});
+
+test('positional joint of vectors: density consumes the flat cat-vector (type≡density)', async () => {
+  const { ctx } = ctxFor(
+    'm = joint(iid(Normal(0.0, 1.0), 3), iid(Normal(0.0, 1.0), 2))\n'
+    + 'lp = logdensityof(m, [0.1, 0.2, 0.3, 0.4, 0.5])', 1);
+  const lp = await ctx.getMeasure('lp');
+  let expected = 0;
+  for (const x of [0.1, 0.2, 0.3, 0.4, 0.5]) expected += normalLogpdf(x, 0, 1);
+  assert.ok(Math.abs(lp.samples[0] - expected) < 1e-10,
+    `positional-vector-joint density: got ${lp.samples[0]}, expected ${expected}`);
+});
+
+test('positional joint of records → measure over the merged record', () => {
+  const r = processSource(
+    'ra = joint(a = Normal(0.0, 1.0), b = Normal(0.0, 1.0))\n'
+    + 'rb = joint(c = Normal(0.0, 1.0), d = Normal(0.0, 1.0))\n'
+    + 'm = joint(ra, rb)');
+  const errs = (r.diagnostics || []).filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0, errs.map((e: any) => e.message).join(' | '));
+  const t = r.bindings.get('m').inferredType;
+  assert.equal(t.domain.kind, 'record', 'domain is a merged record, got ' + T.show(t.domain));
+  assert.deepEqual(Object.keys(t.domain.fields), ['a', 'b', 'c', 'd']);
+});
+
+test('positional joint mixing shape classes (scalar + vector) is a static error (§06)', () => {
+  const r = processSource('m = joint(Normal(0.0, 1.0), iid(Normal(0.0, 1.0), 3))');
+  const errs = (r.diagnostics || []).filter((d: any) => d.severity === 'error');
+  assert.ok(errs.some((e: any) => /mixing shape classes|all scalar.*all vector|distinct variate/i.test(e.message)),
+    'expected a mixed-shape-class static error; got ' + JSON.stringify(errs.map((e: any) => e.message)));
+});

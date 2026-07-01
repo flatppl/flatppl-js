@@ -1134,23 +1134,24 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function inferJoint(expr: any, scopes: any) {
     const fields = expr.fields || [];
     const args = expr.args || [];
-    // Positional joint of ALL-SCALAR components: the variate is the `cat` of
-    // the component variates = a vector (spec §06). Scoped (shape-contract S1)
-    // to the all-scalar case, where the type (vector), the drawn value
-    // [x1,…,xn], and the density (which already consumes the cat array) provably
-    // agree. Vector/record/heterogeneous positional joint still need density
-    // work and keep the legacy domain for now (tracked in the shape-contract
-    // refactor). Mixed positional+keyword falls through to the keyword path.
+    // Positional joint (spec §06): the variate is the `cat` of the component
+    // variates — all scalars → a vector, all vectors → a concatenated vector,
+    // all records → a merged record; mixing shape classes (or a duplicate
+    // variate name across record components) is a static error. The shape is
+    // owned by shape-contract.catShape (shared with `cat` §07 and positional
+    // `cartprod` §03 so the three can't drift). The density side already
+    // consumes the flat/record variate correctly via consume/rest — before this
+    // the type alone was wrong (an empty `record({})` for every non-all-scalar
+    // case). Mixed positional+keyword args fall through to the keyword (record)
+    // path below.
     if (args.length > 0 && fields.length === 0) {
       const domains: any[] = [];
-      let allScalar = true;
       for (const a of args) {
         const at = inferExpr(a, scopes);
         if (T.isMeasure(at)) {
           domains.push(at.domain);
-          if (!at.domain || at.domain.kind !== 'scalar') allScalar = false;
         } else if (at.kind === 'deferred' || at.kind === 'any') {
-          domains.push(T.deferred()); allScalar = false;
+          domains.push(T.deferred());
         } else if (at.kind === 'failed') {
           return T.failed('joint cascade');
         } else {
@@ -1162,12 +1163,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           return T.failed('joint bad component');
         }
       }
-      if (allScalar && domains.length > 0) {
-        const shaped = catShapeType(domains);
-        if (shaped && shaped.kind === 'array') return T.measure(shaped);
+      const spec = SC.catShape(domains);
+      if (spec == null) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'joint: positional components must be all scalar, all vector, '
+            + 'or all record measures with distinct variate names — mixing shape '
+            + 'classes is not permitted (spec §06); use the keyword form '
+            + 'joint(a = …, b = …) to name components',
+          loc: expr.loc,
+        });
+        return T.failed('joint mixed shape classes');
       }
-      // Legacy fallback (unchanged behaviour) for the not-yet-migrated cases.
-      return T.measure(T.record({}));
+      return T.measure(SC.typeOfShape(spec));
     }
     const out: Record<string, any> = {};
     for (const f of fields) {
