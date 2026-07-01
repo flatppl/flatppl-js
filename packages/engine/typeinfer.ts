@@ -2405,6 +2405,46 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.deferred();
   }
 
+  // The codomain of `pushfwd(f, M)` — the type f produces when applied to a
+  // value of M's variate type. `f.result` is the *definition-time* type (the
+  // reified param bound to `any`), so it does NOT reflect the base's shape:
+  // `fn(2.0 .* _).result` is a scalar even for a vector base. Re-infer f's
+  // single-param body with the param bound to `inputType` — the call-site
+  // specialization the FlatPIR polymorphic path prescribes (mirrors
+  // `inferReification`'s body walk, with a concrete input type instead of
+  // `any`). Returns the value-typed codomain, or `null` → the caller keeps its
+  // scalar default for the cases this can't specialize (a bare builtin symbol,
+  // a multi-param callable, an unresolved base). The density side already
+  // evaluates f's body at the drawn value, so this makes the TYPE agree.
+  function _pushfwdCodomain(fExpr: any, inputType: any, scopes: any): any {
+    if (!inputType || inputType.kind === 'failed' || inputType.kind === 'deferred'
+        || inputType.kind === 'any') return null;
+    // Resolve fExpr to a single-param reification node: an inline `fn(...)` /
+    // `functionof(...)`, or a self-ref binding to one.
+    let reif: any = null;
+    if (fExpr && fExpr.op === 'functionof') reif = fExpr;
+    else if (fExpr && fExpr.kind === 'ref' && fExpr.ns === 'self') {
+      const b = loweredModule.bindings.get(fExpr.name);
+      if (b && b.rhs && b.rhs.op === 'functionof') reif = b.rhs;
+    }
+    if (!reif || !Array.isArray(reif.params) || reif.params.length !== 1 || !reif.body) {
+      return null;
+    }
+    const scope = new Map();
+    scope.set(reif.params[0], inputType);
+    // Speculative: infer the body purely to READ its codomain. Any diagnostics
+    // it raises (e.g. `exp` applied to a record base — an ill-typed pushfwd we
+    // don't type-check here) must NOT leak into the module's stream, or they'd
+    // change unrelated results (a spurious error surfaced through this query
+    // broke the disintegrate spec-coverage contract). Drop anything the walk
+    // appended; when the body doesn't resolve to a value the caller falls back
+    // to its scalar default, unchanged from before S2.
+    const savedLen = diagnostics.length;
+    const bodyT: any = inferExpr(reif.body, scopes.concat([scope]));
+    if (diagnostics.length > savedLen) diagnostics.length = savedLen;
+    return T.isValue(bodyT) ? bodyT : null;
+  }
+
   function inferPushfwd(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 2) return arityError('pushfwd', '2', args.length, expr.loc);
@@ -2412,11 +2452,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // here (callable-type tracking is the orchestrator's job).
     inferExpr(args[0], scopes);
     const m2 = inferExpr(args[1], scopes);
-    if (T.isMeasure(m2)) return T.measure(T.REAL);
+    if (T.isMeasure(m2)) {
+      const cod = _pushfwdCodomain(args[0], m2.domain, scopes);
+      return T.measure(cod || T.REAL);
+    }
     if (m2 && m2.kind === 'kernel') {
-      // Preserve the kernel's input signature; only the output
-      // measure's variate type changes.
-      return { kind: 'kernel', inputs: m2.inputs || {}, output: T.measure(T.REAL) };
+      // pushfwd acts on the kernel's OUTPUT measures (spec §06); preserve the
+      // input signature, specialize the output variate to f's codomain.
+      const outMeasure = m2.output;
+      const baseDomain = (outMeasure && T.isMeasure(outMeasure)) ? outMeasure.domain : null;
+      const cod = baseDomain ? _pushfwdCodomain(args[0], baseDomain, scopes) : null;
+      return { kind: 'kernel', inputs: m2.inputs || {}, output: T.measure(cod || T.REAL) };
     }
     if (m2 && m2.kind === 'failed') return T.failed('pushfwd cascade');
     // Permissive default — pushfwd OUTSIDE measure/kernel context
