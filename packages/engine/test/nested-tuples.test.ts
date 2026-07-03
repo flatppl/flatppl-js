@@ -70,6 +70,27 @@ test('tuple t[i]: indexing past the end is a 1-based out-of-range error', () => 
   assert.match(errors[0].message, /range/i);
 });
 
+// get0 is the ZERO-based variant of get (spec §07). Regression for the bug
+// where get0 on a tuple was routed 1-based (like `get`), so get0(t, 0)
+// resolved to index -1 and errored "tuple index 0 out of range". Exact
+// scenario: the determiniser projects a builtin_sample (value, rngstate)
+// tuple via get0(__sample, 0) / get0(__sample, 1).
+test('tuple get0 is 0-based by type: get0(t,0) is the first element', () => {
+  const { bindings, errors } = infer(`
+    t = (10, 2.5)
+    x = get0(t, 0)
+    y = get0(t, 1)
+  `);
+  assert.equal(errors.length, 0, 'unexpected errors: ' + errors.map((e: any) => e.message).join(' | '));
+  assert.ok(T.equal(typeOf(bindings, 'x'), T.INTEGER), 'get0(t,0) must be integer (first elem), got ' + T.show(typeOf(bindings, 'x')));
+  assert.ok(T.equal(typeOf(bindings, 'y'), T.REAL), 'get0(t,1) must be real (second elem), got ' + T.show(typeOf(bindings, 'y')));
+});
+
+test('tuple get0: runtime value is 0-based and agrees with the type', () => {
+  assert.equal(valueOf('x', `t = (10, 2.5)\nx = get0(t, 0)`), 10);
+  assert.equal(valueOf('y', `t = (10, 2.5)\ny = get0(t, 1)`), 2.5);
+});
+
 // =====================================================================
 // Nested tuples — literal, access, decomposition
 // =====================================================================
