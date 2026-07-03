@@ -564,6 +564,13 @@ const EVALUABLE_OPS = new Set([
   'lt', 'le', 'gt', 'ge', 'equal', 'unequal',
   // Predicates → boolean.
   'isfinite', 'isinf', 'isnan', 'iszero',
+  // Set membership → boolean (spec §07 `x in S`). NOT an ARITH_OP: the second
+  // arg is a SET descriptor (interval / named set), not a scalar, so it
+  // dispatches through a dedicated evaluateCall case (like selectbins), and
+  // isEvaluable skips the set arg (which isn't itself an evaluable value).
+  // Reached as a value op in the deterministic floor: the determiniser lowers
+  // `truncate(M, S)` to `ifelse(in(v, S), density, neg(inf))`.
+  'in',
   // Logic / conditionals.
   'land', 'lor', 'lxor', 'lnot', 'ifelse',
   // Reductions over arrays (sampler.js implements the runtime ops). The

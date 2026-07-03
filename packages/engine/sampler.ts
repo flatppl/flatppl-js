@@ -2605,6 +2605,39 @@ function evaluateCall(ir: any, env: any): any {
     }
     return out;
   }
+  if (op === 'in') {
+    // x in S (spec §07 "Membership") → boolean. args[0] is the tested scalar;
+    // args[1] is a SET descriptor (not a value expression). `interval(lo, hi)`
+    // is the CLOSED interval [lo, hi] (spec §03) — exactly the shape the
+    // determiniser's truncate gate emits: `ifelse(in(v, S), density, neg(inf))`.
+    // Named real/integer sets are also handled so a general `x in S` evaluates.
+    const xRaw = evaluateExpr(ir.args[0], env);
+    const x = valueLib.isValue(xRaw) ? xRaw.data : xRaw;
+    const setIR = ir.args[1];
+    if (setIR && setIR.kind === 'call' && setIR.op === 'interval'
+        && Array.isArray(setIR.args) && setIR.args.length === 2) {
+      const loRaw = evaluateExpr(setIR.args[0], env);
+      const hiRaw = evaluateExpr(setIR.args[1], env);
+      const lo = valueLib.isValue(loRaw) ? loRaw.data : loRaw;
+      const hi = valueLib.isValue(hiRaw) ? hiRaw.data : hiRaw;
+      return x >= lo && x <= hi;
+    }
+    const setName = setIR && setIR.kind === 'const' ? setIR.name
+      : (setIR && setIR.kind === 'ref' && setIR.ns === 'self') ? setIR.name
+      : null;
+    switch (setName) {
+      case 'reals':          return Number.isFinite(x);
+      case 'posreals':       return Number.isFinite(x) && x > 0;
+      case 'nonnegreals':    return Number.isFinite(x) && x >= 0;
+      case 'unitinterval':   return x >= 0 && x <= 1;
+      case 'integers':       return Number.isInteger(x);
+      case 'posintegers':    return Number.isInteger(x) && x >= 1;
+      case 'nonnegintegers': return Number.isInteger(x) && x >= 0;
+      case 'booleans':       return x === true || x === false || x === 0 || x === 1;
+    }
+    throw new Error("evaluateCall: `in` unsupported set shape (kind="
+      + (setIR && setIR.kind) + (setIR && setIR.op ? ", op=" + setIR.op : "") + ")");
+  }
   // Higher-order value-domain ops (engine-concepts §18.1 Phase 5c):
   // broadcast / reduce / scan / filter migrated to ops-declarations.ts
   // as kind='higher-order'. Their `logical(ir, ctx)` does its own
