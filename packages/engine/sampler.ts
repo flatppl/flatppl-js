@@ -2633,10 +2633,16 @@ function evaluateCall(ir: any, env: any): any {
       case 'integers':       return Number.isInteger(x);
       case 'posintegers':    return Number.isInteger(x) && x >= 1;
       case 'nonnegintegers': return Number.isInteger(x) && x >= 0;
-      case 'booleans':       return x === true || x === false || x === 0 || x === 1;
+      case 'booleans':       return x === 0 || x === 1;
     }
+    /* c8 ignore start */
+    // Defensive: the determiniser only emits `in(v, interval(...))` (the truncate
+    // gate); named sets are handled above and refs are inlined by the lift before
+    // this point, so an unrecognised set shape does not arise in practice — but
+    // refuse loudly rather than silently mis-answer membership.
     throw new Error("evaluateCall: `in` unsupported set shape (kind="
       + (setIR && setIR.kind) + (setIR && setIR.op ? ", op=" + setIR.op : "") + ")");
+    /* c8 ignore stop */
   }
   // Higher-order value-domain ops (engine-concepts §18.1 Phase 5c):
   // broadcast / reduce / scan / filter migrated to ops-declarations.ts
