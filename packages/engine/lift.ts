@@ -2788,6 +2788,18 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
         }
         return true;
       }
+      // x in S (spec §07 membership) — args[1] is a SET descriptor
+      // (interval(...) / a named set), NOT a value expression. interval and
+      // the set constructors aren't in EVALUABLE_OPS, so naively recursing
+      // into the set arg would reject the whole call (same structural
+      // exception aggregate/broadcast use for their non-value args). Require
+      // only the tested value (args[0]) be evaluable; the set arg is resolved
+      // when membership is computed (sampler.evaluateCall `in` case).
+      if (ir.op === 'in') {
+        const args = ir.args || [];
+        if (args.length !== 2) return false;
+        return isEvaluable(args[0]);
+      }
       // All args / kwargs / fields must themselves be evaluable.
       // record IR uses `fields: [{name, value}, ...]` instead of args,
       // so we walk that shape too — a record(a=x, b=y) is evaluable

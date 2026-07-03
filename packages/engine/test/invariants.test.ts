@@ -106,6 +106,10 @@ const SAMPLER_INLINE_EVALUABLE = new Set([
   'polynomial', 'bernstein', 'stepwise',
   // Binning (spec §07). bincounts also kwargs-shaped.
   'bincounts', 'selectbins',
+  // Set membership (spec §07 `x in S`). Dispatched by evaluateCall via a
+  // dedicated case: its second arg is a SET descriptor (interval / named set),
+  // not a scalar, so it doesn't fit the positional-spread ARITH_OPS shape.
+  'in',
   // Higher-order ops (filter, reduce, scan, broadcast) are dispatched
   // via dedicated cases in evaluateCall — each evaluates a referenced
   // function's body per element rather than fitting the positional-
