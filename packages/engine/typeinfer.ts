@@ -1436,12 +1436,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (containerT && containerT.kind === 'failed') return T.failed('get cascade');
 
     // Tuple integer-index: redirect to tuple_get's existing inferrer.
-    // Surface `t[i]` is 1-based (spec §04), so resolve the slot one-based.
+    // `get` (surface `t[i]`) is 1-based (spec §04/§07); `get0` is the
+    // zero-based variant (spec §07 "get0 = zero-based variant of get"), so
+    // resolve the slot base off the op — mirrors the runtime's
+    // `oneBased = (op === 'get')` in sampler.evaluateCall. (Hardcoding 1-based
+    // here rejected `get0(t, 0)` — the determiniser's `(value, rngstate)`
+    // sample-tuple projection — as out-of-range.)
     if (containerT && containerT.kind === 'tuple'
         && args.length === 2
         && args[1].kind === 'lit'
         && typeof args[1].value === 'number') {
-      return inferTupleGet(expr, scopes, true);
+      return inferTupleGet(expr, scopes, expr.op === 'get');
     }
 
     // Record single-field access: redirect to get_field's shape rule.
