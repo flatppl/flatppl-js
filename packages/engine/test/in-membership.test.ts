@@ -30,9 +30,29 @@ test('`x in interval(lo,hi)` gates ifelse — closed interval (spec §03/§07)',
 });
 
 test('`x in <named set>` membership via ifelse', async () => {
-  assert.equal(await scoreValue('lp = ifelse(1.5 in posreals, 1.0, 0.0)', 'lp'), 1.0);
-  assert.equal(await scoreValue('lp = ifelse(0.0 in posreals, 1.0, 0.0)', 'lp'), 0.0);      // strict > 0
-  assert.equal(await scoreValue('lp = ifelse(0.0 in nonnegreals, 1.0, 0.0)', 'lp'), 1.0);   // >= 0
+  const inSet = async (x: string, s: string) =>
+    scoreValue(`lp = ifelse(${x} in ${s}, 1.0, 0.0)`, 'lp');
+  // reals: any finite; posreals strict > 0; nonnegreals >= 0.
+  assert.equal(await inSet('3.5', 'reals'), 1.0);
+  assert.equal(await inSet('1.5', 'posreals'), 1.0);
+  assert.equal(await inSet('0.0', 'posreals'), 0.0);       // strict > 0
+  assert.equal(await inSet('-2.0', 'posreals'), 0.0);
+  assert.equal(await inSet('0.0', 'nonnegreals'), 1.0);    // >= 0
+  assert.equal(await inSet('-1.0', 'nonnegreals'), 0.0);
+  // unitinterval [0, 1] closed.
+  assert.equal(await inSet('0.5', 'unitinterval'), 1.0);
+  assert.equal(await inSet('1.0', 'unitinterval'), 1.0);
+  assert.equal(await inSet('1.5', 'unitinterval'), 0.0);
+  // integer sets: integer-valued only; pos >= 1; nonneg >= 0.
+  assert.equal(await inSet('3.0', 'integers'), 1.0);
+  assert.equal(await inSet('3.5', 'integers'), 0.0);       // non-integer
+  assert.equal(await inSet('2.0', 'posintegers'), 1.0);
+  assert.equal(await inSet('0.0', 'posintegers'), 0.0);    // >= 1
+  assert.equal(await inSet('0.0', 'nonnegintegers'), 1.0); // >= 0
+  assert.equal(await inSet('-1.0', 'nonnegintegers'), 0.0);
+  // booleans: {0, 1}.
+  assert.equal(await inSet('1.0', 'booleans'), 1.0);
+  assert.equal(await inSet('2.0', 'booleans'), 0.0);
 });
 
 test('truncate in-support density lowers through the `in` gate', async () => {
