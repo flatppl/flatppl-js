@@ -46,3 +46,27 @@ test('truncate in-support density lowers through the `in` gate', async () => {
   const expect = -0.5 * Math.log(2 * Math.PI) - 0.5 * 0.25; // log N(0.5; 0, 1)
   assert.ok(Math.abs(v - expect) < 1e-12, `${v} vs ${expect}`);
 });
+
+test('truncate out-of-support lowers to -inf through the `in` gate', async () => {
+  // Out of support the gate returns neg(inf) (log 0 = -∞). A fixed-phase
+  // binding that resolves to a non-finite value (here via builtin_logdensityof
+  // forcing the fixed-value path) must materialise as -Infinity, not surface as
+  // a spurious "no derivation" — fixedValueToMeasure accepts ±inf, not just
+  // finite scalars.
+  const v = await scoreValue(
+    'lp = ifelse(2.5 in interval(-1.0, 2.0), '
+    + 'builtin_logdensityof(Normal, record(mu = 0.0, sigma = 1.0), 2.5), neg(inf))',
+    'lp',
+  );
+  assert.equal(v, -Infinity);
+});
+
+test('a fixed-phase non-finite scalar (logdensity + -inf) materialises', async () => {
+  // add(builtin_logdensityof(...), neg(inf)) is fixed-phase, resolves to -inf,
+  // and must materialise (was dropped by the finite-only fixedValueToMeasure guard).
+  const v = await scoreValue(
+    'lp = add(builtin_logdensityof(Normal, record(mu = 0.0, sigma = 1.0), 2.5), neg(inf))',
+    'lp',
+  );
+  assert.equal(v, -Infinity);
+});

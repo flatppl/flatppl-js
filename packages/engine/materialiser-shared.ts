@@ -738,7 +738,12 @@ function pushModuleRegistry(ctx: any) {
  * objects); the caller falls through to derivation-based dispatch.
  */
 function fixedValueToMeasure(v: any, sampleCount: any): any {
-  if (typeof v === 'number' && Number.isFinite(v)) {
+  // ±Infinity is a legitimate deterministic scalar — a log-density outside a
+  // truncate's support is log 0 = −∞, which the determiniser emits as the
+  // else-branch of `ifelse(in(v, S), density, neg(inf))`. Accept any number
+  // except NaN (NaN signals an actual numeric error, not a value); rejecting
+  // ±inf here dropped the measure and surfaced as a spurious "no derivation".
+  if (typeof v === 'number' && !Number.isNaN(v)) {
     // engine-concepts §20.2 / TODO Phase 1: a fixed-phase scalar is a
     // rank-0 Value (`{shape: [], data: Float64Array([v])}`); broadcasting
     // against atom-batched operands happens lazily in valueOps via
