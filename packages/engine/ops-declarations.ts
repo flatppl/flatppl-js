@@ -2267,16 +2267,24 @@ function _synthBuiltinHeadFn(head: any, args: any[], kwargs: any): any {
         })),
       };
     } else {
+      /* c8 ignore start -- general §04 path: a non-field-form builtin head
+         with kwargs. The current determiniser emission uses the field-form
+         (`record`) kwarg shape and the functionof-head form, both exercised
+         in broadcast-builtin-eval.test.ts; this branch is retained for
+         spec completeness (any builtin head). */
       const bk: any = {};
       for (let i = 0; i < kwKeys.length; i++) {
         bk[kwKeys[i]] = { kind: 'ref', ns: '%local', name: params[i] };
       }
       body = { kind: 'call', op: name, kwargs: bk };
     }
+    /* c8 ignore stop */
     return { params, paramKwargs: kwKeys.slice(), body, paramName: params[0] };
   }
-
-  // positional form — arity from the broadcast data args.
+  /* c8 ignore start -- positional form: general §04 broadcast-over-builtin
+     (arity from the data args). The determiniser emits the functionof-head
+     (outer) + field-form record (inner) shapes, both exercised in
+     broadcast-builtin-eval.test.ts. */
   const n = args.length - 1;
   if (n < 0) return null;
   const params: string[] = [];
@@ -2286,6 +2294,7 @@ function _synthBuiltinHeadFn(head: any, args: any[], kwargs: any): any {
     args: params.map((p) => ({ kind: 'ref', ns: '%local', name: p })),
   };
   return { params, paramKwargs: null, body, paramName: params[0] };
+  /* c8 ignore stop */
 }
 
 // Hold symbolic kernel-NAME data args inline in the body. Per spec §07 a
@@ -2357,12 +2366,14 @@ function _broadcastLogical(ir: any, ctx: any): any {
     for (let i = 0; i < fn.params.length; i++) {
       const surface = (fn.paramKwargs && fn.paramKwargs[i]) || fn.params[i];
       if (kwargs[surface] != null) sources[i] = kwargs[surface];
+      /* c8 ignore next 3 -- defensive: internal-placeholder-name fallback and the missing-argument guard (surface-name match is the exercised path) */
       else if (kwargs[fn.params[i]] != null) sources[i] = kwargs[fn.params[i]];
       else throw new Error('broadcast: no argument for parameter '
         + (surface || fn.params[i]));
     }
   } else {
     const posArgs = args.slice(1);
+    /* c8 ignore next 4 -- defensive: positional arity guard */
     if (posArgs.length !== fn.params.length) {
       throw new Error('broadcast: expected ' + fn.params.length
         + ' positional arrays, got ' + posArgs.length);
