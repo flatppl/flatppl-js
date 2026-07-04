@@ -74,6 +74,24 @@ test('builtinLogdensityofPositional: matches REGISTRY.logpdfFn directly', () => 
   assert.ok(Math.abs(a - b) < 1e-15);
 });
 
+test('builtinLogdensityof: bare-scalar kernel_input == record form (Poisson)', () => {
+  // spec §07: kernel_input is "a valid kernel input value" for
+  // kernel(kernel_input) — a positional application Poisson(rate) is
+  // valid, so a bare scalar is spec-legal, not just a record.
+  const rate = 2.5, k = 3;
+  const expected = k * Math.log(rate) - rate - Math.log(6); // ln(3!) = ln 6
+  const viaRecord = densityPrims.builtinLogdensityof('Poisson', { rate }, k);
+  const viaBare = densityPrims.builtinLogdensityof('Poisson', rate, k);
+  assert.ok(Math.abs(viaRecord - expected) < 1e-12);
+  assert.ok(Math.abs(viaBare - expected) < 1e-12);
+});
+
+test('builtinLogdensityof: bare positional list == record form (Normal)', () => {
+  const viaRecord = densityPrims.builtinLogdensityof('Normal', { mu: 0.0, sigma: 1.0 }, 0.0);
+  const viaPositional = densityPrims.builtinLogdensityof('Normal', [0.0, 1.0], 0.0);
+  assert.ok(Math.abs(viaRecord - viaPositional) < 1e-15);
+});
+
 test('builtinLogdensityof: unknown kernel name throws', () => {
   assert.throws(() => densityPrims.builtinLogdensityof('NotARealKernel', {}, 0),
     /unknown kernel/);
