@@ -13,6 +13,7 @@ import { getMeasure } from './engine-facade.js';
 import { applyRememberedSelections, rememberPlanSelections } from './overrides.js';
 import { showPlotMessage, updatePlotProgress } from './render-frame.js';
 import { renderProfilePlotForCurrent } from './render-profile.js';
+import { buildInferenceControl } from './render-controls.js';
 import { esc } from './util.js';
 import { errorsForBinding } from './render-frame.js';
 import { renderEmpiricalMeasure } from './render-samples.js';
@@ -135,10 +136,33 @@ export function renderPlotForCurrent(ctx: Ctx) {
       if (ctx.currentPlotPlan !== planForCall) return;
       const msg = err && err.message ? err.message : String(err);
       if (msg === 'cancelled') {
-        // User clicked Stop. Make the message actionable rather
-        // than dead-end so they know how to retry.
-        const name = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'this binding';
-        showPlotMessage(ctx, 'Sampling cancelled. Click <strong>' + name + '</strong> in the graph to retry.', { hint: true });
+        // User clicked Stop. Keep the pane actionable rather than a dead end.
+        // For a posterior, mount the sampler picker inline so the user can
+        // switch backend (or just re-roll) and press Sample to retry WITHOUT
+        // round-tripping through the graph — a graph re-tap would re-sample
+        // with the old backend before they could change it. Non-posteriors
+        // have no sampler to pick, so keep the graph-retry hint.
+        const nm = ctx.currentPlotBindingName;
+        const isPosterior = !!(
+          nm && ctx.derivationsState && ctx.derivationsState.derivations &&
+          ctx.derivationsState.derivations[nm] &&
+          ctx.derivationsState.derivations[nm].kind === 'bayesupdate'
+        );
+        if (isPosterior && ctx.onInferenceChange) {
+          showPlotMessage(ctx, 'Sampling cancelled. Pick a sampler and press <strong>Sample</strong> to retry.', { hint: true });
+          const host = document.getElementById('plot-empty');
+          if (host) {
+            const row = document.createElement('div');
+            row.style.marginTop = '0.6em';
+            row.style.display = 'flex';
+            row.style.justifyContent = 'center';
+            row.appendChild(buildInferenceControl(ctx, ctx.onInferenceChange));
+            host.appendChild(row);
+          }
+        } else {
+          const name = nm ? esc(nm) : 'this binding';
+          showPlotMessage(ctx, 'Sampling cancelled. Click <strong>' + name + '</strong> in the graph to retry.', { hint: true });
+        }
       } else {
         // Real errors are actionable; not italic/dimmed.
         showPlotMessage(ctx, 'Could not compute plot: ' + esc(msg));
