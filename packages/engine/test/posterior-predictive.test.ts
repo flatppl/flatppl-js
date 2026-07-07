@@ -164,3 +164,33 @@ posterior = bayesupdate(L, prior)
   const arr = Array.from(s) as number[];
   assert.ok(arr.every((v) => Number.isFinite(v)), 'all y_rep finite');
 });
+
+test('bayesupdate + PPC through a pushfwd(fn(exp(_))) likelihood (lognormal); density vs conjugate oracle', async () => {
+  // pushfwd(fn(exp(_)), Normal(mu,1)) is LogNormal(mu,1): log(y) ~ Normal(mu,1).
+  // The bijection is synthesised by invertExpr (exp→log), not an explicit
+  // bijection(...) annotation — this used to CRASH the likelihood-density walk
+  // ("v.subarray is not a function") because the synthesised inverse param
+  // (__pf_y) leaked into the base measure's per-atom refArray slice. With prior
+  // mu~Normal(0,1) and the data below, the posterior is conjugate:
+  //   posterior mean = sum(log y_data) / (1 + n) = 2.37154 / 6 = 0.39526.
+  const src = `
+y_data = [1.2, 3.1, 0.8, 2.4, 1.5]
+mu ~ Normal(0.0, 1.0)
+prior = lawof(record(mu = mu))
+y ~ iid(pushfwd(fn(exp(_)), Normal(mu, 1.0)), 5)
+forward_kernel = kernelof(record(y = y), mu = mu)
+L = likelihoodof(forward_kernel, record(y = y_data))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx } = ctxFor(src, 40000);
+  let d = null; for (const n of Object.keys(ctx.derivations)) if (ctx.derivations[n] && ctx.derivations[n].kind === 'bayesupdate') d = ctx.derivations[n];
+  assert.ok(d, 'bayesupdate derivation present');
+  const posterior = await ctx.getMeasure('posterior');
+  const { mean } = weightedMeanStd(posterior.fields.mu.samples, posterior.logWeights);
+  assert.ok(Math.abs(mean - 0.39526) < 0.05, `pushfwd-lognormal posterior mean ${mean} vs conjugate oracle 0.39526`);
+  // And the PPC over the pushfwd forward field builds with finite draws.
+  const ppc = await pp.buildPosteriorPredictive(d, ctx, posterior);
+  assert.ok(ppc && ppc.fields && ppc.fields.y, 'PPC built over the pushfwd forward field');
+  const s = Array.from(ppc.fields.y.yRep.samples) as number[];
+  assert.ok(s.length > 0 && s.every((v) => Number.isFinite(v)), 'finite y_rep');
+});
