@@ -982,7 +982,15 @@ export function renderGenQuantitiesDropdown(ctx: Ctx, candidates: Array<{ name: 
       // re-filters these by present axis keys, so stale entries self-heal.
       if (cb.checked) {
         if (idx < 0) sel.genQuantities.push(c.name);
-        if (sel.selected.indexOf(c.name) < 0) sel.selected.push(c.name);
+        // Respect the correlations axis cap (the Variates dropdown enforces the
+        // same limit): register the derived field and seed it into marginals
+        // unconditionally, but only auto-add it to the correlations selection
+        // when there's room — otherwise a gen-quantity toggle would silently
+        // push `selected` past CORRELATIONS_MAX_AXES.
+        if (sel.selected.indexOf(c.name) < 0
+            && sel.selected.length < ctx.CORRELATIONS_MAX_AXES) {
+          sel.selected.push(c.name);
+        }
         if (sel.marginalGroups.indexOf(c.name) < 0) sel.marginalGroups.push(c.name);
       } else {
         if (idx >= 0) sel.genQuantities.splice(idx, 1);
