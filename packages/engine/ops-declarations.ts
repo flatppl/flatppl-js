@@ -2216,6 +2216,127 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
   return ops.dispatchVariant(opName!, opInputs, { wrappingOp: 'broadcast' });
 }
 
+// Read a bare-builtin / kernel-name from a head or argument IR node,
+// accepting the three shapes `_resolveKernelName` (sampler.ts) accepts:
+//   {kind:'ref', name}  ·  {kind:'call', op}  ·  {kind:'lit', value:'…'}
+// Returns null for any other shape.
+function _headNameOf(node: any): string | null {
+  if (!node || typeof node !== 'object') return null;
+  if (node.kind === 'ref' && typeof node.name === 'string') return node.name;
+  if (node.kind === 'call' && typeof node.op === 'string') return node.op;
+  if (node.kind === 'const' && typeof node.name === 'string') return node.name;
+  if (node.kind === 'lit' && typeof node.value === 'string') return node.value;
+  return null;
+}
+
+// Synthesize a `{params, paramKwargs, body}` fn descriptor for a
+// broadcast whose head is a bare BUILTIN function (`_resolveFn` returned
+// null — the head is not a user fn / functionof / module-aliased ref).
+// The per-cell body applies the builtin to fresh params; the broadcast
+// call's own positional/kwarg shape fixes the arity and, for ordered-
+// named forms (`record`/`joint`/…), the field names. General over any
+// builtin head; `broadcast(record, rate = arr)` and (the brief's bare
+// form) `broadcast(builtin_logdensityof, K, kin, obs)` both land here.
+function _synthBuiltinHeadFn(head: any, args: any[], kwargs: any): any {
+  const name = _headNameOf(head);
+  if (name == null) return null;
+  const builtins = require('./builtins.ts');
+  // FIELD_FORMS (record/joint/jointchain/cartprod/table) is lower.ts's
+  // single source of truth for the ordered-named constructors that carry
+  // their entries as a `fields:[{name,value}]` array rather than kwargs.
+  const lower = require('./lower.ts');
+  const isFieldForm = lower._internal.FIELD_FORMS.has(name);
+  // Only builtins that evaluate to a VALUE in a call position: the
+  // elementary / measure-eval builtin FUNCTIONS and the ordered-named
+  // structural constructors (`record`/`joint`/…). Distributions,
+  // measure ops, constants and sets are not value-callable heads.
+  if (!builtins.BUILTIN_FUNCTIONS.has(name) && !isFieldForm) return null;
+
+  const kwKeys = Object.keys(kwargs || {});
+  if (kwKeys.length > 0) {
+    // kwarg form — arity and surface names come from the broadcast
+    // kwargs (kept in key order). `paramKwargs` carries the surface
+    // names so the cold path's kwarg→source matching binds correctly.
+    const params = kwKeys.map((_k, i) => '__b' + i);
+    let body: any;
+    if (isFieldForm) {
+      body = {
+        kind: 'call', op: name,
+        fields: kwKeys.map((k, i) => ({
+          name: k, value: { kind: 'ref', ns: '%local', name: params[i] },
+        })),
+      };
+    } else {
+      /* c8 ignore start -- general §04 path: a non-field-form builtin head
+         with kwargs. The current determiniser emission uses the field-form
+         (`record`) kwarg shape and the functionof-head form, both exercised
+         in broadcast-builtin-eval.test.ts; this branch is retained for
+         spec completeness (any builtin head). */
+      const bk: any = {};
+      for (let i = 0; i < kwKeys.length; i++) {
+        bk[kwKeys[i]] = { kind: 'ref', ns: '%local', name: params[i] };
+      }
+      body = { kind: 'call', op: name, kwargs: bk };
+    }
+    /* c8 ignore stop */
+    return { params, paramKwargs: kwKeys.slice(), body, paramName: params[0] };
+  }
+  /* c8 ignore start -- positional form: general §04 broadcast-over-builtin
+     (arity from the data args). The determiniser emits the functionof-head
+     (outer) + field-form record (inner) shapes, both exercised in
+     broadcast-builtin-eval.test.ts. */
+  const n = args.length - 1;
+  if (n < 0) return null;
+  const params: string[] = [];
+  for (let i = 0; i < n; i++) params.push('__b' + i);
+  const body = {
+    kind: 'call', op: name,
+    args: params.map((p) => ({ kind: 'ref', ns: '%local', name: p })),
+  };
+  return { params, paramKwargs: null, body, paramName: params[0] };
+  /* c8 ignore stop */
+}
+
+// Hold symbolic kernel-NAME data args inline in the body. Per spec §07 a
+// `builtin_logdensityof` / transport kernel arg is a bare kernel NAME,
+// not an evaluable value: it must reach `_resolveKernelName` (sampler.ts)
+// as a name-shaped IR node. A broadcast data-arg source that reads as a
+// known built-in kernel is loop-invariant and can never evaluate as a
+// value, so we substitute its IR directly into the body (replacing the
+// param ref) and drop it from the params/sources the zip iterates. Fully
+// general — fires for any head whose data arg is a bare kernel name,
+// never for ordinary value args; returns the fn/sources unchanged when
+// there is none.
+function _inlineHeldKernelArgs(fn: any, sources: any[]): any {
+  const densityPrims = require('./density-prims.ts');
+  const subst = new Map<string, any>();
+  const keep: number[] = [];
+  for (let i = 0; i < fn.params.length; i++) {
+    const kname = _headNameOf(sources[i]);
+    if (kname != null && densityPrims.isBuiltinKernel(kname)) {
+      subst.set(fn.params[i], sources[i]);
+    } else {
+      keep.push(i);
+    }
+  }
+  if (subst.size === 0) return { fn, sources };
+  const irWalk = require('./ir-walk.ts');
+  const newBody = irWalk.mapIR(fn.body, (nd: any) => {
+    if (nd && nd.kind === 'ref' && typeof nd.name === 'string'
+        && (nd.ns === '%local' || nd.ns === 'self') && subst.has(nd.name)) {
+      return subst.get(nd.name);
+    }
+    return nd;
+  });
+  const params = keep.map((i) => fn.params[i]);
+  const paramKwargs = Array.isArray(fn.paramKwargs)
+    ? keep.map((i) => fn.paramKwargs[i]) : fn.paramKwargs;
+  return {
+    fn: { params, paramKwargs, body: newBody, paramName: params[0] },
+    sources: keep.map((i) => sources[i]),
+  };
+}
+
 function _broadcastLogical(ir: any, ctx: any): any {
   // Fast path: `broadcasted(<scalar_op>)(args)` and the equivalent
   // dotted-binary / `op.(…)` lowered forms dispatch directly to the
@@ -2230,7 +2351,12 @@ function _broadcastLogical(ir: any, ctx: any): any {
   const args   = ir.args   || [];
   const kwargs = ir.kwargs || {};
   if (args.length < 1) throw new Error('broadcast: no function argument');
-  const fn = ctx.resolveFn(args[0], ctx.env);
+  // Head resolution: a user fn / functionof / module-aliased ref via
+  // `_resolveFn`; otherwise a bare BUILTIN head (`record`,
+  // `builtin_logdensityof`, …) synthesised from the call's own shape
+  // (spec §04 value-level broadcast over a builtin head is legal).
+  let fn = ctx.resolveFn(args[0], ctx.env);
+  if (!fn) fn = _synthBuiltinHeadFn(args[0], args, kwargs);
   if (!fn) throw new Error('broadcast: first arg must be a function');
   const kwargKeys = Object.keys(kwargs);
   const sources = new Array(fn.params.length);
@@ -2240,19 +2366,26 @@ function _broadcastLogical(ir: any, ctx: any): any {
     for (let i = 0; i < fn.params.length; i++) {
       const surface = (fn.paramKwargs && fn.paramKwargs[i]) || fn.params[i];
       if (kwargs[surface] != null) sources[i] = kwargs[surface];
+      /* c8 ignore next 3 -- defensive: internal-placeholder-name fallback and the missing-argument guard (surface-name match is the exercised path) */
       else if (kwargs[fn.params[i]] != null) sources[i] = kwargs[fn.params[i]];
       else throw new Error('broadcast: no argument for parameter '
         + (surface || fn.params[i]));
     }
   } else {
     const posArgs = args.slice(1);
+    /* c8 ignore next 4 -- defensive: positional arity guard */
     if (posArgs.length !== fn.params.length) {
       throw new Error('broadcast: expected ' + fn.params.length
         + ' positional arrays, got ' + posArgs.length);
     }
     for (let i = 0; i < fn.params.length; i++) sources[i] = posArgs[i];
   }
-  const inputs: any = sources.map((s: any) => ctx.evaluateExpr(s, ctx.env));
+  // Held symbolic kernel-name args (e.g. `Poisson` in
+  // `builtin_logdensityof.(Poisson, …)`) are inlined into the body so
+  // they reach `_resolveKernelName` as IR, not as an evaluated value.
+  const held = _inlineHeldKernelArgs(fn, sources);
+  fn = held.fn;
+  const inputs: any = held.sources.map((s: any) => ctx.evaluateExpr(s, ctx.env));
   // Delegate the per-element iteration to the engine's existing
   // `_broadcastApply` — Phase 5c keeps the impl shared between the
   // dedicated dispatch and the OpDecl path. Lazy require to avoid

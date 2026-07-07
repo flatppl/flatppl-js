@@ -1441,7 +1441,7 @@ const REGISTRY = {
     logpdfFn: _crystalBallLogpdf,
   },
   DoubleSidedCrystalBall: {
-    params:   ['m0', 'sigmaL', 'sigmaR', 'alphaL', 'nL', 'alphaR', 'nR'],
+    params:   ['m0', 'sigmaL', 'sigmaR', 'alphaL', 'alphaR', 'nL', 'nR'],
     aliases:  {},
     discrete: false,
     densityOnly: true,

@@ -16,12 +16,17 @@
 // Two dispatch shapes are exposed:
 //
 //   builtinLogdensityof(name, kernelInput, x)
-//     `kernelInput` is a record `{ paramName: value, ... }` of
+//     `kernelInput` is normally a record `{ paramName: value, ... }` of
 //     already-evaluated values; matches the surface form of spec §07
 //     where `kernel_input` is a record matching the kernel's kwarg
 //     interface. The natural shape for the surface `builtin_*` call
 //     dispatcher and for multivariate kernels (whose params live in
-//     named slots).
+//     named slots). For a univariate REGISTRY kernel, `kernelInput` may
+//     also be a bare scalar/Value or a positional list — spec §07 also
+//     allows the POSITIONAL application `kernel(kernel_input)` (e.g.
+//     `Poisson(rate)`) — in which case this delegates to
+//     `builtinLogdensityofPositional`. Multivariate kernels still
+//     require the record form.
 //
 //   builtinLogdensityofPositional(name, params, x)
 //     `params` is the same positional list `REGISTRY[name].logpdfFn`
@@ -402,14 +407,20 @@ function isBuiltinKernel(kernelName: string): boolean {
 }
 
 /**
- * The FlatPDL primitive in its record-input form:
+ * The FlatPDL primitive:
  *
  *   lp = builtin_logdensityof(kernel, kernel_input, x)
  *
  * Per spec §07 §sec:measure-eval-prims:
  *   - `kernel` (here `kernelName`) is the kernel constructor name.
- *   - `kernel_input` is a record matching the kernel's kwarg interface;
- *     values must be already evaluated (numbers / Values).
+ *   - `kernel_input` is "a valid kernel input value" for
+ *     `kernel(kernel_input)`; values must be already evaluated
+ *     (numbers / Values). Usually a record matching the kernel's kwarg
+ *     interface, but for a univariate REGISTRY kernel a bare
+ *     scalar/Value or a positional list is also spec-legal (the
+ *     POSITIONAL application form, e.g. `Poisson(rate)`) — that case
+ *     delegates to `builtinLogdensityofPositional`. Multivariate
+ *     kernels still require the record form.
  *   - `x` is the variate value; scalar (number) for univariate kernels,
  *     a length-n vector or n×n matrix Value for multivariate.
  * Returns the scalar log-density, `-Infinity` outside support.
@@ -430,6 +441,17 @@ function builtinLogdensityof(kernelName: string, kernelInput: any, x: any): numb
       else if (s && typeof s === 'object' && ('a' in s) && ('b' in s))  { lo = +s.a;  hi = +s.b;  }
       else throw new Error('builtin_logdensityof(Uniform): support must be [lo,hi], {lo,hi}, or {a,b}');
       return entry.logpdfFn(_scalarOf(x, 'Uniform'), lo, hi);
+    }
+    // Per spec §07, `kernel_input` is "a valid kernel input value" for
+    // `kernel(kernel_input)" — a POSITIONAL application (e.g.
+    // `Poisson(rate)`) is valid, so a bare scalar/Value or a positional
+    // list is spec-legal, not just a record. Route those to the
+    // positional helper below; the record path is unchanged.
+    if (!_isRecordLike(kernelInput)) {
+      const positionalParams = Array.isArray(kernelInput)
+        ? kernelInput
+        : [valueLib.isValue(kernelInput) ? _scalarOf(kernelInput, kernelName) : kernelInput];
+      return builtinLogdensityofPositional(kernelName, positionalParams, x);
     }
     const params: any[] = [];
     for (let i = 0; i < entry.params.length; i++) {
@@ -465,6 +487,20 @@ function builtinLogdensityofPositional(kernelName: string, params: any[], x: any
   }
   const entry = samplerLib._internal.REGISTRY[kernelName];
   return entry.logpdfFn(_scalarOf(x, kernelName), ...params);
+}
+
+// Whether `kernelInput` is a record `{ paramName: value, ... }` rather
+// than a bare scalar/Value/positional-list. Mirrors sampler.ts's
+// `_synthSampleMeasureIR` `isPlainRecord` check: a record is a plain
+// JS object — distinct from an array, a typed array, a table marker,
+// and a shape-tagged `Value`.
+function _isRecordLike(kernelInput: any): boolean {
+  return kernelInput != null
+    && typeof kernelInput === 'object'
+    && !Array.isArray(kernelInput)
+    && kernelInput.BYTES_PER_ELEMENT === undefined
+    && kernelInput.__table__ !== true
+    && !valueLib.isValue(kernelInput);
 }
 
 // Coerce x to a JS number for univariate dispatch.
