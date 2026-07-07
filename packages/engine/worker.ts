@@ -548,22 +548,32 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           // we can't map to numeric (lo, hi) bounds becomes a worker
           // error — the materialiser handles fallback decisions.
           const count   = msg.count   | 0;
+          // `repeat: k` (optional, default 1) draws k iid truncated samples per
+          // outer atom, atom-major (atom a's slot is [a*repeat, (a+1)*repeat)),
+          // mirroring sampleN. Per-atom refArray params are indexed by the ATOM
+          // (a), shared across the atom's k replicates — so `iid(truncate(M), k)`
+          // with per-atom params feeds every replicate atom a's params instead
+          // of over-indexing a length-`count` column past its end (which read
+          // undefined → NaN). Output length is count*repeat.
+          const repeat  = (msg.repeat | 0) || 1;
           const seed    = msg.seed;
           const setDescr = msg.setDescr || null;
           const mode    = msg.mode    || 'rejection';
           if (count <= 0) throw new Error(`truncateSampleN.count must be positive integer (got ${msg.count})`);
+          if (repeat <= 0) throw new Error(`truncateSampleN.repeat must be positive integer (got ${msg.repeat})`);
           if (!setDescr) throw new Error('truncateSampleN.setDescr is required');
           const [lo, hi] = setBoundsFor(setDescr);
           if (!(hi >= lo)) {
             throw new Error('truncateSampleN: degenerate set bounds [' + lo + ', ' + hi + ']');
           }
           let state = seed != null ? _stateFromSeed(seed) : philox;
-          const out = new Float64Array(count);
+          const total = count * repeat;
+          const out = new Float64Array(total);
 
           if (mode === 'cdf') {
             // Inverse-CDF path. Build the analytical distribution once
             // (static params required — refArrays not supported here),
-            // pre-compute F(lo) and F(hi), then per-atom Q(F(lo) + u·Δ).
+            // pre-compute F(lo) and F(hi), then per-draw Q(F(lo) + u·Δ).
             const callEnv = msg.env ? { ...env, ...msg.env } : env;
             const dist = samplerLib.makeAnalytical(msg.ir, callEnv);
             const Flo = isFinite(lo) ? dist.cdf(lo) : 0;
@@ -571,19 +581,19 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             const dF = Fhi - Flo;
             if (!(dF > 0)) {
               // Empty intersection M ∩ S: every atom NaN, mass shift = -Inf.
-              for (let i = 0; i < count; i++) out[i] = NaN;
+              for (let i = 0; i < total; i++) out[i] = NaN;
               if (seed == null) philox = state;
               return { type: 'samples', id, samples: out, logWeights: null,
                        logShift: -Infinity, n_eff: 0 };
             }
-            for (let i = 0; i < count; i++) {
+            for (let i = 0; i < total; i++) {
               const pair = rngLib.nextUniform(state);
               state = pair[1];
               out[i] = dist.quantile(Flo + pair[0] * dF);
             }
             if (seed == null) philox = state;
             return { type: 'samples', id, samples: out, logWeights: null,
-                     logShift: Math.log(dF), n_eff: count };
+                     logShift: Math.log(dF), n_eff: total };
           }
 
           // Rejection-redraw path. Build one sampler (static or
@@ -596,7 +606,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           let n_eff = 0;
           if (refKeys.length === 0) {
             const s = samplerLib.makeSampler(state, msg.ir, env);
-            for (let i = 0; i < count; i++) {
+            for (let i = 0; i < total; i++) {
               let v = NaN;
               for (let t = 0; t < budget; t++) {
                 const draw = s.draw();
@@ -609,15 +619,20 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           } else {
             const s = samplerLib.makeParametricSampler(state, msg.ir);
             const drawEnv = { ...env };
-            for (let i = 0; i < count; i++) {
-              for (const k of refKeys) drawEnv[k] = refArrays[k][i];
-              let v = NaN;
-              for (let t = 0; t < budget; t++) {
-                const draw = s.drawWith(drawEnv);
-                totalDraws++;
-                if (draw >= lo && draw <= hi) { v = draw; n_eff++; break; }
+            // Atom-major: for each atom a, bind its params once, then draw the
+            // atom's `repeat` replicates from them (spec §06 within-atom
+            // conditional independence).
+            for (let a = 0; a < count; a++) {
+              for (const k of refKeys) drawEnv[k] = refArrays[k][a];
+              for (let r = 0; r < repeat; r++) {
+                let v = NaN;
+                for (let t = 0; t < budget; t++) {
+                  const draw = s.drawWith(drawEnv);
+                  totalDraws++;
+                  if (draw >= lo && draw <= hi) { v = draw; n_eff++; break; }
+                }
+                out[a * repeat + r] = v;
               }
-              out[i] = v;
             }
             state = s.getState();
           }
