@@ -506,7 +506,13 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         type: 'truncateSampleN',
         ir: resolved.distIR,
         setDescr: resolved.setDescr,
-        count: N * k,
+        // count = N outer atoms, repeat = k iid replicates per atom (atom-major
+        // output of length N*k). Passing repeat (not an inflated count=N*k)
+        // keeps per-atom param columns length-N so the worker indexes them by
+        // atom — over-requesting count=N*k against a length-N column read
+        // undefined params past index N and produced NaN samples.
+        count: N,
+        repeat: k,
         mode: 'rejection',
         budget: ctx.rejectionBudget != null ? ctx.rejectionBudget : 1000,
         refArrays: refArrays,

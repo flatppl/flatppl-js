@@ -1364,6 +1364,15 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
       const refArraysI: Record<string, any> = {};
       for (let j = 0; j < refNames.length; j++) {
         const k = refNames[j];
+        // The base measure M's latent params are the columns to slice per atom.
+        // The bijection's OWN parameters — f_inv's input (the variate, bound to
+        // `y`/xi above) and logVolume's preimage var — are not latents of M and
+        // must not be sliced here: a synthesised f_inv param (e.g. `__pf_y` for
+        // an inverted `fn(exp(_))`) can appear in refArrays carrying a non-column
+        // value (the fed boundary record), which is not a Float64Array/Value and
+        // would crash the slice. It is already bound from `y`, so skip it.
+        if (k === bij.fInv.paramName
+            || (bij.logVolume.paramName != null && k === bij.logVolume.paramName)) continue;
         const v = refArrays[k];
         // Vector-atom (shape rank>1) latent refArrays stay Value-typed at the
         // worker boundary; scalar-column latents (the common and tested case)

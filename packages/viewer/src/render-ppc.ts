@@ -1,42 +1,39 @@
 // @flatppl/viewer — posterior-predictive check (PPC) panel renderer.
 //
-// For each observed field in a PPC object, renders a panel containing:
-//   - A full-width weighted histogram of the replicated predictive samples
-//     (y_rep), drawn as HTML <div> bars (no chart library, no external deps).
-//   - A rug strip beneath the histogram: one thin tick per observed value,
-//     positioned by linear interpolation over the histogram's x-range.
+// For each observed field in a PPC object, renders one echarts panel that
+// overlays two histograms on a shared value x-axis:
+//   - the replicated predictive samples (y_rep), a weighted, area-normalised
+//     histogram (filled), and
+//   - the observed data, binned over the SAME bin edges (outline), so the
+//     shapes compare directly.
+//
+// Both series are drawn as `custom` rect series (the same primitive the corner-
+// plot marginals use), so the bars sit at true data coordinates and the two
+// histograms register exactly.
 //
 // Weighted domain clipping
 // ─────────────────────────
 // Heavy-tailed likelihoods can produce y_rep samples with extreme finite
 // outliers that carry near-zero weight. Using raw min/max to set the visible
-// x-range would collapse the histogram to a single bar that misrepresents the
-// actual predictive mass. Instead we use weighted quantiles ([0.5%, 99.5%]) to
-// clip the histogram domain so the bulk of the predictive distribution is
-// visible. Samples outside [lo, hi] still contribute to the histogram bars
-// that fall at the boundary — they are not discarded, only the display range
-// is narrowed. The approach mirrors the weighted-quantile path in
-// render-table.ts (sort ascending, re-pair weights, call
-// FlatPPLEngine.histogram.weightedQuantileSorted).
+// x-range would collapse the histogram to a single bar. Instead we clip the
+// display domain to weighted quantiles ([0.5%, 99.5%]); samples outside the
+// range still land in the boundary bins (they are clamped, not discarded).
 
-import { esc } from './util.js';
+import { esc, formatScalar } from './util.js';
+import { colorForBinding } from './palette.js';
 
 declare const FlatPPLEngine: any;
-
-/** Maximum rug ticks to draw; subsample when observed.length exceeds this. */
-const MAX_RUG_TICKS = 200;
 
 /** Weighted quantile clip fractions for the histogram x-domain. */
 const DOMAIN_LO_Q = 0.005;
 const DOMAIN_HI_Q = 0.995;
 
-/** Number of bins for the PPC histogram (larger than the table inline cell). */
+/** Number of bins for the predictive histogram. */
 const PPC_HIST_BINS = 60;
 
 /**
  * Compute sorted sample/weight pairs needed by weightedQuantileSorted.
- * Returns [sortedSamples, sortedWeights]; both have the same length as
- * `samples`. `logWeights` null → uniform weights.
+ * Returns [sortedSamples, sortedWeights]; `logWeights` null → uniform weights.
  */
 function sortedPairs(
   samples: Float64Array,
@@ -57,13 +54,94 @@ function sortedPairs(
 }
 
 /**
- * Build and append one PPC panel into `hostEl` for the given field.
- *
- * The histogram uses a weighted-quantile-clipped x-domain ([0.5%, 99.5%])
- * so heavy-tailed y_rep outliers with near-zero weight do not collapse the
- * visible range to a single bar. See module-level comment for rationale.
+ * Area-normalised (PDF-scale) histogram of `values` over the given bin edges,
+ * so it overlays a weighted predictive histogram built on the same edges.
+ * Values outside the edge range are clamped into the boundary bins.
+ */
+function densityOnEdges(values: number[], binEdges: ArrayLike<number>): Float64Array {
+  const nb = binEdges.length - 1;
+  if (nb <= 0) return new Float64Array(0);
+  const counts = new Float64Array(nb);
+  let n = 0;
+  for (let i = 0; i < values.length; i++) {
+    const v = values[i];
+    if (!Number.isFinite(v)) continue;
+    let b: number;
+    if (v <= binEdges[0]) b = 0;
+    else if (v >= binEdges[nb]) b = nb - 1;
+    else { b = 0; while (b < nb - 1 && v > binEdges[b + 1]) b++; }
+    counts[b]++; n++;
+  }
+  const ys = new Float64Array(nb);
+  for (let b = 0; b < nb; b++) {
+    const w = binEdges[b + 1] - binEdges[b];
+    ys[b] = (n > 0 && w > 0) ? counts[b] / (n * w) : 0;
+  }
+  return ys;
+}
+
+/**
+ * Scale a histogram to unit peak. Predictive (many samples, spread out) and
+ * observed (often just a handful of points, concentrated) have wildly different
+ * per-bin densities; area-normalising both makes the observed spikes dwarf the
+ * predictive. Peak-normalising each to 1 keeps both visible and makes the
+ * comparison about SHAPE and LOCATION, which is what a PPC reads.
+ */
+function normalizePeak(ys: ArrayLike<number>): Float64Array {
+  let m = 0;
+  for (let i = 0; i < ys.length; i++) if (ys[i] > m) m = ys[i];
+  const out = new Float64Array(ys.length);
+  if (!(m > 0)) return out;
+  for (let i = 0; i < ys.length; i++) out[i] = ys[i] / m;
+  return out;
+}
+
+/** Build `custom`-series rect data for a histogram (bin centre + height + edges). */
+function rectsFor(binEdges: ArrayLike<number>, ys: ArrayLike<number>): Array<{ value: number[]; x0: number; x1: number }> {
+  const rects: Array<{ value: number[]; x0: number; x1: number }> = [];
+  for (let k = 0; k < ys.length; k++) {
+    rects.push({
+      value: [((binEdges[k] as number) + (binEdges[k + 1] as number)) / 2, ys[k] as number],
+      x0: binEdges[k] as number,
+      x1: binEdges[k + 1] as number,
+    });
+  }
+  return rects;
+}
+
+/** A custom rect-bar series drawing `rects` at true data coordinates. */
+function barSeries(
+  rects: Array<{ value: number[]; x0: number; x1: number }>,
+  name: string,
+  fill: string,
+  stroke: string,
+  lineWidth: number,
+  opacity: number,
+): any {
+  return {
+    name,
+    type: 'custom',
+    data: rects,
+    renderItem: function (_p: any, api: any) {
+      const d = rects[_p.dataIndex];
+      const lt = api.coord([d.x0, d.value[1]]);
+      const rb = api.coord([d.x1, 0]);
+      return {
+        type: 'rect',
+        shape: { x: lt[0], y: lt[1], width: rb[0] - lt[0], height: rb[1] - lt[1] },
+        style: api.style({ fill, opacity, stroke, lineWidth }),
+      };
+    },
+    encode: { x: 0, y: 1 },
+  };
+}
+
+/**
+ * Build and append one PPC panel into `hostEl`: an echarts chart overlaying the
+ * weighted predictive histogram and the observed-data histogram.
  */
 function appendPpcPanel(
+  ctx: any,
   hostEl: HTMLElement,
   fieldName: string,
   yRepSamples: Float64Array,
@@ -71,12 +149,12 @@ function appendPpcPanel(
   observed: number[],
 ): void {
   const H = FlatPPLEngine.histogram;
+  const fg = getComputedStyle(document.body).color || '#ccc';
+  const color = colorForBinding(ctx, fieldName);
 
-  // ── Container ─────────────────────────────────────────────────────────────
   const panel = document.createElement('div');
   panel.style.marginBottom = '16px';
 
-  // ── Heading ───────────────────────────────────────────────────────────────
   const heading = document.createElement('div');
   heading.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
   heading.style.fontSize = '0.9em';
@@ -87,7 +165,6 @@ function appendPpcPanel(
   panel.appendChild(heading);
 
   const n = yRepSamples.length;
-
   if (n === 0) {
     const empty = document.createElement('div');
     empty.style.opacity = '0.5';
@@ -98,26 +175,15 @@ function appendPpcPanel(
     return;
   }
 
-  // ── Compute weighted-quantile x-domain ────────────────────────────────────
-  // Sort once for both quantile queries and reuse the pairs.
+  // ── Weighted-quantile x-domain clip ────────────────────────────────────────
   const [ss, sw] = sortedPairs(yRepSamples, logWeights);
   const rawLo = H.weightedQuantileSorted(ss, sw, DOMAIN_LO_Q);
   const rawHi = H.weightedQuantileSorted(ss, sw, DOMAIN_HI_Q);
-
-  // Guard: if domain collapsed (e.g. all samples equal) widen slightly so the
-  // histogram call gets a valid range, and the rug interpolation doesn't divide
-  // by zero.
   let domainLo = Number.isFinite(rawLo) ? rawLo : ss[0];
   let domainHi = Number.isFinite(rawHi) ? rawHi : ss[ss.length - 1];
-  if (!(domainHi > domainLo)) {
-    domainLo = domainLo - 1;
-    domainHi = domainHi + 1;
-  }
+  if (!(domainHi > domainLo)) { domainLo -= 1; domainHi += 1; }
 
-  // ── Weighted histogram ────────────────────────────────────────────────────
-  // Clip samples to [domainLo, domainHi] before passing to the histogram so
-  // the FD algorithm operates on the clipped range (avoids degenerate bins from
-  // extreme outlier coordinates), then collect the returned bin heights.
+  // ── Predictive histogram (weighted, clipped to the display domain) ─────────
   const clipped = new Float64Array(n);
   let clippedWeights: Float64Array | null = null;
   if (logWeights) {
@@ -127,119 +193,75 @@ function appendPpcPanel(
       clippedWeights[i] = logWeights[i];
     }
   } else {
-    for (let i = 0; i < n; i++) {
-      clipped[i] = Math.min(Math.max(yRepSamples[i], domainLo), domainHi);
-    }
+    for (let i = 0; i < n; i++) clipped[i] = Math.min(Math.max(yRepSamples[i], domainLo), domainHi);
   }
 
   const hist = H.freedmanDiaconisHistogram(
     clipped,
-    clippedWeights
-      ? { logWeights: clippedWeights, maxBins: PPC_HIST_BINS }
-      : { maxBins: PPC_HIST_BINS },
+    clippedWeights ? { logWeights: clippedWeights, maxBins: PPC_HIST_BINS } : { maxBins: PPC_HIST_BINS },
   );
-
-  const ys: Float64Array = hist.ys || new Float64Array(0);
-  const nb = ys.length;
   const binEdges: ArrayLike<number> = hist.binEdges || new Float64Array(0);
+  const predYs: Float64Array = normalizePeak(hist.ys || new Float64Array(0));
 
-  // ── Histogram bars ────────────────────────────────────────────────────────
-  const histBox = document.createElement('div');
-  histBox.style.position = 'relative';
-  histBox.style.display = 'flex';
-  histBox.style.alignItems = 'flex-end';
-  histBox.style.gap = '0';
-  histBox.style.width = '100%';
-  histBox.style.height = '120px';
-  histBox.style.boxSizing = 'border-box';
-
-  if (nb > 0) {
-    let maxY = 0;
-    for (let i = 0; i < nb; i++) if (ys[i] > maxY) maxY = ys[i];
-    if (!(maxY > 0)) maxY = 1;
-
-    for (let i = 0; i < nb; i++) {
-      const bar = document.createElement('div');
-      bar.style.flex = '1 1 0';
-      bar.style.height = (ys[i] > 0 ? Math.max((ys[i] / maxY) * 100, 2) : 0) + '%';
-      bar.style.background = 'currentColor';
-      bar.style.opacity = '0.75';
-      histBox.appendChild(bar);
-    }
+  if (predYs.length === 0) {
+    const empty = document.createElement('div');
+    empty.style.opacity = '0.5';
+    empty.style.fontSize = '0.85em';
+    empty.textContent = '(degenerate predictive histogram)';
+    panel.appendChild(empty);
+    hostEl.appendChild(panel);
+    return;
   }
 
-  panel.appendChild(histBox);
+  // ── Observed histogram over the SAME bin edges (peak-normalised to match) ──
+  const obsYs = normalizePeak(densityOnEdges(observed, binEdges));
 
-  // ── Rug strip ─────────────────────────────────────────────────────────────
-  // Determine x-range from binEdges. binEdges has nb+1 entries.
-  const edgeCount = binEdges instanceof Float64Array
-    ? (binEdges as Float64Array).length
-    : (binEdges as number[]).length;
-  const xMin = edgeCount > 0 ? (binEdges as any)[0] : domainLo;
-  const xMax = edgeCount > 1 ? (binEdges as any)[edgeCount - 1] : domainHi;
-  const xRange = xMax - xMin;
+  // ── echarts panel: predictive filled + observed outline, overlaid ──────────
+  const chart = document.createElement('div');
+  chart.style.width = '100%';
+  chart.style.height = '160px';
+  panel.appendChild(chart);
+  hostEl.appendChild(panel);   // attach before init so echarts measures a real size
 
-  let rugValues = observed;
-  let capped = false;
-  if (observed.length > MAX_RUG_TICKS) {
-    // Evenly subsample to MAX_RUG_TICKS entries (not random, for determinism).
-    const step = observed.length / MAX_RUG_TICKS;
-    rugValues = new Array<number>(MAX_RUG_TICKS);
-    for (let i = 0; i < MAX_RUG_TICKS; i++) {
-      rugValues[i] = observed[Math.round(i * step)];
-    }
-    capped = true;
-  }
-
-  const rugBox = document.createElement('div');
-  rugBox.style.position = 'relative';
-  rugBox.style.width = '100%';
-  rugBox.style.height = '8px';
-  rugBox.style.marginTop = '2px';
-  rugBox.style.boxSizing = 'border-box';
-  rugBox.style.overflow = 'hidden';
-
-  if (xRange > 0) {
-    for (let i = 0; i < rugValues.length; i++) {
-      const v = rugValues[i];
-      if (!Number.isFinite(v)) continue;
-      const pct = Math.max(0, Math.min(1, (v - xMin) / xRange));
-      const tick = document.createElement('div');
-      tick.style.position = 'absolute';
-      tick.style.left = (pct * 100) + '%';
-      tick.style.top = '0';
-      tick.style.width = '1px';
-      tick.style.height = '100%';
-      tick.style.background = 'currentColor';
-      tick.style.opacity = '0.6';
-      rugBox.appendChild(tick);
-    }
-  }
-
-  panel.appendChild(rugBox);
-
-  // ── Rug cap note ─────────────────────────────────────────────────────────
-  if (capped) {
-    const note = document.createElement('div');
-    note.style.fontSize = '0.8em';
-    note.style.opacity = '0.55';
-    note.style.marginTop = '1px';
-    note.textContent = '(showing ' + MAX_RUG_TICKS + ' of ' + observed.length + ' observed values)';
-    panel.appendChild(note);
-  }
-
-  hostEl.appendChild(panel);
+  const ec = echarts.init(chart);
+  ec.setOption({
+    backgroundColor: 'transparent',
+    animation: false,
+    grid: { left: 48, right: 12, top: 22, bottom: 24, containLabel: false },
+    legend: {
+      data: ['predictive', 'observed'],
+      textStyle: { color: fg }, top: 0, right: 8, itemWidth: 14, itemHeight: 8, itemGap: 12,
+    },
+    tooltip: { trigger: 'axis' },
+    xAxis: {
+      type: 'value', scale: true,
+      axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
+      axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
+      axisLabel: { color: fg, opacity: 0.6, fontSize: 10, formatter: formatScalar },
+      splitLine: { show: false },
+    },
+    yAxis: {
+      type: 'value', scale: true,
+      axisLine: { lineStyle: { color: fg, opacity: 0.4 } },
+      axisTick: { lineStyle: { color: fg, opacity: 0.4 } },
+      axisLabel: { color: fg, opacity: 0.5, fontSize: 10, formatter: formatScalar },
+      splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
+    },
+    series: [
+      barSeries(rectsFor(binEdges, predYs), 'predictive', color, color, 0.5, 0.6),
+      barSeries(rectsFor(binEdges, obsYs), 'observed', 'transparent', fg, 1.2, 1),
+    ],
+  });
 }
 
 /**
- * Render a posterior-predictive check object into `hostEl`: one panel per
- * field (declaration order), each with a weighted y_rep histogram and an
- * observed-values rug.
+ * Render a posterior-predictive check object into `hostEl`: one echarts panel
+ * per field (declaration order), each overlaying the weighted y_rep histogram
+ * and the observed-data histogram.
  *
  * `ppc` shape: `{ fields: { [name]: { yRep: { samples, logWeights }, observed } } }`.
- * `ctx` is passed for API consistency with other renderers but is not used here.
  */
-export function renderRecordPpc(_ctx: unknown, hostEl: HTMLElement, ppc: any): void {
+export function renderRecordPpc(ctx: any, hostEl: HTMLElement, ppc: any): void {
   hostEl.style.overflow = 'auto';
 
   if (!ppc || !ppc.fields || Object.keys(ppc.fields).length === 0) {
@@ -260,6 +282,6 @@ export function renderRecordPpc(_ctx: unknown, hostEl: HTMLElement, ppc: any): v
     const yRep = field.yRep;
     const observed: number[] = Array.isArray(field.observed) ? field.observed : [];
     if (!yRep || !(yRep.samples instanceof Float64Array)) continue;
-    appendPpcPanel(hostEl, name, yRep.samples, yRep.logWeights ?? null, observed);
+    appendPpcPanel(ctx, hostEl, name, yRep.samples, yRep.logWeights ?? null, observed);
   }
 }
