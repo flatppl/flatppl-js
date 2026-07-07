@@ -5,6 +5,7 @@
 // (marginals on the diagonal, joint scatters off-diagonal).
 
 import { colorForBinding } from './palette.js';
+import { densityContours } from './contour2d.js';
 /**
  * Render the selected axes as a 2D density-strip view: one
  * column per axis, where each column shades by the per-axis
@@ -413,6 +414,35 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
       // Point opacity scales with point count — denser data
       // gets more transparency so clouds don't saturate.
       const alpha = Math.max(0.05, Math.min(0.6, 800 / pts.length));
+      // Credible-region contours over the SAME plotted points, so the curves
+      // share the scatter's axis frame (the overlaid `lines` series stays
+      // inside the cloud's data range and never perturbs echarts' auto-scale).
+      // Inner curve = 68% HPD region, outer = 95% (corner-plot convention).
+      const cxs = new Float64Array(pts.length);
+      const cys = new Float64Array(pts.length);
+      for (let p = 0; p < pts.length; p++) { cxs[p] = pts[p][0]; cys[p] = pts[p][1]; }
+      const contourLevels = densityContours(cxs, cys, [0.68, 0.95]);
+      const contourSeries = contourLevels
+        .filter(function (lvl) { return lvl.segments.length > 0; })
+        .map(function (lvl) {
+          const inner = lvl.frac <= 0.7;
+          // Draw in the theme foreground (near-white on dark, near-black on
+          // light) so the curves read over the same-hued point cloud; the outer
+          // (95%) level is dashed and fainter to separate it from the inner 68%.
+          return {
+            type: 'lines',
+            coordinateSystem: 'cartesian2d',
+            data: lvl.segments.map(function (s) { return { coords: s }; }),
+            silent: true,
+            z: 5,
+            lineStyle: {
+              color: fg,
+              width: inner ? 1.5 : 1.1,
+              opacity: inner ? 0.85 : 0.55,
+              type: inner ? 'solid' : 'dashed',
+            },
+          };
+        });
       const ec2 = echarts.init(inner2);
       ec2.setOption({
         backgroundColor: 'transparent',
@@ -439,7 +469,7 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
           large: true,
           largeThreshold: 2000,
           itemStyle: { color: color, opacity: alpha },
-        }],
+        }].concat(contourSeries as any[]),
       });
     }
   }

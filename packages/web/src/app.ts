@@ -938,6 +938,10 @@
   }
   function hideTreeContextMenu() {
     if (_ctxMenu) _ctxMenu.style.display = 'none';
+    // aria-expanded lives only on the tools button; a closed menu means the
+    // tools popup is collapsed regardless of which trigger opened the menu.
+    const toolsBtn = document.getElementById('tools-btn');
+    if (toolsBtn) toolsBtn.setAttribute('aria-expanded', 'false');
     if (_ctxMenuTrigger) {
       const t = _ctxMenuTrigger;
       _ctxMenuTrigger = null;
@@ -1058,6 +1062,7 @@
     renderMenuItems(menu, tools);
     _ctxMenuTrigger = btn;
     menu.style.display = 'block';
+    btn.setAttribute('aria-expanded', 'true');
     const br = btn.getBoundingClientRect();
     const mr = menu.getBoundingClientRect();
     let x = br.left;
