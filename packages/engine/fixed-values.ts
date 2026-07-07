@@ -192,9 +192,17 @@ class FixedValues {
     const valueRefs = new Set<string>();
     const deferredRefs = new Set();
 
-    function collectFor(walkIr: any, inMeasureContext: any) {
+    function collectFor(walkIr: any, inMeasureContext: any, bound?: Set<string>) {
       const refs = collectSelfRefs(walkIr);
       for (const r of refs) {
+        // A functionof PARAMETER (a boundary bound per-call by the
+        // applying op — `_broadcastApply` binds it into elemEnv) is not a
+        // value to resolve globally. Skip it: an implicit-boundary body
+        // like `pow(x, 2)` (from `f = functionof(y)`, `y = x^2`) references
+        // its boundary `x`, a parameterized `elementof` leaf that would
+        // otherwise make the value-ref gate declare the whole binding
+        // UNRESOLVED — silently blocking the fixed-phase fold of `f.(X)`.
+        if (bound && bound.has(r)) continue;
         if (!bindings.has(r)) continue;
         const dep = bindings.get(r);
         // Function-typed bindings (fn / functionof / kernelof) aren't
@@ -202,11 +210,16 @@ class FixedValues {
         // env.__resolveFnBody at the call site. Skip them from the
         // value-ref gate (they never get a value), but recurse into a
         // functionof BODY since it may close over fixed-phase values.
+        // The body's own params are bound per-call, so add them to `bound`
+        // before recursing (a self-contained implicit-boundary body refers
+        // to them directly).
         if (dep && (dep.type === 'fn' || dep.type === 'functionof'
                     || dep.type === 'kernelof')) {
           if (dep.ir && dep.ir.kind === 'call'
               && dep.ir.op === 'functionof' && dep.ir.body) {
-            collectFor(dep.ir.body, inMeasureContext);
+            const inner = Array.isArray(dep.ir.params) && dep.ir.params.length
+              ? new Set([...(bound || []), ...dep.ir.params]) : bound;
+            collectFor(dep.ir.body, inMeasureContext, inner);
           }
           continue;
         }

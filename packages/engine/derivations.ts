@@ -340,6 +340,53 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     }
   }
 
+  // Self-contain reified `functionof` bodies over their implicit
+  // boundaries. `functionof(<expr>)` auto-promotes the free `elementof`
+  // leaves of <expr> to its parameters (lift.canonicalizeImplicitBoundaries),
+  // but the stored body may still reference the INTERMEDIATE deterministic
+  // value bindings between the body root and those leaves — e.g.
+  // `f = functionof(y)` with `y = x^2` stores body = `ref y`, boundary = {x}.
+  // Every consumer that APPLIES the function binds only the boundary params,
+  // then evaluates the body: the fixed-phase folder (fixed-values
+  // `__resolveFnBody` → sampler `_broadcastApply`) and the materialiser
+  // (`inlineCallableRefs` → `matEvaluate`). A bare `ref y` is unresolvable
+  // there — fixed phase gives up SILENTLY (the binding is then misclassified
+  // and crashes at materialise), and the materialiser throws "no derivation
+  // for 'y'". Inline the intermediate value bindings down to the boundary
+  // set now, exactly as a reified kernel inlines its derived distribution
+  // parameters to its boundaries (materialiser-shared.inlineBoundaryDerivations).
+  // The inliner's guard leaves elementof/external leaves (the boundaries) and
+  // any stochastic / measure-derivation ref as refs — only deterministic
+  // value bindings inline — so a self-contained body results without baking
+  // in an unevaluable input or a draw. Placeholder-param functionofs (user
+  // `(a, b) -> …` fns) carry `%local` body refs and no binding-sourced
+  // boundary, so they are skipped. Lazy require avoids the derivations →
+  // materialiser-shared → orchestrator → derivations CJS cycle.
+  {
+    const { inlineBoundaryDerivations } = require('./materialiser-shared.ts');
+    const inlineCtx = { bindings, derivations };
+    for (const [, binding] of bindings) {
+      // Only `functionof` bindings. A `kernelof` also lowers to an
+      // `ir.op === 'functionof'` reified scope, but a reified kernel keeps
+      // its body a bare ref by design — its boundaries are fed and its
+      // derived params inlined LATE by the density walker / matClm, and the
+      // generative-kernel recogniser reads the bare-ref body. Inlining here
+      // would corrupt that path (see generative-kernel-broadcast tests).
+      if ((binding as any).type !== 'functionof') continue;
+      const ir = binding.ir;
+      if (!ir || ir.kind !== 'call' || ir.op !== 'functionof') continue;
+      if (!Array.isArray(ir.params) || !Array.isArray(ir.paramSources) || !ir.body) continue;
+      const boundary = new Set<string>();
+      for (let i = 0; i < ir.paramSources.length; i++) {
+        const s = ir.paramSources[i];
+        if (s && s.kind === 'binding') boundary.add(ir.params[i]);
+      }
+      if (boundary.size === 0) continue;   // placeholder params: body already uses %local refs
+      const newBody = inlineBoundaryDerivations(ir.body, boundary, inlineCtx);
+      if (newBody !== ir.body) binding.ir = Object.assign({}, ir, { body: newBody });
+    }
+  }
+
   // Fixed-phase value resolution is DEMAND-DRIVEN (engine-concepts §17.1).
   // `fixedValues` is a lazy, memoised, cycle-guarded resolver (FixedValues
   // — see fixed-values.ts), NOT an eager map. A binding's fixed value is
@@ -461,6 +508,69 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     }
   }
 
+  // Cycle detection over the derivation dependency graph. FlatPPL modules
+  // are DAGs (spec §04): a binding may not depend on itself. A cyclic
+  // deterministic derivation — `f = f` (alias whose `from` is `f`),
+  // `f = f + 1` (evaluate whose IR refs `f`), a mutual `a = b; b = a` —
+  // otherwise survives classification and makes the materialiser recurse
+  // without bound: matAlias returns getMeasure(self) synchronously (stack
+  // overflow) and matEvaluate self-chains a promise ("Chaining cycle
+  // detected"). Drop every derivation on a cycle and emit an actionable
+  // diagnostic instead of shipping a non-terminating derivation. Edges run
+  // only to names that themselves carry a derivation — callables, boundary
+  // inputs and draws have none, so they can't close a cycle and the ordinary
+  // DAG is left untouched (an over-prune would surface as a lost derivation
+  // in the suite).
+  function _derivationDepNames(d: any): string[] {
+    const deps = new Set<string>();
+    const addName = (n: any) => { if (typeof n === 'string') deps.add(n); };
+    const addIR = (ir: any) => { if (ir) for (const r of collectSelfRefs(ir)) deps.add(r); };
+    addName(d.from); addName(d.measureName); addName(d.bodyName);
+    if (Array.isArray(d.fromNames)) d.fromNames.forEach(addName);
+    if (Array.isArray(d.elems)) d.elems.forEach(addName);
+    if (d.fields) for (const k in d.fields) addName(d.fields[k]);
+    if (Array.isArray(d.branches)) for (const b of d.branches) if (b && b.ref != null) addName(b.ref);
+    addIR(d.ir); addIR(d.distIR); addIR(d.weightIR); addIR(d.obsIR); addIR(d.pointIR); addIR(d.bodyIR);
+    if (Array.isArray(d.argIRs)) for (const ir of d.argIRs) addIR(ir);
+    if (d.kwargIRs) for (const k in d.kwargIRs) addIR(d.kwargIRs[k]);
+    return Array.from(deps).filter(
+      (n) => Object.prototype.hasOwnProperty.call(derivations, n));
+  }
+  const cyclicNames = new Set<string>();
+  {
+    const GREY = 1, BLACK = 2;
+    const color: Record<string, number> = Object.create(null);
+    const onCycle = cyclicNames;
+    const stack: string[] = [];
+    const dfs = (nm: string): void => {
+      color[nm] = GREY; stack.push(nm);
+      for (const dep of _derivationDepNames(derivations[nm])) {
+        if (color[dep] === GREY) {
+          // Back-edge: the stack from `dep` to the top is a cycle.
+          for (let i = stack.length - 1; i >= 0; i--) {
+            onCycle.add(stack[i]);
+            if (stack[i] === dep) break;
+          }
+        } else if (color[dep] !== BLACK) {
+          dfs(dep);
+        }
+      }
+      stack.pop(); color[nm] = BLACK;
+    };
+    for (const name of Object.keys(derivations)) if (!color[name]) dfs(name);
+    for (const name of onCycle) {
+      delete derivations[name];
+      diagnostics.push({
+        severity: 'error',
+        message: `Binding '${name}' is part of a dependency cycle — it depends on `
+          + `itself, directly or transitively. FlatPPL modules are acyclic `
+          + `(spec §04); a binding may not be defined in terms of itself. Break `
+          + `the cycle. Plotting '${name}' or anything depending on it will fail.`,
+        loc: bindingLoc(name),
+      });
+    }
+  }
+
   // Loud-fail a pruned posterior. A `bayesupdate` binding left without a
   // derivation was cascade-pruned because its prior is not the law of the
   // likelihood's boundary draws — the H1 boundary-conflation scar zone
@@ -508,6 +618,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     if (!b || b.phase !== 'fixed') continue;
     if (_isObjectBindingType(b.type)) continue;         // legit underived
     if (derivations[name]) continue;
+    if (cyclicNames.has(name)) continue;                // already flagged as a cycle, not an engine gap
     if (fixedValues.has(name)) continue;
     diagnostics.push({
       severity: 'error',
