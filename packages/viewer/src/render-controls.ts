@@ -410,11 +410,26 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void, tr
 
 // Global inference-backend selector for the header. Posterior (bayesupdate)
 // measures default to importance sampling ('is'); this lets the user switch
-// to the MCMC driver ('mh' / 'emcee'). Writes onto ctx.inferenceOpts and calls
-// onChange (which clears the measure cache and re-renders) on any change. The
-// engine reads ctx.inferenceOpts via the matCtx — see engine-facade.getMeasure.
+// to the MCMC driver ('mh' / 'emcee'). Writes onto ctx.inferenceOpts.
+//
+// Sampling is DEFERRED behind an explicit "Sample" button: editing the sampler
+// dropdown or any gear knob only mutates ctx.inferenceOpts and flags the button
+// dirty — nothing re-samples until the user clicks Sample, which calls onChange
+// (clears the measure cache and re-renders → re-draws). The same button re-runs
+// with unchanged settings, so it doubles as a re-draw/re-roll. The engine reads
+// ctx.inferenceOpts via the matCtx — see engine-facade.getMeasure.
 export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLElement {
   const opts = ctx.inferenceOpts;
+
+  // `appliedSnapshot` records the config last committed via onChange, so
+  // markDirty can tell a pending edit ("Sample ●", highlighted) from a clean
+  // state ("Sample", used as a plain re-draw). Serialised over every knob.
+  function snapshotOpts(): string {
+    return JSON.stringify([opts.backend, opts.chains, opts.walkers, opts.warmup,
+      opts.draws, opts.seed, opts.amisIters, opts.amisSamples,
+      opts.smcParticles, opts.smcSteps, opts.smcCESS]);
+  }
+  let appliedSnapshot = snapshotOpts();
 
   function styleControl(el: HTMLElement) {
     el.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
@@ -503,7 +518,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
     inp.addEventListener('change', function () {
       const raw = inp.value.trim();
       set(raw === '' ? null : Number(raw));
-      onChange();
+      markDirty();
     });
     row.append(rl, inp);
     panel.appendChild(row);
@@ -541,7 +556,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
     const raw = countInput.value.trim();
     if (opts.backend === 'emcee') opts.walkers = raw === '' ? null : Number(raw);
     else opts.chains = raw === '' ? 4 : Number(raw);
-    onChange();
+    markDirty();
   });
 
   numRow('draws', ['mh', 'emcee', 'elliptical-slice-sampler'], function () { return opts.draws; }, function (v) { opts.draws = v == null ? 1000 : v; });
@@ -596,10 +611,41 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
     opts.backend = sel.value;
     refreshEnabled();
     refreshCountRow();
+    markDirty();
+  });
+
+  // Explicit Sample / re-draw button. Highlighted ("Sample ●") whenever the
+  // pending config differs from what was last drawn; a plain "Sample" otherwise
+  // (still clickable, to re-run / re-roll with the current settings).
+  const applyBtn = document.createElement('button');
+  applyBtn.type = 'button';
+  applyBtn.textContent = 'Sample';
+  styleControl(applyBtn);
+  applyBtn.style.fontWeight = '600';
+  function refreshApply() {
+    const dirty = snapshotOpts() !== appliedSnapshot;
+    applyBtn.textContent = dirty ? 'Sample ●' : 'Sample';
+    if (dirty) {
+      applyBtn.style.background = 'var(--vscode-button-background, #0e639c)';
+      applyBtn.style.color = 'var(--vscode-button-foreground, #ffffff)';
+      applyBtn.style.borderColor = 'var(--vscode-button-background, #0e639c)';
+      applyBtn.title = 'Apply the changed sampler settings and draw';
+    } else {
+      applyBtn.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+      applyBtn.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+      applyBtn.style.borderColor = 'var(--vscode-dropdown-border, #555)';
+      applyBtn.title = 'Re-run the sampler with the current settings (re-draw)';
+    }
+  }
+  function markDirty() { refreshApply(); }
+  applyBtn.addEventListener('click', function () {
     onChange();
+    appliedSnapshot = snapshotOpts();
+    refreshApply();
   });
 
   refreshEnabled();
-  wrap.append(lbl, sel, gear, panel);
+  refreshApply();
+  wrap.append(lbl, sel, gear, applyBtn, panel);
   return wrap;
 }
