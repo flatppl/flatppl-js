@@ -33,6 +33,12 @@ test('valueset: distribution supports (§08 Domain/Support column)', () => {
   assert.equal(vsOf('m = Normal(mu = 0.0, sigma = 1.0)', 'm'), 'reals');
   assert.equal(vsOf('m = LogNormal(mu = 0.0, sigma = 1.0)', 'm'), 'posreals');
   assert.equal(vsOf('m = Exponential(rate = 1.0)', 'm'), 'nonnegreals');
+  // Gamma/ChiSquared density is nonzero at x=0 (Gamma(1,β)=Exponential; α≤1
+  // diverges/is finite there), so their §08 support includes 0 — nonnegreals,
+  // like Exponential. (The HMC transform notion stays `positive`; see
+  // transforms.ts SUPPORT_BY_DIST, boundary is measure-zero.)
+  assert.equal(vsOf('m = Gamma(shape = 1.0, rate = 1.0)', 'm'), 'nonnegreals');
+  assert.equal(vsOf('m = ChiSquared(k = 2.0)', 'm'), 'nonnegreals');
   assert.equal(vsOf('m = Beta(alpha = 1.0, beta = 1.0)', 'm'), 'unitinterval');
   assert.equal(vsOf('m = Bernoulli(p = 0.5)', 'm'), 'booleans');
   assert.equal(vsOf('m = Categorical(p = [0.3, 0.7])', 'm'), 'posintegers');

@@ -3301,9 +3301,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'Uniform': return vsLib.setExprValueset(supportArgOf(ir), _resolveDim);
       case 'Normal': case 'GeneralizedNormal': case 'Cauchy': case 'StudentT':
       case 'Logistic': case 'VonMises': case 'Laplace': return vsLib.REALS;
-      case 'LogNormal': case 'Gamma': case 'InverseGamma': case 'ChiSquared':
+      case 'LogNormal': case 'InverseGamma':
       case 'Pareto': return vsLib.POSREALS;
-      case 'Exponential': case 'Weibull': return vsLib.NONNEGREALS;
+      // Gamma/ChiSquared density is nonzero at x=0 (Gamma(1,β)=Exponential;
+      // shape≤1 is finite/diverges there), so 0 is in the §08 support —
+      // nonnegreals, like Exponential/Weibull. This is the DENSITY support
+      // only; the HMC unconstraining transform still treats them as the
+      // positive half-line (transforms.ts SUPPORT_BY_DIST), the x=0 boundary
+      // being measure-zero — mirroring how Exponential is already handled.
+      case 'Exponential': case 'Weibull':
+      case 'Gamma': case 'ChiSquared': return vsLib.NONNEGREALS;
       case 'Beta': return vsLib.UNITINTERVAL;
       case 'Bernoulli': return vsLib.BOOLEANS;
       case 'Categorical': return vsLib.POSINTEGERS;
