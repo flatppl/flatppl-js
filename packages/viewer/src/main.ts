@@ -162,7 +162,6 @@ import {
   buildPresetControl,
 } from './render-controls.js';
 import {
-  clearForwardCaches,
   setSampleCount,
   setMarginalizationCount,
 } from './forward-draws.js';
