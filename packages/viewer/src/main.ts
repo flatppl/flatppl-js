@@ -162,6 +162,11 @@ import {
   buildPresetControl,
 } from './render-controls.js';
 import {
+  clearForwardCaches,
+  setSampleCount,
+  setMarginalizationCount,
+} from './forward-draws.js';
+import {
   renderFixedRecord,
   renderKernelSampleForCurrent,
   renderKernelSampleMeasure,
@@ -1504,12 +1509,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
       // and re-render the current plot at the new count. The
       // histogram cache must go too — it's keyed by binding name
       // but the underlying samples will be different.
-      if (typeof cfg.sampleCount === 'number'
-          && cfg.sampleCount > 0
-          && cfg.sampleCount !== ctx.SAMPLE_COUNT) {
-        ctx.SAMPLE_COUNT = cfg.sampleCount | 0;
-        ctx.measureCache = new Map();
-        ctx.histogramCache = new Map();
+      if (typeof cfg.sampleCount === 'number' && setSampleCount(ctx, cfg.sampleCount)) {
         if (ctx.plotEnabled) renderPlotForCurrent(ctx);
       }
 
@@ -1520,11 +1520,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
       // recompute. (Independent of sampleCount: tractable plots are
       // unaffected and just re-render from fresh draws.)
       if (typeof cfg.marginalizationSampleCount === 'number'
-          && cfg.marginalizationSampleCount >= 1
-          && cfg.marginalizationSampleCount !== ctx.MARGINALIZATION_COUNT) {
-        ctx.MARGINALIZATION_COUNT = cfg.marginalizationSampleCount | 0;
-        ctx.measureCache = new Map();
-        ctx.histogramCache = new Map();
+          && setMarginalizationCount(ctx, cfg.marginalizationSampleCount)) {
         if (ctx.plotEnabled) renderPlotForCurrent(ctx);
       }
 
