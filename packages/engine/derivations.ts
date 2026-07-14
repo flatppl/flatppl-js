@@ -74,7 +74,7 @@ import type {
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr, computePhases } = require('./analyzer.ts');
-const { MEASURE_PRODUCING, ALL_KNOWN, SET_CONSTRUCTORS } = require('./builtins.ts');
+const { MEASURE_PRODUCING, ALL_KNOWN, SET_CONSTRUCTORS, DISTRIBUTIONS, MEASURE_OPS } = require('./builtins.ts');
 const { isEvaluable, liftInlineSubexpressions, classifyRandTuple } = require('./lift.ts');
 const { dissolveBindings } = require('./dissolver.ts');
 const { signatureOf } = require('./signatures.ts');
@@ -3499,6 +3499,50 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
  *     unchanged. Refs in their kwargs are value-position (per-i
  *     params resolved at materialise / density time).
  */
+/**
+ * Resolve measure-position self-refs nested inside a kernel-broadcast
+ * head's `functionof` BODY (Buffy #268) — e.g. `weighted(p, bkg)`'s `bkg`.
+ * Deliberately NARROWER than, and separate from, `_expandStructural`'s
+ * general contract (several callers — e.g. orchestrator.test.ts "unknown
+ * op is passed through unchanged" — rely on that function returning an
+ * unrecognised op UNCHANGED, by reference, and on it NOT reconstructing a
+ * `normalize` node it cannot score). This helper exists only to make a
+ * kernel-broadcast body self-contained before it reaches the (bindings-
+ * less, worker-side) density walker, and recurses through exactly the
+ * composite-measure vocabulary a hand-written mixture kernel body uses:
+ * normalize/truncate (peel the base), weighted/logweighted (peel the
+ * base, leaving the weight expression alone — it is a VALUE, resolved
+ * per-atom-cell by the density walker), superpose (peel every branch),
+ * and a bare self-ref (resolve by name via `_expandByName`, the same
+ * resolution a top-level measure's named components already get). Any
+ * other shape (a distribution leaf's kwargs, an arithmetic sub-
+ * expression) is left untouched — those are VALUE positions the density
+ * walker's own per-atom-cell env resolves, not measure positions this
+ * pass owns.
+ */
+function _expandKernelBodyMeasureRefs(ir: any, ctx: any, visited: Set<string>): any {
+  if (!ir || typeof ir !== 'object') return ir;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    const expanded = _expandByName(ir.name, ctx, visited);
+    return expanded || ir;
+  }
+  if (ir.kind !== 'call') return ir;
+  if ((ir.op === 'normalize' || ir.op === 'truncate')
+      && Array.isArray(ir.args) && ir.args.length >= 1) {
+    const inner = _expandKernelBodyMeasureRefs(ir.args[0], ctx, visited);
+    return { ...ir, args: [inner, ...ir.args.slice(1)] };
+  }
+  if ((ir.op === 'weighted' || ir.op === 'logweighted')
+      && Array.isArray(ir.args) && ir.args.length === 2) {
+    const inner = _expandKernelBodyMeasureRefs(ir.args[1], ctx, visited);
+    return { ...ir, args: [ir.args[0], inner] };
+  }
+  if (ir.op === 'superpose' && Array.isArray(ir.args)) {
+    return { ...ir, args: ir.args.map((a: any) => _expandKernelBodyMeasureRefs(a, ctx, visited)) };
+  }
+  return ir;
+}
+
 function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
   if (!ir) return null;
   if (ir.kind === 'ref' && ir.ns === 'self') {
@@ -3566,6 +3610,50 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
     const inner: any = _expandStructural(ir.kwargs.intensity, ctx, visited);
     if (!inner) return ir;
     return { ...ir, kwargs: { ...ir.kwargs, intensity: inner } };
+  }
+  if (ir.op === 'broadcast' && Array.isArray(ir.args) && ir.args.length >= 1
+      && ctx && ctx.bindings) {
+    // A kernel-broadcast head that names a user-defined `functionof` whose
+    // BODY is DIRECTLY a composite MEASURE (normalize/superpose/weighted/…
+    // of sampleable leaves — spec §04: such a functionof IS a Markov
+    // kernel; Buffy #268) needs the SAME by-name measure expansion any
+    // top-level measure's components already get (the truncate/superpose/
+    // PoissonProcess cases above) — e.g. `energy = p ->
+    // normalize(superpose(weighted(p, bkg), weighted(1-p, sig)))`'s
+    // `bkg`/`sig` refs. The kernel-broadcast head is reached STRUCTURALLY
+    // (this function), never by name — so `_expandByName`'s superpose/
+    // select/weighted cases, which only fire for a NAMED measure binding,
+    // never see it. Left unresolved, `bkg` would reach the (worker-side,
+    // bindings-less) density walker as a bare self-ref it can never
+    // resolve.
+    //
+    // Gate on (DISTRIBUTIONS ∪ MEASURE_OPS), NOT the broader
+    // MEASURE_PRODUCING (which also includes `lawof`) — deliberately
+    // excluding `lawof`: a GENERATIVE value-expression body (§06 case 3 —
+    // `lawof(<value-expr-with-internal-draw>)`, e.g. the `transport`
+    // model's `lawof(y)` with `y = (x + delta_alpha)^3 * exp(x - b)`) IS
+    // `MEASURE_PRODUCING` (lawof produces a measure) but is NOT a
+    // composite of measure-algebra ops this expansion understands — its
+    // value-expression argument must stay untouched for the generative-
+    // kernel recognisers (detectGenerativeKernelBinding / mc-recipe) to
+    // find `y` by name later. Mistakenly expanding it here (an earlier,
+    // reverted version of this fix used MEASURE_PRODUCING and inlined
+    // `transport`'s `y` prematurely) broke simple-transport1/2.flatppl
+    // with "unbound %local reference" — the by-name mc-marginal /
+    // generative-kernel machinery expects `transport` to still resolve as
+    // a plain named ref at this stage, not a pre-spliced structural blob.
+    const hd: any = ir.args[0];
+    if (hd && hd.kind === 'ref' && hd.ns === 'self') {
+      const b = ctx.bindings.get(hd.name);
+      if (b && b.ir && b.ir.kind === 'call' && b.ir.op === 'functionof' && b.ir.body
+          && b.ir.body.kind === 'call'
+          && (DISTRIBUTIONS.has(b.ir.body.op) || MEASURE_OPS.has(b.ir.body.op))) {
+        const expandedBody = _expandKernelBodyMeasureRefs(b.ir.body, ctx, visited);
+        const newHead = { ...b.ir, body: expandedBody };
+        return { ...ir, args: [newHead, ...ir.args.slice(1)] };
+      }
+    }
+    return ir;
   }
   // Sampleable distribution / select / broadcast / superpose / etc.:
   // pass through unchanged. Their kwargs / args hold value-position

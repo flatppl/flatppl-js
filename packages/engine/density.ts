@@ -1642,6 +1642,93 @@ function _asFloatColumn(r: any, M: number): Float64Array {
 // FlatPDL note: per-element dispatch goes through
 // `densityPrims.builtinLogdensityofPositional`, the same primitive
 // walkLeaf uses — same numbers, same cross-engine ABI.
+// Build the (i, j) → number accessor for one already-evaluated broadcast
+// parameter value `v` (the result of `evaluateExprN`), dispatching on its
+// runtime shape exactly as the inline per-parameter loop in `walkBroadcast`
+// used to (factored out so `walkKernelBroadcastMeasureKernel`'s user-kernel
+// path can share it instead of re-deriving the same shape dispatch).
+// `errCtx` labels the parameter in a thrown message (e.g.
+// "broadcast(Normal) parameter 'mu'").
+function _broadcastParamAccessor(v: any, usesAtom: boolean, N: any, errCtx: string): (i: number, j: number) => number {
+  if (typeof v === 'number') {
+    const val = +v;
+    return (_i, _j) => val;
+  }
+  if (typeof v === 'boolean') {
+    const val = v ? 1 : 0;
+    return (_i, _j) => val;
+  }
+  if (valueLib.isValue(v)) {
+    const shape = v.shape;
+    const data = v.data;
+    if (shape.length === 0) {
+      const val = data[0];
+      return (_i, _j) => val;
+    }
+    if (shape.length === 1) {
+      // Length-N is ambiguous when N === K; `usesAtom` is the
+      // disambiguator: a per-atom expression always produces leading-N.
+      // The canonical `valueLib.isAtomBatched` predicate consults
+      // outerRank too (P3) so a producer-tagged value is honoured.
+      if (usesAtom && valueLib.isAtomBatched(v, N)) {
+        return (i, _j) => data[i];
+      }
+      const K1 = shape[0];
+      if (K1 === 1) {
+        const val = data[0];
+        return (_i, _j) => val;
+      }
+      return (_i, j) => data[j];
+    }
+    if (valueLib.isAtomBatched(v, N) && shape.length >= 2) {
+      // Atom-batched: shape = [N, d1, ..., dm]. Collection axes = shape[1..].
+      // Pi = d1 * d2 * ... * dm (flat size per atom).
+      let Pi = 1;
+      for (let k = 1; k < shape.length; k++) Pi *= shape[k];
+      if (Pi === 1) {
+        return (i, _j) => data[i];
+      }
+      const stride = Pi;
+      return (i, j) => data[i * stride + j];
+    }
+    if (!valueLib.isAtomBatched(v, N) && shape.length >= 2) {
+      // Atom-indep multi-dim: shape = [d1, ..., dm].
+      // Pi = ∏ shape (flat size).
+      let Pi = 1;
+      for (let k = 0; k < shape.length; k++) Pi *= shape[k];
+      if (Pi === 1) {
+        const val = data[0];
+        return (_i, _j) => val;
+      }
+      return (_i, j) => data[j];
+    }
+    throw new Error('density: ' + errCtx + ' resolved to unsupported shape '
+      + JSON.stringify(shape) + ' (expected scalar / [K] / [N] / [N, K] / [d1,d2,...] / [N,d1,...])');
+  }
+  if (v && v.BYTES_PER_ELEMENT !== undefined && typeof v.length === 'number') {
+    const data: any = v;
+    if (usesAtom && valueLib.isAtomBatched(v, N)) {
+      return (i, _j) => data[i];
+    }
+    const Kv = data.length;
+    if (Kv === 1) {
+      const val = data[0];
+      return (_i, _j) => val;
+    }
+    return (_i, j) => data[j];
+  }
+  if (Array.isArray(v)) {
+    const Karr = v.length;
+    if (Karr === 1) {
+      const val = +v[0];
+      return (_i, _j) => val;
+    }
+    const arr = v;
+    return (_i, j) => +arr[j];
+  }
+  throw new Error('density: ' + errCtx + ' resolved to non-numeric value (type ' + (typeof v) + ')');
+}
+
 function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   const args = ir.args || [];
   if (args.length < 1) {
@@ -1650,6 +1737,39 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   // Kernel head must name a built-in sampleable distribution. Same
   // restriction matKernelBroadcast / classifyKernelBroadcast accept.
   const hd: any = args[0];
+  // Composite measure-valued kernel head (spec §04; Buffy #268): a
+  // `functionof` whose BODY is a measure expression (normalize/superpose/
+  // weighted/… of sampleable leaves, or a bare distribution leaf) IS a
+  // Markov kernel — broadcast(kernel, col) is then the independent product
+  // measure, density = Σ per-atom-cell log-densities. The production shape
+  // is an INLINE functionof (materialiser-shared's inlineBoundaryDerivations
+  // splices the binding's body in before the worker hand-off, and
+  // derivations.ts's `_expandStructural` broadcast case now additionally
+  // expands any measure-position self-refs INSIDE that body, e.g. `bkg` /
+  // `sig`, the same way a top-level measure's components already resolve);
+  // a bare self-ref head is the test-only `opts.resolveMeasureRef` escape
+  // hatch. A GENERATIVE value-expression body (§06 case 3 — closes over an
+  // internal draw, e.g. the `transport` model) does NOT classify here (its
+  // op isn't measure-shaped), so it falls through unchanged to the existing
+  // loud refusal below — no silent Monte-Carlo fallback.
+  let fnHead: any = null;
+  if (hd && hd.kind === 'call' && hd.op === 'functionof'
+      && Array.isArray(hd.params) && hd.body) {
+    fnHead = hd;
+  } else if (hd && hd.kind === 'ref' && hd.ns === 'self'
+      && typeof (opts && opts.resolveMeasureRef) === 'function') {
+    try {
+      const headIR = opts.resolveMeasureRef(hd.name);
+      if (headIR && headIR.kind === 'call' && headIR.op === 'functionof'
+          && Array.isArray(headIR.params) && headIR.body) {
+        fnHead = headIR;
+      }
+    } catch (_) { /* resolver may throw for non-bindings; ignore */ }
+  }
+  if (fnHead && fnHead.body && fnHead.body.kind === 'call'
+      && ((OP_HANDLERS as any)[fnHead.body.op] || samplerLib.isKnownDistribution(fnHead.body.op))) {
+    return walkKernelBroadcastMeasureKernel(ir, fnHead, value, refArrays, N, opts, acc, baseEnv, overlay);
+  }
   let kernelName: string | null = null;
   if (hd && hd.kind === 'ref' && hd.ns === 'self') kernelName = hd.name;
   // Module-qualified distribution head (e.g. `hepphys.ContinuedPoisson`,
@@ -1744,90 +1864,8 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     perAtomFlags[pi] = usesAtom;
     paramUsesAtom[pi] = usesAtom;
     if (usesAtom) anyAtomDep = true;
-    let access: (i: number, j: number) => number;
-    if (typeof v === 'number') {
-      const val = +v;
-      access = (_i, _j) => val;
-    } else if (typeof v === 'boolean') {
-      const val = v ? 1 : 0;
-      access = (_i, _j) => val;
-    } else if (valueLib.isValue(v)) {
-      const shape = v.shape;
-      const data = v.data;
-      if (shape.length === 0) {
-        const val = data[0];
-        access = (_i, _j) => val;
-      } else if (shape.length === 1) {
-        // Length-N is ambiguous when N === K; `usesAtom` is the
-        // disambiguator: a per-atom expression always produces leading-N.
-        // The canonical `valueLib.isAtomBatched` predicate consults
-        // outerRank too (P3) so a producer-tagged value is honoured.
-        if (usesAtom && valueLib.isAtomBatched(v, N)) {
-          access = (i, _j) => data[i];
-        } else {
-          const K1 = shape[0];
-          if (K1 === 1) {
-            const val = data[0];
-            access = (_i, _j) => val;
-          } else {
-            access = (_i, j) => data[j];
-          }
-        }
-      } else if (valueLib.isAtomBatched(v, N) && shape.length >= 2) {
-        // Atom-batched: shape = [N, d1, ..., dm]. Collection axes = shape[1..].
-        // Pi = d1 * d2 * ... * dm (flat size per atom).
-        let Pi = 1;
-        for (let k = 1; k < shape.length; k++) Pi *= shape[k];
-        if (Pi === 1) {
-          access = (i, _j) => data[i];
-        } else {
-          const stride = Pi;
-          access = (i, j) => data[i * stride + j];
-        }
-      } else if (!valueLib.isAtomBatched(v, N) && shape.length >= 2) {
-        // Atom-indep multi-dim: shape = [d1, ..., dm].
-        // Pi = ∏ shape (flat size).
-        let Pi = 1;
-        for (let k = 0; k < shape.length; k++) Pi *= shape[k];
-        if (Pi === 1) {
-          const val = data[0];
-          access = (_i, _j) => val;
-        } else {
-          access = (_i, j) => data[j];
-        }
-      } else {
-        throw new Error("density: broadcast(" + kernelName + ") parameter '"
-          + paramNames[pi] + "' resolved to unsupported shape "
-          + JSON.stringify(shape) + ' (expected scalar / [K] / [N] / [N, K] / [d1,d2,...] / [N,d1,...])');
-      }
-    } else if (v && v.BYTES_PER_ELEMENT !== undefined
-                && typeof v.length === 'number') {
-      const data: any = v;
-      if (usesAtom && valueLib.isAtomBatched(v, N)) {
-        access = (i, _j) => data[i];
-      } else {
-        const Kv = data.length;
-        if (Kv === 1) {
-          const val = data[0];
-          access = (_i, _j) => val;
-        } else {
-          access = (_i, j) => data[j];
-        }
-      }
-    } else if (Array.isArray(v)) {
-      const Karr = v.length;
-      if (Karr === 1) {
-        const val = +v[0];
-        access = (_i, _j) => val;
-      } else {
-        const arr = v;
-        access = (_i, j) => +arr[j];
-      }
-    } else {
-      throw new Error("density: broadcast(" + kernelName + ") parameter '"
-        + paramNames[pi] + "' resolved to non-numeric value (type " + (typeof v) + ')');
-    }
-    accessors[pi] = access;
+    accessors[pi] = _broadcastParamAccessor(v, usesAtom, N,
+      "broadcast(" + kernelName + ") parameter '" + paramNames[pi] + "'");
   }
   // Build collection axes per param, resolve broadcast axes, get output axes + strides.
   const resolved = bcAxes.resolveBroadcastAxes(
@@ -1867,6 +1905,120 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
       }
       total += blp(kernelName, params, cells[cell]);
     }
+    acc[i] += total;
+  }
+  return rest;
+}
+
+// ---- Kernel-broadcast: composite MEASURE-valued user kernel head ----
+//
+// broadcast(kernel, col) where `kernel` is a `functionof` whose BODY is a
+// composite measure (normalize/superpose/weighted/… of sampleable leaves,
+// or a bare distribution leaf) — spec §04: such a functionof IS a Markov
+// kernel, so the broadcast is the independent product measure. Density at
+// a length-K observation is the SUM of per-cell log-densities, each scored
+// by binding the kernel's declared param(s) to that cell's input and
+// recursing the EXISTING measure-density walker (`walkAcc`) on the body at
+// that cell's datum — the same composite-measure scorer a plain (non-
+// broadcast) `normalize(superpose(weighted(...)))` binding already uses
+// (mixture-normalize-scorer.test.ts). Buffy #268.
+//
+// Differs from the builtin-distribution path (`walkBroadcast` above) only
+// in HOW a cell's log-density is computed: instead of one primitive call
+// (`builtinLogdensityofPositional`), each cell recurses the general walker
+// on the kernel body — the price of a user-defined (rather than catalogued)
+// per-cell distribution. Parameter-shape classification, axis resolution,
+// and the atom-indep hot-path short-circuit are otherwise identical to the
+// builtin path (and share `_broadcastParamAccessor`).
+function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
+  const args = ir.args || [];
+  // Internal placeholder names the body's refs use (e.g. `_p_` for a
+  // `fn(_)`-sugared single-arg lambda); surface kwarg names a caller's
+  // `kernel.(p = …)` dot-call would use (e.g. `p`) — mirrors the surface→
+  // internal kwarg mapping sampler.ts's self-target-call arm uses (PR #92).
+  const internalNames: string[] = fnHead.params;
+  const surfaceNames: string[] = fnHead.paramKwargs || fnHead.params;
+  const P = internalNames.length;
+  const positional: any[] = args.slice(1);
+  const kwargsIR: Record<string, any> = (ir as any).kwargs || {};
+  const usingKwargs = Object.keys(kwargsIR).length > 0;
+  const paramIRs: any[] = new Array(P);
+  for (let i = 0; i < P; i++) {
+    const surface = surfaceNames[i] || internalNames[i];
+    if (Object.prototype.hasOwnProperty.call(kwargsIR, surface)) {
+      paramIRs[i] = kwargsIR[surface];
+    } else if (Object.prototype.hasOwnProperty.call(kwargsIR, internalNames[i])) {
+      paramIRs[i] = kwargsIR[internalNames[i]];
+    } else if (!usingKwargs && i < positional.length) {
+      paramIRs[i] = positional[i];
+    } else {
+      throw new Error("density: broadcast kernel missing parameter '" + surface + "'");
+    }
+  }
+
+  const refNames: string[] = refArrays ? Object.keys(refArrays) : [];
+  const evalOpts = overlay ? { overlay } : undefined;
+  const accessors: Array<(i: number, j: number) => number> = new Array(P);
+  const paramVals: any[] = new Array(P);
+  const paramUsesAtom: boolean[] = new Array(P);
+  let anyAtomDep = false;
+  for (let pi = 0; pi < P; pi++) {
+    const pIR = paramIRs[pi];
+    const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
+    paramVals[pi] = v;
+    const usesAtom = _exprUsesAny(pIR, refNames)
+      || (valueLib.isValue(v) && v.shape.length >= 2 && valueLib.isAtomBatched(v, N));
+    paramUsesAtom[pi] = usesAtom;
+    if (usesAtom) anyAtomDep = true;
+    accessors[pi] = _broadcastParamAccessor(v, usesAtom, N,
+      "broadcast kernel parameter '" + surfaceNames[pi] + "'");
+  }
+
+  const resolved = bcAxes.resolveBroadcastAxes(
+    internalNames.map((nm: string, pi: number) => ({
+      name: nm,
+      collectionAxes: shared.collectionAxesOf(paramVals[pi], N, paramUsesAtom[pi]) || [],
+    })));
+  const axes: number[] = resolved.axes;
+  const Ktot: number = axes.reduce((a: number, b: number) => a * b, 1);
+
+  // Consume the nested [d1]...[dm] variate into a flat row-major scalar buffer.
+  const { cells, rest } = flattenNestedVariate(value, axes);
+
+  // Score one (atom i, cell) pair: bind the kernel's declared param(s) to
+  // this cell's input value(s), then recurse the EXISTING measure-density
+  // walker on the (inline, already-fully-expanded — derivations.ts's
+  // `_expandStructural` broadcast case resolves any nested measure-position
+  // refs like a mixture's component names ahead of time) body, scoring it
+  // as a single N=1 point at this cell's datum. Env lookups resolve by
+  // plain name regardless of `ns` (self / %local), so binding the params
+  // directly on a callEnv object is sufficient — no literal substitution
+  // needed (contrast walkWeighted's functionof-weight case, which threads a
+  // per-atom scalar into the OUTER N-atom batch rather than a fresh N=1
+  // sub-walk).
+  function scoreCell(i: number, cell: number): number {
+    const coord = bcAxes.cellToCoord(cell, axes);
+    const callEnv: any = Object.assign({}, baseEnv);
+    if (overlay) Object.assign(callEnv, overlay);
+    for (let pi = 0; pi < P; pi++) {
+      callEnv[internalNames[pi]] = accessors[pi](i, bcAxes.coordToOffset(coord, resolved.strides[internalNames[pi]]));
+    }
+    const cellAcc = new Float64Array(1);
+    walkAcc(fnHead.body, cells[cell], {}, 1, opts, cellAcc, callEnv, undefined);
+    return cellAcc[0];
+  }
+
+  if (!anyAtomDep) {
+    // Atom-indep: compute the sum once, fan out.
+    let total = 0;
+    for (let cell = 0; cell < Ktot; cell++) total += scoreCell(0, cell);
+    if (total !== 0) for (let i = 0; i < N; i++) acc[i] += total;
+    return rest;
+  }
+  // Per-atom × per-cell loop.
+  for (let i = 0; i < N; i++) {
+    let total = 0;
+    for (let cell = 0; cell < Ktot; cell++) total += scoreCell(i, cell);
     acc[i] += total;
   }
   return rest;
