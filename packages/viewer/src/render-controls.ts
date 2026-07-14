@@ -681,17 +681,23 @@ export function buildDrawControl(ctx: Ctx, onChange: () => void): HTMLElement {
   wrap.style.alignItems = 'center';
   wrap.style.gap = '0.3em';
 
-  // appliedSnapshot records the forward-draw settings last committed via
-  // Sample. markDirty compares the live ctx fields against it to toggle the
-  // "Sample ●" (pending) vs "Sample" (clean, acts as re-roll) label.
-  function snapshot(): string {
-    return JSON.stringify([ctx.SAMPLE_COUNT, ctx.MARGINALIZATION_COUNT, ctx.rootSeed]);
+  // PENDING (staged) values, local to this control instance. ctx holds only
+  // APPLIED values — editing an input touches these locals, never ctx, so a
+  // staged-but-unapplied edit cannot leak into an unrelated re-render. The
+  // control is rebuilt from ctx on every re-render (it is a toolbar thunk), so
+  // uncommitted edits are simply re-seeded from the applied ctx values then.
+  let pendingDraws = ctx.SAMPLE_COUNT;
+  let pendingSeed = ctx.rootSeed;
+  let pendingM = ctx.MARGINALIZATION_COUNT;
+  function dirty(): boolean {
+    return pendingDraws !== ctx.SAMPLE_COUNT
+      || pendingSeed !== ctx.rootSeed
+      || pendingM !== ctx.MARGINALIZATION_COUNT;
   }
-  let appliedSnapshot = snapshot();
   function markDirty() {
-    const dirty = snapshot() !== appliedSnapshot;
-    sample.textContent = dirty ? 'Sample ●' : 'Sample';
-    sample.style.fontWeight = dirty ? 'bold' : 'normal';
+    const d = dirty();
+    sample.textContent = d ? 'Sample ●' : 'Sample';
+    sample.style.fontWeight = d ? 'bold' : 'normal';
   }
 
   const lbl = document.createElement('label');
@@ -703,16 +709,15 @@ export function buildDrawControl(ctx: Ctx, onChange: () => void): HTMLElement {
   draws.min = '1';
   draws.step = '1000';
   draws.style.width = '6em';
-  draws.value = String(ctx.SAMPLE_COUNT);
+  draws.value = String(pendingDraws);
   draws.title = 'Forward draw budget for prior / tractable-measure histograms. '
     + 'Takes effect on the next Sample.';
   styleControl(draws);
-  // Stage only: mutate SAMPLE_COUNT but do NOT clear caches or re-render —
-  // Sample commits. Revert the field on invalid input.
+  // Stage only: update the pending local, never ctx. Revert on invalid input.
   draws.addEventListener('change', function () {
     const v = Number(draws.value);
-    if (Number.isFinite(v) && v > 0) ctx.SAMPLE_COUNT = v | 0;
-    draws.value = String(ctx.SAMPLE_COUNT);
+    if (Number.isFinite(v) && v > 0) pendingDraws = v | 0;
+    draws.value = String(pendingDraws);
     markDirty();
   });
 
@@ -724,15 +729,15 @@ export function buildDrawControl(ctx: Ctx, onChange: () => void): HTMLElement {
   seed.type = 'number';
   seed.step = '1';
   seed.style.width = '4.5em';
-  seed.value = String(ctx.rootSeed);
+  seed.value = String(pendingSeed);
   seed.title = 'Forward-sampling seed. Pinning it makes draws reproducible '
     + '(and the whole view, when no posterior seed is set separately). '
     + 'Takes effect on the next Sample.';
   styleControl(seed);
   seed.addEventListener('change', function () {
     const raw = seed.value.trim();
-    if (raw !== '' && Number.isFinite(Number(raw))) pinForwardSeed(ctx, Number(raw));
-    seed.value = String(ctx.rootSeed);
+    if (raw !== '' && Number.isFinite(Number(raw))) pendingSeed = Number(raw) | 0;
+    seed.value = String(pendingSeed);
     markDirty();
   });
 
@@ -743,13 +748,17 @@ export function buildDrawControl(ctx: Ctx, onChange: () => void): HTMLElement {
     + 're-rolls the forward seed to draw a fresh sample.';
   styleControl(sample);
   sample.addEventListener('click', function () {
-    if (snapshot() !== appliedSnapshot) {
-      clearForwardCaches(ctx);           // dirty → commit staged Draws/seed/M
+    if (dirty()) {
+      // Commit the staged pending values to ctx, then invalidate + re-render.
+      ctx.SAMPLE_COUNT = pendingDraws;
+      ctx.MARGINALIZATION_COUNT = pendingM;
+      pinForwardSeed(ctx, pendingSeed);   // sets rootSeed (+ mirrors null posterior seed)
+      clearForwardCaches(ctx);
     } else {
-      const next = rerollForwardSeed(ctx);  // clean → re-roll (bump seed + clear)
-      seed.value = String(next);
+      // Clean → re-roll: bump the seed so the draw visibly changes.
+      pendingSeed = rerollForwardSeed(ctx);  // bumps rootSeed + clears caches
+      seed.value = String(pendingSeed);
     }
-    appliedSnapshot = snapshot();
     markDirty();
     onChange();
   });
@@ -785,15 +794,15 @@ export function buildDrawControl(ctx: Ctx, onChange: () => void): HTMLElement {
   mInput.min = '1';
   mInput.step = '1';
   mInput.style.width = '5.5em';
-  mInput.value = String(ctx.MARGINALIZATION_COUNT);
+  mInput.value = String(pendingM);
   mInput.title = 'Monte Carlo count for marginalizing internal latent draws. '
     + 'Takes effect on the next Sample.';
   styleControl(mInput);
-  // Stage only (same as Draws/seed): commit on Sample.
+  // Stage only (same as Draws/seed): update the pending local; commit on Sample.
   mInput.addEventListener('change', function () {
     const v = Number(mInput.value);
-    if (Number.isFinite(v) && v >= 1) ctx.MARGINALIZATION_COUNT = v | 0;
-    mInput.value = String(ctx.MARGINALIZATION_COUNT);
+    if (Number.isFinite(v) && v >= 1) pendingM = v | 0;
+    mInput.value = String(pendingM);
     markDirty();
   });
   mRow.append(mLbl, mInput);
