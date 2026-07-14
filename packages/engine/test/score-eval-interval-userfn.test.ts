@@ -54,3 +54,18 @@ test('evaluateExpr: unresolvable self-target call still errors clearly', () => {
   assert.throws(() => sampler.evaluateExpr(callIR, { __resolveFnBody: () => null }),
     /not evaluable in sampler context/);
 });
+
+test('evaluateExpr: user-fn call maps kwargs surface→internal (fn(_) sugar, keyword call)', () => {
+  // fn(_) sugar: params ['_arg1_'], paramKwargs ['arg1']; body = _arg1_ * 2.
+  const fnBody = { kind: 'call', op: 'mul',
+    args: [ { kind: 'ref', ns: '%local', name: '_arg1_' }, { kind: 'lit', value: 2 } ] };
+  const env = { __resolveFnBody: (n: string) =>
+    n === 'h' ? { body: fnBody, params: ['_arg1_'], paramKwargs: ['arg1'] } : null };
+  // Positional call binds correctly.
+  assert.equal(sampler.evaluateExpr(
+    { kind: 'call', target: { ns: 'self', name: 'h' }, args: [ { kind: 'lit', value: 5 } ] }, env), 10);
+  // Keyword call by the SURFACE name (arg1) must bind the internal param (_arg1_).
+  assert.equal(sampler.evaluateExpr(
+    { kind: 'call', target: { ns: 'self', name: 'h' }, args: [],
+      kwargs: { arg1: { kind: 'lit', value: 5 } } }, env), 10);
+});

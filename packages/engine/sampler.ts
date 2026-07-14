@@ -2248,30 +2248,40 @@ function evaluateCall(ir: any, env: any): any {
   // Self-target call `(call target={ns:'self', name} args, kwargs)` — a
   // user-defined function application (lower.ts). Resolve its body via the
   // env's __resolveFnBody hook (the same resolver higher-order ops use),
-  // bind args to params (positional, then kwargs by name), and evaluate the
-  // body. Enables scoring a determinized prior whose params come from a
-  // reparam function, e.g. Gamma(gamma_shape_rate(2,1)) → the residual
-  // gamma_shape_rate(2,1).shape / .rate (#261). If it doesn't resolve to a
-  // function, fall through to the op-chain (which throws the clear error).
+  // bind args to params (positional, then kwargs mapped surface→internal),
+  // and evaluate the body. Enables scoring a determinized prior whose params
+  // come from a reparam function, e.g. Gamma(gamma_shape_rate(2,1)) → the
+  // residual gamma_shape_rate(2,1).shape / .rate (#261). __resolveFnBody also
+  // resolves `functionof`/`kernelof` bindings; a measure-valued (kernelof)
+  // body evaluated here as a value only succeeds if that value is otherwise
+  // evaluable — otherwise it falls through to the clear throw, unchanged.
+  // Not a resolvable function → fall through to the op-chain (clear error).
   if (ir && ir.target && ir.target.ns === 'self') {
     const fn = _resolveFn({ kind: 'ref', ns: 'self', name: ir.target.name }, env);
     if (fn && fn.body) {
       const params: string[] = fn.params || [];
+      // Surface kwarg names (paramKwargs) map to internal placeholder param
+      // names (params) — e.g. an `fn(_)`-sugared function has params
+      // ['_arg1_'] / paramKwargs ['arg1']. Bind into the INTERNAL name so the
+      // body's %local refs resolve. Mirrors _broadcastLogical
+      // (ops-declarations.ts). Spec §05: a call is positional XOR keyword.
+      const paramKwargs: string[] = fn.paramKwargs || params;
       const callEnv: any = Object.assign({}, env);
       const posArgs = ir.args || [];
-      for (let i = 0; i < posArgs.length && i < params.length; i++) {
-        callEnv[params[i]] = evaluateExpr(posArgs[i], env);
-      }
-      if (ir.kwargs) {
-        for (const k in ir.kwargs) {
-          if (Object.prototype.hasOwnProperty.call(ir.kwargs, k)) {
-            callEnv[k] = evaluateExpr(ir.kwargs[k], env);
-          }
+      const kw = ir.kwargs || {};
+      for (let i = 0; i < params.length; i++) {
+        if (i < posArgs.length) {
+          callEnv[params[i]] = evaluateExpr(posArgs[i], env);
+          continue;
         }
+        const surface = paramKwargs[i] || params[i];
+        const argIR = (kw[surface] !== undefined) ? kw[surface]
+          : (kw[params[i]] !== undefined ? kw[params[i]] : undefined);
+        if (argIR !== undefined) callEnv[params[i]] = evaluateExpr(argIR, env);
+        // else leave unbound → the body's ref throws a clear unbound error.
       }
       return evaluateExpr(fn.body, callEnv);
     }
-    // not a resolvable function → fall through to the op-chain / clear throw
   }
   const op = ir.op;
   // aggregate migrated to OpDecl as kind='higher-order' (engine-
