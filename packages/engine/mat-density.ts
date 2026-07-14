@@ -211,7 +211,11 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         }
         const perParam: Record<string, any> = {};
         for (let d2 = 0; d2 < mv.dim; d2++) perParam[mv.names[d2]] = { rHat: NaN, essBulk: ess };
-        post = { drawsByName, diagnostics: { method: 'amis', ess, essFrac: ess / nDraws, K: res.K, nSamples: nDraws, perParam } };
+        // Log-evidence: AMIS's logW = logπ̃(x) − log q_mix(x) are RAW importance
+        // weights, so logmeanexp(logW) is an unbiased log Ẑ (same estimator the
+        // IS path puts on logTotalmass). Reported for the evidence readout.
+        const amisLogZ = empirical.logSumExp(lw) - Math.log(nDraws);
+        post = { drawsByName, diagnostics: { method: 'amis', ess, essFrac: ess / nDraws, K: res.K, nSamples: nDraws, logZ: amisLogZ, perParam } };
       } else if (backend === 'smc') {
         const { smcSample } = require('./smc-sample.ts');
         const res = smcSample(mv, Object.assign({}, o, { onProgress }));
@@ -406,6 +410,12 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
     }
     const lTM = empirical.logSumExp(newLW);
     const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });
+    // IS log-evidence: with prior atoms and logWeights = priorLW + logp, the
+    // total mass logsumexp(newLW) IS the log marginal likelihood estimate — the
+    // viewer surfaces it via the "total mass" badge (a weighted measure carries
+    // its evidence on logTotalmass). No diagnostics object here: the weighted IS
+    // measure keeps its PSIS-k̂ / ESS readout, unlike the equal-weight
+    // MCMC/AMIS/SMC outputs that report a `diagnostics.method` instead.
     if (parent.fields) {
       return Object.assign(
         empirical.recordMeasure(parent.fields, newLW),

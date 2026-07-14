@@ -408,26 +408,40 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void, tr
   return frag;
 }
 
-// Global inference-backend selector for the header. Posterior (bayesupdate)
-// measures default to importance sampling ('is'); this lets the user switch
-// to the MCMC driver ('mh' / 'emcee'). Writes onto ctx.inferenceOpts.
+// Unified sampler / draw control for the plot toolbar. On a bayesupdate
+// POSTERIOR (`isPosterior`) the sampler selector is live: IS (importance
+// sampling, default), MH / emcee (MCMC), AMIS, SMC, ESS — writing onto
+// ctx.inferenceOpts. On a non-posterior (prior / tractable) plot there is no
+// backend to choose (forward simulation), so the selector is blanked and
+// disabled; the cog then exposes only the forward draw count + seed.
+//
+// The FORWARD draw count + seed (ctx.SAMPLE_COUNT / ctx.rootSeed) also drive
+// the IS backend (its importance draws are the global forward draws), so the
+// cog shows them for IS as well as for the blanked forward mode.
 //
 // Sampling is DEFERRED behind an explicit "Sample" button: editing the sampler
-// dropdown or any gear knob only mutates ctx.inferenceOpts and flags the button
-// dirty — nothing re-samples until the user clicks Sample, which calls onChange
+// dropdown or any gear knob only mutates ctx and flags the button dirty —
+// nothing re-samples until the user clicks Sample, which calls onChange
 // (clears the measure cache and re-renders → re-draws). The same button re-runs
 // with unchanged settings, so it doubles as a re-draw/re-roll. The engine reads
-// ctx.inferenceOpts via the matCtx — see engine-facade.getMeasure.
-export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLElement {
+// ctx.inferenceOpts / SAMPLE_COUNT / rootSeed via the matCtx — see
+// engine-facade.getMeasure.
+export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterior: boolean = true): HTMLElement {
   const opts = ctx.inferenceOpts;
+
+  // The row set + selector state key off the EFFECTIVE backend: the chosen
+  // posterior backend, or the synthetic 'forward' mode on non-posterior plots.
+  function effectiveBackend(): string { return isPosterior ? opts.backend : 'forward'; }
 
   // `appliedSnapshot` records the config last committed via onChange, so
   // markDirty can tell a pending edit ("Sample ●", highlighted) from a clean
-  // state ("Sample", used as a plain re-draw). Serialised over every knob.
+  // state ("Sample", used as a plain re-draw). Serialised over every knob,
+  // including the forward draw count + seed (SAMPLE_COUNT / rootSeed).
   function snapshotOpts(): string {
     return JSON.stringify([opts.backend, opts.chains, opts.walkers, opts.warmup,
       opts.draws, opts.seed, opts.amisIters, opts.amisSamples,
-      opts.smcParticles, opts.smcSteps, opts.smcCESS]);
+      opts.smcParticles, opts.smcSteps, opts.smcCESS,
+      ctx.SAMPLE_COUNT, ctx.rootSeed]);
   }
   let appliedSnapshot = snapshotOpts();
 
@@ -453,17 +467,35 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   lbl.style.opacity = '0.6';
 
   const sel = document.createElement('select');
+  // Blank option added only in the non-posterior (forward) mode, where there
+  // is no backend to choose.
+  if (!isPosterior) {
+    const blankOpt = document.createElement('option');
+    blankOpt.value = '__forward__'; blankOpt.textContent = '—';
+    sel.appendChild(blankOpt);
+  }
   for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC'], ['elliptical-slice-sampler', 'ESS']]) {
     const o = document.createElement('option');
     o.value = v; o.textContent = t;
     sel.appendChild(o);
   }
-  sel.value = opts.backend;
   styleControl(sel);
-  sel.title = 'Posterior inference backend. IS = importance sampling (default); '
-    + 'MH / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
-    + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence); '
-    + 'ESS = elliptical slice sampling (gradient- and tuning-free).';
+  if (isPosterior) {
+    sel.value = opts.backend;
+    sel.title = 'Posterior inference backend. IS = importance sampling (default); '
+      + 'MH / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
+      + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence); '
+      + 'ESS = elliptical slice sampling (gradient- and tuning-free).';
+  } else {
+    // Forward / tractable plots draw directly — no backend to pick. Blank +
+    // disable the selector; the cog still exposes the forward draw count + seed.
+    sel.value = '__forward__';
+    sel.disabled = true;
+    sel.style.opacity = '0.5';
+    sel.style.cursor = 'default';
+    sel.title = 'Prior / tractable plots draw directly (no sampler backend). '
+      + 'Use the gear to set the forward draw count + seed.';
+  }
 
   const gear = document.createElement('button');
   gear.type = 'button';
@@ -570,18 +602,25 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   numRow('CESS ratio', ['smc'], function () { return opts.smcCESS; }, function (v) { opts.smcCESS = v == null ? 0.7 : v; },
     { step: 0.05, min: 0.05, max: 0.99 });
   numRow('seed', ['mh', 'emcee', 'amis', 'smc', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
+  // Forward draw count + seed — shown for IS (its importance draws ARE the
+  // global forward draws) and for the blanked forward mode on non-posterior
+  // plots. These write ctx.SAMPLE_COUNT / ctx.rootSeed, not opts.
+  numRow('draws', ['is', 'forward'], function () { return ctx.SAMPLE_COUNT; },
+    function (v) { ctx.SAMPLE_COUNT = v == null || v <= 0 ? ctx.SAMPLE_COUNT : v | 0; },
+    { min: 1, step: 1000 });
+  numRow('seed', ['is', 'forward'], function () { return ctx.rootSeed; },
+    function (v) { ctx.rootSeed = v == null ? ctx.rootSeed : v | 0; });
   refreshCountRow();
 
-  // IS has no sampler knobs — disable the gear so the advanced panel is clearly
-  // inert in the default mode. For MH/emcee/AMIS, show only the rows that apply
-  // to the selected backend.
+  // Every mode now carries at least the draws + seed rows, so the gear is
+  // always active. Show only the rows that apply to the effective backend
+  // (the chosen posterior backend, or 'forward' on non-posterior plots).
   function refreshEnabled() {
-    const isIS = opts.backend === 'is';
-    gear.disabled = isIS;
-    gear.style.opacity = isIS ? '0.4' : '1';
-    gear.style.cursor = isIS ? 'default' : 'pointer';
-    if (isIS) panel.style.display = 'none';
-    for (const r of rows) r.el.style.display = r.backends.indexOf(opts.backend) >= 0 ? 'flex' : 'none';
+    gear.disabled = false;
+    gear.style.opacity = '1';
+    gear.style.cursor = 'pointer';
+    const eb = effectiveBackend();
+    for (const r of rows) r.el.style.display = r.backends.indexOf(eb) >= 0 ? 'flex' : 'none';
   }
 
   let outside: ((ev: MouseEvent) => void) | null = null;
@@ -639,6 +678,15 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   }
   function markDirty() { refreshApply(); }
   applyBtn.addEventListener('click', function () {
+    // A CLEAN click means "re-draw with the current settings". For the
+    // deterministic forward PRNG (forward mode, and IS whose importance draws
+    // are seeded by rootSeed) re-running the same seed reproduces the identical
+    // sample — so bump rootSeed to actually re-roll. MCMC re-rolls natively
+    // (fresh chain randomness), so leave its seed alone.
+    const clean = snapshotOpts() === appliedSnapshot;
+    if (clean && (!isPosterior || opts.backend === 'is')) {
+      ctx.rootSeed = (ctx.rootSeed | 0) + 1;
+    }
     onChange();
     appliedSnapshot = snapshotOpts();
     refreshApply();

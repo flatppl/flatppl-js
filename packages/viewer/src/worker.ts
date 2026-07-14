@@ -229,9 +229,14 @@ function poolMeasures(measures: any[]): any {
   } else if (first.diagnostics && first.diagnostics.method === 'amis') {
     // AMIS is an importance sampler, not MCMC: report combined IS quality
     // (effective sample sizes add across independent runs) and the worst auto-K.
+    // Each run's logZ is an independent unbiased Ẑ estimate of the SAME evidence,
+    // so pool by averaging on the linear scale (log-sum-exp − log k), like SMC.
     let essSum = 0, kMax = 0;
     for (const m of measures) { const dg = m.diagnostics || {}; essSum += (dg.ess || 0); kMax = Math.max(kMax, dg.K || 0); }
-    diag = { method: 'amis', ess: essSum, essFrac: nSamp > 0 ? essSum / nSamp : 0, K: kMax, nSamples: nSamp, perParam };
+    let mxZ = -Infinity; for (const m of measures) { const z = (m.diagnostics || {}).logZ; if (Number.isFinite(z) && z > mxZ) mxZ = z; }
+    let sZ = 0, kZ = 0; for (const m of measures) { const z = (m.diagnostics || {}).logZ; if (Number.isFinite(z)) { sZ += Math.exp(z - mxZ); kZ++; } }
+    const amisLogZ = kZ > 0 ? mxZ + Math.log(sZ / kZ) : NaN;
+    diag = { method: 'amis', logZ: amisLogZ, ess: essSum, essFrac: nSamp > 0 ? essSum / nSamp : 0, K: kMax, nSamples: nSamp, perParam };
   } else {
     diag = { acceptRate: accSum / measures.length, perParam, nSamples: nSamp };
   }

@@ -162,6 +162,10 @@ import {
   buildPresetControl,
 } from './render-controls.js';
 import {
+  setSampleCount,
+  setMarginalizationCount,
+} from './forward-draws.js';
+import {
   renderFixedRecord,
   renderKernelSampleForCurrent,
   renderKernelSampleMeasure,
@@ -661,13 +665,15 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   ctx.rootSeed = 1;
   // Sample budget for chain-based plots. Higher → smoother histograms,
   // marginal cost grows linearly. Tuned for sub-100ms response.
-  // Sample budget per binding when the visualizer renders a histogram.
-  // Owned by VS Code's configuration (flatppl.visualization.sampleCount,
-  // default 100000, max 10_000_000); the host pushes it via a
-  // configUpdate message and updates it on settings changes. Value
-  // here is just an in-flight default until the first configUpdate
+  // Sample budget per binding when the visualizer renders a histogram (also
+  // the IS backend's importance-draw count). Owned by VS Code's configuration
+  // (flatppl.visualization.sampleCount, default 50000, max 10_000_000); the host
+  // pushes it via a configUpdate message and updates it on settings changes.
+  // Value here is just an in-flight default until the first configUpdate
   // arrives — the panel always boots with a config push from the host.
-  ctx.SAMPLE_COUNT = 100000;
+  // 50000 balances smooth prior/IS histograms against redraw latency; adjust
+  // via the cog.
+  ctx.SAMPLE_COUNT = 50000;
 
   // Monte Carlo sample count M for marginalizing internal latent draws
   // when estimating an INTRACTABLE density (likelihood / posterior of a
@@ -1504,12 +1510,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
       // and re-render the current plot at the new count. The
       // histogram cache must go too — it's keyed by binding name
       // but the underlying samples will be different.
-      if (typeof cfg.sampleCount === 'number'
-          && cfg.sampleCount > 0
-          && cfg.sampleCount !== ctx.SAMPLE_COUNT) {
-        ctx.SAMPLE_COUNT = cfg.sampleCount | 0;
-        ctx.measureCache = new Map();
-        ctx.histogramCache = new Map();
+      if (typeof cfg.sampleCount === 'number' && setSampleCount(ctx, cfg.sampleCount)) {
         if (ctx.plotEnabled) renderPlotForCurrent(ctx);
       }
 
@@ -1520,11 +1521,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
       // recompute. (Independent of sampleCount: tractable plots are
       // unaffected and just re-render from fresh draws.)
       if (typeof cfg.marginalizationSampleCount === 'number'
-          && cfg.marginalizationSampleCount >= 1
-          && cfg.marginalizationSampleCount !== ctx.MARGINALIZATION_COUNT) {
-        ctx.MARGINALIZATION_COUNT = cfg.marginalizationSampleCount | 0;
-        ctx.measureCache = new Map();
-        ctx.histogramCache = new Map();
+          && setMarginalizationCount(ctx, cfg.marginalizationSampleCount)) {
         if (ctx.plotEnabled) renderPlotForCurrent(ctx);
       }
 

@@ -420,16 +420,16 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
   });
   bar.appendChild(modeSel);
 
-  // Sampler selector — only for bayesupdate posteriors (the only measures that
-  // use a sampler). Hidden for IID priors and every other measure, so the bar
-  // never shows a stale backend label for a prior that is sampled IID.
-  if (isBayesupdatePosterior && ctx.onInferenceChange) {
+  // Unified sampler / draw control. On a bayesupdate posterior the sampler
+  // selector is live; on any other sampled record measure it is blanked and
+  // disabled, with the cog exposing the forward draw count + seed.
+  if (ctx.onInferenceChange) {
     const sep0 = document.createElement('div');
     sep0.style.width = '1px';
     sep0.style.alignSelf = 'stretch';
     sep0.style.background = 'rgba(255,255,255,0.1)';
     bar.appendChild(sep0);
-    bar.appendChild(buildInferenceControl(ctx, ctx.onInferenceChange));
+    bar.appendChild(buildInferenceControl(ctx, ctx.onInferenceChange, isBayesupdatePosterior));
   }
 
   // Axis-level selector in correlations mode (per-leaf
@@ -577,8 +577,10 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
         const label = (maxRhat <= 1.01 && minEss >= 400) ? 'good' : (maxRhat <= 1.05 && minEss >= 100) ? 'ok' : (maxRhat <= 1.10) ? 'bad' : 'unusable';
         const es = document.createElement('span');
         es.className = 'is-quality is-' + label;
-        es.textContent = 'ESS-slice: R̂ ' + (maxRhat > 0 ? maxRhat.toFixed(3) : '—') + ', ESS(eff) ' + (Number.isFinite(minEss) ? formatSampleCount(Math.round(minEss)) : '—') + ', ~' + (Number.isFinite(d.meanShrinks) ? d.meanShrinks.toFixed(1) : '—') + ' shrinks, ' + (d.mode || '');
+        es.textContent = 'ESS-slice: logZ n/a, R̂ ' + (maxRhat > 0 ? maxRhat.toFixed(3) : '—') + ', ESS(eff) ' + (Number.isFinite(minEss) ? formatSampleCount(Math.round(minEss)) : '—') + ', ~' + (Number.isFinite(d.meanShrinks) ? d.meanShrinks.toFixed(1) : '—') + ' shrinks, ' + (d.mode || '');
         es.title = 'Elliptical slice sampling (gradient- and tuning-free):'
+          + '\nlog marginal likelihood (evidence): not available — MCMC samples the '
+          + 'unnormalized posterior. Use IS / AMIS / SMC for evidence.'
           + '\nmax split-R̂ ' + (maxRhat > 0 ? maxRhat.toFixed(3) : '—') + ' (want < 1.01)'
           + '\nmin bulk effective sample size ' + (Number.isFinite(minEss) ? Math.round(minEss) : '—')
           + '\nmean shrink steps/iteration ' + (Number.isFinite(d.meanShrinks) ? d.meanShrinks.toFixed(2) : '—')
@@ -612,8 +614,9 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
         const pct = frac >= 0.1 ? (frac * 100).toFixed(0) : (frac * 100).toFixed(1);
         const am = document.createElement('span');
         am.className = 'is-quality is-' + label;
-        am.textContent = 'AMIS: ESS ' + pct + '%, K ' + (d.K != null ? d.K : '—');
+        am.textContent = 'AMIS: logZ ' + (Number.isFinite(d.logZ) ? d.logZ.toFixed(2) : '—') + ', ESS ' + pct + '%, K ' + (d.K != null ? d.K : '—');
         am.title = 'Adaptive multiple importance sampling (EAMIS):'
+          + '\nlog marginal likelihood (evidence) ' + (Number.isFinite(d.logZ) ? d.logZ.toFixed(3) : '—')
           + '\neffective sample size ' + (Number.isFinite(d.ess) ? formatSampleCount(Math.round(d.ess)) : '—')
           + ' of ' + (d.nSamples != null ? formatSampleCount(d.nSamples) : '—') + ' (' + pct + '%)'
           + '\nlow ESS ⇒ the single-Gaussian proposal fits the posterior poorly; try emcee'
@@ -637,8 +640,10 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
       const es  = Number.isFinite(minEss) ? formatSampleCount(Math.round(minEss)) : '—';
       const mc = document.createElement('span');
       mc.className = 'is-quality is-' + label;
-      mc.textContent = 'accept ' + acc + ', R̂ ' + rh + ', ESS ' + es;
+      mc.textContent = 'logZ n/a, accept ' + acc + ', R̂ ' + rh + ', ESS ' + es;
       mc.title = 'MCMC diagnostics (worst across parameters):'
+        + '\nlog marginal likelihood (evidence): not available — MCMC samples the '
+        + 'unnormalized posterior, so Z is not a byproduct. Use IS / AMIS / SMC for evidence.'
         + '\nacceptance rate ' + acc
         + '\nmax split-R̂ ' + rh + ' (want < 1.01)'
         + '\nmin bulk ESS ' + es;
