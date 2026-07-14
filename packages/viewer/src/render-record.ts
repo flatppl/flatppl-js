@@ -11,7 +11,7 @@ import type { Ctx } from './types';
 import { renderCornerGrid, renderDensityStrips } from './render-density.js';
 import { renderRecordTable } from './render-table.js';
 import { detectGeneratedQuantities, fixedEnvFor } from './generated-quantities.js';
-import { buildInferenceControl } from './render-controls.js';
+import { buildInferenceControl, buildDrawControl } from './render-controls.js';
 import { renderRecordPpc } from './render-ppc.js';
 import { sendWorker } from './worker.js';
 
@@ -430,6 +430,17 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
     sep0.style.background = 'rgba(255,255,255,0.1)';
     bar.appendChild(sep0);
     bar.appendChild(buildInferenceControl(ctx, ctx.onInferenceChange));
+  }
+
+  // Forward-draw control — for ALL sampled record plots (prior IID and
+  // posterior alike), unlike the posterior-only Sampler control above.
+  if (ctx.onForwardDrawChange) {
+    const sepD = document.createElement('div');
+    sepD.style.width = '1px';
+    sepD.style.alignSelf = 'stretch';
+    sepD.style.background = 'rgba(255,255,255,0.1)';
+    bar.appendChild(sepD);
+    bar.appendChild(buildDrawControl(ctx, ctx.onForwardDrawChange));
   }
 
   // Axis-level selector in correlations mode (per-leaf

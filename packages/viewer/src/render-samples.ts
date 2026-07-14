@@ -12,6 +12,7 @@ import { colorForBinding } from './palette.js';
 import { complexReBadge, esc, formatComplexScalar, formatScalar } from './util.js';
 import { sendWorker } from './worker.js';
 import { renderPlotFrame, renderTextValue, renderConstantValue } from './render-frame.js';
+import { buildDrawControl } from './render-controls.js';
 import { plotZoomOptions, samplesAreConstant } from './util.js';
 
 // renderSamplesAndDensity's `plan` parameter is NOT a full Plan union
@@ -369,6 +370,26 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   // the whole value.
   if (isComplex && resolvedToolbar == null) {
     resolvedToolbar = complexReBadge();
+  }
+  // This branch is only reached for a scalar HISTOGRAM (past the constant /
+  // array / matrix returns above) — i.e. a plot that actually draws samples —
+  // so the forward-draw control belongs here. Prepend it to whatever
+  // caller-supplied toolbar (kernel preset / complex badge) already exists.
+  if (ctx.onForwardDrawChange) {
+    const combined = document.createElement('span');
+    combined.style.display = 'inline-flex';
+    combined.style.alignItems = 'center';
+    combined.style.gap = '0.5em';
+    combined.appendChild(buildDrawControl(ctx, ctx.onForwardDrawChange));
+    if (resolvedToolbar) {
+      const sep = document.createElement('div');
+      sep.style.width = '1px';
+      sep.style.alignSelf = 'stretch';
+      sep.style.background = 'rgba(255,255,255,0.1)';
+      combined.appendChild(sep);
+      combined.appendChild(resolvedToolbar);
+    }
+    resolvedToolbar = combined;
   }
   // Only fetch analytical density when applicable. This is the
   // only worker round-trip per plot for measure bindings, and
