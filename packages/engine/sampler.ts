@@ -2906,6 +2906,26 @@ function evaluateCall(ir: any, env: any): any {
     const r: any = walk(state, mIR, env, opts);
     return [r.value, r.state];
   }
+  // interval(a, b) — spec §03 value-set. A determinate value when its
+  // endpoints are fixed: evaluate to { kind:'interval', a, b } (the shape
+  // Uniform's density support-reader consumes, density-prims.ts). Only a
+  // proper finite interval (a < b, both finite) is a value here; anything
+  // else is not a usable Uniform support, so refuse with a clear message
+  // (deliberately NOT the "not evaluable in sampler context" phrase, which
+  // fixed-eval maps to its UNSUPPORTED op-gap sentinel).
+  if (op === 'interval') {
+    const iargs = ir.args || [];
+    if (iargs.length !== 2) {
+      throw new Error(`evaluateExpr: interval expects 2 args, got ${iargs.length}`);
+    }
+    const a = evaluateExpr(iargs[0], env);
+    const b = evaluateExpr(iargs[1], env);
+    if (typeof a !== 'number' || typeof b !== 'number'
+        || !Number.isFinite(a) || !Number.isFinite(b) || !(a < b)) {
+      throw new Error(`evaluateExpr: interval(a, b) needs finite a < b (got ${a}, ${b})`);
+    }
+    return { kind: 'interval', a, b };
+  }
   // Calls to other built-ins, user-defined functions, etc. aren't expected
   // inside distribution parameters in the visualizer's scope. The
   // orchestrator should pre-evaluate those and supply concrete numbers
