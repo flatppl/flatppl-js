@@ -24,3 +24,33 @@ test('evaluateExpr: interval with non-finite / degenerate bounds throws (not the
       (e: any) => /interval/.test(e.message) && !/not evaluable in sampler context/.test(e.message));
   }
 });
+
+test('evaluateExpr: user-function call (self target) binds args + returns record', () => {
+  // fn f(s, r) => record(shape = s * 2, rate = r)
+  const fnBody = { kind: 'call', op: 'record', fields: [
+    { name: 'shape', value: { kind: 'call', op: 'mul',
+        args: [ { kind: 'ref', ns: '%local', name: 's' }, { kind: 'lit', value: 2 } ] } },
+    { name: 'rate', value: { kind: 'ref', ns: '%local', name: 'r' } },
+  ] };
+  const env = { __resolveFnBody: (n: string) => n === 'f' ? { body: fnBody, params: ['s', 'r'] } : null };
+  const callIR = { kind: 'call', target: { ns: 'self', name: 'f' },
+    args: [ { kind: 'lit', value: 2.0 }, { kind: 'lit', value: 1.0 } ] };
+  assert.deepEqual(sampler.evaluateExpr(callIR, env), { shape: 4.0, rate: 1.0 });
+  // …and field access over the call result (the #261 shape: fn(...).shape)
+  const fieldIR = { kind: 'call', op: 'get_field', args: [ callIR, { kind: 'lit', value: 'shape' } ] };
+  assert.equal(sampler.evaluateExpr(fieldIR, env), 4.0);
+});
+
+test('evaluateExpr: user-function call binds kwargs by param name', () => {
+  const fnBody = { kind: 'ref', ns: '%local', name: 'x' };
+  const env = { __resolveFnBody: (n: string) => n === 'g' ? { body: fnBody, params: ['x'] } : null };
+  const callIR = { kind: 'call', target: { ns: 'self', name: 'g' },
+    args: [], kwargs: { x: { kind: 'lit', value: 42 } } };
+  assert.equal(sampler.evaluateExpr(callIR, env), 42);
+});
+
+test('evaluateExpr: unresolvable self-target call still errors clearly', () => {
+  const callIR = { kind: 'call', target: { ns: 'self', name: 'nope' }, args: [] };
+  assert.throws(() => sampler.evaluateExpr(callIR, { __resolveFnBody: () => null }),
+    /not evaluable in sampler context/);
+});
