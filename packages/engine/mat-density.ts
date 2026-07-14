@@ -411,21 +411,21 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
     const lTM = empirical.logSumExp(newLW);
     const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });
     // IS log-evidence: with prior atoms and logWeights = priorLW + logp, the
-    // total mass logsumexp(newLW) IS the log marginal likelihood estimate.
-    // Surface it on diagnostics.logZ too, so the evidence readout has one
-    // field across IS / AMIS / SMC (mat-density AMIS + smc-sample also set it).
-    const isDiag = { method: 'is', logZ: lTM, nSamples: N };
+    // total mass logsumexp(newLW) IS the log marginal likelihood estimate — the
+    // viewer surfaces it via the "total mass" badge (a weighted measure carries
+    // its evidence on logTotalmass). No diagnostics object here: the weighted IS
+    // measure keeps its PSIS-k̂ / ESS readout, unlike the equal-weight
+    // MCMC/AMIS/SMC outputs that report a `diagnostics.method` instead.
     if (parent.fields) {
       return Object.assign(
         empirical.recordMeasure(parent.fields, newLW),
-        { logTotalmass: lTM, n_eff: nEff, diagnostics: isDiag },
+        { logTotalmass: lTM, n_eff: nEff },
       );
     }
     return scalarMeasureN(parent.samples, {
       logWeights: newLW,
       logTotalmass: lTM,
       n_eff: nEff,
-      diagnostics: isDiag,
     });
   });
 }

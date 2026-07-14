@@ -217,9 +217,6 @@ export interface Ctx {
    *  caches, persists the choice, and re-renders. Set once in main.ts init;
    *  consumed by the record-measure plot toolbar (bayesupdate-only). */
   onInferenceChange?: () => void;
-  /** Shared onChange closure for the forward-draw control (draw budget /
-   *  marginalization count / seed pin / re-roll). Set once in main.ts init;
-   *  consumed by both the record-measure and scalar-histogram toolbars. */
   SAMPLER_WORKER_URL: string;
   HISTORY_CAP: number;
   CORRELATIONS_MAX_AXES: number;

@@ -678,6 +678,15 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   }
   function markDirty() { refreshApply(); }
   applyBtn.addEventListener('click', function () {
+    // A CLEAN click means "re-draw with the current settings". For the
+    // deterministic forward PRNG (forward mode, and IS whose importance draws
+    // are seeded by rootSeed) re-running the same seed reproduces the identical
+    // sample — so bump rootSeed to actually re-roll. MCMC re-rolls natively
+    // (fresh chain randomness), so leave its seed alone.
+    const clean = snapshotOpts() === appliedSnapshot;
+    if (clean && (!isPosterior || opts.backend === 'is')) {
+      ctx.rootSeed = (ctx.rootSeed | 0) + 1;
+    }
     onChange();
     appliedSnapshot = snapshotOpts();
     refreshApply();
