@@ -205,7 +205,7 @@
       "properties": {
         "flatppl.visualization.sampleCount": {
           "type": "integer",
-          "default": 5000,
+          "default": 50000,
           "minimum": 100,
           "maximum": 10000000,
           "markdownDescription": "Number of Monte Carlo samples drawn per binding when the visualizer renders a histogram. Higher values give smoother plots; lower values are faster. Changing this clears the visualizer's sample cache."

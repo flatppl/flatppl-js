@@ -667,12 +667,13 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // marginal cost grows linearly. Tuned for sub-100ms response.
   // Sample budget per binding when the visualizer renders a histogram (also
   // the IS backend's importance-draw count). Owned by VS Code's configuration
-  // (flatppl.visualization.sampleCount, default 5000, max 10_000_000); the host
+  // (flatppl.visualization.sampleCount, default 50000, max 10_000_000); the host
   // pushes it via a configUpdate message and updates it on settings changes.
   // Value here is just an in-flight default until the first configUpdate
   // arrives — the panel always boots with a config push from the host.
-  // 5000 keeps prior/IS redraws responsive; raise via the cog for smoother tails.
-  ctx.SAMPLE_COUNT = 5000;
+  // 50000 balances smooth prior/IS histograms against redraw latency; adjust
+  // via the cog.
+  ctx.SAMPLE_COUNT = 50000;
 
   // Monte Carlo sample count M for marginalizing internal latent draws
   // when estimating an INTRACTABLE density (likelihood / posterior of a
