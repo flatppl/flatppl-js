@@ -1359,6 +1359,14 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     if (ctx.plotEnabled) renderPlotForCurrent(ctx);
   };
 
+  // Forward-draw re-render. buildDrawControl's helpers already mutated ctx
+  // and cleared the caches; this just re-renders the current plot. Kept
+  // separate from onInferenceChange because forward draws do not persist
+  // via saveState (session-only) and do not touch inferenceOpts.
+  ctx.onForwardDrawChange = function () {
+    if (ctx.plotEnabled) renderPlotForCurrent(ctx);
+  };
+
   // Drag handle between the DAG and plot panes. Lets the user
   // redistribute vertical space; both panes have a min-height clamp
   // so neither can be dragged into invisibility. The DAG and plot

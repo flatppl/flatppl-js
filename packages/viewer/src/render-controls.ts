@@ -10,6 +10,7 @@ import { computeAutoValues, hasDomainOverrides, hasOverrides, setDomainOverrideF
 import { canPersistActive, canPersistDomain, persistActive, persistDomain } from './persist.js';
 import { makeActionButton } from './render-frame.js';
 import { domainBoundsText, presetValuesText } from './util.js';
+import { setSampleCount, setMarginalizationCount, pinForwardSeed, rerollForwardSeed } from './forward-draws.js';
 
 type ControlEntry = {
   name: string | null;
@@ -647,5 +648,140 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   refreshEnabled();
   refreshApply();
   wrap.append(lbl, sel, gear, applyBtn, panel);
+  return wrap;
+}
+
+// Forward-sampling draw control for the plot toolbar. Steers the forward
+// draw budget (SAMPLE_COUNT), inner marginalization count (M), and the
+// forward PRNG seed / re-roll — the settings that drive every prior /
+// tractable-measure histogram. DISTINCT from buildInferenceControl, which
+// steers the POSTERIOR sampler (inferenceOpts) and is gated on bayesupdate.
+// All state changes delegate to forward-draws.ts; onChange re-renders.
+export function buildDrawControl(ctx: Ctx, onChange: () => void): HTMLElement {
+  function styleControl(el: HTMLElement) {
+    el.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+    el.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+    el.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+    el.style.padding = '1px 4px';
+    el.style.fontSize = '1em';
+    el.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
+    el.style.borderRadius = '2px';
+    el.style.cursor = 'pointer';
+  }
+
+  const wrap = document.createElement('span');
+  wrap.style.position = 'relative';
+  wrap.style.display = 'inline-flex';
+  wrap.style.alignItems = 'center';
+  wrap.style.gap = '0.3em';
+
+  const lbl = document.createElement('label');
+  lbl.textContent = 'Draws:';
+  lbl.style.opacity = '0.6';
+
+  const draws = document.createElement('input');
+  draws.type = 'number';
+  draws.min = '1';
+  draws.step = '1000';
+  draws.style.width = '6em';
+  draws.value = String(ctx.SAMPLE_COUNT);
+  draws.title = 'Forward draw budget for prior / tractable-measure histograms.';
+  styleControl(draws);
+  draws.addEventListener('change', function () {
+    if (setSampleCount(ctx, Number(draws.value))) onChange();
+    else draws.value = String(ctx.SAMPLE_COUNT);
+  });
+
+  const seedLbl = document.createElement('label');
+  seedLbl.textContent = 'seed';
+  seedLbl.style.opacity = '0.6';
+
+  const seed = document.createElement('input');
+  seed.type = 'number';
+  seed.step = '1';
+  seed.style.width = '4.5em';
+  seed.value = String(ctx.rootSeed);
+  seed.title = 'Forward-sampling seed. Pinning it makes draws reproducible '
+    + '(and the whole view, when no posterior seed is set separately).';
+  styleControl(seed);
+  seed.addEventListener('change', function () {
+    const raw = seed.value.trim();
+    if (raw === '' || !Number.isFinite(Number(raw))) { seed.value = String(ctx.rootSeed); return; }
+    pinForwardSeed(ctx, Number(raw));
+    clearThenChange();
+  });
+
+  const reroll = document.createElement('button');
+  reroll.type = 'button';
+  reroll.textContent = '↻';
+  reroll.title = 'Re-roll: draw a fresh (reproducible) sample at the next seed.';
+  styleControl(reroll);
+  reroll.addEventListener('click', function () {
+    const next = rerollForwardSeed(ctx);
+    seed.value = String(next);
+    onChange();
+  });
+
+  const gear = document.createElement('button');
+  gear.type = 'button';
+  gear.textContent = '⚙';
+  gear.title = 'Advanced draw settings';
+  styleControl(gear);
+
+  const panel = document.createElement('div');
+  panel.style.position = 'fixed';
+  panel.style.zIndex = '9999';
+  panel.style.padding = '0.5em';
+  panel.style.background = 'var(--vscode-editorWidget-background, #252526)';
+  panel.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))';
+  panel.style.borderRadius = '3px';
+  panel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
+  panel.style.display = 'none';
+  panel.style.fontSize = '0.9em';
+  panel.style.minWidth = '12em';
+
+  const mRow = document.createElement('div');
+  mRow.style.display = 'flex';
+  mRow.style.justifyContent = 'space-between';
+  mRow.style.alignItems = 'center';
+  mRow.style.gap = '0.6em';
+  const mLbl = document.createElement('label');
+  mLbl.textContent = 'marginalization M';
+  mLbl.style.opacity = '0.7';
+  const mInput = document.createElement('input');
+  mInput.type = 'number';
+  mInput.min = '1';
+  mInput.step = '1';
+  mInput.style.width = '5.5em';
+  mInput.value = String(ctx.MARGINALIZATION_COUNT);
+  mInput.title = 'Monte Carlo count for marginalizing internal latent draws.';
+  styleControl(mInput);
+  mInput.addEventListener('change', function () {
+    if (setMarginalizationCount(ctx, Number(mInput.value))) onChange();
+    else mInput.value = String(ctx.MARGINALIZATION_COUNT);
+  });
+  mRow.append(mLbl, mInput);
+  panel.appendChild(mRow);
+
+  gear.addEventListener('click', function () {
+    if (panel.style.display === 'none') {
+      const r = gear.getBoundingClientRect();
+      panel.style.left = String(Math.round(r.left)) + 'px';
+      panel.style.top = String(Math.round(r.bottom + 4)) + 'px';
+      panel.style.display = 'block';
+    } else {
+      panel.style.display = 'none';
+    }
+  });
+
+  // pinForwardSeed does not clear caches (the setters own that decision);
+  // a seed pin must still invalidate + re-render, so clear here.
+  function clearThenChange() {
+    ctx.measureCache = new Map();
+    ctx.histogramCache = new Map();
+    onChange();
+  }
+
+  wrap.append(lbl, draws, seedLbl, seed, reroll, gear, panel);
   return wrap;
 }
