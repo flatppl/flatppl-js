@@ -697,7 +697,18 @@ export function buildDrawControl(ctx: Ctx, onChange: () => void): HTMLElement {
   function markDirty() {
     const d = dirty();
     sample.textContent = d ? 'Sample ●' : 'Sample';
-    sample.style.fontWeight = d ? 'bold' : 'normal';
+    // Match buildInferenceControl's dirty styling so the two Sample buttons
+    // read the same when both are on a posterior toolbar.
+    sample.style.fontWeight = d ? '600' : 'normal';
+    if (d) {
+      sample.style.background = 'var(--vscode-button-background, #0e639c)';
+      sample.style.color = 'var(--vscode-button-foreground, #ffffff)';
+      sample.style.borderColor = 'var(--vscode-button-background, #0e639c)';
+    } else {
+      sample.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+      sample.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+      sample.style.borderColor = 'var(--vscode-dropdown-border, #555)';
+    }
   }
 
   const lbl = document.createElement('label');
