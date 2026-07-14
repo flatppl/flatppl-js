@@ -1702,7 +1702,7 @@ function _broadcastParamAccessor(v: any, usesAtom: boolean, N: any, errCtx: stri
       }
       return (_i, j) => data[j];
     }
-    throw new Error(errCtx + ' resolved to unsupported shape '
+    throw new Error('density: ' + errCtx + ' resolved to unsupported shape '
       + JSON.stringify(shape) + ' (expected scalar / [K] / [N] / [N, K] / [d1,d2,...] / [N,d1,...])');
   }
   if (v && v.BYTES_PER_ELEMENT !== undefined && typeof v.length === 'number') {
@@ -1726,7 +1726,7 @@ function _broadcastParamAccessor(v: any, usesAtom: boolean, N: any, errCtx: stri
     const arr = v;
     return (_i, j) => +arr[j];
   }
-  throw new Error(errCtx + ' resolved to non-numeric value (type ' + (typeof v) + ')');
+  throw new Error('density: ' + errCtx + ' resolved to non-numeric value (type ' + (typeof v) + ')');
 }
 
 function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
