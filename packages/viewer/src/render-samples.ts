@@ -12,7 +12,7 @@ import { colorForBinding } from './palette.js';
 import { complexReBadge, esc, formatComplexScalar, formatScalar } from './util.js';
 import { sendWorker } from './worker.js';
 import { renderPlotFrame, renderTextValue, renderConstantValue } from './render-frame.js';
-import { buildDrawControl } from './render-controls.js';
+import { buildInferenceControl } from './render-controls.js';
 import { plotZoomOptions, samplesAreConstant } from './util.js';
 
 // renderSamplesAndDensity's `plan` parameter is NOT a full Plan union
@@ -373,14 +373,19 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   }
   // This branch is only reached for a scalar HISTOGRAM (past the constant /
   // array / matrix returns above) — i.e. a plot that actually draws samples —
-  // so the forward-draw control belongs here. Prepend it to whatever
-  // caller-supplied toolbar (kernel preset / complex badge) already exists.
-  if (ctx.onForwardDrawChange) {
+  // so the unified sampler/draw control belongs here. On a bayesupdate
+  // posterior the sampler selector is live; otherwise it is blanked and the
+  // cog exposes the forward draw count + seed. Prepend it to any caller
+  // toolbar (kernel preset / complex badge).
+  if (ctx.onInferenceChange) {
+    const isPosterior = !!(name && ctx.derivationsState && ctx.derivationsState.derivations
+      && ctx.derivationsState.derivations[name]
+      && ctx.derivationsState.derivations[name].kind === 'bayesupdate');
     const combined = document.createElement('span');
     combined.style.display = 'inline-flex';
     combined.style.alignItems = 'center';
     combined.style.gap = '0.5em';
-    combined.appendChild(buildDrawControl(ctx, ctx.onForwardDrawChange));
+    combined.appendChild(buildInferenceControl(ctx, ctx.onInferenceChange, isPosterior));
     if (resolvedToolbar) {
       const sep = document.createElement('div');
       sep.style.width = '1px';

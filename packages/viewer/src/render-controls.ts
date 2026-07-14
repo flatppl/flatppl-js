@@ -10,7 +10,6 @@ import { computeAutoValues, hasDomainOverrides, hasOverrides, setDomainOverrideF
 import { canPersistActive, canPersistDomain, persistActive, persistDomain } from './persist.js';
 import { makeActionButton } from './render-frame.js';
 import { domainBoundsText, presetValuesText } from './util.js';
-import { clearForwardCaches, pinForwardSeed, rerollForwardSeed } from './forward-draws.js';
 
 type ControlEntry = {
   name: string | null;
@@ -409,26 +408,40 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void, tr
   return frag;
 }
 
-// Global inference-backend selector for the header. Posterior (bayesupdate)
-// measures default to importance sampling ('is'); this lets the user switch
-// to the MCMC driver ('mh' / 'emcee'). Writes onto ctx.inferenceOpts.
+// Unified sampler / draw control for the plot toolbar. On a bayesupdate
+// POSTERIOR (`isPosterior`) the sampler selector is live: IS (importance
+// sampling, default), MH / emcee (MCMC), AMIS, SMC, ESS — writing onto
+// ctx.inferenceOpts. On a non-posterior (prior / tractable) plot there is no
+// backend to choose (forward simulation), so the selector is blanked and
+// disabled; the cog then exposes only the forward draw count + seed.
+//
+// The FORWARD draw count + seed (ctx.SAMPLE_COUNT / ctx.rootSeed) also drive
+// the IS backend (its importance draws are the global forward draws), so the
+// cog shows them for IS as well as for the blanked forward mode.
 //
 // Sampling is DEFERRED behind an explicit "Sample" button: editing the sampler
-// dropdown or any gear knob only mutates ctx.inferenceOpts and flags the button
-// dirty — nothing re-samples until the user clicks Sample, which calls onChange
+// dropdown or any gear knob only mutates ctx and flags the button dirty —
+// nothing re-samples until the user clicks Sample, which calls onChange
 // (clears the measure cache and re-renders → re-draws). The same button re-runs
 // with unchanged settings, so it doubles as a re-draw/re-roll. The engine reads
-// ctx.inferenceOpts via the matCtx — see engine-facade.getMeasure.
-export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLElement {
+// ctx.inferenceOpts / SAMPLE_COUNT / rootSeed via the matCtx — see
+// engine-facade.getMeasure.
+export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterior: boolean = true): HTMLElement {
   const opts = ctx.inferenceOpts;
+
+  // The row set + selector state key off the EFFECTIVE backend: the chosen
+  // posterior backend, or the synthetic 'forward' mode on non-posterior plots.
+  function effectiveBackend(): string { return isPosterior ? opts.backend : 'forward'; }
 
   // `appliedSnapshot` records the config last committed via onChange, so
   // markDirty can tell a pending edit ("Sample ●", highlighted) from a clean
-  // state ("Sample", used as a plain re-draw). Serialised over every knob.
+  // state ("Sample", used as a plain re-draw). Serialised over every knob,
+  // including the forward draw count + seed (SAMPLE_COUNT / rootSeed).
   function snapshotOpts(): string {
     return JSON.stringify([opts.backend, opts.chains, opts.walkers, opts.warmup,
       opts.draws, opts.seed, opts.amisIters, opts.amisSamples,
-      opts.smcParticles, opts.smcSteps, opts.smcCESS]);
+      opts.smcParticles, opts.smcSteps, opts.smcCESS,
+      ctx.SAMPLE_COUNT, ctx.rootSeed]);
   }
   let appliedSnapshot = snapshotOpts();
 
@@ -454,17 +467,35 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   lbl.style.opacity = '0.6';
 
   const sel = document.createElement('select');
+  // Blank option added only in the non-posterior (forward) mode, where there
+  // is no backend to choose.
+  if (!isPosterior) {
+    const blankOpt = document.createElement('option');
+    blankOpt.value = '__forward__'; blankOpt.textContent = '—';
+    sel.appendChild(blankOpt);
+  }
   for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC'], ['elliptical-slice-sampler', 'ESS']]) {
     const o = document.createElement('option');
     o.value = v; o.textContent = t;
     sel.appendChild(o);
   }
-  sel.value = opts.backend;
   styleControl(sel);
-  sel.title = 'Posterior inference backend. IS = importance sampling (default); '
-    + 'MH / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
-    + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence); '
-    + 'ESS = elliptical slice sampling (gradient- and tuning-free).';
+  if (isPosterior) {
+    sel.value = opts.backend;
+    sel.title = 'Posterior inference backend. IS = importance sampling (default); '
+      + 'MH / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
+      + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence); '
+      + 'ESS = elliptical slice sampling (gradient- and tuning-free).';
+  } else {
+    // Forward / tractable plots draw directly — no backend to pick. Blank +
+    // disable the selector; the cog still exposes the forward draw count + seed.
+    sel.value = '__forward__';
+    sel.disabled = true;
+    sel.style.opacity = '0.5';
+    sel.style.cursor = 'default';
+    sel.title = 'Prior / tractable plots draw directly (no sampler backend). '
+      + 'Use the gear to set the forward draw count + seed.';
+  }
 
   const gear = document.createElement('button');
   gear.type = 'button';
@@ -571,18 +602,25 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   numRow('CESS ratio', ['smc'], function () { return opts.smcCESS; }, function (v) { opts.smcCESS = v == null ? 0.7 : v; },
     { step: 0.05, min: 0.05, max: 0.99 });
   numRow('seed', ['mh', 'emcee', 'amis', 'smc', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
+  // Forward draw count + seed — shown for IS (its importance draws ARE the
+  // global forward draws) and for the blanked forward mode on non-posterior
+  // plots. These write ctx.SAMPLE_COUNT / ctx.rootSeed, not opts.
+  numRow('draws', ['is', 'forward'], function () { return ctx.SAMPLE_COUNT; },
+    function (v) { ctx.SAMPLE_COUNT = v == null || v <= 0 ? ctx.SAMPLE_COUNT : v | 0; },
+    { min: 1, step: 1000 });
+  numRow('seed', ['is', 'forward'], function () { return ctx.rootSeed; },
+    function (v) { ctx.rootSeed = v == null ? ctx.rootSeed : v | 0; });
   refreshCountRow();
 
-  // IS has no sampler knobs — disable the gear so the advanced panel is clearly
-  // inert in the default mode. For MH/emcee/AMIS, show only the rows that apply
-  // to the selected backend.
+  // Every mode now carries at least the draws + seed rows, so the gear is
+  // always active. Show only the rows that apply to the effective backend
+  // (the chosen posterior backend, or 'forward' on non-posterior plots).
   function refreshEnabled() {
-    const isIS = opts.backend === 'is';
-    gear.disabled = isIS;
-    gear.style.opacity = isIS ? '0.4' : '1';
-    gear.style.cursor = isIS ? 'default' : 'pointer';
-    if (isIS) panel.style.display = 'none';
-    for (const r of rows) r.el.style.display = r.backends.indexOf(opts.backend) >= 0 ? 'flex' : 'none';
+    gear.disabled = false;
+    gear.style.opacity = '1';
+    gear.style.cursor = 'pointer';
+    const eb = effectiveBackend();
+    for (const r of rows) r.el.style.display = r.backends.indexOf(eb) >= 0 ? 'flex' : 'none';
   }
 
   let outside: ((ev: MouseEvent) => void) | null = null;
@@ -648,188 +686,5 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void): HTMLEleme
   refreshEnabled();
   refreshApply();
   wrap.append(lbl, sel, gear, applyBtn, panel);
-  return wrap;
-}
-
-// Forward-sampling draw control for the plot toolbar. Steers the forward
-// draw budget (SAMPLE_COUNT), inner marginalization count (M), and the
-// forward PRNG seed — the settings that drive every prior / tractable-measure
-// histogram. DISTINCT from buildInferenceControl, which steers the POSTERIOR
-// sampler (inferenceOpts) and is gated on bayesupdate.
-//
-// Editing an input is DEFERRED behind the Sample button (same idiom as
-// buildInferenceControl): a change only stages the ctx field + flags the
-// button dirty ("Sample ●"); nothing re-draws until the user clicks Sample.
-// Sample doubles as re-roll — dirty → apply staged edits (clear caches +
-// re-render); clean → rerollForwardSeed (bump seed) so the draw visibly
-// changes despite the deterministic forward PRNG.
-export function buildDrawControl(ctx: Ctx, onChange: () => void): HTMLElement {
-  function styleControl(el: HTMLElement) {
-    el.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
-    el.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
-    el.style.border = '1px solid var(--vscode-dropdown-border, #555)';
-    el.style.padding = '1px 4px';
-    el.style.fontSize = '1em';
-    el.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
-    el.style.borderRadius = '2px';
-    el.style.cursor = 'pointer';
-  }
-
-  const wrap = document.createElement('span');
-  wrap.style.position = 'relative';
-  wrap.style.display = 'inline-flex';
-  wrap.style.alignItems = 'center';
-  wrap.style.gap = '0.3em';
-
-  // PENDING (staged) values, local to this control instance. ctx holds only
-  // APPLIED values — editing an input touches these locals, never ctx, so a
-  // staged-but-unapplied edit cannot leak into an unrelated re-render. The
-  // control is rebuilt from ctx on every re-render (it is a toolbar thunk), so
-  // uncommitted edits are simply re-seeded from the applied ctx values then.
-  let pendingDraws = ctx.SAMPLE_COUNT;
-  let pendingSeed = ctx.rootSeed;
-  let pendingM = ctx.MARGINALIZATION_COUNT;
-  function dirty(): boolean {
-    return pendingDraws !== ctx.SAMPLE_COUNT
-      || pendingSeed !== ctx.rootSeed
-      || pendingM !== ctx.MARGINALIZATION_COUNT;
-  }
-  function markDirty() {
-    const d = dirty();
-    sample.textContent = d ? 'Sample ●' : 'Sample';
-    // Match buildInferenceControl's dirty styling so the two Sample buttons
-    // read the same when both are on a posterior toolbar.
-    sample.style.fontWeight = d ? '600' : 'normal';
-    if (d) {
-      sample.style.background = 'var(--vscode-button-background, #0e639c)';
-      sample.style.color = 'var(--vscode-button-foreground, #ffffff)';
-      sample.style.borderColor = 'var(--vscode-button-background, #0e639c)';
-    } else {
-      sample.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
-      sample.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
-      sample.style.borderColor = 'var(--vscode-dropdown-border, #555)';
-    }
-  }
-
-  const lbl = document.createElement('label');
-  lbl.textContent = 'Draws:';
-  lbl.style.opacity = '0.6';
-
-  const draws = document.createElement('input');
-  draws.type = 'number';
-  draws.min = '1';
-  draws.step = '1000';
-  draws.style.width = '6em';
-  draws.value = String(pendingDraws);
-  draws.title = 'Forward draw budget for prior / tractable-measure histograms. '
-    + 'Takes effect on the next Sample.';
-  styleControl(draws);
-  // Stage only: update the pending local, never ctx. Revert on invalid input.
-  draws.addEventListener('change', function () {
-    const v = Number(draws.value);
-    if (Number.isFinite(v) && v > 0) pendingDraws = v | 0;
-    draws.value = String(pendingDraws);
-    markDirty();
-  });
-
-  const seedLbl = document.createElement('label');
-  seedLbl.textContent = 'seed';
-  seedLbl.style.opacity = '0.6';
-
-  const seed = document.createElement('input');
-  seed.type = 'number';
-  seed.step = '1';
-  seed.style.width = '4.5em';
-  seed.value = String(pendingSeed);
-  seed.title = 'Forward-sampling seed. Pinning it makes draws reproducible '
-    + '(and the whole view, when no posterior seed is set separately). '
-    + 'Takes effect on the next Sample.';
-  styleControl(seed);
-  seed.addEventListener('change', function () {
-    const raw = seed.value.trim();
-    if (raw !== '' && Number.isFinite(Number(raw))) pendingSeed = Number(raw) | 0;
-    seed.value = String(pendingSeed);
-    markDirty();
-  });
-
-  const sample = document.createElement('button');
-  sample.type = 'button';
-  sample.textContent = 'Sample';
-  sample.title = 'Apply the draw settings and re-render. With no pending change, '
-    + 're-rolls the forward seed to draw a fresh sample.';
-  styleControl(sample);
-  sample.addEventListener('click', function () {
-    if (dirty()) {
-      // Commit the staged pending values to ctx, then invalidate + re-render.
-      ctx.SAMPLE_COUNT = pendingDraws;
-      ctx.MARGINALIZATION_COUNT = pendingM;
-      pinForwardSeed(ctx, pendingSeed);   // sets rootSeed (+ mirrors null posterior seed)
-      clearForwardCaches(ctx);
-    } else {
-      // Clean → re-roll: bump the seed so the draw visibly changes.
-      pendingSeed = rerollForwardSeed(ctx);  // bumps rootSeed + clears caches
-      seed.value = String(pendingSeed);
-    }
-    markDirty();
-    onChange();
-  });
-
-  const gear = document.createElement('button');
-  gear.type = 'button';
-  gear.textContent = '⚙';
-  gear.title = 'Advanced draw settings';
-  styleControl(gear);
-
-  const panel = document.createElement('div');
-  panel.style.position = 'fixed';
-  panel.style.zIndex = '9999';
-  panel.style.padding = '0.5em';
-  panel.style.background = 'var(--vscode-editorWidget-background, #252526)';
-  panel.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))';
-  panel.style.borderRadius = '3px';
-  panel.style.boxShadow = '0 2px 8px rgba(0,0,0,0.4)';
-  panel.style.display = 'none';
-  panel.style.fontSize = '0.9em';
-  panel.style.minWidth = '12em';
-
-  const mRow = document.createElement('div');
-  mRow.style.display = 'flex';
-  mRow.style.justifyContent = 'space-between';
-  mRow.style.alignItems = 'center';
-  mRow.style.gap = '0.6em';
-  const mLbl = document.createElement('label');
-  mLbl.textContent = 'marginalization M';
-  mLbl.style.opacity = '0.7';
-  const mInput = document.createElement('input');
-  mInput.type = 'number';
-  mInput.min = '1';
-  mInput.step = '1';
-  mInput.style.width = '5.5em';
-  mInput.value = String(pendingM);
-  mInput.title = 'Monte Carlo count for marginalizing internal latent draws. '
-    + 'Takes effect on the next Sample.';
-  styleControl(mInput);
-  // Stage only (same as Draws/seed): update the pending local; commit on Sample.
-  mInput.addEventListener('change', function () {
-    const v = Number(mInput.value);
-    if (Number.isFinite(v) && v >= 1) pendingM = v | 0;
-    mInput.value = String(pendingM);
-    markDirty();
-  });
-  mRow.append(mLbl, mInput);
-  panel.appendChild(mRow);
-
-  gear.addEventListener('click', function () {
-    if (panel.style.display === 'none') {
-      const r = gear.getBoundingClientRect();
-      panel.style.left = String(Math.round(r.left)) + 'px';
-      panel.style.top = String(Math.round(r.bottom + 4)) + 'px';
-      panel.style.display = 'block';
-    } else {
-      panel.style.display = 'none';
-    }
-  });
-
-  wrap.append(lbl, draws, seedLbl, seed, sample, gear, panel);
   return wrap;
 }

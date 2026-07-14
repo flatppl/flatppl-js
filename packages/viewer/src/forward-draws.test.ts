@@ -14,7 +14,6 @@ registerHooks({
 
 const {
   clearForwardCaches, setSampleCount, setMarginalizationCount,
-  pinForwardSeed, rerollForwardSeed,
 } = await import('./forward-draws.ts');
 
 function mkCtx(over = {}) {
@@ -66,26 +65,4 @@ test('setMarginalizationCount applies n>=1 and rejects <1', () => {
   assert.equal(setMarginalizationCount(ctx, 250), true);
   assert.equal(ctx.MARGINALIZATION_COUNT, 250);
   assert.equal(setMarginalizationCount(ctx, 0), false);
-});
-
-test('pinForwardSeed sets rootSeed and mirrors into null inferenceOpts.seed', () => {
-  const ctx = mkCtx();
-  pinForwardSeed(ctx, 42);
-  assert.equal(ctx.rootSeed, 42);
-  assert.equal(ctx.inferenceOpts.seed, 42);
-});
-
-test('pinForwardSeed does not overwrite an already-set inferenceOpts.seed', () => {
-  const ctx = mkCtx({ inferenceOpts: { seed: 7 } });
-  pinForwardSeed(ctx, 42);
-  assert.equal(ctx.rootSeed, 42);
-  assert.equal(ctx.inferenceOpts.seed, 7);
-});
-
-test('rerollForwardSeed increments rootSeed, clears caches, returns new seed', () => {
-  const ctx = mkCtx({ rootSeed: 4 });
-  const next = rerollForwardSeed(ctx);
-  assert.equal(next, 5);
-  assert.equal(ctx.rootSeed, 5);
-  assert.equal(ctx.measureCache.size, 0);
 });

@@ -220,7 +220,6 @@ export interface Ctx {
   /** Shared onChange closure for the forward-draw control (draw budget /
    *  marginalization count / seed pin / re-roll). Set once in main.ts init;
    *  consumed by both the record-measure and scalar-histogram toolbars. */
-  onForwardDrawChange?: () => void;
   SAMPLER_WORKER_URL: string;
   HISTORY_CAP: number;
   CORRELATIONS_MAX_AXES: number;

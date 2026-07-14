@@ -665,13 +665,14 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   ctx.rootSeed = 1;
   // Sample budget for chain-based plots. Higher → smoother histograms,
   // marginal cost grows linearly. Tuned for sub-100ms response.
-  // Sample budget per binding when the visualizer renders a histogram.
-  // Owned by VS Code's configuration (flatppl.visualization.sampleCount,
-  // default 100000, max 10_000_000); the host pushes it via a
-  // configUpdate message and updates it on settings changes. Value
-  // here is just an in-flight default until the first configUpdate
+  // Sample budget per binding when the visualizer renders a histogram (also
+  // the IS backend's importance-draw count). Owned by VS Code's configuration
+  // (flatppl.visualization.sampleCount, default 5000, max 10_000_000); the host
+  // pushes it via a configUpdate message and updates it on settings changes.
+  // Value here is just an in-flight default until the first configUpdate
   // arrives — the panel always boots with a config push from the host.
-  ctx.SAMPLE_COUNT = 100000;
+  // 5000 keeps prior/IS redraws responsive; raise via the cog for smoother tails.
+  ctx.SAMPLE_COUNT = 5000;
 
   // Monte Carlo sample count M for marginalizing internal latent draws
   // when estimating an INTRACTABLE density (likelihood / posterior of a
@@ -1355,14 +1356,6 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     if (ctx.host.saveState) {
       try { ctx.host.saveState({ plotEnabled: ctx.plotEnabled, inferenceOpts: ctx.inferenceOpts }); } catch (_) {}
     }
-    if (ctx.plotEnabled) renderPlotForCurrent(ctx);
-  };
-
-  // Forward-draw re-render. buildDrawControl's helpers already mutated ctx
-  // and cleared the caches; this just re-renders the current plot. Kept
-  // separate from onInferenceChange because forward draws do not persist
-  // via saveState (session-only) and do not touch inferenceOpts.
-  ctx.onForwardDrawChange = function () {
     if (ctx.plotEnabled) renderPlotForCurrent(ctx);
   };
 
