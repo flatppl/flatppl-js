@@ -569,6 +569,10 @@ function truncateSetBounds(setIR: any): [number, number] | null {
 // at θ. Closed-form via the CDF for a Normal base (exact); composite-midpoint
 // quadrature of the base log-density otherwise (matching numericProductLogZ).
 function truncateLogMass(base: any, bounds: [number, number], ctx: any): number {
+  // A discrete base is never reached here: an inline normalize(truncate(...))
+  // this path handles is the §12 generic_dist form (weighted(w, Lebesgue), a
+  // continuous base); a discrete truncate carries a massFrom ref and is
+  // resolved (and refused) by resolveNormalizeMasses instead (Buffy #73).
   const [lo, hi] = bounds;
   if (base.kernel === 'Normal') {
     const mu = +base.input.mu, sigma = +base.input.sigma;
@@ -933,7 +937,23 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
   // weights); rewrite to logweighted(−log Z(θ), inner) without materialising.
   // Only un-recognised nodes reach the materialise/constant-bake fallback.
   const needMaterialise: any[] = [];
+  const samplerLib = require('./sampler.ts');
   for (const node of nodes) {
+    // normalize(truncate(<discrete base>, S)): the materialised logTotalmass
+    // comes from the worker's continuous CDF-difference (F(hi)−F(lo)), which
+    // is wrong for a discrete base (drops the lower endpoint; the true mass is
+    // Σ pmf over S). §06 defines no discrete-truncate normalizer — fail loud
+    // rather than materialise a silently-wrong Z (Buffy #73). Sampling of a
+    // truncated discrete leaf is untouched (this guards only the normalizer).
+    const innerT = node.args[0];
+    const truncBase = innerT && innerT.op === 'truncate' && innerT.args && innerT.args[0];
+    const baseOp = truncBase && typeof truncBase.op === 'string' ? truncBase.op : null;
+    if (baseOp && samplerLib.isKnownDistribution(baseOp)
+        && samplerLib.lookupDistribution({ kind: 'call', op: baseOp }).discrete) {
+      throw new Error('density: normalize(truncate(' + baseOp + ', S)) — a '
+        + 'discrete base measure’s support-restricted normalizer (Σ pmf over S) '
+        + 'is not implemented; refusing to materialise a silently-wrong Z (spec §06)');
+    }
     // Per-θ normalizer when the inner is a recognised superpose-of-weighted
     // probability measures (Z depends on the latent weights); else materialise.
     const massExpr = totalMassExpr(node.args[0]);

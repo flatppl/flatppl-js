@@ -1025,7 +1025,15 @@ function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: 
   const kernelName: string = baseIR.op;
   if (!samplerLib.isKnownDistribution(kernelName)) return null; // multivariate / unknown
   const entry = samplerLib.lookupDistribution(baseIR);
-  if (entry.discrete) return null;
+  // A discrete base's truncate normalizer is Σ pmf over S, not the continuous
+  // CDF difference computed below — falling through here would leave the
+  // normalize at Z=1 (silently dropped, Buffy #73). §06 defines no discrete-
+  // truncate normalizer; fail loud rather than score wrong.
+  if (entry.discrete) {
+    throw new Error('density: normalize(truncate(' + kernelName + ', S)) — a '
+      + 'discrete base measure’s support-restricted normalizer (Σ pmf over S) '
+      + 'is not implemented; refusing to score with a dropped normalizer (spec §06)');
+  }
 
   const callEnv = overlay ? Object.assign({}, baseEnv, overlay) : baseEnv;
   let positional: any[];
