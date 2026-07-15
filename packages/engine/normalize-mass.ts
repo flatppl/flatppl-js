@@ -44,6 +44,18 @@ function totalMassExpr(ir: any): any {
     // mass(weighted(w, M)) = w · mass(M)
     return { kind: 'call', op: 'mul', args: [ir.args[0], inner] };
   }
+  // A superpose branch with a LITERAL weight lowers to logweighted(logw, M)
+  // (the log-space form) rather than weighted(w, M); a mixture with any
+  // literal-weight component therefore presents as
+  // select{ weighted(θ, ·), logweighted(0, ·) }. mass(logweighted(logw, M)) =
+  // exp(logw)·mass(M). Without this branch totalMassExpr returned null for
+  // such a mixture, dropping the whole normalize to the θ-constant materialised
+  // Z bake (Buffy #67).
+  if (op === 'logweighted' && Array.isArray(ir.args) && ir.args.length === 2) {
+    const inner = totalMassExpr(ir.args[1]);
+    if (inner == null) return null;
+    return { kind: 'call', op: 'mul', args: [{ kind: 'call', op: 'exp', args: [ir.args[0]] }, inner] };
+  }
   // A probability-measure leaf has total mass 1.
   if (orchestrator.SAMPLEABLE_DISTRIBUTIONS && orchestrator.SAMPLEABLE_DISTRIBUTIONS.has(op)) {
     return { kind: 'lit', value: 1 };
