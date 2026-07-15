@@ -968,9 +968,83 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
       + ' (massFrom "' + (ir as any).massFrom.ref + '") reached the worker —'
       + ' the scoring path must resolve it via resolveNormalizeMasses');
   }
+  // Bare normalize(truncate(base, S)): every OTHER scoring path rewrites
+  // this to logweighted(−logZ, truncate(...)) on the main thread before
+  // the worker sees it (mat-density.resolveTruncateNormalizers). The one
+  // path that bypasses that pre-pass is the per-cell kernel-broadcast walk
+  // (walkKernelBroadcastMeasureKernel scores a fresh N=1 sub-walk of the
+  // RAW functionof body per row) — a bare normalize(truncate(...)) there
+  // would otherwise fall through to the "Z treated as 1" case below and
+  // silently drop the per-row truncation normalizer (Buffy #73 item 4).
+  // Resolve Z = M(S) here, worker-side, from the env-bound base. Anything
+  // this can't resolve (unrecognised set, discrete/multivariate base) falls
+  // through unchanged to the legacy bare-normalize behaviour; the inner
+  // walkTruncate still gates out-of-support points to −∞ regardless.
+  const inner: any = ir.args && ir.args[0];
+  if (inner && inner.kind === 'call' && inner.op === 'truncate'
+      && Array.isArray(inner.args) && inner.args.length === 2) {
+    const shift = tryResolveTruncateNormalizerShift(inner, opts, baseEnv, overlay);
+    if (shift != null) {
+      for (let i = 0; i < N; i++) acc[i] += shift;
+    }
+  }
   // Legacy bare normalize (no spec): Z treated as 1 — only correct when
   // the inner is already a probability measure.
   return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+}
+
+// Resolve the −log Z shift for a bare `normalize(truncate(base, S))` reached
+// worker-side (see walkNormalize above). Returns the shift (a negative-of-
+// log-mass number) or null when the shape can't be resolved — callers must
+// treat null as "fall through", not as a zero shift. Mirrors mat-density's
+// resolveTruncateNormalizers / truncateLogMass / asScalarFactor, but
+// evaluates the base's parameters from the WORKER env (baseEnv ∪ overlay)
+// rather than a materialised theta point.
+function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: any, overlay: any): number | null {
+  const parseSet = opts && opts.parseSet;
+  if (typeof parseSet !== 'function') return null;
+  const setDescr = parseSet(truncateIR.args[1]);
+  if (!setDescr) return null;
+  let lo: number, hi: number;
+  if (setDescr.kind === 'interval') {
+    lo = +setDescr.lo; hi = +setDescr.hi;
+  } else if (setDescr.kind === 'reals') {
+    lo = -Infinity; hi = Infinity;
+  } else if (setDescr.kind === 'posreals') {
+    lo = 0; hi = Infinity;
+  } else if (setDescr.kind === 'nonnegreals') {
+    lo = 0; hi = Infinity;
+  } else {
+    // Discrete / unrecognised continuous set shape — not a CDF-bounds case.
+    return null;
+  }
+  if (!Number.isFinite(lo) && !Number.isFinite(hi)) return null;
+
+  const baseIR: any = truncateIR.args[0];
+  if (!baseIR || baseIR.kind !== 'call' || typeof baseIR.op !== 'string') return null;
+  const kernelName: string = baseIR.op;
+  if (!samplerLib.isKnownDistribution(kernelName)) return null; // multivariate / unknown
+  const entry = samplerLib.lookupDistribution(baseIR);
+  if (entry.discrete) return null;
+
+  const callEnv = overlay ? Object.assign({}, baseEnv, overlay) : baseEnv;
+  let positional: any[];
+  try {
+    positional = samplerLib.resolveParams(baseIR, entry, callEnv);
+  } catch (_e) {
+    return null;
+  }
+  const kernelInput: Record<string, any> = {};
+  for (let i = 0; i < entry.params.length; i++) kernelInput[entry.params[i]] = positional[i];
+
+  const cdfHi = densityPrims.builtinTouniform(kernelName, kernelInput, hi);
+  const cdfLo = densityPrims.builtinTouniform(kernelName, kernelInput, lo);
+  const Z = cdfHi - cdfLo;
+  if (!(Z > 0) || !Number.isFinite(Z)) {
+    throw new Error('density: normalize(truncate(' + kernelName + ', S)) — mass over the '
+      + 'truncation set is 0 (Z = 0 is undefined per spec §06)');
+  }
+  return -Math.log(Z);
 }
 
 function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
