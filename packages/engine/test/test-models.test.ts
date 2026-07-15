@@ -157,11 +157,49 @@ test('horseshoe: classifies + iid(half_cauchy) materialises', async () => {
   }
   assert.equal(allPositive, true, 'all lambdas samples are positive');
 
-  // Note: posterior materialises to a measure record but the
-  // bayesupdate's likelihood step currently produces NaN n_eff
-  // (likely a separate engine issue in how `X * betas` matvec with
-  // per-atom betas threads through density eval — a follow-up).
-  // Pin the prior parts work; leave posterior n_eff unchecked.
+  // The posterior materialises to a measure record with a finite
+  // n_eff and no NaN in its importance weights. (The `X * betas`
+  // per-atom-matvec density that once produced NaN n_eff is now
+  // numerically correct — see the fixed-point oracle check below.)
+  // n_eff is legitimately low: importance sampling a horseshoe prior
+  // is near-degenerate because the heavy-tailed half-Cauchy scales
+  // occasionally draw enormous `betas`, making the likelihood at the
+  // data astronomically unlikely — a property of naive IS on this
+  // prior, not an engine defect. So assert finiteness, not a floor.
+  const posterior = await ctx!.getMeasure('posterior');
+  assert.ok(typeof posterior.n_eff === 'number' && Number.isFinite(posterior.n_eff),
+    `posterior n_eff is finite (got ${posterior.n_eff})`);
+  const lw = posterior.logWeights || (posterior.value && posterior.value.logWeights);
+  assert.ok(lw, 'posterior exposes importance logWeights');
+  let anyBadWeight = false;
+  for (let i = 0; i < lw.length; i++) {
+    if (Number.isNaN(lw[i])) { anyBadWeight = true; break; }
+  }
+  assert.equal(anyBadWeight, false, 'no NaN in posterior importance weights');
+});
+
+// The `X * betas` per-atom matvec inside the forward kernel once
+// threaded through density eval incorrectly (NaN n_eff). Lock in its
+// numerical correctness against an independent oracle: score the
+// likelihood at a fixed benign parameter point and compare to the
+// closed-form value computed offline with scipy —
+//   betas  = tau * lambdas .* unscaled_betas
+//   mu_obs = X @ betas
+//   ll     = Σ_i logpdf(Normal(mu_obs[i], 1/sqrt(prec_obs)))(Y_data[i])
+// scipy: sum(stats.norm.logpdf(Y, X @ betas, 1/sqrt(2.0))) at
+// lambdas=[0.5,0.8,1.2], tau=0.7, unscaled_betas=[1,-0.5,0.3],
+// prec_obs=2.0  →  -123.30581331171621.
+test('horseshoe: X*betas likelihood density matches scipy oracle', async () => {
+  const src = readFixture('horseshoe.flatppl') + `
+theta_pt = record(lambdas = [0.5, 0.8, 1.2], tau = 0.7, unscaled_betas = [1.0, -0.5, 0.3], prec_obs = 2.0)
+__score__ = logdensityof(L, theta_pt)
+`;
+  const { errs, ctx } = setupCtx(src, 1);
+  assert.equal(errs.length, 0);
+  const m = await ctx!.getMeasure('__score__');
+  const v = m.value ? m.value.data[0] : m.samples[0];
+  assert.ok(Math.abs(v - -123.30581331171621) < 1e-9,
+    `likelihood density at fixed point matches oracle (got ${v})`);
 });
 
 // =====================================================================
