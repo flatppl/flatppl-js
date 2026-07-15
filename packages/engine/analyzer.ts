@@ -3198,6 +3198,30 @@ function analyze(ast: any, source: string, opts?: any) {
   const pir = require('./pir.ts');
   const loweredModule = pir.lowerToModule(bindings, { modulePath: moduleCtx.modulePath });
 
+  // Surface lowering-time failures. pir.lowerToModule catches a lowerExpr
+  // throw and stashes it as `lowerError` on a null-lit placeholder so
+  // downstream passes don't crash — but nothing read it, so a binding that
+  // parses and analyzes clean yet fails to LOWER (e.g. a FieldAccess in a
+  // reification boundary position — not a parse error, so no earlier
+  // diagnostic exists) produced a silent null binding (Buffy #73). Emit an
+  // error diagnostic per stashed lowerError, deduped against any error
+  // already reported at that location (so a genuinely pre-flagged cause
+  // isn't double-reported).
+  for (const [name, b] of loweredModule.bindings) {
+    const le = b && b.rhs && b.rhs.lowerError;
+    if (!le) continue;
+    const loc = (b.rhs && b.rhs.loc) || b.originLoc || null;
+    const already = diagnostics.some((d: any) => d.severity === 'error' && d.loc
+      && loc && d.loc.start && loc.start
+      && d.loc.start.line === loc.start.line && d.loc.start.col === loc.start.col);
+    if (already) continue;
+    diagnostics.push({
+      severity: 'error',
+      message: `could not lower binding '${name}': ${le.replace(/^Error:\s*/, '')}`,
+      loc,
+    });
+  }
+
   // Alias resolution (engine-concepts §19 / spec §04 "Aliasing is
   // just assignment"). Bindings whose RHS is a single ref node — pure
   // aliases like `breit_wigner = hepphys.X` or `theta = some_param`
