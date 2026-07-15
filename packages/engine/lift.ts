@@ -2614,36 +2614,68 @@ function liftInlineSubexpressions(bindings: any) {
    * propagates through any tree shape.
    */
   function computeClosure(bodyAst: any, boundaries: Set<string>) {
-    const closure = new Set<string>();
+    // Phase 1 — reachable non-boundary, non-fixed ancestors + all identifier
+    // refs in each one's RHS subtree (not just top-level — the fixpoint needs
+    // every nested ref). (Same walk as before: skip boundaries and
+    // fixed-phase bindings; look up post-lift `out` first, then `bindings`.)
+    const reachable = new Set<string>();
+    const directRefs = new Map<string, Set<string>>();
     const visiting = new Set<string>();
 
+    function identsOf(node: any, acc: Set<string>) {
+      if (node == null || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const c of node) identsOf(c, acc); return; }
+      if (node.type === 'Identifier') acc.add(node.name);
+      // Placeholder refs (arrow-style `par -> ...` boundaries) are a
+      // distinct node shape from Identifier — substituteIdents matches
+      // them via the sentinel-prefixed key (see PLACEHOLDER_SUB_PREFIX
+      // above), so boundary-dependency detection must use the same key
+      // or a Placeholder-boundary ref is invisible to `boundaries.has(r)`
+      // and every downstream member wrongly stays shared.
+      if (node.type === 'Placeholder') acc.add(PLACEHOLDER_SUB_PREFIX + node.name);
+      for (const k in node) identsOf(node[k], acc);
+    }
     function walk(name: string) {
-      if (closure.has(name) || visiting.has(name)) return;
-      if (boundaries.has(name)) return;          // boundary, will be substituted
-      // Look up in the post-lift map first so lift-introduced anons
-      // (the Normal / iid extracted from a functionof body) are seen
-      // by the walk too — without this, refs inside such an anon
-      // back to a boundary name like `theta1` aren't reached by
-      // substituteIdents and stay as the outer stochastic ref. Fall
-      // back to the analyzer's pre-lift bindings for any names the
-      // lift hasn't processed yet (the loop is in source order, so
-      // earlier-defined bindings are always in `out`).
+      if (reachable.has(name) || visiting.has(name)) return;
+      if (boundaries.has(name)) return;          // boundary → substituted directly
       const b = out.get(name) || bindings.get(name);
-      if (!b) return;                            // unknown name (built-in, etc.)
-      if (b.phase === 'fixed') return;            // closed over per spec
+      if (!b) return;                            // built-in / unknown
+      if (b.phase === 'fixed') return;           // closed over per spec (shared)
       visiting.add(name);
-      closure.add(name);
-      collectRefsAst(b.node && b.node.value);
+      reachable.add(name);
+      const refs = new Set<string>();
+      identsOf(b.node && b.node.value, refs);
+      directRefs.set(name, refs);
+      for (const r of refs) walk(r);
       visiting.delete(name);
     }
-    function collectRefsAst(node: any) {
-      if (node == null || typeof node !== 'object') return;
-      if (Array.isArray(node)) { for (const c of node) collectRefsAst(c); return; }
-      if (node.type === 'Identifier') walk(node.name);
-      for (const k in node) collectRefsAst(node[k]);
+    const bodyRefs = new Set<string>();
+    identsOf(bodyAst, bodyRefs);
+    for (const r of bodyRefs) walk(r);
+
+    // Phase 2 — fixpoint: a reachable member is COPIED iff its RHS subtree
+    // references a boundary directly, or references another already-copied
+    // member. Boundary-independent members are left out → shared (their refs
+    // in the inlined body keep the original name → resolve to the outer
+    // binding, so a point-override patches the one instance the body uses).
+    // This is the #265 fix: only members that must thread a substituted
+    // boundary get a fresh, independent copy.
+    const copy = new Set<string>();
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const name of reachable) {
+        if (copy.has(name)) continue;
+        const refs = directRefs.get(name);
+        if (!refs) continue;
+        let dep = false;
+        for (const r of refs) {
+          if (boundaries.has(r) || copy.has(r)) { dep = true; break; }
+        }
+        if (dep) { copy.add(name); changed = true; }
+      }
     }
-    collectRefsAst(bodyAst);
-    return Array.from(closure);
+    return Array.from(copy);
   }
 
   function substituteIdents(ast: any, sub: any): any {
