@@ -3204,21 +3204,15 @@ function analyze(ast: any, source: string, opts?: any) {
   // parses and analyzes clean yet fails to LOWER (e.g. a FieldAccess in a
   // reification boundary position — not a parse error, so no earlier
   // diagnostic exists) produced a silent null binding (Buffy #73). Emit an
-  // error diagnostic per stashed lowerError, deduped against any error
-  // already reported at that location (so a genuinely pre-flagged cause
-  // isn't double-reported).
+  // error diagnostic per stashed lowerError so the failure is loud and
+  // located.
   for (const [name, b] of loweredModule.bindings) {
     const le = b && b.rhs && b.rhs.lowerError;
     if (!le) continue;
-    const loc = (b.rhs && b.rhs.loc) || b.originLoc || null;
-    const already = diagnostics.some((d: any) => d.severity === 'error' && d.loc
-      && loc && d.loc.start && loc.start
-      && d.loc.start.line === loc.start.line && d.loc.start.col === loc.start.col);
-    if (already) continue;
     diagnostics.push({
       severity: 'error',
       message: `could not lower binding '${name}': ${le.replace(/^Error:\s*/, '')}`,
-      loc,
+      loc: (b.rhs && b.rhs.loc) || b.originLoc || null,
     });
   }
 
