@@ -103,3 +103,45 @@ __score__ = logdensityof(ch, 1.0)
   assert.ok(Math.abs(v - CONJ_ORACLE) < 0.05,
     `kchain MC marginal ${v} should match the closed-form ${CONJ_ORACLE}`);
 });
+
+test('C3: positional joint into 2+ inputs is an analyzer error', () => {
+  const src = `
+flatppl_compat = "0.1"
+prior = joint(Normal(0, 1), Exponential(1))
+theta1 = elementof(reals)
+theta2 = elementof(reals)
+obs ~ iid(Normal(mu = theta1, sigma = abs(theta2)), 10)
+forward_kernel = kernelof(record(obs = obs))
+L = likelihoodof(forward_kernel, record(obs = ${DATA}))
+posterior = bayesupdate(L, prior)
+`;
+  const lifted = processSource(src);
+  const errs = (lifted.diagnostics || []).filter((d: any) => d.severity === 'error');
+  assert.ok(errs.length >= 1, 'expected an analyzer error diagnostic');
+  assert.ok(errs.some((d: any) => /named form|relabel/.test(d.message)),
+    `diagnostic must name the remedy; got ${JSON.stringify(errs.map((e: any) => e.message))}`);
+});
+
+// The inverse of the C3 error test (design-matrix row 2): the per-component
+// relabel form `joint(relabel(M, ["theta1"]), relabel(N, ["theta2"]))` IS the
+// named-form desugaring — C1 reclassifies it to a RECORD variate that splats
+// by name, so the SAME 2-input kernel it fed in the C3 test is now well-formed.
+// C3 must NOT fire on it (regression guard for the false-positive the domain-
+// kind-only skip left open: typeinfer types this shape's domain as `array`,
+// not `record`).
+test('C3 no-false-positive: all-relabel positional joint into 2+ inputs is OK', () => {
+  const src = `
+flatppl_compat = "0.1"
+prior = joint(relabel(Normal(0, 1), ["theta1"]), relabel(Exponential(1), ["theta2"]))
+theta1 = elementof(reals)
+theta2 = elementof(reals)
+obs ~ iid(Normal(mu = theta1, sigma = abs(theta2)), 10)
+forward_kernel = kernelof(record(obs = obs))
+L = likelihoodof(forward_kernel, record(obs = ${DATA}))
+posterior = bayesupdate(L, prior)
+`;
+  const lifted = processSource(src);
+  const errs = (lifted.diagnostics || []).filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0,
+    `all-relabel positional joint is spec-valid (row 2); got ${JSON.stringify(errs.map((e: any) => e.message))}`);
+});
