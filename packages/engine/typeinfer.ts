@@ -126,6 +126,12 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: a
   // value set is PROVABLY outside the parameter's required domain (spec
   // §08), e.g. `Normal(sigma = -1.0)`. Reads the valuesets filled above.
   ctx.checkDomainContracts();
+  // Spec §06 "Known-bijection registry": a domain-restricted pushfwd
+  // forward (log/log10/sqrt/log1p/logit/probit) additionally requires the
+  // base measure's support to lie within that domain — refuse (error
+  // diagnostic) rather than silently score a sub-probability measure
+  // (#260 (c)).
+  ctx.checkPushfwdDomainContracts();
   // Spec §04 "Reification and module scope": functionof/kernelof may not
   // take a cross-module parameterized value as an input. Needs the dep
   // registry (cross-module phases) — a no-op without a bundle.
@@ -3557,6 +3563,175 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   // ===================================================================
+  // Pushfwd domain-restriction guard (spec §06 "Known-bijection registry":
+  // "A domain-restricted forward — log/log10 on posreals, sqrt (and pow)
+  // on nonnegreals, log1p on interval(-1, inf), logit/probit on
+  // interval(0,1) — additionally requires the base measure's support to
+  // lie within that domain; where it does not, density evaluation is
+  // REFUSED rather than yielding a silently sub-probability measure."
+  // #260 (c).
+  //
+  // The per-op invert/LADJ rules in bijection-registry.ts's
+  // ELEMENTARY_BIJECTIONS are domain-AGNOSTIC path-inversion (mirroring
+  // the already-shipped `log`/`pow` entries) — nothing there stops
+  // `pushfwd(fn(log(_)), Normal(0,1))` from synthesizing a bijection and
+  // silently scoring a finite-but-wrong density on the non-positive half
+  // of `Normal(0,1)`'s support. This pass is the separate domain check
+  // that catches that: for every `pushfwd(f, M)`, collect the
+  // domain-restricted ops on `f`'s FREE-VARIABLE inversion path (the ops
+  // `invertExpr` actually traverses from the free ref to the output — see
+  // `_collectPathOps`; NOT every op in the body, so an op applied to a
+  // frozen sub-expression such as `sqrt(5)` in `add(_, sqrt(5))` does not
+  // trigger it), and flag an error when `M`'s inferred support is PROVABLY
+  // outside a path op's domain. Mirrors invert.rs `derive_chain`'s guard,
+  // which is scoped to `flatten_chain`'s output (the linear chain applied
+  // to the placeholder), not the whole body.
+  //
+  // Conservative — mirrors `_provablyDisjoint`'s posture, NOT
+  // invert.rs's `is_positive_domain` (which refuses unless support is
+  // PROVEN within the domain, treating unknown support as a refusal
+  // too): here an UNKNOWN/DEFERRED/ANYTHING support does NOT refuse —
+  // only a support POSITIVELY KNOWN to violate the domain does. This
+  // keeps the check a strict addition (never spurious on a merely
+  // unresolved base) at the cost of not catching every truly-invalid
+  // case statically; the corresponding annotation-free lowering already
+  // requires a resolvable base measure, so this is not a new gap.
+  //
+  // `pow` is deliberately NOT included in `_PUSHFWD_DOMAIN_GUARDS` even
+  // though spec §06 lists it alongside `sqrt` (nonnegreals): the
+  // already-shipped (#260 (a)) `pow` entry is exercised by a passing
+  // regression test using an odd literal exponent over a REALS-support
+  // base (`pushfwd(fn(pow(_, 3)), Normal(0, 1))`), which a nonnegreals
+  // guard would newly refuse. Odd-integer `pow` is genuinely invertible
+  // over all of ℝ; a parity-aware guard is the correct long-term fix but
+  // out of scope here — tracked as a known gap rather than silently
+  // reconciled by breaking the (a) baseline.
+  const _PUSHFWD_DOMAIN_GUARDS: Record<string, { isWithin: (vs: any) => boolean, label: string }> = {
+    log:    { isWithin: _isWithinPositiveDomain, label: 'positive (posreals; spec §07 log domain)' },
+    log10:  { isWithin: _isWithinPositiveDomain, label: 'positive (posreals; spec §07 log10 domain)' },
+    sqrt:   { isWithin: _isWithinPositiveDomain, label: 'non-negative (nonnegreals; spec §07 sqrt domain)' },
+    log1p:  { isWithin: _isWithinGtNegOneDomain, label: 'within (-1, inf) (spec §07 log1p domain)' },
+    logit:  { isWithin: _isWithinUnitDomain, label: 'within (0, 1) (spec §07 logit domain)' },
+    probit: { isWithin: _isWithinUnitDomain, label: 'within (0, 1) (spec §07 probit domain)' },
+  };
+
+  // Mirrors invert.rs `is_positive_domain`: TRUE for the continuous sets
+  // whose boundary at 0 carries no probability mass (posreals, nonnegreals,
+  // unitinterval, or a known interval with lo >= 0) — i.e. "provably
+  // nonnegative, continuous". Used for both log/log10 (spec: posreals) and
+  // sqrt (spec: nonnegreals): the boundary point is measure-zero either way.
+  function _isWithinPositiveDomain(vs: any): boolean {
+    if (vs === vsLib.POSREALS || vs === vsLib.NONNEGREALS || vs === vsLib.UNITINTERVAL) return true;
+    if (vs && vs.vs === 'interval') return vs.lo >= 0;
+    return false;
+  }
+  // Mirrors invert.rs `is_gt_neg_one_domain`: `support ⊆ (−1, ∞)`.
+  function _isWithinGtNegOneDomain(vs: any): boolean {
+    if (vs === vsLib.POSREALS || vs === vsLib.NONNEGREALS || vs === vsLib.UNITINTERVAL) return true;
+    if (vs && vs.vs === 'interval') return vs.lo >= -1;
+    return false;
+  }
+  // Mirrors invert.rs `is_unit_domain`: `support ⊆ (0, 1)`.
+  function _isWithinUnitDomain(vs: any): boolean {
+    if (vs === vsLib.UNITINTERVAL) return true;
+    if (vs && vs.vs === 'interval') return vs.lo >= 0 && vs.hi <= 1;
+    return false;
+  }
+
+  // Resolve a pushfwd forward-arg expression to its single-param
+  // `functionof` reification node — an inline `fn(...)`/`functionof(...)`,
+  // or a self-ref to one. Mirrors `_pushfwdCodomain`'s identical
+  // resolution (this pass runs independently, so it re-resolves rather
+  // than threading state through).
+  function _resolveForwardReif(fExpr: any): any {
+    if (fExpr && fExpr.op === 'functionof') return fExpr;
+    if (fExpr && fExpr.kind === 'ref' && fExpr.ns === 'self') {
+      const b = loweredModule.bindings.get(fExpr.name);
+      if (b && b.rhs && b.rhs.op === 'functionof') return b.rhs;
+    }
+    return null;
+  }
+
+  // Does `ir`'s sub-IR (including `ir` itself) contain a ref to the free
+  // variable named `freeName`? (ns-agnostic, matching invertExpr's
+  // default free-ref match in bijection-registry.ts.)
+  function _irContainsName(ir: any, freeName: string, irWalk: any): boolean {
+    if (!ir || typeof ir !== 'object') return false;
+    if (ir.kind === 'ref' && ir.name === freeName) return true;
+    let found = false;
+    irWalk.forEachIRChild(ir, (c: any) => { if (!found) found = _irContainsName(c, freeName, irWalk); });
+    return found;
+  }
+
+  // The builtin ops on the FREE VARIABLE's inversion path — the ops
+  // invertExpr actually traverses from the output down to the free ref
+  // (NOT every op in the body). An op applied to a FROZEN sub-expression
+  // (off the inversion path, e.g. `sqrt(5)` inside `add(_, sqrt(5))`)
+  // never touches the variate, so it must NOT trigger the domain guard.
+  // Mirrors invert.rs's guard scoping — `derive_chain` guards `flatten_chain`'s
+  // output (the linear chain applied to the placeholder), not the whole body.
+  //
+  // Walks output→leaf following the single arg that (transitively)
+  // contains the free ref, collecting each call op's name. Bails (leaving
+  // `into` as-collected-so-far) on a non-straight-line shape — the free
+  // var in >1 arg, or a non-call/non-free-ref leaf — exactly the shapes
+  // where invertExpr itself returns null (so bijMeta is null and the
+  // pushfwd refuses via the case-3 generic path anyway; not guarding a
+  // non-invertible shape is safe).
+  function _collectPathOps(body: any, freeName: string, into: Set<string>, irWalk: any): void {
+    let cur = body;
+    while (!(cur && cur.kind === 'ref' && cur.name === freeName)) {
+      if (!cur || cur.kind !== 'call' || !Array.isArray(cur.args)) return;
+      let onPathIdx = -1;
+      for (let i = 0; i < cur.args.length; i++) {
+        if (_irContainsName(cur.args[i], freeName, irWalk)) {
+          if (onPathIdx !== -1) return;   // free var in >1 arg — not straight-line
+          onPathIdx = i;
+        }
+      }
+      if (onPathIdx === -1) return;       // free var absent below here (shouldn't happen once entered)
+      if (typeof cur.op === 'string') into.add(cur.op);
+      cur = cur.args[onPathIdx];
+    }
+  }
+
+  function checkPushfwdDomainContracts() {
+    const irWalk = require('./ir-walk.ts');
+    const visit = (ir: any) => {
+      if (!ir || typeof ir !== 'object') return;
+      if (ir.kind === 'call' && ir.op === 'pushfwd' && Array.isArray(ir.args) && ir.args.length === 2) {
+        _checkOnePushfwdDomain(ir, irWalk);
+      }
+      irWalk.forEachIRChild(ir, visit);
+    };
+    for (const [, b] of loweredModule.bindings) visit(b.rhs);
+  }
+
+  function _checkOnePushfwdDomain(ir: any, irWalk: any) {
+    const reif = _resolveForwardReif(ir.args[0]);
+    if (!reif || !Array.isArray(reif.params) || reif.params.length !== 1 || !reif.body) return;
+    const ops = new Set<string>();
+    _collectPathOps(reif.body, reif.params[0], ops, irWalk);
+    const mIR = ir.args[1];
+    let support: any = null;   // lazily computed — only needed if a guarded op is present
+    for (const op of ops) {
+      const guard = _PUSHFWD_DOMAIN_GUARDS[op];
+      if (!guard) continue;
+      if (support == null) support = valuesetOfExpr(mIR);
+      if (support === vsLib.UNKNOWN || support === vsLib.DEFERRED || support === vsLib.ANYTHING) continue;
+      if (guard.isWithin(support)) continue;
+      diagnostics.push({
+        severity: 'error',
+        message: `pushfwd: forward function uses '${op}', which requires the base measure's `
+          + `support to be ${guard.label}, but the base's support is provably `
+          + `${vsLib.toSexpr(support)} — refuse rather than silently produce a `
+          + `sub-probability measure.`,
+        loc: (reif.body.loc || ir.loc),
+      });
+    }
+  }
+
+  // ===================================================================
   // Cross-module reification scope (spec §04 "Reification and module
   // scope"). `functionof` / `kernelof` reify within the CURRENT module
   // only: a parameterized value reached through a loaded-module reference
@@ -3919,7 +4094,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   return { diagnostics, inferBinding, inferExpr, fillValuesets, fillMasses, checkDomainContracts,
-    checkCrossModuleReification };
+    checkPushfwdDomainContracts, checkCrossModuleReification };
 }
 
 // Mass of an independent product of components (spec §11; Rust

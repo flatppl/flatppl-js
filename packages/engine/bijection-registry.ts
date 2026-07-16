@@ -546,6 +546,126 @@ const ELEMENTARY_BIJECTIONS: Record<string, {
       ? _call('add', [_lit(Math.log(Math.abs(a[1].value))), _call('mul', [_lit(a[1].value - 1), _logAbs(X)])])
       : null,
   },
+
+  // ---------------------------------------------------------------------
+  // §06 known-bijection registry extension (#260 (b)): the remaining
+  // monotone §07 elementary unary functions. Each entry mirrors the
+  // oracle-verified Rust determiniser (flatppl-rust crates/determinizer
+  // src/invert.rs `bare_bijection`) — same inverse builtin, same forward
+  // log-abs-det-Jacobian (LADJ) formula — independently re-verified here
+  // against scipy to < 1e-9 (packages/engine/test/pushfwd-registry-density.test.ts).
+  // Domain restriction (log/log10/sqrt need positive-ish support; log1p
+  // needs (-1,inf); logit/probit need (0,1)) is NOT encoded here — these
+  // per-op rules are domain-AGNOSTIC path-inversion, exactly like the
+  // already-shipped `log`/`pow` entries above. The domain guard lives
+  // separately in typeinfer.ts (`checkPushfwdDomainContracts`, #260 (c)),
+  // which refuses the whole `pushfwd` when the base measure's support is
+  // PROVABLY outside the op's required domain — refuse-don't-mislower,
+  // never a silently sub-probability density.
+
+  // y = sqrt(x) = x^(1/2) ⇒ x = y²; log|f'| = log(1/2) − (1/2)·log(x).
+  // `sqrt` is its own IR op (not folded to `pow`), so it needs its own
+  // entry — mirrors invert.rs `bare_bijection("sqrt")`, which delegates to
+  // `derive_pow` with k=0.5 (same inverse + LADJ shape, k=0.5 literal).
+  // Domain: nonnegreals (spec §07; the shared "positive-ish" guard also
+  // used by log/log10/pow — see typeinfer.ts `_isWithinPositiveDomain`).
+  sqrt: {
+    invert: (_i, _a, Y) => _call('pow', [Y, _lit(2)]),
+    ladj: (_i, _a, X) => _call('add', [
+      _lit(Math.log(0.5)),
+      _call('mul', [_lit(-0.5), _call('log', [X])]),
+    ]),
+  },
+  // y = log10(x) = ln(x)/ln(10) ⇒ x = 10^y; log|f'| = −log(x) − log(ln 10).
+  // Domain: posreals (spec §07; same guard as `log`).
+  log10: {
+    invert: (_i, _a, Y) => _call('pow', [_lit(10), Y]),
+    ladj: (_i, _a, X) => _call('neg', [
+      _call('add', [_call('log', [X]), _lit(Math.log(Math.log(10)))]),
+    ]),
+  },
+  // y = log1p(x) = ln(1+x) ⇒ x = expm1(y); log|f'| = −log1p(x).
+  // Domain: interval(−1, ∞) (spec §07).
+  log1p: {
+    invert: (_i, _a, Y) => _call('expm1', [Y]),
+    ladj: (_i, _a, X) => _call('neg', [_call('log1p', [X])]),
+  },
+  // y = expm1(x) = eˣ − 1 ⇒ x = log1p(y); log|f'| = x (identity, d/dx eˣ = eˣ).
+  // Domain: ℝ (unrestricted).
+  expm1: {
+    invert: (_i, _a, Y) => _call('log1p', [Y]),
+    ladj: (_i, _a, X) => X,
+  },
+  // y = logit(p) = ln(p/(1−p)) ⇒ p = invlogit(y); log|f'| = −log(p) − log(1−p).
+  // Domain: interval(0, 1) (spec §07).
+  logit: {
+    invert: (_i, _a, Y) => _call('invlogit', [Y]),
+    ladj: (_i, _a, X) => _call('neg', [
+      _call('add', [_call('log', [X]), _call('log', [_call('sub', [_lit(1), X])])]),
+    ]),
+  },
+  // y = invlogit(x) = 1/(1+e⁻ˣ) ⇒ x = logit(y); log|f'| = log σ(x) + log(1−σ(x)).
+  // Domain: ℝ (unrestricted).
+  invlogit: {
+    invert: (_i, _a, Y) => _call('logit', [Y]),
+    ladj: (_i, _a, X) => {
+      const s = _call('invlogit', [X]);
+      return _call('add', [_call('log', [s]), _call('log', [_call('sub', [_lit(1), s])])]);
+    },
+  },
+  // y = probit(p) = Φ⁻¹(p) ⇒ p = invprobit(y); log|f'| = ½ln(2π) + ½·probit(p)².
+  // Domain: interval(0, 1) (spec §07).
+  probit: {
+    invert: (_i, _a, Y) => _call('invprobit', [Y]),
+    ladj: (_i, _a, X) => {
+      const pr = _call('probit', [X]);
+      const sq = _call('pow', [pr, _lit(2)]);
+      return _call('add', [_lit(0.5 * Math.log(2 * Math.PI)), _call('mul', [_lit(0.5), sq])]);
+    },
+  },
+  // y = invprobit(x) = Φ(x) ⇒ x = probit(y); log|f'| = ln φ(x) = −½ln(2π) − ½x².
+  // Domain: ℝ (unrestricted).
+  invprobit: {
+    invert: (_i, _a, Y) => _call('probit', [Y]),
+    ladj: (_i, _a, X) => {
+      const sq = _call('pow', [X, _lit(2)]);
+      const inner = _call('add', [_lit(0.5 * Math.log(2 * Math.PI)), _call('mul', [_lit(0.5), sq])]);
+      return _call('neg', [inner]);
+    },
+  },
+  // y = atan(x) ⇒ x = tan(y) (valid on atan's range (−π/2, π/2), where tan
+  // is the single-valued inverse); log|f'| = −log(1 + x²). Domain: ℝ.
+  atan: {
+    invert: (_i, _a, Y) => _call('tan', [Y]),
+    ladj: (_i, _a, X) => {
+      const sq = _call('pow', [X, _lit(2)]);
+      return _call('neg', [_call('log', [_call('add', [_lit(1), sq])])]);
+    },
+  },
+  // y = sinh(x) ⇒ x = asinh(y); log|f'| = log(cosh(x)). Domain: ℝ.
+  sinh: {
+    invert: (_i, _a, Y) => _call('asinh', [Y]),
+    ladj: (_i, _a, X) => _call('log', [_call('cosh', [X])]),
+  },
+  // y = asinh(x) ⇒ x = sinh(y); log|f'| = −½·log(1 + x²). Domain: ℝ.
+  asinh: {
+    invert: (_i, _a, Y) => _call('sinh', [Y]),
+    ladj: (_i, _a, X) => {
+      const sq = _call('pow', [X, _lit(2)]);
+      return _call('mul', [_lit(-0.5), _call('log', [_call('add', [_lit(1), sq])])]);
+    },
+  },
+  // y = tanh(x) ⇒ x = atanh(y); log|f'| = log(1 − tanh(x)²). Domain: ℝ.
+  // `atanh` exists as a builtin (ops-declarations.ts) — verified before
+  // adding this entry.
+  tanh: {
+    invert: (_i, _a, Y) => _call('atanh', [Y]),
+    ladj: (_i, _a, X) => {
+      const th = _call('tanh', [X]);
+      const sq = _call('pow', [th, _lit(2)]);
+      return _call('log', [_call('sub', [_lit(1), sq])]);
+    },
+  },
 };
 
 /**
