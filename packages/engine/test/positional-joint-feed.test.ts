@@ -53,3 +53,53 @@ prior = relabel(joint(Normal(0, 1), Exponential(1)), ["theta1", "theta2"])
   assert.ok(m && m.fields && m.fields.theta1 && m.fields.theta2,
     `prior is a record variate with fields theta1, theta2 (got keys ${m && Object.keys(m)})`);
 });
+
+// The EXPLICIT-boundary path: logdensityof(L, θ) with a literal vector point.
+// matLikelihoodDensity feeds θ as an atom-independent `explicit` input, so this
+// exercises the vector-point scoring path — NOT the C2 bindOne/byFrom feed
+// (a literal point never materialises the prior nor flows through feedInputs'
+// boundary link). Kept as a companion regression guard for that path.
+test('explicit-boundary: logdensityof over a lone vector-point kernel input', async () => {
+  const v = await score(`
+flatppl_compat = "0.1"
+prior = joint(Normal(0, 1), Exponential(1))
+theta = elementof(cartpow(reals, 2))
+a = theta[1]
+b = abs(theta[2])
+obs ~ iid(Normal(mu = a, sigma = b), 10)
+forward_kernel = kernelof(record(obs = obs), theta = theta)
+L = likelihoodof(forward_kernel, record(obs = ${DATA}))
+theta_pt = [0.5, 1.5]
+__score__ = logdensityof(L, theta_pt)
+`);
+  assert.ok(Math.abs(v - ORACLE) < 1e-9, `got ${v}`);
+});
+
+// The C2 fix proper: the kchain MC-marginal density feeds the whole positional
+// (non-record) `prior` variate into the kernel's lone REFERENCED boundary input
+// through feedInputs/bindOne's byFrom link. Pre-fix this threw
+// `matScore: … no fed column covers it`; the whole-non-record-variate bind
+// (clm.ts bindOne) closes the gap. Normal–Normal conjugate so the marginal is
+// closed form: ∫ N(1; mu, 1) N(mu; 0, 1) dmu = N(1; 0, sqrt2). sigma is FIXED
+// (not theta[2]) to keep the integral analytic; theta stays a positional
+// 2-vector so the prior is non-record and drives the arity-1 whole-variate feed.
+test('C2: kchain feeds a whole positional-joint prior into a lone boundary input', async () => {
+  const N = 20000;
+  const { errs, ctx, lifted } = setupCtx(`
+flatppl_compat = "0.1"
+prior = joint(Normal(0, 1), Normal(0, 1))
+theta = elementof(cartpow(reals, 2))
+a = theta[1]
+K = functionof(Normal(mu = a, sigma = 1), theta = theta)
+ch = kchain(prior, K)
+__score__ = logdensityof(ch, 1.0)
+`, N);
+  assert.equal(errs.length, 0,
+    'DIAG: ' + JSON.stringify((lifted.diagnostics || []).map((d: any) => d.message)));
+  const m = await ctx!.getMeasure('__score__');
+  const v = m.value ? m.value.data[0] : m.samples[0];
+  // ∫ N(1; mu, 1) N(mu; 0, 1) dmu = N(1; 0, sqrt2); scipy norm.logpdf(1, 0, sqrt2).
+  const CONJ_ORACLE = -1.5155121234846454;
+  assert.ok(Math.abs(v - CONJ_ORACLE) < 0.05,
+    `kchain MC marginal ${v} should match the closed-form ${CONJ_ORACLE}`);
+});

@@ -568,6 +568,28 @@ function feedInputs(node: any, ctx: any): Promise<{ refArrays: any; fixedEnv: an
   const byFrom = new Map<string, any[]>();
   const sharedRefs: string[] = [];
 
+  // Referenced boundary inputs (C2, #73): a fieldless (positional-product)
+  // parent variate has no per-field key to match a named boundary input
+  // against, so bindOne's record/field branches below never fire for it —
+  // only a whole-parent bind can feed it. That is unambiguous exactly when
+  // the kernel body references a SINGLE boundary input (computed lazily,
+  // reusing the same walk assertFedCoverage uses): gate on the REFERENCED
+  // count, not the declared-input count, because a record-base prior
+  // declares every field but the kernel may reference only some. Arity ≥2
+  // is a later fix (#73) and is left to fall through to the existing throw.
+  let _referencedBoundaryInputs: any[] | null = null;
+  const referencedBoundaryInputs = (): any[] => {
+    if (_referencedBoundaryInputs) return _referencedBoundaryInputs;
+    const referenced = _referencedRefNames(node.body);
+    const found = (node.inputs || []).filter((i: any) => {
+      const s = i.source;
+      return s && s.kind === 'boundary'
+        && (referenced.has(i.name) || (s.localAlias && referenced.has(s.localAlias)));
+    });
+    _referencedBoundaryInputs = found;
+    return found;
+  };
+
   for (const inp of node.inputs || []) {
     const src = inp.source;
     if (!src) continue;
@@ -602,6 +624,15 @@ function feedInputs(node: any, ctx: any): Promise<{ refArrays: any; fixedEnv: an
       val = shared.measureToRefValue(parent.fields[src.field], src.field, 'feedInputs');
     } else if (parent && parent.samples) {
       val = shared.measureToRefValue(parent, name, 'feedInputs');
+    } else if (parent && !parent.fields && referencedBoundaryInputs().length === 1) {
+      // Whole non-record parent variate feeding a kernel's lone referenced
+      // boundary input — e.g. a positional `joint(...)` prior, which
+      // materialises to a tuple (`.elems`, no top-level `.samples`/`.value`),
+      // not the record (`.fields`) or scalar-ensemble (`.samples`) shapes the
+      // branches above cover. measureToParamValue flattens `.value` /
+      // composite-`.elems` / scalar-`.samples` alike into one atom-major
+      // Value, so it's the general whole-variate bind for this case.
+      val = shared.measureToParamValue(parent, name, 'feedInputs');
     } else {
       return;                         // nothing materialisable for this input
     }
