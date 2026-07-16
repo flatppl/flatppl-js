@@ -2681,6 +2681,37 @@ function applyAtomScalar(wIR: any, refArrays: any, N: any, baseEnv: any, overlay
     for (let i = 0; i < N; i++) combine(acc, i, v);
     return;
   }
+  // A weight expression touching complex arithmetic (e.g. `abs2(<complex
+  // expr>)`, #307's particle-physics resonance amplitude) routes through
+  // the shape-tagged Value evaluator instead of the plain-numeric
+  // ARITH_OPS_N fast path — `evaluateExprN` returns a Value
+  // (`{shape, data: Float64Array, …}`), not a bare number or Float64Array.
+  // Reading it as a plain indexable array below (`result[i]`) silently
+  // yields `undefined` → `+undefined` = NaN → every atom collapses to
+  // -Infinity (a scalar weight must never look zero/negative because we
+  // misread its container). abs2 always discards the imaginary part, so
+  // the weight is real-scalar-per-atom regardless of this Value's shape
+  // convention: `.data` is exactly the per-atom flat array.
+  if (valueLib.isValue(result)) {
+    const data = result.data;
+    if (data.length === N) {
+      for (let i = 0; i < N; i++) combine(acc, i, +data[i]);
+      return;
+    }
+    if (data.length === 1) {
+      // A weight expression with no per-atom-varying ref (e.g. every
+      // variate occurrence was substituted with the SAME consumed
+      // literal — scoring one fixed point broadcast across N atoms,
+      // #307) collapses to a single Value with no batch axis at all;
+      // broadcast it, matching the plain-number branch above.
+      const v = +data[0];
+      for (let i = 0; i < N; i++) combine(acc, i, v);
+      return;
+    }
+    throw new Error('applyAtomScalar: weight expression evaluated to a '
+      + data.length + '-element Value for ' + N + ' atom(s) — '
+      + 'a weighted()/logweighted() weight must be scalar per atom');
+  }
   // Float64Array(N) or generic Array(N).
   for (let i = 0; i < N; i++) combine(acc, i, +result[i]);
 }

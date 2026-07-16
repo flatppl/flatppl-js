@@ -3,13 +3,14 @@
 // weighted(w, M) with a FUNCTION-of-variate weight — spec §06 "Density of
 // composed measures": logdensityof(weighted(w, M), x) = log w(x) +
 // logdensityof(M, x), w a constant OR a function of the variate. Buffy
-// #307 FRONT 1: the engine dropped w entirely when it was a function
-// (named-ref OR inline lambda) — the density path (numerator, mat-density's
-// normalize-Z materialisation, and the §12-style symbolic totalmass fold)
-// all treated `weighted(fn, M)` as if the weight were absent, so
-// `normalize(weighted(fn, M))` came out flat/uniform regardless of fn.
+// #307: the engine dropped w entirely when it was a function (named-ref OR
+// inline lambda) — the density path (numerator, mat-density's normalize-Z
+// materialisation, and the §12-style symbolic totalmass fold) all treated
+// `weighted(fn, M)` as if the weight were absent, so `normalize(weighted(fn,
+// M))` came out flat/uniform regardless of fn. Root causes (two entangled
+// fronts) fixed here:
 //
-// Root causes:
+// FRONT 1 — the function weight itself was dropped:
 //   - derivations.ts `_classifyWeightedByFunction` already substituted a
 //     function-of-variate weight's parameter with a self-ref to the BASE
 //     measure's own name (both the named-fn-ref and inline-lambda forms end
@@ -30,20 +31,28 @@
 //     mixture branch with a scalar mass factor `w · mass(M)`, which breaks
 //     once `w` is a real `functionof` node (mass(weighted(fn,M)) = ∫f dM,
 //     not a pointwise value).
+//   Fixed: `expandMeasureIR`'s 'weighted' case re-wraps a weight IR that
+//   still self-refs its base into a `functionof` (density.ts's EXISTING
+//   inline-lambda branch then binds it correctly); `_expandByName`'s
+//   'sample' case restores the dropped logTotalmass as a `logweighted`
+//   shift (parity with mat-density's matWeighted, which already reads it);
+//   `containsHoleOrPlaceholder` treats a `fn`/`functionof`/`kernelof`
+//   CallExpr as a closed, opaque reifier (its own holes never escape it);
+//   `totalMassExpr` bails (null) on a `functionof`-shaped weight rather than
+//   misusing it as a scalar factor.
 //
-// Fixed: `expandMeasureIR`'s 'weighted' case re-wraps a weight IR that
-// still self-refs its base into a `functionof` (density.ts's EXISTING
-// inline-lambda branch then binds it correctly); `_expandByName`'s
-// 'sample' case restores the dropped logTotalmass as a `logweighted`
-// shift (parity with mat-density's matWeighted, which already reads it);
-// `liftMeasure`'s hole/placeholder check treats an INLINE closed reifier
-// (`fn`/`functionof`/`kernelof`) in a `weighted`/`logweighted` weight slot
-// as opaque (its own holes never escape it) WITHOUT loosening the check
-// anywhere else (jointchain/kchain kernel args, record/joint kwarg fields,
-// broadcast array literals, and weighted's own BASE slot keep the original
-// conservative behaviour — see lift.ts's `isClosedReifierCall`);
-// `totalMassExpr` bails (null) on a `functionof`-shaped weight rather than
-// misusing it as a scalar factor.
+// FRONT 2 — the complex resonance weight NaN'd once FRONT 1 stopped hiding
+// it: density.ts's `applyAtomScalar` assumed a weight's batched evaluation
+// result was either a plain number/boolean or a bare indexable
+// Float64Array/Array. A weight touching COMPLEX arithmetic (`abs2(<complex
+// expr>)`, the particle-physics resonance amplitude here) evaluates through
+// the shape-tagged Value path instead — `{shape, data: Float64Array}` — so
+// `result[i]` silently read `undefined`, `+undefined` was NaN, and
+// `addLogW` collapsed every atom to −∞ (later masked as a flat/zero
+// density by the SAME entangled front-1 bugs above). Fixed: unwrap a
+// shape-tagged Value result (broadcasting a single-element Value across N
+// atoms when the weight had no per-atom-varying ref — e.g. every occurrence
+// of the variate was substituted with the SAME consumed point).
 //
 // ORACLES — every density assertion below is checked against an
 // INDEPENDENTLY DERIVED value (closed-form or scipy numeric quadrature via
@@ -55,6 +64,8 @@ const assert = require('node:assert');
 const ENG = '../';
 const { processSource, orchestrator, materialiser } = require(ENG + 'index.ts');
 const { createWorkerHandler } = require(ENG + 'worker.ts');
+const fs = require('fs');
+const path = require('path');
 
 function buildCtx(src: string, N: number, seed = 3) {
   const proc = processSource(src);
@@ -222,5 +233,116 @@ D2 = normalize(weighted(cheb_density, Lebesgue(support = interval(a, b))))
     const rel = Math.abs(density - oracle[xs2]) / oracle[xs2];
     assert.ok(rel < TOL,
       `Chebyshev D2 x=${xs2}: density=${density} oracle=${oracle[xs2]} rel=${rel}`);
+  }
+});
+
+// ---------------------------------------------------------------------
+// FRONT 2 — the complex-valued Breit-Wigner resonance weight (D1).
+//
+// full_intensity(x) = abs2(breit_wigner(x², m=1.5, width=0.1, l=0, d=1,
+// ma=mb=0) * cis(3π/4) + (1.1 + 0.02x)), D1 = normalize(weighted(
+// full_intensity, Lebesgue(support=interval(0.5,2.5)))).
+//
+// ORACLE (mcp__python__python_eval / scipy): replicated the
+// resonance_breitwigner body (standard-modules.ts ~228-279) exactly for
+// ma=mb=0, l=0 — the mass-dependent width Γ(σ) collapses to the constant Γ
+// in this limit (the module's own closing note; independently re-derived:
+// the breakup-momentum ratio p(σ)/p₀ = √σ/m and the l=0 Blatt-Weisskopf
+// ratio is 1, so Γ(σ)·(m/√σ)·(p/p₀) = Γ exactly), giving the plain
+// relativistic BW  BW(σ) = 1/(m² − σ − i·m·Γ). Verified the Python
+// full_intensity(x) reproduction against the engine's own (pre-normalize)
+// per-point evaluation at 5 grid points to full double precision before
+// trusting it as the independent oracle. Z = ∫_0.5^2.5 full_intensity(x) dx
+// via scipy.integrate.quad (Z≈7.448253470611266, quad err≈2.2e-8).
+// ---------------------------------------------------------------------
+
+const FIXTURE_PATH = path.join(__dirname, 'fixtures', 'hadron-physics-resonance.flatppl');
+const FIXTURE_SRC = fs.readFileSync(FIXTURE_PATH, 'utf8');
+const BW_N = 1500000;
+const BW_TOL = 1e-2;   // relative; looser than the Chebyshev test's 1e-3 —
+                        // full_intensity's sharp resonance peak (width
+                        // Γ=0.1 against a [0.5,2.5] integration range) has
+                        // much higher pointwise variance than the smooth
+                        // Chebyshev density, so the MC estimate of Z
+                        // converges more slowly for the same N (observed
+                        // ~2e-3 at N=1e6, ~4e-3 at N=2e5 — empirically
+                        // 1/√N as expected). 1e-2 stays a solid order of
+                        // magnitude above the observed noise floor.
+
+test('FRONT 2: D1 (Breit-Wigner resonance component) scores finite and matches the scipy oracle', async () => {
+  // Oracle (scipy quad, see header): full_intensity(x)/Z.
+  const oracle: Record<string, number> = {
+    '0.6': 0.08354404747260157,
+    '1': 0.06528637716448958,
+    '1.5': 4.7081644593506535,
+    '2': 0.3302653463592122,
+    '2.4': 0.24715738703945622,
+  };
+  const xs = Object.keys(oracle).map(Number);
+  const src = FIXTURE_SRC + ldBindings('D1', xs);
+  const ctx = buildCtx(src, BW_N, 303);
+  const scores = await scoreAll(ctx, xs);
+  for (const xs2 of Object.keys(oracle)) {
+    const ld = scores[xs2];
+    assert.ok(Number.isFinite(ld), `D1 x=${xs2}: logdensity is not finite (${ld})`);
+    const density = Math.exp(ld);
+    const rel = Math.abs(density - oracle[xs2]) / oracle[xs2];
+    assert.ok(rel < BW_TOL,
+      `D1 x=${xs2}: density=${density} oracle=${oracle[xs2]} rel=${rel}`);
+  }
+});
+
+test('FRONT 2: the mixture peaks near x=1.5 (the resonance mass) and matches f1*D1 + f2*D2', async () => {
+  // Oracle: f1*D1_pdf(x) + f2*D2_pdf(x) with f1=0.4, f2=0.6, both D1/D2
+  // pdfs from the SAME independent scipy quadrature as the tests above.
+  // scipy grid scan over [0.5,2.5] (4001 points) puts the mixture's peak
+  // at x≈1.5075 (value≈2.189) — near the resonance mass m=1.5, confirming
+  // the fixture's whole point (it used to plot flat).
+  const oracle: Record<string, number> = {
+    '0.6': 0.3365143931825889,
+    '1': 0.28740487344644094,
+    '1.5': 2.1445561063209064,
+    '2': 0.4514609772533622,
+    '2.4': 0.5064758580415888,
+  };
+  const xs = Object.keys(oracle).map(Number);
+  const src = FIXTURE_SRC + ldBindings('mixture', xs);
+  const ctx = buildCtx(src, BW_N, 303);
+  const scores = await scoreAll(ctx, xs);
+  const values: Record<string, number> = {};
+  for (const xs2 of Object.keys(oracle)) {
+    const ld = scores[xs2];
+    assert.ok(Number.isFinite(ld), `mixture x=${xs2}: logdensity is not finite (${ld})`);
+    const density = Math.exp(ld);
+    values[xs2] = density;
+    const rel = Math.abs(density - oracle[xs2]) / oracle[xs2];
+    assert.ok(rel < BW_TOL,
+      `mixture x=${xs2}: density=${density} oracle=${oracle[xs2]} rel=${rel}`);
+  }
+  // The whole point of the card: the mixture PEAKS near x=1.5, not flat.
+  const peakX = Object.keys(values).reduce((best, k) =>
+    values[k] > values[best] ? k : best, Object.keys(values)[0]);
+  assert.equal(peakX, '1.5', `mixture should peak at x=1.5, peaked at x=${peakX} instead`);
+});
+
+// ---------------------------------------------------------------------
+// Guard: the fixture scores finite (no NaN) across a grid — the original
+// symptom ("plots flat / NaN everywhere").
+// ---------------------------------------------------------------------
+
+test('guard: hadron-physics-resonance.flatppl scores finite (no NaN) across the [0.5,2.5] grid', async () => {
+  const xs = [0.55, 0.8, 1.0, 1.2, 1.5, 1.8, 2.1, 2.45];
+  const src = FIXTURE_SRC
+    + ldBindings('D1', xs).replace(/ld_/g, 'ld_d1_')
+    + ldBindings('D2', xs).replace(/ld_/g, 'ld_d2_')
+    + ldBindings('mixture', xs).replace(/ld_/g, 'ld_mix_');
+  const ctx = buildCtx(src, 50000, 404);
+  for (const x of xs) {
+    for (const prefix of ['ld_d1_', 'ld_d2_', 'ld_mix_']) {
+      const m = await ctx.getMeasure(prefix + xLabel(x));
+      const ld = m.samples[0];
+      assert.ok(Number.isFinite(ld),
+        `${prefix} at x=${x}: logdensity is not finite (${ld}) — regression to the #307 NaN/flat bug`);
+    }
   }
 });
