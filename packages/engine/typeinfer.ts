@@ -3626,7 +3626,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
       }
       if (onPathIdx === -1) return;       // free var absent below here (shouldn't happen once entered)
-      if (typeof cur.op === 'string') into.add(cur.op);
+      if (cur.op === 'pow') {
+        // pow(base, k): only guard (nonnegreals) when the free var is in the
+        // BASE (onPathIdx 0) and the exponent is not an odd positive integer.
+        // pow(const, x) (free var in the exponent) is a different bijection and
+        // is not the literal-exponent pow guarded here.
+        if (onPathIdx === 0 && _powExponentNeedsNonNegGuard(cur.args[1])) into.add('pow');
+      } else if (typeof cur.op === 'string') {
+        into.add(cur.op);
+      }
       cur = cur.args[onPathIdx];
     }
   }
@@ -4118,21 +4126,36 @@ function distributionSupport(
   }
 }
 
-// `pow` is deliberately NOT included even though spec §06 lists it alongside
-// `sqrt` (nonnegreals): the already-shipped (#260 (a)) `pow` entry is
-// exercised by a passing regression test using an odd literal exponent over
-// a REALS-support base (`pushfwd(fn(pow(_, 3)), Normal(0, 1))`), which a
-// nonnegreals guard would newly refuse. Odd-integer `pow` is genuinely
-// invertible over all of ℝ; a parity-aware guard is the correct long-term
-// fix but out of scope here — tracked as a known gap.
+// `pow` is guarded PARITY-AWARELY (#310): `pow(_, k)` is a bijection on all of
+// ℝ only for an ODD positive integer `k` (cube root etc.), so those keep the
+// (a)-shipped no-restriction behaviour (`pushfwd(fn(pow(_, 3)), Normal(0, 1))`
+// still scores). For an EVEN or NON-INTEGER `k` the map is not injective on ℝ,
+// so the single-branch inverse `y^(1/k)` is a silently-wrong density (misses a
+// factor of 2) unless the base support is provably non-negative — spec §06/§07
+// pairs `pow` with `sqrt` under nonnegreals. `_collectPathOps` adds `pow` to the
+// guarded set ONLY for a non-odd-positive-integer exponent (see there); the
+// guard below then requires nonnegreals, else refuses (refuse-don't-mislower).
 const PUSHFWD_DOMAIN_GUARDS: Record<string, { isWithin: (vs: any) => boolean, label: string }> = {
   log:    { isWithin: isWithinPositiveDomain, label: 'positive (posreals; spec §07 log domain)' },
   log10:  { isWithin: isWithinPositiveDomain, label: 'positive (posreals; spec §07 log10 domain)' },
   sqrt:   { isWithin: isWithinPositiveDomain, label: 'non-negative (nonnegreals; spec §07 sqrt domain)' },
+  pow:    { isWithin: isWithinPositiveDomain, label: 'non-negative (nonnegreals; even/non-integer pow exponent, spec §06/§07 pow domain)' },
   log1p:  { isWithin: isWithinGtNegOneDomain, label: 'within (-1, inf) (spec §07 log1p domain)' },
   logit:  { isWithin: isWithinUnitDomain, label: 'within (0, 1) (spec §07 logit domain)' },
   probit: { isWithin: isWithinUnitDomain, label: 'within (0, 1) (spec §07 probit domain)' },
 };
+
+// `pow(base, k)` with the free variable in `base`: an odd positive integer
+// literal exponent is bijective on all of ℝ (no domain guard needed); every
+// other exponent (even, non-integer, negative, or non-literal) is only a
+// bijection on the non-negative half-line, so it must be domain-guarded.
+function _powExponentNeedsNonNegGuard(expNode: any): boolean {
+  if (expNode && expNode.kind === 'lit' && typeof expNode.value === 'number'
+      && Number.isInteger(expNode.value) && expNode.value > 0 && (expNode.value % 2 === 1)) {
+    return false;   // odd positive integer → bijective on ℝ
+  }
+  return true;
+}
 
 // Mirrors invert.rs `is_positive_domain`: TRUE for the continuous sets
 // whose boundary at 0 carries no probability mass (posreals, nonnegreals,
