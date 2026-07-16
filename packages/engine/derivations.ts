@@ -1325,7 +1325,7 @@ function classifyIfelse(rhsIR: IRNode, ast: any, bindings: any): DerivationSelec
 // joint to the same `tuple` derivation kind used for array literals
 // of measure refs; downstream matTuple materialises a positional
 // EmpiricalMeasure (SoA across the components).
-function classifyRecordOrJoint(rhsIR: any /*, ast, bindings */): DerivationRecord | DerivationTuple | null {
+function classifyRecordOrJoint(rhsIR: any, ast?: any, bindings?: any): DerivationRecord | DerivationTuple | null {
   if (Array.isArray(rhsIR.fields) && rhsIR.fields.length > 0) {
     const fields: Record<string, any> = {};
     for (const f of rhsIR.fields) {
@@ -1342,6 +1342,30 @@ function classifyRecordOrJoint(rhsIR: any /*, ast, bindings */): DerivationRecor
     for (const a of rhsIR.args) {
       if (!a || a.kind !== 'ref' || a.ns !== 'self') return null;
       elems.push(a.name);
+    }
+    // Named-form desugaring (spec §06): `joint(name=M, …) ≡
+    // joint(relabel(M, ["name"]), …)`. When EVERY positional component
+    // is itself a single-name relabel of its base — the exact shape the
+    // desugaring produces — the positional joint IS the kwarg joint, so
+    // it must classify to the same record-variate shape (fields split
+    // by relabel name), not a bare positional tuple: `bayesupdate` /
+    // `jointchain` resolve a record prior by field name, and a `tuple`
+    // has none. A partially-labeled joint (some args relabeled, some
+    // not) has no equivalent kwarg form; it falls through to the plain
+    // tuple below, unchanged.
+    if (bindings && elems.length > 0) {
+      const labels: string[] = [];
+      let allLabeled = true;
+      for (const name of elems) {
+        const label = _singleRelabelName(name, bindings);
+        if (label == null) { allLabeled = false; break; }
+        labels.push(label);
+      }
+      if (allLabeled) {
+        const fields: Record<string, string> = {};
+        for (let i = 0; i < elems.length; i++) fields[labels[i]] = elems[i];
+        return { kind: 'record', fields };
+      }
     }
     return { kind: 'tuple', elems };
   }
@@ -1811,6 +1835,117 @@ function _detectStructuralProjection(
   return { kind: 'record', fields };
 }
 
+// The ordered component list of a measure IR that is an explicit product
+// (`joint`/`record`), following self-refs — generalises
+// `_namedProductComponents` to ALSO cover POSITIONAL products (`.args`,
+// no field names) and to accept an INLINE product call directly (not
+// just a ref to a binding holding one). `name` is the field name for a
+// named component, or null for a positional one; `ref` is always a
+// binding name (every product component's value is a self-ref after
+// lift — liftMeasure hoists inline sub-measures for joint's positional /
+// named-field slots). Returns null for any non-product shape (a bare
+// distribution call, a scalar-measure ref, iid, jointchain, …) — the
+// caller (classifyRelabel) falls back to its scalar-rename path.
+function _productComponents(
+  ir: any, bindings: any, seen: Set<string>,
+): { name: string | null; ref: string }[] | null {
+  if (!ir) return null;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    if (seen.has(ir.name)) return null;
+    seen.add(ir.name);
+    const b = bindings.get(ir.name);
+    if (!b || !b.ir) return null;
+    return _productComponents(b.ir, bindings, seen);
+  }
+  if (ir.kind === 'call' && (ir.op === 'joint' || ir.op === 'record')) {
+    if (Array.isArray(ir.fields) && ir.fields.length > 0) {
+      const out: { name: string | null; ref: string }[] = [];
+      for (const f of ir.fields) {
+        if (!f.value || f.value.kind !== 'ref' || f.value.ns !== 'self') return null;
+        out.push({ name: f.name, ref: f.value.name });
+      }
+      return out;
+    }
+    if (Array.isArray(ir.args) && ir.args.length > 0) {
+      const out: { name: string | null; ref: string }[] = [];
+      for (const a of ir.args) {
+        if (!a || a.kind !== 'ref' || a.ns !== 'self') return null;
+        out.push({ name: null, ref: a.name });
+      }
+      return out;
+    }
+  }
+  return null;
+}
+
+// Whether binding `name`'s own RHS is `relabel(<base>, [singleName])` —
+// the shape the named-form desugaring (spec §06 `joint(name=M, …) ≡
+// joint(relabel(M, ["name"]), …)`) produces for one positional joint
+// component. Returns the single name, or null when `name` isn't a
+// single-name relabel binding. Consumed by `classifyRecordOrJoint` to
+// recognise an all-relabeled positional joint as the kwarg-equivalent
+// record shape rather than a bare tuple.
+function _singleRelabelName(name: string, bindings: any): string | null {
+  const b = bindings.get(name);
+  if (!b || !b.ir) return null;
+  const ir = b.ir;
+  if (ir.kind !== 'call' || ir.op !== 'relabel'
+      || !Array.isArray(ir.args) || ir.args.length !== 2) return null;
+  const names = _selectorNames(ir.args[1]);
+  if (!names || names.length !== 1) return null;
+  return names[0];
+}
+
+// relabel(M, names) — first-class measure-op classifier (spec §04 / §06
+// named-form desugaring: `joint(name=M, …) ≡ joint(relabel(M, ["name"]),
+// …)`, equivalently `relabel(M,names) ≡ pushfwd(fn(relabel(_,names)),M)`).
+// Two shapes, mirroring classifyPushfwd's structural-projection split:
+//
+//   - M is itself an explicit product (positional or named joint/record,
+//     possibly through a chain of self-refs): `names` relabels M's
+//     components positionally — a `record` derivation whose fields are
+//     `names[i] → component_i`'s binding ref. This is case-B of the
+//     desugaring: `relabel(joint(A, B), ["a","b"])`.
+//   - M is a plain scalar/leaf measure (a bare distribution call, or a
+//     ref to one) and `names` is a single-name list: a pure rename —
+//     M's samples are unchanged, so `relabel(M, [n])` classifies exactly
+//     as M would (an `alias` to M's binding, or a `sample` off M's inline
+//     distribution call). This is the per-component shape the desugaring
+//     produces on the OTHER side: `joint(relabel(Normal(0,1), ["a"]), …)`
+//     — each relabeled component needs its OWN valid derivation so the
+//     anon binding materialises; `classifyRecordOrJoint` then recognises
+//     the all-relabeled positional joint and reassembles the record.
+//
+// A multi-name relabel of a non-product base (nothing to distribute the
+// extra names over) and any other base shape (iid, jointchain, truncate,
+// …) are documented deferrals — return null rather than the general
+// `pushfwd(fn(relabel(_,names)),M)` bijection route (no consumer needs
+// it yet; TODO §06 if a case surfaces).
+function classifyRelabel(rhsIR: IRNode, ast: any, bindings: any): DerivationRecord | DerivationAlias | DerivationSample | null {
+  if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
+  const baseIR = rhsIR.args[0];
+  const names = _selectorNames(rhsIR.args[1]);
+  if (!names || names.length === 0) return null;
+
+  const comps = _productComponents(baseIR, bindings, new Set<string>());
+  if (comps) {
+    if (comps.length !== names.length) return null;
+    const fields: Record<string, string> = {};
+    for (let i = 0; i < names.length; i++) fields[names[i]] = comps[i].ref;
+    return { kind: 'record', fields };
+  }
+
+  if (names.length !== 1) return null;
+  if (baseIR.kind === 'ref' && baseIR.ns === 'self') {
+    if (!bindings.has(baseIR.name)) return null;
+    return { kind: 'alias', from: baseIR.name };
+  }
+  if (baseIR.kind === 'call' && baseIR.op && SAMPLEABLE_DISTRIBUTIONS.has(baseIR.op)) {
+    return { kind: 'sample', distIR: baseIR };
+  }
+  return null;
+}
+
 function classifyPushfwd(rhsIR: IRNode, ast: any, bindings: any): DerivationPushfwd | DerivationRecord | DerivationAlias | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const fIR = rhsIR.args[0];
@@ -2187,6 +2322,7 @@ const MEASURE_OP_CLASSIFIERS = {
   totalmass:    classifyTotalmass,
   truncate:     classifyTruncate,
   pushfwd:      classifyPushfwd,
+  relabel:      classifyRelabel,
   jointchain:   classifyJointchain,
   kchain:       classifyJointchain,
   Lebesgue:     classifyLebesgueInterval,
