@@ -3252,6 +3252,98 @@ function analyze(ast: any, source: string, opts?: any) {
   }
   for (const d of typeDiagnostics) diagnostics.push(d);
 
+  // C3 (#73): a non-record positional-product prior — spec §06's `joint`
+  // combines its components via `cat` into ONE value — cannot split
+  // across a kernel with 2+ referenced boundary inputs. C2 (already
+  // landed) opened the arity-1 whole-variate feed (clm.feedInputs'
+  // bindOne); arity-2+ still dies deep, at materialise time, via
+  // assertFedCoverage's throw (clm.ts:~666) — cryptic and late. This
+  // lifts the same ill-formedness to a located, analyzer-time error, so
+  // the fix (name the joint's fields, or relabel) is visible before
+  // running anything.
+  //
+  // Detection is purely structural (AST-level `bindings`): find
+  // `bayesupdate(L, prior)` bindings whose `prior` is a bare, all-
+  // positional `joint(...)` call (the "single cat'd value" shape), then
+  // resolve `L = likelihoodof(K, obs)` down to K's body and count K's
+  // REFERENCED boundary (parametric `elementof`) leaves via the same
+  // transitive body walk lift.ts's implicit-boundary canonicaliser uses
+  // (`bfsImplicitElementofLeavesAst`) — so the count agrees with the
+  // materialiser regardless of whether K spells its boundary explicitly
+  // or implicitly. ≥2 such leaves is the ill-formed case; exactly 1 (a
+  // bayesupdate positional-joint prior feeding a lone boundary input) is
+  // left alone. Note the shipped C2 test uses `kchain`, not `bayesupdate`,
+  // so it never reaches this count gate — it is excluded upstream by the
+  // `b.type === 'bayesupdate'` guard.
+  //
+  // The one non-bare positional joint that IS spec-valid here (design-
+  // matrix row 2): a joint whose EVERY positional component is a single-
+  // name `relabel(...)` — `joint(relabel(M, ["a"]), relabel(N, ["b"]))`.
+  // That is exactly the named-form desugaring `joint(a = M, b = N)`, and
+  // C1's `classifyRecordOrJoint` reclassifies it to a RECORD variate that
+  // splats by name (materialises bit-identically to the named form). It
+  // must NOT trip C3. typeinfer does NOT model measure-`relabel` as a
+  // record (it types this shape's domain as `array`), and C1's derivation
+  // classifier runs after the analyzer — so the inferred type can't be
+  // trusted for the skip. Instead we replicate C1's `_singleRelabelName`
+  // all-labeled test at the AST level (`_astAllSingleRelabel`). Named
+  // joint (kwargs) and `relabel(joint(...))` (callee is `relabel`) are
+  // already excluded by the kwarg / `isCall(...,'joint')` filters.
+  {
+    const { bfsImplicitElementofLeavesAst } = require('./lift.ts');
+    const isCall = (node: any, calleeName: string): boolean =>
+      !!node && node.type === 'CallExpr' && node.callee
+      && node.callee.type === 'Identifier' && node.callee.name === calleeName;
+    for (const [, b] of bindings) {
+      if (b.type !== 'bayesupdate') continue;
+      const callExpr = b.node && b.node.value;
+      if (!callExpr || callExpr.type !== 'CallExpr') continue;
+      const args = callExpr.args || [];
+      if (args.length !== 2) continue;
+      const [Larg, priorArg] = args;
+      if (!Larg || Larg.type !== 'Identifier') continue;
+      if (!priorArg || priorArg.type !== 'Identifier') continue;
+
+      // prior must be a bare positional joint(...) — named joint
+      // (kwargs) and relabel(joint(...)) (different callee) produce a
+      // record variate that splats by name, so they never reach here.
+      const priorInfo = bindings.get(priorArg.name);
+      const priorCall = priorInfo && priorInfo.node && priorInfo.node.value;
+      if (!isCall(priorCall, 'joint')) continue;
+      const priorArgs = priorCall.args || [];
+      if (priorArgs.length === 0) continue;
+      if (priorArgs.some((a: any) => a && a.type === 'KeywordArg')) continue;
+      // Row-2 skip: an all-single-relabel positional joint IS the named
+      // form (record variate, splats by name) — C1 reclassifies it as
+      // such. Skip so C3 doesn't block a correct, working path.
+      if (_astAllSingleRelabel(priorArgs, bindings)) continue;
+
+      const Linfo = bindings.get(Larg.name);
+      const LCall = Linfo && Linfo.node && Linfo.node.value;
+      if (!isCall(LCall, 'likelihoodof')) continue;
+      const LArgs = LCall.args || [];
+      if (LArgs.length !== 2 || !LArgs[0] || LArgs[0].type !== 'Identifier') continue;
+
+      const Kinfo = bindings.get(LArgs[0].name);
+      const KCall = Kinfo && Kinfo.node && Kinfo.node.value;
+      if (!isCall(KCall, 'kernelof') && !isCall(KCall, 'functionof')) continue;
+      const KArgs = KCall.args || [];
+      if (KArgs.length === 0) continue;
+      const bodyAst = KArgs[0];
+
+      const referenced = bfsImplicitElementofLeavesAst(bodyAst, bindings);
+      if (referenced.length < 2) continue;
+
+      diagnostics.push({
+        severity: 'error',
+        message: "positional joint prior (a single cat'd value) cannot feed a kernel "
+          + "with 2+ inputs — use the named form joint(name = M, …) or "
+          + "relabel(joint(…), [names]) so fields splat by name (spec §06)",
+        loc: priorArg.loc || callExpr.loc,
+      });
+    }
+  }
+
   // Validate load-time `load_module(…, input = value)` substitutions
   // against the loaded module's inputs (spec §04 "Load-time
   // substitution"): the LHS must name an input (elementof / external) of
@@ -3281,6 +3373,48 @@ function analyze(ast: any, source: string, opts?: any) {
   }
 
   return { bindings, loweredModule, diagnostics, symbols };
+}
+
+// C3 (#73) row-2 skip helper: does every positional component of a
+// positional `joint(...)` resolve to a single-name `relabel(M, ["name"])`?
+// This is the AST-level twin of derivations.ts's `_singleRelabelName` +
+// `classifyRecordOrJoint`'s all-labeled test — which run on the LOWERED IR
+// (`b.ir`) after the analyzer, so they can't be consulted here. An
+// all-single-relabel positional joint IS the named-form desugaring
+// (`joint(a = M, …) ≡ joint(relabel(M, ["a"]), …)`) and reclassifies to a
+// record variate, so it must not trip the C3 diagnostic.
+//
+// Each arg may be the inline relabel call itself, or a self-ref Identifier
+// to a binding whose RHS is that call (mirroring `_singleRelabelName`
+// resolving through `bindings.get(name)`); we follow at most one ref hop,
+// which covers both surface forms without risking a cycle.
+function _astSingleRelabelName(argNode: any, bindings: any): string | null {
+  let node = argNode;
+  if (node && node.type === 'Identifier') {
+    const b = bindings.get(node.name);
+    node = b && b.node && b.node.value;
+  }
+  if (!node || node.type !== 'CallExpr' || !node.callee
+      || node.callee.type !== 'Identifier' || node.callee.name !== 'relabel') {
+    return null;
+  }
+  const rargs = node.args || [];
+  if (rargs.length !== 2 || rargs.some((a: any) => a && a.type === 'KeywordArg')) {
+    return null;
+  }
+  const namesArr = rargs[1];
+  if (!namesArr || namesArr.type !== 'ArrayLiteral') return null;
+  const elems = namesArr.elements || [];
+  if (elems.length !== 1 || !elems[0] || elems[0].type !== 'StringLiteral') return null;
+  return elems[0].value;
+}
+
+function _astAllSingleRelabel(priorArgs: any[], bindings: any): boolean {
+  if (!Array.isArray(priorArgs) || priorArgs.length === 0) return false;
+  for (const a of priorArgs) {
+    if (_astSingleRelabelName(a, bindings) == null) return false;
+  }
+  return true;
 }
 
 // Phase ordering helper: fixed < parameterized < stochastic.
