@@ -3346,6 +3346,31 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
       case 'sample':
         // Leaf distribution call — return the distIR verbatim. Refs
         // in its kwargs are value refs (per-i params).
+        //
+        // EXCEPT: `classifyLebesgueInterval` lowers a bounded
+        // `Lebesgue(support=interval(a,b))` to a synthetic
+        // `Uniform(support=interval(a,b))` sample distIR (same atom
+        // positions) plus an explicit `logTotalmass = log(b-a)`
+        // annotation — Lebesgue MEASURE (not the normalized Uniform
+        // PROBABILITY density) is the true target. Density-walking the
+        // bare Uniform distIR scores the NORMALIZED pdf (−log(b−a)),
+        // not Lebesgue's own density (≡ 1) — a −log(b−a) deficit a
+        // materialised weighted/normalize's Z (mat-density's matWeighted,
+        // which DOES read this same `logTotalmass` via
+        // `parent.logTotalmass`) does not share, so numerator and Z
+        // disagree by exactly a factor of (b−a) whenever a
+        // function-of-variate weight forces the runtime (non-closed-form)
+        // Z path (#307 — masked at b−a=1). Restore parity: wrap the
+        // verbatim distIR in a `logweighted(log(b-a), …)` shift so the
+        // density walker adds the SAME compensation matWeighted's Z
+        // already includes.
+        if (typeof d.logTotalmass === 'number' && Number.isFinite(d.logTotalmass)
+            && d.logTotalmass !== 0) {
+          return {
+            kind: 'call', op: 'logweighted',
+            args: [{ kind: 'lit', value: d.logTotalmass }, d.distIR],
+          };
+        }
         return d.distIR;
       case 'mvnormal':
         // Multivariate sampleable distribution. Same
@@ -3815,10 +3840,42 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         if (d.weightIR) {
           // Per-i weight expression — the walker resolves its refs
           // through env at evaluation time.
+          //
+          // A function-of-variate weight (`_classifyWeightedByFunction`,
+          // named or inline) carries `(ref self <d.from>)` wherever the
+          // weight function's own parameter occurred — standing for "the
+          // value the base measure consumes at this atom" (its own name
+          // was chosen deliberately: a synthetic anon binding name is
+          // never otherwise referenced by user code). `inner` above just
+          // inlined `d.from`'s own measure body in place, so that name no
+          // longer denotes a live binding — a bare `(ref self <d.from>)`
+          // reaching density.ts's walker would resolve via
+          // refArrays/getMeasure and re-materialise an UNRELATED sample
+          // of the base measure, not the point actually being scored
+          // (#307's dropped/flat-density bug). Re-wrap: replace every
+          // such self-ref with a fresh `%local` placeholder and wrap the
+          // result in a one-parameter `functionof` — this reconstructs
+          // the same inline-lambda shape a user-authored
+          // `weighted(x -> w(x), M)` lowers to, which density.ts's
+          // walkWeighted (and sampler-side walkers) already handle by
+          // binding the parameter to the atom's consumed value.
+          const baseRefs = collectSelfRefs(d.weightIR);
+          let weightIRForWalk = d.weightIR;
+          if (baseRefs.has(d.from)) {
+            const paramName = '_x_';
+            const { mapIR } = require('./ir-walk.ts');
+            const rewrapped = mapIR(d.weightIR, (n: any) =>
+              (n && n.kind === 'ref' && n.ns === 'self' && n.name === d.from)
+                ? { kind: 'ref', ns: '%local', name: paramName } : n);
+            weightIRForWalk = {
+              kind: 'call', op: 'functionof',
+              params: [paramName], body: rewrapped,
+            };
+          }
           return {
             kind: 'call',
             op: d.isLog ? 'logweighted' : 'weighted',
-            args: [d.weightIR, inner],
+            args: [weightIRForWalk, inner],
           };
         }
         // Constant log-shift was pre-computed; surface as logweighted
