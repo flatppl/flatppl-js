@@ -152,3 +152,63 @@ prior = lawof(record(sigma = sqrt(sigma2)))
       `atom ${i}: sigma=${sigmaSamples[i]}, sqrt(sigma2)=${want}`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// Independent-base invariant (refuse-don't-mislower). This recognition
+// assembles the base as an INDEPENDENT product of the ancestors' laws. For a
+// HIERARCHICAL base (a sibling ancestor's law references another ancestor in
+// the same field set) the true base is a proper joint with cross-factor
+// conditioning, and scoring it as an independent product is a SILENTLY WRONG
+// density. These tests pin the refusal.
+//
+// Regression: before the independence check, `record(m = 1.0*a, y = b)` with
+// `b ~ Normal(a, 1)` scored a finite WRONG number (-2.5817; scipy-correct
+// -1.9629) — a transformed-field shape that had previously thrown a safe
+// "unsupported measure op" refuse, turned into a silent wrong number by (d).
+// It must now REFUSE with a targeted diagnostic instead.
+// ---------------------------------------------------------------------------
+
+test('#260 (d) REFUSE: hierarchical base — a transformed field beside a bare field whose law '
+  + 'references a sibling ancestor (b ~ Normal(a,1)) is refused, not scored as an independent '
+  + 'product (silent-wrong-density regression guard)', async () => {
+  const { proc, ctx } = ctxFor(`
+a ~ Normal(0.0, 1.0)
+b ~ Normal(a, 1.0)
+prior = lawof(record(m = 1.0 * a, y = b))
+lp = logdensityof(prior, record(m = 0.5, y = 0.5))
+`, 8);
+  assert.deepEqual(compileErrors(proc), []);
+  // Must throw naming the sibling dependency — NOT return the old wrong
+  // -2.5817, NOT the generic "unsupported measure op" error.
+  await assert.rejects(() => ctx.getMeasure('lp'),
+    /independent ancestor laws; ancestor 'b' depends on sibling ancestor 'a'/);
+});
+
+test('#260 (d) REFUSE: shared stochastic hyperparameter — a ~ Normal(h,1), b ~ Normal(h,1) '
+  + '(marginally dependent) refused when a field is transformed', async () => {
+  const { proc, ctx } = ctxFor(`
+h ~ Normal(0.0, 1.0)
+a ~ Normal(h, 1.0)
+b ~ Normal(h, 1.0)
+prior = lawof(record(x = exp(a), y = b))
+lp = logdensityof(prior, record(x = 0.5, y = 0.5))
+`, 8);
+  assert.deepEqual(compileErrors(proc), []);
+  await assert.rejects(() => ctx.getMeasure('lp'),
+    /independent ancestor laws; ancestors '(a|b)' and '(a|b)' share stochastic ancestry/);
+});
+
+test('#260 (d) NOT hijacked: an ALL-bare-ref hierarchical record(x = a, y = b) with '
+  + 'b ~ Normal(a,1) still scores correctly via the pre-existing joint env-threading path '
+  + '(the transformed-field recognition does not fire)', async () => {
+  const lp = await scalarOf(`
+a ~ Normal(0.0, 1.0)
+b ~ Normal(a, 1.0)
+prior = lawof(record(x = a, y = b))
+lp = logdensityof(prior, record(x = 0.5, y = 0.5))
+`, 'lp');
+  // scipy oracle (independent, python MCP):
+  //   norm.logpdf(0.5, 0, 1) + norm.logpdf(0.5, loc=0.5, scale=1) = -1.9628770664093453
+  const oracle = -1.9628770664093453;
+  assert.ok(Math.abs(lp - oracle) < TOL, `got ${lp}, oracle ${oracle}`);
+});

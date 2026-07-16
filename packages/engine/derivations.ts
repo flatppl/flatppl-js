@@ -1417,6 +1417,46 @@ function _irContainsFieldRef(ir: any, name: string): boolean {
   return false;
 }
 
+// The transitive set of stochastic bindings a stochastic ancestor's LAW
+// depends on (its alias root included). The identity for each collected
+// binding is its alias root (so `a` and a pure alias of it dedupe). Used by
+// the independence check below: two record-field ancestors are INDEPENDENT
+// only when their stochastic-ancestry sets are disjoint — a shared entry
+// means either one ancestor's law references the other (direct hierarchy,
+// e.g. `b ~ Normal(a, 1)`) or both descend from a common stochastic
+// hyperparameter (`a ~ Normal(h,1); b ~ Normal(h,1)`), and in EITHER case
+// the base joint is NOT the independent product this recognition assembles.
+// Walks laws by expanding each stochastic binding's measure IR + collecting
+// its self-refs; recurses only through stochastic bindings (a shared FIXED
+// value does not create dependence, so it is never followed). Cycle-guarded.
+function _stochasticAncestryRoots(startRoot: string, derivations: any, bindings: any): Set<string> {
+  const isStochastic = (nm: string): boolean => {
+    const b = bindings && bindings.get ? bindings.get(nm) : null;
+    return !!(b && b.phase === 'stochastic');
+  };
+  const roots = new Set<string>();
+  const seen = new Set<string>();
+  const queue: string[] = [startRoot];
+  while (queue.length > 0) {
+    const r = queue.shift() as string;
+    if (seen.has(r)) continue;
+    seen.add(r);
+    roots.add(r);
+    const law = expandMeasureIR(r, derivations, new Set(), bindings);
+    if (!law) continue;
+    for (const ref of collectSelfRefs(law)) {
+      // A law's value-position refs (a distribution's location/scale, a
+      // derived intermediate) name USER bindings; check stochasticity on the
+      // ref name (the user binding carries the phase; a lifted anon may read
+      // as fixed), and canonicalise to the alias root for set identity.
+      if (!isStochastic(ref)) continue;
+      const root = _resolveAliasRoot(ref, derivations);
+      if (!seen.has(root)) queue.push(root);
+    }
+  }
+  return roots;
+}
+
 // The ops on the free-ancestor's inversion path (output→leaf, the single
 // arg that transitively contains the free ref at each node) — used only
 // to look up (c)'s pushfwd domain guards per op. Mirrors
@@ -1563,6 +1603,49 @@ function _recognizeDiagonalPushforwardFields(
       + 'a diagonal bijection (two fields of one ancestor collapse onto a '
       + 'lower-dimensional manifold; no Lebesgue density on the record space; '
       + 'refuse, not mislower)');
+  }
+
+  // Independent-base invariant (refuse-don't-mislower). This recognition
+  // assembles the base as an INDEPENDENT product `joint(law(anc_1), …,
+  // law(anc_n))` — one factor per field's ancestor. That is only the true
+  // base measure when the ancestors are mutually INDEPENDENT. For a
+  // HIERARCHICAL base (`b ~ Normal(a, 1)`: b's law references sibling
+  // ancestor a) or a shared stochastic hyperparameter (`a,b ~ Normal(h,1)`),
+  // the real base is a proper joint with cross-factor conditioning, and the
+  // per-field inverse-image of one ancestor would have to be threaded into a
+  // sibling's law — which this pass does NOT do. Scoring it as an independent
+  // product is a SILENTLY WRONG density (verified: it under/over-counts the
+  // conditional term). Refuse when any two fields' ancestors share stochastic
+  // ancestry. (Correctly threading inverse-images across dependent siblings
+  // is a deliberate follow-up — see the report; the pre-existing all-bare-ref
+  // record path already scores a hierarchical base correctly via walkJoint's
+  // env-threading, and does NOT enter this recognition — it only fires when a
+  // field is a deterministic transform, gated on `hasEvaluateField`.)
+  const ancestrySets = perField.map(
+    (pf) => _stochasticAncestryRoots(pf.ancestor, derivations, bindings));
+  for (let i = 0; i < perField.length; i++) {
+    for (let j = i + 1; j < perField.length; j++) {
+      let overlap: string | null = null;
+      for (const root of ancestrySets[i]) {
+        if (ancestrySets[j].has(root)) { overlap = root; break; }
+      }
+      if (overlap == null) continue;
+      const di = perField[i].ancestorDisplay;
+      const dj = perField[j].ancestorDisplay;
+      // Direct-hierarchy phrasing (one ancestor IS the other's) when the
+      // overlap is one of the two ancestors' own roots; shared-hyperparameter
+      // phrasing otherwise.
+      if (overlap === perField[i].ancestor || overlap === perField[j].ancestor) {
+        const dep = overlap === perField[i].ancestor ? dj : di;   // the law that references
+        const on  = overlap === perField[i].ancestor ? di : dj;   // the referenced ancestor
+        throw new Error("density: record-field pushforward requires independent ancestor "
+          + "laws; ancestor '" + dep + "' depends on sibling ancestor '" + on
+          + "' — not supported (refuse, not mislower)");
+      }
+      throw new Error("density: record-field pushforward requires independent ancestor "
+        + "laws; ancestors '" + di + "' and '" + dj + "' share stochastic ancestry — "
+        + 'not supported (refuse, not mislower)');
+    }
   }
 
   const out: any[] = [];
