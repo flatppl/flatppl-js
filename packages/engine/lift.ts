@@ -726,12 +726,48 @@ function liftInlineSubexpressions(bindings: any) {
     return false;
   }
 
+  // True iff `astNode` is itself a `fn(...)` / `functionof(...)` /
+  // `kernelof(...)` CallExpr — a CLOSED reifier by construction (parser
+  // desugaring / the surface grammar): every Hole/Placeholder inside its
+  // own subtree is one of ITS OWN formals, never an outer scope's.
+  function isClosedReifierCall(astNode: any): boolean {
+    return !!astNode && astNode.type === 'CallExpr' && astNode.callee
+      && astNode.callee.type === 'Identifier'
+      && (astNode.callee.name === 'fn'
+          || astNode.callee.name === 'functionof'
+          || astNode.callee.name === 'kernelof');
+  }
+
   function liftMeasure(astArg: any) {
     if (!astArg) return astArg;
     astArg = inlineUserCall(astArg);
     visit(astArg);
     if (astArg.type === 'Identifier') return astArg;
-    if (containsHoleOrPlaceholder(astArg)) return astArg;
+    // `weighted(w, M)` / `logweighted(g, M)` (spec §06: the weight/
+    // log-weight is a constant OR a function of the variate): an INLINE
+    // closed-reifier weight (`x -> w(x)`, `fn(...)`) carries its OWN
+    // Hole/Placeholder formals — those don't escape past the reifier, so
+    // they must not block lifting the ENCLOSING weighted/logweighted call
+    // to its own anon binding (#307's classifier, derivations.ts's
+    // `_classifyWeightedByFunction`, needs a NAMED base to substitute
+    // the weight's parameter into; an inline weight that stays embedded
+    // never reaches a named base and fails classification — "no
+    // derivation"). Scoped to exactly this shape: EVERY other
+    // `containsHoleOrPlaceholder` call site (jointchain/kchain kernel
+    // args, record/joint kwarg fields, broadcast array literals, and
+    // weighted/logweighted's own BASE slot) keeps the original
+    // conservative check unchanged.
+    if (astArg.type === 'CallExpr' && astArg.callee && astArg.callee.type === 'Identifier'
+        && (astArg.callee.name === 'weighted' || astArg.callee.name === 'logweighted')
+        && Array.isArray(astArg.args) && astArg.args.length === 2) {
+      const weightArg = astArg.args[0];
+      const baseArg = astArg.args[1];
+      const weightEscapes = isClosedReifierCall(weightArg)
+        ? false : containsHoleOrPlaceholder(weightArg);
+      if (weightEscapes || containsHoleOrPlaceholder(baseArg)) return astArg;
+    } else if (containsHoleOrPlaceholder(astArg)) {
+      return astArg;
+    }
     const name = freshName();
     out.set(name, makeSyntheticBinding(name, astArg));
     return makeIdent(name, astArg.loc);

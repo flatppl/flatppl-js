@@ -39,6 +39,18 @@ function totalMassExpr(ir: any): any {
     return acc;
   }
   if (op === 'weighted' && Array.isArray(ir.args) && ir.args.length === 2) {
+    // A function-of-variate weight (`weighted(x -> w(x), M)`, spec §06 — the
+    // §12 generic-density idiom; derivations.ts's expandMeasureIR rewraps a
+    // function-of-variate weight into this exact `functionof` shape, #307)
+    // is NOT a scalar mass factor: mass(weighted(w, M)) here is ∫ w(x) dM(x),
+    // not a pointwise value multiplying mass(M). Treating `ir.args[0]` as a
+    // per-θ scalar (the mixture-branch case this function targets) would
+    // hand a bare `functionof` node to the worker's scalar evaluator — fail
+    // closed (defer to the runtime massFrom/quadrature path) rather than
+    // mis-scoring the generic-density normalizer as a mixture weight.
+    if (ir.args[0] && ir.args[0].kind === 'call' && ir.args[0].op === 'functionof') {
+      return null;
+    }
     const inner = totalMassExpr(ir.args[1]);
     if (inner == null) return null;
     // mass(weighted(w, M)) = w · mass(M)
