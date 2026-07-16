@@ -3559,7 +3559,13 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             const inv = bijReg.invertExpr({
               outputExpr: fBinding.ir.body,
               freeRef: { name: holeName },
-              outputValue: { kind: 'ref', ns: 'self', name: FINV_PARAM },
+              // FINV_PARAM is the synthesized inverse's formal parameter (= y).
+              // It MUST be ns:'%local' — the CLM subset invariant (ir-walk.ts,
+              // .bijection descent) treats formal-parameter refs as '%local';
+              // an ns:'self' ref reads as an unresolved module binding, trips
+              // CLM_SUBSET_VIOLATION, and the logdensityof derivation is then
+              // silently cascade-pruned ("no derivation") — #260.
+              outputValue: { kind: 'ref', ns: '%local', name: FINV_PARAM },
             });
             if (inv) {
               // fInv body is in terms of FINV_PARAM (= y); logVolume (forward
