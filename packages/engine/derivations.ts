@@ -1372,6 +1372,224 @@ function classifyRecordOrJoint(rhsIR: any, ast?: any, bindings?: any): Derivatio
   return null;
 }
 
+// =====================================================================
+// #260 (d): record-field diagonal-bijection pushforward recognition
+// =====================================================================
+//
+// `lawof(record(f_1 = t_1, ..., f_n = t_n))` is a DENSITY pushforward
+// exactly when the field-map ancestors→fields is a bijection with a
+// DIAGONAL Jacobian: each field is either a bare measure ref (already
+// handled — the ordinary `expandMeasureIR` path below) or a straight-
+// line known-bijection transform (`bijection-registry.invertExpr`,
+// oracle-verified in #260 (b)/(c) — reused here, not re-derived) of
+// EXACTLY ONE stochastic ancestor, every ancestor used by AT MOST ONE
+// field, and #fields == #distinct ancestors. Refuse-don't-mislower for
+// anything else (shared ancestor, ≥2-latent transform, non-invertible
+// chain, off-domain per (c)'s pushfwd domain guards) — a wrong Jacobian
+// is a silently wrong density, so every failure mode throws a targeted
+// diagnostic rather than falling through to density's generic
+// "unsupported measure op" error.
+
+// Follow an 'alias' derivation chain to its terminal binding name — the
+// canonical identity used for the shared-ancestor check (so `record(a =
+// x, b = sqrt(y))` with `y = x` a pure alias still detects the shared
+// ancestor). Cycle-guarded defensively; buildDerivations already breaks
+// alias cycles elsewhere, so the guard is never expected to fire.
+function _resolveAliasRoot(name: string, derivations: any): string {
+  let n = name;
+  let guard = 0;
+  while (derivations && derivations[n] && derivations[n].kind === 'alias' && guard++ < 64) {
+    n = derivations[n].from;
+  }
+  return n;
+}
+
+// Does `ir` contain a self-ref named `name` anywhere in its arg tree?
+// (kwargs excluded — mirrors invertExpr's own straight-line contract:
+// a field IR reaching this point already round-tripped through
+// invertExpr, which only ever walks positional args.)
+function _irContainsFieldRef(ir: any, name: string): boolean {
+  if (!ir || typeof ir !== 'object') return false;
+  if (ir.kind === 'ref' && ir.name === name) return true;
+  if (Array.isArray(ir.args)) {
+    for (const a of ir.args) if (_irContainsFieldRef(a, name)) return true;
+  }
+  return false;
+}
+
+// The ops on the free-ancestor's inversion path (output→leaf, the single
+// arg that transitively contains the free ref at each node) — used only
+// to look up (c)'s pushfwd domain guards per op. Mirrors
+// bijection-registry.invertExpr's own path walk (called only once
+// invertExpr has already SUCCEEDED, so the straight-line shape is
+// already proven); this does not re-derive any inverse/LADJ maths, just
+// re-observes which op names sit on the same path invertExpr traversed.
+function _collectFieldPathOps(body: any, freeName: string, into: Set<string>): void {
+  let cur = body;
+  while (!(cur && cur.kind === 'ref' && cur.name === freeName)) {
+    if (!cur || cur.kind !== 'call' || !Array.isArray(cur.args)) return;
+    let onPathIdx = -1;
+    for (let i = 0; i < cur.args.length; i++) {
+      if (_irContainsFieldRef(cur.args[i], freeName)) {
+        if (onPathIdx !== -1) return;
+        onPathIdx = i;
+      }
+    }
+    if (onPathIdx === -1) return;
+    if (typeof cur.op === 'string') into.add(cur.op);
+    cur = cur.args[onPathIdx];
+  }
+}
+
+// Recognise + build the pushfwd-annotated field list for a record whose
+// fields mix plain measure refs with deterministic-transform fields.
+// Returns the `fields` array `_expandByName`'s 'record' case wraps into
+// `{kind:'call', op:'joint', fields}` — OR throws a targeted refusal
+// (never returns null / silently falls through, per refuse-don't-
+// mislower: the caller has no better fallback than density's generic
+// "unsupported measure op" error, which is exactly what this replaces).
+function _recognizeDiagonalPushforwardFields(
+  fieldsMap: Record<string, string>, derivations: any, bindings: any, visited: Set<string>,
+): any[] {
+  const fieldNames = Object.keys(fieldsMap);
+  const perField: Array<{
+    name: string; bindingName: string; ancestor: string; ancestorDisplay: string; bijMeta: any | null;
+  }> = [];
+  for (const name of fieldNames) {
+    const bindingName = fieldsMap[name];
+    const dd = derivations && derivations[bindingName];
+    if (dd && dd.kind === 'evaluate') {
+      const ir = dd.ir;
+      // The stochastic ancestors this field's deterministic transform
+      // actually depends on (per the phase analysis, spec §04) — the
+      // set the diagonal-bijection contract requires to have exactly
+      // one member.
+      const refs = collectSelfRefs(ir);
+      const stochasticAncestors: string[] = [];
+      for (const r of refs) {
+        const b = bindings && bindings.get ? bindings.get(r) : null;
+        if (b && b.phase === 'stochastic') stochasticAncestors.push(r);
+      }
+      if (stochasticAncestors.length === 0) {
+        throw new Error("density: record field '" + name + "' is a deterministic "
+          + 'transform of only fixed/parameterized values, not of a stochastic '
+          + 'ancestor — it has no measure to push forward (refuse, not mislower)');
+      }
+      if (stochasticAncestors.length > 1) {
+        throw new Error("density: record field '" + name + "' depends on "
+          + stochasticAncestors.length + ' stochastic ancestors ('
+          + stochasticAncestors.join(', ') + ') — a multi-argument transform of '
+          + '≥2 latents has no diagonal-bijection pushforward density '
+          + '(refuse, not mislower)');
+      }
+      const freeName = stochasticAncestors[0];
+      const ancestor = _resolveAliasRoot(freeName, derivations);
+      const FINV_PARAM = '__pf_' + name;
+      const bijReg = require('./bijection-registry.ts');
+      const inv = bijReg.invertExpr({
+        outputExpr: ir,
+        freeRef: { name: freeName },
+        // MUST be ns:'%local' — the CLM subset invariant (ir-walk.ts,
+        // .bijection descent) treats formal-parameter refs as '%local';
+        // mirrors the annotation-free `pushfwd` synthesis above (#260).
+        outputValue: { kind: 'ref', ns: '%local', name: FINV_PARAM },
+      });
+      if (!inv) {
+        throw new Error("density: record field '" + name + "' = <transform of '"
+          + freeName + "'> is not a recognized straight-line known-bijection "
+          + '(spec §06 known-bijection registry) — refuse, not mislower');
+      }
+      // (c)'s pushfwd domain-restriction guard (spec §06 "Known-bijection
+      // registry": a domain-restricted forward additionally requires the
+      // base measure's support to lie within that domain), reused
+      // verbatim from typeinfer's PUSHFWD_DOMAIN_GUARDS/isWithin* table
+      // rather than re-derived — see typeinfer.ts's module-level export
+      // block. Conservative: an UNKNOWN/DEFERRED/ANYTHING ancestor
+      // support does not refuse, only a support PROVABLY outside the
+      // guarded domain does.
+      const pathOps = new Set<string>();
+      _collectFieldPathOps(ir, freeName, pathOps);
+      if (pathOps.size > 0) {
+        const typeinfer = require('./typeinfer.ts');
+        const vsLib = require('./value-set.ts');
+        const ancestorIR = expandMeasureIR(ancestor, derivations, new Set(visited), bindings);
+        const support = (ancestorIR && ancestorIR.kind === 'call' && DISTRIBUTIONS.has(ancestorIR.op))
+          ? typeinfer.distributionSupport(ancestorIR) : vsLib.UNKNOWN;
+        if (support !== vsLib.UNKNOWN && support !== vsLib.DEFERRED && support !== vsLib.ANYTHING) {
+          for (const op of pathOps) {
+            const guard = typeinfer.PUSHFWD_DOMAIN_GUARDS[op];
+            if (!guard || guard.isWithin(support)) continue;
+            throw new Error("density: record field '" + name + "' uses '" + op
+              + "', which requires the support of ancestor '" + freeName + "' to be "
+              + guard.label + ', but its support is provably '
+              + vsLib.toSexpr(support) + ' — refuse rather than silently '
+              + 'produce a sub-probability measure (spec §06)');
+          }
+        }
+      }
+      perField.push({
+        name, bindingName, ancestor, ancestorDisplay: freeName,
+        bijMeta: {
+          fInv: { body: inv.inverseIR, paramName: FINV_PARAM },
+          logVolume: { kind: 'fn', body: inv.ladjIR, paramName: freeName },
+        },
+      });
+    } else {
+      // Bare measure ref (the pre-existing, always-supported shape:
+      // sample/alias/iid/…). Its identity for the shared-ancestor check
+      // is its own alias-resolved binding name; `bindingName` itself
+      // (the field's un-resolved ref) is the user-facing display name.
+      perField.push({
+        name, bindingName,
+        ancestor: _resolveAliasRoot(bindingName, derivations),
+        ancestorDisplay: bindingName,
+        bijMeta: null,
+      });
+    }
+  }
+  // Diagonal-bijection invariant: every ancestor used by AT MOST ONE
+  // field, and #fields == #distinct ancestors (spec §06 "Engine contract
+  // for pushfwd density evaluation" — a shared ancestor collapses the
+  // record onto a lower-dimensional manifold with no Lebesgue density on
+  // the record space).
+  const ancestorCounts = new Map<string, number>();
+  for (const pf of perField) {
+    ancestorCounts.set(pf.ancestor, (ancestorCounts.get(pf.ancestor) || 0) + 1);
+  }
+  const shared = perField.filter((pf) => (ancestorCounts.get(pf.ancestor) as number) > 1);
+  if (shared.length > 0) {
+    throw new Error('density: record fields [' + shared.map((pf) => pf.name).join(', ')
+      + "] share the ancestor '" + shared[0].ancestorDisplay + "' — the field-map is not "
+      + 'a diagonal bijection (two fields of one ancestor collapse onto a '
+      + 'lower-dimensional manifold; no Lebesgue density on the record space; '
+      + 'refuse, not mislower)');
+  }
+
+  const out: any[] = [];
+  for (const pf of perField) {
+    const inner = expandMeasureIR(
+      pf.bijMeta ? pf.ancestor : pf.bindingName, derivations, new Set(visited), bindings);
+    if (!inner) {
+      throw new Error("density: record field '" + pf.name + "': ancestor '"
+        + (pf.bijMeta ? pf.ancestor : pf.bindingName) + "' has no expandable measure law");
+    }
+    if (pf.bijMeta) {
+      out.push({
+        name: pf.name,
+        value: {
+          kind: 'call', op: 'pushfwd',
+          args: [{ kind: 'ref', ns: 'self', name: pf.bindingName }, inner],
+          bijection: pf.bijMeta,
+        },
+        source: pf.bindingName,
+      });
+    } else {
+      out.push({ name: pf.name, value: inner, source: pf.bindingName });
+    }
+  }
+  return out;
+}
+
 function classifyIid(
   rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any,
 ): DerivationIid | null {
@@ -3067,6 +3285,46 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         };
       }
       case 'record': {
+        // #260 (d): diagonal-bijection pushforward recognition. A field
+        // whose OWN binding classified 'evaluate' (a deterministic value
+        // transform lifted out by liftInlineSubexpressions, e.g. `sigma =
+        // sqrt(sigma2)`) is not a plain measure ref; naively expanding it
+        // (the loop below, via expandMeasureIR's structural fallback)
+        // leaks the raw arithmetic op into density's dispatcher as an
+        // "unsupported measure op" error. When such a field is a
+        // straight-line known-bijection transform of EXACTLY ONE
+        // stochastic ancestor, and the whole record's field-map is a
+        // DIAGONAL bijection (every ancestor used by at most one field,
+        // #fields == #distinct ancestors — so the Jacobian is diagonal),
+        // the record is an implicit pushforward: synthesise the same
+        // bijMeta the explicit `pushfwd` case below attaches, per field.
+        // Only entered when at least one field needs it — a record whose
+        // fields are all plain measure refs (the pre-existing, always-
+        // supported shape) takes the untouched loop unchanged.
+        const hasEvaluateField = Object.keys(d.fields).some((k) => {
+          const dd = derivations && derivations[d.fields[k]];
+          return !!(dd && dd.kind === 'evaluate');
+        });
+        // Gate on `bindings` being present: recognition needs phase info
+        // (bindings.get(name).phase) to tell a stochastic ancestor from a
+        // fixed/parameterized one. Some callers walk the derivation graph
+        // WITHOUT bindings (e.g. fixed-values.ts's demand-driven fixed-
+        // phase probe, `expandMeasureIR(name, derivations)` — no
+        // `bindings` arg) purely to check resolvability; that probe
+        // context must degrade to the pre-existing null-propagating
+        // behaviour, NOT throw a refusal (a hard throw here would abort
+        // ordinary fixed-phase / sampling-path bookkeeping for any model
+        // with such a field, which is exactly the regression the sampling
+        // path must not suffer). Once `bindings` IS present, this is a
+        // genuine attempt to expand for density, and a shape violation
+        // throws a targeted diagnostic rather than falling through to the
+        // per-field loop below (which would hit the SAME raw-op leak this
+        // recognition exists to fix).
+        if (hasEvaluateField && bindings) {
+          const recognized = _recognizeDiagonalPushforwardFields(
+            d.fields, derivations, bindings, next);
+          return { kind: 'call', op: 'joint', fields: recognized };
+        }
         const fields: any[] = [];
         for (const k in d.fields) {
           const inner = expandMeasureIR(d.fields[k], derivations, next, bindings);

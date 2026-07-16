@@ -3300,36 +3300,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
   // The §08 Domain/Support column → a value set. Keys on the op name, so
   // it works even where the measure TYPE is still `deferred`.
-  function distributionSupport(ir: any): any {
-    const op = ir.op;
-    const args = ir.args || [];
-    switch (op) {
-      case 'Uniform': return vsLib.setExprValueset(supportArgOf(ir), _resolveDim);
-      case 'Normal': case 'GeneralizedNormal': case 'Cauchy': case 'StudentT':
-      case 'Logistic': case 'VonMises': case 'Laplace': return vsLib.REALS;
-      case 'LogNormal': case 'InverseGamma':
-      case 'Pareto': return vsLib.POSREALS;
-      // Gamma/ChiSquared density is nonzero at x=0 (Gamma(1,β)=Exponential;
-      // shape≤1 is finite/diverges there), so 0 is in the §08 support —
-      // nonnegreals, like Exponential/Weibull. This is the DENSITY support
-      // only; the HMC unconstraining transform still treats them as the
-      // positive half-line (transforms.ts SUPPORT_BY_DIST), the x=0 boundary
-      // being measure-zero — mirroring how Exponential is already handled.
-      case 'Exponential': case 'Weibull':
-      case 'Gamma': case 'ChiSquared': return vsLib.NONNEGREALS;
-      case 'Beta': return vsLib.UNITINTERVAL;
-      case 'Bernoulli': return vsLib.BOOLEANS;
-      case 'Categorical': return vsLib.POSINTEGERS;
-      case 'Categorical0': case 'Binomial': case 'Geometric':
-      case 'NegativeBinomial': case 'NegativeBinomial2': case 'Poisson':
-        return vsLib.NONNEGINTEGERS;
-      case 'MvNormal': return vsLib.cartpow(vsLib.REALS, _paramDim(ir, 'mu', 0));
-      case 'Dirichlet': return vsLib.stdsimplex(_paramDim(ir, 'alpha', 0));
-      case 'Multinomial': return vsLib.cartpow(vsLib.NONNEGINTEGERS, _paramDim(ir, 'p', 1));
-      default: return vsLib.UNKNOWN;
-    }
-  }
-
   // The static length of a rank-1-array node — from its inferred type
   // if annotated, else structurally (an inline `vector(...)` literal, or
   // a ref's binding type). typeinfer doesn't write `meta.type` on every
@@ -3445,7 +3415,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           : vsLib.cartpow(elem, args.length);
       }
       default:
-        if (builtins.DISTRIBUTIONS.has(op)) return distributionSupport(ir);
+        if (builtins.DISTRIBUTIONS.has(op)) {
+          return distributionSupport(ir, { paramDim: _paramDim, resolveDim: _resolveDim });
+        }
         return vsLib.UNKNOWN;
     }
   }
@@ -3597,46 +3569,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // case statically; the corresponding annotation-free lowering already
   // requires a resolvable base measure, so this is not a new gap.
   //
-  // `pow` is deliberately NOT included in `_PUSHFWD_DOMAIN_GUARDS` even
-  // though spec §06 lists it alongside `sqrt` (nonnegreals): the
-  // already-shipped (#260 (a)) `pow` entry is exercised by a passing
-  // regression test using an odd literal exponent over a REALS-support
-  // base (`pushfwd(fn(pow(_, 3)), Normal(0, 1))`), which a nonnegreals
-  // guard would newly refuse. Odd-integer `pow` is genuinely invertible
-  // over all of ℝ; a parity-aware guard is the correct long-term fix but
-  // out of scope here — tracked as a known gap rather than silently
-  // reconciled by breaking the (a) baseline.
-  const _PUSHFWD_DOMAIN_GUARDS: Record<string, { isWithin: (vs: any) => boolean, label: string }> = {
-    log:    { isWithin: _isWithinPositiveDomain, label: 'positive (posreals; spec §07 log domain)' },
-    log10:  { isWithin: _isWithinPositiveDomain, label: 'positive (posreals; spec §07 log10 domain)' },
-    sqrt:   { isWithin: _isWithinPositiveDomain, label: 'non-negative (nonnegreals; spec §07 sqrt domain)' },
-    log1p:  { isWithin: _isWithinGtNegOneDomain, label: 'within (-1, inf) (spec §07 log1p domain)' },
-    logit:  { isWithin: _isWithinUnitDomain, label: 'within (0, 1) (spec §07 logit domain)' },
-    probit: { isWithin: _isWithinUnitDomain, label: 'within (0, 1) (spec §07 probit domain)' },
-  };
-
-  // Mirrors invert.rs `is_positive_domain`: TRUE for the continuous sets
-  // whose boundary at 0 carries no probability mass (posreals, nonnegreals,
-  // unitinterval, or a known interval with lo >= 0) — i.e. "provably
-  // nonnegative, continuous". Used for both log/log10 (spec: posreals) and
-  // sqrt (spec: nonnegreals): the boundary point is measure-zero either way.
-  function _isWithinPositiveDomain(vs: any): boolean {
-    if (vs === vsLib.POSREALS || vs === vsLib.NONNEGREALS || vs === vsLib.UNITINTERVAL) return true;
-    if (vs && vs.vs === 'interval') return vs.lo >= 0;
-    return false;
-  }
-  // Mirrors invert.rs `is_gt_neg_one_domain`: `support ⊆ (−1, ∞)`.
-  function _isWithinGtNegOneDomain(vs: any): boolean {
-    if (vs === vsLib.POSREALS || vs === vsLib.NONNEGREALS || vs === vsLib.UNITINTERVAL) return true;
-    if (vs && vs.vs === 'interval') return vs.lo >= -1;
-    return false;
-  }
-  // Mirrors invert.rs `is_unit_domain`: `support ⊆ (0, 1)`.
-  function _isWithinUnitDomain(vs: any): boolean {
-    if (vs === vsLib.UNITINTERVAL) return true;
-    if (vs && vs.vs === 'interval') return vs.lo >= 0 && vs.hi <= 1;
-    return false;
-  }
+  // `PUSHFWD_DOMAIN_GUARDS` + the `isWithin*` predicates (why `pow` is
+  // deliberately excluded, etc.) are module-level, defined + exported below
+  // `inferTypes` so `derivations.ts`'s record-field pushforward recognition
+  // (#260 d) reuses the SAME table rather than re-deriving it.
 
   // Resolve a pushfwd forward-arg expression to its single-param
   // `functionof` reification node — an inline `fn(...)`/`functionof(...)`,
@@ -3715,7 +3651,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const mIR = ir.args[1];
     let support: any = null;   // lazily computed — only needed if a guarded op is present
     for (const op of ops) {
-      const guard = _PUSHFWD_DOMAIN_GUARDS[op];
+      const guard = PUSHFWD_DOMAIN_GUARDS[op];
       if (!guard) continue;
       if (support == null) support = valuesetOfExpr(mIR);
       if (support === vsLib.UNKNOWN || support === vsLib.DEFERRED || support === vsLib.ANYTHING) continue;
@@ -3899,13 +3835,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // ONE owner, `value-set.ts`). true / false / null (unknown).
   function setBounded(setIR: any): boolean | null {
     return vsLib.isBounded(vsLib.setExprValueset(setIR, _resolveDim));
-  }
-
-  // Lebesgue/Counting take their support as a `support` kwarg or a lone
-  // positional arg (spec §06). Shared by the valueset + mass rules.
-  function supportArgOf(ir: any): any {
-    if (ir.kwargs && ir.kwargs.support) return ir.kwargs.support;
-    return (ir.args || [])[0] || null;
   }
 
   // A fixed-phase scalar weight rescales by a constant — preserving the
@@ -4126,4 +4055,110 @@ function additiveMass(masses: any[]): any {
 // Internal "set" marker — not a user-facing type. elementof handles it.
 function setMarker(name: any) { return { kind: 'set', name }; }
 
-module.exports = { inferTypes, inferExprInScope };
+// =====================================================================
+// Module-level reuse surface (#260 d): the per-distribution scalar
+// support table + the pushfwd domain-restriction guards, EXPORTED so
+// `derivations.ts`'s record-field diagonal-pushforward recognition
+// reuses the identical catalogue `checkPushfwdDomainContracts` uses for
+// an explicit `pushfwd(...)` node, rather than re-deriving distribution
+// supports or domain rules for the implicit (record-field) case. Zero
+// closure dependency beyond `vsLib` (module-level, top of file), so
+// these live outside `inferTypes` and are called from inside it too
+// (one call site each — `_computeValueset`'s default branch,
+// `_checkOnePushfwdDomain`) with no behaviour change.
+// =====================================================================
+
+// Lebesgue/Counting take their support as a `support` kwarg or a lone
+// positional arg (spec §06). Shared by the valueset + mass rules.
+function supportArgOf(ir: any): any {
+  if (ir.kwargs && ir.kwargs.support) return ir.kwargs.support;
+  return (ir.args || [])[0] || null;
+}
+
+// Per-distribution support (spec §08). `opts.paramDim`/`opts.resolveDim`
+// are optional loweredModule-bound resolvers (array length / non-literal
+// dimension lookups) that only `typeinfer`'s own call site can supply;
+// a caller without a `LoweredModule` in scope (derivations.ts querying a
+// record field's SCALAR stochastic ancestor) omits them — the Uniform /
+// MvNormal / Dirichlet / Multinomial branches then degrade to whatever
+// `vsLib.setExprValueset`'s literal-only fallback resolves (Uniform with
+// literal bounds still resolves fine) or `vsLib.UNKNOWN` (vector dists —
+// never a scalar bijection's ancestor in practice, so inert there).
+function distributionSupport(
+  ir: any, opts?: { paramDim?: (ir: any, kw: string, posIdx: number) => any, resolveDim?: (ir: any) => any },
+): any {
+  const op = ir.op;
+  switch (op) {
+    case 'Uniform': return vsLib.setExprValueset(supportArgOf(ir), opts && opts.resolveDim);
+    case 'Normal': case 'GeneralizedNormal': case 'Cauchy': case 'StudentT':
+    case 'Logistic': case 'VonMises': case 'Laplace': return vsLib.REALS;
+    case 'LogNormal': case 'InverseGamma':
+    case 'Pareto': return vsLib.POSREALS;
+    // Gamma/ChiSquared density is nonzero at x=0 (Gamma(1,β)=Exponential;
+    // shape≤1 is finite/diverges there), so 0 is in the §08 support —
+    // nonnegreals, like Exponential/Weibull. This is the DENSITY support
+    // only; the HMC unconstraining transform still treats them as the
+    // positive half-line (transforms.ts SUPPORT_BY_DIST), the x=0 boundary
+    // being measure-zero — mirroring how Exponential is already handled.
+    case 'Exponential': case 'Weibull':
+    case 'Gamma': case 'ChiSquared': return vsLib.NONNEGREALS;
+    case 'Beta': return vsLib.UNITINTERVAL;
+    case 'Bernoulli': return vsLib.BOOLEANS;
+    case 'Categorical': return vsLib.POSINTEGERS;
+    case 'Categorical0': case 'Binomial': case 'Geometric':
+    case 'NegativeBinomial': case 'NegativeBinomial2': case 'Poisson':
+      return vsLib.NONNEGINTEGERS;
+    case 'MvNormal':
+      return (opts && opts.paramDim) ? vsLib.cartpow(vsLib.REALS, opts.paramDim(ir, 'mu', 0)) : vsLib.UNKNOWN;
+    case 'Dirichlet':
+      return (opts && opts.paramDim) ? vsLib.stdsimplex(opts.paramDim(ir, 'alpha', 0)) : vsLib.UNKNOWN;
+    case 'Multinomial':
+      return (opts && opts.paramDim) ? vsLib.cartpow(vsLib.NONNEGINTEGERS, opts.paramDim(ir, 'p', 1)) : vsLib.UNKNOWN;
+    default: return vsLib.UNKNOWN;
+  }
+}
+
+// `pow` is deliberately NOT included even though spec §06 lists it alongside
+// `sqrt` (nonnegreals): the already-shipped (#260 (a)) `pow` entry is
+// exercised by a passing regression test using an odd literal exponent over
+// a REALS-support base (`pushfwd(fn(pow(_, 3)), Normal(0, 1))`), which a
+// nonnegreals guard would newly refuse. Odd-integer `pow` is genuinely
+// invertible over all of ℝ; a parity-aware guard is the correct long-term
+// fix but out of scope here — tracked as a known gap.
+const PUSHFWD_DOMAIN_GUARDS: Record<string, { isWithin: (vs: any) => boolean, label: string }> = {
+  log:    { isWithin: isWithinPositiveDomain, label: 'positive (posreals; spec §07 log domain)' },
+  log10:  { isWithin: isWithinPositiveDomain, label: 'positive (posreals; spec §07 log10 domain)' },
+  sqrt:   { isWithin: isWithinPositiveDomain, label: 'non-negative (nonnegreals; spec §07 sqrt domain)' },
+  log1p:  { isWithin: isWithinGtNegOneDomain, label: 'within (-1, inf) (spec §07 log1p domain)' },
+  logit:  { isWithin: isWithinUnitDomain, label: 'within (0, 1) (spec §07 logit domain)' },
+  probit: { isWithin: isWithinUnitDomain, label: 'within (0, 1) (spec §07 probit domain)' },
+};
+
+// Mirrors invert.rs `is_positive_domain`: TRUE for the continuous sets
+// whose boundary at 0 carries no probability mass (posreals, nonnegreals,
+// unitinterval, or a known interval with lo >= 0) — i.e. "provably
+// nonnegative, continuous". Used for both log/log10 (spec: posreals) and
+// sqrt (spec: nonnegreals): the boundary point is measure-zero either way.
+function isWithinPositiveDomain(vs: any): boolean {
+  if (vs === vsLib.POSREALS || vs === vsLib.NONNEGREALS || vs === vsLib.UNITINTERVAL) return true;
+  if (vs && vs.vs === 'interval') return vs.lo >= 0;
+  return false;
+}
+// Mirrors invert.rs `is_gt_neg_one_domain`: `support ⊆ (−1, ∞)`.
+function isWithinGtNegOneDomain(vs: any): boolean {
+  if (vs === vsLib.POSREALS || vs === vsLib.NONNEGREALS || vs === vsLib.UNITINTERVAL) return true;
+  if (vs && vs.vs === 'interval') return vs.lo >= -1;
+  return false;
+}
+// Mirrors invert.rs `is_unit_domain`: `support ⊆ (0, 1)`.
+function isWithinUnitDomain(vs: any): boolean {
+  if (vs === vsLib.UNITINTERVAL) return true;
+  if (vs && vs.vs === 'interval') return vs.lo >= 0 && vs.hi <= 1;
+  return false;
+}
+
+module.exports = {
+  inferTypes, inferExprInScope,
+  distributionSupport, supportArgOf, PUSHFWD_DOMAIN_GUARDS,
+  isWithinPositiveDomain, isWithinGtNegOneDomain, isWithinUnitDomain,
+};
