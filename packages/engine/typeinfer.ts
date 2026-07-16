@@ -3577,14 +3577,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // `pushfwd(fn(log(_)), Normal(0,1))` from synthesizing a bijection and
   // silently scoring a finite-but-wrong density on the non-positive half
   // of `Normal(0,1)`'s support. This pass is the separate domain check
-  // that catches that: for every `pushfwd(f, M)` whose forward `f`'s body
-  // contains a domain-restricted op ANYWHERE (mirrors invert.rs
-  // `derive_chain`'s conservative "log anywhere in the chain" guard,
-  // generalised to every domain-restricted op since this engine's
-  // `invertExpr` — unlike invert.rs's `classify`/`flatten_chain` — allows
-  // these ops at any chain position, not just bare/top-level), flag an
-  // error when `M`'s inferred support is PROVABLY outside the op's
-  // domain.
+  // that catches that: for every `pushfwd(f, M)`, collect the
+  // domain-restricted ops on `f`'s FREE-VARIABLE inversion path (the ops
+  // `invertExpr` actually traverses from the free ref to the output — see
+  // `_collectPathOps`; NOT every op in the body, so an op applied to a
+  // frozen sub-expression such as `sqrt(5)` in `add(_, sqrt(5))` does not
+  // trigger it), and flag an error when `M`'s inferred support is PROVABLY
+  // outside a path op's domain. Mirrors invert.rs `derive_chain`'s guard,
+  // which is scoped to `flatten_chain`'s output (the linear chain applied
+  // to the placeholder), not the whole body.
   //
   // Conservative — mirrors `_provablyDisjoint`'s posture, NOT
   // invert.rs's `is_positive_domain` (which refuses unless support is
@@ -3651,13 +3652,47 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return null;
   }
 
-  // Every builtin call op appearing ANYWHERE in `ir`'s sub-IR (including
-  // `ir` itself), collected into `into`.
-  function _collectCallOps(ir: any, into: Set<string>): void {
-    if (!ir || typeof ir !== 'object') return;
-    if (ir.kind === 'call' && typeof ir.op === 'string') into.add(ir.op);
-    const irWalk = require('./ir-walk.ts');
-    irWalk.forEachIRChild(ir, (c: any) => _collectCallOps(c, into));
+  // Does `ir`'s sub-IR (including `ir` itself) contain a ref to the free
+  // variable named `freeName`? (ns-agnostic, matching invertExpr's
+  // default free-ref match in bijection-registry.ts.)
+  function _irContainsName(ir: any, freeName: string, irWalk: any): boolean {
+    if (!ir || typeof ir !== 'object') return false;
+    if (ir.kind === 'ref' && ir.name === freeName) return true;
+    let found = false;
+    irWalk.forEachIRChild(ir, (c: any) => { if (!found) found = _irContainsName(c, freeName, irWalk); });
+    return found;
+  }
+
+  // The builtin ops on the FREE VARIABLE's inversion path — the ops
+  // invertExpr actually traverses from the output down to the free ref
+  // (NOT every op in the body). An op applied to a FROZEN sub-expression
+  // (off the inversion path, e.g. `sqrt(5)` inside `add(_, sqrt(5))`)
+  // never touches the variate, so it must NOT trigger the domain guard.
+  // Mirrors invert.rs's guard scoping — `derive_chain` guards `flatten_chain`'s
+  // output (the linear chain applied to the placeholder), not the whole body.
+  //
+  // Walks output→leaf following the single arg that (transitively)
+  // contains the free ref, collecting each call op's name. Bails (leaving
+  // `into` as-collected-so-far) on a non-straight-line shape — the free
+  // var in >1 arg, or a non-call/non-free-ref leaf — exactly the shapes
+  // where invertExpr itself returns null (so bijMeta is null and the
+  // pushfwd refuses via the case-3 generic path anyway; not guarding a
+  // non-invertible shape is safe).
+  function _collectPathOps(body: any, freeName: string, into: Set<string>, irWalk: any): void {
+    let cur = body;
+    while (!(cur && cur.kind === 'ref' && cur.name === freeName)) {
+      if (!cur || cur.kind !== 'call' || !Array.isArray(cur.args)) return;
+      let onPathIdx = -1;
+      for (let i = 0; i < cur.args.length; i++) {
+        if (_irContainsName(cur.args[i], freeName, irWalk)) {
+          if (onPathIdx !== -1) return;   // free var in >1 arg — not straight-line
+          onPathIdx = i;
+        }
+      }
+      if (onPathIdx === -1) return;       // free var absent below here (shouldn't happen once entered)
+      if (typeof cur.op === 'string') into.add(cur.op);
+      cur = cur.args[onPathIdx];
+    }
   }
 
   function checkPushfwdDomainContracts() {
@@ -3665,18 +3700,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const visit = (ir: any) => {
       if (!ir || typeof ir !== 'object') return;
       if (ir.kind === 'call' && ir.op === 'pushfwd' && Array.isArray(ir.args) && ir.args.length === 2) {
-        _checkOnePushfwdDomain(ir);
+        _checkOnePushfwdDomain(ir, irWalk);
       }
       irWalk.forEachIRChild(ir, visit);
     };
     for (const [, b] of loweredModule.bindings) visit(b.rhs);
   }
 
-  function _checkOnePushfwdDomain(ir: any) {
+  function _checkOnePushfwdDomain(ir: any, irWalk: any) {
     const reif = _resolveForwardReif(ir.args[0]);
     if (!reif || !Array.isArray(reif.params) || reif.params.length !== 1 || !reif.body) return;
     const ops = new Set<string>();
-    _collectCallOps(reif.body, ops);
+    _collectPathOps(reif.body, reif.params[0], ops, irWalk);
     const mIR = ir.args[1];
     let support: any = null;   // lazily computed — only needed if a guarded op is present
     for (const op of ops) {

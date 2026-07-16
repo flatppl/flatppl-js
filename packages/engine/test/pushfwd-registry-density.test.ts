@@ -238,3 +238,30 @@ __score__ = logdensityof(m, 1.5)
   const errs = proc.diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(errs, [], `expected no error diagnostics, got: ${JSON.stringify(errs)}`);
 });
+
+// The domain guard must scope to the FREE VARIABLE's inversion path, NOT
+// the whole forward-function body. A domain-restricted op applied to a
+// FROZEN sub-expression (here sqrt(5), off the inversion path — a constant
+// shift by √5) must NOT trigger a refusal: `add(_, sqrt(5))` is a plain
+// affine shift, invertible over all of ℝ. Regression for the false-refusal
+// bug in the first (c) cut, which collected op names from the entire body.
+test('§06 domain guard: sqrt off the inversion path does NOT refuse (add(_, sqrt(5)))', async () => {
+  const src = `
+flatppl_compat = "0.1"
+m = pushfwd(fn(add(_, sqrt(5))), Normal(0, 1))
+__score__ = logdensityof(m, 3.0)
+`;
+  const proc = processSource(src);
+  const errs = proc.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.deepEqual(errs, [], `frozen sqrt(5) must not trigger the domain guard; got: ${JSON.stringify(errs)}`);
+  // And it scores the SAME density as the sqrt-free affine baseline
+  // (constant shift by √5 ≈ 2.2360679774997896), matching the scipy oracle.
+  const v = await score(src);
+  assert.ok(Math.abs(v - (-1.2107346007053037)) < 1e-9, `add(_, sqrt(5))@3.0 got ${v}`);
+  const baseline = await score(`
+flatppl_compat = "0.1"
+m = pushfwd(fn(add(_, 2.2360679774997896)), Normal(0, 1))
+__score__ = logdensityof(m, 3.0)
+`);
+  assert.ok(Math.abs(v - baseline) < 1e-9, `frozen-sqrt density ${v} must match affine baseline ${baseline}`);
+});
