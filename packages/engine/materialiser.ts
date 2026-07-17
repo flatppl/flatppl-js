@@ -463,18 +463,27 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     return inflatedCtx.getMeasure(d.from).then((innerM: any) => {
       // G1 (spec §03/§06): a record-valued inner measure (a joint/record
       // materialises to `.fields`, not `.samples`) — the k iid record draws
-      // per atom form a TABLE (an array of records is a table). Assemble the
-      // per-field ensembles (each atom-major length N·k) into a `__table__`
-      // value column-wise, the shape the density path's walkIid table branch
-      // scores — so sampling and density stay in agreement (scar zone). At
-      // N=1 the columns collapse to a clean k-row table (leading atom axis of
-      // size 1 dropped); at N>1 columns carry the atom-major [N, k] shape.
+      // form a TABLE (an array of records is a table). Assemble the per-field
+      // ensembles into a `__table__` value column-wise, the shape the density
+      // path's walkIid table branch scores — so sampling and density stay in
+      // agreement (scar zone).
       if (innerM.fields) {
-        const rank1 = d.dims.length === 1;
-        if (!rank1) {
+        if (d.dims.length !== 1) {
           return Promise.reject(new Error(
             'iid: multi-axis iid over a record measure is out of scope (G1); '
             + 'a table has one row axis (spec §03)'));
+        }
+        if (N !== 1) {
+          // An N-atom ENSEMBLE of record-iid draws is N separate k-row tables;
+          // no single {__table__, columns, nrows} value represents it without
+          // lying about nrows (columns would hold N·k entries while a table's
+          // nrows is k), and tableRow/table-indexing would then mis-extract.
+          // Refuse rather than emit an ambiguous table (refuse-don't-mislower;
+          // measure-algebra-audit scar zone). N=1 — a single sampled dataset,
+          // the real use — is produced below.
+          return Promise.reject(new Error(
+            'iid: sampling iid over a record measure at >1 atoms (an ensemble '
+            + 'of tables) is not supported; sample a single dataset (1 atom)'));
         }
         const columns: Record<string, any> = {};
         for (const fk of Object.keys(innerM.fields)) {
@@ -484,14 +493,18 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
             return Promise.reject(new Error(
               'iid: record field "' + fk + '" produced no samples'));
           }
-          columns[fk] = (N === 1)
-            ? { shape: [k], data: fdata }
-            : { shape: [N, k], data: fdata, outerRank: 1 };
+          // A field's per-row value may itself be a vector (nested iid,
+          // kernel-broadcast, MvNormal): its inner element dims follow the k
+          // row axis. Read them from the field Value's trailing shape (its
+          // leading axis is the k count at N=1); a scalar field has none.
+          const innerElemShape = (fv.value && Array.isArray(fv.value.shape)
+            && fv.value.shape.length > 1) ? fv.value.shape.slice(1) : [];
+          columns[fk] = { shape: [k].concat(innerElemShape), data: fdata };
         }
         const table: any = { __table__: true, columns, nrows: k };
         return {
           shape: 'table', __table__: true, columns, nrows: k,
-          value: table, logTotalmass: 0, n_eff: N,
+          value: table, logTotalmass: 0, n_eff: 1,
         };
       }
       const samples = innerM.samples

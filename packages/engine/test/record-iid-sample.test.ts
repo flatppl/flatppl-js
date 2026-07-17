@@ -62,3 +62,38 @@ __score__ = logdensityof(d6, data)
   assert.ok(Math.abs(got - oracle) < 1e-9,
     `density of sampled table ${got} != hand closed form ${oracle}`);
 });
+
+test('#231/G1: a VECTOR-valued record field samples with the right column shape + round-trips', async () => {
+  // A field whose per-row value is itself a vector (here v ~ iid(Normal,2)) must
+  // carry its inner element dims in the sampled column ([k, 2]) — a scalar-shaped
+  // [k] column silently corrupts it (the density path reads v as a 2-vector).
+  const s = await sampleTable(`
+g = joint(v = iid(Normal(mu = 0.0, sigma = 1.0), 2), y = Normal(mu = 5.0, sigma = 1.0))
+s = iid(g, 4)
+`, 's', 1);
+  assert.deepEqual(s.columns.v.shape, [4, 2]);
+  assert.equal(s.columns.v.data.length, 8);
+  assert.deepEqual(s.columns.y.shape, [4]);
+  // Round-trip: score those SAME draws via the density path == hand closed form.
+  const v: number[] = Array.from(s.columns.v.data), ys: number[] = Array.from(s.columns.y.data);
+  const oracle = v.reduce((a: number, x: number) => a + normLogpdf(x, 0, 1), 0)
+    + ys.reduce((a: number, x: number) => a + normLogpdf(x, 5, 1), 0);
+  const rows: string[] = [];
+  for (let i = 0; i < 4; i++) rows.push(`[${lit(v[2 * i])}, ${lit(v[2 * i + 1])}]`);
+  const got = await score(`
+g = joint(v = iid(Normal(mu = 0.0, sigma = 1.0), 2), y = Normal(mu = 5.0, sigma = 1.0))
+data = table(v = [${rows.join(', ')}], y = [${ys.map(lit).join(', ')}])
+d4 = iid(g, 4)
+__score__ = logdensityof(d4, data)
+`, '__score__');
+  assert.ok(Math.abs(got - oracle) < 1e-9, `vector-field density ${got} != ${oracle}`);
+});
+
+test('#231/G1: sampling record-iid at >1 atoms (ensemble of tables) refuses loudly', async () => {
+  // An N-atom ensemble of k-row tables has no single {__table__,columns,nrows}
+  // representation; refuse rather than emit a table lying about its row count.
+  await assert.rejects(async () => sampleTable(`
+g = joint(x = Normal(mu = 0.0, sigma = 1.0), y = Normal(mu = 5.0, sigma = 1.0))
+s = iid(g, 6)
+`, 's', 4), /ensemble of tables|>1 atoms/);
+});
