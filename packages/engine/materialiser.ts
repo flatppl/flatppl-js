@@ -920,7 +920,44 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     const combinedSamples = new Float64Array(totalN);
     const combinedLogWeights = new Float64Array(totalN);
     let offset = 0;
-    const lifted = parents.map((p: any) => empirical.materialiseUniform(p));
+    // A parent carrying NON-UNIFORM per-atom importance weights (e.g.
+    // `normalize(weighted(fn, Lebesgue))`: uniform sample positions whose
+    // density lives in the logWeights) must be SIR-resampled to equal-weight
+    // atoms FIRST, so its density is baked into the sample POSITIONS before
+    // the block-aware mixture selection below. Without this, the K=1 per-index
+    // selection picks between two importance-weighted parents at their
+    // (uniform) positions and never concentrates → a population mixture of
+    // density-by-formula components plots flat (Buffy #307). An already
+    // equal-weight parent (its positions already represent its law, e.g. a
+    // per-atom `Normal(mu_i, …)` draw) is left UNTOUCHED, preserving the
+    // per-atom correspondence the block-aware path depends on
+    // (iid-repeat-axis "superpose base case"). The resampled parent keeps its
+    // own total mass (carried into the equal per-atom weight), so the mixture
+    // proportions and downstream normalize Z are unchanged.
+    // Repeat block: k inner draws per atom (iid(superpose, k)); else 1.
+    // At K>1 the block-aware path below preserves each atom's per-component
+    // correspondence (a per-atom mixing weight psi_i tied to the [N,k] block),
+    // so importance-weighted parents must NOT be globally resampled there — it
+    // would decorrelate the block. The density-baking resample is a K=1 concern.
+    const K = (typeof ctx.repeatBlock === 'number' && ctx.repeatBlock > 1)
+      ? ctx.repeatBlock : 1;
+    const liftPrng = makeMainThreadPrng(nameSeed(name + ':superpose-lift', ctx.rootKey));
+    const lifted = parents.map((p: any) => {
+      const u = empirical.materialiseUniform(p);
+      const lw = u.logWeights;
+      let mn = Infinity, mx = -Infinity;
+      for (let i = 0; i < lw.length; i++) { if (lw[i] < mn) mn = lw[i]; if (lw[i] > mx) mx = lw[i]; }
+      // Equal-weight parent (positions already represent its law), or a repeat
+      // block (K>1, per-atom correspondence handled below) → keep as-is.
+      if (mx - mn < 1e-9 || K !== 1 || u.samples.length !== sc) return u;
+      const idx = empirical.systematicResample(lw, sc, liftPrng);
+      const rs = new Float64Array(sc);
+      for (let i = 0; i < sc; i++) rs[i] = u.samples[idx[i]];
+      const tm = empirical.logSumExp(lw);            // this parent's total mass
+      const ew = new Float64Array(sc);
+      ew.fill(tm - Math.log(sc));
+      return { samples: rs, logWeights: ew };
+    });
     for (const l of lifted) {
       combinedSamples.set(l.samples, offset);
       combinedLogWeights.set(l.logWeights, offset);
@@ -939,9 +976,7 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     // differs from a global pool-resample by which equally-valid atoms
     // are kept for ordinary population mixtures. Falls back to a global
     // resample only when the parents aren't all the output length (e.g.
-    // pooling populations of different sizes).
-    const K = (typeof ctx.repeatBlock === 'number' && ctx.repeatBlock > 1)
-      ? ctx.repeatBlock : 1;
+    // pooling populations of different sizes). K computed above.
     const blockAware = sc % K === 0
       && lifted.every((l: any) => l.samples.length === sc);
     if (blockAware) {
