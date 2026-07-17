@@ -1165,6 +1165,31 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
     }
   }
   if (total < 0) throw new Error('density: iid size negative: ' + total);
+  // G1 (spec §06 iid + §03 tables): a record-valued M observed as a TABLE —
+  // one row-record per copy. Reuse value.ts tableRow (the single source of
+  // truth for row extraction; recurses into table-valued columns) and feed
+  // each row through the normal dispatch so M's record/joint walker consumes
+  // it. Do NOT resolve the row through refArrays/getMeasure — the per-row
+  // record IS the observed value (measure-algebra-audit scar zone). There is
+  // no downstream consumer of "the rest of a table", so a row count that
+  // doesn't match `total` is fail-loud (trailing rows would be silently
+  // unscored data).
+  if (value && value.__table__ === true) {
+    const rows = value.nrows;
+    if (rows !== total) {
+      throw new Error('density: iid over a record variate wants ' + total
+        + ' rows, table has ' + rows);
+    }
+    for (let i = 0; i < total; i++) {
+      const row = valueLib.tableRow(value, i);
+      const innerRest = walkAcc(args[0], row, refArrays, N, opts, acc, baseEnv, overlay);
+      if (!isEmptyRest(innerRest)) {
+        throw new Error('density: iid row ' + i
+          + ' did not fully consume its record');
+      }
+    }
+    return null;
+  }
   // Two value shapes reach an iid plate (spec §06 `iid(M, size)` =
   // M^⊗N over arrays of M's footprint):
   //

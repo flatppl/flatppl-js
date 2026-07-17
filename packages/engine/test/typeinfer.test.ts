@@ -764,6 +764,22 @@ test('iid: with literal n produces a measure over a concrete-shape array', () =>
   assert.ok(T.equal(t.domain.elem, T.REAL));
 });
 
+test('iid/G1: over a record measure produces a table variate (spec §03)', () => {
+  // An array of records IS a table (spec §03), so iid(joint(x,y), 2) should
+  // type its variate as table(columns={x,y}, nrows=2) — NOT array-of-record —
+  // so it unifies with table-typed data bindings.
+  const { bindings, errors } = infer(`
+    gxy = joint(x = Normal(mu = 0, sigma = 1), y = Normal(mu = 0, sigma = 1))
+    d2 = iid(gxy, 2)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'd2');
+  assert.equal(t.kind, 'measure');
+  assert.equal(t.domain.kind, 'table', `domain should be a table; got ${JSON.stringify(t.domain)}`);
+  assert.equal(t.domain.nrows, 2);
+  assert.deepEqual(Object.keys(t.domain.columns).sort(), ['x', 'y']);
+});
+
 test('iid: integer-typed binding ref resolves via const-eval', () => {
   // Before the engine-concepts §17.1 const-eval-in-typeinfer pass
   // landed, this fell back to %dynamic. With const-eval, the shape

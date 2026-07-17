@@ -1042,6 +1042,28 @@ function _consumeIid(ir: any, t: any): StaticConsumeResult {
   if (sizeIR && sizeIR.kind === 'lit' && Number.isInteger(sizeIR.value)) {
     n = sizeIR.value;
   }
+  // G1 (spec §03/§06): a record-valued M's iid variate is a TABLE — an array
+  // of records, one row-record per copy (spec §03: an array of records is a
+  // table). Verify the row count against n and consume ONE row-record type
+  // against M (all rows share the type), mirroring _consumeJoint's field
+  // recursion. The row record comes from T.rowRecordType (table columns →
+  // record fields, recursing into table-valued columns).
+  if (t && t.kind === 'table') {
+    const rows = t.nrows;
+    if (n != null && typeof rows === 'number' && rows !== n) {
+      return { logpType: T.REAL, rest: t,
+        error: 'iid expects ' + n + ' rows, got table with ' + rows + ' rows' };
+    }
+    const rowRecord = T.rowRecordType(t);
+    const sub = staticConsume(M, rowRecord);
+    if (sub.error) return sub;
+    if (sub.rest != null && !sub.deferred) {
+      return { logpType: T.REAL, rest: t,
+        error: 'iid row-record left a non-empty rest (M does not consume a full table row)' };
+    }
+    return { logpType: T.REAL, rest: null,
+      deferred: sub.deferred || n == null || typeof rows !== 'number' };
+  }
   // The variate type must be array(rank>=1, [n, ...], elem) where
   // elem matches M's variate type. v0.1: defer the full elem check;
   // just verify the leading axis matches.
