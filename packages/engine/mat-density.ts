@@ -663,6 +663,65 @@ function weightedBaseLogMass(
   return Math.log(Z) + Math.log(dx);
 }
 
+// #322: for a `weighted(w, Lebesgue(interval(a,b)))` base whose weight `w` is
+// θ-INDEPENDENT — it references only the variate, module-level FIXED constants,
+// and function bindings (e.g. `poly.chebyshev`) — the normalizer Z = ∫_a^b w dx
+// is a single constant computable by the deterministic quadrature above.
+// Return the {name: value} env of the weight's fixed constant refs, or null if
+// the weight references any LATENT / fed param (Z is then per-θ and must be
+// resolved by the Monte-Carlo materialise path instead). Mirrors the
+// fixed-vs-latent ref split matLogdensityof's batchable check uses.
+function weightedFixedWeightEnv(
+  weightFn: { paramName: string; body: any }, ctx: any,
+): Record<string, any> | null {
+  const env: Record<string, any> = {};
+  for (const n of orchestrator.collectSelfRefs(weightFn.body)) {
+    const b = ctx && ctx.bindings && ctx.bindings.get(n);
+    if (isFunctionLikeBinding(b)) continue;                      // a called fn / module member
+    if (ctx && ctx.fixedValues && ctx.fixedValues.has(n)) {      // a resolved constant
+      env[n] = ctx.fixedValues.get(n); continue;
+    }
+    return null;                                                 // latent / fed / unknown → per-θ, use MC
+  }
+  return env;
+}
+
+// Recognise `weighted(w, <ref-over-interval(a,b)>)` (no truncate) and, when `w`
+// is θ-independent, resolve its normalizer deterministically by quadrature.
+// The base reference is a bounded `Lebesgue(interval)` — which the lowering
+// rewrites to `Uniform(interval)` (density 1/(b−a), the density walker applies
+// it in the numerator), so the correct −log Z for the normalize to cancel is
+// `log ∫_a^b w dx − log(b−a)`. `Lebesgue(reals)` / an unbounded or non-literal
+// support / a θ-dependent weight all return null (caller → Monte-Carlo).
+function weightedLebesgueQuadLogZ(node: any, ctx: any): number | null {
+  const inner = node.args && node.args[0];
+  if (!inner || inner.kind !== 'call' || inner.op !== 'weighted'
+      || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
+  const fn = inner.args[0];
+  if (!fn || fn.kind !== 'call' || fn.op !== 'functionof'
+      || !Array.isArray(fn.params) || fn.params.length !== 1 || !fn.body) return null;
+  // The base reference is "Lebesgue over [a,b]" (density ≡ 1), which the lowering
+  // expresses as one of: `Lebesgue(interval)`, `Uniform(interval)` (only when
+  // b−a = 1, where the density is already 1), or — for a non-unit interval —
+  // `logweighted(log(b−a), Uniform(interval))` (the #307 Lebesgue-restoring
+  // shift that scales Uniform's 1/(b−a) back to 1). Unwrap that shift so all
+  // three forms are recognised; the effective base density is 1 in every case,
+  // so Z = ∫_a^b w dx with NO extra 1/(b−a) factor.
+  let ref = inner.args[1];
+  if (ref && ref.kind === 'call' && ref.op === 'logweighted'
+      && Array.isArray(ref.args) && ref.args.length === 2) {
+    ref = ref.args[1];
+  }
+  if (!ref || ref.kind !== 'call' || (ref.op !== 'Lebesgue' && ref.op !== 'Uniform')) return null;
+  const supp = (ref.kwargs && ref.kwargs.support) || (Array.isArray(ref.args) ? ref.args[0] : null);
+  const bounds = truncateSetBounds(supp);
+  if (!bounds) return null;    // unbounded (Lebesgue(reals)) / non-literal interval
+  const weightFn = { paramName: fn.params[0], body: fn.body };
+  const env = weightedFixedWeightEnv(weightFn, ctx);
+  if (env == null) return null;   // θ-dependent weight → MC materialise
+  return weightedBaseLogMass(weightFn, bounds, env, ctx);   // log ∫_a^b w dx, base density ≡ 1
+}
+
 // =====================================================================
 // Shared-variate product_dist normalizer (§12)
 // =====================================================================
@@ -962,6 +1021,16 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
       node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [massExpr] }] }, node.args[0]];
       delete node.massFrom;
       continue;   // do NOT add this node to the materialise list
+    }
+    // #322: normalize(weighted(w, Lebesgue(interval))) with a θ-independent
+    // weight → deterministic quadrature Z (∫ w over the interval), instead of
+    // the seeded Monte-Carlo materialise below.
+    const quadLogZ = weightedLebesgueQuadLogZ(node, ctx);
+    if (quadLogZ != null) {
+      node.op = 'logweighted';
+      node.args = [{ kind: 'lit', value: -quadLogZ }, node.args[0]];
+      delete node.massFrom;
+      continue;
     }
     needMaterialise.push(node);
   }
