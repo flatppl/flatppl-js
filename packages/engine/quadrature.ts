@@ -50,14 +50,32 @@ export function adaptiveCubature(
   const maxEvals = (opts && opts.maxEvals) ?? 200000;
   const perCell = Math.pow(3, dims) + Math.pow(2, dims);
 
-  const lo0 = new Array(dims).fill(0);
-  const hi0 = new Array(dims).fill(1);
-  const first = cellEstimate(integrand, lo0, hi0);
+  // Seed with a minimum uniform subdivision (INIT_DIV cells per axis) rather
+  // than a single cell: a feature narrower than the whole box (e.g. a sharp
+  // interior peak) could be stepped over by one coarse cell's 2-/3-point rule,
+  // making the embedded error estimate falsely tiny and terminating the loop at
+  // a wrong Z with a wrong (small) `err` — the classic global-adaptive blind
+  // spot, and a refuse-don't-mislower hazard. The seed grid guarantees the
+  // integrand is sampled at least at this resolution before the convergence
+  // test is trusted; adaptive refinement then concentrates where it matters.
+  // Seed cost is bounded for dims ≤ 3 (8/64/512 cells).
+  const INIT_DIV = 8;
+  const step = 1 / INIT_DIV;
   // Simple array as a max-by-E "heap": we scan for the worst cell each step.
   // Cell counts stay small (hundreds–low thousands) for dims ≤ 3, so a linear
   // worst-cell scan is not the bottleneck; the integrand evals are.
-  const cells: Cell[] = [{ lo: lo0, hi: hi0, I: first.I, E: first.E }];
-  let totI = first.I, totE = first.E, evals = perCell;
+  const cells: Cell[] = [];
+  let totI = 0, totE = 0, evals = 0;
+  const idx = new Array(dims).fill(0);
+  const seedCount = Math.pow(INIT_DIV, dims);
+  for (let c = 0; c < seedCount; c++) {
+    const lo = idx.map((k) => k * step);
+    const hi = idx.map((k) => (k + 1) * step);
+    const est = cellEstimate(integrand, lo, hi);
+    cells.push({ lo, hi, I: est.I, E: est.E });
+    totI += est.I; totE += est.E; evals += perCell;
+    for (let d = 0; d < dims; d++) { if (++idx[d] < INIT_DIV) break; idx[d] = 0; }
+  }
 
   while (totE > tol * Math.abs(totI) && evals < maxEvals) {
     // worst cell by E
