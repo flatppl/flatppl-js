@@ -520,28 +520,57 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
     const inner = node.args[0];
     if (inner && inner.kind === 'call' && inner.op === 'truncate'
         && Array.isArray(inner.args) && inner.args.length === 2) {
-      const bounds = truncateSetBounds(inner.args[1]);
-      if (bounds) {
-        // A generic_dist (§12) lowers to
-        // `normalize(truncate(weighted(w, Lebesgue(reals)), S))`: its base
-        // is an unnormalized density `w(x)` over the bounded set S, NOT a
-        // scalar reference measure. Recognise the weighted base first and
-        // quadrature its support-restricted normalizer Z = ∫_S w(x) dx;
-        // a recognised scalar reference measure (Normal closed-form / its
-        // narrow midpoint path) falls through to truncateLogMass.
+      // parseTruncationBox recognises `interval(...)` (1-D) and
+      // `cartprod(interval, ...)` (N-D, ≤ TRUNCATE_DIM_CAP axes) — it throws
+      // above the cap, and returns null for any other set shape (a dynamic /
+      // named set defers to the by-name materialiser, unchanged).
+      const axes = parseTruncationBox(inner.args[1]);
+      if (axes) {
         const weightFn = weightedBaseWeightFn(inner.args[0]);
-        const logZ = weightFn != null
-          ? weightedBaseLogMass(weightFn, bounds, theta, ctx)
-          : (() => {
-              const base = asScalarFactor(inner.args[0], theta);
-              if (!base) {
-                throw new Error('density: normalize(truncate(M, S)) — base '
-                  + 'measure M is not a recognised scalar reference measure '
-                  + 'nor a weighted(<weight-fn>, Lebesgue) density, cannot '
-                  + 'resolve its support-restricted normalizer');
-              }
-              return truncateLogMass(base, bounds, ctx);
-            })();
+        let logZ: number;
+        if (axes.length === 1 && weightFn == null) {
+          // 1-D scalar reference measure (Normal→CDF closed form / its
+          // narrow composite-midpoint quadrature): unchanged fast path.
+          const base = asScalarFactor(inner.args[0], theta);
+          if (!base) {
+            throw new Error('density: normalize(truncate(M, S)) — base measure M '
+              + 'is not a recognised scalar reference measure nor a '
+              + 'weighted(<weight-fn>, Lebesgue) density, cannot resolve its '
+              + 'support-restricted normalizer');
+          }
+          logZ = truncateLogMass(base, [axes[0].lo, axes[0].hi], ctx);
+        } else if (weightFn != null) {
+          // A generic_dist (§12) lowers to
+          // `normalize(truncate(weighted(w, Lebesgue), S))`: its base is an
+          // unnormalized density `w(x)` over the (possibly N-D, ≤3-axis) set
+          // S, NOT a scalar reference measure. Z = ∫_S w(x) dx via adaptive
+          // cubature over the unit box (makeIntegrandND applies the
+          // per-axis change-of-variables + Jacobian for unbounded axes).
+          const { adaptiveCubature } = require('./quadrature.ts');
+          const integ = makeIntegrandND(weightFn.body, weightFn.paramNames, axes, theta, ctx);
+          const res = adaptiveCubature(integ, axes.length);
+          if (!(res.Z > 0)) {
+            throw new Error('density: normalize(truncate(weighted(w, Lebesgue), S)) — '
+              + 'normalizer Z = ∫_S w dx is 0 (an everywhere-zero weight over S has no '
+              + 'normalized density per spec §06)');
+          }
+          const relErr = res.err / Math.abs(res.Z);
+          if (relErr > 1e-3) {
+            throw new Error('density: normalize(truncate(weighted(w, Lebesgue), S)) — '
+              + 'adaptive quadrature did not converge (rel-err ' + relErr.toExponential(2)
+              + ' after ' + res.evals + ' evals); the integrand may be non-integrable '
+              + 'or too singular for the ' + axes.length + '-D quadrature');
+          } else if (relErr > 1e-6) {
+            // eslint-disable-next-line no-console
+            console.warn('normalize(truncate(weighted(w, Lebesgue), S)): quadrature '
+              + 'converged to rel-err ' + relErr.toExponential(2) + ' (' + res.evals + ' evals)');
+          }
+          logZ = Math.log(res.Z);
+        } else {
+          throw new Error('density: normalize(truncate(M, cartprod)) — a '
+            + 'multi-dimensional truncation requires a weighted(w, Lebesgue) base '
+            + '(scalar reference measures are 1-D only)');
+        }
         node.op = 'logweighted';
         node.args = [{ kind: 'lit', value: -logZ }, inner];
         resolveTruncateNormalizers(inner, theta, ctx, seen);
@@ -555,13 +584,32 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
   }
 }
 
-// Resolve an `interval(lo, hi)` set IR (literal bounds) to [lo, hi]; null for
-// any other set shape (dynamic / named sets defer to the by-name materialiser).
+// Resolve a bound expression to a plain number: a `lit` literal, or a spec
+// §03 numeric `const` (`pi`/`e`/`inf`/`-inf`) — `interval(0.0, inf)` lowers
+// its `inf` bound to `{kind:'const',name:'inf'}`, NOT a `lit`, so a bound
+// resolver that only reads `.value` off a `lit` node silently treats every
+// semi-/doubly-infinite interval as "not a literal bound" (defers instead
+// of recognising the unbounded axis). null for any other expression shape
+// (a bound that needs θ or module context defers to the by-name path).
+function numericBoundValue(node: any): number | null {
+  if (!node) return null;
+  if (node.kind === 'lit') return +node.value;
+  if (node.kind === 'const') {
+    const samplerLib = require('./sampler.ts');
+    const v = samplerLib._internal.resolveConst(node.name);
+    return typeof v === 'number' ? v : null;
+  }
+  return null;
+}
+
+// Resolve an `interval(lo, hi)` set IR (literal/const bounds) to [lo, hi];
+// null for any other set shape (dynamic / named sets defer to the by-name
+// materialiser).
 function truncateSetBounds(setIR: any): [number, number] | null {
   if (!setIR || setIR.kind !== 'call' || setIR.op !== 'interval'
       || !Array.isArray(setIR.args) || setIR.args.length !== 2) return null;
-  const lo = setIR.args[0], hi = setIR.args[1];
-  if (lo && lo.kind === 'lit' && hi && hi.kind === 'lit') return [+lo.value, +hi.value];
+  const lo = numericBoundValue(setIR.args[0]), hi = numericBoundValue(setIR.args[1]);
+  if (lo != null && hi != null) return [lo, hi];
   return null;
 }
 
@@ -624,6 +672,19 @@ function truncateLogMass(base: any, bounds: [number, number], ctx: any): number 
         + 'truncation set is 0 (Z = 0 is undefined per spec §06)');
     }
     return Math.log(Z);
+  }
+  // The fixed-width midpoint fallback has no change-of-variables, so an
+  // unbounded interval gives dx = inf and a silent NaN. Refuse-don't-mislower:
+  // this scalar-reference path has no CDF for a non-Normal kernel over an
+  // unbounded set (the Normal branch above handles inf via its CDF). A
+  // weighted(w, Lebesgue) base takes the N-D adaptive-cubature path instead,
+  // which maps unbounded axes with a Jacobian.
+  if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
+    throw new Error('density: normalize(truncate(' + base.kernel + ', S)) — '
+      + 'unbounded truncation of this reference measure has no deterministic '
+      + 'quadrature (only a Normal base has a closed-form CDF here, or a '
+      + 'weighted(w, Lebesgue) base for the adaptive path); refusing rather '
+      + 'than emitting NaN');
   }
   const dx = (hi - lo) / QUAD_POINTS;
   const logIntegrand = new Float64Array(QUAD_POINTS);
@@ -1361,4 +1422,5 @@ module.exports = {
   parseTruncationBox,
   makeIntegrandND,
   weightedBaseWeightFn,
+  resolveTruncateNormalizers,
 };

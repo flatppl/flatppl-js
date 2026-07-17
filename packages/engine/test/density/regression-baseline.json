@@ -268,16 +268,16 @@
     },
     {
       "file": "chebychev-iid.flatppl",
-      "oracle": "scipy/pyROOT analytic, T_2, verified engine==ROOT to 2e-9, 2026-06-25: pure 1+T_2 model, RooChebychev t-rescaling on [0,10]; t=(2x-10)/10; w(x)=1+T_2(t)=2t^2; Z=20/3; pdf(1)=0.192, pdf(3)=0.048, pdf(7)=0.048; analytic logL=log(0.192)+log(0.048)+log(0.048)=-7.7233684431028475; engine midpoint-quadrature error vs analytic ~4.5e-8",
+      "oracle": "scipy/pyROOT analytic, T_2, verified engine==ROOT to 2e-9, 2026-06-25: pure 1+T_2 model, RooChebychev t-rescaling on [0,10]; t=(2x-10)/10; w(x)=1+T_2(t)=2t^2; Z=20/3; pdf(1)=0.192, pdf(3)=0.048, pdf(7)=0.048; analytic logL=log(0.192)+log(0.048)+log(0.048)=-7.7233684431028475",
       "density": [
         {
           "name": "L@alpha=0.5",
           "score": "__score__ = logdensityof(L, 0.5)",
-          "oracle_note": "T_2 non-degenerate: analytic oracle (scipy/pyROOT) = -7.7233684431028475; engine value pinned below differs by ~4.5e-8 (midpoint-quadrature error on T_2 curvature); alpha=0.5 is a free param but cb does not depend on alpha"
+          "oracle_note": "T_2 non-degenerate: analytic oracle (scipy/pyROOT) = -7.7233684431028475; engine G2 (N-D adaptive cubature, replacing the fixed 8192-pt midpoint rule for normalize(truncate(weighted(w,Lebesgue),S))) now matches the analytic value to full float64 precision (was pinned to -7.723368398399364, ~4.5e-8 off, under the superseded midpoint quadrature); alpha=0.5 is a free param but cb does not depend on alpha"
         }
       ],
       "samplemean": [],
-      "expect": { "density:L@alpha=0.5": -7.723368398399364 }
+      "expect": { "density:L@alpha=0.5": -7.7233684431028475 }
     }
   ]
 }
