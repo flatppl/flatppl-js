@@ -565,6 +565,47 @@ function truncateSetBounds(setIR: any): [number, number] | null {
   return null;
 }
 
+const TRUNCATE_DIM_CAP = 3;
+
+type TruncAxis = { lo: number; hi: number; kind: 'finite' | 'semi-lo' | 'semi-hi' | 'infinite' };
+
+// One interval(lo,hi) set IR → an axis, classifying finiteness; null if not a
+// literal-bound interval. Reuses the literal check truncateSetBounds uses.
+function axisFromInterval(setIR: any): TruncAxis | null {
+  const b = truncateSetBounds(setIR); // [lo,hi] for interval(lit,lit), else null
+  if (!b) return null;
+  const [lo, hi] = b;
+  const loF = Number.isFinite(lo), hiF = Number.isFinite(hi);
+  const kind = loF && hiF ? 'finite' : loF ? 'semi-lo' : hiF ? 'semi-hi' : 'infinite';
+  return { lo, hi, kind };
+}
+
+// Set IR → per-axis truncation box. Recognizes interval(...) (1-D) and
+// cartprod(interval, ...) (N-D). null for any other shape (caller defers).
+// Throws above the dimension cap.
+function parseTruncationBox(setIR: any): TruncAxis[] | null {
+  if (!setIR || setIR.kind !== 'call') return null;
+  if (setIR.op === 'interval') {
+    const a = axisFromInterval(setIR);
+    return a ? [a] : null;
+  }
+  if (setIR.op === 'cartprod' && Array.isArray(setIR.args)) {
+    if (setIR.args.length > TRUNCATE_DIM_CAP) {
+      throw new Error('density: normalize(truncate(M, cartprod)) — region '
+        + 'dimension ' + setIR.args.length + ' exceeds the quadrature cap of '
+        + TRUNCATE_DIM_CAP + '; higher-dimensional truncation is not supported');
+    }
+    const axes: TruncAxis[] = [];
+    for (const f of setIR.args) {
+      const a = axisFromInterval(f);
+      if (!a) return null; // a non-interval factor → defer whole set
+      axes.push(a);
+    }
+    return axes;
+  }
+  return null;
+}
+
 // log Z = log ∫_lo^hi f_base(x) dx for a scalar reference-measure base resolved
 // at θ. Closed-form via the CDF for a Normal base (exact); composite-midpoint
 // quadrature of the base log-density otherwise (matching numericProductLogZ).
@@ -1268,4 +1309,5 @@ module.exports = {
   matPosteriorDensity,
   matBroadcastLogdensity,
   matTotalmass,
+  parseTruncationBox,
 };
