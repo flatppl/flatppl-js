@@ -1404,6 +1404,24 @@ function _resolveAliasRoot(name: string, derivations: any): string {
   return n;
 }
 
+// A user-facing name for an alias root, for error messages only (#311's
+// gap-refuse diagnostic). `~`-draws commonly lower to an anonymous sample
+// binding (`__anon0`) with the user's own name as a pure alias TO it — so
+// the alias root a stochastic-ancestry walk lands on is often the
+// internal name, not the one the user wrote. Reverse-search `derivations`
+// for a non-synthetic name that alias-resolves to `root`; falls back to
+// `root` itself when none exists (a genuinely anonymous intermediate).
+function _displayNameForRoot(root: string, derivations: any): string {
+  if (!root.startsWith('__anon') && !root.startsWith('%')) return root;
+  if (!derivations) return root;
+  for (const nm of Object.keys(derivations)) {
+    if (nm.startsWith('__anon') || nm.startsWith('%')) continue;
+    const d = derivations[nm];
+    if (d && d.kind === 'alias' && _resolveAliasRoot(nm, derivations) === root) return nm;
+  }
+  return root;
+}
+
 // Does `ir` contain a self-ref named `name` anywhere in its arg tree?
 // (kwargs excluded — mirrors invertExpr's own straight-line contract:
 // a field IR reaching this point already round-tripped through
@@ -1419,13 +1437,14 @@ function _irContainsFieldRef(ir: any, name: string): boolean {
 
 // The transitive set of stochastic bindings a stochastic ancestor's LAW
 // depends on (its alias root included). The identity for each collected
-// binding is its alias root (so `a` and a pure alias of it dedupe). Used by
-// the independence check below: two record-field ancestors are INDEPENDENT
-// only when their stochastic-ancestry sets are disjoint — a shared entry
-// means either one ancestor's law references the other (direct hierarchy,
-// e.g. `b ~ Normal(a, 1)`) or both descend from a common stochastic
-// hyperparameter (`a ~ Normal(h,1); b ~ Normal(h,1)`), and in EITHER case
-// the base joint is NOT the independent product this recognition assembles.
+// binding is its alias root (so `a` and a pure alias of it dedupe). Used
+// below (#311) to build the per-field ancestor dependency graph: a shared
+// entry between two fields' ancestry sets means either one ancestor's law
+// references the other (direct hierarchy, e.g. `b ~ Normal(a, 1)` — now
+// THREADED, not refused) or both transitively touch a stochastic name that
+// is nobody's field ancestor (a common un-exposed hyperparameter, or a
+// hidden intermediate in a longer chain — still REFUSED, threading needs
+// an OBSERVED inverse image which an un-exposed latent doesn't have).
 // Walks laws by expanding each stochastic binding's measure IR + collecting
 // its self-refs; recurses only through stochastic bindings (a shared FIXED
 // value does not create dependence, so it is never followed). Cycle-guarded.
@@ -1605,51 +1624,98 @@ function _recognizeDiagonalPushforwardFields(
       + 'refuse, not mislower)');
   }
 
-  // Independent-base invariant (refuse-don't-mislower). This recognition
-  // assembles the base as an INDEPENDENT product `joint(law(anc_1), …,
-  // law(anc_n))` — one factor per field's ancestor. That is only the true
-  // base measure when the ancestors are mutually INDEPENDENT. For a
-  // HIERARCHICAL base (`b ~ Normal(a, 1)`: b's law references sibling
-  // ancestor a) or a shared stochastic hyperparameter (`a,b ~ Normal(h,1)`),
-  // the real base is a proper joint with cross-factor conditioning, and the
-  // per-field inverse-image of one ancestor would have to be threaded into a
-  // sibling's law — which this pass does NOT do. Scoring it as an independent
-  // product is a SILENTLY WRONG density (verified: it under/over-counts the
-  // conditional term). Refuse when any two fields' ancestors share stochastic
-  // ancestry. (Correctly threading inverse-images across dependent siblings
-  // is a deliberate follow-up — see the report; the pre-existing all-bare-ref
-  // record path already scores a hierarchical base correctly via walkJoint's
-  // env-threading, and does NOT enter this recognition — it only fires when a
-  // field is a deterministic transform, gated on `hasEvaluateField`.)
+  // Hierarchical-base invariant (spec §06 dependent-threaded joint; #311
+  // follow-up to #260 (d)). This recognition assembles the base as a joint
+  // over one factor per field's ancestor. When the ancestors are mutually
+  // INDEPENDENT that joint is the plain product `joint(law(anc_1), …,
+  // law(anc_n))` (unchanged from #260 (d)). When a field's ancestor's own
+  // law directly references ANOTHER field's ancestor (`b ~ Normal(a, 1)`
+  // with both `a` and `b` exposed as record fields — a HIERARCHICAL base),
+  // the true joint has a cross-factor conditional term `p(a)·p(b|a)`. The
+  // field-map's Jacobian stays DIAGONAL (each field still consumes exactly
+  // one ancestor's own inverse image, Σ logvol_i unchanged) — the ONLY
+  // change from the independent case is that `b`'s law (`Normal(a, 1)`,
+  // UNCHANGED — no IR rewriting) must see `a`'s OBSERVED inverse image
+  // `t_k^{-1}(y_k)` when it is scored. Sibling laws are left completely
+  // untouched deliberately: an earlier version of this code substituted a
+  // synthetic self-ref into the sibling's law IR, but that self-ref names
+  // neither a real binding nor a declared boundary, and CLM's `lowerMeasure`
+  // ⊆-invariant check (`_clmRefsValid`, run at build time for validation)
+  // rejects it as an uncoverable reference (a build-time regression this
+  // very recognition would otherwise cause — verified while implementing
+  // #311, see the report). Instead
+  // `a`'s inverse image is THREADED, under `a`'s own real binding name,
+  // into `walkJointFieldsOrPositional`'s (density.ts) overlay — the exact
+  // mechanism the pre-existing ALL-BARE-REF hierarchical record path
+  // already rides (there a field's "inverse image" IS its own observed
+  // value, already threaded by name; here field `m`'s pushfwd node also
+  // carries `threadAs: 'a'` so the walker additionally threads `a`'s
+  // inverse image once it has scored `m`). Since `a`'s own law is never
+  // rewritten, this is invisible to CLM's static analysis — `a` resolves
+  // exactly as it does in the bare-ref case. Ordering matters: a dependent
+  // field must be scored (hence threaded) AFTER the sibling ancestor(s) its
+  // law references, so the fields are re-emitted below in a topological
+  // order over that dependency — `consumeField` (density.ts) is by-name,
+  // so reordering the `fields` array changes nothing else observable.
+  //
+  // Still REFUSE (loud, not a silent marginalization):
+  //   (a) a field's ancestor's law transitively touches a stochastic name
+  //       that is NOT itself one of THIS record's fields — a common
+  //       un-exposed hyperparameter (`a, b ~ Normal(h, 1)` with `h` not a
+  //       field) or a hidden intermediate in a longer chain that skips a
+  //       field. Threading needs that name's OBSERVED inverse image, which
+  //       doesn't exist for an un-exposed latent — scoring it would need
+  //       true marginalization, a different (and unimplemented) rule.
+  //   (b) a genuine cycle in the per-field ancestor dependency graph.
+  //       Structurally this shouldn't arise from valid source (a binding
+  //       cycle — incl. a mutual stochastic cycle — is already dropped
+  //       with a diagnostic well before any derivation is buildable, see
+  //       `self-referential-derivation.test.ts`); guarded here defensively
+  //       so a violation surfaces as a targeted refusal, never silent
+  //       wrong output or infinite recursion.
   const ancestrySets = perField.map(
     (pf) => _stochasticAncestryRoots(pf.ancestor, derivations, bindings));
+  const ancestorToFieldIdx = new Map<string, number>();
+  perField.forEach((pf, idx) => ancestorToFieldIdx.set(pf.ancestor, idx));
+  const dependsOn: number[][] = perField.map(() => []);
   for (let i = 0; i < perField.length; i++) {
-    for (let j = i + 1; j < perField.length; j++) {
-      let overlap: string | null = null;
-      for (const root of ancestrySets[i]) {
-        if (ancestrySets[j].has(root)) { overlap = root; break; }
+    for (const root of ancestrySets[i]) {
+      if (root === perField[i].ancestor) continue;
+      const k = ancestorToFieldIdx.get(root);
+      if (k !== undefined) {
+        dependsOn[i].push(k);
+        continue;
       }
-      if (overlap == null) continue;
-      const di = perField[i].ancestorDisplay;
-      const dj = perField[j].ancestorDisplay;
-      // Direct-hierarchy phrasing (one ancestor IS the other's) when the
-      // overlap is one of the two ancestors' own roots; shared-hyperparameter
-      // phrasing otherwise.
-      if (overlap === perField[i].ancestor || overlap === perField[j].ancestor) {
-        const dep = overlap === perField[i].ancestor ? dj : di;   // the law that references
-        const on  = overlap === perField[i].ancestor ? di : dj;   // the referenced ancestor
-        throw new Error("density: record-field pushforward requires independent ancestor "
-          + "laws; ancestor '" + dep + "' depends on sibling ancestor '" + on
-          + "' — not supported (refuse, not mislower)");
-      }
-      throw new Error("density: record-field pushforward requires independent ancestor "
-        + "laws; ancestors '" + di + "' and '" + dj + "' share stochastic ancestry — "
-        + 'not supported (refuse, not mislower)');
+      throw new Error("density: record field '" + perField[i].name + "' ancestor '"
+        + perField[i].ancestorDisplay + "' depends on stochastic '"
+        + _displayNameForRoot(root, derivations)
+        + "', which is not itself one of this record's fields — the base is a "
+        + 'proper hierarchical joint requiring marginalization over an unobserved '
+        + 'latent, not a diagonal inverse-image substitution (refuse, not mislower)');
     }
   }
+  // Topological order (dependencies first) via post-order DFS over
+  // `dependsOn`; a back-edge (a node revisited while still 'in progress')
+  // means the ancestor graph is cyclic, not a DAG.
+  const fieldCount = perField.length;
+  const visitState = new Array(fieldCount).fill(0); // 0 unvisited, 1 in-progress, 2 done
+  const order: number[] = [];
+  const visitField = (i: number): void => {
+    if (visitState[i] === 2) return;
+    if (visitState[i] === 1) {
+      throw new Error('density: record-field pushforward ancestor dependency is '
+        + 'cyclic (not a DAG) — refuse, not mislower');
+    }
+    visitState[i] = 1;
+    for (const j of dependsOn[i]) visitField(j);
+    visitState[i] = 2;
+    order.push(i);
+  };
+  for (let i = 0; i < fieldCount; i++) visitField(i);
 
   const out: any[] = [];
-  for (const pf of perField) {
+  for (const idx of order) {
+    const pf = perField[idx];
     const inner = expandMeasureIR(
       pf.bijMeta ? pf.ancestor : pf.bindingName, derivations, new Set(visited), bindings);
     if (!inner) {
@@ -1665,6 +1731,14 @@ function _recognizeDiagonalPushforwardFields(
           bijection: pf.bijMeta,
         },
         source: pf.bindingName,
+        // #311: this field's ancestor's own OBSERVED inverse image, under
+        // its real binding name — density.ts's walkJointFieldsOrPositional
+        // threads it into the overlay (alongside the existing name/source
+        // keys) once this field is scored, so a later sibling field whose
+        // law self-refs `pf.ancestorDisplay` directly (UNCHANGED IR) sees
+        // the observed value instead of falling through to refArrays/
+        // baseEnv. Harmless when no sibling references it.
+        threadAs: pf.ancestorDisplay,
       });
     } else {
       out.push({ name: pf.name, value: inner, source: pf.bindingName });

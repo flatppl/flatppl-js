@@ -1081,6 +1081,31 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
         curOverlay = curOverlay ? Object.assign({}, curOverlay) : {};
         curOverlay[f.name] = head;
         if (f.source && f.source !== f.name) curOverlay[f.source] = head;
+        // #311 dependent-threaded hierarchical record/joint: `f.threadAs`
+        // (set by derivations.ts's `_recognizeDiagonalPushforwardFields`
+        // for a transformed field) names this field's ancestor's OWN real
+        // binding — thread its OBSERVED inverse image `t^{-1}(head)` under
+        // that name too, so a later sibling field whose law self-refs the
+        // ancestor DIRECTLY (unmodified IR — e.g. `Normal(a, 1)` literally
+        // reads `a`) resolves it to the observed value instead of falling
+        // through to refArrays/baseEnv. Only the atom-independent bijection
+        // form is supported here (mirrors walkPushfwd's own `needsPerAtom`
+        // gate) — a per-atom bijection parameter would need a per-atom
+        // overlay, which this single-observation joint walk doesn't carry.
+        if (f.threadAs) {
+          const bij = f.value && f.value.bijection;
+          if (!bij) {
+            throw new Error("density: record-field pushforward ancestor '" + f.threadAs
+              + "' has threadAs but no bijection metadata (producer bug)");
+          }
+          const refNames = Object.keys(refArrays || {});
+          if (refNames.length > 0 && _bijBodyRefsAny(bij.fInv.body, refArrays)) {
+            throw new Error("density: record-field pushforward ancestor '" + f.threadAs
+              + "' needs a per-atom bijection inverse to thread into a dependent "
+              + 'sibling — not supported (single-observation dependent joint only)');
+          }
+          curOverlay[f.threadAs] = _pushfwdInverseAtomIndependent(bij, head, baseEnv, curOverlay);
+        }
       }
     }
     return cur;
@@ -1213,6 +1238,26 @@ function _bijBodyRefsAny(body: any, refArrays: any): boolean {
   }
   /* c8 ignore stop */
   return false;
+}
+
+// Atom-independent bijection inverse `x = f_inv(y)`, evaluated against
+// baseEnv ∪ overlay (overlay wins — the standard env-precedence order,
+// see walkAcc's doc comment). Shared by walkPushfwd's atom-independent
+// fast path and (#311) walkJointFieldsOrPositional's dependent-ancestor
+// threading — the SAME computation, whether the caller then recurses
+// into the base measure at x (walkPushfwd) or threads x into the overlay
+// for a sibling field's law to consume (the hierarchical record case).
+function _pushfwdInverseAtomIndependent(bij: any, y: number, baseEnv: any, overlay: any): number {
+  const finvEnv = Object.assign({}, baseEnv);
+  if (overlay) Object.assign(finvEnv, overlay);
+  finvEnv[bij.fInv.paramName] = y;
+  const x = samplerLib.evaluateExpr(bij.fInv.body, finvEnv);
+  if (typeof x !== 'number') {
+    throw new Error('density: pushfwd f_inv returned non-scalar (got '
+      + (typeof x) + '); per-atom or vector-valued bijections not yet '
+      + 'supported here');
+  }
+  return x;
 }
 
 function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
@@ -1490,15 +1535,7 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   }
 
   // Atom-independent fast path (unchanged): compute x = f_inv(y) once.
-  const finvEnv = Object.assign({}, baseEnv);
-  if (overlay) Object.assign(finvEnv, overlay);
-  finvEnv[bij.fInv.paramName] = y;
-  const x = samplerLib.evaluateExpr(bij.fInv.body, finvEnv);
-  if (typeof x !== 'number') {
-    throw new Error('density: pushfwd f_inv returned non-scalar (got '
-      + (typeof x) + '); per-atom or vector-valued bijections not yet '
-      + 'supported here');
-  }
+  const x = _pushfwdInverseAtomIndependent(bij, y, baseEnv, overlay);
   // Recurse on M scoring at x. x is atom-independent → walks through
   // M's structure with the standard consume/rest semantics.
   walkAcc(M_ir, x, refArrays, N, opts, acc, baseEnv, overlay);
