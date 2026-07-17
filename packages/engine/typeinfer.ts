@@ -4145,14 +4145,17 @@ const PUSHFWD_DOMAIN_GUARDS: Record<string, { isWithin: (vs: any) => boolean, la
   probit: { isWithin: isWithinUnitDomain, label: 'within (0, 1) (spec §07 probit domain)' },
 };
 
-// `pow(base, k)` with the free variable in `base`: an odd positive integer
-// literal exponent is bijective on all of ℝ (no domain guard needed); every
-// other exponent (even, non-integer, negative, or non-literal) is only a
-// bijection on the non-negative half-line, so it must be domain-guarded.
+// `pow(base, k)` with the free variable in `base`: an ODD integer literal
+// exponent (positive OR negative — x³, 1/x, 1/x³ …) is a bijection on ℝ (0 is
+// measure-zero for a continuous base), so no domain guard is needed. Every
+// other exponent (even, non-integer, or non-literal) is only a bijection on the
+// non-negative half-line, so it must be domain-guarded to nonnegreals. The
+// exponent 0 (a constant map) is declined by invertExpr itself (#310), so it
+// never scores regardless of this guard.
 function _powExponentNeedsNonNegGuard(expNode: any): boolean {
   if (expNode && expNode.kind === 'lit' && typeof expNode.value === 'number'
-      && Number.isInteger(expNode.value) && expNode.value > 0 && (expNode.value % 2 === 1)) {
-    return false;   // odd positive integer → bijective on ℝ
+      && Number.isInteger(expNode.value) && (expNode.value % 2 !== 0)) {
+    return false;   // odd integer (any sign) → bijective on ℝ
   }
   return true;
 }
