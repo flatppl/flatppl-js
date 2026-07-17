@@ -1,0 +1,100 @@
+'use strict';
+
+// Gauss-Legendre nodes/weights on [0,1] (interior — never 0 or 1).
+// 3-point (degree-5 exact) is the accurate rule; 2-point (degree-3) is the
+// embedded coarse rule. The cell error estimate is |I3 - I2|.
+const GL3 = [
+  { x: 0.5 - 0.5 * Math.sqrt(3 / 5), w: 5 / 18 },
+  { x: 0.5,                          w: 8 / 18 },
+  { x: 0.5 + 0.5 * Math.sqrt(3 / 5), w: 5 / 18 },
+];
+const GL2 = [
+  { x: 0.5 - 0.5 / Math.sqrt(3), w: 0.5 },
+  { x: 0.5 + 0.5 / Math.sqrt(3), w: 0.5 },
+];
+
+// Tensor-product application of a 1-D rule over cell [lo,hi] in R^dims.
+function tensorRule(
+  integrand: (u: number[]) => number,
+  lo: number[], hi: number[],
+  rule: { x: number; w: number }[],
+): number {
+  const dims = lo.length;
+  const h = lo.map((l, i) => hi[i] - l);
+  let total = 0;
+  const rec = (d: number, pt: number[], w: number) => {
+    if (d === dims) { total += w * integrand(pt); return; }
+    for (const { x, w: wt } of rule) rec(d + 1, pt.concat(lo[d] + x * h[d]), w * wt * h[d]);
+  };
+  rec(0, [], 1.0);
+  return total;
+}
+
+// (I3, error) for one cell.
+function cellEstimate(
+  integrand: (u: number[]) => number, lo: number[], hi: number[],
+): { I: number; E: number } {
+  const fine = tensorRule(integrand, lo, hi, GL3);
+  const coarse = tensorRule(integrand, lo, hi, GL2);
+  return { I: fine, E: Math.abs(fine - coarse) };
+}
+
+interface Cell { lo: number[]; hi: number[]; I: number; E: number; }
+
+export function adaptiveCubature(
+  integrand: (u: number[]) => number,
+  dims: number,
+  opts?: { tol?: number; maxEvals?: number },
+): { Z: number; err: number; evals: number } {
+  const tol = (opts && opts.tol) ?? 1e-8;
+  const maxEvals = (opts && opts.maxEvals) ?? 200000;
+  const perCell = Math.pow(3, dims) + Math.pow(2, dims);
+
+  // Seed with a minimum uniform subdivision (INIT_DIV cells per axis) rather
+  // than a single cell: a feature narrower than the whole box (e.g. a sharp
+  // interior peak) could be stepped over by one coarse cell's 2-/3-point rule,
+  // making the embedded error estimate falsely tiny and terminating the loop at
+  // a wrong Z with a wrong (small) `err` — the classic global-adaptive blind
+  // spot, and a refuse-don't-mislower hazard. The seed grid guarantees the
+  // integrand is sampled at least at this resolution before the convergence
+  // test is trusted; adaptive refinement then concentrates where it matters.
+  // Seed cost is bounded for dims ≤ 3 (8/64/512 cells).
+  const INIT_DIV = 8;
+  const step = 1 / INIT_DIV;
+  // Simple array as a max-by-E "heap": we scan for the worst cell each step.
+  // Cell counts stay small (hundreds–low thousands) for dims ≤ 3, so a linear
+  // worst-cell scan is not the bottleneck; the integrand evals are.
+  const cells: Cell[] = [];
+  let totI = 0, totE = 0, evals = 0;
+  const idx = new Array(dims).fill(0);
+  const seedCount = Math.pow(INIT_DIV, dims);
+  for (let c = 0; c < seedCount; c++) {
+    const lo = idx.map((k) => k * step);
+    const hi = idx.map((k) => (k + 1) * step);
+    const est = cellEstimate(integrand, lo, hi);
+    cells.push({ lo, hi, I: est.I, E: est.E });
+    totI += est.I; totE += est.E; evals += perCell;
+    for (let d = 0; d < dims; d++) { if (++idx[d] < INIT_DIV) break; idx[d] = 0; }
+  }
+
+  while (totE > tol * Math.abs(totI) && evals < maxEvals) {
+    // worst cell by E
+    let wi = 0;
+    for (let i = 1; i < cells.length; i++) if (cells[i].E > cells[wi].E) wi = i;
+    const c = cells[wi];
+    totI -= c.I; totE -= c.E;
+    // bisect the longest edge
+    let ax = 0; let best = -Infinity;
+    for (let i = 0; i < dims; i++) { const len = c.hi[i] - c.lo[i]; if (len > best) { best = len; ax = i; } }
+    const mid = 0.5 * (c.lo[ax] + c.hi[ax]);
+    const aLo = c.lo.slice(), aHi = c.hi.slice(); aHi[ax] = mid;
+    const bLo = c.lo.slice(), bHi = c.hi.slice(); bLo[ax] = mid;
+    const ea = cellEstimate(integrand, aLo, aHi);
+    const eb = cellEstimate(integrand, bLo, bHi);
+    evals += 2 * perCell;
+    cells[wi] = { lo: aLo, hi: aHi, I: ea.I, E: ea.E };
+    cells.push({ lo: bLo, hi: bHi, I: eb.I, E: eb.E });
+    totI += ea.I + eb.I; totE += ea.E + eb.E;
+  }
+  return { Z: totI, err: totE, evals };
+}
