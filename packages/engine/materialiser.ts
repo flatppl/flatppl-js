@@ -461,6 +461,39 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       return p;
     };
     return inflatedCtx.getMeasure(d.from).then((innerM: any) => {
+      // G1 (spec §03/§06): a record-valued inner measure (a joint/record
+      // materialises to `.fields`, not `.samples`) — the k iid record draws
+      // per atom form a TABLE (an array of records is a table). Assemble the
+      // per-field ensembles (each atom-major length N·k) into a `__table__`
+      // value column-wise, the shape the density path's walkIid table branch
+      // scores — so sampling and density stay in agreement (scar zone). At
+      // N=1 the columns collapse to a clean k-row table (leading atom axis of
+      // size 1 dropped); at N>1 columns carry the atom-major [N, k] shape.
+      if (innerM.fields) {
+        const rank1 = d.dims.length === 1;
+        if (!rank1) {
+          return Promise.reject(new Error(
+            'iid: multi-axis iid over a record measure is out of scope (G1); '
+            + 'a table has one row axis (spec §03)'));
+        }
+        const columns: Record<string, any> = {};
+        for (const fk of Object.keys(innerM.fields)) {
+          const fv = innerM.fields[fk];
+          const fdata = (fv.value && fv.value.data) || fv.samples;
+          if (!fdata) {
+            return Promise.reject(new Error(
+              'iid: record field "' + fk + '" produced no samples'));
+          }
+          columns[fk] = (N === 1)
+            ? { shape: [k], data: fdata }
+            : { shape: [N, k], data: fdata, outerRank: 1 };
+        }
+        const table: any = { __table__: true, columns, nrows: k };
+        return {
+          shape: 'table', __table__: true, columns, nrows: k,
+          value: table, logTotalmass: 0, n_eff: N,
+        };
+      }
       const samples = innerM.samples
         || (innerM.value && innerM.value.data);
       if (!samples) {
