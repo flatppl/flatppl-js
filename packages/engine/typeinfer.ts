@@ -2622,9 +2622,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const sampleShape = dims.concat(innerSample);
     const batchShape  = Array.isArray(measureT.batchShape)  ? measureT.batchShape.slice()  : [];
     const eventShape  = Array.isArray(measureT.eventShape)  ? measureT.eventShape.slice()  : [];
-    return T.measure(
-      T.array(rank, dims, measureT.domain),
-      { sampleShape, batchShape, eventShape });
+    // G1 (spec §03): an array of records IS a table — type a single-axis iid
+    // over a record-domain measure as table(columns = M's record fields,
+    // nrows = n) so the variate unifies with table-typed data bindings.
+    // Multi-axis (rank > 1) record-iid stays array-of-record: a table has one
+    // row axis (§03 forbids higher-rank columns), so it's out of scope and the
+    // static gate defers/refuses it.
+    const domain = (rank === 1 && measureT.domain
+      && measureT.domain.kind === 'record' && measureT.domain.fields)
+      ? T.table(measureT.domain.fields, dims[0])
+      : T.array(rank, dims, measureT.domain);
+    return T.measure(domain, { sampleShape, batchShape, eventShape });
   }
 
   // Resolve a shape-position IR expression to a non-negative integer
