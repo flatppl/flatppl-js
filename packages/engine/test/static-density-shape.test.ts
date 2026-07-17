@@ -121,6 +121,44 @@ test('static: iid with dynamic n stays deferred (passes static check)', () => {
 });
 
 // =====================================================================
+// G1: iid over a record-valued M vs a TABLE variate (spec §03/§06)
+// =====================================================================
+
+function jointXY() {
+  return { kind: 'call', op: 'joint',
+    fields: [
+      { name: 'x', value: Normal(0, 1) },
+      { name: 'y', value: Normal(0, 1) },
+    ] };
+}
+
+test('static/G1: iid(joint(x,y), 2) vs table(x,y; 2 rows) → empty rest', () => {
+  const ir = { kind: 'call', op: 'iid', args: [jointXY(), lit(2)] };
+  const variate = T.table({ x: T.REAL, y: T.REAL }, 2);
+  const r = densityPrims.staticConsume(ir, variate);
+  assert.equal(r.rest, null);
+  assert.ok(!r.error, `unexpected error: ${r.error}`);
+});
+
+test('static/G1: iid(joint(x,y), 3) vs table(x,y; 2 rows) → row-count error', () => {
+  const ir = { kind: 'call', op: 'iid', args: [jointXY(), lit(3)] };
+  const variate = T.table({ x: T.REAL, y: T.REAL }, 2);
+  const r = densityPrims.staticConsume(ir, variate);
+  assert.ok(r.error && /3 rows.*2 rows/.test(r.error),
+    `expected row-count error, got ${r.error}`);
+});
+
+test('static/G1: iid(joint(x,y), 2) vs table missing a column → error', () => {
+  // M declares field y, but the table has no y column → the recursive
+  // joint field check refuses (missing field in the row record).
+  const ir = { kind: 'call', op: 'iid', args: [jointXY(), lit(2)] };
+  const variate = T.table({ x: T.REAL }, 2);
+  const r = densityPrims.staticConsume(ir, variate);
+  assert.ok(r.error && /field "y"/.test(r.error),
+    `expected missing-column error, got ${r.error}`);
+});
+
+// =====================================================================
 // Positional joint
 // =====================================================================
 
