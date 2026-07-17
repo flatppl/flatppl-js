@@ -459,7 +459,31 @@ function matLikelihoodDensity(d: any, ctx: any) {
   const isRecord = theta !== null && typeof theta === 'object'
     && !Array.isArray(theta)
     && (theta as any).shape === undefined && (theta as any).data === undefined;
-  if (kwargs.length === 1 && !(isRecord && (kwargs[0] in (theta as any)))) {
+  // Match a kernel input name to a θ record field BY PUBLIC NAME. When the
+  // kernel comes from a `load_module` instance the linker prefixes the input
+  // node's name with the instance alias (`model$theta1`, spec §11 internal
+  // flat-graph naming), but the module's boundary-input INTERFACE — the names
+  // θ is fed by (its own `default_pars`, its prior variate labels, and
+  // load-time substitution keywords, spec §04 "Module composition" /
+  // sec:functionof) — is the bare module-local name (`theta1`). So prefer an
+  // exact field, then fall back to the bare suffix after the last `$` when
+  // that public name is unambiguous among the inputs. Returns the θ field name
+  // to read, or null if none matches. (#360)
+  const publicOf = (k: string): string => {
+    const i = k.lastIndexOf('$');
+    return i < 0 ? k : k.slice(i + 1);
+  };
+  const matchField = (k: string): string | null => {
+    if (!isRecord) return null;
+    if (k in (theta as any)) return k;
+    const pub = publicOf(k);
+    if (pub === k || !(pub in (theta as any))) return null;
+    // Only strip when no OTHER input shares this public name (else ambiguous).
+    let shared = 0;
+    for (const kk of kwargs) if (publicOf(kk) === pub) shared++;
+    return shared === 1 ? pub : null;
+  };
+  if (kwargs.length === 1 && matchField(kwargs[0]) === null) {
     // Single kernel input fed the whole θ value (scalar/vector point).
     boundaries[kwargs[0]] = theta;
   } else {
@@ -467,12 +491,15 @@ function matLikelihoodDensity(d: any, ctx: any) {
     // case, and any single-param term whose θ is a record — e.g. a
     // joint_likelihood sub-term declaring fewer params than θ carries).
     for (const k of kwargs) {
-      if (!isRecord || !(k in (theta as any))) {
+      const field = matchField(k);
+      if (field === null) {
+        const pub = publicOf(k);
+        const hint = pub !== k ? '" (public "' + pub + '")' : '"';
         return Promise.reject(new Error(
           'logdensityof(L, θ): θ must be a record with a "' + k
-          + '" field (kernel inputs: ' + kwargs.join(', ') + ')'));
+          + hint + ' field (kernel inputs: ' + kwargs.join(', ') + ')'));
       }
-      boundaries[k] = (theta as any)[k];
+      boundaries[k] = (theta as any)[field];
     }
   }
   const node = clm.lowerMeasure(d.bodyIR || d.bodyName, ctx, { derivation: d, boundaries });
