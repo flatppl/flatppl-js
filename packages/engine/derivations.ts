@@ -2038,6 +2038,37 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): Derivatio
       pointIR: obsIR,
     };
   }
+  // `logdensityof(bayesupdate(L, prior), θ)`: score a posterior at θ (#309).
+  // Per spec §06 `bayesupdate(L, prior) ≡ logweighted(fn(logdensityof(L, _)),
+  // prior)`, so the log-density at θ is `logdensityof(L, θ) + logdensityof(
+  // prior, θ)`. Recognise it here and lower to the SUM of the two already-
+  // supported scores (likelihood-density for L, generic logdensityof for the
+  // prior). Without this the generic `logdensityof` fallthrough below tries to
+  // materialise the posterior MEASURE, whose CLM feeds the prior measure as a
+  // fed VALUE — but a measure has no .value/.samples, so feedInputs throws.
+  const Mbind = bindings.get(Mref.name) as any;
+  if (Mbind && isCallOp(Mbind.ir, 'bayesupdate', 2)) {
+    const Lref = Mbind.ir.args[0];
+    const priorRef = Mbind.ir.args[1];
+    if (isSelfRef(priorRef) && bindings.has(priorRef.name)) {
+      const plk = _resolveLikelihood(Lref, bindings);
+      if (plk) {
+        return {
+          kind: 'posterior_density',
+          priorName: priorRef.name,
+          bodyName: plk.bodyName,
+          bodyIR: plk.bodyIR,
+          obsIR: plk.obsIR,
+          paramKwargs: plk.paramKwargs,
+          params: plk.params,
+          pointIR: obsIR,
+        } as any;
+      }
+    }
+    // A bayesupdate whose L→K chain or prior doesn't resolve: fall through to
+    // the generic path, keeping its loud materialise-time error (refuse-don't-
+    // mislower) rather than silently producing a wrong number.
+  }
   // `logdensityof(joint_likelihood(L1, …, Lk), θ)`: a joint likelihood is
   // the product of independent terms (spec §06), so its log-density folds
   // to the SUM of the per-term log-densities. Each term is itself a
@@ -3054,6 +3085,29 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       return false;
     }
     return true;
+  }
+  // Posterior density (#309): valid iff the prior is derivable, the point θ's
+  // refs resolve, and the likelihood body's fixed deps resolve (its
+  // parameterized/stochastic internals are fed from θ by the materialiser, same
+  // rule as likelihood_density). This kind never lowers to a single measure, so
+  // _clmRefsValid returns null for it and this legacy branch is authoritative.
+  if ((d as any).kind === 'posterior_density') {
+    if (!resolvable((d as any).priorName)) return false;
+    for (const r of collectSelfRefs((d as any).pointIR)) {
+      if (!resolvable(r)) return false;
+    }
+    if ((d as any).bodyName) {
+      return _bodyNameResolvable((d as any).bodyName, bindings, resolvable);
+    }
+    if ((d as any).bodyIR) {
+      for (const r of collectSelfRefs((d as any).bodyIR)) {
+        const rb = bindings.get(r);
+        if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
+        if (!resolvable(r)) return false;
+      }
+      return true;
+    }
+    return false;
   }
   if (d.kind === 'totalmass') {
     return resolvable(d.measureName);

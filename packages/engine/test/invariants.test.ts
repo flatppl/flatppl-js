@@ -394,7 +394,7 @@ const ALL_DERIVATION_KINDS = new Set([
   'alias', 'array', 'tuple', 'record', 'sample', 'evaluate',
   'weighted', 'normalize', 'superpose', 'iid', 'randsample', 'jointchain',
   'truncate', 'pushfwd', 'bayesupdate', 'logdensityof', 'likelihood_density',
-  'joint_likelihood_density',
+  'joint_likelihood_density', 'posterior_density',
   'totalmass', 'broadcast_logdensity', 'select', 'kernelbroadcast',
   'mvnormal', 'dirichlet', 'multinomial', 'wishart', 'inversewishart',
   'lkjcholesky', 'lkj', 'binnedpoissonprocess', 'poissonprocess',
