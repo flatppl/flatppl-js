@@ -40,3 +40,29 @@ test('#310: even pow over a NON-NEGATIVE base scores correctly (single-branch va
   const v = await score(H + 'm = pushfwd(fn(pow(_, 2)), Exponential(1.0))', 2.25);
   assert.ok(Math.abs(v - (-2.59861228866811)) < 1e-9, `pow(_,2)@2.25 over Exponential got ${v}`);
 });
+
+// #310 edge: exponent 0 (a constant map) is not invertible — invertExpr declines
+// it, so it REFUSES loudly instead of scoring NaN (it previously scored NaN).
+test('#310 edge: pow(_, 0) refuses (constant map, not a density), not NaN', async () => {
+  let threw = false; let got: any;
+  try { got = await score(H + 'm = pushfwd(fn(pow(_, 0)), Exponential(1.0))', 0.5); }
+  catch (_) { threw = true; }
+  assert.ok(threw, `pow(_,0) must refuse loudly (throw), not score; got ${got}`);
+});
+
+// #310 edge: ODD NEGATIVE integer exponents (1/x, 1/x^3) are bijections on ℝ\{0}
+// (0 measure-zero for a continuous base), so they score over a reals base —
+// previously over-refused (the guard keyed on odd POSITIVE only).
+test('#310 edge: odd-negative pow over a reals base scores (bijective on ℝ)', async () => {
+  const v1 = await score(H + 'm = pushfwd(fn(pow(_, -1)), Normal(0, 1))', 0.5);
+  assert.ok(Math.abs(v1 - (-1.532644172084782)) < 1e-9, `pow(_,-1)@0.5 got ${v1}`);
+  const v3 = await score(H + 'm = pushfwd(fn(pow(_, -3)), Normal(0, 1))', 0.5);
+  assert.ok(Math.abs(v3 - (-1.8870551071102883)) < 1e-9, `pow(_,-3)@0.5 got ${v3}`);
+});
+
+// #310 edge: EVEN negative exponent over a reals base still refuses (1/x^2 is
+// 2-to-1 on ℝ) — but scores over a non-negative base (monotone there).
+test('#310 edge: even-negative pow refuses over reals, scores over nonneg', () => {
+  const e = errs(H + 'm = pushfwd(fn(pow(_, -2)), Normal(0, 1))\n__score__ = logdensityof(m, 0.5)\n');
+  assert.ok(e.some((s) => /pow/.test(s)), `pow(_,-2) over reals must refuse; got ${JSON.stringify(e)}`);
+});

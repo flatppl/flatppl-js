@@ -541,8 +541,13 @@ const ELEMENTARY_BIJECTIONS: Record<string, {
   // base x+δ > 0); a sign-preserving root / numerical fallback is the
   // refinement. Base-frozen `a^x` (idx 1) is deferred → null.
   pow: {
-    invert: (i, a, Y) => (i === 0 && _isLit(a[1])) ? _call('pow', [Y, _lit(1 / a[1].value)]) : null,
-    ladj: (i, a, X) => (i === 0 && _isLit(a[1]))
+    // Only a NON-ZERO finite literal exponent gives an invertible map:
+    // pow(_, 0) is the constant 1 (not invertible — declining here makes
+    // walkPushfwd refuse loudly instead of synthesising a `y^(1/0)` = NaN
+    // inverse), #310.
+    invert: (i, a, Y) => (i === 0 && _isLit(a[1]) && a[1].value !== 0 && Number.isFinite(a[1].value))
+      ? _call('pow', [Y, _lit(1 / a[1].value)]) : null,
+    ladj: (i, a, X) => (i === 0 && _isLit(a[1]) && a[1].value !== 0 && Number.isFinite(a[1].value))
       ? _call('add', [_lit(Math.log(Math.abs(a[1].value))), _call('mul', [_lit(a[1].value - 1), _logAbs(X)])])
       : null,
   },
