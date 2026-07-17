@@ -927,6 +927,38 @@ function matJointLikelihoodDensity(d: any, ctx: any) {
   });
 }
 
+function matPosteriorDensity(d: any, ctx: any) {
+  // logdensityof(bayesupdate(L, prior), θ) (#309). Per spec §06
+  // `bayesupdate(L, prior) ≡ logweighted(fn(logdensityof(L, _)), prior)`, so the
+  // posterior's log-density at θ is `logdensityof(L, θ) + logdensityof(prior, θ)`.
+  // Score the two independently — the likelihood via the standalone likelihood-
+  // density path (feeds the kernel's params EXPLICITLY from θ), the prior via the
+  // generic logdensityof path (scores the prior measure's density at θ) — and sum
+  // the per-atom scalars. Both produce a broadcast-constant per-atom scalar; the
+  // sum is the posterior density. This is exactly what the determiniser-then-eval
+  // route (det-js) computes, applied natively.
+  const N = ctx.sampleCount;
+  return Promise.all([
+    matLikelihoodDensity({
+      kind: 'likelihood_density',
+      bodyName: d.bodyName, bodyIR: d.bodyIR, obsIR: d.obsIR,
+      paramKwargs: d.paramKwargs, params: d.params, pointIR: d.pointIR,
+    }, ctx),
+    matLogdensityof({
+      kind: 'logdensityof', measureName: d.priorName, obsIR: d.pointIR,
+    } as any, ctx),
+  ]).then((measures: any[]) => {
+    const out = new Float64Array(N);
+    for (const m of measures) {
+      const s = m.samples;
+      // Each sub is a broadcast-constant per-atom scalar; a sub materialised at
+      // N=1 (or any shorter length) broadcasts its single value across N atoms.
+      for (let i = 0; i < N; i++) out[i] += s[s.length === 1 ? 0 : i];
+    }
+    return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: N });
+  });
+}
+
 // =====================================================================
 // Totalmass — surface the tracked logTotalmass as a per-atom value
 // =====================================================================
@@ -1233,6 +1265,7 @@ module.exports = {
   matLogdensityof,
   matLikelihoodDensity,
   matJointLikelihoodDensity,
+  matPosteriorDensity,
   matBroadcastLogdensity,
   matTotalmass,
 };

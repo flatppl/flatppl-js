@@ -252,7 +252,8 @@ export type DerivationKind =
   | 'lkj'
   | 'binnedpoissonprocess'
   | 'likelihood_density'
-  | 'joint_likelihood_density';
+  | 'joint_likelihood_density'
+  | 'posterior_density';
 
 /**
  * Base derivation shape. Each per-kind interface below extends this
@@ -468,6 +469,25 @@ export interface DerivationJointLikelihoodDensity {
   pointIR: IRNode;
 }
 
+/** `logdensityof(bayesupdate(L, prior), θ)` — a posterior scored at θ. Per
+ *  spec §06 `bayesupdate(L, prior) ≡ logweighted(fn(logdensityof(L, _)), prior)`,
+ *  so its log-density at θ is `logdensityof(L, θ) + logdensityof(prior, θ)`. The
+ *  L→K payload (as DerivationLikelihoodDensity) scores the likelihood at θ against
+ *  the fixed obs; `priorName` scores the prior's density at θ; matPosteriorDensity
+ *  sums the two. Fixes the native-score feed gap (#309): the CLM feed path fed the
+ *  prior MEASURE as a value (no .value/.samples) — this scores its density instead. */
+export interface DerivationPosteriorDensity {
+  kind: 'posterior_density';
+  name?: string;
+  priorName: string;
+  bodyName: string | null;
+  bodyIR: IRNode | null;
+  obsIR: IRNode;
+  paramKwargs: string[];
+  params: string[];
+  pointIR: IRNode;
+}
+
 /** `totalmass(M)` — surface measure's tracked totalmass as scalar value. */
 export interface DerivationTotalmass {
   kind: 'totalmass';
@@ -605,6 +625,7 @@ export type Derivation =
   | DerivationLogdensityof
   | DerivationLikelihoodDensity
   | DerivationJointLikelihoodDensity
+  | DerivationPosteriorDensity
   | DerivationTotalmass
   | DerivationBroadcastLogdensity
   | DerivationSelect
