@@ -31,10 +31,39 @@ function cholRank1Update(S: Float64Array, v: Float64Array, alpha: number, dim: n
 const driver = require('./mcmc-driver.ts');
 const { gaussianNoise } = driver;
 
-// RAM: Robust Adaptive Metropolis (Vihola 2012). Proposes y' = y + S·z
-// (z ~ N(0,I)); during warmup adapts the Cholesky factor S toward a target
-// acceptance rate via a rank-1 update of C = S Sᵀ:
+// In-place Cholesky of a symmetric PD matrix A (flat row-major, dim×dim) into a
+// lower-triangular L (flat). Returns false if A is not PD.
+function denseCholesky(A: Float64Array, L: Float64Array, dim: number): boolean {
+  for (let i = 0; i < dim; i++) {
+    for (let j = 0; j <= i; j++) {
+      let s = A[i * dim + j];
+      for (let k = 0; k < j; k++) s -= L[i * dim + k] * L[j * dim + k];
+      if (i === j) {
+        if (s <= 0) return false;
+        L[i * dim + j] = Math.sqrt(s);
+      } else {
+        L[i * dim + j] = s / L[j * dim + j];
+      }
+    }
+    for (let j = i + 1; j < dim; j++) L[i * dim + j] = 0;
+  }
+  return true;
+}
+
+// RAM: Robust Adaptive Metropolis (Vihola 2012), with an informed proposal.
+// Proposes y' = y + S·z (z ~ N(0,I)) and, during warmup, adapts the Cholesky
+// factor S toward a target acceptance rate via a rank-1 update of C = S Sᵀ:
 //   C ← C + η_n (α − α*) · (S ẑ)(S ẑ)ᵀ,   ẑ = z/‖z‖,   η_n = n^{-γ}.
+// The rank-1 update alone starts isotropic and adapts slowly, so it fails to
+// capture a strongly anisotropic / stiff posterior (e.g. a funnel: one
+// coordinate's marginal sd orders of magnitude below another's) within a short
+// warmup — every block proposal is dominated by the over-large move on the stiff
+// coordinate and rejected. So warmup ALSO periodically re-anchors S to the
+// empirical posterior covariance (the Haario recipe the mh kernel uses:
+// per-coordinate variances, shrunk off-diagonals once enough samples accrue,
+// diagonal fallback), scaled by the optimal RW factor 2.38/√d; the rank-1
+// acceptance update then refines that anchor. This gives RAM the anisotropy
+// capture that makes it robust, keeping its acceptance-targeted refinement.
 // S is stored in adaptState.L and adaptState.scale is fixed at 1 (scale folds
 // into S) so the freeze-then-parallel machinery (which freezes {L, scale}) works
 // unchanged. The sample phase is the shared fixed-proposal batched step.
@@ -46,7 +75,12 @@ function makeRamKernel(opts?: any) {
       const S = new Float64Array(dim * dim);
       const s0 = 2.38 / Math.sqrt(Math.max(dim, 1));   // RW-MH optimal scale as the initial S
       for (let d = 0; d < dim; d++) S[d * dim + d] = s0;
-      return { dim, scale: 1, target, gamma, L: S, iter: 0, z: new Float64Array(dim), step: new Float64Array(dim) };
+      return {
+        dim, scale: 1, target, gamma, L: S, iter: 0,
+        z: new Float64Array(dim), step: new Float64Array(dim),
+        // Running mean + second moment for the empirical covariance re-anchor.
+        sum: new Float64Array(dim), cross: new Float64Array(dim * dim), count: 0, sweeps: 0,
+      };
     },
     step(ensemble: Float64Array[], logp: Float64Array, mv: any, prng: () => number, adaptState: any, phase: string) {
       const dim = adaptState.dim, nWalkers = ensemble.length;
@@ -56,6 +90,7 @@ function makeRamKernel(opts?: any) {
       if (!warm && typeof mv.logPosteriorBatch === 'function') {
         return driver.fixedProposalBatchStep(ensemble, logp, mv, prng, S, adaptState.scale, dim, z);
       }
+      const kappa = 2.38 / Math.sqrt(Math.max(dim, 1));
       let accepts = 0, proposals = 0;
       for (let w = 0; w < nWalkers; w++) {
         const y = ensemble[w];
@@ -82,6 +117,52 @@ function makeRamKernel(opts?: any) {
             const inv = 1 / Math.sqrt(zn2);                   // ẑ = z/‖z‖ ⇒ S ẑ = stepv/‖z‖
             for (let d = 0; d < dim; d++) stepv[d] *= inv;
             cholRank1Update(S, stepv, beta, dim);             // keeps old S on downdate PD-loss
+          }
+          // Accumulate the (possibly updated) position for the covariance anchor.
+          const cur = ensemble[w], sum = adaptState.sum, cross = adaptState.cross;
+          for (let i = 0; i < dim; i++) {
+            sum[i] += cur[i];
+            for (let j = 0; j <= i; j++) cross[i * dim + j] += cur[i] * cur[j];
+          }
+          adaptState.count++;
+        }
+      }
+
+      if (warm) {
+        adaptState.sweeps++;
+        // Re-anchor S to the empirical covariance (× optimal RW factor) every 25
+        // sweeps once enough samples accrue — this injects the posterior's
+        // per-coordinate scale/anisotropy the rank-1 update adapts too slowly to
+        // discover; the rank-1 refinement then continues from the anchor.
+        const n = adaptState.count;
+        if (n > dim + 2 && adaptState.sweeps % 25 === 0) {
+          const sum = adaptState.sum, cross = adaptState.cross, eps = 1e-9;
+          const variance = new Float64Array(dim);
+          for (let d = 0; d < dim; d++) {
+            const md = sum[d] / n;
+            const v = cross[d * dim + d] / n - md * md;
+            variance[d] = v > eps ? v : eps;
+          }
+          const useFullCov = n > 20 * dim;   // enough samples for a stable correlation estimate
+          const M = new Float64Array(dim * dim);
+          for (let i = 0; i < dim; i++) {
+            M[i * dim + i] = variance[i];
+            if (useFullCov) {
+              const mi = sum[i] / n;
+              for (let j = 0; j < i; j++) {
+                const c = (cross[i * dim + j] / n - mi * (sum[j] / n)) * 0.9;   // shrink off-diagonals
+                M[i * dim + j] = c; M[j * dim + i] = c;
+              }
+            }
+          }
+          const Lnew = new Float64Array(dim * dim);
+          if (denseCholesky(M, Lnew, dim)) {
+            for (let t = 0; t < Lnew.length; t++) Lnew[t] *= kappa;
+            adaptState.L = Lnew;
+          } else {
+            const Ld = new Float64Array(dim * dim);
+            for (let d = 0; d < dim; d++) Ld[d * dim + d] = kappa * Math.sqrt(variance[d]);
+            adaptState.L = Ld;
           }
         }
       }

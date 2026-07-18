@@ -1,0 +1,53 @@
+flatppl_compat = "0.1"
+
+datasets = table(
+    exposure   = [1.6, 1.3, 1.0, 0.7, 0.4],
+    efficiency = [0.5, 0.6, 0.7, 0.8, 0.9],
+    counts     = [13, 10, 10, 2, 2],
+)
+exposure     = datasets.exposure
+efficiency   = datasets.efficiency
+counts_data  = datasets.counts
+
+E1_data = [32.29945024522565, 69.08580773988763, 25.440423777510436, 75.61403615267723, 7.9267656229908585, 3.3354153534688638, 20.670985493456392, 82.75167461000609, 136.75349754794027, 19.976541400061382, 34.57232691499431, 52.32632653325007, 4.75519376172241]
+E2_data = [63.76604456320073, 4.602635553779128, 68.24639884216056, 4.272813246216692, 49.33863066627453, 41.748541234687956, 47.49935392156085, 37.52247790527123, 26.040570121268903, 58.08667451701596]
+E3_data = [58.822595816291454, 8.785379233761681, 55.58320441541379, 63.51718319418958, 58.297943138713215, 40.37315193306145, 7.875521943121733, 139.17144907577784, 100.79360983559722, 98.9325347685139]
+E4_data = [31.878682258259104, 21.28067021826852]
+E5_data = [53.041794807908694, 98.55886779280806]
+
+S_mu    = 100.0
+S_sigma = 2.0
+
+S       ~ LogNormal(0, 1)
+sigma_B ~ Exponential(2)
+m_B     ~ pushfwd(fn(20 * _), Beta(2, 2))
+lam     ~ pushfwd(fn(100 * _), Beta(2, 2))
+
+B ~ iid(LogNormal(log(m_B) - sigma_B^2 / 2.0, sigma_B), 5)
+
+prior = lawof(record(S = S, sigma_B = sigma_B, m_B = m_B, lam = lam, B = B))
+
+nu_B = exposure .* B
+nu_S = exposure .* efficiency .* S
+w    = nu_B ./ (nu_B .+ nu_S)
+
+bkg = Exponential(1.0 / lam)
+sig = Normal(S_mu, S_sigma)
+
+event_counts ~ Poisson.(nu_B .+ nu_S)
+
+E1 ~ iid(normalize(superpose(weighted(w[1], bkg), weighted(1.0 - w[1], sig))), 13)
+E2 ~ iid(normalize(superpose(weighted(w[2], bkg), weighted(1.0 - w[2], sig))), 10)
+E3 ~ iid(normalize(superpose(weighted(w[3], bkg), weighted(1.0 - w[3], sig))), 10)
+E4 ~ iid(normalize(superpose(weighted(w[4], bkg), weighted(1.0 - w[4], sig))), 2)
+E5 ~ iid(normalize(superpose(weighted(w[5], bkg), weighted(1.0 - w[5], sig))), 2)
+
+forward_kernel = kernelof(
+    record(event_counts = event_counts, E1 = E1, E2 = E2, E3 = E3, E4 = E4, E5 = E5),
+    S = S, sigma_B = sigma_B, m_B = m_B, lam = lam, B = B,
+)
+L = likelihoodof(forward_kernel, record(
+    event_counts = counts_data,
+    E1 = E1_data, E2 = E2_data, E3 = E3_data, E4 = E4_data, E5 = E5_data,
+))
+posterior = bayesupdate(L, prior)
