@@ -196,6 +196,12 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
   // long mcmcRun can stream {type:'mcmcProgress', id, frac, phase} to the host
   // mid-computation (Web Workers deliver these while the handler is still busy).
   let progressSink: ((m: any) => void) | null = null;
+  // Built-model cache keyed by (source, processOpts). A freeze-then-parallel run
+  // hits this worker twice (warmup phase, then sampling phase) with the same
+  // model; caching the parse + derivation build keeps the second phase from
+  // paying the (often dominant) build cost again. Per handler, so each pool
+  // worker keeps its own cache.
+  const modelCache = new Map<string, any>();
 
   function handle(msg: any) {
     const id = msg.id;
@@ -223,13 +229,23 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           const idx = require('./index.ts');
           const orchestratorLib = require('./orchestrator.ts');
           const materialiserLib = require('./materialiser.ts');
-          const proc = idx.processSource(msg.source, msg.processOpts || {});
-          // Multi-file (spec §04 load_module): build from the LINKED graph so a
-          // cross-module bayesupdate posterior is derivable (the primary graph
-          // leaves `mod.member` refs unresolved). `processOpts.bundle` (shipped
-          // by runMcmcPool) is what makes linkedBindings cross-module-complete;
-          // single-file models have linkedBindings === bindings.
-          const built = orchestratorLib.buildDerivations(proc.linkedBindings || proc.bindings);
+          // Reuse the parse + derivation build across a freeze-then-parallel run's
+          // two phases (same source hits this worker twice); rebuild only on a miss.
+          const cacheKey = msg.source + ' ' + JSON.stringify(msg.processOpts || {});
+          let cachedModel = modelCache.get(cacheKey);
+          if (!cachedModel) {
+            const proc0 = idx.processSource(msg.source, msg.processOpts || {});
+            // Multi-file (spec §04 load_module): build from the LINKED graph so a
+            // cross-module bayesupdate posterior is derivable (the primary graph
+            // leaves `mod.member` refs unresolved). `processOpts.bundle` (shipped
+            // by runMcmcPool) is what makes linkedBindings cross-module-complete;
+            // single-file models have linkedBindings === bindings.
+            const built0 = orchestratorLib.buildDerivations(proc0.linkedBindings || proc0.bindings);
+            cachedModel = { proc: proc0, built: built0 };
+            modelCache.set(cacheKey, cachedModel);
+          }
+          const proc = cachedModel.proc;
+          const built = cachedModel.built;
           const cache = new Map();
           const subCtx: any = {
             derivations: built.derivations,
@@ -261,6 +277,20 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             (measure: any) => ({ type: 'mcmcResult', id, measure }),
             (err: any) => ({ type: 'error', id, message: err && err.message ? err.message : String(err) }),
           );
+        }
+        case 'poolDiagnostics': {
+          // Combine the per-chain draws gathered from every sampling worker into
+          // ONE split-R̂ / bulk-ESS per parameter. `msg.chains` maps each parameter
+          // name to the full list of chains (a Float64Array per chain) across all
+          // workers. The canonical engine diagnostics own the formulae, so the
+          // pooled numbers match a single-worker run over the same chains.
+          const diagnostics = require('./diagnostics.ts');
+          const perParam: Record<string, any> = {};
+          for (const nm of Object.keys(msg.chains || {})) {
+            const chains = msg.chains[nm];
+            perParam[nm] = { rHat: diagnostics.splitRHat(chains), essBulk: diagnostics.essBulk(chains) };
+          }
+          return { type: 'poolDiagnostics', id, perParam };
         }
         case 'setEnv': {
           env = msg.merge === false ? { ...(msg.env ?? {}) } : { ...env, ...(msg.env ?? {}) };

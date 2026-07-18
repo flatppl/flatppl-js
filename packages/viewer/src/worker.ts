@@ -168,8 +168,15 @@ function sendTo(ctx: Ctx, w: any, msg: any, onProgress?: (m: any) => void): Prom
 // field measures) into one, and combine diagnostics: acceptRate averaged,
 // per-parameter R̂ taken as the worst (conservative) across the independent
 // runs, bulk-ESS summed (ESS is additive across independent chains/ensembles).
-function poolMeasures(measures: any[]): any {
-  if (measures.length === 1) return measures[0];
+function poolMeasures(measures: any[], globalPerParam?: any): any {
+  if (measures.length === 1) {
+    // Single worker: its diagnostics already span its chains. Drop the raw-chain
+    // payload (only the pool needs it) before the measure reaches the renderer;
+    // fields share this diagnostics object by reference, so one delete suffices.
+    const m = measures[0];
+    if (m && m.diagnostics && m.diagnostics.rawChains) delete m.diagnostics.rawChains;
+    return m;
+  }
   const first = measures[0];
   const cat = (key: string, arrs: Float64Array[]) => {
     let n = 0; for (const a of arrs) n += a.length;
@@ -208,6 +215,12 @@ function poolMeasures(measures: any[]): any {
     }
   }
   const totalN = fields[Object.keys(fields)[0]].samples.length;
+  // Freeze-then-parallel (mh) distributes full-length chains across the pool, so
+  // split-R̂ / bulk-ESS must be computed once over ALL chains — `globalPerParam`,
+  // computed by an engine worker over the concatenated raw chains. The per-worker
+  // max-R̂ / sum-ESS aggregation above is the fallback (ensemble backends, or a
+  // pool whose workers did not ship raw chains).
+  const pp = globalPerParam || perParam;
   // Per-method combined diagnostics. nSamples is ALWAYS the summed TRUE draw
   // count (`nSamp`), never `totalN` — the latter is the concatenated atom count
   // (= pool size × sampleCount), which would mislabel the run with ~10^5.
@@ -216,7 +229,7 @@ function poolMeasures(measures: any[]): any {
     // Elliptical slice: chains pooled like MH (R̂ worst, ESS summed via perParam
     // above), but keep the ess-slice tag + mode + mean shrinks for the readout.
     let shr = 0, k = 0; for (const m of measures) { const d = m.diagnostics || {}; if (Number.isFinite(d.meanShrinks)) { shr += d.meanShrinks; k++; } }
-    diag = { method: 'ess-slice', mode: first.diagnostics.mode, meanShrinks: k > 0 ? shr / k : NaN, perParam, nSamples: nSamp };
+    diag = { method: 'ess-slice', mode: first.diagnostics.mode, meanShrinks: k > 0 ? shr / k : NaN, perParam: pp, nSamples: nSamp };
   } else if (first.diagnostics && first.diagnostics.method === 'smc') {
     // Independent SMC runs each give an unbiased estimate Ẑ_r of the evidence;
     // the pooled unbiased estimate is their ARITHMETIC mean, reported as its log
@@ -238,7 +251,7 @@ function poolMeasures(measures: any[]): any {
     const amisLogZ = kZ > 0 ? mxZ + Math.log(sZ / kZ) : NaN;
     diag = { method: 'amis', logZ: amisLogZ, ess: essSum, essFrac: nSamp > 0 ? essSum / nSamp : 0, K: kMax, nSamples: nSamp, perParam };
   } else {
-    diag = { acceptRate: accSum / measures.length, perParam, nSamples: nSamp };
+    diag = { acceptRate: accSum / measures.length, perParam: pp, nSamples: nSamp };
   }
   // Attach to the record AND every field measure: the viewer renders a single
   // field on its own and reads its diagnostics for the draw-count label.
@@ -247,10 +260,16 @@ function poolMeasures(measures: any[]): any {
 }
 
 // Run an MCMC posterior off the main thread, parallelised across a worker pool.
-// `name` is the bayesupdate binding; `opts` is ctx.inferenceOpts. MH partitions
-// its independent chains across workers; emcee runs one independent ensemble
-// per worker (P× the draws in P× less wall-clock). Each worker gets a distinct
-// seed and produces sampleCount/P atoms; the results are pooled.
+// `name` is the bayesupdate binding; `opts` is ctx.inferenceOpts.
+//  • emcee / amis / smc — one full independent instance per worker (variance
+//    reduction), pooled; only sampleCount splits.
+//  • mh — FREEZE-THEN-PARALLEL: adapt once on a single worker (full sequential
+//    warmup → the exact single-worker proposal), then run each FULL-length,
+//    independent chain on its own worker under that frozen proposal. Same chains,
+//    same proposal, same length as a single-worker run — identical quality — with
+//    the sampling phase spread across cores. split-R̂ / bulk-ESS recomputed once
+//    over all chains globally.
+//  • elliptical-slice / other — single worker (no adapted proposal to freeze).
 export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<any> {
   const source = ctx.currentSource;
   // Each worker re-processes `source` to build a self-contained ctx; for a
@@ -266,39 +285,95 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
   const baseSeed = (opts.seed != null ? opts.seed : (ctx.rootSeed || 1)) | 0;
   const hw = (typeof navigator !== 'undefined' && (navigator as any).hardwareConcurrency) || 4;
   const cap = Math.max(1, Math.min(opts.parallel || hw, 8));
+  const cleanup = (workers: any[]) => {
+    for (const w of workers) { try { w.terminate(); } catch (_) { /* already gone */ } }
+    // Only clear the shared pool if it still points at OUR workers — a run
+    // cancelled while a later run already started must not wipe the live pool.
+    if (ctx.mcmcPool === workers) ctx.mcmcPool = [];
+  };
 
-  // Partition: shares = per-worker { inferenceOpts, sampleCount }.
-  // emcee and AMIS run one independent instance per worker (a distinct seed);
-  // their per-worker results are concatenated, which lowers the combined
-  // estimator's variance — independent ensembles / IS runs add effective
-  // sample size. MH partitions its independent chains across workers instead.
-  // NOTE: each worker runs a FULL independent instance at the user's knob
-  // settings (emcee walkers / amisSamples,amisIters / smcParticles) — these are
-  // per-worker, deliberately NOT divided by P. The runs are pooled for variance
-  // reduction (more independent samples), so total compute is ≈ P× the knob but
-  // wall-clock stays parallel and each run is full quality. Only `sampleCount`
-  // (the final atom budget) is split, since the pool concatenates to it.
+  // ---- mh: freeze-then-parallel ------------------------------------------
+  if (opts.backend === 'mh' || opts.backend === 'ram') {
+    const nChains = Math.max(1, (opts.walkers ?? opts.chains ?? 4) | 0);
+    const P = Math.max(1, Math.min(cap, nChains));
+    const workers = await Promise.all(Array.from({ length: P }, (_, i) => spawnWorker(ctx, baseSeed + i * 7919)));
+    ctx.mcmcPool = workers;
+    // Two-phase progress: warmup fills [0, wFrac] (one worker), sampling fills
+    // the rest (all workers, mean). Monotonic — no reset between phases.
+    const W = (opts.warmup ?? 1000) | 0, D = (opts.draws ?? 1000) | 0;
+    const wFrac = (W + D) > 0 ? W / (W + D) : 0.5;
+    let inSample = false;
+    const sfracs = new Array(P).fill(0);
+    const report = (i: number, m: any) => {
+      if (!ctx.onSamplingProgress) return;
+      if (!inSample) { ctx.onSamplingProgress(wFrac * (m.frac || 0), 'warmup'); return; }
+      sfracs[i] = m.frac || 0;
+      let s = 0; for (const f of sfracs) s += f;
+      ctx.onSamplingProgress(wFrac + (1 - wFrac) * (s / P), 'sample');
+    };
+    try {
+      // Phase 1 — full warmup on ONE worker over all chains (draws:1 is a
+      // throwaway; we harvest the tuned proposal + warmed chain positions).
+      const warm: any = await sendTo(ctx, workers[0], {
+        type: 'mcmcRun', source, name, processOpts,
+        inferenceOpts: Object.assign({}, opts, { seed: baseSeed, mcmcPhase: 'warmup', chains: nChains, walkers: nChains, draws: 1 }),
+        sampleCount: 1, seed: baseSeed,
+      }, (m: any) => report(0, m));
+      const wd = warm.measure.diagnostics.warmup;   // { L, scale, endPositions[nChains] }
+      const frozen = { L: wd.L, scale: wd.scale };
+      // Distribute the warmed chains round-robin across the workers.
+      const assign: Float64Array[][] = Array.from({ length: P }, () => []);
+      for (let c = 0; c < nChains; c++) assign[c % P].push(wd.endPositions[c]);
+      inSample = true;
+      // Phase 2 — each worker samples its chain subset for the FULL draws under
+      // the shared frozen proposal (no re-adaptation), resuming warmed positions.
+      const sampReplies = await Promise.all(assign.map((positions, i) =>
+        positions.length === 0 ? Promise.resolve(null)
+          : sendTo(ctx, workers[i], {
+            type: 'mcmcRun', source, name, processOpts,
+            inferenceOpts: Object.assign({}, opts, {
+              seed: baseSeed + 104729 + i * 7919, mcmcPhase: 'sample', warmup: 0,
+              chains: positions.length, walkers: positions.length, initAdapt: frozen, initPositions: positions,
+            }),
+            sampleCount: Math.ceil(sampleCount / P), seed: baseSeed + 104729 + i * 7919,
+          }, (m: any) => report(i, m))));
+      const measures = sampReplies.filter(Boolean).map((r: any) => r.measure);
+      // Global split-R̂ / bulk-ESS over ALL chains (each worker holds a subset).
+      let globalPerParam: any = null;
+      if (measures.length > 1 && measures.every((m: any) => m && m.diagnostics && m.diagnostics.rawChains)) {
+        const names = Object.keys(measures[0].diagnostics.rawChains);
+        const chains: any = {};
+        for (const nm of names) {
+          chains[nm] = [];
+          for (const m of measures) for (const c of m.diagnostics.rawChains[nm]) chains[nm].push(c);
+        }
+        const dg: any = await sendTo(ctx, workers[0], { type: 'poolDiagnostics', chains });
+        globalPerParam = dg.perParam;
+      }
+      return poolMeasures(measures, globalPerParam);
+    } finally {
+      cleanup(workers);
+    }
+  }
+
+  // ---- emcee / amis / smc (pooled) + elliptical-slice / other (single) ---
   const shares: any[] = [];
   if (opts.backend === 'emcee' || opts.backend === 'amis' || opts.backend === 'smc') {
+    // One full independent instance per worker (variance reduction), pooled.
     const P = cap;
     for (let i = 0; i < P; i++) {
       shares.push({ inferenceOpts: Object.assign({}, opts, { seed: baseSeed + i * 7919 }),
         sampleCount: Math.ceil(sampleCount / P) });
     }
   } else {
-    // Chain-based backends (mh / nuts / elliptical-slice) run ALL chains in ONE
-    // worker. Splitting chains across workers would make split-R̂ and bulk-ESS
-    // degenerate — each worker would hold a single chain (R̂ can't compare
-    // chains it never sees; 1-chain essBulk is NaN→0), and pooling max/sum gives
-    // a falsely-good R̂ and ESS=0. The batched scorer keeps one worker fast; we
-    // keep the off-thread (non-blocking) benefit, just not cross-worker chains.
+    // elliptical-slice (and any other chain backend): all chains in ONE worker —
+    // it has no adapted proposal to freeze, so there is nothing to parallelise
+    // without splitting chains (which degenerates split-R̂ / bulk-ESS).
     shares.push({ inferenceOpts: Object.assign({}, opts, { seed: baseSeed }), sampleCount });
   }
 
   const workers = await Promise.all(shares.map((_, i) => spawnWorker(ctx, baseSeed + i * 7919)));
   ctx.mcmcPool = workers;
-  // Per-worker progress fractions, averaged into one bar. Each worker carries an
-  // equal share of the work, so the mean fraction tracks overall completion.
   const fracs = new Array(shares.length).fill(0);
   let lastPhase = 'warmup';
   const report = (i: number, m: any) => {
@@ -316,10 +391,6 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
       }, (m: any) => report(i, m))));
     return poolMeasures(replies.map((r: any) => r.measure));
   } finally {
-    for (const w of workers) { try { w.terminate(); } catch (_) {} }
-    // Only clear the shared pool if it still points at OUR workers — a run that
-    // was cancelled while a later run already started must not wipe the live
-    // pool reference (which would leak the new run's workers).
-    if (ctx.mcmcPool === workers) ctx.mcmcPool = [];
+    cleanup(workers);
   }
 }

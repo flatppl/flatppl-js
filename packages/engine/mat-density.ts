@@ -154,12 +154,13 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
   // return an equal-weight empirical measure. IS path (default) is below.
   const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
-  if (backend === 'mh' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler') {
+  if (backend === 'mh' || backend === 'ram' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler') {
     const MV              = require('./model-view.ts');
     const driver          = require('./mcmc-driver.ts');
     const { mhKernel }         = require('./mh-kernel.ts');
     const { makeEmceeKernel }  = require('./emcee-kernel.ts');
     const { makeEllipticalSliceKernel } = require('./elliptical-slice-kernel.ts');
+    const { makeRamKernel } = require('./ram-kernel.ts');
     // Use the new async vector-aware ModelView (wires mcmc-density.ts scorer).
     return MV.buildModelViewFromCtx(ctx, d).then((mv: any) => {
       if (backend === 'nuts' && mv.hasDiscrete) {
@@ -235,16 +236,37 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       } else {
         const isEss = backend === 'elliptical-slice-sampler';
         const kernel = backend === 'emcee' ? makeEmceeKernel(o.a)
+          : backend === 'ram' ? makeRamKernel()
           : isEss ? makeEllipticalSliceKernel() : mhKernel;
         const nWalkers = o.walkers ?? o.chains ?? (backend === 'emcee' ? Math.max(4, 2 * mv.dim + 2) : 4);
         post = driver.runMcmc(mv, kernel, {
           nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a, essMaxShrink: o.essMaxShrink, onProgress,
+          // Freeze-then-parallel (mh across a worker pool): `initAdapt` (a frozen
+          // {L,scale} from a single warmup worker) + `initPositions` (that chain's
+          // warmed start) make this a fixed-proposal sampling run — no re-adaptation
+          // — so full-length independent chains run on separate workers. Undefined
+          // on a normal single-phase run, leaving behaviour unchanged.
+          initPositions: o.initPositions, initAdapt: o.initAdapt,
         });
+        // Warmup phase of a freeze-then-parallel run: surface the adapted proposal
+        // ({L,scale}, from this ONE worker's full sequential warmup — the exact old
+        // proposal, not a pooled one) and the warmed end positions, so the sampling
+        // phase can distribute the chains under that frozen proposal. The measure
+        // itself is discarded in this phase.
+        if (o.mcmcPhase === 'warmup') {
+          const a = post.adaptState || {};
+          post.diagnostics.warmup = { L: a.L, scale: a.scale, endPositions: post.endPositions };
+        }
         // post.diagnostics is { acceptRate, perParam:{name:{rHat,essBulk}} } — attach as-is.
         nDraws = post.drawsByName[mv.names[0]].length;
         // Record the TRUE draw count so the viewer shows it rather than the
         // sampleCount the output is resampled to for plotting.
         post.diagnostics.nSamples = nDraws;
+        // Sampling phase distributes full-length chains across the pool; ship the
+        // raw per-chain draws so split-R̂ / bulk-ESS are computed ONCE over ALL
+        // chains globally (a worker holding a subset can't pool them itself). The
+        // ensemble backend (emcee) pools independent ensembles and doesn't need it.
+        if (backend !== 'emcee') post.diagnostics.rawChains = post.walkers;
         const total = total0 > 0 ? total0 : nDraws;
         idx = new Int32Array(total);
         for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
