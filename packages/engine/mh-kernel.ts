@@ -59,6 +59,39 @@ const mhKernel = {
     const warm = phase === 'warmup';
     let accepts = 0, proposals = 0;
 
+    // Sample phase: the walkers are independent random-walk chains at a FIXED
+    // proposal (scale + L are frozen once warmup ends), so every proposal can be
+    // scored in ONE logPosteriorBatch pass. The proposal noise and accept-uniform
+    // are drawn per walker in the same order as the scalar path (the accept draw
+    // does not depend on the score), so the prng stream is identical: bit-for-bit
+    // the same draws, one batched likelihood eval instead of nWalkers scalar ones.
+    // Warmup stays sequential — it mutates the shared `scale` per walker within
+    // the sweep, so its proposals are genuinely serially dependent.
+    if (!warm && typeof mv.logPosteriorBatch === 'function') {
+      const sc = adaptState.scale;
+      const props: Float64Array[] = new Array(nWalkers);
+      const us = new Float64Array(nWalkers);
+      for (let w = 0; w < nWalkers; w++) {
+        const y = ensemble[w];
+        for (let d = 0; d < dim; d++) z[d] = gaussianNoise(prng);
+        const yProp = Float64Array.from(y);
+        for (let i = 0; i < dim; i++) {
+          let acc = 0;
+          for (let k = 0; k <= i; k++) acc += L[i * dim + k] * z[k];
+          yProp[i] = y[i] + sc * acc;
+        }
+        props[w] = yProp; us[w] = prng();
+      }
+      const lps = mv.logPosteriorBatch(props);
+      for (let w = 0; w < nWalkers; w++) {
+        proposals++;
+        if (Math.log(us[w] + 1e-300) < (lps[w] - logp[w])) {
+          ensemble[w] = props[w]; logp[w] = lps[w]; accepts++;
+        }
+      }
+      return { accepts, proposals };
+    }
+
     for (let w = 0; w < nWalkers; w++) {
       const y = ensemble[w];
       for (let d = 0; d < dim; d++) z[d] = gaussianNoise(prng);
