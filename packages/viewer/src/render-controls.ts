@@ -410,7 +410,7 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void, tr
 
 // Unified sampler / draw control for the plot toolbar. On a bayesupdate
 // POSTERIOR (`isPosterior`) the sampler selector is live: IS (importance
-// sampling, default), MH / RAM / emcee (MCMC), AMIS, SMC, ESS — writing onto
+// sampling, default), MH / RAM / slice / emcee (MCMC), AMIS, SMC, ESS — writing onto
 // ctx.inferenceOpts. On a non-posterior (prior / tractable) plot there is no
 // backend to choose (forward simulation), so the selector is blanked and
 // disabled; the cog then exposes only the forward draw count + seed.
@@ -474,7 +474,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     blankOpt.value = '__forward__'; blankOpt.textContent = '—';
     sel.appendChild(blankOpt);
   }
-  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['ram', 'RAM'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC'], ['elliptical-slice-sampler', 'ESS']]) {
+  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['ram', 'RAM'], ['slice', 'slice'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC'], ['elliptical-slice-sampler', 'ESS']]) {
     const o = document.createElement('option');
     o.value = v; o.textContent = t;
     sel.appendChild(o);
@@ -483,7 +483,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   if (isPosterior) {
     sel.value = opts.backend;
     sel.title = 'Posterior inference backend. IS = importance sampling (default); '
-      + 'MH / RAM / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
+      + 'MH / RAM / slice / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
       + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence); '
       + 'ESS = elliptical slice sampling (gradient- and tuning-free).';
   } else {
@@ -591,17 +591,17 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     markDirty();
   });
 
-  numRow('draws', ['mh', 'ram', 'emcee', 'elliptical-slice-sampler'], function () { return opts.draws; }, function (v) { opts.draws = v == null ? 1000 : v; });
-  numRow('warmup', ['mh', 'ram', 'emcee', 'elliptical-slice-sampler'], function () { return opts.warmup; }, function (v) { opts.warmup = v == null ? 1000 : v; });
+  numRow('draws', ['mh', 'ram', 'slice', 'emcee', 'elliptical-slice-sampler'], function () { return opts.draws; }, function (v) { opts.draws = v == null ? 1000 : v; });
+  numRow('warmup', ['mh', 'ram', 'slice', 'emcee', 'elliptical-slice-sampler'], function () { return opts.warmup; }, function (v) { opts.warmup = v == null ? 1000 : v; });
   panel.appendChild(countRow);
-  rows.push({ el: countRow, backends: ['mh', 'ram', 'emcee', 'elliptical-slice-sampler'] });
+  rows.push({ el: countRow, backends: ['mh', 'ram', 'slice', 'emcee', 'elliptical-slice-sampler'] });
   numRow('iterations', ['amis'], function () { return opts.amisIters; }, function (v) { opts.amisIters = v == null ? 30 : v; });
   numRow('samples/iter', ['amis'], function () { return opts.amisSamples; }, function (v) { opts.amisSamples = v == null ? 300 : v; });
   numRow('particles', ['smc'], function () { return opts.smcParticles; }, function (v) { opts.smcParticles = v == null ? 2000 : v; });
   numRow('chain', ['smc'], function () { return opts.smcSteps; }, function (v) { opts.smcSteps = v == null ? 12 : v; });
   numRow('CESS ratio', ['smc'], function () { return opts.smcCESS; }, function (v) { opts.smcCESS = v == null ? 0.7 : v; },
     { step: 0.05, min: 0.05, max: 0.99 });
-  numRow('seed', ['mh', 'ram', 'emcee', 'amis', 'smc', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
+  numRow('seed', ['mh', 'ram', 'slice', 'emcee', 'amis', 'smc', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
   // Forward draw count + seed — shown for IS (its importance draws ARE the
   // global forward draws) and for the blanked forward mode on non-posterior
   // plots. These write ctx.SAMPLE_COUNT / ctx.rootSeed, not opts.
