@@ -356,7 +356,48 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
     }
   }
 
-  // ---- emcee / amis / smc (pooled) + slice / elliptical-slice / other (single) ---
+  // ---- slice: distribute independent full-length chains across the pool -----
+  // Slice has no adaptation, so each chain is independent from step 1 — split the
+  // nChains chains across workers for multicore parallelism (each worker runs its
+  // subset, and its kernel batches that subset's per-round logπ scoring across
+  // chains), then recompute split-R̂ / bulk-ESS ONCE over all chains globally (a
+  // worker holding a subset can't pool them itself). No freeze phase.
+  if (opts.backend === 'slice') {
+    const nChains = Math.max(1, (opts.walkers ?? opts.chains ?? 4) | 0);
+    const P = Math.max(1, Math.min(cap, nChains));
+    const workers = await Promise.all(Array.from({ length: P }, (_, i) => spawnWorker(ctx, baseSeed + i * 7919)));
+    ctx.mcmcPool = workers;
+    const counts = Array.from({ length: P }, (_, i) => Math.floor(nChains / P) + (i < nChains % P ? 1 : 0));
+    const sfracs = new Array(P).fill(0);
+    const report = (i: number, m: any) => {
+      if (!ctx.onSamplingProgress) return;
+      sfracs[i] = m.frac || 0; let s = 0; for (const f of sfracs) s += f;
+      ctx.onSamplingProgress(s / P, m.phase || 'sample');
+    };
+    try {
+      const replies = await Promise.all(counts.map((cnt, i) =>
+        cnt === 0 ? Promise.resolve(null)
+          : sendTo(ctx, workers[i], {
+            type: 'mcmcRun', source, name, processOpts,
+            inferenceOpts: Object.assign({}, opts, { seed: baseSeed + i * 7919, chains: cnt, walkers: cnt }),
+            sampleCount: Math.ceil(sampleCount / P), seed: baseSeed + i * 7919,
+          }, (m: any) => report(i, m))));
+      const measures = replies.filter(Boolean).map((r: any) => r.measure);
+      let globalPerParam: any = null;
+      if (measures.length > 1 && measures.every((m: any) => m && m.diagnostics && m.diagnostics.rawChains)) {
+        const names = Object.keys(measures[0].diagnostics.rawChains);
+        const chains: any = {};
+        for (const nm of names) { chains[nm] = []; for (const m of measures) for (const c of m.diagnostics.rawChains[nm]) chains[nm].push(c); }
+        const dg: any = await sendTo(ctx, workers[0], { type: 'poolDiagnostics', chains });
+        globalPerParam = dg.perParam;
+      }
+      return poolMeasures(measures, globalPerParam);
+    } finally {
+      cleanup(workers);
+    }
+  }
+
+  // ---- emcee / amis / smc (pooled) + elliptical-slice / other (single) ---
   const shares: any[] = [];
   if (opts.backend === 'emcee' || opts.backend === 'amis' || opts.backend === 'smc') {
     // One full independent instance per worker (variance reduction), pooled.

@@ -44,7 +44,10 @@ function makeSliceKernel(opts?: any) {
       // Shared random coordinate order for the sweep (so chains lock-step per coord).
       for (let d = 0; d < dim; d++) order[d] = d;
       for (let d = dim - 1; d > 0; d--) { const j = Math.floor(prng() * (d + 1)); const t = order[d]; order[d] = order[j]; order[j] = t; }
-      if (typeof mv.logPosteriorBatch === 'function') {
+      // Batch across chains only when there is more than one to batch AND a
+      // batch scorer exists; a lone chain (the common pooled case — one chain per
+      // worker) takes the scalar path, avoiding batch-of-1 array overhead.
+      if (ensemble.length > 1 && typeof mv.logPosteriorBatch === 'function') {
         return stepBatched(ensemble, logp, mv, prng, adaptState, order);
       }
       return stepScalar(ensemble, logp, mv, prng, adaptState, order);
