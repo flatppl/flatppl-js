@@ -293,7 +293,7 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
   };
 
   // ---- mh: freeze-then-parallel ------------------------------------------
-  if (opts.backend === 'mh') {
+  if (opts.backend === 'mh' || opts.backend === 'ram') {
     const nChains = Math.max(1, (opts.walkers ?? opts.chains ?? 4) | 0);
     const P = Math.max(1, Math.min(cap, nChains));
     const workers = await Promise.all(Array.from({ length: P }, (_, i) => spawnWorker(ctx, baseSeed + i * 7919)));
