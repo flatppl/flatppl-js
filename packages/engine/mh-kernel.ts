@@ -1,6 +1,7 @@
 // packages/engine/mh-kernel.ts
 'use strict';
-const { gaussianNoise } = require('./mcmc-driver.ts');
+const driver = require('./mcmc-driver.ts');
+const { gaussianNoise } = driver;
 
 // Adaptive Metropolis (Haario, Saksman & Tamminen 2001) with a whole-vector
 // block proposal: one logπ per walker per sweep (not dim× as Metropolis-within-
@@ -68,28 +69,7 @@ const mhKernel = {
     // Warmup stays sequential — it mutates the shared `scale` per walker within
     // the sweep, so its proposals are genuinely serially dependent.
     if (!warm && typeof mv.logPosteriorBatch === 'function') {
-      const sc = adaptState.scale;
-      const props: Float64Array[] = new Array(nWalkers);
-      const us = new Float64Array(nWalkers);
-      for (let w = 0; w < nWalkers; w++) {
-        const y = ensemble[w];
-        for (let d = 0; d < dim; d++) z[d] = gaussianNoise(prng);
-        const yProp = Float64Array.from(y);
-        for (let i = 0; i < dim; i++) {
-          let acc = 0;
-          for (let k = 0; k <= i; k++) acc += L[i * dim + k] * z[k];
-          yProp[i] = y[i] + sc * acc;
-        }
-        props[w] = yProp; us[w] = prng();
-      }
-      const lps = mv.logPosteriorBatch(props);
-      for (let w = 0; w < nWalkers; w++) {
-        proposals++;
-        if (Math.log(us[w] + 1e-300) < (lps[w] - logp[w])) {
-          ensemble[w] = props[w]; logp[w] = lps[w]; accepts++;
-        }
-      }
-      return { accepts, proposals };
+      return driver.fixedProposalBatchStep(ensemble, logp, mv, prng, L, adaptState.scale, dim, z);
     }
 
     for (let w = 0; w < nWalkers; w++) {

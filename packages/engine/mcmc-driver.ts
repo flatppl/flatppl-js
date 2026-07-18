@@ -11,6 +11,39 @@ function gaussianNoise(prng: () => number): number {
   return Math.sqrt(-2 * Math.log(u1)) * Math.cos(2 * Math.PI * u2);
 }
 
+// Fixed-proposal batched Metropolis step. Each walker proposes
+// y' = y + scale·L·z (z ~ N(0,I), L lower-triangular Cholesky factor), the whole
+// sweep is scored in ONE logPosteriorBatch, then each walker accepts independently.
+// RNG is drawn per walker in the scalar-path order (proposal noise, then the
+// accept-uniform) so the prng stream is bit-identical to a per-walker scalar loop —
+// one batched likelihood eval instead of nWalkers scalar ones. Shared by the mh
+// (sample-phase) and RAM kernels; both run FIXED-proposal chains outside warmup.
+function fixedProposalBatchStep(ensemble: Float64Array[], logp: Float64Array, mv: any, prng: () => number, L: Float64Array, scale: number, dim: number, z: Float64Array) {
+  const nWalkers = ensemble.length;
+  const props: Float64Array[] = new Array(nWalkers);
+  const us = new Float64Array(nWalkers);
+  for (let w = 0; w < nWalkers; w++) {
+    const y = ensemble[w];
+    for (let d = 0; d < dim; d++) z[d] = gaussianNoise(prng);
+    const yProp = Float64Array.from(y);
+    for (let i = 0; i < dim; i++) {
+      let acc = 0;
+      for (let k = 0; k <= i; k++) acc += L[i * dim + k] * z[k];
+      yProp[i] = y[i] + scale * acc;
+    }
+    props[w] = yProp; us[w] = prng();
+  }
+  const lps = mv.logPosteriorBatch(props);
+  let accepts = 0, proposals = 0;
+  for (let w = 0; w < nWalkers; w++) {
+    proposals++;
+    if (Math.log(us[w] + 1e-300) < (lps[w] - logp[w])) {
+      ensemble[w] = props[w]; logp[w] = lps[w]; accepts++;
+    }
+  }
+  return { accepts, proposals };
+}
+
 // Ensemble MCMC driver shared by every kernel. Holds nWalkers positions in
 // unconstrained ℝⁿ; each iteration delegates the move to kernel.step.
 function runMcmc(mv: any, kernel: any, opts: any) {
@@ -99,4 +132,4 @@ function runMcmc(mv: any, kernel: any, opts: any) {
   return { drawsByName, walkers: walkersByName, acceptRate, adaptState, endPositions, diagnostics: { acceptRate, perParam } };
 }
 
-module.exports = { runMcmc, gaussianNoise };
+module.exports = { runMcmc, gaussianNoise, fixedProposalBatchStep };
