@@ -47,6 +47,13 @@ function runMcmc(mv: any, kernel: any, opts: any) {
   }
 
   const adaptState = kernel.init ? kernel.init(nWalkers, dim, opts, mv) : {};
+  // Frozen proposal from a prior warmup phase ({L, scale}). Running with warmup=0
+  // then makes every step a fixed-proposal sampling step (no re-adaptation), so
+  // independent chains can be distributed across workers after adaptation stops.
+  if (opts.initAdapt) {
+    if (opts.initAdapt.L) adaptState.L = opts.initAdapt.L;
+    if (typeof opts.initAdapt.scale === 'number') adaptState.scale = opts.initAdapt.scale;
+  }
   const collected = new Array(nWalkers);
   for (let w = 0; w < nWalkers; w++) collected[w] = [];
   let acceptTotal = 0, proposalTotal = 0;
@@ -85,7 +92,11 @@ function runMcmc(mv: any, kernel: any, opts: any) {
     perParam[name] = { rHat: diagnostics.splitRHat(perWalker), essBulk: diagnostics.essBulk(perWalker) };
   }
   const acceptRate = proposalTotal > 0 ? acceptTotal / proposalTotal : 0;
-  return { drawsByName, walkers: walkersByName, acceptRate, diagnostics: { acceptRate, perParam } };
+  // endPositions = final unconstrained ensemble; a warmup-only run (draws=0)
+  // returns it (with the tuned adaptState) so a later sampling phase on another
+  // worker can resume the warmed chains under the frozen proposal.
+  const endPositions = ensemble.map((y: Float64Array) => Float64Array.from(y));
+  return { drawsByName, walkers: walkersByName, acceptRate, adaptState, endPositions, diagnostics: { acceptRate, perParam } };
 }
 
 module.exports = { runMcmc, gaussianNoise };
