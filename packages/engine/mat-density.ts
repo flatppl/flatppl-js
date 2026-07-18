@@ -154,13 +154,14 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
   // return an equal-weight empirical measure. IS path (default) is below.
   const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
-  if (backend === 'mh' || backend === 'ram' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler') {
+  if (backend === 'mh' || backend === 'ram' || backend === 'slice' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler') {
     const MV              = require('./model-view.ts');
     const driver          = require('./mcmc-driver.ts');
     const { mhKernel }         = require('./mh-kernel.ts');
     const { makeEmceeKernel }  = require('./emcee-kernel.ts');
     const { makeEllipticalSliceKernel } = require('./elliptical-slice-kernel.ts');
     const { makeRamKernel } = require('./ram-kernel.ts');
+    const { makeSliceKernel } = require('./slice-kernel.ts');
     // Use the new async vector-aware ModelView (wires mcmc-density.ts scorer).
     return MV.buildModelViewFromCtx(ctx, d).then((mv: any) => {
       if (backend === 'nuts' && mv.hasDiscrete) {
@@ -237,6 +238,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         const isEss = backend === 'elliptical-slice-sampler';
         const kernel = backend === 'emcee' ? makeEmceeKernel(o.a)
           : backend === 'ram' ? makeRamKernel()
+          : backend === 'slice' ? makeSliceKernel()
           : isEss ? makeEllipticalSliceKernel() : mhKernel;
         const nWalkers = o.walkers ?? o.chains ?? (backend === 'emcee' ? Math.max(4, 2 * mv.dim + 2) : 4);
         post = driver.runMcmc(mv, kernel, {
@@ -278,6 +280,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
           post.diagnostics.mode = mv.gaussianPrior ? 'exact' : 'fitted';
           post.diagnostics.meanShrinks = (ar > 0) ? 1 / ar : NaN;
         }
+        if (backend === 'slice') post.diagnostics.method = 'slice';
       }
       const total = idx.length;
 
