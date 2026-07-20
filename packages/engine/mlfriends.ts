@@ -54,8 +54,8 @@ function buildRegion(liveU: Float64Array[], prng: () => number, opts: any = {}) 
   // nearest-neighbour whitened distance to a DISTINCT resampled point.
   let r2 = 0;
   for (let b = 0; b < B; b++) {
-    const idx = new Int32Array(K); const present = new Uint8Array(K);
-    for (let i = 0; i < K; i++) { idx[i] = Math.floor(prng() * K); present[idx[i]] = 1; }
+    const idx = new Int32Array(K);
+    for (let i = 0; i < K; i++) idx[i] = Math.floor(prng() * K);
     for (let i = 0; i < K; i++) {
       let best = Infinity;
       for (let j = 0; j < K; j++) { if (idx[j] === i) continue; const d2 = whitenedDist2(L, dim, liveU[i], liveU[idx[j]]); if (d2 < best) best = d2; }

@@ -29,14 +29,38 @@ test('mlfriends: sampled points lie inside the cube and the region', () => {
 });
 
 test('mlfriends: uniform-in-region draws are unbiased (overlap correction)', () => {
-  // Live points clustered so balls overlap heavily on one side; the overlap
-  // correction must NOT over-represent the overlap region. Check the sample mean
-  // matches the region's geometric mean within tolerance over many draws.
+  // Live points widely spread and asymmetrically clustered: a DENSE cluster
+  // near x≈0.3 (tight spread → heavy ball overlap) and a SPARSE cluster near
+  // x≈0.75 (wider spread → little overlap). Without a correct overlap
+  // correction, region.sample() over-represents the heavy-overlap cluster and
+  // its x-mean is pulled toward 0.3. The independent reference — brute-force
+  // rejection sampling in the unit square, accepting iff region.contains(u) —
+  // is uniform over the union BY CONSTRUCTION (no overlap weighting), so it
+  // is a ground truth the sampler's output must match.
   const prng = lcg(3);
-  const live = Array.from({ length: 100 }, () => Float64Array.from([0.5 + 0.05 * (prng() - 0.5), 0.5 + 0.3 * (prng() - 0.5)]));
+  const dense = Array.from({ length: 40 }, () => Float64Array.from([0.3 + 0.02 * (prng() - 0.5), 0.5 + 0.3 * (prng() - 0.5)]));
+  const sparse = Array.from({ length: 12 }, () => Float64Array.from([0.75 + 0.15 * (prng() - 0.5), 0.5 + 0.3 * (prng() - 0.5)]));
+  const live = dense.concat(sparse);
   const region = buildRegion(live, prng);
-  let n = 0, sx = 0;
-  for (let i = 0; i < 5000 && n < 2000; i++) { const u = region.sample(); if (u) { n++; sx += u[0]; } }
-  assert.ok(n > 100);
-  assert.ok(Math.abs(sx / n - 0.5) < 0.05, `x-mean ${sx / n} vs 0.5 (overlap bias check)`);
+
+  let refN = 0, refSx = 0;
+  for (let i = 0; i < 400000 && refN < 4000; i++) {
+    const u = Float64Array.from([prng(), prng()]);
+    if (region.contains(u)) { refN++; refSx += u[0]; }
+  }
+  assert.ok(refN >= 4000, `brute-force reference must collect enough accepts (got ${refN})`);
+  const refMeanX = refSx / refN;
+
+  let sampN = 0, sampSx = 0;
+  for (let i = 0; i < 400000 && sampN < 4000; i++) {
+    const u = region.sample();
+    if (u) { sampN++; sampSx += u[0]; }
+  }
+  assert.ok(sampN >= 4000, `region.sample() must collect enough accepts (got ${sampN})`);
+  const sampMeanX = sampSx / sampN;
+
+  assert.ok(
+    Math.abs(sampMeanX - refMeanX) < 0.03,
+    `sample x-mean ${sampMeanX} vs brute-force uniform-union reference x-mean ${refMeanX}`
+  );
 });
