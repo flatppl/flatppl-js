@@ -270,3 +270,25 @@ test('prior transform: eight-schools full fixture — tau is HalfCauchy via norm
   assert.ok(Math.abs(rec.tau - 5) < 1e-4, `tau ${rec.tau}`);
   assert.ok(rec.tau > 0, 'tau positive-support');
 });
+
+test('prior transform: every coordinate is monotone non-decreasing in its cube coord', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'fixtures/baseline/eight-schools.flatppl'), 'utf8');
+  const { ctx } = ctxFor(src, 100);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  const base = new Float64Array(pt.dim).fill(0.5);
+  for (let c = 0; c < pt.dim; c++) {
+    let prevFlat = -Infinity;
+    for (let k = 1; k < 40; k++) {
+      const u = base.slice(); u[c] = k / 40;
+      const rec = pt.transform(u);
+      // flatten record to the coordinate list to read coord c
+      const flat: number[] = [];
+      for (const nm of pt.latentNames) {
+        const v = rec[nm];
+        if (v instanceof Float64Array) for (const x of v) flat.push(x); else flat.push(v);
+      }
+      assert.ok(flat[c] >= prevFlat - 1e-9, `coord ${c} not monotone at u=${k/40}: ${flat[c]} < ${prevFlat}`);
+      prevFlat = flat[c];
+    }
+  }
+});
