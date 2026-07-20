@@ -1,0 +1,90 @@
+'use strict';
+// Static nested sampling (Skilling 2006). Live points live in the unit cube;
+// the prior transform T maps them to θ. Each iteration removes the lowest-
+// likelihood live point, accumulates it into the evidence with the shrinking
+// prior mass X_i ≈ exp(−i/K), and replaces it with a likelihood-constrained
+// draw obtained by a slice step on the cube coordinates. Posterior samples are
+// the dead points weighted by w_i = L_i (X_{i−1} − X_i).
+function logaddexp(a: number, b: number): number {
+  if (a === -Infinity) return b; if (b === -Infinity) return a;
+  const m = Math.max(a, b); return m + Math.log(Math.exp(a - m) + Math.exp(b - m));
+}
+
+// One likelihood-constrained slice draw on the cube (Neal 2003 stepping-out +
+// shrinkage per coordinate), constraint logLik(T(u)) > Lstar. Returns a new cube
+// point + its record + logLik.
+function constrainedSlice(u0: Float64Array, dim: number, transform: any, logLik: any, Lstar: number, prng: () => number) {
+  const u = u0.slice();
+  const w = 0.3;                                   // initial slice width on [0,1]
+  for (let c = 0; c < dim; c++) {
+    let lo = Math.max(0, u[c] - w * prng());
+    let hi = Math.min(1, lo + w);
+    // stepping-out is bounded by the cube; shrink until the constraint holds.
+    for (let it = 0; it < 60; it++) {
+      const cand = lo + prng() * (hi - lo);
+      const uu = u.slice(); uu[c] = cand;
+      const rec = transform(uu);
+      if (logLik(rec) > Lstar) { u[c] = cand; break; }
+      if (cand < u[c]) lo = cand; else hi = cand;    // shrink toward the current point
+    }
+  }
+  const rec = transform(u);
+  return { u, rec, logl: logLik(rec) };
+}
+
+function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
+  const K = opts.nLive || 400;
+  const dlogz = opts.dlogz != null ? opts.dlogz : 0.5;
+  const prng = opts.prng || Math.random;
+  const maxIter = opts.maxIter || 100000;
+
+  // Initial live points: uniform cube → transform → logLik.
+  const liveU: Float64Array[] = [], liveRec: any[] = [], liveL: number[] = [];
+  for (let i = 0; i < K; i++) {
+    const u = new Float64Array(dim); for (let c = 0; c < dim; c++) u[c] = prng();
+    const rec = transform(u); liveU.push(u); liveRec.push(rec); liveL.push(logLik(rec));
+  }
+
+  const deadRec: any[] = [], deadLogW: number[] = [], deadL: number[] = [];
+  let logZ = -Infinity, logZsq = -Infinity;      // logZsq tracks Σ w_i² for the error
+  let logX = 0;                                  // log prior mass, X_0 = 1
+  let nIter = 0, nEval = K;
+  const logdV = Math.log(1 - Math.exp(-1 / K));  // E[log(X_{i-1}-X_i)] per step ≈ log(X_{i-1}(1-e^{-1/K}))
+
+  for (; nIter < maxIter; nIter++) {
+    // lowest-likelihood live point
+    let lo = 0; for (let i = 1; i < K; i++) if (liveL[i] < liveL[lo]) lo = i;
+    const Lstar = liveL[lo];
+    const logWi = Lstar + logX + logdV;          // w_i = L_i · (X_{i-1}-X_i)
+    logZ = logaddexp(logZ, logWi);
+    logZsq = logaddexp(logZsq, 2 * logWi);
+    deadRec.push(liveRec[lo]); deadLogW.push(logWi); deadL.push(Lstar);
+    // termination: remaining live evidence fraction
+    let maxLive = -Infinity; for (let i = 0; i < K; i++) maxLive = Math.max(maxLive, liveL[i]);
+    const logZremain = maxLive + logX;
+    if (logZremain - logZ < Math.log(dlogz)) { nIter++; break; }
+    // replace with a constrained draw seeded from a random OTHER live point
+    let seed = lo; while (seed === lo && K > 1) seed = Math.floor(prng() * K);
+    const drawn = constrainedSlice(liveU[seed], dim, transform, logLik, Lstar, prng);
+    nEval += 1;
+    liveU[lo] = drawn.u; liveRec[lo] = drawn.rec; liveL[lo] = drawn.logl;
+    logX += -1 / K;                              // X_i = exp(−i/K)
+  }
+  // add the remaining live points, each with mass X_final / K
+  const logXk = logX - Math.log(K);
+  for (let i = 0; i < K; i++) {
+    const logWi = liveL[i] + logXk;
+    logZ = logaddexp(logZ, logWi);
+    logZsq = logaddexp(logZsq, 2 * logWi);
+    deadRec.push(liveRec[i]); deadLogW.push(logWi); deadL.push(liveL[i]);
+  }
+  // information-based error: err ≈ sqrt(H/K), H from the weights; use the
+  // moment estimate logZerr = sqrt(Σ w_i² )/Z as a robust proxy.
+  const logZerr = Math.sqrt(Math.max(0, Math.exp(logZsq - 2 * logZ)));
+  const logWeights = Float64Array.from(deadLogW);
+  return {
+    samples: deadRec, logWeights, logZ, logZerr,
+    nLive: K, nIter, efficiency: deadRec.length / Math.max(1, nEval),
+  };
+}
+module.exports = { runNested, logaddexp };
