@@ -41,7 +41,7 @@ const ARG_NAMES: Record<string, string[]> = {
   Uniform: ['lo', 'hi'], Beta: ['alpha', 'beta'], Gamma: ['shape', 'rate'],
   HalfNormal: ['sigma'], HalfCauchy: ['scale'], Cauchy: ['location', 'scale'],
   Logistic: ['mu', 's'], Weibull: ['shape', 'scale'], Pareto: ['shape', 'scale'],
-  Laplace: ['location', 'scale'], Dirac: ['value'],
+  Laplace: ['location', 'scale'], Dirac: ['value'], InverseGamma: ['shape', 'scale'],
 };
 function resolveParams(distOp: string, argIRs: any[], env: Record<string, any>): any {
   const names = ARG_NAMES[distOp];
@@ -61,6 +61,25 @@ function resolveParams(distOp: string, argIRs: any[], env: Record<string, any>):
 function planLatent(measureIR: any, ctx: any): { count: number; realise: (u: Float64Array, off: number, env: Record<string, any>, localIdx?: number) => number } {
   if (measureIR.kind !== 'call') throw new Error('prior-transform: non-call measure IR');
   const op = measureIR.op;
+  if (op === 'Uniform') {
+    // `Uniform` takes a single `interval(lo,hi)` measure-arg (not two positional
+    // scalars) — resolve lo/hi from the interval's own args and quantile directly,
+    // rather than going through resolveParams/ARG_NAMES.
+    const arg0 = measureIR.args && measureIR.args[0];
+    if (!arg0 || arg0.kind !== 'call' || arg0.op !== 'interval') {
+      throw new Error(`prior-transform: Uniform expects a single interval(lo,hi) argument, got '${arg0 && arg0.op}'`);
+    }
+    const loIR = arg0.args[0];
+    const hiIR = arg0.args[1];
+    return {
+      count: 1,
+      realise: (u, off, env) => {
+        const lo = +sampler.evaluateExpr(loIR, env);
+        const hi = +sampler.evaluateExpr(hiIR, env);
+        return lo + u[off] * (hi - lo);
+      },
+    };
+  }
   if (hasQuantile(op) || ARG_NAMES[op]) {
     // Scalar base distribution: one coord.
     return {

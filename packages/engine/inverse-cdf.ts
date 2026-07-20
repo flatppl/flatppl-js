@@ -45,6 +45,9 @@ const QUANTILE: Record<string, (p: number, q: any) => number> = {
   Pareto:      (p, q) => q.scale / Math.pow(1 - p, 1 / q.shape),   // scale = x_m, shape = α
   Laplace:     (p, q) => { const x = p - 0.5; return q.location - q.scale * Math.sign(x) * Math.log1p(-2 * Math.abs(x)); },
   Dirac:       (_p, q) => q.value,
+  // X~IG(shape,scale) ⇔ scale/X ~ Gamma(shape, rate=1) ⇒ F_X(x)=1-P(shape,scale/x);
+  // invert: x = scale / gammaincinv(1-p, shape).
+  InverseGamma: (p, q) => q.scale / stdlibGammaincinv(1 - p, q.shape),
 };
 
 // True iff a distOp has a registered closed-form / library quantile.

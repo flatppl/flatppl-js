@@ -25,6 +25,8 @@ const CDF: Record<string, (x: number, q: any) => number> = {
   Weibull:     (x, q) => x <= 0 ? 0 : -Math.expm1(-Math.pow(x / q.scale, q.shape)),
   Pareto:      (x, q) => x < q.scale ? 0 : 1 - Math.pow(q.scale / x, q.shape),
   Laplace:     (x, q) => { const z = (x - q.location) / q.scale; return z < 0 ? 0.5 * Math.exp(z) : 1 - 0.5 * Math.exp(-z); },
+  // X~IG(shape,scale) ⇔ scale/X ~ Gamma(shape, rate=1) ⇒ F_X(x)=1-P(shape,scale/x).
+  InverseGamma: (x, q) => x <= 0 ? 0 : 1 - stdlibGammainc(q.scale / x, q.shape),
 };
 function hasCdf(distOp: string): boolean { return Object.prototype.hasOwnProperty.call(CDF, distOp); }
 function cdf(distOp: string, x: number, params: any): number {

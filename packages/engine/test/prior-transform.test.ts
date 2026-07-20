@@ -271,6 +271,59 @@ test('prior transform: eight-schools full fixture — tau is HalfCauchy via norm
   assert.ok(rec.tau > 0, 'tau positive-support');
 });
 
+test('prior transform: partial-pooling fixture — Uniform(interval(0,1)) phi at u=0.5 is 0.5', () => {
+  // GAP A fixture: `phi ~ Uniform(interval(0.0, 1.0))` gives measure IR
+  // {op:'Uniform', args:[{op:'interval', args:[lit 0, lit 1]}]} — one interval
+  // arg, not two positional scalars. Independent oracle: Uniform(0,1)'s
+  // quantile is the identity, so phi(u) = u exactly.
+  const src = fs.readFileSync(path.join(__dirname, 'fixtures/baseline/partial-pooling.flatppl'), 'utf8');
+  const { ctx } = ctxFor(src, 50);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  assert.deepEqual(pt.latentNames, ['phi', 'kappa', 'theta']);
+  assert.equal(pt.dim, 10);   // phi(1) + kappa(1) + theta(N=8)
+  const rec = pt.transform(new Float64Array(pt.dim).fill(0.5));
+  assert.ok(Math.abs(rec.phi - 0.5) < 1e-12, `phi at u=0.5 should be 0.5, got ${rec.phi}`);
+  assert.ok(rec.phi > 0 && rec.phi < 1, `phi=${rec.phi} must lie in (0,1)`);
+  // Monotone in the phi coordinate (index 0), holding the rest at 0.5, and
+  // stays within the unit interval across the grid.
+  let prev = -Infinity;
+  for (let k = 1; k < 20; k++) {
+    const u = new Float64Array(pt.dim).fill(0.5);
+    u[0] = k / 20;
+    const phi = pt.transform(u).phi;
+    assert.ok(phi > prev, `phi not strictly monotone at u[0]=${k / 20}: ${phi} <= ${prev}`);
+    assert.ok(phi > 0 && phi < 1, `phi=${phi} out of (0,1) at u[0]=${k / 20}`);
+    prev = phi;
+  }
+});
+
+test('prior transform: linear-regression fixture — InverseGamma(5,5) sigma2 quantile + finite composition through sigma=sqrt(sigma2)', () => {
+  // GAP B fixture: `sigma2 ~ InverseGamma(5, 5)` was refused ("not invertible")
+  // before InverseGamma got a quantile/cdf. Oracle: scipy.stats.invgamma(a=5,
+  // scale=5).ppf(0.5) = 1.070455477822771 (computed independently via scipy;
+  // see inverse-cdf.test.ts for the same constant against the full p-grid).
+  const src = fs.readFileSync(path.join(__dirname, 'fixtures/baseline/linear-regression.flatppl'), 'utf8');
+  const { ctx } = ctxFor(src, 50);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  assert.deepEqual(pt.latentNames, ['sigma2', 'alpha', 'beta']);
+  assert.equal(pt.dim, 3);
+  const SIGMA2_PPF_HALF = 1.070455477822771;   // scipy oracle
+  const rec = pt.transform(new Float64Array([0.5, 0.7, 0.3]));
+  assert.ok(Math.abs(rec.sigma2 - SIGMA2_PPF_HALF) < 1e-9, `sigma2 ${rec.sigma2} vs scipy ${SIGMA2_PPF_HALF}`);
+  // alpha ~ Normal(0, sigma*3) with sigma=sqrt(sigma2) — a derived binding
+  // sitting between the sigma2 draw and the alpha/beta latents. Independent
+  // closed-form check (not the engine's own probit call): alpha = 3·σ·Φ⁻¹(0.7).
+  const erfinv = require('@stdlib/math-base-special-erfinv');
+  const probit = (p: number) => Math.SQRT2 * erfinv(2 * p - 1);
+  const sigma = Math.sqrt(SIGMA2_PPF_HALF);
+  const alphaExpected = 3 * sigma * probit(0.7);
+  const betaExpected = 3 * sigma * probit(0.3);
+  assert.ok(Number.isFinite(rec.alpha), `alpha must be finite, got ${rec.alpha}`);
+  assert.ok(Number.isFinite(rec.beta), `beta must be finite, got ${rec.beta}`);
+  assert.ok(Math.abs(rec.alpha - alphaExpected) < 1e-6, `alpha ${rec.alpha} vs expected ${alphaExpected}`);
+  assert.ok(Math.abs(rec.beta - betaExpected) < 1e-6, `beta ${rec.beta} vs expected ${betaExpected}`);
+});
+
 test('prior transform: every coordinate is monotone non-decreasing in its cube coord', () => {
   const src = fs.readFileSync(path.join(__dirname, 'fixtures/baseline/eight-schools.flatppl'), 'utf8');
   const { ctx } = ctxFor(src, 100);

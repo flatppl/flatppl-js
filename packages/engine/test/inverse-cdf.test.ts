@@ -22,6 +22,9 @@ const CASES: [string, any, number[], number[]][] = [
   ['Laplace',     { location: 0, scale: 1 },[0.05, 0.5, 0.95],                           [-2.302585, 0, 2.302585]],
   ['HalfNormal',  { sigma: 2 },            [0.05, 0.5, 0.95],                            [0.125414, 1.348980, 3.919928]],
   ['HalfCauchy',  { scale: 1.5 },          [0.05, 0.5, 0.95],                            [0.118053, 1.5, 19.059307]],
+  // scipy.stats.invgamma(a=5, scale=5).ppf([0.01,0.1,0.5,0.9,0.99]) — full precision.
+  ['InverseGamma', { shape: 5, scale: 5 }, [0.01, 0.1, 0.5, 0.9, 0.99],
+    [0.4308626733155887, 0.6255012152142634, 1.070455477822771, 2.055421542970347, 3.908979933575256]],
 ];
 
 for (const [distOp, params, ps, refs] of CASES) {

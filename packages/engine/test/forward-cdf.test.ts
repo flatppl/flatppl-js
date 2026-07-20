@@ -11,6 +11,11 @@ const CASES: [string, any, number[], number[]][] = [
   ['Cauchy',      { location: 0, scale: 5 },  [-5, 0, 5],            [0.25, 0.5, 0.75]],
   ['Beta',        { alpha: 2, beta: 2 }, [0.1, 0.5, 0.9],       [0.028000, 0.5, 0.972000]],
   ['Gamma',       { shape: 2, rate: 1 }, [0.5, 1.678347, 4.0],  [0.090204, 0.5, 0.908422]],
+  // scipy.stats.invgamma(a=5, scale=5).cdf(x) at x = that dist's own ppf([0.01,0.1,0.5,0.9,0.99])
+  // (independently computed via scipy — see inverse-cdf.test.ts for the matching ppf values).
+  ['InverseGamma', { shape: 5, scale: 5 },
+    [0.4308626733155887, 0.6255012152142634, 1.070455477822771, 2.055421542970347, 3.908979933575256],
+    [0.01, 0.1, 0.5, 0.9, 0.99]],
 ];
 for (const [distOp, params, xs, refs] of CASES) {
   test(`forward-cdf ${distOp} matches scipy cdf`, () => {
@@ -24,6 +29,12 @@ test('cdf∘quantile round-trips to identity', () => {
   for (const p of [0.05, 0.3, 0.7, 0.95]) {
     const x = quantile('Gamma', p, { shape: 2, rate: 1 });
     assert.ok(Math.abs(cdf('Gamma', x, { shape: 2, rate: 1 }) - p) < 1e-6);
+  }
+});
+test('InverseGamma cdf∘quantile round-trips to identity', () => {
+  for (const p of [0.01, 0.1, 0.5, 0.9, 0.99]) {
+    const x = quantile('InverseGamma', p, { shape: 5, scale: 5 });
+    assert.ok(Math.abs(cdf('InverseGamma', x, { shape: 5, scale: 5 }) - p) < 1e-9, `p=${p} x=${x}`);
   }
 });
 test('truncatedQuantile inverts the truncated CDF (HalfCauchy = Cauchy on [0,inf))', () => {
