@@ -55,3 +55,13 @@ test('prior transform: scalar independent latents match forward draws (KS)', () 
   assert.ok(ks(muT, muRef) < 0.1, `mu KS ${ks(muT, muRef)}`);
   assert.ok(ks(lamT, lamRef) < 0.1, `lam KS ${ks(lamT, lamRef)}`);
 });
+
+test('prior transform: coordSupports reflect each latent\'s real support', () => {
+  const { ctx } = ctxFor(SRC, 100);
+  const d = ctx.derivations['posterior'];
+  const pt = buildPriorTransform(ctx, d);
+  assert.equal(pt.coordSupports.length, 2);
+  assert.equal(pt.coordSupports[0].kind, 'real');       // mu ~ Normal(1,2)
+  assert.notEqual(pt.coordSupports[1].kind, 'real');    // lam ~ Exponential(0.5)
+  assert.equal(pt.coordSupports[1].kind, 'positive');
+});

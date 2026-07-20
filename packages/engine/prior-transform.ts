@@ -63,7 +63,14 @@ function buildPriorTransform(ctx: any, d: any) {
   if (sources.length === 0) throw new Error('buildPriorTransform: prior has no stochastic draws');
   const leaf = modelSpec.enumerateLatents(d, ctx);
   const shapeOf: Record<string, any> = {};
-  for (const l of leaf) { if (l.discrete) throw new Error(`nested backend: latent '${l.name}' is discrete`); shapeOf[l.name] = l.shape; }
+  const supportOf: Record<string, any> = {};
+  for (const l of leaf) {
+    // Discrete latents have no continuous quantile; planLatent throws 'op not
+    // yet supported' for their distribution op (nested refusal message refined
+    // in the composite/refusal task).
+    shapeOf[l.name] = l.shape;
+    supportOf[l.name] = l.support;
+  }
 
   // Fixed-value env seed (data constants).
   const fixedEnv: Record<string, any> = {};
@@ -78,8 +85,7 @@ function buildPriorTransform(ctx: any, d: any) {
     const plan = planLatent(measureIR);
     plans.push({ name: latentName, plan });
     latentNames.push(latentName);
-    const shp = shapeOf[latentName] || { kind: 'scalar' };
-    for (let i = 0; i < plan.count; i++) coordSupports.push(shp.support || { kind: 'real' });
+    for (let i = 0; i < plan.count; i++) coordSupports.push(supportOf[latentName] || { kind: 'real' });
     dim += plan.count;
   }
 
