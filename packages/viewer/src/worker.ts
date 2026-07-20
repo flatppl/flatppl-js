@@ -250,13 +250,26 @@ function poolMeasures(measures: any[], globalPerParam?: any): any {
     let sZ = 0, kZ = 0; for (const m of measures) { const z = (m.diagnostics || {}).logZ; if (Number.isFinite(z)) { sZ += Math.exp(z - mxZ); kZ++; } }
     const amisLogZ = kZ > 0 ? mxZ + Math.log(sZ / kZ) : NaN;
     diag = { method: 'amis', logZ: amisLogZ, ess: essSum, essFrac: nSamp > 0 ? essSum / nSamp : 0, K: kMax, nSamples: nSamp, perParam };
+  } else if (first.diagnostics && first.diagnostics.method === 'nested') {
+    // Nested currently always runs as a single share (see runMcmcPool's
+    // else-branch below), so this is unreachable in practice — poolMeasures
+    // returns measures[0] as-is via the length===1 fast path above, which
+    // already carries logTotalmass = logZ (set in mat-density.ts). Kept for
+    // parity with the other methods / in case nested ever gets pooled.
+    diag = { method: 'nested', logZ: first.diagnostics.logZ, logZerr: first.diagnostics.logZerr,
+      nLive: first.diagnostics.nLive, efficiency: first.diagnostics.efficiency,
+      ess: first.diagnostics.ess, perParam: pp, nSamples: nSamp };
   } else {
     diag = { acceptRate: accSum / measures.length, perParam: pp, nSamples: nSamp };
   }
   // Attach to the record AND every field measure: the viewer renders a single
   // field on its own and reads its diagnostics for the draw-count label.
   for (const fn in fields) { if (fields[fn]) fields[fn].diagnostics = diag; }
-  return { shape: 'record', fields, logWeights: null, logTotalmass: 0, n_eff: totalN, diagnostics: diag };
+  // Nested's evidence readout is the record's logTotalmass (mirrors the
+  // single-worker measure, which mat-density.ts sets directly) — without this
+  // a pooled nested run would show logTotalmass=0 in the evidence badge.
+  const logTotalmass = diag.method === 'nested' && Number.isFinite(diag.logZ) ? diag.logZ : 0;
+  return { shape: 'record', fields, logWeights: null, logTotalmass, n_eff: totalN, diagnostics: diag };
 }
 
 // Run an MCMC posterior off the main thread, parallelised across a worker pool.
@@ -269,7 +282,10 @@ function poolMeasures(measures: any[], globalPerParam?: any): any {
 //    same proposal, same length as a single-worker run — identical quality — with
 //    the sampling phase spread across cores. split-R̂ / bulk-ESS recomputed once
 //    over all chains globally.
-//  • elliptical-slice / other — single worker (no adapted proposal to freeze).
+//  • elliptical-slice / nested / other — single worker: elliptical-slice has
+//    no adapted proposal to freeze; nested is a single sequential live-point
+//    run (not parallel across independent chains), so pooling it would just
+//    fragment one run into smaller, less-live-point-rich sub-runs.
 export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<any> {
   const source = ctx.currentSource;
   // Each worker re-processes `source` to build a self-contained ctx; for a

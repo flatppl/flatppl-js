@@ -74,7 +74,14 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
   // (high-d / degenerate regions), so termination is never blocked on it.
   let region: any = null, sinceRebuild = 0;
   const rebuild = opts.rebuild || Math.max(1, (K / 10) | 0);
-  const useRegion = opts.useRegion !== false;
+  // Region is OPT-IN, not the default: on rasch-1pl's non-identifiable ridge
+  // a single global whitened metric can't bound the constrained region, so
+  // MLFriends rebuilds thrash and cost 4.4x a plain region-free slice with no
+  // acceptance gain. Region-free static NS is correct and not slower on hard
+  // posteriors; pass useRegion:true for easy/low-dim posteriors where the
+  // region's rejection sampling beats the slice fallback (see the efficiency
+  // test in nested-sample.test.ts).
+  const useRegion = opts.useRegion === true;
   const regionTries = opts.regionTries || 200;
 
   for (; nIter < maxIter; nIter++) {

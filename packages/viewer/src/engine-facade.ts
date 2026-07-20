@@ -25,14 +25,16 @@ export function getMeasure(ctx: Ctx, name: any) {
   if (ctx.measureCache.has(name)) return Promise.resolve(ctx.measureCache.get(name));
   if (!ctx.derivationsState) return Promise.reject(new Error('no model loaded'));
 
-  // MCMC backends (mh / emcee) for a bayesupdate posterior run OFF the main
-  // thread in a worker pool — non-blocking, and parallel across independent
-  // chains (MH) / ensembles (emcee). Only the posterior binding takes this
-  // path; its sub-measures (priors, etc.) materialise normally inside each
-  // worker. Other bindings under any backend use the main-thread path below.
+  // MCMC/sampling backends (mh / emcee / nested / ...) for a bayesupdate
+  // posterior run OFF the main thread in a worker pool — non-blocking, and
+  // parallel across independent chains (MH) / ensembles (emcee) where the
+  // backend supports it (nested runs in a single worker — see runMcmcPool).
+  // Only the posterior binding takes this path; its sub-measures (priors,
+  // etc.) materialise normally inside each worker. Other bindings under any
+  // backend use the main-thread path below.
   const io = ctx.inferenceOpts;
   const deriv = ctx.derivationsState.derivations[name];
-  if (io && (io.backend === 'mh' || io.backend === 'ram' || io.backend === 'slice' || io.backend === 'emcee' || io.backend === 'amis' || io.backend === 'smc' || io.backend === 'elliptical-slice-sampler')
+  if (io && (io.backend === 'mh' || io.backend === 'ram' || io.backend === 'slice' || io.backend === 'emcee' || io.backend === 'amis' || io.backend === 'smc' || io.backend === 'elliptical-slice-sampler' || io.backend === 'nested')
       && deriv && deriv.kind === 'bayesupdate' && (ctx as any).currentSource) {
     const p = runMcmcPool(ctx, name, io);
     p.then((m: any) => ctx.measureCache.set(name, m), () => {});

@@ -241,8 +241,12 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         // seeded LCG so a run is reproducible (matches AMIS/SMC determinism expectations)
         let sState = ((o.seed ?? 1) >>> 0) || 1;
         const prng = () => { sState = (1103515245 * sState + 12345) >>> 0; return sState / 4294967296; };
+        // Default sliceSweeps 2 (nested-sample.ts's own internal default is 5):
+        // region-free slice is the default replacement step now (region is
+        // opt-in), and 2 sweeps roughly halves the per-replacement eval cost
+        // while the closed-form Gaussian evidence test still passes.
         const res = runNested(pt.transform, pt.dim, mv.likOf,
-          { nLive: o.nLive || 400, dlogz: o.dlogz ?? 0.5, sliceSweeps: o.sliceSweeps, prng });
+          { nLive: o.nLive || 400, dlogz: o.dlogz ?? 0.5, sliceSweeps: o.sliceSweeps != null ? o.sliceSweeps : 2, prng });
         nDraws = res.samples.length;
         // θ-space scorer records → per-coordinate draws (nested samples are already
         // CONSTRAINED, so read fields directly — no mv.constrainAll).
