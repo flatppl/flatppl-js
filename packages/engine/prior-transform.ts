@@ -57,7 +57,7 @@ function resolveParams(distOp: string, argIRs: any[], env: Record<string, any>):
 // A per-latent plan: how many cube coords it consumes and how to realise it from
 // (coords, env). Built once per latent; `realise` returns the latent's value and
 // its cube-coord count. Extended by later tasks (iid/truncate/pushfwd/composite).
-function planLatent(measureIR: any): { count: number; realise: (u: Float64Array, off: number, env: Record<string, any>) => number } {
+function planLatent(measureIR: any, ctx: any): { count: number; realise: (u: Float64Array, off: number, env: Record<string, any>) => number } {
   if (measureIR.kind !== 'call') throw new Error('prior-transform: non-call measure IR');
   const op = measureIR.op;
   if (hasQuantile(op) || ARG_NAMES[op]) {
@@ -75,7 +75,7 @@ function planLatent(measureIR: any): { count: number; realise: (u: Float64Array,
     const nVal = measureIR.args[1];
     const n = (nVal && nVal.kind === 'lit') ? nVal.value : null;
     if (!Number.isInteger(n) || n <= 0) throw new Error('prior-transform: iid size must be a positive integer literal');
-    const innerPlan = planLatent(inner);          // recurse — inner is a base dist (or truncate/pushfwd via later tasks)
+    const innerPlan = planLatent(inner, ctx);     // recurse — inner is a base dist (or truncate/pushfwd via later tasks)
     if (innerPlan.count !== 1) throw new Error('prior-transform: iid inner measure must be scalar per element');
     return {
       count: n,
@@ -84,7 +84,7 @@ function planLatent(measureIR: any): { count: number; realise: (u: Float64Array,
   }
 
   if (op === 'normalize') {
-    return planLatent(measureIR.args[0]);        // normalizing a truncation → its truncated quantile
+    return planLatent(measureIR.args[0], ctx);   // normalizing a truncation → its truncated quantile
   }
   if (op === 'truncate') {
     const D = measureIR.args[0];
@@ -99,6 +99,29 @@ function planLatent(measureIR: any): { count: number; realise: (u: Float64Array,
         const hi = evalBound(region.args[1], env);
         if (!(lo <= hi)) throw new Error(`prior-transform: truncate lo>hi (lo=${lo},hi=${hi})`);
         return truncatedQuantile(D.op, u[off], params, lo, hi);
+      },
+    };
+  }
+
+  if (op === 'pushfwd') {
+    const fnRef = measureIR.args[0];
+    const base = measureIR.args[1];
+    const basePlan = planLatent(base, ctx);
+    if (basePlan.count !== 1) throw new Error('prior-transform: pushfwd base must be scalar');
+    // The forward function is a `functionof` binding referenced by name.
+    const fb = ctx.bindings && ctx.bindings.get && ctx.bindings.get(fnRef && fnRef.name);
+    const fir = fb && (fb.ir || fb.node || fb);
+    if (!fir || fir.op !== 'functionof' || !fir.body || !fir.params || !fir.params[0]) {
+      throw new Error(`prior-transform: cannot resolve pushfwd forward function '${fnRef && fnRef.name}'`);
+    }
+    const placeholder = fir.params[0];
+    const body = fir.body;
+    return {
+      count: 1,
+      realise: (u, off, env) => {
+        const baseVal = basePlan.realise(u, off, env);
+        const y = sampler.evaluateExpr(body, Object.assign({}, env, { [placeholder]: baseVal }));
+        return typeof y === 'number' ? y : +y;
       },
     };
   }
@@ -155,7 +178,7 @@ function buildPriorTransform(ctx: any, d: any) {
   let dim = 0;
   for (const { latentName, measureName } of sources) {
     const measureIR = orchestrator.expandMeasure(measureName, { derivations: ctx.derivations, bindings: ctx.bindings });
-    const plan = planLatent(measureIR);
+    const plan = planLatent(measureIR, ctx);
     plans.push({ name: latentName, plan });
     latentNames.push(latentName);
     for (let i = 0; i < plan.count; i++) coordSupports.push(supportOf[latentName] || { kind: 'real' });

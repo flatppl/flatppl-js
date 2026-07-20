@@ -193,6 +193,24 @@ posterior = bayesupdate(L, prior)
   assert.ok(zHi > -1 && zHi < 1, `z(0.9)=${zHi} must lie within (-1,1)`);
 });
 
+test('prior transform: pushfwd applies fn forward to the base quantile', () => {
+  const SRC_PF = `
+flatppl_compat = "0.1"
+b ~ pushfwd(fn(20.0 * _), Beta(2.0, 2.0))
+prior = lawof(record(b = b))
+y ~ Normal.(b, 1.0)
+K = kernelof(record(y = y), b = b)
+L = likelihoodof(K, record(y = [0.0]))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx } = ctxFor(SRC_PF, 100);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  assert.equal(pt.dim, 1);
+  assert.ok(Math.abs(pt.transform(new Float64Array([0.5])).b - 10) < 1e-4);
+  // monotone increasing in u
+  assert.ok(pt.transform(new Float64Array([0.9])).b > pt.transform(new Float64Array([0.1])).b);
+});
+
 test('prior transform: eight-schools full fixture — tau is HalfCauchy via normalize(truncate)', () => {
   const src = fs.readFileSync(path.join(__dirname, 'fixtures/baseline/eight-schools.flatppl'), 'utf8');
   const { ctx } = ctxFor(src, 100);
