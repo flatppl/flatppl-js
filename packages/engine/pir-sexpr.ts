@@ -279,6 +279,26 @@ function _atomToSexpr(v: any, numType?: string) {
   return JSON.stringify(v);
 }
 
+// Engine-internal op name → spec §11 FlatPIR op name, for calls whose
+// head differs between the two only in name (same arg shape). Spec §07
+// "Field and element access" defines ONE unified op, `get(container,
+// selectors...)`, covering array/tuple indexing AND record field access
+// (`r.a` ≡ `get(r, "a")`). The engine keeps `get_field` as a distinct
+// internal op (analyzer/typeinfer/sampler/lower all dispatch on it, e.g.
+// to discriminate record access from array indexing without re-deriving
+// operand types) — but that split is an implementation detail, not a
+// FlatPIR surface form. Normalize it away here, at the write boundary,
+// so emitted FlatPIR always uses the spec op. `get_field`'s args
+// (`[container, "field"]`) are already identical to `get`'s, so this is
+// a pure rename of the head symbol, not a shape change.
+const OP_TO_SPEC: Record<string, string> = {
+  get_field: 'get',
+};
+
+function _opToSexpr(op: string): string {
+  return OP_TO_SPEC[op] || op;
+}
+
 function _callToSexpr(e: any, ind: string, mopts?: any): string {
   // Reified callables take the spec §11 fixed-arity form, not the
   // generic call shape. (kernelof is accepted defensively; the lowerer
@@ -301,7 +321,7 @@ function _callToSexpr(e: any, ind: string, mopts?: any): string {
     parts.push('%call');
     parts.push(_exprToSexpr(e.callee, ind, mopts ? { meta: true } : null));
   } else {
-    parts.push(e.op);
+    parts.push(_opToSexpr(e.op));
   }
   // `%meta` is NOT emitted inside the call — it wraps the whole call
   // (spec §11; applied by `_exprToSexpr` via `_wrapMeta`). Inner exprs
