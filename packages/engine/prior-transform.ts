@@ -12,6 +12,7 @@ const sampler      = require('./sampler.ts');
 const modelSpec    = require('./model-spec.ts');
 const { quantile, hasQuantile } = require('./inverse-cdf.ts');
 const { truncatedQuantile } = require('./forward-cdf.ts');
+const { recognizeCompositeIidDraw } = require('./composite-prior.ts');
 
 // Evaluate a param IR to a number in env; null on failure.
 function evalParam(ir: any, env: Record<string, any>): number | null {
@@ -57,7 +58,7 @@ function resolveParams(distOp: string, argIRs: any[], env: Record<string, any>):
 // A per-latent plan: how many cube coords it consumes and how to realise it from
 // (coords, env). Built once per latent; `realise` returns the latent's value and
 // its cube-coord count. Extended by later tasks (iid/truncate/pushfwd/composite).
-function planLatent(measureIR: any, ctx: any): { count: number; realise: (u: Float64Array, off: number, env: Record<string, any>) => number } {
+function planLatent(measureIR: any, ctx: any): { count: number; realise: (u: Float64Array, off: number, env: Record<string, any>, localIdx?: number) => number } {
   if (measureIR.kind !== 'call') throw new Error('prior-transform: non-call measure IR');
   const op = measureIR.op;
   if (hasQuantile(op) || ARG_NAMES[op]) {
@@ -126,7 +127,7 @@ function planLatent(measureIR: any, ctx: any): { count: number; realise: (u: Flo
     };
   }
 
-  throw new Error(`prior-transform: latent measure op '${op}' not yet supported by the nested backend`);
+  throw new Error(`nested backend: prior form '${op}' is not invertible; not eligible for nested sampling`);
 }
 
 function buildPriorTransform(ctx: any, d: any) {
@@ -172,13 +173,53 @@ function buildPriorTransform(ctx: any, d: any) {
     }
   }
 
+  // Coerce a resolved value (JS array | Value{shape,data} | scalar) to a flat JS array.
+  function asArr(x: any): number[] {
+    if (Array.isArray(x)) return x;
+    if (x && x.data && (x.data instanceof Float64Array || Array.isArray(x.data))) return Array.from(x.data);
+    return [x];
+  }
+
+  // A composite-iid draw (kernel-broadcast over a user function returning an
+  // iid block, e.g. `p ~ beta_row_K.(a,b)` where each row has its own params)
+  // has no single measure IR `planLatent` can walk — `enumerateLatents`
+  // reports it as a fromPool placeholder shape (dims:[0], not the real size).
+  // Build its plan directly from the recognizer: `comp.D` is the inner iid
+  // axis length (N); `G` (row count) is the length of the first resolved
+  // sub-param vector. The block is [G,D] row-major — element `i` maps to row
+  // `g = ⌊i/D⌋`, whose per-row params come from `comp.sub[name][g]`.
+  function makeCompositePlan(comp: any, buildEnv: Record<string, any>) {
+    const D = comp.D;
+    const g0 = asArr(sampler.evaluateExpr(comp.sub[comp.paramNames[0]], buildEnv));
+    const G = g0.length;
+    return {
+      count: G * D,
+      realise: (u: Float64Array, off: number, env: Record<string, any>, localIdx?: number) => {
+        const g = Math.floor((localIdx || 0) / D);
+        const rowParams: any = {};
+        for (const pn of comp.paramNames) {
+          const pv = asArr(sampler.evaluateExpr(comp.sub[pn], env));
+          rowParams[pn] = pv[g < pv.length ? g : pv.length - 1];
+        }
+        return quantile(comp.distOp, u[off], rowParams);
+      },
+    };
+  }
+
   const plans: Array<{ name: string; plan: ReturnType<typeof planLatent> }> = [];
   const latentNames: string[] = [];
   const coordSupports: any[] = [];
   let dim = 0;
   for (const { latentName, measureName } of sources) {
-    const measureIR = orchestrator.expandMeasure(measureName, { derivations: ctx.derivations, bindings: ctx.bindings });
-    const plan = planLatent(measureIR, ctx);
+    const comp = recognizeCompositeIidDraw(measureName, ctx);
+    let plan: ReturnType<typeof planLatent>;
+    if (comp) {
+      const seedEnv = Object.assign({}, fixedEnv); refreshDerived(seedEnv);
+      plan = makeCompositePlan(comp, seedEnv);
+    } else {
+      const measureIR = orchestrator.expandMeasure(measureName, { derivations: ctx.derivations, bindings: ctx.bindings });
+      plan = planLatent(measureIR, ctx);
+    }
     plans.push({ name: latentName, plan });
     latentNames.push(latentName);
     for (let i = 0; i < plan.count; i++) coordSupports.push(supportOf[latentName] || { kind: 'real' });
@@ -196,7 +237,7 @@ function buildPriorTransform(ctx: any, d: any) {
         rec[name] = x; env[name] = x;
       } else {
         const v = new Float64Array(plan.count);
-        for (let i = 0; i < plan.count; i++) v[i] = plan.realise(u, off + i, env);
+        for (let i = 0; i < plan.count; i++) v[i] = plan.realise(u, off + i, env, i);
         rec[name] = v; env[name] = Array.from(v);
       }
       off += plan.count;

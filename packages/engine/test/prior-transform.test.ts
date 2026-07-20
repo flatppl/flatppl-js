@@ -211,6 +211,53 @@ posterior = bayesupdate(L, prior)
   assert.ok(pt.transform(new Float64Array([0.9])).b > pt.transform(new Float64Array([0.1])).b);
 });
 
+test('prior transform: composite-iid Beta block realises per-row quantiles', () => {
+  const MODEL = `
+G = 2
+N = 3
+n_data = [[10, 10, 10], [10, 10, 10]]
+r_data = [[7, 8, 6], [5, 6, 4]]
+a = [2.0, 3.0]
+b = [5.0, 4.0]
+beta_row_K = (a_g, b_g) -> iid(Beta(a_g, b_g), N)
+p ~ beta_row_K.(a, b)
+binomial_row_K = (n_row, p_row) -> Binomial.(n_row, p_row)
+r ~ binomial_row_K.(n_data, p)
+prior = lawof(record(p = p))
+forward_kernel = kernelof(record(r = r), p = p)
+L = likelihoodof(forward_kernel, record(r = r_data))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx } = ctxFor(MODEL, 50);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  assert.equal(pt.dim, 6);                                  // G·N = 2·3
+  const { quantile } = require('../inverse-cdf.ts');
+  // u=0.5 for every coord: element (g,j) = Beta⁻¹(0.5; a[g], b[g]). Row 0 uses (2,5); row 1 uses (3,4).
+  const rec = pt.transform(new Float64Array(6).fill(0.5));
+  assert.ok(rec.p instanceof Float64Array && rec.p.length === 6);
+  for (let g = 0; g < 2; g++) for (let j = 0; j < 3; j++) {
+    const want = quantile('Beta', 0.5, { alpha: [2, 3][g], beta: [5, 4][g] });
+    assert.ok(Math.abs(rec.p[g * 3 + j] - want) < 1e-9, `p[${g},${j}] = ${rec.p[g*3+j]} vs ${want}`);
+  }
+});
+
+test('prior transform: unsupported (discrete) prior form refuses loudly', () => {
+  const SRC_BAD = `
+flatppl_compat = "0.1"
+n ~ Poisson(3.0)
+prior = lawof(record(n = n))
+y ~ Normal.(n, 1.0)
+K = kernelof(record(y = y), n = n)
+L = likelihoodof(K, record(y = [0.0]))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx } = ctxFor(SRC_BAD, 100);
+  assert.throws(() => {
+    const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+    pt.transform(new Float64Array(pt.dim).fill(0.5));   // in case the throw is lazy (per-realise)
+  }, /not invertible|not eligible|not yet supported|no quantile/);
+});
+
 test('prior transform: eight-schools full fixture — tau is HalfCauchy via normalize(truncate)', () => {
   const src = fs.readFileSync(path.join(__dirname, 'fixtures/baseline/eight-schools.flatppl'), 'utf8');
   const { ctx } = ctxFor(src, 100);
