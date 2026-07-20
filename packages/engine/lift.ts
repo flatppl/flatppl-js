@@ -2765,6 +2765,33 @@ function liftInlineSubexpressions(bindings: any) {
   }
 }
 
+// Whether `ir` is a (possibly nested) literal numeric/boolean array —
+// `vector(lit, lit, ...)` at any rank, e.g. the rank-2 `[[0.0]]`
+// kernel-param / observed-data literals a flattened nested-iid density
+// lowering emits (spec §03 "vectors of vectors"; determiniser: a
+// composed/nested `iid` peels to a single `sum(broadcast(
+// builtin_logdensityof, K, <rank-d size-1 array-of-records>,
+// <rank-d obs>))`, whose params/obs are rank-d bracket literals, not
+// flat rank-1 ones). Recurses through nested `vector(...)` calls so a
+// literal array of ANY nesting depth qualifies, not just one level —
+// the original one-level-only check rejected `[[0.0]]` (its single
+// element is itself a `vector` call, not a `lit`/`const`), which
+// silently dropped the containing binding from the derivation graph
+// (`isEvaluable` returning false ⇒ `classifyDerivation` returns null)
+// instead of scoring it.
+function _isLiteralNumericVector(ir: any): boolean {
+  if (!ir || ir.kind !== 'call' || ir.op !== 'vector' || !Array.isArray(ir.args)) {
+    return false;
+  }
+  for (const a of ir.args) {
+    if (!a) return false;
+    if (a.kind === 'lit' || a.kind === 'const') continue;
+    if (_isLiteralNumericVector(a)) continue;
+    return false;
+  }
+  return true;
+}
+
 /**
  * Whether the worker's evaluateExpr can compute this IR end-to-end
  * given a numeric env. Conservative — returns false for anything we're
@@ -2792,14 +2819,8 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
       // aggregate body in fusion (a) Step 2 indexes via `get(vec,
       // .j)`. Treating literal-only vectors as evaluable lets that
       // pattern classify cleanly.
-      if (ir.op === 'vector' && Array.isArray(ir.args)) {
-        let allLit = true;
-        for (const a of ir.args) {
-          if (!a || (a.kind !== 'lit' && a.kind !== 'const')) {
-            allLit = false; break;
-          }
-        }
-        if (allLit) return true;
+      if (ir.op === 'vector' && Array.isArray(ir.args) && _isLiteralNumericVector(ir)) {
+        return true;
       }
       if (!ir.op || !EVALUABLE_OPS.has(ir.op)) return false;
       // rand(state, measure) — the measure arg is a measure IR passed

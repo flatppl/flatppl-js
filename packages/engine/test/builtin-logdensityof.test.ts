@@ -176,6 +176,76 @@ lp = builtin_logdensityof(Normal, record(mu = 0.0, sigma = 1.0), 0.0)
   assert.ok(Math.abs(lp - STD_NORMAL_LOGP_AT_ZERO) < 1e-12);
 });
 
+// =====================================================================
+// Rank-d (nested) kernel-broadcast density — the determiniser's
+// flattened nested-iid lowering.
+// =====================================================================
+//
+// `logdensityof(iid(iid(Normal(0,1),2),3), x)` (spec §06: recursing
+// through nesting → Σ over ALL leaves) determinises to a SINGLE
+// `sum(broadcast(builtin_logdensityof, K, params, obs))` — no
+// `functionof`/`get0` unroll (flatppl-rust `crates/determinizer`
+// `lower_iid`'s flatten path). For a d≥2-nested iid, params/obs are
+// rank-d bracket literals (`mu = [[0.0]]` against a rank-2 `[3,2]`
+// obs); those literals carry an outerRank tag (spec §03 "vectors of
+// vectors are not matrices"), which the generic per-cell broadcast
+// loop would otherwise mis-read as "pass this block whole per cell"
+// instead of "every bracket level is an iid axis". Both cases below
+// score the SAME FlatPDL surface shape flatppl-rust actually emits
+// (verified against a real `flatppl determinize` run); the rank-1
+// case pins the pre-existing (unaffected) path, the rank-2/rank-3
+// cases pin the fix. Oracles: independent scipy/hand closed-form
+// Σ norm.logpdf(x, 0, 1) over the flattened observations.
+test('surface: rank-1 (simple iid) kernel-broadcast density — unaffected baseline', () => {
+  const src = `
+flatppl_compat = "0.1"
+
+data = [0.5, -0.3, 1.2]
+lp = sum(builtin_logdensityof.(Normal, broadcast(record, mu = [0.0], sigma = [1.0]), data))
+`;
+  const r = engine.processSource(src);
+  const orchestrator = require('../orchestrator.ts');
+  const derivs = orchestrator.buildDerivations(r.bindings, r.loweredModule);
+  const lp = derivs.fixedValues.get('lp');
+  assert.ok(typeof lp === 'number', `lp should be a number, got ${JSON.stringify(lp)}`);
+  // scipy: sum(norm.logpdf(v,0,1) for v in [0.5,-0.3,1.2]) = -3.646815599614018
+  assert.ok(Math.abs(lp - (-3.646815599614018)) < 1e-9, `got ${lp}`);
+});
+
+test('surface: rank-2 (twice-nested iid) kernel-broadcast density', () => {
+  const src = `
+flatppl_compat = "0.1"
+
+data = [[0.5, -0.3], [1.2, 0.1], [-0.7, 0.9]]
+lp = sum(builtin_logdensityof.(Normal, broadcast(record, mu = [[0.0]], sigma = [[1.0]]), data))
+`;
+  const r = engine.processSource(src);
+  const orchestrator = require('../orchestrator.ts');
+  const derivs = orchestrator.buildDerivations(r.bindings, r.loweredModule);
+  const lp = derivs.fixedValues.get('lp');
+  assert.ok(typeof lp === 'number', `lp should be a number, got ${JSON.stringify(lp)}`);
+  // scipy: sum(norm.logpdf(v,0,1) for row in data for v in row)
+  //      = -7.058631199228036
+  assert.ok(Math.abs(lp - (-7.058631199228036)) < 1e-9, `got ${lp}`);
+});
+
+test('surface: rank-3 (thrice-nested iid) kernel-broadcast density', () => {
+  const src = `
+flatppl_compat = "0.1"
+
+data = [[[0.5, -0.3], [1.2, 0.1]], [[-0.7, 0.9], [0.2, -1.1]]]
+lp = sum(builtin_logdensityof.(Normal, broadcast(record, mu = [[[0.0]]], sigma = [[[1.0]]]), data))
+`;
+  const r = engine.processSource(src);
+  const orchestrator = require('../orchestrator.ts');
+  const derivs = orchestrator.buildDerivations(r.bindings, r.loweredModule);
+  const lp = derivs.fixedValues.get('lp');
+  assert.ok(typeof lp === 'number', `lp should be a number, got ${JSON.stringify(lp)}`);
+  // hand closed-form: sum(-0.5*log(2*pi) - 0.5*v*v for v in the 8 leaves)
+  //      = -9.521508265637381
+  assert.ok(Math.abs(lp - (-9.521508265637381)) < 1e-9, `got ${lp}`);
+});
+
 test('surface: lowerer rejects non-distribution kernel arg, records lowerError', () => {
   const src = `
 flatppl_compat = "0.1"

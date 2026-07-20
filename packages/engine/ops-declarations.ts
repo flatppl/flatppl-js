@@ -2337,6 +2337,147 @@ function _inlineHeldKernelArgs(fn: any, sources: any[]): any {
   };
 }
 
+// =====================================================================
+// Rank-d (nested) kernel-broadcast DENSITY — flattened evaluation
+// =====================================================================
+//
+// The determiniser flattens a composed/nested `iid` density (spec §06:
+// `logdensityof(iid(M,n),x) = Σᵢ logdensityof(M,xᵢ)`, recursing through
+// nesting → Σ over ALL leaves, order-independent) to ONE
+// `sum(broadcast(builtin_logdensityof, K, <params>, <obs>))` — no
+// `functionof`/`get0` unroll. For a ONCE-nested `iid` the kernel params
+// are a rank-1 size-1 `record`-array (`mu = [0.0]`) broadcasting
+// against a rank-1 obs; that shape already worked via the generic
+// per-cell `_broadcastApply` below. For a TWICE-or-more-nested `iid`
+// the params/obs are rank-≥2 bracket literals (e.g. `mu = [[0.0]]`
+// against a `[3,2]` obs) — per spec §03 "vectors of vectors are not
+// matrices", such a literal carries an `outerRank` tag, and the
+// generic broadcast loop (`classifyAxisStructure` / `_broadcastApply`)
+// treats an outerRank-tagged collection as "loop the OUTER axis only,
+// pass the inner block WHOLE per cell" — the right convention for a
+// per-row VECTOR-valued kernel, but the WRONG one here: a univariate
+// kernel's `x` must be a plain scalar per cell, and EVERY bracket-
+// nesting level is an independent iid axis to loop over, not a block
+// to hand the kernel whole. Left as-is, that mismatch either throws
+// (`builtin_logdensityof(...): univariate kernel needs a scalar
+// variate`) or silently mis-shapes, and since this runs inside the
+// FIXED-PHASE resolver (`fixed-values.ts`), the exception is caught
+// and turned into "unresolved" — surfacing many layers up as the
+// unhelpful `no derivation for '<binding>'`, not a shape diagnostic.
+//
+// `_tryFlattenKernelBroadcastDensity` recognises the exact flattened
+// shape (`builtin_logdensityof(<kernel>, <kernel_input>, <x>)` per
+// cell, with `<kernel_input>` sourced from a bare
+// `broadcast(record, field = …, …)`) and, ONLY when `<x>`'s evaluated
+// shape is genuinely rank ≥ 2, computes the density directly: every
+// field + `x` is read via its raw `.shape`/`.data` (the `outerRank`
+// tag is ignored here on purpose — ALL axes are loop axes for this
+// primitive), unified via the ordinary equal-or-1 broadcast rule
+// (`value-ops._broadcastOutShape`, the same rule every other
+// elementwise op already uses), and `builtin_logdensityof` is invoked
+// once per fully-flattened leaf; the result is an ordinary (untagged)
+// flat Value of the broadcast shape, which the enclosing `sum(...)`
+// then reduces over ALL leaves exactly as spec §06 requires. Returns
+// `null` — meaning "not this shape, use the existing generic path
+// unchanged" — for anything that doesn't match, so the already-
+// verified rank-1 (simple, once-nested `iid`) path never routes
+// through here and keeps its exact prior behaviour.
+function _tryFlattenKernelBroadcastDensity(fn: any, sources: any[], ctx: any): any {
+  if (!fn || !fn.body || fn.body.kind !== 'call'
+      || fn.body.op !== 'builtin_logdensityof') return null;
+  const bodyArgs = fn.body.args;
+  if (!Array.isArray(bodyArgs) || bodyArgs.length !== 3) return null;
+  const densityPrims = require('./density-prims.ts');
+  const kernelName = _headNameOf(bodyArgs[0]);
+  if (kernelName == null || !densityPrims.isBuiltinKernel(kernelName)) return null;
+  // Exactly 2 params should remain — kernel_input and x — once the
+  // kernel NAME itself was held/inlined by `_inlineHeldKernelArgs`.
+  if (!Array.isArray(fn.params) || fn.params.length !== 2
+      || !Array.isArray(sources) || sources.length !== 2) {
+    return null;
+  }
+  const kernelInputSourceIR = sources[0];
+  const xSourceIR = sources[1];
+  // Only the determiniser's flattened-iid params shape: a bare
+  // `broadcast(record, field = …, …)` kwarg-form call. Anything else
+  // (a positional kernel input, a plain record, a bare scalar) falls
+  // through to the generic path unchanged — out of scope here.
+  if (!kernelInputSourceIR || kernelInputSourceIR.kind !== 'call'
+      || kernelInputSourceIR.op !== 'broadcast'
+      || !Array.isArray(kernelInputSourceIR.args)
+      || kernelInputSourceIR.args.length !== 1) return null;
+  const recordHead = kernelInputSourceIR.args[0];
+  if (!recordHead || recordHead.kind !== 'ref' || recordHead.name !== 'record') return null;
+  const fieldKwargs = kernelInputSourceIR.kwargs;
+  if (!fieldKwargs || Object.keys(fieldKwargs).length === 0) return null;
+
+  const xVal = ctx.evaluateExpr(xSourceIR, ctx.env);
+  // Bail unless `x` is genuinely rank ≥ 2 — the already-verified rank-1
+  // (simple iid) case never reaches the flattened path.
+  if (!valueLib.isValue(xVal) || xVal.shape.length < 2) return null;
+
+  const fieldNames = Object.keys(fieldKwargs);
+  const fieldVals: any[] = fieldNames.map(
+    (k) => ctx.evaluateExpr(fieldKwargs[k], ctx.env));
+  // Every field must be a plain scalar or a Value — anything else
+  // (a nested JS array that never collapsed to a Value, a record, a
+  // kernel/fn object) is outside this primitive's contract; defer to
+  // the generic path so it can raise its own diagnostic.
+  for (const v of fieldVals) {
+    if (v != null && typeof v === 'object' && !valueLib.isValue(v)) return null;
+  }
+
+  // Gather every operand's FULL shape (ignore any `outerRank` tag —
+  // every bracket-nesting level is a loop axis for this scoring
+  // broadcast, spec §06 "Σ over all leaves").
+  const shapes: number[][] = [xVal.shape];
+  for (const v of fieldVals) if (valueLib.isValue(v)) shapes.push(v.shape);
+  let outShape: number[];
+  try {
+    outShape = valueOps._broadcastOutShape('builtin_logdensityof', shapes).outShape;
+  } catch (_e) {
+    return null;   // shape mismatch — let the generic path raise its own diagnostic
+  }
+  const rank = outShape.length;
+  function stridesFor(shape: number[]): number[] {
+    if (shape.length === 0) return new Array(rank).fill(0);
+    const st = new Array(rank);
+    let acc = 1;
+    for (let a = rank - 1; a >= 0; a--) {
+      st[a] = (shape[a] === 1) ? 0 : acc;
+      acc *= shape[a];
+    }
+    return st;
+  }
+  const xStrides = stridesFor(xVal.shape);
+  const fieldStrides = fieldVals.map(
+    (v) => (valueLib.isValue(v) ? stridesFor(v.shape) : null));
+
+  const total = outShape.reduce((a: number, b: number) => a * b, 1);
+  const out = new Float64Array(total);
+  const idx = new Array(rank).fill(0);
+  for (let flat = 0; flat < total; flat++) {
+    let rem = flat;
+    for (let a = rank - 1; a >= 0; a--) {
+      idx[a] = rem % outShape[a];
+      rem = Math.floor(rem / outShape[a]);
+    }
+    let xOff = 0;
+    for (let a = 0; a < rank; a++) xOff += idx[a] * xStrides[a];
+    const kernelInput: any = {};
+    for (let f = 0; f < fieldNames.length; f++) {
+      const v = fieldVals[f];
+      if (!valueLib.isValue(v)) { kernelInput[fieldNames[f]] = v; continue; }
+      let off = 0;
+      const st = fieldStrides[f]!;
+      for (let a = 0; a < rank; a++) off += idx[a] * st[a];
+      kernelInput[fieldNames[f]] = v.data[off];
+    }
+    out[flat] = densityPrims.builtinLogdensityof(kernelName, kernelInput, xVal.data[xOff]);
+  }
+  return { shape: outShape, data: out };
+}
+
 function _broadcastLogical(ir: any, ctx: any): any {
   // Fast path: `broadcasted(<scalar_op>)(args)` and the equivalent
   // dotted-binary / `op.(…)` lowered forms dispatch directly to the
@@ -2385,6 +2526,14 @@ function _broadcastLogical(ir: any, ctx: any): any {
   // they reach `_resolveKernelName` as IR, not as an evaluated value.
   const held = _inlineHeldKernelArgs(fn, sources);
   fn = held.fn;
+  // Rank-d (nested, d≥2) kernel-broadcast DENSITY: try the flattened
+  // evaluator first (see its header comment). It only fires for the
+  // exact `builtin_logdensityof(<kernel>, <record-broadcast>, <x>)`
+  // shape with a genuinely rank-≥2 `x`; anything else (including every
+  // rank-1 case already covered by tests) returns null and falls
+  // through to the unchanged generic path below.
+  const flattened = _tryFlattenKernelBroadcastDensity(fn, held.sources, ctx);
+  if (flattened !== null) return flattened;
   const inputs: any = held.sources.map((s: any) => ctx.evaluateExpr(s, ctx.env));
   // Delegate the per-element iteration to the engine's existing
   // `_broadcastApply` — Phase 5c keeps the impl shared between the
