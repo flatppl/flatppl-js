@@ -11,32 +11,46 @@ function logaddexp(a: number, b: number): number {
 }
 
 // One likelihood-constrained slice draw on the cube (Neal 2003 stepping-out +
-// shrinkage per coordinate), constraint logLik(T(u)) > Lstar. Returns a new cube
-// point + its record + logLik.
-function constrainedSlice(u0: Float64Array, dim: number, transform: any, logLik: any, Lstar: number, prng: () => number) {
+// shrinkage per coordinate), constraint logLik(T(u)) > Lstar. Sweeps over all
+// coordinates `nSweeps` times so the replacement point decorrelates from its
+// seed instead of moving in just one coordinate (a single sweep is a weak MCMC
+// move on real, non-separable likelihoods). On a coordinate whose shrink loop
+// exhausts its iterations without finding an accepting candidate, that
+// coordinate is left unchanged — the current point always satisfies the
+// constraint, so it is always safe to keep it. Returns the new cube point +
+// its record + logLik + the number of logLik(transform(...)) evaluations
+// actually performed (for accounting the true sampling efficiency).
+function constrainedSlice(u0: Float64Array, dim: number, transform: any, logLik: any, Lstar: number, prng: () => number, nSweeps: number = 5) {
   const u = u0.slice();
   const w = 0.3;                                   // initial slice width on [0,1]
-  for (let c = 0; c < dim; c++) {
-    let lo = Math.max(0, u[c] - w * prng());
-    let hi = Math.min(1, lo + w);
-    // stepping-out is bounded by the cube; shrink until the constraint holds.
-    for (let it = 0; it < 60; it++) {
-      const cand = lo + prng() * (hi - lo);
-      const uu = u.slice(); uu[c] = cand;
-      const rec = transform(uu);
-      if (logLik(rec) > Lstar) { u[c] = cand; break; }
-      if (cand < u[c]) lo = cand; else hi = cand;    // shrink toward the current point
+  let nEval = 0;
+  for (let sweep = 0; sweep < nSweeps; sweep++) {
+    for (let c = 0; c < dim; c++) {
+      let lo = Math.max(0, u[c] - w * prng());
+      let hi = Math.min(1, lo + w);
+      // stepping-out is bounded by the cube; shrink until the constraint holds.
+      for (let it = 0; it < 60; it++) {
+        const cand = lo + prng() * (hi - lo);
+        const uu = u.slice(); uu[c] = cand;
+        const rec = transform(uu);
+        nEval++;
+        if (logLik(rec) > Lstar) { u[c] = cand; break; }
+        if (cand < u[c]) lo = cand; else hi = cand;    // shrink toward the current point
+      }
     }
   }
   const rec = transform(u);
-  return { u, rec, logl: logLik(rec) };
+  nEval++;
+  return { u, rec, logl: logLik(rec), nEval };
 }
 
 function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
   const K = opts.nLive || 400;
+  if (K < 2) throw new Error(`runNested requires nLive >= 2 (got ${K}): the constrained-draw seed picks a live point other than the one being replaced, which is impossible with a single live point`);
   const dlogz = opts.dlogz != null ? opts.dlogz : 0.5;
   const prng = opts.prng || Math.random;
   const maxIter = opts.maxIter || 100000;
+  const sliceSweeps = opts.sliceSweeps != null ? opts.sliceSweeps : 5;
 
   // Initial live points: uniform cube → transform → logLik.
   const liveU: Float64Array[] = [], liveRec: any[] = [], liveL: number[] = [];
@@ -59,16 +73,19 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
     logZ = logaddexp(logZ, logWi);
     logZsq = logaddexp(logZsq, 2 * logWi);
     deadRec.push(liveRec[lo]); deadLogW.push(logWi); deadL.push(Lstar);
+    logX += -1 / K;                              // X_i = exp(−i/K); must land BEFORE the
+                                                   // termination check and any break, so both
+                                                   // it and the post-loop closure see X_i, not
+                                                   // the stale X_{i-1} used for logWi above.
     // termination: remaining live evidence fraction
     let maxLive = -Infinity; for (let i = 0; i < K; i++) maxLive = Math.max(maxLive, liveL[i]);
     const logZremain = maxLive + logX;
     if (logZremain - logZ < Math.log(dlogz)) { nIter++; break; }
     // replace with a constrained draw seeded from a random OTHER live point
     let seed = lo; while (seed === lo && K > 1) seed = Math.floor(prng() * K);
-    const drawn = constrainedSlice(liveU[seed], dim, transform, logLik, Lstar, prng);
-    nEval += 1;
+    const drawn = constrainedSlice(liveU[seed], dim, transform, logLik, Lstar, prng, sliceSweeps);
+    nEval += drawn.nEval;
     liveU[lo] = drawn.u; liveRec[lo] = drawn.rec; liveL[lo] = drawn.logl;
-    logX += -1 / K;                              // X_i = exp(−i/K)
   }
   // add the remaining live points, each with mass X_final / K
   const logXk = logX - Math.log(K);
