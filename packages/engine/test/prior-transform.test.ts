@@ -85,3 +85,80 @@ posterior = bayesupdate(L, prior)
   assert.ok(rec.z[2] > 1.9 && rec.z[2] < 2.0);                          // Φ⁻¹(0.975)≈1.96
   assert.ok(rec.z[3] < -1.9 && rec.z[3] > -2.0);                        // Φ⁻¹(0.025)≈−1.96
 });
+
+test('prior transform: conditional iid (funnel) — theta tracks realised mu,sig', () => {
+  // Brief's model used `sig ~ HalfNormal(1.0)`, but HalfNormal is absent from
+  // SAMPLEABLE_DISTRIBUTIONS (ir-shared.ts) — the worker/classifier gate the
+  // rest of buildDerivations uses — so `sig ~ HalfNormal(1.0)` fails
+  // classification (bayesupdate boundary error) before prior-transform even
+  // runs; that's an engine gap orthogonal to this task, not something to fix
+  // here. HalfNormal remains a valid *inner* base measure for the ladder
+  // (ARG_NAMES / inverse-cdf.ts already support it — see the coordSupports
+  // test above using Exponential similarly). Swapped in `Exponential(1.0)`
+  // for the scale latent, which is on both SAMPLEABLE_DISTRIBUTIONS and
+  // ARG_NAMES, to keep the conditional-iid wiring under test without
+  // tripping the unrelated classification gap.
+  const SRC_FUNNEL = `
+flatppl_compat = "0.1"
+mu ~ Normal(0.0, 1.0)
+sig ~ Exponential(1.0)
+theta ~ iid(Normal(mu, sig), 3)
+prior = lawof(record(mu = mu, sig = sig, theta = theta))
+y ~ Normal.(theta, 1.0)
+K = kernelof(record(y = y), mu = mu, sig = sig, theta = theta)
+L = likelihoodof(K, record(y = [0.0, 0.0, 0.0]))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx: c2 } = ctxFor(SRC_FUNNEL, 100);
+  const pt2 = buildPriorTransform(c2, c2.derivations['posterior']);
+  assert.deepEqual(pt2.latentNames, ['mu', 'sig', 'theta']);
+  assert.equal(pt2.dim, 5);   // 1 + 1 + 3
+  // u = [Φ(mu-coord), Exponential(sig-coord), theta coords...]. 0.9772499 /
+  // 0.0227501 are Φ(±2) (verified via @stdlib erfinv below, not eyeballed —
+  // the brief's own "≈1.96" annotation for these u's was off: Φ(1.96)=0.975,
+  // not 0.9772499).
+  const u = new Float64Array([0.8413447, 0.5, 0.5, 0.9772499, 0.0227501]);
+  const rec = pt2.transform(u);
+  const mu = rec.mu, sig = rec.sig;         // mu = Φ⁻¹(0.8413)=1 ; sig = Exponential(1) median = ln2 ≈ 0.693147
+  assert.ok(Math.abs(mu - 1) < 1e-4, `mu ${mu}`);
+  assert.ok(Math.abs(sig - Math.LN2) < 1e-4, `sig ${sig}`);
+  const erfinv = require('@stdlib/math-base-special-erfinv');
+  const probit = (p: number) => Math.SQRT2 * erfinv(2 * p - 1);
+  const z = probit(0.9772499);              // independent oracle for the theta1/theta2 coord, ≈2.0
+  // theta[0] = mu + sig·Φ⁻¹(0.5) = mu ; theta[1] = mu + sig·z ; theta[2] = mu − sig·z
+  assert.ok(Math.abs(rec.theta[0] - mu) < 1e-4, `theta0 ${rec.theta[0]}`);
+  assert.ok(Math.abs(rec.theta[1] - (mu + sig * z)) < 1e-3, `theta1 ${rec.theta[1]}`);
+  assert.ok(Math.abs(rec.theta[2] - (mu - sig * z)) < 1e-3, `theta2 ${rec.theta[2]}`);
+});
+
+test('prior transform: named derived binding between parent draw and child latent params', () => {
+  // `logm = log(m)` sits between the parent draw `m` and the child latent
+  // `b ~ LogNormal(logm, 0.5)`. Without refreshDerived seeding `env.logm`,
+  // resolveParams throws (unresolved ref) — this is the load-bearing case
+  // the funnel test above cannot exercise (there, children reference direct
+  // draws already threaded into env by tasks 2-3). `m` uses Exponential(1.0)
+  // rather than the brief's HalfNormal(1.0) for the same classification-gate
+  // reason noted above.
+  const SRC_DERIVED = `
+flatppl_compat = "0.1"
+m ~ Exponential(1.0)
+logm = log(m)
+b ~ LogNormal(logm, 0.5)
+prior = lawof(record(m = m, b = b))
+y ~ Normal.(b, 1.0)
+K = kernelof(record(y = y), m = m, b = b)
+L = likelihoodof(K, record(y = [0.0]))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx } = ctxFor(SRC_DERIVED, 100);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  assert.deepEqual(pt.latentNames, ['m', 'b']);
+  assert.equal(pt.dim, 2);
+  // u = [0.5, 0.5]: m = Exponential(1) median = ln2; Φ⁻¹(0.5) = 0 so
+  // b = exp(logm + 0.5·0) = exp(log(m)) = m (independent oracle: identity,
+  // not a re-derivation of the engine's own LogNormal quantile).
+  const u = new Float64Array([0.5, 0.5]);
+  const rec = pt.transform(u);
+  assert.ok(Math.abs(rec.m - Math.LN2) < 1e-6, `m ${rec.m}`);   // Exponential(1) median = ln2
+  assert.ok(Math.abs(rec.b - rec.m) < 1e-6, `b ${rec.b} vs m ${rec.m}`);
+});

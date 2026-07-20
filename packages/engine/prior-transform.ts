@@ -89,6 +89,30 @@ function buildPriorTransform(ctx: any, d: any) {
   const fixedEnv: Record<string, any> = {};
   if (ctx.fixedValues) ctx.fixedValues.forEach((v: any, k: string) => { fixedEnv[k] = v; });
 
+  // Derived (non-draw) bindings — e.g. `logm = log(m)` sitting between a
+  // parent draw and a child latent's dist params (`b ~ LogNormal(logm, 0.5)`).
+  // buildDerivations' lift pass already cached each binding's lowered IR on
+  // `.ir` (module-context-aware — reusing it beats re-lowering the raw AST
+  // ourselves), so collecting derived bindings is just: skip draws (handled
+  // by `plans` below) and anything already fixed, keep everything else that
+  // lowered cleanly. `refreshDerived` evaluates each into `env` and is called
+  // once after seeding `fixedEnv` and again after every realised latent, so a
+  // derived binding that depends on a just-realised parent becomes visible to
+  // the next latent's params. A binding not yet resolvable (still missing a
+  // later parent) is silently skipped — it will resolve on a later call.
+  const derivedBindings: Array<{ name: string; ir: any }> = [];
+  if (ctx.bindings) {
+    ctx.bindings.forEach((b: any, k: string) => {
+      if (!b || b.type === 'draw' || (k in fixedEnv) || !b.ir) return;
+      derivedBindings.push({ name: k, ir: b.ir });
+    });
+  }
+  function refreshDerived(env: Record<string, any>): void {
+    for (const db of derivedBindings) {
+      try { env[db.name] = sampler.evaluateExpr(db.ir, env); } catch (_) { /* not yet resolvable */ }
+    }
+  }
+
   const plans: Array<{ name: string; plan: ReturnType<typeof planLatent> }> = [];
   const latentNames: string[] = [];
   const coordSupports: any[] = [];
@@ -104,6 +128,7 @@ function buildPriorTransform(ctx: any, d: any) {
 
   function transform(u: Float64Array): Record<string, any> {
     const env: Record<string, any> = Object.assign({}, fixedEnv);
+    refreshDerived(env);
     const rec: Record<string, any> = {};
     let off = 0;
     for (const { name, plan } of plans) {
@@ -116,6 +141,7 @@ function buildPriorTransform(ctx: any, d: any) {
         rec[name] = v; env[name] = Array.from(v);
       }
       off += plan.count;
+      refreshDerived(env);
     }
     return rec;
   }
