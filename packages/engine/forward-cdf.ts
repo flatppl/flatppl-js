@@ -18,7 +18,7 @@ const CDF: Record<string, (x: number, q: any) => number> = {
   Uniform:     (x, q) => x <= q.lo ? 0 : (x >= q.hi ? 1 : (x - q.lo) / (q.hi - q.lo)),
   Beta:        (x, q) => x <= 0 ? 0 : (x >= 1 ? 1 : stdlibBetainc(x, q.alpha, q.beta)),
   Gamma:       (x, q) => x <= 0 ? 0 : stdlibGammainc(q.rate * x, q.shape),   // P(shape, rate·x)
-  Cauchy:      (x, q) => 0.5 + Math.atan((x - q.loc) / q.scale) / Math.PI,
+  Cauchy:      (x, q) => 0.5 + Math.atan((x - q.location) / q.scale) / Math.PI,
   HalfCauchy:  (x, q) => x <= 0 ? 0 : 2 * Math.atan(x / q.scale) / Math.PI,
   HalfNormal:  (x, q) => x <= 0 ? 0 : 2 * normCdf(x / q.sigma) - 1,
   Logistic:    (x, q) => 1 / (1 + Math.exp(-(x - q.mu) / q.s)),
