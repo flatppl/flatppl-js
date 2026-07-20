@@ -1,6 +1,8 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const path = require('node:path');
 const { ctxFor } = require('./_ctx-factory.ts');
 const { buildPriorTransform } = require('../prior-transform.ts');
 
@@ -161,4 +163,17 @@ posterior = bayesupdate(L, prior)
   const rec = pt.transform(u);
   assert.ok(Math.abs(rec.m - Math.LN2) < 1e-6, `m ${rec.m}`);   // Exponential(1) median = ln2
   assert.ok(Math.abs(rec.b - rec.m) < 1e-6, `b ${rec.b} vs m ${rec.m}`);
+});
+
+test('prior transform: eight-schools full fixture — tau is HalfCauchy via normalize(truncate)', () => {
+  const src = fs.readFileSync(path.join(__dirname, 'fixtures/baseline/eight-schools.flatppl'), 'utf8');
+  const { ctx } = ctxFor(src, 100);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  assert.deepEqual(pt.latentNames, ['mu', 'tau', 'theta']);
+  assert.equal(pt.dim, 10);                     // 1 + 1 + 8
+  // tau = truncate(Cauchy(0,5), [0,inf)) quantile at u=0.5 → 5 (half-Cauchy median).
+  const u = new Float64Array(10).fill(0.5);
+  const rec = pt.transform(u);
+  assert.ok(Math.abs(rec.tau - 5) < 1e-4, `tau ${rec.tau}`);
+  assert.ok(rec.tau > 0, 'tau positive-support');
 });

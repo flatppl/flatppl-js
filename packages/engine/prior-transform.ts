@@ -11,10 +11,20 @@ const orchestrator = require('./orchestrator.ts');
 const sampler      = require('./sampler.ts');
 const modelSpec    = require('./model-spec.ts');
 const { quantile, hasQuantile } = require('./inverse-cdf.ts');
+const { truncatedQuantile } = require('./forward-cdf.ts');
 
 // Evaluate a param IR to a number in env; null on failure.
 function evalParam(ir: any, env: Record<string, any>): number | null {
   try { const v = sampler.evaluateExpr(ir, env); return typeof v === 'number' ? v : +v; } catch (_) { return null; }
+}
+
+// Evaluate a truncation bound IR — handles the ±inf sentinel that a plain
+// evaluateExpr can't (there's no numeric literal for infinity in the IR).
+function evalBound(ir: any, env: Record<string, any>): number {
+  if (ir && ir.kind === 'const' && ir.name === 'inf') return Infinity;
+  if (ir && ir.kind === 'call' && ir.op === 'neg' && ir.args && ir.args[0] && ir.args[0].kind === 'const' && ir.args[0].name === 'inf') return -Infinity;
+  const v = evalParam(ir, env);
+  return v == null ? NaN : v;
 }
 
 // Map a base distribution's arg IRs → the params object the ladder expects.
@@ -64,6 +74,25 @@ function planLatent(measureIR: any): { count: number; realise: (u: Float64Array,
     return {
       count: n,
       realise: (u, off, env) => innerPlan.realise(u, off, env),  // each coord independently through the inner F⁻¹
+    };
+  }
+
+  if (op === 'normalize') {
+    return planLatent(measureIR.args[0]);        // normalizing a truncation → its truncated quantile
+  }
+  if (op === 'truncate') {
+    const D = measureIR.args[0];
+    const region = measureIR.args[1];
+    if (!D || D.kind !== 'call' || !ARG_NAMES[D.op]) throw new Error(`prior-transform: truncate base '${D && D.op}' unsupported`);
+    if (!region || region.kind !== 'call' || region.op !== 'interval') throw new Error('prior-transform: truncate region must be interval(lo,hi)');
+    return {
+      count: 1,
+      realise: (u, off, env) => {
+        const params = resolveParams(D.op, D.args, env);
+        const lo = evalBound(region.args[0], env);
+        const hi = evalBound(region.args[1], env);
+        return truncatedQuantile(D.op, u[off], params, lo, hi);
+      },
     };
   }
 
