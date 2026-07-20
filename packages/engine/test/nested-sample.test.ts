@@ -17,6 +17,18 @@ test('nested: 1-D Gaussian×Gaussian evidence matches closed form', () => {
   assert.ok(Math.abs(res.logZ - logZexact) < 5 * res.logZerr + 0.05, `logZ ${res.logZ} vs ${logZexact} (err ${res.logZerr})`);
 });
 
+test('nested: region rejection keeps evidence correct and lifts efficiency', () => {
+  const sigmaL = 2.0;
+  const transform = (u: Float64Array) => ({ theta: quantile('Normal', u[0], { mu: 0, sigma: 1 }) });
+  const LN2PI = Math.log(2 * Math.PI);
+  const logLik = (rec: any) => -0.5 * (rec.theta / sigmaL) ** 2 - 0.5 * (LN2PI + 2 * Math.log(sigmaL));
+  let s = 999 >>> 0; const prng = () => { s = (1103515245 * s + 12345) >>> 0; return s / 4294967296; };
+  const res = runNested(transform, 1, logLik, { nLive: 300, dlogz: 0.01, prng, useRegion: true });
+  const logZexact = -0.5 * (LN2PI + Math.log(1 + sigmaL ** 2));
+  assert.ok(Math.abs(res.logZ - logZexact) < 0.1, `logZ ${res.logZ} vs ${logZexact}`);
+  assert.ok(res.efficiency > 0.10, `region efficiency ${res.efficiency} should beat region-free ~0.02`);
+});
+
 test('nested: nLive < 2 throws (constrained-draw seed needs another live point)', () => {
   const transform = (u: Float64Array) => ({ theta: quantile('Normal', u[0], { mu: 0, sigma: 1 }) });
   const logLik = (rec: any) => -0.5 * rec.theta ** 2;

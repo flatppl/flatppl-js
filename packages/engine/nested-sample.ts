@@ -1,4 +1,5 @@
 'use strict';
+const { buildRegion } = require('./mlfriends.ts');
 // Static nested sampling (Skilling 2006). Live points live in the unit cube;
 // the prior transform T maps them to θ. Each iteration removes the lowest-
 // likelihood live point, accumulates it into the evidence with the shrinking
@@ -65,6 +66,17 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
   let nIter = 0, nEval = K;
   const logdV = Math.log(1 - Math.exp(-1 / K));  // E[log(X_{i-1}-X_i)] per step ≈ log(X_{i-1}(1-e^{-1/K}))
 
+  // MLFriends region: proposes constrained draws by rejection (far cheaper
+  // than a region-free slice once the live set concentrates around the
+  // mode). Rebuilt every `rebuild` iterations so its radius tracks the
+  // shrinking constrained prior; a stale region under-covers and biases the
+  // evidence. Falls back to the slice step when region rejection stalls
+  // (high-d / degenerate regions), so termination is never blocked on it.
+  let region: any = null, sinceRebuild = 0;
+  const rebuild = opts.rebuild || Math.max(1, (K / 10) | 0);
+  const useRegion = opts.useRegion !== false;
+  const regionTries = opts.regionTries || 200;
+
   for (; nIter < maxIter; nIter++) {
     // lowest-likelihood live point
     let lo = 0; for (let i = 1; i < K; i++) if (liveL[i] < liveL[lo]) lo = i;
@@ -81,9 +93,31 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
     let maxLive = -Infinity; for (let i = 0; i < K; i++) maxLive = Math.max(maxLive, liveL[i]);
     const logZremain = maxLive + logX;
     if (logZremain - logZ < Math.log(dlogz)) { nIter++; break; }
-    // replace with a constrained draw seeded from a random OTHER live point
-    let seed = lo; while (seed === lo && K > 1) seed = Math.floor(prng() * K);
-    const drawn = constrainedSlice(liveU[seed], dim, transform, logLik, Lstar, prng, sliceSweeps);
+    // replace with a likelihood-constrained draw: region rejection first
+    // (cheap once the region is tight), slice as the fallback.
+    let drawn;
+    if (useRegion) {
+      if (!region || sinceRebuild >= rebuild) { region = buildRegion(liveU, prng, opts.region || {}); sinceRebuild = 0; }
+      sinceRebuild++;
+      let ev = 0, found: any = null;
+      for (let t = 0; t < regionTries && !found; t++) {
+        const u = region.sample();
+        if (!u) continue;
+        const rec = transform(u); ev++;
+        const logl = logLik(rec);
+        if (logl > Lstar) found = { u, rec, logl, nEval: ev };
+      }
+      if (found) {
+        drawn = found;
+      } else {
+        let seed = lo; while (seed === lo && K > 1) seed = Math.floor(prng() * K);
+        drawn = constrainedSlice(liveU[seed], dim, transform, logLik, Lstar, prng, sliceSweeps);
+        drawn.nEval += ev;                             // account the wasted region tries
+      }
+    } else {
+      let seed = lo; while (seed === lo && K > 1) seed = Math.floor(prng() * K);
+      drawn = constrainedSlice(liveU[seed], dim, transform, logLik, Lstar, prng, sliceSweeps);
+    }
     nEval += drawn.nEval;
     liveU[lo] = drawn.u; liveRec[lo] = drawn.rec; liveL[lo] = drawn.logl;
   }
