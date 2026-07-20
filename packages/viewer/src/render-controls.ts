@@ -474,7 +474,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     blankOpt.value = '__forward__'; blankOpt.textContent = '—';
     sel.appendChild(blankOpt);
   }
-  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['ram', 'RAM'], ['slice', 'slice'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC'], ['elliptical-slice-sampler', 'ESS']]) {
+  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['ram', 'RAM'], ['slice', 'slice'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC'], ['nested', 'nested'], ['elliptical-slice-sampler', 'ESS']]) {
     const o = document.createElement('option');
     o.value = v; o.textContent = t;
     sel.appendChild(o);
@@ -485,6 +485,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     sel.title = 'Posterior inference backend. IS = importance sampling (default); '
       + 'MH / RAM / slice / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
       + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence); '
+      + 'nested = nested sampling (robust on multimodal posteriors; reports evidence logZ); '
       + 'ESS = elliptical slice sampling (gradient- and tuning-free).';
   } else {
     // Forward / tractable plots draw directly — no backend to pick. Blank +
@@ -601,7 +602,11 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   numRow('chain', ['smc'], function () { return opts.smcSteps; }, function (v) { opts.smcSteps = v == null ? 12 : v; });
   numRow('CESS ratio', ['smc'], function () { return opts.smcCESS; }, function (v) { opts.smcCESS = v == null ? 0.7 : v; },
     { step: 0.05, min: 0.05, max: 0.99 });
-  numRow('seed', ['mh', 'ram', 'slice', 'emcee', 'amis', 'smc', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
+  numRow('live points', ['nested'], function () { return opts.nLive; }, function (v) { opts.nLive = v == null ? 400 : v; },
+    { min: 2 });
+  numRow('dlogz', ['nested'], function () { return opts.dlogz; }, function (v) { opts.dlogz = v == null ? 0.5 : v; },
+    { step: 0.05, min: 0.01 });
+  numRow('seed', ['mh', 'ram', 'slice', 'emcee', 'amis', 'smc', 'nested', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
   // Forward draw count + seed — shown for IS (its importance draws ARE the
   // global forward draws) and for the blanked forward mode on non-posterior
   // plots. These write ctx.SAMPLE_COUNT / ctx.rootSeed, not opts.

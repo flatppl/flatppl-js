@@ -212,7 +212,7 @@ export interface Ctx {
   /** Inference backend + knobs for posterior (bayesupdate) measures. The
    *  engine's matBayesupdate reads this off the matCtx; 'is' (default) is the
    *  importance-sampling path, 'mh'/'emcee' run the MCMC driver. */
-  inferenceOpts: { backend: string; chains: number; walkers: number | null; warmup: number; draws: number; seed: number | null; amisIters: number; amisSamples: number; smcParticles: number; smcSteps: number; smcCESS: number };
+  inferenceOpts: { backend: string; chains: number; walkers: number | null; warmup: number; draws: number; seed: number | null; amisIters: number; amisSamples: number; smcParticles: number; smcSteps: number; smcCESS: number; nLive: number; dlogz: number };
   /** Shared onChange closure for the inference-backend selector. Clears
    *  caches, persists the choice, and re-renders. Set once in main.ts init;
    *  consumed by the record-measure plot toolbar (bayesupdate-only). */
