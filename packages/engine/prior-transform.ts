@@ -54,6 +54,19 @@ function planLatent(measureIR: any): { count: number; realise: (u: Float64Array,
       },
     };
   }
+  if (op === 'iid') {
+    const inner = measureIR.args[0];
+    const nVal = measureIR.args[1];
+    const n = (nVal && nVal.kind === 'lit') ? nVal.value : null;
+    if (!Number.isInteger(n) || n <= 0) throw new Error('prior-transform: iid size must be a positive integer literal');
+    const innerPlan = planLatent(inner);          // recurse — inner is a base dist (or truncate/pushfwd via later tasks)
+    if (innerPlan.count !== 1) throw new Error('prior-transform: iid inner measure must be scalar per element');
+    return {
+      count: n,
+      realise: (u, off, env) => innerPlan.realise(u, off, env),  // each coord independently through the inner F⁻¹
+    };
+  }
+
   throw new Error(`prior-transform: latent measure op '${op}' not yet supported by the nested backend`);
 }
 

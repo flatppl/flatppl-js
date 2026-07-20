@@ -65,3 +65,23 @@ test('prior transform: coordSupports reflect each latent\'s real support', () =>
   assert.notEqual(pt.coordSupports[1].kind, 'real');    // lam ~ Exponential(0.5)
   assert.equal(pt.coordSupports[1].kind, 'positive');
 });
+
+test('prior transform: iid(Normal(0,1), 4) yields a 4-vector, coords standard-normal', () => {
+  const SRC_IID = `
+flatppl_compat = "0.1"
+z ~ iid(Normal(0.0, 1.0), 4)
+prior = lawof(record(z = z))
+y ~ Normal.(z, 1.0)
+K = kernelof(record(y = y), z = z)
+L = likelihoodof(K, record(y = [0.0, 0.0, 0.0, 0.0]))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx } = ctxFor(SRC_IID, 100);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  assert.equal(pt.dim, 4);
+  const rec = pt.transform(new Float64Array([0.5, 0.5, 0.975, 0.025]));
+  assert.ok(rec.z instanceof Float64Array && rec.z.length === 4);
+  assert.ok(Math.abs(rec.z[0]) < 1e-9 && Math.abs(rec.z[1]) < 1e-9);   // Φ⁻¹(0.5)=0
+  assert.ok(rec.z[2] > 1.9 && rec.z[2] < 2.0);                          // Φ⁻¹(0.975)≈1.96
+  assert.ok(rec.z[3] < -1.9 && rec.z[3] > -2.0);                        // Φ⁻¹(0.025)≈−1.96
+});
