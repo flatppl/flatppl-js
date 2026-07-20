@@ -177,7 +177,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   }
 
   // 4. Async setup: build logPi / logPiBatch / priorLikBatch / probePrior.
-  const { logPi, logPiBatch, priorLikBatch, probePrior } = await buildLogPi(ctx, posteriorDeriv);
+  const { logPi, logPiBatch, priorLikBatch, probePrior, likOf } = await buildLogPi(ctx, posteriorDeriv);
 
   // 4a. Prior-tractability probe. Build a probe point from every latent that HAS
   //     a pool (pool atom 0); latents without a pool are skipped individually but
@@ -359,6 +359,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     logPosteriorBatch,
     logPriorLikBatch,
     logPosteriorConstrained,
+    likOf,
     initFromPrior,
     gaussianPrior,
     latentNames,
