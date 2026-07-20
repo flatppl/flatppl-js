@@ -165,6 +165,34 @@ posterior = bayesupdate(L, prior)
   assert.ok(Math.abs(rec.b - rec.m) < 1e-6, `b ${rec.b} vs m ${rec.m}`);
 });
 
+test('prior transform: finite two-sided truncation — z at u=0.5 is the symmetric-interval median (0)', () => {
+  // normalize(truncate(Normal(0,1), interval(-1,1))) — a truncated standard
+  // normal on a symmetric interval. Independent closed-form oracle: its
+  // median is 0 by symmetry (F(-1) and F(1) are equidistant from 0.5 around
+  // Φ(0)=0.5), regardless of the engine's own quantile ladder.
+  const SRC_TRUNC = `
+flatppl_compat = "0.1"
+z ~ normalize(truncate(Normal(0.0, 1.0), interval(-1.0, 1.0)))
+prior = lawof(record(z = z))
+y ~ Normal.(z, 1.0)
+K = kernelof(record(y = y), z = z)
+L = likelihoodof(K, record(y = [0.0]))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx } = ctxFor(SRC_TRUNC, 100);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  assert.deepEqual(pt.latentNames, ['z']);
+  assert.equal(pt.dim, 1);
+  const zAtHalf = pt.transform(new Float64Array([0.5])).z;
+  assert.ok(Math.abs(zAtHalf) < 1e-9, `z at u=0.5 should be ≈0, got ${zAtHalf}`);
+  // Monotonicity in the cube coordinate, and containment within the bounds.
+  const zLo = pt.transform(new Float64Array([0.1])).z;
+  const zHi = pt.transform(new Float64Array([0.9])).z;
+  assert.ok(zHi > zLo, `transform must be monotone: z(0.9)=${zHi} should exceed z(0.1)=${zLo}`);
+  assert.ok(zLo > -1 && zLo < 1, `z(0.1)=${zLo} must lie within (-1,1)`);
+  assert.ok(zHi > -1 && zHi < 1, `z(0.9)=${zHi} must lie within (-1,1)`);
+});
+
 test('prior transform: eight-schools full fixture — tau is HalfCauchy via normalize(truncate)', () => {
   const src = fs.readFileSync(path.join(__dirname, 'fixtures/baseline/eight-schools.flatppl'), 'utf8');
   const { ctx } = ctxFor(src, 100);

@@ -19,12 +19,18 @@ function evalParam(ir: any, env: Record<string, any>): number | null {
 }
 
 // Evaluate a truncation bound IR — handles the ±inf sentinel that a plain
-// evaluateExpr can't (there's no numeric literal for infinity in the IR).
+// evaluateExpr can't (there's no numeric literal for infinity in the IR). An
+// infinite bound is legitimate and returns ±Infinity; a bound that fails to
+// resolve to a finite number (unresolvable param, or NaN) throws rather than
+// silently falling back to a sentinel — the nested-sampling invariant demands
+// the transform fail loudly, never mis-map a coordinate (see resolveParams,
+// which throws the same way on an unresolvable dist param).
 function evalBound(ir: any, env: Record<string, any>): number {
   if (ir && ir.kind === 'const' && ir.name === 'inf') return Infinity;
   if (ir && ir.kind === 'call' && ir.op === 'neg' && ir.args && ir.args[0] && ir.args[0].kind === 'const' && ir.args[0].name === 'inf') return -Infinity;
   const v = evalParam(ir, env);
-  return v == null ? NaN : v;
+  if (v == null || Number.isNaN(v)) throw new Error('prior-transform: cannot resolve truncate bound');
+  return v;
 }
 
 // Map a base distribution's arg IRs → the params object the ladder expects.
@@ -91,6 +97,7 @@ function planLatent(measureIR: any): { count: number; realise: (u: Float64Array,
         const params = resolveParams(D.op, D.args, env);
         const lo = evalBound(region.args[0], env);
         const hi = evalBound(region.args[1], env);
+        if (!(lo <= hi)) throw new Error(`prior-transform: truncate lo>hi (lo=${lo},hi=${hi})`);
         return truncatedQuantile(D.op, u[off], params, lo, hi);
       },
     };
