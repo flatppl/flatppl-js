@@ -752,36 +752,47 @@ function parseTruncationBox(setIR: any): TruncAxis[] | null {
 }
 
 // log Z = log ∫_lo^hi f_base(x) dx for a scalar reference-measure base resolved
-// at θ. Closed-form via the CDF for a Normal base (exact); composite-midpoint
-// quadrature of the base log-density otherwise (matching numericProductLogZ).
+// at θ. Closed-form via forward-cdf.ts's CDF ladder: an O(1) Φ(hi)−Φ(lo)
+// evaluation, NOT a quadrature — critical when `base`'s params are
+// θ-dependent, since this whole function reruns from scratch on EVERY
+// density call for an inline normalize(truncate(M(θ), S)), e.g. inside a
+// kernelof/likelihoodof body scored once per MCMC step; composite-midpoint
+// quadrature of the base log-density for any kernel forward-cdf.ts doesn't
+// carry (matching numericProductLogZ).
 function truncateLogMass(base: any, bounds: [number, number], ctx: any): number {
   // A discrete base is never reached here: an inline normalize(truncate(...))
   // this path handles is the §12 generic_dist form (weighted(w, Lebesgue), a
   // continuous base); a discrete truncate carries a massFrom ref and is
   // resolved (and refused) by resolveNormalizeMasses instead (Buffy #73).
   const [lo, hi] = bounds;
-  if (base.kernel === 'Normal') {
-    const mu = +base.input.mu, sigma = +base.input.sigma;
-    const normalCdf = require('@stdlib/stats-base-dists-normal-cdf');
-    const Z = normalCdf(hi, mu, sigma) - normalCdf(lo, mu, sigma);
+  const forwardCdf = require('./forward-cdf.ts');
+  if (forwardCdf.hasCdf(base.kernel)) {
+    // Φ(hi) − Φ(lo), O(1) regardless of how many evals this runs across (no
+    // per-θ caching needed — the closed form IS the fast path). Infinite
+    // bounds map to the CDF's limit (0 / 1) rather than evaluating the CDF
+    // function at ±Infinity, mirroring forward-cdf.ts's own truncatedQuantile.
+    const Flo = Number.isFinite(lo) ? forwardCdf.cdf(base.kernel, lo, base.input) : 0;
+    const Fhi = Number.isFinite(hi) ? forwardCdf.cdf(base.kernel, hi, base.input) : 1;
+    const Z = Fhi - Flo;
     if (!(Z > 0)) {
-      throw new Error('density: normalize(truncate(Normal, S)) — mass over the '
+      throw new Error('density: normalize(truncate(' + base.kernel + ', S)) — mass over the '
         + 'truncation set is 0 (Z = 0 is undefined per spec §06)');
     }
     return Math.log(Z);
   }
   // The fixed-width midpoint fallback has no change-of-variables, so an
   // unbounded interval gives dx = inf and a silent NaN. Refuse-don't-mislower:
-  // this scalar-reference path has no CDF for a non-Normal kernel over an
-  // unbounded set (the Normal branch above handles inf via its CDF). A
-  // weighted(w, Lebesgue) base takes the N-D adaptive-cubature path instead,
-  // which maps unbounded axes with a Jacobian.
+  // this scalar-reference path has no CDF for a kernel forward-cdf.ts doesn't
+  // carry (the branch above handles every ladder entry, incl. unbounded
+  // supports, via the CDF's 0/1 limits). A weighted(w, Lebesgue) base takes
+  // the N-D adaptive-cubature path instead, which maps unbounded axes with a
+  // Jacobian.
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
     throw new Error('density: normalize(truncate(' + base.kernel + ', S)) — '
       + 'unbounded truncation of this reference measure has no deterministic '
-      + 'quadrature (only a Normal base has a closed-form CDF here, or a '
-      + 'weighted(w, Lebesgue) base for the adaptive path); refusing rather '
-      + 'than emitting NaN');
+      + 'quadrature (no closed-form CDF is registered for this kernel in '
+      + 'forward-cdf.ts, and a weighted(w, Lebesgue) base would take the '
+      + 'adaptive-cubature path instead); refusing rather than emitting NaN');
   }
   const dx = (hi - lo) / QUAD_POINTS;
   const logIntegrand = new Float64Array(QUAD_POINTS);
