@@ -26,13 +26,13 @@ const { SAMPLING_BACKENDS, shouldDeferAutoSample } = await import('./render-cont
 test('SAMPLING_BACKENDS is exactly the stateful-sampler set (excludes IS and forward)', () => {
   assert.deepEqual(
     SAMPLING_BACKENDS,
-    ['mh', 'ram', 'slice', 'emcee', 'amis', 'smc', 'nested', 'elliptical-slice-sampler'],
+    ['mh', 'ram', 'slice', 'emcee', 'demcz', 'amis', 'smc', 'nested', 'elliptical-slice-sampler'],
   );
   assert.equal(SAMPLING_BACKENDS.indexOf('is'), -1);
   assert.equal(SAMPLING_BACKENDS.indexOf('forward'), -1);
 });
 
-for (const backend of ['mh', 'ram', 'slice', 'emcee', 'amis', 'smc', 'nested', 'elliptical-slice-sampler']) {
+for (const backend of ['mh', 'ram', 'slice', 'emcee', 'demcz', 'amis', 'smc', 'nested', 'elliptical-slice-sampler']) {
   test(`an editor/model-change auto-trigger defers a "${backend}" posterior (no auto sample run)`, () => {
     assert.equal(
       shouldDeferAutoSample({ autoTrigger: true, sampling: true, effectiveBackend: backend }),

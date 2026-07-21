@@ -413,9 +413,9 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
     }
   }
 
-  // ---- emcee / amis / smc (pooled) + elliptical-slice / other (single) ---
+  // ---- emcee / demcz / amis / smc (pooled) + elliptical-slice / other (single) ---
   const shares: any[] = [];
-  if (opts.backend === 'emcee' || opts.backend === 'amis' || opts.backend === 'smc') {
+  if (opts.backend === 'emcee' || opts.backend === 'demcz' || opts.backend === 'amis' || opts.backend === 'smc') {
     // One full independent instance per worker (variance reduction), pooled.
     const P = cap;
     for (let i = 0; i < P; i++) {

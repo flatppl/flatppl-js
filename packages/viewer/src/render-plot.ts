@@ -116,7 +116,7 @@ export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean })
   // to warrant one.
   const io = ctx.inferenceOpts;
   const sampling = !(arrayMode || matrixMode);
-  const showBar = sampling && io && (io.backend === 'mh' || io.backend === 'ram' || io.backend === 'slice' || io.backend === 'emcee' || io.backend === 'amis' || io.backend === 'smc' || io.backend === 'nested' || io.backend === 'elliptical-slice-sampler');
+  const showBar = sampling && io && (io.backend === 'mh' || io.backend === 'ram' || io.backend === 'slice' || io.backend === 'emcee' || io.backend === 'demcz' || io.backend === 'amis' || io.backend === 'smc' || io.backend === 'nested' || io.backend === 'elliptical-slice-sampler');
 
   // Sampling only starts on the explicit Sample button: an AUTOMATIC
   // trigger (opts.autoTrigger — a model edit re-focusing this same

@@ -417,7 +417,7 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void, tr
 // edit re-focusing the same posterior binding — on these backends
 // specifically, while cheap non-sampling plots (IS / forward / tractable /
 // array / matrix) keep updating live on edit.
-export const SAMPLING_BACKENDS = ['mh', 'ram', 'slice', 'emcee', 'amis', 'smc', 'nested', 'elliptical-slice-sampler'];
+export const SAMPLING_BACKENDS = ['mh', 'ram', 'slice', 'emcee', 'demcz', 'amis', 'smc', 'nested', 'elliptical-slice-sampler'];
 
 // True when an AUTOMATIC trigger (anything other than an explicit Sample-
 // button click) should be suppressed for the plot currently being rendered:
@@ -497,7 +497,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     blankOpt.value = '__forward__'; blankOpt.textContent = '—';
     sel.appendChild(blankOpt);
   }
-  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['ram', 'RAM'], ['slice', 'slice'], ['emcee', 'emcee'], ['amis', 'AMIS'], ['smc', 'SMC'], ['nested', 'nested'], ['elliptical-slice-sampler', 'ESS']]) {
+  for (const [v, t] of [['is', 'IS'], ['mh', 'MH'], ['ram', 'RAM'], ['slice', 'slice'], ['emcee', 'emcee'], ['demcz', 'DEMCz'], ['amis', 'AMIS'], ['smc', 'SMC'], ['nested', 'nested'], ['elliptical-slice-sampler', 'ESS']]) {
     const o = document.createElement('option');
     o.value = v; o.textContent = t;
     sel.appendChild(o);
@@ -506,7 +506,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   if (isPosterior) {
     sel.value = opts.backend;
     sel.title = 'Posterior inference backend. IS = importance sampling (default); '
-      + 'MH / RAM / slice / emcee run MCMC; AMIS = adaptive multiple importance sampling; '
+      + 'MH / RAM / slice / emcee / DEMCz run MCMC (DEMCz = differential-evolution ensemble, auto-adapts to covariance); AMIS = adaptive multiple importance sampling; '
       + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence); '
       + 'nested = nested sampling (robust on multimodal posteriors; reports evidence logZ); '
       + 'ESS = elliptical slice sampling (gradient- and tuning-free).';
@@ -614,7 +614,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     return rsel;
   }
 
-  // The latent-count knob means "chains" for MH and "walkers" for emcee.
+  // The latent-count knob means "chains" for MH and "walkers" for emcee/DEMCz.
   const countRow = document.createElement('div');
   const countLabel = document.createElement('label');
   countLabel.style.opacity = '0.7';
@@ -630,7 +630,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   countRow.append(countLabel, countInput);
 
   function refreshCountRow() {
-    if (opts.backend === 'emcee') {
+    if (opts.backend === 'emcee' || opts.backend === 'demcz') {
       countLabel.textContent = 'walkers';
       countInput.value = opts.walkers == null ? '' : String(opts.walkers);
       countInput.placeholder = 'auto';
@@ -642,15 +642,15 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   }
   countInput.addEventListener('change', function () {
     const raw = countInput.value.trim();
-    if (opts.backend === 'emcee') opts.walkers = raw === '' ? null : Number(raw);
+    if (opts.backend === 'emcee' || opts.backend === 'demcz') opts.walkers = raw === '' ? null : Number(raw);
     else opts.chains = raw === '' ? 4 : Number(raw);
     markDirty();
   });
 
-  numRow('draws', ['mh', 'ram', 'slice', 'emcee', 'elliptical-slice-sampler'], function () { return opts.draws; }, function (v) { opts.draws = v == null ? 1000 : v; });
-  numRow('warmup', ['mh', 'ram', 'slice', 'emcee', 'elliptical-slice-sampler'], function () { return opts.warmup; }, function (v) { opts.warmup = v == null ? 1000 : v; });
+  numRow('draws', ['mh', 'ram', 'slice', 'emcee', 'demcz', 'elliptical-slice-sampler'], function () { return opts.draws; }, function (v) { opts.draws = v == null ? 1000 : v; });
+  numRow('warmup', ['mh', 'ram', 'slice', 'emcee', 'demcz', 'elliptical-slice-sampler'], function () { return opts.warmup; }, function (v) { opts.warmup = v == null ? 1000 : v; });
   panel.appendChild(countRow);
-  rows.push({ el: countRow, backends: ['mh', 'ram', 'slice', 'emcee', 'elliptical-slice-sampler'] });
+  rows.push({ el: countRow, backends: ['mh', 'ram', 'slice', 'emcee', 'demcz', 'elliptical-slice-sampler'] });
   numRow('iterations', ['amis'], function () { return opts.amisIters; }, function (v) { opts.amisIters = v == null ? 30 : v; });
   numRow('samples/iter', ['amis'], function () { return opts.amisSamples; }, function (v) { opts.amisSamples = v == null ? 300 : v; });
   numRow('particles', ['smc'], function () { return opts.smcParticles; }, function (v) { opts.smcParticles = v == null ? 2000 : v; });
@@ -669,7 +669,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     + 'reliable for the evidence logZ; whitened = global MLFriends ellipsoid; '
     + 'RadFriends = raw-cube-metric balls; cluster = per-cluster local ellipsoids — '
     + 'fastest sampling, but trades away logZ accuracy (use for exploration, not evidence).');
-  numRow('seed', ['mh', 'ram', 'slice', 'emcee', 'amis', 'smc', 'nested', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
+  numRow('seed', ['mh', 'ram', 'slice', 'emcee', 'demcz', 'amis', 'smc', 'nested', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
   // Forward draw count + seed — shown for IS (its importance draws ARE the
   // global forward draws) and for the blanked forward mode on non-posterior
   // plots. These write ctx.SAMPLE_COUNT / ctx.rootSeed, not opts.

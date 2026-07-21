@@ -34,7 +34,7 @@ export function getMeasure(ctx: Ctx, name: any) {
   // backend use the main-thread path below.
   const io = ctx.inferenceOpts;
   const deriv = ctx.derivationsState.derivations[name];
-  if (io && (io.backend === 'mh' || io.backend === 'ram' || io.backend === 'slice' || io.backend === 'emcee' || io.backend === 'amis' || io.backend === 'smc' || io.backend === 'elliptical-slice-sampler' || io.backend === 'nested')
+  if (io && (io.backend === 'mh' || io.backend === 'ram' || io.backend === 'slice' || io.backend === 'emcee' || io.backend === 'demcz' || io.backend === 'amis' || io.backend === 'smc' || io.backend === 'elliptical-slice-sampler' || io.backend === 'nested')
       && deriv && deriv.kind === 'bayesupdate' && (ctx as any).currentSource) {
     const p = runMcmcPool(ctx, name, io);
     p.then((m: any) => ctx.measureCache.set(name, m), () => {});
