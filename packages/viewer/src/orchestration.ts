@@ -55,6 +55,13 @@ export function moduleContextOnUpdate(
 
 export function applySourceUpdate(ctx: Ctx, msg: any) {
   const sourceChanged = (msg.source !== ctx.currentSource);
+  // Captured BEFORE the sourceChanged block below (re)assigns
+  // ctx.currentBindings, so this distinguishes an edit of an ALREADY-open
+  // model from the very first sourceUpdate that opens one (hadPriorBindings
+  // is false there). Only the former defers a stateful-sampler backend's
+  // auto re-render (see autoTrigger below) — the initial paint still
+  // samples immediately so the pane isn't left empty on load.
+  const hadPriorBindings = !!ctx.currentBindings;
   // The module's path + dep bundle are STICKY to the current model
   // (moduleContextOnUpdate): a same-model re-lower (target-nav / edit) keeps
   // them so relative load_module deps still resolve against THIS module — and
@@ -129,11 +136,21 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
       && ctx.currentPlotBindingName !== ctx.currentState.targetName) {
     preservedPlotBinding = ctx.currentPlotBindingName;
   }
-  focusNode(ctx, msg.targetName, msg.pushHistory);
+  // autoTrigger: this call chain is a same-model TEXT EDIT (not the initial
+  // load, not a cross-model switch, not an explicit DAG click) re-focusing
+  // whatever binding is already shown — renderPlotForCurrent defers a
+  // stateful-sampler backend behind the Sample button rather than silently
+  // re-running it. `msg.path === undefined` is the same same-model signal
+  // moduleContextOnUpdate uses above: a model SWITCH
+  // always carries `path` (even `null` for a path-less module), so this
+  // excludes opening a different/new model from the gate — that still
+  // samples immediately, same as the very first load.
+  const autoTrigger = sourceChanged && hadPriorBindings && msg.path === undefined;
+  focusNode(ctx, msg.targetName, msg.pushHistory, { autoTrigger });
   if (preservedPlotBinding
       && ctx.currentBindings && ctx.currentBindings.has(preservedPlotBinding)
       && ctx.currentPlotBindingName !== preservedPlotBinding) {
-    updatePlotForBinding(ctx, preservedPlotBinding);
+    updatePlotForBinding(ctx, preservedPlotBinding, { autoTrigger });
   }
 }
 

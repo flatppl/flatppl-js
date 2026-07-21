@@ -641,8 +641,13 @@ export function renderDAG(ctx: Ctx, data: any) {
  * button stack first. If targetName is null, falls back to the last
  * binding in document order (the same default the extension ctx.host used
  * before this refactor).
+ *
+ * `opts.autoTrigger` passes through to updatePlotForBinding / renderPlot
+ * ForCurrent — set by applySourceUpdate on an actual model edit so a
+ * stateful sampler backend (MH/nested/AMIS/SMC/…) isn't auto-resampled.
+ * Explicit navigation (dbltap drill-down below) omits it.
  */
-export function focusNode(ctx: Ctx, targetName: any, pushHistory: any) {
+export function focusNode(ctx: Ctx, targetName: any, pushHistory: any, opts?: { autoTrigger?: boolean }) {
   if (!ctx.currentBindings) return;
   // No targetName supplied → prefer keeping the current focus.
   // This is the path used by source-only updates from the host
@@ -682,7 +687,7 @@ export function focusNode(ctx: Ctx, targetName: any, pushHistory: any) {
   ctx.currentState = { data: dagData, targetName: targetName, path: ctx.currentPath };
   renderDAG(ctx, dagData);
   updateBackBtn(ctx);
-  updatePlotForBinding(ctx, targetName);
+  updatePlotForBinding(ctx, targetName, opts);
   // Notify the host so any URL / panel state stays in sync with
   // the viewer's actual focus. Internal navigations (DAG node
   // clicks, double-clicks, "show whole module" toolbar) used to

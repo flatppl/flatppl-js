@@ -13,12 +13,26 @@ import { getMeasure } from './engine-facade.js';
 import { applyRememberedSelections, rememberPlanSelections } from './overrides.js';
 import { showPlotMessage, updatePlotProgress } from './render-frame.js';
 import { renderProfilePlotForCurrent } from './render-profile.js';
-import { buildInferenceControl } from './render-controls.js';
+import { buildInferenceControl, shouldDeferAutoSample } from './render-controls.js';
 import { esc } from './util.js';
 import { errorsForBinding } from './render-frame.js';
 import { renderEmpiricalMeasure } from './render-samples.js';
 import type { Ctx } from './types';
-export function renderPlotForCurrent(ctx: Ctx) {
+/**
+ * Render the plot pane for the currently-focused binding.
+ *
+ * `opts.autoTrigger` marks an AUTOMATIC call — one not originating from the
+ * explicit Sample button (e.g. a model edit re-focusing the same binding via
+ * applySourceUpdate → focusNode). On such a call, a bayesupdate posterior
+ * whose effective backend is a stateful sampler (MH/RAM/slice/emcee/AMIS/
+ * SMC/nested/ESS — see SAMPLING_BACKENDS in render-controls.ts) is NOT
+ * re-sampled; instead the pane shows a "press Sample" hint.
+ * Explicit triggers (Sample button, DAG node click/drill-down, cog changes
+ * once applied) omit `autoTrigger` and always sample. Cheap non-sampling
+ * plots (IS / forward / tractable / array / matrix) are unaffected either
+ * way and keep updating live on edit.
+ */
+export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean }) {
   // The plot panel stays mounted whenever plotEnabled is true. When
   // the focused binding isn't plottable (lawof, modules, etc.) we
   // still show *something* — a "Not plottable" message — so the
@@ -103,6 +117,38 @@ export function renderPlotForCurrent(ctx: Ctx) {
   const io = ctx.inferenceOpts;
   const sampling = !(arrayMode || matrixMode);
   const showBar = sampling && io && (io.backend === 'mh' || io.backend === 'ram' || io.backend === 'slice' || io.backend === 'emcee' || io.backend === 'amis' || io.backend === 'smc' || io.backend === 'nested' || io.backend === 'elliptical-slice-sampler');
+
+  // Sampling only starts on the explicit Sample button: an AUTOMATIC
+  // trigger (opts.autoTrigger — a model edit re-focusing this same
+  // binding, see applySourceUpdate in orchestration.ts) must not silently
+  // kick off a possibly-slow MCMC / nested / AMIS / SMC / ESS run. isPosterior
+  // mirrors the same bayesupdate check the "cancelled" catch branch below
+  // (and buildInferenceControl's other callers) use — every non-posterior
+  // plot (prior / tractable / array / matrix) draws directly via the
+  // synthetic 'forward' backend and stays cheap, so it's never deferred.
+  const gateBindingName = ctx.currentPlotBindingName;
+  const gateIsPosterior = !!(
+    gateBindingName && ctx.derivationsState && ctx.derivationsState.derivations &&
+    ctx.derivationsState.derivations[gateBindingName] &&
+    ctx.derivationsState.derivations[gateBindingName].kind === 'bayesupdate'
+  );
+  const effectiveBackend = gateIsPosterior ? io.backend : 'forward';
+  if (shouldDeferAutoSample({ autoTrigger: !!(opts && opts.autoTrigger), sampling, effectiveBackend })) {
+    showPlotMessage(ctx,
+      'Model changed — the <strong>' + esc(effectiveBackend) + '</strong> sampler is stale. Press <strong>Sample</strong> to refresh.',
+      { hint: true });
+    const host = document.getElementById('plot-empty');
+    if (host && ctx.onInferenceChange) {
+      const row = document.createElement('div');
+      row.style.marginTop = '0.6em';
+      row.style.display = 'flex';
+      row.style.justifyContent = 'center';
+      row.appendChild(buildInferenceControl(ctx, ctx.onInferenceChange, gateIsPosterior));
+      host.appendChild(row);
+    }
+    return;
+  }
+
   showPlotMessage(ctx,
     (arrayMode || matrixMode) ? 'Loading…' : 'Sampling…',
     { cancellable: sampling, hint: true, progress: showBar });
@@ -171,7 +217,7 @@ export function renderPlotForCurrent(ctx: Ctx) {
     .then(function () { ctx.onSamplingProgress = null; }, function () { ctx.onSamplingProgress = null; });
 }
 
-export function updatePlotForBinding(ctx: Ctx, bindingName: string | null) {
+export function updatePlotForBinding(ctx: Ctx, bindingName: string | null, opts?: { autoTrigger?: boolean }) {
   // Snapshot the outgoing plan first — the user may have
   // mutated it since it was first built (selected a different
   // preset, edited an override value, picked a sweep axis).
@@ -225,6 +271,7 @@ export function updatePlotForBinding(ctx: Ctx, bindingName: string | null) {
   ctx.currentPlotBindingName = binding ? bindingName : null;
   // Plot pane stays visible whenever plotEnabled is true. When the
   // current binding isn't plottable, renderPlotForCurrent() shows
-  // a "Not plottable" message in place of a chart.
-  if (ctx.plotEnabled) renderPlotForCurrent(ctx);
+  // a "Not plottable" message in place of a chart. `opts` (autoTrigger)
+  // passes through unchanged — see renderPlotForCurrent's doc comment.
+  if (ctx.plotEnabled) renderPlotForCurrent(ctx, opts);
 }
