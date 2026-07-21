@@ -5,27 +5,8 @@
 //   postVar  = 1/(1/100 + 1/1) = 0.990099…,  postMean = postVar*5 = 4.950495…
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource, orchestrator, materialiser } = require('..');
-const { createWorkerHandler } = require('../worker.ts');
-
-function setupCtx(src: string, N: number) {
-  const lifted = processSource(src);
-  const errs = (lifted.diagnostics || []).filter((d: any) => d.severity === 'error');
-  if (errs.length > 0) return { errs, ctx: null };
-  const built = orchestrator.buildDerivations(lifted.bindings);
-  const worker = createWorkerHandler();
-  worker.handle({ type: 'init', seed: 42 });
-  const cache = new Map();
-  const ctx: any = {
-    derivations: built.derivations, bindings: built.bindings,
-    fixedValues: built.fixedValues || new Map(),
-    moduleRegistry: lifted.loweredModule && lifted.loweredModule.moduleRegistry ? lifted.loweredModule.moduleRegistry : null,
-    getMeasure: (n: string) => { if (cache.has(n)) return cache.get(n); const p = materialiser.materialiseMeasure(n, ctx); cache.set(n, p); return p; },
-    sendWorker: (m: any) => { const r = worker.handle(m); return r && r.type === 'error' ? Promise.reject(new Error(r.message)) : Promise.resolve(r); },
-    sampleCount: N, rootSeed: 42, rootKey: 42,
-  };
-  return { errs: [], ctx };
-}
+const { materialiser } = require('..');
+const { ctxFor } = require('./_ctx-factory.ts');
 
 const MODEL = `
 mu = draw(Normal(mu = 0.0, sigma = 10.0))
@@ -43,7 +24,8 @@ const stats = (arr: Float64Array) => {
 };
 
 test('backend:demcz recovers the conjugate Normal-Normal posterior', async () => {
-  const { errs, ctx } = setupCtx(MODEL, 2000);
+  const { proc, ctx } = ctxFor(MODEL, 2000);
+  const errs = (proc.diagnostics || []).filter((d: any) => d.severity === 'error');
   assert.equal(errs.length, 0, `parse errors: ${errs.map((e: any) => e.message).join('; ')}`);
   const m = await materialiser.materialiseMeasure('posterior', ctx, {
     backend: 'demcz', chains: 8, warmup: 1000, draws: 2000, seed: 1,
@@ -59,7 +41,7 @@ test('backend:demcz recovers the conjugate Normal-Normal posterior', async () =>
 
 test('backend:demcz is deterministic for a fixed seed', async () => {
   const run = async () => {
-    const { ctx } = setupCtx(MODEL, 2000);
+    const { ctx } = ctxFor(MODEL, 2000);
     const m = await materialiser.materialiseMeasure('posterior', ctx, { backend: 'demcz', chains: 8, warmup: 300, draws: 300, seed: 42 });
     return Array.from(m.fields.mu.samples);
   };

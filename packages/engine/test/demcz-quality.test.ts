@@ -5,27 +5,8 @@
 // posterior = prior: means 0, vars 1, cov 0.95 (closed-form oracle).
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource, orchestrator, materialiser } = require('..');
-const { createWorkerHandler } = require('../worker.ts');
-
-function setupCtx(src: string, N: number) {
-  const lifted = processSource(src);
-  const errs = (lifted.diagnostics || []).filter((d: any) => d.severity === 'error');
-  if (errs.length > 0) return { errs, ctx: null };
-  const built = orchestrator.buildDerivations(lifted.bindings);
-  const worker = createWorkerHandler();
-  worker.handle({ type: 'init', seed: 42 });
-  const cache = new Map();
-  const ctx: any = {
-    derivations: built.derivations, bindings: built.bindings,
-    fixedValues: built.fixedValues || new Map(),
-    moduleRegistry: lifted.loweredModule && lifted.loweredModule.moduleRegistry ? lifted.loweredModule.moduleRegistry : null,
-    getMeasure: (n: string) => { if (cache.has(n)) return cache.get(n); const p = materialiser.materialiseMeasure(n, ctx); cache.set(n, p); return p; },
-    sendWorker: (m: any) => { const r = worker.handle(m); return r && r.type === 'error' ? Promise.reject(new Error(r.message)) : Promise.resolve(r); },
-    sampleCount: N, rootSeed: 42, rootKey: 42,
-  };
-  return { errs: [], ctx };
-}
+const { materialiser } = require('..');
+const { ctxFor } = require('./_ctx-factory.ts');
 
 // sqrt(1 - 0.95^2) = 0.31224989991991997
 const MODEL = `
@@ -48,7 +29,8 @@ const cov = (a: Float64Array, b: Float64Array) => {
 const OPTS = { warmup: 200, draws: 3000, seed: 1 };
 
 test('backend:demcz recovers the correlated-Gaussian moments (closed form)', async () => {
-  const { errs, ctx } = setupCtx(MODEL, 3000);
+  const { proc, ctx } = ctxFor(MODEL, 3000);
+  const errs = (proc.diagnostics || []).filter((d: any) => d.severity === 'error');
   assert.equal(errs.length, 0, `parse errors: ${errs.map((e: any) => e.message).join('; ')}`);
   const m = await materialiser.materialiseMeasure('posterior', ctx, Object.assign({ backend: 'demcz', walkers: 8 }, OPTS));
   const x = m.fields.x.samples, y = m.fields.y.samples;
@@ -61,7 +43,7 @@ test('backend:demcz recovers the correlated-Gaussian moments (closed form)', asy
 
 test('backend:demcz ESS exceeds mh at equal short-warmup budget, and agrees with mh on the mean', async () => {
   const runEss = async (backend: string) => {
-    const { ctx } = setupCtx(MODEL, 3000);
+    const { ctx } = ctxFor(MODEL, 3000);
     const m = await materialiser.materialiseMeasure('posterior', ctx, Object.assign({ backend, chains: 8, walkers: 8 }, OPTS));
     return { m, essX: m.diagnostics.perParam.x.essBulk, essY: m.diagnostics.perParam.y.essBulk };
   };
