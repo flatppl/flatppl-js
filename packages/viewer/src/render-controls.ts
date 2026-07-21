@@ -582,6 +582,38 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     return inp;
   }
 
+  // One labelled `<select>` row (mirrors numRow's layout/tagging, styled like
+  // the backend selector above). `options` is a list of [value, label] pairs.
+  function selectRow(label: string, backends: string[], options: [string, string][],
+                     get: () => string, set: (v: string) => void, title?: string): HTMLSelectElement {
+    const row = document.createElement('div');
+    row.style.display = 'flex';
+    row.style.justifyContent = 'space-between';
+    row.style.alignItems = 'center';
+    row.style.gap = '0.6em';
+    row.style.margin = '0.15em 0';
+    const rl = document.createElement('label');
+    rl.textContent = label;
+    rl.style.opacity = '0.7';
+    const rsel = document.createElement('select');
+    for (const [v, t] of options) {
+      const o = document.createElement('option');
+      o.value = v; o.textContent = t;
+      rsel.appendChild(o);
+    }
+    styleControl(rsel);
+    rsel.value = get();
+    if (title) rsel.title = title;
+    rsel.addEventListener('change', function () {
+      set(rsel.value);
+      markDirty();
+    });
+    row.append(rl, rsel);
+    panel.appendChild(row);
+    rows.push({ el: row, backends });
+    return rsel;
+  }
+
   // The latent-count knob means "chains" for MH and "walkers" for emcee.
   const countRow = document.createElement('div');
   const countLabel = document.createElement('label');
@@ -629,6 +661,14 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     { min: 2 });
   numRow('dlogz', ['nested'], function () { return opts.dlogz; }, function (v) { opts.dlogz = v == null ? 0.5 : v; },
     { step: 0.05, min: 0.01 });
+  selectRow('region', ['nested'],
+    [['off', 'region-free'], ['whitened', 'whitened'], ['identity', 'RadFriends'], ['cluster', 'cluster']],
+    function () { return opts.regionMetric || 'off'; },
+    function (v) { opts.regionMetric = v as 'off' | 'whitened' | 'identity' | 'cluster'; },
+    'Constrained-draw region for nested sampling. region-free (default) is the most '
+    + 'reliable for the evidence logZ; whitened = global MLFriends ellipsoid; '
+    + 'RadFriends = raw-cube-metric balls; cluster = per-cluster local ellipsoids — '
+    + 'fastest sampling, but trades away logZ accuracy (use for exploration, not evidence).');
   numRow('seed', ['mh', 'ram', 'slice', 'emcee', 'amis', 'smc', 'nested', 'elliptical-slice-sampler'], function () { return opts.seed; }, function (v) { opts.seed = v; });
   // Forward draw count + seed — shown for IS (its importance draws ARE the
   // global forward draws) and for the blanked forward mode on non-posterior

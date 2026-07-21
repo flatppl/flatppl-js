@@ -146,6 +146,24 @@ function applyReduce(reply: any, node: any): any {
   return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: 1 });
 }
 
+// Derive runNested's {useRegion, region} from the viewer's single-field
+// regionMetric contract ('off' | 'whitened' | 'identity' | 'cluster' — see
+// types.d.ts Ctx.inferenceOpts and mlfriends.ts's header comment for the
+// per-metric tradeoffs). 'off' (region-free) is the default. Back-compat: if
+// o.regionMetric is undefined (a direct runNested caller / older saved state
+// that predates this field), fall back to the raw o.useRegion/o.region pair
+// that mat-density.ts passed straight through before this field existed.
+function deriveRegionOpts(o: any): { useRegion: boolean; region: any } {
+  if (o && o.regionMetric != null) {
+    const metric = o.regionMetric;
+    return {
+      useRegion: metric !== 'off',
+      region: metric === 'off' ? undefined : { metric },
+    };
+  }
+  return { useRegion: !!(o && o.useRegion === true), region: o ? o.region : undefined };
+}
+
 // =====================================================================
 // Bayesupdate — reweight prior atoms by per-atom log-likelihood
 // =====================================================================
@@ -245,8 +263,13 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         // region-free slice is the default replacement step now (region is
         // opt-in), and 2 sweeps roughly halves the per-replacement eval cost
         // while the closed-form Gaussian evidence test still passes.
+        // useRegion/region: opt-in region-based constrained draws (mlfriends.ts),
+        // derived from the single-field regionMetric contract the viewer's gear
+        // panel exposes ('off' = region-free default) — see deriveRegionOpts.
+        const { useRegion, region } = deriveRegionOpts(o);
         const res = runNested(pt.transform, pt.dim, mv.likOf,
-          { nLive: o.nLive || 400, dlogz: o.dlogz ?? 0.5, sliceSweeps: o.sliceSweeps != null ? o.sliceSweeps : 2, prng, onProgress });
+          { nLive: o.nLive || 400, dlogz: o.dlogz ?? 0.5, sliceSweeps: o.sliceSweeps != null ? o.sliceSweeps : 2, prng, onProgress,
+            useRegion, region, rebuild: o.rebuild, regionTries: o.regionTries });
         nDraws = res.samples.length;
         // θ-space scorer records → per-coordinate draws (nested samples are already
         // CONSTRAINED, so read fields directly — no mv.constrainAll).
@@ -1531,4 +1554,5 @@ module.exports = {
   makeIntegrandND,
   weightedBaseWeightFn,
   resolveTruncateNormalizers,
+  deriveRegionOpts,
 };

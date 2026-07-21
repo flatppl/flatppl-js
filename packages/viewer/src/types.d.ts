@@ -212,7 +212,15 @@ export interface Ctx {
   /** Inference backend + knobs for posterior (bayesupdate) measures. The
    *  engine's matBayesupdate reads this off the matCtx; 'is' (default) is the
    *  importance-sampling path, 'mh'/'emcee' run the MCMC driver. */
-  inferenceOpts: { backend: string; chains: number; walkers: number | null; warmup: number; draws: number; seed: number | null; amisIters: number; amisSamples: number; smcParticles: number; smcSteps: number; smcCESS: number; nLive: number; dlogz: number };
+  inferenceOpts: { backend: string; chains: number; walkers: number | null; warmup: number; draws: number; seed: number | null; amisIters: number; amisSamples: number; smcParticles: number; smcSteps: number; smcCESS: number; nLive: number; dlogz: number;
+    /** Nested-sampling constrained-draw region (mlfriends.ts). 'off' (default,
+     *  region-free) is the shipped default for evidence reliability; 'whitened'
+     *  (global MLFriends ellipsoid), 'identity' (RadFriends balls), and
+     *  'cluster' (per-cluster local ellipsoids — fastest sampling, but logZ
+     *  less reliable) are opt-in. mat-density.ts derives useRegion/region from
+     *  this field, falling back to raw useRegion/region for direct runNested
+     *  callers that predate this field. */
+    regionMetric?: 'off' | 'whitened' | 'identity' | 'cluster' };
   /** Shared onChange closure for the inference-backend selector. Clears
    *  caches, persists the choice, and re-renders. Set once in main.ts init;
    *  consumed by the record-measure plot toolbar (bayesupdate-only). */
