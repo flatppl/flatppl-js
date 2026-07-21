@@ -64,3 +64,37 @@ test('mlfriends: uniform-in-region draws are unbiased (overlap correction)', () 
     `sample x-mean ${sampMeanX} vs brute-force uniform-union reference x-mean ${refMeanX}`
   );
 });
+
+test('mlfriends: identity metric (RadFriends) draws are also unbiased (overlap correction)', () => {
+  // Same falsifiable check as the whitened-metric test above, but with
+  // opts.metric:'identity' — the RadFriends ball geometry (raw Euclidean
+  // radius, no Cholesky/covariance). The overlap correction must still make
+  // region.sample() uniform over the union; if it didn't, this would show up
+  // as the same heavy-cluster bias the whitened test guards against.
+  const prng = lcg(4);
+  const dense = Array.from({ length: 40 }, () => Float64Array.from([0.3 + 0.02 * (prng() - 0.5), 0.5 + 0.3 * (prng() - 0.5)]));
+  const sparse = Array.from({ length: 12 }, () => Float64Array.from([0.75 + 0.15 * (prng() - 0.5), 0.5 + 0.3 * (prng() - 0.5)]));
+  const live = dense.concat(sparse);
+  const region = buildRegion(live, prng, { metric: 'identity' });
+
+  let refN = 0, refSx = 0;
+  for (let i = 0; i < 400000 && refN < 4000; i++) {
+    const u = Float64Array.from([prng(), prng()]);
+    if (region.contains(u)) { refN++; refSx += u[0]; }
+  }
+  assert.ok(refN >= 4000, `brute-force reference must collect enough accepts (got ${refN})`);
+  const refMeanX = refSx / refN;
+
+  let sampN = 0, sampSx = 0;
+  for (let i = 0; i < 400000 && sampN < 4000; i++) {
+    const u = region.sample();
+    if (u) { sampN++; sampSx += u[0]; }
+  }
+  assert.ok(sampN >= 4000, `region.sample() must collect enough accepts (got ${sampN})`);
+  const sampMeanX = sampSx / sampN;
+
+  assert.ok(
+    Math.abs(sampMeanX - refMeanX) < 0.03,
+    `sample x-mean ${sampMeanX} vs brute-force uniform-union reference x-mean ${refMeanX}`
+  );
+});

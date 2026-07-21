@@ -81,7 +81,10 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
   // acceptance gain. Region-free static NS is correct and not slower on hard
   // posteriors; pass useRegion:true for easy/low-dim posteriors where the
   // region's rejection sampling beats the slice fallback (see the efficiency
-  // test in nested-sample.test.ts).
+  // test in nested-sample.test.ts). `opts.region` passes straight through to
+  // buildRegion — {metric:'identity'} switches to a RadFriends-style raw-cube
+  // ball geometry (mlfriends.ts), which may fare better on a ridge than the
+  // default whitened metric; unmeasured whether it should become the default.
   const useRegion = opts.useRegion === true;
   const regionTries = opts.regionTries || 200;
 
