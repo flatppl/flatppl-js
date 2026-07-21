@@ -172,7 +172,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
   // return an equal-weight empirical measure. IS path (default) is below.
   const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
-  if (backend === 'mh' || backend === 'ram' || backend === 'slice' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler' || backend === 'nested') {
+  if (backend === 'mh' || backend === 'ram' || backend === 'slice' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler' || backend === 'nested' || backend === 'demcz') {
     const MV              = require('./model-view.ts');
     const driver          = require('./mcmc-driver.ts');
     const { mhKernel }         = require('./mh-kernel.ts');
@@ -180,6 +180,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
     const { makeEllipticalSliceKernel } = require('./elliptical-slice-kernel.ts');
     const { makeRamKernel } = require('./ram-kernel.ts');
     const { makeSliceKernel } = require('./slice-kernel.ts');
+    const { makeDemczKernel } = require('./demcz-kernel.ts');
     // Use the new async vector-aware ModelView (wires mcmc-density.ts scorer).
     return MV.buildModelViewFromCtx(ctx, d).then((mv: any) => {
       if (backend === 'nuts' && mv.hasDiscrete) {
@@ -303,10 +304,11 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       } else {
         const isEss = backend === 'elliptical-slice-sampler';
         const kernel = backend === 'emcee' ? makeEmceeKernel(o.a)
+          : backend === 'demcz' ? makeDemczKernel(o)
           : backend === 'ram' ? makeRamKernel()
           : backend === 'slice' ? makeSliceKernel()
           : isEss ? makeEllipticalSliceKernel() : mhKernel;
-        const nWalkers = o.walkers ?? o.chains ?? (backend === 'emcee' ? Math.max(4, 2 * mv.dim + 2) : 4);
+        const nWalkers = o.walkers ?? o.chains ?? (backend === 'emcee' ? Math.max(4, 2 * mv.dim + 2) : backend === 'demcz' ? Math.max(8, 2 * mv.dim) : 4);
         post = driver.runMcmc(mv, kernel, {
           nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a, essMaxShrink: o.essMaxShrink, onProgress,
           // Freeze-then-parallel (mh across a worker pool): `initAdapt` (a frozen
@@ -334,7 +336,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         // raw per-chain draws so split-R̂ / bulk-ESS are computed ONCE over ALL
         // chains globally (a worker holding a subset can't pool them itself). The
         // ensemble backend (emcee) pools independent ensembles and doesn't need it.
-        if (backend !== 'emcee') post.diagnostics.rawChains = post.walkers;
+        if (backend !== 'emcee' && backend !== 'demcz') post.diagnostics.rawChains = post.walkers;
         const total = total0 > 0 ? total0 : nDraws;
         idx = new Int32Array(total);
         for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
