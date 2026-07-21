@@ -154,7 +154,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // backend:'mh' (or 'nuts') — run Metropolis-Hastings on the latents, then
   // return an equal-weight empirical measure. IS path (default) is below.
   const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
-  if (backend === 'mh' || backend === 'ram' || backend === 'slice' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler') {
+  if (backend === 'mh' || backend === 'ram' || backend === 'slice' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler' || backend === 'nested') {
     const MV              = require('./model-view.ts');
     const driver          = require('./mcmc-driver.ts');
     const { mhKernel }         = require('./mh-kernel.ts');
@@ -234,6 +234,49 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         idx = new Int32Array(total);
         for (let i = 0; i < total; i++) idx[i] = Math.floor((i * nDraws) / total) % nDraws;
         post = { drawsByName, diagnostics: { method: 'smc', logZ: res.logZ, rungs: res.rungs, acceptRate: res.acceptRate, nSamples: nDraws } };
+      } else if (backend === 'nested') {
+        const { buildPriorTransform } = require('./prior-transform.ts');
+        const { runNested } = require('./nested-sample.ts');
+        const pt = buildPriorTransform(ctx, d);
+        // seeded LCG so a run is reproducible (matches AMIS/SMC determinism expectations)
+        let sState = ((o.seed ?? 1) >>> 0) || 1;
+        const prng = () => { sState = (1103515245 * sState + 12345) >>> 0; return sState / 4294967296; };
+        // Default sliceSweeps 2 (nested-sample.ts's own internal default is 5):
+        // region-free slice is the default replacement step now (region is
+        // opt-in), and 2 sweeps roughly halves the per-replacement eval cost
+        // while the closed-form Gaussian evidence test still passes.
+        const res = runNested(pt.transform, pt.dim, mv.likOf,
+          { nLive: o.nLive || 400, dlogz: o.dlogz ?? 0.5, sliceSweeps: o.sliceSweeps != null ? o.sliceSweeps : 2, prng, onProgress });
+        nDraws = res.samples.length;
+        // θ-space scorer records → per-coordinate draws (nested samples are already
+        // CONSTRAINED, so read fields directly — no mv.constrainAll).
+        const drawsByName: Record<string, Float64Array> = {};
+        for (let li = 0; li < mv.latentNames.length; li++) {
+          const nm = mv.latentNames[li], shp = mv.latentShapes[li];
+          if (shp.kind === 'scalar') drawsByName[nm] = new Float64Array(nDraws);
+          else for (let j = 0; j < shp.dims[0]; j++) drawsByName[`${nm}[${j}]`] = new Float64Array(nDraws);
+        }
+        for (let a = 0; a < nDraws; a++) {
+          const rec = res.samples[a];
+          for (let li = 0; li < mv.latentNames.length; li++) {
+            const nm = mv.latentNames[li], shp = mv.latentShapes[li];
+            if (shp.kind === 'scalar') { drawsByName[nm][a] = +rec[nm]; }
+            else { const v: any = rec[nm]; for (let j = 0; j < shp.dims[0]; j++) drawsByName[`${nm}[${j}]`][a] = +v[j]; }
+          }
+        }
+        // Weighted systematic resample over normalized exp(logWeights) (AMIS pattern).
+        const lw = res.logWeights; let mx = -Infinity;
+        for (let i = 0; i < nDraws; i++) if (lw[i] > mx) mx = lw[i];
+        let sw = 0; for (let i = 0; i < nDraws; i++) sw += Math.exp(lw[i] - mx);
+        const wbar = new Float64Array(nDraws); let sumSq = 0;
+        for (let i = 0; i < nDraws; i++) { wbar[i] = Math.exp(lw[i] - mx) / sw; sumSq += wbar[i] * wbar[i]; }
+        const ess = sumSq > 0 ? 1 / sumSq : 0;
+        const total = total0 > 0 ? total0 : nDraws;
+        idx = new Int32Array(total);
+        { let c = wbar[0], j = 0; for (let i = 0; i < total; i++) { const uu = (i + 0.5) / total; while (uu > c && j < nDraws - 1) { j++; c += wbar[j]; } idx[i] = j; } }
+        const perParam: Record<string, any> = {};
+        for (let d2 = 0; d2 < mv.dim; d2++) perParam[mv.names[d2]] = { rHat: NaN, essBulk: ess };
+        post = { drawsByName, diagnostics: { method: 'nested', logZ: res.logZ, logZerr: res.logZerr, nLive: res.nLive, efficiency: res.efficiency, ess, nSamples: nDraws, perParam } };
       } else {
         const isEss = backend === 'elliptical-slice-sampler';
         const kernel = backend === 'emcee' ? makeEmceeKernel(o.a)
@@ -380,6 +423,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
           }
           const recM = empirical.recordMeasure(fields, null);
           recM.diagnostics = post.diagnostics;
+          if (post.diagnostics && post.diagnostics.method === 'nested') recM.logTotalmass = post.diagnostics.logZ;
           return recM;
         }
 
@@ -398,6 +442,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
           m = buildArray(flat, dlen);
         }
         m.diagnostics = post.diagnostics;
+        if (post.diagnostics && post.diagnostics.method === 'nested') m.logTotalmass = post.diagnostics.logZ;
         return m;
       });
     });
