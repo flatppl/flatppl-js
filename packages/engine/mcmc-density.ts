@@ -72,7 +72,60 @@ function collectNormalizeMassNodes(node: any, out: any[], seen: Set<any>) {
 }
 
 
-async function resolveNormalizeMasses(measureIR: any, ctx: any): Promise<any> {
+// ---------------------------------------------------------------------------
+// canDeferTruncateNormalizer — Buffy #384: normalize(truncate(D(θ), S)) whose
+// base D's params (or S's bounds) reference a LIVE latent (a draw, or a
+// derived binding depending on one) cannot have its −log Z baked at setup:
+// Z(θ) changes every MCMC step. Rather than re-implement the CDF-difference
+// math here, recognise when the bare (massFrom-stripped) node reaching
+// density.ts's walker will be resolved CORRECTLY and DYNAMICALLY, per call,
+// by density.ts's own tryResolveTruncateNormalizerShift — the exact mechanism
+// the per-cell kernel-broadcast walk already relies on for the same shape
+// (density.ts:996 "Resolve Z = M(S) here, worker-side, from the env-bound
+// base"). That path evaluates the base's params from `opts.baseEnv`
+// (== the current point's `env` here) via `samplerLib.resolveParams`, so it
+// is automatically correct at every θ — we just need to NOT bake a stale
+// constant over it first.
+//
+// Returns true only when the shape is one that path is GUARANTEED to resolve
+// (never silently falls through to "Z treated as 1"): a truncate over a
+// KNOWN, CONTINUOUS (non-discrete) univariate distribution, with a bounds set
+// that is structurally an `interval(lo, hi)` call or one of the named
+// continuous sets (reals/posreals/nonnegreals) tryResolveTruncateNormalizerShift
+// recognises. Anything else (discrete base, unknown op, an unrecognised set
+// shape) is NOT deferred — it keeps the pre-existing materialise/bake path
+// (correct for θ-independent params; may throw for a θ-dependent case this
+// function can't safely classify, same as before this fix).
+const NAMED_CONTINUOUS_SETS = new Set(['reals', 'posreals', 'nonnegreals']);
+function canDeferTruncateNormalizer(inner: any): boolean {
+  if (!inner || inner.kind !== 'call' || inner.op !== 'truncate'
+      || !Array.isArray(inner.args) || inner.args.length !== 2) return false;
+  const baseIR = inner.args[0];
+  if (!baseIR || baseIR.kind !== 'call' || typeof baseIR.op !== 'string') return false;
+  if (!sampler.isKnownDistribution(baseIR.op)) return false;
+  let entry: any;
+  try { entry = sampler.lookupDistribution(baseIR); } catch (_) { return false; }
+  if (!entry || entry.discrete) return false;
+  const boundsIR = inner.args[1];
+  if (boundsIR && boundsIR.kind === 'call' && boundsIR.op === 'interval'
+      && Array.isArray(boundsIR.args) && boundsIR.args.length === 2) return true;
+  if (boundsIR && (boundsIR.kind === 'const' || (boundsIR.kind === 'ref' && boundsIR.ns === 'self'))
+      && NAMED_CONTINUOUS_SETS.has(boundsIR.name)) return true;
+  return false;
+}
+
+// Does `ir` reference any name in `atomDep` (a draw, or a value derived from
+// one)? Used to decide whether a normalize(truncate(...)) node's mass is
+// θ-dependent (must defer, see canDeferTruncateNormalizer) or θ-independent
+// (safe to materialise/bake once, the pre-existing fast path).
+function referencesAtomDep(ir: any, atomDep: Set<string>): boolean {
+  const refs = new Set<string>();
+  collectRefNames(ir, refs);
+  for (const r of refs) { if (atomDep.has(r)) return true; }
+  return false;
+}
+
+async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<string>): Promise<any> {
   const nodes: any[] = [];
   collectNormalizeMassNodes(measureIR, nodes, new Set());
   if (nodes.length === 0) return measureIR;
@@ -89,9 +142,19 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any): Promise<any> {
       node.op = 'logweighted';
       node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [massExpr] }] }, inner];
       delete node.massFrom;
-    } else {
-      needMaterialise.push(node);
+      continue;
     }
+    // Buffy #384: a θ-dependent normalize(truncate(D(θ), S)) — defer to
+    // density.ts's per-call dynamic resolution instead of baking a stale
+    // constant. Strip massFrom and leave the node as a bare
+    // normalize(truncate(...)); walkNormalize resolves −log Z(θ) fresh on
+    // every logDensityN call from the point's own env.
+    if (atomDep && atomDep.size > 0 && referencesAtomDep(inner, atomDep)
+        && canDeferTruncateNormalizer(inner)) {
+      delete node.massFrom;
+      continue;
+    }
+    needMaterialise.push(node);
   }
   if (needMaterialise.length === 0) return measureIR;
   // Fallback: a normalize whose mass we can't express symbolically. Materialise
@@ -287,6 +350,40 @@ async function buildLogPi(
   // those we score the inner built-in as a flat independent product with the
   // per-row params expanded across the inner iid axis. compositeDesc[nm] holds
   // { distOp, D, paramNames, sub } when nm is such a draw, else is absent.
+  // ── SETUP: fixed env + derived bindings + atom-dependence (hoisted) ───────
+  // Computed here, BEFORE the per-draw prior measures below, because
+  // classifying a normalize(truncate(D(θ), S)) as θ-dependent (Buffy #384 —
+  // see canDeferTruncateNormalizer) needs to know which names are
+  // atom-dependent (a draw, or derived from one) at the point resolveNormalizeMasses
+  // runs for each draw's own measure.
+  const fixedEnvObj: Record<string, any> = {};
+  if (ctx.fixedValues) ctx.fixedValues.forEach((v: any, k: string) => { fixedEnvObj[k] = v; });
+  const derivedBindings: Array<{ name: string; ir: any }> = [];
+  if (ctx.bindings) {
+    ctx.bindings.forEach((b: any, k: string) => {
+      if (!b || b.type === 'draw' || (k in fixedEnvObj)) return;
+      const rhsNode = (b.node || b).value || (b.node || b).effectiveValue;
+      if (!rhsNode) return;
+      try { derivedBindings.push({ name: k, ir: lower.lowerExpr(rhsNode) }); } catch (_) { /* skip */ }
+    });
+  }
+  const moduleReg = ctx.moduleRegistry;
+  const NULL_REF = (_n: string) => null as any;
+  // Atom-dependent derived = transitive closure of bindings whose lowered RHS
+  // references a draw or another atom-dependent name.
+  const atomDep = new Set<string>(drawNames);
+  {
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const db of derivedBindings) {
+        if (atomDep.has(db.name)) continue;
+        const refs = new Set<string>(); collectRefNames(db.ir, refs);
+        for (const r of refs) { if (atomDep.has(r)) { atomDep.add(db.name); grew = true; break; } }
+      }
+    }
+  }
+
   const { recognizeCompositeIidDraw } = require('./composite-prior.ts');
   const compositeDesc: Record<string, any> = {};
   const drawMeasures: Record<string, any> = {};
@@ -298,7 +395,7 @@ async function buildLogPi(
       msrc, { derivations: ctx.derivations, bindings: ctx.bindings },
     );
     if (!raw) throw new Error(`buildLogPi: cannot expand draw measure '${msrc}'`);
-    drawMeasures[nm] = await resolveNormalizeMasses(raw, ctx);
+    drawMeasures[nm] = await resolveNormalizeMasses(raw, ctx, atomDep);
   }
 
   // ── SETUP: likelihood body IR ─────────────────────────────────────────────
@@ -315,7 +412,7 @@ async function buildLogPi(
   // refuses an unresolved spec — swallowed to −∞ by likWith, making logπ = −∞
   // everywhere (every sampler stuck at init; SMC's 0·(−∞)=NaN at β=0 wipes all
   // weights). Mirrors the per-draw prior resolution above.
-  const likBodyIR = await resolveNormalizeMasses(likNode.body, ctx);
+  const likBodyIR = await resolveNormalizeMasses(likNode.body, ctx, atomDep);
 
   // ── SETUP: observed ───────────────────────────────────────────────────────
   const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
@@ -329,19 +426,6 @@ async function buildLogPi(
   // lower each derived (non-draw value) binding's IR ONCE here; per call only
   // evaluateExpr them into a fresh env, built ONCE per logπ and shared by the
   // prior and likelihood terms.
-  const fixedEnvObj: Record<string, any> = {};
-  if (ctx.fixedValues) ctx.fixedValues.forEach((v: any, k: string) => { fixedEnvObj[k] = v; });
-  const derivedBindings: Array<{ name: string; ir: any }> = [];
-  if (ctx.bindings) {
-    ctx.bindings.forEach((b: any, k: string) => {
-      if (!b || b.type === 'draw' || (k in fixedEnvObj)) return;
-      const rhsNode = (b.node || b).value || (b.node || b).effectiveValue;
-      if (!rhsNode) return;
-      try { derivedBindings.push({ name: k, ir: lower.lowerExpr(rhsNode) }); } catch (_) { /* skip */ }
-    });
-  }
-  const moduleReg = ctx.moduleRegistry;
-  const NULL_REF = (_n: string) => null as any;
 
   // Build the scoring env at a point: fixed + draws + derived (eval only, no
   // lowering). Vector draws land as plain arrays so index ops resolve.
@@ -368,18 +452,9 @@ async function buildLogPi(
   // pass instead of N scalar calls. The prior term stays scalar (a few cheap
   // logpdfs per atom). `likBodyIR` has derived bindings inlined by clm, so the
   // names it actually references are typically just the draws.
-  // Atom-dependent derived = transitive closure of bindings whose lowered RHS
-  // references a draw or another atom-dependent name.
-  const atomDep = new Set<string>(drawNames);
-  let grew = true;
-  while (grew) {
-    grew = false;
-    for (const db of derivedBindings) {
-      if (atomDep.has(db.name)) continue;
-      const refs = new Set<string>(); collectRefNames(db.ir, refs);
-      for (const r of refs) { if (atomDep.has(r)) { atomDep.add(db.name); grew = true; break; } }
-    }
-  }
+  // (atomDep — the transitive atom-dependent-name closure — was already
+  // computed above, ahead of the per-draw prior measures, for Buffy #384's
+  // θ-dependent-truncate-normalizer classification; reused here unchanged.)
   // Atom-independent base env: fixed values + derived that depend only on them,
   // evaluated ONCE. (Atom-dependent values are supplied per call via refArrays.)
   const baseEnvConst: Record<string, any> = Object.assign({}, fixedEnvObj);
