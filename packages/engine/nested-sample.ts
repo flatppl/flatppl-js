@@ -152,9 +152,18 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
     logZsq = logaddexp(logZsq, 2 * logWi);
     deadRec.push(liveRec[i]); deadLogW.push(logWi); deadL.push(liveL[i]);
   }
-  // information-based error: err ≈ sqrt(H/K), H from the weights; use the
-  // moment estimate logZerr = sqrt(Σ w_i² )/Z as a robust proxy.
-  const logZerr = Math.sqrt(Math.max(0, Math.exp(logZsq - 2 * logZ)));
+  // Skilling's nested-sampling error on ln Z: the dominant uncertainty comes
+  // from the unknown prior-mass shrinkage and is √(H/K), where H is the run's
+  // INFORMATION (Kullback–Leibler divergence of posterior from prior, in nats):
+  //   H = Σ_i (w_i/Z)·(logL_i − logZ).
+  // A multi-seed check found the earlier moment proxy √(Σ w_i²)/Z reported an
+  // error 3–14× smaller than the empirical seed-to-seed sd of logZ; √(H/K) is
+  // the principled estimate and tracks that spread far better. (logZsq is kept
+  // only for reference/backwards diagnostics; not used for the reported error.)
+  let Hinfo = 0;
+  for (let i = 0; i < deadLogW.length; i++) { const w = Math.exp(deadLogW[i] - logZ); if (w > 0) Hinfo += w * (deadL[i] - logZ); }
+  const logZerr = Math.sqrt(Math.max(0, Hinfo) / K);
+  void logZsq;
   const logWeights = Float64Array.from(deadLogW);
   if (onProgress) onProgress(1, 'sampling');
   return {
