@@ -246,7 +246,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         // opt-in), and 2 sweeps roughly halves the per-replacement eval cost
         // while the closed-form Gaussian evidence test still passes.
         const res = runNested(pt.transform, pt.dim, mv.likOf,
-          { nLive: o.nLive || 400, dlogz: o.dlogz ?? 0.5, sliceSweeps: o.sliceSweeps != null ? o.sliceSweeps : 2, prng });
+          { nLive: o.nLive || 400, dlogz: o.dlogz ?? 0.5, sliceSweeps: o.sliceSweeps != null ? o.sliceSweeps : 2, prng, onProgress });
         nDraws = res.samples.length;
         // θ-space scorer records → per-coordinate draws (nested samples are already
         // CONSTRAINED, so read fields directly — no mv.constrainAll).

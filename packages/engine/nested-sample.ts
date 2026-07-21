@@ -52,6 +52,13 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
   const prng = opts.prng || Math.random;
   const maxIter = opts.maxIter || 100000;
   const sliceSweeps = opts.sliceSweeps != null ? opts.sliceSweeps : 5;
+  const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
+  // Progress is gauged by the remaining-evidence gap closing toward the dlogz
+  // stop: gap = logZremain − logZ starts large and shrinks to log(dlogz) at
+  // termination. There is no known iteration total, so this fraction (from the
+  // first finite gap) is the honest progress signal. Reported throttled.
+  const logStop = Math.log(dlogz);
+  let gap0: number | null = null;
 
   // Initial live points: uniform cube → transform → logLik.
   const liveU: Float64Array[] = [], liveRec: any[] = [], liveL: number[] = [];
@@ -99,6 +106,13 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
     // termination: remaining live evidence fraction
     let maxLive = -Infinity; for (let i = 0; i < K; i++) maxLive = Math.max(maxLive, liveL[i]);
     const logZremain = maxLive + logX;
+    if (onProgress && nIter % 40 === 0) {
+      const gap = logZremain - logZ;
+      if (gap0 === null && Number.isFinite(gap)) gap0 = gap;
+      if (gap0 !== null && gap0 > logStop) {
+        onProgress(Math.max(0, Math.min(0.99, (gap0 - gap) / (gap0 - logStop))), 'sampling');
+      }
+    }
     if (logZremain - logZ < Math.log(dlogz)) { nIter++; break; }
     // replace with a likelihood-constrained draw: region rejection first
     // (cheap once the region is tight), slice as the fallback.
@@ -140,6 +154,7 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
   // moment estimate logZerr = sqrt(Σ w_i² )/Z as a robust proxy.
   const logZerr = Math.sqrt(Math.max(0, Math.exp(logZsq - 2 * logZ)));
   const logWeights = Float64Array.from(deadLogW);
+  if (onProgress) onProgress(1, 'sampling');
   return {
     samples: deadRec, logWeights, logZ, logZerr,
     nLive: K, nIter, efficiency: deadRec.length / Math.max(1, nEval),
