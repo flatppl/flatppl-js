@@ -408,6 +408,27 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void, tr
   return frag;
 }
 
+// Backends that draw via a stateful / iterative sampler (MCMC chains, nested
+// sampling, AMIS, SMC, elliptical-slice) as opposed to 'is' (a stateless
+// direct importance draw) or the synthetic 'forward' mode used on
+// non-posterior plots. This is exactly the set the Sample button below
+// gates. render-plot.ts's renderPlotForCurrent reuses this same list (via
+// shouldDeferAutoSample) to defer an AUTOMATIC re-render — e.g. a model
+// edit re-focusing the same posterior binding — on these backends
+// specifically, while cheap non-sampling plots (IS / forward / tractable /
+// array / matrix) keep updating live on edit.
+export const SAMPLING_BACKENDS = ['mh', 'ram', 'slice', 'emcee', 'amis', 'smc', 'nested', 'elliptical-slice-sampler'];
+
+// True when an AUTOMATIC trigger (anything other than an explicit Sample-
+// button click) should be suppressed for the plot currently being rendered:
+// it's a sampling-mode plot (not array/matrix, which load synchronously off
+// a cache rather than invoking a sampler) AND the effective backend is one
+// of the stateful samplers above. Kept pure/DOM-free so it's directly unit-
+// testable — see render-plot.test.ts.
+export function shouldDeferAutoSample(opts: { autoTrigger: boolean; sampling: boolean; effectiveBackend: string }): boolean {
+  return !!opts.autoTrigger && !!opts.sampling && SAMPLING_BACKENDS.indexOf(opts.effectiveBackend) >= 0;
+}
+
 // Unified sampler / draw control for the plot toolbar. On a bayesupdate
 // POSTERIOR (`isPosterior`) the sampler selector is live: IS (importance
 // sampling, default), MH / RAM / slice / emcee (MCMC), AMIS, SMC, ESS — writing onto
@@ -425,7 +446,9 @@ export function buildDomainControl(ctx: Ctx, plan: any, onChange: () => void, tr
 // (clears the measure cache and re-renders → re-draws). The same button re-runs
 // with unchanged settings, so it doubles as a re-draw/re-roll. The engine reads
 // ctx.inferenceOpts / SAMPLE_COUNT / rootSeed via the matCtx — see
-// engine-facade.getMeasure.
+// engine-facade.getMeasure. Editor/model edits are ALSO deferred behind this
+// button for these same backends — see shouldDeferAutoSample above and its
+// use in render-plot.ts.
 export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterior: boolean = true): HTMLElement {
   const opts = ctx.inferenceOpts;
 
