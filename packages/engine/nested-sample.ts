@@ -53,12 +53,6 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
   const maxIter = opts.maxIter || 100000;
   const sliceSweeps = opts.sliceSweeps != null ? opts.sliceSweeps : 5;
   const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
-  // Progress is gauged by the remaining-evidence gap closing toward the dlogz
-  // stop: gap = logZremain − logZ starts large and shrinks to log(dlogz) at
-  // termination. There is no known iteration total, so this fraction (from the
-  // first finite gap) is the honest progress signal. Reported throttled.
-  const logStop = Math.log(dlogz);
-  let gap0: number | null = null;
 
   // Initial live points: uniform cube → transform → logLik.
   const liveU: Float64Array[] = [], liveRec: any[] = [], liveL: number[] = [];
@@ -106,12 +100,17 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
     // termination: remaining live evidence fraction
     let maxLive = -Infinity; for (let i = 0; i < K; i++) maxLive = Math.max(maxLive, liveL[i]);
     const logZremain = maxLive + logX;
-    if (onProgress && nIter % 40 === 0) {
-      const gap = logZremain - logZ;
-      if (gap0 === null && Number.isFinite(gap)) gap0 = gap;
-      if (gap0 !== null && gap0 > logStop) {
-        onProgress(Math.max(0, Math.min(0.99, (gap0 - gap) / (gap0 - logStop))), 'sampling');
-      }
+    if (onProgress && nIter % 40 === 0 && Number.isFinite(logZ)) {
+      // Progress by iteration against an estimated total. Nested has no a-priori
+      // iteration count, but the expected total ≈ K·H (H = the run's information)
+      // and H STABILISES as the run proceeds — so nIter/estTotal tracks
+      // wall-clock (per-iteration cost is ~flat) instead of saturating early
+      // like an evidence-gap metric, which is what made the bar sit at 99%.
+      // H ≈ Σ (w_i/Z)·logL_i − logZ, recomputed from the running dead weights.
+      let H = 0; for (let i = 0; i < deadLogW.length; i++) H += Math.exp(deadLogW[i] - logZ) * deadL[i];
+      H = Math.max(0.1, H - logZ);
+      const estTotal = K * H * 1.25 + K;   // +K for the live-point closure batch; 1.25 slack
+      onProgress(Math.max(0, Math.min(0.99, nIter / estTotal)), 'sampling');
     }
     if (logZremain - logZ < Math.log(dlogz)) { nIter++; break; }
     // replace with a likelihood-constrained draw: region rejection first
