@@ -373,3 +373,24 @@ test('prior transform: every coordinate is monotone non-decreasing in its cube c
     }
   }
 });
+
+test('prior transform: hierarchical-logistic (kwargs Gamma + locscale StudentT pushfwd)', () => {
+  // Exercises two real-model forms that a plain positional/functionof reader misses:
+  //   sigma_a ~ Gamma(shape = 4.0, rate = 2.0)   — keyword-arg call (kwargs, not positional)
+  //   b       ~ locscale(StudentT(3.0), 0.0, 2.5) — pushfwd via a location-scale BIJECTION
+  //                                                 binding (args[0] is a bijection, not a bare functionof)
+  const src = fs.readFileSync(path.join(__dirname, 'fixtures/baseline/hierarchical-logistic.flatppl'), 'utf8');
+  const { ctx } = ctxFor(src, 20);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  assert.deepEqual(pt.latentNames, ['mu_a', 'sigma_a', 'a', 'b']);
+  const rec = pt.transform(new Float64Array(pt.dim).fill(0.5));
+  // mu_a = Normal(0,1) median = 0.
+  assert.ok(Math.abs(rec.mu_a) < 1e-9, `mu_a ${rec.mu_a}`);
+  // sigma_a = Gamma(shape=4, rate=2) median (kwargs path) — scipy.stats.gamma(a=4, scale=0.5).ppf(0.5).
+  assert.ok(Math.abs(rec.sigma_a - 1.8360303744254485) < 1e-6, `sigma_a ${rec.sigma_a}`);
+  // b = locscale(StudentT(3), 0, 2.5) at u=0.5 = 2.5·t₃⁻¹(0.5) + 0 = 0 (pushfwd via bijection).
+  assert.ok(Math.abs(rec.b) < 1e-9, `b ${rec.b}`);
+  // a ~ iid(Normal(mu_a, sigma_a), 3): each = mu_a + sigma_a·Φ⁻¹(0.5) = mu_a = 0.
+  assert.ok(rec.a instanceof Float64Array && rec.a.length === 3);
+  for (const v of rec.a) assert.ok(Math.abs(v) < 1e-9, `a elem ${v}`);
+});

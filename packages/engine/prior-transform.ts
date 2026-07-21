@@ -44,12 +44,18 @@ const ARG_NAMES: Record<string, string[]> = {
   Laplace: ['location', 'scale'], Dirac: ['value'], InverseGamma: ['shape', 'scale'],
   StudentT: ['nu'], ChiSquared: ['k'],
 };
-function resolveParams(distOp: string, argIRs: any[], env: Record<string, any>): any {
+// Resolve a distribution's params from its call node. A call carries EITHER
+// positional `args` (`Gamma(4, 2)`) OR by-name `kwargs` (`Gamma(shape=4,
+// rate=2)`) — resolve each declared param name from `kwargs[name]` when present,
+// else the positional slot. `node` is the `{op, args?, kwargs?}` call IR.
+function resolveParams(distOp: string, node: any, env: Record<string, any>): any {
   const names = ARG_NAMES[distOp];
   if (!names) throw new Error(`prior-transform: unsupported base distribution '${distOp}'`);
+  const kwargs = node && node.kwargs, args = (node && node.args) || [];
   const q: any = {};
   for (let i = 0; i < names.length; i++) {
-    const v = evalParam(argIRs[i], env);
+    const ir = (kwargs && kwargs[names[i]] != null) ? kwargs[names[i]] : args[i];
+    const v = evalParam(ir, env);
     if (v == null) throw new Error(`prior-transform: cannot resolve param '${names[i]}' of ${distOp}`);
     q[names[i]] = v;
   }
@@ -86,7 +92,7 @@ function planLatent(measureIR: any, ctx: any): { count: number; realise: (u: Flo
     return {
       count: 1,
       realise: (u, off, env) => {
-        const params = resolveParams(op, measureIR.args, env);
+        const params = resolveParams(op, measureIR, env);
         return quantile(op, u[off], params);
       },
     };
@@ -115,7 +121,7 @@ function planLatent(measureIR: any, ctx: any): { count: number; realise: (u: Flo
     return {
       count: 1,
       realise: (u, off, env) => {
-        const params = resolveParams(D.op, D.args, env);
+        const params = resolveParams(D.op, D, env);
         const lo = evalBound(region.args[0], env);
         const hi = evalBound(region.args[1], env);
         if (!(lo <= hi)) throw new Error(`prior-transform: truncate lo>hi (lo=${lo},hi=${hi})`);
@@ -129,9 +135,17 @@ function planLatent(measureIR: any, ctx: any): { count: number; realise: (u: Flo
     const base = measureIR.args[1];
     const basePlan = planLatent(base, ctx);
     if (basePlan.count !== 1) throw new Error('prior-transform: pushfwd base must be scalar');
-    // The forward function is a `functionof` binding referenced by name.
+    // The forward function is a `functionof` binding referenced by name — for a
+    // bare `pushfwd(fn(...), D)`, args[0] IS that binding. For `locscale(D, loc,
+    // scale)` (the non-centered reparameterisation, ubiquitous in hierarchical
+    // models), args[0] is instead a `bijection` binding whose FIRST arg is the
+    // forward `functionof` (args[1] is the inverse). Unwrap that one hop.
     const fb = ctx.bindings && ctx.bindings.get && ctx.bindings.get(fnRef && fnRef.name);
-    const fir = fb && (fb.ir || fb.node || fb);
+    let fir = fb && (fb.ir || fb.node || fb);
+    if (fir && fir.op === 'bijection' && fir.args && fir.args[0] && fir.args[0].name) {
+      const fwd = ctx.bindings.get(fir.args[0].name);
+      fir = fwd && (fwd.ir || fwd.node || fwd);
+    }
     if (!fir || fir.op !== 'functionof' || !fir.body || !fir.params || !fir.params[0]) {
       throw new Error(`prior-transform: cannot resolve pushfwd forward function '${fnRef && fnRef.name}'`);
     }
