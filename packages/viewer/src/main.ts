@@ -703,7 +703,12 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // backend ('amis'): T proposal-adaptation iterations of M samples each.
   // smcParticles (N) / smcSteps (chain length P) / smcCESS (ρ, the CESS target
   // fraction) drive the sequential-Monte-Carlo backend ('smc').
-  ctx.inferenceOpts = { backend: 'is', chains: 4, walkers: null, warmup: 1000, draws: 4000, seed: null, amisIters: 30, amisSamples: 300, smcParticles: 2000, smcSteps: 12, smcCESS: 0.7, nLive: 400, dlogz: 0.5 };
+  // regionMetric: nested-sampling constrained-draw region (mlfriends.ts).
+  // 'off' (region-free) is the default — measured most reliable for the
+  // evidence logZ; 'whitened'/'identity'/'cluster' are opt-in (see the gear
+  // panel's region selector in render-controls.ts and mlfriends.ts's header
+  // comment for the per-metric tradeoffs).
+  ctx.inferenceOpts = { backend: 'is', chains: 4, walkers: null, warmup: 1000, draws: 4000, seed: null, amisIters: 30, amisSamples: 300, smcParticles: 2000, smcSteps: 12, smcCESS: 0.7, nLive: 400, dlogz: 0.5, regionMetric: 'off' };
 
 
 
