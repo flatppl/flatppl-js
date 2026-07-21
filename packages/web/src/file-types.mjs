@@ -35,8 +35,8 @@ export function typeForPath(path) {
   const p = String(path).toLowerCase();
   if (p.endsWith('.flatppl')) return 'flatppl';
   if (p.endsWith('.md') || p.endsWith('.markdown')) return 'markdown';
-  if (p.endsWith('.hs3.json')) return 'hs3';
-  if (p.endsWith('.pyhf.json')) return 'pyhf';
+  if (p.endsWith('.hs3.json') || p.endsWith('.hs3')) return 'hs3';
+  if (p.endsWith('.pyhf.json') || p.endsWith('.pyhf')) return 'pyhf';
   return 'unknown';
 }
 
