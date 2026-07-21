@@ -183,19 +183,44 @@ D = normalize(truncate(weighted((x,y) -> 0.0,
   assert.throws(() => resolvedNegLogZ(src), /Z = .*0|normalizer/i);
 });
 
-test('unbounded truncation of a non-Normal scalar measure refuses (no silent NaN)', () => {
-  // Defense-in-depth for the 1-D scalar-reference fast path: interval(2, inf)
-  // resolves to a semi-lo axis (numericBoundValue recognises the `inf` const),
-  // and that path has no change-of-variables, so a non-Normal kernel over an
-  // unbounded set must THROW rather than compute dx=inf → logweighted(NaN).
-  // Built as a plain IR (no massFrom) so it reaches resolveTruncateNormalizers'
-  // truncate branch directly — in a full derivation context such a node is
-  // routed to the mass resolver instead, so this exercises the guard in
-  // isolation (a future massFrom-absent caller is exactly the risk it covers).
+test('unbounded truncation of Exponential (has a closed-form CDF) resolves exactly, no refusal', () => {
+  // forward-cdf.ts carries Exponential's CDF (F(x) = 1-e^{-rate·x}), so this —
+  // PREVIOUSLY refused by the 1-D scalar-reference fast path, which
+  // had no change-of-variables for a non-Normal kernel over an unbounded set —
+  // now resolves in closed form instead of throwing. Oracle: for a memoryless
+  // Exponential(rate), the survival mass past any lo is exp(-rate·lo) exactly,
+  // so log Z = -rate·lo = -1·2 = -2.
   const ir = {
     kind: 'call', op: 'normalize', args: [
       { kind: 'call', op: 'truncate', args: [
         { kind: 'call', op: 'Exponential', args: [], kwargs: { rate: lit(1) } },
+        { kind: 'call', op: 'interval', args: [lit(2), { kind: 'const', name: 'inf' }] },
+      ] },
+    ],
+  };
+  matDensity.resolveTruncateNormalizers(ir, {}, { bindings: new Map() });
+  assert.equal(ir.op, 'logweighted');
+  const negLogZ = (ir.args as any[])[0].value;
+  assert.ok(Math.abs(negLogZ - 2) <= 1e-12, `-logZ ${negLogZ} == oracle 2 (rate·lo)`);
+});
+
+test('unbounded truncation of a scalar measure with NO registered CDF refuses (no silent NaN)', () => {
+  // Defense-in-depth for the 1-D scalar-reference fast path: interval(2, inf)
+  // resolves to a semi-lo axis (numericBoundValue recognises the `inf` const),
+  // and that path has no change-of-variables, so a kernel with no closed-form
+  // CDF in forward-cdf.ts must THROW rather than compute dx=inf →
+  // logweighted(NaN). GeneralizedNormal is real-line-supported but has no CDF
+  // ladder entry (only its density is registered), so it still exercises the
+  // guard the Exponential case above no longer needs. Built as a plain IR (no
+  // massFrom) so it reaches resolveTruncateNormalizers' truncate branch
+  // directly — in a full derivation context such a node is routed to the mass
+  // resolver instead, so this exercises the guard in isolation (a future
+  // massFrom-absent caller is exactly the risk it covers).
+  const ir = {
+    kind: 'call', op: 'normalize', args: [
+      { kind: 'call', op: 'truncate', args: [
+        { kind: 'call', op: 'GeneralizedNormal', args: [],
+          kwargs: { mean: lit(0), alpha: lit(1), beta: lit(2) } },
         { kind: 'call', op: 'interval', args: [lit(2), { kind: 'const', name: 'inf' }] },
       ] },
     ],
