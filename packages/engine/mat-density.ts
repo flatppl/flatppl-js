@@ -245,8 +245,12 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         // region-free slice is the default replacement step now (region is
         // opt-in), and 2 sweeps roughly halves the per-replacement eval cost
         // while the closed-form Gaussian evidence test still passes.
+        // useRegion/region: opt-in region-based constrained draws (mlfriends.ts);
+        // pass straight through to runNested — see its own comment for why
+        // region-free is the shipped default and region stays opt-in.
         const res = runNested(pt.transform, pt.dim, mv.likOf,
-          { nLive: o.nLive || 400, dlogz: o.dlogz ?? 0.5, sliceSweeps: o.sliceSweeps != null ? o.sliceSweeps : 2, prng, onProgress });
+          { nLive: o.nLive || 400, dlogz: o.dlogz ?? 0.5, sliceSweeps: o.sliceSweeps != null ? o.sliceSweeps : 2, prng, onProgress,
+            useRegion: o.useRegion === true, region: o.region, rebuild: o.rebuild, regionTries: o.regionTries });
         nDraws = res.samples.length;
         // θ-space scorer records → per-coordinate draws (nested samples are already
         // CONSTRAINED, so read fields directly — no mv.constrainAll).
