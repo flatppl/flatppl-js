@@ -42,6 +42,7 @@ const ARG_NAMES: Record<string, string[]> = {
   HalfNormal: ['sigma'], HalfCauchy: ['scale'], Cauchy: ['location', 'scale'],
   Logistic: ['mu', 's'], Weibull: ['shape', 'scale'], Pareto: ['shape', 'scale'],
   Laplace: ['location', 'scale'], Dirac: ['value'], InverseGamma: ['shape', 'scale'],
+  StudentT: ['nu'], ChiSquared: ['k'],
 };
 function resolveParams(distOp: string, argIRs: any[], env: Record<string, any>): any {
   const names = ARG_NAMES[distOp];
@@ -146,7 +147,7 @@ function planLatent(measureIR: any, ctx: any): { count: number; realise: (u: Flo
     };
   }
 
-  throw new Error(`nested backend: prior form '${op}' is not invertible; not eligible for nested sampling`);
+  throw new Error(`nested backend: prior form '${op}' is not yet supported by the nested prior transform`);
 }
 
 function buildPriorTransform(ctx: any, d: any) {

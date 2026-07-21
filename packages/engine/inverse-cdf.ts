@@ -48,6 +48,24 @@ const QUANTILE: Record<string, (p: number, q: any) => number> = {
   // X~IG(shape,scale) ⇔ scale/X ~ Gamma(shape, rate=1) ⇒ F_X(x)=1-P(shape,scale/x);
   // invert: x = scale / gammaincinv(1-p, shape).
   InverseGamma: (p, q) => q.scale / stdlibGammaincinv(1 - p, q.shape),
+  Cauchy: (p, q) => q.location + q.scale * Math.tan(Math.PI * (p - 0.5)),
+  // ChiSquared(k) ≡ Gamma(shape=k/2, rate=1/2); gammaincinv is scale-1 (rate-1),
+  // so divide by rate=1/2 ⇔ multiply by 2. Verified vs scipy.stats.chi2(df=k).ppf.
+  ChiSquared: (p, q) => 2 * stdlibGammaincinv(p, q.k / 2),
+  // Standard StudentT(nu) (zero mean, unit scale, spec §08). Inverse via the
+  // regularized-incomplete-beta identity: for T~t(nu), P(|T|>t) = I_z(nu/2,½)
+  // with z = nu/(nu+t²); invert for t given the tail probability, then place
+  // the sign by which side of the median p falls on. Verified vs
+  // scipy.stats.t(df=nu).ppf across nu∈{3,10} and p incl. tails (see
+  // test/inverse-cdf.test.ts) — the naive z=betaincinv(...) ↔ t mapping is
+  // easy to get backwards/inverted; this form matches scipy exactly to
+  // float64 precision, not just approximately.
+  StudentT: (p, q) => {
+    const p2 = p < 0.5 ? 2 * p : 2 * (1 - p);
+    const z = stdlibBetaincinv(p2, q.nu / 2, 0.5);
+    const t = Math.sqrt(q.nu * (1 - z) / z);
+    return p < 0.5 ? -t : (p > 0.5 ? t : 0);
+  },
 };
 
 // True iff a distOp has a registered closed-form / library quantile.

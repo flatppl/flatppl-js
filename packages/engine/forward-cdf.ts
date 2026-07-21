@@ -27,6 +27,17 @@ const CDF: Record<string, (x: number, q: any) => number> = {
   Laplace:     (x, q) => { const z = (x - q.location) / q.scale; return z < 0 ? 0.5 * Math.exp(z) : 1 - 0.5 * Math.exp(-z); },
   // X~IG(shape,scale) ⇔ scale/X ~ Gamma(shape, rate=1) ⇒ F_X(x)=1-P(shape,scale/x).
   InverseGamma: (x, q) => x <= 0 ? 0 : 1 - stdlibGammainc(q.scale / x, q.shape),
+  // ChiSquared(k) ≡ Gamma(shape=k/2, rate=1/2): F(x) = P(k/2, x/2). Verified vs
+  // scipy.stats.chi2(df=k).cdf.
+  ChiSquared: (x, q) => x <= 0 ? 0 : stdlibGammainc(x / 2, q.k / 2),
+  // Standard StudentT(nu): F(x) = 1 - ½·I_z(nu/2,½) for x>0, ½·I_z(nu/2,½) for
+  // x≤0, with z = nu/(nu+x²) (symmetric in x so the same z serves both
+  // tails). Verified vs scipy.stats.t(df=nu).cdf across nu∈{3,10} incl. tails.
+  StudentT: (x, q) => {
+    const z = q.nu / (q.nu + x * x);
+    const half = 0.5 * stdlibBetainc(z, q.nu / 2, 0.5);
+    return x > 0 ? 1 - half : half;
+  },
 };
 function hasCdf(distOp: string): boolean { return Object.prototype.hasOwnProperty.call(CDF, distOp); }
 function cdf(distOp: string, x: number, params: any): number {

@@ -324,6 +324,34 @@ test('prior transform: linear-regression fixture — InverseGamma(5,5) sigma2 qu
   assert.ok(Math.abs(rec.beta - betaExpected) < 1e-6, `beta ${rec.beta} vs expected ${betaExpected}`);
 });
 
+test('prior transform: StudentT/Cauchy/ChiSquared latents run (no refusal), medians match scipy', () => {
+  // Previously refused ("not invertible") — all three have closed-form/library
+  // quantiles now. Independent oracle (scipy, computed separately — see
+  // inverse-cdf.test.ts for the full ppf grid): StudentT(nu) median = 0 by
+  // symmetry; ChiSquared(k) median = scipy .ppf(0.5); Cauchy(loc,scale) median
+  // = loc by symmetry.
+  const SRC_TCC = `
+flatppl_compat = "0.1"
+t ~ StudentT(3.0)
+c ~ Cauchy(0.0, 1.0)
+x ~ ChiSquared(4.0)
+prior = lawof(record(t = t, c = c, x = x))
+y ~ Normal.(t, 1.0)
+K = kernelof(record(y = y), t = t, c = c, x = x)
+L = likelihoodof(K, record(y = [0.0]))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx } = ctxFor(SRC_TCC, 100);
+  const pt = buildPriorTransform(ctx, ctx.derivations['posterior']);
+  assert.deepEqual(pt.latentNames, ['t', 'c', 'x']);
+  assert.equal(pt.dim, 3);
+  const rec = pt.transform(new Float64Array([0.5, 0.5, 0.5]));
+  const CHISQ4_PPF_HALF = 3.3566939800333224;   // scipy.stats.chi2(df=4).ppf(0.5)
+  assert.ok(Math.abs(rec.t) < 1e-9, `t at u=0.5 should be 0 (StudentT median), got ${rec.t}`);
+  assert.ok(Math.abs(rec.c) < 1e-9, `c at u=0.5 should be 0 (Cauchy(0,1) median), got ${rec.c}`);
+  assert.ok(Math.abs(rec.x - CHISQ4_PPF_HALF) < 1e-9, `x at u=0.5 should be scipy chi2(4) median ${CHISQ4_PPF_HALF}, got ${rec.x}`);
+});
+
 test('prior transform: every coordinate is monotone non-decreasing in its cube coord', () => {
   const src = fs.readFileSync(path.join(__dirname, 'fixtures/baseline/eight-schools.flatppl'), 'utf8');
   const { ctx } = ctxFor(src, 100);
