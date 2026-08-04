@@ -1494,8 +1494,32 @@ function _registerScalarLogicals(): void {
   };
 
   for (const name in LOGICALS) {
-    ops.attachLogical(name, LOGICALS[name], 'rank-polymorphic');
+    ops.attachLogical(name, _withArrayCase(name, LOGICALS[name]), 'rank-polymorphic');
   }
+}
+
+// Give a unary scalar logical its ARRAY case, per `ops.ELEMWISE_OVER_ARRAY`:
+// a Value argument routes to the cell-wise value-ops impl, everything else to
+// the scalar impl unchanged. Ops outside that map are returned untouched.
+//
+// Shared with the legacy `sampler.ARITH_OPS` facade (`sampler._withArrayCase`
+// applies the same map), so the two paths cannot disagree about which ops read
+// cell-wise or about what a cell-wise read computes.
+function _withArrayCase(name: string, scalarImpl: (...a: any[]) => any): (...a: any[]) => any {
+  const impl = (ops.ELEMWISE_OVER_ARRAY as any)[name];
+  if (!impl) return scalarImpl;
+  const cellwise = (valueOps as any)[impl];
+  /* c8 ignore start */
+  // Load-time invariant on a hand-written map: unreachable while every entry
+  // names a real `value-ops` export, so no test can cover it. Kept as a throw
+  // rather than dropped — a typo would otherwise install `undefined` as the
+  // cell-wise impl and fail later as a TypeError inside an op.
+  if (typeof cellwise !== 'function') {
+    throw new Error(`ops.ELEMWISE_OVER_ARRAY: '${name}' names value-ops.${impl}, `
+      + 'which does not exist');
+  }
+  /* c8 ignore stop */
+  return (a: any) => valueLib.isValue(a) ? cellwise(a) : scalarImpl(a);
 }
 
 let _BCAST_VARIANTS_REGISTERED = false;
