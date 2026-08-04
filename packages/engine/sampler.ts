@@ -1874,6 +1874,19 @@ function _buildFilled(dims: number[], value: any): any {
   return out;
 }
 
+// Give the unary primitives in `ops.ELEMWISE_OVER_ARRAY` their cell-wise ARRAY
+// case here too, from the same map and the same value-ops impls the declared
+// logicals use (`ops-declarations._withArrayCase`). Direct ARITH_OPS callers
+// (mat-*, the batched facade, tests) then read an array the way typeinfer types
+// it instead of coercing the container to NaN. Must run before
+// `initARITHOPSN`, which copies these references.
+for (const _name in opsModule.ELEMWISE_OVER_ARRAY) {
+  const _cellwise = (valueOps as any)[opsModule.ELEMWISE_OVER_ARRAY[_name]];
+  const _scalar = (ARITH_OPS as any)[_name];
+  (ARITH_OPS as any)[_name] = (a: any) =>
+    valueLib.isValue(a) ? _cellwise(a) : _scalar(a);
+}
+
 // =====================================================================
 // Populate ARITH_OPS_N from ARITH_OPS via sampler-eval-batched.
 // =====================================================================
@@ -2652,35 +2665,62 @@ function evaluateCall(ir: any, env: any): any {
     const xRaw = evaluateExpr(ir.args[0], env);
     const x = valueLib.isValue(xRaw) ? xRaw.data : xRaw;
     const setIR = ir.args[1];
-    if (setIR && setIR.kind === 'call' && setIR.op === 'interval'
+    // Membership of ONE point in a scalar-element set descriptor.
+    const pointIn = (p: any, sIR: any): boolean => {
+      if (sIR && sIR.kind === 'call' && sIR.op === 'interval'
+          && Array.isArray(sIR.args) && sIR.args.length === 2) {
+        const loRaw = evaluateExpr(sIR.args[0], env);
+        const hiRaw = evaluateExpr(sIR.args[1], env);
+        const lo = valueLib.isValue(loRaw) ? loRaw.data : loRaw;
+        const hi = valueLib.isValue(hiRaw) ? hiRaw.data : hiRaw;
+        return p >= lo && p <= hi;
+      }
+      const setName = sIR && sIR.kind === 'const' ? sIR.name
+        : (sIR && sIR.kind === 'ref' && sIR.ns === 'self') ? sIR.name
+        : null;
+      switch (setName) {
+        case 'reals':          return Number.isFinite(p);
+        case 'posreals':       return Number.isFinite(p) && p > 0;
+        case 'nonnegreals':    return Number.isFinite(p) && p >= 0;
+        case 'unitinterval':   return p >= 0 && p <= 1;
+        case 'integers':       return Number.isInteger(p);
+        case 'posintegers':    return Number.isInteger(p) && p >= 1;
+        case 'nonnegintegers': return Number.isInteger(p) && p >= 0;
+        case 'booleans':       return p === 0 || p === 1;
+      }
+      // Refuse loudly rather than silently mis-answer membership. Reachable
+      // from a nested `cartpow(cartpow(S, n), m)`, whose inner power is a set
+      // of arrays and not a scalar element set.
+      throw new Error("evaluateCall: `in` unsupported set shape (kind="
+        + (sIR && sIR.kind) + (sIR && sIR.op ? ", op=" + sIR.op : "") + ")");
+    };
+    // §03 "Cartesian power": `cartpow(S, size)` "produces the Cartesian power
+    // of `S` with shape `size`", so a point is a member exactly when EVERY cell
+    // is in `S` — the per-cell conjunction. §05 "Broadcasting syntax" leaves no
+    // other spelling: `in` "has no dotted form (its right operand is a set, not
+    // a broadcastable value)", so the reduce belongs to `in` itself. The
+    // determiniser's set-valued image over a vector variate emits exactly this
+    // (flatppl-rust determinizer/src/invert.rs::Image::vector_condition, e.g.
+    // `y in cartpow(posreals, 3)` for `pushfwd(exp, ·)`).
+    if (setIR && setIR.kind === 'call' && setIR.op === 'cartpow'
         && Array.isArray(setIR.args) && setIR.args.length === 2) {
-      const loRaw = evaluateExpr(setIR.args[0], env);
-      const hiRaw = evaluateExpr(setIR.args[1], env);
-      const lo = valueLib.isValue(loRaw) ? loRaw.data : loRaw;
-      const hi = valueLib.isValue(hiRaw) ? hiRaw.data : hiRaw;
-      return x >= lo && x <= hi;
+      const sizeRaw = evaluateExpr(setIR.args[1], env);
+      const n = Number(valueLib.isValue(sizeRaw) ? sizeRaw.data[0] : sizeRaw);
+      // A rank-≥2 power (`cartpow(S, [3, 3])`) has a flat cell count that
+      // cannot equal the scalar `n`, so this length test also refuses it —
+      // matching the rank-1-only contract of the StableHLO emitter's `in`.
+      const cells = (x != null && typeof x !== 'string' && typeof x.length === 'number')
+        ? x : null;
+      if (cells == null || !Number.isInteger(n) || cells.length !== n) {
+        throw new Error('evaluateCall: `in` over cartpow expects a length-' + n
+          + ' 1-D point, got ' + (cells == null ? typeof x : 'length ' + cells.length));
+      }
+      for (let i = 0; i < cells.length; i++) {
+        if (!pointIn(cells[i], setIR.args[0])) return false;
+      }
+      return true;
     }
-    const setName = setIR && setIR.kind === 'const' ? setIR.name
-      : (setIR && setIR.kind === 'ref' && setIR.ns === 'self') ? setIR.name
-      : null;
-    switch (setName) {
-      case 'reals':          return Number.isFinite(x);
-      case 'posreals':       return Number.isFinite(x) && x > 0;
-      case 'nonnegreals':    return Number.isFinite(x) && x >= 0;
-      case 'unitinterval':   return x >= 0 && x <= 1;
-      case 'integers':       return Number.isInteger(x);
-      case 'posintegers':    return Number.isInteger(x) && x >= 1;
-      case 'nonnegintegers': return Number.isInteger(x) && x >= 0;
-      case 'booleans':       return x === 0 || x === 1;
-    }
-    /* c8 ignore start */
-    // Defensive: the determiniser only emits `in(v, interval(...))` (the truncate
-    // gate); named sets are handled above and refs are inlined by the lift before
-    // this point, so an unrecognised set shape does not arise in practice — but
-    // refuse loudly rather than silently mis-answer membership.
-    throw new Error("evaluateCall: `in` unsupported set shape (kind="
-      + (setIR && setIR.kind) + (setIR && setIR.op ? ", op=" + setIR.op : "") + ")");
-    /* c8 ignore stop */
+    return pointIn(x, setIR);
   }
   // Higher-order value-domain ops (engine-concepts §18.1 Phase 5c):
   // broadcast / reduce / scan / filter migrated to ops-declarations.ts

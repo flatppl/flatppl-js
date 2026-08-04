@@ -94,6 +94,48 @@ test('realElem: complex Value → real Value with re buffer', () => {
   assert.deepEqual(Array.from(r.data), [1, 2, 3]);
 });
 
+test('real(array) dispatches cell-wise UN-dotted (spec §07 `real`)', () => {
+  // §07 gives `real(x)` as "returns `x` for real `x`, Re(x) for complex `x`",
+  // which an array satisfies cell-wise. The determiniser's discrete lattice
+  // snap emits it un-dotted over a vector variate — `real(round.(v))`,
+  // flatppl-rust determinizer/src/density.rs::snap_to_lattice — so the plain
+  // `dispatch` path (wrappingOp 'direct', not 'broadcast') must handle it.
+  // Before this, the rank-polymorphic scalar logical coerced the container
+  // and produced NaN.
+  const v = vl.vector([1, 2, 3]);
+  assert.deepEqual(Array.from(ops.dispatch('real', [v]).data), [1, 2, 3]);
+  const c = vo.complexElem(vl.vector([1, 2, 3]), vl.vector([4, 5, 6]));
+  const r = ops.dispatch('real', [c]);
+  assert.equal(r.dtype, undefined);
+  assert.deepEqual(Array.from(r.data), [1, 2, 3]);
+  // A matrix restricts cell-wise too — the rule is not rank-1-specific.
+  const m = { shape: [2, 2], data: new Float64Array([1, 2, 3, 4]) };
+  assert.deepEqual(Array.from(ops.dispatch('real', [m]).data), [1, 2, 3, 4]);
+  // The scalar branch is unchanged.
+  assert.equal(ops.dispatch('real', [2.5]), 2.5);
+  assert.equal(ops.dispatch('real', [{ re: 7, im: 9 }]), 7);
+});
+
+test('abs(array) dispatches cell-wise UN-dotted (spec §07)', () => {
+  // §07 gives the vector norms their own names (`l1norm` / `l2norm`), so `abs`
+  // over an array is the cell-wise magnitude and nothing else — which is what
+  // typeinfer already assigns it (shape-preserving). The determiniser's vector
+  // lattice test emits it un-dotted, `sum(abs(v - back))`
+  // (flatppl-rust determinizer/src/density.rs::lattice_test). Before this the
+  // container coerced to NaN and `sum` of that read 0, so the lattice gate
+  // silently admitted off-lattice points instead of returning -inf.
+  const v = vl.vector([0, -0.5, 2]);
+  assert.deepEqual(Array.from(ops.dispatch('abs', [v]).data), [0, 0.5, 2]);
+  // Complex cells give the modulus, a real Value.
+  const c = vo.complexElem(vl.vector([3, 0]), vl.vector([4, 5]));
+  const r = ops.dispatch('abs', [c]);
+  assert.equal(r.dtype, undefined);
+  assert.deepEqual(Array.from(r.data), [5, 5]);
+  // The scalar branch is unchanged.
+  assert.equal(ops.dispatch('abs', [-2.5]), 2.5);
+  assert.equal(ops.dispatch('abs', [{ re: 3, im: 4 }]), 5);
+});
+
 test('imagElem: real Value → zero Value of same shape', () => {
   const x = vl.vector([1, 2, 3]);
   const i = vo.imagElem(x);

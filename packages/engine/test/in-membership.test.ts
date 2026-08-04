@@ -55,6 +55,40 @@ test('`x in <named set>` membership via ifelse', async () => {
   assert.equal(await inSet('2.0', 'booleans'), 0.0);
 });
 
+test('`v in cartpow(S, n)` is the per-cell conjunction (spec §03)', async () => {
+  // §03 "Cartesian power": `cartpow(S, size)` is the Cartesian power of `S`, so
+  // a point is a member exactly when every cell is in `S`. The determiniser's
+  // set-valued image over a VECTOR variate emits this in place of the scalar
+  // `in S` (invert.rs::Image::vector_condition, e.g. `pushfwd(exp, ·)`).
+  const inPow = async (v: string, s: string) =>
+    scoreValue(`lp = ifelse(${v} in cartpow(${s}, 3), 1.0, 0.0)`, 'lp');
+  assert.equal(await inPow('[1.0, 2.0, 3.0]', 'posreals'), 1.0);
+  // One cell outside S falsifies the whole conjunction, in any position.
+  assert.equal(await inPow('[0.0, 2.0, 3.0]', 'posreals'), 0.0);
+  assert.equal(await inPow('[1.0, 2.0, -3.0]', 'posreals'), 0.0);
+  // The element set is any set the scalar form takes, including an interval.
+  assert.equal(await inPow('[0.5, 0.5, 0.5]', 'unitinterval'), 1.0);
+  assert.equal(await inPow('[0.5, 1.5, 0.5]', 'unitinterval'), 0.0);
+  assert.equal(await inPow('[1.0, 2.0, 3.0]', 'interval(0.0, 4.0)'), 1.0);
+  assert.equal(await inPow('[1.0, 2.0, 5.0]', 'interval(0.0, 4.0)'), 0.0);
+});
+
+test('`in cartpow` refuses a point whose length is not the power', async () => {
+  await assert.rejects(
+    () => scoreValue('lp = ifelse([1.0, 2.0] in cartpow(posreals, 3), 1.0, 0.0)', 'lp'),
+    /`in` over cartpow expects a length-3 1-D point, got length 2/);
+});
+
+test('`in cartpow` refuses a non-scalar element set', async () => {
+  // A nested power is a set of ARRAYS, so its cells are not scalar members —
+  // refuse rather than mis-answer. Matches the StableHLO emitter's contract
+  // ("optionally under one cartpow").
+  await assert.rejects(
+    () => scoreValue(
+      'lp = ifelse([1.0, 2.0, 3.0] in cartpow(cartpow(posreals, 2), 3), 1.0, 0.0)', 'lp'),
+    /`in` unsupported set shape \(kind=call, op=cartpow\)/);
+});
+
 test('truncate in-support density lowers through the `in` gate', async () => {
   // The determiniser's truncate density: ifelse(in(v, S), logdensity, neg(inf)).
   // In-support, this returns the Normal log-density; verify against closed form.

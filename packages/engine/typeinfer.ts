@@ -589,6 +589,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // measure — an affine pushforward changes neither domain nor shape.
       case 'locscale':    return write(inferLocscale(expr, scopes), expr);
       case 'checked':     return write(inferChecked(expr, scopes), expr);
+      // real(x) — §07 "Scalar restrictions and constructors" gives it as
+      // "returns `x` for real `x`, Re(x) for complex `x`", which an ARRAY
+      // satisfies cell-wise. The scalar case stays on the signature
+      // (`complex → real`, integer admitted through §03's embedding); only
+      // the array form needs the shape-preserving lift.
+      case 'real':        return write(inferReal(expr, scopes), expr);
     }
     // Static refusal: the four FlatPDL transports (touniform / fromuniform
     // / tonormal / fromnormal) are undefined on a DISCRETE kernel — there
@@ -2349,6 +2355,39 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       });
       return T.failed(expr.op + ' bad operand');
     }
+    return out;
+  }
+
+  // real(x) over an ARRAY. §07 "Scalar restrictions and constructors":
+  // "`real` | `x` | returns `x` for real `x`, Re(x) for complex `x`" — the
+  // restriction is per cell, so the result keeps the argument's shape with a
+  // real leaf. §03's `booleans ⊂ integers ⊂ reals` makes an integer cell
+  // already real, so the array form is value-identity there and only retypes.
+  // The determiniser's discrete lattice snap is what emits it un-dotted:
+  // `real(round.(v))` over a vector variate (flatppl-rust
+  // determinizer/src/density.rs::snap_to_lattice).
+  //
+  // A scalar (or anything non-array) falls through to the signature path, so
+  // `real(complex)` and the non-numeric refusal keep their existing rules.
+  function inferReal(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    if (args.length !== 1) return arityError('real', 1, args.length, expr.loc);
+    const aT: any = inferExpr(args[0], scopes);
+    if (aT.kind !== 'array') return inferGenericCall(expr, scopes);
+    // Null propagates out of a nested leaf, so a non-numeric cell refuses the
+    // whole call instead of yielding an array with a null element type.
+    function liftElemwise(t: any): any {
+      if (t == null) return null;
+      if (t.kind === 'array') {
+        const elem = liftElemwise(t.elem);
+        return elem == null ? null : T.array(t.rank, t.shape.slice(), elem);
+      }
+      if (t.kind === 'deferred' || t.kind === 'any') return t;
+      if (t.kind === 'scalar' && t.prim !== 'string') return T.REAL;
+      return null;
+    }
+    const out = liftElemwise(aT);
+    if (out == null) return argError('real', 0, T.COMPLEX, aT, args[0].loc);
     return out;
   }
 

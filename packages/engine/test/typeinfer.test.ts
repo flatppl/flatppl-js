@@ -1043,6 +1043,33 @@ test('multi-LHS preserves disintegrate semantics (no tuple_get rewrite)', () => 
 });
 
 
+test('§07 real: an ARRAY argument types cell-wise, shape preserved', () => {
+  // §07 "Scalar restrictions and constructors" gives `real(x)` as "returns `x`
+  // for real `x`, Re(x) for complex `x`" — per cell over an array, so the
+  // result keeps the shape with a real leaf. §03's `booleans ⊂ integers ⊂
+  // reals` makes an integer array a member already, so the array form only
+  // retypes it. The determiniser's discrete lattice snap emits exactly this
+  // (`real(round.(v))` — determinizer/src/density.rs::snap_to_lattice), and
+  // rejecting it blocked every vector discrete pushforward from scoring.
+  const { bindings, errors } = infer(`
+    v = [1.5, -2.5, 3.5]
+    k = round.(v)
+    r = real(k)
+    s = real(2.5)
+  `);
+  assert.equal(errors.length, 0, errors.map((d: any) => d.message).join('; '));
+  assert.ok(T.equal(typeOf(bindings, 'k'), T.array(1, [3], T.INTEGER)));
+  assert.ok(T.equal(typeOf(bindings, 'r'), T.array(1, [3], T.REAL)));
+  assert.ok(T.equal(typeOf(bindings, 's'), T.REAL));
+});
+
+test('§07 real: a non-numeric argument is still refused', () => {
+  const { errors } = infer(`r = real(["a", "b"])`);
+  assert.ok(errors.some((d: any) => /^real: arg 1 expects/.test(d.message)),
+    'expected a real arg-1 diagnostic, got: '
+    + errors.map((d: any) => d.message).join('; '));
+});
+
 test('logdensityof: shape-mismatch diagnostic substitutes resolved measure domain', () => {
   // When the second arg's type doesn't unify with the substituted T
   // (the resolved measure domain), the generic argError now reports
