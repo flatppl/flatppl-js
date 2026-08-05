@@ -82,21 +82,31 @@ function mcDensityOpts(ctx: any): any {
 // =====================================================================
 
 // Shared-ancestor marginal (spec §06 "Density of composed measures": "A
-// `joint` with shared ancestry reduces as its equivalent record law"). §06
-// permits a closed form or a discrete enumeration and "otherwise reports a
-// static error", so the two non-MC outcomes clm's lowering declares are
-// answered HERE, before the worker is asked for per-atom scores it cannot
-// legitimately reduce: an `analytic-gaussian` reduce is evaluated in closed
-// form at the observed point, and a `refuse` reduce throws.
+// `joint` with shared ancestry reduces as its equivalent record law"). The same
+// section closes the marginal question outright — "This is generally
+// intractable; an engine evaluates it in closed form, or by enumeration of a
+// discrete latent, and otherwise reports a static error" — so the two outcomes
+// clm's lowering declares are answered HERE, before the worker is asked for
+// per-atom scores no conforming reduction can turn into a density: an
+// `analytic-gaussian` reduce is evaluated in closed form at the observed point,
+// and a `refuse` reduce throws.
+//
+// The rest of the path is untouched by this: §06's structural-reduction
+// contract ("`logdensityof` reduces structurally to the densities of its
+// operands, terminating at the per-kernel primitive `builtin_logdensityof`")
+// is what keeps bayesupdate / weighted / logweighted scoring a pure sum, so
+// neither this function nor `applyReduce` may interpose on a node without a
+// marginal reduce.
 function _analyticMarginalReply(node: any, ctx: any, opts: any): any {
   const r = node.reduce;
   if (!r || r.kind !== 'marginal') return null;
   if (r.method === 'refuse') {
     throw new Error('density: the measure marginalises the stochastic ancestor(s) '
       + r.marginalize.join(', ') + ', which this engine cannot evaluate in closed '
-      + 'form: ' + r.reason + '. Per spec §06 a marginal is evaluated in closed '
-      + 'form or by enumeration of a discrete latent, and otherwise refused — a '
-      + 'density query never returns a Monte-Carlo estimate.');
+      + 'form: ' + r.reason + '. Per spec §06 "Density of composed measures" a '
+      + 'marginal is evaluated in closed form or by enumeration of a discrete '
+      + 'latent, and otherwise reports a static error — a density query never '
+      + 'returns a Monte-Carlo estimate.');
   }
   if (r.method !== 'analytic-gaussian') return null;
   const lg = require('./linear-gaussian.ts');

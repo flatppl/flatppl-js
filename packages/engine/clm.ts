@@ -560,13 +560,18 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   // and so is a shared-ancestor joint (spec §06 "Reified components share
   // their ancestry": `joint(a = lawof(a), b = lawof(b))` "is equivalent to
   // `lawof(record(a = a, b = b))`"). §06 "Density of composed measures" allows
-  // an engine exactly two ways to evaluate such a marginal — "in closed form,
-  // or by enumeration of a discrete latent, and otherwise reports a static
-  // error" — so the reduce declares WHICH, and a shape that is not provably
-  // analytic carries a refusal instead of a Monte-Carlo estimate (owner
-  // decision 2026-08-05: a density query never returns a stochastic estimate).
+  // an engine exactly two ways to evaluate such a marginal — "This is generally
+  // intractable; an engine evaluates it in closed form, or by enumeration of a
+  // discrete latent, and otherwise reports a static error" — so the reduce
+  // declares WHICH, and a shape that is not provably analytic carries a refusal.
+  // An MC estimate is not a conforming third option, which is why this branch
+  // no longer emits one (owner decision 2026-08-05 agrees, but the sentence
+  // above is the binding reason).
   // bayesupdate is excluded — it reweights prior atoms, not logsumexp, and
-  // ignores `reduce` anyway (matBayesupdate owns its reduction).
+  // ignores `reduce` anyway (matBayesupdate owns its reduction), keeping its
+  // scoring the pure structural sum the same section mandates ("`logdensityof`
+  // reduces structurally to the densities of its operands, terminating at the
+  // per-kernel primitive `builtin_logdensityof`").
   if (!reduce && (!deriv || deriv.kind !== 'bayesupdate') && _isMeasureNode(body)) {
     const latents = inputs.filter((i: any) => i.source.kind === 'shared'
       && _isStochastic(ctx.bindings && ctx.bindings.get(i.source.ref)));

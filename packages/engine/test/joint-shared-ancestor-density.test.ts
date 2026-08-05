@@ -9,10 +9,12 @@
 // a, b = b))`: the shared ancestor is traced once and the dependence is
 // retained", and "A `joint` with shared ancestry reduces as its equivalent
 // record law; a singular joint has no density and the query is refused."
-// §06 allows an engine exactly two ways to evaluate the resulting marginal —
-// "in closed form, or by enumeration of a discrete latent, and otherwise
-// reports a static error" — so there is no Monte-Carlo branch to test: a shape
-// this engine cannot close analytically must REFUSE.
+// The same section allows an engine exactly two ways to evaluate the resulting
+// marginal — "This is generally intractable; an engine evaluates it in closed
+// form, or by enumeration of a discrete latent, and otherwise reports a static
+// error" — so there is no Monte-Carlo branch to test: a shape this engine
+// cannot close analytically must REFUSE, as spec conformance rather than as a
+// local policy choice.
 //
 // Oracles are INDEPENDENT (Distributions.jl, not the engine's own output, not
 // the Rust determiniser):

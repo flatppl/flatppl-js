@@ -8,11 +8,12 @@
 //
 // `lawof(record(a = a, b = b))` — equivalently `joint(a = lawof(a), b =
 // lawof(b))` — over draws that share a stochastic ancestor is the MARGINAL
-// law of the component vector, ∫ p(a, b | z) p(z) dz. §06 gives an engine
-// exactly two ways to evaluate such a marginal ("an engine evaluates it in
-// closed form, or by enumeration of a discrete latent, and otherwise
-// reports a static error"), so a density query must never answer with a
-// Monte-Carlo estimate.
+// law of the component vector, ∫ p(a, b | z) p(z) dz. §06 "Density of
+// composed measures" gives an engine exactly two ways to evaluate such a
+// marginal — "This is generally intractable; an engine evaluates it in closed
+// form, or by enumeration of a discrete latent, and otherwise reports a static
+// error." A Monte-Carlo estimate is not one of them, so refusing is spec
+// CONFORMANCE here, not a local policy choice.
 //
 // When every node of the shared sub-DAG is Normal with an AFFINE location
 // in its ancestors and a CONSTANT scale, the marginal is exactly
