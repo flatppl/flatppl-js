@@ -1,20 +1,24 @@
 'use strict';
 
-// Density of a joint law over components that SHARE a stochastic ancestor
-// (spec §06 "Joint composition" → "Reified components share their ancestry",
-// §06 "Density of composed measures", §06 "Singular joints", §04 "Identity
-// law" / "Trace of the reified law").
+// Density of a joint law over components that SHARE a stochastic ancestor.
+// Spec anchors, quoted verbatim from flatppl-design 52df5de: §06 "Joint
+// composition" → "Equivalent record law" and "Singular joints", §06 "Density of
+// composed measures", §04 "Identity law" and "Trace of the reified law".
 //
-// §06: "`joint(a = lawof(a), b = lawof(b))` is equivalent to `lawof(record(a =
-// a, b = b))`: the shared ancestor is traced once and the dependence is
-// retained", and "A `joint` with shared ancestry reduces as its equivalent
-// record law; a singular joint has no density and the query is refused."
-// The same section allows an engine exactly two ways to evaluate the resulting
-// marginal — "This is generally intractable; an engine evaluates it in closed
+// §06 "Equivalent record law": "`joint(a = lawof(a), b = lawof(b))` is
+// equivalent to `lawof(record(a = a, b = b))`; the positional form is the
+// corresponding `cat` law". §06 "Density of composed measures": "A `joint` with
+// shared ancestry reduces as its equivalent record law; a singular joint has no
+// density and the query is refused."
+//
+// How the resulting marginal may be evaluated is stated in that section for
+// `kchain` — "This is generally intractable; an engine evaluates it in closed
 // form, or by enumeration of a discrete latent, and otherwise reports a static
-// error" — so there is no Monte-Carlo branch to test: a shape this engine
-// cannot close analytically must REFUSE, as spec conformance rather than as a
-// local policy choice.
+// error" — and the owner's 2026-08-05 decision applies it to this construct.
+// Under either there is no Monte-Carlo branch to test: a shape this engine
+// cannot close analytically must REFUSE. (Enumeration of a finite discrete
+// latent is the one permitted device the engine does not implement yet; it
+// refuses those too — tracked in flatppl-dev/TODO-flatppl-js.md.)
 //
 // Oracles are INDEPENDENT (Distributions.jl, not the engine's own output, not
 // the Rust determiniser):
@@ -278,6 +282,100 @@ ld = logdensityof(L, record(a = 0.5))
 `, 1);
   await assert.rejects(async () => ctx.getMeasure('ld'),
     /location is not an affine function/);
+});
+
+// ── a caller-substituted boundary must not be silently ignored ─────────────
+//
+// `lowerMeasure(name, ctx, {boundaries})` is the viewer's kernel/profile route
+// (spec §04 functionof boundary substitution): the CALLER supplies the value for
+// a named input instead of the model's own. The closed form reads its constants
+// out of `bindings`/`fixedValues`, so a marginal that depends on a substituted
+// name must refuse — answering from the un-substituted value would be a
+// confidently wrong density, and the MC reduce this wave replaced at least fed
+// the boundary to the worker. Threading the substitution into the moments is the
+// capability fix, filed in flatppl-dev/TODO-flatppl-js.md.
+
+const OVERRIDDEN_MEAN = `
+m = 0.0
+z ~ Normal(mu = m, sigma = 1.0)
+a ~ Normal(mu = z, sigma = 1.0)
+b ~ Normal(mu = z, sigma = 1.0)
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 0.5, b = 0.7))
+`;
+
+const reduceFor = (src: string, opts?: any) => {
+  const clm = require('../clm.ts');
+  const { ctx } = ctxFor(src, 1);
+  return clm.lowerMeasure('L', ctx, opts).reduce;
+};
+
+test('an explicit boundary the marginal depends on refuses instead of scoring '
+  + 'the un-substituted value', () => {
+  // Baseline: with no substitution the same model closes analytically, and the
+  // mean comes from the model's own `m = 0.0`.
+  const plain = reduceFor(OVERRIDDEN_MEAN);
+  assert.equal(plain.method, 'analytic-gaussian');
+  assert.deepEqual(plain.gaussian.mean, [0, 0]);
+  // Substituting m = 5 makes the true mean [5, 5]. The closed form cannot see
+  // the fed value, so it must refuse rather than return [0, 0] again.
+  const fed = reduceFor(OVERRIDDEN_MEAN, { boundaries: { m: 5 } });
+  assert.equal(fed.method, 'refuse');
+  assert.match(fed.reason, /depends on 'm', which the caller substitutes/);
+});
+
+test('a free profile axis the marginal depends on refuses the same way', () => {
+  const fed = reduceFor(OVERRIDDEN_MEAN, { freeInputs: ['m'] });
+  assert.equal(fed.method, 'refuse');
+  assert.match(fed.reason, /depends on 'm', which the caller substitutes/);
+});
+
+test('a substituted input the marginal does NOT depend on leaves the closed '
+  + 'form intact', () => {
+  const fed = reduceFor(`
+k = 3.0
+z ~ Normal(mu = 0.0, sigma = 1.0)
+a ~ Normal(mu = z, sigma = 1.0)
+b ~ Normal(mu = z, sigma = 1.0)
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 0.5, b = 0.7))
+`, { boundaries: { k: 9 } });
+  assert.equal(fed.method, 'analytic-gaussian');
+  assert.deepEqual(fed.gaussian.cov, [[2, 1], [1, 2]]);
+});
+
+// ── recogniser gaps, pinned as refusals so they cannot drift silently ──────
+
+test('a component in another component\'s location refuses, though the law IS '
+  + 'linear-Gaussian (recogniser gap)', async () => {
+  // z ~ N(0,1); a ~ N(z,1); b ~ N(a,1) with both a and b record fields is
+  // MvNormal([0,0], [[2,2],[2,3]]). `_affine` accepts only marginalised latents
+  // and constants, so a sibling component in the location refuses. Filed in
+  // flatppl-dev/TODO-flatppl-js.md; the refusal is safe, not wrong.
+  const { ctx } = ctxFor(`
+z ~ Normal(mu = 0.0, sigma = 1.0)
+a ~ Normal(mu = z, sigma = 1.0)
+b ~ Normal(mu = a, sigma = 1.0)
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 0.5, b = 0.7))
+`, 1);
+  await assert.rejects(async () => ctx.getMeasure('ld'),
+    /location is not an affine function/);
+});
+
+test('a finite discrete latent refuses, though §06 permits enumeration '
+  + '(unimplemented device)', async () => {
+  // §06's marginal rule allows "enumeration of a discrete latent"; this engine
+  // has no enumeration device (flatppl-rust's determiniser does). Refusing is
+  // permitted and safe — pinned so implementing enumeration flips it loudly.
+  const { ctx } = ctxFor(`
+s ~ Bernoulli(p = 0.3)
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 0.5)
+`, 1);
+  await assert.rejects(async () => ctx.getMeasure('ld'),
+    /'s' is a 'Bernoulli', not a Normal/);
 });
 
 // ── the point scored must match the variate ────────────────────────────────

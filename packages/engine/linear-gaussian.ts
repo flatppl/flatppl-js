@@ -2,18 +2,28 @@
 
 // ════════════════════════════════════════════════════════════════════════
 // Linear-Gaussian marginal recognition — the ANALYTIC closed form for a
-// shared-ancestor joint law's density (spec §06 "Reified components share
-// their ancestry" + "Density of composed measures": "A `joint` with shared
-// ancestry reduces as its equivalent record law").
+// shared-ancestor joint law's density. Spec anchors, verbatim from
+// flatppl-design 52df5de:
 //
-// `lawof(record(a = a, b = b))` — equivalently `joint(a = lawof(a), b =
-// lawof(b))` — over draws that share a stochastic ancestor is the MARGINAL
-// law of the component vector, ∫ p(a, b | z) p(z) dz. §06 "Density of
-// composed measures" gives an engine exactly two ways to evaluate such a
-// marginal — "This is generally intractable; an engine evaluates it in closed
-// form, or by enumeration of a discrete latent, and otherwise reports a static
-// error." A Monte-Carlo estimate is not one of them, so refusing is spec
-// CONFORMANCE here, not a local policy choice.
+//   §06 "Equivalent record law" — "`joint(a = lawof(a), b = lawof(b))` is
+//   equivalent to `lawof(record(a = a, b = b))`; the positional form is the
+//   corresponding `cat` law". (The traced-once statement lives in §04 "Trace of
+//   the reified law", a different section.)
+//
+//   §06 "Density of composed measures" — "A `joint` with shared ancestry
+//   reduces as its equivalent record law; a singular joint has no density and
+//   the query is refused."
+//
+// `lawof(record(a = a, b = b))` over draws that share a stochastic ancestor is
+// therefore the MARGINAL law of the component vector, ∫ p(a, b | z) p(z) dz.
+// The same section states how such a marginal may be evaluated, for `kchain`:
+// "This is generally intractable; an engine evaluates it in closed form, or by
+// enumeration of a discrete latent, and otherwise reports a static error." That
+// wording is scoped to `kchain` at 52df5de (flatppl-design#72 would widen it and
+// is not merged), and the owner's decision of 2026-08-05 — a density query never
+// returns a stochastic estimate — is what binds this construct. Under either,
+// a Monte-Carlo estimate is not an option, so this module answers exactly or
+// refuses.
 //
 // When every node of the shared sub-DAG is Normal with an AFFINE location
 // in its ancestors and a CONSTANT scale, the marginal is exactly
@@ -31,6 +41,12 @@
 // and each component y = c + Σ_j b_j x_j + ε likewise, giving
 //     cov[y][y'] = Σ_j Σ_l b_j b'_l cov_L[j][l] + δ_{yy'} σ_y².
 // Pinned against Distributions.jl in test/joint-shared-ancestor-density.test.ts.
+//
+// KNOWN GAP: a component that appears in ANOTHER component's location (`a ~
+// Normal(z,1); b ~ Normal(a,1)`, both record fields) is linear-Gaussian but
+// refuses — `_affine` accepts only marginalised latents and constants. Tracked
+// in flatppl-dev/TODO-flatppl-js.md; the fix is to substitute a sibling
+// component's own affine form, which is already topologically orderable.
 // ════════════════════════════════════════════════════════════════════════
 
 const orchestrator = require('./orchestrator.ts');
@@ -74,6 +90,47 @@ function _refsStochastic(ir: any, ctx: any): boolean {
     if (b && b.phase === 'stochastic') found = true;
   });
   return found;
+}
+
+// The refs an IR mentions, in either namespace. `%local` counts: an explicit
+// boundary is fed under both its own name and its `%local` param alias.
+function _refNames(ir: any): string[] {
+  const { walkIR } = require('./ir-walk.ts');
+  const out: string[] = [];
+  walkIR(ir, (n: any) => {
+    if (n && n.kind === 'ref' && (n.ns === 'self' || n.ns === '%local')) out.push(n.name);
+  });
+  return out;
+}
+
+// The first `blocked` name the given IRs reach, transitively through binding
+// bodies, or null.
+//
+// This is the CALLER-SUBSTITUTED-VALUE guard. Every constant in the closed form
+// is resolved from the model's own `bindings`/`fixedValues`, so a caller that
+// substitutes a boundary — `lowerMeasure`'s `opts.boundaries` (the viewer's
+// kernel/profile route, spec §04 functionof boundary substitution) or
+// `opts.freeInputs` (the profile sweep axis the worker varies per grid point) —
+// would get a number computed from the ORIGINAL value, silently ignoring the
+// substitution. Refusing is the only sound answer available here: the previous
+// MC reduce at least fed the boundary to the worker, so an exact-looking number
+// that does not track the override would be a regression dressed as a fix.
+function _reachesBlocked(irs: any[], blocked: Set<string>, ctx: any): string | null {
+  if (blocked.size === 0) return null;
+  const seen = new Set<string>();
+  const stack = irs.slice();
+  while (stack.length > 0) {
+    const ir = stack.pop();
+    if (!ir) continue;
+    for (const ref of _refNames(ir)) {
+      if (blocked.has(ref)) return ref;
+      if (seen.has(ref)) continue;
+      seen.add(ref);
+      const b = ctx.bindings && ctx.bindings.get ? ctx.bindings.get(ref) : null;
+      if (b && b.ir) stack.push(b.ir);
+    }
+  }
+  return null;
 }
 
 // Parse `ir` as an affine form over `latents`. Returns null when the
@@ -199,22 +256,43 @@ function _components(body: any): { labels: string[] | null; irs: any[] } {
  * normal, or refuse.
  *
  * `body` is a clm body (a Normal call, or a `joint` over Normal calls);
- * `marginalize` names the stochastic ancestors integrated out. Returns
- * `{ labels, mean, cov }` — labels null for a positional/scalar variate —
- * or `{ refuse: <reason> }`.
+ * `marginalize` names the stochastic ancestors integrated out. `substituted`
+ * names the inputs the CALLER feeds instead of the model's own values (clm's
+ * `explicit` / `free` input kinds); the closed form reads constants from the
+ * model, so any dependence on one of those is refused rather than answered from
+ * the un-substituted value. Returns `{ labels, mean, cov }` — labels null for a
+ * positional/scalar variate — or `{ refuse: <reason> }`.
  */
-function recogniseGaussianMarginal(body: any, marginalize: string[], ctx: any): any {
+function recogniseGaussianMarginal(
+  body: any, marginalize: string[], ctx: any, substituted?: Set<string>,
+): any {
   const latents = new Set(marginalize);
+  const blocked = substituted || new Set<string>();
   // Each latent's own law, plus its affine dependence on the other latents
   // (a hierarchy z2 ~ Normal(z1, s) is linear-Gaussian too).
   const laws = new Map<string, { loc: Affine; sd: number }>();
+  const lawIRs: any[] = [];
   for (const nm of marginalize) {
     let law: any = null;
     try { law = orchestrator.expandMeasure(nm, ctx); } catch (_) { /* refused below */ }
     if (!law) return { refuse: "the marginalised ancestor '" + nm + "' has no expandable law" };
+    lawIRs.push(law);
     const node = _normalNode(law, latents, ctx, "the marginalised ancestor '" + nm + "'");
     if ((node as any).refuse) return node;
     laws.set(nm, node as { loc: Affine; sd: number });
+  }
+
+  // Caller-substituted inputs (see _reachesBlocked): checked over the body AND
+  // every marginalised ancestor's law, since a substituted value most often
+  // reaches the marginal through an ancestor's parameters (`z ~ Normal(m, 1)`
+  // with `m` overridden) rather than through a component directly.
+  const hit = _reachesBlocked([body].concat(lawIRs), blocked, ctx);
+  if (hit) {
+    return { refuse: "the marginal depends on '" + hit + "', which the caller "
+      + 'substitutes (an explicit boundary value or a free profile axis). The '
+      + "closed form is built from the model's own constants, so it would ignore "
+      + 'the substitution — refused rather than returning an exact-looking number '
+      + 'that does not track the fed value' };
   }
 
   // Topological order over the latent-to-latent affine dependencies.

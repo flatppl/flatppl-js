@@ -32,8 +32,9 @@
 //   reduce  — null for a plain product measure, or {kind:'marginal', method}
 //             for kchain / lawof-of-record (H8) / mc-generative — replacing
 //             the scattered isChain/naryKchain/mcForm booleans. `method` says
-//             HOW the marginal is evaluated, and spec §06 ("Density of
-//             composed measures") allows only non-stochastic answers:
+//             HOW the marginal is evaluated — the shared-ancestor marginal
+//             admits no stochastic answer (see the H8 branch below for the
+//             §06 anchor and the owner decision):
 //               'logsumexp-logN'   — the kchain reduction over the fed prior
 //                                    atoms, and the vacuous no-op case where
 //                                    every ancestor is a threaded record field
@@ -136,14 +137,15 @@ function _isStochastic(b: any): boolean {
   return !!(b && b.phase === 'stochastic');
 }
 
-// ── singular joints (spec §06 "Singular joints") ─────────────────────────
+// ── singular joints ──────────────────────────────────────────────────────
 //
-// "When one component's variate is determined by the others given the shared
-// ancestors — the same draw referenced twice, or a deterministic transform of
-// another component — the joint law concentrates on a lower-dimensional subset
-// and has no density w.r.t. the product reference measure. Sampling is
-// well-defined; a density query is a static error where statically detectable,
-// and is otherwise refused by the engine."
+// spec §06 "Singular joints", quoted verbatim from flatppl-design 52df5de:
+//
+//   "When one component's variate is determined by the others given the shared
+//   ancestors (the same draw referenced twice, a deterministic transform of
+//   another component), the joint law has no density w.r.t. the product
+//   reference measure. Sampling is well-defined; a density query is a static
+//   error where statically detectable, and is otherwise refused by the engine."
 //
 // The identity that decides this is the component's set of INDEPENDENT NOISE
 // SOURCES: the draws it is a deterministic function of. Two components are
@@ -151,9 +153,13 @@ function _isStochastic(b: any): boolean {
 // the other given the shared ancestors. `lawof(a)` and `lawof(b)` for `a, b ~
 // Normal(z, 1)` do NOT overlap (each carries its own noise) even though both
 // trace through `z` — that is the correlated, absolutely-continuous case §06
-// wants retained. `joint(m, m)` over a constructor measure does not overlap
-// either: neither component reifies a draw, so per §04's Identity law it is
-// the product of two independent draws.
+// "Equivalent record law" wants retained. `joint(m, m)` over a constructor
+// measure does not overlap either: neither component reifies a draw, so per
+// §04's Identity law it is the product of two independent draws.
+//
+// The refusal is a RUNTIME one. §06 prefers "a static error where statically
+// detectable", which this shape is; an analyzer diagnostic is a follow-up
+// tracked in flatppl-dev/TODO-flatppl-js.md.
 //
 // This gate runs only on the DENSITY path (lowerMeasure is not the sampling
 // route for a record/tuple measure), so sampling a singular joint stays legal.
@@ -242,10 +248,10 @@ function _refuseIfSingular(input: any, ctx: any): void {
         const err: any = new Error("density: joint components '" + comps[i].label
           + "' and '" + comps[j].label + "' are reified laws of the same draw — they "
           + "share the ancestor '" + _displayName(r, ctx) + "' with no independent "
-          + 'noise separating them, so the joint law concentrates on a '
-          + 'lower-dimensional subset and has no density w.r.t. the product '
-          + 'reference measure — refused (spec §06 "Singular joints"). Sampling '
-          + 'this joint stays well-defined.');
+          + 'noise separating them, so the joint law has no density w.r.t. the '
+          + 'product reference measure (it concentrates on a lower-dimensional '
+          + 'subset) — refused per spec §06 "Singular joints". Sampling this '
+          + 'joint stays well-defined.');
         err.code = 'CLM_SINGULAR_JOINT';
         throw err;
       }
@@ -557,16 +563,22 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   // standalone measure whose body references a STOCHASTIC binding that is not
   // a retained variate (e.g. `pp = lawof(obs)`, obs ~ Normal(theta,1),
   // theta ~ Normal(0,1)) is the marginal law: p(x) = ∫ p(x|theta) p(theta) dθ,
-  // and so is a shared-ancestor joint (spec §06 "Reified components share
-  // their ancestry": `joint(a = lawof(a), b = lawof(b))` "is equivalent to
-  // `lawof(record(a = a, b = b))`"). §06 "Density of composed measures" allows
-  // an engine exactly two ways to evaluate such a marginal — "This is generally
-  // intractable; an engine evaluates it in closed form, or by enumeration of a
-  // discrete latent, and otherwise reports a static error" — so the reduce
-  // declares WHICH, and a shape that is not provably analytic carries a refusal.
-  // An MC estimate is not a conforming third option, which is why this branch
-  // no longer emits one (owner decision 2026-08-05 agrees, but the sentence
-  // above is the binding reason).
+  // and so is a shared-ancestor joint. §06 "Equivalent record law" (verbatim,
+  // flatppl-design 52df5de): "`joint(a = lawof(a), b = lawof(b))` is equivalent
+  // to `lawof(record(a = a, b = b))`; the positional form is the corresponding
+  // `cat` law", and §06 "Density of composed measures": "A `joint` with shared
+  // ancestry reduces as its equivalent record law".
+  //
+  // HOW that marginal may be evaluated: the same section states the rule for
+  // `kchain`'s marginal integral — "This is generally intractable; an engine
+  // evaluates it in closed form, or by enumeration of a discrete latent, and
+  // otherwise reports a static error" — and this IS that integral, reached
+  // through the equivalent record law. The owner's 2026-08-05 decision (a
+  // density query never returns a stochastic estimate) settles the policy for
+  // this construct; §06 states it for `kchain`, and flatppl-design#72 would
+  // widen the wording, but it is NOT merged, so the decision is what binds
+  // here. Either way an MC estimate is not among the options, so the reduce
+  // declares WHICH of the two it is and refuses when neither applies.
   // bayesupdate is excluded — it reweights prior atoms, not logsumexp, and
   // ignores `reduce` anyway (matBayesupdate owns its reduction), keeping its
   // scoring the pure structural sum the same section mandates ("`logdensityof`
@@ -596,8 +608,20 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
       if (marg.length === 0 || mc) {
         reduce = { kind: 'marginal', method: 'logsumexp-logN', over };
       } else {
+        // Inputs the CALLER feeds instead of the model's own value: an explicit
+        // boundary (the viewer's kernel/profile route) or the free profile axis.
+        // The closed form reads constants out of bindings/fixedValues, so a
+        // marginal that depends on one of these must refuse rather than answer
+        // from the un-substituted value — the recogniser owns that check because
+        // it is the one that knows which names the moments were built from.
+        const substituted = new Set<string>();
+        for (const inp of inputs) {
+          if (inp.source.kind !== 'explicit' && inp.source.kind !== 'free') continue;
+          substituted.add(inp.name);
+          if (inp.source.localAlias) substituted.add(inp.source.localAlias);
+        }
         const lg = require('./linear-gaussian.ts');
-        const g = lg.recogniseGaussianMarginal(body, marg, ctx);
+        const g = lg.recogniseGaussianMarginal(body, marg, ctx, substituted);
         reduce = g.refuse
           ? { kind: 'marginal', method: 'refuse', over, marginalize: marg, reason: g.refuse }
           : { kind: 'marginal', method: 'analytic-gaussian', over, marginalize: marg, gaussian: g };
