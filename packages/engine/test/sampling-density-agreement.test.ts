@@ -85,8 +85,11 @@ test('[GREEN H8] lawof(draw with a stochastic ancestor) marginalises — density
   // — a VARIANCE mismatch glaring in the tails (maxErr≈4.15). FIXED (CLM Phase 3):
   // lowerMeasure recognises the marginalised stochastic ancestor (theta is a
   // `shared` body ref to a stochastic binding, not a retained variate) and sets
-  // reduce={marginal}; applyReduce does the logsumexp − logN over theta ~ prior,
-  // the same MC marginal kchain uses. Now a regression guard.
+  // reduce={marginal}. That reduction was an MC logsumexp − logN over theta ~
+  // prior; it is now the EXACT linear-Gaussian marginal Normal(0,√2)
+  // (linear-gaussian.ts, spec §06 "Density of composed measures" — closed form
+  // or refuse, never an estimate), pinned against Distributions.jl in
+  // joint-shared-ancestor-density.test.ts. Now a regression guard.
   const r = await agreement(`
 theta ~ Normal(0.0, 1.0)
 obs ~ Normal(mu = theta, sigma = 1.0)
