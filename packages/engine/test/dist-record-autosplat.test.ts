@@ -85,9 +85,20 @@ test('dist auto-splat: sampling the splatted Gamma agrees with the density momen
 });
 
 test('dist auto-splat: a field/parameter name mismatch still errors (spec static error)', async () => {
-  // `rate` misspelled `rat` — names do not cover Gamma's params, so no splat
-  // fires and the missing parameter surfaces rather than binding silently.
+  // `rate` misspelled `rat` — the splat fires regardless (§04 always-splat),
+  // so `rate` has nothing bound to it and the missing parameter surfaces
+  // rather than binding silently.
   const ctx = buildCtx(`ld = logdensityof(Gamma(record(shape = 4.0, rat = 2.0)), 1.0)`, 1, 1);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('ld')),
+    /missing parameter 'rate'/);
+});
+
+test('dist auto-splat: a ONE-parameter constructor also errors on a bad field name', async () => {
+  // §04 always-splat. Gating the splat on the fields covering the params
+  // left this record bound to `rate` itself, and `Poisson(<record>)` then
+  // scored NaN with no error — a single-parameter constructor was the one
+  // shape where the name rule went unenforced entirely.
+  const ctx = buildCtx(`ld = logdensityof(Poisson(record(zzz = 0.5)), 2)`, 1, 1);
   await assert.rejects(() => Promise.resolve(ctx.getMeasure('ld')),
     /missing parameter 'rate'/);
 });
