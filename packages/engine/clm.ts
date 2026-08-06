@@ -41,6 +41,10 @@
 //               'analytic-gaussian'— the shared-ancestor closed form
 //                                    (linear-gaussian.ts), carried on
 //                                    reduce.gaussian
+//               'analytic-mixture' — the same closed form per atom of an
+//                                    ENUMERATED finite discrete ancestor,
+//                                    carried on reduce.gaussian.mixture
+//                                    (deterministic and exact, not MC)
 //               'refuse'           — a marginal this engine cannot close;
 //                                    reduce.reason says why, and the density
 //                                    consumer throws it
@@ -257,6 +261,28 @@ function _refuseIfSingular(input: any, ctx: any): void {
       }
     }
   }
+}
+
+// The binding each of the body's joint components reifies, aligned with the
+// body's component order — the DRAW IDENTITY the linear-Gaussian recogniser
+// keys its node table by. A field carries its own `source`; a positional body
+// carries none, so the tuple derivation's element order supplies them. `null`
+// for a component whose identity is not recoverable: the recogniser refuses a
+// multi-component body rather than risk double-counting a shared draw.
+function _componentKeys(body: any, input: any, ctx: any): Array<string | null> | null {
+  const isJoint = body && body.kind === 'call' && body.op === 'joint';
+  const fields = isJoint && Array.isArray(body.fields) ? body.fields : null;
+  const args = isJoint && Array.isArray(body.args) ? body.args : null;
+  if (!fields && !args) return null;                 // a scalar body — one component
+  const comps = _jointComponents(input, ctx);
+  if (fields) {
+    const byLabel = new Map<string, string>();
+    for (const c of (comps || [])) byLabel.set(c.label, c.binding);
+    return fields.map((f: any) => (f.source != null ? f.source
+      : (byLabel.get(f.name) != null ? (byLabel.get(f.name) as string) : null)));
+  }
+  if (!comps || comps.length !== args.length) return null;
+  return comps.map((c) => c.binding);
 }
 
 function _domKind(dom: any): string {
@@ -645,10 +671,18 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
           if (inp.source.localAlias) substituted.add(inp.source.localAlias);
         }
         const lg = require('./linear-gaussian.ts');
-        const g = lg.recogniseGaussianMarginal(body, marg, ctx, substituted);
+        const identity = {
+          keyOf: (nm: string) => _aliasChain(nm, ctx).root,
+          componentKeys: _componentKeys(body, input, ctx),
+        };
+        const g = lg.recogniseGaussianMarginal(body, marg, ctx, substituted, identity);
         reduce = g.refuse
           ? { kind: 'marginal', method: 'refuse', over, marginalize: marg, reason: g.refuse }
-          : { kind: 'marginal', method: 'analytic-gaussian', over, marginalize: marg, gaussian: g };
+          : {
+            kind: 'marginal',
+            method: g.mixture ? 'analytic-mixture' : 'analytic-gaussian',
+            over, marginalize: marg, gaussian: g,
+          };
       }
     }
   }

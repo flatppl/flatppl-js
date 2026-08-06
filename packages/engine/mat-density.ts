@@ -88,10 +88,12 @@ function mcDensityOpts(ctx: any): any {
 // engine evaluates it in closed form, or by enumeration of a discrete latent,
 // and otherwise reports a static error" — is stated there of `kchain`; the
 // owner's 2026-08-05 decision applies it to this construct. Either way no
-// stochastic estimate is admissible, so the two outcomes clm's lowering declares
-// are answered HERE rather than by asking the worker for per-atom scores: an
+// stochastic estimate is admissible, so the outcomes clm's lowering declares are
+// answered HERE rather than by asking the worker for per-atom scores: an
 // `analytic-gaussian` reduce is evaluated in closed form at the observed point,
-// and a `refuse` reduce throws.
+// an `analytic-mixture` reduce logsumexps the mass-weighted blocks of an
+// enumerated finite discrete ancestor (deterministic, not MC), and a `refuse`
+// reduce throws.
 //
 // The rest of the path is untouched by this: §06's structural-reduction
 // contract ("`logdensityof` reduces structurally to the densities of its
@@ -108,10 +110,10 @@ function _analyticMarginalReply(node: any, ctx: any, opts: any): any {
       + 'here: ' + r.reason + '. Per spec §06\'s `kchain` marginal rule, applied '
       + 'to the equivalent record law (§06 "Density of composed measures"), a '
       + 'marginal is evaluated in closed form or by enumeration of a discrete '
-      + 'latent; this engine has no enumeration device yet, so it refuses — a '
-      + 'density query never returns a Monte-Carlo estimate.');
+      + 'latent; this shape is neither, so it refuses — a density query never '
+      + 'returns a Monte-Carlo estimate.');
   }
-  if (r.method !== 'analytic-gaussian') return null;
+  if (r.method !== 'analytic-gaussian' && r.method !== 'analytic-mixture') return null;
   const lg = require('./linear-gaussian.ts');
   const logp = lg.scoreGaussianMarginal(r.gaussian, opts.observed);
   const out = new Float64Array((ctx.sampleCount | 0) || 1);

@@ -99,6 +99,37 @@ pp = lawof(obs)`, 'pp', { N: 60000, tol: 0.35 });
     JSON.stringify(r.probes || r.reason));
 });
 
+test('[GREEN F1] a hierarchical CHAIN marginal — density ≡ histogram', async () => {
+  // z ~ N(0,1); a ~ N(z,1); b ~ N(a,1) ⇒ lawof(b) is Normal(0, √3). The
+  // recogniser reaches `z` only through `a`'s law (only `a` is a body self-ref),
+  // so this is the transitive ancestor closure checked against SAMPLING — a
+  // path that never touches linear-gaussian.ts. Dropping the closure refuses;
+  // composing the maps wrongly gives the wrong variance, glaring in the tails.
+  const r = await agreement(`
+z ~ Normal(0.0, 1.0)
+a ~ Normal(mu = z, sigma = 1.0)
+b ~ Normal(mu = a, sigma = 1.0)
+m = lawof(b)`, 'm', { N: 60000, tol: 0.35 });
+  assert.ok(r.ok, `chain marginal — expected Normal(0,√3) agreement, got ` +
+    `${r.crashed ? 'CRASH:' + r.reason : 'maxErr=' + (r.maxErr || 0).toFixed(2)}: ` +
+    JSON.stringify(r.probes || r.reason));
+});
+
+test('[GREEN F1] an ENUMERATED discrete latent — mixture density ≡ histogram', async () => {
+  // s ~ Categorical([0.2,0.5,0.3]); x ~ N(s, 0.3) is trimodal at 1, 2, 3 with
+  // well-separated modes. Sampling draws s from the registry's own sampler
+  // (1-based, spec §08) while the density enumerates the atoms, so this pins the
+  // atom CONVENTION and the mass WEIGHTS against an independent path: a 0-based
+  // enumeration would put all three modes one unit low.
+  const r = await agreement(`
+s ~ Categorical(p = [0.2, 0.5, 0.3])
+x ~ Normal(mu = s, sigma = 0.3)
+m = lawof(x)`, 'm', { N: 60000, tol: 0.35 });
+  assert.ok(r.ok, `enumerated mixture — expected trimodal agreement, got ` +
+    `${r.crashed ? 'CRASH:' + r.reason : 'maxErr=' + (r.maxErr || 0).toFixed(2)}: ` +
+    JSON.stringify(r.probes || r.reason));
+});
+
 test('[GREEN gen] standalone logdensityof(lawof(generative composite)) marginalises — density ≡ histogram', async () => {
   // Single-event transport: z = f(x, uniform) at fixed pars. The MC-marginal
   // density used to be a GAP as a bare logdensityof(lawof(z), x) (crash).
