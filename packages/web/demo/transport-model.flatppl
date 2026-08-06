@@ -17,7 +17,7 @@ transport = kernelof(y, x = x, pars = pars)
 post = x -> x/2
 
 n = elementof(posintegers)
-xs ~ iid(generator(pars), n)
+xs ~ iid(generator(pars = pars), n)
 ys ~ transport.(xs, [pars])
 zs = post.(ys)
 
