@@ -29,10 +29,21 @@
 //             only surviving getMeasure-as-boundary path, now EXPLICIT), or
 //             {kind:'fixed', ref}. Each carries a shape/axis descriptor
 //             (critique C — repeat-axis awareness is NOT optional).
-//   reduce  — null for a plain product measure, or {kind:'marginal',
-//             method:'logsumexp-logN'} for kchain / lawof-of-record (H8) /
-//             mc-generative — replacing the scattered isChain/naryKchain/
-//             mcForm booleans.
+//   reduce  — null for a plain product measure, or {kind:'marginal', method}
+//             for kchain / lawof-of-record (H8) / mc-generative — replacing
+//             the scattered isChain/naryKchain/mcForm booleans. `method` says
+//             HOW the marginal is evaluated — the shared-ancestor marginal
+//             admits no stochastic answer (see the H8 branch below for the
+//             §06 anchor and the owner decision):
+//               'logsumexp-logN'   — the kchain reduction over the fed prior
+//                                    atoms, and the vacuous no-op case where
+//                                    every ancestor is a threaded record field
+//               'analytic-gaussian'— the shared-ancestor closed form
+//                                    (linear-gaussian.ts), carried on
+//                                    reduce.gaussian
+//               'refuse'           — a marginal this engine cannot close;
+//                                    reduce.reason says why, and the density
+//                                    consumer throws it
 //
 // Structural invariant the pass asserts: collectSelfRefs(body) ⊆
 // {i.name for i in inputs} (callable refs excluded — they resolve by name,
@@ -124,6 +135,128 @@ function describeInputShape(source: any, name: string, ctx: any): any {
 
 function _isStochastic(b: any): boolean {
   return !!(b && b.phase === 'stochastic');
+}
+
+// ── singular joints ──────────────────────────────────────────────────────
+//
+// spec §06 "Singular joints", quoted verbatim from flatppl-design 52df5de:
+//
+//   "When one component's variate is determined by the others given the shared
+//   ancestors (the same draw referenced twice, a deterministic transform of
+//   another component), the joint law has no density w.r.t. the product
+//   reference measure. Sampling is well-defined; a density query is a static
+//   error where statically detectable, and is otherwise refused by the engine."
+//
+// The identity that decides this is the component's set of INDEPENDENT NOISE
+// SOURCES: the draws it is a deterministic function of. Two components are
+// singular exactly when those sets overlap, because then one is a function of
+// the other given the shared ancestors. `lawof(a)` and `lawof(b)` for `a, b ~
+// Normal(z, 1)` do NOT overlap (each carries its own noise) even though both
+// trace through `z` — that is the correlated, absolutely-continuous case §06
+// "Equivalent record law" wants retained. `joint(m, m)` over a constructor
+// measure does not overlap either: neither component reifies a draw, so per
+// §04's Identity law it is the product of two independent draws.
+//
+// The refusal is a RUNTIME one. §06 prefers "a static error where statically
+// detectable", which this shape is; an analyzer diagnostic is a follow-up
+// tracked in flatppl-dev/TODO-flatppl-js.md.
+//
+// This gate runs only on the DENSITY path (lowerMeasure is not the sampling
+// route for a record/tuple measure), so sampling a singular joint stays legal.
+
+// The alias chain from `name` to its terminal binding, and whether any name on
+// it is stochastic — i.e. whether the component reifies a DRAW rather than
+// naming a constructor measure. Phase lives on the user binding, not on the
+// lifted anon sample, so the whole chain is inspected.
+function _aliasChain(name: string, ctx: any): { root: string; isDraw: boolean } {
+  const derivations = ctx && ctx.derivations;
+  let n = name;
+  let isDraw = _isStochastic(ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null);
+  for (let guard = 0; guard < 64; guard++) {
+    const d = derivations && derivations[n];
+    if (!d || d.kind !== 'alias') break;
+    n = d.from;
+    if (_isStochastic(ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null)) isDraw = true;
+  }
+  return { root: n, isDraw };
+}
+
+// The independent noise sources `name` is a deterministic function of. Walks
+// through `evaluate` (deterministic value) bindings only — a `sample` binding
+// IS its own noise source and terminates the walk.
+function _noiseRoots(name: string, ctx: any, seen?: Set<string>): Set<string> {
+  const out = new Set<string>();
+  const visited = seen || new Set<string>();
+  const { root } = _aliasChain(name, ctx);
+  if (visited.has(root)) return out;
+  visited.add(root);
+  const d = ctx.derivations && ctx.derivations[root];
+  if (d && d.kind === 'evaluate') {
+    for (const ref of orchestrator.collectSelfRefs(d.ir)) {
+      if (!_isStochastic(ctx.bindings && ctx.bindings.get ? ctx.bindings.get(ref) : null)) continue;
+      for (const r of _noiseRoots(ref, ctx, visited)) out.add(r);
+    }
+    return out;
+  }
+  out.add(root);
+  return out;
+}
+
+// The record/tuple derivation `input` names, following aliases (`L =
+// lawof(record(…))` is an alias to the lifted record binding). Null when the
+// input is not a named record/tuple measure.
+function _jointComponents(input: any, ctx: any): Array<{ label: string; binding: string }> | null {
+  if (typeof input !== 'string' || !ctx || !ctx.derivations) return null;
+  const { root } = _aliasChain(input, ctx);
+  const d = ctx.derivations[root];
+  if (!d) return null;
+  if (d.kind === 'record' && d.fields) {
+    return Object.keys(d.fields).map((k) => ({ label: k, binding: d.fields[k] }));
+  }
+  if (d.kind === 'tuple' && Array.isArray(d.elems)) {
+    return d.elems.map((e: string, i: number) => ({ label: '#' + (i + 1), binding: e }));
+  }
+  return null;
+}
+
+// A user-facing name for a noise root. A `~`-draw lowers to an anonymous
+// sample binding with the user's name as a pure alias to it, so the root a
+// draw-identity walk lands on is usually the internal name.
+function _displayName(root: string, ctx: any): string {
+  if (!root.startsWith('__anon') && !root.startsWith('%')) return root;
+  const derivations = (ctx && ctx.derivations) || {};
+  for (const nm of Object.keys(derivations)) {
+    if (nm.startsWith('__anon') || nm.startsWith('%')) continue;
+    if (derivations[nm].kind === 'alias' && _aliasChain(nm, ctx).root === root) return nm;
+  }
+  /* c8 ignore start -- unexercised: a genuinely anonymous intermediate no user
+     binding aliases. Mirrors derivations.ts's _displayNameForRoot fallback; a
+     `~`-draw always leaves the user's name as an alias to its anon sample. */
+  return root;
+  /* c8 ignore stop */
+}
+
+function _refuseIfSingular(input: any, ctx: any): void {
+  const comps = _jointComponents(input, ctx);
+  if (!comps || comps.length < 2) return;
+  const noise = comps.map((c) => (_aliasChain(c.binding, ctx).isDraw
+    ? _noiseRoots(c.binding, ctx) : new Set<string>()));
+  for (let i = 0; i < comps.length; i++) {
+    for (let j = i + 1; j < comps.length; j++) {
+      for (const r of noise[i]) {
+        if (!noise[j].has(r)) continue;
+        const err: any = new Error("density: joint components '" + comps[i].label
+          + "' and '" + comps[j].label + "' are reified laws of the same draw — they "
+          + "share the ancestor '" + _displayName(r, ctx) + "' with no independent "
+          + 'noise separating them, so the joint law has no density w.r.t. the '
+          + 'product reference measure (it concentrates on a lower-dimensional '
+          + 'subset) — refused per spec §06 "Singular joints". Sampling this '
+          + 'joint stays well-defined.');
+        err.code = 'CLM_SINGULAR_JOINT';
+        throw err;
+      }
+    }
+  }
 }
 
 function _domKind(dom: any): string {
@@ -254,6 +387,16 @@ function _boundarySet(deriv: any, ctx: any): Set<string> {
 // N-ary, reconstructed from steps by the consumer). bayesupdate is NOT a
 // marginal reduce — it reweights prior atoms; its per-event MC marginal (when
 // the likelihood is generative) rides mcmarginal inside body.
+//
+// This kchain/jointchain marginal is a MONTE-CARLO estimator: applyReduce
+// averages the per-atom scores over the prior's SAMPLED atoms, which is the one
+// place §06's `kchain` sentence applies literally ("an engine evaluates it in
+// closed form, or by enumeration of a discrete latent, and otherwise reports a
+// static error") and the engine does neither. Out of scope for the wave that
+// made the shared-ancestor marginal exact; tracked as the third open MC density
+// site in flatppl-dev/TODO-flatppl-js.md. `test/kchain-density-relabelled-prior.
+// test.ts` pins it at 8000 prior atoms against a 0.1-nat tolerance, which is the
+// tell: an exact density would not need either number.
 function _reduce(deriv: any): any {
   if (deriv && deriv.kind === 'jointchain' && deriv.marginalize) {
     const base = Array.isArray(deriv.steps) ? deriv.steps[0] : null;
@@ -415,6 +558,11 @@ function _priorFrom(deriv: any): string | null {
 function lowerMeasure(input: any, ctx: any, opts?: any): any {
   const deriv = (opts && opts.derivation)
     || (typeof input === 'string' && ctx && ctx.derivations ? ctx.derivations[input] : null);
+  // Singular joints are refused BEFORE the body is built: inlining erases the
+  // shared draw identity (two `lawof(y)` components both inline to a bare
+  // `Normal(0, 1)` call, indistinguishable from independent draws), so the
+  // check must read the derivation's component→binding map while it survives.
+  _refuseIfSingular(input, ctx);
   const built = _buildBody(input, deriv, ctx, opts);
   if (!built) return null;
   const { body, boundarySet, mc } = built;
@@ -424,23 +572,84 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   // Marginalised stochastic ancestor (H8 — the kchain/lawof unification). A
   // standalone measure whose body references a STOCHASTIC binding that is not
   // a retained variate (e.g. `pp = lawof(obs)`, obs ~ Normal(theta,1),
-  // theta ~ Normal(0,1)) is the marginal law: p(x) = ∫ p(x|theta) p(theta) dθ.
-  // The ancestor is already fed from its own law (the `shared` getMeasure path
-  // yields theta ~ prior atoms), so scoring per atom then logsumexp − logN is
-  // the MC marginal — the SAME reduction kchain uses, reached structurally
-  // instead of via a derivation flag. Sampling draws obs ancestrally and is
-  // already the marginal, so this makes density agree with the histogram
-  // (the conditional Normal(·,1) vs the marginal Normal(0,√2), audit H8).
-  // bayesupdate is excluded — it reweights prior atoms, not logsumexp, and
-  // ignores `reduce` anyway (matBayesupdate owns its reduction).
+  // theta ~ Normal(0,1)) is the marginal law: p(x) = ∫ p(x|theta) p(theta) dθ,
+  // and so is a shared-ancestor joint. §06 "Equivalent record law" (verbatim,
+  // flatppl-design 52df5de): "`joint(a = lawof(a), b = lawof(b))` is equivalent
+  // to `lawof(record(a = a, b = b))`; the positional form is the corresponding
+  // `cat` law", and §06 "Density of composed measures": "A `joint` with shared
+  // ancestry reduces as its equivalent record law".
+  //
+  // HOW that marginal may be evaluated is the OWNER's decision of 2026-08-05: a
+  // density query never returns a stochastic estimate — exactly, or refuse. That
+  // is what binds this construct. §06 at 52df5de states no evaluation rule for
+  // the record law's marginal: the joint bullet stops at "reduces as its
+  // equivalent record law", and the closed-form/enumeration/static-error
+  // sentence one paragraph later has `kchain` as its subject ("`kchain`
+  // marginalizes the intermediate variate, so its density is the marginal
+  // integral … This is generally intractable; an engine evaluates it in closed
+  // form, or by enumeration of a discrete latent, and otherwise reports a static
+  // error"). That rule is a supporting ANALOGY here — the same marginal integral
+  // reached through the equivalent record law — not the authority.
+  // flatppl-design#72 ("densities are exact — closed form, enumeration, or
+  // static error") would make it general and is OPEN, so it carries none either.
+  // Under the decision an MC estimate is not among the options, so the reduce
+  // declares WHICH of the two it is and refuses when neither applies.
+  //
+  // bayesupdate is excluded by the `deriv.kind` guard below, and that guard is
+  // load-bearing: matBayesupdate DOES route through matScore, so a non-null
+  // marginal reduce on its node would make matScore answer analytically or throw
+  // instead of returning the per-atom log-likelihoods it reweights with. The
+  // protection is that its node carries reduce === null — `_reduce` returns a
+  // marginal only for `jointchain`, and this branch declines bayesupdate — so
+  // `_analyticMarginalReply` returns null and the worker scores as before. That
+  // keeps bayesupdate on the pure structural sum §06 mandates ("`logdensityof`
+  // reduces structurally to the densities of its operands, terminating at the
+  // per-kernel primitive `builtin_logdensityof`").
   if (!reduce && (!deriv || deriv.kind !== 'bayesupdate') && _isMeasureNode(body)) {
     const latents = inputs.filter((i: any) => i.source.kind === 'shared'
       && _isStochastic(ctx.bindings && ctx.bindings.get(i.source.ref)));
     if (latents.length > 0) {
-      reduce = {
-        kind: 'marginal', method: 'logsumexp-logN',
-        over: latents.map((i: any) => i.source.ref),
-      };
+      const over = latents.map((i: any) => i.source.ref);
+      // An ancestor that is itself one of the record's FIELDS is not
+      // integrated out: the density walker threads that field's observed
+      // value into the overlay by name/source (the hierarchical record law
+      // p(a)·p(b|a)), making the per-atom scores constant and the reduction a
+      // no-op. Only genuinely unexposed ancestors need a marginal.
+      const exposed = new Set<string>();
+      for (const f of (body.fields || [])) {
+        exposed.add(f.name);
+        if (f.source != null) exposed.add(f.source);
+        if (f.threadAs != null) exposed.add(f.threadAs);
+      }
+      const marg = over.filter((nm: string) => !exposed.has(nm));
+      // An mc-form body carries an `mcmarginal` recipe the worker integrates
+      // in-batch (buildMcMarginalForm) — one of the THREE MC density sites this
+      // wave leaves alone (the others: the bayesupdate/mc-generative routing
+      // that consumes the same form, and `_reduce`'s own kchain/jointchain
+      // marginal, which averages sampled prior atoms). All three are tracked in
+      // flatppl-dev/TODO-flatppl-js.md; this branch keeps their reduction
+      // untouched.
+      if (marg.length === 0 || mc) {
+        reduce = { kind: 'marginal', method: 'logsumexp-logN', over };
+      } else {
+        // Inputs the CALLER feeds instead of the model's own value: an explicit
+        // boundary (the viewer's kernel/profile route) or the free profile axis.
+        // The closed form reads constants out of bindings/fixedValues, so a
+        // marginal that depends on one of these must refuse rather than answer
+        // from the un-substituted value — the recogniser owns that check because
+        // it is the one that knows which names the moments were built from.
+        const substituted = new Set<string>();
+        for (const inp of inputs) {
+          if (inp.source.kind !== 'explicit' && inp.source.kind !== 'free') continue;
+          substituted.add(inp.name);
+          if (inp.source.localAlias) substituted.add(inp.source.localAlias);
+        }
+        const lg = require('./linear-gaussian.ts');
+        const g = lg.recogniseGaussianMarginal(body, marg, ctx, substituted);
+        reduce = g.refuse
+          ? { kind: 'marginal', method: 'refuse', over, marginalize: marg, reason: g.refuse }
+          : { kind: 'marginal', method: 'analytic-gaussian', over, marginalize: marg, gaussian: g };
+      }
     }
   }
 

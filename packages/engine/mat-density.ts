@@ -81,8 +81,50 @@ function mcDensityOpts(ctx: any): any {
 // callers that need the reduced scalar pass through `applyReduce`.
 // =====================================================================
 
+// Shared-ancestor marginal (spec §06 "Density of composed measures", verbatim
+// from flatppl-design 52df5de: "A `joint` with shared ancestry reduces as its
+// equivalent record law; a singular joint has no density and the query is
+// refused"). The same section's rule for evaluating a marginal integral — "an
+// engine evaluates it in closed form, or by enumeration of a discrete latent,
+// and otherwise reports a static error" — is stated there of `kchain`; the
+// owner's 2026-08-05 decision applies it to this construct. Either way no
+// stochastic estimate is admissible, so the two outcomes clm's lowering declares
+// are answered HERE rather than by asking the worker for per-atom scores: an
+// `analytic-gaussian` reduce is evaluated in closed form at the observed point,
+// and a `refuse` reduce throws.
+//
+// The rest of the path is untouched by this: §06's structural-reduction
+// contract ("`logdensityof` reduces structurally to the densities of its
+// operands, terminating at the per-kernel primitive `builtin_logdensityof`")
+// is what keeps bayesupdate / weighted / logweighted scoring a pure sum, so
+// neither this function nor `applyReduce` may interpose on a node without a
+// marginal reduce.
+function _analyticMarginalReply(node: any, ctx: any, opts: any): any {
+  const r = node.reduce;
+  if (!r || r.kind !== 'marginal') return null;
+  if (r.method === 'refuse') {
+    throw new Error('density: the measure marginalises the stochastic ancestor(s) '
+      + r.marginalize.join(', ') + ', and this engine has no exact answer for it '
+      + 'here: ' + r.reason + '. Per spec §06\'s `kchain` marginal rule, applied '
+      + 'to the equivalent record law (§06 "Density of composed measures"), a '
+      + 'marginal is evaluated in closed form or by enumeration of a discrete '
+      + 'latent; this engine has no enumeration device yet, so it refuses — a '
+      + 'density query never returns a Monte-Carlo estimate.');
+  }
+  if (r.method !== 'analytic-gaussian') return null;
+  const lg = require('./linear-gaussian.ts');
+  const logp = lg.scoreGaussianMarginal(r.gaussian, opts.observed);
+  const out = new Float64Array((ctx.sampleCount | 0) || 1);
+  out.fill(logp);
+  return { samples: out };
+}
+
 function matScore(node: any, ctx: any, opts?: any): Promise<any> {
   opts = opts || {};
+  let analytic: any = null;
+  try { analytic = _analyticMarginalReply(node, ctx, opts); }
+  catch (e) { return Promise.reject(e); }
+  if (analytic) return Promise.resolve(analytic);
   // Normalize-mass specs (audit M3) resolve on every matScore path
   // including bayesupdate: the resolution is a pure correctness fix
   // (−log Z literalised from the inner measure's tracked logTotalmass),
@@ -139,6 +181,12 @@ function applyReduce(reply: any, node: any): any {
     return scalarMeasureN(perAtom, {
       logWeights: null, logTotalmass: 0, n_eff: perAtom.length,
     });
+  }
+  // An analytic marginal (the shared-ancestor closed form) already carries the
+  // reduced scalar in every atom — there is nothing to average, and averaging
+  // it would be the MC estimator this reduce exists to avoid.
+  if (node.reduce.method !== 'logsumexp-logN') {
+    return scalarMeasureN(perAtom, { logWeights: null, logTotalmass: 0, n_eff: 1 });
   }
   const margLogp = empirical.logSumExp(perAtom) - Math.log(perAtom.length);
   const out = new Float64Array(perAtom.length);
