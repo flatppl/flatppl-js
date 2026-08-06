@@ -14,9 +14,12 @@
 // How the resulting marginal may be evaluated is stated in that section for
 // `kchain` — "This is generally intractable; an engine evaluates it in closed
 // form, or by enumeration of a discrete latent, and otherwise reports a static
-// error" — and the owner's 2026-08-05 decision applies it to this construct.
-// Under either there is no Monte-Carlo branch to test: a shape this engine
-// cannot answer by ONE of those two exact devices must REFUSE.
+// error" — and reaches this construct only as an ANALOGY. Nothing normative
+// forces exact-or-refuse: flatppl-design#72 was closed unmerged and the owner's
+// 2026-08-06 call leaves the method unruled for now, superseding the earlier
+// 2026-08-05 no-stochastic-estimate decision. These tests therefore pin an
+// ENGINEERING CHOICE of this path, not a conformance requirement: a shape it
+// cannot answer by one of the two exact devices must REFUSE rather than estimate.
 //
 // Oracles are INDEPENDENT (Distributions.jl, not the engine's own output, not
 // the Rust determiniser):
@@ -450,10 +453,11 @@ ld = logdensityof(L, record(a = 0.5, b = 0.7))
 // §06 "Density of composed measures" states the marginal rule for `kchain`: "an
 // engine evaluates it in closed form, or by enumeration of a discrete latent,
 // and otherwise reports a static error". Enumeration is DETERMINISTIC and EXACT
-// — density(y) = Σ_k P(z = k) · density(y | z = k) — so it is not the
-// Monte-Carlo estimate the 2026-08-05 decision rules out. The support cap
-// mirrors the determiniser's (`flatppl-rust/crates/determinizer/src/marginal.rs`,
-// MAX_ATOMS = 256), which is a CAP VALUE reference only, not a semantics oracle.
+// — density(y) = Σ_k P(z = k) · density(y | z = k) — so it satisfies this path's
+// exact-or-refuse choice without any Monte Carlo. The support cap mirrors the
+// determiniser's (`flatppl-rust/crates/determinizer/src/marginal.rs`,
+// MAX_ATOMS = 256), which is a CAP VALUE reference only, not a semantics oracle;
+// the cross-latent product cap is this engine's own, tighter reading.
 
 test('a Bernoulli ancestor enumerates to the exact two-atom mixture', async () => {
   // julia> log(0.7*pdf(Normal(0,1),0.5) + 0.3*pdf(Normal(1,1),0.5))
@@ -486,6 +490,25 @@ test('a Categorical ancestor enumerates its 1-based atoms (§08)', async () => {
   const oracle = -1.296297984007803;
   const got = await scoreOf(`
 s ~ Categorical(p = [0.2, 0.5, 0.3])
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 1.4)
+`, 1);
+  assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+});
+
+test('a Categorical0 ancestor enumerates its 0-based atoms (§08)', async () => {
+  // §08 Categorical0: support interval(0, n-1), density p_{k+1}. Atoms {0,1,2}
+  // for the SAME p the 1-based test above uses, scored at the SAME point, so the
+  // pair pins the offset rather than just the arithmetic.
+  // julia> log(0.2*pdf(Normal(0,1),1.4) + 0.5*pdf(Normal(1,1),1.4)
+  //            + 0.3*pdf(Normal(2,1),1.4))
+  //   = -1.1582096163653917
+  // The 1-based sibling scores -1.296297984007803, so an off-by-one in the
+  // offset moves this by 0.138 — far outside F64_TOL.
+  const oracle = -1.1582096163653917;
+  const got = await scoreOf(`
+s ~ Categorical0(p = [0.2, 0.5, 0.3])
 x ~ Normal(mu = s, sigma = 1.0)
 P = lawof(x)
 ld = logdensityof(P, 1.4)
@@ -686,6 +709,22 @@ test('two components resolving to ONE draw refuses as singular', () => {
   const g = recogniserOn(body, ['z'], TWO_DRAWS, { keyOf: (n: string) => n });
   assert.match(g.refuse, /are the same draw, so the joint law is singular/);
 });
+
+test('omitting identity.keyOf THROWS rather than falling back to name keying',
+  () => {
+    // Defaulting keyOf to `nm => nm` is name keying, which is what scored
+    // [[2,1],[1,3]] for the chain before this recogniser was rewritten. A caller
+    // that cannot supply draw identities must get an error, never a number.
+    const body = {
+      kind: 'call', op: 'joint',
+      fields: [{ name: 'a', value: NORMAL_OF('z'), source: 'a' },
+               { name: 'b', value: NORMAL_OF('a'), source: 'b' }],
+    };
+    for (const bad of [undefined, {}, { componentKeys: null }]) {
+      assert.throws(() => recogniserOn(body, ['z'], TWO_DRAWS, bad),
+        /identity\.keyOf is required/);
+    }
+  });
 
 // ── the point scored must match the variate ────────────────────────────────
 //

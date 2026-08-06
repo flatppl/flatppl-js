@@ -569,21 +569,34 @@ function _blockMoments(nodes: Map<string, TableNode>, compKeys: string[],
  * names the inputs the CALLER feeds instead of the model's own values (clm's
  * `explicit` / `free` input kinds); the closed form reads constants from the
  * model, so any dependence on one of those is refused rather than answered from
- * the un-substituted value. `identity.keyOf` maps a binding name to its draw
- * identity (clm's alias root) so a component and an ancestor that are the same
- * draw collapse to one node.
+ * the un-substituted value.
+ *
+ * `identity` is REQUIRED and throws when absent. Its `keyOf` maps a binding name
+ * to its draw identity (clm's alias root) so a component and an ancestor that are
+ * the same draw collapse to one node. Defaulting it to the identity function
+ * `nm => nm` would be name keying — precisely the defect that made
+ * `joint(lawof(a), lawof(b))` over a hierarchical chain SCORE `[[2,1],[1,3]]`
+ * instead of `[[2,2],[2,3]]`, silently, before this recogniser was rewritten. A
+ * caller that cannot supply draw identities must get an error, never a number.
  *
  * Returns `{ labels, mean, cov }` for a pure linear-Gaussian sub-DAG,
- * `{ labels, mixture: [{ logw, mean, cov }, …], enumerated }` when a finite
- * discrete ancestor is enumerated, or `{ refuse: <reason> }`. `labels` is null
- * for a positional/scalar variate.
+ * `{ labels, mixture: [{ logw, mean, cov }, …] }` when a finite discrete
+ * ancestor is enumerated, or `{ refuse: <reason> }`. `labels` is null for a
+ * positional/scalar variate.
  */
 function recogniseGaussianMarginal(
-  body: any, marginalize: string[], ctx: any, substituted?: Set<string>, identity?: any,
+  body: any, marginalize: string[], ctx: any, substituted: Set<string> | undefined,
+  identity: { keyOf: (nm: string) => string; componentKeys?: Array<string | null> | null },
 ): any {
-  const keyOf = (identity && identity.keyOf) || ((nm: string) => nm);
+  if (!identity || typeof identity.keyOf !== 'function') {
+    throw new Error('linear-gaussian.recogniseGaussianMarginal: identity.keyOf is '
+      + 'required — without draw identities a component and a marginalised ancestor '
+      + 'that are the same draw are double-counted, which scores a wrong covariance '
+      + 'instead of refusing');
+  }
+  const keyOf = identity.keyOf;
   const comps = _components(body);
-  if (identity && Array.isArray(identity.componentKeys)) {
+  if (Array.isArray(identity.componentKeys)) {
     for (let i = 0; i < comps.sources.length; i++) {
       if (identity.componentKeys[i] != null) comps.sources[i] = identity.componentKeys[i];
     }
@@ -638,11 +651,7 @@ function recogniseGaussianMarginal(
     if (b.refuse) return b;
     mixture.push({ logw, mean: b.mean, cov: b.cov });
   }
-  return {
-    labels: comps.labels,
-    mixture,
-    enumerated: discrete.map((n) => ({ what: n.what, atoms: n.atoms })),
-  };
+  return { labels: comps.labels, mixture };
 }
 
 /**
@@ -725,4 +734,4 @@ function _flattenNumbers(v: any): number[] {
     + 'for the shared-ancestor joint law');
 }
 
-module.exports = { recogniseGaussianMarginal, scoreGaussianMarginal, MAX_ATOMS };
+module.exports = { recogniseGaussianMarginal, scoreGaussianMarginal };
