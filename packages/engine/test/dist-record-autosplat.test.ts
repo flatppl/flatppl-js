@@ -86,11 +86,46 @@ test('dist auto-splat: sampling the splatted Gamma agrees with the density momen
 
 test('dist auto-splat: a field/parameter name mismatch still errors (spec static error)', async () => {
   // `rate` misspelled `rat` — the splat fires regardless (§04 always-splat),
-  // so `rate` has nothing bound to it and the missing parameter surfaces
-  // rather than binding silently.
+  // and the misspelling is reported as the unbindable name it is rather than
+  // as the missing `rate` it leaves behind.
   const ctx = buildCtx(`ld = logdensityof(Gamma(record(shape = 4.0, rat = 2.0)), 1.0)`, 1, 1);
   await assert.rejects(() => Promise.resolve(ctx.getMeasure('ld')),
-    /missing parameter 'rate'/);
+    /'Gamma' has no parameter 'rat'/);
+});
+
+test('dist auto-splat: a SURPLUS field is an error, not silently dropped', async () => {
+  // §04's name rule runs both directions. The per-parameter loop reads out
+  // of the splatted kwargs, so it only ever caught a parameter with nothing
+  // bound; `zz` was ignored and the model scored as if it were not written.
+  const ctx = buildCtx(
+    `ld = logdensityof(Normal(record(mu = 1.1, sigma = 0.2, zz = 9.0)), 1.1)`, 1, 1);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('ld')),
+    /'Normal' has no parameter 'zz' \(parameters: mu, sigma\)/);
+});
+
+test('dist auto-splat: a surplus KEYWORD argument is an error too', async () => {
+  // Same rule, written without a record — the check sits after the splat so
+  // it covers both spellings.
+  const ctx = buildCtx(
+    `ld = logdensityof(Normal(mu = 1.1, sigma = 0.2, zz = 9.0), 1.1)`, 1, 1);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('ld')),
+    /'Normal' has no parameter 'zz'/);
+});
+
+test('dist auto-splat: a surplus field on the SAMPLING path reports legibly', async () => {
+  // The sampling path had no worker-error guard, so every worker-side
+  // parameter failure surfaced as "Cannot read properties of undefined
+  // (reading 'length')" — including a plain missing parameter, before this
+  // check existed.
+  const ctx = buildCtx(`s ~ Normal(record(mu = 1.1, sigma = 0.2, zz = 9.0))`, 4096, 17);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('s')),
+    /worker failed sampling.*'Normal' has no parameter 'zz'/);
+});
+
+test('dist auto-splat: a missing parameter on the SAMPLING path reports legibly', async () => {
+  const ctx = buildCtx(`s ~ Normal(mu = 1.1)`, 4096, 17);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('s')),
+    /worker failed sampling.*'Normal' missing parameter 'sigma'/);
 });
 
 test('dist auto-splat: a ONE-parameter constructor also errors on a bad field name', async () => {
@@ -100,5 +135,5 @@ test('dist auto-splat: a ONE-parameter constructor also errors on a bad field na
   // shape where the name rule went unenforced entirely.
   const ctx = buildCtx(`ld = logdensityof(Poisson(record(zzz = 0.5)), 2)`, 1, 1);
   await assert.rejects(() => Promise.resolve(ctx.getMeasure('ld')),
-    /missing parameter 'rate'/);
+    /'Poisson' has no parameter 'zzz' \(parameters: rate\)/);
 });

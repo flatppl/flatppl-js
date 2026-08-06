@@ -1573,6 +1573,26 @@ function resolveParams(measureIR: any, entry: any, env: any) {
     }
   }
 
+  // §04's name rule runs in BOTH directions: "A call with field or column
+  // names that do not match the callable's argument names is a static
+  // error." The per-parameter loop below reads OUT of `kwargs`, so it only
+  // catches a parameter with nothing bound to it. A SURPLUS name is
+  // invisible to it — `Normal(record(mu = 1.1, sigma = 0.2, zz = 9.0))`
+  // scored as though `zz` had not been written. Reject leftover names.
+  const bindable = new Set<string>();
+  for (const p of entry.params) {
+    bindable.add(p);
+    if (entry.aliases[p]) bindable.add(entry.aliases[p]);
+  }
+  const surplus = Object.keys(kwargs).filter((k) => !bindable.has(k));
+  if (surplus.length > 0) {
+    throw new Error(
+      `sampler: '${measureIR.op}' has no parameter `
+      + surplus.map((k) => `'${k}'`).join(', ')
+      + ` (parameters: ${entry.params.join(', ')})`
+    );
+  }
+
   const out: any[] = [];
   for (let i = 0; i < entry.params.length; i++) {
     const paramName = entry.params[i];
