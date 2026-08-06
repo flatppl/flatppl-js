@@ -41,6 +41,10 @@
 //               'analytic-gaussian'— the shared-ancestor closed form
 //                                    (linear-gaussian.ts), carried on
 //                                    reduce.gaussian
+//               'analytic-mixture' — the same closed form per atom of an
+//                                    ENUMERATED finite discrete ancestor,
+//                                    carried on reduce.gaussian.mixture
+//                                    (deterministic and exact, not MC)
 //               'refuse'           — a marginal this engine cannot close;
 //                                    reduce.reason says why, and the density
 //                                    consumer throws it
@@ -257,6 +261,28 @@ function _refuseIfSingular(input: any, ctx: any): void {
       }
     }
   }
+}
+
+// The binding each of the body's joint components reifies, aligned with the
+// body's component order — the DRAW IDENTITY the linear-Gaussian recogniser
+// keys its node table by. A field carries its own `source`; a positional body
+// carries none, so the tuple derivation's element order supplies them. `null`
+// for a component whose identity is not recoverable: the recogniser refuses a
+// multi-component body rather than risk double-counting a shared draw.
+function _componentKeys(body: any, input: any, ctx: any): Array<string | null> | null {
+  const isJoint = body && body.kind === 'call' && body.op === 'joint';
+  const fields = isJoint && Array.isArray(body.fields) ? body.fields : null;
+  const args = isJoint && Array.isArray(body.args) ? body.args : null;
+  if (!fields && !args) return null;                 // a scalar body — one component
+  const comps = _jointComponents(input, ctx);
+  if (fields) {
+    const byLabel = new Map<string, string>();
+    for (const c of (comps || [])) byLabel.set(c.label, c.binding);
+    return fields.map((f: any) => (f.source != null ? f.source
+      : (byLabel.get(f.name) != null ? (byLabel.get(f.name) as string) : null)));
+  }
+  if (!comps || comps.length !== args.length) return null;
+  return comps.map((c) => c.binding);
 }
 
 function _domKind(dom: any): string {
@@ -579,21 +605,24 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   // `cat` law", and §06 "Density of composed measures": "A `joint` with shared
   // ancestry reduces as its equivalent record law".
   //
-  // HOW that marginal may be evaluated is the OWNER's decision of 2026-08-05: a
-  // density query never returns a stochastic estimate — exactly, or refuse. That
-  // is what binds this construct. §06 at 52df5de states no evaluation rule for
-  // the record law's marginal: the joint bullet stops at "reduces as its
-  // equivalent record law", and the closed-form/enumeration/static-error
-  // sentence one paragraph later has `kchain` as its subject ("`kchain`
-  // marginalizes the intermediate variate, so its density is the marginal
-  // integral … This is generally intractable; an engine evaluates it in closed
-  // form, or by enumeration of a discrete latent, and otherwise reports a static
-  // error"). That rule is a supporting ANALOGY here — the same marginal integral
-  // reached through the equivalent record law — not the authority.
-  // flatppl-design#72 ("densities are exact — closed form, enumeration, or
-  // static error") would make it general and is OPEN, so it carries none either.
-  // Under the decision an MC estimate is not among the options, so the reduce
-  // declares WHICH of the two it is and refuses when neither applies.
+  // HOW that marginal may be evaluated is NOT ruled. §06 at 52df5de states no
+  // evaluation rule for the record law's marginal: the joint bullet stops at
+  // "reduces as its equivalent record law", and the closed-form/enumeration/
+  // static-error sentence one paragraph later has `kchain` as its subject
+  // ("`kchain` marginalizes the intermediate variate, so its density is the
+  // marginal integral … This is generally intractable; an engine evaluates it in
+  // closed form, or by enumeration of a discrete latent, and otherwise reports a
+  // static error"). That rule is a supporting ANALOGY here — the same marginal
+  // integral reached through the equivalent record law — not the authority.
+  // flatppl-design#72 would have made it general but was CLOSED UNMERGED, and the
+  // owner's 2026-08-06 call leaves the method unruled for now
+  // (flatppl-dev/decisions-log.md), superseding the earlier 2026-08-05
+  // no-stochastic-estimate decision. An MC marginal would therefore be conformant
+  // today, and three other density paths in this engine do estimate
+  // (TODO-flatppl-js.md). This branch nonetheless answers exactly or refuses, as
+  // its own engineering choice: the reduce declares WHICH exact device it used —
+  // 'analytic-gaussian' or 'analytic-mixture' — and refuses when neither applies,
+  // so a caller can tell a closed form from an estimate.
   //
   // bayesupdate is excluded by the `deriv.kind` guard below, and that guard is
   // load-bearing: matBayesupdate DOES route through matScore, so a non-null
@@ -645,10 +674,18 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
           if (inp.source.localAlias) substituted.add(inp.source.localAlias);
         }
         const lg = require('./linear-gaussian.ts');
-        const g = lg.recogniseGaussianMarginal(body, marg, ctx, substituted);
+        const identity = {
+          keyOf: (nm: string) => _aliasChain(nm, ctx).root,
+          componentKeys: _componentKeys(body, input, ctx),
+        };
+        const g = lg.recogniseGaussianMarginal(body, marg, ctx, substituted, identity);
         reduce = g.refuse
           ? { kind: 'marginal', method: 'refuse', over, marginalize: marg, reason: g.refuse }
-          : { kind: 'marginal', method: 'analytic-gaussian', over, marginalize: marg, gaussian: g };
+          : {
+            kind: 'marginal',
+            method: g.mixture ? 'analytic-mixture' : 'analytic-gaussian',
+            over, marginalize: marg, gaussian: g,
+          };
       }
     }
   }

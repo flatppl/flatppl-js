@@ -14,11 +14,12 @@
 // How the resulting marginal may be evaluated is stated in that section for
 // `kchain` — "This is generally intractable; an engine evaluates it in closed
 // form, or by enumeration of a discrete latent, and otherwise reports a static
-// error" — and the owner's 2026-08-05 decision applies it to this construct.
-// Under either there is no Monte-Carlo branch to test: a shape this engine
-// cannot close analytically must REFUSE. (Enumeration of a finite discrete
-// latent is the one permitted device the engine does not implement yet; it
-// refuses those too — tracked in flatppl-dev/TODO-flatppl-js.md.)
+// error" — and reaches this construct only as an ANALOGY. Nothing normative
+// forces exact-or-refuse: flatppl-design#72 was closed unmerged and the owner's
+// 2026-08-06 call leaves the method unruled for now, superseding the earlier
+// 2026-08-05 no-stochastic-estimate decision. These tests therefore pin an
+// ENGINEERING CHOICE of this path, not a conformance requirement: a shape it
+// cannot answer by one of the two exact devices must REFUSE rather than estimate.
 //
 // Oracles are INDEPENDENT (Distributions.jl, not the engine's own output, not
 // the Rust determiniser):
@@ -31,6 +32,10 @@
 //     logpdf(0.5, 0.7)                    = -4.375464849980595
 // (julia> logpdf(MvNormal(mu, Sigma), x) — the covariances are the textbook
 // linear-Gaussian moments, re-derived in linear-gaussian.ts's header.)
+//
+// The CHAIN covariances below are each confirmed twice, by two derivations that
+// share no algebra: the MvNormal moments, and the chain rule p(a)·p(b|a) over
+// the same draws. The mixtures are the finite sum written out term by term.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -344,39 +349,382 @@ ld = logdensityof(L, record(a = 0.5, b = 0.7))
   assert.deepEqual(fed.gaussian.cov, [[2, 1], [1, 2]]);
 });
 
-// ── recogniser gaps, pinned as refusals so they cannot drift silently ──────
+// ── hierarchical chains: a component in another component's location ───────
+//
+// z ~ N(0,1); a ~ N(z,1); b ~ N(a,1) is the plainest hierarchical shape there
+// is, and it IS linear-Gaussian: a = z + ε_a and b = a + ε_b, so Var(a) = 2,
+// Var(b) = 3 and Cov(a,b) = Var(a) = 2, giving MvNormal([0,0], [[2,2],[2,3]]).
+//
+// Two derivations that share no algebra agree on that covariance:
+//   julia> logpdf(MvNormal([0,0], [2 2; 2 3]), [0.5,0.7]) = -2.2669506566893185
+//   julia> logpdf(Normal(0,√2), 0.5) + logpdf(Normal(0.5,1), 0.7)
+//                                                         = -2.266950656689318
+// The second is the chain rule p(a)·p(b|a) over the same draws — it never forms
+// a covariance matrix — so it is an independent check that the recogniser keeps
+// the noise `a` and `b` SHARE. Dropping it (composing b's location down to `z`
+// and giving b fresh noise) would give [[2,1],[1,2]] and a different number.
+const CHAIN_ORACLE = -2.2669506566893185;
 
-test('a component in another component\'s location refuses, though the law IS '
-  + 'linear-Gaussian (recogniser gap)', async () => {
-  // z ~ N(0,1); a ~ N(z,1); b ~ N(a,1) with both a and b record fields is
-  // MvNormal([0,0], [[2,2],[2,3]]). `_affine` accepts only marginalised latents
-  // and constants, so a sibling component in the location refuses. Filed in
-  // flatppl-dev/TODO-flatppl-js.md; the refusal is safe, not wrong.
-  const { ctx } = ctxFor(`
+const CHAIN_DRAWS = `
 z ~ Normal(mu = 0.0, sigma = 1.0)
 a ~ Normal(mu = z, sigma = 1.0)
 b ~ Normal(mu = a, sigma = 1.0)
+`;
+
+test('a component in another component\'s location closes analytically '
+  + '(hierarchical chain, record spelling)', async () => {
+  const got = await scoreOf(CHAIN_DRAWS + `
 L = lawof(record(a = a, b = b))
 ld = logdensityof(L, record(a = 0.5, b = 0.7))
 `, 1);
-  await assert.rejects(async () => ctx.getMeasure('ld'),
-    /location is not an affine function/);
+  assert.ok(Math.abs(got - CHAIN_ORACLE) < F64_TOL,
+    `got ${got}, MvNormal([0,0],[[2,2],[2,3]]) logpdf(0.5,0.7) = ${CHAIN_ORACLE}`);
 });
 
-test('a finite discrete latent refuses, though §06 permits enumeration '
-  + '(unimplemented device)', async () => {
-  // §06's marginal rule allows "enumeration of a discrete latent"; this engine
-  // has no enumeration device (flatppl-rust's determiniser does). Refusing is
-  // permitted and safe — pinned so implementing enumeration flips it loudly.
-  const { ctx } = ctxFor(`
+test('every spelling of the chain joint scores the SAME marginal — a component '
+  + 'is identified by its DRAW, not by its label', async () => {
+  // The record spelling exposes the field under the draw's own name `a`; the
+  // other three do not, and before draw-identity keying the recogniser
+  // integrated `a` out as a latent AND redrew it as a component, silently
+  // scoring MvNormal([0,0],[[2,1],[1,3]]) — a WRONG number, not a refusal.
+  const spellings = [
+    ['record', 'L = lawof(record(a = a, b = b))', 'record(a = 0.5, b = 0.7)'],
+    ['joint of laws', 'L = joint(a = lawof(a), b = lawof(b))', 'record(a = 0.5, b = 0.7)'],
+    ['relabelled joint', 'L = joint(p = lawof(a), q = lawof(b))', 'record(p = 0.5, q = 0.7)'],
+    ['positional joint', 'L = joint(lawof(a), lawof(b))', '[0.5, 0.7]'],
+  ];
+  for (const [what, decl, point] of spellings) {
+    const got = await scoreOf(CHAIN_DRAWS + decl + `\nld = logdensityof(L, ${point})\n`, 1);
+    assert.ok(Math.abs(got - CHAIN_ORACLE) < F64_TOL,
+      `${what}: got ${got}, oracle ${CHAIN_ORACLE}`);
+  }
+});
+
+test('the chain marginal does not depend on sampleCount', async () => {
+  const src = CHAIN_DRAWS + `
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 0.5, b = 0.7))
+`;
+  assert.equal(await scoreOf(src, 1), await scoreOf(src, 250));
+});
+
+test('an affine chain composes the maps through the intermediate node', async () => {
+  // z ~ N(1,2); a ~ N(2z-1, 0.5); b ~ N(3a+1, 1.5)
+  //   mean(a) = 1, Var(a) = 4*4 + 0.25 = 16.25
+  //   mean(b) = 4, Var(b) = 9*16.25 + 2.25 = 148.5, Cov(a,b) = 3*16.25 = 48.75
+  // julia> logpdf(MvNormal([1,4], [16.25 48.75; 48.75 148.5]), [0.5,0.7])
+  //   = -4.3650809365976935
+  // cross-check (chain rule, no covariance matrix):
+  //   logpdf(Normal(1,√16.25), 0.5) + logpdf(Normal(3*0.5+1, 1.5), 0.7)
+  //   = -4.365080936597691
+  const oracle = -4.3650809365976935;
+  const got = await scoreOf(`
+z ~ Normal(mu = 1.0, sigma = 2.0)
+a ~ Normal(mu = 2.0 * z - 1.0, sigma = 0.5)
+b ~ Normal(mu = 3.0 * a + 1.0, sigma = 1.5)
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 0.5, b = 0.7))
+`, 1);
+  assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+});
+
+test('an UNEXPOSED intermediate latent is closed over too (transitive '
+  + 'ancestor closure)', async () => {
+  // z1 ~ N(0,1); z2 ~ N(z1,1); a,b ~ N(z2,1): only `z2` is a body self-ref, so
+  // `z1` reaches the recogniser through z2's law alone. Var(z2) = 2 ⇒
+  // Var(a) = Var(b) = 3, Cov(a,b) = Var(z2) = 2.
+  // julia> logpdf(MvNormal([0,0], [3 2; 2 3]), [0.5,0.7]) = -2.7245960226263954
+  // cross-check: logpdf(Normal(0,√3),0.5) + logpdf(Normal(0.5*2/3, √(3-4/3)),0.7)
+  //   = -2.724596022626396
+  const oracle = -2.7245960226263954;
+  const got = await scoreOf(`
+z1 ~ Normal(mu = 0.0, sigma = 1.0)
+z2 ~ Normal(mu = z1, sigma = 1.0)
+a ~ Normal(mu = z2, sigma = 1.0)
+b ~ Normal(mu = z2, sigma = 1.0)
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 0.5, b = 0.7))
+`, 1);
+  assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+});
+
+// ── enumeration of a finite discrete latent (§06's second exact device) ────
+//
+// §06 "Density of composed measures" states the marginal rule for `kchain`: "an
+// engine evaluates it in closed form, or by enumeration of a discrete latent,
+// and otherwise reports a static error". Enumeration is DETERMINISTIC and EXACT
+// — density(y) = Σ_k P(z = k) · density(y | z = k) — so it satisfies this path's
+// exact-or-refuse choice without any Monte Carlo. The support cap mirrors the
+// determiniser's (`flatppl-rust/crates/determinizer/src/marginal.rs`,
+// MAX_ATOMS = 256), which is a CAP VALUE reference only, not a semantics oracle;
+// the cross-latent product cap is this engine's own, tighter reading.
+
+test('a Bernoulli ancestor enumerates to the exact two-atom mixture', async () => {
+  // julia> log(0.7*pdf(Normal(0,1),0.5) + 0.3*pdf(Normal(1,1),0.5))
+  const oracle = -1.0439385332046727;
+  const got = await scoreOf(`
 s ~ Bernoulli(p = 0.3)
 x ~ Normal(mu = s, sigma = 1.0)
 P = lawof(x)
 ld = logdensityof(P, 0.5)
 `, 1);
-  await assert.rejects(async () => ctx.getMeasure('ld'),
-    /'s' is a 'Bernoulli', not a Normal/);
+  assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
 });
+
+test('the enumerated mixture does not depend on sampleCount (no MC estimate)',
+  async () => {
+    const src = `
+s ~ Bernoulli(p = 0.3)
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 0.5)
+`;
+    assert.equal(await scoreOf(src, 1), await scoreOf(src, 400));
+  });
+
+test('a Categorical ancestor enumerates its 1-based atoms (§08)', async () => {
+  // §08 Categorical: support interval(1, n) — "Categories are numbered starting
+  // from 1". Atoms {1,2,3} with p = [0.2,0.5,0.3].
+  // julia> log(0.2*pdf(Normal(1,1),1.4) + 0.5*pdf(Normal(2,1),1.4)
+  //            + 0.3*pdf(Normal(3,1),1.4))
+  const oracle = -1.296297984007803;
+  const got = await scoreOf(`
+s ~ Categorical(p = [0.2, 0.5, 0.3])
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 1.4)
+`, 1);
+  assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+});
+
+test('a Categorical0 ancestor enumerates its 0-based atoms (§08)', async () => {
+  // §08 Categorical0: support interval(0, n-1), density p_{k+1}. Atoms {0,1,2}
+  // for the SAME p the 1-based test above uses, scored at the SAME point, so the
+  // pair pins the offset rather than just the arithmetic.
+  // julia> log(0.2*pdf(Normal(0,1),1.4) + 0.5*pdf(Normal(1,1),1.4)
+  //            + 0.3*pdf(Normal(2,1),1.4))
+  //   = -1.1582096163653917
+  // The 1-based sibling scores -1.296297984007803, so an off-by-one in the
+  // offset moves this by 0.138 — far outside F64_TOL.
+  const oracle = -1.1582096163653917;
+  const got = await scoreOf(`
+s ~ Categorical0(p = [0.2, 0.5, 0.3])
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 1.4)
+`, 1);
+  assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+});
+
+test('a Binomial ancestor enumerates its n+1 atoms', async () => {
+  // julia> log(sum(pdf(Binomial(4,0.4),k) * pdf(Normal(k,1),1.7) for k in 0:4))
+  const oracle = -1.276691405132729;
+  const got = await scoreOf(`
+s ~ Binomial(n = 4, p = 0.4)
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 1.7)
+`, 1);
+  assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+});
+
+test('a discrete ancestor SHARED by two components is a mixture of MvNormals',
+  async () => {
+    // Given s the components are independent, so each block is MvNormal([s,s], I).
+    // julia> log(0.7*pdf(MvNormal([0,0],I),[0.5,0.7])
+    //            + 0.3*pdf(MvNormal([1,1],I),[0.5,0.7]))
+    const oracle = -2.143569046102502;
+    const got = await scoreOf(`
+s ~ Bernoulli(p = 0.3)
+a ~ Normal(mu = s, sigma = 1.0)
+b ~ Normal(mu = s, sigma = 1.0)
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 0.5, b = 0.7))
+`, 1);
+    assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+  });
+
+test('enumeration and the chain recogniser compose: a discrete root above a '
+  + 'Gaussian chain', async () => {
+  // s ~ Bernoulli(0.3); z ~ N(s,1); a ~ N(z,1); b ~ N(a,1). Per atom the block
+  // is MvNormal([s,s], [[2,2],[2,3]]).
+  // julia> log(0.7*pdf(MvNormal([0,0],[2 2; 2 3]),[0.9,1.9])
+  //            + 0.3*pdf(MvNormal([1,1],[2 2; 2 3]),[0.9,1.9]))
+  const oracle = -2.822642636382475;
+  const got = await scoreOf(`
+s ~ Bernoulli(p = 0.3)
+z ~ Normal(mu = s, sigma = 1.0)
+a ~ Normal(mu = z, sigma = 1.0)
+b ~ Normal(mu = a, sigma = 1.0)
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 0.9, b = 1.9))
+`, 1);
+  assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+});
+
+test('two discrete ancestors enumerate their product support', async () => {
+  // s ~ Bernoulli(0.3) × t ~ Categorical([0.2,0.5,0.3]) = 6 atom combinations.
+  // julia> log(sum(pdf(Bernoulli(0.3),k) * [0.2,0.5,0.3][j]
+  //                * pdf(Normal(k + 2j, 1), 3.1) for k in 0:1, j in 1:3))
+  const oracle = -1.841643789646692;
+  const got = await scoreOf(`
+s ~ Bernoulli(p = 0.3)
+t ~ Categorical(p = [0.2, 0.5, 0.3])
+x ~ Normal(mu = s + 2.0 * t, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 3.1)
+`, 1);
+  assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+});
+
+test('a support above the enumeration cap refuses rather than enumerating',
+  async () => {
+    const { ctx } = ctxFor(`
+s ~ Binomial(n = 400, p = 0.5)
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 0.5)
+`, 1);
+    await assert.rejects(async () => ctx.getMeasure('ld'),
+      /401 atoms, above the enumeration cap of 256/);
+  });
+
+test('an INFINITE discrete ancestor is not enumerable and refuses', async () => {
+  const { ctx } = ctxFor(`
+s ~ Poisson(rate = 3.0)
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 0.5)
+`, 1);
+  await assert.rejects(async () => ctx.getMeasure('ld'),
+    /'s' is a 'Poisson', not a Normal/);
+});
+
+test('the product support of several discrete ancestors is capped too', async () => {
+  // 21 × 21 = 441 atom combinations, each latent under the per-latent cap.
+  const { ctx } = ctxFor(`
+s ~ Binomial(n = 20, p = 0.5)
+t ~ Binomial(n = 20, p = 0.5)
+x ~ Normal(mu = s + t, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 0.5)
+`, 1);
+  await assert.rejects(async () => ctx.getMeasure('ld'),
+    /441 atom combinations, above the cap of 256/);
+});
+
+test('a zero-mass atom drops out of the mixture instead of contributing -Inf',
+  async () => {
+    // Categorical([0, 1]) puts no mass on atom 1, so the sum is the atom-2 term
+    // alone: log(1 * pdf(Normal(2,1), 1.4)) = logpdf(Normal(2,1), 1.4).
+    // julia> logpdf(Normal(2,1), 1.4) = -1.0989385332046728
+    const oracle = -1.0989385332046728;
+    const got = await scoreOf(`
+s ~ Categorical(p = [0.0, 1.0])
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 1.4)
+`, 1);
+    assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+  });
+
+// A discrete latent whose own parameters are stochastic has no statically known
+// support, so there is nothing to enumerate — refuse per distribution.
+
+test("a Bernoulli ancestor with a stochastic `p` is not enumerable", async () => {
+  const { ctx } = ctxFor(`
+u ~ Normal(mu = 0.5, sigma = 0.1)
+s ~ Bernoulli(p = u)
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 0.5)
+`, 1);
+  await assert.rejects(async () => ctx.getMeasure('ld'),
+    /`p` is not a constant in \[0, 1\]/);
+});
+
+test("a Binomial ancestor with a stochastic `p` is not enumerable", async () => {
+  const { ctx } = ctxFor(`
+u ~ Normal(mu = 0.5, sigma = 0.1)
+s ~ Binomial(n = 4, p = u)
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 0.5)
+`, 1);
+  await assert.rejects(async () => ctx.getMeasure('ld'),
+    /`n`\/`p` are not constants/);
+});
+
+test("a Categorical ancestor with a stochastic `p` has no static category count",
+  async () => {
+    const { ctx } = ctxFor(`
+w ~ Dirichlet(alpha = [1.0, 1.0, 1.0])
+s ~ Categorical(p = w)
+x ~ Normal(mu = s, sigma = 1.0)
+P = lawof(x)
+ld = logdensityof(P, 0.5)
+`, 1);
+    await assert.rejects(async () => ctx.getMeasure('ld'),
+      /`p` is not a constant probability vector/);
+  });
+
+// ── draw-identity guards, exercised on the recogniser directly ─────────────
+//
+// Both are SAFETY guards against double-counting a shared draw. Neither is
+// reachable through source today (`lowerMeasure` recovers a positional body's
+// identities from its tuple derivation, and `_refuseIfSingular` rejects a
+// same-draw joint before the body is built), so they are driven here from a
+// hand-built body — the shape a by-IR `lowerMeasure` call could still present.
+
+const recogniserOn = (body: any, marg: string[], src: string, identity: any) => {
+  const lg = require('../linear-gaussian.ts');
+  const { ctx } = ctxFor(src, 1);
+  return lg.recogniseGaussianMarginal(body, marg, ctx, undefined, identity);
+};
+
+const NORMAL_OF = (name: string) => ({
+  kind: 'call', op: 'Normal',
+  kwargs: { mu: { kind: 'ref', ns: 'self', name }, sigma: { kind: 'lit', value: 1 } },
+});
+
+const TWO_DRAWS = `
+z ~ Normal(mu = 0.0, sigma = 1.0)
+a ~ Normal(mu = z, sigma = 1.0)
+b ~ Normal(mu = z, sigma = 1.0)
+`;
+
+test('a multi-component body whose components carry no draw identity refuses',
+  () => {
+    const body = { kind: 'call', op: 'joint', args: [NORMAL_OF('z'), NORMAL_OF('z')] };
+    const g = recogniserOn(body, ['z'], TWO_DRAWS, { keyOf: (n: string) => n, componentKeys: null });
+    assert.match(g.refuse, /carries no draw identity/);
+  });
+
+test('two components resolving to ONE draw refuses as singular', () => {
+  const body = {
+    kind: 'call', op: 'joint',
+    fields: [{ name: 'p', value: NORMAL_OF('z'), source: 'a' },
+             { name: 'q', value: NORMAL_OF('z'), source: 'a' }],
+  };
+  const g = recogniserOn(body, ['z'], TWO_DRAWS, { keyOf: (n: string) => n });
+  assert.match(g.refuse, /are the same draw, so the joint law is singular/);
+});
+
+test('omitting identity.keyOf THROWS rather than falling back to name keying',
+  () => {
+    // Defaulting keyOf to `nm => nm` is name keying, which is what scored
+    // [[2,1],[1,3]] for the chain before this recogniser was rewritten. A caller
+    // that cannot supply draw identities must get an error, never a number.
+    const body = {
+      kind: 'call', op: 'joint',
+      fields: [{ name: 'a', value: NORMAL_OF('z'), source: 'a' },
+               { name: 'b', value: NORMAL_OF('a'), source: 'b' }],
+    };
+    for (const bad of [undefined, {}, { componentKeys: null }]) {
+      assert.throws(() => recogniserOn(body, ['z'], TWO_DRAWS, bad),
+        /identity\.keyOf is required/);
+    }
+  });
 
 // ── the point scored must match the variate ────────────────────────────────
 //
