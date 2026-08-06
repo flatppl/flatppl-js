@@ -74,7 +74,7 @@ test('shared-ancestor record law scores the analytic MvNormal marginal (N=1)', a
 });
 
 test('joint(a = lawof(a), b = lawof(b)) scores the SAME analytic marginal '
-  + '(§06 "Reified components share their ancestry")', async () => {
+  + '(§06 "Equivalent record law")', async () => {
   const viaJoint = await scoreOf(JOINT_OF_LAWS, 1);
   const viaRecord = await scoreOf(RECORD_LAW, 1);
   assert.ok(Math.abs(viaJoint - MVN_ORACLE) < F64_TOL,
@@ -256,7 +256,7 @@ ld = logdensityof(G, record(y = 0.5))
   for (const N of [1, 5000]) {
     const { ctx } = ctxFor(src, N);
     await assert.rejects(async () => ctx.getMeasure('ld'),
-      /cannot evaluate in closed form.*'z' is a 'Gamma'/s,
+      /no exact answer for it here.*'z' is a 'Gamma'/s,
       `sampleCount ${N} must refuse, not estimate`);
   }
 });
@@ -448,5 +448,5 @@ L = iid(lawof(a), 2)
 ld = logdensityof(L, [0.5, 0.7])
 `, 1);
   await assert.rejects(async () => ctx.getMeasure('ld'),
-    /cannot evaluate in closed form/);
+    /no exact answer for it here/);
 });

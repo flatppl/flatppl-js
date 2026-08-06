@@ -387,6 +387,16 @@ function _boundarySet(deriv: any, ctx: any): Set<string> {
 // N-ary, reconstructed from steps by the consumer). bayesupdate is NOT a
 // marginal reduce — it reweights prior atoms; its per-event MC marginal (when
 // the likelihood is generative) rides mcmarginal inside body.
+//
+// This kchain/jointchain marginal is a MONTE-CARLO estimator: applyReduce
+// averages the per-atom scores over the prior's SAMPLED atoms, which is the one
+// place §06's `kchain` sentence applies literally ("an engine evaluates it in
+// closed form, or by enumeration of a discrete latent, and otherwise reports a
+// static error") and the engine does neither. Out of scope for the wave that
+// made the shared-ancestor marginal exact; tracked as the third open MC density
+// site in flatppl-dev/TODO-flatppl-js.md. `test/kchain-density-relabelled-prior.
+// test.ts` pins it at 8000 prior atoms against a 0.1-nat tolerance, which is the
+// tell: an exact density would not need either number.
 function _reduce(deriv: any): any {
   if (deriv && deriv.kind === 'jointchain' && deriv.marginalize) {
     const base = Array.isArray(deriv.steps) ? deriv.steps[0] : null;
@@ -569,19 +579,30 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   // `cat` law", and §06 "Density of composed measures": "A `joint` with shared
   // ancestry reduces as its equivalent record law".
   //
-  // HOW that marginal may be evaluated: the same section states the rule for
-  // `kchain`'s marginal integral — "This is generally intractable; an engine
-  // evaluates it in closed form, or by enumeration of a discrete latent, and
-  // otherwise reports a static error" — and this IS that integral, reached
-  // through the equivalent record law. The owner's 2026-08-05 decision (a
-  // density query never returns a stochastic estimate) settles the policy for
-  // this construct; §06 states it for `kchain`, and flatppl-design#72 would
-  // widen the wording, but it is NOT merged, so the decision is what binds
-  // here. Either way an MC estimate is not among the options, so the reduce
+  // HOW that marginal may be evaluated is the OWNER's decision of 2026-08-05: a
+  // density query never returns a stochastic estimate — exactly, or refuse. That
+  // is what binds this construct. §06 at 52df5de states no evaluation rule for
+  // the record law's marginal: the joint bullet stops at "reduces as its
+  // equivalent record law", and the closed-form/enumeration/static-error
+  // sentence one paragraph later has `kchain` as its subject ("`kchain`
+  // marginalizes the intermediate variate, so its density is the marginal
+  // integral … This is generally intractable; an engine evaluates it in closed
+  // form, or by enumeration of a discrete latent, and otherwise reports a static
+  // error"). That rule is a supporting ANALOGY here — the same marginal integral
+  // reached through the equivalent record law — not the authority.
+  // flatppl-design#72 ("densities are exact — closed form, enumeration, or
+  // static error") would make it general and is OPEN, so it carries none either.
+  // Under the decision an MC estimate is not among the options, so the reduce
   // declares WHICH of the two it is and refuses when neither applies.
-  // bayesupdate is excluded — it reweights prior atoms, not logsumexp, and
-  // ignores `reduce` anyway (matBayesupdate owns its reduction), keeping its
-  // scoring the pure structural sum the same section mandates ("`logdensityof`
+  //
+  // bayesupdate is excluded by the `deriv.kind` guard below, and that guard is
+  // load-bearing: matBayesupdate DOES route through matScore, so a non-null
+  // marginal reduce on its node would make matScore answer analytically or throw
+  // instead of returning the per-atom log-likelihoods it reweights with. The
+  // protection is that its node carries reduce === null — `_reduce` returns a
+  // marginal only for `jointchain`, and this branch declines bayesupdate — so
+  // `_analyticMarginalReply` returns null and the worker scores as before. That
+  // keeps bayesupdate on the pure structural sum §06 mandates ("`logdensityof`
   // reduces structurally to the densities of its operands, terminating at the
   // per-kernel primitive `builtin_logdensityof`").
   if (!reduce && (!deriv || deriv.kind !== 'bayesupdate') && _isMeasureNode(body)) {
@@ -602,9 +623,12 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
       }
       const marg = over.filter((nm: string) => !exposed.has(nm));
       // An mc-form body carries an `mcmarginal` recipe the worker integrates
-      // in-batch (buildMcMarginalForm). That is the OTHER MC density site and
-      // it keeps its existing reduction untouched this wave — the no-MC policy
-      // ripple for it is tracked in flatppl-dev/TODO-flatppl-js.md.
+      // in-batch (buildMcMarginalForm) — one of the THREE MC density sites this
+      // wave leaves alone (the others: the bayesupdate/mc-generative routing
+      // that consumes the same form, and `_reduce`'s own kchain/jointchain
+      // marginal, which averages sampled prior atoms). All three are tracked in
+      // flatppl-dev/TODO-flatppl-js.md; this branch keeps their reduction
+      // untouched.
       if (marg.length === 0 || mc) {
         reduce = { kind: 'marginal', method: 'logsumexp-logN', over };
       } else {

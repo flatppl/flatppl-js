@@ -104,8 +104,8 @@ function _analyticMarginalReply(node: any, ctx: any, opts: any): any {
   if (!r || r.kind !== 'marginal') return null;
   if (r.method === 'refuse') {
     throw new Error('density: the measure marginalises the stochastic ancestor(s) '
-      + r.marginalize.join(', ') + ', which this engine cannot evaluate in closed '
-      + 'form: ' + r.reason + '. Per spec §06\'s `kchain` marginal rule, applied '
+      + r.marginalize.join(', ') + ', and this engine has no exact answer for it '
+      + 'here: ' + r.reason + '. Per spec §06\'s `kchain` marginal rule, applied '
       + 'to the equivalent record law (§06 "Density of composed measures"), a '
       + 'marginal is evaluated in closed form or by enumeration of a discrete '
       + 'latent; this engine has no enumeration device yet, so it refuses — a '
