@@ -128,6 +128,32 @@ test('dist auto-splat: a missing parameter on the SAMPLING path reports legibly'
     /worker failed sampling.*'Normal' missing parameter 'sigma'/);
 });
 
+test('dist auto-splat: the BATCHED resolver defers a surplus name to the canonical error', async () => {
+  // `mu = t` references an upstream draw, which selects the batched per-atom
+  // resolver (resolveParamsN) over the scalar one. That resolver carried the
+  // missing-parameter throw but not the surplus check, so this drew exactly
+  // the same 4096 atoms as the spelling without `zz`. It now returns null,
+  // the caller falls back to the scalar path, and resolveParams raises the one
+  // canonical message — the resolver's never-throw contract is preserved.
+  const ctx = buildCtx(`t ~ Normal(0.0, 1.0)
+s ~ Normal(mu = t, sigma = 0.2, zz = 9.0)`, 4096, 17);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('s')),
+    /'Normal' has no parameter 'zz' \(parameters: mu, sigma\)/);
+});
+
+test('dist auto-splat: the batched resolver still draws the valid hierarchical shape', async () => {
+  // Control for the test above — the same model without `zz` must still batch.
+  const ctx = buildCtx(`t ~ Normal(0.0, 1.0)
+s ~ Normal(mu = t, sigma = 0.2)`, 4096, 17);
+  const s = (await ctx.getMeasure('s')).samples;
+  assert.equal(s.length, 4096);
+  // Var(s) = Var(t) + 0.2^2 = 1.04 for the marginal of this two-level model.
+  let mean = 0; for (const v of s) mean += v; mean /= s.length;
+  let varr = 0; for (const v of s) varr += (v - mean) * (v - mean); varr /= s.length;
+  assert.ok(Math.abs(mean) < 0.06, `sample mean ${mean} ≈ 0`);
+  assert.ok(Math.abs(varr - 1.04) < 0.08, `sample var ${varr} ≈ 1.04`);
+});
+
 test('dist auto-splat: a ONE-parameter constructor also errors on a bad field name', async () => {
   // §04 always-splat. Gating the splat on the fields covering the params
   // left this record bound to `rate` itself, and `Poisson(<record>)` then

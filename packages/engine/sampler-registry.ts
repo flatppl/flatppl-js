@@ -1541,6 +1541,27 @@ function lookupDistribution(measureIR: any) {
 // below — same pattern used elsewhere in the engine (materialiser
 // lazy-requires sampler in mat-multivariate's worker dispatch).
 
+// Every name a call may legally bind: the declared parameters plus their
+// aliases. §04's name rule is symmetric — "A call with field or column names
+// that do not match the callable's argument names is a static error" — so both
+// resolvers need this set, and they must not drift: `resolveParams` grew the
+// surplus check while the batched `resolveParamsN` did not, which left the
+// rule unenforced for exactly the calls that reference an upstream draw.
+//
+// The alias branch mirrors both resolvers' own `entry.aliases[p]` lookup and
+// so assumes one alternate name per parameter; an array-valued alias map would
+// land in the set as an array and match nothing. Every registry `aliases` is
+// `{}` today (see the header: "empty for v1"), so the branch is unreachable
+// and the shape question is moot until a v2 entry declares one.
+function _bindableParamNames(entry: any): Set<string> {
+  const bindable = new Set<string>();
+  for (const p of entry.params) {
+    bindable.add(p);
+    if (entry.aliases[p]) bindable.add(entry.aliases[p]);
+  }
+  return bindable;
+}
+
 function resolveParams(measureIR: any, entry: any, env: any) {
   if (typeof entry.customResolveParams === 'function') {
     return entry.customResolveParams(measureIR, env);
@@ -1573,17 +1594,12 @@ function resolveParams(measureIR: any, entry: any, env: any) {
     }
   }
 
-  // §04's name rule runs in BOTH directions: "A call with field or column
-  // names that do not match the callable's argument names is a static
-  // error." The per-parameter loop below reads OUT of `kwargs`, so it only
-  // catches a parameter with nothing bound to it. A SURPLUS name is
-  // invisible to it — `Normal(record(mu = 1.1, sigma = 0.2, zz = 9.0))`
-  // scored as though `zz` had not been written. Reject leftover names.
-  const bindable = new Set<string>();
-  for (const p of entry.params) {
-    bindable.add(p);
-    if (entry.aliases[p]) bindable.add(entry.aliases[p]);
-  }
+  // §04's name rule runs in BOTH directions. The per-parameter loop below
+  // reads OUT of `kwargs`, so it only catches a parameter with nothing bound
+  // to it. A SURPLUS name is invisible to it — `Normal(record(mu = 1.1,
+  // sigma = 0.2, zz = 9.0))` scored as though `zz` had not been written.
+  // This is the canonical site for the error; `resolveParamsN` defers here.
+  const bindable = _bindableParamNames(entry);
   const surplus = Object.keys(kwargs).filter((k) => !bindable.has(k));
   if (surplus.length > 0) {
     throw new Error(
@@ -1721,6 +1737,16 @@ function resolveParamsN(
     if (!_columnAllFinite(lo) || !_columnAllFinite(hi)) return null;
     return [lo, hi];
   }
+
+  // A surplus name is §04's static error, but this resolver's contract is to
+  // fall back rather than throw, so hand the call to the scalar path and let
+  // `resolveParams` raise the single canonical message. Without this the rule
+  // went unenforced for every call whose parameter references an upstream
+  // draw — the ordinary hierarchical shape, and the one that selects this
+  // resolver — so `Normal(mu = t, sigma = 0.2, zz = 9.0)` drew exactly the
+  // same 4096 atoms as the spelling without `zz`.
+  const bindable = _bindableParamNames(entry);
+  if (Object.keys(kwargs).some((k) => !bindable.has(k))) return null;
 
   // Generic: iterate declared params with resolveParams' precedence.
   const out: any[] = [];
