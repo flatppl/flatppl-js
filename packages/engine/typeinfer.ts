@@ -3073,6 +3073,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // error"), NOT a signal to bind the whole record to input 0. The
     // keyword spelling `f(pars = <record>)` is the way to pass a record
     // as one ordinary argument; it never reaches here (kwargs non-empty).
+    //
+    // §04's single-input carve-out (design#78, pending owner review) — "A
+    // callable with exactly one input whose documented domain admits records or
+    // tables is exempt and receives a sole positional record or table whole" —
+    // needs no test here, because this branch only sees callables that DECLARE
+    // `inputs`: user functionof / kernelof / lambdas. Every exempt callable is a
+    // §07 builtin (`sum`, `mean`, `var`, `lengthof`, `reverse`, `indicesof`,
+    // `indicesof0`, `identity`) typed by dedicated inference that never reaches
+    // this code. Do NOT widen this check to builtins without implementing the
+    // exemption first — `sum(t)` would start reporting that `sum` has no
+    // argument named after each of the table's columns.
+    // Pinned by test/always-splat.test.ts's "carve-out:" cases.
     if (args.length === 1 && Object.keys(kwargs).length === 0 && inputs.length > 0) {
       const splatType = inferExpr(args[0], scopes);
       if (splatType && splatType.kind === 'record' && splatType.fields) {

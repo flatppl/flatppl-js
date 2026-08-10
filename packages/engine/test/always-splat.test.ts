@@ -137,6 +137,85 @@ test('always-splat: a keyword-bound record is an ordinary value, never splatted'
   assert.deepEqual(errorsOf(transportSrc('generator(pars = gp)')), []);
 });
 
+// ── §04's single-input carve-out (flatppl-design#78, pending owner review) ──
+//
+//   "A callable with exactly one input whose documented domain admits records
+//    or tables is exempt and receives a sole positional record or table whole,
+//    so that `sum(t)` and `lengthof(t)` reduce over the table rather than
+//    splatting."
+//
+// BOTH halves of the test matter, and it is decidable from the callable's
+// signature alone — never from the caller's field names, which is what #74
+// rejected. Exempt, per §07's Domains column plus its "Table reductions"
+// paragraph: `sum`, `mean`, `var` (table domain documented in the paragraph,
+// not the Domains cell, which is why #78 names `sum(t)` normatively),
+// `lengthof`, `reverse`, `indicesof`, `indicesof0` (Domains name tables) and
+// `identity` (Domains `any`). NOT exempt: `prod`, `sizeof`, `cumsum`,
+// `joinblocks` (arrays only), every scalar math builtin, and every
+// distribution constructor — `Exponential(rate)`'s domain is `reals`, so one
+// input is not enough.
+//
+// None of the exempt builtins reaches this branch's enforcement sites: the
+// static check fires only for callables carrying `inputs` (user
+// functionof/kernelof/lambdas), and §07 builtins are typed by dedicated
+// inference. These tests pin that, so extending the check to builtins later
+// cannot silently kill `sum(t)`.
+function fixedOf(src: string, name: string) {
+  const proc = processSource(src);
+  const built = orchestrator.buildDerivations(proc.bindings);
+  return built.fixedValues && built.fixedValues.get(name);
+}
+
+test('carve-out: sum(t) receives a two-column table whole and reduces column-wise', () => {
+  // §07 "Table reductions": returns a record of per-column reductions. Splatting
+  // would instead bind `mass`/`pt` to `sum`'s only input `xs` and fail.
+  // Oracle: 1+2+3 = 6, 4+5+6 = 15.
+  const src = `t = table(mass = [1.0, 2.0, 3.0], pt = [4.0, 5.0, 6.0])
+s = sum(t)`;
+  assert.deepEqual(errorsOf(src), []);
+  assert.deepEqual(fixedOf(src, 's'), { mass: 6, pt: 15 });
+});
+
+test('carve-out: mean(t) and var(t) reduce column-wise too', () => {
+  // mean [1,2,3] = 2, [4,5,6] = 5. var (n-1) of each = 1.
+  const src = `t = table(mass = [1.0, 2.0, 3.0], pt = [4.0, 5.0, 6.0])
+m = mean(t)
+v = var(t)`;
+  assert.deepEqual(errorsOf(src), []);
+  assert.deepEqual(fixedOf(src, 'm'), { mass: 2, pt: 5 });
+  assert.deepEqual(fixedOf(src, 'v'), { mass: 1, pt: 1 });
+});
+
+test('carve-out: lengthof(t) counts rows rather than splatting', () => {
+  // §07 Domains cell names tables outright; §03: "lengthof(t) returns the
+  // number of table rows."
+  const src = `t = table(mass = [1.0, 2.0, 3.0], pt = [4.0, 5.0, 6.0])
+n = lengthof(t)`;
+  assert.deepEqual(errorsOf(src), []);
+  assert.equal(fixedOf(src, 'n'), 3);
+});
+
+test('carve-out: identity(t) receives the table whole (Domains `any`)', () => {
+  const src = `t = table(mass = [1.0, 2.0], pt = [3.0, 4.0])
+u = identity(t)`;
+  assert.deepEqual(errorsOf(src), []);
+  const u: any = fixedOf(src, 'u');
+  assert.equal(u && u.__table__, true, 'identity must yield the table itself');
+  assert.deepEqual(Object.keys(u.columns), ['mass', 'pt']);
+});
+
+test('carve-out: a single-input constructor whose domain is reals STILL splats', async () => {
+  // #78's own row: `Exponential(record(rate = 1.0))` has one input, but its
+  // domain admits no records, so the exemption does not reach it. The splat
+  // fires and binds `rate` by name.
+  // ORACLE, closed form: Exponential(rate = 2) logpdf at 1 = log 2 - 2·1
+  //   = 0.6931471805599453 - 2 = -1.3068528194400546
+  const ORACLE = Math.log(2) - 2;
+  const got = (await buildCtx(
+    `ld = logdensityof(Exponential(record(rate = 2.0)), 1.0)`, 1, 1).getMeasure('ld')).samples[0];
+  assert.ok(Math.abs(got - ORACLE) < 1e-12, `${got} ≈ ${ORACLE}`);
+});
+
 test('always-splat: a record alongside another argument is an ordinary value', () => {
   // §04 excludes this too — the record is not the call's SOLE argument,
   // so `restrict(M, x)`'s observation record is never splatted.

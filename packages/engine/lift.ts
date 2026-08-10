@@ -2518,6 +2518,11 @@ function liftInlineSubexpressions(bindings: any) {
     // body with unsubstituted boundary identifiers.
     // The keyword spelling `f(pars = <record>)` is how a record is passed
     // as one ordinary argument; it is a KeywordArg and never reaches here.
+    //
+    // §04's single-input carve-out (design#78) does not apply here either:
+    // `fnAst` is always a user-reified callable (functionof / kernelof / fn),
+    // and every carve-out-exempt callable is a §07 builtin, which this pass
+    // never inlines. See the note at typeinfer's matching check.
     let callArgs = astArg.args || [];
     if (callArgs.length === 1
         && callArgs[0].type !== 'KeywordArg'
