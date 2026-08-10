@@ -3062,31 +3062,62 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     let args   = expr.args   || [];
     let kwargs = expr.kwargs || {};
 
-    // Auto-splatting (spec §sec:calling-convention lines 99-102):
-    // a single positional record argument is equivalent to passing
-    // each field as a kwarg. We detect this when the call has
-    // exactly one positional arg of record type whose field names
-    // are a subset of the callee's input names; the splat replaces
-    // the positional list with a kwarg map for the type-check below.
-    // This lets the spec's `f(record(a=x, b=y))` and `f(some_record_
-    // value)` typecheck against `f` declared with a/b kwargs.
+    // Auto-splatting (spec §04 sec:calling-convention): a single
+    // positional record argument is equivalent to passing each field
+    // as a kwarg, and it ALWAYS splats — "A sole positional record or
+    // table therefore always splats: whether its field or column names
+    // match the callable's argument names decides only whether the call
+    // is valid, never whether the splat occurs." So a field with no
+    // matching input is §04's static error ("A call with field or column
+    // names that do not match the callable's argument names is a static
+    // error"), NOT a signal to bind the whole record to input 0. The
+    // keyword spelling `f(pars = <record>)` is the way to pass a record
+    // as one ordinary argument; it never reaches here (kwargs non-empty).
+    //
+    // §04's single-input carve-out (design#78) — "A callable with exactly one
+    // input whose documented domain admits records or tables is exempt and
+    // receives a sole positional record or table whole" — needs no test here,
+    // because it keys on the DOCUMENTED domain and so reaches §07 builtins only.
+    // A user callable with one record-domain input is NOT exempt and still
+    // splats (ruled 2026-08-10, narrow; the builtin/user asymmetry is the
+    // accepted cost). This branch only sees callables that DECLARE `inputs`:
+    // user functionof / kernelof / lambdas. Every exempt callable is a
+    // §07 builtin (`sum`, `mean`, `var`, `lengthof`, `reverse`, `indicesof`,
+    // `indicesof0`, `identity`) typed by dedicated inference that never reaches
+    // this code. Do NOT widen this check to builtins without implementing the
+    // exemption first — `sum(t)` would start reporting that `sum` has no
+    // argument named after each of the table's columns.
+    // Pinned by test/always-splat.test.ts's "carve-out:" cases.
     if (args.length === 1 && Object.keys(kwargs).length === 0 && inputs.length > 0) {
       const splatType = inferExpr(args[0], scopes);
       if (splatType && splatType.kind === 'record' && splatType.fields) {
         const inputNames = new Set(inputs.map((i: any) => i.name));
-        let allMatch = true;
+        // Synthesize per-field exprs by typing through `splatType` — no
+        // AST rewrite here, just record the per-field types for the unify
+        // loop. We re-key the call by field name.
+        const splatKwargs: Record<string, any> = {};
+        const unbindable: string[] = [];
         for (const k in splatType.fields) {
-          if (!inputNames.has(k)) { allMatch = false; break; }
+          if (inputNames.has(k)) splatKwargs[k] = { __splatType: splatType.fields[k] };
+          else unbindable.push(k);
         }
-        if (allMatch) {
-          // Synthesize per-field exprs by typing through `splatType`
-          // — no AST rewrite here, just record the per-field types
-          // for the unify loop. We re-key the call by field name.
-          const splatKwargs: Record<string, any> = {};
-          for (const k in splatType.fields) splatKwargs[k] = { __splatType: splatType.fields[k] };
-          args = [];
-          kwargs = splatKwargs;
+        if (unbindable.length > 0) {
+          diagnostics.push({
+            severity: 'error',
+            message: 'call to "' + head.name + '" splats a sole positional record, but '
+              + head.name + ' has no argument named '
+              + unbindable.map((k) => '"' + k + '"').join(', ')
+              + ' (spec §04: a sole positional record always splats; to pass the record '
+              + 'as one argument name it, e.g. ' + head.name + '('
+              + inputs[0].name + ' = …))',
+            loc: args[0].loc || expr.loc,
+          });
         }
+        // Splat regardless — an unbindable field does not turn the call
+        // back into a whole-record positional bind. Inputs left without a
+        // field fall through to the "missing argument" diagnostic below.
+        args = [];
+        kwargs = splatKwargs;
       }
     }
 

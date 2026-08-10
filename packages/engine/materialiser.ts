@@ -95,6 +95,15 @@ function matSample(name: string, d: DerivationSample, ctx: any) {
       seed: nameSeed(name, ctx.rootKey),
     }))
     .then((reply: any) => {
+      // Surface a worker-side sampling failure loudly instead of
+      // dereferencing a missing `samples`, which masked every such error
+      // as a cryptic "Cannot read properties of undefined (reading
+      // 'length')" — including a plain missing/surplus distribution
+      // parameter. Same guard mat-density's applyReduce already carries.
+      if (reply && reply.type === 'error') {
+        throw new Error('sample: worker failed sampling \'' + name + '\': '
+          + (reply.message || 'unknown worker error'));
+      }
       const lw = reply.logWeights || null;
       // Default 0 for probability measures; explicit overrides for
       // unnormalised reference measures (Lebesgue / future Counting-

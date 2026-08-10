@@ -1516,6 +1516,43 @@ function listDistributions() {
   return Object.keys(REGISTRY);
 }
 
+// Every name a call may legally bind: the declared parameters plus their
+// aliases. §04's name rule is symmetric — "A call with field or column names
+// that do not match the callable's argument names is a static error" — so the
+// recognition point and the post-splat resolver share one definition of the
+// set and one error message. Keeping them separate is how the gaps arose: the
+// batched resolver missed the check the scalar one had, and every marginal path
+// missed it entirely.
+//
+// Memoised per entry: `lookupDistribution` runs on every recognised call, and
+// the set depends only on the registry row, which is immutable after load.
+//
+// The alias branch mirrors both resolvers' own `entry.aliases[p]` lookup and so
+// assumes one alternate name per parameter; an array-valued alias map would
+// land in the set as an array and match nothing. Every registry `aliases` is
+// `{}` today (see the header: "empty for v1"), so the branch is unreachable and
+// the shape question is moot until a v2 entry declares one.
+const _bindableCache = new WeakMap<object, Set<string>>();
+function _bindableParamNames(entry: any): Set<string> {
+  const hit = _bindableCache.get(entry);
+  if (hit) return hit;
+  const bindable = new Set<string>();
+  for (const p of entry.params) {
+    bindable.add(p);
+    if (entry.aliases[p]) bindable.add(entry.aliases[p]);
+  }
+  _bindableCache.set(entry, bindable);
+  return bindable;
+}
+
+function _surplusNameError(op: string, surplus: string[], entry: any) {
+  return new Error(
+    `sampler: '${op}' has no parameter `
+    + surplus.map((k) => `'${k}'`).join(', ')
+    + ` (parameters: ${entry.params.join(', ')})`
+  );
+}
+
 function lookupDistribution(measureIR: any) {
   if (!measureIR || measureIR.kind !== 'call') {
     throw new Error(
@@ -1529,6 +1566,25 @@ function lookupDistribution(measureIR: any) {
       `sampler: '${name}' is not a known distribution (or not yet implemented). ` +
       `Known: ${listDistributions().join(', ')}`
     );
+  }
+  // §04's name rule, checked where a distribution call is first RECOGNISED —
+  // before any consumer reads a parameter by name. The two resolvers are not
+  // the only such consumer: the shared-ancestor marginal paths
+  // (`linear-gaussian._distParamIR`, and density.ts's broadcast parameter
+  // resolution) read `mu`/`sigma`/`p`/`n` straight out of `kwargs` and never
+  // resolve the full list, so a surplus name was silently ignored there —
+  // `logdensityof(Normal(mu = t, sigma = 0.2, zz = 9.0), 1.1)` returned the
+  // valid part's answer, and #134's chain joint and enumerated mixture
+  // inherited the same blindness. Every one of those paths reaches its
+  // parameters through this function, so one check here covers them all.
+  //
+  // Only the KEYWORD spelling is visible here: a splatted `Dist(record(...))`
+  // still has empty `kwargs` at recognition time, so `resolveParams` keeps its
+  // own post-splat check.
+  if (measureIR.kwargs) {
+    const bindable = _bindableParamNames(entry);
+    const surplus = Object.keys(measureIR.kwargs).filter((k) => !bindable.has(k));
+    if (surplus.length > 0) throw _surplusNameError(name, surplus, entry);
   }
   return entry;
 }
@@ -1551,28 +1607,39 @@ function resolveParams(measureIR: any, entry: any, env: any) {
 
   // Auto-splatting (spec §04 "Calling conventions"): a single positional
   // record argument is equivalent to passing each field as a keyword arg
-  // — `Dist(record(a = x, b = y))` ≡ `Dist(a = x, b = y)`. Fires only
-  // when there are no explicit kwargs and the lone positional arg is a
-  // record whose field names cover every parameter (or its alias). A
-  // field/parameter-name mismatch is left untouched so the per-param
-  // loop below raises the existing "missing parameter" — matching the
-  // spec's "names that do not match the callable's argument names is a
-  // static error". Splatting is shallow.
+  // — `Dist(record(a = x, b = y))` ≡ `Dist(a = x, b = y)` — and it
+  // ALWAYS splats when there are no explicit kwargs. §04: "A sole
+  // positional record or table therefore always splats: whether its
+  // field or column names match the callable's argument names decides
+  // only whether the call is valid, never whether the splat occurs."
+  // Splatting unconditionally is what makes a name mismatch reach the
+  // per-param "missing parameter" throw below. Gating the splat on the
+  // fields covering the params instead left the record bound to param 0,
+  // so `Poisson(record(zzz = 0.5))` scored NaN with no error at all.
+  // Splatting is shallow. A record meant as one parameter's value is
+  // spelled `Dist(param = <record>)`, which has kwargs and is untouched.
   if (Object.keys(kwargs).length === 0 && positional.length === 1) {
     const a0 = positional[0];
     if (a0 && a0.kind === 'call' && a0.op === 'record'
         && Array.isArray(a0.fields)) {
       const byName: Record<string, any> = Object.create(null);
       for (const f of a0.fields) byName[f.name] = f.value;
-      let covers = true;
-      for (const p of entry.params) {
-        if (p in byName) continue;
-        if (entry.aliases[p] && entry.aliases[p] in byName) continue;
-        covers = false; break;
-      }
-      if (covers) { kwargs = byName; positional = []; }
+      kwargs = byName;
+      positional = [];
     }
   }
+
+  // §04's name rule runs in BOTH directions. The per-parameter loop below
+  // reads OUT of `kwargs`, so it only catches a parameter with nothing bound
+  // to it. A SURPLUS name is invisible to it — `Normal(record(mu = 1.1,
+  // sigma = 0.2, zz = 9.0))` scored as though `zz` had not been written.
+  //
+  // This check exists IN ADDITION to `lookupDistribution`'s because it runs
+  // AFTER the splat: a `Dist(record(...))` call carries empty `kwargs` at
+  // recognition time, so the record spelling is only checkable here.
+  const bindable = _bindableParamNames(entry);
+  const surplus = Object.keys(kwargs).filter((k) => !bindable.has(k));
+  if (surplus.length > 0) throw _surplusNameError(measureIR.op, surplus, entry);
 
   const out: any[] = [];
   for (let i = 0; i < entry.params.length; i++) {
@@ -1702,6 +1769,14 @@ function resolveParamsN(
     if (!_columnAllFinite(lo) || !_columnAllFinite(hi)) return null;
     return [lo, hi];
   }
+
+  // No surplus-name check here. Every call site obtains `entry` from
+  // `lookupDistribution(measureIR)` on this same IR immediately beforehand, so
+  // a surplus keyword has already thrown by the time this runs; a check here
+  // would be unreachable. The invariant is load-bearing — a future caller that
+  // resolves params without recognising the call first would reopen the gap
+  // this resolver had, where `Normal(mu = t, sigma = 0.2, zz = 9.0)` drew the
+  // same 4096 atoms as the spelling without `zz`.
 
   // Generic: iterate declared params with resolveParams' precedence.
   const out: any[] = [];

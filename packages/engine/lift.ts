@@ -2497,17 +2497,32 @@ function liftInlineSubexpressions(bindings: any) {
     // surfaceOrder is correctly populated here regardless of whether
     // the user wrote kwargs or relied on the implicit form.
 
-    // Auto-splatting (spec §sec:calling-convention lines 99-102):
+    // Auto-splatting (spec §04 sec:calling-convention):
     // `f(record(a=x, b=y))` and `f(some_record_value)` are
     // equivalent to `f(a=x, b=y)`. We detect two splat sources:
     //   - inline `record(...)` calls — splat their KeywordArg
     //     children directly.
     //   - Identifier ref to a record-typed binding — synthesize a
-    //     FieldAccess per surface kwarg name.
-    // Splat fires only when the call has exactly one positional arg,
-    // surfaceOrder has more than one slot, and the arg's record fields
-    // cover those slots (otherwise leave the call alone — the type
-    // checker already raised "missing argument" or arg-mismatch).
+    //     FieldAccess per RECORD FIELD.
+    // A sole positional record ALWAYS splats — §04: "A sole positional
+    // record or table therefore always splats: whether its field or
+    // column names match the callable's argument names decides only
+    // whether the call is valid, never whether the splat occurs." So the
+    // splat is NOT conditioned on the fields covering surfaceOrder, and a
+    // mismatch must never fall back to binding the whole record to
+    // surfaceOrder[0] — that fallback was the name-conditioned reading
+    // §04 now rules out, and it silently accepted `f(pars)` against a
+    // one-input `f`. typeinfer raises the located §04 error; here we bail
+    // out of inlining (same idiom as the complex-boundary bail above), so
+    // the classifier reports an unsupported outcome instead of emitting a
+    // body with unsubstituted boundary identifiers.
+    // The keyword spelling `f(pars = <record>)` is how a record is passed
+    // as one ordinary argument; it is a KeywordArg and never reaches here.
+    //
+    // §04's single-input carve-out (design#78) does not apply here either:
+    // `fnAst` is always a user-reified callable (functionof / kernelof / fn),
+    // and every carve-out-exempt callable is a §07 builtin, which this pass
+    // never inlines. See the note at typeinfer's matching check.
     let callArgs = astArg.args || [];
     if (callArgs.length === 1
         && callArgs[0].type !== 'KeywordArg'
@@ -2517,19 +2532,15 @@ function liftInlineSubexpressions(bindings: any) {
       if (arg0.type === 'CallExpr' && arg0.callee
           && arg0.callee.type === 'Identifier'
           && arg0.callee.name === 'record') {
-        const fieldNames = new Set<string>();
-        for (const f of (arg0.args || [])) {
-          if (f.type === 'KeywordArg') fieldNames.add(f.name);
-        }
-        if (surfaceOrder.every((n: string) => fieldNames.has(n))) {
-          splatted = (arg0.args || []).filter((f: any) => f.type === 'KeywordArg');
-        }
+        splatted = (arg0.args || []).filter((f: any) => f.type === 'KeywordArg');
       } else if (arg0.type === 'Identifier') {
         const recBinding = out.get(arg0.name);
         const t = recBinding && recBinding.inferredType;
-        if (t && t.kind === 'record' && t.fields
-            && surfaceOrder.every((n: string) => n in t.fields)) {
-          splatted = surfaceOrder.map((name: string) => ({
+        // An unknown or non-record type is not a splat source we can
+        // expand — leave the call alone. That is an unresolved-type bail,
+        // not a name-conditioned choice.
+        if (t && t.kind === 'record' && t.fields) {
+          splatted = Object.keys(t.fields).map((name: string) => ({
             type: 'KeywordArg',
             name,
             value: { type: 'FieldAccess', object: cloneAst(arg0), field: name, loc: arg0.loc },
@@ -2537,7 +2548,11 @@ function liftInlineSubexpressions(bindings: any) {
           }));
         }
       }
-      if (splatted) callArgs = splatted;
+      if (splatted) {
+        const splatNames = new Set(splatted.map((f: any) => f.name));
+        if (!surfaceOrder.every((n: string) => splatNames.has(n))) return astArg;
+        callArgs = splatted;
+      }
     }
 
     // Walk the call's args. KeywordArg → match by surface name;
