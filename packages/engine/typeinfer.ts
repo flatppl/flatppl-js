@@ -465,11 +465,22 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
         break;   // unknown / non-concrete length → generic signature
       }
-      // Spec §07 table reductions: when sum / mean / var / std / prod /
-      // maximum / minimum is applied to a table, the result is a record
-      // whose fields are the column names and values are the per-column
-      // reductions. Check the input type up front so the static SIGNATURE_
-      // FACTORIES entry (which returns any() / REAL) doesn't shadow this.
+      // Table reductions: when one of these is applied to a table, the result
+      // is a record whose fields are the column names and values are the
+      // per-column reductions. Checked up front so the static SIGNATURE_
+      // FACTORIES entry (which returns any() / REAL) doesn't shadow it.
+      //
+      // NOTE the set below is WIDER than the spec's. §07's "Table reductions"
+      // paragraph names `sum`, `mean` and `var`, plus `std` by owner ruling
+      // (design#77) — four. `prod`, `maximum` and `minimum` are accepted here
+      // too, which no version of §07 sanctions; their Domains cells are
+      // arrays-only. The values produced are correct column-wise reductions,
+      // so this is an over-permissive DOMAIN, not a wrong answer. Left as-is
+      // deliberately: `test/table-vector-columns.test.ts` asserts table
+      // `maximum`/`minimum`, so narrowing to the spec'd four is a behaviour
+      // change needing an owner ruling, not a silent fix. Tracked in
+      // TODO-flatppl-js.md §04. Read the exempt set for §04's carve-out off
+      // §07, never off this list.
       case 'sum':
       case 'mean':
       case 'var':
@@ -479,6 +490,39 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'minimum': {
         const tbl = _maybeTableReduction(expr, scopes);
         if (tbl != null) return write(tbl, expr);
+        break;
+      }
+      // §07 `reverse`: "reverses the order of elements in a vector or rows in
+      // a table", Domains `vectors, tables`. Reversing rows preserves the
+      // table's own type, so a table argument returns that type unchanged.
+      // Checked up front because the signature factory declares a rank-1
+      // array argument, which rejected a table outright.
+      case 'reverse': {
+        const args = expr.args || [];
+        if (args.length === 1) {
+          const t: any = inferExpr(args[0], scopes);
+          if (t && t.kind === 'table') return write(t, expr);
+        }
+        break;
+      }
+      // §07 gives `sizeof` the domain `vectors, arrays`; a table has no
+      // per-axis dimension vector. The signature factory takes `any()` so it
+      // cannot reject one, and the runtime's throw is swallowed by fixed-eval's
+      // try/catch, which left `sizeof(t)` silently valueless. Raise it here.
+      case 'sizeof': {
+        const args = expr.args || [];
+        if (args.length === 1) {
+          const t: any = inferExpr(args[0], scopes);
+          if (t && t.kind === 'table') {
+            diagnostics.push({
+              severity: 'error',
+              message: 'sizeof: argument must be a vector or array (spec §07 domain: '
+                + 'vectors, arrays); got a table — use lengthof for its row count',
+              loc: (args[0] && args[0].loc) || expr.loc,
+            });
+            return write(T.failed('sizeof of a table'), expr);
+          }
+        }
         break;
       }
       // lengthof(t) for a table returns the row count (an integer).
@@ -1017,12 +1061,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.record(out);
   }
 
-  // Spec §07 "Table reductions": sum / mean / var / std / prod / max /
-  // min applied to a table operates column-wise and returns a record
-  // whose fields are the column names and values are the per-column
-  // reductions. Returns null when the input isn't a table — caller
-  // falls through to the signature-factory path (which handles arrays
-  // and scalars).
+  // Column-wise reduction of a table into a record whose fields are the column
+  // names. Returns null when the input isn't a table — caller falls through to
+  // the signature-factory path (which handles arrays and scalars).
+  //
+  // §07's "Table reductions" paragraph sanctions `sum`, `mean`, `var` and (by
+  // owner ruling, design#77) `std`. The caller also routes `prod`, `maximum`
+  // and `minimum` here, which §07 does not sanction — see the note at that
+  // switch; the over-permissiveness is recorded, not fixed.
   //
   // Per-column result type:
   //   sum, prod, mean   → same as column element type (real / complex)
@@ -1070,7 +1116,68 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // `(%table (%columns (<name> <element-type>) ...) (%nrows <N>))`).
   function inferTable(expr: any, scopes: any) {
     const fields = expr.fields || [];
-    if (fields.length === 0) return T.failed('table: at least one column required');
+    // §03: a table "can also be constructed from records of equal-length
+    // vectors via `table(r)`". The analyzer already admits that spelling (single
+    // positional arg → record-promotion form), but this rule only ever read the
+    // column kwargs, so the promotion form fell to the empty-columns failure
+    // below and produced no type at all.
+    if (fields.length === 0) {
+      const posArgs = expr.args || [];
+      if (posArgs.length === 1) {
+        const argLoc = (posArgs[0] && posArgs[0].loc) || expr.loc;
+        const fail = (message: string) => {
+          diagnostics.push({ severity: 'error', message, loc: argLoc });
+          return T.failed(message);
+        };
+        const rT: any = inferExpr(posArgs[0], scopes);
+        // Already a table — promoting is the identity.
+        if (rT && rT.kind === 'table') return rT;
+        // An unresolved argument type is not yet a violation; the runtime
+        // promotion still applies.
+        /* c8 ignore start -- no corpus or test model reaches `table(<expr>)`
+           with an unresolved argument type; kept so a deferred argument cannot
+           be reported as a §03 violation it may not be. */
+        if (rT && (rT.kind === 'deferred' || rT.kind === 'any' || rT.kind === 'failed')) {
+          return T.deferred();
+        }
+        /* c8 ignore stop */
+        if (rT && rT.kind === 'record' && rT.fields) {
+          const columns: Record<string, any> = {};
+          let nrows: number | '%dynamic' = '%dynamic';
+          // No table-valued field to consider: §03 forbids a table inside a
+          // record ("a table belongs in a table column"), so a promotable
+          // record's fields are always vectors.
+          for (const k in rT.fields) {
+            const cT = rT.fields[k];
+            if (!cT || cT.kind !== 'array' || cT.rank !== 1) {
+              return fail('table: field "' + k + '" of the promoted record must be a '
+                + '1-D array (spec §03 `table(r)`: records of equal-length vectors)');
+            }
+            columns[k] = cT.elem;
+            const len = cT.shape && cT.shape[0];
+            if (typeof len === 'number') {
+              if (typeof nrows === 'number' && nrows !== len) {
+                return fail('table: promoted record field "' + k + '" has length ' + len
+                  + ', but earlier fields have length ' + nrows
+                  + ' (spec §03: all columns must have equal length)');
+              }
+              nrows = len;
+            }
+          }
+          /* c8 ignore start -- `record()` itself requires at least one field
+             (analyzer), so a promotable record type with no fields cannot be
+             written; kept so the promotion never yields a column-less table. */
+          if (Object.keys(columns).length === 0) {
+            return fail('table: at least one column required');
+          }
+          /* c8 ignore stop */
+          return T.table(columns, nrows);
+        }
+        return fail('table: a positional argument must be a record of equal-length '
+          + 'vectors (spec §03 `table(r)`)');
+      }
+      return T.failed('table: at least one column required');
+    }
     const columns: Record<string, any> = {};
     let nrows: number | '%dynamic' = '%dynamic';
     let nrowsBound = false;
@@ -3082,7 +3189,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // splats (ruled 2026-08-10, narrow; the builtin/user asymmetry is the
     // accepted cost). This branch only sees callables that DECLARE `inputs`:
     // user functionof / kernelof / lambdas. Every exempt callable is a
-    // §07 builtin (`sum`, `mean`, `var`, `lengthof`, `reverse`, `indicesof`,
+    // §07 builtin (`sum`, `mean`, `var`, `std`, `lengthof`, `reverse`, `indicesof`,
     // `indicesof0`, `identity`) typed by dedicated inference that never reaches
     // this code. Do NOT widen this check to builtins without implementing the
     // exemption first — `sum(t)` would start reporting that `sum` has no
