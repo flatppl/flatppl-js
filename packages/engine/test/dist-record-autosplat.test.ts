@@ -141,8 +141,11 @@ s ~ Normal(mu = t, sigma = 0.2, zz = 9.0)`, 4096, 17);
     /'Normal' has no parameter 'zz' \(parameters: mu, sigma\)/);
 });
 
-test('dist auto-splat: the batched resolver still draws the valid hierarchical shape', async () => {
-  // Control for the test above — the same model without `zz` must still batch.
+test('dist auto-splat: the valid hierarchical shape still draws correctly', async () => {
+  // Control for the test above: the same model without `zz`. This asserts the
+  // DRAWS, not the path — nothing observable here distinguishes the batched
+  // resolver from the scalar fallback, so it cannot claim the model "still
+  // batches"; it only shows the surplus check did not disturb a valid model.
   const ctx = buildCtx(`t ~ Normal(0.0, 1.0)
 s ~ Normal(mu = t, sigma = 0.2)`, 4096, 17);
   const s = (await ctx.getMeasure('s')).samples;
@@ -152,6 +155,73 @@ s ~ Normal(mu = t, sigma = 0.2)`, 4096, 17);
   let varr = 0; for (const v of s) varr += (v - mean) * (v - mean); varr /= s.length;
   assert.ok(Math.abs(mean) < 0.06, `sample mean ${mean} ≈ 0`);
   assert.ok(Math.abs(varr - 1.04) < 0.08, `sample var ${varr} ≈ 1.04`);
+});
+
+// ── the density half: paths that read parameters by name without resolving ──
+//
+// The shared-ancestor marginal paths (linear-gaussian's `_distParamIR`, and
+// density.ts's broadcast parameter resolution) pull `mu`/`sigma`/`p` straight
+// out of `kwargs` and never resolve the full parameter list, so NEITHER
+// resolver runs and a surplus name was silently ignored. All three shapes below
+// returned the valid part's answer with zero diagnostics. The check now sits in
+// `lookupDistribution`, which every one of these paths goes through.
+//
+// INDEPENDENT ORACLES — none is an engine output:
+//   scalar marginal: x = t + 0.2·ε with t ~ N(0,1) is N(0, √1.04), so
+//     logpdf(1.1) = -½log(2π·1.04) - 1.1²/(2·1.04) = -1.5202796590120826
+//   chain joint:  logpdf(Normal(0,√2), 0.5) + logpdf(Normal(0.5,1), 0.7)
+//                 = -2.2669506566893185          (Julia, via #134)
+//   mixture:      log(0.7·pdf(N(0,1),0.5) + 0.3·pdf(N(1,1),0.5))
+//                 = -1.0439385332046727          (Julia, via #134)
+const MARGINAL_ORACLE = -1.5202796590120826;
+const CHAIN_ORACLE    = -2.2669506566893185;
+const MIXTURE_ORACLE  = -1.0439385332046727;
+
+const marginalSrc = (extra: string) => `t ~ Normal(mu = 0.0, sigma = 1.0)
+ld = logdensityof(Normal(mu = t, sigma = 0.2${extra}), 1.1)`;
+const chainSrc = (extra: string) => `z ~ Normal(mu = 0.0, sigma = 1.0)
+a ~ Normal(mu = z, sigma = 1.0)
+b ~ Normal(mu = a, sigma = 1.0${extra})
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 0.5, b = 0.7))`;
+const mixtureSrc = (extra: string) => `s ~ Bernoulli(p = 0.3)
+x ~ Normal(mu = s, sigma = 1.0${extra})
+P = lawof(x)
+ld = logdensityof(P, 0.5)`;
+
+const SURPLUS = /'Normal' has no parameter 'zz' \(parameters: mu, sigma\)/;
+
+test('dist name check: the scalar shared-ancestor marginal rejects a surplus name', async () => {
+  await assert.rejects(
+    () => Promise.resolve(buildCtx(marginalSrc(', zz = 9.0'), 1, 1).getMeasure('ld')),
+    SURPLUS);
+});
+
+test('dist name check: the scalar marginal still scores its closed form', async () => {
+  const got = (await buildCtx(marginalSrc(''), 1, 1).getMeasure('ld')).samples[0];
+  assert.ok(Math.abs(got - MARGINAL_ORACLE) < 1e-12, `${got} ≈ ${MARGINAL_ORACLE}`);
+});
+
+test('dist name check: the hierarchical chain joint rejects a surplus name', async () => {
+  await assert.rejects(
+    () => Promise.resolve(buildCtx(chainSrc(', zz = 9.0'), 1, 1).getMeasure('ld')),
+    SURPLUS);
+});
+
+test('dist name check: the chain joint still scores its oracle', async () => {
+  const got = (await buildCtx(chainSrc(''), 1, 1).getMeasure('ld')).samples[0];
+  assert.ok(Math.abs(got - CHAIN_ORACLE) < 1e-12, `${got} ≈ ${CHAIN_ORACLE}`);
+});
+
+test('dist name check: the enumerated discrete mixture rejects a surplus name', async () => {
+  await assert.rejects(
+    () => Promise.resolve(buildCtx(mixtureSrc(', zz = 9.0'), 1, 1).getMeasure('ld')),
+    SURPLUS);
+});
+
+test('dist name check: the enumerated mixture still scores its oracle', async () => {
+  const got = (await buildCtx(mixtureSrc(''), 1, 1).getMeasure('ld')).samples[0];
+  assert.ok(Math.abs(got - MIXTURE_ORACLE) < 1e-12, `${got} ≈ ${MIXTURE_ORACLE}`);
 });
 
 test('dist auto-splat: a ONE-parameter constructor also errors on a bad field name', async () => {

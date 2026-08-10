@@ -1516,6 +1516,43 @@ function listDistributions() {
   return Object.keys(REGISTRY);
 }
 
+// Every name a call may legally bind: the declared parameters plus their
+// aliases. §04's name rule is symmetric — "A call with field or column names
+// that do not match the callable's argument names is a static error" — so the
+// recognition point and the post-splat resolver share one definition of the
+// set and one error message. Keeping them separate is how the gaps arose: the
+// batched resolver missed the check the scalar one had, and every marginal path
+// missed it entirely.
+//
+// Memoised per entry: `lookupDistribution` runs on every recognised call, and
+// the set depends only on the registry row, which is immutable after load.
+//
+// The alias branch mirrors both resolvers' own `entry.aliases[p]` lookup and so
+// assumes one alternate name per parameter; an array-valued alias map would
+// land in the set as an array and match nothing. Every registry `aliases` is
+// `{}` today (see the header: "empty for v1"), so the branch is unreachable and
+// the shape question is moot until a v2 entry declares one.
+const _bindableCache = new WeakMap<object, Set<string>>();
+function _bindableParamNames(entry: any): Set<string> {
+  const hit = _bindableCache.get(entry);
+  if (hit) return hit;
+  const bindable = new Set<string>();
+  for (const p of entry.params) {
+    bindable.add(p);
+    if (entry.aliases[p]) bindable.add(entry.aliases[p]);
+  }
+  _bindableCache.set(entry, bindable);
+  return bindable;
+}
+
+function _surplusNameError(op: string, surplus: string[], entry: any) {
+  return new Error(
+    `sampler: '${op}' has no parameter `
+    + surplus.map((k) => `'${k}'`).join(', ')
+    + ` (parameters: ${entry.params.join(', ')})`
+  );
+}
+
 function lookupDistribution(measureIR: any) {
   if (!measureIR || measureIR.kind !== 'call') {
     throw new Error(
@@ -1530,6 +1567,25 @@ function lookupDistribution(measureIR: any) {
       `Known: ${listDistributions().join(', ')}`
     );
   }
+  // §04's name rule, checked where a distribution call is first RECOGNISED —
+  // before any consumer reads a parameter by name. The two resolvers are not
+  // the only such consumer: the shared-ancestor marginal paths
+  // (`linear-gaussian._distParamIR`, and density.ts's broadcast parameter
+  // resolution) read `mu`/`sigma`/`p`/`n` straight out of `kwargs` and never
+  // resolve the full list, so a surplus name was silently ignored there —
+  // `logdensityof(Normal(mu = t, sigma = 0.2, zz = 9.0), 1.1)` returned the
+  // valid part's answer, and #134's chain joint and enumerated mixture
+  // inherited the same blindness. Every one of those paths reaches its
+  // parameters through this function, so one check here covers them all.
+  //
+  // Only the KEYWORD spelling is visible here: a splatted `Dist(record(...))`
+  // still has empty `kwargs` at recognition time, so `resolveParams` keeps its
+  // own post-splat check.
+  if (measureIR.kwargs) {
+    const bindable = _bindableParamNames(entry);
+    const surplus = Object.keys(measureIR.kwargs).filter((k) => !bindable.has(k));
+    if (surplus.length > 0) throw _surplusNameError(name, surplus, entry);
+  }
   return entry;
 }
 
@@ -1540,27 +1596,6 @@ function lookupDistribution(measureIR: any) {
 // top-level evaluator usage) and resolved per-call via lazy require
 // below — same pattern used elsewhere in the engine (materialiser
 // lazy-requires sampler in mat-multivariate's worker dispatch).
-
-// Every name a call may legally bind: the declared parameters plus their
-// aliases. §04's name rule is symmetric — "A call with field or column names
-// that do not match the callable's argument names is a static error" — so both
-// resolvers need this set, and they must not drift: `resolveParams` grew the
-// surplus check while the batched `resolveParamsN` did not, which left the
-// rule unenforced for exactly the calls that reference an upstream draw.
-//
-// The alias branch mirrors both resolvers' own `entry.aliases[p]` lookup and
-// so assumes one alternate name per parameter; an array-valued alias map would
-// land in the set as an array and match nothing. Every registry `aliases` is
-// `{}` today (see the header: "empty for v1"), so the branch is unreachable
-// and the shape question is moot until a v2 entry declares one.
-function _bindableParamNames(entry: any): Set<string> {
-  const bindable = new Set<string>();
-  for (const p of entry.params) {
-    bindable.add(p);
-    if (entry.aliases[p]) bindable.add(entry.aliases[p]);
-  }
-  return bindable;
-}
 
 function resolveParams(measureIR: any, entry: any, env: any) {
   if (typeof entry.customResolveParams === 'function') {
@@ -1598,16 +1633,13 @@ function resolveParams(measureIR: any, entry: any, env: any) {
   // reads OUT of `kwargs`, so it only catches a parameter with nothing bound
   // to it. A SURPLUS name is invisible to it — `Normal(record(mu = 1.1,
   // sigma = 0.2, zz = 9.0))` scored as though `zz` had not been written.
-  // This is the canonical site for the error; `resolveParamsN` defers here.
+  //
+  // This check exists IN ADDITION to `lookupDistribution`'s because it runs
+  // AFTER the splat: a `Dist(record(...))` call carries empty `kwargs` at
+  // recognition time, so the record spelling is only checkable here.
   const bindable = _bindableParamNames(entry);
   const surplus = Object.keys(kwargs).filter((k) => !bindable.has(k));
-  if (surplus.length > 0) {
-    throw new Error(
-      `sampler: '${measureIR.op}' has no parameter `
-      + surplus.map((k) => `'${k}'`).join(', ')
-      + ` (parameters: ${entry.params.join(', ')})`
-    );
-  }
+  if (surplus.length > 0) throw _surplusNameError(measureIR.op, surplus, entry);
 
   const out: any[] = [];
   for (let i = 0; i < entry.params.length; i++) {
@@ -1738,15 +1770,13 @@ function resolveParamsN(
     return [lo, hi];
   }
 
-  // A surplus name is §04's static error, but this resolver's contract is to
-  // fall back rather than throw, so hand the call to the scalar path and let
-  // `resolveParams` raise the single canonical message. Without this the rule
-  // went unenforced for every call whose parameter references an upstream
-  // draw — the ordinary hierarchical shape, and the one that selects this
-  // resolver — so `Normal(mu = t, sigma = 0.2, zz = 9.0)` drew exactly the
+  // No surplus-name check here. Every call site obtains `entry` from
+  // `lookupDistribution(measureIR)` on this same IR immediately beforehand, so
+  // a surplus keyword has already thrown by the time this runs; a check here
+  // would be unreachable. The invariant is load-bearing — a future caller that
+  // resolves params without recognising the call first would reopen the gap
+  // this resolver had, where `Normal(mu = t, sigma = 0.2, zz = 9.0)` drew the
   // same 4096 atoms as the spelling without `zz`.
-  const bindable = _bindableParamNames(entry);
-  if (Object.keys(kwargs).some((k) => !bindable.has(k))) return null;
 
   // Generic: iterate declared params with resolveParams' precedence.
   const out: any[] = [];
