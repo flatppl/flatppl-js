@@ -146,14 +146,28 @@ test('always-splat: a keyword-bound record is an ordinary value, never splatted'
 //
 // BOTH halves of the test matter, and it is decidable from the callable's
 // signature alone — never from the caller's field names, which is what #74
-// rejected. Exempt, per §07's Domains column plus its "Table reductions"
-// paragraph: `sum`, `mean`, `var` (table domain documented in the paragraph,
-// not the Domains cell, which is why #78 names `sum(t)` normatively),
-// `lengthof`, `reverse`, `indicesof`, `indicesof0` (Domains name tables) and
-// `identity` (Domains `any`). NOT exempt: `prod`, `sizeof`, `cumsum`,
-// `joinblocks` (arrays only), every scalar math builtin, and every
-// distribution constructor — `Exponential(rate)`'s domain is `reals`, so one
-// input is not enough.
+// rejected.
+//
+// The exempt set, nine callables, agreed with flatppl-rust:
+//   sum, mean, var, std   — table domain from §07's "Table reductions"
+//                           paragraph, not their Domains cells (`std` added by
+//                           owner ruling, spec commit onto design#77)
+//   lengthof, reverse     — Domains cells `vectors, tables`
+//   indicesof, indicesof0 — Domains cells `vectors, arrays, tables`
+//   identity              — Domains `any`, which admits both
+// NOT exempt: `prod`, `sizeof`, `cumsum`, `joinblocks` (arrays only), every
+// scalar math builtin, every distribution constructor (`Exponential(rate)`'s
+// domain is `reals`, so one input is not enough), and the single-input §09
+// module functions (`lu`, `qr`, `svd`, … take matrices and RETURN records).
+// `record` and `table` have variadic NAMED inputs, so "exactly one input"
+// excludes them and §03's `table(r)` / `record(t)` keeps relying on the splat.
+//
+// Three of the nine are exempt in the spec but not yet implemented over tables
+// here, all PRE-EXISTING (reproduced on origin/main) and all §07 conformance
+// gaps rather than splat bugs, so they are recorded in TODO-flatppl-js.md
+// instead of pinned: `reverse(t)` fails loudly ("arg 1 expects array of any"),
+// and `indicesof(t)` / `indicesof0(t)` return an EMPTY vector where §07 wants
+// the row indices — silent, so worse than reverse's failure.
 //
 // None of the exempt builtins reaches this branch's enforcement sites: the
 // static check fires only for callables carrying `inputs` (user
@@ -184,6 +198,20 @@ v = var(t)`;
   assert.deepEqual(errorsOf(src), []);
   assert.deepEqual(fixedOf(src, 'm'), { mass: 2, pt: 5 });
   assert.deepEqual(fixedOf(src, 'v'), { mass: 1, pt: 1 });
+});
+
+test('carve-out: std(t) reduces column-wise (owner ruling, design#77)', () => {
+  // std joins §07's Table reductions by owner ruling. Deliberately NOT the
+  // fixture above: with [1,2,3] the variance is 1 and √1 = 1, so var and std
+  // are indistinguishable and the test could not tell std from a mis-wire to
+  // var. Here mass = [1,3,5] has var 4 / std 2 and pt = [10,20,30] has var 100
+  // / std 10, so the two reductions are separated.
+  const src = `t = table(mass = [1.0, 3.0, 5.0], pt = [10.0, 20.0, 30.0])
+v = var(t)
+d = std(t)`;
+  assert.deepEqual(errorsOf(src), []);
+  assert.deepEqual(fixedOf(src, 'v'), { mass: 4, pt: 100 });
+  assert.deepEqual(fixedOf(src, 'd'), { mass: 2, pt: 10 });
 });
 
 test('carve-out: lengthof(t) counts rows rather than splatting', () => {
