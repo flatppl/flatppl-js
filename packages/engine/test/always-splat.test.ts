@@ -155,19 +155,33 @@ test('always-splat: a keyword-bound record is an ordinary value, never splatted'
 //   lengthof, reverse     — Domains cells `vectors, tables`
 //   indicesof, indicesof0 — Domains cells `vectors, arrays, tables`
 //   identity              — Domains `any`, which admits both
-// NOT exempt: `prod`, `sizeof`, `cumsum`, `joinblocks` (arrays only), every
-// scalar math builtin, every distribution constructor (`Exponential(rate)`'s
-// domain is `reals`, so one input is not enough), and the single-input §09
-// module functions (`lu`, `qr`, `svd`, … take matrices and RETURN records).
-// `record` and `table` have variadic NAMED inputs, so "exactly one input"
-// excludes them and §03's `table(r)` / `record(t)` keeps relying on the splat.
+// NOT exempt per §07: `prod`, `sizeof`, `cumsum`, `joinblocks` (arrays only),
+// every scalar math builtin, every distribution constructor
+// (`Exponential(rate)`'s domain is `reals`, so one input is not enough), and the
+// single-input §09 module functions (`lu`, `qr`, `svd`, … take matrices and
+// RETURN records). `record` and `table` have variadic NAMED inputs, so "exactly
+// one input" excludes them from the carve-out either way.
 //
-// Three of the nine are exempt in the spec but not yet implemented over tables
-// here, all PRE-EXISTING (reproduced on origin/main) and all §07 conformance
-// gaps rather than splat bugs, so they are recorded in TODO-flatppl-js.md
-// instead of pinned: `reverse(t)` fails loudly ("arg 1 expects array of any"),
-// and `indicesof(t)` / `indicesof0(t)` return an EMPTY vector where §07 wants
-// the row indices — silent, so worse than reverse's failure.
+// CAREFUL: that list is what §07 SANCTIONS, not what this engine accepts. The
+// engine's table-capable reduction set is SEVEN — `sum`, `mean`, `var`, `std`
+// plus `prod` (→ `{mass: 6, pt: 120}`), `minimum` (→ `{mass: 1, pt: 4}`) and
+// `maximum` (→ `{mass: 3, pt: 6}`) all reduce column-wise — against the FOUR
+// §07 sanctions with design#77. `sizeof(t)` is accepted too and silently yields
+// an empty vector though its Domains cell is `vectors, arrays`. The values are
+// right for what they compute; the set is over-permissive. So a later carve-out
+// implementation must read the exemption set off §07, NEVER off what the engine
+// happens to accept, or it silently exempts prod/minimum/maximum/sizeof.
+//
+// Gaps between the spec and this engine, all PRE-EXISTING (reproduced on
+// origin/main), all §07/§03 conformance rather than splat bugs, so recorded in
+// TODO-flatppl-js.md instead of pinned here: `reverse(t)` fails loudly ("arg 1
+// expects array of any"); `indicesof(t)` / `indicesof0(t)` return an EMPTY
+// vector where §07 wants the row indices — silent, so the worst class; and
+// §03:153-155's round trip works in NEITHER direction — `record(t)` is rejected
+// outright ("record() takes keyword arguments only") and `table(r)` infers
+// `failed: "table: at least one column required"` — though §03 says tables
+// convert "via `table(r)`" and "to such records via `record(t)`, due to FlatPPL
+// auto-splatting".
 //
 // None of the exempt builtins reaches this branch's enforcement sites: the
 // static check fires only for callables carrying `inputs` (user
