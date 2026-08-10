@@ -3074,11 +3074,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // keyword spelling `f(pars = <record>)` is the way to pass a record
     // as one ordinary argument; it never reaches here (kwargs non-empty).
     //
-    // §04's single-input carve-out (design#78, pending owner review) — "A
-    // callable with exactly one input whose documented domain admits records or
-    // tables is exempt and receives a sole positional record or table whole" —
-    // needs no test here, because this branch only sees callables that DECLARE
-    // `inputs`: user functionof / kernelof / lambdas. Every exempt callable is a
+    // §04's single-input carve-out (design#78) — "A callable with exactly one
+    // input whose documented domain admits records or tables is exempt and
+    // receives a sole positional record or table whole" — needs no test here,
+    // because it keys on the DOCUMENTED domain and so reaches §07 builtins only.
+    // A user callable with one record-domain input is NOT exempt and still
+    // splats (ruled 2026-08-10, narrow; the builtin/user asymmetry is the
+    // accepted cost). This branch only sees callables that DECLARE `inputs`:
+    // user functionof / kernelof / lambdas. Every exempt callable is a
     // §07 builtin (`sum`, `mean`, `var`, `lengthof`, `reverse`, `indicesof`,
     // `indicesof0`, `identity`) typed by dedicated inference that never reaches
     // this code. Do NOT widen this check to builtins without implementing the

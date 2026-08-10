@@ -137,7 +137,7 @@ test('always-splat: a keyword-bound record is an ordinary value, never splatted'
   assert.deepEqual(errorsOf(transportSrc('generator(pars = gp)')), []);
 });
 
-// ── §04's single-input carve-out (flatppl-design#78, pending owner review) ──
+// ── §04's single-input carve-out (flatppl-design#78) ───────────────────────
 //
 //   "A callable with exactly one input whose documented domain admits records
 //    or tables is exempt and receives a sole positional record or table whole,
@@ -147,6 +147,15 @@ test('always-splat: a keyword-bound record is an ordinary value, never splatted'
 // BOTH halves of the test matter, and it is decidable from the callable's
 // signature alone — never from the caller's field names, which is what #74
 // rejected.
+//
+// The exemption keys on the DOCUMENTED domain, so it reaches §07 builtins only.
+// A user callable with one record-domain input — `generator = kernelof(x, pars =
+// pars)` over `pars = elementof(cartprod(a = reals, mu = reals))` — is NOT
+// exempt and still splats (ruled 2026-08-10, narrow reading; a clarifying
+// sentence is going into #78). The resulting builtin/user asymmetry is accepted
+// as the cost: the same one-input-one-record-domain shape splats for a user
+// callable and does not for `sum`. Both engines take the narrow reading. The
+// first test in this file pins the user-callable half.
 //
 // The exempt set, nine callables, agreed with flatppl-rust:
 //   sum, mean, var, std   — table domain from §07's "Table reductions"
