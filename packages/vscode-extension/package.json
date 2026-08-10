@@ -26,7 +26,7 @@
     "test":            "node --test 'test/*.test.js'"
   },
   "dependencies": {
-    "vscode-languageclient": "^10.0.0"
+    "vscode-languageclient": "^10.1.0"
   },
   "devDependencies": {
     "@flatppl/engine": "*",
@@ -39,7 +39,7 @@
     "cytoscape-bubblesets": "^4.1.0",
     "cytoscape-layers": "^3.1.0",
     "echarts": "^6.0.0",
-    "marked": "^18.0.0",
+    "marked": "^18.0.7",
     "temml": "^0.13.3"
   },
   "activationEvents": [

@@ -33,7 +33,7 @@
     "cytoscape-bubblesets": "^4.1.0",
     "cytoscape-layers": "^3.1.0",
     "echarts": "^6.0.0",
-    "marked": "^18.0.0",
+    "marked": "^18.0.7",
     "temml": "^0.13.3"
   },
   "engines": {
