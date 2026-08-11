@@ -597,13 +597,26 @@ function _reverseColumnRows(col: any): any {
   }
   const N = dense.shape[0];
   const cellLen = dense.shape.slice(1).reduce((a: number, b: number) => a * b, 1);
-  const out = new Float64Array(dense.data.length);
-  for (let i = 0; i < N; i++) {
-    const from = i * cellLen;
-    const to = (N - 1 - i) * cellLen;
-    for (let j = 0; j < cellLen; j++) out[to + j] = dense.data[from + j];
-  }
-  return { shape: dense.shape.slice(), data: out };
+  // Same row-block permutation for every buffer the column carries.
+  const permute = (src: Float64Array): Float64Array => {
+    const out = new Float64Array(src.length);
+    for (let i = 0; i < N; i++) {
+      const from = i * cellLen;
+      const to = (N - 1 - i) * cellLen;
+      for (let j = 0; j < cellLen; j++) out[to + j] = src[from + j];
+    }
+    return out;
+  };
+  // Spread the input rather than rebuilding a bare `{shape, data}`: a column may
+  // carry `dtype`, `im` (complex), `outerRank` (nested vectors) or `struct`, and
+  // reversing rows changes none of them. Rebuilding dropped every one — a complex
+  // column lost its imaginary half and stopped being a complex Value at all,
+  // which is a wrong value with no error. Spreading also carries any tag added
+  // later, so this cannot silently regress the same way again. `im` is the one
+  // tag that is itself row-ordered, so it gets the same permutation as `data`.
+  const out: any = { ...dense, shape: dense.shape.slice(), data: permute(dense.data) };
+  if (dense.im instanceof Float64Array) out.im = permute(dense.im);
+  return out;
 }
 
 function _tableReduceOp(t: any, opName: string): any {
@@ -2887,8 +2900,8 @@ function evaluateCall(ir: any, env: any): any {
     /* c8 ignore stop */
     const columns: Record<string, any> = {};
     let nrows: number | null = null;
-    // Every field is a vector: §03 forbids a table inside a record ("a table
-    // belongs in a table column"), so there is no sub-table case here.
+    // Every field is a vector: §03 "Records" — "Field values may be scalars,
+    // arrays, or records" — admits no table, so there is no sub-table case here.
     for (const k in rv) {
       if (!Object.prototype.hasOwnProperty.call(rv, k)) continue;
       const colV = rv[k];

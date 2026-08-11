@@ -1144,9 +1144,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         if (rT && rT.kind === 'record' && rT.fields) {
           const columns: Record<string, any> = {};
           let nrows: number | '%dynamic' = '%dynamic';
-          // No table-valued field to consider: §03 forbids a table inside a
-          // record ("a table belongs in a table column"), so a promotable
-          // record's fields are always vectors.
+          // No table-valued field to consider: §03 "Records" — "Field values
+          // may be scalars, arrays, or records" — admits no table, so a
+          // promotable record's fields are always vectors.
           for (const k in rT.fields) {
             const cT = rT.fields[k];
             if (!cT || cT.kind !== 'array' || cT.rank !== 1) {

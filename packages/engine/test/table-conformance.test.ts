@@ -250,15 +250,65 @@ test('reverse(t) moves a vector column as a whole row block', () => {
   assert.deepEqual(r.columns.v.shape, [2, 3]);
 });
 
-// §03 forbids a table inside a record ("a table belongs in a table column"),
-// so a promotable record never carries a table-valued field — there is no
-// sub-table case in the promotion path, and the analyzer rejects the record
-// itself. Nested tables live in table COLUMNS, which reverse() recurses into
-// (covered above).
+// §03 "Records" — "Field values may be scalars, arrays, or records" — admits no
+// table, so a promotable record never carries a table-valued field: there is no
+// sub-table case in the promotion path, and the analyzer rejects such a record
+// outright. ("a table belongs in a table column" is the engine's own diagnostic
+// wording, not spec text — the normative rule is the sentence above.) Nested
+// tables live in table COLUMNS, which reverse() recurses into (covered above).
 
 test('table(r) with a scalar field is a located error (§03 needs vectors)', () => {
   const errs = errorsOf(`r = record(a = 1.0)
 t = table(r)`);
   assert.equal(errs.length, 1, 'got: ' + errs.join(' | '));
   assert.match(errs[0], /must be a 1-D array/);
+});
+
+// ── reverse(t) must preserve a column's Value tags ─────────────────────────
+//
+// A column is not always a bare `{shape, data}`. It may carry `dtype`, `im`
+// (complex), `outerRank` (a nested-vector column) or `struct` (storage layout).
+// Reversing ROWS changes none of them, and rebuilding a bare Value instead
+// dropped every one — a complex column lost its imaginary half and stopped
+// being a complex Value at all, i.e. a wrong value with no error, on the same
+// table shape whose reductions handle complex correctly.
+//
+// §03 makes a complex column legitimate: Complex is a scalar type and a table
+// column is a vector of scalars.
+
+test('reverse(t) preserves a complex column, reversing re and im together', () => {
+  const col: any = {
+    shape: [3],
+    data: Float64Array.from([1, 2, 3]),
+    im: Float64Array.from([10, 20, 30]),
+    dtype: 'complex',
+  };
+  const out: any = ARITH_OPS.reverse(mkTable({ z: col }, 3)).columns.z;
+  assert.deepEqual(Array.from(out.data), [3, 2, 1]);
+  assert.deepEqual(Array.from(out.im), [30, 20, 10], 'im must reverse with re');
+  assert.equal(out.dtype, 'complex');
+  assert.equal(valueLib.isComplexValue(out), true,
+    'the reversed column must still BE a complex Value');
+});
+
+test('reverse(t) preserves outerRank on a nested-vector column', () => {
+  const col: any = { shape: [2, 3], data: Float64Array.from([1, 2, 3, 4, 5, 6]), outerRank: 1 };
+  const out: any = ARITH_OPS.reverse(mkTable({ v: col }, 2)).columns.v;
+  assert.equal(out.outerRank, 1);
+  assert.deepEqual(Array.from(out.data), [4, 5, 6, 1, 2, 3]);
+});
+
+test('reverse(t) preserves a column dtype', () => {
+  const col: any = { shape: [3], data: Float64Array.from([7, 8, 9]), dtype: 'integer' };
+  const out: any = ARITH_OPS.reverse(mkTable({ n: col }, 3)).columns.n;
+  assert.equal(out.dtype, 'integer');
+  assert.deepEqual(Array.from(out.data), [9, 8, 7]);
+});
+
+test('reverse(t) leaves a plain real column with no spurious tags', () => {
+  // The complement of the tests above: nothing is INVENTED either.
+  const col: any = { shape: [2], data: Float64Array.from([1, 2]) };
+  const out: any = ARITH_OPS.reverse(mkTable({ a: col }, 2)).columns.a;
+  assert.deepEqual(Object.keys(out).sort(), ['data', 'shape']);
+  assert.deepEqual(Array.from(out.data), [2, 1]);
 });
