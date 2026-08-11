@@ -3252,6 +3252,64 @@ function analyze(ast: any, source: string, opts?: any) {
   }
   for (const d of typeDiagnostics) diagnostics.push(d);
 
+  // §04 auto-splatting for builtins, on the AST the ORCHESTRATOR lowers from.
+  // typeinfer rewrote its own lowered IR (so inference and the §04 name error
+  // are correct there), but that is a separate object graph from the one
+  // `buildDerivations` lowers, so without this the accepted spellings would type
+  // clean and then evaluate to nothing. Both rewrites take the name decision
+  // from `builtin-param-names.splatDecision`, so the rule has one definition.
+  //
+  // Runs AFTER typeinfer because deciding whether the sole argument IS a record
+  // or table needs its inferred type for anything but an inline literal.
+  {
+    const pn = require('./builtin-param-names.ts');
+    const T2 = require('./types.ts');
+    // Field/column names of the sole argument, or null when it is not an
+    // aggregate this can read statically.
+    const aggNames = (arg: any): string[] | null => {
+      if (arg && arg.type === 'CallExpr' && arg.callee && arg.callee.type === 'Identifier'
+          && (arg.callee.name === 'record' || arg.callee.name === 'table')) {
+        const ks = (arg.args || []).filter((a: any) => a.type === 'KeywordArg')
+          .map((a: any) => a.name);
+        return ks.length === (arg.args || []).length && ks.length > 0 ? ks : null;
+      }
+      if (arg && arg.type === 'Identifier') {
+        const b = bindings.get(arg.name);
+        const t = b && b.inferredType;
+        if (t && t.kind === 'record' && t.fields) return Object.keys(t.fields);
+        if (t && t.kind === 'table' && t.columns) return Object.keys(t.columns);
+      }
+      return null;
+    };
+    const walk = (node: any): void => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const x of node) walk(x); return; }
+      if (node.type === 'CallExpr' && node.callee && node.callee.type === 'Identifier') {
+        const op = node.callee.name;
+        const args = node.args || [];
+        if (args.length === 1 && args[0].type !== 'KeywordArg' && !node.__splatApplied) {
+          const sig = T2.hasSignature(op) ? T2.signatureOf(op) : null;
+          if (sig && sig.args && !sig.variadic) {
+            const present = aggNames(args[0]);
+            if (present) {
+              const d = pn.splatDecision(op, present, sig.args.length);
+              if (d && d.order) {
+                const agg = args[0];
+                node.args = d.order.map((k: string) => AST.FieldAccess(agg, k, agg.loc));
+                node.__splatApplied = d.order.slice();
+              }
+            }
+          }
+        }
+      }
+      for (const k in node) {
+        if (k === 'loc' || k === 'meta' || k === '__splatApplied') continue;
+        walk(node[k]);
+      }
+    };
+    for (const [, b] of bindings) if (b && b.node) walk(b.node.value);
+  }
+
   // C3 (#73): a non-record positional-product prior — spec §06's `joint`
   // combines its components via `cat` into ONE value — cannot split
   // across a kernel with 2+ referenced boundary inputs. C2 (already

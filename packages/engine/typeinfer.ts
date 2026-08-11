@@ -49,6 +49,7 @@ const T = require('./types.ts');
 const SC = require('./shape-contract.ts');
 const builtins = require('./builtins.ts');
 const aggregateShape = require('./aggregate-shape.ts');
+const paramNames = require('./builtin-param-names.ts');
 const vsLib = require('./value-set.ts');
 
 // =====================================================================
@@ -409,6 +410,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         + T.show(calleeT)), expr);
     }
 
+    // §04 auto-splatting for builtins runs BEFORE the op switch. Many ops have a
+    // dedicated inference path (`pow`, the arith pairs, …) and only some fall
+    // through to `inferGenericCall`, so hooking one typing function would cover
+    // only part of the surface. Rewriting the ARGS here means every path — and
+    // the evaluator, which reads the same IR — sees an ordinary positional call,
+    // leaving exactly one site that knows the rule.
+    const splatFailure = _applyBuiltinSplat(expr, scopes);
+    if (splatFailure) return write(splatFailure, expr);
+
     // Special-cased ops whose result type depends on actuals or
     // structural shape in ways that don't fit the static signature
     // table.
@@ -674,6 +684,74 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // -------------------------------------------------------------------
   // Generic call inference: signature lookup + arg unify
   // -------------------------------------------------------------------
+
+  // §04 auto-splatting for a BUILTIN. §04: "`f(record(a = x, b = y, ...))` and
+  // `f(table(a = x, b = y, ...))` are equivalent to `f(a = x, b = y, ...)`",
+  // over "Arguments are bound to inputs by name, the order of the arguments is
+  // not relevant" — so the fields bind to the row's Arguments column BY NAME,
+  // and "A call with field or column names that do not match the callable's
+  // argument names is a static error."
+  //
+  // On a match this REWRITES `expr.args` into one field access per argument, in
+  // the row's declared order — the same `get_field` IR the surface `r.name`
+  // lowers to (§03: "Field access uses dot syntax: `r.name1`"; a table column
+  // reads the same way). Every downstream consumer — the other inference paths,
+  // the evaluator, the dissolver — therefore sees an ordinary positional call
+  // and needs no splat logic of its own.
+  // Returns a failed type when §04 makes the call a static error, else null.
+  function _applyBuiltinSplat(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    const kwargs = expr.kwargs || {};
+    if (args.length !== 1 || Object.keys(kwargs).length > 0) return null;
+    if (expr.meta && expr.meta.splatApplied) return null;   // idempotent
+    const op = expr.op;
+    if (typeof op !== 'string') return null;
+    // The nine carve-out names take the aggregate WHOLE (design#78).
+    if (paramNames.isSplatExemptBuiltin(op)) return null;
+    const declared = paramNames.builtinParamNames(op);
+    if (!declared) return null;
+    const sig = T.signatureOf(op);
+    // Variadic rows have no named inputs to bind (§04), and a row whose arity
+    // disagrees with its spec name list is not one this can reason about.
+    if (!sig || sig.args === null || sig.variadic) return null;
+    if (declared.length !== sig.args.length) return null;
+    // Only a record or table splats; anything else is an ordinary argument.
+    const at: any = inferExpr(args[0], scopes);
+    const fields: any = (at && at.kind === 'record') ? at.fields
+                 : (at && at.kind === 'table') ? at.columns
+                 : null;
+    if (!fields) return null;
+    const present = Object.keys(fields);
+    const decision = paramNames.splatDecision(op, present, sig.args.length);
+    if (!decision) return null;
+    const unbindable = decision.unbindable || [];
+    const missing = decision.missing || [];
+    if (unbindable.length > 0 || missing.length > 0) {
+      const what = (at.kind === 'table') ? 'column' : 'field';
+      let msg = op + ': a sole positional ' + at.kind + ' splats into one argument per '
+        + what + ' (spec §04), so its ' + what + ' names must match this row\'s argument '
+        + 'names (' + declared.join(', ') + ')';
+      if (unbindable.length > 0) {
+        msg += '; no argument is named ' + unbindable.map((k: string) => '"' + k + '"').join(', ');
+      }
+      if (missing.length > 0) {
+        msg += '; nothing binds ' + missing.map((k: string) => '"' + k + '"').join(', ');
+      }
+      diagnostics.push({
+        severity: 'error', message: msg, loc: (args[0] && args[0].loc) || expr.loc,
+      });
+      return T.failed(op + ' splat name mismatch');
+    }
+    const agg = args[0];
+    expr.args = decision.order.map((k: string) => ({
+      kind: 'call', op: 'get_field',
+      args: [agg, { kind: 'lit', value: k, loc: agg.loc }],
+      loc: agg.loc,
+    }));
+    if (!expr.meta) expr.meta = {};
+    expr.meta.splatApplied = declared.slice();
+    return null;
+  }
 
   function inferGenericCall(expr: any, scopes: any): any {
     const op = expr.op;
