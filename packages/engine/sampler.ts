@@ -578,6 +578,47 @@ function _shapeAwareBinop(opName: any, scalarFn: any, a: any, b: any, complexFn:
 // vector-per-entry column (Value [N, ...cells], spec §03 "3-vector per entry")
 // reduces element-wise over the N rows to a [...cells] Value; a table column
 // recurses to a nested record.
+// Reverse a table's ROW order (§07 `reverse`), column by column, keeping every
+// column's cell shape. A column is [N, ...cells], so row i occupies the cell-
+// length block at i*cellLen; a vector column therefore moves as a block rather
+// than being reversed elementwise. A table-valued column recurses.
+function _reverseTableRows(t: any): any {
+  const columns: Record<string, any> = {};
+  for (const k in t.columns) columns[k] = _reverseColumnRows(t.columns[k]);
+  return { __table__: true, columns, nrows: t.nrows };
+}
+function _reverseColumnRows(col: any): any {
+  if (col && col.__table__ === true) return _reverseTableRows(col);
+  const dense = (col && col.struct !== undefined) ? valueLib.densify(col) : col;
+  if (!valueLib.isValue(dense)) {
+    // A non-Value column (plain JS array) — reverse a copy.
+    if (Array.isArray(dense)) return dense.slice().reverse();
+    return dense;
+  }
+  const N = dense.shape[0];
+  const cellLen = dense.shape.slice(1).reduce((a: number, b: number) => a * b, 1);
+  // Same row-block permutation for every buffer the column carries.
+  const permute = (src: Float64Array): Float64Array => {
+    const out = new Float64Array(src.length);
+    for (let i = 0; i < N; i++) {
+      const from = i * cellLen;
+      const to = (N - 1 - i) * cellLen;
+      for (let j = 0; j < cellLen; j++) out[to + j] = src[from + j];
+    }
+    return out;
+  };
+  // Spread the input rather than rebuilding a bare `{shape, data}`: a column may
+  // carry `dtype`, `im` (complex), `outerRank` (nested vectors) or `struct`, and
+  // reversing rows changes none of them. Rebuilding dropped every one — a complex
+  // column lost its imaginary half and stopped being a complex Value at all,
+  // which is a wrong value with no error. Spreading also carries any tag added
+  // later, so this cannot silently regress the same way again. `im` is the one
+  // tag that is itself row-ordered, so it gets the same permutation as `data`.
+  const out: any = { ...dense, shape: dense.shape.slice(), data: permute(dense.data) };
+  if (dense.im instanceof Float64Array) out.im = permute(dense.im);
+  return out;
+}
+
 function _tableReduceOp(t: any, opName: string): any {
   const out: Record<string, any> = {};
   for (const k in t.columns) out[k] = _reduceColumn(t.columns[k], opName);
@@ -1145,6 +1186,8 @@ const ARITH_OPS = {
   // now (no canonical table runtime yet). Returns a rank-1 Value when
   // the input is a flat numeric vector.
   reverse: (xs: any) => {
+    // §07: "reverses the order of elements in a vector or rows in a table."
+    if (xs && xs.__table__ === true) return _reverseTableRows(xs);
     if (valueLib.isValue(xs) && xs.shape.length === 1) {
       const n = xs.shape[0];
       const out = new Float64Array(n);
@@ -1596,6 +1639,14 @@ const ARITH_OPS = {
       for (let i = 0; i < dims.length; i++) out[i] = dims[i];
       return { shape: [dims.length], data: out };
     }
+    // §07 gives `sizeof` the domain `vectors, arrays` — a table is neither, and
+    // has no per-axis dimension vector to report. It used to fall through to
+    // the empty-dims return below and hand back `[]` silently. Use `lengthof`
+    // for a row count.
+    if (a && a.__table__ === true) {
+      throw new Error('sizeof: argument must be a vector or array (spec §07 '
+        + 'domain: vectors, arrays); got a table — use lengthof for its row count');
+    }
     if (valueLib.isValue(a)) return _packDims(a.shape);
     if (a == null) return _packDims([0]);
     if (typeof a === 'number') return _packDims([]);
@@ -1799,6 +1850,20 @@ function _indicesOfImpl(a: any, zeroBased: boolean): any {
   function _multiAxisTuple(dims: number[]): any {
     if (dims.length === 1) return _packRange(dims[0]);
     return dims.map(_packRange);
+  }
+  // A table Value — §07 `indicesof`: "For a table, returns the row indices."
+  // This must precede the generic object walk below: a table is
+  // `{__table__, columns, nrows}`, so that walk finds no column-shaped key
+  // (it sees the boolean, the columns wrapper and the row count) and fell
+  // through to an EMPTY range, silently.
+  if (a && a.__table__ === true) {
+    if (typeof a.nrows === 'number') return _packRange(a.nrows);
+    for (const k in (a.columns || {})) {
+      const col = a.columns[k];
+      if (valueLib.isValue(col)) return _packRange(col.shape[0]);
+      if (col && typeof col.length === 'number') return _packRange(col.length);
+    }
+    return _packRange(0);
   }
   if (valueLib.isValue(a)) {
     if (a.shape.length === 0) return _packRange(0);
@@ -2816,6 +2881,48 @@ function evaluateCall(ir: any, env: any): any {
   // The marker distinguishes a table value from a plain record (which
   // is just a JS object with field values). Downstream consumers
   // (get, lengthof, reductions, broadcast) branch on the marker.
+  // §03 `table(r)` — promote a record of equal-length vectors. The analyzer
+  // admits this spelling and §03 states it normatively, but with no column
+  // kwargs the branch below never ran, so the call produced no value at all.
+  if (op === 'table' && (!Array.isArray(ir.fields) || ir.fields.length === 0)
+      && Array.isArray(ir.args) && ir.args.length === 1) {
+    const rv = evaluateExpr(ir.args[0], env);
+    if (rv && rv.__table__ === true) return rv;   // already a table: identity
+    /* c8 ignore start -- unreachable from source: typeinfer's `inferTable`
+       promotion rejects a non-record argument, an unequal-length record and a
+       non-vector field statically, with the same three messages. These stay as
+       runtime guards because ARITH_OPS / evaluateCall are also driven by paths
+       that never ran inference (the worker, hand-built IR). */
+    if (!rv || typeof rv !== 'object' || Array.isArray(rv)) {
+      throw new Error('table: a positional argument must be a record of '
+        + 'equal-length vectors (spec §03 `table(r)`)');
+    }
+    /* c8 ignore stop */
+    const columns: Record<string, any> = {};
+    let nrows: number | null = null;
+    // Every field is a vector: §03 "Records" — "Field values may be scalars,
+    // arrays, or records" — admits no table, so there is no sub-table case here.
+    for (const k in rv) {
+      if (!Object.prototype.hasOwnProperty.call(rv, k)) continue;
+      const colV = rv[k];
+      const len = valueLib.isValue(colV) ? colV.shape[0]
+                : (colV && typeof colV.length === 'number') ? colV.length : null;
+      /* c8 ignore start -- see the guard note above: statically pre-empted. */
+      if (len === null) {
+        throw new Error(`table: field '${k}' of the promoted record must be a `
+          + `vector, got ${typeof colV}`);
+      }
+      if (nrows !== null && nrows !== len) {
+        throw new Error(`table: promoted record field '${k}' has length ${len}, but `
+          + `earlier fields have length ${nrows} (spec §03: all columns must have equal length)`);
+      }
+      /* c8 ignore stop */
+      if (nrows === null) nrows = len;
+      columns[k] = colV;
+    }
+    if (nrows === null) throw new Error('table: at least one column required');
+    return { __table__: true, columns, nrows };
+  }
   if (op === 'table' && Array.isArray(ir.fields)) {
     const columns: Record<string, any> = {};
     let nrows: number | null = null;
