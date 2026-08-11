@@ -240,6 +240,38 @@ test('record(<non-table>) is a located error naming §03 record(t)', () => {
   assert.match(errs[0], /must be a table/);
 });
 
+// §03 "Tables": "Each column is a vector or a table". A table-valued column
+// converts fine to a NESTED TABLE inside `table(r)`'s mirror direction — but
+// `record(t)` cannot mirror it back, because §03 "Records" caps a record
+// field at "scalars, arrays, or records" — no table. Getting this wrong
+// mistyped the field as `array(1, [n], table(...))` ("array of table"), a
+// value no downstream reader (get_field, checkContainerElem) recognises; a
+// later, unrelated field access failed far away with a confusing message
+// instead of the conversion itself being rejected at the point of use.
+
+test('record(t) with a nested table-valued column is a located error (§03)', () => {
+  const errs = errorsOf(`sub = table(x = [1.0, 2.0])
+t = table(sub = sub, a = [10.0, 20.0])
+r = record(t)`);
+  assert.equal(errs.length, 1, 'got: ' + errs.join(' | '));
+  assert.match(errs[0], /column "sub" of the table is itself a table/);
+  assert.match(errs[0], /record field may not be a table/);
+});
+
+// Adjacent shape on the OTHER direction: a record field cannot be a table
+// either (same §03 cap), so it can never reach `table(r)`'s per-field vector
+// check carrying a table — but a NESTED RECORD field is constructible, and
+// is not a vector, so `table(r)` must reject it the same way it rejects a
+// scalar field. Confirms the two constructors stay symmetric at this edge.
+
+test('table(r) with a nested-record field is a located error (adjacent shape)', () => {
+  const errs = errorsOf(`inner = record(x = 1.0)
+r = record(a = inner)
+t = table(r)`);
+  assert.equal(errs.length, 1, 'got: ' + errs.join(' | '));
+  assert.match(errs[0], /must be a 1-D array/);
+});
+
 // ── direct ARITH_OPS calls ─────────────────────────────────────────────────
 //
 // These ops are also reached WITHOUT typeinfer — the worker and other engine

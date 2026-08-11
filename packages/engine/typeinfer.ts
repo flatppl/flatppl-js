@@ -1162,7 +1162,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         if (tT && tT.kind === 'table' && tT.columns) {
           const out: Record<string, any> = {};
           for (const k in tT.columns) {
-            out[k] = T.array(1, [tT.nrows != null ? tT.nrows : '%dynamic'], tT.columns[k]);
+            const colT = tT.columns[k];
+            // §03 "Records": "Field values may be scalars, arrays, or
+            // records" — a table is not one of the three, so a table-valued
+            // column (§03 "Tables": "Each column is a vector or a table")
+            // has no record field it can become. Reject rather than mistype
+            // the field as an array-of-table (mirrors `table(r)`'s rejection
+            // of a non-vector record field above, and the table-column guard
+            // in `inferUserCall`'s splat, which keeps a table-valued column
+            // AS a table rather than wrapping it in `array(...)`).
+            if (colT && colT.kind === 'table') {
+              return fail('record: column "' + k + '" of the table is itself a table, but a '
+                + 'record field may not be a table (spec §03: record fields are scalars, '
+                + 'arrays, or records)');
+            }
+            out[k] = T.array(1, [tT.nrows != null ? tT.nrows : '%dynamic'], colT);
           }
           return T.record(out);
         }

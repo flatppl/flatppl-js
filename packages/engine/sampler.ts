@@ -2879,7 +2879,19 @@ function evaluateCall(ir: any, env: any): any {
     if (tv && tv.__table__ === true) {
       const out: Record<string, any> = {};
       for (const k in tv.columns) {
-        if (Object.prototype.hasOwnProperty.call(tv.columns, k)) out[k] = tv.columns[k];
+        if (!Object.prototype.hasOwnProperty.call(tv.columns, k)) continue;
+        const colV = tv.columns[k];
+        /* c8 ignore start -- statically pre-empted: typeinfer's `inferRecord`
+           rejects a table-valued column with the same message before this
+           ever runs. Kept as a runtime guard for paths that never ran
+           inference (the worker, hand-built IR). */
+        if (colV && colV.__table__ === true) {
+          throw new Error('record: column \'' + k + '\' of the table is itself a table, but a '
+            + 'record field may not be a table (spec §03: record fields are scalars, '
+            + 'arrays, or records)');
+        }
+        /* c8 ignore stop */
+        out[k] = colV;
       }
       return out;
     }
