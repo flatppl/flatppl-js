@@ -686,13 +686,22 @@ function validateSpecialOperation(valueNode: any) {
 
     // ---- Composite constructors --------------------------------------
     case 'record': {
-      // record(name = expr, ...) — all keyword.
+      // Two forms (spec §03):
+      //   record(name = expr, ...)   — field kwargs (canonical)
+      //   record(t)                  — convert a table's columns to a
+      //                                 record via FlatPPL auto-splatting
       if (args.length === 0) {
         diags.push({ severity: 'error', message: `record() requires at least one field`, loc: valueNode.loc });
+        break;
       }
+      // Single positional arg → table-conversion form. OK.
+      if (args.length === 1 && args[0].type !== 'KeywordArg') {
+        break;
+      }
+      // Otherwise: all kwargs required.
       for (const arg of args) {
         if (arg.type !== 'KeywordArg') {
-          diags.push({ severity: 'error', message: `record() takes keyword arguments only (name = value)`, loc: arg.loc });
+          diags.push({ severity: 'error', message: `record() takes either a single positional table or field keyword arguments (name = value)`, loc: arg.loc });
         }
       }
       break;

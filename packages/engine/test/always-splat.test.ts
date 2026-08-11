@@ -181,16 +181,9 @@ test('always-splat: a keyword-bound record is an ordinary value, never splatted'
 // implementation must read the exemption set off §07, NEVER off what the engine
 // happens to accept, or it silently exempts prod/minimum/maximum/sizeof.
 //
-// Gaps between the spec and this engine, all PRE-EXISTING (reproduced on
-// origin/main), all §07/§03 conformance rather than splat bugs, so recorded in
-// TODO-flatppl-js.md instead of pinned here: `reverse(t)` fails loudly ("arg 1
-// expects array of any"); `indicesof(t)` / `indicesof0(t)` return an EMPTY
-// vector where §07 wants the row indices — silent, so the worst class; and
-// §03:153-155's round trip works in NEITHER direction — `record(t)` is rejected
-// outright ("record() takes keyword arguments only") and `table(r)` infers
-// `failed: "table: at least one column required"` — though §03 says tables
-// convert "via `table(r)`" and "to such records via `record(t)`, due to FlatPPL
-// auto-splatting".
+// `reverse(t)`, `indicesof(t)`/`indicesof0(t)`, `sizeof(t)`, and §03:153-155's
+// `table(r)`/`record(t)` round trip are all covered in
+// `test/table-conformance.test.ts` instead of here — none is a splat bug.
 //
 // None of the exempt builtins reaches this branch's enforcement sites: the
 // static check fires only for callables carrying `inputs` (user
@@ -273,4 +266,76 @@ test('always-splat: a record alongside another argument is an ordinary value', (
   assert.deepEqual(errorsOf(`mu = joint(a = Normal(0.0, 1.0), b = Normal(0.0, 1.0))
 x = record(a = 0.5)
 nu = restrict(mu, x)`), []);
+});
+
+// ── §04 "of records and table columns" — tables splat too ──────────────────
+//
+// Every splat site above was written and tested against records only; §04's
+// own wording ("Auto-splatting (of records and table columns)") makes a
+// table's columns splat identically. A table column is a VECTOR (spec §03),
+// so the natural target is a callable whose inputs are themselves array-
+// typed — `f = (a, b) -> a + b` below adds elementwise, unlike the scalar
+// kernels/distributions the record tests above use.
+
+const registry = require(ENG + 'sampler-registry.ts');
+const asArr = (v: any) => Array.from(v && v.data !== undefined ? v.data : v);
+
+test('tables splat: an inline table(...) literal splats into a two-input lambda', () => {
+  const fv = orchestrator.buildDerivations(processSource(`f = (a, b) -> a + b
+y = f(table(a = [1.0, 2.0], b = [3.0, 4.0]))`).bindings).fixedValues;
+  assert.deepEqual(asArr(fv.get('y')), [4, 6]);
+});
+
+test('tables splat: a table-typed identifier ref splats the same way', () => {
+  const src = `f = (a, b) -> a + b
+t = table(a = [1.0, 2.0], b = [3.0, 4.0])
+y = f(t)`;
+  assert.deepEqual(errorsOf(src), []);
+  const fv = orchestrator.buildDerivations(processSource(src).bindings).fixedValues;
+  assert.deepEqual(asArr(fv.get('y')), [4, 6]);
+});
+
+test('tables splat: a column name with no matching input is a §04 error, not a whole-table bind', () => {
+  // Mirrors the record surplus-field test above, with a table column instead.
+  const errs = errorsOf(`f = (a, b) -> a + b
+t = table(a = [1.0, 2.0], c = [3.0, 4.0])
+y = f(t)`);
+  const splat = errs.filter((m: string) => /no argument named/.test(m));
+  assert.equal(splat.length, 1, 'got: ' + errs.join(' | '));
+  assert.match(splat[0], /"c"/);
+  assert.match(splat[0], /positional table/);
+});
+
+test('tables splat: resolveParams splats an inline table(...) into a distribution, like record(...)', () => {
+  // Unit-level: exercises sampler-registry.resolveParams directly (the third
+  // of the three splat sites), sidestepping the arity-1 whole-variate feed
+  // that a single-parameter array-typed distribution (e.g. Dirichlet) hits
+  // before reaching resolveParams — tracked separately in TODO-flatppl-js.md
+  // as the deliberate C2/C3 arity-1 design, not a splat gap.
+  const lit = (v: number) => ({ kind: 'lit', value: v });
+  const measureIR = {
+    kind: 'call', op: 'Normal',
+    args: [{ kind: 'call', op: 'table', fields: [
+      { name: 'mu', value: lit(1.1) },
+      { name: 'sigma', value: lit(0.2) },
+    ] }],
+    kwargs: {},
+  };
+  const out = registry.resolveParams(measureIR, registry.REGISTRY.Normal, {});
+  assert.deepEqual(out, [1.1, 0.2]);
+});
+
+test('tables splat: resolveParams rejects a table column with no matching parameter', () => {
+  const lit = (v: number) => ({ kind: 'lit', value: v });
+  const measureIR = {
+    kind: 'call', op: 'Normal',
+    args: [{ kind: 'call', op: 'table', fields: [
+      { name: 'mu', value: lit(1.1) },
+      { name: 'sigma', value: lit(0.2) },
+      { name: 'zz', value: lit(9.0) },
+    ] }],
+    kwargs: {},
+  };
+  assert.throws(() => registry.resolveParams(measureIR, registry.REGISTRY.Normal, {}),
+    /'Normal' has no parameter 'zz'/);
 });

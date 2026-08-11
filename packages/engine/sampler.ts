@@ -2868,6 +2868,43 @@ function evaluateCall(ir: any, env: any): any {
     }
     return NaN;
   }
+  // §03 `record(t)` — convert a table's columns to a record, the reverse of
+  // `table(r)` below. The analyzer admits this spelling and §03 states it
+  // normatively ("converted to such records via `record(t)`, due to
+  // FlatPPL auto-splatting"); with no field kwargs the generic branch below
+  // would otherwise return an empty object.
+  if (op === 'record' && (!Array.isArray(ir.fields) || ir.fields.length === 0)
+      && Array.isArray(ir.args) && ir.args.length === 1) {
+    const tv = evaluateExpr(ir.args[0], env);
+    if (tv && tv.__table__ === true) {
+      const out: Record<string, any> = {};
+      for (const k in tv.columns) {
+        if (!Object.prototype.hasOwnProperty.call(tv.columns, k)) continue;
+        const colV = tv.columns[k];
+        /* c8 ignore start -- statically pre-empted: typeinfer's `inferRecord`
+           rejects a table-valued column with the same message before this
+           ever runs. Kept as a runtime guard for paths that never ran
+           inference (the worker, hand-built IR). */
+        if (colV && colV.__table__ === true) {
+          throw new Error('record: column \'' + k + '\' of the table is itself a table, but a '
+            + 'record field may not be a table (spec §03: record fields are scalars, '
+            + 'arrays, or records)');
+        }
+        /* c8 ignore stop */
+        out[k] = colV;
+      }
+      return out;
+    }
+    // Already a record — converting is the identity, mirroring `table(t)`.
+    if (tv && typeof tv === 'object' && !Array.isArray(tv)) return tv;
+    /* c8 ignore start -- unreachable from source: typeinfer's `inferRecord`
+       conversion rejects any other argument type statically with the same
+       message. Kept as a runtime guard for paths that never ran inference
+       (the worker, hand-built IR); the throw always exits the block, so the
+       closing brace below is unreachable too. */
+    throw new Error('record: a positional argument must be a table (spec §03 `record(t)`)');
+  }
+  /* c8 ignore stop */
   // record(...) — build a JS object from the call's `fields` array
   // (lowered from surface `record(a=x, b=y)`). Field values are
   // evaluated; keys are static names from the fields array.
