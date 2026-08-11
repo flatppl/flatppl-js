@@ -16,13 +16,15 @@
 //        no per-axis dimension vector, but it was accepted and silently
 //        returned `[]`.
 //   §03 — a table "can also be constructed from records of equal-length
-//        vectors via `table(r)`". The analyzer admitted that spelling, but no
-//        type rule or evaluator branch implemented it, so it produced nothing.
+//        vectors via `table(r)` and converted to such records via
+//        `record(t)`, due to FlatPPL auto-splatting". The analyzer admitted
+//        `table(r)`, but no type rule or evaluator branch implemented it, so
+//        it produced nothing; `record(t)` was rejected outright ("record()
+//        takes keyword arguments only"). Both directions are wired below.
 //
-// NOT covered here, deliberately: `record(t)` (§03's other direction) is still
-// rejected, and the engine reduces `prod`/`maximum`/`minimum` over tables
-// though §07 sanctions only `sum`/`mean`/`var`/`std`. Both are recorded in
-// TODO-flatppl-js.md — the second has an in-repo test asserting it, so
+// NOT covered here, deliberately: the engine reduces `prod`/`maximum`/
+// `minimum` over tables though §07 sanctions only `sum`/`mean`/`var`/`std`.
+// Recorded in TODO-flatppl-js.md — it has an in-repo test asserting it, so
 // narrowing needs an owner ruling rather than a silent fix.
 
 const { test } = require('node:test');
@@ -198,6 +200,44 @@ test('table(<non-record>) is a located error naming §03 table(r)', () => {
   const errs = errorsOf('t = table(1.0)');
   assert.equal(errs.length, 1, 'got: ' + errs.join(' | '));
   assert.match(errs[0], /must be a record of equal-length vectors/);
+});
+
+// ── §03 record(t) conversion — the reverse direction ───────────────────────
+
+test('record(t) converts a table\'s columns to a record (§03)', () => {
+  const fv = ev(T3 + 'r = record(t)');
+  const r: any = fv.get('r');
+  assert.deepEqual(asArray(r.mass), [1, 2, 3]);
+  assert.deepEqual(asArray(r.pt), [4, 5, 6]);
+});
+
+test('record(t) agrees with the field-kwarg spelling', () => {
+  // §03 presents record(t) and the equivalent field kwargs as the same
+  // record, so a downstream field read must not tell them apart.
+  const fv = ev(T3 + `viaTable = record(t)
+viaKwargs = record(mass = [1.0, 2.0, 3.0], pt = [4.0, 5.0, 6.0])
+a = viaTable.mass
+b = viaKwargs.mass`);
+  assert.deepEqual(asArray(fv.get('a')), asArray(fv.get('b')));
+});
+
+test('record(t) round-trips with table(r): table(record(t)) reproduces t', () => {
+  const fv = ev(T3 + `r = record(t)
+t2 = table(r)
+a = sum(t2)`);
+  assert.deepEqual(fv.get('a'), { mass: 6, pt: 15 });
+});
+
+test('record(r) on something already a record is the identity', () => {
+  const fv = ev(`r0 = record(a = 1.0, b = 2.0)
+r = record(r0)`);
+  assert.deepEqual(fv.get('r'), { a: 1, b: 2 });
+});
+
+test('record(<non-table>) is a located error naming §03 record(t)', () => {
+  const errs = errorsOf('r = record(1.0)');
+  assert.equal(errs.length, 1, 'got: ' + errs.join(' | '));
+  assert.match(errs[0], /must be a table/);
 });
 
 // ── direct ARITH_OPS calls ─────────────────────────────────────────────────

@@ -2499,11 +2499,12 @@ function liftInlineSubexpressions(bindings: any) {
 
     // Auto-splatting (spec §04 sec:calling-convention):
     // `f(record(a=x, b=y))` and `f(some_record_value)` are
-    // equivalent to `f(a=x, b=y)`. We detect two splat sources:
-    //   - inline `record(...)` calls — splat their KeywordArg
-    //     children directly.
-    //   - Identifier ref to a record-typed binding — synthesize a
-    //     FieldAccess per RECORD FIELD.
+    // equivalent to `f(a=x, b=y)`, and likewise for `table(...)` /
+    // table columns. We detect two splat sources:
+    //   - inline `record(...)` / `table(...)` calls — splat their
+    //     KeywordArg children directly.
+    //   - Identifier ref to a record- or table-typed binding — synthesize
+    //     a FieldAccess per RECORD FIELD / TABLE COLUMN.
     // A sole positional record ALWAYS splats — §04: "A sole positional
     // record or table therefore always splats: whether its field or
     // column names match the callable's argument names decides only
@@ -2531,16 +2532,22 @@ function liftInlineSubexpressions(bindings: any) {
       let splatted: any = null;
       if (arg0.type === 'CallExpr' && arg0.callee
           && arg0.callee.type === 'Identifier'
-          && arg0.callee.name === 'record') {
+          && (arg0.callee.name === 'record' || arg0.callee.name === 'table')) {
         splatted = (arg0.args || []).filter((f: any) => f.type === 'KeywordArg');
       } else if (arg0.type === 'Identifier') {
         const recBinding = out.get(arg0.name);
         const t = recBinding && recBinding.inferredType;
-        // An unknown or non-record type is not a splat source we can
+        // An unknown or non-record/table type is not a splat source we can
         // expand — leave the call alone. That is an unresolved-type bail,
-        // not a name-conditioned choice.
-        if (t && t.kind === 'record' && t.fields) {
-          splatted = Object.keys(t.fields).map((name: string) => ({
+        // not a name-conditioned choice. Records and table columns both
+        // splat (spec §04); `t.colname` reads a table column the same way
+        // `r.name` reads a record field (spec §03), so the same FieldAccess
+        // synthesis covers both.
+        const names = (t && t.kind === 'record' && t.fields) ? Object.keys(t.fields)
+                    : (t && t.kind === 'table' && t.columns) ? Object.keys(t.columns)
+                    : null;
+        if (names) {
+          splatted = names.map((name: string) => ({
             type: 'KeywordArg',
             name,
             value: { type: 'FieldAccess', object: cloneAst(arg0), field: name, loc: arg0.loc },

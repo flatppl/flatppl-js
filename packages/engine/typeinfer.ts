@@ -1135,6 +1135,41 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function inferRecord(expr: any, scopes: any) {
     // record uses `fields` (ordered), not `kwargs`.
     const fields = expr.fields || [];
+    // §03: a table "can also be converted to such records via `record(t)`",
+    // due to FlatPPL auto-splatting — the reverse of `table(r)` above. The
+    // analyzer admits a single positional arg as this form; when there are
+    // no field kwargs, resolve it from the arg's type instead.
+    if (fields.length === 0) {
+      const posArgs = expr.args || [];
+      if (posArgs.length === 1) {
+        const argLoc = (posArgs[0] && posArgs[0].loc) || expr.loc;
+        const fail = (message: string) => {
+          diagnostics.push({ severity: 'error', message, loc: argLoc });
+          return T.failed(message);
+        };
+        const tT: any = inferExpr(posArgs[0], scopes);
+        // Already a record — converting is the identity.
+        if (tT && tT.kind === 'record' && tT.fields) return tT;
+        // An unresolved argument type is not yet a violation; the runtime
+        // conversion still applies. Mirrors inferTable's matching guard.
+        /* c8 ignore start -- no corpus or test model reaches `record(<expr>)`
+           with an unresolved argument type; kept so a deferred argument cannot
+           be reported as a §03 violation it may not be. */
+        if (tT && (tT.kind === 'deferred' || tT.kind === 'any' || tT.kind === 'failed')) {
+          return T.deferred();
+        }
+        /* c8 ignore stop */
+        if (tT && tT.kind === 'table' && tT.columns) {
+          const out: Record<string, any> = {};
+          for (const k in tT.columns) {
+            out[k] = T.array(1, [tT.nrows != null ? tT.nrows : '%dynamic'], tT.columns[k]);
+          }
+          return T.record(out);
+        }
+        return fail('record: a positional argument must be a table (spec §03 `record(t)`)');
+      }
+      return T.failed('record() requires at least one field');
+    }
     const out: Record<string, any> = {};
     for (const f of fields) {
       const ft = inferExpr(f.value, scopes);
@@ -3280,32 +3315,49 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // Pinned by test/always-splat.test.ts's "carve-out:" cases.
     if (args.length === 1 && Object.keys(kwargs).length === 0 && inputs.length > 0) {
       const splatType = inferExpr(args[0], scopes);
-      if (splatType && splatType.kind === 'record' && splatType.fields) {
+      // A table's columns splat exactly like a record's fields (spec §04:
+      // "of records and table columns"). `splatType.columns[k]` is the
+      // COLUMN'S ELEMENT type (mirrors the table type representation used
+      // by `inferGetField`/`inferTable`), so a vector column's per-input
+      // type is the vector `array(1, [nrows], elem)`; a table-valued
+      // column stays a table.
+      const isRecord = splatType && splatType.kind === 'record' && splatType.fields;
+      const isTable  = splatType && splatType.kind === 'table' && splatType.columns;
+      if (isRecord || isTable) {
         const inputNames = new Set(inputs.map((i: any) => i.name));
+        const fieldNames: string[] = isRecord
+          ? Object.keys(splatType.fields) : Object.keys(splatType.columns);
+        const fieldType = (k: string): any => isRecord ? splatType.fields[k]
+          : (splatType.columns[k] && splatType.columns[k].kind === 'table')
+            ? splatType.columns[k]
+            : T.array(1, [splatType.nrows], splatType.columns[k]);
         // Synthesize per-field exprs by typing through `splatType` — no
         // AST rewrite here, just record the per-field types for the unify
-        // loop. We re-key the call by field name.
+        // loop. We re-key the call by field/column name.
         const splatKwargs: Record<string, any> = {};
         const unbindable: string[] = [];
-        for (const k in splatType.fields) {
-          if (inputNames.has(k)) splatKwargs[k] = { __splatType: splatType.fields[k] };
+        for (const k of fieldNames) {
+          if (inputNames.has(k)) splatKwargs[k] = { __splatType: fieldType(k) };
           else unbindable.push(k);
         }
         if (unbindable.length > 0) {
+          const what = isTable ? 'table' : 'record';
+          const whatNoun = isTable ? 'column' : 'field';
           diagnostics.push({
             severity: 'error',
-            message: 'call to "' + head.name + '" splats a sole positional record, but '
+            message: 'call to "' + head.name + '" splats a sole positional ' + what + ', but '
               + head.name + ' has no argument named '
               + unbindable.map((k) => '"' + k + '"').join(', ')
-              + ' (spec §04: a sole positional record always splats; to pass the record '
-              + 'as one argument name it, e.g. ' + head.name + '('
+              + ' (spec §04: a sole positional ' + what + ' always splats; to pass the '
+              + whatNoun + 's as one argument name it, e.g. ' + head.name + '('
               + inputs[0].name + ' = …))',
             loc: args[0].loc || expr.loc,
           });
         }
-        // Splat regardless — an unbindable field does not turn the call
-        // back into a whole-record positional bind. Inputs left without a
-        // field fall through to the "missing argument" diagnostic below.
+        // Splat regardless — an unbindable field/column does not turn the
+        // call back into a whole-value positional bind. Inputs left
+        // without a field fall through to the "missing argument"
+        // diagnostic below.
         args = [];
         kwargs = splatKwargs;
       }

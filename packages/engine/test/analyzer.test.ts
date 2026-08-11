@@ -251,9 +251,17 @@ test('analyzer: joint_likelihood is variadic (≥2 positional)', () => {
   assert.ok(process(`L = joint_likelihood(L1, name = L2)\n`).diagnostics.some((d: any) => /positional/i.test(d.message)));
 });
 
-test('analyzer: record requires keyword args only', () => {
-  const pos = process(`r = record(a, b)\n`);
-  assert.ok(pos.diagnostics.some((d: any) => /keyword arguments only/.test(d.message)));
+test('analyzer: record accepts kwarg fields OR a single positional table', () => {
+  // record(name = value, ...) — kwarg form
+  const kw = process(`r = record(a = 1.0, b = 2.0)\n`);
+  assert.ok(!kw.diagnostics.some((d: any) => /record/.test(d.message)));
+  // record(t) — table-conversion form (§03), the reverse of table(r)
+  const oneArg = process(`t = table(x = [1, 2], y = [3, 4])\nr = record(t)\n`);
+  assert.ok(!oneArg.diagnostics.some((d: any) => /record/.test(d.message)));
+  // record(a, b) — multi positional NOT allowed
+  const multiPos = process(`r = record(a, b)\n`);
+  assert.ok(multiPos.diagnostics.some((d: any) => /single positional table or field keyword/.test(d.message)));
+  // record() — empty
   const empty = process(`r = record()\n`);
   assert.ok(empty.diagnostics.some((d: any) => /at least one field/.test(d.message)));
 });

@@ -1606,21 +1606,22 @@ function resolveParams(measureIR: any, entry: any, env: any) {
   let positional = measureIR.args || [];
 
   // Auto-splatting (spec §04 "Calling conventions"): a single positional
-  // record argument is equivalent to passing each field as a keyword arg
-  // — `Dist(record(a = x, b = y))` ≡ `Dist(a = x, b = y)` — and it
-  // ALWAYS splats when there are no explicit kwargs. §04: "A sole
-  // positional record or table therefore always splats: whether its
-  // field or column names match the callable's argument names decides
-  // only whether the call is valid, never whether the splat occurs."
+  // record OR TABLE argument is equivalent to passing each field/column as
+  // a keyword arg — `Dist(record(a = x, b = y))` ≡ `Dist(a = x, b = y)`,
+  // and likewise `Dist(table(a = x, b = y))` — and it ALWAYS splats when
+  // there are no explicit kwargs. §04: "A sole positional record or
+  // table therefore always splats: whether its field or column names
+  // match the callable's argument names decides only whether the call
+  // is valid, never whether the splat occurs."
   // Splatting unconditionally is what makes a name mismatch reach the
   // per-param "missing parameter" throw below. Gating the splat on the
   // fields covering the params instead left the record bound to param 0,
   // so `Poisson(record(zzz = 0.5))` scored NaN with no error at all.
-  // Splatting is shallow. A record meant as one parameter's value is
+  // Splatting is shallow. A record/table meant as one parameter's value is
   // spelled `Dist(param = <record>)`, which has kwargs and is untouched.
   if (Object.keys(kwargs).length === 0 && positional.length === 1) {
     const a0 = positional[0];
-    if (a0 && a0.kind === 'call' && a0.op === 'record'
+    if (a0 && a0.kind === 'call' && (a0.op === 'record' || a0.op === 'table')
         && Array.isArray(a0.fields)) {
       const byName: Record<string, any> = Object.create(null);
       for (const f of a0.fields) byName[f.name] = f.value;
