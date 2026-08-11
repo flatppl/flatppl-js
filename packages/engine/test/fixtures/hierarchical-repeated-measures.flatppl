@@ -24,7 +24,7 @@ N_per_group = 5
 mu_g ~ iid(Normal(0, 10), G)
 
 % Shared global noise.
-sigma_g ~ truncate(Normal(0, 1), interval(0, inf))
+sigma_g ~ normalize(truncate(Normal(0, 1), interval(0, inf)))
 
 % Per-group obs kernel — kwarg-form placeholder, engine canonical.
 group_kernel = kernelof(iid(Normal(mu = mu, sigma = sigma_g), N_per_group),
