@@ -89,6 +89,78 @@ test('§04: a broadcast draw over a distribution head is accepted', () => {
   assert.deepEqual(gateErrors(src), []);
 });
 
+// ---------------------------------------------------------------------
+// A reweighting of a base with NO class: `deferred` rides out only when
+// the weight is provably the identity scale
+// ---------------------------------------------------------------------
+//
+// Total mass is w · mass(base), so proving it one needs mass(base) = 1/w,
+// which no rule establishes for a base that has no class. A weight other
+// than one therefore settles "not provably normalized" whatever the base
+// turns out to be. This shipped the other way — the class rode a
+// `deferred` base as if the scale did not matter — and the gate passed
+// every spelling below.
+
+// A chain op has no mass rule in this pass, so its class is `deferred`.
+const CHAIN_HEAD = 'mu = elementof(reals)\n'
+  + 'K = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)\n'
+  + 'pr = Normal(mu = 0.0, sigma = 1.0)\n';
+
+const RESCALED_DEFERRED: [string, string][] = [
+  ['weighted(2.0, kchain(…))', 'm = weighted(2.0, kchain(pr, K))'],
+  ['weighted(0.5, kchain(…))', 'm = weighted(0.5, kchain(pr, K))'],
+  ['logweighted(2.0, kchain(…))', 'm = logweighted(2.0, kchain(pr, K))'],
+  ['weighted(2.0, jointchain(…))', 'm = weighted(2.0, jointchain(pr, K))'],
+];
+
+for (const [label, body] of RESCALED_DEFERRED) {
+  test(`§04 refuses a draw from ${label} — a rescaled base with no class`, () => {
+    const src = CHAIN_HEAD + body + '\nx ~ m';
+    assert.equal(massOf(src, 'm'), 'unknown');
+    const errs = gateErrors(src);
+    assert.equal(errs.length, 1, `expected one gate error, got ${errs.length}`);
+    assert.match(errs[0], /total mass is %unknown/);
+  });
+}
+
+test('§06: the identity scale DOES ride a base with no class', () => {
+  // `weighted(1, M)` and `logweighted(0, M)` are both dν = dM, so they
+  // leave the base's class alone — including "not yet inferred", which the
+  // gate passes. This is the control that makes the four refusals above
+  // mean "the scale settled it" rather than "chains are refused".
+  for (const body of [
+    'm = weighted(1.0, kchain(pr, K))',
+    'm = logweighted(0.0, kchain(pr, K))',
+    'm = weighted(1.0, jointchain(pr, K))',
+    'm = kchain(pr, K)',
+  ]) {
+    const src = CHAIN_HEAD + body + '\nx ~ m';
+    assert.equal(massOf(src, 'm'), 'deferred', body);
+    assert.deepEqual(gateErrors(src), [], body);
+  }
+});
+
+test('§06: a fixed scalar BINDING as the weight is not provably one', () => {
+  // `isFixedScalarWeight` accepts a ref to a fixed scalar binding, but this
+  // pass does not evaluate it, so `w` is not proven to be the identity
+  // scale even when it happens to be 1.0 in the source.
+  for (const w of ['2.0', '1.0']) {
+    const src = CHAIN_HEAD + `w = ${w}\nm = weighted(w, kchain(pr, K))\nx ~ m`;
+    assert.equal(massOf(src, 'm'), 'unknown', w);
+    assert.equal(gateErrors(src).length, 1, w);
+  }
+});
+
+test('§06: a rescaled base WITH a class keeps its existing rule', () => {
+  // The change above touches only the no-class fallthrough: a classified
+  // base still demotes to finite (or stays locally finite) exactly as
+  // before, for any fixed scalar weight including one.
+  const N = `Normal(mu = 0.0, sigma = 1.0)`;
+  assert.equal(massOf(`m = weighted(2.0, ${N})`, 'm'), 'finite');
+  assert.equal(massOf(`m = weighted(1.0, ${N})`, 'm'), 'finite');
+  assert.equal(massOf('m = weighted(2.0, Lebesgue(support = reals))', 'm'), 'locallyfinite');
+});
+
 test('§04: a broadcast over a locally-finite cell measure is refused', () => {
   // The cell classifies through the reified head's body, so a broadcast
   // of an unbounded reference measure is not a probability measure. The

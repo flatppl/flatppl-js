@@ -4121,6 +4121,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return vsLib.isBounded(vsLib.setExprValueset(setIR, _resolveDim));
   }
 
+  // Is this weight provably the identity scale — `weighted(1, M)` or
+  // `logweighted(0, M)`, both of which give dν = dM (spec §06)? A LITERAL
+  // only: a ref to a fixed scalar binding is a constant this pass does not
+  // evaluate, so it is not provably one.
+  function isIdentityScale(op: string, weightIR: any): boolean {
+    if (!weightIR || weightIR.kind !== 'lit') return false;
+    return weightIR.value === (op === 'logweighted' ? 0 : 1);
+  }
+
   // A fixed-phase scalar weight rescales by a constant — preserving the
   // mass class (modulo normalized→finite). A parameterised / stochastic
   // / function / inline weight does not qualify (spec §06 + Rust rule).
@@ -4237,6 +4246,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // weighted(w, M) / logweighted(g, M): a fixed scalar weight keeps
       // the class (normalized demotes to finite — the scale is no longer
       // one); any other weight is unknown.
+      //
+      // `deferred` may only ride out of here when the weight is provably
+      // the IDENTITY scale. Total mass is w · mass(base), so proving it one
+      // needs mass(base) = 1/w — and no rule establishes that for a base
+      // with no class, so a weight other than one settles "not provably
+      // normalized" on its own, whatever the base turns out to be. This
+      // rule shipped the other way and the draw gate passed
+      // `weighted(2.0, kchain(…))` silently: the class rode a `deferred`
+      // base as if the scale did not matter. `unknown` rather than
+      // `finite`, because an unclassified base may itself carry infinite
+      // mass.
       case 'weighted':
       case 'logweighted': {
         const base = massOfExpr(args[1]);
@@ -4244,10 +4264,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         if (isFixedScalarWeight(args[0])) {
           if (base === T.MASS_NORMALIZED || base === T.MASS_FINITE) return T.MASS_FINITE;
           if (base === T.MASS_LOCALLY_FINITE) return T.MASS_LOCALLY_FINITE;
-          // A constant rescaling of a not-yet-classified base is itself
-          // not yet classified — not `unknown`, which would make the draw
-          // gate reject a base the rules simply have no rule for.
-          return base === T.MASS_DEFERRED ? T.MASS_DEFERRED : T.MASS_UNKNOWN;
+          if (base === T.MASS_DEFERRED && isIdentityScale(op, args[0])) {
+            return T.MASS_DEFERRED;
+          }
+          return T.MASS_UNKNOWN;
         }
         // A parameterised / stochastic weight scales by an unknown factor,
         // so the total mass is unknown whatever the base's class is.
@@ -4255,6 +4275,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
       // truncate(M, S) demotes a finite/normalized measure to finite;
       // a locally finite measure becomes finite only on a bounded S.
+      //
+      // A base with no class falls through to `unknown`, the same closed
+      // answer the weighted rule above gives — and for the same reason,
+      // which is NOT that a restriction cannot be a probability measure
+      // (restricting a mass-5 measure to a region carrying exactly 1 is
+      // one). It is that nothing here PROVES the restricted mass, and the
+      // gate's rule is reject unless proven. Stating it as "a sub-measure,
+      // therefore not a probability measure" is the false version of this
+      // argument, and reasoning that way is what let the weighted rule err
+      // open on the identical situation.
       case 'truncate': {
         const base = massOfExpr(args[0]);
         if (base === T.MASS_NULL) return T.MASS_NULL;
@@ -4262,9 +4292,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         if (base === T.MASS_LOCALLY_FINITE) {
           return setBounded(args[1]) === true ? T.MASS_FINITE : T.MASS_UNKNOWN;
         }
-        // Not `deferred`: a restriction is a SUB-measure whatever the base
-        // turns out to be, so "no class for the base" is still a verdict
-        // that this is not a probability measure.
         return T.MASS_UNKNOWN;
       }
       // superpose is measure addition; select is its discrete-mixture
@@ -4458,6 +4485,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // subtrees are `(%ref self psi)` — no source is written inside either,
   // and the `draw` sits in `psi`'s own binding, which this deliberately
   // does not enter.
+  //
+  // SCOPE NOTE: the opaque-free arm is WIDER than flatppl-design#80's
+  // literal wording ("both occurrences of `e` are the same node"). It is
+  // sound — an opaque-free subtree is deterministic in its refs, so two
+  // occurrences denote one value — but it accepts spellings #80 as drafted
+  // does not name (e.g. two separate `invlogit(eta)` subtrees). If #80
+  // lands as written, either narrow this to node identity or get the wider
+  // reading into the text.
   function isComplementOf(part: any, wholeMinus: any): boolean {
     const node = resolveBindingRefs(wholeMinus);
     if (!node || node.kind !== 'call' || node.op !== 'sub') return false;
