@@ -123,6 +123,11 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: a
   // normalize-of-infinite/null static error.
   ctx.fillValuesets();
   ctx.fillMasses();
+  // Consumer of the normalization domain: spec §04 "Reification" — `x ~ m`
+  // / `draw(m)` draws "from a normalized measure (i.e. a probability
+  // measure)", so a draw from a measure the mass pass could not prove
+  // normalized is a static error naming `normalize(...)` as the escape.
+  ctx.checkDrawMass();
   // Consumer of the valueset domain: flag distribution parameters whose
   // value set is PROVABLY outside the parameter's required domain (spec
   // §08), e.g. `Normal(sigma = -1.0)`. Reads the valuesets filled above.
@@ -4099,6 +4104,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // ===================================================================
   const massCache = new Map<string, any>();
   const massInProgress = new Set<string>();
+  // Per-NODE memo. Keyed by the IR node and NOT by its `meta.type`,
+  // because unification SHARES one type object between nodes: in
+  // `N = Normal(…); m2 = weighted(2.0, N)`, `m2`'s result type is the
+  // very object that is `N`'s, so a `meta.type.mass` read answers with
+  // whichever neighbour was classified last rather than with this
+  // node's own class. The draw gate below rejects on that answer, so
+  // reading a neighbour's class would refuse a correct model.
+  const massNodeCache = new WeakMap<object, any>();
 
   // Boundedness of a set expression (spec §03), for the Lebesgue /
   // Counting mass rule — read through the valueset layer (§17.3: mass
@@ -4128,11 +4141,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // passes) and stamp the class onto the call's `meta.type` for %meta
   // emission.
   function massOfExpr(ir: any): any {
-    if (ir && ir.kind === 'call' && ir.meta && ir.meta.type
-        && ir.meta.type.kind === 'measure' && ir.meta.type.mass !== undefined) {
-      return ir.meta.type.mass;
+    if (ir && typeof ir === 'object' && massNodeCache.has(ir)) {
+      return massNodeCache.get(ir);
     }
     const m = _computeMass(ir);
+    if (ir && typeof ir === 'object') massNodeCache.set(ir, m);
     if (ir && ir.kind === 'call' && ir.meta && ir.meta.type
         && ir.meta.type.kind === 'measure') {
       ir.meta.type.mass = m;
@@ -4140,12 +4153,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return m;
   }
 
+  // A shape no rule below covers is §11's `%deferred` ("not yet
+  // inferred"), NOT `%unknown` ("nothing beyond s-finiteness known").
+  // The two used to collapse onto UNKNOWN here, which was invisible while
+  // the class was only `%meta` decoration; the draw gate makes it
+  // load-bearing, since it rejects `unknown` and passes `deferred`. So an
+  // op this pass has no rule for (a user call, a §09 catalogue member, a
+  // shape added later) must answer `deferred` or the gate turns every gap
+  // in mass inference into an error on a well-formed model. A rule that
+  // RAN and concluded nothing still answers `unknown`.
   function _computeMass(ir: any): any {
-    if (!ir) return T.MASS_UNKNOWN;
+    if (!ir) return T.MASS_DEFERRED;
     if (ir.kind === 'ref' && loweredModule.bindings.has(ir.name)) {
       return massOfBinding(ir.name);
     }
-    if (ir.kind !== 'call') return T.MASS_UNKNOWN;
+    if (ir.kind !== 'call') return T.MASS_DEFERRED;
     const op = ir.op;
     const args = ir.args || [];
 
@@ -4182,8 +4204,31 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'iid': {
         const base = massOfExpr(args[0]);
         return (base === T.MASS_NORMALIZED || base === T.MASS_NULL
-          || base === T.MASS_FINITE || base === T.MASS_LOCALLY_FINITE)
+          || base === T.MASS_FINITE || base === T.MASS_LOCALLY_FINITE
+          || base === T.MASS_DEFERRED)
           ? base : T.MASS_UNKNOWN;
+      }
+      // A broadcast call `D.(a, b)` is an independent product of one cell
+      // measure per data cell (spec §04 "Broadcasting"), so the cell's
+      // class carries to the product exactly as Rust's `broadcast_mass`
+      // maps it. The cell measure is the broadcast HEAD applied at a cell:
+      // a §08 distribution name is normalized, and a reified kernel /
+      // functionof head classifies through its own body. Any other head
+      // (a §09 catalogue member, an unresolved name) is not yet inferred.
+      case 'broadcast': {
+        const head = args[0];
+        let cell = T.MASS_DEFERRED;
+        if (head && head.kind === 'ref' && builtins.DISTRIBUTIONS.has(head.name)) {
+          cell = T.MASS_NORMALIZED;
+        } else {
+          const resolved = resolveBindingRefs(head);
+          if (resolved && resolved.kind === 'call' && resolved.body) {
+            cell = massOfExpr(resolved.body);
+          }
+        }
+        if (cell === T.MASS_NORMALIZED || cell === T.MASS_NULL
+          || cell === T.MASS_FINITE || cell === T.MASS_DEFERRED) return cell;
+        return T.MASS_UNKNOWN;
       }
       // Pushforward is mass-preserving: (f∗M)(whole) = M(whole). Measure
       // is arg 1 (`pushfwd(f, M)`); `locscale(m, …)` carries it at arg 0.
@@ -4199,8 +4244,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         if (isFixedScalarWeight(args[0])) {
           if (base === T.MASS_NORMALIZED || base === T.MASS_FINITE) return T.MASS_FINITE;
           if (base === T.MASS_LOCALLY_FINITE) return T.MASS_LOCALLY_FINITE;
-          return T.MASS_UNKNOWN;
+          // A constant rescaling of a not-yet-classified base is itself
+          // not yet classified — not `unknown`, which would make the draw
+          // gate reject a base the rules simply have no rule for.
+          return base === T.MASS_DEFERRED ? T.MASS_DEFERRED : T.MASS_UNKNOWN;
         }
+        // A parameterised / stochastic weight scales by an unknown factor,
+        // so the total mass is unknown whatever the base's class is.
         return T.MASS_UNKNOWN;
       }
       // truncate(M, S) demotes a finite/normalized measure to finite;
@@ -4212,11 +4262,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         if (base === T.MASS_LOCALLY_FINITE) {
           return setBounded(args[1]) === true ? T.MASS_FINITE : T.MASS_UNKNOWN;
         }
+        // Not `deferred`: a restriction is a SUB-measure whatever the base
+        // turns out to be, so "no class for the base" is still a verdict
+        // that this is not a probability measure.
         return T.MASS_UNKNOWN;
       }
       // superpose is measure addition; select is its discrete-mixture
-      // sibling — both combine additively.
-      case 'superpose': return additiveMass(args.map(massOfExpr));
+      // sibling — both combine additively. A superposition whose weights
+      // are PROVEN to sum to one is the exception: its total mass is
+      // exactly one, so §11's `%normalized` applies rather than merely
+      // `%finite`.
+      case 'superpose':
+        if (superposeIsProvablyNormalized(ir)) return T.MASS_NORMALIZED;
+        return additiveMass(args.map(massOfExpr));
       case 'select': {
         const br = ir.branches || [];
         const masses = br.map((b: any) =>
@@ -4231,17 +4289,211 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           ? ir.fields.map((f: any) => f.value) : args;
         return productMass(comps.map(massOfExpr));
       }
-      // bayesupdate's mass is the evidence integral — statically unknown.
-      // Dependent chains: conservative (the kernel arg is kernel-typed,
-      // so its output mass isn't reachable here without unwrapping —
-      // matches Rust's effective behaviour; refine when a consumer needs
-      // it).
+      // bayesupdate's mass is the evidence integral — a rule ran and it is
+      // statically unknown.
       case 'bayesupdate':
+        return T.MASS_UNKNOWN;
+      // Dependent chains: NO rule here yet. The kernel arg is
+      // kernel-typed, so its output mass isn't reachable without
+      // unwrapping — that is a gap in this pass (Rust classifies both),
+      // hence `deferred` rather than a verdict of `unknown`.
       case 'jointchain':
       case 'kchain':
-        return T.MASS_UNKNOWN;
+        return T.MASS_DEFERRED;
     }
-    return T.MASS_UNKNOWN;
+    return T.MASS_DEFERRED;
+  }
+
+  // ------------------------------------------------------------------
+  // Is this `superpose(...)` PROVABLY a probability measure?
+  //
+  // The maths is forced. `superpose` is measure addition (spec §06
+  // superpose: `ν(A) = M₁(A) + M₂(A) + …`) and `weighted(w, M)` scales by
+  // `w` (spec §06 weighted: `dν = w · dM`), so a superposition of
+  // `weighted(wᵢ, mᵢ)` with every `mᵢ` normalized has total mass `Σ wᵢ`.
+  // Prove `Σ wᵢ = 1` and the sum is a probability measure. §06 words
+  // superpose as "generally not normalized" and recommends
+  // `normalize(superpose(weighted(w1, M1), weighted(w2, M2)))` for a
+  // mixture — "generally" is what this reads: the normalize spelling
+  // stays correct, and stays necessary for everything not proven here.
+  //
+  // Reads the argument SYNTAX, not the argument masses, and it has to:
+  // the mass lattice has no "scaled by an unproven factor" element, so
+  // `weighted(psi, m)` with a stochastic `psi` folds to `unknown` and the
+  // weights are unrecoverable from the folded class.
+  //
+  // Requires ALL of: every argument is the positional `weighted(wᵢ, mᵢ)`
+  // with `mᵢ` proven normalized; the weights sum to one by one of the two
+  // decidable readings below; and every weight is provably in [0, 1], so
+  // each component is a measure and the sum is a mixture rather than a
+  // signed combination. Mirrors flatppl-rust
+  // `superpose_is_provably_normalized`.
+  // ------------------------------------------------------------------
+  function superposeIsProvablyNormalized(ir: any): boolean {
+    const args = ir.args || [];
+    if (args.length < 2) return false;
+    if (ir.kwargs && Object.keys(ir.kwargs).length > 0) return false;
+    const weights: any[] = [];
+    for (const arg of args) {
+      const parts = weightedParts(arg);
+      if (!parts) return false;
+      if (massOfExpr(parts.base) !== T.MASS_NORMALIZED) return false;
+      weights.push(parts.weight);
+    }
+    return literalWeightsSumToOne(weights) || complementPair(weights);
+  }
+
+  // `{weight, base}` of a `weighted(w, M)` call, looking through binding
+  // references so a named component (`signal = weighted(w, m)`) reads the
+  // same as an inline one. Positional two-argument spelling only: §04
+  // lets a built-in take its arguments by keyword too, so
+  // `weighted(weight = w, base = m)` is valid FlatPPL that this declines
+  // to prove. `logweighted` is deliberately absent — its weight is
+  // exp(logweight), so a sum of one is a different, non-linear question.
+  function weightedParts(ir: any): { weight: any, base: any } | null {
+    const node = resolveBindingRefs(ir);
+    if (!node || node.kind !== 'call' || node.op !== 'weighted') return null;
+    const args = node.args || [];
+    if (args.length !== 2) return null;
+    if (node.kwargs && Object.keys(node.kwargs).length > 0) return null;
+    return { weight: args[0], base: args[1] };
+  }
+
+  // Follow `self`-namespace ref hops to the bound right-hand side.
+  // Bounded, so a reference cycle (reported separately) cannot spin here.
+  function resolveBindingRefs(ir: any): any {
+    let node = ir;
+    for (let i = 0; i < 16; i++) {
+      if (!node || node.kind !== 'ref' || node.ns !== 'self') break;
+      const b = loweredModule.bindings.get(node.name);
+      if (!b || !b.rhs) break;
+      node = b.rhs;
+    }
+    return node;
+  }
+
+  // All weights are non-negative literals whose DECLARED DECIMAL values
+  // sum to exactly one.
+  //
+  // "Declared decimal" is the load-bearing choice, and it is neither f64
+  // addition nor the exact value of the stored doubles. On three readings
+  // of the same weights:
+  //
+  //   [0.3, 0.7]                  f64 addition gives exactly 1, the stored
+  //                               doubles sum to 0.99999999999999994…, the
+  //                               declared decimals sum to 1 → ACCEPTED.
+  //   [0.3333333333333333] × 3    f64 addition gives exactly 1 (two
+  //                               roundings land on it), the declared
+  //                               decimals sum to 0.9999999999999999 →
+  //                               REJECTED. An f64 fold would have accepted
+  //                               a mixture whose weights, as written, do
+  //                               not sum to one.
+  //   [0.1] × 10                  declared decimals sum to 1 → ACCEPTED,
+  //                               and this must not depend on f64 addition
+  //                               happening to agree.
+  //
+  // So the proof is exact rational arithmetic over what the model says,
+  // never over what a particular float width does with it — FlatPPL
+  // mandates no precision, and this verdict must not move with the
+  // engine's.
+  function literalWeightsSumToOne(weights: any[]): boolean {
+    const parsed = weights.map(decimalLiteral);
+    if (parsed.some((p) => p === null)) return false;
+    // A negative weight makes the component a signed measure, not a measure.
+    if (parsed.some((p: any) => p.mantissa < 0n)) return false;
+    const scale = Math.max(...parsed.map((p: any) => p.scale));
+    let total = 0n;
+    for (const p of parsed as any[]) {
+      total += p.mantissa * (10n ** BigInt(scale - p.scale));
+    }
+    return total === 10n ** BigInt(scale);
+  }
+
+  // A numeric literal as its declared decimal value: `{mantissa, scale}`
+  // denotes `mantissa / 10^scale`, exact in BigInt. null for a
+  // non-literal, and for the exponent spellings (`1e-7`, `1e21`) whose
+  // declared decimal this does not read.
+  function decimalLiteral(ir: any): { mantissa: bigint, scale: number } | null {
+    if (!ir || ir.kind !== 'lit' || typeof ir.value !== 'number'
+        || !Number.isFinite(ir.value)) return null;
+    // `String(x)` is the shortest decimal that round-trips, i.e. what the
+    // model wrote — but it switches to exponent notation outside
+    // 1e-6 … 1e21, which this declines rather than mis-read.
+    const text = String(ir.value);
+    if (text.indexOf('e') >= 0 || text.indexOf('E') >= 0) return null;
+    const dot = text.indexOf('.');
+    const intDigits = dot < 0 ? text : text.slice(0, dot);
+    const fracDigits = dot < 0 ? '' : text.slice(dot + 1);
+    return { mantissa: BigInt(intDigits + fracDigits), scale: fracDigits.length };
+  }
+
+  // The complement pattern: exactly two weights, `e` and `1 - e` with the
+  // SAME `e`, where `e` is provably in [0, 1]. Then the weights sum to one
+  // whatever `e` turns out to be — the one sum-to-one proof that survives
+  // a stochastic or parameterized weight.
+  function complementPair(weights: any[]): boolean {
+    if (weights.length !== 2) return false;
+    return isComplementOf(weights[0], weights[1])
+      || isComplementOf(weights[1], weights[0]);
+  }
+
+  // Is `wholeMinus` the expression `1 - part`, for the SAME `part`, with
+  // `part` proven to lie in [0, 1]?
+  //
+  // **Structural equality is not value identity, and treating it as such
+  // is unsound.** Two inline `draw(Uniform(interval(0.0, 1.0)))` subtrees
+  // are syntactically identical and are two INDEPENDENT coordinates (§04:
+  // each draw introduces its own stochastic node), so
+  // `w₁ + (1 - w₂) = 1` holds only on a probability-zero event — yet the
+  // pair would type normalized and lower as a law with no normalizer. A
+  // silently wrong number, and worse than refusing.
+  //
+  // So identity needs one of two things, and structural equality alone is
+  // neither: the SAME node (identity by construction), or a subtree with
+  // no opaque value source written inside it, where the spelling does
+  // determine the value.
+  //
+  // The legitimate spelling survives because a binding is one coordinate:
+  // in `psi ~ Beta(…)` with weights `psi` and `1 - psi`, both compared
+  // subtrees are `(%ref self psi)` — no source is written inside either,
+  // and the `draw` sits in `psi`'s own binding, which this deliberately
+  // does not enter.
+  function isComplementOf(part: any, wholeMinus: any): boolean {
+    const node = resolveBindingRefs(wholeMinus);
+    if (!node || node.kind !== 'call' || node.op !== 'sub') return false;
+    const args = node.args || [];
+    if (args.length !== 2) return false;
+    if (node.kwargs && Object.keys(node.kwargs).length > 0) return false;
+    const one = args[0];
+    if (!one || one.kind !== 'lit' || one.value !== 1) return false;
+    const other = args[1];
+    const sameValue = part === other
+      || (!containsOpaqueValueSource(part) && !containsOpaqueValueSource(other));
+    if (!sameValue || !irStructuralEq(part, other)) return false;
+    // [0, 1] is exactly `unitinterval` (§11 value sets); `subsetOf` proves
+    // containment or answers false, so an unconstrained weight is unproven.
+    return vsLib.subsetOf(valuesetOfExpr(part), vsLib.UNITINTERVAL);
+  }
+
+  // Does this subtree contain a call whose value is a property of the NODE
+  // rather than of the expression? Reading the spelling of one of these
+  // tells you nothing about which value you get, so two occurrences of one
+  // spelling may denote two different values (§04: each `draw` is its own
+  // stochastic coordinate, each `elementof` leaf its own parameter).
+  //
+  // Does NOT follow binding references, and that is the point: one binding
+  // is one coordinate, so two `(%ref self psi)` nodes denote the same
+  // value however `psi` was produced. Only sources written INSIDE the
+  // compared subtree defeat identity.
+  function containsOpaqueValueSource(ir: any): boolean {
+    if (!ir || typeof ir !== 'object') return false;
+    if (ir.kind === 'call' && OPAQUE_VALUE_SOURCES.has(ir.op)) return true;
+    const irWalk = require('./ir-walk.ts');
+    let found = false;
+    irWalk.forEachIRChild(ir, (child: any) => {
+      found = found || containsOpaqueValueSource(child);
+    });
+    return found;
   }
 
   // Mass of a measure binding (memoised, cycle-guarded — refs resolve here).
@@ -4249,10 +4501,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (massCache.has(name)) return massCache.get(name);
     if (massInProgress.has(name)) return T.MASS_UNKNOWN;     // cycle → conservative
     const b = loweredModule.bindings.get(name);
+    /* c8 ignore start -- defensive: a mass rule only recurses into a ref
+       from a measure position, and every op that would put a KERNEL there
+       (§06's uniform kernel extension over truncate / weighted / iid) is
+       an arg-type error in this engine today, so no model reaches this. */
     if (!b || !b.inferredType || b.inferredType.kind !== 'measure') {
-      massCache.set(name, T.MASS_UNKNOWN);
-      return T.MASS_UNKNOWN;
+      // Not a measure binding at all: no mass verdict to give.
+      massCache.set(name, T.MASS_DEFERRED);
+      return T.MASS_DEFERRED;
     }
+    /* c8 ignore stop */
     massInProgress.add(name);
     const m = massOfExpr(b.rhs);
     massInProgress.delete(name);
@@ -4285,7 +4543,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const visit = (ir: any) => {
       if (!ir || typeof ir !== 'object') return;
       if (ir.kind === 'call' && ir.meta && ir.meta.type
-          && ir.meta.type.kind === 'measure' && ir.meta.type.mass === undefined) {
+          && ir.meta.type.kind === 'measure' && !massNodeCache.has(ir)) {
         massOfExpr(ir);
       }
       irWalk.forEachIRChild(ir, visit);
@@ -4293,8 +4551,97 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const [, b] of loweredModule.bindings) visit(b.rhs);
   }
 
+  // ===================================================================
+  // The `draw` total-mass gate (spec §04 "Reification")
+  // ===================================================================
+  //
+  // §04 states the rule normatively: "`x ~ m` (equivalent to
+  // `x = draw(m)`) introduces a stochastic node `x` by drawing a variate
+  // from a normalized measure (i.e. a probability measure) `m`." A draw
+  // from anything else is therefore already ill-formed, and this engine
+  // refuses instead of normalizing quietly — implicit normalization would
+  // make a model's meaning depend on a step the user never wrote, so the
+  // diagnostic names `normalize(...)` as the escape.
+  //
+  // The rule this implements is **reject unless proven normalized, or not
+  // yet inferred** — NOT "reject what is proven unnormalized". The
+  // difference is `unknown`, which §11 defines as unknown total mass and
+  // which IS rejected without anything having been proven about it,
+  // because the question is whether normalization was established. An
+  // ABSENT mass field is §11's `%deferred` ("not yet inferred") and PASSES,
+  // so a gap in mass inference never becomes a user-facing error on a
+  // well-formed model.
+  //
+  // `finite` is rejected too. The rule quantifies over the mass CLASS and
+  // does no arithmetic of its own: proving normalization is the mass
+  // rules' job, and where a proof exists the class they yield is
+  // `normalized` before this is consulted — see
+  // `superposeIsProvablyNormalized`, which is why a mixture with
+  // sum-to-one weights arrives here already normalized rather than
+  // arguing its way past a `finite` verdict.
+  //
+  // Only a MEASURE argument is gated. A kernel argument is a different
+  // question (§06 scopes its "uniform kernel extension" to
+  // measure-to-measure operations, and `draw` is measure-to-value), and
+  // one about shapes rather than about mass. Mirrors flatppl-rust
+  // `draw_mass_gate`. `x ~ m` needs no separate case: the parser rewrites
+  // a tilde binding to `draw(...)`.
+  function checkDrawMass() {
+    const irWalk = require('./ir-walk.ts');
+    const visit = (ir: any) => {
+      if (!ir || typeof ir !== 'object') return;
+      if (ir.kind === 'call' && ir.op === 'draw') {
+        const arg = (ir.args || [])[0];
+        const offending = unprovableNormalization(arg);
+        if (offending) {
+          diagnostics.push({ severity: 'error',
+            message: 'draw requires a probability measure, but this argument\'s total '
+              + 'mass is ' + offending + ' (spec §04): there is no draw from an '
+              + 'unnormalized measure. Wrap it in normalize(...) to state that intent '
+              + '— draw never normalizes its argument',
+            loc: (arg && arg.loc) || ir.loc });
+        }
+      }
+      irWalk.forEachIRChild(ir, visit);
+    };
+    for (const [, b] of loweredModule.bindings) visit(b.rhs);
+  }
+
+  // The mass class of a measure-typed expression whose normalization could
+  // not be established, spelled as the §11 `%mass` symbol to quote in the
+  // diagnostic — null when the expression is not a measure, or is one whose
+  // mass the caller must accept.
+  //
+  // Reads the class through `massOfExpr` / `massOfBinding` rather than off
+  // `meta.type.mass` / `inferredType.mass`: those slots live on type objects
+  // that unification SHARES between nodes and between bindings, so their
+  // `mass` is whichever neighbour was classified last.
+  function unprovableNormalization(ir: any): string | null {
+    if (!ir || typeof ir !== 'object') return null;
+    if (!isMeasureTyped(ir)) return null;
+    const mass = ir.kind === 'ref' && loweredModule.bindings.has(ir.name)
+      ? massOfBinding(ir.name) : massOfExpr(ir);
+    // Proven normalized, or not yet inferred — let it through.
+    if (mass === T.MASS_NORMALIZED || mass === T.MASS_DEFERRED
+      || mass === undefined) return null;
+    // Every class string is its FlatPIR symbol without the sigil (§11).
+    return '%' + mass;
+  }
+
+  // Is this expression measure-typed? A binding ref answers from the
+  // binding's own type; any other node from its `meta.type`. Only the
+  // `kind` discriminator is read, which unification does not vary across
+  // the nodes that share a type object.
+  function isMeasureTyped(ir: any): boolean {
+    if (ir.kind === 'ref' && loweredModule.bindings.has(ir.name)) {
+      const b = loweredModule.bindings.get(ir.name);
+      return !!(b && b.inferredType && b.inferredType.kind === 'measure');
+    }
+    return !!(ir.meta && ir.meta.type && ir.meta.type.kind === 'measure');
+  }
+
   return { diagnostics, inferBinding, inferExpr, fillValuesets, fillMasses, checkDomainContracts,
-    checkPushfwdDomainContracts, checkCrossModuleReification };
+    checkPushfwdDomainContracts, checkCrossModuleReification, checkDrawMass };
 }
 
 // Mass of an independent product of components (spec §11; Rust
@@ -4303,6 +4650,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 // finite; anything unknown is unknown.
 function productMass(masses: any[]): any {
   if (masses.some((m) => m === T.MASS_NULL)) return T.MASS_NULL;
+  // A factor with no class yet leaves the product with no class yet —
+  // distinct from `unknown`, which the draw gate rejects.
+  if (masses.some((m) => m === T.MASS_DEFERRED)) return T.MASS_DEFERRED;
   if (masses.every((m) => m === T.MASS_NORMALIZED)) return T.MASS_NORMALIZED;
   if (masses.every((m) => m === T.MASS_NORMALIZED || m === T.MASS_FINITE)) return T.MASS_FINITE;
   if (masses.every((m) =>
@@ -4318,9 +4668,72 @@ function productMass(masses: any[]): any {
 function additiveMass(masses: any[]): any {
   if (masses.length === 0) return T.MASS_NULL;
   if (masses.some((m) => m === T.MASS_UNKNOWN || m === undefined)) return T.MASS_UNKNOWN;
+  // As in `productMass`: a summand with no class yet is a gap, not a
+  // verdict of `unknown`.
+  if (masses.some((m) => m === T.MASS_DEFERRED)) return T.MASS_DEFERRED;
   if (masses.some((m) => m === T.MASS_LOCALLY_FINITE)) return T.MASS_LOCALLY_FINITE;
   if (masses.every((m) => m === T.MASS_NULL)) return T.MASS_NULL;
   return T.MASS_FINITE;
+}
+
+// Built-ins whose value is a property of the NODE rather than of the
+// expression. `draw` and `rand` are fresh coordinates; each `elementof`
+// leaf is its own parameter (spec §04 "the leaf nodes become the inputs of
+// the reified callable"); `external` / `load_data` are compile-time
+// unknown. Mirrors flatppl-rust `is_opaque_value_source`.
+//
+// Deliberately wider than freshness alone: two `load_data` calls on one
+// path do agree, but this set exists so a caller can decline to reason
+// about the value at all.
+const OPAQUE_VALUE_SOURCES = new Set([
+  'draw', 'rand', 'elementof', 'external', 'load_data', 'rnginit', 'rngstate',
+]);
+
+// Structural equality of two IR expressions — conservative: `true` means
+// the two spellings are identical, `false` means "not proven equal", never
+// "proven different". Covers the value-expression forms a `weighted` weight
+// can take (literals, set constants, refs, calls over args/kwargs); any
+// node carrying another IR-bearing field (a reification body, select
+// branches, record fields, …) answers false rather than guess at how to
+// pair those positions up.
+function irStructuralEq(a: any, b: any): boolean {
+  if (a === b) return true;
+  if (!a || !b || typeof a !== 'object' || typeof b !== 'object') return false;
+  if (a.kind !== b.kind) return false;
+  switch (a.kind) {
+    case 'lit': return a.value === b.value && a.numType === b.numType;
+    case 'const': return a.name === b.name;
+    case 'ref': return a.ns === b.ns && a.name === b.name;
+    case 'call': {
+      if (a.op !== b.op) return false;
+      // A ref-headed user call carries `target` as a fresh {ns, name}
+      // object per call site, so it compares by its fields, never by
+      // identity.
+      const aT = a.target, bT = b.target;
+      if (!!aT !== !!bT) return false;
+      if (aT && (aT.ns !== bT.ns || aT.name !== bT.name)) return false;
+      for (const node of [a, b]) {
+        for (const field of ['callee', 'fields', 'body', 'branches',
+          'selector', 'logweights', 'assigns', 'bijection']) {
+          if (node[field] !== undefined) return false;
+        }
+      }
+      const aArgs = a.args || [], bArgs = b.args || [];
+      if (aArgs.length !== bArgs.length) return false;
+      for (let i = 0; i < aArgs.length; i++) {
+        if (!irStructuralEq(aArgs[i], bArgs[i])) return false;
+      }
+      const aKeys = Object.keys(a.kwargs || {}).sort();
+      const bKeys = Object.keys(b.kwargs || {}).sort();
+      if (aKeys.length !== bKeys.length) return false;
+      for (let i = 0; i < aKeys.length; i++) {
+        if (aKeys[i] !== bKeys[i]) return false;
+        if (!irStructuralEq(a.kwargs[aKeys[i]], b.kwargs[bKeys[i]])) return false;
+      }
+      return true;
+    }
+    default: return false;
+  }
 }
 
 // Internal "set" marker — not a user-facing type. elementof handles it.

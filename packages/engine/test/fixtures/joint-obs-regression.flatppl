@@ -28,7 +28,7 @@ G = 3  % number of groups
 
 % Hierarchical group-level parameters.
 mu_pop ~ Normal(0, 5)
-tau ~ truncate(Normal(0, 2), interval(0, inf))
+tau ~ normalize(truncate(Normal(0, 2), interval(0, inf)))
 mus_per_group ~ iid(Normal(mu_pop, tau), G)
 
 % Per-group noise scales (fixed-phase array — atom-indep).

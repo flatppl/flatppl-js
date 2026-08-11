@@ -192,6 +192,41 @@ test('mass: superpose adds (sum of probability measures is finite, not normalize
     'locallyfinite');
 });
 
+test('mass: a superpose whose weights provably sum to one is normalized', () => {
+  // The decidable exception to "generally not normalized" (§06), checked
+  // before the additive fold because it recovers a class the folded
+  // component masses have already lost. Full proof coverage — both
+  // readings, the f64-vs-decimal disagreements, and the identity
+  // soundness controls — lives in draw-mass-gate.test.ts.
+  const N0 = 'Normal(mu = 0.0, sigma = 1.0)', N1 = 'Normal(mu = 5.0, sigma = 1.0)';
+  assert.equal(massOf(`m = superpose(weighted(0.3, ${N0}), weighted(0.7, ${N1}))`, 'm'),
+    'normalized');
+  assert.equal(massOf(`m = superpose(weighted(0.3, ${N0}), weighted(0.8, ${N1}))`, 'm'),
+    'finite');
+});
+
+test('mass: a broadcast is an independent product of its cell measure', () => {
+  // `D.(args…)` is one cell measure per data cell (§04 Broadcasting), so
+  // the cell's class carries to the product (Rust `broadcast_mass`).
+  assert.equal(massOf('mus = [1.0, 2.0]\nm = Normal.(mus, 1.0)', 'm'), 'normalized');
+});
+
+test('mass: a shape with no rule is deferred, not unknown (§11)', () => {
+  // §11 separates "not yet inferred" from "unknown total mass", and the
+  // draw gate consumes the difference: it rejects `unknown` and passes
+  // `deferred`. A chain op has no rule in this pass yet.
+  const src = 'mu = elementof(reals)\n'
+    + 'K = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)\n'
+    + 'm = jointchain(Normal(mu = 0.0, sigma = 1.0), K)';
+  assert.equal(massOf(src, 'm'), 'deferred');
+  // bayesupdate's evidence integral IS a verdict of unknown: a rule ran.
+  assert.equal(massOf('mu = elementof(reals)\n'
+    + 'K = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)\n'
+    + 'L = likelihoodof(K, 0.5)\n'
+    + 'prior = lawof(draw(Normal(mu = 0.0, sigma = 1.0)))\n'
+    + 'm = bayesupdate(L, prior)', 'm'), 'unknown');
+});
+
 test('mass: joint is an independent product (golden: joint_mass_products)', () => {
   // normalized × normalized = normalized.
   assert.equal(

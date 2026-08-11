@@ -84,12 +84,16 @@ posterior = bayesupdate(L, prior2)
 The bindings below exercise the engine's `weighted` form (valid
 shapes plus three intentionally-invalid cases that the analyser
 should reject — names starting with `invalid` are the cue).
+
+A `weighted` measure is not normalized, and §04 draws only from a
+probability measure, so the two bindings that DRAW from one say
+`normalize(...)` explicitly.
 ###
 
 theta3_dist = weighted(theta2, theta1_dist)
 theta4_dist = weighted(draw(theta2_dist), theta1_dist)
-theta4 = draw(weighted(draw(theta2_dist), theta1_dist))
-theta5 ~ weighted(draw(theta2_dist)^2, theta1_dist)
+theta4 = draw(normalize(weighted(draw(theta2_dist), theta1_dist)))
+theta5 ~ normalize(weighted(draw(theta2_dist)^2, theta1_dist))
 
 invalid1_dist = weighted(theta2_dist, theta1_dist)
 invalid2_dist = weighted(theta2, theta1)
