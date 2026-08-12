@@ -49,6 +49,7 @@ mu = 0.0
 
 test('doc: leading doc-comment with `%typ` tag', () => {
   const r = engine.processSource(`
+mu = 0.0
 %typ Posterior over $mu$.
 posterior = mu
 `);

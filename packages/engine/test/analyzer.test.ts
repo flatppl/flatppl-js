@@ -121,12 +121,45 @@ x = 2
   assert.ok(diagnostics.some((d: any) => /Duplicate/.test(d.message)));
 });
 
-test('analyzer: undefined variable warning', () => {
+test('analyzer: undefined variable is a static error (spec §04 "Unresolvable names are static errors")', () => {
   const { diagnostics } = process(`
 y = no_such_var + 1
 `);
-  assert.ok(diagnostics.some((d: any) =>
-    d.severity === 'warning' && /Undefined/.test(d.message)));
+  const d = diagnostics.find((d: any) => /Undefined/.test(d.message));
+  assert.ok(d && d.severity === 'error', 'expected an error diagnostic');
+  assert.ok(/no_such_var/.test(d.message), 'message names the identifier');
+  assert.ok(d.loc && d.loc.start && d.loc.end, 'diagnostic carries a source location');
+});
+
+test('analyzer: unknown call head is a static error (spec §04 position 2)', () => {
+  const { diagnostics } = process(`
+y = nromal(1.0)
+`);
+  const d = diagnostics.find((d: any) => /Undefined/.test(d.message));
+  assert.ok(d && d.severity === 'error', 'expected an error diagnostic');
+  assert.ok(/nromal/.test(d.message), 'message names the identifier');
+  assert.ok(d.loc && d.loc.start && d.loc.end, 'diagnostic carries a source location');
+});
+
+test('analyzer: bare §09 module member is a static error (spec §09 — no unqualified spelling)', () => {
+  // `kallen` is a real particle-physics module function (standard-modules.ts),
+  // but resolves only through its module alias (`pp.kallen`); bare use is
+  // unresolvable per spec §09.
+  const { diagnostics } = process(`
+y = add(kallen, 1.0)
+`);
+  const d = diagnostics.find((d: any) => /Undefined/.test(d.message));
+  assert.ok(d && d.severity === 'error', 'expected an error diagnostic');
+  assert.ok(/kallen/.test(d.message), 'message names the identifier');
+  assert.ok(d.loc && d.loc.start && d.loc.end, 'diagnostic carries a source location');
+});
+
+test('analyzer: alias-qualified §09 module member resolves cleanly', () => {
+  const { diagnostics } = process(`
+pp = standard_module("particle-physics", "0.1")
+y = add(pp.kallen(1.0, 2.0, 3.0), 1.0)
+`);
+  assert.equal(diagnostics.filter((d: any) => /Undefined/.test(d.message)).length, 0);
 });
 
 test('analyzer: builtin names are not flagged as undefined', () => {
@@ -134,7 +167,45 @@ test('analyzer: builtin names are not flagged as undefined', () => {
 mu = elementof(reals)
 x = exp(mu)
 `);
-  assert.equal(diagnostics.filter((d: any) => d.severity === 'warning').length, 0);
+  assert.equal(diagnostics.filter((d: any) => /Undefined/.test(d.message)).length, 0);
+});
+
+test('analyzer: a real builtin with no type rule stays deferred, not undefined', () => {
+  // Dirac has no catalogue row (no type rule yet); "no rule" must not
+  // collapse into "no such name" (spec §04 vs. an honest inference gap).
+  const { diagnostics } = process(`
+y = draw(Dirac(0.0))
+`);
+  assert.equal(diagnostics.filter((d: any) => /Undefined/.test(d.message)).length, 0);
+});
+
+test('analyzer: functionof self-referential boundary (`mu = mu`) is not undefined', () => {
+  // The identifier-form boundary kwarg's RHS repeating the kwarg's own
+  // name declares a local formal (spec §04 §sec:functionof) — the JS
+  // engine's canonical spelling alongside placeholder (`_mu_`) form.
+  // Body-internal occurrences are the callable's own input, not a
+  // reference to any like-named outer binding.
+  const { diagnostics } = process(`
+k = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)
+`);
+  assert.equal(diagnostics.filter((d: any) => /Undefined/.test(d.message)).length, 0);
+});
+
+test('analyzer: functionof identifier-form boundary to a genuinely different name still resolves', () => {
+  // `p = a` (LHS differs from RHS): the RHS names a real ancestor node
+  // to cut at; body uses the RHS name. If `a` is truly missing it must
+  // still error.
+  const { diagnostics: clean } = process(`
+a = elementof(reals)
+f = functionof(a, p = a)
+`);
+  assert.equal(clean.filter((d: any) => /Undefined/.test(d.message)).length, 0);
+
+  const { diagnostics: bad } = process(`
+f = functionof(a, p = a)
+`);
+  assert.ok(bad.some((d: any) =>
+    d.severity === 'error' && /Undefined variable 'a'/.test(d.message)));
 });
 
 test('analyzer: lawof argument validation', () => {

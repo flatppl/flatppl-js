@@ -60,7 +60,10 @@ test('§05: `;` inside parens is FlatPPJ kwargs (not a statement separator)', ()
   // FlatPPL it produces a diagnostic that we don't gate on here. The
   // important thing is the `;` does NOT silently break parsing into
   // two top-level statements when it's inside a call.
-  const r = engine.processSource(`x = f(a, b)`);
+  const r = engine.processSource(`a = 1
+b = 2
+f = identity
+x = f(a, b)`);
   assert.deepEqual(errors(r), []);
 });
 

@@ -11,12 +11,10 @@ const { processSource } = require('../index.ts');
 function parseOK(src: any, opts: any) {
   const r = processSource(src, opts);
   // The minimal tilde snippets in these tests reference undefined
-  // names (M, Normal, …) just to keep them short. Ignore analyzer
-  // "Undefined variable" warnings — they aren't the parse-level
-  // failures these tests are checking for.
-  const errors = r.diagnostics.filter((d: any) =>
-    d.severity === 'error'
-    || (d.severity === 'warning' && !/Undefined variable/.test(d.message)));
+  // names (M, Normal, …) just to keep them short. Ignore "Undefined
+  // variable" diagnostics regardless of severity — they aren't the
+  // parse-level failures these tests are checking for.
+  const errors = r.diagnostics.filter((d: any) => !/Undefined variable/.test(d.message));
   assert.deepEqual(errors, [], 'expected no parse errors, got: '
     + JSON.stringify(errors));
   return r;

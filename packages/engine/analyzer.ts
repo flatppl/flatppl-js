@@ -1864,14 +1864,68 @@ function sliceSource(source: string, loc: any) {
 
 /**
  * Find all identifier references in an expression and their locations.
- * Used by definition/hover providers to find what's under the cursor.
+ * Used by definition/hover providers to find what's under the cursor,
+ * and by the undefined-name check.
+ *
+ * Scope-aware for `functionof` / `kernelof` boundaries, mirroring
+ * `collectDeps`'s two-scope walk (see its comment above): a kwarg after
+ * the first positional arg declares a LOCAL FORMAL — named by the
+ * kwarg's RHS identifier (`mu = mu`, `p = a`, …) or by the underlying
+ * name of a placeholder RHS (`x = _x_` → formal `_x_`). Body-internal
+ * occurrences of that formal name are the callable's own input, not a
+ * reference to any like-named outer binding (spec §04 §sec:functionof:
+ * boundary substitution), so they're excluded here regardless of
+ * whether a module binding of the same name happens to exist elsewhere.
  */
 function collectIdentRefs(node: any) {
   const refs: any[] = [];
+  const localStack: Set<string>[] = [];
+  function isLocal(name: string): boolean {
+    for (let i = localStack.length - 1; i >= 0; i--) {
+      if (localStack[i].has(name)) return true;
+    }
+    return false;
+  }
   function walk(node: any) {
     if (!node) return;
-    if (node.type === 'Identifier') { refs.push(node); return; }
-    if (node.type === 'CallExpr') { walk(node.callee); for (const a of node.args) walk(a); }
+    if (node.type === 'Identifier') {
+      if (!isLocal(node.name)) refs.push(node);
+      return;
+    }
+    if (node.type === 'CallExpr') {
+      const callee = node.callee;
+      const isReif = callee && callee.type === 'Identifier'
+        && (callee.name === 'functionof' || callee.name === 'kernelof');
+      if (isReif) {
+        const formals = new Set<string>();
+        for (let i = 1; i < node.args.length; i++) {
+          const arg = node.args[i];
+          if (arg && arg.type === 'KeywordArg' && arg.value) {
+            if (arg.value.type === 'Identifier') formals.add(arg.value.name);
+            else if (arg.value.type === 'Placeholder') formals.add('_' + arg.value.name + '_');
+          }
+        }
+        localStack.push(formals);
+        const body = node.args[0];
+        if (body && body.type !== 'KeywordArg') walk(body);
+        localStack.pop();
+        for (let i = 1; i < node.args.length; i++) {
+          const arg = node.args[i];
+          if (!arg || arg.type !== 'KeywordArg') continue;
+          // A self-referential boundary kwarg (`am = am`) is a
+          // declaration, not a reference — the RHS just repeats the
+          // formal's own name (the identifier-form counterpart of a
+          // placeholder RHS) and names no outer node. An identifier-
+          // form CUT to a genuinely different name (`p = a`) still
+          // needs `a` to resolve, per spec §04 §sec:functionof.
+          if (arg.value && arg.value.type === 'Identifier' && arg.value.name === arg.name) continue;
+          walk(arg.value);
+        }
+      } else {
+        walk(node.callee);
+        for (const a of node.args) walk(a);
+      }
+    }
     if (node.type === 'BinaryExpr') { walk(node.left); walk(node.right); }
     if (node.type === 'UnaryExpr') walk(node.operand);
     if (node.type === 'ArrayLiteral' || node.type === 'TupleLiteral') for (const e of node.elements) walk(e);
@@ -2882,12 +2936,16 @@ function analyze(ast: any, source: string, opts?: any) {
       paramSourceDeps.delete(nameNode.name);
     }
 
-    // Check for undefined references
+    // Check for undefined references. Spec §04 "Name resolution":
+    // "Unresolvable names are static errors" — a name absent from both
+    // the current bindings and the builtin roster (`isKnownName`, which
+    // deliberately excludes §09 module members: they resolve only
+    // through their module alias) is a hard error, not advisory.
     const refs = collectIdentRefs(stmt.value);
     for (const ref of refs) {
       if (!definedNames.has(ref.name) && !isKnownName(ref.name)) {
         diagnostics.push({
-          severity: 'warning',
+          severity: 'error',
           message: `Undefined variable '${ref.name}'`,
           loc: ref.loc,
         });

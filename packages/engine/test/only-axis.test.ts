@@ -20,13 +20,20 @@ const lowerMod = require('../lower.ts');
 const { inBothModes } = require('./_perf-helpers.ts');
 
 function errors(src: string) {
+  // These snippets often reference a bare array operand (B, …) just to
+  // keep them short; filter the resulting "Undefined variable"
+  // diagnostics, since this helper checks parsing/lowering, not name
+  // resolution.
   return processSource(src).diagnostics.filter(
-    (d: any) => d.severity === 'error');
+    (d: any) => d.severity === 'error' && !/Undefined variable/.test(d.message));
 }
 
 function evalRHS(src: string, binding: string, env: any) {
   const ctx = processSource(src);
-  const errs = ctx.diagnostics.filter((d: any) => d.severity === 'error');
+  // Array operands are injected directly via `env` rather than bound
+  // in-source, so "Undefined variable" is expected here, not a defect.
+  const errs = ctx.diagnostics.filter((d: any) =>
+    d.severity === 'error' && !/Undefined variable/.test(d.message));
   assert.equal(errs.length, 0,
     `source must parse cleanly: ${errs.map((d: any) => d.message).join('; ')}`);
   // Evaluate every binding in declaration order, threading the env

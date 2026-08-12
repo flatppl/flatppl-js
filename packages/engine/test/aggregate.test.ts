@@ -27,7 +27,11 @@ function errors(src: string) {
 // semantics from the rest of the orchestration pipeline.
 function evalAggregateRHS(src: string, binding: string, env: any) {
   const ctx = processSource(src);
-  const errs = ctx.diagnostics.filter((d: any) => d.severity === 'error');
+  // The source is a single bare RHS expression; array operands (A, B, …)
+  // are injected directly via `env` rather than bound in-source, so
+  // "Undefined variable" is expected here and not a real parse defect.
+  const errs = ctx.diagnostics.filter((d: any) =>
+    d.severity === 'error' && !/Undefined variable/.test(d.message));
   assert.equal(errs.length, 0,
     `source must parse cleanly: ${errs.map((d: any) => d.message).join('; ')}`);
   const b = ctx.bindings.get(binding);
