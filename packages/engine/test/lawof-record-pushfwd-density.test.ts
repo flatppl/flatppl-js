@@ -108,7 +108,14 @@ x ~ Exponential(1.0)
 prior = lawof(record(a = x, b = sqrt(x)))
 lp = logdensityof(prior, record(a = 1.0, b = 1.0))
 `, 8);
-  assert.deepEqual(compileErrors(proc), []);
+  // This shape is §06 "Singular joints"' second named class verbatim — "a
+  // deterministic transform of another component" — so it is STATICALLY
+  // detectable and §06 wants a static error. The joint concentrates on the
+  // curve {(t, √t)}, which has 2-D Lebesgue measure zero. Both halves are
+  // pinned: the analyzer diagnostic, and the runtime refusal that backstops it.
+  assert.equal(compileErrors(proc).length, 1);
+  assert.match(compileErrors(proc)[0].message,
+    /singular joint: components 'a' and 'b' are determined by the same draw 'x'/);
   await assert.rejects(() => ctx.getMeasure('lp'), /share the ancestor 'x'/);
 });
 
