@@ -85,6 +85,12 @@ test('vector column: maximum/minimum reduce element-wise over rows', () => {
   assert.deepEqual(asJS(mn.p), [1, 2, 3]);
 });
 
+test('vector column: prod reduces element-wise over rows', () => {
+  const p = valueOf('p', TBL + 'p = prod(t)');
+  assert.deepEqual(asJS(p.p), [4, 10, 18]);   // [1*4, 2*5, 3*6]
+  assert.equal(asJS(p.w), 200);               // 10*20
+});
+
 test('vector column: var/std reduce element-wise over rows (Bessel)', () => {
   // per cell, 2 rows: var = ((x0-mu)^2+(x1-mu)^2)/(2-1). cell0: (1,4)->mu 2.5->4.5
   const v = valueOf('v', TBL + 'v = var(t)');

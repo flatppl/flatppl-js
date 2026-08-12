@@ -178,6 +178,34 @@ test('table: var / std return record-of-reals (Bessel correction makes the resul
   }
 });
 
+test('table: prod / maximum / minimum return record of per-column reductions', () => {
+  // Same column-wise-reduction path as sum/mean (typeinfer.ts:499-509):
+  // engine-side these three are accepted alongside sum/mean/var/std, ahead
+  // of design PR flatppl-design#79 sanctioning them in §07's text.
+  const { bindings, errors } = infer(`
+    events = table(mass = [1.1, 1.2, 1.3], pt = [45.2, 32.1, 67.8])
+    p = prod(events)
+    mx = maximum(events)
+    mn = minimum(events)
+  `);
+  assert.equal(errors.length, 0);
+  for (const name of ['p', 'mx', 'mn']) {
+    const t = typeOf(bindings, name);
+    assert.equal(t.kind, 'record');
+    assert.ok('mass' in t.fields && 'pt' in t.fields);
+  }
+});
+
+test('table: cumprod still rejects a table (control — not a table reduction)', () => {
+  // §07 lists prod/maximum/minimum's siblings cumsum/cumprod/l1norm/logsumexp/
+  // softmax as arrays-only; only the seven named reductions accept a table.
+  const { errors } = infer(`
+    events = table(mass = [1.1, 1.2, 1.3], pt = [45.2, 32.1, 67.8])
+    c = cumprod(events)
+  `);
+  assert.ok(errors.length > 0, 'expected cumprod(table) to be a typeinfer error');
+});
+
 test('table: broadcast over table — outer rank = nrows, cell = record', () => {
   // Spec §04: "When a table is passed to broadcast, it is traversed
   // row-wise and each row treated as a record passed to the function".
@@ -252,6 +280,22 @@ s = std(events)
   assert.ok(Math.abs(v.a - (5 / 3)) < 1e-9);
   assert.ok(Math.abs(v.b - 0.0) < 1e-9);
   assert.ok(Math.abs(s.a - Math.sqrt(5 / 3)) < 1e-9);
+});
+
+test('table: runtime — prod / maximum / minimum applied per column', () => {
+  const r = processSource(`events = table(a = [1.0, 2.0, 3.0], b = [10.0, 20.0, 30.0])
+p = prod(events)
+mx = maximum(events)
+mn = minimum(events)
+`);
+  const ds = buildDerivations(r.bindings);
+  const p = ds.fixedValues.get('p'), mx = ds.fixedValues.get('mx'), mn = ds.fixedValues.get('mn');
+  // prod: a = 1*2*3 = 6, b = 10*20*30 = 6000.
+  assert.deepEqual(p, { a: 6, b: 6000 });
+  // maximum: a = max(1,2,3) = 3, b = max(10,20,30) = 30.
+  assert.deepEqual(mx, { a: 3, b: 30 });
+  // minimum: a = min(1,2,3) = 1, b = min(10,20,30) = 10.
+  assert.deepEqual(mn, { a: 1, b: 10 });
 });
 
 test('table: runtime — broadcast (rowsum) operates row-wise', () => {
