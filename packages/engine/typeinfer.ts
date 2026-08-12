@@ -4424,6 +4424,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // would turn every gap in a step kernel's own mass rules into an
       // error on a well-formed model. This is why the rule does not simply
       // test "all normalized".
+      //
+      // But a gap must not DISCARD a proof either, so the tests below run
+      // settled verdicts first. An earlier revision short-circuited on
+      // `deferred` before testing the kernels, which let one unclassified
+      // component mask a sibling already proven non-Markov:
+      // `kchain(N, KT_nonMarkov, KD)` answered `deferred` and passed the draw
+      // gate while the same chain without `KD` answered `unknown` and failed
+      // it. `deferred` is now reachable only when nothing else settles the
+      // chain.
       case 'kchain':
       case 'jointchain': {
         // Keyword form (`jointchain(name = M, …)`) carries its components in
@@ -4432,14 +4441,30 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           ? ir.fields.map((f: any) => f.value) : args;
         if (comps.length === 0) return T.MASS_DEFERRED;
         const masses = comps.map(componentMass);
-        if (masses.some((m: any) => m === T.MASS_DEFERRED)) return T.MASS_DEFERRED;
-        // Every argument after the base is a transition kernel; the identity
-        // above holds only when each is Markov.
-        if (!masses.slice(1).every((m: any) => m === T.MASS_NORMALIZED)) {
-          return T.MASS_UNKNOWN;
+        const base = masses[0];
+        const kernels = masses.slice(1);
+        // "Proven to be something other than a probability measure" — as
+        // opposed to `deferred`, which proves nothing either way.
+        const settledUnnormalized = (m: any) =>
+          m !== T.MASS_NORMALIZED && m !== T.MASS_DEFERRED;
+        // A step kernel proven non-Markov settles the chain whatever its
+        // siblings are: the identities above need EVERY kernel Markov.
+        if (kernels.some(settledUnnormalized)) return T.MASS_UNKNOWN;
+        // Kernels not all PROVEN Markov, so neither identity applies. A base
+        // already proven non-normalized still settles the chain — `unknown`
+        // claims nothing, and a kernel gap must not suppress that proof (it
+        // was suppressing the §06 normalize-of-infinite error on
+        // `jointchain(Lebesgue(reals), <unclassified kernel>)`). Otherwise the
+        // gap rides out as a gap.
+        if (kernels.some((m: any) => m === T.MASS_DEFERRED)) {
+          return settledUnnormalized(base) ? T.MASS_UNKNOWN : T.MASS_DEFERRED;
         }
-        if (op === 'jointchain') return masses[0];
-        return masses[0] === T.MASS_NORMALIZED ? T.MASS_NORMALIZED : T.MASS_UNKNOWN;
+        // Every kernel is Markov. `jointchain` carries the base's class
+        // exactly (ν(whole) = μ(whole)); `kchain` claims only the normalized
+        // case and keeps a base gap a gap.
+        if (op === 'jointchain') return base;
+        if (base === T.MASS_NORMALIZED) return T.MASS_NORMALIZED;
+        return base === T.MASS_DEFERRED ? T.MASS_DEFERRED : T.MASS_UNKNOWN;
       }
     }
     return T.MASS_DEFERRED;
@@ -4805,33 +4830,30 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // its own mass error is the same question one level up, and is not
   // decided here.
   //
-  // EXEMPT: the `lawof` that kernel reification synthesizes. §04 says
-  // "`kernelof` … combines `lawof` and `functionof`", and this engine
-  // desugars `kernelof(M, kwargs…)` to `functionof(lawof(M), kwargs…)`, so
-  // EVERY kernel reification puts a `lawof` over its measure argument.
-  // Gating those would refuse a construction §04 explicitly allows: under
-  // "Reifying measure-valued expressions to kernels", applying `functionof`
-  // to a measure "generates a transition kernel", and normalization enters
-  // only as "IF the measure is normalized, the resulting kernel is a Markov
-  // kernel". So an unnormalized measure reifies to a non-Markov transition
-  // kernel BY DESIGN. Nothing is lost by exempting it: the mass arm still
-  // classifies the inner `lawof` honestly, so the kernel's output mass stays
-  // non-normalized and the chain rules above already refuse to call a chain
-  // through such a kernel normalized.
+  // NO position is exempt, including the `lawof` that `kernelof` desugars
+  // into. `kernelof(M, kwargs…)` lowers here to
+  // `functionof(lawof(M), kwargs…)` (§04 "Kernels and `kernelof`" gives that
+  // equivalence), so an earlier revision of this gate exempted that position
+  // to keep an unnormalized measure reifiable to a non-Markov kernel. That
+  // was wrong, and the same §04 section says why: "`kernelof(x, kwargs...)`
+  // reifies (typically stochastic) value nodes to Markov kernels. `x` must
+  // not be a measure." So `kernelof(<measure>, …)` is ALREADY ill-formed, and
+  // the exemption protected only the forbidden spelling. The sentence that
+  // motivated it — "If `functionof` is applied to a measure node, it
+  // generates a transition kernel" — governs `functionof`, a different
+  // operator, and `functionof(<measure>, p = p)` inserts no `lawof` at all,
+  // so the legal way to build a non-Markov kernel never reaches this gate and
+  // classifies identically.
+  //
+  // The diagnostic a `kernelof(<unnormalized measure>, …)` gets is therefore
+  // this gate's, which names the mass rather than the misuse. A located
+  // "`kernelof`'s argument must not be a measure" error is the better
+  // message and is tracked as follow-up in TODO-flatppl-js.md.
   function checkLawofMass() {
     const irWalk = require('./ir-walk.ts');
-    const exempt = new WeakSet();
     const visit = (ir: any) => {
       if (!ir || typeof ir !== 'object') return;
-      if (ir.kind === 'call' && ir.op === 'functionof') {
-        // The reified body is `body` after lowering; `args[0]` covers the
-        // pre-lowering spelling.
-        for (const inner of [ir.body, (ir.args || [])[0]]) {
-          if (inner && typeof inner === 'object'
-            && inner.kind === 'call' && inner.op === 'lawof') exempt.add(inner);
-        }
-      }
-      if (ir.kind === 'call' && ir.op === 'lawof' && !exempt.has(ir)) {
+      if (ir.kind === 'call' && ir.op === 'lawof') {
         const arg = (ir.args || [])[0];
         const offending = unprovableNormalization(arg);
         if (offending) {

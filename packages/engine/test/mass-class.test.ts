@@ -247,18 +247,27 @@ test('mass: a shape with no rule is deferred, not unknown (§11)', () => {
 // tests, and it is forced by the two integrals above, not copied from the
 // other engine.
 
-// A Markov step kernel, and a NON-Markov one (its output is a restriction,
-// so κ(a, whole) < 1) — a legitimate reification per §04 "Reifying
-// measure-valued expressions to kernels".
+// A Markov step kernel, and a NON-Markov one (its output is a restriction, so
+// κ(a, whole) < 1).
+//
+// The non-Markov kernels below use `functionof`, NOT `kernelof`. §04 "Kernels
+// and `kernelof`" says "`kernelof(x, kwargs...)` reifies (typically
+// stochastic) value nodes to Markov kernels. `x` must not be a measure", so
+// `kernelof(<measure>, …)` is ill-formed however normalized the measure is.
+// §04 "Reifying measure-valued expressions to kernels" gives the legal route:
+// applying `functionof` to a measure node "generates a transition kernel", and
+// it is a Markov kernel only "if the measure is normalized". `functionof`
+// inserts no `lawof`, so these reach the chain rules without tripping the
+// `lawof` mass gate.
 const MARKOV_K = 'mu = elementof(reals)\n'
-  + 'K = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)\n';
+  + 'K = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)\n';
 const SUB_K = 'mu = elementof(reals)\n'
-  + 'KT = kernelof(truncate(Normal(mu = mu, sigma = 1.0), '
+  + 'KT = functionof(truncate(Normal(mu = mu, sigma = 1.0), '
   + 'interval(0.0, 1.0)), mu = mu)\n';
 // A step kernel whose own output class is not yet inferred.
 const DEFERRED_K = 'mu = elementof(reals)\n'
   + 'jj = joint(Normal(mu = mu, sigma = 1.0), Beta(alpha = 1.0, beta = 1.0))\n'
-  + 'KD = kernelof(relabel(jj, ["a", "b"]), mu = mu)\n';
+  + 'KD = functionof(relabel(jj, ["a", "b"]), mu = mu)\n';
 const NORM_BASE = 'Normal(mu = 0.0, sigma = 1.0)';
 const FINITE_BASE = 'b = truncate(Normal(mu = 0.0, sigma = 1.0), interval(0.0, 1.0))\n';
 
@@ -312,6 +321,49 @@ test('mass: a chain component with no class keeps the chain deferred (§11)', ()
     'deferred');
   assert.equal(massOf(DEFERRED_K + `m = jointchain(${NORM_BASE}, KD)`, 'm'),
     'deferred');
+  // A gap in the BASE stays a gap too — `kchain` must not report a settled
+  // `unknown` for a base whose class is merely not yet inferred.
+  const deferredBase = MARKOV_K
+    + 'jd = joint(Normal(mu = 0.0, sigma = 1.0), Beta(alpha = 1.0, beta = 1.0))\n'
+    + 'rb = relabel(jd, ["a", "b"])\n';
+  assert.equal(massOf(deferredBase + 'm = kchain(rb, K)', 'm'), 'deferred');
+  assert.equal(massOf(deferredBase + 'm = jointchain(rb, K)', 'm'), 'deferred');
+});
+
+test('mass: an unclassified component does not mask a settled non-Markov kernel', () => {
+  // Ordering regression. The `deferred` short-circuit used to run before the
+  // Markov test, so an unclassified sibling discarded a proof the engine
+  // already had: these chains answered `deferred` and passed the draw gate,
+  // while the same chains WITHOUT the unclassified component answered
+  // `unknown` and failed it. A settled verdict now wins.
+  const heads = SUB_K + 'jj = joint(Normal(mu = mu, sigma = 1.0), '
+    + 'Beta(alpha = 1.0, beta = 1.0))\n'
+    + 'KD = functionof(relabel(jj, ["a", "b"]), mu = mu)\n';
+  assert.equal(massOf(heads + `m = kchain(${NORM_BASE}, KT, KD)`, 'm'), 'unknown');
+  assert.equal(massOf(heads + FINITE_BASE + 'm = jointchain(b, KT, KD)', 'm'),
+    'unknown');
+  // Controls: the same shapes without the unclassified component. Equal
+  // classes are the point — adding a gap must not change the verdict.
+  assert.equal(massOf(SUB_K + `m = kchain(${NORM_BASE}, KT)`, 'm'), 'unknown');
+  assert.equal(massOf(SUB_K + FINITE_BASE + 'm = jointchain(b, KT)', 'm'),
+    'unknown');
+});
+
+test('mass: an unclassified kernel does not suppress a settled infinite base', () => {
+  // The sharpest case of the same ordering bug: an unclassified step kernel
+  // made `jointchain(Lebesgue(reals), KD)` answer `deferred`, suppressing the
+  // §06 normalize-of-infinite static error that the identical chain raises
+  // with a Markov kernel. The base's proof survives the kernel's gap as
+  // `unknown`, which claims nothing but is not a proof of normalization.
+  const src = DEFERRED_K + 'm = jointchain(Lebesgue(support = reals), KD)';
+  assert.equal(massOf(src, 'm'), 'unknown');
+  // Control: with a Markov kernel the base's class carries exactly, and the
+  // §06 error does fire.
+  const ctl = MARKOV_K + 'm = jointchain(Lebesgue(support = reals), K)';
+  assert.equal(massOf(ctl, 'm'), 'locallyfinite');
+  assert.ok(errorsOf(`${ctl}\nn = normalize(m)`)
+    .some((e: string) => /infinite total mass/.test(e)),
+  'normalize of the locally-finite jointchain must raise the §06 error');
 });
 
 test('mass: restrict is a sub-measure, so it is never normalized (§06)', () => {

@@ -156,11 +156,42 @@ test('§04: a KERNEL argument is not this gate\'s business', () => {
   // admitting kernels has to decide the mass question deliberately rather
   // than inheriting silence.
   const src = 'mu = elementof(reals)\n'
-    + 'K = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)\n'
+    + 'K = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)\n'
     + 'm = lawof(K)';
   assert.deepEqual(lawofErrors(src), []);
   assert.equal(errorsOf(src).length, 1);
   assert.match(errorsOf(src)[0], /lawof expects a value-typed argument/);
+});
+
+test('§04: kernelof over an unnormalized measure is NOT exempt from the gate', () => {
+  // `kernelof(M, kwargs…)` lowers to `functionof(lawof(M), kwargs…)`, so an
+  // earlier revision exempted that `lawof` position to keep an unnormalized
+  // measure reifiable to a non-Markov kernel. §04 "Kernels and `kernelof`"
+  // rules that out: "`x` must not be a measure." The exemption therefore
+  // protected only an ill-formed spelling, and it is gone.
+  const forbidden = 'mu = elementof(reals)\n'
+    + 'KT = kernelof(truncate(Normal(mu = mu, sigma = 1.0), '
+    + 'interval(0.0, 1.0)), mu = mu)';
+  assert.equal(lawofErrors(forbidden).length, 1);
+  assert.match(lawofErrors(forbidden)[0], /total mass is %finite/);
+
+  // The LEGAL spelling of the same intent — §04 "Reifying measure-valued
+  // expressions to kernels" — inserts no `lawof`, so it never reaches this
+  // gate, and it classifies identically downstream. This is what makes the
+  // exemption unnecessary rather than merely wrong.
+  const legal = 'mu = elementof(reals)\n'
+    + 'KT = functionof(truncate(Normal(mu = mu, sigma = 1.0), '
+    + 'interval(0.0, 1.0)), mu = mu)\n'
+    + 'm = kchain(Normal(mu = 0.0, sigma = 1.0), KT)';
+  assert.deepEqual(errorsOf(legal), []);
+  assert.equal(massOf(legal, 'm'), 'unknown');
+
+  // A NORMALIZED measure under `kernelof` stays silent here: the spelling is
+  // still ill-formed per §04, but that is a shape error this mass gate does
+  // not own (tracked as follow-up), and the corpus uses it widely.
+  const normalized = 'mu = elementof(reals)\n'
+    + 'K = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)';
+  assert.deepEqual(lawofErrors(normalized), []);
 });
 
 // ---------------------------------------------------------------------

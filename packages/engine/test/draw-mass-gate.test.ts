@@ -118,10 +118,13 @@ const DEFERRED_BASE = 'j = joint(Normal(mu = 0.0, sigma = 1.0), '
   + 'pr = relabel(j, ["a", "b"])\n';
 
 const RESCALED_DEFERRED: [string, string][] = [
+  // Four DISTINCT cases: each weight op above and below its identity scale
+  // (1 for `weighted`, 0 for `logweighted`), since the rule turns on "provably
+  // the identity" rather than on the direction of the rescaling.
   ['weighted(2.0, <no class>)', 'm = weighted(2.0, pr)'],
   ['weighted(0.5, <no class>)', 'm = weighted(0.5, pr)'],
   ['logweighted(2.0, <no class>)', 'm = logweighted(2.0, pr)'],
-  ['weighted(3.0, <no class>)', 'm = weighted(3.0, pr)'],
+  ['logweighted(-1.0, <no class>)', 'm = logweighted(-1.0, pr)'],
 ];
 
 for (const [label, body] of RESCALED_DEFERRED) {
