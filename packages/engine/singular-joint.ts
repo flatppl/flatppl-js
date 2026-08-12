@@ -132,7 +132,8 @@
 //     independent and the product is null exactly when M is.
 // Both are checked recursively. They matter more than they look: before they
 // were covered, all three shapes returned a finite WRONG number rather than
-// refusing (see the fail-silent note).
+// refusing. `clm._refuseIfSingular` now implements the same inheritance rule on
+// the derivation table, so they refuse as well as report.
 //
 // ── WHY THE DENSITY QUERY, NOT THE JOINT ────────────────────────────────
 //
@@ -146,7 +147,16 @@
 // `clm._refuseIfSingular` is the "otherwise refused by the engine" half. It runs
 // at density time on the post-lift DERIVATION table; this pass runs on the
 // LOWERED IR, because a pass that had to wait for `buildDerivations` could not be
-// static. The two are NOT the same predicate and deliberately so:
+// static.
+//
+// The INHERITANCE rule is now the same on both sides: clm recurses through an
+// `iid` derivation to its base measure and into every component binding, so the
+// three inherited shapes refuse as well as report. Until that landed, this pass
+// made them VISIBLE but could not prevent the number — a diagnostic is not a gate,
+// and a user who ignored it still got -2.8268155996140187 out of a law with no
+// density.
+//
+// The PAIR predicate still differs, and deliberately so:
 //
 //   clm still uses the coarse any-overlap test. It therefore REFUSES the
 //   full-rank shapes above, with a reason that is factually wrong for them.
@@ -156,20 +166,22 @@
 //   refusal for an unverified number is the wrong direction. Tracked in
 //   flatppl-dev/TODO-flatppl-js.md.
 //
-// The two therefore diverge in BOTH directions, and neither contains the other:
+// clm's recursion covers every level the pair predicate can NAME, and its
+// container rule (a record/tuple component reports the union of its children's
+// roots) additionally refuses the Hall size-3 class this pass declines — but only
+// where the overlapping outer sibling is a draw or a NAMED binding. Neither side
+// contains the other:
 //
-//   pair rule (§06's named classes) — clm also refuses, so the static error and
-//   the refusal agree, and the query genuinely reaches no number.
+//   an INLINE field expression (`lawof(record(inner = record(a = y, b = exp(y)),
+//   c = t))`) lifts to an untyped internal binding, which clm reads as a
+//   constructor measure contributing no roots, so clm's singular predicate stays
+//   silent where this pass fires. That query still reaches no number, but through
+//   `mat-density`'s diagonal-bijection gate. Do not read a flag here as "clm will
+//   refuse it".
 //
-//   inherited cases (iid, nested) — clm does NOT refuse. At 61c29f0 it scores a
-//   finite wrong number, and it still does: this pass makes the error VISIBLE
-//   but cannot prevent the number, because a diagnostic is not a gate. A user
-//   who ignores the diagnostic still gets -2.8268155996140187 out of a law that
-//   has no density. That is an improvement on silence, not a fix.
-//
-// Anything narrower than clm is safe to flag. The inherited cases are flagged
-// anyway, because a visible wrong answer beats a silent one and §06 wants the
-// static error regardless of what the runtime does with it.
+//   conversely, clm's container rule refuses FULL-RANK nested laws this pass
+//   correctly declines, with the nullity claim that is false of them — the coarse
+//   pair predicate reaching one level further, not a new defect.
 //
 // ── FAIL-SILENT, AND WHAT THAT DOES AND DOES NOT BUY ────────────────────
 //
@@ -178,15 +190,16 @@
 // case, which the linear-Gaussian recogniser closes in closed form) and the user
 // has no way around a compile error.
 //
-// Be precise about what a miss costs, though — the earlier revision of this
-// header claimed "a miss still refuses at density time", and that is FALSE. The
-// runtime backstop does not cover every shape either: at 61c29f0 an `iid` over a
-// singular joint, and a nested singular joint or record, each returned a finite
-// wrong number. This pass now catches those three statically, but the underlying
-// density bug is unfixed and other unrecognised shapes may share it. A miss here
-// may therefore cost a wrong number, not merely a late message. The
-// silent-number holes are tracked in flatppl-dev/TODO-flatppl-js.md with their
-// closed forms.
+// Be precise about what a miss costs, though. "A miss still refuses at density
+// time" is not a guarantee this pass can make: clm's coverage is wide but not
+// total, and at 61c29f0 an `iid` over a singular joint and a nested singular joint
+// or record each returned a finite wrong number. Those three now refuse, as does
+// the Hall size-3 class this pass declines. What clm still cannot see is a
+// component with no typed binding to classify: `lawof(record(inner = record(a = y,
+// b = t), c = y + 0.0))` — the same Hall size-3 shape with an INLINE sibling —
+// scores -2.7868155996140187 at runtime and is silent here. A miss may therefore
+// cost a wrong number, not merely a late message. The remaining silent-number
+// holes are tracked in flatppl-dev/TODO-flatppl-js.md.
 
 const { forEachIRChild } = require('./ir-walk.ts');
 
