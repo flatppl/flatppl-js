@@ -29,35 +29,82 @@
 // determined by `v` given `y`. Overlap is necessary for singularity, never
 // sufficient.
 //
-// What IS sufficient, at pair granularity: the two components are deterministic
-// functions of the SAME SINGLE continuous scalar draw. Then the pair's support is
-// the image of a 1-dimensional variable in R², a curve, which is 2-D
-// Lebesgue-null — so no density w.r.t. the product reference. Both of §06's named
-// classes are this case (the same draw twice is `f = g = id`; a deterministic
-// transform of another component is `g = h ∘ f`).
+// What IS sufficient, at pair granularity: both components are deterministic
+// functions of ONE SHARED SCALAR VALUE — a single common "generator". Then the
+// pair's support is the image of a 1-dimensional variable in the 2-dimensional
+// product space, a curve, which is Lebesgue-null. Both of §06's named classes are
+// this case (the same draw twice is `f = g = id`; a deterministic transform of
+// another component is `g = h ∘ f`).
 //
-// Three conditions, each load-bearing, each with a false positive behind it:
-//   equal root sets   — `{y} vs {y,n}` means the second component carries noise
-//                       the first does not, so it is not determined by it;
-//   singleton         — a strict subset relation among larger sets is Hall's
-//                       condition territory (see the deficiency note below);
-//   continuous scalar — a MULTI-coordinate draw fails because two components can
-//                       read different coordinates of it (`v ~ MvNormal(...);
-//                       a = v[1]; b = v[2]` is two independent standard normals,
-//                       and root identity is per-draw-binding, so it cannot see
-//                       the difference). A DISCRETE draw fails for a deeper
-//                       reason: `joint(a = lawof(k), b = lawof(k))` for `k ~
-//                       Bernoulli(p)` is not singular at all. Its reference
-//                       measure is counting ⊗ counting, and the diagonal of
-//                       {0,1}² is NOT null w.r.t. counting measure — the law has
-//                       a perfectly good pmf. Lebesgue-nullity is a
-//                       continuous-support argument and does not transfer.
+// `_commonGenerator` looks for that value: a binding `X` of scalar type such that
+// each component's noise roots, computed with `X` treated as terminal, are exactly
+// {X} — i.e. neither component carries any randomness that does not come through
+// `X`. Two conditions guard it, each with a verified false positive behind it:
 //
-// The general rule is Hall's condition on the component→root bipartite graph (the
-// joint's Jacobian drops rank exactly when some subset S has |⋃_{i∈S} R_i| < |S|).
-// This pass implements only the |S| = 2 case with equal singletons. A deficiency
-// needing a subset of size ≥ 3 — `lawof(record(inner = record(a = y, b = t), c =
-// y))`, whose support is {(y,t,y)} ⊂ R³ — is a MISS. See the fail-silent note.
+//   the generator must exist  — `u = y + n1; v = y + n2` has no common generator
+//                       (each component carries its own noise), and the law is
+//                       Gaussian with covariance [[2,1],[1,2]], determinant 3.
+//                       Neither does `joint(a = lawof(y), b = lawof(y + n))`,
+//                       where `b` carries `n` on top of `a`. An any-overlap test
+//                       flagged both.
+//   the generator must be SCALAR — a multi-coordinate draw is excluded because
+//                       two components can read different coordinates of it
+//                       (`v ~ MvNormal(...); a = v[1]; b = v[2]` is two
+//                       independent standard normals, and root identity is
+//                       per-draw-binding, so it cannot see the difference).
+//
+// ── THE REFERENCE MEASURE IS FIXED BY THE COMPONENTS, NOT THE DRAW ──────
+//
+// Nullity is meaningless without naming the measure it is null against, and §06
+// "Reference measure for product measures" fixes it per COMPONENT (verbatim,
+// flatppl-design 9e35262):
+//
+//   "When `joint(M1, M2, ...)` (or `iid(M, size)`, `jointchain(M, K1, ...)` etc.)
+//   combines components with individual reference measures ρ1, ρ2, … (each either
+//   `Lebesgue` or `Counting` on the corresponding component support), the
+//   reference measure of the product is the product ρ1 ⊗ ρ2 ⊗ ⋯ on the joint
+//   variate space."
+//
+// So the curve-is-null argument needs BOTH components to have continuous
+// (Lebesgue) support, and that is a property of the COMPONENTS' types, not of the
+// shared draw. Keying it on the draw is wrong in both directions, and an earlier
+// revision did exactly that:
+//
+//   `lawof(record(a = y, b = floor(y)))` for `y ~ Normal` — the draw is
+//   continuous, but `floor(y)` is scalar INTEGER, so the reference is
+//   Lebesgue ⊗ Counting and the law HAS a density w.r.t. it:
+//   f(t, n) = φ(t)·1[⌊t⌋ = n], since μ(A × {n}) = ∫_A 1[⌊t⌋ = n] φ(t) dt.
+//   Equivalently the support's slices {t : ⌊t⌋ = n} = [n, n+1) are not
+//   Lebesgue-null. NOT singular; the draw-keyed test made it a static error.
+//
+//   `c ~ Poisson(2); a = c * 1.0; b = c * 2.0` — the draw is DISCRETE, but both
+//   components are scalar real, so the reference is Lebesgue ⊗ Lebesgue and the
+//   support {(n, 2n)} is countable, hence 2-D Lebesgue-null. Genuinely singular;
+//   the draw-keyed test stayed silent on it.
+//
+// Hence the gate below: the generator must be scalar of ANY prim (a discrete draw
+// generates a perfectly good singular pair, as the Poisson case shows), and BOTH
+// COMPONENTS must be `scalar real`. An all-discrete joint can never be singular —
+// on a countable support with counting reference the only null set is ∅, so every
+// measure there is absolutely continuous — which is why `joint(a = lawof(k), b =
+// lawof(k))` for `k ~ Bernoulli(p)` is correctly silent: it has an ordinary pmf.
+//
+// ── THE GENERAL CRITERION, STATED HONESTLY ──────────────────────────────
+//
+// The joint's Jacobian dropping rank is the real criterion. Hall's condition on
+// the component→root bipartite graph (some subset S with |⋃_{i∈S} R_i| < |S|) is
+// the GENERIC rank criterion: it assumes the component functions are
+// algebraically independent, so it is NECESSARY for full rank but NOT SUFFICIENT.
+// Rank can drop inside a Hall-satisfying graph when the components are
+// functionally dependent — `u = y + n; joint(a = lawof(u), b = lawof(2*u))` has
+// R₁ = R₂ = {y, n}, so |⋃ R_i| = 2 = |S|, yet the Jacobian has rank 1. A full
+// Hall check would therefore NOT complete this pass.
+//
+// This pass implements the |S| = 2 case via the common-generator test, which
+// catches both the equal-singleton shapes and that dependent-function case. A
+// deficiency needing a subset of size ≥ 3 — `lawof(record(inner = record(a = y,
+// b = t), c = y))`, whose support is {(y,t,y)} ⊂ R³ — is a MISS. See the
+// fail-silent note.
 //
 // ── WHAT ELSE MAKES A JOINT SINGULAR: INHERITANCE ───────────────────────
 //
@@ -152,14 +199,31 @@ function _isMeasureTyped(binding: any): boolean {
   return !!(t && t.kind === 'measure');
 }
 
-// A draw whose variate is a single CONTINUOUS real coordinate — the only kind for
-// which "both components are functions of this one draw" implies Lebesgue-null.
-// An absent type answers false: unclassifiable means silent.
-function _isContinuousScalarDraw(name: string, loweredModule: any): boolean {
+// The variate type, unwrapping a measure to its domain. Null when unavailable —
+// every caller treats that as "cannot classify", i.e. stay silent.
+function _variateType(t: any): any {
+  if (!t) return null;
+  return t.kind === 'measure' ? (t.domain || null) : t;
+}
+
+// A single CONTINUOUS real coordinate. §06 "Reference measure for product
+// measures" makes this the COMPONENT-level test: only a Lebesgue-referenced
+// component can sit on a Lebesgue-null curve.
+function _isScalarReal(t: any): boolean {
+  const v = _variateType(t);
+  return !!(v && v.kind === 'scalar' && v.prim === 'real');
+}
+
+// A single coordinate of ANY prim. The generator may be discrete — `c ~ Poisson;
+// a = c*1.0; b = c*2.0` is singular w.r.t. Lebesgue ⊗ Lebesgue because its support
+// is countable — so this deliberately does not require `real`. What it does
+// require is ONE coordinate: an array-valued generator can feed two components
+// different coordinates, and then they are not functions of one value.
+function _isScalarBinding(name: string, loweredModule: any): boolean {
   const b = loweredModule.bindings.get(name);
-  if (!b || !_isDrawBinding(b)) return false;
-  const t = b.inferredType;
-  return !!(t && t.kind === 'scalar' && t.prim === 'real');
+  if (!b) return false;
+  const v = _variateType(b.inferredType);
+  return !!(v && v.kind === 'scalar');
 }
 
 // The independent noise sources the VALUE expression `ir` is a deterministic
@@ -191,6 +255,73 @@ function _noiseRootsOf(ir: any, loweredModule: any): Set<string> {
   return out;
 }
 
+// The same walk, but `barrier` is treated as a terminal noise source instead of
+// being descended through. So `_rootsWithBarrier(expr, X) === {X}` says exactly
+// "expr is a deterministic function of X and of nothing else random" — which is
+// the property the common-generator test needs.
+function _rootsWithBarrier(ir: any, barrier: string, loweredModule: any): Set<string> {
+  const out = new Set<string>();
+  const walk = (node: any, visited: Set<string>, depth: number): void => {
+    if (!node || typeof node !== 'object' || depth > MAX_DEPTH) return;
+    const target = _refTarget(node, loweredModule);
+    if (target) {
+      if (target.name === barrier) { out.add(barrier); return; }
+      if (visited.has(target.name)) return;
+      visited.add(target.name);
+      if (_isDrawBinding(target.binding)) { out.add(target.name); return; }
+      if (_isMeasureTyped(target.binding)) return;
+      walk(target.binding.rhs, visited, depth + 1);
+      return;
+    }
+    if (node.kind === 'call' && (node.op === 'lawof' || node.op === 'draw')) return;
+    forEachIRChild(node, (child: any) => walk(child, visited, depth + 1));
+  };
+  walk(ir, new Set<string>(), 0);
+  return out;
+}
+
+// Every binding the value expression `ir` passes through, draws included. These
+// are the candidate generators: a common generator, if one exists, is always a
+// binding one of the components is built from.
+function _visitedBindings(ir: any, loweredModule: any): string[] {
+  const order: string[] = [];
+  const seen = new Set<string>();
+  const walk = (node: any, depth: number): void => {
+    if (!node || typeof node !== 'object' || depth > MAX_DEPTH) return;
+    const target = _refTarget(node, loweredModule);
+    if (target) {
+      if (seen.has(target.name)) return;
+      seen.add(target.name);
+      order.push(target.name);
+      if (_isDrawBinding(target.binding) || _isMeasureTyped(target.binding)) return;
+      walk(target.binding.rhs, depth + 1);
+      return;
+    }
+    if (node.kind === 'call' && (node.op === 'lawof' || node.op === 'draw')) return;
+    forEachIRChild(node, (child: any) => walk(child, depth + 1));
+  };
+  walk(ir, 0);
+  return order;
+}
+
+// A scalar binding both expressions are deterministic functions of, and of nothing
+// else random. Prefers a DRAW when several qualify, purely so the diagnostic can
+// name the draw — the more recognisable object to a reader.
+function _commonGenerator(exprA: any, exprB: any, loweredModule: any):
+{ name: string; isDraw: boolean } | null {
+  const only = (roots: Set<string>, x: string) => roots.size === 1 && roots.has(x);
+  let fallback: { name: string; isDraw: boolean } | null = null;
+  for (const x of _visitedBindings(exprA, loweredModule)) {
+    if (!_isScalarBinding(x, loweredModule)) continue;
+    if (!only(_rootsWithBarrier(exprA, x, loweredModule), x)) continue;
+    if (!only(_rootsWithBarrier(exprB, x, loweredModule), x)) continue;
+    const isDraw = _isDrawBinding(loweredModule.bindings.get(x));
+    if (isDraw) return { name: x, isDraw: true };
+    if (!fallback) fallback = { name: x, isDraw: false };
+  }
+  return fallback;
+}
+
 // Follow a chain of bare-ref bindings to the expression that DEFINES the
 // measure. `joint(a = Ly, b = Ly)` with `Ly = lawof(y)` must see the `lawof`,
 // and alias-resolution has already collapsed the pure-ref hops, so this handles
@@ -207,16 +338,43 @@ function _resolveMeasureExpr(ir: any, loweredModule: any, depth: number): any {
 // A `Reason` records WHY, so the diagnostic can name the offending pair and the
 // path to it. `via` / `iid` wrap an inner reason for the inherited cases.
 type Reason =
-  | { kind: 'pair'; a: string; b: string; ancestor: string }
+  | { kind: 'pair'; a: string; b: string; generator: string; generatorIsDraw: boolean }
   | { kind: 'via'; label: string; inner: Reason }
   | { kind: 'iid'; inner: Reason };
+
+// A component, as the two rules need it.
+//   roots    — its noise sources, for the cheap equal-sets pre-filter
+//   value    — the VALUE expression the generator test walks (for a `lawof(V)`
+//              component that is `V`; for a record field, the field itself)
+//   type     — its variate type, per §06's per-component reference measure
+//   measure  — its measure expression, for the inheritance rule
+type Component = {
+  label: string;
+  roots: Set<string>;
+  value: any;
+  type: any;
+  measure: any;
+};
+
+// Component variate types keyed by label, read off the enclosing measure's own
+// inferred domain — §06's "corresponding component support". This is the reliable
+// source: a bare-ref field carries no `meta.type` of its own.
+function _componentTypeAt(container: any, label: string, index: number): any {
+  const dom = _variateType(container && container.meta && container.meta.type);
+  if (!dom) return null;
+  if (dom.kind === 'record' && dom.fields) return dom.fields[label] || null;
+  // A positional joint cats its components into one array; every component
+  // carries the element type.
+  if (dom.kind === 'array') return dom.elem || null;
+  if (dom.kind === 'table' && dom.columns) return dom.columns[label] || null;
+  return null;
+}
 
 // The components of a record-valued joint law as { label, roots, measure }:
 // `roots` feeds the pair rule, `measure` (when present) is the component's own
 // measure expression, which the inheritance rule recurses into. Null when
 // `measureIR` is not a shape this pass classifies — the fail-silent exit.
-function _componentsOf(measureIR: any, loweredModule: any):
-Array<{ label: string; roots: Set<string>; measure: any }> | null {
+function _componentsOf(measureIR: any, loweredModule: any): Component[] | null {
   const m = _resolveMeasureExpr(measureIR, loweredModule, 0);
   if (!m || m.kind !== 'call') return null;
 
@@ -227,18 +385,18 @@ Array<{ label: string; roots: Set<string>; measure: any }> | null {
         ? m.args.map((a: any, i: number) => ({ label: '#' + (i + 1), value: a }))
         : [];
     if (parts.length < 2) return null;
-    return parts.map((p) => {
+    return parts.map((p, i) => {
       const resolved = _resolveMeasureExpr(p.value, loweredModule, 0);
       const isLawof = !!(resolved && resolved.kind === 'call' && resolved.op === 'lawof');
+      // Only a REIFIED component reads a variate. A constructor contributes a
+      // fresh coordinate (§06 "Joint composition"), so it gets no value
+      // expression and no roots, and can never pair-match.
+      const value = isLawof ? (resolved.args || [])[0] : null;
       return {
         label: p.label,
-        // Only a REIFIED component carries noise roots. A constructor
-        // contributes a fresh coordinate (§06 "Joint composition": "A component
-        // contributes a fresh coordinate"), so it gets the empty set and can
-        // never pair-match.
-        roots: isLawof
-          ? _noiseRootsOf((resolved.args || [])[0], loweredModule)
-          : new Set<string>(),
+        roots: value ? _noiseRootsOf(value, loweredModule) : new Set<string>(),
+        value,
+        type: _componentTypeAt(m, p.label, i),
         measure: p.value,
       };
     });
@@ -249,22 +407,28 @@ Array<{ label: string; roots: Set<string>; measure: any }> | null {
   // that is itself a `record(...)` is a nested record law.
   if (m.op === 'lawof') {
     const inner = _resolveMeasureExpr((m.args || [])[0], loweredModule, 0);
-    return _recordFieldComponents(inner, loweredModule);
+    return _recordFieldComponents(inner, loweredModule, m);
   }
 
-  if (m.op === 'record') return _recordFieldComponents(m, loweredModule);
+  if (m.op === 'record') return _recordFieldComponents(m, loweredModule, m);
 
   return null;
 }
 
-function _recordFieldComponents(recordIR: any, loweredModule: any):
-Array<{ label: string; roots: Set<string>; measure: any }> | null {
+// `typeSource` is the node whose inferred domain names the component supports:
+// the `lawof` wrapper when there is one (its domain is the record type), else the
+// record node itself.
+function _recordFieldComponents(recordIR: any, loweredModule: any,
+  typeSource: any): Component[] | null {
   if (!recordIR || recordIR.kind !== 'call' || recordIR.op !== 'record') return null;
   const fields = Array.isArray(recordIR.fields) ? recordIR.fields : [];
   if (fields.length < 2) return null;
-  return fields.map((f: any) => ({
+  return fields.map((f: any, i: number) => ({
     label: f.name,
     roots: _noiseRootsOf(f.value, loweredModule),
+    value: f.value,
+    type: _componentTypeAt(typeSource, f.name, i)
+      || _componentTypeAt(recordIR, f.name, i),
     // A record FIELD is a value, not a measure — except when it is itself a
     // `record(...)`, which is the nested record law and recurses.
     measure: f.value,
@@ -299,19 +463,36 @@ function _singularityOf(measureIR: any, loweredModule: any, depth: number): Reas
   return null;
 }
 
-// The |S| = 2 Hall deficiency: two components that are deterministic functions of
-// the SAME single continuous scalar draw.
-function _firstSingularPair(comps: Array<{ label: string; roots: Set<string> }>,
-  loweredModule: any): Reason | null {
+function _setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
+}
+
+// Two components that are deterministic functions of one shared scalar value, both
+// with continuous (Lebesgue-referenced) support — so their pair lies on a curve in
+// R², which is 2-D Lebesgue-null.
+function _firstSingularPair(comps: Component[], loweredModule: any): Reason | null {
   for (let i = 0; i < comps.length; i++) {
-    const ri = comps[i].roots;
-    if (ri.size !== 1) continue;
-    const r = [...ri][0];
-    if (!_isContinuousScalarDraw(r, loweredModule)) continue;
+    if (!comps[i].value || comps[i].roots.size === 0) continue;
+    // §06 "Reference measure for product measures": a component with COUNTING
+    // reference cannot make the pair null, whatever the shared draw is.
+    if (!_isScalarReal(comps[i].type)) continue;
     for (let j = i + 1; j < comps.length; j++) {
-      const rj = comps[j].roots;
-      if (rj.size !== 1 || !rj.has(r)) continue;
-      return { kind: 'pair', a: comps[i].label, b: comps[j].label, ancestor: r };
+      if (!comps[j].value || comps[j].roots.size === 0) continue;
+      if (!_isScalarReal(comps[j].type)) continue;
+      // Cheap necessary pre-filter: a common generator forces equal root sets,
+      // so unequal sets can skip the walk. `{y}` vs `{y,n}` exits here.
+      if (!_setsEqual(comps[i].roots, comps[j].roots)) continue;
+      const gen = _commonGenerator(comps[i].value, comps[j].value, loweredModule);
+      if (!gen) continue;
+      return {
+        kind: 'pair',
+        a: comps[i].label,
+        b: comps[j].label,
+        generator: gen.name,
+        generatorIsDraw: gen.isDraw,
+      };
     }
   }
   return null;
@@ -322,8 +503,9 @@ function _firstSingularPair(comps: Array<{ label: string; roots: Set<string> }>,
 function _describe(reason: Reason): string {
   if (reason.kind === 'pair') {
     return "components '" + reason.a + "' and '" + reason.b
-      + "' are both deterministic functions of the single draw '"
-      + reason.ancestor + "', so each is determined by the other";
+      + "' are both deterministic functions of the single "
+      + (reason.generatorIsDraw ? 'draw' : 'value') + " '"
+      + reason.generator + "', so each is determined by the other";
   }
   if (reason.kind === 'via') {
     return "component '" + reason.label + "' is itself a singular joint ("

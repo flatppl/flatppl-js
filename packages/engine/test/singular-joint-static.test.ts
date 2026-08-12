@@ -14,11 +14,17 @@
 //
 // The criterion is "determined by the others GIVEN THE SHARED ANCESTORS", not
 // "shares an ancestor". `singular-joint.ts` fires only when two components are
-// deterministic functions of the same single CONTINUOUS SCALAR draw, which is the
-// |S| = 2 case of Hall's condition on the component→noise-root graph. The
-// NOT-SINGULAR table below is the half of this file that pins that distinction,
-// and it is the more important half: a false positive rejects a model the engine
-// answers exactly, and the user cannot work around a compile error.
+// deterministic functions of ONE shared scalar value AND both components have
+// continuous support. The second half is §06 "Reference measure for product
+// measures" (verbatim, flatppl-design 9e35262): the reference is built per
+// component, "each either `Lebesgue` or `Counting` on the corresponding component
+// support" — so nullity is a claim about the COMPONENTS' supports, not about the
+// shared draw. Both directions of that distinction are tested below
+// (`floor(y)` beside `y`, and two real-typed functions of one Poisson draw).
+//
+// The NOT-SINGULAR table is the more important half of this file: a false positive
+// rejects a model the engine answers exactly, and a user cannot work around a
+// compile error.
 //
 // Two properties are asserted TOGETHER for the pair-rule shapes: the STATIC
 // diagnostic, and the runtime refusal that accompanies it. Neither alone is §06:
@@ -124,6 +130,24 @@ T = joint(a = lawof(y), b = lawof(v))
 ld = logdensityof(T, record(a = 0.5, b = 0.9))
 `,
   },
+  {
+    // §06 "Reference measure for product measures" fixes the reference per
+    // COMPONENT support, so what matters is that both components are real-typed —
+    // NOT that the shared draw is continuous. Here the draw is DISCRETE and the
+    // law is still singular: both components infer `scalar real`, so the reference
+    // is Lebesgue ⊗ Lebesgue, and the support {(n, 2n) : n ∈ ℕ₀} is countable and
+    // therefore 2-D Lebesgue-null. A draw-keyed continuity test missed this.
+    label: 'two real-valued functions of one DISCRETE draw (countable support)',
+    ancestor: 'c',
+    components: ['a', 'b'],
+    src: `
+c ~ Poisson(rate = 2.0)
+a = c * 1.0
+b = c * 2.0
+R = lawof(record(a = a, b = b))
+ld = logdensityof(R, record(a = 1.0, b = 2.0))
+`,
+  },
 ];
 
 for (const c of SINGULAR_PAIR) {
@@ -141,6 +165,81 @@ for (const c of SINGULAR_PAIR) {
     const { ctx } = ctxFor(c.src, 1);
     await assert.rejects(async () => ctx.getMeasure('ld'),
       /no density w\.r\.t\. the product reference measure|joint law is singular/);
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════
+// SINGULAR through a shared derived VALUE, not a shared draw
+// ════════════════════════════════════════════════════════════════════
+//
+// The shared generator need not be a draw. Here both components are functions of
+// the intermediate value `u`, whose OWN root set has size 2 — so an
+// equal-singleton-roots rule missed these, even though the first is §06's "the
+// same draw referenced twice" and the third is "a deterministic transform of
+// another component" almost verbatim.
+//
+// These are also the counterexample to reading Hall's condition as an exact rank
+// criterion: R₁ = R₂ = {y, n} gives |⋃ Rᵢ| = 2 = |S|, so Hall is satisfied, yet
+// the Jacobian has rank 1 because the two component functions are dependent.
+
+const SINGULAR_SHARED_VALUE = [
+  {
+    label: 'two components that are the SAME expression',
+    generator: 'u',
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+n ~ Normal(mu = 0.0, sigma = 1.0)
+u = y + n
+S = joint(a = lawof(u), b = lawof(u))
+ld = logdensityof(S, record(a = 0.5, b = 0.9))
+`,
+  },
+  {
+    label: 'the record spelling of the same-expression pair',
+    generator: 'u',
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+n ~ Normal(mu = 0.0, sigma = 1.0)
+u = y + n
+R = lawof(record(a = u, b = u))
+ld = logdensityof(R, record(a = 0.5, b = 0.9))
+`,
+  },
+  {
+    label: 'one component a deterministic transform of the other',
+    generator: 'u',
+    // The one shape here that clm's singular check does NOT catch — its inline
+    // `lawof(2.0 * u)` component never becomes a named binding in the derivation
+    // table, so `_refuseIfSingular` sees no component pair. It still produces no
+    // number: the linear-Gaussian recogniser refuses it one step later for being
+    // a non-Normal component. Recorded rather than smoothed over, because "which
+    // gate stopped it" is the difference between a designed refusal and luck.
+    backstop: /component 'a' is a 'add', not a Normal/,
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+n ~ Normal(mu = 0.0, sigma = 1.0)
+u = y + n
+S = joint(a = lawof(u), b = lawof(2.0 * u))
+ld = logdensityof(S, record(a = 0.5, b = 0.9))
+`,
+  },
+];
+
+for (const c of SINGULAR_SHARED_VALUE) {
+  test(`STATIC: ${c.label} is a static error, naming the shared value`, () => {
+    const errs = singularErrorsOf(c.src);
+    assert.equal(errs.length, 1, 'expected exactly one singular-joint error, got: '
+      + JSON.stringify(errs));
+    // "value", not "draw" — the generator is a derived binding here, and saying
+    // "draw" would name something the user did not write.
+    assert.match(errs[0], new RegExp("the single value '" + c.generator + "'"));
+  });
+
+  test(`BACKSTOP: ${c.label} still reaches no number at density time`, async () => {
+    const { ctx } = ctxFor(c.src, 1);
+    await assert.rejects(async () => ctx.getMeasure('ld'),
+      (c as any).backstop
+        || /no density w\.r\.t\. the product reference measure|joint law is singular/);
   });
 }
 
@@ -288,12 +387,29 @@ S = joint(a = lawof(y), b = lawof(w))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `,
   },
-  // ── the shared root is one draw, but not a continuous scalar ──────────
+  {
+    // Equal root sets {y,n} AND a satisfied Hall condition, but full rank: the two
+    // component functions are algebraically independent. Cov(p,q) = Var(y)-Var(n) =
+    // 0, so this is two independent N(0,√2) variates, determinant 4. THE
+    // discriminator for the common-generator test — a rule that fired on equal root
+    // sets alone would reject this, and no generator exists here because neither
+    // component is a function of the other.
+    label: 'equal root sets but full rank (y+n beside y-n, independent)',
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+n ~ Normal(mu = 0.0, sigma = 1.0)
+p = y + n
+q = y - n
+S = joint(a = lawof(p), b = lawof(q))
+ld = logdensityof(S, record(a = 0.5, b = 0.9))
+`,
+  },
+  // ── the shared root is one draw, but not a single coordinate ──────────
   {
     // Root identity is per-draw-BINDING, so it cannot see that the two
     // components read different COORDINATES of `v`. Under identity covariance
-    // these are two independent standard normals — full rank. Excluded by the
-    // scalar requirement.
+    // these are two independent standard normals — full rank. Excluded because
+    // an array-valued generator is not one coordinate.
     label: 'two coordinates of one multivariate draw',
     src: `
 v ~ MvNormal(mu = [0.0, 0.0], cov = [[1.0, 0.0], [0.0, 1.0]])
@@ -303,13 +419,56 @@ S = joint(a = lawof(a), b = lawof(b))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `,
   },
+  // ── a component whose support is COUNTING, not Lebesgue ───────────────
+  //
+  // §06 "Reference measure for product measures" builds the reference per
+  // component support. A counting-referenced component cannot sit on a
+  // Lebesgue-null set, so the curve argument does not apply to it — regardless of
+  // how continuous the shared draw is. All four of these were static errors under
+  // a draw-keyed continuity test.
   {
-    // The deepest of the exclusions. `(k, k)` for a Bernoulli draw is NOT
-    // singular: its reference measure is counting ⊗ counting, and the diagonal
-    // of {0,1}² is not null w.r.t. counting measure — the law has a perfectly
-    // good pmf (p at (1,1), 1-p at (0,0)). Lebesgue-nullity is a
-    // continuous-support argument and does not transfer to a discrete draw.
-    label: 'a duplicated BERNOULLI draw (counting reference measure, has a pmf)',
+    // Reference is Lebesgue ⊗ Counting, and the law HAS a density w.r.t. it:
+    // f(t, n) = φ(t)·1[⌊t⌋ = n], since μ(A × {n}) = ∫_A 1[⌊t⌋ = n] φ(t) dt for
+    // every Borel A. Equivalently the support slices {t : ⌊t⌋ = n} = [n, n+1) are
+    // not Lebesgue-null, so the support is not ρ-null.
+    label: 'floor(y) beside y (Lebesgue ⊗ Counting reference, density exists)',
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(a = y, b = floor(y)))
+ld = logdensityof(R, record(a = 0.5, b = 0))
+`,
+  },
+  {
+    label: 'round(y) beside y (same argument)',
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(a = y, b = round(y)))
+ld = logdensityof(R, record(a = 0.5, b = 0))
+`,
+  },
+  {
+    label: 'a boolean-valued component beside its continuous draw',
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(a = y, b = y > 0.0))
+ld = logdensityof(R, record(a = 0.5, b = true))
+`,
+  },
+  {
+    label: 'the joint(lawof(y), lawof(floor(y))) spelling of the same shape',
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+fy = floor(y)
+S = joint(a = lawof(y), b = lawof(fy))
+ld = logdensityof(S, record(a = 0.5, b = 0))
+`,
+  },
+  {
+    // The all-discrete case, and the cleanest instance of the rule: on a countable
+    // support with counting reference the ONLY null set is ∅, so every measure
+    // there is absolutely continuous and an all-discrete joint can never be
+    // singular. `(k, k)` has an ordinary pmf — p at (1,1), 1-p at (0,0).
+    label: 'a duplicated BERNOULLI draw (counting reference, has a pmf)',
     src: `
 k ~ Bernoulli(p = 0.3)
 S = joint(a = lawof(k), b = lawof(k))
@@ -403,12 +562,16 @@ for (const c of NOT_SINGULAR) {
   });
 }
 
-// The full-rank shapes the static pass now (correctly) stays silent on are STILL
-// refused by clm's coarser runtime check, with a reason that is factually wrong
-// for them. Pinned so the divergence between the two predicates is visible rather
-// than folklore, and so narrowing clm later flips a test here.
-test('clm still refuses the full-rank shapes the static pass declines (divergence '
-  + 'is deliberate, and clm\'s stated reason is wrong for them)', async () => {
+// ── IMPORTANT: every NOT SINGULAR case above asserts STATIC silence only ──
+//
+// Static silence is not end-to-end support. clm still runs the coarse
+// any-overlap test at density time, so it refuses these shapes anyway: the model
+// the static pass now declares legal STILL cannot be scored. The two tests below
+// pin that, so the exemptions are not misread as "these models work now", and so
+// narrowing clm later flips a test here rather than passing unnoticed.
+
+test('a declined FULL-RANK shape is still refused by clm at density time '
+  + '(static silence is not end-to-end support)', async () => {
   const { ctx } = ctxFor(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
 n1 ~ Normal(mu = 0.0, sigma = 1.0)
@@ -418,10 +581,27 @@ v = y + n2
 S = joint(a = lawof(u), b = lawof(v))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `, 1);
-  // A refusal returns no number, so this is sound-but-incapable — which is why
-  // narrowing clm was left out of scope: it would hand these shapes to a scoring
-  // path nobody has verified.
+  // A refusal returns no number, so clm is sound-but-incapable here — which is
+  // why narrowing it was left out of scope: it would hand these shapes to a
+  // scoring path nobody has verified.
   await assert.rejects(async () => ctx.getMeasure('ld'), /share the ancestor 'y'/);
+});
+
+test('a declined DISCRETE shape is still refused by clm, and with a factually '
+  + 'false reason', async () => {
+  const { ctx } = ctxFor(`
+k ~ Bernoulli(p = 0.3)
+S = joint(a = lawof(k), b = lawof(k))
+ld = logdensityof(S, record(a = 1.0, b = 1.0))
+`, 1);
+  // Worth stating plainly, because it is the weakest point of the discrete
+  // exemption: clm's message asserts the law "has no density w.r.t. the product
+  // reference measure", which is FALSE of `(k, k)` — it has a pmf w.r.t.
+  // counting ⊗ counting. So this exemption is static-only and buys the user
+  // nothing yet; fixing it means touching the runtime path. Filed in
+  // flatppl-dev/TODO-flatppl-js.md.
+  await assert.rejects(async () => ctx.getMeasure('ld'),
+    /share the ancestor 'k'.*no density w\.r\.t\. the product reference measure/s);
 });
 
 // ── (2) sampling stays legal ───────────────────────────────────────────────
