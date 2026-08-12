@@ -182,16 +182,18 @@ function _isStochastic(b: any): boolean {
 // and a constructor measure whose parameters reach one carry phase 'stochastic'
 // (`q = Normal(mu = z, sigma = 0.6)` is stochastic-phase), so phase alone cannot
 // separate them; the domain does. A variate has a value type (scalar / array /
-// record), a measure has `kind === 'measure'`, and a LIFTED anon constructor
-// binding has no inferred type at all — the last is a measure too, which is why
-// the test is positive ("has a value type") rather than "is not a measure".
+// record) and a measure has `kind === 'measure'`, so a binding that HAS a type is
+// classified by `kind !== 'measure'`.
 //
-// A missing inferred type therefore answers false, which is FAIL-OPEN: a variate
-// that lost its type would be read as a constructor, get a fresh coordinate, and
-// score a singular joint instead of refusing it. Every stochastic binding without
-// a type is an internal lifted name today, so the guard asserts exactly that
-// rather than trusting it — a user-facing name arriving here untyped is a
-// classification this function cannot make, and must not answer.
+// The untyped case is separate, and is why this is not simply that one test. A
+// LIFTED anon constructor binding has no inferred type at all, and is a measure;
+// answering it by absence-of-type alone would be FAIL-OPEN for anything else that
+// arrived untyped, since a variate that lost its type would be read as a
+// constructor, get a fresh coordinate, and score a singular joint instead of
+// refusing it. Every stochastic binding without a type is an internal lifted name
+// today, so the guard asserts exactly that rather than trusting it — a
+// user-facing name arriving here untyped is a classification this function cannot
+// make, and must not answer.
 function _namesADraw(name: string, b: any): boolean {
   if (!_isStochastic(b)) return false;
   if (!b.inferredType) {

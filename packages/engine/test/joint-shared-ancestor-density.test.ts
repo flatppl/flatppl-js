@@ -833,9 +833,10 @@ ld = logdensityof(V, ${point})
 // below the two routes agree to 60 significant digits.
 //
 // The reference is computed from the parameters as EXACT DECIMALS, which is what
-// the source literals denote; feeding the reference the float64 of `0.6` instead
-// shifts it by about 1 ulp — right at the level these tests assert, so it is not
-// a detail that can be skipped.
+// the source literals denote. Feeding the reference the float64 nearest `0.6`
+// instead shifts it by 0.126 ulp on the first value below and 0.333 ulp on the
+// second — well inside the budget, and NO pinned constant's nearest f64 changes,
+// so this is about the quoted digits being right rather than any test flipping.
 //   mu0 = 0.5, s0 = 2, point (2.5, -1.0)
 //     (sa, sb) = (0.6, 0.8):  -8.74874735412980761937447869029
 //     sa = sb = 0.6:         -10.9032011771911282956792920692
@@ -865,11 +866,14 @@ const MARGINAL_1D_ORACLE = -2.1138901582154195;
 // `ulpsClose` (a RELATIVE budget), and every other test keeps F64_TOL.
 //
 // `ulpsClose` is still an exactness claim, not a loosened statistical tolerance.
-// The budget is 64 EPS ~ 1.4e-14 relative, and the failure mode it must catch —
-// dropping the shared node, so the law becomes the product of the marginals —
-// sits 2.4e15 EPS away (6.45 nats on the affine sibling). There are thirteen
-// orders of magnitude of daylight between the budget and the nearest wrong
-// answer, and the worst correct value observed uses a quarter of the budget.
+// The budget is 64 EPS ~ 1.4e-14 RELATIVE, which at these magnitudes is 70-96 ulp
+// (1 ulp is 0.67-0.91 EPS relative here, depending on where the mantissa sits —
+// which is the other reason the budget is expressed relative rather than in ulp).
+// Measured engine errors are 5, 8 and 24 ulp, so the worst correct value uses a
+// quarter of the budget. The failure mode the budget must catch — dropping the
+// shared node, so the law becomes the product of the marginals — sits 2.4e15 EPS
+// away (6.45 nats on the affine sibling). Thirteen orders of magnitude of daylight
+// separate the budget from the nearest wrong answer.
 const ULP_BUDGET = 64;
 const ulpsClose = (got: number, want: number) =>
   Math.abs(got - want) <= ULP_BUDGET * Number.EPSILON * Math.abs(want);
@@ -1016,7 +1020,7 @@ ld = logdensityof(J, record(a = 2.5, b = -1.0))
 `, 1);
     assert.ok(ulpsClose(got, COMPOUND_AFFINE_LOC_ORACLE),
       `got ${got}, oracle ${COMPOUND_AFFINE_LOC_ORACLE}. Dropping the shared node `
-      + 'would give -5.531043805465598, 6.45 nats away');
+      + 'would give -5.531043805465599, 6.45 nats away');
   });
 
 // KNOWN SAMPLING DEFECT, filed in flatppl-dev/TODO-flatppl-js.md and
