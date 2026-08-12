@@ -128,6 +128,11 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: a
   // measure)", so a draw from a measure the mass pass could not prove
   // normalized is a static error naming `normalize(...)` as the escape.
   ctx.checkDrawMass();
+  // Same domain, same classifier: `lawof` of a measure this engine cannot
+  // prove normalized is a static error too, since an unnormalized measure is
+  // not its own law (spec §04 reification; the measure-argument case is
+  // flatppl-design#73, still open — see `checkLawofMass`).
+  ctx.checkLawofMass();
   // Consumer of the valueset domain: flag distribution parameters whose
   // value set is PROVABLY outside the parameter's required domain (spec
   // §08), e.g. `Normal(sigma = -1.0)`. Reads the valuesets filled above.
@@ -4256,8 +4261,22 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (builtins.DISTRIBUTIONS.has(op)) return T.MASS_NORMALIZED;
 
     switch (op) {
-      // `lawof(x)` reifies the total law of a variate: a probability measure.
-      case 'lawof': return T.MASS_NORMALIZED;
+      // `lawof(x)` on a VALUE reifies the total law of a variate — §04
+      // "Reification to measures" calls the result "the **probability
+      // measure** that is the total law of x", so it is normalized.
+      //
+      // A MEASURE argument is a different question, and answering it
+      // `normalized` too was unsound. `inferLawof` implements the §04
+      // "Identity law" reading extended to a measure argument
+      // (`lawof(measure) = measure`), and an identity cannot change a total
+      // mass: `lawof` of a `%finite` measure is that same `%finite`
+      // measure. Claiming `normalized` let an unnormalized measure launder
+      // its class — `draw(truncate(N, S))` was correctly refused while
+      // `draw(lawof(truncate(N, S)))` passed the draw gate silently, which
+      // is the very lowering (a restriction presented as a law, with no
+      // normalizer) that gate exists to catch.
+      case 'lawof':
+        return isMeasureTyped(args[0]) ? massOfExpr(args[0]) : T.MASS_NORMALIZED;
       case 'normalize': {
         const base = massOfExpr(args[0]);
         if (base === T.MASS_NULL) {
@@ -4382,13 +4401,68 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // statically unknown.
       case 'bayesupdate':
         return T.MASS_UNKNOWN;
-      // Dependent chains: NO rule here yet. The kernel arg is
-      // kernel-typed, so its output mass isn't reachable without
-      // unwrapping — that is a gap in this pass (Rust classifies both),
-      // hence `deferred` rather than a verdict of `unknown`.
-      case 'jointchain':
+      // Dependent composition (spec §06 "Dependent composition").
+      //
+      // `kchain(M, K1, …)` is the Kleisli bind, which §06 defines as
+      // `ν(B) = ∫ κ(a, B) dμ(a)`. Take the whole space for `B`: with `μ` a
+      // probability measure and every `κ` a Markov kernel (κ(a, whole) = 1
+      // for every a), `ν(whole) = ∫ 1 dμ = 1`. So a chain of probability
+      // components IS a probability measure — forced, no integral left to
+      // evaluate. Nothing WEAKER is claimed: §06 says the bind's
+      // marginalization integral "is generally intractable", so a finite
+      // base is not pursued past `unknown` here.
+      //
+      // `jointchain(M, K1, …)` is `ν(A × B) = ∫_A κ(a, B) dμ(a)` and
+      // "concatenates all variates (no marginalization)". Its total mass is
+      // `∫ κ(a, whole) dμ(a) = μ(whole)` whenever every kernel is Markov, so
+      // the BASE's class carries through unchanged — a `%finite` base with
+      // Markov kernels is a `%finite` joint chain.
+      //
+      // A component with no class yet leaves the chain `deferred` rather
+      // than collapsing it to `unknown`. §11's `deferred` is "not yet
+      // inferred", so answering `unknown` — which the draw gate REJECTS —
+      // would turn every gap in a step kernel's own mass rules into an
+      // error on a well-formed model. This is why the rule does not simply
+      // test "all normalized".
       case 'kchain':
-        return T.MASS_DEFERRED;
+      case 'jointchain': {
+        // Keyword form (`jointchain(name = M, …)`) carries its components in
+        // `fields`, positional form in `args` — as `joint` / `record` above.
+        const comps = Array.isArray(ir.fields) && ir.fields.length > 0
+          ? ir.fields.map((f: any) => f.value) : args;
+        if (comps.length === 0) return T.MASS_DEFERRED;
+        const masses = comps.map(componentMass);
+        if (masses.some((m: any) => m === T.MASS_DEFERRED)) return T.MASS_DEFERRED;
+        // Every argument after the base is a transition kernel; the identity
+        // above holds only when each is Markov.
+        if (!masses.slice(1).every((m: any) => m === T.MASS_NORMALIZED)) {
+          return T.MASS_UNKNOWN;
+        }
+        if (op === 'jointchain') return masses[0];
+        return masses[0] === T.MASS_NORMALIZED ? T.MASS_NORMALIZED : T.MASS_UNKNOWN;
+      }
+    }
+    return T.MASS_DEFERRED;
+  }
+
+  // Mass class of one `kchain` / `jointchain` component. The base may be a
+  // measure or (kernel-first form) a kernel; every later component is a
+  // transition kernel, whose class is the class of the measure it RETURNS —
+  // a `normalized` kernel is a Markov kernel.
+  //
+  // A kernel's output mass is not readable off its type: the JS kernel type
+  // carries `result`, and unification SHARES that type object between
+  // nodes, so its `mass` slot is whichever neighbour was classified last
+  // (the hazard `unprovableNormalization` documents). So the class comes off
+  // the reified BODY instead — the same unwrapping the `broadcast` rule
+  // performs on its head. A component that is neither a measure nor a
+  // reified callable is "not yet inferred", not a verdict.
+  function componentMass(ir: any): any {
+    if (!ir || typeof ir !== 'object') return T.MASS_DEFERRED;
+    if (isMeasureTyped(ir)) return massOfExpr(ir);
+    const resolved = resolveBindingRefs(ir);
+    if (resolved && resolved.kind === 'call' && resolved.body) {
+      return massOfExpr(resolved.body);
     }
     return T.MASS_DEFERRED;
   }
@@ -4704,6 +4778,76 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const [, b] of loweredModule.bindings) visit(b.rhs);
   }
 
+  // `lawof(m)`'s total-mass gate: a MEASURE argument must be provably
+  // normalized. Shares `unprovableNormalization` with the draw gate, so the
+  // two accept and reject exactly the same classes.
+  //
+  // What grounds it. §04 "Reification to measures" says `lawof(x)` reifies
+  // its argument as "the **probability measure** that is the total law of
+  // x", and its result is normalized on every reading. A VALUE argument
+  // needs no gate — the law of a variate is a probability measure by
+  // construction. The gated case is the MEASURE argument, which this engine
+  // already accepts as the identity (`inferLawof`): an unnormalized measure
+  // is not its own law, so `lawof` either rejects it or silently relabels
+  // its mass, and relabelling is what let `draw(lawof(truncate(N, S)))`
+  // through.
+  //
+  // Honest about its authority: §04 as it stands does not define `lawof` ON
+  // A MEASURE at all. That extension — and the explicit requirement that
+  // the argument be `%normalized` — is flatppl-design#73, which is OPEN and
+  // unmerged, so this rule rests on PROPOSED normative text, unlike the
+  // draw gate's merged §04 sentence. The measure-argument identity it gates
+  // is already shipped here, so the choice is not whether to anticipate #73
+  // but whether the shipped path stays sound while #73 is pending. If #73
+  // lands differently, this gate and `inferLawof` move together.
+  //
+  // A KERNEL argument is not gated: whether a non-Markov kernel deserves
+  // its own mass error is the same question one level up, and is not
+  // decided here.
+  //
+  // EXEMPT: the `lawof` that kernel reification synthesizes. §04 says
+  // "`kernelof` … combines `lawof` and `functionof`", and this engine
+  // desugars `kernelof(M, kwargs…)` to `functionof(lawof(M), kwargs…)`, so
+  // EVERY kernel reification puts a `lawof` over its measure argument.
+  // Gating those would refuse a construction §04 explicitly allows: under
+  // "Reifying measure-valued expressions to kernels", applying `functionof`
+  // to a measure "generates a transition kernel", and normalization enters
+  // only as "IF the measure is normalized, the resulting kernel is a Markov
+  // kernel". So an unnormalized measure reifies to a non-Markov transition
+  // kernel BY DESIGN. Nothing is lost by exempting it: the mass arm still
+  // classifies the inner `lawof` honestly, so the kernel's output mass stays
+  // non-normalized and the chain rules above already refuse to call a chain
+  // through such a kernel normalized.
+  function checkLawofMass() {
+    const irWalk = require('./ir-walk.ts');
+    const exempt = new WeakSet();
+    const visit = (ir: any) => {
+      if (!ir || typeof ir !== 'object') return;
+      if (ir.kind === 'call' && ir.op === 'functionof') {
+        // The reified body is `body` after lowering; `args[0]` covers the
+        // pre-lowering spelling.
+        for (const inner of [ir.body, (ir.args || [])[0]]) {
+          if (inner && typeof inner === 'object'
+            && inner.kind === 'call' && inner.op === 'lawof') exempt.add(inner);
+        }
+      }
+      if (ir.kind === 'call' && ir.op === 'lawof' && !exempt.has(ir)) {
+        const arg = (ir.args || [])[0];
+        const offending = unprovableNormalization(arg);
+        if (offending) {
+          diagnostics.push({ severity: 'error',
+            message: 'lawof requires a %normalized measure (spec §04), but this '
+              + 'argument\'s total mass is ' + offending + ': an unnormalized measure '
+              + 'is not its own law. Wrap it in normalize(...) to state that intent '
+              + '— lawof never normalizes its argument',
+            loc: (arg && arg.loc) || ir.loc });
+        }
+      }
+      irWalk.forEachIRChild(ir, visit);
+    };
+    for (const [, b] of loweredModule.bindings) visit(b.rhs);
+  }
+
   // The mass class of a measure-typed expression whose normalization could
   // not be established, spelled as the §11 `%mass` symbol to quote in the
   // diagnostic — null when the expression is not a measure, or is one whose
@@ -4738,7 +4882,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   return { diagnostics, inferBinding, inferExpr, fillValuesets, fillMasses, checkDomainContracts,
-    checkPushfwdDomainContracts, checkCrossModuleReification, checkDrawMass };
+    checkPushfwdDomainContracts, checkCrossModuleReification, checkDrawMass,
+    checkLawofMass };
 }
 
 // Mass of an independent product of components (spec §11; Rust

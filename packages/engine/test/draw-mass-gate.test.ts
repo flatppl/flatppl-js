@@ -74,12 +74,10 @@ test('§04: normalize(...) is the escape the diagnostic names', () => {
 });
 
 test('§04: a shape with no mass rule yet (deferred) is accepted', () => {
-  // A user kernel's output mass is not reachable from this pass, so the
-  // class is `deferred` — "not yet inferred", which must not be reported
-  // as an error on a well-formed model.
-  const src = 'mu = elementof(reals)\n'
-    + 'K = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)\n'
-    + 'm = jointchain(Normal(mu = 0.0, sigma = 1.0), K)\nx ~ m';
+  // `deferred` is "not yet inferred", which must not be reported as an
+  // error on a well-formed model. See `DEFERRED_BASE` for why this shape
+  // is the rule-less one.
+  const src = DEFERRED_BASE + 'm = pr\nx ~ m';
   assert.deepEqual(errorsOf(src), []);
   assert.equal(massOf(src, 'm'), 'deferred');
 });
@@ -101,21 +99,34 @@ test('§04: a broadcast draw over a distribution head is accepted', () => {
 // `deferred` base as if the scale did not matter — and the gate passed
 // every spelling below.
 
-// A chain op has no mass rule in this pass, so its class is `deferred`.
-const CHAIN_HEAD = 'mu = elementof(reals)\n'
-  + 'K = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)\n'
-  + 'pr = Normal(mu = 0.0, sigma = 1.0)\n';
+// `pr` is a measure with NO mass class. A measure-`relabel` over a NAMED
+// base survives lowering as a `relabel` node, and no rule in this pass
+// classifies `relabel`, so its class is `deferred` — "not yet inferred".
+// (The base has to be a separate binding: `relabel(joint(…), […])` written
+// inline folds into a keyword `joint`, which the product rule then classifies
+// `normalized`.)
+//
+// These tests used `kchain`/`jointchain` for this until those gained mass
+// rules of their own (§06 dependent composition), at which point the same
+// sources classified `normalized` and stopped exercising the no-class path.
+// If `relabel` ever gains a mass rule, re-point this at whatever shape is
+// then genuinely rule-less — do NOT relax the assertions below, since the
+// behaviour under test is the weight rule's treatment of an unclassified
+// base, not anything about the base's own op.
+const DEFERRED_BASE = 'j = joint(Normal(mu = 0.0, sigma = 1.0), '
+  + 'Beta(alpha = 1.0, beta = 1.0))\n'
+  + 'pr = relabel(j, ["a", "b"])\n';
 
 const RESCALED_DEFERRED: [string, string][] = [
-  ['weighted(2.0, kchain(…))', 'm = weighted(2.0, kchain(pr, K))'],
-  ['weighted(0.5, kchain(…))', 'm = weighted(0.5, kchain(pr, K))'],
-  ['logweighted(2.0, kchain(…))', 'm = logweighted(2.0, kchain(pr, K))'],
-  ['weighted(2.0, jointchain(…))', 'm = weighted(2.0, jointchain(pr, K))'],
+  ['weighted(2.0, <no class>)', 'm = weighted(2.0, pr)'],
+  ['weighted(0.5, <no class>)', 'm = weighted(0.5, pr)'],
+  ['logweighted(2.0, <no class>)', 'm = logweighted(2.0, pr)'],
+  ['weighted(3.0, <no class>)', 'm = weighted(3.0, pr)'],
 ];
 
 for (const [label, body] of RESCALED_DEFERRED) {
   test(`§04 refuses a draw from ${label} — a rescaled base with no class`, () => {
-    const src = CHAIN_HEAD + body + '\nx ~ m';
+    const src = DEFERRED_BASE + body + '\nx ~ m';
     assert.equal(massOf(src, 'm'), 'unknown');
     const errs = gateErrors(src);
     assert.equal(errs.length, 1, `expected one gate error, got ${errs.length}`);
@@ -127,14 +138,13 @@ test('§06: the identity scale DOES ride a base with no class', () => {
   // `weighted(1, M)` and `logweighted(0, M)` are both dν = dM, so they
   // leave the base's class alone — including "not yet inferred", which the
   // gate passes. This is the control that makes the four refusals above
-  // mean "the scale settled it" rather than "chains are refused".
+  // mean "the scale settled it" rather than "this base is refused".
   for (const body of [
-    'm = weighted(1.0, kchain(pr, K))',
-    'm = logweighted(0.0, kchain(pr, K))',
-    'm = weighted(1.0, jointchain(pr, K))',
-    'm = kchain(pr, K)',
+    'm = weighted(1.0, pr)',
+    'm = logweighted(0.0, pr)',
+    'm = pr',
   ]) {
-    const src = CHAIN_HEAD + body + '\nx ~ m';
+    const src = DEFERRED_BASE + body + '\nx ~ m';
     assert.equal(massOf(src, 'm'), 'deferred', body);
     assert.deepEqual(gateErrors(src), [], body);
   }
@@ -145,7 +155,7 @@ test('§06: a fixed scalar BINDING as the weight is not provably one', () => {
   // pass does not evaluate it, so `w` is not proven to be the identity
   // scale even when it happens to be 1.0 in the source.
   for (const w of ['2.0', '1.0']) {
-    const src = CHAIN_HEAD + `w = ${w}\nm = weighted(w, kchain(pr, K))\nx ~ m`;
+    const src = DEFERRED_BASE + `w = ${w}\nm = weighted(w, pr)\nx ~ m`;
     assert.equal(massOf(src, 'm'), 'unknown', w);
     assert.equal(gateErrors(src).length, 1, w);
   }
@@ -390,9 +400,9 @@ test('zero-inflated-binomial: the psi / 1 - psi mixture types clean through the 
   assert.deepEqual(errs.map((d: any) => d.message), []);
   // The mixture's weights are `psi` and `1 - psi` over one Beta-supported
   // binding, so the complement reading proves it a probability measure.
-  const zib = r.loweredModule.bindings.get('zib_one');
+  const zib = r.loweredModule.bindings.get('ZeroInflatedBinomial');
   assert.equal(zib.inferredType.mass, 'normalized');
-  // `y ~ iid(zib_one, N)`: iid is a homomorphism on the class, so the
+  // `y ~ iid(ZeroInflatedBinomial, N)`: iid is a homomorphism on the class, so the
   // drawn measure is normalized too and the gate passes it.
   const y = r.loweredModule.bindings.get('y');
   assert.equal(y.rhs.op, 'draw');
@@ -414,12 +424,13 @@ test('zero-inflated-binomial: the mixture density matches an independent oracle,
     .replace('weighted(psi, Binomial(K, p))', 'Binomial(K, p)')
     .replace('weighted(1 - psi, Dirac(0))', 'Dirac(0)');
 
-  const score = async (model: string) => {
+  const scoreOf = async (model: string, binding: string) => {
     const { ctx } = ctxFor(
-      model + '\n__score__ = logdensityof(L, record(p = 0.4, psi = 0.7))\n', 1);
+      model + `\n__score__ = logdensityof(${binding}, record(p = 0.4, psi = 0.7))\n`, 1);
     const mm = await ctx.getMeasure('__score__');
     return mm.value ? mm.value.data[0] : mm.samples[0];
   };
+  const score = (model: string) => scoreOf(model, 'L');
 
   const weighted = await score(src);
   assert.ok(Math.abs(weighted - (-23.881454058598102)) < 1e-12,
@@ -429,4 +440,32 @@ test('zero-inflated-binomial: the mixture density matches an independent oracle,
     `unweighted superposition logdensity ${bare}, oracle -17.77295727547568`);
   assert.ok(Math.abs(weighted - bare) > 6.1,
     'the two spellings must not score the same — the weights are carried');
+});
+
+test('zero-inflated-binomial: the posterior carries the Beta(1.5, 1.5) priors', async () => {
+  // `L` is prior-independent, so the likelihood score above cannot tell this
+  // fixture apart from the stale local copy it replaced (which carried
+  // Beta(1, 1) priors — logpdf exactly 0 everywhere, so ITS posterior equalled
+  // its likelihood). `posterior = bayesupdate(L, prior)` is what pins them.
+  //
+  // Oracle (scipy, independent of this engine):
+  //   L                              = -23.881454058598102  (pinned above)
+  //   beta.logpdf(0.4, 1.5, 1.5)
+  //     + beta.logpdf(0.7, 1.5, 1.5) =   0.37554125970846486
+  //   posterior = L + that           = -23.505912798889636
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { ctxFor } = require('./_ctx-factory.ts');
+  const src = fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'zero-inflated-binomial.flatppl'), 'utf8');
+  const { ctx } = ctxFor(
+    src + '\n__score__ = logdensityof(posterior, record(p = 0.4, psi = 0.7))\n', 1);
+  const mm = await ctx.getMeasure('__score__');
+  const got = mm.value ? mm.value.data[0] : mm.samples[0];
+  assert.ok(Math.abs(got - (-23.505912798889636)) < 1e-12,
+    `posterior logdensity ${got}, oracle -23.505912798889636`);
+  // The prior contribution is the whole point: a posterior that silently
+  // dropped it would land on `L` itself.
+  assert.ok(Math.abs(got - (-23.881454058598102)) > 0.37,
+    'the posterior must differ from the likelihood — the priors are carried');
 });
