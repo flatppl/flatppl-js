@@ -115,7 +115,7 @@ lp = logdensityof(prior, record(a = 1.0, b = 1.0))
   // pinned: the analyzer diagnostic, and the runtime refusal that backstops it.
   assert.equal(compileErrors(proc).length, 1);
   assert.match(compileErrors(proc)[0].message,
-    /singular joint: components 'a' and 'b' are determined by the same draw 'x'/);
+    /singular joint: components 'a' and 'b' are both deterministic functions of the single draw 'x'/);
   await assert.rejects(() => ctx.getMeasure('lp'), /share the ancestor 'x'/);
 });
 

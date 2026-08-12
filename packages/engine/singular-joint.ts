@@ -12,40 +12,118 @@
 //   reference measure. Sampling is well-defined; a density query is a static
 //   error where statically detectable, and is otherwise refused by the engine."
 //
-// This module is the "static error where statically detectable" half. The other
-// half — "otherwise refused by the engine" — is `clm._refuseIfSingular`, which
-// stays as the backstop for every shape this pass declines to classify. The two
-// share a doctrine but not a substrate: clm reads the post-lift DERIVATION
-// table, this reads the LOWERED IR, which is what the analyzer has. The
-// duplication is deliberate — a static pass that had to wait for
-// `buildDerivations` could not be a static pass.
+// This module is the "static error where statically detectable" half.
 //
-// The identity that decides singularity is the component's set of INDEPENDENT
-// NOISE SOURCES: the draws it is a deterministic function of. Two components are
-// singular exactly when those sets overlap, because then one is a function of
-// the other given the shared ancestors. `lawof(a)` and `lawof(b)` for `a, b ~
-// Normal(z, 1)` do NOT overlap — each carries its own noise — even though both
-// trace through `z`; that is §06's correlated, absolutely-continuous case, and
-// firing on it would refuse a model the engine answers exactly.
+// ── THE CRITERION IS CONDITIONAL DETERMINISM, NOT A SHARED ANCESTOR ─────
 //
-// A CONSTRUCTOR component contributes no noise source at all, per §06 "Joint
-// composition": "A component contributes a fresh coordinate". So `joint(a = q,
-// b = q)` with `q = Normal(mu = z, sigma = 0.6)` is the correlated compound law,
-// not the singular diagonal, and must not fire here. At this layer the
-// discriminator is structural: a component is a reified draw only when it is
-// spelled `lawof(<value>)`, and `q` is a distribution call.
+// §06's operative words are "determined by the others given the shared
+// ancestors". Sharing an ancestor is NOT the criterion, and an earlier revision
+// of this pass got that wrong: it fired on any non-empty overlap between two
+// components' noise-source sets, which made
 //
-// WHY THE DENSITY QUERY, NOT THE JOINT. §06 makes sampling well-defined — the
-// singular joint itself is a legal binding, and `joint(a = lawof(y), b =
-// lawof(y))` samples on the diagonal. Only a DENSITY query over it is the error.
-// So this pass starts from `logdensityof` call sites and works inward; a model
-// that merely builds the joint gets no diagnostic.
+//   y ~ Normal(0, 1); n1 ~ Normal(0, 1); n2 ~ Normal(0, 1)
+//   u = y + n1; v = y + n2; joint(a = lawof(u), b = lawof(v))
 //
-// FAIL-SILENT BY DESIGN. Every unrecognised shape yields no diagnostic rather
-// than a guess. A missed static diagnostic still refuses at density time
-// (clm's backstop), so the cost of a miss is a late error message; the cost of a
-// false positive is a legal model the user cannot score. The asymmetry decides
-// every judgement call below.
+// a compile error. That law is Gaussian with covariance [[2,1],[1,2]],
+// determinant 3 — full rank, absolutely continuous, and `u` is emphatically NOT
+// determined by `v` given `y`. Overlap is necessary for singularity, never
+// sufficient.
+//
+// What IS sufficient, at pair granularity: the two components are deterministic
+// functions of the SAME SINGLE continuous scalar draw. Then the pair's support is
+// the image of a 1-dimensional variable in R², a curve, which is 2-D
+// Lebesgue-null — so no density w.r.t. the product reference. Both of §06's named
+// classes are this case (the same draw twice is `f = g = id`; a deterministic
+// transform of another component is `g = h ∘ f`).
+//
+// Three conditions, each load-bearing, each with a false positive behind it:
+//   equal root sets   — `{y} vs {y,n}` means the second component carries noise
+//                       the first does not, so it is not determined by it;
+//   singleton         — a strict subset relation among larger sets is Hall's
+//                       condition territory (see the deficiency note below);
+//   continuous scalar — a MULTI-coordinate draw fails because two components can
+//                       read different coordinates of it (`v ~ MvNormal(...);
+//                       a = v[1]; b = v[2]` is two independent standard normals,
+//                       and root identity is per-draw-binding, so it cannot see
+//                       the difference). A DISCRETE draw fails for a deeper
+//                       reason: `joint(a = lawof(k), b = lawof(k))` for `k ~
+//                       Bernoulli(p)` is not singular at all. Its reference
+//                       measure is counting ⊗ counting, and the diagonal of
+//                       {0,1}² is NOT null w.r.t. counting measure — the law has
+//                       a perfectly good pmf. Lebesgue-nullity is a
+//                       continuous-support argument and does not transfer.
+//
+// The general rule is Hall's condition on the component→root bipartite graph (the
+// joint's Jacobian drops rank exactly when some subset S has |⋃_{i∈S} R_i| < |S|).
+// This pass implements only the |S| = 2 case with equal singletons. A deficiency
+// needing a subset of size ≥ 3 — `lawof(record(inner = record(a = y, b = t), c =
+// y))`, whose support is {(y,t,y)} ⊂ R³ — is a MISS. See the fail-silent note.
+//
+// ── WHAT ELSE MAKES A JOINT SINGULAR: INHERITANCE ───────────────────────
+//
+// Singularity propagates outward, and two constructs carry it:
+//   - a COMPONENT that is itself a singular joint. `joint(inner = S, c =
+//     lawof(t))` with `S` singular concentrates on {(u, u, t)} ⊂ R³.
+//   - `iid(M, size)` over a singular `M`. §06 `iid` is the product measure
+//     M^⊗N and "never shares nodes between copies", so the copies are
+//     independent and the product is null exactly when M is.
+// Both are checked recursively. They matter more than they look: before they
+// were covered, all three shapes returned a finite WRONG number rather than
+// refusing (see the fail-silent note).
+//
+// ── WHY THE DENSITY QUERY, NOT THE JOINT ────────────────────────────────
+//
+// §06 makes sampling well-defined — the singular joint is a legal binding, and
+// `joint(a = lawof(y), b = lawof(y))` samples on the diagonal. Only a DENSITY
+// query over it is the error. So this pass starts from `logdensityof` call sites
+// and works inward; a model that merely builds or samples the joint is silent.
+//
+// ── RELATION TO clm._refuseIfSingular ───────────────────────────────────
+//
+// `clm._refuseIfSingular` is the "otherwise refused by the engine" half. It runs
+// at density time on the post-lift DERIVATION table; this pass runs on the
+// LOWERED IR, because a pass that had to wait for `buildDerivations` could not be
+// static. The two are NOT the same predicate and deliberately so:
+//
+//   clm still uses the coarse any-overlap test. It therefore REFUSES the
+//   full-rank shapes above, with a reason that is factually wrong for them.
+//   Narrowing it is not this pass's business and is not obviously safe: a refusal
+//   returns no number, so it is sound-but-incapable, whereas narrowing it would
+//   hand those shapes to a scoring path nobody has verified. Trading a safe
+//   refusal for an unverified number is the wrong direction. Tracked in
+//   flatppl-dev/TODO-flatppl-js.md.
+//
+// The two therefore diverge in BOTH directions, and neither contains the other:
+//
+//   pair rule (§06's named classes) — clm also refuses, so the static error and
+//   the refusal agree, and the query genuinely reaches no number.
+//
+//   inherited cases (iid, nested) — clm does NOT refuse. At 61c29f0 it scores a
+//   finite wrong number, and it still does: this pass makes the error VISIBLE
+//   but cannot prevent the number, because a diagnostic is not a gate. A user
+//   who ignores the diagnostic still gets -2.8268155996140187 out of a law that
+//   has no density. That is an improvement on silence, not a fix.
+//
+// Anything narrower than clm is safe to flag. The inherited cases are flagged
+// anyway, because a visible wrong answer beats a silent one and §06 wants the
+// static error regardless of what the runtime does with it.
+//
+// ── FAIL-SILENT, AND WHAT THAT DOES AND DOES NOT BUY ────────────────────
+//
+// Every unrecognised shape yields no diagnostic rather than a guess, because a
+// false positive refuses a model the engine answers exactly (§06's correlated
+// case, which the linear-Gaussian recogniser closes in closed form) and the user
+// has no way around a compile error.
+//
+// Be precise about what a miss costs, though — the earlier revision of this
+// header claimed "a miss still refuses at density time", and that is FALSE. The
+// runtime backstop does not cover every shape either: at 61c29f0 an `iid` over a
+// singular joint, and a nested singular joint or record, each returned a finite
+// wrong number. This pass now catches those three statically, but the underlying
+// density bug is unfixed and other unrecognised shapes may share it. A miss here
+// may therefore cost a wrong number, not merely a late message. The
+// silent-number holes are tracked in flatppl-dev/TODO-flatppl-js.md with their
+// closed forms.
 
 const { forEachIRChild } = require('./ir-walk.ts');
 
@@ -63,7 +141,7 @@ function _refTarget(ir: any, loweredModule: any): { name: string; binding: any }
 
 // Is this binding a `~`-draw (or `draw(m)`)? Its variate IS a noise source, and
 // the walk terminates there — a draw's own ancestors are shared context, not
-// shared noise (which is exactly what keeps `a, b ~ Normal(z, 1)` separable).
+// shared noise, which is what keeps `a, b ~ Normal(z, 1)` separable.
 function _isDrawBinding(binding: any): boolean {
   const rhs = binding && binding.rhs;
   return !!(rhs && rhs.kind === 'call' && rhs.op === 'draw');
@@ -72,6 +150,16 @@ function _isDrawBinding(binding: any): boolean {
 function _isMeasureTyped(binding: any): boolean {
   const t = binding && binding.inferredType;
   return !!(t && t.kind === 'measure');
+}
+
+// A draw whose variate is a single CONTINUOUS real coordinate — the only kind for
+// which "both components are functions of this one draw" implies Lebesgue-null.
+// An absent type answers false: unclassifiable means silent.
+function _isContinuousScalarDraw(name: string, loweredModule: any): boolean {
+  const b = loweredModule.bindings.get(name);
+  if (!b || !_isDrawBinding(b)) return false;
+  const t = b.inferredType;
+  return !!(t && t.kind === 'scalar' && t.prim === 'real');
 }
 
 // The independent noise sources the VALUE expression `ir` is a deterministic
@@ -114,16 +202,21 @@ function _resolveMeasureExpr(ir: any, loweredModule: any, depth: number): any {
   return _resolveMeasureExpr(target.binding.rhs, loweredModule, depth + 1);
 }
 
-// The components of a record-valued joint law, as { label, roots } — `roots`
-// being the component's noise sources. Null when `measureIR` is not a shape
-// this pass classifies, which is the fail-silent exit.
+// ── the singularity judgement ────────────────────────────────────────────
 //
-// Two spellings reach here, and §06 "Equivalent record law" says they are the
-// same measure: "`joint(a = lawof(a), b = lawof(b))` is equivalent to
-// `lawof(record(a = a, b = b))`; the positional form is the corresponding `cat`
-// law". Both are classified, so both diagnose.
-function _componentRoots(measureIR: any, loweredModule: any):
-Array<{ label: string; roots: Set<string> }> | null {
+// A `Reason` records WHY, so the diagnostic can name the offending pair and the
+// path to it. `via` / `iid` wrap an inner reason for the inherited cases.
+type Reason =
+  | { kind: 'pair'; a: string; b: string; ancestor: string }
+  | { kind: 'via'; label: string; inner: Reason }
+  | { kind: 'iid'; inner: Reason };
+
+// The components of a record-valued joint law as { label, roots, measure }:
+// `roots` feeds the pair rule, `measure` (when present) is the component's own
+// measure expression, which the inheritance rule recurses into. Null when
+// `measureIR` is not a shape this pass classifies — the fail-silent exit.
+function _componentsOf(measureIR: any, loweredModule: any):
+Array<{ label: string; roots: Set<string>; measure: any }> | null {
   const m = _resolveMeasureExpr(measureIR, loweredModule, 0);
   if (!m || m.kind !== 'call') return null;
 
@@ -134,37 +227,117 @@ Array<{ label: string; roots: Set<string> }> | null {
         ? m.args.map((a: any, i: number) => ({ label: '#' + (i + 1), value: a }))
         : [];
     if (parts.length < 2) return null;
-    return parts.map((p) => ({
-      label: p.label,
-      roots: _jointComponentRoots(p.value, loweredModule),
-    }));
+    return parts.map((p) => {
+      const resolved = _resolveMeasureExpr(p.value, loweredModule, 0);
+      const isLawof = !!(resolved && resolved.kind === 'call' && resolved.op === 'lawof');
+      return {
+        label: p.label,
+        // Only a REIFIED component carries noise roots. A constructor
+        // contributes a fresh coordinate (§06 "Joint composition": "A component
+        // contributes a fresh coordinate"), so it gets the empty set and can
+        // never pair-match.
+        roots: isLawof
+          ? _noiseRootsOf((resolved.args || [])[0], loweredModule)
+          : new Set<string>(),
+        measure: p.value,
+      };
+    });
   }
 
-  // `lawof(record(...))` — the equivalent record law. Its fields are VALUE
-  // expressions, so each field's noise sources are read directly.
+  // `lawof(record(...))` — §06 "Equivalent record law". Its fields are VALUE
+  // expressions, so each field's noise sources are read directly, and a field
+  // that is itself a `record(...)` is a nested record law.
   if (m.op === 'lawof') {
     const inner = _resolveMeasureExpr((m.args || [])[0], loweredModule, 0);
-    if (!inner || inner.kind !== 'call' || inner.op !== 'record') return null;
-    const fields = Array.isArray(inner.fields) ? inner.fields : [];
-    if (fields.length < 2) return null;
-    return fields.map((f: any) => ({
-      label: f.name,
-      roots: _noiseRootsOf(f.value, loweredModule),
-    }));
+    return _recordFieldComponents(inner, loweredModule);
   }
+
+  if (m.op === 'record') return _recordFieldComponents(m, loweredModule);
 
   return null;
 }
 
-// A `joint` component's noise sources. Only a REIFIED component carries any: a
-// constructor contributes a fresh coordinate (§06 "Joint composition"), so it
-// gets the empty set and can never overlap with anything.
-function _jointComponentRoots(value: any, loweredModule: any): Set<string> {
-  const resolved = _resolveMeasureExpr(value, loweredModule, 0);
-  if (resolved && resolved.kind === 'call' && resolved.op === 'lawof') {
-    return _noiseRootsOf((resolved.args || [])[0], loweredModule);
+function _recordFieldComponents(recordIR: any, loweredModule: any):
+Array<{ label: string; roots: Set<string>; measure: any }> | null {
+  if (!recordIR || recordIR.kind !== 'call' || recordIR.op !== 'record') return null;
+  const fields = Array.isArray(recordIR.fields) ? recordIR.fields : [];
+  if (fields.length < 2) return null;
+  return fields.map((f: any) => ({
+    label: f.name,
+    roots: _noiseRootsOf(f.value, loweredModule),
+    // A record FIELD is a value, not a measure — except when it is itself a
+    // `record(...)`, which is the nested record law and recurses.
+    measure: f.value,
+  }));
+}
+
+// Why `measureIR` is singular, or null. Order matters only for the message: the
+// direct pair is §06's named case, so it is reported in preference to an
+// inherited one.
+function _singularityOf(measureIR: any, loweredModule: any, depth: number): Reason | null {
+  if (depth > MAX_DEPTH) return null;
+  const m = _resolveMeasureExpr(measureIR, loweredModule, 0);
+  if (!m || m.kind !== 'call') return null;
+
+  // `iid(M, size)` — the product measure inherits M's singularity.
+  if (m.op === 'iid') {
+    const inner = _singularityOf((m.args || [])[0], loweredModule, depth + 1);
+    return inner ? { kind: 'iid', inner } : null;
   }
-  return new Set<string>();
+
+  const comps = _componentsOf(m, loweredModule);
+  if (!comps) return null;
+
+  const pair = _firstSingularPair(comps, loweredModule);
+  if (pair) return pair;
+
+  // Inheritance: a component that is itself a singular joint.
+  for (const c of comps) {
+    const inner = _singularityOf(c.measure, loweredModule, depth + 1);
+    if (inner) return { kind: 'via', label: c.label, inner };
+  }
+  return null;
+}
+
+// The |S| = 2 Hall deficiency: two components that are deterministic functions of
+// the SAME single continuous scalar draw.
+function _firstSingularPair(comps: Array<{ label: string; roots: Set<string> }>,
+  loweredModule: any): Reason | null {
+  for (let i = 0; i < comps.length; i++) {
+    const ri = comps[i].roots;
+    if (ri.size !== 1) continue;
+    const r = [...ri][0];
+    if (!_isContinuousScalarDraw(r, loweredModule)) continue;
+    for (let j = i + 1; j < comps.length; j++) {
+      const rj = comps[j].roots;
+      if (rj.size !== 1 || !rj.has(r)) continue;
+      return { kind: 'pair', a: comps[i].label, b: comps[j].label, ancestor: r };
+    }
+  }
+  return null;
+}
+
+// ── diagnostics ─────────────────────────────────────────────────────────
+
+function _describe(reason: Reason): string {
+  if (reason.kind === 'pair') {
+    return "components '" + reason.a + "' and '" + reason.b
+      + "' are both deterministic functions of the single draw '"
+      + reason.ancestor + "', so each is determined by the other";
+  }
+  if (reason.kind === 'via') {
+    return "component '" + reason.label + "' is itself a singular joint ("
+      + _describe(reason.inner) + ')';
+  }
+  return 'it is an iid product over a singular joint (' + _describe(reason.inner) + ')';
+}
+
+function _message(reason: Reason): string {
+  return 'singular joint: ' + _describe(reason)
+    + '. The joint law therefore has no density w.r.t. the product reference '
+    + 'measure (it concentrates on a lower-dimensional subset), so this density '
+    + 'query is a static error (spec §06 "Singular joints"). Sampling this joint '
+    + 'stays well-defined; give each component its own draw to score it';
 }
 
 // The measure argument of every DENSITY QUERY in `ir`, with the node to locate a
@@ -189,9 +362,14 @@ function _densityQueryMeasures(ir: any, out: Array<{ measure: any; loc: any }>):
 
 /**
  * Error diagnostics for every statically detectable singular-joint density
- * query in `loweredModule`. Runs after type inference (it reads
- * `inferredType` to tell a measure binding from a variate) and emits nothing
- * for a model that only samples the joint.
+ * query in `loweredModule`. Runs after type inference (it reads `inferredType`
+ * to tell a measure from a variate and a continuous scalar draw from anything
+ * else) and emits nothing for a model that only samples the joint.
+ *
+ * One diagnostic per density QUERY. A joint with three same-draw components is
+ * one modelling mistake, not three (`_firstSingularPair` stops at the first
+ * offending pair), but two queries over the same singular joint each report,
+ * since each is its own ill-formed query.
  */
 function checkSingularJoints(loweredModule: any): any[] {
   const diagnostics: any[] = [];
@@ -199,44 +377,12 @@ function checkSingularJoints(loweredModule: any): any[] {
     const queries: Array<{ measure: any; loc: any }> = [];
     _densityQueryMeasures(binding.rhs, queries);
     for (const q of queries) {
-      const comps = _componentRoots(q.measure, loweredModule);
-      if (!comps) continue;
-      const hit = _firstOverlap(comps);
-      if (!hit) continue;
-      diagnostics.push({
-        severity: 'error',
-        message: "singular joint: components '" + hit.a + "' and '" + hit.b
-          + "' are determined by the same draw '" + hit.ancestor + "' — no "
-          + 'independent noise separates them, so the joint law has no density '
-          + 'w.r.t. the product reference measure (it concentrates on a '
-          + 'lower-dimensional subset) and this density query is a static error '
-          + '(spec §06 "Singular joints"). Sampling this joint stays '
-          + 'well-defined; give each component its own draw to score it',
-        loc: q.loc,
-      });
-      // One diagnostic per query: a joint with three same-draw components is
-      // one modelling mistake, not three.
-      break;
+      const reason = _singularityOf(q.measure, loweredModule, 0);
+      if (!reason) continue;
+      diagnostics.push({ severity: 'error', message: _message(reason), loc: q.loc });
     }
   }
   return diagnostics;
 }
 
-function _firstOverlap(comps: Array<{ label: string; roots: Set<string> }>):
-{ a: string; b: string; ancestor: string } | null {
-  for (let i = 0; i < comps.length; i++) {
-    for (let j = i + 1; j < comps.length; j++) {
-      for (const r of comps[i].roots) {
-        if (comps[j].roots.has(r)) {
-          return { a: comps[i].label, b: comps[j].label, ancestor: r };
-        }
-      }
-    }
-  }
-  return null;
-}
-
-module.exports = {
-  checkSingularJoints,
-  _internal: { _componentRoots, _noiseRootsOf, _densityQueryMeasures },
-};
+module.exports = { checkSingularJoints };
