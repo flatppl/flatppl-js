@@ -3261,6 +3261,18 @@ function analyze(ast: any, source: string, opts?: any) {
   }
   for (const d of typeDiagnostics) diagnostics.push(d);
 
+  // Spec §06 "Singular joints": a density query over a joint whose components
+  // share their noise is "a static error where statically detectable, and is
+  // otherwise refused by the engine". `clm._refuseIfSingular` covers the
+  // refusal; this covers the static half, so the editor marks
+  // `logdensityof(joint(a = lawof(y), b = lawof(y)), …)` before anything runs
+  // instead of staying silent until a density is scored. Reads `inferredType`,
+  // so it runs after inference; fires on the DENSITY QUERY only, never on a
+  // joint that is merely sampled (§06 keeps sampling well-defined).
+  for (const d of require('./singular-joint.ts').checkSingularJoints(loweredModule)) {
+    diagnostics.push(d);
+  }
+
   // §04 auto-splatting for builtins, on the AST the ORCHESTRATOR lowers from.
   // typeinfer rewrote its own lowered IR (so inference and the §04 name error
   // are correct there), but that is a separate object graph from the one
