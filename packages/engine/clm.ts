@@ -177,6 +177,35 @@ function _isStochastic(b: any): boolean {
 //
 // This gate runs only on the DENSITY path (lowerMeasure is not the sampling
 // route for a record/tuple measure), so sampling a singular joint stays legal.
+//
+// ── SINGULARITY IS INHERITED, SO THE CHECK RECURSES ─────────────────────
+//
+// The pair test above reads ONE component→binding map, so a singular joint one
+// level down used to be invisible and the query answered with a finite number for
+// a law that has none: `iid(S, 2)` over a singular `S` scored -3.8257541328186915
+// (four independent standard normals), and `joint(inner = S, c = lawof(t))` scored
+// -2.8268155996140187 (three of them) — the singular pair scored as two
+// independent coordinates. Two constructs carry singularity outward:
+//
+//   `iid(M, size)` — §06 `iid` (verbatim, flatppl-design 9e35262) is the product
+//   measure M^⊗N and "never shares nodes between copies", so the copies are
+//   independent and the product is null exactly when M is.
+//
+//   a COMPONENT that is itself a singular joint or record law — §06 "Joint
+//   composition" makes a record-valued component "a nested record under its
+//   name", so the outer support is the inner curve crossed with the remaining
+//   coordinates, still null in the product space.
+//
+// Hence `_refuseIfSingular` walks the derivation table: through an `iid`
+// derivation to its base measure, and into every component binding. The path is
+// carried into the message, because the offending pair is not at the level the
+// user queried.
+//
+// This is the "otherwise refused by the engine" half only. `singular-joint.ts`
+// implements the same inheritance rule statically, on the lowered IR, with a
+// NARROWER pair predicate (a common scalar generator, both components Lebesgue-
+// referenced). The two are deliberately not the same predicate — see that
+// module's "RELATION TO clm._refuseIfSingular".
 
 // Whether `name` binds a VARIATE of a draw rather than a measure. Both a `~`-draw
 // and a constructor measure whose parameters reach one carry phase 'stochastic'
@@ -286,16 +315,38 @@ function _displayName(root: string, ctx: any): string {
   /* c8 ignore stop */
 }
 
-function _refuseIfSingular(input: any, ctx: any): void {
+// The `iid` base measure `input` is a product of, or null when it is not an iid.
+function _iidBase(input: any, ctx: any): string | null {
+  if (typeof input !== 'string' || !ctx || !ctx.derivations) return null;
+  const d = ctx.derivations[_aliasChain(input, ctx).root];
+  return (d && d.kind === 'iid' && typeof d.from === 'string') ? d.from : null;
+}
+
+// Bound the walk the way the rest of this module does — `buildDerivations` has a
+// real cycle detector, but an alias chain reaching here malformed must not hang.
+const _SINGULAR_MAX_DEPTH = 64;
+
+function _refuseIfSingular(input: any, ctx: any, depth?: number, via?: string[]): void {
+  const d = depth || 0;
+  if (d > _SINGULAR_MAX_DEPTH) return;
+  const path = via || [];
+
+  const base = _iidBase(input, ctx);
+  if (base != null) {
+    _refuseIfSingular(base, ctx, d + 1, path.concat(["the iid product's inner measure"]));
+    return;
+  }
+
   const comps = _jointComponents(input, ctx);
-  if (!comps || comps.length < 2) return;
+  if (!comps) return;
   const noise = comps.map((c) => (_aliasChain(c.binding, ctx).isDraw
     ? _noiseRoots(c.binding, ctx) : new Set<string>()));
   for (let i = 0; i < comps.length; i++) {
     for (let j = i + 1; j < comps.length; j++) {
       for (const r of noise[i]) {
         if (!noise[j].has(r)) continue;
-        const err: any = new Error("density: joint components '" + comps[i].label
+        const err: any = new Error('density: ' + (path.length ? path.join(', in ') + ': ' : '')
+          + "joint components '" + comps[i].label
           + "' and '" + comps[j].label + "' are reified laws of the same draw — they "
           + "share the ancestor '" + _displayName(r, ctx) + "' with no independent "
           + 'noise separating them, so the joint law has no density w.r.t. the '
@@ -306,6 +357,10 @@ function _refuseIfSingular(input: any, ctx: any): void {
         throw err;
       }
     }
+  }
+
+  for (const c of comps) {
+    _refuseIfSingular(c.binding, ctx, d + 1, path.concat(["component '" + c.label + "'"]));
   }
 }
 

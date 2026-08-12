@@ -26,12 +26,13 @@
 // rejects a model the engine answers exactly, and a user cannot work around a
 // compile error.
 //
-// Two properties are asserted TOGETHER for the pair-rule shapes: the STATIC
+// Two properties are asserted TOGETHER for every singular shape: the STATIC
 // diagnostic, and the runtime refusal that accompanies it. Neither alone is §06:
 // the diagnostic makes the error visible, and only the refusal makes the query
 // reach no number. A test that checked the diagnostic alone would pass against an
-// engine that then scored the joint anyway — which is exactly the state the
-// INHERITED shapes are in (see that section, and the WILL-FLIP marker on it).
+// engine that then scored the joint anyway — which is the state the INHERITED
+// shapes were in until `clm._refuseIfSingular` learned to recurse through `iid`
+// and into nested components.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -262,22 +263,23 @@ for (const c of SINGULAR_SHARED_VALUE) {
 // singular joint drags the outer joint down with it.
 //
 // These three are the reason the "a miss still refuses at density time" claim was
-// wrong. At 61c29f0 each scored a finite number, oracled below against
-// independent closed forms, for a law that has none. The static diagnostic now
-// makes them VISIBLE, but a diagnostic is not a gate: the runtime still returns
-// the number. The WILL-FLIP tests pin that honestly, so fixing the underlying
-// density bug turns a red test rather than drifting silently.
-
-const L = (x: number) => -0.5 * Math.log(2 * Math.PI) - 0.5 * x * x;
+// wrong. At 61c29f0 each SCORED a finite number for a law that has none — the
+// value being exactly the product of independent normals, i.e. the singular pair
+// scored as two independent coordinates. `clm._refuseIfSingular` read one
+// component→binding map, so singularity one level down was invisible to it.
+//
+// It now recurses through an `iid` derivation to its base measure and into every
+// component binding, so all three reach the DESIGNED singular refusal. The
+// `backstop` regexes below pin the path clause the recursion adds, since "which
+// level was singular" is the difference between a designed refusal and an
+// incidental crash.
 
 const SINGULAR_INHERITED = [
   {
     label: 'iid over a singular joint',
     reason: /it is an iid product over a singular joint/,
-    // Four independent standard normals at 0.1, 0.2, 0.3, 0.4 — i.e. the engine
-    // scores iid(S, 2) as if S's two coordinates were independent. The true law
-    // concentrates on {(a₁,a₁,a₂,a₂)} ⊂ R⁴ and has no density at all.
-    wrongValue: L(0.1) + L(0.2) + L(0.3) + L(0.4),
+    // The refusal names the iid's inner measure, then the offending inner pair.
+    backstop: /the iid product's inner measure: joint components 'a' and 'b'.*share the ancestor 'y'.*no density w\.r\.t\. the product reference measure/s,
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 S = joint(a = lawof(y), b = lawof(y))
@@ -288,9 +290,8 @@ ld = logdensityof(I, table(a = [0.1, 0.3], b = [0.2, 0.4]))
   {
     label: 'a nested singular joint component',
     reason: /component 'inner' is itself a singular joint/,
-    // Three independent standard normals at 0.1, 0.2, 0.3. True support is
-    // {(u, u, t)} ⊂ R³ — 2-dimensional, R³-Lebesgue-null.
-    wrongValue: L(0.1) + L(0.2) + L(0.3),
+    // True support is {(u, u, t)} ⊂ R³ — 2-dimensional, R³-Lebesgue-null.
+    backstop: /component 'inner': joint components 'a' and 'b'.*share the ancestor 'y'.*no density w\.r\.t\. the product reference measure/s,
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
@@ -302,7 +303,7 @@ ld = logdensityof(N, record(inner = record(a = 0.1, b = 0.2), c = 0.3))
   {
     label: 'a nested singular record law',
     reason: /component 'inner' is itself a singular joint/,
-    wrongValue: L(0.1) + L(0.2) + L(0.3),
+    backstop: /component 'inner': joint components 'a' and 'b'.*share the ancestor 'y'.*no density w\.r\.t\. the product reference measure/s,
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
@@ -320,19 +321,88 @@ for (const c of SINGULAR_INHERITED) {
     assert.match(errs[0], c.reason);
   });
 
-  test(`[WILL-FLIP] ${c.label} still SCORES a wrong number at runtime — the `
-    + 'static diagnostic is not a gate', async () => {
-    // Pinning a value known to be WRONG, deliberately and only here: the law has
-    // no density, so any finite answer is wrong. It is pinned because the
-    // alternative — asserting nothing — is how the hole stayed invisible. When
-    // the runtime learns to refuse these, this test goes red and should be
-    // rewritten to `assert.rejects`, exactly like the pair-rule BACKSTOP tests.
+  test(`BACKSTOP: ${c.label} refuses at density time, naming the level that is `
+    + 'singular', async () => {
+    // Both halves of §06 now hold for the inherited shapes: the static diagnostic
+    // makes the error visible AND the query reaches no number. Asserting the path
+    // clause, not just any rejection, is what separates the DESIGNED refusal from
+    // an incidental crash somewhere further down the density walk.
     const { ctx } = ctxFor(c.src, 1);
-    const m: any = await ctx.getMeasure('ld');
-    assert.ok(Math.abs(m.samples[0] - c.wrongValue) < 1e-12,
-      `expected the known-wrong value ${c.wrongValue}, got ${m.samples[0]}`);
+    await assert.rejects(async () => ctx.getMeasure('ld'), c.backstop);
   });
 }
+
+// ════════════════════════════════════════════════════════════════════
+// The recursion must not over-reach: legal shapes still score
+// ════════════════════════════════════════════════════════════════════
+//
+// The inheritance recursion walks into EVERY component binding, so a legal nested
+// or iid shape is one wrong step away from a false refusal — and a false refusal
+// leaves the user no workaround. Both values below are pinned to an INDEPENDENT
+// oracle (Distributions.jl 0.25, `logpdf(Normal(0,1), ·)` summed), never to the
+// engine's own output.
+
+test('a nested record law over three DISTINCT draws still scores, and matches the '
+  + 'independent oracle', async () => {
+  const { ctx } = ctxFor(`
+y ~ Normal(mu = 0.0, sigma = 1.0)
+s ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(inner = record(a = y, b = s), c = t))
+ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.3))
+`, 1);
+  const m: any = await ctx.getMeasure('ld');
+  // Three independent standard normals at 0.1, 0.2, 0.3 — the SAME numeric value
+  // the singular nested shape used to return, which is exactly why that shape's
+  // finite answer was invisible: here the value is correct, there it was not.
+  assert.ok(Math.abs(m.samples[0] - -2.8268155996140187) < 1e-13,
+    `expected -2.8268155996140187, got ${m.samples[0]}`);
+});
+
+test('iid over a scalar law still scores, and matches the independent oracle',
+  async () => {
+    const { ctx } = ctxFor(`
+y ~ Normal(mu = 0.0, sigma = 1.0)
+I = iid(lawof(y), 2)
+ld = logdensityof(I, [0.1, 0.3])
+`, 1);
+    const m: any = await ctx.getMeasure('ld');
+    assert.ok(Math.abs(m.samples[0] - -1.8878770664093456) < 1e-13,
+      `expected -1.8878770664093456, got ${m.samples[0]}`);
+  });
+
+test('a LEGAL correlated joint under iid or nesting is not caught by the singular '
+  + 'recursion', async () => {
+  // Both of these already reach no number, but for the MARGINALISATION refusal
+  // (the engine has no exact answer for the shared ancestor `z`), not for
+  // singularity. Pinning which gate stops them keeps the recursion from silently
+  // becoming the reason: if it ever fires here, that is a false refusal of a
+  // full-rank law, and this assertion catches it rather than the error merely
+  // changing wording.
+  for (const src of [`
+z ~ Normal(mu = 0.0, sigma = 1.0)
+a ~ Normal(mu = z, sigma = 1.0)
+b ~ Normal(mu = z, sigma = 1.0)
+S = joint(a = lawof(a), b = lawof(b))
+I = iid(S, 2)
+ld = logdensityof(I, table(a = [0.1, 0.3], b = [0.2, 0.4]))
+`, `
+z ~ Normal(mu = 0.0, sigma = 1.0)
+a ~ Normal(mu = z, sigma = 1.0)
+b ~ Normal(mu = z, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+S = joint(a = lawof(a), b = lawof(b))
+N = joint(inner = S, c = lawof(t))
+ld = logdensityof(N, record(inner = record(a = 0.1, b = 0.2), c = 0.3))
+`]) {
+    const { ctx } = ctxFor(src, 1);
+    await assert.rejects(async () => ctx.getMeasure('ld'), (e: any) => {
+      assert.notEqual(e.code, 'CLM_SINGULAR_JOINT');
+      assert.match(String(e.message), /marginalises the stochastic ancestor/);
+      return true;
+    });
+  }
+});
 
 // ════════════════════════════════════════════════════════════════════
 // NOT SINGULAR — the predicate must stay silent
@@ -791,6 +861,11 @@ test('a Hall deficiency needing a subset of size 3 is a MISS (documented limit)'
   // of components has equal singleton root sets ({y,t} vs {y}), so the |S| = 2
   // rule cannot see it. Pinned as a known miss rather than left undocumented; if
   // the general Hall check ever lands, this test flips to expecting an error.
+  //
+  // This one is NOT safe at runtime either: clm's recursion sees no offending pair
+  // at any level (the outer components are a nested record and a draw, whose root
+  // sets do not overlap), so it scores -2.786815599614018 — three independent
+  // normals at 0.1, 0.2, 0.1. Tracked in flatppl-dev/TODO-flatppl-js.md.
   assert.deepEqual(singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
