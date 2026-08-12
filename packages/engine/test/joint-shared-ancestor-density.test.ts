@@ -780,6 +780,221 @@ ld = logdensityof(V, ${point})
     /cannot read the point scored as a numeric variate/);
 });
 
+// ── constructor components with a stochastic parameter ─────────────────────
+//
+// §06 "Joint composition", quoted verbatim from flatppl-design 9e35262: "A
+// component contributes a fresh coordinate; a stochastic node shared between
+// component traces (through a reified component — `lawof`, `kernelof` — or a
+// stochastic constructor parameter) remains a single node of the composed trace.
+// Components that share no stochastic node are independent, and their `joint` is
+// the product measure".
+//
+// A distribution CONSTRUCTOR whose parameters reach a draw is the second of the
+// two routes that sentence names, so `z ~ Normal(mu0, s0); joint(a = Normal(mu =
+// z, sigma = sa), b = Normal(mu = z, sigma = sb))` is the COMPOUND (correlated)
+// law: each coordinate is fresh, `z` is one node, giving mean (mu0, mu0) and
+// Sigma = s0^2 * 11' + diag(sa^2, sb^2). That is the same law §06 "Equivalent
+// record law" gives `lawof(record(a = a, b = b))` over fresh draws, so the two
+// spellings are pinned to ONE oracle below.
+//
+// Oracles are INDEPENDENT of this engine and of flatppl-rust (which emits
+// symbolic lowerings and evaluates no density at all, so it is not an oracle
+// here). Each was computed at 40 decimal digits by two routes that share no
+// algebra: the closed-form Gaussian with an explicit 2x2 inverse, and numerical
+// quadrature of the compound integral ∫ p(z) p(a|z) p(b|z) dz. Both agree to all
+// 40 digits.
+//   mu0 = 0.5, s0 = 2, point (2.5, -1.0)
+//     (sa, sb) = (0.6, 0.8):  -8.748747354129807395499993
+//     sa = sb = 0.6:         -10.90320117719112888674244
+// The disjoint-latent and marginal controls are products of 1-D Normals from the
+// same 40-digit computation, and the engine matches those bit-exactly.
+
+const COMPOUND_ORACLE = -8.748747354129808;          // nearest f64 of the above
+const COMPOUND_EQUAL_SD_ORACLE = -10.903201177191129;
+const DISJOINT_ORACLE = -4.0426427710908985;
+const MARGINAL_1D_ORACLE = -2.1138901582154195;
+
+// Sigma = s0^2 * 11' + diag(sigma_i^2) is far worse conditioned than the
+// [[2,1],[1,2]] blocks earlier in this file (4.36 against 4 off-diagonal), so the
+// engine's Cholesky loses ~6 ulp where those lose ~2. These therefore pin f64
+// exactness as a RELATIVE ulp budget instead of the absolute F64_TOL. It remains
+// an exactness claim, not a loosened statistical tolerance: dropping the shared
+// node moves these values by ~4.7, fourteen orders of magnitude above the budget.
+const ULP_BUDGET = 16;
+const ulpsClose = (got: number, want: number) =>
+  Math.abs(got - want) <= ULP_BUDGET * Number.EPSILON * Math.abs(want);
+
+const CONSTRUCTOR_JOINT = `
+z ~ Normal(mu = 0.5, sigma = 2.0)
+J = joint(a = Normal(mu = z, sigma = 0.6), b = Normal(mu = z, sigma = 0.8))
+ld = logdensityof(J, record(a = 2.5, b = -1.0))
+`;
+
+test('a keyword joint of CONSTRUCTORS sharing a latent scores the compound law',
+  async () => {
+    const got = await scoreOf(CONSTRUCTOR_JOINT, 1);
+    assert.ok(ulpsClose(got, COMPOUND_ORACLE),
+      `got ${got}, compound-law oracle ${COMPOUND_ORACLE} (40-digit closed form and `
+      + 'quadrature agree). The product of the two marginals would be '
+      + `${DISJOINT_ORACLE} — a component sharing no node is a DIFFERENT law`);
+  });
+
+test('the POSITIONAL constructor-joint spelling scores the same compound law',
+  async () => {
+    const got = await scoreOf(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+V = joint(Normal(mu = z, sigma = 0.6), Normal(mu = z, sigma = 0.8))
+ld = logdensityof(V, [2.5, -1.0])
+`, 1);
+    assert.ok(ulpsClose(got, COMPOUND_ORACLE), `got ${got}, oracle ${COMPOUND_ORACLE}`);
+  });
+
+test('the constructor joint and its equivalent record law over fresh draws are '
+  + 'ONE measure (§06 "Equivalent record law")', async () => {
+  // The constructor spelling shares `z` through a stochastic PARAMETER, the
+  // record spelling through REIFIED components. §06 names both routes in one
+  // sentence, so the two must not merely agree to a tolerance — they are the
+  // same measure and must score bit-identically.
+  const viaConstructors = await scoreOf(CONSTRUCTOR_JOINT, 1);
+  const viaRecordLaw = await scoreOf(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+a ~ Normal(mu = z, sigma = 0.6)
+b ~ Normal(mu = z, sigma = 0.8)
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 2.5, b = -1.0))
+`, 1);
+  const viaJointOfLaws = await scoreOf(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+a ~ Normal(mu = z, sigma = 0.6)
+b ~ Normal(mu = z, sigma = 0.8)
+J = joint(a = lawof(a), b = lawof(b))
+ld = logdensityof(J, record(a = 2.5, b = -1.0))
+`, 1);
+  assert.equal(viaConstructors, viaRecordLaw);
+  assert.equal(viaConstructors, viaJointOfLaws);
+});
+
+test('the constructor joint does not depend on sampleCount (no MC estimate)',
+  async () => {
+    assert.equal(await scoreOf(CONSTRUCTOR_JOINT, 1),
+      await scoreOf(CONSTRUCTOR_JOINT, 250));
+  });
+
+test('constructor components over DISJOINT latents are the product of their '
+  + 'marginals', async () => {
+  // §06: "Components that share no stochastic node are independent, and their
+  // `joint` is the product measure". Each component still marginalises its OWN
+  // latent, so this is the product of two 1-D compound marginals — not the
+  // ancestor-free product, and not the correlated law.
+  const got = await scoreOf(`
+z1 ~ Normal(mu = 0.5, sigma = 2.0)
+z2 ~ Normal(mu = 0.5, sigma = 2.0)
+J = joint(a = Normal(mu = z1, sigma = 0.6), b = Normal(mu = z2, sigma = 0.8))
+ld = logdensityof(J, record(a = 2.5, b = -1.0))
+`, 1);
+  assert.ok(Math.abs(got - DISJOINT_ORACLE) < F64_TOL,
+    `got ${got}, product of the two 1-D marginals ${DISJOINT_ORACLE}`);
+});
+
+test('a SOLE constructor component with a latent is that component\'s 1-D '
+  + 'marginal', async () => {
+  // The one-component joint must keep the direct path rather than becoming a
+  // one-field record, and a bare stochastic-parameter measure is the same law.
+  // (The `relabel(Normal(mu = z, …), ["a"])` spelling of this is NOT covered: it
+  // refuses on the separately filed S5 relabel typing gap, at origin/main too.)
+  for (const decl of ['J = joint(a = Normal(mu = z, sigma = 0.6))']) {
+    const got = await scoreOf(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+${decl}
+ld = logdensityof(J, record(a = 2.5))
+`, 1);
+    assert.ok(Math.abs(got - MARGINAL_1D_ORACLE) < F64_TOL,
+      `${decl}: got ${got}, Normal(0.5, √(4 + 0.36)) at 2.5 = ${MARGINAL_1D_ORACLE}`);
+  }
+  const bare = await scoreOf(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+J = Normal(mu = z, sigma = 0.6)
+ld = logdensityof(J, 2.5)
+`, 1);
+  assert.ok(Math.abs(bare - MARGINAL_1D_ORACLE) < F64_TOL,
+    `bare stochastic-parameter measure: got ${bare}, oracle ${MARGINAL_1D_ORACLE}`);
+});
+
+// A constructor NAMED ONCE and used as two components. §06 gives each component
+// a fresh coordinate and keeps the shared parameter node single, so this is the
+// compound law with sa = sb — NOT the singular diagonal. Before this was fixed
+// the two components resolved to one binding name, which the singularity gate
+// read as the same draw and refused; naming a constructor must not change the
+// measure it denotes.
+
+const REUSED_CONSTRUCTOR = `
+z ~ Normal(mu = 0.5, sigma = 2.0)
+q = Normal(mu = z, sigma = 0.6)
+J = joint(a = q, b = q)
+ld = logdensityof(J, record(a = 2.5, b = -1.0))
+`;
+
+test('a constructor with a latent used as TWO components is the compound law, '
+  + 'not a singular joint', async () => {
+  const got = await scoreOf(REUSED_CONSTRUCTOR, 1);
+  assert.ok(ulpsClose(got, COMPOUND_EQUAL_SD_ORACLE),
+    `got ${got}, compound-law oracle ${COMPOUND_EQUAL_SD_ORACLE}`);
+});
+
+test('writing the reused constructor out twice denotes the same measure',
+  async () => {
+  const inline = await scoreOf(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+J = joint(a = Normal(mu = z, sigma = 0.6), b = Normal(mu = z, sigma = 0.6))
+ld = logdensityof(J, record(a = 2.5, b = -1.0))
+`, 1);
+  assert.equal(await scoreOf(REUSED_CONSTRUCTOR, 1), inline);
+});
+
+test('a named REIFIED law used as two components still refuses as singular',
+  async () => {
+    // The counterpart the fix must not break: `lawof(y)` names a DRAW, so two
+    // components of it are the same coordinate and the joint is singular (§06
+    // "Singular joints"). The discriminator is variate-vs-measure, not whether
+    // the binding was given a name.
+    for (const model of [`
+y ~ Normal(mu = 0.0, sigma = 1.0)
+Ly = lawof(y)
+S = joint(a = Ly, b = Ly)
+ld = logdensityof(S, record(a = 0.5, b = 0.9))
+`, `
+z ~ Normal(mu = 0.5, sigma = 2.0)
+y ~ Normal(mu = z, sigma = 0.6)
+Ly = lawof(y)
+S = joint(a = Ly, b = Ly)
+ld = logdensityof(S, record(a = 0.5, b = 0.9))
+`]) {
+      const { ctx } = ctxFor(model, 1);
+      await assert.rejects(async () => ctx.getMeasure('ld'),
+        /share the ancestor 'y'.*lower-dimensional subset/s);
+    }
+  });
+
+// KNOWN GAP (filed in flatppl-dev/TODO-flatppl-js.md): a latent-carrying
+// constructor beside an ancestor-free NON-Gaussian sibling. §06 makes the sibling
+// independent, so the exact answer is the product of the closed-form marginal and
+// the sibling's own density, but the recogniser classifies every component in one
+// linear-Gaussian block and refuses on the first non-Normal one. It refuses
+// rather than answering wrongly, so this is a capability gap; the test pins the
+// refusal so implementing the factorisation flips a red test instead of drifting.
+test('an ancestor-free NON-Gaussian sibling refuses rather than factorising '
+  + '(known gap)', async () => {
+  const { ctx } = ctxFor(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+J = joint(a = Normal(mu = z, sigma = 0.6), b = Exponential(rate = 1.0))
+ld = logdensityof(J, record(a = 2.5, b = 1.0))
+`, 1);
+  await assert.rejects(async () => ctx.getMeasure('ld'),
+    /component 'b' is a 'Exponential', not a Normal/,
+    'when this starts scoring, the exact value is -3.1138901582154195 — the 1-D '
+    + 'marginal -2.1138901582154195 plus Exponential(1) at 1.0, which is -1');
+});
+
 // ── iid is independent by construction (§06 "iid") ─────────────────────────
 
 test('iid over a reified law is unchanged: the copies redraw the ancestor, so '

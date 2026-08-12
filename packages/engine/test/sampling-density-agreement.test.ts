@@ -170,6 +170,34 @@ j = joint(a = m, b = m)`, 'j', 'a', 'b', { N: 30000 });
     `H7 regression — joint(m,m) must be independent (|corr|<0.1), got corr=${corr.toFixed(3)}`);
 });
 
+test('[GREEN H7c] joint(m, m) over a constructor with a LATENT shares the latent '
+  + '(Corr = s0²/(s0²+σ²))', async () => {
+  // The H7 sibling above is ancestor-free, where §04's Identity law gives the
+  // independent product. Add a latent and §06 "Joint composition" splits the two
+  // roles: "A component contributes a fresh coordinate; a stochastic node shared
+  // between component traces (through a reified component … or a stochastic
+  // constructor parameter) remains a single node of the composed trace". So the
+  // coordinates are fresh but `z` is ONE draw, and
+  //   Corr(a, b) = Var(z) / (Var(z) + σ²) = 4 / 4.36 = 0.9174311926605504.
+  // This is the sampling side of the density path's compound law
+  // (joint-shared-ancestor-density.test.ts pins that at -10.903201177191129), so
+  // the two must not disagree. The re-seeded duplicate factor used to redraw its
+  // whole sub-DAG, giving two independent copies at Corr ≈ 0 — `iid`'s semantics,
+  // not `joint`'s — while the density scored the correlated law.
+  const corr = await fieldCorrelation(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+m = Normal(mu = z, sigma = 0.6)
+j = joint(a = m, b = m)`, 'j', 'a', 'b', { N: 30000 });
+  const want = 4 / 4.36;
+  assert.ok(Math.abs(corr - want) < 0.02,
+    `shared latent must survive the fresh coordinates: want Corr≈${want.toFixed(4)}, `
+    + `got ${corr.toFixed(4)} (≈0 means the duplicate redrew z; ≈1 means the `
+    + 'coordinates collapsed onto one draw)');
+  assert.ok(corr < 0.999,
+    `the coordinates must stay FRESH, got Corr=${corr.toFixed(6)} — a shared `
+    + 'coordinate is the singular diagonal, which has no density');
+});
+
 test('[GREEN H7b/B] joint(posterior, posterior) — reused WEIGHTED factor refused loudly', async () => {
   // The critique's high-severity case (B): re-seeding a reused posterior gives
   // corr≈0 but the sample-side outer weight (w1+w2) disagrees with the density
