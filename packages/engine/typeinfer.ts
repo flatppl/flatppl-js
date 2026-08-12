@@ -4401,22 +4401,30 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // statically unknown.
       case 'bayesupdate':
         return T.MASS_UNKNOWN;
-      // Dependent composition (spec §06 "Dependent composition").
+      // Dependent composition (spec §06 "Dependent composition"). BOTH ops
+      // carry the base's class through Markov kernels, and for the same
+      // one-line reason.
       //
-      // `kchain(M, K1, …)` is the Kleisli bind, which §06 defines as
-      // `ν(B) = ∫ κ(a, B) dμ(a)`. Take the whole space for `B`: with `μ` a
-      // probability measure and every `κ` a Markov kernel (κ(a, whole) = 1
-      // for every a), `ν(whole) = ∫ 1 dμ = 1`. So a chain of probability
-      // components IS a probability measure — forced, no integral left to
-      // evaluate. Nothing WEAKER is claimed: §06 says the bind's
-      // marginalization integral "is generally intractable", so a finite
-      // base is not pursued past `unknown` here.
+      // `kchain(M, K1, …)` is the Kleisli bind `ν(B) = ∫ κ(a, B) dμ(a)`;
+      // `jointchain(M, K1, …)` is `ν(A × B) = ∫_A κ(a, B) dμ(a)`, retaining
+      // all variates. Evaluate either at the WHOLE space: a Markov kernel has
+      // κ(a, whole) = 1 for every a, so the integrand collapses to the
+      // constant 1 and `ν(whole) = ∫ 1 dμ = μ(whole)`. Total mass is
+      // therefore the BASE's, exactly, for any base — normalized, finite or
+      // infinite. Equivalently: `kchain` is `jointchain` with the
+      // intermediate variate marginalized out, marginalization is a
+      // projection pushforward, and the `pushfwd` rule above is
+      // mass-preserving. A rule that gave the two different total masses
+      // would contradict that rule.
       //
-      // `jointchain(M, K1, …)` is `ν(A × B) = ∫_A κ(a, B) dμ(a)` and
-      // "concatenates all variates (no marginalization)". Its total mass is
-      // `∫ κ(a, whole) dμ(a) = μ(whole)` whenever every kernel is Markov, so
-      // the BASE's class carries through unchanged — a `%finite` base with
-      // Markov kernels is a `%finite` joint chain.
+      // §06's "generally intractable" does NOT bear on this. It qualifies
+      // evaluating `ν(B)` for a general `B` — the density marginal
+      // `∫ densityof(K(a), x) dM(a)` of §06's density section, a function of
+      // x. At `B = whole` there is no integral left to do. An earlier
+      // revision transplanted that sentence onto the total-mass question and
+      // so claimed `unknown` for a finite base, while performing this very
+      // computation one line earlier for a normalized one. The `kchain` /
+      // `jointchain` asymmetry is real but DENSITY-only.
       //
       // A component with no class yet leaves the chain `deferred` rather
       // than collapsing it to `unknown`. §11's `deferred` is "not yet
@@ -4459,12 +4467,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         if (kernels.some((m: any) => m === T.MASS_DEFERRED)) {
           return settledUnnormalized(base) ? T.MASS_UNKNOWN : T.MASS_DEFERRED;
         }
-        // Every kernel is Markov. `jointchain` carries the base's class
-        // exactly (ν(whole) = μ(whole)); `kchain` claims only the normalized
-        // case and keeps a base gap a gap.
-        if (op === 'jointchain') return base;
-        if (base === T.MASS_NORMALIZED) return T.MASS_NORMALIZED;
-        return base === T.MASS_DEFERRED ? T.MASS_DEFERRED : T.MASS_UNKNOWN;
+        // Every kernel is Markov, so ν(whole) = μ(whole) for both ops: the
+        // base's class carries through unchanged, a base gap included.
+        return base;
       }
     }
     return T.MASS_DEFERRED;

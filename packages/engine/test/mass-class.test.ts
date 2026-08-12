@@ -238,14 +238,20 @@ test('mass: a shape with no rule is deferred, not unknown (§11)', () => {
 //   kchain:     ν(B)     = ∫ κ(a, B) dμ(a)
 //   jointchain: ν(A × B) = ∫_A κ(a, B) dμ(a)
 //
-// Take the whole space. With every kernel Markov (κ(a, whole) = 1 for all a),
-// kchain gives ν(whole) = ∫ 1 dμ = 1 when μ is a probability measure, and
-// jointchain gives ν(whole) = ∫ κ(a, whole) dμ(a) = μ(whole) for ANY μ. So
-// the two differ on a non-normalized base: `jointchain` carries the base's
-// class, `kchain` does not pursue it (§06 calls the bind's marginalization
-// integral "generally intractable"). That asymmetry is the point of these
-// tests, and it is forced by the two integrals above, not copied from the
-// other engine.
+// Evaluate either at the WHOLE space. A Markov kernel has κ(a, whole) = 1 for
+// every a, so the integrand collapses to the constant 1 and
+// ν(whole) = ∫ 1 dμ = μ(whole). BOTH ops therefore carry the base's class
+// exactly, for any base. Cross-check inside this engine: `kchain` is
+// `jointchain` with the intermediate variate marginalized out, marginalization
+// is a projection pushforward, and the `pushfwd` mass rule is
+// mass-preserving — so giving the two different total masses would contradict
+// that rule.
+//
+// §06's "generally intractable" is about evaluating ν(B) for a general B (the
+// density marginal ∫ densityof(K(a), x) dM(a), a function of x), NOT about
+// total mass, where no integral remains. An earlier revision of these tests
+// pinned `kchain(<finite base>, K) → unknown` on that sentence; the
+// kchain/jointchain asymmetry is DENSITY-only.
 
 // A Markov step kernel, and a NON-Markov one (its output is a restriction, so
 // κ(a, whole) < 1).
@@ -271,37 +277,48 @@ const DEFERRED_K = 'mu = elementof(reals)\n'
 const NORM_BASE = 'Normal(mu = 0.0, sigma = 1.0)';
 const FINITE_BASE = 'b = truncate(Normal(mu = 0.0, sigma = 1.0), interval(0.0, 1.0))\n';
 
-test('mass: a kchain of a probability measure and Markov kernels is normalized', () => {
-  // ν(whole) = ∫ κ(a, whole) dμ(a) = ∫ 1 dμ = 1.
-  assert.equal(massOf(MARKOV_K + `m = kchain(${NORM_BASE}, K)`, 'm'), 'normalized');
+test('mass: both chains carry the BASE class through Markov kernels', () => {
+  // ν(whole) = ∫ κ(a, whole) dμ(a) = ∫ 1 dμ = μ(whole). Same class for both
+  // ops on the same base — equality across the two columns is the assertion
+  // that would catch the total mass being treated as `kchain`-specific again.
+  for (const op of ['kchain', 'jointchain']) {
+    assert.equal(massOf(MARKOV_K + `m = ${op}(${NORM_BASE}, K)`, 'm'),
+      'normalized', op);
+    assert.equal(massOf(MARKOV_K + FINITE_BASE + `m = ${op}(b, K)`, 'm'),
+      'finite', op);
+    assert.equal(
+      massOf(MARKOV_K + `m = ${op}(Lebesgue(support = reals), K)`, 'm'),
+      'locallyfinite', op);
+  }
 });
 
-test('mass: a kchain does not pursue a non-normalized base', () => {
-  // In exact maths a finite base through a Markov kernel stays finite, but
-  // §06 calls the bind's marginalization integral "generally intractable",
-  // so nothing weaker than the all-normalized case is claimed. `unknown` is
-  // the safe direction: it is not a proof of normalization, so the draw gate
-  // still refuses it.
-  assert.equal(massOf(MARKOV_K + FINITE_BASE + 'm = kchain(b, K)', 'm'), 'unknown');
+test('mass: a finite-base chain is refused by the draw gate, not silently drawn', () => {
+  // The consequence of carrying `finite` rather than claiming `unknown`: the
+  // class is more precise AND still not a proof of normalization, so the gate
+  // refuses either way. `finite` additionally lets `normalize` accept it.
+  for (const op of ['kchain', 'jointchain']) {
+    const src = MARKOV_K + FINITE_BASE + `m = ${op}(b, K)\nx ~ m`;
+    assert.ok(errorsOf(src).some((e: string) => e.startsWith('draw requires')), op);
+    assert.deepEqual(errorsOf(MARKOV_K + FINITE_BASE
+      + `m = normalize(${op}(b, K))\nx ~ m`), [], op);
+  }
 });
 
-test('mass: a kchain through a NON-Markov kernel is unknown', () => {
+test('mass: an infinite-base chain raises the §06 normalize error', () => {
+  // Carrying `locallyfinite` is what makes this reachable: `normalize` of an
+  // infinite-mass measure is a static error, and the chain no longer hides
+  // the base's infinity behind `unknown`.
+  for (const op of ['kchain', 'jointchain']) {
+    const src = MARKOV_K + `m = ${op}(Lebesgue(support = reals), K)\n`
+      + 'n = normalize(m)';
+    assert.ok(errorsOf(src).some((e: string) => /infinite total mass/.test(e)), op);
+  }
+});
+
+test('mass: a chain through a NON-Markov kernel is unknown', () => {
+  // κ(a, whole) < 1 breaks the collapse to the constant 1, and §06 gives no
+  // closed answer for the resulting integral.
   assert.equal(massOf(SUB_K + `m = kchain(${NORM_BASE}, KT)`, 'm'), 'unknown');
-});
-
-test('mass: a jointchain carries the BASE class through Markov kernels', () => {
-  // ν(whole) = ∫ κ(a, whole) dμ(a) = μ(whole): no marginalization, so the
-  // base's class survives exactly. This is where jointchain and kchain part.
-  assert.equal(massOf(MARKOV_K + `m = jointchain(${NORM_BASE}, K)`, 'm'),
-    'normalized');
-  assert.equal(massOf(MARKOV_K + FINITE_BASE + 'm = jointchain(b, K)', 'm'),
-    'finite');
-  assert.equal(
-    massOf(MARKOV_K + 'm = jointchain(Lebesgue(support = reals), K)', 'm'),
-    'locallyfinite');
-});
-
-test('mass: a jointchain through a NON-Markov kernel is unknown', () => {
   assert.equal(massOf(SUB_K + `m = jointchain(${NORM_BASE}, KT)`, 'm'), 'unknown');
 });
 
@@ -350,20 +367,22 @@ test('mass: an unclassified component does not mask a settled non-Markov kernel'
 });
 
 test('mass: an unclassified kernel does not suppress a settled infinite base', () => {
-  // The sharpest case of the same ordering bug: an unclassified step kernel
-  // made `jointchain(Lebesgue(reals), KD)` answer `deferred`, suppressing the
-  // §06 normalize-of-infinite static error that the identical chain raises
-  // with a Markov kernel. The base's proof survives the kernel's gap as
-  // `unknown`, which claims nothing but is not a proof of normalization.
+  // Same ordering bug over an infinite base: `jointchain(Lebesgue(reals), KD)`
+  // answered `deferred`, so a draw from it was accepted in silence. The base's
+  // proof now survives the kernel's gap as `unknown`, which claims nothing but
+  // is not a proof of normalization, so the DRAW is refused.
+  //
+  // `normalize` of it still raises nothing, and that is correct: with an
+  // unclassified kernel the total ∫ κ(a, whole) dμ(a) is genuinely
+  // undetermined even over an infinite base, so the §06 infinite-mass error —
+  // which needs a PROVEN infinite mass — must not fire. The Markov control
+  // for that error lives in the infinite-base test above.
   const src = DEFERRED_K + 'm = jointchain(Lebesgue(support = reals), KD)';
   assert.equal(massOf(src, 'm'), 'unknown');
-  // Control: with a Markov kernel the base's class carries exactly, and the
-  // §06 error does fire.
-  const ctl = MARKOV_K + 'm = jointchain(Lebesgue(support = reals), K)';
-  assert.equal(massOf(ctl, 'm'), 'locallyfinite');
-  assert.ok(errorsOf(`${ctl}\nn = normalize(m)`)
-    .some((e: string) => /infinite total mass/.test(e)),
-  'normalize of the locally-finite jointchain must raise the §06 error');
+  assert.ok(errorsOf(`${src}\nx ~ m`).some((e: string) => e.startsWith('draw requires')),
+    'the draw must be refused rather than silently accepted');
+  assert.deepEqual(errorsOf(`${src}\nn = normalize(m)`), [],
+    'normalize of an unknown mass claims nothing, so it raises nothing');
 });
 
 test('mass: restrict is a sub-measure, so it is never normalized (§06)', () => {
