@@ -260,9 +260,28 @@ function _aliasChain(name: string, ctx: any): { root: string; isDraw: boolean } 
   return { root: n, isDraw };
 }
 
+// The child bindings a structural (record/tuple) derivation is built from, or
+// null when `d` is not one.
+function _structuralChildren(d: any): string[] | null {
+  if (!d) return null;
+  if (d.kind === 'record' && d.fields) return Object.keys(d.fields).map((k) => d.fields[k]);
+  if (d.kind === 'tuple' && Array.isArray(d.elems)) return d.elems;
+  return null;
+}
+
 // The independent noise sources `name` is a deterministic function of. Walks
 // through `evaluate` (deterministic value) bindings only — a `sample` binding
 // IS its own noise source and terminates the walk.
+//
+// A STRUCTURAL (record/tuple) binding is not a noise source either: it is a
+// container, so its noise is the union of its children's. Without that branch a
+// nested record contributed only its own lifted name, and a shared draw split
+// across nesting levels was invisible to the pair test — `lawof(record(inner =
+// record(a = y, b = t), c = y))` (support {(y,t,y)} ⊂ R³, genuinely singular)
+// scored -2.7868155996140187, three normals with `y` counted twice. That is
+// §06's "determined by the others given the shared ancestors" across a level,
+// and it is a Hall deficiency needing a subset of size 3, which no PAIR of
+// components can express until the container reports its children's roots.
 function _noiseRoots(name: string, ctx: any, seen?: Set<string>): Set<string> {
   const out = new Set<string>();
   const visited = seen || new Set<string>();
@@ -274,6 +293,13 @@ function _noiseRoots(name: string, ctx: any, seen?: Set<string>): Set<string> {
     for (const ref of orchestrator.collectSelfRefs(d.ir)) {
       if (!_isStochastic(ctx.bindings && ctx.bindings.get ? ctx.bindings.get(ref) : null)) continue;
       for (const r of _noiseRoots(ref, ctx, visited)) out.add(r);
+    }
+    return out;
+  }
+  const children = _structuralChildren(d);
+  if (children) {
+    for (const child of children) {
+      for (const r of _noiseRoots(child, ctx, visited)) out.add(r);
     }
     return out;
   }
@@ -339,13 +365,22 @@ function _refuseIfSingular(input: any, ctx: any, depth?: number, via?: string[])
 
   const comps = _jointComponents(input, ctx);
   if (!comps) return;
-  const noise = comps.map((c) => (_aliasChain(c.binding, ctx).isDraw
+  // A component reports noise when it names a VARIATE (a draw or a transform of
+  // one) or when it is a structural container of them. A CONSTRUCTOR measure
+  // reports none — §06 "Joint composition": "A component contributes a fresh
+  // coordinate" — which is what keeps `joint(a = q, b = q)` scoring.
+  const noise = comps.map((c) => ((_aliasChain(c.binding, ctx).isDraw
+    || _structuralChildren(ctx.derivations[_aliasChain(c.binding, ctx).root]))
     ? _noiseRoots(c.binding, ctx) : new Set<string>()));
   for (let i = 0; i < comps.length; i++) {
     for (let j = i + 1; j < comps.length; j++) {
       for (const r of noise[i]) {
         if (!noise[j].has(r)) continue;
-        const err: any = new Error('density: ' + (path.length ? path.join(', in ') + ': ' : '')
+        // `path` is outermost-first, so it is reversed for the message: the
+        // reader wants the offending level named first, then its containers.
+        const where = path.length
+          ? path.slice().reverse().join(', inside ') + ': ' : '';
+        const err: any = new Error('density: ' + where
           + "joint components '" + comps[i].label
           + "' and '" + comps[j].label + "' are reified laws of the same draw — they "
           + "share the ancestor '" + _displayName(r, ctx) + "' with no independent "

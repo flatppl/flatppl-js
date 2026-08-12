@@ -166,8 +166,15 @@
 //   refusal for an unverified number is the wrong direction. Tracked in
 //   flatppl-dev/TODO-flatppl-js.md.
 //
-// So clm refuses strictly MORE than this pass flags, at every level the recursion
-// reaches. Anything narrower than clm is safe to flag here.
+// clm's recursion covers every level the pair predicate can NAME, and its
+// container rule (a record/tuple component reports the union of its children's
+// roots) additionally refuses the Hall size-3 class this pass declines. But it is
+// NOT a superset of this pass: an INLINE field expression
+// (`lawof(record(inner = record(a = y, b = exp(y)), c = t))`) lifts to an untyped
+// internal binding, which clm reads as a constructor measure contributing no
+// roots, so clm's singular predicate stays silent where this pass fires. That
+// query still reaches no number, but through `mat-density`'s diagonal-bijection
+// gate. Do not read a flag here as "clm will refuse it".
 //
 // ── FAIL-SILENT, AND WHAT THAT DOES AND DOES NOT BUY ────────────────────
 //
@@ -179,13 +186,13 @@
 // Be precise about what a miss costs, though. "A miss still refuses at density
 // time" is not a guarantee this pass can make: clm's coverage is wide but not
 // total, and at 61c29f0 an `iid` over a singular joint and a nested singular joint
-// or record each returned a finite wrong number. Those three now refuse on both
-// sides, but clm's recursion is keyed on the derivation table's component→binding
-// map, so a shape with no such map is still outside it — the Hall size-3 miss
-// below (`lawof(record(inner = record(a = y, b = t), c = y))`, support
-// {(y,t,y)} ⊂ R³) scores a finite number at runtime and is silent here. A miss may
-// therefore cost a wrong number, not merely a late message. The remaining
-// silent-number holes are tracked in flatppl-dev/TODO-flatppl-js.md.
+// or record each returned a finite wrong number. Those three now refuse, as does
+// the Hall size-3 class this pass declines. What clm still cannot see is a
+// component with no typed binding to classify: `lawof(record(inner = record(a = y,
+// b = t), c = y + 0.0))` — the same Hall size-3 shape with an INLINE sibling —
+// scores -2.7868155996140187 at runtime and is silent here. A miss may therefore
+// cost a wrong number, not merely a late message. The remaining silent-number
+// holes are tracked in flatppl-dev/TODO-flatppl-js.md.
 
 const { forEachIRChild } = require('./ir-walk.ts');
 

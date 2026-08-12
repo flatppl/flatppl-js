@@ -328,9 +328,207 @@ for (const c of SINGULAR_INHERITED) {
     // clause, not just any rejection, is what separates the DESIGNED refusal from
     // an incidental crash somewhere further down the density walk.
     const { ctx } = ctxFor(c.src, 1);
-    await assert.rejects(async () => ctx.getMeasure('ld'), c.backstop);
+    await assert.rejects(async () => ctx.getMeasure('ld'), (e: any) => {
+      assert.equal(e.code, 'CLM_SINGULAR_JOINT');
+      assert.match(String(e.message), c.backstop);
+      return true;
+    });
   });
 }
+
+// ════════════════════════════════════════════════════════════════════
+// INHERITANCE reaches every level, and names it
+// ════════════════════════════════════════════════════════════════════
+//
+// The three shapes above are one level deep and keyword-spelled. These are the
+// rest of the surface the recursion covers. Each was a finite wrong number or an
+// incidental crash before it, and none was pinned.
+
+const INHERITED_SURFACES = [
+  {
+    label: 'a SINGLE-field outer record whose only field is singular',
+    // The sole reason the pair loop's `comps.length < 2` guard had to become a
+    // bare `!comps`: a one-field record law is its inner law relabelled, so it is
+    // singular whenever the inner is, but no PAIR exists at the outer level.
+    // Base scored -1.8628770664093457 (two normals at 0.1, 0.2).
+    backstop: /component 'inner': joint components 'a' and 'b'/,
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(inner = record(a = y, b = y)))
+ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2)))
+`,
+  },
+  {
+    // §06 "Equivalent record law": "the positional form is the corresponding
+    // `cat` law". A tuple derivation nests exactly as a record one does, and the
+    // component is labelled by position. Base threw an incidental "cannot consume
+    // scalar from value of type object".
+    label: 'a POSITIONAL joint nesting a singular joint',
+    backstop: /component '#1': joint components 'a' and 'b'/,
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+S = joint(a = lawof(y), b = lawof(y))
+P = joint(S, lawof(t))
+ld = logdensityof(P, record(a = 0.1, b = 0.2))
+`,
+  },
+  {
+    // Two `iid` levels, so the path clause repeats. Base threw an incidental
+    // "cannot consume named field 'a'".
+    label: 'iid of iid over a singular joint',
+    backstop: /the iid product's inner measure, inside the iid product's inner measure: joint components 'a' and 'b'/,
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+S = joint(a = lawof(y), b = lawof(y))
+I = iid(iid(S, 2), 2)
+ld = logdensityof(I, table(a = [0.1, 0.3], b = [0.2, 0.4]))
+`,
+  },
+  {
+    // Depth 2, and the ONLY test of the path clause's ORDER. It reads
+    // innermost-first ("`inner`, inside `deep`"), which is the containment the
+    // right way round — an outermost-first join stated it backwards.
+    label: 'three levels of nesting',
+    backstop: /component 'inner', inside component 'deep': joint components 'a' and 'b'/,
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+r ~ Normal(mu = 0.0, sigma = 1.0)
+S = joint(a = lawof(y), b = lawof(y))
+M = joint(inner = S, c = lawof(t))
+D = joint(deep = M, d = lawof(r))
+ld = logdensityof(D, record(deep = record(inner = record(a = 0.1, b = 0.2), c = 0.3), d = 0.4))
+`,
+  },
+  {
+    // `iid` and component nesting compose, and the path clause mixes both kinds.
+    label: 'iid over a nested singular record law',
+    backstop: /component 'inner', inside the iid product's inner measure: joint components 'a' and 'b'/,
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(inner = record(a = y, b = y), c = t))
+I = iid(R, 2)
+ld = logdensityof(I, table(inner = [record(a = 0.1, b = 0.2)], c = [0.3]))
+`,
+  },
+];
+
+for (const c of INHERITED_SURFACES) {
+  test(`BACKSTOP: ${c.label} refuses, naming the level that is singular`, async () => {
+    const { ctx } = ctxFor(c.src, 1);
+    await assert.rejects(async () => ctx.getMeasure('ld'), (e: any) => {
+      assert.equal(e.code, 'CLM_SINGULAR_JOINT');
+      assert.match(String(e.message), c.backstop);
+      return true;
+    });
+  });
+}
+
+// ════════════════════════════════════════════════════════════════════
+// A Hall size-3 deficiency: the container reports its children's roots
+// ════════════════════════════════════════════════════════════════════
+//
+// §06 "Singular joints" is "determined by the others given the shared ancestors",
+// and that can hold ACROSS a nesting level with no offending pair at either level
+// on its own. `lawof(record(inner = record(a = y, b = t), c = y))` has support
+// {(y,t,y)} ⊂ R³ — 2-dimensional, R³-Lebesgue-null — and no PAIR of components has
+// overlapping roots while a nested record reports only its own lifted name.
+//
+// clm's fix is not the general Hall check: a structural (record/tuple) binding is
+// a CONTAINER, not a noise source, so its root set is the union of its children's.
+// The coarse any-overlap pair test then sees {y,t} against {y} and refuses. This
+// stays inside clm's existing sound-but-incapable posture — it only ever converts a
+// wrong number into a refusal. The STATIC pass cannot widen the same way without
+// false positives, which is why it still declines these.
+
+const HALL3 = [
+  {
+    label: 'a nested record sharing a draw with a later sibling',
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(inner = record(a = y, b = t), c = y))
+ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.1))
+`,
+    pair: /joint components 'inner' and 'c' .*share the ancestor 'y'/s,
+  },
+  {
+    // Field ORDER must not decide it. This mirror scored -2.7868155996140183 while
+    // only the other spelling was covered — the classic "passes on the spelling you
+    // tested" shape.
+    label: 'the mirror spelling, sibling declared first',
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(c = y, inner = record(a = y, b = t)))
+ld = logdensityof(R, record(c = 0.1, inner = record(a = 0.1, b = 0.2)))
+`,
+    pair: /joint components 'c' and 'inner' .*share the ancestor 'y'/s,
+  },
+  {
+    label: 'the joint(inner = S, c = lawof(y)) spelling',
+    src: `
+y ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+S = joint(a = lawof(y), b = lawof(t))
+N = joint(inner = S, c = lawof(y))
+ld = logdensityof(N, record(inner = record(a = 0.1, b = 0.2), c = 0.1))
+`,
+    pair: /joint components 'inner' and 'c' .*share the ancestor 'y'/s,
+  },
+];
+
+for (const c of HALL3) {
+  test(`BACKSTOP: Hall size-3 — ${c.label} refuses`, async () => {
+    const { ctx } = ctxFor(c.src, 1);
+    await assert.rejects(async () => ctx.getMeasure('ld'), (e: any) => {
+      assert.equal(e.code, 'CLM_SINGULAR_JOINT');
+      assert.match(String(e.message), c.pair);
+      return true;
+    });
+  });
+}
+
+test('a Hall size-3 shape whose sibling is an INLINE expression is still a MISS', async () => {
+  // The remaining limit, and it is the pre-existing inline gap, not the container
+  // rule: `c = y + 0.0` lifts to an untyped internal binding, which clm classifies
+  // as a constructor measure rather than a variate, so it contributes no roots at
+  // all. Naming it (`w = y + 0.0; … c = w`) refuses. Widening the classifier to
+  // untyped lifted evaluates would also hand the full-rank nested shapes clm's
+  // factually-false nullity message, which is the trade this wave declines.
+  // Tracked in flatppl-dev/TODO-flatppl-js.md.
+  const { ctx } = ctxFor(`
+y ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(inner = record(a = y, b = t), c = y + 0.0))
+ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.1))
+`, 1);
+  const m: any = await ctx.getMeasure('ld');
+  assert.ok(Math.abs(m.samples[0] - -2.7868155996140187) < 1e-13,
+    `expected the known-wrong -2.7868155996140187, got ${m.samples[0]}`);
+});
+
+test('a full-rank nested shape keeps its PUSHFORWARD refusal, not the singular one',
+  async () => {
+    // The container rule must not reach a full-rank law. This one already refused
+    // before it (the ≥2-latent pushforward gate), and the reason must not drift to
+    // the singular message — that message asserts nullity, which is false here.
+    const { ctx } = ctxFor(`
+y ~ Normal(mu = 0.0, sigma = 1.0)
+n1 ~ Normal(mu = 0.0, sigma = 1.0)
+n2 ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(inner = record(a = y + n1, b = t), c = y + n2))
+ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.3))
+`, 1);
+    await assert.rejects(async () => ctx.getMeasure('ld'), (e: any) => {
+      assert.notEqual(e.code, 'CLM_SINGULAR_JOINT');
+      assert.match(String(e.message), /depends on 2 stochastic ancestors/);
+      return true;
+    });
+  });
 
 // ════════════════════════════════════════════════════════════════════
 // The recursion must not over-reach: legal shapes still score
@@ -862,10 +1060,10 @@ test('a Hall deficiency needing a subset of size 3 is a MISS (documented limit)'
   // rule cannot see it. Pinned as a known miss rather than left undocumented; if
   // the general Hall check ever lands, this test flips to expecting an error.
   //
-  // This one is NOT safe at runtime either: clm's recursion sees no offending pair
-  // at any level (the outer components are a nested record and a draw, whose root
-  // sets do not overlap), so it scores -2.786815599614018 — three independent
-  // normals at 0.1, 0.2, 0.1. Tracked in flatppl-dev/TODO-flatppl-js.md.
+  // STATIC silence only. clm now REFUSES this shape (its container rule unions a
+  // nested record's children's roots, so the pair test sees {y,t} against {y}) —
+  // see the "Hall size-3" backstop tests above. The static pass cannot copy that
+  // widening without false positives, so the two sides diverge here on purpose.
   assert.deepEqual(singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
