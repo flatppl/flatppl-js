@@ -22,10 +22,11 @@
 //        it produced nothing; `record(t)` was rejected outright ("record()
 //        takes keyword arguments only"). Both directions are wired below.
 //
-// NOT covered here, deliberately: the engine reduces `prod`/`maximum`/
-// `minimum` over tables though §07 sanctions only `sum`/`mean`/`var`/`std`.
-// Recorded in TODO-flatppl-js.md — it has an in-repo test asserting it, so
-// narrowing needs an owner ruling rather than a silent fix.
+// `prod`/`maximum`/`minimum` table reduction (runtime pins in table.test.ts
+// and table-vector-columns.test.ts) predates the spec text sanctioning it —
+// flatppl-design PR #79 extends §07's "Table reductions" paragraph from
+// `sum`/`mean`/`var` to also name `prod`/`maximum`/`minimum`, matching the
+// engine. See TODO-flatppl-js.md.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');

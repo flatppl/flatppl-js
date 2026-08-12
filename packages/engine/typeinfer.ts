@@ -485,17 +485,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // per-column reductions. Checked up front so the static SIGNATURE_
       // FACTORIES entry (which returns any() / REAL) doesn't shadow it.
       //
-      // NOTE the set below is WIDER than the spec's. §07's "Table reductions"
-      // paragraph names `sum`, `mean` and `var`, plus `std` by owner ruling
-      // (design#77) — four. `prod`, `maximum` and `minimum` are accepted here
-      // too, which no version of §07 sanctions; their Domains cells are
-      // arrays-only. The values produced are correct column-wise reductions,
-      // so this is an over-permissive DOMAIN, not a wrong answer. Left as-is
-      // deliberately: `test/table-vector-columns.test.ts` asserts table
-      // `maximum`/`minimum`, so narrowing to the spec'd four is a behaviour
-      // change needing an owner ruling, not a silent fix. Tracked in
-      // TODO-flatppl-js.md §04. Read the exempt set for §04's carve-out off
-      // §07, never off this list.
+      // §07's "Table reductions" paragraph named `sum`, `mean` and `var`,
+      // plus `std` by owner ruling (design#77), when this branch was first
+      // wired for four ops. `prod`, `maximum` and `minimum` are accepted
+      // here too, ahead of flatppl-design PR #79 extending §07's text to
+      // name all seven — the engine and the spec now agree once that PR
+      // lands. Tracked in TODO-flatppl-js.md §04. Read the exempt set for
+      // §04's carve-out off §07, never off this list.
       case 'sum':
       case 'mean':
       case 'var':
