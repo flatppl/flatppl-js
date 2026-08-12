@@ -735,16 +735,29 @@ function matRandSample(name: string, d: any, ctx: any) {
   });
 }
 
-// Materialise a joint/record/tuple's factor bindings as the INDEPENDENT
-// product (spec §06). The FIRST occurrence of each dep name uses the shared
-// cached materialisation — preserving the shared-ancestor alignment derived
-// factors rely on (joint(a=x, b=g(x)): a and b are DISTINCT binding names, so
-// both ride the parent cache and g(x) sees the same x). A DUPLICATE direct dep
-// (joint(a=m, b=m)) is a reuse of the SAME measure as two independent factors;
-// the cached path would hand back the identical atom batch (Corr=1), but the
-// spec product is independent (Corr≈0), so the duplicate redraws in a re-seeded
-// child ctx (matches what materialiseMeasureIR's joint case already does via
-// foldIn-per-field). A reused WEIGHTED / posterior factor is refused loudly:
+// Materialise a joint/record/tuple's factor bindings (spec §06). The FIRST
+// occurrence of each dep name uses the shared cached materialisation —
+// preserving the shared-ancestor alignment derived factors rely on
+// (joint(a=x, b=g(x)): a and b are DISTINCT binding names, so both ride the
+// parent cache and g(x) sees the same x). A DUPLICATE direct dep
+// (joint(a=m, b=m)) is a reuse of the SAME measure as two components; the cached
+// path would hand back the identical atom batch (Corr=1), but §06 "Joint
+// composition" gives each component a FRESH coordinate, so the duplicate redraws
+// in a re-seeded child ctx (matches what materialiseMeasureIR's joint case
+// already does via foldIn-per-field).
+//
+// The re-seeded child redraws the DUPLICATE ONLY and delegates every other name
+// to the parent cache, because §06 shares what the fresh coordinate does not:
+// "a stochastic node shared between component traces (through a reified
+// component … or a stochastic constructor parameter) remains a single node of
+// the composed trace". So for `z ~ Normal(0, 1); q = Normal(mu = z, sigma = s);
+// joint(a = q, b = q)` the two coordinates are fresh but `z` is drawn ONCE,
+// giving Cov(a, b) = Var(z) — the compound law the density path scores. Redrawing
+// the child's whole sub-DAG instead produced two independent copies (Cov ≈ 0),
+// which is `iid`'s semantics, not `joint`'s. An ancestor-free `q` has nothing to
+// delegate, so §04's Identity law product (Corr ≈ 0) is unchanged.
+//
+// A reused WEIGHTED / posterior factor is refused loudly:
 // re-seeding gives independent draws whose sample-side outer weight is w1+w2,
 // but the density path reads outer-only weights — a silent IS-weight asymmetry
 // (measure-lowering-unification-plan critique B). Combining the sub-field
@@ -771,6 +784,10 @@ function _materialiseFactorsIndependent(deps: any[], ctx: any): Promise<any[]> {
         rootKey: nameSeed('__jointfactor$' + dep + '$' + i, ctx.rootKey),
       });
       child.getMeasure = function (nn: string) {
+        // Only the duplicate itself gets the fresh coordinate; its stochastic
+        // ancestors come from the parent cache, so every component conditions on
+        // the SAME draw of them.
+        if (nn !== dep) return ctx.getMeasure(nn);
         if (childCache.has(nn)) return childCache.get(nn);
         const p = materialiseMeasure(nn, child);
         childCache.set(nn, p);

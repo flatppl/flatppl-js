@@ -170,6 +170,73 @@ j = joint(a = m, b = m)`, 'j', 'a', 'b', { N: 30000 });
     `H7 regression — joint(m,m) must be independent (|corr|<0.1), got corr=${corr.toFixed(3)}`);
 });
 
+test('[GREEN H7c] joint(m, m) over a constructor with a LATENT shares the latent '
+  + '(Corr = s0²/(s0²+σ²))', async () => {
+  // The H7 sibling above is ancestor-free, where §04's Identity law gives the
+  // independent product. Add a latent and §06 "Joint composition" splits the two
+  // roles: "A component contributes a fresh coordinate; a stochastic node shared
+  // between component traces (through a reified component … or a stochastic
+  // constructor parameter) remains a single node of the composed trace". So the
+  // coordinates are fresh but `z` is ONE draw, and
+  //   Corr(a, b) = Var(z) / (Var(z) + σ²) = 4 / 4.36 = 0.9174311926605504.
+  // This is the sampling side of the density path's compound law
+  // (joint-shared-ancestor-density.test.ts pins that at -10.903201177191129), so
+  // the two must not disagree. The re-seeded duplicate factor used to redraw its
+  // whole sub-DAG, giving two independent copies at Corr ≈ 0 — `iid`'s semantics,
+  // not `joint`'s — while the density scored the correlated law.
+  const corr = await fieldCorrelation(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+m = Normal(mu = z, sigma = 0.6)
+j = joint(a = m, b = m)`, 'j', 'a', 'b', { N: 30000 });
+  const want = 4 / 4.36;
+  assert.ok(Math.abs(corr - want) < 0.02,
+    `shared latent must survive the fresh coordinates: want Corr≈${want.toFixed(4)}, `
+    + `got ${corr.toFixed(4)} (≈0 means the duplicate redrew z; ≈1 means the `
+    + 'coordinates collapsed onto one draw)');
+  assert.ok(corr < 0.999,
+    `the coordinates must stay FRESH, got Corr=${corr.toFixed(6)} — a shared `
+    + 'coordinate is the singular diagonal, which has no density');
+});
+
+test('[WILL-FLIP H7d] a NESTED constructor joint reuses the inner draw for the '
+  + 'outer component', async () => {
+  // `joint(u = joint(a = q, b = q), c = q)` over `q = Normal(mu = z, sigma = 0.6)`
+  // should be THREE fresh coordinates over one shared `z` (§06: "A component
+  // contributes a fresh coordinate"), so all three pairwise correlations are
+  // s0²/(s0²+σ²) = 0.9174. The inner pair is right. But `c` is BIT-IDENTICAL to
+  // `u.a`: the outer joint's `q` is not a duplicate BY NAME of `u`, so it takes
+  // the first-occurrence branch in `_materialiseFactorsIndependent`
+  // (materialiser.ts:781) and gets the cached batch `u.a` already drew. §06
+  // "Singular joints" is what that pair actually is — the same draw twice.
+  //
+  // PRE-EXISTING (identical at clean 0ab097d) and SAMPLING-ONLY: the density path
+  // refuses this shape, pinned in joint-shared-ancestor-density.test.ts, so no
+  // wrong number is scored. It nonetheless breaks the [GREEN H7] invariant above
+  // under nesting, so it is tagged WILL-FLIP and asserted TIED TO THE FAILURE
+  // MODE rather than to the wrong value: this goes red the moment the defect is
+  // fixed, which is the signal to re-tag it GREEN and assert 0.9174.
+  const src = `
+z ~ Normal(mu = 0.5, sigma = 2.0)
+q = Normal(mu = z, sigma = 0.6)
+u = joint(a = q, b = q)
+j = joint(uu = u, c = q)`;
+  const inner = await fieldCorrelation(src, 'u', 'a', 'b', { N: 20000 });
+  const want = 4 / 4.36;
+  assert.ok(Math.abs(inner - want) < 0.03,
+    `the INNER pair must already share the latent: want ≈${want.toFixed(4)}, got ${inner.toFixed(4)}`);
+
+  const { ctx } = require('./_agreement-harness.ts').buildCtx(src, 20000, 99);
+  const m = await ctx.getMeasure('j');
+  const ua = m.fields.uu.fields.a.samples;
+  const c = m.fields.c.samples;
+  let identical = 0;
+  for (let i = 0; i < c.length; i++) if (c[i] === ua[i]) identical++;
+  assert.equal(identical, c.length,
+    'THE DEFECT IS FIXED — `c` is no longer the same batch as `u.a`. Re-tag this '
+    + 'test GREEN and assert all three pairwise correlations ≈ '
+    + `${want.toFixed(4)} instead (got ${identical}/${c.length} identical)`);
+});
+
 test('[GREEN H7b/B] joint(posterior, posterior) — reused WEIGHTED factor refused loudly', async () => {
   // The critique's high-severity case (B): re-seeding a reused posterior gives
   // corr≈0 but the sample-side outer weight (w1+w2) disagrees with the density

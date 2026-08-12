@@ -157,9 +157,19 @@ function _isStochastic(b: any): boolean {
 // the other given the shared ancestors. `lawof(a)` and `lawof(b)` for `a, b ~
 // Normal(z, 1)` do NOT overlap (each carries its own noise) even though both
 // trace through `z` — that is the correlated, absolutely-continuous case §06
-// "Equivalent record law" wants retained. `joint(m, m)` over a constructor
-// measure does not overlap either: neither component reifies a draw, so per
-// §04's Identity law it is the product of two independent draws.
+// "Equivalent record law" wants retained.
+//
+// `joint(m, m)` over a CONSTRUCTOR measure does not overlap either, and this
+// holds whether or not `m`'s parameters reach a draw. §06 "Joint composition"
+// (verbatim, flatppl-design 9e35262): "A component contributes a fresh
+// coordinate; a stochastic node shared between component traces (through a
+// reified component — `lawof`, `kernelof` — or a stochastic constructor
+// parameter) remains a single node of the composed trace." So for `z ~
+// Normal(0, 1); q = Normal(mu = z, sigma = 0.6); joint(a = q, b = q)` the shared
+// node is `z`, not the coordinate: the two coordinates are conditionally
+// independent given `z`, and the law is the correlated compound one, not the
+// singular diagonal. Naming the constructor once and using it twice must
+// therefore behave exactly as writing it out twice does.
 //
 // The refusal is a RUNTIME one. §06 prefers "a static error where statically
 // detectable", which this shape is; an analyzer diagnostic is a follow-up
@@ -168,19 +178,55 @@ function _isStochastic(b: any): boolean {
 // This gate runs only on the DENSITY path (lowerMeasure is not the sampling
 // route for a record/tuple measure), so sampling a singular joint stays legal.
 
+// Whether `name` binds a VARIATE of a draw rather than a measure. Both a `~`-draw
+// and a constructor measure whose parameters reach one carry phase 'stochastic'
+// (`q = Normal(mu = z, sigma = 0.6)` is stochastic-phase), so phase alone cannot
+// separate them; the domain does. A variate has a value type (scalar / array /
+// record) and a measure has `kind === 'measure'`, so a binding that HAS a type is
+// classified by `kind !== 'measure'`.
+//
+// The untyped case is separate, and is why this is not simply that one test. A
+// LIFTED anon constructor binding has no inferred type at all, and is a measure;
+// answering it by absence-of-type alone would be FAIL-OPEN for anything else that
+// arrived untyped, since a variate that lost its type would be read as a
+// constructor, get a fresh coordinate, and score a singular joint instead of
+// refusing it. Every stochastic binding without a type is an internal lifted name
+// today, so the guard asserts exactly that rather than trusting it — a
+// user-facing name arriving here untyped is a classification this function cannot
+// make, and must not answer.
+function _namesADraw(name: string, b: any): boolean {
+  if (!_isStochastic(b)) return false;
+  if (!b.inferredType) {
+    if (!_isInternalName(name)) {
+      throw new Error("clm: stochastic binding '" + name + "' has no inferred type, "
+        + 'so it cannot be classified as a draw variate or a constructor measure. '
+        + 'Only internal lifted names (__anon…, %…) are untyped here; a user-facing '
+        + 'name reaching this point would be read as a constructor and would score '
+        + 'a singular joint instead of refusing it');
+    }
+    return false;
+  }
+  return b.inferredType.kind !== 'measure';
+}
+
+// Lifted/internal binding names, as `_displayName` and derivations.ts spell them.
+function _isInternalName(name: string): boolean {
+  return typeof name === 'string' && (name.startsWith('__anon') || name.startsWith('%'));
+}
+
 // The alias chain from `name` to its terminal binding, and whether any name on
-// it is stochastic — i.e. whether the component reifies a DRAW rather than
-// naming a constructor measure. Phase lives on the user binding, not on the
+// it binds a draw's variate — i.e. whether the component reifies a DRAW rather
+// than naming a constructor measure. Phase lives on the user binding, not on the
 // lifted anon sample, so the whole chain is inspected.
 function _aliasChain(name: string, ctx: any): { root: string; isDraw: boolean } {
   const derivations = ctx && ctx.derivations;
   let n = name;
-  let isDraw = _isStochastic(ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null);
+  let isDraw = _namesADraw(n, ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null);
   for (let guard = 0; guard < 64; guard++) {
     const d = derivations && derivations[n];
     if (!d || d.kind !== 'alias') break;
     n = d.from;
-    if (_isStochastic(ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null)) isDraw = true;
+    if (_namesADraw(n, ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null)) isDraw = true;
   }
   return { root: n, isDraw };
 }
@@ -263,26 +309,39 @@ function _refuseIfSingular(input: any, ctx: any): void {
   }
 }
 
-// The binding each of the body's joint components reifies, aligned with the
-// body's component order — the DRAW IDENTITY the linear-Gaussian recogniser
-// keys its node table by. A field carries its own `source`; a positional body
-// carries none, so the tuple derivation's element order supplies them. `null`
-// for a component whose identity is not recoverable: the recogniser refuses a
+// The COORDINATE identity of each of the body's joint components, aligned with
+// the body's component order — the key the linear-Gaussian recogniser builds its
+// node table on. A field carries its own `source`; a positional body carries
+// none, so the tuple derivation's element order supplies them. `null` for a
+// component whose identity is not recoverable: the recogniser refuses a
 // multi-component body rather than risk double-counting a shared draw.
+//
+// A REIFIED component (`lawof(x)`) has the coordinate of the draw it reifies, so
+// a component and a marginalised ancestor that are the same draw collapse to one
+// node. A CONSTRUCTOR component instead contributes a fresh coordinate (§06
+// "Joint composition": "A component contributes a fresh coordinate"), so it gets
+// a synthesized key. Handing back the constructor's own binding name would make
+// `joint(a = q, b = q)` two components on ONE key, which the recogniser reads as
+// the same draw and refuses as singular — the shared node is `q`'s parameter, not
+// the coordinate.
 function _componentKeys(body: any, input: any, ctx: any): Array<string | null> | null {
   const isJoint = body && body.kind === 'call' && body.op === 'joint';
   const fields = isJoint && Array.isArray(body.fields) ? body.fields : null;
   const args = isJoint && Array.isArray(body.args) ? body.args : null;
   if (!fields && !args) return null;                 // a scalar body — one component
   const comps = _jointComponents(input, ctx);
+  const coordinate = (binding: any, i: number): string | null => {
+    if (binding == null) return null;
+    return _aliasChain(binding, ctx).isDraw ? binding : '%coord' + i;
+  };
   if (fields) {
     const byLabel = new Map<string, string>();
     for (const c of (comps || [])) byLabel.set(c.label, c.binding);
-    return fields.map((f: any) => (f.source != null ? f.source
-      : (byLabel.get(f.name) != null ? (byLabel.get(f.name) as string) : null)));
+    return fields.map((f: any, i: number) => coordinate(
+      f.source != null ? f.source : byLabel.get(f.name), i));
   }
   if (!comps || comps.length !== args.length) return null;
-  return comps.map((c) => c.binding);
+  return comps.map((c, i) => coordinate(c.binding, i));
 }
 
 function _domKind(dom: any): string {
