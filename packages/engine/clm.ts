@@ -178,15 +178,38 @@ function _isStochastic(b: any): boolean {
 // This gate runs only on the DENSITY path (lowerMeasure is not the sampling
 // route for a record/tuple measure), so sampling a singular joint stays legal.
 
-// Whether `b` binds a VARIATE of a draw rather than a measure. Both a `~`-draw
+// Whether `name` binds a VARIATE of a draw rather than a measure. Both a `~`-draw
 // and a constructor measure whose parameters reach one carry phase 'stochastic'
 // (`q = Normal(mu = z, sigma = 0.6)` is stochastic-phase), so phase alone cannot
 // separate them; the domain does. A variate has a value type (scalar / array /
 // record), a measure has `kind === 'measure'`, and a LIFTED anon constructor
 // binding has no inferred type at all — the last is a measure too, which is why
 // the test is positive ("has a value type") rather than "is not a measure".
-function _namesADraw(b: any): boolean {
-  return _isStochastic(b) && !!b.inferredType && b.inferredType.kind !== 'measure';
+//
+// A missing inferred type therefore answers false, which is FAIL-OPEN: a variate
+// that lost its type would be read as a constructor, get a fresh coordinate, and
+// score a singular joint instead of refusing it. Every stochastic binding without
+// a type is an internal lifted name today, so the guard asserts exactly that
+// rather than trusting it — a user-facing name arriving here untyped is a
+// classification this function cannot make, and must not answer.
+function _namesADraw(name: string, b: any): boolean {
+  if (!_isStochastic(b)) return false;
+  if (!b.inferredType) {
+    if (!_isInternalName(name)) {
+      throw new Error("clm: stochastic binding '" + name + "' has no inferred type, "
+        + 'so it cannot be classified as a draw variate or a constructor measure. '
+        + 'Only internal lifted names (__anon…, %…) are untyped here; a user-facing '
+        + 'name reaching this point would be read as a constructor and would score '
+        + 'a singular joint instead of refusing it');
+    }
+    return false;
+  }
+  return b.inferredType.kind !== 'measure';
+}
+
+// Lifted/internal binding names, as `_displayName` and derivations.ts spell them.
+function _isInternalName(name: string): boolean {
+  return typeof name === 'string' && (name.startsWith('__anon') || name.startsWith('%'));
 }
 
 // The alias chain from `name` to its terminal binding, and whether any name on
@@ -196,12 +219,12 @@ function _namesADraw(b: any): boolean {
 function _aliasChain(name: string, ctx: any): { root: string; isDraw: boolean } {
   const derivations = ctx && ctx.derivations;
   let n = name;
-  let isDraw = _namesADraw(ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null);
+  let isDraw = _namesADraw(n, ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null);
   for (let guard = 0; guard < 64; guard++) {
     const d = derivations && derivations[n];
     if (!d || d.kind !== 'alias') break;
     n = d.from;
-    if (_namesADraw(ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null)) isDraw = true;
+    if (_namesADraw(n, ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null)) isDraw = true;
   }
   return { root: n, isDraw };
 }

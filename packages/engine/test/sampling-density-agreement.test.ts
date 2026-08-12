@@ -198,6 +198,45 @@ j = joint(a = m, b = m)`, 'j', 'a', 'b', { N: 30000 });
     + 'coordinate is the singular diagonal, which has no density');
 });
 
+test('[WILL-FLIP H7d] a NESTED constructor joint reuses the inner draw for the '
+  + 'outer component', async () => {
+  // `joint(u = joint(a = q, b = q), c = q)` over `q = Normal(mu = z, sigma = 0.6)`
+  // should be THREE fresh coordinates over one shared `z` (§06: "A component
+  // contributes a fresh coordinate"), so all three pairwise correlations are
+  // s0²/(s0²+σ²) = 0.9174. The inner pair is right. But `c` is BIT-IDENTICAL to
+  // `u.a`: the outer joint's `q` is not a duplicate BY NAME of `u`, so it takes
+  // the first-occurrence branch in `_materialiseFactorsIndependent`
+  // (materialiser.ts:781) and gets the cached batch `u.a` already drew. §06
+  // "Singular joints" is what that pair actually is — the same draw twice.
+  //
+  // PRE-EXISTING (identical at clean 0ab097d) and SAMPLING-ONLY: the density path
+  // refuses this shape, pinned in joint-shared-ancestor-density.test.ts, so no
+  // wrong number is scored. It nonetheless breaks the [GREEN H7] invariant above
+  // under nesting, so it is tagged WILL-FLIP and asserted TIED TO THE FAILURE
+  // MODE rather than to the wrong value: this goes red the moment the defect is
+  // fixed, which is the signal to re-tag it GREEN and assert 0.9174.
+  const src = `
+z ~ Normal(mu = 0.5, sigma = 2.0)
+q = Normal(mu = z, sigma = 0.6)
+u = joint(a = q, b = q)
+j = joint(uu = u, c = q)`;
+  const inner = await fieldCorrelation(src, 'u', 'a', 'b', { N: 20000 });
+  const want = 4 / 4.36;
+  assert.ok(Math.abs(inner - want) < 0.03,
+    `the INNER pair must already share the latent: want ≈${want.toFixed(4)}, got ${inner.toFixed(4)}`);
+
+  const { ctx } = require('./_agreement-harness.ts').buildCtx(src, 20000, 99);
+  const m = await ctx.getMeasure('j');
+  const ua = m.fields.uu.fields.a.samples;
+  const c = m.fields.c.samples;
+  let identical = 0;
+  for (let i = 0; i < c.length; i++) if (c[i] === ua[i]) identical++;
+  assert.equal(identical, c.length,
+    'THE DEFECT IS FIXED — `c` is no longer the same batch as `u.a`. Re-tag this '
+    + 'test GREEN and assert all three pairwise correlations ≈ '
+    + `${want.toFixed(4)} instead (got ${identical}/${c.length} identical)`);
+});
+
 test('[GREEN H7b/B] joint(posterior, posterior) — reused WEIGHTED factor refused loudly', async () => {
   // The critique's high-severity case (B): re-seeding a reused posterior gives
   // corr≈0 but the sample-side outer weight (w1+w2) disagrees with the density

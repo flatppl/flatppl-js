@@ -726,6 +726,33 @@ test('omitting identity.keyOf THROWS rather than falling back to name keying',
     }
   });
 
+// A stochastic binding with NO inferred type cannot be classified as a draw
+// variate or a constructor measure. Answering "constructor" would be fail-open:
+// the component gets a fresh coordinate and a singular joint SCORES instead of
+// refusing. Only internal lifted names are untyped today, so the classifier
+// asserts that rather than trusting it. Not reachable from source — driven from a
+// hand-built ctx, like the recogniser guards above.
+
+test('an untyped stochastic binding under a USER-FACING name throws rather than '
+  + 'being read as a constructor', () => {
+  const clm = require('../clm.ts');
+  const ctxWith = (nm: string) => ({
+    derivations: { J: { kind: 'record', fields: { a: nm, b: nm } } },
+    bindings: new Map([[nm, { phase: 'stochastic' }]]),   // no inferredType
+    fixedValues: new Map(),
+  });
+  assert.throws(() => clm.lowerMeasure('J', ctxWith('q')),
+    /stochastic binding 'q' has no inferred type/);
+  // The control: the same shape under an internal lifted name is the ordinary
+  // untyped-constructor case and must NOT hit the guard.
+  try {
+    clm.lowerMeasure('J', ctxWith('__anon7'));
+  } catch (e: any) {
+    assert.doesNotMatch(String(e.message), /has no inferred type/,
+      'an internal lifted name is the expected untyped case, not a guard trip');
+  }
+});
+
 // ── the point scored must match the variate ────────────────────────────────
 //
 // §06 "Singular joints" sets the pattern for the whole density path: "a static
@@ -799,28 +826,51 @@ ld = logdensityof(V, ${point})
 //
 // Oracles are INDEPENDENT of this engine and of flatppl-rust (which emits
 // symbolic lowerings and evaluates no density at all, so it is not an oracle
-// here). Each was computed at 40 decimal digits by two routes that share no
-// algebra: the closed-form Gaussian with an explicit 2x2 inverse, and numerical
-// quadrature of the compound integral ∫ p(z) p(a|z) p(b|z) dz. Both agree to all
-// 40 digits.
+// here). Each was computed at 60 decimal digits by two routes that share no
+// algebra — the closed-form Gaussian with an explicit 2x2 inverse and
+// determinant, and numerical quadrature of the compound integral
+// ∫ p(z) p(a|z) p(b|z) dz, which never forms a covariance matrix. For every value
+// below the two routes agree to 60 significant digits.
+//
+// The reference is computed from the parameters as EXACT DECIMALS, which is what
+// the source literals denote; feeding the reference the float64 of `0.6` instead
+// shifts it by about 1 ulp — right at the level these tests assert, so it is not
+// a detail that can be skipped.
 //   mu0 = 0.5, s0 = 2, point (2.5, -1.0)
-//     (sa, sb) = (0.6, 0.8):  -8.748747354129807395499993
-//     sa = sb = 0.6:         -10.90320117719112888674244
+//     (sa, sb) = (0.6, 0.8):  -8.74874735412980761937447869029
+//     sa = sb = 0.6:         -10.9032011771911282956792920692
+//   mu0 = 1.5, s0 = 6 (an affine location t = 3z), sa = sb = 0.6, same point
+//                            -11.9825963491921424570272318537
 // The disjoint-latent and marginal controls are products of 1-D Normals from the
-// same 40-digit computation, and the engine matches those bit-exactly.
+// same computation, and the engine matches those bit-exactly.
 
 const COMPOUND_ORACLE = -8.748747354129808;          // nearest f64 of the above
 const COMPOUND_EQUAL_SD_ORACLE = -10.903201177191129;
+const COMPOUND_AFFINE_LOC_ORACLE = -11.982596349192143;
 const DISJOINT_ORACLE = -4.0426427710908985;
 const MARGINAL_1D_ORACLE = -2.1138901582154195;
 
-// Sigma = s0^2 * 11' + diag(sigma_i^2) is far worse conditioned than the
-// [[2,1],[1,2]] blocks earlier in this file (4.36 against 4 off-diagonal), so the
-// engine's Cholesky loses ~6 ulp where those lose ~2. These therefore pin f64
-// exactness as a RELATIVE ulp budget instead of the absolute F64_TOL. It remains
-// an exactness claim, not a loosened statistical tolerance: dropping the shared
-// node moves these values by ~4.7, fourteen orders of magnitude above the budget.
-const ULP_BUDGET = 16;
+// WHICH TOLERANCE TO USE, and why there are two.
+//
+// Most tests in this file compare against the absolute `F64_TOL = 1e-14`, which
+// suits the F1-era blocks: [[2,1],[1,2]] and friends are well conditioned, so the
+// engine lands within ~2 ulp of the exact value.
+//
+// The COMPOUND blocks are not. Sigma = s0^2 * 11' + diag(sigma_i^2) is dominated
+// by the rank-1 shared-latent term (4.36 against 4 off-diagonal; 36.36 against 36
+// once the location is scaled), so the engine's Cholesky cancels far more and
+// lands 5-17 ulp out. Worse, the error grows with s0^2/sigma^2 — the affine-
+// location sibling below sits at 16 EPS on a CORRECT answer — so an absolute
+// budget would have to be re-tuned per shape. A compound-law test therefore uses
+// `ulpsClose` (a RELATIVE budget), and every other test keeps F64_TOL.
+//
+// `ulpsClose` is still an exactness claim, not a loosened statistical tolerance.
+// The budget is 64 EPS ~ 1.4e-14 relative, and the failure mode it must catch —
+// dropping the shared node, so the law becomes the product of the marginals —
+// sits 2.4e15 EPS away (6.45 nats on the affine sibling). There are thirteen
+// orders of magnitude of daylight between the budget and the nearest wrong
+// answer, and the worst correct value observed uses a quarter of the budget.
+const ULP_BUDGET = 64;
 const ulpsClose = (got: number, want: number) =>
   Math.abs(got - want) <= ULP_BUDGET * Number.EPSILON * Math.abs(want);
 
@@ -949,6 +999,58 @@ J = joint(a = Normal(mu = z, sigma = 0.6), b = Normal(mu = z, sigma = 0.6))
 ld = logdensityof(J, record(a = 2.5, b = -1.0))
 `, 1);
   assert.equal(await scoreOf(REUSED_CONSTRUCTOR, 1), inline);
+});
+
+test('the reused constructor still composes through an AFFINE location',
+  async () => {
+    // `t = 3z` scales the shared node, so Sigma = 36 * 11' + diag(0.36, 0.36) and
+    // the mean is (1.5, 1.5). This is the shape that fixes the tolerance budget:
+    // s0^2/sigma^2 = 100 here against 11 above, and the engine's Cholesky lands
+    // 16 EPS out on this CORRECT value — which is why ULP_BUDGET is not 16.
+    const got = await scoreOf(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+t = 3.0 * z
+q = Normal(mu = t, sigma = 0.6)
+J = joint(a = q, b = q)
+ld = logdensityof(J, record(a = 2.5, b = -1.0))
+`, 1);
+    assert.ok(ulpsClose(got, COMPOUND_AFFINE_LOC_ORACLE),
+      `got ${got}, oracle ${COMPOUND_AFFINE_LOC_ORACLE}. Dropping the shared node `
+      + 'would give -5.531043805465598, 6.45 nats away');
+  });
+
+// KNOWN SAMPLING DEFECT, filed in flatppl-dev/TODO-flatppl-js.md and
+// measure-algebra-audit.md: NESTING a constructor joint inside another joint that
+// also names the same constructor. `joint(u = joint(a = q, b = q), c = q)` should
+// be three fresh coordinates over one shared `z`, so all three pairwise
+// correlations are s0²/(s0²+σ²). The inner pair is correct, but `c` comes back
+// BIT-IDENTICAL to `u.a` (correlation exactly 1) because the outer joint's `q` is
+// not a duplicate BY NAME of `u`, so it takes the first-occurrence branch in
+// `materialiser._materialiseFactorsIndependent` and reuses the cached batch that
+// `u.a` already drew. That is a singular pair where §06 wants a fresh coordinate.
+//
+// Pre-existing: identical at clean 0ab097d, before this wave. It is a SAMPLING
+// defect only — the density path refuses the shape (its component `u` is a
+// `joint`, not a Normal), so no wrong number is ever scored. This test pins the
+// refusal, which is what currently keeps the defect unreachable from a density.
+// The correlation itself is deliberately NOT asserted here: the only value
+// available to assert is the wrong one, and pinning a wrong value as expected is
+// how it would become permanent. The correlation guard lives in
+// sampling-density-agreement.test.ts, tagged WILL-FLIP.
+
+test('a nested constructor joint refuses on the density side (which is what '
+  + 'keeps the known nested sampling defect unscorable)', async () => {
+  const { ctx } = ctxFor(`
+z ~ Normal(mu = 0.5, sigma = 2.0)
+q = Normal(mu = z, sigma = 0.6)
+u = joint(a = q, b = q)
+J = joint(u = u, c = q)
+ld = logdensityof(J, record(u = record(a = 2.5, b = -1.0), c = 0.3))
+`, 1);
+  await assert.rejects(async () => ctx.getMeasure('ld'),
+    /component 'u' is a 'joint', not a Normal/,
+    'if this starts scoring, the nested SAMPLING defect (c bit-identical to u.a) '
+    + 'becomes reachable from a density and must be fixed first');
 });
 
 test('a named REIFIED law used as two components still refuses as singular',
