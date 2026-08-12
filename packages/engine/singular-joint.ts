@@ -101,9 +101,25 @@
 // Hall check would therefore NOT complete this pass.
 //
 // This pass implements the |S| = 2 case via the common-generator test, which
-// catches both the equal-singleton shapes and that dependent-function case. A
-// deficiency needing a subset of size ≥ 3 — `lawof(record(inner = record(a = y,
-// b = t), c = y))`, whose support is {(y,t,y)} ⊂ R³ — is a MISS. See the
+// catches the equal-singleton shapes and the dependent-function case ONLY WHERE
+// THE DEPENDENCY PASSES THROUGH A SHARED NAMED BINDING — the generator has to be
+// a binding for `_commonGenerator` to find it. Two dependent shapes are therefore
+// still misses:
+//
+//   p = y + n; q = 2.0*y + 2.0*n; joint(a = lawof(p), b = lawof(q))
+//     q = 2p exactly, so rank 1, but `q` reaches y and n directly and never
+//     through `p` — there is no shared binding to nominate.
+//   lawof(record(a = y + n, b = y + n))
+//     the two field expressions are identical but inline, so again no binding.
+//
+// Closing those needs STRUCTURAL COMPARISON of the component expressions (or
+// symbolic dependence testing), not a wider root-set rule — widening roots is
+// what produced the earlier false positives. Both stay safe meanwhile: each still
+// reaches no number at runtime (the first via clm's shared-ancestor refusal, the
+// second via the multi-latent pushforward refusal).
+//
+// A deficiency needing a subset of size ≥ 3 — `lawof(record(inner = record(a = y,
+// b = t), c = y))`, whose support is {(y,t,y)} ⊂ R³ — is likewise a MISS. See the
 // fail-silent note.
 //
 // ── WHAT ELSE MAKES A JOINT SINGULAR: INHERITANCE ───────────────────────

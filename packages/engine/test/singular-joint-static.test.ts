@@ -214,6 +214,15 @@ ld = logdensityof(R, record(a = 0.5, b = 0.9))
     // number: the linear-Gaussian recogniser refuses it one step later for being
     // a non-Normal component. Recorded rather than smoothed over, because "which
     // gate stopped it" is the difference between a designed refusal and luck.
+    //
+    // RISK, and what to do about it: this pins a NON-F5 gate, so widening the
+    // recogniser to accept affine components (an obvious future improvement) will
+    // redden this test for a reason unrelated to singular joints. The fix then is
+    // NOT to loosen this assertion — that would let the shape start scoring
+    // unnoticed, and it is genuinely singular. Teach clm to see inline
+    // `lawof(2.0 * u)` components first, then re-pin this to the singular
+    // refusal. Tracked with the other clm follow-ups in
+    // flatppl-dev/TODO-flatppl-js.md.
     backstop: /component 'a' is a 'add', not a Normal/,
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
@@ -468,11 +477,16 @@ ld = logdensityof(S, record(a = 0.5, b = 0))
     // support with counting reference the ONLY null set is ∅, so every measure
     // there is absolutely continuous and an all-discrete joint can never be
     // singular. `(k, k)` has an ordinary pmf — p at (1,1), 1-p at (0,0).
+    // The variate is spelled `true`, not `1.0`: a Bernoulli joint has a BOOLEAN
+    // domain, and scoring it at reals is a type error. It matters here beyond
+    // tidiness — a fixture asserting a shape is LEGAL has to type-check, or the
+    // `singularErrorsOf` filter quietly hides an unrelated error and the case
+    // stops demonstrating what it claims.
     label: 'a duplicated BERNOULLI draw (counting reference, has a pmf)',
     src: `
 k ~ Bernoulli(p = 0.3)
 S = joint(a = lawof(k), b = lawof(k))
-ld = logdensityof(S, record(a = 1.0, b = 1.0))
+ld = logdensityof(S, record(a = true, b = true))
 `,
   },
   {
@@ -480,7 +494,7 @@ ld = logdensityof(S, record(a = 1.0, b = 1.0))
     src: `
 c ~ Poisson(rate = 2.0)
 S = joint(a = lawof(c), b = lawof(c))
-ld = logdensityof(S, record(a = 1.0, b = 1.0))
+ld = logdensityof(S, record(a = 1, b = 1))
 `,
   },
   // ── no shared root at all ─────────────────────────────────────────────
@@ -558,7 +572,13 @@ ld = logdensityof(I, [0.1, 0.3])
 
 for (const c of NOT_SINGULAR) {
   test(`NOT SINGULAR: ${c.label}`, () => {
-    assert.deepEqual(singularErrorsOf(c.src), []);
+    // Asserts ALL errors empty, not just this pass's. A legality fixture must
+    // type-check, or `singularErrorsOf`'s filter silently hides an unrelated error
+    // and the case stops demonstrating what it claims — which is how two
+    // ill-typed discrete fixtures (a Bernoulli joint scored at reals) sat here
+    // looking like evidence. Every fixture in this table is clean today; keep it
+    // that way rather than reaching for the filter.
+    assert.deepEqual(errorsOf(c.src), []);
   });
 }
 
@@ -592,7 +612,7 @@ test('a declined DISCRETE shape is still refused by clm, and with a factually '
   const { ctx } = ctxFor(`
 k ~ Bernoulli(p = 0.3)
 S = joint(a = lawof(k), b = lawof(k))
-ld = logdensityof(S, record(a = 1.0, b = 1.0))
+ld = logdensityof(S, record(a = true, b = true))
 `, 1);
   // Worth stating plainly, because it is the weakest point of the discrete
   // exemption: clm's message asserts the law "has no density w.r.t. the product
@@ -728,6 +748,43 @@ C = kchain(lawof(z), K)
 ld = logdensityof(C, 0.5)
 `), []);
   });
+
+// The generator test needs the dependency to pass through a shared NAMED binding,
+// because the generator it looks for IS a binding. Two dependent shapes are
+// therefore missed. Both are pinned as misses so the module header's narrowed
+// claim is backed by a test rather than only asserted, and so closing either one
+// flips a test here.
+//
+// Closing them needs STRUCTURAL comparison of the component expressions (or
+// symbolic dependence testing) — deliberately not a wider root-set rule, since
+// widening roots is exactly what produced the earlier false positives.
+
+test('a dependent pair with NO shared named binding is a MISS: q = 2y+2n equals '
+  + '2p, but never reaches p', () => {
+  // Rank 1 (q = 2p exactly), so genuinely singular. `q` refs y and n directly, so
+  // no binding is a generator for both components. Still safe: clm's
+  // shared-ancestor check refuses it at density time (verified).
+  assert.deepEqual(singularErrorsOf(`
+y ~ Normal(mu = 0.0, sigma = 1.0)
+n ~ Normal(mu = 0.0, sigma = 1.0)
+p = y + n
+q = 2.0 * y + 2.0 * n
+S = joint(a = lawof(p), b = lawof(q))
+ld = logdensityof(S, record(a = 0.5, b = 1.0))
+`), []);
+});
+
+test('two INLINE identical field expressions are a MISS (no binding to nominate)', () => {
+  // Support is the diagonal of R², so singular. The fields are structurally
+  // identical but inline, so there is no named generator. Still safe: the
+  // multi-latent pushforward path refuses it at density time (verified).
+  assert.deepEqual(singularErrorsOf(`
+y ~ Normal(mu = 0.0, sigma = 1.0)
+n ~ Normal(mu = 0.0, sigma = 1.0)
+R = lawof(record(a = y + n, b = y + n))
+ld = logdensityof(R, record(a = 0.5, b = 0.5))
+`), []);
+});
 
 test('a Hall deficiency needing a subset of size 3 is a MISS (documented limit)', () => {
   // Support is {(y, t, y)} ⊂ R³ — 2-dimensional, so genuinely singular. No PAIR
