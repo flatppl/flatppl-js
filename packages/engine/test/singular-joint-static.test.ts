@@ -491,13 +491,21 @@ for (const c of HALL3) {
   });
 }
 
-test('a Hall size-3 shape whose sibling is an INLINE expression is still a MISS', async () => {
-  // The remaining limit, and it is the pre-existing inline gap, not the container
-  // rule: `c = y + 0.0` lifts to an untyped internal binding, which clm classifies
-  // as a constructor measure rather than a variate, so it contributes no roots at
-  // all. Naming it (`w = y + 0.0; … c = w`) refuses. Widening the classifier to
-  // untyped lifted evaluates would also hand the full-rank nested shapes clm's
-  // factually-false nullity message, which is the trade this wave declines.
+test('[WILL-FLIP] a Hall size-3 shape whose OUTER sibling is an INLINE expression is '
+  + 'still a MISS', async () => {
+  // Pinning a value known to be WRONG, deliberately: the law is R³-Lebesgue-null, so
+  // §06's "otherwise refused by the engine" is still unmet for this ONE spelling and
+  // any finite answer is wrong. When clm learns to refuse it, this test goes red and
+  // should be rewritten to `assert.rejects`, exactly like the pair-rule BACKSTOP
+  // tests. It is pinned because the alternative — asserting nothing — is how the
+  // wider version of this hole stayed invisible until wave F5's review.
+  //
+  // The cause is the pre-existing inline gap, not the container rule: `c = y + 0.0`
+  // lifts to an untyped internal binding, which clm classifies as a constructor
+  // measure rather than a variate, so it contributes no roots at all. Traced:
+  // `labels=["inner","c"] kinds=["record","evaluate"] noise=[["y","t"],[]]` — the
+  // container reports its children correctly, and the sibling reports nothing, so no
+  // pair can overlap. Naming the sibling (`w = y + 0.0; … c = w`) refuses.
   // Tracked in flatppl-dev/TODO-flatppl-js.md.
   const { ctx } = ctxFor(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
@@ -510,12 +518,49 @@ ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.1))
     `expected the known-wrong -2.7868155996140187, got ${m.samples[0]}`);
 });
 
-test('a full-rank nested shape keeps its PUSHFORWARD refusal, not the singular one',
-  async () => {
-    // The container rule must not reach a full-rank law. This one already refused
-    // before it (the ≥2-latent pushforward gate), and the reason must not drift to
-    // the singular message — that message asserts nullity, which is false here.
-    const { ctx } = ctxFor(`
+// ── what the container rule costs a FULL-RANK nested law ────────────────────
+//
+// The container rule reaches absolutely-continuous shapes too, and there it hands
+// them clm's factually-false nullity message (clm-gap (b)). Nothing regresses — every
+// shape below ALREADY refused, for the ≥2-latent pushforward or marginalisation
+// reason — but the reason now drifts to the singular one wherever the overlapping
+// outer sibling is a draw or a NAMED binding. Both directions are pinned, because a
+// single test on the one configuration that keeps its old reason would read as general
+// assurance and is not — the "passes on the spelling you tested" shape the HALL3
+// mirror above warns about.
+
+test('a full-rank nested law whose outer sibling is NAMED now gets the singular '
+  + 'reason (the container rule reaches it)', async () => {
+  // (u, t, w) is full rank and absolutely continuous: u = y+n1 and w = y+n2 are not
+  // determined by one another. So the nullity the message asserts is FALSE here — it
+  // is clm's coarse any-overlap predicate talking, the same overstatement the flat
+  // spelling `joint(a = lawof(u), b = lawof(w))` already produces. Pinned so that
+  // narrowing the predicate later flips a test rather than passing unnoticed.
+  const { ctx } = ctxFor(`
+y ~ Normal(mu = 0.0, sigma = 1.0)
+n1 ~ Normal(mu = 0.0, sigma = 1.0)
+n2 ~ Normal(mu = 0.0, sigma = 1.0)
+t ~ Normal(mu = 0.0, sigma = 1.0)
+u = y + n1
+w = y + n2
+R = lawof(record(inner = record(a = u, b = t), c = w))
+ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.3))
+`, 1);
+  await assert.rejects(async () => ctx.getMeasure('ld'), (e: any) => {
+    assert.equal(e.code, 'CLM_SINGULAR_JOINT');
+    assert.match(String(e.message), /'inner' and 'c'.*share the ancestor 'y'/s);
+    return true;
+  });
+});
+
+test('a full-rank nested law keeps its PUSHFORWARD refusal ONLY when the outer '
+  + 'sibling is an inline expression', async () => {
+  // The single configuration the container rule does not reach, and the title says
+  // so: `c = y + n2` inline contributes no roots (the same gap the [WILL-FLIP] pin
+  // above records), so the pair test never fires and the ≥2-latent pushforward gate
+  // stops the query instead. Change one thing — name the sibling — and the reason
+  // becomes the singular one, per the test above.
+  const { ctx } = ctxFor(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
 n1 ~ Normal(mu = 0.0, sigma = 1.0)
 n2 ~ Normal(mu = 0.0, sigma = 1.0)
@@ -523,12 +568,12 @@ t ~ Normal(mu = 0.0, sigma = 1.0)
 R = lawof(record(inner = record(a = y + n1, b = t), c = y + n2))
 ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2), c = 0.3))
 `, 1);
-    await assert.rejects(async () => ctx.getMeasure('ld'), (e: any) => {
-      assert.notEqual(e.code, 'CLM_SINGULAR_JOINT');
-      assert.match(String(e.message), /depends on 2 stochastic ancestors/);
-      return true;
-    });
+  await assert.rejects(async () => ctx.getMeasure('ld'), (e: any) => {
+    assert.notEqual(e.code, 'CLM_SINGULAR_JOINT');
+    assert.match(String(e.message), /depends on 2 stochastic ancestors/);
+    return true;
   });
+});
 
 // ════════════════════════════════════════════════════════════════════
 // The recursion must not over-reach: legal shapes still score

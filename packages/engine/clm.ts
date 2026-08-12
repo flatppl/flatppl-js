@@ -282,6 +282,23 @@ function _structuralChildren(d: any): string[] | null {
 // §06's "determined by the others given the shared ancestors" across a level,
 // and it is a Hall deficiency needing a subset of size 3, which no PAIR of
 // components can express until the container reports its children's roots.
+//
+// This is the COARSE pair predicate reaching one level further, so it inherits
+// that predicate's overstatement: a FULL-RANK nested law (`u = y+n1; w = y+n2;
+// record(inner = record(a = u, b = t), c = w)`) now also refuses, with the
+// nullity claim that is false of it. Every such shape already refused for the
+// ≥2-latent pushforward or marginalisation reason, so no number regresses — only
+// the wording moves, and it moves onto clm's pre-existing wrong message (the
+// factually-false-reason gap tracked in flatppl-dev/TODO-flatppl-js.md).
+//
+// What is NOT widened is the component CLASSIFIER. An INLINE field expression
+// lifts to an untyped internal binding that `_namesADraw` reads as a constructor,
+// so it reports no roots, and a Hall size-3 shape whose outer sibling is inline
+// (`c = y + 0.0`) still scores. Widening that would drag in the Lebesgue ⊗
+// Counting exemptions — `floor(y)`/`round(y)`/a boolean beside `y`, whose laws §06
+// "Reference measure for product measures" gives a real density — and telling
+// those they have no density contradicts the very section they rest on. That is
+// the cost that makes the classifier the wrong thing to widen here.
 function _noiseRoots(name: string, ctx: any, seen?: Set<string>): Set<string> {
   const out = new Set<string>();
   const visited = seen || new Set<string>();

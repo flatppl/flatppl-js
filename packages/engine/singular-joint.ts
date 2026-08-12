@@ -168,13 +168,20 @@
 //
 // clm's recursion covers every level the pair predicate can NAME, and its
 // container rule (a record/tuple component reports the union of its children's
-// roots) additionally refuses the Hall size-3 class this pass declines. But it is
-// NOT a superset of this pass: an INLINE field expression
-// (`lawof(record(inner = record(a = y, b = exp(y)), c = t))`) lifts to an untyped
-// internal binding, which clm reads as a constructor measure contributing no
-// roots, so clm's singular predicate stays silent where this pass fires. That
-// query still reaches no number, but through `mat-density`'s diagonal-bijection
-// gate. Do not read a flag here as "clm will refuse it".
+// roots) additionally refuses the Hall size-3 class this pass declines — but only
+// where the overlapping outer sibling is a draw or a NAMED binding. Neither side
+// contains the other:
+//
+//   an INLINE field expression (`lawof(record(inner = record(a = y, b = exp(y)),
+//   c = t))`) lifts to an untyped internal binding, which clm reads as a
+//   constructor measure contributing no roots, so clm's singular predicate stays
+//   silent where this pass fires. That query still reaches no number, but through
+//   `mat-density`'s diagonal-bijection gate. Do not read a flag here as "clm will
+//   refuse it".
+//
+//   conversely, clm's container rule refuses FULL-RANK nested laws this pass
+//   correctly declines, with the nullity claim that is false of them — the coarse
+//   pair predicate reaching one level further, not a new defect.
 //
 // ── FAIL-SILENT, AND WHAT THAT DOES AND DOES NOT BUY ────────────────────
 //
