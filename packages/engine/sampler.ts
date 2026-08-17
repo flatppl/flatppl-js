@@ -3506,14 +3506,26 @@ function _reshapeNested(flat: any[], dims: number[]): any {
   return out;
 }
 
-// weighted / logweighted: sampling is a pure pass-through (the weight only
-// affects density, which lives in density.ts).
-function walkWeightedPassThrough(state: any, ir: IRNode, env: any, ctx: any): any {
+// weighted / logweighted: `rand` refuses these outright (spec §07 sec:random:
+// "`rand` does not support measures for which this is an intractable
+// problem, especially measures involving non-constant weighting (via
+// `weighted(f, base)`, `logweighted(g, base)`, or `bayesupdate(L, prior)`)");
+// spec §13 lists the same refusal among determinization's refused
+// constructs ("a sampled output over a measure that `rand` does not
+// support: one with non-constant weighting"). A weighted measure is not a
+// probability measure unless renormalized, so sampling its base and
+// dropping the weight is a silent wrong answer, not a legal shortcut.
+function walkWeightedRefuse(state: any, ir: IRNode, env: any, ctx: any): any {
   const args = ir.args || [];
   if (args.length !== 2) {
     throw new Error(`sampler.walk: weighted/logweighted expected 2 args, got ${args.length}`);
   }
-  return walkInner(state, args[1], env, ctx);
+  throw new Error(
+    `sampler.walk: '${ir.op}' cannot be sampled directly (spec §07 sec:random) — ` +
+    `a weighted measure is not a probability measure unless renormalized. ` +
+    `Wrap it in normalize(...) first, or sample its base measure explicitly ` +
+    `if discarding the weight is intended.`
+  );
 }
 
 // lawof(M) / draw(M): pass-through wrappers per `lawof(draw(M)) ≡ M`.
@@ -3529,8 +3541,8 @@ const MEASURE_OP_WALKERS = {
   joint:       walkJoint,
   record:      walkJoint,
   iid:         walkIid,
-  weighted:    walkWeightedPassThrough,
-  logweighted: walkWeightedPassThrough,
+  weighted:    walkWeightedRefuse,
+  logweighted: walkWeightedRefuse,
   lawof:       walkUnwrap,
   draw:        walkUnwrap,
 };
