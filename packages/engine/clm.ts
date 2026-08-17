@@ -233,7 +233,15 @@ function _namesADraw(name: string, b: any): boolean {
         + 'name reaching this point would be read as a constructor and would score '
         + 'a singular joint instead of refusing it');
     }
-    return false;
+    // A closure synthesized at a kernel APPLICATION point has no inferred type
+    // — typeinfer ran before lift's boundary substitution created it. `draw(M)`
+    // is unambiguously a variate whatever else is unknown, so read the IR head
+    // instead of defaulting to "constructor": defaulting there let the singular
+    // fan-out `logdensityof(joint(K, K)(v), y)` SCORE a product of independent
+    // coordinates where §06 "Singular joints" refuses. Only this one IR shape is
+    // recognised — a deterministic transform of a draw stays a constructor here,
+    // per the classifier note on `_noiseRoots`.
+    return !!(b.ir && b.ir.kind === 'call' && b.ir.op === 'draw');
   }
   return b.inferredType.kind !== 'measure';
 }
