@@ -241,6 +241,16 @@ test('record(<non-table>) is a located error naming §03 record(t)', () => {
   assert.match(errs[0], /must be a table/);
 });
 
+test('record(x, t) with a table not sole still requires field kwargs', () => {
+  // Only a SOLE positional table splats (§03); a second positional argument
+  // means every argument must be a name = value field, table included.
+  const errs = errorsOf(T3 + 'x = 1.0\nr = record(x, t)');
+  assert.equal(errs.length, 2, 'got: ' + errs.join(' | '));
+  for (const e of errs) {
+    assert.match(e, /record\(\) takes either a single positional table or field keyword arguments/);
+  }
+});
+
 // §03 "Tables": "Each column is a vector or a table". A table-valued column
 // converts fine to a NESTED TABLE inside `table(r)`'s mirror direction — but
 // `record(t)` cannot mirror it back, because §03 "Records" caps a record
