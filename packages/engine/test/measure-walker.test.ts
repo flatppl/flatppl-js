@@ -118,18 +118,76 @@ test('walk: logweighted refuses to sample rather than dropping the weight', () =
   );
 });
 
-// normalize(weighted(w, M)) renormalizes back to a probability measure, so
-// per spec §07 `rand` should support it. The walker refuses it today, but
-// for a DIFFERENT reason: `normalize` is not itself in MEASURE_OP_WALKERS,
-// so any `normalize(...)` hits the generic "not a measure we can sample"
-// wall regardless of what it wraps — a pre-existing gap this wave does not
-// close. Pinned here so a future normalize walker doesn't silently
-// resurrect the weighted-refusal question without a test noticing.
-test('walk: normalize(weighted(...)) refuses today, but not via the weighted refusal', () => {
+// normalize — spec §06 "given a measure M with finite total mass
+// Z = totalmass(M) > 0, returns the probability measure M / Z", and §07
+// sec:random makes `rand` legal on any probability measure. `normalize` now
+// has a MEASURE_OP_WALKERS entry: it samples the IDENTITY case (base already
+// %normalized) directly, and refuses any other base with an honest
+// diagnostic — known normalization is not the same as samplable, since
+// sampling M/Z in general needs reweighting (importance/rejection) this
+// sampler does not implement. normalize(weighted(...)) renormalizes back to
+// a probability measure, so per §07 `rand` in principle allows it, but
+// mass known ≠ samplable: this stays refused, now for that honest reason
+// rather than the generic "not a measure we can sample" wall normalize used
+// to hit before it had any MEASURE_OP_WALKERS entry at all.
+test('walk: normalize(weighted(...)) refuses via the honest normalize diagnostic', () => {
   const M = { kind: 'call', op: 'normalize', args: [weighted(0.5, STD_NORMAL)] };
   assert.throws(
     () => sampler.walk(rng.stateFromKey(1), M, {}),
-    /op 'normalize' is not a measure expression we can sample/,
+    /'normalize' cannot be sampled here.*requires reweighting/,
+  );
+});
+
+test('walk: normalize(logweighted(...)) refuses via the honest normalize diagnostic (same wall)', () => {
+  const M = { kind: 'call', op: 'normalize', args: [logweight(-1.0, STD_NORMAL)] };
+  assert.throws(
+    () => sampler.walk(rng.stateFromKey(1), M, {}),
+    /'normalize' cannot be sampled here.*requires reweighting/,
+  );
+});
+
+// Identity case: normalize(M) where M is already a probability measure is a
+// no-op (Z = 1) — sampling M directly IS sampling normalize(M). Moment
+// check against the closed-form oracle (Standard Normal: mean 0, var 1)
+// rather than pinning specific draws, since the walker legitimately
+// delegates to the leaf sampler underneath.
+test('walk: normalize(iid(Normal(0,1), N)) samples the identity case, moments match the closed-form oracle', () => {
+  const M = { kind: 'call', op: 'normalize', args: [iid(STD_NORMAL, 20000)] };
+  const r = sampler.walk(rng.stateFromKey(42), M, {});
+  const xs = r.value;
+  const n = xs.length;
+  const mean = xs.reduce((a: number, b: number) => a + b, 0) / n;
+  const varr = xs.reduce((a: number, b: number) => a + (b - mean) * (b - mean), 0) / n;
+  assert.ok(Math.abs(mean) < 0.05, `mean ${mean} should be ~0 (Standard Normal)`);
+  assert.ok(Math.abs(varr - 1) < 0.05, `var ${varr} should be ~1 (Standard Normal)`);
+});
+
+// A single leaf normalize(Normal(0,1)) also identity-samples (no iid
+// wrapper) — the plain leaf branch of the identity check.
+test('walk: normalize(Normal(0,1)) (bare leaf) samples the identity case', () => {
+  const M = { kind: 'call', op: 'normalize', args: [STD_NORMAL] };
+  const r = sampler.walk(rng.stateFromKey(1), M, {});
+  assert.equal(typeof r.value, 'number');
+  assert.equal(Number.isFinite(r.value), true);
+});
+
+// Nested normalize(normalize(M)) is trivially identity too — normalize's
+// own output is always normalized once it type-checked.
+test('walk: normalize(normalize(Normal(0,1))) samples the identity case (nested normalize)', () => {
+  const M = { kind: 'call', op: 'normalize', args: [{ kind: 'call', op: 'normalize', args: [STD_NORMAL] }] };
+  const r = sampler.walk(rng.stateFromKey(1), M, {});
+  assert.equal(typeof r.value, 'number');
+  assert.equal(Number.isFinite(r.value), true);
+});
+
+// A base the walker cannot PROVE is already normalized (e.g. an
+// unrecognised op) refuses via the same honest diagnostic — the identity
+// check is a conservative allow-list, not "refuse only weighted/logweighted".
+test('walk: normalize(<unprovable base>) refuses via the honest diagnostic too', () => {
+  const M = { kind: 'call', op: 'normalize', args: [{ kind: 'call', op: 'superpose', args: [STD_NORMAL, EXP1] }] };
+  assert.throws(
+    () => sampler.walk(rng.stateFromKey(1), M, {}),
+    /'normalize' cannot be sampled here.*requires reweighting/,
   );
 });
 

@@ -61,6 +61,7 @@ const matPoisson   = require('./mat-poisson.ts');
 const broadcast    = require('./mat-broadcast.ts');
 const density      = require('./mat-density.ts');
 const transforms   = require('./mat-transformations.ts');
+const samplerReg   = require('./sampler-registry.ts');
 
 const {
   nameSeed,
@@ -670,6 +671,35 @@ function _resolveRandState(ir: any, ctx: any): any {
   return orchestrator.resolveIRToValue(ir, ctx.bindings, ctx.fixedValues);
 }
 
+// Follows a chain of 'alias' / 'normalize' derivations (both sample-
+// preserving pass-throughs) down to the first derivation that is neither,
+// returning that terminal derivation. Cycle-guarded. Used by
+// matRandSample's normalize gate below to see PAST any normalize(...)
+// wrapper(s) to what is actually being sampled.
+function _peelAliasNormalize(name: string, derivations: any): any {
+  let cur = name;
+  const seen = new Set<string>();
+  while (cur && derivations[cur]
+         && (derivations[cur].kind === 'alias' || derivations[cur].kind === 'normalize')
+         && !seen.has(cur)) {
+    seen.add(cur);
+    cur = derivations[cur].from;
+  }
+  return derivations[cur];
+}
+
+// True only when `d` is a leaf-distribution derivation — every kind that
+// wraps one directly ('sample', and the dedicated multivariate kinds
+// 'mvnormal' / 'dirichlet' / 'wishart' / ... ) stashes the distribution
+// call IR at `.distIR`, so checking that field structurally covers all of
+// them (present and future) without hardcoding the kind-name list. Every
+// leaf distribution constructor is normalized (spec §08), so this is the
+// materialiser-level twin of sampler.ts's `_isProvablyNormalized` leaf case.
+function _isLeafDistributionDeriv(d: any): boolean {
+  return !!(d && d.distIR && d.distIR.kind === 'call'
+    && samplerReg.isKnownDistribution(d.distIR.op));
+}
+
 function matRandSample(name: string, d: any, ctx: any) {
   // Demand-driven composite `rand` draw (engine-concepts §11 (demand-driven composite rand);
   // classifier: derivations.classifyRandSample). `samples, _ =
@@ -731,6 +761,40 @@ function matRandSample(name: string, d: any, ctx: any) {
       + `in normalize(...) first, or sample its base measure explicitly if `
       + `discarding the weight is intended.`
     );
+  }
+  // normalize(...) named binding (spec §06 normalize, §07 sec:random): a
+  // NAMED `nw = normalize(w); rand(state, nw)` never reaches sampler.ts's
+  // walkNormalizeRefuse (that walker only ever sees an INLINE `normalize(...)`
+  // call) — it resolves here via `d.from`'s own 'normalize' derivation kind
+  // instead, dispatching (via ctx.getMeasure → matNormalize) to whatever
+  // materialises the wrapped base. When that base is `weighted`/`logweighted`,
+  // matNormalize legitimately builds a self-normalized-importance-sampling
+  // empirical measure (non-uniform logWeights summing to one in log-space) —
+  // correct for density/plotting, but the array-measure rebuild below
+  // (`empirical.arrayMeasure(data, variateDims, null)`) discards logWeights
+  // entirely, which would silently hand back a plain unweighted draw from
+  // the UNNORMALIZED base — the identical weight-dropping defect the
+  // `kind === 'weighted'` check above closes for a bare weighted binding,
+  // one `normalize(...)` wrapper away. Peel through any 'alias'/'normalize'
+  // chain to the terminal derivation: only refuse ourselves when normalize's
+  // total mass is genuinely known-but-not-samplable (its base is not
+  // provably already a probability measure) — an identity `normalize(M)`
+  // over an already-normalized `M` (terminal is a leaf distribution) has
+  // Z = 1 and matNormalize's uniform-weight rebuild is exact, so that case
+  // falls through unrefused.
+  if (fromDeriv && fromDeriv.kind === 'normalize') {
+    const terminal = _peelAliasNormalize(d.from, ctx.derivations || {});
+    if (!_isLeafDistributionDeriv(terminal)) {
+      throw new Error(
+        `rand: 'normalize' cannot be sampled (spec §06 normalize, §07 ` +
+        `sec:random) — the total mass is known in closed form, but ` +
+        `sampling the normalized measure in general requires reweighting ` +
+        `(importance or rejection sampling) this engine does not ` +
+        `implement. Known normalization is not the same as samplable — ` +
+        `the density path can still score this measure via ` +
+        `logdensityof/totalmass.`
+      );
+    }
   }
   const state = _resolveRandState(d.stateIR, ctx);
   if (!state || !state.key) {
