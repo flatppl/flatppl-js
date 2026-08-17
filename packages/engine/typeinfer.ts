@@ -4448,6 +4448,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return massOfBinding(ir.name);
     }
     if (ir.kind !== 'call') return T.MASS_DEFERRED;
+    // APPLYING a kernel yields its output measure, and §11 makes a kernel's
+    // `%mass` "the total-mass class of the output measure, uniform over all
+    // inputs" — so an application carries the callee's class unchanged, at every
+    // input. This arm is not decoration: `inferUserCall` returns the callee's
+    // `result` type OBJECT itself, so falling through to `deferred` here STAMPED
+    // that `deferred` back over the kernel's own class, and `deferred` is the
+    // class the draw gate passes where `unknown` fails.
+    if (ir.target && ir.target.ns === 'self' && !ir.op) {
+      return kernelOutputMass(ir.target.name);
+    }
     const op = ir.op;
     const args = ir.args || [];
 
@@ -4714,13 +4724,46 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
     }
     if (suspect.length < 2) return product;
-    const traces = suspect.map((i) => stochasticAncestors(comps[i], new Set<string>()));
+    const traces = suspect.map((i) => componentTrace(comps[i]));
     for (let i = 0; i < traces.length; i++) {
       for (let j = i + 1; j < traces.length; j++) {
         for (const n of traces[i]) if (traces[j].has(n)) return T.MASS_UNKNOWN;
       }
     }
     return product;
+  }
+
+  // The stochastic nodes a `joint` component's trace CARRIES — the set §06's
+  // ancestry rule intersects. A reified callable's trace stops at its boundary:
+  // §04 "Specifying reification boundaries" replaces boundary nodes with fresh
+  // `elementof` inputs, so nodes above the boundary are not in the trace at all.
+  // Walking past it counted a common ancestor of two boundaries as shared, which
+  // downgraded a `finite` × `finite` pair whose below-boundary traces are
+  // disjoint — given the fanned input those components ARE independent and the
+  // product is exact.
+  function componentTrace(ir: any): Set<string> {
+    const stop = new Set<string>();
+    if (ir && ir.kind === 'ref' && loweredModule.bindings.has(ir.name)) {
+      const b = loweredModule.bindings.get(ir.name);
+      const rhs = b && b.rhs;
+      if (rhs && rhs.kind === 'call' && rhs.op === 'functionof' && rhs.body) {
+        for (const p of (Array.isArray(rhs.params) ? rhs.params : [])) stop.add(p);
+        return stochasticAncestors(rhs.body, stop);
+      }
+    }
+    return stochasticAncestors(ir, stop);
+  }
+
+  // The output-measure class of a kernel BINDING, by name. A reified callable
+  // carries that measure as `rhs.body`; a kernel built by a measure-algebra op
+  // (`joint` over kernels) carries the kernel type on its own node instead, so
+  // the node itself is classified. A non-kernel callee has no verdict to give.
+  function kernelOutputMass(name: string): any {
+    const b = loweredModule.bindings.get(name);
+    if (!b || !b.rhs || !b.inferredType || b.inferredType.kind !== 'kernel') {
+      return T.MASS_DEFERRED;
+    }
+    return massOfExpr(b.rhs.body ? b.rhs.body : b.rhs);
   }
 
   function isKernelTyped(ir: any): boolean {

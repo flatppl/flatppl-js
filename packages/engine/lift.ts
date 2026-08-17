@@ -2459,13 +2459,24 @@ function liftInlineSubexpressions(bindings: any) {
   // ancestry rule, the singular-joint refusal and the sampler all apply to it
   // unchanged.
   //
+  // The identity is LICENSED ONLY WHEN THE MERGED BOUNDARY SET IS STILL AN
+  // ALL-OR-NONE COMPLETE CUT FOR EVERY COMPONENT — the premise the maths doc
+  // states as "(each all-or-none complete for its own component)", resting on
+  // §04 "Specifying reification boundaries". It holds for matched boundary sets,
+  // for disjoint non-nested ones, and for a measure component (empty set). It
+  // FAILS when a boundary node of component i is an INTERIOR ancestor of
+  // component j: merging then cuts a path j deliberately marginalizes over, so
+  // j's own input goes dead and j is scored at the wrong law. That shape needs
+  // no ruling to be wrong — it violates the marginalization floor (the i-th
+  // marginal of the composed law must equal K_i at the same input), which both
+  // candidate conventions satisfy — so it must refuse, not answer.
+  //
   // Returns null — leaving the call un-inlined, so the classifier refuses
   // rather than lowering something else — for every shape this rewrite cannot
   // resolve: a non-`joint` binding, an all-measure `joint` (not callable), a
   // component whose reification boundary is a placeholder or a complex
-  // expression, an inline (unlifted) reification component, and a boundary
-  // naming conflict. The conflicting-name case is §06's static error, which
-  // typeinfer reports.
+  // expression, an inline (unlifted) reification component, a nested boundary
+  // scope (above), and a boundary naming conflict in either direction.
   function _jointFanoutAsFunctionof(fnBinding: any) {
     const jAst = fnBinding.node && fnBinding.node.value;
     if (!jAst || jAst.type !== 'CallExpr' || !jAst.callee
@@ -2475,18 +2486,22 @@ function liftInlineSubexpressions(bindings: any) {
     const outerOfSurface = new Map<string, string>();
     const surfaceOfOuter = new Map<string, string>();
     const newArgs: any[] = [];
-    let sawKernel = false;
+    const kernelReps: any[] = [];
     for (const a of (jAst.args || [])) {
       const isKw = a.type === 'KeywordArg';
       const rep = _jointComponentAsMeasure(isKw ? a.value : a);
       if (!rep) return null;
       if (rep.boundaries) {
-        sawKernel = true;
+        kernelReps.push(rep);
         for (const [surface, outer] of rep.boundaries) {
           const prevOuter = outerOfSurface.get(surface);
           const prevSurface = surfaceOfOuter.get(outer);
           // One input name must denote one node, and one node must be reached
-          // through one input name (§06's boundary-naming clause).
+          // through one input name. The first is §06's boundary-naming clause.
+          // The second rejects one LEGAL shape too — trace-disjoint components
+          // binding one node under two names — because a single substitution
+          // map cannot give one node two fed values; recorded as a gap in
+          // flatppl-dev/TODO-flatppl-js.md.
           if (prevOuter !== undefined && prevOuter !== outer) return null;
           if (prevSurface !== undefined && prevSurface !== surface) return null;
           outerOfSurface.set(surface, outer);
@@ -2497,7 +2512,18 @@ function liftInlineSubexpressions(bindings: any) {
         ? { type: 'KeywordArg', name: a.name, value: rep.measureAst, loc: a.loc }
         : rep.measureAst);
     }
-    if (!sawKernel) return null;
+    if (kernelReps.length === 0) return null;
+    // The complete-cut check.
+    for (const rj of kernelReps) {
+      const interior = _reachableAncestors(rj.measureAst,
+        new Set(rj.boundaries.values()));
+      for (const ri of kernelReps) {
+        if (ri === rj) continue;
+        for (const outer of ri.boundaries.values()) {
+          if (interior.has(outer)) return null;
+        }
+      }
+    }
     const boundaryArgs: any[] = [];
     for (const [surface, outer] of outerOfSurface) {
       boundaryArgs.push({
@@ -2513,6 +2539,41 @@ function liftInlineSubexpressions(bindings: any) {
       ],
       loc: jAst.loc,
     };
+  }
+
+  // Every binding name `ast` reaches transitively through identifier refs,
+  // stopping at (and excluding) `stopAt` — the INTERIOR of a reification whose
+  // boundary is `stopAt`. Substituting any of these names rewrites the
+  // reification's interior, which is what the complete-cut check must detect.
+  //
+  // Deliberately NOT `computeClosure`: that walk reports the boundary-DEPENDENT
+  // subset (the members needing a fresh copy), and a member left out of it is
+  // shared by name — so a merged substitution still rewrites it. It also skips
+  // fixed-phase ancestors, which a sibling component may legitimately name as
+  // its own boundary.
+  function _reachableAncestors(ast: any, stopAt: Set<string>): Set<string> {
+    const found = new Set<string>();
+    const idents = (node: any, acc: Set<string>) => {
+      if (node == null || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const c of node) idents(c, acc); return; }
+      if (node.type === 'Identifier' && typeof node.name === 'string') acc.add(node.name);
+      for (const k in node) if (k !== 'loc') idents(node[k], acc);
+    };
+    const walk = (name: string) => {
+      if (stopAt.has(name) || found.has(name)) return;
+      const b = out.get(name) || bindings.get(name);
+      if (!b) return;
+      found.add(name);
+      const rhs = b.node && b.node.value;
+      if (!rhs) return;
+      const refs = new Set<string>();
+      idents(rhs, refs);
+      for (const r of refs) walk(r);
+    };
+    const seeds = new Set<string>();
+    idents(ast, seeds);
+    for (const s of seeds) walk(s);
+    return found;
   }
 
   const _REIFICATION_HEADS = new Set(['kernelof', 'functionof', 'fn']);
@@ -2798,7 +2859,15 @@ function liftInlineSubexpressions(bindings: any) {
       newRhs = inlineUserCall(newRhs);
       visit(newRhs);
       const fresh = argMap[origName].name;
-      out.set(fresh, makeSyntheticBinding(fresh, newRhs));
+      const synth: any = makeSyntheticBinding(fresh, newRhs);
+      // Which model binding this copy stands for. A closure copy carries no
+      // `inferredType` (typeinfer ran before it existed), so downstream passes
+      // that must tell a copied VARIATE from a copied constructor measure have
+      // only its IR to go on — and only a copy created HERE has a boundary
+      // substitution behind it. clm's `_namesADraw` keys on this marker so the
+      // reasoning stays confined to reification closures.
+      synth.closureOf = origName;
+      out.set(fresh, synth);
     }
 
     // Substitute identifiers in a deep-cloned body. Different call
