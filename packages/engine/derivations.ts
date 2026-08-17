@@ -216,6 +216,53 @@ function inlineNamedSetBindings(bindings: Map<string, BindingInfo>) {
   }
 }
 
+// Is a pushfwd's M-slot argument something that can ONLY ever be a plain
+// VALUE function — never a measure or a kernel? Used by buildDerivations'
+// reversed-pushfwd diagnostic to tell a genuinely swapped pushfwd(M, f)
+// apart from the spec §06 "Uniform kernel extension" (`pushfwd(f, K)`
+// denotes θ ↦ pushfwd(f, κ(θ)); a kernel is a legal M) — a false positive
+// there would hand the user an invalid rewrite AND delete the honest
+// "engine gap" message the unimplemented kernel-M path emits today
+// (typeinfer.ts:2469, TODO-flatppl-js.md).
+//
+//   - unbound name: only a bare BUILTIN_FUNCTIONS identifier is
+//     unambiguous (can never denote a measure); anything else (an
+//     undefined variable) is the analyzer's problem, not ours.
+//   - `kernelof`: ALWAYS produces a kernel when called, by spec
+//     construction (§sec:kernelof requires kernelof's own body to be a
+//     plain value, not a measure — kernelof reifies "the law of that
+//     value", which the call site sees as a measure). So it is never
+//     function-shaped here, unconditionally, regardless of its body.
+//   - `fn` / `functionof`: can go either way (§04) — a measure-bodied
+//     one (e.g. `fn(Normal(mu = _, sigma = 1.0))`) is a legal kernel M; a
+//     value-bodied one (e.g. `fn(2.0 * _)`) is not. Check the reified
+//     body with `isMeasureExpr`, the same predicate analyzer.ts's own
+//     kernelof-vs-functionof disambiguation (`kernelTypeForPlan`) uses.
+//   - `bijection` / `fchain`: can never return a measure (they
+//     compose/annotate plain value transforms), so both stay
+//     unconditionally function-shaped.
+//   - anything else (not callable-like at all): unaffected, same as
+//     before — never function-shaped.
+function _mSlotIsFunctionShaped(mIR: IRNode, bindings: Map<string, BindingInfo>): boolean {
+  const mBound = bindings.get(mIR.name);
+  if (!mBound) return BUILTIN_FUNCTIONS.has(mIR.name);
+  // Read through `string | undefined` (not the narrower BindingType) —
+  // `isCallableLikeBindingType` does the same, since BindingType's
+  // declared union is missing 'fchain' (a real runtime tag; see
+  // analyzer.ts classifyStatement) and a direct literal comparison
+  // against the declared type would be a compile error.
+  const mType: string | undefined = mBound.type;
+  if (!isCallableLikeBindingType(mType)) return false;
+  if (mType === 'kernelof') return false;
+  if (mType === 'bijection' || mType === 'fchain') return true;
+  // fn / functionof: measure-bodied ⇒ a legal kernel M.
+  const wrapper = mBound.effectiveValue || (mBound.node && mBound.node.value);
+  const bodyAst = wrapper && wrapper.type === 'CallExpr'
+    && Array.isArray(wrapper.args) && wrapper.args[0];
+  if (bodyAst && isMeasureExpr(bodyAst, bindings)) return false;
+  return true;
+}
+
 function buildDerivations(bindings: Map<string, BindingInfo>) {
   // Inline named set bindings (Uniform(S) → Uniform(interval(…))) before the
   // lift/classify passes so a set used as a distribution support survives the
@@ -601,16 +648,19 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // legitimately silent for a bare non-pushfwd shape — classifyPushfwd
   // returns null for plenty of not-this-op inputs. But a pushfwd(f, M)
   // whose two named arguments are BOTH self-refs, with M resolving to
-  // something function-shaped (an unbound built-in function name, or a
-  // binding of fn/functionof/kernelof/bijection/fchain type), can never
-  // classify — spec §06's table gives pushfwd's arguments as `f, M`, a
-  // function first and the measure second (#06-measure-algebra.md), and
-  // M is never itself a function. That shape is unambiguously reversed,
-  // not merely unsupported, so it gets a named diagnostic instead of the
-  // binding silently vanishing and the eventual error blaming whatever
-  // consumes it. A legal-but-not-callable f paired with a REAL measure M
-  // (mLooksLikeFunction false) is untouched here — same fall-through
-  // classifyPushfwd already gives it. Names flagged here are recorded in
+  // something that can only ever be a VALUE function (never a measure or
+  // kernel), can never classify — spec §06's table gives pushfwd's
+  // arguments as `f, M`, a function first and the measure second
+  // (06-measure-algebra.md). That shape is unambiguously reversed, not
+  // merely unsupported, so it gets a named diagnostic instead of the
+  // binding surfacing the generic (and here misleading) "engine gap"
+  // dead-end message below. A legal-but-not-callable f paired with a REAL
+  // measure M (mLooksLikeFunction false) is untouched here — same
+  // fall-through classifyPushfwd already gives it. So is the spec-legal
+  // "uniform kernel extension" (§06: "pushfwd(f, K) denotes θ ↦
+  // pushfwd(f, κ(θ))" — a kernel is itself a valid M) — see
+  // `_mSlotIsFunctionShaped` for how that's told apart from a genuine
+  // value function. Names flagged here are recorded in
   // `malformedPushfwdNames` so the generic fixed-phase dead-end check
   // below (which would otherwise ALSO fire, with a misleading "engine
   // gap" message for what is really a swapped-argument typo) skips
@@ -622,19 +672,25 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     if (!Array.isArray(b.ir.args) || b.ir.args.length !== 2) continue;
     const [fIR, mIR] = b.ir.args;
     if (!isSelfRef(fIR) || !isSelfRef(mIR)) continue;
-    const mBound = bindings.get(mIR.name);
-    const mLooksLikeFunction = mBound
-      ? isCallableLikeBindingType(mBound.type)
-      : BUILTIN_FUNCTIONS.has(mIR.name);
-    if (!mLooksLikeFunction) continue;
+    if (!_mSlotIsFunctionShaped(mIR, bindings)) continue;
     malformedPushfwdNames.add(name);
+    // Display the user's own spelling, not a lift-synthesized anon
+    // binding name — `inlinePushfwdLift` desugars a bare builtin f
+    // (e.g. `exp`) to a `fn(exp(_))` anon binding and tags it with
+    // `builtinSourceName` for exactly this.
+    const displayName = (ref: any) => {
+      const rb = bindings.get(ref.name);
+      return (rb && rb.builtinSourceName) || ref.name;
+    };
+    const fDisplay = displayName(fIR);
+    const mDisplay = displayName(mIR);
     diagnostics.push({
       severity: 'error',
-      message: `Binding '${name}' calls pushfwd(${fIR.name}, ${mIR.name}), but `
+      message: `Binding '${name}' calls pushfwd(${fDisplay}, ${mDisplay}), but `
         + `pushfwd's arguments are (f, M) — a function first, the measure `
-        + `second (spec §06). '${mIR.name}' is function-shaped here, not a `
-        + `measure, so the arguments look reversed. Did you mean `
-        + `pushfwd(${mIR.name}, ${fIR.name})?`,
+        + `second (spec §06). '${mDisplay}' is function-shaped here, not a `
+        + `measure or kernel, so the arguments look reversed. Did you mean `
+        + `pushfwd(${mDisplay}, ${fDisplay})?`,
       loc: bindingLoc(name),
     });
   }

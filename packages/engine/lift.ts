@@ -29,7 +29,7 @@ const {
   SAMPLEABLE_DISTRIBUTIONS,
   resolveCallableAlias,
 } = require('./ir-shared.ts');
-const { MEASURE_PRODUCING } = require('./builtins.ts');
+const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS } = require('./builtins.ts');
 
 // =====================================================================
 // Inline-subexpression lifting
@@ -972,6 +972,7 @@ function liftInlineSubexpressions(bindings: any) {
     if (!astArg.args || astArg.args.length !== 2) return astArg;
     let fArg = astArg.args[0];
     if (fArg.type === 'KeywordArg') return astArg;
+    let builtinSourceName: string | null = null;
     if (fArg.type === 'Identifier') {
       if (bindings.has(fArg.name)) return astArg;
       // Spec §06's own example, `pushfwd(exp, mu)`: a bare BUILTIN
@@ -980,8 +981,8 @@ function liftInlineSubexpressions(bindings: any) {
       // classifyPushfwd then sees the usual self-ref-to-a-functionof
       // binding. An unbound name that ISN'T a known builtin is left
       // alone (undefined-variable diagnostics are the analyzer's job).
-      const builtinsLib = require('./builtins.ts');
-      if (!builtinsLib.BUILTIN_FUNCTIONS.has(fArg.name)) return astArg;
+      if (!BUILTIN_FUNCTIONS.has(fArg.name)) return astArg;
+      builtinSourceName = fArg.name;
       fArg = {
         type: 'CallExpr',
         callee: makeIdent('fn', fArg.loc),
@@ -994,14 +995,19 @@ function liftInlineSubexpressions(bindings: any) {
         loc: fArg.loc,
       };
     } else {
+      // No further lifting for a non-Identifier, non-KeywordArg fArg
+      // beyond recursing into it — `visit` mutates in place and can
+      // never turn a CallExpr into a bare Identifier, so there is no
+      // shape left to special-case here.
       visit(fArg);
-      if (fArg.type === 'Identifier') {
-        astArg.args[0] = fArg;
-        return astArg;
-      }
     }
     const n = freshName();
-    out.set(n, makeSyntheticBinding(n, fArg));
+    const synth: any = makeSyntheticBinding(n, fArg);
+    // Surfaced by buildDerivations' reversed-pushfwd diagnostic so the
+    // message names the user's own spelling (`exp`) instead of this
+    // lift-synthesized anon binding name.
+    if (builtinSourceName) synth.builtinSourceName = builtinSourceName;
+    out.set(n, synth);
     astArg.args[0] = makeIdent(n, astArg.loc);
     return astArg;
   }
