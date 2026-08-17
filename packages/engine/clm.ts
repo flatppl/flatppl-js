@@ -233,7 +233,22 @@ function _namesADraw(name: string, b: any): boolean {
         + 'name reaching this point would be read as a constructor and would score '
         + 'a singular joint instead of refusing it');
     }
-    return false;
+    // A REIFICATION-CLOSURE COPY (lift's boundary substitution, marked
+    // `closureOf`) has no inferred type because typeinfer ran before it
+    // existed, so its IR head is the only evidence it names a variate. `draw(M)`
+    // is unambiguously one: without this the singular fan-out
+    // `logdensityof(joint(K, K)(v), y)` SCORED a product of independent
+    // coordinates where §06 "Singular joints" refuses.
+    //
+    // The `closureOf` marker is load-bearing, not decoration. Every ORDINARY
+    // lifted anon is untyped and internal too, and an inline `draw(m)` in a
+    // component position lifts to this same IR shape — but two syntactically
+    // distinct `draw(m)` are two INDEPENDENT draws (§04 "Reification to
+    // measures": "`joint(m, m)` is the product of two independent draws"), and
+    // `_noiseRoots` resolves both up to `m`, so recognising them here refused a
+    // scorable shape. A closure copy is the one case where the copy stands for a
+    // specific model node under a substituted boundary.
+    return !!(b.closureOf && b.ir && b.ir.kind === 'call' && b.ir.op === 'draw');
   }
   return b.inferredType.kind !== 'measure';
 }
@@ -299,6 +314,13 @@ function _structuralChildren(d: any): string[] | null {
 // "Reference measure for product measures" gives a real density — and telling
 // those they have no density contradicts the very section they rest on. That is
 // the cost that makes the classifier the wrong thing to widen here.
+//
+// The one exception is REIFICATION-CLOSURE COPIES (`closureOf`, see
+// `_namesADraw`), which are untyped for a different reason: lift created them
+// after typeinfer ran, and each stands for one specific model node under a
+// substituted boundary. An inline `draw(m)` is NOT one of those and still reads
+// as a constructor, which is what keeps `lawof(record(a = draw(m), b = draw(m)))`
+// — two independent draws — scorable.
 function _noiseRoots(name: string, ctx: any, seen?: Set<string>): Set<string> {
   const out = new Set<string>();
   const visited = seen || new Set<string>();

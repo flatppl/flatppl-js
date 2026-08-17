@@ -1387,6 +1387,81 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return shaped;
   }
 
+  // One `joint` component's contribution: the variate domain it adds, plus
+  // the inputs it declares. §06 "Uniform kernel extension" identifies
+  // measures with nullary kernels ("we unify measures and kernels and identify
+  // measures with nullary kernels"), so both arrive here and only the input
+  // list distinguishes them. Returns null after pushing a diagnostic.
+  function jointComponent(ir: any, scopes: any, where: string, loc: any): any {
+    const at = inferExpr(ir, scopes);
+    if (T.isMeasure(at)) return { domain: at.domain, inputs: [], failed: false };
+    if (at && at.kind === 'kernel') {
+      // The kernel's output measure at each input point. §06 `joint`: "At each
+      // input point the result is the `joint` of the component output
+      // measures", so the variate contribution is that measure's domain.
+      const res = at.result;
+      /* c8 ignore start -- defensive: every site that builds a kernel type in
+         this engine (the `functionof` arm below, density-prims' chain
+         composition, and inferJoint itself) is guarded to a measure result, so
+         a kernel whose output is not a measure is unreachable from source.
+         Kept so a construction site added later cannot silently produce a
+         `joint` over a value-returning callable. */
+      if (!T.isMeasure(res)) {
+        diagnostics.push({
+          severity: 'error',
+          message: where + ' expects a measure or a kernel over a measure, got '
+            + T.show(at),
+          loc,
+        });
+        return null;
+      }
+      /* c8 ignore stop */
+      return { domain: res.domain, inputs: (at.inputs || []).slice(), failed: false };
+    }
+    if (at && (at.kind === 'deferred' || at.kind === 'any')) {
+      return { domain: T.deferred(), inputs: [], failed: false };
+    }
+    if (at && at.kind === 'failed') return { domain: null, inputs: [], failed: true };
+    diagnostics.push({
+      severity: 'error',
+      message: where + ' expects a measure or a kernel, got ' + T.show(at),
+      loc,
+    });
+    return null;
+  }
+
+  // Union the component input lists BY NAME, first-declaration order (spec §06
+  // `joint`: "The result's inputs are the union of the component kernels'
+  // inputs by name; a component receives the inputs it declares and is
+  // unaffected by the others"). A name declared by several components binds
+  // once and fans that one value to each declaring component. A later
+  // declaration only sharpens the recorded type — `any` / `deferred` is
+  // "not pinned yet", not a constraint.
+  function unionKernelInputs(perComponent: any[][]): any[] {
+    const order: string[] = [];
+    const byName = new Map<string, any>();
+    for (const inputs of perComponent) {
+      for (const inp of inputs) {
+        const prev = byName.get(inp.name);
+        if (prev === undefined) {
+          order.push(inp.name);
+          byName.set(inp.name, inp.type);
+        } else if (prev == null || prev.kind === 'any' || prev.kind === 'deferred') {
+          byName.set(inp.name, inp.type);
+        }
+      }
+    }
+    return order.map((name) => ({ name, type: byName.get(name) }));
+  }
+
+  // `joint` over measures and kernels alike (spec §06 "Joint composition" +
+  // "Uniform kernel extension"). Kernel components fan one input out to every
+  // component; the result is a kernel over the union-by-name input signature
+  // whose output measure at each point is the measure-`joint` of the applied
+  // components. An all-measure `joint` has an empty union and stays a measure
+  // — the §06 kernel↔measure collapse, which is why measure and kernel
+  // components need no separate code path here (the same collapse
+  // `inferChainComposition` applies to a chain's residual inputs).
   function inferJoint(expr: any, scopes: any) {
     const fields = expr.fields || [];
     const args = expr.args || [];
@@ -1400,25 +1475,27 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // the type alone was wrong (an empty `record({})` for every non-all-scalar
     // case). Mixed positional+keyword args fall through to the keyword (record)
     // path below.
-    if (args.length > 0 && fields.length === 0) {
-      const domains: any[] = [];
-      for (const a of args) {
-        const at = inferExpr(a, scopes);
-        if (T.isMeasure(at)) {
-          domains.push(at.domain);
-        } else if (at.kind === 'deferred' || at.kind === 'any') {
-          domains.push(T.deferred());
-        } else if (at.kind === 'failed') {
-          return T.failed('joint cascade');
-        } else {
-          diagnostics.push({
-            severity: 'error',
-            message: 'joint expects measures as components, got ' + T.show(at),
-            loc: a.loc || expr.loc,
-          });
-          return T.failed('joint bad component');
-        }
+    const positional = args.length > 0 && fields.length === 0;
+    const comps: any[] = positional
+      ? args.map((a: any) => ({ ir: a, name: null }))
+      : fields.map((f: any) => ({ ir: f.value, name: f.name }));
+    const domains: any[] = [];
+    const perComponentInputs: any[][] = [];
+    for (const c of comps) {
+      const where = positional ? 'joint component'
+        : 'joint kwarg "' + c.name + '"';
+      const got = jointComponent(c.ir, scopes, where, (c.ir && c.ir.loc) || expr.loc);
+      if (got == null) {
+        return T.failed(positional ? 'joint bad component' : 'joint bad kwarg');
       }
+      if (got.failed) return T.failed('joint cascade');
+      domains.push(got.domain);
+      perComponentInputs.push(got.inputs);
+    }
+    const inputs = unionKernelInputs(perComponentInputs);
+    if (inputs.length > 0) checkSharedBoundaryNames(comps, expr);
+    let variate: any;
+    if (positional) {
       const spec = SC.catShape(domains);
       if (spec == null) {
         diagnostics.push({
@@ -1431,24 +1508,144 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         });
         return T.failed('joint mixed shape classes');
       }
-      return T.measure(SC.typeOfShape(spec));
+      variate = SC.typeOfShape(spec);
+    } else {
+      const out: Record<string, any> = {};
+      for (let i = 0; i < comps.length; i++) out[comps[i].name] = domains[i];
+      variate = T.record(out);
     }
-    const out: Record<string, any> = {};
-    for (const f of fields) {
-      const at = inferExpr(f.value, scopes);
-      if (T.isMeasure(at)) out[f.name] = at.domain;
-      else if (at.kind === 'deferred' || at.kind === 'any') out[f.name] = T.deferred();
-      else if (at.kind === 'failed') return T.failed('joint cascade');
-      else {
-        diagnostics.push({
-          severity: 'error',
-          message: 'joint kwarg "' + f.name + '" expects a measure, got ' + T.show(at),
-          loc: f.value.loc || expr.loc,
-        });
-        return T.failed('joint bad kwarg');
+    return inputs.length === 0
+      ? T.measure(variate)
+      : T.kernelType(inputs, T.measure(variate));
+  }
+
+  // The §06 boundary-naming clause on a kernel `joint`: "Components that share
+  // a stochastic node must bind every boundary ancestor of that node under the
+  // same input name; a `joint` whose sharing components disagree on that name
+  // is a static error." Two components that fan one input record but reach the
+  // same retained node through differently-named inputs leave that node with
+  // no well-defined parent value at an application point where the two inputs
+  // differ.
+  //
+  // SOUND SUBSET. This detects the shape reachable from the reified-callable
+  // bindings the pass can read: a component that is a `self` ref to a
+  // `functionof` binding, whose boundary list names outer BINDINGS
+  // (`paramSources[i].kind === 'binding'`). It reports a conflict only when
+  // both sharing components bind the SAME outer binding under DIFFERENT input
+  // names — never on a shape it cannot resolve, so a legal program is never
+  // rejected. What it does not see is recorded in
+  // flatppl-dev/TODO-flatppl-js.md.
+  function checkSharedBoundaryNames(comps: any[], expr: any) {
+    const infos = comps.map((c: any) => reifiedBoundaryInfo(c.ir));
+    for (let i = 0; i < infos.length; i++) {
+      for (let j = i + 1; j < infos.length; j++) {
+        const a = infos[i], b = infos[j];
+        if (!a || !b) continue;
+        const stopAt = new Set<string>([...a.boundaryOf.keys(), ...b.boundaryOf.keys()]);
+        const shared = new Set<string>();
+        for (const n of a.stochastic) if (b.stochastic.has(n)) shared.add(n);
+        for (const node of shared) {
+          for (const outer of boundaryAncestorsOf(node, stopAt)) {
+            const na = a.boundaryOf.get(outer);
+            const nb = b.boundaryOf.get(outer);
+            if (na === undefined || nb === undefined || na === nb) continue;
+            diagnostics.push({
+              severity: 'error',
+              message: 'joint: components share the stochastic node \'' + node
+                + '\', whose boundary ancestor \'' + outer + '\' is bound as input \''
+                + na + '\' by one component and \'' + nb + '\' by another — a shared '
+                + 'node must be reached through the same input name in every '
+                + 'sharing component (spec §06 joint)',
+              loc: expr.loc,
+            });
+            return;
+          }
+        }
       }
     }
-    return T.measure(T.record(out));
+  }
+
+  // A component's reification boundary, when the component is a ref to a
+  // `functionof` binding (which is what `kernelof(x, kw…)` lowers to). Returns
+  // `boundaryOf`: outer binding name → the input name it is bound under, and
+  // `stochastic`: the stochastic bindings the body reaches without crossing a
+  // boundary — the nodes the composed trace can share. Null when the component
+  // is not a shape this pass can resolve.
+  function reifiedBoundaryInfo(ir: any): any {
+    if (!ir || ir.kind !== 'ref' || ir.ns !== 'self') return null;
+    const b = loweredModule.bindings.get(ir.name);
+    const rhs = b && b.rhs;
+    if (!rhs || rhs.kind !== 'call' || rhs.op !== 'functionof' || !rhs.body) return null;
+    const params: string[] = Array.isArray(rhs.params) ? rhs.params : [];
+    const kwargs: string[] = Array.isArray(rhs.paramKwargs) ? rhs.paramKwargs : params;
+    const sources: any[] = Array.isArray(rhs.paramSources) ? rhs.paramSources : [];
+    const boundaryOf = new Map<string, string>();
+    for (let i = 0; i < params.length; i++) {
+      const src = sources[i];
+      if (src && src.kind === 'binding' && typeof src.name === 'string') {
+        boundaryOf.set(src.name, kwargs[i] !== undefined ? kwargs[i] : params[i]);
+      }
+    }
+    if (boundaryOf.size === 0) return null;
+    return {
+      boundaryOf,
+      stochastic: stochasticAncestors(rhs.body, new Set(params)),
+    };
+  }
+
+  // Stochastic bindings reachable from `ir` through binding refs, stopping at
+  // (and excluding) `stopAt`. §04 "Trace of the reified law" — these are the
+  // nodes a reified value carries, and node identity across two components'
+  // traces is what §06's ancestry rule reads.
+  function stochasticAncestors(ir: any, stopAt: Set<string>): Set<string> {
+    const found = new Set<string>();
+    const seen = new Set<string>();
+    const walk = (node: any) => {
+      if (!node || typeof node !== 'object') return;
+      if (Array.isArray(node)) { for (const c of node) walk(c); return; }
+      if (node.kind === 'ref' && node.ns === 'self' && typeof node.name === 'string') {
+        const name = node.name;
+        if (stopAt.has(name) || seen.has(name)) return;
+        seen.add(name);
+        const b = loweredModule.bindings.get(name);
+        if (!b) return;
+        if (b.phase === 'stochastic') found.add(name);
+        walk(b.rhs);
+        return;
+      }
+      for (const k in node) {
+        if (k === 'loc' || k === 'meta') continue;
+        walk(node[k]);
+      }
+    };
+    walk(ir);
+    return found;
+  }
+
+  // The boundary bindings that are ancestors of `node` — walk up from the
+  // node's own RHS and report every name in `stopAt` it reaches.
+  function boundaryAncestorsOf(node: string, stopAt: Set<string>): Set<string> {
+    const hit = new Set<string>();
+    const seen = new Set<string>();
+    const walk = (ir: any) => {
+      if (!ir || typeof ir !== 'object') return;
+      if (Array.isArray(ir)) { for (const c of ir) walk(c); return; }
+      if (ir.kind === 'ref' && ir.ns === 'self' && typeof ir.name === 'string') {
+        if (stopAt.has(ir.name)) { hit.add(ir.name); return; }
+        if (seen.has(ir.name)) return;
+        seen.add(ir.name);
+        const b = loweredModule.bindings.get(ir.name);
+        if (b) walk(b.rhs);
+        return;
+      }
+      for (const k in ir) {
+        if (k === 'loc' || k === 'meta') continue;
+        walk(ir[k]);
+      }
+    };
+    const start = loweredModule.bindings.get(node);
+    if (start) walk(start.rhs);
+    return hit;
   }
 
   /**
@@ -4222,9 +4419,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     const m = _computeMass(ir);
     if (ir && typeof ir === 'object') massNodeCache.set(ir, m);
-    if (ir && ir.kind === 'call' && ir.meta && ir.meta.type
-        && ir.meta.type.kind === 'measure') {
-      ir.meta.type.mass = m;
+    if (ir && ir.kind === 'call' && ir.meta && ir.meta.type) {
+      if (ir.meta.type.kind === 'measure') {
+        ir.meta.type.mass = m;
+      } else if (ir.meta.type.kind === 'kernel'
+          && ir.meta.type.result && ir.meta.type.result.kind === 'measure') {
+        // A kernel-typed measure-algebra node (a `joint` over kernels) carries
+        // its class on the OUTPUT measure — §11: a kernel's `%mass` is "the
+        // total-mass class of the output measure, uniform over all inputs".
+        ir.meta.type.result.mass = m;
+      }
     }
     return m;
   }
@@ -4244,6 +4448,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return massOfBinding(ir.name);
     }
     if (ir.kind !== 'call') return T.MASS_DEFERRED;
+    // APPLYING a kernel yields its output measure, and §11 makes a kernel's
+    // `%mass` "the total-mass class of the output measure, uniform over all
+    // inputs" — so an application carries the callee's class unchanged, at every
+    // input. This arm is not decoration: `inferUserCall` returns the callee's
+    // `result` type OBJECT itself, so falling through to `deferred` here STAMPED
+    // that `deferred` back over the kernel's own class, and `deferred` is the
+    // class the draw gate passes where `unknown` fails.
+    if (ir.target && ir.target.ns === 'self' && !ir.op) {
+      return kernelOutputMass(ir.target.name);
+    }
     const op = ir.op;
     const args = ir.args || [];
 
@@ -4390,12 +4604,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
             : (b && b.ref ? { kind: 'ref', ns: 'self', name: b.ref } : null))));
         return additiveMass(masses);
       }
-      // Independent product (joint / record-of-measures).
+      // Independent product (joint / record-of-measures), qualified for
+      // shared ancestry.
       case 'joint':
       case 'record': {
         const comps = Array.isArray(ir.fields)
           ? ir.fields.map((f: any) => f.value) : args;
-        return productMass(comps.map(massOfExpr));
+        return jointMass(comps);
       }
       // bayesupdate's mass is the evidence integral — a rule ran and it is
       // statically unknown.
@@ -4473,6 +4688,90 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
     }
     return T.MASS_DEFERRED;
+  }
+
+  // Total-mass class of a `joint` (spec §06 `joint`: "The result's total-mass
+  // class is the product of the components' classes, as in the measure case;
+  // when components sharing a stochastic node include more than one
+  // non-normalized member the product is not an upper bound on the composed
+  // mass, and no class stronger than unknown is statically justified").
+  //
+  // Why the product fails there: with a shared ancestor the composed mass is
+  // E[w₁(a₁)·w₂(a₂)] over the common law, and the component masses E[wᵢ(aᵢ)]
+  // do not bound it — a Student-t (ν = 3) ancestor with wᵢ(y) = y² gives two
+  // `%finite` components whose composition has infinite mass. This is not
+  // kernel-specific: that counterexample is a MEASURE joint.
+  //
+  // A kernel component contributes the class of the measure it RETURNS — §11
+  // makes a kernel's `%mass` "the total-mass class of the output measure,
+  // uniform over all inputs", and the fan-out is the measure rule applied
+  // pointwise, so no kernel-specific arithmetic appears here.
+  function jointMass(comps: any[]): any {
+    const masses = comps.map((c: any) =>
+      isKernelTyped(c) ? componentMass(c) : massOfExpr(c));
+    const product = productMass(masses);
+    if (product !== T.MASS_FINITE && product !== T.MASS_LOCALLY_FINITE) {
+      return product;
+    }
+    // Only a component PROVEN non-normalized can break the bound; `deferred`
+    // and `null` prove nothing and `normalized` cannot (the composition of
+    // probability laws is a probability law).
+    const suspect: number[] = [];
+    for (let i = 0; i < masses.length; i++) {
+      const m = masses[i];
+      if (m !== T.MASS_NORMALIZED && m !== T.MASS_DEFERRED && m !== T.MASS_NULL) {
+        suspect.push(i);
+      }
+    }
+    if (suspect.length < 2) return product;
+    const traces = suspect.map((i) => componentTrace(comps[i]));
+    for (let i = 0; i < traces.length; i++) {
+      for (let j = i + 1; j < traces.length; j++) {
+        for (const n of traces[i]) if (traces[j].has(n)) return T.MASS_UNKNOWN;
+      }
+    }
+    return product;
+  }
+
+  // The stochastic nodes a `joint` component's trace CARRIES — the set §06's
+  // ancestry rule intersects. A reified callable's trace stops at its boundary:
+  // §04 "Specifying reification boundaries" replaces boundary nodes with fresh
+  // `elementof` inputs, so nodes above the boundary are not in the trace at all.
+  // Walking past it counted a common ancestor of two boundaries as shared, which
+  // downgraded a `finite` × `finite` pair whose below-boundary traces are
+  // disjoint — given the fanned input those components ARE independent and the
+  // product is exact.
+  function componentTrace(ir: any): Set<string> {
+    const stop = new Set<string>();
+    if (ir && ir.kind === 'ref' && loweredModule.bindings.has(ir.name)) {
+      const b = loweredModule.bindings.get(ir.name);
+      const rhs = b && b.rhs;
+      if (rhs && rhs.kind === 'call' && rhs.op === 'functionof' && rhs.body) {
+        for (const p of (Array.isArray(rhs.params) ? rhs.params : [])) stop.add(p);
+        return stochasticAncestors(rhs.body, stop);
+      }
+    }
+    return stochasticAncestors(ir, stop);
+  }
+
+  // The output-measure class of a kernel BINDING, by name. A reified callable
+  // carries that measure as `rhs.body`; a kernel built by a measure-algebra op
+  // (`joint` over kernels) carries the kernel type on its own node instead, so
+  // the node itself is classified. A non-kernel callee has no verdict to give.
+  function kernelOutputMass(name: string): any {
+    const b = loweredModule.bindings.get(name);
+    if (!b || !b.rhs || !b.inferredType || b.inferredType.kind !== 'kernel') {
+      return T.MASS_DEFERRED;
+    }
+    return massOfExpr(b.rhs.body ? b.rhs.body : b.rhs);
+  }
+
+  function isKernelTyped(ir: any): boolean {
+    if (ir && ir.kind === 'ref' && loweredModule.bindings.has(ir.name)) {
+      const b = loweredModule.bindings.get(ir.name);
+      return !!(b && b.inferredType && b.inferredType.kind === 'kernel');
+    }
+    return !!(ir && ir.meta && ir.meta.type && ir.meta.type.kind === 'kernel');
   }
 
   // Mass class of one `kchain` / `jointchain` component. The base may be a
@@ -4732,8 +5031,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         b.inferredType.mass = massOfBinding(name);
       } else if (b.inferredType && b.inferredType.kind === 'kernel'
           && b.inferredType.result && b.inferredType.result.kind === 'measure'
-          && b.rhs && b.rhs.body) {
-        massOfExpr(b.rhs.body);
+          && b.rhs) {
+        // A reified callable carries its output measure as `rhs.body`, whose
+        // `meta.type` aliases the kernel's `result`. A kernel built by a
+        // measure-algebra op (`joint` over kernels) has no such body — its own
+        // node carries the kernel type, and massOfExpr stamps `result` there.
+        massOfExpr(b.rhs.body ? b.rhs.body : b.rhs);
       }
     }
     // Pass 2 — every remaining inner measure node (the distribution
