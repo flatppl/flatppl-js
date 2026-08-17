@@ -5,7 +5,7 @@
 // density.ts (see test/density.test.ts); the cases below cover only the
 // sampling primitive: leaf draws, env-resolved distribution params,
 // joint / record / iid structural recursion, weighted / logweighted
-// pass-through, lawof / draw unwrapping, and resolveMeasureRef
+// refusal, lawof / draw unwrapping, and resolveMeasureRef
 // dereferencing. All assertions are self-relative (same-seed walk-vs-walk
 // identity) or distributional, so they hold regardless of which batched
 // leaf realisation the endpoint uses.
@@ -96,23 +96,41 @@ test('walk: iid count may reference an env binding', () => {
 });
 
 // =====================================================================
-// weighted / logweighted — sampling pass-through (weights don't affect
-// generative draws; only density.ts scores them)
+// weighted / logweighted — rand refuses (spec §07 sec:random, §13):
+// a weighted measure is not a probability measure unless renormalized,
+// so sampling its base and dropping the weight is a wrong answer, not a
+// legal shortcut.
 // =====================================================================
 
-test('walk: weighted is a sampling pass-through to its base measure', () => {
+test('walk: weighted refuses to sample rather than dropping the weight', () => {
   const M = weighted(0.5, STD_NORMAL);
-  const r = sampler.walk(rng.stateFromKey(1), M, {});
-  // Compare to the un-weighted base from the same seed — same draw.
-  const ref0 = sampler.walk(rng.stateFromKey(1), STD_NORMAL, {});
-  assert.equal(r.value, ref0.value);
+  assert.throws(
+    () => sampler.walk(rng.stateFromKey(1), M, {}),
+    /weighted.*cannot be sampled|cannot be sampled.*weighted/,
+  );
 });
 
-test('walk: logweighted is a sampling pass-through to its base measure', () => {
+test('walk: logweighted refuses to sample rather than dropping the weight', () => {
   const M = logweight(-2.5, STD_NORMAL);
-  const r = sampler.walk(rng.stateFromKey(1), M, {});
-  const ref0 = sampler.walk(rng.stateFromKey(1), STD_NORMAL, {});
-  assert.equal(r.value, ref0.value);
+  assert.throws(
+    () => sampler.walk(rng.stateFromKey(1), M, {}),
+    /logweighted.*cannot be sampled|cannot be sampled.*logweighted/,
+  );
+});
+
+// normalize(weighted(w, M)) renormalizes back to a probability measure, so
+// per spec §07 `rand` should support it. The walker refuses it today, but
+// for a DIFFERENT reason: `normalize` is not itself in MEASURE_OP_WALKERS,
+// so any `normalize(...)` hits the generic "not a measure we can sample"
+// wall regardless of what it wraps — a pre-existing gap this wave does not
+// close. Pinned here so a future normalize walker doesn't silently
+// resurrect the weighted-refusal question without a test noticing.
+test('walk: normalize(weighted(...)) refuses today, but not via the weighted refusal', () => {
+  const M = { kind: 'call', op: 'normalize', args: [weighted(0.5, STD_NORMAL)] };
+  assert.throws(
+    () => sampler.walk(rng.stateFromKey(1), M, {}),
+    /op 'normalize' is not a measure expression we can sample/,
+  );
 });
 
 // =====================================================================

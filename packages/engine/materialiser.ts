@@ -696,6 +696,42 @@ function matRandSample(name: string, d: any, ctx: any) {
   // FRESH cache: the inflated-count materialisation must not pollute
   // the parent ctx's cache for these binding names at the session N
   // (mirrors matIid's composite-fallback child ctx).
+  //
+  // weighted / logweighted refusal (spec §07 sec:random, §13): `d.from`
+  // is always a named binding (classifyRandTuple, lift.ts, requires a
+  // ref) whose own derivation carries the ORIGINAL kind — a `weighted`
+  // measure classifies `kind:'weighted'` whether reached bare
+  // (`rand(state, w)`) or via `iid(w, n)` (same `d.from`, engine-concepts
+  // §11's iid-of-composite folds through this same field). This is the
+  // named-binding twin of sampler.ts's `walkWeightedRefuse`: that walker
+  // only ever sees an INLINE `weighted(...)` call (composite escape-hatch
+  // dispatch on `ir.op`), so it can't see this route — a named weighted
+  // binding sampled via `rand`/`randsample` never reaches `sampler.walk`
+  // at all (matRandSample resolves `d.from` through `ctx.getMeasure`,
+  // which dispatches on the BINDING's derivation kind instead). Without
+  // this check, `childCtx.getMeasure(d.from)` below resolves to `matWeighted`
+  // (which correctly builds non-uniform `logWeights`) and the array-measure
+  // rebuild a few lines down silently drops them — the same silent
+  // wrong-answer defect `walkWeightedRefuse` closes, one binding shape away.
+  const fromDeriv = ctx.derivations && ctx.derivations[d.from];
+  if (fromDeriv && fromDeriv.kind === 'weighted') {
+    // A constant-weight `weighted`/`logweighted` collapses to the same
+    // `{kind:'weighted', logShift}` derivation with no `isLog` field
+    // (classifyWeighted/classifyLogWeighted, derivations.ts:981/1068) —
+    // the surface spelling is genuinely not recoverable there, so name
+    // both rather than guessing. A function-weight derivation always
+    // carries an explicit `isLog` boolean, so that case names the exact
+    // op the user wrote.
+    const op = typeof fromDeriv.isLog === 'boolean'
+      ? (fromDeriv.isLog ? 'logweighted' : 'weighted')
+      : 'weighted/logweighted';
+    throw new Error(
+      `rand: '${op}' cannot be sampled (spec §07 sec:random) — a weighted `
+      + `measure is not a probability measure unless renormalized. Wrap it `
+      + `in normalize(...) first, or sample its base measure explicitly if `
+      + `discarding the weight is intended.`
+    );
+  }
   const state = _resolveRandState(d.stateIR, ctx);
   if (!state || !state.key) {
     return Promise.reject(new Error(
