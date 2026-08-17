@@ -179,7 +179,7 @@ function builtinParamNames(opName: string): string[] | null {
 // positional record or table whole, so that `sum(t)` and `lengthof(t)` reduce
 // over the table rather than splatting."
 //
-// These nine MUST NOT splat. `sum`'s only argument is named `xs`, so splatting
+// These twelve MUST NOT splat. `sum`'s only argument is named `xs`, so splatting
 // `sum(table(mass = …, pt = …))` would compare `{mass, pt}` against `{xs}` and
 // reject a call §07's "Table reductions" paragraph defines. They keep their
 // entries above because an ordinary keyword call still binds by name.
@@ -187,10 +187,13 @@ function builtinParamNames(opName: string): string[] | null {
 // The set: `sum`, `mean`, `var`, `std` (table domain from §07's "Table
 // reductions" paragraph, `std` by owner ruling), `lengthof`, `reverse` (Domains
 // `vectors, tables`), `indicesof`, `indicesof0` (Domains `vectors, arrays,
-// tables`) and `identity` (Domains `any`).
+// tables`), `identity` (Domains `any`), and `prod`, `maximum`, `minimum`
+// (table domain ahead of spec: flatppl-design PR #79 extends §07's "Table
+// reductions" paragraph to name these three, matching this engine's existing
+// column-wise behaviour; owner-merge pending, per TODO-flatppl-js.md).
 const SPLAT_EXEMPT_BUILTINS: ReadonlySet<string> = new Set([
   'sum', 'mean', 'var', 'std', 'lengthof', 'reverse',
-  'indicesof', 'indicesof0', 'identity',
+  'indicesof', 'indicesof0', 'identity', 'prod', 'maximum', 'minimum',
 ]);
 
 /** Whether §04's carve-out exempts `opName` from splatting. */
@@ -208,18 +211,12 @@ function isSplatExemptBuiltin(opName: string): boolean {
 // type inference and the evaluator respectively) call this rather than
 // re-deriving the rule, because two sites drifting is precisely how the
 // surplus-name gap in `resolveParams` / `resolveParamsN` arose.
-// HELD OUT of the splat, and NOT a §04 carve-out claim. This engine reduces
-// `prod`, `maximum` and `minimum` over a table column-wise, which no version of
-// §07 sanctions (its "Table reductions" paragraph names `sum`, `mean`, `var`,
-// plus `std` by owner ruling). `test/table-vector-columns.test.ts` asserts that
-// behaviour, so letting §04's splat reject these calls would silently settle a
-// question TODO-flatppl-js.md records as needing an owner ruling. Holding them
-// keeps the two questions separate: when the ruling lands, either §07 widens and
-// they join the carve-out set above, or the engine narrows and they leave this
-// set and start splatting like any other non-exempt row.
-const SPLAT_HELD_TABLE_REDUCTIONS: ReadonlySet<string> = new Set([
-  'prod', 'maximum', 'minimum',
-]);
+// Formerly held `prod`, `maximum`, `minimum` pending the owner ruling that
+// flatppl-design PR #79 now encodes (unmerged); moved to the carve-out set
+// above ahead of spec merge — see its comment. Empty for now; a future op
+// with unsettled table-reduction status goes here, not straight into the
+// carve-out set.
+const SPLAT_HELD_TABLE_REDUCTIONS: ReadonlySet<string> = new Set([]);
 
 function splatDecision(opName: string, present: string[], arity: number): any {
   if (isSplatExemptBuiltin(opName)) return null;
