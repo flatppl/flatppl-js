@@ -787,8 +787,9 @@ function _catSample(p: any, prng: any, offset: any) {
 }
 
 function _catLogpmf(k: any, p: any, offset: any) {
+  if (!Number.isInteger(k)) return -Infinity;
   const arr = valueLib.isValue(p) ? p.data : p;
-  const idx = (k | 0) - offset;
+  const idx = k - offset;
   if (idx < 0 || idx >= arr.length) return -Infinity;
   const pi = arr[idx];
   return pi > 0 ? Math.log(pi) : -Infinity;
