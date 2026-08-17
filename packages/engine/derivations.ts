@@ -74,7 +74,7 @@ import type {
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr, computePhases } = require('./analyzer.ts');
-const { MEASURE_PRODUCING, ALL_KNOWN, SET_CONSTRUCTORS, DISTRIBUTIONS, MEASURE_OPS } = require('./builtins.ts');
+const { MEASURE_PRODUCING, ALL_KNOWN, SET_CONSTRUCTORS, DISTRIBUTIONS, MEASURE_OPS, BUILTIN_FUNCTIONS } = require('./builtins.ts');
 const { isEvaluable, liftInlineSubexpressions, classifyRandTuple } = require('./lift.ts');
 const { dissolveBindings } = require('./dissolver.ts');
 const { signatureOf } = require('./signatures.ts');
@@ -597,6 +597,48 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     });
   }
 
+  // Malformed pushfwd (arguments reversed). "No derivation" is
+  // legitimately silent for a bare non-pushfwd shape — classifyPushfwd
+  // returns null for plenty of not-this-op inputs. But a pushfwd(f, M)
+  // whose two named arguments are BOTH self-refs, with M resolving to
+  // something function-shaped (an unbound built-in function name, or a
+  // binding of fn/functionof/kernelof/bijection/fchain type), can never
+  // classify — spec §06's table gives pushfwd's arguments as `f, M`, a
+  // function first and the measure second (#06-measure-algebra.md), and
+  // M is never itself a function. That shape is unambiguously reversed,
+  // not merely unsupported, so it gets a named diagnostic instead of the
+  // binding silently vanishing and the eventual error blaming whatever
+  // consumes it. A legal-but-not-callable f paired with a REAL measure M
+  // (mLooksLikeFunction false) is untouched here — same fall-through
+  // classifyPushfwd already gives it. Names flagged here are recorded in
+  // `malformedPushfwdNames` so the generic fixed-phase dead-end check
+  // below (which would otherwise ALSO fire, with a misleading "engine
+  // gap" message for what is really a swapped-argument typo) skips
+  // them — same pattern as `cyclicNames`.
+  const malformedPushfwdNames = new Set<string>();
+  for (const [name, b] of bindings) {
+    if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'pushfwd') continue;
+    if (derivations[name]) continue;
+    if (!Array.isArray(b.ir.args) || b.ir.args.length !== 2) continue;
+    const [fIR, mIR] = b.ir.args;
+    if (!isSelfRef(fIR) || !isSelfRef(mIR)) continue;
+    const mBound = bindings.get(mIR.name);
+    const mLooksLikeFunction = mBound
+      ? isCallableLikeBindingType(mBound.type)
+      : BUILTIN_FUNCTIONS.has(mIR.name);
+    if (!mLooksLikeFunction) continue;
+    malformedPushfwdNames.add(name);
+    diagnostics.push({
+      severity: 'error',
+      message: `Binding '${name}' calls pushfwd(${fIR.name}, ${mIR.name}), but `
+        + `pushfwd's arguments are (f, M) — a function first, the measure `
+        + `second (spec §06). '${mIR.name}' is function-shaped here, not a `
+        + `measure, so the arguments look reversed. Did you mean `
+        + `pushfwd(${mIR.name}, ${fIR.name})?`,
+      loc: bindingLoc(name),
+    });
+  }
+
   // Fixed-phase dead end (mode b). A fixed-phase value computation
   // must end up either resolvable (fixedValues) or classified
   // (derivations); neither means the engine silently gave up on a
@@ -619,6 +661,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     if (_isObjectBindingType(b.type)) continue;         // legit underived
     if (derivations[name]) continue;
     if (cyclicNames.has(name)) continue;                // already flagged as a cycle, not an engine gap
+    if (malformedPushfwdNames.has(name)) continue;      // already flagged as reversed pushfwd args
     if (fixedValues.has(name)) continue;
     diagnostics.push({
       severity: 'error',

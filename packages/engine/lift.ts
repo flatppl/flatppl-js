@@ -972,11 +972,33 @@ function liftInlineSubexpressions(bindings: any) {
     if (!astArg.args || astArg.args.length !== 2) return astArg;
     let fArg = astArg.args[0];
     if (fArg.type === 'KeywordArg') return astArg;
-    if (fArg.type === 'Identifier') return astArg;
-    visit(fArg);
     if (fArg.type === 'Identifier') {
-      astArg.args[0] = fArg;
-      return astArg;
+      if (bindings.has(fArg.name)) return astArg;
+      // Spec §06's own example, `pushfwd(exp, mu)`: a bare BUILTIN
+      // function name at f-position desugars to `fn(exp(_))`, the
+      // same shape the explicit-fn spelling below produces —
+      // classifyPushfwd then sees the usual self-ref-to-a-functionof
+      // binding. An unbound name that ISN'T a known builtin is left
+      // alone (undefined-variable diagnostics are the analyzer's job).
+      const builtinsLib = require('./builtins.ts');
+      if (!builtinsLib.BUILTIN_FUNCTIONS.has(fArg.name)) return astArg;
+      fArg = {
+        type: 'CallExpr',
+        callee: makeIdent('fn', fArg.loc),
+        args: [{
+          type: 'CallExpr',
+          callee: makeIdent(fArg.name, fArg.loc),
+          args: [makeHole(fArg.loc)],
+          loc: fArg.loc,
+        }],
+        loc: fArg.loc,
+      };
+    } else {
+      visit(fArg);
+      if (fArg.type === 'Identifier') {
+        astArg.args[0] = fArg;
+        return astArg;
+      }
     }
     const n = freshName();
     out.set(n, makeSyntheticBinding(n, fArg));
