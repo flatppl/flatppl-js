@@ -125,7 +125,7 @@ const BUILTIN_FUNCTIONS = new Set([
   'isfinite', 'isinf', 'isnan', 'iszero',
   // Linear algebra
   'transpose', 'adjoint', 'det', 'logabsdet', 'inv', 'trace',
-  'linsolve', 'lower_cholesky',
+  'linsolve', 'qr', 'lower_cholesky',
   'row_gram', 'col_gram', 'self_outer', 'cross', 'diagmat',
   'quadform',
   // Diagonal extract / block-matrix constructors (spec §07)
@@ -187,7 +187,7 @@ const MEASURE_OPS = new Set([
   // Normalization and mass
   'normalize', 'totalmass',
   // Composition
-  'superpose', 'joint', 'iid', 'kchain', 'jointchain',
+  'superpose', 'joint', 'iid', 'kchain', 'jointchain', 'markovchain', 'kscan',
   // Restriction and transformation
   'truncate', 'pushfwd',
   // Affine pushforward sugar (spec §06 "locscale"). Expanded in the
@@ -228,7 +228,7 @@ const MEASURE_PRODUCING = new Set([
   ...DISTRIBUTIONS,
   'lawof',
   'weighted', 'logweighted', 'bayesupdate', 'normalize',
-  'superpose', 'joint', 'iid', 'kchain', 'jointchain',
+  'superpose', 'joint', 'iid', 'kchain', 'jointchain', 'markovchain', 'kscan',
   'truncate', 'pushfwd',
 ]);
 

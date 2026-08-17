@@ -132,6 +132,24 @@ test('planRename: field access dot-suffix is NOT renamed', () => {
   assert.equal(result.locs.length, 2); // r def + r ref in 'r.x'
 });
 
+test('planRename: identifier-form boundary kwarg to a real binding is renamed too', () => {
+  // Mirrors test/fixtures/minimal.flatppl's `kernelof(x, mu = mu)`. `mu`
+  // is a real module binding cut into the boundary kwarg (lower.ts:851's
+  // CUT branch, not a local formal), so renaming `mu` must also update
+  // this boundary kwarg's RHS, not just the plain reference in Normal(...).
+  const src = `mu = elementof(reals)
+sigma = elementof(reals)
+x = draw(Normal(mu = mu, sigma = sigma))
+kernel = kernelof(x, mu = mu)
+`;
+  const result = plan(src, 0, 0); // cursor on 'mu' def
+  assert.ok(result);
+  assert.equal(result.kind, 'binding');
+  assert.equal(result.oldName, 'mu');
+  // 1 def + Normal(...) RHS ref + kernelof boundary RHS ref
+  assert.equal(result.locs.length, 3);
+});
+
 // --- planRename: placeholder renames ---
 
 test('planRename for cursor on a placeholder', () => {
