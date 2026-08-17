@@ -98,6 +98,7 @@ xs = [0.5, 1.0, 1.5]
 pars = elementof(cartprod(a = reals, b = reals))
 glob = record(a = 0.1, b = 0.3)
 a, b = (pars.a, pars.b)
+x = elementof(reals)
 delta_alpha = (2 * draw(Uniform(interval(0, 1))) + 1) * a
 y = (x + delta_alpha)^3 * exp(x - b)
 transport = kernelof(y, x = x, pars = pars)
@@ -241,6 +242,7 @@ xs = [1.0, 1.0, 1.0, 1.0]
 pars = elementof(cartprod(a = reals, b = reals))
 glob = record(a = 0.5, b = 0.0)
 a, b = (pars.a, pars.b)
+x = elementof(reals)
 delta_alpha = (2 * draw(Uniform(interval(0, 1))) + 1) * a
 y = (x + delta_alpha)^3 * exp(x - b)
 transport = kernelof(y, x = x, pars = pars)

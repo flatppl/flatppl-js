@@ -11,9 +11,10 @@ const { processSource } = require('../index.ts');
 
 function parseRHS(src: any, opts: any) {
   const r = processSource(src, opts);
-  const errors = r.diagnostics.filter((d: any) =>
-    d.severity === 'error'
-    || (d.severity === 'warning' && !/Undefined variable/.test(d.message)));
+  // These snippets reference bare identifiers just to keep them short —
+  // filter the resulting "Undefined variable" diagnostics regardless of
+  // severity, since these tests check parsing, not name resolution.
+  const errors = r.diagnostics.filter((d: any) => !/Undefined variable/.test(d.message));
   assert.deepEqual(errors, [], 'expected no parse errors, got: '
     + JSON.stringify(errors));
   return r.bindings.get('x').node.value;

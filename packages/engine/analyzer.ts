@@ -1864,14 +1864,93 @@ function sliceSource(source: string, loc: any) {
 
 /**
  * Find all identifier references in an expression and their locations.
- * Used by definition/hover providers to find what's under the cursor.
+ * Used by definition/hover providers to find what's under the cursor,
+ * and by the undefined-name check.
+ *
+ * Scope-aware for `functionof` / `kernelof` boundaries. An identifier-
+ * form boundary kwarg (`mu = mu`, `p = a`) is a LOCAL FORMAL only when
+ * its RHS name is not itself a real module binding — mirroring
+ * `lower.ts`'s `ctx.bindingNames` branch (`lower.ts:851`), which is the
+ * actual source of truth for the binding/formal split (`collectDeps`'s
+ * two-scope walk does not gate this the same way — see its comment).
+ * A placeholder RHS (`x = _x_`) is always a formal, named `_x_`.
+ * `definedNames`, when given, is the caller's set of real module
+ * bindings; without it every identifier-form kwarg defaults to the CUT
+ * reading (never a formal), mirroring `lower.ts`'s
+ * `!ctx.bindingNames` fallback (`lower.ts:849`).
+ *
+ * `offSpecBoundaries`, when given, collects the RHS node of every
+ * self-referential identifier-form kwarg (`mu = mu`) whose name has no
+ * real binding — the bare-name boundary-input shorthand that spec §04
+ * §sec:functionof only spells with a placeholder (`_mu_`). Callers use
+ * this to surface the off-spec idiom as a non-error diagnostic.
  */
-function collectIdentRefs(node: any) {
+function collectIdentRefs(
+  node: any,
+  definedNames?: { has(name: string): boolean },
+  offSpecBoundaries?: any[],
+) {
   const refs: any[] = [];
+  const localStack: Set<string>[] = [];
+  function isLocal(name: string): boolean {
+    for (let i = localStack.length - 1; i >= 0; i--) {
+      if (localStack[i].has(name)) return true;
+    }
+    return false;
+  }
   function walk(node: any) {
     if (!node) return;
-    if (node.type === 'Identifier') { refs.push(node); return; }
-    if (node.type === 'CallExpr') { walk(node.callee); for (const a of node.args) walk(a); }
+    if (node.type === 'Identifier') {
+      if (!isLocal(node.name)) refs.push(node);
+      return;
+    }
+    if (node.type === 'CallExpr') {
+      const callee = node.callee;
+      const isReif = callee && callee.type === 'Identifier'
+        && (callee.name === 'functionof' || callee.name === 'kernelof');
+      if (isReif) {
+        const formals = new Set<string>();
+        for (let i = 1; i < node.args.length; i++) {
+          const arg = node.args[i];
+          if (arg && arg.type === 'KeywordArg' && arg.value) {
+            if (arg.value.type === 'Identifier') {
+              // Only a name with no real module binding is a pure local
+              // formal (lower.ts:851's placeholder branch). A name that
+              // IS a binding is a CUT: body occurrences stay references
+              // to that outer node, so it must not be masked as local.
+              if (!definedNames || !definedNames.has(arg.value.name)) formals.add(arg.value.name);
+            }
+            else if (arg.value.type === 'Placeholder') formals.add('_' + arg.value.name + '_');
+          }
+        }
+        localStack.push(formals);
+        const body = node.args[0];
+        if (body && body.type !== 'KeywordArg') walk(body);
+        localStack.pop();
+        for (let i = 1; i < node.args.length; i++) {
+          const arg = node.args[i];
+          if (!arg || arg.type !== 'KeywordArg') continue;
+          const isSelfRef = arg.value && arg.value.type === 'Identifier' && arg.value.name === arg.name;
+          // A self-referential kwarg (`am = am`) whose name has no real
+          // binding is the bare-identifier formal shorthand — a
+          // declaration, not a reference, so its own RHS occurrence is
+          // excluded too. When the name IS a real binding, the RHS is a
+          // genuine reference to that outer node (mirrors lower.ts:851's
+          // CUT branch) and must be walked, self-referential or not, so
+          // the undefined-check and rename both see it. A CUT to a
+          // genuinely different name (`p = a`) always needs `a` to
+          // resolve, per spec §04 §sec:functionof.
+          if (isSelfRef && (!definedNames || !definedNames.has(arg.value.name))) {
+            if (offSpecBoundaries) offSpecBoundaries.push(arg.value);
+            continue;
+          }
+          walk(arg.value);
+        }
+      } else {
+        walk(node.callee);
+        for (const a of node.args) walk(a);
+      }
+    }
     if (node.type === 'BinaryExpr') { walk(node.left); walk(node.right); }
     if (node.type === 'UnaryExpr') walk(node.operand);
     if (node.type === 'ArrayLiteral' || node.type === 'TupleLiteral') for (const e of node.elements) walk(e);
@@ -2882,16 +2961,34 @@ function analyze(ast: any, source: string, opts?: any) {
       paramSourceDeps.delete(nameNode.name);
     }
 
-    // Check for undefined references
-    const refs = collectIdentRefs(stmt.value);
+    // Check for undefined references. Spec §04 "Name resolution":
+    // "Unresolvable names are static errors" — a name absent from both
+    // the current bindings and the builtin roster (`isKnownName`, which
+    // deliberately excludes §09 module members: they resolve only
+    // through their module alias) is a hard error, not advisory.
+    const offSpecBoundaries: any[] = [];
+    const refs = collectIdentRefs(stmt.value, definedNames, offSpecBoundaries);
     for (const ref of refs) {
       if (!definedNames.has(ref.name) && !isKnownName(ref.name)) {
         diagnostics.push({
-          severity: 'warning',
+          severity: 'error',
           message: `Undefined variable '${ref.name}'`,
           loc: ref.loc,
         });
       }
+    }
+    // Bare-name boundary-input shorthand (`mu = mu` with no module `mu`)
+    // is off-spec per §04 §sec:functionof, which only spells a pure local
+    // formal with a placeholder (`_mu_`). The engine treats it as
+    // canonical (lower.ts:842-855) so it is not an error, but it still
+    // gets a diagnostic so the idiom stays discoverable.
+    for (const b of offSpecBoundaries) {
+      diagnostics.push({
+        severity: 'info',
+        message: `Bare-name boundary input '${b.name}' has no module binding; `
+          + `off-spec shorthand for the placeholder form '_${b.name}_' (spec §04 §sec:functionof)`,
+        loc: b.loc,
+      });
     }
 
     // Build binding info for each name
@@ -3767,7 +3864,7 @@ function planBindingRename(ast: any, bindings: any, name: string) {
   const locs = [binding.nameLoc];
   for (const stmt of ast.body) {
     if (stmt.type !== 'AssignStatement') continue;
-    const refs = collectIdentRefs(stmt.value);
+    const refs = collectIdentRefs(stmt.value, bindings);
     for (const ref of refs) {
       if (ref.name === name) locs.push(ref.loc);
     }

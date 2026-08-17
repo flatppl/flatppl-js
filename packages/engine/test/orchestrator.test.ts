@@ -3581,7 +3581,7 @@ test('auto-splat: forward_kernel(rand_pars) drives end-to-end rand chain', () =>
 
 test('auto-splat: inline record(...) call splats fields', () => {
   const { bindings, diagnostics } = processSource(`
-    f = functionof(a + b, a = c, b = d)
+    f = functionof(c + d, a = c, b = d)
     c = elementof(reals)
     d = elementof(reals)
     y = f(record(a = 3, b = 4))

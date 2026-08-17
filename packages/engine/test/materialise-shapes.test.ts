@@ -527,7 +527,7 @@ test('materialise: functionof binding — function itself not plottable', async 
   // with a clean "no derivation" / "unsupported" error rather than an
   // undefined-length crash.
   const { ctx } = makeMatCtx(`
-sq = functionof(x * x, x = _x_)
+sq = functionof(_x_ * _x_, x = _x_)
 `);
   try {
     await ctx.getMeasure('sq');
@@ -623,7 +623,7 @@ test('materialise: bayesupdate posterior — does not crash with undefined', asy
   const { ctx } = makeMatCtx(`
 prior = Normal(mu = 0, sigma = 2)
 obs = 1.5
-K = kernelof(Normal(mu = mu, sigma = 0.5), mu = _mu_)
+K = kernelof(Normal(mu = _mu_, sigma = 0.5), mu = _mu_)
 L = likelihoodof(K, obs)
 posterior = bayesupdate(L, prior)
 `);
