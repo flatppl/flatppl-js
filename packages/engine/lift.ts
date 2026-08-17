@@ -2548,9 +2548,10 @@ function liftInlineSubexpressions(bindings: any) {
   //
   // Deliberately NOT `computeClosure`: that walk reports the boundary-DEPENDENT
   // subset (the members needing a fresh copy), and a member left out of it is
-  // shared by name — so a merged substitution still rewrites it. It also skips
-  // fixed-phase ancestors, which a sibling component may legitimately name as
-  // its own boundary.
+  // shared by name — so a merged substitution still rewrites it. `v ~ Normal(0,1)`
+  // (not descended from the boundary) with `a2 ~ Normal(v + z, 1)` and a boundary
+  // at `z` is the case: `v` is reachable but not boundary-dependent, so
+  // `computeClosure` omits it while `argMap[v]` would still substitute it.
   function _reachableAncestors(ast: any, stopAt: Set<string>): Set<string> {
     const found = new Set<string>();
     const idents = (node: any, acc: Set<string>) => {

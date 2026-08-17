@@ -426,6 +426,58 @@ ld = logdensityof(KJ(z = 0.0), record(p = 1.0, q = -1.0))
     + 'density w.r.t. the product reference measure');
 });
 
+test('an applied kernel whose reified RECORD names one draw twice refuses too — '
+  + 'a collateral fix, off the fan-out path', async () => {
+  // Not a `joint` over kernels at all: one `kernelof` whose record body names the
+  // same draw in two fields. §06 "Singular joints" refuses it — the pair
+  // concentrates on the diagonal — and until the closure copy was recognised as a
+  // variate the engine SCORED it. Both spellings, measured on origin/main:
+  //   no latent   → -2.8378770664093453, the same value the DISTINCT-draw
+  //                 program gives, so the repeat was simply invisible;
+  //   with latent → -3.3871832107434, the value that belongs to two distinct
+  //                 children of the shared node.
+  // The refusal message names an internal binding (filed gap 6), so it is not
+  // pinned here.
+  const singular = [`
+z = elementof(reals)
+a1 ~ Normal(mu = z, sigma = 1.0)
+KR = kernelof(record(p = a1, q = a1), z = z)
+ld = logdensityof(KR(z = 0.0), record(p = 1.0, q = -1.0))
+`, `
+z = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+a1 ~ Normal(mu = u, sigma = 1.0)
+KR = kernelof(record(p = a1, q = a1), z = z)
+ld = logdensityof(KR(z = 0.0), record(p = 1.0, q = -1.0))
+`];
+  for (const src of singular) {
+    const { ctx } = ctxFor(src, 1);
+    await assert.rejects(async () => ctx.getMeasure('ld'),
+      /are reified laws of the same draw/);
+  }
+  // The controls must keep scoring: two DISTINCT draws under the same boundary
+  // are two coordinates, and the recognition must not reach them.
+  const noLatent = await scoreOf(`
+z = elementof(reals)
+a1 ~ Normal(mu = z, sigma = 1.0)
+a2 ~ Normal(mu = z, sigma = 1.0)
+KR = kernelof(record(p = a1, q = a2), z = z)
+ld = logdensityof(KR(z = 0.0), record(p = 1.0, q = -1.0))
+`);
+  assert.ok(Math.abs(noLatent - -2.8378770664093453) < F64_TOL,
+    `got ${noLatent}, two independent Normal(0,1) coordinates -2.8378770664093453`);
+  const withLatent = await scoreOf(`
+z = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+a1 ~ Normal(mu = u, sigma = 1.0)
+a2 ~ Normal(mu = u, sigma = 1.0)
+KR = kernelof(record(p = a1, q = a2), z = z)
+ld = logdensityof(KR(z = 0.0), record(p = 1.0, q = -1.0))
+`);
+  assert.ok(Math.abs(withLatent - RETAIN_AT_0) < F64_TOL,
+    `got ${withLatent}, correlated record law ${RETAIN_AT_0}`);
+});
+
 // ── a kernel is not a closed measure ────────────────────────────────────────
 
 test('scoring the UNAPPLIED fan-out is a static error (only closed measures '
