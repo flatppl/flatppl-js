@@ -699,10 +699,12 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
     const inner = node.args[0];
     if (inner && inner.kind === 'call' && inner.op === 'truncate'
         && Array.isArray(inner.args) && inner.args.length === 2) {
-      // parseTruncationBox recognises `interval(...)` (1-D) and
-      // `cartprod(interval, ...)` (N-D, ≤ TRUNCATE_DIM_CAP axes) — it throws
-      // above the cap, and returns null for any other set shape (a dynamic /
-      // named set defers to the by-name materialiser, unchanged).
+      // parseTruncationBox recognises `interval(...)` (1-D) and the
+      // POSITIONAL `cartprod(interval, ...)` (N-D, ≤ TRUNCATE_DIM_CAP axes)
+      // — it throws above the cap, throws for the record-form (keyword)
+      // cartprod spelling (not yet wired to this consumer), and returns null
+      // for any other set shape (a dynamic / named set defers to the by-name
+      // materialiser, unchanged).
       const axes = parseTruncationBox(inner.args[1]);
       if (axes) {
         const weightFn = weightedBaseWeightFn(inner.args[0]);
@@ -807,16 +809,42 @@ function axisFromInterval(setIR: any): TruncAxis | null {
   return { lo, hi, kind };
 }
 
-// Set IR → per-axis truncation box. Recognizes interval(...) (1-D) and
-// cartprod(interval, ...) (N-D). null for any other shape (caller defers).
-// Throws above the dimension cap.
+// Set IR → per-axis truncation box. Recognizes interval(...) (1-D) and the
+// POSITIONAL cartprod(interval, ...) (N-D) spelling only. null for any other
+// shape (caller defers). Throws above the dimension cap, and throws for the
+// §03 record-variate spelling cartprod(a = S1, b = S2, ...) (see below) —
+// never returns a truthy empty axis list for either shape.
 function parseTruncationBox(setIR: any): TruncAxis[] | null {
   if (!setIR || setIR.kind !== 'call') return null;
   if (setIR.op === 'interval') {
     const a = axisFromInterval(setIR);
     return a ? [a] : null;
   }
-  if (setIR.op === 'cartprod' && Array.isArray(setIR.args)) {
+  if (setIR.op === 'cartprod') {
+    // §03 defines two cartprod spellings with different variate types
+    // (flatppl-design/docs/03-value-types.md): positional `cartprod(S1, S2,
+    // ...)` (array variate, handled below) and keyword `cartprod(a = S1, b =
+    // S2, ...)` (record variate). The keyword form is a FIELD_FORM
+    // (lower.ts) — it lowers to a `fields: [{name, value}, ...]` array with
+    // NO `args` key at all (also true reading FlatPIR text back in:
+    // pir-sexpr.ts deletes an empty `args`), never a truthy empty `args`.
+    // It is the spelling §03 makes normative and the one the HS3 converter
+    // emits (Lebesgue(support = cartprod(x = ..., y = ...))). It is refused
+    // here rather than silently deferred: weightedBaseWeightFn/
+    // makeIntegrandND bind an axis to a weight-function parameter BY
+    // POSITION (paramNames[i] ↔ axes[i]); a record-form region has no
+    // positional order of its own to line up with — correctly wiring it
+    // needs the weight function's surface-name ↔ placeholder map
+    // (functionof.paramKwargs) too, which is a real feature addition, not a
+    // containment fix. Full N-D record-spelling truncation is tracked as a
+    // follow-up (flatppl-dev/TODO-flatppl-js.md).
+    if (Array.isArray(setIR.fields) && setIR.fields.length > 0) {
+      throw new Error('density: normalize(truncate(M, cartprod(a = S1, ...))) — '
+        + 'engine gap: the record-form (keyword) cartprod spelling is not yet '
+        + 'wired to N-D truncation quadrature; only the positional '
+        + 'cartprod(S1, S2, ...) spelling is supported here');
+    }
+    if (!Array.isArray(setIR.args)) return null;
     if (setIR.args.length > TRUNCATE_DIM_CAP) {
       throw new Error('density: normalize(truncate(M, cartprod)) — region '
         + 'dimension ' + setIR.args.length + ' exceeds the quadrature cap of '
@@ -828,7 +856,11 @@ function parseTruncationBox(setIR: any): TruncAxis[] | null {
       if (!a) return null; // a non-interval factor → defer whole set
       axes.push(a);
     }
-    return axes;
+    // Defensive: an empty axis list is truthy and would integrate a
+    // 0-dimensional box (adaptiveCubature(integ, 0)) if it reached the
+    // caller — never let that happen even if some future IR shape manages
+    // to carry a present-but-empty `args` for a non-empty region.
+    return axes.length > 0 ? axes : null;
   }
   return null;
 }
