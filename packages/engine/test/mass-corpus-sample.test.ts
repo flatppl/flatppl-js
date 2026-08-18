@@ -14,12 +14,13 @@
 // per distinct kind of change, so a partial revert of the copy-on-write
 // cannot go undetected by the rest of the suite:
 //
-//   - `finite` → `normalized` (18+2 of the 29 are a class getting corrected
+//   - `unknown` → `normalized` (18 of the 29 — the largest group) and
+//     `finite` → `normalized` (2 more) — both a class getting corrected
 //     upward once it is no longer being overwritten by an unrelated sibling
-//     that shared its pre-fix type object)
-//   - `unknown` → `locallyfinite` (an improper-flat prior joint, sharper)
-//   - a kernel's `result.mass` UNSET → `normalized` (base emitted no `%mass`
-//     slot on the kernel at all)
+//     that shared its pre-fix type object
+//   - `unknown` → `locallyfinite` (1 — an improper-flat prior joint, sharper)
+//   - a kernel's `result.mass` UNSET → `normalized` (8 — base emitted no
+//     `%mass` slot on the kernel at all)
 //
 // Every direction below was checked against spec §11's own class
 // definitions, not assumed correct because it changed — see

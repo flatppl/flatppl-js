@@ -41,9 +41,13 @@ const assert = require('node:assert/strict');
 
 const { processSource } = require('../index.ts');
 
-function massOf(src: string, name: string): any {
+function bindingOf(src: string, name: string): any {
   const r = processSource(src);
-  const b = r.loweredModule.bindings.get(name);
+  return r.loweredModule.bindings.get(name);
+}
+
+function massOf(src: string, name: string): any {
+  const b = bindingOf(src, name);
   return b && b.inferredType ? b.inferredType.mass : undefined;
 }
 
@@ -149,4 +153,102 @@ test('bayesupdate\'s posterior class does not depend on whether the prior is '
   const namedSrc = LL + 'pr = Normal(mu = 0.0, sigma = 1.0)\nm = bayesupdate(LL, pr)\n';
   assert.equal(massOf(inlineSrc, 'm'), 'unknown');
   assert.equal(massOf(namedSrc, 'm'), 'unknown');
+});
+
+// ── AGENTS.md:280's "structural ops still fall through" list, per op ───────
+//
+// The four ops split FOUR ways at the mass layer, not the two or three ways
+// earlier drafts of the AGENTS.md clause claimed — measured here with a
+// WELL-FORMED call for each, so a malformed call's own argument error can't
+// stand in for a type gap that isn't actually there (this is exactly how
+// `restrict` got misclassified as "fully deferred" in an earlier round: the
+// probe that produced that reading had an unrelated observation-argument
+// error).
+
+const MASS_LAYER_OPS: Array<{
+  name: string; src: string; kind: string;
+  mass?: string; resultMass?: string; drawErrorSubstring: string | null;
+}> = [
+  {
+    // A single-target destructure (`m = disintegrate(...)`, silently
+    // discarding the forward kernel) gives `kind: 'deferred'` with ZERO
+    // diagnostics instead — the malformed-call trap that caught `restrict`
+    // in an earlier round, reproduced here deliberately as a regression
+    // guard rather than left as a discovery someone else has to repeat.
+    name: 'disintegrate',
+    src: 'u ~ Normal(mu = 0.0, sigma = 1.0)\n'
+      + 'x ~ Normal(mu = u, sigma = 1.0)\n'
+      + 'joint_model = lawof(record(obs = x, u = u))\n'
+      + 'fk, m = disintegrate("obs", joint_model)\n',
+    kind: 'measure',
+    mass: 'normalized', // the prior's own mass, via the ordinary joint/record rule
+    drawErrorSubstring: null, // %normalized passes the gate cleanly
+  },
+  {
+    name: 'kernelof',
+    src: 'mu = elementof(reals)\n'
+      + 'x ~ Normal(mu = mu, sigma = 1.0)\n'
+      + 'm = kernelof(x, mu = mu)\n',
+    kind: 'kernel',
+    resultMass: 'normalized',
+    drawErrorSubstring: 'expects measure, got kernel', // kind short-circuit, not mass
+  },
+  {
+    name: 'relabel',
+    src: 'm = relabel(joint(Normal(mu = 0.0, sigma = 1.0), '
+      + 'Beta(alpha = 1.0, beta = 1.0)), ["a", "b"])\n',
+    kind: 'measure',
+    mass: 'deferred',
+    drawErrorSubstring: null, // %deferred passes the gate (§11: not yet inferred)
+  },
+  {
+    name: 'restrict',
+    src: 'jj = joint(a = Normal(mu = 0.0, sigma = 1.0), '
+      + 'b = Beta(alpha = 1.0, beta = 1.0))\n'
+      + 'm = restrict(jj, record(a = 0.5))\n',
+    kind: 'measure',
+    mass: 'unknown',
+    drawErrorSubstring: 'total mass is %unknown', // REFUSES at the mass layer
+  },
+];
+
+for (const spec of MASS_LAYER_OPS) {
+  test(`${spec.name}: well-formed call types kind: '${spec.kind}'`
+    + (spec.mass ? `, mass: '${spec.mass}'` : '')
+    + (spec.resultMass ? `, result.mass: '${spec.resultMass}'` : ''), () => {
+    assert.deepEqual(errorsOf(spec.src), [], 'the probe itself must be clean');
+    const t = bindingOf(spec.src, 'm').inferredType;
+    assert.equal(t.kind, spec.kind);
+    if (spec.mass !== undefined) assert.equal(t.mass, spec.mass);
+    if (spec.resultMass !== undefined) {
+      assert.equal(t.result && t.result.mass, spec.resultMass);
+    }
+  });
+
+  test(`${spec.name}: 'y ~ m' ` + (spec.drawErrorSubstring
+    ? `refuses at the mass layer ("${spec.drawErrorSubstring}")`
+    : 'passes the draw gate'), () => {
+    const errors = errorsOf(spec.src + 'y ~ m\n');
+    if (spec.drawErrorSubstring) {
+      assert.ok(errors.some((e: string) => e.includes(spec.drawErrorSubstring!)),
+        'got: ' + errors.join(' | '));
+    } else {
+      assert.deepEqual(errors, []);
+    }
+  });
+}
+
+test('disintegrate: a single-target destructure is the malformed-call trap, '
+  + 'not disintegrate\'s real classification', () => {
+  // Discarding the forward kernel by binding only one name gives `kind:
+  // 'deferred'` with ZERO diagnostics — silently wrong in a different way
+  // from the well-formed case above, and the exact shape that made an
+  // earlier AGENTS.md draft call `disintegrate` "fully deferred at both
+  // layers". Pinned so nobody re-derives this the hard way.
+  const src = 'u ~ Normal(mu = 0.0, sigma = 1.0)\n'
+    + 'x ~ Normal(mu = u, sigma = 1.0)\n'
+    + 'joint_model = lawof(record(obs = x, u = u))\n'
+    + 'm = disintegrate("obs", joint_model)\n';
+  assert.deepEqual(errorsOf(src), []);
+  assert.equal(bindingOf(src, 'm').inferredType.kind, 'deferred');
 });
