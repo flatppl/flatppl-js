@@ -42,6 +42,37 @@ test('over-cap dimension throws', () => {
     /dimension 4 exceeds .*cap.*3/i);
 });
 
+// Record-form (keyword) cartprod containment. §03 makes `cartprod(a = S1, b
+// = S2, ...)` a normative alternative spelling, and the HS3 converter emits
+// exactly it (Lebesgue(support = cartprod(x = ..., y = ...))). It is a
+// FIELD_FORM (lower.ts) — it lowers to `fields: [{name, value}, ...]` with
+// NO `args` key present at all (confirmed against the real surface parser
+// AND the FlatPIR S-expr reader, which deletes an empty `args`). So the
+// previously-claimed failure mode ("parseTruncationBox reads only
+// setIR.args, returns [] for the record form") does not reproduce against
+// any genuinely-produced IR — Array.isArray(undefined) is false, so the old
+// code already fell through to `return null` for real record-form input.
+// It is refused explicitly below instead, rather than left as a silent
+// defer to a generic, unrelated-sounding downstream classification error.
+test('record-form (keyword) cartprod refuses loudly, not silently', () => {
+  const namedCart = { kind: 'call', op: 'cartprod',
+    fields: [{ name: 'x', value: iv(-5, 5) }, { name: 'y', value: iv(-5, 5) }] };
+  assert.throws(() => parseTruncationBox(namedCart),
+    /engine gap.*record-form.*cartprod/i);
+});
+
+// Adversarial containment: even if some IR producer ever presented a
+// cartprod with a truthy-but-empty `args` (the literal shape the original
+// defect report assumed for the record form), parseTruncationBox must never
+// hand a 0-dimensional box to the caller — that is the failure mode that
+// silently integrated over a 0-D box (adaptiveCubature(integ, 0), −logZ =
+// −0.693 instead of the correct −5.298 for a constant weight of 2 over
+// [-5,5]²; oracle re-derived independently via scipy.integrate.dblquad).
+test('an empty positional args array never yields a truthy empty axis list', () => {
+  const emptyArgsCart = { kind: 'call', op: 'cartprod', args: [] };
+  assert.equal(parseTruncationBox(emptyArgsCart), null);
+});
+
 // makeIntegrandND — weight IR + change-of-variables (Task 3). The weight
 // body IR here is hand-built to the shape `samplerLib.evaluateExpr` (sampler.ts)
 // actually consumes: `{kind:'lit',value}`, `{kind:'ref',name}` (resolveRef
@@ -165,6 +196,24 @@ D = normalize(truncate(weighted(x -> 1.0/(pi*5.0*(1.0 + (x/5.0)^2)),
     Lebesgue(interval(0.0, inf))), interval(0.0, inf)))`;
   const neg = resolvedNegLogZ(src);
   assert.ok(neg != null && Math.abs(-neg - O3) < 1e-5, `logZ=${-(neg!)} vs ${O3}`);
+});
+
+test('record-form (keyword) cartprod truncation region refuses loudly through the real pipeline', () => {
+  // Same model as O1's shape, region re-spelled record-form. Pre-fix (see
+  // parseTruncationBox's history), a hand-built `args: []` stub for this
+  // spelling reached `resolveTruncateNormalizers` as a truthy empty axis
+  // list and silently rewrote this exact model to -logZ = -0.693 (log 2, a
+  // 0-D "integral" that just evaluates the weight once) instead of the
+  // correct -5.298317... (log 200, scipy-derived independently). Real IR for
+  // this spelling never actually carries that `args: []` shape (see the
+  // "record-form … refuses loudly" unit test above), so the concrete
+  // observable outcome on genuine IR is: the node is refused here rather
+  // than silently deferred into a generic downstream classification error.
+  const src = `
+D = normalize(truncate(weighted((x, y) -> 2.0,
+    Lebesgue(cartprod(x = interval(-5.0, 5.0), y = interval(-5.0, 5.0)))),
+    cartprod(x = interval(-5.0, 5.0), y = interval(-5.0, 5.0))))`;
+  assert.throws(() => resolvedNegLogZ(src), /engine gap.*record-form.*cartprod/i);
 });
 
 test('over-cap 4-D cartprod truncation refuses loudly', () => {
