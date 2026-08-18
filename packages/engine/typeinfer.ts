@@ -1493,7 +1493,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       perComponentInputs.push(got.inputs);
     }
     const inputs = unionKernelInputs(perComponentInputs);
-    if (inputs.length > 0) checkSharedBoundaryNames(comps, expr);
+    if (inputs.length > 0) checkSharedBoundaryNames(comps, perComponentInputs, expr);
     let variate: any;
     if (positional) {
       const spec = SC.catShape(domains);
@@ -1519,24 +1519,36 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       : T.kernelType(inputs, T.measure(variate));
   }
 
-  // The §06 boundary-naming clause on a kernel `joint`: "Components that share
-  // a stochastic node must bind every boundary ancestor of that node under the
-  // same input name; a `joint` whose sharing components disagree on that name
-  // is a static error." Two components that fan one input record but reach the
-  // same retained node through differently-named inputs leave that node with
-  // no well-defined parent value at an application point where the two inputs
-  // differ.
+  // The §06 ancestry clause on a kernel `joint`: "Components that share a
+  // stochastic node must agree on that node's ancestry: every ancestor of the
+  // shared node that any component binds as a boundary input must be bound by
+  // every sharing component, under the same input name. A `joint` in which a
+  // sharing component binds such an ancestor under a different name, or does
+  // not bind it at all — in particular a measure component, which binds
+  // nothing — is a static error." Two components that fan one input record but
+  // reach the same retained node through differently-named inputs leave that
+  // node with no well-defined parent value at an application point where the
+  // two inputs differ. The non-binder case is the same incoherence with the
+  // AMBIENT parameter playing the second binder — kernel-joint-w1-maths.md §3.
   //
-  // SOUND SUBSET. This detects the shape reachable from the reified-callable
-  // bindings the pass can read: a component that is a `self` ref to a
-  // `functionof` binding, whose boundary list names outer BINDINGS
-  // (`paramSources[i].kind === 'binding'`). It reports a conflict only when
-  // both sharing components bind the SAME outer binding under DIFFERENT input
-  // names — never on a shape it cannot resolve, so a legal program is never
-  // rejected. What it does not see is recorded in
-  // flatppl-dev/TODO-flatppl-js.md.
-  function checkSharedBoundaryNames(comps: any[], expr: any) {
-    const infos = comps.map((c: any) => reifiedBoundaryInfo(c.ir));
+  // SOUND SUBSET. This detects the shape reachable from the bindings the pass
+  // can read: a KERNEL component that is a `self` ref to a `functionof`
+  // binding, whose boundary list names outer BINDINGS
+  // (`paramSources[i].kind === 'binding'`), and a MEASURE component (empty
+  // input list — §06's nullary case), which binds nothing by construction. It
+  // reports a conflict only when both sharing components resolve and they
+  // disagree on the input name that reaches a flagged ancestor — never on a
+  // shape it cannot resolve, so a legal program is never rejected. What it does
+  // not see is recorded in flatppl-dev/TODO-flatppl-js.md.
+  function checkSharedBoundaryNames(comps: any[], perComponentInputs: any[][],
+      expr: any) {
+    // Kernel-ness comes from the inferred input list, not from an IR pattern:
+    // an empty list IS the nullary (measure) case, so a measure component never
+    // reaches `reifiedBoundaryInfo`'s functionof-shaped resolution.
+    const infos = comps.map((c: any, i: number) => (
+      perComponentInputs[i].length === 0
+        ? nonBinderInfo(c.ir)
+        : reifiedBoundaryInfo(c.ir)));
     for (let i = 0; i < infos.length; i++) {
       for (let j = i + 1; j < infos.length; j++) {
         const a = infos[i], b = infos[j];
@@ -1548,14 +1560,30 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           for (const outer of boundaryAncestorsOf(node, stopAt)) {
             const na = a.boundaryOf.get(outer);
             const nb = b.boundaryOf.get(outer);
-            if (na === undefined || nb === undefined || na === nb) continue;
+            // `outer` came from the union of the two boundary maps, so at least
+            // one side is defined; equal names are the legal both-bind case.
+            if (na === nb) continue;
+            // A resolvable non-binder has an empty boundary map, which only a
+            // measure component can have — `reifiedBoundaryInfo` rejects a
+            // kernel whose boundary it cannot name. So the empty side names the
+            // clause's "in particular a measure component" case explicitly.
+            const nonBinder = na === undefined ? a : b;
+            const clash = na === undefined || nb === undefined
+              ? 'is bound as input \'' + (na === undefined ? nb : na)
+                + '\' by one component and not bound at all by '
+                + (nonBinder.boundaryOf.size === 0
+                  ? 'a measure component, which binds nothing'
+                  : 'another')
+                + ' — every sharing component must bind that ancestor under the '
+                + 'same input name'
+              : 'is bound as input \'' + na + '\' by one component and \'' + nb
+                + '\' by another — a shared node must be reached through the '
+                + 'same input name in every sharing component';
             diagnostics.push({
               severity: 'error',
               message: 'joint: components share the stochastic node \'' + node
-                + '\', whose boundary ancestor \'' + outer + '\' is bound as input \''
-                + na + '\' by one component and \'' + nb + '\' by another — a shared '
-                + 'node must be reached through the same input name in every '
-                + 'sharing component (spec §06 joint)',
+                + '\', whose boundary ancestor \'' + outer + '\' ' + clash
+                + ' (spec §06 joint)',
               loc: expr.loc,
             });
             return;
@@ -1563,6 +1591,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
       }
     }
+  }
+
+  // A component that declares no boundary input: §06's nullary case. Its trace
+  // is every stochastic binding it reaches, with nothing to stop at — the node
+  // set the ancestry clause reads on the non-binder side. An inline reification
+  // is excluded above by its non-empty input list, so anything arriving here is
+  // measure-typed and safe to walk.
+  function nonBinderInfo(ir: any): any {
+    return { boundaryOf: new Map<string, string>(), stochastic: stochasticAncestors(ir, new Set()) };
   }
 
   // A component's reification boundary, when the component is a ref to a
@@ -1597,12 +1634,35 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // (and excluding) `stopAt`. §04 "Trace of the reified law" — these are the
   // nodes a reified value carries, and node identity across two components'
   // traces is what §06's ancestry rule reads.
+  //
+  // An `iid` over a REIFIED LAW freshens, so the walk does not descend into it.
+  // §06 `iid` conditions the sentence on exactly that: "When `M` is a reified
+  // law, each of the $N$ copies carries its own copy of the reified sub-DAG,
+  // stochastic ancestors included; `iid` never shares nodes between copies." So
+  // `iid(lawof(u), 3)` shares `u` with nobody and the ancestry clause must not
+  // reach it.
+  //
+  // An `iid` over a DISTRIBUTION copies nothing — the spec's own example
+  // `iid(Normal(mu = a, sigma = b), 100)` reads one `a` and one `b` — so the
+  // walk must descend there or it loses genuine sharing. Skipping
+  // unconditionally silently dropped the §06 different-name diagnostic for a
+  // node shared behind an `iid(Normal(mu = u, …), n)`, which is how an ILLEGAL
+  // program passes: removing reported sharing is not the safe direction, it is
+  // just the other failure.
+  //
+  // `iid` is the only operator the spec documents as copying a sub-DAG. What a
+  // non-bare reified law under an `iid` (`weighted(f, lawof(u))`) should do is
+  // undecided and left descending; recorded in flatppl-dev/TODO-flatppl-js.md.
   function stochasticAncestors(ir: any, stopAt: Set<string>): Set<string> {
     const found = new Set<string>();
     const seen = new Set<string>();
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
       if (Array.isArray(node)) { for (const c of node) walk(c); return; }
+      if (node.kind === 'call' && node.op === 'iid'
+          && isReifiedLaw(node.args && node.args[0])) {
+        return;
+      }
       if (node.kind === 'ref' && node.ns === 'self' && typeof node.name === 'string') {
         const name = node.name;
         if (stopAt.has(name) || seen.has(name)) return;
@@ -1620,6 +1680,22 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     };
     walk(ir);
     return found;
+  }
+
+  // Is `ir` a reified law — `lawof(...)`, or a name that resolves to one? §04
+  // "Aliasing is just assignment", so a chain of plain refs resolves through.
+  // Anything else (a distribution constructor, `weighted(f, lawof(u))`, a
+  // module member) answers false, which keeps the `iid` walk descending.
+  function isReifiedLaw(ir: any): boolean {
+    let node = ir;
+    const seen = new Set<string>();
+    while (node && node.kind === 'ref' && node.ns === 'self'
+        && typeof node.name === 'string' && !seen.has(node.name)) {
+      seen.add(node.name);
+      const b = loweredModule.bindings.get(node.name);
+      node = b && b.rhs;
+    }
+    return !!(node && node.kind === 'call' && node.op === 'lawof');
   }
 
   // The boundary bindings that are ancestors of `node` — walk up from the

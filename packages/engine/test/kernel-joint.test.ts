@@ -15,10 +15,16 @@
 //   input out to all component kernels, so each of them receives the same
 //   input. The result's inputs are the union of the component kernels' inputs
 //   by name; a component receives the inputs it declares and is unaffected by
-//   the others […] Components that share a stochastic node must bind every
-//   boundary ancestor of that node under the same input name; a `joint` whose
-//   sharing components disagree on that name is a static error. Measure
-//   components are permitted and are the nullary case: they ignore the input.
+//   the others […] Components that share a stochastic node must agree on that
+//   node's ancestry: every ancestor of the shared node that any component binds
+//   as a boundary input must be bound by every sharing component, under the
+//   same input name. A `joint` in which a sharing component binds such an
+//   ancestor under a different name, or does not bind it at all — in particular
+//   a measure component, which binds nothing — is a static error. Measure
+//   components are permitted and are the nullary case: they ignore the input. A
+//   measure component may be parameterized and may share stochastic nodes with
+//   kernel components; only a shared node with a boundary-bound ancestor is
+//   excluded, by the naming clause above.
 //   The keyword form applies unchanged, producing a kernel whose output variate
 //   is a record. At each input point the result is the `joint` of the component
 //   output measures, so the ancestry rule above governs it: component kernels
@@ -677,14 +683,17 @@ test('a nested boundary scope refuses SAMPLING too, so no wrong moments escape',
       /no derivation for 'S'/);
   });
 
-test('the SHARING nested-boundary variant refuses as well', async () => {
-  // u is shared, and its boundary ancestor is `v` in one component and `z` in
-  // the other, so the union cuts K2's path through v. Before the check this
-  // scored -3.3871832107434 at every feed point, while K2(t = 0) alone is
-  // -1.6349113442053942 = Normal(0, √3): the composed q-marginal had variance 2
-  // against K2's 3. Under #85's "must bind EVERY boundary ancestor of that node
-  // under the same input name" this shape is arguably a static error rather than
-  // an engine gap; that tightening is filed, not decided here.
+test('the SHARING nested-boundary variant is a STATIC error, and still refuses',
+  async () => {
+  // u is shared, and its boundary ancestor `v` is bound as `s` by K1 and not
+  // bound at all by K2, so the union cuts K2's path through v. Before the
+  // complete-cut check this scored -3.3871832107434 at every feed point, while
+  // K2(t = 0) alone is -1.6349113442053942 = Normal(0, √3): the composed
+  // q-marginal had variance 2 against K2's 3. This is the KERNEL non-binder —
+  // the same missing case as W1 (kernel-joint-w1-maths.md §6, "the kernel-side
+  // analogue … is the same missing case and currently refuses only by the C1
+  // complete-cut mechanism, not by the clause"), so the clarified clause now
+  // catches it statically and the runtime refusal remains as the second layer.
   const src = `
 z = elementof(reals)
 v ~ Normal(mu = z, sigma = 1.0)
@@ -697,7 +706,10 @@ KJ = joint(p = K1, q = K2)
 ld = logdensityof(KJ(s = 0.0, t = 0.0), record(p = 1.0, q = -1.0))
 `;
   const { errors } = infer(src);
-  assert.deepEqual(errors.map((e: any) => e.message), []);
+  assert.ok(errors.some((e: any) =>
+    /share the stochastic node 'u'.*ancestor 'v' is bound as input 's'.*not bound at all by another/s
+      .test(e.message)),
+  'got: ' + errors.map((e: any) => e.message).join(' | '));
   const { ctx } = ctxFor(src, 1);
   await assert.rejects(async () => ctx.getMeasure('ld'), /no derivation for 'ld'/);
 });

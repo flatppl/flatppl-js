@@ -2487,10 +2487,12 @@ function liftInlineSubexpressions(bindings: any) {
     const surfaceOfOuter = new Map<string, string>();
     const newArgs: any[] = [];
     const kernelReps: any[] = [];
+    const measureReps: any[] = [];
     for (const a of (jAst.args || [])) {
       const isKw = a.type === 'KeywordArg';
       const rep = _jointComponentAsMeasure(isKw ? a.value : a);
       if (!rep) return null;
+      if (!rep.boundaries) measureReps.push(rep);
       if (rep.boundaries) {
         kernelReps.push(rep);
         for (const [surface, outer] of rep.boundaries) {
@@ -2523,6 +2525,22 @@ function liftInlineSubexpressions(bindings: any) {
           if (interior.has(outer)) return null;
         }
       }
+    }
+    // A measure component binds nothing (§06's nullary case), so its coordinate
+    // reads the AMBIENT parameter — never the fed input. The hoist has one
+    // substitution map for the whole body, so a measure component that reaches a
+    // hoisted boundary node would be rewritten with the fed value: that is the
+    // W1 bug (kernel-joint-w1-maths.md §9 item 2, "the substitution map … must
+    // never rewrite nodes inside a measure component"). Refuse instead.
+    //
+    // The illegal sharing shape is already a located static error in typeinfer;
+    // this covers the LEGAL non-sharing parameterized case too (§5, third
+    // bullet), which the maths doc scores only when the ambient parameter is
+    // bound — a value this rewrite cannot see, so refusing is the correct
+    // behavior rather than a gap.
+    for (const rm of measureReps) {
+      const reach = _reachableAncestors(rm.measureAst, new Set<string>());
+      for (const outer of outerOfSurface.values()) if (reach.has(outer)) return null;
     }
     const boundaryArgs: any[] = [];
     for (const [surface, outer] of outerOfSurface) {
