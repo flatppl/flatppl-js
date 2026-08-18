@@ -282,6 +282,36 @@ items below are larger structural work or open feature gaps.
   handful of measure-algebra / structural ops (`kernelof`, `disintegrate`,
   `restrict`, `relabel`, …). If you add a new distribution or built-in, also
   add its signature in `types.ts`.
+  The signature slot and the `%mass` slot (`typeinfer.ts` `fillMasses`) are
+  separate and this list is only about the former; the four ops above are
+  NOT one group at the mass layer — each was measured per op with a
+  WELL-FORMED call (a malformed call's own argument error, or a destructure
+  that silently drops one of `disintegrate`'s two return values, gives
+  `kind: 'deferred'` for a reason that has nothing to do with the op's real
+  classification — that trap caught `restrict` once already in an earlier
+  draft of this clause). `MvNormal`, `Wishart`, `Dirichlet`, and `Multinomial`
+  now carry `mass = %normalized` — they were fixed at the mass layer without
+  gaining a `types.ts` signature, so they still belong in the list above.
+  `kernelof` is the one op here whose overall type genuinely never reaches
+  `kind: 'measure'`: it types as `kind: 'kernel'` with
+  `result.mass = %normalized`, and the `lawof`/draw gate short-circuits on
+  kind (a kernel is not a measure), not on a missing type. `relabel` DOES
+  reach `kind: 'measure'`; over a named base it has no mass rule of its own,
+  so it carries `mass = %deferred` and passes the `lawof`/draw gate for the
+  ordinary mass-layer reason (§11: "not yet inferred" is not a proven
+  non-probability measure). `restrict`, called well-formed
+  (`restrict(jj, record(a = 0.5))`, zero own diagnostics), also reaches
+  `kind: 'measure'` and carries `mass = %unknown` — both gates REFUSE it at
+  the mass layer ("total mass is %unknown"), which is neither "fully
+  deferred" nor a passing case. `disintegrate`, called well-formed (a
+  TWO-VALUE destructure, `fk, pr = disintegrate(target, joint_model)`), gives
+  a `kind: 'kernel'` forward half and a `kind: 'measure'` prior half whose
+  mass is computed by the ordinary joint/record composition rule — e.g.
+  `%normalized` when every underlying stochastic node is — not universally
+  `%deferred`. A single-target destructure (`m = disintegrate(...)`, silently
+  discarding the forward kernel) is what produces `kind: 'deferred'` with
+  zero diagnostics; that is the malformed-call artifact, not `disintegrate`'s
+  own classification.
 - **`orchestrator.ts` was split** into five facade modules (`ir-shared`,
   `lift`, `derivations`, `signatures`, `profile-plan`); the core is now a
   thin facade (~550 lines). See the "Module map" in `ARCHITECTURE.md` for
