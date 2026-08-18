@@ -1646,12 +1646,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // nodes a reified value carries, and node identity across two components'
   // traces is what §06's ancestry rule reads.
   //
-  // An `iid` over a REIFIED LAW freshens, so the walk does not descend into it.
-  // §06 `iid` conditions the sentence on exactly that: "When `M` is a reified
-  // law, each of the $N$ copies carries its own copy of the reified sub-DAG,
-  // stochastic ancestors included; `iid` never shares nodes between copies." So
-  // `iid(lawof(u), 3)` shares `u` with nobody and the ancestry clause must not
-  // reach it.
+  // An `iid` over a REIFIED LAW freshens, so the walk does not descend into the
+  // replicated law. §06 `iid`: "When `M` is a reified law, each of the $N$
+  // copies carries its own copy of the reified sub-DAG, stochastic ancestors
+  // included; `iid` never shares nodes between copies." So `iid(lawof(u), 3)`
+  // shares `u` with nobody and the ancestry clause must not reach it.
   //
   // An `iid` over a DISTRIBUTION copies nothing — the spec's own example
   // `iid(Normal(mu = a, sigma = b), 100)` reads one `a` and one `b` — so the
@@ -1661,17 +1660,60 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // program passes: removing reported sharing is not the safe direction, it is
   // just the other failure.
   //
-  // `iid` is the only operator the spec documents as copying a sub-DAG. What a
-  // non-bare reified law under an `iid` (`weighted(f, lawof(u))`) should do is
-  // undecided and left descending; recorded in flatppl-dev/TODO-flatppl-js.md.
+  // A WRAPPED reified law (`iid(weighted(f, lawof(u)), n)`) prunes too, because
+  // §06 defines `iid(M, size)` as the product measure $M^{\otimes N}$ and a
+  // product has independent coordinates by construction: the operative property
+  // is that the replicated measure carries a sub-DAG to copy, not that its top
+  // node is literally `lawof`. The wrapper rescales, restricts or transports
+  // each copy; it does not identify the copies. Pruning only became sound once
+  // the sampler agreed — before that the shape sampled a singular diagonal
+  // (var = cov), and the static error was the only thing standing between a
+  // user and that number.
+  //
+  // Only the replicated law prunes. The wrapper's OTHER arguments — a weight
+  // function, a truncation region, a pushfwd map — name nodes fixed BEFORE
+  // replication, exactly like a distribution's parameters, so
+  // `iid(weighted(p, lawof(u)), n)` still reports `p`.
   function stochasticAncestors(ir: any, stopAt: Set<string>): Set<string> {
     const found = new Set<string>();
     const seen = new Set<string>();
+    // The measure argument of each wrapper that leaves a replicated reified law
+    // intact, by position in §06's signature table (`weighted(weight, base)`,
+    // `truncate(M, S)`, `pushfwd(f, M)`, …). `superpose` is deliberately absent:
+    // its sampler does not yet freshen per copy, and the sequencing rule is that
+    // the sampler is fixed before the report is removed.
+    const WRAPPER_MEASURE_ARG: Record<string, number> = {
+      weighted: 1, logweighted: 1, normalize: 0, truncate: 0, pushfwd: 1, iid: 0,
+    };
+    // Walk an `iid`'s measure argument, pruning the reified law it replicates
+    // and walking everything else normally. Resolves ref chains itself (§04
+    // "Aliasing is just assignment") rather than pruning by node identity, so
+    // a `lawof` reached by another route in the same expression is unaffected.
+    const walkIidMeasureArg = (arg: any) => {
+      let node = arg;
+      const chain = new Set<string>();
+      for (;;) {
+        while (node && node.kind === 'ref' && node.ns === 'self'
+            && typeof node.name === 'string' && !chain.has(node.name)) {
+          chain.add(node.name);
+          const b = loweredModule.bindings.get(node.name);
+          node = b && b.rhs;
+        }
+        if (!node || node.kind !== 'call') { walk(arg); return; }
+        if (node.op === 'lawof') return;                 // the replicated sub-DAG
+        const pos = WRAPPER_MEASURE_ARG[node.op];
+        const args = Array.isArray(node.args) ? node.args : null;
+        if (pos === undefined || !args || !args[pos]) { walk(arg); return; }
+        for (let i = 0; i < args.length; i++) if (i !== pos) walk(args[i]);
+        node = args[pos];
+      }
+    };
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
       if (Array.isArray(node)) { for (const c of node) walk(c); return; }
-      if (node.kind === 'call' && node.op === 'iid'
-          && isReifiedLaw(node.args && node.args[0])) {
+      if (node.kind === 'call' && node.op === 'iid' && Array.isArray(node.args)) {
+        walkIidMeasureArg(node.args[0]);
+        for (let i = 1; i < node.args.length; i++) walk(node.args[i]);
         return;
       }
       if (node.kind === 'ref' && node.ns === 'self' && typeof node.name === 'string') {
@@ -1691,22 +1733,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     };
     walk(ir);
     return found;
-  }
-
-  // Is `ir` a reified law — `lawof(...)`, or a name that resolves to one? §04
-  // "Aliasing is just assignment", so a chain of plain refs resolves through.
-  // Anything else (a distribution constructor, `weighted(f, lawof(u))`, a
-  // module member) answers false, which keeps the `iid` walk descending.
-  function isReifiedLaw(ir: any): boolean {
-    let node = ir;
-    const seen = new Set<string>();
-    while (node && node.kind === 'ref' && node.ns === 'self'
-        && typeof node.name === 'string' && !seen.has(node.name)) {
-      seen.add(node.name);
-      const b = loweredModule.bindings.get(node.name);
-      node = b && b.rhs;
-    }
-    return !!(node && node.kind === 'call' && node.op === 'lawof');
   }
 
   // The boundary bindings that are ancestors of `node` — walk up from the
