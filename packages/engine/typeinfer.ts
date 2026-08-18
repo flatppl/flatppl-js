@@ -1635,22 +1635,34 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // nodes a reified value carries, and node identity across two components'
   // traces is what §06's ancestry rule reads.
   //
-  // `iid` FRESHENS, so the walk does not descend into it: §06 `iid` — "each of
-  // the $N$ copies carries its own copy of the reified sub-DAG, stochastic
-  // ancestors included; `iid` never shares nodes between copies". A node under
-  // an `iid` is a copy, not the outer node, so `iid(lawof(u), 3)` shares `u`
-  // with nobody and the ancestry clause must not reach it. Skipping the whole
-  // call can only REMOVE reported sharing, which is the sound direction — it
-  // cannot make a legal program illegal. `iid` is the only operator the spec
-  // documents as copying a sub-DAG; whether another one ever needs the same
-  // treatment is recorded in flatppl-dev/TODO-flatppl-js.md.
+  // An `iid` over a REIFIED LAW freshens, so the walk does not descend into it.
+  // §06 `iid` conditions the sentence on exactly that: "When `M` is a reified
+  // law, each of the $N$ copies carries its own copy of the reified sub-DAG,
+  // stochastic ancestors included; `iid` never shares nodes between copies." So
+  // `iid(lawof(u), 3)` shares `u` with nobody and the ancestry clause must not
+  // reach it.
+  //
+  // An `iid` over a DISTRIBUTION copies nothing — the spec's own example
+  // `iid(Normal(mu = a, sigma = b), 100)` reads one `a` and one `b` — so the
+  // walk must descend there or it loses genuine sharing. Skipping
+  // unconditionally silently dropped the §06 different-name diagnostic for a
+  // node shared behind an `iid(Normal(mu = u, …), n)`, which is how an ILLEGAL
+  // program passes: removing reported sharing is not the safe direction, it is
+  // just the other failure.
+  //
+  // `iid` is the only operator the spec documents as copying a sub-DAG. What a
+  // non-bare reified law under an `iid` (`weighted(f, lawof(u))`) should do is
+  // undecided and left descending; recorded in flatppl-dev/TODO-flatppl-js.md.
   function stochasticAncestors(ir: any, stopAt: Set<string>): Set<string> {
     const found = new Set<string>();
     const seen = new Set<string>();
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
       if (Array.isArray(node)) { for (const c of node) walk(c); return; }
-      if (node.kind === 'call' && node.op === 'iid') return;
+      if (node.kind === 'call' && node.op === 'iid'
+          && isReifiedLaw(node.args && node.args[0])) {
+        return;
+      }
       if (node.kind === 'ref' && node.ns === 'self' && typeof node.name === 'string') {
         const name = node.name;
         if (stopAt.has(name) || seen.has(name)) return;
@@ -1668,6 +1680,22 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     };
     walk(ir);
     return found;
+  }
+
+  // Is `ir` a reified law — `lawof(...)`, or a name that resolves to one? §04
+  // "Aliasing is just assignment", so a chain of plain refs resolves through.
+  // Anything else (a distribution constructor, `weighted(f, lawof(u))`, a
+  // module member) answers false, which keeps the `iid` walk descending.
+  function isReifiedLaw(ir: any): boolean {
+    let node = ir;
+    const seen = new Set<string>();
+    while (node && node.kind === 'ref' && node.ns === 'self'
+        && typeof node.name === 'string' && !seen.has(node.name)) {
+      seen.add(node.name);
+      const b = loweredModule.bindings.get(node.name);
+      node = b && b.rhs;
+    }
+    return !!(node && node.kind === 'call' && node.op === 'lawof');
   }
 
   // The boundary bindings that are ancestors of `node` — walk up from the

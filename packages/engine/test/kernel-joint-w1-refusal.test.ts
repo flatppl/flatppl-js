@@ -239,11 +239,23 @@ out = F(zz = 5.0)
   assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
 });
 
-test('an `iid` measure component shares NO node, so the clause must not reach it',
+// ── `iid`: freshening is conditioned on the argument being a reified law ─────
+//
+// §06 `iid`, quoted verbatim: "When `M` is a reified law, each of the $N$ copies
+// carries its own copy of the reified sub-DAG, stochastic ancestors included;
+// `iid` never shares nodes between copies."
+//
+// The condition is load-bearing in BOTH directions. Over a reified law the
+// copies are fresh, so the ancestry clause must not reach them. Over a
+// DISTRIBUTION nothing is copied — the spec's own example
+// `iid(Normal(mu = a, sigma = b), 100)` reads one `a` and one `b` — so a node
+// behind it is genuinely shared and the clause must still fire. Treating both
+// alike drops real diagnostics, including §06's different-name error that
+// predates this wave.
+
+test('an `iid` over a REIFIED LAW shares NO node, so the clause must not reach it',
   () => {
-    // §06 `iid`: "each of the N copies carries its own copy of the reified
-    // sub-DAG, stochastic ancestors included; `iid` never shares nodes between
-    // copies." So `u` under an `iid` is a copy, §5's shared-node ingredient is
+    // `u` under `iid(lawof(u), 3)` is a copy, §5's shared-node ingredient is
     // absent, and the static error would be a FALSE rejection of a legal
     // program. The applied density still refuses, for the unrelated
     // iid-marginalization gap.
@@ -256,6 +268,104 @@ M = iid(lawof(u), 3)
 KJ = joint(p = K1, q = M)
 `).map((e: any) => e.message), []);
   });
+
+test('the reified-law test resolves through an ALIAS chain', () => {
+  // §04 "Aliasing is just assignment", so `M = iid(L2, 3)` with `L2 = L` and
+  // `L = lawof(u)` freshens exactly as the inline spelling does.
+  assert.deepEqual(infer(`
+z = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+a1 ~ Normal(mu = u, sigma = 1.0)
+K1 = kernelof(a1, z = z)
+L = lawof(u)
+L2 = L
+M = iid(L2, 3)
+KJ = joint(p = K1, q = M)
+`).map((e: any) => e.message), []);
+});
+
+test('a node shared behind `iid` over a DISTRIBUTION still gets the '
+  + 'DIFFERENT-NAME error — the diagnostic predates this wave', () => {
+  // Each of the three copies reads the ONE node `u`, whose boundary ancestor `z`
+  // arrives as `s` in one component and `t` in the other. This errors on
+  // origin/main; an unconditional iid skip silenced it, which is a regression of
+  // a landed diagnostic and the reason the skip is conditioned.
+  const errors = infer(`
+z = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+o1 ~ iid(Normal(mu = u, sigma = 1.0), 3)
+o2 ~ iid(Normal(mu = u, sigma = 1.0), 3)
+K1 = kernelof(o1, s = z)
+K2 = kernelof(o2, t = z)
+KJ = joint(p = K1, q = K2)
+`);
+  assert.ok(errors.some((e: any) =>
+    /share the stochastic node 'u'.*bound as input 's'.*and 't'/s.test(e.message)),
+  'got: ' + errors.map((e: any) => e.message).join(' | '));
+});
+
+test('a MEASURE component sharing a node behind `iid` over a distribution errors',
+  () => {
+    // The W1 no-name case with the kernel side reaching `u` through an
+    // `iid(Normal(mu = u, …), 3)`. One `u`, so §5's ingredients are all present.
+    const errors = infer(`
+z = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+o1 ~ iid(Normal(mu = u, sigma = 1.0), 3)
+K1 = kernelof(o1, z = z)
+M = lawof(u)
+KJ = joint(p = K1, q = M)
+`);
+    assert.ok(errors.some((e: any) => SHARED_ANCESTRY_ERROR.test(e.message)),
+      'got: ' + errors.map((e: any) => e.message).join(' | '));
+  });
+
+test('a KERNEL non-binder sharing a node behind `iid` over a distribution errors',
+  () => {
+    const errors = infer(`
+z = elementof(reals)
+y = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+o1 ~ iid(Normal(mu = u, sigma = 1.0), 3)
+o2 ~ iid(Normal(mu = u + y, sigma = 1.0), 3)
+K1 = kernelof(o1, z = z)
+K2 = kernelof(o2, y = y)
+KJ = joint(p = K1, q = K2)
+`);
+    assert.ok(errors.some((e: any) =>
+      /share the stochastic node 'u'.*not bound at all by another/s.test(e.message)),
+    'got: ' + errors.map((e: any) => e.message).join(' | '));
+  });
+
+test('the SAME-name share behind `iid` over a distribution stays legal', () => {
+  // The narrowed skip must not turn the legal both-bind spelling into an error:
+  // one `u`, but every sharing component reaches `z` as `z`.
+  assert.deepEqual(infer(`
+z = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+o1 ~ iid(Normal(mu = u, sigma = 1.0), 3)
+o2 ~ iid(Normal(mu = u, sigma = 1.0), 3)
+K1 = kernelof(o1, z = z)
+K2 = kernelof(o2, z = z)
+KJ = joint(p = K1, q = K2)
+`).map((e: any) => e.message), []);
+});
+
+test('a direct `lawof(u)` beside an `iid` copy of the same law still errors', () => {
+  // Adversarial control: the freshened branch must not launder the un-freshened
+  // one. `M`'s `d` field reads the outer `u` directly, so the shape is illegal
+  // however many freshened copies sit next to it.
+  const errors = infer(`
+z = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+a1 ~ Normal(mu = u, sigma = 1.0)
+K1 = kernelof(a1, z = z)
+M = joint(d = lawof(u), c = iid(lawof(u), 3))
+KJ = joint(p = K1, q = M)
+`);
+  assert.ok(errors.some((e: any) => SHARED_ANCESTRY_ERROR.test(e.message)),
+    'got: ' + errors.map((e: any) => e.message).join(' | '));
+});
 
 test('a measure component over a node with NO boundary ancestor still scores '
   + 'with a kernel component present', async () => {
