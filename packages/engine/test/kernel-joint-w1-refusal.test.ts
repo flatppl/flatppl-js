@@ -220,6 +220,43 @@ test('the hoist does not substitute the fed input into a non-sharing measure '
   }
 });
 
+test('a non-sharing parameterized measure component SCORES when the ambient '
+  + 'parameter is bound', async () => {
+  // §5, third bullet: `joint(K1, M)(a) = K1(a) ⊗ Normal(v, 2)` at the ambient
+  // value `v`. Binding `z` through an outer reification supplies `v = 5` while
+  // the fan-out is fed `z = 0`, so the two coordinates read different values —
+  // which is exactly what the substituted reading cannot express. Pre-fix this
+  // gave -11.908847837249262 (`q ~ Normal(0, 2)`, the fed input), a second
+  // silently wrong number.
+  //   logpdf(N(0,√2), 6) + logpdf(N(5,2), 0.5) = -14.408847837249262
+  const oracle = -14.408847837249262;
+  const { ctx } = ctxFor(NON_SHARING + `
+ld = logdensityof(KJ(z = 0.0), record(p = 6.0, q = 0.5))
+F = functionof(ld, zz = z)
+out = F(zz = 5.0)
+`, 1);
+  const got = (await ctx.getMeasure('out')).samples[0];
+  assert.ok(Math.abs(got - oracle) < F64_TOL, `got ${got}, oracle ${oracle}`);
+});
+
+test('an `iid` measure component shares NO node, so the clause must not reach it',
+  () => {
+    // §06 `iid`: "each of the N copies carries its own copy of the reified
+    // sub-DAG, stochastic ancestors included; `iid` never shares nodes between
+    // copies." So `u` under an `iid` is a copy, §5's shared-node ingredient is
+    // absent, and the static error would be a FALSE rejection of a legal
+    // program. The applied density still refuses, for the unrelated
+    // iid-marginalization gap.
+    assert.deepEqual(infer(`
+z = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+a1 ~ Normal(mu = u, sigma = 1.0)
+K1 = kernelof(a1, z = z)
+M = iid(lawof(u), 3)
+KJ = joint(p = K1, q = M)
+`).map((e: any) => e.message), []);
+  });
+
 test('a measure component over a node with NO boundary ancestor still scores '
   + 'with a kernel component present', async () => {
   // The guard fires only on a measure component that actually reaches a hoisted

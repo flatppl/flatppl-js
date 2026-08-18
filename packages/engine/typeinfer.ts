@@ -1634,12 +1634,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // (and excluding) `stopAt`. §04 "Trace of the reified law" — these are the
   // nodes a reified value carries, and node identity across two components'
   // traces is what §06's ancestry rule reads.
+  //
+  // `iid` FRESHENS, so the walk does not descend into it: §06 `iid` — "each of
+  // the $N$ copies carries its own copy of the reified sub-DAG, stochastic
+  // ancestors included; `iid` never shares nodes between copies". A node under
+  // an `iid` is a copy, not the outer node, so `iid(lawof(u), 3)` shares `u`
+  // with nobody and the ancestry clause must not reach it. Skipping the whole
+  // call can only REMOVE reported sharing, which is the sound direction — it
+  // cannot make a legal program illegal. `iid` is the only operator the spec
+  // documents as copying a sub-DAG; whether another one ever needs the same
+  // treatment is recorded in flatppl-dev/TODO-flatppl-js.md.
   function stochasticAncestors(ir: any, stopAt: Set<string>): Set<string> {
     const found = new Set<string>();
     const seen = new Set<string>();
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
       if (Array.isArray(node)) { for (const c of node) walk(c); return; }
+      if (node.kind === 'call' && node.op === 'iid') return;
       if (node.kind === 'ref' && node.ns === 'self' && typeof node.name === 'string') {
         const name = node.name;
         if (stopAt.has(name) || seen.has(name)) return;
