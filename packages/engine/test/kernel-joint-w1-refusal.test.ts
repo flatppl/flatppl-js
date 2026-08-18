@@ -72,9 +72,9 @@ M = lawof(u)
 KJ = joint(p = K1, q = M)
 `;
 
-// §4 reading E: the same law, spelled with both components binding `z`. Written
-// in the NAMED spelling — an inline `kernelof` joint component silently drops
-// (filed separately), so an inline spelling would pass for the wrong reason.
+// §4 reading E: the same law, spelled with both components binding `z`.
+// Written in the NAMED spelling; kernel-joint-inline-component.test.ts pins
+// the same five rows with `q` written inline as `kernelof(u, z = z)` instead.
 const BOTH_BIND = `
 z = elementof(reals)
 u ~ Normal(mu = z, sigma = 1.0)

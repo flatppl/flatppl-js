@@ -647,7 +647,8 @@ function liftInlineSubexpressions(bindings: any) {
       for (let i = 0; i < astNode.args.length; i++) {
         const a = astNode.args[i];
         if (a && a.type === 'KeywordArg') {
-          if (isRecordLike)             a.value = liftMeasure(a.value);
+          if (op === 'joint')             a.value = liftJointComponent(a.value);
+          else if (isRecordLike)           a.value = liftMeasure(a.value);
           else if (opUsesValueKwargs(op)) a.value = liftValue(a.value);
           // `broadcast(f, name=[lits or refs], …)` (kwarg form of the
           // surface broadcast surfaces, including dot-notation
@@ -667,7 +668,8 @@ function liftInlineSubexpressions(bindings: any) {
           continue;
         }
         const expected = sig ? sig[i] : null;
-        if      (expected === 'measure')          astNode.args[i] = liftMeasure(a);
+        if      (op === 'joint' && expected === 'measure') astNode.args[i] = liftJointComponent(a);
+        else if (expected === 'measure')          astNode.args[i] = liftMeasure(a);
         else if (expected === 'value-or-measure') astNode.args[i] = liftMeasureOrValue(a);
         else                                      astNode.args[i] = liftValue(a);
         // `broadcast(f, [lit_or_ref, …], X, …)` and dot-call /
@@ -741,6 +743,34 @@ function liftInlineSubexpressions(bindings: any) {
   function liftMeasure(astArg: any) {
     if (!astArg) return astArg;
     astArg = inlineUserCall(astArg);
+    return finishLiftMeasure(astArg);
+  }
+
+  // A `joint` component keeps an inline `kernelof`/`functionof` reification
+  // AS-IS rather than routing it through `liftMeasure`'s generic hoist. A
+  // hoisted synthetic binding never gets an `inferredType` (typeinfer runs
+  // over the pre-lift module; synthetic bindings created here don't exist
+  // yet), and the applied-density hoist (`_jointComponentAsMeasure`) tells a
+  // kernel component from a measure component by reading that type off the
+  // resolved binding — an untyped synthetic binding reads as a bare measure,
+  // silently dropping the component's kernel-ness. That is the inline
+  // `joint(p = K1, q = kernelof(u, z = z))` shape: hoisting `q` erased its
+  // kernel type and the fan-out scored as if `q` were absent. Left inline,
+  // `_jointComponentAsMeasure` reads the CallExpr head directly instead —
+  // exactly the same shape a named `K2 = kernelof(u, z = z)` binding gives
+  // it, just without the lookup.
+  function liftJointComponent(astArg: any) {
+    if (!astArg) return astArg;
+    astArg = inlineUserCall(astArg);
+    if (astArg.type === 'CallExpr' && astArg.callee && astArg.callee.type === 'Identifier'
+        && (astArg.callee.name === 'kernelof' || astArg.callee.name === 'functionof')) {
+      visit(astArg);
+      return astArg;
+    }
+    return finishLiftMeasure(astArg);
+  }
+
+  function finishLiftMeasure(astArg: any) {
     visit(astArg);
     if (astArg.type === 'Identifier') return astArg;
     // `weighted(w, M)` / `logweighted(g, M)` (spec §06: the weight/
@@ -2604,19 +2634,28 @@ function liftInlineSubexpressions(bindings: any) {
     if (!compAst) return null;
     const inlineHead = compAst.type === 'CallExpr' && compAst.callee
       && compAst.callee.type === 'Identifier' && compAst.callee.name;
-    if (compAst.type !== 'Identifier') {
-      // An unlifted inline reification would need its own boundary hoist;
-      // refuse rather than mistake it for a measure.
+    let kAst: any;
+    if (compAst.type === 'Identifier') {
+      const name = resolveCallableAlias(compAst.name, out);
+      const b = out.get(name) || bindings.get(name);
+      const t = b && b.inferredType;
+      if (!t || t.kind !== 'kernel') {
+        return { measureAst: cloneAst(compAst), boundaries: null };
+      }
+      kAst = b.effectiveValue || (b.node && b.node.value);
+    } else if (inlineHead === 'kernelof' || inlineHead === 'functionof') {
+      // Written out verbatim as a joint component, not bound to a name first.
+      // Spec §06's uniform kernel extension does not distinguish a named
+      // kernel from an inline one, so this hoists the same way the Identifier
+      // branch above does — the literal CallExpr already IS the reification,
+      // no binding lookup needed.
+      kAst = compAst;
+    } else {
+      // `fn(...)` and any other unlifted inline reification would need its own
+      // boundary hoist; refuse rather than mistake it for a measure.
       if (inlineHead && _REIFICATION_HEADS.has(inlineHead)) return null;
       return { measureAst: cloneAst(compAst), boundaries: null };
     }
-    const name = resolveCallableAlias(compAst.name, out);
-    const b = out.get(name) || bindings.get(name);
-    const t = b && b.inferredType;
-    if (!t || t.kind !== 'kernel') {
-      return { measureAst: cloneAst(compAst), boundaries: null };
-    }
-    const kAst = b.effectiveValue || (b.node && b.node.value);
     if (!kAst || kAst.type !== 'CallExpr' || !kAst.callee
         || kAst.callee.type !== 'Identifier') return null;
     const head = kAst.callee.name;

@@ -282,6 +282,15 @@ items below are larger structural work or open feature gaps.
   handful of measure-algebra / structural ops (`kernelof`, `disintegrate`,
   `restrict`, `relabel`, …). If you add a new distribution or built-in, also
   add its signature in `types.ts`.
+  The signature slot and the `%mass` slot (`typeinfer.ts` `fillMasses`) are
+  separate and this list is only about the former. `MvNormal`, `Wishart`,
+  `Dirichlet`, and `Multinomial` now carry `mass = %normalized` — they were
+  fixed at the mass layer without gaining a `types.ts` signature, so they
+  still belong in the list above. `kernelof`, `disintegrate`, `restrict`, and
+  `relabel` stay fully `deferred()` at BOTH layers: their overall type never
+  reaches `kind: 'measure'`, so the `lawof`/draw gate short-circuits on the
+  missing type before mass is ever consulted — a different pass reason from a
+  measure whose `%mass` itself is `%deferred`.
 - **`orchestrator.ts` was split** into five facade modules (`ir-shared`,
   `lift`, `derivations`, `signatures`, `profile-plan`); the core is now a
   thin facade (~550 lines). See the "Module map" in `ARCHITECTURE.md` for

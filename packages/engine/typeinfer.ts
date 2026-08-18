@@ -1603,15 +1603,22 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   // A component's reification boundary, when the component is a ref to a
-  // `functionof` binding (which is what `kernelof(x, kw…)` lowers to). Returns
+  // `functionof` binding (which is what `kernelof(x, kw…)` lowers to) OR an
+  // INLINE `functionof`/`kernelof` call written verbatim as the component —
+  // `kernelof` lowers to `functionof` before this pass runs, so both spellings
+  // reach here as the same IR shape; only the lookup differs. Returns
   // `boundaryOf`: outer binding name → the input name it is bound under, and
   // `stochastic`: the stochastic bindings the body reaches without crossing a
   // boundary — the nodes the composed trace can share. Null when the component
   // is not a shape this pass can resolve.
   function reifiedBoundaryInfo(ir: any): any {
-    if (!ir || ir.kind !== 'ref' || ir.ns !== 'self') return null;
-    const b = loweredModule.bindings.get(ir.name);
-    const rhs = b && b.rhs;
+    let rhs: any;
+    if (ir && ir.kind === 'ref' && ir.ns === 'self') {
+      const b = loweredModule.bindings.get(ir.name);
+      rhs = b && b.rhs;
+    } else {
+      rhs = ir;
+    }
     if (!rhs || rhs.kind !== 'call' || rhs.op !== 'functionof' || !rhs.body) return null;
     const params: string[] = Array.isArray(rhs.params) ? rhs.params : [];
     const kwargs: string[] = Array.isArray(rhs.paramKwargs) ? rhs.paramKwargs : params;
@@ -4489,6 +4496,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // its normalize diagnostic fired — exactly once across both fill
   // passes) and stamp the class onto the call's `meta.type` for %meta
   // emission.
+  //
+  // COPY-ON-WRITE, not mutation: `ir.meta.type` is not always this node's own
+  // object. `inferWeighted` (and any op with the same "result is the same
+  // measure type" shortcut) returns its base argument's type object verbatim
+  // rather than a copy, so `weighted(0.3, n1)`'s own node and `n1`'s node end
+  // up with `meta.type` pointing at ONE shared object. Mutating `.mass` in
+  // place on that object stamps whichever node is classified LAST over every
+  // other holder's already-correct class — `n1` standalone reports
+  // `%normalized`, but once anything reaches `weighted(0.3, n1)` its `%finite`
+  // overwrites `n1`'s own reported mass too, and any reader of `n1`'s
+  // `inferredType.mass` (viewer, LSP hover, a conformance harness) sees a
+  // value that depends on unrelated code elsewhere in the module. Replacing
+  // the object here instead of writing through it means each node's stamp is
+  // independent of processing order and of how many other nodes alias its
+  // pre-stamp type object.
   function massOfExpr(ir: any): any {
     if (ir && typeof ir === 'object' && massNodeCache.has(ir)) {
       return massNodeCache.get(ir);
@@ -4497,13 +4519,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (ir && typeof ir === 'object') massNodeCache.set(ir, m);
     if (ir && ir.kind === 'call' && ir.meta && ir.meta.type) {
       if (ir.meta.type.kind === 'measure') {
-        ir.meta.type.mass = m;
+        ir.meta.type = { ...ir.meta.type, mass: m };
       } else if (ir.meta.type.kind === 'kernel'
           && ir.meta.type.result && ir.meta.type.result.kind === 'measure') {
         // A kernel-typed measure-algebra node (a `joint` over kernels) carries
         // its class on the OUTPUT measure — §11: a kernel's `%mass` is "the
         // total-mass class of the output measure, uniform over all inputs".
-        ir.meta.type.result.mass = m;
+        ir.meta.type = { ...ir.meta.type, result: { ...ir.meta.type.result, mass: m } };
       }
     }
     return m;
@@ -5104,15 +5126,40 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // kernel's output-mass class.
     for (const [name, b] of loweredModule.bindings) {
       if (b.inferredType && b.inferredType.kind === 'measure') {
-        b.inferredType.mass = massOfBinding(name);
+        // Copy-on-write for the same reason as `massOfExpr` above: a bare
+        // alias (`r = j`) or a pass-through op can leave `b.inferredType`
+        // pointing at the SAME object another binding's `inferredType`
+        // points at. Replacing it here, rather than writing `.mass` through
+        // it, keeps this binding's own published type from being overwritten
+        // by — or overwriting — a binding that merely shares its pre-stamp
+        // object.
+        b.inferredType = { ...b.inferredType, mass: massOfBinding(name) };
       } else if (b.inferredType && b.inferredType.kind === 'kernel'
           && b.inferredType.result && b.inferredType.result.kind === 'measure'
           && b.rhs) {
-        // A reified callable carries its output measure as `rhs.body`, whose
-        // `meta.type` aliases the kernel's `result`. A kernel built by a
-        // measure-algebra op (`joint` over kernels) has no such body — its own
-        // node carries the kernel type, and massOfExpr stamps `result` there.
-        massOfExpr(b.rhs.body ? b.rhs.body : b.rhs);
+        // A reified callable carries its output measure as `rhs.body`. A
+        // kernel built by a measure-algebra op (`joint` over kernels) has no
+        // such body — its own node carries the kernel type instead. Either
+        // way, read the computed class off `massOfExpr`'s RETURN value and
+        // publish it onto THIS binding's own `inferredType.result` here,
+        // explicitly — `massOfExpr` copies-on-write rather than mutating a
+        // shared object in place (the fix for the cross-binding aliasing bug
+        // above), so this can no longer rely on catching that mutation by
+        // watching an object `rhs.body.meta.type` used to alias.
+        const m = massOfExpr(b.rhs.body ? b.rhs.body : b.rhs);
+        const freshKernelType = {
+          ...b.inferredType, result: { ...b.inferredType.result, mass: m },
+        };
+        b.inferredType = freshKernelType;
+        // `b.rhs.meta.type` is this binding's OWN kernel-wrapper node (the
+        // `functionof`/`kernelof` call, or the `joint`-over-kernels node when
+        // there is no body) — deliberately kept aliased to `b.inferredType`
+        // so %meta emission (which reads the IR node's own annotation, not
+        // the binding's `inferredType`) sees the same class. Re-establishing
+        // that alias here, on the freshly-built object, is intentional and
+        // scoped to this ONE binding's two references to its own type — not
+        // the cross-BINDING sharing the fix above eliminates.
+        if (b.rhs.meta) b.rhs.meta.type = freshKernelType;
       }
     }
     // Pass 2 — every remaining inner measure node (the distribution
