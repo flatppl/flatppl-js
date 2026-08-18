@@ -1532,14 +1532,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // AMBIENT parameter playing the second binder — kernel-joint-w1-maths.md §3.
   //
   // SOUND SUBSET. This detects the shape reachable from the bindings the pass
-  // can read: a KERNEL component that is a `self` ref to a `functionof`
-  // binding, whose boundary list names outer BINDINGS
-  // (`paramSources[i].kind === 'binding'`), and a MEASURE component (empty
-  // input list — §06's nullary case), which binds nothing by construction. It
-  // reports a conflict only when both sharing components resolve and they
-  // disagree on the input name that reaches a flagged ancestor — never on a
-  // shape it cannot resolve, so a legal program is never rejected. What it does
-  // not see is recorded in flatppl-dev/TODO-flatppl-js.md.
+  // can read: a KERNEL component that is EITHER a `self` ref to a
+  // `functionof` binding OR an inline `functionof`/`kernelof` CallExpr
+  // written directly as the component (wave JSPOLISH — `kernelof` lowers to
+  // `functionof` before this pass runs, so both spellings reach
+  // `reifiedBoundaryInfo` as the same IR shape), whose boundary list names
+  // outer BINDINGS (`paramSources[i].kind === 'binding'`), and a MEASURE
+  // component (empty input list — §06's nullary case), which binds nothing by
+  // construction. It reports a conflict only when both sharing components
+  // resolve and they disagree on the input name that reaches a flagged
+  // ancestor — never on a shape it cannot resolve, so a legal program is
+  // never rejected. What it does not see is recorded in
+  // flatppl-dev/TODO-flatppl-js.md.
   function checkSharedBoundaryNames(comps: any[], perComponentInputs: any[][],
       expr: any) {
     // Kernel-ness comes from the inferred input list, not from an IR pattern:

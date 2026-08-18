@@ -129,3 +129,24 @@ test('two bindings that alias the SAME base measure get independently '
   assert.equal(massOf(src, 'q'), 'normalized');
   assert.equal(massOf(src, 'wp'), 'finite');
 });
+
+// ── the pre-existing bayesupdate witness (TODO-flatppl-js.md, wave JSSMALL
+// review round 2) — the aliasing bug via a THIRD inferrer, not weighted/lawof
+
+test('bayesupdate\'s posterior class does not depend on whether the prior is '
+  + 'named or written inline', () => {
+  // `inferBayesupdate`'s result-type construction is a fourth site that used
+  // to leave the posterior's `inferredType` aliased to the (inline) prior
+  // expression's own node. Pre-fix: the inline spelling read `%normalized`
+  // (the aliased Normal literal's own class, stamped over the posterior's
+  // actual `%unknown` evidence-integral class), while the named spelling
+  // read `%unknown` correctly — two spellings of one model disagreeing, and
+  // the wrong one claiming a posterior is a probability measure.
+  const LL = 'mu = elementof(reals)\n'
+    + 'K = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)\n'
+    + 'LL = likelihoodof(K, 0.5)\n';
+  const inlineSrc = LL + 'm = bayesupdate(LL, Normal(mu = 0.0, sigma = 1.0))\n';
+  const namedSrc = LL + 'pr = Normal(mu = 0.0, sigma = 1.0)\nm = bayesupdate(LL, pr)\n';
+  assert.equal(massOf(inlineSrc, 'm'), 'unknown');
+  assert.equal(massOf(namedSrc, 'm'), 'unknown');
+});

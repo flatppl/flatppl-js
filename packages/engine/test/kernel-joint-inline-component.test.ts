@@ -152,3 +152,62 @@ test('the illegal inline shape refuses SAMPLING too', async () => {
   await assert.rejects(async () => materialiser.materialiseMeasure('S', ctx),
     /no derivation for 'S'/);
 });
+
+test('the legal inline shape SAMPLES too, not just scores', async () => {
+  const { ctx } = ctxFor(ROWS23_INLINE + 'S = KJ(z = 0.0)\n', 8);
+  const m = await materialiser.materialiseMeasure('S', ctx);
+  assert.deepEqual(Object.keys(m.fields), ['p', 'q']);
+  assert.equal(m.fields.p.samples.length, 8);
+  assert.equal(m.fields.q.samples.length, 8);
+});
+
+// ── the Q1 DIFFERENT-NAME case, spelled inline ──────────────────────────────
+//
+// The widened `reifiedBoundaryInfo` (needed to make rows 2-3 above resolve at
+// all) buys more than "the legal inline shape scores": it also makes the
+// inline DIFFERENT-NAME shape a located §06 error, where before this wave it
+// typed clean and only refused later at the density layer with no reason
+// given. Every other test in this file uses the SAME input name (`z`) in
+// both components, so on its own this file cannot tell "resolves inline
+// components" apart from "resolves inline components enough to bind them,
+// but not enough to compare their names" — a regression that narrowed
+// `reifiedBoundaryInfo` back to refs-only would leave every row above green
+// while silently dropping this diagnostic. This is that discriminator.
+
+test('the inline DIFFERENT-NAME shape is a located §06 error, not a silent '
+  + 'pass followed by an unexplained refusal', () => {
+  const src = `
+z = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+a1 ~ Normal(mu = u, sigma = 1.0)
+K1 = kernelof(a1, z = z)
+KJ = joint(p = K1, q = kernelof(u, y = z))
+`;
+  const errors = infer(src);
+  assert.ok(errors.some((e: any) =>
+    /share the stochastic node 'u'.*bound as input 'z'.*and 'y'/s.test(e.message)),
+  'got: ' + errors.map((e: any) => e.message).join(' | '));
+});
+
+// ── inline `functionof`, not just inline `kernelof` ─────────────────────────
+//
+// `liftJointComponent` and `_jointComponentAsMeasure` both handle
+// `functionof` heads explicitly, not only `kernelof` — pin that the other
+// head actually resolves too, since every test above only ever spells
+// `kernelof`. `functionof(lawof(u), z = z)` is `kernelof(u, z = z)`'s own
+// desugaring (spec §04), so the oracle is the same reading-E value.
+
+test('an inline `functionof(lawof(u), ...)` component resolves the same as '
+  + 'inline `kernelof`', async () => {
+  const src = `
+z = elementof(reals)
+u ~ Normal(mu = z, sigma = 1.0)
+a1 ~ Normal(mu = u, sigma = 1.0)
+K1 = kernelof(a1, z = z)
+KJ = joint(p = K1, q = functionof(lawof(u), z = z))
+`;
+  assert.deepEqual(infer(src).map((e: any) => e.message), []);
+  const got = await scoreOf(src
+    + 'ld = logdensityof(KJ(z = 0.0), record(p = 1.0, q = 0.5))\n');
+  assert.ok(Math.abs(got - AT_0) < F64_TOL, `got ${got}, oracle ${AT_0}`);
+});

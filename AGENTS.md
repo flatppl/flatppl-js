@@ -283,14 +283,21 @@ items below are larger structural work or open feature gaps.
   `restrict`, `relabel`, …). If you add a new distribution or built-in, also
   add its signature in `types.ts`.
   The signature slot and the `%mass` slot (`typeinfer.ts` `fillMasses`) are
-  separate and this list is only about the former. `MvNormal`, `Wishart`,
-  `Dirichlet`, and `Multinomial` now carry `mass = %normalized` — they were
-  fixed at the mass layer without gaining a `types.ts` signature, so they
-  still belong in the list above. `kernelof`, `disintegrate`, `restrict`, and
-  `relabel` stay fully `deferred()` at BOTH layers: their overall type never
-  reaches `kind: 'measure'`, so the `lawof`/draw gate short-circuits on the
-  missing type before mass is ever consulted — a different pass reason from a
-  measure whose `%mass` itself is `%deferred`.
+  separate and this list is only about the former; the four ops above split
+  three ways at the mass layer, measured per op rather than lumped as one
+  group. `MvNormal`, `Wishart`, `Dirichlet`, and `Multinomial` now carry
+  `mass = %normalized` — they were fixed at the mass layer without gaining a
+  `types.ts` signature, so they still belong in the list above. `restrict`
+  and `disintegrate` stay fully `deferred()` at BOTH layers: their overall
+  type never reaches `kind: 'measure'`, so the `lawof`/draw gate
+  short-circuits on the missing type before mass is ever consulted.
+  `kernelof` types as `kind: 'kernel'` with `result.mass = %normalized` — its
+  gate short-circuit is on kind (a kernel is not a measure), not on a missing
+  type. `relabel` DOES reach `kind: 'measure'`; over a named base it has no
+  mass rule of its own, so it carries `mass = %deferred` and passes the
+  `lawof`/draw gate for the ordinary mass-layer reason (§11: "not yet
+  inferred" is not a proven non-probability measure) — the "different pass
+  reason" that only `restrict`/`disintegrate` actually get.
 - **`orchestrator.ts` was split** into five facade modules (`ir-shared`,
   `lift`, `derivations`, `signatures`, `profile-plan`); the core is now a
   thin facade (~550 lines). See the "Module map" in `ARCHITECTURE.md` for
