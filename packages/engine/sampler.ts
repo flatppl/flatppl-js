@@ -3537,12 +3537,75 @@ function walkUnwrap(state: any, ir: IRNode, env: any, ctx: any): any {
   return walkInner(state, args[0], env, ctx);
 }
 
+// Structural, conservative check: true only when `ir` is PROVABLY already a
+// probability measure without consulting any weight function, so
+// normalize(ir) is a no-op (Z = 1). Mirrors a deliberately narrow subset of
+// typeinfer.ts's massOfExpr MASS_NORMALIZED rules (leaf distributions,
+// normalize's own output, iid of a normalized base) — the walker has no
+// type/mass annotations to consult, so it re-derives just enough of that
+// judgement here. Under-approximates on purpose: returning false on a case
+// that IS actually normalized only costs coverage (falls to
+// walkNormalizeRefuse below), whereas a false positive would silently
+// sample the wrong distribution — the catastrophic failure mode this wave
+// exists to avoid (PR #150 precedent).
+function _isProvablyNormalized(ir: any, ctx: any): boolean {
+  if (ir && ir.kind === 'ref' && ir.ns === 'self' && ctx && ctx.resolveRef) {
+    const resolved = ctx.resolveRef(ir.name);
+    if (resolved) return _isProvablyNormalized(resolved, ctx);
+  }
+  if (!ir || ir.kind !== 'call') return false;
+  // Every leaf distribution constructor is normalized (spec §08).
+  if (isKnownDistribution(ir.op)) return true;
+  // normalize(...)'s own result is always normalized once it type-checked
+  // (spec §06: Z = totalmass(M), the result is M/Z) — so a nested
+  // normalize is trivially already normalized.
+  if (ir.op === 'normalize') return true;
+  // iid(M, n) is a homomorphism on the mass class: iid of a normalized
+  // base is itself normalized (product of probability measures).
+  if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length === 2) {
+    return _isProvablyNormalized(ir.args[0], ctx);
+  }
+  return false;
+}
+
+// normalize(M): `rand` can only sample this when M is ALREADY a probability
+// measure — normalize is then the identity (spec §06: "given a measure M
+// with finite total mass Z = totalmass(M) > 0, returns the probability
+// measure M / Z"; Z = 1 here, nothing rescales, so sampling M directly IS
+// sampling normalize(M)). Any other base (weighted(w, M), superpose(...),
+// bayesupdate(...), an unrecognised composite, …) has a KNOWN closed-form
+// total mass (the density path can score it via logdensityof/totalmass),
+// but sampling M/Z in general requires reweighting (importance or
+// rejection sampling) this sampler does not implement — refuse with an
+// honest diagnostic naming that specific gap, not the generic "not a
+// measure we can sample" wall `normalize` used to hit before it had any
+// entry in MEASURE_OP_WALKERS.
+function walkNormalizeRefuse(state: any, ir: IRNode, env: any, ctx: any): any {
+  const args = ir.args || [];
+  if (args.length !== 1) {
+    throw new Error(`sampler.walk: normalize expected 1 arg, got ${args.length}`);
+  }
+  if (_isProvablyNormalized(args[0], ctx)) {
+    return walkInner(state, args[0], env, ctx);
+  }
+  throw new Error(
+    `sampler.walk: 'normalize' cannot be sampled here (spec §06 normalize, ` +
+    `§07 sec:random) — the total mass is known in closed form, but sampling ` +
+    `the normalized measure in general requires reweighting (importance or ` +
+    `rejection sampling) that this sampler does not implement. Known ` +
+    `normalization is not the same as samplable. If the wrapped measure is ` +
+    `itself already normalized, sample it directly instead of wrapping it ` +
+    `in normalize(...).`
+  );
+}
+
 const MEASURE_OP_WALKERS = {
   joint:       walkJoint,
   record:      walkJoint,
   iid:         walkIid,
   weighted:    walkWeightedRefuse,
   logweighted: walkWeightedRefuse,
+  normalize:   walkNormalizeRefuse,
   lawof:       walkUnwrap,
   draw:        walkUnwrap,
 };
