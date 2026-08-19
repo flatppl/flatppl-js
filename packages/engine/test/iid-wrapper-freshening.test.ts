@@ -35,11 +35,13 @@
 // standard error is sqrt(2/N) = 0.010 for Var and 1/sqrt(N) = 0.0071 for Cov,
 // so 0.06 is about 6 sigma — wide enough to survive an RNG-neutral refactor,
 // and 16 sigma away from the defect's Cov = 1. Note that the determinism does
-// NOT come from `_ctx-factory`'s seed: this materialiser path ignores
-// `rootKey` / `rootSeed` and the worker's `init` seed, and a plain
-// `x ~ Normal(0, 1)` draws the same values under any of them. That is
-// pre-existing and engine-wide, not specific to `iid`, but it means these
-// numbers must not be read as one sample from a seeded stream.
+// NOT come from `_ctx-factory`'s seed: the factory sets a SCALAR `rootKey` where
+// the engine's contract is the two-lane PhiloxKey `[k0, k1]`, so `foldIn`
+// collapses and every seed draws one stream. That is the scalar-as-rootKey
+// defect carded in flatppl-dev/TODO-flatppl-js.md (`worker.ts:240`), of which
+// the factory is a fourth site — not an engine-wide seed fault. It means these
+// numbers must not be read as one sample from a seeded stream, so quote the
+// draw count with any figure taken from here.
 
 const test = require('node:test');
 const assert = require('node:assert');

@@ -1704,16 +1704,25 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     };
     // `joint` / `record` replicate EVERY component, so each one is its own
     // replicated measure rather than one measure argument at a fixed position.
-    // Kwarg form carries `fields`, positional form `args`.
+    // Kwarg form carries `fields`, positional form `args`. `record` is here for
+    // symmetry with the materialiser's `record` derivation kind and is
+    // unreachable for a measure argument: §04 forbids a measure inside a record,
+    // so `iid(record(a = lawof(u), …), 3)` is a type error before this runs.
     const PRODUCT_OPS = new Set(['joint', 'record']);
     // Walk an `iid`'s measure argument, pruning the reified laws it replicates
     // and walking everything else normally. Resolves ref chains itself (§04
     // "Aliasing is just assignment") rather than pruning by node identity, so
     // a `lawof` reached by another route in the same expression is unaffected.
-    // `chain` is shared across the whole recursion: a ref reached twice stops
-    // resolving and falls through to `walk`, which both terminates a cyclic
-    // spelling and reports the genuinely shared node when two components name
-    // the same measure binding.
+    // `chain` is shared across the whole recursion, so a ref reached twice stops
+    // resolving and falls through to `walk`. That terminates a cyclic spelling.
+    // It also makes the verdict SPELLING-DEPENDENT for sibling components that
+    // name one law: `iid(joint(a = L, b = L), 3)` with `L = lawof(u)` reports
+    // `u`, while the inline `iid(joint(a = lawof(u), b = lawof(u)), 3)` does not,
+    // and §04 "Aliasing is just assignment" makes those the same program. The
+    // named form also errors under §06's input-binding ancestry clause rather
+    // than the **Singular joints** clause that actually governs a
+    // doubly-referenced draw. Over-reporting on a degenerate shape, so it is
+    // carded rather than fixed here; a per-path copy of `chain` is the fix.
     const walkIidMeasureArg = (arg: any, chain: Set<string>) => {
       let node = arg;
       while (node && node.kind === 'ref' && node.ns === 'self'
@@ -1734,9 +1743,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           return;
         }
         /* c8 ignore start -- a `joint` / `record` with neither `fields` nor
-           `args` is not a shape lowering produces (the materialiser's own
-           walkJoint throws on it); falling through to `walk` keeps the
-           report rather than pruning on an unrecognised node */
+           `args` is not a shape lowering produces: density.ts's
+           walkJointFieldsOrPositional, dispatched for both ops, ends in
+           `throw new Error('density: joint with neither fields nor args')`, so
+           an independent surface already treats it as impossible. Falling
+           through to `walk` keeps the report rather than pruning on an
+           unrecognised node. */
         walk(arg);
         return;
       }
