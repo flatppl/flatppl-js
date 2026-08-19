@@ -717,6 +717,14 @@ function fromSexpr(text: any) {
       const paramKwargs: string[] = [];
       const paramSources: any[] = [];
       for (const en of entries) {
+        // Spec §04 "Specifying reification boundaries": "Boundary input names
+        // must be distinct — a repeated name is a static error".
+        if (paramKwargs.includes(en.name)) {
+          diagnostics.push({ severity: 'error',
+            message: 'pir-sexpr: duplicate boundary input name \'' + en.name
+              + '\' in ' + op + ' %specinputs — boundary input names must be '
+              + 'distinct (spec §04 "Specifying reification boundaries")' });
+        }
         paramKwargs.push(en.name);
         params.push(en.ref.name);
         if (en.ref.ns === '%local') {

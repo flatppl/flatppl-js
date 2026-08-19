@@ -1783,6 +1783,67 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
 }
 
 /**
+ * Enforce distinct boundary input names on every `functionof` / `kernelof`
+ * call, per spec §04 "Specifying reification boundaries": "Boundary input
+ * names must be distinct — a repeated name is a static error, which likewise
+ * forbids a lambda or named function from repeating an argument name."
+ *
+ * One check covers every surface spelling because the parser desugars
+ * `f(a, b) = e` and `(a, b) -> e` to `functionof(e', a = _a_, b = _b_)`
+ * (see `desugarLambdaToFunctionof`), so all of them arrive here as a kwarg
+ * name list. The walk recurses because a reification may sit nested in an
+ * argument (`pushfwd(functionof(...), M)`, `broadcast((a, b) -> ..., ...)`)
+ * rather than at the top of a binding's RHS.
+ *
+ * The span is the repeated kwarg, which for the desugared spellings is the
+ * argument-name token itself.
+ *
+ * @param {object} node - root expression node
+ * @param {Diagnostic[]} diagnostics - mutable, appended to
+ */
+function validateBoundaryNames(node: any, diagnostics: any[]) {
+  function checkReification(call: any) {
+    const seen = new Set<string>();
+    // Arg 0 is the reified output expression; boundary kwargs follow.
+    for (let i = 1; i < call.args.length; i++) {
+      const arg = call.args[i];
+      if (!arg || arg.type !== 'KeywordArg') continue;
+      if (!seen.has(arg.name)) { seen.add(arg.name); continue; }
+      // `name = _name_` is the shape the lambda / function-definition
+      // desugaring produces, so name the surface concept the user wrote.
+      const fromSugar = arg.value && arg.value.type === 'Placeholder'
+        && arg.value.name === arg.name;
+      diagnostics.push({
+        severity: 'error',
+        message: fromSugar
+          ? `Duplicate argument name '${arg.name}': a lambda or named function `
+            + `must not repeat an argument name (spec §04 "Specifying `
+            + `reification boundaries")`
+          : `Duplicate boundary input name '${arg.name}': boundary input names `
+            + `must be distinct (spec §04 "Specifying reification boundaries")`,
+        loc: arg.loc,
+      });
+    }
+  }
+
+  // Structural walk over every child object rather than a node-type roster:
+  // the check needs no per-type logic, and an enumerated walk would silently
+  // stop covering a spelling whenever a new node type gains an expression child.
+  function walk(n: any) {
+    if (n == null || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+    if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier'
+        && (n.callee.name === 'functionof' || n.callee.name === 'kernelof')) {
+      checkReification(n);
+    }
+    for (const k of Object.keys(n)) {
+      if (k !== 'loc') walk(n[k]);
+    }
+  }
+  walk(node);
+}
+
+/**
  * Walk an AST collecting all distinct axis-ref names that appear in it.
  * Used by `validateSpecialOperation` for `aggregate` to verify each
  * declared output axis is actually referenced in the expr.
@@ -2949,6 +3010,7 @@ function analyze(ast: any, source: string, opts?: any) {
     const stmtType = classifyStatement(stmt.value);
     diagnostics.push(...validateSpecialOperation(stmt.value));
     validateHolesAndPlaceholders(stmt.value, diagnostics);
+    validateBoundaryNames(stmt.value, diagnostics);
     validateIndexing(stmt.value, diagnostics);
     const { deps, callDeps, bodyDeps, paramSourceDeps } = collectDeps(stmt.value, definedNames);
     const rhs = sliceSource(source, stmt.value.loc);
