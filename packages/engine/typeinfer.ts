@@ -1694,21 +1694,30 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const seen = new Set<string>();
     // The measure argument of each wrapper that leaves a replicated reified law
     // intact, by position in §06's signature table (`weighted(weight, base)`,
-    // `truncate(M, S)`, `pushfwd(f, M)`, …). `superpose` is deliberately absent:
-    // its sampler does not yet freshen per copy (it pins a branch per
-    // coordinate), and the sequencing rule is that the sampler is fixed before
-    // the report is removed. Over-reporting on a shape whose sampler is known
-    // broken is the safe half of that trade.
+    // `truncate(M, S)`, `pushfwd(f, M)`, …).
     const WRAPPER_MEASURE_ARG: Record<string, number> = {
       weighted: 1, logweighted: 1, normalize: 0, truncate: 0, pushfwd: 1, iid: 0,
     };
-    // `joint` / `record` replicate EVERY component, so each one is its own
-    // replicated measure rather than one measure argument at a fixed position.
-    // Kwarg form carries `fields`, positional form `args`. `record` is here for
-    // symmetry with the materialiser's `record` derivation kind and is
-    // unreachable for a measure argument: §04 forbids a measure inside a record,
-    // so `iid(record(a = lawof(u), …), 3)` is a type error before this runs.
-    const PRODUCT_OPS = new Set(['joint', 'record']);
+    // Ops that replicate EVERY argument, so each one is its own replicated
+    // measure rather than one measure argument at a fixed position.
+    //
+    // `joint` / `record` are the product case. Kwarg form carries `fields`,
+    // positional form `args`. `record` is here for symmetry with the
+    // materialiser's `record` derivation kind and is unreachable for a measure
+    // argument: §04 forbids a measure inside a record, so
+    // `iid(record(a = lawof(u), …), 3)` is a type error before this runs.
+    //
+    // `superpose` is the SUM case (§06 `superpose`: "measure addition:
+    // $\nu(A) = M_1(A) + M_2(A) + \ldots$"), and it prunes for the same reason:
+    // `iid` of a sum is a product of sums, so each copy selects its own
+    // component and draws its own copy of that component's sub-DAG. It was held
+    // out while its sampler pinned a component per coordinate; the sampler now
+    // selects per output index (materialiser.ts `matSuperpose`), so the
+    // sequencing rule — sampler first, then the report — is satisfied and the
+    // report would be a false rejection. Each branch's OTHER arguments are still
+    // walked, so a mixing weight `psi` read from outside still reports, matching
+    // the sampler, which still shares it.
+    const REPLICATED_ARG_OPS = new Set(['joint', 'record', 'superpose']);
     // Walk an `iid`'s measure argument, pruning the reified laws it replicates
     // and walking everything else normally. Resolves ref chains itself (§04
     // "Aliasing is just assignment") rather than pruning by node identity, so
@@ -1733,7 +1742,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
       if (!node || node.kind !== 'call') { walk(arg); return; }
       if (node.op === 'lawof') return;                   // the replicated sub-DAG
-      if (PRODUCT_OPS.has(node.op)) {
+      if (REPLICATED_ARG_OPS.has(node.op)) {
         if (Array.isArray(node.fields)) {
           for (const f of node.fields) walkIidMeasureArg(f && f.value, chain);
           return;
@@ -1746,9 +1755,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
            `args` is not a shape lowering produces: density.ts's
            walkJointFieldsOrPositional, dispatched for both ops, ends in
            `throw new Error('density: joint with neither fields nor args')`, so
-           an independent surface already treats it as impossible. Falling
-           through to `walk` keeps the report rather than pruning on an
-           unrecognised node. */
+           an independent surface already treats it as impossible. `superpose`
+           is positional-only (§06 `superpose(M1, M2, ...)`), so it always
+           carries `args`. Falling through to `walk` keeps the report rather
+           than pruning on an unrecognised node. */
         walk(arg);
         return;
       }
