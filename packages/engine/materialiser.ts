@@ -427,11 +427,30 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     // a positively-identified value — it can never mis-share a measure.
     // Tiling also makes y's psi the SAME canonical draw every other
     // consumer of psi sees (the old redraw used a separate seed stream).
+    //
+    // **Reified-law variates are exempt from the tiling** (§06 `iid`: "When
+    // `M` is a reified law, each of the $N$ copies carries its own copy of
+    // the reified sub-DAG"). `lawof(u)`'s variate `u` is value-TYPED, so
+    // classification by type alone tiled it and every coordinate of
+    // `iid(weighted(2.0, lawof(u)), 3)` was the SAME draw — var = cov, a
+    // singular diagonal where §06 defines a product measure. The variate is
+    // reached in MEASURE position (`_reifiedVariatesUnder`), so a node reached
+    // ONLY as a parameter is never exempt: `iid(Normal(mu = u, …), n)` and the
+    // repeat axis share exactly as before.
+    //
+    // A node in BOTH positions — the wrapper's own weight AND the replicated
+    // variate, as in `superpose(weighted(psi, lawof(psi)), …)` — is exempt, so
+    // it stops being tiled. §06 gives no tie-break there: the same node is
+    // fixed before replication as a weight and copied per coordinate as a
+    // variate. Measure position wins here because that is the direction §06
+    // states outright, and the shapes are degenerate.
     if (!ctx.derivations || !ctx.derivations[d.from]) {
       return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
     }
     const k = d.dims.reduce((p: any, n: any) => p * n, 1);
     const N = ctx.sampleCount;
+    const reifiedVariates = _reifiedVariatesUnder(
+      d.from, ctx.derivations, ctx.bindings);
     const inflatedCache = new Map();
     const inflatedCtx: any = Object.assign({}, ctx, {
       sampleCount: N * k,
@@ -452,14 +471,16 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     inflatedCtx.getMeasure = function(nn: string) {
       if (inflatedCache.has(nn)) return inflatedCache.get(nn);
       // Repeat-axis split (see the block comment above). A binding is
-      // an atom-level VALUE draw iff its inferred type is non-measure;
-      // those are held constant across the k inner draws by tiling the
-      // parent's N-atom draw ×k. Everything else — M itself and its
-      // sub-measures — redraws freshly at the inflated N×k count.
+      // an atom-level VALUE draw iff its inferred type is non-measure AND
+      // it is not a reified law's variate; those are held constant across
+      // the k inner draws by tiling the parent's N-atom draw ×k. Everything
+      // else — M itself, its sub-measures, and the variates of the reified
+      // laws inside it — redraws freshly at the inflated N×k count.
       const bdef = (ctx.bindings && ctx.bindings.get)
         ? ctx.bindings.get(nn) : null;
       const bt = bdef && bdef.inferredType;
-      const isValueDraw = !!(bt && bt.kind && bt.kind !== 'measure');
+      const isValueDraw = !!(bt && bt.kind && bt.kind !== 'measure')
+        && !reifiedVariates.has(nn);
       let p: any;
       if (isValueDraw) {
         p = Promise.resolve(ctx.getMeasure(nn))
@@ -623,6 +644,75 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
 // recognised as its own leaf shape below — it has a worker primitive
 // (`truncateSampleN`) that takes the inflated count directly.
 const IID_LEAF_PRESERVING_KINDS = new Set(['alias', 'normalize']);
+
+// Derivation fields that hold the name of a SUB-MEASURE. A name reached
+// along one of these is a measure the walk may keep descending through;
+// distribution parameters and weight functions never appear here — they
+// live in `distIR` / `weightIR` / `ir`, which `_reifiedVariatesUnder`
+// never enters.
+const MEASURE_CHILD_NAME_FIELDS = ['from'];
+const MEASURE_CHILD_LIST_FIELDS = ['fromNames', 'elems'];
+const MEASURE_CHILD_MAP_FIELDS = ['fields'];
+
+/**
+ * The value bindings that are the VARIATE of a reified law inside the
+ * measure `name` denotes — the nodes §06 `iid` copies per coordinate:
+ * "When `M` is a reified law, each of the $N$ copies carries its own copy
+ * of the reified sub-DAG, stochastic ancestors included; `iid` never shares
+ * nodes between copies."
+ *
+ * `lawof(u)` lowers to a measure-position alias whose `from` is the variate
+ * `u`, so a NON-measure-typed binding reached along these edges is a
+ * reification boundary. A node reached ONLY as a distribution parameter is
+ * never reached, which is what keeps `iid(Normal(mu = u, …), n)`'s `u` shared —
+ * §06's own example `iid(Normal(mu = a, sigma = b), 100)` reads one `a` and
+ * one `b`. A node that occupies BOTH positions (the wrapper's own weight and
+ * the replicated variate) IS exempt; see the tie-break note at the call site.
+ *
+ * The same field list keeps being followed after the walk lands on a value
+ * binding, so the exemption propagates through VALUE land along those edges
+ * too: `t = psi` (an `alias`) exempts `psi` as well as `t`, and a `record`
+ * under a `lawof` exempts its fields. That is §06's "stochastic ancestors
+ * included" as far as these edges reach it — an `evaluate` derivation
+ * (`shifted = psi + 1.0`) holds its dependencies in `ir`, which is not in the
+ * list, so the walk stops at `shifted`.
+ *
+ * Under-approximates on purpose. A name this walk misses keeps the caller's
+ * tiling, which reproduces today's behaviour. A false POSITIVE would
+ * freshen an atom-level parameter that the atom's k inner draws must share
+ * (the repeat axis, engine-concepts §22.4), so the walk follows only the
+ * edges it can name.
+ */
+function _reifiedVariatesUnder(
+  name: string, derivations: any, bindings: any,
+): Set<string> {
+  const out = new Set<string>();
+  if (!derivations || !bindings || !bindings.get) return out;
+  const seen = new Set<string>();
+  const visit = (nn: string) => {
+    if (!nn || seen.has(nn)) return;
+    seen.add(nn);
+    const b = bindings.get(nn);
+    const bt = b && b.inferredType;
+    if (bt && bt.kind && bt.kind !== 'measure') out.add(nn);
+    const d = derivations[nn];
+    if (!d) return;
+    for (const f of MEASURE_CHILD_NAME_FIELDS) {
+      if (typeof d[f] === 'string') visit(d[f]);
+    }
+    for (const f of MEASURE_CHILD_LIST_FIELDS) {
+      if (Array.isArray(d[f])) for (const c of d[f]) if (typeof c === 'string') visit(c);
+    }
+    for (const f of MEASURE_CHILD_MAP_FIELDS) {
+      const m = d[f];
+      if (m && typeof m === 'object' && !Array.isArray(m)) {
+        for (const k in m) if (typeof m[k] === 'string') visit(m[k]);
+      }
+    }
+  };
+  visit(name);
+  return out;
+}
 
 // Walk the derivation graph to find a leaf shape iid can route to a
 // SINGLE worker round-trip:
