@@ -434,9 +434,16 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     // classification by type alone tiled it and every coordinate of
     // `iid(weighted(2.0, lawof(u)), 3)` was the SAME draw — var = cov, a
     // singular diagonal where §06 defines a product measure. The variate is
-    // reached in MEASURE position (`_reifiedVariatesUnder`), which a
-    // parameter never is, so exempting it leaves `iid(Normal(mu = u, …), n)`
-    // and the repeat axis sharing exactly as before.
+    // reached in MEASURE position (`_reifiedVariatesUnder`), so a node reached
+    // ONLY as a parameter is never exempt: `iid(Normal(mu = u, …), n)` and the
+    // repeat axis share exactly as before.
+    //
+    // A node in BOTH positions — the wrapper's own weight AND the replicated
+    // variate, as in `superpose(weighted(psi, lawof(psi)), …)` — is exempt, so
+    // it stops being tiled. §06 gives no tie-break there: the same node is
+    // fixed before replication as a weight and copied per coordinate as a
+    // variate. Measure position wins here because that is the direction §06
+    // states outright, and the shapes are degenerate.
     if (!ctx.derivations || !ctx.derivations[d.from]) {
       return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
     }
@@ -655,11 +662,20 @@ const MEASURE_CHILD_MAP_FIELDS = ['fields'];
  * nodes between copies."
  *
  * `lawof(u)` lowers to a measure-position alias whose `from` is the variate
- * `u`, so a NON-measure-typed binding reached along measure-position edges
- * is a reification boundary. A distribution parameter cannot be reached
- * that way, which is what keeps `iid(Normal(mu = u, …), n)`'s `u` shared —
+ * `u`, so a NON-measure-typed binding reached along these edges is a
+ * reification boundary. A node reached ONLY as a distribution parameter is
+ * never reached, which is what keeps `iid(Normal(mu = u, …), n)`'s `u` shared —
  * §06's own example `iid(Normal(mu = a, sigma = b), 100)` reads one `a` and
- * one `b`.
+ * one `b`. A node that occupies BOTH positions (the wrapper's own weight and
+ * the replicated variate) IS exempt; see the tie-break note at the call site.
+ *
+ * The same field list keeps being followed after the walk lands on a value
+ * binding, so the exemption propagates through VALUE land along those edges
+ * too: `t = psi` (an `alias`) exempts `psi` as well as `t`, and a `record`
+ * under a `lawof` exempts its fields. That is §06's "stochastic ancestors
+ * included" as far as these edges reach it — an `evaluate` derivation
+ * (`shifted = psi + 1.0`) holds its dependencies in `ir`, which is not in the
+ * list, so the walk stops at `shifted`.
  *
  * Under-approximates on purpose. A name this walk misses keeps the caller's
  * tiling, which reproduces today's behaviour. A false POSITIVE would

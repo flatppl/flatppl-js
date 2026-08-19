@@ -26,16 +26,20 @@
 // `u ~ Normal(0, 1)`: Var = 1 and Cov = 0 per §06's product definition, against
 // the singular alternative Cov = Var = 1. The `truncate` row's Var uses the
 // closed form for a standard normal truncated to [-1, 1],
-// 1 - 2aφ(a)/(2Φ(a)-1) = 0.29096 at a = 1. The density targets are
+// 1 - 2aφ(a)/(2Φ(a)-1) = 0.291125 at a = 1. The density targets are
 // log 2 + logpdf sums written out below. flatppl-rust evaluates no density and
 // is not consulted.
 //
-// TOLERANCES. Moments run at a FIXED seed (test/_ctx-factory.ts, 0xBA5E) so
-// every number here is deterministic; the tolerances below are Monte-Carlo
-// slack, not flakiness insurance. At N = 20000 the standard error is
-// sqrt(2/N) = 0.010 for Var and 1/sqrt(N) = 0.0071 for Cov, so 0.06 is ~6 sigma
-// — wide enough to survive an RNG-neutral refactor, and 16 sigma away from the
-// defect's Cov = 1.
+// TOLERANCES. Every moment here is deterministic run to run, so the tolerances
+// below are Monte-Carlo slack rather than flakiness insurance. At N = 20000 the
+// standard error is sqrt(2/N) = 0.010 for Var and 1/sqrt(N) = 0.0071 for Cov,
+// so 0.06 is about 6 sigma — wide enough to survive an RNG-neutral refactor,
+// and 16 sigma away from the defect's Cov = 1. Note that the determinism does
+// NOT come from `_ctx-factory`'s seed: this materialiser path ignores
+// `rootKey` / `rootSeed` and the worker's `init` seed, and a plain
+// `x ~ Normal(0, 1)` draws the same values under any of them. That is
+// pre-existing and engine-wide, not specific to `iid`, but it means these
+// numbers must not be read as one sample from a seeded stream.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -91,8 +95,9 @@ const FRESHENING_ROSTER: Array<[string, string, number, number]> = [
   ['normalize',   'W = normalize(lawof(u))\nb ~ iid(W, 3)\n',                    0.0, 1.0],
   ['pushfwd',     'W = pushfwd(x -> x + 1.0, lawof(u))\nb ~ iid(W, 3)\n',        1.0, 1.0],
   // Standard normal truncated to [-1, 1]: mean 0 by symmetry, variance
-  // 1 - 2φ(1)/(2Φ(1)-1) = 0.2909584116850662.
-  ['truncate',    'W = truncate(lawof(u), interval(-1.0, 1.0))\nb ~ iid(W, 3)\n', 0.0, 0.2909584116850662],
+  // 1 - 2φ(1)/(2Φ(1)-1) = 0.29112509477279314, which
+  // `scipy.stats.truncnorm(-1, 1).var()` gives as 0.291125094772793.
+  ['truncate',    'W = truncate(lawof(u), interval(-1.0, 1.0))\nb ~ iid(W, 3)\n', 0.0, 0.29112509477279314],
 ];
 
 for (const [label, body, wantMean, wantVar] of FRESHENING_ROSTER) {
@@ -139,24 +144,32 @@ test('a NESTED iid over a wrapped reified law freshens all six coordinates',
     }
   });
 
-test('a G1 record iid over wrapped reified laws produces DISTINCT rows',
-  async () => {
-    // `iid` over a record law materialises as a table (G1). Pre-fix all k rows
-    // were byte-identical — the same defect, visible without any moment.
-    const { ctx } = ctxFor(STD_NORMAL
-      + 'w ~ Normal(mu = 10.0, sigma = 1.0)\n'
-      + 'J = joint(a = weighted(2.0, lawof(u)), b = weighted(2.0, lawof(w)))\n'
-      + 'b ~ iid(J, 3)\n', 1);
-    const m = await ctx.getMeasure('b');
-    assert.ok(m.__table__, 'expected a table value');
-    assert.equal(m.nrows, 3);
-    for (const col of ['a', 'b']) {
-      const vals = Array.from(m.columns[col].data as any).map(Number);
-      assert.equal(vals.length, 3);
-      assert.equal(new Set(vals).size, 3,
-        `column ${col} rows are not distinct: ${vals.join(', ')}`);
-    }
-  });
+// `iid` over a record law materialises as a table (G1). Pre-fix all k rows were
+// byte-identical — the same defect, visible without any moment. BOTH spellings
+// were broken at da7391c, the BARE one included: the locus is the composite
+// fallback, which every one of these compositions routes to, not the wrapper.
+const RECORD_SPELLINGS: Array<[string, string]> = [
+  ['bare', 'J = joint(a = lawof(u), b = lawof(w))\n'],
+  ['wrapped', 'J = joint(a = weighted(2.0, lawof(u)), b = weighted(2.0, lawof(w)))\n'],
+];
+
+for (const [label, decl] of RECORD_SPELLINGS) {
+  test(`a G1 record iid over ${label} reified laws produces DISTINCT rows`,
+    async () => {
+      const { ctx } = ctxFor(STD_NORMAL
+        + 'w ~ Normal(mu = 10.0, sigma = 1.0)\n' + decl
+        + 'b ~ iid(J, 3)\n', 1);
+      const m = await ctx.getMeasure('b');
+      assert.ok(m.__table__, 'expected a table value');
+      assert.equal(m.nrows, 3);
+      for (const col of ['a', 'b']) {
+        const vals = Array.from(m.columns[col].data as any).map(Number);
+        assert.equal(vals.length, 3);
+        assert.equal(new Set(vals).size, 3,
+          `column ${col} rows are not distinct: ${vals.join(', ')}`);
+      }
+    });
+}
 
 // ── The two shapes that must NOT freshen ────────────────────────────────────
 
@@ -258,6 +271,7 @@ test('normalize and pushfwd wrappers score the unweighted product', async () => 
 const W1_PREAMBLE = `
 z = elementof(reals)
 u ~ Normal(mu = z, sigma = 1.0)
+w ~ Normal(mu = 0.0, sigma = 1.0)
 a1 ~ Normal(mu = u, sigma = 1.0)
 K1 = kernelof(a1, z = z)
 `;
@@ -271,6 +285,13 @@ const WRAPPED_COMPONENTS: Array<[string, string]> = [
   ['nested iid',  'M = iid(iid(weighted(2.0, lawof(u)), 2), 3)'],
   // §04 "Aliasing is just assignment" — the chain resolves.
   ['alias chain', 'L = lawof(u)\nL2 = L\nW = weighted(2.0, L2)\nM = iid(W, 3)'],
+  // `joint` / `record` replicate every component, so each one prunes its own
+  // law. The BARE record spelling was singular at da7391c for the same reason
+  // the wrapped one was — it takes the same composite fallback — and the
+  // sampler freshens it now, so the walk must stop reporting it.
+  ['bare record',    'M = iid(joint(a = lawof(u), b = lawof(w)), 3)'],
+  ['wrapped record', 'M = iid(joint(a = weighted(2.0, lawof(u)), b = weighted(2.0, lawof(w))), 3)'],
+  ['positional joint', 'M = iid(joint(lawof(u), lawof(w)), 3)'],
 ];
 
 for (const [label, decl] of WRAPPED_COMPONENTS) {
@@ -298,6 +319,23 @@ KJ = joint(p = K1, q = M)
     assert.ok(errors.some((m: string) => /share the stochastic node 'p'/.test(m)),
       'got: ' + errors.join(' | '));
   });
+
+test('a DISTRIBUTION component of a replicated joint is still walked', () => {
+  // Pruning a `joint` component by component must not prune a component that
+  // replicates nothing: `Normal(mu = p, …)` reads one `p` fixed before
+  // replication, so the sharing report stands for that component alone.
+  const errors = infer(`
+z = elementof(reals)
+p ~ Normal(mu = z, sigma = 1.0)
+u ~ Normal(mu = 0.0, sigma = 1.0)
+a1 ~ Normal(mu = p, sigma = 1.0)
+K1 = kernelof(a1, z = z)
+M = iid(joint(a = lawof(u), b = Normal(mu = p, sigma = 1.0)), 3)
+KJ = joint(p = K1, q = M)
+`);
+  assert.ok(errors.some((m: string) => /share the stochastic node 'p'/.test(m)),
+    'got: ' + errors.join(' | '));
+});
 
 test('a shared node in a TRUNCATION region is still walked', () => {
   const errors = infer(`

@@ -1674,45 +1674,84 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // function, a truncation region, a pushfwd map — name nodes fixed BEFORE
   // replication, exactly like a distribution's parameters, so
   // `iid(weighted(p, lawof(u)), n)` still reports `p`.
+  //
+  // The roster must stay in step with the materialiser's `_reifiedVariatesUnder`
+  // exempt walk, which decides the same question off the DERIVATION graph. The
+  // two are pinned together in `test/iid-wrapper-freshening.test.ts`; a wrapper
+  // added to one and not the other means the report and the sampler disagree
+  // about whether a node is shared, which is the failure this skip exists to
+  // remove. `joint` / `record` were exactly that mismatch for one round: the
+  // sampler freshened the record spelling while the walk still reported it.
+  //
+  // One family stays divergent, in the over-reporting direction. When a node is
+  // BOTH the wrapper's weight and the replicated variate —
+  // `iid(weighted(p, lawof(p)), n)` — this walk reports `p` (it walks the weight
+  // argument) while the sampler exempts and freshens it. §06 gives no tie-break
+  // for a node in both positions, the spellings are degenerate, and reporting is
+  // the safe half, so it is recorded rather than resolved.
   function stochasticAncestors(ir: any, stopAt: Set<string>): Set<string> {
     const found = new Set<string>();
     const seen = new Set<string>();
     // The measure argument of each wrapper that leaves a replicated reified law
     // intact, by position in §06's signature table (`weighted(weight, base)`,
     // `truncate(M, S)`, `pushfwd(f, M)`, …). `superpose` is deliberately absent:
-    // its sampler does not yet freshen per copy, and the sequencing rule is that
-    // the sampler is fixed before the report is removed.
+    // its sampler does not yet freshen per copy (it pins a branch per
+    // coordinate), and the sequencing rule is that the sampler is fixed before
+    // the report is removed. Over-reporting on a shape whose sampler is known
+    // broken is the safe half of that trade.
     const WRAPPER_MEASURE_ARG: Record<string, number> = {
       weighted: 1, logweighted: 1, normalize: 0, truncate: 0, pushfwd: 1, iid: 0,
     };
-    // Walk an `iid`'s measure argument, pruning the reified law it replicates
+    // `joint` / `record` replicate EVERY component, so each one is its own
+    // replicated measure rather than one measure argument at a fixed position.
+    // Kwarg form carries `fields`, positional form `args`.
+    const PRODUCT_OPS = new Set(['joint', 'record']);
+    // Walk an `iid`'s measure argument, pruning the reified laws it replicates
     // and walking everything else normally. Resolves ref chains itself (§04
     // "Aliasing is just assignment") rather than pruning by node identity, so
     // a `lawof` reached by another route in the same expression is unaffected.
-    const walkIidMeasureArg = (arg: any) => {
+    // `chain` is shared across the whole recursion: a ref reached twice stops
+    // resolving and falls through to `walk`, which both terminates a cyclic
+    // spelling and reports the genuinely shared node when two components name
+    // the same measure binding.
+    const walkIidMeasureArg = (arg: any, chain: Set<string>) => {
       let node = arg;
-      const chain = new Set<string>();
-      for (;;) {
-        while (node && node.kind === 'ref' && node.ns === 'self'
-            && typeof node.name === 'string' && !chain.has(node.name)) {
-          chain.add(node.name);
-          const b = loweredModule.bindings.get(node.name);
-          node = b && b.rhs;
-        }
-        if (!node || node.kind !== 'call') { walk(arg); return; }
-        if (node.op === 'lawof') return;                 // the replicated sub-DAG
-        const pos = WRAPPER_MEASURE_ARG[node.op];
-        const args = Array.isArray(node.args) ? node.args : null;
-        if (pos === undefined || !args || !args[pos]) { walk(arg); return; }
-        for (let i = 0; i < args.length; i++) if (i !== pos) walk(args[i]);
-        node = args[pos];
+      while (node && node.kind === 'ref' && node.ns === 'self'
+          && typeof node.name === 'string' && !chain.has(node.name)) {
+        chain.add(node.name);
+        const b = loweredModule.bindings.get(node.name);
+        node = b && b.rhs;
       }
+      if (!node || node.kind !== 'call') { walk(arg); return; }
+      if (node.op === 'lawof') return;                   // the replicated sub-DAG
+      if (PRODUCT_OPS.has(node.op)) {
+        if (Array.isArray(node.fields)) {
+          for (const f of node.fields) walkIidMeasureArg(f && f.value, chain);
+          return;
+        }
+        if (Array.isArray(node.args)) {
+          for (const c of node.args) walkIidMeasureArg(c, chain);
+          return;
+        }
+        /* c8 ignore start -- a `joint` / `record` with neither `fields` nor
+           `args` is not a shape lowering produces (the materialiser's own
+           walkJoint throws on it); falling through to `walk` keeps the
+           report rather than pruning on an unrecognised node */
+        walk(arg);
+        return;
+      }
+      /* c8 ignore stop */
+      const pos = WRAPPER_MEASURE_ARG[node.op];
+      const args = Array.isArray(node.args) ? node.args : null;
+      if (pos === undefined || !args || !args[pos]) { walk(arg); return; }
+      for (let i = 0; i < args.length; i++) if (i !== pos) walk(args[i]);
+      walkIidMeasureArg(args[pos], chain);
     };
     const walk = (node: any) => {
       if (!node || typeof node !== 'object') return;
       if (Array.isArray(node)) { for (const c of node) walk(c); return; }
       if (node.kind === 'call' && node.op === 'iid' && Array.isArray(node.args)) {
-        walkIidMeasureArg(node.args[0]);
+        walkIidMeasureArg(node.args[0], new Set<string>());
         for (let i = 1; i < node.args.length; i++) walk(node.args[i]);
         return;
       }
