@@ -1842,7 +1842,7 @@ const ARITH_OPS = {
   // `[NaN, NaN]`, matching `accumulate(max, ·)`.
   //
   // NaN LATER in the input still does not propagate — `cummax([1, NaN, 2])`
-  // gives `[1, 1, 1]` against `[1, NaN, NaN]` — because a `>` comparison
+  // gives `[1, 1, 2]` against `[1, NaN, NaN]` — because a `>` comparison
   // skips NaN. That matches the engine's own comparison-seeded `maximum`;
   // §07 states no NaN rule (TODO-flatppl-js.md).
   cummax: (a: any) => {
