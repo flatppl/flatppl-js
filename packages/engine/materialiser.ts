@@ -1114,16 +1114,17 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
   //
   // **Repeat axis (spec §06).** Under an `iid(superpose(…), k)`
   // composite fallback, matIid sets `ctx.repeatBlock = k` (the iid
-  // axis recorded on the binding's axisStack). The k inner draws of
-  // atom b are iid from atom b's mixture: each must INDEPENDENTLY
-  // select a component, but all share atom b's per-atom params
-  // (weights / component params, tiled into the inflated batch by
-  // `tileMeasureAtomMajor`). A global pool-resample would mix atoms
-  // across the [N, k] block boundary (atom b's draws drawing from
-  // atom b'≠b's components) — correct marginal, wrong joint. The
-  // repeat-block path resamples WITHIN each contiguous k-block, so
-  // atom b's k slots draw only from atom b's per-component pool:
-  // independent per-draw selection, shared per-atom conditioning.
+  // axis recorded on the binding's axisStack). §06's `iid` entry makes
+  // the k inner draws of atom b a product measure — "the product
+  // measure M^⊗N … `iid` never shares nodes between copies" — so each
+  // must INDEPENDENTLY select a component, while still sharing atom b's
+  // per-atom params (weights / component params, tiled into the
+  // inflated batch by `tileMeasureAtomMajor`). Both properties come
+  // from selecting per OUTPUT INDEX rather than per block: index i
+  // picks among the components' own index-i draws, which are atom b's,
+  // and consumes its own prng draw. A pool-resample across the whole
+  // block instead pinned a component per slot (see the selection loop
+  // below).
   return Promise.all(d.fromNames.map(ctx.getMeasure)).then((parents: any[]) => {
     let totalN = 0;
     for (const p of parents) totalN += p.samples.length;
@@ -1140,21 +1141,23 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     // `normalize(weighted(fn, Lebesgue))`: uniform sample positions whose
     // density lives in the logWeights) must be SIR-resampled to equal-weight
     // atoms FIRST, so its density is baked into the sample POSITIONS before
-    // the block-aware mixture selection below. Without this, the K=1 per-index
+    // the mixture selection below. Without this, the K=1 per-index
     // selection picks between two importance-weighted parents at their
     // (uniform) positions and never concentrates → a population mixture of
     // density-by-formula components plots flat (Buffy #307). An already
     // equal-weight parent (its positions already represent its law, e.g. a
     // per-atom `Normal(mu_i, …)` draw) is left UNTOUCHED, preserving the
-    // per-atom correspondence the block-aware path depends on
+    // per-index correspondence the selection below depends on
     // (iid-repeat-axis "superpose base case"). The resampled parent keeps its
     // own total mass (carried into the equal per-atom weight), so the mixture
     // proportions and downstream normalize Z are unchanged.
-    // Repeat block: k inner draws per atom (iid(superpose, k)); else 1.
-    // At K>1 the block-aware path below preserves each atom's per-component
-    // correspondence (a per-atom mixing weight psi_i tied to the [N,k] block),
-    // so importance-weighted parents must NOT be globally resampled there — it
-    // would decorrelate the block. The density-baking resample is a K=1 concern.
+    // Repeat block: k inner draws per atom (iid(superpose, k)); else 1. K is
+    // read ONLY to suppress this lift. A global resample here permutes
+    // positions across the [N, k] block, decorrelating a per-atom mixing
+    // weight psi_i from the draws it conditions, so at K>1 an
+    // importance-weighted parent is left alone and its density stays
+    // unbaked — an accepted gap on that shape, tracked with the K=1
+    // density-baking case. The selection below never reads K.
     const K = (typeof ctx.repeatBlock === 'number' && ctx.repeatBlock > 1)
       ? ctx.repeatBlock : 1;
     const liftPrng = makeMainThreadPrng(nameSeed(name + ':superpose-lift', ctx.rootKey));
@@ -1182,36 +1185,36 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     const prng = makeMainThreadPrng(nameSeed(name, ctx.rootKey));
     const out = new Float64Array(sc);
 
-    // Block-aware resampling is the GENERAL case, not just the repeat
-    // axis: each contiguous K-block draws only from its own component
-    // pool, preserving per-atom correspondence. K = the iid repeat block
-    // when present (`iid(superpose,k)`), else 1 — the base case, where
-    // out[i] selects among atom i's OWN per-component draws rather than
-    // the global N·P pool. This is correct for per-atom-parameterized
-    // superpose (weights/components depend on a per-atom draw) and only
-    // differs from a global pool-resample by which equally-valid atoms
-    // are kept for ordinary population mixtures. Falls back to a global
-    // resample only when the parents aren't all the output length (e.g.
-    // pooling populations of different sizes). K computed above.
-    const blockAware = sc % K === 0
-      && lifted.every((l: any) => l.samples.length === sc);
-    if (blockAware) {
-      // Per-atom mixture: resample each k-block from its own
-      // P×K component pool (P = number of superposed parents).
+    // Per-INDEX component selection is the GENERAL case, not just the
+    // repeat axis: output index i selects among the P components' OWN
+    // index-i draws, so a per-atom-parameterized superpose (weights or
+    // component params depending on a per-atom draw) keeps its
+    // correspondence, and under `iid(superpose, k)` each of the k slots
+    // in a block is its own iid coordinate and selects INDEPENDENTLY.
+    // One `systematicResample` over P weights with n = 1 is a single
+    // multinomial draw (one prng call, one position u, the first
+    // cumulative bucket at or past it). Falls back to a global resample
+    // only when the parents aren't all the output length (e.g. pooling
+    // populations of different sizes).
+    //
+    // THE DEFECT this replaced. A single `systematicResample` over the
+    // P×K block pool with n = K pinned a component per slot: systematic
+    // resampling spreads its K positions evenly over the cumulative
+    // weights ((j + u)/K for j = 0…K−1) and the pool was ordered by
+    // parent, so position j fell inside parent-stratum j. With two
+    // equal-weight branches and k = 3, slot 0 always took branch 0 and
+    // slot 2 always branch 1 — per-coordinate means −3 / 0 / +3 where
+    // §06's product of three mixtures is mean 0 in every coordinate.
+    // K = 1 is unaffected: the pool is the same P weights and the same
+    // single prng call, so that stream is unchanged.
+    const perIndex = lifted.every((l: any) => l.samples.length === sc);
+    if (perIndex) {
       const P = lifted.length;
-      const poolSamples = new Float64Array(P * K);
-      const poolLW = new Float64Array(P * K);
-      for (let base = 0; base < sc; base += K) {
-        for (let p = 0; p < P; p++) {
-          const ls = lifted[p].samples;
-          const lw = lifted[p].logWeights;
-          for (let j = 0; j < K; j++) {
-            poolSamples[p * K + j] = ls[base + j];
-            poolLW[p * K + j] = lw[base + j];
-          }
-        }
-        const bidx = empirical.systematicResample(poolLW, K, prng);
-        for (let j = 0; j < K; j++) out[base + j] = poolSamples[bidx[j]];
+      const slotLW = new Float64Array(P);
+      for (let i = 0; i < sc; i++) {
+        for (let p = 0; p < P; p++) slotLW[p] = lifted[p].logWeights[i];
+        const pick = empirical.systematicResample(slotLW, 1, prng)[0];
+        out[i] = lifted[pick].samples[i];
       }
     } else {
       const idx = empirical.systematicResample(combinedLogWeights, sc, prng);

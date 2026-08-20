@@ -197,21 +197,44 @@ test('the REPEAT AXIS still shares an atom-level parameter across the k draws',
     // "draw psi_i per atom, then k iid draws from M at that psi_i". `psi` is
     // reached as the weight ARGUMENT, never in measure position, so the
     // freshening carve-out must leave it tiled. Without the tiling the k inner
-    // draws would each see their own psi — the right marginal, the wrong joint —
-    // and the mixture's per-coordinate means would collapse toward each other.
+    // draws would each see their own psi — the right marginal, the wrong joint.
     const src = `
 psi ~ Beta(alpha = 2.0, beta = 2.0)
 zib = superpose(weighted(psi, Normal(mu = 0.0, sigma = 0.001)), weighted(1.0 - psi, Normal(mu = 5.0, sigma = 1.0)))
 y ~ iid(zib, 4)
 `;
-    const { mean } = await momentsOf(src, 'y', 4);
-    // The per-position means stay ORDERED and far apart, the fingerprint of a
-    // shared psi driving a within-atom resample. (Pinned as a regression
-    // witness, not as a spec claim about this shape's own correctness.)
-    assert.ok(mean[0] < mean[1] && mean[1] < mean[2] && mean[2] < mean[3],
-      'repeat-axis means are no longer ordered: ' + mean.join(', '));
-    assert.ok(mean[3] - mean[0] > 3.0,
-      'repeat-axis mean spread collapsed: ' + mean.join(', '));
+    const { mean, varr, cov } = await momentsOf(src, 'y', 4);
+    // CROSS-COORDINATE COVARIANCE is the statistic that separates a shared psi
+    // from a freshened one: it is Var(E[Y | psi]) when psi is shared and 0 when
+    // it is not, while the mean and variance are the same either way.
+    //
+    // Closed form by conditioning, psi ~ Beta(2, 2) (mean 1/2, var 1/20):
+    // E[Y|psi] = 5(1-psi) so Cov(Y_i, Y_j) = 25·Var(psi) = 1.25;
+    // Var(Y|psi) = psi·0.001² + (1-psi) + 25·psi(1-psi) so
+    // E[Var(Y|psi)] = 0.5 + 25·(1/2 - 3/10) = 5.5 and Var(Y) = 6.75;
+    // E[Y] = 2.5.
+    //
+    // This replaces an earlier witness that asserted the per-position means
+    // stayed ORDERED and spread over 3 units (0.2579 / 1.5730 / 3.4082 /
+    // 4.7392). That gradient was the branch PINNING, not shared-psi evidence:
+    // matSuperpose stratified its component selection across the k slots, so
+    // slot 0 favoured the psi-weighted spike and slot 3 the wide component.
+    // With the selection independent per coordinate all four positions share
+    // one marginal, which is what §06's product measure requires.
+    //
+    // Wider than this file's MOMENT_TOL: a covariance on a variance-6.75
+    // variate at N = 20000 has a standard error around 0.05, and the measured
+    // spread here is 1.154 to 1.207 against 1.239 to 1.251 at 200000 draws.
+    const ZIB_TOL = 0.3;
+    for (let i = 0; i < 4; i++) {
+      assert.ok(Math.abs(mean[i] - 2.5) < ZIB_TOL, `mean[${i}] = ${mean[i]}`);
+      assert.ok(Math.abs(varr[i] - 6.75) < ZIB_TOL, `var[${i}] = ${varr[i]}`);
+    }
+    for (let i = 1; i < 4; i++) {
+      assert.ok(Math.abs(cov[i] - 1.25) < ZIB_TOL,
+        `cov[0,${i}] = ${cov[i]}, want 1.25 — a covariance near 0 means psi was `
+        + 'freshened per coordinate instead of tiled across the repeat block');
+    }
   });
 
 // ── The density path agrees with the fixed sampler ───────────────────────────
@@ -353,21 +376,23 @@ KJ = joint(p = K1, q = M)
     'got: ' + errors.join(' | '));
 });
 
-test('superpose is NOT in the widened roster — its sampler does not freshen',
+test('superpose IS in the roster now that its sampler freshens per coordinate',
   () => {
-    // Measured at this commit: `iid(superpose(weighted(0.5, lawof(u)),
-    // weighted(0.5, lawof(w))), 3)` pins coordinate 0 to one branch and
-    // coordinate 2 to the other (per-coordinate means -3.0 / 0.0 / +3.0 for
-    // laws centred at -3 and +3, where a product of mixtures has mean 0 in
-    // every coordinate). The sequencing rule is that the sampler is fixed
-    // before the static report is removed, so the report stays.
-    const errors = infer(`
+    // This row was the inverse assertion while `matSuperpose` pinned a
+    // component per coordinate: `iid(superpose(weighted(0.5, lawof(u)),
+    // weighted(0.5, lawof(w))), 3)` gave per-coordinate means -3.0 / 0.0 / +3.0
+    // for laws centred at -3 and +3, where §06's product of mixtures is mean 0
+    // in every coordinate, and the sequencing rule kept the static report until
+    // the sampler was fixed. The sampler now selects per output index, so the
+    // report became a false rejection and `superpose` joined the roster. Its
+    // own moment, control and density rows live in
+    // `test/iid-superpose-branch-freshness.test.ts`.
+    assert.deepEqual(infer(`
 z = elementof(reals)
 u ~ Normal(mu = z, sigma = 1.0)
 a1 ~ Normal(mu = u, sigma = 1.0)
 K1 = kernelof(a1, z = z)
 M = iid(superpose(weighted(0.5, lawof(u)), weighted(0.5, Normal(mu = 0.0, sigma = 1.0))), 3)
 KJ = joint(p = K1, q = M)
-`);
-    assert.ok(errors.length > 0, 'expected the sharing report to stay');
+`), []);
   });
