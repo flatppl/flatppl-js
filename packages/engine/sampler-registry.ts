@@ -25,6 +25,12 @@ const rng      = require('./rng.ts');
 const valueLib = require('./value.ts');
 const transforms = require('./transforms.ts');
 
+// Same primitive @stdlib's own random-base-beta/lib/validate.js uses to
+// reject a non-positive-number alpha/beta, so the Beta two-gamma
+// workaround (below) can reproduce @stdlib's own validation on the one
+// region that never reaches @stdlib's factory to get it for free.
+const isPositiveNumber = require('@stdlib/assert-is-positive-number').isPrimitive;
+
 // Math special functions for gamma / loggamma / erf-based math.
 const stdlibGamma       = require('@stdlib/math-base-special-gamma');
 const stdlibGammaln     = require('@stdlib/math-base-special-gammaln');
@@ -436,6 +442,20 @@ function _betaHitsUpstreamDefect(alpha: number, beta: number) {
   return alpha === beta && alpha > 1.5;
 }
 
+// The affected region below never calls `randBeta.factory`, so it never
+// gets @stdlib's own `alpha`/`beta` validation for free the way the
+// unaffected region's delegation does. Reproduce it here, on the RAW
+// (uncoerced) arguments, so a bad param throws the same way regardless
+// of which region it lands in.
+function _validateBetaParams(rawAlpha: any, rawBeta: any) {
+  if (!isPositiveNumber(rawAlpha)) {
+    throw new TypeError('invalid argument. First argument must be a positive number. Value: `' + rawAlpha + '`.');
+  }
+  if (!isPositiveNumber(rawBeta)) {
+    throw new TypeError('invalid argument. Second argument must be a positive number. Value: `' + rawBeta + '`.');
+  }
+}
+
 const randBetaFixed = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
@@ -471,7 +491,12 @@ const randBetaFixed = {
       return randBeta.factory(args[0], args[1], opts);
     }
     // alpha === beta here, so one Gamma(alpha, 1) closure serves both
-    // draws; consecutive draws off the same stream are independent.
+    // draws; consecutive draws off the same stream are independent. This
+    // route never reaches `randBeta.factory`, so validate the raw args
+    // ourselves first — @stdlib would have rejected a non-positive-number
+    // `alpha`/`beta` (e.g. an array or a numeric string) before ever
+    // getting here, and this path must refuse the same way.
+    _validateBetaParams(args[0], args[1]);
     const gamma = randGamma.factory(alpha, 1, opts);
     return function staticBetaSampler() {
       const x = gamma(), y = gamma();

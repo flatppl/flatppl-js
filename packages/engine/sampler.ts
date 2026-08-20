@@ -1773,8 +1773,9 @@ const ARITH_OPS = {
   // boolean is a JS boolean — truthiness reads both.
   //
   // Empty input returns each reduction's identity: `lany([])` is false
-  // (nothing is true) and `lall([])` is true (vacuously). Spec §07 is
-  // silent on empty reductions; see TODO-flatppl-js.md.
+  // (nothing is true) and `lall([])` is true (vacuously) — RULED, per
+  // flatppl-dev/empty-arrays-ruling.md's §07 "Logic and conditionals"
+  // edit row (these are the forced lor-/land-reduction identities).
   lany: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'lany');
     const arr = _arrLike(a);
@@ -1789,9 +1790,17 @@ const ARITH_OPS = {
   },
   // Sample variance per spec §07 §sec:functions (line: `var | xs |
   // (1/(n-1)) Σ(xᵢ - x̄)²`). Bessel-corrected — divisor is n-1, not
-  // n. n = 1 has a defined (zero) variance; n = 0 has none — the
-  // empty-array ruling makes that an error, not the 0/0 the formula
-  // would otherwise produce.
+  // n. n = 0 has none to divide by — the empty-array ruling makes that
+  // an error, not the 0/0 the formula would otherwise produce.
+  //
+  // n = 1 returns 0 here, but that is a KNOWN §04 NONCONFORMANCE, not a
+  // ruled answer: "Relationship to broadcasting" states var/std are
+  // undefined over a single element (0/0 in this same formula), and the
+  // Rust StableHLO emitter refuses it (crates/stablehlo/src/norms.rs).
+  // This 0 is the ddof=0 population estimator, a different formula from
+  // the ddof=1 sample estimator §07 states — see TODO-flatppl-js.md.
+  // Not fixed here: out of scope for the empty-array ruling, which
+  // adjudicates n = 0 only.
   var: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'var');
     const arr = _arrLike(a);
@@ -1807,7 +1816,8 @@ const ARITH_OPS = {
   },
   // std = sqrt(var). Per spec §07 §sec:functions
   // (`std | xs | √var(x)`) so the Bessel correction in `var` flows
-  // through, including the n = 0 error (empty-array ruling).
+  // through, including the n = 0 error (empty-array ruling) and the
+  // n = 1 §04 nonconformance (see the comment on `var`, above).
   std: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'std');
     const arr = _arrLike(a);

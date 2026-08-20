@@ -187,9 +187,7 @@ const BETA_RAND_FN = sampler._internal.REGISTRY.Beta.randFn;
 // Minor 1 — the unaffected static path (alpha !== beta, or alpha <= 1.5)
 // must delegate the caller's own arguments to @stdlib unchanged, so
 // @stdlib's own validator sees what was actually passed, not a `+`-coerced
-// number. The affected path (alpha === beta > 1.5) never delegates to
-// @stdlib at all, so it is untouched by this fix; picking an unaffected
-// pair here is deliberate.
+// number.
 test('Beta.randFn: the unaffected static path delegates args unchanged to @stdlib', () => {
   // @stdlib's own validator rejects a non-number even though `+` would
   // coerce it — an array or a numeric string must throw, matching what
@@ -203,6 +201,26 @@ test('Beta.randFn: the unaffected static path delegates args unchanged to @stdli
     /positive number/);
   // A genuine number pair keeps drawing (the common, unaffected case).
   assert.doesNotThrow(() => BETA_RAND_FN.factory(2, 3, { prng: Math.random })());
+});
+
+// Minor 1, closed the rest of the way — the AFFECTED path (alpha === beta
+// > 1.5) never calls `randBeta.factory` at all (it draws via two Gammas
+// instead), so it got none of @stdlib's validation for free even after
+// the fix above. `_validateBetaParams` reproduces that validation on the
+// raw args before the Gamma route. Literal repro calls from the #161
+// review (`wave-beta-review.md`, minor 1 follow-up): both used to draw
+// silently; both must now throw the same way the unaffected path does.
+test('Beta.randFn: the affected (two-gamma) static path also rejects a non-number', () => {
+  assert.throws(() => BETA_RAND_FN.factory([2], [2], { prng: Math.random }),
+    /First argument must be a positive number/);
+  assert.throws(() => BETA_RAND_FN.factory('2', '2', { prng: Math.random }),
+    /First argument must be a positive number/);
+  // alpha valid, beta not — exercises the second-argument branch, which
+  // the first-argument-only repro calls above never reach.
+  assert.throws(() => BETA_RAND_FN.factory(2, [2], { prng: Math.random }),
+    /Second argument must be a positive number/);
+  // A genuine affected pair still draws (the fix must not touch this).
+  assert.doesNotThrow(() => BETA_RAND_FN.factory(2, 2, { prng: Math.random })());
 });
 
 // Minor 2 — the parametric form (a single options-object argument) must be

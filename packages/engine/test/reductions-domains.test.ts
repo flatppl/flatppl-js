@@ -132,6 +132,14 @@ test('mean on complex rank-1', () => {
   assert.deepEqual(m, { re: 4, im: 20 });
 });
 
+// Empty input, complex branch — the same undefined-0/0 error as the real
+// branch (empty-array ruling), but through isComplexValue's separate
+// early-return rather than _arrLike's.
+test('mean on an empty complex rank-1 throws (same as the real branch)', () => {
+  const v = valueLib.complexValue(new Float64Array(0), new Float64Array(0), [0]);
+  assert.throws(() => ARITH_OPS.mean(v), /mean: undefined for an empty array/);
+});
+
 test('prod on complex rank-1 — multiplicative complex algebra', () => {
   // (1 + 0i) * (2 + 1i) * (0 + 1i)
   //   = (2 + 1i) * (0 + 1i)
@@ -193,8 +201,14 @@ test('maximum([]) = -Infinity, minimum([]) = +Infinity (lattice identities)', ()
 
 // Empty input — var / std have no count to divide by (empty-array
 // ruling): an error, not the 0/0 the formula would silently give.
-// n = 1 stays 0 (a defined, zero, sample variance).
-test('var([]) / std([]) throw; var([x]) / std([x]) stay 0', () => {
+//
+// n = 1 stays 0 here, but that is a KNOWN §04 NONCONFORMANCE pinned as a
+// regression, not a ruled answer: "Relationship to broadcasting" states
+// var/std are undefined over a single element (§07's own formula is 0/0
+// there too), and 0 is the ddof=0 population estimator, not §07's ddof=1
+// sample estimator. Out of scope for the empty-array ruling (n = 0 only)
+// — see TODO-flatppl-js.md.
+test('var([]) / std([]) throw; var([x]) / std([x]) return 0 (§04 nonconformance, unchanged)', () => {
   const empty = { shape: [0], data: new Float64Array(0) };
   const one = { shape: [1], data: Float64Array.from([3.0]) };
   assert.throws(() => ARITH_OPS.var(empty), /var: undefined for an empty array/);
