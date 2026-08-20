@@ -134,17 +134,25 @@ const BUILTIN_FUNCTIONS = new Set([
   'conv', 'crosscorr',
   // Reductions
   'sum', 'mean', 'var', 'std', 'prod', 'maximum', 'minimum', 'lengthof', 'sizeof',
+  // Order statistics (spec §07). `median` is order-invariant and joins
+  // the aggregate / table reductions; `quantile(xs, p)` is two-argument
+  // and joins neither.
+  'median', 'quantile',
   // Axis-index helpers (spec §07). `indicesof(x)` returns 1-based
   // axis indices; `indicesof0(x)` is the 0-based variant. Vector
   // input → integer vector; multi-axis array → tuple of per-axis
   // index vectors; table → row indices.
   'indicesof', 'indicesof0',
-  'cumsum', 'cumprod',
+  'cumsum', 'cumprod', 'cummax', 'cummin',
   // Norms and normalization
-  'l1norm', 'l2norm', 'l1unit', 'l2unit',
+  'l1norm', 'l2norm', 'linfnorm', 'l1unit', 'l2unit',
   'logsumexp', 'softmax', 'logsoftmax',
   // Logic and conditionals
   'land', 'lor', 'lnot', 'lxor', 'ifelse',
+  // Boolean reductions (spec §07): the lor- and land-reduction of a
+  // boolean array. Named lany / lall because bare `all` collides with
+  // the axis-slicing keyword.
+  'lany', 'lall',
   // Membership and filtering
   'filter', 'selectbins',
   // Binning

@@ -198,7 +198,8 @@ test('table: prod / maximum / minimum return record of per-column reductions', (
 
 test('table: cumprod still rejects a table (control — not a table reduction)', () => {
   // §07 lists prod/maximum/minimum's siblings cumsum/cumprod/l1norm/logsumexp/
-  // softmax as arrays-only; only the seven named reductions accept a table.
+  // softmax as arrays-only; only the ten reductions its "Table reductions"
+  // paragraph names accept a table.
   const { errors } = infer(`
     events = table(mass = [1.1, 1.2, 1.3], pt = [45.2, 32.1, 67.8])
     c = cumprod(events)

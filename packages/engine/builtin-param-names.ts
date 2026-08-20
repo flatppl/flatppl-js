@@ -66,6 +66,8 @@ const BUILTIN_PARAM_NAMES: Record<string, string[]> = {
   cosh:                 ['x'],
   cross:                ['a', 'b'],
   crosscorr:            ['v', 'kernel'],
+  cummax:               ['xs'],
+  cummin:               ['xs'],
   cumprod:              ['xs'],
   cumsum:               ['xs'],
   densityof:            ['M', 'x'],
@@ -101,9 +103,12 @@ const BUILTIN_PARAM_NAMES: Record<string, string[]> = {
   l1unit:               ['v'],
   l2norm:               ['v'],
   l2unit:               ['v'],
+  lall:                 ['xs'],
   land:                 ['a', 'b'],
+  lany:                 ['xs'],
   le:                   ['a', 'b'],
   lengthof:             ['x'],
+  linfnorm:             ['v'],
   linsolve:             ['A', 'b'],
   lnot:                 ['a'],
   log:                  ['x'],
@@ -123,6 +128,7 @@ const BUILTIN_PARAM_NAMES: Record<string, string[]> = {
   max:                  ['a', 'b'],
   maximum:              ['xs'],
   mean:                 ['xs'],
+  median:               ['xs'],
   min:                  ['a', 'b'],
   minimum:              ['xs'],
   mod:                  ['a', 'b'],
@@ -136,6 +142,7 @@ const BUILTIN_PARAM_NAMES: Record<string, string[]> = {
   prod:                 ['xs'],
   pushfwd:              ['f', 'M'],
   quadform:             ['A', 'x'],
+  quantile:             ['xs', 'p'],
   rand:                 ['rstate', 'm'],
   real:                 ['x'],
   reverse:              ['xs'],
@@ -179,21 +186,24 @@ function builtinParamNames(opName: string): string[] | null {
 // positional record or table whole, so that `sum(t)` and `lengthof(t)` reduce
 // over the table rather than splatting."
 //
-// These twelve MUST NOT splat. `sum`'s only argument is named `xs`, so splatting
-// `sum(table(mass = …, pt = …))` would compare `{mass, pt}` against `{xs}` and
-// reject a call §07's "Table reductions" paragraph defines. They keep their
-// entries above because an ordinary keyword call still binds by name.
+// These fifteen MUST NOT splat. `sum`'s only argument is named `xs`, so
+// splatting `sum(table(mass = …, pt = …))` would compare `{mass, pt}` against
+// `{xs}` and reject a call §07's "Table reductions" paragraph defines. They keep
+// their entries above because an ordinary keyword call still binds by name.
 //
-// The set: `sum`, `mean`, `var`, `std` (table domain from §07's "Table
-// reductions" paragraph, `std` by owner ruling), `lengthof`, `reverse` (Domains
-// `vectors, tables`), `indicesof`, `indicesof0` (Domains `vectors, arrays,
-// tables`), `identity` (Domains `any`), and `prod`, `maximum`, `minimum`
-// (table domain ahead of spec: flatppl-design PR #79 extends §07's "Table
-// reductions" paragraph to name these three, matching this engine's existing
-// column-wise behaviour; owner-merge pending, per TODO-flatppl-js.md).
+// The set: `sum`, `mean`, `var`, `std`, `prod`, `maximum`, `minimum`, `median`,
+// `lany`, `lall` (the ten table reductions §07's "Table reductions" paragraph
+// names), `lengthof`, `reverse` (Domains `vectors, tables`), `indicesof`,
+// `indicesof0` (Domains `vectors, arrays, tables`), and `identity` (Domains
+// `any`).
+//
+// `quantile` is NOT here: §07 gives it the domain `real arrays` and omits it
+// from the table reductions, so it takes two arguments and splats like any other
+// two-argument builtin.
 const SPLAT_EXEMPT_BUILTINS: ReadonlySet<string> = new Set([
   'sum', 'mean', 'var', 'std', 'lengthof', 'reverse',
   'indicesof', 'indicesof0', 'identity', 'prod', 'maximum', 'minimum',
+  'median', 'lany', 'lall',
 ]);
 
 /** Whether §04's carve-out exempts `opName` from splatting. */
@@ -212,10 +222,9 @@ function isSplatExemptBuiltin(opName: string): boolean {
 // re-deriving the rule, because two sites drifting is precisely how the
 // surplus-name gap in `resolveParams` / `resolveParamsN` arose.
 // Formerly held `prod`, `maximum`, `minimum` pending the owner ruling that
-// flatppl-design PR #79 now encodes (unmerged); moved to the carve-out set
-// above ahead of spec merge — see its comment. Empty for now; a future op
-// with unsettled table-reduction status goes here, not straight into the
-// carve-out set.
+// §07's "Table reductions" paragraph now encodes; they sit in the carve-out set
+// above. Empty for now; a future op with unsettled table-reduction status goes
+// here, not straight into the carve-out set.
 const SPLAT_HELD_TABLE_REDUCTIONS: ReadonlySet<string> = new Set([]);
 
 function splatDecision(opName: string, present: string[], arity: number): any {

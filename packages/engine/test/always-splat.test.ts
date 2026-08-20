@@ -157,29 +157,27 @@ test('always-splat: a keyword-bound record is an ordinary value, never splatted'
 // callable and does not for `sum`. Both engines take the narrow reading. The
 // first test in this file pins the user-callable half.
 //
-// The exempt set, nine callables, agreed with flatppl-rust:
-//   sum, mean, var, std   — table domain from §07's "Table reductions"
-//                           paragraph, not their Domains cells (`std` added by
-//                           owner ruling, spec commit onto design#77)
+// The exempt set, fifteen callables, agreed with flatppl-rust:
+//   sum, mean, var, std,  — the ten table reductions §07's "Table reductions"
+//   prod, maximum,          paragraph names, not their Domains cells
+//   minimum, median,
+//   lany, lall
 //   lengthof, reverse     — Domains cells `vectors, tables`
 //   indicesof, indicesof0 — Domains cells `vectors, arrays, tables`
 //   identity              — Domains `any`, which admits both
-// NOT exempt per §07: `prod`, `sizeof`, `cumsum`, `joinblocks` (arrays only),
-// every scalar math builtin, every distribution constructor
-// (`Exponential(rate)`'s domain is `reals`, so one input is not enough), and the
-// single-input §09 module functions (`lu`, `qr`, `svd`, … take matrices and
-// RETURN records). `record` and `table` have variadic NAMED inputs, so "exactly
-// one input" excludes them from the carve-out either way.
+// NOT exempt per §07: `quantile` (two-argument, and its Domains cell is `real
+// arrays`), `sizeof`, `cumsum`, `cummax`, `joinblocks` (arrays only), every
+// scalar math builtin, every distribution constructor (`Exponential(rate)`'s
+// domain is `reals`, so one input is not enough), and the single-input §09
+// module functions (`lu`, `qr`, `svd`, … take matrices and RETURN records).
+// `record` and `table` have variadic NAMED inputs, so "exactly one input"
+// excludes them from the carve-out either way.
 //
-// CAREFUL: that list is what §07 SANCTIONS, not what this engine accepts. The
-// engine's table-capable reduction set is SEVEN — `sum`, `mean`, `var`, `std`
-// plus `prod` (→ `{mass: 6, pt: 120}`), `minimum` (→ `{mass: 1, pt: 4}`) and
-// `maximum` (→ `{mass: 3, pt: 6}`) all reduce column-wise — against the FOUR
-// §07 sanctions with design#77. `sizeof(t)` is accepted too and silently yields
-// an empty vector though its Domains cell is `vectors, arrays`. The values are
-// right for what they compute; the set is over-permissive. So a later carve-out
+// CAREFUL: that list is what §07 SANCTIONS, not what this engine accepts.
+// `sizeof(t)` used to be accepted and silently yield an empty vector though its
+// Domains cell is `vectors, arrays`; it now raises. So a carve-out
 // implementation must read the exemption set off §07, NEVER off what the engine
-// happens to accept, or it silently exempts prod/minimum/maximum/sizeof.
+// happens to accept.
 //
 // `reverse(t)`, `indicesof(t)`/`indicesof0(t)`, `sizeof(t)`, and §03:153-155's
 // `table(r)`/`record(t)` round trip are all covered in

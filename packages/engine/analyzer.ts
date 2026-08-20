@@ -402,16 +402,19 @@ function validateSpecialOperation(valueNode: any) {
           });
         }
       }
-      // First arg: one of the seven order-invariant reductions.
+      // First arg: one of the order-invariant reductions §04
+      // §sec:aggregate lists. `quantile` is deliberately absent — it is
+      // two-argument, so it has no f_reduction form.
       const fArg = args[0];
       const ALLOWED_REDUCTIONS = new Set([
         'sum', 'prod', 'mean', 'var', 'std', 'maximum', 'minimum',
+        'median', 'lany', 'lall',
       ]);
       if (fArg.type !== 'Identifier' || !ALLOWED_REDUCTIONS.has(fArg.name)) {
         diags.push({
           severity: 'error',
           message: `aggregate()'s first argument must be one of: `
-            + `sum, prod, mean, var, std, maximum, minimum`,
+            + `sum, prod, mean, var, std, maximum, minimum, median, lany, lall`,
           loc: fArg.loc,
         });
       }

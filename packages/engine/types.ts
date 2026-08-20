@@ -1271,6 +1271,21 @@ const SIGNATURE_FACTORIES = {
   std:     () => ({ args: [any()], kwargs: {}, result: REAL }),
   maximum: () => ({ args: [any()], kwargs: {}, result: REAL }),
   minimum: () => ({ args: [any()], kwargs: {}, result: REAL }),
+  // Order statistics (spec §07). `median` takes `any()` for the same
+  // reason maximum / minimum do: the argument may be an array of any
+  // rank OR a table (the column-wise form, typed up front by
+  // `_maybeTableReduction`). Even n averages the two middle order
+  // statistics, so an integer input can yield a half-integer — the
+  // result is REAL, not the element type.
+  median: () => ({ args: [any()], kwargs: {}, result: REAL }),
+  // quantile(xs, p) — §07 domains `real arrays, interval(0, 1)`. The
+  // engine has no dependent interval type, so `p` types as REAL; the
+  // runtime raises on p outside [0, 1].
+  quantile: () => ({ args: [any(), REAL], kwargs: {}, result: REAL }),
+  // Boolean reductions (spec §07). Same `any()` argument as maximum /
+  // minimum — boolean array of any rank, or a table column-wise.
+  lany: () => ({ args: [any()], kwargs: {}, result: BOOLEAN }),
+  lall: () => ({ args: [any()], kwargs: {}, result: BOOLEAN }),
   // Cumulative reductions (spec §07): scan-style — output array of the
   // same length as input. Result rank/length tracked as dynamic since
   // static input shape isn't always known.
@@ -1278,11 +1293,16 @@ const SIGNATURE_FACTORIES = {
                      result: array(1, ['%dynamic'], REAL) }),
   cumprod: () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
                      result: array(1, ['%dynamic'], REAL) }),
+  cummax:  () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
+                     result: array(1, ['%dynamic'], REAL) }),
+  cummin:  () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
+                     result: array(1, ['%dynamic'], REAL) }),
   // Norms and softmax family (spec §07). Single vector argument.
   // *norm / logsumexp produce a scalar; *unit / softmax / logsoftmax
   // produce a vector of the same length.
   l1norm:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   l2norm:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  linfnorm:   () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   logsumexp:  () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
   l1unit:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
                        result: array(1, ['%dynamic'], REAL) }),

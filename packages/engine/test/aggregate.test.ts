@@ -520,15 +520,36 @@ C = aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])
 });
 
 // ---------------------------------------------------------------------
-// All seven reductions parse + classify
+// Every eligible reduction parses + classifies
+//
+// §04 §sec:aggregate: "The eligible built-ins are `sum`, `prod`, `mean`,
+// `var`, `std`, `maximum`, `minimum`, `median`, `lany` and `lall`."
+// `quantile` is two-argument and is not eligible — the rejection is
+// covered in order-statistics.test.ts.
 // ---------------------------------------------------------------------
 
-const REDUCTIONS = ['sum', 'prod', 'mean', 'var', 'std', 'maximum', 'minimum'];
+const REDUCTIONS = ['sum', 'prod', 'mean', 'var', 'std', 'maximum', 'minimum',
+                    'median'];
 for (const r of REDUCTIONS) {
   test(`aggregate: reduction '${r}' parses + classifies`, () => {
     const src = `
 A = [[1.0, 2.0], [3.0, 4.0]]
 R = aggregate(${r}, [.i], A[.i, .j])
+`;
+    assert.equal(errors(src).length, 0,
+      `reduction ${r} should parse cleanly`);
+  });
+}
+
+for (const r of ['lany', 'lall']) {
+  test(`aggregate: boolean reduction '${r}' parses + classifies`, () => {
+    // Boolean reductions over a boolean body. The mask is hoisted to its
+    // own binding because the broadcast-reduce body evaluator handles
+    // arithmetic and unary math, not comparisons.
+    const src = `
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+mask = gt(A, 2.0)
+R = aggregate(${r}, [.i], mask[.i, .j])
 `;
     assert.equal(errors(src).length, 0,
       `reduction ${r} should parse cleanly`);

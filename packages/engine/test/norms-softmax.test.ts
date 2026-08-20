@@ -1,7 +1,7 @@
 'use strict';
 
-// Spec §07 Norms and normalization: l1norm, l2norm, l1unit, l2unit,
-// logsumexp, softmax, logsoftmax. All pure vector→scalar or
+// Spec §07 Norms and normalization: l1norm, l2norm, linfnorm, l1unit,
+// l2unit, logsumexp, softmax, logsoftmax. All pure vector→scalar or
 // vector→vector reductions dispatched through ARITH_OPS.
 
 const { test } = require('node:test');
@@ -40,6 +40,32 @@ test('l2norm: classic 3-4-5 right triangle', () => {
 test('l1norm / l2norm on empty vector ⇒ 0', () => {
   assert.equal(ev(call('l1norm', vec())), 0);
   assert.equal(ev(call('l2norm', vec())), 0);
+});
+
+// =====================================================================
+// linfnorm — max_i |v_i|
+// =====================================================================
+
+test('linfnorm: largest magnitude wins, sign ignored', () => {
+  assert.equal(ev(call('linfnorm', vec(-3, 2, -7))), 7);
+  assert.equal(ev(call('linfnorm', vec(1, 1, 1))), 1);
+});
+
+test('linfnorm on empty vector ⇒ 0 (same convention as l1norm / l2norm)', () => {
+  // Oracle: LinearAlgebra.norm(Float64[], Inf) == 0.0.
+  assert.equal(ev(call('linfnorm', vec())), 0);
+});
+
+test('linfnorm on a complex vector takes each modulus (§07 domain)', () => {
+  // |3 + 4i| = 5 beats |1 + 0i| = 1. Built directly: the surface
+  // `complex(...)` path is covered elsewhere and this pins the branch.
+  const v = {
+    shape: [2],
+    data: Float64Array.from([3, 1]),
+    im: Float64Array.from([4, 0]),
+    dtype: 'complex',
+  };
+  assert.equal(sampler._internal.ARITH_OPS.linfnorm(v), 5);
 });
 
 // =====================================================================
