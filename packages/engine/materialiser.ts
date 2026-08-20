@@ -538,6 +538,29 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
           value: table, logTotalmass: 0, n_eff: 1,
         };
       }
+      // A TUPLE-variate inner measure — a positional `joint(M1, M2)`, or a
+      // `jointchain`/`kchain` retain body, whose §06 variate is the `cat` of
+      // its components. §06 `iid` makes the result a measure over
+      // `array(k) of tuple(…)`, and the engine has no value for that: a
+      // record variate becomes a `__table__` above because its components are
+      // NAMED columns, and a tuple's are not. Emitting a tuple-of-arrays
+      // instead would be a different §03 type (`tuple(array(k), …)` rather
+      // than `array(k) of tuple`), so the density walker would score a shape
+      // the sampler never produced — the sampling-vs-density divergence
+      // `measure-algebra-audit.md` exists to keep out. Refuse loudly and name
+      // the spec-supported spelling that DOES materialise: §06's keyword form
+      // `jointchain(a = M, b = K)` (equivalently `relabel`) gives a RECORD
+      // variate, which reaches the table path above.
+      if (innerM.shape === 'tuple' && innerM.elems) {
+        return Promise.reject(new Error(
+          'iid: the measure "' + d.from + '" has a TUPLE variate ('
+          + innerM.elems.length + ' components — a positional joint, or a '
+          + 'jointchain/kchain that retains all its variates), and sampling '
+          + 'iid over it is not supported: an array of unnamed tuples has no '
+          + 'value representation in this engine. Name the components to get '
+          + 'a record variate, which iid materialises as a table — spec §06 '
+          + 'keyword form, jointchain(name1 = M, name2 = K1, ...)'));
+      }
       const samples = innerM.samples
         || (innerM.value && innerM.value.data);
       if (!samples) {
@@ -655,6 +678,29 @@ const MEASURE_CHILD_LIST_FIELDS = ['fromNames', 'elems'];
 const MEASURE_CHILD_MAP_FIELDS = ['fields'];
 
 /**
+ * The sub-measure names a `kind:'jointchain'` derivation (the whole
+ * `kchain`/`jointchain` family) reaches in MEASURE position: the base
+ * measure of the chain, held in `steps[0].ref`.
+ *
+ * A step with `kernel: true` is a KERNEL, not a measure — its variate is
+ * step-local randomness the chain already redraws per position, and its
+ * `ref` names a `kernelof`/`fn` binding whose own reified variate is not the
+ * chain's replicated sub-DAG. Following it would freshen a node §06 says
+ * nothing about, so the walk takes measure steps only. A step carrying
+ * `measureIR` (an inline base, or the substituted body of an applied chain)
+ * holds IR rather than a name and is unreachable, like `distIR` — the same
+ * deliberate under-approximation the doc comment below describes.
+ */
+function _chainStepMeasureRefs(d: any): string[] {
+  if (!d || d.kind !== 'jointchain' || !Array.isArray(d.steps)) return [];
+  const out: string[] = [];
+  for (const s of d.steps) {
+    if (s && !s.kernel && typeof s.ref === 'string') out.push(s.ref);
+  }
+  return out;
+}
+
+/**
  * The value bindings that are the VARIATE of a reified law inside the
  * measure `name` denotes — the nodes §06 `iid` copies per coordinate:
  * "When `M` is a reified law, each of the $N$ copies carries its own copy
@@ -676,6 +722,12 @@ const MEASURE_CHILD_MAP_FIELDS = ['fields'];
  * included" as far as these edges reach it — an `evaluate` derivation
  * (`shifted = psi + 1.0`) holds its dependencies in `ir`, which is not in the
  * list, so the walk stops at `shifted`.
+ *
+ * The BASE MEASURE of a `kchain`/`jointchain` is reached the same way, through
+ * `_chainStepMeasureRefs` — the chain records its components as an explicit
+ * step list rather than a `from`, so the plain field list stopped at the chain
+ * and every coordinate of `iid(kchain(lawof(z), K), n)` shared one `z` draw
+ * (cross-coordinate covariance 10 where §06's product measure requires 0).
  *
  * Under-approximates on purpose. A name this walk misses keeps the caller's
  * tiling, which reproduces today's behaviour. A false POSITIVE would
@@ -709,6 +761,7 @@ function _reifiedVariatesUnder(
         for (const k in m) if (typeof m[k] === 'string') visit(m[k]);
       }
     }
+    for (const r of _chainStepMeasureRefs(d)) visit(r);
   };
   visit(name);
   return out;
