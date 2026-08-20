@@ -476,6 +476,16 @@ const randBetaFixed = {
       // @stdlib's own `randBeta.factory` does.
       const upstream = randBeta.factory(args[0]);
       let gamma: any = null;
+      // No `_validateBetaParams` here, unlike the static affected branch
+      // below: this is PARITY with @stdlib, not a gap. @stdlib validates
+      // once at `factory()` construction time but its returned per-draw
+      // closure does not re-validate its own `alpha`/`beta` arguments
+      // (confirmed: `randBeta.factory({prng})(-1,-1)` gives `NaN`, not a
+      // throw) — so `upstream(alpha, beta)` on the line above already
+      // skips validation on every unaffected call through this same
+      // closure. Adding it only to the affected branch below would make
+      // this closure inconsistent with itself, stricter on one branch
+      // than the other and stricter than @stdlib, in a per-draw hot path.
       return function parametricBetaSampler(alpha: any, beta: any) {
         if (!_betaHitsUpstreamDefect(+alpha, +beta)) return upstream(alpha, beta);
         if (gamma === null) gamma = randGamma.factory(args[0]);
