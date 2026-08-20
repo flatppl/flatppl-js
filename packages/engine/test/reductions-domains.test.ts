@@ -6,6 +6,7 @@
 //   var, std                 — real arrays (any rank)
 //   maximum, minimum         — real arrays (any rank)
 //   cumsum, cumprod          — vectors (rank-1)
+//   cummax, cummin           — real vectors (rank-1)
 //   lengthof                 — vectors, tables
 //   sizeof                   — vectors, arrays (any rank)
 //
@@ -186,6 +187,60 @@ test('cumprod on rank-1', () => {
   const fv = ev('cp = cumprod([1.0, 2.0, 3.0, 4.0])');
   const cp: any = fv.get('cp');
   assert.deepEqual(Array.from(cp.data), [1, 2, 6, 24]);
+});
+
+// =====================================================================
+// cummax / cummin — running extrema, shape-preserving scans.
+// Oracle: Julia's accumulate(max, xs) / accumulate(min, xs).
+// =====================================================================
+
+test('cummax on rank-1', () => {
+  const fv = ev('cm = cummax([3.0, 1.0, 7.0, 5.0])');
+  const cm: any = fv.get('cm');
+  assert.deepEqual(Array.from(cm.data), [3, 3, 7, 7]);
+});
+
+test('cummin on rank-1', () => {
+  const fv = ev('cn = cummin([3.0, 1.0, 7.0, 5.0])');
+  const cn: any = fv.get('cn');
+  assert.deepEqual(Array.from(cn.data), [3, 1, 1, 1]);
+});
+
+test('cummax / cummin preserve shape, including the empty vector', () => {
+  // A scan, not a reduction: no ±Infinity leaks out of an empty input
+  // the way `maximum([])` gives -Infinity.
+  const fv = ev(`
+cm = cummax([])
+cn = cummin([])
+one = cummax([2.0])
+`);
+  assert.deepEqual(Array.from((fv.get('cm') as any).data), []);
+  assert.deepEqual(Array.from((fv.get('cn') as any).data), []);
+  assert.deepEqual(Array.from((fv.get('one') as any).data), [2]);
+});
+
+test('cummax / cummin never emit a value absent from the input', () => {
+  // The scan seeds on the first element, so nothing can reach the output
+  // that was not in the input. A ±Infinity seed returned
+  // `[-Infinity, 1]` here, fabricating a value.
+  // Oracle: accumulate(max, [NaN, 1]) == [NaN, NaN] (numpy
+  // maximum.accumulate agrees), because max propagates NaN.
+  const cm: any = ARITH_OPS.cummax({ shape: [2], data: Float64Array.from([NaN, 1]) });
+  const cn: any = ARITH_OPS.cummin({ shape: [2], data: Float64Array.from([NaN, 1]) });
+  assert.ok(Number.isNaN(cm.data[0]) && Number.isNaN(cm.data[1]),
+    'cummax([NaN, 1]) should be [NaN, NaN], got ' + Array.from(cm.data));
+  assert.ok(Number.isNaN(cn.data[0]) && Number.isNaN(cn.data[1]),
+    'cummin([NaN, 1]) should be [NaN, NaN], got ' + Array.from(cn.data));
+});
+
+test('cummax / cummin last element equals maximum / minimum', () => {
+  const fv = ev(`
+xs = [3.0, 1.0, 7.0, 5.0]
+cm = cummax(xs)
+last_cm = cm[4]
+mx = maximum(xs)
+`);
+  assert.equal(fv.get('last_cm'), fv.get('mx'));
 });
 
 // =====================================================================

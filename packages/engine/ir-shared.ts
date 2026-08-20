@@ -583,12 +583,18 @@ const EVALUABLE_OPS = new Set([
   // (with stochastic refs) must NOT classify as evaluable, so the
   // existing array-derivation special case keeps owning that path.
   'sum', 'mean', 'prod', 'lengthof', 'sizeof', 'maximum', 'minimum', 'var', 'std',
+  // Order statistics (spec §07). `quantile` is the one two-argument
+  // member; its `p` is an ordinary evaluable scalar operand.
+  'median', 'quantile',
+  // Boolean reductions (spec §07) — the lor- / land-reduction of a
+  // boolean array.
+  'lany', 'lall',
   'indicesof', 'indicesof0',
-  'cumsum', 'cumprod',
+  'cumsum', 'cumprod', 'cummax', 'cummin',
   // Norms and softmax family (spec §07). All single-arg, vector
   // input; *unit / softmax / logsoftmax return vectors, the rest
   // return scalars.
-  'l1norm', 'l2norm', 'l1unit', 'l2unit',
+  'l1norm', 'l2norm', 'linfnorm', 'l1unit', 'l2unit',
   'logsumexp', 'softmax', 'logsoftmax',
   // Engine-internal projection emitted by the analyzer's multi-LHS
   // rewriter (`a, b = rand(...)`). sampler.evaluateCall handles it.

@@ -277,15 +277,42 @@ test('arithmetic: shape mismatch is a diagnostic', () => {
   assert.ok(errors.some((e: any) => /not numerically compatible/.test(e.message)));
 });
 
-test('arithmetic: comparisons return boolean of the broadcast shape', () => {
+test('arithmetic: a dotted comparison returns boolean of the array shape', () => {
+  // §07 gives the comparisons the domain `reals`, and §05 has no implicit
+  // operator broadcasting, so the array form is the dotted one: `xs .< 2.0`
+  // lowers to `broadcast(lt, xs, 2.0)`.
   const { bindings, errors } = infer(`
     xs = [1.0, 2.0, 3.0]
-    out = xs < 2.0
+    out = xs .< 2.0
   `);
   assert.equal(errors.length, 0);
   const t = typeOf(bindings, 'out');
   assert.equal(t.kind, 'array');
   assert.ok(T.equal(t.elem, T.BOOLEAN));
+});
+
+test('arithmetic: an undotted comparison refuses an array operand', () => {
+  // Previously typed as a boolean array while the runtime returned the
+  // scalar `false` — a wrong number with no diagnostic. The message names
+  // the dotted form, which is the route that works.
+  const { errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = xs < 2.0
+  `);
+  assert.ok(errors.some((e: any) =>
+    /lt: arg 1 expects a scalar.*comparisons are scalar-only/.test(e.message)),
+    'expected the scalar-only diagnostic, got: '
+      + errors.map((e: any) => e.message).join('; '));
+});
+
+test('arithmetic: a comparison refuses an array in the SECOND operand too', () => {
+  const { errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = gt(2.0, xs)
+  `);
+  assert.ok(errors.some((e: any) => /gt: arg 2 expects a scalar/.test(e.message)),
+    'expected the arg-2 diagnostic, got: '
+      + errors.map((e: any) => e.message).join('; '));
 });
 
 test('broadcast: dotted op over rank-1 array preserves shape', () => {

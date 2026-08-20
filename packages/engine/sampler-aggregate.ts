@@ -512,7 +512,7 @@ AGGREGATE_PATTERNS.push({
 //   aggregate(f, [out_axes…], get(arr, sels…))
 //
 // Common pattern: column sums, row means, axis-wise max/min, etc.
-// All seven reductions are supported via _AGGREGATE_REDUCTIONS. The
+// Every eligible reduction is supported via _AGGREGATE_REDUCTIONS. The
 // fast path applies the reduction along each non-output dim directly
 // on the source — no broadcast intermediate, no per-axis lift.
 // ---------------------------------------------------------------------
@@ -633,13 +633,25 @@ const _AGGREGATE_REDUCTIONS: Record<string, (a: any) => number> = {
   std:     (a: any) => (ARITH_OPS as any).std(a),
   maximum: (a: any) => (ARITH_OPS as any).maximum(a),
   minimum: (a: any) => (ARITH_OPS as any).minimum(a),
+  median:  (a: any) => (ARITH_OPS as any).median(a),
+  // lany / lall return JS booleans; every caller writes the result into
+  // a Float64Array, which stores them as 1 / 0 — the same convention a
+  // boolean inside any array uses. `_applyAggregateReduction`'s unary
+  // plus does the same coercion for the rank-0 case.
+  lany:    (a: any) => (ARITH_OPS as any).lany(a),
+  lall:    (a: any) => (ARITH_OPS as any).lall(a),
 };
 
 // Reductions whose result depends on the count (n) of input
 // values, not just their multiset content. These are silently
 // wrong if `data` is a singleton-broadcast view rather than a
 // fully-materialised buffer.
-const _COUNT_DEPENDENT_REDUCTIONS = new Set(['mean', 'var', 'std']);
+// `median` belongs here for a slightly different reason than mean /
+// var / std: it needs no denominator, but duplicating some elements and
+// not others shifts which element is the middle one. `maximum`,
+// `minimum`, `lany` and `lall` are idempotent, so a duplicated view
+// gives them the right answer and they stay out.
+const _COUNT_DEPENDENT_REDUCTIONS = new Set(['mean', 'var', 'std', 'median']);
 
 // Sanctioned entry point for applying a reduction to a buffer in an
 // aggregate context. `expectedCount` should be the genuine count of
@@ -663,12 +675,18 @@ function _applyAggregateReduction(
     throw new Error(`aggregate: unknown reduction '${fname}'`);
   }
   if (expectedCount !== null && _COUNT_DEPENDENT_REDUCTIONS.has(fname)) {
+    /* c8 ignore start -- a future-specialiser guard, unreachable from
+       every call site today: both materialise their buffer to
+       `reduceSize` genuine elements before calling. It exists to fail
+       loudly if a new specialiser feeds a count-dependent reduction a
+       singleton-expanded view. */
     if (data.length !== expectedCount) {
       throw new Error(`aggregate: reduction '${fname}' expects a fully `
         + `materialised buffer of length ${expectedCount}, got ${data.length}; `
-        + 'singleton-expanded views give wrong mean / var / std (count '
-        + 'mismatch). Materialise via _broadcastTo before reducing.');
+        + 'singleton-expanded views give wrong mean / var / std / median '
+        + '(count mismatch). Materialise via _broadcastTo before reducing.');
     }
+    /* c8 ignore stop */
   }
   return +reduce(data);
 }

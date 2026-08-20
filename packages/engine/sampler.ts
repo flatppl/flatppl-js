@@ -660,7 +660,29 @@ function _reduceRowAxis(col: any, opName: string): any {
       let v = 0; for (let i = 0; i < N; i++) { const d = data[i * cellLen + j] - mu; v += d * d; }
       v = v / (N - 1);
       out[j] = opName === 'std' ? Math.sqrt(v) : v;
+    } else if (opName === 'median') {
+      const cell = new Float64Array(N);
+      for (let i = 0; i < N; i++) cell[i] = data[i * cellLen + j];
+      out[j] = (ARITH_OPS as any).median({ shape: [N], data: cell });
+    } else if (opName === 'lany') {
+      // Booleans in a cell buffer are 0 / 1, and so is the result —
+      // the storage convention for a boolean inside an array.
+      let hit = 0;
+      for (let i = 0; i < N; i++) if (data[i * cellLen + j]) { hit = 1; break; }
+      out[j] = hit;
+    } else if (opName === 'lall') {
+      let hit = 1;
+      for (let i = 0; i < N; i++) if (!data[i * cellLen + j]) { hit = 0; break; }
+      out[j] = hit;
+    /* c8 ignore start -- unreachable: every op routed here by
+       `_reduceColumn` has a branch above. The throw replaces a silent
+       fall-through that left the cell buffer zero-filled, so a future
+       reduction added to the table-reduction switch without a row-axis
+       branch fails loudly instead of returning zeros. */
+    } else {
+      throw new Error('table reduction: unsupported op ' + opName);
     }
+    /* c8 ignore stop */
   }
   return { shape: cells, data: out };
 }
@@ -1686,6 +1708,81 @@ const ARITH_OPS = {
     for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
     return m;
   },
+  // median(xs) per spec §07: with order statistics x_(1) ≤ … ≤ x_(n),
+  // x_((n+1)/2) for odd n and ½(x_(n/2) + x_(n/2+1)) for even n.
+  // Reduces over EVERY element of an any-rank array (like maximum /
+  // minimum), and column-wise over a table.
+  //
+  // n = 0 has no order statistics, so the result is NaN — matching
+  // `mean([])`, which is 0/0. Spec §07 does not say what an empty
+  // reduction gives; see TODO-flatppl-js.md.
+  median: (a: any) => {
+    if (a && a.__table__ === true) return _tableReduceOp(a, 'median');
+    const s = _sortedCopy(_arrLike(a));
+    const n = s.length;
+    if (n === 0) return NaN;
+    const half = n >> 1;
+    // Odd n: the single middle element (0-based index (n-1)/2 = half).
+    // Even n: the mean of the two straddling it.
+    return (n % 2 === 1) ? s[half] : 0.5 * (s[half - 1] + s[half]);
+  },
+  // quantile(xs, p) per spec §07: linear interpolation between order
+  // statistics (Hyndman-Fan type 7 — the numpy / Julia default). With
+  // h = (n−1)p + 1 and k = ⌊h⌋,
+  //
+  //   quantile(x, p) = x_(k) + (h − k)(x_(k+1) − x_(k)),
+  //
+  // "taking the second term to vanish when k = n". That guard is what
+  // makes n = 1 and p = 1 work at all — x_(k+1) is off the end of the
+  // vector in both cases.
+  //
+  // NOT a table reduction and NOT an aggregate-eligible reduction:
+  // §07's Table-reductions paragraph and §04's eligible list both name
+  // `median` and omit `quantile`, which is two-argument.
+  quantile: (a: any, p: any) => {
+    if (a && a.__table__ === true) {
+      throw new Error('quantile: argument must be a real array (spec §07 '
+        + 'domain: real arrays); got a table — §07 does not list quantile '
+        + 'among the table reductions');
+    }
+    const q = +p;
+    // §03: `interval(lo, hi)` is the CLOSED interval, so p = 0 and
+    // p = 1 are in domain (§07 pins them to minimum / maximum).
+    // Outside it the formula would extrapolate to a plausible-looking
+    // number rather than an obvious NaN, so refuse instead.
+    if (!(q >= 0 && q <= 1)) {
+      throw new Error('quantile: p must lie in interval(0, 1) (spec §07); got ' + p);
+    }
+    const s = _sortedCopy(_arrLike(a));
+    const n = s.length;
+    if (n === 0) return NaN;
+    const h = (n - 1) * q + 1;
+    const k = Math.floor(h);
+    // 1-based k → 0-based index k−1.
+    if (k >= n) return s[n - 1];
+    return s[k - 1] + (h - k) * (s[k] - s[k - 1]);
+  },
+  // lany / lall per spec §07: the lor- and land-reduction of a boolean
+  // array. Order-invariant, so both reduce a table column-wise and both
+  // are aggregate-eligible (spec §04). Booleans inside an array are
+  // stored as 0 / 1 in the Float64Array (see `vector`), while a scalar
+  // boolean is a JS boolean — truthiness reads both.
+  //
+  // Empty input returns each reduction's identity: `lany([])` is false
+  // (nothing is true) and `lall([])` is true (vacuously). Spec §07 is
+  // silent on empty reductions; see TODO-flatppl-js.md.
+  lany: (a: any) => {
+    if (a && a.__table__ === true) return _tableReduceOp(a, 'lany');
+    const arr = _arrLike(a);
+    for (let i = 0; i < arr.length; i++) if (arr[i]) return true;
+    return false;
+  },
+  lall: (a: any) => {
+    if (a && a.__table__ === true) return _tableReduceOp(a, 'lall');
+    const arr = _arrLike(a);
+    for (let i = 0; i < arr.length; i++) if (!arr[i]) return false;
+    return true;
+  },
   // Sample variance per spec §07 §sec:functions (line: `var | xs |
   // (1/(n-1)) Σ(xᵢ - x̄)²`). Bessel-corrected — divisor is n-1, not
   // n. n ≤ 1 has no sample variance; return 0 (matches the existing
@@ -1735,6 +1832,35 @@ const ARITH_OPS = {
     for (let i = 0; i < n; i++) { p *= arr[i]; out[i] = p; }
     return { shape: [n], data: out };
   },
+  // cummax / cummin — running extrema (spec §07). Scans, so they
+  // preserve their input's shape; an empty input gives an empty vector.
+  //
+  // Seeded from the FIRST ELEMENT, not ±Infinity, so no value that is
+  // absent from the input can reach the output: a ±Infinity seed made
+  // `cummax([NaN, 1])` return `[-Infinity, 1]`, since `>` is false against
+  // NaN and the seed survived to out[0]. With this seed it returns
+  // `[NaN, NaN]`, matching `accumulate(max, ·)`.
+  //
+  // NaN LATER in the input still does not propagate — `cummax([1, NaN, 2])`
+  // gives `[1, 1, 2]` against `[1, NaN, NaN]` — because a `>` comparison
+  // skips NaN. That matches the engine's own comparison-seeded `maximum`;
+  // §07 states no NaN rule (TODO-flatppl-js.md).
+  cummax: (a: any) => {
+    const arr = _arrLike(a);
+    const n = arr.length;
+    const out = new Float64Array(n);
+    let m = n > 0 ? arr[0] : 0;
+    for (let i = 0; i < n; i++) { if (arr[i] > m) m = arr[i]; out[i] = m; }
+    return { shape: [n], data: out };
+  },
+  cummin: (a: any) => {
+    const arr = _arrLike(a);
+    const n = arr.length;
+    const out = new Float64Array(n);
+    let m = n > 0 ? arr[0] : 0;
+    for (let i = 0; i < n; i++) { if (arr[i] < m) m = arr[i]; out[i] = m; }
+    return { shape: [n], data: out };
+  },
   // Norms and normalization (spec §07). All take a single vector
   // argument. Numerically stable forms — logsumexp uses the standard
   // shift-by-max trick so exp doesn't overflow on large entries.
@@ -1749,6 +1875,33 @@ const ARITH_OPS = {
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
     return Math.sqrt(s);
+  },
+  // linfnorm(v) = max_i |v_i| (spec §07). Empty input gives 0, the
+  // same convention l1norm / l2norm reach as empty sums, and what
+  // LinearAlgebra.norm(Float64[], Inf) returns.
+  //
+  // §07's domain is `real/complex vectors`, so a complex Value takes
+  // the modulus of each entry. l1norm / l2norm carry the same domain
+  // but read only the real half — recorded in TODO-flatppl-js.md, not
+  // fixed here.
+  linfnorm: (a: any) => {
+    if (valueLib.isComplexValue(a)) {
+      const re = a.data;
+      const im = a.im;
+      let m = 0;
+      for (let i = 0; i < re.length; i++) {
+        const mag = Math.hypot(re[i], im[i]);
+        if (mag > m) m = mag;
+      }
+      return m;
+    }
+    const arr = _arrLike(a);
+    let m = 0;
+    for (let i = 0; i < arr.length; i++) {
+      const mag = Math.abs(arr[i]);
+      if (mag > m) m = mag;
+    }
+    return m;
   },
   // l1unit / l2unit — per spec §07, rank-1 normalized vectors.
   l1unit: (a: any) => {
@@ -1824,6 +1977,17 @@ const ARITH_OPS = {
 function _arrLike(v: any) {
   if (valueLib.isValue(v)) return v.data;
   return v;
+}
+
+// Ascending copy of an array-like, for the order statistics (median /
+// quantile). Copies because the operand may be a live Value buffer an
+// in-place sort would corrupt, and goes through Float64Array so the
+// sort is numeric — Array.prototype.sort with no comparator is
+// LEXICOGRAPHIC, which would order [10, 9] as [10, 9].
+function _sortedCopy(arrLike: any): Float64Array {
+  const out = Float64Array.from(arrLike as any, (x: any) => +x);
+  out.sort();
+  return out;
 }
 
 /**

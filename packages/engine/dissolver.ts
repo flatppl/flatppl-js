@@ -114,8 +114,8 @@ const DISSOLVE_AT_ANY_RANK_OPS: Set<string> = new Set([
   // quadform(A, x) = xᵀ A x — composition of mul + elementwise + sum
   // already in ARITH_OPS; dissolving through it just inlines the call.
   'quadform',
-  // Sequential / prefix-sum reductions (operate on whole vectors).
-  'cumsum', 'cumprod',
+  // Sequential / prefix-sum scans (operate on whole vectors).
+  'cumsum', 'cumprod', 'cummax', 'cummin',
   // Klein-4 tag flips (transpose / adjoint) — free at any rank;
   // matrices swap their LAST TWO axes (NumPy / JAX convention);
   // vectors swap row/column orientation. value-ops handles every

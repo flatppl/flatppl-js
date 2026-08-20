@@ -91,6 +91,22 @@ test('vector column: prod reduces element-wise over rows', () => {
   assert.equal(asJS(p.w), 200);               // 10*20
 });
 
+test('vector column: median reduces element-wise over rows', () => {
+  // Two rows, so each cell's median is the mean of both entries.
+  const m = valueOf('m', TBL + 'm = median(t)');
+  assert.deepEqual(asJS(m.p), [2.5, 3.5, 4.5]);   // ½(1+4), ½(2+5), ½(3+6)
+  assert.equal(asJS(m.w), 15);
+});
+
+test('vector column: lany/lall reduce element-wise over rows', () => {
+  const src = 'b = table(hit = [[true, false, true], [true, true, false]])\n';
+  // Column cells over rows: (T,T) (F,T) (T,F).
+  const a = valueOf('a', src + 'a = lany(b)');
+  assert.deepEqual(asJS(a.hit), [1, 1, 1]);
+  const l = valueOf('l', src + 'l = lall(b)');
+  assert.deepEqual(asJS(l.hit), [1, 0, 0]);
+});
+
 test('vector column: var/std reduce element-wise over rows (Bessel)', () => {
   // per cell, 2 rows: var = ((x0-mu)^2+(x1-mu)^2)/(2-1). cell0: (1,4)->mu 2.5->4.5
   const v = valueOf('v', TBL + 'v = var(t)');

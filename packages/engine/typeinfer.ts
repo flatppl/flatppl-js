@@ -490,20 +490,24 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // per-column reductions. Checked up front so the static SIGNATURE_
       // FACTORIES entry (which returns any() / REAL) doesn't shadow it.
       //
-      // §07's "Table reductions" paragraph named `sum`, `mean` and `var`,
-      // plus `std` by owner ruling (design#77), when this branch was first
-      // wired for four ops. `prod`, `maximum` and `minimum` are accepted
-      // here too, ahead of flatppl-design PR #79 extending §07's text to
-      // name all seven — the engine and the spec now agree once that PR
-      // lands. Tracked in TODO-flatppl-js.md §04. Read the exempt set for
-      // §04's carve-out off §07, never off this list.
+      // §07's "Table reductions" paragraph names the ten ops below:
+      // "When `sum`, `mean`, `var`, `std`, `prod`, `maximum`, `minimum`,
+      // `median`, `lany`, or `lall` is applied to a table, the reduction
+      // operates column-wise and returns a record whose fields are the
+      // column names". `quantile` is deliberately absent — it is
+      // two-argument, and §07 lists its domain as `real arrays`.
+      // Read the exempt set for §04's carve-out off §07, never off this
+      // list.
       case 'sum':
       case 'mean':
       case 'var':
       case 'std':
       case 'prod':
       case 'maximum':
-      case 'minimum': {
+      case 'minimum':
+      case 'median':
+      case 'lany':
+      case 'lall': {
         const tbl = _maybeTableReduction(expr, scopes);
         if (tbl != null) return write(tbl, expr);
         break;
@@ -518,6 +522,43 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         if (args.length === 1) {
           const t: any = inferExpr(args[0], scopes);
           if (t && t.kind === 'table') return write(t, expr);
+        }
+        break;
+      }
+      // §07 gives `quantile` the domains `real arrays, interval(0, 1)`. Both
+      // violations are statically visible and both raise here for the same
+      // reason `sizeof` does below: the runtime's throw is swallowed by
+      // fixed-eval's try/catch, leaving the binding silently valueless.
+      //
+      //   - a table argument: §07's "Table reductions" paragraph names the ten
+      //     column-wise reductions and quantile is not one of them;
+      //   - a LITERAL p outside the closed interval (§03: "`interval(lo, hi)`
+      //     denotes the closed interval"). A computed p can't be checked here,
+      //     and the runtime refuses it.
+      case 'quantile': {
+        const args = expr.args || [];
+        if (args.length === 2) {
+          const t: any = inferExpr(args[0], scopes);
+          if (t && t.kind === 'table') {
+            const message = 'quantile: argument must be a real array (spec §07 '
+              + 'domain: real arrays); got a table — §07 does not list quantile '
+              + 'among the table reductions';
+            diagnostics.push({
+              severity: 'error', message,
+              loc: (args[0] && args[0].loc) || expr.loc,
+            });
+            return write(T.failed(message), expr);
+          }
+          const pIR = args[1];
+          if (pIR && pIR.kind === 'lit' && typeof pIR.value === 'number'
+              && !(pIR.value >= 0 && pIR.value <= 1)) {
+            const message = 'quantile: p must lie in interval(0, 1) (spec §07); got '
+              + pIR.value;
+            diagnostics.push({
+              severity: 'error', message, loc: pIR.loc || expr.loc,
+            });
+            return write(T.failed(message), expr);
+          }
         }
         break;
       }
@@ -1198,15 +1239,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // names. Returns null when the input isn't a table — caller falls through to
   // the signature-factory path (which handles arrays and scalars).
   //
-  // §07's "Table reductions" paragraph sanctions `sum`, `mean`, `var` and (by
-  // owner ruling, design#77) `std`. The caller also routes `prod`, `maximum`
-  // and `minimum` here, which §07 does not sanction — see the note at that
-  // switch; the over-permissiveness is recorded, not fixed.
+  // §07's "Table reductions" paragraph sanctions all ten ops the caller
+  // routes here — see the note at that switch.
   //
   // Per-column result type:
   //   sum, prod, mean   → same as column element type (real / complex)
   //   var, std          → real (Bessel-corrected variance / its sqrt)
   //   maximum, minimum  → same as column element type
+  //   median            → real: even n averages the two middle order
+  //                       statistics, so an integer column can reduce to
+  //                       a half-integer
+  //   lany, lall        → same as column element type (boolean)
   function _maybeTableReduction(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 1) return null;
@@ -1224,12 +1267,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       const cT = t.columns[k];
       if (cT && cT.kind === 'table') {
         fields[k] = _reduceTableType(cT, op);
-      } else if (op === 'var' || op === 'std') {
-        // var/std are real-valued but reduce over the ROW axis only, so a
-        // vector-per-entry column keeps its cell shape with a real leaf.
+      } else if (op === 'var' || op === 'std' || op === 'median') {
+        // var/std/median are real-valued but reduce over the ROW axis
+        // only, so a vector-per-entry column keeps its cell shape with a
+        // real leaf.
         fields[k] = _realLeafType(cT);
       } else {
-        // sum, prod, mean, maximum, minimum preserve element type.
+        // sum, prod, mean, maximum, minimum, lany, lall preserve element
+        // type.
         fields[k] = cT;
       }
     }
@@ -2239,9 +2284,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   //
   // Element type: the result type of `expr`. For the standard
   // arithmetic-on-reals case this is REAL; for richer cases it
-  // follows whatever the body's inferred type is. The seven
-  // reductions are all scalar-in / scalar-out, so the body's element
-  // type passes through unchanged.
+  // follows whatever the body's inferred type is. Every eligible
+  // reduction is scalar-in / scalar-out, so the body's element type
+  // passes through unchanged — except for the three whose result type
+  // is fixed by the reduction rather than the body (`median`, `lany`,
+  // `lall`), which `inferAggregate` overrides.
 
   // Shared core for `aggregate` and `metricsum` shape inference. Both
   // ops carry the same `(axes_vector, body)` shape (modulo the first arg
@@ -2372,12 +2419,28 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     aggregateShape.annotate(expr, shape.lengths);
     const outShape = shape.axisNames.map((n) =>
       n in shape.lengths ? shape.lengths[n] : '%dynamic');
+    // `elemT` is the BODY's element type, which most reductions pass
+    // through. `median` does not: even n averages the two middle order
+    // statistics, so an integer body reduces to a real (§07's median
+    // entry). `lany` / `lall` are the lor- / land-reduction, so they
+    // yield a boolean whatever the body was.
+    //
+    // `var` and `std` have the same mismatch (both are real-valued over
+    // an integer body) and are NOT corrected here — that predates this
+    // list and is recorded in TODO-flatppl-js.md rather than changed
+    // alongside the new heads.
+    const RESULT_TYPE_OVERRIDE: Record<string, any> = {
+      median: T.REAL, lany: T.BOOLEAN, lall: T.BOOLEAN,
+    };
+    const fArg = args[0];
+    const fname = (fArg && (fArg.name || fArg.op)) || '';
+    const elemT = RESULT_TYPE_OVERRIDE[fname] || shape.elemT;
     // Empty output_axes (spec §04 §sec:aggregate: "The bracketed axis
     // list may be empty for full reduction to a scalar") returns the
     // body's scalar element type directly — rank-0 arrays aren't a
     // distinct type in FlatPIR.
-    if (shape.axisNames.length === 0) return shape.elemT;
-    return T.array(shape.axisNames.length, outShape, shape.elemT);
+    if (shape.axisNames.length === 0) return elemT;
+    return T.array(shape.axisNames.length, outShape, elemT);
   }
 
   // Metricsum type inference (spec §04 §sec:metricsum). Shape-wise
@@ -3003,14 +3066,32 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   function inferComparison(expr: any, scopes: any): any {
-    // Comparisons unify operand shapes via unifyArith and return
-    // boolean of that shape. `equal(scalar, array)` would broadcast;
-    // `equal(scalar, scalar)` → boolean.
+    // §07 gives every comparison the domain `reals` — scalars only,
+    // unlike `add`/`sub` whose domain column reads "scalars or arrays of
+    // same shape". With §05's "No implicit operator broadcasting", an
+    // array operand reaches a comparison only through `broadcast`
+    // (`gt.(v, s)`, `v .> s`), which the elementwise value-ops impls
+    // already serve. Refuse it here: ARITH_OPS.gt is scalar `a > b`, so
+    // an accepted array collapsed to a scalar `false` while this
+    // function typed the result as a boolean array.
     const args = expr.args || [];
     if (args.length !== 2) return arityError(expr.op, 2, args.length, expr.loc);
     const aT: any = inferExpr(args[0], scopes);
     const bT: any = inferExpr(args[1], scopes);
     if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed(expr.op + ' cascade');
+    for (let i = 0; i < 2; i++) {
+      const t = i === 0 ? aT : bT;
+      if (t.kind === 'array') {
+        diagnostics.push({
+          severity: 'error',
+          message: expr.op + ': arg ' + (i + 1) + ' expects a scalar, got '
+            + T.show(t) + ' — comparisons are scalar-only (spec §07); apply one '
+            + 'elementwise with broadcast, as `' + expr.op + '.(a, b)`',
+          loc: args[i].loc || expr.loc,
+        });
+        return T.failed(expr.op + ' array operand');
+      }
+    }
     const r: any = T.unifyArith(aT, bT, new Map());
     if (r == null) {
       diagnostics.push({
