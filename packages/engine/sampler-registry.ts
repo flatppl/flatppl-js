@@ -410,6 +410,68 @@ const randInverseGamma = {
   },
 };
 
+// Beta, working around an upstream defect in @stdlib/random-base-beta@0.2.2.
+//
+// Its lib/beta.js:44 routes `alpha === beta && alpha > 1.5` to
+// lib/sample1.js, a normal-proposal rejection sampler. Because the else at
+// sample1.js:64 rejects outright, that branch's second squeeze must be an
+// upper bound on the exact acceptance probability
+//
+//   R(s) = (1 - s²/(2A))^A · e^{s²/2},   A = alpha-1,   |s| <= sqrt(2A)
+//
+// but sample1.js:63 adds the second-order term to the LOWER squeeze
+// `1 - s⁴/(8α-12)` instead of building the bound from `1 - s⁴/(8α-8)`, so
+// the coded bound sits below R over a wide band of s. Draws that should be
+// accepted are rejected, which depletes the near-extreme mass and biases
+// the variance LOW while leaving the mean exact: -3.1 % at alpha = 2,
+// -32 % at 1.6, -97 % as alpha -> 1.5⁺. Verified by integrating the
+// accepted density; see TODO-flatppl-js.md.
+//
+// So that ONE region draws via two standard gammas instead —
+// X ~ Gamma(a, 1), Y ~ Gamma(b, 1) ⇒ X/(X+Y) ~ Beta(a, b). The branch test
+// mirrors theirs exactly, so every other parameter region still delegates
+// to @stdlib and its draws stay bit-identical to before this workaround.
+// Revert to plain `randBeta` once the dependency ships a fix.
+function _betaHitsUpstreamDefect(alpha: number, beta: number) {
+  return alpha === beta && alpha > 1.5;
+}
+
+const randBetaFixed = {
+  factory: function () {
+    const args = Array.prototype.slice.call(arguments);
+    const lastIdx = args.length - 1;
+    const opts = (args.length > 0 && args[lastIdx]
+                  && typeof args[lastIdx] === 'object'
+                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    if (args.length === 1 && args[0] === opts) {
+      // Parametric form: params arrive per draw, so the branch test does
+      // too. Build the @stdlib closure eagerly and unconditionally —
+      // constructing it consumes one uniform (it seeds its own normal
+      // generator off the prng), so deferring it would shift the stream
+      // for the unaffected params this path must leave untouched.
+      const upstream = randBeta.factory(opts);
+      let gamma: any = null;
+      return function parametricBetaSampler(alpha: any, beta: any) {
+        if (!_betaHitsUpstreamDefect(+alpha, +beta)) return upstream(alpha, beta);
+        if (gamma === null) gamma = randGamma.factory(opts);
+        const x = gamma(+alpha, 1), y = gamma(+beta, 1);
+        return x / (x + y);
+      };
+    }
+    const alpha = +args[0], beta = +args[1];
+    if (!_betaHitsUpstreamDefect(alpha, beta)) {
+      return randBeta.factory(alpha, beta, opts);
+    }
+    // alpha === beta here, so one Gamma(alpha, 1) closure serves both
+    // draws; consecutive draws off the same stream are independent.
+    const gamma = randGamma.factory(alpha, 1, opts);
+    return function staticBetaSampler() {
+      const x = gamma(), y = gamma();
+      return x / (x + y);
+    };
+  },
+};
+
 function InverseGammaCtor(this: any, shape: any, scale: any) {
   this.shape = +shape;
   this.scale = +scale;
@@ -1286,7 +1348,7 @@ const REGISTRY = {
     aliases:  {},
     discrete: false,
     Ctor:     Beta,
-    randFn:   randBeta,
+    randFn:   randBetaFixed,
     logpdfFn: logpdfBeta,
   },
   Gamma: {
