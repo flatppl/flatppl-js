@@ -40,7 +40,7 @@ function betaIR(alpha: number, beta: number) {
   };
 }
 
-function oracle(a: number, b: number) {
+function oracle(a: number, b: number, n: number) {
   const s = a + b;
   const variance = (a * b) / (s * s * (s + 1));
   const mu4 = (3 * a * b * ((2 * s * s) + (a * b * (s - 6)))) /
@@ -48,8 +48,8 @@ function oracle(a: number, b: number) {
   return {
     mean:    a / s,
     variance,
-    seMean:  Math.sqrt(variance / N),
-    seVar:   Math.sqrt((mu4 - (variance * variance)) / N),
+    seMean:  Math.sqrt(variance / n),
+    seVar:   Math.sqrt((mu4 - (variance * variance)) / n),
   };
 }
 
@@ -69,16 +69,28 @@ function sampleMoments(xs: Float64Array) {
   return { mean, variance: c2 / xs.length };
 }
 
-function checkMoments(alpha: number, beta: number, seed: number) {
-  const o = oracle(alpha, beta);
-  const m = sampleMoments(draws(alpha, beta, seed));
+function assertMoments(xs: Float64Array, alpha: number, beta: number, label: string) {
+  const o = oracle(alpha, beta, xs.length);
+  const m = sampleMoments(xs);
   const zMean = (m.mean - o.mean) / o.seMean;
   const zVar = (m.variance - o.variance) / o.seVar;
   assert.ok(Math.abs(zMean) < TOL_SIGMA,
-    `Beta(${alpha},${beta}) seed ${seed}: mean ${m.mean} vs oracle ${o.mean} — ${zMean.toFixed(1)}σ`);
+    `Beta(${alpha},${beta}) ${label}: mean ${m.mean} vs oracle ${o.mean} — ${zMean.toFixed(1)}σ`);
   assert.ok(Math.abs(zVar) < TOL_SIGMA,
-    `Beta(${alpha},${beta}) seed ${seed}: var ${m.variance} vs oracle ${o.variance} — ${zVar.toFixed(1)}σ`);
-  return { zMean, zVar };
+    `Beta(${alpha},${beta}) ${label}: var ${m.variance} vs oracle ${o.variance} — ${zVar.toFixed(1)}σ`);
+}
+
+function checkMoments(alpha: number, beta: number, seed: number) {
+  assertMoments(draws(alpha, beta, seed), alpha, beta, `seed ${seed}`);
+}
+
+// Params supplied per draw rather than baked into the factory. A separate
+// branch of the Beta wiring, with its own dispatch on each call.
+function parametricDraws(alpha: number, beta: number, seed: number) {
+  const s = sampler.makeParametricSampler(rng.seedFromBytes([seed, 7, 0]), betaIR(alpha, beta));
+  const xs = new Float64Array(N);
+  for (let i = 0; i < N; i++) xs[i] = s.drawWith({});
+  return xs;
 }
 
 // Every draw must land strictly inside the open unit interval — the
@@ -113,36 +125,55 @@ for (const [alpha, beta] of [
   });
 }
 
-// UPSTREAM DEFECT — @stdlib/random-base-beta@0.2.2.
+// The symmetric alpha === beta > 1.5 region, which @stdlib draws with a
+// variance biased low (beta.js:44 → sample1.js:63 — its second squeeze is
+// not an upper bound on the acceptance probability, so legitimate draws
+// are rejected and the near-extreme mass is depleted). The engine works
+// around it by drawing that ONE region from two standard gammas; these
+// rows are what pins the workaround.
 //
-// beta.js:44 routes alpha === beta && alpha > 1.5 to sample1.js, whose
-// second squeeze is not an upper bound on the acceptance probability.
-// sample1.js:63 increments the LOWER squeeze `1 - s⁴/(8α-12)` by the
-// second-order term instead of building the bound from `1 - s⁴/(8α-8)`,
-// so for
-//
-//   R(s) = (1 - s²/(2A))^A · e^{s²/2},   A = α-1,   |s| ≤ sqrt(2A)
-//
-// the coded bound y₂ falls below R over a wide band of s. Draws with
-// y₂ ≤ u < R are rejected though they should be accepted, which
-// depletes the near-extreme x and pulls the variance down. Numerically
-// integrating the accepted density reproduces the measured deficit
-// exactly: −3.09 % at α = 2, −32.4 % at α = 1.6, −97.3 % at α = 1.5001.
-// The mean stays exact because the loss is symmetric in s.
-//
-// The bias shrinks as alpha grows, so only alpha = 1.6 and alpha = 2 are
-// detectable at N = 200 000 and TOL_SIGMA = 5 (−143σ and −12σ). The same
-// branch biases alpha = 2.5 by −0.47 % and alpha = 3 by −0.13 %, both
-// under this envelope, so those are not listed here — raising N would
-// surface them too.
-//
-// Unskip once the dependency ships a fix; the assertions below are the
-// correct closed-form targets and must not be re-pinned to the biased
-// values.
-for (const alpha of [1.6, 2]) {
-  test(`Beta(${alpha}, ${alpha}): mean and variance within ${TOL_SIGMA}σ of closed form`,
-    { skip: 'upstream @stdlib/random-base-beta@0.2.2 sample1.js:63 — symmetric-branch squeeze is not an upper bound; variance biased low' },
-    () => {
-      for (const seed of [1, 2, 3]) checkMoments(alpha, alpha, seed);
-    });
+// alpha = 1.6 and alpha = 2 are the cases the defect moves far enough to
+// see at this N and tolerance: unfixed they land at −143σ and −12σ. The
+// same branch biases alpha = 2.5 by −0.47 % and alpha = 3 by −0.13 %,
+// both inside this envelope, so those two would pass either way and are
+// listed only for coverage of the branch.
+for (const alpha of [1.6, 2, 2.5, 3]) {
+  test(`Beta(${alpha}, ${alpha}): mean and variance within ${TOL_SIGMA}σ of closed form`, () => {
+    for (const seed of [1, 2, 3]) checkMoments(alpha, alpha, seed);
+  });
 }
+
+// The per-draw-params path dispatches on every call, so it needs its own
+// coverage on both sides of the branch.
+test(`per-draw params: mean and variance within ${TOL_SIGMA}σ of closed form`, () => {
+  for (const [a, b] of [[2, 2], [1.6, 1.6], [2, 3], [0.5, 0.5]] as [number, number][]) {
+    assertMoments(parametricDraws(a, b, 5), a, b, 'per-draw params');
+  }
+});
+
+// One per-draw-params closure must serve both sides of the branch, interleaved
+// — the workaround builds its Gamma sampler on first need, so a closure that
+// has already served unaffected params must still route correctly when an
+// affected pair arrives, and vice versa.
+test('per-draw params: one closure alternating across the branch stays correct', () => {
+  const ir = {
+    kind: 'call',
+    op:   'Beta',
+    kwargs: {
+      alpha: { kind: 'ref', ns: 'self', name: 'a', loc: synthLoc() },
+      beta:  { kind: 'ref', ns: 'self', name: 'b', loc: synthLoc() },
+    },
+    loc: synthLoc(),
+  };
+  const s = sampler.makeParametricSampler(rng.seedFromBytes([6, 7, 0]), ir);
+  const pairs: [number, number][] = [[2, 3], [2, 2], [0.5, 0.5], [1.6, 1.6]];
+  const out: number[][] = pairs.map(() => []);
+  for (let i = 0; i < N; i++) {
+    const j = i % pairs.length;
+    out[j].push(s.drawWith({ a: pairs[j][0], b: pairs[j][1] }));
+  }
+  for (let j = 0; j < pairs.length; j++) {
+    const [a, b] = pairs[j];
+    assertMoments(Float64Array.from(out[j]), a, b, 'alternating closure');
+  }
+});
