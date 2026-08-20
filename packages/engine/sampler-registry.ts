@@ -443,24 +443,32 @@ const randBetaFixed = {
     const opts = (args.length > 0 && args[lastIdx]
                   && typeof args[lastIdx] === 'object'
                   && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    if (args.length === 1 && args[0] === opts) {
+    if (args.length === 1 && typeof args[0] === 'object' && args[0] !== null) {
       // Parametric form: params arrive per draw, so the branch test does
       // too. Build the @stdlib closure eagerly and unconditionally —
       // constructing it consumes one uniform (it seeds its own normal
       // generator off the prng), so deferring it would shift the stream
       // for the unaffected params this path must leave untouched.
-      const upstream = randBeta.factory(opts);
+      //
+      // Detected by arity and type alone, not by an rng-key lookup on
+      // the sole argument — a `{ seed }` (no `prng`) options object is
+      // still the parametric form, and this recognises it the same way
+      // @stdlib's own `randBeta.factory` does.
+      const upstream = randBeta.factory(args[0]);
       let gamma: any = null;
       return function parametricBetaSampler(alpha: any, beta: any) {
         if (!_betaHitsUpstreamDefect(+alpha, +beta)) return upstream(alpha, beta);
-        if (gamma === null) gamma = randGamma.factory(opts);
+        if (gamma === null) gamma = randGamma.factory(args[0]);
         const x = gamma(+alpha, 1), y = gamma(+beta, 1);
         return x / (x + y);
       };
     }
     const alpha = +args[0], beta = +args[1];
     if (!_betaHitsUpstreamDefect(alpha, beta)) {
-      return randBeta.factory(alpha, beta, opts);
+      // Delegate the caller's own arguments, uncoerced — @stdlib does its
+      // own validation and must see what was actually passed, not the
+      // `+`-coerced numbers used only for the branch test above.
+      return randBeta.factory(args[0], args[1], opts);
     }
     // alpha === beta here, so one Gamma(alpha, 1) closure serves both
     // draws; consecutive draws off the same stream are independent.

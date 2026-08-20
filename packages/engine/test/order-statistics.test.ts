@@ -216,17 +216,16 @@ test('quantile: a table reaching the runtime throws rather than returning NaN', 
 });
 
 // =====================================================================
-// Empty input — §07 does not define an empty reduction. median and
-// quantile have no order statistics to return, so both give NaN, which
-// is what `mean([])` already gives (0/0). Recorded in TODO-flatppl-js.md
-// as a spec gap; pinned here so a change is deliberate.
+// Empty input — the empty-array ruling (flatppl-dev/empty-arrays-ruling.md):
+// median and quantile have no order statistic over 0 elements, so both
+// throw rather than the NaN the formula would silently give.
 // =====================================================================
 
-test('median / quantile of an empty array ⇒ NaN (matches mean([]))', () => {
+test('median / quantile of an empty array throw (no order statistic over 0 elements)', () => {
   const empty = { shape: [0], data: new Float64Array(0) };
-  assert.ok(Number.isNaN(ARITH_OPS.median(empty)));
-  assert.ok(Number.isNaN(ARITH_OPS.quantile(empty, 0.5)));
-  assert.ok(Number.isNaN(ARITH_OPS.mean(empty)));
+  assert.throws(() => ARITH_OPS.median(empty), /median: undefined for an empty array/);
+  assert.throws(() => ARITH_OPS.quantile(empty, 0.5), /quantile: undefined for an empty array/);
+  assert.throws(() => ARITH_OPS.mean(empty), /mean: undefined for an empty array/);
 });
 
 // =====================================================================

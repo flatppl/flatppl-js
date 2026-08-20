@@ -97,6 +97,14 @@ test('l1unit / l2unit on zero-norm vector throws', () => {
   assert.throws(() => ev(call('l2unit', vec(0, 0, 0))), /zero-norm/);
 });
 
+// Empty input — no quotient is ever evaluated, so the result is
+// vacuously the empty vector (empty-array ruling, flatppl-dev/
+// empty-arrays-ruling.md), not the zero-norm error. Was a throw.
+test('l1unit / l2unit on empty vector ⇒ the empty vector, not the zero-norm error', () => {
+  assert.deepEqual(ev(call('l1unit', vec())), []);
+  assert.deepEqual(ev(call('l2unit', vec())), []);
+});
+
 // =====================================================================
 // logsumexp — numerically stable log Σ exp
 // =====================================================================
@@ -153,4 +161,12 @@ test('logsoftmax: each entry equals v_i − logsumexp(v)', () => {
   const lse = ev(call('logsumexp', v));
   const expected = [1 - lse, 2 - lse, 3 - lse];
   assert.ok(arrClose(ls, expected, 1e-12));
+});
+
+// Empty input — softmax / logsoftmax give the empty vector (empty-array
+// ruling), already conformant; pinned here so a future change is
+// deliberate.
+test('softmax([]) / logsoftmax([]) ⇒ the empty vector', () => {
+  assert.deepEqual(ev(call('softmax', vec())), []);
+  assert.deepEqual(ev(call('logsoftmax', vec())), []);
 });

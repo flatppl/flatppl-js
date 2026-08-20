@@ -1596,16 +1596,21 @@ const ARITH_OPS = {
     for (let i = 0; i < arr.length; i++) s += arr[i];
     return s;
   },
+  // mean(xs) per spec §07 divides by the element count. n = 0 has no
+  // count to divide by — the empty-array ruling makes this an error
+  // rather than the 0/0 = NaN the formula would silently produce.
   mean: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'mean');
     if (valueLib.isComplexValue(a)) {
       const cplx = valueLib.readComplex(a);
       const n = cplx.re.length;
+      if (n === 0) throw new Error('mean: undefined for an empty array — the formula divides by the element count, which is 0 (spec §07)');
       let sR = 0, sI = 0;
       for (let i = 0; i < n; i++) { sR += cplx.re[i]; sI += cplx.im[i]; }
       return { re: sR / n, im: sI / n };
     }
     const arr = _arrLike(a);
+    if (arr.length === 0) throw new Error('mean: undefined for an empty array — the formula divides by the element count, which is 0 (spec §07)');
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i];
     return s / arr.length;
@@ -1713,14 +1718,13 @@ const ARITH_OPS = {
   // Reduces over EVERY element of an any-rank array (like maximum /
   // minimum), and column-wise over a table.
   //
-  // n = 0 has no order statistics, so the result is NaN — matching
-  // `mean([])`, which is 0/0. Spec §07 does not say what an empty
-  // reduction gives; see TODO-flatppl-js.md.
+  // n = 0 has no order statistics — the empty-array ruling makes this
+  // an error, like mean/var/std/quantile over empty (TODO-flatppl-js.md).
   median: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'median');
     const s = _sortedCopy(_arrLike(a));
     const n = s.length;
-    if (n === 0) return NaN;
+    if (n === 0) throw new Error('median: undefined for an empty array — no order statistic exists for 0 elements (spec §07)');
     const half = n >> 1;
     // Odd n: the single middle element (0-based index (n-1)/2 = half).
     // Even n: the mean of the two straddling it.
@@ -1755,7 +1759,7 @@ const ARITH_OPS = {
     }
     const s = _sortedCopy(_arrLike(a));
     const n = s.length;
-    if (n === 0) return NaN;
+    if (n === 0) throw new Error('quantile: undefined for an empty array — no order statistic exists for 0 elements (spec §07)');
     const h = (n - 1) * q + 1;
     const k = Math.floor(h);
     // 1-based k → 0-based index k−1.
@@ -1785,13 +1789,15 @@ const ARITH_OPS = {
   },
   // Sample variance per spec §07 §sec:functions (line: `var | xs |
   // (1/(n-1)) Σ(xᵢ - x̄)²`). Bessel-corrected — divisor is n-1, not
-  // n. n ≤ 1 has no sample variance; return 0 (matches the existing
-  // n=0 sentinel and avoids a NaN from 0/0).
+  // n. n = 1 has a defined (zero) variance; n = 0 has none — the
+  // empty-array ruling makes that an error, not the 0/0 the formula
+  // would otherwise produce.
   var: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'var');
     const arr = _arrLike(a);
     const n = arr.length;
-    if (n <= 1) return 0;
+    if (n === 0) throw new Error('var: undefined for an empty array — the formula divides by n-1 samples, and there are none (spec §07)');
+    if (n === 1) return 0;
     let s = 0;
     for (let i = 0; i < n; i++) s += arr[i];
     const mu = s / n;
@@ -1801,12 +1807,13 @@ const ARITH_OPS = {
   },
   // std = sqrt(var). Per spec §07 §sec:functions
   // (`std | xs | √var(x)`) so the Bessel correction in `var` flows
-  // through.
+  // through, including the n = 0 error (empty-array ruling).
   std: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'std');
     const arr = _arrLike(a);
     const n = arr.length;
-    if (n <= 1) return 0;
+    if (n === 0) throw new Error('std: undefined for an empty array — the formula divides by n-1 samples, and there are none (spec §07)');
+    if (n === 1) return 0;
     let s = 0;
     for (let i = 0; i < n; i++) s += arr[i];
     const mu = s / n;
@@ -1903,9 +1910,13 @@ const ARITH_OPS = {
     }
     return m;
   },
-  // l1unit / l2unit — per spec §07, rank-1 normalized vectors.
+  // l1unit / l2unit — per spec §07, rank-1 normalized vectors. Over an
+  // empty input the elementwise formula never evaluates a quotient, so
+  // the result is vacuously the empty vector (empty-array ruling); the
+  // zero-norm error stays for a non-empty input whose norm is 0.
   l1unit: (a: any) => {
     const arr = _arrLike(a);
+    if (arr.length === 0) return { shape: [0], data: new Float64Array(0) };
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += Math.abs(arr[i]);
     if (s === 0) throw new Error('l1unit: zero-norm vector has no unit form');
@@ -1915,6 +1926,7 @@ const ARITH_OPS = {
   },
   l2unit: (a: any) => {
     const arr = _arrLike(a);
+    if (arr.length === 0) return { shape: [0], data: new Float64Array(0) };
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
     if (s === 0) throw new Error('l2unit: zero-norm vector has no unit form');

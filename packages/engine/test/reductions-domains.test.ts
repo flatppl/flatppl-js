@@ -49,6 +49,15 @@ test('prod on rank-1 real vector', () => {
   assert.equal(fv.get('p'), 24);
 });
 
+// Empty input — sum and prod are the monoid units (empty-array ruling,
+// flatppl-dev/empty-arrays-ruling.md), already conformant; pinned here so a
+// future change is deliberate.
+test('sum([]) = 0, prod([]) = 1 (monoid units)', () => {
+  const empty = { shape: [0], data: new Float64Array(0) };
+  assert.equal(ARITH_OPS.sum(empty), 0);
+  assert.equal(ARITH_OPS.prod(empty), 1);
+});
+
 // =====================================================================
 // sum / mean / prod — real (rank-2 matrix; spec says "arrays")
 // =====================================================================
@@ -173,6 +182,27 @@ m = minimum(M)
   assert.equal(fv.get('m'), 1);
 });
 
+// Empty input — maximum / minimum are the lattice identities of the
+// extended reals (empty-array ruling), already conformant; pinned here
+// so a future change is deliberate.
+test('maximum([]) = -Infinity, minimum([]) = +Infinity (lattice identities)', () => {
+  const empty = { shape: [0], data: new Float64Array(0) };
+  assert.equal(ARITH_OPS.maximum(empty), -Infinity);
+  assert.equal(ARITH_OPS.minimum(empty), Infinity);
+});
+
+// Empty input — var / std have no count to divide by (empty-array
+// ruling): an error, not the 0/0 the formula would silently give.
+// n = 1 stays 0 (a defined, zero, sample variance).
+test('var([]) / std([]) throw; var([x]) / std([x]) stay 0', () => {
+  const empty = { shape: [0], data: new Float64Array(0) };
+  const one = { shape: [1], data: Float64Array.from([3.0]) };
+  assert.throws(() => ARITH_OPS.var(empty), /var: undefined for an empty array/);
+  assert.throws(() => ARITH_OPS.std(empty), /std: undefined for an empty array/);
+  assert.equal(ARITH_OPS.var(one), 0);
+  assert.equal(ARITH_OPS.std(one), 0);
+});
+
 // =====================================================================
 // cumsum / cumprod — vectors only per spec §07
 // =====================================================================
@@ -187,6 +217,15 @@ test('cumprod on rank-1', () => {
   const fv = ev('cp = cumprod([1.0, 2.0, 3.0, 4.0])');
   const cp: any = fv.get('cp');
   assert.deepEqual(Array.from(cp.data), [1, 2, 6, 24]);
+});
+
+// Empty input — scans preserve shape, so cumsum / cumprod give the
+// empty vector (empty-array ruling), already conformant; pinned here
+// so a future change is deliberate.
+test('cumsum([]) / cumprod([]) preserve shape', () => {
+  const empty = { shape: [0], data: new Float64Array(0) };
+  assert.deepEqual(Array.from((ARITH_OPS.cumsum(empty) as any).data), []);
+  assert.deepEqual(Array.from((ARITH_OPS.cumprod(empty) as any).data), []);
 });
 
 // =====================================================================
