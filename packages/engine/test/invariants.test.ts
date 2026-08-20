@@ -117,7 +117,7 @@ const SAMPLER_INLINE_EVALUABLE = new Set([
   'filter', 'reduce', 'scan', 'broadcast',
   // Multi-axis aggregation (spec §04 §sec:aggregate). Dispatched by
   // evaluateCall via a dedicated case that walks the axis-name iteration
-  // and reduces with one of the seven order-invariant reductions.
+  // and reduces with one of the ten order-invariant reductions.
   'aggregate',
   // FlatPDL measure-eval primitives (spec §07 §sec:measure-eval-prims).
   // Dispatched in evaluateCall: builtin_logdensityof / builtin_touniform

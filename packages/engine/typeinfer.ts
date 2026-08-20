@@ -3066,14 +3066,32 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   function inferComparison(expr: any, scopes: any): any {
-    // Comparisons unify operand shapes via unifyArith and return
-    // boolean of that shape. `equal(scalar, array)` would broadcast;
-    // `equal(scalar, scalar)` → boolean.
+    // §07 gives every comparison the domain `reals` — scalars only,
+    // unlike `add`/`sub` whose domain column reads "scalars or arrays of
+    // same shape". With §05's "No implicit operator broadcasting", an
+    // array operand reaches a comparison only through `broadcast`
+    // (`gt.(v, s)`, `v .> s`), which the elementwise value-ops impls
+    // already serve. Refuse it here: ARITH_OPS.gt is scalar `a > b`, so
+    // an accepted array collapsed to a scalar `false` while this
+    // function typed the result as a boolean array.
     const args = expr.args || [];
     if (args.length !== 2) return arityError(expr.op, 2, args.length, expr.loc);
     const aT: any = inferExpr(args[0], scopes);
     const bT: any = inferExpr(args[1], scopes);
     if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed(expr.op + ' cascade');
+    for (let i = 0; i < 2; i++) {
+      const t = i === 0 ? aT : bT;
+      if (t.kind === 'array') {
+        diagnostics.push({
+          severity: 'error',
+          message: expr.op + ': arg ' + (i + 1) + ' expects a scalar, got '
+            + T.show(t) + ' — comparisons are scalar-only (spec §07); apply one '
+            + 'elementwise with broadcast, as `' + expr.op + '.(a, b)`',
+          loc: args[i].loc || expr.loc,
+        });
+        return T.failed(expr.op + ' array operand');
+      }
+    }
     const r: any = T.unifyArith(aT, bT, new Map());
     if (r == null) {
       diagnostics.push({

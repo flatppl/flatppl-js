@@ -56,9 +56,17 @@ test('linfnorm on empty vector ⇒ 0 (same convention as l1norm / l2norm)', () =
   assert.equal(ev(call('linfnorm', vec())), 0);
 });
 
-test('linfnorm on a complex vector takes each modulus (§07 domain)', () => {
-  // |3 + 4i| = 5 beats |1 + 0i| = 1. Built directly: the surface
-  // `complex(...)` path is covered elsewhere and this pins the branch.
+test('linfnorm ARITH_OPS complex branch takes each modulus (not reachable from source)', () => {
+  // |3 + 4i| = 5 beats |1 + 0i| = 1. Oracle: norm([3+4im, 1], Inf) == 5.
+  //
+  // The Value is hand-built and ARITH_OPS is called directly because there
+  // is NO surface route: `types.ts` gives linfnorm `array(1, …, REAL)`, and
+  // the engine has no real-or-complex array signature at all, so
+  // `linfnorm([complex(3.0, 4.0), …])` is a static type error. §07 gives
+  // all three norms the domain `real/complex vectors`, so the complex half
+  // is unimplemented at the surface for l1norm / l2norm / linfnorm alike.
+  // This test pins the runtime branch only; it does not certify the domain.
+  // Closing the gap needs a new type form (TODO-flatppl-js.md).
   const v = {
     shape: [2],
     data: Float64Array.from([3, 1]),

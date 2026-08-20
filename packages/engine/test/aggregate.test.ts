@@ -541,20 +541,63 @@ R = aggregate(${r}, [.i], A[.i, .j])
   });
 }
 
-for (const r of ['lany', 'lall']) {
-  test(`aggregate: boolean reduction '${r}' parses + classifies`, () => {
-    // Boolean reductions over a boolean body. The mask is hoisted to its
-    // own binding because the broadcast-reduce body evaluator handles
-    // arithmetic and unary math, not comparisons.
-    const src = `
+// Boolean reductions over a boolean body, end to end with values.
+//
+// The mask is built with the dotted comparison `A .> 1.5`, which §05
+// lowers to `broadcast(gt, A, 1.5)` — the only route §07 sanctions, since
+// a bare `gt` takes `reals`. It is also hoisted to its own binding,
+// because the broadcast-reduce body evaluator handles arithmetic and
+// unary math, not comparisons.
+//
+// A = [[1, 2], [3, 4]], so mask = [[false, true], [true, true]]:
+// row 0 is mixed and row 1 is all-true, which is what separates lany
+// from lall. Oracle is closed-form per row.
+test('aggregate: lany / lall reduce a broadcast comparison mask', () => {
+  const src = `
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+mask = A .> 1.5
+Rany = aggregate(lany, [.i], mask[.i, .j])
+Rall = aggregate(lall, [.i], mask[.i, .j])
+`;
+  assert.equal(errors(src).length, 0, 'source should have no diagnostics');
+  const fv = orchestrator.buildDerivations(processSource(src).bindings).fixedValues;
+  // Booleans inside an aggregate result are stored 1 / 0 (every aggregate
+  // output path writes a Float64Array).
+  const any = fv.get('Rany'), all = fv.get('Rall');
+  assert.equal(any.length, 2, 'lany over axis .i must give one entry per row');
+  assert.equal(all.length, 2, 'lall over axis .i must give one entry per row');
+  assert.deepEqual(Array.from(any), [1, 1]);   // any(F,T)=T ; any(T,T)=T
+  assert.deepEqual(Array.from(all), [0, 1]);   // all(F,T)=F ; all(T,T)=T
+});
+
+test('lany / lall over a rank-1 broadcast comparison mask', () => {
+  const src = `
+v = [1.0, 5.0, 2.0]
+m = v .> 3.0
+a = lany(m)
+l = lall(m)
+`;
+  assert.equal(errors(src).length, 0, 'source should have no diagnostics');
+  const fv = orchestrator.buildDerivations(processSource(src).bindings).fixedValues;
+  // m = [false, true, false] — only 5.0 exceeds 3.0.
+  assert.deepEqual(Array.from(fv.get('m').data), [0, 1, 0]);
+  assert.equal(fv.get('a'), true);
+  assert.equal(fv.get('l'), false);
+});
+
+test('aggregate: a bare comparison mask is refused, not silently scalar', () => {
+  // Regression: `gt(A, 2.0)` typed as a boolean array while ARITH_OPS.gt
+  // returned the scalar `false`, so the aggregate reduced an empty body
+  // and the wrong answer reached the model with no diagnostic.
+  const errs = errors(`
 A = rowstack([[1.0, 2.0], [3.0, 4.0]])
 mask = gt(A, 2.0)
-R = aggregate(${r}, [.i], mask[.i, .j])
-`;
-    assert.equal(errors(src).length, 0,
-      `reduction ${r} should parse cleanly`);
-  });
-}
+R = aggregate(lany, [.i], mask[.i, .j])
+`);
+  assert.ok(errs.some((d: any) => /comparisons are scalar-only/.test(d.message)),
+    'expected the scalar-only diagnostic, got: '
+      + errs.map((d: any) => d.message).join('; '));
+});
 
 // ---------------------------------------------------------------------
 // Static analyzer errors (per spec rules)

@@ -135,6 +135,24 @@ for (const [xs, p, want] of QUANTILE_CASES) {
   });
 }
 
+// §07 pins quantile as an EXPRESSION, so its floating-point rounding is the
+// normative answer and an algebraically equivalent rearrangement is a
+// deviation. Every other pinned case agrees under both forms, and `close`
+// uses a 1e-12 tolerance, so this is the one case that can see the
+// difference — assert it exactly.
+//
+//   spec  x_(k) + (h−k)(x_(k+1) − x_(k))  = 1 + 0.5·(1e16 − 1) = 5000000000000001
+//   lerp  b − (b−a)(1−t)                  =                      5000000000000000
+//
+// The second form is what numpy's `_lerp` switches to for t ≥ 0.5. numpy
+// 2.5.1 percentile(method='linear') and Julia both return ...000; the spec
+// formula, recomputed independently in Python, returns ...001.
+test('quantile pins the spec expression, not an equivalent lerp (§07)', () => {
+  const q = ev('q = quantile([1.0e16, 1.0], 0.5)').get('q') as number;
+  assert.strictEqual(q, 5000000000000001);
+  assert.notStrictEqual(q, 5000000000000000);
+});
+
 test('quantile(xs, 0) = minimum, quantile(xs, 1) = maximum (§07)', () => {
   const fv = ev(`
 xs = [7.0, 1.0, 5.0, 3.0]

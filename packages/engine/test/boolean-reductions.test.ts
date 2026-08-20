@@ -6,8 +6,8 @@
 //   lall — true if every element of xs is true
 //
 // "`lany` is the `lor`-reduction of its input and `lall` the
-// `land`-reduction. Both are order-invariant and both reduce a table
-// column-wise" — so both also join §04's eligible aggregate reductions.
+// `land`-reduction. Both reduce a table column-wise" — and §04 lists both
+// among the ten eligible aggregate reductions, which are order-invariant.
 // The names avoid bare `all`, which collides with the axis-slicing
 // keyword.
 //

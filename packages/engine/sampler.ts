@@ -1833,14 +1833,23 @@ const ARITH_OPS = {
     return { shape: [n], data: out };
   },
   // cummax / cummin — running extrema (spec §07). Scans, so they
-  // preserve their input's shape. Seeded from the first element rather
-  // than ±Infinity so an empty input gives an empty vector instead of
-  // an infinity.
+  // preserve their input's shape; an empty input gives an empty vector.
+  //
+  // Seeded from the FIRST ELEMENT, not ±Infinity, so no value that is
+  // absent from the input can reach the output: a ±Infinity seed made
+  // `cummax([NaN, 1])` return `[-Infinity, 1]`, since `>` is false against
+  // NaN and the seed survived to out[0]. With this seed it returns
+  // `[NaN, NaN]`, matching `accumulate(max, ·)`.
+  //
+  // NaN LATER in the input still does not propagate — `cummax([1, NaN, 2])`
+  // gives `[1, 1, 1]` against `[1, NaN, NaN]` — because a `>` comparison
+  // skips NaN. That matches the engine's own comparison-seeded `maximum`;
+  // §07 states no NaN rule (TODO-flatppl-js.md).
   cummax: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
     const out = new Float64Array(n);
-    let m = -Infinity;
+    let m = n > 0 ? arr[0] : 0;
     for (let i = 0; i < n; i++) { if (arr[i] > m) m = arr[i]; out[i] = m; }
     return { shape: [n], data: out };
   },
@@ -1848,7 +1857,7 @@ const ARITH_OPS = {
     const arr = _arrLike(a);
     const n = arr.length;
     const out = new Float64Array(n);
-    let m = Infinity;
+    let m = n > 0 ? arr[0] : 0;
     for (let i = 0; i < n; i++) { if (arr[i] < m) m = arr[i]; out[i] = m; }
     return { shape: [n], data: out };
   },
