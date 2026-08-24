@@ -39,6 +39,8 @@
 // dissolvable pattern, it is left as-is. The existing `_broadcastApply`
 // runtime path handles the residual cases unchanged.
 
+const collectionDomain = require('./collection-domain-heads.ts');
+
 // ---------------------------------------------------------------------
 // Dissolve-safe op set
 // ---------------------------------------------------------------------
@@ -1039,6 +1041,80 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
   return _fusedFallback();
 }
 
+// Rank of a FLAT array type — one whose elements are scalars, so its `rank` is
+// also the rank of the row-major buffer holding it. Null for a scalar, for a
+// NESTED array (elements that are themselves arrays — §03 keeps those a
+// distinct type from a matrix), and for anything else.
+//
+// Deliberately not a nesting-depth SUM. A sum cannot tell "one loop axis over
+// rank-k cells" from "a genuine flat rank-(k+1) array": both come to k+1, and
+// the second has SCALAR cells, which §04 makes a static error under a
+// collection-domain head. An earlier version of the caller summed the depth and
+// so admitted `diagmat` over a real `[2, 3]` and `det` over a `[2, 2, 2]` —
+// caught by the domain gate and by op signatures in every route tried, but the
+// condition was not the proof it claimed to be.
+function _flatArrayRank(t: any): number | null {
+  if (!t || t.kind !== 'array') return null;
+  if (typeof t.rank !== 'number') return null;
+  if (!t.elem || t.elem.kind !== 'scalar') return null;
+  return t.rank;
+}
+
+// Is `broadcast(<head>, args…) ≡ <head>(args…)` for a §07 collection-domain
+// head, at these argument types?
+//
+// It is exactly when the whole-value call applies the head PER OUTER SLICE
+// rather than to the whole buffer, and `ops.dispatch` documents the one
+// condition under which it does: a `fixed-rank` declaration whose arg is one
+// rank above its declared logical rank is atom-batched, and the dispatcher
+// runs the op per leading-axis slice (engine-concepts §18 / §20.1).
+//
+// So each argument must be a NESTED array with exactly ONE outer axis whose
+// cell is a FLAT array of exactly the op's declared logical rank. That outer
+// axis is the dispatcher's leading axis, and it is a §03 nesting axis rather
+// than an axis of one flat buffer, so the per-slice application and the
+// broadcast's per-cell application are the same computation.
+//
+// Everything else refuses:
+//   - undeclared heads (`cumsum`, `sum`, `diag`, `conv`, … — they reach the
+//     legacy whole-value ARITH_OPS impl, which is where `cumsum.(vv)`'s
+//     single flat scan came from);
+//   - `rank-polymorphic` heads (`transpose`, `adjoint`), whose declaration
+//     states outright that the dispatcher does NOT auto-atom-batch them;
+//   - `variadic` / `higher-order` heads;
+//   - a FLAT operand at any rank — its cells are scalars, which is the case
+//     the domain rule refuses outright;
+//   - more than one outer axis, where the dispatcher's rank test fails and it
+//     hands the op the whole buffer instead of slicing;
+//   - a cell that is itself nested (`[2]` of `[2]` of `[2]` under `det`), which
+//     §03 says is not a matrix.
+function _collectionHeadSlicesPerCell(
+  op: string, appliedArgs: any[], bindings: any,
+): boolean {
+  // Lazy, and pulling `ops-declarations` for its registration side effect —
+  // the same reason sampler.ts requires it. A top-level require here would
+  // load the whole op/value/linalg stack on every dissolver import, and
+  // `ops.lookup` on an unpopulated registry would silently answer "not
+  // declared" and refuse a dissolution that is in fact sound.
+  const ops = require('./ops.ts');
+  require('./ops-declarations.ts');
+  const decl = ops.lookup(op);
+  if (!decl) return false;
+  if ((decl.kind || 'fixed-rank') !== 'fixed-rank') return false;
+  const argRanks: any = decl.argRanks;
+  if (!Array.isArray(argRanks) || argRanks.length !== appliedArgs.length) return false;
+  if (!bindings) return false;
+  for (let i = 0; i < appliedArgs.length; i++) {
+    const tp = _argTypeAndPhase(appliedArgs[i], bindings);
+    if (!tp || !tp.type) return false;
+    const t = tp.type;
+    // Exactly one outer axis, and it must be a §03 nesting axis.
+    if (t.kind !== 'array' || t.rank !== 1) return false;
+    if (_flatArrayRank(t.elem) !== argRanks[i]) return false;
+  }
+  return true;
+}
+
 // Recursively substitute `%local` refs in a body expression with the
 // corresponding broadcast args, and verify every op-call in the body
 // is in DISSOLVE_SAFE_OPS. Returns the substituted IR on success, or
@@ -1061,6 +1137,13 @@ function _substituteBody(
   bcArgs: any[],
   bindings: any,
   argsAreAllScalar: boolean,
+  // The one collection-domain head this call is permitted to carry at its
+  // OUTERMOST node, when `_tryDissolveSingleOp` has proved the whole-value
+  // call applies the op per outer slice. Null everywhere else, and cleared
+  // on every recursion — a collection-domain head deeper in a compound body
+  // has no sound whole-value reading (its argument mixes held constants with
+  // cells), so it always refuses.
+  allowedCollectionHead?: string | null,
 ): any | null {
   if (!expr) return null;
   switch (expr.kind) {
@@ -1093,6 +1176,26 @@ function _substituteBody(
       //   - scalar-only ops: only allowed when ALL outer broadcast
       //     args are scalar (so the body runs entirely on scalars
       //     once substitution lands the runtime args in place).
+      //
+      // Third gate, ahead of both tiers: a §07 head whose Domains cell
+      // admits only collections is dissolvable only where the caller has
+      // PROVED the whole-value call applies it per outer slice
+      // (`_collectionHeadSlicesPerCell`). `broadcast(op, X) ≡ op(X)` needs
+      // the op's runtime to read X's outer axis as an iteration axis; for a
+      // head that reads its whole argument instead, the broadcast means
+      // "apply per element" and the bare call means "apply to the whole
+      // collection" — different answers. 26 of these heads sit in
+      // DISSOLVE_AT_ANY_RANK_OPS on the strength of the whole-value reading
+      // alone, which is how `cumsum.(vv)` dissolved to `cumsum(vv)` and
+      // emitted one scan across the entire flat buffer where the answer is a
+      // scan per inner vector. This gate is the dissolver's own half of the
+      // domain rule: it holds even when inference is bypassed or left the
+      // type `deferred`, so no wrapper is discarded on the way to the
+      // runtime. See collection-domain-heads.ts.
+      if (collectionDomain.isCollectionDomainHead(expr.op)
+          && expr.op !== allowedCollectionHead) {
+        return null;
+      }
       if (DISSOLVE_AT_ANY_RANK_OPS.has(expr.op)) {
         // OK regardless of arg ranks.
       } else if (DISSOLVE_SCALAR_ONLY_OPS.has(expr.op)) {
@@ -1107,7 +1210,7 @@ function _substituteBody(
       const outArgs: any[] = new Array(inArgs.length);
       for (let i = 0; i < inArgs.length; i++) {
         const sub = _substituteBody(
-          inArgs[i], paramIndex, bcArgs, bindings, argsAreAllScalar);
+          inArgs[i], paramIndex, bcArgs, bindings, argsAreAllScalar, null);
         if (sub === null) return null;
         outArgs[i] = sub;
       }
@@ -1421,6 +1524,11 @@ function _inlineBroadcastInAggregate(
   const params: string[] = Array.isArray(head.params) ? head.params : [];
   const body = head.body;
   if (!body || body.kind !== 'call' || !body.op || !params.length) return null;
+  // The inline treats the nested broadcast as pointwise once its args are
+  // `.j`-indexed scalars. A §07 collection-domain head is not pointwise —
+  // it consumes the whole cell — so inlining it would discard the wrapper
+  // the same way `_substituteBody` used to. See collection-domain-heads.ts.
+  if (collectionDomain.isCollectionDomainHead(body.op)) return null;
   // Posbargs.
   const posArgs = bcArgs.slice(1);
   if (posArgs.length !== params.length) return null;
@@ -1549,6 +1657,17 @@ function _tryDissolveBroadcastReduction(bcIR: any, bindings: any): any | null {
     if (!tp || !tp.type) return null;
     if (tp.type.kind !== 'array') return null;
     if (!Array.isArray(tp.type.shape) || tp.type.shape.length === 0) return null;
+    // A NESTED collection (spec §03: "Vectors of vectors are not interpreted
+    // as matrices implicitly") has an array per cell, not a scalar. The
+    // fusion replaces the placeholder with `get(arg, .atom)` and
+    // `_wrapVectorLeaves` then treats that `get` as a finished scalar leaf —
+    // true for a flat tensor, false here, where the cell is an inner vector
+    // that still needs its own `.j` axis. Fusing anyway emitted
+    // `aggregate(sum, [.atom], get(vv, .atom))`, a reduction over one
+    // element: `sum.(vv)` returned each inner vector's FIRST entry instead
+    // of its sum. Refuse and let `_broadcastApply` iterate the outer axis,
+    // which hands the head the inner vector whole and is correct.
+    if (tp.type.elem && tp.type.elem.kind === 'array') return null;
     if (broadcastRank < 0) broadcastRank = tp.type.shape.length;
     else if (tp.type.shape.length !== broadcastRank) {
       // Mixed-rank broadcast-over args fall back to runtime.
@@ -1899,8 +2018,27 @@ function _tryDissolveSingleOp(bcIR: any, bindings: any): any | null {
   // Build the param-index map for the body walk.
   const paramIndex: Map<string, number> = new Map();
   for (let i = 0; i < params.length; i++) paramIndex.set(params[i], i);
+  // A §07 collection-domain head is permitted at the body's OUTERMOST node
+  // only when the whole-value call provably applies it per outer slice.
+  // Recognise the body shape the check assumes — the head over the head's
+  // own params, in order — so the applied args ARE the op's arguments.
+  let allowedCollectionHead: string | null = null;
+  if (body.kind === 'call' && typeof body.op === 'string'
+      && collectionDomain.isCollectionDomainHead(body.op)) {
+    const bodyArgs: any[] = body.args || [];
+    let headOverParamsInOrder = bodyArgs.length === params.length;
+    for (let i = 0; headOverParamsInOrder && i < bodyArgs.length; i++) {
+      const ba = bodyArgs[i];
+      if (!ba || ba.kind !== 'ref' || ba.name !== params[i]) headOverParamsInOrder = false;
+    }
+    if (headOverParamsInOrder
+        && _collectionHeadSlicesPerCell(body.op, appliedArgs, bindings)) {
+      allowedCollectionHead = body.op;
+    }
+  }
   const substituted = _substituteBody(
-    body, paramIndex, appliedArgs, bindings, argsAreAllScalar);
+    body, paramIndex, appliedArgs, bindings, argsAreAllScalar,
+    allowedCollectionHead);
   if (substituted === null) return null;
   // Preserve the broadcast's source location on the outermost call so
   // diagnostics still point at the user-written site.

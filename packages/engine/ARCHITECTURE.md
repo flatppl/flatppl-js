@@ -206,7 +206,8 @@ after the table.
 | `composite-body-recognizers.ts` (~400) | Kernel-broadcast body-shape recognition (engine-concepts §21): ordered recognizers → tagged-union `CompositeBody` (`iid` / `nested_broadcast` / `jointchain` / `joint` / `generative`, registered most-specific first — only generative-last is load-bearing). The kind→executor mapping is an if-chain in `mat-broadcast.ts`; the near-miss diagnostic lives in `kernel-broadcast-shape.ts`. |
 | `kernel-broadcast-handlers.ts` (~240) | Per-`distOp` closed-form fast-path registry for kernel broadcasts (the analytic per-distribution handlers behind the recognizer dispatch). |
 | `kernel-broadcast-shape.ts` (~1400) | The kernel-broadcast SHAPE analysis behind the recognizers: `detectJointKernelBinding` / `detectNestedBroadcastKernelBinding` / `detectGenerativeKernelBinding` (the generative-pushforward recognizer + near-miss arm consumed by `mc-recipe`). Largest single recognizer module. |
-| `broadcast-shape.ts` (~320) | VALUE-level broadcast shape: `classifyNestedJSArray` (outer-rank of a raw nested array, engine-concepts §2.1) + the outer-axis slot descriptors the value-broadcast loop consumes. Distinct from `kernel-broadcast-shape.ts` (measure/kernel shapes). |
+| `broadcast-shape.ts` (~365) | VALUE-level broadcast shape: `classifyNestedJSArray` (outer-rank of a raw nested array, engine-concepts §2.1) + the outer-axis slot descriptors the value-broadcast loop consumes. `tryStackBroadcastCells` stacks per-cell results into one Value: it `densify`-s a structured cell first (value.ts's stated consumer contract), carries `im`/`dtype` for complex cells, and REFUSES — returning the per-cell list — for a `t`-tagged cell (§03 keeps a transposed vector distinct, and a `t` on the stacked rank-2 Value would mean matrix transpose instead), for mixed real/complex cells, and for a cell whose buffer is shorter than its own shape. Distinct from `kernel-broadcast-shape.ts` (measure/kernel shapes). |
+| `collection-domain-heads.ts` (~250) | The 53 §07 heads across six §07 tables whose Domains cell admits only collections, each with its table and its cell as §07 writes it, plus §04's ten `aggregate`-eligible reductions and `NESTED_CELL_HEADS` (the four whose cell must itself be a collection: `rowstack`/`colstack`/`joinblocks`/`blockdiagmat`). Spec §04 hands a broadcast head one ELEMENT and §03 defines no rank-0 array, so a scalar cell under one of these is a static error. TWO consumers, each keeping its own half: `typeinfer.inferBroadcast` (the located diagnostic) and `dissolver` (refuses to discard the wrapper even when inference is bypassed). Only the FIRST argument's domain drives the refusal. Carve-outs `min`/`max` and `cat` admit a scalar and are deliberately absent; the head set mirrors `flatppl-rust`'s `COLLECTION_DOMAIN_HEADS`. |
 | `alias-resolution.ts` (~220) | Post-lower IR pass canonicalising references through alias bindings (`x = mod.y` / re-bindings → canonical ref form, once — LLVM `@alias`-like; engine-concepts §19, spec §04). A named pipeline stage, not an internal helper (lift's `rewriteCompositeRandSucc` runs after it). |
 | `module-resolve.ts` (~70) | **One owner** of spec §04 `load_module` path math: `resolveModulePath(importer, rel)` (`/`-separator, `.`/`..` collapse, relative-to-importer-dir, absolute importer/relpath preserved). Dependency-free leaf, shared by the engine bundle compiler AND the host resolvers (web `fetch`, VS Code `workspace.fs`) so they agree on "the same file". Also URL-aware via `isUrl` (an absolute http(s) dep used verbatim; a relative dep inside a URL module resolved against the importer URL), so a URL dep keys identically for the walk and the compiler. |
 | `url-cache.ts` (~155, **Node-only**) | **Remote file caching** (spec §04 #sec:url-cache): `fetchToCache(url, opts)` resolves an http(s) source to its cached bytes, fetching on a miss after a per-URL trust gate. Per-OS cache dir (+ `FLATPPL_CACHEDIR`), SHA-256 URL keys + full trailing ext, atomic temp+fsync+rename (metadata before object), mandatory `_meta.json`, `trust/<kk>/<key>` (`O_EXCL`), `FLATPPL_CACHE_OFFLINE` / `FLATPPL_TRUST`, redirects followed, `force` re-fetch (update). NOT in the browser bundle (never imported by `index.ts`); vendored into the extension as `lib/url-cache.cjs`, consumed by the VS Code host's `readSource`. `isUrl` is re-exported from `module-resolve`. |
@@ -561,6 +562,26 @@ comparisons, logic) AND all outer broadcast args scalar-typed. Outer args must
 resolve to IDENTICAL inferred types + matching phase (the lazy `_resolveExprType`
 handles binding refs + inline calls); mixed-shape / mixed-phase stay cold.
 Iterates to a fixed point so `(a .* b) .+ c` dissolves end-to-end.
+
+**Third gate: §07 collection-domain heads** (`collection-domain-heads.ts`). A
+head whose §07 Domains cell admits only collections — the 53 in that table,
+26 of which are in `DISSOLVE_AT_ANY_RANK_OPS` — dissolves only where
+`_collectionHeadSlicesPerCell` proves the whole-value call applies it PER OUTER
+SLICE. The proof is two facts about every argument: exactly ONE outer axis, and
+a FLAT cell (`_flatArrayRank`) of exactly the op's `argRanks` entry, on a
+`fixed-rank` declaration — the one shape `ops.dispatch` atom-batches and slices
+per leading axis. It is deliberately NOT a nesting-depth sum: a sum cannot tell
+"one loop axis over rank-k cells" from a genuine flat rank-(k+1) array, and the
+second has SCALAR cells. That holds for `cross`/`self_outer`/`diagmat`/`det`/…
+over a nested operand, and fails for a flat operand at any rank, for more than
+one outer axis, for a nested cell (§03: not a matrix), for every undeclared head
+(`cumsum`, `sum`, `diag`, `conv` — legacy whole-value `ARITH_OPS`) and for the
+`rank-polymorphic` `transpose`/`adjoint`. So no wrapper is discarded even when
+inference is bypassed or left `deferred` — the gate is independent of
+`typeinfer.inferBroadcast`, not a duplicate of it. A collection-domain head
+DEEPER in a compound body always refuses. Fusion (a) likewise refuses a
+broadcast-over arg whose cell is itself an array, since `_wrapVectorLeaves`
+would treat the emitted `get(arg, .atom)` as a finished scalar leaf.
 
 **Shape-fold** (`_foldShapeCall`, engine-concepts §20.10): folds
 `lengthof`/`sizeof`/`indicesof`/`indicesof0` into literal IR when the input shape

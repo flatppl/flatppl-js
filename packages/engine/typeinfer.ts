@@ -51,6 +51,7 @@ const builtins = require('./builtins.ts');
 const aggregateShape = require('./aggregate-shape.ts');
 const paramNames = require('./builtin-param-names.ts');
 const vsLib = require('./value-set.ts');
+const collectionDomain = require('./collection-domain-heads.ts');
 
 // =====================================================================
 // Constant maps (carried over from the AST-based version)
@@ -2773,6 +2774,114 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.substitute(sig.result, s);
   }
 
+  // Resolve a broadcast head to the BUILT-IN op name it applies per cell,
+  // or null when the head is anything else. Two IR shapes reach here, the
+  // same two `_maybeFastBroadcasted` unpacks:
+  //
+  //   1. `broadcast(functionof(<op>(_arg1_, …)), A, …)` — what `op.(…)`,
+  //      the dotted operators, and `broadcast(<builtin>, …)` all lower to
+  //      (lower.ts `_synthOpFunctionof`).
+  //   2. `broadcast(<ref to op>, A, …)` — a bare head, either a builtin name
+  //      (the shape a FlatPIR reader produces) or a `self` ref to a
+  //      user-defined `functionof` binding, which is inlined one level. That
+  //      inlining is what makes `tot = fn(sum(_))` / `tot.(v)` refuse where
+  //      the equivalent inline `fn(sum(_)).(v)` does; the dissolver inlines a
+  //      user-fn head on the same reasoning.
+  //
+  // Deliberately narrow: the body must be the head applied to the head's
+  // own params, in declared order. A COMPOUND body (`functionof(add(sum(
+  // _arg1_), 1.0))`) resolves to its OUTERMOST op only, so an inner
+  // collection-domain call in a compound body is not covered by the domain
+  // rule below — that is the same scope the Rust rule has, and it is
+  // recorded as a LEFT item in TODO-flatppl-js.md.
+  function broadcastHeadOpName(fn: any, inlineDepth = 0): string | null {
+    if (!fn) return null;
+    if (fn.kind === 'ref' && fn.ns === 'self') {
+      if (builtins.ALL_KNOWN.has(fn.name)) return fn.name;
+      // One level of user-fn inlining. FlatPPL bindings are a DAG, so a
+      // chain terminates, but the depth cap keeps this cheap and makes the
+      // recursion obviously finite.
+      if (inlineDepth > 0) return null;
+      const b = loweredModule.bindings.get(fn.name);
+      const bodyIR = b && b.rhs;
+      if (!bodyIR || bodyIR.kind !== 'call' || bodyIR.op !== 'functionof') return null;
+      return broadcastHeadOpName(bodyIR, inlineDepth + 1);
+    }
+    if (fn.kind !== 'call' || fn.op !== 'functionof') return null;
+    const body = fn.body;
+    if (!body || body.kind !== 'call' || typeof body.op !== 'string') return null;
+    if (body.kwargs && Object.keys(body.kwargs).length > 0) return null;
+    const params: any[] = Array.isArray(fn.params) ? fn.params : [];
+    const bodyArgs: any[] = body.args || [];
+    if (!params.length || bodyArgs.length !== params.length) return null;
+    for (let i = 0; i < bodyArgs.length; i++) {
+      const ba = bodyArgs[i];
+      if (!ba || ba.kind !== 'ref') return null;
+      if (ba.ns !== '%local' && ba.ns !== 'self') return null;
+      if (ba.name !== params[i]) return null;
+    }
+    return body.op;
+  }
+
+  // Spec §04 + §07: a broadcast hands its head one ELEMENT, and a head whose
+  // §07 Domains cell admits only collections has no meaning at a scalar
+  // element — §03 defines no rank-0 array. Full reasoning, the table, the two
+  // carve-outs (`min`/`max`, `cat`) and the four heads that need a NESTED cell
+  // live in collection-domain-heads.ts. Returns true when a diagnostic was
+  // pushed.
+  //
+  // Keys on the FIRST argument's domain: every head in the table takes its
+  // collection there, which is what makes one argument enough to decide. A
+  // later argument out of domain is NOT reached — see the note in
+  // collection-domain-heads.ts. A cell that satisfies the head's domain is
+  // LEGAL (§03's vectors-of-vectors sentence) and falls through to the ordinary
+  // per-cell inference below; an unresolved cell decides nothing, so it falls
+  // through too.
+  function refuseCollectionDomainHead(
+    expr: any, fn: any, cellTypes: any[], argClassif: any[],
+  ): boolean {
+    const head = broadcastHeadOpName(fn);
+    if (head == null || !collectionDomain.isCollectionDomainHead(head)) return false;
+    const cell = cellTypes[0];
+    if (!cell) return false;
+    // Why this cell is out of the head's domain, or null if it is not.
+    let why: string | null = null;
+    if (cell.kind === 'scalar') {
+      why = 'spec §03 defines no rank-0 array';
+    } else if (collectionDomain.needsNestedCell(head)
+               && cell.kind === 'array' && cell.elem && cell.elem.kind === 'scalar') {
+      // §07 asks this head for a collection OF collections; a flat array of
+      // scalars is not one, and §03 keeps the two distinct.
+      why = 'spec §03 keeps a vector of vectors distinct from a flat array';
+    }
+    if (why === null) return false;
+    const cellRow = collectionDomain.domainCellFor(head);
+    const remedy = collectionDomain.AGGREGATE_ELIGIBLE_HEADS.has(head)
+      ? 'use the bare `' + collectionDomain.bareFormFor(head)
+        + '` to reduce the whole collection, or `aggregate(' + head
+        + ', [<axes>], …)` to reduce along chosen axes (spec §04 '
+        + '"Multi-axis aggregation")'
+      : 'use the bare `' + collectionDomain.bareFormFor(head) + '`';
+    // Argument 1 may be a HELD CONSTANT rather than an iterated collection
+    // (`quantile.(0.5, vv)` — §04 "Non-collection inputs" holds a scalar
+    // constant while the collection args are iterated). Saying "the elements
+    // here are …" would then describe the constant as if it were a cell.
+    const isHeld = !(argClassif[0] && argClassif[0].collection);
+    const found = isHeld
+      ? 'argument 1 here is ' + T.show(cell) + ', held constant and never iterated'
+      : 'the elements here are ' + T.show(cell)
+        + (cell.kind === 'scalar' ? ' scalars' : '');
+    diagnostics.push({
+      severity: 'error',
+      message: head + ': a broadcast applies its head to one ELEMENT (spec §04 '
+        + '"Broadcasting"), and spec §07 "' + cellRow!.section + '" gives `'
+        + head + '` the domain ' + cellRow!.domains + ' — ' + found + ', and '
+        + why + '; ' + remedy,
+      loc: expr.loc,
+    });
+    return true;
+  }
+
   function inferBroadcast(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length < 2) return T.deferred();
@@ -2871,6 +2980,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // Phase 4: resolve cell-result type via the callable.
     const cellTypes = argClassif.map((c) => c.cellType);
     const fn = args[0];
+    // Domain gate first: a §07 collection-domain head over a scalar cell is
+    // a static error, not a type to infer. Runs before the callable is
+    // resolved so the diagnostic names the domain rather than whatever the
+    // head's signature slot happens to accept — several of these heads
+    // declare `any()` in `types.ts` (the type AST cannot say "array of any
+    // rank"), which is what let a scalar cell type-check and produce a
+    // silent whole-collection answer.
+    if (refuseCollectionDomainHead(expr, fn, cellTypes, argClassif)) {
+      return T.failed('broadcast: collection-domain head over a scalar element');
+    }
     let elem: any = T.deferred();
     if (fn && fn.kind === 'call' && fn.op === 'functionof'
         && fn.body && Array.isArray(fn.params)) {

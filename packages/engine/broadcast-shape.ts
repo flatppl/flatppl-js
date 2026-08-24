@@ -289,9 +289,22 @@ function tryStackBroadcastCells(cells: any[], bshape: number[]): any {
     return { shape: bshape.slice(), data: out };
   }
   // Try Value-stack (same inner shape).
-  let innerShape: number[] | null = null;
+  //
+  // Densify a structured cell first. The `struct` tag section of value.ts
+  // states the contract: "Any consumer without a structured fast-path calls
+  // `densify(v)` first" — and this is such a consumer. A diagonal cell
+  // carries shape [n, n] with only n entries in `data`, so copying `data`
+  // straight into an n*n stride wrote the diagonal into the block's first n
+  // slots and left the rest zero. That is how `diagmat.(vv)` produced a
+  // matrix whose first ROW was the intended diagonal.
+  const dense: any[] = new Array(cells.length);
   for (let i = 0; i < cells.length; i++) {
     if (!valueLib.isValue(cells[i])) return null;
+    dense[i] = (cells[i].struct !== undefined) ? valueLib.densify(cells[i]) : cells[i];
+  }
+  cells = dense;
+  let innerShape: number[] | null = null;
+  for (let i = 0; i < cells.length; i++) {
     const s = cells[i].shape;
     if (innerShape === null) innerShape = s;
     else {
@@ -300,12 +313,51 @@ function tryStackBroadcastCells(cells: any[], bshape: number[]): any {
     }
   }
   if (innerShape === null) return null;
+  // A cell carrying a Klein-4 tag is NOT stackable. §03: "transposed vectors
+  // are a distinct type in FlatPPL", and §07 "Linear algebra": "The transpose
+  // of a vector is a transposed vector (see arrays), not a single-row matrix."
+  // A stack of transposed 3-vectors is therefore not a `[2, 3]` Value, and a
+  // `t` tag on that stacked Value would mean matrix transpose — a different
+  // claim, not the cells'. Dropping the tag silently is what made
+  // `transpose.(vv)` a tag-less matrix whose own inferred type still said
+  // `array of transposed vector`. Refuse, and let the caller keep the per-cell
+  // list where each element carries its own tag.
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i].t !== undefined) return null;
+  }
+  // Complex cells keep their imaginary half. `densify` builds the expanded
+  // `im` for a structured complex cell, and copying only `data` discarded it —
+  // real parts presented as the whole answer, which is a wrong value rather
+  // than a lost tag. Mixed real/complex cells are not representable in one
+  // Value here, so they refuse rather than having the missing halves guessed
+  // as zero.
+  let withIm = 0;
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i].im instanceof Float64Array) withIm++;
+  }
+  if (withIm !== 0 && withIm !== cells.length) return null;
   const innerLen = innerShape.reduce((a: number, b: number) => a * b, 1);
+  // A cell whose buffer is SHORTER than its own shape is a packed
+  // representation this function cannot read. Copying it into an `innerLen`
+  // stride is what zero-filled the tail and put a diagonal in the first row;
+  // `densify` above expands the one packed form the engine produces
+  // (diag-stored), so anything still short here is a form this consumer does
+  // not understand. Refuse rather than zero-fill.
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i].data.length !== innerLen) return null;
+  }
   const out = new Float64Array(cells.length * innerLen);
   for (let i = 0; i < cells.length; i++) {
     out.set(cells[i].data, i * innerLen);
   }
-  return { shape: bshape.concat(innerShape), data: out };
+  const stacked: any = { shape: bshape.concat(innerShape), data: out };
+  if (withIm === cells.length) {
+    const outIm = new Float64Array(cells.length * innerLen);
+    for (let i = 0; i < cells.length; i++) outIm.set(cells[i].im, i * innerLen);
+    stacked.im = outIm;
+    stacked.dtype = 'complex';
+  }
+  return stacked;
 }
 
 module.exports = {
