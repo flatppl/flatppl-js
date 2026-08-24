@@ -469,6 +469,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // real)`; refine the result to the input's concrete length so a
       // downstream `aggregate`/`broadcast` sees a known dim (and the
       // %meta type slot matches the value-set's concrete dim).
+      //
+      // l1unit / l2unit also carry §07's domain `real/complex vectors`,
+      // and divide by a REAL norm, so a complex input keeps its element
+      // type through the quotient. softmax / logsoftmax are `real
+      // vectors` in §07, so a complex element is not refined here and
+      // falls through to the signature's arg check, which rejects it.
       case 'softmax':
       case 'logsoftmax':
       case 'l1unit':
@@ -476,10 +482,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         const a = expr.args || [];
         if (a.length === 1) {
           const at = inferExpr(a[0], scopes);
-          if (at && at.kind === 'array' && at.rank === 1
-              && Array.isArray(at.shape) && at.shape.length === 1
-              && at.shape[0] !== '%dynamic'
-              && at.elem && at.elem.kind === 'scalar' && at.elem.prim === 'real') {
+          const vec1 = at && at.kind === 'array' && at.rank === 1
+            && Array.isArray(at.shape) && at.shape.length === 1
+            && at.elem && at.elem.kind === 'scalar';
+          const prim = vec1 ? at.elem.prim : null;
+          // A complex input refines even at a dynamic length: the
+          // signature's REAL result element would be wrong, not merely
+          // imprecise.
+          if (prim === 'complex' && (expr.op === 'l1unit' || expr.op === 'l2unit')) {
+            return write(T.array(1, [at.shape[0]], T.COMPLEX), expr);
+          }
+          if (prim === 'real' && at.shape[0] !== '%dynamic') {
             return write(T.array(1, [at.shape[0]], T.REAL), expr);
           }
         }

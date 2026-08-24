@@ -1881,13 +1881,31 @@ const ARITH_OPS = {
   // Norms and normalization (spec §07). All take a single vector
   // argument. Numerically stable forms — logsumexp uses the standard
   // shift-by-max trick so exp doesn't overflow on large entries.
+  //
+  // §07 gives all five the domain `real/complex vectors`, so each
+  // branches on _complexVecParts and reduces over the per-element
+  // modulus |v_i| = hypot(re_i, im_i).
   l1norm: (a: any) => {
+    const z = _complexVecParts(a);
+    if (z) {
+      let s = 0;
+      for (let i = 0; i < z.re.length; i++) s += Math.hypot(z.re[i], z.im[i]);
+      return s;
+    }
     const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += Math.abs(arr[i]);
     return s;
   },
   l2norm: (a: any) => {
+    const z = _complexVecParts(a);
+    if (z) {
+      // |v_i|² is re² + im² — computed directly rather than as
+      // hypot(re, im)², which would round twice.
+      let s = 0;
+      for (let i = 0; i < z.re.length; i++) s += z.re[i] * z.re[i] + z.im[i] * z.im[i];
+      return Math.sqrt(s);
+    }
     const arr = _arrLike(a);
     let s = 0;
     for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
@@ -1896,18 +1914,12 @@ const ARITH_OPS = {
   // linfnorm(v) = max_i |v_i| (spec §07). Empty input gives 0, the
   // same convention l1norm / l2norm reach as empty sums, and what
   // LinearAlgebra.norm(Float64[], Inf) returns.
-  //
-  // §07's domain is `real/complex vectors`, so a complex Value takes
-  // the modulus of each entry. l1norm / l2norm carry the same domain
-  // but read only the real half — recorded in TODO-flatppl-js.md, not
-  // fixed here.
   linfnorm: (a: any) => {
-    if (valueLib.isComplexValue(a)) {
-      const re = a.data;
-      const im = a.im;
+    const z = _complexVecParts(a);
+    if (z) {
       let m = 0;
-      for (let i = 0; i < re.length; i++) {
-        const mag = Math.hypot(re[i], im[i]);
+      for (let i = 0; i < z.re.length; i++) {
+        const mag = Math.hypot(z.re[i], z.im[i]);
         if (mag > m) m = mag;
       }
       return m;
@@ -1924,7 +1936,16 @@ const ARITH_OPS = {
   // empty input the elementwise formula never evaluates a quotient, so
   // the result is vacuously the empty vector (empty-array ruling); the
   // zero-norm error stays for a non-empty input whose norm is 0.
+  //
+  // A complex input divides by its REAL norm, so the result stays a
+  // complex vector: both parts scale by the same 1/‖v‖.
   l1unit: (a: any) => {
+    const z = _complexVecParts(a);
+    if (z) {
+      let s = 0;
+      for (let i = 0; i < z.re.length; i++) s += Math.hypot(z.re[i], z.im[i]);
+      return _scaleComplexVec('l1unit', z, s);
+    }
     const arr = _arrLike(a);
     if (arr.length === 0) return { shape: [0], data: new Float64Array(0) };
     let s = 0;
@@ -1935,6 +1956,12 @@ const ARITH_OPS = {
     return { shape: [arr.length], data: out };
   },
   l2unit: (a: any) => {
+    const z = _complexVecParts(a);
+    if (z) {
+      let s = 0;
+      for (let i = 0; i < z.re.length; i++) s += z.re[i] * z.re[i] + z.im[i] * z.im[i];
+      return _scaleComplexVec('l2unit', z, Math.sqrt(s));
+    }
     const arr = _arrLike(a);
     if (arr.length === 0) return { shape: [0], data: new Float64Array(0) };
     let s = 0;
@@ -1999,6 +2026,52 @@ const ARITH_OPS = {
 function _arrLike(v: any) {
   if (valueLib.isValue(v)) return v.data;
   return v;
+}
+
+// Logical (re, im) buffers of a complex VECTOR argument, or null when the
+// argument carries no imaginary part. Used by the §07 norms, whose domain
+// is `real/complex vectors`.
+//
+// A complex vector reaches here in either of the engine's two complex
+// representations: the planar Value (`dtype: 'complex'`), or the JS array
+// of scalar `{re, im}` objects that `vector(...)` falls back to when its
+// elements are not plain numbers. Both are live — the second is what a
+// surface `[complex(3.0, 4.0), 1.0]` produces — so a norm that reads only
+// one of them still drops the imaginary half on the other.
+//
+// Returning null (rather than an all-zero `im`) keeps the real inputs on
+// their existing single-buffer loops.
+function _complexVecParts(v: any): { re: ArrayLike<number>, im: ArrayLike<number> } | null {
+  // readComplex applies the lazy Klein-4 conjugation sign; reading `v.im`
+  // raw would give a conjugate view the wrong imaginary sign.
+  if (valueLib.isComplexValue(v)) return valueLib.readComplex(v);
+  if (!Array.isArray(v)) return null;
+  let anyComplex = false;
+  for (let i = 0; i < v.length; i++) {
+    if (_isComplex(v[i])) { anyComplex = true; break; }
+  }
+  if (!anyComplex) return null;
+  const re = new Float64Array(v.length);
+  const im = new Float64Array(v.length);
+  for (let i = 0; i < v.length; i++) {
+    const e = v[i];
+    if (_isComplex(e)) { re[i] = e.re; im[i] = e.im; }
+    else { re[i] = +e; }
+  }
+  return { re, im };
+}
+
+// v / s for a complex vector and a real norm s — the shared tail of
+// l1unit / l2unit on a complex input (spec §07). Both parts scale by the
+// same 1/s, so the result is a complex Value of the same length.
+function _scaleComplexVec(op: string, z: { re: ArrayLike<number>, im: ArrayLike<number> }, s: number) {
+  const n = z.re.length;
+  if (n === 0) return valueLib.complexValue(new Float64Array(0), new Float64Array(0), [0]);
+  if (s === 0) throw new Error(op + ': zero-norm vector has no unit form');
+  const re = new Float64Array(n);
+  const im = new Float64Array(n);
+  for (let i = 0; i < n; i++) { re[i] = z.re[i] / s; im[i] = z.im[i] / s; }
+  return valueLib.complexValue(re, im, [n]);
 }
 
 // Ascending copy of an array-like, for the order statistics (median /
