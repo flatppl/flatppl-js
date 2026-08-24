@@ -177,3 +177,85 @@ test('per-draw params: one closure alternating across the branch stays correct',
     assertMoments(Float64Array.from(out[j]), a, b, 'alternating closure');
   }
 });
+
+// =====================================================================
+// randFn.factory edge cases (review minors on #161's workaround)
+// =====================================================================
+
+const BETA_RAND_FN = sampler._internal.REGISTRY.Beta.randFn;
+
+// Minor 1 — the unaffected static path (alpha !== beta, or alpha <= 1.5)
+// must delegate the caller's own arguments to @stdlib unchanged, so
+// @stdlib's own validator sees what was actually passed, not a `+`-coerced
+// number.
+test('Beta.randFn: the unaffected static path delegates args unchanged to @stdlib', () => {
+  // @stdlib's own validator rejects a non-number even though `+` would
+  // coerce it — an array or a numeric string must throw, matching what
+  // `randBeta.factory` does when called directly.
+  assert.throws(() => BETA_RAND_FN.factory([2], [3], { prng: Math.random }),
+    /positive number/);
+  assert.throws(() => BETA_RAND_FN.factory('2', '3', { prng: Math.random }),
+    /positive number/);
+  // A negative/NaN static param still throws either way (unchanged).
+  assert.throws(() => BETA_RAND_FN.factory(-1, -1, { prng: Math.random }),
+    /positive number/);
+  // A genuine number pair keeps drawing (the common, unaffected case).
+  assert.doesNotThrow(() => BETA_RAND_FN.factory(2, 3, { prng: Math.random })());
+});
+
+// Minor 1, closed the rest of the way — the AFFECTED path (alpha === beta
+// > 1.5) never calls `randBeta.factory` at all (it draws via two Gammas
+// instead), so it got none of @stdlib's validation for free even after
+// the fix above. `_validateBetaParams` reproduces that validation on the
+// raw args before the Gamma route. Literal repro calls from the #161
+// review (`wave-beta-review.md`, minor 1 follow-up): both used to draw
+// silently; both must now throw the same way the unaffected path does.
+test('Beta.randFn: the affected (two-gamma) static path also rejects a non-number', () => {
+  assert.throws(() => BETA_RAND_FN.factory([2], [2], { prng: Math.random }),
+    /First argument must be a positive number/);
+  assert.throws(() => BETA_RAND_FN.factory('2', '2', { prng: Math.random }),
+    /First argument must be a positive number/);
+  // alpha valid, beta not — exercises the second-argument branch, which
+  // the first-argument-only repro calls above never reach.
+  assert.throws(() => BETA_RAND_FN.factory(2, [2], { prng: Math.random }),
+    /Second argument must be a positive number/);
+  // A genuine affected pair still draws (the fix must not touch this).
+  assert.doesNotThrow(() => BETA_RAND_FN.factory(2, 2, { prng: Math.random })());
+});
+
+// Minor 2 — the parametric form (a single options-object argument) must be
+// recognised by arity and type, not by requiring a `prng` key specifically.
+// `{ seed }` with no `prng` is still the parametric form: @stdlib's own
+// `randBeta.factory` accepts it, and so must this wrapper.
+test('Beta.randFn: parametric-form detection accepts {seed} as well as {prng}', () => {
+  const bySeed = BETA_RAND_FN.factory({ seed: 17 });
+  assert.equal(typeof bySeed, 'function');
+  const draw = bySeed(2, 3);
+  assert.ok(draw > 0 && draw < 1, `draw ${draw} should lie in (0, 1)`);
+
+  // Regression: the existing {prng}-keyed parametric form still works.
+  const byPrng = BETA_RAND_FN.factory({ prng: Math.random });
+  assert.equal(typeof byPrng, 'function');
+  const draw2 = byPrng(2, 3);
+  assert.ok(draw2 > 0 && draw2 < 1, `draw ${draw2} should lie in (0, 1)`);
+});
+
+// A/B proof that both fixes leave the draw stream unmoved for a clean,
+// unaffected pair on every path — same method as the #161 review
+// (`wave-beta-review.md` §2): same seed, elementwise comparison.
+// makeSampler routes through the fixed delegation line (minor 1);
+// makeParametricSampler routes through the fixed detection (minor 2, via
+// the {prng} object it always passes) — neither line's fix changes the
+// value seen by @stdlib for a normal numeric call, so the streams must
+// be bit-identical to the pre-fix code path on origin/main.
+test('A/B: Beta(2,3) draws are bit-identical to the pre-fix implementation', () => {
+  // Captured once from origin/main (a8dba03) via makeSampler(seed=917),
+  // before the two randFn.factory edits in this change — see
+  // wave-jsempty-report.md for the reproduction command.
+  const PRE_FIX_FIRST5 = [
+    0.26847073287101375, 0.6989095105826877, 0.5390169467192227,
+    0.32271517194735966, 0.35944345579589404,
+  ];
+  const first5 = Array.from(draws(2, 3, 917)).slice(0, 5);
+  assert.deepEqual(first5, PRE_FIX_FIRST5);
+});

@@ -25,6 +25,12 @@ const rng      = require('./rng.ts');
 const valueLib = require('./value.ts');
 const transforms = require('./transforms.ts');
 
+// Same primitive @stdlib's own random-base-beta/lib/validate.js uses to
+// reject a non-positive-number alpha/beta, so the Beta two-gamma
+// workaround (below) can reproduce @stdlib's own validation on the one
+// region that never reaches @stdlib's factory to get it for free.
+const isPositiveNumber = require('@stdlib/assert-is-positive-number').isPrimitive;
+
 // Math special functions for gamma / loggamma / erf-based math.
 const stdlibGamma       = require('@stdlib/math-base-special-gamma');
 const stdlibGammaln     = require('@stdlib/math-base-special-gammaln');
@@ -436,6 +442,20 @@ function _betaHitsUpstreamDefect(alpha: number, beta: number) {
   return alpha === beta && alpha > 1.5;
 }
 
+// The affected region below never calls `randBeta.factory`, so it never
+// gets @stdlib's own `alpha`/`beta` validation for free the way the
+// unaffected region's delegation does. Reproduce it here, on the RAW
+// (uncoerced) arguments, so a bad param throws the same way regardless
+// of which region it lands in.
+function _validateBetaParams(rawAlpha: any, rawBeta: any) {
+  if (!isPositiveNumber(rawAlpha)) {
+    throw new TypeError('invalid argument. First argument must be a positive number. Value: `' + rawAlpha + '`.');
+  }
+  if (!isPositiveNumber(rawBeta)) {
+    throw new TypeError('invalid argument. Second argument must be a positive number. Value: `' + rawBeta + '`.');
+  }
+}
+
 const randBetaFixed = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
@@ -443,27 +463,50 @@ const randBetaFixed = {
     const opts = (args.length > 0 && args[lastIdx]
                   && typeof args[lastIdx] === 'object'
                   && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    if (args.length === 1 && args[0] === opts) {
+    if (args.length === 1 && typeof args[0] === 'object' && args[0] !== null) {
       // Parametric form: params arrive per draw, so the branch test does
       // too. Build the @stdlib closure eagerly and unconditionally —
       // constructing it consumes one uniform (it seeds its own normal
       // generator off the prng), so deferring it would shift the stream
       // for the unaffected params this path must leave untouched.
-      const upstream = randBeta.factory(opts);
+      //
+      // Detected by arity and type alone, not by an rng-key lookup on
+      // the sole argument — a `{ seed }` (no `prng`) options object is
+      // still the parametric form, and this recognises it the same way
+      // @stdlib's own `randBeta.factory` does.
+      const upstream = randBeta.factory(args[0]);
       let gamma: any = null;
+      // No `_validateBetaParams` here, unlike the static affected branch
+      // below: this is PARITY with @stdlib, not a gap. @stdlib validates
+      // once at `factory()` construction time but its returned per-draw
+      // closure does not re-validate its own `alpha`/`beta` arguments
+      // (confirmed: `randBeta.factory({prng})(-1,-1)` gives `NaN`, not a
+      // throw) — so `upstream(alpha, beta)` on the line above already
+      // skips validation on every unaffected call through this same
+      // closure. Adding it only to the affected branch below would make
+      // this closure inconsistent with itself, stricter on one branch
+      // than the other and stricter than @stdlib, in a per-draw hot path.
       return function parametricBetaSampler(alpha: any, beta: any) {
         if (!_betaHitsUpstreamDefect(+alpha, +beta)) return upstream(alpha, beta);
-        if (gamma === null) gamma = randGamma.factory(opts);
+        if (gamma === null) gamma = randGamma.factory(args[0]);
         const x = gamma(+alpha, 1), y = gamma(+beta, 1);
         return x / (x + y);
       };
     }
     const alpha = +args[0], beta = +args[1];
     if (!_betaHitsUpstreamDefect(alpha, beta)) {
-      return randBeta.factory(alpha, beta, opts);
+      // Delegate the caller's own arguments, uncoerced — @stdlib does its
+      // own validation and must see what was actually passed, not the
+      // `+`-coerced numbers used only for the branch test above.
+      return randBeta.factory(args[0], args[1], opts);
     }
     // alpha === beta here, so one Gamma(alpha, 1) closure serves both
-    // draws; consecutive draws off the same stream are independent.
+    // draws; consecutive draws off the same stream are independent. This
+    // route never reaches `randBeta.factory`, so validate the raw args
+    // ourselves first — @stdlib would have rejected a non-positive-number
+    // `alpha`/`beta` (e.g. an array or a numeric string) before ever
+    // getting here, and this path must refuse the same way.
+    _validateBetaParams(args[0], args[1]);
     const gamma = randGamma.factory(alpha, 1, opts);
     return function staticBetaSampler() {
       const x = gamma(), y = gamma();

@@ -804,10 +804,11 @@ test('reductions: var (sample, spec §07) matches the Bessel-corrected formula',
   assert.equal(r.samples[0], 2.5);
 });
 
-test('reductions: var of empty array → 0 (degenerate)', () => {
+test('reductions: var of empty array → error (empty-array ruling)', () => {
   const w = createWorkerHandler();
   const r = w.handle({ type: 'evaluateN', ir: reductionIR('var', []), count: 1 });
-  assert.equal(r.samples[0], 0);
+  assert.equal(r.type, 'error');
+  assert.match(r.message, /var: undefined for an empty array/);
 });
 
 test('reductions: var of single element → 0 (sample variance undefined for n=1)', () => {

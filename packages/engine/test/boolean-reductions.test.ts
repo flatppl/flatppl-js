@@ -94,9 +94,11 @@ test('lany / lall over a boolean rank-2 array reduce every element', () => {
 });
 
 // =====================================================================
-// Empty input — the identity of each reduction. §07 does not define an
-// empty reduction; pinned here so a change is deliberate, and recorded
-// in TODO-flatppl-js.md as a spec gap.
+// Empty input — the identity of each reduction. RULED, per
+// flatppl-dev/empty-arrays-ruling.md's §07 "Logic and conditionals" edit
+// row (these are the forced lor-/land-reduction identities); pinned here
+// as a regression, not because a change is expected. TODO-flatppl-js.md's
+// entry now reads RULED and CONFORMED.
 // =====================================================================
 
 test('lany([]) = false, lall([]) = true (each reduction identity)', () => {
