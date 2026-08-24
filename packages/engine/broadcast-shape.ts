@@ -289,9 +289,22 @@ function tryStackBroadcastCells(cells: any[], bshape: number[]): any {
     return { shape: bshape.slice(), data: out };
   }
   // Try Value-stack (same inner shape).
-  let innerShape: number[] | null = null;
+  //
+  // Densify a structured cell first. The `struct` tag section of value.ts
+  // states the contract: "Any consumer without a structured fast-path calls
+  // `densify(v)` first" — and this is such a consumer. A diagonal cell
+  // carries shape [n, n] with only n entries in `data`, so copying `data`
+  // straight into an n*n stride wrote the diagonal into the block's first n
+  // slots and left the rest zero. That is how `diagmat.(vv)` produced a
+  // matrix whose first ROW was the intended diagonal.
+  const dense: any[] = new Array(cells.length);
   for (let i = 0; i < cells.length; i++) {
     if (!valueLib.isValue(cells[i])) return null;
+    dense[i] = (cells[i].struct !== undefined) ? valueLib.densify(cells[i]) : cells[i];
+  }
+  cells = dense;
+  let innerShape: number[] | null = null;
+  for (let i = 0; i < cells.length; i++) {
     const s = cells[i].shape;
     if (innerShape === null) innerShape = s;
     else {
