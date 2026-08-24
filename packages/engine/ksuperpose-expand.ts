@@ -71,24 +71,32 @@ function _rhsOf(name: string, body: any[]): any {
   return null;
 }
 
+function _isKsuperposeCall(node: any): boolean {
+  return !!(node && node.type === 'CallExpr' && node.callee
+    && node.callee.type === 'Identifier'
+    && node.callee.name === 'ksuperpose');
+}
+
 // The `ksuperpose(K, w)` lift node a call's callee denotes, or null. Covers
-// the inline spelling `ksuperpose(K, w)(…)` and the named one
-// (`lift = ksuperpose(K, w)` then `lift(…)`) — §04 "Aliasing is just
-// assignment" makes those the same program.
+// the inline spelling `ksuperpose(K, w)(…)`, the named one
+// (`lift = ksuperpose(K, w)` then `lift(…)`) and an alias CHAIN of any depth
+// (`l1 = ksuperpose(…)`, `l2 = l1`, then `l2(…)`) — §04 "Aliasing is just
+// assignment" makes all of those the same program.
+//
+// The chain is walked here rather than inherited from `alias-resolution.ts`:
+// that pass canonicalises the LOWERED module, and this rewrite runs on the
+// AST. `seen` is the cycle guard — a self- or mutually-referential binding is
+// a different error, not this pass's to report, so it stops rather than
+// looping.
 function _liftNodeOf(callee: any, body: any[]): any {
   if (!callee) return null;
-  if (callee.type === 'CallExpr' && callee.callee
-      && callee.callee.type === 'Identifier'
-      && callee.callee.name === 'ksuperpose') {
-    return callee;
-  }
-  if (callee.type === 'Identifier') {
-    const rhs = _rhsOf(callee.name, body);
-    if (rhs && rhs.type === 'CallExpr' && rhs.callee
-        && rhs.callee.type === 'Identifier'
-        && rhs.callee.name === 'ksuperpose') {
-      return rhs;
-    }
+  if (_isKsuperposeCall(callee)) return callee;
+  let node = callee;
+  const seen = new Set<string>();
+  while (node && node.type === 'Identifier' && !seen.has(node.name)) {
+    seen.add(node.name);
+    node = _rhsOf(node.name, body);
+    if (_isKsuperposeCall(node)) return node;
   }
   return null;
 }
@@ -223,9 +231,10 @@ function _expandApplication(call: any, lift: any, bindings: any, diagnostics: an
       return call;
     }
     if (cls.kind === 'table') {
-      _err(diagnostics, 'ksuperpose over a TABLE parameter family is not '
-        + 'lowered (the per-column family extraction is not built); pass the '
-        + 'columns as keyword vectors instead', (node && node.loc) || call.loc);
+      _err(diagnostics, 'ksuperpose: §06 allows a TABLE parameter family (one '
+        + 'axis, its rows), but this engine does not lower one — the '
+        + 'per-column family extraction is not built. Pass the columns as '
+        + 'keyword vectors instead.', (node && node.loc) || call.loc);
       return call;
     }
     specs.push({ name: isKw ? a.name : null, node, cls });
@@ -327,15 +336,28 @@ function _rewrite(node: any, bindings: any, diagnostics: any[], body: any[]): an
 // Both AST slots `pir.lowerToModule` reads are rewritten: `effectiveValue`
 // (set for destructured / disintegrated bindings) takes precedence there, so
 // rewriting only `node.value` would silently skip those.
+//
+// `done` MEMOISES the rewrite by input node rather than marking nodes as
+// visited. Two slots can share one AST object — `attachDelegate` assigns
+// `binding.effectiveValue = target.node.value` — and a visited-set would then
+// rewrite the object through the first slot and skip the second, leaving the
+// UN-EXPANDED node in the slot `pir.lowerToModule` actually prefers. Memoising
+// assigns the same rewritten node to every slot that shared the original, and
+// keeps the pass idempotent besides.
 function expandKsuperposeApplications(ast: any, bindings: any, diagnostics: any[]): boolean {
   if (!ast || !Array.isArray(ast.body)) return false;
   let changed = false;
-  const seen = new Set<any>();
+  const done = new Map<any, any>();
   const rewriteSlot = (holder: any, key: string) => {
     const node = holder && holder[key];
-    if (!node || typeof node !== 'object' || seen.has(node)) return;
-    seen.add(node);
-    const out = _rewrite(node, bindings, diagnostics, ast.body);
+    if (!node || typeof node !== 'object') return;
+    let out;
+    if (done.has(node)) {
+      out = done.get(node);
+    } else {
+      out = _rewrite(node, bindings, diagnostics, ast.body);
+      done.set(node, out);
+    }
     if (out !== node) { holder[key] = out; changed = true; }
   };
   for (const stmt of ast.body) {
