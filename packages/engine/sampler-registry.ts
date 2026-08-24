@@ -460,9 +460,15 @@ const randBetaFixed = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
+    // `seed` as well as `prng`: @stdlib's factory accepts either, so a
+    // `{ seed }`-only options object is a real options object. Testing for
+    // `prng` alone silently dropped it and both STATIC branches then ran off
+    // @stdlib's default-seeded generator, so two factories built with the
+    // same seed produced DIFFERENT draws — the caller's seed had no effect.
+    // `randDirac` already tests both keys; this is the same test.
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
     if (args.length === 1 && typeof args[0] === 'object' && args[0] !== null) {
       // Parametric form: params arrive per draw, so the branch test does
       // too. Build the @stdlib closure eagerly and unconditionally —
