@@ -154,6 +154,27 @@ test('§06: all-zero weights are the zero measure — log-density −∞ everywh
     }
   });
 
+test('§06: normalize of an all-zero mixture is refused, not scored as NaN — '
+  + 'Z = 0 makes normalize undefined', async () => {
+  // §06 `normalize`: "If Z = 0 or Z = ∞, the result is undefined." The
+  // resolved normalize carries `-log Z`, so Z = 0 arrives as a +∞ shift onto
+  // an inner log-density of −∞, whose sum is NaN. That silently scored a
+  // measure §06 leaves undefined; it now refuses at the shift.
+  await assert.rejects(() => score(
+    'wz = [0.0, 0.0]\n'
+    + 'means = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
+    + 'mix = normalize(ksuperpose(Normal, wz)(mu = means, sigma = sigmas))\n'
+    + '__score__ = logdensityof(mix, 0.5)\n'),
+    (e: any) => {
+      assert.match(e.message, /ZERO total mass/);
+      assert.match(e.message, /spec §06/);
+      // The message must not leave the reader thinking nothing is defined:
+      // the UNNORMALIZED log-density is −∞, which the test above pins.
+      assert.match(e.message, /UNNORMALIZED log-density is defined/);
+      return true;
+    });
+});
+
 test('§08: a categorical over arbitrary labels is a Dirac superposition, '
   + 'density log pₖ at the label', async () => {
   const SRC = 'p = [0.2, 0.8]\nlabels = [0.0, 1.5]\n'
@@ -269,9 +290,12 @@ test('a family argument that is an unnamed expression is refused, naming the '
     `want a classify refusal, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
 });
 
-test('the weights may be LATENT — the rewrite indexes the weight EXPRESSION, '
-  + 'so a mixture whose weights are inferred still normalizes per-θ',
-async () => {
+test('the weights may be a COMPUTED EXPRESSION — the rewrite indexes the '
+  + 'weight expression, not a value, so Z is resolved per-θ', async () => {
+  // NOT a latent-weight test: `theta` is a deterministic constant here, so
+  // this pins only that the rewrite carries an expression through. What
+  // genuinely LATENT weights do is the next two tests.
+  //
   // theta and 1-theta sum to one, so Z = 1 and normalize is a no-op; the
   // score is then the plain two-component mixture density at theta = 0.5,
   // which is logsumexp(log .5 + logpdf(N(-1,1), .5), log .5 + logpdf(N(2,.5), .5)).
@@ -288,6 +312,137 @@ async () => {
   const want = m + Math.log(Math.exp(lp1 - m) + Math.exp(lp2 - m));
   assert.ok(Math.abs(got - want) <= TOL, `got ${got}, closed form ${want}`);
 });
+
+test('GENUINELY LATENT weights: the density path refuses, naming the '
+  + 'marginalisation it cannot do — the SAMPLING path works', async () => {
+  // `wp ~ Dirichlet(1, 1)` is a real draw, so scoring the mixture would have
+  // to marginalise it. The engine has no exact answer for that here and says
+  // so rather than returning a number. The sampling half of the same spelling
+  // is the parameterized-weights control in ksuperpose-sampling.test.ts, which
+  // holds at cov 3 — so latent weights work for SAMPLING and refuse for
+  // DENSITY, and the split is asserted rather than assumed.
+  const src = 'wp ~ Dirichlet(alpha = [1.0, 1.0])\n'
+    + 'means = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
+    + 'mix = normalize(ksuperpose(Normal, wp)(mu = means, sigma = sigmas))\n'
+    + '__score__ = logdensityof(mix, 0.5)\n';
+  await assert.rejects(() => score(src), (e: any) => {
+    assert.match(e.message, /marginalises the stochastic ancestor\(s\) wp/);
+    return true;
+  });
+});
+
+test('the hand-written spelling of a latent weight VECTOR does not classify — '
+  + 'pre-existing, and NOT introduced by the ksuperpose rewrite', async () => {
+  // Guards the report's claim rather than the engine's behaviour: indexing a
+  // latent vector in weight position fails in the HAND-WRITTEN superpose
+  // spelling too, so it is not the expansion's doing. If this ever starts
+  // passing, the ksuperpose card in TODO-flatppl-js.md can be closed with it.
+  const handWritten = 'psi ~ Beta(2.0, 2.0)\nwp = [psi, 1.0 - psi]\n'
+    + 'means = [-1.0, 2.0]\n'
+    + 'mix = normalize(superpose(weighted(wp[1], Normal(means[1], 1.0)), '
+    + 'weighted(wp[2], Normal(means[2], 1.0))))\n'
+    + '__score__ = logdensityof(mix, 0.5)\n';
+  await assert.rejects(() => score(handWritten), /no derivation/);
+});
+
+// =====================================================================
+// §04 aliasing — the lift reached through a chain of names
+// =====================================================================
+
+test('§04: an alias CHAIN to the lift is the same program — two hops and '
+  + 'three', async () => {
+  const inline = await score(PARAMS
+    + 'mix = normalize(ksuperpose(Normal, weights)(mu = means, sigma = sigmas))\n'
+    + '__score__ = logdensityof(mix, 0.5)\n');
+  const twoHop = await score(PARAMS
+    + 'l1 = ksuperpose(Normal, weights)\nl2 = l1\n'
+    + 'mix = normalize(l2(mu = means, sigma = sigmas))\n'
+    + '__score__ = logdensityof(mix, 0.5)\n');
+  assert.ok(Math.abs(twoHop - inline) <= TOL,
+    `two-hop alias ${twoHop} == inline ${inline}`);
+  const threeHop = await score(PARAMS
+    + 'l1 = ksuperpose(Normal, weights)\nl2 = l1\nl3 = l2\n'
+    + 'mix = normalize(l3(mu = means, sigma = sigmas))\n'
+    + '__score__ = logdensityof(mix, 0.5)\n');
+  assert.ok(Math.abs(threeHop - inline) <= TOL,
+    `three-hop alias ${threeHop} == inline ${inline}`);
+  assert.ok(Math.abs(twoHop - (-3.411415107516122)) <= TOL,
+    `two-hop hits the oracle: got ${twoHop}`);
+});
+
+test('§04: a CYCLIC alias chain terminates instead of looping', () => {
+  // `a = b`, `b = a` is a degenerate program that other passes report; this
+  // pass must not hang walking it. Reaching a diagnostics array at all is the
+  // assertion — the cycle guard is what makes that possible.
+  const ds = diagnosticsOf(PARAMS
+    + 'a = b\nb = a\nmix = normalize(a(mu = means, sigma = sigmas))\n');
+  assert.ok(Array.isArray(ds), 'the pass returned rather than looping');
+});
+
+// =====================================================================
+// Both AST slots pir.lowerToModule reads are rewritten
+// =====================================================================
+
+// `pir.lowerToModule` reads `binding.effectiveValue || binding.node.value`
+// (pir.ts), so `effectiveValue` — set for destructured / disintegrated
+// bindings — takes precedence. Rewriting only `node.value` would leave an
+// un-expanded `ksuperpose` in the slot that actually gets lowered, which is
+// the SILENT direction: no diagnostic, and a downstream consumer handed a node
+// nothing else knows. Nothing stood behind that claim, so this does.
+test('a disintegrated binding leaves no residual ksuperpose in EITHER AST slot',
+  () => {
+    const src = PARAMS
+      + 'a = draw(Normal(mu = 0.0, sigma = 2.0))\n'
+      + 'b = draw(normalize(ksuperpose(Normal, weights)'
+        + '(mu = means, sigma = sigmas)))\n'
+      + 'joint_model = lawof(record(a = a, b = b))\n'
+      + 'fk, pr = disintegrate(["b"], joint_model)\n';
+    const out = require('..').processSource(src);
+    assert.deepEqual(
+      out.diagnostics.filter((d: any) => d.severity === 'error'), []);
+
+    // Vacuity guard: if no binding carries effectiveValue, the test proves
+    // nothing about that slot.
+    const withEff = [...out.bindings.keys()]
+      .filter((n: any) => out.bindings.get(n).effectiveValue);
+    assert.ok(withEff.length >= 2,
+      `expected disintegration to set effectiveValue on 2+ bindings, got `
+      + `${withEff.length} (${withEff.join(', ')}) — if the disintegration `
+      + 'stopped producing them this test needs a new model');
+
+    const holdsKsuperpose = (n: any): boolean => {
+      if (!n || typeof n !== 'object') return false;
+      if (Array.isArray(n)) return n.some(holdsKsuperpose);
+      if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier'
+          && n.callee.name === 'ksuperpose') return true;
+      return Object.keys(n).filter((k) => k !== 'loc').some((k) => holdsKsuperpose(n[k]));
+    };
+    const dirty: string[] = [];
+    for (const [name, b] of out.bindings) {
+      if (b && b.effectiveValue && holdsKsuperpose(b.effectiveValue)) {
+        dirty.push(name + ':effectiveValue');
+      }
+      if (b && b.node && holdsKsuperpose(b.node.value)) {
+        dirty.push(name + ':node.value');
+      }
+    }
+    assert.deepEqual(dirty, [], `AST slots still holding ksuperpose: ${dirty}`);
+
+    // And the lowered module — the executable form analyze returns — carries
+    // no `ksuperpose` op either.
+    const residual: string[] = [];
+    const walkIR = (ir: any, name: string) => {
+      if (!ir || typeof ir !== 'object') return;
+      if (Array.isArray(ir)) { ir.forEach((x) => walkIR(x, name)); return; }
+      if (ir.kind === 'call' && ir.op === 'ksuperpose') residual.push(name);
+      for (const k of Object.keys(ir)) {
+        if (k !== 'loc' && k !== 'meta') walkIR(ir[k], name);
+      }
+    };
+    for (const [name, lb] of out.loweredModule.bindings) walkIR(lb.rhs, name);
+    assert.deepEqual(residual, [],
+      `lowered bindings still holding a ksuperpose op: ${residual}`);
+  });
 
 // =====================================================================
 // Static errors and refusals
@@ -336,6 +491,30 @@ test('a TABLE parameter family is refused with the keyword-vector remedy, not '
   assert.ok(ds.some((d: any) => /TABLE parameter family/.test(d.message)
       && /keyword vectors/.test(d.message)),
     `want a table refusal, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
+});
+
+// The refusal messages have a POSITIONAL spelling as well as a keyword one
+// (`family argument #1` / `position` rather than `` `mu` ``). The reviewer
+// hand-verified these; pinning them keeps the whole refusal roster tested in
+// both calling conventions rather than only the keyword one.
+test('the refusals name a POSITIONAL family argument correctly too', () => {
+  const multiAxis = diagnosticsOf(PARAMS
+    + 'grid = [[1.0, 2.0], [3.0, 4.0]]\n'
+    + 'mix = ksuperpose(Normal, weights)(grid, sigmas)\n');
+  assert.ok(multiAxis.some((d: any) => /family argument #1 /.test(d.message)
+      && /single axis/.test(d.message)),
+    `want a positional one-axis error, got ${JSON.stringify(multiAxis.map((d: any) => d.message))}`);
+
+  const sizeMismatch = diagnosticsOf(PARAMS
+    + 'three = [1.0, 2.0, 3.0]\n'
+    + 'mix = ksuperpose(Normal, weights)(three, sigmas)\n');
+  assert.ok(sizeMismatch.some((d: any) => /family argument position has size 3/.test(d.message)),
+    `want a positional size error, got ${JSON.stringify(sizeMismatch.map((d: any) => d.message))}`);
+
+  const unnamed = diagnosticsOf(PARAMS
+    + 'mix = ksuperpose(Normal, weights)(means + 1.0, sigmas)\n');
+  assert.ok(unnamed.some((d: any) => /cannot tell whether family argument #1 /.test(d.message)),
+    `want a positional classify refusal, got ${JSON.stringify(unnamed.map((d: any) => d.message))}`);
 });
 
 test('a component count that is not statically known is refused, naming the '

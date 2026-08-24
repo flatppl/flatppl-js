@@ -232,6 +232,60 @@ test('§06: the mixture mass is Σᵢ wᵢ and "need not be normalized", so `dra
   assert.deepEqual(wrapped, [], 'the normalize wrapper clears the gate');
 });
 
+// ── All-zero weights: §06 makes SAMPLING undefined ──────────────────────────
+//
+// §06: "when every weight is zero it is the zero measure (density 0,
+// log-density −∞, sampling undefined)". The density half is pinned in
+// ksuperpose-density.test.ts (−∞ exactly, at three points). This is the
+// sampling half, which used to return ONE CONSTANT repeated for every atom:
+// the selection resampled a cumulative distribution built from all-−∞ weights,
+// which pins index 0. A plausible-looking number for a measure with no draws.
+//
+// The check lives in `matSuperpose` — where the superposition computes its
+// total mass — so it is the SHARED layer: the hand-written variadic spelling
+// reaches the same guard whenever it materialises.
+
+test('§06: drawing from an all-zero-weight mixture is a located error, not a '
+  + 'repeated constant', async () => {
+  const src = 'wz = [0.0, 0.0]\nmus = [-3.0, 3.0]\n'
+    + 'M = normalize(ksuperpose(Normal, wz)(mu = mus, sigma = 1.0))\n'
+    + 'b ~ M\n';
+  const { ctx } = ctxFor(src, 6);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('b')), (e: any) => {
+    assert.match(e.message, /every component has zero mass/);
+    assert.match(e.message, /spec §06/);
+    assert.match(e.message, /sampling undefined/);
+    // Names the binding, so the error is located in the model.
+    assert.match(e.message, /^superpose '/);
+    return true;
+  });
+});
+
+test('§06: the all-zero refusal also fires under iid, where the pinning was '
+  + 'worst', async () => {
+  const src = 'wz = [0.0, 0.0]\nmus = [-3.0, 3.0]\n'
+    + 'M = normalize(ksuperpose(Normal, wz)(mu = mus, sigma = 1.0))\n'
+    + 'b ~ iid(M, 3)\n';
+  const { ctx } = ctxFor(src, 6);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('b')),
+    /every component has zero mass/);
+});
+
+test('CONTROL: ONE zero weight still samples — the guard tests the TOTAL mass, '
+  + 'not any single weight', async () => {
+  // w = [0.0, 1.2] leaves the N(3, 1) component carrying all the mass, so
+  // every draw comes from it: mean 3, var 1. A guard that fired on any zero
+  // weight rather than on Σw would break this legal model.
+  const { mean, varr } = await momentsOf(
+    'w1 = [0.0, 1.2]\nmus = [-3.0, 3.0]\n'
+    + 'M = normalize(ksuperpose(Normal, w1)(mu = mus, sigma = 1.0))\n'
+    + 'b ~ iid(M, 3)\n', 'b', 3);
+  for (let i = 0; i < 3; i++) {
+    assert.ok(Math.abs(mean[i] - 3.0) < MEAN_TOL, `mean[${i}] = ${mean[i]}, want 3`);
+    assert.ok(Math.abs(varr[i] - 1.0) < VAR_TOL, `var[${i}] = ${varr[i]}, want 1`);
+  }
+});
+
 test('§06: an unnormalized mixture draws in proportion to the weights — the '
   + 'weights live in the mass, the selection in the sample', async () => {
   // normalize(w = [0.25, 0.75]) is the same selection law as the unnormalized

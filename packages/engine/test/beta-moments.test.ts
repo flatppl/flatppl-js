@@ -248,10 +248,13 @@ test('Beta.randFn: parametric-form detection accepts {seed} as well as {prng}', 
 // parametric form never had the defect — it forwards `args[0]` straight into
 // `randBeta.factory` — so the two forms disagreed on the same option.
 //
-// Pre-fix, measured: affected region (2, 2) gave 0.06930173733498424 then
-// 0.5307780586509132; unaffected region (2, 5) gave 0.09638859618832678 then
-// 0.05651354001796724. The defect covered BOTH static branches, not only the
-// gamma-pair workaround region.
+// The pre-fix defect is stated as an INVARIANT, not as captured constants:
+// the un-seeded path ran off @stdlib's PROCESS-GLOBAL generator, so the actual
+// pre-fix values depend on call order within the process and are not
+// reproducible in isolation (two observers measured 0.0693… and 0.8204… for
+// the same call). What reproduces exactly is the invariant this test asserts —
+// pre-fix, two same-seed factories DISAGREE; post-fix they agree — and it held
+// for every parameter pair either observer tried, on both static branches.
 test('#547: the STATIC form honours a {seed}-only options object — repeat '
   + 'factories with one seed agree, on both static branches', () => {
   // alpha === beta > 1.5 — the gamma-pair workaround branch, which never
