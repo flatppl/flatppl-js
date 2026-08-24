@@ -1247,6 +1247,21 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       combinedLogWeights.set(l.logWeights, offset);
       offset += l.samples.length;
     }
+    // Zero total mass — spec §06 makes this UNDEFINED to sample, for both
+    // spellings that reach here: `superpose(weighted(0, M₁), weighted(0, M₂))`
+    // and the `ksuperpose` lift with every weight zero ("when every weight is
+    // zero it is the zero measure (density 0, log-density −∞, sampling
+    // undefined)"). Without the check the selection below resamples a
+    // cumulative distribution built from all-−∞ weights, which pins index 0
+    // and returns ONE CONSTANT repeated for every atom — a plausible-looking
+    // number for a measure that has no draws at all.
+    if (!(empirical.logSumExp(combinedLogWeights) > -Infinity)) {
+      throw new Error("superpose '" + name + "': every component has zero mass, "
+        + 'so the superposition is the zero measure and there is nothing to '
+        + 'draw from (spec §06: "when every weight is zero it is the zero '
+        + 'measure … sampling undefined"). Its log-density is still defined, '
+        + 'and is −∞ everywhere.');
+    }
     const prng = makeMainThreadPrng(nameSeed(name, ctx.rootKey));
     const out = new Float64Array(sc);
 

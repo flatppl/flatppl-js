@@ -884,7 +884,10 @@ function walkLogWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: a
   if (gIR && gIR.kind === 'call' && gIR.op === 'functionof') {
     addFunctionofVariateWeight(gIR, value, refArrays, N, opts, acc, baseEnv, overlay);
   } else {
-    applyAtomScalar(gIR, refArrays, N, baseEnv, overlay, acc, addRaw);
+    // A node the normalize-mass resolve rewrote carries `-log Z`, whose
+    // non-finite values are §06's undefined Z rather than a legal weight.
+    applyAtomScalar(gIR, refArrays, N, baseEnv, overlay, acc,
+      (ir as any).fromNormalize ? addNormalizeShift : addRaw);
   }
   return rest;
 }
@@ -2783,6 +2786,22 @@ function addLogW(acc: any, i: any, w: any) {
   else acc[i] += Math.log(w);
 }
 function addRaw(acc: any, i: any, v: any) {
+  acc[i] += v;
+}
+// The `-log Z` shift a resolved `normalize` carries (mat-density.ts sets
+// `fromNormalize` when it rewrites the node). §06 `normalize`: "If Z = 0 or
+// Z = ∞, the result is undefined" — both show up here as a non-finite shift,
+// and adding one to the inner log-density silently returns NaN. Refuse
+// instead, saying which end it hit.
+function addNormalizeShift(acc: any, i: any, v: any) {
+  if (!Number.isFinite(v)) {
+    throw new Error('normalize: the measure has '
+      + (v === Infinity ? 'ZERO' : 'INFINITE')
+      + ' total mass, so normalize(...) is undefined and its density cannot '
+      + 'be scored (spec §06: "If Z = 0 or Z = infinity, the result is '
+      + 'undefined"). For an all-zero-weight mixture the UNNORMALIZED '
+      + 'log-density is defined, and is -Infinity everywhere.');
+  }
   acc[i] += v;
 }
 
