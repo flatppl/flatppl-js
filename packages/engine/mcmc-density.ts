@@ -142,6 +142,18 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
       node.op = 'logweighted';
       node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [massExpr] }] }, inner];
       delete node.massFrom;
+      // Same mark as mat-density.ts's copy of this rewrite: Z = 0 makes the
+      // shift +∞ and §06 leaves normalize undefined, so the density walker
+      // must refuse rather than add ±∞ to the inner log-density. Without it
+      // the MCMC route scored NaN and MH rejected every proposal, returning a
+      // CONSTANT chain with no diagnostic — the IS route refused correctly, so
+      // the two disagreed on the same model. The other `logweighted` rewrites
+      // need no mark: `:176` here and `resolveNormalizeMasses`' materialise
+      // fallback both throw on a non-finite `logZ` first, and the #322
+      // quadrature literal cannot reach Z = 0. `resolveTruncateNormalizers` /
+      // `resolveProductNormalizers` bake a literal for other constructs
+      // (see TODO-flatppl-js.md).
+      node.fromNormalize = true;
       continue;
     }
     // Buffy #384: a θ-dependent normalize(truncate(D(θ), S)) — defer to
@@ -313,6 +325,7 @@ async function buildLogPi(
   priorOf:       (pt: Record<string, any>) => number;
   likOf:         (pt: Record<string, any>) => number;
   probePrior:    (pt: Record<string, any>) => void;
+  probeLik:      (pt: Record<string, any>) => void;
 }> {
   if (!d || d.kind !== 'bayesupdate') {
     throw new Error('buildLogPi: derivation must be kind=bayesupdate');
@@ -608,6 +621,36 @@ async function buildLogPi(
     }
   }
 
+  // The likelihood companion to `probePrior`, and for the same reason: at
+  // runtime `likWith` swallows every density throw to −∞, which is right for a
+  // proposal that lands outside support but wrong for a likelihood whose
+  // density is a STATIC refusal — MH then rejects every proposal and returns a
+  // constant chain with no diagnostic at all. `normalize` of a zero-mass
+  // mixture is exactly that case (spec §06 leaves it undefined), and the IS
+  // route refuses it, so without this probe the two backends disagreed on the
+  // same model. Only THROWS propagate; a legitimately −∞ likelihood is a
+  // normal in-support answer and stays one.
+  function probeLik(pt: Record<string, any>): void {
+    const env = buildEnv(pt);
+    const { refArrays } = pointToRefArrays(pt);
+    const opts = { parseSet: makeParseSet(env), resolveMeasureRef: NULL_REF, baseEnv: env };
+    try {
+      density.logDensityN(likBodyIR, observed, refArrays, 1, opts);
+    } catch (err: any) {
+      // ONLY the tagged §06-undefined-normalize refusal is a verdict on the
+      // model. Everything else is swallowed on purpose: the probe point is
+      // assembled from per-latent PRIOR pool atoms, which need not have the
+      // axis structure the likelihood body expects, so an unrelated throw here
+      // (a broadcast axis mismatch, say) is a probe artifact and NOT evidence
+      // that the likelihood is intractable. Treating every throw as a verdict
+      // reddened six legitimate models.
+      if (err && err.undefinedNormalize) {
+        throw new Error('the likelihood has no tractable density: '
+          + (err.message ? err.message : String(err)));
+      }
+    }
+  }
+
   function priorOf(pt: Record<string, any>): number { return priorWith(buildEnv(pt), pt); }
   function likOf(pt: Record<string, any>): number { return likWith(buildEnv(pt), pt); }
 
@@ -698,7 +741,7 @@ async function buildLogPi(
     return out;
   }
 
-  return { logPi, logPiBatch, priorLikBatch, priorOf, likOf, probePrior };
+  return { logPi, logPiBatch, priorLikBatch, priorOf, likOf, probePrior, probeLik };
 }
 
 module.exports = { buildLogPi, evaluateDerivedBindings };

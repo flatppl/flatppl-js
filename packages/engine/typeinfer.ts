@@ -464,6 +464,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'Counting':  return write(inferReferenceMeasure(expr, scopes, T.INTEGER), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
+      case 'ksuperpose': return write(inferKsuperpose(expr, scopes), expr);
       // Normalization functions (spec §07): vector → vector, LENGTH-
       // PRESERVING. The static signature returns `array(1, %dynamic,
       // real)`; refine the result to the input's concrete length so a
@@ -3377,6 +3378,52 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       ? T.table(measureT.domain.fields, dims[0])
       : T.array(rank, dims, measureT.domain);
     return T.measure(domain, { sampleShape, batchShape, eventShape });
+  }
+
+  // §06 `ksuperpose(kernel, weights)`: "lifts a kernel to a weighted
+  // superposition: the result is itself a kernel", so the LIFT's type is a
+  // kernel whose result is the component's own per-cell variate measure.
+  // Applying it is typed by `inferCall`'s expression-headed branch, which
+  // returns a kernel's `result` unchanged — so the family axis is
+  // CONTRACTED, which is the whole difference from `broadcast`, whose
+  // applied form is the independent product and therefore GAINS the axis.
+  // Getting that backwards would be a silent, plausible-looking type error.
+  //
+  // The mixture's mass and domain come from the expanded
+  // `superpose(weighted(w[i], K(θᵢ)), …)` (ksuperpose-expand.ts), which the
+  // analyzer produces before it infers the module a second time. This rule
+  // types the surface form and the bare unapplied lift.
+  function inferKsuperpose(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    if (args.length !== 2) return arityError('ksuperpose', 2, args.length, expr.loc);
+    const wT = inferExpr(args[1], scopes);
+    if (wT && wT.kind === 'failed') return T.failed('ksuperpose cascade');
+    const head = args[0];
+    let result: any = T.deferred();
+    if (head && head.kind === 'ref' && head.ns === 'self') {
+      const headT: any = inferBinding(head.name);
+      if (T.isCallable(headT)) result = headT.result;
+      else {
+        // A bare measure constructor is not a callable BINDING — the measure
+        // only exists once it is called — so read its variate off the
+        // signature, exactly as inferBroadcast's bare-builtin-head arm does.
+        const cell = inferMeasureHeadCellResult(head.name, []);
+        if (cell) result = cell;
+      }
+    } else if (head) {
+      // An inline reification in the component slot — a lambda, a
+      // `functionof` / `kernelof`. §04 makes a reification whose body is a
+      // measure a Markov kernel, so its own result IS the per-component
+      // variate measure.
+      const headT: any = inferExpr(head, scopes);
+      if (T.isCallable(headT)) result = headT.result;
+    }
+    // Empty inputs, not null: `inferUserCall` iterates them for the named
+    // spelling (`lift = ksuperpose(…)` then `lift(…)`). Declaring the
+    // component's own parameter names here would type each family argument
+    // against a SCALAR parameter and reject the size-N vector §06 requires,
+    // so the family is left to the expansion, which reads the real types.
+    return T.kernelType([], result);
   }
 
   // Resolve a shape-position IR expression to a non-negative integer

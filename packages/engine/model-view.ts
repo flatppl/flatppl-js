@@ -177,7 +177,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   }
 
   // 4. Async setup: build logPi / logPiBatch / priorLikBatch / probePrior.
-  const { logPi, logPiBatch, priorLikBatch, probePrior, likOf } = await buildLogPi(ctx, posteriorDeriv);
+  const { logPi, logPiBatch, priorLikBatch, probePrior, probeLik, likOf } = await buildLogPi(ctx, posteriorDeriv);
 
   // 4a. Prior-tractability probe. Build a probe point from every latent that HAS
   //     a pool (pool atom 0); latents without a pool are skipped individually but
@@ -212,6 +212,22 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
           `backend '${backend}': ${msg}. MCMC/AMIS must score the prior; use `
           + `backend 'is' (which forward-samples the prior rather than scoring it), `
           + `or annotate the offending transform with bijection(f, f_inv, logvolume).`);
+      }
+      // 4b. LIKELIHOOD-tractability probe, for the same reason as 4a. At
+      //     runtime `likWith` swallows a density throw to −∞, which is right
+      //     for a proposal outside support and wrong for a STATIC refusal:
+      //     MH then rejects every proposal and reports a constant chain with
+      //     no diagnostic. `normalize` of a zero-mass mixture is that case
+      //     (spec §06 leaves it undefined) and the IS route already refuses
+      //     it, so probing here keeps the two backends from disagreeing on
+      //     the same model. A legitimately −∞ likelihood does not throw and
+      //     so does not trip this.
+      try {
+        probeLik(probePt);
+      } catch (err: any) {
+        const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'mh';
+        const msg = err && err.message ? err.message : String(err);
+        throw new Error(`backend '${backend}': ${msg}`);
       }
     }
   }

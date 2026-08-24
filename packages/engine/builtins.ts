@@ -196,6 +196,11 @@ const MEASURE_OPS = new Set([
   'normalize', 'totalmass',
   // Composition
   'superpose', 'joint', 'iid', 'kchain', 'jointchain', 'markovchain', 'kscan',
+  // Weighted-superposition lift (spec §06 `ksuperpose`). Expanded in the
+  // analyzer to `superpose(weighted(w[i], K(θᵢ)), …)` before derivation
+  // classification, so — like `restrict` and `locscale` — it carries no
+  // derivation kind of its own; listed here only to be a known name.
+  'ksuperpose',
   // Restriction and transformation
   'truncate', 'pushfwd',
   // Affine pushforward sugar (spec §06 "locscale"). Expanded in the

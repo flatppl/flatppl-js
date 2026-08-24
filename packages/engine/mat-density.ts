@@ -1425,6 +1425,12 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
       node.op = 'logweighted';
       node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [massExpr] }] }, node.args[0]];
       delete node.massFrom;
+      // The shift is `-log Z`, so §06's "If Z = 0 or Z = ∞, the result is
+      // undefined" shows up as a non-finite shift. Mark the node so the
+      // density walker refuses it there rather than adding ±∞ to the inner
+      // log-density and returning NaN — the materialise path below already
+      // has its own loud error for the same condition.
+      node.fromNormalize = true;
       continue;   // do NOT add this node to the materialise list
     }
     // #322: normalize(weighted(w, Lebesgue(interval))) with a θ-independent

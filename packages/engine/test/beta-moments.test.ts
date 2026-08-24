@@ -240,6 +240,52 @@ test('Beta.randFn: parametric-form detection accepts {seed} as well as {prng}', 
   assert.ok(draw2 > 0 && draw2 < 1, `draw ${draw2} should lie in (0, 1)`);
 });
 
+// #547 leftover — the STATIC form dropped a `{ seed }`-only options object.
+// `opts` was recognised only when it carried a `prng` key, so a `{ seed }`
+// third argument fell back to `{}` and BOTH static branches ran off
+// @stdlib's default-seeded generator: two factories built with the same seed
+// produced DIFFERENT draws, and the caller's seed had no effect at all. The
+// parametric form never had the defect — it forwards `args[0]` straight into
+// `randBeta.factory` — so the two forms disagreed on the same option.
+//
+// The pre-fix defect is stated as an INVARIANT, not as captured constants:
+// the un-seeded path ran off @stdlib's PROCESS-GLOBAL generator, so the actual
+// pre-fix values depend on call order within the process and are not
+// reproducible in isolation (two observers measured 0.0693… and 0.8204… for
+// the same call). What reproduces exactly is the invariant this test asserts —
+// pre-fix, two same-seed factories DISAGREE; post-fix they agree — and it held
+// for every parameter pair either observer tried, on both static branches.
+test('#547: the STATIC form honours a {seed}-only options object — repeat '
+  + 'factories with one seed agree, on both static branches', () => {
+  // alpha === beta > 1.5 — the gamma-pair workaround branch, which never
+  // reaches randBeta.factory and so seeds randGamma itself.
+  const a = BETA_RAND_FN.factory(2.0, 2.0, { seed: 12345 });
+  const b = BETA_RAND_FN.factory(2.0, 2.0, { seed: 12345 });
+  const da = a(), db = b();
+  assert.equal(da, db,
+    `affected static branch: ${da} != ${db} — the {seed} opts object was dropped`);
+  assert.ok(da > 0 && da < 1, `draw ${da} should lie in (0, 1)`);
+
+  // The unaffected branch, which delegates to @stdlib.
+  const c = BETA_RAND_FN.factory(2.0, 5.0, { seed: 999 });
+  const d = BETA_RAND_FN.factory(2.0, 5.0, { seed: 999 });
+  const dc = c(), dd = d();
+  assert.equal(dc, dd,
+    `unaffected static branch: ${dc} != ${dd} — the {seed} opts object was dropped`);
+
+  // Different seeds must still give different draws: the fix must honour the
+  // seed, not ignore it in the other direction.
+  const e = BETA_RAND_FN.factory(2.0, 2.0, { seed: 54321 });
+  assert.notEqual(e(), da, 'a different seed gives a different draw');
+
+  // The seeded static form agrees with the seeded parametric form on the
+  // same seed and params — the two forms now read the option the same way.
+  const stat = BETA_RAND_FN.factory(2.0, 2.0, { seed: 4242 })();
+  const para = BETA_RAND_FN.factory({ seed: 4242 })(2.0, 2.0);
+  assert.equal(stat, para,
+    `static ${stat} != parametric ${para} on the same seed`);
+});
+
 // A/B proof that both fixes leave the draw stream unmoved for a clean,
 // unaffected pair on every path — same method as the #161 review
 // (`wave-beta-review.md` §2): same seed, elementwise comparison.
