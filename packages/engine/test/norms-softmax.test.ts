@@ -8,6 +8,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const sampler = require('../sampler.ts');
+const valueLib = require('../value.ts');
+const { processSource, types: T } = require('..');
 const { toJS } = require('./_value-helpers.ts');
 
 function lit(v: any)        { return { kind: 'lit', value: v }; }
@@ -15,6 +17,26 @@ function vec(...vs: any[])    { return { kind: 'call', op: 'vector', args: vs.ma
 function call(op: any, v: any)   { return { kind: 'call', op, args: [v] }; }
 const evRaw = (ir: any) => sampler.evaluateExpr(ir, {});
 const ev = (ir: any) => toJS(evRaw(ir));
+
+// Surface `complex(re, im)` / vector-of-complex IR, for §07's
+// `real/complex vectors` domain. `cvec` builds the same IR the parser
+// lowers `[complex(3.0, 4.0), complex(1.0, 0.0)]` to, so these go
+// through the ordinary evaluation path — no hand-built Values.
+function cx(re: number, im: number) {
+  return { kind: 'call', op: 'complex', args: [lit(re), lit(im)] };
+}
+function cvec(...zs: any[]) { return { kind: 'call', op: 'vector', args: zs }; }
+// toJS reads only a complex Value's real buffer, so complex results are
+// compared through readComplex, which also applies the conjugation sign.
+function parts(v: any) {
+  const z = valueLib.readComplex(v);
+  return { re: Array.from(z.re), im: Array.from(z.im) };
+}
+// Errors from a full parse → analyze run, for the static-domain checks.
+function errorsFor(src: string) {
+  return processSource(src).diagnostics
+    .filter((d: any) => d.severity === 'error').map((d: any) => d.message);
+}
 
 function arrClose(a: any, b: any, tol?: any) {
   tol = tol == null ? 1e-12 : tol;
@@ -56,24 +78,125 @@ test('linfnorm on empty vector ⇒ 0 (same convention as l1norm / l2norm)', () =
   assert.equal(ev(call('linfnorm', vec())), 0);
 });
 
-test('linfnorm ARITH_OPS complex branch takes each modulus (not reachable from source)', () => {
-  // |3 + 4i| = 5 beats |1 + 0i| = 1. Oracle: norm([3+4im, 1], Inf) == 5.
-  //
-  // The Value is hand-built and ARITH_OPS is called directly because there
-  // is NO surface route: `types.ts` gives linfnorm `array(1, …, REAL)`, and
-  // the engine has no real-or-complex array signature at all, so
-  // `linfnorm([complex(3.0, 4.0), …])` is a static type error. §07 gives
-  // all three norms the domain `real/complex vectors`, so the complex half
-  // is unimplemented at the surface for l1norm / l2norm / linfnorm alike.
-  // This test pins the runtime branch only; it does not certify the domain.
-  // Closing the gap needs a new type form (TODO-flatppl-js.md).
-  const v = {
-    shape: [2],
-    data: Float64Array.from([3, 1]),
-    im: Float64Array.from([4, 0]),
-    dtype: 'complex',
-  };
-  assert.equal(sampler._internal.ARITH_OPS.linfnorm(v), 5);
+// =====================================================================
+// §07's `real/complex vectors` domain
+//
+// Oracles, derived three independent ways for v = [3+4i, 1]:
+// by hand from §07's formulas (Σ|v_i| = 5+1 = 6; √Σ|v_i|² = √26;
+// max|v_i| = 5; v/‖v‖), cross-checked against LinearAlgebra.norm in
+// Julia and numpy.linalg.norm — all three agree bit-for-bit.
+// =====================================================================
+
+test('l1norm / l2norm / linfnorm on a complex vector reduce over the moduli (§07 domain)', () => {
+  const v = () => cvec(cx(3, 4), cx(1, 0));
+  assert.equal(ev(call('l1norm', v())), 6);
+  assert.equal(ev(call('l2norm', v())), 5.0990195135927845);   // √26
+  assert.equal(ev(call('linfnorm', v())), 5);
+});
+
+test('the complex domain is REACHABLE from source — no diagnostic (§07 domain)', () => {
+  // The guard for the defect this closed: the norms used to type their
+  // argument `array(1, …, REAL)`, so every call below was a static error
+  // and the runtime complex branches were dead code.
+  const decl = 'v = [complex(3.0, 4.0), complex(1.0, 0.0)]\n';
+  for (const op of ['l1norm', 'l2norm', 'linfnorm', 'l1unit', 'l2unit']) {
+    assert.deepEqual(errorsFor(decl + 'n = ' + op + '(v)'), [],
+      op + ' must accept a complex vector');
+  }
+  // The result types: a norm is real-valued whatever the input; a unit
+  // vector keeps its argument's element type (§07 divides by a REAL norm).
+  const { bindings } = processSource(decl + 'a = l2norm(v)\nb = l2unit(v)');
+  assert.ok(T.equal(bindings.get('a').inferredType, T.REAL));
+  assert.ok(T.equal(bindings.get('b').inferredType, T.array(1, [2], T.COMPLEX)));
+});
+
+test('logsumexp / softmax / logsoftmax still reject a complex vector (§07 real vectors)', () => {
+  // §07 gives these three the domain `real vectors`, not `real/complex
+  // vectors` — widening the norms must not widen them.
+  const decl = 'v = [complex(3.0, 4.0), complex(1.0, 0.0)]\n';
+  for (const op of ['logsumexp', 'softmax', 'logsoftmax']) {
+    const errs = errorsFor(decl + 'n = ' + op + '(v)');
+    assert.equal(errs.length, 1, op + ' must reject a complex vector');
+    assert.match(errs[0], /expects array of real, got array of complex/);
+  }
+});
+
+test('l1unit / l2unit on a complex vector divide by the real norm (§07 domain)', () => {
+  // v / ‖v‖₁ = [(3+4i)/6, 1/6]; v / ‖v‖₂ = [(3+4i)/√26, 1/√26].
+  const v = () => cvec(cx(3, 4), cx(1, 0));
+  assert.deepEqual(parts(evRaw(call('l1unit', v()))), {
+    re: [0.5, 0.16666666666666666],
+    im: [0.6666666666666666, 0],
+  });
+  assert.deepEqual(parts(evRaw(call('l2unit', v()))), {
+    re: [0.5883484054145521, 0.19611613513818404],
+    im: [0.7844645405527362, 0],
+  });
+});
+
+test('a mixed real/complex vector literal norms over the moduli', () => {
+  // `[complex(3.0, 4.0), 1.0]` — the real entry promotes (§03: reals
+  // embed into complexes), so the result matches [3+4i, 1] exactly.
+  const v = () => cvec(cx(3, 4), lit(1.0));
+  assert.equal(ev(call('l1norm', v())), 6);
+  assert.equal(ev(call('l2norm', v())), 5.0990195135927845);
+});
+
+test('a complex vector holding only real values agrees with the real path', () => {
+  // Oracle: norm([1.5+0i, -2+0i], p) == norm([1.5, -2], p) for p ∈ {1,2,∞}.
+  const cv = () => cvec(cx(1.5, 0), cx(-2, 0));
+  const rv = () => vec(1.5, -2);
+  for (const op of ['l1norm', 'l2norm', 'linfnorm']) {
+    assert.equal(ev(call(op, cv())), ev(call(op, rv())), op);
+  }
+  assert.equal(ev(call('l1norm', cv())), 3.5);
+  assert.equal(ev(call('l2norm', cv())), 2.5);
+  assert.equal(ev(call('linfnorm', cv())), 2);
+  // The unit form keeps the complex element type, with a zero imaginary part.
+  assert.deepEqual(parts(evRaw(call('l2unit', cv()))), { re: [0.6, -0.8], im: [0, 0] });
+});
+
+test('the norms accept the planar complex Value as well as the vector-of-complex form', () => {
+  // The engine carries two complex representations (value.ts "Complex
+  // Values"): the planar Value `dtype: 'complex'`, and the JS array of
+  // scalar {re, im} that `vector(...)` falls back to — which is what the
+  // surface tests above exercise. A norm reading only one still drops the
+  // imaginary half on the other, so both are pinned.
+  const v = valueLib.complexValue(Float64Array.from([3, 1]), Float64Array.from([4, 0]), [2]);
+  const OPS = sampler._internal.ARITH_OPS;
+  assert.equal(OPS.l1norm(v), 6);
+  assert.equal(OPS.l2norm(v), 5.0990195135927845);
+  assert.equal(OPS.linfnorm(v), 5);
+  // Conjugation is a lazy tag flip, so the norms must read the LOGICAL
+  // imaginary part: |conj(z)| = |z| leaves all three norms unchanged, and
+  // l2unit's imaginary part flips sign.
+  const c = valueLib.conjugate(v);
+  assert.equal(OPS.l1norm(c), 6);
+  assert.equal(OPS.l2norm(c), 5.0990195135927845);
+  assert.equal(OPS.linfnorm(c), 5);
+  // conj(1 + 0i) is 1 − 0i, so the second imaginary part is a signed zero.
+  assert.deepEqual(parts(OPS.l2unit(c)), {
+    re: [0.5883484054145521, 0.19611613513818404],
+    im: [-0.7844645405527362, -0],
+  });
+});
+
+test('an empty complex vector norms to 0 and units to the empty vector', () => {
+  // Same empty-input convention as the real path (§07 "Empty inputs").
+  const e = valueLib.complexValue(new Float64Array(0), new Float64Array(0), [0]);
+  const OPS = sampler._internal.ARITH_OPS;
+  assert.equal(OPS.l1norm(e), 0);
+  assert.equal(OPS.l2norm(e), 0);
+  assert.equal(OPS.linfnorm(e), 0);
+  assert.deepEqual(OPS.l1unit(e).shape, [0]);
+  assert.deepEqual(OPS.l2unit(e).shape, [0]);
+});
+
+test('a zero-norm complex vector has no unit form', () => {
+  const z = valueLib.complexValue(Float64Array.from([0, 0]), Float64Array.from([0, 0]), [2]);
+  const OPS = sampler._internal.ARITH_OPS;
+  assert.throws(() => OPS.l1unit(z), /zero-norm/);
+  assert.throws(() => OPS.l2unit(z), /zero-norm/);
 });
 
 // =====================================================================

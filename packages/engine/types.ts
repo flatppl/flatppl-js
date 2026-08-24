@@ -1300,13 +1300,28 @@ const SIGNATURE_FACTORIES = {
   // Norms and softmax family (spec §07). Single vector argument.
   // *norm / logsumexp produce a scalar; *unit / softmax / logsoftmax
   // produce a vector of the same length.
-  l1norm:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  l2norm:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  linfnorm:   () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
+  //
+  // The five norm heads carry §07's domain `real/complex vectors`, so
+  // their argument's ELEMENT type is COMPLEX: unify's scalar case checks
+  // canPromote(actual, expected) along §03's one-directional ladder
+  // (booleans ⊂ integers ⊂ reals → complexes) and its array case recurses
+  // into `elem` in the same signature/actual direction, so an array of
+  // real satisfies an array of complex but not the reverse. This is the
+  // element-level use of the mechanism the scalar complex heads already
+  // rely on — `real`/`imag`/`conj` declare COMPLEX and accept a real
+  // argument the same way. `logsumexp` / `softmax` / `logsoftmax` stay
+  // REAL: §07 gives those three `real vectors`.
+  //
+  // *unit's RESULT element type follows its argument's (complex in ⇒
+  // complex out); the signature's REAL is the real-input case, refined
+  // for a complex input in typeinfer's normalization-function case.
+  l1norm:     () => ({ args: [array(1, ['%dynamic'], COMPLEX)], kwargs: {}, result: REAL }),
+  l2norm:     () => ({ args: [array(1, ['%dynamic'], COMPLEX)], kwargs: {}, result: REAL }),
+  linfnorm:   () => ({ args: [array(1, ['%dynamic'], COMPLEX)], kwargs: {}, result: REAL }),
   logsumexp:  () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {}, result: REAL }),
-  l1unit:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
+  l1unit:     () => ({ args: [array(1, ['%dynamic'], COMPLEX)], kwargs: {},
                        result: array(1, ['%dynamic'], REAL) }),
-  l2unit:     () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
+  l2unit:     () => ({ args: [array(1, ['%dynamic'], COMPLEX)], kwargs: {},
                        result: array(1, ['%dynamic'], REAL) }),
   softmax:    () => ({ args: [array(1, ['%dynamic'], REAL)], kwargs: {},
                        result: array(1, ['%dynamic'], REAL) }),
