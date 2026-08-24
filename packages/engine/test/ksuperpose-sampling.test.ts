@@ -286,6 +286,63 @@ test('CONTROL: ONE zero weight still samples — the guard tests the TOTAL mass,
   }
 });
 
+// The MCMC route resolves `normalize` in its OWN copy of the rewrite
+// (mcmc-density.ts), separately from the IS route's (mat-density.ts). With the
+// mark on only one of them, `{backend: 'mh'}` on an all-zero mixture scored NaN,
+// MH rejected every proposal, and the run reported a CONSTANT CHAIN with zero
+// diagnostics — while the IS route refused the same model. Two routes, two
+// answers, one measure. Both copies are marked now, and the refusal has to
+// SURFACE as well as fire: `likWith` swallows density throws to −∞ on purpose
+// (a proposal outside support must be rejected, not crash), so the §06 refusal
+// is tagged and re-thrown through a one-time probe.
+test('§06: the all-zero refusal reaches the MCMC route too, not just the IS '
+  + 'route', async () => {
+  const orchestrator = require('../orchestrator.ts');
+  const materialiser = require('../materialiser.ts');
+  const { createWorkerHandler } = require('../worker.ts');
+  const SRC = 'wz = [0.0, 0.0]\noffs = [-1.0, 2.0]\n'
+    + 'mu = draw(Normal(mu = 0.0, sigma = 10.0))\n'
+    + 'mix = normalize(ksuperpose(Normal, wz)(mu = offs, sigma = 1.0))\n'
+    + 'obs_dist = joint(y = mix)\n'
+    + 'K = functionof(obs_dist, mu = mu)\n'
+    + 'L = likelihoodof(K, record(y = 0.5))\n'
+    + 'prior = lawof(record(mu = mu))\n'
+    + 'posterior = bayesupdate(L, prior)\n';
+  const lifted = processSource(SRC);
+  assert.deepEqual(
+    lifted.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const built = orchestrator.buildDerivations(lifted.bindings);
+  const worker = createWorkerHandler();
+  worker.handle({ type: 'init', seed: 7 });
+  const cache = new Map();
+  const ctx: any = {
+    derivations: built.derivations,
+    bindings: built.bindings,
+    fixedValues: built.fixedValues || new Map(),
+    getMeasure: (n: string) => {
+      if (cache.has(n)) return cache.get(n);
+      const p = materialiser.materialiseMeasure(n, ctx);
+      cache.set(n, p);
+      return p;
+    },
+    sendWorker: (m: any) => {
+      const r = worker.handle(m);
+      return r && r.type === 'error'
+        ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+    },
+    sampleCount: 200, rootSeed: 42, rootKey: 42,
+  };
+  await assert.rejects(
+    () => materialiser.materialiseMeasure('posterior', ctx,
+      { backend: 'mh', chains: 2, warmup: 50, draws: 50, seed: 1 }),
+    (e: any) => {
+      assert.match(e.message, /ZERO total mass/);
+      assert.match(e.message, /spec §06/);
+      assert.match(e.message, /backend 'mh'/);
+      return true;
+    });
+});
+
 test('§06: an unnormalized mixture draws in proportion to the weights — the '
   + 'weights live in the mass, the selection in the sample', async () => {
   // normalize(w = [0.25, 0.75]) is the same selection law as the unnormalized

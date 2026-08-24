@@ -371,12 +371,18 @@ test('§04: an alias CHAIN to the lift is the same program — two hops and '
 });
 
 test('§04: a CYCLIC alias chain terminates instead of looping', () => {
-  // `a = b`, `b = a` is a degenerate program that other passes report; this
-  // pass must not hang walking it. Reaching a diagnostics array at all is the
-  // assertion — the cycle guard is what makes that possible.
+  // TERMINATION is the whole guarantee here, and it is the only one asserted.
+  // `a = b`, `b = a` is NOT reported by any pass — measured: zero error
+  // diagnostics either side of the cycle guard, so the earlier claim that
+  // "other passes report the cycle" was wrong. The cycle is silently
+  // undiagnosed and is carded in TODO-flatppl-js.md; what this pass owes is
+  // simply not to hang walking it, which the guard delivers.
   const ds = diagnosticsOf(PARAMS
     + 'a = b\nb = a\nmix = normalize(a(mu = means, sigma = sigmas))\n');
   assert.ok(Array.isArray(ds), 'the pass returned rather than looping');
+  assert.deepEqual(ds, [],
+    'documenting the gap, not endorsing it: nothing diagnoses the cycle — '
+    + 'if a pass starts reporting it, update this and close the TODO card');
 });
 
 // =====================================================================

@@ -2788,19 +2788,34 @@ function addLogW(acc: any, i: any, w: any) {
 function addRaw(acc: any, i: any, v: any) {
   acc[i] += v;
 }
-// The `-log Z` shift a resolved `normalize` carries (mat-density.ts sets
-// `fromNormalize` when it rewrites the node). §06 `normalize`: "If Z = 0 or
-// Z = ∞, the result is undefined" — both show up here as a non-finite shift,
-// and adding one to the inner log-density silently returns NaN. Refuse
-// instead, saying which end it hit.
+// The `-log Z` shift a resolved `normalize` carries — `mat-density.ts` AND
+// `mcmc-density.ts` both set `fromNormalize` when they rewrite the node, and
+// both must: the two routes resolve the same normalize independently, so a
+// mark on only one makes the IS path refuse while the MCMC path scores NaN.
+// §06 `normalize`: "If Z = 0 or Z = ∞, the result is undefined" — both show up
+// here as a non-finite shift, and adding one to the inner log-density silently
+// returns NaN. Refuse instead, saying which end it hit.
 function addNormalizeShift(acc: any, i: any, v: any) {
   if (!Number.isFinite(v)) {
-    throw new Error('normalize: the measure has '
-      + (v === Infinity ? 'ZERO' : 'INFINITE')
+    // NaN is its own case: `-log Z` is NaN when Z is NEGATIVE, which a
+    // negative weight can produce (§06 requires non-negative weights but
+    // nothing enforces it yet). Calling that "INFINITE total mass" would
+    // send the reader looking for the wrong problem.
+    const which = Number.isNaN(v) ? 'NEGATIVE (so -log Z is not a number)'
+      : v === Infinity ? 'ZERO' : 'INFINITE';
+    const err: any = new Error('normalize: the measure has ' + which
       + ' total mass, so normalize(...) is undefined and its density cannot '
       + 'be scored (spec §06: "If Z = 0 or Z = infinity, the result is '
       + 'undefined"). For an all-zero-weight mixture the UNNORMALIZED '
       + 'log-density is defined, and is -Infinity everywhere.');
+    // Tagged so the MCMC scorer can tell this apart from the throws it
+    // legitimately swallows to −∞. Its `likWith` turns any density error into a
+    // rejected proposal, which is right for a point outside support and wrong
+    // for a measure §06 leaves undefined — that is a property of the MODEL, not
+    // of the proposal, and MH otherwise reports a constant chain with no
+    // diagnostic while the IS route refuses the same model.
+    err.undefinedNormalize = true;
+    throw err;
   }
   acc[i] += v;
 }
