@@ -3367,7 +3367,7 @@ function analyze(ast: any, source: string, opts?: any) {
   // for source-level concerns (DAG display, source-located
   // diagnostics).
   const pir = require('./pir.ts');
-  const loweredModule = pir.lowerToModule(bindings, { modulePath: moduleCtx.modulePath });
+  let loweredModule = pir.lowerToModule(bindings, { modulePath: moduleCtx.modulePath });
 
   // Surface lowering-time failures. pir.lowerToModule catches a lowerExpr
   // throw and stashes it as `lowerError` on a null-lit placeholder so
@@ -3398,8 +3398,7 @@ function analyze(ast: any, source: string, opts?: any) {
   // object. Matches Rust HIR's `use`-path resolution + LLVM @alias /
   // MLIR symbol resolution — one canonical-IR pass instead of an
   // alias-chain walk in every consumer.
-  require('./alias-resolution.ts').resolveAliases(loweredModule);
-
+  //
   // Structural type inference (FlatPIR §sec:flatpir). Mutates each
   // lowered binding to set `inferredType` and writes per-call
   // `meta.type` annotations. We mirror inferredType back onto the
@@ -3413,15 +3412,46 @@ function analyze(ast: any, source: string, opts?: any) {
   // try/catch; if a const expression can't be evaluated (refs to
   // unresolved bindings, stochastic deps), the type stays %dynamic —
   // same fall-through as before this shim landed.
-  const fixedEval = require('./fixed-eval.ts');
-  const resolveFixed = fixedEval.makeResolver({ loweredModule });
-  const typeDiagnostics = require('./typeinfer.ts')
-    .inferTypes(loweredModule, { resolveFixed, modules: moduleCtx.modules });
-  for (const [name, lb] of loweredModule.bindings) {
-    const b = bindings.get(name);
-    if (b) b.inferredType = lb.inferredType;
+  //
+  // Collected rather than pushed straight onto `diagnostics`: a `ksuperpose`
+  // expansion rewrites the AST and infers the module a second time, and only
+  // the second pass's diagnostics describe the program that actually runs.
+  const _resolveAndInfer = () => {
+    require('./alias-resolution.ts').resolveAliases(loweredModule);
+    const fe = require('./fixed-eval.ts');
+    const td = require('./typeinfer.ts').inferTypes(loweredModule, {
+      resolveFixed: fe.makeResolver({ loweredModule }),
+      modules: moduleCtx.modules,
+    });
+    for (const [name, lb] of loweredModule.bindings) {
+      const b = bindings.get(name);
+      if (b) b.inferredType = lb.inferredType;
+    }
+    return td;
+  };
+  let inferDiagnostics = _resolveAndInfer();
+
+  // Pre-derivation pass: expand `ksuperpose(K, w)(family…)` into the
+  // equivalent `superpose(weighted(w[i], K(θᵢ)), …)` per spec §06
+  // `ksuperpose`. Like restrict and locscale, every op it introduces is
+  // already first-class, so `ksuperpose` needs no derivation kind, no
+  // density arm and no sampler of its own — see ksuperpose-expand.ts for
+  // why inheriting them (rather than re-deriving them) is the point.
+  //
+  // It runs AFTER inference because it reads `inferredType` to tell a
+  // size-N family collection from a held-constant argument, and the
+  // rewritten module is then lowered and inferred again so
+  // `loweredModule` — which analyze returns as the executable form —
+  // describes the expanded program rather than the surface one.
+  const ksExpandDiagnostics: any[] = [];
+  const ksExpanded = require('./ksuperpose-expand.ts')
+    .expandKsuperposeApplications(ast, bindings, ksExpandDiagnostics);
+  if (ksExpanded) {
+    loweredModule = pir.lowerToModule(bindings, { modulePath: moduleCtx.modulePath });
+    inferDiagnostics = _resolveAndInfer();
   }
-  for (const d of typeDiagnostics) diagnostics.push(d);
+  for (const d of inferDiagnostics) diagnostics.push(d);
+  for (const d of ksExpandDiagnostics) diagnostics.push(d);
 
   // Spec §06 "Singular joints": a density query over a joint whose components
   // share their noise is "a static error where statically detectable, and is
