@@ -179,6 +179,28 @@ const COLLECTION_DOMAIN_HEADS: Map<string, { section: string; domains: string }>
   }],
 ]);
 
+// The four heads whose §07 Domains cell demands a collection OF COLLECTIONS,
+// so a FLAT cell — an array of scalars — is out of domain too, not only a
+// scalar one:
+//
+//   `rowstack` / `colstack`  "vector of equal-length vectors"
+//   `joinblocks`             "array of equal-shaped arrays"
+//   `blockdiagmat`           "vector of matrices"
+//
+// §03 makes this a real distinction rather than a pedantic one — "Vectors of
+// vectors are not interpreted as matrices implicitly" — and the engine already
+// enforces it elsewhere (`valueLib.requireMatrix`, and typeinfer's §03
+// vec-of-vec diagnostic). Without this, `rowstack.(vv)` handed `rowstack` a
+// `[3]` vector of SCALARS per cell and answered with two empty 0x0 matrices.
+//
+// Not a general "cell out of domain" check: only the FIRST argument's domain
+// drives the refusal, so a later argument out of domain — `linsolve.(MM, MM)`,
+// where §07 gives `b` "vector" and it receives a matrix — is still not reached.
+// Recorded in flatppl-dev/TODO-flatppl-js.md.
+const NESTED_CELL_HEADS: Set<string> = new Set([
+  'rowstack', 'colstack', 'joinblocks', 'blockdiagmat',
+]);
+
 // The ten built-ins §04 "Multi-axis aggregation" admits:
 //
 //   > The eligible built-ins are `sum`, `prod`, `mean`, `var`, `std`,
@@ -211,10 +233,18 @@ function domainCellFor(name: string): { section: string; domains: string } | nul
   return COLLECTION_DOMAIN_HEADS.get(name) || null;
 }
 
+// Does this head's §07 cell demand a collection of collections, so that a flat
+// array cell is out of domain as well as a scalar one?
+function needsNestedCell(name: any): boolean {
+  return typeof name === 'string' && NESTED_CELL_HEADS.has(name);
+}
+
 module.exports = {
   COLLECTION_DOMAIN_HEADS,
   AGGREGATE_ELIGIBLE_HEADS,
+  NESTED_CELL_HEADS,
   isCollectionDomainHead,
   domainCellFor,
   bareFormFor,
+  needsNestedCell,
 };

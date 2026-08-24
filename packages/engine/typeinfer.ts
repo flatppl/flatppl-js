@@ -2825,22 +2825,36 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
   // Spec §04 + §07: a broadcast hands its head one ELEMENT, and a head whose
   // §07 Domains cell admits only collections has no meaning at a scalar
-  // element — §03 defines no rank-0 array. Full reasoning, the table, and
-  // the two carve-outs (`min`/`max`, `cat`) live in
-  // collection-domain-heads.ts. Returns true when a diagnostic was pushed.
+  // element — §03 defines no rank-0 array. Full reasoning, the table, the two
+  // carve-outs (`min`/`max`, `cat`) and the four heads that need a NESTED cell
+  // live in collection-domain-heads.ts. Returns true when a diagnostic was
+  // pushed.
   //
-  // Keys on the FIRST argument's cell type: every head in the table takes
-  // its collection there, which is what makes one cell enough to decide.
-  // A nested-array cell is LEGAL (§03's vectors-of-vectors sentence) and
-  // falls through to the ordinary per-cell inference below; an unresolved
-  // cell decides nothing, so it falls through too.
+  // Keys on the FIRST argument's domain: every head in the table takes its
+  // collection there, which is what makes one argument enough to decide. A
+  // later argument out of domain is NOT reached — see the note in
+  // collection-domain-heads.ts. A cell that satisfies the head's domain is
+  // LEGAL (§03's vectors-of-vectors sentence) and falls through to the ordinary
+  // per-cell inference below; an unresolved cell decides nothing, so it falls
+  // through too.
   function refuseCollectionDomainHead(
-    expr: any, fn: any, cellTypes: any[],
+    expr: any, fn: any, cellTypes: any[], argClassif: any[],
   ): boolean {
     const head = broadcastHeadOpName(fn);
     if (head == null || !collectionDomain.isCollectionDomainHead(head)) return false;
     const cell = cellTypes[0];
-    if (!cell || cell.kind !== 'scalar') return false;
+    if (!cell) return false;
+    // Why this cell is out of the head's domain, or null if it is not.
+    let why: string | null = null;
+    if (cell.kind === 'scalar') {
+      why = 'spec §03 defines no rank-0 array';
+    } else if (collectionDomain.needsNestedCell(head)
+               && cell.kind === 'array' && cell.elem && cell.elem.kind === 'scalar') {
+      // §07 asks this head for a collection OF collections; a flat array of
+      // scalars is not one, and §03 keeps the two distinct.
+      why = 'spec §03 keeps a vector of vectors distinct from a flat array';
+    }
+    if (why === null) return false;
     const cellRow = collectionDomain.domainCellFor(head);
     const remedy = collectionDomain.AGGREGATE_ELIGIBLE_HEADS.has(head)
       ? 'use the bare `' + collectionDomain.bareFormFor(head)
@@ -2848,12 +2862,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         + ', [<axes>], …)` to reduce along chosen axes (spec §04 '
         + '"Multi-axis aggregation")'
       : 'use the bare `' + collectionDomain.bareFormFor(head) + '`';
+    // Argument 1 may be a HELD CONSTANT rather than an iterated collection
+    // (`quantile.(0.5, vv)` — §04 "Non-collection inputs" holds a scalar
+    // constant while the collection args are iterated). Saying "the elements
+    // here are …" would then describe the constant as if it were a cell.
+    const isHeld = !(argClassif[0] && argClassif[0].collection);
+    const found = isHeld
+      ? 'argument 1 here is ' + T.show(cell) + ', held constant and never iterated'
+      : 'the elements here are ' + T.show(cell)
+        + (cell.kind === 'scalar' ? ' scalars' : '');
     diagnostics.push({
       severity: 'error',
       message: head + ': a broadcast applies its head to one ELEMENT (spec §04 '
         + '"Broadcasting"), and spec §07 "' + cellRow!.section + '" gives `'
-        + head + '` the domain ' + cellRow!.domains + ' — the elements here are '
-        + T.show(cell) + ' scalars, and spec §03 defines no rank-0 array; ' + remedy,
+        + head + '` the domain ' + cellRow!.domains + ' — ' + found + ', and '
+        + why + '; ' + remedy,
       loc: expr.loc,
     });
     return true;
@@ -2964,7 +2987,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // declare `any()` in `types.ts` (the type AST cannot say "array of any
     // rank"), which is what let a scalar cell type-check and produce a
     // silent whole-collection answer.
-    if (refuseCollectionDomainHead(expr, fn, cellTypes)) {
+    if (refuseCollectionDomainHead(expr, fn, cellTypes, argClassif)) {
       return T.failed('broadcast: collection-domain head over a scalar element');
     }
     let elem: any = T.deferred();

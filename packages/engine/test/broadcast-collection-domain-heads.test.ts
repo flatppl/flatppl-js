@@ -264,6 +264,13 @@ test('a COMPOUND broadcast body is outside the rule — a known gap, not a silen
   const src = 'v = [1.0, 2.0]\ny = fn(sum(_) + 1.0).(v)\n';
   assert.deepEqual(errorsOf(src), []);
   assertClose(valueOfY(src), [1, 1], 'compound body (still wrong, still pinned)');
+  // The bare calls it rests on produce NUMBERS, not merely a clean type, which
+  // is the measured half of that card.
+  assert.equal(valueOfY('y = sum(2.0)\n'), 0, 'sum(<scalar>) = 0');
+  assert.equal(valueOfY('y = lany(true)\n'), false, 'lany(<scalar>) = false');
+  // `transpose(<scalar>)` is `inferTransposeAdjoint`'s silent `T.failed` with no
+  // diagnostic — closed on the broadcast path, still open for a bare call.
+  assert.deepEqual(errorsOf('y = transpose(2.0)\n'), []);
 });
 
 test('a scalar in the FIRST argument refuses even when a later argument is a collection', () => {
@@ -419,14 +426,61 @@ for (const head in MATRIX_CELL_EXPECTED) {
   });
 }
 
-test('a cell out of the head\'s domain refuses instead of answering', () => {
+test('a matrix cell under a vector-domain head refuses on its signature', () => {
   // §07 gives `cumsum` "vectors" and `self_outer` "vectors"; a matrix cell is
-  // out of domain either way. The refusal comes from the signature rather
-  // than the domain gate — the point is that neither returns a number.
+  // out of domain either way. The refusal comes from the SIGNATURE, not the
+  // domain gate — the gate keys on the head's FIRST argument being a scalar
+  // (or, for the four collection-of-collections heads, a flat array), so this
+  // is not the general "any out-of-domain cell" check its old name implied.
   for (const head of ['cumsum', 'self_outer']) {
     const errs = errorsOf(`${MM}\ny = ${head}.(MM)\n`);
     assert.equal(errs.length, 1, head + ': ' + JSON.stringify(errs));
+    assert.ok(!errs[0].includes('a broadcast applies its head to one ELEMENT'),
+      head + ': the signature caught it, not the domain gate — ' + errs[0]);
   }
+});
+
+test('a FLAT cell refuses under the four collection-of-collections heads', () => {
+  // §07 gives `rowstack`/`colstack` "vector of equal-length vectors",
+  // `joinblocks` "array of equal-shaped arrays", `blockdiagmat` "vector of
+  // matrices". A `[3]` vector of SCALARS per cell is none of those, and §03
+  // keeps the two shapes distinct. At BASE `rowstack.(vv)` and `colstack.(vv)`
+  // both answered `{shape: [2, 0, 0], data: []}` — two empty 0x0 matrices.
+  for (const head of ['rowstack', 'colstack', 'joinblocks', 'blockdiagmat']) {
+    const errs = errorsOf(`${VV}\ny = ${head}.(vv)\n`);
+    assert.equal(errs.length, 1, head + ': ' + JSON.stringify(errs));
+    assert.ok(errs[0].startsWith(head + ': a broadcast'), head + ': ' + errs[0]);
+    assert.ok(errs[0].includes('keeps a vector of vectors distinct from a flat array'),
+      head + ': names why a flat cell is out of domain — ' + errs[0]);
+  }
+});
+
+test('rowstack over an IN-DOMAIN nested cell still answers with empties', () => {
+  // The gate refuses an out-of-domain FLAT cell; it does not fix `rowstack`
+  // under a broadcast. `vvv`'s cells ARE vectors of vectors, so this is in
+  // domain and legal, and it returns empty 0x0 blocks where the bare
+  // `rowstack(vv)` returns the correct `[2, 3]`. Pre-existing and unchanged;
+  // pinned so it is honest rather than silent, and carded.
+  const legal = valueOfY('vvv = [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]\n'
+    + 'y = rowstack.(vvv)\n');
+  assert.deepEqual(Array.from(legal.data), [], 'still empty — if this changes, drop the card');
+  // The bare call on the same shape of input is correct, which is what makes
+  // the broadcast path the defect.
+  assertClose(valueOfY(`${VV}\ny = rowstack(vv)\n`), [1, 2, 3, 4, 5, 6], 'rowstack(vv)');
+});
+
+test('a held-constant first argument is described as held, not as an element', () => {
+  // §04 "Non-collection inputs": a scalar constant is "not iterated over but
+  // held constant while collection arguments are iterated over". Saying "the
+  // elements here are real scalars" would describe the constant as if it were
+  // a cell — the message-accuracy nit the Rust rule carries.
+  const errs = errorsOf(`${VV}\ny = quantile.(0.5, vv)\n`);
+  assert.equal(errs.length, 1);
+  assert.ok(errs[0].includes('argument 1 here is real, held constant and never iterated'),
+    errs[0]);
+  // The iterated case still reads as elements.
+  const el = errorsOf('v = [1.0, 2.0]\ny = sum.(v)\n')[0];
+  assert.ok(el.includes('the elements here are real scalars'), el);
 });
 
 // =====================================================================
@@ -448,6 +502,91 @@ function singleOpBroadcastIR(op: string): any {
     ],
   };
 }
+
+// Synthetic bindings for the dissolver's structural matcher: a name → inferred
+// type map with a resolved fixed phase, which is all `_argTypeAndPhase` reads.
+function syntheticBindings(types: Record<string, any>): Map<string, any> {
+  const m = new Map<string, any>();
+  for (const n in types) m.set(n, { inferredType: types[n], phase: 'fixed', ir: null });
+  return m;
+}
+
+function multiArgBroadcastIR(op: string, names: string[]): any {
+  const params = names.map((_, i) => `_arg${i + 1}_`);
+  return {
+    kind: 'call', op: 'broadcast',
+    args: [
+      {
+        kind: 'call', op: 'functionof', params,
+        paramKwargs: params.map((_, i) => 'arg' + (i + 1)),
+        body: {
+          kind: 'call', op,
+          args: params.map((p) => ({ kind: 'ref', ns: '%local', name: p })),
+        },
+      },
+      ...names.map((n) => ({ kind: 'ref', ns: 'self', name: n })),
+    ],
+  };
+}
+
+test('a FLAT operand never dissolves, at any rank', () => {
+  // `_collectionHeadSlicesPerCell` must not be satisfiable by a rank that
+  // merely COINCIDES with `argRanks[k] + 1`. An earlier version summed nesting
+  // depth, which cannot tell "one loop axis over rank-k cells" from "a genuine
+  // flat rank-(k+1) array" — both come to k+1 — and so admitted `diagmat` over
+  // a real `[2, 3]` and `det` over a `[2, 2, 2]`, whose cells are SCALARS and
+  // which §04 makes a static error. Nothing reached a wrong number (the domain
+  // gate or an op signature caught every route), but the condition was not the
+  // proof it claimed to be, so it is now the two facts it needs: exactly ONE
+  // outer axis, and a FLAT cell of exactly the op's logical rank.
+  const dissolver = require('../dissolver.ts');
+  const scalar = { kind: 'scalar', prim: 'real' };
+  const arr = (rank: number, shape: any[], elem: any) =>
+    ({ kind: 'array', rank, shape, elem });
+
+  const nestedVec = arr(1, [2], arr(1, [3], scalar));           // [2] of [3]
+  const nestedMat = arr(1, [2], arr(2, [2, 2], scalar));        // [2] of [2,2]
+  const flatMat = arr(2, [2, 3], scalar);                       // a real [2,3]
+  const flatMatDyn = arr(2, ['%dynamic', 3], scalar);
+  const flatCube = arr(3, [2, 2, 2], scalar);                   // a real [2,2,2]
+  const nestedNested = arr(1, [2], arr(1, [2], arr(1, [2], scalar)));
+  const twoOuterAxes = arr(2, [2, 3], arr(1, [4], scalar));
+
+  const dissolves = (op: string, argTypes: any[]) => {
+    const names = argTypes.map((_, i) => 'x' + i);
+    const types: Record<string, any> = {};
+    argTypes.forEach((t, i) => { types['x' + i] = t; });
+    return dissolver._tryDissolveSingleOp(
+      multiArgBroadcastIR(op, names), syntheticBindings(types)) !== null;
+  };
+
+  // Sound: one nesting axis over a flat cell at the op's logical rank.
+  assert.ok(dissolves('diagmat', [nestedVec]), 'diagmat over [2] of [3]');
+  assert.ok(dissolves('self_outer', [nestedVec]), 'self_outer over [2] of [3]');
+  assert.ok(dissolves('cross', [nestedVec, nestedVec]), 'cross over two [2] of [3]');
+  for (const op of ['det', 'trace', 'inv', 'lower_cholesky', 'logabsdet',
+    'row_gram', 'col_gram']) {
+    assert.ok(dissolves(op, [nestedMat]), op + ' over [2] of [2,2]');
+  }
+
+  // Unsound, and previously admitted: a genuine flat array whose cells are
+  // scalars, at the coincident rank.
+  assert.ok(!dissolves('diagmat', [flatMat]), 'diagmat over a real [2,3]');
+  assert.ok(!dissolves('self_outer', [flatMat]), 'self_outer over a real [2,3]');
+  assert.ok(!dissolves('cross', [flatMat, flatMat]), 'cross over two real [2,3]');
+  assert.ok(!dissolves('diagmat', [flatMatDyn]), 'diagmat over [%dynamic,3]');
+  for (const op of ['det', 'trace', 'inv', 'lower_cholesky']) {
+    assert.ok(!dissolves(op, [flatCube]), op + ' over a real [2,2,2]');
+  }
+  // §03: a vector of vectors is not a matrix, so it is not `det`'s cell either.
+  assert.ok(!dissolves('det', [nestedNested]), 'det over [2] of ([2] of [2])');
+  // More than one outer axis: the dispatcher's rank test fails and it would be
+  // handed the whole buffer.
+  assert.ok(!dissolves('diagmat', [twoOuterAxes]), 'diagmat over two outer axes');
+  // A pointwise head is unaffected by any of this.
+  assert.ok(dissolves('neg', [nestedVec]), 'neg still dissolves');
+  assert.ok(dissolves('add', [flatMat, flatMat]), 'add over two real [2,3]');
+});
 
 test('the dissolver keeps its own half of the rule', () => {
   // Refuse-don't-mislower must not depend on inference having run. The
@@ -494,6 +633,89 @@ test('the unlowered collection heads refuse on their signature, not the domain r
       head + ': refuses on the domain rule, so it belongs IN the table now — '
       + errs[0]);
   }
+});
+
+test('a per-cell transposed vector keeps its tag instead of becoming a matrix', () => {
+  // §03: "transposed vectors are a distinct type in FlatPPL"; §07 "Linear
+  // algebra": "The transpose of a vector is a transposed vector (see arrays),
+  // not a single-row matrix." The inferred type says
+  // `array of transposed vector`, so the value must not be a tag-less `[2, 3]`
+  // matrix — a `t` tag on THAT would mean matrix transpose, a different claim.
+  // The cells therefore stay a per-cell list, each carrying its own tag.
+  for (const [head, tag] of [['transpose', 'T'], ['adjoint', 'A']] as const) {
+    const v = valueOfY(`${VV}\ny = ${head}.(vv)\n`);
+    assert.ok(Array.isArray(v), head + ': a per-cell list, not one stacked Value');
+    assert.equal(v.length, 2);
+    assert.equal(v[0].t, tag, head + ': cell 0 keeps its tag');
+    assert.equal(v[1].t, tag, head + ': cell 1 keeps its tag');
+    assert.deepEqual(Array.from(v[0].data), [1, 2, 3]);
+    assert.deepEqual(Array.from(v[1].data), [4, 5, 6]);
+  }
+});
+
+test('a complex cell keeps its imaginary half', () => {
+  // The stacker built `{shape, data}` and dropped everything else, so a complex
+  // per-cell result was presented as its real parts — a wrong VALUE, not a lost
+  // tag. Exercised directly on the exported helper: the reachable source route
+  // is masked by an upstream defect (below), which is the point of testing the
+  // helper.
+  const { tryStackBroadcastCells } = require('../broadcast-shape.ts');
+  const cx = (re: number[], im: number[]) => ({
+    shape: [re.length], data: Float64Array.from(re),
+    im: Float64Array.from(im), dtype: 'complex',
+  });
+  const stacked = tryStackBroadcastCells([cx([1, 2], [3, 4]), cx([5, 6], [7, 8])], [2]);
+  assert.deepEqual(stacked.shape, [2, 2]);
+  assert.deepEqual(Array.from(stacked.data), [1, 2, 5, 6]);
+  assert.deepEqual(Array.from(stacked.im), [3, 4, 7, 8]);
+  assert.equal(stacked.dtype, 'complex');
+  // A structured complex cell too: `densify` expands `im` alongside `data`.
+  const diagCx = (re: number[], im: number[]) => ({
+    shape: [2, 2], data: Float64Array.from(re),
+    im: Float64Array.from(im), dtype: 'complex', struct: 2,
+  });
+  const s2 = tryStackBroadcastCells([diagCx([1, 2], [9, 8]), diagCx([3, 4], [7, 6])], [2]);
+  assert.deepEqual(Array.from(s2.data), [1, 0, 0, 2, 3, 0, 0, 4]);
+  assert.deepEqual(Array.from(s2.im), [9, 0, 0, 8, 7, 0, 0, 6]);
+  // MIXED real and complex cells are not one Value; guessing the missing half
+  // as zero would be a wrong number, so they refuse.
+  assert.equal(
+    tryStackBroadcastCells(
+      [{ shape: [2], data: Float64Array.from([1, 2]) }, cx([5, 6], [7, 8])], [2]),
+    null, 'mixed real/complex refuses');
+});
+
+test('a cell whose buffer is shorter than its shape refuses instead of zero-filling', () => {
+  // `densify` expands the one packed form the engine produces (diag-stored).
+  // Anything still short is a representation this consumer cannot read, and
+  // copying it into the full stride is exactly what put a diagonal in the
+  // first row.
+  const { tryStackBroadcastCells } = require('../broadcast-shape.ts');
+  const short = () => ({ shape: [2, 2], data: Float64Array.from([1, 2, 3]) });
+  assert.equal(tryStackBroadcastCells([short(), short()], [2]), null);
+});
+
+test('the complex nested operand is honest, and its wrongness is upstream', () => {
+  // The reviewer's four-line repro. `zz = [a, b]` over two complex vectors is
+  // where the imaginary half is lost: the ARRAY LITERAL drops `im`, so `zz`
+  // already carries real parts only. Pinned here so the day the literal is
+  // fixed, these values change and this test says so.
+  const src = 'a = complex.([1.0, 2.0], [3.0, 4.0])\n'
+    + 'b = complex.([5.0, 6.0], [7.0, 8.0])\n'
+    + 'zz = [a, b]\n';
+  // `a` alone is complex and correct.
+  const a = valueOfY(src + 'y = a\n');
+  assert.deepEqual(Array.from(a.im), [3, 4], 'a keeps its imaginary half');
+  // The literal drops it. THIS is the defect, carded in TODO-flatppl-js.md.
+  const zz = valueOfY(src + 'y = zz\n');
+  assert.equal(zz.im, undefined,
+    'the array literal still drops `im` — if this now passes, update the card');
+  // Given that input, `adjoint.(zz)` is an honest per-cell list of tagged
+  // vectors rather than a tag-less matrix of real parts, which is what it was.
+  const adj = valueOfY(src + 'y = adjoint.(zz)\n');
+  assert.ok(Array.isArray(adj), 'a per-cell list');
+  assert.equal(adj[0].t, 'A');
+  assert.equal(adj[1].t, 'A');
 });
 
 test('stacking a structured cell densifies it first', () => {

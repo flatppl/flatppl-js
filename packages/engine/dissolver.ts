@@ -1041,20 +1041,23 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
   return _fusedFallback();
 }
 
-// Storage rank of an inferred type — the total array nesting depth, which is
-// the rank of the flat row-major buffer the runtime actually holds. A nested
-// vector `array(1, [N], array(1, [k], real))` stores rank 2, which is what
-// `ops.dispatch`'s atom-batch detection compares against `argRanks`. Null for
-// anything that is not built from arrays and scalars.
-function _storageRank(t: any): number | null {
-  if (!t) return null;
-  if (t.kind === 'scalar') return 0;
-  if (t.kind === 'tvector') return 1;
-  if (t.kind !== 'array') return null;
+// Rank of a FLAT array type — one whose elements are scalars, so its `rank` is
+// also the rank of the row-major buffer holding it. Null for a scalar, for a
+// NESTED array (elements that are themselves arrays — §03 keeps those a
+// distinct type from a matrix), and for anything else.
+//
+// Deliberately not a nesting-depth SUM. A sum cannot tell "one loop axis over
+// rank-k cells" from "a genuine flat rank-(k+1) array": both come to k+1, and
+// the second has SCALAR cells, which §04 makes a static error under a
+// collection-domain head. An earlier version of the caller summed the depth and
+// so admitted `diagmat` over a real `[2, 3]` and `det` over a `[2, 2, 2]` —
+// caught by the domain gate and by op signatures in every route tried, but the
+// condition was not the proof it claimed to be.
+function _flatArrayRank(t: any): number | null {
+  if (!t || t.kind !== 'array') return null;
   if (typeof t.rank !== 'number') return null;
-  const inner = _storageRank(t.elem);
-  if (inner === null) return null;
-  return t.rank + inner;
+  if (!t.elem || t.elem.kind !== 'scalar') return null;
+  return t.rank;
 }
 
 // Is `broadcast(<head>, args…) ≡ <head>(args…)` for a §07 collection-domain
@@ -1064,9 +1067,13 @@ function _storageRank(t: any): number | null {
 // rather than to the whole buffer, and `ops.dispatch` documents the one
 // condition under which it does: a `fixed-rank` declaration whose arg is one
 // rank above its declared logical rank is atom-batched, and the dispatcher
-// runs the op per leading-axis slice (engine-concepts §18 / §20.1). A nested
-// vector's outer axis IS that leading axis, so the per-slice application and
-// the broadcast's per-cell application are the same computation.
+// runs the op per leading-axis slice (engine-concepts §18 / §20.1).
+//
+// So each argument must be a NESTED array with exactly ONE outer axis whose
+// cell is a FLAT array of exactly the op's declared logical rank. That outer
+// axis is the dispatcher's leading axis, and it is a §03 nesting axis rather
+// than an axis of one flat buffer, so the per-slice application and the
+// broadcast's per-cell application are the same computation.
 //
 // Everything else refuses:
 //   - undeclared heads (`cumsum`, `sum`, `diag`, `conv`, … — they reach the
@@ -1075,9 +1082,12 @@ function _storageRank(t: any): number | null {
 //   - `rank-polymorphic` heads (`transpose`, `adjoint`), whose declaration
 //     states outright that the dispatcher does NOT auto-atom-batch them;
 //   - `variadic` / `higher-order` heads;
-//   - any arg whose rank is not exactly `argRanks[k] + 1`, which includes
-//     every FLAT operand — and a flat operand is the scalar-cell case
-//     `typeinfer` refuses anyway.
+//   - a FLAT operand at any rank — its cells are scalars, which is the case
+//     the domain rule refuses outright;
+//   - more than one outer axis, where the dispatcher's rank test fails and it
+//     hands the op the whole buffer instead of slicing;
+//   - a cell that is itself nested (`[2]` of `[2]` of `[2]` under `det`), which
+//     §03 says is not a matrix.
 function _collectionHeadSlicesPerCell(
   op: string, appliedArgs: any[], bindings: any,
 ): boolean {
@@ -1097,8 +1107,10 @@ function _collectionHeadSlicesPerCell(
   for (let i = 0; i < appliedArgs.length; i++) {
     const tp = _argTypeAndPhase(appliedArgs[i], bindings);
     if (!tp || !tp.type) return false;
-    const rank = _storageRank(tp.type);
-    if (rank === null || rank !== argRanks[i] + 1) return false;
+    const t = tp.type;
+    // Exactly one outer axis, and it must be a §03 nesting axis.
+    if (t.kind !== 'array' || t.rank !== 1) return false;
+    if (_flatArrayRank(t.elem) !== argRanks[i]) return false;
   }
   return true;
 }
