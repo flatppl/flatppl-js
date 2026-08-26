@@ -41,6 +41,19 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
       return false;
     }
     case 'CallExpr': {
+      // §06 `ksuperpose(κ, w)` "is itself a kernel", so APPLYING it "yields
+      // the mixture ν = Σᵢ wᵢ κ(θᵢ)" — a measure. The applied form is an
+      // expression-headed call, so its callee is a CallExpr and the
+      // Identifier guard below declines it. `ksuperpose-expand.ts` rewrites
+      // the application away when N is statically known, but a RUNTIME N
+      // leaves it standing for the runtime arm, and without this a
+      // `normalize`/`weighted` wrapper around such a mixture fails
+      // `resolveMeasureBaseName` and goes unclassified.
+      if (node.callee && node.callee.type === 'CallExpr'
+          && node.callee.callee && node.callee.callee.type === 'Identifier'
+          && node.callee.callee.name === 'ksuperpose') {
+        return true;
+      }
       if (!node.callee || node.callee.type !== 'Identifier') return false;
       const name = node.callee.name;
       if (name === 'lawof') return true;

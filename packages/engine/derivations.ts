@@ -590,6 +590,27 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     return (b && b.node && b.node.loc) || undefined;
   }
 
+  // Spec §06 `ksuperpose`: N "need not be statically known". The analyzer's
+  // AST rewrite needs N while it runs, so it leaves a runtime-N mixture
+  // standing; this is the first point where the weight vector's VALUE — hence
+  // its length — exists, because `fixedValues` is now built. The pass
+  // synthesises the same component graph the static rewrite writes, so
+  // density, mass, `normalize` and the per-output-index component draw are
+  // the reviewed ones (see ksuperpose-runtime.ts). It runs BEFORE the
+  // cascade-prune so its synthesised bindings are pruned like any other, and
+  // a third classification pass follows for the wrappers above the mixture
+  // (`normalize`, `weighted`) that could not classify while it had none.
+  const ksRuntime = require('./ksuperpose-runtime.ts').expandRuntimeKsuperpose(
+    bindings, derivations, fixedValues, diagnostics);
+  if (ksRuntime.changed) {
+    for (const [name, binding] of bindings) {
+      if (derivations[name]) continue;
+      const d = classifyDerivation(binding, bindings, fixedValues);
+      if (d) derivations[name] = d;
+    }
+  }
+  const ksRefusedNames = new Set<string>(ksRuntime.refused);
+
   // Cascade-prune: drop any derivation whose refs aren't satisfiable.
   // Runs AFTER pre-eval so refs to fixed-phase value bindings (whose
   // derivations were dropped because the value is opaque / a record)
@@ -764,12 +785,33 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // resolved here, same as before. Fully eliminating that residual would
   // need a reachability-from-plotted-target gate not available at build
   // time — deferred (TODO §06).
+  // A refused runtime-N mixture takes every binding above it down with it —
+  // the cascade-prune above has just dropped their derivations — and each
+  // would then draw the generic dead-end message below, appending "this is an
+  // engine gap" to a precise, located refusal that already named the cause and
+  // the remedy. Grow the refused set over the bindings that reach one, the way
+  // `malformedPushfwdNames` suppresses the message for its own name. This runs
+  // AFTER the prune because a wrapper still HELD its derivation when the
+  // mixture was refused, and a pre-prune walk would therefore skip it.
+  if (ksRefusedNames.size > 0) {
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [name, b] of bindings) {
+        if (ksRefusedNames.has(name) || !b || !b.ir || derivations[name]) continue;
+        for (const r of collectSelfRefs(b.ir)) {
+          if (ksRefusedNames.has(r)) { ksRefusedNames.add(name); grew = true; break; }
+        }
+      }
+    }
+  }
   for (const [name, b] of bindings) {
     if (!b || b.phase !== 'fixed') continue;
     if (_isObjectBindingType(b.type)) continue;         // legit underived
     if (derivations[name]) continue;
     if (cyclicNames.has(name)) continue;                // already flagged as a cycle, not an engine gap
     if (malformedPushfwdNames.has(name)) continue;      // already flagged as reversed pushfwd args
+    if (ksRefusedNames.has(name)) continue;             // already flagged as a refused runtime-N mixture
     if (fixedValues.has(name)) continue;
     diagnostics.push({
       severity: 'error',

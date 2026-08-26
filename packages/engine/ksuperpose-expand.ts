@@ -40,9 +40,17 @@
 //
 // The cost is that N must be resolvable when this pass runs. §06 says N
 // "need not be statically known", so a weight vector of genuinely dynamic
-// length is a located refusal here rather than a lowering. Nothing else in
-// §06 is restricted: the weights themselves may be latent (the common
-// mixture spelling), because the rewrite indexes the weight EXPRESSION.
+// length cannot be rewritten HERE. That case is handed to the RUNTIME ARM
+// (`ksuperpose-runtime.ts`), which runs at derivation-build time where a
+// deterministic vector's VALUE — and so its length — is available, and which
+// synthesises the same component graph this pass would have written. This
+// pass therefore leaves such an application untouched and SILENT: the
+// refusal, if one is still owed, belongs to whoever knows the value.
+//
+// Nothing else in §06 is restricted: the weights themselves may be latent
+// (the common mixture spelling), because the rewrite indexes the weight
+// EXPRESSION. Latent weights keep this path — a latent vector has a static
+// length but no value, so the runtime arm could not read N from it.
 //
 // Runs after type inference (it reads `inferredType` to classify each
 // family argument as size-N, singular, or held constant) and before
@@ -279,18 +287,31 @@ function _expandApplication(call: any, lift: any, bindings: any, diagnostics: an
   // here needs the component's parameter names: each argument is handed to
   // the component call in the position or under the keyword it already has
   // (§05 lets a distribution take its parameters positionally).
+  //
+  // An argument this cannot classify does NOT refuse here. Whether it is a
+  // refusal at all depends on N: with a static N the rows must be read now,
+  // so the message below stands; with a runtime N the whole application goes
+  // to the runtime arm, which reads each argument's shape from its value and
+  // needs no static classification. So the error is HELD until N is known.
   const specs: any[] = [];
+  let unclassified: any = null;
   for (const a of call.args || []) {
     const isKw = a && a.type === 'KeywordArg';
     const node = isKw ? a.value : a;
     const cls = _classify(node, bindings);
     if (cls == null) {
-      _err(diagnostics, 'ksuperpose: cannot tell whether family argument '
-        + `${isKw ? '`' + a.name + '`' : '#' + (specs.length + 1)} is a `
-        + 'size-N collection or a held-constant scalar, so the component '
-        + 'rows cannot be read (spec §06). Bind it to a name with a '
-        + 'statically-known vector length.', (node && node.loc) || call.loc);
-      return call;
+      if (unclassified == null) {
+        unclassified = {
+          message: 'ksuperpose: cannot tell whether family argument '
+            + `${isKw ? '`' + a.name + '`' : '#' + (specs.length + 1)} is a `
+            + 'size-N collection or a held-constant scalar, so the component '
+            + 'rows cannot be read (spec §06). Bind it to a name with a '
+            + 'statically-known vector length.',
+          loc: (node && node.loc) || call.loc,
+        };
+      }
+      specs.push({ name: isKw ? a.name : null, node, cls: null });
+      continue;
     }
     if (cls.kind === 'multiaxis') {
       _err(diagnostics, 'ksuperpose: the parameter family is restricted to a '
@@ -314,25 +335,25 @@ function _expandApplication(call: any, lift: any, bindings: any, diagnostics: an
   let N: number | null = (wCls && wCls.kind === 'axis') ? wCls.length : null;
   if (N == null) {
     for (const s of specs) {
-      if (s.cls.kind === 'axis' && s.cls.length != null && s.cls.length > 1) {
+      if (s.cls && s.cls.kind === 'axis' && s.cls.length != null && s.cls.length > 1) {
         N = s.cls.length;
         break;
       }
     }
   }
-  if (N == null) {
-    _err(diagnostics, 'ksuperpose: the component count N is not statically '
-      + 'known. §06 allows a runtime N, but this engine expands the mixture '
-      + 'into its N components, so the weight vector (or a size-N family '
-      + 'argument) needs a statically-known length.',
-      (weightsNode && weightsNode.loc) || lift.loc);
+  // §06: N "need not be statically known". Hand the application to the
+  // runtime arm rather than refusing, and say nothing — a diagnostic here
+  // would fire on a program the runtime arm goes on to score.
+  if (N == null) return call;
+  if (unclassified != null) {
+    _err(diagnostics, unclassified.message, unclassified.loc);
     return call;
   }
 
   // §06: "each collection argument has size N or is singular (size one,
   // expanded by repetition)".
   for (const s of specs) {
-    if (s.cls.kind !== 'axis') continue;
+    if (!s.cls || s.cls.kind !== 'axis') continue;
     if (s.cls.length != null && s.cls.length !== N && s.cls.length !== 1) {
       _err(diagnostics, 'ksuperpose: family argument '
         + `${s.name == null ? 'position' : '`' + s.name + '`'} has size `
@@ -441,4 +462,12 @@ function expandKsuperposeApplications(ast: any, bindings: any, diagnostics: any[
   return changed;
 }
 
-module.exports = { expandKsuperposeApplications };
+// The §06 family classification for a NAMED binding, read off its inferred
+// type. Exported so the runtime arm classifies by this rule and not a second
+// one: the two spellings of the same mixture must agree on which arguments are
+// size-N collections, which are singular, and which are held constant.
+function classifyNamedFamilyArg(name: string, bindings: any): any {
+  return _classify({ type: 'Identifier', name }, bindings);
+}
+
+module.exports = { expandKsuperposeApplications, classifyNamedFamilyArg };
