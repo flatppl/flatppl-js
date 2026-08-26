@@ -9,7 +9,7 @@ import type { Ctx } from './types';
 import { measureIsConstant, renderConstantRecord, renderRecordMarginals } from './render-record.js';
 
 import { colorForBinding } from './palette.js';
-import { complexReBadge, esc, formatComplexScalar, formatScalar } from './util.js';
+import { complexReBadge, displayBindingName, esc, formatComplexScalar, formatScalar } from './util.js';
 import { sendWorker } from './worker.js';
 import { renderPlotFrame, renderTextValue, renderConstantValue } from './render-frame.js';
 import { buildInferenceControl } from './render-controls.js';
@@ -39,7 +39,7 @@ export function renderArrayStepPlot(ctx: Ctx, arr: any) {
   // shared phaseFixed grey (post the literal-color unification);
   // for other shapes it picks up the node.kind overrides.
   const color = colorForBinding(ctx, ctx.currentPlotBindingName);
-  const distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'array';
+  const distLabel = ctx.currentPlotBindingName ? esc(displayBindingName(ctx.currentPlotBindingName)) : 'array';
   const arrayLegendLabel = n + ' values';
   // No measure passed — fixed array data isn't a sampled empirical
   // measure, so the frame skips the N+ESS readout. (A future
@@ -124,7 +124,7 @@ export function renderMatrixHeatmap(ctx: Ctx, samples: any, shape: [number, numb
   }
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) { lo = 0; hi = 1; }
   if (lo === hi) { lo -= 0.5; hi += 0.5; }
-  const distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'matrix';
+  const distLabel = ctx.currentPlotBindingName ? esc(displayBindingName(ctx.currentPlotBindingName)) : 'matrix';
   const dimLabel = rows + '×' + cols;
   renderPlotFrame(ctx, {
     chartCallback: function(chartHost: any) {
@@ -549,7 +549,7 @@ export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanH
   const series = densitySeries ? [samplesSeries, densitySeries] : [samplesSeries];
   const legendData = densitySeries ? ['samples', 'density'] : ['samples'];
 
-  const distLabel = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'distribution';
+  const distLabel = ctx.currentPlotBindingName ? esc(displayBindingName(ctx.currentPlotBindingName)) : 'distribution';
 
   // Frame owns the N + ESS readout (in the toolbar above the
   // chart). Pass reply.measure so the frame can compute it; the

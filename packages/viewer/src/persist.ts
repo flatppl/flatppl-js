@@ -77,6 +77,11 @@ function finalizeSaveAsNew(
 }
 
 export function canPersistActive(ctx: Ctx, plan: any): boolean {
+  // A cross-module member's plan name is the LINKED `module$field`
+  // form (module-link.ts). Every edit below writes into ctx.currentPath
+  // via ctx.host.editSource, i.e. the PRIMARY model's source — never the
+  // loaded module's — so a member plot must not offer to persist.
+  if (plan.name && plan.name.indexOf('$') !== -1) return false;
   if (!hasOverrides(ctx, plan)) return false;
   if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
   if (typeof ctx.host.canPersist === 'function' && !ctx.host.canPersist()) return false;
@@ -297,6 +302,9 @@ function formatSetDescriptor(ctx: Ctx, d: any): string {
 }
 
 export function canPersistDomain(ctx: Ctx, plan: any): boolean {
+  // See canPersistActive: a linked `module$field` plan name means this
+  // is a cross-module member plot, foreign to ctx.currentPath.
+  if (plan.name && plan.name.indexOf('$') !== -1) return false;
   if (!hasDomainOverrides(ctx, plan)) return false;
   if (!ctx.host || typeof ctx.host.editSource !== 'function') return false;
   if (typeof ctx.host.canPersist === 'function' && !ctx.host.canPersist()) return false;

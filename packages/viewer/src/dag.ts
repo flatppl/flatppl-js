@@ -317,6 +317,26 @@ export function initCy(ctx: Ctx) {
     }
     const d = evt.target.data();
     showNodeInfo(ctx, d);
+    // Cross-module member node (spec §04, "Stochastic boundary": only
+    // fixed/parameterized members are reachable across the boundary, so
+    // this always lands on the profile or fixed-value paths, never a
+    // sampled histogram). `moduleMember` is also stamped on an ORDINARY
+    // top-level alias of a member (`f_b = common.f_b`, for dbltap's
+    // drill-in) — that node's id is its own plain name and it's already
+    // a key in ctx.currentBindings, so it must NOT take this branch; only
+    // the anonymous `module.field` access node (id === the dotted form)
+    // has no such key. buildPlotPlan/updatePlotForBinding resolve THAT
+    // one against the LINKED binding graph instead, under its
+    // `module$field` name (module-link.ts), via a shallow ctx clone. The
+    // clone's writes (currentPlotPlan etc.) don't touch the real ctx, so
+    // the DAG's own selection/back-stack state is untouched — this is a
+    // one-off side-plot, not a navigation.
+    const mm = d.moduleMember;
+    if (mm && mm.module && d.id === mm.module + '.' + mm.field && ctx.currentLinkedBindings) {
+      const linkedName = mm.module + '$' + mm.field;
+      updatePlotForBinding({ ...ctx, currentBindings: ctx.currentLinkedBindings }, linkedName);
+      return;
+    }
     // Always re-target the plot to whatever the user clicked. For
     // synthetic nodes (anonymous inline expressions, placeholders,
     // holes — recognised by ':' in the id) there's no binding to

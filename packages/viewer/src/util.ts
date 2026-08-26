@@ -39,6 +39,18 @@ export function esc(s: any) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// A cross-module member's LINKED binding name (module-link.ts) is
+// `module$field`, `$`-joined so it can't collide with a source
+// identifier. That separator is an internal wiring detail; the DAG
+// node for the same member already displays it dotted (`module.field`,
+// engine/dag.ts), so any user-facing label does the same conversion.
+// No ordinary binding name contains `$`, so this is a no-op elsewhere.
+export function displayBindingName(name: any): any {
+  return typeof name === 'string' && name.indexOf('$') !== -1
+    ? name.replace(/\$/g, '.')
+    : name;
+}
+
 export function truncateExpr(expr: any) {
   if (!expr) return '';
   // Truncate array literals: [1, 2, 3, ..., 8, 9, 10]
