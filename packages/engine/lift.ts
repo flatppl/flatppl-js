@@ -1201,8 +1201,17 @@ function liftInlineSubexpressions(bindings: any) {
       const rows = covLit.elements.length;
       if (D != null && rows !== D) return astArg;
       for (const row of covLit.elements) {
-        if (!row || row.type !== 'ArrayLiteral'
-            || row.elements.length !== rows) return astArg;
+        if (!row) return astArg;
+        // A row spelled as a nested literal exposes its length, so a
+        // non-square matrix is a VISIBLE conflict and refuses. A row
+        // that is any other expression (an Identifier naming a vector,
+        // a call) exposes nothing — per the relaxation above that is
+        // UNKNOWN, not wrong, so keep lowering and let the affine
+        // registry's runtime shape checks reject a real mismatch.
+        // Refusing here instead left `m` unsamplable while
+        // `logdensityof(m, …)` still scored through another path.
+        if (row.type !== 'ArrayLiteral') continue;
+        if (row.elements.length !== rows) return astArg;
       }
     } else if (covAst.type === 'Identifier') {
       const cb = out.get(covAst.name);
