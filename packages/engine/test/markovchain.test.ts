@@ -355,3 +355,88 @@ traj = markovchain(f, 0.0, 2.5)
   assert.ok(msgs.some((m) => /markovchain: arg 3 .*positive integer/.test(m)),
     'expected a located n diagnostic, got ' + JSON.stringify(msgs));
 });
+
+test('markovchain: n = 0 is a located error, not an empty trajectory', () => {
+  // §06 says `n` is "a positive integer", so zero is rejected outright rather
+  // than lowered to the empty product measure. Distinct from the 2.5 case
+  // above, which fails the integer check before the sign one.
+  const msgs = errorsOf(`
+f = fn(Normal(mu = _, sigma = 1.0))
+traj = markovchain(f, 0.0, 0)
+`);
+  assert.ok(msgs.some((m) => /markovchain: `n` must be positive, got 0/.test(m)),
+    'expected a located sign diagnostic, got ' + JSON.stringify(msgs));
+});
+
+test('markovchain: a kernel argument naming no binding is a located error', () => {
+  // Two spellings reach the same refusal: an undefined name, and a BARE §08
+  // distribution name. The second is worth pinning separately — `Normal` is a
+  // plausible thing to write there by analogy with `broadcast(Normal, …)`, but
+  // it is not a kernel `(state) -> measure_over_state`: it takes two
+  // parameters, not one state.
+  const undef = errorsOf('traj = markovchain(nope, 0.0, 3)\n');
+  assert.ok(undef.some((m) => /markovchain: `nope` names no binding/.test(m)),
+    'expected an undefined-name refusal, got ' + JSON.stringify(undef));
+  const bare = errorsOf('traj = markovchain(Normal, 0.0, 3)\n');
+  assert.ok(bare.some((m) => /markovchain: `Normal` names no binding/.test(m)),
+    'expected a bare-distribution refusal, got ' + JSON.stringify(bare));
+});
+
+test('markovchain: too many positional step parameters is a located error', () => {
+  // §05 positional parameters are named from the REGISTRY order, so a third
+  // positional argument to a two-parameter distribution has no name to take.
+  const msgs = errorsOf(`
+f = fn(Normal(_, 1.0, 2.0))
+traj = markovchain(f, 0.0, 3)
+`);
+  assert.ok(msgs.some((m) =>
+    /markovchain: `f`'s body passes 3 positional arguments to `Normal`, which takes 2/.test(m)),
+    'expected a positional-arity refusal, got ' + JSON.stringify(msgs));
+});
+
+test('markovchain: an ARRAY-valued init is refused, not read element-wise',
+  async () => {
+  // §06 admits an array state; this engine lowers a scalar one. The refusal is
+  // the point: reading element 0 would silently lower a length-1 array init as
+  // a scalar, and lowering a length-3 one against a scalar step would be a
+  // shape lie. Both take the same named refusal.
+  for (const init of ['[2.0]', '[1.0, 2.0, 3.0]']) {
+    const ctx = makeCtx(`
+f = fn(Normal(mu = _, sigma = 0.5))
+traj = markovchain(f, ${init}, 2)
+`, 500);
+    await assert.rejects(
+      () => ctx.getMeasure('traj'),
+      /markovchain: `init` resolved to \[\d+\] \(expected a scalar or one value per atom\)/,
+      `array init ${init} must be refused by name`);
+  }
+});
+
+test('markovchain: a RECORD init — §06\'s table-trajectory case — is refused',
+  async () => {
+  // §06: "If `init` and `traj[i]` are records, then the trajectories are
+  // tables, not arrays." That state shape is spec-admitted and NOT implemented
+  // here, so it must be a named refusal rather than a wrong array. Pinned so
+  // the gap is visible in the suite and not merely in a TODO.
+  const ctx = makeCtx(`
+f = fn(Normal(mu = _, sigma = 0.5))
+traj = markovchain(f, record(a = 1.0), 2)
+`, 500);
+  await assert.rejects(
+    () => ctx.getMeasure('traj'),
+    /markovchain: `init` resolved to object \(expected a scalar or one value per atom\)/);
+});
+
+test('markovchain: a vector step parameter is refused at the step it breaks',
+  async () => {
+  // The step kernel's parameters must resolve per atom. A vector `sigma` is an
+  // array-valued step this engine does not lower; the refusal names the step
+  // index and the parameter so the offending position is identifiable.
+  const ctx = makeCtx(`
+f = fn(Normal(mu = _, sigma = [1.0, 2.0]))
+traj = markovchain(f, 0.0, 2)
+`, 500);
+  await assert.rejects(
+    () => ctx.getMeasure('traj'),
+    /markovchain: step 1 param 'sigma' resolved to \[2\] \(expected a scalar or \[500\]\)/);
+});

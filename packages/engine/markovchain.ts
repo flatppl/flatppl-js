@@ -77,8 +77,11 @@ function _peelLawof(ir: any): any {
 
 /** REGISTRY param names for a distribution op, or [] when the sampler
  *  is not loadable (classify time). Null when the sampler is loaded and
- *  does not know the op. */
-function _distParamsOf(distOp: string): string[] | null {
+ *  does not know the op — which callers reach only through the
+ *  `SAMPLEABLE_DISTRIBUTIONS` gate, and every member of that set carries a
+ *  REGISTRY `params` list (checked: the set difference is empty), so there is
+ *  no loaded-but-unknown arm to write. */
+function _distParamsOf(distOp: string): string[] {
   let registry: any = null;
   try {
     const sampler = require('./sampler.ts');
@@ -86,9 +89,8 @@ function _distParamsOf(distOp: string): string[] | null {
       registry = sampler._internal.REGISTRY;
     }
   } catch (_) { /* classify-time conservatism */ }
-  if (!registry) return [];
-  const entry = registry[distOp];
-  return (entry && Array.isArray(entry.params)) ? entry.params : null;
+  const entry = registry && registry[distOp];
+  return (entry && Array.isArray(entry.params)) ? entry.params : [];
 }
 
 /**
@@ -133,9 +135,6 @@ function describeStepKernel(compIR: any, bindings: any): any {
     };
   }
   const distParams = _distParamsOf(dist.op);
-  if (distParams === null) {
-    return { reason: shownAs + '\'s body distribution `' + dist.op + '` is not sampleable' };
-  }
   // §05 lets a distribution take its parameters positionally
   // (`Normal(x, sqrt(2*D*dt))`, the §06 markovchain example itself). Name them
   // from the REGISTRY order so the two execution paths only ever see kwargs.
@@ -196,7 +195,18 @@ function densityIR(d: any): any {
   return { kind: 'call', op: 'joint', args };
 }
 
-/** A scalar or per-atom value as a length-N column. Null when neither. */
+/**
+ * A scalar or per-atom value as a length-N column. Null when neither, which
+ * every caller turns into a located refusal.
+ *
+ * An atom-independent scalar arrives as a plain number (measured across the
+ * init spellings: a literal, a fixed binding ref, an arithmetic expression);
+ * only a per-atom quantity arrives as a Value, with shape [N]. A Value of any
+ * OTHER shape is an array-valued state or parameter, and this returns null for
+ * it rather than reading `data[0]` — reading element 0 of a length-1 array
+ * would silently lower `markovchain(f, [2.0], n)`, an ARRAY state §06 admits
+ * and this engine does not implement, as though it were the scalar 2.0.
+ */
 function _asColumn(pv: any, N: number): Float64Array | null {
   if (typeof pv === 'number' || typeof pv === 'boolean') {
     const buf = new Float64Array(N);
@@ -204,14 +214,7 @@ function _asColumn(pv: any, N: number): Float64Array | null {
     return buf;
   }
   if (valueLib.isValue(pv)) {
-    const s = pv.shape;
-    if (s.length === 0 || (s.length === 1 && s[0] === 1)) {
-      const buf = new Float64Array(N);
-      buf.fill(pv.data[0]);
-      return buf;
-    }
-    if (s.length === 1 && s[0] === N) return pv.data;
-    return null;
+    return (pv.shape.length === 1 && pv.shape[0] === N) ? pv.data : null;
   }
   if (pv && pv.BYTES_PER_ELEMENT !== undefined && pv.length === N) return pv;
   return null;

@@ -5206,20 +5206,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // A markovchain trajectory is the product of its n transition measures
       // (spec §06 dependent composition), so the step kernel's class carries
       // to the trajectory exactly as `iid`'s base does — a probability kernel
-      // gives a probability measure. The kernel head is classified the way
-      // `broadcast` classifies its own: a §08 distribution name is
-      // normalized, a reified kernel through its body.
+      // gives a probability measure. The step is classified through its BODY.
+      //
+      // Unlike `broadcast` below, there is no bare-§08-distribution-name arm:
+      // `broadcast(Normal, mu = …, sigma = …)` is a canonical spelling, but a
+      // bare `Normal` is not a Markov kernel `(state) -> measure_over_state` —
+      // it takes two parameters, not one state — so the classifier refuses it
+      // and such an arm could only ever fire on a program that does not lower.
       case 'markovchain': {
-        const head = args[0];
-        let step = T.MASS_DEFERRED;
-        if (head && head.kind === 'ref' && builtins.DISTRIBUTIONS.has(head.name)) {
-          step = T.MASS_NORMALIZED;
-        } else {
-          const resolved = resolveBindingRefs(head);
-          if (resolved && resolved.kind === 'call' && resolved.body) {
-            step = massOfExpr(resolved.body);
-          }
-        }
+        const resolved = resolveBindingRefs(args[0]);
+        const step = (resolved && resolved.kind === 'call' && resolved.body)
+          ? massOfExpr(resolved.body)
+          : T.MASS_DEFERRED;
         return (step === T.MASS_NORMALIZED || step === T.MASS_NULL
           || step === T.MASS_FINITE || step === T.MASS_DEFERRED)
           ? step : T.MASS_UNKNOWN;
