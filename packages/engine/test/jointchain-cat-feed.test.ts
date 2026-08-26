@@ -140,8 +140,9 @@ ch = jointchain(Normal(mu = 0.0, sigma = 1.0), k1, k2)
 `;
 
 test('cat-fed 3-step chain: logdensityof is the product of the conditionals', async () => {
+  // The literal is §06's own: "logdensityof(jointchain(M, K), [a, b])".
   const ctx = setupCtx(CAT_CHAIN + `
-ld = logdensityof(ch, tuple(0.3, 0.7, 1.1))
+ld = logdensityof(ch, [0.3, 0.7, 1.1])
 `, 4, 3);
   const want = normLogpdf(0.3, 0.0, 1.0)
              + normLogpdf(0.7, 0.3, 1.0)
@@ -165,7 +166,10 @@ test('cat-fed 3-step chain: the sampled covariance matches the closed form',
     const N = 40000;
     const ctx = setupCtx(CAT_CHAIN, N, 5);
     const m = await ctx.getMeasure('ch');
-    assert.equal(m.shape, 'tuple', 'a positional chain retains a tuple variate');
+    // `shape: 'tuple'` is the materialiser's per-component sample CONTAINER,
+    // which positional `joint` uses too — not a claim about the variate
+    // domain, which §06 makes the `cat` (an array).
+    assert.equal(m.shape, 'tuple', 'a positional chain keeps per-component columns');
     const cols = m.elems.map((e: any) => e.samples);
     assert.equal(cols.length, 3);
     for (const c of cols) {

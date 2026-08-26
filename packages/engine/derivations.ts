@@ -4448,7 +4448,15 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             positionalArgs.push(kb);
             positionalPriorNames.push('s' + i);
           }
-          return { kind: 'call', op: 'joint', args: positionalArgs };
+          // `s{i}` names the chain's OWN i-th observed component, which
+          // walkJointFieldsOrPositional threads into the overlay as it
+          // consumes the value — there is nothing to feed. Declaring that on
+          // the node (the same contract markovchain.densityIR uses) keeps the
+          // CLM ⊆ check from classifying it as a boundary fed from the base
+          // measure, which is what left `iid(<positional chain>, n)` with no
+          // density path at all.
+          return { kind: 'call', op: 'joint', args: positionalArgs,
+                   selfThreaded: positionalPriorNames };
         }
         for (let i = 1; i < steps.length; i++) {
           const ke = kernelExpand(steps[i]);
@@ -4464,6 +4472,12 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             }
           }
         }
+        // NOT self-threaded, unlike the positional route above. The record
+        // route's fields reach `matScore` as DECLARED boundary inputs, and
+        // declaring them threaded only converts the corpus case
+        // `fragment/jointchain_chain3`'s loud "declared boundary input 'b'
+        // … feed gap" into a silent NaN — the overlay on this path does not
+        // supply them. Its feed gap stays pinned in TODO-flatppl-js.md.
         return { kind: 'call', op: 'joint', fields: outFields };
       }
       case 'weighted': {
