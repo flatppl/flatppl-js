@@ -47,13 +47,23 @@ function token(type: string, value: any, startLine: number, startCol: number, en
   };
 }
 
-// At the start of a line iff there's no preceding token on this line.
-// We track this through the emitted-token stream: a NEWLINE at the
-// tail means we're starting a fresh line; an empty stream means
-// start of source.
-function _atLineStart(tokens: any[]) {
-  if (tokens.length === 0) return true;
-  return tokens[tokens.length - 1].type === 'NEWLINE';
+// Spec §05 EBNF: a `###` / `%%%` fence is `HWS* "###" ...` — preceded on
+// its physical line by horizontal whitespace only. Scan the source
+// rather than the emitted tokens: inside an unclosed `(` or `[` no
+// NEWLINE token is emitted, so a token-based test would miss every
+// fence at depth > 0.
+function _atLineStart(source: string, pos: number) {
+  let p = pos - 1;
+  while (p >= 0 && (source[p] === ' ' || source[p] === '\t' || source[p] === '\r')) p--;
+  return p < 0 || source[p] === '\n';
+}
+
+// The remainder of the physical line from `pos` is horizontal
+// whitespace only (spec §05 EBNF: a fence line ends `HWS* Newline`).
+function _restOfLineBlank(source: string, pos: number) {
+  let p = pos;
+  while (p < source.length && (source[p] === ' ' || source[p] === '\t' || source[p] === '\r')) p++;
+  return p >= source.length || source[p] === '\n';
 }
 
 function isAlpha(ch: string) { return /[a-zA-Z]/.test(ch); }
@@ -117,16 +127,12 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
     //     newline-collapsing transport channels (spec §05 Statements:
     //     newlines and `;` are equivalent separators).
     if (ch === '#') {
-      // Block-comment fence detection: `###` AT THE START OF A LINE
-      // (only horizontal whitespace before it on the line). We
-      // approximate "start of line" by checking that the previous
-      // emitted token is NEWLINE (or there is no previous token —
-      // start of source). Tab/space already consumed by the
-      // whitespace branch above; line/col still point at the `#`.
+      // Block-comment fence detection: `###` ALONE ON A LINE — spec
+      // §05 EBNF `HWS* "###" HWS* Newline`. Anything else on the line
+      // (a decorative `### Section ###`) is a line comment.
       if (peek(1) === '#' && peek(2) === '#'
-          && (peek(3) === '\n' || peek(3) === '' ||
-              (peek(3) === ' ' || peek(3) === '\t'))
-          && _atLineStart(tokens)) {
+          && _atLineStart(source, pos)
+          && _restOfLineBlank(source, pos + 3)) {
         // Consume the opening fence and any trailing whitespace
         // through the newline.
         advance(); advance(); advance();
@@ -183,7 +189,7 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
       // `###`). The closing fence is `%%%` on its own line — content
       // tag (`%%%md`, `%%%typ`) appears only at the opening fence.
       if (peek(1) === '%' && peek(2) === '%'
-          && _atLineStart(tokens)) {
+          && _atLineStart(source, pos)) {
         // Consume opening fence.
         advance(); advance(); advance();
         // Optional markup tag immediately after, no whitespace.
