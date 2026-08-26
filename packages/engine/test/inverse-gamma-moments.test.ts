@@ -140,6 +140,19 @@ test('#591: the STATIC form honours a {seed}-only options object — repeat '
   assert.notEqual(c, da, 'a different seed gives a different draw');
 });
 
+// _sharedPrng's third arm — neither `prng` nor `seed` given at all — is
+// dead from every engine-internal caller (sampler.ts always supplies
+// `{ prng }`), but the STATIC form's bare call (no trailing options object
+// at all) is still a supported call shape — it was before this fix too,
+// via the old inline `opts.prng || Math.random` — and must still draw off
+// Math.random rather than throw. (The PARAMETRIC form has no analogous
+// case: its one-argument detection requires that argument to already
+// carry `prng` or `seed` to be recognised as `opts` at all.)
+test('InverseGamma.randFn: a bare STATIC factory call with no options object at all still draws', () => {
+  const draw = INVGAMMA_RAND_FN.factory(3, 2)();
+  assert.ok(draw > 0, `draw ${draw} should be positive`);
+});
+
 test('#591: the PARAMETRIC form recognises and honours a {seed}-only options object', () => {
   const pa = INVGAMMA_RAND_FN.factory({ seed: 555 });
   const pb = INVGAMMA_RAND_FN.factory({ seed: 555 });
