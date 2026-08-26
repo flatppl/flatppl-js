@@ -245,6 +245,12 @@
           "type": "boolean",
           "default": false,
           "markdownDescription": "Show each binding's inferred type as a CodeLens (`| type`) on the line above it. Off by default. Toggle with the editor-title button or the `FlatPPL: Toggle Inference Display` command.\n\n**Note:** this flag controls *display only*. When off, the language server still computes the inferred types (it just isn't shown). Disabling the inference computation itself is a separate, future server-side change."
+        },
+        "flatppl.diagnostics.exclude": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["fixtures"],
+          "markdownDescription": "Directory names pruned from the language server's workspace scan, so `.flatppl` files under them never get diagnostics published in the Problems panel — useful for fixture/test corpora that are deliberately invalid models, not user errors. Matches a directory by its exact name at any depth (e.g. `fixtures` matches `packages/engine/test/fixtures`). `node_modules` is always pruned regardless of this setting. Changes restart the language server."
         }
       }
     },

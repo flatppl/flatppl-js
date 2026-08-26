@@ -15,11 +15,16 @@ import {
 
 const OUTPUT_CHANNEL = 'FlatPPL Language Server';
 
-/** Build (but do not start) the LanguageClient for the resolved binary and
- *  the catalogues read from the configured directory. */
+/** Build (but do not start) the LanguageClient for the resolved binary, the
+ *  catalogues read from the configured directory, and the workspace-scan
+ *  exclusions from `flatppl.diagnostics.exclude` (directory names pruned
+ *  from the server's diagnostics — fixture/test corpora are often
+ *  deliberately invalid, not user errors; the server always prunes
+ *  `node_modules` regardless of this list). */
 export function createClient(
   serverPath: string,
   catalogues: string[],
+  diagnosticsExclude: string[],
 ): LanguageClient {
   const serverOptions: ServerOptions = {
     command: serverPath,
@@ -27,7 +32,7 @@ export function createClient(
   };
   const clientOptions: LanguageClientOptions = {
     documentSelector: [{ scheme: 'file', language: 'flatppl' }],
-    initializationOptions: { catalogues },
+    initializationOptions: { catalogues, diagnosticsExclude },
     outputChannelName: OUTPUT_CHANNEL,
   };
   return new LanguageClient(
@@ -66,6 +71,7 @@ export function createLspManager(
     const cfg = vscode.workspace.getConfiguration('flatppl');
     const serverPathSetting = cfg.get<string>('server.path', '');
     const cataloguesDir = cfg.get<string>('catalogues.path', '');
+    const diagnosticsExclude = cfg.get<string[]>('diagnostics.exclude', ['fixtures']);
     let bin: { path: string; source: string };
     try {
       bin = resolveServerBinary(extRoot, serverPathSetting, process.platform, process.arch);
@@ -78,7 +84,7 @@ export function createLspManager(
     const catalogues = readCatalogues(cataloguesDir, (m) =>
       vscode.window.showWarningMessage(`FlatPPL: ${m}`),
     );
-    const c = createClient(bin.path, catalogues);
+    const c = createClient(bin.path, catalogues, diagnosticsExclude);
     try {
       await c.start();
       client = c;
