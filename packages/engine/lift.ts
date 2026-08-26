@@ -481,6 +481,14 @@ function liftInlineSubexpressions(bindings: any) {
     do { n = '__ms_raised_' + (raisedCounter++); } while (out.has(n));
     return n;
   }
+  // Hoisted composed tensor bases (`(p1 + p2)[.mu_]`) — the cascade keys
+  // on a name, so a non-Identifier base needs one.
+  let msBaseCounter = 0;
+  function freshMsBaseName() {
+    let n: string;
+    do { n = '__ms_base_' + (msBaseCounter++); } while (out.has(n));
+    return n;
+  }
   // Hidden binding for the main aggregate when a raise cascade follows
   // (so the user's RHS gets redirected to the final raise step).
   let mainCounter = 0;
@@ -1709,25 +1717,50 @@ function liftInlineSubexpressions(bindings: any) {
       return prevIdent;
     }
 
+    // Hoist a composed (non-Identifier) tensor base into its own
+    // synthetic binding so emitMixedCascade has a name to key on.
+    // Structurally identical bases share one binding, which also keeps
+    // the cascade CSE effective across repeated accesses.
+    const baseCSE = new Map<string, any>();
+    function containsAxisRef(n: any): boolean {
+      if (!n || typeof n !== 'object') return false;
+      if (Array.isArray(n)) return n.some(containsAxisRef);
+      if (n.type === 'AxisRef') return true;
+      for (const k of Object.keys(n)) {
+        if (k === 'loc') continue;
+        if (containsAxisRef(n[k])) return true;
+      }
+      return false;
+    }
+    function baseStructuralKey(n: any): string {
+      return JSON.stringify(n, (k, v) => (k === 'loc' ? undefined : v));
+    }
+    function hoistComposedBase(objectNode: any, anchorLoc: any): any {
+      const key = baseStructuralKey(objectNode);
+      const cached = baseCSE.get(key);
+      if (cached) return cached;
+      const name = freshMsBaseName();
+      out.set(name, makeSyntheticBinding(name, objectNode));
+      const ident = makeIdent(name, anchorLoc);
+      baseCSE.set(key, ident);
+      return ident;
+    }
+
     // ─── STEP 6: body rewrite ──────────────────────────────────────
     // Deep-walk the body, cloning as we go (the source AST stays
-    // untouched). For each IndexExpr with any lower-variance index AND
-    // an Identifier source, emit (or look up) a mixed cascade and
-    // replace the IndexExpr with `__ms_mixed_N[bare_axes]`. Other
-    // AxisRef occurrences lose their variance markers. Nested
-    // aggregate/metricsum subtrees pass through verbatim.
+    // untouched). For each IndexExpr with any lower-variance index,
+    // emit (or look up) a mixed cascade and replace the IndexExpr with
+    // `__ms_mixed_N[bare_axes]`. Other AxisRef occurrences lose their
+    // variance markers. Nested aggregate/metricsum subtrees pass
+    // through verbatim.
     function rewriteBody(n: any): any {
       if (!n) return n;
       if (Array.isArray(n)) return n.map(rewriteBody);
       if (typeof n !== 'object') return n;
-      // IndexExpr with a lower-variance axis: cascade-rewrite if the
-      // source is an Identifier. (Non-Identifier sources fall through
-      // to default recurse — variance markers are stripped, but no
-      // metric factor is inserted; the analyzer / spec discourage
-      // non-Identifier tensor sources in metricsum bodies, so this is
-      // a documented best-effort path.)
-      if (n.type === 'IndexExpr' && n.object && n.object.type === 'Identifier'
-          && Array.isArray(n.indices)) {
+      // IndexExpr with a lower-variance axis. A non-Identifier source
+      // is hoisted first; skipping the cascade instead would silently
+      // drop the inv(metric) contraction the spec mandates.
+      if (n.type === 'IndexExpr' && n.object && Array.isArray(n.indices)) {
         let hasLower = false;
         for (const idx of n.indices) {
           if (idx && idx.type === 'AxisRef' && idx.variance === 'lower') {
@@ -1735,7 +1768,18 @@ function liftInlineSubexpressions(bindings: any) {
           }
         }
         if (hasLower && gDownIdent) {
-          const mixedIdent = emitMixedCascade(n.object, n.indices, n.loc);
+          let sourceIdent = n.object;
+          if (sourceIdent.type !== 'Identifier') {
+            // A base mentioning an axis of this metricsum cannot leave
+            // the aggregate scope, so it cannot be hoisted.
+            if (containsAxisRef(sourceIdent)) {
+              throw new Error(
+                'metricsum: a tensor base indexed with a lower-variance axis '
+                + 'may not itself mention an axis name');
+            }
+            sourceIdent = hoistComposedBase(cloneAst(sourceIdent), n.loc);
+          }
+          const mixedIdent = emitMixedCascade(sourceIdent, n.indices, n.loc);
           const bareIndices = n.indices.map((idx: any) => {
             if (idx && idx.type === 'AxisRef') {
               return makeAxisRef(idx.name, idx.loc);
