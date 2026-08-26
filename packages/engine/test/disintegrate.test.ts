@@ -389,3 +389,46 @@ fk, pr = disintegrate("a", m)
     if (n.id !== 'fk') assert.equal(n.isBoundary, false);
   }
 });
+
+// ── arity diagnostic: a single-target destructure silently discarded the
+// forward kernel and typed `kind: 'deferred'` with ZERO diagnostics (see
+// mass-published-object.test.ts). disintegrate produces 2 values
+// (kernel, base_measure) per spec §06 "Structural disintegration"; a
+// destructure with any other target count must be a located error.
+
+test('disintegrate: single-target destructure is a located error, not a '
+  + 'silent deferred', () => {
+  const src = 'u ~ Normal(mu = 0.0, sigma = 1.0)\n'
+    + 'x ~ Normal(mu = u, sigma = 1.0)\n'
+    + 'joint_model = lawof(record(obs = x, u = u))\n'
+    + 'm = disintegrate("obs", joint_model)\n';
+  const { diagnostics } = processSource(src);
+  const errors = diagnostics.filter((d: any) => d.severity === 'error');
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /disintegrate/);
+  assert.match(errors[0].message, /2/); // produced arity
+  assert.match(errors[0].message, /1/); // target count
+  assert.ok(errors[0].loc, 'diagnostic must be located');
+});
+
+test('disintegrate: a three-target destructure is also a located arity error', () => {
+  const src = 'u ~ Normal(mu = 0.0, sigma = 1.0)\n'
+    + 'x ~ Normal(mu = u, sigma = 1.0)\n'
+    + 'joint_model = lawof(record(obs = x, u = u))\n'
+    + 'fk, m, extra = disintegrate("obs", joint_model)\n';
+  const { diagnostics } = processSource(src);
+  const errors = diagnostics.filter((d: any) => d.severity === 'error');
+  assert.ok(errors.some((e: any) => /disintegrate/.test(e.message) && /3/.test(e.message)),
+    'got: ' + errors.map((e: any) => e.message).join(' | '));
+});
+
+test('disintegrate: the well-formed two-target spelling stays clean', () => {
+  const src = 'u ~ Normal(mu = 0.0, sigma = 1.0)\n'
+    + 'x ~ Normal(mu = u, sigma = 1.0)\n'
+    + 'joint_model = lawof(record(obs = x, u = u))\n'
+    + 'fk, m = disintegrate("obs", joint_model)\n';
+  const { diagnostics, bindings } = processSource(src);
+  assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);
+  assert.equal(bindings.get('fk').type, 'kernelof');
+  assert.equal(bindings.get('m').type, 'lawof');
+});
