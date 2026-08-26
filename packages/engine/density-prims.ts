@@ -846,6 +846,7 @@ function multivariateShape(kernelName: string) {
 // open follow-ups.
 
 const T = require('./types.ts');
+const SC = require('./shape-contract.ts');
 
 type StaticRest = any | null;
 interface StaticConsumeResult {
@@ -1235,6 +1236,14 @@ interface ChainCompositionResult {
    *  Empty when the chain types cleanly. Caller pushes these into
    *  its own diagnostics stream. */
   diagnostics: any[];
+  /** The value type fed INTO each step, indexed by step. Slot 0 is
+   *  always undefined (step 0 consumes nothing from the chain), as is
+   *  any slot whose step is a closed kernel. For the kernel modes this
+   *  is the `cat` of every variate to the step's left — the type its
+   *  inputs bind against. Callers use it to re-check a step's body
+   *  against what the chain actually feeds it; see typeinfer's
+   *  `checkChainStepBodies`. */
+  boundaryTypes?: any[];
 }
 
 /**
@@ -1246,7 +1255,15 @@ interface ChainCompositionResult {
  * matches positionally against any compatible result type.
  */
 function _matchChainBoundary(prevResult: any, nextInputs: any[]) {
-  // Single-input boundary: positional match, any compatible type.
+  // Single-input boundary: positional match, any compatible type. §06
+  // dependent composition binds the whole value here. A RECORD result ought
+  // to splat by field name even into a lone input (§04
+  // sec:calling-convention: "A sole positional record or table therefore
+  // always splats"), but the chain materialiser does not implement that feed
+  // — it binds the record whole and the draw comes out NaN. Typing it as the
+  // whole-value bind is what makes the body re-check in typeinfer's
+  // `checkChainStepBodies` report a located error instead. Recorded as a
+  // conformance gap in flatppl-dev/TODO-flatppl-js.md.
   if (nextInputs.length === 1) {
     const s = T.unify(nextInputs[0].type, prevResult, new Map());
     if (s == null) {
@@ -1371,17 +1388,39 @@ function _inferKernelChain(
       return { resultType: T.failed(mode + ' non-kernel step'), diagnostics };
     }
   }
-  // Boundary walk: step_i's variate → step_{i+1}'s inputs. Same matcher
-  // as fchain's, applied at the value level (the measure's domain).
+  // Boundary walk: the variates of steps 0..i → step_{i+1}'s inputs. Same
+  // matcher as fchain's, applied at the value level (the measure's domain).
   // A nullary next-step (measure-typed or kernel with empty inputs) is
   // a closed kernel — no boundary match required; the next step
   // produces a measure regardless of the prior step's variate.
+  //
+  // Step i+1 consumes the `cat` of EVERY variate to its left, not just step
+  // i's: spec §06 dependent composition lowers `kchain(M1, K2, K3)` to
+  // `a ~ M1; b ~ K2(a); c ~ K3([a, b])`. Typing the boundary as step i's
+  // variate alone made a scalar-named single-input third step type-check
+  // against a real while the materialiser fed it the whole `[a, b]` pair,
+  // which reached the distribution as a vector parameter and sampled NaN.
+  //
+  // The cat is applied to the POSITIONAL MARGINAL chain only, because that is
+  // where the materialiser feeds the cat (`derivations.ts` rewires the final
+  // kernel's hole to the cat over the retained history's variate names). The
+  // retain chain does NOT: it threads the previous variate alone, which is
+  // what `test/fixtures/hierarchical-state-space.flatppl` relies on — a
+  // 4-step positional `jointchain` of one-input AR-1 kernels whose calibration
+  // `test/hierarchical-models.test.ts` pins against the random-walk variance
+  // sigma_init² + k·sigma_step². §06 gives kchain and jointchain the SAME
+  // `c ~ K3([a, b])` lowering, so one of the two feeds is non-conformant; the
+  // labelled form feeds by label name and models neither. Which way the
+  // retain chain should move (and whether that fixture wants `markovchain`)
+  // is a spec-owner call, recorded in flatppl-dev/TODO-flatppl-js.md — not
+  // something to change as a side effect of the arity fix here.
+  const catBoundary = mode === 'kchain-marginal' && !labels;
+  const leftVariates: any[] = [];
+  const boundaryTypes: any[] = new Array(steps.length);
   for (let i = 0; i < steps.length - 1; i++) {
     const next = steps[i + 1];
-    const nextInputs = (next.type.kind === 'kernel' && next.type.inputs) || [];
-    if (nextInputs.length === 0) continue;     // closed kernel — no binding
-    const prevVariate = _chainStepVariate(steps[i].type);
-    if (prevVariate == null) {
+    const stepVariate = _chainStepVariate(steps[i].type);
+    if (stepVariate == null) {
       diagnostics.push({
         severity: 'error',
         message: mode + ' ' + _stepLabel(steps[i], i)
@@ -1390,6 +1429,35 @@ function _inferKernelChain(
       });
       return { resultType: T.failed(mode + ' unresolved variate'), diagnostics };
     }
+    leftVariates.push(stepVariate);
+    const nextInputs = (next.type.kind === 'kernel' && next.type.inputs) || [];
+    if (nextInputs.length === 0) continue;     // closed kernel — no binding
+    // One variate to the left feeds as itself; two or more feed as their
+    // `cat` — a flat vector for scalar/vector variates, a merged record for
+    // record variates, which is what auto-splats by field name.
+    let prevVariate: any;
+    if (!catBoundary || leftVariates.length === 1) {
+      prevVariate = stepVariate;
+    } else {
+      prevVariate = SC.typeOfShape(SC.catShape(leftVariates));
+      if (prevVariate == null) {
+        diagnostics.push({
+          severity: 'error',
+          message: mode + ' step boundary ' + i + ' → ' + (i + 1) + ': the '
+                 + 'variates to the left of ' + _stepLabel(next, i + 1)
+                 + ' do not `cat` — they must be all scalar, all vector, or '
+                 + 'all record with distinct field names (spec §06 dependent '
+                 + 'composition)',
+          loc: next.loc || steps[i].loc,
+        });
+        return { resultType: T.failed(mode + ' uncattable boundary'),
+                 diagnostics };
+      }
+    }
+    // Only the cat-fed chain publishes a fed type. Elsewhere the fed value is
+    // not what this walk computes (see `catBoundary`), so a body re-check
+    // against it would be checking the wrong thing.
+    if (catBoundary) boundaryTypes[i + 1] = prevVariate;
     const m = _matchChainBoundary(prevVariate, nextInputs);
     if (!m.ok) {
       diagnostics.push({
@@ -1438,7 +1506,7 @@ function _inferKernelChain(
   const result = residual.length === 0
     ? T.measure(resultVariate)
     : T.kernelType(residual, T.measure(resultVariate));
-  return { resultType: result, diagnostics };
+  return { resultType: result, diagnostics, boundaryTypes };
 }
 
 /**
