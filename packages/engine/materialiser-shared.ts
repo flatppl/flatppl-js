@@ -327,8 +327,24 @@ function tileMeasureAtomMajor(m: any, N: number, k: number): any {
  * remembering setEnv-merge was exactly the distributed-responsibility
  * anti-pattern engine-concepts §11 calls out.
  */
+// Names appearing as an `aggregate` reduction head anywhere in `ir`. The head
+// is a builtin reducer reference, not a value ref.
+function _aggregateHeadNames(ir: any, into?: Set<string>): Set<string> {
+  const out = into || new Set<string>();
+  if (!ir || typeof ir !== 'object') return out;
+  if (Array.isArray(ir)) { ir.forEach((n) => _aggregateHeadNames(n, out)); return out; }
+  if (ir.kind === 'call' && ir.op === 'aggregate'
+      && Array.isArray(ir.args) && ir.args.length > 0) {
+    const head = ir.args[0];
+    if (head && head.kind === 'ref' && head.name) out.add(head.name);
+  }
+  for (const k in ir) _aggregateHeadNames(ir[k], out);
+  return out;
+}
+
 function collectRefArrays(ir: any, ctx: any) {
   const refs = orchestrator.collectSelfRefs(ir);
+  const aggregateHeadNames = _aggregateHeadNames(ir);
   const names: string[] = [];
   const fixedEnv: Record<string, any> = {};
   let anyFixed = false;
@@ -356,6 +372,15 @@ function collectRefArrays(ir: any, ctx: any) {
       anyFixed = true;
       return;
     }
+    // An aggregate's REDUCER (`sum`, `prod`, …) reaches collectSelfRefs as a
+    // ref, but it is a builtin with no binding: the aggregate evaluator
+    // resolves it, and getMeasure would throw "no derivation for 'sum'". Skip
+    // it — the same exemption derivationRefsValid applies to a callable head.
+    // Narrowed to heads that name NO binding on purpose: a name carrying a
+    // derivation but no binding is a synthetic CLM step variate (s0, s1, …)
+    // that must still be materialised.
+    if (aggregateHeadNames.has(n)
+        && !(ctx && ctx.bindings && ctx.bindings.has(n))) return;
     names.push(n);
   });
   const preFlight = anyFixed ? pushFixedEnv(ctx, fixedEnv) : Promise.resolve();

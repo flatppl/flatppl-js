@@ -662,6 +662,17 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
       // specialiser fires, fall through to the generic
       // `_evalAggregateBroadcastReduceN` lowering.
       if (op === 'aggregate') {
+        // The lifter detects an atom-batched container by REF NAME
+        // (`_alignedTensorFromGet`), so an INLINE container expression whose
+        // elements depend on a per-atom ref — `[t, t^2][.i]`, the shape a
+        // reified weight body produces — is misread as atom-independent: it is
+        // evaluated once under the batched env and broadcast, which silently
+        // returns atom 0's value where an element is a bare batched ref and NaN
+        // where an element is computed. Route that shape to the per-atom
+        // evaluator, which handles it correctly at a per-atom cost.
+        if (_aggregateHasAtomDependentInlineContainer(ir, refArrays, overlay)) {
+          return _perAtomFallback(ir, refArrays, N, baseEnv, overlay);
+        }
         const agg = require('./sampler-aggregate.ts');
         const r = agg._tryBatchedAggregatePatterns(ir, refArrays, N, baseEnv, overlay);
         if (r !== null) return r;
@@ -830,6 +841,44 @@ function _batchedApproximation(op: any, ir: any, refArrays: any, N: any, baseEnv
   // Value, return a Value; if it was a bare Float64Array, return one.
   if (valueLib.isValue(xVal)) return valueLib.batchedScalar(out);
   return out;
+}
+
+// Does this aggregate index an INLINE container whose contents vary per atom?
+//
+// `_alignedTensorFromGet` recognises an atom-batched container only when the
+// container is a bare `self` ref it was told is atom-batched. Any other
+// container is treated as atom-independent, evaluated once, and broadcast with
+// stride 0. That is correct for a literal (`[1, 2][.i]`) and wrong for an inline
+// container built from per-atom values. Detect the wrong case by shape — an
+// indexed container that is not a bare ref, reaching a per-atom name — and let
+// the caller take the per-atom route.
+//
+// A name covered by `overlay` is atom-independent for this call (overlay wins
+// over refArrays), matching `_perAtomFallback`'s own accounting.
+function _aggregateHasAtomDependentInlineContainer(
+  ir: any, refArrays: any, overlay: any,
+): boolean {
+  const perAtom = refArrays ? Object.keys(refArrays).filter(
+    (k) => !(overlay && Object.prototype.hasOwnProperty.call(overlay, k))) : [];
+  if (perAtom.length === 0) return false;
+  const body = (ir.args || [])[2];
+  if (!body) return false;
+  let found = false;
+  (function scan(n: any): void {
+    if (found || n == null || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach(scan); return; }
+    if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')
+        && Array.isArray(n.args) && n.args.length > 0) {
+      const container = n.args[0];
+      const bareRef = container && container.kind === 'ref' && container.ns === 'self';
+      if (!bareRef) {
+        const refs = _subtreeRefNames(container);
+        for (const k of perAtom) if (refs.has(k)) { found = true; return; }
+      }
+    }
+    for (const k in n) scan(n[k]);
+  })(body);
+  return found;
 }
 
 // Referenced-name set of an IR subtree, memoised per node identity.
