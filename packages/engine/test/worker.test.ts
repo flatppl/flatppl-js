@@ -811,10 +811,11 @@ test('reductions: var of empty array → error (empty-array ruling)', () => {
   assert.match(r.message, /var: undefined for an empty array/);
 });
 
-test('reductions: var of single element → 0 (sample variance undefined for n=1)', () => {
+test('reductions: var of single element → error (undefined per spec §04)', () => {
   const w = createWorkerHandler();
   const r = w.handle({ type: 'evaluateN', ir: reductionIR('var', [42]), count: 1 });
-  assert.equal(r.samples[0], 0);
+  assert.equal(r.type, 'error');
+  assert.match(r.message, /var: undefined over a single element/);
 });
 
 test('reductions: maximum / minimum of length-1 array → that single value', () => {

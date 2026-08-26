@@ -28,6 +28,8 @@ const { processSource } = require('../index.ts');
 const { buildDerivations } = require('../orchestrator.ts');
 const T = require('../types.ts');
 const { toJS } = require('./_value-helpers.ts');
+const sampler = require('../sampler.ts');
+const ARITH_OPS = sampler._internal.ARITH_OPS;
 
 function infer(src: string) {
   const r = processSource(src);
@@ -281,6 +283,40 @@ s = std(events)
   assert.ok(Math.abs(v.a - (5 / 3)) < 1e-9);
   assert.ok(Math.abs(v.b - 0.0) < 1e-9);
   assert.ok(Math.abs(s.a - Math.sqrt(5 / 3)) < 1e-9);
+});
+
+// A length-1 table column is the same undefined case as the bare-array
+// head (spec §04 "Relationship to broadcasting": var/std "are undefined
+// over a single element"), so it throws rather than returning 0.
+//
+// Exercised directly against ARITH_OPS (as reductions-domains.test.ts
+// does for the bare head): the fixed-values pipeline's evaluation
+// (fixed-values.ts `_compute`) catches every error from evaluating a
+// binding's RHS and turns it into an uncached UNRESOLVED — a
+// pre-existing swallow (shared with the n=0 empty-array throw, and out
+// of scope here) that would silently drop the binding rather than
+// surface the error through `processSource` + `buildDerivations`.
+test('table: var / std over a single-row plain column throws (§04, undefined over a single element)', () => {
+  const events = {
+    __table__: true,
+    nrows: 1,
+    columns: { a: { shape: [1], data: Float64Array.from([42.0]) } },
+  };
+  assert.throws(() => ARITH_OPS.var(events), /var: undefined over a single element/);
+  assert.throws(() => ARITH_OPS.std(events), /std: undefined over a single element/);
+});
+
+test('table: var / std over a single-row array-valued (matrix-shaped) column throws (§04, undefined over a single element)', () => {
+  // A column whose per-row value is itself a vector: shape [nrows, cellLen].
+  // nrows = 1 routes through `_reduceRowAxis`, not the plain-column
+  // ARITH_OPS dispatch.
+  const events = {
+    __table__: true,
+    nrows: 1,
+    columns: { a: { shape: [1, 3], data: Float64Array.from([1.0, 2.0, 3.0]) } },
+  };
+  assert.throws(() => ARITH_OPS.var(events), /var: undefined over a single element/);
+  assert.throws(() => ARITH_OPS.std(events), /std: undefined over a single element/);
 });
 
 test('table: runtime — prod / maximum / minimum applied per column', () => {

@@ -202,19 +202,17 @@ test('maximum([]) = -Infinity, minimum([]) = +Infinity (lattice identities)', ()
 // Empty input — var / std have no count to divide by (empty-array
 // ruling): an error, not the 0/0 the formula would silently give.
 //
-// n = 1 stays 0 here, but that is a KNOWN §04 NONCONFORMANCE pinned as a
-// regression, not a ruled answer: "Relationship to broadcasting" states
-// var/std are undefined over a single element (§07's own formula is 0/0
-// there too), and 0 is the ddof=0 population estimator, not §07's ddof=1
-// sample estimator. Out of scope for the empty-array ruling (n = 0 only)
-// — see TODO-flatppl-js.md.
-test('var([]) / std([]) throw; var([x]) / std([x]) return 0 (§04 nonconformance, unchanged)', () => {
+// n = 1 also throws: §04 "Relationship to broadcasting" states var/std
+// "are undefined over a single element" (§07's own formula is 0/0
+// there too), so this is the same undefined case as n = 0, not a ruled
+// 0. Matches the Rust StableHLO emitter's n < 2 refusal.
+test('var([]) / std([]) throw (empty-array ruling); var([x]) / std([x]) throw (§04, undefined over a single element)', () => {
   const empty = { shape: [0], data: new Float64Array(0) };
   const one = { shape: [1], data: Float64Array.from([3.0]) };
   assert.throws(() => ARITH_OPS.var(empty), /var: undefined for an empty array/);
   assert.throws(() => ARITH_OPS.std(empty), /std: undefined for an empty array/);
-  assert.equal(ARITH_OPS.var(one), 0);
-  assert.equal(ARITH_OPS.std(one), 0);
+  assert.throws(() => ARITH_OPS.var(one), /var: undefined over a single element/);
+  assert.throws(() => ARITH_OPS.std(one), /std: undefined over a single element/);
 });
 
 // =====================================================================
