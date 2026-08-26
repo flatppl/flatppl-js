@@ -205,7 +205,7 @@ test('reif/phase: forward_kernel definition is fixed even with elementof formals
 const featureTest1Path = path.join(
   __dirname, '..', '..', 'web', 'demo', 'feature-test1.flatppl');
 
-test('e2e: feature-test1.flatppl analyzes with the expected invalid-* diagnostics', () => {
+test('e2e: feature-test1.flatppl analyzes with no error diagnostics', () => {
   if (!fs.existsSync(featureTest1Path)) {
     // Test inert if the demo file isn't reachable from the build root
     // (e.g. flatppl-js cloned standalone without sibling packages).
@@ -213,17 +213,9 @@ test('e2e: feature-test1.flatppl analyzes with the expected invalid-* diagnostic
   }
   const src = fs.readFileSync(featureTest1Path, 'utf8');
   const { diagnostics } = processSource(src);
-  // The file intentionally contains 3 invalid bindings (named with the
-  // `invalid*` prefix). The valid bindings must produce no errors.
-  // We accept the file's documented invalid forms (recorded as
-  // type/arity errors) and reject anything else.
   const errs = diagnostics.filter((d: any) => d.severity === 'error');
-  // Each of the three invalid_* bindings should yield exactly one
-  // diagnostic each. We don't pin exact messages (they may improve
-  // over time) but we pin the count: any new error coming from a
-  // *valid* binding would show up here as a regression.
-  assert.equal(errs.length, 3,
-    `expected exactly 3 errors from the file's three invalid bindings, got ${errs.length}:\n` +
+  assert.equal(errs.length, 0,
+    `expected no errors, got ${errs.length}:\n` +
     errs.map((d: any) => `  - ${d.message}`).join('\n'));
 });
 
