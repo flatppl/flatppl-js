@@ -469,8 +469,10 @@ export function materialiseAppliedKernelByName(ctx: Ctx, applied: any, count: nu
     },
     sendWorker:  function(m: any) { return sendWorker(ctx, m); },
     sampleCount: count,
+    // rootSeed only — the materialiser derives the two-lane PhiloxKey. The
+    // uint32 this used to also pass as `rootKey` pre-empted that derivation and
+    // keyed every stream from [0, 0], so the seed control had no effect here.
     rootSeed:    seed != null ? seed : ctx.rootSeed,
-    rootKey:     seed != null ? seed : ctx.rootSeed,
     rejectionBudget: ctx.REJECTION_BUDGET,
     inferenceOpts: ctx.inferenceOpts,
   };

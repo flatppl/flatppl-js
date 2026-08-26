@@ -28,8 +28,14 @@ const FIXTURE = path.join(__dirname, 'fixtures/baseline/eight-schools.flatppl');
 const SRC = fs.readFileSync(FIXTURE, 'utf8');
 
 // chains/warmup/draws large enough for eight-schools' half-Cauchy funnel (tau)
-// to settle within split-R̂ < 1.1 deterministically at this seed; ~1s runtime.
-const OPTS = { chains: 4, warmup: 3000, draws: 2000, seed: 7 };
+// to settle within split-R̂ < 1.1 deterministically at this seed.
+//
+// The earlier 3000/2000 budget was under-powered and only passed because
+// `_ensureRootKey` discarded a numeric `rootKey`, so every ctx ran the same
+// degenerate zero-key stream. On a genuinely seeded stream tau reaches only
+// R̂ = 1.21 at that budget; 6000/4000 reaches R̂ = 1.03 (mu 1.02, every theta
+// under 1.04) — the funnel needs the warmup, the sampler is not at fault.
+const OPTS = { chains: 4, warmup: 6000, draws: 4000, seed: 7 };
 
 test('backend:ram on eight-schools: acceptRate near target and split-R̂ < 1.1 for every latent', async () => {
   const { ctx } = ctxFor(SRC, 4000);
