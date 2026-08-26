@@ -412,7 +412,8 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   {
     const { inlineBoundaryDerivations } = require('./materialiser-shared.ts');
     const inlineCtx = { bindings, derivations };
-    for (const [, binding] of bindings) {
+    const selfContained = new Set<string>();
+    for (const [fnName, binding] of bindings) {
       // Only `functionof` bindings. A `kernelof` also lowers to an
       // `ir.op === 'functionof'` reified scope, but a reified kernel keeps
       // its body a bare ref by design — its boundaries are fed and its
@@ -428,9 +429,56 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
         const s = ir.paramSources[i];
         if (s && s.kind === 'binding') boundary.add(ir.params[i]);
       }
-      if (boundary.size === 0) continue;   // placeholder params: body already uses %local refs
+      if (boundary.size === 0) {
+        // Placeholder params (a user `(a, b) -> …`) normally leave `%local`
+        // refs in the body, so there is nothing to self-contain. The one
+        // exception is a body whose ROOT is a hoisted ref:
+        // `pw(mass, cost) = f(mass, cost)` stores body = `ref __anonK` with
+        // `__anonK = f(_mass_, _cost_)`, so the formals sit behind the ref and
+        // a consumer that binds them in the BODY (density.ts's walkWeighted)
+        // substitutes nothing and is left evaluating a bare measure-shaped
+        // ref. Unwrap the root ref chain only — deliberately NOT a deep walk.
+        // Inlining nested refs as well would splice a reified callable's
+        // traced subgraph into the body and expose intermediates that are only
+        // resolvable once that callable's own boundaries are bound.
+        const formals = new Set<string>(ir.params);
+        const newLocalBody = _unwrapHoistedFormalRoot(ir.body, formals, bindings, derivations);
+        if (newLocalBody !== ir.body) {
+          binding.ir = Object.assign({}, ir, { body: newLocalBody });
+          selfContained.add(fnName);
+        }
+        continue;
+      }
       const newBody = inlineBoundaryDerivations(ir.body, boundary, inlineCtx);
-      if (newBody !== ir.body) binding.ir = Object.assign({}, ir, { body: newBody });
+      if (newBody !== ir.body) {
+        binding.ir = Object.assign({}, ir, { body: newBody });
+        selfContained.add(fnName);
+      }
+    }
+
+    // Re-classify the reweighting bindings that read a body this pass just
+    // rewrote. Spec §06 lets `weighted`'s weight be "a function of the variate
+    // x of M", and spec §04 makes a reified `functionof` such a function — but
+    // the classification loop above ran BEFORE the inlining, so
+    // `_classifyWeightedByFunction` snapshotted the pre-inlining body. For a
+    // reified weight that body is a bare `ref <intermediate>` (e.g.
+    // `functionof(y, x = x)` with `y = x^2` stores `ref y`), so the parameter
+    // substitution matched nothing and the weight kept a ref to an
+    // intermediate whose own derivation the cascade-prune then dropped for
+    // referencing the parametric boundary — taking the weighted binding and
+    // every measure above it down with it. Re-classifying against the now
+    // self-contained body yields the same weightIR a user-authored
+    // `weighted(x -> …, M)` produces.
+    if (selfContained.size > 0) {
+      for (const [name, binding] of bindings) {
+        const ir = binding.ir;
+        if (!ir || ir.kind !== 'call') continue;
+        if (ir.op !== 'weighted' && ir.op !== 'logweighted') continue;
+        const w = Array.isArray(ir.args) && ir.args[0];
+        if (!w || w.kind !== 'ref' || w.ns !== 'self' || !selfContained.has(w.name)) continue;
+        const d = classifyDerivation(binding, bindings);
+        if (d) derivations[name] = d;
+      }
     }
   }
 
@@ -1042,6 +1090,61 @@ function classifyDerivation(
 
   // Reifications, modules, inputs, joints, likelihoods, bayesupdate: unsupported.
   return null;
+}
+
+// Unwrap the ROOT of a placeholder-param `functionof` body when
+// liftInlineSubexpressions hoisted that root to an anonymous binding —
+// `pw(mass, cost) = f(mass, cost)` stores body = `ref __anonK`. A consumer that
+// binds the function's formals in the body (density.ts's walkWeighted) needs
+// them visible there, so replace the root ref with its binding's IR.
+//
+// Only the root ref chain is unwrapped, and only while the binding it names
+// carries a formal. Nested refs are left alone on purpose: a ref inside the
+// resulting expression may name a reified callable's traced subgraph, whose
+// intermediates become resolvable only once that callable's own boundaries are
+// bound, so splicing them in would leave the body referring to bindings nothing
+// can resolve standalone.
+function _unwrapHoistedFormalRoot(
+  ir: any, formals: Set<string>, bindings: any, derivations: any,
+): any {
+  const carries = new Map<string, boolean>();
+  function mentionsFormal(name: string, seen: Set<string>): boolean {
+    if (carries.has(name)) return carries.get(name)!;
+    if (seen.has(name)) return false;
+    seen.add(name);
+    const b = bindings && bindings.get(name);
+    if (!b || !b.ir) return false;
+    let found = false;
+    (function scan(n: any): void {
+      if (found || n == null || typeof n !== 'object') return;
+      if (Array.isArray(n)) { n.forEach(scan); return; }
+      if (n.kind === 'ref' && n.ns === '%local' && formals.has(n.name)) { found = true; return; }
+      if (n.kind === 'ref' && n.ns === 'self' && n.name) {
+        if (mentionsFormal(n.name, seen)) found = true;
+        return;
+      }
+      for (const k in n) scan(n[k]);
+    })(b.ir);
+    carries.set(name, found);
+    return found;
+  }
+  let node = ir;
+  const seenRoots = new Set<string>();
+  while (node && node.kind === 'ref' && node.ns === 'self' && node.name) {
+    const name = node.name;
+    if (seenRoots.has(name)) break;             // cycle guard
+    seenRoots.add(name);
+    const drv = derivations
+      && Object.prototype.hasOwnProperty.call(derivations, name) ? derivations[name] : null;
+    // A measure or draw derivation must stay a ref for the density walker.
+    if (drv && drv.kind !== 'evaluate') break;
+    const target = bindings && bindings.get(name);
+    if (!target || !target.ir || target.ir.kind !== 'call') break;
+    if (target.ir.op === 'elementof' || target.ir.op === 'external') break;
+    if (!mentionsFormal(name, new Set())) break;
+    node = target.ir;
+  }
+  return node;
 }
 
 // =====================================================================
