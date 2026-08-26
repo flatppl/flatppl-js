@@ -10,7 +10,7 @@
 
 import { renderPlotForCurrent } from './render-plot.js';
 import { renderSampleStats } from './render-record.js';
-import { $, displayBindingName, esc, listScalarAxes } from './util.js';
+import { $, displayBindingName, esc, listScalarAxes, renderDocTitle } from './util.js';
 import { downloadMeasure } from './export-samples.js';
 /**
  * Return the analyzer-level error diagnostics that landed on a
@@ -322,6 +322,19 @@ export function renderPlotFrame(ctx: Ctx, opts: any) {
   el.style.padding = '10px';
   el.style.boxSizing = 'border-box';
   el.style.gap = '8px';
+
+  // Doc-comment math title: only occupies a slot when the currently
+  // plotted binding actually carries `$...$` content (rare in the
+  // corpus today) — a binding with no math gets no extra row and the
+  // pane looks exactly as before.
+  const titleEl = document.createElement('div');
+  titleEl.className = 'plot-frame-title';
+  titleEl.style.textAlign = 'center';
+  titleEl.style.flexShrink = '0';
+  titleEl.style.fontSize = '1.05em';
+  if (renderDocTitle(ctx, titleEl, ctx.currentPlotBindingName)) {
+    el.appendChild(titleEl);
+  }
 
   const hasToolbarLeft = opts.toolbarControls != null;
   const hasMeasureStats = opts.measure != null;
