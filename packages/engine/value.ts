@@ -663,6 +663,78 @@ function densify(v: any) {
 }
 
 // ---------------------------------------------------------------------
+// Uniform cell packing
+// ---------------------------------------------------------------------
+
+// Pack a flat, row-major list of per-cell Values into ONE contiguous
+// buffer, or refuse with null. The single implementation behind every
+// consumer that stacks cells into a shape-explicit Value: the broadcast
+// output stacker (`broadcast-shape.tryStackBroadcastCells`) and the array
+// literal (`ops-declarations._vectorLogical`). Callers own the outer
+// shape and any tag they put on the result; this owns the per-cell
+// contract.
+//
+// Returns `{ innerShape, innerLen, data, im? }` on success. `null` means
+// "these cells are not one Value" and the caller keeps its per-cell list.
+//
+// The four refusal and expansion rules, each one a defect that shipped
+// through a copy of this loop:
+//
+//   - A structured cell is densified first. The `struct` tag section
+//     above states the contract: "Any consumer without a structured
+//     fast-path calls `densify(v)` first". A diag-stored cell carries
+//     shape [n, n] with only n entries in `data`, so copying `data`
+//     straight into an n*n stride wrote the diagonal into the block's
+//     first ROW and left the rest zero.
+//   - A cell still SHORTER than its own shape after densify is a packed
+//     form this function cannot read. Refuse rather than zero-fill the
+//     tail.
+//   - A Klein-4 tag refuses. §03: "transposed vectors are a distinct
+//     type in FlatPPL"; §07 "Linear algebra": "The transpose of a vector
+//     is a transposed vector (see arrays), not a single-row matrix." A
+//     stack of transposed 3-vectors is not a [2, 3] Value, and a `t` tag
+//     on the stacked Value would claim matrix transpose instead.
+//   - `im` is all-or-nothing. Copying only `data` presented the real
+//     parts as the whole answer. Mixed real and complex cells are not
+//     representable in one Value, so they refuse rather than have the
+//     missing halves guessed as zero.
+function packUniformCells(cells: any[]): any {
+  if (cells.length === 0) return null;
+  const dense: any[] = new Array(cells.length);
+  for (let i = 0; i < cells.length; i++) {
+    if (!isValue(cells[i])) return null;
+    dense[i] = (cells[i].struct !== undefined) ? densify(cells[i]) : cells[i];
+  }
+  let innerShape: number[] | null = null;
+  let withIm = 0;
+  for (let i = 0; i < dense.length; i++) {
+    const c = dense[i];
+    if (c.t !== undefined) return null;
+    if (c.im instanceof Float64Array) withIm++;
+    const s = c.shape;
+    if (innerShape === null) innerShape = s;
+    else {
+      if (s.length !== innerShape.length) return null;
+      for (let a = 0; a < s.length; a++) if (s[a] !== innerShape[a]) return null;
+    }
+  }
+  if (withIm !== 0 && withIm !== dense.length) return null;
+  const innerLen = innerShape!.reduce((a: number, b: number) => a * b, 1);
+  for (let i = 0; i < dense.length; i++) {
+    if (dense[i].data.length !== innerLen) return null;
+  }
+  const data = new Float64Array(dense.length * innerLen);
+  for (let i = 0; i < dense.length; i++) data.set(dense[i].data, i * innerLen);
+  const out: any = { innerShape: innerShape!.slice(), innerLen, data };
+  if (withIm === dense.length) {
+    const im = new Float64Array(dense.length * innerLen);
+    for (let i = 0; i < dense.length; i++) im.set(dense[i].im, i * innerLen);
+    out.im = im;
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------
 // Complex Values (dtype: 'complex')
 // ---------------------------------------------------------------------
 //
@@ -1002,6 +1074,7 @@ module.exports = {
   isDiagStored: isDiagStored,
   diagMatrix: diagMatrix,
   densify: densify,
+  packUniformCells: packUniformCells,
   // tag-flipping operations (lazy; never touch data)
   transpose: transpose,
   adjoint: adjoint,
