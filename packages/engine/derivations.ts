@@ -523,6 +523,15 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     return (b && b.ir) || null;
   }
 
+  // Declared here (ahead of its other push sites below) so FixedValues
+  // can share it: a real evaluation throw (domain refusal, engine bug)
+  // becomes a diagnostic on the binding instead of a silent UNRESOLVED.
+  const diagnostics: any[] = [];
+  function bindingLoc(name: any) {
+    const b = bindings.get(name);
+    return (b && b.node && b.node.loc) || undefined;
+  }
+
   const fixedValues = new FixedValues({
     bindings,
     derivations,
@@ -532,6 +541,8 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     expandMeasureIR,
     collectSelfRefs,
     lowerExpr,
+    diagnostics,
+    bindingLoc,
   });
 
   // Second classification pass. Classifiers that depend on
@@ -573,7 +584,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // vanished — instead of the user hitting a confusing plot-time
   // error far from the cause. The broader stochastic-side overloading
   // is real debt tracked for the derivation-kind unification refactor.
-  const diagnostics: any[] = [];
+  // (`diagnostics` declared above, ahead of `fixedValues`.)
   // Binding types that are "legitimately underived" — they hold
   // first-class objects (callables, measures, likelihoods, raw
   // inputs) whose value isn't a sample-able derivation. The
@@ -585,10 +596,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     if (t === 'input' || t === 'lawof' || t === 'likelihood') return true;
     return isCallableLikeBindingType(t);
   }
-  function bindingLoc(name: any) {
-    const b = bindings.get(name);
-    return (b && b.node && b.node.loc) || undefined;
-  }
+  // (`bindingLoc` declared above, ahead of `fixedValues`.)
 
   // Cascade-prune: drop any derivation whose refs aren't satisfiable.
   // Runs AFTER pre-eval so refs to fixed-phase value bindings (whose

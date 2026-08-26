@@ -3415,10 +3415,18 @@ function evaluateCall(ir: any, env: any): any {
   // inside distribution parameters in the visualizer's scope. The
   // orchestrator should pre-evaluate those and supply concrete numbers
   // via env if the model uses them.
-  throw new Error(
+  //
+  // `flatpplUnresolvedRef`: this is a category error (a measure/kernel
+  // construction reached as a value, e.g. a disintegrate-synthesised
+  // `effectiveValue`), not a broken evaluation — fixed-values.ts's
+  // `_compute` reads this tag to keep it a silent UNRESOLVED rather than
+  // surfacing a diagnostic for an expression that was never a value.
+  const notAValue: any = new Error(
     `evaluateExpr: call op '${op}' not evaluable in sampler context — ` +
     `the orchestrator should pre-resolve this`
   );
+  notAValue.flatpplUnresolvedRef = true;
+  throw notAValue;
 }
 
 // Predicate guarding rnginit / rngstate: argument must be an iterable of
