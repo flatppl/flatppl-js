@@ -243,3 +243,113 @@ lp = logdensityof(m, [${x[0]}, ${x[1]}])
   assert.ok(Math.abs(lp.samples[0] - expected) < 1e-10,
     'got ' + lp.samples[0] + ', expected ' + expected);
 });
+
+// =====================================================================
+// Inline `rowstack([...])` cov whose rows are named vector bindings
+// =====================================================================
+//
+// The 5f-1 cov gate resolves `rowstack(<ArrayLiteral>)` to its inner
+// literal to check squareness. A row that is an Identifier rather than
+// a nested ArrayLiteral carries no visible shape, so the gate must
+// LOWER (the affine registry's Cholesky/matvec checks own a real
+// mismatch at runtime) instead of refusing the §22 rewrite. Refusing
+// left `m` unsamplable while `logdensityof(m, ...)` still scored, which
+// is the same model disagreeing with itself across the two paths.
+
+test('MvNormal: inline rowstack cov with named rows samples and scores', async () => {
+  // cov = [[2, 1], [1, 3]], det = 5. Oracle: Distributions.jl
+  // logpdf(MvNormal([0,0], [2 1; 1 3]), [1,1]) = -2.942596022626396,
+  // equal to the closed form -log(2π) - ½log 5 - 0.3.
+  const ctx = makeCtx(`
+r1 = [2.0, 1.0]
+r2 = [1.0, 3.0]
+mu = [0.0, 0.0]
+m = MvNormal(mu = mu, cov = rowstack([r1, r2]))
+lp = logdensityof(m, [1.0, 1.0])
+`);
+  const m = await ctx.getMeasure('m');
+  assert.deepEqual(m.value.shape, [SAMPLE_COUNT, 2]);
+  const meanHat = vecMean(m.samples, 2);
+  const covHat  = vecCov(m.samples, meanHat, 2);
+  // MC tolerances as in the literal-row cases above.
+  assert.ok(Math.abs(covHat[0] - 2.0) < 0.25, 'cov[0,0] off: ' + covHat[0]);
+  assert.ok(Math.abs(covHat[1] - 1.0) < 0.25, 'cov[0,1] off: ' + covHat[1]);
+  assert.ok(Math.abs(covHat[2] - 1.0) < 0.25, 'cov[1,0] off: ' + covHat[2]);
+  assert.ok(Math.abs(covHat[3] - 3.0) < 0.30, 'cov[1,1] off: ' + covHat[3]);
+
+  const lp = await ctx.getMeasure('lp');
+  const expected = -2.942596022626396;
+  assert.ok(Math.abs(lp.samples[0] - expected) < 1e-12,
+    'got ' + lp.samples[0] + ', expected ' + expected);
+});
+
+test('MvNormal: named-row rowstack cov agrees with the literal spelling', async () => {
+  // The two spellings denote the same matrix, so both the density and
+  // the sample stream must match atom for atom.
+  const named = makeCtx(`
+r1 = [2.0, 1.0]
+r2 = [1.0, 3.0]
+mu = [0.0, 0.0]
+m = MvNormal(mu = mu, cov = rowstack([r1, r2]))
+lp = logdensityof(m, [0.5, -0.5])
+`);
+  const literal = makeCtx(`
+mu = [0.0, 0.0]
+m = MvNormal(mu = mu, cov = rowstack([[2.0, 1.0], [1.0, 3.0]]))
+lp = logdensityof(m, [0.5, -0.5])
+`);
+  const a = await named.getMeasure('lp');
+  const b = await literal.getMeasure('lp');
+  // Oracle: logpdf(MvNormal([0,0], [2 1; 1 3]), [0.5,-0.5]).
+  assert.ok(Math.abs(a.samples[0] - (-2.817596022626396)) < 1e-12,
+    'named got ' + a.samples[0]);
+  assert.equal(a.samples[0], b.samples[0]);
+  const ma = await named.getMeasure('m');
+  const mb = await literal.getMeasure('m');
+  assert.deepEqual(Array.from(ma.samples.slice(0, 8)),
+                   Array.from(mb.samples.slice(0, 8)));
+});
+
+test('MvNormal: named-row rowstack cov, diagonal case equals product of Normals', async () => {
+  const ctx = makeCtx(`
+r1 = [2.0, 0.0]
+r2 = [0.0, 3.0]
+mu = [0.0, 0.0]
+m = MvNormal(mu = mu, cov = rowstack([r1, r2]))
+lp = logdensityof(m, [1.0, 1.0])
+`);
+  const lp = await ctx.getMeasure('lp');
+  function logN(x: number, mu: number, var_: number) {
+    return -0.5 * Math.log(2 * Math.PI * var_) - (x - mu) * (x - mu) / (2 * var_);
+  }
+  const expected = logN(1.0, 0.0, 2.0) + logN(1.0, 0.0, 3.0);
+  // Distributions.jl agrees to the bit: -3.1504234676900396.
+  assert.ok(Math.abs(expected - (-3.1504234676900396)) < 1e-12);
+  assert.ok(Math.abs(lp.samples[0] - expected) < 1e-12,
+    'got ' + lp.samples[0] + ', expected ' + expected);
+});
+
+test('MvNormal: a named row of the wrong length still refuses', async () => {
+  // r2 is length 3 against a length-2 mu. The gate cannot see this
+  // statically, so the refusal must come from the affine registry's
+  // runtime shape check rather than from a silently wrong number.
+  const ctx = makeCtx(`
+r1 = [2.0, 1.0]
+r2 = [1.0, 3.0, 0.5]
+mu = [0.0, 0.0]
+m = MvNormal(mu = mu, cov = rowstack([r1, r2]))
+`);
+  await assert.rejects(() => ctx.getMeasure('m'), /rowstack|shape|dimension|length|square/i);
+});
+
+test('MvNormal: a visibly non-square literal cov still refuses', async () => {
+  // rows = 2 matches mu's length, but each row holds 3 entries. The
+  // shape IS visible here, so the gate must keep refusing the §22
+  // rewrite rather than deferring to a runtime check.
+  const ctx = makeCtx(`
+mu = [0.0, 0.0]
+m = MvNormal(mu = mu, cov = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+`);
+  await assert.rejects(() => ctx.getMeasure('m'),
+    /not lowerable to pushfwd\(affine, iid\)/);
+});
