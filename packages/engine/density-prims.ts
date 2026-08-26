@@ -1401,20 +1401,21 @@ function _inferKernelChain(
   // against a real while the materialiser fed it the whole `[a, b]` pair,
   // which reached the distribution as a vector parameter and sampled NaN.
   //
-  // The cat is applied to the POSITIONAL MARGINAL chain only, because that is
-  // where the materialiser feeds the cat (`derivations.ts` rewires the final
-  // kernel's hole to the cat over the retained history's variate names). The
-  // retain chain does NOT: it threads the previous variate alone, which is
-  // what `test/fixtures/hierarchical-state-space.flatppl` relies on — a
-  // 4-step positional `jointchain` of one-input AR-1 kernels whose calibration
-  // `test/hierarchical-models.test.ts` pins against the random-walk variance
-  // sigma_init² + k·sigma_step². §06 gives kchain and jointchain the SAME
-  // `c ~ K3([a, b])` lowering, so one of the two feeds is non-conformant; the
-  // labelled form feeds by label name and models neither. Which way the
-  // retain chain should move (and whether that fixture wants `markovchain`)
-  // is a spec-owner call, recorded in flatppl-dev/TODO-flatppl-js.md — not
-  // something to change as a side effect of the arity fix here.
-  const catBoundary = mode === 'kchain-marginal' && !labels;
+  // BOTH positional chains cat. §06 gives kchain and jointchain one lowering
+  // — `kchain(M1, K2, K3)` and `jointchain(M1, K2, K3)` are both
+  // `a ~ M1; b ~ K2(a); c ~ K3([a, b])` — so the retain chain's former
+  // prev-only feed was the non-conformant half of that divergence. The bare
+  // positional retain path already fed the cat at runtime (`derivations.ts`
+  // rewireHole builds `vector(ref s0, …)` for ≥2 priors) and sampled NaN
+  // against a prev-only step body; typing the boundary as the cat is what
+  // turns that into a located error naming `markovchain` (below), which IS
+  // the construct for prev-only intent.
+  //
+  // The LABELLED form is excluded: §06's keyword form is
+  // `jointchain(relabel(M, ["name1"]), …)`, and a labelled component's
+  // variate binds to a kernel input by field name (§04 calling convention),
+  // not positionally off a cat.
+  const catBoundary = !labels;
   const leftVariates: any[] = [];
   const boundaryTypes: any[] = new Array(steps.length);
   for (let i = 0; i < steps.length - 1; i++) {

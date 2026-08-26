@@ -1993,7 +1993,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const r = densityPrims.inferChainComposition(steps, mode, { labels });
     for (const d of r.diagnostics) diagnostics.push(d);
     if (r.diagnostics.length === 0 && r.boundaryTypes) {
-      checkChainStepBodies(comps, steps, r.boundaryTypes, scopes);
+      checkChainStepBodies(comps, steps, r.boundaryTypes, scopes, opName);
     }
     return r.resultType;
   }
@@ -2015,7 +2015,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // Diagnostics that the definition-site pass already reported are
   // dropped, so a body error is reported once.
   function checkChainStepBodies(comps: any[], steps: any[],
-      boundaryTypes: any[], scopes: any) {
+      boundaryTypes: any[], scopes: any, opName: string) {
     for (let i = 1; i < comps.length; i++) {
       const fed = boundaryTypes[i];
       if (fed == null || fed.kind === 'deferred' || fed.kind === 'any') continue;
@@ -2032,11 +2032,30 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return !!(kw && ir.kwargs && ir.kwargs[kw]);
       });
       if (declared) continue;
-      const scope = _chainStepScope(params, paramKwargs, fed);
+      const scope = _chainStepScope(params, paramKwargs, fed, i >= 2);
       if (scope == null) continue;
       const before = diagnostics.length;
       inferExpr(ir.body, scopes.concat([scope]));
       _dropDuplicateDiagnostics(before);
+      // A step at index ≥ 2 is fed the CAT of two or more left variates, so
+      // "expects real, got array of real" here is almost always a step that
+      // meant the previous state alone. Name the construct that means that,
+      // or the reader sees only a shape mismatch they did not write.
+      if (i >= 2) _appendPrevOnlyHint(before, opName, i);
+    }
+  }
+
+  /** Append the `markovchain` route to every diagnostic the body re-check
+   *  just added. §06 gives `jointchain`/`kchain` the cat feed
+   *  (`c ~ K3([a, b])`) and gives `markovchain(kernel, init, n)` the
+   *  prev-only feed, so a prev-only step in a chain is a wrong-construct
+   *  error, not just a wrong-shape one. */
+  function _appendPrevOnlyHint(before: number, opName: string, i: number) {
+    for (let k = before; k < diagnostics.length; k++) {
+      diagnostics[k].message += ' — ' + opName + ' feeds step ' + i
+        + ' the `cat` of every variate to its left (spec §06 dependent '
+        + 'composition: `c ~ K3([a, b])`). A step that means the PREVIOUS '
+        + 'state alone is `markovchain(kernel, init, n)`';
     }
   }
 
@@ -2044,10 +2063,26 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
    *  fed type does not bind — in which case the boundary matcher has already
    *  reported it and there is nothing to re-check. Same split as the matcher:
    *  a lone input binds the whole fed value, two or more splat a record fed
-   *  type by field name. */
-  function _chainStepScope(params: any[], paramKwargs: any[], fed: any) {
+   *  type by field name.
+   *
+   *  `catOfMany` says the fed type is the `cat` of two or more left variates.
+   *  A record cat there splats into a LONE input by field name too (§04
+   *  sec:calling-convention: "A sole positional record or table therefore
+   *  always splats"), which is what the chain's runtime does — `bindKernel`
+   *  matches a param against the prior field names before treating it as a
+   *  hole. At the FIRST boundary the runtime binds the whole record instead,
+   *  so the whole-value bind stays the model there; that gap is pinned in
+   *  kchain-step-arity.test.ts. */
+  function _chainStepScope(params: any[], paramKwargs: any[], fed: any,
+      catOfMany: boolean) {
     const scope = new Map<string, any>();
     if (params.length === 1) {
+      const name = paramKwargs[0] || params[0];
+      if (catOfMany && fed.kind === 'record'
+          && Object.prototype.hasOwnProperty.call(fed.fields, name)) {
+        scope.set(params[0], fed.fields[name]);
+        return scope;
+      }
       scope.set(params[0], fed);
       return scope;
     }

@@ -289,91 +289,91 @@ test('joint-obs-regression: positional joint also classifies + materialises', as
 });
 
 // =====================================================================
-// 5. Jointchain-bodied composite kernel — hierarchical state-space (Phase 4.3)
+// 5. State-space AR-1 trajectory — `markovchain`
 // =====================================================================
 //
-// Per spec §06 jointchain is a Markov chain: step 0 is a base
-// measure; each step k > 0 applies a kernel to the previous variate.
-// Phase 4.3 lands the jointchain composite-body recogniser + the
-// `_executeJointChainComposite` execution path with per-step state
-// threading (step k's sampleN sees step k-1's per-atom column as a
-// refArray).
+// The fixture spelled this chain with a 4-component positional
+// `jointchain` of one-input AR-1 kernels. Spec §06 gives jointchain the
+// lowering `a ~ M; b ~ K1(a); c ~ K2([a, b])` — step i binds the `cat` of
+// every variate to its left — so a prev-only step is not expressible past
+// two components, and the engine now says so at the step's own location.
+// §06's construct for the prev-only feed is `markovchain(kernel, init, n)`:
+// "Step i is traj_i ~ kappa(traj_{i-1})".
 //
-// Fixture: AR-1 random walk per group, 3 transition steps. The
-// per-step variance follows the random walk formula
-// Var(x_k) ≈ sigma_init^2 + k * sigma_step^2 → with sigma_init=0.1,
-// sigma_step=0.5 the predicted values are {0.01, 0.26, 0.51, 0.76}.
-// Increments x_k - x_{k-1} are Normal(0, sigma_step) → sample
-// variance approaches 0.25.
+// The calibration is unchanged, because the law is unchanged. §06 makes
+// `init` a VALUE outside the trajectory, so a drawn init puts sigma_init^2
+// into every state:
+//   Var(traj[k])          = sigma_init^2 + k * sigma_step^2
+//   Cov(traj[j], traj[k]) = sigma_init^2 + min(j,k) * sigma_step^2
+// With sigma_init=0.1, sigma_step=0.5 → {0.26, 0.51, 0.76, 1.01}, and the
+// increments traj[k] - traj[k-1] are Normal(0, sigma_step) → variance 0.25.
 
-test('hierarchical-state-space: jointchain composite materialises (Phase 4.3)', async () => {
+test('state-space: markovchain AR-1 trajectory calibrates', async () => {
   const src = readFixture('hierarchical-state-space.flatppl');
-  const { ctx, derivations } = setupCtx(src, 500);
+  const { ctx, derivations } = setupCtx(src, 40000);
 
-  // Classify.
-  assert.ok(derivations.y,
-    'y has a derivation (classifier accepts jointchain-bodied user kernel)');
-  assert.equal(derivations.y.kind, 'kernelbroadcast',
-    'jointchain-bodied user kernel routes via matKernelBroadcast');
+  assert.ok(derivations.y, 'y has a derivation');
+  assert.equal(derivations.y.kind, 'markovchain',
+    'the prev-only chain routes via markovchain, not a jointchain composite');
 
-  // Materialise.
   const m = await ctx.getMeasure('y');
-  assert.deepEqual(m.value.shape, [500, 3, 4],
-    'state-space result shape: [N_atom, G, chain_length]');
+  const N = 40000, C = 4;
+  assert.equal(m.shape, 'array', 'the variate is an array of n states (§06)');
+  assert.equal(m.samples.length, N * C, 'n = 4 states per atom');
 
-  // No NaN.
-  for (let i = 0; i < m.value.data.length; i++) {
-    assert.ok(Number.isFinite(m.value.data[i]),
+  for (let i = 0; i < m.samples.length; i++) {
+    assert.ok(Number.isFinite(m.samples[i]),
       'y sample at flat index ' + i + ' is finite');
   }
 
-  // AR-1 calibration. The KEY conformance signal — state threading
-  // is correct iff the per-cell increments behave like AR-1
-  // increments AND the per-step marginal variance grows linearly.
-  const N = 500, G = 3, C = 4;
   const sigmaStep = 0.5, sigmaInit = 0.1;
-  const x0List = [0.0, 0.5, 1.0];
-  for (let g = 0; g < G; g++) {
-    // Step 0 marginal: mean ≈ x0_g, var ≈ sigma_init^2.
-    let sum0 = 0, sumSq0 = 0;
-    for (let i = 0; i < N; i++) {
-      const v = m.value.data[i * G * C + g * C + 0];
-      sum0 += v; sumSq0 += v * v;
-    }
-    const m0 = sum0 / N, v0 = sumSq0 / N - m0 * m0;
-    assert.ok(Math.abs(m0 - x0List[g]) < 0.05,
-      'group ' + g + ' step 0 mean (' + m0.toFixed(3)
-      + ') near x0=' + x0List[g]);
-    assert.ok(Math.abs(v0 - sigmaInit * sigmaInit) < 0.01,
-      'group ' + g + ' step 0 var (' + v0.toFixed(3)
-      + ') near sigma_init^2 = ' + (sigmaInit * sigmaInit));
+  const col = (k: number) => {
+    const out = new Float64Array(N);
+    for (let i = 0; i < N; i++) out[i] = m.samples[i * C + k];
+    return out;
+  };
+  const mean = (xs: Float64Array) => {
+    let s = 0;
+    for (let i = 0; i < xs.length; i++) s += xs[i];
+    return s / xs.length;
+  };
+  const cov = (xs: Float64Array, ys: Float64Array) => {
+    const mx = mean(xs), my = mean(ys);
+    let s = 0;
+    for (let i = 0; i < xs.length; i++) s += (xs[i] - mx) * (ys[i] - my);
+    return s / xs.length;
+  };
 
-    // Each transition step's increment distribution: per atom,
-    // delta = x_k - x_{k-1}. With state threading this is a fresh
-    // Normal(0, sigma_step) draw; the per-atom correlation between
-    // x_k and x_{k-1} carries the random walk.
-    for (let k = 1; k < C; k++) {
-      let dSum = 0, dSumSq = 0;
-      for (let i = 0; i < N; i++) {
-        const xk = m.value.data[i * G * C + g * C + k];
-        const xkm1 = m.value.data[i * G * C + g * C + (k - 1)];
-        dSum += (xk - xkm1);
-        dSumSq += (xk - xkm1) * (xk - xkm1);
-      }
-      const dMean = dSum / N;
-      const dVar = dSumSq / N - dMean * dMean;
-      assert.ok(Math.abs(dMean) < 0.08,
-        'group ' + g + ' step ' + k + ' increment mean ('
-        + dMean.toFixed(3) + ') near 0');
-      assert.ok(Math.abs(dVar - sigmaStep * sigmaStep) < 0.05,
-        'group ' + g + ' step ' + k + ' increment var ('
-        + dVar.toFixed(3) + ') near sigma_step^2 = '
-        + (sigmaStep * sigmaStep)
-        + ' — STATE THREADING ORACLE (a chain that drew steps '
-        + 'independently would have increment var ≈ sigma_step^2 + '
-        + 'Var(x_{k-1}) → much larger than 0.25 once k > 1)');
-    }
+  // Per-state marginal variance: sigma_init^2 + k * sigma_step^2, k = 1..4.
+  for (let k = 0; k < C; k++) {
+    const xs = col(k);
+    const want = sigmaInit * sigmaInit + (k + 1) * sigmaStep * sigmaStep;
+    const got = cov(xs, xs);
+    assert.ok(Math.abs(got - want) < 0.1 * want,
+      'Var(traj[' + (k + 1) + ']) ≈ ' + want.toFixed(2) + '; got ' + got.toFixed(3));
+    assert.ok(Math.abs(mean(xs)) < 0.05,
+      'E[traj[' + (k + 1) + ']] ≈ 0; got ' + mean(xs).toFixed(3));
   }
+
+  // Increments: the state-threading oracle. A chain that drew its steps
+  // independently would have increment variance sigma_step^2 +
+  // Var(traj[k-1]) — much larger than 0.25 once k > 1.
+  for (let k = 1; k < C; k++) {
+    const xk = col(k), xkm1 = col(k - 1);
+    const inc = new Float64Array(N);
+    for (let i = 0; i < N; i++) inc[i] = xk[i] - xkm1[i];
+    assert.ok(Math.abs(mean(inc)) < 0.03,
+      'increment ' + k + ' mean ≈ 0; got ' + mean(inc).toFixed(3));
+    const v = cov(inc, inc);
+    assert.ok(Math.abs(v - sigmaStep * sigmaStep) < 0.03,
+      'increment ' + k + ' var ≈ ' + (sigmaStep * sigmaStep) + '; got ' + v.toFixed(3)
+      + ' — STATE THREADING ORACLE');
+  }
+
+  // Cov(traj[1], traj[3]) = sigma_init^2 + 1 * sigma_step^2 = 0.26.
+  const c13 = cov(col(0), col(2));
+  assert.ok(Math.abs(c13 - 0.26) < 0.03,
+    'Cov(traj[1], traj[3]) ≈ 0.26; got ' + c13.toFixed(3));
 });
 
 // =====================================================================

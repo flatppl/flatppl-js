@@ -18,10 +18,9 @@
 //
 // (Var(init) = 0 for a literal init; sigma_init^2 when init is a draw.) That
 // second form is the SAME calibration `hierarchical-models.test.ts` pins for
-// `test/fixtures/hierarchical-state-space.flatppl`, which spells the chain
-// with `jointchain` because markovchain did not exist — see
-// TODO-flatppl-js.md. The fixture is left alone; this is the markovchain
-// spelling of the same law, so the two can be compared before any migration.
+// `test/fixtures/hierarchical-state-space.flatppl`, which now spells its
+// prev-only AR-1 chain with `markovchain` — a positional `jointchain` binds
+// the `cat` of every left variate (§06), so it cannot express that feed.
 //
 // The density is exact (no MC): §06 makes `init` a VALUE, so there is no base
 // term and logdensityof is the sum of exactly n Gaussian transition

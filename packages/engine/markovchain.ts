@@ -27,19 +27,14 @@
 // reusing the landed chain machinery was the first design tried. Three
 // measured facts ruled it out on this engine at `14d20337`:
 //
-//   1. A bare (non-broadcast) positional `jointchain` of ≥ 3 components
-//      samples NaN and scores NaN, for EVERY step spelling — `fn(_)`
-//      holes and by-name `kernelof(…, prev = prev)` alike. Its derivation
-//      declares step i's inputs as EVERY variate to its left
-//      (`inputs: ["s0","s1"]`), so the single-input step body receives the
-//      cat pair and the arithmetic goes NaN. That is the open jointchain
-//      half of the two-feeds divergence in TODO-flatppl-js.md, whose
-//      kchain half branch `kchain-inline-kernel-arity` fixed for the
-//      MARGINAL chain only. The one correct sequential executor today is
-//      `_executeJointChainComposite` (mat-broadcast.ts), reachable only
-//      through the kernel-broadcast path — which is why
-//      `test/fixtures/hierarchical-state-space.flatppl` samples calibrated
-//      while the same chain written bare does not.
+//   1. A positional `jointchain` cannot express a prev-only step past two
+//      components at all. §06 gives it the same lowering as kchain —
+//      `c ~ K3([a, b])` — so step i binds the `cat` of every variate to its
+//      left, which a prev-only step body cannot consume. That is now a
+//      located error naming this op (density-prims `catBoundary`,
+//      typeinfer `checkChainStepBodies`), and
+//      `test/fixtures/hierarchical-state-space.flatppl` is spelled with
+//      `markovchain` for exactly that reason.
 //   2. `jointchain` requires ≥ 2 components, so it cannot spell n = 1,
 //      which §06 admits (`n` is any positive integer).
 //   3. A positional `jointchain` retaining all its variates materialises

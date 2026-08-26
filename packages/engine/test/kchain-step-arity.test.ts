@@ -159,22 +159,21 @@ ch = kchain(Normal(0, 1), K1, K2)
   assert.ok(errs[0].loc && errs[0].loc.start, 'diagnostic must carry a location');
 });
 
-// The RETAIN chain keeps the previous-variate boundary. §06 gives kchain and
-// jointchain the same `c ~ K3([a, b])` lowering, but the materialiser threads
-// only the previous variate through a positional jointchain, which is what
-// `fixtures/hierarchical-state-space.flatppl` (a 4-step AR-1 walk of one-input
-// kernels) is calibrated on in `hierarchical-models.test.ts`. Typing that
-// boundary as the cat would reject a model the engine samples correctly, so
-// the cat rule stops at the marginal chain until the feed itself is settled.
-// The divergence is recorded in flatppl-dev/TODO-flatppl-js.md.
-test('scope: the retain chain keeps the previous-variate boundary', () => {
+// The RETAIN chain cats too. §06 gives kchain and jointchain the same
+// `c ~ K3([a, b])` lowering, so the same prev-only third step is the same
+// error under `jointchain`. The full jointchain treatment — every spelling,
+// the runtime, and the migrated fixture — is in jointchain-cat-feed.test.ts.
+test('the retain chain cats its left variates too', () => {
   const errs = errorsOf(`
 flatppl_compat = "0.1"
 K1 = a -> Normal(mu = a, sigma = 1)
 K2 = b -> Normal(mu = b, sigma = 1)
 ch = jointchain(Normal(0, 1), K1, K2)
 `);
-  assert.deepEqual(errs.map((d: any) => d.message), []);
+  assert.equal(errs.length, 1, JSON.stringify(errs.map((d: any) => d.message)));
+  assert.match(errs[0].message,
+    /Normal: kwarg "mu" expects real, got array of real \(length 2\)/);
+  assert.match(errs[0].message, /markovchain\(kernel, init, n\)/);
 });
 
 test('a 2-input third step names the cat as the fed type', () => {
