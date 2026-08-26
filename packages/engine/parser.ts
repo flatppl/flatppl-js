@@ -12,10 +12,19 @@ const AST = require('./ast.ts');
  * later commits in this series. `variant` is accepted (and ignored)
  * starting now so call sites can pass it without churn.
  */
-function parse(tokens: any[], variant: any) {
+function parse(tokensIn: any[], variant: any) {
   // Fall back to canonical FlatPPL when no variant supplied — keeps
   // existing call sites that pass only `tokens` working.
   const v = variant || require('./variants.ts').FLATPPL;
+
+  // Spec §05 Comments: both plain-comment forms are "discarded by the
+  // parser". A comment may therefore sit anywhere whitespace may sit,
+  // including mid-expression inside an unclosed `(` or `[`. Stripping
+  // COMMENT here — rather than at each grammar position — makes that
+  // uniform. Doc-comments (DOC_LINE / DOC_BLOCK) are semantic and stay
+  // in the stream.
+  const commentToks = tokensIn.filter((t: any) => t.type === T.COMMENT);
+  const tokens = tokensIn.filter((t: any) => t.type !== T.COMMENT);
 
   const diagnostics: any[] = [];
   let pos = 0;
@@ -47,10 +56,7 @@ function parse(tokens: any[], variant: any) {
   }
 
   function skipNewlines() {
-    while (at(T.NEWLINE) || at(T.COMMENT)) {
-      if (at(T.COMMENT)) advance(); // skip comments in body for now
-      else advance();
-    }
+    while (at(T.NEWLINE)) advance();
   }
 
   // Skip newlines + plain comments while collecting any leading
@@ -60,9 +66,8 @@ function parse(tokens: any[], variant: any) {
   function skipNewlinesCollectingDocs(): any | null {
     let leadingDoc: any | null = null;
     let leadingDocLoc: any | null = null;
-    while (at(T.NEWLINE) || at(T.COMMENT)
-           || at(T.DOC_LINE) || at(T.DOC_BLOCK)) {
-      if (at(T.COMMENT) || at(T.NEWLINE)) {
+    while (at(T.NEWLINE) || at(T.DOC_LINE) || at(T.DOC_BLOCK)) {
+      if (at(T.NEWLINE)) {
         advance();
         continue;
       }
@@ -1193,19 +1198,12 @@ function parse(tokens: any[], variant: any) {
 
   function parseProgram() {
     const body: any[] = [];
-    const comments: any[] = [];
+    const comments = commentToks.map((c: any) => AST.Comment(c.value, c.loc));
 
     // Collect a doc-comment that PRECEDES the first statement (leading
     // form), if any.
     let leadingDoc = skipNewlinesCollectingDocs();
     while (!at(T.EOF)) {
-      if (at(T.COMMENT)) {
-        const c = advance();
-        comments.push(AST.Comment(c.value, c.loc));
-        leadingDoc = skipNewlinesCollectingDocs() || leadingDoc;
-        continue;
-      }
-
       const stmt = parseStatement();
 
       // Trailing-doc check: a single-line `%` doc-comment right after
@@ -1251,10 +1249,10 @@ function parse(tokens: any[], variant: any) {
       leadingDoc = null;
       body.push(stmt);
 
-      // Expect newline / SEMI(already-NEWLINE) / EOF / COMMENT after
-      // statement (and now also DOC_*, which would have been the
-      // trailing form handled above; defensively swallow any here).
-      if (!at(T.NEWLINE) && !at(T.EOF) && !at(T.COMMENT)) {
+      // Expect newline / SEMI(already-NEWLINE) / EOF after statement
+      // (and now also DOC_*, which would have been the trailing form
+      // handled above; defensively swallow any here).
+      if (!at(T.NEWLINE) && !at(T.EOF)) {
         diagnostics.push({
           severity: 'error',
           message: `Expected end of line, got '${peek().value}'`,
