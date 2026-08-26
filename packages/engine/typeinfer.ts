@@ -1066,6 +1066,34 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       });
       return T.failed(op + ' arg 1');
     }
+    // §06 `weighted`: "f is a NON-NEGATIVE weight". A negative constant makes
+    // weighted(w, M) a signed set function, which has no density and no mass
+    // to normalize by — and the density walker used to map it to log 0, i.e.
+    // answer with the measure that has the component DELETED. Only `weighted`
+    // is checked: a `logweighted` weight is exp(logweight), so a negative
+    // log-weight is an ordinary weight below one.
+    //
+    // A written `-0.3` arrives here as a `lit` of -0.3, already folded: the
+    // lowering does not leave a `neg` call in weight position (measured), so a
+    // literal read is the whole check. NaN needs no case — FlatPPL has no NaN
+    // literal, so a NaN weight is always computed and belongs to the density
+    // walker's per-atom check.
+    if (op === 'weighted') {
+      const w0 = args[0];
+      const wv = (w0 && w0.kind === 'lit' && typeof w0.value === 'number')
+        ? w0.value : null;
+      if (wv != null && wv < 0) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'weighted: the weight is ' + wv
+            + ', but §06 requires a non-negative weight ("f is a non-negative '
+            + 'weight") — a negative weight makes weighted(w, M) a signed '
+            + 'measure, not a measure. A ZERO weight is legal.',
+          loc: args[0].loc,
+        });
+        return T.failed(op + ' arg 1 sign');
+      }
+    }
     return mT;  // result is the same measure type
   }
 

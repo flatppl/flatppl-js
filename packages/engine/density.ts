@@ -866,7 +866,7 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
     const wBody = mapIR(wIR.body, (n: any) =>
       (n && n.kind === 'ref' && n.name in bound)
         ? { kind: 'lit', value: bound[n.name] } : n);
-    applyAtomScalar(wBody, refArrays, N, baseEnv, overlay, acc, addLogW);
+    applyAtomScalar(wBody, refArrays, N, baseEnv, overlay, acc, addLogWOfVariate);
     return rest;
   }
   if (wIR && wIR.kind === 'call' && wIR.op === 'functionof'
@@ -901,7 +901,7 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
       : { kind: 'lit', value: inferConsumedScalar(value, rest) };
     const wBody = mapIR(wIR.body, (n: any) =>
       (n && n.kind === 'ref' && n.name === pName) ? bound : n);
-    applyAtomScalar(wBody, refArrays, N, baseEnv, overlay, acc, addLogW);
+    applyAtomScalar(wBody, refArrays, N, baseEnv, overlay, acc, addLogWOfVariate);
     return rest;
   }
   applyAtomScalar(wIR, refArrays, N, baseEnv, overlay, acc, addLogW);
@@ -2847,7 +2847,41 @@ function applyAtomScalar(wIR: any, refArrays: any, N: any, baseEnv: any, overlay
   for (let i = 0; i < N; i++) combine(acc, i, +result[i]);
 }
 
+// A `weighted(w, M)` weight that does NOT depend on the variate — a constant,
+// a ref, a mixture component weight (`w[i]`, what ksuperpose-expand emits).
+//
+// §06 requires the weight to be non-negative, PER WEIGHT: a negative one makes
+// the component a signed measure whatever the other weights sum to. Zero is
+// the one non-positive value §06 gives a meaning ("when every weight is zero
+// it is the zero measure … log-density −∞"), so it alone stays −∞. Negative
+// and NaN used to take that same branch, which silently answered with the
+// measure that has the component DELETED — a wrong NUMBER, not a bad message.
 function addLogW(acc: any, i: any, w: any) {
+  if (w > 0) { acc[i] += Math.log(w); return; }
+  if (w === 0) { acc[i] = -Infinity; return; }
+  const err: any = new Error('weighted: the weight evaluated to '
+    + (Number.isNaN(w) ? 'NaN (not a number)' : w) + ', but §06 requires a '
+    + 'non-negative weight ("f is a non-negative weight"; for a mixture, '
+    + '"[weights] must be non-negative") — a negative weight makes the '
+    + 'component a signed measure, not a measure, whatever the other weights '
+    + 'sum to, and the mixture then has no density to report. A ZERO weight '
+    + 'is legal and contributes -Infinity.');
+  // Tagged for the MCMC tractability probe, which otherwise lets `likWith`
+  // swallow this to −∞ as if it were a proposal outside support. It is a
+  // property of the MODEL, so mh/emcee must refuse rather than run a chain
+  // that rejects everything with no diagnostic.
+  err.modelRefusal = true;
+  throw err;
+}
+
+// The same accumulation for a weight that IS a function of the variate (the
+// §12 generic_dist lowering `weighted(x -> w(x), Lebesgue(...))`). A weight
+// FUNCTION dipping negative at a scored point is the existing documented
+// behaviour — it "contributes nothing rather than corrupting the quadrature",
+// matching mat-density's normalizer integrand, so the two agree on the same
+// model. Only the variate-INDEPENDENT weight above is enforced, because there
+// no point of the domain rescues it.
+function addLogWOfVariate(acc: any, i: any, w: any) {
   if (!(w > 0)) acc[i] = -Infinity;
   else acc[i] += Math.log(w);
 }
@@ -2863,14 +2897,19 @@ function addRaw(acc: any, i: any, v: any) {
 // returns NaN. Refuse instead, saying which end it hit.
 function addNormalizeShift(acc: any, i: any, v: any) {
   if (!Number.isFinite(v)) {
-    // NaN is its own case: `-log Z` is NaN when Z is NEGATIVE, which a
-    // negative weight can produce (§06 requires non-negative weights but
-    // nothing enforces it yet). Calling that "INFINITE total mass" would
-    // send the reader looking for the wrong problem.
-    const which = Number.isNaN(v) ? 'NEGATIVE (so -log Z is not a number)'
-      : v === Infinity ? 'ZERO' : 'INFINITE';
+    // NaN is its own case, and this must NOT name a cause it cannot know.
+    // `-log Z` is NaN whenever the mass computation produced a NaN or a
+    // negative number, and the two are different problems with different
+    // fixes. Announcing "NEGATIVE" sent readers hunting a minus sign that
+    // was often not there. Per-weight non-negativity is now enforced at the
+    // weight (addLogW and the two static checks), so a NaN reaching here
+    // comes from the mass arithmetic itself.
+    const which = Number.isNaN(v)
+      ? 'a total mass that is NOT A NUMBER (-log Z is NaN, so the mass came '
+        + 'out NaN or negative)'
+      : v === Infinity ? 'ZERO total mass' : 'INFINITE total mass';
     const err: any = new Error('normalize: the measure has ' + which
-      + ' total mass, so normalize(...) is undefined and its density cannot '
+      + ', so normalize(...) is undefined and its density cannot '
       + 'be scored (spec §06: "If Z = 0 or Z = infinity, the result is '
       + 'undefined"). For an all-zero-weight mixture the UNNORMALIZED '
       + 'log-density is defined, and is -Infinity everywhere.');
