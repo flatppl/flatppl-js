@@ -533,6 +533,28 @@ ld = logdensityof(KJ(z = 0.0), record(p = 1.0, q = -1.0))
   await assert.rejects(async () => ctx.getMeasure('ld'), /no derivation for 'ld'/);
 });
 
+test('an INLINE fn(...) written directly as a joint component refuses with a '
+  + 'located diagnostic naming the kwarg — not a raw TDZ crash', () => {
+  // Distinct from the LAMBDA case above: `z -> ...` desugars straight to
+  // `functionof(...)`, which the fan-out hoist's Identifier branch reads by
+  // resolved binding type. `fn(...)` written out verbatim as the kwarg VALUE
+  // (never bound to a name) is a different AST shape the hoist's inline-head
+  // reader special-cases — and unconditionally referenced a `const` declared
+  // later in the same enclosing function, so reaching this branch during the
+  // main lift loop threw `ReferenceError: Cannot access
+  // '_REIFICATION_HEADS' before initialization` before any diagnostic ran.
+  const src = `
+K = joint(a = kernelof(Normal(mu = z, sigma = 1.0), z = z), b = fn(z -> Normal(mu = z, sigma = 2.0)))
+y ~ K(3.0)
+`;
+  assert.throws(() => ctxFor(src, 1), (e: any) => {
+    assert.equal(e.code, 'JOINT_FANOUT_INLINE_FN_COMPONENT');
+    assert.match(e.message, /joint kwarg "b" is an inline fn\(\.\.\.\) reification/);
+    assert.doesNotMatch(e.message, /before initialization/);
+    return true;
+  });
+});
+
 test('a NESTED kernel joint as a component types correctly but the applied '
   + 'density is a KNOWN GAP that refuses', async () => {
   // Nesting is legal and flattening-equivalent — node identity is global, so
