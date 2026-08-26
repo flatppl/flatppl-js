@@ -105,6 +105,53 @@ test('valueset lattice: isBounded', () => {
   assert.equal(VS.isBounded(VS.UNKNOWN), null);
 });
 
+// Positional `cartprod` (spec §03, an ARRAY variate over possibly-differing
+// factors). Its boundedness drives the §06 Lebesgue mass class for a box
+// support, so a box has to read `finite`, not `unknown`.
+test('valueset lattice: cartprod', () => {
+  const box = VS.cartprod([VS.interval(0, 2), VS.interval(-1, 1)]);
+  // Bounded iff EVERY factor is; one unbounded factor decides false outright,
+  // and an unknown factor otherwise makes the whole unknown.
+  assert.equal(VS.isBounded(box), true);
+  assert.equal(VS.isBounded(VS.cartprod([VS.interval(0, 1), VS.REALS])), false);
+  assert.equal(VS.isBounded(VS.cartprod([VS.interval(0, 1), VS.UNKNOWN])), null);
+  // An unbounded factor beats an unknown one — false, not null.
+  assert.equal(VS.isBounded(VS.cartprod([VS.REALS, VS.UNKNOWN])), false);
+
+  // Structural equality: same arity, same factors, in order.
+  assert.equal(VS.equal(box, VS.cartprod([VS.interval(0, 2), VS.interval(-1, 1)])), true);
+  assert.equal(VS.equal(box, VS.cartprod([VS.interval(-1, 1), VS.interval(0, 2)])), false,
+    'factor ORDER is significant — a positional product is not a set of factors');
+  assert.equal(VS.equal(box, VS.cartprod([VS.interval(0, 2)])), false);
+  assert.equal(VS.equal(box, VS.cartpow(VS.interval(0, 2), 2)), false,
+    'a cartprod never equals a cartpow — different vocabulary entries');
+
+  // `%meta` rendering, as a §03 set expression.
+  assert.equal(VS.toSexpr(box), '(cartprod (interval 0.0 2.0) (interval -1.0 1.0))');
+  assert.equal(VS.toSexpr(VS.cartprod([VS.REALS, VS.INTEGERS])), '(cartprod reals integers)');
+});
+
+test('valueset: setExprValueset reads a positional cartprod set expression', () => {
+  const iv = (lo: number, hi: number) => ({
+    kind: 'call', op: 'interval',
+    args: [{ kind: 'lit', value: lo }, { kind: 'lit', value: hi }],
+  });
+  const cart = (...args: any[]) => ({ kind: 'call', op: 'cartprod', args });
+  assert.equal(VS.toSexpr(VS.setExprValueset(cart(iv(0, 1), iv(2, 4)))),
+    '(cartprod (interval 0.0 1.0) (interval 2.0 4.0))');
+  // §03: "single-component cartprod is the component itself" — no wrapper.
+  assert.equal(VS.toSexpr(VS.setExprValueset(cart(iv(0, 1)))), '(interval 0.0 1.0)');
+  // An unresolvable factor makes the whole product unknown rather than
+  // producing a product with a hole in it.
+  assert.equal(VS.setExprValueset(cart(iv(0, 1), { kind: 'ref', name: 'S' })), VS.UNKNOWN);
+  // Degenerate and record-form spellings carry no positional entry.
+  assert.equal(VS.setExprValueset(cart()), VS.UNKNOWN);
+  assert.equal(VS.setExprValueset({
+    kind: 'call', op: 'cartprod',
+    fields: [{ name: 'a', value: iv(0, 1) }, { name: 'b', value: iv(0, 1) }],
+  }), VS.UNKNOWN);
+});
+
 test('valueset lattice: subsetOf (conservative)', () => {
   assert.equal(VS.subsetOf(VS.POSREALS, VS.REALS), true);
   assert.equal(VS.subsetOf(VS.UNITINTERVAL, VS.NONNEGREALS), true);

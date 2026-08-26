@@ -521,8 +521,23 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
       const isInputLeaf = !drv && target && target.ir
         && target.ir.kind === 'call'
         && (target.ir.op === 'elementof' || target.ir.op === 'external');
+      // N-D box measures are inlined rather than left as boundary refs. They
+      // are the ONLY measure derivations treated this way, and deliberately:
+      // the §12 `normalize(truncate(weighted(w, Lebesgue(box)), box))` shape
+      // is resolved by mat-density's EXACT adaptive cubature, which pattern-
+      // matches the full `weighted(<functionof>, Lebesgue(...))` IR. Before
+      // the box kinds existed these anon bindings had no derivation and so
+      // were inlined by the rule below; leaving them as refs now would send
+      // that shape down the Monte-Carlo normalizer instead and lose the
+      // closed-form Z. Inlining restores the IR those consumers already
+      // expect, and is limited to the box kinds so no pre-existing measure
+      // binding changes behavior.
+      const isBoxMeasure = !!drv
+        && (drv.kind === 'lebesguebox'
+          || (drv.kind === 'weighted' && typeof drv.boxAxes === 'number'));
       const isEvaluableValue = !isInputLeaf
         && ((drv && drv.kind === 'evaluate')
+          || isBoxMeasure
           || (!drv && target && target.ir && target.ir.kind === 'call'));
       if (isEvaluableValue && target && target.ir) {
         visiting.add(name);

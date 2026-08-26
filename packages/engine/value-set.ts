@@ -36,6 +36,9 @@ const ANYTHING = 'anything';
 function interval(lo: number, hi: number): any { return { vs: 'interval', lo, hi }; }
 function stdsimplex(n: any): any { return { vs: 'stdsimplex', n }; }     // n: number | '%dynamic'
 function cartpow(elem: any, n: any): any { return { vs: 'cartpow', elem, n }; }
+// Positional `cartprod(S1, S2, …)` — spec §03 gives it an ARRAY variate, so
+// unlike cartpow the components may differ. Mirrors Rust `ValueSet::CartProd`.
+function cartprod(elems: any[]): any { return { vs: 'cartprod', elems }; }
 
 function equal(a: any, b: any): boolean {
   if (a === b) return true;
@@ -44,6 +47,10 @@ function equal(a: any, b: any): boolean {
   if (a.vs === 'interval') return a.lo === b.lo && a.hi === b.hi;
   if (a.vs === 'stdsimplex') return a.n === b.n;
   if (a.vs === 'cartpow') return a.n === b.n && equal(a.elem, b.elem);
+  if (a.vs === 'cartprod') {
+    return a.elems.length === b.elems.length
+      && a.elems.every((e: any, i: number) => equal(e, b.elems[i]));
+  }
   return false;
 }
 
@@ -90,6 +97,17 @@ function isBounded(vs: any): boolean | null {
   }
   if (vs && vs.vs === 'cartpow') {
     return vs.n === '%dynamic' ? null : isBounded(vs.elem);
+  }
+  if (vs && vs.vs === 'cartprod') {
+    // A product is bounded iff every factor is. One unbounded factor decides
+    // false outright; otherwise an unknown factor makes the whole unknown.
+    let unknown = false;
+    for (const e of vs.elems) {
+      const b = isBounded(e);
+      if (b === false) return false;
+      if (b == null) unknown = true;
+    }
+    return unknown ? null : true;
   }
   return null;
 }
@@ -140,6 +158,9 @@ function toSexpr(vs: any): string {
   if (vs.vs === 'stdsimplex') return '(stdsimplex ' + _renderDim(vs.n) + ')';
   if (vs.vs === 'interval') return '(interval ' + _renderReal(vs.lo) + ' ' + _renderReal(vs.hi) + ')';
   if (vs.vs === 'cartpow') return '(cartpow ' + toSexpr(vs.elem) + ' ' + _renderDim(vs.n) + ')';
+  if (vs.vs === 'cartprod') {
+    return '(cartprod ' + vs.elems.map((e: any) => toSexpr(e)).join(' ') + ')';
+  }
   return '%unknown';
 }
 
@@ -188,7 +209,17 @@ function setExprValueset(setIR: any, resolveDim?: (ir: any) => any): any {
       if (elem === UNKNOWN) return UNKNOWN;
       return cartpow(elem, _dim(args[1], resolveDim));
     }
-    // cartprod has no flat-vocabulary entry (record/tuple of sets).
+    case 'cartprod': {
+      // POSITIONAL form only (spec §03 array variate). The keyword form
+      // lowers to `fields`, carries a RECORD variate, and has no entry here.
+      if (Array.isArray(setIR.fields) && setIR.fields.length > 0) return UNKNOWN;
+      if (args.length === 0) return UNKNOWN;
+      // §03: "single-component cartprod is the component itself".
+      if (args.length === 1) return setExprValueset(args[0], resolveDim);
+      const elems = args.map((a: any) => setExprValueset(a, resolveDim));
+      if (elems.some((e: any) => e === UNKNOWN)) return UNKNOWN;
+      return cartprod(elems);
+    }
     default: return UNKNOWN;
   }
 }
@@ -235,7 +266,7 @@ function constValueset(name: string): any {
 module.exports = {
   DEFERRED, UNKNOWN, REALS, POSREALS, NONNEGREALS, UNITINTERVAL,
   INTEGERS, POSINTEGERS, NONNEGINTEGERS, BOOLEANS, COMPLEXES, RNGSTATES, ANYTHING,
-  interval, stdsimplex, cartpow,
+  interval, stdsimplex, cartpow, cartprod,
   equal, naturalOf, isBounded, subsetOf, toSexpr,
   constSetValueset, setExprValueset, literalValueset, constValueset,
 };
