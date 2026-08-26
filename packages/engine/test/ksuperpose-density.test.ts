@@ -523,11 +523,16 @@ test('the refusals name a POSITIONAL family argument correctly too', () => {
     `want a positional classify refusal, got ${JSON.stringify(unnamed.map((d: any) => d.message))}`);
 });
 
-test('a component count that is not statically known is refused, naming the '
-  + 'remedy — §06 allows a runtime N that this engine does not expand', () => {
-  const ds = diagnosticsOf(
+test('a component count that is not statically known is NOT refused here — '
+  + '§06 allows a runtime N and this pass hands it on', () => {
+  // §06: N "need not be statically known". This pass rewrites the AST and so
+  // needs N while it runs; when N is unavailable it now leaves the
+  // application standing for the RUNTIME ARM (ksuperpose-runtime.ts), which
+  // reads N from the weight vector's value at derivation-build time. A
+  // diagnostic here would fire on a program the runtime arm goes on to score,
+  // so this pass must stay SILENT. What the runtime arm scores, and what it
+  // still refuses, is ksuperpose-runtime-n.test.ts.
+  assert.deepEqual(diagnosticsOf(
     'w = external(cartpow(nonnegreals, 2))\n'
-    + 'mix = ksuperpose(Normal, w)(mu = 0.0, sigma = 1.0)\n');
-  assert.ok(ds.some((d: any) => /not statically\s+known/.test(d.message)),
-    `want an N refusal, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
+    + 'mix = ksuperpose(Normal, w)(mu = 0.0, sigma = 1.0)\n'), []);
 });
