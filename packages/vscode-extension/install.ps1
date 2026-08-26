@@ -10,8 +10,16 @@ Write-Host "Downloading $vsix ..."
 Invoke-WebRequest "$base/$vsix" -OutFile $vsix -UseBasicParsing
 
 if (Get-Command code -ErrorAction SilentlyContinue) {
-  code --install-extension $vsix --force
-  Write-Host "Installed. Reload VS Code (Developer: Reload Window)."
+  $editorCli = "code"
+} elseif (Get-Command cursor -ErrorAction SilentlyContinue) {
+  $editorCli = "cursor"
 } else {
-  Write-Error "Downloaded $vsix, but 'code' is not on PATH. Install: code --install-extension $vsix"
+  $editorCli = $null
+}
+
+if ($editorCli) {
+  & $editorCli --install-extension $vsix --force
+  Write-Host "Installed. Reload the editor (Developer: Reload Window)."
+} else {
+  Write-Error "Downloaded $vsix, but neither 'code' nor 'cursor' is on PATH. Install: code --install-extension $vsix"
 }
