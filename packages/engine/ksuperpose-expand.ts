@@ -168,16 +168,21 @@ function _dim(d: any): number | null {
 // reads. `-0.3` parses as a unary minus over a NumberLiteral, so the sign
 // lives outside the literal and a NumberLiteral-only check would miss every
 // negative weight written the obvious way.
+// `node` is always a real node: the only caller walks a parsed ArrayLiteral's
+// elements, and the parser never leaves a hole there — `[0.3, ]` drops the
+// trailing comma and `[0.3,, 1.2]` yields the `__error__` identifier (both
+// measured). So there is no null guard to take.
 function _constNumber(node: any): number | null {
-  if (!node) return null;
   if (node.type === 'NumberLiteral' && typeof node.value === 'number') return node.value;
-  if (node.type === 'UnaryExpr' && (node.op === '-' || node.op === 'neg')) {
+  // The parser spells unary minus `op: '-'` (measured), so there is no `neg`
+  // alternative to test for. A minus over a NON-literal (`[-x, 1.2]`) folds to
+  // null and is left to the density walker.
+  if (node.type === 'UnaryExpr' && node.op === '-') {
     const inner = _constNumber(node.operand);
     return inner == null ? null : -inner;
   }
-  if (node.type === 'UnaryExpr' && (node.op === '+' || node.op === 'pos')) {
-    return _constNumber(node.operand);
-  }
+  // No unary-plus case: FlatPPL has no prefix `+`, and `[+2.0]` is a parse
+  // error (the element comes back as the `__error__` identifier).
   return null;
 }
 
@@ -199,28 +204,27 @@ function _weightElements(node: any, body: any[]): any[] | null {
 // negative component makes the superposition a signed set function with no
 // density, and `normalize` would divide by a mass that never was one. Zero
 // stays legal: §06 gives it a meaning ("when every weight is zero it is the
-// zero measure"). Only constants are read here; a weight that needs the
-// runtime is caught by the density walker's per-atom check.
+// zero measure").
+//
+// Only a written CONSTANT is read here. There is no NaN case: FlatPPL has no
+// NaN literal, so a NaN weight can only be computed (`0.0 / 0.0`) and belongs
+// to the density walker's per-atom check, which owns every weight this cannot
+// fold.
 function _checkWeightSigns(weightsNode: any, body: any[], lift: any, diagnostics: any[]): boolean {
   const els = _weightElements(weightsNode, body);
   if (els == null) return true;
   for (let i = 0; i < els.length; i++) {
     const v = _constNumber(els[i]);
     if (v == null) continue;
-    if (Number.isNaN(v)) {
-      _err(diagnostics, `ksuperpose: weight #${i + 1} is not a number, but §06 `
-        + 'requires the weights to be non-negative — a NaN weight has no mass '
-        + 'to contribute and the mixture cannot be scored or sampled',
-        (els[i] && els[i].loc) || (weightsNode && weightsNode.loc) || lift.loc);
-      return false;
-    }
     if (v < 0) {
       _err(diagnostics, `ksuperpose: weight #${i + 1} is ${v}, but §06 requires `
         + 'the weights to be non-negative ("It must be non-negative but need '
         + 'not be normalized") — a negative weight makes the component a '
         + 'signed measure, not a measure, whatever the other weights sum to. '
         + 'A ZERO weight is legal and drops the component out.',
-        (els[i] && els[i].loc) || (weightsNode && weightsNode.loc) || lift.loc);
+        // Every parsed array element carries its own loc, so the refusal
+        // points at the offending weight and not at the whole vector.
+        els[i].loc);
       return false;
     }
   }

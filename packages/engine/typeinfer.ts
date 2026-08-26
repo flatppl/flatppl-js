@@ -1064,12 +1064,20 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // answer with the measure that has the component DELETED. Only `weighted`
     // is checked: a `logweighted` weight is exp(logweight), so a negative
     // log-weight is an ordinary weight below one.
+    //
+    // A written `-0.3` arrives here as a `lit` of -0.3, already folded: the
+    // lowering does not leave a `neg` call in weight position (measured), so a
+    // literal read is the whole check. NaN needs no case — FlatPPL has no NaN
+    // literal, so a NaN weight is always computed and belongs to the density
+    // walker's per-atom check.
     if (op === 'weighted') {
-      const wv = _constWeight(args[0]);
-      if (wv != null && (Number.isNaN(wv) || wv < 0)) {
+      const w0 = args[0];
+      const wv = (w0 && w0.kind === 'lit' && typeof w0.value === 'number')
+        ? w0.value : null;
+      if (wv != null && wv < 0) {
         diagnostics.push({
           severity: 'error',
-          message: 'weighted: the weight is ' + (Number.isNaN(wv) ? 'not a number' : wv)
+          message: 'weighted: the weight is ' + wv
             + ', but §06 requires a non-negative weight ("f is a non-negative '
             + 'weight") — a negative weight makes weighted(w, M) a signed '
             + 'measure, not a measure. A ZERO weight is legal.',
@@ -1079,20 +1087,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
     }
     return mT;  // result is the same measure type
-  }
-
-  // A constant weight's value, or null when it is not one this reads. `-0.3`
-  // lowers to `neg(0.3)`, so the sign lives in a call and a literal-only
-  // check would miss every negative weight written the obvious way.
-  function _constWeight(ir: any): number | null {
-    if (!ir) return null;
-    if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
-    if (ir.kind === 'call' && (ir.op === 'neg' || ir.op === 'uminus')
-        && (ir.args || []).length === 1) {
-      const inner = _constWeight(ir.args[0]);
-      return inner == null ? null : -inner;
-    }
-    return null;
   }
 
   function inferTransposeAdjoint(expr: any, scopes: any): any {

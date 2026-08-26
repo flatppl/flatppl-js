@@ -212,6 +212,29 @@ test('§06: a negative weight that only appears at RUNTIME is refused while '
   });
 });
 
+test('a MINUS over a non-literal does not fold, so the static pass defers and '
+  + 'the walker refuses', async () => {
+  // `[-a, 1.2]` is a unary minus whose operand is a name: the static pass
+  // cannot know the value, so it must NOT refuse (a negated name could hold a
+  // negative number and be a perfectly legal positive weight). The refusal
+  // therefore has to come from the walker, at the value.
+  const src = 'a = 0.3\nw = [-a, 1.2]\n' + FAMILY
+    + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'
+    + '__score__ = logdensityof(mix, 0.5)\n';
+  assert.deepEqual(diagnosticsOf(src), [],
+    'the static pass must not fold a minus over a name');
+  await assert.rejects(() => score(src), /non-negative/);
+
+  // The control: negating a name that holds a NEGATIVE number is a POSITIVE
+  // weight, and must score. This is why the static pass cannot just refuse
+  // any leading minus. -(-0.3) = 0.3, so this is the valid oracle row.
+  const ok = await score('a = 0.0 - 0.3\nw = [-a, 1.2]\n' + FAMILY
+    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'
+    + '__score__ = logdensityof(mix, 0.5)\n');
+  assert.ok(Math.abs(ok - (-3.411415107516122)) <= TOL,
+    `got ${ok}, oracle -3.411415107516122`);
+});
+
 test('§06: a NaN weight gets its own message and is NOT reported as negative '
   + 'total mass', async () => {
   // The old path let NaN through the weight, so `-log Z` came out NaN and
@@ -225,6 +248,62 @@ test('§06: a NaN weight gets its own message and is NOT reported as negative '
     assert.doesNotMatch(e.message, /NEGATIVE/);
     return true;
   });
+});
+
+// =====================================================================
+// The `normalize` shift guard names only what it can know
+// =====================================================================
+
+// Driven through a HAND-BUILT IR rather than a model, because after the fix no
+// model reaches the NaN arm: every route that used to put a NaN into `-log Z`
+// went through a NaN or negative WEIGHT, and those now refuse at the weight
+// (the two tests above). The arm stays as a guard for the rewrite sites that
+// bake a `-log Z` literal from a mass computation of their own
+// (`mat-density.ts` resolveTruncateNormalizers / resolveProductNormalizers),
+// and this is the only way left to exercise it.
+//
+// `fromNormalize` is what marks a `logweighted` node as carrying `-log Z`
+// (density.ts walkLogWeighted), so these three nodes are exactly what a
+// resolved `normalize` hands the walker for Z = NaN, Z = 0 and Z = ∞.
+test('§06 normalize: the shift guard reports NOT A NUMBER, ZERO and INFINITE '
+  + 'as three distinct causes', () => {
+  const density = require('../density.ts');
+  const N01 = {
+    kind: 'call', op: 'Normal',
+    kwargs: { mu: { kind: 'lit', value: 0.0 }, sigma: { kind: 'lit', value: 1.0 } },
+  };
+  const shifted = (v: number) => ({
+    kind: 'call', op: 'logweighted', fromNormalize: true,
+    args: [{ kind: 'lit', value: v }, N01],
+  });
+  const cases: [number, RegExp][] = [
+    [NaN, /NOT A NUMBER/],
+    [Infinity, /ZERO total mass/],      // -log Z = +∞ ⇔ Z = 0
+    [-Infinity, /INFINITE total mass/], // -log Z = -∞ ⇔ Z = ∞
+  ];
+  for (const [v, want] of cases) {
+    assert.throws(() => density.logDensityN(shifted(v), 0.5, {}, 1, {}),
+      (e: any) => {
+        assert.match(e.message, want);
+        assert.match(e.message, /spec §06/);
+        // The MCMC scorer keys off this to refuse instead of rejecting a
+        // proposal; an untagged throw would be swallowed to −∞.
+        assert.equal(e.undefinedNormalize, true);
+        return true;
+      }, `shift ${v} should report ${want}`);
+  }
+  // The NaN arm must not name a cause it cannot know: the mass came out NaN
+  // OR negative, and the guard sees only the NaN shift either way.
+  assert.throws(() => density.logDensityN(shifted(NaN), 0.5, {}, 1, {}),
+    (e: any) => {
+      assert.doesNotMatch(e.message, /NEGATIVE/);
+      return true;
+    });
+  // Vacuity guard: a FINITE shift is an ordinary weight and must pass through,
+  // or the three throws above would prove nothing about the guard.
+  const finite = density.logDensityN(shifted(-Math.log(2)), 0.5, {}, 1, {})[0];
+  const want = -Math.log(2) + (-0.5 * Math.log(2 * Math.PI) - 0.125);
+  assert.ok(Math.abs(finite - want) <= TOL, `got ${finite}, closed form ${want}`);
 });
 
 // =====================================================================
