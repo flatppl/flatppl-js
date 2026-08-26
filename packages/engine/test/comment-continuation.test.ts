@@ -83,13 +83,14 @@ test('comment: `### Section ###` is a line comment, not an opening fence', () =>
   assert.equal(inner.ast.body.length, 1);
 });
 
-test('comment: trailing operator still does not continue a line', () => {
-  // §05 continuation is bracket-depth-driven only; a dangling operator
-  // is an error with or without a comment after it.
+test('comment: a trailing comment does not end an operator continuation', () => {
+  // §05 Statement separation: a trailing operator continues the line,
+  // and the comment between it and the newline is transparent. See
+  // operator-continuation.test.ts for the full continuation surface.
   const bare = parseSrc('mu = 1.0 +\n  2.0\n');
-  assert.ok(errors(bare).length > 0);
-  const commented = parseSrc('mu = 1.0 +  # dangling\n  2.0\n');
-  assert.ok(errors(commented).length > 0);
+  assert.deepEqual(errors(bare), []);
+  const commented = parseSrc('mu = 1.0 +  # continues\n  2.0\n');
+  assert.deepEqual(errors(commented), []);
 });
 
 test('comment: statement-level comments still reach ast.comments', () => {
