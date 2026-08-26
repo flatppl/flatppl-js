@@ -1995,29 +1995,37 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return !!(kw && ir.kwargs && ir.kwargs[kw]);
       });
       if (declared) continue;
-      // Same split as the boundary matcher: a lone input binds the whole fed
-      // value, two or more splat a record fed type by field name.
-      const scope = new Map<string, any>();
-      if (params.length === 1) {
-        scope.set(params[0], fed);
-      } else if (fed.kind === 'record') {
-        let ok = true;
-        for (let j = 0; j < params.length; j++) {
-          const name = paramKwargs[j] || params[j];
-          if (!Object.prototype.hasOwnProperty.call(fed.fields, name)) {
-            ok = false;
-            break;
-          }
-          scope.set(params[j], fed.fields[name]);
-        }
-        if (!ok) continue;   // boundary matcher already reported this
-      } else {
-        continue;   // boundary matcher already rejected this shape
-      }
+      const scope = _chainStepScope(params, paramKwargs, fed);
+      if (scope == null) continue;
       const before = diagnostics.length;
       inferExpr(ir.body, scopes.concat([scope]));
       _dropDuplicateDiagnostics(before);
     }
+  }
+
+  /** A step's params bound to the type the chain feeds it, or null when the
+   *  fed type does not bind — in which case the boundary matcher has already
+   *  reported it and there is nothing to re-check. Same split as the matcher:
+   *  a lone input binds the whole fed value, two or more splat a record fed
+   *  type by field name. */
+  function _chainStepScope(params: any[], paramKwargs: any[], fed: any) {
+    const scope = new Map<string, any>();
+    if (params.length === 1) {
+      scope.set(params[0], fed);
+      return scope;
+    }
+    // Both guards below hold the invariant the boundary matcher establishes —
+    // a multi-input boundary needs a record whose field names are exactly this
+    // step's input names. Returning null rather than trusting it keeps a change
+    // to either rule degrading to a skipped re-check instead of reading
+    // `fields` off a non-record.
+    if (fed.kind !== 'record') return null;
+    for (let j = 0; j < params.length; j++) {
+      const name = paramKwargs[j] || params[j];
+      if (!Object.prototype.hasOwnProperty.call(fed.fields, name)) return null;
+      scope.set(params[j], fed.fields[name]);
+    }
+    return scope;
   }
 
   /** The `functionof` IR of a chain step written inline or bound to a

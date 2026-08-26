@@ -143,6 +143,22 @@ b ~ C
   }
 });
 
+test('left variates that do not cat are a located error', () => {
+  // §06 builds the fed value with `cat`, and `cat` admits all-scalar,
+  // all-vector or all-record components only. A scalar base followed by a
+  // record-variate step has no cat, so the third step has nothing to consume.
+  const errs = errorsOf(`
+flatppl_compat = "0.1"
+K1 = a -> joint(b = Normal(mu = a, sigma = 1))
+K2 = c -> Normal(mu = 0, sigma = 1)
+ch = kchain(Normal(0, 1), K1, K2)
+`);
+  assert.equal(errs.length, 1, JSON.stringify(errs.map((d: any) => d.message)));
+  assert.match(errs[0].message, /do not `cat`/);
+  assert.match(errs[0].message, /all scalar, all vector, or all record/);
+  assert.ok(errs[0].loc && errs[0].loc.start, 'diagnostic must carry a location');
+});
+
 // The RETAIN chain keeps the previous-variate boundary. §06 gives kchain and
 // jointchain the same `c ~ K3([a, b])` lowering, but the materialiser threads
 // only the previous variate through a positional jointchain, which is what
