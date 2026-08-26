@@ -331,18 +331,27 @@ test('GENUINELY LATENT weights: the density path refuses, naming the '
   });
 });
 
-test('the hand-written spelling of a latent weight VECTOR does not classify — '
-  + 'pre-existing, and NOT introduced by the ksuperpose rewrite', async () => {
-  // Guards the report's claim rather than the engine's behaviour: indexing a
-  // latent vector in weight position fails in the HAND-WRITTEN superpose
-  // spelling too, so it is not the expansion's doing. If this ever starts
-  // passing, the ksuperpose card in TODO-flatppl-js.md can be closed with it.
+test('the hand-written spelling of a latent weight VECTOR now classifies, and '
+  + 'refuses for the SAME reason the Dirichlet spelling does', async () => {
+  // Was: this spelling produced `no derivation` — indexing a latent vector in
+  // weight position did not classify at all, so `wp`, `mix` and the query were
+  // silently cascade-pruned. `foldStochasticVectorGets` folds `wp[k]` to the
+  // element expression, so the model now reaches the density path and lands on
+  // the located marginalisation refusal above: a GENUINELY latent weight cannot
+  // be scored exactly whichever way it is spelled. Same class of refusal as the
+  // `wp ~ Dirichlet(...)` sibling test, and asserted against that same message
+  // so the two spellings cannot drift apart.
   const handWritten = 'psi ~ Beta(2.0, 2.0)\nwp = [psi, 1.0 - psi]\n'
     + 'means = [-1.0, 2.0]\n'
     + 'mix = normalize(superpose(weighted(wp[1], Normal(means[1], 1.0)), '
     + 'weighted(wp[2], Normal(means[2], 1.0))))\n'
     + '__score__ = logdensityof(mix, 0.5)\n';
-  await assert.rejects(() => score(handWritten), /no derivation/);
+  await assert.rejects(() => score(handWritten), (e: any) => {
+    assert.doesNotMatch(e.message, /no derivation/,
+      'the indexed latent weight should classify now');
+    assert.match(e.message, /marginalises the stochastic ancestor\(s\) psi/);
+    return true;
+  });
 });
 
 // =====================================================================
