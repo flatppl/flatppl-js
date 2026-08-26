@@ -1991,7 +1991,113 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const densityPrims = require('./density-prims.ts');
     const r = densityPrims.inferChainComposition(steps, mode, { labels });
     for (const d of r.diagnostics) diagnostics.push(d);
+    if (r.diagnostics.length === 0 && r.boundaryTypes) {
+      checkChainStepBodies(comps, steps, r.boundaryTypes, scopes);
+    }
     return r.resultType;
+  }
+
+  // Re-check each chain step's body against the type the chain actually
+  // feeds it. A step written as a lambda or an `fn`-style reification
+  // declares no input types, so its params infer as `any` at the
+  // definition site and its body type-checks against nothing. That is
+  // how a third kchain step spelled `b -> Normal(mu = b, sigma = 1)`
+  // used to pass: the chain feeds it the whole `[a, b]` pair (spec §06
+  // dependent composition lowers `kchain(M, K1, K2)` to `c ~ K2([a, b])`),
+  // `mu` received a 2-vector, and the sampler produced NaN with no
+  // diagnostic. Binding the params to the fed type and re-inferring the
+  // body puts the located `Normal: kwarg "mu" expects real` error back.
+  //
+  // Same mechanism as the polymorphic-at-call-site re-inference in
+  // `inferUserCall`: build a scope of param name → actual type, then
+  // `inferExpr` the body so its own checks run and locate themselves.
+  // Diagnostics that the definition-site pass already reported are
+  // dropped, so a body error is reported once.
+  function checkChainStepBodies(comps: any[], steps: any[],
+      boundaryTypes: any[], scopes: any) {
+    for (let i = 1; i < comps.length; i++) {
+      const fed = boundaryTypes[i];
+      if (fed == null || fed.kind === 'deferred' || fed.kind === 'any') continue;
+      const ir = _reifiedStepIR(comps[i]);
+      if (ir == null) continue;
+      const params = ir.params || [];
+      const paramKwargs = ir.paramKwargs || [];
+      // Only an UNDECLARED boundary is re-checked. A step that declares
+      // its input types (`functionof(body, theta = theta)`) already had
+      // its body checked against them, and the boundary matcher above
+      // has confirmed the fed type unifies with the declaration.
+      const declared = params.some((p: any, j: number) => {
+        const kw = paramKwargs[j];
+        return !!(kw && ir.kwargs && ir.kwargs[kw]);
+      });
+      if (declared) continue;
+      const scope = _chainStepScope(params, paramKwargs, fed);
+      if (scope == null) continue;
+      const before = diagnostics.length;
+      inferExpr(ir.body, scopes.concat([scope]));
+      _dropDuplicateDiagnostics(before);
+    }
+  }
+
+  /** A step's params bound to the type the chain feeds it, or null when the
+   *  fed type does not bind — in which case the boundary matcher has already
+   *  reported it and there is nothing to re-check. Same split as the matcher:
+   *  a lone input binds the whole fed value, two or more splat a record fed
+   *  type by field name. */
+  function _chainStepScope(params: any[], paramKwargs: any[], fed: any) {
+    const scope = new Map<string, any>();
+    if (params.length === 1) {
+      scope.set(params[0], fed);
+      return scope;
+    }
+    // Both guards below hold the invariant the boundary matcher establishes —
+    // a multi-input boundary needs a record whose field names are exactly this
+    // step's input names. Returning null rather than trusting it keeps a change
+    // to either rule degrading to a skipped re-check instead of reading
+    // `fields` off a non-record.
+    if (fed.kind !== 'record') return null;
+    for (let j = 0; j < params.length; j++) {
+      const name = paramKwargs[j] || params[j];
+      if (!Object.prototype.hasOwnProperty.call(fed.fields, name)) return null;
+      scope.set(params[j], fed.fields[name]);
+    }
+    return scope;
+  }
+
+  /** The `functionof` IR of a chain step written inline or bound to a
+   *  name, or null when the step is anything else (a measure, a builtin
+   *  call, a cross-module ref). `kernelof` and lambdas both lower to
+   *  `functionof` before this pass runs. */
+  function _reifiedStepIR(comp: any): any {
+    if (!comp) return null;
+    if (comp.kind === 'call' && comp.op === 'functionof' && comp.body) return comp;
+    if (comp.kind === 'ref' && comp.ns === 'self') {
+      const b = loweredModule.bindings.get(comp.name);
+      const rhs = b && b.rhs;
+      if (rhs && rhs.kind === 'call' && rhs.op === 'functionof' && rhs.body) {
+        return rhs;
+      }
+    }
+    return null;
+  }
+
+  /** Drop diagnostics added since `before` that repeat one already
+   *  present — the re-inference walks a body the definition-site pass
+   *  walked too, so its unrelated errors would otherwise double up. */
+  function _dropDuplicateDiagnostics(before: number) {
+    if (diagnostics.length <= before) return;
+    const key = (d: any) => d.severity + ' ' + d.message + ' '
+      + JSON.stringify(d.loc || null);
+    const seen = new Set<string>();
+    for (let i = 0; i < before; i++) seen.add(key(diagnostics[i]));
+    const kept = diagnostics.slice(before).filter((d: any) => {
+      const k = key(d);
+      if (seen.has(k)) return false;
+      seen.add(k);
+      return true;
+    });
+    diagnostics.length = before;
+    for (const d of kept) diagnostics.push(d);
   }
 
   function inferTuple(expr: any, scopes: any) {
