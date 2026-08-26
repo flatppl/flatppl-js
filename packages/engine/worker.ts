@@ -252,8 +252,10 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             bindings: built.bindings,
             fixedValues: built.fixedValues || new Map(),
             sampleCount: msg.sampleCount,
+            // rootSeed only — `_ensureRootKey` derives the two-lane PhiloxKey.
+            // The uint32 this also passed as `rootKey` pre-empted that and keyed
+            // every in-worker prior pool from [0, 0], for any seed.
             rootSeed: msg.seed,
-            rootKey: msg.seed,
             moduleRegistry: proc.loweredModule && proc.loweredModule.moduleRegistry,
             inferenceOpts: msg.inferenceOpts,
             // Streamed to the host as mcmcProgress; the samplers call it with

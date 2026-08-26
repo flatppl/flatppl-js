@@ -54,7 +54,11 @@ function buildCtx(src: string, N: number, seed = 7) {
   const ctx: any = {
     derivations: built.derivations, bindings: built.bindings,
     fixedValues: built.fixedValues || new Map(), sampleCount: N,
-    rootKey: seed, rootSeed: seed, marginalizationCount: 32,
+    // rootSeed only: the materialiser derives the two-lane PhiloxKey itself.
+    // Passing `rootKey: seed` (a bare number) made every seed sample the same
+    // stream, which is what made this file's Monte-Carlo masses look
+    // suspiciously seed-independent.
+    rootSeed: seed, marginalizationCount: 32,
     moduleRegistry: proc.loweredModule && proc.loweredModule.moduleRegistry,
     getMeasure: (n: string) => {
       if (cache.has(n)) return cache.get(n);
@@ -302,6 +306,97 @@ M = weighted(f, L)
   assert.ok(rel < 0.03,
     'totalmass ' + Math.exp(m.logTotalmass) + ' ≉ 9 (rel ' + rel + ')');
   assert.deepEqual(m.dims, [2], 'weighted must preserve the vector-atom shape');
+});
+
+// The three closed forms below over the SAME box [0,2]×[0,3], all derived by
+// hand and confirmed symbolically, with the exact Monte-Carlo relative
+// standard error of `volume · Ê[f]` at N = 65536 (σ(f)/E[f]/√N):
+//
+//   f          Z    E[f]   Var[f]     rel-se @ 65536
+//   x·y        9    3/2    7/4        0.34 %
+//   x²·y²     24    4      896/25     0.58 %
+//   (x+y)²    44    22/3   1288/45    0.28 %
+//
+// Tolerances are 6·rel-se, so each is a genuine ~6σ band on the estimator: it
+// passes on an unbiased estimator and fails on a bias of ~2 % or worse. This is
+// what the estimator IS — a plain Monte-Carlo mean over the box's own atoms —
+// not a quadrature, so a tighter band would flake.
+const BOX_2x3 = 'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\n';
+
+async function boxMass(weightDecl: string, N: number, seed?: number) {
+  const { ctx } = makeMatCtx(BOX_2x3 + weightDecl + 'M = weighted(f, L)\n',
+    seed == null ? { sampleCount: N } : { sampleCount: N, rootSeed: seed });
+  const m: any = await ctx.getMeasure('M');
+  return Math.exp(m.logTotalmass);
+}
+
+test('a SEPARABLE quadratic weight over a box integrates to its closed form', async () => {
+  // ∫₀²∫₀³ x²y² dy dx = (2³/3)·(3³/3) = (8/3)·9 = 24.
+  const Z = await boxMass('f(x, y) = x * x * y * y\n', 65536);
+  const rel = Math.abs(Z - 24) / 24;
+  assert.ok(rel < 0.035, 'totalmass ' + Z + ' ≉ 24 (rel ' + rel + ')');
+});
+
+test('a NON-SEPARABLE weight over a box integrates to its closed form', async () => {
+  // ∫₀³ (x+y)² dy = ((x+3)³ − x³)/3, so
+  // ∫₀² ((x+3)³ − x³)/3 dx = [(x+3)⁴ − x⁴]/12 |₀² = (625−16−81)/12 = 528/12 = 44.
+  // (x+y)² is not a product of per-axis factors, so it exercises the estimator
+  // rather than a per-axis rule that a tensor product would integrate exactly.
+  const Z = await boxMass('f(x, y) = (x + y) * (x + y)\n', 65536);
+  const rel = Math.abs(Z - 44) / 44;
+  assert.ok(rel < 0.017, 'totalmass ' + Z + ' ≉ 44 (rel ' + rel + ')');
+});
+
+test('the box mass estimator is UNBIASED — its seed ensemble mean is the closed form', async () => {
+  // The single-seed tolerances above cannot separate "noisy" from "biased".
+  // Average 24 independent seeds at N = 16384: the per-replicate relative
+  // standard error for x·y is 0.34 %·2 = 0.688 %, so the ensemble mean's is
+  // 0.688 %/√24 = 0.14 %. A 0.5 % band is 3.6σ — it passes on an unbiased
+  // estimator and FAILS the ~0.5 % systematic bias this test was written to
+  // rule out. Every replicate uses its own seed, so a numeric-rootKey
+  // regression (which collapses all seeds onto one stream) shows up here as a
+  // zero-variance ensemble and trips the spread assertion below.
+  const S = 24, N = 16384;
+  const zs: number[] = [];
+  for (let s = 0; s < S; s++) zs.push(await boxMass('f(x, y) = x * y\n', N, 1000 + s * 7919));
+  const mean = zs.reduce((a, b) => a + b, 0) / S;
+  const sd = Math.sqrt(zs.reduce((a, z) => a + (z - mean) ** 2, 0) / (S - 1));
+  assert.ok(Math.abs(mean - 9) / 9 < 0.005,
+    'ensemble mean ' + mean + ' is more than 0.5 % from the closed form 9');
+  // The replicate spread must be the genuine 1/√N Monte-Carlo error (0.688 %
+  // of 9 = 0.062 at this N), not zero (one collapsed stream) and not wild.
+  assert.ok(sd > 0.02 && sd < 0.15,
+    'replicate sd ' + sd + ' is not the expected ~0.062 Monte-Carlo spread');
+});
+
+test('a ctx that passes rootKey as a bare number still varies with its seed', async () => {
+  // `foldIn` indexes its key as key[0]/key[1], so a NUMBER rootKey folds in
+  // [NaN, NaN] → [0, 0]: the seed is discarded and every seed draws the same
+  // stream. `_ensureRootKey` normalises a numeric rootKey through
+  // `keyFromSeed`. Without that, two different seeds give bit-identical masses
+  // and any seed-robustness claim in a ctx of this shape is vacuous — which is
+  // how a plain Monte-Carlo mass got mistaken for a biased deterministic one.
+  const src = BOX_2x3 + 'f(x, y) = x * y\nM = weighted(f, L)\n';
+  const massAt = async (seed: number) => {
+    const proc = processSource(src);
+    const built = orchestrator.buildDerivations(proc.bindings);
+    const w = createWorkerHandler();
+    w.handle({ type: 'init', seed });
+    const cache = new Map();
+    const ctx: any = {
+      derivations: built.derivations, bindings: built.bindings,
+      fixedValues: built.fixedValues || new Map(), sampleCount: 4096,
+      rootKey: seed, rootSeed: seed,
+      getMeasure: (n: string) => {
+        if (cache.has(n)) return cache.get(n);
+        const m = materialiser.materialiseMeasure(n, ctx); cache.set(n, m); return m;
+      },
+      sendWorker: (m: any) => Promise.resolve(w.handle(m)),
+    };
+    return (await ctx.getMeasure('M')).logTotalmass;
+  };
+  assert.notEqual(await massAt(7), await massAt(1),
+    'a numeric rootKey collapsed both seeds onto one stream');
 });
 
 test('a CONSTANT weight over a box scales the mass exactly', async () => {

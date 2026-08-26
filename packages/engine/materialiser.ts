@@ -1955,10 +1955,17 @@ function makeTracingStage(opts?: TracingStageOpts): MaterialiserStage {
 // — because hosts (viewer plot-plan.ts, tests in kernel-broadcast.test.ts)
 // can land at any of those without going through materialiseMeasure
 // first. Idempotent and cheap (one assignment after the first call).
+// A host that passes `rootKey` as a bare uint32 (the `rootSeed` spelling) is
+// normalised here too. `foldIn` indexes its key as `key[0]`/`key[1]`, so a
+// number keys every stream from `[NaN, NaN] → [0, 0]`: the seed is discarded
+// entirely and EVERY seed produces the identical draw sequence.
 function _ensureRootKey(ctx: any): void {
-  if (ctx && ctx.rootKey == null && ctx.rootSeed != null) {
-    ctx.rootKey = rng.keyFromSeed(ctx.rootSeed | 0);
+  if (!ctx) return;
+  if (ctx.rootKey == null) {
+    if (ctx.rootSeed != null) ctx.rootKey = rng.keyFromSeed(ctx.rootSeed | 0);
+    return;
   }
+  if (!Array.isArray(ctx.rootKey)) ctx.rootKey = rng.keyFromSeed(ctx.rootKey | 0);
 }
 
 function materialiseMeasure(name: string, ctx: any, opts?: any): Promise<EmpiricalMeasure> {
