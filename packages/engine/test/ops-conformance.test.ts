@@ -129,7 +129,10 @@ function arbSquareMat(maxN = 5): any {
 }
 
 // Random SPD matrix: generate L lower-triangular with positive
-// diagonal, return L · Lᵀ. Always positive definite by construction.
+// diagonal, return L · Lᵀ. Positive definite by construction, and — see
+// the diagonal below — conditioned well enough to stay positive definite
+// in DOUBLE PRECISION too, which is the property that actually matters
+// to a caller.
 function arbSPD(maxN = 5): any {
   return fc.integer({ min: 1, max: maxN }).chain((n: any) =>
     fc.array(arbReal, { minLength: n * n, maxLength: n * n })
@@ -139,10 +142,21 @@ function arbSPD(maxN = 5): any {
         let idx = 0;
         for (let i = 0; i < n; i++) {
           const row: number[] = new Array(n).fill(0);
-          for (let j = 0; j <= i; j++) row[j] = vals[idx++];
-          // Force a positive, non-tiny diagonal so det(L) is bounded
-          // away from zero.
-          row[i] = Math.abs(row[i]) + 1.0;
+          for (let j = 0; j < i; j++) row[j] = vals[idx++];
+          const diagDraw = vals[idx++];
+          // The diagonal must dominate the row's off-diagonal norm, not
+          // merely be positive. `abs(x) + 1` alone bounds det(L) away
+          // from zero but bounds nothing about CONDITIONING: with
+          // off-diagonals up to 1e3 and a diagonal as small as 1, the
+          // exactly-SPD `A = L·Lᵀ` reaches cond ~9e18 and its smallest
+          // eigenvalue lands at −5e-17 in float64 — numerically
+          // indefinite, so a double-precision Cholesky refuses on a
+          // non-positive pivot and the property under test never runs.
+          // Adding the off-diagonal norm holds cond(A) = cond(L)² near
+          // 1e7 or below, where the factorization is meaningful.
+          let offSq = 0;
+          for (let j = 0; j < i; j++) offSq += row[j] * row[j];
+          row[i] = Math.abs(diagDraw) + 1.0 + Math.sqrt(offSq);
           L.push(row);
         }
         // A = L · Lᵀ.
