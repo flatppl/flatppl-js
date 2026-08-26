@@ -224,12 +224,23 @@ test('§06: integer literal weights sum exactly (1 + 0 is a mixture, 1 + 1 is no
     'finite');
 });
 
-test('§06: a negative weight is refused — a signed combination is not a mixture', () => {
-  // The declared decimals do sum to one; the component with weight
-  // -0.5 is not a measure, so the sum is not a mixture.
+test('§06: a negative weight is refused AT THE WEIGHT — a signed combination is '
+  + 'not a mixture', () => {
+  // The declared decimals do sum to one; the component with weight -0.5 is
+  // not a measure, so the sum is not a mixture.
+  //
+  // This used to arrive as a draw-mass refusal: the sum-to-one proof declined
+  // the negative weight, `m` fell to mass `finite`, and the gate reported that
+  // `x ~ m` needs a probability measure. §06 refuses the WEIGHT itself now
+  // ("f is a non-negative weight"), which is both earlier and the actual
+  // diagnosis — the reader was previously told the mixture was unnormalized,
+  // not that a weight was negative. `weighted` then has no measure type, so
+  // there is no mass class left to classify and no second refusal to make.
   const src = `m = superpose(weighted(-0.5, ${N0}), weighted(1.5, ${N1}))\nx ~ m`;
-  assert.equal(massOf(src, 'm'), 'finite');
-  assert.equal(gateErrors(src).length, 1);
+  const sign = errorsOf(src).filter((mm) => /non-negative weight/.test(mm));
+  assert.ok(sign.length >= 1, `want a sign refusal, got ${JSON.stringify(errorsOf(src))}`);
+  assert.match(sign[0], /-0\.5/);
+  assert.equal(massOf(src, 'm'), undefined);
 });
 
 test('§06: an unnormalized component defeats the literal proof', () => {

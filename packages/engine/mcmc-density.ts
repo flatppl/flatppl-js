@@ -644,7 +644,9 @@ async function buildLogPi(
       // (a broadcast axis mismatch, say) is a probe artifact and NOT evidence
       // that the likelihood is intractable. Treating every throw as a verdict
       // reddened six legitimate models.
-      if (err && err.undefinedNormalize) {
+      // `modelRefusal` is the same contract for a §06 violation the walker
+      // reports at the weight (a negative or NaN `weighted` weight).
+      if (err && (err.undefinedNormalize || err.modelRefusal)) {
         throw new Error('the likelihood has no tractable density: '
           + (err.message ? err.message : String(err)));
       }

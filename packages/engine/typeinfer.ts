@@ -1058,7 +1058,41 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       });
       return T.failed(op + ' arg 1');
     }
+    // §06 `weighted`: "f is a NON-NEGATIVE weight". A negative constant makes
+    // weighted(w, M) a signed set function, which has no density and no mass
+    // to normalize by — and the density walker used to map it to log 0, i.e.
+    // answer with the measure that has the component DELETED. Only `weighted`
+    // is checked: a `logweighted` weight is exp(logweight), so a negative
+    // log-weight is an ordinary weight below one.
+    if (op === 'weighted') {
+      const wv = _constWeight(args[0]);
+      if (wv != null && (Number.isNaN(wv) || wv < 0)) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'weighted: the weight is ' + (Number.isNaN(wv) ? 'not a number' : wv)
+            + ', but §06 requires a non-negative weight ("f is a non-negative '
+            + 'weight") — a negative weight makes weighted(w, M) a signed '
+            + 'measure, not a measure. A ZERO weight is legal.',
+          loc: args[0].loc,
+        });
+        return T.failed(op + ' arg 1 sign');
+      }
+    }
     return mT;  // result is the same measure type
+  }
+
+  // A constant weight's value, or null when it is not one this reads. `-0.3`
+  // lowers to `neg(0.3)`, so the sign lives in a call and a literal-only
+  // check would miss every negative weight written the obvious way.
+  function _constWeight(ir: any): number | null {
+    if (!ir) return null;
+    if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
+    if (ir.kind === 'call' && (ir.op === 'neg' || ir.op === 'uminus')
+        && (ir.args || []).length === 1) {
+      const inner = _constWeight(ir.args[0]);
+      return inner == null ? null : -inner;
+    }
+    return null;
   }
 
   function inferTransposeAdjoint(expr: any, scopes: any): any {

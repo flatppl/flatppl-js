@@ -164,6 +164,69 @@ function _dim(d: any): number | null {
   return (typeof d === 'number' && Number.isInteger(d) && d > 0) ? d : null;
 }
 
+// A numeric AST node as its value, or null when it is not a constant this
+// reads. `-0.3` parses as a unary minus over a NumberLiteral, so the sign
+// lives outside the literal and a NumberLiteral-only check would miss every
+// negative weight written the obvious way.
+function _constNumber(node: any): number | null {
+  if (!node) return null;
+  if (node.type === 'NumberLiteral' && typeof node.value === 'number') return node.value;
+  if (node.type === 'UnaryExpr' && (node.op === '-' || node.op === 'neg')) {
+    const inner = _constNumber(node.operand);
+    return inner == null ? null : -inner;
+  }
+  if (node.type === 'UnaryExpr' && (node.op === '+' || node.op === 'pos')) {
+    return _constNumber(node.operand);
+  }
+  return null;
+}
+
+// The array-literal weight vector, reached inline or through the named
+// binding (and an alias chain). Returns its element nodes, or null.
+function _weightElements(node: any, body: any[]): any[] | null {
+  let n = node;
+  const seen = new Set<string>();
+  while (n && n.type === 'Identifier' && !seen.has(n.name)) {
+    seen.add(n.name);
+    n = _rhsOf(n.name, body);
+  }
+  return (n && n.type === 'ArrayLiteral' && Array.isArray(n.elements))
+    ? n.elements : null;
+}
+
+// §06 `ksuperpose`: `weights` "must be non-negative but need not be
+// normalized". PER WEIGHT — a non-negative TOTAL is no defence, because a
+// negative component makes the superposition a signed set function with no
+// density, and `normalize` would divide by a mass that never was one. Zero
+// stays legal: §06 gives it a meaning ("when every weight is zero it is the
+// zero measure"). Only constants are read here; a weight that needs the
+// runtime is caught by the density walker's per-atom check.
+function _checkWeightSigns(weightsNode: any, body: any[], lift: any, diagnostics: any[]): boolean {
+  const els = _weightElements(weightsNode, body);
+  if (els == null) return true;
+  for (let i = 0; i < els.length; i++) {
+    const v = _constNumber(els[i]);
+    if (v == null) continue;
+    if (Number.isNaN(v)) {
+      _err(diagnostics, `ksuperpose: weight #${i + 1} is not a number, but §06 `
+        + 'requires the weights to be non-negative — a NaN weight has no mass '
+        + 'to contribute and the mixture cannot be scored or sampled',
+        (els[i] && els[i].loc) || (weightsNode && weightsNode.loc) || lift.loc);
+      return false;
+    }
+    if (v < 0) {
+      _err(diagnostics, `ksuperpose: weight #${i + 1} is ${v}, but §06 requires `
+        + 'the weights to be non-negative ("It must be non-negative but need '
+        + 'not be normalized") — a negative weight makes the component a '
+        + 'signed measure, not a measure, whatever the other weights sum to. '
+        + 'A ZERO weight is legal and drops the component out.',
+        (els[i] && els[i].loc) || (weightsNode && weightsNode.loc) || lift.loc);
+      return false;
+    }
+  }
+  return true;
+}
+
 function _err(diagnostics: any[], message: string, loc: any) {
   diagnostics.push({ severity: 'error', message, loc });
 }
@@ -185,7 +248,7 @@ function _componentArg(spec: any, i: number, sloc: any): any {
 // Rewrite one `ksuperpose(K, w)(family…)` application. Returns the
 // `superpose(...)` replacement, or `call` unchanged when §06 makes the
 // application a static error or when the rewrite is refused.
-function _expandApplication(call: any, lift: any, bindings: any, diagnostics: any[]): any {
+function _expandApplication(call: any, lift: any, bindings: any, diagnostics: any[], body: any[]): any {
   const sloc = { ...call.loc, synthetic: true, source: 'ksuperpose-expand' };
   const liftArgs = lift.args || [];
   if (liftArgs.length !== 2 || liftArgs.some((a: any) => a && a.type === 'KeywordArg')) {
@@ -206,6 +269,7 @@ function _expandApplication(call: any, lift: any, bindings: any, diagnostics: an
       + 'count N', weightsNode.loc || lift.loc);
     return call;
   }
+  if (!_checkWeightSigns(weightsNode, body, lift, diagnostics)) return call;
 
   // Family arguments, in the application's own order and naming. Nothing
   // here needs the component's parameter names: each argument is handed to
@@ -313,7 +377,7 @@ function _rewrite(node: any, bindings: any, diagnostics: any[], body: any[]): an
       // nested application.
       const inner = _rewrite(node.args, bindings, diagnostics, body);
       const call = inner === node.args ? node : { ...node, args: inner };
-      return _expandApplication(call, lift, bindings, diagnostics);
+      return _expandApplication(call, lift, bindings, diagnostics, body);
     }
   }
   let out: any = node;
