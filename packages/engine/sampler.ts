@@ -654,7 +654,14 @@ function _reduceRowAxis(col: any, opName: string): any {
       let m = Infinity; for (let i = 0; i < N; i++) { const x = data[i * cellLen + j]; if (x < m) m = x; }
       out[j] = m;
     } else if (opName === 'var' || opName === 'std') {
-      if (N <= 1) { out[j] = 0; continue; }
+      // n = 1 is undefined (spec §04 "Relationship to broadcasting",
+      // §07's formula gives 0/0) — throws like the bare-head ARITH_OPS
+      // var/std. n = 0 is left as-is: out of scope here, not touched by
+      // the empty-array ruling for this row-axis (matrix-column) path.
+      if (N === 1) {
+        throw new Error(`${opName}: undefined over a single element — the formula's n-1 divisor is 0 (spec §04 "Relationship to broadcasting")`);
+      }
+      if (N === 0) { out[j] = 0; continue; }
       let s = 0; for (let i = 0; i < N; i++) s += data[i * cellLen + j];
       const mu = s / N;
       let v = 0; for (let i = 0; i < N; i++) { const d = data[i * cellLen + j] - mu; v += d * d; }
@@ -1793,20 +1800,17 @@ const ARITH_OPS = {
   // n. n = 0 has none to divide by — the empty-array ruling makes that
   // an error, not the 0/0 the formula would otherwise produce.
   //
-  // n = 1 returns 0 here, but that is a KNOWN §04 NONCONFORMANCE, not a
-  // ruled answer: "Relationship to broadcasting" states var/std are
-  // undefined over a single element (0/0 in this same formula), and the
-  // Rust StableHLO emitter refuses it (crates/stablehlo/src/norms.rs).
-  // This 0 is the ddof=0 population estimator, a different formula from
-  // the ddof=1 sample estimator §07 states — see TODO-flatppl-js.md.
-  // Not fixed here: out of scope for the empty-array ruling, which
-  // adjudicates n = 0 only.
+  // n = 1 also throws: §04 "Relationship to broadcasting" states var
+  // and std "are undefined over a single element", and §07's own
+  // formula gives 0/0 at n = 1 — the same undefined case as n = 0, not
+  // a ruled 0. Matches the Rust StableHLO emitter's n < 2 refusal
+  // (crates/stablehlo/src/norms.rs).
   var: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'var');
     const arr = _arrLike(a);
     const n = arr.length;
     if (n === 0) throw new Error('var: undefined for an empty array — the formula divides by n-1 samples, and there are none (spec §07)');
-    if (n === 1) return 0;
+    if (n === 1) throw new Error('var: undefined over a single element — the formula\'s n-1 divisor is 0 (spec §04 "Relationship to broadcasting")');
     let s = 0;
     for (let i = 0; i < n; i++) s += arr[i];
     const mu = s / n;
@@ -1816,14 +1820,14 @@ const ARITH_OPS = {
   },
   // std = sqrt(var). Per spec §07 §sec:functions
   // (`std | xs | √var(x)`) so the Bessel correction in `var` flows
-  // through, including the n = 0 error (empty-array ruling) and the
-  // n = 1 §04 nonconformance (see the comment on `var`, above).
+  // through, including the n = 0 and n = 1 errors (see the comment on
+  // `var`, above).
   std: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'std');
     const arr = _arrLike(a);
     const n = arr.length;
     if (n === 0) throw new Error('std: undefined for an empty array — the formula divides by n-1 samples, and there are none (spec §07)');
-    if (n === 1) return 0;
+    if (n === 1) throw new Error('std: undefined over a single element — the formula\'s n-1 divisor is 0 (spec §04 "Relationship to broadcasting")');
     let s = 0;
     for (let i = 0; i < n; i++) s += arr[i];
     const mu = s / n;

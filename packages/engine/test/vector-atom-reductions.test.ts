@@ -78,9 +78,9 @@ test('var on Value (sample variance, spec §07 — Bessel-corrected)', () => {
   assert.ok(Math.abs(ARITH_OPS.var(v) - (20 / 3)) < 1e-12);
 });
 
-test('var on Value: n=1 returns 0 (sample variance undefined)', () => {
+test('var on Value: n=1 throws (§04, undefined over a single element)', () => {
   const v = valueLib.vector([42]);
-  assert.equal(ARITH_OPS.var(v), 0);
+  assert.throws(() => ARITH_OPS.var(v), /var: undefined over a single element/);
 });
 
 test('l1norm / l2norm on Value', () => {

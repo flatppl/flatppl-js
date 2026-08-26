@@ -901,6 +901,17 @@ inBothModes('aggregate: column variance with sample-variance (Bessel) semantics'
   assert.ok(Math.abs(got[2] -  8) < 1e-10);
 });
 
+inBothModes('aggregate: var over a length-1 reduce axis throws (§04, undefined over a single element)',
+  'aggregate', () => {
+  // Each output row reduces over .j, and .j has length 1 — the same
+  // undefined case as var([x]) (spec §04 "Relationship to
+  // broadcasting"), so the reduction must throw rather than return 0.
+  const M = [[1], [2], [3]];
+  const src = 'V = aggregate(var, [.i], M[.i, .j])';
+  assert.throws(() => evalAggregateRHS(src, 'V', { M }),
+    /var: undefined over a single element/);
+});
+
 inBothModes('aggregate: multi-axis prod over a non-trivial body (sum-of-getters)',
   'aggregate', () => {
   const A = [[1, 3, 5], [9, 5, 1]];
