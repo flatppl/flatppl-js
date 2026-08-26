@@ -16,6 +16,48 @@ import { resolveMeasureAlias } from './util.js';
 // lazy-load of engine-facade; not refactored as part of the typecheck
 // cleanup.
 declare function require(id: string): any;
+
+/**
+ * True when every element of a `tuple` inferredType is a rank-1 array
+ * of the same literal length — the fixed-tuple-of-paired-columns shape
+ * (`paired = (xs, ys)`). A 2-tuple of scalars, a mixed tuple, or a
+ * tuple with a dynamic-length element returns false and stays on the
+ * text (`fixed-record`) path.
+ */
+export function fixedTupleColumnMode(inferredType: any): boolean {
+  const elems = inferredType && inferredType.elems;
+  if (!Array.isArray(elems) || elems.length === 0) return false;
+  let len: number | null = null;
+  for (const e of elems) {
+    if (!e || e.kind !== 'array' || e.rank !== 1 || !Array.isArray(e.shape)
+        || typeof e.shape[0] !== 'number') {
+      return false;
+    }
+    if (len === null) len = e.shape[0];
+    else if (e.shape[0] !== len) return false;
+  }
+  return true;
+}
+
+/**
+ * Provenance axis labels for a fixed tuple plan: element `i`'s label
+ * is the referenced binding name when the RHS is a literal tuple
+ * construction (`(xs, ys)`, lowered to `{op:'tuple', args}` — verified
+ * live against the parser/lowerer, NOT `'vector'`, which is the array-
+ * literal `[...]` op) and element `i` is a bare self-ref; otherwise
+ * `name[i+1]`. Returns null when the RHS isn't a literal tuple
+ * construction at all, so the caller falls back to `listScalarAxes`'s
+ * own `[k]` labels.
+ */
+export function tupleAxisLabelsFromIR(name: string, rhsIR: any): string[] | null {
+  if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'tuple' || !Array.isArray(rhsIR.args)) {
+    return null;
+  }
+  return rhsIR.args.map(function(a: any, i: number) {
+    return (a && a.kind === 'ref' && a.ns === 'self') ? a.name : (name + '[' + (i + 1) + ']');
+  });
+}
+
 export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan | null {
   if (!binding || !ctx.derivationsState) return null;
   const name = binding.name;
@@ -288,7 +330,25 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     // per-atom evaluator coerced the opaque object to a Float64
     // entry).
     if (typeKind === 'rngstate') return null;
-    if (typeKind === 'record' || typeKind === 'tuple') {
+    if (typeKind === 'tuple') {
+      // A fixed tuple of equal-length rank-1 arrays is a set of
+      // paired columns (e.g. `paired = (xs, ys)`) — plot it as record
+      // marginals over the materialised elements, same as a record of
+      // arrays. A fixed 2-tuple of SCALARS stays text below: it is a
+      // single point, and there is no heatmap of one point.
+      if (fixedTupleColumnMode(inferredType)) {
+        const out: any = { name: name, mode: 'tuple' };
+        // .ir lives on the LIFTED bindings map (derivationsState.bindings),
+        // not the unlifted ctx.currentBindings `binding` passed in here —
+        // same distinction the implicit-kernel branch above relies on.
+        const liftedBinding = ctx.derivationsState.bindings && ctx.derivationsState.bindings.get(name);
+        const axisLabels = tupleAxisLabelsFromIR(name, liftedBinding && liftedBinding.ir);
+        if (axisLabels) out.axisLabels = axisLabels;
+        return out;
+      }
+      return { name: name, mode: 'fixed-record' };
+    }
+    if (typeKind === 'record') {
       return { name: name, mode: 'fixed-record' };
     }
     // Static numeric arrays take the dedicated step-plot / matrix

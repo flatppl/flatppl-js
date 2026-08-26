@@ -7,7 +7,7 @@
 // re-target the plot pane.
 
 import { buildPlotPlan } from './plot-plan.js';
-import { renderFixedRecord, renderKernelSampleForCurrent } from './render-kernel.js';
+import { renderFixedRecord, renderFixedTuple, renderKernelSampleForCurrent } from './render-kernel.js';
 
 import { getMeasure } from './engine-facade.js';
 import { applyRememberedSelections, rememberPlanSelections } from './overrides.js';
@@ -97,6 +97,13 @@ export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean })
   // broadcast) fall through to the sample histogram path.
   if (ctx.currentPlotPlan.mode === 'fixed-record') {
     renderFixedRecord(ctx, ctx.currentPlotPlan);
+    return;
+  }
+  // mode='tuple': a fixed tuple of equal-length rank-1 arrays (paired
+  // columns) — render record marginals over the materialised elements,
+  // same as any other array-of-columns record.
+  if (ctx.currentPlotPlan.mode === 'tuple') {
+    renderFixedTuple(ctx, ctx.currentPlotPlan);
     return;
   }
   // mode='fixed-scalar' falls through to the sample pipeline
