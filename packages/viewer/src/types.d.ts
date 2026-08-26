@@ -172,7 +172,7 @@ export type Plan =
 /** Per-record-binding selection state set up by renderRecordMarginals. */
 export interface RecordSelection {
   bindingName: string;
-  mode: 'correlations' | 'marginals' | 'table';
+  mode: 'correlations' | 'marginals' | 'table' | 'joint2d';
   /** Per-axis selection (correlations mode) — list of axis keys. */
   selected: string[];
   /** Group-level selection (marginals mode) — list of group keys. */

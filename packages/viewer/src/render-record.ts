@@ -8,7 +8,7 @@
 // formatConstantMeasure detect + format constant measures.
 
 import type { Ctx } from './types';
-import { renderCornerGrid, renderDensityStrips } from './render-density.js';
+import { renderCornerGrid, renderDensityStrips, renderJointField } from './render-density.js';
 import { renderRecordTable } from './render-table.js';
 import { detectGeneratedQuantities, fixedEnvFor } from './generated-quantities.js';
 import { buildInferenceControl } from './render-controls.js';
@@ -297,6 +297,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     // on a previous pass (display:grid for cornerGrid; flex for
     // strips). We re-establish from scratch each draw.
     chartHostRef.style.display = '';
+    chartHostRef.style.flexDirection = '';
     chartHostRef.style.gridTemplateColumns = '';
     chartHostRef.style.gridTemplateRows = '';
     chartHostRef.style.gap = '';
@@ -314,6 +315,8 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
         if (!ppcBuilt) ensurePpc();
         renderCornerGrid(ctx, chartHostRef, dm, bindingName);
       }
+    } else if (ctx.recordSelection!.mode === 'joint2d') {
+      renderJointField(ctx, chartHostRef, dm, rerenderChart);
     } else if (ctx.recordSelection!.mode === 'table') {
       renderRecordTable(ctx, chartHostRef, dm, bindingName);
     } else if (ctx.recordSelection!.mode === 'marginals') {
@@ -390,6 +393,11 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
     { key: 'marginals',    label: 'Marginals',    title: 'One column per axis with vertical density shading; plots every axis' },
     { key: 'table',        label: 'Table',        title: 'Summary-statistics table: per-variate mean, std, median, credible interval, ESS, R̂, MCSE, and an inline histogram' },
   ];
+  // Needs two axes to have a plane to bin over. A third selected axis takes
+  // over the colour (its per-bin weighted mean) — see renderJointField.
+  if (axes.length >= 2) {
+    MODE_OPTIONS.push({ key: 'joint2d', label: 'Joint 2D', title: 'Binned joint density of the first two selected variates as a colour surface, with 68% / 95% credible contours; a third selected variate takes over the colour as its per-bin weighted mean' });
+  }
   if (ppcAvailable) {
     MODE_OPTIONS.push({ key: 'ppc', label: 'Posterior predictive', title: 'Replicated observations forward-sampled at each posterior draw, overlaid on the observed data' });
   }
@@ -436,7 +444,9 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
   // checkboxes, capped at CORRELATIONS_MAX_AXES); group-level
   // selector in marginals mode (one entry per name-prefix —
   // obs[1]…obs[10] collapse into a single "obs" toggle).
-  if (ctx.recordSelection!.mode === 'correlations') {
+  // Joint 2D reads the same per-axis selection, positionally: the first three
+  // checked axes are x, y and colour.
+  if (ctx.recordSelection!.mode === 'correlations' || ctx.recordSelection!.mode === 'joint2d') {
     const sep = document.createElement('div');
     sep.style.width = '1px';
     sep.style.alignSelf = 'stretch';
