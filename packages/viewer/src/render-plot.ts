@@ -80,7 +80,8 @@ export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean })
   // Profile mode (function / likelihood bindings) dispatches to
   // its own worker primitive (profileN) and renderer; the rest
   // of this function handles the sample-mode pipeline.
-  if (ctx.currentPlotPlan.mode === 'profile') {
+  if (ctx.currentPlotPlan.mode === 'profile'
+      || ctx.currentPlotPlan.mode === 'profile-grid') {
     renderProfilePlotForCurrent(ctx);
     return;
   }
@@ -246,7 +247,8 @@ export function updatePlotForBinding(ctx: Ctx, bindingName: string | null, opts?
   // matchedPresets / matchedDomains — i.e. 'profile' and 'kernel-sample'.
   // Use any-cast through the union; tightening per-mode lands when
   // each renderer's narrows tighten.
-  if (plan && (plan.mode === 'profile' || plan.mode === 'kernel-sample')) {
+  if (plan && (plan.mode === 'profile' || plan.mode === 'profile-grid'
+      || plan.mode === 'kernel-sample')) {
     const p: any = plan;
     if (ctx.pendingPresetName != null) {
       const pn = ctx.pendingPresetName;

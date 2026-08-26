@@ -101,10 +101,14 @@ export interface PlanBase {
 }
 
 export interface ProfilePlan extends PlanBase {
-  mode: 'profile';
+  // 'profile-grid' is the same plan under a second axis: the Surface toggle in
+  // the profile toolbar flips the mode, buildPlotPlan never emits it.
+  mode: 'profile' | 'profile-grid';
   signature: any;
   axes: any[];
   sweepKey: string;
+  /** The y (grid) axis in 'profile-grid' mode. Unused in 'profile' mode. */
+  gridKey?: string | null;
   matchedPresets: any[];
   presetName: string | null;
   outputs: any[];

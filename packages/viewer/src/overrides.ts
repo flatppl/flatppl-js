@@ -248,6 +248,17 @@ export function applyRememberedSelections(ctx: Ctx, plan: any) {
       && plan.axes.some(function(a: any) { return a.key === mem.sweepKey; })) {
     plan.sweepKey = mem.sweepKey;
   }
+  // Surface mode and its y axis ride the same memory as the sweep axis, so a
+  // source edit or a click away and back keeps the surface up.
+  if (mem.gridKey
+      && plan.axes
+      && plan.axes.some(function(a: any) { return a.key === mem.gridKey; })) {
+    plan.gridKey = mem.gridKey;
+  }
+  if (mem.mode === 'profile-grid' && plan.mode === 'profile'
+      && plan.axes && plan.axes.length > 1) {
+    plan.mode = 'profile-grid';
+  }
   if (mem.outputKey
       && plan.outputs
       && plan.outputs.some(function(o: any) { return o.key === mem.outputKey; })) {
@@ -277,6 +288,8 @@ export function rememberPlanSelections(ctx: Ctx, plan: any) {
   if (!plan || !plan.name) return;
   ctx.planMemoryByName.set(plan.name, {
     sweepKey: plan.sweepKey || null,
+    gridKey: plan.gridKey || null,
+    mode: plan.mode || null,
     outputKey: plan.outputKey || null,
     presetName: plan.presetName || null,
     domainName: plan.domainName || null,
