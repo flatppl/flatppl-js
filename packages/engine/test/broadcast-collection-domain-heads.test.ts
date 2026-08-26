@@ -249,28 +249,137 @@ test('a user-fn head wrapping the reduction refuses too', () => {
     [4, 6], 'mySum.(v, w)');
 });
 
-test('a COMPOUND broadcast body is outside the rule — a known gap, not a silent pass', () => {
-  // The gate resolves the head only when the body is the head applied to the
-  // head's own params, in order. `fn(sum(_) + 1.0)` has `add` at its
-  // outermost node, so the inner `sum` over a scalar cell is NOT refused —
-  // the same scope the Rust rule has, where such a body is a `functionof`
-  // head its own rule does not see either.
-  //
-  // This is the bare-call domain gap in per-cell clothing: `sum(<scalar>)`
-  // types clean anywhere, dotted or not, because `types.ts` declares the slot
-  // `any()`. Unchanged from BASE, where this program also evaluated to
-  // `[1.0, 1.0]`. Pinned so closing it is a deliberate act; tracked as a LEFT
-  // item in flatppl-dev/TODO-flatppl-js.md.
-  const src = 'v = [1.0, 2.0]\ny = fn(sum(_) + 1.0).(v)\n';
-  assert.deepEqual(errorsOf(src), []);
-  assertClose(valueOfY(src), [1, 1], 'compound body (still wrong, still pinned)');
-  // The bare calls it rests on produce NUMBERS, not merely a clean type, which
-  // is the measured half of that card.
-  assert.equal(valueOfY('y = sum(2.0)\n'), 0, 'sum(<scalar>) = 0');
-  assert.equal(valueOfY('y = lany(true)\n'), false, 'lany(<scalar>) = false');
-  // `transpose(<scalar>)` is `inferTransposeAdjoint`'s silent `T.failed` with no
-  // diagnostic — closed on the broadcast path, still open for a bare call.
-  assert.deepEqual(errorsOf('y = transpose(2.0)\n'), []);
+// =====================================================================
+// 1b. The same domain, enforced on the BARE call
+// =====================================================================
+//
+// `refuseCollectionDomainHead` resolves a broadcast head only when the body is
+// the head applied to the head's own params, in order, so a COMPOUND body —
+// `fn(sum(_) + 1.0)`, whose outermost node is `add` — escaped it. That is the
+// same scope the Rust rule has (`flatppl-rust` #186).
+//
+// The gap was never really about broadcast: `sum(<scalar>)` types clean
+// ANYWHERE, dotted or not, because `types.ts` declares the slot `any()` (the
+// type AST cannot say "array of any rank"). So §07's domain is now enforced on
+// the bare call in `inferCall`, which closes both at once. A compound
+// broadcast body is inferred per cell with the param bound to the cell type,
+// so the bare gate fires inside it with the diagnostic on the inner call.
+
+test('a COMPOUND broadcast body refuses over a scalar cell', () => {
+  // At BASE this compiled clean and evaluated to `[1.0, 1.0]` — `sum(1.0)` and
+  // `sum(2.0)` both being 0.
+  const errs = errorsOf('v = [1.0, 2.0]\ny = fn(sum(_) + 1.0).(v)\n');
+  assert.equal(errs.length, 1, JSON.stringify(errs));
+  assert.ok(errs[0].startsWith('sum: spec §07 "Reductions"'), errs[0]);
+  assert.ok(errs[0].includes('real/complex arrays'), errs[0]);
+  assert.ok(errs[0].includes('spec §03 defines no rank-0 array'), errs[0]);
+  // Reversed operand order, and a second head, reach the same refusal.
+  assert.equal(errorsOf('v = [1.0, 2.0]\ny = fn(1.0 + sum(_)).(v)\n').length, 1);
+  assert.equal(errorsOf('v = [1.0, 2.0]\ny = fn(mean(_) * 2.0).(v)\n').length, 1);
+});
+
+test('a COMPOUND body over a NESTED operand still answers, and answers right', () => {
+  // §03: a vector of vectors has ONE axis, so the cell is an inner VECTOR,
+  // which IS in `sum`'s domain. Hand-computed: sum([1,2,3]) + 1 = 7,
+  // sum([4,5,6]) + 1 = 16. This was already right at BASE and must stay so —
+  // the bare gate must not fire on an array cell.
+  assertClose(
+    valueOfY('vv = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]\ny = fn(sum(_) + 1.0).(vv)\n'),
+    [7, 16], 'fn(sum(_) + 1.0).(vv)');
+  // A pointwise compound body over a flat operand is untouched.
+  assertClose(valueOfY('v = [1.0, 2.0]\ny = fn(_ * 2).(v)\n'), [2, 4], 'fn(_ * 2).(v)');
+});
+
+test('the same fn applied to the WHOLE collection is legal', () => {
+  // No broadcast, so `sum` receives the vector it asks for. sum([1,2]) + 1 = 4.
+  assertClose(valueOfY('v = [1.0, 2.0]\nf = fn(sum(_) + 1.0)\ny = f(v)\n'), [4], 'f(v)');
+  assertClose(valueOfY('v = [1.0, 2.0]\ny = sum(v) + 1.0\n'), [4], 'sum(v) + 1.0');
+});
+
+// Every bare spelling that produced a silent value at BASE, with the value it
+// produced. `null` / `undefined` / an empty array are as silent as a number —
+// they reach `y` with no diagnostic — so all of them are pinned by name.
+const BARE_SILENT: Array<[string, string]> = [
+  ['sum(2.0)', '0'],
+  ['sum(2)', '0'],
+  ['prod(2.0)', '1'],
+  ['mean(2.0)', 'null'],
+  ['var(2.0)', 'null'],
+  ['std(2.0)', 'null'],
+  ['maximum(2.0)', 'null'],
+  ['minimum(2.0)', 'null'],
+  ['median(2.0)', 'undefined'],
+  ['quantile(2.0, 0.5)', 'undefined'],
+  ['lengthof(2.0)', 'undefined'],
+  ['sizeof(2.0)', 'empty array'],
+  ['indicesof(2.0)', 'empty array'],
+  ['indicesof0(2.0)', 'empty array'],
+  ['lany(true)', 'false'],
+  ['lall(true)', 'true'],
+  ['transpose(2.0)', 'empty array'],
+  ['adjoint(2.0)', 'empty array'],
+  ['tile(2.0, 2)', 'undefined'],
+  ['rowstack(2.0)', 'empty 0x0 matrix'],
+];
+
+for (const [call, wasValue] of BARE_SILENT) {
+  const head = call.slice(0, call.indexOf('('));
+  test(`bare ${call} refuses (at BASE: ${wasValue})`, () => {
+    const errs = errorsOf('y = ' + call + '\n');
+    assert.equal(errs.length, 1, call + ': ' + JSON.stringify(errs));
+    const row = COLLECTION_DOMAIN_HEADS.get(head);
+    assert.ok(errs[0].startsWith(head + ': spec §07 "' + row.section + '"'), errs[0]);
+    assert.ok(errs[0].includes(row.domains), head + ': quotes its cell — ' + errs[0]);
+    assert.ok(errs[0].includes('spec §03 defines no rank-0 array'), errs[0]);
+  });
+}
+
+test('the bare refusal is attached to the call, and only to the scalar argument', () => {
+  const r = processSource('y = sum(2.0)\n');
+  const errs = (r.diagnostics || []).filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 1);
+  assert.equal(errs[0].loc.start.line, 0);
+  assert.equal(errs[0].loc.start.col, 4);
+});
+
+test('the bare gate leaves every in-domain call alone', () => {
+  // Flat vector, matrix, table column-wise reduction, and the nested reading.
+  assertClose(valueOfY('y = sum([1.0, 2.0, 3.0])\n'), [6], 'sum(v)');
+  assertClose(valueOfY('M = rowstack([[1.0, 2.0], [3.0, 4.0]])\ny = sum(M)\n'), [10],
+    'sum(M)');
+  assert.deepEqual(
+    valueOfY('t = table(a = [1.0, 2.0], b = [3.0, 4.0])\ny = sum(t)\n'),
+    { a: 3, b: 7 }, 'sum(<table>) stays the column-wise record');
+  assertClose(valueOfY('y = sum([[1.0, 2.0], [3.0, 4.0]])\n'), [10], 'sum(vv)');
+  assert.deepEqual(errorsOf('y = lengthof([1.0, 2.0])\n'), []);
+  assert.deepEqual(errorsOf('y = transpose([1.0, 2.0])\n'), []);
+});
+
+test('an `any` or deferred argument decides nothing and is not refused', () => {
+  // A `functionof` boundary with no declared type infers `any`; refusing there
+  // would reject a call whose argument may well be a collection at every use.
+  assert.deepEqual(
+    errorsOf('g = functionof(sum(_a_), a = _a_)\ny = g([1.0, 2.0])\n'), []);
+});
+
+test('the carve-outs and the signature-refusing heads are unchanged', () => {
+  // §07's `min`/`max` (Domains `reals`) and `cat` admit a scalar, so the bare
+  // gate must not reach them either.
+  assertClose(valueOfY('y = max(2.0, 3.0)\n'), [3], 'max(2.0, 3.0)');
+  assertClose(valueOfY('y = cat(1.0, 2.0)\n'), [1, 2], 'cat(1.0, 2.0)');
+  // These five already refused at BASE, on their SIGNATURE — their `types.ts`
+  // slot is a real array type, so `unify` rejected a scalar. The gate runs
+  // before the signature check, so they now carry the §07 domain message
+  // instead. Same verdict, one message for one rule, and the wording no longer
+  // depends on whether the type AST happens to be able to express the domain.
+  for (const call of ['cumsum(2.0)', 'l2norm(2.0)', 'reverse(2.0)',
+                      'diagmat(2.0)', 'det(2.0)']) {
+    const head = call.slice(0, call.indexOf('('));
+    const errs = errorsOf('y = ' + call + '\n');
+    assert.equal(errs.length, 1, call);
+    assert.ok(errs[0].startsWith(head + ': spec §07 "'), call + ': ' + errs[0]);
+    assert.ok(errs[0].includes(COLLECTION_DOMAIN_HEADS.get(head).domains), errs[0]);
+  }
 });
 
 test('a scalar in the FIRST argument refuses even when a later argument is a collection', () => {

@@ -430,6 +430,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const splatFailure = _applyBuiltinSplat(expr, scopes);
     if (splatFailure) return write(splatFailure, expr);
 
+    // §07's collection domain, on the BARE call, for the same reason and from
+    // the same table. Sited here for the reason the splat is: many of these
+    // heads have a dedicated typing path (`transpose`, the table reductions,
+    // `reverse`) and only some reach `inferGenericCall`, so one site before the
+    // switch is the whole surface.
+    const domainFailure = _refuseBareCollectionDomainCall(expr, scopes);
+    if (domainFailure) return write(domainFailure, expr);
+
     // Special-cased ops whose result type depends on actuals or
     // structural shape in ways that don't fit the static signature
     // table.
@@ -2821,6 +2829,63 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (ba.name !== params[i]) return null;
     }
     return body.op;
+  }
+
+  // Spec §07: a head whose Domains cell admits only collections has no meaning
+  // at a SCALAR argument — §03 defines no rank-0 array. Same table, same
+  // reasoning and same first-argument key as `refuseCollectionDomainHead`
+  // below, applied where the call is written plainly rather than under a
+  // `broadcast`. Returns a `failed` type when a diagnostic was pushed, else
+  // null.
+  //
+  // Fifteen of the table's heads declare their collection slot `any()` in
+  // `types.ts` — the type AST cannot express "array of any rank" — so the
+  // signature check admits a scalar and the runtime then reduces over nothing:
+  // `sum(2.0)` was 0, `prod(2.0)` was 1, `lany(true)` was false, `lall(true)`
+  // was true, `mean`/`var`/`std`/`maximum`/`minimum` were null, `median`/
+  // `quantile`/`lengthof`/`tile` undefined, `sizeof`/`indicesof`/`indicesof0`/
+  // `transpose`/`adjoint` an empty array, `rowstack` an empty 0x0 matrix. Every
+  // one of those is a silent wrong answer, not a refusal.
+  //
+  // Closing it here also closes the broadcast half's one remaining gap. A
+  // COMPOUND body — `fn(sum(_) + 1.0)`, whose outermost node is `add` — never
+  // resolves to `sum` in `broadcastHeadOpName`, so the dotted refusal did not
+  // see it and `fn(sum(_) + 1.0).(v)` evaluated to `[1.0, 1.0]` over
+  // `v = [1.0, 2.0]`. `inferBroadcast` infers the body per cell with each param
+  // bound to its cell type, so this gate fires on the inner `sum` with the
+  // diagnostic on that node. The nested reading stays legal in both halves: an
+  // ARRAY cell is in `sum`'s domain, so `fn(sum(_) + 1.0).(vv)` still answers
+  // [7, 16] over `[[1,2,3],[4,5,6]]`.
+  //
+  // Only the SCALAR case. `needsNestedCell`'s stricter "collection of
+  // collections" reading stays on the broadcast half, where the head is known
+  // to be receiving a cell; a bare `rowstack(<flat vector>)` is a separate
+  // pre-existing wrong answer recorded in flatppl-dev/TODO-flatppl-js.md.
+  function _refuseBareCollectionDomainCall(expr: any, scopes: any): any {
+    const head = expr.op;
+    if (!collectionDomain.isCollectionDomainHead(head)) return null;
+    const args = expr.args || [];
+    if (args.length === 0) return null;
+    // Probing the argument's type re-runs inference on it, which would emit any
+    // diagnostic of its own twice — once here and once on the real path below.
+    // Roll the log back to what it was and let the real path report them.
+    const mark = diagnostics.length;
+    const argT: any = inferExpr(args[0], scopes);
+    diagnostics.length = mark;
+    // Only a resolved scalar decides. `failed` is a cascade, and `any` /
+    // `deferred` is the common shape of an untyped `functionof` boundary, whose
+    // argument may be a collection at every actual use.
+    if (!argT || argT.kind !== 'scalar') return null;
+    const cellRow = collectionDomain.domainCellFor(head)!;
+    diagnostics.push({
+      severity: 'error',
+      message: head + ': spec §07 "' + cellRow.section + '" gives `' + head
+        + '` the domain ' + cellRow.domains + ' — argument 1 here is '
+        + T.show(argT) + ', and spec §03 defines no rank-0 array; pass a '
+        + 'collection',
+      loc: expr.loc,
+    });
+    return T.failed(head + ': collection-domain head over a scalar');
   }
 
   // Spec §04 + §07: a broadcast hands its head one ELEMENT, and a head whose
