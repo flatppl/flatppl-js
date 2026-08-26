@@ -181,13 +181,28 @@ function stepDistIR(step: any, prevIR: any): any {
  */
 function densityIR(d: any): any {
   const args: any[] = [];
+  const selfThreaded: string[] = [];
   for (let j = 0; j < d.n; j++) {
     const prevIR = (j === 0)
       ? d.initIR
       : { kind: 'ref', ns: 'self', name: 's' + (j - 1) };
+    if (j > 0) selfThreaded.push('s' + (j - 1));
     args.push(stepDistIR(d.step, prevIR));
   }
-  return { kind: 'call', op: 'joint', args };
+  // `selfThreaded` rides ON THE NODE, naming the refs this joint satisfies from
+  // its own observed value, so clm's ⊆ check can exclude them wherever the node
+  // ends up. Keying that exclusion off the enclosing derivation's kind instead
+  // does not survive any indirection, and `x ~ markovchain(…)` is already one
+  // — `~` makes `x` an alias to an anon markovchain binding, so the enclosing
+  // kind at lowering time is 'alias', 'record', or 'likelihood_density'.
+  //
+  // The list is carried rather than re-derived from the `s{i}` convention,
+  // because a `jointchain` names its FED step variates `s{i}` too: a blanket
+  // exclusion of that spelling would silently drop real ⊆ gaps there. Carrying
+  // it also makes nesting work — two trajectories in one body each declare
+  // their own, and the density walker's per-level copy-on-write overlay keeps
+  // an inner `s0` from colliding with an outer one.
+  return { kind: 'call', op: 'joint', args, selfThreaded };
 }
 
 /**

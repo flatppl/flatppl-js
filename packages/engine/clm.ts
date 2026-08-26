@@ -69,6 +69,7 @@ const orchestrator = require('./orchestrator.ts');
 const shared = require('./materialiser-shared.ts');
 const builtins = require('./builtins.ts');
 const valueLib = require('./value.ts');
+const irWalk = require('./ir-walk.ts');
 
 // A scorable measure node (a distribution or measure-algebra op) vs a value
 // transform. The stochastic-ancestor marginal (H8) applies only to a measure
@@ -680,12 +681,20 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
   const seen = new Set<string>();
   const missing: string[] = [];
   const priorFrom = _priorFrom(deriv);
-  // Trajectory positions a markovchain body threads from its own observed
-  // value (see the exclusion below). Empty for every other kind.
+  // Refs the BODY satisfies from its own observed value (see the exclusion
+  // below). Read off the lowered body rather than off `deriv.kind`: a
+  // markovchain density can be inlined into any enclosing measure — a record
+  // law, a likelihood kernel, an alias, which `x ~ markovchain(…)` already
+  // introduces — and then the enclosing kind is not 'markovchain'. Each
+  // producer declares its own names on the node it emits (markovchain.densityIR
+  // is the only one today), so this never has to guess from a name convention
+  // that other kinds also use.
   const selfThreaded = new Set<string>();
-  if (deriv && deriv.kind === 'markovchain') {
-    for (let j = 0; j + 1 < deriv.n; j++) selfThreaded.add('s' + j);
-  }
+  irWalk.walkIR(body, (nd: any) => {
+    if (nd && Array.isArray(nd.selfThreaded)) {
+      for (const nm of nd.selfThreaded) selfThreaded.add(nm);
+    }
+  });
 
   const add = (name: string, source: any) => {
     if (seen.has(name)) return;
