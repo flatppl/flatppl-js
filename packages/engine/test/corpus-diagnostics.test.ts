@@ -34,9 +34,6 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 const KNOWN_ERRORS: Record<string, string[]> = {
   // Doc-comment style: consecutive single-line `#` comments where the
   // parser wants one `%%%` block.
-  'hierarchical-state-space.flatppl': [
-    'Only one doc-comment may precede a binding (use a `%%%` block for multi-line content)',
-  ],
   'joint-obs-regression.flatppl': [
     'Only one doc-comment may precede a binding (use a `%%%` block for multi-line content)',
   ],

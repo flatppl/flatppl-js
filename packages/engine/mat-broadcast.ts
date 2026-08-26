@@ -1519,8 +1519,23 @@ function _executeJointChainComposite(
         let paramNames = compositeBody.params;
         let paramKwargs = compositeBody.paramKwargs;
         if (kk > 0) {
-          subMap[steps[kk].kernel.inputParam] = { kind: 'ref', ns: 'self', name: '__carry' };
-          stepRefs.__carry = valueLib.batchedScalar(cols[kk - 1]);
+          // §06 feeds step k the `cat` of EVERY variate to its left, not just
+          // step k-1's: `jointchain(M1, K2, K3)` is `c ~ K3([a, b])`, the same
+          // lowering kchain has. One left variate binds as itself; two or more
+          // bind as a `vector(…)` the step body must reduce to a scalar (the
+          // recogniser's scope is scalar-dist steps). A body that means the
+          // previous state alone is a `markovchain`, and the chain's type layer
+          // now says so — see density-prims `catBoundary`.
+          for (let p = 0; p < kk; p++) {
+            stepRefs['__carry' + p] = valueLib.batchedScalar(cols[p]);
+          }
+          const carryRefs = [];
+          for (let p = 0; p < kk; p++) {
+            carryRefs.push({ kind: 'ref', ns: 'self', name: '__carry' + p });
+          }
+          subMap[steps[kk].kernel.inputParam] = (kk === 1)
+            ? carryRefs[0]
+            : { kind: 'call', op: 'vector', args: carryRefs };
           paramNames = [steps[kk].kernel.inputParam].concat(compositeBody.params);
           paramKwargs = [steps[kk].kernel.inputParam].concat(compositeBody.paramKwargs);
         }
@@ -1540,7 +1555,13 @@ function _executeJointChainComposite(
             const shp = valueLib.isValue(pv) ? JSON.stringify(pv.shape) : typeof pv;
             throw new Error('broadcast(' + d.distOp + '): jointchain step ' + kk
               + ' param \'' + pn + '\' resolved to ' + shp
-              + ' (expected scalar or [' + count + '])');
+              + ' (expected scalar or [' + count + '])'
+              + (kk > 1
+                ? ' — step ' + kk + ' is fed the `cat` of the ' + kk
+                  + ' variates to its left (spec §06 `c ~ K3([a, b])`); a step '
+                  + 'that means the PREVIOUS state alone is '
+                  + '`markovchain(kernel, init, n)`'
+                : ''));
           }
           if (r.kind === 'col') {
             const pr = '__p_s' + kk + '_' + pn;

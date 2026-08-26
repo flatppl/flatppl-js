@@ -1,0 +1,42 @@
+%%%
+Jointchain-bodied composite kernel under a kernel-broadcast.
+
+Per group g a 3-component positional `jointchain`, so the chain's
+per-cell result is [x_0, x_1, x_2]:
+
+  x_0 ~ Normal(m_g, 1)
+  x_1 ~ Normal(x_0, 1)
+  x_2 ~ Normal(x_0 + x_1, 1)
+
+Step i binds the `cat` of every variate to its left — spec §06 gives
+`jointchain(M, K1, K2)` the lowering `a ~ M; b ~ K1(a); c ~ K2([a, b])`.
+Step 1 has one variate to its left and binds it whole; step 2 has two
+and binds their `cat`, which its body reduces with `sum`. A step that
+means the previous state ALONE is `markovchain` instead (see
+fixtures/hierarchical-state-space.flatppl).
+
+The executor is `_executeJointChainComposite` (mat-broadcast.ts): the
+steps are a scan (sequential, carrying every variate drawn so far), the
+cell axis G is parallel and folds into each step's single sampleN.
+
+Closed form (x_1 = x_0 + e_1, x_2 = 2*x_0 + e_1 + e_2, all e ~ N(0,1)):
+  E[x_0] = E[x_1] = m_g,  E[x_2] = 2*m_g
+  Var = {1, 2, 6},  Cov(x_0, x_2) = 2,  Cov(x_1, x_2) = 3
+The cat feed is what those numbers pin: a prev-only step 2 would give
+E[x_2] = m_g and Var(x_2) = 3.
+%%%
+flatppl_compat = "0.1"
+
+m_per_group = [0.0, 1.0, 2.0]
+
+% Step 1: one variate to the left, bound whole.
+step_prev = kernelof(Normal(mu = a, sigma = 1.0), a = a)
+
+% Step 2: two variates to the left, bound as their `cat`.
+step_cat = kernelof(Normal(mu = sum(b), sigma = 1.0), b = b)
+
+group_chain = kernelof(
+  jointchain(Normal(mu = m, sigma = 1.0), step_prev, step_cat),
+  m = m)
+
+y = broadcast(group_chain, m = m_per_group)

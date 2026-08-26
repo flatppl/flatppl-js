@@ -4,24 +4,24 @@
 // jointchain-composite batch-flatten — calibration oracle (Phase 8 leg 4)
 // =====================================================================
 //
-// `test/fixtures/hierarchical-state-space.flatppl` (G=3 groups, AR-1):
-//   x_0 ~ Normal(x0_per_group[g], sigma_init=0.1)
-//   x_k ~ Normal(x_{k-1}, sigma_step=0.5)   for k = 1..3   (the carry)
-//   y = broadcast(group_chain, x0 = x0_per_group)          → [N, 3, 4]
+// `test/fixtures/jointchain-cat-chain.flatppl` (G=3 groups, C=3 steps):
+//   x_0 ~ Normal(m_per_group[g], 1)
+//   x_1 ~ Normal(x_0, 1)                 (one variate to the left)
+//   x_2 ~ Normal(sum([x_0, x_1]), 1)     (the cat of two)
+//   y = broadcast(group_chain, m = m_per_group)            → [N, 3, 3]
 //
-// A jointchain-bodied kernel-broadcast is a Markov chain per cell. Phase 8
-// leg 4 folds it as a SCAN (`_executeJointChainScan`): the cell axis K=3
-// folds into each step's sampleN (count = N·3, one call per step), and the
-// steps run sequentially with the carry — step k-1's flat [count] column
-// (already in (i,j) order) binds directly as step k's input refArray.
+// A jointchain-bodied kernel-broadcast is a scan per cell. Phase 8 leg 4
+// folds it: the cell axis K=3 folds into each step's sampleN (count = N·3,
+// one call per step), and the steps run sequentially, each carrying every
+// variate drawn so far — step k binds the `cat` of columns 0..k-1 (spec §06
+// `c ~ K3([a, b])`), one variate binding whole, two or more as a `vector`.
 // K·C per-cell calls collapse to C.
 //
-// The decisive carry-correctness check is the INCREMENT distribution:
-// x_k - x_{k-1} ~ Normal(0, sigma_step) only if step k actually consumes
-// step k-1's variate. A broken carry would not calibrate to σ=0.5.
-// Also pins the fold path (single [kernel_broadcast 3] ladder), the shape,
-// the per-group x_0 mean, and random-walk variance growth
-// Var(x_k) ≈ sigma_init² + k·sigma_step².
+// The decisive check is the closed form, which separates the cat feed from
+// a prev-only one. With x_1 = x_0 + e_1 and x_2 = 2·x_0 + e_1 + e_2:
+//   E = {m, m, 2m}, Var = {1, 2, 6}, Cov(x_0,x_2) = 2, Cov(x_1,x_2) = 3
+// A step 2 fed only x_1 would give E[x_2] = m and Var(x_2) = 3.
+// Also pins the fold path (single [kernel_broadcast 3] ladder) and the shape.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -33,13 +33,10 @@ const materialiser = require('../materialiser.ts');
 const axisStackMod = require('../axis-stack.ts');
 const { createWorkerHandler } = require('../worker.ts');
 
-test('jointchain scan fold: AR-1 carry calibrates (increment σ=σ_step) at shape [N,3,4]', async () => {
-  const N = 8000;
+test('jointchain scan fold: the cat feed calibrates at shape [N,3,3]', async () => {
+  const N = 40000;
   const src = fs.readFileSync(
-    path.join(__dirname, 'fixtures', 'hierarchical-state-space.flatppl'), 'utf-8');
-  // The fixture (verbatim from flatppl-examples) trips the cosmetic
-  // multi-line doc-comment diagnostic; the analyzer recovers. Assert the
-  // model is derivable rather than diagnostic-clean.
+    path.join(__dirname, 'fixtures', 'jointchain-cat-chain.flatppl'), 'utf-8');
   const lifted = processSource(src);
   const built = orchestrator.buildDerivations(lifted.bindings);
   assert.ok(built.derivations && built.derivations.y, 'y has a derivation');
@@ -61,44 +58,53 @@ test('jointchain scan fold: AR-1 carry calibrates (increment σ=σ_step) at shap
 
   // (a) Fold path: a jointchain body adds no inner axis → single ladder.
   const stack = axisStackMod.bindingAxisStack('y', ctx);
-  assert.deepEqual(stack, [{ source: 'kernel_broadcast', size: 3, name: 'x0_per_group' }],
+  assert.deepEqual(stack, [{ source: 'kernel_broadcast', size: 3, name: 'm_per_group' }],
     'y carries the single [kernel_broadcast 3] ladder (scan fold path)');
 
   const m = await ctx.getMeasure('y');
-  assert.deepEqual(m.value.shape, [N, 3, 4], 'shape [N, groups, chain length]');
+  assert.deepEqual(m.value.shape, [N, 3, 3], 'shape [N, groups, chain length]');
 
-  const G = 3, C = 4;
+  const G = 3, C = 3;
   const d = m.value.data;
-  const x0 = [0.0, 0.5, 1.0];
-  const sigmaInit = 0.1, sigmaStep = 0.5;
+  const mPer = [0.0, 1.0, 2.0];
 
-  // (b) Carry correctness: increments x_k - x_{k-1} ~ Normal(0, σ_step).
-  let si = 0, sq = 0, ni = 0;
+  const col = (g: number, k: number) => {
+    const out = new Float64Array(N);
+    for (let i = 0; i < N; i++) out[i] = d[i * G * C + g * C + k];
+    return out;
+  };
+  const mean = (xs: Float64Array) => {
+    let s = 0;
+    for (let i = 0; i < xs.length; i++) s += xs[i];
+    return s / xs.length;
+  };
+  const cov = (xs: Float64Array, ys: Float64Array) => {
+    const mx = mean(xs), my = mean(ys);
+    let s = 0;
+    for (let i = 0; i < xs.length; i++) s += (xs[i] - mx) * (ys[i] - my);
+    return s / xs.length;
+  };
+
   for (let g = 0; g < G; g++) {
-    for (let k = 1; k < C; k++) {
-      for (let i = 0; i < N; i++) {
-        const inc = d[i * G * C + g * C + k] - d[i * G * C + g * C + (k - 1)];
-        si += inc; sq += inc * inc; ni++;
-      }
+    const x0 = col(g, 0), x1 = col(g, 1), x2 = col(g, 2);
+    const mu = mPer[g];
+    // (b) Means. E[x_2] = 2·m is the cat feed's signature: a prev-only
+    // step 2 would centre on m.
+    assert.ok(Math.abs(mean(x0) - mu) < 0.03, `group ${g} E[x_0] ≈ ${mu}; got ${mean(x0).toFixed(3)}`);
+    assert.ok(Math.abs(mean(x1) - mu) < 0.04, `group ${g} E[x_1] ≈ ${mu}; got ${mean(x1).toFixed(3)}`);
+    assert.ok(Math.abs(mean(x2) - 2 * mu) < 0.06,
+      `group ${g} E[x_2] ≈ ${2 * mu} (CAT FEED: sum([x_0, x_1]) has mean 2m; `
+      + `a prev-only step 2 would give ${mu}); got ${mean(x2).toFixed(3)}`);
+    // (c) Variances {1, 2, 6}.
+    for (const [k, want, xs] of [[0, 1, x0], [1, 2, x1], [2, 6, x2]] as any[]) {
+      const got = cov(xs, xs);
+      assert.ok(Math.abs(got - want) < 0.15 * want,
+        `group ${g} Var(x_${k}) ≈ ${want}; got ${got.toFixed(3)}`);
     }
-  }
-  const incMean = si / ni, incStd = Math.sqrt(sq / ni - incMean * incMean);
-  assert.ok(Math.abs(incMean) < 0.05, `increment mean ≈ 0; got ${incMean.toFixed(4)}`);
-  assert.ok(Math.abs(incStd - sigmaStep) < 0.05,
-    `increment std ≈ σ_step=${sigmaStep} (proves the carry threads x_{k-1} into x_k); got ${incStd.toFixed(4)}`);
-
-  // (c) Per-group x_0 mean ≈ x0_per_group[g]; random-walk variance growth.
-  for (let g = 0; g < G; g++) {
-    let s0 = 0;
-    for (let i = 0; i < N; i++) s0 += d[i * G * C + g * C + 0];
-    assert.ok(Math.abs(s0 / N - x0[g]) < 0.05, `group ${g} x_0 mean ≈ ${x0[g]}; got ${(s0 / N).toFixed(3)}`);
-    let m3 = 0;
-    for (let i = 0; i < N; i++) m3 += d[i * G * C + g * C + 3];
-    m3 /= N;
-    let v3 = 0;
-    for (let i = 0; i < N; i++) { const x = d[i * G * C + g * C + 3] - m3; v3 += x * x; }
-    v3 /= N;
-    const expVar = sigmaInit * sigmaInit + 3 * sigmaStep * sigmaStep;   // ≈ 0.76
-    assert.ok(Math.abs(v3 - expVar) < 0.12, `group ${g} Var(x_3) ≈ ${expVar.toFixed(2)}; got ${v3.toFixed(3)}`);
+    // (d) Cross-covariances 2 and 3 — the carry, step by step.
+    assert.ok(Math.abs(cov(x0, x2) - 2) < 0.15,
+      `group ${g} Cov(x_0, x_2) ≈ 2; got ${cov(x0, x2).toFixed(3)}`);
+    assert.ok(Math.abs(cov(x1, x2) - 3) < 0.2,
+      `group ${g} Cov(x_1, x_2) ≈ 3; got ${cov(x1, x2).toFixed(3)}`);
   }
 });

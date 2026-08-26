@@ -115,7 +115,7 @@ const NATIVE: Array<{ file: string; target: string }> = [
   { file: 'eight-schools.flatppl',          target: 'posterior' },
   { file: 'random-intercepts.flatppl',      target: 'y_obs' },
   { file: 'vector-obs-mvnormal.flatppl',    target: 'y' },
-  { file: 'hierarchical-state-space.flatppl', target: 'y' },
+  { file: 'jointchain-cat-chain.flatppl',   target: 'y' },
   { file: 'nested-broadcast.flatppl',       target: 'y' },
 ];
 
