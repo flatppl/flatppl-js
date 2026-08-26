@@ -13,7 +13,7 @@ import { updatePlotForBinding } from './render-plot.js';
 import { $, bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
 import { renderDoc } from './markdown.js';
 import { resolveNodeColor } from './palette.js';
-import { errorsForBinding } from './render-frame.js';
+import { errorsForBinding, saveViewState } from './render-frame.js';
 import type { Ctx } from './types';
 // The `load_module` registry entry for a DAG node, if it is a user
 // module-load binding with a resolved path (spec §04) — the handle for
@@ -276,6 +276,19 @@ export function initCy(ctx: Ctx) {
           'overlay-opacity': 0,
         }
       },
+      {
+        // Collapsed reification anchor: its bubble's members are hidden
+        // behind it (see renderDAG's `dropped` map). Double border reads
+        // as "this node stands in for a container", distinct from the
+        // thin translucent isReifAnchor treatment an expanded anchor gets.
+        // Listed after node[?isReifAnchor] so border-width/style here win
+        // on a node matching both selectors.
+        selector: 'node[?collapsed]',
+        style: {
+          'border-style': 'double',
+          'border-width': 7,
+        }
+      },
     ],
     elements: [],
     layout: { name: 'preset' },
@@ -308,6 +321,17 @@ export function initCy(ctx: Ctx) {
   // distribution in place.
   ctx.cy.on('tap', 'node', function(evt: any) {
     const oe = evt.originalEvent;
+    // Shift+click on a reification anchor (collapsed or not) toggles
+    // its bubble's collapse state and re-renders. Plain tap keeps its
+    // select-and-plot meaning below; dbltap keeps drill-in — neither
+    // is touched by this gesture.
+    if (oe && oe.shiftKey) {
+      const d = evt.target.data();
+      if (d.collapsed || d.isReifAnchor) {
+        toggleReification(ctx, d.id);
+      }
+      return;
+    }
     if (oe && (oe.ctrlKey || oe.metaKey)) {
       const line = evt.target.data('line');
       if (line >= 0) {
@@ -442,6 +466,8 @@ export function drawReificationLassos(ctx: Ctx, data: any) {
     const r = data.reifications[k];
     if (r.kernel.length < 2) continue;
     if (!ctx.TYPE_STYLE[r.type]) continue;
+    // Collapsed: its members aren't in the graph to lasso around.
+    if (ctx.collapsedReifications.has(r.name)) continue;
     // Same colour the bubble's reification node would get — keeps
     // bubble fill, bubble stroke, and node fill in lockstep.
     const bubbleColor = resolveNodeColor(ctx, r);
@@ -475,6 +501,36 @@ export function drawReificationLassos(ctx: Ctx, data: any) {
   }
 }
 
+/**
+ * Flip one reification anchor's collapse state and re-render the
+ * currently focused sub-DAG. No-op with no current view (nothing to
+ * re-render against).
+ */
+export function toggleReification(ctx: Ctx, anchorName: string): void {
+  if (ctx.collapsedReifications.has(anchorName)) ctx.collapsedReifications.delete(anchorName);
+  else ctx.collapsedReifications.add(anchorName);
+  saveViewState(ctx);
+  if (ctx.currentState) renderDAG(ctx, ctx.currentState.data);
+}
+
+/**
+ * Toolbar collapse-all / expand-all: acts on every reification
+ * anchor in the currently rendered sub-DAG (not the whole model —
+ * consistent with renderDAG itself only ever seeing one sub-DAG's
+ * `data.reifications` at a time).
+ */
+export function toggleAllReifications(ctx: Ctx, collapse: boolean): void {
+  if (!ctx.currentState || !ctx.currentState.data.reifications) return;
+  const reifications = ctx.currentState.data.reifications;
+  for (let i = 0; i < reifications.length; i++) {
+    const name = reifications[i].name;
+    if (collapse) ctx.collapsedReifications.add(name);
+    else ctx.collapsedReifications.delete(name);
+  }
+  saveViewState(ctx);
+  renderDAG(ctx, ctx.currentState.data);
+}
+
 export function renderDAG(ctx: Ctx, data: any) {
   if (!ctx.cy) initCy(ctx);
   updateHeader(ctx, data);
@@ -495,8 +551,44 @@ export function renderDAG(ctx: Ctx, data: any) {
     }
   }
 
+  // Graph-view compactor: decide which reification bubbles render
+  // collapsed. A bubble not yet decided this session defaults to
+  // collapsed at >= 3 members (`_reifSeen` marks the decision so a
+  // later re-render, e.g. after shift+click-expanding a *different*
+  // anchor, doesn't reconsider this one). `dropped` maps every member
+  // id hidden by a collapsed bubble to its anchor's name; moduleMember
+  // nodes are excluded so cross-module drill-in targets stay tappable
+  // even while their enclosing bubble is collapsed.
+  const dropped: Map<string, string> = new Map();
+  const nodeById: Record<string, any> = {};
+  for (let ni2 = 0; ni2 < data.nodes.length; ni2++) nodeById[data.nodes[ni2].id] = data.nodes[ni2];
+  if (data.reifications) {
+    for (let rd = 0; rd < data.reifications.length; rd++) {
+      const r = data.reifications[rd];
+      if (!ctx._reifSeen.has(r.name)) {
+        ctx._reifSeen.add(r.name);
+        const memberCount = Object.keys(bubbleMemberIds(r, data.reifications)).length;
+        if (memberCount >= 3) ctx.collapsedReifications.add(r.name);
+      }
+      if (!ctx.collapsedReifications.has(r.name)) continue;
+      const memberIds = bubbleMemberIds(r, data.reifications);
+      for (const memId in memberIds) {
+        if (memId === r.name) continue;
+        const n = nodeById[memId];
+        if (n && n.moduleMember) continue;
+        dropped.set(memId, r.name);
+      }
+    }
+  }
+  const dropCountByAnchor: Record<string, number> = {};
+  dropped.forEach(function(anchorName) {
+    dropCountByAnchor[anchorName] = (dropCountByAnchor[anchorName] || 0) + 1;
+  });
+
   for (let i = 0; i < data.nodes.length; i++) {
     const node = data.nodes[i];
+    // Hidden behind a collapsed reification bubble it belongs to.
+    if (dropped.has(node.id)) continue;
     const ts = ctx.TYPE_STYLE[node.type] || ctx.TYPE_STYLE.unknown;
 
     // Shape: type-driven (carries the structural info — what *kind*
@@ -512,7 +604,9 @@ export function renderDAG(ctx: Ctx, data: any) {
     // Anonymous nodes (inline-expression targets) have label === ''
     // deliberately and show their expression on hover only. Others
     // fall back to their id.
-    const displayLabel = node.label === '' ? '' : (node.label || node.id);
+    let displayLabel = node.label === '' ? '' : (node.label || node.id);
+    const collapsed = !!reifAnchorNames[node.id] && ctx.collapsedReifications.has(node.id);
+    if (collapsed) displayLabel = displayLabel + '  ⊞' + (dropCountByAnchor[node.id] || 0);
     const width = displayLabel === ''
       ? 60
       : Math.max(displayLabel.length * 9 + 24, 60);
@@ -536,6 +630,7 @@ export function renderDAG(ctx: Ctx, data: any) {
         inferredType: node.inferredType || '',
         hasError: !!(node.errors && node.errors.length > 0),
         isReifAnchor: !!reifAnchorNames[node.id],
+        collapsed: collapsed,
         // Cross-module member node (spec §04): `{ module, field }` drill-in
         // target for the dbltap handler; null for ordinary bindings.
         moduleMember: node.moduleMember || null,
@@ -600,6 +695,33 @@ export function renderDAG(ctx: Ctx, data: any) {
         tetherLabel: tetherLabel,
       },
     });
+  }
+
+  // Rewrite edges through `dropped`: an endpoint hidden behind a
+  // collapsed bubble reroutes to that bubble's anchor. A tether whose
+  // source was dropped now points from-and-to the same anchor and is
+  // removed — correct, since the bubble it explained is gone. Multiple
+  // rewritten edges landing on the same (source, target, edgeType)
+  // triple are deduped, since collapsing can merge what were distinct
+  // member-to-member edges into one anchor-to-anchor edge.
+  if (dropped.size > 0) {
+    const seenEdgeKeys = new Set<string>();
+    const rewritten: any[] = [];
+    for (let ei = 0; ei < elements.length; ei++) {
+      const el = elements[ei];
+      if (el.group !== 'edges') { rewritten.push(el); continue; }
+      const src = dropped.get(el.data.source) || el.data.source;
+      const tgt = dropped.get(el.data.target) || el.data.target;
+      if (src === tgt) continue;
+      const key = src + '|' + tgt + '|' + el.data.edgeType;
+      if (seenEdgeKeys.has(key)) continue;
+      seenEdgeKeys.add(key);
+      el.data.source = src;
+      el.data.target = tgt;
+      rewritten.push(el);
+    }
+    elements.length = 0;
+    for (let ei = 0; ei < rewritten.length; ei++) elements.push(rewritten[ei]);
   }
 
   // Tear down old bubble paths BEFORE detaching elements so we can

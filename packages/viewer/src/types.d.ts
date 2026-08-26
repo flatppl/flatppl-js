@@ -285,6 +285,12 @@ export interface Ctx {
   currentPlotPlan: Plan | null;
   /** Per-record-binding selection state. */
   recordSelection: RecordSelection | null;
+  /** Anchor names (reification binding ids) whose bubble is collapsed
+   *  in the DAG view. Defaults to collapsed for a bubble with >= 3
+   *  members (dag.ts renderDAG), user-toggled via shift+click on the
+   *  anchor node and the collapse-all/expand-all toolbar buttons.
+   *  Persisted alongside plotEnabled/inferenceOpts via saveViewState. */
+  collapsedReifications: Set<string>;
   rootSeed: number;
 
   // ---- caches ----
