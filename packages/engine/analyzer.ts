@@ -3099,6 +3099,28 @@ function analyze(ast: any, source: string, opts?: any) {
   // Third pass: detect disintegrate-decompositions, tag results, validate selectors.
   for (const stmt of ast.body) {
     if (stmt.type !== 'AssignStatement') continue;
+
+    // `disintegrate` produces exactly 2 values (kernel, base_measure) per
+    // spec §06 "Structural disintegration". A destructure with any other
+    // target count (most dangerously a single target, which silently
+    // discards the forward kernel) must not fall through to `detectDisintegration`
+    // returning null and typing the call as an ordinary unrecognised call
+    // (`kind: 'deferred'`, zero diagnostics) — that reading previously
+    // misled the mass-layer classification of `disintegrate` entirely.
+    if (stmt.value && stmt.value.type === 'CallExpr' && stmt.value.callee
+        && stmt.value.callee.type === 'Identifier'
+        && stmt.value.callee.name === 'disintegrate'
+        && stmt.names.length !== 2) {
+      diagnostics.push({
+        severity: 'error',
+        message: `disintegrate produces 2 values (kernel, base_measure); `
+          + `destructure has ${stmt.names.length} target`
+          + `${stmt.names.length === 1 ? '' : 's'}`,
+        loc: stmt.loc,
+      });
+      continue;
+    }
+
     const info = detectDisintegration(stmt, bindings);
     if (!info) continue;
 

@@ -238,17 +238,20 @@ for (const spec of MASS_LAYER_OPS) {
   });
 }
 
-test('disintegrate: a single-target destructure is the malformed-call trap, '
-  + 'not disintegrate\'s real classification', () => {
-  // Discarding the forward kernel by binding only one name gives `kind:
-  // 'deferred'` with ZERO diagnostics — silently wrong in a different way
-  // from the well-formed case above, and the exact shape that made an
-  // earlier AGENTS.md draft call `disintegrate` "fully deferred at both
-  // layers". Pinned so nobody re-derives this the hard way.
+test('disintegrate: a single-target destructure is now a located arity '
+  + 'error, not the silent malformed-call trap', () => {
+  // Discarding the forward kernel by binding only one name used to give
+  // `kind: 'deferred'` with ZERO diagnostics — silently wrong, and the
+  // exact shape that made an earlier AGENTS.md draft call `disintegrate`
+  // "fully deferred at both layers". It now raises a located diagnostic
+  // naming the op, the produced arity, and the target count instead.
   const src = 'u ~ Normal(mu = 0.0, sigma = 1.0)\n'
     + 'x ~ Normal(mu = u, sigma = 1.0)\n'
     + 'joint_model = lawof(record(obs = x, u = u))\n'
     + 'm = disintegrate("obs", joint_model)\n';
-  assert.deepEqual(errorsOf(src), []);
-  assert.equal(bindingOf(src, 'm').inferredType.kind, 'deferred');
+  const errors = errorsOf(src);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0], /disintegrate/);
+  assert.match(errors[0], /2/);
+  assert.match(errors[0], /1/);
 });
