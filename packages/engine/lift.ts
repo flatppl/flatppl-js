@@ -1201,7 +1201,11 @@ function liftInlineSubexpressions(bindings: any) {
       const rows = covLit.elements.length;
       if (D != null && rows !== D) return astArg;
       for (const row of covLit.elements) {
+        // Defensive: the parser never emits a falsy element inside an
+        // ArrayLiteral, so no surface program reaches this.
+        /* c8 ignore start */
         if (!row) return astArg;
+        /* c8 ignore stop */
         // A row spelled as a nested literal exposes its length, so a
         // non-square matrix is a VISIBLE conflict and refuses. A row
         // that is any other expression (an Identifier naming a vector,

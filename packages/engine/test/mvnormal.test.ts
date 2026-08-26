@@ -341,3 +341,15 @@ m = MvNormal(mu = mu, cov = rowstack([r1, r2]))
 `);
   await assert.rejects(() => ctx.getMeasure('m'), /rowstack|shape|dimension|length|square/i);
 });
+
+test('MvNormal: a visibly non-square literal cov still refuses', async () => {
+  // rows = 2 matches mu's length, but each row holds 3 entries. The
+  // shape IS visible here, so the gate must keep refusing the §22
+  // rewrite rather than deferring to a runtime check.
+  const ctx = makeCtx(`
+mu = [0.0, 0.0]
+m = MvNormal(mu = mu, cov = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]))
+`);
+  await assert.rejects(() => ctx.getMeasure('m'),
+    /not lowerable to pushfwd\(affine, iid\)/);
+});
