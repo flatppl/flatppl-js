@@ -680,6 +680,12 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
   const seen = new Set<string>();
   const missing: string[] = [];
   const priorFrom = _priorFrom(deriv);
+  // Trajectory positions a markovchain body threads from its own observed
+  // value (see the exclusion below). Empty for every other kind.
+  const selfThreaded = new Set<string>();
+  if (deriv && deriv.kind === 'markovchain') {
+    for (let j = 0; j + 1 < deriv.n; j++) selfThreaded.add('s' + j);
+  }
 
   const add = (name: string, source: any) => {
     if (seen.has(name)) return;
@@ -725,6 +731,12 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
     // Callable refs (fn / functionof / kernelof / bijection) resolve by name
     // at dispatch — they are NOT fed inputs and are excluded from the ⊆ set.
     if (shared.isFunctionLikeBinding(b)) return;
+    // A markovchain's `s{j}` names its own PRECEDING TRAJECTORY POSITION, not
+    // an outside measure: §06 makes step j's conditioning state the observed
+    // element x_j, which `walkJointFieldsOrPositional` threads into the
+    // overlay as it consumes the value. There is nothing to feed, so — like a
+    // callable ref — it is excluded from the ⊆ set rather than declared.
+    if (selfThreaded.has(n)) return;
 
     if (fixedValues && fixedValues.has(n)) {
       add(n, { kind: 'fixed', ref: n });

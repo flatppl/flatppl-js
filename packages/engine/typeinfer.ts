@@ -473,6 +473,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'Counting':  return write(inferReferenceMeasure(expr, scopes, T.INTEGER), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
+      case 'markovchain': return write(inferMarkovchain(expr, scopes), expr);
       case 'ksuperpose': return write(inferKsuperpose(expr, scopes), expr);
       // Normalization functions (spec §07): vector → vector, LENGTH-
       // PRESERVING. The static signature returns `array(1, %dynamic,
@@ -3698,6 +3699,56 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.measure(domain, { sampleShape, batchShape, eventShape });
   }
 
+  // §06 `markovchain(kernel, init, n)`: "The resulting measure is a measure
+  // over arrays `[traj[1], ..., traj[n]]`, excluding the initial state", and
+  // `init` is "a value in the state space". So the domain is `array(n)` of
+  // INIT's type — the state type, which the kernel maps back to itself.
+  // Reading it off `init` rather than off the kernel's result keeps the type
+  // available for an inline kernel whose own result inference did not reach.
+  // (§06 also gives a record state a TABLE trajectory; that state shape is
+  // not lowered by this engine, so it types as a deferred domain rather than
+  // an array of records this engine would then refuse to build.)
+  function inferMarkovchain(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    if (args.length !== 3) return arityError('markovchain', '3', args.length, expr.loc);
+    const kT: any = inferExpr(args[0], scopes);
+    if (kT && kT.kind === 'failed') return T.failed('markovchain cascade');
+    if (kT && kT.kind !== 'kernel' && kT.kind !== 'deferred' && kT.kind !== 'function') {
+      diagnostics.push({
+        severity: 'error',
+        message: 'markovchain: arg 1 expects a Markov kernel '
+          + '`(state) -> measure_over_state`, got ' + T.show(kT) + ' (spec §06)',
+        loc: args[0].loc,
+      });
+      return T.failed('markovchain bad kernel');
+    }
+    const stateT: any = inferExpr(args[1], scopes);
+    const nT: any = inferExpr(args[2], scopes);
+    if (T.unify(T.INTEGER, nT, new Map()) == null) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'markovchain: arg 3 (`n`) expects a positive integer, got '
+          + T.show(nT) + ' (spec §06)',
+        loc: args[2].loc,
+      });
+      return T.failed('markovchain bad n');
+    }
+    const n = resolveIntegerShape(args[2]);
+    if (n != null && n <= 0) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'markovchain: `n` must be positive, got ' + n + ' (spec §06)',
+        loc: args[2].loc,
+      });
+      return T.failed('markovchain bad n');
+    }
+    const dim = n != null ? n : '%dynamic';
+    const lowerable = stateT
+      && (stateT.kind === 'scalar' || stateT.kind === 'array');
+    const domain = lowerable ? T.array(1, [dim], stateT) : T.deferred();
+    return T.measure(domain, { sampleShape: [dim], batchShape: [], eventShape: [] });
+  }
+
   // §06 `ksuperpose(kernel, weights)`: "lifts a kernel to a weighted
   // superposition: the result is itself a kernel", so the LIFT's type is a
   // kernel whose result is the component's own per-cell variate measure.
@@ -5151,6 +5202,27 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
             loc: ir.loc });
         }
         return T.MASS_NORMALIZED;
+      }
+      // A markovchain trajectory is the product of its n transition measures
+      // (spec §06 dependent composition), so the step kernel's class carries
+      // to the trajectory exactly as `iid`'s base does — a probability kernel
+      // gives a probability measure. The kernel head is classified the way
+      // `broadcast` classifies its own: a §08 distribution name is
+      // normalized, a reified kernel through its body.
+      case 'markovchain': {
+        const head = args[0];
+        let step = T.MASS_DEFERRED;
+        if (head && head.kind === 'ref' && builtins.DISTRIBUTIONS.has(head.name)) {
+          step = T.MASS_NORMALIZED;
+        } else {
+          const resolved = resolveBindingRefs(head);
+          if (resolved && resolved.kind === 'call' && resolved.body) {
+            step = massOfExpr(resolved.body);
+          }
+        }
+        return (step === T.MASS_NORMALIZED || step === T.MASS_NULL
+          || step === T.MASS_FINITE || step === T.MASS_DEFERRED)
+          ? step : T.MASS_UNKNOWN;
       }
       // iid is a homomorphism on the mass class (Nᵗʰ power preserves it).
       case 'iid': {

@@ -233,6 +233,7 @@ export type DerivationKind =
   | 'normalize'
   | 'superpose'
   | 'iid'
+  | 'markovchain'
   | 'randsample'
   | 'jointchain'
   | 'truncate'
@@ -391,6 +392,25 @@ export interface DerivationIid {
   from: string;
   /** Per-axis sizes (multi-axis iid is single-axis today, dims = [n]). */
   dims: number[];
+}
+
+/**
+ * Markov trajectory: `markovchain(kernel, init, n)` (spec §06) — atom-major
+ * buffer of shape [N, n] holding `[traj[1], …, traj[n]]`, the initial state
+ * excluded. `step` describes the single-input step kernel (markovchain.ts);
+ * `initIR` is the initial STATE VALUE, which carries no density term.
+ */
+export interface DerivationMarkovchain {
+  kind: 'markovchain';
+  name?: string;
+  step: {
+    inputParam: string;
+    distOp: string;
+    distParams: string[];
+    distKwargs: Record<string, any>;
+  };
+  initIR: any;
+  n: number;
 }
 
 /**
@@ -640,6 +660,7 @@ export type Derivation =
   | DerivationNormalize
   | DerivationSuperpose
   | DerivationIid
+  | DerivationMarkovchain
   | DerivationRandSample
   | DerivationJointchain
   | DerivationTruncate
