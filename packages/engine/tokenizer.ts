@@ -66,6 +66,24 @@ function _restOfLineBlank(source: string, pos: number) {
   return p >= source.length || source[p] === '\n';
 }
 
+// Spec §05 EBNF `ContinuationOp` — every infix binary operator, the
+// lambda arrow, and the binding operators. `!` is unary only, so it is
+// absent. The dotted forms (`.+`, `.^`, …) carry the same token type as
+// their plain counterparts, so they are covered by these entries.
+const _CONTINUATION_OPS = new Set([
+  T.PLUS, T.MINUS, T.STAR, T.SLASH, T.CARET,
+  T.LT, T.GT, T.LTE, T.GTE, T.EQEQ, T.NEQ,
+  T.AMPAMP, T.PIPEPIPE,
+  T.ARROW, T.EQUALS, T.TILDE, T.COLON_EQ, T.COLON,
+]);
+
+// Token types a `.name` may follow as a FieldAccess. After any of these
+// a `.name` is field access, not an axis reference (spec §05 Note on
+// parser disambiguation).
+const _POSTFIXABLE = new Set([
+  T.IDENT, T.NUMBER, T.STRING, T.PLACEHOLDER, T.HOLE, T.RPAREN, T.RBRACKET,
+]);
+
 function isAlpha(ch: string) { return /[a-zA-Z]/.test(ch); }
 function isDigit(ch: string) { return /[0-9]/.test(ch); }
 function isHexDigit(ch: string) { return /[0-9a-fA-F]/.test(ch); }
@@ -90,6 +108,11 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
   let line = 0;
   let col = 0;
   let depth = 0; // paren/bracket nesting depth
+  // An unlexable character on the current line. It emits no token, so
+  // without this the operator before it would still look like the
+  // line's last token and would swallow the next statement, costing
+  // error recovery a whole line.
+  let lexErrorOnLine = false;
 
   function peek(offset: number) { return source[pos + (offset || 0)] || ''; }
   function advance() {
@@ -98,6 +121,51 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
     return ch;
   }
   function at(offset?: number) { return pos + (offset || 0) < source.length ? source[pos + (offset || 0)] : ''; }
+
+  // The n-th token from the end of the emitted stream, ignoring
+  // COMMENT. A trailing line comment sits between the operator and the
+  // newline, and comments are discarded by the parser (spec §05
+  // Comments), so they cannot be what a line "ends on".
+  function priorSignificant(n: number) {
+    let seen = 0;
+    for (let i = tokens.length - 1; i >= 0; i--) {
+      if (tokens[i].type === T.COMMENT) continue;
+      if (seen === n) return tokens[i];
+      seen++;
+    }
+    return null;
+  }
+
+  // Spec §05 Statement separation: at paren/bracket depth 0 a newline is
+  // whitespace when the line's last token is a `ContinuationOp`. Blank
+  // and comment-only lines in between do not end the continuation —
+  // they emit no significant token, so the trailing operator is still
+  // the last one seen here.
+  function continuesLine() {
+    if (lexErrorOnLine) return false;
+    const tok = priorSignificant(0);
+    if (!tok) return false;
+    // `in` is a CompOp spelled as a keyword, so it lexes as an IDENT.
+    // A NEWLINE here is a `;` or an already-emitted line break, neither
+    // of which is a ContinuationOp, so both correctly fall through.
+    if (!_CONTINUATION_OPS.has(tok.type)) {
+      return tok.type === T.IDENT && tok.value === 'in';
+    }
+    // `.name^` is the axis's upper-variance marker, not exponentiation
+    // (spec §05 Statement separation). The lower marker `_` needs no
+    // check: it lexes as part of the IDENT. A dotted `.^` is always the
+    // operator, and a `.name` following a postfixable token is field
+    // access, so its `^` is the operator too.
+    if (tok.type === T.CARET && !tok.dotted) {
+      const name = priorSignificant(1);
+      const dot = priorSignificant(2);
+      if (name && dot && name.type === T.IDENT && dot.type === T.DOT) {
+        const before = priorSignificant(3);
+        if (!before || !_POSTFIXABLE.has(before.type)) return false;
+      }
+    }
+    return true;
+  }
 
   while (pos < source.length) {
     const startLine = line, startCol = col;
@@ -112,9 +180,10 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
     // Newline
     if (ch === '\n') {
       advance();
-      if (depth === 0) {
+      if (depth === 0 && !continuesLine()) {
         tokens.push(token(T.NEWLINE, '\n', startLine, startCol, line, col));
       }
+      lexErrorOnLine = false;
       continue;
     }
 
@@ -163,10 +232,12 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
         // token. The block spanned ≥1 newline(s) which would have
         // been emitted as NEWLINE if we'd taken the whitespace path,
         // so we synthesise a single NEWLINE here at depth 0 to keep
-        // statement-separator behaviour intact.
-        if (depth === 0) {
+        // statement-separator behaviour intact. A block comment is
+        // comment-only lines, so it does not end a continuation either.
+        if (depth === 0 && !continuesLine()) {
           tokens.push(token(T.NEWLINE, '\n', startLine, startCol, line, col));
         }
+        lexErrorOnLine = false;
         continue;
       }
       // Line comment.
@@ -517,6 +588,7 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
 
     // Unknown character
     const uch = advance();
+    lexErrorOnLine = true;
     diagnostics.push({
       severity: 'error',
       message: `Unexpected character '${uch}'`,
