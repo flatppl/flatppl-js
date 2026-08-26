@@ -24,6 +24,48 @@ function _loadModuleEntry(ctx: Ctx, nodeId: any): { path: string } | null {
   return (e && e.kind === 'load_module' && e.path) ? e : null;
 }
 
+// Per-character label width used to size a node (see renderDAG's
+// `width`). The glyph hit-test reuses it to locate the glyph inside the
+// node's box, so the two must stay in step.
+const LABEL_CHAR_PX = 9;
+
+export const GLYPH_COLLAPSED = '⊞';
+export const GLYPH_EXPANDED = '⊟';
+
+/**
+ * The clickable collapse/expand glyph appended to every reification
+ * anchor's label. A collapsed anchor carries its drop count after the
+ * glyph. The two leading spaces separate it from the binding name and
+ * are not part of the hit target.
+ */
+export function anchorGlyphSuffix(collapsed: boolean, dropCount: number): string {
+  return '  ' + (collapsed ? GLYPH_COLLAPSED + String(dropCount) : GLYPH_EXPANDED);
+}
+
+/**
+ * True when a tap landed on an anchor's glyph. Cytoscape gives a node no
+ * sub-element hit targets, so the glyph's region is derived from the
+ * geometry renderDAG itself lays out: the label is centered in the node
+ * and sized at LABEL_CHAR_PX per character, so the glyph occupies the
+ * last `glyphLen` character cells of the text. The region runs to the
+ * node's right edge rather than stopping at the text, which keeps the
+ * target generous and puts every miss on the label side.
+ *
+ * `pos` and `box` are both cytoscape model coordinates, so the test is
+ * zoom- and pan-independent.
+ */
+export function hitsAnchorGlyph(
+  pos: { x: number; y: number },
+  box: { x1: number; x2: number; y1: number; y2: number },
+  labelLen: number,
+  glyphLen: number,
+): boolean {
+  if (glyphLen <= 0) return false;
+  if (pos.y < box.y1 || pos.y > box.y2) return false;
+  const textRight = (box.x1 + box.x2) / 2 + (labelLen * LABEL_CHAR_PX) / 2;
+  return pos.x >= textRight - glyphLen * LABEL_CHAR_PX && pos.x <= box.x2;
+}
+
 export function showNodeInfo(ctx: Ctx, d: any) {
   const phase = d.phase || 'unknown';
   const phaseTag = '<span class="phase phase-' + esc(phase) + '">' + esc(phase) + ' phase</span>';
@@ -340,6 +382,15 @@ export function initCy(ctx: Ctx) {
       return;
     }
     const d = evt.target.data();
+    // Plain click on the ⊞/⊟ glyph at the right end of a reification
+    // anchor's label toggles that one bubble. Anywhere else on the node
+    // keeps the select-and-plot meaning below.
+    if ((d.collapsed || d.isReifAnchor)
+        && hitsAnchorGlyph(evt.position, evt.target.boundingBox(),
+                           String(d.label || '').length, d.glyphLen || 0)) {
+      toggleReification(ctx, d.id);
+      return;
+    }
     showNodeInfo(ctx, d);
     // Cross-module member node (spec §04, "Stochastic boundary": only
     // fixed/parameterized members are reachable across the boundary, so
@@ -681,8 +732,17 @@ export function renderDAG(ctx: Ctx, data: any) {
     // deliberately and show their expression on hover only. Others
     // fall back to their id.
     let displayLabel = node.label === '' ? '' : (node.label || node.id);
-    const collapsed = !!reifAnchorNames[node.id] && ctx.collapsedReifications.has(node.id);
-    if (collapsed) displayLabel = displayLabel + '  ⊞' + (dropCountByAnchor[node.id] || 0);
+    const isReifAnchor = !!reifAnchorNames[node.id];
+    const collapsed = isReifAnchor && ctx.collapsedReifications.has(node.id);
+    // Every anchor advertises the gesture: ⊞ with the drop count when
+    // collapsed, ⊟ when expanded. `glyphLen` is what the tap hit-test
+    // measures back off the label's right edge.
+    let glyphLen = 0;
+    if (isReifAnchor) {
+      const suffix = anchorGlyphSuffix(collapsed, dropCountByAnchor[node.id] || 0);
+      displayLabel = displayLabel + suffix;
+      glyphLen = suffix.trim().length;
+    }
     const width = displayLabel === ''
       ? 60
       : Math.max(displayLabel.length * 9 + 24, 60);
@@ -705,8 +765,9 @@ export function renderDAG(ctx: Ctx, data: any) {
         unsupportedDetail: node.unsupportedDetail || '',
         inferredType: node.inferredType || '',
         hasError: !!(node.errors && node.errors.length > 0),
-        isReifAnchor: !!reifAnchorNames[node.id],
+        isReifAnchor: isReifAnchor,
         collapsed: collapsed,
+        glyphLen: glyphLen,
         // Cross-module member node (spec §04): `{ module, field }` drill-in
         // target for the dbltap handler; null for ordinary bindings.
         moduleMember: node.moduleMember || null,

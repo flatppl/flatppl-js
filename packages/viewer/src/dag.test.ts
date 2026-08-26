@@ -15,7 +15,14 @@ registerHooks({
   }
 });
 
-const { resolveDroppedChain, rewriteEdgesForCollapse } = await import('./dag.ts');
+const {
+  resolveDroppedChain,
+  rewriteEdgesForCollapse,
+  anchorGlyphSuffix,
+  hitsAnchorGlyph,
+  GLYPH_COLLAPSED,
+  GLYPH_EXPANDED,
+} = await import('./dag.ts');
 
 // Regression for #176: the graph-view compactor collapsed a reification
 // bubble whose anchor was ITSELF a member of an outer collapsed bubble.
@@ -84,4 +91,61 @@ test('rewriteEdgesForCollapse drops an edge whose resolved endpoint still is not
   const survivingNodeIds = new Set(['a']);
   const edges = [{ source: 'a', target: 'ghost', edgeType: 'data' }];
   assert.deepEqual(rewriteEdgesForCollapse(edges, dropped, survivingNodeIds), []);
+});
+
+// The glyph hit-test derives the glyph's region from the node geometry
+// renderDAG lays out, so these tests rebuild that geometry the same way:
+// width = max(labelLen * 9 + 24, 60), height 36, label centered.
+function anchorBox(label, cx = 0) {
+  const w = Math.max(label.length * 9 + 24, 60);
+  return { x1: cx - w / 2, x2: cx + w / 2, y1: -18, y2: 18 };
+}
+
+test('anchorGlyphSuffix shows ⊞ with the drop count when collapsed and ⊟ when expanded', () => {
+  assert.equal(anchorGlyphSuffix(true, 3), '  ' + GLYPH_COLLAPSED + '3');
+  assert.equal(anchorGlyphSuffix(false, 3), '  ' + GLYPH_EXPANDED);
+  // Every anchor gets a glyph, including one that dropped nothing.
+  assert.equal(anchorGlyphSuffix(true, 0), '  ' + GLYPH_COLLAPSED + '0');
+});
+
+test('hitsAnchorGlyph accepts a tap on a collapsed anchor glyph and rejects one on its name', () => {
+  const label = 'prior' + anchorGlyphSuffix(true, 3);   // 'prior  ⊞3'
+  const box = anchorBox(label);
+  const glyphLen = 2;
+  assert.equal(hitsAnchorGlyph({ x: 30, y: 0 }, box, label.length, glyphLen), true);
+  assert.equal(hitsAnchorGlyph({ x: box.x2, y: 0 }, box, label.length, glyphLen), true);
+  assert.equal(hitsAnchorGlyph({ x: 0, y: 0 }, box, label.length, glyphLen), false);
+  assert.equal(hitsAnchorGlyph({ x: box.x1 + 4, y: 0 }, box, label.length, glyphLen), false);
+});
+
+test('hitsAnchorGlyph accepts a tap on an expanded anchor glyph', () => {
+  const label = 'prior' + anchorGlyphSuffix(false, 0);  // 'prior  ⊟'
+  const box = anchorBox(label);
+  assert.equal(hitsAnchorGlyph({ x: 30, y: 0 }, box, label.length, 1), true);
+  assert.equal(hitsAnchorGlyph({ x: 10, y: 0 }, box, label.length, 1), false);
+});
+
+test('hitsAnchorGlyph rejects a tap outside the node box vertically', () => {
+  const label = 'prior' + anchorGlyphSuffix(true, 3);
+  const box = anchorBox(label);
+  assert.equal(hitsAnchorGlyph({ x: 30, y: 40 }, box, label.length, 2), false);
+  assert.equal(hitsAnchorGlyph({ x: 30, y: -40 }, box, label.length, 2), false);
+});
+
+test('hitsAnchorGlyph rejects every tap on a node with no glyph', () => {
+  const box = anchorBox('theta');
+  assert.equal(hitsAnchorGlyph({ x: box.x2, y: 0 }, box, 5, 0), false);
+});
+
+test('hitsAnchorGlyph is independent of where the node sits on the canvas', () => {
+  const label = 'phase_weight' + anchorGlyphSuffix(true, 12);  // 2-digit count
+  const glyphLen = 3;
+  const near = anchorBox(label, 0);
+  const far = anchorBox(label, 4000);
+  assert.equal(
+    hitsAnchorGlyph({ x: near.x2 - 5, y: 0 }, near, label.length, glyphLen),
+    hitsAnchorGlyph({ x: far.x2 - 5, y: 0 }, far, label.length, glyphLen),
+  );
+  assert.equal(hitsAnchorGlyph({ x: far.x2 - 5, y: 0 }, far, label.length, glyphLen), true);
+  assert.equal(hitsAnchorGlyph({ x: 4000, y: 0 }, far, label.length, glyphLen), false);
 });
