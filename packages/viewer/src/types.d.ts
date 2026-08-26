@@ -159,7 +159,16 @@ export interface FixedRecordPlan extends PlanBase {
   mode: 'fixed-record';
 }
 
-/** Discriminated union over the seven plan modes buildPlotPlan emits. */
+export interface TuplePlan extends PlanBase {
+  mode: 'tuple';
+  // Provenance labels for a literal tuple construction (`(xs, ys)`):
+  // element i's binding name when it's a bare ref, else `name[i+1]`.
+  // Absent when the RHS isn't a literal tuple construction — the
+  // renderer falls back to listScalarAxes's own `[k]` labels.
+  axisLabels?: string[];
+}
+
+/** Discriminated union over the eight plan modes buildPlotPlan emits. */
 export type Plan =
   | ProfilePlan
   | KernelSamplePlan
@@ -167,7 +176,8 @@ export type Plan =
   | ArrayPlan
   | MatrixPlan
   | FixedScalarPlan
-  | FixedRecordPlan;
+  | FixedRecordPlan
+  | TuplePlan;
 
 /** Per-record-binding selection state set up by renderRecordMarginals. */
 export interface RecordSelection {

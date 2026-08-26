@@ -5,7 +5,7 @@
 // materialiseConcreteMeasure has done the substitution.
 // renderFixedRecord handles a record-shaped fixed-phase value.
 
-import type { Ctx, FixedRecordPlan, KernelSamplePlan } from './types';
+import type { Ctx, FixedRecordPlan, KernelSamplePlan, TuplePlan } from './types';
 import { nameSeed } from './orchestration.js';
 import { materialiseConcreteMeasure, materialiseAppliedKernelByName } from './plot-plan.js';
 import { buildPresetControl } from './render-controls.js';
@@ -13,7 +13,7 @@ import { buildPresetControl } from './render-controls.js';
 import { getMeasure, tryGetMeasure } from './engine-facade.js';
 import { activePresetFor } from './overrides.js';
 import { showPlotMessage } from './render-frame.js';
-import { renderConstantRecord } from './render-record.js';
+import { renderConstantRecord, renderRecordMarginals } from './render-record.js';
 import { arrayInputLength, defaultValueForInputType, esc } from './util.js';
 import { renderEmpiricalMeasure } from './render-samples.js';
 export function renderFixedRecord(ctx: Ctx, plan: FixedRecordPlan) {
@@ -22,6 +22,31 @@ export function renderFixedRecord(ctx: Ctx, plan: FixedRecordPlan) {
   getMeasure(ctx, plan.name).then(function(measure: any) {
     if (ctx.currentPlotPlan !== planForCall) return;
     renderConstantRecord(ctx, measure, plan.name);
+  }).catch(function(err: any) {
+    if (ctx.currentPlotPlan !== planForCall) return;
+    showPlotMessage(ctx, 'Failed to load <strong>' + esc(plan.name) + '</strong>: '
+      + esc(err && err.message || String(err)));
+  });
+}
+
+/**
+ * Fixed tuple of equal-length rank-1 arrays (`paired = (xs, ys)`) —
+ * routes to the same record-marginals view a runtime record/tuple
+ * measure gets. `fixedValueToMeasure`'s nested-JS-array branch
+ * (materialiser-shared.ts) returns a bare `{elems, logTotalmass,
+ * n_eff}` with no `shape` tag; `listScalarAxes` gates its tuple
+ * recursion on `shape === 'tuple'`, so tag it here — a viewer-local
+ * fix, not a materialiser change, since that helper has other callers
+ * (vector-of-vectors, matrix flattening) that must keep their current
+ * shape.
+ */
+export function renderFixedTuple(ctx: Ctx, plan: TuplePlan) {
+  showPlotMessage(ctx, 'Loading…', { hint: true });
+  const planForCall = plan;
+  getMeasure(ctx, plan.name).then(function(measure: any) {
+    if (ctx.currentPlotPlan !== planForCall) return;
+    const tagged = measure.shape ? measure : Object.assign({}, measure, { shape: 'tuple' });
+    renderRecordMarginals(ctx, tagged, plan.name, undefined, plan.axisLabels);
   }).catch(function(err: any) {
     if (ctx.currentPlotPlan !== planForCall) return;
     showPlotMessage(ctx, 'Failed to load <strong>' + esc(plan.name) + '</strong>: '

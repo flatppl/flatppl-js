@@ -108,7 +108,7 @@ export function renderConstantRecord(ctx: Ctx, measure: any, bindingName: string
   renderConstantValue(ctx, bindingName, formatConstantMeasure(ctx, measure), toolbarControls);
 }
 
-export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: string, extraToolbarControls: any) {
+export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: string, extraToolbarControls: any, axisLabelOverride?: string[]) {
   // Detect whether this binding is a bayesupdate posterior. If so,
   // generated-quantity detection is available and the toolbar
   // will offer a "Generated" toggle group.
@@ -174,7 +174,21 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
   // grid (filters by recordSelection.selected) and the marginals strips
   // (filter by recordSelection.marginalGroups) all see them — not just
   // the Table (which lists displayMeasure's fields directly).
-  const axes = listScalarAxes(displayMeasure());
+  // Provenance override (tuple-plan axisLabels): swap the display label
+  // only — `.key` stays the positional `[k]` form, since selection state
+  // and the toolbar's checkbox/option `value`s are keyed off it. Wraps
+  // listScalarAxes so every call site in this function (the outer `axes`
+  // below AND the marginals view's re-list of the derived measure at
+  // draw time) sees the override consistently.
+  function scalarAxesWithOverride(m: any) {
+    const list = listScalarAxes(m);
+    if (axisLabelOverride && axisLabelOverride.length === list.length) {
+      for (let ai = 0; ai < list.length; ai++) list[ai].label = axisLabelOverride[ai];
+    }
+    return list;
+  }
+
+  const axes = scalarAxesWithOverride(displayMeasure());
   if (axes.length === 0) {
     showPlotMessage(ctx, 'No scalar fields to plot for <strong>' + esc(bindingName) + '</strong>.', { hint: true });
     return;
@@ -312,7 +326,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
         // to correlations so the pane is never blank. If the build
         // completes successfully it triggers a full rerender.
         if (!ppcBuilt) ensurePpc();
-        renderCornerGrid(ctx, chartHostRef, dm, bindingName);
+        renderCornerGrid(ctx, chartHostRef, dm, bindingName, scalarAxesWithOverride(dm));
       }
     } else if (ctx.recordSelection!.mode === 'table') {
       renderRecordTable(ctx, chartHostRef, dm, bindingName);
@@ -324,7 +338,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
       // outer `axes`): the gen-quantity toggle uses the chart-only
       // rerender, which does NOT recompute the outer `axes`, so a
       // freshly-toggled quantity is only visible by re-listing `dm` here.
-      const dmAxes = listScalarAxes(dm);
+      const dmAxes = scalarAxesWithOverride(dm);
       const selSet: Record<string, boolean> = {};
       (ctx.recordSelection!.marginalGroups || allGroups).forEach(function(g: any) {
         selSet[g] = true;
@@ -332,7 +346,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
       const picked = dmAxes.filter(function(a: any) { return selSet[axisGroupKey(a.label)]; });
       renderDensityStrips(ctx, chartHostRef, dm, bindingName, picked);
     } else {
-      renderCornerGrid(ctx, chartHostRef, dm, bindingName);
+      renderCornerGrid(ctx, chartHostRef, dm, bindingName, scalarAxesWithOverride(dm));
     }
   }
   function rerenderAll() {

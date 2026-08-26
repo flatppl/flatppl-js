@@ -209,9 +209,9 @@ export function renderDensityStrips(ctx: Ctx, hostEl: any, measure: any, binding
  * div whose contents we replace; it must be a flex/block child
  * with a fixed height so the inner grid expands correctly.
  */
-export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingName: any) {
+export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingName: any, axesArg?: ReturnType<typeof listScalarAxes>) {
   hostEl.innerHTML = '';
-  const axes = listScalarAxes(measure)
+  const axes = (axesArg || listScalarAxes(measure))
     .filter(function(a: any) { return ctx.recordSelection!.selected.indexOf(a.key) >= 0; });
   const n = axes.length;
   if (n === 0) {
