@@ -66,14 +66,31 @@
 //     `vector(scalar1, scalar2, ...)`." A per-element `cat` of two scalars is
 //     well-formed where a per-element `sum` of one scalar is not.
 //
-// Consumed by two enforcement points, which must both keep their own half:
+// Consumed by three enforcement points, which must each keep their own half:
 //
-//   - `typeinfer.inferBroadcast` — the located static error over a scalar
-//     cell. This is the half that was returning wrong numbers.
+//   - `typeinfer._refuseBareCollectionDomainCall` — the located static error
+//     over a scalar ARGUMENT, wherever the call is written. §07's domain does
+//     not depend on a `broadcast` being present: `sum(2.0)` was 0, and fifteen
+//     of these heads declare their slot `any()` in `types.ts` (the type AST
+//     cannot say "array of any rank"), so the signature check admitted a
+//     scalar and the runtime reduced over nothing.
+//   - `typeinfer.inferBroadcast` — the same static error at a broadcast CELL,
+//     and the only half that enforces `NESTED_CELL_HEADS` (below), since only
+//     there is the head known to be receiving one element. This is the half
+//     that was returning wrong numbers.
 //   - `dissolver` — refuses to rewrite `broadcast(<head>, X)` to the bare
 //     `<head>(X)`, or to fuse it into an `aggregate`. Without that half the
 //     wrapper is discarded whenever inference is bypassed or deferred, which
 //     is exactly how `cumsum.(vv)` came to emit a whole-collection scan.
+//
+// The bare half is what reaches a head DEEPER in a compound body.
+// `broadcastHeadOpName` resolves only the OUTERMOST op, so `fn(sum(_) + 1.0)`
+// resolves to `add` and the broadcast half never sees the `sum` — that is the
+// same scope the Rust rule has. `inferBroadcast` infers the body per cell with
+// each param bound to its cell type, so the bare gate fires on the inner `sum`
+// with a scalar argument. §03's nested reading survives in both halves: an
+// ARRAY cell is in `sum`'s domain, so `fn(sum(_) + 1.0).(vv)` answers
+// `[7, 16]` over `[[1, 2, 3], [4, 5, 6]]`.
 //
 // FORWARD HAZARD. §07 carries four further tables with a collection-domain
 // first argument that are NOT listed here — Convolution (`conv`,
