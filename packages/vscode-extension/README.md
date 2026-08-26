@@ -131,19 +131,46 @@ other editors must supply them manually in their LSP client configuration.
 
 ### Nightly build
 
-One command — it detects your platform and installs the matching build:
+One command — it detects your platform, detects which VS Code-compatible
+editor CLIs you have (`code`, `code-insiders`, `cursor`, `codium`,
+`windsurf`), and installs into them:
 
 ```sh
 curl -fsSL https://github.com/flatppl/flatppl-js/releases/download/nightly/install.sh | sh
 ```
 
-Windows (PowerShell):
+Run in a terminal, it shows an interactive checklist — detected CLIs start
+checked, undetected ones show as unavailable:
+
+```
+Select install targets (toggle by number, enter to confirm):
+  1 [x] code
+  2 [ ] code-insiders (not found)
+  3 [x] cursor
+  4 [ ] codium (not found)
+  5 [ ] windsurf (not found)
+>
+```
+
+Enter a number to toggle it, or blank to confirm and install. Piped straight
+into `sh` (no terminal attached to stdin) it skips the prompt and installs
+into every detected CLI. It tries every selected target, reports an error
+per target that fails or is missing, and exits 0 if at least one succeeded.
+
+Non-interactive flags for scripts and CI:
+
+```sh
+install.sh --all                       # every detected CLI, no prompt
+install.sh --target code --target cursor  # only these, no prompt
+```
+
+Windows (PowerShell), with the same `-Target`/`-All` flags:
 
 ```powershell
 irm https://github.com/flatppl/flatppl-js/releases/download/nightly/install.ps1 | iex
 ```
 
-Requires the `code` or `cursor` CLI on your PATH. On an unsupported platform,
+Requires at least one supported editor CLI on your PATH. On an unsupported platform,
 build `flatppl-lsp` from source and set the `flatppl.server.path` setting.
 
 ## Development
