@@ -834,3 +834,99 @@ plain[.i, .k]   := A[.i, .j]   * B[.j, .k]
     }
   }
 });
+
+// =====================================================================
+// 6. Composed (non-Identifier) tensor bases
+// =====================================================================
+//
+// Spec §sec:metricsum "Expression restrictions" requires only that the
+// indexed arrays hold scalars; it puts no syntactic restriction on the
+// base expression. So `(p1 + p2)[.mu_]` must lower with the same metric
+// contraction as `p12 = p1 + p2; p12[.mu_]`. Both metrics below are
+// non-identity, so an omitted contraction reads as the Euclidean value.
+//
+// Oracle (closed form, independent of the engine): for
+// s = p1 + p2 = [2, 1, 0, 0],
+//   metric diag(1, -1, -1, -1)  → g_down = diag(1, -1, -1, -1),
+//     s^mu s_mu = 2*2*1 + 1*1*(-1) = 3
+//   metric diag(2, 2, 2, 2)     → g_down = diag(.5, .5, .5, .5),
+//     s^mu s_mu = .5 * (2*2 + 1*1) = 2.5
+// The Euclidean contraction (no metric) is 4 + 1 = 5 for both.
+
+function fourVecSrc(diag: number[]): string {
+  const rows = diag.map((d, i) =>
+    '[' + diag.map((_, j) => (i === j ? d : 0).toFixed(1)).join(', ') + ']');
+  return `
+g = rowstack([${rows.join(', ')}])
+p1 = [1.0, 0.0, 0.0, 0.0]
+p2 = [1.0, 1.0, 0.0, 0.0]
+p12 = p1 + p2
+g: named[]   := p12[.mu^] * p12[.mu_]
+g: inlined[] := (p1 + p2)[.mu^] * (p1 + p2)[.mu_]
+`;
+}
+
+function scoreComposed(diag: number[]): { named: number; inlined: number } {
+  const ctx = processSource(fourVecSrc(diag));
+  const errs = ctx.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0,
+    `parse errors: ${errs.map((d: any) => d.message).join('; ')}`);
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  return {
+    named:   valueAt(built.fixedValues.get('named')),
+    inlined: valueAt(built.fixedValues.get('inlined')),
+  };
+}
+
+test('metricsum: composed tensor base contracts under Minkowski diag(1,-1,-1,-1)', () => {
+  const { named, inlined } = scoreComposed([1, -1, -1, -1]);
+  assert.ok(approxEq(named, 3), `named = ${named}, want 3`);
+  assert.ok(approxEq(inlined, 3),
+    `(p1 + p2)[.mu^] * (p1 + p2)[.mu_] = ${inlined}, want 3 ` +
+    '(5 means the inv(metric) contraction was dropped)');
+});
+
+test('metricsum: composed tensor base contracts under diag(2,2,2,2)', () => {
+  // A second, differently-scaled metric: a lowering that ignores the
+  // metric returns 5 for both, so one metric alone cannot pin the bug.
+  const { named, inlined } = scoreComposed([2, 2, 2, 2]);
+  assert.ok(approxEq(named, 2.5), `named = ${named}, want 2.5`);
+  assert.ok(approxEq(inlined, 2.5),
+    `(p1 + p2)[.mu^] * (p1 + p2)[.mu_] = ${inlined}, want 2.5`);
+});
+
+test('metricsum: composed tensor base with a lower output axis raises correctly', () => {
+  // Rank-1 result. `g: r[.mu_] := (a + b)[.mu_]` computes the covariant
+  // components of s = a + b = [2, 1] and stores them all-upper, so the
+  // spec's "Output variance … automatically raised to all-upper
+  // canonical storage" makes the round trip the identity: r == s.
+  const src = `
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
+a = [1.0, 0.0]
+b = [1.0, 1.0]
+g: r[.mu_] := (a + b)[.mu_]
+`;
+  const ctx = processSource(src);
+  const errs = ctx.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0,
+    `parse errors: ${errs.map((d: any) => d.message).join('; ')}`);
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  const v = built.fixedValues.get('r');
+  assert.ok(approxEq(valueAt(v, 0), 2), `r[0] = ${valueAt(v, 0)}, want 2`);
+  assert.ok(approxEq(valueAt(v, 1), 1), `r[1] = ${valueAt(v, 1)}, want 1`);
+});
+
+test('metricsum: identical composed bases share one hoisted binding', () => {
+  const src = `
+g = rowstack([[1.0, 0.0], [0.0, -1.0]])
+a = [1.0, 0.0]
+b = [1.0, 1.0]
+g: norm[] := (a + b)[.mu^] * (a + b)[.mu_]
+`;
+  const ctx = processSource(src);
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  const names = [...built.bindings.keys()].filter(
+    (n: string) => n.startsWith('__ms_base_'));
+  assert.equal(names.length, 1,
+    `expected one hoisted composed base; got ${JSON.stringify(names)}`);
+});
