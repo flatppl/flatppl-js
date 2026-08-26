@@ -4902,11 +4902,38 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const [, b] of loweredModule.bindings) visit(b.rhs);
   }
 
+  // The BARE-BUILTIN forward spelling of spec §06's own `pushfwd(exp, mu)`
+  // example. The AST lift desugars it to `fn(op(_))` (lift.ts
+  // `inlinePushfwdLift`), but PIR lowering leaves it as a plain ref to the
+  // builtin, so `_resolveForwardReif` finds no reification and the domain
+  // guard would skip the whole pushfwd. Returns the guarded op name for
+  // `pushfwd(log, M)` / an alias of it, else null.
+  //
+  // Membership in PUSHFWD_DOMAIN_GUARDS is the whole test: that table IS the
+  // set of domain-restricted §06 case-1 bijections. `pow` is excluded because
+  // a bare `pow` is binary — it carries no literal exponent at f-position, so
+  // it is not a unary forward and `_powExponentNeedsNonNegGuard` has nothing
+  // to read. A user binding of the same name is left to the reif path above.
+  function _bareBuiltinGuardOp(fExpr: any): string | null {
+    if (!fExpr || fExpr.kind !== 'ref' || typeof fExpr.name !== 'string') return null;
+    if (loweredModule.bindings.has(fExpr.name)) return null;
+    const op = fExpr.name;
+    if (op === 'pow' || !PUSHFWD_DOMAIN_GUARDS[op]) return null;
+    return op;
+  }
+
   function _checkOnePushfwdDomain(ir: any, irWalk: any) {
-    const reif = _resolveForwardReif(ir.args[0]);
-    if (!reif || !Array.isArray(reif.params) || reif.params.length !== 1 || !reif.body) return;
     const ops = new Set<string>();
-    _collectPathOps(reif.body, reif.params[0], ops, irWalk);
+    const reif = _resolveForwardReif(ir.args[0]);
+    if (reif) {
+      if (!Array.isArray(reif.params) || reif.params.length !== 1 || !reif.body) return;
+      _collectPathOps(reif.body, reif.params[0], ops, irWalk);
+    } else {
+      const bare = _bareBuiltinGuardOp(ir.args[0]);
+      if (!bare) return;
+      ops.add(bare);
+    }
+    const locSource = reif ? (reif.body.loc || ir.loc) : (ir.args[0].loc || ir.loc);
     const mIR = ir.args[1];
     let support: any = null;   // lazily computed — only needed if a guarded op is present
     for (const op of ops) {
@@ -4921,7 +4948,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           + `support to be ${guard.label}, but the base's support is provably `
           + `${vsLib.toSexpr(support)} — refuse rather than silently produce a `
           + `sub-probability measure.`,
-        loc: (reif.body.loc || ir.loc),
+        loc: locSource,
       });
     }
   }
