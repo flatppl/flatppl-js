@@ -2564,7 +2564,7 @@ function liftInlineSubexpressions(bindings: any) {
     const measureReps: any[] = [];
     for (const a of (jAst.args || [])) {
       const isKw = a.type === 'KeywordArg';
-      const rep = _jointComponentAsMeasure(isKw ? a.value : a);
+      const rep = _jointComponentAsMeasure(isKw ? a.value : a, isKw ? a.name : undefined);
       if (!rep) return null;
       if (!rep.boundaries) measureReps.push(rep);
       if (rep.boundaries) {
@@ -2669,12 +2669,10 @@ function liftInlineSubexpressions(bindings: any) {
     return found;
   }
 
-  const _REIFICATION_HEADS = new Set(['kernelof', 'functionof', 'fn']);
-
   // One `joint` component, expressed as the measure it contributes to the
   // hoisted body, plus the reification boundary it declares (null for a
   // measure component — §06's nullary case, which "ignores the input").
-  function _jointComponentAsMeasure(compAst: any) {
+  function _jointComponentAsMeasure(compAst: any, compLabel?: string) {
     if (!compAst) return null;
     const inlineHead = compAst.type === 'CallExpr' && compAst.callee
       && compAst.callee.type === 'Identifier' && compAst.callee.name;
@@ -2695,9 +2693,24 @@ function liftInlineSubexpressions(bindings: any) {
       // no binding lookup needed.
       kAst = compAst;
     } else {
-      // `fn(...)` and any other unlifted inline reification would need its own
-      // boundary hoist; refuse rather than mistake it for a measure.
-      if (inlineHead && _REIFICATION_HEADS.has(inlineHead)) return null;
+      // `fn(...)` written out verbatim (not bound to a name first) would need
+      // its own boundary hoist that this reader does not perform — refuse
+      // rather than mistake it for a measure (a silent null here surfaces
+      // only as the fanout's generic "no derivation" fallback, which does not
+      // say why). Named `fn(...)` kernel components hit the Identifier branch
+      // above and resolve through the binding's effective value the same as
+      // any other kernel; only the inline literal reaches this refusal.
+      if (inlineHead === 'fn') {
+        const where = compLabel ? `joint kwarg "${compLabel}"` : 'a joint component';
+        const err: any = new Error(
+          `${where} is an inline fn(...) reification used directly as a kernel `
+          + 'in a joint fan-out (spec §06 "Uniform kernel extension"); the '
+          + 'fan-out hoist only reads kernelof(...) / functionof(...) inline, '
+          + 'or a name bound to any kernel. Bind it to a name first, e.g. '
+          + `k = fn(...); joint(${compLabel ? compLabel + ' = k' : 'k'}, ...).`);
+        err.code = 'JOINT_FANOUT_INLINE_FN_COMPONENT';
+        throw err;
+      }
       return { measureAst: cloneAst(compAst), boundaries: null };
     }
     if (!kAst || kAst.type !== 'CallExpr' || !kAst.callee
