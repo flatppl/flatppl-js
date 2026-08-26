@@ -1118,52 +1118,55 @@ function _vectorLogical(...xs: any[]): any {
   // outerRank = 1, cell = arg.shape. The user's `[C]` lifts C
   // into a length-1 nested vector with C as the sole cell.
   let stackOuterRank: number | null = null;
+  // Normalize each element to a rank-explicit Value so the shared cell packer
+  // can read it. A typed array or a flat numeric JS array becomes a rank-1
+  // Value; anything else (scalar, record, tuple, kernel, deeper JS nesting)
+  // falls back to the JS-array form.
+  const cells: any[] = new Array(xs.length);
   for (let i = 0; i < xs.length; i++) {
     const v = xs[i];
-    let s: number[] | null = null;
+    let cell: any;
     let nestedTag: number = 0;
-    if (v && Array.isArray(v.shape) && v.data instanceof Float64Array) {
-      s = v.shape;
+    if (valueLib.isValue(v)) {
+      cell = v;
       // Only an EXPLICIT tag stacks; untagged Values are cells.
       nestedTag = (typeof v.outerRank === 'number') ? v.outerRank : 0;
-    } else if (v && v.BYTES_PER_ELEMENT !== undefined && typeof v.length === 'number') {
-      s = [v.length];
-    } else if (Array.isArray(v)) {
-      s = [v.length];
-    } else if (typeof v === 'number' || typeof v === 'boolean') {
-      return xs;
+    } else if ((v && v.BYTES_PER_ELEMENT !== undefined && typeof v.length === 'number')
+               || Array.isArray(v)) {
+      const flat = new Float64Array(v.length);
+      for (let k = 0; k < v.length; k++) {
+        const el = (v as any)[k];
+        const t = typeof el;
+        if (t !== 'number' && t !== 'boolean') return xs;
+        flat[k] = +el;
+      }
+      cell = { shape: [v.length], data: flat };
     } else {
       return xs;
     }
-    // s is provably non-null here: every branch above either assigned
-    // it a number[] or returned. tsc can't carry that narrowing past
-    // the chain, so assert it (type-only, no runtime line).
-    if (innerShape === null) { innerShape = s; stackOuterRank = nestedTag; }
-    else {
-      if (s!.length !== innerShape.length) return xs;
-      for (let a = 0; a < s!.length; a++) if (s![a] !== innerShape[a]) return xs;
-      // Ragged stacking across args ⇒ fall back to JS-array form.
-      if (nestedTag !== stackOuterRank) return xs;
-    }
+    cells[i] = cell;
+    if (innerShape === null) { innerShape = cell.shape; stackOuterRank = nestedTag; }
+    // Ragged stacking across args ⇒ fall back to JS-array form. The shape
+    // agreement itself is the packer's call; only the tag check is ours.
+    else if (nestedTag !== stackOuterRank) return xs;
   }
-  if (innerShape === null) return xs;
-  const innerLen = innerShape.reduce((a: number, b: number) => a * b, 1);
-  const out = new Float64Array(xs.length * innerLen);
-  for (let i = 0; i < xs.length; i++) {
-    const v = xs[i];
-    if (v && Array.isArray(v.shape) && v.data instanceof Float64Array) {
-      out.set(v.data, i * innerLen);
-    } else if (v && v.BYTES_PER_ELEMENT !== undefined) {
-      for (let k = 0; k < innerLen; k++) out[i * innerLen + k] = +(v as any)[k];
-    } else if (Array.isArray(v)) {
-      for (let k = 0; k < innerLen; k++) out[i * innerLen + k] = +v[k];
-    }
-  }
-  return {
-    shape: [xs.length].concat(innerShape as number[]),
-    data: out,
+  // `packUniformCells` owns the per-cell contract — densify a structured
+  // cell, refuse a short buffer, refuse a Klein-4 tag, keep `im`
+  // all-or-nothing. The broadcast output stacker shares it, so a fix on
+  // one path cannot leave the other behind. Refusal means these elements
+  // are not one Value, and the JS-array form carries them instead.
+  const packed = valueLib.packUniformCells(cells);
+  if (packed === null) return xs;
+  const out: any = {
+    shape: [xs.length].concat(packed.innerShape),
+    data: packed.data,
     outerRank: 1 + (stackOuterRank || 0),
   };
+  if (packed.im !== undefined) {
+    out.im = packed.im;
+    out.dtype = 'complex';
+  }
+  return out;
 }
 
 ops.register({

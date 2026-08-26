@@ -695,27 +695,32 @@ test('a cell whose buffer is shorter than its shape refuses instead of zero-fill
   assert.equal(tryStackBroadcastCells([short(), short()], [2]), null);
 });
 
-test('the complex nested operand is honest, and its wrongness is upstream', () => {
-  // The reviewer's four-line repro. `zz = [a, b]` over two complex vectors is
-  // where the imaginary half is lost: the ARRAY LITERAL drops `im`, so `zz`
-  // already carries real parts only. Pinned here so the day the literal is
-  // fixed, these values change and this test says so.
+test('the complex nested operand keeps its imaginary half end to end', () => {
+  // The reviewer's four-line repro. `zz = [a, b]` over two complex vectors
+  // USED to lose the imaginary half: the array literal packed cells with its
+  // own copy of the stacking loop and dropped `im`. Both consumers now share
+  // `valueLib.packUniformCells`, so the literal keeps it — the change this
+  // test was written to catch. The literal's own coverage lives in
+  // array-literal-struct-cells.test.ts.
   const src = 'a = complex.([1.0, 2.0], [3.0, 4.0])\n'
     + 'b = complex.([5.0, 6.0], [7.0, 8.0])\n'
     + 'zz = [a, b]\n';
-  // `a` alone is complex and correct.
   const a = valueOfY(src + 'y = a\n');
   assert.deepEqual(Array.from(a.im), [3, 4], 'a keeps its imaginary half');
-  // The literal drops it. THIS is the defect, carded in TODO-flatppl-js.md.
   const zz = valueOfY(src + 'y = zz\n');
-  assert.equal(zz.im, undefined,
-    'the array literal still drops `im` — if this now passes, update the card');
-  // Given that input, `adjoint.(zz)` is an honest per-cell list of tagged
-  // vectors rather than a tag-less matrix of real parts, which is what it was.
+  assert.equal(zz.dtype, 'complex');
+  assert.deepEqual(Array.from(zz.data), [1, 2, 5, 6]);
+  assert.deepEqual(Array.from(zz.im), [3, 4, 7, 8]);
+  // `adjoint.(zz)` is a per-cell list of tagged vectors — a stack of
+  // transposed vectors is not a matrix (§07 "Linear algebra") — and each cell
+  // now carries its own imaginary half. `adjoint` is a lazy Klein-4 flip, so
+  // the canonical `im` is unchanged and the 'A' tag holds the conjugation.
   const adj = valueOfY(src + 'y = adjoint.(zz)\n');
   assert.ok(Array.isArray(adj), 'a per-cell list');
   assert.equal(adj[0].t, 'A');
   assert.equal(adj[1].t, 'A');
+  assert.deepEqual(Array.from(adj[0].im), [3, 4]);
+  assert.deepEqual(Array.from(adj[1].im), [7, 8]);
 });
 
 test('stacking a structured cell densifies it first', () => {
