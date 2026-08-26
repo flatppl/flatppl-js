@@ -447,6 +447,7 @@ function activate(context: any) {
       installCatWatcher();
       void lspManager?.restart();
     }
+    if (e.affectsConfiguration('flatppl.diagnostics.exclude')) void lspManager?.restart();
   });
   context.subscriptions.push(cfgWatcher, {
     dispose: () => debouncedRestart.cancel(),

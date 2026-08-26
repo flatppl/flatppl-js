@@ -59,6 +59,15 @@ ships inside the extension.
   targets the configured `flatppl.catalogues.path` directly, so it works even
   when that directory is outside the open workspace.
 
+`flatppl.diagnostics.exclude`
+: Directory names pruned from the server's workspace scan, so `.flatppl`
+  files under them never get diagnostics published in the Problems panel —
+  useful for fixture/test corpora that are deliberately invalid models, not
+  user errors. Matches a directory by its exact name at any depth (e.g.
+  `fixtures` matches `packages/engine/test/fixtures`). Defaults to
+  `["fixtures"]`. `node_modules` is always pruned regardless of this setting.
+  Changing it restarts the server.
+
 ### Other editors
 
 `flatppl-lsp` is a standalone LSP binary. Per-platform builds are published as
@@ -102,17 +111,21 @@ vim.lsp.start({
 (add-to-list 'eglot-server-programs '(flatppl-mode . ("flatppl-lsp")))
 ```
 
-#### External catalogues in non-VSCode editors
+#### External catalogues and diagnostics exclusions in non-VSCode editors
 
-Pass catalogues via the LSP `initializationOptions`, an object of the form:
+Pass catalogues and workspace-scan exclusions via the LSP
+`initializationOptions`, an object of the form:
 
 ```json
-{ "catalogues": ["<ron source string>", ...] }
+{ "catalogues": ["<ron source string>", ...], "diagnosticsExclude": ["fixtures"] }
 ```
 
-Each entry is the full text of a catalogue `.ron` file. VSCode does this
-automatically from `flatppl.catalogues.path`; other editors must supply the
-strings manually in their LSP client configuration.
+Each `catalogues` entry is the full text of a catalogue `.ron` file.
+`diagnosticsExclude` is a list of directory names pruned from the server's
+workspace scan (`node_modules` is always pruned regardless); the server
+defaults to `["fixtures"]` when this key is omitted. VS Code sends both
+automatically from `flatppl.catalogues.path` and `flatppl.diagnostics.exclude`;
+other editors must supply them manually in their LSP client configuration.
 
 ## Installation
 
