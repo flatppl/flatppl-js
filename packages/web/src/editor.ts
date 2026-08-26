@@ -551,6 +551,21 @@
     const initialLang = langKeyFor(opts.fileType || 'flatppl');
 
     const extensions: any[] = [
+      bundle.EditorState.allowMultipleSelections.of(true),
+      bundle.drawSelection(),
+      // CM6 picks the mouse-selection style at mousedown, before any drag
+      // distance is known — Alt-click-adds-cursor and Alt-drag-rectangle
+      // can't share bare Alt. Rectangle moves to Alt+Shift (VS Code's
+      // column-select binding) so plain Alt-click is free for multicursor.
+      bundle.rectangularSelection({
+        eventFilter: function (ev: any) { return ev.altKey && ev.shiftKey && ev.button === 0; },
+      }),
+      bundle.crosshairCursor(),
+      // CM6's default click-adds-cursor modifier is Ctrl/Cmd (platform-
+      // dependent), which collides with this editor's own Ctrl/Cmd-click
+      // jump-to-definition (see domEventHandlers.mousedown below).
+      // Rebind multicursor clicks to Alt, freeing Ctrl/Cmd for navigation.
+      bundle.EditorView.clickAddsSelectionRange.of(function (ev: any) { return ev.altKey; }),
       bundle.lineNumbers(),
       bundle.highlightActiveLine(),
       bundle.highlightActiveLineGutter(),
@@ -575,6 +590,9 @@
           key: 'Mod-/',
           preventDefault: true,
           run: function () { return toggleLineComment(); },
+        }, {
+          key: 'Mod-d',
+          run: bundle.selectNextOccurrence,
         }] as any[]).concat(
           bundle.defaultKeymap || [],
           bundle.historyKeymap || [],
