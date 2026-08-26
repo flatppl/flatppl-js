@@ -25,6 +25,87 @@ export interface ContourLevel {
   segments: Array<[[number, number], [number, number]]>;
 }
 
+/** A G×G accumulator over the data range of (xs, ys), plus the bin centres. */
+export interface BinnedGrid {
+  /** Row-major: bin (column bx, row by) lives at index `by * G + bx`. */
+  field: Float64Array;
+  /** x bin centres, length G. */
+  gx: Float64Array;
+  /** y bin centres, length G. */
+  gy: Float64Array;
+  /** Sum of the accumulated weights (the point count when unweighted). */
+  total: number;
+  /** Points that landed in a bin — both coordinates finite. */
+  count: number;
+}
+
+/**
+ * Bin (xs, ys) onto a G×G grid spanning the data range.
+ *
+ * @param weights optional per-point weight; omitted means weight 1 (counts).
+ *                A weight may be negative — the caller may be accumulating a
+ *                signed numerator such as Σ w·z — so `total` is not a mass.
+ * @param range   explicit [xmin, xmax, ymin, ymax] to span instead of the data
+ *                range. Points outside are DROPPED, not clamped to the edge
+ *                bins, so a deliberately narrowed window does not pile the
+ *                excluded tail onto its border.
+ * @returns null when the grid is not constructible: a degenerate (zero-width)
+ *          axis, or no point with both coordinates finite.
+ */
+export function binGrid(
+  xs: ArrayLike<number>,
+  ys: ArrayLike<number>,
+  G: number,
+  weights?: ArrayLike<number> | null,
+  range?: [number, number, number, number] | null,
+): BinnedGrid | null {
+  const n = Math.min(xs.length, ys.length);
+
+  let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+  if (range) {
+    xmin = range[0]; xmax = range[1]; ymin = range[2]; ymax = range[3];
+  } else {
+    for (let i = 0; i < n; i++) {
+      const x = xs[i], y = ys[i];
+      if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+      if (x < xmin) xmin = x;
+      if (x > xmax) xmax = x;
+      if (y < ymin) ymin = y;
+      if (y > ymax) ymax = y;
+    }
+  }
+  if (!(xmax > xmin) || !(ymax > ymin)) return null;
+
+  const dx = (xmax - xmin) / G;
+  const dy = (ymax - ymin) / G;
+
+  // Node j (0..G-1) is the CENTRE of bin j, at xmin+(j+0.5)*dx.
+  const field = new Float64Array(G * G);
+  let total = 0;
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    const x = xs[i], y = ys[i];
+    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
+    const w = weights ? weights[i] : 1;
+    if (!Number.isFinite(w)) continue;
+    if (range && (x < xmin || x > xmax || y < ymin || y > ymax)) continue;
+    let bx = Math.floor((x - xmin) / dx);
+    let by = Math.floor((y - ymin) / dy);
+    if (bx < 0) bx = 0; else if (bx >= G) bx = G - 1;
+    if (by < 0) by = 0; else if (by >= G) by = G - 1;
+    field[by * G + bx] += w;
+    total += w;
+    count += 1;
+  }
+  if (count === 0) return null;
+
+  const gx = new Float64Array(G);
+  const gy = new Float64Array(G);
+  for (let j = 0; j < G; j++) { gx[j] = xmin + (j + 0.5) * dx; gy[j] = ymin + (j + 0.5) * dy; }
+
+  return { field: field, gx: gx, gy: gy, total: total, count: count };
+}
+
 /**
  * Density contours enclosing each fraction in `fracs` (e.g. [0.68, 0.95]).
  *
@@ -49,55 +130,51 @@ export function densityContours(
   const empty = fracs.map(function (f) { return { frac: f, segments: [] as ContourLevel['segments'] }; });
   if (n < minPoints) return empty;
 
-  // Data range. A degenerate (zero-width) axis has no 2D density to contour.
-  let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
-  for (let i = 0; i < n; i++) {
-    const x = xs[i], y = ys[i];
-    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    if (x < xmin) xmin = x;
-    if (x > xmax) xmax = x;
-    if (y < ymin) ymin = y;
-    if (y > ymax) ymax = y;
-  }
-  if (!(xmax > xmin) || !(ymax > ymin)) return empty;
-
   const G = Math.max(8, opts.grid != null ? opts.grid : 48);
-  const dx = (xmax - xmin) / G;
-  const dy = (ymax - ymin) / G;
-
-  // Bin counts. Node j (0..G-1) is the CENTRE of bin j, at xmin+(j+0.5)*dx.
-  const grid = new Float64Array(G * G);
-  let total = 0;
-  for (let i = 0; i < n; i++) {
-    const x = xs[i], y = ys[i];
-    if (!Number.isFinite(x) || !Number.isFinite(y)) continue;
-    let bx = Math.floor((x - xmin) / dx);
-    let by = Math.floor((y - ymin) / dy);
-    if (bx < 0) bx = 0; else if (bx >= G) bx = G - 1;
-    if (by < 0) by = 0; else if (by >= G) by = G - 1;
-    grid[by * G + bx] += 1;
-    total += 1;
-  }
-  if (total <= 0) return empty;
+  const binned = binGrid(xs, ys, G);
+  if (!binned) return empty;
 
   const sigma = opts.smooth != null ? opts.smooth : 1.0;
-  const field = sigma > 0 ? gaussianBlur(grid, G, sigma) : grid;
-
-  // Node coordinates (bin centres).
-  const gx = new Float64Array(G);
-  const gy = new Float64Array(G);
-  for (let j = 0; j < G; j++) { gx[j] = xmin + (j + 0.5) * dx; gy[j] = ymin + (j + 0.5) * dy; }
+  const field = sigma > 0 ? gaussianBlur(binned.field, G, sigma) : binned.field;
 
   return fracs.map(function (frac) {
     const level = hpdLevel(field, frac);
-    const segments = level > 0 ? marchingSquares(field, G, gx, gy, level) : [];
+    const segments = level > 0 ? marchingSquares(field, G, binned.gx, binned.gy, level) : [];
+    return { frac: frac, segments: segments };
+  });
+}
+
+/**
+ * HPD contours of a field that is already binned — the surface renderer's own
+ * grid (render-field.ts), so the curves are the iso-levels of exactly the
+ * surface drawn under them.
+ *
+ * densityContours cannot serve that case: it re-bins raw points with no
+ * weights, which on an importance-weighted posterior traces the PRIOR.
+ *
+ * @param field row-major, gxArr.length * gyArr.length, already smoothed
+ */
+export function fieldContours(
+  field: Float64Array,
+  gxArr: Float64Array,
+  gyArr: Float64Array,
+  fracs: number[],
+): ContourLevel[] {
+  const G = gxArr.length;
+  if (gyArr.length !== G || field.length !== G * G) {
+    // marchingSquares walks a square grid; anything else is a caller bug.
+    return fracs.map(function (f) { return { frac: f, segments: [] as ContourLevel['segments'] }; });
+  }
+  return fracs.map(function (frac) {
+    const level = hpdLevel(field, frac);
+    const segments = level > 0 ? marchingSquares(field, G, gxArr, gyArr, level) : [];
     return { frac: frac, segments: segments };
   });
 }
 
 /** Separable Gaussian blur with reflect-at-edge padding. Mass-preserving
  *  (normalised kernel), so the total under `field` matches the input. */
-function gaussianBlur(src: Float64Array, G: number, sigma: number): Float64Array {
+export function gaussianBlur(src: Float64Array, G: number, sigma: number): Float64Array {
   const radius = Math.max(1, Math.ceil(3 * sigma));
   const kernel = new Float64Array(2 * radius + 1);
   let ksum = 0;

@@ -5,7 +5,8 @@
 // (marginals on the diagonal, joint scatters off-diagonal).
 
 import { colorForBinding } from './palette.js';
-import { densityContours } from './contour2d.js';
+import { densityContours, fieldContours } from './contour2d.js';
+import { jointDensityField, jointMeanField, renderField2D } from './render-field.js';
 /**
  * Render the selected axes as a 2D density-strip view: one
  * column per axis, where each column shades by the per-axis
@@ -475,4 +476,157 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
   }
   // Above-diagonal cells are intentionally left empty (corner-
   // plot convention).
+}
+
+/** Credible levels the joint surface overlays, inner first. */
+const JOINT_FRACS = [0.68, 0.95];
+
+/**
+ * Joint 2D view: the selected axes' joint density as a value-axis surface,
+ * with a third selected axis optionally taking over the colour.
+ *
+ * Roles are positional in selection order — `selected[0]` → x, `[1]` → y,
+ * `[2]` → colour — so the Variates dropdown doubles as the role picker and no
+ * second control is needed. `onRotate` re-renders the chart after the rotate
+ * buttons permute those roles.
+ */
+export function renderJointField(ctx: Ctx, hostEl: any, measure: any, onRotate: () => void) {
+  hostEl.innerHTML = '';
+  const byKey: Record<string, any> = {};
+  listScalarAxes(measure).forEach(function (a: any) { byKey[a.key] = a; });
+  // Selection ORDER, not axis order — that ordering is the role assignment.
+  const picked = ctx.recordSelection!.selected
+    .map(function (k: string) { return byKey[k]; })
+    .filter(function (a: any) { return !!a; });
+
+  function message(text: string) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    div.style.opacity = '0.5';
+    div.style.padding = '24px';
+    div.style.textAlign = 'center';
+    hostEl.appendChild(div);
+  }
+  if (picked.length < 2) {
+    message('Select at least two variates to plot a joint surface.');
+    return;
+  }
+  const roleCount = Math.min(3, picked.length);
+  const xAxis = picked[0], yAxis = picked[1];
+  const cAxis = roleCount >= 3 ? picked[2] : null;
+
+  // Bin with weights rather than importance-resampling. A surface needs no
+  // equal-weight subset, and binning uses every atom — deliberately unlike the
+  // corner-plot scatters above, which resample because a scatter can only draw
+  // one point per atom.
+  let weights: Float64Array | null = null;
+  if (measure.logWeights) {
+    const lw = measure.logWeights;
+    let maxLw = -Infinity;
+    for (let i = 0; i < lw.length; i++) if (lw[i] > maxLw) maxLw = lw[i];
+    weights = new Float64Array(lw.length);
+    // Shift by the max before exponentiating: raw logWeights can sit far
+    // enough below 0 that every exp() underflows to zero.
+    if (Number.isFinite(maxLw)) {
+      for (let i = 0; i < lw.length; i++) weights[i] = Math.exp(lw[i] - maxLw);
+    }
+  }
+
+  const density = jointDensityField(xAxis.samples, yAxis.samples, weights);
+  if (!density) {
+    message('Not enough variation in the selected variates to bin a surface.');
+    return;
+  }
+  const surface = cAxis
+    ? jointMeanField(xAxis.samples, yAxis.samples, cAxis.samples, weights)
+    : density;
+  if (!surface) {
+    message('Not enough variation in the selected variates to bin a surface.');
+    return;
+  }
+
+  // ---- Role legend + rotate buttons ----
+  hostEl.style.display = 'flex';
+  hostEl.style.flexDirection = 'column';
+  hostEl.style.minHeight = '0';
+
+  const legend = document.createElement('div');
+  legend.style.display = 'flex';
+  legend.style.alignItems = 'center';
+  legend.style.gap = '1.2em';
+  legend.style.padding = '0.2em 0.4em 0.4em';
+  legend.style.fontSize = '0.92em';
+  legend.style.flex = '0 0 auto';
+
+  const roles = document.createElement('span');
+  roles.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
+  roles.style.opacity = '0.85';
+  roles.textContent = 'x: ' + xAxis.label + '   y: ' + yAxis.label
+    + (cAxis ? '   colour: ' + cAxis.label : '');
+  roles.title = cAxis
+    ? 'Colour is the weighted mean of ' + cAxis.label + ' per bin.\n'
+      + 'The contours stay the 68% / 95% credible regions of the '
+      + xAxis.label + ' / ' + yAxis.label + ' DENSITY, not of the colour.'
+    : 'Colour is the joint density of ' + xAxis.label + ' and ' + yAxis.label
+      + '.\nContours bound the 68% and 95% credible regions.';
+  legend.appendChild(roles);
+
+  function rotateBtn(glyph: string, title: string, step: number) {
+    const b = document.createElement('button');
+    b.textContent = glyph;
+    b.title = title;
+    b.style.cursor = 'pointer';
+    b.style.fontSize = '0.95em';
+    b.style.lineHeight = '1';
+    b.style.padding = '0.15em 0.45em';
+    b.style.border = '1px solid var(--vscode-button-border, rgba(255,255,255,0.15))';
+    b.style.borderRadius = '3px';
+    b.style.background = 'var(--vscode-button-secondaryBackground, #3a3d41)';
+    b.style.color = 'var(--vscode-button-secondaryForeground, #ccc)';
+    b.addEventListener('click', function (ev) {
+      ev.stopPropagation();
+      // Permute only the role-bearing prefix; any further checked axes keep
+      // their place in the queue.
+      const sel = ctx.recordSelection!.selected;
+      const head = sel.slice(0, roleCount);
+      const shift = ((step % roleCount) + roleCount) % roleCount;
+      const rotated = head.slice(shift).concat(head.slice(0, shift));
+      for (let i = 0; i < roleCount; i++) sel[i] = rotated[i];
+      onRotate();
+    });
+    return b;
+  }
+  const btns = document.createElement('span');
+  btns.style.display = 'inline-flex';
+  btns.style.gap = '0.3em';
+  btns.appendChild(rotateBtn('↑', 'Rotate roles: y becomes x', 1));
+  btns.appendChild(rotateBtn('↓', 'Rotate roles: x becomes y', -1));
+  legend.appendChild(btns);
+
+  if (ctx.recordSelection!.selected.length > 3) {
+    const note = document.createElement('span');
+    note.textContent = 'Joint 2D uses the first three axes';
+    note.style.opacity = '0.6';
+    legend.appendChild(note);
+  }
+  hostEl.appendChild(legend);
+
+  const chartHost = document.createElement('div');
+  chartHost.style.flex = '1 1 auto';
+  chartHost.style.minHeight = '0';
+  hostEl.appendChild(chartHost);
+
+  // Contours always describe the (x, y) DENSITY — with a third axis on the
+  // colour the surface no longer shows it. Taken off the density field's own
+  // grid, so they are its exact iso-levels (and weight-aware, unlike
+  // densityContours' re-bin of the raw points).
+  const contours = fieldContours(density.z, density.xs, density.ys, JOINT_FRACS);
+  renderField2D(chartHost, surface, {
+    xLabel: xAxis.label,
+    yLabel: yAxis.label,
+    zLabel: cAxis ? cAxis.label : 'density',
+    contours: contours,
+    diverging: !!cAxis,
+    robustRamp: !!cAxis,
+  });
 }
