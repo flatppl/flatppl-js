@@ -448,7 +448,7 @@ M = weighted(f, L)
   }
   const rel = Math.abs(Math.exp(m.logTotalmass) - 0.5) / 0.5;
   assert.ok(rel < 0.03, 'retained mass ' + Math.exp(m.logTotalmass) + ' ≉ 0.5 (rel ' + rel + ')');
-  assert.ok(warnings.some((w) => /negative weight sample/.test(w)),
+  assert.ok(warnings.some((w) => /negative off-support weight/.test(w)),
     'expected a negative-weight warning, got ' + JSON.stringify(warnings));
 });
 

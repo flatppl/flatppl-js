@@ -369,6 +369,18 @@ export interface DerivationWeighted {
    * the coordinates of the scored point.
    */
   boxAxes?: number;
+  /**
+   * True when `weightIR` is a function of the base's variate
+   * (`_classifyWeightedByFunction`'s parameter-substituted body, single- or
+   * multi-axis). Density's walkWeighted tells this apart from a plain
+   * atom-scalar weight by re-inspecting the raw (unsubstituted) AST for a
+   * `functionof` node; the derivation's `weightIR` has already had that
+   * substitution applied, so matWeighted needs this flag to draw the same
+   * line and pick addLogWOfVariate's lenient path over addLogW's refusal.
+   * Unset (or false) means a constant or a closed-form runtime expression
+   * that does NOT vary with the variate — negativity there is enforced.
+   */
+  isVariateWeight?: boolean;
 }
 
 /** Normalise `from` measure by dividing through its totalmass. */

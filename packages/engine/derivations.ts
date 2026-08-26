@@ -1348,7 +1348,10 @@ function _classifyWeightedByFunction(
   if (fnIR.params.length > 1) {
     const axes = _boxAxesOf(baseName, bindings);
     if (!axes || axes !== fnIR.params.length) return null;
-    return { kind: 'weighted', from: baseName, weightIR: fnIR, boxAxes: axes, isLog: !!isLog };
+    return {
+      kind: 'weighted', from: baseName, weightIR: fnIR, boxAxes: axes,
+      isLog: !!isLog, isVariateWeight: true,
+    };
   }
   const paramName = fnIR.params[0];
   // Replace every `(ref %local <paramName>)` in the body with
@@ -1366,7 +1369,10 @@ function _classifyWeightedByFunction(
     }
     return n;
   });
-  return { kind: 'weighted', from: baseName, weightIR: synth, isLog: !!isLog };
+  return {
+    kind: 'weighted', from: baseName, weightIR: synth,
+    isLog: !!isLog, isVariateWeight: true,
+  };
 }
 
 // Axis count of a binding that is a Lebesgue over an N-D box, else null.

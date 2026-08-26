@@ -244,6 +244,54 @@ function matArray(d: DerivationArray) {
   }));
 }
 
+// Per-atom log-weight accumulation shared by matWeighted's three bases
+// (record/tuple, scalar, N-D box). §06 `weighted`: "f is a non-negative
+// weight (a constant or a function of the variate x of M)". The split mirrors
+// density.ts's addLogW / addLogWOfVariate:
+//
+//   - `isVariateWeight` (the base's own variate feeds the weight body,
+//     `_classifyWeightedByFunction`'s substituted IR): a negative sample is
+//     legitimate off-support behaviour ("contributes nothing" — the § 12
+//     generic_dist normalizer integrand), so it collapses to -Infinity and
+//     is only counted, never refused.
+//   - otherwise `weightIR` is a constant or a closed-form expression that
+//     does NOT vary with the variate (an `isEvaluable` fallback the static
+//     passes couldn't fold) — a negative sample there makes weighted(w, M) a
+//     signed measure at that atom, with no density to report, so it refuses
+//     exactly like density's addLogW: located, tagged `modelRefusal` so the
+//     MCMC tractability probe re-raises it instead of a swallowed proposal.
+//
+// Zero stays legal either way — §06 gives it a meaning (the atom drops out).
+function _addWeightedLogSamples(
+  w: Float64Array, baseLW: Float64Array, weights: Float64Array, N: number,
+  isVariateWeight: boolean,
+): void {
+  let nonPos = 0;
+  for (let i = 0; i < N; i++) {
+    const v = weights[i];
+    if (v > 0) { w[i] = baseLW[i] + Math.log(v); continue; }
+    if (v === 0) { w[i] = -Infinity; continue; }
+    // v < 0, or NaN (isVariateWeight treats NaN the same as a negative:
+    // "not positive" collapses to -Infinity, matching addLogWOfVariate).
+    if (isVariateWeight) { w[i] = -Infinity; nonPos++; continue; }
+    const err: any = new Error('weighted: sampled weight #' + i + ' is '
+      + (Number.isNaN(v) ? 'NaN (not a number)' : v) + ', but §06 requires a '
+      + 'non-negative weight ("f is a non-negative weight") — a negative '
+      + 'weight makes weighted(w, M) a signed measure at that atom, not a '
+      + 'measure, and it has no density to report. A ZERO weight is legal '
+      + 'and contributes -Infinity.');
+    err.modelRefusal = true;
+    throw err;
+  }
+  if (nonPos > 0) {
+    // eslint-disable-next-line no-console
+    console.warn('weighted: ' + nonPos + ' sample(s) hit a negative off-support '
+      + 'weight value (legal per §06 — a weight function of the variate '
+      + 'contributes nothing there, matching the density path\'s '
+      + 'addLogWOfVariate), treated as zero mass');
+  }
+}
+
 function matWeighted(d: DerivationWeighted, ctx: any) {
   // weighted(w, base) / logweighted(lw, base): shift each parent
   // atom's logWeight by log(w_i) (or lw_i directly). totalmass scales
@@ -318,17 +366,7 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
           if (d.isLog) {
             for (let i = 0; i < N; i++) w[i] = baseLW[i] + weights[i];
           } else {
-            let nonPos = 0;
-            for (let j = 0; j < N; j++) {
-              const v = weights[j];
-              if (v > 0) w[j] = baseLW[j] + Math.log(v);
-              else { w[j] = -Infinity; if (v < 0) nonPos++; }
-            }
-            if (nonPos > 0) {
-              // eslint-disable-next-line no-console
-              console.warn('weighted: ' + nonPos
-                + ' negative weight sample(s) treated as zero mass');
-            }
+            _addWeightedLogSamples(w, baseLW, weights, N, !!d.isVariateWeight);
           }
           // Result totalmass = ∫ f · dM (spec §06). The empirical
           // estimator logSumExp(baseLW + log(f(x_i))) gives
@@ -360,24 +398,10 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
         })
       ).then((reply: any) => {
         const weights = reply.samples;
-        let nonPos = 0;
         if (d.isLog) {
           for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] + weights[i];
         } else {
-          for (let j = 0; j < N; j++) {
-            const v = weights[j];
-            if (v > 0) {
-              w[j] = lifted.logWeights[j] + Math.log(v);
-            } else {
-              w[j] = -Infinity;
-              if (v < 0) nonPos++;
-            }
-          }
-          if (nonPos > 0) {
-            // eslint-disable-next-line no-console
-            console.warn('weighted: ' + nonPos
-              + ' negative weight sample(s) treated as zero mass');
-          }
+          _addWeightedLogSamples(w, lifted.logWeights, weights, N, !!d.isVariateWeight);
         }
         // Spec §06 totalmass = ∫ f · dM. Parent's mass (e.g.
         // log(b−a) for `Lebesgue(interval(a,b))`) lives on
@@ -496,17 +520,7 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any) {
     if (d.isLog) {
       for (let i = 0; i < N; i++) w[i] = baseLW[i] + weights[i];
     } else {
-      let nonPos = 0;
-      for (let i = 0; i < N; i++) {
-        const v = weights[i];
-        if (v > 0) w[i] = baseLW[i] + Math.log(v);
-        else { w[i] = -Infinity; if (v < 0) nonPos++; }
-      }
-      if (nonPos > 0) {
-        // eslint-disable-next-line no-console
-        console.warn('weighted: ' + nonPos
-          + ' negative weight sample(s) treated as zero mass');
-      }
+      _addWeightedLogSamples(w, baseLW, weights, N, !!d.isVariateWeight);
     }
     return emit(parentLTM + empirical.logSumExp(w));
   });
