@@ -22,7 +22,7 @@
     "typecheck":       "tsc -p tsconfig.json",
     "typecheck:watch": "tsc -p tsconfig.json --watch",
     "package:vsix":    "npm run build:vendor && vsce package -o ../../flatppl-vscode-extension-nightly.vsix --no-dependencies",
-    "install:vsix":    "npm run package:vsix && { command -v code >/dev/null 2>&1 && code --install-extension ../../flatppl-vscode-extension-nightly.vsix --force || echo \"warning: 'code' not on PATH; packaged vsix at flatppl-vscode-extension-nightly.vsix — install with: code --install-extension <path>\"; }",
+    "install:vsix":    "npm run package:vsix && { command -v code >/dev/null 2>&1 && code --install-extension ../../flatppl-vscode-extension-nightly.vsix --force || command -v cursor >/dev/null 2>&1 && cursor --install-extension ../../flatppl-vscode-extension-nightly.vsix --force || echo \"warning: neither 'code' nor 'cursor' on PATH; packaged vsix at flatppl-vscode-extension-nightly.vsix — install with: code --install-extension <path>\"; }",
     "test":            "node --test 'test/*.test.js'"
   },
   "dependencies": {

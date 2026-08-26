@@ -130,8 +130,8 @@ Windows (PowerShell):
 irm https://github.com/flatppl/flatppl-js/releases/download/nightly/install.ps1 | iex
 ```
 
-Requires the `code` CLI on your PATH. On an unsupported platform, build
-`flatppl-lsp` from source and set the `flatppl.server.path` setting.
+Requires the `code` or `cursor` CLI on your PATH. On an unsupported platform,
+build `flatppl-lsp` from source and set the `flatppl.server.path` setting.
 
 ## Development
 

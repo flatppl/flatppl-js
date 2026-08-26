@@ -1,6 +1,6 @@
 #!/bin/sh
 # Detect the host platform, download the matching FlatPPL VS Code extension
-# vsix from the nightly release, and install it with the `code` CLI.
+# vsix from the nightly release, and install it with the `code` or `cursor` CLI.
 set -eu
 
 REPO="flatppl/flatppl-js"
@@ -25,10 +25,18 @@ echo "Downloading $vsix ..."
 curl -fsSL "$BASE/$vsix" -o "$vsix"
 
 if command -v code >/dev/null 2>&1; then
-  code --install-extension "$vsix" --force
-  echo "Installed. Reload VS Code (Command Palette -> Developer: Reload Window)."
+  editor_cli=code
+elif command -v cursor >/dev/null 2>&1; then
+  editor_cli=cursor
 else
-  echo "Downloaded $vsix, but 'code' is not on PATH." >&2
+  editor_cli=""
+fi
+
+if [ -n "$editor_cli" ]; then
+  "$editor_cli" --install-extension "$vsix" --force
+  echo "Installed. Reload the editor (Command Palette -> Developer: Reload Window)."
+else
+  echo "Downloaded $vsix, but neither 'code' nor 'cursor' is on PATH." >&2
   echo "Install manually: code --install-extension \"$vsix\"" >&2
   exit 1
 fi
