@@ -437,12 +437,16 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
         // `__anonK = f(_mass_, _cost_)`, so the formals sit behind the ref and
         // a consumer that binds them in the BODY (density.ts's walkWeighted)
         // substitutes nothing and is left evaluating a bare measure-shaped
-        // ref. Unwrap the root ref chain only — deliberately NOT a deep walk.
-        // Inlining nested refs as well would splice a reified callable's
-        // traced subgraph into the body and expose intermediates that are only
-        // resolvable once that callable's own boundaries are bound.
+        // ref. Unwrap the root ref chain, then inline the refs BELOW the root
+        // that likewise carry a formal — a nested reification's applied body
+        // arrives as a tree of such clones, none of which resolves standalone
+        // (see `_inlineFormalCarryingRefs`). Refs carrying no formal are left
+        // alone, so no standalone-resolvable subgraph is spliced in.
         const formals = new Set<string>(ir.params);
-        const newLocalBody = _unwrapHoistedFormalRoot(ir.body, formals, bindings, derivations);
+        const mentionsFormal = _makeMentionsFormal(formals, bindings);
+        const newLocalBody = _inlineFormalCarryingRefs(
+          _unwrapHoistedFormalRoot(ir.body, formals, bindings, derivations, mentionsFormal),
+          bindings, mentionsFormal);
         if (newLocalBody !== ir.body) {
           binding.ir = Object.assign({}, ir, { body: newLocalBody });
           selfContained.add(fnName);
@@ -1108,15 +1112,9 @@ function classifyDerivation(
 // binds the function's formals in the body (density.ts's walkWeighted) needs
 // them visible there, so replace the root ref with its binding's IR.
 //
-// Only the root ref chain is unwrapped, and only while the binding it names
-// carries a formal. Nested refs are left alone on purpose: a ref inside the
-// resulting expression may name a reified callable's traced subgraph, whose
-// intermediates become resolvable only once that callable's own boundaries are
-// bound, so splicing them in would leave the body referring to bindings nothing
-// can resolve standalone.
-function _unwrapHoistedFormalRoot(
-  ir: any, formals: Set<string>, bindings: any, derivations: any,
-): any {
+// Only the root ref chain is unwrapped here; `_inlineFormalCarryingRefs` then
+// handles the refs BELOW the root, under the same carries-a-formal test.
+function _makeMentionsFormal(formals: Set<string>, bindings: any) {
   const carries = new Map<string, boolean>();
   function mentionsFormal(name: string, seen: Set<string>): boolean {
     if (carries.has(name)) return carries.get(name)!;
@@ -1138,6 +1136,14 @@ function _unwrapHoistedFormalRoot(
     carries.set(name, found);
     return found;
   }
+  return (name: string) => mentionsFormal(name, new Set());
+}
+
+function _unwrapHoistedFormalRoot(
+  ir: any, formals: Set<string>, bindings: any, derivations: any,
+  mentionsFormal?: (name: string) => boolean,
+): any {
+  if (!mentionsFormal) mentionsFormal = _makeMentionsFormal(formals, bindings);
   let node = ir;
   const seenRoots = new Set<string>();
   while (node && node.kind === 'ref' && node.ns === 'self' && node.name) {
@@ -1151,10 +1157,91 @@ function _unwrapHoistedFormalRoot(
     const target = bindings && bindings.get(name);
     if (!target || !target.ir || target.ir.kind !== 'call') break;
     if (target.ir.op === 'elementof' || target.ir.op === 'external') break;
-    if (!mentionsFormal(name, new Set())) break;
+    if (!mentionsFormal(name)) break;
     node = target.ir;
   }
   return node;
+}
+
+// Complete the body of a placeholder-param `functionof` by inlining every ref
+// BELOW its root that names a formal-carrying binding.
+//
+// A weight function whose reified body applies a SECOND reification is the
+// motivating shape (the amplitude-analysis spelling: `intensity_fn` traces a
+// subgraph that applies `angular_tensors`). Spec §04 "Specifying reification
+// boundaries" gives the applied semantics — "A specified boundary node `a` can
+// be thought of as being substituted with a new node, generated via
+// `elementof(valueset(a))`, in the reified graph" — and the lift already
+// performs that substitution, hoisting the substituted CLONES of the inner
+// traced graph to anonymous bindings. Those clones reference this function's
+// `%local` formals, so they are inert standalone: a clone like `[_q_^2, _p_]`
+// classifies as no derivation (a `vector` with computed elements is neither an
+// all-literal array nor an all-ref tuple nor `isEvaluable`) and `fixedValues`
+// cannot evaluate it either. Left as bare refs they make the body unresolvable,
+// the cascade-prune drops the weight, and every measure above it goes with it.
+//
+// CARRYING A FORMAL is the whole criterion, and it is what makes this walk
+// sound where an unguarded one is not. A binding that transitively mentions a
+// formal has no meaning outside this body, so inlining it is forced and cannot
+// expose anything new; a binding that carries none is resolvable on its own and
+// stays a ref, so no reified callable's own traced subgraph gets spliced in
+// (the failure mode #184 hit). No name is ever rewritten: the arguments were
+// substituted by the lift, which is why a PERMUTED composition
+// (`f(x, y) = g(b = x, a = y)`) reduces correctly.
+//
+// A MEASURE binding stays a ref for the density walker. The kind-based test
+// `_unwrapHoistedFormalRoot` uses is too strict here: a reified function with a
+// record output stores its applied body as a `record` derivation over
+// formal-carrying fields, which is a value composition, not a measure — leaving
+// it a ref keeps the body unresolvable. `isMeasureBinding` is the criterion that
+// separates the two, and the carries-a-formal test already excludes anything
+// materialisable in its own right.
+//
+// The memo returns one shared node per binding, so a diamond in the graph stays
+// a diamond rather than expanding exponentially.
+function _inlineFormalCarryingRefs(
+  ir: any, bindings: any, mentionsFormal: (name: string) => boolean,
+): any {
+  const memo = new Map<string, any>();
+  const active = new Set<string>();
+
+  function inlinedBinding(name: string): any | null {
+    if (memo.has(name)) return memo.get(name);
+    if (active.has(name)) return null;              // cycle guard
+    const target = bindings && bindings.get(name);
+    if (isMeasureBinding(target)) return null;
+    if (!target || !target.ir || target.ir.kind !== 'call') return null;
+    if (target.ir.op === 'elementof' || target.ir.op === 'external') return null;
+    if (!mentionsFormal(name)) return null;
+    active.add(name);
+    const inlined = walk(target.ir);
+    active.delete(name);
+    memo.set(name, inlined);
+    return inlined;
+  }
+
+  function walk(n: any): any {
+    if (n == null || typeof n !== 'object') return n;
+    if (Array.isArray(n)) {
+      let changed = false;
+      const out = n.map((e) => { const w = walk(e); if (w !== e) changed = true; return w; });
+      return changed ? out : n;
+    }
+    if (n.kind === 'ref' && n.ns === 'self' && n.name) {
+      const inlined = inlinedBinding(n.name);
+      return inlined == null ? n : inlined;
+    }
+    let changed = false;
+    const out: any = {};
+    for (const k in n) {
+      const w = walk(n[k]);
+      if (w !== n[k]) changed = true;
+      out[k] = w;
+    }
+    return changed ? out : n;
+  }
+
+  return walk(ir);
 }
 
 // =====================================================================
@@ -3302,9 +3389,16 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     if (!resolvable(d.from)) return false;
     // Per-atom path also depends on every binding referenced by its
     // weight expression — those need derivations of their own so the
-    // visualPanel can build refArrays for evaluateN.
+    // visualPanel can build refArrays for evaluateN. Callable heads are
+    // exempt for the same reason as in the generic walk below: an
+    // aggregate's reducer (`sum`) is a builtin with no binding at all, and
+    // a broadcast head resolves through `__resolveFnBody` at eval time. A
+    // reified weight body that contracts an index carries such a head, so
+    // without this the reduction alone pruned the measure.
     if (d.weightIR) {
+      const heads = _collectCallableHeadRefs(d.weightIR);
       for (const r of collectSelfRefs(d.weightIR)) {
+        if (heads.has(r)) continue;
         if (!resolvable(r)) return false;
       }
     }
