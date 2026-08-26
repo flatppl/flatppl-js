@@ -19,9 +19,17 @@ import { runAutoDomain } from './autodomain.js';
 import { nameSeed } from './orchestration.js';
 import { renderPlotFrame } from './render-frame.js';
 import { plotZoomOptions } from './util.js';
+import { renderField2D } from './render-field.js';
+
+// Surface-mode grid: GRID_COLS points per sweep, GRID_ROWS sweeps. 4096
+// evaluations in GRID_ROWS worker calls, which the closed-form profile path
+// carries interactively.
+const GRID_COLS = 64;
+const GRID_ROWS = 64;
+
 export function renderProfilePlotForCurrent(ctx: Ctx) {
   const planAny = ctx.currentPlotPlan;
-  if (!planAny || planAny.mode !== 'profile') return;
+  if (!planAny || (planAny.mode !== 'profile' && planAny.mode !== 'profile-grid')) return;
   const plan: ProfilePlan = planAny;
   const sig = plan.signature;
   const axes = plan.axes;
@@ -34,6 +42,30 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
       + esc(plan.name) + '</strong>.', { hint: true });
     return;
   }
+  // Surface mode sweeps sweepAxis once per value of gridAxis: GRID_ROWS
+  // profileN calls, the grid axis pinned through the same fixedEnv the 1-D
+  // path uses for every non-swept input. A per-slot grid axis is excluded —
+  // pinning a single array slot needs the sweep-placeholder machinery, which
+  // profileN already spends on the swept axis.
+  let gridAxis: any = null;
+  if (plan.mode === 'profile-grid') {
+    if (plan.gridKey) {
+      for (let i = 0; i < axes.length; i++) {
+        if (axes[i].key === plan.gridKey) { gridAxis = axes[i]; break; }
+      }
+    }
+    if (!gridAxis || gridAxis.key === sweepAxis.key || gridAxis.path) {
+      gridAxis = defaultGridAxis(plan, sweepAxis);
+      plan.gridKey = gridAxis ? gridAxis.key : null;
+    }
+    if (!gridAxis) {
+      plan.mode = 'profile';
+      showPlotMessage(ctx, 'Surface: <strong>' + esc(plan.name)
+        + '</strong> has no second scalar axis to grid over.', { hint: true });
+      return;
+    }
+  }
+  const surface = plan.mode === 'profile-grid' && !!gridAxis;
   // Mode dispatch. Kernels are routed to renderKernelSampleForCurrent
   // by buildPlotPlan; profile mode here only sees function /
   // likelihood bindings.
@@ -279,15 +311,23 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
           return r;
         });
   }
+  // The grid axis resolves its range the same three ways, so a named
+  // plot_domain drives both axes of the surface.
+  const gridRangePromise = surface
+    ? resolveAxisRange(ctx, plan, gridAxis, domainRanges)
+    : Promise.resolve(null);
   const rangeRef = [defaultRangeForLeafType(sweepAxis.leafType)];
+  const gridRangeRef = [gridAxis ? defaultRangeForLeafType(gridAxis.leafType) : null];
   Promise.all([
     rangePromise,
     Promise.all(selfRefs.map(function(n: any) { return tryGetMeasure(ctx, n); })),
     Promise.all(nonSweptBindingSources.map(function(s) {
       return tryGetMeasure(ctx, s.sourceName);
     })),
+    gridRangePromise,
   ]).then(function(arr) {
     rangeRef[0] = arr[0];
+    if (surface) gridRangeRef[0] = arr[3] as any;
     const measures = arr[1];
     for (let i = 0; i < selfRefs.length; i++) {
       const m = measures[i];
@@ -343,7 +383,7 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     // (n = hi−lo+1 with integer lo, hi). Cap at POINT_COUNT for
     // very wide ranges; renderProfileLine then draws a step
     // plot rather than smoothing between integer values.
-    let pointCount = POINT_COUNT;
+    let pointCount = surface ? GRID_COLS : POINT_COUNT;
     const isIntegerAxis = sweepAxis.leafType
       && sweepAxis.leafType.kind === 'scalar'
       && sweepAxis.leafType.prim === 'integer';
@@ -425,7 +465,10 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
     const setupEnv = Object.keys(profileFixedEnv).length > 0
       ? sendWorker(ctx, { type: 'setEnv', env: profileFixedEnv, merge: true })
       : Promise.resolve(undefined);
-    return setupEnv.then(function() {
+    // One full sweep of the x axis at the CURRENT contents of fixedEnv /
+    // envForWorker. Surface mode calls it once per grid row, rewriting the grid
+    // axis's entry in both between calls; the 1-D path calls it once.
+    function sweepOnce(): Promise<Float64Array | null> {
       return loweredTerms.reduce(function(acc: Promise<Float64Array | null>, lt) {
         // For likelihood profile plots, resolve each term's obs IR to a JS
         // value at dispatch time.  sig.obsIR (single-term) / term.obsIR
@@ -476,10 +519,46 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
           });
         });
       }, Promise.resolve(null as Float64Array | null));
-    });
-  }).then(function(summed: Float64Array | null) {
-    if (!summed) return;
+    }
+    if (!surface) return setupEnv.then(sweepOnce) as Promise<any>;
+    // Grid rows, bottom row first, so row r of the assembled field is the sweep
+    // at y = gridValues[r] and renderField2D's row-major z needs no flip.
+    const gridInput = inputByKwarg[gridAxis.kwargName];
+    const gridParamName = gridInput ? gridInput.paramName : null;
+    if (!gridParamName) {
+      showPlotMessage(ctx, 'Surface: cannot resolve the grid parameter.', { hint: true });
+      return Promise.resolve(null);
+    }
+    const gridRange: any = gridRangeRef[0];
+    const gridValues = new Float64Array(GRID_ROWS);
+    for (let r = 0; r < GRID_ROWS; r++) {
+      const t = r / (GRID_ROWS - 1);
+      gridValues[r] = gridRange[0] + t * (gridRange[1] - gridRange[0]);
+    }
+    const rows: Array<Float64Array | null> = [];
+    return setupEnv.then(function() {
+      return gridValues.reduce(function(acc: Promise<any>, gv, r) {
+        return acc.then(function() {
+          if (ctx.currentPlotPlan !== planForCall) return null;
+          fixedEnv[gridParamName] = gv;
+          envForWorker[gridParamName] = gv;
+          showPlotMessage(ctx, 'Profiling surface… row ' + (r + 1) + ' of '
+            + GRID_ROWS, { cancellable: true, hint: true });
+          return sweepOnce().then(function(row) { rows.push(row); return null; });
+        });
+      }, Promise.resolve(null)).then(function(): any {
+        return { rows: rows, gridValues: gridValues };
+      });
+    }) as Promise<any>;
+  }).then(function(result: any) {
+    if (!result) return;
     if (ctx.currentPlotPlan !== planForCall) return;
+    if (result.rows) {
+      renderProfileSurface(ctx, result.rows, result.gridValues,
+        rangeRef[0], plan, sweepAxis, gridAxis);
+      return;
+    }
+    const summed: Float64Array = result;
     renderProfileLine(ctx, summed, rangeRef[0], plan, sweepAxis);
     // Plot is painted — now kick off the best-effort MLE for the labelled
     // `auto (MLE)` default point (likelihoods only; no-op for functions /
@@ -488,6 +567,117 @@ export function renderProfilePlotForCurrent(ctx: Ctx) {
   }).catch(function(err) {
     if (ctx.currentPlotPlan !== planForCall) return;
     showPlotMessage(ctx, 'Profile plot failed: ' + esc(err && err.message || String(err)));
+  });
+}
+
+/**
+ * Axes that can carry the surface's y direction: a top-level SCALAR input other
+ * than the swept one. A per-slot array axis is excluded — see the grid-axis
+ * comment in renderProfilePlotForCurrent.
+ */
+export function gridEligibleAxes(plan: ProfilePlan, sweepKey: string) {
+  if (!plan.axes) return [];
+  return plan.axes.filter(function(a: any) {
+    // 'any' / 'deferred' / 'var' are the unrestricted placeholder boundaries
+    // (`fn(_)`); distributeAxes emits one sweepable axis for each, and the
+    // profile path treats them as reals. They grid the same way.
+    const k = a.leafType && a.leafType.kind;
+    const scalarish = k === 'scalar' || k === 'any' || k === 'deferred' || k === 'var';
+    return a.key !== sweepKey && a.kwargName
+      && !(a.path && a.path.length > 0)
+      && scalarish;
+  });
+}
+
+function defaultGridAxis(plan: ProfilePlan, sweepAxis: any) {
+  const eligible = gridEligibleAxes(plan, sweepAxis.key);
+  return eligible.length > 0 ? eligible[0] : null;
+}
+
+/**
+ * The same three-tier range resolution the sweep axis uses — active domain
+ * range, cached auto-fit, else `resolveSweepRange` — for any axis.
+ */
+function resolveAxisRange(ctx: Ctx, plan: ProfilePlan, axis: any, domainRanges: any) {
+  const fromDomain = domainRanges[axis.key]
+    || (axis.kwargName ? domainRanges[axis.kwargName] : undefined);
+  if (fromDomain) return Promise.resolve([fromDomain.lo, fromDomain.hi]);
+  const cacheKey = plan.name + '|' + axis.key + '|D=' + (plan.domainName || '');
+  const cached = ctx.profileRangeCache.get(cacheKey);
+  if (cached) return Promise.resolve([cached.lo, cached.hi]);
+  return resolveSweepRange(ctx, axis).then(function(r: any) {
+    ctx.profileRangeCache.set(cacheKey, { lo: r[0], hi: r[1], fromAuto: true });
+    return r;
+  });
+}
+
+/**
+ * Paint the assembled Gy × Gx field as a value-axis surface.
+ *
+ * No contours: this is a deterministic evaluation on a grid, not a sample
+ * density, so there is no credible region to draw. For a log-density output the
+ * same relative cut-off the line plot applies to the y axis drops far-below-peak
+ * rows out of the colour ramp — as NaN, which renderField2D leaves transparent
+ * rather than painting at the floor.
+ */
+export function renderProfileSurface(
+  ctx: Ctx,
+  rows: Array<Float64Array | null>,
+  gridValues: Float64Array,
+  range: any,
+  plan: ProfilePlan,
+  sweepAxis: any,
+  gridAxis: any,
+) {
+  const nx = rows.length > 0 && rows[0] ? rows[0]!.length : 0;
+  const ny = rows.length;
+  if (nx === 0 || ny === 0) {
+    showPlotMessage(ctx, 'Surface: the sweep returned no points.');
+    return;
+  }
+  const isLogDensity = plan.signature.kind === 'kernel'
+                    || plan.signature.kind === 'likelihood';
+  let zMax = -Infinity;
+  for (let r = 0; r < ny; r++) {
+    const row = rows[r];
+    if (!row) continue;
+    for (let i = 0; i < nx; i++) {
+      if (Number.isFinite(row[i]) && row[i] > zMax) zMax = row[i];
+    }
+  }
+  const floor = (isLogDensity && Number.isFinite(zMax))
+    ? zMax - ((plan.yCutoff != null) ? plan.yCutoff : 100)
+    : -Infinity;
+  const z = new Float64Array(ny * nx);
+  for (let r = 0; r < ny; r++) {
+    const row = rows[r];
+    for (let i = 0; i < nx; i++) {
+      const v = row ? row[i] : NaN;
+      z[r * nx + i] = (Number.isFinite(v) && v >= floor) ? v : NaN;
+    }
+  }
+  const xs = new Float64Array(nx);
+  for (let i = 0; i < nx; i++) {
+    const t = nx === 1 ? 0 : i / (nx - 1);
+    xs[i] = range[0] + t * (range[1] - range[0]);
+  }
+  const zLabel = plan.signature.kind === 'function'   ? 'value'
+               : plan.signature.kind === 'likelihood' ? 'log-likelihood'
+               :                                        'log-density';
+  renderPlotFrame(ctx, {
+    toolbarControls: buildProfileControls(ctx, plan, range),
+    bottomRow:       buildProfileBottomRow(ctx, plan, range),
+    chartCallback: function(chartHost: any) {
+      renderField2D(chartHost, { xs: xs, ys: gridValues, z: z }, {
+        xLabel: sweepAxis.label,
+        yLabel: gridAxis.label,
+        zLabel: zLabel,
+        // A function's value crosses zero as often as not, and the sign is the
+        // information. renderField2D falls back to the sequential ramp when the
+        // range stays on one side. A log-density's zero carries no such meaning.
+        diverging: plan.signature.kind === 'function',
+      });
+    },
   });
 }
 
@@ -720,6 +910,58 @@ export function buildProfileControls(ctx: Ctx, plan: ProfilePlan, range: any) {
   xBlock.appendChild(xLabel);
   if (axisEl) xBlock.appendChild(axisEl);
   frag.appendChild(xBlock);
+
+  // Surface toggle: offered whenever a second scalar axis can carry the y
+  // direction. Checked, it flips the plan to 'profile-grid' and the y-axis
+  // selector appears beside it.
+  const eligible = gridEligibleAxes(plan, plan.sweepKey);
+  if (eligible.length > 0) {
+    const surfBlock = document.createElement('span');
+    surfBlock.style.display = 'inline-flex';
+    surfBlock.style.alignItems = 'center';
+    surfBlock.style.gap = '0.35em';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox';
+    cb.checked = plan.mode === 'profile-grid';
+    cb.title = 'Sweep a second axis and plot the surface';
+    cb.style.marginRight = '0.3em';
+    const cbLabel = document.createElement('label');
+    cbLabel.style.opacity = '0.6';
+    cbLabel.appendChild(cb);
+    cbLabel.appendChild(document.createTextNode('Surface'));
+    cb.addEventListener('change', function() {
+      plan.mode = cb.checked ? 'profile-grid' : 'profile';
+      if (cb.checked && !plan.gridKey) plan.gridKey = eligible[0].key;
+      renderProfilePlotForCurrent(ctx);
+    });
+    surfBlock.appendChild(cbLabel);
+    if (plan.mode === 'profile-grid') {
+      const yLabel = document.createElement('label');
+      yLabel.textContent = 'y-Axis:';
+      yLabel.style.opacity = '0.6';
+      const ySelect = document.createElement('select');
+      ySelect.style.background = 'var(--vscode-dropdown-background, #3c3c3c)';
+      ySelect.style.color = 'var(--vscode-dropdown-foreground, #cccccc)';
+      ySelect.style.border = '1px solid var(--vscode-dropdown-border, #555)';
+      ySelect.style.padding = '2px 4px';
+      ySelect.style.fontSize = '1em';
+      ySelect.title = 'Axis to grid over';
+      for (let gi = 0; gi < eligible.length; gi++) {
+        const gopt = document.createElement('option');
+        gopt.value = eligible[gi].key;
+        gopt.textContent = eligible[gi].label;
+        if (eligible[gi].key === plan.gridKey) gopt.selected = true;
+        ySelect.appendChild(gopt);
+      }
+      ySelect.addEventListener('change', function(e) {
+        plan.gridKey = (e.target as HTMLSelectElement).value;
+        renderProfilePlotForCurrent(ctx);
+      });
+      surfBlock.appendChild(yLabel);
+      surfBlock.appendChild(ySelect);
+    }
+    frag.appendChild(surfBlock);
+  }
   return frag;
 }
 
