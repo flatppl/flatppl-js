@@ -12,7 +12,7 @@ import { activeDomainRangesFor, activeFixedNamesFor, activeInputDomain, activeIn
 import { colorForBinding } from './palette.js';
 import { buildDomainControl, buildPresetControl } from './render-controls.js';
 import { makeGlyphButton, setGlyphButtonEnabled, showPlotMessage } from './render-frame.js';
-import { arrayInputLength, defaultRangeForLeafType, defaultValueForLeafType, esc, formatScalar } from './util.js';
+import { arrayInputLength, defaultRangeForLeafType, defaultValueForLeafType, displayBindingName, esc, formatScalar } from './util.js';
 import { sendWorker } from './worker.js';
 import { populateModeCache, runFindMaximum } from './optimize-plot.js';
 import { runAutoDomain } from './autodomain.js';
@@ -932,7 +932,7 @@ export function renderProfileLine(ctx: Ctx, values: any, range: any, plan: Profi
       data[i] = [x, y];
     }
   }
-  const titleText = (ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'profile')
+  const titleText = (ctx.currentPlotBindingName ? esc(displayBindingName(ctx.currentPlotBindingName)) : 'profile')
     + ' — ' + esc(sweepAxis.label);
   // Per spec / convention: a kernel with obs fixed (likelihoodof)
   // computes the log-LIKELIHOOD; a bare kernel (or any other

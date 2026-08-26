@@ -10,7 +10,7 @@
 
 import { renderPlotForCurrent } from './render-plot.js';
 import { renderSampleStats } from './render-record.js';
-import { $, esc, listScalarAxes } from './util.js';
+import { $, displayBindingName, esc, listScalarAxes } from './util.js';
 import { downloadMeasure } from './export-samples.js';
 /**
  * Return the analyzer-level error diagnostics that landed on a
@@ -406,7 +406,7 @@ export function renderConstantValue(ctx: Ctx, bindingName: any, text: any, toolb
   if (!toolbarControls) { renderTextValue(ctx, bindingName, text); return; }
   const resolved = typeof toolbarControls === 'function' ? toolbarControls() : toolbarControls;
   const composite = ('' + text).length > 16 && /[(\[]/.test(text);
-  const name = bindingName ? esc(bindingName) : '';
+  const name = bindingName ? esc(displayBindingName(bindingName)) : '';
   renderPlotFrame(ctx, {
     measure: null,
     toolbarControls: resolved,
@@ -428,7 +428,7 @@ export function renderTextValue(ctx: Ctx, bindingName: any, text: any) {
   resetPlotContentStyle(ctx);
   if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
   const el = $('plot-content');
-  const name = bindingName ? esc(bindingName) : '';
+  const name = bindingName ? esc(displayBindingName(bindingName)) : '';
   // Atomic values (e.g. "5", "Dirac(5)", "true") get the hero
   // 36px treatment so the value pops as the answer. Composite
   // values (records, multi-element arrays, Dirac wrappers around
