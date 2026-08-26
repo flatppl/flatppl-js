@@ -127,6 +127,21 @@ DiracCtor.prototype.logpdf   = function(x: any) { return x === this.value ? 0 : 
 DiracCtor.prototype.cdf      = function(x: any) { return x < this.value ? 0 : 1; };
 DiracCtor.prototype.quantile = function(this: any, _p: any) { return this.value; };
 
+// One prng function per factory call, shared by every consumer inside it —
+// an inner stdlib factory, a local `prng()` call, or several of each. `opts`
+// carries either `prng` (an external generator, e.g. the Philox bridge) or
+// `seed`; a `{ prng }` object built fresh from `opts.prng` at each call site
+// used to lose `seed` outright (#591), and building a SEPARATE seeded
+// generator per inner factory (`randGamma.factory(opts)` next to
+// `randPoisson.factory(opts)`) would trace the same underlying sequence
+// twice and correlate draws that must be independent. Resolve one generator
+// here and thread that single `{ prng }` through every consumer instead.
+function _sharedPrng(opts: any) {
+  if (opts.prng) return opts.prng;
+  if ('seed' in opts) return randUniform.factory(0, 1, { seed: opts.seed });
+  return Math.random;
+}
+
 // Synthetic Logistic and Weibull — no stdlib packages installed.
 // Both have simple closed-form inverse-CDFs.
 function uClip(u: any) {
@@ -183,10 +198,10 @@ const randLogistic = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     if (args.length === 1 && args[0] === opts) {
       return function parametricLogisticSampler(mu: any, s: any) {
         const u = uClip(prng());
@@ -236,10 +251,10 @@ const randWeibull = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     if (args.length === 1 && args[0] === opts) {
       return function parametricWeibullSampler(k: any, lambda: any) {
         const u = uClip(prng());
@@ -300,10 +315,10 @@ const randPareto = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     if (args.length === 1 && args[0] === opts) {
       return function parametricParetoSampler(alpha: any, scale: any) {
         const u = uClip(prng());
@@ -350,10 +365,10 @@ const randGeneralizedNormal = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     if (args.length === 1 && args[0] === opts) {
       const inner = randGamma.factory({ prng });
       return function parametricGenNormalSampler(mean: any, alpha: any, beta: any) {
@@ -399,10 +414,10 @@ const randInverseGamma = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     if (args.length === 1 && args[0] === opts) {
       const inner = randGamma.factory({ prng });
       return function parametricInverseGammaSampler(shape: any, scale: any) {
@@ -548,10 +563,10 @@ const randChiSquared = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     if (args.length === 1 && args[0] === opts) {
       const inner = randGamma.factory({ prng });
       return function parametricChiSquaredSampler(k: any) {
@@ -642,10 +657,10 @@ const randVonMises = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     if (args.length === 1 && args[0] === opts) {
       return function parametricVonMisesSampler(mu: any, kappa: any) {
         return _vmDraw(mu, kappa, prng);
@@ -680,10 +695,10 @@ const randLaplace = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     function draw(mu: any, b: any) {
       const u = prng() - 0.5;
       const s = u < 0 ? -1 : 1;
@@ -733,10 +748,10 @@ const randGeometric = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     function draw(p: any) {
       const pp = +p;
       if (pp <= 0) throw new Error('Geometric: p must be > 0');
@@ -783,10 +798,10 @@ const randNegativeBinomial = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     const innerGamma   = randGamma.factory({ prng });
     const innerPoisson = randPoisson.factory({ prng });
     function draw(alpha: any, beta: any) {
@@ -835,10 +850,10 @@ const randNegativeBinomial2 = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     const innerGamma   = randGamma.factory({ prng });
     const innerPoisson = randPoisson.factory({ prng });
     function draw(mu: any, psi: any) {
@@ -910,10 +925,10 @@ const randCategorical = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     if (args.length === 1 && args[0] === opts) {
       return function parametricCategoricalSampler(p: any) {
         return _catSample(p, prng, 1);
@@ -928,10 +943,10 @@ const randCategorical0 = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
     const lastIdx = args.length - 1;
-    const opts = (args.length > 0 && args[lastIdx]
-                  && typeof args[lastIdx] === 'object'
-                  && ('prng' in args[lastIdx])) ? args[lastIdx] : {};
-    const prng = opts.prng || Math.random;
+    const o = args.length > 0 ? args[lastIdx] : null;
+    const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
+      ? o : {};
+    const prng = _sharedPrng(opts);
     if (args.length === 1 && args[0] === opts) {
       return function parametricCategorical0Sampler(p: any) {
         return _catSample(p, prng, 0);
