@@ -425,7 +425,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     //   samplerWorkerUrl: string  — URL of the sampler-worker bundle,
     //                                loaded as a Web Worker.
     ctx.CONFIG = (typeof window !== 'undefined' && window.__FLATPPL_CONFIG__) || {};
-    ctx.HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source';
+    ctx.HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source &middot; click ⊞/⊟ or Shift+click an anchor to collapse/expand that group';
     // Sampler-worker URL. Used lazily — no worker is spawned until the
     // user picks a binding for which the Plot tab is enabled (a 'draw'
     // of a known distribution with literal params).
