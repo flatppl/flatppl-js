@@ -109,6 +109,7 @@ import {
   renderPlotFrame,
   renderTextValue,
   resetPlotContentStyle,
+  saveViewState,
   setPlotEnabled,
   showPlotMessage,
 } from './render-frame.js';
@@ -122,6 +123,7 @@ import {
   renderDAG,
   showNodeInfo,
   teardownBubbles,
+  toggleAllReifications,
   updateBackBtn,
   updateHeader,
 } from './dag.js';
@@ -918,6 +920,12 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // the full axis count and ignores the selection.
   ctx.recordSelection = null;
   ctx.CORRELATIONS_MAX_AXES = 4;
+  // Graph-view compactor state: anchor names whose reification bubble is
+  // collapsed. `_reifSeen` (untyped, session-only) tracks which anchors
+  // have already had their >=3-member default decided, so a manual
+  // expand isn't undone by the next renderDAG — see renderDAG in dag.ts.
+  ctx.collapsedReifications = new Set();
+  ctx._reifSeen = new Set();
 
 
   /**
@@ -1347,6 +1355,16 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     setPlotEnabled(ctx, !ctx.plotEnabled);
   });
 
+  // Graph-view compactor toolbar: collapse/expand every reification
+  // bubble in the currently focused sub-DAG (shift+click on a single
+  // anchor toggles just that one — see dag.ts's tap handler).
+  $('collapse-all-btn').addEventListener('click', function() {
+    toggleAllReifications(ctx, true);
+  });
+  $('expand-all-btn').addEventListener('click', function() {
+    toggleAllReifications(ctx, false);
+  });
+
   // The inference-backend control now lives in the record-measure plot toolbar
   // (built per-render, bayesupdate-only — see render-record). Its onChange
   // closure is shared via ctx so the toolbar can rebuild the control.
@@ -1359,9 +1377,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   ctx.onInferenceChange = function () {
     ctx.measureCache = new Map();
     ctx.histogramCache = new Map();
-    if (ctx.host.saveState) {
-      try { ctx.host.saveState({ plotEnabled: ctx.plotEnabled, inferenceOpts: ctx.inferenceOpts }); } catch (_) {}
-    }
+    saveViewState(ctx);
     if (ctx.plotEnabled) renderPlotForCurrent(ctx);
   };
 
@@ -1616,6 +1632,18 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   let prevState: any = null;
   if (ctx.host.loadState) { try { prevState = ctx.host.loadState(); } catch (_) {} }
   setPlotEnabled(ctx, prevState && prevState.plotEnabled === true);
+  // Restore which reification bubbles were collapsed last session. A
+  // restored anchor is marked "seen" so the >=3-member default in
+  // renderDAG doesn't recompute over it — see the `_reifSeen` comment
+  // above. Anchors the user had explicitly EXPANDED aren't recorded
+  // anywhere (an expanded anchor is simply absent from the saved
+  // array), so they're indistinguishable from an anchor never seen
+  // before and can re-collapse under the default on reload if they
+  // still have >=3 members — known limitation, not fixed here.
+  if (prevState && Array.isArray(prevState.collapsedReifications)) {
+    ctx.collapsedReifications = new Set(prevState.collapsedReifications);
+    prevState.collapsedReifications.forEach(function(name: string) { ctx._reifSeen.add(name); });
+  }
 
   // Initial source bootstrap. When opts.source is supplied, render
   // immediately. Otherwise the viewer waits for a postMessage

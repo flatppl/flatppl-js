@@ -351,6 +351,21 @@ body {
 #back-btn:hover {
   background: var(--vscode-button-secondaryHoverBackground, #505355);
 }
+#collapse-all-btn, #expand-all-btn {
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 3px;
+  padding: 2px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--vscode-font-family, sans-serif);
+  flex-shrink: 0;
+  margin-right: 6px;
+}
+#collapse-all-btn:hover, #expand-all-btn:hover {
+  background: var(--vscode-button-secondaryHoverBackground, #505355);
+}
 `;
 
 export var VIEWER_BODY_HTML = `
@@ -358,6 +373,8 @@ export var VIEWER_BODY_HTML = `
 <button id="back-btn">&larr; Back</button>
 <span id="header-expr"></span>
 <span id="inference-controls"></span>
+<button id="collapse-all-btn" title="Collapse every reification bubble in view">Collapse all</button>
+<button id="expand-all-btn" title="Expand every reification bubble in view">Expand all</button>
 <button id="plot-toggle" title="Toggle the plot panel">Plot: off</button>
 </div>
 <div id="main">

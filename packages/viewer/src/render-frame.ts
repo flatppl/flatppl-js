@@ -20,6 +20,26 @@ import { downloadMeasure } from './export-samples.js';
  */
 import { cancelAllSampling } from './worker.js';
 import type { Ctx } from './types';
+
+/**
+ * Persist the viewer's cross-reload view state through the host
+ * adapter (VS Code's setState/getState, or a web host's own
+ * store). `host.saveState` replaces the whole saved object rather
+ * than merging, so every field the viewer wants to survive a
+ * reload/panel-close must be written together here — a call site
+ * that saved only its own field would silently drop the others.
+ */
+export function saveViewState(ctx: Ctx): void {
+  if (!ctx.host || typeof ctx.host.saveState !== 'function') return;
+  try {
+    ctx.host.saveState({
+      plotEnabled: ctx.plotEnabled,
+      inferenceOpts: ctx.inferenceOpts,
+      collapsedReifications: Array.from(ctx.collapsedReifications || []),
+    });
+  } catch (_) {}
+}
+
 export function errorsForBinding(ctx: Ctx, bindingName: any) {
   if (!bindingName || !ctx.currentState || !ctx.currentState.data
       || !ctx.currentState.data.nodes) return null;
@@ -241,7 +261,7 @@ export function setPlotEnabled(ctx: Ctx, enabled: any) {
   plot.style.flex = '';
   // Persist across panel reopens. VS Code restores webview state
   // automatically when the panel is shown again.
-  if (ctx.host.saveState) { try { ctx.host.saveState({ plotEnabled: ctx.plotEnabled, inferenceOpts: ctx.inferenceOpts }); } catch (_) {} }
+  saveViewState(ctx);
   if (ctx.plotEnabled) {
     // Render whatever the current plan says — including the
     // "not plottable" message if the focused binding isn't
