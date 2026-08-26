@@ -1618,6 +1618,8 @@ const KIND_HANDLERS = {
   weighted:     (name: any, d: any, ctx: any) => matWeighted(d, ctx),
   normalize:    (name: any, d: any, ctx: any) => matNormalize(d, ctx),
   iid:          (name: any, d: any, ctx: any) => matIid(name, d, ctx),
+  markovchain:  (name: any, d: any, ctx: any) =>
+    require('./markovchain.ts').matMarkovchain(name, d, ctx),
   randsample:   (name: any, d: any, ctx: any) => matRandSample(name, d, ctx),
   tuple:        (name: any, d: any, ctx: any) => matTuple(d, ctx),
   record:       (name: any, d: any, ctx: any) => matRecord(d, ctx),

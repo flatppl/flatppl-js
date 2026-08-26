@@ -778,6 +778,16 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     });
   }
 
+  // Spec §06 `markovchain`: a step kernel outside the scalar-distribution
+  // scope this engine lowers is a located refusal, not a binding that quietly
+  // gets no derivation. Runs here rather than in the analyzer because it
+  // shares its shape reader (`describeStepKernel`) with `classifyMarkovchain`
+  // above, and that reader needs the POST-LIFT bindings' IR — so the message
+  // and the classification cannot disagree about what is lowerable.
+  for (const d of require('./markovchain.ts').checkMarkovchain(bindings)) {
+    diagnostics.push(Object.assign({ loc: bindingLoc(d.name) }, d));
+  }
+
   // Discrete map: walk through aliases to find each binding's leaf
   // sample step. evaluate-only bindings inherit the discreteness of
   // their inputs naively, but we treat them as continuous — arithmetic
@@ -2698,6 +2708,25 @@ function _baseRecordFields(desc: any, bindings: any): string[] | null {
   return null;
 }
 
+// `markovchain(kernel, init, n)` (spec §06 dependent composition). Three
+// distinguished positional inputs (spec §04). The step kernel's structure and
+// both execution paths live in markovchain.ts; this only resolves `n` and
+// records the descriptor. A shape markovchain.ts declines classifies to null,
+// so the binding surfaces as "no derivation" rather than mis-lowering — the
+// analyzer reports the reason (`markovchainRefusals`).
+function classifyMarkovchain(
+  rhsIR: any, ast: any, bindings?: any, fixedValues?: any,
+): any {
+  if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'markovchain') return null;
+  const args = Array.isArray(rhsIR.args) ? rhsIR.args : [];
+  if (args.length !== 3) return null;
+  const step = require('./markovchain.ts').describeStepKernel(args[0], bindings);
+  if (!step || step.reason) return null;
+  const n = resolveConstant(args[2], bindings, new Set(), fixedValues);
+  if (n == null || !Number.isInteger(n) || n <= 0) return null;
+  return { kind: 'markovchain', step, initIR: args[1], n };
+}
+
 function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): DerivationJointchain | null {
   if (!rhsIR || rhsIR.kind !== 'call'
       || (rhsIR.op !== 'jointchain' && rhsIR.op !== 'kchain')) return null;
@@ -3071,6 +3100,7 @@ const MEASURE_OP_CLASSIFIERS = {
   relabel:      classifyRelabel,
   jointchain:   classifyJointchain,
   kchain:       classifyJointchain,
+  markovchain:  classifyMarkovchain,
   Lebesgue:     classifyLebesgue,
 };
 
@@ -3313,6 +3343,22 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   // iid: the inner measure must be resolvable.
   if (d.kind === 'iid') {
     return resolvable(d.from);
+  }
+  // markovchain: no inner measure binding — the step kernel is inlined as a
+  // distribution call. What must resolve is every self-ref its `init`
+  // expression and its step parameters reach.
+  if (d.kind === 'markovchain') {
+    const dd: any = d;
+    const irs = [dd.initIR].concat(Object.keys(dd.step.distKwargs)
+      .map((pn: string) => dd.step.distKwargs[pn]));
+    for (const ir of irs) {
+      for (const r of collectSelfRefs(ir)) {
+        // The step's own input param is bound per step, never fed.
+        if (r === dd.step.inputParam) continue;
+        if (!resolvable(r)) return false;
+      }
+    }
+    return true;
   }
   // kernelbroadcast: every self-ref in the parameter inputs must be
   // resolvable (the distribution kernel itself is a builtin).
@@ -3865,6 +3911,11 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // walker has a dedicated handler keyed on the op name
         // (walkMvNormal in density.js OP_HANDLERS).
         return d.distIR;
+      case 'markovchain':
+        // §06: the n transition densities, as a POSITIONAL joint whose step j
+        // reads `s{j-1}` — the previous OBSERVED element. `init` enters step 1
+        // as a value and contributes no density term of its own.
+        return require('./markovchain.ts').densityIR(d);
       case 'iid': {
         const inner: any = expandMeasureIR(d.from, derivations, next, bindings);
         if (!inner) return null;
