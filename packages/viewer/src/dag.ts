@@ -551,6 +551,61 @@ export function toggleAllReifications(ctx: Ctx, collapse: boolean): void {
   renderDAG(ctx, ctx.currentState.data);
 }
 
+/**
+ * Follow a chain of dropped-member -> anchor mappings to the
+ * surviving anchor at its end. A collapsed reification's anchor can
+ * itself be a member of an OUTER collapsed reification — e.g.
+ * phase_weight ⊃ intensity_fn ⊃ angular_tensors in
+ * dminus-to-3pi-amplitude.flatppl, where each anchor is directly
+ * listed as a member of the one enclosing it. A single-hop
+ * `dropped.get(id)` stops at `intensity_fn`, which is itself dropped
+ * under `phase_weight` — pure-testable seam for the #176 regression
+ * (a dangling edge crashed cytoscape's whole render).
+ */
+export function resolveDroppedChain(dropped: Map<string, string>, id: string): string {
+  let cur = id;
+  let hops = 0;
+  while (dropped.has(cur) && hops < dropped.size + 1) {
+    cur = dropped.get(cur) as string;
+    hops++;
+  }
+  return cur;
+}
+
+/**
+ * Rewrite a collapsed sub-DAG's edges through `dropped` (chain-
+ * resolved via resolveDroppedChain) so every endpoint that used to
+ * point into a hidden bubble member now points at the surviving
+ * anchor instead. A self-edge produced by both endpoints resolving to
+ * the same anchor is dropped (the bubble it explained is gone).
+ * Duplicate (source, target, edgeType) triples produced by collapsing
+ * distinct member-to-member edges into one anchor-to-anchor edge are
+ * deduped. Finally, ANY edge whose resolved endpoint still isn't in
+ * `survivingNodeIds` is dropped rather than kept — cytoscape throws
+ * hard on a dangling edge and takes down the whole render, so a gap
+ * in the drop/resolve accounting must fail quiet, not fail loud.
+ */
+export function rewriteEdgesForCollapse(
+  edges: Array<{ source: string; target: string; edgeType: string; [extra: string]: any }>,
+  dropped: Map<string, string>,
+  survivingNodeIds: Set<string>,
+): Array<{ source: string; target: string; edgeType: string; [extra: string]: any }> {
+  const seenEdgeKeys = new Set<string>();
+  const out: Array<{ source: string; target: string; edgeType: string; [extra: string]: any }> = [];
+  for (let i = 0; i < edges.length; i++) {
+    const e = edges[i];
+    const src = resolveDroppedChain(dropped, e.source);
+    const tgt = resolveDroppedChain(dropped, e.target);
+    if (src === tgt) continue;
+    if (!survivingNodeIds.has(src) || !survivingNodeIds.has(tgt)) continue;
+    const key = src + '|' + tgt + '|' + e.edgeType;
+    if (seenEdgeKeys.has(key)) continue;
+    seenEdgeKeys.add(key);
+    out.push(Object.assign({}, e, { source: src, target: tgt }));
+  }
+  return out;
+}
+
 export function renderDAG(ctx: Ctx, data: any) {
   if (!ctx.cy) initCy(ctx);
   updateHeader(ctx, data);
@@ -601,8 +656,9 @@ export function renderDAG(ctx: Ctx, data: any) {
     }
   }
   const dropCountByAnchor: Record<string, number> = {};
-  dropped.forEach(function(anchorName) {
-    dropCountByAnchor[anchorName] = (dropCountByAnchor[anchorName] || 0) + 1;
+  dropped.forEach(function(_anchorName, memId) {
+    const finalAnchor = resolveDroppedChain(dropped, memId);
+    dropCountByAnchor[finalAnchor] = (dropCountByAnchor[finalAnchor] || 0) + 1;
   });
 
   for (let i = 0; i < data.nodes.length; i++) {
@@ -717,31 +773,22 @@ export function renderDAG(ctx: Ctx, data: any) {
     });
   }
 
-  // Rewrite edges through `dropped`: an endpoint hidden behind a
-  // collapsed bubble reroutes to that bubble's anchor. A tether whose
-  // source was dropped now points from-and-to the same anchor and is
-  // removed — correct, since the bubble it explained is gone. Multiple
-  // rewritten edges landing on the same (source, target, edgeType)
-  // triple are deduped, since collapsing can merge what were distinct
-  // member-to-member edges into one anchor-to-anchor edge.
+  // Rewrite edges through `dropped` (chain-resolved) and drop any
+  // edge a future gap in the accounting still leaves dangling — see
+  // rewriteEdgesForCollapse's own doc comment for the #176 story.
   if (dropped.size > 0) {
-    const seenEdgeKeys = new Set<string>();
-    const rewritten: any[] = [];
+    const survivingNodeIds = new Set<string>();
+    const nodeElements: any[] = [];
+    const edgeData: any[] = [];
     for (let ei = 0; ei < elements.length; ei++) {
       const el = elements[ei];
-      if (el.group !== 'edges') { rewritten.push(el); continue; }
-      const src = dropped.get(el.data.source) || el.data.source;
-      const tgt = dropped.get(el.data.target) || el.data.target;
-      if (src === tgt) continue;
-      const key = src + '|' + tgt + '|' + el.data.edgeType;
-      if (seenEdgeKeys.has(key)) continue;
-      seenEdgeKeys.add(key);
-      el.data.source = src;
-      el.data.target = tgt;
-      rewritten.push(el);
+      if (el.group === 'nodes') { survivingNodeIds.add(el.data.id); nodeElements.push(el); }
+      else edgeData.push(el.data);
     }
+    const newEdgeData = rewriteEdgesForCollapse(edgeData, dropped, survivingNodeIds);
     elements.length = 0;
-    for (let ei = 0; ei < rewritten.length; ei++) elements.push(rewritten[ei]);
+    for (let ei = 0; ei < nodeElements.length; ei++) elements.push(nodeElements[ei]);
+    for (let ei = 0; ei < newEdgeData.length; ei++) elements.push({ group: 'edges', data: newEdgeData[ei] });
   }
 
   // Tear down old bubble paths BEFORE detaching elements so we can
