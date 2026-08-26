@@ -26,7 +26,7 @@ import { jointDensityField, jointMeanField, renderField2D } from './render-field
  * edges. Custom render gives that flexibility cheaply.
  */
 import { nameSeed } from './orchestration.js';
-import { listScalarAxes, makeMainThreadPrng } from './util.js';
+import { listScalarAxes, makeMainThreadPrng, renderDocTitle } from './util.js';
 import { formatScalar } from './util.js';
 import type { Ctx } from './types';
 export function renderDensityStrips(ctx: Ctx, hostEl: any, measure: any, bindingName: any, axesArg: any) {
@@ -254,7 +254,11 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
   // it reads bottom-up.
   for (let yi = 0; yi < n; yi++) {
     const ylab = document.createElement('div');
-    ylab.textContent = axes[yi].label;
+    // Provenance-labelled axes (tuple-plan axisLabels) carry a real
+    // sibling binding name — try its doc-comment math before falling
+    // back to the plain label; an ordinary record-field path (e.g.
+    // "mu.sigma") never matches a binding and stays plain text.
+    if (!renderDocTitle(ctx, ylab, axes[yi].label)) ylab.textContent = axes[yi].label;
     ylab.style.gridColumn = '1 / span 1';
     ylab.style.gridRow = (yi + 1) + ' / span 1';
     ylab.style.writingMode = 'vertical-rl';
@@ -276,7 +280,7 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
   // column.
   for (let xi = 0; xi < n; xi++) {
     const xlab = document.createElement('div');
-    xlab.textContent = axes[xi].label;
+    if (!renderDocTitle(ctx, xlab, axes[xi].label)) xlab.textContent = axes[xi].label;
     xlab.style.gridColumn = (xi + 2) + ' / span 1';
     xlab.style.gridRow = (n + 1) + ' / span 1';
     xlab.style.textAlign = 'center';

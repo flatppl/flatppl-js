@@ -1,5 +1,7 @@
 // @flatppl/viewer — pure utility/formatter module —
 
+import { renderDoc } from './markdown.js';
+
 /**
  * Get an element by ID from the viewer's DOM skeleton, throwing if
  * absent. The skeleton is owned by templates.js (`VIEWER_BODY_HTML`,
@@ -49,6 +51,37 @@ export function displayBindingName(name: any): any {
   return typeof name === 'string' && name.indexOf('$') !== -1
     ? name.replace(/\$/g, '.')
     : name;
+}
+
+/**
+ * Look up the doc-comment carried by a named binding, the same source
+ * the DAG hover tooltip reads (`dag.ts`'s `doc: node.doc || null`).
+ */
+function docForBinding(ctx: any, bindingName: any): { markup: string; lines: string[] } | null {
+  if (!bindingName || !ctx || !ctx.currentState || !ctx.currentState.data
+      || !ctx.currentState.data.nodes) return null;
+  const nodes = ctx.currentState.data.nodes;
+  for (let i = 0; i < nodes.length; i++) {
+    if (nodes[i].id === bindingName) return nodes[i].doc || null;
+  }
+  return null;
+}
+
+/**
+ * Render a binding's doc-comment math into `hostEl` when it carries
+ * `$...$` content, via the same marked+temml pipeline the DAG tooltip
+ * uses (`renderDoc`, which owns all escaping — never innerHTML anything
+ * else here). Returns true when a title was rendered, so callers can
+ * skip the slot entirely and leave the plain-text label as it was —
+ * a binding with no math stays exactly as it rendered before.
+ */
+export function renderDocTitle(ctx: any, hostEl: HTMLElement, bindingName: any): boolean {
+  const doc = docForBinding(ctx, bindingName);
+  if (!doc || !doc.lines || !doc.lines.some(function(l) { return l.indexOf('$') >= 0; })) return false;
+  const html = renderDoc(doc as any);
+  if (!html) return false;
+  hostEl.innerHTML = html;
+  return true;
 }
 
 export function truncateExpr(expr: any) {
