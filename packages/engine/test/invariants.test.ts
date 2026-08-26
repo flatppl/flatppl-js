@@ -391,7 +391,7 @@ test('invariant: every measure-algebra op classifies under inline subexpressions
 // AND given a KIND_HANDLERS entry (or a KIND_HANDLER_EXEMPT entry); block 9a
 // fails loudly if a handler names a kind missing from this set.
 const ALL_DERIVATION_KINDS = new Set([
-  'alias', 'array', 'tuple', 'record', 'sample', 'evaluate',
+  'alias', 'array', 'tuple', 'record', 'sample', 'lebesguebox', 'evaluate',
   'weighted', 'normalize', 'superpose', 'iid', 'randsample', 'jointchain',
   'truncate', 'pushfwd', 'bayesupdate', 'logdensityof', 'likelihood_density',
   'joint_likelihood_density', 'posterior_density',

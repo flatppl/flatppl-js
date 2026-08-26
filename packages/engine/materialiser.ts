@@ -53,6 +53,7 @@ import type {
 } from './engine-types';
 
 const empirical    = require('./empirical.ts');
+const valueLib     = require('./value.ts');
 const orchestrator = require('./orchestrator.ts');
 const rng          = require('./rng.ts');
 const shared       = require('./materialiser-shared.ts');
@@ -117,6 +118,70 @@ function matSample(name: string, d: DerivationSample, ctx: any) {
         n_eff: reply.samples.length,
       });
     });
+}
+
+// Lebesgue over an N-D box (`kind:'lebesguebox'`, derivations.ts
+// classifyLebesgueBox). Spec §06: the measure on a product support is the
+// product of the per-axis Lebesgue measures, so the atoms are independent
+// uniform draws per axis and the total mass is the box volume.
+//
+// Atom layout is the engine's standard vector-atom storage (materialiser-
+// shared.ts `valueOf`): a flat [N·k] buffer in atom-major order with
+// `dims = [k]`, so atom i occupies samples[i·k … i·k+k−1]. `_boxAxisColumns`
+// hands the per-axis columns back out for matWeighted's parameter binding.
+//
+// Each axis draws from its OWN seeded stream (`<name>#axis<i>`), so the axes
+// are independent rather than sharing one stream's consecutive draws.
+function matLebesgueBox(name: string, d: any, ctx: any) {
+  const k = d.axes.length;
+  const N = ctx.sampleCount;
+  const columns: Float64Array[] = [];
+  let chain: Promise<any> = Promise.resolve();
+  for (let i = 0; i < k; i++) {
+    const axis = d.axes[i];
+    chain = chain.then(() => ctx.sendWorker({
+      type: 'sampleN',
+      ir: {
+        kind: 'call', op: 'Uniform',
+        kwargs: {
+          support: {
+            kind: 'call', op: 'interval',
+            args: [{ kind: 'lit', value: axis.lo }, { kind: 'lit', value: axis.hi }],
+          },
+        },
+      },
+      count: N,
+      refArrays: {},
+      seed: nameSeed(name + '#axis' + i, ctx.rootKey),
+    })).then((reply: any) => {
+      /* c8 ignore start */
+      // The axis IR is built here from literal bounds the classifier already
+      // validated as finite, so the worker has nothing to reject. Mirrors
+      // matSample's own guard: without it a worker error surfaces as a
+      // "cannot read properties of undefined" on `reply.samples`.
+      if (reply && reply.type === 'error') {
+        throw new Error("lebesguebox: worker failed sampling axis " + i + " of '"
+          + name + "': " + (reply.message || 'unknown worker error'));
+      }
+      /* c8 ignore stop */
+      columns.push(reply.samples);
+    });
+  }
+  return chain.then(() => {
+    const data = new Float64Array(N * k);
+    for (let i = 0; i < k; i++) {
+      const col = columns[i];
+      for (let n = 0; n < N; n++) data[n * k + i] = col[n];
+    }
+    const m: any = scalarMeasureN(data, {
+      logWeights: null,
+      logTotalmass: d.logTotalmass,
+      n_eff: N,
+    });
+    m.dims = [k];
+    m._boxAxisColumns = columns;
+    return m;
+  });
 }
 
 function matAlias(d: DerivationAlias, ctx: any) {
@@ -198,6 +263,12 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
   // record measure (the kernel body) and the per-atom log-weight is
   // a single scalar from `logdensityof(marginal, x)`.
   return ctx.getMeasure(d.from).then((parent: any) => {
+    // N-D box base (matLebesgueBox): vector atoms, so the generic path below
+    // — which assumes one scalar per atom — would read N·k "atoms" and drop
+    // `dims`. Handled separately, before any of that.
+    if (parent && Array.isArray(parent._boxAxisColumns)) {
+      return _matWeightedOverBox(d, parent, ctx);
+    }
     const isRecord = parent && parent.shape === 'record' && parent.fields;
     const isTuple  = parent && parent.shape === 'tuple'  && parent.elems;
     if (isRecord || isTuple) {
@@ -328,6 +399,116 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
       logTotalmass: parentLTM + d.logShift,
       n_eff: (typeof parent.n_eff === 'number') ? parent.n_eff : N,
     });
+  });
+}
+
+// `weighted(w, Lebesgue(box))` / `logweighted(…)` over a vector-atom box
+// base. Spec §06: dν = w · dM, and totalmass(ν) = ∫ w dM — which over a box
+// is volume · E_Uniform[w], so the box's own logTotalmass carries the volume
+// factor and the empirical logSumExp carries the mean.
+//
+// Parameter binding, the one thing this path adds over the scalar case:
+//   - a k-PARAMETER weight (`boxAxes` set by _classifyWeightedByFunction)
+//     takes one coordinate per parameter in AXIS ORDER, matching
+//     mat-density.ts's `makeIntegrandND`. Each parameter is rewritten to a
+//     synthetic self-ref fed from that axis's own sample column through the
+//     `_extraRefArrays` overlay, so the worker's evaluateN resolves it by
+//     name like any other per-atom column.
+//   - any other weight (a constant, or a 1-parameter function of the whole
+//     array variate) keeps its already-substituted IR unchanged.
+//
+// The atom buffer and `dims` pass through untouched: reweighting changes the
+// measure's weights, never its variate shape.
+function _matWeightedOverBox(d: any, parent: any, ctx: any) {
+  const columns: Float64Array[] = parent._boxAxisColumns;
+  const k = columns.length;
+  const N = ctx.sampleCount;
+  const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
+  const baseLW = parent.logWeights || (() => {
+    const c = N > 0 ? -Math.log(N) : 0;
+    const a = new Float64Array(N);
+    for (let i = 0; i < N; i++) a[i] = c;
+    return a;
+  })();
+  const w = new Float64Array(N);
+  const emit = (logTotalmass: number) => {
+    const m: any = scalarMeasureN(parent.samples, {
+      logWeights: w,
+      logTotalmass,
+      n_eff: empirical.effectiveSampleSize({ samples: parent.samples, logWeights: w }),
+    });
+    m.dims = parent.dims;
+    m._boxAxisColumns = columns;
+    return m;
+  };
+
+  if (!d.weightIR) {
+    for (let i = 0; i < N; i++) w[i] = baseLW[i] + d.logShift;
+    return Promise.resolve(emit(parentLTM + d.logShift));
+  }
+
+  let evalIR = d.weightIR;
+  let overlay: any = null;
+  if (!d.boxAxes) {
+    // A single-parameter weight is a function of the WHOLE array variate
+    // (spec §06), so its parameter was already substituted by a self-ref to
+    // the base. Feed that as an atom-batched [N, k] Value: the default
+    // `measureToRefValue` would hand the flat [N·k] buffer to
+    // `batchedScalar`, which reads it as N·k scalar atoms and silently
+    // misaligns every coordinate.
+    overlay = Object.assign({}, ctx._extraRefArrays);
+    overlay[d.from] = { shape: [N, k], data: parent.samples, outerRank: 1 };
+  } else {
+    /* c8 ignore start */
+    // Unreachable: _classifyWeightedByFunction only sets `boxAxes` after
+    // matching it against the base's own axis count, so a mismatch never
+    // classifies (asserted by "a weight-function arity that mismatches the box
+    // dimension is refused"). Re-checked here because getting it wrong would
+    // read past the axis columns and bind a parameter to undefined.
+    if (d.boxAxes !== k) {
+      return Promise.reject(new Error('weighted: weight function takes ' + d.boxAxes
+        + ' parameters but the box base has ' + k + ' axes'));
+    }
+    /* c8 ignore stop */
+    const { mapIR } = require('./ir-walk.ts');
+    const params: string[] = d.weightIR.params;
+    const synth: Record<string, string> = {};
+    overlay = Object.assign({}, ctx._extraRefArrays);
+    for (let i = 0; i < k; i++) {
+      const nm = '__boxaxis' + i + '_' + d.from;
+      synth[params[i]] = nm;
+      overlay[nm] = valueLib.batchedScalar(columns[i]);
+    }
+    evalIR = mapIR(d.weightIR.body, (n: any) => {
+      if (n && n.kind === 'ref' && n.name in synth
+          && (n.ns === '%local' || n.ns === 'self')) {
+        return { kind: 'ref', ns: 'self', name: synth[n.name], loc: n.loc };
+      }
+      return n;
+    });
+  }
+  const evalCtx = overlay ? Object.assign({}, ctx, { _extraRefArrays: overlay }) : ctx;
+
+  return collectRefArrays(evalIR, evalCtx).then((refArrays: any) => ctx.sendWorker({
+    type: 'evaluateN', ir: evalIR, count: N, refArrays,
+  })).then((reply: any) => {
+    const weights = reply.samples;
+    if (d.isLog) {
+      for (let i = 0; i < N; i++) w[i] = baseLW[i] + weights[i];
+    } else {
+      let nonPos = 0;
+      for (let i = 0; i < N; i++) {
+        const v = weights[i];
+        if (v > 0) w[i] = baseLW[i] + Math.log(v);
+        else { w[i] = -Infinity; if (v < 0) nonPos++; }
+      }
+      if (nonPos > 0) {
+        // eslint-disable-next-line no-console
+        console.warn('weighted: ' + nonPos
+          + ' negative weight sample(s) treated as zero mass');
+      }
+    }
+    return emit(parentLTM + empirical.logSumExp(w));
   });
 }
 
@@ -1430,6 +1611,7 @@ const KIND_HANDLERS = {
   // basic
   alias:        (name: any, d: any, ctx: any) => matAlias(d, ctx),
   sample:       (name: any, d: any, ctx: any) => matSample(name, d, ctx),
+  lebesguebox:  (name: any, d: any, ctx: any) => matLebesgueBox(name, d, ctx),
   evaluate:     (name: any, d: any, ctx: any) => matEvaluate(d, ctx),
   array:        (name: any, d: any) =>      matArray(d),
   // algebra

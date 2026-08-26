@@ -326,6 +326,20 @@ export interface DerivationSample {
   logTotalmass?: number;
 }
 
+/**
+ * `Lebesgue(support = S)` where S is an N-D box — a positional
+ * `cartprod(interval, …)` or `cartpow(interval, k)`. The variate is a
+ * k-array (spec §03) drawn uniformly over the box, and `logTotalmass` is the
+ * log of the box volume, Σᵢ log(hiᵢ − loᵢ).
+ */
+export interface DerivationLebesgueBox {
+  kind: 'lebesguebox';
+  name?: string;
+  axes: { lo: number; hi: number }[];
+  logTotalmass: number;
+  discrete?: boolean;
+}
+
 /** Element-wise deterministic evaluation of `ir` over upstream sample arrays. */
 export interface DerivationEvaluate {
   kind: 'evaluate';
@@ -346,6 +360,14 @@ export interface DerivationWeighted {
   logShift?: number;
   weightIR?: IRNode;
   isLog?: boolean;
+  /**
+   * Axis count when the base is an N-D box and `weightIR` is a k-parameter
+   * `functionof` kept VERBATIM (parameters unsubstituted). Each parameter
+   * takes one box coordinate in axis order; the consumers bind them —
+   * matWeighted to the per-axis sample columns, density's walkWeighted to
+   * the coordinates of the scored point.
+   */
+  boxAxes?: number;
 }
 
 /** Normalise `from` measure by dividing through its totalmass. */
@@ -612,6 +634,7 @@ export type Derivation =
   | DerivationTuple
   | DerivationRecord
   | DerivationSample
+  | DerivationLebesgueBox
   | DerivationEvaluate
   | DerivationWeighted
   | DerivationNormalize

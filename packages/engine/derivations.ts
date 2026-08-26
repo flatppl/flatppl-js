@@ -1130,8 +1130,26 @@ function _classifyWeightedByFunction(
   } else {
     return null;
   }
-  if (!Array.isArray(fnIR.params) || fnIR.params.length !== 1
-      || !fnIR.body) return null;
+  if (!Array.isArray(fnIR.params) || fnIR.params.length < 1 || !fnIR.body) return null;
+  // MULTI-PARAMETER weight over an N-D box base. Spec §06 says the weight is
+  // "a function of the variate x of M"; for a box that variate is a k-array
+  // (§03), and a k-parameter weight takes its coordinates one per parameter,
+  // in axis order. This is the same axis↔parameter-by-position convention
+  // mat-density.ts's `makeIntegrandND` already uses for the §12
+  // `normalize(truncate(weighted(w, Lebesgue), cartprod))` normalizer, so the
+  // sampling and quadrature paths agree on which coordinate feeds which
+  // parameter. The arity must match the box dimension exactly — a mismatch
+  // has no coordinate for some parameter and is refused, not guessed.
+  //
+  // The functionof node is kept VERBATIM here (no parameter substitution):
+  // its two consumers bind the parameters themselves — matWeighted to the
+  // box's per-axis sample columns, density.ts's walkWeighted to the k
+  // scalars the base consumed at the scored point.
+  if (fnIR.params.length > 1) {
+    const axes = _boxAxesOf(baseName, bindings);
+    if (!axes || axes !== fnIR.params.length) return null;
+    return { kind: 'weighted', from: baseName, weightIR: fnIR, boxAxes: axes, isLog: !!isLog };
+  }
   const paramName = fnIR.params[0];
   // Replace every `(ref %local <paramName>)` in the body with
   // `(ref self <baseName>)`. mapIR's identity-preserving rebuild
@@ -1149,6 +1167,17 @@ function _classifyWeightedByFunction(
     return n;
   });
   return { kind: 'weighted', from: baseName, weightIR: synth, isLog: !!isLog };
+}
+
+// Axis count of a binding that is a Lebesgue over an N-D box, else null.
+// Re-classifies the base rather than reading a derivations map, because a
+// weight classifier runs before the base's own derivation is necessarily
+// built. `classifyLebesgueBox` is pure, so this is a cheap re-read.
+function _boxAxesOf(baseName: string, bindings: any): number | null {
+  const b = bindings && bindings.get(baseName);
+  if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'Lebesgue') return null;
+  const d = classifyLebesgueBox(b.ir, null, bindings);
+  return d ? d.axes.length : null;
 }
 
 function classifyLogWeighted(
@@ -2782,13 +2811,20 @@ function classifyAppliedChain(rhsIR: any, bindings: any): any {
 //     downstream sees the default 0. Documented as an open follow-up;
 //     in practice Lebesgue's interval bounds are literals.
 //
-// Higher-dim Lebesgue supports (`cartpow(interval, n)`, `cartprod(...)`)
-// are a follow-up — each adds its own multi-axis sampling path with
-// a corresponding totalmass formula. Tracked in TODO §06.
+// N-D box supports (`cartprod(interval, …)` positional, `cartpow(interval,
+// n)`) classify as `kind:'lebesguebox'` instead — see classifyLebesgue below.
 function classifyLebesgueInterval(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): any {
   void ast;
+  // KWARG form only, deliberately. The bare-positional spelling
+  // `Lebesgue(interval(0, inf))` is left UNCLASSIFIED so that
+  // `inlineBoundaryDerivations` keeps inlining it — mat-density's exact
+  // 1-D normalizer (`weightedBaseWeightFn` → `asScalarFactor`) pattern-
+  // matches the inlined `weighted(w, Lebesgue(...))` IR, and giving this
+  // shape a derivation turns it into a boundary ref the matcher misses,
+  // silently replacing an exact log Z with 0. The N-D box reader below
+  // accepts both spellings because its own kinds are inlined explicitly.
   if (!rhsIR.kwargs) return null;
-  const support = rhsIR.kwargs.support;
+  const support = _lebesgueSupportIR(rhsIR, bindings);
   if (!support || support.kind !== 'call' || support.op !== 'interval') return null;
   if (!Array.isArray(support.args) || support.args.length !== 2) return null;
   const aIR = support.args[0], bIR = support.args[1];
@@ -2812,6 +2848,108 @@ function classifyLebesgueInterval(rhsIR: IRNode, ast: any, bindings: any, fixedV
   return out;
 }
 
+// The support set IR of a `Lebesgue(...)` / `Counting(...)` call. Falls back to
+// a lone positional argument, per §04's calling convention.
+//
+// No self-ref resolution here, deliberately. `Lebesgue(support = square)` with
+// `square = cartprod(...)` bound elsewhere — the spelling the Dalitz example
+// uses — arrives with the set already INLINED into the Lebesgue call, so a
+// ref-following loop was dead on every producer: made to throw, it fired zero
+// times across the whole 5507-test suite while all the box tests (the named-set
+// spelling included) stayed green. If a producer ever does hand this reader a
+// bare set ref, the box classifier declines and the binding surfaces as
+// underivable rather than being silently mis-typed — a visible failure, not a
+// wrong number.
+function _lebesgueSupportIR(rhsIR: any, bindings: any): any {
+  void bindings;
+  let support = rhsIR.kwargs && rhsIR.kwargs.support;
+  if (!support && Array.isArray(rhsIR.args) && rhsIR.args.length === 1) {
+    support = rhsIR.args[0];
+  }
+  if (!support) return null;
+  // §03: "single-component cartprod is the component itself" — unwrap so the
+  // 1-D interval reader sees the interval it actually describes.
+  while (support && support.kind === 'call' && support.op === 'cartprod'
+         && Array.isArray(support.args) && support.args.length === 1
+         && !(Array.isArray(support.fields) && support.fields.length > 0)) {
+    support = support.args[0];
+  }
+  return support;
+}
+
+// Lebesgue over an N-D BOX support — spec §06 "Fundamental measures":
+// "`S` may be any FlatPPL set: one-dimensional …, a Cartesian power (e.g.
+// `cartpow(reals, n)`), a record-structured product … and so on", and "For
+// full-dimensional subsets of Euclidean or product spaces this is the ordinary
+// Lebesgue measure on the ambient space".
+//
+// Recognised spellings, both carrying an ARRAY variate per §03 ("The resulting
+// set is a set of arrays, not a set of tuples"):
+//   - positional `cartprod(interval(a₁,b₁), …, interval(a_k,b_k))`
+//   - `cartpow(interval(a,b), k)` — the homogeneous case, same axes repeated
+//
+// The measure is the product of its per-axis Lebesgue measures, so:
+//   - sampling is independent uniform per axis (matLebesgueBox), and
+//   - logTotalmass = Σᵢ log(bᵢ − aᵢ), the log of the box volume.
+//
+// REFUSALS, all "refuse-don't-mislower":
+//   - any non-interval factor, or a non-literal bound → decline (no derivation)
+//   - an unbounded axis → decline: the box mass is infinite and §06 leaves
+//     normalize/totalmass undefined there, so inventing a side length would be
+//     a silently wrong number
+//   - the keyword form `cartprod(a = S1, …)` → decline: §03 gives it a RECORD
+//     variate with no positional axis order, which the axis-to-weight-parameter
+//     binding below depends on. Tracked as a follow-up in TODO-flatppl-js.md.
+//   - k < 2 → not a box; §03 says a single-component cartprod IS the component,
+//     so it falls through to the 1-D scalar classifier above.
+function classifyLebesgueBox(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): any {
+  void ast;
+  const support = _lebesgueSupportIR(rhsIR, bindings);
+  if (!support || support.kind !== 'call') return null;
+  let factors: any[];
+  if (support.op === 'cartprod') {
+    if (Array.isArray(support.fields) && support.fields.length > 0) return null;
+    if (!Array.isArray(support.args)) return null;
+    factors = support.args;
+  } else if (support.op === 'cartpow') {
+    if (!Array.isArray(support.args) || support.args.length !== 2) return null;
+    const n = resolveConstant(support.args[1], bindings, new Set(), fixedValues);
+    if (!Number.isInteger(n) || n < 2 || n > LEBESGUE_BOX_DIM_CAP) return null;
+    factors = new Array(n).fill(support.args[0]);
+  } else {
+    return null;
+  }
+  if (factors.length < 2 || factors.length > LEBESGUE_BOX_DIM_CAP) return null;
+  const axes: { lo: number; hi: number }[] = [];
+  for (const f of factors) {
+    if (!f || f.kind !== 'call' || f.op !== 'interval'
+        || !Array.isArray(f.args) || f.args.length !== 2) return null;
+    const lo = resolveConstant(f.args[0], bindings, new Set(), fixedValues);
+    const hi = resolveConstant(f.args[1], bindings, new Set(), fixedValues);
+    if (typeof lo !== 'number' || typeof hi !== 'number') return null;
+    if (!Number.isFinite(lo) || !Number.isFinite(hi) || !(hi > lo)) return null;
+    axes.push({ lo, hi });
+  }
+  let logTotalmass = 0;
+  for (const a of axes) logTotalmass += Math.log(a.hi - a.lo);
+  return { kind: 'lebesguebox', axes, logTotalmass, discrete: false };
+}
+
+// Axis cap for a box support. Sampling itself is dimension-agnostic, but the
+// density walk consumes one scalar per axis and the viewer plots at most a
+// plane, so a runaway `cartpow(interval, 10000)` is refused rather than
+// silently building a 10000-wide variate. Mirrors mat-density.ts's
+// TRUNCATE_DIM_CAP in spirit; kept separate because it caps a different
+// consumer (sampling/density, not quadrature).
+const LEBESGUE_BOX_DIM_CAP = 8;
+
+// `Lebesgue(support = S)`: the 1-D interval reading first (unchanged scalar
+// path), then the N-D box.
+function classifyLebesgue(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): any {
+  return classifyLebesgueInterval(rhsIR, ast, bindings, fixedValues)
+      || classifyLebesgueBox(rhsIR, ast, bindings, fixedValues);
+}
+
 const MEASURE_OP_CLASSIFIERS = {
   weighted:     classifyWeighted,
   logweighted:  classifyLogWeighted,
@@ -2830,7 +2968,7 @@ const MEASURE_OP_CLASSIFIERS = {
   relabel:      classifyRelabel,
   jointchain:   classifyJointchain,
   kchain:       classifyJointchain,
-  Lebesgue:     classifyLebesgueInterval,
+  Lebesgue:     classifyLebesgue,
 };
 
 /**
@@ -3599,6 +3737,25 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
           };
         }
         return d.distIR;
+      case 'lebesguebox': {
+        // N-D box Lebesgue. Unlike the 1-D case above there is NO synthetic
+        // Uniform to compensate for: this node's density IS Lebesgue's own
+        // (≡ 1), so `walkLebesgue` contributes 0 and no `logweighted` volume
+        // shift belongs here. Adding one would report log(volume) instead of
+        // 0 for `logdensityof(Lebesgue(box), x)`.
+        //
+        // The axes ride along on the node so the density walker knows how
+        // many scalars the variate occupies and where the support ends — it
+        // must not re-derive them from a support IR it may not be able to
+        // resolve in the density context.
+        const b = bindings && bindings.get(name);
+        return {
+          kind: 'call', op: 'Lebesgue',
+          kwargs: (b && b.ir && b.ir.kwargs) || {},
+          boxAxes: d.axes,
+          loc: b && b.ir && b.ir.loc,
+        } as any;
+      }
       case 'mvnormal':
         // Multivariate sampleable distribution. Same
         // treatment as 'sample': return the IR verbatim; the density

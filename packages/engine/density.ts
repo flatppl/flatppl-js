@@ -840,6 +840,35 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   // scalar and evaluate the weight body per atom, adding log(w). (A plain
   // atom-scalar weight — a constant or env/ref expression — takes the
   // original evaluateExprN path.)
+  // A MULTI-parameter weight belongs to an N-D box base (spec §03 array
+  // variate): each parameter takes one coordinate, in axis order — the same
+  // convention matWeighted and mat-density's makeIntegrandND use, so all
+  // three agree on which coordinate feeds which parameter. The coordinates
+  // are the ones the base just consumed, recovered from the value/rest pair.
+  if (wIR && wIR.kind === 'call' && wIR.op === 'functionof'
+      && Array.isArray(wIR.params) && wIR.params.length > 1 && wIR.body) {
+    const coords = inferConsumedVector(value, wIR.params.length);
+    /* c8 ignore start */
+    // Unreachable in practice: the base was already walked above, and its
+    // walkLebesgue consumed these same k coordinates off `value` — a short
+    // point throws there first, with consumeVector's own message. Kept so a
+    // future base that consumes differently fails loudly instead of scoring a
+    // partly-bound weight.
+    if (coords == null) {
+      throw new Error('density: weighted(w, M) — w takes ' + wIR.params.length
+        + ' parameters but the scored point does not supply that many '
+        + 'coordinates for the base measure');
+    }
+    /* c8 ignore stop */
+    const { mapIR } = require('./ir-walk.ts');
+    const bound: Record<string, number> = {};
+    for (let i = 0; i < wIR.params.length; i++) bound[wIR.params[i]] = coords[i];
+    const wBody = mapIR(wIR.body, (n: any) =>
+      (n && n.kind === 'ref' && n.name in bound)
+        ? { kind: 'lit', value: bound[n.name] } : n);
+    applyAtomScalar(wBody, refArrays, N, baseEnv, overlay, acc, addLogW);
+    return rest;
+  }
   if (wIR && wIR.kind === 'call' && wIR.op === 'functionof'
       && Array.isArray(wIR.params) && wIR.params.length === 1 && wIR.body) {
     // Substitute the lambda's single parameter with the consumed scalar (a
@@ -847,11 +876,31 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
     // atom-scalar path — so any OTHER refs in the weight body (model params
     // fed as θ, e.g. `alpha`) resolve via refArrays / baseEnv / overlay
     // exactly as they do for a leaf's kwargs.
-    const consumed = inferConsumedScalar(value, rest);
     const pName = wIR.params[0];
     const { mapIR } = require('./ir-walk.ts');
+    // Over an N-D box base the variate is the k-array itself (spec §03), so a
+    // single-parameter weight binds to the WHOLE consumed vector — bound as a
+    // `vector(...)` of the k coordinates, which is what an indexing body like
+    // `v[1] + v[2]` needs. Binding the first coordinate alone (the scalar
+    // path below) would score a different function without erroring.
+    const boxK = _baseBoxDim(ir.args[1]);
+    const bound = boxK > 1
+      ? (() => {
+          const coords = inferConsumedVector(value, boxK);
+          /* c8 ignore start */
+          // Unreachable for the same reason as the k-parameter branch above:
+          // walkLebesgue already consumed these coordinates and would have
+          // thrown on a short point.
+          if (coords == null) {
+            throw new Error('density: weighted(w, Lebesgue(box)) — the scored point '
+              + 'does not supply the box\'s ' + boxK + ' coordinates');
+          }
+          /* c8 ignore stop */
+          return { kind: 'call', op: 'vector', args: coords.map((c) => ({ kind: 'lit', value: c })) };
+        })()
+      : { kind: 'lit', value: inferConsumedScalar(value, rest) };
     const wBody = mapIR(wIR.body, (n: any) =>
-      (n && n.kind === 'ref' && n.name === pName) ? { kind: 'lit', value: consumed } : n);
+      (n && n.kind === 'ref' && n.name === pName) ? bound : n);
     applyAtomScalar(wBody, refArrays, N, baseEnv, overlay, acc, addLogW);
     return rest;
   }
@@ -866,6 +915,23 @@ function walkLebesgue(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   // (§12 generic_dist), where the weight carries the whole density. Consume
   // one scalar (the variate) so rest-threading and the enclosing truncate's
   // support gate (which reads the consumed scalar) work as for a leaf.
+  //
+  // An N-D BOX support (`boxAxes`, attached by derivations.ts's
+  // 'lebesguebox' expansion) has a k-array variate (spec §03), so it
+  // consumes k scalars instead of one. Spec §06 restricts the measure to its
+  // support — "density is zero outside" — so a coordinate outside its axis
+  // collapses the atom to −∞ rather than reporting the interior density.
+  const axes = (ir as any).boxAxes;
+  if (Array.isArray(axes) && axes.length > 1) {
+    const { head, rest } = consumeVector(value, axes.length);
+    let outside = false;
+    for (let i = 0; i < axes.length; i++) {
+      const x = +head[i];
+      if (!(x >= axes[i].lo && x <= axes[i].hi)) { outside = true; break; }
+    }
+    if (outside) for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    return rest;
+  }
   const { rest } = consumeScalar(value);
   return rest;
 }
@@ -2862,6 +2928,45 @@ function logDensity(ir: any, value: any, env: any, opts: any) {
 // =====================================================================
 // Local helpers — set-membership for truncate, scalar back-inference.
 // =====================================================================
+
+// The first `n` coordinates of the value a base measure just consumed — the
+// vector counterpart of inferConsumedScalar, for an N-D box variate. null when
+// the value cannot supply n coordinates (the caller refuses rather than
+// padding, since a short read would score a different function).
+// Box dimension of a base measure IR, 1 when it is not an N-D box. The base
+// of a `weighted`/`logweighted` may be wrapped (another reweighting, a
+// truncate), so descend through the measure-op chain to the Lebesgue node
+// carrying `boxAxes`.
+function _baseBoxDim(baseIR: any, depth?: number): number {
+  if (!baseIR || baseIR.kind !== 'call' || (depth || 0) > 16) return 1;
+  if (baseIR.op === 'Lebesgue') {
+    const axes = baseIR.boxAxes;
+    return Array.isArray(axes) ? axes.length : 1;
+  }
+  if (BASE_WRAPPING_OPS.has(baseIR.op) && Array.isArray(baseIR.args)) {
+    // The base sits last for the reweightings and first for truncate; both
+    // are covered by scanning for the single measure-shaped argument.
+    for (const a of baseIR.args) {
+      const k = _baseBoxDim(a, (depth || 0) + 1);
+      if (k > 1) return k;
+    }
+  }
+  return 1;
+}
+
+const BASE_WRAPPING_OPS = new Set(['weighted', 'logweighted', 'truncate', 'normalize']);
+
+function inferConsumedVector(value: any, n: number): number[] | null {
+  if (n <= 0) return null;
+  let src: any = null;
+  if (valueLib.isValue(value) && value.shape.length === 1) src = value.data;
+  else if (value && value.BYTES_PER_ELEMENT) src = value;
+  else if (Array.isArray(value)) src = value;
+  if (src == null || src.length < n) return null;
+  const out: number[] = [];
+  for (let i = 0; i < n; i++) out.push(+src[i]);
+  return out;
+}
 
 function inferConsumedScalar(value: any, rest: any) {
   // For truncate(M, S) where M is scalar-leaf-like: the head consumed
