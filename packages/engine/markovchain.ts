@@ -1,7 +1,8 @@
 'use strict';
 
 // =====================================================================
-// markovchain.ts — spec §06 `markovchain(kernel, init, n)`
+// markovchain.ts — spec §06 `markovchain(kernel, init, n)` and
+//                  spec §06 `kscan(kernel, init, xs)`
 // =====================================================================
 //
 // §06 dependent composition, verbatim: "`kernel` is a Markov kernel
@@ -61,6 +62,22 @@
 // substitutes the previous OBSERVED element (`s{j-1}`, the name
 // `walkJointFieldsOrPositional` threads positionally). So the two paths
 // cannot drift in which distribution they place at step j.
+//
+// `kscan`, §06 verbatim: "`kernel` is a Markov kernel `(state, x) ->
+// measure_over_state`; step $i$ is $\text{traj}_i \sim
+// \kappa(\text{traj}_{i-1}, \text{xs}_i)$ with $\text{traj}_0 = \text{init}$.
+// Trajectories have length `lengthof(xs)`. As with `markovchain`, `init` is a
+// value in the state space and not part of the trajectory."
+//
+// So `kscan` is this same scan with a SECOND substitution at each step: the
+// kernel's exogenous param takes `xs[i]`. Everything else — the array variate,
+// the value-not-measure `init`, the n-term density with no base term — is
+// markovchain's, which is why the two share every function here and differ
+// only in the step kernel's arity, where the length comes from (`lengthof(xs)`
+// rather than the literal `n`), and one extra entry in `stepDistIR`'s
+// substitution map. `xs[i]` is spelled as the 1-based `get(xs, i)` on BOTH
+// paths, so an exogenous column is the same value in the sampler and in the
+// density.
 
 const valueLib = require('./value.ts');
 
@@ -89,13 +106,26 @@ function _distParamsOf(distOp: string): string[] {
 }
 
 /**
- * The step descriptor for a markovchain's kernel argument, or a
+ * The two §06 trajectory ops, by the only thing that differs in their step
+ * kernel: its arity, and the arrow §06 spells for it.
+ */
+const TRAJECTORY_OPS: Record<string, { arity: number; arrow: string }> = {
+  markovchain: { arity: 1, arrow: '`(state) -> measure_over_state`' },
+  kscan:       { arity: 2, arrow: '`(state, x) -> measure_over_state`' },
+};
+
+/**
+ * The step descriptor for a `markovchain` / `kscan` kernel argument, or a
  * `{ reason }` refusal naming what the shape is instead.
  *
  * `compIR` is either a self-ref to a kernel binding or an inline
- * `functionof` (`fn` / `kernelof` / `->` all lower to one).
+ * `functionof` (`fn` / `kernelof` / `->` all lower to one). `op` selects the
+ * §06 arity: one input for `markovchain`, two for `kscan`, whose second is
+ * the exogenous input.
  */
-function describeStepKernel(compIR: any, bindings: any): any {
+function describeStepKernel(compIR: any, bindings: any, op?: string): any {
+  const opName = op || 'markovchain';
+  const spec = TRAJECTORY_OPS[opName];
   const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
   let ir = compIR;
   let shownAs = 'the kernel argument';
@@ -109,15 +139,16 @@ function describeStepKernel(compIR: any, bindings: any): any {
   }
   if (!ir || ir.kind !== 'call' || ir.op !== 'functionof') {
     return {
-      reason: shownAs + ' is not a kernel — §06 markovchain takes a Markov '
-        + 'kernel `(state) -> measure_over_state` as its first argument',
+      reason: shownAs + ' is not a kernel — §06 ' + opName + ' takes a Markov '
+        + 'kernel ' + spec.arrow + ' as its first argument',
     };
   }
   const params: string[] = Array.isArray(ir.params) ? ir.params : [];
-  if (params.length !== 1) {
+  if (params.length !== spec.arity) {
     return {
-      reason: shownAs + ' has ' + params.length + ' inputs; §06 markovchain '
-        + 'takes a single-input kernel `(state) -> measure_over_state`',
+      reason: shownAs + ' has ' + params.length + ' inputs; §06 ' + opName
+        + ' takes a ' + (spec.arity === 1 ? 'single-input' : (spec.arity + '-input'))
+        + ' kernel ' + spec.arrow,
     };
   }
   const dist = _peelLawof(ir.body);
@@ -125,13 +156,13 @@ function describeStepKernel(compIR: any, bindings: any): any {
       || !SAMPLEABLE || !SAMPLEABLE.has(dist.op)) {
     return {
       reason: shownAs + '\'s body is not a sampleable distribution call; this '
-        + 'engine implements markovchain over a scalar-distribution step '
+        + 'engine implements ' + opName + ' over a scalar-distribution step '
         + 'kernel only (a composite or record-state step is not lowered)',
     };
   }
   const distParams = _distParamsOf(dist.op);
   // §05 lets a distribution take its parameters positionally
-  // (`Normal(x, sqrt(2*D*dt))`, the §06 markovchain example itself). Name them
+  // (`Normal(x, sqrt(2*D*dt))`, §06's markovchain and kscan examples both). Name them
   // from the REGISTRY order so the two execution paths only ever see kwargs.
   const distKwargs: Record<string, any> = Object.assign({}, dist.kwargs || {});
   const positional: any[] = Array.isArray(dist.args) ? dist.args : [];
@@ -146,25 +177,37 @@ function describeStepKernel(compIR: any, bindings: any): any {
   }
   return {
     inputParam: params[0],
+    xParam: spec.arity === 2 ? params[1] : null,
     distOp: dist.op,
     distParams,
     distKwargs,
   };
 }
 
+/** `xs[j+1]` — §06 indexes `xs` from 1, and `get` is the 1-based IR form. */
+function xElemIR(xsIR: any, j: number): any {
+  return { kind: 'call', op: 'get', args: [xsIR, { kind: 'lit', value: j + 1 }] };
+}
+
 /**
- * Step j's distribution IR, with the kernel's input param replaced by
- * `prevIR`. The single producer both the sampler and the density walker
- * read, so step j is the same distribution on both paths.
+ * Step j's distribution IR, with the kernel's state param replaced by
+ * `prevIR` and — for a `kscan` step — its exogenous param replaced by `xIR`.
+ * The single producer both the sampler and the density walker read, so step j
+ * is the same distribution on both paths.
  */
-function stepDistIR(step: any, prevIR: any): any {
+function stepDistIR(step: any, prevIR: any, xIR?: any): any {
   const substituteKernelParams = require('./mat-broadcast.ts').substituteKernelParams;
   const kwargs: Record<string, any> = {};
+  const params: string[] = [step.inputParam];
   const subMap: Record<string, any> = {};
   subMap[step.inputParam] = prevIR;
+  if (step.xParam) {
+    params.push(step.xParam);
+    subMap[step.xParam] = xIR;
+  }
   for (const pn of Object.keys(step.distKwargs)) {
     kwargs[pn] = substituteKernelParams(
-      step.distKwargs[pn], [step.inputParam], [step.inputParam], subMap);
+      step.distKwargs[pn], params, params, subMap);
   }
   return { kind: 'call', op: step.distOp, kwargs };
 }
@@ -187,7 +230,7 @@ function densityIR(d: any): any {
       ? d.initIR
       : { kind: 'ref', ns: 'self', name: 's' + (j - 1) };
     if (j > 0) selfThreaded.push('s' + (j - 1));
-    args.push(stepDistIR(d.step, prevIR));
+    args.push(stepDistIR(d.step, prevIR, d.xsIR ? xElemIR(d.xsIR, j) : undefined));
   }
   // `selfThreaded` rides ON THE NODE, naming the refs this joint satisfies from
   // its own observed value, so clm's ⊆ check can exclude them wherever the node
@@ -242,22 +285,24 @@ function matMarkovchain(name: string, d: any, ctx: any): Promise<any> {
   const empirical = require('./empirical.ts');
   const N = ctx.sampleCount;
   const n = d.n;
+  const op = d.kind;
 
-  // One aggregate node carrying every free expression (the init value and
-  // each step kwarg) so per-atom refs resolve in a single pass.
+  // One aggregate node carrying every free expression (the init value, `xs`
+  // where there is one, and each step kwarg) so per-atom refs resolve in a
+  // single pass.
   const aggregate: any = {
     kind: 'call', op: 'joint',
-    args: [d.initIR].concat(Object.keys(d.step.distKwargs)
-      .map((pn: string) => d.step.distKwargs[pn])),
+    args: [d.initIR].concat(d.xsIR ? [d.xsIR] : []).concat(
+      Object.keys(d.step.distKwargs).map((pn: string) => d.step.distKwargs[pn])),
   };
 
-  return shared.prepareDensityRefs(aggregate, ctx, 'markovchain').then((prep: any) => {
+  return shared.prepareDensityRefs(aggregate, ctx, op).then((prep: any) => {
     const { refArrays, fixedEnv } = prep;
     const initVal = sampler.evaluateExprN(d.initIR, refArrays, N, fixedEnv, undefined);
     const initCol = _asColumn(initVal, N);
     if (!initCol) {
       const shp = valueLib.isValue(initVal) ? JSON.stringify(initVal.shape) : typeof initVal;
-      return Promise.reject(new Error('markovchain: `init` resolved to ' + shp
+      return Promise.reject(new Error(op + ': `init` resolved to ' + shp
         + ' (expected a scalar or one value per atom) — §06 makes `init` a '
         + 'value in the state space, and this engine lowers a scalar state'));
     }
@@ -270,7 +315,8 @@ function matMarkovchain(name: string, d: any, ctx: any): Promise<any> {
         const prev = (jj === 0) ? initCol : cols[jj - 1];
         const stepRefs: Record<string, any> = Object.assign({}, refArrays);
         stepRefs.__mc_prev = valueLib.batchedScalar(prev);
-        const ir = stepDistIR(d.step, { kind: 'ref', ns: 'self', name: '__mc_prev' });
+        const ir = stepDistIR(d.step, { kind: 'ref', ns: 'self', name: '__mc_prev' },
+          d.xsIR ? xElemIR(d.xsIR, jj) : undefined);
         const distKwargs: Record<string, any> = {};
         const sampleRefs: Record<string, any> = {};
         for (const pn of Object.keys(ir.kwargs)) {
@@ -278,7 +324,7 @@ function matMarkovchain(name: string, d: any, ctx: any): Promise<any> {
           const col = _asColumn(pv, N);
           if (!col) {
             const shp = valueLib.isValue(pv) ? JSON.stringify(pv.shape) : typeof pv;
-            throw new Error('markovchain: step ' + (jj + 1) + ' param \'' + pn
+            throw new Error(op + ': step ' + (jj + 1) + ' param \'' + pn
               + '\' resolved to ' + shp + ' (expected a scalar or [' + N + '])');
           }
           const rn = '__mc_p_' + pn;
@@ -308,29 +354,64 @@ function matMarkovchain(name: string, d: any, ctx: any): Promise<any> {
 }
 
 /**
- * Located refusals for `markovchain` calls this engine will not lower.
- * Without this the classifier's `null` leaves the binding with no derivation
- * and no message, so a composite or record-state step kernel would fail
- * silently instead of saying what it is. Reads the same `bindings` map the
- * classifier reads, so the two cannot disagree about what is lowerable.
+ * `lengthof(xs)` — §06 kscan's trajectory length — as a positive integer, or
+ * null when it does not resolve before materialisation.
+ *
+ * An inline array literal lowers to `vector(…)`, whose argument count IS the
+ * length. Otherwise `resolveConstant`'s `lengthof` arm reads the pre-evaluated
+ * fixed-phase value, which is how a data-loaded or computed `xs` resolves.
+ * THE one length reader, shared by `classifyKscan` and the refusal check, so a
+ * length that does not resolve is a message rather than a silent non-lowering.
  */
-function checkMarkovchain(bindings: any): any[] {
+function resolveXsLength(xsIR: any, bindings: any, fixedValues?: any): number | null {
+  if (xsIR && xsIR.kind === 'call' && xsIR.op === 'vector' && Array.isArray(xsIR.args)) {
+    return xsIR.args.length > 0 ? xsIR.args.length : null;
+  }
+  const resolveConstant = require('./ir-shared.ts').resolveConstant;
+  const n = resolveConstant(
+    { kind: 'call', op: 'lengthof', args: [xsIR] },
+    bindings || new Map(), new Set(), fixedValues);
+  return (Number.isInteger(n) && n > 0) ? n : null;
+}
+
+/**
+ * Located refusals for `markovchain` / `kscan` calls this engine will not
+ * lower. Without this the classifier's `null` leaves the binding with no
+ * derivation and no message, so a composite or record-state step kernel would
+ * fail silently instead of saying what it is. Reads the same `bindings` map
+ * and the same readers the classifiers read, so the two cannot disagree about
+ * what is lowerable.
+ */
+function checkTrajectoryKernels(bindings: any, fixedValues?: any): any[] {
   const out: any[] = [];
   if (!bindings || !bindings.entries) return out;
   for (const [name, b] of bindings.entries()) {
     const ir = b && b.ir;
-    if (!ir || ir.kind !== 'call' || ir.op !== 'markovchain') continue;
+    if (!ir || ir.kind !== 'call' || !ir.op
+        || !Object.prototype.hasOwnProperty.call(TRAJECTORY_OPS, ir.op)) continue;
+    const op = ir.op;
     // Arity is typeinfer's (it reports `markovchain expects 3`), so only the
-    // step-kernel shape is judged here.
+    // step-kernel shape and kscan's `xs` length are judged here.
     const args = Array.isArray(ir.args) ? ir.args : [];
     if (args.length !== 3) continue;
-    const step = describeStepKernel(args[0], bindings);
+    const step = describeStepKernel(args[0], bindings, op);
     if (step && step.reason) {
       out.push({
         name,
         severity: 'error',
-        message: 'markovchain: ' + step.reason,
+        message: op + ': ' + step.reason,
         loc: (args[0] && args[0].loc) || ir.loc,
+      });
+      continue;
+    }
+    if (op === 'kscan' && resolveXsLength(args[2], bindings, fixedValues) == null) {
+      out.push({
+        name,
+        severity: 'error',
+        message: 'kscan: `xs` length does not resolve before sampling — §06 '
+          + 'gives the trajectory length `lengthof(xs)`, so `xs` must be an '
+          + 'array literal or a fixed-phase array value',
+        loc: (args[2] && args[2].loc) || ir.loc,
       });
     }
   }
@@ -338,5 +419,6 @@ function checkMarkovchain(bindings: any): any[] {
 }
 
 module.exports = {
-  describeStepKernel, stepDistIR, densityIR, matMarkovchain, checkMarkovchain,
+  describeStepKernel, stepDistIR, densityIR, matMarkovchain,
+  checkTrajectoryKernels, resolveXsLength,
 };

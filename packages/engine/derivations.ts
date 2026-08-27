@@ -832,13 +832,15 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     });
   }
 
-  // Spec §06 `markovchain`: a step kernel outside the scalar-distribution
-  // scope this engine lowers is a located refusal, not a binding that quietly
-  // gets no derivation. Runs here rather than in the analyzer because it
-  // shares its shape reader (`describeStepKernel`) with `classifyMarkovchain`
-  // above, and that reader needs the POST-LIFT bindings' IR — so the message
-  // and the classification cannot disagree about what is lowerable.
-  for (const d of require('./markovchain.ts').checkMarkovchain(bindings)) {
+  // Spec §06 `markovchain` / `kscan`: a step kernel outside the
+  // scalar-distribution scope this engine lowers is a located refusal, not a
+  // binding that quietly gets no derivation. Runs here rather than in the
+  // analyzer because it shares its shape reader (`describeStepKernel`) with
+  // `classifyMarkovchain` / `classifyKscan` above, and that reader needs the
+  // POST-LIFT bindings' IR — so the message and the classification cannot
+  // disagree about what is lowerable.
+  for (const d of require('./markovchain.ts')
+    .checkTrajectoryKernels(bindings, fixedValues)) {
     diagnostics.push(Object.assign({ loc: bindingLoc(d.name) }, d));
   }
 
@@ -2870,6 +2872,24 @@ function classifyMarkovchain(
   return { kind: 'markovchain', step, initIR: args[1], n };
 }
 
+// `kscan(kernel, init, xs)` (spec §06 dependent composition) — markovchain
+// with one exogenous column threaded through the steps. Same descriptor plus
+// `xsIR`, and the length is §06's `lengthof(xs)` rather than a literal `n`, so
+// this only resolves that length and records the two-input step kernel.
+function classifyKscan(
+  rhsIR: any, ast: any, bindings?: any, fixedValues?: any,
+): any {
+  if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'kscan') return null;
+  const args = Array.isArray(rhsIR.args) ? rhsIR.args : [];
+  if (args.length !== 3) return null;
+  const mc = require('./markovchain.ts');
+  const step = mc.describeStepKernel(args[0], bindings, 'kscan');
+  if (!step || step.reason) return null;
+  const n = mc.resolveXsLength(args[2], bindings, fixedValues);
+  if (n == null) return null;
+  return { kind: 'kscan', step, initIR: args[1], xsIR: args[2], n };
+}
+
 function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): DerivationJointchain | null {
   if (!rhsIR || rhsIR.kind !== 'call'
       || (rhsIR.op !== 'jointchain' && rhsIR.op !== 'kchain')) return null;
@@ -3244,6 +3264,7 @@ const MEASURE_OP_CLASSIFIERS = {
   jointchain:   classifyJointchain,
   kchain:       classifyJointchain,
   markovchain:  classifyMarkovchain,
+  kscan:        classifyKscan,
   Lebesgue:     classifyLebesgue,
 };
 
@@ -3494,17 +3515,18 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   if (d.kind === 'iid') {
     return resolvable(d.from);
   }
-  // markovchain: no inner measure binding — the step kernel is inlined as a
-  // distribution call. What must resolve is every self-ref its `init`
-  // expression and its step parameters reach.
-  if (d.kind === 'markovchain') {
+  // markovchain / kscan: no inner measure binding — the step kernel is inlined
+  // as a distribution call. What must resolve is every self-ref its `init`
+  // expression, its `xs` (kscan) and its step parameters reach.
+  if (d.kind === 'markovchain' || d.kind === 'kscan') {
     const dd: any = d;
-    const irs = [dd.initIR].concat(Object.keys(dd.step.distKwargs)
-      .map((pn: string) => dd.step.distKwargs[pn]));
+    const irs = [dd.initIR].concat(dd.xsIR ? [dd.xsIR] : [])
+      .concat(Object.keys(dd.step.distKwargs)
+        .map((pn: string) => dd.step.distKwargs[pn]));
     for (const ir of irs) {
       for (const r of collectSelfRefs(ir)) {
-        // The step's own input param is bound per step, never fed.
-        if (r === dd.step.inputParam) continue;
+        // The step's own params are bound per step, never fed.
+        if (r === dd.step.inputParam || r === dd.step.xParam) continue;
         if (!resolvable(r)) return false;
       }
     }
@@ -4062,9 +4084,11 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // (walkMvNormal in density.js OP_HANDLERS).
         return d.distIR;
       case 'markovchain':
+      case 'kscan':
         // §06: the n transition densities, as a POSITIONAL joint whose step j
         // reads `s{j-1}` — the previous OBSERVED element. `init` enters step 1
-        // as a value and contributes no density term of its own.
+        // as a value and contributes no density term of its own. A kscan step
+        // also reads `xs[j]`, which is exogenous data, not a variate.
         return require('./markovchain.ts').densityIR(d);
       case 'iid': {
         const inner: any = expandMeasureIR(d.from, derivations, next, bindings);
