@@ -336,6 +336,22 @@ function _substituteKernelParams(
   return expr;
 }
 
+// Collect, into `out`, the SURFACE kwarg name of every kernel formal that
+// `expr` references. The namespace test must stay in step with
+// `_substituteKernelParams` above: a collector that sees a formal the
+// substituter will not rewrite (or the reverse) is the boundary-name
+// conflation this pair exists to avoid.
+function _collectKernelParamRefs(
+  expr: any, params: string[], paramKwargs: string[], out: Set<string>,
+): void {
+  require('./ir-walk.ts').walkIR(expr, (n: any) => {
+    if (n.kind !== 'ref') return;
+    if (n.ns !== '%local' && n.ns !== 'self') return;
+    const idx = params.indexOf(n.name);
+    if (idx >= 0) out.add(paramKwargs[idx]);
+  });
+}
+
 // =====================================================================
 // Phase 8 — batch-flatten: the uniform iid-composite executor
 // =====================================================================
@@ -1156,17 +1172,19 @@ function _executeJointComposite(
   const components = compositeBody.components;
   const C = components.length;
 
-  // Formals consumed by VECTOR-OUTPUT components — their args (per-cell
-  // mu, etc.) are resolved as vector/matrix values by
-  // `_jointVectorComponentCol`, NOT laid out via the scalar `__o_` path.
+  // Broadcast args consumed by VECTOR-OUTPUT components — resolved as
+  // vector/matrix values by `_jointVectorComponentCol`, NOT laid out via
+  // the scalar `__o_` path. Keyed by SURFACE kwarg name, since that is
+  // what `d.kwargIRs` is keyed by; a `_x_` placeholder formal and its
+  // surface name differ. Matches both `%local` and `self` namespaces for
+  // the same reason `_substituteKernelParams` does.
   const vectorFormals = new Set<string>();
-  const formalSet = new Set<string>(compositeBody.params);
   for (let c = 0; c < C; c++) {
     if (!components[c].isVectorOutput) continue;
     for (const pn of Object.keys(components[c].distKwargs)) {
-      orchestrator.collectSelfRefs(components[c].distKwargs[pn]).forEach((r: string) => {
-        if (formalSet.has(r)) vectorFormals.add(r);
-      });
+      _collectKernelParamRefs(
+        components[c].distKwargs[pn], compositeBody.params,
+        compositeBody.paramKwargs, vectorFormals);
     }
   }
 
@@ -2159,4 +2177,8 @@ function _executeMvNormalBroadcast(
   });
 }
 
-module.exports = { matKernelBroadcast, substituteKernelParams: _substituteKernelParams };
+module.exports = {
+  matKernelBroadcast,
+  substituteKernelParams: _substituteKernelParams,
+  collectKernelParamRefs: _collectKernelParamRefs,
+};

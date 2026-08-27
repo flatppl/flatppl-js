@@ -15,9 +15,9 @@ cov_shared = rowstack([[1.0, 0.3], [0.3, 0.5]])
 sigma_obs = 0.7
 
 joint_kernel = functionof(
-  joint(loc = MvNormal(mu = m, cov = cov_shared),
+  joint(loc = MvNormal(mu = _m_, cov = cov_shared),
         obs = Normal(mu = 0.0, sigma = sigma_obs)),
-  m = m
+  m = _m_
 )
 
 y ~ broadcast(joint_kernel, m = mu_per_group)
