@@ -31,24 +31,12 @@ const FIXTURES = path.join(__dirname, 'fixtures');
 // filename → the sorted unique error messages it is KNOWN to produce.
 // Every one of these is a pre-existing defect unrelated to what any model
 // says about measures; none is a mass or normalization diagnostic.
-const KNOWN_ERRORS: Record<string, string[]> = {
-  // Doc-comment style: consecutive single-line `#` comments where the
-  // parser wants one `%%%` block.
-  'joint-obs-regression.flatppl': [
-    'Only one doc-comment may precede a binding (use a `%%%` block for multi-line content)',
-  ],
-  'nested-broadcast.flatppl': [
-    'Only one doc-comment may precede a binding (use a `%%%` block for multi-line content)',
-  ],
-  'random-intercepts.flatppl': [
-    'Only one doc-comment may precede a binding (use a `%%%` block for multi-line content)',
-  ],
-  // Prose in the header comment block parses as bindings.
-  'nested-broadcast-mvnormal-inner.flatppl': [
-    "Expected EQUALS, got IDENT 'lands'",
-    "Expected EQUALS, got NUMBER '5'",
-  ],
-};
+// The map is EMPTY and should stay that way: the last four entries (stacked
+// `%` doc lines, and prose whose `;` ended a `#` line comment and left the
+// rest to parse as a binding) were fixed with the residual `kernelof`
+// boundary-input migration. A new entry needs the same justification the
+// header demands — a defect the fixture cannot yet avoid, never a silencer.
+const KNOWN_ERRORS: Record<string, string[]> = {};
 
 function errorMessagesOf(file: string): string[] {
   const src = fs.readFileSync(path.join(FIXTURES, file), 'utf8');
@@ -76,6 +64,25 @@ for (const file of FIXTURE_FILES) {
     assert.deepEqual(errorMessagesOf(file), expected);
   });
 }
+
+// Spec §11 "Reified callables" admits two spellings for a boundary input: a
+// ref into the ancestor subgraph, or a placeholder within the reified output.
+// A bare unbound name is neither, and `lower.ts` still accepts it as an
+// off-spec shorthand behind an `info` diagnostic. The corpus carries no
+// remaining instance, so pin that — a new fixture must not reintroduce one.
+test('no fixture spells a kernel boundary input as a bare unbound name', () => {
+  const offenders: string[] = [];
+  for (const file of FIXTURE_FILES) {
+    const src = fs.readFileSync(path.join(FIXTURES, file), 'utf8');
+    const { diagnostics } = processSource(src);
+    for (const d of diagnostics || []) {
+      if (/Bare-name boundary input/.test(String(d.message))) {
+        offenders.push(`${file}: ${d.message}`);
+      }
+    }
+  }
+  assert.deepEqual(offenders, []);
+});
 
 test('every KNOWN_ERRORS entry names a fixture that still exists', () => {
   for (const file of Object.keys(KNOWN_ERRORS)) {

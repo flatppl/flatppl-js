@@ -31,16 +31,20 @@ visit_means = [10.0, 20.0, 30.0, 40.0]
 % Per-patient noise scales.
 sigmas_per_patient = [0.5, 1.0, 1.5]
 
-% Inner observation kernel — `inlineOnce` collapses this into the
-% inner broadcast's bare-dist head at lift time.
-obs_kernel = functionof(Normal(mu = mu, sigma = sigma),
-                        mu = mu, sigma = sigma)
+%%%
+Inner observation kernel — `inlineOnce` collapses this into the
+inner broadcast's bare-dist head at lift time.
+%%%
+obs_kernel = functionof(Normal(mu = _mu_, sigma = _sigma_),
+                        mu = _mu_, sigma = _sigma_)
 
-% Per-patient outer kernel: broadcast obs_kernel over visit_means
-% with sigma_g (the patient's sigma) modulating the noise scale.
+%%%
+Per-patient outer kernel: broadcast obs_kernel over visit_means
+with sigma_g (the patient's sigma) modulating the noise scale.
+%%%
 patient_kernel = functionof(
-  broadcast(obs_kernel, mu = visit_means, sigma = sigma_g),
-  sigma_g = sigma_g)
+  broadcast(obs_kernel, mu = visit_means, sigma = _sigma_g_),
+  sigma_g = _sigma_g_)
 
 % Kernel-broadcast over per-patient sigmas.
 y = broadcast(patient_kernel, sigma_g = sigmas_per_patient)
