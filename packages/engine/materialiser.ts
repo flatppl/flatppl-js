@@ -526,35 +526,93 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any) {
   });
 }
 
-// Per-atom `log Ẑ(θ_i)` for a `normalize` whose inner measure is the
-// θ-dependent `weighted(f, Lebesgue(box))` shape, or null for every other
-// shape.
+// Is the weight slot of a `weighted`/`logweighted` node a function of a LATENT
+// (rather than of the variate alone, a constant, or a called function)? Reuses
+// crn-normalize's test verbatim, so the two mass routes cannot drift on what
+// "θ-dependent" means — in particular on a REIFIED weight, whose boundary
+// binding names live in `self` and look latent until the parameters come out.
+function _weightIsThetaDependent(inner: any, ctx: any): boolean {
+  const { crnWeightIsThetaDependent } = require('./crn-normalize.ts');
+  const w = inner.args[0];
+  const isFn = w.kind === 'call' && w.op === 'functionof' && Array.isArray(w.params);
+  return crnWeightIsThetaDependent(
+    { weightParams: isFn ? w.params : [], weightBody: isFn ? w.body : w, axes: [] }, ctx);
+}
+
+// IR expression for the per-atom mass Z(θ_i) of a `normalize`, or null when the
+// pooled divisor is already right for the shape. THROWS when the mass moves
+// with a latent and no expression is available — see the refusal below.
 //
-// WHY THE SAMPLER NEEDS IT. `matNormalize` divides the parent's weights by
-// their POOLED sum, which is the parent's mass averaged over the atom
-// ensemble. When f references a latent, the parent's mass is Z(θ_i) — a
-// DIFFERENT number per atom — and a pooled divisor leaves the residue
-// Z(θ_i)/E[Z] on atom i. Spec §06 makes `normalize(M)` a probability measure
-// for each θ, so the θ-marginal of the sampled joint must be the prior
-// untouched; the residue tilts it towards large-Z θ instead. Measured on
-// `theta ~ Uniform(interval(0, 4))`, `f = exp(theta * x)` over [0,1]: the
-// pooled divisor gives E[θ] = 2.809 against the prior's 2.0, matching the
-// Z-tilted quadrature 2.8073 rather than the correct one.
-//
-// The expression comes from `crn-normalize.ts`, the same builder both density
-// routes use, and its point set is seeded from the box axes alone — so the
-// divisor here is BIT-IDENTICAL to the one `logdensityof` subtracts, which is
-// what makes the two routes score one measure.
-// An expansion failure is NOT caught: falling back would silently reinstate the
-// pooled divisor, which is the wrong number this path exists to remove.
-function _crnPerAtomLogMass(name: string, ctx: any, N: number): Promise<Float64Array | null> {
+// Two expression sources, both shared with the density routes so the sampler
+// divides by the number `logdensityof` subtracts:
+//   • crn-normalize's fixed-sample Ẑ(θ) for `weighted(f, Lebesgue(box))`.
+//   • normalize-mass's `totalMassExpr` for a scalar mass factor over a
+//     probability leaf — Z(θ) = w(θ) · 1, algebraic and exact.
+function _perAtomMassExpr(name: string, ctx: any): any | null {
   const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
+  const { totalMassExpr } = require('./normalize-mass.ts');
   const { expandMeasureIR } = require('./derivations.ts');
   const ir = expandMeasureIR(name, ctx.derivations, new Set(), ctx.bindings);
   const shape = crnRecognize(ir);
-  if (!shape || !crnWeightIsThetaDependent(shape, ctx)) return Promise.resolve(null);
-  // null here is the node-budget refusal, which crn-normalize.ts warns about.
-  const expr = crnNormalizeMassExpr(ir, { points: ctx.crnNormalizePoints });
+  if (shape && crnWeightIsThetaDependent(shape, ctx)) {
+    // null here is the node-budget refusal, which crn-normalize.ts warns about.
+    return crnNormalizeMassExpr(ir, { points: ctx.crnNormalizePoints });
+  }
+  if (!ir || ir.kind !== 'call' || ir.op !== 'normalize'
+      || !Array.isArray(ir.args) || ir.args.length !== 1) return null;
+  const inner = ir.args[0];
+  if (!inner || inner.kind !== 'call'
+      || (inner.op !== 'weighted' && inner.op !== 'logweighted')
+      || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
+  if (!_weightIsThetaDependent(inner, ctx)) return null;
+  const expr = totalMassExpr(inner);
+  if (expr != null) return expr;
+  // A θ-dependent mass with no expression to divide by. The pooled divisor
+  // would return a measure whose θ-marginal is the prior TILTED by Z(θ), and
+  // spec §06 `normalize`: "given a measure M with finite total mass
+  // Z = totalmass(M) > 0, returns the probability measure M / Z … On a
+  // non-nullary kernel, normalizes the output measures" — each θ-slice is a
+  // probability measure, so the θ-marginal of the sampled joint is the prior
+  // unchanged. Refuse rather than hand back the tilt: the caller can see a
+  // refusal, and cannot see a wrong ensemble.
+  throw new Error('normalize(' + name + '): the total mass of the inner measure moves '
+    + 'with a latent, and this engine has no per-θ expression for it (its mass is '
+    + 'neither a scalar factor over a probability measure nor an integral over a '
+    + 'Lebesgue box). Sampling it against the POOLED mass would return the prior '
+    + 'tilted by Z(θ); spec §06 normalize makes each θ-slice a probability measure, '
+    + 'so refusing instead. Rewrite the measure so its mass is closed-form in the '
+    + 'latent, or score it with logdensityof rather than sampling it.');
+}
+
+// Per-atom `log Z(θ_i)` for a `normalize` whose inner measure's mass moves with
+// a latent, or null when the pooled divisor is already right for the shape.
+//
+// WHY THE SAMPLER NEEDS IT. `matNormalize` divides the parent's weights by
+// their POOLED sum, which is the parent's mass averaged over the atom
+// ensemble. When the weight references a latent, the parent's mass is Z(θ_i) —
+// a DIFFERENT number per atom — and a pooled divisor leaves the residue
+// Z(θ_i)/E[Z] on atom i. Spec §06 makes `normalize(M)` a probability measure
+// for each θ, so the θ-marginal of the sampled joint must be the prior
+// untouched; the residue tilts it towards large-Z θ instead. Two measured
+// witnesses, each against a closed-form prior mean:
+//   • `f = exp(theta * x)` over [0,1], θ ~ Uniform(0, 4): E[θ] was 2.809
+//     against the prior's 2.0, matching the Z-tilted quadrature 2.8073.
+//   • `weighted(theta, Normal(0, 1))`, θ ~ Uniform(1, 5): E[θ] was 3.4464
+//     against the prior's 3.0, matching the Z-tilted E[θ²]/E[θ] = 3.4444.
+//
+// The expressions come from `crn-normalize.ts` and `normalize-mass.ts`, the
+// same two builders the density routes use — so the divisor here is the one
+// `logdensityof` subtracts, which is what makes the two routes score one
+// measure.
+// An expansion failure is NOT caught: falling back would silently reinstate the
+// pooled divisor, which is the wrong number this path exists to remove.
+function _perAtomLogMass(name: string, ctx: any, N: number): Promise<Float64Array | null> {
+  let expr: any = null;
+  try {
+    expr = _perAtomMassExpr(name, ctx);
+  } catch (e) {
+    return Promise.reject(e);
+  }
   if (expr == null) return Promise.resolve(null);
   return collectRefArrays(expr, ctx)
     .then((refArrays: any) => ctx.sendWorker({ type: 'evaluateN', ir: expr, count: N, refArrays }))
@@ -594,21 +652,31 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
             for (let i = 0; i < N; i++) a[i] = c;
             return a;
           })();
-      const lse = empirical.logSumExp(baseLW);
-      const w = new Float64Array(N);
-      for (let i = 0; i < N; i++) w[i] = baseLW[i] - lse;
-      const out = isRecord
-        ? Object.assign(empirical.recordMeasure(parent.fields, w),
-            { logTotalmass: 0,
-              n_eff: (typeof parent.n_eff === 'number' ? parent.n_eff : N) })
-        : Object.assign(empirical.tupleMeasure(parent.elems, w),
-            { logTotalmass: 0,
-              n_eff: (typeof parent.n_eff === 'number' ? parent.n_eff : N) });
-      return out;
+      // The structured branch takes the same per-atom divisor as the scalar
+      // one: a record variate does not make the parent's mass constant, and
+      // `weighted(theta, joint(a = …, b = …))` tilted E[θ] to the identical
+      // 3.4464 the scalar witness produced.
+      return _perAtomLogMass(name, ctx, N).then((perAtomLogZ: Float64Array | null) => {
+        const w = new Float64Array(N);
+        for (let i = 0; i < N; i++) {
+          w[i] = perAtomLogZ ? baseLW[i] - perAtomLogZ[i] : baseLW[i];
+        }
+        const lse = empirical.logSumExp(w);
+        for (let i = 0; i < N; i++) w[i] -= lse;
+        // From the OUTPUT weights, as the scalar branch does: the per-atom
+        // divisor changes them, so the parent's own n_eff no longer describes
+        // this ensemble.
+        const nEff = empirical.effectiveSampleSize({ logWeights: w });
+        return isRecord
+          ? Object.assign(empirical.recordMeasure(parent.fields, w),
+              { logTotalmass: 0, n_eff: nEff })
+          : Object.assign(empirical.tupleMeasure(parent.elems, w),
+              { logTotalmass: 0, n_eff: nEff });
+      });
     }
     const lifted = empirical.materialiseUniform(parent);
     const N = lifted.logWeights.length;
-    return _crnPerAtomLogMass(name, ctx, N).then((perAtomLogZ: Float64Array | null) => {
+    return _perAtomLogMass(name, ctx, N).then((perAtomLogZ: Float64Array | null) => {
       const w = new Float64Array(N);
       // Divide by the per-atom mass FIRST when there is one, then renormalise:
       // the remaining pooled shift is the θ-independent constant that turns the

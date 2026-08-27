@@ -38,6 +38,26 @@ function totalMassExpr(ir: any): any {
     }
     return acc;
   }
+  // joint(M₁, …) is the INDEPENDENT PRODUCT (§06 "Joint composition":
+  // "(M1⊗M2)(A×B) = M1(A)·M2(B)"), so its mass is ∏ᵢ mass(Mᵢ) — 1 for a joint
+  // of probability measures. Without this arm a `weighted(theta, joint(…))`
+  // had no expression at all and fell to the θ-CONSTANT materialised bake,
+  // which mis-scores every θ but the materialised one and (on the sampling
+  // side) tilted E[θ] to 3.4464 against a prior mean of 3.0.
+  if (op === 'joint') {
+    // Keyword form carries `fields: [{name, value}]`, positional form `args`.
+    const parts: any[] = Array.isArray(ir.fields)
+      ? ir.fields.map((f: any) => f.value) : ir.args;
+    /* c8 ignore next -- defensive: a `joint` node always carries one of the two */
+    if (!Array.isArray(parts) || parts.length === 0) return null;
+    let acc: any = null;
+    for (const p of parts) {
+      const m = totalMassExpr(p);
+      if (m == null) return null;
+      acc = (acc == null) ? m : { kind: 'call', op: 'mul', args: [acc, m] };
+    }
+    return acc;
+  }
   if (op === 'weighted' && Array.isArray(ir.args) && ir.args.length === 2) {
     // A function-of-variate weight (`weighted(x -> w(x), M)`, spec §06 — the
     // §12 generic-density idiom; derivations.ts's expandMeasureIR rewraps a
