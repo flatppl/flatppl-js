@@ -1002,6 +1002,53 @@ function _subtreeRefNames(ir: any): Set<string> {
   return names;
 }
 
+// Numeric cell shape of one per-atom result, or null when it is not a
+// numeric cell at all. A bare JS/typed array is a rank-1 cell; a Value
+// carries its own shape, so a rank-2 result stays rank-2.
+//
+// A complex Value carries its imaginary part out of band, so packing only
+// `.data` would drop it silently — refuse and leave it to the caller.
+function _cellShapeOf(s: any) {
+  if (Array.isArray(s) || (s && s.BYTES_PER_ELEMENT !== undefined)) return [s.length];
+  if (valueLib.isValue(s) && s.shape.length >= 1 && s.dtype !== 'complex') return s.shape;
+  return null;
+}
+
+// Pack N per-atom results that all carry the SAME numeric cell shape into
+// one atom-major Value shape=[N, ...cell]; return null when they do not, so
+// the caller can surface the raw per-atom array instead.
+//
+// The cell keeps its own rank: a rank-1 result packs to [N, k] and a rank-2
+// one to [N, r, c] — the shape the vector-atom callers already read
+// (worker.ts `evaluateN` splits `shape.slice(1)` off as `dims`).
+function _packUniformCells(out: any[], N: any) {
+  const cell0 = _cellShapeOf(out[0]);
+  if (cell0 === null) return null;
+  const cellLen = cell0.reduce((a: any, b: any) => a * b, 1);
+  if (cellLen === 0) return null;
+  for (let i = 0; i < N; i++) {
+    const s = out[i];
+    const cell = _cellShapeOf(s);
+    if (cell === null || cell.length !== cell0.length) return null;
+    for (let d = 0; d < cell0.length; d++) {
+      if (cell[d] !== cell0[d]) return null;
+    }
+    const src = valueLib.isValue(s) ? s.data : s;
+    for (let j = 0; j < cellLen; j++) {
+      const e = src[j];
+      if (typeof e !== 'number' && typeof e !== 'boolean') return null;
+    }
+  }
+  const data = new Float64Array(N * cellLen);
+  for (let i = 0; i < N; i++) {
+    const s = out[i];
+    const src = valueLib.isValue(s) ? s.data : s;
+    const base = i * cellLen;
+    for (let j = 0; j < cellLen; j++) data[base + j] = +src[j];
+  }
+  return { shape: [N, ...cell0], data };
+}
+
 function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
   const refNames = refArrays ? Object.keys(refArrays) : [];
   const overlayKeys = overlay ? Object.keys(overlay) : null;
@@ -1134,50 +1181,11 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
     for (let i = 0; i < N; i++) { re[i] = out[i].re; im[i] = out[i].im; }
     return valueLib.complexValue(re, im, [N]);
   }
-  // Per-atom uniform-length numeric array outputs (e.g.
-  // softmax / l1unit / l2unit / logsoftmax on per-atom inputs) pack
-  // atom-major into a Value shape=[N, k]. Detect uniform shape across
-  // atoms; non-uniform results stay as a JS array of per-atom values
-  // (the caller chooses how to surface them).
-  let allUniformArrays = true;
-  const sample0 = out[0];
-  let k0 = 0;
-  if (Array.isArray(sample0) || (sample0 && sample0.BYTES_PER_ELEMENT !== undefined)) {
-    k0 = sample0.length;
-  } else if (valueLib.isValue(sample0) && sample0.shape.length === 1) {
-    k0 = sample0.shape[0];
-  } else {
-    allUniformArrays = false;
-  }
-  for (let i = 0; allUniformArrays && i < N; i++) {
-    const s = out[i];
-    let len;
-    if (Array.isArray(s) || (s && s.BYTES_PER_ELEMENT !== undefined)) {
-      len = s.length;
-    } else if (valueLib.isValue(s) && s.shape.length === 1) {
-      len = s.shape[0];
-    } else {
-      allUniformArrays = false; break;
-    }
-    if (len !== k0) { allUniformArrays = false; break; }
-    // Also require numeric entries throughout.
-    for (let j = 0; allUniformArrays && j < k0; j++) {
-      const e = valueLib.isValue(s) ? s.data[j] : s[j];
-      if (typeof e !== 'number' && typeof e !== 'boolean') {
-        allUniformArrays = false; break;
-      }
-    }
-  }
-  if (allUniformArrays && k0 > 0) {
-    const data = new Float64Array(N * k0);
-    for (let i = 0; i < N; i++) {
-      const s = out[i];
-      const src = valueLib.isValue(s) ? s.data : s;
-      const base = i * k0;
-      for (let j = 0; j < k0; j++) data[base + j] = +src[j];
-    }
-    return { shape: [N, k0], data };
-  }
+  // Per-atom uniform-shape numeric cell outputs (e.g. softmax / l1unit /
+  // l2unit / logsoftmax on per-atom inputs, or `broadcast(exp, ·)` over a
+  // matrix atom) pack atom-major into a Value shape=[N, ...cell].
+  const packed = _packUniformCells(out, N);
+  if (packed !== null) return packed;
   return out;
 }
 
@@ -1186,6 +1194,7 @@ module.exports = {
   _evalN,
   _batchedApproximation,
   _perAtomFallback,
+  _packUniformCells,
   ARITH_OPS_N,
   isBatch,
   initARITHOPSN,
