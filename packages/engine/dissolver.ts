@@ -40,6 +40,7 @@
 // runtime path handles the residual cases unchanged.
 
 const collectionDomain = require('./collection-domain-heads.ts');
+const { MEASURE_PRODUCING, DISTRIBUTIONS } = require('./builtins.ts');
 
 // ---------------------------------------------------------------------
 // Dissolve-safe op set
@@ -1814,18 +1815,28 @@ function _tryDissolveKernelBroadcast(bcIR: any, bindings: any): any | null {
   if (!kBinding || !kBinding.ir) return null;
   const kIR = kBinding.ir;
 
-  // Binding's IR must be `functionof(lawof(<DistCall>), params=…)`.
-  // (kernelof lowers to this form per lower.ts:733.) functionof's
-  // body is the measure expression; for fusion (b) MVP we only
-  // recognise `lawof(<single_dist_call>)`.
+  // Binding's IR must be a `functionof` over a single dist call. Two
+  // surfaces reach here and denote the same kernel, so both must fuse:
+  //   - `functionof(<DistCall>, kw)` — the spec-legal spelling for a
+  //     measure body (§04 §sec:functionof-measure).
+  //   - `functionof(lawof(<DistCall>), kw)` — a `kernelof` over a VALUE,
+  //     which lower.ts wraps in `lawof` (§04 §sec:kernelof).
+  // Peeling an optional `lawof` is the same normalisation
+  // `kernel-broadcast-shape._peelKernelBody` and
+  // `lift.tryFuseBroadcastOfBroadcast` already apply. Requiring the wrapper
+  // dropped the legal spelling off the fusion path and onto a per-atom
+  // `evaluate`.
   if (kIR.kind !== 'call' || kIR.op !== 'functionof') return null;
   const params: string[] = Array.isArray(kIR.params) ? kIR.params : [];
   const paramKwargs: string[] = Array.isArray(kIR.paramKwargs) ? kIR.paramKwargs : params;
   if (params.length === 0) return null;
-  const kBody = kIR.body;
-  if (!kBody || kBody.kind !== 'call' || kBody.op !== 'lawof') return null;
-  if (!Array.isArray(kBody.args) || kBody.args.length !== 1) return null;
-  const distCall = kBody.args[0];
+  let kBody = kIR.body;
+  if (!kBody || kBody.kind !== 'call') return null;
+  if (kBody.op === 'lawof') {
+    if (!Array.isArray(kBody.args) || kBody.args.length !== 1) return null;
+    kBody = kBody.args[0];
+  }
+  const distCall = kBody;
   if (!distCall || distCall.kind !== 'call' || typeof distCall.op !== 'string') {
     return null;
   }
@@ -2103,8 +2114,39 @@ function _isKernelHead(head: any, bindings: any): boolean {
   // already inlines `functionof` bodies, so a function head wouldn't
   // appear in a kernel-broadcast pattern.
   const t = b.inferredType;
-  if (!t) return false;
-  return t.kind === 'kernel';
+  if (t && t.kind === 'kernel') return true;
+  return _irBodyIsMeasureValued(b.ir, bindings);
+}
+
+// Structural fallback for `_isKernelHead`: is this binding's IR a
+// `functionof` over a measure-valued body — a kernel per §04
+// §sec:functionof-measure?
+//
+// typeinfer has no `broadcast` rule, so `functionof(broadcast(<Dist>, kw), kw)`
+// — the spec-legal spelling — types as a FUNCTION, and only the `lawof`
+// wrapper a `kernelof` adds coerced the deferred body to a measure. Reading
+// the IR instead makes the two spellings agree, using the same broadcast-is-
+// dual rule as `analyzer.isMeasureExpr`.
+function _irBodyIsMeasureValued(ir: any, bindings: any): boolean {
+  if (!ir || ir.kind !== 'call' || ir.op !== 'functionof') return false;
+  let body = ir.body;
+  if (!body || body.kind !== 'call') return false;
+  if (body.op === 'lawof') {
+    body = (body.args && body.args[0]) || null;
+    if (!body || body.kind !== 'call') return false;
+  }
+  if (MEASURE_PRODUCING.has(body.op)) return true;
+  // §04 "Stochastic broadcast": `broadcast(K, …)` over a distribution or
+  // kernel is a measure; over a value function it is an array value.
+  if (body.op === 'broadcast') {
+    const head = body.args && body.args[0];
+    if (!head || head.kind !== 'ref') return false;
+    if (!bindings || !bindings.get) return false;
+    const hb = bindings.get(head.name);
+    if (!hb) return DISTRIBUTIONS.has(head.name);
+    return _irBodyIsMeasureValued(hb.ir, bindings);
+  }
+  return false;
 }
 
 function _argSizeIdentifier(arg: any, bindings: any): number | string {

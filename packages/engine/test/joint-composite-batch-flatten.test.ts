@@ -5,7 +5,7 @@
 // =====================================================================
 //
 //   a_means = [1, 2, 3];  b_rates = [0.5, 1, 2]
-//   obs_kernel = kernelof(joint(a = Normal(mu = am, sigma = 1),
+//   obs_kernel = functionof(joint(a = Normal(mu = am, sigma = 1),
 //                               b = Exponential(rate = br)), am = am, br = br)
 //   y = broadcast(obs_kernel, am = a_means, br = b_rates)
 //
@@ -33,7 +33,7 @@ const { createWorkerHandler } = require('../worker.ts');
 const SRC = `flatppl_compat = "0.1"
 a_means = [1.0, 2.0, 3.0]
 b_rates = [0.5, 1.0, 2.0]
-obs_kernel = kernelof(joint(a = Normal(mu = am, sigma = 1.0), b = Exponential(rate = br)), am = am, br = br)
+obs_kernel = functionof(joint(a = Normal(mu = am, sigma = 1.0), b = Exponential(rate = br)), am = am, br = br)
 y = broadcast(obs_kernel, am = a_means, br = b_rates)`;
 
 test('joint fold: y calibrates per cell to (Normal a, Exponential b) at shape [N,3,2]', async () => {

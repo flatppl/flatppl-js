@@ -7,7 +7,7 @@ repeated obs). Each of G groups has its own latent mean `mu_g`
 drawn from a hyperprior; conditional on `mu_g`, the group produces
 `N_per_group` iid Normal observations sharing a global sigma.
 
-The forward model is `kernelof(iid(Normal(mu, sigma), N_per_group),
+The forward model is `functionof(iid(Normal(mu, sigma), N_per_group),
 mu)` — a kernel whose body is an iid measure. Broadcasting that
 kernel over the per-group `mu_g` values yields a [G, N_per_group]
 observation matrix.
@@ -27,8 +27,8 @@ mu_g ~ iid(Normal(0, 10), G)
 sigma_g ~ normalize(truncate(Normal(0, 1), interval(0, inf)))
 
 % Per-group obs kernel — kwarg-form placeholder, engine canonical.
-group_kernel = kernelof(iid(Normal(mu = mu, sigma = sigma_g), N_per_group),
-                        mu = mu)
+group_kernel = functionof(iid(Normal(mu = mu, sigma = sigma_g), N_per_group),
+                          mu = mu)
 
 % Broadcast over each group's mu — yields a [G, N_per_group] obs matrix.
 obs = broadcast(group_kernel, mu = mu_g)

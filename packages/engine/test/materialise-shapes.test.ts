@@ -623,7 +623,7 @@ test('materialise: bayesupdate posterior — does not crash with undefined', asy
   const { ctx } = makeMatCtx(`
 prior = Normal(mu = 0, sigma = 2)
 obs = 1.5
-K = kernelof(Normal(mu = _mu_, sigma = 0.5), mu = _mu_)
+K = functionof(Normal(mu = _mu_, sigma = 0.5), mu = _mu_)
 L = likelihoodof(K, obs)
 posterior = bayesupdate(L, prior)
 `);

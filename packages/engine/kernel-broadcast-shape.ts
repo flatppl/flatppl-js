@@ -647,7 +647,10 @@ function detectJointChainKernelBinding(
       });
     } else {
       // Kernel step: dep must be a kernel binding with single param,
-      // body lawof(<sampleable DistCall>).
+      // body a sampleable DistCall under an optional `lawof` — the same
+      // two-spelling peel `_peelKernelBody` applies to the outer body.
+      // `functionof(<Dist>, kw)` is the spec-legal spelling for a measure
+      // body (§04 §sec:functionof-measure) and carries no `lawof`.
       const stepIR = dep.ir;
       if (stepIR.kind !== 'call' || stepIR.op !== 'functionof') return null;
       const stepParams: string[] = Array.isArray(stepIR.params)
@@ -655,10 +658,7 @@ function detectJointChainKernelBinding(
       // MVP: single-input kernels only (the canonical prev-variate
       // form). Multi-input kernels defer.
       if (stepParams.length !== 1) return null;
-      const stepBody = stepIR.body;
-      if (!stepBody || stepBody.kind !== 'call'
-          || stepBody.op !== 'lawof') return null;
-      const stepDist = stepBody.args && stepBody.args[0];
+      const stepDist = _peelKernelBody(stepIR.body);
       if (!stepDist || stepDist.kind !== 'call' || !stepDist.op) return null;
       if (!SAMPLEABLE || !SAMPLEABLE.has(stepDist.op)) return null;
       const distParams = lookupDistParams(stepDist.op);
