@@ -188,10 +188,10 @@ test('reader: a FILLED %autoinputs list is inference metadata — parsed and dro
 // ---------------------------------------------------------------------
 
 test('reader: kernelof desugars to functionof(lawof(output)) on ingest', () => {
-  // Matches flatppl-rust reified.flatpir's `kernel` binding. JS never
-  // emits kernelof (lower.ts canonicalises at the surface); rust-emitted
-  // FlatPIR contains it, so the reader applies the same §04 rule —
-  // post-read modules carry one uniform reification form.
+  // Matches flatppl-rust reified.flatpir's `kernel` binding. The desugaring
+  // is engine-internal only: `wasKernelof` carries the spec head through to
+  // the writer, so post-read modules carry one uniform reification form
+  // without losing the surface op.
   const text = `
 (%module
   (%bind kernel
@@ -222,6 +222,35 @@ test('reader: kernelof with %specinputs restores boundaries + lawof-wraps', () =
   assert.equal(k.body.op, 'lawof');
   assert.deepEqual(k.paramKwargs, ['theta']);
   assert.deepEqual(k.paramSources, [{ kind: 'binding', name: 'theta' }]);
+});
+
+// `kernelof` is its own FlatPIR head (spec §11 "Reified callables"), and §11
+// "Normalization" licenses only keyword reordering — so the internal
+// functionof∘lawof desugaring must not reach the wire. §11 also requires
+// %specinputs entries to restore as boundary keyword arguments when FlatPIR
+// converts back to FlatPPL, which the desugared form cannot do.
+
+test('writer: a kernelof binding emits the kernelof head, not functionof(lawof(…))', () => {
+  const mod = buildModule([
+    'flatppl_compat = "0.1"',
+    'sigma = 1.0',
+    'k = kernelof(Normal(mu = _p_, sigma = sigma), p = _p_)',
+  ].join('\n'));
+  const out = pirSexpr.toSexpr(mod);
+  assert.match(normWs(out), /\(kernelof \(Normal[^)]*\)[\s\S]*%specinputs \(\(p \(%ref %local _p_\)\)\)\)/);
+  assert.ok(!/functionof \(lawof/.test(normWs(out)),
+    'the internal desugaring must not reach the wire');
+});
+
+test('round-trip: a kernelof form survives write → read → write', () => {
+  const text = '(%module\n'
+    + '  (%bind k\n'
+    + '    (kernelof (Normal (%kwarg mu (%ref %local _p_)) (%kwarg sigma 1.0))\n'
+    + '      %specinputs ((p (%ref %local _p_))))))\n';
+  const { module: mod, diagnostics } = pirSexpr.fromSexpr(text);
+  assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const collapse = (s: string) => normWs(s).replace(/\s+\)/g, ')');
+  assert.equal(collapse(pirSexpr.toSexpr(mod)), collapse(text));
 });
 
 // ---------------------------------------------------------------------
