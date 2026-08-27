@@ -230,6 +230,14 @@ function inferSyntheticType(astNode: any) {
 // substitutions from identifier substitutions of the same name.
 const PLACEHOLDER_SUB_PREFIX = '@placeholder:';
 
+// Square matrix ops whose ARGUMENT shape certifies the result is square, so
+// the affine lifts can discover D from the argument when the op's own result
+// type is %dynamic. ONLY genuinely shape-preserving ops belong here. NOT
+// `transpose`/`adjoint`: those swap dims, so a `transpose([3,2])` is `[2,3]`.
+// A square transpose still routes via a concrete-[D,D] inferredType instead.
+const SHAPE_PRESERVING_SQUARE_OPS = new Set([
+  'lower_cholesky', 'cholesky', 'inv']);
+
 /**
  * Canonicalise no-kwargs functionof / kernelof to explicit-kwargs
  * form before any downstream consumer touches the AST or its
@@ -885,6 +893,11 @@ function liftInlineSubexpressions(bindings: any) {
       // structure. Only the f-position lift remains — inline
       // fn / functionof shapes get hoisted to anon bindings so the
       // classifier sees a clean self-ref.
+      // The explicit matrix-vector affine spelling `pushfwd(x -> L * x + b,
+      // iid(…, D))` routes to the affine registry, per spec §06's
+      // known-bijection list. Must run BEFORE inlinePushfwdLift, which
+      // hoists the f-position functionof to an anon binding.
+      astArg = inlinePushfwdAffineLift(astArg);
       astArg = inlinePushfwdLift(astArg);
       astArg = inlineBijectionLift(astArg);
       // Phase 5.1 Session 5e — lower MvNormal CallExpr to the
@@ -1317,6 +1330,89 @@ function liftInlineSubexpressions(bindings: any) {
   }
 
   /**
+   * Static event dim D of an affine map's [D,D] scale matrix, or null when it
+   * is not statically known. A literal / ref-to-literal matrix resolves via
+   * `__discoveredMvNormalD`; a named shape-preserving square op like
+   * `Lc = lower_cholesky(cov)` has a %dynamic result type, so D comes from
+   * the op's (concrete-shape) argument instead.
+   *
+   * Shared by the `locscale` and `pushfwd` affine lifts — one discovery rule
+   * so both spellings route on identical static evidence.
+   */
+  function __affineScaleD(e: any): number | null {
+    const direct = __discoveredMvNormalD(e, out, 2);
+    if (direct != null) return direct;
+    if (e && e.type === 'Identifier') {
+      const b = out.get(e.name);
+      const rhs = b && b.node && b.node.value;
+      if (rhs && rhs.type === 'CallExpr' && rhs.callee
+          && rhs.callee.type === 'Identifier'
+          && SHAPE_PRESERVING_SQUARE_OPS.has(rhs.callee.name)
+          && Array.isArray(rhs.args) && rhs.args.length >= 1) {
+        return __discoveredMvNormalD(rhs.args[0], out, 2);
+      }
+    }
+    return null;
+  }
+
+  /**
+   * Static iid count of an affine pushforward's base — `iid(<dist>, K)` with
+   * a NumberLiteral size, or a ref chain to such. Null when K is not
+   * statically an integer, in which case the caller routes on the scale
+   * shape alone and the count reconciles at materialise time.
+   */
+  function __affineBaseIidCount(e: any): number | null {
+    if (!e) return null;
+    if (e.type === 'CallExpr' && e.callee && e.callee.type === 'Identifier'
+        && e.callee.name === 'iid' && Array.isArray(e.args)) {
+      const positional = e.args.filter((a: any) => !(a && a.type === 'KeywordArg'));
+      const sizeArg = positional[1];
+      if (sizeArg && sizeArg.type === 'NumberLiteral'
+          && Number.isInteger(sizeArg.value)) {
+        return sizeArg.value;
+      }
+      return null;
+    }
+    if (e.type === 'Identifier') {
+      const b = out.get(e.name);
+      const rhs = b && b.node && b.node.value;
+      if (rhs) return __affineBaseIidCount(rhs);
+    }
+    /* c8 ignore start */
+    // Defensive tail: both callers gate on the base being an iid call or a
+    // ref chain to one (locscale through the analyzer pre-pass, pushfwd
+    // through __affineBaseIsIid), both resolved above. This falls through
+    // only for a binding with no node.value.
+    return null;
+    /* c8 ignore stop */
+  }
+
+  /**
+   * True when an affine pushforward's base is structurally an `iid(...)` —
+   * the call itself, or a ref chain to it. The affine registry's density path
+   * requires a base that scores as `iid(<scalar>, D)`, and unlike `locscale`
+   * (whose analyzer pre-pass rejects a non-iid base up front) the explicit
+   * `pushfwd` spelling accepts any measure, so the lift must check here.
+   */
+  function __affineBaseIsIid(e: any): boolean {
+    if (!e) return false;
+    if (e.type === 'CallExpr') {
+      return !!e.callee && e.callee.type === 'Identifier'
+        && e.callee.name === 'iid';
+    }
+    if (e.type === 'Identifier') {
+      const b = out.get(e.name);
+      const rhs = b && b.node && b.node.value;
+      return !!rhs && __affineBaseIsIid(rhs);
+    }
+    /* c8 ignore start */
+    // Defensive tail: a measure-position argument is a call or a ref, both
+    // resolved above.
+    return false;
+    /* c8 ignore stop */
+  }
+
+  /**
    * P3 — lower a surviving non-scalar `locscale(base, shift, scale)` to the
    * canonical affine-registry pushfwd, mirroring `inlineMvNormalLift`. The
    * analyzer pre-pass leaves vector/matrix locscale unexpanded (only iid-base
@@ -1347,44 +1443,10 @@ function liftInlineSubexpressions(bindings: any) {
     if (args.some((a: any) => a && a.type === 'KeywordArg')) return astArg;
     const baseAst = args[0], shiftAst = args[1], scaleAst = args[2];
     // Static shape gate (mirror MvNormal's cov/mu discovery): scale [D,D],
-    // shift [D]. scale is rank-2, shift rank-1.
-    //
-    // The scale can be a literal/ref matrix (handled exactly as MvNormal's
-    // cov) OR a named SHAPE-PRESERVING square matrix op like
-    // `Lc = lower_cholesky(cov)` — the spec's MvNormal idiom. Unlike a cov
-    // literal, lower_cholesky's RESULT type is `array(2,[%dynamic,%dynamic])`
-    // (types.ts SIGNATURE_FACTORIES), so the ref's own inferredType can't
-    // tell us D. For those ops we discover D from the op's ARGUMENT (which
-    // carries a concrete [D,D]) — the op preserves the square shape. This is
-    // the documented adjustment over MvNormal's gate (P3 plan Task 5).
-    //
-    // ONLY genuinely square/shape-preserving factor ops belong here. NOT
-    // `transpose`/`adjoint`: those swap dims, so the op's argument shape does
-    // NOT certify the result is square (a `transpose([3,2])` is `[2,3]`). A
-    // SQUARE transpose still routes fine via the normal concrete-[D,D]
-    // inferredType path below (square-confirm passes); a NON-square transpose
-    // correctly fails square-confirm and falls to the buildDerivations safety
-    // net rather than feeding a non-square matrix to the affine bijection.
-    const SHAPE_PRESERVING_SQUARE_OPS = new Set([
-      'lower_cholesky', 'cholesky', 'inv']);
-    const discoverScaleD = (e: any): number | null => {
-      const direct = __discoveredMvNormalD(e, out, 2);
-      if (direct != null) return direct;
-      // Follow a 1-level ref to a shape-preserving square op and discover D
-      // from its (concrete-shape) argument.
-      if (e && e.type === 'Identifier') {
-        const b = out.get(e.name);
-        const rhs = b && b.node && b.node.value;
-        if (rhs && rhs.type === 'CallExpr' && rhs.callee
-            && rhs.callee.type === 'Identifier'
-            && SHAPE_PRESERVING_SQUARE_OPS.has(rhs.callee.name)
-            && Array.isArray(rhs.args) && rhs.args.length >= 1) {
-          return __discoveredMvNormalD(rhs.args[0], out, 2);
-        }
-      }
-      return null;
-    };
-    const D = discoverScaleD(scaleAst);
+    // shift [D]. A non-square scale, or one whose D cannot be discovered,
+    // falls to the buildDerivations safety net rather than reaching the
+    // affine bijection.
+    const D = __affineScaleD(scaleAst);
     if (D == null || !Number.isInteger(D) || D < 1) return astArg;
     const shiftD = __discoveredMvNormalD(shiftAst, out, 1);
     if (shiftD !== D) return astArg;
@@ -1441,32 +1503,7 @@ function liftInlineSubexpressions(bindings: any) {
     // length-mismatched base reach the registry density (a cryptic
     // "value exhausted"). When K can't be determined statically, route as
     // before.
-    const baseIidCount = (e: any): number | null => {
-      if (!e) return null;
-      if (e.type === 'CallExpr' && e.callee && e.callee.type === 'Identifier'
-          && e.callee.name === 'iid' && Array.isArray(e.args)) {
-        const positional = e.args.filter((a: any) => !(a && a.type === 'KeywordArg'));
-        const sizeArg = positional[1];
-        if (sizeArg && sizeArg.type === 'NumberLiteral'
-            && Number.isInteger(sizeArg.value)) {
-          return sizeArg.value;
-        }
-        return null;
-      }
-      if (e.type === 'Identifier') {
-        const b = out.get(e.name);
-        const rhs = b && b.node && b.node.value;
-        if (rhs) return baseIidCount(rhs);
-      }
-      /* c8 ignore start */
-      // Defensive tail: only an iid-base locscale survives the analyzer
-      // pre-pass to lift, so baseAst is an iid CallExpr or a named ref to one
-      // (both resolved above); this falls through only for a binding with no
-      // node.value, which does not occur for a real iid base.
-      return null;
-      /* c8 ignore stop */
-    };
-    const baseK = baseIidCount(baseAst);
+    const baseK = __affineBaseIidCount(baseAst);
     if (baseK != null && baseK !== D) return astArg;   // → buildDerivations safety net
     // Synthetic bijection stub (identical to MvNormal): fn-hole fwd/inv +
     // scalar-0 log-volume, pre-hoisted to anon bindings so derivations'
@@ -1509,6 +1546,188 @@ function liftInlineSubexpressions(bindings: any) {
     astArg.args = [makeIdent(bijName, astArg.loc), baseRef];
     if (astArg.kwargs) delete astArg.kwargs;
     return astArg;
+  }
+
+  /**
+   * Route the EXPLICIT matrix-vector affine spelling
+   * `pushfwd(x -> L * x + b, iid(<scalar dist>, D))` through the same
+   * affine-registry pushfwd `locscale` and `MvNormal` already lower to.
+   *
+   * Spec §06 "Engine contract for `pushfwd` density evaluation" case 1 lists
+   * "matrix-vector affine maps such as `mu + lower_cholesky(cov) * _`" among
+   * the built-in bijections every conforming engine must recognize by name,
+   * so this spelling owes an analytic density. Recognizing it here also
+   * keeps the sample side on the registry's atom-batched forward, which
+   * consumes the base's `[N, D]` atom batch whole.
+   *
+   * Gate — every condition static, else the call is returned unchanged:
+   *   - f resolves (inline, or through a 1-level named ref) to
+   *     `functionof(<body>, p = <p>)` with exactly one parameter;
+   *   - body is `L * p + b` or `b + L * p`, with `p` the multiplicand's
+   *     RIGHT operand (a matrix-vector product, not `p * L`);
+   *   - L is a square `[D,D]` and b a `[D]` vector, by the same discovery
+   *     locscale's scale and shift use;
+   *   - the base's static iid count, when known, is D.
+   *
+   * A call that fails the gate keeps its plain-pushfwd lowering: sampling
+   * runs f's body over the base atoms, and density reports the §06 case-3
+   * static error unless the user annotated f with `bijection`.
+   */
+  function inlinePushfwdAffineLift(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
+    if (astArg.callee.name !== 'pushfwd') return astArg;
+    const args = astArg.args || [];
+    if (args.length !== 2) return astArg;
+    if (args.some((a: any) => a && a.type === 'KeywordArg')) return astArg;
+    const fAst = args[0], baseAst = args[1];
+    const fn = __resolveFunctionofRef(fAst);
+    if (!fn) return astArg;
+    const affine = __matchAffineBody(fn.body, fn.param);
+    if (!affine) return astArg;
+    const D = __affineScaleD(affine.scaleAst);
+    if (D == null || !Number.isInteger(D) || D < 1) return astArg;
+    if (__discoveredMvNormalD(affine.shiftAst, out, 1) !== D) return astArg;
+    // Square-confirm the scale. __affineScaleD reads only the LEADING dim, so
+    // a [D, k] scale reaches here with D rows and a wrong column count; a
+    // non-endomorphism is not a bijection and must not route. A literal is
+    // confirmed structurally; a named rank-2 ref is confirmed through its
+    // inferredType; a named shape-preserving square op was already confirmed
+    // by __affineScaleD reading the op's concrete-[D,D] argument.
+    const scaleLit = __resolveLiteralArrayRef(affine.scaleAst, out);
+    if (scaleLit) {
+      if (scaleLit.elements.length !== D) return astArg;
+      for (const row of scaleLit.elements) {
+        if (!row || row.type !== 'ArrayLiteral'
+            || row.elements.length !== D) return astArg;
+      }
+    } else if (affine.scaleAst.type === 'Identifier') {
+      const sb = out.get(affine.scaleAst.name);
+      const st = sb && sb.inferredType;
+      const isSquareRefType = st && st.kind === 'array' && st.rank === 2
+        && Number.isInteger(st.shape[1]) && st.shape[1] === D;
+      const rhs = sb && sb.node && sb.node.value;
+      const isSquareOpRef = rhs && rhs.type === 'CallExpr' && rhs.callee
+        && rhs.callee.type === 'Identifier'
+        && SHAPE_PRESERVING_SQUARE_OPS.has(rhs.callee.name);
+      if (!isSquareRefType && !isSquareOpRef) return astArg;
+    /* c8 ignore start */
+    // Defensive: __affineScaleD resolves D only from an ArrayLiteral (which
+    // takes the scaleLit branch) or an Identifier, so a scale of any other
+    // shape — an inline `lower_cholesky(...)` call, say — leaves D null and
+    // returns at the D check above, before this else.
+    } else {
+      return astArg;
+    }
+    /* c8 ignore stop */
+    // The registry's density path scores the base as `iid(<scalar>, D)`, and
+    // the affine map L@x + b needs a length-D variate. Route only an iid
+    // base, and only when its statically-known count is D — a count that
+    // disagrees, or a non-iid base, keeps the plain-pushfwd lowering, which
+    // reports on its own terms instead of being handed a wrong variate.
+    if (!__affineBaseIsIid(baseAst)) return astArg;
+    const baseK = __affineBaseIidCount(baseAst);
+    if (baseK != null && baseK !== D) return astArg;
+    // Synthetic bijection stub + registry marker, identical in shape to the
+    // locscale and MvNormal lowerings: fn-hole forward / inverse and a
+    // scalar-0 log-volume, pre-hoisted so derivations' bijection-construction
+    // loop sees Identifiers.
+    const fwdAnon = freshName();
+    out.set(fwdAnon, makeSyntheticBinding(fwdAnon, makeFnHole(astArg.loc)));
+    const invAnon = freshName();
+    out.set(invAnon, makeSyntheticBinding(invAnon, makeFnHole(astArg.loc)));
+    const bijAst = {
+      type: 'CallExpr',
+      callee: makeIdent('bijection', astArg.loc),
+      args: [
+        makeIdent(fwdAnon, astArg.loc),
+        makeIdent(invAnon, astArg.loc),
+        makeNumLit(0, astArg.loc),
+      ],
+      loc: astArg.loc,
+    };
+    const bijName = freshBijName();
+    const bijBinding = makeSyntheticBinding(bijName, bijAst);
+    // L is the user's own matrix (no lower_cholesky wrap — unlike MvNormal,
+    // which is given cov); b is the shift vector.
+    (bijBinding as any).__pushfwdAffineLowering = {
+      LIR: lowerExpr(cloneAst(affine.scaleAst), liftLowerCtx),
+      bIR: lowerExpr(cloneAst(affine.shiftAst), liftLowerCtx),
+    };
+    out.set(bijName, bijBinding);
+    // The registry density path requires the base to classify as
+    // `iid(<ref-to-scalar-dist>, D)`, so liftMeasure hoists the iid's inner
+    // distribution call to its own anon ref and hands back a bare ref.
+    const baseRef = liftMeasure(baseAst);
+    astArg.args = [makeIdent(bijName, astArg.loc), baseRef];
+    return astArg;
+  }
+
+  /**
+   * Resolve an f-position argument to `{ param, body }` when it is a
+   * single-parameter `functionof(<body>, p = <p>)` — the shape both the
+   * lambda syntax `x -> …` and an explicit `functionof` parse to — either
+   * inline or through a 1-level named ref. Null for anything else.
+   */
+  function __resolveFunctionofRef(ast: any): { param: string; body: any } | null {
+    let e = ast;
+    if (e && e.type === 'Identifier') {
+      const b = out.get(e.name);
+      e = b && b.node && b.node.value;
+    }
+    if (!e || e.type !== 'CallExpr' || !e.callee
+        || e.callee.type !== 'Identifier'
+        || e.callee.name !== 'functionof') return null;
+    const fargs = e.args || [];
+    const positional = fargs.filter((a: any) => !(a && a.type === 'KeywordArg'));
+    const kw = fargs.filter((a: any) => a && a.type === 'KeywordArg');
+    if (positional.length !== 1 || kw.length !== 1) return null;
+    if (!kw[0].name) return null;
+    return { param: kw[0].name, body: positional[0] };
+  }
+
+  /**
+   * Match an affine body `L * p + b` / `b + L * p` over the parameter named
+   * `param`, returning `{ scaleAst, shiftAst }`. The parameter must be the
+   * multiplicand's RIGHT operand: `L * p` is the matrix-vector product the
+   * affine registry implements, while `p * L` is a different map. The
+   * parameter must not appear anywhere else in the body — a second
+   * occurrence makes the map non-affine in p.
+   */
+  function __matchAffineBody(body: any, param: string):
+      { scaleAst: any; shiftAst: any } | null {
+    if (!body || body.type !== 'BinaryExpr' || body.op !== '+') return null;
+    for (const [mulSide, shiftSide] of [
+      [body.left, body.right], [body.right, body.left]] as any[]) {
+      if (!mulSide || mulSide.type !== 'BinaryExpr' || mulSide.op !== '*') continue;
+      if (!__isParamRef(mulSide.right, param)) continue;
+      if (__mentionsParam(mulSide.left, param)) continue;
+      if (__mentionsParam(shiftSide, param)) continue;
+      return { scaleAst: mulSide.left, shiftAst: shiftSide };
+    }
+    return null;
+  }
+
+  // A leaf naming the function's parameter. The lambda surface spells it as
+  // a Placeholder; an explicit `functionof` body may name it as an ordinary
+  // Identifier.
+  function __isParamRef(ast: any, param: string): boolean {
+    return !!ast && (ast.type === 'Placeholder' || ast.type === 'Identifier')
+      && ast.name === param;
+  }
+
+  function __mentionsParam(ast: any, param: string): boolean {
+    let found = false;
+    (function walk(n: any) {
+      if (found || !n || typeof n !== 'object') return;
+      if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+      if (__isParamRef(n, param)) { found = true; return; }
+      for (const k of Object.keys(n)) {
+        if (k === 'loc') continue;
+        walk(n[k]);
+      }
+    })(ast);
+    return found;
   }
 
   /**

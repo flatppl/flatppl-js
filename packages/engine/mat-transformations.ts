@@ -237,9 +237,21 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
     //   - multi param, scalar base    → loud error (no splat source).
     const N = measureN(M);
     const paramBind: Record<string, any> = {};
+    // A VECTOR-atom base (iid(scalar, D), an MvNormal, a pushfwd of either)
+    // must ride as its shape-tagged `[N, D]` Value. Its flat `.samples`
+    // buffer has lost the atom axis, so a shape-sensitive body op sees one
+    // rank-1 `[N*D]` operand where spec §06 wants f applied to each atom —
+    // `L * x` then fails as a `[D,D] × [N*D]` product instead of N
+    // matrix-vector products, and an elementwise op silently reads the
+    // buffer as N scalars and returns NaN past the first N entries.
+    const baseVal = M.value;
+    const vectorAtom = !!baseVal && Array.isArray(baseVal.shape)
+      && baseVal.shape.length >= 2 && baseVal.shape[0] === N;
     if (fnInfo.params.length === 1) {
       const p0 = fnInfo.params[0];
-      if (M.samples) {
+      if (vectorAtom) {
+        paramBind[p0] = baseVal;
+      } else if (M.samples) {
         paramBind[p0] = M.samples;
       } else if (M.fields) {
         paramBind[p0] = measureToPerAtomRecords(M, p0, 'pushfwd');
@@ -288,7 +300,23 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
       ir: body,
       count: N,
       refArrays: Object.assign({}, bodyRefs, paramBind),
-    })).then((reply: any) => {
+    })).catch((err: any) => {
+      // Over a vector-atom base the batched evaluator covers the
+      // shape-aware ops (matrix-vector products, atom-broadcast add / sub);
+      // an ELEMENTWISE scalar primitive over a whole D-vector atom is not
+      // wired there yet and fails with a shape complaint from deep inside.
+      // Name the situation instead, and name what does work — silently
+      // reading the flat atom buffer as N scalars, which is what this used
+      // to do, produced NaNs.
+      if (!vectorAtom) return Promise.reject(err);
+      return Promise.reject(new Error(`pushfwd: function '${d.fnRef}' over the `
+        + `vector-valued variate of '${d.from}' (${N} atoms of `
+        + `${baseVal.shape.slice(1).join('×')}) is not supported by this `
+        + `engine's batched evaluator: ${err.message}. A matrix-vector `
+        + `affine map (\`L * x + b\`) scores and samples analytically via `
+        + `spec §06's bijection registry; an elementwise map over a vector `
+        + `variate is not yet wired here.`));
+    }).then((reply: any) => {
       return measureFromReply(reply, N, {
         logWeights: M.logWeights,
         logTotalmass: M.logTotalmass,
