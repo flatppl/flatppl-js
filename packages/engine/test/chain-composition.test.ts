@@ -180,16 +180,21 @@ test('inferChainComposition: closed-first jointchain ⇒ measure of retained rec
   assert.deepEqual(r.resultType.domain.fields.k, T.INTEGER);
 });
 
-test('inferChainComposition: positional jointchain ⇒ measure of tuple variate', () => {
-  // Positional form (no labels) yields a tuple variate (the spec's
-  // `cat(...)` of mixed-typed variates).
+test('inferChainComposition: positional jointchain ⇒ measure of array variate', () => {
+  // §06: "the output variate is the `cat` of the variates of all the
+  // components, as with `joint`" — so the positional form yields the same
+  // ARRAY that positional `joint` does, with the leaf types joined
+  // (integer ⊂ real). §04 sec:tuples rules the alternative out: "Measures,
+  // kernels, and likelihoods never use tuples as their domain."
   const M  = T.measure(T.REAL);
   const K1 = kernel([{ name: 'x', type: T.REAL }], T.INTEGER);
   const r = inferChainComposition([step(M, 'M'), step(K1, 'K1')],
                                   'jointchain-retain');
   assert.equal(r.resultType.kind, 'measure');
-  assert.equal(r.resultType.domain.kind, 'tuple');
-  assert.equal(r.resultType.domain.elems.length, 2);
+  assert.equal(r.resultType.domain.kind, 'array');
+  assert.equal(r.resultType.domain.rank, 1);
+  assert.deepEqual(r.resultType.domain.shape, [2]);
+  assert.deepEqual(r.resultType.domain.elem, T.REAL);
 });
 
 test('inferChainComposition: kernel-first jointchain ⇒ kernelType result', () => {

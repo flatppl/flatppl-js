@@ -1484,11 +1484,18 @@ function _inferKernelChain(
       resultVariate = T.deferred();
     }
   } else {
-    // jointchain: retain every step's variate. Keyword form (labels)
-    // → record; positional form → tuple (spec §06 line 252's
-    // `cat(...variates...)` is array-of-array semantically; the type
-    // system models heterogeneous positional retention as tuple,
-    // since arrays require homogeneous element types per §03).
+    // jointchain: retain every step's variate. §06: "the output variate is
+    // the `cat` of the variates of all the components, as with `joint`" — the
+    // same operator, so the same shape, owned by the same
+    // shape-contract.catShape that types positional `joint`. Keyword form
+    // (labels) → record, as §06's `relabel` lowering gives.
+    //
+    // The positional form was typed as a tuple, which §04 sec:tuples forbids
+    // outright ("Measures, kernels, and likelihoods never use tuples as their
+    // domain"). That made §06's own array-literal density rule a static error
+    // while the tuple literal the spec never writes type-checked, and left
+    // iid-over-jointchain with no density path at all. The runtime always
+    // consumed the array.
     const stepVariates = steps.map(s => _chainStepVariate(s.type));
     if (labels && labels.length === steps.length) {
       const fields: Record<string, any> = {};
@@ -1497,7 +1504,13 @@ function _inferKernelChain(
       }
       resultVariate = T.record(fields);
     } else {
-      resultVariate = T.tuple(stepVariates);
+      // A step-variate list that does not `cat` — a record base with an array
+      // kernel variate, the §04 kernelof equivalent §06 writes — DEFERS
+      // rather than refusing. Positional `joint` reports that mix as an error,
+      // but that refusal is its own; adding one here would reject programs
+      // the spec writes on nothing §06 says. Deferred is the honest answer:
+      // the type system does not model this variate.
+      resultVariate = SC.typeOfShape(SC.catShape(stepVariates)) || T.deferred();
     }
   }
   // Residual inputs: step 0's inputs survive only if kernel-first.
