@@ -30,13 +30,13 @@ flatppl_compat = "0.1"
 m_per_group = [0.0, 1.0, 2.0]
 
 % Step 1: one variate to the left, bound whole.
-step_prev = functionof(Normal(mu = a, sigma = 1.0), a = a)
+step_prev = functionof(Normal(mu = _a_, sigma = 1.0), a = _a_)
 
 % Step 2: two variates to the left, bound as their `cat`.
-step_cat = functionof(Normal(mu = sum(b), sigma = 1.0), b = b)
+step_cat = functionof(Normal(mu = sum(_b_), sigma = 1.0), b = _b_)
 
 group_chain = functionof(
-  jointchain(Normal(mu = m, sigma = 1.0), step_prev, step_cat),
-  m = m)
+  jointchain(Normal(mu = _m_, sigma = 1.0), step_prev, step_cat),
+  m = _m_)
 
 y = broadcast(group_chain, m = m_per_group)

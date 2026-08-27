@@ -298,10 +298,14 @@ interface JointKernelDescriptor {
  *       kernel_kwargs...
  *     )
  *
- * - Each `<componentRef>` must be a `self`-ref to an anon binding
- *   whose `ir` is a direct call to a sampler-REGISTRY-known
- *   distribution (kernel placeholders inside the component's kwargs
- *   resolve at execute time via the per-cell substitution pass).
+ * - Each component must be a direct call to a sampler-REGISTRY-known
+ *   distribution, either inline or reached through a `self`-ref to an
+ *   anon binding (kernel placeholders inside the component's kwargs
+ *   resolve at execute time via the per-cell substitution pass). A
+ *   component whose kwargs name a `_x_` placeholder stays inline: §04
+ *   "Placeholders and holes" scopes a placeholder to the nearest
+ *   enclosing `functionof` or `kernelof`, so the lift cannot hoist it
+ *   to a module-level anon binding.
  * - Phase 4.2 MVP does not recurse into nested composites; a
  *   component that is itself a `joint` / `iid` / `broadcast` returns
  *   null here. Future phases (4.3 jointchain, 4.4 nested broadcast)
@@ -371,11 +375,18 @@ function detectJointKernelBinding(
   const components: JointKernelComponent[] = [];
   for (let i = 0; i < componentRefs.length; i++) {
     const ref = componentRefs[i];
-    if (!ref || ref.kind !== 'ref' || ref.ns !== 'self'
-        || !bindings.has(ref.name)) return null;
-    const anon = bindings.get(ref.name);
-    if (!anon || !anon.ir) return null;
-    const distCall = anon.ir;
+    if (!ref) return null;
+    let distCall: any;
+    if (ref.kind === 'ref') {
+      if (ref.ns !== 'self' || !bindings.has(ref.name)) return null;
+      const anon = bindings.get(ref.name);
+      if (!anon || !anon.ir) return null;
+      distCall = anon.ir;
+    } else if (ref.kind === 'call') {
+      distCall = ref;
+    } else {
+      return null;
+    }
     if (!distCall || distCall.kind !== 'call' || !distCall.op) return null;
     const op = distCall.op;
     const isScalarSampleable = SAMPLEABLE && SAMPLEABLE.has(op);
@@ -556,7 +567,7 @@ interface JointChainKernelDescriptor {
  *     functionof(
  *       lawof(jointchain(
  *         args = [
- *           <baseRef>,      # anon-ref to sampleable DistCall
+ *           <base>,         # inline sampleable DistCall, or anon-ref to one
  *           <kernelRef_1>,  # binding-ref to single-step kernel
  *           <kernelRef_2>,
  *           …]
@@ -564,15 +575,18 @@ interface JointChainKernelDescriptor {
  *       outer_kernel_kwargs...
  *     )
  *
- * - `<baseRef>` derefs to an anon binding whose `ir` is a sampleable
- *   DistCall. The DistCall's kwargs may reference outer kernel
- *   placeholders (substituted per cell at execute time).
+ * - `<base>` is a sampleable DistCall, either inline or reached through
+ *   an anon binding ref. The DistCall's kwargs may reference outer kernel
+ *   placeholders (substituted per cell at execute time). A base whose
+ *   kwargs name a `_x_` placeholder stays inline: §04 "Placeholders and
+ *   holes" scopes a placeholder to the nearest enclosing `functionof` or
+ *   `kernelof`, so the lift cannot hoist it to a module-level anon binding.
  * - Each `<kernelRef_k>` derefs to a kernel binding with `ir.op ===
  *   'functionof'`, exactly one param, body `lawof(<DistCall>)`. The
  *   DistCall's kwargs reference that single param (the prev variate).
  *
  * Phase 4.3 MVP rejections (return null):
- *  - Kernel-first chains (step 0 is itself a kernel binding).
+ *  - Kernel-first chains (step 0 is itself a kernel).
  *  - Composite step bodies (step kernel's body isn't a direct DistCall).
  *  - Multi-input step kernels (more than one param).
  *  - Keyword-form jointchain (`fields:` populated).
@@ -626,14 +640,22 @@ function detectJointChainKernelBinding(
 
   const steps: JointChainStep[] = [];
   for (let i = 0; i < innerMeasure.args.length; i++) {
-    const ref = innerMeasure.args[i];
-    if (!ref || ref.kind !== 'ref' || ref.ns !== 'self'
-        || !bindings.has(ref.name)) return null;
-    const dep = bindings.get(ref.name);
-    if (!dep || !dep.ir) return null;
+    const arg = innerMeasure.args[i];
+    if (!arg) return null;
+    let node: any;
+    if (arg.kind === 'ref') {
+      if (arg.ns !== 'self' || !bindings.has(arg.name)) return null;
+      const dep = bindings.get(arg.name);
+      if (!dep || !dep.ir) return null;
+      node = dep.ir;
+    } else if (i === 0 && arg.kind === 'call') {
+      node = arg;
+    } else {
+      return null;
+    }
     if (i === 0) {
-      // Base step: dep.ir must be a sampleable DistCall (closed-first).
-      const distCall = dep.ir;
+      // Base step: a sampleable DistCall (closed-first).
+      const distCall = node;
       if (distCall.kind !== 'call' || !distCall.op) return null;
       if (!SAMPLEABLE || !SAMPLEABLE.has(distCall.op)) return null;
       const distParams = lookupDistParams(distCall.op);
@@ -651,7 +673,7 @@ function detectJointChainKernelBinding(
       // two-spelling peel `_peelKernelBody` applies to the outer body.
       // `functionof(<Dist>, kw)` is the spec-legal spelling for a measure
       // body (§04 §sec:functionof-measure) and carries no `lawof`.
-      const stepIR = dep.ir;
+      const stepIR = node;
       if (stepIR.kind !== 'call' || stepIR.op !== 'functionof') return null;
       const stepParams: string[] = Array.isArray(stepIR.params)
         ? stepIR.params : [];

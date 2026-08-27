@@ -26,9 +26,9 @@ mu_g ~ iid(Normal(0, 10), G)
 % Shared global noise.
 sigma_g ~ normalize(truncate(Normal(0, 1), interval(0, inf)))
 
-% Per-group obs kernel — kwarg-form placeholder, engine canonical.
-group_kernel = functionof(iid(Normal(mu = mu, sigma = sigma_g), N_per_group),
-                          mu = mu)
+% Per-group obs kernel — `_mu_` is a §04 placeholder boundary input.
+group_kernel = functionof(iid(Normal(mu = _mu_, sigma = sigma_g), N_per_group),
+                          mu = _mu_)
 
 % Broadcast over each group's mu — yields a [G, N_per_group] obs matrix.
 obs = broadcast(group_kernel, mu = mu_g)

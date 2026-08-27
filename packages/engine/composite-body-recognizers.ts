@@ -309,7 +309,7 @@ registerCompositeBodyRecognizer((d, ctx) => {
 // ---------- jointchain: `lawof(jointchain(<base>, <K_1>, …))` ------
 //
 // Phase 4.3 entry. Closed-first chains where step 0 is a base measure
-// (sampleable DistCall via an anon binding) and each subsequent step
+// (a sampleable DistCall, inline or via an anon binding) and each subsequent step
 // is a single-input kernel whose body is `lawof(<sampleable DistCall>)`.
 // The executor (`_executeJointChainComposite` in mat-broadcast.ts)
 // threads state step-by-step within each cell: step k's sampleN sees
