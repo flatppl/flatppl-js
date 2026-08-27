@@ -40,7 +40,7 @@ const assert = require('node:assert/strict');
 const { processSource, orchestrator, materialiser } = require('..');
 const { createWorkerHandler } = require('../worker.ts');
 const valueLib = require('../value.ts');
-const { broadcastN } = require('../sampler-eval-batched.ts');
+const { broadcastN, _packUniformCells, _perAtomFallback } = require('../sampler-eval-batched.ts');
 const ROOT_SEED = 0x10C5CA1E;
 
 const LOGNORMAL_MEAN = 1.6487212707001282;
@@ -145,6 +145,165 @@ test('a rank-3 cell ([N,3,2] from iid-of-iid) maps cell-wise too', async () => {
   for (let i = 0; i < N * 6; i++) {
     assert.equal(X.value.data[i], Math.exp(Z.value.data[i]));
   }
+});
+
+// ---------------------------------------------------------------------
+// The DOTTED spelling over a rank-≥2 cell
+// ---------------------------------------------------------------------
+//
+// `exp.(x)` lowers to `broadcast(exp, x)` (§04 "Broadcasting": "`f.(<args>)`
+// lowers to `broadcast(f, <args>)`"), which "maps a function or kernel
+// elementwise over arrays". §07 "Elementary functions" makes `exp` scalar-only
+// ("All accept scalar arguments and return scalar results"), so the dotted
+// spelling is the one the spec licenses over a matrix variate, and it must
+// agree with the bare spelling cell for cell.
+//
+// `broadcast` is a higher-order op with no batched slot, so it takes
+// `_perAtomFallback`: N per-atom `evaluateExpr` calls, each returning one
+// rank-2 Value. Packing those back into a batch only handled a rank-1 cell,
+// so a [3, 2] cell fell through to the raw JS array and `evaluateN` refused it
+// ("expression produced non-scalar per-atom result (got object)"). The nesting
+// is incidental — `iid(Normal, [3, 2])`, whose cells are plain scalars, failed
+// identically.
+
+const RANK2_VARIATES: [string, string][] = [
+  ['an iid-of-iid', 'iid(iid(Normal(0.0, 1.0), 2), 3)'],
+  ['a multi-axis iid', 'iid(Normal(0.0, 1.0), [3, 2])'],
+];
+
+for (const [label, base] of RANK2_VARIATES) {
+  test(`dotted and bare \`exp\` agree cell-for-cell over ${label} variate`,
+    async () => {
+      const N = 32;
+      const image = async (body: string) => {
+        const ctx = makeCtx(`Z = ${base}\nX = pushfwd(x -> ${body}, Z)\n`,
+          { sampleCount: N });
+        return { Z: await ctx.getMeasure('Z'), X: await ctx.getMeasure('X') };
+      };
+      const dot = await image('exp.(x)');
+      const bare = await image('exp(x)');
+      assert.deepEqual(dot.Z.value.shape, [N, 3, 2], 'base cell is 3×2');
+      assert.deepEqual(dot.X.value.shape, [N, 3, 2],
+        'the dotted image keeps the atom axis and both cell axes');
+      assert.deepEqual(bare.X.value.shape, [N, 3, 2]);
+      for (let i = 0; i < N * 6; i++) {
+        assert.equal(dot.X.value.data[i], Math.exp(dot.Z.value.data[i]),
+          `dotted cell ${i}: got ${dot.X.value.data[i]}, expected `
+          + `${Math.exp(dot.Z.value.data[i])} from base ${dot.Z.value.data[i]}`);
+        assert.equal(dot.X.value.data[i], bare.X.value.data[i],
+          `cell ${i}: dotted ${dot.X.value.data[i]} vs bare `
+          + `${bare.X.value.data[i]}`);
+      }
+    });
+}
+
+test('dotted `exp` over a matrix variate is a LogNormal(0,1) in every cell',
+  async () => {
+    const N = 20000;
+    const ctx = makeCtx(
+      'Z = iid(Normal(0.0, 1.0), [3, 2])\n'
+      + 'X = pushfwd(x -> exp.(x), Z)\n', { sampleCount: N });
+    const X = await ctx.getMeasure('X');
+    assert.deepEqual(X.value.shape, [N, 3, 2]);
+    // A LogNormal's sample variance is a heavy-tailed estimator, so the
+    // tolerance comes from its own standard error, not a round number.
+    // Kurtosis of LogNormal(0, 1) is e⁴ + 2e³ + 3e² − 3 = 113.9363..., so
+    // sd(s²)/σ² = sqrt((kurt − 1)/N) = 7.51% at N = 20000. Four of those.
+    const KURTOSIS = Math.exp(4) + 2 * Math.exp(3) + 3 * Math.exp(2) - 3;
+    const VAR_TOL = 4 * Math.sqrt((KURTOSIS - 1) / N);
+    const CELLS = 6, data = X.value.data;
+    for (let c = 0; c < CELLS; c++) {
+      let m = 0;
+      for (let i = 0; i < N; i++) m += data[i * CELLS + c];
+      m /= N;
+      let v = 0;
+      for (let i = 0; i < N; i++) {
+        const e = data[i * CELLS + c] - m;
+        v += e * e;
+      }
+      v /= N;
+      assert.ok(Math.abs(m - LOGNORMAL_MEAN) < 0.06,
+        `cell ${c} mean ${m} vs LogNormal mean ${LOGNORMAL_MEAN}`);
+      assert.ok(Math.abs(v - LOGNORMAL_VAR) / LOGNORMAL_VAR < VAR_TOL,
+        `cell ${c} variance ${v} vs LogNormal variance ${LOGNORMAL_VAR}`);
+      for (let i = 0; i < N; i++) {
+        assert.ok(data[i * CELLS + c] > 0,
+          `atom ${i} cell ${c} is ${data[i * CELLS + c]}, not in the support`);
+      }
+    }
+  });
+
+// ---------------------------------------------------------------------
+// _packUniformCells unit level — which per-atom results pack, and which
+// stay a raw JS array for the caller to surface
+// ---------------------------------------------------------------------
+
+const cell = (flat: number[], shape: number[]) =>
+  valueLib.withShape(Float64Array.from(flat), shape);
+
+test('_packUniformCells: rank-2 cells pack atom-major into [N, r, c]', () => {
+  const out = _packUniformCells(
+    [cell([1, 2, 3, 4, 5, 6], [3, 2]), cell([7, 8, 9, 10, 11, 12], [3, 2])], 2);
+  assert.deepEqual(out.shape, [2, 3, 2]);
+  assert.deepEqual(Array.from(out.data), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+});
+
+test('_packUniformCells: rank-1 cells and bare arrays still pack to [N, k]', () => {
+  const values = _packUniformCells([cell([1, 2], [2]), cell([3, 4], [2])], 2);
+  assert.deepEqual(values.shape, [2, 2]);
+  assert.deepEqual(Array.from(values.data), [1, 2, 3, 4]);
+  const bare = _packUniformCells([[1, 2], Float64Array.from([3, 4])], 2);
+  assert.deepEqual(bare.shape, [2, 2]);
+  assert.deepEqual(Array.from(bare.data), [1, 2, 3, 4]);
+});
+
+test('_packUniformCells: a cell shape that varies across atoms does not pack',
+  () => {
+    // Differing rank, then differing size at equal rank, then a first
+    // result that is no cell at all. Each must stay unpacked rather than
+    // stride one atom's cell over the batch.
+    assert.equal(
+      _packUniformCells([cell([1, 2], [2]), cell([3, 4], [2, 1])], 2), null,
+      'rank mismatch');
+    assert.equal(
+      _packUniformCells([cell([1, 2, 3, 4], [2, 2]), cell([5, 6], [1, 2])], 2),
+      null, 'size mismatch at equal rank');
+    assert.equal(
+      _packUniformCells([{ a: 1 }, cell([1, 2], [2])], 2), null,
+      'first result is not a cell');
+  });
+
+test('_packUniformCells: non-numeric, empty and complex cells do not pack',
+  () => {
+    assert.equal(_packUniformCells([['a', 'b'], ['c', 'd']], 2), null,
+      'non-numeric entries');
+    assert.equal(_packUniformCells([cell([], [0]), cell([], [0])], 2), null,
+      'empty cell');
+    // A complex Value keeps its imaginary part in `.im`, so packing `.data`
+    // alone would drop it silently.
+    const cx = valueLib.complexValue(
+      Float64Array.from([1, 2]), Float64Array.from([3, 4]), [2]);
+    assert.equal(_packUniformCells([cx, cx], 2), null, 'complex cell');
+  });
+
+test('_packUniformCells: boolean cell entries pack as 0/1', () => {
+  const out = _packUniformCells([[true, false], [false, true]], 2);
+  assert.deepEqual(out.shape, [2, 2]);
+  assert.deepEqual(Array.from(out.data), [1, 0, 0, 1]);
+});
+
+test('_perAtomFallback: per-atom records stay a raw JS array', () => {
+  // A record result is no cell, so the batch keeps the per-atom array and
+  // the caller decides how to surface it — `evaluateN` refuses it, which is
+  // the pre-existing contract for a non-scalar per-atom result.
+  const ir = {
+    kind: 'call', op: 'record',
+    fields: [{ name: 'a', value: { kind: 'ref', ns: 'self', name: 'x' } }],
+  };
+  const refArrays = { x: valueLib.batchedScalar(Float64Array.from([1, 2])) };
+  const out = _perAtomFallback(ir, refArrays, 2, {}, null);
+  assert.ok(Array.isArray(out), 'unpackable results stay per-atom');
+  assert.deepEqual(out.map((r: any) => r.a), [1, 2]);
 });
 
 // ---------------------------------------------------------------------
