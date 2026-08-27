@@ -720,11 +720,23 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           const baseEnv = Object.assign({}, env, fixedEnv);
           if (mode === 'function') {
             const evalEnv = Object.assign({}, baseEnv);
+            // Compile the body ONCE for the whole sweep, then call it per
+            // point (sampler-profile-compile.ts). The interpreted path
+            // re-walked the tree every point; on an inlined amplitude body
+            // that is thousands of node visits of which only a couple of
+            // hundred are structurally distinct.
+            const prog = samplerLib.compileProfileBody(msg.ir);
+            // The aggregate lowering re-enters the evaluator a few hundred
+            // times per point; `__bodyEval` routes those re-entries back
+            // into this program so a repeated subtree inside an aggregate
+            // body shares the outer body's memo slots.
+            evalEnv.__bodyEval = prog.bodyEval;
             for (let i = 0; i < count; i++) {
               const t = count === 1 ? 0 : i / (count - 1);
               evalEnv[sweepName] = lo + t * (hi - lo);
+              prog.nextPoint();
               try {
-                out[i] = samplerLib.evaluateExpr(msg.ir, evalEnv);
+                out[i] = prog.evalPoint(evalEnv);
               } catch (_) {
                 out[i] = NaN;
               }

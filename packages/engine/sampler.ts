@@ -2226,6 +2226,18 @@ for (const _name in opsModule.ELEMWISE_OVER_ARRAY) {
 _evalBatched.initARITHOPSN(ARITH_OPS);
 
 // =====================================================================
+// Wire the single-point profile compiler (sampler-profile-compile.ts).
+// =====================================================================
+// Same injection shape as initARITHOPSN, and for the same reason — the
+// compiler needs `evaluateCall` and `resolveConst`, which stay
+// unexported. Function declarations hoist, so `evaluateCall` below is
+// already bound here.
+const _profileCompile = require('./sampler-profile-compile.ts');
+_profileCompile.initProfileCompiler({
+  ARITH_OPS, evaluateExpr, evaluateCall, resolveConst,
+});
+
+// =====================================================================
 // Linear-algebra helpers (textbook algorithms; small-matrix sized)
 // =====================================================================
 // Extracted to sampler-linalg.ts (sampler split; module map in ARCHITECTURE.md).
@@ -3942,6 +3954,7 @@ module.exports = {
   evaluateExpr,
   evaluateExprN,
   isBatch,
+  compileProfileBody: _profileCompile.compileProfileBody,
 
   // Used by the in-module measure walker + the fixed-values value-ref
   // resolver — both dispatch on the distribution registry and resolve
