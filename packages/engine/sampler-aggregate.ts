@@ -42,7 +42,16 @@ const aggregateShape = require('./aggregate-shape.ts');
 function _sampler(): any {
   return require('./sampler.ts');
 }
+// `env.__bodyEval`, when present, is the single-point profile compiler's
+// entry (sampler-profile-compile.ts). An aggregate re-enters the
+// evaluator a few hundred times per profile point, so routing those
+// re-entries through the compiler is what lets a repeated subtree inside
+// an aggregate body share the outer body's memo slots. One property read
+// per re-entry, not per node. Absent the hook this is the plain
+// interpreter, unchanged.
 function evaluateExpr(ir: any, env: any): any {
+  const hook = env && env.__bodyEval;
+  if (hook !== undefined) return hook(ir, env);
   return _sampler().evaluateExpr(ir, env);
 }
 // Proxy stand-in for `ARITH_OPS` — every property read forwards to
