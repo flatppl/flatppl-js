@@ -164,6 +164,77 @@ function _propagateLiftedPhases(bindings: Map<string, any>): Map<string, any> {
   return out;
 }
 
+// Fold `V[k]` to V's k-th element when V is a STOCHASTIC-phase array literal
+// (`wp = [psi, 1.0 - psi]` with `psi` latent).
+//
+// Spec §04 "Variates and measures" — "arithmetic on variates" — makes such an
+// array a DETERMINISTIC node whose value is built from its elements' variates,
+// so `wp[1]` denotes the element expression. A fixed-phase array literal
+// already reads that way: the fixed-value pre-eval resolves the whole array and
+// `wp[1]` is a real number. A stochastic one had no value path at all. `vector`
+// is deliberately absent from EVALUABLE_OPS — an array of stochastic refs does
+// not fit the worker's scalar-per-atom contract — so a stochastic array literal
+// falls to the array-literal classifier branch, which accepts only
+// all-numeric-literal elements (`kind:'array'`) or all-self-ref elements
+// (`kind:'tuple'`, a positional joint measure built for plotting). `[psi, 1.0 -
+// psi]` is neither, so it classified as nothing and the cascade-prune silently
+// took every measure above it down; the all-self-ref spelling classified as
+// `tuple` and then died in feedInputs, because a value consumer asking for
+// `wp[1]` finds a measure with no per-atom samples.
+//
+// Substituting the element IR puts the weight (or distribution parameter) back
+// on the ordinary scalar value path — the same IR the working
+// `q = 1.0 - psi; weighted(q, …)` spelling produces — so no evaluator learns a
+// new shape and the scalar-per-atom contract holds. V's own binding is left
+// alone, so plotting the array through `kind:'tuple'` is unaffected.
+//
+// Fixed-phase arrays are excluded on purpose: they already resolve, and
+// rewriting them would move working models onto a different path for nothing.
+function foldStochasticVectorGets(bindings: Map<string, BindingInfo>) {
+  // The elements of `name` if it is a stochastic-phase array literal.
+  function vectorElems(name: string): any[] | null {
+    const b: any = bindings.get(name);
+    if (!b || b.phase !== 'stochastic') return null;
+    const ir = b.ir;
+    if (!ir || ir.kind !== 'call' || ir.op !== 'vector') return null;
+    // The caller indexes the result and tests the element, so a `vector` with
+    // no positional args needs no separate guard here.
+    return ir.args;
+  }
+
+  // `seen` carries the array bindings already substituted on THIS path, so a
+  // self-referential array (`wp = [wp[1], …]`) cannot loop. Siblings each get a
+  // fresh branch, so one array can be indexed many times in one expression.
+  function fold(ir: any, seen: Set<string>): any {
+    if (!ir || typeof ir !== 'object') return ir;
+    if (Array.isArray(ir)) return ir.map((x) => fold(x, seen));
+    if (ir.kind === 'call' && ir.op === 'get'
+        && Array.isArray(ir.args) && ir.args.length === 2) {
+      const target = ir.args[0], index = ir.args[1];
+      if (target && target.kind === 'ref' && target.ns === 'self'
+          && !seen.has(target.name)
+          && index && index.kind === 'lit' && Number.isInteger(index.value)) {
+        const elems = vectorElems(target.name);
+        // Spec §03: `get` on an array is 1-indexed.
+        const elem = elems && elems[index.value - 1];
+        if (elem) {
+          const next = new Set(seen);
+          next.add(target.name);
+          return fold(elem, next);   // fold rebuilds, so the element is copied
+        }
+      }
+    }
+    const out: any = {};
+    for (const k in ir) out[k] = fold(ir[k], seen);
+    return out;
+  }
+
+  for (const [, b] of bindings) {
+    if (b && (b as any).ir) (b as any).ir = fold((b as any).ir, new Set());
+  }
+  return bindings;
+}
+
 // Inline a fixed-phase named SET into its use sites. A set constructor
 // (`interval`, `cartprod`, …) is not value-evaluable — `resolveIRToValue` /
 // the sampler's evaluator reject it ("the orchestrator should pre-resolve
@@ -279,6 +350,11 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // Smell D: give the lift-introduced anons real phases (they're created after
   // analyzer.computePhases, so they'd otherwise carry phase == null).
   bindings = _propagateLiftedPhases(bindings);
+
+  // Post-lift, pre-classify: fold `V[k]` over a stochastic array literal to its
+  // k-th element, so an indexed latent weight / parameter reaches the ordinary
+  // scalar value path. Needs the phases the pass above just filled in.
+  bindings = foldStochasticVectorGets(bindings);
 
   // Post-lift: dissolve broadcast / aggregate constructs whose body is
   // an inherently-batched single op (engine-concepts §20 / Phase 2 of
