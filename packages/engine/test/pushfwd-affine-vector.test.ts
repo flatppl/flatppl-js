@@ -251,17 +251,34 @@ test('a shift-free matrix map samples through the atom batch (no registry)', asy
   }
 });
 
-test('an elementwise map over a vector variate reports, not returns NaN', async () => {
-  // Elementwise scalar primitives over a whole D-vector atom are not wired
-  // into the batched evaluator. Reading the flat atom buffer as N scalars —
-  // what the old binding did — produced a shape-[N] measure of NaNs past the
-  // first N/D entries, which is worse than refusing.
-  const ctx = makeCtx(`X = pushfwd(x -> exp(x), iid(Normal(0.0, 1.0), 2))\n`,
+test('an elementwise map over a vector variate keeps the atom axis', async () => {
+  // This case used to refuse: elementwise scalar primitives over a whole
+  // D-vector atom were not wired into the batched evaluator, and reading the
+  // flat atom buffer as N scalars produced a shape-[N] measure of NaNs past
+  // the first N/D entries. `broadcastN` now maps the primitive over each
+  // atom's cell — see broadcastn-vector-atom.test.ts for the oracle legs.
+  const N = 8;
+  const ctx = makeCtx(`Z = iid(Normal(0.0, 1.0), 2)\n`
+    + `X = pushfwd(x -> exp(x), Z)\n`, { sampleCount: N });
+  const Z = await ctx.getMeasure('Z');
+  const X = await ctx.getMeasure('X');
+  assert.deepEqual(X.value.shape, [N, 2]);
+  for (let i = 0; i < N * 2; i++) {
+    assert.equal(X.value.data[i], Math.exp(Z.value.data[i]),
+      `cell ${i} is not exp of the base cell`);
+  }
+});
+
+test('a product of two vector atoms still reports the unsupported shape', async () => {
+  // The residual the batched evaluator genuinely does not cover: `x * x`
+  // over two [N,D] operands is neither elementwise-scalar nor one of
+  // value-ops' shape-aware kernels.
+  const ctx = makeCtx(`X = pushfwd(x -> x * x, iid(Normal(0.0, 1.0), 2))\n`,
     { sampleCount: 8 });
   await assert.rejects(() => ctx.getMeasure('X'), (err: any) => {
     assert.match(err.message, /vector-valued variate/,
       `expected a vector-variate diagnostic, got: ${err.message}`);
-    assert.match(err.message, /elementwise/, `got: ${err.message}`);
+    assert.match(err.message, /product of two vector atoms/, `got: ${err.message}`);
     return true;
   });
 });
