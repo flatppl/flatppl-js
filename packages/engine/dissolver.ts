@@ -2122,11 +2122,12 @@ function _isKernelHead(head: any, bindings: any): boolean {
 // `functionof` over a measure-valued body — a kernel per §04
 // §sec:functionof-measure?
 //
-// typeinfer has no `broadcast` rule, so `functionof(broadcast(<Dist>, kw), kw)`
-// — the spec-legal spelling — types as a FUNCTION, and only the `lawof`
-// wrapper a `kernelof` adds coerced the deferred body to a measure. Reading
-// the IR instead makes the two spellings agree, using the same broadcast-is-
-// dual rule as `analyzer.isMeasureExpr`.
+// `typeinfer.inferBroadcast` now carries §04's dual, so the spec-legal
+// spelling `functionof(broadcast(<Dist>, kw), kw)` types as a KERNEL and the
+// type check above answers it. The IR fallback still owns every broadcast the
+// rule cannot resolve — an unresolvable head, a keyword that names no
+// parameter — using the same broadcast-is-dual rule as
+// `analyzer.isMeasureExpr`.
 function _irBodyIsMeasureValued(ir: any, bindings: any): boolean {
   if (!ir || ir.kind !== 'call' || ir.op !== 'functionof') return false;
   let body = ir.body;

@@ -3175,14 +3175,76 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return true;
   }
 
+  // The head's input names, in the head's own declared order, or null when
+  // they cannot be resolved. Needed for the keyword spelling only: spec §04
+  // "Broadcasting" says "Keyword arguments bind inputs by name. If the
+  // callable has a declared positional order, positional binding is also
+  // permitted", so a keyword call has to be re-ordered onto the head's
+  // parameters before the positional phases below can run.
+  //
+  // §04 binds keyword arguments by NAME, so only a head that declares surface
+  // names can take them. `paramKwargs` holds those names; `params` holds the
+  // internal placeholders, which no call site can write. Every lowered and
+  // PIR-read `functionof` pushes the two in lockstep, so the array is either
+  // absent or dense and the runtime binder's per-index `params[i]` fallback
+  // (marked defensive there) has nothing to mirror here.
+  function broadcastHeadParamNames(fn: any, scopes: any): string[] | null {
+    if (fn.kind === 'call') {
+      if (fn.op !== 'functionof') return null;   // computed head
+      // Only a synthesized reification (the weight wrapper in `derivations`)
+      // omits paramKwargs, and one is never a broadcast head.
+      /* c8 ignore next -- defensive */
+      if (!fn.paramKwargs) return null;
+      return fn.paramKwargs.slice();
+    }
+    if (fn.kind !== 'ref') return null;
+    const t: any = inferExpr(fn, scopes);
+    if (T.isCallable(t)) return t.inputs.map((inp: any) => inp.name);
+    // A bare builtin head (`Normal`, `Binomial`, `sqrt`, …) has no binding and
+    // shadows to a `failed` type here; its declared input names are its
+    // signature's kwargs, in declaration order — the same order
+    // `inferMeasureHeadCellResult` binds them positionally.
+    const sig: any = fn.ns === 'self' ? T.signatureOf(fn.name) : null;
+    return sig ? Object.keys(sig.kwargs) : null;
+  }
+
   function inferBroadcast(expr: any, scopes: any): any {
     const args = expr.args || [];
-    if (args.length < 2) return T.deferred();
+    /* c8 ignore next 2 -- defensive: the analyzer refuses a headless
+       `broadcast(a = A)` before it lowers, so args[0] is always the head */
+    if (args.length < 1) return T.deferred();
+
+    // Phase 0: the data args, in the head's parameter order. Positional
+    // (`broadcast(f, A, B)`) is already in that order; keyword
+    // (`broadcast(f, a = A, b = B)`) is re-ordered onto the head's declared
+    // inputs. The two spellings never mix — `lower._lowerBroadcast` emits
+    // kwargs only when the surface call used them, and the runtime binder
+    // takes the same either/or.
+    const kwargs: any = expr.kwargs || {};
+    const kwNames: string[] = Object.keys(kwargs);
+    let dataArgs: any[];
+    if (kwNames.length > 0) {
+      const paramNames = broadcastHeadParamNames(args[0], scopes);
+      if (!paramNames) return T.deferred();
+      // A parameter with no argument, or a keyword naming no parameter of the
+      // head, is an ill-formed call the runtime binder throws on. Infer no
+      // type for it rather than typing a call that cannot run.
+      if (kwNames.length !== paramNames.length) return T.deferred();
+      dataArgs = [];
+      for (const name of paramNames) {
+        const src = kwargs[name];
+        if (!src) return T.deferred();
+        dataArgs.push(src);
+      }
+    } else {
+      if (args.length < 2) return T.deferred();
+      dataArgs = args.slice(1);
+    }
 
     // Phase 1: infer each data arg's type.
     const dataTypes: any[] = [];
-    for (let i = 1; i < args.length; i++) {
-      const t = inferExpr(args[i], scopes);
+    for (let i = 0; i < dataArgs.length; i++) {
+      const t = inferExpr(dataArgs[i], scopes);
       if (t && t.kind === 'failed') return T.failed('broadcast cascade');
       dataTypes.push(t);
     }
@@ -3291,8 +3353,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         localScope.set(fn.params[i], cellTypes[i]);
       }
       elem = inferExpr(fn.body, scopes.concat([localScope]));
-    } else if (fn && fn.kind === 'ref' && fn.ns === 'self') {
-      const calleeType: any = inferBinding(fn.name);
+    } else if (fn && fn.kind === 'ref') {
+      // Any ref: a module-local binding, a cross-module member, or a
+      // callable-typed parameter of an enclosing reification. §04 ties the
+      // result to WHAT the head is, not to where it was written.
+      const calleeType: any = inferExpr(fn, scopes);
       if (T.isCallable(calleeType)) {
         elem = calleeType.result;
       } else {
@@ -3305,7 +3370,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         // lets a `(n,p) -> Binomial.(n,p)` lambda reify to a kernel:
         // its body's broadcast now types as a measure, so inferReification
         // makes the lambda a kernelType rather than a function.
-        const headResult = inferMeasureHeadCellResult(fn.name, cellTypes);
+        const headResult = (fn.ns === 'self')
+          ? inferMeasureHeadCellResult(fn.name, cellTypes) : null;
         if (headResult) elem = headResult;
         else return T.deferred();
       }
@@ -4202,6 +4268,41 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return null;
   }
 
+  // Does this expression broadcast a MEASURE-producing head? Spec §04
+  // "Broadcasting" makes broadcast dual: "`broadcast(function, ...)` returns
+  // an array value" while "`broadcast(kernel, ...)` returns an array-valued
+  // measure". So the answer is decided by the head alone, and it holds even
+  // where `inferBroadcast` could not resolve a type (an unresolvable data arg,
+  // a rank mismatch, a keyword that names no parameter of the head).
+  //
+  // Structural on purpose: the `kernelof` gate below needs the measure LAYER,
+  // not a full type. Re-inferring the head would double every diagnostic the
+  // argument produces, and a type is not even available for the shapes this
+  // exists to catch. Mirrors `analyzer.isMeasureExpr`'s broadcast arm on the
+  // lowered IR.
+  function broadcastYieldsMeasure(ir: any): boolean {
+    if (ir.kind !== 'call' || ir.op !== 'broadcast') return false;
+    /* c8 ignore next 2 -- defensive: every lowered broadcast carries its head */
+    const head = (ir.args || [])[0];
+    if (!head) return false;
+    // An inline reification head is a kernel when its body produces a measure
+    // (§04 "Reifying measure-valued expressions to kernels").
+    if (head.kind === 'call') {
+      const body = head.op === 'functionof' ? head.body : null;
+      return !!(body && body.kind === 'call'
+        && builtins.MEASURE_PRODUCING.has(body.op));
+    }
+    if (head.kind === 'ref' && head.ns === 'self') {
+      const b = loweredModule.bindings.get(head.name);
+      // No binding ⇒ a bare builtin head. §04's kernel half is every
+      // measure-producing one: a distribution constructor IS a kernel (§06
+      // uniform kernel extension).
+      if (!b) return builtins.MEASURE_PRODUCING.has(head.name);
+      return !!(b.inferredType && b.inferredType.kind === 'kernel');
+    }
+    return false;
+  }
+
   function inferReification(expr: any, scopes: any): any {
     // Only `functionof` reaches here — kernelof and fn are lowered
     // to functionof by lower.js. `expr.wasKernelof` marks the ones
@@ -4248,7 +4349,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // §04 names only the measure case. A kernel body fails the same clause
       // one step earlier, so it gets its own wording rather than being told
       // it is a measure.
-      const what = T.isMeasure(argT) ? 'a measure'
+      const what = (T.isMeasure(argT) || broadcastYieldsMeasure(kernelofArg))
+        ? 'a measure'
         : (argT && argT.kind === 'kernel') ? 'a kernel' : null;
       if (what) {
         const fix = what === 'a measure'
