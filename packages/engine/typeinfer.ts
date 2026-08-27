@@ -4204,10 +4204,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
   function inferReification(expr: any, scopes: any): any {
     // Only `functionof` reaches here — kernelof and fn are lowered
-    // to functionof by lower.js. The kernelof spec rule "x must not
-    // be a measure" emerges naturally from the lawof inside the
-    // lowered form (lawof requires a value-typed argument); we don't
-    // need a special case here.
+    // to functionof by lower.js. `expr.wasKernelof` marks the ones
+    // that were written `kernelof`, which the §04 check below needs.
     const params      = expr.params      || [];   // scope-local names
     const paramKwargs = expr.paramKwargs || [];   // surface kwarg names
     const newScope = new Map();
@@ -4232,6 +4230,42 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
 
     const innerScopes = scopes.concat([newScope]);
+
+    // §04 §sec:kernelof: "`kernelof(x, kwargs...)` reifies (typically
+    // stochastic) value nodes to Markov kernels. `x` must not be a measure."
+    // The rule does NOT fall out of the lowered `functionof(lawof(x), …)`
+    // form: §sec:lawof gives `lawof` its own identity law on a measure
+    // argument, so `inferLawof` accepts one and the illegal spelling used to
+    // type clean. Check the pre-lowering argument instead. §sec:kernelof
+    // costs no expressiveness — §sec:functionof-measure gives
+    // `functionof(m, …)` for the conditional kernel and
+    // `functionof(lawof(m), …)` for the marginal.
+    const kernelofArg = (expr.wasKernelof && expr.body
+      && expr.body.kind === 'call' && expr.body.op === 'lawof'
+      && (expr.body.args || []).length === 1) ? expr.body.args[0] : null;
+    if (kernelofArg) {
+      const argT: any = inferExpr(kernelofArg, innerScopes);
+      // §04 names only the measure case. A kernel body fails the same clause
+      // one step earlier, so it gets its own wording rather than being told
+      // it is a measure.
+      const what = T.isMeasure(argT) ? 'a measure'
+        : (argT && argT.kind === 'kernel') ? 'a kernel' : null;
+      if (what) {
+        const fix = what === 'a measure'
+          ? 'use `functionof` to reify a measure node to a kernel directly, '
+            + 'or pass the value you meant to take the law of'
+          : 'a kernel is already a reified law — pass the value node you meant '
+            + 'to reify, or drop the outer `kernelof`';
+        diagnostics.push({
+          severity: 'error',
+          message: '`kernelof` reifies value nodes, but this argument is '
+            + what + ' (spec §04: `x` must not be a measure); ' + fix,
+          loc: kernelofArg.loc || expr.loc,
+        });
+        return T.failed('kernelof of a measure-layer argument');
+      }
+    }
+
     const bodyT: any = expr.body ? inferExpr(expr.body, innerScopes) : T.deferred();
     // Inputs use the *surface* keyword name from paramKwargs — that's
     // what call-site kwargs bind to. Types come from the scope.

@@ -87,7 +87,7 @@ function normLogpdf(x: number, mu: number, sigma: number) {
 // was a silent NaN in the third variate for every one of them.
 const PREV_ONLY_SPELLINGS: Array<[string, string]> = [
   ['fn placeholder', 'fn(Normal(mu = _, sigma = 1.0))'],
-  ['kernelof named', 'kernelof(Normal(mu = prev, sigma = 1.0), prev = prev)'],
+  ['functionof named', 'functionof(Normal(mu = prev, sigma = 1.0), prev = prev)'],
   ['lambda',         'p -> Normal(mu = p, sigma = 1.0)'],
 ];
 
@@ -114,7 +114,7 @@ test('a 4-component prev-only chain names its first bad step', () => {
   // Step 2 is fed 2 variates and step 3 is fed 3, so both report.
   const errs = errorsOf(`
 flatppl_compat = "0.1"
-K = kernelof(Normal(mu = prev, sigma = 0.5), prev = prev)
+K = functionof(Normal(mu = prev, sigma = 0.5), prev = prev)
 ch = jointchain(Normal(0, 0.1), K, K, K)
 `);
   assert.equal(errs.length, 2, JSON.stringify(errs.map((d: any) => d.message)));
@@ -213,8 +213,8 @@ test('the keyword form still binds by field name, not off a cat', async () => {
   // convention). So the third term's mean here is 0.7, not sum([0.3, 0.7]).
   const src = `
 flatppl_compat = "0.1"
-k1 = kernelof(Normal(mu = a, sigma = 1.0), a = a)
-k2 = kernelof(Normal(mu = b, sigma = 1.0), b = b)
+k1 = functionof(Normal(mu = a, sigma = 1.0), a = a)
+k2 = functionof(Normal(mu = b, sigma = 1.0), b = b)
 ch = jointchain(a = Normal(mu = 0.0, sigma = 1.0), b = k1, c = k2)
 ld = logdensityof(ch, record(a = 0.3, b = 0.7, c = 1.1))
 `;
@@ -280,8 +280,8 @@ test('the broadcast scan refuses a prev-only step instead of threading it',
     const src = `
 flatppl_compat = "0.1"
 m_per_group = [0.0, 1.0]
-K = kernelof(Normal(mu = prev, sigma = 0.5), prev = prev)
-cell = kernelof(jointchain(Normal(mu = m, sigma = 1.0), K, K), m = m)
+K = functionof(Normal(mu = prev, sigma = 0.5), prev = prev)
+cell = functionof(jointchain(Normal(mu = m, sigma = 1.0), K, K), m = m)
 y = broadcast(cell, m = m_per_group)
 `;
     const errs = errorsOf(src).map((d: any) => d.message);

@@ -630,7 +630,7 @@ test('logdensityof: cascade-prunes when measure isn\'t derivable', () => {
   // a reified scope). lp must therefore not appear.
   const { derivations } = derivationsOf(`
 m  = Normal(mu = 0.0, sigma = 1.0)
-k  = kernelof(m)
+k  = functionof(m)
 lp = logdensityof(k, 1.5)
 `);
   assert.ok(!('lp' in derivations));
@@ -679,7 +679,7 @@ test('totalmass: cascade-prunes when measure isn\'t derivable', () => {
   // graph derivation, so totalmass(k) must not appear.
   const { derivations } = derivationsOf(`
 m = Normal(mu = 0.0, sigma = 1.0)
-k = kernelof(m)
+k = functionof(m)
 z = totalmass(k)
 `);
   assert.ok(!('z' in derivations));
@@ -720,7 +720,7 @@ t = truncate(m, posreals)
 test('truncate: cascade-prunes when measure isn\'t derivable', () => {
   const { derivations } = derivationsOf(`
 m = Normal(mu = 0.0, sigma = 1.0)
-k = kernelof(m)
+k = functionof(m)
 t = truncate(k, posreals)
 `);
   assert.ok(!('t' in derivations));
@@ -1182,10 +1182,10 @@ f = functionof(theta1 + theta2, theta1 = theta1, theta2 = theta2)
   assert.deepEqual(sig.inputs[1].source, { kind: 'binding', name: 'theta2' });
 });
 
-test('signatureOf: kernelof produces kind=kernel with measure-typed output', () => {
+test('signatureOf: functionof produces kind=kernel with measure-typed output', () => {
   const sig = sigOf(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
-K = kernelof(Normal(mu = theta1, sigma = 1), theta1 = theta1)
+K = functionof(Normal(mu = theta1, sigma = 1), theta1 = theta1)
 `, 'K');
   assert.equal(sig.kind, 'kernel');
   assert.equal(sig.inputs.length, 1);
@@ -1199,7 +1199,7 @@ test('signatureOf: likelihood inherits inputs from K, output is REAL', () => {
   // therefore exposes K's inputs and a real output.
   const sig = sigOf(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
-K = kernelof(Normal(mu = theta1, sigma = 1), theta1 = theta1)
+K = functionof(Normal(mu = theta1, sigma = 1), theta1 = theta1)
 obs_value = 1.5
 L = likelihoodof(K, obs_value)
 `, 'L');
@@ -1214,7 +1214,7 @@ L = likelihoodof(K, obs_value)
   const { liftInlineSubexpressions } = require('../orchestrator.ts');
   const { bindings } = processSource(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
-K = kernelof(Normal(mu = theta1, sigma = 1), theta1 = theta1)
+K = functionof(Normal(mu = theta1, sigma = 1), theta1 = theta1)
 obs_value = 1.5
 L = likelihoodof(K, obs_value)
 `);

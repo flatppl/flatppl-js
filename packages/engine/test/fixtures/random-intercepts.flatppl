@@ -4,7 +4,7 @@ Random-intercepts regression (Bambi / lme4 / Stan classic).
 Per-group intercepts modelled hierarchically; observations within
 each group share the group intercept and follow a common-slope
 linear predictor. The forward model factors as a per-group
-`kernelof(...)` reified once and broadcast over the per-group
+`functionof(...)` reified once and broadcast over the per-group
 parameter vector.
 
 This is the same shape as flatppl-examples/eight-schools.flatppl
@@ -32,7 +32,7 @@ sigma ~ normalize(truncate(Normal(0, 1), interval(0, inf)))
 x_per_group = [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 1.1, 1.2]]
 
 % Per-group observation kernel — kwarg-form placeholders.
-group_kernel = kernelof(
+group_kernel = functionof(
   iid(Normal(mu = intercept + slope .* x_group, sigma = sigma), N_per_group),
   intercept = intercept,
   x_group = x_group)

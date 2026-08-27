@@ -38,7 +38,7 @@ sigmas_per_group = [1.0, 0.5, 0.8]
 % components. Body uses placeholder names `mu`, `sigma` which the
 % kernel-broadcast args (`mu = mus_per_group`, `sigma = sigmas_per_group`)
 % substitute per cell.
-group_kernel = kernelof(
+group_kernel = functionof(
   joint(y1 = Normal(mu = mu, sigma = sigma),
         y2 = Normal(mu = mu, sigma = mul(2.0, sigma))),
   mu = mu, sigma = sigma)
