@@ -68,6 +68,24 @@
 // exported across the Map surface; never stored in the cache.
 const UNRESOLVED: unique symbol = Symbol('flatppl.fixed.unresolved');
 
+// Marks a thrown Error as "this ref/expression is not (yet) a value" —
+// a ref to an unknown or unexpandable binding, or an IR shape that is
+// structurally a measure/kernel construction rather than a value (the
+// disintegrate/lift-anon category error). These stay silently UNRESOLVED:
+// they are not a claim that anything is wrong, only that no value exists
+// here (yet, or ever, by construction). Any OTHER thrown error reaching
+// `_compute`'s catch — a domain refusal (e.g. var/std over one element),
+// or a genuine internal bug — is a REAL evaluation failure and becomes a
+// diagnostic instead of vanishing. No existing error class distinguishes
+// these (checked: no `modelRefusal` tag, no `.loc`-carrying Error anywhere
+// in the engine); this marker is the smallest boundary that keeps the
+// three known-benign throw shapes quiet without swallowing everything.
+function unresolvableRefError(message: string): Error {
+  const err: any = new Error(message);
+  err.flatpplUnresolvedRef = true;
+  return err;
+}
+
 interface FixedValuesDeps {
   bindings: any;            // Map<name, BindingInfo>
   derivations: any;         // name → Derivation (the in-progress table)
@@ -77,16 +95,26 @@ interface FixedValuesDeps {
   expandMeasureIR: any;     // (name, derivations) → IR | null
   collectSelfRefs: any;     // (ir) → Set<name>
   lowerExpr: any;           // (ast) → IR
+  diagnostics?: any[];      // shared build-time diagnostics array (optional: tests may omit it)
+  bindingLoc?: any;         // (name) → source loc | undefined
 }
 
 class FixedValues {
   _deps: FixedValuesDeps;
   _cache: Map<string, any>;
   _inProgress: Set<string>;
+  _diagnosed: Set<string>;
 
   constructor(deps: FixedValuesDeps) {
     this._deps = deps;
     this._cache = new Map();        // name → resolved value (success only)
+    // Names already given a real-evaluation-failure diagnostic. No-negative-
+    // cache (see header) means a genuinely-failing binding is re-attempted
+    // on every demand; without this set a hot name (`.has` called from
+    // several sites) would push a duplicate diagnostic per demand. This set
+    // only suppresses the DUPLICATE MESSAGE, not the retry — a later demand
+    // that happens to succeed still returns the value normally.
+    this._diagnosed = new Set();
     this._inProgress = new Set();   // current resolution stack (cycle guard)
   }
 
@@ -282,14 +310,14 @@ class FixedValues {
         return [env[refName], state];
       }
       const dep = bindings.get(refName);
-      if (!dep) throw new Error(`resolveValueRef: unknown binding '${refName}'`);
+      if (!dep) throw unresolvableRefError(`resolveValueRef: unknown binding '${refName}'`);
       const d = derivations[refName];
       if (d && (d.kind === 'sample' || d.kind === 'alias'
                 || d.kind === 'iid' || d.kind === 'record'
                 || d.kind === 'weighted')) {
         const measureIR = expandMeasureIR(refName, derivations);
         if (!measureIR) {
-          throw new Error(`resolveValueRef: cannot expand measure for '${refName}'`);
+          throw unresolvableRefError(`resolveValueRef: cannot expand measure for '${refName}'`);
         }
         // samplerLib.walk is the in-module measure walker (was
         // traceeval.walk; relocated into sampler.ts in stage 4). It
@@ -308,7 +336,7 @@ class FixedValues {
       // own refs through this resolver first, then evaluate.
       const innerIR = (d && d.kind === 'evaluate' && d.ir) || dep.ir;
       if (!innerIR) {
-        throw new Error(`resolveValueRef: no IR for '${refName}'`);
+        throw unresolvableRefError(`resolveValueRef: no IR for '${refName}'`);
       }
       const inner = collectSelfRefs(innerIR);
       for (const n of inner) {
@@ -347,12 +375,31 @@ class FixedValues {
 
     // The synthesised disintegrate effectiveValue can be a measure
     // expression (e.g. `lawof(...)`); evaluating that as a value is a
-    // category error. Catch cleanly — UNRESOLVED, not a crash. Same for
-    // anonymous bindings whose lifted IR is a measure construction.
-    // (Old loop: `catch (_) { continue; }`.)
+    // category error — sampler.ts's evaluateCall throws "not evaluable
+    // in sampler context" for exactly this shape (marked via
+    // unresolvableRefError below, at the throw site inside sampler.ts).
+    // Same for the three localResolveValueRef throws above (unknown
+    // binding / unexpandable measure / no IR): all mean "this name isn't
+    // a value here", not "evaluation is broken". Those stay silently
+    // UNRESOLVED. Anything else that reaches here — a domain refusal
+    // (e.g. var/std over one element) or a genuine internal bug — is a
+    // REAL failure: surface it as a diagnostic instead of vanishing, and
+    // still return UNRESOLVED (the binding still has no fixed value).
     try {
       return samplerLib.evaluateExpr(ir, env);
-    } catch (_) {
+    } catch (err: any) {
+      if (!err || !err.flatpplUnresolvedRef) {
+        const { diagnostics, bindingLoc } = this._deps;
+        if (diagnostics && !this._diagnosed.has(name)) {
+          this._diagnosed.add(name);
+          diagnostics.push({
+            severity: 'error',
+            message: `Fixed-phase binding '${name}' failed to evaluate: `
+              + `${err && err.message ? err.message : String(err)}`,
+            loc: bindingLoc ? bindingLoc(name) : undefined,
+          });
+        }
+      }
       return UNRESOLVED;
     }
   }
