@@ -50,7 +50,9 @@
 //
 // SCOPE. The kernel must be a single-input kernel whose body is a
 // sampleable scalar distribution (`fn(Normal(mu = _, sigma = s))`,
-// `x -> Normal(x, s)`, `kernelof(Normal(mu = p, sigma = s), p = p)`),
+// `x -> Normal(x, s)`, `functionof(Normal(mu = _p_, sigma = s), p = _p_)`
+// — `functionof`, not `kernelof`, because a distribution call is a measure
+// and spec §04 §sec:kernelof bars a measure from `kernelof`),
 // which is the same "scalar dist step" scope the jointchain composite
 // recogniser takes. §06 also admits record states (whose trajectories are
 // tables) and composite kernel bodies; both are a located refusal here

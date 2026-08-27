@@ -30,7 +30,7 @@ sigma_init = 0.1
 sigma_step = 0.5
 
 % AR-1 step kernel: x_t | x_{t-1} ~ Normal(x_{t-1}, sigma_step).
-step_kernel = kernelof(
+step_kernel = functionof(
   Normal(mu = _prev_, sigma = sigma_step),
   prev = _prev_)
 
