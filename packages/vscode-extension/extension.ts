@@ -774,7 +774,7 @@ function activate(context: any) {
   function armEmbeddedFollower(hostUri: any) {
     const hostUriStr = hostUri.toString();
     if (embeddedFollow) embeddedFollow.dispose();
-    let lastName = ' ';
+    let lastName = '\0';
     embeddedFollow = vscode.window.onDidChangeTextEditorSelection((ev: any) => {
       if (!FlatPPLPanel.currentPanel) {
         embeddedFollow.dispose(); embeddedFollow = undefined; return;
