@@ -197,8 +197,7 @@ const randLogNormal = _makeInvCdfNormalFactory((z, mu, sigma) => Math.exp(mu + s
 const randLogistic = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -250,8 +249,7 @@ function logpdfLogistic(x: any, mu: any, s: any) {
 const randWeibull = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -314,8 +312,7 @@ function logpdfWeibull(x: any, k: any, lambda: any) {
 const randPareto = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -364,8 +361,7 @@ function logpdfPareto(x: any, alpha: any, scale: any) {
 const randGeneralizedNormal = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -413,8 +409,7 @@ function logpdfGeneralizedNormal(x: any, mean: any, alpha: any, beta: any) {
 const randInverseGamma = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -562,8 +557,7 @@ function logpdfInverseGamma(x: any, shape: any, scale: any) {
 const randChiSquared = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -656,8 +650,7 @@ function _vmDraw(mu: any, kappa: any, prng: any) {
 const randVonMises = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -694,8 +687,7 @@ function logpdfVonMises(x: any, mu: any, kappa: any) {
 const randLaplace = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -747,8 +739,7 @@ function logpdfLaplace(x: any, location: any, scale: any) {
 const randGeometric = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -797,8 +788,7 @@ function logpdfGeometric(x: any, p: any) {
 const randNegativeBinomial = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -849,8 +839,7 @@ function logpdfNegativeBinomial(x: any, alpha: any, beta: any) {
 const randNegativeBinomial2 = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -924,8 +913,7 @@ function _catLogpmf(k: any, p: any, offset: any) {
 const randCategorical = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
@@ -942,8 +930,7 @@ const randCategorical = {
 const randCategorical0 = {
   factory: function () {
     const args = Array.prototype.slice.call(arguments);
-    const lastIdx = args.length - 1;
-    const o = args.length > 0 ? args[lastIdx] : null;
+    const o = args[args.length - 1];
     const opts = (o && typeof o === 'object' && ('prng' in o || 'seed' in o))
       ? o : {};
     const prng = _sharedPrng(opts);
