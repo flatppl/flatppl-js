@@ -472,6 +472,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'Lebesgue':  return write(inferReferenceMeasure(expr, scopes, T.REAL), expr);
       case 'Counting':  return write(inferReferenceMeasure(expr, scopes, T.INTEGER), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
+      case 'truncate':  return write(inferTruncate(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
       case 'markovchain': return write(inferMarkovchain(expr, scopes), expr);
       case 'kscan':     return write(inferKscan(expr, scopes), expr);
@@ -2159,6 +2160,62 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (!support) return T.measure(defaultElem);
     const t = setValueType(support, scopes);
     return T.measure(t || defaultElem);
+  }
+
+  // truncate(M, S) — spec §06: "restricts the support of measure `M` to the set
+  // `S`: ν(A) = M(A ∩ S)". That intersection is only meaningful when `S` lives
+  // in the same space as `M`'s variate. A region whose members have a DIFFERENT
+  // structural kind (a scalar measure against a set of vectors, say) intersects
+  // `M`'s space nowhere, so ν is the zero measure and a downstream `normalize`
+  // is undefined — §06 gives no meaning to the spelling.
+  //
+  // §06 states the measure-theoretic definition and no typing rule, so the
+  // diagnostic is derived from the maths rather than quoted. It is deliberately
+  // conservative in the house style of the §08 domain-contract checks below:
+  // it fires only when BOTH sides resolve to a concrete structural kind and
+  // those kinds differ. An unresolved region, an `any`/`deferred` domain, or a
+  // same-kind mismatch (a 2-vector region on a 3-vector measure) all pass here
+  // — the first two are not proven wrong, and the last is left to the
+  // classifiers that already read dimensions.
+  //
+  // Without this, `truncate(Normal(0,1), cartprod(interval(0,2)))` typed
+  // silently as `measure<real>` and then died in the materialiser with an
+  // unlocated "no derivation for '<binding>'" naming the wrong binding.
+  // The mass and valueset passes re-infer an inner node, so a nested spelling
+  // (`normalize(truncate(…))`) reaches inferTruncate more than once. Report the
+  // mismatch on each node at most once.
+  const truncateKindReported = new WeakSet<any>();
+
+  function inferTruncate(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    if (args.length !== 2) return arityError('truncate', 2, args.length, expr.loc);
+    const baseT: any = inferExpr(args[0], scopes);
+    if (baseT && baseT.kind === 'failed') return T.failed('truncate cascade');
+    const regionElem: any = setValueType(args[1], scopes);
+    const kindOf = (t: any) => (t && (t.kind === 'scalar' || t.kind === 'array'
+      || t.kind === 'record') ? t.kind : null);
+    const domainKind = baseT && baseT.kind === 'measure' ? kindOf(baseT.domain) : null;
+    const regionKind = kindOf(regionElem);
+    if (domainKind && regionKind && domainKind !== regionKind) {
+      if (truncateKindReported.has(expr)) {
+        return T.failed('truncate region/variate kind mismatch');
+      }
+      truncateKindReported.add(expr);
+      diagnostics.push({
+        severity: 'error',
+        message: 'truncate(M, S): the region S is a set of ' + regionKind
+          + ' values but M has a ' + domainKind + ' variate ('
+          + T.show(baseT.domain) + ' vs ' + T.show(regionElem) + '). Spec §06 '
+          + 'defines truncate as ν(A) = M(A ∩ S), which is the zero measure '
+          + 'when S lies outside M\'s space. Note that a one-component '
+          + 'positional cartprod over a scalar set is a set of LENGTH-1 '
+          + 'VECTORS (spec §03 with the §07 cat rule) — write the bare set '
+          + 'for a scalar variate.',
+        loc: expr.loc,
+      });
+      return T.failed('truncate region/variate kind mismatch');
+    }
+    return baseT && baseT.kind === 'measure' ? baseT : T.measure(T.deferred());
   }
 
   function inferGetField(expr: any, scopes: any): any {
@@ -4496,12 +4553,20 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
         const elems = (expr.args || []).map((a: any) => setValueType(a, scopes));
         if (elems.some((e: any) => e == null)) return null;
-        if (elems.length === 1) return elems[0];
-        // Positional cartprod (spec §03): the set of arrays formed by `cat`-ing
-        // one element from each component — NOT a tuple. Per the §07 cat rule,
-        // components must share a structural kind (all scalar / all vector / all
-        // record); mixing is not permitted. (Per-position membership lives in
-        // the value-set layer — %unknown for cartprod today.)
+        // Positional cartprod (spec §03 "Cartesian product"): "Each member is
+        // the `cat` of one element per component set (so vector components
+        // concatenate)" — NOT a tuple. Per the §07 cat rule, components must
+        // share a structural kind (all scalar / all vector / all record);
+        // mixing is not permitted. Per-position membership lives in the
+        // value-set layer (`value-set.setExprValueset`'s cartprod arm), not
+        // here — this slot carries the shape only.
+        //
+        // Arity 1 goes through the same rule, deliberately. §07 `cat(x)` is `x`
+        // for a vector or a record but `vector(x)` for a scalar, so
+        // `cartprod(cartpow(reals, 3))` collapses to the component (a theorem,
+        // not a special case) while `cartprod(reals)` is the set of LENGTH-1
+        // vectors. An arity-1 shortcut returning the component outright got the
+        // scalar case wrong.
         const shaped = catShapeType(elems);
         if (shaped == null) {
           diagnostics.push({

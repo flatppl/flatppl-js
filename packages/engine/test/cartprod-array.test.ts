@@ -7,9 +7,10 @@
 // `cat` on values and `cartpow` on a scalar set, and removes the tuple that
 // leaked into `elementof` results, measure domains, and record fields (§04).
 //
-// (Per-position set membership belongs in the valueset/support layer, which is
-// `%unknown` for cartprod today — a separate follow-up; this file pins the
-// VALUE TYPE only. The keyword form stays a record.)
+// (Per-position set membership belongs in the valueset/support layer, which
+// value-set.ts now carries for the positional form; this file pins the VALUE
+// TYPE only — see value-set.test.ts for the valueset arm. The keyword form
+// stays a record.)
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -63,9 +64,38 @@ test('cartprod mixing structural kinds (scalar + vector) is a static error (§07
     'expected a mixed-kind cartprod error; got ' + errs.map((e: any) => e.message).join(' | '));
 });
 
-test('single-component cartprod is the component itself', () => {
-  const { t } = typeOf('x = elementof(cartprod(reals))', 'x');
-  assert.ok(T.equal(t, T.REAL));
+test('single-component cartprod of a SCALAR set is the set of length-1 vectors', () => {
+  // §03: "Each member is the `cat` of one element per component set", and §07
+  // `cat(x)` is `vector(x)` for a scalar. So this is R¹, NOT `reals` — the same
+  // type `cartpow(reals, 1)` gives.
+  const { t, errs } = typeOf('x = elementof(cartprod(reals))', 'x');
+  assert.equal(errs.length, 0, errs.map((e: any) => e.message).join(' | '));
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [1]);
+  assert.ok(T.equal(t.elem, T.REAL));
+  const pow = typeOf('x = elementof(cartpow(reals, 1))', 'x').t;
+  assert.ok(T.equal(t, pow), 'cartprod(S) ≡ cartpow(S, 1) for a scalar S: '
+    + T.show(t) + ' vs ' + T.show(pow));
+});
+
+test('single-component cartprod of an ARRAY set collapses to the component', () => {
+  // §07 `cat(x)` is `x` for a vector, so the collapse here is a THEOREM of the
+  // cat rule, not an arity-1 special case. Contrast the scalar case above.
+  const { t, errs } = typeOf('x = elementof(cartprod(cartpow(reals, 3)))', 'x');
+  assert.equal(errs.length, 0, errs.map((e: any) => e.message).join(' | '));
+  assert.equal(t.kind, 'array');
+  assert.deepEqual(t.shape, [3]);
+  const bare = typeOf('x = elementof(cartpow(reals, 3))', 'x').t;
+  assert.ok(T.equal(t, bare), 'cartprod(A) ≡ A for an array set A');
+});
+
+test('single-component cartprod of a RECORD set collapses to the component', () => {
+  // §07 `cat(x)` is `x` for a record too — the merged record of one record.
+  const { t, errs } = typeOf('x = elementof(cartprod(cartprod(a = reals, b = integers)))', 'x');
+  assert.equal(errs.length, 0, errs.map((e: any) => e.message).join(' | '));
+  assert.equal(t.kind, 'record');
+  assert.ok(T.equal(t.fields.a, T.REAL));
+  assert.ok(T.equal(t.fields.b, T.INTEGER));
 });
 
 test('keyword cartprod stays a record (unchanged)', () => {

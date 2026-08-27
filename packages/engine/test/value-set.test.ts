@@ -139,8 +139,11 @@ test('valueset: setExprValueset reads a positional cartprod set expression', () 
   const cart = (...args: any[]) => ({ kind: 'call', op: 'cartprod', args });
   assert.equal(VS.toSexpr(VS.setExprValueset(cart(iv(0, 1), iv(2, 4)))),
     '(cartprod (interval 0.0 1.0) (interval 2.0 4.0))');
-  // §03: "single-component cartprod is the component itself" — no wrapper.
-  assert.equal(VS.toSexpr(VS.setExprValueset(cart(iv(0, 1)))), '(interval 0.0 1.0)');
+  // Arity 1 KEEPS the wrapper. §03 makes a member the `cat` of one element per
+  // component and §07 `cat(x)` is `vector(x)` for a scalar, so this is the set
+  // of length-1 vectors over [0,1] — not the interval itself.
+  assert.equal(VS.toSexpr(VS.setExprValueset(cart(iv(0, 1)))),
+    '(cartprod (interval 0.0 1.0))');
   // An unresolvable factor makes the whole product unknown rather than
   // producing a product with a hole in it.
   assert.equal(VS.setExprValueset(cart(iv(0, 1), { kind: 'ref', name: 'S' })), VS.UNKNOWN);
