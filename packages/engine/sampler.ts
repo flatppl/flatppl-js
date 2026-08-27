@@ -2638,7 +2638,26 @@ function evaluateCall(ir: any, env: any): any {
     });
   }
   if (op in ARITH_OPS) {
-    const args = (ir.args || []).map((a: any) => evaluateExpr(a, env));
+    // The hottest arm of the interpreter: an inlined amplitude body
+    // reaches it thousands of times per evaluated point. Building `args`
+    // with `.map` costs ~29% of a profile sweep, because the per-node
+    // callback closure blocks inlining of the recursive `evaluateExpr`.
+    // Arities 1 and 2 cover nearly every op and get a fixed-length array
+    // literal; the general case pushes into an empty array. Do NOT
+    // "simplify" either back to `.map`, and do not use `new Array(n)` —
+    // its holey elements measured -2% against this form's -27%, i.e. they
+    // give back nearly the whole win.
+    const rawArgs = ir.args;
+    const n = rawArgs === undefined || rawArgs === null ? 0 : rawArgs.length;
+    let args: any[];
+    if (n === 1) {
+      args = [evaluateExpr(rawArgs[0], env)];
+    } else if (n === 2) {
+      args = [evaluateExpr(rawArgs[0], env), evaluateExpr(rawArgs[1], env)];
+    } else {
+      args = [];
+      for (let i = 0; i < n; i++) args.push(evaluateExpr(rawArgs[i], env));
+    }
     // Phase 2: declared ops dispatch through ops.ts (engine-concepts
     // §18). Both paths return the same result for the declared ops;
     // conformance suite pins this. ARITH_OPS entries that haven't
