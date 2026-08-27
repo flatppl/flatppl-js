@@ -620,10 +620,16 @@ function validateSpecialOperation(valueNode: any) {
 
       // Static check #3 (spec §sec:metricsum "Static checks"):
       // **every repeated non-output index in `expr` must occur exactly
-      // twice — once upper and once lower**. Walk body occurrences,
-      // skipping any names that ARE output indices (they're checked above);
-      // for each non-output name, count upper / lower occurrences and
-      // require exactly one of each.
+      // twice — once upper and once lower**. The clause governs *repeated*
+      // indices only: a non-output index occurring ONCE is left alone,
+      // because "Equivalence to `aggregate` under identity metric" makes
+      // `metricsum(eye(n), ...)` an `aggregate(sum, ...)`, and a plain row
+      // sum (`aggregate(sum, [.mu], A[.mu, .nu])`) spells exactly that —
+      // one unpaired non-output index. Refusing it would refuse a
+      // construct the equivalence clause requires. Walk body occurrences,
+      // skipping any names that ARE output indices (they're checked
+      // above); for each non-output name occurring 2+ times, require
+      // exactly one upper and one lower.
       const outNames = new Set(declared.map(d => d.name));
       for (const [name, occs] of bodyOccurrences) {
         if (outNames.has(name)) continue;
@@ -632,7 +638,7 @@ function validateSpecialOperation(valueNode: any) {
           if (occ.variance === 'upper') uppers++;
           else if (occ.variance === 'lower') lowers++;
         }
-        if (uppers !== 1 || lowers !== 1) {
+        if (uppers + lowers >= 2 && !(uppers === 1 && lowers === 1)) {
           // Pick the first occurrence of this name for the diagnostic
           // location — pointing at any one occurrence is enough to find
           // the offending axis in the source.
@@ -640,8 +646,8 @@ function validateSpecialOperation(valueNode: any) {
           diags.push({
             severity: 'error',
             message: `metricsum(): contracted axis '.${name}' must appear exactly `
-              + `twice in expr — once upper ('.${name}^') and once lower ('.${name}_'); `
-              + `got ${uppers} upper, ${lowers} lower`,
+              + `twice in expr — once upper ('.${name}^') and once lower ('.${name}_') `
+              + `(spec §04 §sec:metricsum "Static checks"); got ${uppers} upper, ${lowers} lower`,
             loc: loc || valueNode.loc,
           });
         }

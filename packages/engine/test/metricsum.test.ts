@@ -214,6 +214,37 @@ g: r[.mu^] := A[.mu^, .nu^] * B[.nu^, .rho_]
     `expected paired-variance diagnostic; got: ${ds.map((d: any) => d.message).join('; ')}`);
 });
 
+test('metricsum: a single unpaired non-output index is legal (spec equivalence to aggregate)', () => {
+  // The pairing clause governs *repeated* indices only. Spec "Equivalence
+  // to `aggregate` under identity metric" makes `metricsum(eye(n), ...)`
+  // an `aggregate(sum, ...)`, so the row-sum spelling `A[.mu^, .nu_]` with
+  // `.nu` occurring once must parse — the same construct as
+  // `aggregate(sum, [.mu], A[.mu, .nu])`.
+  const src = `
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+g = eye(2)
+r = metricsum(g, [.mu^], A[.mu^, .nu_])
+`;
+  assert.equal(errors(src).length, 0);
+});
+
+test('metricsum: single unpaired non-output index evaluates as the equivalent aggregate row sum', () => {
+  // Numeric pin: A = [[1,2],[3,4]] row sums are [3, 7] — matches both
+  // the `aggregate(sum, [.mu], A[.mu, .nu])` equivalent and hand
+  // computation.
+  const src = `
+A = rowstack([[1.0, 2.0], [3.0, 4.0]])
+g = eye(2)
+r = metricsum(g, [.mu^], A[.mu^, .nu_])
+`;
+  const ctx = processSource(src);
+  assert.equal(ctx.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  const v = built.fixedValues.get('r');
+  const data = v instanceof Float64Array ? Array.from(v) : Array.from(v.data);
+  assert.deepEqual(data, [3, 7]);
+});
+
 test('metricsum: output index appearing with opposite variance in body is a static error', () => {
   // Spec: "every output index must occur in `expr` with the same
   // variance and may not also be contracted." Output `.mu^` (upper) +
