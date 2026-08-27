@@ -1622,6 +1622,10 @@ function _hasAtomAxis(v: any, N: any) {
   return valueLib.isAtomBatched(v, N) && v.shape.length >= 2;
 }
 
+function _isRank0(v: any) {
+  return isValue(v) && v.shape.length === 0;
+}
+
 // mulN: atom-aware multiplication. Routes the MvNormal-style
 // matrix × shape=[N, n] case to _matBatchedVecMul; otherwise delegates
 // to the atom-indep `mul` (which already handles scalar broadcast,
@@ -1662,6 +1666,13 @@ function mulN(a: any, b: any, N: any) {
   }
   // Atom-indep case.
   if (!aBatched && !bBatched) return mul(a, b);
+  // Scalar × atom-batched. Spec §07 admits `mul` on scalar-vector and
+  // scalar-matrix, and a rank-0 operand has no axis to align against
+  // the atom axis — so the atom-indep kernel's scalar broadcast already
+  // scales every cell and keeps the batched shape.
+  if ((aBatched && _isRank0(b)) || (bBatched && _isRank0(a))) {
+    return mul(a, b);
+  }
   // Other atom-batched cases land when needed.
   throw new Error(
     'mulN: unsupported atom-batched shape combination ' +
@@ -1682,6 +1693,12 @@ function _makeAtomAwareBinop(scalarFn: any, atomIndepImpl: any, opName: any) {
     if (aBatched && bBatched) {
       // Both atom-batched: same shape required; delegate to atom-indep
       // elementwise add (the data layouts agree and rank includes N).
+      return atomIndepImpl(a, b);
+    }
+    // A rank-0 operand has no axis to align against the atom axis, so
+    // the atom-indep kernel's rank-0 broadcast already covers every
+    // cell of the batched buffer and keeps the batched shape.
+    if ((aBatched && _isRank0(b)) || (bBatched && _isRank0(a))) {
       return atomIndepImpl(a, b);
     }
     if (aBatched && !bBatched) {

@@ -301,21 +301,20 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
       count: N,
       refArrays: Object.assign({}, bodyRefs, paramBind),
     })).catch((err: any) => {
-      // Over a vector-atom base the batched evaluator covers the
-      // shape-aware ops (matrix-vector products, atom-broadcast add / sub);
-      // an ELEMENTWISE scalar primitive over a whole D-vector atom is not
-      // wired there yet and fails with a shape complaint from deep inside.
-      // Name the situation instead, and name what does work — silently
-      // reading the flat atom buffer as N scalars, which is what this used
-      // to do, produced NaNs.
+      // Over a vector-atom base the batched evaluator covers elementwise
+      // scalar primitives (broadcastN maps them over each atom's cell) and
+      // the shape-aware ops value-ops has kernels for — matrix-vector
+      // products, scalar scaling, atom-broadcast add / sub. An operand
+      // combination outside those, `x * x` over two vector atoms say,
+      // fails with a shape complaint from deep inside. Name the situation
+      // instead of letting the inner message stand alone.
       if (!vectorAtom) return Promise.reject(err);
       return Promise.reject(new Error(`pushfwd: function '${d.fnRef}' over the `
         + `vector-valued variate of '${d.from}' (${N} atoms of `
         + `${baseVal.shape.slice(1).join('×')}) is not supported by this `
-        + `engine's batched evaluator: ${err.message}. A matrix-vector `
-        + `affine map (\`L * x + b\`) scores and samples analytically via `
-        + `spec §06's bijection registry; an elementwise map over a vector `
-        + `variate is not yet wired here.`));
+        + `engine's batched evaluator: ${err.message}. Elementwise scalar `
+        + `primitives and scalar / matrix-vector affine maps over a vector `
+        + `variate do work; a product of two vector atoms does not.`));
     }).then((reply: any) => {
       return measureFromReply(reply, N, {
         logWeights: M.logWeights,

@@ -89,12 +89,19 @@ function _scalarVal(v: any) {
 //   - Float64Array of length N → atom-batched scalar (raw)
 //   - Value with shape=[]    → atom-indep scalar (wrapped)
 //   - Value with shape=[N]   → atom-batched scalar (wrapped)
+//   - Value with shape=[N, ...cell] → shaped atom batch, one
+//     vector/matrix per atom (an `iid(Normal(0,1), D)` variate, or the
+//     vector-atom base a `pushfwd` body is applied to)
 //
 // Returns:
 //   - rank-0 result (no atom-batched input) → number or Value([])
 //     depending on wantValue.
 //   - rank-1 result (≥1 atom-batched input) → Float64Array(N) or
 //     Value([N]) depending on wantValue.
+//   - Value([N, ...cell]) when any input is a shaped atom batch — the
+//     primitive maps over each atom's cell. Without this the cell
+//     operand fell through `isBatch` to a rank-0 read, which returned
+//     NaN or a shape-[] result the callers rejected.
 //
 // **wantValue.** If ANY input is a Value, the output is Value-wrapped
 // (per the §2.1 contract — Values propagate; raw types only outputted
@@ -105,6 +112,95 @@ function _scalarVal(v: any) {
 // nested form); higher arities take the generic per-atom dispatch.
 // `broadcast1/2/3` survive as thin shims for back-compat callers.
 
+// Per-atom cell length of an atom-batched Value whose per-atom slice is
+// itself shaped — shape=[N, ...cell], the form `iid(Normal(0,1), D)` and
+// the vector-atom pushfwd paths produce. Returns 0 for anything else,
+// `isBatch` (shape=[N]) included. Non-allocating: the product replaces
+// `atomShape(v, N)`'s `.slice()`.
+function _cellLen(v: any, N: any) {
+  if (!isValueObj(v)) return 0;
+  const s = v.shape;
+  if (s.length < 2 || s[0] !== N) return 0;
+  if (typeof v.outerRank === 'number' && v.outerRank < 1) return 0;
+  let n = s[1];
+  for (let i = 2; i < s.length; i++) n *= s[i];
+  return n;
+}
+
+// First shaped atom-batch operand in `args`, or null. Only a Value of
+// rank ≥ 2 can be one, so the scan costs a length compare per argument
+// and confirms the survivor through `_cellLen` — cheap enough to sit
+// ahead of the scalar dispatch on every call.
+function _cellArg(args: any[], N: any) {
+  for (let i = 0; i < args.length; i++) {
+    const v = args[i];
+    if (isValueObj(v) && v.shape.length > 1 && _cellLen(v, N) !== 0) return v;
+  }
+  return null;
+}
+
+// Map a scalar primitive over the CELLS of a shaped atom batch:
+// shape=[N, ...cell] in, shape=[N, ...cell] out. Each operand is read
+// at its own granularity — a same-cell-shaped batch per cell entry, an
+// atom-batched scalar once per atom (constant across that atom's cell),
+// a rank-0 Value or bare number once. Arity-generic: an elementwise body
+// over a vector variate is the cold path next to the shape-aware
+// value-ops kernels, so it does not earn a fixed-arity unroll.
+//
+// The result is always a Value — a cell shape cannot ride on a bare
+// Float64Array — so `wantValue` does not apply here.
+function _broadcastCells(fn: any, args: any[], N: any, cell: any) {
+  const cellLen = _cellLen(cell, N);
+  const ar = args.length;
+  // Per-operand read plan: 2 = cell batch, 1 = atom-batched scalar,
+  // 0 = constant. Kept as a flat array so the inner loop indexes it
+  // without a per-entry type test.
+  const kind = new Array(ar);
+  const datas: any[] = new Array(ar);
+  const consts: any[] = new Array(ar);
+  for (let k = 0; k < ar; k++) {
+    const v = args[k];
+    const vCell = _cellLen(v, N);
+    if (vCell !== 0) {
+      if (vCell !== cellLen) {
+        throw new Error('broadcastN: per-atom cell shape ['
+          + v.shape.slice(1).join(',') + '] does not match ['
+          + cell.shape.slice(1).join(',') + '] with N=' + N);
+      }
+      kind[k] = 2; datas[k] = v.data;
+    } else if (isBatch(v, N)) {
+      kind[k] = 1; datas[k] = _batchData(v);
+    } else {
+      kind[k] = 0; consts[k] = _scalarVal(v);
+    }
+  }
+  const out = new Float64Array(N * cellLen);
+  const slot: any[] = new Array(ar);
+  for (let k = 0; k < ar; k++) if (kind[k] === 0) slot[k] = consts[k];
+  for (let atom = 0; atom < N; atom++) {
+    const base = atom * cellLen;
+    for (let k = 0; k < ar; k++) if (kind[k] === 1) slot[k] = datas[k][atom];
+    for (let i = 0; i < cellLen; i++) {
+      for (let k = 0; k < ar; k++) {
+        if (kind[k] === 2) slot[k] = datas[k][base + i];
+      }
+      out[base + i] = +fn(...slot);
+    }
+  }
+  return valueLib.withShape(out, cell.shape.slice());
+}
+
+// Pre-dispatch on the operand ranks, then hand off. Kept to this shape
+// deliberately: `_broadcastScalarN` below carries the per-element hot
+// loops, and folding the cell branch into it cost a uniform ~5% per
+// element on every arity (bench/broadcastn-bench.ts) by perturbing how
+// those loops optimise. A tiny dispatcher leaves them byte-identical.
+function broadcastN(fn: any, args: any[], N: any) {
+  const cell = _cellArg(args, N);
+  if (cell !== null) return _broadcastCells(fn, args, N, cell);
+  return _broadcastScalarN(fn, args, N);
+}
+
 function _anyValueArr(args: any[]): boolean {
   for (let i = 0; i < args.length; i++) {
     if (isValueObj(args[i])) return true;
@@ -112,7 +208,7 @@ function _anyValueArr(args: any[]): boolean {
   return false;
 }
 
-function broadcastN(fn: any, args: any[], N: any) {
+function _broadcastScalarN(fn: any, args: any[], N: any) {
   const ar = args.length;
   // Fast paths for arity 1/2/3 — V8 JITs the fixed-arity form much
   // better than the generic loop. The runtime hits these almost
