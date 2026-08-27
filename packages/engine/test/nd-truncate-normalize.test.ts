@@ -54,6 +54,45 @@ test('over-cap dimension throws', () => {
 // code already fell through to `return null` for real record-form input.
 // It is refused explicitly below instead, rather than left as a silent
 // defer to a generic, unrelated-sounding downstream classification error.
+test('a one-component positional cartprod still reads as ONE axis', () => {
+  // parseTruncationBox reads the region's geometry and is unaffected by the
+  // variate-kind fix: the box over `cartprod(interval(0,2))` has one axis,
+  // exactly as `interval(0,2)` does. What changed is the VARIATE the region
+  // describes (a length-1 vector, not a scalar), which the truncate typing
+  // rule below polices — the axis list, and so every Z it drives, is the same.
+  assert.deepEqual(parseTruncationBox(cart(iv(0, 2))),
+    [{ lo: 0, hi: 2, kind: 'finite' }]);
+  assert.deepEqual(parseTruncationBox(cart(iv(0, 2))), parseTruncationBox(iv(0, 2)));
+});
+
+test('truncate refuses a region whose variate kind differs from the measure', () => {
+  // Spec §06: truncate is ν(A) = M(A ∩ S). A scalar-variate measure against a
+  // region of length-1 VECTORS (§03 cartprod + §07 cat) intersects nowhere, so
+  // ν is the zero measure and normalize is undefined. Refuse with a LOCATED
+  // diagnostic rather than typing silently as measure<real> and then dying in
+  // the materialiser with an unlocated "no derivation for '<binding>'".
+  const errs = (src: string) => processSource(src).diagnostics
+    .filter((d: any) => d.severity === 'error');
+
+  const bad = errs('m = normalize(truncate(Normal(0.0, 1.0), cartprod(interval(0.0, 2.0))))');
+  assert.equal(bad.length, 1, 'exactly one diagnostic, not one per inference pass: '
+    + bad.map((d: any) => d.message).join(' | '));
+  assert.match(bad[0].message, /truncate\(M, S\).*set of array values.*scalar variate/);
+  assert.ok(bad[0].loc && bad[0].loc.start && typeof bad[0].loc.start.line === 'number',
+    'the diagnostic must carry a source location, got ' + JSON.stringify(bad[0].loc));
+
+  // The record form on a scalar measure is the same mismatch.
+  assert.match(
+    errs('m = truncate(Normal(0.0, 1.0), cartprod(a = interval(0.0, 2.0)))')[0].message,
+    /set of record values.*scalar variate/);
+
+  // The bare interval — the only spelling with a scalar variate — stays clean,
+  // as does a matched vector region over a vector-variate measure.
+  assert.deepEqual(errs('m = normalize(truncate(Normal(0.0, 1.0), interval(0.0, 2.0)))'), []);
+  assert.deepEqual(errs('L = Lebesgue(support = cartprod(interval(0.0, 3.0)))\n'
+    + 'm = truncate(L, cartprod(interval(0.0, 2.0)))\n'), []);
+});
+
 test('record-form (keyword) cartprod refuses loudly, not silently', () => {
   const namedCart = { kind: 'call', op: 'cartprod',
     fields: [{ name: 'x', value: iv(-5, 5) }, { name: 'y', value: iv(-5, 5) }] };

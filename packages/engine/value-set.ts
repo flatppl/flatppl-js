@@ -214,8 +214,10 @@ function setExprValueset(setIR: any, resolveDim?: (ir: any) => any): any {
       // lowers to `fields`, carries a RECORD variate, and has no entry here.
       if (Array.isArray(setIR.fields) && setIR.fields.length > 0) return UNKNOWN;
       if (args.length === 0) return UNKNOWN;
-      // §03: "single-component cartprod is the component itself".
-      if (args.length === 1) return setExprValueset(args[0], resolveDim);
+      // Arity 1 keeps the wrapper. §03 makes a member the `cat` of one element
+      // per component, and §07 `cat(x)` is `vector(x)` for a scalar, so
+      // `cartprod(reals)` is the set of length-1 vectors — not `reals`.
+      // Mirrors Rust, which builds `ValueSet::CartProd([S])` unconditionally.
       const elems = args.map((a: any) => setExprValueset(a, resolveDim));
       if (elems.some((e: any) => e === UNKNOWN)) return UNKNOWN;
       return cartprod(elems);

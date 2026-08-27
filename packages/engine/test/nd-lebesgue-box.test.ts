@@ -110,11 +110,16 @@ test('1-D Lebesgue(interval) keeps its existing scalar classification', () => {
   assert.ok(Math.abs(d.logTotalmass - Math.log(4)) < 1e-15);
 });
 
-test('a single-component positional cartprod is the 1-D scalar case', () => {
-  // §03: "single-component cartprod is the component itself" — so it must
-  // NOT become a 1-axis vector-variate box.
+test('a single-component positional cartprod is a ONE-axis box, not the scalar case', () => {
+  // §03 makes a member the `cat` of one element per component and §07 `cat(x)`
+  // is `vector(x)` for a scalar, so the support is a set of length-1 VECTORS.
+  // It classifies as a 1-axis box; only the bare `interval(a,b)` spelling keeps
+  // the scalar variate. The mass is the same either way (log 4).
   const { d } = derivOf('L = Lebesgue(support = cartprod(interval(0.0, 4.0)))', 'L');
-  assert.equal(d.kind, 'sample');
+  assert.equal(d.kind, 'lebesguebox');
+  assert.equal(d.axes.length, 1);
+  assert.ok(Math.abs(d.logTotalmass - Math.log(4)) < 1e-15,
+    'logTotalmass ' + d.logTotalmass + ' ≠ log 4');
 });
 
 test('an unbounded box axis is refused, not silently given finite mass', () => {
@@ -138,14 +143,13 @@ test('an INFINITE box axis bound is refused', () => {
     undefined);
 });
 
-test('cartpow box dimension is bounded below by 2 and above by the axis cap', () => {
-  // k = 1 declines. Note the ASYMMETRY with cartprod, which is deliberate:
-  // §03 collapses a one-component cartprod ("single-component cartprod is the
-  // component itself") but says no such thing for cartpow — `cartpow(reals, 1)`
-  // is R¹, a one-element ARRAY, not a scalar. So this is left underivable
-  // rather than quietly treated as the scalar interval case.
-  assert.equal(derivOf('L = Lebesgue(support = cartpow(interval(0.0, 1.0), 1))', 'L').d,
-    undefined, 'cartpow(interval, 1) is a 1-array, not a scalar — declines');
+test('cartpow box dimension runs from 1 up to the axis cap', () => {
+  // k = 1 is a ONE-axis box, matching the single-component cartprod above.
+  // `cartpow(reals, 1)` is R¹, a one-element ARRAY, so it carries a length-1
+  // vector variate and never collapses to the scalar interval case.
+  const one = derivOf('L = Lebesgue(support = cartpow(interval(0.0, 1.0), 1))', 'L').d;
+  assert.equal(one?.kind, 'lebesguebox', 'cartpow(interval, 1) is a 1-axis box');
+  assert.equal(one.axes.length, 1);
   assert.equal(derivOf('L = Lebesgue(support = cartpow(interval(0.0, 1.0), 9))', 'L').d,
     undefined, 'cartpow(interval, 9) exceeds the 8-axis cap');
   assert.equal(derivOf('L = Lebesgue(support = cartpow(interval(0.0, 1.0), 8))', 'L').d?.kind,
@@ -291,6 +295,62 @@ f(v) = v[1] + v[2]
 P = normalize(weighted(f, L))
 `;
   assertRel(await scoreAt(src, 'P', [0.25, 0.5], MC_N), 0.75, MC_TOL, 'array-variate weight');
+});
+
+// =====================================================================
+// One-axis box: the length-1-vector variate, and the density identity
+// against the scalar spelling. Spec §03 makes a cartprod member the `cat`
+// of one element per component and §07 `cat(x)` is `vector(x)` for a
+// scalar, so `cartprod(interval(a,b))` has a length-1 VECTOR variate
+// while bare `interval(a,b)` stays scalar. The two carry the SAME mass and
+// the same density value — the reference measure over a length-1 box is
+// the scalar one composed with the trivial R ≅ R¹ identification — so the
+// typing fix must not move any number.
+// =====================================================================
+
+test('the 1-axis box and the scalar interval agree on mass and density', async () => {
+  // Closed forms, both spellings: total mass = 4 − 0 = 4, and the
+  // normalized (uniform) density is 1/4 everywhere inside, so
+  // logdensityof = −log 4. Exact on both paths, no Monte Carlo.
+  const boxDeriv = derivOf('L = Lebesgue(support = cartprod(interval(0.0, 4.0)))', 'L').d;
+  const scalarDeriv = derivOf('L = Lebesgue(support = interval(0.0, 4.0))', 'L').d;
+  assert.equal(boxDeriv.kind, 'lebesguebox', 'the 1-cartprod spelling is a box');
+  assert.equal(scalarDeriv.kind, 'sample', 'the bare interval keeps the scalar kind');
+  for (const d of [boxDeriv, scalarDeriv]) {
+    assert.ok(Math.abs(d.logTotalmass - Math.log(4)) < 1e-15,
+      'logTotalmass ' + d.logTotalmass + ' ≠ log 4');
+  }
+  // The density agrees too — scored through each spelling's own variate
+  // (a length-1 array for the box, a bare scalar for the interval).
+  const boxLd = await scoreAt(
+    'P = normalize(Lebesgue(support = cartprod(interval(0.0, 4.0))))', 'P', [1.5], 64);
+  const scalarCtx = buildCtx(
+    'P = normalize(Lebesgue(support = interval(0.0, 4.0)))\nld = logdensityof(P, 1.5)\n', 64);
+  const scalarLd = (await scalarCtx.getMeasure('ld')).samples[0];
+  const want = -Math.log(4);
+  assert.ok(Math.abs(boxLd - want) < 1e-12, '1-axis box logpdf ' + boxLd + ' ≠ −log 4');
+  assert.ok(Math.abs(scalarLd - want) < 1e-12, 'scalar logpdf ' + scalarLd + ' ≠ −log 4');
+  assert.ok(Math.abs(boxLd - scalarLd) < 1e-12,
+    'the two spellings must score identically: ' + boxLd + ' vs ' + scalarLd);
+});
+
+test('a weighted 1-axis box integrates to its closed form', async () => {
+  // Z = ∫₀² x² dx = 8/3, so the normalized density at x = 1.5 is
+  // 1.5² / (8/3) = 2.25 · 3/8 = 0.84375. Monte Carlo over the box atoms.
+  //
+  // The weight takes a SCALAR parameter. At one axis the engine's two
+  // weight-binding rules coincide in arity — k params to k axes (a scalar per
+  // axis) and one param to the whole array variate — and the per-axis rule
+  // takes it, matching what mat-density's quadrature already does for a 1-axis
+  // box. Both readings denote the same number, since a length-1 array and its
+  // element carry the same value. The whole-array spelling `f(v) = v[1] * v[1]`
+  // is NOT supported at one axis (the worker's arithmetic has no atom-batched
+  // [N, 1] case); it has no working precedent and is a named follow-up.
+  const src = `L = Lebesgue(support = cartprod(interval(0.0, 2.0)))
+f(x) = x * x
+P = normalize(weighted(f, L))
+`;
+  assertRel(await scoreAt(src, 'P', [1.5], MC_N), 0.84375, MC_TOL, '1-axis weighted box');
 });
 
 test('weighted(f, Lebesgue(box)) totalmass is ∫ f over the box', async () => {

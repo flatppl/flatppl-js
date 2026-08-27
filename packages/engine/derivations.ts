@@ -1475,11 +1475,19 @@ function _classifyWeightedByFunction(
   // its two consumers bind the parameters themselves — matWeighted to the
   // box's per-axis sample columns, density.ts's walkWeighted to the k
   // scalars the base consumed at the scored point.
-  if (fnIR.params.length > 1) {
-    const axes = _boxAxesOf(baseName, bindings);
-    if (!axes || axes !== fnIR.params.length) return null;
+  // A ONE-axis box takes the per-axis route too, even at one parameter. The two
+  // binding rules coincide in arity there, and only the per-axis one is
+  // executable: it feeds the parameter a plain [N] scalar column, whereas the
+  // whole-array substitution below hands the worker an atom-batched [N, 1]
+  // value that its arithmetic kernels do not accept. It also keeps this path
+  // agreeing with mat-density's `makeIntegrandND`, which already binds
+  // `paramNames[0]` to a scalar for a 1-axis box — the sampling/quadrature
+  // agreement the axis↔parameter convention above exists to preserve.
+  const boxAxes = _boxAxesOf(baseName, bindings);
+  if (fnIR.params.length > 1 || (boxAxes === 1 && fnIR.params.length === 1)) {
+    if (!boxAxes || boxAxes !== fnIR.params.length) return null;
     return {
-      kind: 'weighted', from: baseName, weightIR: fnIR, boxAxes: axes,
+      kind: 'weighted', from: baseName, weightIR: fnIR, boxAxes,
       isLog: !!isLog, isVariateWeight: true,
     };
   }
@@ -3240,13 +3248,6 @@ function _lebesgueSupportIR(rhsIR: any, bindings: any): any {
     support = rhsIR.args[0];
   }
   if (!support) return null;
-  // §03: "single-component cartprod is the component itself" — unwrap so the
-  // 1-D interval reader sees the interval it actually describes.
-  while (support && support.kind === 'call' && support.op === 'cartprod'
-         && Array.isArray(support.args) && support.args.length === 1
-         && !(Array.isArray(support.fields) && support.fields.length > 0)) {
-    support = support.args[0];
-  }
   return support;
 }
 
@@ -3273,8 +3274,13 @@ function _lebesgueSupportIR(rhsIR: any, bindings: any): any {
 //   - the keyword form `cartprod(a = S1, …)` → decline: §03 gives it a RECORD
 //     variate with no positional axis order, which the axis-to-weight-parameter
 //     binding below depends on. Tracked as a follow-up in TODO-flatppl-js.md.
-//   - k < 2 → not a box; §03 says a single-component cartprod IS the component,
-//     so it falls through to the 1-D scalar classifier above.
+//
+// A ONE-axis box is a box, not the scalar case. §03 makes a cartprod member the
+// `cat` of one element per component and §07 `cat(x)` is `vector(x)` for a
+// scalar, so `cartprod(interval(a,b))` — and `cartpow(interval(a,b), 1)`, which
+// §03 already gave a length-1 array — carry a length-1 VECTOR variate. Both
+// classify here. The scalar classifier above still owns the bare
+// `interval(a,b)` support, which is the only spelling with a scalar variate.
 function classifyLebesgueBox(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): any {
   void ast;
   const support = _lebesgueSupportIR(rhsIR, bindings);
@@ -3287,12 +3293,12 @@ function classifyLebesgueBox(rhsIR: IRNode, ast: any, bindings: any, fixedValues
   } else if (support.op === 'cartpow') {
     if (!Array.isArray(support.args) || support.args.length !== 2) return null;
     const n = resolveConstant(support.args[1], bindings, new Set(), fixedValues);
-    if (!Number.isInteger(n) || n < 2 || n > LEBESGUE_BOX_DIM_CAP) return null;
+    if (!Number.isInteger(n) || n < 1 || n > LEBESGUE_BOX_DIM_CAP) return null;
     factors = new Array(n).fill(support.args[0]);
   } else {
     return null;
   }
-  if (factors.length < 2 || factors.length > LEBESGUE_BOX_DIM_CAP) return null;
+  if (factors.length < 1 || factors.length > LEBESGUE_BOX_DIM_CAP) return null;
   const axes: { lo: number; hi: number }[] = [];
   for (const f of factors) {
     if (!f || f.kind !== 'call' || f.op !== 'interval'
