@@ -26,6 +26,7 @@ const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
 const { totalMassExpr } = require('./normalize-mass.ts');
+const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
 
 const {
   nameSeed,
@@ -1441,6 +1442,33 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
       node.op = 'logweighted';
       node.args = [{ kind: 'lit', value: -quadLogZ }, node.args[0]];
       delete node.massFrom;
+      continue;
+    }
+    // A θ-DEPENDENT weight over a Lebesgue box: Z moves with θ, so the constant
+    // bake below is wrong at every θ but the materialised one. Estimate Z(θ) by
+    // reweighting ONE fixed sample of the box, emitted as an expression in θ
+    // (crn-normalize.ts explains the estimator, the fixed sample and the
+    // plug-in bias).
+    //
+    // The θ-dependence test is EXPLICIT rather than inferred from the quadrature
+    // above returning null: that function also declines an N-D box and an
+    // unbounded support, so treating its null as "θ-dependent" pulled the N-D
+    // θ-INDEPENDENT case onto this path too and moved numbers that were already
+    // right (it broke the reified-vs-lambda bit-for-bit agreement and the 4xy
+    // box oracle).
+    const crnShape = crnRecognize(node);
+    const crnExpr = (crnShape && crnWeightIsThetaDependent(crnShape, ctx))
+      ? crnNormalizeMassExpr(node, { points: ctx && ctx.crnNormalizePoints })
+      : null;
+    if (crnExpr != null) {
+      const innerC = node.args[0];
+      node.op = 'logweighted';
+      node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [crnExpr] }] }, innerC];
+      delete node.massFrom;
+      // Same mark the closed-form mass rewrite carries: Ẑ = 0 makes the shift
+      // +∞ and §06 leaves normalize undefined there, so the walker must refuse
+      // rather than add ±∞ to the inner log-density.
+      node.fromNormalize = true;
       continue;
     }
     needMaterialise.push(node);
