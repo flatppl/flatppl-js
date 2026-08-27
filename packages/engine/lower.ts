@@ -890,9 +890,11 @@ function _lowerReification(op: string, node: any, ctx: any): any {
   // this rewrite, downstream IR consumers (type inference,
   // orchestrator) see one uniform reification form.
   let outOp = op;
+  let wasKernelof = false;
   if (op === 'kernelof') {
     body = { kind: 'call', op: 'lawof', args: [body], loc: args[0].loc };
     outOp = 'functionof';
+    wasKernelof = true;
   }
 
   return {
@@ -902,6 +904,12 @@ function _lowerReification(op: string, node: any, ctx: any): any {
     paramKwargs,
     paramSources,
     body,
+    // `kernelof` is its own FlatPIR head (spec §11 "Reified callables"),
+    // and §11 "Normalization" licenses no desugaring, so the export must
+    // restore it. Recorded here rather than kept as `op` so downstream
+    // consumers keep seeing the one uniform reification form. Set only when
+    // true — an always-present field would change every functionof shape.
+    ...(wasKernelof ? { wasKernelof: true } : {}),
     loc:         node.loc,
   };
 }

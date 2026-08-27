@@ -302,7 +302,8 @@ function _opToSexpr(op: string): string {
 function _callToSexpr(e: any, ind: string, mopts?: any): string {
   // Reified callables take the spec §11 fixed-arity form, not the
   // generic call shape. (kernelof is accepted defensively; the lowerer
-  // canonicalises it to functionof so it never appears internally.)
+  // canonicalises it to functionof and flags `wasKernelof` so the
+  // printer can restore the spec head.)
   if (!e.target && (e.op === 'functionof' || e.op === 'kernelof') && e.body) {
     return _reificationToSexpr(e, ind, mopts);
   }
@@ -394,12 +395,21 @@ function _reificationToSexpr(e: any, ind: string, mopts?: any): string {
     const p = params[i];
     return isPlaceholderName(p) ? p.slice(1, -1) : p;
   };
-  const parts: string[] = [e.op === 'kernelof' ? 'kernelof' : 'functionof'];
+  // `kernelof` is its own FlatPIR head (spec §11 "Reified callables"), and
+  // §11 "Normalization" licenses only kwarg reordering, so the lowerer's
+  // internal `functionof(lawof(x), kw)` desugaring must be undone here:
+  // %specinputs entries have to restore as boundary kwargs on the way back
+  // to FlatPPL.
+  const isKernelof = e.op === 'kernelof' || e.wasKernelof;
+  const parts: string[] = [isKernelof ? 'kernelof' : 'functionof'];
+  const body = (e.wasKernelof && e.body && e.body.op === 'lawof')
+    ? e.body.args[0]
+    : e.body;
   // The reification's own kernel/function annotation wraps the whole
   // `(functionof …)` form (spec §11; applied by `_exprToSexpr` via
   // `_wrapMeta`), not the head. The body's inner exprs keep their own
   // wrappers via {meta:true}.
-  parts.push(_exprToSexpr(e.body, ind, mopts ? { meta: true } : null));
+  parts.push(_exprToSexpr(body, ind, mopts ? { meta: true } : null));
   if (params.length === 0) {
     parts.push('%autoinputs', '%deferred');
   } else {
@@ -658,7 +668,11 @@ function fromSexpr(text: any) {
   // reification wraps the whole `(functionof …)` form and is stripped by
   // `readMetaForm` before this runs, so none appears here.)
   function readReificationTail(op: string): any {
+    // A `kernelof` head reads into the same desugared shape the lowerer
+    // produces, so a read module and a lowered module are interchangeable
+    // downstream; the writer restores the head from `wasKernelof`.
     const callShape: any = { kind: 'call', op: 'functionof' };
+    if (op === 'kernelof') callShape.wasKernelof = true;
     let body: any = null;
     // Output expression.
     while (!eof() && peek().type !== ')') {
@@ -747,10 +761,8 @@ function fromSexpr(text: any) {
     // kernelof(x, …) ≡ functionof(lawof(x), …) (spec §04): apply the
     // same lowering rule lower.ts applies at the surface ingest point,
     // so post-read modules carry ONE uniform reification form — op
-    // 'kernelof' never exists in engine-internal IR. (JS output is
-    // therefore the functionof∘lawof image, valid FlatPIR though not
-    // the syntactic image of a kernelof-authored source — see
-    // ARCHITECTURE "Engine-internal vs spec FlatPIR".)
+    // 'kernelof' never exists in engine-internal IR. The `kernelof` head
+    // survives on `wasKernelof` for the writer to restore.
     if (op === 'kernelof' && body) {
       body = { kind: 'call', op: 'lawof', args: [body] };
     }
