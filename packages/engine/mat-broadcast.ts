@@ -825,16 +825,19 @@ function _executeGenerativeComposite(
   //     paramKwargs positionally (the canonical `transport.(xs, [pars])`
   //     surface lowers to positional argIRs).
   const bcArgIRByFormal: Record<string, any> = {};   // formal name → arg IR
+  const surfaceOfFormal: Record<string, string> = {}; // formal name → surface kwarg
   if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
     for (let i = 0; i < compositeBody.params.length; i++) {
       const surf = compositeBody.paramKwargs[i];
       if (Object.prototype.hasOwnProperty.call(d.kwargIRs, surf)) {
         bcArgIRByFormal[compositeBody.params[i]] = d.kwargIRs[surf];
+        surfaceOfFormal[compositeBody.params[i]] = surf;
       }
     }
   } else if (Array.isArray(d.argIRs)) {
     for (let i = 0; i < compositeBody.params.length && i < d.argIRs.length; i++) {
       bcArgIRByFormal[compositeBody.params[i]] = d.argIRs[i];
+      surfaceOfFormal[compositeBody.params[i]] = compositeBody.paramKwargs[i];
     }
   }
 
@@ -953,6 +956,13 @@ function _executeGenerativeComposite(
     //     inlined body's boundary formals get substituted to `ref __bf_` —
     //     numeric ones resolve to columns in flatRefs, record ones to the
     //     baseEnv record (field-accessed by the body).
+    //
+    //     `bcKwargs` is keyed by SURFACE kwarg name, which is what
+    //     `_substituteKernelParams` looks up; everything else in this
+    //     executor is keyed by FORMAL. The two coincide only for the
+    //     off-spec `x = x` shorthand — a `_x_` placeholder or a renaming
+    //     cut (`x = xin`) makes them differ, and a formal-keyed map then
+    //     leaves every boundary ref unsubstituted.
     const flatRefs: Record<string, any> = {};
     const bcKwargs: Record<string, any> = {};
     for (const formal of Object.keys(bcArgIRByFormal)) {
@@ -965,7 +975,7 @@ function _executeGenerativeComposite(
         flatRefs[flatName] = valueLib.batchedScalar(
           _layoutFlat(numArgVal[formal], N, axes, sp.atomVaries, sp.axisSizes));
       }
-      bcKwargs[formal] = { kind: 'ref', ns: 'self', name: flatName };
+      bcKwargs[surfaceOfFormal[formal]] = { kind: 'ref', ns: 'self', name: flatName };
     }
 
     // Substitute boundary formals → `__bf_` refs in the inlined body. After

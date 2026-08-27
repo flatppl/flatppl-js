@@ -34,17 +34,21 @@ mus_per_group ~ iid(Normal(mu_pop, tau), G)
 % Per-group noise scales (fixed-phase array — atom-indep).
 sigmas_per_group = [1.0, 0.5, 0.8]
 
-% Per-group joint observation kernel — kwarg-form, two scalar Normal
-% components. Body uses placeholder names `mu`, `sigma` which the
-% kernel-broadcast args (`mu = mus_per_group`, `sigma = sigmas_per_group`)
-% substitute per cell.
+%%%
+Per-group joint observation kernel — kwarg-form, two scalar Normal
+components. Body uses the placeholders `_mu_` and `_sigma_` which the
+kernel-broadcast args (`mu = mus_per_group`, `sigma = sigmas_per_group`)
+substitute per cell.
+%%%
 group_kernel = functionof(
-  joint(y1 = Normal(mu = mu, sigma = sigma),
-        y2 = Normal(mu = mu, sigma = mul(2.0, sigma))),
-  mu = mu, sigma = sigma)
+  joint(y1 = Normal(mu = _mu_, sigma = _sigma_),
+        y2 = Normal(mu = _mu_, sigma = mul(2.0, _sigma_))),
+  mu = _mu_, sigma = _sigma_)
 
-% Kernel-broadcast: per group g, draw a (y1, y2) pair with
-% mu = mus_per_group[g] and sigma = sigmas_per_group[g].
+%%%
+Kernel-broadcast: per group g, draw a (y1, y2) pair with
+mu = mus_per_group[g] and sigma = sigmas_per_group[g].
+%%%
 y_obs = broadcast(group_kernel,
                   mu = mus_per_group,
                   sigma = sigmas_per_group)
