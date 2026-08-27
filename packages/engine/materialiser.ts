@@ -526,7 +526,54 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any) {
   });
 }
 
-function matNormalize(d: DerivationNormalize, ctx: any) {
+// Per-atom `log Ẑ(θ_i)` for a `normalize` whose inner measure is the
+// θ-dependent `weighted(f, Lebesgue(box))` shape, or null for every other
+// shape.
+//
+// WHY THE SAMPLER NEEDS IT. `matNormalize` divides the parent's weights by
+// their POOLED sum, which is the parent's mass averaged over the atom
+// ensemble. When f references a latent, the parent's mass is Z(θ_i) — a
+// DIFFERENT number per atom — and a pooled divisor leaves the residue
+// Z(θ_i)/E[Z] on atom i. Spec §06 makes `normalize(M)` a probability measure
+// for each θ, so the θ-marginal of the sampled joint must be the prior
+// untouched; the residue tilts it towards large-Z θ instead. Measured on
+// `theta ~ Uniform(interval(0, 4))`, `f = exp(theta * x)` over [0,1]: the
+// pooled divisor gives E[θ] = 2.809 against the prior's 2.0, matching the
+// Z-tilted quadrature 2.8073 rather than the correct one.
+//
+// The expression comes from `crn-normalize.ts`, the same builder both density
+// routes use, and its point set is seeded from the box axes alone — so the
+// divisor here is BIT-IDENTICAL to the one `logdensityof` subtracts, which is
+// what makes the two routes score one measure.
+// An expansion failure is NOT caught: falling back would silently reinstate the
+// pooled divisor, which is the wrong number this path exists to remove.
+function _crnPerAtomLogMass(name: string, ctx: any, N: number): Promise<Float64Array | null> {
+  const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
+  const { expandMeasureIR } = require('./derivations.ts');
+  const ir = expandMeasureIR(name, ctx.derivations, new Set(), ctx.bindings);
+  const shape = crnRecognize(ir);
+  if (!shape || !crnWeightIsThetaDependent(shape, ctx)) return Promise.resolve(null);
+  // null here is the node-budget refusal, which crn-normalize.ts warns about.
+  const expr = crnNormalizeMassExpr(ir, { points: ctx.crnNormalizePoints });
+  if (expr == null) return Promise.resolve(null);
+  return collectRefArrays(expr, ctx)
+    .then((refArrays: any) => ctx.sendWorker({ type: 'evaluateN', ir: expr, count: N, refArrays }))
+    .then((reply: any) => {
+      const out = new Float64Array(N);
+      for (let i = 0; i < N; i++) {
+        const z = reply.samples[i];
+        if (!(z > 0) || !Number.isFinite(z)) {
+          throw new Error('normalize(' + name + '): the estimated total mass of the inner '
+            + 'measure is ' + z + ' at atom ' + i + '; spec §06 leaves normalize undefined '
+            + 'when Z is zero or infinite');
+        }
+        out[i] = Math.log(z);
+      }
+      return out;
+    });
+}
+
+function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
   // normalize(base): shift weights so they sum to 1 (logTotalmass = 0).
   // Record/tuple-typed parents: same logic as matWeighted's record
   // branch — the top-level logWeights array carries the joint
@@ -561,12 +608,28 @@ function matNormalize(d: DerivationNormalize, ctx: any) {
     }
     const lifted = empirical.materialiseUniform(parent);
     const N = lifted.logWeights.length;
-    const lse = empirical.logSumExp(lifted.logWeights);
-    const w = new Float64Array(N);
-    for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] - lse;
-    const nEff = empirical.effectiveSampleSize({ samples: lifted.samples, logWeights: w });
-    return scalarMeasureN(lifted.samples,
-      { logWeights: w, logTotalmass: 0, n_eff: nEff });
+    return _crnPerAtomLogMass(name, ctx, N).then((perAtomLogZ: Float64Array | null) => {
+      const w = new Float64Array(N);
+      // Divide by the per-atom mass FIRST when there is one, then renormalise:
+      // the remaining pooled shift is the θ-independent constant that turns the
+      // importance-weighted ensemble into a probability measure.
+      if (perAtomLogZ) {
+        for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] - perAtomLogZ[i];
+      } else {
+        for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i];
+      }
+      const lse = empirical.logSumExp(w);
+      for (let i = 0; i < N; i++) w[i] -= lse;
+      const nEff = empirical.effectiveSampleSize({ samples: lifted.samples, logWeights: w });
+      const out: any = scalarMeasureN(lifted.samples,
+        { logWeights: w, logTotalmass: 0, n_eff: nEff });
+      // A vector-atom parent (a Lebesgue box) stays vector-atom: normalize
+      // changes weights, never the variate shape. Without this the 2-D box's
+      // `dims` is dropped and every consumer reads N·k scalar atoms.
+      if (parent.dims) out.dims = parent.dims;
+      if (parent._boxAxisColumns) out._boxAxisColumns = parent._boxAxisColumns;
+      return out;
+    });
   });
 }
 
@@ -1630,7 +1693,7 @@ const KIND_HANDLERS = {
   array:        (name: any, d: any) =>      matArray(d),
   // algebra
   weighted:     (name: any, d: any, ctx: any) => matWeighted(d, ctx),
-  normalize:    (name: any, d: any, ctx: any) => matNormalize(d, ctx),
+  normalize:    (name: any, d: any, ctx: any) => matNormalize(d, ctx, name),
   iid:          (name: any, d: any, ctx: any) => matIid(name, d, ctx),
   markovchain:  (name: any, d: any, ctx: any) =>
     require('./markovchain.ts').matMarkovchain(name, d, ctx),
