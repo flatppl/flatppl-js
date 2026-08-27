@@ -1759,7 +1759,7 @@ function liftInlineSubexpressions(bindings: any) {
 
   /**
    * Route the SCALAR-affine pushforward spelling over a vector base —
-   * `pushfwd(x -> s * x + b, iid(<scalar dist>, D))` and its sign / divide /
+   * `pushfwd(x -> s * x + b, iid(<scalar dist>, D))` and its sign- and
    * shift-free variants — through the same affine-registry pushfwd the
    * matrix-vector spelling uses, by synthesising `L = s * eye(D)` and
    * `b = zeros(D)` where the user wrote no matrix or no shift.
