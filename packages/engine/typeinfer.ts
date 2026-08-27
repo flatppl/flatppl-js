@@ -2124,7 +2124,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
    *  walked too, so its unrelated errors would otherwise double up. */
   function _dropDuplicateDiagnostics(before: number) {
     if (diagnostics.length <= before) return;
-    const key = (d: any) => d.severity + ' ' + d.message + ' '
+    const key = (d: any) => d.severity + '\0' + d.message + '\0'
       + JSON.stringify(d.loc || null);
     const seen = new Set<string>();
     for (let i = 0; i < before; i++) seen.add(key(diagnostics[i]));
