@@ -26,6 +26,7 @@ const irShared      = require('./ir-shared.ts');
 const sampler       = require('./sampler.ts');
 const lower         = require('./lower.ts');
 const { totalMassExpr } = require('./normalize-mass.ts');
+const { crnNormalizeMassExpr } = require('./crn-normalize.ts');
 
 // ---------------------------------------------------------------------------
 // parseSet — mirrors worker.ts makeParseSet (worker.ts:112-126).
@@ -165,6 +166,22 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
         && canDeferTruncateNormalizer(inner)) {
       delete node.massFrom;
       continue;
+    }
+    // A θ-dependent `normalize(weighted(f, Lebesgue(box)))`: Z moves with θ, so
+    // estimate it by reweighting one FIXED sample of the box rather than baking
+    // the constant below. The point set is seeded from the node's own content,
+    // so this route and the IS route (mat-density) build the same expression for
+    // the same model — see crn-normalize.ts. Gated on atom-dependence so a
+    // θ-INDEPENDENT weight keeps whatever this route does today.
+    if (atomDep && atomDep.size > 0 && referencesAtomDep(inner, atomDep)) {
+      const crnExpr = crnNormalizeMassExpr(node, { points: ctx && ctx.crnNormalizePoints });
+      if (crnExpr != null) {
+        node.op = 'logweighted';
+        node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [crnExpr] }] }, inner];
+        delete node.massFrom;
+        node.fromNormalize = true;
+        continue;
+      }
     }
     needMaterialise.push(node);
   }
