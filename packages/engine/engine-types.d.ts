@@ -234,6 +234,7 @@ export type DerivationKind =
   | 'superpose'
   | 'iid'
   | 'markovchain'
+  | 'kscan'
   | 'randsample'
   | 'jointchain'
   | 'truncate'
@@ -417,11 +418,28 @@ export interface DerivationMarkovchain {
   name?: string;
   step: {
     inputParam: string;
+    /** Null for markovchain; kscan's exogenous input param. */
+    xParam?: string | null;
     distOp: string;
     distParams: string[];
     distKwargs: Record<string, any>;
   };
   initIR: any;
+  n: number;
+}
+
+/**
+ * Kleisli scan: `kscan(kernel, init, xs)` (spec §06) — markovchain with one
+ * exogenous column threaded per step. `n` is §06's `lengthof(xs)`, resolved at
+ * classify time; `xsIR` is the exogenous array, read as `xs[j]` (1-based) by
+ * both execution paths.
+ */
+export interface DerivationKscan {
+  kind: 'kscan';
+  name?: string;
+  step: DerivationMarkovchain['step'];
+  initIR: any;
+  xsIR: any;
   n: number;
 }
 
@@ -673,6 +691,7 @@ export type Derivation =
   | DerivationSuperpose
   | DerivationIid
   | DerivationMarkovchain
+  | DerivationKscan
   | DerivationRandSample
   | DerivationJointchain
   | DerivationTruncate

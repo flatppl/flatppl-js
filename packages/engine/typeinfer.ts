@@ -474,6 +474,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'vector':    return write(inferVector(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
       case 'markovchain': return write(inferMarkovchain(expr, scopes), expr);
+      case 'kscan':     return write(inferKscan(expr, scopes), expr);
       case 'ksuperpose': return write(inferKsuperpose(expr, scopes), expr);
       // Normalization functions (spec §07): vector → vector, LENGTH-
       // PRESERVING. The static signature returns `array(1, %dynamic,
@@ -3784,6 +3785,48 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.measure(domain, { sampleShape: [dim], batchShape: [], eventShape: [] });
   }
 
+  // §06 `kscan(kernel, init, xs)`: "step $i$ is $\text{traj}_i \sim
+  // \kappa(\text{traj}_{i-1}, \text{xs}_i)$ […] Trajectories have length
+  // `lengthof(xs)`." So the domain is markovchain's — `array(len)` of `init`'s
+  // type — with the length read off `xs`'s leading dim rather than folded from
+  // a literal `n`. `xs` is exogenous DATA, so it never contributes to the
+  // variate; a state shape this engine does not lower defers, exactly as in
+  // `inferMarkovchain`.
+  function inferKscan(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    if (args.length !== 3) return arityError('kscan', '3', args.length, expr.loc);
+    const kT: any = inferExpr(args[0], scopes);
+    if (kT && kT.kind === 'failed') return T.failed('kscan cascade');
+    if (kT && kT.kind !== 'kernel' && kT.kind !== 'deferred' && kT.kind !== 'function') {
+      diagnostics.push({
+        severity: 'error',
+        message: 'kscan: arg 1 expects a Markov kernel '
+          + '`(state, x) -> measure_over_state`, got ' + T.show(kT) + ' (spec §06)',
+        loc: args[0].loc,
+      });
+      return T.failed('kscan bad kernel');
+    }
+    const stateT: any = inferExpr(args[1], scopes);
+    const xsT: any = inferExpr(args[2], scopes);
+    if (xsT && xsT.kind === 'failed') return T.failed('kscan cascade');
+    if (xsT && (xsT.kind === 'scalar' || T.isMeasure(xsT))) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'kscan: arg 3 (`xs`) expects an array of exogenous inputs, got '
+          + T.show(xsT) + ' — §06 gives the trajectory length `lengthof(xs)` '
+          + '(spec §06)',
+        loc: args[2].loc,
+      });
+      return T.failed('kscan bad xs');
+    }
+    const dim = (xsT && xsT.kind === 'array' && Array.isArray(xsT.shape)
+      && xsT.shape.length >= 1) ? xsT.shape[0] : '%dynamic';
+    const lowerable = stateT
+      && (stateT.kind === 'scalar' || stateT.kind === 'array');
+    const domain = lowerable ? T.array(1, [dim], stateT) : T.deferred();
+    return T.measure(domain, { sampleShape: [dim], batchShape: [], eventShape: [] });
+  }
+
   // §06 `ksuperpose(kernel, weights)`: "lifts a kernel to a weighted
   // superposition: the result is itself a kernel", so the LIFT's type is a
   // kernel whose result is the component's own per-cell variate measure.
@@ -5275,7 +5318,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // bare `Normal` is not a Markov kernel `(state) -> measure_over_state` —
       // it takes two parameters, not one state — so the classifier refuses it
       // and such an arm could only ever fire on a program that does not lower.
-      case 'markovchain': {
+      // `kscan` is the same product over the same step kernel (§06), so it
+      // classifies identically — the exogenous input changes which
+      // distribution a step is, never its mass class.
+      case 'markovchain':
+      case 'kscan': {
         const resolved = resolveBindingRefs(args[0]);
         const step = (resolved && resolved.kind === 'call' && resolved.body)
           ? massOfExpr(resolved.body)
