@@ -693,3 +693,38 @@ test('registry: mul has 11 direct-wrapping variants', () => {
   // (Adjust the assertion if the variant set is intentionally widened.)
   assert.equal(direct.length, 11);
 });
+
+// =====================================================================
+// 5. `ops.ELEMWISE_OVER_ARRAY_2` — the binary array case
+// =====================================================================
+//
+// §07 "Operator-equivalent functions" gives `divide` the domains "scalars,
+// array-scalar, transposed-vector–scalar (real or complex)". Both consumers of
+// the map — the declared logical and the `sampler.ARITH_OPS` facade — must
+// divide cell-wise when either operand is a Value, and both orders are
+// exercised because typeinfer admits only the shaped-dividend one and the
+// runtime guard covers the other.
+const sampler = require('../sampler.ts');
+
+test('divide over an array: the ARITH_OPS facade divides cell-wise', () => {
+  const ARITH_OPS = sampler._internal.ARITH_OPS;
+  const v = { shape: [3], data: new Float64Array([1, 2, 4]) };
+  const shaped = ARITH_OPS.divide(v, 2.0);
+  assert.deepEqual(shaped.shape, [3]);
+  assert.deepEqual(Array.from(shaped.data), [0.5, 1, 2]);
+  // Scalar dividend, Value divisor — the other arm of the Value guard.
+  const flipped = ARITH_OPS.divide(2.0, v);
+  assert.deepEqual(flipped.shape, [3]);
+  assert.deepEqual(Array.from(flipped.data), [2, 1, 0.5]);
+  // Two bare numbers stay on the scalar impl.
+  assert.equal(ARITH_OPS.divide(3.0, 2.0), 1.5);
+});
+
+test('divide over an array: the declared logical agrees with the facade', () => {
+  const v = { shape: [3], data: new Float64Array([1, 2, 4]) };
+  const decl = ops.lookup('divide');
+  assert.ok(valuesEqual(decl.logical(v, 2.0),
+                        sampler._internal.ARITH_OPS.divide(v, 2.0)));
+  assert.ok(valuesEqual(valueOps.divElem(v, valueLib.asValue(2.0)),
+                        decl.logical(v, 2.0)));
+});
