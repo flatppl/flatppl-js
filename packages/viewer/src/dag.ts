@@ -25,9 +25,17 @@ function _loadModuleEntry(ctx: Ctx, nodeId: any): { path: string } | null {
 }
 
 // Per-character label width used to size a node (see renderDAG's
-// `width`). The glyph hit-test reuses it to locate the glyph inside the
-// node's box, so the two must stay in step.
+// `width`). Node sizing only — deliberately generous, and NOT usable for
+// locating anything inside the label: the render font is proportional, so
+// at 13px Helvetica a 17-character label measures ~103px against this
+// estimate's 153px. The glyph region is measured instead (see
+// glyphStartOffset).
 const LABEL_CHAR_PX = 9;
+
+// Left-hand slop on the measured glyph region. Absorbs the sub-pixel gap
+// between the glyph's advance width and its inked extent so a click that
+// looks like it landed on the glyph's left edge still counts.
+export const GLYPH_SLOP_PX = 5;
 
 export const GLYPH_COLLAPSED = '⊞';
 export const GLYPH_EXPANDED = '⊟';
@@ -43,27 +51,90 @@ export function anchorGlyphSuffix(collapsed: boolean, dropCount: number): string
 }
 
 /**
+ * Where an anchor's glyph region starts, as an offset from the node's
+ * centre in model pixels. Both widths must come from measuring the real
+ * render font — anything estimated per character drifts, because the font
+ * is proportional and the ⊞/⊟ glyphs are wider than a letter.
+ *
+ * The label is centre-aligned, so its right edge sits at
+ * `centre + labelWidth / 2` however wide the node itself is, and the
+ * glyph is the tail of that text.
+ */
+export function glyphStartOffset(
+  labelWidth: number,
+  glyphWidth: number,
+  slop: number = GLYPH_SLOP_PX,
+): number {
+  return labelWidth / 2 - glyphWidth - slop;
+}
+
+/**
  * True when a tap landed on an anchor's glyph. Cytoscape gives a node no
- * sub-element hit targets, so the glyph's region is derived from the
- * geometry renderDAG itself lays out: the label is centered in the node
- * and sized at LABEL_CHAR_PX per character, so the glyph occupies the
- * last `glyphLen` character cells of the text. The region runs to the
- * node's right edge rather than stopping at the text, which keeps the
- * target generous and puts every miss on the label side.
+ * sub-element hit targets, so the region is bounded by the measured glyph
+ * start (`glyphStartOffset`, stamped on the node as `glyphStart`) on the
+ * left and the node's own right edge on the right. Running to the edge
+ * rather than to the end of the text keeps the target generous — the
+ * border a collapsed anchor draws is inside the region, not shaved off it
+ * — and puts every miss on the label side, where the click keeps its
+ * select-and-plot meaning.
  *
  * `pos` and `box` are both cytoscape model coordinates, so the test is
- * zoom- and pan-independent.
+ * zoom- and pan-independent. A null `glyphStart` means the node has no
+ * glyph.
  */
 export function hitsAnchorGlyph(
   pos: { x: number; y: number },
   box: { x1: number; x2: number; y1: number; y2: number },
-  labelLen: number,
-  glyphLen: number,
+  glyphStart: number | null,
 ): boolean {
-  if (glyphLen <= 0) return false;
+  if (glyphStart == null) return false;
   if (pos.y < box.y1 || pos.y > box.y2) return false;
-  const textRight = (box.x1 + box.x2) / 2 + (labelLen * LABEL_CHAR_PX) / 2;
-  return pos.x >= textRight - glyphLen * LABEL_CHAR_PX && pos.x <= box.x2;
+  return pos.x >= (box.x1 + box.x2) / 2 + glyphStart && pos.x <= box.x2;
+}
+
+// Canvas 2D context kept for text measurement, created on first use.
+// `null` once we know we cannot have one (no document, no 2d context) so
+// the failed lookup is not retried per node per render.
+let _labelMetrics: any;
+
+/**
+ * Measure `text` in the font cytoscape renders node labels in. The font
+ * is read back off a live node rather than restated here, so a style
+ * change cannot silently desynchronise the hit region from the glyph the
+ * user sees. Returns null when no canvas is available (non-browser test
+ * env), which leaves the anchor without a glyph region — shift+click
+ * still toggles.
+ */
+export function measureLabelPx(node: any, text: string): number | null {
+  if (_labelMetrics === undefined) {
+    _labelMetrics = null;
+    if (typeof document !== 'undefined') {
+      const canvas = document.createElement('canvas');
+      if (canvas && typeof canvas.getContext === 'function') {
+        _labelMetrics = canvas.getContext('2d') || null;
+      }
+    }
+  }
+  if (!_labelMetrics) return null;
+  _labelMetrics.font = node.style('font-size') + ' ' + node.style('font-family');
+  return _labelMetrics.measureText(text).width;
+}
+
+/**
+ * Stamp every reification anchor with its measured `glyphStart`. Runs
+ * after the nodes are in the graph, because the measurement needs each
+ * node's resolved label font, which only exists once cytoscape owns the
+ * element.
+ */
+export function stampGlyphRegions(cy: any): void {
+  cy.nodes().forEach(function(node: any) {
+    const glyph = node.data('glyph');
+    if (!glyph) return;
+    const labelW = measureLabelPx(node, String(node.data('label') || ''));
+    const glyphW = measureLabelPx(node, glyph);
+    if (labelW == null || glyphW == null) return;
+    node.data('glyphStart', glyphStartOffset(labelW, glyphW));
+  });
 }
 
 export function showNodeInfo(ctx: Ctx, d: any) {
@@ -387,7 +458,7 @@ export function initCy(ctx: Ctx) {
     // keeps the select-and-plot meaning below.
     if ((d.collapsed || d.isReifAnchor)
         && hitsAnchorGlyph(evt.position, evt.target.boundingBox(),
-                           String(d.label || '').length, d.glyphLen || 0)) {
+                           d.glyphStart == null ? null : d.glyphStart)) {
       toggleReification(ctx, d.id);
       return;
     }
@@ -735,13 +806,14 @@ export function renderDAG(ctx: Ctx, data: any) {
     const isReifAnchor = !!reifAnchorNames[node.id];
     const collapsed = isReifAnchor && ctx.collapsedReifications.has(node.id);
     // Every anchor advertises the gesture: ⊞ with the drop count when
-    // collapsed, ⊟ when expanded. `glyphLen` is what the tap hit-test
-    // measures back off the label's right edge.
-    let glyphLen = 0;
+    // collapsed, ⊟ when expanded. `glyph` is the clickable tail of the
+    // label; stampGlyphRegions measures it once the node is in the graph
+    // and adds the `glyphStart` the tap hit-test needs.
+    let glyph = '';
     if (isReifAnchor) {
       const suffix = anchorGlyphSuffix(collapsed, dropCountByAnchor[node.id] || 0);
       displayLabel = displayLabel + suffix;
-      glyphLen = suffix.trim().length;
+      glyph = suffix.trim();
     }
     const width = displayLabel === ''
       ? 60
@@ -767,7 +839,8 @@ export function renderDAG(ctx: Ctx, data: any) {
         hasError: !!(node.errors && node.errors.length > 0),
         isReifAnchor: isReifAnchor,
         collapsed: collapsed,
-        glyphLen: glyphLen,
+        glyph: glyph,
+        glyphStart: null,
         // Cross-module member node (spec §04): `{ module, field }` drill-in
         // target for the dbltap handler; null for ordinary bindings.
         moduleMember: node.moduleMember || null,
@@ -857,6 +930,7 @@ export function renderDAG(ctx: Ctx, data: any) {
   teardownBubbles(ctx);
   ctx.cy.elements().remove();
   ctx.cy.add(elements);
+  stampGlyphRegions(ctx.cy);
 
   ctx.cy.layout({
     name: 'dagre',
