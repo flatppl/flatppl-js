@@ -205,27 +205,71 @@ test('a weight whose mass estimates to zero is refused, not sampled', async () =
     /estimated total mass .* is 0.*spec §06/s);
 });
 
-test('over the node budget the sampler keeps the pooled divisor', async () => {
-  // crn-normalize.ts declines to inline a weight body M times past its node
-  // budget, and warns. The sampler must then behave exactly as it did before
-  // this path existed rather than fail: the honest fallback, same as the density
-  // route's. Forced through the point count, which multiplies the same budget.
-  const n = 20000;
-  const { proc, ctx } = ctxFor(S1D, n);
+test('over the node budget the sampler refuses rather than pooling the divisor',
+  async () => {
+    // crn-normalize.ts declines to inline a weight body M times past its node
+    // budget. It used to return null there and let the sampler reinstate the
+    // POOLED divisor behind a `console.warn`, which is the tilted measure this
+    // whole path exists to remove: measured at this point count, E[θ] = 2.8124
+    // against the prior's 2.0 and the Z-tilted 2.8073. §06 makes every θ-slice a
+    // probability measure and its engine contract says an engine "does not
+    // silently substitute heuristics", so the budget is a refusal.
+    //
+    // Deliberateness is preserved the same way the pooled pin preserved it: the
+    // assertion names the budget and the shape, so a quiet drop to a smaller M —
+    // or a quiet return of the tilted ensemble — fails here rather than passing.
+    // Forced through the point count, which multiplies the same budget.
+    const n = 20000;
+    const { proc, ctx } = ctxFor(S1D, n);
+    assert.equal(proc.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+    ctx.crnNormalizePoints = 400000;
+    await assert.rejects(() => Promise.resolve(ctx.getMeasure('y')),
+      /the weight depends on a latent.*over the budget of 400000.*spec §06 normalize/s);
+  });
+
+test('over the node budget the density route refuses too', async () => {
+  // The same builder feeds `logdensityof`, where the fallback was a baked
+  // constant −log Z rather than a pooled weight sum — the same pooled number by
+  // another name. One measure, one verdict.
+  const src = S1D + 'K = kernelof(record(y = y))\n'
+    + 'L = likelihoodof(K, record(y = 0.5))\n'
+    + 'posterior = bayesupdate(L, lawof(theta))\n';
+  const { proc, ctx } = ctxFor(src, 64);
   assert.equal(proc.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
   ctx.crnNormalizePoints = 400000;
-  const y = await ctx.getMeasure('y');
-  const th = await ctx.getMeasure('theta');
-  const lw = Array.from(y.logWeights) as number[];
-  const norm = logSumExp(lw);
-  let et = 0;
-  for (let i = 0; i < n; i++) et += Math.exp(lw[i] - norm) * th.samples[i];
-  // The fallback is the pooled divisor, so the θ-marginal is tilted again. That
-  // is what "honest fallback" means here, and asserting it is what proves the
-  // budget branch was taken rather than quietly using a smaller M.
-  assert.ok(Math.abs(et - 2.8073315742) < 0.15,
-    `E[θ] = ${et}; the budget fallback must give the Z-TILTED 2.8073315742`);
+  let post: any = null;
+  for (const [, v] of Object.entries(ctx.derivations as Record<string, any>)) {
+    if (v && (v as any).kind === 'bayesupdate') post = v;
+  }
+  assert.ok(post, 'the scoring model must produce a bayesupdate derivation');
+  await assert.rejects(() => Promise.resolve(buildLogPi(ctx, post)),
+    /the weight depends on a latent.*over the budget of 400000.*spec §06 normalize/s);
 });
+
+test('over the node budget a θ-INDEPENDENT weight still keeps the pooled divisor',
+  async () => {
+    // The gate on the refusal. Z is one constant here, so the pooled mass is
+    // exactly it and refusing would reject a correct answer. Same point count,
+    // same budget overrun, opposite verdict — and the number must still be the
+    // one the pooled path produces, bit-for-bit.
+    const n = 60000;
+    const { proc, ctx } = ctxFor(S_FIXED, n);
+    assert.equal(proc.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+    ctx.crnNormalizePoints = 400000;
+    const y = await ctx.getMeasure('y');
+    const th = await ctx.getMeasure('theta');
+    const lw = Array.from(y.logWeights) as number[];
+    const norm = logSumExp(lw);
+    let ey = 0;
+    let et = 0;
+    for (let i = 0; i < n; i++) {
+      const w = Math.exp(lw[i] - norm);
+      ey += w * y.samples[i];
+      et += w * th.samples[i];
+    }
+    assert.equal(ey, 0.4170387508194253, `E[y] = ${ey} moved`);
+    assert.equal(et, 2.0013148946121326, `E[θ] = ${et} moved`);
+  });
 
 test('a θ-INDEPENDENT weight keeps the pooled divisor untouched', async () => {
   // The control that pins the per-atom divisor to a θ-DEPENDENT weight. Here Z

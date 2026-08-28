@@ -103,11 +103,13 @@ function moments(value: any, d: number) {
 // Exact leg — every cell equals the scalar function of the base cell
 // ---------------------------------------------------------------------
 
+// The elementary functions carry §07's scalar-only signature, so over a vector
+// variate they appear dotted; `*`, `/`, `+`, `-` and unary `-` are the
+// operator-equivalent rows §07 gives array domains.
 const EXACT: [string, (z: number) => number][] = [
   ['exp.(x)', (z) => Math.exp(z)],
-  ['exp(x)', (z) => Math.exp(z)],
-  ['abs(x)', (z) => Math.abs(z)],
-  ['tanh(x)', (z) => Math.tanh(z)],
+  ['abs.(x)', (z) => Math.abs(z)],
+  ['tanh.(x)', (z) => Math.tanh(z)],
   ['2.0 * x', (z) => 2.0 * z],
   ['x * 2.0', (z) => z * 2.0],
   ['x / 2.0', (z) => z / 2.0],
@@ -115,7 +117,7 @@ const EXACT: [string, (z: number) => number][] = [
   ['x - 1.0', (z) => z - 1.0],
   ['1.0 - x', (z) => 1.0 - z],
   ['-x', (z) => -z],
-  ['atan2(x, 1.0)', (z) => Math.atan2(z, 1.0)],
+  ['atan2.(x, 1.0)', (z) => Math.atan2(z, 1.0)],
 ];
 
 for (const [body, f] of EXACT) {
@@ -133,20 +135,6 @@ for (const [body, f] of EXACT) {
   });
 }
 
-test('a rank-3 cell ([N,3,2] from iid-of-iid) maps cell-wise too', async () => {
-  const N = 32;
-  const ctx = makeCtx(
-    `Z = iid(iid(Normal(0.0, 1.0), 2), 3)\n`
-    + `X = pushfwd(x -> exp(x), Z)\n`, { sampleCount: N });
-  const Z = await ctx.getMeasure('Z');
-  const X = await ctx.getMeasure('X');
-  assert.deepEqual(Z.value.shape, [N, 3, 2]);
-  assert.deepEqual(X.value.shape, [N, 3, 2]);
-  for (let i = 0; i < N * 6; i++) {
-    assert.equal(X.value.data[i], Math.exp(Z.value.data[i]));
-  }
-});
-
 // ---------------------------------------------------------------------
 // The DOTTED spelling over a rank-≥2 cell
 // ---------------------------------------------------------------------
@@ -155,47 +143,67 @@ test('a rank-3 cell ([N,3,2] from iid-of-iid) maps cell-wise too', async () => {
 // lowers to `broadcast(f, <args>)`"), which "maps a function or kernel
 // elementwise over arrays". §07 "Elementary functions" makes `exp` scalar-only
 // ("All accept scalar arguments and return scalar results"), so the dotted
-// spelling is the one the spec licenses over a matrix variate, and it must
-// agree with the bare spelling cell for cell.
+// spelling is the only one the spec licenses over a matrix variate.
 //
 // `broadcast` is a higher-order op with no batched slot, so it takes
 // `_perAtomFallback`: N per-atom `evaluateExpr` calls, each returning one
 // rank-2 Value. Packing those back into a batch only handled a rank-1 cell,
 // so a [3, 2] cell fell through to the raw JS array and `evaluateN` refused it
-// ("expression produced non-scalar per-atom result (got object)"). The nesting
-// is incidental — `iid(Normal, [3, 2])`, whose cells are plain scalars, failed
-// identically.
+// ("expression produced non-scalar per-atom result (got object)").
+//
+// The two rank-≥2 variates part company at inference, which is where §04's ONE
+// broadcast level bites. `iid(Normal, [3, 2])` is an n-D array of scalars, so a
+// single dot reaches scalars and types clean. `iid(iid(M, 2), 3)` is a vector
+// OF vectors (§03 keeps the two distinct), so the same single dot hands `exp` a
+// 2-vector and the scalar-only rule refuses it — the admissible spelling nests
+// one dot per array level, and that is not on the batched evaluator. The engine
+// represents both as one flat [N,3,2] Value, so only inference tells them apart.
 
-const RANK2_VARIATES: [string, string][] = [
-  ['an iid-of-iid', 'iid(iid(Normal(0.0, 1.0), 2), 3)'],
-  ['a multi-axis iid', 'iid(Normal(0.0, 1.0), [3, 2])'],
-];
+const RANK2_MULTI_AXIS = 'iid(Normal(0.0, 1.0), [3, 2])';
+const RANK2_NESTED = 'iid(iid(Normal(0.0, 1.0), 2), 3)';
 
-for (const [label, base] of RANK2_VARIATES) {
-  test(`dotted and bare \`exp\` agree cell-for-cell over ${label} variate`,
-    async () => {
-      const N = 32;
-      const image = async (body: string) => {
-        const ctx = makeCtx(`Z = ${base}\nX = pushfwd(x -> ${body}, Z)\n`,
-          { sampleCount: N });
-        return { Z: await ctx.getMeasure('Z'), X: await ctx.getMeasure('X') };
-      };
-      const dot = await image('exp.(x)');
-      const bare = await image('exp(x)');
-      assert.deepEqual(dot.Z.value.shape, [N, 3, 2], 'base cell is 3×2');
-      assert.deepEqual(dot.X.value.shape, [N, 3, 2],
-        'the dotted image keeps the atom axis and both cell axes');
-      assert.deepEqual(bare.X.value.shape, [N, 3, 2]);
-      for (let i = 0; i < N * 6; i++) {
-        assert.equal(dot.X.value.data[i], Math.exp(dot.Z.value.data[i]),
-          `dotted cell ${i}: got ${dot.X.value.data[i]}, expected `
-          + `${Math.exp(dot.Z.value.data[i])} from base ${dot.Z.value.data[i]}`);
-        assert.equal(dot.X.value.data[i], bare.X.value.data[i],
-          `cell ${i}: dotted ${dot.X.value.data[i]} vs bare `
-          + `${bare.X.value.data[i]}`);
-      }
-    });
+async function rank2Image(base: string, body: string, N: number) {
+  const ctx = makeCtx(`Z = ${base}\nX = pushfwd(x -> ${body}, Z)\n`,
+    { sampleCount: N });
+  return { Z: await ctx.getMeasure('Z'), X: await ctx.getMeasure('X') };
 }
+
+test('dotted `exp` maps cell-for-cell over a multi-axis iid variate', async () => {
+  const N = 32;
+  const { Z, X } = await rank2Image(RANK2_MULTI_AXIS, 'exp.(x)', N);
+  assert.deepEqual(Z.value.shape, [N, 3, 2], 'base cell is 3×2');
+  assert.deepEqual(X.value.shape, [N, 3, 2],
+    'the dotted image keeps the atom axis and both cell axes');
+  for (let i = 0; i < N * 6; i++) {
+    assert.equal(X.value.data[i], Math.exp(Z.value.data[i]),
+      `cell ${i}: got ${X.value.data[i]}, expected `
+      + `${Math.exp(Z.value.data[i])} from base ${Z.value.data[i]}`);
+  }
+});
+
+// The bare spelling is a static error on both, so it is no longer available as
+// a cross-check on the dotted result. §07's refusal is the pin instead.
+for (const [label, base, got] of [
+  ['a multi-axis iid', RANK2_MULTI_AXIS, '2d array of real'],
+  ['an iid-of-iid', RANK2_NESTED, 'array of array of real'],
+] as [string, string, string][]) {
+  test(`bare \`exp\` over ${label} variate is refused by §07`, async () => {
+    await assert.rejects(
+      () => rank2Image(base, 'exp(x)', 4),
+      (e: any) => e.message.includes('exp: arg 1 expects a scalar, got ' + got)
+        && e.message.includes('All accept scalar arguments and return scalar results'));
+  });
+}
+
+test('dotted `exp` over an iid-of-iid variate is refused: one broadcast level',
+  async () => {
+    // §04 maps `broadcast` over the array's ELEMENTS, and this variate's
+    // elements are 2-vectors, so a single dot is still a scalar-only violation.
+    await assert.rejects(
+      () => rank2Image(RANK2_NESTED, 'exp.(x)', 4),
+      (e: any) => e.message.includes(
+        'exp: arg 1 expects a scalar, got array of real (length 2)'));
+  });
 
 test('dotted `exp` over a matrix variate is a LogNormal(0,1) in every cell',
   async () => {
@@ -355,16 +363,13 @@ test('a scalar scale over a vector variate is Normal(0,2) per component', async 
 // Batched / atom-indep agreement
 // ---------------------------------------------------------------------
 
-// `x / 2.0` is deliberately absent: §07 lists `divide` on "array-scalar",
-// but typeinfer refuses `v / 2.0` on a literal vector ("divide: arg 1
-// expects real"), so there is no atom-indep counterpart to compare against.
-// That asymmetry is typeinfer's, not this path's — a pushfwd body's lambda
-// parameter carries no static array type, so the §07 scalar-only signatures
-// never fire inside one. Tracked in TODO-flatppl-js.md.
+// `x / 2.0` is here now that typeinfer admits §07's "array-scalar" `divide`
+// domain on a literal vector; it used to have no atom-indep counterpart to
+// compare against because `v / 2.0` was a static error.
 test('the batched path agrees with the atom-indep path on a literal vector', async () => {
   for (const [body, indepBody] of [
-    ['exp(x)', 'exp(v)'], ['2.0 * x', '2.0 * v'], ['x + 1.0', 'v + 1.0'],
-    ['-x', '-v'], ['x * 2.0', 'v * 2.0'],
+    ['exp.(x)', 'exp.(v)'], ['2.0 * x', '2.0 * v'], ['x + 1.0', 'v + 1.0'],
+    ['-x', '-v'], ['x * 2.0', 'v * 2.0'], ['x / 2.0', 'v / 2.0'],
   ]) {
     const indep = await makeCtx(
       `v = [0.25, -1.5]\nw = ${indepBody}\n`, { sampleCount: 1 },
@@ -456,6 +461,29 @@ test('broadcastN: mismatched cell shapes are refused, not silently strided', () 
   const b = cellValue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [N4, 3]);
   assert.throws(() => broadcastN((x: number, y: number) => x + y, [a, b], N4),
     /broadcastN: per-atom cell shape \[3\] does not match \[2\] with N=4/);
+});
+
+// Equal-COUNT, different-axes cells (B2): `_cellLen` is a product, so
+// [2,3] and [3,2] both give 6 — an equal-count check would pass this
+// through and silently pair a 2×3 with a 3×2 flat-index-wise. Both
+// argument orders must refuse.
+test('broadcastN: same cell element count but different axes is refused', () => {
+  const a = cellValue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 2, 3]);
+  const b = cellValue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 3, 2]);
+  assert.throws(() => broadcastN((x: number, y: number) => x + y, [a, b], 2),
+    /broadcastN: per-atom cell shape \[3,2\] does not match \[2,3\] with N=2/);
+  assert.throws(() => broadcastN((x: number, y: number) => x + y, [b, a], 2),
+    /broadcastN: per-atom cell shape \[2,3\] does not match \[3,2\] with N=2/);
+});
+
+// Equal count, different RANK: [N,6] vs [N,2,3] also share cellLen=6.
+test('broadcastN: same cell element count but different rank is refused', () => {
+  const flat = cellValue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 6]);
+  const nested = cellValue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 2, 3]);
+  assert.throws(() => broadcastN((x: number, y: number) => x + y, [flat, nested], 2),
+    /broadcastN: per-atom cell shape \[2,3\] does not match \[6\] with N=2/);
+  assert.throws(() => broadcastN((x: number, y: number) => x + y, [nested, flat], 2),
+    /broadcastN: per-atom cell shape \[6\] does not match \[2,3\] with N=2/);
 });
 
 test('broadcastN: a shape=[N] batch is NOT treated as a cell batch', () => {

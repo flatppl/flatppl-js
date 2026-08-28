@@ -491,6 +491,224 @@ test('broadcast: chained dotted ops preserve shape across compositions', () => {
   assert.ok(T.equal(t.elem, T.REAL));
 });
 
+// ---------------------------------------------------------------------
+// Keyword-bound broadcast — spec §04 "Broadcasting"
+// ---------------------------------------------------------------------
+//
+// "`broadcast(f_or_K, name = array, ...)` or `broadcast(f_or_K, array,
+//  ...)` maps a function or kernel elementwise over arrays […] Keyword
+//  arguments bind inputs by name. If the callable has a declared
+//  positional order, positional binding is also permitted."
+//
+// and the *Return type* clause, which is what makes broadcast dual:
+//
+// - "`broadcast(function, ...)` returns an **array value**."
+// - "`broadcast(kernel, ...)` returns an **array-valued measure**: the
+//    independent product measure of the kernel applications at each array
+//    position."
+//
+// Only the positional spelling used to be typed; the keyword spelling —
+// §04's first form, and the one every `Normal.(mu = …, sigma = …)` surface
+// lowers to — deferred, and with it every consumer that keys on the
+// inferred type of a broadcast body.
+
+test('broadcast: keyword arguments bind a value function by name (§04)', () => {
+  const { bindings, errors } = infer(`
+    A = [1.0, 2.0, 3.0]
+    f = functionof(2.0 * _a_ + 1.0, a = _a_)
+    C = broadcast(f, a = A)
+  `);
+  assert.equal(errors.length, 0);
+  assert.ok(T.equal(typeOf(bindings, 'C'), T.array(1, [3], T.REAL)));
+});
+
+test('broadcast: a keyword-bound distribution head is an array-valued measure', () => {
+  // Same §04 return-type clause as the positional spelling, and the same
+  // three-shape decomposition: the outer broadcast axis is the batch shape.
+  const { bindings, errors } = infer(`
+    A = [1.0, 2.0, 3.0]
+    D = broadcast(Normal, mu = A, sigma = 1.0)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'D');
+  assert.equal(t.kind, 'measure');
+  assert.ok(T.equal(t.domain, T.array(1, [3], T.REAL)));
+  assert.deepEqual(t.batchShape, [3]);
+  assert.deepEqual(t.eventShape, []);
+});
+
+test('broadcast: the dot spelling with keywords types the same', () => {
+  const { bindings, errors } = infer(`
+    A = [1.0, 2.0, 3.0]
+    D = Normal.(mu = A, sigma = 1.0)
+  `);
+  assert.equal(errors.length, 0);
+  const t = typeOf(bindings, 'D');
+  assert.equal(t.kind, 'measure');
+  assert.ok(T.equal(t.domain, T.array(1, [3], T.REAL)));
+});
+
+test('broadcast: keyword order is the head’s, not the call site’s', () => {
+  // Written back to front, the arguments still bind to the parameters they
+  // name. The detector is the §07 collection domain: `sum` over a scalar
+  // cell is a static error, so a positional misread of `a = [C]` / `b = xs`
+  // shows up as a diagnostic rather than as a wrong-but-plausible type.
+  const { bindings, errors } = infer(`
+    C = [2.0, 3.0, 4.0]
+    xs = [1.0, 2.0]
+    g = functionof(sum(_a_) + _b_, a = _a_, b = _b_)
+    Y = broadcast(g, b = xs, a = [C])
+  `);
+  assert.equal(errors.length, 0, 'unexpected: ' + JSON.stringify(errors));
+  assert.ok(T.equal(typeOf(bindings, 'Y'), T.array(1, [2], T.REAL)));
+});
+
+test('broadcast: an INLINE reification head binds keywords too', () => {
+  // `f.(a = A)` keeps `f` as a ref; the head is an inline `functionof` when
+  // the callable is written at the call site, and its own paramKwargs supply
+  // the names.
+  const { bindings, errors } = infer(`
+    A = [1.0, 2.0, 3.0]
+    C = broadcast(functionof(2.0 * _a_ + 1.0, a = _a_), a = A)
+  `);
+  assert.equal(errors.length, 0);
+  assert.ok(T.equal(typeOf(bindings, 'C'), T.array(1, [3], T.REAL)));
+});
+
+test('broadcast: `broadcasted(f)` applied with keywords types as the broadcast', () => {
+  // §04: "`broadcasted(f)(args...)` is equivalent to `broadcast(f, args...)`"
+  // — including for the keyword spelling of `args`.
+  const { bindings, errors } = infer(`
+    A = [1.0, 2.0, 3.0]
+    f = functionof(2.0 * _a_ + 1.0, a = _a_)
+    bc = broadcasted(f)
+    C = bc(a = A)
+  `);
+  assert.equal(errors.length, 0);
+  assert.ok(T.equal(typeOf(bindings, 'C'), T.array(1, [3], T.REAL)));
+});
+
+test('broadcast: a cross-module callable head binds keywords by name', () => {
+  // §04 ties the result to what the head IS, not to where it was written. A
+  // standard-module function's declared inputs supply the names.
+  const { bindings, errors } = infer(`
+    poly = standard_module("polynomials", "0.1")
+    xs = [0.1, 0.2, 0.3]
+    C = broadcast(poly.legendre, n = 3, x = xs)
+    D = poly.legendre.(n = 3, x = xs)
+  `);
+  assert.equal(errors.length, 0);
+  assert.ok(T.equal(typeOf(bindings, 'C'), T.array(1, [3], T.REAL)));
+  assert.ok(T.equal(typeOf(bindings, 'D'), T.array(1, [3], T.REAL)));
+});
+
+test('broadcast: a non-callable head with keywords stays untyped', () => {
+  const { bindings } = infer(`
+    A = [1.0, 2.0, 3.0]
+    C = broadcast(1.0, a = A)
+  `);
+  assert.equal(typeOf(bindings, 'C').kind, 'deferred');
+});
+
+test('broadcast: a computed head with keywords stays untyped', () => {
+  // `fchain(f, g)` is a callable-valued CALL, not a reification the rule can
+  // read parameter names off. Nothing to bind by name, so nothing is claimed.
+  const { bindings } = infer(`
+    A = [1.0, 2.0, 3.0]
+    f = functionof(2.0 * _a_ + 1.0, a = _a_)
+    g = functionof(_b_ + 1.0, b = _b_)
+    C = broadcast(fchain(f, g), a = A)
+  `);
+  assert.equal(typeOf(bindings, 'C').kind, 'deferred');
+});
+
+test('broadcast: a keyword count that misses the head’s arity stays untyped', () => {
+  const extra = infer(`
+    A = [1.0, 2.0, 3.0]
+    f = functionof(2.0 * _a_ + 1.0, a = _a_)
+    C = broadcast(f, a = A, b = A)
+  `);
+  assert.equal(typeOf(extra.bindings, 'C').kind, 'deferred');
+  const missing = infer(`
+    A = [1.0, 2.0, 3.0]
+    f = functionof(_a_ + _b_, a = _a_, b = _b_)
+    C = broadcast(f, a = A)
+  `);
+  assert.equal(typeOf(missing.bindings, 'C').kind, 'deferred');
+});
+
+test('broadcast: a keyword naming no parameter of the head stays untyped', () => {
+  // `K`'s single input is the placeholder's surface name `arg1`, so `mu =`
+  // binds nothing and the runtime binder throws. Infer no type for a call
+  // that cannot run rather than guessing which parameter was meant.
+  const { bindings } = infer(`
+    A = [1.0, 2.0, 3.0]
+    K = fn(Normal(mu = _, sigma = 0.1))
+    D = broadcast(K, mu = A)
+  `);
+  assert.equal(typeOf(bindings, 'D').kind, 'deferred');
+});
+
+test('broadcast: a boundary-input head with keywords stays untyped', () => {
+  // The head is the enclosing reification's own input, so it is a `%local`
+  // ref of type `any` — no declared parameter names to bind the keyword to.
+  // §04 needs the head's names, and an untyped input has none.
+  const { bindings, errors } = infer(`
+    A = [1.0, 2.0, 3.0]
+    G = functionof(broadcast(_f_, a = A), f = _f_)
+  `);
+  assert.equal(errors.length, 0);
+  assert.equal(typeOf(bindings, 'G').result.kind, 'deferred');
+});
+
+test('broadcast: a head with no arguments at all stays untyped', () => {
+  // Diagnosed by the analyzer ("requires at least two arguments"); the type
+  // rule adds nothing and claims nothing.
+  const { bindings } = infer(`
+    f = functionof(2.0 * _a_ + 1.0, a = _a_)
+    C = broadcast(f)
+  `);
+  assert.equal(typeOf(bindings, 'C').kind, 'deferred');
+});
+
+test('broadcast: an unknown head name with keywords stays untyped', () => {
+  const { bindings, errors } = infer(`
+    A = [1.0, 2.0, 3.0]
+    C = broadcast(Nrmal, mu = A, sigma = 1.0)
+  `);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /Undefined variable 'Nrmal'/);
+  assert.equal(typeOf(bindings, 'C').kind, 'deferred');
+});
+
+test('broadcast: keyword args singleton-expand like positional ones', () => {
+  const { bindings, errors } = infer(`
+    A = [1.0]
+    B = [10.0, 20.0, 30.0]
+    f = functionof(_a_ + _b_, a = _a_, b = _b_)
+    C = broadcast(f, a = A, b = B)
+  `);
+  assert.equal(errors.length, 0);
+  assert.ok(T.equal(typeOf(bindings, 'C'), T.array(1, [3], T.REAL)));
+});
+
+test('broadcast: §04’s dual decides what a reification of the body is', () => {
+  // The point of the rule for consumers: with the body typed, a `functionof`
+  // over a value broadcast is a FUNCTION and one over a kernel broadcast is
+  // a KERNEL (§04 "Reifying measure-valued expressions to kernels"). Both
+  // used to come back deferred, so neither reification had a type.
+  const { bindings, errors } = infer(`
+    A = [1.0, 2.0, 3.0]
+    t = elementof(reals)
+    f = functionof(_a_ + _t_, a = _a_, t = _t_)
+    Fv = functionof(broadcast(f, a = A, t = t), t = t)
+    Fm = functionof(broadcast(Normal, mu = A, sigma = t), t = t)
+  `);
+  assert.equal(errors.length, 0);
+  assert.equal(typeOf(bindings, 'Fv').kind, 'function');
+  assert.equal(typeOf(bindings, 'Fm').kind, 'kernel');
+});
+
 test('aggregate: matrix multiplication infers array(2, [2, 2], real)', () => {
   // Spec §04 §sec:aggregate canonical example. Output rank = 2
   // (output_axes = [.i, .k]), shape inferred from A and B's
@@ -768,15 +986,160 @@ test('broadcast: kernel-broadcast via ~ (draw) still works after tightening', ()
   assert.equal(errors.length, 0);
 });
 
-test('arithmetic: unary ops preserve shape', () => {
+test('arithmetic: neg preserves shape over an array', () => {
+  // §07 "Operator-equivalent functions" gives `neg` the domain "scalars or
+  // arrays (real or complex)", so the un-dotted array form is admissible and
+  // shape-preserving. `abs` is NOT — see the elementary-function tests below.
   const { bindings, errors } = infer(`
     xs = [1.0, 2.0, 3.0]
-    out = abs(xs)
+    out = neg(xs)
   `);
   assert.equal(errors.length, 0);
   const t = typeOf(bindings, 'out');
   assert.equal(t.kind, 'array');
   assert.deepEqual(t.shape, [3]);
+});
+
+// §07 "Elementary functions": "All accept scalar arguments and return scalar
+// results." Every member refuses a non-scalar operand, with one message, and
+// the dotted spelling is the elementwise form. Before this rule `exp`, `log`,
+// `log10`, `sqrt`, `abs`, `abs2`, `sin`, `cos`, `floor`, `ceil`, `round`,
+// `div` and `mod` lifted silently while the rest of the table refused.
+for (const src of ['exp(xs)', 'log(xs)', 'log10(xs)', 'sqrt(xs)', 'abs(xs)',
+                   'abs2(xs)', 'sin(xs)', 'cos(xs)', 'tan(xs)', 'tanh(xs)',
+                   'floor(xs)', 'ceil(xs)', 'round(xs)', 'loggamma(xs)',
+                   'invlogit(xs)', 'min(xs, 1.0)', 'max(xs, 1.0)',
+                   'atan2(xs, 1.0)', 'div(xs, 2)', 'mod(xs, 2)',
+                   'pow(xs, 2.0)']) {
+  const op = src.slice(0, src.indexOf('('));
+  test(`§07 scalar-only: ${op} refuses an array operand`, () => {
+    const { errors } = infer(`
+      xs = [1.0, 2.0, 3.0]
+      out = ${src}
+    `);
+    assert.ok(errors.some((e: any) =>
+      e.message.startsWith(op + ': arg 1 expects a scalar')
+      && /elementwise form is the dotted spelling/.test(e.message)),
+      'expected the §07 scalar-only refusal, got: '
+        + errors.map((e: any) => e.message).join('; '));
+  });
+  test(`§07 scalar-only: ${op} admits the dotted spelling`, () => {
+    // `div` / `mod` carry §07's `integers` domain, so they need integer cells.
+    const xs = (op === 'div' || op === 'mod') ? '[1, 2, 3]' : '[1.0, 2.0, 3.0]';
+    const { errors } = infer(`
+      xs = ${xs}
+      out = ${op}.(${src.slice(src.indexOf('(') + 1)}
+    `);
+    assert.equal(errors.length, 0,
+      errors.map((e: any) => e.message).join('; '));
+  });
+}
+
+test('§07 scalar-only: the refusal cites the elementary-functions sentence', () => {
+  const { errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = exp(xs)
+  `);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message,
+    /All accept scalar arguments and return scalar results/);
+  assert.match(errors[0].message, /`exp\.\(…\)`/);
+});
+
+test('§07 scalar-only: pow cites its own operator-equivalent domain', () => {
+  // `pow` is not in the elementary table; its §07 operator-equivalent row
+  // reads "scalars (real or complex; …)" — the only such row with no array
+  // form, unlike `add` / `sub` / `mul` / `divide` / `neg`.
+  const { errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = pow(xs, 2.0)
+  `);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /the domain "scalars \(real or complex\)"/);
+});
+
+// §07 "Operator-equivalent functions" gives `divide` the domains "scalars,
+// array-scalar, transposed-vector–scalar (real or complex)". The `[REAL, REAL]`
+// signature refused the two non-scalar forms, making `v / 2` a static error
+// against the spec.
+test('§07 divide: array-scalar keeps the dividend shape', () => {
+  const { bindings, errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = divide(xs, 2.0)
+    sugar = xs / 2.0
+  `);
+  assert.equal(errors.length, 0, errors.map((e: any) => e.message).join('; '));
+  assert.ok(T.equal(typeOf(bindings, 'out'), T.array(1, [3], T.REAL)));
+  assert.ok(T.equal(typeOf(bindings, 'sugar'), T.array(1, [3], T.REAL)));
+});
+
+test('§07 divide: matrix-scalar and transposed-vector–scalar', () => {
+  const { bindings, errors } = infer(`
+    M = rowstack([[1.0, 2.0], [3.0, 4.0]])
+    xs = [1.0, 2.0]
+    mq = divide(M, 2.0)
+    tq = divide(transpose(xs), 2.0)
+  `);
+  assert.equal(errors.length, 0, errors.map((e: any) => e.message).join('; '));
+  assert.ok(T.equal(typeOf(bindings, 'mq'), T.array(2, [2, 2], T.REAL)));
+  assert.ok(T.equal(typeOf(bindings, 'tq'), T.tvector(2, T.REAL)));
+});
+
+test('§07 divide: an integer dividend still gives a real quotient', () => {
+  const { bindings, errors } = infer(`
+    xs = [1, 2, 3]
+    out = divide(xs, 2)
+  `);
+  assert.equal(errors.length, 0, errors.map((e: any) => e.message).join('; '));
+  assert.ok(T.equal(typeOf(bindings, 'out'), T.array(1, [3], T.REAL)));
+});
+
+test('§07 divide: a complex operand on either side gives a complex quotient', () => {
+  const { bindings, errors } = infer(`
+    zs = [complex(1.0, 2.0), complex(3.0, 4.0)]
+    xs = [1.0, 2.0]
+    cz = divide(zs, 2.0)
+    cx = divide(xs, complex(1.0, 1.0))
+  `);
+  assert.equal(errors.length, 0, errors.map((e: any) => e.message).join('; '));
+  assert.ok(T.equal(typeOf(bindings, 'cz'), T.array(1, [2], T.COMPLEX)));
+  assert.ok(T.equal(typeOf(bindings, 'cx'), T.array(1, [2], T.COMPLEX)));
+});
+
+test('§07 divide: a non-numeric dividend leaf is not divisible', () => {
+  const { errors } = infer(`
+    ss = ["a", "b"]
+    out = divide(ss, 2.0)
+  `);
+  assert.ok(errors.some((e: any) =>
+    /divide: operand types array of string \(length 2\) and real are not numerically compatible/
+      .test(e.message)), errors.map((e: any) => e.message).join('; '));
+});
+
+test('§07 divide: arity and a failed operand', () => {
+  const one = infer(`out = divide(1.0)`);
+  assert.ok(one.errors.some((e: any) =>
+    /divide expects 2 positional argument\(s\), got 1/.test(e.message)));
+  // A refused operand cascades rather than producing a second complaint about
+  // the quotient.
+  const bad = infer(`
+    xs = [1.0, 2.0]
+    out = divide(exp(xs), 2.0)
+  `);
+  assert.equal(bad.errors.length, 1, bad.errors.map((e: any) => e.message).join('; '));
+  assert.match(bad.errors[0].message, /^exp: arg 1 expects a scalar/);
+});
+
+test('§07 divide: the divisor must be a scalar', () => {
+  // §07 lists no scalar-array or array-array division; that spelling is
+  // `divide.(a, b)`.
+  const { errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = divide(2.0, xs)
+  `);
+  assert.ok(errors.some((e: any) =>
+    /divide: arg 2 \(the divisor\) expects a scalar/.test(e.message)),
+    errors.map((e: any) => e.message).join('; '));
 });
 
 test('iid: with literal n produces a measure over a concrete-shape array', () => {

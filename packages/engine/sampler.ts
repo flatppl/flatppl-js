@@ -2214,6 +2214,18 @@ for (const _name in opsModule.ELEMWISE_OVER_ARRAY) {
   (ARITH_OPS as any)[_name] = (a: any) =>
     valueLib.isValue(a) ? _cellwise(a) : _scalar(a);
 }
+// The binary counterpart (`ops.ELEMWISE_OVER_ARRAY_2`) — `divide` over §07's
+// "array-scalar" and "transposed-vector–scalar" domains. The value-ops
+// elementwise binops require both operands to be Values, so the scalar partner
+// is wrapped.
+for (const _name in opsModule.ELEMWISE_OVER_ARRAY_2) {
+  const _cellwise = (valueOps as any)[opsModule.ELEMWISE_OVER_ARRAY_2[_name]];
+  const _scalar = (ARITH_OPS as any)[_name];
+  (ARITH_OPS as any)[_name] = (a: any, b: any) =>
+    (valueLib.isValue(a) || valueLib.isValue(b))
+      ? _cellwise(valueLib.asValue(a), valueLib.asValue(b))
+      : _scalar(a, b);
+}
 
 // =====================================================================
 // Populate ARITH_OPS_N from ARITH_OPS via sampler-eval-batched.

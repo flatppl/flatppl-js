@@ -729,7 +729,8 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
           // cubature over the unit box (makeIntegrandND applies the
           // per-axis change-of-variables + Jacobian for unbounded axes).
           const { adaptiveCubature } = require('./quadrature.ts');
-          const integ = makeIntegrandND(weightFn.body, weightFn.paramNames, axes, theta, ctx);
+          const integ = makeIntegrandND(weightFn.body, weightFn.paramNames, axes, theta, ctx,
+            supportIsArrayVariate(inner.args[1]));
           const res = adaptiveCubature(integ, axes.length);
           if (!(res.Z > 0)) {
             throw new Error('density: normalize(truncate(weighted(w, Lebesgue), S)) — '
@@ -793,6 +794,18 @@ function truncateSetBounds(setIR: any): [number, number] | null {
   const lo = numericBoundValue(setIR.args[0]), hi = numericBoundValue(setIR.args[1]);
   if (lo != null && hi != null) return [lo, hi];
   return null;
+}
+
+// Does a support set IR denote an ARRAY variate? §03 "Cartesian product" makes
+// each member of a positional `cartprod` / `cartpow` the `cat` of one element
+// per component, and §07 `cat(x)` is `vector(x)` for a scalar — so even a
+// ONE-component cartprod is a set of length-1 VECTORS, while a bare
+// `interval(...)` is a set of scalars. `parseTruncationBox` reports one axis
+// for both, so a caller that binds the variate to a weight parameter has to ask
+// this separately.
+function supportIsArrayVariate(setIR: any): boolean {
+  return !!setIR && setIR.kind === 'call'
+    && (setIR.op === 'cartprod' || setIR.op === 'cartpow');
 }
 
 const TRUNCATE_DIM_CAP = 3;
@@ -959,8 +972,14 @@ function axisMap(axis: TruncAxis, u: number): { x: number; J: number } {
 
 // Non-log integrand w(x(u))·∏Jᵢ on the unit box (u ∈ (0,1)^dims), suitable
 // for `adaptiveCubature` (quadrature.ts). paramNames[i] binds to axes[i]'s
-// real coordinate xᵢ(uᵢ) — the weight body's free variate refs, exactly as
-// `weightedBaseLogMass` below binds the 1-D case. theta's own params are
+// real coordinate xᵢ(uᵢ) — the §06 k-parameter weight form, which the arity
+// rule admits only for k >= 2. A ONE-parameter weight over an ARRAY variate
+// (`arrayVariate`) instead "receives the variate whole", so its single
+// parameter binds to the whole coordinate array; the density and sampling
+// routes bind it the same way, so the normalizer integrates the function they
+// score. A bare `interval(...)` support has a scalar variate, and its
+// one-parameter weight keeps the single scalar binding
+// `weightedBaseLogMass` below uses. theta's own params are
 // bound once (θ is fixed across quadrature nodes); ctx.moduleRegistry
 // threads through for any standard-module call inside the weight (e.g.
 // `poly.chebyshev`), matching weightedBaseLogMass's env construction.
@@ -970,19 +989,23 @@ function axisMap(axis: TruncAxis, u: number): { x: number; J: number } {
 // contributes nothing rather than corrupting the quadrature).
 function makeIntegrandND(
   weightBody: any, paramNames: string[], axes: TruncAxis[], theta: any, ctx: any,
+  arrayVariate?: boolean,
 ): (u: number[]) => number {
   const samplerLib = require('./sampler.ts');
   const base: Record<string, any> = {};
   if (ctx && ctx.moduleRegistry) base.__moduleRegistry = ctx.moduleRegistry;
   if (theta && typeof theta === 'object') for (const k in theta) base[k] = theta[k];
+  const whole = !!arrayVariate && paramNames.length === 1;
   return (u: number[]): number => {
     const env: Record<string, any> = Object.assign({}, base);
     let J = 1;
+    const coords: number[] = whole ? new Array(axes.length) : (null as any);
     for (let i = 0; i < axes.length; i++) {
       const m = axisMap(axes[i], u[i]);
-      env[paramNames[i]] = m.x;
+      if (whole) coords[i] = m.x; else env[paramNames[i]] = m.x;
       J *= m.J;
     }
+    if (whole) env[paramNames[0]] = coords;
     const w = +samplerLib.evaluateExpr(weightBody, env);
     if (!Number.isFinite(w) || w < 0) return 0;
     return w * J;
@@ -1457,8 +1480,10 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
     // right (it broke the reified-vs-lambda bit-for-bit agreement and the 4xy
     // box oracle).
     const crnShape = crnRecognize(node);
+    // Over the node budget this THROWS rather than returning null: the constant
+    // bake below is the pooled mass, which is wrong at every θ but one.
     const crnExpr = (crnShape && crnWeightIsThetaDependent(crnShape, ctx))
-      ? crnNormalizeMassExpr(node, { points: ctx && ctx.crnNormalizePoints })
+      ? crnNormalizeMassExpr(node, { points: ctx && ctx.crnNormalizePoints, ctx })
       : null;
     if (crnExpr != null) {
       const innerC = node.args[0];
@@ -1676,6 +1701,7 @@ module.exports = {
   matBroadcastLogdensity,
   matTotalmass,
   parseTruncationBox,
+  supportIsArrayVariate,
   makeIntegrandND,
   weightedBaseWeightFn,
   resolveTruncateNormalizers,

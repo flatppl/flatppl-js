@@ -174,7 +174,9 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
     // the same model — see crn-normalize.ts. Gated on atom-dependence so a
     // θ-INDEPENDENT weight keeps whatever this route does today.
     if (atomDep && atomDep.size > 0 && referencesAtomDep(inner, atomDep)) {
-      const crnExpr = crnNormalizeMassExpr(node, { points: ctx && ctx.crnNormalizePoints });
+      // Over the node budget this THROWS rather than returning null: the
+      // constant −log Z baked below is the pooled mass, wrong wherever Z moves.
+      const crnExpr = crnNormalizeMassExpr(node, { points: ctx && ctx.crnNormalizePoints, ctx });
       if (crnExpr != null) {
         node.op = 'logweighted';
         node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [crnExpr] }] }, inner];

@@ -1486,16 +1486,16 @@ function _classifyWeightedByFunction(
   // its two consumers bind the parameters themselves — matWeighted to the
   // box's per-axis sample columns, density.ts's walkWeighted to the k
   // scalars the base consumed at the scored point.
-  // A ONE-axis box takes the per-axis route too, even at one parameter. The two
-  // binding rules coincide in arity there, and only the per-axis one is
-  // executable: it feeds the parameter a plain [N] scalar column, whereas the
-  // whole-array substitution below hands the worker an atom-batched [N, 1]
-  // value that its arithmetic kernels do not accept. It also keeps this path
-  // agreeing with mat-density's `makeIntegrandND`, which already binds
-  // `paramNames[0]` to a scalar for a 1-axis box — the sampling/quadrature
-  // agreement the axis↔parameter convention above exists to preserve.
+  //
+  // The per-axis rule needs k >= 2. §06 states the arity rule as "A
+  // one-parameter weight receives the variate whole. If the variate is a
+  // k-element array with k >= 2, a weight of exactly k scalar parameters
+  // instead receives one component per parameter, in order", so at ONE axis
+  // only the whole-variate reading applies, and the variate is the length-1
+  // vector §03/§07 give a one-component cartprod. The one-parameter case
+  // therefore always falls through to the whole-array substitution below.
   const boxAxes = _boxAxesOf(baseName, bindings);
-  if (fnIR.params.length > 1 || (boxAxes === 1 && fnIR.params.length === 1)) {
+  if (fnIR.params.length > 1) {
     if (!boxAxes || boxAxes !== fnIR.params.length) return null;
     return {
       kind: 'weighted', from: baseName, weightIR: fnIR, boxAxes,

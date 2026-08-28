@@ -334,23 +334,176 @@ test('the 1-axis box and the scalar interval agree on mass and density', async (
     'the two spellings must score identically: ' + boxLd + ' vs ' + scalarLd);
 });
 
+// =====================================================================
+// The WHOLE-VARIATE weight reading, at one axis as much as above it.
+//
+// §06 `weighted` states the arity rule: "A one-parameter weight receives the
+// variate whole. If the variate is a k-element array with k >= 2, a weight of
+// exactly k scalar parameters instead receives one component per parameter, in
+// order". The per-axis form therefore needs k >= 2, and at ONE axis only the
+// whole-variate reading applies — the variate there being the length-1 VECTOR
+// §03/§07 give a one-component cartprod, per the identity test above.
+//
+// So `f(v) = v[1] * v[1]` is the spelling of a quadratic weight over a 1-axis
+// box, and `f(x) = x * x` is refused rather than read as its element: §06 also
+// requires the weight to be "a non-negative weight", and `x * x` with `x` the
+// vector is vector-valued, a proven violation typeinfer can see.
+//
+// ORACLES. scipy.integrate.quad / dblquad, to 1e-13, agreeing with the hand
+// derivations stated at each test:
+//   1-axis [0,2],   f = v₁²        Z = 8/3,  logpdf([1.5])      = -0.16989903679539747
+//   2-axis [0,2]×[0,3], f = v₁²v₂²  Z = 24,   logpdf([1.5, 2.0]) = -0.9808292530117262
+// =====================================================================
+
 test('a weighted 1-axis box integrates to its closed form', async () => {
-  // Z = ∫₀² x² dx = 8/3, so the normalized density at x = 1.5 is
+  // Z = ∫₀² v₁² dv = 8/3, so the normalized density at v = [1.5] is
   // 1.5² / (8/3) = 2.25 · 3/8 = 0.84375. Monte Carlo over the box atoms.
-  //
-  // The weight takes a SCALAR parameter. At one axis the engine's two
-  // weight-binding rules coincide in arity — k params to k axes (a scalar per
-  // axis) and one param to the whole array variate — and the per-axis rule
-  // takes it, matching what mat-density's quadrature already does for a 1-axis
-  // box. Both readings denote the same number, since a length-1 array and its
-  // element carry the same value. The whole-array spelling `f(v) = v[1] * v[1]`
-  // is NOT supported at one axis (the worker's arithmetic has no atom-batched
-  // [N, 1] case); it has no working precedent and is a named follow-up.
   const src = `L = Lebesgue(support = cartprod(interval(0.0, 2.0)))
-f(x) = x * x
+f(v) = v[1] * v[1]
 P = normalize(weighted(f, L))
 `;
   assertRel(await scoreAt(src, 'P', [1.5], MC_N), 0.84375, MC_TOL, '1-axis weighted box');
+});
+
+test('a weighted 1-axis box carries the closed-form total mass', async () => {
+  // ∫₀² v₁² dv = 8/3 (scipy.integrate.quad: 2.6666666666666665). The estimator
+  // is volume · Ê[f] over the box's own atoms, whose relative standard error
+  // here is 0.30 % at N = 65536, so 2 % is a ~6σ band.
+  const { ctx } = makeMatCtx(`L = Lebesgue(support = cartprod(interval(0.0, 2.0)))
+f(v) = v[1] * v[1]
+M = weighted(f, L)
+`, { sampleCount: 65536 });
+  const m: any = await ctx.getMeasure('M');
+  const Z = Math.exp(m.logTotalmass);
+  assert.ok(Math.abs(Z - 8 / 3) / (8 / 3) < 0.02, 'totalmass ' + Z + ' ≉ 8/3');
+  assert.deepEqual(m.dims, [1], 'the 1-axis box keeps its length-1 vector atoms');
+});
+
+test('a SCALAR-form weight over a 1-axis box is refused, naming the vector reading', () => {
+  // `f(x) = x * x` denotes a vector-valued function once `x` is the length-1
+  // vector §06 hands a one-parameter weight, and §06 requires a non-negative
+  // real weight. Refuse rather than silently read `x` as the element: that
+  // scores a different function, and the two readings part company the moment
+  // the body stops being elementwise.
+  const proc = processSource(`L = Lebesgue(support = cartprod(interval(0.0, 2.0)))
+f(x) = x * x
+P = normalize(weighted(f, L))
+`);
+  const errs = proc.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 1, 'expected exactly one error, got '
+    + JSON.stringify(proc.diagnostics));
+  assert.match(errs[0].message, /variate WHOLE/);
+  assert.match(errs[0].message, /array of real \(length 1\)/,
+    'the message must name the variate type it is talking about');
+  assert.match(errs[0].message, /v\[1\]/, 'the message must name the vector spelling');
+  assert.match(errs[0].message, /bare `interval\(\.\.\.\)`/,
+    'the message must name the scalar-variate alternative');
+  assert.ok(errs[0].loc, 'the refusal must be located');
+});
+
+test('the scalar-form refusal fires above one axis too, without the interval hint', () => {
+  // Nothing about the refusal is special to k = 1 — a one-parameter weight
+  // receives the whole variate at every k. Above one axis there is no scalar
+  // spelling of the same measure, so the message offers only the vector form.
+  const proc = processSource(`L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))
+f(x) = x * x
+P = normalize(weighted(f, L))
+`);
+  const errs = proc.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 1, JSON.stringify(proc.diagnostics));
+  assert.match(errs[0].message, /variate WHOLE/);
+  assert.doesNotMatch(errs[0].message, /bare `interval/,
+    'the scalar-variate hint is only correct at one axis');
+});
+
+test('the same weight over a BARE interval keeps its scalar reading', () => {
+  // The refusal above is about the VARIATE, not about the spelling `x * x`:
+  // `Lebesgue(support = interval(...))` has a scalar variate, so the same
+  // weight body is a scalar function of it and passes untouched.
+  const proc = processSource(`L = Lebesgue(support = interval(0.0, 2.0))
+f(x) = x * x
+P = normalize(weighted(f, L))
+`);
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
+});
+
+test('a WRAPPED scalar base still binds the weight parameter to a scalar', async () => {
+  // The box search descends through the reweighting chain, so it has to say
+  // "no box" for a wrapper over a scalar Lebesgue as surely as for a bare one.
+  // Exact, no Monte Carlo: logdensityof = log f(1.5) + log 2 + log 1 =
+  // log(2.25 · 2) = log 4.5, the base being Lebesgue (density ≡ 1).
+  const ctx = buildCtx(`L = Lebesgue(support = interval(0.0, 2.0))
+S = logweighted(0.6931471805599453, L)
+f(x) = x * x
+M = weighted(f, S)
+ld = logdensityof(M, 1.5)
+`, 16);
+  const got = (await ctx.getMeasure('ld')).samples[0];
+  assert.ok(Math.abs(got - Math.log(4.5)) < 1e-12, 'logdensityof ' + got + ' ≠ log 4.5');
+});
+
+test('a WRAPPED box base is still found through the reweighting chain', async () => {
+  // The twin of the test above: the same wrapper, a box underneath. The search
+  // has to descend past the log-weight argument and report the box's 2 axes, so
+  // the weight parameter binds to the whole 2-vector. Exact: log f([1.5, 2.0])
+  // + log 2 = log(3 · 2) = log 6.
+  const ctx = buildCtx(`L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))
+S = logweighted(0.6931471805599453, L)
+f(v) = v[1] * v[2]
+M = weighted(f, S)
+ld = logdensityof(M, [1.5, 2.0])
+`, 16);
+  const got = (await ctx.getMeasure('ld')).samples[0];
+  assert.ok(Math.abs(got - Math.log(6)) < 1e-12, 'logdensityof ' + got + ' ≠ log 6');
+});
+
+test('a one-parameter weight over a 2-axis box scores its closed form', async () => {
+  // The k >= 2 twin of the 1-axis case, same reading: ∫₀²∫₀³ v₁²v₂² = 24
+  // (scipy.integrate.dblquad: 24.0), so the density at [1.5, 2.0] is
+  // 2.25 · 4 / 24 = 0.375.
+  const src = `L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))
+f(v) = v[1] * v[1] * v[2] * v[2]
+P = normalize(weighted(f, L))
+`;
+  assertRel(await scoreAt(src, 'P', [1.5, 2.0], MC_N), 0.375, MC_TOL, '2-axis 1-param weight');
+});
+
+// Self-normalized weighted mean of axis `j` over a weighted box measure — the
+// first moment of the measure `normalize(M)` denotes, read off M's own atoms.
+function axisMean(m: any, j: number, k: number): number {
+  const N = m.logWeights.length;
+  let sw = 0, sx = 0;
+  for (let i = 0; i < N; i++) {
+    const w = Math.exp(m.logWeights[i]);
+    sw += w; sx += w * m.samples[i * k + j];
+  }
+  return sx / sw;
+}
+
+test('the sampled moments of a weighted box match scipy quadrature', async () => {
+  // The SAMPLING route, against the same oracles the density route is pinned
+  // to. First moments of the normalized measure, by scipy.integrate:
+  //   1-axis [0,2],       f = v₁²    → E[v₁] = 1.5
+  //   2-axis [0,2]×[0,3], f = v₁²v₂² → E[v₁] = 1.5, E[v₂] = 2.25
+  // Tolerances are 6σ of the self-normalized estimator, measured at
+  // N = 65536 over 200 replicates: 0.011 / 0.013 / 0.021.
+  const { ctx: c1 } = makeMatCtx(`L = Lebesgue(support = cartprod(interval(0.0, 2.0)))
+f(v) = v[1] * v[1]
+M = weighted(f, L)
+`, { sampleCount: 65536 });
+  const m1: any = await c1.getMeasure('M');
+  assert.ok(Math.abs(axisMean(m1, 0, 1) - 1.5) < 0.011,
+    '1-axis E[v1] ' + axisMean(m1, 0, 1) + ' ≉ 1.5');
+
+  const { ctx: c2 } = makeMatCtx(`L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))
+f(v) = v[1] * v[1] * v[2] * v[2]
+M = weighted(f, L)
+`, { sampleCount: 65536 });
+  const m2: any = await c2.getMeasure('M');
+  assert.ok(Math.abs(axisMean(m2, 0, 2) - 1.5) < 0.013,
+    '2-axis E[v1] ' + axisMean(m2, 0, 2) + ' ≉ 1.5');
+  assert.ok(Math.abs(axisMean(m2, 1, 2) - 2.25) < 0.021,
+    '2-axis E[v2] ' + axisMean(m2, 1, 2) + ' ≉ 2.25');
 });
 
 test('weighted(f, Lebesgue(box)) totalmass is ∫ f over the box', async () => {

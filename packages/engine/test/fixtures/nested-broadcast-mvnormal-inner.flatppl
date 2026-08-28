@@ -43,7 +43,7 @@ substitution; a per-atom-stochastic mu or a per-cell cov still
 defers to the matPushfwd vector-base extension.
 ###
 
-inner_kernel = kernelof(
+inner_kernel = functionof(
   broadcast(MvNormal, mu = mu_inner_per_cell .* _scale_outer_, cov = cov_shared),
   scale_outer = _scale_outer_
 )

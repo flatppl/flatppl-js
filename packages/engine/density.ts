@@ -878,13 +878,17 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
     // exactly as they do for a leaf's kwargs.
     const pName = wIR.params[0];
     const { mapIR } = require('./ir-walk.ts');
-    // Over an N-D box base the variate is the k-array itself (spec §03), so a
+    // Over a box base the variate is the k-array itself (spec §03), so a
     // single-parameter weight binds to the WHOLE consumed vector — bound as a
     // `vector(...)` of the k coordinates, which is what an indexing body like
     // `v[1] + v[2]` needs. Binding the first coordinate alone (the scalar
-    // path below) would score a different function without erroring.
+    // path below) would score a different function without erroring. This
+    // holds at k = 1 too: a one-component cartprod is the set of LENGTH-1
+    // VECTORS, so the sole parameter takes `vector(x)`, not `x`. Only a base
+    // with no box at all (boxK = 0, a bare `Lebesgue(interval(...))` or a
+    // non-Lebesgue leaf) has a scalar variate.
     const boxK = _baseBoxDim(ir.args[1]);
-    const bound = boxK > 1
+    const bound = boxK >= 1
       ? (() => {
           const coords = inferConsumedVector(value, boxK);
           /* c8 ignore start */
@@ -2972,25 +2976,28 @@ function logDensity(ir: any, value: any, env: any, opts: any) {
 // vector counterpart of inferConsumedScalar, for an N-D box variate. null when
 // the value cannot supply n coordinates (the caller refuses rather than
 // padding, since a short read would score a different function).
-// Box dimension of a base measure IR, 1 when it is not an N-D box. The base
-// of a `weighted`/`logweighted` may be wrapped (another reweighting, a
-// truncate), so descend through the measure-op chain to the Lebesgue node
-// carrying `boxAxes`.
+// Box dimension of a base measure IR, 0 when it is not a box at all. A ONE-axis
+// box returns 1 and a bare scalar `Lebesgue(interval(...))` returns 0: the two
+// carry different variates (a length-1 vector versus a scalar, spec §03/§07 on
+// `cartprod` and `cat`), so a caller that binds the variate must tell them
+// apart. The base of a `weighted`/`logweighted` may be wrapped (another
+// reweighting, a truncate), so descend through the measure-op chain to the
+// Lebesgue node carrying `boxAxes`.
 function _baseBoxDim(baseIR: any, depth?: number): number {
-  if (!baseIR || baseIR.kind !== 'call' || (depth || 0) > 16) return 1;
+  if (!baseIR || baseIR.kind !== 'call' || (depth || 0) > 16) return 0;
   if (baseIR.op === 'Lebesgue') {
     const axes = baseIR.boxAxes;
-    return Array.isArray(axes) ? axes.length : 1;
+    return Array.isArray(axes) ? axes.length : 0;
   }
   if (BASE_WRAPPING_OPS.has(baseIR.op) && Array.isArray(baseIR.args)) {
     // The base sits last for the reweightings and first for truncate; both
     // are covered by scanning for the single measure-shaped argument.
     for (const a of baseIR.args) {
       const k = _baseBoxDim(a, (depth || 0) + 1);
-      if (k > 1) return k;
+      if (k > 0) return k;
     }
   }
-  return 1;
+  return 0;
 }
 
 const BASE_WRAPPING_OPS = new Set(['weighted', 'logweighted', 'truncate', 'normalize']);

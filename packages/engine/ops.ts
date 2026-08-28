@@ -92,21 +92,19 @@ const SCALAR_PRIM_ARITY: Record<string, number> = {
 };
 
 // Unary primitives whose ARRAY argument is the cell-wise application, mapped to
-// the `value-ops` impl that performs it. This is exactly the set typeinfer
-// already types shape-preserving over an array (`typeinfer.UNARY_ARITH_OPS`)
-// plus §07 `real`, so the entries here are what it takes for the RUNTIME to
-// agree with inference: without them a Value argument reaches the scalar
-// logical, coerces to NaN, and the wrong number propagates silently.
+// the `value-ops` impl that performs it: without them a Value argument reaches
+// the scalar logical, coerces to NaN, and the wrong number propagates silently.
 //
-// Not merely hypothetical: the determiniser emits these un-dotted over a vector
-// variate, e.g. `real(round.(v))` and `sum(abs(v - exp(real(round.(log.(v))))))`
-// in the discrete lattice gate (flatppl-rust determinizer/src/density.rs
-// snap_to_lattice / lattice_test).
+// §07's elementary functions are scalar-only, so typeinfer refuses an array
+// operand at every one of them and no un-dotted source spelling reaches these
+// entries any more. They stay as the runtime backstop for internally
+// constructed IR (`real`, `pos`, and the discrete-lattice gate's snap), which
+// no source-level check gates. Removing the elementary entries is a separate
+// pass — see TODO-flatppl-js.md.
 //
 // `neg` is absent because its Value case is already served by its own
 // registered variants. The predicates, casts, link and gamma functions are
-// absent because typeinfer does NOT type them over an array, so a runtime
-// elementwise reading there would outrun the type rule.
+// absent because they never had an array reading here.
 //
 // Values only, never the string names of impls that do not exist: the map is
 // asserted against `value-ops`' exports where it is consumed.
@@ -116,6 +114,20 @@ const ELEMWISE_OVER_ARRAY: Record<string, string> = {
   sin: 'sinElem', cos: 'cosElem',
   floor: 'floorElem', ceil: 'ceilElem', round: 'roundElem',
   real: 'realElem',
+};
+
+// The BINARY counterpart, for ops whose §07 domain admits a shaped operand
+// beside a scalar one. §07 "Operator-equivalent functions" gives `divide` the
+// domains "scalars, array-scalar, transposed-vector–scalar (real or complex)",
+// so a Value dividend is the spec's own case and typeinfer types it
+// shape-preserving; without a cell-wise runtime reading `v / 2` reached the
+// scalar logical and the shaped result was lost.
+//
+// `add` / `sub` / `mul` are absent: each carries its own Value-aware impl in
+// `sampler.ARITH_OPS` (see ops-declarations' migration note), and `mul`'s
+// rank ≥ 1 semantics are the matrix product, not the elementwise one.
+const ELEMWISE_OVER_ARRAY_2: Record<string, string> = {
+  divide: 'divElem',
 };
 
 // ---------------------------------------------------------------------
@@ -1214,6 +1226,7 @@ module.exports = {
   REAL_SCALAR_PRIM_ARITY,
   COMPLEX_SCALAR_PRIMS,
   ELEMWISE_OVER_ARRAY,
+  ELEMWISE_OVER_ARRAY_2,
   // ArgInfo constructors for typed dispatch (P2 / P3a integration):
   argInfoFromValue,
   argInfoFromMeasure,

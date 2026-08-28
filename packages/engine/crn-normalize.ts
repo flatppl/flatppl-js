@@ -128,6 +128,10 @@ type CrnShape = {
   weightParams: string[];
   weightBody: any;
   axes: Array<{ lo: number; hi: number; kind: string }>;
+  // Is the base's variate an ARRAY (a positional cartprod/cartpow support) or a
+  // scalar (a bare `interval`)? `axes` reports one axis for both, and a
+  // one-parameter weight binds differently in each case — see `bindWeightAt`.
+  arrayVariate: boolean;
 };
 
 // Recognise `normalize(weighted(<functionof weight>, <Lebesgue over a
@@ -155,7 +159,11 @@ function crnRecognize(node: any): CrnShape | null {
   // parameters instead receives one component per parameter, in order; any
   // other arity is an error."
   if (fn.params.length !== 1 && fn.params.length !== axes.length) return null;
-  return { weightParams: fn.params.slice(), weightBody: fn.body, axes };
+  const { supportIsArrayVariate } = require('./mat-density.ts');
+  return {
+    weightParams: fn.params.slice(), weightBody: fn.body, axes,
+    arrayVariate: supportIsArrayVariate(supp),
+  };
 }
 
 // Does the weight actually depend on a latent? Only then is a per-θ normalizer
@@ -250,13 +258,15 @@ function crnFixedPoints(
 // Bind the weight function's parameters to one sample point, following the
 // SAME convention density.ts's walkWeighted and mat-density's makeIntegrandND
 // use — a k-parameter weight takes one coordinate per parameter in axis order,
-// a one-parameter weight over a k-axis box takes the whole k-vector — so the
-// normalizer integrates the function the density path scores.
-function bindWeightAt(params: string[], body: any, pt: number[]): any {
+// a one-parameter weight takes the variate whole — so the normalizer integrates
+// the function the density path scores. `arrayVariate` decides what "whole"
+// means at ONE axis: a `cartprod(interval(...))` support gives a length-1
+// VECTOR (§03/§07), a bare `interval(...)` support a scalar.
+function bindWeightAt(params: string[], body: any, pt: number[], arrayVariate?: boolean): any {
   const bound: Record<string, any> = {};
   if (params.length === pt.length && pt.length > 1) {
     for (let i = 0; i < params.length; i++) bound[params[i]] = { kind: 'lit', value: pt[i] };
-  } else if (pt.length > 1) {
+  } else if (arrayVariate) {
     bound[params[0]] = {
       kind: 'call', op: 'vector',
       args: pt.map((c) => ({ kind: 'lit', value: c })),
@@ -316,7 +326,24 @@ function crnNormalizeNote(key: string, M: number, dims: number) {
 
 // Build the IR expression for Ẑ(θ) of a `normalize` node, or null when the node
 // is not the recognised shape (the caller keeps its existing fallback).
-// `opts.points` overrides M.
+// `opts.points` overrides M; `opts.ctx` is the materialisation context, read
+// only to tell a latent from a constant or a called function in the budget
+// refusal below.
+//
+// THROWS when the shape IS recognised, the weight moves with a latent, and the
+// body will not fit the node budget. Every caller's fallback there is the mass
+// POOLED over the atom ensemble — the pooled weight sum on the sampling route, a
+// baked −log Z on the two density routes — which is E[Z], not Z(θ). Returning
+// null with a `console.warn` handed that back as a number: measured on
+// `f = exp(θx)` over [0,1] with θ ~ Uniform(0, 4) at M = 400000, E[θ] = 2.8124
+// against the prior's 2.0 and the Z-tilted 2.8073. Spec §06 `normalize` makes
+// every θ-slice a probability measure, so the θ-marginal is the prior; and its
+// engine contract states the doctrine — "engines do not silently substitute
+// heuristics: … succeeds with closed-form math or fails loudly".
+//
+// A weight that is a function of the VARIATE alone keeps the null: Z is then one
+// constant, the pooled mass is exactly it, and refusing would reject a correct
+// answer. That is the only shape reachable here where the fallback is right.
 function crnNormalizeMassExpr(node: any, opts?: any): any | null {
   const shape = crnRecognize(node);
   if (!shape) return null;
@@ -324,18 +351,24 @@ function crnNormalizeMassExpr(node: any, opts?: any): any | null {
   const key = seedString(shape.axes, M);
   const bodySize = nodeCount(shape.weightBody);
   if (bodySize * M > CRN_NODE_BUDGET) {
-    // eslint-disable-next-line no-console
-    console.warn('normalize(weighted(f, Lebesgue(box))): the weight body is '
-      + bodySize + ' nodes, too large to inline ' + M + ' times for the fixed-sample '
-      + 'normalizer (budget ' + CRN_NODE_BUDGET + '); falling back to a θ-independent '
-      + 'constant Z, which is wrong wherever Z moves with θ');
-    return null;
+    // Without a ctx every free name reads as a latent, which refuses rather than
+    // guesses — the conservative direction for a divisor.
+    if (!crnWeightIsThetaDependent(shape, opts && opts.ctx)) return null;
+    throw new Error('normalize(weighted(f, Lebesgue(box))): the weight depends on a '
+      + 'latent, so its mass Z(θ) is estimated by inlining the weight body at each of '
+      + M + ' fixed points — ' + bodySize + ' nodes × ' + M + ' = ' + (bodySize * M)
+      + ' nodes, over the budget of ' + CRN_NODE_BUDGET + '. Falling back to the pooled '
+      + 'mass would return the prior tilted by Z(θ); spec §06 normalize makes each '
+      + 'θ-slice a probability measure, so refusing instead. Lower the point count '
+      + '(`crnNormalizePoints`) to trade estimator accuracy for expression size, or '
+      + 'rewrite the measure so its mass is closed-form in the latent.');
   }
   const seed = rng.xxhash32(key, 0) >>> 0;
   const pts = crnFixedPoints(shape.axes, M, seed);
   let volume = 1;
   for (const a of shape.axes) volume *= (a.hi - a.lo);
-  const terms = pts.map((pt) => bindWeightAt(shape.weightParams, shape.weightBody, pt));
+  const terms = pts.map((pt) =>
+    bindWeightAt(shape.weightParams, shape.weightBody, pt, shape.arrayVariate));
   const sum = balancedAdd(terms);
   crnNormalizeNote(key, M, shape.axes.length);
   return {
