@@ -1569,7 +1569,11 @@ function liftInlineSubexpressions(bindings: any) {
    *     locscale's scale and shift use;
    *   - the base's static iid count, when known, is D.
    *
-   * A call that fails the gate keeps its plain-pushfwd lowering: sampling
+   * A body that is not a matrix-vector affine map falls through to
+   * `__routeScalarAffinePushfwd`, which covers the scalar-factor spellings
+   * (`s * x + b` and friends) by synthesising `L = s * eye(D)`.
+   *
+   * A call that fails both gates keeps its plain-pushfwd lowering: sampling
    * runs f's body over the base atoms, and density reports the §06 case-3
    * static error unless the user annotated f with `bijection`.
    */
@@ -1584,7 +1588,13 @@ function liftInlineSubexpressions(bindings: any) {
     const fn = __resolveFunctionofRef(fAst);
     if (!fn) return astArg;
     const affine = __matchAffineBody(fn.body, fn.param);
-    if (!affine) return astArg;
+    // `2.0 * x + b` matches the matrix body shape too — only the scale tells
+    // the two apart — so a statically-scalar scale goes to the scalar route,
+    // which synthesises `L = s * eye(D)`. Everything else keeps the
+    // matrix-vector gate below.
+    if (!affine || __staticNonzeroScalar(affine.scaleAst)) {
+      return __routeScalarAffinePushfwd(astArg, baseAst, fn);
+    }
     const D = __affineScaleD(affine.scaleAst);
     if (D == null || !Number.isInteger(D) || D < 1) return astArg;
     if (__discoveredMvNormalD(affine.shiftAst, out, 1) !== D) return astArg;
@@ -1628,6 +1638,25 @@ function liftInlineSubexpressions(bindings: any) {
     if (!__affineBaseIsIid(baseAst)) return astArg;
     const baseK = __affineBaseIidCount(baseAst);
     if (baseK != null && baseK !== D) return astArg;
+    // L is the user's own matrix (no lower_cholesky wrap — unlike MvNormal,
+    // which is given cov); b is the shift vector.
+    return __emitAffineRegistryPushfwd(astArg, baseAst,
+      affine.scaleAst, affine.shiftAst);
+  }
+
+  /**
+   * Route `pushfwd(f, <iid base>)` to the affine registry, given the affine
+   * map's scale matrix and shift vector as ASTs. Mutates `astArg` in place and
+   * returns it.
+   *
+   * Shared by the matrix-vector spelling (`x -> L * x + b`, where LAst/bAst are
+   * the user's own operands) and the scalar spelling (`x -> s * x + b`, where
+   * LAst is a synthesised `s * eye(D)`). Both owe an analytic density under
+   * spec §06 "Engine contract for `pushfwd` density evaluation" case 1, and
+   * both want the registry's atom-batched forward on the sample side.
+   */
+  function __emitAffineRegistryPushfwd(astArg: any, baseAst: any,
+                                       LAst: any, bAst: any) {
     // Synthetic bijection stub + registry marker, identical in shape to the
     // locscale and MvNormal lowerings: fn-hole forward / inverse and a
     // scalar-0 log-volume, pre-hoisted so derivations' bijection-construction
@@ -1648,11 +1677,9 @@ function liftInlineSubexpressions(bindings: any) {
     };
     const bijName = freshBijName();
     const bijBinding = makeSyntheticBinding(bijName, bijAst);
-    // L is the user's own matrix (no lower_cholesky wrap — unlike MvNormal,
-    // which is given cov); b is the shift vector.
     (bijBinding as any).__pushfwdAffineLowering = {
-      LIR: lowerExpr(cloneAst(affine.scaleAst), liftLowerCtx),
-      bIR: lowerExpr(cloneAst(affine.shiftAst), liftLowerCtx),
+      LIR: lowerExpr(cloneAst(LAst), liftLowerCtx),
+      bIR: lowerExpr(cloneAst(bAst), liftLowerCtx),
     };
     out.set(bijName, bijBinding);
     // The registry density path requires the base to classify as
@@ -1728,6 +1755,188 @@ function liftInlineSubexpressions(bindings: any) {
       }
     })(ast);
     return found;
+  }
+
+  /**
+   * Route the SCALAR-affine pushforward spelling over a vector base —
+   * `pushfwd(x -> s * x + b, iid(<scalar dist>, D))` and its sign- and
+   * shift-free variants — through the same affine-registry pushfwd the
+   * matrix-vector spelling uses, by synthesising `L = s * eye(D)` and
+   * `b = zeros(D)` where the user wrote no matrix or no shift.
+   *
+   * Spec §06 "Engine contract for `pushfwd` density evaluation" case 1 requires
+   * every conforming engine to recognize "affine maps composed from
+   * `add`/`sub`/`neg`/`mul`/`divide`" by name, so this spelling owes an
+   * analytic density. Without the route, density consumed one scalar from the
+   * length-D variate ("scalar leaf has no entry to consume") for a rescale, and
+   * threw "per-atom or vector-valued bijections not yet supported here" for a
+   * vector shift.
+   *
+   * Gate — every condition static, else the call is returned unchanged:
+   *   - the body matches `__matchScalarAffineBody`;
+   *   - the base is an `iid(...)` whose count D is a statically-known integer,
+   *     since D is what `eye(D)` / `zeros(D)` are synthesised from;
+   *   - the scalar factor, when present, is statically scalar and nonzero (a
+   *     zero factor is a singular map, not a bijection);
+   *   - the shift, when present, is a statically-discovered length-D vector.
+   *     §07 `add` takes "scalars or arrays of same shape", so a SCALAR shift
+   *     over a vector base is not a legal map and must not route.
+   */
+  function __routeScalarAffinePushfwd(astArg: any, baseAst: any, fn: any) {
+    const m = __matchScalarAffineBody(fn.body, fn.param);
+    if (!m) return astArg;
+    if (!__affineBaseIsIid(baseAst)) return astArg;
+    const D = __affineBaseIidCount(baseAst);
+    if (D == null || !Number.isInteger(D) || D < 1) return astArg;
+    if (m.scaleAst && !__staticNonzeroScalar(m.scaleAst)) return astArg;
+    if (m.shiftAst && __discoveredMvNormalD(m.shiftAst, out, 1) !== D) {
+      return astArg;
+    }
+    const loc = astArg.loc;
+    // Every spelling lowers to `L = <scalar factor> * eye(D)`, so the registry
+    // sees one [D,D] shape whichever way the user wrote the rescale. The sign
+    // of the linear part rides on the factor, so L never needs a matrix
+    // negation and an unscaled negated map gets the literal factor -1.
+    let factor: any;
+    if (!m.scaleAst) {
+      factor = makeNumLit(m.negate ? -1 : 1, loc);
+    } else if (m.negate) {
+      factor = { type: 'UnaryExpr', op: '-', operand: m.scaleAst, loc };
+    } else {
+      factor = m.scaleAst;
+    }
+    const LAst = {
+      type: 'BinaryExpr', op: '*', left: factor,
+      right: {
+        type: 'CallExpr', callee: makeIdent('eye', loc),
+        args: [makeNumLit(D, loc)], loc,
+      },
+      loc,
+    };
+    const zerosD = {
+      type: 'CallExpr', callee: makeIdent('zeros', loc),
+      args: [makeNumLit(D, loc)], loc,
+    };
+    let bAst: any;
+    if (!m.shiftAst) {
+      bAst = zerosD;
+    } else if (m.negateShift) {
+      // `zeros(D) - b`, not `-b`: materialise resolves the shift through
+      // `ir-shared.resolveIRToValue`, whose `neg` (and `mul`) fold a
+      // vector-valued binding ref to NaN / null, while `sub` coerces it.
+      bAst = { type: 'BinaryExpr', op: '-', left: zerosD, right: m.shiftAst, loc };
+    } else {
+      bAst = m.shiftAst;
+    }
+    return __emitAffineRegistryPushfwd(astArg, baseAst, LAst, bAst);
+  }
+
+  /**
+   * Match a scalar-affine body over the parameter named `param` — a scalar
+   * rescale of the parameter plus a vector shift, in any of these spellings:
+   *
+   *   x          s * x      x * s          (each optionally negated)
+   *   <above> + b      b + <above>      <above> - b      b - <above>
+   *
+   * Returns `{ scaleAst, negate, shiftAst, negateShift }`, where a null
+   * `scaleAst` means an unscaled parameter and a null `shiftAst` a shift-free
+   * map. `negate` negates the linear part (`-x`, `b - x`); `negateShift`
+   * negates the shift (`x - b`). The caller owns every shape and value check —
+   * this matcher only decides the SYNTACTIC form.
+   *
+   * The parameter must occur exactly once: `s * x + x` is not affine in x. A
+   * dotted (broadcast) operator is refused — `.+` / `.*` lower to a
+   * `broadcast(...)` call, a different map from the scalar-array arithmetic
+   * §07 gives `add` and `mul`.
+   *
+   * §06 case 1 also admits `divide`, but `x / s` is NOT matched: typeinfer's
+   * `divide` carries a scalars-only `(real, real) → real` signature (it is
+   * absent from typeinfer's `BINARY_ARITH_OPS`), so a vector-over-scalar
+   * division types as a scalar and the query is refused before the lift is
+   * consulted. Routing it would emit a correct number alongside a static
+   * error. Reinstating the form needs the typeinfer fix first.
+   */
+  function __matchScalarAffineBody(body: any, param: string): {
+    scaleAst: any; negate: boolean;
+    shiftAst: any; negateShift: boolean;
+  } | null {
+    // A null body cannot mention the parameter, so this also covers it.
+    if (!__mentionsParam(body, param)) return null;
+    if (body.broadcast) return null;
+    // Peel the optional outer additive layer first: after this, `linear` holds
+    // the (possibly negated) scalar-rescale part and the shift is settled.
+    let linear = body, shiftAst: any = null, negateShift = false;
+    let shiftNegatesLinear = false;
+    if (body.type === 'BinaryExpr' && (body.op === '+' || body.op === '-')) {
+      const leftHasParam = __mentionsParam(body.left, param);
+      const rightHasParam = __mentionsParam(body.right, param);
+      if (leftHasParam === rightHasParam) return null;   // both, or neither
+      if (leftHasParam) {
+        linear = body.left;
+        shiftAst = body.right;
+        negateShift = body.op === '-';
+      } else {
+        linear = body.right;
+        shiftAst = body.left;
+        // `b - <linear>` negates the linear part, not the shift.
+        shiftNegatesLinear = body.op === '-';
+      }
+    }
+    // Then peel any unary minuses off the linear part; each flips the sign.
+    let negate = shiftNegatesLinear;
+    while (linear && linear.type === 'UnaryExpr' && linear.op === '-') {
+      if (linear.broadcast) return null;
+      negate = !negate;
+      linear = linear.operand;
+    }
+    /* c8 ignore start */
+    // Defensive: the body is non-null (it mentions the parameter) and a peeled
+    // `UnaryExpr` always carries an operand, so only a malformed AST lands
+    // here. The guard keeps `.type` below off a null.
+    if (!linear) return null;
+    /* c8 ignore stop */
+    // Finally the rescale itself: a bare parameter, or one scalar factor.
+    if (__isParamRef(linear, param)) {
+      return { scaleAst: null, negate, shiftAst, negateShift };
+    }
+    if (linear.type !== 'BinaryExpr' || linear.broadcast) return null;
+    if (linear.op !== '*') return null;
+    for (const [pSide, factor] of [
+      [linear.left, linear.right], [linear.right, linear.left]] as any[]) {
+      if (!__isParamRef(pSide, param)) continue;
+      if (__mentionsParam(factor, param)) continue;
+      return { scaleAst: factor, negate, shiftAst, negateShift };
+    }
+    return null;
+  }
+
+  /**
+   * True when `e` is statically a scalar whose value is not zero — a literal
+   * (with any number of leading unary minuses) or a ref whose inferredType is
+   * `kind: 'scalar'`. A zero factor makes the affine map singular, so it is not
+   * a bijection and must not reach the registry; a scalar-typed ref's value is
+   * unknown here, exactly as a named matrix scale's singularity is.
+   */
+  function __staticNonzeroScalar(e: any): boolean {
+    let inner = e;
+    while (inner && inner.type === 'UnaryExpr' && inner.op === '-') {
+      inner = inner.operand;
+    }
+    /* c8 ignore start */
+    // Defensive: every caller passes a real expression node, and a peeled
+    // `UnaryExpr` always carries an operand.
+    if (!inner) return false;
+    /* c8 ignore stop */
+    if (inner.type === 'NumberLiteral') {
+      return typeof inner.value === 'number' && Number.isFinite(inner.value)
+        && inner.value !== 0;
+    }
+    if (inner.type === 'Identifier') {
+      const b = out.get(inner.name);
+      const t = b && b.inferredType;
+      return !!t && t.kind === 'scalar';
+    }
+    return false;
   }
 
   /**
