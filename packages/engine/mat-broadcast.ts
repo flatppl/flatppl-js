@@ -286,29 +286,36 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
 // uses _substituteKernelParams below to bind the broadcast args into
 // the inner dist call's kwargs.
 
-// Substitute kernel placeholders in an IR expression with the
-// corresponding broadcast arg from `bcKwargs`. Matches BOTH `%local.
-// <paramName>` (the canonical placeholder form) AND `self.<paramName>`
-// when the name appears in the kernel's params (the lift pass strips
-// %local when hoisting inline measure calls to anon bindings —
-// inside the anon, placeholder refs come out as `self.<paramName>`
-// referencing a non-existent module binding; the substitution
-// rebinds them to the broadcast args). Other refs (closed-over
-// self-refs from the kernel definition's outer scope) and literals
-// pass through unchanged.
-function _substituteKernelParams(
-  expr: any, params: string[], paramKwargs: string[], bcKwargs: any,
+// THE traversal over the positions where a kernel formal can occur.
+// `_substituteKernelParams` and `_collectKernelParamRefs` are both
+// defined in terms of it, so a formal one of them sees is a formal the
+// other sees — the boundary-name conflation this pair exists to avoid
+// cannot arise from a traversal difference.
+//
+// A formal is matched in BOTH `%local.<paramName>` (the canonical
+// placeholder form) AND `self.<paramName>` when the name appears in the
+// kernel's params (the lift pass strips %local when hoisting inline
+// measure calls to anon bindings — inside the anon, placeholder refs
+// come out as `self.<paramName>` referencing a non-existent module
+// binding). `rewrite(ref, idx)` receives the matched ref and the index
+// of the formal in `params`; every other ref (closed-over self-refs from
+// the kernel definition's outer scope) and every literal passes through.
+//
+// The `body` of a nested `functionof` / `kernelof` is deliberately NOT
+// walked. §04 "Placeholders and holes" scopes a placeholder to its
+// nearest enclosing reification and requires an inner placeholder to be
+// bound there ("A placeholder in an inner `functionof` or `kernelof`
+// **must** be bound there"), so a same-named ref inside a nested body
+// belongs to the inner scope, never to this kernel's formals.
+function _mapKernelParamRefs(
+  expr: any, params: string[], rewrite: (ref: any, idx: number) => any,
 ): any {
   if (!expr || typeof expr !== 'object') return expr;
   if (expr.kind === 'ref'
       && (expr.ns === '%local' || expr.ns === 'self')) {
     const idx = params.indexOf(expr.name);
     if (idx < 0) return expr;
-    const surfaceKw = paramKwargs[idx];
-    if (Object.prototype.hasOwnProperty.call(bcKwargs, surfaceKw)) {
-      return bcKwargs[surfaceKw];
-    }
-    return expr;
+    return rewrite(expr, idx);
   }
   if (expr.kind === 'call') {
     const out: any = { kind: 'call' };
@@ -316,14 +323,24 @@ function _substituteKernelParams(
     if (expr.target) out.target = expr.target;
     if (Array.isArray(expr.args)) {
       out.args = expr.args.map((a: any) =>
-        _substituteKernelParams(a, params, paramKwargs, bcKwargs));
+        _mapKernelParamRefs(a, params, rewrite));
     }
     if (expr.kwargs) {
       out.kwargs = {};
       for (const k in expr.kwargs) {
-        out.kwargs[k] = _substituteKernelParams(
-          expr.kwargs[k], params, paramKwargs, bcKwargs);
+        out.kwargs[k] = _mapKernelParamRefs(expr.kwargs[k], params, rewrite);
       }
+    }
+    // `record` / keyword-form `joint` etc. carry their operands in an
+    // ordered `fields` array instead of `kwargs` (lower.ts "These
+    // produce IR with a `fields` array preserving source order"), so a
+    // formal reached only through a record literal needs this arm.
+    if (Array.isArray(expr.fields)) {
+      out.fields = expr.fields.map((f: any) => (f && f.value)
+        ? Object.assign({}, f, {
+          value: _mapKernelParamRefs(f.value, params, rewrite),
+        })
+        : f);
     }
     if (expr.op === 'functionof') {
       if (expr.body) out.body = expr.body;
@@ -336,19 +353,29 @@ function _substituteKernelParams(
   return expr;
 }
 
+// Substitute kernel placeholders in an IR expression with the
+// corresponding broadcast arg from `bcKwargs`. A formal with no entry in
+// `bcKwargs` passes through unchanged.
+function _substituteKernelParams(
+  expr: any, params: string[], paramKwargs: string[], bcKwargs: any,
+): any {
+  return _mapKernelParamRefs(expr, params, (ref: any, idx: number) => {
+    const surfaceKw = paramKwargs[idx];
+    if (Object.prototype.hasOwnProperty.call(bcKwargs, surfaceKw)) {
+      return bcKwargs[surfaceKw];
+    }
+    return ref;
+  });
+}
+
 // Collect, into `out`, the SURFACE kwarg name of every kernel formal that
-// `expr` references. The namespace test must stay in step with
-// `_substituteKernelParams` above: a collector that sees a formal the
-// substituter will not rewrite (or the reverse) is the boundary-name
-// conflation this pair exists to avoid.
+// `expr` references.
 function _collectKernelParamRefs(
   expr: any, params: string[], paramKwargs: string[], out: Set<string>,
 ): void {
-  require('./ir-walk.ts').walkIR(expr, (n: any) => {
-    if (n.kind !== 'ref') return;
-    if (n.ns !== '%local' && n.ns !== 'self') return;
-    const idx = params.indexOf(n.name);
-    if (idx >= 0) out.add(paramKwargs[idx]);
+  _mapKernelParamRefs(expr, params, (ref: any, idx: number) => {
+    out.add(paramKwargs[idx]);
+    return ref;
   });
 }
 

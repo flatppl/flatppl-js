@@ -922,6 +922,17 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     diagnostics.push(Object.assign({ loc: bindingLoc(d.name) }, d));
   }
 
+  // Same discipline for `broadcast(<jointchain-bodied kernel>, …)`: a step
+  // spelling the recogniser declines otherwise leaves the binding classified
+  // as a plain value evaluation and crashes inside the materialiser.
+  for (const d of _kernelBroadcastShape.checkJointChainKernelSteps(bindings)) {
+    diagnostics.push(Object.assign({ loc: bindingLoc(d.name) }, d));
+    // The refused broadcast fell through every kernel-broadcast classifier
+    // into a plain value evaluation, which materialises to an undefined
+    // reply. Drop it so the refusal above is the only thing the user sees.
+    delete derivations[d.name];
+  }
+
   // Discrete map: walk through aliases to find each binding's leaf
   // sample step. evaluate-only bindings inherit the discreteness of
   // their inputs naively, but we treat them as continuous — arithmetic

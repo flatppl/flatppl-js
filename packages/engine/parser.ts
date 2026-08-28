@@ -277,10 +277,16 @@ function parse(tokensIn: any[], variant: any) {
         AST.Placeholder(argNames[i], argLocs[i]),
         argLocs[i]));
     }
-    return AST.CallExpr(
+    const out = AST.CallExpr(
       AST.Identifier('functionof', lloc),
       [rewritten, ...kwargs],
       lloc);
+    // Provenance for the §04 placeholder scoping check, which refuses the
+    // nested shape `x -> y -> x + y` desugars to (a closure). The refusal is
+    // the same either way; the mark only lets the message name the lambda the
+    // user wrote instead of the `functionof` this rewrite produced.
+    out.fromLambda = true;
+    return out;
   }
 
   // Replace every free `Identifier(name)` whose name is in `argSet`
