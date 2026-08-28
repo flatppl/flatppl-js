@@ -139,6 +139,18 @@ function _cellArg(args: any[], N: any) {
   return null;
 }
 
+// Axis-by-axis equality of two per-atom cell shapes (the tail after the
+// leading N axis). `_cellLen` alone is a product, so [2,3] and [3,2] both
+// give 6 and an equal-count check lets them through — a §04 "same number
+// of axes … same size" violation that silently pairs cells flat-index-wise
+// instead of refusing (B2). Rank must match too: [6] and [2,3] have equal
+// products but are not the same shape.
+function _sameCellShape(a: any[], b: any[]) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
 // Map a scalar primitive over the CELLS of a shaped atom batch:
 // shape=[N, ...cell] in, shape=[N, ...cell] out. Each operand is read
 // at its own granularity — a same-cell-shaped batch per cell entry, an
@@ -151,6 +163,7 @@ function _cellArg(args: any[], N: any) {
 // Float64Array — so `wantValue` does not apply here.
 function _broadcastCells(fn: any, args: any[], N: any, cell: any) {
   const cellLen = _cellLen(cell, N);
+  const cellShape = cell.shape.slice(1);
   const ar = args.length;
   // Per-operand read plan: 2 = cell batch, 1 = atom-batched scalar,
   // 0 = constant. Kept as a flat array so the inner loop indexes it
@@ -162,10 +175,10 @@ function _broadcastCells(fn: any, args: any[], N: any, cell: any) {
     const v = args[k];
     const vCell = _cellLen(v, N);
     if (vCell !== 0) {
-      if (vCell !== cellLen) {
+      if (!_sameCellShape(v.shape.slice(1), cellShape)) {
         throw new Error('broadcastN: per-atom cell shape ['
           + v.shape.slice(1).join(',') + '] does not match ['
-          + cell.shape.slice(1).join(',') + '] with N=' + N);
+          + cellShape.join(',') + '] with N=' + N);
       }
       kind[k] = 2; datas[k] = v.data;
     } else if (isBatch(v, N)) {
