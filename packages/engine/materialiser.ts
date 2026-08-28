@@ -707,6 +707,109 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
   });
 }
 
+// Fold the composite fallback's per-POSITION importance weights (one per
+// inflated N·k atom) onto the N-atom axis `iid`'s output lives on.
+//
+// §06 `iid` is "the product measure $M^{\otimes N}$", and §06 `normalize` makes
+// each factor "the probability measure $M / Z$". So when the inflated
+// materialisation of `M` represents its law by REWEIGHTING uniform positions —
+// `normalize(weighted(f, Q))`, whose atoms sit at Q's positions and carry
+// $f/Z$ in `logWeights` — the joint proposal for atom b is its k positions
+// drawn from Q, and the target/proposal ratio for the product is the PRODUCT of
+// the k per-coordinate ratios, i.e. the SUM of the k log weights. Dropping them
+// (an `arrayMeasure(samples, dims, null)` rebuild) hands back a draw from the
+// UNNORMALIZED base instead: `iid(normalize(weighted(x -> exp(x),
+// Normal(0, 1))), 3)` is exactly Normal(1, 1)^⊗3 by conjugacy, and every
+// coordinate came out at Normal(0, 1)'s mean, a full sigma low.
+//
+// Returns null when the positions already represent the law on their own (no
+// weights, or weights that are exactly equal, as every equal-weight fallback
+// shape produces). Null keeps the output's `logWeights` absent rather than an
+// all-equal array, which preserves `propagateLogWeights`'s reference-identity
+// dedupe for the shapes that were already right.
+//
+// Summing is right for every stream that can reach `innerM.logWeights`, because
+// only a MEASURE handler introduces per-position weights and only VALUE draws
+// are held constant across the repeat axis (`tileMeasureAtomMajor`). A value
+// binding reached in measure position is a reified law's variate, and those are
+// exempt from the tiling, so a tiled — block-constant — stream never becomes a
+// measure handler's `parent.logWeights`. The guard below tests that invariant on
+// the data rather than trusting it.
+//
+// The result is renormalised to sum to one in log space, the convention
+// `matNormalize` sets, so the `logTotalmass: 0` the caller records stays true.
+function _foldIidBlockLogWeights(
+  innerM: any, N: number, k: number, fromName: string,
+): Float64Array | null {
+  const lw = innerM && innerM.logWeights;
+  if (!lw) return null;
+  // An EXACTLY equal array is the fallback's equal-weight case (a resampled
+  // superpose, a θ-independent normalize whose divisor cancelled): the positions
+  // already represent the law and there is nothing to fold. A zero- or
+  // one-length array lands here too, which is why the fold below needs no
+  // separate empty-axis guard.
+  let allEqual = true;
+  for (let i = 1; i < lw.length; i++) {
+    if (lw[i] !== lw[0]) { allEqual = false; break; }
+  }
+  if (allEqual) return null;
+  /* c8 ignore start */
+  // Two guards over shapes the engine cannot currently produce. Both are
+  // wrong-number risks, so neither may fall through to the fold.
+  //
+  // The weight axis must be the inflated N·k axis: the inner measure is
+  // materialised at `sampleCount = N * k`, so a different length means some
+  // handler returned an ensemble off the repeat axis and the k-block fold would
+  // mix atoms.
+  if (lw.length !== N * k) {
+    throw new Error('iid: the inner measure "' + fromName + '" returned '
+      + lw.length + ' importance weights for ' + N + ' atoms × ' + k
+      + ' inner draws; the fallback cannot fold a weight axis it cannot align '
+      + 'with the repeat axis');
+  }
+  // Weights that vary across atoms but are EXACTLY equal within every block
+  // depend on the atom, not on the coordinate — one weighting event shared by
+  // the block, which summing would raise to the k-th power. A genuine
+  // per-coordinate weight cannot hit float equality k times per atom over N
+  // atoms, so this is the shared-stream invariant above failing, and the summed
+  // array cannot be decomposed afterwards. Refuse rather than guess.
+  let blockConstant = k > 1;
+  for (let b = 0; blockConstant && b < N; b++) {
+    for (let j = 1; j < k; j++) {
+      if (lw[b * k + j] !== lw[b * k]) { blockConstant = false; break; }
+    }
+  }
+  if (blockConstant) {
+    throw new Error('iid: the inner measure "' + fromName + '" gives all '
+      + k + ' inner draws of an atom the SAME importance weight, so the weight '
+      + 'is a shared per-atom event, not one per coordinate; folding it as a '
+      + 'product would raise it to the power ' + k + ' (spec §06 iid, the '
+      + 'product measure M^⊗N). Not implemented rather than silently '
+      + 'mis-weighted');
+  }
+  /* c8 ignore stop */
+  const out = new Float64Array(N);
+  for (let b = 0; b < N; b++) {
+    let s = 0;
+    for (let j = 0; j < k; j++) s += lw[b * k + j];
+    out[b] = s;
+  }
+  const lse = empirical.logSumExp(out);
+  /* c8 ignore start */
+  // Every atom weightless or infinite. Unreachable from a `normalize` parent,
+  // whose own weights already sum to one over the inflated axis, and from a
+  // `weighted` parent, whose all-underflowed weights would be equal and return
+  // null above. Guarded because `out[b] -= lse` would otherwise write NaN.
+  if (!Number.isFinite(lse)) {
+    throw new Error('iid: the inner measure "' + fromName + '" gives every atom '
+      + 'total weight ' + Math.exp(lse) + '; spec §06 leaves normalize undefined '
+      + 'when Z is zero or infinite');
+  }
+  /* c8 ignore stop */
+  for (let b = 0; b < N; b++) out[b] -= lse;
+  return out;
+}
+
 function matIid(name: string, d: DerivationIid, ctx: any) {
   // iid(M, n, …): N atoms × k inner draws, atom-major packed into
   // one Float64Array. Worker's sampleN takes an optional repeat=k.
@@ -824,6 +927,10 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       return p;
     };
     return inflatedCtx.getMeasure(d.from).then((innerM: any) => {
+      // §06 `iid` is a product measure, so the k inner positions' importance
+      // weights multiply into ONE weight per atom. Folded before either branch
+      // below rebuilds the measure, so neither can drop them silently.
+      const foldedLW = _foldIidBlockLogWeights(innerM, N, k, d.from);
       // G1 (spec §03/§06): a record-valued inner measure (a joint/record
       // materialises to `.fields`, not `.samples`) — the k iid record draws
       // form a TABLE (an array of records is a table). Assemble the per-field
@@ -835,6 +942,21 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
           return Promise.reject(new Error(
             'iid: multi-axis iid over a record measure is out of scope (G1); '
             + 'a table has one row axis (spec §03)'));
+        }
+        if (foldedLW) {
+          // The table branch below emits ONE dataset (N is forced to 1 just
+          // under this), and a single atom's importance weight renormalises to
+          // one — there is no ensemble left to carry the reweighting §06
+          // `normalize` defines ("the probability measure M / Z"). Emitting the
+          // table anyway is a draw from the UNNORMALIZED base, the same silent
+          // weight-drop the scalar branch fixes by folding. Refuse instead.
+          return Promise.reject(new Error(
+            'iid: the record measure "' + d.from + '" represents its law by '
+            + 'importance weights (a normalize over a variate-dependent '
+            + 'weighted/logweighted), and iid over it samples one k-row table '
+            + 'whose single atom cannot carry them (spec §06 normalize, §06 '
+            + 'iid). Sampling this shape is not implemented — the density path '
+            + 'can still score it via logdensityof/totalmass'));
         }
         if (N !== 1) {
           // An N-atom ENSEMBLE of record-iid draws is N separate k-row tables;
@@ -922,8 +1044,16 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         shape: [N | 0].concat(perAtomDims), data: samples, outerRank: 1,
       };
       return Object.assign(
-        empirical.arrayMeasure(samples, perAtomDims, null),
-        { value: value, logTotalmass: 0, n_eff: N },
+        empirical.arrayMeasure(samples, perAtomDims, foldedLW),
+        {
+          value: value,
+          logTotalmass: 0,
+          // From the folded weights when there are any: k importance-weighted
+          // coordinates per atom leave far fewer effective atoms than N.
+          n_eff: foldedLW
+            ? empirical.effectiveSampleSize({ logWeights: foldedLW })
+            : N,
+        },
       );
     });
   }
