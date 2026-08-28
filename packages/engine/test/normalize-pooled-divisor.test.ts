@@ -259,12 +259,143 @@ test('iid over normalize(truncate(…)) keeps the untilted θ-marginal', async (
 });
 
 // =====================================================================
+// FIXED — iid over a normalize keeps the importance weights
+// =====================================================================
+
+// Weighted per-coordinate moments of an `iid(M, k)` output: k coordinates per
+// atom, atom-major, all sharing the atom's folded importance weight.
+async function iidCoords(src: string, k: number, n = N) {
+  const { proc, ctx } = ctxFor(src, n);
+  const errs = proc.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0, errs.map((e: any) => e.message).join(' | '));
+  const y = await ctx.getMeasure('y');
+  const lw: number[] = y.logWeights
+    ? Array.from(y.logWeights) as number[]
+    : new Array(n).fill(-Math.log(n));
+  const norm = logSumExp(lw);
+  const mean = new Array(k).fill(0);
+  const sq = new Array(k).fill(0);
+  let cross = 0;
+  for (let b = 0; b < n; b++) {
+    const w = Math.exp(lw[b] - norm);
+    for (let j = 0; j < k; j++) {
+      mean[j] += w * y.samples[b * k + j];
+      sq[j]   += w * y.samples[b * k + j] * y.samples[b * k + j];
+    }
+    cross += w * y.samples[b * k] * y.samples[b * k + 1];
+  }
+  return {
+    m: y,
+    mean,
+    variance: mean.map((mu, j) => sq[j] - mu * mu),
+    cov01: cross - mean[0] * mean[1],
+  };
+}
+
+test('iid over a normalize FOLDS the importance weights into one per atom',
+  async () => {
+    // §06 `normalize`: "returns the probability measure M / Z". With
+    // f(x) = e^x over Normal(0, 1) the tilt is conjugate and exact:
+    //   e^x · e^(−x²/2) = e^(−(x−1)²/2) · e^(1/2)
+    // so normalize(weighted(x -> exp(x), Normal(0, 1))) IS Normal(1, 1) and
+    // Z = e^(1/2). §06 `iid` is "the product measure M^⊗N", so `iid(m, 3)` is
+    // Normal(1, 1)^⊗3: every coordinate has mean 1 and variance 1, and distinct
+    // coordinates are independent (covariance 0).
+    //
+    // The fallback packs the k inner draws of atom b at the BASE measure's
+    // positions and the whole reweighting rides in the per-position logWeights;
+    // discarding them was a draw from the UNNORMALIZED Normal(0, 1), a full
+    // sigma low on every coordinate. `_foldIidBlockLogWeights` sums the k log
+    // weights into the atom's weight — the product-measure ratio — so all three
+    // coordinate means come back at 1 together. Reading ONE position's weight
+    // instead of the block's would put coordinate 0 at 1 and the rest at 0,
+    // which is why every coordinate is asserted, not just the pooled mean.
+    const r = await iidCoords(H
+      + 'theta ~ Uniform(interval(1.0, 5.0))\n'
+      + 'm = normalize(weighted(x -> exp(x), Normal(mu = 0.0, sigma = 1.0)))\n'
+      + 'y ~ iid(m, 3)\n', 3);
+    assert.deepEqual(r.m.dims, [3]);
+    assert.ok(r.m.logWeights, 'the folded importance weights must survive on the '
+      + 'iid output — without them the draw is from the unnormalized base');
+    // n_eff at 60000 atoms is ~4.1e3: the atom weight is a product of three
+    // lognormal(0, 1) factors, so it is far from uniform. Pins that the weights
+    // are the real thing and not an all-equal array.
+    assert.ok(r.m.n_eff < 0.5 * N,
+      `three importance-weighted coordinates cannot leave n_eff ${r.m.n_eff} `
+      + `near ${N}`);
+    for (let j = 0; j < 3; j++) {
+      assert.ok(Math.abs(r.mean[j] - 1.0) < 0.08,
+        `coordinate ${j} mean = ${r.mean[j]}, Normal(1, 1) oracle 1`);
+      assert.ok(Math.abs(r.variance[j] - 1.0) < 0.10,
+        `coordinate ${j} variance = ${r.variance[j]}, Normal(1, 1) oracle 1`);
+    }
+    assert.ok(Math.abs(r.cov01) < 0.10,
+      `cov(y1, y2) = ${r.cov01}, product measure oracle 0`);
+  });
+
+test('iid over a RECORD normalize with importance weights is refused, not '
+  + 'sampled unnormalized', async () => {
+  // The record arm of the fallback emits ONE k-row table and forces N to 1, so
+  // there is no ensemble to carry the reweighting — a single atom's importance
+  // weight renormalises to one. Before the fold this arm assembled the table
+  // from the per-field samples and dropped the weights, which is a draw from
+  // the UNNORMALIZED joint. §06 `normalize` defines the result as "the
+  // probability measure M / Z", so refuse.
+  for (const op of ['weighted(v -> exp(v.a)', 'logweighted(v -> v.a']) {
+    const { proc, ctx } = ctxFor(H
+      + 'm = normalize(' + op + ', joint(a = Normal(mu = 0.0, sigma = 1.0), '
+      + 'b = Normal(mu = 3.0, sigma = 1.0))))\n'
+      + 'y ~ iid(m, 3)\n', 1);
+    assert.equal(proc.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+    await assert.rejects(() => ctx.getMeasure('y'), (e: any) => {
+      assert.match(e.message, /importance weights/);
+      assert.match(e.message, /§06/);
+      return true;
+    }, op);
+  }
+});
+
+test('a weighted PARAMETER ancestor does not block the fold', async () => {
+  // The inner measure's location is itself an importance-weighted draw, so the
+  // repeat axis tiles a value measure that carries its own weights. Those never
+  // reach `innerM.logWeights` — only a measure handler introduces per-position
+  // weights, and a value binding in measure position is a reified variate, which
+  // the tiling exempts — so the k-block fold stays a product of k INDEPENDENT
+  // coordinate weights and must not refuse here.
+  //
+  // No moment is asserted: the joint log weight is θ + Σⱼ yⱼ with variance 19,
+  // so the ensemble is importance-degenerate at any reachable N. `n_eff` is the
+  // engine's honest readout of exactly that, and the point of the assertion is
+  // that it collapses instead of reporting a confident N.
+  const r = await joint(H
+    + 'tm = normalize(weighted(x -> exp(x), Normal(mu = 0.0, sigma = 1.0)))\n'
+    + 'theta ~ tm\n'
+    + 'm = normalize(weighted(x -> exp(x), Normal(mu = theta, sigma = 1.0)))\n'
+    + 'y ~ iid(m, 3)\n');
+  assert.deepEqual(r.m.dims, [3]);
+  assert.ok(r.m.logWeights, 'the folded weights must survive');
+  assert.ok(r.m.n_eff < 0.01 * N,
+    `a log-weight variance of 19 cannot leave n_eff ${r.m.n_eff} anywhere near `
+    + `${N} — an n_eff of N would mean the weights were dropped`);
+});
+
+test('the folded weights leave the θ-marginal untilted', async () => {
+  // The same witness read through the θ lens: Z = e^(1/2) is θ-INDEPENDENT, so
+  // the folded atom weights must not move E[θ] off the Uniform(1, 5) prior mean.
+  const r = await joint(H
+    + 'theta ~ Uniform(interval(1.0, 5.0))\n'
+    + 'm = normalize(weighted(x -> exp(x), Normal(mu = 0.0, sigma = 1.0)))\n'
+    + 'y ~ iid(m, 3)\n');
+  assert.ok(Math.abs(r.et - 3.0) < 0.1, `E[θ] = ${r.et}, prior mean 3.0`);
+});
+
+// =====================================================================
 // WILL-FLIP — pooled masses one operator away from `normalize`
 // =====================================================================
-// Both are asserted TIED TO THE FAILURE MODE, so each goes red the moment its
-// defect is fixed. Neither is fixable by a divisor at `matNormalize`: the
-// parent's atoms reach it already pooled. Tracked in
-// flatppl-dev/TODO-flatppl-js.md and measure-algebra-audit.md.
+// Asserted TIED TO THE FAILURE MODE, so it goes red the moment its defect is
+// fixed. Not fixable by a divisor at `matNormalize`: the parent's atoms reach it
+// already pooled. Tracked in flatppl-dev/TODO-flatppl-js.md and
+// measure-algebra-audit.md.
 
 test('[WILL-FLIP] a LATENT mixing weight is pooled by the superpose lift',
   async () => {
@@ -290,28 +421,4 @@ test('[WILL-FLIP] a LATENT mixing weight is pooled by the superpose lift',
     assert.ok(Math.abs(r.cov) < 0.02,
       `THE DEFECT IS FIXED — cov(p, y) = ${r.cov} is no longer 0. Re-tag this test `
       + 'GREEN and assert cov ≈ −10·Var(p) = −0.2551020408.');
-  });
-
-test('[WILL-FLIP] iid over a normalize with importance weights drops them',
-  async () => {
-    // normalize(weighted(x -> e^x, Normal(0,1))) is exactly Normal(1,1), so
-    // every coordinate of `iid(m, 3)` has mean 1 — and sampling `m` DIRECTLY
-    // gives 1.0013 (pinned above). Through iid the composite fallback
-    // re-materialises at the inflated count and then packs the atoms into an
-    // array measure, discarding the per-atom logWeights that carry the whole
-    // reweighting: the result is a plain draw from the UNNORMALIZED base,
-    // Normal(0,1), a full sigma out. `rand` refuses this exact weight-drop
-    // loudly (materialiser.ts's matRandSample normalize gate); the iid path
-    // does it silently.
-    const r = await joint(H
-      + 'theta ~ Uniform(interval(1.0, 5.0))\n'
-      + 'm = normalize(weighted(x -> exp(x), Normal(mu = 0.0, sigma = 1.0)))\n'
-      + 'y ~ iid(m, 3)\n');
-    assert.deepEqual(r.m.dims, [3]);
-    let mean = 0;
-    for (let i = 0; i < r.m.samples.length; i++) mean += r.m.samples[i];
-    mean /= r.m.samples.length;
-    assert.ok(Math.abs(mean) < 0.05,
-      `THE DEFECT IS FIXED — the iid coordinates mean ${mean}, no longer the `
-      + 'unnormalized base\'s 0. Re-tag this test GREEN and assert mean ≈ 1.');
   });
