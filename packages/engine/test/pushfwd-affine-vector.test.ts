@@ -259,7 +259,7 @@ test('an elementwise map over a vector variate keeps the atom axis', async () =>
   // atom's cell — see broadcastn-vector-atom.test.ts for the oracle legs.
   const N = 8;
   const ctx = makeCtx(`Z = iid(Normal(0.0, 1.0), 2)\n`
-    + `X = pushfwd(x -> exp(x), Z)\n`, { sampleCount: N });
+    + `X = pushfwd(x -> exp.(x), Z)\n`, { sampleCount: N });
   const Z = await ctx.getMeasure('Z');
   const X = await ctx.getMeasure('X');
   assert.deepEqual(X.value.shape, [N, 2]);
