@@ -1097,7 +1097,93 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return T.failed(op + ' arg 1 sign');
       }
     }
+    const scalarFormT = _scalarFormWeightRefusal(expr, args, mT, scopes);
+    if (scalarFormT) return scalarFormT;
     return mT;  // result is the same measure type
+  }
+
+  // Resolve an expression in function position to a single-parameter
+  // reification node: an inline `fn(...)` / `functionof(...)`, or a self-ref
+  // binding to one. null for anything else.
+  function _unaryReification(fExpr: any): any {
+    let reif: any = null;
+    if (fExpr && fExpr.op === 'functionof') reif = fExpr;
+    else if (fExpr && fExpr.kind === 'ref' && fExpr.ns === 'self') {
+      const b = loweredModule.bindings.get(fExpr.name);
+      if (b && b.rhs && b.rhs.op === 'functionof') reif = b.rhs;
+    }
+    if (!reif || !Array.isArray(reif.params) || reif.params.length !== 1 || !reif.body) {
+      return null;
+    }
+    return reif;
+  }
+
+  // Type of a unary reification's body with its parameter bound to
+  // `paramType`. Speculative: the walk's diagnostics are dropped rather than
+  // leaked into the module's stream, exactly as `_pushfwdCodomain` does.
+  function _bodyTypeUnder(reif: any, paramType: any, scopes: any): any {
+    const scope = new Map();
+    scope.set(reif.params[0], paramType);
+    const savedLen = diagnostics.length;
+    const t: any = inferExpr(reif.body, scopes.concat([scope]));
+    diagnostics.length = savedLen;
+    return t;
+  }
+
+  // §06 `weighted`: "$f$ is a non-negative weight (a constant or a function of
+  // the variate $x$ of $M$)" — so the weight is REAL-VALUED — and its arity
+  // rule: "A one-parameter weight receives the variate whole. If the variate is
+  // a $k$-element array with $k \geq 2$, a weight of exactly $k$ scalar
+  // parameters instead receives one component per parameter, in order". Over a
+  // measure whose variate is an array, a ONE-parameter weight is therefore a
+  // function OF THAT ARRAY, at k = 1 as much as above it: §03/§07 make
+  // `cartprod(<scalar set>)` the set of LENGTH-1 VECTORS.
+  //
+  // A body written for the scalar reading — `f(x) = x * x` over a box — is
+  // array-valued once its parameter is the vector, and an array-valued weight
+  // is a proven violation of the non-negative-real rule above. Refuse rather
+  // than quietly reading the element instead: that would score a different
+  // function from the one written, and the two readings stop agreeing the
+  // moment the body is not elementwise.
+  //
+  // Conservative in the house style of the §08 domain-contract checks: the
+  // speculative body walk must resolve to a concrete NON-SCALAR value type.
+  // `any` / `deferred` / `failed` (`f(v) = sum(v)`, an unresolved call, a body
+  // already carrying its own diagnostic) all pass here — none is proven wrong.
+  const scalarFormWeightReported = new WeakSet<any>();
+
+  function _scalarFormWeightRefusal(expr: any, args: any, mT: any, scopes: any): any {
+    const domain = mT && mT.domain;
+    if (!domain || domain.kind !== 'array' || domain.rank !== 1) return null;
+    const reif = _unaryReification(args[0]);
+    if (!reif) return null;
+    const bodyT: any = _bodyTypeUnder(reif, domain, scopes);
+    const bad = bodyT && (bodyT.kind === 'array' || bodyT.kind === 'tvector'
+      || bodyT.kind === 'record');
+    if (!bad) return null;
+    if (scalarFormWeightReported.has(expr)) {
+      return T.failed(expr.op + ' non-scalar weight over an array variate');
+    }
+    scalarFormWeightReported.add(expr);
+    // At ONE axis the whole-variate reading is what makes the two spellings
+    // differ, so the message can also offer the scalar-variate support; above
+    // one axis there is no scalar spelling of the same measure to offer.
+    const oneAxis = domain.shape[0] === 1;
+    diagnostics.push({
+      severity: 'error',
+      message: expr.op + ': the weight has one parameter, so §06 gives it the '
+        + 'variate WHOLE — here ' + T.show(domain) + ' — and the body is then '
+        + T.show(bodyT) + ', not the non-negative real §06 requires of a '
+        + 'weight. Write the weight as a function of the vector, indexing the '
+        + 'components it needs (e.g. `v[1]`)'
+        + (oneAxis
+          ? ', or give the measure a scalar variate by writing its support as a '
+            + 'bare `interval(...)` rather than a one-component `cartprod(...)`.'
+          : '.'),
+      /* c8 ignore next -- defensive: the weight slot always carries a span */
+      loc: args[0].loc || expr.loc,
+    });
+    return T.failed(expr.op + ' non-scalar weight over an array variate');
   }
 
   function inferTransposeAdjoint(expr: any, scopes: any): any {
@@ -3591,17 +3677,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _pushfwdCodomain(fExpr: any, inputType: any, scopes: any): any {
     if (!inputType || inputType.kind === 'failed' || inputType.kind === 'deferred'
         || inputType.kind === 'any') return null;
-    // Resolve fExpr to a single-param reification node: an inline `fn(...)` /
-    // `functionof(...)`, or a self-ref binding to one.
-    let reif: any = null;
-    if (fExpr && fExpr.op === 'functionof') reif = fExpr;
-    else if (fExpr && fExpr.kind === 'ref' && fExpr.ns === 'self') {
-      const b = loweredModule.bindings.get(fExpr.name);
-      if (b && b.rhs && b.rhs.op === 'functionof') reif = b.rhs;
-    }
-    if (!reif || !Array.isArray(reif.params) || reif.params.length !== 1 || !reif.body) {
-      return null;
-    }
+    const reif = _unaryReification(fExpr);
+    if (!reif) return null;
     const scope = new Map();
     scope.set(reif.params[0], inputType);
     // Speculative: infer the body purely to READ its codomain. Any diagnostics

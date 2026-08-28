@@ -128,6 +128,10 @@ type CrnShape = {
   weightParams: string[];
   weightBody: any;
   axes: Array<{ lo: number; hi: number; kind: string }>;
+  // Is the base's variate an ARRAY (a positional cartprod/cartpow support) or a
+  // scalar (a bare `interval`)? `axes` reports one axis for both, and a
+  // one-parameter weight binds differently in each case — see `bindWeightAt`.
+  arrayVariate: boolean;
 };
 
 // Recognise `normalize(weighted(<functionof weight>, <Lebesgue over a
@@ -155,7 +159,11 @@ function crnRecognize(node: any): CrnShape | null {
   // parameters instead receives one component per parameter, in order; any
   // other arity is an error."
   if (fn.params.length !== 1 && fn.params.length !== axes.length) return null;
-  return { weightParams: fn.params.slice(), weightBody: fn.body, axes };
+  const { supportIsArrayVariate } = require('./mat-density.ts');
+  return {
+    weightParams: fn.params.slice(), weightBody: fn.body, axes,
+    arrayVariate: supportIsArrayVariate(supp),
+  };
 }
 
 // Does the weight actually depend on a latent? Only then is a per-θ normalizer
@@ -250,13 +258,15 @@ function crnFixedPoints(
 // Bind the weight function's parameters to one sample point, following the
 // SAME convention density.ts's walkWeighted and mat-density's makeIntegrandND
 // use — a k-parameter weight takes one coordinate per parameter in axis order,
-// a one-parameter weight over a k-axis box takes the whole k-vector — so the
-// normalizer integrates the function the density path scores.
-function bindWeightAt(params: string[], body: any, pt: number[]): any {
+// a one-parameter weight takes the variate whole — so the normalizer integrates
+// the function the density path scores. `arrayVariate` decides what "whole"
+// means at ONE axis: a `cartprod(interval(...))` support gives a length-1
+// VECTOR (§03/§07), a bare `interval(...)` support a scalar.
+function bindWeightAt(params: string[], body: any, pt: number[], arrayVariate?: boolean): any {
   const bound: Record<string, any> = {};
   if (params.length === pt.length && pt.length > 1) {
     for (let i = 0; i < params.length; i++) bound[params[i]] = { kind: 'lit', value: pt[i] };
-  } else if (pt.length > 1) {
+  } else if (arrayVariate) {
     bound[params[0]] = {
       kind: 'call', op: 'vector',
       args: pt.map((c) => ({ kind: 'lit', value: c })),
@@ -357,7 +367,8 @@ function crnNormalizeMassExpr(node: any, opts?: any): any | null {
   const pts = crnFixedPoints(shape.axes, M, seed);
   let volume = 1;
   for (const a of shape.axes) volume *= (a.hi - a.lo);
-  const terms = pts.map((pt) => bindWeightAt(shape.weightParams, shape.weightBody, pt));
+  const terms = pts.map((pt) =>
+    bindWeightAt(shape.weightParams, shape.weightBody, pt, shape.arrayVariate));
   const sum = balancedAdd(terms);
   crnNormalizeNote(key, M, shape.axes.length);
   return {
