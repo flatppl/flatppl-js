@@ -714,6 +714,61 @@ function isJointChainCompositeKernelBinding(
   return detectJointChainKernelBinding(name, bindings) !== null;
 }
 
+/**
+ * Located refusals for `broadcast(<jointchain-bodied kernel>, …)` shapes
+ * `detectJointChainKernelBinding` declines. Without this the decline leaves the
+ * broadcast binding classified as a plain value evaluation, which materialises
+ * to an undefined reply and an internal `TypeError` — a spec-legal program with
+ * no diagnostic and no located message.
+ *
+ * The one shape judged here is an inline step kernel past the base. The base
+ * (argument 1) may be written inline because a placeholder-bearing measure call
+ * cannot be hoisted to a module-level anon binding, but a step is read through
+ * its binding: §11 "Reified callables" spells a reification's input as a
+ * `<ref>` that "refers to a node in the ancestor subgraph of `<output>`", and
+ * the executor threads step k's previous variate through that named node.
+ * Binding the step kernel to a name is always available and changes no
+ * semantics.
+ *
+ * Reads the same `bindings` map and the same peel (`_peelKernelBody`) the
+ * recogniser reads, so the message and the classification cannot disagree.
+ */
+function checkJointChainKernelSteps(bindings: any): any[] {
+  const out: any[] = [];
+  if (!bindings || !bindings.entries) return out;
+  for (const [name, b] of bindings.entries()) {
+    const ir = b && b.ir;
+    if (!ir || ir.kind !== 'call' || ir.op !== 'broadcast') continue;
+    const head = Array.isArray(ir.args) ? ir.args[0] : null;
+    if (!head || head.kind !== 'ref' || head.ns !== 'self') continue;
+    if (!bindings.has(head.name)) continue;
+    const kb = bindings.get(head.name);
+    const kernelIR = kb && kb.ir;
+    if (!kernelIR || kernelIR.kind !== 'call' || kernelIR.op !== 'functionof') continue;
+    const chain = _peelKernelBody(kernelIR.body);
+    if (!chain || chain.kind !== 'call' || chain.op !== 'jointchain') continue;
+    const args = chain.args;
+    if (!Array.isArray(args)) continue;
+    for (let i = 1; i < args.length; i++) {
+      const arg = args[i];
+      if (arg && arg.kind === 'ref') continue;
+      out.push({
+        name,
+        severity: 'error',
+        message: 'broadcast over kernel \'' + head.name + '\': jointchain '
+          + 'argument ' + (i + 1) + ' (step kernel ' + i + ') is written '
+          + 'inline. This engine reads a step kernel past the base through a '
+          + 'named binding — §11 "Reified callables" spells such an input as a '
+          + '`<ref>` that "refers to a node in the ancestor subgraph of '
+          + '`<output>`". Bind the step kernel to its own name and pass that '
+          + 'name.',
+        loc: (arg && arg.loc) || chain.loc,
+      });
+    }
+  }
+  return out;
+}
+
 // =====================================================================
 // Nested-broadcast composite kernel (Phase 4.4)
 // =====================================================================
@@ -1451,6 +1506,7 @@ module.exports = {
   isJointCompositeKernelBinding,
   detectJointChainKernelBinding,
   isJointChainCompositeKernelBinding,
+  checkJointChainKernelSteps,
   detectNestedBroadcastKernelBinding,
   isNestedBroadcastCompositeKernelBinding,
   detectGenerativeKernelBinding,

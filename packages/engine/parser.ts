@@ -277,10 +277,18 @@ function parse(tokensIn: any[], variant: any) {
         AST.Placeholder(argNames[i], argLocs[i]),
         argLocs[i]));
     }
-    return AST.CallExpr(
+    const out = AST.CallExpr(
       AST.Identifier('functionof', lloc),
       [rewritten, ...kwargs],
       lloc);
+    // Provenance for the §04 placeholder scoping check. `x -> y -> x + y`
+    // desugars to a NESTED functionof whose inner body reads `_x_`, bound
+    // by the outer — the shape §04 forbids a user to write. §04 defines
+    // lambda notation as a rewrite of one surface expression, so the inner
+    // reification here is engine-generated and does not cut the lexical
+    // scope chain. `validateHolesAndPlaceholders` reads this flag.
+    out.fromLambda = true;
+    return out;
   }
 
   // Replace every free `Identifier(name)` whose name is in `argSet`

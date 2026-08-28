@@ -59,6 +59,60 @@ test('placeholder: error when used inside fn', () => {
   assert.ok(errs.some((d: any) => /Placeholder.*functionof.*kernelof/.test(d.message)));
 });
 
+// --- Placeholder scoping (§04 "Placeholders and holes", scoping rule) ---
+//
+// "The scope of a placeholder is the nearest enclosing `functionof` or
+// `kernelof`. The same placeholder name may appear in different scopes
+// without conflict … A placeholder in an inner `functionof` or `kernelof`
+// **must** be bound there".
+
+test('placeholder: §04 licenses the same name in two nested scopes', () => {
+  // The spec's own example, verbatim.
+  assert.equal(errors(
+    'b = 2.0\nsome_value = 3.0\n'
+    + 'f = functionof(functionof(_a_ * b, a = _a_)(some_value) + _a_, a = _a_)\n',
+  ).length, 0);
+});
+
+test('placeholder: §04\'s DISALLOWED nested example is refused', () => {
+  // "A placeholder in an inner `functionof` or `kernelof` **must** be bound
+  // there, so this code is invalid" — §04, quoted verbatim below. The inner
+  // reification binds only `a`, so its body's `_c_` resolves to nothing.
+  const errs = errors(
+    'b = 2.0\nsome_value = 3.0\n'
+    + 'f = functionof(functionof(_a_ * b + _c_, a = _a_)(some_value) + _d_, '
+    + 'c = _c_, d = _d_)\n',
+  );
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].message, /Placeholder '_c_' is not bound by the nearest/);
+  assert.match(errs[0].message, /§04/);
+});
+
+test('placeholder: §04\'s aggregate-inside-functionof example is accepted', () => {
+  // "`aggregate` composes cleanly with `functionof` as the namespace of axis
+  // names is local to the enclosing `aggregate` and the namespace of
+  // placeholders is local to the enclosing `functionof`" — the axis scope
+  // must not cut the body off from the reification's placeholders.
+  assert.equal(errors(
+    'mymatmul = functionof(\n'
+    + '    aggregate(sum, [.i, .k], _A_[.i, .j] * _B_[.j, .k]),\n'
+    + '    A = _A_, B = _B_\n)\n',
+  ).length, 0);
+});
+
+test('placeholder: a curried lambda keeps the outer arg in scope', () => {
+  // §04's lambda rule rewrites `x -> y -> x + y` to nested `functionof`s
+  // whose inner body reads `_x_`. The nesting is the rewrite's, so the
+  // scoping rule above does not bite.
+  assert.equal(errors('f = x -> y -> x + y\n').length, 0);
+  assert.equal(errors('f = a -> (a -> a + 1)\n').length, 0);
+});
+
+test('placeholder: a USER-written inner functionof still must bind it', () => {
+  const errs = errors('f = functionof(functionof(_x_ + 1, z = _z_), x = _x_)\n');
+  assert.ok(errs.some((d: any) => /'_x_' is not bound by the nearest/.test(d.message)));
+});
+
 // --- LHS underscore is fine (not a hole or placeholder per parser) ---
 
 test('decomposition with bare _ on LHS is not flagged', () => {

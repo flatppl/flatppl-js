@@ -1715,19 +1715,49 @@ function validateIndexing(node: any, diagnostics: any[]) {
 }
 
 /**
+ * Collect the placeholder names a `functionof` / `kernelof` call binds, as the
+ * `_name_` spelling the body uses. Spec §04 "Placeholders and holes": "All
+ * placeholders must appear both in the expression to be reified and the
+ * boundary input keyword arguments", so the boundary kwargs ARE the binder
+ * list. Identifier-form boundaries (`a = a`) bind no placeholder.
+ */
+function reificationBoundPlaceholders(call: any): Set<string> {
+  const out = new Set<string>();
+  const args = call.args;
+  for (let i = 1; i < args.length; i++) {
+    const arg = args[i];
+    if (!arg || arg.type !== 'KeywordArg') continue;
+    if (arg.value && arg.value.type === 'Placeholder') {
+      out.add(arg.value.name);
+    }
+  }
+  return out;
+}
+
+/**
  * Validate hole (`_`) and placeholder (`_name_`) usage according to the spec:
  *  - `_` is only valid inside `fn(...)`.
- *  - `_name_` is only valid inside `functionof(...)` or `kernelof(...)`.
- *    (lawof is unary now and cannot bind placeholders.)
+ *  - `_name_` is only valid inside `functionof(...)` or `kernelof(...)`, and
+ *    must be bound by the NEAREST enclosing one. Spec §04 "Placeholders and
+ *    holes", scoping rule: "The scope of a placeholder is the nearest
+ *    enclosing `functionof` or `kernelof`. … A placeholder in an inner
+ *    `functionof` or `kernelof` **must** be bound there".
  *
- * Scope is determined by the nearest enclosing special operation.
+ * Axis scope and placeholder scope are tracked separately because §04 makes
+ * them independent namespaces — "`aggregate` composes cleanly with
+ * `functionof` as the namespace of axis names is local to the enclosing
+ * `aggregate` and the namespace of placeholders is local to the enclosing
+ * `functionof`" — so an `aggregate` inside a reification must not cut the
+ * body off from that reification's placeholders.
  *
  * @param {object} node - root expression node
  * @param {Diagnostic[]} diagnostics - mutable, appended to
  */
 function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
-  // scope can be: 'normal', 'fn', 'reify' (functionof/kernelof), 'aggregate'
-  function walk(node: any, scope: string) {
+  // scope can be: 'normal', 'fn', 'reify' (functionof/kernelof), 'aggregate'.
+  // `bound` is the nearest enclosing reification's binder list, or null when
+  // there is no enclosing reification.
+  function walk(node: any, scope: string, bound: Set<string> | null) {
     if (!node) return;
     switch (node.type) {
       case 'Hole':
@@ -1740,10 +1770,21 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
         }
         return;
       case 'Placeholder':
-        if (scope !== 'reify') {
+        if (!bound) {
           diagnostics.push({
             severity: 'error',
             message: `Placeholder '_${node.name}_' may only appear inside functionof(...) or kernelof(...)`,
+            loc: node.loc,
+          });
+        } else if (!bound.has(node.name)) {
+          diagnostics.push({
+            severity: 'error',
+            message: `Placeholder '_${node.name}_' is not bound by the `
+              + `nearest enclosing functionof(...) / kernelof(...): a `
+              + `placeholder's scope is that reification, and one used inside `
+              + `it must be bound there (spec §04 "Placeholders and holes"). `
+              + `Add '${node.name} = _${node.name}_' to that reification's `
+              + `boundary inputs, or move the placeholder out of it.`,
             loc: node.loc,
           });
         }
@@ -1766,42 +1807,58 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
         return;
       case 'CallExpr': {
         let inner = scope;
+        let innerBound = bound;
         if (node.callee && node.callee.type === 'Identifier') {
-          if (node.callee.name === 'fn') inner = 'fn';
-          else if (node.callee.name === 'functionof' || node.callee.name === 'kernelof') inner = 'reify';
-          else if (node.callee.name === 'aggregate') inner = 'aggregate';
+          if (node.callee.name === 'fn') {
+            inner = 'fn';
+            // `fn` delimits hole lowering (§04 "Holes and `fn`"); it is not a
+            // placeholder binder, so its body has no enclosing reification.
+            innerBound = null;
+          } else if (node.callee.name === 'functionof' || node.callee.name === 'kernelof') {
+            inner = 'reify';
+            const own = reificationBoundPlaceholders(node);
+            if (node.fromLambda && bound) {
+              // A curried lambda desugars to nested `functionof`s whose
+              // inner body legitimately reads the outer lambda's
+              // placeholder (parser.desugarLambdaToFunctionof). The nesting
+              // is the rewrite's, not the user's, so it does not cut the
+              // scope chain.
+              for (const n of bound) own.add(n);
+            }
+            innerBound = own;
+          } else if (node.callee.name === 'aggregate') inner = 'aggregate';
           else if (node.callee.name === 'metricsum') inner = 'metricsum';
         }
-        walk(node.callee, scope);
-        for (const a of node.args) walk(a, inner);
+        walk(node.callee, scope, bound);
+        for (const a of node.args) walk(a, inner, innerBound);
         return;
       }
       case 'BinaryExpr':
-        walk(node.left, scope);
-        walk(node.right, scope);
+        walk(node.left, scope, bound);
+        walk(node.right, scope, bound);
         return;
       case 'UnaryExpr':
-        walk(node.operand, scope);
+        walk(node.operand, scope, bound);
         return;
       case 'ArrayLiteral':
       case 'TupleLiteral':
-        for (const e of node.elements) walk(e, scope);
+        for (const e of node.elements) walk(e, scope, bound);
         return;
       case 'IndexExpr':
-        walk(node.object, scope);
-        for (const i of node.indices) walk(i, scope);
+        walk(node.object, scope, bound);
+        for (const i of node.indices) walk(i, scope, bound);
         return;
       case 'FieldAccess':
-        walk(node.object, scope);
+        walk(node.object, scope, bound);
         return;
       case 'KeywordArg':
-        walk(node.value, scope);
+        walk(node.value, scope, bound);
         return;
       // Identifier, NumberLiteral, StringLiteral, BoolLiteral, ConstantRef,
       // SetRef, SliceAll: nothing to do.
     }
   }
-  walk(node, 'normal');
+  walk(node, 'normal', null);
 }
 
 /**
