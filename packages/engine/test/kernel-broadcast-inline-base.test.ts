@@ -433,7 +433,7 @@ test('checkJointChainKernelSteps falls back to the jointchain loc', () => {
   // A step carrying no `loc` of its own (a synthesised node) still gets a
   // located message — the enclosing jointchain's span.
   const chainLoc = { start: { line: 2, col: 0 }, end: { line: 2, col: 30 } };
-  const chain = chainKernel([normal(local('_m_')), { kind: 'lit', value: 3 }]);
+  const chain: any = chainKernel([normal(local('_m_')), { kind: 'lit', value: 3 }]);
   chain.ir.body.loc = chainLoc;
   const out = kbShape.checkJointChainKernelSteps(walkableBindings({
     chain, y: broadcastOf('chain'),

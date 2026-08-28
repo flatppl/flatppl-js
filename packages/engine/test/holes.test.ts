@@ -100,11 +100,13 @@ test('placeholder: §04\'s aggregate-inside-functionof example is accepted', () 
   ).length, 0);
 });
 
-test('placeholder: a curried lambda keeps the outer arg in scope', () => {
-  // §04's lambda rule rewrites `x -> y -> x + y` to nested `functionof`s
-  // whose inner body reads `_x_`. The nesting is the rewrite's, so the
-  // scoping rule above does not bite.
-  assert.equal(errors('f = x -> y -> x + y\n').length, 0);
+test('placeholder: a curried lambda is refused, a shadowing one is not', () => {
+  // §04's lambda rule rewrites `x -> y -> x + y` to nested `functionof`s whose
+  // inner body reads `_x_`, bound by the outer — a closure, which the scoping
+  // rule forbids (owner ruling 2026-08-28: the scoping rule wins, no carve-out
+  // for the rewrite). A nested lambda that SHADOWS captures nothing, so it
+  // stays legal. Message wording is pinned in `lambda.test.ts`.
+  assert.equal(errors('f = x -> y -> x + y\n').length, 1);
   assert.equal(errors('f = a -> (a -> a + 1)\n').length, 0);
 });
 

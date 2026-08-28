@@ -281,12 +281,10 @@ function parse(tokensIn: any[], variant: any) {
       AST.Identifier('functionof', lloc),
       [rewritten, ...kwargs],
       lloc);
-    // Provenance for the §04 placeholder scoping check. `x -> y -> x + y`
-    // desugars to a NESTED functionof whose inner body reads `_x_`, bound
-    // by the outer — the shape §04 forbids a user to write. §04 defines
-    // lambda notation as a rewrite of one surface expression, so the inner
-    // reification here is engine-generated and does not cut the lexical
-    // scope chain. `validateHolesAndPlaceholders` reads this flag.
+    // Provenance for the §04 placeholder scoping check, which refuses the
+    // nested shape `x -> y -> x + y` desugars to (a closure). The refusal is
+    // the same either way; the mark only lets the message name the lambda the
+    // user wrote instead of the `functionof` this rewrite produced.
     out.fromLambda = true;
     return out;
   }

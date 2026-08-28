@@ -65,12 +65,10 @@ test('lambda: free args in body rewritten to placeholders', () => {
   assert.equal(body.right.type, 'Placeholder');
 });
 
-test('lambda: nested single-arg lambdas are right-associative', () => {
-  // `x -> y -> x + y` parses as `x -> (y -> x + y)`. The body of the
-  // outer is itself a lambda — and its body `x + y` references both
-  // arg names. The outer rewrite handles `x`; the inner already
-  // handled `y` during its own parse.
-  assert.equal(errors('f = x -> y -> x + y\n').length, 0);
+test('lambda: nested single-arg lambdas still parse right-associatively', () => {
+  // `x -> y -> x + y` parses as `x -> (y -> x + y)`, so the outer body is
+  // itself a lambda. The PARSE is unchanged; the refusal below is the
+  // analyzer's, so the two stay separable.
   const ctx = processSource('f = x -> y -> x + y\n');
   const f = ctx.bindings.get('f');
   const outerFn = f.node.value;                  // functionof outer
@@ -80,9 +78,41 @@ test('lambda: nested single-arg lambdas are right-associative', () => {
   assert.equal(outerBody.callee.name, 'functionof');
 });
 
-test('lambda: nested lambda — inner shadows outer arg', () => {
-  // Outer binds `a`; inner re-binds `a`. The inner body's `a`
-  // references the inner binding, not the outer one.
+test('lambda: a curried lambda is refused — FlatPPL has no closures', () => {
+  // `x -> y -> x + y` rewrites to `functionof(functionof(_x_ + _y_, y = _y_),
+  // x = _x_)`, whose inner body reads a placeholder the OUTER binds. §04
+  // "Placeholders and holes": "A placeholder in an inner `functionof` or
+  // `kernelof` **must** be bound there". Owner ruling 2026-08-28: the scoping
+  // rule wins and the lambda rewrite gets no carve-out, so currying is not
+  // admitted and no closure is formed.
+  const errs = errors('f = x -> y -> x + y\n');
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].message, /Lambda argument 'x' is read inside a nested lambda/);
+  assert.match(errs[0].message, /FlatPPL has no closures/);
+  assert.match(errs[0].message, /§04 "Placeholders and holes"/);
+  assert.match(errs[0].message, /curried lambda is not admitted/);
+  // The span is the captured argument's own occurrence in the inner body.
+  assert.equal(errs[0].loc.start.line, 0);
+});
+
+test('lambda: the multi-argument form is the admitted spelling', () => {
+  assert.equal(errors('f = (x, y) -> x + y\n').length, 0);
+});
+
+test('lambda: a lambda argument is unreachable from any nested reification', () => {
+  // Same doctrine through the other two nestings, and the same verdicts
+  // `flatppl-rust`'s parser reaches (crates/syntax/src/parser.rs — "`{name}` is
+  // an argument of an enclosing lambda and cannot be referenced inside a
+  // nested reification"), which cites §04's DISALLOWED case for the rule.
+  assert.equal(errors('f = x -> fn(_ + x)\n').length, 1,
+    'a lambda argument read inside fn(...)');
+  assert.equal(errors('f = x -> functionof(x + 1, z = _z_)\n').length, 1,
+    'a lambda argument read inside an explicit functionof');
+});
+
+test('lambda: nested lambda — inner shadows outer arg, so nothing is captured', () => {
+  // Outer binds `a`; inner re-binds `a`. The inner body's `a` references the
+  // inner binding, so there is no capture and no closure — this stays legal.
   const src = 'f = a -> (a -> a + 1)\n';
   assert.equal(errors(src).length, 0);
 });

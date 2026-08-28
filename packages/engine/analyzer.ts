@@ -1750,14 +1750,24 @@ function reificationBoundPlaceholders(call: any): Set<string> {
  * `functionof`" — so an `aggregate` inside a reification must not cut the
  * body off from that reification's placeholders.
  *
+ * The rule bites a curried lambda too. §04's lambda rewrite turns
+ * `x -> y -> x + y` into `functionof(functionof(_x_ + _y_, y = _y_), x = _x_)`,
+ * whose inner body reads a placeholder the outer binds — a closure. FlatPPL
+ * admits none, so the nesting the rewrite produces gets the same refusal any
+ * other unbound inner placeholder gets, worded for the surface form the user
+ * actually wrote (that is all the parser's `fromLambda` mark is for).
+ *
  * @param {object} node - root expression node
  * @param {Diagnostic[]} diagnostics - mutable, appended to
  */
 function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
   // scope can be: 'normal', 'fn', 'reify' (functionof/kernelof), 'aggregate'.
   // `bound` is the nearest enclosing reification's binder list, or null when
-  // there is no enclosing reification.
-  function walk(node: any, scope: string, bound: Set<string> | null) {
+  // there is no enclosing reification; `boundIsLambda` records whether that
+  // reification is the parser's own lambda rewrite.
+  function walk(
+    node: any, scope: string, bound: Set<string> | null, boundIsLambda: boolean,
+  ) {
     if (!node) return;
     switch (node.type) {
       case 'Hole':
@@ -1779,12 +1789,20 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
         } else if (!bound.has(node.name)) {
           diagnostics.push({
             severity: 'error',
-            message: `Placeholder '_${node.name}_' is not bound by the `
-              + `nearest enclosing functionof(...) / kernelof(...): a `
-              + `placeholder's scope is that reification, and one used inside `
-              + `it must be bound there (spec §04 "Placeholders and holes"). `
-              + `Add '${node.name} = _${node.name}_' to that reification's `
-              + `boundary inputs, or move the placeholder out of it.`,
+            message: boundIsLambda
+              ? `Lambda argument '${node.name}' is read inside a nested `
+                + `lambda, which would close over it. FlatPPL has no closures: `
+                + `spec §04 "Placeholders and holes" scopes a placeholder to `
+                + `the nearest enclosing functionof(...) / kernelof(...) and `
+                + `requires one used inside it to be bound there, so a curried `
+                + `lambda is not admitted. Take the arguments together — `
+                + `'(${node.name}, …) -> …' — instead of nesting.`
+              : `Placeholder '_${node.name}_' is not bound by the `
+                + `nearest enclosing functionof(...) / kernelof(...): a `
+                + `placeholder's scope is that reification, and one used inside `
+                + `it must be bound there (spec §04 "Placeholders and holes"). `
+                + `Add '${node.name} = _${node.name}_' to that reification's `
+                + `boundary inputs, or move the placeholder out of it.`,
             loc: node.loc,
           });
         }
@@ -1808,57 +1826,51 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
       case 'CallExpr': {
         let inner = scope;
         let innerBound = bound;
+        let innerIsLambda = boundIsLambda;
         if (node.callee && node.callee.type === 'Identifier') {
           if (node.callee.name === 'fn') {
             inner = 'fn';
             // `fn` delimits hole lowering (§04 "Holes and `fn`"); it is not a
             // placeholder binder, so its body has no enclosing reification.
             innerBound = null;
+            innerIsLambda = false;
           } else if (node.callee.name === 'functionof' || node.callee.name === 'kernelof') {
             inner = 'reify';
-            const own = reificationBoundPlaceholders(node);
-            if (node.fromLambda && bound) {
-              // A curried lambda desugars to nested `functionof`s whose
-              // inner body legitimately reads the outer lambda's
-              // placeholder (parser.desugarLambdaToFunctionof). The nesting
-              // is the rewrite's, not the user's, so it does not cut the
-              // scope chain.
-              for (const n of bound) own.add(n);
-            }
-            innerBound = own;
+            innerBound = reificationBoundPlaceholders(node);
+            innerIsLambda = !!node.fromLambda;
           } else if (node.callee.name === 'aggregate') inner = 'aggregate';
           else if (node.callee.name === 'metricsum') inner = 'metricsum';
         }
-        walk(node.callee, scope, bound);
-        for (const a of node.args) walk(a, inner, innerBound);
+        walk(node.callee, scope, bound, boundIsLambda);
+        for (const a of node.args) walk(a, inner, innerBound, innerIsLambda);
         return;
       }
       case 'BinaryExpr':
-        walk(node.left, scope, bound);
-        walk(node.right, scope, bound);
+        walk(node.left, scope, bound, boundIsLambda);
+        walk(node.right, scope, bound, boundIsLambda);
         return;
       case 'UnaryExpr':
-        walk(node.operand, scope, bound);
+        walk(node.operand, scope, bound, boundIsLambda);
         return;
       case 'ArrayLiteral':
       case 'TupleLiteral':
-        for (const e of node.elements) walk(e, scope, bound);
+        for (const e of node.elements) walk(e, scope, bound, boundIsLambda);
         return;
       case 'IndexExpr':
-        walk(node.object, scope, bound);
-        for (const i of node.indices) walk(i, scope, bound);
+        walk(node.object, scope, bound, boundIsLambda);
+        for (const i of node.indices) walk(i, scope, bound, boundIsLambda);
         return;
       case 'FieldAccess':
-        walk(node.object, scope, bound);
+        walk(node.object, scope, bound, boundIsLambda);
         return;
       case 'KeywordArg':
-        walk(node.value, scope, bound);
+        walk(node.value, scope, bound, boundIsLambda);
         return;
       // Identifier, NumberLiteral, StringLiteral, BoolLiteral, ConstantRef,
       // SetRef, SliceAll: nothing to do.
     }
   }
-  walk(node, 'normal', null);
+  walk(node, 'normal', null, false);
 }
 
 /**
