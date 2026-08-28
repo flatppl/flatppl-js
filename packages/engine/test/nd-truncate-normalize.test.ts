@@ -150,6 +150,37 @@ test('makeIntegrandND: semi-lo change-of-variables integrates 1/(1+x²) over (0,
   assert.ok(Math.abs(r.Z - Math.PI / 2) < 1e-6, `Z=${r.Z} vs ${Math.PI / 2}`);
 });
 
+test('makeIntegrandND: a ONE-parameter weight over an array variate gets the whole point', () => {
+  // §06: "A one-parameter weight receives the variate whole", and the
+  // per-parameter form needs k >= 2. Over a positional-cartprod support the
+  // variate is an array, so the single parameter binds to the coordinate ARRAY
+  // and the body indexes it. Same integrand as the two-parameter spelling:
+  // ∫₀²∫₀³ v₁v₂ = (2²/2)(3²/2) = 9 (scipy.integrate.dblquad: 9.0).
+  const body = { kind: 'call', op: 'mul', args: [
+    { kind: 'call', op: 'get', args: [{ kind: 'ref', name: 'v' }, { kind: 'lit', value: 1 }] },
+    { kind: 'call', op: 'get', args: [{ kind: 'ref', name: 'v' }, { kind: 'lit', value: 2 }] },
+  ] };
+  const axes = [{ lo: 0, hi: 2, kind: 'finite' }, { lo: 0, hi: 3, kind: 'finite' }];
+  const r = adaptiveCubature(makeIntegrandND(body, ['v'], axes, {}, {}, true), 2);
+  assert.ok(Math.abs(r.Z - 9) < 1e-8, `Z=${r.Z} vs 9`);
+});
+
+test('supportIsArrayVariate separates the cartprod spellings from a bare interval', () => {
+  // `parseTruncationBox` reports ONE axis for both `interval(a,b)` and
+  // `cartprod(interval(a,b))`, so the array-variate question is asked
+  // separately — §03/§07 make the one-component cartprod a set of length-1
+  // vectors while the bare interval stays scalar.
+  const { supportIsArrayVariate } = matDensity;
+  const iv = (a: number, b: number) => ({ kind: 'call', op: 'interval',
+    args: [{ kind: 'lit', value: a }, { kind: 'lit', value: b }] });
+  assert.equal(supportIsArrayVariate(iv(0, 2)), false);
+  assert.equal(supportIsArrayVariate(
+    { kind: 'call', op: 'cartprod', args: [iv(0, 2)] }), true);
+  assert.equal(supportIsArrayVariate(
+    { kind: 'call', op: 'cartpow', args: [iv(0, 2), { kind: 'lit', value: 1 }] }), true);
+  assert.equal(supportIsArrayVariate(null), false);
+});
+
 // =====================================================================
 // resolveTruncateNormalizers, wired to the N-D path (Task 4) — oracle
 // integration tests through the REAL surface→lowering pipeline.

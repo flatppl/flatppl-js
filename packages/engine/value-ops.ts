@@ -1673,11 +1673,65 @@ function mulN(a: any, b: any, N: any) {
   if ((aBatched && _isRank0(b)) || (bBatched && _isRank0(a))) {
     return mul(a, b);
   }
+  // Both atom-batched with the SAME per-atom shape. The leading axis is a
+  // batch axis, so the meaning per atom is the atom-indep `mul` of the two
+  // cells — for rank-1 cells `mul`'s vector×vector case, for square rank-2
+  // cells its matrix product. Dispatching to `mul` cell by cell rather than
+  // adding a shape rule here keeps ONE §07 domain in force for both: a
+  // combination §07 does not define (column × column, which is what a
+  // whole-variate weight over a k-axis Lebesgue box reaches when it multiplies
+  // the variate instead of its components) raises `mul`'s own message naming
+  // the transposes that would fix it, rather than an internal "unsupported
+  // shape combination". k = 1 is no special case — a length-1 vector is a
+  // vector.
+  //
+  // A TAGGED operand is excluded. On a rank-≥2 Value the transpose tag means
+  // the whole array is a swapped view of its storage (value.ts `transpose`
+  // swaps the last two shape entries), not that each per-atom cell is
+  // transposed, so slicing atom-major cells out of it would read the wrong
+  // numbers.
+  if (aBatched && bBatched && N > 0 && _sameShape(a.shape, b.shape)
+      && !isTransposeView(a) && !isTransposeView(b)
+      && !isComplexValue(a) && !isComplexValue(b)
+      && !valueLib.isDiagStored(a) && !valueLib.isDiagStored(b)) {
+    return _perAtomMul(a, b, N);
+  }
   // Other atom-batched cases land when needed.
   throw new Error(
     'mulN: unsupported atom-batched shape combination ' +
     JSON.stringify(a.shape) + ' × ' + JSON.stringify(b.shape) +
     ' with N=' + N);
+}
+
+function _sameShape(a: any[], b: any[]) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
+
+// Atom i of an untagged, real atom-batched Value as a standalone Value over
+// the same buffer. `dtype` is not carried: its only value is 'complex', and a
+// complex operand never reaches the per-atom path.
+function _atomCell(v: any, i: number, cellShape: any[], stride: number) {
+  return { shape: cellShape, data: v.data.subarray(i * stride, (i + 1) * stride) };
+}
+
+// `mul` per atom, repacked atom-major. Every atom runs the same shape
+// combination, so the result cells are uniform and the pack is a straight
+// copy. Atom 0 runs first and alone: when the cells are a combination §07 does
+// not define, its throw is the whole answer and the other N−1 atoms never run.
+function _perAtomMul(a: any, b: any, N: any) {
+  const cellShape = a.shape.slice(1);
+  const stride = cellShape.reduce((x: number, y: number) => x * y, 1);
+  const cells: any[] = new Array(N);
+  for (let i = 0; i < N; i++) {
+    cells[i] = mul(_atomCell(a, i, cellShape, stride), _atomCell(b, i, cellShape, stride));
+  }
+  const outCell = cells[0].shape;
+  const outStride = outCell.reduce((x: number, y: number) => x * y, 1);
+  const out = new Float64Array(N * outStride);
+  for (let i = 0; i < N; i++) out.set(cells[i].data, i * outStride);
+  return { shape: [N].concat(outCell), data: out };
 }
 
 // addN / subN: atom-aware. Handles the atom-indep + atom-batched

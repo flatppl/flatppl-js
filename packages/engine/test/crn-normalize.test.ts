@@ -73,6 +73,18 @@ const M2D_VARIATE = H
   + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = [0.3, 0.7]))\n'
   + 'posterior = bayesupdate(L, lawof(theta))\n';
 
+// The SAME measure as M1D, written over a one-component cartprod. §03/§07 make
+// that variate a length-1 VECTOR, so §06's "receives the variate whole" gives
+// the weight an array to index — `w[1]`, not a bare `w`. Sharing M1D's oracle
+// is the point: the two spellings denote one measure, so the whole-variate
+// binding at k = 1 must reproduce the scalar-interval numbers exactly.
+const M1D_BOX = H
+  + 'theta ~ Uniform(interval(0.5, 2.0))\n'
+  + 'm = normalize(weighted(w -> exp(0.0 - w[1] / theta), '
+  + 'Lebesgue(support = cartprod(interval(0.0, 1.0)))))\n'
+  + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = [0.5]))\n'
+  + 'posterior = bayesupdate(L, lawof(theta))\n';
+
 // scipy-confirmed closed forms (see the header).
 const ORACLE_1D: Record<string, number> = {
   '0.6': -0.11317386031459675, '1.25': -0.026525872125234218, '1.9': -0.011515485860314256,
@@ -161,6 +173,37 @@ test('a one-parameter weight over a box receives the variate whole (§06)', asyn
     const got = await likAt(M2D_VARIATE, +t, 2048);
     assert.ok(Math.abs(got - ORACLE_2D[t]) < 2e-2,
       `theta=${t}: got ${got}, oracle ${ORACLE_2D[t]}`);
+  }
+});
+
+test('1-axis box: the whole-variate weight reproduces the scalar-interval numbers', async () => {
+  // Same measure as M1D, so the SAME oracle — Z(θ) = θ(1 − e^{−1/θ}), scipy
+  // quad to 1e-15. This is the θ-dependent witness for the k = 1 whole-variate
+  // binding: the normalizer's own fixed-sample points must feed the weight a
+  // length-1 vector, exactly as the density route does, or the two disagree.
+  for (const t of ['0.6', '1.25', '1.9']) {
+    const got = await likAt(M1D_BOX, +t);
+    assert.ok(Math.abs(got - ORACLE_1D[t]) < 1e-3,
+      `theta=${t}: got ${got}, oracle ${ORACLE_1D[t]}`);
+  }
+});
+
+test('1-axis box: the IS route and the MH route score the same measure', async () => {
+  // The two-routes-one-measure gate, on the k = 1 whole-variate binding. Both
+  // routes build their own Ẑ(θ) expression; a binding that differed between
+  // them would show up as a per-atom disagreement here.
+  const { ctx } = ctxFor(M1D_BOX, 8);
+  const post = await ctx.getMeasure('posterior');
+  const th = await ctx.getMeasure('theta');
+  const ts = Array.from(th.samples) as number[];
+  const lw = Array.from(post.logWeights) as number[];
+  const { ctx: ctx2 } = ctxFor(M1D_BOX, 1);
+  const { likOf } = await buildLogPi(ctx2, postDeriv(ctx2));
+  for (let i = 1; i < Math.min(5, ts.length); i++) {
+    const isDelta = lw[i] - lw[0];
+    const mhDelta = likOf({ theta: ts[i] }) - likOf({ theta: ts[0] });
+    assert.ok(Math.abs(isDelta - mhDelta) < 1e-9,
+      `atom ${i}: IS Δ ${isDelta} vs MH Δ ${mhDelta}`);
   }
 });
 
