@@ -458,6 +458,29 @@ test('broadcastN: mismatched cell shapes are refused, not silently strided', () 
     /broadcastN: per-atom cell shape \[3\] does not match \[2\] with N=4/);
 });
 
+// Equal-COUNT, different-axes cells (B2): `_cellLen` is a product, so
+// [2,3] and [3,2] both give 6 — an equal-count check would pass this
+// through and silently pair a 2×3 with a 3×2 flat-index-wise. Both
+// argument orders must refuse.
+test('broadcastN: same cell element count but different axes is refused', () => {
+  const a = cellValue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 2, 3]);
+  const b = cellValue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 3, 2]);
+  assert.throws(() => broadcastN((x: number, y: number) => x + y, [a, b], 2),
+    /broadcastN: per-atom cell shape \[3,2\] does not match \[2,3\] with N=2/);
+  assert.throws(() => broadcastN((x: number, y: number) => x + y, [b, a], 2),
+    /broadcastN: per-atom cell shape \[2,3\] does not match \[3,2\] with N=2/);
+});
+
+// Equal count, different RANK: [N,6] vs [N,2,3] also share cellLen=6.
+test('broadcastN: same cell element count but different rank is refused', () => {
+  const flat = cellValue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 6]);
+  const nested = cellValue([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12], [2, 2, 3]);
+  assert.throws(() => broadcastN((x: number, y: number) => x + y, [flat, nested], 2),
+    /broadcastN: per-atom cell shape \[2,3\] does not match \[6\] with N=2/);
+  assert.throws(() => broadcastN((x: number, y: number) => x + y, [nested, flat], 2),
+    /broadcastN: per-atom cell shape \[6\] does not match \[2,3\] with N=2/);
+});
+
 test('broadcastN: a shape=[N] batch is NOT treated as a cell batch', () => {
   const s = valueLib.batchedScalar(Float64Array.from([1, 2, 3, 4]));
   const out = broadcastN((x: number) => x + 1, [s], N4);
