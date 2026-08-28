@@ -119,6 +119,123 @@ test('§04: kernelof of a RECORD of variates stays accepted', () => {
 });
 
 // ---------------------------------------------------------------------
+// Refused: a BROADCAST of a measure-producing head
+// ---------------------------------------------------------------------
+//
+// §04 "Broadcasting" makes broadcast dual: "`broadcast(function, ...)`
+// returns an array value" while "`broadcast(kernel, ...)` returns an
+// array-valued measure". The measure half is a measure like any other, so
+// §sec:kernelof refuses it — but the refusal reads the ARGUMENT's type, and
+// the keyword spelling had no type rule at all, so this shape slipped past
+// the gate while the positional spelling was refused. One fixture
+// (`nested-broadcast-mvnormal-inner.flatppl`) was written that way.
+
+test('§04: kernelof of a keyword-bound distribution broadcast is refused', () => {
+  const src = 'mu = elementof(reals)\n'
+    + 'A = [1.0, 2.0, 3.0]\n'
+    + 'K = kernelof(broadcast(Normal, mu = A, sigma = mu), mu = mu)';
+  const errs = kernelofErrors(src);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /this argument is a measure/);
+});
+
+test('§04: the dot spelling of the same broadcast is refused', () => {
+  const src = 'mu = elementof(reals)\n'
+    + 'A = [1.0, 2.0, 3.0]\n'
+    + 'K = kernelof(Normal.(mu = A, sigma = mu), mu = mu)';
+  assert.equal(kernelofErrors(src).length, 1);
+});
+
+// A broadcast whose head is measure-producing is an array-valued measure by
+// §04 whatever its data arguments do, so the refusal cannot depend on the
+// type resolving. Here the keyword names no parameter of `Kin` (whose only
+// input is the placeholder's `arg1`), which leaves the broadcast untyped.
+test('§04: an UNTYPED broadcast of a kernel head is refused too', () => {
+  const src = 'mu = elementof(reals)\n'
+    + 'A = [1.0, 2.0, 3.0]\n'
+    + 'Kin = fn(Normal(mu = _, sigma = 0.1))\n'
+    + 'K = kernelof(broadcast(Kin, mu = A), mu = mu)';
+  const errs = kernelofErrors(src);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /this argument is a measure/);
+});
+
+test('§04: an INLINE lambda head over a distribution is refused', () => {
+  // The head is an inline reification rather than a ref, and the record
+  // argument (§04 "Disallowed inputs") leaves the broadcast with no type at
+  // all — the head still decides.
+  const src = 'mu = elementof(reals)\n'
+    + 'r = record(a = 1.0)\n'
+    + 'K = kernelof(fn(Normal(mu = _, sigma = 0.1)).(r), mu = mu)';
+  assert.equal(kernelofErrors(src).length, 1);
+});
+
+test('§04: a BARE distribution head is refused where the type declines', () => {
+  // The record argument (§04 "Disallowed inputs") leaves the broadcast with no
+  // type, and the head is a bare builtin with no module binding to read a
+  // kind off. §04's dual still answers: a distribution constructor is a
+  // kernel, so the broadcast is a measure.
+  const src = 'mu = elementof(reals)\n'
+    + 'r = record(a = 1.0)\n'
+    + 'K = kernelof(broadcast(Normal, mu = r, sigma = mu), mu = mu)';
+  const errs = kernelofErrors(src);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /this argument is a measure/);
+});
+
+test('§04: a MvNormal broadcast under kernelof is refused', () => {
+  // The fixture shape. A vector-output head over a rank-2 argument types as a
+  // measure here — the same answer the positional spelling already gave — so
+  // the refusal comes from the type, not from the structural fallback.
+  const src = 'mu = elementof(reals)\n'
+    + 'mus = rowstack([[0.0, 0.0], [1.0, -1.0]])\n'
+    + 'cov = rowstack([[1.0, 0.3], [0.3, 0.5]])\n'
+    + 'K = kernelof(broadcast(MvNormal, mu = mus, cov = cov), mu = mu)';
+  assert.equal(kernelofErrors(src).length, 1);
+});
+
+// ---------------------------------------------------------------------
+// Accepted: a VALUE broadcast, and the functionof replacement
+// ---------------------------------------------------------------------
+
+test('§04: kernelof of a value broadcast stays accepted', () => {
+  // `broadcast(<function>, …)` is an array VALUE — exactly what §sec:kernelof
+  // reifies. The dual must not over-refuse.
+  const src = 'mu = elementof(reals)\n'
+    + 'A = [1.0, 2.0, 3.0]\n'
+    + 'x ~ Normal(mu = mu, sigma = 1.0)\n'
+    + 'K = kernelof(broadcast(add, A, x), mu = mu)';
+  assert.deepEqual(kernelofErrors(src), []);
+});
+
+test('§04: kernelof of a value broadcast with a non-ref head stays accepted', () => {
+  // Neither head produces a measure, so neither reaches the refusal: a
+  // callable-valued CALL (`fchain`) and a cross-module function.
+  const chained = 'mu = elementof(reals)\n'
+    + 'A = [1.0, 2.0, 3.0]\n'
+    + 'f = functionof(2.0 * _a_, a = _a_)\n'
+    + 'g = functionof(_b_ + 1.0, b = _b_)\n'
+    + 'K = kernelof(broadcast(fchain(f, g), a = A), mu = mu)';
+  assert.deepEqual(kernelofErrors(chained), []);
+  const crossModule = 'mu = elementof(reals)\n'
+    + 'poly = standard_module("polynomials", "0.1")\n'
+    + 'xs = [0.1, 0.2, 0.3]\n'
+    + 'K = kernelof(broadcast(poly.legendre, n = 3, x = xs), mu = mu)';
+  assert.deepEqual(kernelofErrors(crossModule), []);
+});
+
+test('§04: functionof over the same broadcast is accepted, and is a kernel', () => {
+  const { processSource: ps } = require('../index.ts');
+  const src = H + 'mu = elementof(reals)\n'
+    + 'A = [1.0, 2.0, 3.0]\n'
+    + 'K = functionof(broadcast(Normal, mu = A, sigma = mu), mu = mu)\n';
+  const { bindings, diagnostics } = ps(src);
+  assert.deepEqual((diagnostics || [])
+    .filter((d: any) => d.severity === 'error').map((d: any) => d.message), []);
+  assert.equal(bindings.get('K').inferredType.kind, 'kernel');
+});
+
+// ---------------------------------------------------------------------
 // The spec-legal replacement keeps the composite recognisers
 // ---------------------------------------------------------------------
 //
