@@ -119,6 +119,69 @@ test('mulN: unsupported atom-batched matrix × atom-batched vector', () => {
 });
 
 // =====================================================================
+// mulN: two atom-batched operands of the SAME per-atom shape
+//
+// The leading axis is a batch axis, so the meaning per atom is the
+// atom-indep `mul` of the two cells. Dispatching there rather than adding
+// a shape rule keeps ONE §07 domain in force for both: `mul`'s own
+// vector×vector message reaches the caller instead of an internal
+// "unsupported shape combination". Whole-variate weight functions over a
+// k-axis Lebesgue box are what reach this at rank-1 cells, k = 1 included.
+// =====================================================================
+
+test('mulN: two atom-batched COLUMN vectors raise §07\'s own domain message', () => {
+  // §07 does not define vector * vector. The per-atom dispatch means the
+  // caller sees `mul`'s message, which names the transposes that would fix
+  // it, rather than an internal shape-combination error. k = 1 and k = 2
+  // behave alike — a length-1 vector is still a vector, so the one-axis box
+  // gets the same answer as any other.
+  for (const k of [1, 2]) {
+    const N = 5;
+    const Z = () => batchedVector(new Float64Array(N * k).fill(2), k);
+    assert.throws(() => valueOps.mulN(Z(), Z(), N),
+      /vector \* vector is not defined/, 'k=' + k);
+  }
+});
+
+test('mulN: two atom batches of DIFFERENT per-atom width keep the refusal', () => {
+  // Same rank, different cell length — there is no per-atom pairing to make,
+  // so this stays with the shape-combination refusal rather than reaching
+  // `mul` with mismatched cells.
+  const N = 9;
+  assert.throws(
+    () => valueOps.mulN(batchedVector(new Float64Array(N * 2), 2),
+      batchedVector(new Float64Array(N * 3), 3), N),
+    /unsupported atom-batched/);
+});
+
+test('mulN: shape=[N, n, n] × shape=[N, n, n] → per-atom matrix product', () => {
+  // Square per-atom cells ARE a §07 combination (matrix-matrix), so the
+  // per-atom dispatch computes them. Atom 0 is [[1,2],[3,4]]² =
+  // [[7,10],[15,22]]; atom 1 is I·I = I.
+  const N = 2;
+  const A = {
+    shape: [N, 2, 2],
+    data: new Float64Array([1, 2, 3, 4, 1, 0, 0, 1]),
+  };
+  const r = valueOps.mulN(A, A, N);
+  assert.deepEqual(r.shape, [N, 2, 2]);
+  assert.deepEqual(Array.from(r.data), [7, 10, 15, 22, 1, 0, 0, 1]);
+});
+
+test('mulN: a TRANSPOSE-tagged atom batch is not sliced per atom', () => {
+  // On a rank-≥2 Value the tag swaps the last two shape entries of the WHOLE
+  // array, so atom-major cells would read the wrong numbers. Excluded from the
+  // per-atom path, which leaves the pre-existing refusal.
+  // transpose(matrix(2, N)) has shape=[N, 2] and the tag set, so it reads as
+  // an atom batch of the right shape yet stores its data [2, N].
+  const N = 8;
+  const T = () => transpose(matrix(new Float64Array(2 * N).fill(1), 2, N));
+  assert.deepEqual(T().shape, [N, 2], 'the fixture must look like an atom batch');
+  assert.equal(getTag(T()), 'T', 'the fixture must carry the transpose tag');
+  assert.throws(() => valueOps.mulN(T(), T(), N), /unsupported atom-batched/);
+});
+
+// =====================================================================
 // addN: atom-indep + atom-batched broadcast
 // =====================================================================
 

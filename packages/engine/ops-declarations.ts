@@ -1501,27 +1501,36 @@ function _registerScalarLogicals(): void {
   }
 }
 
-// Give a unary scalar logical its ARRAY case, per `ops.ELEMWISE_OVER_ARRAY`:
-// a Value argument routes to the cell-wise value-ops impl, everything else to
-// the scalar impl unchanged. Ops outside that map are returned untouched.
+// Give a scalar logical its ARRAY case, per `ops.ELEMWISE_OVER_ARRAY` (unary)
+// and `ops.ELEMWISE_OVER_ARRAY_2` (binary): a Value argument routes to the
+// cell-wise value-ops impl, everything else to the scalar impl unchanged. Ops
+// in neither map are returned untouched.
 //
 // Shared with the legacy `sampler.ARITH_OPS` facade (`sampler._withArrayCase`
-// applies the same map), so the two paths cannot disagree about which ops read
+// applies the same maps), so the two paths cannot disagree about which ops read
 // cell-wise or about what a cell-wise read computes.
 function _withArrayCase(name: string, scalarImpl: (...a: any[]) => any): (...a: any[]) => any {
   const impl = (ops.ELEMWISE_OVER_ARRAY as any)[name];
-  if (!impl) return scalarImpl;
-  const cellwise = (valueOps as any)[impl];
+  const impl2 = (ops.ELEMWISE_OVER_ARRAY_2 as any)[name];
+  if (!impl && !impl2) return scalarImpl;
+  const cellwise = (valueOps as any)[impl || impl2];
   /* c8 ignore start */
   // Load-time invariant on a hand-written map: unreachable while every entry
   // names a real `value-ops` export, so no test can cover it. Kept as a throw
   // rather than dropped — a typo would otherwise install `undefined` as the
   // cell-wise impl and fail later as a TypeError inside an op.
   if (typeof cellwise !== 'function') {
-    throw new Error(`ops.ELEMWISE_OVER_ARRAY: '${name}' names value-ops.${impl}, `
-      + 'which does not exist');
+    throw new Error(`ops.ELEMWISE_OVER_ARRAY: '${name}' names value-ops.`
+      + `${impl || impl2}, which does not exist`);
   }
   /* c8 ignore stop */
+  if (impl2) {
+    // The value-ops elementwise binops require both operands to be Values, so
+    // the scalar partner is wrapped rather than passed through.
+    return (a: any, b: any) => (valueLib.isValue(a) || valueLib.isValue(b))
+      ? cellwise(valueLib.asValue(a), valueLib.asValue(b))
+      : scalarImpl(a, b);
+  }
   return (a: any) => valueLib.isValue(a) ? cellwise(a) : scalarImpl(a);
 }
 

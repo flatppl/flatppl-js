@@ -87,6 +87,24 @@ const UNARY_ARITH_OPS  = new Set([
   'sin', 'cos', 'floor', 'ceil', 'round',
 ]);
 const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
+// §07 "Elementary functions": "All accept scalar arguments and return scalar
+// results." An array or transposed-vector operand is therefore a static
+// error, not an implicit elementwise lift — the elementwise spelling is the
+// dotted / `broadcast` form. `abs`/`exp`/`log`/`log10`/`sqrt`/`sin`/`cos`/
+// `floor`/`ceil`/`round`/`div`/`mod` used to lift silently and the rest of
+// the table already refused; this set makes the whole table refuse alike.
+const ELEMENTARY_OPS = new Set([
+  'exp', 'log', 'log10', 'sqrt', 'abs', 'abs2',
+  'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
+  'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
+  'log1p', 'expm1', 'min', 'max', 'floor', 'ceil', 'round',
+  'div', 'mod', 'conj', 'cis', 'gamma', 'loggamma',
+  'logit', 'invlogit', 'probit', 'invprobit',
+]);
+// The elementary table plus §07's operator-equivalent `pow`, whose domain
+// column reads "scalars (real or complex; …)" — the only operator-equivalent
+// row that lists no array form.
+const SCALAR_ONLY_OPS = new Set([...ELEMENTARY_OPS, 'pow']);
 // The four FlatPDL transports (spec §07) — undefined on discrete kernels.
 const TRANSPORT_OPS = new Set([
   'builtin_touniform', 'builtin_fromuniform',
@@ -722,6 +740,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // (`complex → real`, integer admitted through §03's embedding); only
       // the array form needs the shape-preserving lift.
       case 'real':        return write(inferReal(expr, scopes), expr);
+      // divide(a, b) — §07 "Operator-equivalent functions" gives it the
+      // domains "scalars, array-scalar, transposed-vector–scalar (real or
+      // complex)". The `[REAL, REAL]` signature admitted only the first, so
+      // `v / 2` was a static error against the spec.
+      case 'divide':      return write(inferDivide(expr, scopes), expr);
     }
     // Static refusal: the four FlatPDL transports (touniform / fromuniform
     // / tonormal / fromnormal) are undefined on a DISCRETE kernel — there
@@ -857,6 +880,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
         for (let i = 0; i < fixedN; i++) {
           const at: any = inferExpr(args[i], scopes);
+          // The §07 table members that never lifted (tan, tanh, min, max, the
+          // gamma and link functions, …) refuse here. Route them through the
+          // shared refusal so the whole table reads alike rather than falling
+          // to the generic "expects real, got array of real".
+          if (SCALAR_ONLY_OPS.has(op) && _isNonScalarOperand(at)) {
+            return scalarOnlyError(op, i, at, args[i].loc);
+          }
           const next = T.unify(sig.args[i], at, s);
           if (next == null) {
             // Apply the substitution accumulated from earlier args so
@@ -1097,7 +1127,93 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return T.failed(op + ' arg 1 sign');
       }
     }
+    const scalarFormT = _scalarFormWeightRefusal(expr, args, mT, scopes);
+    if (scalarFormT) return scalarFormT;
     return mT;  // result is the same measure type
+  }
+
+  // Resolve an expression in function position to a single-parameter
+  // reification node: an inline `fn(...)` / `functionof(...)`, or a self-ref
+  // binding to one. null for anything else.
+  function _unaryReification(fExpr: any): any {
+    let reif: any = null;
+    if (fExpr && fExpr.op === 'functionof') reif = fExpr;
+    else if (fExpr && fExpr.kind === 'ref' && fExpr.ns === 'self') {
+      const b = loweredModule.bindings.get(fExpr.name);
+      if (b && b.rhs && b.rhs.op === 'functionof') reif = b.rhs;
+    }
+    if (!reif || !Array.isArray(reif.params) || reif.params.length !== 1 || !reif.body) {
+      return null;
+    }
+    return reif;
+  }
+
+  // Type of a unary reification's body with its parameter bound to
+  // `paramType`. Speculative: the walk's diagnostics are dropped rather than
+  // leaked into the module's stream, exactly as `_pushfwdCodomain` does.
+  function _bodyTypeUnder(reif: any, paramType: any, scopes: any): any {
+    const scope = new Map();
+    scope.set(reif.params[0], paramType);
+    const savedLen = diagnostics.length;
+    const t: any = inferExpr(reif.body, scopes.concat([scope]));
+    diagnostics.length = savedLen;
+    return t;
+  }
+
+  // §06 `weighted`: "$f$ is a non-negative weight (a constant or a function of
+  // the variate $x$ of $M$)" — so the weight is REAL-VALUED — and its arity
+  // rule: "A one-parameter weight receives the variate whole. If the variate is
+  // a $k$-element array with $k \geq 2$, a weight of exactly $k$ scalar
+  // parameters instead receives one component per parameter, in order". Over a
+  // measure whose variate is an array, a ONE-parameter weight is therefore a
+  // function OF THAT ARRAY, at k = 1 as much as above it: §03/§07 make
+  // `cartprod(<scalar set>)` the set of LENGTH-1 VECTORS.
+  //
+  // A body written for the scalar reading — `f(x) = x * x` over a box — is
+  // array-valued once its parameter is the vector, and an array-valued weight
+  // is a proven violation of the non-negative-real rule above. Refuse rather
+  // than quietly reading the element instead: that would score a different
+  // function from the one written, and the two readings stop agreeing the
+  // moment the body is not elementwise.
+  //
+  // Conservative in the house style of the §08 domain-contract checks: the
+  // speculative body walk must resolve to a concrete NON-SCALAR value type.
+  // `any` / `deferred` / `failed` (`f(v) = sum(v)`, an unresolved call, a body
+  // already carrying its own diagnostic) all pass here — none is proven wrong.
+  const scalarFormWeightReported = new WeakSet<any>();
+
+  function _scalarFormWeightRefusal(expr: any, args: any, mT: any, scopes: any): any {
+    const domain = mT && mT.domain;
+    if (!domain || domain.kind !== 'array' || domain.rank !== 1) return null;
+    const reif = _unaryReification(args[0]);
+    if (!reif) return null;
+    const bodyT: any = _bodyTypeUnder(reif, domain, scopes);
+    const bad = bodyT && (bodyT.kind === 'array' || bodyT.kind === 'tvector'
+      || bodyT.kind === 'record');
+    if (!bad) return null;
+    if (scalarFormWeightReported.has(expr)) {
+      return T.failed(expr.op + ' non-scalar weight over an array variate');
+    }
+    scalarFormWeightReported.add(expr);
+    // At ONE axis the whole-variate reading is what makes the two spellings
+    // differ, so the message can also offer the scalar-variate support; above
+    // one axis there is no scalar spelling of the same measure to offer.
+    const oneAxis = domain.shape[0] === 1;
+    diagnostics.push({
+      severity: 'error',
+      message: expr.op + ': the weight has one parameter, so §06 gives it the '
+        + 'variate WHOLE — here ' + T.show(domain) + ' — and the body is then '
+        + T.show(bodyT) + ', not the non-negative real §06 requires of a '
+        + 'weight. Write the weight as a function of the vector, indexing the '
+        + 'components it needs (e.g. `v[1]`)'
+        + (oneAxis
+          ? ', or give the measure a scalar variate by writing its support as a '
+            + 'bare `interval(...)` rather than a one-component `cartprod(...)`.'
+          : '.'),
+      /* c8 ignore next -- defensive: the weight slot always carries a span */
+      loc: args[0].loc || expr.loc,
+    });
+    return T.failed(expr.op + ' non-scalar weight over an array variate');
   }
 
   function inferTransposeAdjoint(expr: any, scopes: any): any {
@@ -3424,6 +3540,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const aT: any = inferExpr(args[0], scopes);
     const bT: any = inferExpr(args[1], scopes);
     if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed(expr.op + ' cascade');
+    // `div` / `mod` (elementary) and `pow` (operator-equivalent, "scalars")
+    // are scalar-only in §07, so only `add` / `sub` / `mul` reach unifyArith's
+    // array and broadcast cases.
+    if (SCALAR_ONLY_OPS.has(expr.op)) {
+      const refused = checkScalarOnlyOperands(expr.op, [aT, bT], args);
+      if (refused) return refused;
+    }
     // `mod` and `div` are integer-domain (spec §07: `mod(a, b) = a − b·⌊a/b⌋`,
     // `div(a, b) = ⌊a/b⌋`, both over `integers` with `b ≠ 0`). The general
     // arith ladder (unifyArith) admits reals, so enforce the integer
@@ -3475,6 +3598,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (args.length !== 1) return arityError(expr.op, 1, args.length, expr.loc);
     const aT = inferExpr(args[0], scopes);
     if (aT.kind === 'failed') return T.failed(expr.op + ' cascade');
+    // §07's elementary functions are scalar-only, so only `neg` / `pos` reach
+    // the array lift below.
+    if (SCALAR_ONLY_OPS.has(expr.op)) {
+      const refused = checkScalarOnlyOperands(expr.op, [aT], args);
+      if (refused) return refused;
+    }
     // Scalar in → scalar out; array in → array out (shape preserved).
     // Per-op element-type rule:
     //   - INT_CAST  (floor/ceil/round): real → integer.
@@ -3555,6 +3684,60 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const out = liftElemwise(aT);
     if (out == null) return argError('real', 0, T.COMPLEX, aT, args[0].loc);
     return out;
+  }
+
+  // divide(a, b) — §07 "Operator-equivalent functions": "scalars, array-scalar,
+  // transposed-vector–scalar (real or complex)". The dividend carries the
+  // shape; the divisor is a scalar in all three forms, so a non-scalar arg 2
+  // is refused (§07 lists no scalar-array or array-array division — that
+  // spelling is `divide.(a, b)`).
+  function inferDivide(expr: any, scopes: any): any {
+    // No `|| []` fallback: the parser always populates `args` on a call node,
+    // and the unreachable arm reads as an uncovered branch.
+    const args = expr.args;
+    if (args.length !== 2) return arityError('divide', 2, args.length, expr.loc);
+    const aT: any = inferExpr(args[0], scopes);
+    const bT: any = inferExpr(args[1], scopes);
+    if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed('divide cascade');
+    if (_isNonScalarOperand(bT)) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'divide: arg 2 (the divisor) expects a scalar, got '
+          + T.show(bT) + ' — spec §07 gives `divide` the domains "scalars, '
+          + 'array-scalar, transposed-vector–scalar", all with a scalar '
+          + 'divisor; the elementwise form is `divide.(a, b)`',
+        loc: args[1].loc,
+      });
+      return T.failed('divide non-scalar divisor');
+    }
+    if (!_isNonScalarOperand(aT)) return inferGenericCall(expr, scopes);
+    // Array-scalar / tvector-scalar: the quotient keeps the dividend's shape.
+    // Element type promotes through the same numeric ladder as the scalar
+    // form, so a complex operand on either side gives a complex quotient.
+    function leafElem(t: any): any {
+      if (t.kind === 'array' || t.kind === 'tvector') return leafElem(t.elem);
+      return t;
+    }
+    const elemR: any = T.unifyArith(leafElem(aT), bT, new Map());
+    if (elemR == null) {
+      diagnostics.push({
+        severity: 'error',
+        message: 'divide: operand types ' + T.show(aT) + ' and ' + T.show(bT)
+          + ' are not numerically compatible',
+        loc: expr.loc,
+      });
+      return T.failed('divide element type');
+    }
+    // §07's quotient is real (or complex) even over an integer dividend, so an
+    // integer leaf widens rather than staying integer.
+    const elem = (elemR.result && elemR.result.kind === 'scalar'
+                  && elemR.result.prim === 'complex') ? T.COMPLEX : T.REAL;
+    function rebuild(t: any): any {
+      if (t.kind === 'array') return T.array(t.rank, t.shape.slice(), rebuild(t.elem));
+      if (t.kind === 'tvector') return T.tvector(t.length, rebuild(t.elem));
+      return elem;
+    }
+    return rebuild(aT);
   }
 
   function inferComparison(expr: any, scopes: any): any {
@@ -3657,17 +3840,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _pushfwdCodomain(fExpr: any, inputType: any, scopes: any): any {
     if (!inputType || inputType.kind === 'failed' || inputType.kind === 'deferred'
         || inputType.kind === 'any') return null;
-    // Resolve fExpr to a single-param reification node: an inline `fn(...)` /
-    // `functionof(...)`, or a self-ref binding to one.
-    let reif: any = null;
-    if (fExpr && fExpr.op === 'functionof') reif = fExpr;
-    else if (fExpr && fExpr.kind === 'ref' && fExpr.ns === 'self') {
-      const b = loweredModule.bindings.get(fExpr.name);
-      if (b && b.rhs && b.rhs.op === 'functionof') reif = b.rhs;
-    }
-    if (!reif || !Array.isArray(reif.params) || reif.params.length !== 1 || !reif.body) {
-      return null;
-    }
+    const reif = _unaryReification(fExpr);
+    if (!reif) return null;
     const scope = new Map();
     scope.set(reif.params[0], inputType);
     // Speculative: infer the body purely to READ its codomain. Any diagnostics
@@ -3677,9 +3851,25 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // broke the disintegrate spec-coverage contract). Drop anything the walk
     // appended; when the body doesn't resolve to a value the caller falls back
     // to its scalar default, unchanged from before S2.
+    //
+    // §07's scalar-only refusals are the one exception. The parameter IS bound
+    // to the base measure's domain here, so a bare `exp(x)` over a vector
+    // variate is refusable — and dropping that refusal is not neutral: the
+    // failed body leaves `cod` null and the caller falls back to the scalar
+    // default, silently retyping an array-variate pushforward as a scalar one.
+    // Deduplicated by message and location because the body may be walked more
+    // than once (a pushfwd reached through several queries).
     const savedLen = diagnostics.length;
     const bodyT: any = inferExpr(reif.body, scopes.concat([scope]));
-    if (diagnostics.length > savedLen) diagnostics.length = savedLen;
+    if (diagnostics.length > savedLen) {
+      const kept = diagnostics.slice(savedLen).filter((d: any) => d.scalarOnly);
+      diagnostics.length = savedLen;
+      for (const d of kept) {
+        const dup = diagnostics.some((e: any) => e.message === d.message
+          && JSON.stringify(e.loc) === JSON.stringify(d.loc));
+        if (!dup) diagnostics.push(d);
+      }
+    }
     return T.isValue(bodyT) ? bodyT : null;
   }
 
@@ -4749,6 +4939,41 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return ' — this is a vector-of-vectors per spec §03, not a matrix; '
       + 'wrap with `rowstack(...)` (rows = inner vectors) or `colstack(...)` '
       + '(columns = inner vectors) to commit the storage-order interpretation.';
+  }
+
+  // A non-scalar operand at a SCALAR_ONLY_OPS argument. One message for the
+  // whole §07 table so the refusal reads the same whichever function it is.
+  function scalarOnlyError(op: any, i: any, got: any, loc: any) {
+    const cite = ELEMENTARY_OPS.has(op)
+      ? 'spec §07 "Elementary functions": "All accept scalar arguments and '
+        + 'return scalar results"'
+      : 'spec §07 "Operator-equivalent functions" gives `' + op
+        + '` the domain "scalars (real or complex)"';
+    diagnostics.push({
+      severity: 'error',
+      message: op + ': arg ' + (i + 1) + ' expects a scalar, got ' + T.show(got)
+        + ' — ' + cite + '; the elementwise form is the dotted spelling, `'
+        + op + '.(…)`',
+      loc,
+      // Read by _pushfwdCodomain, which drops the rest of a speculative
+      // body walk's diagnostics but must keep this one.
+      scalarOnly: true,
+    });
+    return T.failed(op + ' non-scalar operand');
+  }
+  // Whether `t` carries a shape §07's scalar-only domains do not admit.
+  function _isNonScalarOperand(t: any): boolean {
+    return t != null && (t.kind === 'array' || t.kind === 'tvector');
+  }
+  // Refuse every non-scalar operand of a SCALAR_ONLY_OPS call. Returns the
+  // failed type, or null when all operands are admissible.
+  function checkScalarOnlyOperands(op: any, argTypes: any[], args: any[]): any {
+    for (let i = 0; i < argTypes.length; i++) {
+      if (_isNonScalarOperand(argTypes[i])) {
+        return scalarOnlyError(op, i, argTypes[i], args[i].loc);
+      }
+    }
+    return null;
   }
 
   function argError(op: any, i: any, expected: any, got: any, loc: any) {

@@ -986,15 +986,160 @@ test('broadcast: kernel-broadcast via ~ (draw) still works after tightening', ()
   assert.equal(errors.length, 0);
 });
 
-test('arithmetic: unary ops preserve shape', () => {
+test('arithmetic: neg preserves shape over an array', () => {
+  // §07 "Operator-equivalent functions" gives `neg` the domain "scalars or
+  // arrays (real or complex)", so the un-dotted array form is admissible and
+  // shape-preserving. `abs` is NOT — see the elementary-function tests below.
   const { bindings, errors } = infer(`
     xs = [1.0, 2.0, 3.0]
-    out = abs(xs)
+    out = neg(xs)
   `);
   assert.equal(errors.length, 0);
   const t = typeOf(bindings, 'out');
   assert.equal(t.kind, 'array');
   assert.deepEqual(t.shape, [3]);
+});
+
+// §07 "Elementary functions": "All accept scalar arguments and return scalar
+// results." Every member refuses a non-scalar operand, with one message, and
+// the dotted spelling is the elementwise form. Before this rule `exp`, `log`,
+// `log10`, `sqrt`, `abs`, `abs2`, `sin`, `cos`, `floor`, `ceil`, `round`,
+// `div` and `mod` lifted silently while the rest of the table refused.
+for (const src of ['exp(xs)', 'log(xs)', 'log10(xs)', 'sqrt(xs)', 'abs(xs)',
+                   'abs2(xs)', 'sin(xs)', 'cos(xs)', 'tan(xs)', 'tanh(xs)',
+                   'floor(xs)', 'ceil(xs)', 'round(xs)', 'loggamma(xs)',
+                   'invlogit(xs)', 'min(xs, 1.0)', 'max(xs, 1.0)',
+                   'atan2(xs, 1.0)', 'div(xs, 2)', 'mod(xs, 2)',
+                   'pow(xs, 2.0)']) {
+  const op = src.slice(0, src.indexOf('('));
+  test(`§07 scalar-only: ${op} refuses an array operand`, () => {
+    const { errors } = infer(`
+      xs = [1.0, 2.0, 3.0]
+      out = ${src}
+    `);
+    assert.ok(errors.some((e: any) =>
+      e.message.startsWith(op + ': arg 1 expects a scalar')
+      && /elementwise form is the dotted spelling/.test(e.message)),
+      'expected the §07 scalar-only refusal, got: '
+        + errors.map((e: any) => e.message).join('; '));
+  });
+  test(`§07 scalar-only: ${op} admits the dotted spelling`, () => {
+    // `div` / `mod` carry §07's `integers` domain, so they need integer cells.
+    const xs = (op === 'div' || op === 'mod') ? '[1, 2, 3]' : '[1.0, 2.0, 3.0]';
+    const { errors } = infer(`
+      xs = ${xs}
+      out = ${op}.(${src.slice(src.indexOf('(') + 1)}
+    `);
+    assert.equal(errors.length, 0,
+      errors.map((e: any) => e.message).join('; '));
+  });
+}
+
+test('§07 scalar-only: the refusal cites the elementary-functions sentence', () => {
+  const { errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = exp(xs)
+  `);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message,
+    /All accept scalar arguments and return scalar results/);
+  assert.match(errors[0].message, /`exp\.\(…\)`/);
+});
+
+test('§07 scalar-only: pow cites its own operator-equivalent domain', () => {
+  // `pow` is not in the elementary table; its §07 operator-equivalent row
+  // reads "scalars (real or complex; …)" — the only such row with no array
+  // form, unlike `add` / `sub` / `mul` / `divide` / `neg`.
+  const { errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = pow(xs, 2.0)
+  `);
+  assert.equal(errors.length, 1);
+  assert.match(errors[0].message, /the domain "scalars \(real or complex\)"/);
+});
+
+// §07 "Operator-equivalent functions" gives `divide` the domains "scalars,
+// array-scalar, transposed-vector–scalar (real or complex)". The `[REAL, REAL]`
+// signature refused the two non-scalar forms, making `v / 2` a static error
+// against the spec.
+test('§07 divide: array-scalar keeps the dividend shape', () => {
+  const { bindings, errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = divide(xs, 2.0)
+    sugar = xs / 2.0
+  `);
+  assert.equal(errors.length, 0, errors.map((e: any) => e.message).join('; '));
+  assert.ok(T.equal(typeOf(bindings, 'out'), T.array(1, [3], T.REAL)));
+  assert.ok(T.equal(typeOf(bindings, 'sugar'), T.array(1, [3], T.REAL)));
+});
+
+test('§07 divide: matrix-scalar and transposed-vector–scalar', () => {
+  const { bindings, errors } = infer(`
+    M = rowstack([[1.0, 2.0], [3.0, 4.0]])
+    xs = [1.0, 2.0]
+    mq = divide(M, 2.0)
+    tq = divide(transpose(xs), 2.0)
+  `);
+  assert.equal(errors.length, 0, errors.map((e: any) => e.message).join('; '));
+  assert.ok(T.equal(typeOf(bindings, 'mq'), T.array(2, [2, 2], T.REAL)));
+  assert.ok(T.equal(typeOf(bindings, 'tq'), T.tvector(2, T.REAL)));
+});
+
+test('§07 divide: an integer dividend still gives a real quotient', () => {
+  const { bindings, errors } = infer(`
+    xs = [1, 2, 3]
+    out = divide(xs, 2)
+  `);
+  assert.equal(errors.length, 0, errors.map((e: any) => e.message).join('; '));
+  assert.ok(T.equal(typeOf(bindings, 'out'), T.array(1, [3], T.REAL)));
+});
+
+test('§07 divide: a complex operand on either side gives a complex quotient', () => {
+  const { bindings, errors } = infer(`
+    zs = [complex(1.0, 2.0), complex(3.0, 4.0)]
+    xs = [1.0, 2.0]
+    cz = divide(zs, 2.0)
+    cx = divide(xs, complex(1.0, 1.0))
+  `);
+  assert.equal(errors.length, 0, errors.map((e: any) => e.message).join('; '));
+  assert.ok(T.equal(typeOf(bindings, 'cz'), T.array(1, [2], T.COMPLEX)));
+  assert.ok(T.equal(typeOf(bindings, 'cx'), T.array(1, [2], T.COMPLEX)));
+});
+
+test('§07 divide: a non-numeric dividend leaf is not divisible', () => {
+  const { errors } = infer(`
+    ss = ["a", "b"]
+    out = divide(ss, 2.0)
+  `);
+  assert.ok(errors.some((e: any) =>
+    /divide: operand types array of string \(length 2\) and real are not numerically compatible/
+      .test(e.message)), errors.map((e: any) => e.message).join('; '));
+});
+
+test('§07 divide: arity and a failed operand', () => {
+  const one = infer(`out = divide(1.0)`);
+  assert.ok(one.errors.some((e: any) =>
+    /divide expects 2 positional argument\(s\), got 1/.test(e.message)));
+  // A refused operand cascades rather than producing a second complaint about
+  // the quotient.
+  const bad = infer(`
+    xs = [1.0, 2.0]
+    out = divide(exp(xs), 2.0)
+  `);
+  assert.equal(bad.errors.length, 1, bad.errors.map((e: any) => e.message).join('; '));
+  assert.match(bad.errors[0].message, /^exp: arg 1 expects a scalar/);
+});
+
+test('§07 divide: the divisor must be a scalar', () => {
+  // §07 lists no scalar-array or array-array division; that spelling is
+  // `divide.(a, b)`.
+  const { errors } = infer(`
+    xs = [1.0, 2.0, 3.0]
+    out = divide(2.0, xs)
+  `);
+  assert.ok(errors.some((e: any) =>
+    /divide: arg 2 \(the divisor\) expects a scalar/.test(e.message)),
+    errors.map((e: any) => e.message).join('; '));
 });
 
 test('iid: with literal n produces a measure over a concrete-shape array', () => {
