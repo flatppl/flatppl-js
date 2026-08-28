@@ -1457,8 +1457,10 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
     // right (it broke the reified-vs-lambda bit-for-bit agreement and the 4xy
     // box oracle).
     const crnShape = crnRecognize(node);
+    // Over the node budget this THROWS rather than returning null: the constant
+    // bake below is the pooled mass, which is wrong at every θ but one.
     const crnExpr = (crnShape && crnWeightIsThetaDependent(crnShape, ctx))
-      ? crnNormalizeMassExpr(node, { points: ctx && ctx.crnNormalizePoints })
+      ? crnNormalizeMassExpr(node, { points: ctx && ctx.crnNormalizePoints, ctx })
       : null;
     if (crnExpr != null) {
       const innerC = node.args[0];

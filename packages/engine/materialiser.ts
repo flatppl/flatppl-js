@@ -555,8 +555,10 @@ function _perAtomMassExpr(name: string, ctx: any): any | null {
   const ir = expandMeasureIR(name, ctx.derivations, new Set(), ctx.bindings);
   const shape = crnRecognize(ir);
   if (shape && crnWeightIsThetaDependent(shape, ctx)) {
-    // null here is the node-budget refusal, which crn-normalize.ts warns about.
-    return crnNormalizeMassExpr(ir, { points: ctx.crnNormalizePoints });
+    // Over the node budget this THROWS rather than returning null: the pooled
+    // divisor is the wrong number under a θ-dependent weight, and it is the one
+    // the caller would fall back to.
+    return crnNormalizeMassExpr(ir, { points: ctx.crnNormalizePoints, ctx });
   }
   if (!ir || ir.kind !== 'call' || ir.op !== 'normalize'
       || !Array.isArray(ir.args) || ir.args.length !== 1) return null;
@@ -604,8 +606,12 @@ function _perAtomMassExpr(name: string, ctx: any): any | null {
 // same two builders the density routes use — so the divisor here is the one
 // `logdensityof` subtracts, which is what makes the two routes score one
 // measure.
-// An expansion failure is NOT caught: falling back would silently reinstate the
-// pooled divisor, which is the wrong number this path exists to remove.
+// NOTHING is caught here. A null means the pooled divisor is right for the
+// shape — a θ-INDEPENDENT weight, whose mass is one constant. Every path where
+// it would be wrong throws instead: an `expandMeasureIR` failure, a θ-dependent
+// mass with no expression (the refusal in `_perAtomMassExpr`), and a θ-dependent
+// weight body over crn-normalize's node budget. Catching any of them would
+// reinstate the pooled divisor, the wrong number this path exists to remove.
 function _perAtomLogMass(name: string, ctx: any, N: number): Promise<Float64Array | null> {
   let expr: any = null;
   try {
