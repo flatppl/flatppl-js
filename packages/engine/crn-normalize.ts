@@ -316,7 +316,24 @@ function crnNormalizeNote(key: string, M: number, dims: number) {
 
 // Build the IR expression for Ẑ(θ) of a `normalize` node, or null when the node
 // is not the recognised shape (the caller keeps its existing fallback).
-// `opts.points` overrides M.
+// `opts.points` overrides M; `opts.ctx` is the materialisation context, read
+// only to tell a latent from a constant or a called function in the budget
+// refusal below.
+//
+// THROWS when the shape IS recognised, the weight moves with a latent, and the
+// body will not fit the node budget. Every caller's fallback there is the mass
+// POOLED over the atom ensemble — the pooled weight sum on the sampling route, a
+// baked −log Z on the two density routes — which is E[Z], not Z(θ). Returning
+// null with a `console.warn` handed that back as a number: measured on
+// `f = exp(θx)` over [0,1] with θ ~ Uniform(0, 4) at M = 400000, E[θ] = 2.8124
+// against the prior's 2.0 and the Z-tilted 2.8073. Spec §06 `normalize` makes
+// every θ-slice a probability measure, so the θ-marginal is the prior; and its
+// engine contract states the doctrine — "engines do not silently substitute
+// heuristics: … succeeds with closed-form math or fails loudly".
+//
+// A weight that is a function of the VARIATE alone keeps the null: Z is then one
+// constant, the pooled mass is exactly it, and refusing would reject a correct
+// answer. That is the only shape reachable here where the fallback is right.
 function crnNormalizeMassExpr(node: any, opts?: any): any | null {
   const shape = crnRecognize(node);
   if (!shape) return null;
@@ -324,12 +341,17 @@ function crnNormalizeMassExpr(node: any, opts?: any): any | null {
   const key = seedString(shape.axes, M);
   const bodySize = nodeCount(shape.weightBody);
   if (bodySize * M > CRN_NODE_BUDGET) {
-    // eslint-disable-next-line no-console
-    console.warn('normalize(weighted(f, Lebesgue(box))): the weight body is '
-      + bodySize + ' nodes, too large to inline ' + M + ' times for the fixed-sample '
-      + 'normalizer (budget ' + CRN_NODE_BUDGET + '); falling back to a θ-independent '
-      + 'constant Z, which is wrong wherever Z moves with θ');
-    return null;
+    // Without a ctx every free name reads as a latent, which refuses rather than
+    // guesses — the conservative direction for a divisor.
+    if (!crnWeightIsThetaDependent(shape, opts && opts.ctx)) return null;
+    throw new Error('normalize(weighted(f, Lebesgue(box))): the weight depends on a '
+      + 'latent, so its mass Z(θ) is estimated by inlining the weight body at each of '
+      + M + ' fixed points — ' + bodySize + ' nodes × ' + M + ' = ' + (bodySize * M)
+      + ' nodes, over the budget of ' + CRN_NODE_BUDGET + '. Falling back to the pooled '
+      + 'mass would return the prior tilted by Z(θ); spec §06 normalize makes each '
+      + 'θ-slice a probability measure, so refusing instead. Lower the point count '
+      + '(`crnNormalizePoints`) to trade estimator accuracy for expression size, or '
+      + 'rewrite the measure so its mass is closed-form in the latent.');
   }
   const seed = rng.xxhash32(key, 0) >>> 0;
   const pts = crnFixedPoints(shape.axes, M, seed);

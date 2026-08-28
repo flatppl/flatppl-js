@@ -284,16 +284,46 @@ test('a constant-weight `weighted` is declined (it is a mass shift, not a densit
   assert.equal(crn.crnRecognize(node), null);
 });
 
-test('a weight body over the node budget is declined rather than shrunk', () => {
-  // A body of `nodes` nodes inlined M times must not silently drop to a smaller
-  // M: that would change the measure being scored without saying so.
-  let body: any = XREF;
+// A body of `nodes` nodes inlined M times must not silently drop to a smaller M:
+// that would change the measure being scored without saying so. `leafName` is
+// the body's one free term, which decides whether Z moves with a latent — spelt
+// `ns: 'self'` because that is the only ref the θ-dependence test can see.
+function overBudgetNode(leafName: string) {
+  let body: any = { kind: 'ref', ns: 'self', name: leafName };
   while (crn._internal.nodeCount(body) * 128 <= crn.CRN_NODE_BUDGET) {
     body = { kind: 'call', op: 'add', args: [body, { kind: 'lit', value: 1 }] };
   }
-  const node = normalizeIR(weightedOver(lebesgue(interval(0, 1)), ['x'], body));
-  assert.ok(crn._internal.nodeCount(body) * 128 > crn.CRN_NODE_BUDGET, 'the body must exceed the budget');
-  assert.equal(crn.crnNormalizeMassExpr(node), null);
+  assert.ok(crn._internal.nodeCount(body) * 128 > crn.CRN_NODE_BUDGET,
+    'the body must exceed the budget');
+  return normalizeIR(weightedOver(lebesgue(interval(0, 1)), ['x'], body));
+}
+
+test('a θ-INDEPENDENT weight body over the node budget is declined, not refused', () => {
+  // The body is a function of the variate alone, so Z is one constant and the
+  // caller's pooled mass is exactly it. Declining hands the caller a correct
+  // number; refusing would reject it.
+  assert.equal(crn.crnNormalizeMassExpr(overBudgetNode('x')), null);
+});
+
+test('a θ-DEPENDENT weight body over the node budget is refused, not pooled', () => {
+  // Z moves with θ here, so every caller's fallback — the pooled weight sum on
+  // the sampling route, a baked constant −log Z on the two density routes — is
+  // E[Z] rather than Z(θ), and returns the prior TILTED by Z(θ). §06 normalize
+  // makes each θ-slice a probability measure; §06's engine contract adds that an
+  // engine "does not silently substitute heuristics". So this fails loudly.
+  const node = overBudgetNode('theta');
+  assert.throws(() => crn.crnNormalizeMassExpr(node),
+    /the weight depends on a latent.*over the budget of 400000.*spec §06 normalize/s);
+  // ... with or without a ctx: a caller that supplies none cannot prove the name
+  // is a constant, and guessing in the permissive direction is what produced the
+  // tilted ensemble.
+  assert.throws(() => crn.crnNormalizeMassExpr(node, { points: 128 }),
+    /the weight depends on a latent/);
+  // ... and a ctx that names `theta` a fixed constant puts it back on the
+  // declined side, since a constant mass is what the pooled divisor is right for.
+  assert.equal(
+    crn.crnNormalizeMassExpr(node, { ctx: { fixedValues: new Map([['theta', 1]]) } }),
+    null);
 });
 
 // =====================================================================
