@@ -87,8 +87,29 @@ const {
 // Per-kind handlers — basic + algebra
 // =====================================================================
 
+// Sample a distribution at its per-atom parameters.
+//
+// **Parameter weights propagate (§06).** The measure monad's bind is
+// $(\nu \mathbin{>>=} \kappa)(B) = \int_X \kappa(x)(B)\, d\nu(x)$, and `theta ~ M;
+// y ~ K(theta)` is that bind (§06 `kchain` / `jointchain`, "equivalence with
+// stochastic nodes"). When the parameter measure $\nu$ represents its law by
+// REWEIGHTING proposal positions — `normalize(weighted(f, Q))`, whose atoms sit
+// at Q's positions and carry $f/Z$ in `logWeights` — the integral is against
+// $\nu$, not against Q. Drawing one kernel sample per parameter atom and
+// handing the result back UNWEIGHTED integrates against Q instead, i.e. returns
+// a draw from a different measure: with `theta ~ normalize(weighted(x -> exp(x),
+// Normal(0, 1)))` (exactly Normal(1, 1) by conjugacy) and `y ~ Normal(mu =
+// theta, sigma = 1)`, y's own ensemble measured E[y] = 0.058 where the oracle
+// is 1 — Normal(0, 1)'s mean, a full sigma low.
+//
+// So the parents' weights join the draw's own via `propagateLogWeights`, the
+// same joint-IS combination `matEvaluate` uses: the kernel draw at atom i is
+// conditionally independent given the parameters, so it introduces no weighting
+// event of its own and the atom's weight is the parameters' joint IS weight.
+// Reference-identity dedupe counts a stream shared by two parameters once.
 function matSample(name: string, d: DerivationSample, ctx: any) {
-  return collectRefArrays(d.distIR, ctx)
+  const parents: any[] = [];
+  return collectRefArrays(d.distIR, ctx, parents)
     .then((refArrays: any) => ctx.sendWorker({
       type: 'sampleN',
       ir: d.distIR,
@@ -106,16 +127,28 @@ function matSample(name: string, d: DerivationSample, ctx: any) {
         throw new Error('sample: worker failed sampling \'' + name + '\': '
           + (reply.message || 'unknown worker error'));
       }
-      const lw = reply.logWeights || null;
+      const lw = empirical.propagateLogWeights(
+        [{ logWeights: reply.logWeights || null }].concat(parents));
       // Default 0 for probability measures; explicit overrides for
       // unnormalised reference measures (Lebesgue / future Counting-
       // over-finite-support) attach via the derivation's
       // `logTotalmass` field. Cf. engine-types.d.ts DerivationSample.
-      const logTotalmass = (typeof d.logTotalmass === 'number') ? d.logTotalmass : 0;
+      // Otherwise the mass follows the resulting weights, as matEvaluate's
+      // does — `normalize` leaves them summing to one, so a kernel draw at a
+      // normalized parameter ensemble still reports mass 0 in log space.
+      const logTotalmass = (typeof d.logTotalmass === 'number')
+        ? d.logTotalmass
+        : (lw ? empirical.logSumExp(lw) : 0);
+      // A weighted parameter ensemble caps the draw's own quality: the atoms
+      // downweighted at theta stay downweighted at y.
+      let n_eff = reply.samples.length;
+      for (const p of parents) {
+        if (typeof p.n_eff === 'number') n_eff = Math.min(n_eff, p.n_eff);
+      }
       return scalarMeasureN(reply.samples, {
         logWeights: lw,
         logTotalmass,
-        n_eff: reply.samples.length,
+        n_eff,
       });
     });
 }
@@ -896,6 +929,62 @@ function _foldIidBlockLogWeights(
   return out;
 }
 
+// Combine the k-block coordinate product with the weight streams the repeat
+// axis SHARES across an atom's k inner draws.
+//
+// A tiled value draw (`tileMeasureAtomMajor`) is ONE draw held constant across
+// the block, so its importance weight is ONE weighting event for the atom and
+// enters the atom's weight ONCE — unlike a per-coordinate weight, which enters
+// k times (§06 `iid`, the product measure M^⊗N: the coordinates are
+// independent GIVEN the shared parameters, so only the coordinates multiply).
+// Summing a shared stream over the block would raise it to the power k: with
+// `theta ~ normalize(weighted(x -> exp(0.5 x), Normal(0, 1)))` (exactly
+// Normal(0.5, 1)) feeding `iid(normalize(weighted(x -> exp(0.1 x),
+// Normal(mu = theta, sigma = 1))), 2)`, a doubled theta weight tilts E[theta]
+// to 1.0 and E[y] to 1.1 where the oracle is 0.5 and 0.6.
+//
+// That is why the shared streams are kept OFF the inflated per-position axis
+// (matIid strips them from the tiled measure) rather than summed and then
+// decomposed: `blockLW`'s sum cannot be un-summed afterwards.
+//
+// Renormalised to sum to one in log space, the convention `_foldIidBlockLog-
+// Weights` and `matNormalize` set, so the caller's `logTotalmass: 0` stays true.
+// Returns null when there is nothing to carry, keeping `logWeights` absent
+// rather than an all-equal array (`propagateLogWeights`'s dedupe contract).
+function _combineIidAtomWeights(
+  blockLW: Float64Array | null, sharedLW: Float64Array[], N: number,
+): Float64Array | null {
+  if (!sharedLW.length) return blockLW;
+  const out = new Float64Array(N);
+  if (blockLW) out.set(blockLW);
+  for (const w of sharedLW) {
+    /* c8 ignore start */
+    // A shared stream is the PARENT-N measure matIid tiled, so its axis is N by
+    // construction. A mismatch means some handler returned an ensemble off the
+    // atom axis, and adding it would mix atoms.
+    if (w.length !== N) {
+      throw new Error('iid: a per-atom weight stream shared across the repeat '
+        + 'axis has ' + w.length + ' weights for ' + N + ' atoms; the fold '
+        + 'cannot align a weight axis with the atom axis');
+    }
+    /* c8 ignore stop */
+    for (let i = 0; i < N; i++) out[i] += w[i];
+  }
+  const lse = empirical.logSumExp(out);
+  /* c8 ignore start */
+  // Same guard as the block fold's: every atom weightless or infinite leaves
+  // `out[i] -= lse` writing NaN. Unreachable from a `normalize` parent, whose
+  // weights already sum to one.
+  if (!Number.isFinite(lse)) {
+    throw new Error('iid: the weight streams shared across the repeat axis give '
+      + 'every atom total weight ' + Math.exp(lse) + '; spec §06 leaves '
+      + 'normalize undefined when Z is zero or infinite');
+  }
+  /* c8 ignore stop */
+  for (let i = 0; i < N; i++) out[i] -= lse;
+  return out;
+}
+
 function matIid(name: string, d: DerivationIid, ctx: any) {
   // iid(M, n, …): N atoms × k inner draws, atom-major packed into
   // one Float64Array. Worker's sampleN takes an optional repeat=k.
@@ -973,6 +1062,13 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     const reifiedVariates = _reifiedVariatesUnder(
       d.from, ctx.derivations, ctx.bindings);
     const inflatedCache = new Map();
+    // Weight streams a tiled value draw brings in — ONE weighting event per
+    // atom, shared by its k inner draws, so they are held OFF the inflated
+    // per-position axis and folded into the atom weight once
+    // (`_combineIidAtomWeights`). Deduped by array reference, the same
+    // independence contract `propagateLogWeights` uses.
+    const sharedAtomLW: Float64Array[] = [];
+    const sharedSeen = new Set<Float64Array>();
     const inflatedCtx: any = Object.assign({}, ctx, {
       sampleCount: N * k,
       // Repeat axis: the inflated batch is N blocks of k contiguous
@@ -1004,8 +1100,23 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         && !reifiedVariates.has(nn);
       let p: any;
       if (isValueDraw) {
-        p = Promise.resolve(ctx.getMeasure(nn))
-          .then((m: any) => tileMeasureAtomMajor(m, N, k));
+        p = Promise.resolve(ctx.getMeasure(nn)).then((m: any) => {
+          const tiled = tileMeasureAtomMajor(m, N, k);
+          // The draw is held constant across the block, so its weight is the
+          // atom's, not the position's: record it for the once-only fold and
+          // keep it off the inflated axis, where the k-block product would
+          // raise it to the power k. At k = 1 there is no block and no tiling —
+          // the weights stay on the (N·1) axis, where the fold already counts
+          // each exactly once.
+          if (tiled !== m && m && m.logWeights) {
+            if (!sharedSeen.has(m.logWeights)) {
+              sharedSeen.add(m.logWeights);
+              sharedAtomLW.push(m.logWeights);
+            }
+            tiled.logWeights = null;
+          }
+          return tiled;
+        });
       } else {
         p = materialiseMeasure(nn, inflatedCtx);
       }
@@ -1014,9 +1125,11 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     };
     return inflatedCtx.getMeasure(d.from).then((innerM: any) => {
       // §06 `iid` is a product measure, so the k inner positions' importance
-      // weights multiply into ONE weight per atom. Folded before either branch
-      // below rebuilds the measure, so neither can drop them silently.
-      const foldedLW = _foldIidBlockLogWeights(innerM, N, k, d.from);
+      // weights multiply into ONE weight per atom, and a weight stream shared
+      // across the block joins it once. Folded before either branch below
+      // rebuilds the measure, so neither can drop them silently.
+      const foldedLW = _combineIidAtomWeights(
+        _foldIidBlockLogWeights(innerM, N, k, d.from), sharedAtomLW, N);
       // G1 (spec §03/§06): a record-valued inner measure (a joint/record
       // materialises to `.fields`, not `.samples`) — the k iid record draws
       // form a TABLE (an array of records is a table). Assemble the per-field
@@ -1039,10 +1152,11 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
           return Promise.reject(new Error(
             'iid: the record measure "' + d.from + '" represents its law by '
             + 'importance weights (a normalize over a variate-dependent '
-            + 'weighted/logweighted), and iid over it samples one k-row table '
-            + 'whose single atom cannot carry them (spec §06 normalize, §06 '
-            + 'iid). Sampling this shape is not implemented — the density path '
-            + 'can still score it via logdensityof/totalmass'));
+            + 'weighted/logweighted, or a weighted parameter ancestor), and iid '
+            + 'over it samples one k-row table whose single atom cannot carry '
+            + 'them (spec §06 normalize, §06 iid). Sampling this shape is not '
+            + 'implemented — the density path can still score it via '
+            + 'logdensityof/totalmass'));
         }
         if (N !== 1) {
           // An N-atom ENSEMBLE of record-iid draws is N separate k-row tables;
