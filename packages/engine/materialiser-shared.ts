@@ -342,7 +342,7 @@ function _aggregateHeadNames(ir: any, into?: Set<string>): Set<string> {
   return out;
 }
 
-function collectRefArrays(ir: any, ctx: any) {
+function collectRefArrays(ir: any, ctx: any, outParents?: any[]) {
   const refs = orchestrator.collectSelfRefs(ir);
   const aggregateHeadNames = _aggregateHeadNames(ir);
   const names: string[] = [];
@@ -391,6 +391,12 @@ function collectRefArrays(ir: any, ctx: any) {
       for (let i = 0; i < names.length; i++) {
         out[names[i]] = measureToRefValue(measures[i], names[i], 'collectRefArrays');
       }
+      // `measureToRefValue` keeps only the per-atom POSITIONS; a parameter
+      // measure that represents its law by importance weights carries the rest
+      // of the law in `logWeights`, which the caller needs to propagate (§06
+      // bind integrates the kernel against the parameter measure itself, not
+      // against its proposal). Hand the measures back so the caller can.
+      if (outParents) for (const m of measures) outParents.push(m);
       // CLM boundary feed (measure-lowering unification Phase 4). matClm feeds
       // a lowered body's boundary inputs via feedInputs (the ONE feeding
       // contract sample + density share) and threads the columns through
