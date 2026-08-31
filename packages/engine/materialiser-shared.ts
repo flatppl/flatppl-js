@@ -440,6 +440,15 @@ function collectRefArrays(ir: any, ctx: any, outParents?: any[]) {
  *    caller pushes this via `setEnv merge:true` before its
  *    logDensityN / evaluateN message; helpers fixedRefsToSetEnv /
  *    pushFixedEnv expose the canonical pattern.
+ *  - `perAtomNames` — the names behind `refArrays`, in order.
+ *  - `parents`     — the materialised measures behind `refArrays`, in the
+ *    same order. `measureToRefValue` keeps only the per-atom POSITIONS, so a
+ *    parameter measure that represents its law by importance weights carries
+ *    the rest of the law in `logWeights` and the caller needs the measure
+ *    itself to propagate them (§06 bind integrates the kernel against the
+ *    parameter measure, not against the proposal its atoms came from). Handed
+ *    back rather than re-fetched so a caller cannot re-materialise a parent
+ *    and pair one draw's positions with another draw's weights.
  */
 // Walk an IR expression and substitute every `self`-ref to a
 // callable binding (fn / functionof / kernelof / bijection — see
@@ -680,7 +689,7 @@ function prepareDensityRefs(ir: any, ctx: any, label: string) {
         measureToRefValue(measures[i], perAtomNames[i], label);
     }
     if (extra) for (const k in extra) { if (extra[k] != null) refArrays[k] = extra[k]; }
-    return { refArrays, fixedEnv, perAtomNames };
+    return { refArrays, fixedEnv, perAtomNames, parents: measures };
   });
 }
 
