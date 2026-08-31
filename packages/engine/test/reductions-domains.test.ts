@@ -259,10 +259,15 @@ test('cummin on rank-1', () => {
 
 test('cummax / cummin preserve shape, including the empty vector', () => {
   // A scan, not a reduction: no ±Infinity leaks out of an empty input
-  // the way `maximum([])` gives -Infinity.
+  // the way an empty `maximum` gives -Infinity.
+  //
+  // `zeros(0)` spells the empty vector because `[]` cannot: §05 gives the
+  // empty bracket to `AxisList` alone (its `ArrayLiteral` production needs
+  // an element), and an axis list is legal only in an aggregation's
+  // output_axes or binder. §07 "Empty inputs" still governs the value.
   const fv = ev(`
-cm = cummax([])
-cn = cummin([])
+cm = cummax(zeros(0))
+cn = cummin(zeros(0))
 one = cummax([2.0])
 `);
   assert.deepEqual(Array.from((fv.get('cm') as any).data), []);

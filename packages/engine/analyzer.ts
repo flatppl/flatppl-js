@@ -1759,8 +1759,12 @@ function reificationBoundPlaceholders(call: any): Set<string> {
  *
  * @param {object} node - root expression node
  * @param {Diagnostic[]} diagnostics - mutable, appended to
+ * @param {Set<object>} axisListsRefused - brackets `validateAxisListPositions`
+ *   has already refused as a whole; their axis names get no second report.
  */
-function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
+function validateHolesAndPlaceholders(
+  node: any, diagnostics: any[], axisListsRefused: Set<any> = new Set(),
+) {
   // scope can be: 'normal', 'fn', 'reify' (functionof/kernelof), 'aggregate'.
   // `bound` is the nearest enclosing reification's binder list, or null when
   // there is no enclosing reification; `boundIsLambda` records whether that
@@ -1853,6 +1857,11 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
         walk(node.operand, scope, bound, boundIsLambda);
         return;
       case 'ArrayLiteral':
+        // An axis list already refused as a whole (spec §05's axis-list
+        // position rule) needs no per-axis report on top of that.
+        if (axisListsRefused.has(node)) return;
+        for (const e of node.elements) walk(e, scope, bound, boundIsLambda);
+        return;
       case 'TupleLiteral':
         for (const e of node.elements) walk(e, scope, bound, boundIsLambda);
         return;
@@ -1892,6 +1901,104 @@ function validateHolesAndPlaceholders(node: any, diagnostics: any[]) {
  * @param {object} node - root expression node
  * @param {Diagnostic[]} diagnostics - mutable, appended to
  */
+/**
+ * Enforce spec §05 "Note on axis names" on axis-list POSITION: "The grammar
+ * likewise admits `AxisList` as a `Primary`, but it is legal only as the
+ * `output_axes` argument of an `aggregate` or `metricsum` call and as the
+ * axis-list binder of an `AggregateBinding` or `MetricsumBinding`; anywhere
+ * else it is a static error."
+ *
+ * The parser desugars both binder forms at parse time (`C[.i] := e` becomes
+ * `aggregate(sum, [.i], e)`, `g: C[.mu^] := e` becomes
+ * `metricsum(g, [.mu^], e)`), so the spec's four legal positions have already
+ * collapsed to two by the time this runs: argument 1 of an `aggregate` call
+ * and argument 1 of a `metricsum` call. §04 `sec:aggregate` /
+ * `sec:metricsum` give `output_axes` to those two operations and to no other,
+ * so no third slot needs admitting here.
+ *
+ * A bracket is an `AxisList` rather than an `ArrayLiteral` when it is empty or
+ * when every element is an axis name — §05: "In `AxisList`'s legal positions
+ * (as above), `[...]` parses as `AxisList`, not `ArrayLiteral`." Emptiness on
+ * its own is decisive, because §05's `ArrayLiteral` production requires at
+ * least one `Expression` while `AxisList`'s element list is optional, and §05
+ * spells the asymmetry out: "Unlike `ArrayLiteral`, `AxisList` may be empty".
+ * A bare `[]` outside the two slots therefore has no legal reading at all,
+ * which is why it is refused here rather than left to a downstream shape
+ * error that would blame the consumer instead of the bracket.
+ *
+ * Refusing at the bracket also reaches the illegal positions INSIDE an
+ * `aggregate` / `metricsum` call — the metric slot, the body slot — which the
+ * per-axis rule cannot see: `validateHolesAndPlaceholders` widens its scope to
+ * the whole call, so every argument of an aggregation looks axis-legal to it.
+ *
+ * Returns the refused bracket nodes so the per-axis pass can skip their
+ * subtrees; without that it would report the same mistake once per element on
+ * top of this one refusal.
+ *
+ * @param {object} node - root expression node
+ * @param {Diagnostic[]} diagnostics - mutable, appended to
+ * @returns {Set<object>} the bracket nodes refused here
+ */
+function validateAxisListPositions(node: any, diagnostics: any[]): Set<any> {
+  const refused = new Set<any>();
+
+  // An empty bracket can only be an AxisList (§05's ArrayLiteral needs an
+  // element); a non-empty one is an AxisList when it holds axis names only.
+  function isAxisList(n: any): boolean {
+    if (!n || n.type !== 'ArrayLiteral') return false;
+    if (n.elements.length === 0) return true;
+    return n.elements.every((e: any) => e && e.type === 'AxisRef');
+  }
+
+  function walk(n: any, axisListOk: boolean) {
+    if (n == null || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const x of n) walk(x, false); return; }
+
+    if (isAxisList(n) && !axisListOk) {
+      refused.add(n);
+      diagnostics.push({
+        severity: 'error',
+        message: `Axis list '${axisListText(n)}' is not legal here: an axis `
+          + `list is legal only as the output_axes argument of `
+          + `aggregate(...) or metricsum(...), or as the axis-list binder of `
+          + `a 'C[...] := expr' or 'metric: C[...] := expr' binding — `
+          + `"anywhere else it is a static error" (spec §05 "Note on axis `
+          + `names")`,
+        loc: n.loc,
+      });
+      // The refusal covers the whole bracket, so its axis names need no
+      // second report.
+      return;
+    }
+
+    if (n.type === 'CallExpr') {
+      const callee = n.callee;
+      const isAggregation = callee && callee.type === 'Identifier'
+        && (callee.name === 'aggregate' || callee.name === 'metricsum');
+      walk(callee, false);
+      for (let i = 0; i < n.args.length; i++) {
+        walk(n.args[i], isAggregation && i === 1);
+      }
+      return;
+    }
+
+    for (const k of Object.keys(n)) {
+      if (k !== 'loc') walk(n[k], false);
+    }
+  }
+
+  walk(node, false);
+  return refused;
+}
+
+/** Render an axis-list bracket back to source for a diagnostic. */
+function axisListText(n: any): string {
+  const marker = (v: any) => (v === 'upper' ? '^' : v === 'lower' ? '_' : '');
+  return '[' + n.elements
+    .map((e: any) => `.${e.name}${marker(e.variance)}`)
+    .join(', ') + ']';
+}
+
 function validateBoundaryNames(node: any, diagnostics: any[]) {
   function checkReification(call: any) {
     const seen = new Set<string>();
@@ -3100,7 +3207,8 @@ function analyze(ast: any, source: string, opts?: any) {
 
     const stmtType = classifyStatement(stmt.value);
     diagnostics.push(...validateSpecialOperation(stmt.value));
-    validateHolesAndPlaceholders(stmt.value, diagnostics);
+    const axisListsRefused = validateAxisListPositions(stmt.value, diagnostics);
+    validateHolesAndPlaceholders(stmt.value, diagnostics, axisListsRefused);
     validateBoundaryNames(stmt.value, diagnostics);
     validateIndexing(stmt.value, diagnostics);
     const { deps, callDeps, bodyDeps, paramSourceDeps } = collectDeps(stmt.value, definedNames);

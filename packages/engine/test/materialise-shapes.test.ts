@@ -215,8 +215,12 @@ xs = [record(a = 1.0, b = 2.0), record(a = 3.0, b = 4.0)]
 // Empty / edge shapes
 // ---------------------------------------------------------------------
 
-test('materialise: empty array literal', async () => {
-  const { ctx } = makeMatCtx('xs = []');
+test('materialise: empty array', async () => {
+  // `zeros(0)`, not `[]`: §05 gives the empty bracket to `AxisList` alone
+  // (its `ArrayLiteral` production requires an element), and an axis list is
+  // legal only in an aggregation's output_axes or binder — so an empty
+  // vector has no literal spelling.
+  const { ctx } = makeMatCtx('xs = zeros(0)');
   const m = await ctx.getMeasure('xs');
   // Empty arrays may legitimately have no plot — accept either a
   // missing-fields measure or an empty .samples — but the call must
