@@ -39,6 +39,55 @@ const compositeBodies = require('./composite-body-recognizers.ts');
 
 const { nameSeed, measureFromValue, prepareDensityRefs, pushFixedEnv } = shared;
 
+// The weight-carrying fields a broadcast output inherits from the parameter
+// measures its per-position draws condition on.
+//
+// §04 sec:broadcasting makes `broadcast(kernel, …)` "an **array-valued
+// measure**: the independent product measure of the kernel applications at
+// each array position", and §06 "The measure monad" gives bind as
+// $(\nu \mathbin{\texttt{>>=}} \kappa)(B) = \int_X \kappa(x)(B)\, d\nu(x)$,
+// which §06 `kchain`'s "Equivalence with stochastic nodes" reads as `theta ~ M;
+// y ~ K(theta)`. Every position integrates against the parameter MEASURE. When
+// that measure represents its law by REWEIGHTING proposal positions —
+// `normalize(weighted(f, Q))`, whose atoms sit at Q's positions with $f/Z$ in
+// `logWeights` — an `arrayMeasure(out, axes, null)` rebuild integrates against
+// Q instead: with `theta ~ normalize(weighted(x -> exp(x), Normal(0, 1)))`
+// (exactly Normal(1, 1) by conjugacy) feeding
+// `broadcast(Normal, mu = theta .+ [0, 1], sigma = 1)`, both cells read
+// Normal(0, 1)'s mean (-0.002 / 1.001 against the oracle 1 / 2 at 2e5 atoms), a
+// full sigma low, with `logWeights` absent.
+//
+// **Once only, not once per position.** Every executor here resolves its
+// parameters at the PARENT's N (`prepareDensityRefs`) and tiles each atom's
+// value across that atom's cell / inner / component positions (`_layoutFlat`
+// with `atomVaries`). One parameter draw therefore serves every position of an
+// atom: ONE weighting event, entering the atom's weight ONCE. The k-block
+// product `_foldIidBlockLogWeights` performs is for a PER-POSITION weight axis,
+// which no path here has — the worker's `sampleN` always replies
+// `logWeights: null`, so the draws introduce no event of their own — and
+// summing over the positions would raise the shared event to that power.
+// `propagateLogWeights` is that once-only fold, and it keeps the dedupe
+// contract: a stream two parameters share counts once, and a single-stream
+// parent is passed forward BY REFERENCE rather than cloned, which is how the
+// independence dedupe recognises it downstream. Same combination `matSample`
+// and `matEvaluate` use.
+//
+// Returns `logWeights: null` when no parent carries weights, which keeps the
+// output's `logWeights` absent rather than an all-equal array — the shape the
+// dedupe relies on.
+function _parentWeightOverlay(parents: any[], N: number) {
+  const lw = empirical.propagateLogWeights(parents);
+  return {
+    // `normalize` leaves its weights summing to one, so a draw at a normalized
+    // parameter ensemble still reports mass 0 in log space.
+    logTotalmass: lw ? empirical.logSumExp(lw) : 0,
+    // A weighted parameter ensemble leaves far fewer effective atoms than N,
+    // so the output must not report a confident N.
+    n_eff: lw ? empirical.effectiveSampleSize({ logWeights: lw }) : N,
+    logWeights: lw,
+  };
+}
+
 function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any) {
   const sampler = require('./sampler.ts');
   const irShared = require('./ir-shared.ts');
@@ -155,7 +204,7 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     kwargs: paramIRs,
   };
   return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
-    const { refArrays, fixedEnv } = prep;
+    const { refArrays, fixedEnv, parents } = prep;
     const baseEnv: Record<string, any> = {};
     for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
     const refNames = Object.keys(refArrays);
@@ -213,7 +262,7 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     // axis. For 2-D+ grids (axes.length >= 2) the fast-path returns a
     // flat [N, Ktot] measure, losing the grid structure. The general
     // per-cell path below produces the correct [N, ...axes] shape via
-    // arrayMeasure(out, axes, null).
+    // arrayMeasure over `axes`.
     const fastResult = axes.length <= 1
       ? fastPaths.tryKernelBroadcastFastPath({ d, ctx, name, K, N, paramVals, anyAtomDep })
       : null;
@@ -267,9 +316,11 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
       // arrayMeasure builds value.shape = [N, ...axes]; axes=[K] reduces to
       // the 1-D case. When axes=[] (all-scalar / Ktot=1 degenerate) pass
       // [1] so the dims.length>0 guard in arrayMeasure still sets .value.
+      const wt = _parentWeightOverlay(parents, N);
       return Object.assign(
-        empirical.arrayMeasure(out, axes.length === 0 ? [1] : axes, null),
-        { logTotalmass: 0, n_eff: N },
+        empirical.arrayMeasure(
+          out, axes.length === 0 ? [1] : axes, wt.logWeights),
+        { logTotalmass: wt.logTotalmass, n_eff: wt.n_eff },
       );
     });
   });
@@ -558,7 +609,7 @@ function _executeIidCompositeBatchFlatten(
   };
 
   return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
-    const { refArrays, fixedEnv } = prep;
+    const { refArrays, fixedEnv, parents } = prep;
     const baseEnv: Record<string, any> = {};
     for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
     const refNames = Object.keys(refArrays);
@@ -708,16 +759,19 @@ function _executeIidCompositeBatchFlatten(
       .then((reply: any) => {
         // reply.samples is flat [count] in (i, j, r) = [N, K, D] order.
         const out = reply.samples;
+        // One parameter draw per atom serves all K·D of its positions, so its
+        // importance weight enters the atom's weight once.
+        const wt = _parentWeightOverlay(parents, N);
         if (D > 1) {
           const value = { shape: [N | 0, K, D], data: out };
           return Object.assign(
-            empirical.arrayMeasure(out, [K, D], null),
-            { value: value, logTotalmass: 0, n_eff: N });
+            empirical.arrayMeasure(out, [K, D], wt.logWeights),
+            { value: value, logTotalmass: wt.logTotalmass, n_eff: wt.n_eff });
         }
         const value = { shape: [N | 0, K], data: out };
         return Object.assign(
-          empirical.arrayMeasure(out, [K], null),
-          { value: value, logTotalmass: 0, n_eff: N });
+          empirical.arrayMeasure(out, [K], wt.logWeights),
+          { value: value, logTotalmass: wt.logTotalmass, n_eff: wt.n_eff });
       });
   });
 }
@@ -892,7 +946,7 @@ function _executeGenerativeComposite(
   };
 
   return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
-    const { refArrays, fixedEnv } = prep;
+    const { refArrays, fixedEnv, parents } = prep;
     const baseEnv: Record<string, any> = {};
     for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
     const refNames = Object.keys(refArrays);
@@ -1091,9 +1145,12 @@ function _executeGenerativeComposite(
           return Promise.reject(err instanceof Error ? err : new Error(String(err)));
         }
         const value = { shape: [N | 0, K], data: out };
+        // The internal draws are fresh per (atom, cell) and unweighted; the
+        // only weights here are the broadcast args' own, one event per atom.
+        const wt = _parentWeightOverlay(parents, N);
         return Object.assign(
-          empirical.arrayMeasure(out, [K], null),
-          { value: value, logTotalmass: 0, n_eff: N });
+          empirical.arrayMeasure(out, [K], wt.logWeights),
+          { value: value, logTotalmass: wt.logTotalmass, n_eff: wt.n_eff });
       });
   });
 }
@@ -1244,7 +1301,7 @@ function _executeJointComposite(
   };
 
   return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
-    const { refArrays, fixedEnv } = prep;
+    const { refArrays, fixedEnv, parents } = prep;
     const baseEnv: Record<string, any> = {};
     for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
     const refNames = Object.keys(refArrays);
@@ -1408,9 +1465,12 @@ function _executeJointComposite(
         }
       }
       const value = { shape: [N | 0, K, E], data: out };
+      // The C components are the variate's STRUCTURE, drawn at one shared
+      // per-atom parameter — one weighting event, not one per component.
+      const wt = _parentWeightOverlay(parents, N);
       return Object.assign(
-        empirical.arrayMeasure(out, [K, E], null),
-        { value: value, logTotalmass: 0, n_eff: N });
+        empirical.arrayMeasure(out, [K, E], wt.logWeights),
+        { value: value, logTotalmass: wt.logTotalmass, n_eff: wt.n_eff });
     });
   });
 }
@@ -1468,7 +1528,7 @@ function _executeJointChainComposite(
   };
 
   return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
-    const { refArrays, fixedEnv } = prep;
+    const { refArrays, fixedEnv, parents } = prep;
     const baseEnv: Record<string, any> = {};
     for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
     const refNames = Object.keys(refArrays);
@@ -1648,9 +1708,12 @@ function _executeJointChainComposite(
         }
       }
       const value = { shape: [N | 0, K, C], data: out };
+      // The C chain steps run sequentially at one shared per-atom parameter —
+      // one weighting event for the atom, not one per step.
+      const wt = _parentWeightOverlay(parents, N);
       return Object.assign(
-        empirical.arrayMeasure(out, [K, C], null),
-        { value: value, logTotalmass: 0, n_eff: N });
+        empirical.arrayMeasure(out, [K, C], wt.logWeights),
+        { value: value, logTotalmass: wt.logTotalmass, n_eff: wt.n_eff });
     });
   });
 }
@@ -1736,7 +1799,7 @@ function _executeNestedBroadcastBatchFlatten(
   };
 
   return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
-    const { refArrays, fixedEnv } = prep;
+    const { refArrays, fixedEnv, parents } = prep;
     const baseEnv: Record<string, any> = {};
     for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
     const refNames = Object.keys(refArrays);
@@ -1850,9 +1913,12 @@ function _executeNestedBroadcastBatchFlatten(
         // = [N, K_outer, K_inner].
         const out = reply.samples;
         const value = { shape: [N | 0, Kout, Kin], data: out };
+        // One parameter draw per atom serves all K_outer·K_inner of its
+        // positions, so its importance weight enters the atom's weight once.
+        const wt = _parentWeightOverlay(parents, N);
         return Object.assign(
-          empirical.arrayMeasure(out, [Kout, Kin], null),
-          { value: value, logTotalmass: 0, n_eff: N });
+          empirical.arrayMeasure(out, [Kout, Kin], wt.logWeights),
+          { value: value, logTotalmass: wt.logTotalmass, n_eff: wt.n_eff });
       });
   });
 }
@@ -2036,6 +2102,11 @@ function _executeNestedBroadcastVectorFold(
     const out = res.data;
     const innerWidth = Kin * n;
     const value = { shape: [N | 0, Kout, innerWidth], data: out };
+    // `logWeights: null` unconditionally. Every input here went through
+    // `resolveIRToValue` at (1)–(3) above, which resolves against bindings and
+    // fixed values only, so an atom-dependent outer arg / mu / cov never gets
+    // past those gates — and a parameter measure with importance weights is
+    // atom-dependent by construction. No weighted parent can reach this line.
     return Object.assign(
       empirical.arrayMeasure(out, [Kout, innerWidth], null),
       { value: value, logTotalmass: 0, n_eff: N },
@@ -2207,6 +2278,10 @@ function _executeMvNormalBroadcast(
   ).then((res: { data: Float64Array }) => {
     const out = res.data;
     const value = { shape: [N | 0, K, n], data: out };
+    // `logWeights: null` unconditionally, for the same reason as the nested
+    // vector fold's: mu and cov both had to resolve through
+    // `resolveIRToValue` above, which an atom-dependent expression cannot, so
+    // a parameter measure carrying importance weights never reaches here.
     return Object.assign(
       empirical.arrayMeasure(out, [K, n], null),
       { value: value, logTotalmass: 0, n_eff: N },
