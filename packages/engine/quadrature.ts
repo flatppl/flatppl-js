@@ -98,3 +98,23 @@ export function adaptiveCubature(
   }
   return { Z: totI, err: totE, evals };
 }
+
+// Fixed composite Gauss-Legendre estimate of ∫_lo^hi f over ONE 1-D window.
+//
+// WHY THIS IS SEPARATE FROM `adaptiveCubature`. The adaptive routine cannot
+// tell a CONVERGENT endpoint singularity from a DIVERGENT one: both look
+// locally smooth to the embedded error estimate, so it reports "converged" at
+// whatever finite number its last subdivision reached. The discriminator is the
+// WINDOW's own contribution — for a convergent endpoint ∫_{1-δ}^{1} f → 0 as
+// δ → 0, and for a divergent one it does not. Callers probe a geometric ladder
+// of δ with this and refuse when the contribution fails to shrink.
+export function windowIntegral(
+  f: (u: number[]) => number, lo: number, hi: number, cells = 32,
+): number {
+  const h = (hi - lo) / cells;
+  let total = 0;
+  for (let i = 0; i < cells; i++) {
+    for (const { x, w } of GL3) total += w * h * f([lo + (i + x) * h]);
+  }
+  return total;
+}

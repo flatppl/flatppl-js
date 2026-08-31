@@ -812,6 +812,14 @@ const TRUNCATE_DIM_CAP = 3;
 
 type TruncAxis = { lo: number; hi: number; kind: 'finite' | 'semi-lo' | 'semi-hi' | 'infinite' };
 
+// Relative tolerance for the deterministic normalizer quadratures. Tighter than
+// `adaptiveCubature`'s own 1e-8 default because a normalizer enters the density
+// as a LEVEL — log Z shifts every scored point by the same amount, so its error
+// does not average out across a likelihood the way a per-point error would.
+// Measured on `normalize(weighted(fn(exp(_)), Normal(0, 1)))` (Z = e^{1/2}):
+// 1e-8 gave log Z off by 3.4e-12 in 2090 evals, 1e-10 by 7.5e-14 in 6730.
+const NORMALIZE_QUAD_TOL = 1e-10;
+
 // One interval(lo,hi) set IR → an axis, classifying finiteness; null if not a
 // literal-bound interval. Reuses the literal check truncateSetBounds uses.
 function axisFromInterval(setIR: any): TruncAxis | null {
@@ -1117,6 +1125,146 @@ function weightedLebesgueQuadLogZ(node: any, ctx: any): number | null {
   const env = weightedFixedWeightEnv(weightFn, ctx);
   if (env == null) return null;   // θ-dependent weight → MC materialise
   return weightedBaseLogMass(weightFn, bounds, env, ctx);   // log ∫_a^b w dx, base density ≡ 1
+}
+
+// Does the endpoint contribution of `f` on [0,1] shrink as the window shrinks?
+//
+// `adaptiveCubature` cannot answer this on its own. A weight that outgrows the
+// base's tail makes ∫ w dB divergent, but the integrand still looks locally
+// smooth, so the embedded error estimate reports "converged" at whatever finite
+// number the last subdivision reached — and it is a LARGE number, quietly
+// dividing every scored point by a divisor that has no limit. Measured on
+// `normalize(weighted(fn(exp(_ * _)), Normal(0, 1)))`, where Z = ∫ e^{x²} dΦ
+// does not exist: Ẑ came back as 4.97e12 with rel-err 1.0e-10.
+//
+// The discriminator is the window's own contribution: for a convergent endpoint
+// ∫_{1−δ}^{1} f → 0 as δ → 0, and for a divergent one it plateaus or grows.
+// Measured over δ = 1e-1 and δ = 1e-8, the two classes separate by many orders.
+// Convergent cases fell by a factor of 1e-4 or more — `exp(_)` over Normal
+// 5.2e-6, a flat weight 1e-7, `_` over Exponential 5.7e-7, `_` over Beta 1.3e-7,
+// and a flat weight over the heavy-tailed Cauchy 1e-7. Divergent ones did not
+// fall at all — `exp(_ * _)` over Normal 2.9e6, `abs(_)` over Cauchy 1.0,
+// `exp(3 * _)` over Exponential 3.2e3. The 1e-4 gate sits in that gap.
+//
+// A window contribution of exactly 0 passes: the weight underflowed to nothing
+// there, which is the strongest form of decay rather than a failure to decay.
+function _endpointContributionShrinks(f: (u: number[]) => number): boolean {
+  const { windowIntegral } = require('./quadrature.ts');
+  const WIDE = 1e-1, NARROW = 1e-8;
+  const ends: Array<[number, number, number, number]> = [
+    [1 - WIDE, 1, 1 - NARROW, 1],
+    [0, WIDE, 0, NARROW],
+  ];
+  for (const [lo0, hi0, lo1, hi1] of ends) {
+    const wide = Math.abs(windowIntegral(f, lo0, hi0));
+    const narrow = Math.abs(windowIntegral(f, lo1, hi1));
+    if (narrow !== 0 && !(narrow <= 1e-4 * wide)) return false;
+  }
+  return true;
+}
+
+// Recognise `normalize(weighted(w, <scalar probability leaf>))` with a
+// θ-INDEPENDENT `w`, and resolve its normalizer deterministically by the leaf's
+// own inverse-CDF substitution:
+//
+//     Z = ∫ w(x) dB(x) = ∫₀¹ w(F_B⁻¹(u)) du
+//
+// evaluated by adaptive quadrature over the unit interval.
+//
+// WHY THIS ARM EXISTS. Without it this shape fell through to the materialise
+// fallback at the bottom of `resolveNormalizeMasses`, which bakes −log Ẑ from
+// the inner measure's TRACKED `logTotalmass` — for a `weighted` parent,
+// log((1/N) Σᵢ w(xᵢ)) over the N = `ctx.sampleCount` atoms of the base's own
+// ensemble. That is a plain importance-sampling estimate of Z: it moves with the
+// session seed, it moves with `sampleCount`, and its accuracy knob is therefore
+// whatever the caller happened to ask the SAMPLER for. Measured on
+// `normalize(weighted(fn(exp(_)), Normal(0, 1)))`, whose Z = e^{1/2} is exact:
+// the implied log Ẑ ran 1.099 (N = 1) to 0.494 (N = 100000) against 0.5, and it
+// was identical at every `marginalizationCount` — the knob never reaches this
+// path. §06 makes Z = totalmass(M) a deterministic integral, and the density
+// rule "logdensityof(normalize(M), x) = logdensityof(M, x) − log Z" fixes the
+// LEVEL and not just the shape, so a seed-dependent divisor is a wrong number
+// rather than noise: it biases `totalmass` and every model comparison built on
+// it.
+//
+// This is the sibling of `weightedLebesgueQuadLogZ` (#322), which replaced the
+// same Monte-Carlo bake for a `Lebesgue(box)` base.
+//
+// WHY THE INVERSE CDF AND NOT `axisMap`. `axisMap`'s change-of-variables would
+// need the base's density in the integrand, and its `atanh` map for an unbounded
+// axis stretches the tail faster than a heavy-tailed base's density decays: the
+// mapped integrand is then unbounded at the endpoint for a perfectly ordinary
+// measure — a flat weight over `Cauchy` already does it — which no endpoint test
+// can tell apart from a real divergence. `F⁻¹` instead cancels the base density
+// exactly, so the integrand is `w` alone and is flat for a constant weight over
+// ANY base. An unbounded endpoint then means the WEIGHT is unbounded, which is
+// the condition worth testing. It also fixes the accepted set at
+// `inverse-cdf.hasQuantile`: a base outside that ladder, a discrete leaf, and a
+// `Uniform` (whose `support` kwarg is a set, so `asScalarFactor` declines it)
+// all fall through to the pre-existing route unchanged.
+//
+// A θ-DEPENDENT weight also returns null and keeps the materialise fallback: Z
+// is then per-θ, and a per-θ expression for a probability-leaf base is not
+// available — crn-normalize covers only a Lebesgue box. That shape is the
+// remaining gap, recorded in flatppl-dev/measure-algebra-audit.md.
+function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
+  const inner = node.args && node.args[0];
+  if (!inner || inner.kind !== 'call' || inner.op !== 'weighted'
+      || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
+  const fn = inner.args[0];
+  if (!fn || fn.kind !== 'call' || fn.op !== 'functionof'
+      || !Array.isArray(fn.params) || fn.params.length !== 1 || !fn.body) return null;
+  // The base must be a closed scalar leaf whose parameters are all numbers. A
+  // θ-dependent PARAMETER would make Z per-θ just as a θ-dependent weight does,
+  // and `asScalarFactor` with no theta resolves only literals, so it declines.
+  const base = asScalarFactor(inner.args[1], null);
+  if (!base) return null;
+  const invcdf = require('./inverse-cdf.ts');
+  if (!invcdf.hasQuantile(base.kernel)) return null;
+  const weightFn = { paramNames: [fn.params[0]], body: fn.body };
+  const env = weightedFixedWeightEnv(weightFn, ctx);
+  if (env == null) return null;                      // θ-dependent weight
+  if (ctx && ctx.moduleRegistry) env.__moduleRegistry = ctx.moduleRegistry;
+  const samplerLib = require('./sampler.ts');
+  const { adaptiveCubature } = require('./quadrature.ts');
+  // A non-finite or non-positive weight contributes 0, matching
+  // `makeIntegrandND`: §06's normalizer integrates a non-negative weight, and a
+  // weight that goes negative off its intended support must not corrupt the
+  // quadrature.
+  const integrand = (u: number[]): number => {
+    env[weightFn.paramNames[0]] = invcdf.quantile(base.kernel, u[0], base.input);
+    const w = +samplerLib.evaluateExpr(weightFn.body, env);
+    return Number.isFinite(w) && w > 0 ? w : 0;
+  };
+  if (!_endpointContributionShrinks(integrand)) {
+    throw new Error('density: normalize(weighted(w, ' + base.kernel + ')) — the weight does '
+      + 'not decay against this base measure, so Z = ∫ w dB has no finite value; spec §06 '
+      + 'leaves normalize undefined when Z is zero or infinite');
+  }
+  const res = adaptiveCubature(integrand, 1, { tol: NORMALIZE_QUAD_TOL });
+  if (!(res.Z > 0)) {
+    throw new Error('density: normalize(weighted(w, ' + base.kernel + ')) — the normalizer '
+      + 'Z = ∫ w dB is ' + res.Z + '; spec §06 leaves normalize undefined when Z is zero '
+      + 'or infinite');
+  }
+  // The request was NORMALIZE_QUAD_TOL, so a returned rel-err four orders above
+  // it means the adaptive loop hit its eval cap rather than converged. Refuse:
+  // the pushfwd engine contract states the doctrine for the whole density
+  // surface — "engines do not silently substitute heuristics: … succeeds with
+  // closed-form math or fails loudly".
+  const relErr = res.err / res.Z;
+  /* c8 ignore start -- backstop with no witness: the endpoint test above already
+     rejects every divergent integrand found so far, so reaching this gate needs a
+     CONVERGENT weight the adaptive loop cannot resolve to 1e-10 inside its eval
+     cap, which no corpus or constructed case has produced. Kept rather than
+     dropped: without it a cap-truncated Ẑ would be returned as if converged. */
+  if (relErr > 1e-6) {
+    throw new Error('density: normalize(weighted(w, ' + base.kernel + ')) — adaptive '
+      + 'quadrature of Z = ∫ w dB did not converge (rel-err ' + relErr.toExponential(2)
+      + ' after ' + res.evals + ' evals, tolerance ' + NORMALIZE_QUAD_TOL + ')');
+  }
+  /* c8 ignore stop */
+  return Math.log(res.Z);
 }
 
 // =====================================================================
@@ -1496,6 +1644,17 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
       node.fromNormalize = true;
       continue;
     }
+    // A θ-INDEPENDENT weight over a continuous scalar probability LEAF (not a
+    // Lebesgue box): Z = ∫ w dB is one deterministic quadrature, so take it
+    // instead of the seeded importance-sampling estimate the materialise
+    // fallback below reads off the ensemble's tracked logTotalmass.
+    const leafLogZ = weightedLeafQuadLogZ(node, ctx);
+    if (leafLogZ != null) {
+      node.op = 'logweighted';
+      node.args = [{ kind: 'lit', value: -leafLogZ }, node.args[0]];
+      delete node.massFrom;
+      continue;
+    }
     needMaterialise.push(node);
   }
   if (needMaterialise.length === 0) return Promise.resolve(measureIR);
@@ -1706,4 +1865,5 @@ module.exports = {
   weightedBaseWeightFn,
   resolveTruncateNormalizers,
   deriveRegionOpts,
+  weightedLeafQuadLogZ,
 };
