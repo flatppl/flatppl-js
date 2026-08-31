@@ -4349,6 +4349,47 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return ir;
   }
 
+  /**
+   * Refuse a `rowstack` / `colstack` call whose positional-argument count is
+   * not one. §07 "Array and table operations" gives both rows the single
+   * argument `vs` and spells its domain out twice — the table's Domains cell
+   * reads "vector of equal-length vectors", and the entry says "The argument
+   * `vs` is a vector of vectors, all of the same length" — so a vararg
+   * spelling has no reading at all.
+   *
+   * Every other fixed-arity row in that table already refuses its own vararg
+   * form through `inferGenericCall`'s count check. These two do not reach it:
+   * they are intercepted by `inferRowstack` for the static-shape read, which
+   * returned `deferred` on any other count and let the call through. The
+   * runtime `ARITH_OPS.rowstack` takes one JS parameter and ignores the rest,
+   * so `rowstack(a, b)` answered with an empty 0x0 matrix — a silent wrong
+   * answer, and the shape a §03 matrix consumer then multiplies by.
+   *
+   * A zero-positional call lands here too, which is where the KEYWORD
+   * spelling `rowstack(vs = …)` arrives. §04 "All built-in ordinary callables
+   * … accept both positional and keyword arguments" makes that spelling
+   * legal, but no ordinary §07 row supports it in this engine yet — `zeros`,
+   * `reverse`, `tile` and the rest all refuse it in `inferGenericCall` — and
+   * these two answered 0x0 instead. Refusing keeps them with their siblings;
+   * the shared gap is recorded in flatppl-dev/TODO-flatppl-js.md.
+   *
+   * One vararg spelling never reaches here: a SCALAR first argument —
+   * `rowstack(1, 2)` — is refused earlier by `_refuseBareCollectionDomainCall`,
+   * which is sited before the op switch because it covers the whole §07
+   * collection-domain table. That refusal cites the same §07 row, so the call
+   * is located and quoted either way.
+   */
+  function refuseStackArity(expr: any, got: number) {
+    const head = expr.op;
+    const message = head + ': spec §07 "Array and table operations" gives `'
+      + head + '` one argument, `vs` — "The argument `vs` is a vector of '
+      + 'vectors, all of the same length" — got ' + got + ' positional '
+      + 'argument(s); pass the vectors as one vector of vectors, as in `'
+      + head + '([[1, 2, 3], [4, 5, 6]])`';
+    diagnostics.push({ severity: 'error', message, loc: expr.loc });
+    return T.failed(head + ' arity');
+  }
+
   // rowstack(vector_of_vectors) / colstack(vector_of_vectors). When
   // the input is an inline vector(vector(...), vector(...), ...)
   // literal, both dims are static — emit the precise [m, n] shape.
@@ -4356,7 +4397,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // shape is the same since both axes are dense real.)
   function inferRowstack(expr: any, scopes: any) {
     const args = expr.args || [];
-    if (args.length !== 1) return T.deferred();
+    if (args.length !== 1) return refuseStackArity(expr, args.length);
     const outerIR = args[0];
     // Inline literal? Read m = outer length, n = inner length(0).
     if (outerIR && outerIR.kind === 'call' && outerIR.op === 'vector'
