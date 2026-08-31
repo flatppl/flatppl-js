@@ -390,35 +390,202 @@ test('the folded weights leave the θ-marginal untilted', async () => {
 });
 
 // =====================================================================
-// WILL-FLIP — pooled masses one operator away from `normalize`
+// A LATENT MIXING WEIGHT — the superpose lift's pooled mass
 // =====================================================================
-// Asserted TIED TO THE FAILURE MODE, so it goes red the moment its defect is
-// fixed. Not fixable by a divisor at `matNormalize`: the parent's atoms reach it
-// already pooled. Tracked in flatppl-dev/TODO-flatppl-js.md and
-// measure-algebra-audit.md.
 
-test('[WILL-FLIP] a LATENT mixing weight is pooled by the superpose lift',
+// Beta(2,5) variance 10/392, and the mixture's covariance oracle.
+const VAR_P = 0.025510204081632654;
+const COV_ORACLE = -10 * VAR_P;   // −0.2551020408
+// Sampling error on cov at N = 60000: 400 replicate ensembles of the closed-form
+// generative model (p ~ Beta(2,5); component 0 with probability p) gave
+// sd = 0.00313, so 0.012 is a ~3.8σ band.
+const COV_BAND = 0.012;
+
+test('a LATENT mixing weight tilts each atom at its own p_i', async () => {
+  // The canonical latent-weight mixture, §06 normalize: "To build a normalized
+  // mixture distribution, use normalize(superpose(weighted(w1, M1),
+  // weighted(w2, M2)))". Here Z(p) = p + (1 − p) = 1, so the MASS is constant
+  // and only the per-atom mixing proportion is at stake: atom i must mix at
+  // p_i, giving E[y | p] = 10(1 − p) and therefore cov(p, y) = −10 · Var(p).
+  //
+  // THE DEFECT this pins. matSuperpose SIR-lifted every parent whose per-atom
+  // weights were non-uniform, which replaced p_i with the parent's POOLED total
+  // mass — every atom mixed at E[p] and p came out INDEPENDENT of y
+  // (cov = −0.003, three sampling errors from zero). The y-marginal is right
+  // either way (it is linear in p), which is why only the covariance sees this.
+  const r = await joint(H
+    + 'p ~ Beta(alpha = 2.0, beta = 5.0)\n'
+    + 'q = 1.0 - p\n'
+    + 'm = normalize(superpose(weighted(p, Normal(mu = 0.0, sigma = 1.0)), '
+    + 'weighted(q, Normal(mu = 10.0, sigma = 1.0))))\n'
+    + 'y ~ m\n', N, 'p');
+  assert.ok(Math.abs(r.varT - VAR_P) < 2e-3,
+    `Var(p) = ${r.varT}, Beta(2,5) variance ${VAR_P}`);
+  assert.ok(Math.abs(r.cov - COV_ORACLE) < COV_BAND,
+    `cov(p, y) = ${r.cov}, oracle −10·Var(p) = ${COV_ORACLE}`);
+  assert.ok(Math.abs(r.cov) > 0.1,
+    `cov(p, y) = ${r.cov} is the POOLED value — p is independent of y again`);
+});
+
+test('the mixing weight leaves the p- and y-marginals where they were',
   async () => {
-    // The canonical latent-weight mixture, §06 normalize: "To build a
-    // normalized mixture distribution, use normalize(superpose(weighted(w1, M1),
-    // weighted(w2, M2)))". Here Z(p) = p + (1 − p) = 1, so the MASS is constant
-    // and only the per-atom mixing proportion is at stake: atom i must mix at
-    // p_i, giving E[y | p] = 10(1 − p) and therefore
-    //   cov(p, y) = −10 · Var(p) = −0.2551020408   (Beta(2,5): Var = 10/392)
-    // matSuperpose instead SIR-lifts a parent whose per-atom weights are
-    // non-uniform (materialiser.ts, the `lifted` map), which replaces p_i with
-    // the parent's pooled total mass — so every atom mixes at E[p] and p comes
-    // out INDEPENDENT of y. The y-marginal is right (it is linear in p), which
-    // is why only the covariance sees this.
+    // The moments that must NOT move, and the reason this defect stayed hidden:
+    // E[p] = 2/7 is the Beta prior, and E[y] = 10 · E[1 − p] = 50/7 is LINEAR in
+    // p, so the pooled lift got both right. A fix validated on means alone
+    // proves nothing here.
     const r = await joint(H
       + 'p ~ Beta(alpha = 2.0, beta = 5.0)\n'
       + 'q = 1.0 - p\n'
       + 'm = normalize(superpose(weighted(p, Normal(mu = 0.0, sigma = 1.0)), '
       + 'weighted(q, Normal(mu = 10.0, sigma = 1.0))))\n'
       + 'y ~ m\n', N, 'p');
-    assert.ok(Math.abs(r.varT - 0.0255102041) < 2e-3,
-      `Var(p) = ${r.varT}, Beta(2,5) variance 0.0255102041`);
-    assert.ok(Math.abs(r.cov) < 0.02,
-      `THE DEFECT IS FIXED — cov(p, y) = ${r.cov} is no longer 0. Re-tag this test `
-      + 'GREEN and assert cov ≈ −10·Var(p) = −0.2551020408.');
+    assert.ok(Math.abs(r.et - 2 / 7) < 0.005, `E[p] = ${r.et}, prior mean ${2 / 7}`);
+    assert.ok(Math.abs(r.ey - 50 / 7) < 0.05, `E[y] = ${r.ey}, oracle ${50 / 7}`);
+    // Z(p) = 1 at every atom, so the mixture's per-atom masses are equal and
+    // `normalize` leaves the ensemble unweighted.
+    assert.ok(Math.abs(r.n_eff - N) < 1e-6,
+      `the atoms must stay equally weighted, n_eff ${r.n_eff}`);
+  });
+
+test('a θ-dependent MASS inside the superpose gets a per-atom divisor',
+  async () => {
+    // The same shape with the mixture's MASS moving too: components weighted θ
+    // and 1 over θ ~ Uniform(0, 4), so Z(θ) = θ + 1 and the mixing proportion
+    // on N(0,1) is θ/(θ+1). §06 normalize makes every θ-slice a probability
+    // measure, so
+    //   E[y] = 10 · E[1/(1 + θ)] = (10/4)·ln 5 = 4.0235947811
+    // and the θ-marginal stays the prior mean 2.0. Both closed form.
+    //
+    // Two failure modes are excluded. Pooling atom i's slice mass into the
+    // ensemble average gives the mixing proportion at E[θ], so E[y] = 10/3 —
+    // measured 3.3478 before this fix. Carrying the per-atom mass without a
+    // per-atom divisor at `normalize` instead leaves the residue Z(θ_i)/E[Z] on
+    // the atom weights and tilts E[θ] to 2.4477. Sampling errors at this count
+    // (400 replicate ensembles of the closed-form generative model) are 0.020 on
+    // E[y] and 0.0047 on E[θ], so both bands below are ~4σ.
+    const r = await joint(H
+      + 'theta ~ Uniform(support = interval(0.0, 4.0))\n'
+      + 'm = normalize(superpose(weighted(theta, Normal(mu = 0.0, sigma = 1.0)), '
+      + 'weighted(1.0, Normal(mu = 10.0, sigma = 1.0))))\n'
+      + 'y ~ m\n');
+    assert.ok(Math.abs(r.ey - 4.0235947811) < 0.08,
+      `E[y] = ${r.ey}, oracle 10·E[1/(1+θ)] = 4.0235947811`);
+    assert.ok(Math.abs(r.ey - 10 / 3) > 0.3,
+      `E[y] = ${r.ey} is the POOLED 10/3 — the mixing proportion sits at E[θ]`);
+    assert.ok(Math.abs(r.et - 2.0) < 0.02, `E[θ] = ${r.et}, prior mean 2.0`);
+    assert.ok(Math.abs(r.n_eff - N) < 1e-6,
+      `the per-atom divisor must leave the atoms equally weighted, n_eff ${r.n_eff}`);
+  });
+
+test('REIFIED components inline to their leaves, so the divisor is exact',
+  async () => {
+    // The same mixture over `lawof(u)` / `lawof(w)`. `expandMeasureIR` inlines a
+    // reified law to the leaf it reifies, so `totalMassExpr` still sees two
+    // probability components and Z(p) = p + (1 − p) is exact. The covariance
+    // oracle is unchanged, which is the point: reifying the components must not
+    // move the mixture.
+    const r = await joint(H
+      + 'p ~ Beta(alpha = 2.0, beta = 5.0)\n'
+      + 'q = 1.0 - p\n'
+      + 'u ~ Normal(mu = 0.0, sigma = 1.0)\n'
+      + 'w ~ Normal(mu = 10.0, sigma = 1.0)\n'
+      + 'm = normalize(superpose(weighted(p, lawof(u)), weighted(q, lawof(w))))\n'
+      + 'y ~ m\n', N, 'p');
+    assert.ok(Math.abs(r.cov - COV_ORACLE) < COV_BAND,
+      `cov(p, y) = ${r.cov}, oracle −10·Var(p) = ${COV_ORACLE}`);
+    assert.ok(Math.abs(r.ey - 50 / 7) < 0.05, `E[y] = ${r.ey}, oracle ${50 / 7}`);
+  });
+
+// =====================================================================
+// WILL-FLIP — a superposition counts Σ w_i and drops each component's own mass
+// =====================================================================
+// Found while looking for a shape that reaches `_perAtomMassExpr`'s
+// no-mass-expression arm. A SEPARATE and OLDER defect than this file's subject:
+// it is in the superposition's own mass accounting, not in any divisor, and it
+// hits the density and sampling routes CONSISTENTLY — they agree with each other
+// and both disagree with §06. Tracked in flatppl-dev/measure-algebra-audit.md.
+//
+// §06 `truncate`: "restricts the support of measure M to the set S:
+// ν(A) = M(A ∩ S). Does not normalize automatically." So
+//   Z_t = totalmass(truncate(Normal(0,1), [−1,1])) = 2Φ(1) − 1 = 0.6826894921,
+// and §06 `superpose`'s "ν(A) = M₁(A) + M₂(A) + …" makes the superposition's mass
+// Σ_i w_i·Z_i, not Σ_i w_i.
+
+const Z_TRUNC = 0.6826894921370859;          // 2Φ(1) − 1
+const TRUNC = 'truncate(Normal(mu = 0.0, sigma = 1.0), interval(-1.0, 1.0))';
+
+test('[WILL-FLIP] a superposition drops a component\'s own mass, on BOTH routes',
+  async () => {
+    // CONSTANT weights, so the whole thing is exact and no band enters.
+    //   Z = 0.3·Z_t + 0.7 = 0.9048068476
+    //   density(y) = [0.3·φ(y)·1(|y| ≤ 1) + 0.7·φ(y − 10)] / Z
+    //     at y = 0.5   → −2.147877551448541
+    //     at y = 10.0  → −1.1755796910613374
+    //   P(component 0) = 0.3·Z_t / Z = 0.2263542193, so E[y] = 10·0.7/Z = 7.7364578067
+    // The engine scores −2.2479113375299518 and −1.2756134771427479 — each exactly
+    // log Z = −0.1000337860820677 BELOW the oracle, the same offset at both points, so
+    // it is a missing divisor and not a wrong shape: `normalize` divided by
+    // 0.3 + 0.7 = 1. The sampler mixes at 0.3 : 0.7 for the same reason and
+    // reports E[y] = 6.9938 against the mass-ignored 7.0.
+    const { proc, ctx } = ctxFor(H
+      + 'm = normalize(superpose(weighted(0.3, ' + TRUNC + '), '
+      + 'weighted(0.7, Normal(mu = 10.0, sigma = 1.0))))\n'
+      + 'y ~ m\n'
+      + 'lp = logdensityof(m, 0.5)\n'
+      + 'lp2 = logdensityof(m, 10.0)\n', N);
+    assert.equal(proc.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+
+    const logZ = Math.log(0.3 * Z_TRUNC + 0.7);
+    const scored = [];
+    for (const nm of ['lp', 'lp2']) {
+      const v: any = await ctx.getMeasure(nm);
+      scored.push(v.samples ? v.samples[0] : v.value.data[0]);
+    }
+    for (const [i, want] of [[0, -2.147877551448541], [1, -1.1755796910613374]] as [number, number][]) {
+      assert.ok(Math.abs(scored[i] - (want + logZ)) < 1e-12,
+        `THE DEFECT IS FIXED — logdensityof #${i} = ${scored[i]} is no longer `
+        + `${want} + log Z. Re-tag this test GREEN and assert ${want}.`);
+    }
+    // The SAME offset at both points is what makes this a missing Z rather than
+    // a mis-scored component.
+    assert.ok(Math.abs((scored[0] - -2.147877551448541)
+                       - (scored[1] - -1.1755796910613374)) < 1e-12,
+      'the two offsets must be identical for the diagnosis to hold');
+
+    const y: any = await ctx.getMeasure('y');
+    let s = 0;
+    for (let i = 0; i < N; i++) s += y.samples[i];
+    const ey = s / N;
+    assert.ok(Math.abs(ey - 7.0) < 0.05,
+      `THE DEFECT IS FIXED — E[y] = ${ey} is no longer the mass-ignored 7.0. `
+      + 'Re-tag this test GREEN and assert 7.7364578067.');
+    assert.ok(Math.abs(ey - 7.7364578067) > 0.3,
+      `E[y] = ${ey} is the MASS-AWARE value — the defect is fixed`);
+  });
+
+test('a truncate component reaches the pooled-divisor fallback without refusing',
+  async () => {
+    // The one spelling that reaches `_perAtomMassExpr`'s "no closed-form Σ_i w_i"
+    // arm with θ-DEPENDENT weights: `totalMassExpr` has no `truncate` arm, so
+    // there is no expression to divide by. It must return the POOLED divisor —
+    // the number this shape already had — and NOT refuse.
+    //
+    // The numbers it produces are the mass-ignored ones (E[y] = 50/7,
+    // cov = −10·Var(p)) for the defect above, so they are asserted TIED TO THE
+    // FAILURE MODE here too. The mass-aware oracles are E[y] = 7.7783296397 and
+    // cov(p, y) = −0.2196964652 (scipy.quad over the Beta(2,5) prior). Sampling
+    // errors from 300 replicate ensembles of the mass-ignored generative model:
+    // 0.0186 on E[y], 0.00289 on cov.
+    const r = await joint(H
+      + 'p ~ Beta(alpha = 2.0, beta = 5.0)\n'
+      + 'q = 1.0 - p\n'
+      + 'm = normalize(superpose(weighted(p, ' + TRUNC + '), '
+      + 'weighted(q, Normal(mu = 10.0, sigma = 1.0))))\n'
+      + 'y ~ m\n', N, 'p');
+    assert.ok(Number.isFinite(r.ey), 'the shape must sample, not refuse');
+    assert.ok(Math.abs(r.ey - 50 / 7) < 0.1,
+      `E[y] = ${r.ey}; the mass-ignored 50/7 is what this shape gives until the `
+      + 'component-mass defect above is fixed, then it is 7.7783296397');
+    assert.ok(Math.abs(r.cov - COV_ORACLE) < 0.015,
+      `cov(p, y) = ${r.cov}; mass-aware it is −0.2196964652`);
   });

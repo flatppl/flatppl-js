@@ -292,6 +292,34 @@ function _addWeightedLogSamples(
   }
 }
 
+// Do a measure's per-atom log weights carry a variate-INDEPENDENT per-atom MASS
+// factor and nothing else? §06 `weighted` admits both weight kinds — "f is a
+// non-negative weight (a constant or a function of the variate x of M)" — and
+// the two are not interchangeable for a consumer that needs POSITIONS:
+//
+//   - a weight that moves with the VARIATE is an importance weight. The atom
+//     positions do not yet represent the law, so matSuperpose's lift must
+//     SIR-resample to bake the density into them.
+//   - a weight that moves only with a LATENT is atom i's slice MASS. The
+//     positions already represent that slice's law, and the number belongs to
+//     atom i alone — pooling it across atoms is what decoupled a latent mixing
+//     weight from the variate.
+//
+// Absence of the marker means UNKNOWN, which keeps every other weight producer
+// on the SIR path it already had.
+function _weightsAreAtomMassOnly(m: any): boolean {
+  if (m && m._atomMassWeights === true) return true;
+  const lw = m && m.logWeights;
+  if (!lw || lw.length === 0) return true;
+  let mn = Infinity;
+  let mx = -Infinity;
+  for (let i = 0; i < lw.length; i++) {
+    if (lw[i] < mn) mn = lw[i];
+    if (lw[i] > mx) mx = lw[i];
+  }
+  return mx - mn < 1e-9;
+}
+
 function matWeighted(d: DerivationWeighted, ctx: any) {
   // weighted(w, base) / logweighted(lw, base): shift each parent
   // atom's logWeight by log(w_i) (or lw_i directly). totalmass scales
@@ -311,11 +339,15 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
   // record measure (the kernel body) and the per-atom log-weight is
   // a single scalar from `logdensityof(marginal, x)`.
   return ctx.getMeasure(d.from).then((parent: any) => {
+    // A latent-only weight over a parent that carries no variate-dependent
+    // spread leaves the atom positions representing their own slice's law, so
+    // the result's weight spread is pure per-atom mass.
+    const massOnly = !d.isVariateWeight && _weightsAreAtomMassOnly(parent);
     // N-D box base (matLebesgueBox): vector atoms, so the generic path below
     // — which assumes one scalar per atom — would read N·k "atoms" and drop
     // `dims`. Handled separately, before any of that.
     if (parent && Array.isArray(parent._boxAxisColumns)) {
-      return _matWeightedOverBox(d, parent, ctx);
+      return _matWeightedOverBox(d, parent, ctx, massOnly);
     }
     const isRecord = parent && parent.shape === 'record' && parent.fields;
     const isTuple  = parent && parent.shape === 'tuple'  && parent.elems;
@@ -336,6 +368,7 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
               { logTotalmass, n_eff: (typeof parent.n_eff === 'number' ? parent.n_eff : N) })
           : Object.assign(empirical.tupleMeasure(parent.elems, weights),
               { logTotalmass, n_eff: (typeof parent.n_eff === 'number' ? parent.n_eff : N) });
+        if (massOnly) out._atomMassWeights = true;
         return out;
       };
       if (d.weightIR) {
@@ -410,19 +443,23 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
         const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
         const lTM = parentLTM + empirical.logSumExp(w);
         const nEff = empirical.effectiveSampleSize({ samples: lifted.samples, logWeights: w });
-        return scalarMeasureN(lifted.samples,
+        const out: any = scalarMeasureN(lifted.samples,
           { logWeights: w, logTotalmass: lTM, n_eff: nEff });
+        if (massOnly) out._atomMassWeights = true;
+        return out;
       });
     }
     // Constant fast path: orchestrator pre-computed d.logShift (a
     // uniform per-atom additive shift). totalmass simply scales.
     for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] + d.logShift;
     const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
-    return scalarMeasureN(lifted.samples, {
+    const out: any = scalarMeasureN(lifted.samples, {
       logWeights: w,
       logTotalmass: parentLTM + d.logShift,
       n_eff: (typeof parent.n_eff === 'number') ? parent.n_eff : N,
     });
+    if (massOnly) out._atomMassWeights = true;
+    return out;
   });
 }
 
@@ -443,7 +480,7 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
 //
 // The atom buffer and `dims` pass through untouched: reweighting changes the
 // measure's weights, never its variate shape.
-function _matWeightedOverBox(d: any, parent: any, ctx: any) {
+function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
   const columns: Float64Array[] = parent._boxAxisColumns;
   const k = columns.length;
   const N = ctx.sampleCount;
@@ -463,6 +500,7 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any) {
     });
     m.dims = parent.dims;
     m._boxAxisColumns = columns;
+    if (massOnly) m._atomMassWeights = true;
     return m;
   };
 
@@ -563,12 +601,53 @@ function _perAtomMassExpr(name: string, ctx: any): any | null {
   if (!ir || ir.kind !== 'call' || ir.op !== 'normalize'
       || !Array.isArray(ir.args) || ir.args.length !== 1) return null;
   const inner = ir.args[0];
-  if (!inner || inner.kind !== 'call'
-      || (inner.op !== 'weighted' && inner.op !== 'logweighted')
-      || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
-  if (!_weightIsThetaDependent(inner, ctx)) return null;
+  /* c8 ignore start -- defensive: `expandMeasureIR` of a one-argument
+     `normalize` always yields a call node for the inner measure */
+  if (!inner || inner.kind !== 'call') return null;
+  /* c8 ignore stop */
+  const isW = (inner.op === 'weighted' || inner.op === 'logweighted')
+    && Array.isArray(inner.args) && inner.args.length === 2;
+  // §06 normalize's own recommended mixture spelling puts the θ-dependent
+  // weights INSIDE the superpose — "To build a normalized mixture distribution,
+  // use normalize(superpose(weighted(w1, M1), weighted(w2, M2)))" — and §06
+  // superpose makes its mass "ν(A) = M₁(A) + M₂(A) + …", i.e. Σ_i w_i over
+  // probability components, which is normalize-mass's superpose arm. matSuperpose
+  // now emits atom i's own slice mass, so the divisor has to come from here.
+  // A superpose reaches here as the `select{branches}` lowering with no
+  // logweights and no selector, or as a bare `superpose{args}` — the same two
+  // forms normalize-mass's own arm recognises. A select carrying explicit
+  // logweights or a selectorName is not a raw additive superposition.
+  let supComps: any = null;
+  if (inner.op === 'select'
+      && inner.logweights == null && inner.selectorName == null) {
+    supComps = inner.branches;
+  /* c8 ignore start -- `expandMeasureIR` gives a superpose derivation the
+     `select` form, so the bare `superpose{args}` node never reaches this call
+     site; the arm is kept because normalize-mass's own recogniser accepts it
+     and the two must not drift on what a superposition looks like */
+  } else if (inner.op === 'superpose') {
+    supComps = inner.args;
+  }
+  /* c8 ignore stop */
+  const isSup = Array.isArray(supComps) && supComps.length > 0;
+  if (!isW && !isSup) return null;
+  const wComps = (isW ? [inner] : supComps).filter((c: any) =>
+    c && c.kind === 'call' && (c.op === 'weighted' || c.op === 'logweighted')
+    && Array.isArray(c.args) && c.args.length === 2);
+  if (!wComps.some((c: any) => _weightIsThetaDependent(c, ctx))) return null;
   const expr = totalMassExpr(inner);
   if (expr != null) return expr;
+  // A superpose with a component `totalMassExpr` cannot express — a nested
+  // `normalize`, a `truncate`, an `iid` — has no closed-form Σ_i w_i. (A `lawof`
+  // component does NOT land here: `expandMeasureIR` inlines it to its leaf.)
+  // Return null rather than refuse: null is the POOLED divisor, which is what
+  // this shape already had, and it is the RIGHT number wherever the component
+  // weights sum to a constant — a mixing weight and its complement, every such
+  // spelling in the corpus. Refusing would reject shapes that sample correctly.
+  // Where the sum genuinely moves with a latent the pooled divisor leaves the
+  // usual residue; that is the open shape recorded in
+  // flatppl-dev/measure-algebra-audit.md, now narrowed to non-leaf components.
+  if (isSup) return null;
   // A θ-dependent mass with no expression to divide by. The pooled divisor
   // would return a measure whose θ-marginal is the prior TILTED by Z(θ), and
   // spec §06 `normalize`: "given a measure M with finite total mass
@@ -673,11 +752,15 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
         // divisor changes them, so the parent's own n_eff no longer describes
         // this ensemble.
         const nEff = empirical.effectiveSampleSize({ logWeights: w });
-        return isRecord
+        const out: any = isRecord
           ? Object.assign(empirical.recordMeasure(parent.fields, w),
               { logTotalmass: 0, n_eff: nEff })
           : Object.assign(empirical.tupleMeasure(parent.elems, w),
               { logTotalmass: 0, n_eff: nEff });
+        // A pooled shift does not introduce variate dependence, so the parent's
+        // classification carries through.
+        if (parent._atomMassWeights) out._atomMassWeights = true;
+        return out;
       });
     }
     const lifted = empirical.materialiseUniform(parent);
@@ -702,6 +785,9 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
       // `dims` is dropped and every consumer reads N·k scalar atoms.
       if (parent.dims) out.dims = parent.dims;
       if (parent._boxAxisColumns) out._boxAxisColumns = parent._boxAxisColumns;
+      // A pooled shift does not introduce variate dependence, so the parent's
+      // classification carries through.
+      if (parent._atomMassWeights) out._atomMassWeights = true;
       return out;
     });
   });
@@ -1696,6 +1782,20 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       // Equal-weight parent (positions already represent its law), or a repeat
       // block (K>1, per-atom correspondence handled below) → keep as-is.
       if (mx - mn < 1e-9 || K !== 1 || u.samples.length !== sc) return u;
+      // A parent whose spread is a variate-INDEPENDENT per-atom MASS is atom
+      // i's own slice mass, not an importance weight: its positions already
+      // represent that slice's law, and §06's recommended mixture spelling —
+      // "To build a normalized mixture distribution, use
+      // normalize(superpose(weighted(w1, M1), weighted(w2, M2)))" — puts the
+      // per-atom MIXING PROPORTION there. Baking it into positions replaces
+      // w(θ_i) with the pooled E[w], so the selection below mixes every atom at
+      // E[w] and the latent decouples from the variate: Beta(2,5) mixing
+      // N(0,1) with N(10,1) measured cov(p, y) ≈ 0 against the closed-form
+      // −10·Var(p) = −0.2551020408. Leave those weights on the atom and let the
+      // per-index selection read them.
+      // The flag alone, not `_weightsAreAtomMassOnly`: the uniform case already
+      // returned above.
+      if (p && p._atomMassWeights === true) return u;
       const idx = empirical.systematicResample(lw, sc, liftPrng);
       const rs = new Float64Array(sc);
       for (let i = 0; i < sc; i++) rs[i] = u.samples[idx[i]];
@@ -1764,16 +1864,49 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     }
 
     // Total mass = sum of parents' masses (unchanged by which atoms the
-    // resampling keeps); resampled atoms are equally weighted.
+    // resampling keeps).
     const totalLogMass = empirical.logSumExp(combinedLogWeights);
-    const perAtom = totalLogMass - Math.log(sc);
     const outW = new Float64Array(sc);
-    outW.fill(perAtom);
+    if (perIndex && K === 1) {
+      // Atom i's own slice mass Σ_p M_p(θ_i), from §06 `superpose`'s
+      // "ν(A) = M₁(A) + M₂(A) + …" applied at atom i. Pooling it instead —
+      // totalLogMass − log(sc), the ensemble AVERAGE — is the same number
+      // whenever the parents are equally weighted (logsumexp of P constants),
+      // so this is bit-for-bit unchanged on every equal-weight and SIR-lifted
+      // parent; it differs exactly where a parent keeps a per-atom mass, and
+      // there the average is the pooled-divisor residue a downstream
+      // `normalize` needs to divide out.
+      //
+      // K > 1 keeps the pooled weight. Under `iid(superpose(…), k)` the k inner
+      // draws of atom b share atom b's parameters, so they share its slice
+      // mass: §06's product measure wants Z(θ_b)^k there, and
+      // `_foldIidBlockLogWeights` refuses to fold a block-constant weight
+      // rather than raise it to the k-th power. Emitting the per-atom mass here
+      // would turn that into a refusal on shapes that sample correctly today
+      // (a mixing weight and its complement, Z ≡ 1 up to float noise), so the
+      // K > 1 gap recorded on the lift above stays as it is.
+      const P = lifted.length;
+      const slot = new Float64Array(P);
+      for (let i = 0; i < sc; i++) {
+        for (let p = 0; p < P; p++) slot[p] = lifted[p].logWeights[i];
+        outW[i] = empirical.logSumExp(slot);
+      }
+    } else {
+      outW.fill(totalLogMass - Math.log(sc));
+    }
+    let wMin = Infinity;
+    let wMax = -Infinity;
+    for (let i = 0; i < sc; i++) {
+      if (outW[i] < wMin) wMin = outW[i];
+      if (outW[i] > wMax) wMax = outW[i];
+    }
     return scalarMeasureN(out, {
       logWeights: outW,
       logTotalmass: totalLogMass,
-      // After systematic resampling the atoms are uniform → n_eff = N.
-      n_eff: sc,
+      // Equal atom weights → n_eff = N exactly, not the estimator's N(1 + ε).
+      n_eff: (wMax - wMin < 1e-12)
+        ? sc
+        : empirical.effectiveSampleSize({ samples: out, logWeights: outW }),
     });
   });
 }
