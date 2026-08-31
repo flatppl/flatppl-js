@@ -985,6 +985,49 @@ function _combineIidAtomWeights(
   return out;
 }
 
+// The weight-carrying fields a RESOLVED-LEAF `iid` inherits from the parameter
+// measures its leaf draw conditions on.
+//
+// §06 `iid` is "the product measure $M^{\otimes N}$", and §06 bind is
+// $(\nu \mathbin{>>=} \kappa)(B) = \int_X \kappa(x)(B)\, d\nu(x)$, which §06
+// `kchain`'s "equivalence with stochastic nodes" gives as `theta ~ M;
+// y ~ K(theta)`. So `iid(Normal(mu = theta, sigma = 1), k)` integrates each
+// coordinate against theta's MEASURE. When theta represents its law by
+// reweighting proposal positions — `normalize(weighted(f, Q))`, whose atoms sit
+// at Q's positions with $f/Z$ in `logWeights` — an `arrayMeasure(samples, dims,
+// null)` rebuild integrates against Q instead: `theta ~ normalize(weighted(x ->
+// exp(x), Normal(0, 1)))` is exactly Normal(1, 1) by conjugacy, and every
+// coordinate of `iid(Normal(mu = theta, sigma = 1), 3)` read Normal(0, 1)'s
+// mean (0.006 / 0.023 / 0.036 against the oracle 1), a full sigma low, with
+// `logWeights` absent.
+//
+// **Once only, not per coordinate.** The parameters are pinned PER ATOM —
+// `collectRefArrays` runs at the parent's N and the worker takes `repeat = k`
+// against length-N param columns, so one parameter draw serves an atom's k
+// inner positions. It is therefore ONE weighting event for the atom and enters
+// the atom's weight ONCE. `_foldIidBlockLogWeights`'s k-block product is for a
+// PER-POSITION weight axis, which this path has none of (`sampleN` and
+// `truncateSampleN` both reply `logWeights: null`, so the draw introduces no
+// event of its own); summing over the block here would raise the shared event
+// to the power k. `propagateLogWeights` is that once-only fold, and it keeps
+// the dedupe contract the rest of the engine relies on: a stream two parameters
+// share counts once, and a single-stream parent is passed forward BY REFERENCE
+// rather than cloned, which is how the independence dedupe recognises it
+// downstream. Same combination `matSample` uses for a non-iid draw.
+function _iidLeafParentOverlay(parents: any[], N: number) {
+  const lw = empirical.propagateLogWeights(parents);
+  return {
+    logWeights: lw,
+    // The parameters' own total mass, to add to whatever the leaf contributes.
+    // `normalize` leaves its weights summing to one, so a draw at a normalized
+    // parameter ensemble still reports mass 0 in log space.
+    logMass: lw ? empirical.logSumExp(lw) : 0,
+    // Read off the resulting weights: a weighted parameter ensemble leaves far
+    // fewer effective atoms than N, so the draw must not report a confident N.
+    n_eff: lw ? empirical.effectiveSampleSize({ logWeights: lw }) : N,
+  };
+}
+
 function matIid(name: string, d: DerivationIid, ctx: any) {
   // iid(M, n, …): N atoms × k inner draws, atom-major packed into
   // one Float64Array. Worker's sampleN takes an optional repeat=k.
@@ -1260,11 +1303,16 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
   const k = d.dims.reduce((p: any, n: any) => p * n, 1);
   const N = ctx.sampleCount;
 
+  // The parameter measures the leaf draw conditions on, for
+  // `_iidLeafParentOverlay`. `measureToRefValue` keeps only their per-atom
+  // positions, so without this collector the weights are unreachable here.
+  const leafParents: any[] = [];
+
   if (resolved.kind === 'truncate') {
     // Truncated leaf: route to truncateSampleN with count = N*k.
     // Output is shape=[N, ...dims] atom-major; the worker returns
     // a flat N*k Float64Array which we wrap directly.
-    return collectRefArrays(resolved.distIR, ctx)
+    return collectRefArrays(resolved.distIR, ctx, leafParents)
       .then((refArrays: any) => ctx.sendWorker({
         type: 'truncateSampleN',
         ir: resolved.distIR,
@@ -1286,17 +1334,23 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         const value = {
           shape: [N | 0].concat(d.dims), data: reply.samples, outerRank: 1,
         };
+        const pw = _iidLeafParentOverlay(leafParents, N);
         return Object.assign(
-          empirical.arrayMeasure(reply.samples, d.dims, null),
+          empirical.arrayMeasure(reply.samples, d.dims, pw.logWeights),
           // logTotalmass scales by k (independent product of k iid
-          // truncated draws — each contributes the same logShift).
-          { value: value, logTotalmass: k * (reply.logShift || 0), n_eff: N },
+          // truncated draws — each contributes the same logShift), plus the
+          // parameter measures' own mass.
+          {
+            value: value,
+            logTotalmass: k * (reply.logShift || 0) + pw.logMass,
+            n_eff: pw.n_eff,
+          },
         );
       });
   }
 
   // Standard sample leaf — sampleN with repeat=k.
-  return collectRefArrays(resolved.distIR, ctx)
+  return collectRefArrays(resolved.distIR, ctx, leafParents)
     .then((refArrays: any) => ctx.sendWorker({
       type: 'sampleN', ir: resolved.distIR, count: N, repeat: k,
       refArrays: refArrays,
@@ -1310,9 +1364,10 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       const value = {
         shape: [N | 0].concat(d.dims), data: reply.samples, outerRank: 1,
       };
+      const pw = _iidLeafParentOverlay(leafParents, N);
       return Object.assign(
-        empirical.arrayMeasure(reply.samples, d.dims, null),
-        { value: value, logTotalmass: 0, n_eff: N },
+        empirical.arrayMeasure(reply.samples, d.dims, pw.logWeights),
+        { value: value, logTotalmass: pw.logMass, n_eff: pw.n_eff },
       );
     });
 }
