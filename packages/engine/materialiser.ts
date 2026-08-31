@@ -1781,6 +1781,60 @@ function _materialiseFactorsIndependent(deps: any[], ctx: any): Promise<any[]> {
 // descriptor density also reads.
 // `shared` / `fixed` inputs need no override (the parent ctx already resolves
 // them via getMeasure / fixedValues). Empty boundary set ⇒ today's path.
+// Carry the FED parents' importance weights onto a CLM body's output.
+//
+// `clm.feedInputs` binds each boundary / shared parent into `refArrays` as a
+// per-atom POSITION column (`measureToRefValue`), and `collectRefArrays`
+// consults that overlay BEFORE `getMeasure` — so the body's own draws never see
+// the parent measures and `matSample`'s parameter-weight fold has nothing to
+// fold. A parent that represents its law by REWEIGHTING proposal positions —
+// `normalize(weighted(f, Q))`, whose atoms sit at Q's positions with $f/Z$ in
+// `logWeights` — therefore had the rest of its law dropped at the feed.
+//
+// §06 `kchain`'s "Equivalence with stochastic nodes" reads `y = kchain(M, K)`
+// as `theta ~ M; y ~ K(theta)`, which §06 "The measure monad" gives as bind,
+// $(\nu \mathbin{\texttt{>>=}} \kappa)(B) = \int_X \kappa(x)(B)\, d\nu(x)$: the
+// kernel integrates against the prior MEASURE, not against the proposal its
+// atoms were drawn from. With `theta ~ normalize(weighted(x -> exp(x),
+// Normal(0, 1)))` (exactly Normal(1, 1) by conjugacy) as the base of
+// `kchain(theta, functionof(Normal(mu = mu, sigma = 1), mu = mu))`, the output
+// measured E[y] = -0.001 against the oracle 1 at 2e5 atoms — Normal(0, 1)'s
+// mean, a full sigma low — with `logWeights` absent and n_eff reporting a
+// confident 200000 where theta's own was 74164.
+//
+// **Once only.** The feed pins one parent draw per atom and the body's kernel
+// is conditionally independent given it, so the parent is ONE weighting event
+// entering the atom's weight ONCE. `propagateLogWeights` is that fold, over the
+// body's own output as well as the parents: it dedupes by reference identity,
+// so a stream two fed inputs share — the usual case, a boundary and the shared
+// latent behind it — counts once, and a single stream is passed forward BY
+// REFERENCE rather than cloned, which is how the dedupe recognises it
+// downstream.
+//
+// The RETAIN branch needs none of this: it walks `ir.body` through the
+// unchanged materialiser with NO feed, so its output IS the body's own measure
+// and the joint walk's `propagateLogWeights` has already folded the fields'
+// weights. Nothing is rebuilt there, so nothing can be dropped.
+function _clmFedParentOverlay(out: any, parents: any[]) {
+  // Nothing fed carries weights: hand the body's own measure back untouched,
+  // so an unweighted chain keeps `logWeights` ABSENT rather than gaining an
+  // all-equal array — the shape the dedupe relies on.
+  if (!empirical.propagateLogWeights(parents)) return out;
+  const lw = empirical.propagateLogWeights([out].concat(parents));
+  // A shallow copy, not a mutation: the body's measure is the value the walk
+  // handed back and may be cached against its own name.
+  return Object.assign({}, out, {
+    logWeights: lw,
+    // Read off the resulting weights, so the mass follows them however many
+    // streams joined. `normalize` leaves its weights summing to one, so a
+    // kernel draw at a normalized prior still reports mass 0 in log space.
+    logTotalmass: empirical.logSumExp(lw),
+    // A weighted prior leaves far fewer effective atoms than N, so the output
+    // must not report a confident N.
+    n_eff: empirical.effectiveSampleSize({ logWeights: lw }),
+  });
+}
+
 function matClm(ir: any, ctx: any): Promise<any> {
   const clm = require('./clm.ts');
   const marginal = !!(ir.reduce && ir.reduce.kind === 'marginal');
@@ -1805,6 +1859,10 @@ function matClm(ir: any, ctx: any): Promise<any> {
   // the sample side (the prior columns aren't part of the output). Mirrors
   // matLogdensityof's feedInputs + extraRefArrays history feed exactly.
   return clm.feedInputs(ir, ctx).then((fed: any) => {
+    // The fed parents whose importance weights the body's output must carry
+    // (see `_clmFedParentOverlay`). The history joint counts once as a whole:
+    // its own `logWeights` already fold its components' via `propagateLogWeights`.
+    const weightParents: any[] = fed.parents.slice();
     const histP = ir.marginalHistoryBody
       ? materialiseMeasureIR(ir.marginalHistoryBody, ctx).then((histM: any) => {
           const comps = histM.elems
@@ -1813,6 +1871,7 @@ function matClm(ir: any, ctx: any): Promise<any> {
             throw new Error('matClm: N-ary kchain history did not materialise '
               + 'to a joint (tuple/record) measure');
           }
+          weightParents.push(histM);
           const ex: Record<string, any> = {};
           for (let i = 0; i < comps.length; i++) {
             ex['s' + i] = shared.measureToRefValue(comps[i], 's' + i, 'matClm');
@@ -1839,7 +1898,8 @@ function matClm(ir: any, ctx: any): Promise<any> {
         _extraRefArrays: extra, _boundaryNames: boundaryNames,
       });
       return shared.pushFixedEnv(child, fed.fixedEnv)
-        .then(() => materialiseMeasureIR(ir.body, child));
+        .then(() => materialiseMeasureIR(ir.body, child))
+        .then((out: any) => _clmFedParentOverlay(out, weightParents));
     });
   });
 }
@@ -2112,6 +2172,54 @@ function _synthSelectorSamples(
   }).then((reply: any) => reply.samples);
 }
 
+// The weight-carrying fields a select's gather inherits from its selector and
+// its branches.
+//
+// §07 sec:functions makes `ifelse(cond, a, b)` return "`a` if `cond` is true,
+// `b` otherwise", so `c ~ Bernoulli(p); y ~ ifelse(c, a, b)` is §06's bind
+// $(\nu \mathbin{\texttt{>>=}} \kappa)(B) = \int_X \kappa(x)(B)\, d\nu(x)$ over
+// the selector measure. When the selector or a branch represents its law by
+// REWEIGHTING proposal positions — `normalize(weighted(f, Q))`, whose atoms sit
+// at Q's positions with $f/Z$ in `logWeights` — a `logWeights: null` gather
+// integrates against Q instead: with `theta ~ normalize(weighted(x -> exp(x),
+// Normal(0, 1)))` (exactly Normal(1, 1) by conjugacy) and `y ~ ifelse(c,
+// Normal(mu = theta, sigma = 1), Normal(mu = theta + 10, sigma = 1))`, y's own
+// ensemble measured E[y] = 4.99 against the oracle 6 at 2e5 atoms, with
+// `logWeights` absent and n_eff reporting a confident 200000 where theta's own
+// was 74164.
+//
+// **Every branch, not just the selected one.** The unselected branches are not
+// dead weight to skip: a branch's `logWeights` is an IMPORTANCE correction on
+// the atom's PARAMETER draws, and those same parameters were drawn once per
+// atom and feed every branch. The target reweights the joint over all of them,
+// so the atom's weight is their joint IS weight — the sum over the INDEPENDENT
+// streams, which is what a gather of only the selected branch's weight would
+// under-count. Summing is also scale-safe: a per-branch gather would rescale
+// the branch masses against each other whenever the streams carry different
+// normalising constants.
+//
+// The branch WEIGHTS are a separate channel and are not double counted here.
+// `_synthSelectorSamples` realises the selector FROM them, and the IR bridge
+// strips the `weighted` / `logweighted` wrapper before materialising a branch,
+// so a component's selection probability never enters its `logWeights`.
+//
+// `propagateLogWeights` is the once-only fold, and it keeps the dedupe
+// contract: the usual case — every branch parameterised by the SAME weighted
+// measure — is one stream, passed forward BY REFERENCE rather than cloned,
+// which is how the independence dedupe recognises it downstream.
+function _selectParentOverlay(parents: any[], N: number) {
+  const lw = empirical.propagateLogWeights(parents);
+  return {
+    logWeights: lw,
+    // `normalize` leaves its weights summing to one, so a mixture over a
+    // normalized parent still reports mass 0 in log space.
+    logTotalmass: lw ? empirical.logSumExp(lw) : 0,
+    // A weighted parent leaves far fewer effective atoms than N, so the gather
+    // must not report a confident N.
+    n_eff: lw ? empirical.effectiveSampleSize({ logWeights: lw }) : N,
+  };
+}
+
 function matSelect(name: string, d: DerivationSelect, ctx: any) {
   // Discrete-selector mixture generation (engine-concepts §12): the SAMPLING
   // half of the ONE select sampler (density is walkSelect). Eval-all-branches-
@@ -2150,24 +2258,42 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
   }
   const branchP = branchEntries.map((b: any, bi: any) => {
     if (b && b.ref != null) return ctx.getMeasure(b.ref);
-    return collectRefArrays(b.ir, ctx)
+    // An INLINE branch draws through the worker, which replies about the draw
+    // alone: a parameter measure carrying importance weights reaches it only as
+    // per-atom POSITIONS through `collectRefArrays`. So collect the parameter
+    // MEASURES the branch resolved and fold their weights in, exactly as
+    // `matSample` does for a binding-graph leaf draw.
+    const parents: any[] = [];
+    return collectRefArrays(b.ir, ctx, parents)
       .then((refArrays: any) => ctx.sendWorker({
         type: 'sampleN', ir: b.ir, count: ctx.sampleCount,
         refArrays: refArrays, seed: nameSeed(name + ':b' + bi, ctx.rootKey),
       }))
-      .then((reply: any) => scalarMeasureN(reply.samples, {
-        logWeights: reply.logWeights || null, logTotalmass: 0,
-        n_eff: reply.samples.length }));
+      .then((reply: any) => {
+        const lw = empirical.propagateLogWeights(
+          [{ logWeights: reply.logWeights || null }].concat(parents));
+        let nEff = reply.samples.length;
+        for (const p of parents) {
+          if (typeof p.n_eff === 'number') nEff = Math.min(nEff, p.n_eff);
+        }
+        return scalarMeasureN(reply.samples, {
+          logWeights: lw, logTotalmass: 0, n_eff: nEff });
+      });
   });
   // Selector samples: realise the named condition, or synthesize from the
-  // constant weights (engine-concepts §12).
+  // constant weights (engine-concepts §12). The named selector's MEASURE is
+  // kept, not just its samples: a selector parameterised by a weighted measure
+  // (`c ~ Bernoulli(p = invlogit(theta))`) carries theta's weights, and the
+  // mixture integrates against the selector's measure like any other bind.
   const selP: Promise<any> = d.selectorRef
-    ? ctx.getMeasure(d.selectorRef).then((m: any) => empirical.materialiseUniform(m).samples)
-    : _synthSelectorSamples(name, d.synthWeights as number[], ctx.sampleCount, ctx);
+    ? ctx.getMeasure(d.selectorRef)
+    : _synthSelectorSamples(name, d.synthWeights as number[], ctx.sampleCount, ctx)
+      .then((samples: any) => ({ samples, logWeights: null }));
   return Promise.all(([selP] as any[]).concat(branchP)).then((results: any[]) => {
-    const sel = results[0];
-    const branches = results.slice(1)
-      .map((m: any) => empirical.materialiseUniform(m).samples);
+    const selM = results[0];
+    const sel = empirical.materialiseUniform(selM).samples;
+    const branchMs = results.slice(1);
+    const branches = branchMs.map((m: any) => empirical.materialiseUniform(m).samples);
     const K = branches.length;
     const N = ctx.sampleCount;
     const out = new Float64Array(N);
@@ -2182,7 +2308,7 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
       if (k < 0) k = 0; else if (k >= K) k = K - 1;
       out[i] = branches[k][i];
     }
-    return scalarMeasureN(out, { logWeights: null, logTotalmass: 0, n_eff: N });
+    return scalarMeasureN(out, _selectParentOverlay([selM].concat(branchMs), N));
   });
 }
 
