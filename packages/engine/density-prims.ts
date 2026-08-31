@@ -1323,6 +1323,71 @@ function _stepLabel(step: ChainStep, index: number): string {
 }
 
 /**
+ * Fill in the types a step's boundary inputs DECLARE, where the step's own
+ * kernel type says only `any`, and only where the fed value is an ARRAY.
+ *
+ * `functionof(body, mu = mu)` publishes its inputs as `any` (see
+ * `_declaredBoundaryInputTypes` in typeinfer for why), so the matcher below
+ * could not reject the vector §06 feeds the step and the sampler produced NaN
+ * for every atom. The placeholder spelling of the same step is a located
+ * error, and §06 gives both spellings one lowering, so the two must agree.
+ *
+ * The ARRAY gate is deliberate and is the whole scope of this fill-in. A
+ * RECORD fed to a lone input is a live, separate surface: the engine's chain
+ * runtime unwraps a single-field record into the input whatever the field is
+ * named (measured — a `joint(theta = M)` base feeding a kernel that declares
+ * `mu` samples its closed form), which no reading of §04's splat-by-field-name
+ * predicts, while the same base through `kchain` samples NaN. Enforcing the
+ * declared type there would refuse a program that works today. That record
+ * gap is carded in flatppl-dev/TODO-flatppl-js.md; this fill-in leaves every
+ * non-array boundary byte-identical.
+ */
+function _applyDeclaredInputTypes(nextInputs: any[], arrayVariate: any,
+                                  declared: Map<string, any> | null | undefined) {
+  if (!declared || !arrayVariate) return nextInputs;
+  return nextInputs.map((inp: any) => {
+    // By NAME, not by position: `declared` carries only the inputs whose
+    // boundary binding has a concrete value type, so a step mixing one of
+    // those with a boundary that types `any` keeps the `any` input as it is.
+    const t = declared.get(inp.name);
+    return t ? { name: inp.name, type: t } : inp;
+  });
+}
+
+/**
+ * The §06 route to append to a boundary mismatch, or '' when the plain shape
+ * mismatch is the whole story. A reader who wrote a scalar-input step sees
+ * only "cannot unify … array of real" without it, and the construct that means
+ * what they wrote is named nowhere.
+ *
+ * Two routes, both §06 sentences. `catOfMany` — two or more variates to the
+ * left: the step is fed the `cat` of all of them (dependent composition,
+ * `c ~ K3([a, b])`), and the construct for the previous state alone is
+ * `markovchain`. `arrayVariate` — one ARRAY-typed variate to the left: it is a
+ * positional `joint`'s `cat`d variate, which §06's auto-splatting paragraph
+ * says "carries no field names, so it feeds a kernel only when the kernel has
+ * a single input, to which the whole value is bound" — the named form or
+ * `relabel` is what gives the components names to splat by.
+ */
+function _catFeedRoute(catOfMany: boolean, arrayVariate: any,
+                       nextIndex: number): string {
+  if (catOfMany) {
+    return ' — the chain feeds step ' + nextIndex + ' the `cat` of every '
+         + 'variate to its left (spec §06 dependent composition: '
+         + '`c ~ K3([a, b])`). A step that means the PREVIOUS state alone is '
+         + '`markovchain(kernel, init, n)`';
+  }
+  if (arrayVariate) {
+    return ' — a positional `joint`\'s variate is the `cat` of its components '
+         + '(spec §06 `joint`), and §06 dependent composition binds that whole '
+         + 'value to a lone kernel input. Name the components '
+         + '(`joint(name1 = M1, ...)` or `relabel`) to splat them by field '
+         + 'name, or give the step an input of the fed shape';
+  }
+  return '';
+}
+
+/**
  * Pull the variate space from a step's output. For a kernel step the
  * variate is `step.result.domain` (kernel returns a measure); for a
  * measure-typed step (chain base only) it's `step.domain`. Returns
@@ -1353,7 +1418,8 @@ function _chainStepVariate(stepType: any): any {
 function _inferKernelChain(
   steps: ChainStep[],
   mode: 'kchain-marginal' | 'jointchain-retain',
-  labels: string[] | null
+  labels: string[] | null,
+  declaredInputs?: (Map<string, any> | null)[] | null
 ): ChainCompositionResult {
   const diagnostics: any[] = [];
   // Step 0 may be measure (closed-first) or kernel (kernel-first).
@@ -1459,14 +1525,25 @@ function _inferKernelChain(
     // not what this walk computes (see `catBoundary`), so a body re-check
     // against it would be checking the wrong thing.
     if (catBoundary) boundaryTypes[i + 1] = prevVariate;
-    const m = _matchChainBoundary(prevVariate, nextInputs);
+    // The two signals the §06 route keys on, and the one the declared-input
+    // fill-in keys on (`arrayVariate`). Both are cat-fed-chain only: the
+    // LABELLED form binds by field name (§06's keyword form is `relabel`), so
+    // its fed value is a field and not the variate this walk computed.
+    const catOfMany = catBoundary && leftVariates.length >= 2;
+    const arrayVariate = (catBoundary && prevVariate.kind === 'array')
+      ? prevVariate : null;
+    const m = _matchChainBoundary(
+      prevVariate,
+      _applyDeclaredInputTypes(nextInputs, arrayVariate,
+                               declaredInputs && declaredInputs[i + 1]));
     if (!m.ok) {
       diagnostics.push({
         severity: 'error',
         message: mode + ' step boundary ' + i + ' → ' + (i + 1) + ': '
                + m.reason
                + ' (from ' + _stepLabel(steps[i], i) + ' to '
-               + _stepLabel(next, i + 1) + ')',
+               + _stepLabel(next, i + 1) + ')'
+               + _catFeedRoute(catOfMany, arrayVariate, i + 1),
         loc: next.loc || steps[i].loc,
       });
       return { resultType: T.failed(mode + ' step-boundary mismatch'),
@@ -1553,7 +1630,8 @@ function _inferKernelChain(
 function inferChainComposition(
   steps: ChainStep[],
   mode: 'func' | 'kchain-marginal' | 'jointchain-retain',
-  opts?: { labels?: string[] | null }
+  opts?: { labels?: string[] | null,
+           declaredInputs?: (Map<string, any> | null)[] }
 ): ChainCompositionResult {
   if (!Array.isArray(steps) || steps.length === 0) {
     return { resultType: T.failed('chain composition requires ≥ 1 step'),
@@ -1574,7 +1652,8 @@ function inferChainComposition(
     }
   }
   if (mode === 'kchain-marginal' || mode === 'jointchain-retain') {
-    return _inferKernelChain(steps, mode, (opts && opts.labels) || null);
+    return _inferKernelChain(steps, mode, (opts && opts.labels) || null,
+                             (opts && opts.declaredInputs) || null);
   }
   // mode === 'func' — every step must be a funcType.
   const diagnostics: any[] = [];

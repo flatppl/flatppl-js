@@ -2103,12 +2103,24 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return T.failed(opName + ' arity');
     }
     const steps: any[] = [];
+    const declaredInputs: any[] = [];
+    // A `relabel`d measure keeps its UN-relabelled variate type
+    // (`inferRelabel`'s measure arm is labels-only, by design — see the rule
+    // there), so an array-typed variate to the left of a step may really be
+    // the record §06's `relabel` produces. The declared-input fill-in below
+    // reads that type, so withhold it once a relabel-rooted step is to the
+    // left: refusing on a known under-approximation would reject a program
+    // the spec allows. Carded in flatppl-dev/TODO-flatppl-js.md.
+    let untrustedLeft = false;
     for (const a of comps) {
       const name = (a && a.kind === 'ref' && a.ns === 'self') ? a.name : undefined;
       steps.push({ type: inferExpr(a, scopes), loc: a && a.loc, name });
+      declaredInputs.push(untrustedLeft ? null : _declaredBoundaryInputTypes(a));
+      if (_isRelabelRooted(a)) untrustedLeft = true;
     }
     const densityPrims = require('./density-prims.ts');
-    const r = densityPrims.inferChainComposition(steps, mode, { labels });
+    const r = densityPrims.inferChainComposition(steps, mode,
+      { labels, declaredInputs });
     for (const d of r.diagnostics) diagnostics.push(d);
     if (r.diagnostics.length === 0 && r.boundaryTypes) {
       checkChainStepBodies(comps, steps, r.boundaryTypes, scopes, opName);
@@ -2216,6 +2228,66 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       scope.set(params[j], fed.fields[name]);
     }
     return scope;
+  }
+
+  /** The type each of a chain step's boundary inputs DECLARES, by input name,
+   *  or null when the step declares none.
+   *
+   *  `functionof(body, mu = mu)` records the boundary in `paramSources` and
+   *  drops it from `kwargs`, so `inferReification` finds no boundary
+   *  expression to read and types the input `any`. `any` unifies with
+   *  anything, so the chain's boundary matcher could not reject the `cat` §06
+   *  feeds the step, and the body re-check below cannot reach that spelling
+   *  either — an identifier-bound boundary's body refs are `self`-namespaced
+   *  module names, which `inferRef` resolves through `loweredModule.bindings`
+   *  rather than through the pushed scope. So the step's body type-checked
+   *  against the boundary node's OWN type while the chain fed it a vector,
+   *  and every atom sampled NaN with no diagnostic. §06 dependent composition
+   *  gives that step and its placeholder spelling one lowering
+   *  (`c ~ K3([a, b])`), and the placeholder spelling is a located error, so
+   *  the two must agree.
+   *
+   *  These types are advisory: the boundary walk applies them only where the
+   *  fed value is an ARRAY, and never writes them back onto the step's node.
+   *  See `_applyDeclaredInputTypes` in density-prims for the gate. */
+  function _declaredBoundaryInputTypes(comp: any): Map<string, any> | null {
+    const ir = _reifiedStepIR(comp);
+    if (!ir || !Array.isArray(ir.params) || !Array.isArray(ir.paramSources)) return null;
+    const out = new Map<string, any>();
+    for (let j = 0; j < ir.paramSources.length; j++) {
+      const src = ir.paramSources[j];
+      // A placeholder param lives in `%local` and names no module node, so it
+      // declares nothing — the body re-check covers that spelling.
+      if (!src || src.kind !== 'binding') continue;
+      const t = _bindingValueType(src.name);
+      if (t == null) continue;
+      // paramKwargs carries the SURFACE name, which is the input name
+      // `inferReification` published; key on it rather than on position.
+      out.set(ir.paramKwargs[j], t);
+    }
+    return out.size > 0 ? out : null;
+  }
+
+  /** A module binding's type when it is a CONCRETE value type, else null. A
+   *  non-value boundary is already the `functionof boundary must be a value`
+   *  error at the definition site, and `any` / `deferred` constrain nothing,
+   *  so neither is worth carrying to the chain boundary. */
+  function _bindingValueType(name: any): any {
+    // `inferBinding` is total — an unknown name types `failed`, which is not a
+    // value — so this needs no existence guard of its own.
+    const t = inferBinding(name);
+    if (!T.isValue(t) || t.kind === 'any' || t.kind === 'deferred') return null;
+    return t;
+  }
+
+  /** Whether a chain step is a `relabel` call, written inline or reached
+   *  through one binding ref. Its variate type is the un-relabelled one, so
+   *  the boundary walk cannot trust an array there to be an array. */
+  function _isRelabelRooted(comp: any): boolean {
+    const rhs = (comp && comp.kind === 'ref' && comp.ns === 'self')
+      ? (loweredModule.bindings.get(comp.name) || {}).rhs
+      : comp;
+    return !!(rhs && rhs.kind === 'call' && rhs.op === 'relabel');
   }
 
   /** The `functionof` IR of a chain step written inline or bound to a

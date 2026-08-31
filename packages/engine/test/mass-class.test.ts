@@ -353,9 +353,15 @@ test('mass: an unclassified component does not mask a settled non-Markov kernel'
   // already had: these chains answered `deferred` and passed the draw gate,
   // while the same chains WITHOUT the unclassified component answered
   // `unknown` and failed it. A settled verdict now wins.
-  const heads = SUB_K + 'jj = joint(Normal(mu = mu, sigma = 1.0), '
+  // KD is the THIRD step of a 3-step chain, so §06 dependent composition
+  // feeds it the `cat` of both variates to its left and its boundary is a
+  // 2-vector. A `mu = mu` scalar boundary here is the prev-only spelling the
+  // chain refuses (it sampled NaN before it did), and this test's subject is
+  // the mass class, not the boundary shape.
+  const heads = SUB_K + 'md = elementof(cartpow(reals, 2))\n'
+    + 'jj = joint(Normal(mu = sum(md), sigma = 1.0), '
     + 'Beta(alpha = 1.0, beta = 1.0))\n'
-    + 'KD = functionof(relabel(jj, ["a", "b"]), mu = mu)\n';
+    + 'KD = functionof(relabel(jj, ["a", "b"]), md = md)\n';
   assert.equal(massOf(heads + `m = kchain(${NORM_BASE}, KT, KD)`, 'm'), 'unknown');
   assert.equal(massOf(heads + FINITE_BASE + 'm = jointchain(b, KT, KD)', 'm'),
     'unknown');
