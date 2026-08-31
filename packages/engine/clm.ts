@@ -1017,9 +1017,17 @@ function _explicitToRefValue(value: any, shape: any, ctx: any): any {
   return v;                              // higher-rank constant: pass through
 }
 
-function feedInputs(node: any, ctx: any): Promise<{ refArrays: any; fixedEnv: any }> {
+function feedInputs(
+  node: any, ctx: any,
+): Promise<{ refArrays: any; fixedEnv: any; parents: any[] }> {
   const refArrays: Record<string, any> = {};
   const fixedEnv: Record<string, any> = {};
+  // The fed parent MEASURES, for a caller that has to carry their importance
+  // weights (matClm). A refArray column is per-atom POSITIONS only, so the
+  // weight channel is lost the moment a parent is reduced to one — the caller
+  // needs the measures themselves. Collected for every materialised parent,
+  // weighted or not; `propagateLogWeights` ignores the unweighted ones.
+  const parents: any[] = [];
   const byFrom = new Map<string, any[]>();
   const sharedRefs: string[] = [];
 
@@ -1097,18 +1105,20 @@ function feedInputs(node: any, ctx: any): Promise<{ refArrays: any; fixedEnv: an
 
   const froms = Array.from(byFrom.keys());
   return Promise.all(froms.map((f) => Promise.resolve(ctx.getMeasure(f))))
-    .then((parents: any[]) => {
+    .then((boundaryParents: any[]) => {
       for (let i = 0; i < froms.length; i++) {
-        for (const inp of byFrom.get(froms[i])!) bindOne(parents[i], inp);
+        if (boundaryParents[i]) parents.push(boundaryParents[i]);
+        for (const inp of byFrom.get(froms[i])!) bindOne(boundaryParents[i], inp);
       }
       return Promise.all(sharedRefs.map((r) => Promise.resolve(ctx.getMeasure(r))));
     })
     .then((measures: any[]) => {
       for (let i = 0; i < sharedRefs.length; i++) {
+        if (measures[i]) parents.push(measures[i]);
         refArrays[sharedRefs[i]] =
           shared.measureToRefValue(measures[i], sharedRefs[i], 'feedInputs');
       }
-      return { refArrays, fixedEnv };
+      return { refArrays, fixedEnv, parents };
     });
 }
 
