@@ -497,36 +497,47 @@ test('REIFIED components inline to their leaves, so the divisor is exact',
   });
 
 // =====================================================================
-// WILL-FLIP — a superposition counts Σ w_i and drops each component's own mass
+// A COMPONENT'S OWN MASS — the superposition counts Σ w_i·Z_i, not Σ w_i
 // =====================================================================
-// Found while looking for a shape that reaches `_perAtomMassExpr`'s
-// no-mass-expression arm. A SEPARATE and OLDER defect than this file's subject:
-// it is in the superposition's own mass accounting, not in any divisor, and it
-// hits the density and sampling routes CONSISTENTLY — they agree with each other
-// and both disagree with §06. Tracked in flatppl-dev/measure-algebra-audit.md.
+// A SEPARATE and OLDER defect than this file's subject: it was in the
+// superposition's own mass accounting, not in any divisor, and it hit the
+// density and sampling routes CONSISTENTLY — they agreed with each other and
+// both disagreed with §06.
 //
 // §06 `truncate`: "restricts the support of measure M to the set S:
 // ν(A) = M(A ∩ S). Does not normalize automatically." So
 //   Z_t = totalmass(truncate(Normal(0,1), [−1,1])) = 2Φ(1) − 1 = 0.6826894921,
 // and §06 `superpose`'s "ν(A) = M₁(A) + M₂(A) + …" makes the superposition's mass
 // Σ_i w_i·Z_i, not Σ_i w_i.
+//
+// THE CAUSE. `matSuperpose` read each component's per-atom `logWeights`, which
+// carry only the weighting events introduced along that component's own chain.
+// `matTruncate` keeps uniform weights and records the accept rate on
+// `logTotalmass` alone, so Z_t never reached the mixture. Fixed by
+// `_superposeComponentWeights`, which shifts a component's weights by the part
+// of `logTotalmass` they do not already carry.
 
 const Z_TRUNC = 0.6826894921370859;          // 2Φ(1) − 1
 const TRUNC = 'truncate(Normal(mu = 0.0, sigma = 1.0), interval(-1.0, 1.0))';
 
-test('[WILL-FLIP] a superposition drops a component\'s own mass, on BOTH routes',
+test('a superposition carries each component\'s own mass, on BOTH routes',
   async () => {
-    // CONSTANT weights, so the whole thing is exact and no band enters.
+    // CONSTANT weights, so the density side is exact and no band enters.
     //   Z = 0.3·Z_t + 0.7 = 0.9048068476
     //   density(y) = [0.3·φ(y)·1(|y| ≤ 1) + 0.7·φ(y − 10)] / Z
     //     at y = 0.5   → −2.147877551448541
     //     at y = 10.0  → −1.1755796910613374
     //   P(component 0) = 0.3·Z_t / Z = 0.2263542193, so E[y] = 10·0.7/Z = 7.7364578067
-    // The engine scores −2.2479113375299518 and −1.2756134771427479 — each exactly
-    // log Z = −0.1000337860820677 BELOW the oracle, the same offset at both points, so
-    // it is a missing divisor and not a wrong shape: `normalize` divided by
-    // 0.3 + 0.7 = 1. The sampler mixes at 0.3 : 0.7 for the same reason and
-    // reports E[y] = 6.9938 against the mass-ignored 7.0.
+    // Before the fix the engine scored −2.2479113375299518 and
+    // −1.2756134771427479 — each exactly log Z = −0.1000337860820677 BELOW the
+    // oracle, the same offset at both points, so it was a missing divisor and not
+    // a wrong shape: `normalize` divided by 0.3 + 0.7 = 1. The sampler mixed at
+    // 0.3 : 0.7 for the same reason and reported E[y] = 6.9938.
+    //
+    // The MASS-IGNORED value is excluded on both routes, so a green test cannot
+    // mean "the number moved somewhere plausible". Sampling error on E[y] at this
+    // count (400 replicate ensembles of the closed-form mixture) is 0.0172, so
+    // the band below is ~4σ.
     const { proc, ctx } = ctxFor(H
       + 'm = normalize(superpose(weighted(0.3, ' + TRUNC + '), '
       + 'weighted(0.7, Normal(mu = 10.0, sigma = 1.0))))\n'
@@ -542,25 +553,57 @@ test('[WILL-FLIP] a superposition drops a component\'s own mass, on BOTH routes'
       scored.push(v.samples ? v.samples[0] : v.value.data[0]);
     }
     for (const [i, want] of [[0, -2.147877551448541], [1, -1.1755796910613374]] as [number, number][]) {
-      assert.ok(Math.abs(scored[i] - (want + logZ)) < 1e-12,
-        `THE DEFECT IS FIXED — logdensityof #${i} = ${scored[i]} is no longer `
-        + `${want} + log Z. Re-tag this test GREEN and assert ${want}.`);
+      // 1e-9, not exact: Z reaches the density route through the materialised
+      // superpose's `logTotalmass`, a logsumexp over the components' analytic
+      // masses, so the last few digits are accumulation noise.
+      assert.ok(Math.abs(scored[i] - want) < 1e-9,
+        `logdensityof #${i} = ${scored[i]}, closed form ${want}`);
+      assert.ok(Math.abs(scored[i] - (want + logZ)) > 1e-3,
+        `logdensityof #${i} = ${scored[i]} is the MASS-IGNORED ${want + logZ}`);
     }
-    // The SAME offset at both points is what makes this a missing Z rather than
-    // a mis-scored component.
-    assert.ok(Math.abs((scored[0] - -2.147877551448541)
-                       - (scored[1] - -1.1755796910613374)) < 1e-12,
-      'the two offsets must be identical for the diagnosis to hold');
 
     const y: any = await ctx.getMeasure('y');
     let s = 0;
     for (let i = 0; i < N; i++) s += y.samples[i];
     const ey = s / N;
-    assert.ok(Math.abs(ey - 7.0) < 0.05,
-      `THE DEFECT IS FIXED — E[y] = ${ey} is no longer the mass-ignored 7.0. `
-      + 'Re-tag this test GREEN and assert 7.7364578067.');
-    assert.ok(Math.abs(ey - 7.7364578067) > 0.3,
-      `E[y] = ${ey} is the MASS-AWARE value — the defect is fixed`);
+    assert.ok(Math.abs(ey - 7.7364578067) < 0.07,
+      `E[y] = ${ey}, mixing oracle 10·0.7/Z = 7.7364578067`);
+    assert.ok(Math.abs(ey - 7.0) > 0.3,
+      `E[y] = ${ey} is the MASS-IGNORED 7.0 — the component's Z_t is dropped again`);
+  });
+
+test('an ALREADY-NORMALIZED component does not get its mass applied twice',
+  async () => {
+    // The same mixture with each component's mass divided out inside it, so
+    // Z_i = 1 and Z = 0.3 + 0.7 = 1. §06 `normalize` gives the inner truncate
+    // "the probability measure M / Z", so the outer divisor must be 1 and the
+    // mixing proportions must be 0.3 : 0.7 — the numbers the DEFECT produced for
+    // the un-normalized spelling above. Applying a component's `logTotalmass` on
+    // top of weights that already carry it would divide by Z_t twice: both scores
+    // would come back log Z = 0.1000337861 HIGH, at −1.7661624051 and
+    // −1.1755796911, and the mixture would shift to 0.3·Z_t : 0.7 (E[y] = 7.7365).
+    //   density(0.5)  = log[0.3·φ(0.5)/Z_t + 0.7·φ(−9.5)] = −1.8661961912284826
+    //   density(10.0) = log[0.7·φ(0)]                     = −1.2756134771434051
+    //   E[y] = 0.3·0 + 0.7·10 = 7.0   (the truncated slice is symmetric, mean 0)
+    const { proc, ctx } = ctxFor(H
+      + 'm = normalize(superpose(weighted(0.3, normalize(' + TRUNC + ')), '
+      + 'weighted(0.7, Normal(mu = 10.0, sigma = 1.0))))\n'
+      + 'y ~ m\n'
+      + 'lp = logdensityof(m, 0.5)\n'
+      + 'lp2 = logdensityof(m, 10.0)\n', N);
+    assert.equal(proc.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
+    const want = [-1.8661961912284826, -1.2756134771434051];
+    for (const [i, nm] of ['lp', 'lp2'].entries()) {
+      const v: any = await ctx.getMeasure(nm);
+      const got = v.samples ? v.samples[0] : v.value.data[0];
+      assert.ok(Math.abs(got - want[i]) < 1e-9,
+        `logdensityof #${i} = ${got}, closed form ${want[i]}`);
+    }
+    const y: any = await ctx.getMeasure('y');
+    let s = 0;
+    for (let i = 0; i < N; i++) s += y.samples[i];
+    const ey = s / N;
+    assert.ok(Math.abs(ey - 7.0) < 0.07, `E[y] = ${ey}, oracle 7.0`);
   });
 
 test('a truncate component reaches the pooled-divisor fallback without refusing',
@@ -570,22 +613,37 @@ test('a truncate component reaches the pooled-divisor fallback without refusing'
     // there is no expression to divide by. It must return the POOLED divisor —
     // the number this shape already had — and NOT refuse.
     //
-    // The numbers it produces are the mass-ignored ones (E[y] = 50/7,
-    // cov = −10·Var(p)) for the defect above, so they are asserted TIED TO THE
-    // FAILURE MODE here too. The mass-aware oracles are E[y] = 7.7783296397 and
-    // cov(p, y) = −0.2196964652 (scipy.quad over the Beta(2,5) prior). Sampling
-    // errors from 300 replicate ensembles of the mass-ignored generative model:
-    // 0.0186 on E[y], 0.00289 on cov.
-    const r = await joint(H
+    // The component mass now reaches the SAMPLE POSITIONS, so the unweighted
+    // positions are the exact mixture: E[y] = 7.7783296397 (scipy.quad over the
+    // Beta(2,5) prior; replicate sd 0.0180 at this count). The `normalize` step
+    // still leaves the residue Z(p_i)/E[Z] on the atom WEIGHTS, so the weighted
+    // read stays the pooled one — E[y] = 7.8549918431, cov(p, y) = −0.2106127697,
+    // E[p] tilted to 0.2768126020 off the prior's 2/7 (replicate sds 0.0169 and
+    // 0.00289). Both readings are asserted, and the GAP BETWEEN THEM is asserted
+    // too: the two reads come off one ensemble, so their difference is far
+    // sharper than either band. cov discriminates poorly here (the mass-aware
+    // −0.2196964652 is only 3.1 sampling errors from the pooled value), which is
+    // why E[y] carries the exclusion. This row pins the remaining θ-dependent
+    // gap, recorded in flatppl-dev/measure-algebra-audit.md, so closing it flips
+    // this row loudly.
+    const src = H
       + 'p ~ Beta(alpha = 2.0, beta = 5.0)\n'
       + 'q = 1.0 - p\n'
       + 'm = normalize(superpose(weighted(p, ' + TRUNC + '), '
       + 'weighted(q, Normal(mu = 10.0, sigma = 1.0))))\n'
-      + 'y ~ m\n', N, 'p');
+      + 'y ~ m\n';
+    const r = await joint(src, N, 'p');
     assert.ok(Number.isFinite(r.ey), 'the shape must sample, not refuse');
-    assert.ok(Math.abs(r.ey - 50 / 7) < 0.1,
-      `E[y] = ${r.ey}; the mass-ignored 50/7 is what this shape gives until the `
-      + 'component-mass defect above is fixed, then it is 7.7783296397');
-    assert.ok(Math.abs(r.cov - COV_ORACLE) < 0.015,
-      `cov(p, y) = ${r.cov}; mass-aware it is −0.2196964652`);
+    let s = 0;
+    for (let i = 0; i < N; i++) s += r.m.samples[i];
+    const pos = s / N;
+    assert.ok(Math.abs(pos - 7.7783296397) < 0.08,
+      `unweighted E[y] = ${pos}, mass-aware oracle 7.7783296397`);
+    assert.ok(Math.abs(r.ey - 7.8549918431) < 0.07,
+      `weighted E[y] = ${r.ey}, pooled-divisor value 7.8549918431`);
+    assert.ok(Math.abs(r.cov - -0.2106127697) < 0.012,
+      `cov(p, y) = ${r.cov}, pooled-divisor value −0.2106127697`);
+    assert.ok(r.ey - pos > 0.03,
+      `the weighted read ${r.ey} no longer sits ABOVE the positions ${pos} — the `
+      + 'pooled residue Z(p)/E[Z] is gone, flip this row to the exact 7.7783296397');
   });

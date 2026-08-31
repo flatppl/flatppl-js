@@ -1948,6 +1948,41 @@ function matRecord(d: DerivationRecord, ctx: any) {
   });
 }
 
+// A component's per-atom `logWeights` carry only the weighting events
+// introduced along its OWN chain. Mass a handler recorded on `logTotalmass`
+// alone never reaches them: `truncate` keeps uniform weights and puts the
+// accept rate Z_t there (§06 `truncate`: "Does not normalize automatically"),
+// and a `Lebesgue(interval(a,b))` base carries its volume the same way.
+//
+// §06 `superpose` makes the superposition "ν(A) = M₁(A) + M₂(A) + …", so
+// component i must enter at its FULL mass — mixing proportion and enclosing
+// normalize divisor alike. Shift its weights by the part of `logTotalmass` the
+// weights do not already carry, so every consumer below (the per-index
+// selection, `totalLogMass`, the per-atom slice mass) reads absolute masses.
+//
+// Dropping Z_i mixed
+// `superpose(weighted(0.3, truncate(Normal(0,1), interval(-1,1))),
+//            weighted(0.7, Normal(10,1)))`
+// at 0.3 : 0.7 rather than 0.3·Z_t : 0.7 — E[y] = 6.9970 against the oracle
+// 7.7364578067 — and handed the enclosing `normalize` a divisor of 1 instead
+// of 0.3·Z_t + 0.7 = 0.9048068476, scoring every point log Z = 0.1000337861
+// low.
+//
+// A zero-offset component keeps its own array, so every equal-mass
+// superposition in the corpus is bit-for-bit unchanged.
+function _superposeComponentWeights(p: any) {
+  const u = empirical.materialiseUniform(p);
+  // A non-finite offset has nothing to redistribute over the atoms: an absent
+  // `logTotalmass`, an infinite mass (§06 leaves Z = ∞ undefined), or a
+  // zero-mass component whose weights are already all −∞ — that last one is
+  // the superposition matSuperpose refuses below.
+  const off = p.logTotalmass - empirical.logSumExp(u.logWeights);
+  if (!Number.isFinite(off) || Math.abs(off) < 1e-12) return u;
+  const lw = new Float64Array(u.logWeights.length);
+  for (let i = 0; i < lw.length; i++) lw[i] = u.logWeights[i] + off;
+  return Object.assign({}, u, { logWeights: lw });
+}
+
 function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
   // Superpose: concat parents' samples + logWeights, systematic-
   // resample to ctx.sampleCount. Mass-faithful: result's totalmass
@@ -2004,7 +2039,7 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       ? ctx.repeatBlock : 1;
     const liftPrng = makeMainThreadPrng(nameSeed(name + ':superpose-lift', ctx.rootKey));
     const lifted = parents.map((p: any) => {
-      const u = empirical.materialiseUniform(p);
+      const u = _superposeComponentWeights(p);
       const lw = u.logWeights;
       let mn = Infinity, mx = -Infinity;
       for (let i = 0; i < lw.length; i++) { if (lw[i] < mn) mn = lw[i]; if (lw[i] > mx) mx = lw[i]; }
