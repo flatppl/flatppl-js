@@ -291,6 +291,23 @@ test('§05: a bare axis outside an aggregation still gets the per-axis rule', ()
     `expected the per-axis diagnostic; got: ${ds.map((d: any) => d.message).join('; ')}`);
 });
 
+test('§05: a leading-dot real literal is not an axis', () => {
+  // §05's `RealLit ::= "." DecFracPart Exponent?` and maximal munch make
+  // `.5` a number, so `[.5]` is an ordinary vector literal. The bracket
+  // looks like an axis list to a reader and must not be refused as one.
+  assertAccepted('x = [.5]\nn = l1norm(x)\n');
+  assert.equal(axisListRefusals('x = [.5, .25]\n').length, 0);
+  assert.equal(axisListRefusals('x = [.5e2]\n').length, 0);
+});
+
+test('§05: a field access is not an axis', () => {
+  // `.name` after a postfix-able expression is `FieldAccess`, not `Axis`,
+  // so a bracket of field reads is an ordinary vector literal.
+  const src = 'r = record(a = 1.0, b = 2.0)\nx = [r.a, r.b]\n';
+  assertAccepted(src);
+  assert.equal(axisListRefusals(src).length, 0);
+});
+
 test('§05: an array literal of non-axis elements is untouched', () => {
   // Only an all-axis-name (or empty) bracket is an `AxisList`; an
   // ordinary vector literal must keep parsing as an `ArrayLiteral`.
