@@ -193,10 +193,27 @@ function walkIR(node: any, visit: (n: any) => void): void {
  * carried through the shallow copy untouched. Transformers that need
  * to inspect or rewrite those fields can do so on the result of
  * `mapIR`.
+ *
+ * One result per input OBJECT, memoised for the duration of the call.
+ * Lowering shares subtrees, so the input is a DAG even though walking it
+ * looks like a tree: an inlined amplitude body reaches 777 distinct
+ * objects through 40092 parent-child edges. Without the memo every
+ * occurrence on a path to a rewritten node gets its own copy of that
+ * path, which turned those 777 objects into 17227 for a two-node ref
+ * rewrite, and left the output with no sharing for an identity-keyed
+ * consumer to exploit. `transform` must therefore be a function of the
+ * node alone; every caller is a by-name ref substitution, which is.
  */
 function mapIR<T>(node: any, transform: (n: any) => any): any {
-  if (!node || typeof node !== 'object') return transform(node);
-  return transform(_mapChildren(node, (c: any) => mapIR(c, transform)));
+  const memo = new Map<object, any>();
+  function rec(n: any): any {
+    if (!n || typeof n !== 'object') return transform(n);
+    if (memo.has(n)) return memo.get(n);
+    const out = transform(_mapChildren(n, rec));
+    memo.set(n, out);
+    return out;
+  }
+  return rec(node);
 }
 
 // Shared child-rebuild for mapIR / mapIRScoped: returns a shallow copy

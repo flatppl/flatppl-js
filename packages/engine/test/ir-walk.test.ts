@@ -239,3 +239,60 @@ test('mapIR: rewrites a ref inside logweights array', () => {
   assert.equal(out.logweights[0].value, -42);
   assert.equal(out.logweights[1].value, 0);
 });
+
+// =====================================================================
+// mapIR — shared subtrees are rebuilt once, not once per occurrence
+// =====================================================================
+//
+// Lowering shares subtrees, so the input is a DAG. Rebuilding a shared
+// subtree once per parent edge is what expanded an inlined amplitude
+// body from 777 objects to 17227 for a two-node ref rewrite.
+
+test('mapIR: a shared subtree is transformed once and shared in the output', () => {
+  const leaf = { kind: 'ref', ns: 'self', name: 'x' };
+  // `shared` is ONE object reached through two parent edges.
+  const shared = { kind: 'call', op: 'mul', args: [leaf, { kind: 'lit', value: 2 }] };
+  const root = { kind: 'call', op: 'add', args: [shared, shared] };
+
+  let visits = 0;
+  const out = mapIR(root, (n: any) => {
+    visits++;
+    if (n && n.kind === 'ref' && n.name === 'x') return { kind: 'lit', value: 7 };
+    return n;
+  });
+
+  // root, shared, leaf, the lit inside shared — each seen once.
+  assert.equal(visits, 4);
+  assert.equal(out.args[0], out.args[1], 'the rewritten subtree stays shared');
+  assert.equal(out.args[0].args[0].value, 7);
+});
+
+test('mapIR: sharing survives a deep chain over a shared base', () => {
+  const base = { kind: 'ref', ns: 'self', name: 'p' };
+  let node: any = base;
+  for (let i = 0; i < 8; i++) {
+    // Both operands are the SAME object, so an unmemoised rebuild
+    // doubles the object count at every level: 2^8 copies of `base`.
+    node = { kind: 'call', op: 'add', args: [node, node] };
+  }
+  const out = mapIR(node, (n: any) =>
+    (n && n.kind === 'ref' && n.name === 'p') ? { kind: 'lit', value: 1 } : n);
+
+  const seen = new Set<any>();
+  (function count(n: any) {
+    if (!n || typeof n !== 'object') return;
+    if (seen.has(n)) return;
+    seen.add(n);
+    forEachIRChild(n, count);
+  })(out);
+  // 8 add levels + the one rewritten leaf.
+  assert.equal(seen.size, 9);
+});
+
+test('mapIR: identity preservation still holds for an unchanged shared DAG', () => {
+  const leaf = { kind: 'ref', ns: 'self', name: 'x' };
+  const shared = { kind: 'call', op: 'neg', args: [leaf] };
+  const root = { kind: 'call', op: 'add', args: [shared, shared] };
+  const out = mapIR(root, (n: any) => n);
+  assert.equal(out, root, 'no copy when nothing changed');
+});
