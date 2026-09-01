@@ -255,7 +255,7 @@ function _massToSexpr(mass: any): string | null {
   }
 }
 
-function _atomToSexpr(v: any, numType?: string) {
+function _atomToSexpr(v: any, numType?: string): string {
   if (v === true) return 'true';
   if (v === false) return 'false';
   if (v === null) return 'null';
@@ -266,11 +266,18 @@ function _atomToSexpr(v: any, numType?: string) {
       if (v === -Infinity) return '(neg inf)';
       return 'nan';
     }
-    // Spec §11: a literal's type IS its lexical form on the wire
-    // (`3` integer, `1.0` real). An integer-VALUED real lit must
-    // therefore carry a decimal point — emitting `3.0` as `3` would
-    // change its type. The reader reconstructs `numType` from the
-    // same lexical rule, so the tag round-trips.
+    // Spec §11 "Literal values": "A scalar literal carries no leading
+    // sign: a negated numeric literal is the call `(neg 1.0)`." The
+    // lowerer folds a source `-3` into a signed lit to keep its
+    // integer numType (see `_lowerUnaryExpr`), so the sign has to be
+    // unfolded back into a `neg` call here, at the write boundary.
+    // Same treatment `-Infinity` already gets above.
+    if (v < 0) return '(neg ' + _atomToSexpr(-v, numType) + ')';
+    // A literal's type IS its lexical form on the wire (`3` integer,
+    // `1.0` real). An integer-VALUED real lit must therefore carry a
+    // decimal point — emitting `3.0` as `3` would change its type. The
+    // reader reconstructs `numType` from the same lexical rule, so the
+    // tag round-trips.
     if (numType === 'real' && Number.isInteger(v)) return v.toFixed(1);
     return String(v);
   }
