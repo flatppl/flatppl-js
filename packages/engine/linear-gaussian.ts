@@ -303,9 +303,12 @@ function _describeOp(ir: any): string {
 }
 
 // The components of a clm body: the joint's fields (named) / args
-// (positional), or the body itself as a single unnamed component.
+// (positional), or the body itself as a single unnamed component. `record` is
+// the same IR shape under the surface spelling a reified inline body keeps
+// (`kernelof(record(y = y), …)`); without it the whole record node arrives as
+// ONE component and the recogniser refuses a shape it can in fact split.
 function _components(body: any): { labels: string[] | null; irs: any[]; sources: any[] } {
-  if (body && body.kind === 'call' && body.op === 'joint') {
+  if (body && body.kind === 'call' && (body.op === 'joint' || body.op === 'record')) {
     if (Array.isArray(body.fields) && body.fields.length > 0) {
       return {
         labels: body.fields.map((f: any) => f.name),
