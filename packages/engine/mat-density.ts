@@ -27,6 +27,7 @@ const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
 const { totalMassExpr } = require('./normalize-mass.ts');
 const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
+const { leafMassExpr } = require('./leaf-mass-quad.ts');
 
 const {
   nameSeed,
@@ -1203,10 +1204,10 @@ function _endpointContributionShrinks(f: (u: number[]) => number): boolean {
 // `Uniform` (whose `support` kwarg is a set, so `asScalarFactor` declines it)
 // all fall through to the pre-existing route unchanged.
 //
-// A θ-DEPENDENT weight also returns null and keeps the materialise fallback: Z
-// is then per-θ, and a per-θ expression for a probability-leaf base is not
-// available — crn-normalize covers only a Lebesgue box. That shape is the
-// remaining gap, recorded in flatppl-dev/measure-algebra-audit.md.
+// A θ-DEPENDENT weight also returns null: Z is then per-θ, and `leaf-mass-quad`
+// owns that shape with a FIXED graded rule emitted as an expression in θ. This
+// arm keeps the θ-independent case because its adaptive refinement and its own
+// endpoint test are the more accurate answer where θ does not move.
 function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
   const inner = node.args && node.args[0];
   if (!inner || inner.kind !== 'call' || inner.op !== 'weighted'
@@ -1644,6 +1645,23 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
       node.fromNormalize = true;
       continue;
     }
+    // A θ-DEPENDENT weight over a continuous scalar probability LEAF: Z(θ) is a
+    // fixed graded quadrature of ∫₀¹ w(F_B⁻¹(u); θ) du, emitted as an expression
+    // in θ so this route, the MH route and the sampling route score one measure
+    // (leaf-mass-quad.ts). The arm gates on θ-dependence itself, so the
+    // θ-INDEPENDENT leaf below keeps its adaptive quadrature.
+    const leafExpr = leafMassExpr(node, ctx);
+    if (leafExpr != null) {
+      const innerL = node.args[0];
+      node.op = 'logweighted';
+      node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [leafExpr] }] }, innerL];
+      delete node.massFrom;
+      // The arm's accuracy gate hands back +∞ for a weight the rule cannot
+      // resolve, and §06 leaves normalize undefined at Z = ∞; the mark makes the
+      // density walker refuse there rather than add ±∞ to the inner log-density.
+      node.fromNormalize = true;
+      continue;
+    }
     // A θ-INDEPENDENT weight over a continuous scalar probability LEAF (not a
     // Lebesgue box): Z = ∫ w dB is one deterministic quadrature, so take it
     // instead of the seeded importance-sampling estimate the materialise
@@ -1866,4 +1884,7 @@ module.exports = {
   resolveTruncateNormalizers,
   deriveRegionOpts,
   weightedLeafQuadLogZ,
+  // Shared with leaf-mass-quad.ts, so the θ-dependent and θ-independent leaf
+  // arms accept exactly the same set of base measures.
+  asScalarFactor,
 };

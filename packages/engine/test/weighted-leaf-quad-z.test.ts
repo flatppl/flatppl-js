@@ -107,11 +107,13 @@ test('a discrete base declines the arm and keeps the existing fallback', async (
   assert.ok(Number.isFinite(v), `expected a finite log-density, got ${v}`);
 });
 
-test('a θ-dependent weight declines the arm, leaving the known gap', async () => {
+test('a θ-dependent weight goes to the per-θ arm, at the exact Z(θ)', async () => {
   // The weight references a latent, so Z is per-θ and this arm must not bake one
-  // constant. The pre-existing Monte-Carlo route still answers, and its answer
-  // still moves with the sample count — the open shape recorded in
-  // flatppl-dev/measure-algebra-audit.md, unchanged by this arm.
+  // constant. leaf-mass-quad emits Z(θ) as an expression instead, and the value
+  // is the closed-form e^{θ²/2}: `normalize(weighted(fn(exp(θ·_)), Normal(0,1)))`
+  // is Normal(θ, 1), so the likelihood at 0.5 is log N(0.5; 1, 1) at θ = 1. The
+  // Monte-Carlo route this replaced returned −1.885 at N = 1 and −1.654 at
+  // N = 4000. leaf-mass-quad.test.ts owns the arm's own witnesses.
   const { buildLogPi } = require('../mcmc-density.ts');
   const src = H
     + 'theta ~ Uniform(interval(0.5, 2.0))\n'
@@ -128,8 +130,9 @@ test('a θ-dependent weight declines the arm, leaving the known gap', async () =
     return likOf({ theta: 1.0 });
   };
   const a = await at(1), b = await at(4000);
-  assert.ok(Number.isFinite(a) && Number.isFinite(b), `got ${a} and ${b}`);
-  assert.notEqual(a, b, 'the θ-dependent shape must still take the Monte-Carlo route');
+  assert.equal(a, b, 'the per-θ arm must not move with the sample count');
+  assert.ok(Math.abs(a - TILT_AT_HALF) < 1e-7,
+    `likelihoodof at θ = 1 is ${a}, closed form ${TILT_AT_HALF}`);
 });
 
 test('the arm itself returns null for a θ-dependent weight', () => {

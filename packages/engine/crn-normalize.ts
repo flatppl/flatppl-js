@@ -386,5 +386,12 @@ module.exports = {
   seedString,
   CRN_POINTS_DEFAULT,
   CRN_NODE_BUDGET,
+  // Shared with leaf-mass-quad.ts, which emits the same kind of per-θ mass
+  // expression over a probability-leaf base: one binder, one reduction and one
+  // budget test, so the two builders cannot drift on the §06 weight arity, on
+  // pairwise summation, or on what counts as too large an expression.
+  bindWeightAt,
+  nodeCount,
+  balancedAdd,
   _internal: { bindWeightAt, nodeCount, balancedAdd, _noted },
 };
