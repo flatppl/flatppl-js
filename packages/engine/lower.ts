@@ -117,7 +117,8 @@ import type { IRNode } from './engine-types';
 
 const builtins = require('./builtins.ts');
 
-const { CONSTANTS, SETS, BOOL_LITERALS, ALL_KNOWN, BUILTIN_FUNCTIONS, DISTRIBUTIONS } = builtins;
+const { CONSTANTS, SETS, BOOL_LITERALS, ALL_KNOWN, BUILTIN_FUNCTIONS,
+        FLATPDL_KERNEL_TAGS } = builtins;
 
 // ---------------------------------------------------------------------
 // Public API
@@ -711,11 +712,13 @@ function _lowerBroadcast(node: any, ctx: any) {
 
 // builtin_logdensityof(kernel, kernel_input, x) — FlatPDL primitive,
 // spec §07 §sec:measure-eval-prims. The first arg must be a bare
-// distribution Identifier (built-in kernel constructor — `Normal`,
-// `MvNormal`, …); lower it to a `{kind:'lit', value:<name>}` so the
-// analyzer doesn't see it as an undefined variable and the evaluator
-// can read the kernel name directly without resolving a ref. The
-// other two args lower normally.
+// Identifier naming a kernel constructor — a §08 base one (`Normal`,
+// `MvNormal`, …) or a §09 standard-module member whose module
+// qualification the determiniser already discharged (`CrystalBall`), so
+// the gate is `FLATPDL_KERNEL_TAGS`, not `DISTRIBUTIONS`. Lower it to a
+// `{kind:'lit', value:<name>}` so the analyzer doesn't see it as an
+// undefined variable and the evaluator can read the kernel name directly
+// without resolving a ref. The other two args lower normally.
 function _lowerBuiltinLogdensityof(node: any, ctx: any): any {
   const args = node.args || [];
   if (args.length !== 3) {
@@ -728,9 +731,9 @@ function _lowerBuiltinLogdensityof(node: any, ctx: any): any {
     }
   }
   const kernelArg = args[0];
-  if (kernelArg.type !== 'Identifier' || !DISTRIBUTIONS.has(kernelArg.name)) {
+  if (kernelArg.type !== 'Identifier' || !FLATPDL_KERNEL_TAGS.has(kernelArg.name)) {
     throw new Error('lower: builtin_logdensityof: kernel argument must be a built-in '
-      + 'distribution name (e.g. Normal, MvNormal); got '
+      + 'or standard-module distribution name (e.g. Normal, MvNormal, CrystalBall); got '
       + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
   }
   return {
@@ -761,9 +764,9 @@ function _lowerBuiltinTransport(op: string, node: any, ctx: any): any {
     }
   }
   const kernelArg = args[0];
-  if (kernelArg.type !== 'Identifier' || !DISTRIBUTIONS.has(kernelArg.name)) {
+  if (kernelArg.type !== 'Identifier' || !FLATPDL_KERNEL_TAGS.has(kernelArg.name)) {
     throw new Error(`lower: ${op}: kernel argument must be a built-in `
-      + 'distribution name (e.g. Normal, MvNormal); got '
+      + 'or standard-module distribution name (e.g. Normal, MvNormal, CrystalBall); got '
       + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
   }
   return {
@@ -796,9 +799,9 @@ function _lowerBuiltinSample(node: any, ctx: any): any {
     }
   }
   const kernelArg = args[1];
-  if (kernelArg.type !== 'Identifier' || !DISTRIBUTIONS.has(kernelArg.name)) {
+  if (kernelArg.type !== 'Identifier' || !FLATPDL_KERNEL_TAGS.has(kernelArg.name)) {
     throw new Error('lower: builtin_sample: kernel argument must be a built-in '
-      + 'distribution name (e.g. Normal, MvNormal); got '
+      + 'or standard-module distribution name (e.g. Normal, MvNormal, CrystalBall); got '
       + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
   }
   const lowered: any[] = [

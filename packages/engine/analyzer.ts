@@ -2178,6 +2178,37 @@ function sliceSource(source: string, loc: any) {
  * §sec:functionof only spells with a placeholder (`_mu_`). Callers use
  * this to surface the off-spec idiom as a non-error diagnostic.
  */
+// The argument index holding the kernel TAG of a FlatPDL `builtin_*` primitive
+// (spec §07 §sec:measure-eval-prims), or `-1` when this call has none. The same
+// positions `lower.ts`'s three gates guard: `builtin_sample(rngstate, kernel,
+// …)` puts it second, every other primitive puts it first.
+//
+// The DOTTED form counts too. `builtin_logdensityof.(K, params, obs)` — the
+// determiniser's axis-native emission for `iid` and for a broadcast kernel —
+// parses as `broadcast(builtin_logdensityof, K, params, obs)` (spec §05
+// "Broadcasting syntax"), so the tag sits one slot further right.
+function builtinKernelTagIndex(node: any): number {
+  const callee = node && node.callee;
+  if (!callee || callee.type !== 'Identifier') return -1;
+  let name = callee.name;
+  let shift = 0;
+  if (name === 'broadcast') {
+    const head = node.args && node.args[0];
+    if (!head || head.type !== 'Identifier') return -1;
+    name = head.name;
+    shift = 1;
+  }
+  switch (name) {
+    case 'builtin_sample': return 1 + shift;
+    case 'builtin_logdensityof':
+    case 'builtin_touniform':
+    case 'builtin_fromuniform':
+    case 'builtin_tonormal':
+    case 'builtin_fromnormal': return 0 + shift;
+    default: return -1;
+  }
+}
+
 function collectIdentRefs(
   node: any,
   definedNames?: { has(name: string): boolean },
@@ -2241,7 +2272,21 @@ function collectIdentRefs(
         }
       } else {
         walk(node.callee);
-        for (const a of node.args) walk(a);
+        // A FlatPDL `builtin_*` primitive's kernel argument is a TAG, not a
+        // variable reference: `lower.ts` turns it into a `{kind:'lit'}` string
+        // and the evaluator reads the name directly. So it must not be checked
+        // against the source namespace. This is invisible for a §08 name
+        // (`Normal` resolves through `isKnownName` anyway) but decisive for a
+        // §09 standard-module member, whose module qualification the
+        // determiniser has already discharged: `builtin_logdensityof(
+        // CrystalBall, …)` is legal FlatPDL, while a bare `CrystalBall(...)`
+        // in FlatPPL source stays the undefined variable §09 makes it.
+        const tagIdx = builtinKernelTagIndex(node);
+        for (let i = 0; i < node.args.length; i++) {
+          const a = node.args[i];
+          if (i === tagIdx && a && a.type === 'Identifier') continue;
+          walk(a);
+        }
       }
     }
     if (node.type === 'BinaryExpr') { walk(node.left); walk(node.right); }
