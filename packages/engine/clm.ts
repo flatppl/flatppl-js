@@ -85,6 +85,29 @@ function _isMeasureNode(ir: any): boolean {
       || builtins.MEASURE_OPS.has(ir.op)));
 }
 
+// `record` and `joint` share the IR shape and the measure walkers treat them
+// equivalently — derivations.expandMeasureIR canonicalises a `record`
+// derivation to `joint` for exactly that reason. A reified inline body does
+// NOT go through that canonicalisation: `kernelof(record(y = y), mu = mu)`
+// keeps the surface `record` op, with each field's draw ref expanded to its
+// distribution call. `record` is in none of the builtin measure-op sets, so
+// `_isMeasureNode` rejects such a body and the shared-ancestor marginal below
+// never runs — the latent is then fed as a prior DRAW and the query returns a
+// seed-dependent number instead of the conditional density §06 asks for.
+// Recognise the record spelling too. Every field value must itself be a
+// measure, so a plain value record (not a measure at all) still declines.
+function _isRecordOfMeasures(ir: any): boolean {
+  return !!(ir && ir.kind === 'call' && ir.op === 'record'
+    && Array.isArray(ir.fields) && ir.fields.length > 0
+    && ir.fields.every((f: any) => _isMeasureNode(f.value)));
+}
+
+// Does this body carry named/positional components the marginal recogniser can
+// split, in either the `joint` or the equivalent `record` spelling?
+function _isJointShaped(ir: any): boolean {
+  return !!(ir && ir.kind === 'call' && (ir.op === 'joint' || ir.op === 'record'));
+}
+
 
 // ── shape / axis descriptor (critique C) ────────────────────────────────
 //
@@ -455,7 +478,7 @@ function _refuseIfSingular(input: any, ctx: any, depth?: number, via?: string[])
 // the same draw and refuses as singular — the shared node is `q`'s parameter, not
 // the coordinate.
 function _componentKeys(body: any, input: any, ctx: any): Array<string | null> | null {
-  const isJoint = body && body.kind === 'call' && body.op === 'joint';
+  const isJoint = _isJointShaped(body);
   const fields = isJoint && Array.isArray(body.fields) ? body.fields : null;
   const args = isJoint && Array.isArray(body.args) ? body.args : null;
   if (!fields && !args) return null;                 // a scalar body — one component
@@ -843,7 +866,8 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   // keeps bayesupdate on the pure structural sum §06 mandates ("`logdensityof`
   // reduces structurally to the densities of its operands, terminating at the
   // per-kernel primitive `builtin_logdensityof`").
-  if (!reduce && (!deriv || deriv.kind !== 'bayesupdate') && _isMeasureNode(body)) {
+  if (!reduce && (!deriv || deriv.kind !== 'bayesupdate')
+      && (_isMeasureNode(body) || _isRecordOfMeasures(body))) {
     const latents = inputs.filter((i: any) => i.source.kind === 'shared'
       && _isStochastic(ctx.bindings && ctx.bindings.get(i.source.ref)));
     if (latents.length > 0) {
