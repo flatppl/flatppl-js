@@ -97,3 +97,15 @@ g = joint(x = Normal(mu = 0.0, sigma = 1.0), y = Normal(mu = 5.0, sigma = 1.0))
 s = iid(g, 6)
 `, 's', 4), /ensemble of tables|>1 atoms/);
 });
+
+test('#848: iid over a record measure at a derived-zero size refuses (spec §06 iid)', async () => {
+  // §06 iid: a scalar-length size derived to 0 (here from a loaded empty
+  // column, via lengthof) is an error over a record-valued M — a table has no
+  // zero-row form — rather than the empty product measure the scalar case gets.
+  await assert.rejects(async () => sampleTable(`
+x_data = zeros(0)
+n = lengthof(x_data)
+g = joint(x = Normal(mu = 0.0, sigma = 1.0), y = Normal(mu = 5.0, sigma = 1.0))
+s = iid(g, n)
+`, 's', 1), /§06|zero-row/);
+});

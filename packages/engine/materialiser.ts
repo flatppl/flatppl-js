@@ -1037,6 +1037,17 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
   // totalmass: M^k (in log: k · M.logTotalmass).
   // n_eff: inherits M's n_eff.
   //
+  // Spec §06 iid: a size derived to 0 over a record-valued M is an error,
+  // not the empty product measure — a table has no zero-row form. Caught
+  // here, before dispatch, so it never reaches the leaf/composite paths
+  // below at sampleCount 0 (which fail on an unrelated worker invariant
+  // instead of citing the spec).
+  const _k0 = d.dims.reduce((p: any, n: any) => p * n, 1);
+  if (_k0 === 0
+      && require('./derivations.ts')._isRecordValuedMeasureBase(d.from, ctx.bindings)) {
+    throw new Error('iid: the record measure "' + d.from + '" has a derived '
+      + 'size of 0 (spec §06 iid: a table has no zero-row form)');
+  }
   // Resolution: peel through alias / normalize (both sample-
   // preserving — normalize just adjusts logTotalmass, samples
   // unchanged) to reach the underlying sample / truncate derivation,

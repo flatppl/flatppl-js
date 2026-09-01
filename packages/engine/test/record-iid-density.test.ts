@@ -52,3 +52,19 @@ d2 = iid(gxy, 3)
 __score__ = logdensityof(d2, data)
 `));
 });
+
+test('#848: iid over a record measure at a derived-zero size refuses against a 0-row table (spec §06 iid)', async () => {
+  // §06 iid: `size` here is a scalar length DERIVED from a loaded empty
+  // column (via lengthof), not written in source, so it resolves to 0 only at
+  // data-load time. A table has no zero-row form — this must refuse, not
+  // silently score the empty 0-row table as the vacuous empty product.
+  await assert.rejects(async () => score(`
+x_data = zeros(0)
+y_data = zeros(0)
+n = lengthof(x_data)
+gxy = joint(x = Normal(mu = 0.0, sigma = 1.0), y = Normal(mu = 0.0, sigma = 1.0))
+data = table(x = x_data, y = y_data)
+d2 = iid(gxy, n)
+__score__ = logdensityof(d2, data)
+`), /§06|zero-row/);
+});

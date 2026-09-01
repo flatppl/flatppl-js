@@ -2230,6 +2230,25 @@ function _recognizeDiagonalPushforwardFields(
   return out;
 }
 
+// Whether a named measure binding's variate is record-valued (a `joint`/
+// `record`, inline or via inferredType) — mirrors `_baseRecordFields`'s
+// ref-branch recognition, boolean-only. Used by `classifyIid` to route a
+// derived size of 0 to the §06 refusal rather than the empty-product path.
+function _isRecordValuedMeasureBase(baseName: string, bindings: any): boolean {
+  const b = bindings.get(baseName);
+  if (!b) return false;
+  const t = b.inferredType;
+  if (t && t.kind === 'measure' && t.domain && t.domain.kind === 'record'
+      && t.domain.fields) {
+    return true;
+  }
+  // Fallback for a lifted inline base (no inferredType yet): its raw IR is
+  // the record/joint call itself.
+  return !!(b.ir && b.ir.kind === 'call'
+    && (b.ir.op === 'joint' || b.ir.op === 'record')
+    && Array.isArray(b.ir.fields));
+}
+
 function classifyIid(
   rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any,
 ): DerivationIid | null {
@@ -2254,9 +2273,19 @@ function classifyIid(
   }
   for (const node of nodes) {
     const n = resolveConstant(node, bindings, new Set(), fixedValues);
-    if (n == null || !Number.isInteger(n) || n <= 0) return null;
+    if (n == null || !Number.isInteger(n) || n < 0) return null;
     dims.push(n);
   }
+  // §06 iid: a scalar-length size derived to 0 is the empty product measure
+  // for a scalar-valued M (still unclassified here — a pre-existing, separate
+  // gap this fix does not touch), but record-valued M has no zero-row table.
+  // Let that one shape through as a normal 'iid' derivation with dims=[0] so
+  // it reaches the runtime record branch, which raises the §06 refusal.
+  if (dims.length === 1 && dims[0] === 0) {
+    if (!_isRecordValuedMeasureBase(baseName, bindings)) return null;
+    return { kind: 'iid', from: baseName, dims };
+  }
+  if (dims.some((n) => n === 0)) return null;
   return { kind: 'iid', from: baseName, dims };
 }
 
@@ -5453,6 +5482,7 @@ module.exports = {
   classifySuperpose,
   classifyRecordOrJoint,
   classifyIid,
+  _isRecordValuedMeasureBase,
   classifyKernelBroadcast,
   classifyLogdensityof,
   classifyTotalmass,
