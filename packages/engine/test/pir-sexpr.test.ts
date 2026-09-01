@@ -67,9 +67,59 @@ test('toSexpr: record literal → record with %field entries', () => {
   assert.match(out, /\(%field sigma 1\.0\)/);
 });
 
+// Spec §11 "Literal values": "A scalar literal carries no leading sign:
+// a negated numeric literal is the call `(neg 1.0)`."
+test('toSexpr: a negated numeric literal is a neg call, not a signed atom', () => {
+  const mod = buildModule(`i = -3\nr = -1.5\nz = -2.0`);
+  const out = pirSexpr.toSexpr(mod);
+  assert.match(out, /\(%bind i \(neg 3\)\)/);
+  assert.match(out, /\(%bind r \(neg 1\.5\)\)/);
+  // An integer-valued real keeps its decimal point inside the call.
+  assert.match(out, /\(%bind z \(neg 2\.0\)\)/);
+  assert.doesNotMatch(out, /-\d/);
+});
+
+test('toSexpr: negated literals inside composites are neg calls too', () => {
+  const mod = buildModule(`v = [1, -3, 5]\nr = record(a = -0.5)`);
+  const out = pirSexpr.toSexpr(mod);
+  assert.match(out, /\(vector 1 \(neg 3\) 5\)/);
+  assert.match(out, /\(%field a \(neg 0\.5\)\)/);
+});
+
 // ---------------------------------------------------------------------
 // Reader
 // ---------------------------------------------------------------------
+
+test('fromSexpr: (neg n) reads back as a neg call over an unsigned literal', () => {
+  const src = `
+(%module
+  (%public i r)
+  (%bind i (neg 3))
+  (%bind r (neg 1.0)))
+`;
+  const { module, diagnostics } = pirSexpr.fromSexpr(src);
+  assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);
+  for (const [name, numType] of [['i', 'integer'], ['r', 'real']]) {
+    const rhs = module.bindings.get(name).rhs;
+    assert.equal(rhs.kind, 'call');
+    assert.equal(rhs.op, 'neg');
+    assert.equal(rhs.args[0].kind, 'lit');
+    assert.equal(rhs.args[0].numType, numType);
+    assert.ok(rhs.args[0].value > 0, 'the literal itself carries no sign');
+  }
+  // Re-emitting the read module reproduces the canonical text.
+  const out = pirSexpr.toSexpr(module);
+  assert.match(out, /\(%bind i \(neg 3\)\)/);
+  assert.match(out, /\(%bind r \(neg 1\.0\)\)/);
+});
+
+test('fromSexpr: a source-lowered negated literal survives emit → read → emit', () => {
+  const mod = buildModule(`x = -3\ny = -1.25`);
+  const sexp1 = pirSexpr.toSexpr(mod);
+  const { module: mod2, diagnostics } = pirSexpr.fromSexpr(sexp1);
+  assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);
+  assert.equal(pirSexpr.toSexpr(mod2), sexp1);
+});
 
 test('fromSexpr: simple module round-trip preserves bindings', () => {
   const src = `
