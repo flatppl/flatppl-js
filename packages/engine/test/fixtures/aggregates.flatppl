@@ -1,0 +1,37 @@
+%%%
+# Multi-axis aggregation (`aggregate`)
+
+A showcase of FlatPPL's `aggregate(reduction, output_axes, body)` — the
+loop-free, index-labelled Einstein-summation primitive. Axes named in the
+body but absent from `output_axes` are reduced over; axes in both are
+retained. The reduction need not be `sum`: any reduction (`sum`, `prod`,
+`var`, …) closes over the reduced axis.
+
+Purely deterministic — no random variables — so it is an illustration of
+the array language, not a probabilistic model.
+%%%
+flatppl_compat = "0.1"
+
+A = rowstack([[1, 3, 5], [9, 5, 1]])
+B = rowstack([[1, 0], [0, 1], [1, 1]])
+
+# Matrix multiplication
+C = aggregate(sum, [.i, .k], A[.i, .j] * B[.j, .k])
+# → C = [[6, 8], [10, 6]]
+
+# Weighted sum of squared differences, reducing over .j
+w = [1, 2, 1]
+D = aggregate(sum, [.i, .k], (A[.i, .j] - B[.j, .k])^2 * w[.j])
+# → D = [[34, 25], [114, 113]]
+
+# Column-wise variance of a matrix
+V = aggregate(var, [.j], A[.i, .j])
+# → V = [32, 2, 8]
+
+# Row-wise sum with one fixed column
+S = aggregate(sum, [.i], A[.i, 1])
+# → S = [1, 9]
+
+# Product over .j of (A + B) entries: prod-reduction over two matrices
+P = aggregate(prod, [.i, .k], A[.i, .j] + B[.j, .k])
+# → P = [[36, 24], [100, 108]]

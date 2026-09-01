@@ -1062,6 +1062,48 @@ function _packUniformCells(out: any[], N: any) {
   return { shape: [N, ...cell0], data };
 }
 
+// Default ON; FLATPPL_NO_PERATOM_COMPILE=1 forces the interpreter loop
+// (kill switch for debugging a suspected divergence in the field, the
+// same escape hatch FLATPPL_NO_EVALN_COMPILE gives the fused-loop path).
+let _COMPILE_PERATOM = !(typeof process !== 'undefined' && process.env
+  && process.env.FLATPPL_NO_PERATOM_COMPILE === '1');
+function _setCompilePerAtom(on: boolean) { _COMPILE_PERATOM = !!on; }
+
+// One compiled program per IR object. `_evalN` reaches `_perAtomFallback`
+// per residue NODE, so a tree with several residue subtrees would
+// otherwise recompile on every call; the materialiser also re-materialises
+// the same body across ctx rebuilds. Keyed by identity like `_PLAN_CACHE`,
+// so a program lives no longer than the IR it was compiled from.
+//
+// Deliberately NO size threshold. sampler-profile-compile.ts documents one
+// that was written and measured on the sweep path: it cost 7 to 11 % on the
+// small bodies it was meant to protect, because probing the node count is
+// itself a walk. `npm test` wall time before and after this change confirms
+// the same holds here (see the PR body).
+const _PROFILE_PROG_CACHE = new WeakMap<object, any>();
+
+// Returns a compiled program for `ir`, or null when it must not be used.
+// A throw from the COMPILER is contained and cached as a refusal, so an
+// unsupported shape costs one failed compile and then runs interpreted.
+// A throw from `evalPoint` is NOT caught: the compiler routes anything it
+// does not specialise through the interpreter's own `evaluateCall` on the
+// same node, so a runtime error is the model's, and re-running the batch
+// interpreted would both double-evaluate it and hide a real codegen
+// divergence behind an identical-looking result.
+function _profileProgramFor(ir: any): any {
+  if (!_COMPILE_PERATOM || ir === null || typeof ir !== 'object') return null;
+  const hit = _PROFILE_PROG_CACHE.get(ir);
+  if (hit !== undefined) return hit || null;
+  let prog: any = null;
+  try {
+    prog = _sampler().compileProfileBody(ir);
+  } catch (_e) {
+    prog = null;
+  }
+  _PROFILE_PROG_CACHE.set(ir, prog === null ? false : prog);
+  return prog;
+}
+
 function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
   const refNames = refArrays ? Object.keys(refArrays) : [];
   const overlayKeys = overlay ? Object.keys(overlay) : null;
@@ -1131,14 +1173,36 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
     }
   }
   const out = new Array(N);
-  for (let i = 0; i < N; i++) {
-    for (let j = 0; j < refNames.length; j++) {
-      const k = refNames[j];
-      // overlay wins over refArrays — skip the write when overlay has it.
-      if (overlayKeys && Object.prototype.hasOwnProperty.call(overlay, k)) continue;
-      callEnv[k] = accessors[j](i);
+  // Compile the body ONCE for the whole batch instead of re-walking the
+  // tree per atom, the same lever `worker.profileN` mode 'function'
+  // already pulls (sampler-profile-compile.ts). Both loops sweep one
+  // body over many points of the same shape, so the compiler applies
+  // unchanged: `nextPoint()` between atoms invalidates the memo, and
+  // `__bodyEval` routes the aggregate lowering's re-entries back into
+  // this program so a repeated subtree inside an aggregate body shares
+  // the outer body's slots.
+  const prog = _profileProgramFor(ir);
+  if (prog !== null) {
+    callEnv.__bodyEval = prog.bodyEval;
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < refNames.length; j++) {
+        const k = refNames[j];
+        // overlay wins over refArrays — skip the write when overlay has it.
+        if (overlayKeys && Object.prototype.hasOwnProperty.call(overlay, k)) continue;
+        callEnv[k] = accessors[j](i);
+      }
+      prog.nextPoint();
+      out[i] = prog.evalPoint(callEnv);
     }
-    out[i] = evaluateExpr(ir, callEnv);
+  } else {
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < refNames.length; j++) {
+        const k = refNames[j];
+        if (overlayKeys && Object.prototype.hasOwnProperty.call(overlay, k)) continue;
+        callEnv[k] = accessors[j](i);
+      }
+      out[i] = evaluateExpr(ir, callEnv);
+    }
   }
   // Pack to Float64Array if every result is numeric/boolean (the
   // common case for non-scalar ops whose outputs happen to be scalar,
@@ -1217,4 +1281,6 @@ module.exports = {
   broadcast3,
   broadcastN,
   _setCompileEvalN,
+  _setCompilePerAtom,
+  _profileProgramFor,
 };
