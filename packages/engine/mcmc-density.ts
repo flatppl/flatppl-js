@@ -27,6 +27,7 @@ const sampler       = require('./sampler.ts');
 const lower         = require('./lower.ts');
 const { totalMassExpr } = require('./normalize-mass.ts');
 const { crnNormalizeMassExpr } = require('./crn-normalize.ts');
+const { leafMassExpr } = require('./leaf-mass-quad.ts');
 
 // ---------------------------------------------------------------------------
 // parseSet — mirrors worker.ts makeParseSet (worker.ts:112-126).
@@ -180,6 +181,18 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
       if (crnExpr != null) {
         node.op = 'logweighted';
         node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [crnExpr] }] }, inner];
+        delete node.massFrom;
+        node.fromNormalize = true;
+        continue;
+      }
+      // The same for a continuous scalar probability LEAF base: Z(θ) is a fixed
+      // graded quadrature of ∫₀¹ w(F_B⁻¹(u); θ) du (leaf-mass-quad.ts). The IS
+      // route builds the identical expression, which is what makes this route
+      // and that one score one measure.
+      const leafExpr = leafMassExpr(node, ctx);
+      if (leafExpr != null) {
+        node.op = 'logweighted';
+        node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [leafExpr] }] }, inner];
         delete node.massFrom;
         node.fromNormalize = true;
         continue;

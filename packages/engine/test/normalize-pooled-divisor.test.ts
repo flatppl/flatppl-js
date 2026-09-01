@@ -16,7 +16,8 @@
 // correct value AND excludes the tilted one, so a green test cannot mean "the
 // number moved somewhere plausible".
 //
-// #216 wired the fixed-sample Ẑ(θ) for `weighted(f, Lebesgue(box))`. This file
+// #216 wired the fixed-sample Ẑ(θ) for `weighted(f, Lebesgue(box))`, and
+// `leaf-mass-quad` the graded quadrature for a probability-LEAF base. This file
 // covers the rest of the surface: the closed-form `totalMassExpr` shapes (a
 // scalar mass factor over a probability measure, in log space too, over a
 // record/tuple variate), the shapes with no per-θ expression (refused), and
@@ -156,26 +157,28 @@ test('the density route divides by the SAME Z(θ) the sampler now does', async (
   }
 });
 
-// =====================================================================
-// REFUSED — a θ-dependent mass with no per-θ expression
-// =====================================================================
-
-test('a θ-dependent mass with no closed form is refused, not sampled tilted',
+test('a θ-dependent mass over a probability LEAF is sampled untilted',
   async () => {
     // `weighted(x -> exp(θx), Normal(0,1))` has Z(θ) = e^{θ²/2}: not a scalar
     // factor (the weight is a function of the variate) and not an integral over
-    // a Lebesgue box (the base is a probability measure), so neither expression
-    // builder covers it. The pooled divisor returned E[θ] = 1.3557 against the
-    // prior's 1.0, matching the Z-tilted 1.3510637950 — the caller can act on a
-    // refusal and cannot see a tilted ensemble.
-    const src = H
+    // a Lebesgue box (the base is a probability measure). `leaf-mass-quad` now
+    // emits Z(θ) = ∫₀¹ w(F_B⁻¹(u); θ) du as a fixed graded quadrature, so this
+    // shape neither refuses nor takes the pooled divisor. The pooled divisor
+    // gave E[θ] = 1.3557 against the prior's 1.0, matching the Z-tilted
+    // 1.3510637950; the intervening refusal is gone. leaf-mass-quad.test.ts
+    // carries the density-side oracles for the same measure.
+    const r = await joint(H
       + 'theta ~ Uniform(interval(0.0, 2.0))\n'
       + 'm = normalize(weighted(x -> exp(theta * x), Normal(mu = 0.0, sigma = 1.0)))\n'
-      + 'y ~ m\n';
-    const { ctx } = ctxFor(src, 64);
-    await assert.rejects(() => Promise.resolve(ctx.getMeasure('y')),
-      /moves with a latent[\s\S]*no per-θ expression[\s\S]*§06/);
+      + 'y ~ m\n');
+    assert.ok(Math.abs(r.et - 1.0) < 0.03, `E[θ] = ${r.et}, prior mean 1.0`);
+    assert.ok(Math.abs(r.et - 1.3510637950) > 0.2,
+      `E[θ] = ${r.et} is the Z-TILTED 1.3510637950`);
   });
+
+// =====================================================================
+// REFUSED — a θ-dependent mass with no per-θ expression
+// =====================================================================
 
 test('a joint whose component mass is not 1 gets no expression, so it is refused',
   async () => {

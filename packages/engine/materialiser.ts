@@ -614,9 +614,11 @@ function _weightIsThetaDependent(inner: any, ctx: any): boolean {
 // pooled divisor is already right for the shape. THROWS when the mass moves
 // with a latent and no expression is available — see the refusal below.
 //
-// Two expression sources, both shared with the density routes so the sampler
+// Three expression sources, all shared with the density routes so the sampler
 // divides by the number `logdensityof` subtracts:
 //   • crn-normalize's fixed-sample Ẑ(θ) for `weighted(f, Lebesgue(box))`.
+//   • leaf-mass-quad's fixed graded quadrature Ẑ(θ) for `weighted(f, B)` with a
+//     continuous scalar probability leaf `B`.
 //   • normalize-mass's `totalMassExpr` for a scalar mass factor over a
 //     probability leaf — Z(θ) = w(θ) · 1, algebraic and exact.
 function _perAtomMassExpr(name: string, ctx: any): any | null {
@@ -631,6 +633,12 @@ function _perAtomMassExpr(name: string, ctx: any): any | null {
     // the caller would fall back to.
     return crnNormalizeMassExpr(ir, { points: ctx.crnNormalizePoints, ctx });
   }
+  // The same for a continuous scalar probability LEAF base — the shape this
+  // route used to REFUSE while the density route baked a constant. Both now
+  // divide by the same expression (leaf-mass-quad.ts).
+  const { leafMassExpr } = require('./leaf-mass-quad.ts');
+  const leafExpr = leafMassExpr(ir, ctx);
+  if (leafExpr != null) return leafExpr;
   if (!ir || ir.kind !== 'call' || ir.op !== 'normalize'
       || !Array.isArray(ir.args) || ir.args.length !== 1) return null;
   const inner = ir.args[0];
@@ -691,8 +699,9 @@ function _perAtomMassExpr(name: string, ctx: any): any | null {
   // refusal, and cannot see a wrong ensemble.
   throw new Error('normalize(' + name + '): the total mass of the inner measure moves '
     + 'with a latent, and this engine has no per-θ expression for it (its mass is '
-    + 'neither a scalar factor over a probability measure nor an integral over a '
-    + 'Lebesgue box). Sampling it against the POOLED mass would return the prior '
+    + 'not a scalar factor over a probability measure, an integral over a Lebesgue '
+    + 'box, or an integral over a continuous scalar probability leaf). Sampling it '
+    + 'against the POOLED mass would return the prior '
     + 'tilted by Z(θ); spec §06 normalize makes each θ-slice a probability measure, '
     + 'so refusing instead. Rewrite the measure so its mass is closed-form in the '
     + 'latent, or score it with logdensityof rather than sampling it.');
@@ -714,8 +723,9 @@ function _perAtomMassExpr(name: string, ctx: any): any | null {
 //   • `weighted(theta, Normal(0, 1))`, θ ~ Uniform(1, 5): E[θ] was 3.4464
 //     against the prior's 3.0, matching the Z-tilted E[θ²]/E[θ] = 3.4444.
 //
-// The expressions come from `crn-normalize.ts` and `normalize-mass.ts`, the
-// same two builders the density routes use — so the divisor here is the one
+// The expressions come from `crn-normalize.ts`, `leaf-mass-quad.ts` and
+// `normalize-mass.ts`, the same builders the density routes use — so the
+// divisor here is the one
 // `logdensityof` subtracts, which is what makes the two routes score one
 // measure.
 // NOTHING is caught here. A null means the pooled divisor is right for the

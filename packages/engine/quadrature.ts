@@ -99,6 +99,46 @@ export function adaptiveCubature(
   return { Z: totI, err: totE, evals };
 }
 
+// 5-point Gauss-Legendre nodes/weights on [0,1] (degree-9 exact).
+const GL5 = [
+  { x: 0.5 * (1 - 0.9061798459386640), w: 0.5 * 0.2369268850561891 },
+  { x: 0.5 * (1 - 0.5384693101056831), w: 0.5 * 0.4786286704993665 },
+  { x: 0.5,                            w: 0.5 * 0.5688888888888889 },
+  { x: 0.5 * (1 + 0.5384693101056831), w: 0.5 * 0.4786286704993665 },
+  { x: 0.5 * (1 + 0.9061798459386640), w: 0.5 * 0.2369268850561891 },
+];
+
+// A FIXED composite Gauss-Legendre rule on (0,1) whose cells are graded
+// geometrically towards BOTH endpoints: the breakpoints are 0, 2^-L, …, 1/2, …,
+// 1 − 2^-L, 1, and each cell carries the 5-point rule above.
+//
+// WHY GRADED AND NOT UNIFORM. The caller integrates ∫₀¹ f(F⁻¹(u)) du, and F⁻¹
+// carries u → 0 and u → 1 to the base measure's tails, so the integrand's whole
+// structure sits in the two endpoint cells. A uniform grid resolves none of it.
+// The dyadic grading resolves a tail decaying at any exponential rate, and its
+// outermost cell doubles as the caller's accuracy probe: for an integrand this
+// rule resolves, that cell's contribution is a negligible fraction of the total.
+//
+// Returned per CELL rather than as one flat node list: the caller needs the
+// outermost cells separately, and the grouping is not recoverable from the
+// nodes alone.
+export function gradedUnitCells(levels: number): Array<{ us: number[]; ws: number[] }> {
+  const bps: number[] = [0];
+  for (let k = levels; k >= 1; k--) bps.push(Math.pow(2, -k));
+  for (let k = 2; k <= levels; k++) bps.push(1 - Math.pow(2, -k));
+  bps.push(1);
+  const cells: Array<{ us: number[]; ws: number[] }> = [];
+  for (let i = 0; i + 1 < bps.length; i++) {
+    const lo = bps[i], hi = bps[i + 1];
+    const h = hi - lo;
+    cells.push({
+      us: GL5.map((n) => lo + n.x * h),
+      ws: GL5.map((n) => n.w * h),
+    });
+  }
+  return cells;
+}
+
 // Fixed composite Gauss-Legendre estimate of ∫_lo^hi f over ONE 1-D window.
 //
 // WHY THIS IS SEPARATE FROM `adaptiveCubature`. The adaptive routine cannot
