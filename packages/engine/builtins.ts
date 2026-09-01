@@ -188,6 +188,31 @@ const DISTRIBUTIONS = new Set([
   'Dirac', 'Lebesgue', 'Counting',
 ]);
 
+// Kernel TAGS a FlatPDL `builtin_*` primitive may name, which is a wider set
+// than `DISTRIBUTIONS` — that one is the §08 base namespace, the names a
+// FlatPPL SOURCE may write unqualified.
+//
+// A determinised module names its kernel by the bare constructor symbol, and
+// for a §09 standard-module member (`hep.CrystalBall(m0 = …)`) that symbol is
+// the member name with the module qualification already discharged. The tag is
+// therefore not a source-level name, and §09 "Standard modules" gives a member
+// no unqualified spelling: `CrystalBall(...)` written directly in FlatPPL is an
+// undefined variable, and must stay one. That is why the §09 names live HERE
+// and not in `DISTRIBUTIONS` — which also feeds `ALL_KNOWN` and the analyzer's
+// bare-name resolution.
+//
+// The §09 densities themselves are REGISTRY-resident (`sampler-registry.ts`),
+// not in `standard-modules.ts`, so `builtinLogdensityof` already resolves every
+// name below. `test/flatpdl-kernel-tags.test.ts` pins that this set covers the
+// whole REGISTRY plus `DISTRIBUTIONS`, so a newly registered density cannot
+// evaluate while still failing to lower.
+const FLATPDL_KERNEL_TAGS = new Set([
+  ...DISTRIBUTIONS,
+  // §09 `particle-physics` (spec §09 "Distributions").
+  'CrystalBall', 'DoubleSidedCrystalBall', 'Argus', 'RelativisticBreitWigner',
+  'Voigtian', 'Landau', 'BifurcatedNormal', 'ContinuedPoisson',
+]);
+
 // Measure algebra operations
 const MEASURE_OPS = new Set([
   // Reweighting
@@ -279,6 +304,7 @@ function isReserved(name: string) {
 module.exports = {
   CONSTANTS, BOOL_LITERALS, SETS, SET_CONSTRUCTORS,
   RESERVED_NAMES, SPECIAL_BINDINGS, SPECIAL_OPERATIONS,
-  BUILTIN_FUNCTIONS, DISTRIBUTIONS, MEASURE_OPS, MEASURE_PRODUCING, ALL_KNOWN,
+  BUILTIN_FUNCTIONS, DISTRIBUTIONS, FLATPDL_KERNEL_TAGS,
+  MEASURE_OPS, MEASURE_PRODUCING, ALL_KNOWN,
   isKnownName, isConstant, isBoolLiteral, isSet, isSpecialOperation, isReserved,
 };
