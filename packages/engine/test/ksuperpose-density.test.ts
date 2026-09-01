@@ -272,13 +272,14 @@ async () => {
     `got ${got}, oracle -3.411415107516122`);
 });
 
-test('§06: a nested array LITERAL family is a static error, caught on the AST '
-  + 'without a type', () => {
+test('§06: a nested array LITERAL family over a SCALAR parameter is a static '
+  + 'error, caught on the AST without a type', () => {
   const ds = diagnosticsOf(PARAMS
     + 'mix = ksuperpose(Normal, weights)(mu = [[1.0, 2.0], [3.0, 4.0]], '
     + 'sigma = sigmas)\n');
-  assert.ok(ds.some((d: any) => /single axis/.test(d.message)),
-    `want a one-axis error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
+  assert.ok(ds.some((d: any) => /exactly one family axis/.test(d.message)
+      && /`mu` has rank 0/.test(d.message)),
+    `want a family-axis error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
 });
 
 test('a family argument that is an unnamed expression is refused, naming the '
@@ -463,13 +464,33 @@ test('a disintegrated binding leaves no residual ksuperpose in EITHER AST slot',
 // Static errors and refusals
 // =====================================================================
 
-test('§06: more than one family axis is a static error', () => {
+// §06: "an argument's family axes are its leading axes in excess of the rank
+// (number of axes) of the parameter it feeds, and any count other than one is a
+// static error". `Normal`'s `mu` has rank 0, so a two-axis argument carries two
+// family axes.
+test('§06: two family axes over a SCALAR parameter is a static error', () => {
   const ds = diagnosticsOf(PARAMS
     + 'grid = [[1.0, 2.0], [3.0, 4.0]]\n'
     + 'mix = ksuperpose(Normal, weights)(mu = grid, sigma = sigmas)\n');
-  assert.ok(ds.some((d: any) => /single axis/.test(d.message)),
-    `want a one-axis error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
+  assert.ok(ds.some((d: any) => /exactly one family axis/.test(d.message)
+      && /gives 2 family axes/.test(d.message)),
+    `want a family-axis error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
   assert.ok(ds.some((d: any) => d.loc), 'the error is located');
+});
+
+// The other direction of the same sentence: an argument AT the parameter's own
+// rank carries ZERO family axes, which "any count other than one" also refuses.
+// Only a NON-collection is held constant, so a shared covariance must be
+// spelled with a singular family axis.
+test('§06: zero family axes over a MATRIX parameter is a static error', () => {
+  const ds = diagnosticsOf(
+    'w = [0.4, 0.6]\n'
+    + 'mus = rowstack([[0.0, 0.0], [3.0, 3.0]])\n'
+    + 'cov = rowstack([[1.0, 0.2], [0.2, 1.0]])\n'
+    + 'mix = ksuperpose(MvNormal, w)(mu = mus, cov = cov)\n');
+  assert.ok(ds.some((d: any) => /exactly one family axis/.test(d.message)
+      && /`cov` has rank 2/.test(d.message) && /gives 0 family axes/.test(d.message)),
+    `want a family-axis error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
 });
 
 test('§06: a family collection whose size is neither N nor one is a static '
@@ -517,8 +538,8 @@ test('the refusals name a POSITIONAL family argument correctly too', () => {
     + 'grid = [[1.0, 2.0], [3.0, 4.0]]\n'
     + 'mix = ksuperpose(Normal, weights)(grid, sigmas)\n');
   assert.ok(multiAxis.some((d: any) => /family argument #1 /.test(d.message)
-      && /single axis/.test(d.message)),
-    `want a positional one-axis error, got ${JSON.stringify(multiAxis.map((d: any) => d.message))}`);
+      && /exactly one family axis/.test(d.message)),
+    `want a positional family-axis error, got ${JSON.stringify(multiAxis.map((d: any) => d.message))}`);
 
   const sizeMismatch = diagnosticsOf(PARAMS
     + 'three = [1.0, 2.0, 3.0]\n'

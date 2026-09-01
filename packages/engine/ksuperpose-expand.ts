@@ -127,21 +127,26 @@ function _typeOf(node: any, bindings: any): any {
 // §06 classifies each family argument as a collection (size N or singular,
 // "expanded by repetition") or a non-collection ("held constant across the
 // components"). Return one of:
-//   { kind: 'const' }                 — held constant
-//   { kind: 'axis', length: n|null }  — one axis; null length = unknown
-//   { kind: 'multiaxis' }             — §06 static error
-//   { kind: 'table' }                 — one axis, but not lowered here
-//   null                              — cannot classify
+//   { kind: 'const' }                            — held constant
+//   { kind: 'axis', length, axes, lead }         — a collection
+//   { kind: 'table', length, columns }           — one axis, its rows
+//   null                                         — cannot classify
 //
-// Axis counting follows the TYPE, not `shape.length`: FlatPPL spells a
-// nested array as an array whose element is an array, so a rank-1 type with
-// an array element is two axes and must not pass as one.
+// `axes` is the argument's TOTAL axis count, which §06's family rule measures
+// against the rank of the parameter it feeds ([`familyAxisComplaint`]). `lead`
+// is how many of those axes live in the OUTER array shape, which is how many
+// selectors read one family row: FlatPPL spells a nested array as an array
+// whose element is an array, so an N-vector of d x d matrices takes one
+// selector while a flat N x d x d array takes three.
 function _classify(node: any, bindings: any): any {
   const lit = _literalLength(node);
   if (lit != null) {
-    const nested = (node.elements || []).some(
-      (e: any) => e && (e.type === 'ArrayLiteral' || e.type === 'TupleLiteral'));
-    return nested ? { kind: 'multiaxis' } : { kind: 'axis', length: lit };
+    // A literal's nesting is its own axes; the outer literal is one axis.
+    const inner = (node.elements || [])[0];
+    const nested = inner && (inner.type === 'ArrayLiteral' || inner.type === 'TupleLiteral');
+    const innerCls = nested ? _classify(inner, bindings) : null;
+    const innerAxes = innerCls && innerCls.kind === 'axis' ? innerCls.axes : (nested ? 1 : 0);
+    return { kind: 'axis', length: lit, axes: 1 + innerAxes, lead: 1 };
   }
   if (node && (node.type === 'NumberLiteral' || node.type === 'BoolLiteral'
       || node.type === 'StringLiteral')) {
@@ -149,16 +154,21 @@ function _classify(node: any, bindings: any): any {
   }
   const t = _typeOf(node, bindings);
   if (!t) return null;
-  if (t.kind === 'table') return { kind: 'table' };
-  if (t.kind === 'tvector') return { kind: 'axis', length: _dim(t.length) };
+  if (t.kind === 'table') {
+    return { kind: 'table', length: _dim(t.nrows), columns: t.columns || null };
+  }
+  if (t.kind === 'tvector') {
+    return {
+      kind: 'axis', length: _dim(t.length), lead: 1,
+      axes: 1 + _typeAxes(t.elem),
+    };
+  }
   if (t.kind === 'array') {
-    const rank = Array.isArray(t.shape) ? t.shape.length : t.rank;
-    if (rank !== 1) return { kind: 'multiaxis' };
-    if (t.elem && (t.elem.kind === 'array' || t.elem.kind === 'table'
-        || t.elem.kind === 'tvector')) {
-      return { kind: 'multiaxis' };
-    }
-    return { kind: 'axis', length: _dim(t.shape && t.shape[0]) };
+    const lead = Array.isArray(t.shape) ? t.shape.length : (t.rank || 1);
+    return {
+      kind: 'axis', length: _dim(t.shape && t.shape[0]), lead,
+      axes: lead + _typeAxes(t.elem),
+    };
   }
   if (t.kind === 'measure' || t.kind === 'kernel' || t.kind === 'function'
       || t.kind === 'module' || t.kind === 'failed' || t.kind === 'deferred') {
@@ -168,8 +178,102 @@ function _classify(node: any, bindings: any): any {
   return { kind: 'const' };
 }
 
+// Axes of a value TYPE, counting a nested array's own axes.
+function _typeAxes(t: any): number {
+  if (!t) return 0;
+  if (t.kind === 'array') {
+    const rank = Array.isArray(t.shape) ? t.shape.length : (t.rank || 1);
+    return rank + _typeAxes(t.elem);
+  }
+  if (t.kind === 'tvector') return 1 + _typeAxes(t.elem);
+  return 0;
+}
+
 function _dim(d: any): number | null {
   return (typeof d === 'number' && Number.isInteger(d) && d > 0) ? d : null;
+}
+
+// The builtin measure-constructor name a `ksuperpose` kernel argument denotes,
+// or null for a reified or user-defined kernel. Follows an alias chain (§04
+// "Aliasing is just assignment").
+//
+// A §09 module member (`hepphys.Landau`) also answers null, which the family
+// rule reads as rank-polymorphic. That is not a gap in the rank rule: every §09
+// module distribution's parameters are scalars, and such a component does not
+// type as a measure in this engine yet, so no mixture reaches the check.
+function _componentName(node: any, body: any[]): string | null {
+  let n = node;
+  const seen = new Set<string>();
+  while (n && n.type === 'Identifier' && !seen.has(n.name)) {
+    seen.add(n.name);
+    const rhs = _rhsOf(n.name, body);
+    // No binding: a builtin constructor name.
+    if (rhs == null) return n.name;
+    n = rhs;
+  }
+  return null;
+}
+
+// The component's declared parameter names in order, plus whether its
+// parameter list is declared at all. A positional family argument feeds the
+// parameter at its own position (§06 passes the family "as to `broadcast`",
+// which binds a positional data-arg to the head's ordered parameter name).
+function _componentParams(name: string | null): { known: boolean, params: string[] } {
+  if (!name) return { known: false, params: [] };
+  const sig: any = require('./types.ts').signatureOf(name);
+  const kwargs = sig && sig.kwargs;
+  const isMeasure = !!(sig && sig.result && sig.result.kind === 'measure');
+  if (!kwargs || !isMeasure) return { known: false, params: [] };
+  return { known: true, params: Object.keys(kwargs) };
+}
+
+// §06's family-axis rule for ONE classified argument, or null when it holds.
+//
+// > with one family axis per collection argument: an argument's family axes are
+// > its leading axes in excess of the rank (number of axes) of the parameter it
+// > feeds, and any count other than one is a static error
+//
+// A parameter whose rank is unknown (a reified component, `Dirac`'s
+// rank-polymorphic `value`) is read as rank-polymorphic: the rank that leaves
+// exactly one family axis, so the argument holds. That is the only reading
+// available without a declared rank.
+//
+// Shared with the runtime arm (`ksuperpose-runtime.ts`) so the two spellings of
+// one mixture apply the same rule.
+function familyAxisComplaint(
+  cls: any, dist: string | null, param: string | null, label: string,
+  known: boolean,
+): string | null {
+  const { paramRankOf } = require('./distribution-param-ranks.ts');
+  // A TABLE family works by ROW axis with per-column element rank (§06 makes a
+  // table's columns the collection arguments), so the rank comparison is
+  // against the column ELEMENT's own axes and the row axis is the family axis.
+  if (cls && cls.kind === 'table' && cls.columns) {
+    for (const col of Object.keys(cls.columns)) {
+      const colRank = paramRankOf(dist, col, known);
+      if (colRank == null) continue;
+      const colAxes = _typeAxes(cls.columns[col]);
+      if (colAxes === colRank) continue;
+      return `ksuperpose: family argument ${label} must carry exactly one `
+        + 'family axis (spec §06: "an argument\'s family axes are its leading '
+        + 'axes in excess of the rank (number of axes) of the parameter it '
+        + 'feeds, and any count other than one is a static error"); the '
+        + `table's rows are one axis and \`${col}\` has rank ${colRank}, so a `
+        + `column of rank-${colAxes} elements does not leave exactly one`;
+    }
+    return null;
+  }
+  if (!cls || cls.kind !== 'axis') return null;
+  const rank = paramRankOf(dist, param, known);
+  if (rank == null) return null;
+  const axes = typeof cls.axes === 'number' ? cls.axes : 1;
+  if (axes === rank + 1) return null;
+  return `ksuperpose: family argument ${label} must carry exactly one family `
+    + 'axis (spec §06: "an argument\'s family axes are its leading axes in '
+    + 'excess of the rank (number of axes) of the parameter it feeds, and any '
+    + `count other than one is a static error"); \`${param}\` has rank ${rank}, `
+    + `so a collection with ${axes} axes gives ${Math.max(0, axes - rank)} `
+    + 'family axes';
 }
 
 // A numeric AST node as its value, or null when it is not a constant this
@@ -244,6 +348,12 @@ function _err(diagnostics: any[], message: string, loc: any) {
 }
 
 // One family argument, specialised to component `i` (1-based).
+//
+// Only the FAMILY axis is indexed; the parameter's own axes ride along. §07
+// gives the row slice of a multi-axis array as `get(M, i, all)`, so an argument
+// whose outer shape carries the parameter's axes takes one `all` per remaining
+// outer axis. A nested spelling (an N-vector of matrices) carries them in the
+// ELEMENT instead, so one selector already lands on the whole matrix.
 function _componentArg(spec: any, i: number, sloc: any): any {
   const node = _clone(spec.node);
   let value = node;
@@ -251,8 +361,10 @@ function _componentArg(spec: any, i: number, sloc: any): any {
     // §06: a singular collection is "size one, expanded by repetition", so
     // it reads row 1 for every component.
     const row = spec.cls.length === 1 ? 1 : i;
-    value = AST.IndexExpr(
-      node, [AST.NumberLiteral(row, String(row), sloc)], sloc, 'get');
+    const sels: any[] = [AST.NumberLiteral(row, String(row), sloc)];
+    const lead = typeof spec.cls.lead === 'number' ? spec.cls.lead : 1;
+    for (let k = 1; k < lead; k++) sels.push(AST.Identifier('all', sloc));
+    value = AST.IndexExpr(node, sels, sloc, 'get');
   }
   return spec.name == null ? value : AST.KeywordArg(spec.name, value, sloc);
 }
@@ -293,11 +405,14 @@ function _expandApplication(call: any, lift: any, bindings: any, diagnostics: an
   // so the message below stands; with a runtime N the whole application goes
   // to the runtime arm, which reads each argument's shape from its value and
   // needs no static classification. So the error is HELD until N is known.
+  const dist = _componentName(kernelNode, body);
+  const { known, params } = _componentParams(dist);
   const specs: any[] = [];
   let unclassified: any = null;
   for (const a of call.args || []) {
     const isKw = a && a.type === 'KeywordArg';
     const node = isKw ? a.value : a;
+    const param = isKw ? a.name : (params[specs.length] || null);
     const cls = _classify(node, bindings);
     if (cls == null) {
       if (unclassified == null) {
@@ -313,10 +428,10 @@ function _expandApplication(call: any, lift: any, bindings: any, diagnostics: an
       specs.push({ name: isKw ? a.name : null, node, cls: null });
       continue;
     }
-    if (cls.kind === 'multiaxis') {
-      _err(diagnostics, 'ksuperpose: the parameter family is restricted to a '
-        + `single axis, and family argument ${isKw ? '`' + a.name + '`' : '#' + (specs.length + 1)} `
-        + 'has more than one (spec §06)', (node && node.loc) || call.loc);
+    const label = isKw ? '`' + a.name + '`' : '#' + (specs.length + 1);
+    const complaint = familyAxisComplaint(cls, dist, param, label, known);
+    if (complaint) {
+      _err(diagnostics, complaint, (node && node.loc) || call.loc);
       return call;
     }
     if (cls.kind === 'table') {
@@ -470,4 +585,7 @@ function classifyNamedFamilyArg(name: string, bindings: any): any {
   return _classify({ type: 'Identifier', name }, bindings);
 }
 
-module.exports = { expandKsuperposeApplications, classifyNamedFamilyArg };
+module.exports = {
+  expandKsuperposeApplications, classifyNamedFamilyArg, familyAxisComplaint,
+  componentName: _componentName, componentParams: _componentParams,
+};

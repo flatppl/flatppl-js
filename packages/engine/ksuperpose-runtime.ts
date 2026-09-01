@@ -105,8 +105,13 @@ function _litInt(i: number): any {
   return { kind: 'lit', value: i, numType: 'integer' };
 }
 
-function _getRow(ir: any, row: number): any {
-  return { kind: 'call', op: 'get', args: [ir, _litInt(row)] };
+// Index the FAMILY axis only. §07 gives a multi-axis row slice as
+// `get(M, i, all)`, so an argument whose outer shape also carries the
+// parameter's own axes takes one `all` per remaining outer axis (`lead`).
+function _getRow(ir: any, row: number, lead?: number): any {
+  const args: any[] = [ir, _litInt(row)];
+  for (let k = 1; k < (lead || 1); k++) args.push({ kind: 'const', name: 'all' });
+  return { kind: 'call', op: 'get', args };
 }
 
 // A synthesised binding. It carries no AST: this pass sets the derivation
@@ -143,6 +148,7 @@ function _synthBinding(name: string, ir: any, deps: string[], loc: any): any {
 // reason this pass exists. A `null` return is a refusal the caller reports.
 function _classifyArg(
   ir: any, label: string, bindings: any, fixedValues: any, refuse: any,
+  dist?: string | null, param?: string | null, known?: boolean,
 ): any {
   if (ir && ir.kind === 'lit') return { kind: 'const' };
   if (!_isSelfRef(ir)) {
@@ -154,9 +160,10 @@ function _classifyArg(
   const name = ir.name;
   const byType = require('./ksuperpose-expand.ts')
     .classifyNamedFamilyArg(name, bindings);
-  if (byType && byType.kind === 'multiaxis') {
-    refuse(`ksuperpose: the parameter family is restricted to a single axis, `
-      + `and family argument ${label} has more than one (spec §06)`);
+  const complaint = require('./ksuperpose-expand.ts')
+    .familyAxisComplaint(byType, dist || null, param || null, label, !!known);
+  if (complaint) {
+    refuse(complaint);
     return null;
   }
   if (byType && byType.kind === 'table') {
@@ -167,7 +174,7 @@ function _classifyArg(
   }
   if (byType && byType.kind === 'const') return { kind: 'const' };
   if (byType && byType.kind === 'axis' && byType.length != null) {
-    return { kind: 'axis', length: byType.length };
+    return { kind: 'axis', length: byType.length, lead: byType.lead || 1 };
   }
   // The type carries no length. Read the value.
   const v = fixedValues.has(name) ? fixedValues.get(name) : null;
@@ -253,16 +260,20 @@ function _expandOne(
   // Family arguments, in the application's own order and naming — the
   // component call takes each one in the position or under the keyword it
   // already has (§05 lets a distribution take its parameters positionally).
+  const { known, params } = require('./ksuperpose-expand.ts')
+    .componentParams(kernelOp);
   const specs: any[] = [];
   const posArgs = binding.ir.args || [];
   for (let i = 0; i < posArgs.length; i++) {
-    const cls = _classifyArg(posArgs[i], '#' + (i + 1), bindings, fixedValues, refuse);
+    const cls = _classifyArg(posArgs[i], '#' + (i + 1), bindings, fixedValues,
+      refuse, kernelOp, params[i] || null, known);
     if (cls == null) return false;
     specs.push({ key: null, ir: posArgs[i], cls });
   }
   const kwargs = binding.ir.kwargs || {};
   for (const k of Object.keys(kwargs)) {
-    const cls = _classifyArg(kwargs[k], '`' + k + '`', bindings, fixedValues, refuse);
+    const cls = _classifyArg(kwargs[k], '`' + k + '`', bindings, fixedValues,
+      refuse, kernelOp, k, known);
     if (cls == null) return false;
     specs.push({ key: k, ir: kwargs[k], cls });
   }
@@ -291,7 +302,7 @@ function _expandOne(
       // it reads row 1 for every component.
       const value = s.cls.kind === 'const'
         ? s.ir
-        : _getRow(s.ir, s.cls.length === 1 ? 1 : i);
+        : _getRow(s.ir, s.cls.length === 1 ? 1 : i, s.cls.lead);
       if (s.key == null) cArgs.push(value);
       else { cKwargs[s.key] = value; hasKw = true; }
     }
