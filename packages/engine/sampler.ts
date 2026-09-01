@@ -648,10 +648,13 @@ function _reduceRowAxis(col: any, opName: string): any {
       let p = 1; for (let i = 0; i < N; i++) p *= data[i * cellLen + j];
       out[j] = p;
     } else if (opName === 'maximum') {
-      let m = -Infinity; for (let i = 0; i < N; i++) { const x = data[i * cellLen + j]; if (x > m) m = x; }
+      // A NaN cell propagates (spec §07, "NaN inputs") — this is a
+      // separate hand-rolled reduction from ARITH_OPS.maximum, so it
+      // needs its own isNaN check.
+      let m = -Infinity; for (let i = 0; i < N; i++) { const x = data[i * cellLen + j]; if (Number.isNaN(x)) { m = NaN; break; } if (x > m) m = x; }
       out[j] = m;
     } else if (opName === 'minimum') {
-      let m = Infinity; for (let i = 0; i < N; i++) { const x = data[i * cellLen + j]; if (x < m) m = x; }
+      let m = Infinity; for (let i = 0; i < N; i++) { const x = data[i * cellLen + j]; if (Number.isNaN(x)) { m = NaN; break; } if (x < m) m = x; }
       out[j] = m;
     } else if (opName === 'var' || opName === 'std') {
       // n = 1 is undefined (spec §04 "Relationship to broadcasting",
@@ -1706,18 +1709,29 @@ const ARITH_OPS = {
   // Multi-axis array → tuple of per-axis index Values.
   indicesof:  (a: any) => _indicesOfImpl(a, /*zeroBased=*/ false),
   indicesof0: (a: any) => _indicesOfImpl(a, /*zeroBased=*/ true),
+  // A NaN input propagates through the order operations (spec §07,
+  // "NaN inputs"). `>`/`<` are false against NaN, so a plain running
+  // comparison silently skips it — an explicit isNaN check is needed.
   maximum: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'maximum');
     const arr = _arrLike(a);
     let m = -Infinity;
-    for (let i = 0; i < arr.length; i++) if (arr[i] > m) m = arr[i];
+    for (let i = 0; i < arr.length; i++) {
+      const x = arr[i];
+      if (Number.isNaN(x)) return NaN;
+      if (x > m) m = x;
+    }
     return m;
   },
   minimum: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'minimum');
     const arr = _arrLike(a);
     let m = Infinity;
-    for (let i = 0; i < arr.length; i++) if (arr[i] < m) m = arr[i];
+    for (let i = 0; i < arr.length; i++) {
+      const x = arr[i];
+      if (Number.isNaN(x)) return NaN;
+      if (x < m) m = x;
+    }
     return m;
   },
   // median(xs) per spec §07: with order statistics x_(1) ≤ … ≤ x_(n),
@@ -1727,9 +1741,16 @@ const ARITH_OPS = {
   //
   // n = 0 has no order statistics — the empty-array ruling makes this
   // an error, like mean/var/std/quantile over empty (TODO-flatppl-js.md).
+  //
+  // A NaN anywhere in the input propagates (spec §07, "NaN inputs").
+  // The typed-array default sort pushes NaN to the END regardless of
+  // its input position, so a post-sort scan would miss one seated
+  // before the median index — the check runs on the unsorted array.
   median: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'median');
-    const s = _sortedCopy(_arrLike(a));
+    const arr = _arrLike(a);
+    for (let i = 0; i < arr.length; i++) if (Number.isNaN(arr[i])) return NaN;
+    const s = _sortedCopy(arr);
     const n = s.length;
     if (n === 0) throw new Error('median: undefined for an empty array — no order statistic exists for 0 elements (spec §07)');
     const half = n >> 1;
@@ -1764,7 +1785,11 @@ const ARITH_OPS = {
     if (!(q >= 0 && q <= 1)) {
       throw new Error('quantile: p must lie in interval(0, 1) (spec §07); got ' + p);
     }
-    const s = _sortedCopy(_arrLike(a));
+    // A NaN in xs propagates (spec §07, "NaN inputs"); check the
+    // unsorted array — see the same note on `median`, above.
+    const arr = _arrLike(a);
+    for (let i = 0; i < arr.length; i++) if (Number.isNaN(arr[i])) return NaN;
+    const s = _sortedCopy(arr);
     const n = s.length;
     if (n === 0) throw new Error('quantile: undefined for an empty array — no order statistic exists for 0 elements (spec §07)');
     const h = (n - 1) * q + 1;
@@ -1856,22 +1881,18 @@ const ARITH_OPS = {
   // cummax / cummin — running extrema (spec §07). Scans, so they
   // preserve their input's shape; an empty input gives an empty vector.
   //
-  // Seeded from the FIRST ELEMENT, not ±Infinity, so no value that is
-  // absent from the input can reach the output: a ±Infinity seed made
-  // `cummax([NaN, 1])` return `[-Infinity, 1]`, since `>` is false against
-  // NaN and the seed survived to out[0]. With this seed it returns
-  // `[NaN, NaN]`, matching `accumulate(max, ·)`.
-  //
-  // NaN LATER in the input still does not propagate — `cummax([1, NaN, 2])`
-  // gives `[1, 1, 2]` against `[1, NaN, NaN]` — because a `>` comparison
-  // skips NaN. That matches the engine's own comparison-seeded `maximum`;
-  // §07 states no NaN rule (TODO-flatppl-js.md).
+  // A NaN input propagates (spec §07, "NaN inputs"): once `m` is NaN,
+  // every later `x > m` / `x < m` is false, so `m` stays NaN through
+  // the rest of the scan without a repeated isNaN check.
   cummax: (a: any) => {
     const arr = _arrLike(a);
     const n = arr.length;
     const out = new Float64Array(n);
     let m = n > 0 ? arr[0] : 0;
-    for (let i = 0; i < n; i++) { if (arr[i] > m) m = arr[i]; out[i] = m; }
+    for (let i = 0; i < n; i++) {
+      if (Number.isNaN(arr[i])) m = NaN; else if (arr[i] > m) m = arr[i];
+      out[i] = m;
+    }
     return { shape: [n], data: out };
   },
   cummin: (a: any) => {
@@ -1879,7 +1900,10 @@ const ARITH_OPS = {
     const n = arr.length;
     const out = new Float64Array(n);
     let m = n > 0 ? arr[0] : 0;
-    for (let i = 0; i < n; i++) { if (arr[i] < m) m = arr[i]; out[i] = m; }
+    for (let i = 0; i < n; i++) {
+      if (Number.isNaN(arr[i])) m = NaN; else if (arr[i] < m) m = arr[i];
+      out[i] = m;
+    }
     return { shape: [n], data: out };
   },
   // Norms and normalization (spec §07). All take a single vector
@@ -1918,12 +1942,15 @@ const ARITH_OPS = {
   // linfnorm(v) = max_i |v_i| (spec §07). Empty input gives 0, the
   // same convention l1norm / l2norm reach as empty sums, and what
   // LinearAlgebra.norm(Float64[], Inf) returns.
+  // A NaN component propagates (spec §07, "NaN inputs") — `mag > m` is
+  // false against a NaN magnitude, so it needs its own isNaN check.
   linfnorm: (a: any) => {
     const z = _complexVecParts(a);
     if (z) {
       let m = 0;
       for (let i = 0; i < z.re.length; i++) {
         const mag = Math.hypot(z.re[i], z.im[i]);
+        if (Number.isNaN(mag)) return NaN;
         if (mag > m) m = mag;
       }
       return m;
@@ -1932,6 +1959,7 @@ const ARITH_OPS = {
     let m = 0;
     for (let i = 0; i < arr.length; i++) {
       const mag = Math.abs(arr[i]);
+      if (Number.isNaN(mag)) return NaN;
       if (mag > m) m = mag;
     }
     return m;
