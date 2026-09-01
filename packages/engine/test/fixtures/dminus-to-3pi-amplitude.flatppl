@@ -1,0 +1,211 @@
+%%%
+# D- -> pi+ pi- pi- amplitude-analysis playground
+
+Coordinates:
+  m = m(pi- pi-) in GeV
+  c = cos(theta), with p2 <-> p3 equivalent to c -> -c
+
+The graph reconstructs p1, p2, p3 in the same-sign-pair rest frame,
+forms both opposite-sign isobars, evaluates spin-0/1/2 covariant
+spin factors, coherently sums simple constant-width Breit-Wigners,
+and constructs the unnormalized measure
+
+  dmu = m*k1*k*|A|^2 dm dc.
+
+This is an exploration fixture, not a precision amplitude model.
+Mass-dependent widths, barrier factors, and resolution are intentionally
+left for later. The two identical pi- are represented on the full labeled
+domain; a physical absolute rate would additionally use a global 1/2! factor.
+%%%
+flatppl_compat = "0.1"
+
+# --------------------------------------------------------------------
+# Fixed constants and square-domain coordinates
+# --------------------------------------------------------------------
+
+mpi = 0.13957039
+mD = 1.86965
+
+m_lo = 2 * mpi
+m_hi = mD - mpi
+
+m = elementof(interval(m_lo, m_hi))
+c = elementof(interval(-1.0, 1.0))
+
+kallen(x, y, z) = x^2 + y^2 + z^2 - 2*x*y - 2*x*z - 2*y*z
+
+# energy and momentum in the (p2+p3) rest frame
+E1_of(mass) = (mD^2 - mass^2 - mpi^2) / (2 * mass)
+q_of(mass) = sqrt(kallen(mD^2, mass^2, mpi^2)) / (2 * mass)
+k_of(mass) = sqrt(kallen(mass^2, mpi^2, mpi^2)) / (2 * mass)
+
+E1 = E1_of(m)
+k1 = q_of(m)
+k = k_of(m)
+sin_theta = sqrt(1 - c^2)
+
+# Contravariant four-vectors in the (p2+p3) rest frame.
+p1_event = [E1, 0.0, 0.0, -k1]
+p2_event = [m/2, k*sin_theta, 0.0, k*c]
+p3_event = [m/2, -k*sin_theta, 0.0, -k*c]
+
+# Minkowski metric stored as g^{mu nu}.
+g = rowstack([
+    [1.0,  0.0,  0.0,  0.0],
+    [0.0, -1.0,  0.0,  0.0],
+    [0.0,  0.0, -1.0,  0.0],
+    [0.0,  0.0,  0.0, -1.0]
+])
+
+# --------------------------------------------------------------------
+# Kinematic invariants
+# --------------------------------------------------------------------
+
+r12 = p1_event + p2_event
+r13 = p1_event + p3_event
+r23 = p2_event + p3_event
+g: s12[] := r12[.mu^] * r12[.mu_]
+g: s13[] := r13[.mu^] * r13[.mu_]
+g: s23[] := r23[.mu^] * r23[.mu_]
+
+dalitz_sum_residual = s12 + s13 + s23 - (mD^2 + 3*mpi^2)
+
+# --------------------------------------------------------------------
+# Transverse projectors for the two opposite-sign isobars
+# h^{mu nu} = g^{mu nu} - r^mu r^nu / r^2
+# --------------------------------------------------------------------
+
+p1 = elementof(cartpow(reals, 4))
+p2 = elementof(cartpow(reals, 4))
+p3 = elementof(cartpow(reals, 4))
+
+# four vector 
+r = p1 + p2
+d = p1 - p2
+P = p1 + p2 + p3
+b = P + p3
+# 
+g: s[] := r[.mu^] * r[.mu_]
+rr[.mu, .nu] := r[.mu] * r[.nu]
+h = g - rr ./ s
+# 0
+Z0 = 1.0
+# 1
+g: Z1[] := d[.mu_] * h[.mu^, .nu^] * b[.nu_]
+# 2
+g: dhd[] := d[.mu_] * h[.mu^, .nu^] * d[.nu_]
+g: bhb[] := b[.mu_] * h[.mu^, .nu^] * b[.nu_]
+Z2 = Z1^2 - dhd*bhb/3
+
+%%% 
+    angular_tensors(p_first, p_second, p_third) = ...
+
+Computation for angular tensors for the two opposite-sign isobars
+%%% 
+angular_tensors = functionof(
+    record(
+        Z0 = Z0,
+        Z1 = Z1,
+        Z2 = Z2,
+    ),
+    p1 = p1,
+    p2 = p2,
+    p3 = p3
+)
+
+angular_tensors_12 = angular_tensors(p1_event, p2_event, p3_event)
+angular_tensors_13 = angular_tensors(p1_event, p3_event, p2_event)
+
+Z0_12 = angular_tensors_12.Z0
+Z1_12 = angular_tensors_12.Z1
+Z2_12 = angular_tensors_12.Z2
+
+Z0_13 = angular_tensors_13.Z0
+Z1_13 = angular_tensors_13.Z1
+Z2_13 = angular_tensors_13.Z2
+
+# Algebraically equivalent form avoids complex/complex division while
+# preserving 1/(mR^2 - s - i*mR*width).
+bw(s, mR, width) = (
+    (s - mR^2 + mR * width * im) *
+    (1 / ((s - mR^2)^2 + (mR * width)^2)))
+
+# Illustrative pole parameters in GeV, not a fit model.
+m_scalar = 0.98
+Gamma_scalar = 0.07
+m_vector = 0.775
+Gamma_vector = 0.149
+m_tensor = 1.275
+Gamma_tensor = 0.185
+
+# Illustrative complex couplings.
+a_scalar = 1.0 * cis(0.0)
+a_vector = 0.8 * cis(0.7)
+a_tensor = 0.5 * cis(-1.2)
+
+# Keep the complex value inside abs2: the current JS engine has its
+# strongest support for complex intermediate arithmetic with real output.
+intensity = abs2(
+    a_scalar * (
+        bw(s12, m_scalar, Gamma_scalar) * Z0_12 +
+        bw(s13, m_scalar, Gamma_scalar) * Z0_13
+    ) +
+    a_vector * (
+        bw(s12, m_vector, Gamma_vector) * Z1_12 +
+        bw(s13, m_vector, Gamma_vector) * Z1_13
+    ) +
+    a_tensor * (
+        bw(s12, m_tensor, Gamma_tensor) * Z2_12 +
+        bw(s13, m_tensor, Gamma_tensor) * Z2_13
+    )
+)
+
+# Reify the useful graph outputs as scalar-input functions.
+intensity_fn = functionof(intensity, m = m, c = c)
+kinematics_fn = functionof(
+    record(
+        p1 = p1_event,
+        p2 = p2_event,
+        p3 = p3_event,
+        s12 = s12,
+        s13 = s13,
+        s23 = s23,
+        dalitz_sum_residual = dalitz_sum_residual
+    ),
+    m = m,
+    c = c
+)
+
+# --------------------------------------------------------------------
+# Unnormalized physical phase-space measure on the square
+# --------------------------------------------------------------------
+
+# Positional cartprod gives the current JS engine a two-component array
+# variate [m, c], which is also convenient for its 2-D browser plotter.
+square = cartprod(
+    interval(m_lo, m_hi),
+    interval(-1.0, 1.0)
+)
+
+phase_space = Lebesgue(support = square)
+phase_weight(mass, costheta) = mass * q_of(mass) * k_of(mass) * intensity_fn(mass, costheta)
+amplitude_measure = weighted(phase_weight, phase_space)
+
+# Normalization is intentionally optional for the first validation pass.
+# amplitude_pdf = normalize(amplitude_measure)
+
+# Fixed smoke-test outputs visible immediately in the browser.
+smoke_kinematics = kinematics_fn(1.0, 0.0)
+smoke_intensity = intensity_fn(1.0, 0.35)
+smoke_intensity_swapped = intensity_fn(1.0, -0.35)
+bose_intensity_residual = smoke_intensity - smoke_intensity_swapped
+
+plot_point = record(
+    m = 1.0,
+    c = 0.0
+)
+
+plot_domain = cartprod(
+    m = interval(m_lo, m_hi),
+    c = interval(-1.0, 1.0)
+)
