@@ -1248,6 +1248,12 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
   // doesn't match `total` is fail-loud (trailing rows would be silently
   // unscored data).
   if (value && value.__table__ === true) {
+    // Spec §06 iid: a size derived to 0 over a record-valued M is an error,
+    // not the empty product measure — a table has no zero-row form.
+    if (total === 0) {
+      throw new Error('density: iid over a record variate has size 0 '
+        + '(spec §06 iid: a table has no zero-row form)');
+    }
     const rows = value.nrows;
     if (rows !== total) {
       throw new Error('density: iid over a record variate wants ' + total
