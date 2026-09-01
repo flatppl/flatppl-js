@@ -1769,8 +1769,21 @@ function validateHolesAndPlaceholders(
   // `bound` is the nearest enclosing reification's binder list, or null when
   // there is no enclosing reification; `boundIsLambda` records whether that
   // reification is the parser's own lambda rewrite.
+  //
+  // `axisOk` and `inBody` track the OTHER half of the §05 axis rule — a bare
+  // axis name's own position, as opposed to an axis LIST's (which
+  // `validateAxisListPositions` already owns). §05 "Axis names and
+  // aggregation" gives a bare axis exactly two legal spots: "an entry in
+  // `aggregate`'s `output_axes` axis list" (an `AxisList` element, so
+  // `axisOk` carries unchanged into `ArrayLiteral`'s children) or "an index
+  // inside `[...]` within the body" (an `IndexExpr` index, or a `get(...)`
+  // index argument, and only once `inBody` — set on entry to an
+  // aggregate/metricsum's `expr` argument and never cleared — is true).
+  // Everywhere else `axisOk` is false, matching the indexed OBJECT itself,
+  // which is a value position even inside a body.
   function walk(
     node: any, scope: string, bound: Set<string> | null, boundIsLambda: boolean,
+    axisOk: boolean = false, inBody: boolean = false,
   ) {
     if (!node) return;
     switch (node.type) {
@@ -1813,12 +1826,10 @@ function validateHolesAndPlaceholders(
         return;
       case 'AxisRef':
         // Per spec §05 Axis names: an axis label `.name` (or its
-        // variance-marked form `.name^` / `.name_`) is legal only inside
-        // an enclosing `aggregate(...)` or `metricsum(...)` — as an entry
-        // of output_axes, as an `[...]` index in the body, or as a binder
-        // on the LHS of `:=` (which the parser desugars to `aggregate(...)`
-        // or `metricsum(...)`).
-        if (scope !== 'aggregate' && scope !== 'metricsum') {
+        // variance-marked form `.name^` / `.name_`) is legal only as an
+        // `output_axes` entry or as an index within an aggregation body —
+        // `axisOk` is exactly that (see the note above `walk`).
+        if (!axisOk) {
           diagnostics.push({
             severity: 'error',
             message: `Axis name '.${node.name}' may only appear inside `
@@ -1831,6 +1842,7 @@ function validateHolesAndPlaceholders(
         let inner = scope;
         let innerBound = bound;
         let innerIsLambda = boundIsLambda;
+        let isAggregation = false;
         if (node.callee && node.callee.type === 'Identifier') {
           if (node.callee.name === 'fn') {
             inner = 'fn';
@@ -1842,38 +1854,60 @@ function validateHolesAndPlaceholders(
             inner = 'reify';
             innerBound = reificationBoundPlaceholders(node);
             innerIsLambda = !!node.fromLambda;
-          } else if (node.callee.name === 'aggregate') inner = 'aggregate';
-          else if (node.callee.name === 'metricsum') inner = 'metricsum';
+          } else if (node.callee.name === 'aggregate') { inner = 'aggregate'; isAggregation = true; }
+          else if (node.callee.name === 'metricsum') { inner = 'metricsum'; isAggregation = true; }
         }
-        walk(node.callee, scope, bound, boundIsLambda);
-        for (const a of node.args) walk(a, inner, innerBound, innerIsLambda);
+        walk(node.callee, scope, bound, boundIsLambda, false, inBody);
+        if (isAggregation) {
+          // arg 0 is `f_reduction`/the metric, arg 1 is `output_axes`, arg 2
+          // is `expr` — the one `AxisList` position and the one point where
+          // `inBody` turns on and stays on, per §05 "Note on axis names" and
+          // "Axis names and aggregation".
+          node.args.forEach((a: any, i: number) => {
+            walk(a, inner, innerBound, innerIsLambda, i === 1, inBody || i === 2);
+          });
+        } else if (node.callee && node.callee.type === 'Identifier' && node.callee.name === 'get') {
+          // `get(A, .i, 1, .j)` (§04): arg 0 is the indexed object, a value
+          // position; the rest are indices, legal for a bare axis only
+          // inside a body.
+          node.args.forEach((a: any, i: number) => {
+            walk(a, inner, innerBound, innerIsLambda, i > 0 && inBody, inBody);
+          });
+        } else {
+          for (const a of node.args) walk(a, inner, innerBound, innerIsLambda, false, inBody);
+        }
         return;
       }
       case 'BinaryExpr':
-        walk(node.left, scope, bound, boundIsLambda);
-        walk(node.right, scope, bound, boundIsLambda);
+        walk(node.left, scope, bound, boundIsLambda, false, inBody);
+        walk(node.right, scope, bound, boundIsLambda, false, inBody);
         return;
       case 'UnaryExpr':
-        walk(node.operand, scope, bound, boundIsLambda);
+        walk(node.operand, scope, bound, boundIsLambda, false, inBody);
         return;
       case 'ArrayLiteral':
         // An axis list already refused as a whole (spec §05's axis-list
         // position rule) needs no per-axis report on top of that.
         if (axisListsRefused.has(node)) return;
-        for (const e of node.elements) walk(e, scope, bound, boundIsLambda);
+        // `axisOk` carries in unchanged: an `output_axes` list's elements
+        // are axis-legal, any other array literal's are not.
+        for (const e of node.elements) walk(e, scope, bound, boundIsLambda, axisOk, inBody);
         return;
       case 'TupleLiteral':
-        for (const e of node.elements) walk(e, scope, bound, boundIsLambda);
+        for (const e of node.elements) walk(e, scope, bound, boundIsLambda, false, inBody);
         return;
       case 'IndexExpr':
-        walk(node.object, scope, bound, boundIsLambda);
-        for (const i of node.indices) walk(i, scope, bound, boundIsLambda);
+        // The indexed object is a value position even inside a body — only
+        // the indices are the "index inside `[...]` within the body" §05
+        // admits a bare axis in.
+        walk(node.object, scope, bound, boundIsLambda, false, inBody);
+        for (const i of node.indices) walk(i, scope, bound, boundIsLambda, inBody, inBody);
         return;
       case 'FieldAccess':
-        walk(node.object, scope, bound, boundIsLambda);
+        walk(node.object, scope, bound, boundIsLambda, false, inBody);
         return;
       case 'KeywordArg':
-        walk(node.value, scope, bound, boundIsLambda);
+        walk(node.value, scope, bound, boundIsLambda, false, inBody);
         return;
       // Identifier, NumberLiteral, StringLiteral, BoolLiteral, ConstantRef,
       // SetRef, SliceAll: nothing to do.
