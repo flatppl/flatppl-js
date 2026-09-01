@@ -13,7 +13,51 @@ import type { IRNode } from './engine-types';
 
 const { lowerExpr } = require('./lower.ts');
 const { isMeasureExpr } = require('./analyzer.ts');
-const { walkIR, walkIRScoped } = require('./ir-walk.ts');
+const { walkIR, forEachIRChild, identifierBoundParams } = require('./ir-walk.ts');
+
+/**
+ * Sharing-aware variant of `walkIRScoped` for IDEMPOTENT visitors.
+ *
+ * The lowered IR is a DAG: one binding's IR object is reached from many
+ * parents, so `walkIRScoped` — a tree walk — re-walks a shared subtree once
+ * per parent. On a graph-shaped model (an amplitude body reusing one isobar
+ * across coherent terms) that costs a ~50x factor: 787 distinct objects
+ * reached 40 102 times.
+ *
+ * Skipping a `(node, scope)` pair already visited is observationally
+ * identical ONLY for a visitor whose effect is idempotent — one that unions
+ * into a set, as `collectSelfRefs` does. A visitor that COUNTS occurrences, or
+ * that accumulates per-occurrence state, would see fewer calls and a different
+ * answer. That is why this stays private to the idempotent collector here
+ * rather than becoming `walkIRScoped`'s default.
+ *
+ * The scope key is the active shadow SET OBJECT, not its contents. Descending
+ * a reified body allocates a fresh `inner` set (matching `walkIRScoped`), so
+ * two paths carrying equal-but-distinct shadow sets each get their own visited
+ * set — fewer skips than a content-keyed scope would allow, never more.
+ */
+function walkIRScopedDeduped(
+  node: any, visit: (n: any, shadowed: Set<string>) => void,
+): void {
+  const seenByScope = new Map<Set<string>, Set<any>>();
+  function go(n: any, active: Set<string>) {
+    if (!n || typeof n !== 'object') return;
+    let seen = seenByScope.get(active);
+    if (!seen) { seen = new Set(); seenByScope.set(active, seen); }
+    if (seen.has(n)) return;
+    seen.add(n);
+    const bound = identifierBoundParams(n);
+    if (bound && n.body) {
+      const inner = new Set(active);
+      for (const p of bound) inner.add(p);
+      forEachIRChild(n, (child: any) => go(child, child === n.body ? inner : active));
+    } else {
+      forEachIRChild(n, (child: any) => go(child, active));
+    }
+    visit(n, active);
+  }
+  go(node, new Set<string>());
+}
 
 /**
  * Resolve a measure-typed AST argument (the measure operand of
@@ -383,7 +427,11 @@ function collectSelfRefs(ir: IRNode | null | undefined) {
   // the module binding (the audit-§3 boundary-conflation class).
   // Placeholder params are `%local` and invisible to this collector
   // anyway; nesting-aware shadowing comes from walkIRScoped.
-  walkIRScoped(ir, (n: any, shadowed: Set<string>) => {
+  //
+  // The visitor only UNIONS names into `seen`, so re-visiting a shared
+  // subtree can add nothing new — hence the sharing-aware walk, which skips a
+  // `(node, scope)` pair it has already visited. See walkIRScopedDeduped.
+  walkIRScopedDeduped(ir, (n: any, shadowed: Set<string>) => {
     if (!n) return;
     if (n.kind === 'ref' && n.ns === 'self') {
       if (!shadowed.has(n.name)) seen.add(n.name);
