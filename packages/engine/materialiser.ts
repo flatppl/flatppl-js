@@ -295,6 +295,26 @@ function matArray(d: DerivationArray) {
 //     MCMC tractability probe re-raises it instead of a swallowed proposal.
 //
 // Zero stays legal either way — §06 gives it a meaning (the atom drops out).
+// Cells per atom of an ARRAY-atom base, when the base's per-sample log-weight
+// array (`N` long) counts one entry per CELL rather than one per atom. 1 when
+// the base is scalar-atom or its weights are already per-atom, so the caller's
+// scalar path is unchanged.
+function _weightAtomStride(parent: any, N: number): number {
+  if (!parent || parent.shape !== 'array' || !Array.isArray(parent.dims)) return 1;
+  const perAtom = parent.dims.reduce((p: number, n: number) => p * n, 1);
+  if (!(perAtom > 1) || N % perAtom !== 0) return 1;
+  return perAtom;
+}
+
+// Repeat each atom's weight across that atom's `perAtom` cells.
+function _spreadOverAtomCells(
+  atomWeights: any, perAtom: number, N: number,
+): Float64Array {
+  const out = new Float64Array(N);
+  for (let i = 0; i < N; i++) out[i] = atomWeights[Math.floor(i / perAtom)];
+  return out;
+}
+
 function _addWeightedLogSamples(
   w: Float64Array, baseLW: Float64Array, weights: Float64Array, N: number,
   isVariateWeight: boolean,
@@ -455,15 +475,24 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
     const N = lifted.logWeights.length;
     const w = new Float64Array(N);
     if (d.weightIR) {
+      // An ARRAY-atom base (`MvNormal`, `iid`) holds one atom per `dims` cell,
+      // so its uniform log-weights run per SAMPLE while the weight — §06's
+      // `w`, which does not depend on the coordinate within an atom — is one
+      // value per ATOM. Ask for the atom count and spread each weight across
+      // its own atom's coordinates. Reached by a §06 multivariate mixture,
+      // whose per-component weight is `w[i]` rather than a folded constant.
+      const perAtom = _weightAtomStride(parent, N);
       return collectRefArrays(d.weightIR, ctx).then((refArrays: any) =>
         ctx.sendWorker({
           type: 'evaluateN',
           ir: d.weightIR,
-          count: ctx.sampleCount,
+          count: perAtom > 1 ? Math.floor(N / perAtom) : ctx.sampleCount,
           refArrays: refArrays,
         })
       ).then((reply: any) => {
-        const weights = reply.samples;
+        const weights = perAtom > 1
+          ? _spreadOverAtomCells(reply.samples, perAtom, N)
+          : reply.samples;
         if (d.isLog) {
           for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] + weights[i];
         } else {
@@ -478,6 +507,7 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
         const nEff = empirical.effectiveSampleSize({ samples: lifted.samples, logWeights: w });
         const out: any = scalarMeasureN(lifted.samples,
           { logWeights: w, logTotalmass: lTM, n_eff: nEff });
+        _keepAtomShape(out, parent);
         if (massOnly) out._atomMassWeights = true;
         return out;
       });
@@ -491,9 +521,28 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
       logTotalmass: parentLTM + d.logShift,
       n_eff: (typeof parent.n_eff === 'number') ? parent.n_eff : N,
     });
+    _keepAtomShape(out, parent);
     if (massOnly) out._atomMassWeights = true;
     return out;
   });
+}
+
+// Carry an ARRAY-atom base's per-atom shape onto a reweighted measure: §06
+// `weighted` changes a measure's weights, never its variate shape, and a
+// downstream `superpose` needs the shape to select a component per ATOM rather
+// than per cell. The log-weights stay per CELL, which is what the parent's own
+// uniform weights are.
+function _keepAtomShape(out: any, parent: any): void {
+  if (!parent || parent.shape !== 'array' || !Array.isArray(parent.dims)) return;
+  out.dims = parent.dims;
+  out.shape = 'array';
+  const perAtom = parent.dims.reduce((p: number, n: number) => p * n, 1);
+  if (perAtom > 0 && out.samples && out.samples.BYTES_PER_ELEMENT !== undefined) {
+    out.value = {
+      shape: [Math.floor(out.samples.length / perAtom)].concat(parent.dims),
+      data: out.samples,
+    };
+  }
 }
 
 // `weighted(w, Lebesgue(box))` / `logweighted(…)` over a vector-atom box
@@ -1983,6 +2032,17 @@ function _superposeComponentWeights(p: any) {
   return Object.assign({}, u, { logWeights: lw });
 }
 
+// Cells per atom shared by every superpose component, or 1 when the components
+// are scalar-atom (or do not agree on one stride, which keeps the pooled
+// fallback). `sc` is the output atom count, so a component of `m · sc` samples
+// holds `m` values per atom.
+function _superposeCellsPerAtom(lifted: any[], sc: number): number {
+  if (!(sc > 0) || lifted.length === 0) return 1;
+  const m = lifted[0].samples.length / sc;
+  if (!Number.isInteger(m) || m <= 1) return 1;
+  return lifted.every((l: any) => l.samples.length === m * sc) ? m : 1;
+}
+
 function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
   // Superpose: concat parents' samples + logWeights, systematic-
   // resample to ctx.sampleCount. Mass-faithful: result's totalmass
@@ -2088,8 +2148,16 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
         + 'measure … sampling undefined"). Its log-density is still defined, '
         + 'and is −∞ everywhere.');
     }
+    // ARRAY-ATOM components (a vector or matrix variate: `MvNormal`, and the
+    // §06 multivariate `ksuperpose` mixture that expands to a superposition of
+    // them) hold `cells` values per atom. The selection is per ATOM — one
+    // component choice for a whole vector — so the whole cell block moves
+    // together; choosing per cell would mix coordinates from different
+    // components, which gave a K = 2, d = 2 mixture both coordinates at the
+    // pooled mean and a covariance neither component has.
+    const cells = _superposeCellsPerAtom(lifted, sc);
     const prng = makeMainThreadPrng(nameSeed(name, ctx.rootKey));
-    const out = new Float64Array(sc);
+    const out = new Float64Array(sc * cells);
 
     // Per-INDEX component selection is the GENERAL case, not just the
     // repeat axis: output index i selects among the P components' OWN
@@ -2113,14 +2181,19 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     // §06's product of three mixtures is mean 0 in every coordinate.
     // K = 1 is unaffected: the pool is the same P weights and the same
     // single prng call, so that stream is unchanged.
-    const perIndex = lifted.every((l: any) => l.samples.length === sc);
+    const perIndex = lifted.every((l: any) => l.samples.length === sc * cells);
     if (perIndex) {
       const P = lifted.length;
       const slotLW = new Float64Array(P);
       for (let i = 0; i < sc; i++) {
-        for (let p = 0; p < P; p++) slotLW[p] = lifted[p].logWeights[i];
+        // An array-atom parent's log-weights run per CELL and are constant
+        // within an atom (§06's weight does not depend on the coordinate), so
+        // the atom's first cell carries its weight.
+        for (let p = 0; p < P; p++) slotLW[p] = lifted[p].logWeights[i * cells];
         const pick = empirical.systematicResample(slotLW, 1, prng)[0];
-        out[i] = lifted[pick].samples[i];
+        for (let c = 0; c < cells; c++) {
+          out[i * cells + c] = lifted[pick].samples[i * cells + c];
+        }
       }
     } else {
       const idx = empirical.systematicResample(combinedLogWeights, sc, prng);
@@ -2152,27 +2225,52 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       const P = lifted.length;
       const slot = new Float64Array(P);
       for (let i = 0; i < sc; i++) {
-        for (let p = 0; p < P; p++) slot[p] = lifted[p].logWeights[i];
-        outW[i] = empirical.logSumExp(slot);
+        for (let p = 0; p < P; p++) slot[p] = lifted[p].logWeights[i * cells];
+        const lw = empirical.logSumExp(slot);
+        for (let c = 0; c < cells; c++) outW[i * cells + c] = lw;
       }
     } else {
       outW.fill(totalLogMass - Math.log(sc));
     }
     let wMin = Infinity;
     let wMax = -Infinity;
-    for (let i = 0; i < sc; i++) {
+    for (let i = 0; i < outW.length; i++) {
       if (outW[i] < wMin) wMin = outW[i];
       if (outW[i] > wMax) wMax = outW[i];
+    }
+    const nEff = (wMax - wMin < 1e-12)
+      // Equal atom weights → n_eff = N exactly, not the estimator's N(1 + ε).
+      ? sc
+      : empirical.effectiveSampleSize({ samples: out, logWeights: outW });
+    if (cells > 1) {
+      // Keep the variate's per-atom shape: the components share it (§06 makes
+      // every component of a superposition live on one variate space), so it
+      // is the superposition's own.
+      const m: any = empirical.arrayMeasure(out, _superposeAtomDims(parents, cells), outW);
+      m.logTotalmass = totalLogMass;
+      m.n_eff = nEff;
+      return m;
     }
     return scalarMeasureN(out, {
       logWeights: outW,
       logTotalmass: totalLogMass,
-      // Equal atom weights → n_eff = N exactly, not the estimator's N(1 + ε).
-      n_eff: (wMax - wMin < 1e-12)
-        ? sc
-        : empirical.effectiveSampleSize({ samples: out, logWeights: outW }),
+      n_eff: nEff,
     });
   });
+}
+
+// The per-atom shape shared by the superpose components. Read off the first
+// component that kept it; `[cells]` is the flat fallback for a component chain
+// that dropped `dims` on the way (a vector variate, which is the shape every
+// such chain in the corpus carries).
+function _superposeAtomDims(parents: any[], cells: number): number[] {
+  for (const p of parents) {
+    if (p && p.shape === 'array' && Array.isArray(p.dims) && p.dims.length > 0
+        && p.dims.reduce((a: number, b: number) => a * b, 1) === cells) {
+      return p.dims.slice();
+    }
+  }
+  return [cells];
 }
 
 // Synthesize the discrete-selector samples from CONSTANT branch weights

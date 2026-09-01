@@ -530,12 +530,13 @@ test('a chained user call is not mistaken for an applied mixture', () => {
     `no ksuperpose diagnostic belongs here, got ${JSON.stringify(errs)}`);
 });
 
-test('§06: more than one family axis is refused under a runtime N too', () => {
+test('§06: two family axes over a scalar parameter is refused under a runtime '
+  + 'N too', () => {
   const errs = buildErrors('w = reverse([1.2, 0.3])\n'
     + 'grid = [[1.0, 2.0], [3.0, 4.0]]\n'
     + 'mix = ksuperpose(Normal, w)(mu = grid, sigma = 1.0)\n');
-  assert.ok(errs.some((m) => /single axis/.test(m) && /`mu`/.test(m)),
-    `want a one-axis refusal, got ${JSON.stringify(errs)}`);
+  assert.ok(errs.some((m) => /exactly one family axis/.test(m) && /`mu`/.test(m)),
+    `want a family-axis refusal, got ${JSON.stringify(errs)}`);
 });
 
 test('a TABLE family is refused under a runtime N with the keyword-vector '

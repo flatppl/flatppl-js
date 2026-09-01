@@ -1181,7 +1181,12 @@ function liftInlineSubexpressions(bindings: any) {
       if (muAst.type === 'Identifier') {
         // Must name a REAL module binding — a bare formal skips (above).
         if (out.has(muAst.name)) muRefAst = makeIdent(muAst.name, astArg.loc);
-      } else if (muAst.type === 'CallExpr' || muAst.type === 'ArrayLiteral') {
+      } else if (muAst.type === 'CallExpr' || muAst.type === 'ArrayLiteral'
+                 || muAst.type === 'IndexExpr') {
+        // An `IndexExpr` mu is a §06 `ksuperpose` family row
+        // (`mus[i, :]`), which ksuperpose-expand synthesises per
+        // component; it hoists like any other inline mu.
+        //
         // Inline dynamic-shape mu (`MvNormal(mu = fill(0.0, k), …)`):
         // hoist it to an anon binding so the count expression has a
         // name to measure. Skip if it contains formals/placeholders —
