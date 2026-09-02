@@ -1565,10 +1565,58 @@ function collectNormalizeMassNodes(node: any, out: any, seen: any) {
 // worker never sees a mass-carrying normalize. The in-place mutation is
 // safe because the body is freshly built per lowerMeasure call (no
 // cache; the CLM mutation-hazard rule).
+// The in-place rewrite below is only sound while each node it touches is
+// PRIVATE to `measureIR` — reachable from no persistent binding IR, and by
+// exactly one path within the body. Both hold because a mass-carrying
+// `normalize` node is minted by `expandMeasure` per call rather than spliced
+// from a binding, so `inlineBoundaryDerivations` (which shares structure with
+// its input wherever it can) never aliases one.
+//
+// That is an invariant of two modules acting together, so it is checkable
+// rather than obvious. Opt in with `ctx.auditRewriteTargets` and it is
+// verified before the first mutation; the check is off by default and costs
+// nothing when off. `test/normalize-rewrite-privacy.test.ts` turns it on.
+function assertRewriteTargetsPrivate(nodes: any[], measureIR: any, ctx: any) {
+  const irWalk = require('./ir-walk.ts');
+  const bindingNodes = new Set<any>();
+  if (ctx && ctx.bindings && typeof ctx.bindings.forEach === 'function') {
+    ctx.bindings.forEach((b: any) => {
+      if (!b || !b.ir) return;
+      (function go(n: any) {
+        if (!n || typeof n !== 'object' || bindingNodes.has(n)) return;
+        bindingNodes.add(n);
+        irWalk.forEachIRChild(n, go);
+      })(b.ir);
+    });
+  }
+  const paths = new Map<any, number>();
+  (function go(n: any) {
+    if (!n || typeof n !== 'object') return;
+    paths.set(n, (paths.get(n) || 0) + 1);
+    irWalk.forEachIRChild(n, go);
+  })(measureIR);
+  for (const node of nodes) {
+    if (bindingNodes.has(node)) {
+      throw new Error('density: refusing to rewrite normalize(' + node.op
+        + ') in place — the node is reachable from a persistent binding IR, so '
+        + 'the rewrite would corrupt the binding');
+    }
+    const n = paths.get(node) || 0;
+    if (n > 1) {
+      throw new Error('density: refusing to rewrite normalize(' + node.op
+        + ') in place — the node is reachable by ' + n + ' paths in the body, '
+        + 'so rewriting one position would silently change the others');
+    }
+  }
+}
+
 function resolveNormalizeMasses(measureIR: any, ctx: any) {
   const nodes: any[] = [];
   collectNormalizeMassNodes(measureIR, nodes, new Set());
   if (nodes.length === 0) return Promise.resolve(measureIR);
+  if (ctx && ctx.auditRewriteTargets) {
+    assertRewriteTargetsPrivate(nodes, measureIR, ctx);
+  }
   // First pass: per-θ normalizer when the inner is a recognised
   // superpose-of-weighted probability measures (Z depends on the latent
   // weights); rewrite to logweighted(−log Z(θ), inner) without materialising.
@@ -1887,4 +1935,7 @@ module.exports = {
   // Shared with leaf-mass-quad.ts, so the θ-dependent and θ-independent leaf
   // arms accept exactly the same set of base measures.
   asScalarFactor,
+  // Exported for its own unit test — the guard has to be shown to fire, not
+  // only to pass. See test/normalize-rewrite-privacy.test.ts.
+  assertRewriteTargetsPrivate,
 };
