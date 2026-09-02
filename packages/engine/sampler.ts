@@ -3087,6 +3087,20 @@ function evaluateCall(ir: any, env: any): any {
         case 'nonnegintegers': return Number.isInteger(p) && p >= 0;
         case 'booleans':       return p === 0 || p === 1;
       }
+      // A set held in a BINDING (`window = interval(-3.0, 3.0)`; `x in
+      // window`). §03 makes a set a value, so the name need not be one of
+      // the named sets above. Its resolved value is the runtime descriptor
+      // `interval` evaluates to; membership is the same closed-interval
+      // test as the inline spelling.
+      if (setName != null && env
+          && Object.prototype.hasOwnProperty.call(env, setName)) {
+        const sv = env[setName];
+        if (sv && sv.kind === 'interval') {
+          const lo = sv.a !== undefined ? sv.a : sv.lo;
+          const hi = sv.b !== undefined ? sv.b : sv.hi;
+          return p >= lo && p <= hi;
+        }
+      }
       // Refuse loudly rather than silently mis-answer membership. Reachable
       // from a nested `cartpow(cartpow(S, n), m)`, whose inner power is a set
       // of arrays and not a scalar element set.
