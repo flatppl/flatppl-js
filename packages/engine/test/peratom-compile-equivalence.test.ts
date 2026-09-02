@@ -97,7 +97,11 @@ function measureNames(src: string): string[] {
 }
 
 async function assertRouteAgreement(file: string, N: number) {
-  const src = fs.readFileSync(path.join(FIXTURES, file), 'utf8');
+  return assertRouteAgreementSrc(file, fs.readFileSync(path.join(FIXTURES, file), 'utf8'), N);
+}
+
+async function assertRouteAgreementSrc(label: string, src: string, N: number) {
+  const file = label;
   const names = measureNames(src);
   assert.ok(names.length > 0, `${file}: no bindings to compare`);
   let compared = 0;
@@ -148,6 +152,27 @@ for (const file of [
     await assertRouteAgreement(file, 128);
   });
 }
+
+// A `normalize` whose per-atom divisor is an EXPRESSION in a latent, not a
+// pooled constant: `_perAtomLogMass` sends `totalMassExpr`'s output through
+// `evaluateN`, so the divisor itself is evaluated per atom and lands on the
+// same residue branch as any other body. The truncate arm makes the expression
+// `p·Z_t + q·1` with Z_t a baked literal, so both routes must produce the same
+// weights to the last bit — a divisor that differed between them would move the
+// θ-marginal on one route only. Inline rather than a fixture: the shape is a
+// §06 mixture spelling, not a corpus model.
+test('per-atom compile: a θ-dependent truncate-component divisor is bit-identical',
+  async () => {
+    const src = 'flatppl_compat = "0.1"\n'
+      + 'p ~ Beta(alpha = 2.0, beta = 5.0)\n'
+      + 'q = 1.0 - p\n'
+      + 'm = normalize(superpose('
+      + 'weighted(p, truncate(Normal(mu = 0.0, sigma = 1.0), interval(-1.0, 1.0))), '
+      + 'weighted(q, Normal(mu = 10.0, sigma = 1.0))))\n'
+      + 'y ~ m\n';
+    const n = await assertRouteAgreementSrc('normalize-truncate-mixture', src, 128);
+    assert.ok(n >= 3, `expected p, q, m and y to materialise, compared ${n}`);
+  });
 
 // The kill switch has to actually reach the loop, or the comparisons
 // above would be two runs of the same route.

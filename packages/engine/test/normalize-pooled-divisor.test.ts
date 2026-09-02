@@ -20,8 +20,9 @@
 // `leaf-mass-quad` the graded quadrature for a probability-LEAF base. This file
 // covers the rest of the surface: the closed-form `totalMassExpr` shapes (a
 // scalar mass factor over a probability measure, in log space too, over a
-// record/tuple variate), the shapes with no per-θ expression (refused), and
-// the shapes where the pooled divisor is right (pinned bit-for-bit).
+// record/tuple variate, over a `truncate` whose mass is its CDF difference),
+// the shapes with no per-θ expression (refused), and the shapes where the
+// pooled divisor is right (pinned bit-for-bit).
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -176,20 +177,62 @@ test('a θ-dependent mass over a probability LEAF is sampled untilted',
       `E[θ] = ${r.et} is the Z-TILTED 1.3510637950`);
   });
 
+test('a joint of a truncate is expressed exactly, so the θ-marginal is the prior',
+  async () => {
+    // §06 "Support restriction" makes truncate(M, S) "ν(A) = M(A ∩ S). Does
+    // not normalize automatically", so mass(truncate(Normal(0,1), [−1,1])) is
+    // 2Φ(1) − 1, and §06 "Joint composition" makes the joint's mass the
+    // product: mass = θ·(1·Z_t). §06 `normalize` then makes every θ-slice a
+    // probability measure, so the θ-MARGINAL of the sampled joint must be the
+    // prior UNCHANGED at E[θ] = 3.0. The pooled divisor would leave the residue
+    // Z(θ)/E[Z] ∝ θ and tilt it to E[θ²]/E[θ] = (124/12)/3 = 3.4444444444,
+    // which is 0.44 away against a Monte-Carlo error of ~4e-3 — so the tilted
+    // hypothesis is excluded, not merely un-asserted.
+    //
+    // The mass is θ·Z_t: a CONSTANT times the θ-dependent factor. Dividing it
+    // out therefore leaves the SAME ensemble as the mass-1 spelling
+    // `normalize(weighted(θ, Normal(0,1)))`, whose two moments the row below
+    // pins bit-for-bit — so both are asserted here to 1e-12, which is a far
+    // sharper statement than either moment's own sampling band.
+    const r = await joint(H
+      + 'theta ~ Uniform(interval(1.0, 5.0))\n'
+      + 'm = normalize(weighted(theta, joint(a = Normal(mu = 0.0, sigma = 1.0), '
+      + 'b = truncate(Normal(mu = 0.0, sigma = 1.0), interval(-1.0, 1.0)))))\n'
+      + 'y ~ m\n', N, 'theta', 'y');
+    assert.ok(Math.abs(r.et - 3.0) < 0.02,
+      `E[θ] = ${r.et}, prior mean 3.0 (the tilted hypothesis is 3.4444444444)`);
+    assert.ok(Math.abs(r.et - 3.003582380503686) < 1e-12,
+      `E[θ] = ${r.et} left the mass-1 spelling's ensemble (3.003582380503686)`);
+    assert.ok(Math.abs(r.ey - -0.004265923637528699) < 1e-12,
+      `E[a] = ${r.ey} left the mass-1 spelling's ensemble (−0.004265923637528699)`);
+    // The divisor cancels the per-atom mass exactly, so the weights come back
+    // uniform — a residual tilt would show as n_eff below N.
+    assert.ok(Math.abs(r.n_eff - N) < 1e-6, `n_eff = ${r.n_eff}, expected N = ${N}`);
+  });
+
 // =====================================================================
 // REFUSED — a θ-dependent mass with no per-θ expression
 // =====================================================================
 
-test('a joint whose component mass is not 1 gets no expression, so it is refused',
+test('an iid component gets no expression, so a θ-dependent factor over it is refused',
   async () => {
     // §06's independent product gives mass(joint) = ∏ mass(Mᵢ), which is only
-    // closed-form when every component's is. A `truncate` component's mass is
-    // M(S), which `totalMassExpr` does not express — so the product declines
-    // and the θ-dependent factor in front of it has nothing to divide by.
+    // closed-form when every component's is. `totalMassExpr` expresses a leaf
+    // (mass 1), a `weighted`/`logweighted` factor over one, a `superpose` sum,
+    // a `joint` product and a constant-parameter `truncate` (its CDF
+    // difference) — an `iid` component is none of those, so the product
+    // declines and the θ-dependent factor in front of it has nothing to divide
+    // by. The pooled divisor would hand back the prior tilted by Z(θ), so the
+    // sampling route refuses instead.
+    //
+    // THIS ROW USED TO USE A `truncate` COMPONENT, on the premise that its mass
+    // had no expression. It has one now (see the joint-of-truncate row above),
+    // so the witness moved to the component kind that still has none. The
+    // refusal itself is unchanged and must keep firing.
     const src = H
       + 'theta ~ Uniform(interval(1.0, 5.0))\n'
       + 'm = normalize(weighted(theta, joint(a = Normal(mu = 0.0, sigma = 1.0), '
-      + 'b = truncate(Normal(mu = 0.0, sigma = 1.0), interval(-1.0, 1.0)))))\n'
+      + 'b = iid(Normal(mu = 0.0, sigma = 1.0), 2))))\n'
       + 'y ~ m\n';
     const { ctx } = ctxFor(src, 64);
     await assert.rejects(() => Promise.resolve(ctx.getMeasure('y')),
@@ -609,26 +652,37 @@ test('an ALREADY-NORMALIZED component does not get its mass applied twice',
     assert.ok(Math.abs(ey - 7.0) < 0.07, `E[y] = ${ey}, oracle 7.0`);
   });
 
-test('a truncate component reaches the pooled-divisor fallback without refusing',
+test('a θ-DEPENDENT truncate component mass is divided out per atom',
   async () => {
-    // The one spelling that reaches `_perAtomMassExpr`'s "no closed-form Σ_i w_i"
-    // arm with θ-DEPENDENT weights: `totalMassExpr` has no `truncate` arm, so
-    // there is no expression to divide by. It must return the POOLED divisor —
-    // the number this shape already had — and NOT refuse.
+    // §06 "Support restriction": truncate(M, S) is "ν(A) = M(A ∩ S). Does not
+    // normalize automatically", so the component's mass is Z_t = 2Φ(1) − 1 and
+    // the superposition's is Z(p) = p·Z_t + (1 − p) by §06 `superpose`'s
+    // "ν(A) = M₁(A) + M₂(A) + …". `totalMassExpr`'s `truncate` arm emits Z_t as
+    // a rewrite-time literal, so the whole mass is an expression in p and both
+    // routes divide by Z(p_i) at atom i.
     //
-    // The component mass now reaches the SAMPLE POSITIONS, so the unweighted
-    // positions are the exact mixture: E[y] = 7.7783296397 (scipy.quad over the
-    // Beta(2,5) prior; replicate sd 0.0180 at this count). The `normalize` step
-    // still leaves the residue Z(p_i)/E[Z] on the atom WEIGHTS, so the weighted
-    // read stays the pooled one — E[y] = 7.8549918431, cov(p, y) = −0.2106127697,
-    // E[p] tilted to 0.2768126020 off the prior's 2/7 (replicate sds 0.0169 and
-    // 0.00289). Both readings are asserted, and the GAP BETWEEN THEM is asserted
-    // too: the two reads come off one ensemble, so their difference is far
-    // sharper than either band. cov discriminates poorly here (the mass-aware
-    // −0.2196964652 is only 3.1 sampling errors from the pooled value), which is
-    // why E[y] carries the exclusion. This row pins the remaining θ-dependent
-    // gap, recorded in flatppl-dev/measure-algebra-audit.md, so closing it flips
-    // this row loudly.
+    // THE ORACLE, mpmath at 40 digits, independent of the engine. The truncated
+    // component is symmetric about 0, so E[y | p] = 10(1 − p)/Z(p), and over
+    // the Beta(2,5) prior E[y] = 7.7783296397108580,
+    // cov(p, y) = −0.21969646519528201, E[p] = 2/7 exactly (§06 makes each
+    // p-slice a probability measure, so the p-marginal is the prior UNCHANGED).
+    // Replicate sds at this count: 0.0180 on E[y], 0.00289 on cov, 6.5e-4 on
+    // E[p].
+    //
+    // THIS ROW WAS THE `[WILL-FLIP]` PIN for the defect, and it flipped. Before
+    // the fix `_perAtomMassExpr` hit its "no closed-form Σ_i w_i" arm and
+    // returned the POOLED divisor, so the sample POSITIONS were the exact
+    // mixture while `normalize` left the residue Z(p_i)/E[Z] on the atom
+    // WEIGHTS: the weighted read was the pooled 7.8549918431449647 (measured
+    // 7.850136), cov the pooled −0.21061276969469647 (measured −0.211808), E[p]
+    // tilted to 0.27681260196068794 (measured 0.276920) and n_eff 59814.8. Each
+    // pooled value is EXCLUDED below, so a green row cannot mean "the number
+    // moved somewhere plausible".
+    //
+    // The sharpest assertion is not a moment. The two reads come off ONE
+    // ensemble, so with the residue gone the weighted read and the unweighted
+    // positions must agree to float noise, and n_eff must return to N. Neither
+    // carries a sampling band.
     const src = H
       + 'p ~ Beta(alpha = 2.0, beta = 5.0)\n'
       + 'q = 1.0 - p\n'
@@ -636,17 +690,54 @@ test('a truncate component reaches the pooled-divisor fallback without refusing'
       + 'weighted(q, Normal(mu = 10.0, sigma = 1.0))))\n'
       + 'y ~ m\n';
     const r = await joint(src, N, 'p');
-    assert.ok(Number.isFinite(r.ey), 'the shape must sample, not refuse');
     let s = 0;
     for (let i = 0; i < N; i++) s += r.m.samples[i];
     const pos = s / N;
-    assert.ok(Math.abs(pos - 7.7783296397) < 0.08,
-      `unweighted E[y] = ${pos}, mass-aware oracle 7.7783296397`);
-    assert.ok(Math.abs(r.ey - 7.8549918431) < 0.07,
-      `weighted E[y] = ${r.ey}, pooled-divisor value 7.8549918431`);
-    assert.ok(Math.abs(r.cov - -0.2106127697) < 0.012,
-      `cov(p, y) = ${r.cov}, pooled-divisor value −0.2106127697`);
-    assert.ok(r.ey - pos > 0.03,
-      `the weighted read ${r.ey} no longer sits ABOVE the positions ${pos} — the `
-      + 'pooled residue Z(p)/E[Z] is gone, flip this row to the exact 7.7783296397');
+    assert.ok(Math.abs(pos - 7.7783296397108580) < 0.08,
+      `unweighted E[y] = ${pos}, oracle 7.7783296397108580`);
+    assert.ok(Math.abs(r.ey - 7.7783296397108580) < 0.08,
+      `weighted E[y] = ${r.ey}, oracle 7.7783296397108580`);
+    assert.ok(Math.abs(r.ey - 7.8549918431449647) > 0.04,
+      `weighted E[y] = ${r.ey} is the POOLED 7.8549918431449647 — the residue `
+      + 'Z(p)/E[Z] is still on the atom weights');
+    assert.ok(Math.abs(r.cov - -0.21969646519528201) < 0.012,
+      `cov(p, y) = ${r.cov}, oracle −0.21969646519528201`);
+    assert.ok(Math.abs(r.et - 0.2857142857142857) < 0.003,
+      `E[p] = ${r.et}, prior mean 2/7 (the pooled tilt is 0.27681260196068794)`);
+    // The two reads off one ensemble, and the weights that make them differ.
+    assert.ok(Math.abs(r.ey - pos) < 1e-9,
+      `the weighted read ${r.ey} and the positions ${pos} come off ONE ensemble `
+      + 'and must agree once the residue is divided out');
+    assert.ok(Math.abs(r.n_eff - N) < 1e-6, `n_eff = ${r.n_eff}, expected N = ${N}`);
+  });
+
+test('a truncate whose own base moves with a latent keeps the pooled divisor',
+  async () => {
+    // THE BOUNDARY, and it is the narrowed remaining open shape. The `truncate`
+    // arm emits M(S) as a rewrite-time LITERAL — the IR's scalar evaluator
+    // carries no CDF primitive — so a base parameter that moves with a latent
+    // has no value at rewrite time and the arm declines. `_perAtomMassExpr`
+    // then reaches its "no closed-form Σ_i w_i" arm and returns the POOLED
+    // divisor, which is the number this shape already had, rather than
+    // refusing: refusing would reject a shape that samples.
+    //
+    // Here the mixing weights still sum to 1 (p + q), so only the COMPONENT
+    // masses move with p and the residue is the ratio Z(p_i)/E[Z] of a mass
+    // that varies by a few percent. No moment is asserted against the exact
+    // mixture, because the point of the row is that the pooled divisor is what
+    // fires: the shape must SAMPLE, and its weights must be non-uniform (an
+    // n_eff at N would mean an expression was found after all, and this row
+    // would need to become a correctness assertion with its own oracle).
+    const src = H
+      + 'p ~ Beta(alpha = 2.0, beta = 5.0)\n'
+      + 'q = 1.0 - p\n'
+      + 'm = normalize(superpose('
+      + 'weighted(p, truncate(Normal(mu = p, sigma = 1.0), interval(-1.0, 1.0))), '
+      + 'weighted(q, Normal(mu = 10.0, sigma = 1.0))))\n'
+      + 'y ~ m\n';
+    const r = await joint(src, N, 'p');
+    assert.ok(Number.isFinite(r.ey), 'the shape must sample, not refuse');
+    assert.ok(r.n_eff < N - 1,
+      `n_eff = ${r.n_eff} is N, so the per-atom divisor found an expression for a `
+      + 'latent-parameterised truncate — turn this row into a correctness assertion');
   });
