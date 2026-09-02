@@ -1391,9 +1391,16 @@ function numericProductLogZ(kernels: any[], variate: any, ctx: any): number {
 
 // If `m` (a factor measure IR) is a scalar reference-measure kernel over the
 // shared variate, return { kernel, input } where `input` is the kernel-input
-// record resolved at `theta` (a plain {param: value} map). Peels the
-// record/relabel wrapper the §12 lowering may put around a variate-keyed
-// factor. Returns null for an unrecognised / multivariate factor.
+// record resolved at `theta` (a plain {param: value} map), keyed by the leaf's
+// DECLARED parameter names. Peels the record/relabel wrapper the §12 lowering
+// may put around a variate-keyed factor. Returns null for an unrecognised /
+// multivariate factor.
+//
+// Parameters bind through `leaf-params.leafParamIRs`, so the POSITIONAL spelling
+// `Normal(0.0, 1.0)` and the keyword `Normal(mu = 0.0, sigma = 1.0)` reach the
+// same route — §04 makes them one call. Reading `kwargs` alone declined the
+// positional spelling and every consumer here then either refused the model or
+// kept a wrong mass; see that module's header for the four measured rows.
 function asScalarFactor(m: any, theta: any): any {
   let k = m;
   while (k && k.kind === 'call' && (k.op === 'relabel' || k.op === 'record')) {
@@ -1401,14 +1408,16 @@ function asScalarFactor(m: any, theta: any): any {
     if (Array.isArray(k.fields) && k.fields.length === 1) { k = k.fields[0].value; continue; }
     return null;
   }
-  if (!k || k.kind !== 'call' || typeof k.op !== 'string' || !k.kwargs) return null;
+  const { leafParamIRs } = require('./leaf-params.ts');
+  const bound = leafParamIRs(k);
+  if (!bound) return null;
   const input: Record<string, number> = {};
-  for (const name in k.kwargs) {
-    const v = resolveScalarAtPoint(k.kwargs[name], theta);
+  for (let i = 0; i < bound.entry.params.length; i++) {
+    const v = resolveScalarAtPoint(bound.paramIRs[i], theta);
     if (!Number.isFinite(v)) return null;
-    input[name] = v;
+    input[bound.entry.params[i]] = v;
   }
-  return { kernel: k.op, input };
+  return { kernel: bound.kernel, input };
 }
 
 // Resolve the variate's declared domain [lo, hi] from a `cartprod` binding
