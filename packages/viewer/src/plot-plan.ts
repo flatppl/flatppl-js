@@ -58,6 +58,19 @@ export function tupleAxisLabelsFromIR(name: string, rhsIR: any): string[] | null
   });
 }
 
+// Set constructors (spec §03). A binding whose RHS builds a set holds a value
+// that is not a measure, so it has no plot — the same category as a module
+// namespace, and render-plot says so.
+const SET_CONSTRUCTOR_OPS = new Set(['interval', 'cartprod', 'cartpow', 'stdsimplex']);
+
+export function isSetConstructorBinding(name: string | null | undefined, ctx: Ctx): boolean {
+  if (name == null) return false;
+  const lifted = ctx.derivationsState && ctx.derivationsState.bindings
+    && ctx.derivationsState.bindings.get(name);
+  const ir = lifted && lifted.ir;
+  return !!(ir && ir.kind === 'call' && ir.op && SET_CONSTRUCTOR_OPS.has(ir.op));
+}
+
 export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan | null {
   if (!binding || !ctx.derivationsState) return null;
   const name = binding.name;
@@ -201,15 +214,27 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     // currentBindings don't carry `.ir`, so the structural fallback
     // in expandMeasureIR can't walk them.
     //
-    // Dispatch by phase:
-    //   stochastic   → implicit kernel (synthesise `kernelof(x)` with
-    //                  parametric leaves as inputs; kernel-sample plan).
-    //   parameterized → implicit function (synthesise `functionof(x)`
-    //                  with parametric leaves as inputs; profile plan).
+    // Dispatch by what the binding IS:
+    //   stochastic, or measure-typed → implicit kernel (synthesise
+    //                  `kernelof(x)` with parametric leaves as inputs;
+    //                  kernel-sample plan).
+    //   parameterized value         → implicit function (synthesise
+    //                  `functionof(x)` with parametric leaves as inputs;
+    //                  profile plan).
+    // A parameterized MEASURE (`m = truncate(Exponential(rate), interval(0,
+    // tau))`, `posterior = bayesupdate(L, prior)` over free `elementof`
+    // boundaries) is measure-like, not a value: it samples rather than
+    // evaluates, so it takes the kernel path. That matches
+    // implicitKernelSignature's own gate and implicitFunctionSignature's
+    // refusal of measure-typed subjects; dispatching on phase alone asked
+    // the function builder for a measure, got null, and reported the whole
+    // posterior chain unplottable.
     // Fixed-phase bindings with no fixedValue entry shouldn't reach
     // here (they'd be in fixedValues or have a derivation); fall
     // through to "Not plottable".
-    if (binding.phase === 'stochastic') {
+    const measureTyped = !!(binding.inferredType
+      && binding.inferredType.kind === 'measure');
+    if (binding.phase === 'stochastic' || measureTyped) {
       const implicitSig = FlatPPLEngine.orchestrator.implicitKernelSignature(
         name, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
       if (implicitSig && implicitSig.inputs.length > 0) {
@@ -330,6 +355,12 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     // per-atom evaluator coerced the opaque object to a Float64
     // entry).
     if (typeKind === 'rngstate') return null;
+    // A SET binding (`window = interval(-3.0, 3.0)`) is a value but not a
+    // measure (spec §03), so it has no samples, no marginals and no density.
+    // It reached samples mode on its `deferred` type and the scalar renderer
+    // read `.length` off an absent sample buffer, surfacing a raw
+    // "Cannot read properties of undefined" in the plot pane.
+    if (isSetConstructorBinding(name, ctx)) return null;
     if (typeKind === 'tuple') {
       // A fixed tuple of equal-length rank-1 arrays is a set of
       // paired columns (e.g. `paired = (xs, ys)`) — plot it as record
