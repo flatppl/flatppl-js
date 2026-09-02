@@ -286,6 +286,22 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     }
     opts = Object.assign({}, opts, { mode: 'dist' });
   }
+  // No sample buffer. Every renderer below reads `.samples`, so reaching them
+  // without one turned an unmodelled measure shape into a raw
+  // "Cannot read properties of undefined (reading 'length')" in the plot pane.
+  // A measure carrying `.fields` is a record whose `shape` tag is absent —
+  // render its marginals; anything else gets a message that names the binding.
+  if (measure.samples == null) {
+    if (measure.fields) {
+      renderRecordMarginals(ctx, measure, name, opts.toolbarControls);
+      return;
+    }
+    renderConstantValue(ctx, name,
+      'no samples to plot (the measure carries '
+      + (Object.keys(measure).join(', ') || 'nothing') + ')',
+      opts.toolbarControls);
+    return;
+  }
   const samples = measure.samples;
   // Complex-valued binding (engine sets dtype:'complex' + .imag,
   // planar with .samples = Re). v1 renders the real part — honest

@@ -671,7 +671,11 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // (e.g. a future first-class `fchain`-via-aggregate combinator)
   // updates one place, not seven.
   function _isObjectBindingType(t: string): boolean {
-    if (t === 'input' || t === 'lawof' || t === 'likelihood') return true;
+    // 'module': a `standard_module(...)` / `load_module(...)` binding is a
+    // namespace handle (spec §11), never a value. Without it every model
+    // that names a standard module drew a spurious "produced no value —
+    // this is an engine gap" error.
+    if (t === 'input' || t === 'lawof' || t === 'likelihood' || t === 'module') return true;
     return isCallableLikeBindingType(t);
   }
   // (`bindingLoc` declared above, ahead of `fixedValues`.)
@@ -1524,15 +1528,29 @@ function _classifyWeightedByFunction(
   };
 }
 
-// Axis count of a binding that is a Lebesgue over an N-D box, else null.
-// Re-classifies the base rather than reading a derivations map, because a
-// weight classifier runs before the base's own derivation is necessarily
-// built. `classifyLebesgueBox` is pure, so this is a cheap re-read.
+// Length of a base measure's k-element-array variate, else null. §06 states
+// the weight-arity rule over "the variate", so this is not a Lebesgue-only
+// question: an `iid(M, k)` base carries the same k-element variate and takes
+// the same per-component reading.
+//
+// A Lebesgue box re-classifies rather than reading a derivations map, because
+// a weight classifier runs before the base's own derivation is necessarily
+// built; `classifyLebesgueBox` is pure, so this is a cheap re-read. Any other
+// base reads the variate off the binding's inferred measure type, whose
+// `domain` typeinfer already resolved to the variate's shape.
 function _boxAxesOf(baseName: string, bindings: any): number | null {
   const b = bindings && bindings.get(baseName);
-  if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'Lebesgue') return null;
-  const d = classifyLebesgueBox(b.ir, null, bindings);
-  return d ? d.axes.length : null;
+  if (!b) return null;
+  if (b.ir && b.ir.kind === 'call' && b.ir.op === 'Lebesgue') {
+    const d = classifyLebesgueBox(b.ir, null, bindings);
+    return d ? d.axes.length : null;
+  }
+  const t = b.inferredType;
+  if (!t || t.kind !== 'measure') return null;
+  const dom = t.domain;
+  if (!dom || dom.kind !== 'array' || dom.rank !== 1) return null;
+  const k = Array.isArray(dom.shape) ? dom.shape[0] : null;
+  return typeof k === 'number' && k >= 2 ? k : null;
 }
 
 function classifyLogWeighted(
@@ -2594,6 +2612,20 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): Derivatio
           pointIR: obsIR,
         } as any;
       }
+      // The L of a bayesupdate may itself be a `joint_likelihood` (spec §06
+      // "Combining likelihoods"), which `_resolveLikelihood` declines — it
+      // resolves one `likelihoodof` term. Fold the terms the same way the
+      // standalone joint score does and carry them beside the prior, so the
+      // posterior at θ is Σᵢ logdensityof(Lᵢ, θ) + logdensityof(prior, θ).
+      const jsubs = _resolveJointLikelihoodTerms(Lref, bindings);
+      if (jsubs) {
+        return {
+          kind: 'posterior_density',
+          priorName: priorRef.name,
+          subs: jsubs,
+          pointIR: obsIR,
+        } as any;
+      }
     }
     // A bayesupdate whose L→K chain or prior doesn't resolve: fall through to
     // the generic path, keeping its loud materialise-time error (refuse-don't-
@@ -2605,18 +2637,9 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): Derivatio
   // `likelihoodof(K, obs)` — a self-ref to an L binding or an inline call
   // (the form the pyhf/HS3 importer emits). All terms must resolve, else
   // we can't honour the whole joint and defer (return null).
-  const Lir = (bindings.get(Mref.name) as any)?.ir;
-  if (Lir && Lir.kind === 'call' && Lir.op === 'joint_likelihood'
-      && Array.isArray(Lir.args) && Lir.args.length > 0) {
-    const subs: any[] = [];
-    for (const arg of Lir.args) {
-      const sub = isSelfRef(arg)
-        ? _resolveLikelihood(arg, bindings)
-        : _resolveLikelihoodIR(arg, bindings);
-      if (!sub) return null;
-      subs.push(sub);
-    }
-    return { kind: 'joint_likelihood_density', subs, pointIR: obsIR } as any;
+  const jointSubs = _resolveJointLikelihoodTerms(Mref, bindings);
+  if (jointSubs) {
+    return { kind: 'joint_likelihood_density', subs: jointSubs, pointIR: obsIR } as any;
   }
   // Hold the obs IR — the materialiser resolves it to a concrete JS
   // value at sample time, consulting fixedValues for any binding
@@ -3686,6 +3709,25 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     }
     return true;
   }
+  // Cascade-prune verdict for ONE resolved likelihood term — the `bodyName` /
+  // `bodyIR` rule the standalone likelihood density uses, shared by the
+  // per-term arms of the joint and posterior scores.
+  function _likelihoodBodyRefsValid(sub: any): boolean {
+    if (sub.bodyName) return _bodyNameResolvable(sub.bodyName, bindings, resolvable);
+    if (!sub.bodyIR) return false;
+    const heads = _collectCallableHeadRefs(sub.bodyIR);
+    for (const r of collectSelfRefs(sub.bodyIR)) {
+      const rb = bindings.get(r);
+      // A body's parameterized / stochastic internals are fed from the scored
+      // point by the materialiser, not through a derivation.
+      if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
+      // Builtin distribution / op heads and callable-bound heads resolve by
+      // name at dispatch, as clm `_enumerateInputs` treats them.
+      if (ALL_KNOWN.has(r) || heads.has(r)) continue;
+      if (!resolvable(r)) return false;
+    }
+    return true;
+  }
   // broadcast(logdensityof, M, pts): the measure must be resolvable
   // (the points expression is a fixed-phase value resolved at
   // materialise time).
@@ -3703,6 +3745,14 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   // un-lowerable shapes on their loud materialise-time error.
   if (d.kind === 'bayesupdate') {
     if (!resolvable(d.from)) return false;
+    // A joint_likelihood L carries per-term bodies in `subs`; each obeys the
+    // single-term rule below.
+    if (Array.isArray((d as any).subs)) {
+      for (const sub of (d as any).subs) {
+        if (!_likelihoodBodyRefsValid(sub)) return false;
+      }
+      return true;
+    }
     if (d.bodyName) {
       if (!resolvable(d.bodyName)) return false;
       return true;
@@ -3765,24 +3815,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       if (!resolvable(r)) return false;
     }
     for (const sub of ((d as any).subs || [])) {
-      if (sub.bodyName) {
-        if (!_bodyNameResolvable(sub.bodyName, bindings, resolvable)) return false;
-        continue;
-      }
-      if (sub.bodyIR) {
-        const heads = _collectCallableHeadRefs(sub.bodyIR);
-        for (const r of collectSelfRefs(sub.bodyIR)) {
-          const rb = bindings.get(r);
-          if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
-          // Builtin distribution / op heads (Poisson, broadcast, …) and
-          // callable-bound heads resolve by name at dispatch, never via a
-          // derivation — exactly as clm `_enumerateInputs` treats them.
-          if (ALL_KNOWN.has(r) || heads.has(r)) continue;
-          if (!resolvable(r)) return false;
-        }
-        continue;
-      }
-      return false;
+      if (!_likelihoodBodyRefsValid(sub)) return false;
     }
     return true;
   }
@@ -3795,6 +3828,14 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     if (!resolvable((d as any).priorName)) return false;
     for (const r of collectSelfRefs((d as any).pointIR)) {
       if (!resolvable(r)) return false;
+    }
+    // A joint_likelihood L carries per-term bodies in `subs`; each obeys the
+    // single-term rule above.
+    if (Array.isArray((d as any).subs)) {
+      for (const sub of (d as any).subs) {
+        if (!_likelihoodBodyRefsValid(sub)) return false;
+      }
+      return true;
     }
     if ((d as any).bodyName) {
       return _bodyNameResolvable((d as any).bodyName, bindings, resolvable);
@@ -5099,6 +5140,27 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
  * the ones whose target binding has type='input' (elementof /
  * external).
  */
+// Names to enqueue when the implicit-reification walk descends one binding.
+//
+// `collectSelfRefs` deliberately treats an identifier-bound boundary param of
+// a reified callable as the callable's INPUT, not an outer dependency, so it
+// reports nothing for a point-free `functionof(Normal(mu = mu, ...))` whose
+// boundary shadows the module node it is fed from (spec §04). The feeding
+// binding is named by `paramSources`, so follow those too — that is how
+// signatureOf's auto-promote reaches the same leaves. Without it a posterior
+// over `elementof` boundaries reached through a kernel surfaced no inputs and
+// the viewer reported it unplottable.
+function _implicitInputSeeds(binding: any): string[] {
+  const out: string[] = Array.from(collectSelfRefs(binding.ir));
+  const ir = binding.ir;
+  if (ir && ir.kind === 'call' && Array.isArray(ir.paramSources)) {
+    for (const src of ir.paramSources) {
+      if (src && src.kind === 'binding' && typeof src.name === 'string') out.push(src.name);
+    }
+  }
+  return out;
+}
+
 function implicitKernelSignature(name: any, bindings: any, derivations: any) {
   if (!bindings) return null;
   // Fire for anything that produces samples or measures: either
@@ -5142,7 +5204,7 @@ function implicitKernelSignature(name: any, bindings: any, derivations: any) {
     // (external / load_data) have no .ir to walk, so they drop out
     // here silently — exactly the spec's "closed over" semantics.
     if (target.ir) {
-      for (const inner of collectSelfRefs(target.ir)) queue.push(inner);
+      for (const inner of _implicitInputSeeds(target)) queue.push(inner);
     }
   }
   const inputs: any[] = [];
@@ -5224,7 +5286,7 @@ function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
       continue;
     }
     if (target.ir) {
-      for (const inner of collectSelfRefs(target.ir)) queue.push(inner);
+      for (const inner of _implicitInputSeeds(target)) queue.push(inner);
     }
   }
   const inputs: any[] = [];
@@ -5412,6 +5474,30 @@ function _resolveLikelihoodIR(Lir: any, bindings: any): {
   return { bodyName, bodyIR, obsIR, paramKwargs: params, params };
 }
 
+// Per-term resolutions of a `joint_likelihood(L1, …, Lk)` binding, else null.
+// A joint likelihood is the product of independent terms (spec §06), so its
+// log-density folds to the SUM of the per-term log-densities. Each term is
+// itself a `likelihoodof(K, obs)` — a self-ref to an L binding or an inline
+// call (the form the pyhf/HS3 importer emits). All terms must resolve, else
+// the whole joint cannot be honoured and the caller defers.
+function _resolveJointLikelihoodTerms(Lref: any, bindings: any): any[] | null {
+  if (!isSelfRef(Lref)) return null;
+  const Lir = (bindings.get(Lref.name) as any)?.ir;
+  if (!Lir || Lir.kind !== 'call' || Lir.op !== 'joint_likelihood'
+      || !Array.isArray(Lir.args) || Lir.args.length === 0) {
+    return null;
+  }
+  const subs: any[] = [];
+  for (const arg of Lir.args) {
+    const sub = isSelfRef(arg)
+      ? _resolveLikelihood(arg, bindings)
+      : _resolveLikelihoodIR(arg, bindings);
+    if (!sub) return null;
+    subs.push(sub);
+  }
+  return subs;
+}
+
 // A point-free likelihood's measure `bodyName` is "resolvable" for cascade-
 // pruning either when it has its own derivation/fixed value (resolvable), OR
 // when it is a parameterized/stochastic MEASURE binding — its open internals
@@ -5469,7 +5555,15 @@ function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate
   // Resolve the L→K chain (shared with the standalone likelihood-
   // density classifier — _resolveLikelihood holds the shape notes).
   const lk = _resolveLikelihood(Lref, bindings);
-  if (!lk) return null;
+  if (!lk) {
+    // The L may be a `joint_likelihood` (spec §06 "Combining likelihoods"),
+    // which resolves per term rather than as one L→K chain. A joint is the
+    // product of independent terms, so the per-atom log-weight is the SUM of
+    // the terms' scores; carry them and let the materialiser add them up.
+    const jsubs = _resolveJointLikelihoodTerms(Lref, bindings);
+    if (!jsubs) return null;
+    return { kind: 'bayesupdate', from: priorRef.name, subs: jsubs } as any;
+  }
 
   // Hold the obs IR; resolution to a JS value happens at materialise
   // time via resolveIRToValue + fixedValues. The classifier cares

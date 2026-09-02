@@ -401,11 +401,28 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
     // spread leaves the atom positions representing their own slice's law, so
     // the result's weight spread is pure per-atom mass.
     const massOnly = !d.isVariateWeight && _weightsAreAtomMassOnly(parent);
-    // N-D box base (matLebesgueBox): vector atoms, so the generic path below
-    // — which assumes one scalar per atom — would read N·k "atoms" and drop
-    // `dims`. Handled separately, before any of that.
+    // Vector-atom base: the generic path below assumes one scalar per atom,
+    // so it would read N·k "atoms" and drop `dims`. Handled separately,
+    // before any of that. A Lebesgue box arrives with its axis columns
+    // already split out; any other k-element-array variate (`iid(M, k)`)
+    // gets them split here, so §06's weight-arity rule reads the same over
+    // every vector variate rather than over `Lebesgue` alone.
     if (parent && Array.isArray(parent._boxAxisColumns)) {
       return _matWeightedOverBox(d, parent, ctx, massOnly);
+    }
+    // Only a VARIATE weight needs the split: it binds the weight body's
+    // parameters to the atom's coordinates, and the generic path below has
+    // one scalar per atom to offer. A constant weight has nothing to bind,
+    // so it keeps the generic path — routing it here would additionally tag
+    // the result with `_boxAxisColumns`, and downstream box logic would then
+    // read a plain vector-variate measure (an MvNormal mixture component) as
+    // a Lebesgue box.
+    const vectorAtomK = d.isVariateWeight ? _vectorAtomWidth(parent) : 0;
+    if (vectorAtomK > 1) {
+      return _matWeightedOverBox(
+        d, Object.assign({}, parent,
+          { _boxAxisColumns: _splitAtomColumns(parent.samples, vectorAtomK) }),
+        ctx, massOnly);
     }
     const isRecord = parent && parent.shape === 'record' && parent.fields;
     const isTuple  = parent && parent.shape === 'tuple'  && parent.elems;
@@ -540,6 +557,27 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
 //
 // Both `dims` AND `shape` — the pair is the vector-atom tag. `dims` alone
 // leaves consumers keyed on `shape === 'array'` reading N·k scalar atoms.
+// Per-atom vector width of a measure whose atoms are rank-1 arrays, else 0.
+function _vectorAtomWidth(m: any): number {
+  if (!m || m.shape !== 'array' || !Array.isArray(m.dims) || m.dims.length !== 1) return 0;
+  if (!m.samples || m.samples.BYTES_PER_ELEMENT === undefined) return 0;
+  const k = m.dims[0] | 0;
+  return k > 1 ? k : 0;
+}
+
+// Split an atom-major [N·k] buffer into k per-coordinate columns, the layout
+// matWeighted's k-parameter binding reads.
+function _splitAtomColumns(samples: any, k: number): Float64Array[] {
+  const N = Math.floor(samples.length / k);
+  const columns: Float64Array[] = [];
+  for (let i = 0; i < k; i++) {
+    const col = new Float64Array(N);
+    for (let n = 0; n < N; n++) col[n] = samples[n * k + i];
+    columns.push(col);
+  }
+  return columns;
+}
+
 function _keepAtomShape(out: any, parent: any): void {
   if (!parent || parent.shape !== 'array' || !Array.isArray(parent.dims)) return;
   out.dims = parent.dims;

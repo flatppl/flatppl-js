@@ -159,12 +159,58 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
     return ir && ir.meta && ir.meta.type;
   }
 
+  // True for an inline reification — the argument shape a higher-order op
+  // (`filter`, `broadcast`, `reduce`, `scan`) takes in its callable slot.
+  function _isReificationIR(ir: any): boolean {
+    return !!ir && ir.kind === 'call' && !!ir.body && Array.isArray(ir.params)
+      && (ir.op === 'functionof' || ir.op === 'kernelof' || ir.op === 'fn');
+  }
+
+  // A callable argument that is a self-ref to a reified binding — the named
+  // spelling (`pred = fn(...)`, `filter(pred, xs)`).
+  function _reificationBehindRef(ir: any): any | undefined {
+    if (!ir || ir.kind !== 'ref' || ir.ns !== 'self') return undefined;
+    const b = loweredModule && loweredModule.bindings && loweredModule.bindings.get(ir.name);
+    return _isReificationIR(b && b.rhs) ? b.rhs : undefined;
+  }
+
+  function _callableArgIR(ir: any): any | undefined {
+    if (_isReificationIR(ir)) return ir;
+    return _reificationBehindRef(ir);
+  }
+
+  // Free self-refs a reification body reads. `_evalCall` cannot pre-evaluate
+  // them into literals — the body IR is handed to evaluateExpr whole — so
+  // they are resolved and seeded into the env it looks names up in.
+  function _collectSelfRefs(ir: any, out: Set<string>): void {
+    if (ir == null || typeof ir !== 'object') return;
+    if (ir.kind === 'ref' && ir.ns === 'self') { out.add(ir.name); return; }
+    if (Array.isArray(ir.args)) for (const a of ir.args) _collectSelfRefs(a, out);
+    if (ir.kwargs) for (const k in ir.kwargs) _collectSelfRefs(ir.kwargs[k], out);
+    if (ir.body) _collectSelfRefs(ir.body, out);
+    if (Array.isArray(ir.terms)) for (const t of ir.terms) _collectSelfRefs(t, out);
+  }
+
   function _evalCall(ir: any, env?: any): any | undefined {
     const args = ir.args || [];
     // Evaluate each positional arg recursively; short-circuit on
     // first failure (`undefined`).
+    // A callable argument is the exception: it denotes a function, not a
+    // value, so it is passed through as IR for evaluateExpr's own
+    // `_resolveFn` to resolve. Evaluating it instead synthesised an
+    // operand-less `functionof` call, which evaluateExpr rejects — that
+    // reported every higher-order op as an unsupported fixed-phase
+    // operation, so a size derived through `filter` could not be folded.
     const evaledArgs: any[] = new Array(args.length);
+    const passthrough: any[] = new Array(args.length);
+    const bodyRefs = new Set<string>();
     for (let i = 0; i < args.length; i++) {
+      const callable = _callableArgIR(args[i]);
+      if (callable) {
+        passthrough[i] = callable;
+        _collectSelfRefs(callable.body, bodyRefs);
+        continue;
+      }
       const v = evalIR(args[i], env);
       if (v === UNSUPPORTED) return UNSUPPORTED;   // op-gap dominates: propagate
       if (v === undefined) return undefined;
@@ -187,12 +233,36 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
     // for per-op semantics (ARITH_OPS, get/get_field/get0, record,
     // tuple, polynomial, rand, etc.); we just bypass its operand
     // walk because we've already done it.
-    const synthArgs = evaledArgs.map((v) => ({ kind: 'lit', value: v }));
+    // Built with an index loop, not `map`: `evaledArgs` has a hole at every
+    // passed-through callable slot and `map` skips holes.
+    const synthArgs: any[] = [];
+    for (let i = 0; i < args.length; i++) {
+      synthArgs.push(passthrough[i] !== undefined
+        ? passthrough[i] : { kind: 'lit', value: evaledArgs[i] });
+    }
     const synthIR: any = { kind: 'call', op: ir.op, args: synthArgs };
     if (evaledKwargs) {
       const sk: Record<string, any> = {};
       for (const k in evaledKwargs) sk[k] = { kind: 'lit', value: evaledKwargs[k] };
       synthIR.kwargs = sk;
+    }
+    // Seed the lookup env for the passed-through callable bodies. A body ref
+    // that will not resolve leaves the whole call statically unknown, which
+    // is `undefined` (legitimately `%dynamic`), never an op gap.
+    let evalEnv: any = baseEnv;
+    if (bodyRefs.size > 0) {
+      evalEnv = Object.assign({}, baseEnv);
+      for (const name of bodyRefs) {
+        if (Object.prototype.hasOwnProperty.call(evalEnv, name)) continue;
+        if (env && Object.prototype.hasOwnProperty.call(env, name)) {
+          evalEnv[name] = env[name];
+          continue;
+        }
+        const v = resolveBinding(name);
+        if (v === UNSUPPORTED) return UNSUPPORTED;
+        if (v === undefined) return undefined;
+        evalEnv[name] = v;
+      }
     }
     // All inputs resolved to concrete values, so the call is
     // fixed-phase and computable in principle. If evaluateExpr can't
@@ -201,7 +271,7 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
     // this value errors clearly rather than silently degrading to
     // `%dynamic`. Any other throw (a genuinely malformed call) stays
     // `undefined` — conservative; we only escalate the op-gap signal.
-    try { return samplerLib.evaluateExpr(synthIR, baseEnv); }
+    try { return samplerLib.evaluateExpr(synthIR, evalEnv); }
     catch (e: any) {
       const msg = (e && e.message) || '';
       if (/not evaluable in sampler context/.test(msg)) return UNSUPPORTED;

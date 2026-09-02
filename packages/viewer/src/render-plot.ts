@@ -6,7 +6,7 @@
 // public hook the DAG tap handler + applySourceUpdate call to
 // re-target the plot pane.
 
-import { buildPlotPlan } from './plot-plan.js';
+import { buildPlotPlan, isSetConstructorBinding } from './plot-plan.js';
 import { renderFixedRecord, renderFixedTuple, renderKernelSampleForCurrent } from './render-kernel.js';
 
 import { getMeasure } from './engine-facade.js';
@@ -32,6 +32,31 @@ import type { Ctx } from './types';
  * plots (IS / forward / tractable / array / matrix) are unaffected either
  * way and keep updating live on edit.
  */
+/**
+ * Why a binding has no plot, when the answer is a property of the binding
+ * rather than an engine gap. A bare "Not plottable" reads as a defect on a
+ * module handle or a free parameter, which are both plot-free by design.
+ * Returns '' when nothing specific applies, so the generic message stands.
+ */
+function unplottableReason(ctx: Ctx, bindingName: string | null): string {
+  const b = ctx.currentBindings && bindingName != null
+    ? ctx.currentBindings.get(bindingName) : null;
+  if (!b) return '';
+  if (b.type === 'module') {
+    return ' A standard module is a namespace, not a measure —'
+      + ' plot one of its members instead.';
+  }
+  if (b.type === 'input' && b.phase === 'parameterized') {
+    return ' A free parameter has no measure of its own —'
+      + ' plot a binding that uses it.';
+  }
+  if (isSetConstructorBinding(bindingName, ctx)) {
+    return ' A set is a value, not a measure —'
+      + ' plot a measure defined over it.';
+  }
+  return '';
+}
+
 export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean }) {
   // The plot panel stays mounted whenever plotEnabled is true. When
   // the focused binding isn't plottable (lawof, modules, etc.) we
@@ -74,7 +99,8 @@ export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean })
       showPlotMessage(ctx, 'Internal nodes are not plottable.', { hint: true });
       return;
     }
-    showPlotMessage(ctx, 'Not plottable for <strong>' + name + '</strong>.', { hint: true });
+    showPlotMessage(ctx, 'Not plottable for <strong>' + name + '</strong>.'
+      + unplottableReason(ctx, ctx.currentPlotBindingName), { hint: true });
     return;
   }
   // Profile mode (function / likelihood bindings) dispatches to

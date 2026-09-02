@@ -232,6 +232,16 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // return an equal-weight empirical measure. IS path (default) is below.
   const backend = (ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'is';
   if (backend === 'mh' || backend === 'ram' || backend === 'slice' || backend === 'nuts' || backend === 'emcee' || backend === 'amis' || backend === 'smc' || backend === 'elliptical-slice-sampler' || backend === 'nested' || backend === 'demcz') {
+    // ModelView lowers ONE likelihood body, so a multi-term joint_likelihood
+    // has no scorer here yet. Refuse by name rather than score one term and
+    // report it as the posterior; the default importance-sampling path below
+    // handles the joint. Recorded in flatppl-dev/TODO-flatppl-js.md.
+    if (Array.isArray((d as any).subs) && (d as any).subs.length > 1) {
+      return Promise.reject(new Error(
+        `backend '${backend}' cannot sample a posterior whose likelihood is a `
+        + 'joint_likelihood of more than one term; use the default IS backend',
+      ));
+    }
     const MV              = require('./model-view.ts');
     const driver          = require('./mcmc-driver.ts');
     const { mhKernel }         = require('./mh-kernel.ts');
@@ -545,22 +555,48 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // input) instead of re-materialising a like-named binding via getMeasure
   // (the boundary-conflation bug, audit §3 / H1/H6). matScore + clm.feedInputs
   // own the feeding; this function keeps only the reweighting.
-  const node = clm.lowerMeasure(d.bodyIR || d.bodyName, ctx, { derivation: d });
-  if (!node) {
-    return Promise.reject(new Error('bayesupdate: cannot expand body into measure IR'));
-  }
-  const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
+  //
+  // A `joint_likelihood` L carries its terms in `subs` instead of one body. A
+  // joint is the product of independent terms (spec §06 "Combining
+  // likelihoods"), so each term lowers and scores on its own and the per-atom
+  // log-weight is the SUM. One term is the ordinary case, expressed the same
+  // way so there is a single reweighting below.
+  const terms: any[] = Array.isArray(d.subs)
+    ? d.subs.map((sub: any) => ({ bodyIR: sub.bodyIR, bodyName: sub.bodyName,
+        obsIR: sub.obsIR, paramKwargs: sub.paramKwargs, params: sub.params }))
+    : [{ bodyIR: d.bodyIR, bodyName: d.bodyName, obsIR: d.obsIR,
+         paramKwargs: d.paramKwargs, params: d.params }];
+  const scores = terms.map((t: any) => {
+    const node = clm.lowerMeasure(t.bodyIR || t.bodyName, ctx,
+      { derivation: Object.assign({}, d, t) });
+    /* c8 ignore start */
+    // lowerMeasure returning null is refused earlier by the cascade-prune
+    // (derivationRefsValid), so a classified bayesupdate always lowers. Kept
+    // as a refuse-don't-mislower guard.
+    if (!node) {
+      throw new Error('bayesupdate: cannot expand body into measure IR');
+    }
+    /* c8 ignore stop */
+    const observed = orchestrator.resolveIRToValue(t.obsIR, ctx.bindings, ctx.fixedValues);
+    return matScore(node, ctx, { observed });
+  });
   return Promise.all([
     Promise.resolve(ctx.getMeasure(d.from)),
-    matScore(node, ctx, { observed }),
-  ]).then(([parent, reply]: any[]) => {
+    Promise.all(scores),
+  ]).then(([parent, replies]: any[]) => {
     const N = measureN(parent);
     const existingLW = parent.logWeights;
     const uniformLW = -Math.log(N);
     const newLW = new Float64Array(N);
     for (let i = 0; i < N; i++) {
+      let logp = 0;
+      for (const reply of replies) {
+        const s = reply.samples;
+        // A term materialised at N=1 broadcasts its single value across atoms.
+        logp += s[s.length === 1 ? 0 : i];
+      }
       const base = existingLW ? existingLW[i] : uniformLW;
-      newLW[i] = base + reply.samples[i];
+      newLW[i] = base + logp;
     }
     const lTM = empirical.logSumExp(newLW);
     const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });
@@ -1492,13 +1528,25 @@ function matPosteriorDensity(d: any, ctx: any) {
   // the per-atom scalars. Both produce a broadcast-constant per-atom scalar; the
   // sum is the posterior density. This is exactly what the determiniser-then-eval
   // route (det-js) computes, applied natively.
+  //
+  // A `joint_likelihood` L carries per-term resolutions in `subs` instead of
+  // one body; each term scores through the same standalone path and the sum
+  // extends over all of them (spec §06 "Combining likelihoods"), so a
+  // multi-instrument posterior scores like a single-term one.
   const N = ctx.sampleCount;
+  const terms: any[] = Array.isArray(d.subs)
+    ? d.subs.map((sub: any) => ({
+        kind: 'likelihood_density',
+        bodyName: sub.bodyName, bodyIR: sub.bodyIR, obsIR: sub.obsIR,
+        paramKwargs: sub.paramKwargs, params: sub.params, pointIR: d.pointIR,
+      }))
+    : [{
+        kind: 'likelihood_density',
+        bodyName: d.bodyName, bodyIR: d.bodyIR, obsIR: d.obsIR,
+        paramKwargs: d.paramKwargs, params: d.params, pointIR: d.pointIR,
+      }];
   return Promise.all([
-    matLikelihoodDensity({
-      kind: 'likelihood_density',
-      bodyName: d.bodyName, bodyIR: d.bodyIR, obsIR: d.obsIR,
-      paramKwargs: d.paramKwargs, params: d.params, pointIR: d.pointIR,
-    }, ctx),
+    ...terms.map((t: any) => matLikelihoodDensity(t, ctx)),
     matLogdensityof({
       kind: 'logdensityof', measureName: d.priorName, obsIR: d.pointIR,
     } as any, ctx),
