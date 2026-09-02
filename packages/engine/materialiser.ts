@@ -2994,6 +2994,18 @@ function _bridgeRegister(ctx: any) {
 // IR has. So map the structural fields by hand (reusing IR-based helpers like
 // parseSetIR) and reuse the rich materialisation in the handler. Drift-guarded
 // by the agreement harness + per-gap fixtures; grows one op per Smell A stage.
+// A sub-measure's `from` name for a bridged derivation. A `self`-ref
+// already IS a resolvable binding name, so use it directly — `register`
+// would route it back to `materialiseMeasureIR`, which only takes calls.
+// Returns null for anything that is neither (the caller then declines the
+// arm and the leaf default's diagnostic stands).
+function _bridgeMeasureFrom(ir: any, register: any, label: string): string | null {
+  if (!ir) return null;
+  if (ir.kind === 'ref' && ir.ns === 'self') return ir.name;
+  if (ir.kind !== 'call') return null;
+  return register(ir, label);
+}
+
 function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
   const irShared = require('./ir-shared.ts');
   const op = ir && ir.op;
@@ -3018,6 +3030,16 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
       const from = register(ir.args[1], 'weighted:base');
       return { kind: 'weighted', from, logShift: Math.log(w) };
     }
+    // Non-constant weight — a LATENT-dependent per-atom mass (§06's
+    // mixture proportion, `weighted(w(θ), M)`). matWeighted evaluates
+    // `weightIR` per atom through `evaluateN`, exactly as the by-name
+    // classifier's `weightIR` arm does; the two produce the same
+    // derivation, so an inline weight and a named one sample alike.
+    // `isVariateWeight` stays false: a function OF THE VARIATE needs the
+    // param-substitution the by-name classifier does from the AST, which
+    // an already-expanded IR has lost.
+    const wFrom = _bridgeMeasureFrom(ir.args[1], register, 'weighted:base');
+    if (wFrom) return { kind: 'weighted', from: wFrom, weightIR: ir.args[0], isLog: false };
   }
   if (op === 'logweighted' && Array.isArray(ir.args) && ir.args.length === 2) {
     const lw = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
@@ -3026,6 +3048,18 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
       const from = register(ir.args[1], 'logweighted:base');
       return { kind: 'weighted', from, logShift: lw };
     }
+    const lwFrom = _bridgeMeasureFrom(ir.args[1], register, 'logweighted:base');
+    if (lwFrom) return { kind: 'weighted', from: lwFrom, weightIR: ir.args[0], isLog: true };
+  }
+  // superpose(M1, M2, …) — §06's measure sum. matSuperpose combines the
+  // components' atom batches by per-index selection on their masses, so
+  // registering each component is enough. Without this arm an inline
+  // superpose fell through to the leaf default and the worker's sampleN
+  // reported `superpose` as an unknown kernel.
+  if (op === 'superpose' && Array.isArray(ir.args) && ir.args.length >= 1) {
+    const fromNames = ir.args.map((a: any, i: number) =>
+      _bridgeMeasureFrom(a, register, 'superpose:c' + i));
+    if (fromNames.every((n: any) => !!n)) return { kind: 'superpose', fromNames };
   }
   if (op === 'normalize' && Array.isArray(ir.args) && ir.args.length === 1) {
     // normalize(M): renormalise the base's weights (logTotalmass→0). matNormalize
@@ -3322,6 +3356,12 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   }
   // normalize(M) → canonical matNormalize via the bridge. [Smell A, Stage 3]
   if (ir.op === 'normalize' && Array.isArray(ir.args) && ir.args.length === 1) {
+    return _bridgeToHandler(ir, ctx);
+  }
+  // superpose(M1, M2, …) → canonical matSuperpose via the bridge. Same
+  // rationale as truncate / weighted: the leaf fallback has no `superpose`
+  // kernel, so an inline measure sum dead-ended there before.
+  if (ir.op === 'superpose' && Array.isArray(ir.args) && ir.args.length >= 1) {
     return _bridgeToHandler(ir, ctx);
   }
   // pushfwd(f, M) → canonical matPushfwd via the bridge — variable

@@ -168,6 +168,13 @@ function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any
     if (compositeBody.kind === 'generative') {
       return _executeGenerativeComposite(name, d, ctx, compositeBody);
     }
+    // 6th kind: a §06 measure-ALGEBRA body (normalize / superpose /
+    // weighted / logweighted / truncate). Executed one cell at a time
+    // through the by-name materialiser — see
+    // `_executeMeasureAlgebraComposite`.
+    if (compositeBody.kind === 'measure_algebra') {
+      return _executeMeasureAlgebraComposite(name, d, ctx, compositeBody);
+    }
     return Promise.reject(new Error(
       'broadcast: composite kernel-body kind \'' + compositeBody.kind
       + '\' recognised but not yet executable (Phase 4 work)'));
@@ -1158,6 +1165,260 @@ function _executeGenerativeComposite(
 // Coerce an evaluateExprN result (the inlined generative body over the
 // count batch) to a flat [count] Float64Array. The body is scalar-per-cell,
 // so a constant (N·K all equal) is admissible too. Loud on any other shape.
+// =====================================================================
+// measure_algebra — a §06 algebra body, one cell at a time
+// =====================================================================
+//
+// `broadcast(K, col)` where K's body is a §06 measure-ALGEBRA tree — the
+// mixture spelling §06 recommends, `normalize(superpose(weighted(p, M1),
+// weighted(1 - p, M2)))`, or `truncate` / bare weight wrappers. §04
+// sec:broadcasting makes the result "the independent product measure of
+// the kernel applications at each array position", so cell j is the body
+// evaluated at column element j, and the K cells are independent.
+//
+// The executor does NOT re-implement mixture sampling. It substitutes the
+// kernel formals with `get(<col IR>, j)` and hands the substituted body to
+// `materialiseMeasureIR`, so cell j is sampled by the same matNormalize /
+// matSuperpose / matWeighted / matTruncate handlers the non-broadcast
+// spelling uses. Substituting the INDEX EXPRESSION rather than a resolved
+// number is what keeps a latent-dependent weight correlated with its
+// latent: the body's own `evaluateN` resolves `w` through the parent's
+// atom batch, exactly as the direct spelling does.
+//
+// Cell independence comes from a per-cell `rootKey` plus a child
+// `getMeasure` that redraws the body's MEASURE-position names and delegates
+// every other name to the parent cache — `_materialiseFactorsIndependent`'s
+// discipline, and for the same §06 reason: "a stochastic node shared
+// between component traces … remains a single node of the composed trace",
+// so a closed-over per-atom VALUE draw (a hierarchical rate) is shared
+// across the cells while each cell's component draws are fresh.
+
+// Measure-position names in a §06 algebra tree: the base of
+// `normalize`/`truncate`, the base of `weighted`/`logweighted` (arg 1 —
+// arg 0 is the WEIGHT, a value), every arg of `superpose`. A weight or a
+// truncation region is value position and is deliberately not walked.
+function _algebraMeasureRefs(ir: any, out: Set<string>): void {
+  if (!ir || ir.kind !== 'call') return;
+  const push = (node: any) => {
+    if (!node) return;
+    if (node.kind === 'ref' && node.ns === 'self') { out.add(node.name); return; }
+    _algebraMeasureRefs(node, out);
+  };
+  const args = Array.isArray(ir.args) ? ir.args : [];
+  if (ir.op === 'normalize') push(args[0]);
+  else if (ir.op === 'truncate') push(args[0]);
+  else if (ir.op === 'weighted' || ir.op === 'logweighted') push(args[1]);
+  else if (ir.op === 'superpose') for (const a of args) push(a);
+}
+
+// Transitive measure-position closure: a component's own measure parents
+// are measure position too, so they need the same fresh coordinate. Value
+// parents (a `weightIR`, a `distIR`'s parameters) are NOT followed — those
+// are the shared closed-over draws.
+function _measureSubtreeNames(bodyIR: any, ctx: any): Set<string> {
+  const seeds = new Set<string>();
+  _algebraMeasureRefs(bodyIR, seeds);
+  const out = new Set<string>();
+  const stack = Array.from(seeds);
+  while (stack.length > 0) {
+    const nm = stack.pop() as string;
+    if (out.has(nm)) continue;
+    out.add(nm);
+    const d: any = ctx.derivations && ctx.derivations[nm];
+    if (!d) continue;
+    if (typeof d.from === 'string') stack.push(d.from);
+    if (Array.isArray(d.fromNames)) for (const f of d.fromNames) stack.push(f);
+    if (Array.isArray(d.branches)) {
+      for (const b of d.branches) if (b && typeof b.ref === 'string') stack.push(b.ref);
+    }
+  }
+  return out;
+}
+
+function _executeMeasureAlgebraComposite(
+  name: string, d: DerivationKernelBroadcast, ctx: any, body: any,
+) {
+  const sampler = require('./sampler.ts');
+  const materialiser = require('./materialiser.ts');
+  const params: string[] = body.params;
+  const paramKwargs: string[] = body.paramKwargs;
+  // Map each kernel formal's SURFACE kwarg name to the broadcast arg IR.
+  const argIRByKw: Record<string, any> = {};
+  if (d.kwargIRs && Object.keys(d.kwargIRs).length > 0) {
+    for (const kw of Object.keys(d.kwargIRs)) argIRByKw[kw] = d.kwargIRs[kw];
+  } else if (Array.isArray(d.argIRs)) {
+    if (d.argIRs.length !== paramKwargs.length) {
+      return Promise.reject(new Error('broadcast(' + d.distOp + '): expected '
+        + paramKwargs.length + ' argument(s) for kernel parameter(s) '
+        + paramKwargs.join(', ') + ', got ' + d.argIRs.length));
+    }
+    for (let i = 0; i < paramKwargs.length; i++) argIRByKw[paramKwargs[i]] = d.argIRs[i];
+  }
+  for (const kw of paramKwargs) {
+    if (!Object.prototype.hasOwnProperty.call(argIRByKw, kw)) {
+      return Promise.reject(new Error('broadcast(' + d.distOp
+        + '): kernel parameter \'' + kw + '\' has no broadcast argument'));
+    }
+  }
+  const kws = Object.keys(argIRByKw);
+  // Resolve the cell axis. Each arg is evaluated ONCE over the atom batch
+  // purely to learn its shape; the per-cell IR below re-reads it by index.
+  const aggregateIR: any = {
+    kind: 'call', op: 'broadcast',
+    args: [{ kind: 'ref', ns: 'self', name: d.distOp }],
+    kwargs: argIRByKw,
+  };
+  return prepareDensityRefs(aggregateIR, ctx, 'broadcast').then((prep: any) => {
+    const { refArrays, fixedEnv, parents } = prep;
+    const baseEnv: Record<string, any> = {};
+    for (const k in fixedEnv) baseEnv[k] = fixedEnv[k];
+    const refNames = Object.keys(refArrays);
+    const N = ctx.sampleCount;
+    const collAxes: Record<string, number[]> = {};
+    for (const kw of kws) {
+      const argRefs = orchestrator.collectSelfRefs(argIRByKw[kw]);
+      const usesAtom = refNames.some((n) => argRefs.has(n));
+      let v: any;
+      try {
+        v = sampler.evaluateExprN(argIRByKw[kw], refArrays, N, baseEnv, undefined);
+        /* c8 ignore start — a rethrow that turns a synchronous evaluator
+           throw into this promise's rejection. Every argument shape a model
+           can write is either evaluable or caught by the `ca == null` /
+           axis-count checks below, so no fixture reaches it. */
+      } catch (err) {
+        return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+      }
+      /* c8 ignore stop */
+      const ca = shared.collectionAxesOf(v, N, usesAtom);
+      if (ca == null) {
+        return Promise.reject(new Error('broadcast(' + d.distOp
+          + '): argument \'' + kw + '\' resolved to an unsupported value shape'));
+      }
+      collAxes[kw] = ca;
+    }
+    let resolved: { axes: number[]; strides: Record<string, number[]> };
+    try {
+      resolved = bcAxes.resolveBroadcastAxes(
+        kws.map((kw: string) => ({ name: kw, collectionAxes: collAxes[kw] })));
+    } catch (err) {
+      // §04 "Collection arguments": sizes must match or be 1 along each
+      // axis. Surface the axis resolver's own diagnostic as a rejection.
+      return Promise.reject(err instanceof Error ? err : new Error(String(err)));
+    }
+    const axes: number[] = resolved.axes;
+    if (axes.length > 1) {
+      // A multi-axis grid needs a per-axis index expression per cell; the
+      // one-axis form covers every §06 mixture spelling seen so far. Refuse
+      // rather than flatten, which would lose the grid shape.
+      return Promise.reject(new Error('broadcast(' + d.distOp
+        + '): a measure-algebra kernel body over ' + axes.length
+        + ' broadcast axes is not supported yet (one axis only)'));
+    }
+    const K: number = axes.length === 0 ? 1 : axes[0];
+    const componentNames = _measureSubtreeNames(body.bodyMeasureIR, ctx);
+    const cols = new Array(K);
+    const cellMeasures = new Array(K);
+    let chain: Promise<any> = pushFixedEnv(ctx, fixedEnv);
+    for (let cell = 0; cell < K; cell++) {
+      const cc = cell;
+      chain = chain.then(() => {
+        // Per-cell formal binding: index the collection args, pass a
+        // held-constant (rank-0) arg through unchanged (§04 "Non-collection
+        // inputs"). A size-one axis reads element 1 at every cell (§04's
+        // singleton expansion).
+        const bcKwargs: Record<string, any> = {};
+        for (const kw of kws) {
+          const srcSize = collAxes[kw].length === 0 ? 0 : collAxes[kw][0];
+          if (srcSize === 0) { bcKwargs[kw] = argIRByKw[kw]; continue; }
+          const idx = srcSize === 1 ? 1 : cc + 1;
+          bcKwargs[kw] = { kind: 'call', op: 'get',
+            args: [argIRByKw[kw], { kind: 'lit', value: idx, numType: 'integer' }] };
+        }
+        const cellIR = _substituteKernelParams(
+          body.bodyMeasureIR, params, paramKwargs, bcKwargs);
+        const cellCache = new Map();
+        const child: any = Object.assign({}, ctx, {
+          rootKey: nameSeed(name + ':macell:' + cc, ctx.rootKey),
+        });
+        child.getMeasure = (nm: string) => {
+          if (!componentNames.has(nm)) return ctx.getMeasure(nm);
+          if (cellCache.has(nm)) return cellCache.get(nm);
+          const p = materialiser.materialiseMeasure(nm, child);
+          cellCache.set(nm, p);
+          return p;
+        };
+        return materialiser.materialiseMeasureIR(cellIR, child).then((m: any) => {
+          if (!m || !m.samples) {
+            throw new Error('broadcast(' + d.distOp + '): cell ' + cc
+              + ' produced no scalar samples (a record- or vector-variate '
+              + 'measure-algebra body is not supported yet)');
+          }
+          cellMeasures[cc] = m;
+          cols[cc] = m.samples;
+        });
+      });
+    }
+    return chain.then(() => {
+      const out = new Float64Array(N * K);
+      for (let cell = 0; cell < K; cell++) {
+        const col = cols[cell];
+        for (let i = 0; i < N; i++) out[i * K + cell] = col[i];
+      }
+      // A cell is one independent factor of the product measure, so the
+      // cells' masses MULTIPLY and their per-atom weight SHAPES add. Both
+      // are folded here, and each cell is read relative to a uniform
+      // measure of its own mass, so nothing is counted twice:
+      //   mass_j  = cell j's logTotalmass (a `truncate` region's mass, an
+      //             unnormalized `weighted` body's scale; 0 once
+      //             normalized), and
+      //   e_j[i]  = cell j's logWeights[i] − (mass_j − log N), the atom's
+      //             departure from that uniform measure — a genuine
+      //             importance event, 0 for an equal-weight cell.
+      // Without the mass_j subtraction a `weighted` cell would contribute
+      // its scale through BOTH terms (matWeighted's contract is
+      // logTotalmass == logSumExp(logWeights)); without the −log N the
+      // ordinary empirical baseline would be added once per cell and a
+      // normalized mixture would report mass −K·log N instead of 0.
+      const base = N > 0 ? -Math.log(N) : 0;
+      let massSum = 0;
+      let excess: Float64Array | null = null;
+      for (let cell = 0; cell < K; cell++) {
+        const cm = cellMeasures[cell];
+        if (!cm) continue;
+        const clw = cm.logWeights;
+        const mass = (typeof cm.logTotalmass === 'number')
+          ? cm.logTotalmass
+          : (clw ? empirical.logSumExp(clw) : 0);
+        if (mass !== 0) massSum += mass;
+        if (!clw) continue;
+        const uniform = mass + base;
+        for (let i = 0; i < N; i++) {
+          const e = clw[i] - uniform;
+          if (e === 0) continue;
+          if (!excess) excess = new Float64Array(N);
+          excess[i] += e;
+        }
+      }
+      const wt = _parentWeightOverlay(parents, N);
+      let lw: Float64Array | null = wt.logWeights;
+      if (excess || massSum !== 0) {
+        const merged = new Float64Array(N);
+        for (let i = 0; i < N; i++) {
+          merged[i] = (lw ? lw[i] : base) + massSum + (excess ? excess[i] : 0);
+        }
+        lw = merged;
+      }
+      return Object.assign(
+        empirical.arrayMeasure(out, axes.length === 0 ? [1] : axes, lw),
+        {
+          logTotalmass: lw ? empirical.logSumExp(lw) : wt.logTotalmass,
+          n_eff: lw ? empirical.effectiveSampleSize({ logWeights: lw }) : wt.n_eff,
+        },
+      );
+    });
+  });
+}
+
 function _coerceCountColumn(ev: any, count: number, distOp: string): Float64Array {
   if (typeof ev === 'number' || typeof ev === 'boolean') {
     const o = new Float64Array(count); o.fill(+ev); return o;

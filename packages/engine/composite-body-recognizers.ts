@@ -13,6 +13,8 @@
 //   - joint:             `lawof(joint(<kernels>))`
 //   - jointchain:        `lawof(jointchain(<base>, <kernels…>))`
 //   - nested_broadcast:  body contains a `broadcast(…)` itself
+//   - measure_algebra:   `normalize` / `superpose` / `weighted` /
+//                        `logweighted` / `truncate` of measures
 //   - generative:        `lawof(<value-expr with an internal draw>)`
 //                        — the most-permissive catch-all, tried LAST
 //
@@ -60,10 +62,10 @@ interface CompositeBodyBase {
 /**
  * Tagged-union descriptor returned by composite-body recognizers.
  *
- * Five kinds: 'iid' | 'nested_broadcast' | 'jointchain' | 'joint' |
- * 'generative' (see the header). matKernelBroadcast (and any future
- * composite executor) discriminates on `kind` before reading
- * variant-specific fields.
+ * Six kinds: 'iid' | 'nested_broadcast' | 'jointchain' | 'joint' |
+ * 'measure_algebra' | 'generative' (see the header). matKernelBroadcast
+ * (and any future composite executor) discriminates on `kind` before
+ * reading variant-specific fields.
  */
 type CompositeBody =
   | (CompositeBodyBase & {
@@ -168,6 +170,20 @@ type CompositeBody =
          *  resolves at materialise-time). */
         eventDim: number;
       }>;
+    })
+  | (CompositeBodyBase & {
+      kind: 'measure_algebra';
+      /** The kernel head name (== d.distOp), for the executor's errors. */
+      distOp: string;
+      /** The peeled body: one §06 measure-algebra call tree (normalize /
+       *  superpose / weighted / logweighted / truncate, nested freely)
+       *  with the kernel formals still embedded. The executor substitutes
+       *  the formals per cell and hands the result to the by-name
+       *  materialiser, so the per-cell law is sampled by exactly the
+       *  handlers the non-broadcast spelling uses. */
+      bodyMeasureIR: any;
+      /** The body's outer op. */
+      outerOp: string;
     })
   | (CompositeBodyBase & {
       kind: 'generative';
@@ -353,6 +369,37 @@ registerCompositeBodyRecognizer((d, ctx) => {
     // Phase 5.1 Session 5b — MvNormal inner support.
     innerIsVectorOutput: desc.innerIsVectorOutput,
     innerEventDim: desc.innerEventDim,
+  };
+});
+
+// ---------- measure_algebra: `normalize|superpose|weighted|truncate` --
+//
+// The 6th recogniser kind. The kernel body is one §06 measure-ALGEBRA
+// call tree — the mixture spelling §06 recommends, `normalize(superpose(
+// weighted(p, M1), weighted(1 - p, M2)))`, plus `truncate` and the bare
+// weight wrappers. Registered AFTER the four measure-CONSTRUCTION
+// recognisers (each owns an axis layout this one has none for) and BEFORE
+// `generative` (which would otherwise claim a `lawof`-wrapped body).
+//
+// The executor (`_executeMeasureAlgebraComposite` in mat-broadcast.ts)
+// substitutes the formals per cell and materialises the substituted body
+// through the by-name materialiser, so a per-cell law is sampled by the
+// same matNormalize / matSuperpose / matWeighted / matTruncate handlers
+// the non-broadcast spelling uses.
+
+registerCompositeBodyRecognizer((d, ctx) => {
+  if (!ctx || !ctx.bindings) return null;
+  const desc = kernelBroadcastShape.detectMeasureAlgebraKernelBinding(
+    d.distOp, ctx.bindings);
+  if (!desc) return null;
+  return {
+    kind: 'measure_algebra',
+    binding: desc.binding,
+    params: desc.params,
+    paramKwargs: desc.paramKwargs,
+    distOp: d.distOp,
+    bodyMeasureIR: desc.bodyMeasureIR,
+    outerOp: desc.outerOp,
   };
 });
 
