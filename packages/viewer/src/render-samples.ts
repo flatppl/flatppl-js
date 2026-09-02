@@ -350,7 +350,28 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
     // weighted/bayesupdate/normalize) render their bars
     // correctly. For unweighted measures this is null and the
     // histogram takes its fast count/N path.
-    const histOpts = measure.logWeights ? { logWeights: measure.logWeights } : {};
+    //
+    // The length check is for the one shape that legitimately reaches here
+    // with per-ATOM weights over a longer sample buffer: a ragged point
+    // process, whose `.samples` is the POOLED point set across atoms. The
+    // histogram now throws on a mismatch, so filter it here and say so — a
+    // vector-atom measure must never arrive on this path at all (it routes to
+    // the corner grid above on `shape === 'array'`), so a warning here for
+    // anything else is a real bug worth seeing in the console.
+    let histOpts: { logWeights?: any } = {};
+    if (measure.logWeights) {
+      if (measure.logWeights.length === samples.length) {
+        histOpts = { logWeights: measure.logWeights };
+      } else {
+        try {
+          console.warn('[viewer] ' + name + ': dropping ' + measure.logWeights.length
+            + ' log-weights over ' + samples.length + ' samples — the histogram is UNWEIGHTED'
+            + (measure.shape === 'ragged'
+              ? ' (pooled point-process points carry no per-point weight)'
+              : ''));
+        } catch (_) { /* console unavailable in a bare host */ }
+      }
+    }
     hist = opts.discrete
       ? FlatPPLEngine.histogram.integerHistogram(samples, histOpts)
       : FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOpts);
