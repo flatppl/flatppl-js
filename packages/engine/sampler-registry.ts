@@ -1081,6 +1081,30 @@ function randNLogNormal(state: any, params: any, n: number, out?: Float64Array) 
   return r;
 }
 
+// ContinuedPoisson log-density on x ≥ 0 (spec §09):
+//
+//   λ^x e^{-λ} / Γ(x+1)   for x ≥ 0
+//
+// §09's row gives the domain `reals` and the support `nonnegreals`, and §08
+// "Variate domain and support" makes the domain "the set over which density
+// evaluation is defined (returning 0 outside the support)" — restated as
+// "Density formulas below specify the value on the support only; outside the
+// support the density is zero". So x < 0 is −∞, not the formula's value.
+//
+// Unmasked, the formula returns a FINITE number for every non-integer x < 0 —
+// measured at λ = 3: −4.121671087258755 at x = −0.5, −5.51 at x = −1.5 —
+// where the spec value is −∞. So a `shapesys` aux term at a negative γ carried
+// a finite log-density and nothing excluded that half-space. The negative
+// INTEGERS came out right by accident: `gammaln` has a pole at each of them and
+// returns +∞, which the subtraction turns into −∞.
+//
+// `x >= 0` is written as `!(x >= 0)` so a NaN variate is refused rather than
+// falling through the comparison into the formula.
+function _continuedPoissonLogpdf(x: number, rate: number): number {
+  if (!(x >= 0)) return -Infinity;
+  return x * Math.log(rate) - rate - stdlibGammaln(x + 1);
+}
+
 // ContinuedPoisson is density-only (spec §09): the continuous extension of
 // Poisson to the reals is not a probability measure and has no generator, so
 // every sampling entry point throws rather than returning a bogus draw.
@@ -1537,13 +1561,13 @@ const REGISTRY = {
     // Density-only: no sampler, so exempt from the REGISTRY ⊆
     // SAMPLEABLE_DISTRIBUTIONS invariant (it is deliberately absent there).
     densityOnly: true,
-    // Density-only (spec §09): logpdf(x; rate) = x·ln(rate) − rate − ln Γ(x+1),
-    // the continuous extension that agrees with Poisson's logpmf on integer x.
-    // Not normalized, not generative — the sampler stubs throw (see above).
+    // Density-only (spec §09): logpdf(x; rate) = x·ln(rate) − rate − ln Γ(x+1)
+    // for x ≥ 0, the continuous extension that agrees with Poisson's logpmf on
+    // non-negative integer x. Not normalized, not generative — the sampler
+    // stubs throw (see above).
     Ctor:     _continuedPoissonNonGenerative,
     randFn:   { factory: _continuedPoissonNonGenerative },
-    logpdfFn: (x: number, rate: number) =>
-      x * Math.log(rate) - rate - stdlibGammaln(x + 1),
+    logpdfFn: _continuedPoissonLogpdf,
   },
   CrystalBall: {
     params:   ['m0', 'sigma', 'alpha', 'n'],

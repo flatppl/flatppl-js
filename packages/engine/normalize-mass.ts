@@ -172,30 +172,17 @@ function truncateMassLit(baseIR: any, setIR: any): any | null {
 // as `{ kernel, input }` keyed by the SPEC parameter names — the keys
 // `forward-cdf`'s CDF table reads. null for anything else.
 //
-// WHY NOT `mat-density.asScalarFactor`. That reads `kwargs` alone, so it
-// declines the POSITIONAL spelling `Normal(0.0, 1.0)` and mis-keys an alias.
-// Two spellings of one measure would then take different mass routes and
-// disagree — measured: the positional mixture kept the θ-constant bake
-// (−5.7411 at θ = 0.9 against the exact −7.6256546896974614) while the keyword
-// spelling of the same model was exact. Resolution follows
-// `sampler-registry.resolveParamsN`'s precedence — kwargs by name, then by
-// alias, then positional by declared index — so the accepted set is the
-// registry's own.
+// Parameters bind through `leaf-params.leafParamIRs`, the shared §04 spelling
+// rule: reading `kwargs` alone declines the POSITIONAL spelling
+// `Normal(0.0, 1.0)` and mis-keys an alias, so two spellings of one measure
+// would take different mass routes and disagree — measured: the positional
+// mixture kept the θ-constant bake (−5.7411 at θ = 0.9 against the exact
+// −7.6256546896974614) while the keyword spelling of the same model was exact.
 function constantLeafParams(ir: any): { kernel: string; input: Record<string, number> } | null {
-  if (!ir || ir.kind !== 'call' || typeof ir.op !== 'string') return null;
-  const samplerLib = require('./sampler.ts');
-  if (!samplerLib.isKnownDistribution(ir.op)) return null;
-  // `lookupDistribution` THROWS on a surplus keyword, which is §04's own static
-  // error and belongs to the call site that recognises the distribution — not
-  // to a mass builder whose contract is "an expression or null". Every consumer
-  // looks the same IR up itself, so declining here changes only WHERE the error
-  // surfaces, never whether it does.
-  let entry: any;
-  try {
-    entry = samplerLib.lookupDistribution(ir);
-  } catch {
-    return null;
-  }
+  const { leafParamIRs } = require('./leaf-params.ts');
+  const bound = leafParamIRs(ir);
+  if (!bound) return null;
+  const entry = bound.entry;
   // A DISCRETE base's restricted mass is Σ pmf over S, which the continuous
   // CDF difference gets wrong (it drops the lower endpoint). §06 defines no
   // discrete-truncate normalizer, and mat-density already refuses
@@ -207,24 +194,12 @@ function constantLeafParams(ir: any): { kernel: string; input: Record<string, nu
     const v = resolveConstant(x, new Map(), new Set());
     return typeof v === 'number' ? v : NaN;
   };
-  const kwargs = ir.kwargs || {};
-  const positional = Array.isArray(ir.args) ? ir.args : [];
-  const paramIR = (name: string, i: number) => {
-    if (name in kwargs) return kwargs[name];
-    /* c8 ignore start -- no REGISTRY entry currently declares an alias, so this
-       arm is unreachable today; it is kept because `resolveParamsN` consults
-       aliases and the two resolvers must not drift apart */
-    const alias = entry.aliases && entry.aliases[name];
-    if (alias && alias in kwargs) return kwargs[alias];
-    /* c8 ignore stop */
-    return i < positional.length ? positional[i] : null;
-  };
   // `Uniform` declares one parameter, `support`, and takes its bounds from an
   // `interval` inside it (sampler-registry's `customResolveParams`), while the
   // CDF row reads `lo`/`hi`. Map it here so a truncated Uniform is not the one
   // hole in this arm's accepted set.
   if (ir.op === 'Uniform') {
-    const sup = paramIR('support', 0);
+    const sup = bound.paramIRs[0];
     if (!sup || sup.kind !== 'call' || sup.op !== 'interval'
         || !Array.isArray(sup.args) || sup.args.length !== 2) return null;
     const lo = num(sup.args[0]);
@@ -234,14 +209,13 @@ function constantLeafParams(ir: any): { kernel: string; input: Record<string, nu
   }
   const input: Record<string, number> = {};
   for (let i = 0; i < entry.params.length; i++) {
-    const name = entry.params[i];
-    const v = num(paramIR(name, i));
+    const v = num(bound.paramIRs[i]);
     // A parameter that moves with a latent has no constant here, so the whole
     // arm declines and the caller keeps its existing route.
     if (!Number.isFinite(v)) return null;
-    input[name] = v;
+    input[entry.params[i]] = v;
   }
-  return { kernel: ir.op, input };
+  return { kernel: bound.kernel, input };
 }
 
 module.exports = { totalMassExpr };
