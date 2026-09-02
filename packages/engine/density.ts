@@ -827,6 +827,81 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   return rest;
 }
 
+// True when a `functionof` log-weight body is the §12 product_dist lowering —
+// an add-fold of `logdensityof(M, x)`. Those terms are SCORED against the
+// consumed variate rather than evaluated as arithmetic, so they take their own
+// path; any other body is an ordinary weight expression.
+function _isLogdensityFold(node: any): boolean {
+  if (!node || node.kind !== 'call') return false;
+  if (node.op === 'add' && Array.isArray(node.args) && node.args.length === 2) {
+    return _isLogdensityFold(node.args[0]) && _isLogdensityFold(node.args[1]);
+  }
+  return node.op === 'logdensityof' && Array.isArray(node.args) && node.args.length === 2;
+}
+
+// Bind a variate weight's parameters to the coordinates the base just consumed
+// and return the resulting body IR, or null when `wIR` is not a reification.
+//
+// §06 "Weight arity": a k-parameter weight (k >= 2) takes one component per
+// parameter in order; a one-parameter weight takes the variate whole, which is
+// the k-vector for an array variate and the scalar for a scalar one. Shared by
+// `weighted` and `logweighted` — §06 admits the k-parameter form for both, so
+// they must agree on which coordinate feeds which parameter.
+function _bindVariateWeightBody(wIR: any, baseIR: any, value: any, rest: any): any {
+  /* c8 ignore start */
+  // Both call sites already test `op === 'functionof'` with params + body, so
+  // this guard never fires today. Kept so a future caller gets null rather
+  // than a half-bound body.
+  if (!wIR || wIR.kind !== 'call' || wIR.op !== 'functionof'
+      || !Array.isArray(wIR.params) || !wIR.body) {
+    return null;
+  }
+  /* c8 ignore stop */
+  const { mapIR } = require('./ir-walk.ts');
+  if (wIR.params.length > 1) {
+    const coords = inferConsumedVector(value, wIR.params.length);
+    /* c8 ignore start */
+    // Unreachable in practice: the base was already walked, and its own walker
+    // consumed these k coordinates off `value` — a short point throws there
+    // first, with consumeVector's own message. Kept so a future base that
+    // consumes differently fails loudly instead of scoring a partly-bound
+    // weight.
+    if (coords == null) {
+      throw new Error('density: weighted(w, M) — w takes ' + wIR.params.length
+        + ' parameters but the scored point does not supply that many '
+        + 'coordinates for the base measure');
+    }
+    /* c8 ignore stop */
+    const bound: Record<string, number> = {};
+    for (let i = 0; i < wIR.params.length; i++) bound[wIR.params[i]] = coords[i];
+    return mapIR(wIR.body, (n: any) =>
+      (n && n.kind === 'ref' && n.name in bound)
+        ? { kind: 'lit', value: bound[n.name] } : n);
+  }
+  if (wIR.params.length !== 1) return null;
+  // The variate whole. `_baseBoxDim` distinguishes a length-1 vector variate
+  // from a scalar one; two or more consumed coordinates settle it outright.
+  const consumedK = _consumedLen(value, rest);
+  const boxK = consumedK >= 2 ? consumedK : _baseBoxDim(baseIR);
+  const pName = wIR.params[0];
+  let bound: any;
+  if (boxK >= 1) {
+    const coords = inferConsumedVector(value, boxK);
+    /* c8 ignore start */
+    // Unreachable for the same reason as the k-parameter branch above.
+    if (coords == null) {
+      throw new Error('density: weighted(w, M) — the scored point does not supply '
+        + 'the variate\'s ' + boxK + ' coordinates');
+    }
+    /* c8 ignore stop */
+    bound = { kind: 'call', op: 'vector', args: coords.map((c) => ({ kind: 'lit', value: c })) };
+  } else {
+    bound = { kind: 'lit', value: inferConsumedScalar(value, rest) };
+  }
+  return mapIR(wIR.body, (n: any) =>
+    (n && n.kind === 'ref' && n.name === pName) ? bound : n);
+}
+
 function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   // weighted(w, base): adds log(w) per atom. Recurse into base first
   // (with the same acc), then add log(w_i). Negative or zero weights
@@ -836,75 +911,19 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   // A `functionof` weight is a function of the SAME variate the base just
   // consumed — the §12 generic_dist lowering
   // `weighted(x -> w(x), Lebesgue(reals))`, where `w` is the (non-log)
-  // density of the variate. Bind the lambda's parameter to the consumed
-  // scalar and evaluate the weight body per atom, adding log(w). (A plain
+  // density of the variate. Bind the weight's parameters to the coordinates
+  // the base consumed and evaluate the body per atom, adding log(w). Any
+  // OTHER ref in the body (a model parameter fed as θ) resolves via
+  // refArrays / baseEnv / overlay exactly as a leaf's kwargs do. A plain
   // atom-scalar weight — a constant or env/ref expression — takes the
-  // original evaluateExprN path.)
-  // A MULTI-parameter weight belongs to an N-D box base (spec §03 array
-  // variate): each parameter takes one coordinate, in axis order — the same
-  // convention matWeighted and mat-density's makeIntegrandND use, so all
-  // three agree on which coordinate feeds which parameter. The coordinates
-  // are the ones the base just consumed, recovered from the value/rest pair.
+  // evaluateExprN path below.
+  //
+  // `_bindVariateWeightBody` owns the arity rule and is shared with
+  // walkLogWeighted, so the two spellings §06 admits cannot drift on which
+  // coordinate feeds which parameter.
   if (wIR && wIR.kind === 'call' && wIR.op === 'functionof'
-      && Array.isArray(wIR.params) && wIR.params.length > 1 && wIR.body) {
-    const coords = inferConsumedVector(value, wIR.params.length);
-    /* c8 ignore start */
-    // Unreachable in practice: the base was already walked above, and its
-    // walkLebesgue consumed these same k coordinates off `value` — a short
-    // point throws there first, with consumeVector's own message. Kept so a
-    // future base that consumes differently fails loudly instead of scoring a
-    // partly-bound weight.
-    if (coords == null) {
-      throw new Error('density: weighted(w, M) — w takes ' + wIR.params.length
-        + ' parameters but the scored point does not supply that many '
-        + 'coordinates for the base measure');
-    }
-    /* c8 ignore stop */
-    const { mapIR } = require('./ir-walk.ts');
-    const bound: Record<string, number> = {};
-    for (let i = 0; i < wIR.params.length; i++) bound[wIR.params[i]] = coords[i];
-    const wBody = mapIR(wIR.body, (n: any) =>
-      (n && n.kind === 'ref' && n.name in bound)
-        ? { kind: 'lit', value: bound[n.name] } : n);
-    applyAtomScalar(wBody, refArrays, N, baseEnv, overlay, acc, addLogWOfVariate);
-    return rest;
-  }
-  if (wIR && wIR.kind === 'call' && wIR.op === 'functionof'
-      && Array.isArray(wIR.params) && wIR.params.length === 1 && wIR.body) {
-    // Substitute the lambda's single parameter with the consumed scalar (a
-    // literal) and score the resulting weight expression through the normal
-    // atom-scalar path — so any OTHER refs in the weight body (model params
-    // fed as θ, e.g. `alpha`) resolve via refArrays / baseEnv / overlay
-    // exactly as they do for a leaf's kwargs.
-    const pName = wIR.params[0];
-    const { mapIR } = require('./ir-walk.ts');
-    // Over a box base the variate is the k-array itself (spec §03), so a
-    // single-parameter weight binds to the WHOLE consumed vector — bound as a
-    // `vector(...)` of the k coordinates, which is what an indexing body like
-    // `v[1] + v[2]` needs. Binding the first coordinate alone (the scalar
-    // path below) would score a different function without erroring. This
-    // holds at k = 1 too: a one-component cartprod is the set of LENGTH-1
-    // VECTORS, so the sole parameter takes `vector(x)`, not `x`. Only a base
-    // with no box at all (boxK = 0, a bare `Lebesgue(interval(...))` or a
-    // non-Lebesgue leaf) has a scalar variate.
-    const boxK = _baseBoxDim(ir.args[1]);
-    const bound = boxK >= 1
-      ? (() => {
-          const coords = inferConsumedVector(value, boxK);
-          /* c8 ignore start */
-          // Unreachable for the same reason as the k-parameter branch above:
-          // walkLebesgue already consumed these coordinates and would have
-          // thrown on a short point.
-          if (coords == null) {
-            throw new Error('density: weighted(w, Lebesgue(box)) — the scored point '
-              + 'does not supply the box\'s ' + boxK + ' coordinates');
-          }
-          /* c8 ignore stop */
-          return { kind: 'call', op: 'vector', args: coords.map((c) => ({ kind: 'lit', value: c })) };
-        })()
-      : { kind: 'lit', value: inferConsumedScalar(value, rest) };
-    const wBody = mapIR(wIR.body, (n: any) =>
-      (n && n.kind === 'ref' && n.name === pName) ? bound : n);
+      && Array.isArray(wIR.params) && wIR.params.length >= 1 && wIR.body) {
+    const wBody = _bindVariateWeightBody(wIR, ir.args[1], value, rest);
     applyAtomScalar(wBody, refArrays, N, baseEnv, overlay, acc, addLogWOfVariate);
     return rest;
   }
@@ -951,8 +970,24 @@ function walkLogWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: a
   // scored point x is Σ logdensityof(Mᵢ, x). Score each Mᵢ at the same `value`
   // and add. (A plain atom-scalar weight — the closed-form-Z / massFrom
   // rewrite, a constant or env/ref expression — takes the original path.)
-  if (gIR && gIR.kind === 'call' && gIR.op === 'functionof') {
+  if (gIR && gIR.kind === 'call' && gIR.op === 'functionof'
+      && _isLogdensityFold(gIR.body)) {
     addFunctionofVariateWeight(gIR, value, refArrays, N, opts, acc, baseEnv, overlay);
+  } else if (gIR && gIR.kind === 'call' && gIR.op === 'functionof') {
+    // An ordinary weighting FUNCTION, in log space. §06's arity rule admits
+    // the k-parameter form for `logweighted` too, so bind the parameters the
+    // same way `weighted` does and add the body's value directly (it is
+    // already a log-weight, so no log is taken).
+    const gBody = _bindVariateWeightBody(gIR, ir.args[1], value, rest);
+    /* c8 ignore start */
+    // The branch condition already established `op === 'functionof'`, which is
+    // exactly what the binder needs, so null cannot come back here.
+    if (gBody == null) {
+      throw new Error('density: logweighted(g, M) — g is a reification whose '
+        + 'parameters could not be bound to the consumed variate');
+    }
+    /* c8 ignore stop */
+    applyAtomScalar(gBody, refArrays, N, baseEnv, overlay, acc, addRaw);
   } else {
     // A node the normalize-mass resolve rewrote carries `-log Z`, whose
     // non-finite values are §06's undefined Z rather than a legal weight.
@@ -3115,6 +3150,33 @@ function inferConsumedVector(value: any, n: number): number[] | null {
   const out: number[] = [];
   for (let i = 0; i < n; i++) out.push(+src[i]);
   return out;
+}
+
+// Scalar count of a walker value / rest slot. `null` (fully consumed) is 0
+// and a bare number is 1, so the difference of two of these is how many
+// coordinates a base measure consumed.
+function _valueLen(v: any): number {
+  if (v == null) return 0;
+  if (typeof v === 'number') return 1;
+  /* c8 ignore start */
+  // A shape-explicit Value and an unrecognised carrier: the walkers normalise
+  // the scored point to a typed array before reaching a weight, so only the
+  // null / number / typed-array arms run today. A rank-≥2 Value returns 0
+  // rather than a wrong coordinate count, which keeps the caller on
+  // `_baseBoxDim` instead of guessing.
+  if (valueLib.isValue(v)) {
+    return v.shape.length === 1 ? v.shape[0] : 0;
+  }
+  /* c8 ignore stop */
+  if (v.BYTES_PER_ELEMENT !== undefined || Array.isArray(v)) return v.length;
+  /* c8 ignore next */
+  return 0;
+}
+
+// Coordinates a just-walked base consumed, from the value it was handed and
+// the rest it returned.
+function _consumedLen(value: any, rest: any): number {
+  return _valueLen(value) - _valueLen(rest);
 }
 
 function inferConsumedScalar(value: any, rest: any) {
