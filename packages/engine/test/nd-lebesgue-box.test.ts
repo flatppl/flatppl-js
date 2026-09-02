@@ -191,6 +191,54 @@ test('box Lebesgue materialises k-vector atoms with the box mass', async () => {
     'logTotalmass ' + m.logTotalmass + ' ≠ log 6');
 });
 
+// `dims` alone is HALF the vector-atom tag. Every shape-aware consumer keys on
+// `shape === 'array'` — the viewer's `listScalarAxes` / corner grid, the CSV
+// export, `_keepAtomShape` — and reads an untagged box as N·k SCALAR atoms.
+// The observable failure that motivates this: `weighted(f, Lebesgue(box))`
+// plotted bit-identical to its unweighted base, because the per-atom weights
+// (length N) could not be paired with a buffer read as N·k samples and the
+// histogram silently dropped them. `.value` is the other half — `valueOf`
+// PREFERS `m.value`, so a flat `[N·k]` view outranks a correct `dims`.
+const BOX_SHAPE_SRCS: Array<[string, string, number[]]> = [
+  ['a plain box',
+   'M = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\n', [2]],
+  ['a constant-weighted box',
+   'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\nM = weighted(2.0, L)\n', [2]],
+  ['a function-weighted box',
+   'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\nf(x, y) = x * y\nM = weighted(f, L)\n', [2]],
+  ['a log-weighted box',
+   'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\ng(x, y) = 0.5\nM = logweighted(g, L)\n', [2]],
+  ['a normalized weighted box',
+   'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\nf(x, y) = x * y\nM = normalize(weighted(f, L))\n', [2]],
+  ['a 1-axis box',
+   'M = Lebesgue(support = cartprod(interval(0.0, 4.0)))\n', [1]],
+  ['a 3-axis cartpow box',
+   'M = Lebesgue(support = cartpow(interval(0.0, 1.0), 3))\n', [3]],
+];
+
+for (const [what, src, dims] of BOX_SHAPE_SRCS) {
+  test(what + ' carries the FULL vector-atom tag: shape, dims and an [N, k] value', async () => {
+    const N = 512;
+    const { ctx } = makeMatCtx(src, { sampleCount: N });
+    const m: any = await ctx.getMeasure('M');
+    const k = dims.reduce((p, n) => p * n, 1);
+    assert.equal(m.shape, 'array',
+      what + ": shape must be 'array', got " + JSON.stringify(m.shape));
+    assert.deepEqual(m.dims, dims, what + ': dims must be ' + JSON.stringify(dims));
+    assert.equal(m.samples.length, N * k);
+    assert.ok(m.value, what + ': the shape-explicit view must be populated');
+    assert.deepEqual(m.value.shape, [N].concat(dims),
+      what + ': value.shape must be [N, k], got ' + JSON.stringify(m.value.shape));
+    assert.equal(m.value.data, m.samples, what + ': the value view must share storage');
+    // Any per-atom weights are per ATOM, not per cell — the length a consumer
+    // pairing them with the per-axis columns depends on.
+    if (m.logWeights) {
+      assert.equal(m.logWeights.length, N,
+        what + ': logWeights must be per-atom (N), got ' + m.logWeights.length);
+    }
+  });
+}
+
 test('box Lebesgue samples uniformly: coordinate means hit the midpoints', async () => {
   // Oracle: for U ~ Uniform(box), E[xᵢ] = (loᵢ+hiᵢ)/2 exactly. Axis 1 on
   // [0,2] → 1.0; axis 2 on [0,3] → 1.5. The per-axis standard error is

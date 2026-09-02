@@ -206,12 +206,17 @@ function matLebesgueBox(name: string, d: any, ctx: any) {
       const col = columns[i];
       for (let n = 0; n < N; n++) data[n * k + i] = col[n];
     }
-    const m: any = scalarMeasureN(data, {
+    // `batchedVector` (not `batchedScalar` + a `dims` patch): the [N, k] Value
+    // is what makes `measureFromValue` tag `shape = 'array'` and populate the
+    // `[N, k]` `.value` view. A bare `dims` leaves `shape` unset, and every
+    // consumer keyed on `shape === 'array'` (the viewer's corner grid /
+    // listScalarAxes, `_keepAtomShape`) then reads the box as N·k SCALAR atoms:
+    // the plot silently drops the weights and offers one unnamed axis.
+    const m: any = measureFromValue(valueLib.batchedVector(data, k), {
       logWeights: null,
       logTotalmass: d.logTotalmass,
       n_eff: N,
     });
-    m.dims = [k];
     m._boxAxisColumns = columns;
     return m;
   });
@@ -528,10 +533,13 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
 }
 
 // Carry an ARRAY-atom base's per-atom shape onto a reweighted measure: §06
-// `weighted` changes a measure's weights, never its variate shape, and a
-// downstream `superpose` needs the shape to select a component per ATOM rather
-// than per cell. The log-weights stay per CELL, which is what the parent's own
-// uniform weights are.
+// `weighted` and `normalize` change a measure's weights, never its variate
+// shape, and a downstream `superpose` needs the shape to select a component
+// per ATOM rather than per cell. The log-weights stay per CELL, which is what
+// the parent's own uniform weights are.
+//
+// Both `dims` AND `shape` — the pair is the vector-atom tag. `dims` alone
+// leaves consumers keyed on `shape === 'array'` reading N·k scalar atoms.
 function _keepAtomShape(out: any, parent: any): void {
   if (!parent || parent.shape !== 'array' || !Array.isArray(parent.dims)) return;
   out.dims = parent.dims;
@@ -580,7 +588,7 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
       logTotalmass,
       n_eff: empirical.effectiveSampleSize({ samples: parent.samples, logWeights: w }),
     });
-    m.dims = parent.dims;
+    _keepAtomShape(m, parent);
     m._boxAxisColumns = columns;
     if (massOnly) m._atomMassWeights = true;
     return m;
@@ -875,7 +883,7 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
       // A vector-atom parent (a Lebesgue box) stays vector-atom: normalize
       // changes weights, never the variate shape. Without this the 2-D box's
       // `dims` is dropped and every consumer reads N·k scalar atoms.
-      if (parent.dims) out.dims = parent.dims;
+      _keepAtomShape(out, parent);
       if (parent._boxAxisColumns) out._boxAxisColumns = parent._boxAxisColumns;
       // A pooled shift does not introduce variate dependence, so the parent's
       // classification carries through.
