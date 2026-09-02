@@ -213,3 +213,64 @@ test('normaliseWeights and weightedQuantileSorted are exported and correct', () 
   const med = h.weightedQuantileSorted(new Float64Array([0, 1, 2, 3, 4]), w, 0.5);
   assert.ok(med >= 1.5 && med <= 2.5, `median ${med}`);
 });
+
+// =====================================================================
+// Misaligned logWeights: REFUSED, never silently dropped.
+//
+// Both estimators used to test `lw.length === n` and fall through to the
+// UNWEIGHTED path when it failed. A caller handing per-ATOM weights over a
+// flattened per-CELL buffer (a k-vector-atom measure read as N·k scalars) then
+// got an unweighted histogram with no signal at all — the plot matched the
+// unweighted base measure while its caption reported the weighted mass and ESS.
+// =====================================================================
+
+test('freedmanDiaconisHistogram: misaligned logWeights throws, naming both lengths', () => {
+  const samples = new Float64Array([0, 1, 2, 3, 4, 5]);   // 6 cells
+  const lw = new Float64Array(3);                          // 3 atoms
+  assert.throws(
+    () => freedmanDiaconisHistogram(samples, { logWeights: lw }),
+    (err: any) => {
+      assert.match(err.message, /freedmanDiaconisHistogram/);
+      assert.match(err.message, /3 entries/);
+      assert.match(err.message, /6 samples/);
+      return true;
+    });
+});
+
+test('integerHistogram: misaligned logWeights throws, naming both lengths', () => {
+  const samples = new Float64Array([0, 1, 1, 2]);          // 4 cells
+  const lw = new Float64Array(2);                           // 2 atoms
+  assert.throws(
+    () => integerHistogram(samples, { logWeights: lw }),
+    (err: any) => {
+      assert.match(err.message, /integerHistogram/);
+      assert.match(err.message, /2 entries/);
+      assert.match(err.message, /4 samples/);
+      return true;
+    });
+});
+
+test('absent logWeights stays the legitimate uniform path, not a refusal', () => {
+  const samples = new Float64Array([0, 1, 1, 2, 2, 2, 3]);
+  for (const opts of [{}, { logWeights: null }, { logWeights: undefined }]) {
+    assert.doesNotThrow(() => integerHistogram(samples, opts as any));
+    assert.doesNotThrow(() => freedmanDiaconisHistogram(samples, opts as any));
+  }
+});
+
+test('an aligned weight array is still honoured after the guard', () => {
+  // Guard-regression: the refusal must not have turned the weighted branch off.
+  const samples = new Float64Array([0, 1, 2]);
+  const lw = new Float64Array([Math.log(1), Math.log(4), Math.log(1)]);
+  const r = integerHistogram(samples, { logWeights: lw });
+  assert.ok(Math.abs(r.ys[1] - 4) < 1e-12, 'the heavy atom must carry mass 4');
+});
+
+test('an EMPTY sample buffer short-circuits before the guard', () => {
+  // n === 0 returns the empty result first, so a stray weight array on an empty
+  // measure is not an error — there is nothing to misalign it against.
+  assert.doesNotThrow(
+    () => freedmanDiaconisHistogram(new Float64Array(0), { logWeights: new Float64Array(4) }));
+  assert.doesNotThrow(
+    () => integerHistogram(new Float64Array(0), { logWeights: new Float64Array(4) }));
+});

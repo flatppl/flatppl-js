@@ -21,6 +21,34 @@
 // `binWidth` so a bar-style chart can size rectangles directly.
 
 /**
+ * Decide whether a caller's `logWeights` is usable, and REFUSE a
+ * misaligned one.
+ *
+ * A weight array whose length is not the sample count cannot be paired
+ * with the samples at all. Both estimators used to treat that as
+ * "unweighted" — so a caller that handed a per-ATOM weight array
+ * alongside a flattened per-CELL sample buffer (a k-vector-atom measure
+ * read as N·k scalars) got an UNWEIGHTED histogram with no signal that
+ * the weights had been discarded. The plot then looked identical to the
+ * unweighted base measure while its caption reported the weighted total
+ * mass and ESS. Throw instead: the mismatch is a caller bug, and the two
+ * lengths in the message name the shape that got flattened.
+ *
+ * Returns false for absent weights (the legitimate uniform case) and
+ * true for an aligned array.
+ */
+function requireAlignedWeights(lw: any, n: number, who: string): boolean {
+  if (lw == null) return false;
+  if (lw.length !== n) {
+    throw new Error(who + ': logWeights has ' + lw.length + ' entries but there are '
+      + n + ' samples. Per-atom weights cannot be paired with a flattened '
+      + 'per-cell sample buffer — pass the per-axis samples (see '
+      + 'listScalarAxes) or omit the weights.');
+  }
+  return true;
+}
+
+/**
  * Equal-width histogram with bin width chosen by the Freedman-Diaconis
  * rule. The visible x-range is trimmed to a quantile interval (default
  * [q0.005, q0.995]) so a single far-away outlier doesn't compress the
@@ -54,7 +82,7 @@ function freedmanDiaconisHistogram(samples: ArrayLike<number>, opts: { logWeight
   }
 
   const lw = opts.logWeights;
-  const weighted = lw && lw.length === n;
+  const weighted = !!requireAlignedWeights(lw, n, 'freedmanDiaconisHistogram');
 
   // For weighted: pre-compute normalised weights once, sort sample
   // indices by value. For unweighted: sort the values directly (no
@@ -185,7 +213,7 @@ function integerHistogram(samples: ArrayLike<number>, opts: { logWeights?: any; 
     return { xs: new Float64Array(0), ys: new Float64Array(0), support: [0, 0], reference: 'counting' };
   }
   const lw = opts && opts.logWeights;
-  const weighted = lw && lw.length === n;
+  const weighted = !!requireAlignedWeights(lw, n, 'integerHistogram');
 
   let lo = +Infinity, hi = -Infinity;
   for (let i = 0; i < n; i++) {
