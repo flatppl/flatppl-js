@@ -486,10 +486,15 @@ export interface DerivationBayesupdate {
   name?: string;
   from: string;
   /** Likelihood-kernel body source: a named binding (bodyName) or
-   *  inline call IR (bodyIR). Exactly one is set. */
-  bodyName: string | null;
-  bodyIR: IRNode | null;
-  obsIR: IRNode;
+   *  inline call IR (bodyIR). Exactly one is set — unless the L is a
+   *  `joint_likelihood`, which sets `subs` instead. */
+  bodyName?: string | null;
+  bodyIR?: IRNode | null;
+  obsIR?: IRNode;
+  /** Set instead of the single-term fields when L is a `joint_likelihood`:
+   *  one term per entry, each carrying its own body / obs / params. The
+   *  per-atom log-weight is the SUM of the terms' scores (spec §06). */
+  subs?: any[];
   /** The kernel's parametric (reified-boundary) input names. matBayesupdate
    *  FEEDS these from the prior's atoms — per the spec lowering
    *  bayesupdate(L,prior)=logweighted(fn(logdensityof(L,_)),prior) the prior's
@@ -552,11 +557,14 @@ export interface DerivationPosteriorDensity {
   kind: 'posterior_density';
   name?: string;
   priorName: string;
-  bodyName: string | null;
-  bodyIR: IRNode | null;
-  obsIR: IRNode;
-  paramKwargs: string[];
-  params: string[];
+  bodyName?: string | null;
+  bodyIR?: IRNode | null;
+  obsIR?: IRNode;
+  paramKwargs?: string[];
+  params?: string[];
+  /** Set instead of the single-term fields when L is a `joint_likelihood`:
+   *  one entry per term, each the shape DerivationLikelihoodDensity scores. */
+  subs?: any[];
   pointIR: IRNode;
 }
 

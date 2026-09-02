@@ -278,42 +278,77 @@ function canonicalizeImplicitBoundaries(bindings: any) {
   const out: Map<string, any> = new Map(bindings);
 
   for (const [name, b] of bindings) {
-    if (b.type !== 'functionof' && b.type !== 'kernelof') continue;
     if (!b.node || !b.node.value) continue;
-    const callExpr = b.node.value;
-    if (callExpr.type !== 'CallExpr') continue;
-    const args = callExpr.args || [];
-    if (args.length === 0) continue;
-    // Already has explicit boundary kwargs → don't auto-promote.
-    if (args.slice(1).some((a: any) => a && a.type === 'KeywordArg')) continue;
-
-    const bodyAst = args[0];
-    if (!bodyAst) continue;
-    const leaves = bfsImplicitElementofLeavesAst(bodyAst, bindings);
-    if (leaves.length === 0) continue;
-
-    // Synthesize KeywordArgs for each parametric leaf. Both surface
-    // name and value Identifier are the leaf's own binding name —
-    // body refs to that name resolve normally through self-scope,
-    // and the boundary kwarg's surface name matches the spec's
-    // "leaf nodes become the inputs of the reified callable" wording.
-    const newKwargs = leaves.map((leafName: any) => ({
-      type: 'KeywordArg',
-      name: leafName,
-      value: { type: 'Identifier', name: leafName, loc: bodyAst.loc || null },
-      loc: bodyAst.loc || null,
-    }));
-
-    const newCallExpr = { ...callExpr, args: [args[0], ...newKwargs] };
+    const promoted: string[] = [];
+    const rewritten = _promoteReificationBoundaries(b.node.value, bindings, promoted);
+    if (promoted.length === 0) continue;
     out.set(name, {
       ...b,
       // Mark the rewrite so downstream tooling (diagnostics, round-
       // trip) can distinguish it from a user-authored kwarg list.
-      implicitBoundaries: leaves.slice(),
-      node: { ...b.node, value: newCallExpr },
+      implicitBoundaries: promoted.slice(),
+      node: { ...b.node, value: rewritten },
     });
   }
   return out;
+}
+
+// Rewrite every `functionof` / `kernelof` CallExpr in `node` that declares no
+// boundary kwargs, promoting its reachable elementof leaves to explicit ones.
+// Names promoted anywhere in the tree are appended to `promoted`; the node is
+// returned unchanged (by identity) when nothing fired.
+//
+// The walk is not limited to the binding's TOP-LEVEL value: an INLINE
+// reification (`likelihoodof(functionof(iid(m, 6)), t_obs)`) is lifted to its
+// own anonymous binding only AFTER this pass, so a top-level-only rewrite left
+// it with no inputs and every consumer — the likelihood's signature, and
+// through it the viewer's profile plot — saw a parameterless callable.
+function _promoteReificationBoundaries(node: any, bindings: any, promoted: string[]): any {
+  if (node == null || typeof node !== 'object') return node;
+  if (Array.isArray(node)) {
+    let changed = false;
+    const out = node.map((c) => {
+      const r = _promoteReificationBoundaries(c, bindings, promoted);
+      if (r !== c) changed = true;
+      return r;
+    });
+    return changed ? out : node;
+  }
+  let out: any = node;
+  let changed = false;
+  for (const k in node) {
+    const r = _promoteReificationBoundaries(node[k], bindings, promoted);
+    if (r !== node[k]) {
+      if (!changed) { out = { ...node }; changed = true; }
+      out[k] = r;
+    }
+  }
+  // Only the `functionof` / `kernelof` spellings take implicit boundaries.
+  // `fn(...)` uses placeholder holes, so the §04 rule does not apply to it.
+  const calleeName = out.type === 'CallExpr' && out.callee
+    && out.callee.type === 'Identifier' ? out.callee.name : null;
+  if (calleeName !== 'functionof' && calleeName !== 'kernelof') return out;
+  const args = out.args || [];
+  if (args.length === 0) return out;
+  // Already has explicit boundary kwargs → don't auto-promote.
+  if (args.slice(1).some((a: any) => a && a.type === 'KeywordArg')) return out;
+  const bodyAst = args[0];
+  if (!bodyAst) return out;
+  const leaves = bfsImplicitElementofLeavesAst(bodyAst, bindings);
+  if (leaves.length === 0) return out;
+  // Synthesize KeywordArgs for each parametric leaf. Both surface
+  // name and value Identifier are the leaf's own binding name —
+  // body refs to that name resolve normally through self-scope,
+  // and the boundary kwarg's surface name matches the spec's
+  // "leaf nodes become the inputs of the reified callable" wording.
+  const newKwargs = leaves.map((leafName: any) => ({
+    type: 'KeywordArg',
+    name: leafName,
+    value: { type: 'Identifier', name: leafName, loc: bodyAst.loc || null },
+    loc: bodyAst.loc || null,
+  }));
+  for (const leafName of leaves) promoted.push(leafName);
+  return { ...out, args: [args[0], ...newKwargs] };
 }
 
 /**

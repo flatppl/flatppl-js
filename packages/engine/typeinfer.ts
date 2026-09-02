@@ -684,6 +684,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'logdensityof':
       case 'densityof':
       case 'bayesupdate':
+      case 'joint_likelihood':
       case 'likelihoodof': {
         const t = inferLikelihoodOps(expr, scopes);
         _checkDensityShapes(expr);
@@ -960,6 +961,26 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // interface. Carry the kernel's inputs as the likelihood's params.
       const inputs = (kT && kT.kind === 'kernel') ? kT.inputs : undefined;
       return T.likelihood(inputs);
+    }
+    // `joint_likelihood(L1, …, Lk)` (spec §06 "Combining likelihoods") is the
+    // product of independent likelihood terms, so it is itself a likelihood.
+    // Its parameter interface is the union of the terms' inputs, by name, in
+    // first-appearance order — the same union signatureOfLikelihood builds.
+    // Without this arm the whole chain typed `deferred`, which left a
+    // `bayesupdate` over it un-typed and its posterior unplottable.
+    if (op === 'joint_likelihood') {
+      const inputs: any[] = [];
+      const seen = new Set<string>();
+      for (const arg of args) {
+        const tT: any = inferExpr(arg, scopes);
+        if (tT && tT.kind === 'likelihood' && Array.isArray(tT.inputs)) {
+          for (const inp of tT.inputs) {
+            const key = inp && (inp.paramName || inp.name);
+            if (key != null && !seen.has(key)) { seen.add(key); inputs.push(inp); }
+          }
+        }
+      }
+      return T.likelihood(inputs.length > 0 ? inputs : undefined);
     }
     if (op === 'densityof' || op === 'logdensityof') {
       const mT: any = args.length > 0 ? inferExpr(args[0], scopes) : T.deferred();
