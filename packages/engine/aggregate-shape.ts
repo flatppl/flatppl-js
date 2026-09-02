@@ -64,8 +64,14 @@ interface AggregateCanonical {
 
 /**
  * Collect axis names that appear in `exprIR`, NOT descending into
- * nested aggregate(...) bodies (each aggregate has its own closed
- * axis scope per spec §05).
+ * nested aggregate(...) or metricsum(...) bodies.
+ *
+ * Spec §04 §sec:aggregate: "Axis names are lexically scoped to the
+ * enclosing `aggregate(...)`". Spec §04 §sec:metricsum: "Axis-names
+ * with variance markers are lexically scoped to the enclosing
+ * `metricsum`". Both operations therefore close an axis scope, so an
+ * axis under either binder is never an axis of the enclosing
+ * aggregate. Matches typeinfer's own scope walkers.
  *
  * Order is depth-first first-occurrence — used as the canonical
  * ordering of axes in body so the post-output reduce-axes block has a
@@ -81,7 +87,8 @@ function collectAxesInScope(exprIR: any): string[] {
       if (!seen.has(n.name)) { seen.add(n.name); ordered.push(n.name); }
       return;
     }
-    if (n.kind === 'call' && n.op === 'aggregate') return;   // inner scope
+    if (n.kind === 'call'
+        && (n.op === 'aggregate' || n.op === 'metricsum')) return; // inner scope
     for (const k of Object.keys(n)) {
       if (k === 'loc' || k === 'kind' || k === 'op'
           || k === 'name' || k === 'ns') continue;

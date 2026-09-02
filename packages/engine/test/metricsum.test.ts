@@ -961,3 +961,30 @@ g: norm[] := (a + b)[.mu^] * (a + b)[.mu_]
   assert.equal(names.length, 1,
     `expected one hoisted composed base; got ${JSON.stringify(names)}`);
 });
+
+test('metricsum: nested in an aggregate body, the outer sum keeps only its own axes', () => {
+  // Spec §04 §sec:metricsum: "Axis-names with variance markers are
+  // lexically scoped to the enclosing `metricsum`", and bare neutral
+  // axes are banned inside it. So `.j` below belongs to the metricsum
+  // alone and the outer aggregate reduces over `.k` only.
+  //
+  // Closed form, exact integer arithmetic. g is the 2x2 identity, so
+  // inv(g) = g and v_j = v^j:
+  //   metricsum(g, [], v[.j^] * v[.j_]) = 1*1 + 2*2       = 5
+  //   t = sum over .k of u[.k] * 5      = (1 + 10 + 100)*5 = 555
+  // A leaked `.j` would add a second reduction dimension of length 2
+  // and double the result to 1110.
+  const src = `
+g = rowstack([[1.0, 0.0], [0.0, 1.0]])
+v = [1.0, 2.0]
+u = [1.0, 10.0, 100.0]
+t[] := u[.k] * metricsum(g, [], v[.j^] * v[.j_])
+`;
+  const ctx = processSource(src);
+  const errs = ctx.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 0,
+    `parse errors: ${errs.map((d: any) => d.message).join('; ')}`);
+  const built = orchestrator.buildDerivations(ctx.bindings);
+  const t = built.fixedValues.get('t');
+  assert.ok(approxEq(t, 555), `t = ${t}, want 555`);
+});
