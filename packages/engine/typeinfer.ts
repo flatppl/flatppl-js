@@ -4936,6 +4936,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return SC.typeOfShape(SC.catShape(parts));
   }
 
+  // Names `setValueType` is currently following, so a cyclic set binding
+  // answers with the fallback instead of recursing forever.
+  const setRefInProgress = new Set<string>();
+
+  // The IR a self-ref set binding is bound to — `value-set.setExprValueset`'s
+  // ref-following hook. That reader has its own hop cap, so no cycle guard
+  // belongs here.
+  const _resolveSetRef = (name: string): any => {
+    const b = loweredModule.bindings.get(name);
+    return (b && b.rhs) ? b.rhs : null;
+  };
+
   function setValueType(expr: any, scopes: any): any {
     if (!expr) return null;
     if (expr.kind === 'const' && SET_VALUE_TYPES[expr.name] !== undefined) {
@@ -4943,6 +4955,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     if (expr.kind === 'ref' && expr.ns === 'self' && SET_VALUE_TYPES[expr.name] !== undefined) {
       return SET_VALUE_TYPES[expr.name];
+    }
+    // §04: "Expressions are single or nested calls that bind expressions
+    // (literal or by name reference) to inputs of callables" — a name
+    // reference is admitted wherever the expression is, so a set bound to a
+    // name types exactly as its RHS. Without this,
+    // `square = cartprod(interval(…), interval(…))` +
+    // `Lebesgue(support = square)` fell back to the default scalar variate
+    // while the inline spelling correctly gave a 2-vector.
+    if (expr.kind === 'ref' && expr.ns === 'self') {
+      if (setRefInProgress.has(expr.name)) return null;
+      const b = loweredModule.bindings.get(expr.name);
+      if (!b) return null;
+      setRefInProgress.add(expr.name);
+      try { return setValueType(b.rhs, scopes); }
+      finally { setRefInProgress.delete(expr.name); }
     }
     if (expr.kind !== 'call') return null;
     switch (expr.op) {
@@ -5208,9 +5235,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     switch (op) {
       // Parameters / loaded sets, and reference-measure supports.
       case 'elementof': case 'external':
-        return vsLib.setExprValueset(args[0], _resolveDim);
+        return vsLib.setExprValueset(args[0], _resolveDim, _resolveSetRef);
       case 'Lebesgue': case 'Counting':
-        return vsLib.setExprValueset(supportArgOf(ir), _resolveDim);
+        return vsLib.setExprValueset(supportArgOf(ir), _resolveDim, _resolveSetRef);
       // Drawing yields a value in the measure's support.
       case 'draw': return valuesetOfExpr(args[0]);
       case 'lawof': return valuesetOfExpr(args[0]);
@@ -5218,7 +5245,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'normalize': case 'bayesupdate': return valuesetOfExpr(args[0]);
       case 'weighted': case 'logweighted': return valuesetOfExpr(args[1]);
       case 'truncate': {
-        const s = vsLib.setExprValueset(args[1], _resolveDim);
+        const s = vsLib.setExprValueset(args[1], _resolveDim, _resolveSetRef);
         return s === vsLib.UNKNOWN ? valuesetOfExpr(args[0]) : s;
       }
       case 'iid': {
@@ -5249,7 +5276,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
       default:
         if (builtins.DISTRIBUTIONS.has(op)) {
-          return distributionSupport(ir, { paramDim: _paramDim, resolveDim: _resolveDim });
+          return distributionSupport(ir, {
+            paramDim: _paramDim, resolveDim: _resolveDim, resolveSetRef: _resolveSetRef,
+          });
         }
         return vsLib.UNKNOWN;
     }
@@ -5710,7 +5739,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // CONSUMES set facts; the set vocabulary + boundedness lattice have
   // ONE owner, `value-set.ts`). true / false / null (unknown).
   function setBounded(setIR: any): boolean | null {
-    return vsLib.isBounded(vsLib.setExprValueset(setIR, _resolveDim));
+    return vsLib.isBounded(vsLib.setExprValueset(setIR, _resolveDim, _resolveSetRef));
   }
 
   // Is this weight provably the identity scale — `weighted(1, M)` or
@@ -6722,9 +6751,10 @@ function supportArgOf(ir: any): any {
   return (ir.args || [])[0] || null;
 }
 
-// Per-distribution support (spec §08). `opts.paramDim`/`opts.resolveDim`
-// are optional loweredModule-bound resolvers (array length / non-literal
-// dimension lookups) that only `typeinfer`'s own call site can supply;
+// Per-distribution support (spec §08). `opts.paramDim`/`opts.resolveDim`/
+// `opts.resolveSetRef` are optional loweredModule-bound resolvers (array
+// length / non-literal dimension lookups / a named set binding's RHS) that
+// only `typeinfer`'s own call site can supply;
 // a caller without a `LoweredModule` in scope (derivations.ts querying a
 // record field's SCALAR stochastic ancestor) omits them — the Uniform /
 // MvNormal / Dirichlet / Multinomial branches then degrade to whatever
@@ -6732,11 +6762,16 @@ function supportArgOf(ir: any): any {
 // literal bounds still resolves fine) or `vsLib.UNKNOWN` (vector dists —
 // never a scalar bijection's ancestor in practice, so inert there).
 function distributionSupport(
-  ir: any, opts?: { paramDim?: (ir: any, kw: string, posIdx: number) => any, resolveDim?: (ir: any) => any },
+  ir: any, opts?: {
+    paramDim?: (ir: any, kw: string, posIdx: number) => any,
+    resolveDim?: (ir: any) => any,
+    resolveSetRef?: (name: string) => any,
+  },
 ): any {
   const op = ir.op;
   switch (op) {
-    case 'Uniform': return vsLib.setExprValueset(supportArgOf(ir), opts && opts.resolveDim);
+    case 'Uniform': return vsLib.setExprValueset(
+      supportArgOf(ir), opts && opts.resolveDim, opts && opts.resolveSetRef);
     case 'Normal': case 'GeneralizedNormal': case 'Cauchy': case 'StudentT':
     case 'Logistic': case 'VonMises': case 'Laplace': return vsLib.REALS;
     case 'LogNormal': case 'InverseGamma':
