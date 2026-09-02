@@ -182,15 +182,33 @@ function constSetValueset(name: string): any {
   }
 }
 
+// A ref hop is following one `S_name` to its RHS. Bounded so a cyclic or
+// pathologically chained set binding cannot spin here.
+const MAX_SET_REF_HOPS = 32;
+
 // A set EXPRESSION (an `elementof` / `truncate` / reference-measure
 // argument) read structurally into a ValueSet. `resolveDim(ir)` →
 // number | null resolves a dimension argument (caller supplies a
-// const-eval-capable resolver; defaults to literal-only). Mirrors Rust
-// `set_expr_valueset`.
-function setExprValueset(setIR: any, resolveDim?: (ir: any) => any): any {
+// const-eval-capable resolver; defaults to literal-only).
+// `resolveSetRef(name)` → the IR a self-ref set binding is bound to, so
+// `square = cartprod(…)` + `Lebesgue(support = square)` reads as the inline
+// spelling does: spec §04 admits a name reference wherever the expression is
+// admitted ("Expressions are single or nested calls that bind expressions
+// (literal or by name reference) to inputs of callables"). Only a caller with
+// a `LoweredModule` in scope can supply it; without it a named set stays
+// UNKNOWN, as before. Mirrors Rust `set_expr_valueset` plus its
+// `Node::Ref(RefNs::SelfMod)` arm in `crates/infer/src/ops.rs`.
+function setExprValueset(
+  setIR: any,
+  resolveDim?: (ir: any) => any,
+  resolveSetRef?: (name: string) => any,
+  refHops: number = 0,
+): any {
   if (!setIR) return UNKNOWN;
   if ((setIR.kind === 'const' || setIR.kind === 'ref') && typeof setIR.name === 'string') {
-    return constSetValueset(setIR.name);
+    const vs = constSetValueset(setIR.name);
+    if (vs !== UNKNOWN || !resolveSetRef || refHops >= MAX_SET_REF_HOPS) return vs;
+    return setExprValueset(resolveSetRef(setIR.name), resolveDim, resolveSetRef, refHops + 1);
   }
   if (setIR.kind !== 'call') return UNKNOWN;
   const args = setIR.args || [];
@@ -205,7 +223,7 @@ function setExprValueset(setIR: any, resolveDim?: (ir: any) => any): any {
       return stdsimplex(n);
     }
     case 'cartpow': {
-      const elem = setExprValueset(args[0], resolveDim);
+      const elem = setExprValueset(args[0], resolveDim, resolveSetRef, refHops);
       if (elem === UNKNOWN) return UNKNOWN;
       return cartpow(elem, _dim(args[1], resolveDim));
     }
@@ -218,7 +236,7 @@ function setExprValueset(setIR: any, resolveDim?: (ir: any) => any): any {
       // per component, and §07 `cat(x)` is `vector(x)` for a scalar, so
       // `cartprod(reals)` is the set of length-1 vectors — not `reals`.
       // Mirrors Rust, which builds `ValueSet::CartProd([S])` unconditionally.
-      const elems = args.map((a: any) => setExprValueset(a, resolveDim));
+      const elems = args.map((a: any) => setExprValueset(a, resolveDim, resolveSetRef, refHops));
       if (elems.some((e: any) => e === UNKNOWN)) return UNKNOWN;
       return cartprod(elems);
     }
