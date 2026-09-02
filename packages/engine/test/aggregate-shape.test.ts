@@ -111,6 +111,80 @@ outer[.i] := A[.i, 1, 1] + inner
     'inner aggregate axis .k must not leak into outer canonical form');
 });
 
+// `metricsum` closes an axis scope exactly as `aggregate` does. Spec §04
+// §sec:metricsum: "Axis-names with variance markers are lexically scoped
+// to the enclosing `metricsum`." The spec also bans bare neutral axes
+// inside `metricsum`, so no axis under a metricsum can ever belong to the
+// enclosing aggregate.
+//
+// The `metricsum` node is visible on this IR because typeinfer runs on
+// the pre-lift lowered module; lift rewrites metricsum to a fresh
+// aggregate only later, on its own copy.
+test('aggregate-shape: nested metricsum does NOT leak its axes outward', () => {
+  const ir = aggIRFromSource(`
+g = rowstack([[1.0, 0.0], [0.0, 1.0]])
+v = [1.0, 2.0]
+u = [1.0, 10.0, 100.0]
+t[] := u[.k] * metricsum(g, [], v[.j^] * v[.j_])
+`, 't');
+  const c = ir.meta.aggregateCanonical;
+  assert.deepEqual(c.outAxes, []);
+  // .k indexes u (length 3) and is the outer aggregate's only axis.
+  // .j is bound by the metricsum and must not appear at all.
+  assert.deepEqual(c.reduceAxes, ['k']);
+  assert.deepEqual(c.canonicalAxes, ['k']);
+  assert.ok(!('j' in c.axisLengths),
+    'metricsum axis .j must not leak into the outer canonical form');
+  assert.equal(c.axisLengths.k, 3);
+  assert.equal(c.fullyResolved, true);
+});
+
+test('aggregate-shape: outer axis shadowed by a metricsum keeps the OUTER length', () => {
+  // `.i` occurs twice with two different bindings: free in the outer
+  // aggregate (indexing u, length 3) and bound by the metricsum
+  // (indexing v, length 2). The outer aggregate must keep .i with
+  // length 3 — stopping at the metricsum must not drop a legitimately
+  // free outer axis, nor take its length from the inner scope.
+  const ir = aggIRFromSource(`
+g = rowstack([[1.0, 0.0], [0.0, 1.0]])
+v = [1.0, 2.0]
+u = [1.0, 10.0, 100.0]
+t[] := u[.i] * metricsum(g, [], v[.i^] * v[.i_])
+`, 't');
+  const c = ir.meta.aggregateCanonical;
+  assert.deepEqual(c.canonicalAxes, ['i']);
+  assert.equal(c.axisLengths.i, 3);
+  assert.equal(c.fullyResolved, true);
+});
+
+test('aggregate-shape: collectAxesInScope stops at a metricsum binder', () => {
+  // Direct unit call on a hand-built IR: body is
+  // `mul(get(u, .k), metricsum(g, [], mul(get(v, .j^), get(v, .j_))))`.
+  const body = {
+    kind: 'call', op: 'mul', args: [
+      { kind: 'call', op: 'get', args: [
+        { kind: 'ref', ns: 'self', name: 'u' },
+        { kind: 'axis', name: 'k' },
+      ]},
+      { kind: 'call', op: 'metricsum', args: [
+        { kind: 'ref', ns: 'self', name: 'g' },
+        { kind: 'call', op: 'vector', args: [] },
+        { kind: 'call', op: 'mul', args: [
+          { kind: 'call', op: 'get', args: [
+            { kind: 'ref', ns: 'self', name: 'v' },
+            { kind: 'axis', name: 'j', variance: 'upper' },
+          ]},
+          { kind: 'call', op: 'get', args: [
+            { kind: 'ref', ns: 'self', name: 'v' },
+            { kind: 'axis', name: 'j', variance: 'lower' },
+          ]},
+        ]},
+      ]},
+    ],
+  };
+  assert.deepEqual(aggregateShape.collectAxesInScope(body), ['k']);
+});
+
 // =====================================================================
 // 5. Pure-helper unit tests (collectAxesInScope, structuralCanonicalAxes)
 // =====================================================================

@@ -105,7 +105,12 @@ function _makeRuntimeAxisLengthResolver(
       if (found != null) return;
       if (!n || typeof n !== 'object') return;
       if (Array.isArray(n)) { for (const c of n) walk(c); return; }
-      if (n.kind === 'call' && n.op === 'aggregate') return;   // inner scope
+      // Both aggregate and metricsum close an axis scope (spec §04
+      // §sec:aggregate, §sec:metricsum). A same-named axis inside one
+      // is a different axis, so its container must not resolve the
+      // enclosing aggregate's axis length.
+      if (n.kind === 'call'
+          && (n.op === 'aggregate' || n.op === 'metricsum')) return; // inner scope
       if (n.kind === 'call' && (n.op === 'get' || n.op === 'get0')) {
         const args = n.args || [];
         const container = args[0];
@@ -829,8 +834,10 @@ function _flatToValueSP(data: Float64Array, shape: number[]): any {
 
 // True if `node` (an IR subtree) contains any `kind: 'axis'` node.
 // Used for constant-hoisting: axis-free subtrees evaluate once and
-// broadcast as singletons. Stops at nested aggregate boundaries
-// (those have a closed axis scope per spec §05).
+// broadcast as singletons. Stops at nested aggregate AND metricsum
+// boundaries — both close an axis scope (spec §04 §sec:aggregate,
+// §sec:metricsum), so an axis under either binder does not make the
+// subtree depend on the enclosing aggregate's axes.
 function _containsAxisRef(node: any): boolean {
   if (!node || typeof node !== 'object') return false;
   if (Array.isArray(node)) {
@@ -838,7 +845,8 @@ function _containsAxisRef(node: any): boolean {
     return false;
   }
   if (node.kind === 'axis') return true;
-  if (node.kind === 'call' && node.op === 'aggregate') return false;
+  if (node.kind === 'call'
+      && (node.op === 'aggregate' || node.op === 'metricsum')) return false;
   for (const k of Object.keys(node)) {
     if (k === 'loc' || k === 'kind' || k === 'op'
         || k === 'name' || k === 'ns') continue;
