@@ -2397,13 +2397,27 @@ function classifyKernelBroadcast(rhsIR: IRNode, ast: any, bindings: any): Deriva
   // `_executeGenerativeComposite` via the COMPOSITE_BODY_RECOGNIZERS table.
   // Without this gate the binding falls through to the silent `null` below
   // (no derivation → the variate never materialises).
-  const isGenerativeComposite = !isBareDist && !isBareVectorDist
+  // Measure-ALGEBRA-bodied user kernels — body shape is a §06 algebra
+  // call (`normalize` / `superpose` / `weighted` / `logweighted` /
+  // `truncate`), e.g. the §06 mixture spelling `p -> normalize(superpose(
+  // weighted(p, M1), weighted(1 - p, M2)))`. Per §04 a `functionof` over a
+  // measure node IS a kernel, so this broadcast is §04's independent
+  // product measure. matKernelBroadcast dispatches to
+  // `_executeMeasureAlgebraComposite` via COMPOSITE_BODY_RECOGNIZERS.
+  // Without this gate the binding fell through to the value `evaluate`
+  // classification below and the sampler hit the composite op in VALUE
+  // position ("call op 'normalize' not evaluable in sampler context").
+  const isMeasureAlgebraComposite = !isBareDist && !isBareVectorDist
     && !isIidComposite && !isJointComposite && !isJointChainComposite
     && !isNestedBroadcastComposite
+    && _isMeasureAlgebraCompositeKernelBinding(k.name, bindings);
+  const isGenerativeComposite = !isBareDist && !isBareVectorDist
+    && !isIidComposite && !isJointComposite && !isJointChainComposite
+    && !isNestedBroadcastComposite && !isMeasureAlgebraComposite
     && _isGenerativeCompositeKernelBinding(k.name, bindings);
   if (!isBareDist && !isBareVectorDist && !isIidComposite && !isJointComposite
       && !isJointChainComposite && !isNestedBroadcastComposite
-      && !isGenerativeComposite) return null;
+      && !isMeasureAlgebraComposite && !isGenerativeComposite) return null;
   const argIRs = rhsIR.args.slice(1);
   const kwargIRs = rhsIR.kwargs ? Object.assign({}, rhsIR.kwargs) : null;
   if (argIRs.length === 0 && (!kwargIRs || Object.keys(kwargIRs).length === 0)) {
@@ -2431,6 +2445,10 @@ function _isNestedBroadcastCompositeKernelBinding(name: string, bindings: any): 
 }
 function _isGenerativeCompositeKernelBinding(name: string, bindings: any): boolean {
   return _kernelBroadcastShape.isGenerativeCompositeKernelBinding(name, bindings);
+}
+
+function _isMeasureAlgebraCompositeKernelBinding(name: string, bindings: any): boolean {
+  return _kernelBroadcastShape.isMeasureAlgebraCompositeKernelBinding(name, bindings);
 }
 
 // broadcast(logdensityof, M, points) — evaluate a measure's density
@@ -4847,7 +4865,12 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         } else if (Array.isArray(d.argIRs)) {
           for (let i = 0; i < d.argIRs.length; i++) ir.args.push(d.argIRs[i]);
         }
-        return ir;
+        // A head naming a MEASURE-bodied kernel (§04 sec:functionof-measure)
+        // carries measure refs inside that body — `bkg` / `sig` in the §06
+        // mixture spelling. `_expandStructural`'s broadcast arm resolves
+        // them to leaves, which the bindings-less density walker needs; for
+        // a built-in distribution head it returns the IR unchanged.
+        return _expandStructural(ir, ctx, next) || ir;
       }
       // evaluate / array / normalize / superpose / iid-of-iid / etc.
       // are not measures-with-densities we can score today.

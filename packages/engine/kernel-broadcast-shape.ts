@@ -1005,6 +1005,20 @@ interface GenerativeKernelDescriptor {
   hasInternalDraw: boolean;
 }
 
+interface MeasureAlgebraKernelDescriptor {
+  /** The user-kernel binding's IR (the functionof node). */
+  binding: any;
+  /** Kernel parameter names (boundaries). */
+  params: string[];
+  /** Kernel surface kwarg names. */
+  paramKwargs: string[];
+  /** The peeled body — one measure-algebra call tree, kernel formals
+   *  still embedded. The executor substitutes them per cell. */
+  bodyMeasureIR: any;
+  /** The body's outer op, for diagnostics. */
+  outerOp: string;
+}
+
 // Measure-construction ops the EARLIER recognisers claim. A lawof arg
 // whose (deref'd) op is one of these is NOT a generative value-expr —
 // decline so the dedicated recogniser keeps it.
@@ -1043,6 +1057,81 @@ function _internalDrawDist(ir: any, bindings: any): any {
   const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
   if (!SAMPLEABLE || !SAMPLEABLE.has(m.op)) return null;
   return m;
+}
+
+// Measure-ALGEBRA body ops (spec §06). These wrap other measures rather
+// than construct a product / chain / joint structure, so a body built from
+// them is one per-cell measure the by-name materialiser already samples —
+// unlike `iid`/`joint`/`jointchain`/`broadcast`, each of which owns a
+// dedicated executor with its own axis layout.
+//
+// `iid` is deliberately absent: `lawof(iid(<dist>, n))` is the iid
+// recogniser's shape and carries an inner axis this executor has no layout
+// for. `pushfwd` is absent because a non-bijective pushfwd has no density,
+// so admitting it would give a sampleable broadcast the density path
+// refuses — the two halves must agree on the same set of bodies.
+const _MEASURE_ALGEBRA_BODY_OPS = new Set([
+  'normalize', 'superpose', 'weighted', 'logweighted', 'truncate',
+]);
+
+/**
+ * Recognise a measure-ALGEBRA-bodied user-kernel binding. Returns a
+ * `MeasureAlgebraKernelDescriptor` on match, null otherwise.
+ *
+ * Accepts the following IR shape (post-lowering + post-lift):
+ *
+ *     functionof(
+ *       <normalize|superpose|weighted|logweighted|truncate>(…),
+ *       kernel_kwargs...
+ *     )
+ *
+ * with an optional `lawof` peel (the `kernelof` spelling). Per spec §04
+ * "Reifying measure-valued expressions to kernels", a `functionof` over a
+ * measure node IS a transition kernel, so `broadcast(K, col)` over it is
+ * §04's independent product measure of the per-cell applications.
+ *
+ * The body may nest the algebra ops freely (`normalize(superpose(
+ * weighted(p, M1), weighted(1 - p, M2)))` is the §06 mixture spelling) and
+ * may reference the kernel formals anywhere a value is admitted — the
+ * executor substitutes each formal with that cell's column before handing
+ * the body to the by-name materialiser.
+ *
+ * Declines (returns null) when the binding isn't a `functionof` with at
+ * least one formal, or when the peeled body's outer op is not a
+ * measure-algebra op.
+ */
+function detectMeasureAlgebraKernelBinding(
+  name: string, bindings: any,
+): MeasureAlgebraKernelDescriptor | null {
+  if (!bindings || !bindings.has || !bindings.has(name)) return null;
+  const b = bindings.get(name);
+  if (!b || !b.ir) return null;
+  const ir = b.ir;
+  if (ir.kind !== 'call' || ir.op !== 'functionof') return null;
+  const params: string[] = Array.isArray(ir.params) ? ir.params : [];
+  if (params.length === 0) return null;
+  const paramKwargs: string[] = Array.isArray(ir.paramKwargs)
+    ? ir.paramKwargs : params;
+  const bodyMeasureIR = _peelKernelBody(ir.body);
+  if (!bodyMeasureIR || bodyMeasureIR.kind !== 'call'
+      || !_MEASURE_ALGEBRA_BODY_OPS.has(bodyMeasureIR.op)) return null;
+  return {
+    binding: b,
+    params,
+    paramKwargs,
+    bodyMeasureIR,
+    outerOp: bodyMeasureIR.op,
+  };
+}
+
+/**
+ * Lighter check: does `name` resolve to a measure-algebra-bodied kernel
+ * binding? Mirrors `isIid…` / `isJoint…` / `isGenerative…`.
+ */
+function isMeasureAlgebraCompositeKernelBinding(
+  name: string, bindings: any,
+): boolean {
+  return detectMeasureAlgebraKernelBinding(name, bindings) !== null;
 }
 
 /**
@@ -1509,6 +1598,8 @@ module.exports = {
   checkJointChainKernelSteps,
   detectNestedBroadcastKernelBinding,
   isNestedBroadcastCompositeKernelBinding,
+  detectMeasureAlgebraKernelBinding,
+  isMeasureAlgebraCompositeKernelBinding,
   detectGenerativeKernelBinding,
   isGenerativeCompositeKernelBinding,
   diagnoseKernelBodyNearMiss,

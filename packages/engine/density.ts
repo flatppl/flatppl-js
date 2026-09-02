@@ -1061,9 +1061,90 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
       for (let i = 0; i < N; i++) acc[i] += shift;
     }
   }
+  // Bare normalize(superpose(weighted(w_k, M_k), …)) — §06's recommended
+  // mixture spelling, "To build a normalized mixture distribution, use
+  // normalize(superpose(weighted(w1, M1), weighted(w2, M2)))". Same
+  // situation as the truncate case above: every other scoring path resolves
+  // Z on the main thread, but the per-cell kernel-broadcast walk scores the
+  // RAW functionof body, so a bare normalize here would fall through to the
+  // "Z treated as 1" case below. That is only right when the weights
+  // happen to sum to one — the UNNORMALISED-yield spelling
+  // `normalize(superpose(weighted(nu_B, bkg), weighted(nu_S, sig)))`, the
+  // same measure written without forming `1 - w`, would silently score
+  // log(nu_B + nu_S) too high per event. Z = Σ_k w_k for probability-measure
+  // components; anything this cannot resolve exactly falls through
+  // unchanged.
+  if (inner && inner.kind === 'call'
+      && (inner.op === 'superpose' || inner.op === 'select')) {
+    const shift = tryResolveSuperposeNormalizerShift(inner, baseEnv, overlay);
+    if (shift != null) {
+      for (let i = 0; i < N; i++) acc[i] += shift;
+    }
+  }
   // Legacy bare normalize (no spec): Z treated as 1 — only correct when
   // the inner is already a probability measure.
   return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+}
+
+// Resolve the −log Z shift for a bare `normalize(superpose(…))` /
+// `normalize(select(…))` reached worker-side (see walkNormalize above).
+// Z = Σ_k w_k · totalmass(M_k), and this resolver fires ONLY when every
+// term is exact: each component must be a probability measure (mass 1) and
+// each weight a value expression, constant in the variate, that the worker
+// env can evaluate. Returns null — "fall through", never a zero shift — for
+// anything else, so no shape that scores correctly today changes.
+function tryResolveSuperposeNormalizerShift(
+  baseIR: any, baseEnv: any, overlay: any,
+): number | null {
+  const branches: any[] = baseIR.op === 'select'
+    ? (Array.isArray(baseIR.branches) ? baseIR.branches : [])
+    : (Array.isArray(baseIR.args) ? baseIR.args : []);
+  if (branches.length === 0) return null;
+  // A `select` carrying its own per-branch logweights is the discrete-
+  // selector node, whose weights are a selector PRIOR rather than mixture
+  // masses. Leave it alone.
+  if (baseIR.op === 'select' && baseIR.logweights != null) return null;
+  if (baseIR.selectorName) return null;
+  const callEnv = overlay ? Object.assign({}, baseEnv, overlay) : baseEnv;
+  let Z = 0;
+  for (const br of branches) {
+    if (!br || br.kind !== 'call') return null;
+    let inner = br;
+    let w = 1;
+    if ((br.op === 'weighted' || br.op === 'logweighted')
+        && Array.isArray(br.args) && br.args.length === 2) {
+      const wIR = br.args[0];
+      // A function-of-the-variate weight (§06's `weighted(f, M)` with f a
+      // callable) is not a constant mass — its integral is not Σ w_k.
+      if (!wIR || wIR.kind === 'call'
+          && (wIR.op === 'functionof' || wIR.op === 'fn')) return null;
+      let wv: any;
+      try {
+        wv = samplerLib.evaluateExpr(wIR, callEnv);
+      } catch (_e) {
+        return null;
+      }
+      if (typeof wv !== 'number' || !Number.isFinite(wv)) return null;
+      w = br.op === 'logweighted' ? Math.exp(wv) : wv;
+      if (!(w >= 0)) return null;
+      inner = br.args[1];
+    }
+    // The component's own mass must be exactly 1, or Z is not Σ w_k. A
+    // distribution leaf and a nested `normalize` are the two shapes that
+    // guarantee it. `leafParamIRs` is the single owner of §04's leaf
+    // binding rule, so both the positional and the keyword spelling of a
+    // leaf are recognised here and a surplus keyword declines.
+    if (!inner || inner.kind !== 'call') return null;
+    const { leafParamIRs } = require('./leaf-params.ts');
+    const isProbability = leafParamIRs(inner) != null || inner.op === 'normalize';
+    if (!isProbability) return null;
+    Z += w;
+  }
+  if (!(Z > 0) || !Number.isFinite(Z)) {
+    throw new Error('density: normalize(superpose(…)) — the superposition\'s '
+      + 'total mass is ' + Z + '; normalize is undefined at Z = 0 (spec §06)');
+  }
+  return -Math.log(Z);
 }
 
 // Resolve the −log Z shift for a bare `normalize(truncate(base, S))` reached
@@ -2197,6 +2278,12 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
       "broadcast kernel parameter '" + surfaceNames[pi] + "'");
   }
 
+  // A per-atom ref reachable from the BODY (not just from a broadcast
+  // argument) makes the score atom-dependent too: a kernel BOUNDARY like
+  // `lam` varies per atom under `logdensityof(L, …)`, so the fan-out-once
+  // path below would score every atom at atom 0's value.
+  if (_exprUsesAny(fnHead.body, refNames)) anyAtomDep = true;
+
   const resolved = bcAxes.resolveBroadcastAxes(
     internalNames.map((nm: string, pi: number) => ({
       name: nm,
@@ -2223,6 +2310,16 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
     const coord = bcAxes.cellToCoord(cell, axes);
     const callEnv: any = Object.assign({}, baseEnv);
     if (overlay) Object.assign(callEnv, overlay);
+    // Atom i's value of every per-atom ref, so a body ref that is fed as a
+    // refArray rather than a fixed-phase value resolves in the N=1 sub-walk
+    // — a `kernelof(…, lam = lam)` BOUNDARY threaded through `likelihoodof`,
+    // or any stochastic ancestor of a component's parameter. Bound BEFORE
+    // the kernel formals so a formal always wins on a name clash. Same
+    // per-atom env convention `walkMvBuiltin` uses.
+    for (let j = 0; j < refNames.length; j++) {
+      const v = refArrays[refNames[j]];
+      callEnv[refNames[j]] = valueLib.isValue(v) ? _atomSlice(v, i) : v[i];
+    }
     for (let pi = 0; pi < P; pi++) {
       callEnv[internalNames[pi]] = accessors[pi](i, bcAxes.coordToOffset(coord, resolved.strides[internalNames[pi]]));
     }
