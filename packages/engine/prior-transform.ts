@@ -62,12 +62,67 @@ function resolveParams(distOp: string, node: any, env: Record<string, any>): any
   return q;
 }
 
+// Resolve a `Dirichlet(alpha)` call's concentration vector in `env`.
+function resolveAlpha(measureIR: any, env: Record<string, any>): number[] {
+  const ir = (measureIR.kwargs && measureIR.kwargs.alpha) || (measureIR.args && measureIR.args[0]);
+  if (!ir) throw new Error('prior-transform: Dirichlet has no alpha argument');
+  const v = sampler.evaluateExpr(ir, env);
+  const arr = Array.isArray(v) ? v
+    : (v && v.data) ? Array.from(v.data as Float64Array) : null;
+  if (!arr || arr.length < 2) throw new Error('prior-transform: Dirichlet alpha must resolve to a vector of length ≥ 2');
+  return arr.map(Number);
+}
+
 // A per-latent plan: how many cube coords it consumes and how to realise it from
 // (coords, env). Built once per latent; `realise` returns the latent's value and
 // its cube-coord count. Extended by later tasks (iid/truncate/pushfwd/composite).
-function planLatent(measureIR: any, ctx: any): { count: number; realise: (u: Float64Array, off: number, env: Record<string, any>, localIdx?: number) => number } {
+// A plan carrying `sizeVec`/`realiseVec` realises its WHOLE value at once — the
+// shape a `Dirichlet` needs, whose K−1 cube coordinates map jointly onto K
+// constrained ones.
+interface LatentPlan {
+  count: number;
+  /** Present only on a vector plan: cube-coord count and constrained width. */
+  sizeVec?: (env: Record<string, any>) => { coords: number; width: number };
+  /** Set from `sizeVec` at build time. */
+  width?: number;
+  realise: (u: Float64Array, off: number, env: Record<string, any>, localIdx?: number) => number;
+  /** Present only on a vector plan: realises the whole value at once. */
+  realiseVec?: (u: Float64Array, off: number, env: Record<string, any>) => Float64Array;
+}
+
+function planLatent(measureIR: any, ctx: any): LatentPlan {
   if (measureIR.kind !== 'call') throw new Error('prior-transform: non-call measure IR');
   const op = measureIR.op;
+  if (op === 'Dirichlet') {
+    // Spec §08 "Dirichlet": canonical transport to/from standard uniform is the
+    // Connor–Mosimann stick-breaking map — "the i-th break is
+    // Beta(alpha_i, sum_{j>i} alpha_j), accumulated by stick-breaking onto
+    // stdsimplex(n)". K−1 cube coords, monotone in each, so it meets nested
+    // sampling's bijective-monotone requirement.
+    return {
+      count: 0,                                        // set from sizeVec at build time
+      sizeVec: (env) => {
+        const K = resolveAlpha(measureIR, env).length;
+        return { coords: K - 1, width: K };
+      },
+      realise: () => { throw new Error('prior-transform: Dirichlet is a vector plan'); },
+      realiseVec: (u, off, env) => {
+        const alpha = resolveAlpha(measureIR, env);
+        const K = alpha.length;
+        const p = new Float64Array(K);
+        let remaining = 1;
+        for (let i = 0; i < K - 1; i++) {
+          let tail = 0;
+          for (let j = i + 1; j < K; j++) tail += alpha[j];
+          const z = quantile('Beta', u[off + i], { alpha: alpha[i], beta: tail });
+          p[i] = remaining * z;
+          remaining -= p[i];
+        }
+        p[K - 1] = remaining > 0 ? remaining : 0;
+        return p;
+      },
+    };
+  }
   if (op === 'Uniform') {
     // `Uniform` takes a single `interval(lo,hi)` measure-arg (not two positional
     // scalars) — resolve lo/hi from the interval's own args and quantile directly,
@@ -240,19 +295,27 @@ function buildPriorTransform(ctx: any, d: any) {
     };
   }
 
-  const plans: Array<{ name: string; plan: ReturnType<typeof planLatent> }> = [];
+  const plans: Array<{ name: string; plan: LatentPlan }> = [];
   const latentNames: string[] = [];
   const coordSupports: any[] = [];
   let dim = 0;
   for (const { latentName, measureName } of sources) {
     const comp = recognizeCompositeIidDraw(measureName, ctx);
-    let plan: ReturnType<typeof planLatent>;
+    let plan: LatentPlan;
     if (comp) {
       const seedEnv = Object.assign({}, fixedEnv); refreshDerived(seedEnv);
       plan = makeCompositePlan(comp, seedEnv);
     } else {
       const measureIR = orchestrator.expandMeasure(measureName, { derivations: ctx.derivations, bindings: ctx.bindings });
       plan = planLatent(measureIR, ctx);
+    }
+    // A vector plan (Dirichlet) consumes fewer cube coords than the constrained
+    // width it produces; size both from the seed env.
+    if (typeof plan.sizeVec === 'function') {
+      const seedEnv = Object.assign({}, fixedEnv); refreshDerived(seedEnv);
+      const { coords, width } = plan.sizeVec(seedEnv);
+      plan.count = coords;
+      plan.width = width;
     }
     plans.push({ name: latentName, plan });
     latentNames.push(latentName);
@@ -266,7 +329,10 @@ function buildPriorTransform(ctx: any, d: any) {
     const rec: Record<string, any> = {};
     let off = 0;
     for (const { name, plan } of plans) {
-      if (plan.count === 1) {
+      if (typeof plan.realiseVec === 'function') {
+        const v = plan.realiseVec(u, off, env);
+        rec[name] = v; env[name] = Array.from(v);
+      } else if (plan.count === 1) {
         const x = plan.realise(u, off, env);
         rec[name] = x; env[name] = x;
       } else {

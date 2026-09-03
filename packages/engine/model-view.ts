@@ -130,38 +130,74 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     priorPools.push(pool);
   }
 
-  // 3b. Build per-coordinate structures (coordinates = one slot per scalar or
-  //     per element of a vector/matrix latent), using the reconciled shapes.
-  const coordNames: string[]  = [];   // e.g. ['mu','tau','theta[0]','theta[1]',…]
-  const coordSupports: any[]  = [];   // per-coordinate support
+  // 3b. Build the transform BLOCKS, using the reconciled shapes.
+  //
+  // A block owns one contiguous slice of the unconstrained vector `y` and the
+  // bijection onto its constrained coordinates. Most latents give one scalar
+  // block per element, so the unconstrained dimension equals the constrained
+  // one. A latent constrained as a WHOLE VECTOR does not: a `Dirichlet(alpha)`
+  // draw lives on `stdsimplex(K)` (spec §08 "Dirichlet": "Domain/Support:
+  // cartpow(reals, n)/stdsimplex(n)", density stated only for Σpᵢ = 1, pᵢ ≥ 0),
+  // which is a K−1 dimensional manifold — so it is ONE block of K−1
+  // unconstrained coordinates carrying the stick-breaking transform.
+  //
+  // Consequence for consumers: `dim` (unconstrained, what the kernels move in)
+  // and `names.length` (constrained output coordinates, what `constrainAll`
+  // returns and `drawsByName` keys on) are no longer the same number.
+  const blocks: any[]         = [];   // { kind, latent, name?, elem?, K?, y0, t }
+  const coordNames: string[]  = [];   // e.g. ['mu','tau','p[0]','p[1]','p[2]']
   const latentNames: string[] = [];   // unique latent names
   const latentShapes: any[]   = [];   // { kind:'scalar'|'vector', dims?:[d] }
+  let ydim = 0;
 
   for (const l of leafLatents) {
     latentNames.push(l.name);
     latentShapes.push(l.shape);
+    const width = l.shape.kind === 'scalar' ? 1 : l.shape.dims[0];
+    const kind = l.support && l.support.kind;
+    if (kind === 'unsupported') {
+      throw new Error(
+        `backend '${(ctx.inferenceOpts && ctx.inferenceOpts.backend) || 'mh'}': latent `
+        + `'${l.name}' is a '${l.support.distOp}' draw, whose support has no unconstraining `
+        + `transform in this engine; use backend 'is', which forward-samples the prior `
+        + `rather than exploring an unconstrained space`);
+    }
+    if (kind === 'simplex') {
+      if (l.shape.kind !== 'vector' || !(width >= 2)) {
+        throw new Error(
+          `model-view: simplex latent '${l.name}' needs a vector shape of width ≥ 2; got `
+          + `${JSON.stringify(l.shape)}`);
+      }
+      blocks.push({ kind: 'simplex', latent: l.name, K: width, y0: ydim, t: T.simplexTransform(width) });
+      for (let i = 0; i < width; i++) coordNames.push(`${l.name}[${i}]`);
+      ydim += width - 1;
+      continue;
+    }
+    const t = T.transformFor(l.support);
     if (l.shape.kind === 'scalar') {
+      blocks.push({ kind: 'scalar', latent: l.name, name: l.name, elem: null, y0: ydim, t });
       coordNames.push(l.name);
-      coordSupports.push(l.support);
+      ydim += 1;
     } else {
-      // vector / flattened matrix — expand each coordinate (shared support)
-      const d = l.shape.dims[0];
-      for (let i = 0; i < d; i++) {
-        coordNames.push(`${l.name}[${i}]`);
-        coordSupports.push(l.support);
+      // vector / flattened matrix — one scalar block per coordinate (shared support)
+      for (let i = 0; i < width; i++) {
+        const nm = `${l.name}[${i}]`;
+        blocks.push({ kind: 'scalar', latent: l.name, name: nm, elem: i, y0: ydim, t });
+        coordNames.push(nm);
+        ydim += 1;
       }
     }
   }
 
-  const dim = coordNames.length;
-  const coordTransforms = coordSupports.map((s: any) => T.transformFor(s));
+  const dim = ydim;
+  const hasBlockTransform = blocks.some((b: any) => b.kind !== 'scalar');
 
   // Per-coordinate (μ,σ) of the unconstrained prior IFF it is exactly an
   // independent Gaussian with constant params (every latent Normal-literal,
   // real support) — the elliptical slice sampler's EXACT reference. null ⇒
   // non-Gaussian prior ⇒ that sampler fits a Gaussian reference instead.
   let gaussianPrior: { mu: Float64Array; sigma: Float64Array } | null = null;
-  {
+  if (!hasBlockTransform) {
     const det = modelSpec.detectGaussianPrior(posteriorDeriv, ctx);
     if (det) {
       const mu = new Float64Array(dim), sigma = new Float64Array(dim);
@@ -277,11 +313,34 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     return rec;
   }
 
-  // 5. Driver-compatible constrainAll: Float64Array(dim) → flat record.
+  // Read element `j` of a latent's value in either scorer form (Float64Array /
+  // shaped Value) or plain-array form.
+  function elemOf(v: any, j: number): number {
+    if (v instanceof Float64Array) return v[j];
+    if (Array.isArray(v)) return +v[j];
+    if (v && v.data) return v.data[j];
+    /* c8 ignore start -- elemOf is only reached for a latent the shape walk
+       already classified as a vector, so a non-indexable value here is an
+       internal inconsistency. Coercing it would give every coordinate the same
+       number, the silent-wrong outcome this file exists to stop, so throw. */
+    throw new Error(
+      `model-view: expected an indexable value for a vector latent, got ${typeof v}`);
+    /* c8 ignore stop */
+  }
+
+  // 5. Driver-compatible constrainAll: Float64Array(dim) → flat record keyed by
+  //    the CONSTRAINED coordinate names (`names`, which for a simplex latent is
+  //    one key wider than that latent's slice of `y`).
   function constrainAll(y: Float64Array): Record<string, any> {
     const flat: Record<string, any> = {};
-    for (let i = 0; i < dim; i++) {
-      flat[coordNames[i]] = coordTransforms[i].constrain(y[i]);
+    for (let bi = 0; bi < blocks.length; bi++) {
+      const b = blocks[bi];
+      if (b.kind === 'simplex') {
+        const p = b.t.constrain(y.subarray(b.y0, b.y0 + b.K - 1));
+        for (let i = 0; i < b.K; i++) flat[`${b.latent}[${i}]`] = p[i];
+      } else {
+        flat[b.name] = b.t.constrain(y[b.y0]);
+      }
     }
     return flat;
   }
@@ -289,26 +348,35 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   // 6. unconstrainAll: scorer-format record → Float64Array(dim).
   function unconstrainAll(scorerPt: Record<string, any>): Float64Array {
     const y = new Float64Array(dim);
-    let i = 0;
-    for (let li = 0; li < latentNames.length; li++) {
-      const nm  = latentNames[li];
-      const shp = latentShapes[li];
-      if (shp.kind === 'scalar') {
-        const v = scorerPt[nm];
-        y[i] = coordTransforms[i].unconstrain(typeof v === 'number' ? v : +v);
-        i++;
+    for (let bi = 0; bi < blocks.length; bi++) {
+      const b = blocks[bi];
+      if (b.kind === 'simplex') {
+        const src = scorerPt[b.latent];
+        const p = new Float64Array(b.K);
+        for (let i = 0; i < b.K; i++) p[i] = elemOf(src, i);
+        const yv = b.t.unconstrain(p);
+        for (let k = 0; k < b.K - 1; k++) y[b.y0 + k] = yv[k];
       } else {
-        const d   = shp.dims[0];
-        const vec = scorerPt[nm];
-        for (let j = 0; j < d; j++) {
-          const v = vec instanceof Float64Array ? vec[j]
-            : Array.isArray(vec) ? vec[j] : +vec;
-          y[i] = coordTransforms[i].unconstrain(v);
-          i++;
-        }
+        const src = scorerPt[b.latent];
+        const v = b.elem == null
+          ? (typeof src === 'number' ? src : +src)
+          : elemOf(src, b.elem);
+        y[b.y0] = b.t.unconstrain(v);
       }
     }
     return y;
+  }
+
+  // Total change-of-variables term Σ log|dθ/dy| over the blocks.
+  function logDetJTotal(y: Float64Array): number {
+    let j = 0;
+    for (let bi = 0; bi < blocks.length; bi++) {
+      const b = blocks[bi];
+      j += b.kind === 'simplex'
+        ? b.t.logDetJ(y.subarray(b.y0, b.y0 + b.K - 1))
+        : b.t.logDetJ(y[b.y0]);
+    }
+    return j;
   }
 
   // 7. logPosteriorConstrained: scorer-format record → scalar (no Jacobian).
@@ -321,7 +389,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     const flatPt = constrainAll(y);
     const scorerPt = flatToScorerPt(flatPt);
     let lp = logPi(scorerPt);
-    for (let i = 0; i < dim; i++) lp += coordTransforms[i].logDetJ(y[i]);
+    lp += logDetJTotal(y);
     return lp;
   }
 
@@ -335,9 +403,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     for (let a = 0; a < N; a++) {
       const y = ys[a];
       pts[a] = flatToScorerPt(constrainAll(y));
-      let j = 0;
-      for (let i = 0; i < dim; i++) j += coordTransforms[i].logDetJ(y[i]);
-      jac[a] = j;
+      jac[a] = logDetJTotal(y);
     }
     const lp = logPiBatch(pts);
     for (let a = 0; a < N; a++) lp[a] = Number.isFinite(lp[a]) ? lp[a] + jac[a] : -Infinity;
@@ -356,9 +422,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     for (let a = 0; a < N; a++) {
       const y = ys[a];
       pts[a] = flatToScorerPt(constrainAll(y));
-      let j = 0;
-      for (let i = 0; i < dim; i++) j += coordTransforms[i].logDetJ(y[i]);
-      jac[a] = j;
+      jac[a] = logDetJTotal(y);
     }
     const { prior, lik } = priorLikBatch(pts);
     for (let a = 0; a < N; a++) prior[a] = Number.isFinite(prior[a]) ? prior[a] + jac[a] : -Infinity;
@@ -367,7 +431,11 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
 
   return {
     dim,
-    names: coordNames,        // per-coordinate expanded names (length = dim)
+    // CONSTRAINED output coordinate names. `names.length` is the number of
+    // output coordinates and `dim` the unconstrained dimension the kernels move
+    // in; they differ whenever a block transform is in play (simplex latents),
+    // so a consumer building `drawsByName` must iterate `names.length`.
+    names: coordNames,
     hasDiscrete: false,       // only continuous latents reach here
     constrainAll,
     unconstrainAll,

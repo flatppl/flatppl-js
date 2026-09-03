@@ -102,9 +102,15 @@ function simplexTransform(K: number) {
       const y = new Float64Array(K - 1);
       let remaining = 1;
       for (let k = 0; k < K - 1; k++) {
-        const zk = p[k] / remaining;             // breaking proportion in (0,1)
+        // A prior draw can put an exact 0 (or an exact 1) in a coordinate, and
+        // logit(0) = −∞ makes every downstream logπ NaN. Clamp the breaking
+        // proportion away from the endpoints, the same way the `interval`
+        // transform above does.
+        let zk = remaining > 1e-300 ? p[k] / remaining : 0.5;
+        if (!(zk > 1e-12)) zk = 1e-12;
+        if (zk > 1 - 1e-12) zk = 1 - 1e-12;
         y[k] = Math.log(zk / (1 - zk)) + Math.log(K - 1 - k); // offset so y=0 is uniform
-        remaining -= p[k];
+        remaining -= remaining * zk;
       }
       return y;
     },
@@ -116,7 +122,10 @@ function simplexTransform(K: number) {
         p[k] = remaining * zk;
         remaining -= p[k];
       }
-      p[K - 1] = remaining;
+      // Roundoff in the running subtraction can leave a tiny negative residue;
+      // a negative coordinate is off the simplex and would score NaN, so floor
+      // it at 0 (which scores −∞ and is rejected).
+      p[K - 1] = remaining > 0 ? remaining : 0;
       return p;
     },
     logDetJ(y: Float64Array): number {

@@ -16,6 +16,11 @@
 // expensive density this is the dominant speedup — the whole ensemble runs in one
 // worker to keep the batch as large as possible. A scalar fallback covers a
 // ModelView without logPosteriorBatch.
+
+// Hard bound on shrinkage rounds per coordinate. See stepBatched's shrinkage
+// comment for why a bound is required and not merely prudent.
+const SHRINK_CAP = 200;
+
 function makeSliceKernel(opts?: any) {
   const m = (opts && opts.m) || 50;   // max stepping-out expansions per coordinate
   return {
@@ -91,9 +96,18 @@ function stepBatched(ensemble: Float64Array[], logp: Float64Array, mv: any, prng
       for (let a = 0; a < idx.length; a++) { const c = idx[a]; if (lps[a] > logu[c]) { R[c] += wi; kk[c]--; } else kk[c] = 0; }
     }
     // Shrinkage: sample in [L,R]; accept above the level, else shrink toward x0.
-    for (;;) {
+    // The interval roughly halves per round, so SHRINK_CAP rounds is far past the
+    // 1e-12 collapse. The cap is not an optimisation: this loop's only exits are
+    // acceptance and `R - L < 1e-12`, and BOTH are false for a NaN endpoint. A
+    // chain position that has gone NaN therefore makes x0, L, R and every
+    // proposal NaN, and the loop has no reachable exit at all.
+    for (let round = 0; ; round++) {
       idx.length = 0; for (let c = 0; c < nW; c++) if (!accepted[c]) idx.push(c);
       if (!idx.length) break;
+      if (round >= SHRINK_CAP) {
+        for (const c of idx) { ensemble[c][i] = x0[c]; accepted[c] = 1; }
+        break;
+      }
       const xp = new Float64Array(nW);
       for (const c of idx) { xp[c] = L[c] + prng() * (R[c] - L[c]); props[c][i] = xp[c]; }
       const lps = scoreActive();
@@ -128,7 +142,8 @@ function stepScalar(ensemble: Float64Array[], logp: Float64Array, mv: any, prng:
       y[i] = L; while (j > 0) { evals++; if (mv.logPosterior(y) > logu) { L -= wi; y[i] = L; j--; } else break; }
       y[i] = R; while (k > 0) { evals++; if (mv.logPosterior(y) > logu) { R += wi; y[i] = R; k--; } else break; }
       let accepted = false;
-      while (!accepted) {
+      for (let round = 0; !accepted; round++) {
+        if (round >= SHRINK_CAP) { y[i] = x0; accepted = true; break; }   // see stepBatched
         const xp = L + prng() * (R - L);
         y[i] = xp; const lp = mv.logPosterior(y); evals++;
         if (lp > logu) { logp[c] = lp; updates++; accepted = true; }

@@ -76,9 +76,17 @@ test('elliptical slice handles a singular fitted reference covariance', () => {
   assert.ok(post.drawsByName['a'].length > 0);
 });
 
-test('AMIS stops cleanly and SMC throws when all weights vanish', () => {
-  const r = amisSample(mv2d({ neginf: true }), { amisSamples: 40, amisIters: 4, seed: 1 });
-  assert.ok(Array.isArray(r.samples) || r.samples.length >= 0);
+test('AMIS and SMC both throw when all weights vanish', () => {
+  // AMIS used to return here rather than throw, and the old assertion
+  // (`Array.isArray(r.samples) || r.samples.length >= 0`) was a tautology that
+  // pinned nothing about the values. What it actually returned was a single
+  // sample with ESS 0 — the max-subtraction in the self-normalisation picks one
+  // of the −∞ weights, the proposal collapses onto it, and the viewer renders
+  // that point as a very sharp posterior. A target with no mass anywhere the
+  // prior reaches is not samplable, so AMIS now refuses on the same condition
+  // SMC already did.
+  assert.throws(() => amisSample(mv2d({ neginf: true }), { amisSamples: 40, amisIters: 4, seed: 1 }),
+    /not finite at ANY|weights|mass/i);
   assert.throws(() => smcSample(mv2d({ neginf: true }), { smcParticles: 200, seed: 1 }), /advance|weights|mass/i);
 });
 

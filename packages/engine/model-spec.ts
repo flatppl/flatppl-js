@@ -403,11 +403,33 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
         return transforms.supportOf(distIR.op, {});
       } catch (_) { return { kind: 'real' }; }
     }
+    // Multivariate draws classify to their OWN derivation kind (derivations.ts
+    // 'Multivariate sampleable distributions go through dedicated kind
+    // handlers'), so they never reach the 'sample' branch above. Falling through
+    // to `real` here silently told the samplers that a whole-vector-constrained
+    // latent lives in ℝ^d: a Dirichlet's coordinates then explored off
+    // `stdsimplex(n)`, where spec §08 "Dirichlet" leaves the density undefined
+    // (it is stated only "for x ∈ {p ∈ ℝⁿ : Σpᵢ = 1, pᵢ ≥ 0}") and the engine's
+    // unconstrained continuation grows without bound. Name each kind instead.
+    if (d.kind === 'dirichlet') return { kind: 'simplex' };
+    if (MULTIVARIATE_DERIV_KINDS.has(d.kind)) {
+      return { kind: 'unsupported', distOp: (d.distIR && d.distIR.op) || d.kind };
+    }
     // Unrecognised kind: treat as scalar real
     return { kind: 'real' };
   }
   return { kind: 'real' };
 }
+
+// Derivation kinds for multivariate draws whose support is a constrained
+// manifold (positive-definite / correlation matrices, integer compositions) for
+// which no unconstraining bijection exists in transforms.ts. `walkDerivChain`
+// reports them as `unsupported` so model-view REFUSES instead of sampling the
+// ambient space. `dirichlet` is handled above — its stick-breaking transform
+// exists.
+const MULTIVARIATE_DERIV_KINDS = new Set([
+  'mvnormal', 'multinomial', 'wishart', 'inversewishart', 'lkj', 'lkjcholesky',
+]);
 
 // Infer support for an element of an iid latent from the iid's base name.
 // The base derivation should be 'sample' with a distIR.
