@@ -47,7 +47,8 @@ function fixedProposalBatchStep(ensemble: Float64Array[], logp: Float64Array, mv
 // Ensemble MCMC driver shared by every kernel. Holds nWalkers positions in
 // unconstrained ℝⁿ; each iteration delegates the move to kernel.step.
 function runMcmc(mv: any, kernel: any, opts: any) {
-  const dim = mv.dim;
+  const dim = mv.dim;                       // unconstrained: what the kernels move in
+  const outDim = mv.names.length;           // constrained output coordinates
   const nWalkers = opts.nWalkers ?? 4;
   const warmup = opts.warmup ?? 1000;
   const draws = opts.draws ?? 1000;
@@ -79,6 +80,25 @@ function runMcmc(mv: any, kernel: any, opts: any) {
     logp[w] = mv.logPosterior(y);
   }
 
+  // Every walker starting at a non-finite logπ means the target has no mass
+  // anywhere the prior put a walker. No proposal can ever be accepted from
+  // there, so the run would return the init positions verbatim — one frozen
+  // value per chain, accept rate 0 — which reads as a converged answer in the
+  // viewer. Refuse the way the SMC path already refuses a vanished population,
+  // rather than shipping the init points as draws.
+  {
+    let anyFinite = false;
+    for (let w = 0; w < nWalkers; w++) if (Number.isFinite(logp[w])) { anyFinite = true; break; }
+    if (!anyFinite) {
+      throw new Error(
+        `sampler: log-posterior is not finite at ANY of the ${nWalkers} initial positions, `
+        + 'so no proposal can be accepted and the chains cannot move. Check that the '
+        + 'likelihood scores finitely at a prior draw (a mis-parameterised or '
+        + 'unresolvable density scores -Infinity everywhere), or supply initPositions '
+        + 'inside the support.');
+    }
+  }
+
   const adaptState = kernel.init ? kernel.init(nWalkers, dim, opts, mv) : {};
   // Frozen proposal from a prior warmup phase ({L, scale}). Running with warmup=0
   // then makes every step a fixed-proposal sampling step (no re-adaptation), so
@@ -102,15 +122,15 @@ function runMcmc(mv: any, kernel: any, opts: any) {
     if (it >= warmup) {
       for (let w = 0; w < nWalkers; w++) {
         const theta = mv.constrainAll(ensemble[w]);
-        const row = new Float64Array(dim);
-        for (let d = 0; d < dim; d++) row[d] = theta[mv.names[d]];
+        const row = new Float64Array(outDim);
+        for (let d = 0; d < outDim; d++) row[d] = theta[mv.names[d]];
         collected[w].push(row);
       }
     }
   }
 
   const drawsByName: Record<string, Float64Array> = {}, walkersByName: Record<string, Float64Array[]> = {}, perParam: Record<string, any> = {};
-  for (let d = 0; d < dim; d++) {
+  for (let d = 0; d < outDim; d++) {
     const name = mv.names[d];
     const flat = new Float64Array(nWalkers * draws);
     const perWalker = new Array(nWalkers);

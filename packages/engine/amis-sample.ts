@@ -178,6 +178,22 @@ function amisSample(mv: any, opts: any) {
     const lt = (typeof mv.logPosteriorBatch === 'function')
       ? mv.logPosteriorBatch(batch)
       : batch.map((x: Float64Array) => mv.logPosterior(x));
+    // A first proposal (drawn at prior scale) whose every sample scores −∞ means
+    // the target has no mass the prior can reach. The weights then normalise to
+    // whichever single sample the max-subtraction picks, the proposal collapses
+    // onto it, and AMIS returns that one point with ESS 0 — indistinguishable in
+    // the viewer from a very sharp posterior. Refuse instead, matching the MCMC
+    // driver's, SMC's and nested's refusals on the same condition.
+    if (t === 1) {
+      let anyFinite = false;
+      for (let m = 0; m < M; m++) if (Number.isFinite(lt[m])) { anyFinite = true; break; }
+      if (!anyFinite) {
+        throw new Error(
+          `backend 'amis': log-posterior is not finite at ANY of the ${M} samples of the `
+          + 'initial prior-scale proposal, so no importance weight carries mass. Check that '
+          + 'the likelihood scores finitely at a prior draw.');
+      }
+    }
     for (let m = 0; m < M; m++) {
       const x = batch[m];
       X.push(x); tau.push(t); logTarget.push(lt[m]);

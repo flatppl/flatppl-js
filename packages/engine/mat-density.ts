@@ -278,10 +278,10 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         nDraws = res.samples.length;
         // Per-coordinate constrained draws from the unconstrained samples.
         const drawsByName: Record<string, Float64Array> = {};
-        for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]] = new Float64Array(nDraws);
+        for (let d2 = 0; d2 < mv.names.length; d2++) drawsByName[mv.names[d2]] = new Float64Array(nDraws);
         for (let a = 0; a < nDraws; a++) {
           const flat = mv.constrainAll(res.samples[a]);
-          for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]][a] = flat[mv.names[d2]];
+          for (let d2 = 0; d2 < mv.names.length; d2++) drawsByName[mv.names[d2]][a] = flat[mv.names[d2]];
         }
         // Self-normalised weights + Kish ESS = (Σw)² / Σw² = 1 / Σ w̄².
         const lw = res.logW; let mx = -Infinity;
@@ -300,7 +300,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
           idx[i] = j;
         }
         const perParam: Record<string, any> = {};
-        for (let d2 = 0; d2 < mv.dim; d2++) perParam[mv.names[d2]] = { rHat: NaN, essBulk: ess };
+        for (let d2 = 0; d2 < mv.names.length; d2++) perParam[mv.names[d2]] = { rHat: NaN, essBulk: ess };
         // Log-evidence: AMIS's logW = logπ̃(x) − log q_mix(x) are RAW importance
         // weights, so logmeanexp(logW) is an unbiased log Ẑ (same estimator the
         // IS path puts on logTotalmass). Reported for the evidence readout.
@@ -313,10 +313,10 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         // SMC's final particles are EQUAL weight (already resampled), so build
         // per-coordinate draws and resample uniformly (like MH/emcee).
         const drawsByName: Record<string, Float64Array> = {};
-        for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]] = new Float64Array(nDraws);
+        for (let d2 = 0; d2 < mv.names.length; d2++) drawsByName[mv.names[d2]] = new Float64Array(nDraws);
         for (let a = 0; a < nDraws; a++) {
           const flat = mv.constrainAll(res.samples[a]);
-          for (let d2 = 0; d2 < mv.dim; d2++) drawsByName[mv.names[d2]][a] = flat[mv.names[d2]];
+          for (let d2 = 0; d2 < mv.names.length; d2++) drawsByName[mv.names[d2]][a] = flat[mv.names[d2]];
         }
         const total = total0 > 0 ? total0 : nDraws;
         idx = new Int32Array(total);
@@ -368,7 +368,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         idx = new Int32Array(total);
         { let c = wbar[0], j = 0; for (let i = 0; i < total; i++) { const uu = (i + 0.5) / total; while (uu > c && j < nDraws - 1) { j++; c += wbar[j]; } idx[i] = j; } }
         const perParam: Record<string, any> = {};
-        for (let d2 = 0; d2 < mv.dim; d2++) perParam[mv.names[d2]] = { rHat: NaN, essBulk: ess };
+        for (let d2 = 0; d2 < mv.names.length; d2++) perParam[mv.names[d2]] = { rHat: NaN, essBulk: ess };
         post = { drawsByName, diagnostics: { method: 'nested', logZ: res.logZ, logZerr: res.logZerr, nLive: res.nLive, efficiency: res.efficiency, ess, nSamples: nDraws, perParam } };
       } else {
         const isEss = backend === 'elliptical-slice-sampler';

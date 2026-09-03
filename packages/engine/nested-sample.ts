@@ -61,6 +61,23 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
     const rec = transform(u); liveU.push(u); liveRec.push(rec); liveL.push(logLik(rec));
   }
 
+  // A live set with no finite likelihood anywhere leaves the run with nothing to
+  // shrink toward: `logL > Lstar` is false for −∞ against −∞, so the constrained
+  // draw never replaces a point, logZ stays −∞, and the termination test
+  // `logZremain − logZ` evaluates NaN — which is not `< log(dlogz)`. The loop
+  // then runs to maxIter producing nothing. Refuse instead, matching the
+  // MCMC driver's and SMC's refusals on the same condition.
+  {
+    let anyFinite = false;
+    for (let i = 0; i < K; i++) if (Number.isFinite(liveL[i])) { anyFinite = true; break; }
+    if (!anyFinite) {
+      throw new Error(
+        `nested backend: the likelihood is not finite at ANY of the ${K} initial live points, `
+        + 'so no likelihood-constrained draw can ever be made and the evidence integral has '
+        + 'no mass to accumulate. Check that the likelihood scores finitely at a prior draw.');
+    }
+  }
+
   const deadRec: any[] = [], deadLogW: number[] = [], deadL: number[] = [];
   let logZ = -Infinity, logZsq = -Infinity;      // logZsq tracks Σ w_i² for the error
   let logX = 0;                                  // log prior mass, X_0 = 1
