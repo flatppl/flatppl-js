@@ -515,8 +515,8 @@
     if (!userStore) return null;
     const suggested = suggestForkName(origPath);
     const raw = window.prompt(
-      'Save your edits to. The original "' + origPath
-      + '" stays unchanged:',
+      'Save your edits as (the original "' + origPath
+      + '" stays unchanged):',
       suggested);
     if (raw == null) return null;
     let typed = raw.trim();
@@ -1271,13 +1271,17 @@
 
   /** Sanitize a user-supplied filename into a path the rest of the
       gallery accepts: strip surrounding whitespace, prepend `new/`
-      if missing, append a default extension when none of the three
-      known surface-variant extensions are present. */
+      if missing, append a default extension when none of the known
+      model extensions (file-types.mjs MODEL_EXTENSIONS) are present. */
   function normalizeEphemeralPath(raw: any) {
     let s = String(raw || '').trim();
     if (!s) return null;
     if (s.indexOf('/') === -1) s = 'new/' + s;
-    if (!/\.flatppl$/i.test(s)) s = s + '.flatppl';
+    const FT = window.FlatPPLFileTypes;
+    const exts: string[] = (FT && FT.MODEL_EXTENSIONS) || ['.flatppl'];
+    const lower = s.toLowerCase();
+    const hasKnownExt = exts.some(function (ext: string) { return lower.endsWith(ext); });
+    if (!hasKnownExt) s = s + '.flatppl';
     return s;
   }
 
@@ -1360,7 +1364,7 @@
     }
 
     if (!state.model) {
-      showSourceIfChanged(FALLBACK_SOURCE, 'inline-smoke-test.flatppl');
+      showSourceIfChanged(FALLBACK_SOURCE, 'untitled');
       if (viewer) viewer.update(FALLBACK_SOURCE, state.target || null);
       document.title = 'FlatPPL';
       lastModel = null;
