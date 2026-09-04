@@ -1746,11 +1746,15 @@
     window.FlatPPLWebRouter.onChange(applyState);
 
     // First render: if the URL specifies a model, that wins. Otherwise
-    // pick the first manifest entry as the default selection so the
-    // gallery shows something real on a bare visit.
+    // open an empty ephemeral buffer, because a bare visit is a place
+    // to start typing, and routing to a manifest entry ties the landing
+    // page to whichever example happens to ship first.
     const initial = window.FlatPPLWebRouter.parseHash();
-    if (!initial.model && manifest && manifest.entries.length > 0) {
-      window.FlatPPLWebRouter.navigateTo({ model: manifest.entries[0].path });
+    const ephBoot = window.FlatPPLWebEphemeral;
+    if (!initial.model && ephBoot) {
+      const scratch = ephBoot.nextUntitled('.flatppl');
+      ephBoot.add(scratch, '');
+      window.FlatPPLWebRouter.navigateTo({ model: scratch });
     } else {
       window.FlatPPLWebRouter.emitInitial();
     }
