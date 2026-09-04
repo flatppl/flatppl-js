@@ -152,6 +152,22 @@ function classifyStatement(valueNode: any) {
 }
 
 /**
+ * Spec §04 "Calling conventions" on the *distinguished inputs* of a special
+ * operation: "A distinguished input has no name and so cannot be passed by
+ * keyword. […] Where this specification refers to a distinguished input by a
+ * name, as in `aggregate(f_reduction, output_axes, expr)`, the name identifies
+ * the input in prose only. A call binds the input by position, never by keyword
+ * argument."
+ *
+ * Every refusal of a keyword spelling at a distinguished input quotes the
+ * decisive sentence, so the diagnostic carries the rule rather than a bare
+ * arity complaint.
+ */
+const KEYWORD_RULE =
+  '"A call binds the input by position, never by keyword argument" '
+  + '(spec §04 "Calling conventions")';
+
+/**
  * Validate argument structure of special operations.
  * Returns an array of diagnostics.
  */
@@ -166,13 +182,12 @@ function validateSpecialOperation(valueNode: any) {
   switch (name) {
     case 'functionof':
     case 'kernelof': {
-      // First arg must be a positional expression, rest must be keyword args
+      // First arg must be a positional expression, rest must be keyword args.
+      // The keyword spelling of the first arg is refused by
+      // `validateDistinguishedInputs`.
       if (args.length === 0) {
         diags.push({ severity: 'error', message: `${name}() requires at least one argument`, loc: valueNode.loc });
         break;
-      }
-      if (args[0].type === 'KeywordArg') {
-        diags.push({ severity: 'error', message: `First argument of ${name}() must be an expression, not a keyword argument`, loc: args[0].loc });
       }
       for (let i = 1; i < args.length; i++) {
         if (args[i].type !== 'KeywordArg') {
@@ -187,9 +202,6 @@ function validateSpecialOperation(valueNode: any) {
       if (args.length === 0) {
         diags.push({ severity: 'error', message: `lawof() requires exactly one argument`, loc: valueNode.loc });
         break;
-      }
-      if (args[0].type === 'KeywordArg') {
-        diags.push({ severity: 'error', message: `lawof() argument must be an expression, not a keyword argument`, loc: args[0].loc });
       }
       for (let i = 1; i < args.length; i++) {
         diags.push({
@@ -211,22 +223,30 @@ function validateSpecialOperation(valueNode: any) {
     }
     case 'draw':
     case 'elementof':
-    case 'external':
-    case 'valueset': {
-      // Single positional expression
+    case 'external': {
+      // One distinguished input (spec §04 "Calling conventions"), so a single
+      // positional expression. The keyword spelling is refused by
+      // `validateDistinguishedInputs`.
       if (args.length !== 1) {
         diags.push({ severity: 'error', message: `${name}() requires exactly one argument`, loc: valueNode.loc });
+      }
+      break;
+    }
+    case 'valueset': {
+      // Single positional node argument (spec §03 "Sets that govern values").
+      if (args.length !== 1) {
+        diags.push({ severity: 'error', message: `valueset() requires exactly one argument`, loc: valueNode.loc });
       } else if (args[0].type === 'KeywordArg') {
-        diags.push({ severity: 'error', message: `${name}() argument must be an expression, not a keyword argument`, loc: args[0].loc });
+        diags.push({ severity: 'error', message: `valueset() argument must be an expression, not a keyword argument`, loc: args[0].loc });
       }
       break;
     }
     case 'load_module': {
-      // First arg must be a string, rest are optional keyword args
+      // First arg is the distinguished path input, rest are optional keyword
+      // substitutions. Its keyword spelling is refused by
+      // `validateDistinguishedInputs`.
       if (args.length === 0) {
         diags.push({ severity: 'error', message: `load_module() requires a file path argument`, loc: valueNode.loc });
-      } else if (args[0].type === 'KeywordArg') {
-        diags.push({ severity: 'error', message: `First argument of load_module() must be a file path`, loc: args[0].loc });
       }
       for (let i = 1; i < args.length; i++) {
         if (args[i].type !== 'KeywordArg') {
@@ -236,14 +256,10 @@ function validateSpecialOperation(valueNode: any) {
       break;
     }
     case 'standard_module': {
-      // Two positional arguments: module name and version string
+      // Two distinguished inputs: module name and version string. The keyword
+      // spelling of either is refused by `validateDistinguishedInputs`.
       if (args.length !== 2) {
         diags.push({ severity: 'error', message: `standard_module() requires exactly two arguments (name, version)`, loc: valueNode.loc });
-      }
-      for (const arg of args) {
-        if (arg.type === 'KeywordArg') {
-          diags.push({ severity: 'error', message: `standard_module() takes positional arguments only`, loc: arg.loc });
-        }
       }
       break;
     }
@@ -374,30 +390,31 @@ function validateSpecialOperation(valueNode: any) {
     }
 
     case 'broadcasted': {
-      // broadcasted(f) — curried single-fn form (returns a callable).
+      // broadcasted(f) — curried single-fn form (returns a callable). Its one
+      // distinguished input is refused by keyword in
+      // `validateDistinguishedInputs`.
       if (args.length !== 1) {
         diags.push({ severity: 'error', message: `broadcasted() takes exactly one argument`, loc: valueNode.loc });
-      } else if (args[0].type === 'KeywordArg') {
-        diags.push({ severity: 'error', message: `broadcasted() argument must be positional`, loc: args[0].loc });
       }
       break;
     }
 
     case 'broadcast': {
-      // broadcast(f, args...) — first arg is the head (function /
+      // broadcast(f, args...) — first arg is the distinguished head (function /
       // distribution / measure op); collection args follow positionally
       // or by kwarg (matching the callee's signature). Minimum 2 args.
+      // The keyword spelling of the head is refused by
+      // `validateDistinguishedInputs`.
       if (args.length < 2) {
         diags.push({ severity: 'error', message: `broadcast() requires at least two arguments (head, collection)`, loc: valueNode.loc });
-      } else if (args[0].type === 'KeywordArg') {
-        diags.push({ severity: 'error', message: `broadcast() first argument must be a positional head expression`, loc: args[0].loc });
       }
       break;
     }
 
     case 'aggregate': {
       // aggregate(f_reduction, output_axes, expr) — spec §04 §sec:aggregate.
-      // Three distinguished positional inputs, no kwargs.
+      // Three distinguished positional inputs; the keyword spelling of any of
+      // them is refused by `validateDistinguishedInputs`.
       if (args.length !== 3) {
         diags.push({
           severity: 'error',
@@ -405,15 +422,6 @@ function validateSpecialOperation(valueNode: any) {
           loc: valueNode.loc,
         });
         break;
-      }
-      for (const arg of args) {
-        if (arg.type === 'KeywordArg') {
-          diags.push({
-            severity: 'error',
-            message: `aggregate() takes positional arguments only`,
-            loc: arg.loc,
-          });
-        }
       }
       // First arg: one of the order-invariant reductions §04
       // §sec:aggregate lists. `quantile` is deliberately absent — it is
@@ -486,7 +494,7 @@ function validateSpecialOperation(valueNode: any) {
 
     case 'metricsum': {
       // metricsum(metric, output_axes, expr) — spec §04 §sec:metricsum.
-      // Three distinguished positional inputs, no kwargs. The surface
+      // Three distinguished positional inputs. The surface
       // shorthand `metric: result[output_indices] := expr` desugars to
       // this form in the parser, so most well-formed metricsums arrive
       // here with the canonical shape; user-written direct calls land
@@ -498,15 +506,6 @@ function validateSpecialOperation(valueNode: any) {
           loc: valueNode.loc,
         });
         break;
-      }
-      for (const arg of args) {
-        if (arg.type === 'KeywordArg') {
-          diags.push({
-            severity: 'error',
-            message: `metricsum() takes positional arguments only`,
-            loc: arg.loc,
-          });
-        }
       }
       // Second arg: array literal of variance-marked AxisRefs (or empty).
       // The empty case `[]` reduces to a scalar (same semantics as
@@ -2033,6 +2032,81 @@ function axisListText(n: any): string {
     .join(', ') + ']';
 }
 
+/**
+ * How many leading inputs of each special operation are *distinguished*, per
+ * the roster in spec §04 "Calling conventions". A distinguished input binds by
+ * position only; whatever follows it keeps that head's own rule (the boundary
+ * kwargs of `functionof` / `kernelof`, the collection kwargs of `broadcast`,
+ * the substitution kwargs of `load_module`).
+ *
+ * `get`'s trailing indices are variadic *unnamed* inputs, so only its
+ * distinguished first input is covered here.
+ */
+const DISTINGUISHED_INPUTS = new Map<string, number>([
+  ['elementof', 1], ['external', 1], ['draw', 1],
+  ['lawof', 1], ['fixed', 1], ['broadcasted', 1],
+  ['functionof', 1], ['kernelof', 1], ['broadcast', 1],
+  ['get', 1], ['load_module', 1],
+  ['standard_module', 2], ['ksuperpose', 2],
+  ['aggregate', 3], ['metricsum', 3], ['markovchain', 3], ['kscan', 3],
+]);
+
+/**
+ * Heads that take further inputs after their distinguished ones, so the
+ * diagnostic must name the offending position rather than call the whole
+ * argument list positional.
+ */
+const HAS_FURTHER_INPUTS = new Set([
+  'functionof', 'kernelof', 'broadcast', 'get', 'load_module',
+]);
+
+/**
+ * Refuse a keyword spelling at a distinguished input of a special operation
+ * (spec §04 "Calling conventions"; see `KEYWORD_RULE`).
+ *
+ * The walk is structural and covers nested spellings, not just a statement's
+ * outermost call: the idiomatic `ksuperpose` form is the applied
+ * `ksuperpose(K, w)(mu = ..., sigma = ...)`, whose `ksuperpose` call is the
+ * callee of an enclosing call, and `fixed` normally appears inside a preset
+ * `record(...)`. A keyword at a distinguished input is otherwise reported only
+ * as a positional-count mismatch by type inference, which names an arity
+ * rather than the rule the call breaks.
+ */
+function validateDistinguishedInputs(node: any, diagnostics: any[]) {
+  function check(call: any) {
+    const name = call.callee.name;
+    const distinguished = DISTINGUISHED_INPUTS.get(name)!;
+    const args = call.args || [];
+    for (let i = 0; i < args.length && i < distinguished; i++) {
+      if (!args[i] || args[i].type !== 'KeywordArg') continue;
+      diagnostics.push({
+        severity: 'error',
+        message: HAS_FURTHER_INPUTS.has(name)
+          ? `Argument ${i + 1} of ${name}() is a distinguished input and must `
+            + `be positional: ${KEYWORD_RULE}`
+          : `${name}() takes positional arguments only: its `
+            + `${distinguished === 1 ? 'argument is a distinguished input'
+                                     : 'arguments are distinguished inputs'}, `
+            + `and ${KEYWORD_RULE}`,
+        loc: args[i].loc,
+      });
+    }
+  }
+
+  function walk(n: any) {
+    if (n == null || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+    if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier'
+        && DISTINGUISHED_INPUTS.has(n.callee.name)) {
+      check(n);
+    }
+    for (const k of Object.keys(n)) {
+      if (k !== 'loc') walk(n[k]);
+    }
+  }
+  walk(node);
+}
+
 function validateBoundaryNames(node: any, diagnostics: any[]) {
   function checkReification(call: any) {
     const seen = new Set<string>();
@@ -3286,6 +3360,7 @@ function analyze(ast: any, source: string, opts?: any) {
 
     const stmtType = classifyStatement(stmt.value);
     diagnostics.push(...validateSpecialOperation(stmt.value));
+    validateDistinguishedInputs(stmt.value, diagnostics);
     const axisListsRefused = validateAxisListPositions(stmt.value, diagnostics);
     validateHolesAndPlaceholders(stmt.value, diagnostics, axisListsRefused);
     validateBoundaryNames(stmt.value, diagnostics);

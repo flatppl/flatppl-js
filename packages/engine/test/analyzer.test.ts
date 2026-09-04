@@ -328,7 +328,8 @@ test('analyzer: broadcasted takes exactly 1 positional arg', () => {
 
 test('analyzer: broadcast requires positional head + at least 1 more arg', () => {
   assert.ok(process(`x = broadcast(Normal)\n`).diagnostics.some((d: any) => /at least two/.test(d.message)));
-  assert.ok(process(`x = broadcast(f = Normal, mu = 1)\n`).diagnostics.some((d: any) => /positional head/.test(d.message)));
+  assert.ok(process(`x = broadcast(f = Normal, mu = 1)\n`).diagnostics.some(
+    (d: any) => /Argument 1 of broadcast\(\) is a distinguished input/.test(d.message)));
 });
 
 test('analyzer: reduce / scan take their spec-mandated positional counts', () => {
