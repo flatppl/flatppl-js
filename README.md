@@ -21,7 +21,7 @@ This monorepo contains:
 
 ## Live demos
 
-* [Live demo of the FlatPPL web gallery](https://flatppl.github.io/flatppl-js/)
+* [Live demo of the FlatPPL web gallery](https://live.flatppl.org/)
 
 ## Building and testing
 

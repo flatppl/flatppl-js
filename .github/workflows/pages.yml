@@ -1,11 +1,13 @@
 name: Deploy web gallery to GitHub Pages
 
 # Builds packages/web/dist/ on every push to main and deploys it to
-# GitHub Pages. The deployed URL is
-#   https://<owner>.github.io/<repo>/
-# Local-relative URLs in the gallery (`fetch('models.json')`,
-# `<script src="vendor/...">`, `#model=demo/...`) work transparently
-# under that base path — nothing in the page hard-codes an origin.
+# GitHub Pages. The site is served at
+#   https://live.flatppl.org/
+# via the custom domain set in the repository's Pages settings; without
+# one it would be https://<owner>.github.io/<repo>/. Local-relative URLs
+# in the gallery (`fetch('models.json')`, `<script src="vendor/...">`,
+# `#model=demo/...`) work transparently under either base path — nothing
+# in the page hard-codes an origin.
 #
 # One-time repo setup (not automated here): the repository's Pages
 # settings must select "GitHub Actions" as the deploy source rather
