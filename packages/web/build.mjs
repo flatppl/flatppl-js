@@ -21,6 +21,10 @@
 //     models.json             — auto-generated manifest covering both
 //                               demo/ and examples/ (the gallery shell
 //                               fetches it on boot)
+//     legal-notice.html, …    — standalone site pages rendered from the
+//                               deployment's site overlay (FLATPPL_SITE_DIR;
+//                               none by default), also the source of the
+//                               footer links
 //
 // Mirrors packages/viewer/build.mjs structurally for the engine
 // bundling step; the flatppl-examples sync mirrors the
@@ -41,6 +45,8 @@ import * as esbuild from 'esbuild';
 // the runtime (bundled to vendor/file-types.js below). Importing it here keeps
 // the manifest filter + typing from drifting against surfaces.ts / app.ts.
 import { MODEL_EXTENSIONS, typeForPath, hideTestExamplesEnv } from './src/file-types.mjs';
+// Deploy-specific site overlay (legal notice etc. + the footer links).
+import { buildSite } from './build-site.mjs';
 
 const here     = dirname(fileURLToPath(import.meta.url));   // packages/web/
 const repoRoot = dirname(dirname(here));                    // flatppl-js/
@@ -83,6 +89,23 @@ const grammarsSibling = process.env.GRAMMARS_DIR || join(dirname(repoRoot), 'fla
 const grammarsPin = 'main';
 const grammarsRemote = `https://github.com/flatppl/flatppl-grammars/archive/refs/heads/${grammarsPin}.tar.gz`;
 const srcVendorDir = join(here, 'src', 'vendor');
+
+// Site overlay: the deployment's own pages (legal notice, …) and, derived
+// from them, the gallery's footer links. Deployment content, so it lives
+// OUTSIDE this package: the public deploy's overlay is
+// deploy/live.flatppl.org/site/ at the repo root (pages.yml points
+// FLATPPL_SITE_DIR at it); unset, the build ships no pages and no footer.
+// See build-site.mjs for the manifest format.
+const siteDir = process.env.FLATPPL_SITE_DIR || null;
+
+// Build-time feature flags baked into dist/build-flags.js; see
+// writeBuildFlags() for the fields. Declared before the first producer
+// (provisionWasmConvert) runs.
+const buildFlags = {
+  convert: false,
+  hideTestExamples: hideTestExamplesEnv(process.env.FLATPPL_HIDE_TEST_EXAMPLES),
+  footerLinks: [],
+};
 
 const WATCH = process.argv.includes('--watch');
 
@@ -251,6 +274,13 @@ await syncExamples();
 const hasCmHighlighter = await syncGrammars();
 
 // ---------------------------------------------------------------------
+// 5b. Render the site overlay's pages and bake their footer links into
+//     build-flags.js (the shell renders the footer from
+//     __FLATPPL_CONFIG__.footerLinks at boot; no page lists them twice).
+
+await syncSite();
+
+// ---------------------------------------------------------------------
 // 6. Generate dist/models.json from the assembled dist/{demo,examples}.
 //    Demo entries first, then examples; each group sorted alphabetically.
 //    Title falls back to the file basename without the .flatppl
@@ -393,6 +423,15 @@ if (WATCH) {
       console.error(`  ! src/${filename} rebuild failed:`, err.message);
     });
   });
+  if (siteDir) watchDirDebounced(siteDir, { recursive: false }, async () => {
+    // Overlay changed (a notice edited, a page added to site.json) —
+    // re-render the pages and the footer links.
+    try {
+      await syncSite();
+    } catch (err) {
+      console.error('  ! site overlay resync failed:', err.message);
+    }
+  });
   watchDirDebounced(join(here, 'demo'), { recursive: true }, async () => {
     // demo/ tree changed — re-sync the whole tree (it's small and
     // hand-curated) and regenerate models.json since the manifest
@@ -509,8 +548,8 @@ async function provisionWasmConvert() {
 }
 
 // Bake the build-time feature flags into the page (no runtime probe):
-// dist/build-flags.js merges { convert, hideTestExamples } into
-// __FLATPPL_CONFIG__.
+// dist/build-flags.js merges { convert, hideTestExamples, footerLinks }
+// into __FLATPPL_CONFIG__.
 //
 //   convert          — whether the convert (pyhf/hs3 → FlatPPL) command is
 //                      wired in (set by provisionWasmConvert).
@@ -519,13 +558,41 @@ async function provisionWasmConvert() {
 //                      truthy value other than '0'/'off'/'false'; unset by
 //                      default so local dev keeps the feature tests visible.
 //                      CI (pages.yml) sets it for the public deploy.
+//   footerLinks      — [{ label, href }] for the gallery footer, derived
+//                      from the site overlay's page list (set by syncSite;
+//                      empty until then, and empty for an overlay without
+//                      pages — the shell then hides the footer).
+//
+// The flags accumulate in `buildFlags` (declared up top, before the
+// first producer runs); each producer sets its field and rewrites the
+// file, so the last write always carries every flag.
 async function writeConvertFlag(convertOn) {
-  const hideTestExamples = hideTestExamplesEnv(process.env.FLATPPL_HIDE_TEST_EXAMPLES);
+  buildFlags.convert = convertOn;
+  await writeBuildFlags();
+}
+
+async function writeBuildFlags() {
   await writeFile(join(distDir, 'build-flags.js'),
     '// Generated by build.mjs — build-time feature flags. Do not edit.\n'
     + 'window.__FLATPPL_CONFIG__ = Object.assign(window.__FLATPPL_CONFIG__ || {}, '
-    + `{ convert: ${convertOn ? 'true' : 'false'}, `
-    + `hideTestExamples: ${hideTestExamples ? 'true' : 'false'} });\n`);
+    + JSON.stringify(buildFlags) + ');\n');
+}
+
+// Render the site overlay's pages into dist/ and publish their footer
+// links through build-flags.js.
+async function syncSite() {
+  if (!siteDir) {
+    buildFlags.footerLinks = [];
+    await writeBuildFlags();
+    console.log('  site: no overlay (FLATPPL_SITE_DIR unset); no pages, footer hidden');
+    return;
+  }
+  buildFlags.footerLinks = await buildSite({ siteDir, distDir });
+  await writeBuildFlags();
+  const n = buildFlags.footerLinks.length;
+  console.log(n
+    ? `  site: rendered ${n} page(s) from ${siteDir} -> dist/ (${buildFlags.footerLinks.map(l => l.href).join(', ')})`
+    : `  site: no pages (no site.json under ${siteDir}); footer hidden`);
 }
 
 function hasCmd(cmd) {

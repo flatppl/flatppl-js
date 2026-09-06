@@ -1501,6 +1501,13 @@
       });
     }
 
+    // Footer links (Legal Notice, …) — deployment-specific, so they come
+    // from the config (site overlay via build-flags.js, or the embedding
+    // host's bootstrap), never from the shell itself.
+    if (window.FlatPPLWebFooter) {
+      window.FlatPPLWebFooter.install(window.__FLATPPL_CONFIG__ || {});
+    }
+
     // Mount the source editor eagerly. The editor is the only
     // source surface now (no read-only <pre>) — it lives in view-
     // only mode by default and the edit toggle flips it to writable.

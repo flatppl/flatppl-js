@@ -29,6 +29,9 @@ interface Window {
     samplerWorkerUrl?: string;
     allowEdit?: boolean;
     playground?: boolean;
+    // Gallery footer links (Legal Notice, …); baked into build-flags.js
+    // from the site overlay, or set by an embedding host's bootstrap.
+    footerLinks?: { label: string; href: string }[];
     [extra: string]: any;
   };
 
@@ -42,6 +45,7 @@ interface Window {
   FlatPPLWebResolver?: any;
   FlatPPLWebSurfaces?: any;
   FlatPPLWebLayout?: any;
+  FlatPPLWebFooter?: any;
   FlatPPLWebEditor?: any;
   FlatPPLWebEphemeral?: any;
   FlatPPLWebUserStore?: any;

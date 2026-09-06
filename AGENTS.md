@@ -51,8 +51,14 @@ flatppl-js/
 │   │                                      src/lspHelpers.js; unit-tested directly
 │   └── web/                             ← standalone gallery shell for static hosts
 │       ├── src/                         ← page entry, app, resolver, router,
-│       │                                  manifest loader, syntax highlighter
-│       └── demo/                        ← in-package demo .flatppl programs
+│       │                                  manifest loader, syntax highlighter, footer
+│       ├── demo/                        ← in-package demo .flatppl programs
+│       └── build-site.mjs               ← renders a deployment's site overlay (legal
+│                                          notice etc. → dist/*.html + footer links;
+│                                          FLATPPL_SITE_DIR; format in its header)
+├── deploy/live.flatppl.org/site/        ← the public deploy's overlay content (legal
+│                                          notice); deployment-specific, NOT package
+│                                          content — pages.yml points the build at it
 └── package.json                         ← workspace root
 ```
 

@@ -55,6 +55,10 @@ jobs:
       # Hide the "Test cases" folder (demo/ + test-cases/ feature tests) in the
       # public deploy; local dev leaves it unset so the tests stay visible.
       FLATPPL_HIDE_TEST_EXAMPLES: '1'
+      # The public deploy's site overlay: the legal notice page and the
+      # gallery footer linking it. Deployment content, kept out of the web
+      # package (which ships no notice); see deploy/live.flatppl.org/README.md.
+      FLATPPL_SITE_DIR: ${{ github.workspace }}/deploy/live.flatppl.org/site
     steps:
       - uses: actions/checkout@v7
 

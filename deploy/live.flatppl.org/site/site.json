@@ -1,0 +1,6 @@
+{
+  "// purpose": "Site overlay of the public deploy (live.flatppl.org): the pages listed here are rendered to dist/<name>.html and linked, in this order, from the gallery footer. pages.yml points FLATPPL_SITE_DIR here; see packages/web/build-site.mjs.",
+  "pages": [
+    { "title": "Legal Notice", "source": "legal-notice.md" }
+  ]
+}

@@ -131,6 +131,13 @@
         <div id="surface-root"></div>
       </div>
     </section>
+
+    <!-- Footer across the full width, below the panes. Its links come from
+         __FLATPPL_CONFIG__.footerLinks (baked into build-flags.js from the
+         site overlay's pages; a host embedding the shell sets its own in
+         its bootstrap) and are rendered by footer.js at boot. Stays hidden
+         when there are none. -->
+    <footer id="app-footer" hidden></footer>
   </div>
 
   <script src="vendor/cytoscape.min.js"></script>
@@ -189,6 +196,7 @@
   <script src="router.js"></script>
   <script src="manifest.js"></script>
   <script src="layout.js"></script>
+  <script src="footer.js"></script>
   <script src="editor.js"></script>
   <script src="app.js"></script>
 </body>
