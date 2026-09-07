@@ -747,6 +747,7 @@ const ARITH_OPS = {
   abs2:  (a: any) => _isComplex(a) ? _cAbs2(a) : a * a,
   exp:   (a: any) => _isComplex(a) ? _cExp(a) : Math.exp(a),
   log:   (a: any) => _isComplex(a) ? _cLog(a) : Math.log(a),
+  log2: (a: any) => Math.log2(a),
   log10: (a: any) => Math.log10(a),
   log1p: (a: any) => Math.log1p(a),
   expm1: (a: any) => Math.expm1(a),

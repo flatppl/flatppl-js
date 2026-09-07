@@ -1017,6 +1017,7 @@ const tanElem    = _makeElementwiseUnop(Math.tan,    'tanElem',    (z: any) => _
 // abs / abs2 of complex returns a real value.
 const absElem    = _makeElementwiseUnop(Math.abs,    'absElem',    (z: any) => _cxImpl()._cAbs(z));
 const abs2Elem   = _makeElementwiseUnop((x: any) => x * x, 'abs2Elem', (z: any) => _cxImpl()._cAbs2(z));
+const log2Elem   = _makeElementwiseUnop(Math.log2,   'log2Elem');
 const log10Elem  = _makeElementwiseUnop(Math.log10,  'log10Elem');
 const log1pElem  = _makeElementwiseUnop(Math.log1p,  'log1pElem');
 const expm1Elem  = _makeElementwiseUnop(Math.expm1,  'expm1Elem');
@@ -1968,6 +1969,7 @@ module.exports = {
   tanElem,
   absElem,
   abs2Elem,
+  log2Elem,
   log10Elem,
   log1pElem,
   expm1Elem,

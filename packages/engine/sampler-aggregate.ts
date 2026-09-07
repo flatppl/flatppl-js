@@ -1069,7 +1069,7 @@ const _AGG_BIN: Record<string, (x: number, y: number) => number> = {
 
 const _AGG_UN: Record<string, (x: number) => number> = {
   neg: (x) => -x,    pos: (x) => +x,
-  exp:   Math.exp,    log:   Math.log,    log10: Math.log10,
+  exp:   Math.exp,    log:   Math.log,    log2:  Math.log2,    log10: Math.log10,
   log1p: Math.log1p,  expm1: Math.expm1,
   sqrt:  Math.sqrt,   abs:   Math.abs,    abs2: (x) => x * x,
   sin:   Math.sin,    cos:   Math.cos,    tan:   Math.tan,
