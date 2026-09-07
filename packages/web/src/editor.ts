@@ -230,33 +230,32 @@
     }, { hideOnChange: true });
   }
 
-  /** Build a small EditorView.theme matching the gallery's dark
-      palette so the editor blends with the surrounding panes. */
+  /** Build a small EditorView theme from the host's shared design tokens. */
   function makeTheme(bundle: any) {
     return bundle.EditorView.theme({
       '&': {
         height: '100%',
         fontSize: '13px',
-        backgroundColor: '#252526',
-        color: '#cccccc',
+        backgroundColor: 'var(--fp-bg)',
+        color: 'var(--fp-text)',
       },
       '.cm-scroller': {
-        fontFamily: "ui-monospace, 'Cascadia Code', 'JetBrains Mono', 'Source Code Pro', Menlo, Consolas, monospace",
+        fontFamily: 'var(--fp-font-mono)',
         lineHeight: '1.45',
       },
-      '.cm-content':  { caretColor: '#cccccc' },
+      '.cm-content':  { caretColor: 'var(--fp-text)' },
       '.cm-gutters':  {
-        backgroundColor: '#252526',
-        borderRight: '1px solid #3c3c3c',
-        color: '#858585',
+        backgroundColor: 'var(--fp-bg)',
+        borderRight: '1px solid var(--fp-border)',
+        color: 'var(--fp-text-muted)',
       },
-      '.cm-activeLine':       { backgroundColor: 'rgba(255,255,255,0.06)' },
-      '.cm-activeLineGutter': { backgroundColor: 'rgba(255,255,255,0.08)' },
-      '&.cm-focused .cm-cursor': { borderLeftColor: '#cccccc' },
+      '.cm-activeLine':       { backgroundColor: 'var(--fp-surface)' },
+      '.cm-activeLineGutter': { backgroundColor: 'var(--fp-surface-2)' },
+      '&.cm-focused .cm-cursor': { borderLeftColor: 'var(--fp-text)' },
       '&.cm-focused .cm-selectionBackground, ::selection': {
-        backgroundColor: '#264f78',
+        backgroundColor: 'var(--fp-select)',
       },
-    }, { dark: true });
+    }, { dark: false });
   }
 
   // Surface engine diagnostics (tokenizer/parser/analyzer) as CM lint markers.

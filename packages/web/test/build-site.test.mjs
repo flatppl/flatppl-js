@@ -9,12 +9,15 @@ import assert from 'node:assert/strict';
 import { mkdtemp, writeFile, mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import {
   sitePagesFromConfig,
   renderSitePage,
   loadSiteConfig,
   buildSite,
 } from '../build-site.mjs';
+
+const themeDir = fileURLToPath(new URL('../../../vendor/flatppl-theme/', import.meta.url));
 
 test('sitePagesFromConfig derives the output file and footer link per page', () => {
   const pages = sitePagesFromConfig({
@@ -36,19 +39,17 @@ test('sitePagesFromConfig rejects a page without title or source', () => {
   assert.throws(() => sitePagesFromConfig({ pages: [{ title: 'x', source: 'sub/x.md' }] }), /basename/);
 });
 
-test('renderSitePage escapes the title and wires the shared footer', () => {
+test('renderSitePage escapes the title and leaves shared-shell insertion points', () => {
   const html = renderSitePage({
     title: 'A <b>title</b> & more',
     bodyHtml: '<p>body</p>',
-    footerLinks: [{ label: 'Legal <Notice>', href: 'legal-notice.html' }],
   });
   assert.match(html, /<title>A &lt;b&gt;title&lt;\/b&gt; &amp; more/);
   assert.match(html, /<h1>A &lt;b&gt;title&lt;\/b&gt; &amp; more<\/h1>/);
   assert.ok(html.includes('<p>body</p>'));
-  assert.match(html, /<a href="legal-notice.html">Legal &lt;Notice&gt;<\/a>/);
-  // Back-link to the gallery and the standalone stylesheet (NOT style.css,
-  // whose html/body overflow:hidden would stop a long page from scrolling).
-  assert.match(html, /href="\.\/"/);
+  assert.match(html, /flatppl-theme:header/);
+  assert.match(html, /flatppl-theme:footer/);
+  // Standalone pages use page.css rather than the viewport-pinned app CSS.
   assert.match(html, /href="page\.css"/);
   assert.ok(!html.includes('style.css'));
 });
@@ -75,13 +76,17 @@ test('buildSite renders every manifest page to dist/ and returns the footer link
     }));
     await writeFile(join(siteDir, 'legal-notice.md'),
       '## Provider\n\nThe provider is [X](https://example.org).\n');
-    const links = await buildSite({ siteDir, distDir });
+    const links = await buildSite({ siteDir, distDir, themeDir });
     assert.deepEqual(links, [{ label: 'Legal Notice', href: 'legal-notice.html' }]);
     const { readFile } = await import('node:fs/promises');
     const html = await readFile(join(distDir, 'legal-notice.html'), 'utf8');
     assert.match(html, /<h2[^>]*>Provider<\/h2>/);
     assert.match(html, /<a href="https:\/\/example\.org">X<\/a>/);
     assert.match(html, /<h1>Legal Notice<\/h1>/);
+    assert.match(html, /data-fp-nav="play"/);
+    assert.match(html, /class="fp-shell-footer"/);
+    assert.match(html, /href="legal-notice\.html">Legal Notice<\/a>/);
+    assert.match(html, /theme\/assets\/favicon\.ico/);
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -92,7 +97,7 @@ test('buildSite with an empty overlay yields no links and writes nothing', async
   const distDir = join(dir, 'dist');
   try {
     await mkdir(distDir);
-    const links = await buildSite({ siteDir: join(dir, 'missing'), distDir });
+    const links = await buildSite({ siteDir: join(dir, 'missing'), distDir, themeDir });
     assert.deepEqual(links, []);
     const { readdir } = await import('node:fs/promises');
     assert.deepEqual(await readdir(distDir), []);

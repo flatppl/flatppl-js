@@ -727,8 +727,8 @@
       for (let i = 0; i < ephEntries.length; i++) {
         const ent = ephEntries[i];
         const li = document.createElement('li');
-        li.className = 'file-list-item file-list-item--ephemeral';
-        if (ent.path === currentModel) li.classList.add('selected');
+        li.className = 'file-list-item fp-nav-item file-list-item--ephemeral';
+        if (ent.path === currentModel) li.classList.add('selected', 'is-active');
         li.textContent = ent.path.replace(/^new\//, '');
         li.title = ent.path + ' (session-only)';
         li.dataset.path = ent.path;
@@ -803,7 +803,7 @@
     folder.dataset.key = key;
 
     const header = document.createElement('div');
-    header.className = 'file-folder-header';
+    header.className = 'file-folder-header fp-nav-item';
     const chev = document.createElement('span');
     chev.className = 'file-folder-chev';
     chev.textContent = open ? '▾' : '▸';  // ▾ / ▸
@@ -840,9 +840,9 @@
         for (let i = 0; i < items.length; i++) {
           const entry = items[i];
           const li = document.createElement('li');
-          li.className = 'file-list-item';
+          li.className = 'file-list-item fp-nav-item';
           if (italic) li.classList.add('file-list-item--ephemeral');
-          if (entry.path === currentModel) li.classList.add('selected');
+          if (entry.path === currentModel) li.classList.add('selected', 'is-active');
           li.textContent = entry.title || basenameOf(entry.path);
           li.title = entry.path;
           li.dataset.path = entry.path;
@@ -1505,9 +1505,8 @@
       });
     }
 
-    // Footer links (Legal Notice, …) — deployment-specific, so they come
-    // from the config (site overlay via build-flags.js, or the embedding
-    // host's bootstrap), never from the shell itself.
+    // Retarget matching shared-footer links when this deployment provides a
+    // local page through its site overlay.
     if (window.FlatPPLWebFooter) {
       window.FlatPPLWebFooter.install(window.__FLATPPL_CONFIG__ || {});
     }

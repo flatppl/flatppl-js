@@ -13,11 +13,19 @@
   against an inline source string so the integration works end-to-end
   before fetch and the manifest land.
 -->
-<html lang="en">
+<html lang="en" data-fp-active="play">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>FlatPPL</title>
+  <title>FlatPPL Playground</title>
+  <script src="theme/shell.js"></script>
+  <link rel="icon" href="theme/assets/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="theme/assets/favicon-32x32.png">
+  <link rel="apple-touch-icon" href="theme/assets/apple-touch-icon.png">
+  <link rel="manifest" href="theme/assets/site.webmanifest">
+  <link rel="stylesheet" href="theme/tokens.css">
+  <link rel="stylesheet" href="theme/components.css">
+  <link rel="stylesheet" href="theme/shell.css">
   <link rel="stylesheet" href="style.css">
   <!-- Temml's MathML companion stylesheet — sets a font-family
        chain over locally-installed math fonts (Cambria Math, STIX
@@ -29,34 +37,38 @@
 </head>
 <body>
   <div id="app">
-    <header id="app-header">
-      <button id="toggle-files" type="button"
+    <!-- flatppl-theme:header -->
+    <div id="app-toolbar" aria-label="Playground navigation">
+      <button class="fp-btn fp-btn--icon" id="toggle-files" type="button"
               aria-expanded="true" title="Hide file list">
-        <span aria-hidden="true">&#9776;</span>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zm3 0v9M3.5 5.5h1m-1 2h1m-1 2h1"/></svg>
+        <span class="fp-sr-only">Toggle file list</span>
       </button>
-      <button id="nav-back" type="button" title="Back (Alt+Left)">
-        <span aria-hidden="true">&#8249;</span>
+      <button class="fp-btn fp-btn--icon" id="nav-back" type="button" title="Back (Alt+Left)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 3 4.5 8l5 5"/></svg>
+        <span class="fp-sr-only">Back</span>
       </button>
-      <button id="nav-forward" type="button" title="Forward (Alt+Right)">
-        <span aria-hidden="true">&#8250;</span>
+      <button class="fp-btn fp-btn--icon" id="nav-forward" type="button" title="Forward (Alt+Right)">
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6.5 3 5 5-5 5"/></svg>
+        <span class="fp-sr-only">Forward</span>
       </button>
-      <span id="app-title">FlatPPL</span>
-    </header>
+      <span id="app-title">Playground</span>
+    </div>
 
     <aside class="pane" id="files-pane">
       <div class="pane-header pane-header--row">
         <span class="pane-header-text">Files</span>
-        <button id="new-file-btn" type="button"
+        <button class="fp-btn fp-btn--icon" id="new-file-btn" type="button"
                 title="New ephemeral file (session-only, not saved to disk)"
                 aria-label="New file"
                 hidden>
-          <span aria-hidden="true">+</span>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
         </button>
-        <button id="upload-btn" type="button"
+        <button class="fp-btn fp-btn--icon" id="upload-btn" type="button"
                 title="Upload .flatppl, .md/.markdown, .hs3.json, or .pyhf.json files (or drag-and-drop into the file list)"
                 aria-label="Upload"
                 hidden>
-          <span aria-hidden="true">&#128228;</span>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2m0 0L5 5m3-3 3 3M3 9v4h10V9"/></svg>
         </button>
       </div>
       <div class="pane-body" id="file-tree">
@@ -67,46 +79,43 @@
     <section class="pane" id="source-pane">
       <div class="pane-header pane-header--row">
         <span id="source-header" class="pane-header-text">Source</span>
-        <button id="edit-toggle" type="button"
+        <button class="fp-btn fp-btn--icon" id="edit-toggle" type="button"
                 title="Toggle edit mode"
                 aria-label="Toggle edit mode"
                 aria-pressed="false"
                 hidden>
-          <span aria-hidden="true">&#9998;</span>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 11 8-8 2 2-8 8-3 1zm7-7 2 2"/></svg>
         </button>
-        <button id="save-btn" type="button"
+        <button class="fp-btn fp-btn--icon" id="save-btn" type="button"
                 title="Save, copying to user/ unless already there (Ctrl/Cmd+S)"
                 aria-label="Save"
                 hidden>
-          <span aria-hidden="true">&#128190;</span>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5h9l2 2v9h-11zm2 0v4h6v-4m-6 11v-5h7v5"/></svg>
         </button>
-        <button id="download-btn" type="button"
+        <button class="fp-btn fp-btn--icon" id="download-btn" type="button"
                 title="Download this file"
                 aria-label="Download">
-          <span aria-hidden="true">&#128229;</span>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m0 0 3-3m-3 3L5 7M3 12v2h10v-2"/></svg>
         </button>
-        <button id="delete-btn" type="button"
+        <button class="fp-btn fp-btn--icon" id="delete-btn" type="button"
                 title="Delete this file from user/"
                 aria-label="Delete"
                 hidden>
-          <span aria-hidden="true">&#128465;</span>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 4h10M6 2h4l1 2M5 6v6m3-6v6m3-6v6M4 4l.5 10h7L12 4"/></svg>
         </button>
-        <button id="show-module-btn" type="button"
+        <button class="fp-btn fp-btn--icon" id="show-module-btn" type="button"
                 title="Visualize whole module"
                 aria-label="Visualize whole module"
                 hidden>
-          <img src="media/visualize-module-dark.svg"
-               alt="" width="16" height="16">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M3 3h3v3H3zm7 0h3v3h-3zM6 10h4v3H6zM4.5 6v2h3.5m3.5-2v2H8v2"/></svg>
         </button>
-        <button id="tools-btn" type="button"
+        <button class="fp-btn fp-btn--icon" id="tools-btn" type="button"
                 title="Tools"
                 aria-label="Tools"
                 aria-haspopup="true"
                 aria-expanded="false"
                 hidden>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
-               stroke="currentColor" stroke-width="2" stroke-linecap="round"
-               stroke-linejoin="round" aria-hidden="true">
+          <svg viewBox="0 0 24 24" aria-hidden="true">
             <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z"/>
           </svg>
         </button>
@@ -132,12 +141,10 @@
       </div>
     </section>
 
-    <!-- Footer across the full width, below the panes. Its links come from
-         __FLATPPL_CONFIG__.footerLinks (baked into build-flags.js from the
-         site overlay's pages; a host embedding the shell sets its own in
-         its bootstrap) and are rendered by footer.js at boot. Stays hidden
-         when there are none. -->
-    <footer id="app-footer" hidden></footer>
+    <!-- The shared product footer stays stable across FlatPPL properties.
+         footer.js only retargets matching links when this deployment has a
+         local site-overlay page such as its own legal notice. -->
+    <!-- flatppl-theme:footer -->
   </div>
 
   <script src="vendor/cytoscape.min.js"></script>

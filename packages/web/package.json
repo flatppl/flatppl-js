@@ -14,14 +14,15 @@
     "directory": "packages/web"
   },
   "scripts": {
-    "test": "node --test 'test/**/*.test.mjs'",
-    "prebuild": "npm run typecheck",
+    "test": "npm run verify:theme && node --test 'test/**/*.test.mjs'",
+    "prebuild": "npm run typecheck && npm run verify:theme",
     "build": "node ./build.mjs",
     "watch": "node ./build.mjs --watch",
     "serve": "node ./serve.mjs",
     "dev": "node ./dev.mjs",
     "typecheck": "tsc -p tsconfig.json",
-    "typecheck:watch": "tsc -p tsconfig.json --watch"
+    "typecheck:watch": "tsc -p tsconfig.json --watch",
+    "verify:theme": "node ./scripts/verify-theme.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.18.0",
