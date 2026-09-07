@@ -99,12 +99,17 @@
 
   // Placeholder: neutral "nothing to visualise yet" pane for any type
   // without a registered surface (pyhf / HS3 / Stan / Julia / …). The
-  // reserved slot a future native surface drops into.
+  // reserved slot a future native surface drops into. hs3/pyhf get a
+  // pointer to the Tools button's converter — those two DO have a path
+  // to a visualisable surface, just not directly.
   function placeholderSurface(container: any, _ctx: any): any {
     return {
-      update: function (_input: any) {
-        container.innerHTML =
-          '<div class="surface-placeholder"><p>No visualization available.</p></div>';
+      update: function (input: any) {
+        const type = input && input.type;
+        const msg = (type === 'hs3' || type === 'pyhf')
+          ? 'No visualization available. Use the Tools button to convert this file to FlatPPL.'
+          : 'No visualization available.';
+        container.innerHTML = '<div class="surface-placeholder"><p>' + msg + '</p></div>';
       },
       dispose: function () { try { container.innerHTML = ''; } catch (_) {} },
     };
@@ -146,9 +151,10 @@
     return {
       update: function (source: any, target: any, opts: any) {
         const path = (typeof getActivePath === 'function') ? getActivePath() : null;
-        ensure(typeForPath(path));
+        const type = typeForPath(path);
+        ensure(type);
         if (handle) {
-          handle.update({ source: source, target: target || null, fileName: path, opts: opts });
+          handle.update({ source: source, target: target || null, fileName: path, type: type, opts: opts });
         }
       },
       dispose: function () {
