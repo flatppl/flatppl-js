@@ -4,7 +4,8 @@
   "version": "0.1.0",
   "source": {
     "repository": "https://github.com/flatppl/flatppl-theme",
-    "commit": "54d52ead4f8fb6e50d8fc09a034d05bea38c7dbf"
+    "commit": "54d52ead4f8fb6e50d8fc09a034d05bea38c7dbf",
+    "release": "v0.1.0"
   },
   "files": [
     {

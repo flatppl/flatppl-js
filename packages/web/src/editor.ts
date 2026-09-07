@@ -231,7 +231,7 @@
   }
 
   /** Build a small EditorView theme from the host's shared design tokens. */
-  function makeTheme(bundle: any) {
+  function makeTheme(bundle: any, dark: boolean) {
     return bundle.EditorView.theme({
       '&': {
         height: '100%',
@@ -255,7 +255,7 @@
       '&.cm-focused .cm-selectionBackground, ::selection': {
         backgroundColor: 'var(--fp-select)',
       },
-    }, { dark: false });
+    }, { dark });
   }
 
   // Surface engine diagnostics (tokenizer/parser/analyzer) as CM lint markers.
@@ -343,6 +343,7 @@
     // wants both unset (the defaults are writable + editable).
     const initialReadOnly = opts.initialReadOnly !== false;
     const readOnlyCompartment = new bundle.Compartment();
+    const themeCompartment = new bundle.Compartment();
     function readOnlyExtensions(ro: boolean) {
       return [
         bundle.EditorState.readOnly.of(ro),
@@ -602,7 +603,10 @@
       ),
       languageCompartment.of(languagePack(initialLang)),
       flashPlugin,
-      makeTheme(bundle),
+      themeCompartment.of(makeTheme(
+        bundle,
+        document.documentElement.dataset.theme === 'dark',
+      )),
       bundle.EditorView.domEventHandlers(domEventHandlers),
       docChangeListener,
       readOnlyCompartment.of(readOnlyExtensions(initialReadOnly)),
@@ -614,6 +618,25 @@
     });
 
     var view = new bundle.EditorView({ state: state, parent: container });
+
+    // CodeMirror's dark facet affects its built-in UI and default highlight
+    // style, so keep it synchronized with the shared shell's data-theme toggle.
+    let editorDark = document.documentElement.dataset.theme === 'dark';
+    const ThemeObserver = globalScope.MutationObserver;
+    const themeObserver = ThemeObserver ? new ThemeObserver(function () {
+      const nextDark = document.documentElement.dataset.theme === 'dark';
+      if (nextDark === editorDark) return;
+      editorDark = nextDark;
+      view.dispatch({
+        effects: themeCompartment.reconfigure(makeTheme(bundle, editorDark)),
+      });
+    }) : null;
+    if (themeObserver) {
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme'],
+      });
+    }
 
     // Toggle FlatPPL line comments (`#`) on the active line / selection.
     // Standard editor behaviour: if every non-blank affected line is already
@@ -754,7 +777,10 @@
           suppressNavigate = false;
         }
       },
-      destroy: function () { try { view.destroy(); } catch (_) {} },
+      destroy: function () {
+        if (themeObserver) themeObserver.disconnect();
+        try { view.destroy(); } catch (_) {}
+      },
     };
   }
 

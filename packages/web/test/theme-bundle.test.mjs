@@ -1,12 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cp, mkdtemp, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { verifyThemeBundle } from '../scripts/verify-theme.mjs';
 
 test('the pinned theme bundle passes its manifest guard and tampering does not', async (t) => {
   assert.deepEqual(await verifyThemeBundle(), []);
+  const pinnedManifest = JSON.parse(await readFile(
+    new URL('../../../vendor/flatppl-theme/manifest.json', import.meta.url),
+    'utf8',
+  ));
+  assert.equal(pinnedManifest.source.release, 'v0.1.0');
 
   const root = await mkdtemp(join(tmpdir(), 'flatppl-theme-test-'));
   t.after(() => import('node:fs/promises').then(({ rm }) =>
