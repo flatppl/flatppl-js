@@ -112,6 +112,7 @@ const BUILTIN_PARAM_NAMES: Record<string, string[]> = {
   linsolve:             ['A', 'b'],
   lnot:                 ['a'],
   log:                  ['x'],
+  log2:                 ['x'],
   log10:                ['x'],
   log1p:                ['x'],
   logabsdet:            ['A'],

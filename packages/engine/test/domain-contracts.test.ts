@@ -83,3 +83,33 @@ test('domain-contract: unconstrained location parameters never flag', () => {
 test('domain-contract: a fixed-phase positive binding passes', () => {
   assert.ok(!violates('sd = 2.0\nx = draw(Normal(mu = 0.0, sigma = sd))'));
 });
+
+// =====================================================================
+// §07 function argument domains
+// =====================================================================
+//
+// §07 "Elementary functions" gives `log2`, `log10`, `gamma` and `loggamma`
+// the domain `posreals` ALONE, with no `complexes` beside it as `log` and
+// `sqrt` carry. §03 "Sets" makes `posreals` the half-line (0, +inf], which
+// excludes 0. So the same conservative rule that flags `Normal(sigma = -1.0)`
+// flags a non-positive argument to these four.
+
+test('domain-contract: a negative argument to a posreals function is flagged', () => {
+  for (const f of ['log2', 'log10', 'gamma', 'loggamma']) {
+    assert.ok(violates(`y = ${f}(-1.0)`), `${f}(-1.0)`);
+    assert.ok(violates(`y = ${f}(x = -1.0)`), `${f}(x = -1.0)`);
+  }
+});
+
+test('domain-contract: zero violates a posreals function domain', () => {
+  for (const f of ['log2', 'log10', 'gamma', 'loggamma']) {
+    assert.ok(violates(`y = ${f}(0.0)`), `${f}(0.0)`);
+  }
+});
+
+test('domain-contract: a positive argument to a posreals function passes', () => {
+  for (const src of ['y = log2(8.0)', 'y = log10(1000.0)',
+                     'y = gamma(0.5)', 'y = loggamma(5.0)']) {
+    assert.ok(!violates(src), src);
+  }
+});

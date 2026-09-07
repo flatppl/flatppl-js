@@ -593,7 +593,7 @@ const EVALUABLE_OPS = new Set([
   // worker's evaluator).
   'add', 'sub', 'mul', 'div', 'divide', 'mod', 'neg', 'pos',
   'identity',
-  'abs', 'abs2', 'exp', 'log', 'log10', 'log1p', 'expm1', 'sqrt',
+  'abs', 'abs2', 'exp', 'log', 'log2', 'log10', 'log1p', 'expm1', 'sqrt',
   'sin', 'cos', 'tan',
   'asin', 'acos', 'atan', 'atan2',
   'sinh', 'cosh', 'tanh',

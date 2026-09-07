@@ -66,7 +66,7 @@ const REAL_SCALAR_PRIM_ARITY: Record<string, number> = {
   // scalar semantics as `div`, on the batched-broadcast path.
   add: 2, sub: 2, mul: 2, div: 2, divide: 2, mod: 2, neg: 1, pos: 1, pow: 2,
   // Elementary math
-  abs: 1, abs2: 1, exp: 1, log: 1, log10: 1, log1p: 1, expm1: 1, sqrt: 1,
+  abs: 1, abs2: 1, exp: 1, log: 1, log2: 1, log10: 1, log1p: 1, expm1: 1, sqrt: 1,
   sin: 1, cos: 1, tan: 1,
   asin: 1, acos: 1, atan: 1, atan2: 2,
   sinh: 1, cosh: 1, tanh: 1,
@@ -110,7 +110,8 @@ const SCALAR_PRIM_ARITY: Record<string, number> = {
 // asserted against `value-ops`' exports where it is consumed.
 const ELEMWISE_OVER_ARRAY: Record<string, string> = {
   pos: 'posElem', abs: 'absElem', abs2: 'abs2Elem',
-  exp: 'expElem', log: 'logElem', log10: 'log10Elem', sqrt: 'sqrtElem',
+  exp: 'expElem', log: 'logElem', log2: 'log2Elem', log10: 'log10Elem',
+  sqrt: 'sqrtElem',
   sin: 'sinElem', cos: 'cosElem',
   floor: 'floorElem', ceil: 'ceilElem', round: 'roundElem',
   real: 'realElem',

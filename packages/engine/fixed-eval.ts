@@ -126,12 +126,12 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
   // Two operand shapes both supported (engine-concepts §17.1 — the
   // short-circuit must apply uniformly):
   //  (a) Self-ref to a binding — read shape from binding's inferredType.
-  //  (b) Inline call (e.g. `length(rowstack(...))`) — typeinfer wrote
+  //  (b) Inline call (e.g. `lengthof(rowstack(...))`) — typeinfer wrote
   //      the operand's type into its `meta.type` slot; read from there.
   // Either path avoids materialising the operand.
   function _shapeObserverShortCircuit(ir: any): any | undefined {
     if (!Array.isArray(ir.args) || ir.args.length !== 1) return undefined;
-    if (ir.op !== 'length' && ir.op !== 'lengthof' && ir.op !== 'sizeof') return undefined;
+    if (ir.op !== 'lengthof' && ir.op !== 'sizeof') return undefined;
     const arg = ir.args[0];
     if (!arg) return undefined;
     const t = _operandType(arg);
