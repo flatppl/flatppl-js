@@ -120,7 +120,7 @@ if (themeErrors.length > 0) {
 }
 await rm(distThemeDir, { recursive: true, force: true });
 await copyDirRecursive(themeDir, distThemeDir);
-console.log('  verified + copied flatppl-theme v0.1.1 -> dist/theme/');
+console.log('  verified + copied flatppl-theme v0.1.2 -> dist/theme/');
 
 // ---------------------------------------------------------------------
 // 1. Copy ready-made UMD/min bundles from node_modules into dist/vendor/.

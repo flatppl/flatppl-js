@@ -27,6 +27,8 @@ html {
   border-bottom: 1px solid var(--fp-border);
   font-size: var(--fp-size-base);
   line-height: var(--fp-leading);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .fp-product-nav [hidden] {
@@ -93,15 +95,19 @@ html {
 }
 
 .fp-shell-footer {
+  box-sizing: border-box;
   display: flex;
-  min-height: 48px;
+  min-height: 36px;
   align-items: center;
   gap: var(--fp-gutter);
   padding: 0 var(--fp-gutter);
   color: var(--fp-text-muted);
   background: var(--fp-bg);
   border-top: 1px solid var(--fp-border);
-  font-size: var(--fp-size-xs);
+  font-size: 11px;
+  line-height: normal;
+  white-space: nowrap;
+  overflow: hidden;
 }
 
 .fp-shell-footer a {
@@ -124,6 +130,13 @@ html {
   width: 18px;
   height: 18px;
   stroke: currentColor;
+}
+
+.fp-icon-github {
+  display: block;
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
 }
 
 .fp-sr-only {

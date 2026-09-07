@@ -125,9 +125,6 @@ html, body {
 #app > .fp-shell-footer {
   grid-column: 1 / -1;
   grid-row: 4;
-  min-height: 36px;
-  white-space: nowrap;
-  overflow: hidden;
 }
 
 /* Drag handles between adjacent panes. Thin column inside the grid;
