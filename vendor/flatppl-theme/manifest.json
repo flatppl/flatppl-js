@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "name": "flatppl-theme",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "source": {
     "repository": "https://github.com/flatppl/flatppl-theme",
-    "commit": "9f71e0b9e2d45c66092b81537494d819237a86a5",
-    "release": "v0.1.1"
+    "commit": "671f2423c99c5da8a53b0450156ecad94fae2e84",
+    "release": "v0.1.2"
   },
   "files": [
     {
@@ -85,13 +85,13 @@
     },
     {
       "path": "header.html",
-      "sha256": "d2fbb7e012075a22282bc2c090eb788461ef77fd22cb9afed49969da0ab9ee10",
-      "size": 1360
+      "sha256": "5ee4c764786fe480767c942a3cb6d5be921f75db2399556d1e954c6be5d5850b",
+      "size": 2217
     },
     {
       "path": "shell.css",
-      "sha256": "90eed1c791b35043db061c8e7e0a0f20e96f5213007e41e370525b824af9447a",
-      "size": 3395
+      "sha256": "a4832af43281e50ec119278ea728558fb5ceec3f272ea6ef07f3660341736f86",
+      "size": 3643
     },
     {
       "path": "shell.js",
