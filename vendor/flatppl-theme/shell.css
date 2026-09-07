@@ -4,6 +4,10 @@ html {
   font-family: var(--fp-font-sans);
 }
 
+::selection {
+  background: var(--fp-select);
+}
+
 .fp-skip-link {
   position: fixed;
   z-index: 1000;
@@ -99,15 +103,22 @@ html {
   display: flex;
   min-height: 36px;
   align-items: center;
+  justify-content: flex-end;
   gap: var(--fp-gutter);
   padding: 0 var(--fp-gutter);
   color: var(--fp-text-muted);
   background: var(--fp-bg);
   border-top: 1px solid var(--fp-border);
+  font-family: var(--fp-font-sans);
   font-size: 11px;
+  font-style: normal;
+  font-weight: 400;
   line-height: normal;
+  letter-spacing: normal;
   white-space: nowrap;
   overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 .fp-shell-footer a {
