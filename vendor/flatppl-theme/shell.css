@@ -25,6 +25,12 @@ html {
   color: var(--fp-text);
   background: var(--fp-surface);
   border-bottom: 1px solid var(--fp-border);
+  font-size: var(--fp-size-base);
+  line-height: var(--fp-leading);
+}
+
+.fp-product-nav [hidden] {
+  display: none !important;
 }
 
 .fp-product-bar {
@@ -49,7 +55,7 @@ html {
 .fp-brand-mark {
   width: 24px;
   height: 24px;
-  background: center / contain no-repeat url("./assets/logo.svg");
+  background: center / contain no-repeat url("./assets/logo-original.png");
 }
 
 .fp-menu-button {
