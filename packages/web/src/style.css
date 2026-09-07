@@ -1,22 +1,59 @@
 /* @flatppl/web — gallery shell layout + theming. */
 
 :root {
-  --bg:        #1e1e1e;
-  --bg-pane:   #252526;
-  --bg-header: #2d2d30;
-  --fg:        #cccccc;
-  --fg-muted:  #858585;
-  --border:    #3c3c3c;
-  --accent:    #007acc;
-  --mono: ui-monospace, 'Cascadia Code', 'JetBrains Mono', 'Source Code Pro',
-          Menlo, Consolas, monospace;
+  --bg: var(--fp-bg);
+  --bg-pane: var(--fp-bg);
+  --bg-header: var(--fp-surface);
+  --fg: var(--fp-text);
+  --fg-muted: var(--fp-text-muted);
+  --border: var(--fp-border);
+  --accent: var(--fp-accent);
+  --mono: var(--fp-font-mono);
+
+  /* The standalone host supplies the VS Code-compatible variables consumed
+     by the shared viewer. The extension continues to supply its real editor
+     values; these aliases exist only in packages/web. */
+  --vscode-font-family: var(--fp-font-sans);
+  --vscode-editor-font-family: var(--fp-font-mono);
+  --vscode-foreground: var(--fp-text);
+  --vscode-descriptionForeground: var(--fp-text-muted);
+  --vscode-panel-border: var(--fp-border);
+  --vscode-button-background: var(--fp-accent);
+  --vscode-button-foreground: var(--fp-on-accent);
+  --vscode-button-hoverBackground: var(--fp-accent);
+  --vscode-button-secondaryBackground: var(--fp-surface-2);
+  --vscode-button-secondaryForeground: var(--fp-text);
+  --vscode-button-secondaryHoverBackground: var(--fp-active-bg);
+  --vscode-dropdown-background: var(--fp-bg);
+  --vscode-dropdown-foreground: var(--fp-text);
+  --vscode-dropdown-border: var(--fp-border);
+  --vscode-editorWidget-background: var(--fp-surface);
+  --vscode-editorWidget-foreground: var(--fp-text);
+  --vscode-editorWidget-border: var(--fp-border);
+  --vscode-editorHoverWidget-background: var(--fp-surface);
+  --vscode-editorHoverWidget-foreground: var(--fp-text);
+  --vscode-editorHoverWidget-border: var(--fp-border);
+  --vscode-input-background: var(--fp-bg);
+  --vscode-input-foreground: var(--fp-text);
+  --vscode-input-border: var(--fp-border);
+  --vscode-input-placeholderForeground: var(--fp-text-muted);
+  --vscode-menu-background: var(--fp-surface);
+  --vscode-menu-foreground: var(--fp-text);
+  --vscode-menu-border: var(--fp-border);
+  --vscode-menu-selectionBackground: var(--fp-active-bg);
+  --vscode-menu-selectionForeground: var(--fp-accent);
+  --vscode-badge-background: var(--fp-accent);
+  --vscode-badge-foreground: var(--fp-on-accent);
+  --vscode-progressBar-background: var(--fp-accent);
+  --vscode-editor-background: var(--fp-bg);
+  --vscode-editor-foreground: var(--fp-text);
 }
 
 html, body {
   margin: 0; padding: 0;
   background: var(--bg);
   color: var(--fg);
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--fp-font-sans);
   width: 100%; height: 100%;
   overflow: hidden;
 }
@@ -31,7 +68,7 @@ html, body {
    runs, plus a no-JS fallback. */
 #app {
   display: grid;
-  grid-template-rows: 36px 1fr auto;
+  grid-template-rows: auto var(--fp-pane-header-h) 1fr auto;
   grid-template-columns: 240px 5px 1fr 5px 1.5fr;
   width: 100vw;
   height: 100vh;
@@ -40,20 +77,26 @@ html, body {
 /* Pin every pane and handle to an explicit grid column so that
    `display: none` on the file pane (collapse) doesn't auto-shift
    the remaining items into the now-empty cells. */
-#files-pane                                 { grid-column: 1; grid-row: 2; }
-.resize-handle[data-resize="files-source"]  { grid-column: 2; grid-row: 2; }
-#source-pane                                { grid-column: 3; grid-row: 2; }
-.resize-handle[data-resize="source-viewer"] { grid-column: 4; grid-row: 2; }
-#viewer-pane                                { grid-column: 5; grid-row: 2; }
+#files-pane                                 { grid-column: 1; grid-row: 3; }
+.resize-handle[data-resize="files-source"]  { grid-column: 2; grid-row: 3; }
+#source-pane                                { grid-column: 3; grid-row: 3; }
+.resize-handle[data-resize="source-viewer"] { grid-column: 4; grid-row: 3; }
+#viewer-pane                                { grid-column: 5; grid-row: 3; }
 
-#app-header {
+#app > .fp-shell-header {
   grid-column: 1 / -1;
-  background: var(--bg-header);
-  border-bottom: 1px solid var(--border);
+  grid-row: 1;
+}
+
+#app-toolbar {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  background: var(--fp-bg);
+  border-bottom: 1px solid var(--fp-border);
   display: flex;
   align-items: center;
   gap: 0.6em;
-  padding: 0 1em;
+  padding: 0 var(--fp-gutter);
   font-weight: 600;
   letter-spacing: 0.02em;
 }
@@ -61,44 +104,31 @@ html, body {
 #toggle-files,
 #nav-back,
 #nav-forward {
-  background: transparent;
-  color: var(--fg-muted);
-  border: none;
-  font-size: 1.1em;
-  line-height: 1;
-  padding: 0.2em 0.4em;
-  cursor: pointer;
-  border-radius: 3px;
+  color: var(--fp-text-muted);
 }
 #toggle-files:hover,
 #nav-back:hover,
-#nav-forward:hover { color: var(--fg); background: rgba(255,255,255,0.05); }
-#toggle-files:focus,
-#nav-back:focus,
-#nav-forward:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
-#nav-back, #nav-forward { font-size: 1.3em; padding: 0 0.35em; }
+#nav-forward:hover { color: var(--fp-accent); }
+#app-toolbar svg,
+.pane-header button svg {
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.35;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
 
-/* Footer: one thin row of links (Legal Notice, …) across the full
-   width, rendered by footer.js from __FLATPPL_CONFIG__.footerLinks.
-   Kept `hidden` (display: none, so the grid row collapses) when the
-   deployment configures no links. */
-#app-footer {
+/* Shared product footer across the full width. footer.ts applies any
+   deployment-specific link replacements from __FLATPPL_CONFIG__.footerLinks. */
+#app > .fp-shell-footer {
   grid-column: 1 / -1;
-  grid-row: 3;
-  background: var(--bg-header);
-  border-top: 1px solid var(--border);
-  padding: 0.3em 1em;
-  font-size: 12px;
-  line-height: 1;
-  color: var(--fg-muted);
-  display: flex;
-  gap: 1.2em;
+  grid-row: 4;
+  min-height: 36px;
   white-space: nowrap;
   overflow: hidden;
 }
-#app-footer[hidden] { display: none; }
-#app-footer a { color: inherit; text-decoration: none; }
-#app-footer a:hover { color: var(--fg); text-decoration: underline; }
 
 /* Drag handles between adjacent panes. Thin column inside the grid;
    colour-shift on hover so the user can see they're interactive. */
@@ -174,35 +204,16 @@ html, body {
    header. */
 .pane-header button {
   flex: 0 0 auto;
-  background: transparent;
-  border: none;
-  padding: 2px 4px;
-  border-radius: 3px;
-  cursor: pointer;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
   color: var(--fg);
   opacity: 1;
   font-size: 14px;
   line-height: 1;
 }
-.pane-header button:hover { background: rgba(255,255,255,0.07); }
-.pane-header button:focus { outline: 1px solid var(--accent); outline-offset: 1px; }
+.pane-header button:hover { color: var(--fp-accent); }
 .pane-header button img { display: block; width: 14px; height: 14px; }
-
-/* Desaturate the colour-emoji icons in the pane-header buttons
-   (📤 📥 💾 🗑 — anything in <span aria-hidden="true">) so they
-   render as grayscale instead of the system emoji font's vivid
-   colours. Tonal shading + glyph shape are preserved, but the
-   icons no longer clash with the surrounding monochrome chrome.
-   The SVG <img> children are unaffected (already monochrome). */
-.pane-header button > span[aria-hidden="true"] {
-  filter: grayscale(100%);
-}
 .pane-header button[aria-pressed="true"] {
-  background: rgba(13, 113, 199, 0.55);
-  color: #fff;
+  background: var(--fp-accent);
+  color: var(--fp-on-accent);
 }
 .pane-header button[hidden] { display: none; }
 
@@ -228,7 +239,8 @@ html, body {
 }
 
 .file-list-item {
-  padding: 0.4em 1em;
+  padding: var(--fp-row-pad);
+  border-left: var(--fp-marker-w) solid transparent;
   cursor: pointer;
   font-size: 0.9em;
   white-space: nowrap;
@@ -236,10 +248,12 @@ html, body {
   text-overflow: ellipsis;
   user-select: none;
 }
-.file-list-item:hover    { background: #2a2d2e; }
+.file-list-item:hover    { color: var(--fp-accent); background: var(--fp-surface); }
 .file-list-item.selected {
-  background: #094771;
-  color: #ffffff;
+  background: var(--fp-active-bg);
+  border-left-color: var(--fp-accent);
+  color: var(--fp-accent);
+  font-weight: 600;
 }
 
 /* "Unsaved" section header above ephemeral entries. */
@@ -284,7 +298,7 @@ html, body {
 }
 .file-list-action:hover {
   opacity: 1;
-  background: rgba(255, 255, 255, 0.08);
+  background: var(--fp-surface-2);
 }
 
 /* Folder grouping in the file pane (Examples / Test cases / User).
@@ -340,10 +354,10 @@ html, body {
   position: fixed;
   z-index: 1000;
   min-width: 160px;
-  background: var(--bg-pane);
-  border: 1px solid var(--border);
-  border-radius: 3px;
-  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.4);
+  background: var(--fp-surface);
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-md);
+  box-shadow: var(--fp-shadow);
   padding: 0.25em 0;
   font-size: 0.9em;
   user-select: none;
@@ -351,16 +365,23 @@ html, body {
 .tree-ctx-item {
   padding: 0.35em 1em;
   cursor: pointer;
-  color: var(--fg);
+  color: var(--fp-text);
+  border-left: var(--fp-marker-w) solid transparent;
 }
-.tree-ctx-item:hover { background: #094771; color: #fff; }
+.tree-ctx-item:hover,
+.tree-ctx-item:focus {
+  background: var(--fp-active-bg);
+  border-left-color: var(--fp-accent);
+  color: var(--fp-accent);
+  outline: none;
+}
 
 /* Drop-target highlight on the file tree while a drag is in
    progress. Inset dashed border so the cue is unambiguous but
    doesn't shift layout. */
 .file-tree--drop-target {
   box-shadow: inset 0 0 0 2px var(--accent);
-  background: rgba(0, 122, 204, 0.07);
+  background: var(--fp-active-bg);
 }
 
 /* Transient bottom-of-pane notification for upload summaries
@@ -371,13 +392,13 @@ html, body {
   bottom: 1em;
   left: 50%;
   transform: translateX(-50%);
-  background: var(--bg-pane);
-  color: var(--fg);
-  border: 1px solid var(--border);
-  border-radius: 3px;
+  background: var(--fp-surface);
+  color: var(--fp-text);
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-md);
   padding: 0.5em 1em;
   font-size: 0.9em;
-  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.4);
+  box-shadow: var(--fp-shadow);
   z-index: 1100;
   opacity: 0;
   transition: opacity 0.3s ease;
@@ -418,26 +439,26 @@ html, body {
    highlight ViewPlugin applies these same class names to its
    Decoration ranges, so the palette is shared between syntax
    styling in view and edit modes. */
-.tok-comment        { color: #6a9955; font-style: italic; }
-.tok-string         { color: #ce9178; }
-.tok-number         { color: #b5cea8; }
-.tok-op             { color: #d4d4d4; }
-.tok-placeholder    { color: #9cdcfe; }
-.tok-hole           { color: #9cdcfe; }
-.tok-ident          { color: #9cdcfe; }
-.tok-ident-binding  { color: #4ec9b0; }
+.tok-comment        { color: var(--fp-syn-comment); font-style: italic; }
+.tok-string         { color: var(--fp-syn-red); }
+.tok-number         { color: var(--fp-syn-green); }
+.tok-op             { color: var(--fp-text); }
+.tok-placeholder    { color: var(--fp-syn-cyan); }
+.tok-hole           { color: var(--fp-syn-cyan); }
+.tok-ident          { color: var(--fp-text); }
+.tok-ident-binding  { color: var(--fp-syn-cyan); }
 .tok-ident-binding:hover {
   text-decoration: underline;
   cursor: pointer;
 }
-.tok-keyword   { color: #c586c0; }   /* and, or, not, in, true/false (variant kwds) */
-.tok-special   { color: #c586c0; }   /* draw, lawof, fn, …  */
-.tok-mop       { color: #c586c0; }   /* weighted, joint, … */
-.tok-dist      { color: #4fc1ff; }   /* Normal, Poisson, … */
-.tok-set       { color: #569cd6; }   /* reals, interval,    */
-.tok-const     { color: #569cd6; }   /* true, pi, inf, im   */
-.tok-func      { color: #dcdcaa; }   /* exp, log, sum, …    */
-.tok-reserved  { color: #c586c0; }   /* self, base, flatppl_compat */
+.tok-keyword   { color: var(--fp-syn-purple); }   /* and, or, not, in, true/false */
+.tok-special   { color: var(--fp-syn-purple); }   /* draw, lawof, fn, … */
+.tok-mop       { color: var(--fp-syn-purple); }   /* weighted, joint, … */
+.tok-dist      { color: var(--fp-syn-cyan); }     /* Normal, Poisson, … */
+.tok-set       { color: var(--fp-syn-blue); }     /* reals, interval */
+.tok-const     { color: var(--fp-syn-blue); }     /* true, pi, inf, im */
+.tok-func      { color: var(--fp-syn-yellow); }   /* exp, log, sum, … */
+.tok-reserved  { color: var(--fp-syn-purple); }   /* self, base, flatppl_compat */
 
 /* The viewer manages its own internal scroll and resize, so the
    right pane's body must not introduce a second scrollbar. */
@@ -460,6 +481,11 @@ html, body {
 .cm-tooltip.cm-tooltip-hover .cm-source-hover {
   max-width: 480px;
   padding: 4px 8px;
+  color: var(--fp-text);
+  background: var(--fp-surface);
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-md);
+  box-shadow: var(--fp-shadow);
   font-family: var(--mono);
   font-size: 13px;
   white-space: normal;
@@ -471,9 +497,9 @@ html, body {
 .cm-source-hover .cm-source-hover-doc {
   margin-top: 4px;
   padding-top: 4px;
-  border-top: 1px solid #454545;
+  border-top: 1px solid var(--fp-border);
   opacity: 0.95;
-  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-family: var(--fp-font-sans);
 }
 .cm-source-hover .cm-source-hover-doc p,
 .cm-source-hover .cm-source-hover-doc ul,
@@ -492,7 +518,7 @@ html, body {
 .cm-source-hover .cm-source-hover-doc code {
   font-family: var(--mono);
   font-size: 0.95em;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--fp-surface-2);
   padding: 0 3px;
   border-radius: 2px;
 }
@@ -565,12 +591,13 @@ html, body {
 .surface-markdown pre {
   overflow: auto;
   padding: 0.6em 0.8em;
-  background: rgba(127, 127, 127, 0.12);
-  border-radius: 4px;
+  background: var(--fp-surface);
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-lg);
 }
 .surface-markdown table { border-collapse: collapse; }
 .surface-markdown th,
-.surface-markdown td { border: 1px solid rgba(127, 127, 127, 0.35); padding: 0.3em 0.6em; }
+.surface-markdown td { border: 1px solid var(--fp-border); padding: 0.3em 0.6em; }
 .surface-placeholder {
   flex: 1 1 auto;
   display: flex;
@@ -592,7 +619,7 @@ html, body {
   color: inherit;
   padding: 0 3px;
   min-width: 8em;
-  border: 1px solid rgba(127, 127, 127, 0.6);
-  border-radius: 3px;
-  background: rgba(127, 127, 127, 0.12);
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-sm);
+  background: var(--fp-bg);
 }

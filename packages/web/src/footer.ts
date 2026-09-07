@@ -1,13 +1,9 @@
 // @flatppl/web — gallery footer.
 //
-// Renders the footer links (Legal Notice, …) into #app-footer from
-// __FLATPPL_CONFIG__.footerLinks. The links are deployment-specific —
-// a legal notice names the provider of THIS deployment — so the shell
-// never hard-codes them: build.mjs bakes the site overlay's page list
-// into build-flags.js, and a host that embeds the shell in a page of
-// its own sets footerLinks in its bootstrap instead (see build-site.mjs
-// for both routes). Without links the footer stays hidden and its grid
-// row collapses.
+// Adapts the shared theme footer to deployment-specific pages. The release
+// fragment supplies the stable Legal Notice / AI Declaration / GitHub shape;
+// a deployment overlay may retarget a matching label to its local page or add
+// another deployment-owned link.
 //
 // Lives on globalThis as window.FlatPPLWebFooter.
 
@@ -31,21 +27,23 @@
     return out;
   }
 
-  /** Fill #app-footer from the config and unhide it when there is
-      anything to show. Returns the rendered links. */
+  /** Apply configured link overrides while preserving the shared footer. */
   function install(config: any): FooterLink[] {
-    const el = document.getElementById('app-footer');
+    const el = document.querySelector('.fp-shell-footer');
     if (!el) return [];
     const links = normalizeLinks(config && config.footerLinks);
-    el.textContent = '';
+    const anchors = Array.from(el.querySelectorAll('a')) as HTMLAnchorElement[];
     for (const l of links) {
-      const a = document.createElement('a');
-      a.href = l.href;
-      a.textContent = l.label;   // textContent, never innerHTML — the
-                                 // labels come from a config file
-      el.appendChild(a);
+      const existing = anchors.find((a) => a.textContent === l.label);
+      if (existing) {
+        existing.href = l.href;
+        continue;
+      }
+      const anchor = document.createElement('a');
+      anchor.href = l.href;
+      anchor.textContent = l.label;
+      el.appendChild(anchor);
     }
-    el.hidden = links.length === 0;
     return links;
   }
 

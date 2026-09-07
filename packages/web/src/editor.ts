@@ -230,33 +230,32 @@
     }, { hideOnChange: true });
   }
 
-  /** Build a small EditorView.theme matching the gallery's dark
-      palette so the editor blends with the surrounding panes. */
-  function makeTheme(bundle: any) {
+  /** Build a small EditorView theme from the host's shared design tokens. */
+  function makeTheme(bundle: any, dark: boolean) {
     return bundle.EditorView.theme({
       '&': {
         height: '100%',
         fontSize: '13px',
-        backgroundColor: '#252526',
-        color: '#cccccc',
+        backgroundColor: 'var(--fp-bg)',
+        color: 'var(--fp-text)',
       },
       '.cm-scroller': {
-        fontFamily: "ui-monospace, 'Cascadia Code', 'JetBrains Mono', 'Source Code Pro', Menlo, Consolas, monospace",
+        fontFamily: 'var(--fp-font-mono)',
         lineHeight: '1.45',
       },
-      '.cm-content':  { caretColor: '#cccccc' },
+      '.cm-content':  { caretColor: 'var(--fp-text)' },
       '.cm-gutters':  {
-        backgroundColor: '#252526',
-        borderRight: '1px solid #3c3c3c',
-        color: '#858585',
+        backgroundColor: 'var(--fp-bg)',
+        borderRight: '1px solid var(--fp-border)',
+        color: 'var(--fp-text-muted)',
       },
-      '.cm-activeLine':       { backgroundColor: 'rgba(255,255,255,0.06)' },
-      '.cm-activeLineGutter': { backgroundColor: 'rgba(255,255,255,0.08)' },
-      '&.cm-focused .cm-cursor': { borderLeftColor: '#cccccc' },
+      '.cm-activeLine':       { backgroundColor: 'var(--fp-surface)' },
+      '.cm-activeLineGutter': { backgroundColor: 'var(--fp-surface-2)' },
+      '&.cm-focused .cm-cursor': { borderLeftColor: 'var(--fp-text)' },
       '&.cm-focused .cm-selectionBackground, ::selection': {
-        backgroundColor: '#264f78',
+        backgroundColor: 'var(--fp-select)',
       },
-    }, { dark: true });
+    }, { dark });
   }
 
   // Surface engine diagnostics (tokenizer/parser/analyzer) as CM lint markers.
@@ -344,6 +343,7 @@
     // wants both unset (the defaults are writable + editable).
     const initialReadOnly = opts.initialReadOnly !== false;
     const readOnlyCompartment = new bundle.Compartment();
+    const themeCompartment = new bundle.Compartment();
     function readOnlyExtensions(ro: boolean) {
       return [
         bundle.EditorState.readOnly.of(ro),
@@ -603,7 +603,10 @@
       ),
       languageCompartment.of(languagePack(initialLang)),
       flashPlugin,
-      makeTheme(bundle),
+      themeCompartment.of(makeTheme(
+        bundle,
+        document.documentElement.dataset.theme === 'dark',
+      )),
       bundle.EditorView.domEventHandlers(domEventHandlers),
       docChangeListener,
       readOnlyCompartment.of(readOnlyExtensions(initialReadOnly)),
@@ -615,6 +618,25 @@
     });
 
     var view = new bundle.EditorView({ state: state, parent: container });
+
+    // CodeMirror's dark facet affects its built-in UI and default highlight
+    // style, so keep it synchronized with the shared shell's data-theme toggle.
+    let editorDark = document.documentElement.dataset.theme === 'dark';
+    const ThemeObserver = globalScope.MutationObserver;
+    const themeObserver = ThemeObserver ? new ThemeObserver(function () {
+      const nextDark = document.documentElement.dataset.theme === 'dark';
+      if (nextDark === editorDark) return;
+      editorDark = nextDark;
+      view.dispatch({
+        effects: themeCompartment.reconfigure(makeTheme(bundle, editorDark)),
+      });
+    }) : null;
+    if (themeObserver) {
+      themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['data-theme'],
+      });
+    }
 
     // Toggle FlatPPL line comments (`#`) on the active line / selection.
     // Standard editor behaviour: if every non-blank affected line is already
@@ -755,7 +777,10 @@
           suppressNavigate = false;
         }
       },
-      destroy: function () { try { view.destroy(); } catch (_) {} },
+      destroy: function () {
+        if (themeObserver) themeObserver.disconnect();
+        try { view.destroy(); } catch (_) {}
+      },
     };
   }
 

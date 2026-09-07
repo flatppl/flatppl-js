@@ -47,6 +47,8 @@ import * as esbuild from 'esbuild';
 import { MODEL_EXTENSIONS, typeForPath, hideTestExamplesEnv } from './src/file-types.mjs';
 // Deploy-specific site overlay (legal notice etc. + the footer links).
 import { buildSite } from './build-site.mjs';
+import { insertThemeShell } from './theme-shell.mjs';
+import { verifyThemeBundle } from './scripts/verify-theme.mjs';
 
 const here     = dirname(fileURLToPath(import.meta.url));   // packages/web/
 const repoRoot = dirname(dirname(here));                    // flatppl-js/
@@ -54,6 +56,8 @@ const enginePkg = join(repoRoot, 'packages', 'engine');
 const viewerPkg = join(repoRoot, 'packages', 'viewer');
 const distDir   = join(here, 'dist');
 const vendorDir = join(distDir, 'vendor');
+const themeDir  = join(repoRoot, 'vendor', 'flatppl-theme');
+const distThemeDir = join(distDir, 'theme');
 const nm        = join(repoRoot, 'node_modules');
 
 // MODEL_EXTENSIONS / typeForPath are imported from src/file-types.mjs (the
@@ -110,6 +114,13 @@ const buildFlags = {
 const WATCH = process.argv.includes('--watch');
 
 await mkdir(vendorDir, { recursive: true });
+const themeErrors = await verifyThemeBundle(themeDir);
+if (themeErrors.length > 0) {
+  throw new Error(`vendored flatppl-theme failed verification:\n${themeErrors.join('\n')}`);
+}
+await rm(distThemeDir, { recursive: true, force: true });
+await copyDirRecursive(themeDir, distThemeDir);
+console.log('  verified + copied flatppl-theme v0.1.0 -> dist/theme/');
 
 // ---------------------------------------------------------------------
 // 1. Copy ready-made UMD/min bundles from node_modules into dist/vendor/.
@@ -159,24 +170,6 @@ await provisionWasmConvert();
 //    Bundling happens below alongside the engine/worker/codemirror
 //    builds, so all four bundles share the same `if (WATCH)` /
 //    one-shot path.
-
-// Toolbar icons. We pull from packages/vscode-extension/media/ so the
-// gallery and the VS Code extension stay visually consistent — same
-// icon set, single source of truth. Update the extension's SVG and
-// the next gallery build picks it up.
-const extMedia = join(repoRoot, 'packages', 'vscode-extension', 'media');
-const mediaDst = join(distDir, 'media');
-await mkdir(mediaDst, { recursive: true });
-const SHARED_ICONS = ['visualize-module-dark.svg'];
-for (const name of SHARED_ICONS) {
-  const from = join(extMedia, name);
-  if (!existsSync(from)) {
-    console.error(`  ! missing shared icon: ${name} (looked under ${extMedia})`);
-    process.exit(1);
-  }
-  await copyFile(from, join(mediaDst, name));
-  console.log(`  copied ${name} -> dist/media/${name}`);
-}
 
 // ---------------------------------------------------------------------
 // 3. Build the page entry-point and app sources from src/ into dist/.
@@ -228,8 +221,17 @@ async function transpileOrCopySrcFile(name) {
     await writeFile(join(distDir, outName), result.code);
     console.log(`  transpiled src/${name} -> dist/${outName}`);
   } else {
-    await copyFile(srcPath, join(distDir, name));
-    console.log(`  copied src/${name} -> dist/${name}`);
+    if (name === 'index.html') {
+      const html = await readFile(srcPath, 'utf8');
+      await writeFile(join(distDir, name), await insertThemeShell(html, {
+        themeDir,
+        mainTarget: 'source-pane',
+      }));
+      console.log(`  rendered src/${name} with shared theme shell -> dist/${name}`);
+    } else {
+      await copyFile(srcPath, join(distDir, name));
+      console.log(`  copied src/${name} -> dist/${name}`);
+    }
   }
   return true;
 }
@@ -558,10 +560,9 @@ async function provisionWasmConvert() {
 //                      truthy value other than '0'/'off'/'false'; unset by
 //                      default so local dev keeps the feature tests visible.
 //                      CI (pages.yml) sets it for the public deploy.
-//   footerLinks      — [{ label, href }] for the gallery footer, derived
-//                      from the site overlay's page list (set by syncSite;
-//                      empty until then, and empty for an overlay without
-//                      pages — the shell then hides the footer).
+//   footerLinks      — [{ label, href }] additions or replacements for the
+//                      shared footer, derived from the site overlay's page
+//                      list (set by syncSite; empty without an overlay).
 //
 // The flags accumulate in `buildFlags` (declared up top, before the
 // first producer runs); each producer sets its field and rewrites the
@@ -584,15 +585,15 @@ async function syncSite() {
   if (!siteDir) {
     buildFlags.footerLinks = [];
     await writeBuildFlags();
-    console.log('  site: no overlay (FLATPPL_SITE_DIR unset); no pages, footer hidden');
+    console.log('  site: no overlay (FLATPPL_SITE_DIR unset); shared footer only');
     return;
   }
-  buildFlags.footerLinks = await buildSite({ siteDir, distDir });
+  buildFlags.footerLinks = await buildSite({ siteDir, distDir, themeDir });
   await writeBuildFlags();
   const n = buildFlags.footerLinks.length;
   console.log(n
     ? `  site: rendered ${n} page(s) from ${siteDir} -> dist/ (${buildFlags.footerLinks.map(l => l.href).join(', ')})`
-    : `  site: no pages (no site.json under ${siteDir}); footer hidden`);
+    : `  site: no pages (no site.json under ${siteDir}); shared footer only`);
 }
 
 function hasCmd(cmd) {

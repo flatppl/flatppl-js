@@ -1,0 +1,112 @@
+{
+  "schema": 1,
+  "name": "flatppl-theme",
+  "version": "0.1.0",
+  "source": {
+    "repository": "https://github.com/flatppl/flatppl-theme",
+    "commit": "54d52ead4f8fb6e50d8fc09a034d05bea38c7dbf",
+    "release": "v0.1.0"
+  },
+  "files": [
+    {
+      "path": "LICENSE.md",
+      "sha256": "e37e13c897af585bb0d950c45f43f51c8ff2078466e410c1152b1b47966611c7",
+      "size": 396
+    },
+    {
+      "path": "LICENSES/CC-BY-4.0.txt",
+      "sha256": "36e4256822494fb79a7e6a5922872ac2be22858c87db70a27aa91289ddf7dc3b",
+      "size": 18782
+    },
+    {
+      "path": "LICENSES/MIT.txt",
+      "sha256": "6b07278d88d1b2b230100a61bc6a7c1c0fec3b897313bda093b936966110f1ce",
+      "size": 1126
+    },
+    {
+      "path": "assets/android-chrome-192x192.png",
+      "sha256": "7b2bdf175acfac2436ff0042c630ba54f9bbc7881a7e4b20b7d17562251e7893",
+      "size": 72663
+    },
+    {
+      "path": "assets/android-chrome-512x512.png",
+      "sha256": "941ce89dc2e397122a097f120716d56950eeb92d1e2372d7e2ba252e06edb28b",
+      "size": 490111
+    },
+    {
+      "path": "assets/apple-touch-icon.png",
+      "sha256": "74dc62465d97f2805e53e1dcf608ab6c3d9351c67c2ac593577f361a4c134e94",
+      "size": 64701
+    },
+    {
+      "path": "assets/favicon-16x16.png",
+      "sha256": "ba7b833b6a5aaa57051181ed35dd9004bde8fa66c1d5376d66c71ae719ace656",
+      "size": 1363
+    },
+    {
+      "path": "assets/favicon-32x32.png",
+      "sha256": "1941e0f59140e0e2ba1d589fd04ff0f064d239cf89fb4bba7a3d47e0265c1e50",
+      "size": 3305
+    },
+    {
+      "path": "assets/favicon.ico",
+      "sha256": "ab9976cfa412b6f1a54c4194609b973561c751cb7106731d222b0f8de9d434a4",
+      "size": 15086
+    },
+    {
+      "path": "assets/logo-original.png",
+      "sha256": "3f5f23c6bd79b14d40969803e680a7fb3e461e4e416566843e77035eca4c4e61",
+      "size": 118683
+    },
+    {
+      "path": "assets/logo.svg",
+      "sha256": "3f81e807027033bc432118b237168f0bedbe63b027c3def600bbf3148aac69b9",
+      "size": 599
+    },
+    {
+      "path": "assets/site.webmanifest",
+      "sha256": "365cb8fed30ac150ce008c0f3be3f4d2a5c1125f93cc1dae18fbf0c78d98f638",
+      "size": 401
+    },
+    {
+      "path": "assets/wordmark.svg",
+      "sha256": "643d1248e928b276f6bcd86822a420e21e0ecb08768c75574da29899bbd18a3a",
+      "size": 322
+    },
+    {
+      "path": "components.css",
+      "sha256": "998f34d4f04ccce63ff7fe1402f545023a7af85d59b4ea91c5eb900766c58f3c",
+      "size": 3967
+    },
+    {
+      "path": "footer.html",
+      "sha256": "cd456f9a6d9efafa35a214c66054b956e0b87f3b0efd697a37fe93ad98cebe73",
+      "size": 223
+    },
+    {
+      "path": "header.html",
+      "sha256": "d2fbb7e012075a22282bc2c090eb788461ef77fd22cb9afed49969da0ab9ee10",
+      "size": 1360
+    },
+    {
+      "path": "shell.css",
+      "sha256": "f54cba057465901f1a0666915eacb5a1e537dc3a1e0dd0d0ad358c9964f4dd1f",
+      "size": 3260
+    },
+    {
+      "path": "shell.js",
+      "sha256": "0a1b5c57d5e9502f85baf4d0e8380f3334b2b84ade43b4a9a137e0e3a9c4ac6c",
+      "size": 2341
+    },
+    {
+      "path": "syntax-map.json",
+      "sha256": "e725d3675027b40703b56f12f1bf1cf1be0c8dc5b6b0eeb8fe8a7af13fb41048",
+      "size": 1969
+    },
+    {
+      "path": "tokens.css",
+      "sha256": "46185d602298cb06eac2e9356ec4818eec4e1a98952abfd6e331af70cf6d5796",
+      "size": 2086
+    }
+  ]
+}

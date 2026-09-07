@@ -1,0 +1,202 @@
+.fp-btn {
+  padding: 0.4em 0.75em;
+  color: var(--fp-text);
+  background: transparent;
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-lg);
+  font: inherit;
+  font-size: var(--fp-size-sm);
+  cursor: pointer;
+}
+
+.fp-btn:hover {
+  background: var(--fp-surface);
+  border-color: var(--fp-accent);
+}
+
+.fp-btn--primary {
+  padding: 0.4em 1.1em;
+  color: var(--fp-on-accent);
+  background: var(--fp-accent);
+  border-color: transparent;
+  border-radius: var(--fp-radius-pill);
+  font-weight: 500;
+}
+
+.fp-btn--primary:hover {
+  color: var(--fp-on-accent);
+  background: var(--fp-accent);
+  opacity: 0.88;
+}
+
+.fp-btn--icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: 0;
+  border-radius: var(--fp-radius-sm);
+}
+
+.fp-btn[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+:focus-visible {
+  outline: 2px solid var(--fp-accent);
+  outline-offset: 3px;
+  border-radius: var(--fp-radius-sm);
+}
+
+.fp-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 0.4em 0.6em;
+  color: var(--fp-text);
+  background: var(--fp-bg);
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-sm);
+  font: inherit;
+}
+
+.fp-input:focus {
+  border-color: var(--fp-accent);
+}
+
+.fp-input::placeholder {
+  color: var(--fp-text-muted);
+  opacity: 0.8;
+}
+
+.fp-card {
+  padding: 1em 1.5em;
+  margin: var(--fp-rhythm) 0;
+  background: var(--fp-surface);
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-xl);
+}
+
+.fp-callout {
+  padding: 0.6em 1em;
+  margin: var(--fp-rhythm) 0;
+  color: var(--fp-text-muted);
+  background: var(--fp-surface);
+  border-left: 4px solid var(--fp-border);
+  border-radius: 0 var(--fp-radius-lg) var(--fp-radius-lg) 0;
+}
+
+.fp-callout--note {
+  color: var(--fp-text);
+  border-left-color: var(--fp-accent);
+}
+
+.fp-callout--warn {
+  color: var(--fp-text);
+  border-left-color: var(--fp-syn-yellow);
+}
+
+.fp-code {
+  margin: var(--fp-rhythm) 0;
+  overflow: hidden;
+  background: var(--fp-surface);
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-xl);
+}
+
+.fp-code > pre {
+  padding: 1em 1.2em;
+  margin: 0;
+  overflow-x: auto;
+  background: none;
+  border: 0;
+  font-family: var(--fp-font-mono);
+  font-size: var(--fp-size-precode);
+  line-height: var(--fp-leading-code);
+}
+
+:where(.fp-prose p, .fp-prose li, .fp-prose td) code {
+  padding: 0.15em 0.35em;
+  background: var(--fp-surface-2);
+  border-radius: 0.4em;
+  font-family: var(--fp-font-mono);
+  font-size: var(--fp-size-code);
+}
+
+.fp-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.95em;
+  font-variant-numeric: tabular-nums;
+}
+
+.fp-table :is(th, td) {
+  padding: 0.5em 0.9em;
+  border: 1px solid var(--fp-border);
+  text-align: left;
+}
+
+.fp-table th,
+.fp-table tbody tr:nth-child(even) {
+  background: var(--fp-surface);
+}
+
+.fp-table th {
+  color: var(--fp-text-strong);
+  font-weight: 600;
+}
+
+.fp-dialog {
+  width: min(640px, 90vw);
+  max-height: min(600px, 80vh);
+  padding: 0;
+  overflow: hidden;
+  color: var(--fp-text);
+  background: var(--fp-bg);
+  border: 0;
+  border-radius: var(--fp-radius-lg);
+  box-shadow: var(--fp-shadow);
+}
+
+.fp-dialog::backdrop {
+  background: var(--fp-scrim);
+}
+
+.fp-popover {
+  background: var(--fp-surface);
+  border: 1px solid var(--fp-border);
+  border-radius: var(--fp-radius-md);
+  box-shadow: var(--fp-shadow);
+}
+
+.fp-nav-item {
+  display: block;
+  padding: var(--fp-row-pad);
+  color: var(--fp-text);
+  border-left: var(--fp-marker-w) solid transparent;
+  font-size: var(--fp-size-xs);
+  font-weight: 500;
+  line-height: 1.4;
+  text-decoration: none;
+}
+
+.fp-nav-item:hover {
+  color: var(--fp-accent);
+  background: var(--fp-surface);
+}
+
+.fp-nav-item.is-active {
+  color: var(--fp-accent);
+  background: var(--fp-active-bg);
+  border-left-color: var(--fp-accent);
+  font-weight: 600;
+}
+
+.fp-prose a {
+  color: var(--fp-accent);
+  text-underline-offset: 3px;
+}
+
+.fp-prose a:hover {
+  text-decoration-thickness: 2px;
+}

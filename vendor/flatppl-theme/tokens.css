@@ -1,0 +1,84 @@
+:root {
+  color-scheme: light;
+  --fp-bg: #fafaf8;
+  --fp-surface: #f6f8fa;
+  --fp-surface-2: #e8eaed;
+  --fp-text: #24292f;
+  --fp-text-strong: #1f2328;
+  --fp-text-muted: #57606a;
+  --fp-text-faint: #8e9199;
+  --fp-border: #d0d7de;
+  --fp-border-light: #eaeef2;
+  --fp-brand: #224535;
+  --fp-accent: #0860ca;
+  --fp-on-accent: #fff;
+  --fp-active-bg: #eaf1fb;
+  --fp-select: rgb(8 96 202 / 20%);
+  --fp-scrim: rgb(0 0 0 / 40%);
+  --fp-shadow: 0 2px 8px rgb(0 0 0 / 15%);
+
+  --fp-syn-red: #a31515;
+  --fp-syn-yellow: #946200;
+  --fp-syn-green: #397900;
+  --fp-syn-cyan: #007181;
+  --fp-syn-blue: #1c4d9a;
+  --fp-syn-purple: #6f42c1;
+  --fp-syn-comment: #6f5a4d;
+
+  --fp-font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --fp-font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo,
+    monospace;
+  --fp-size-base: 16px;
+  --fp-size-h1: 1.8em;
+  --fp-size-h2: 1.4em;
+  --fp-size-h3: 1.2em;
+  --fp-size-sm: 0.9em;
+  --fp-size-xs: 0.85em;
+  --fp-size-code: 0.875em;
+  --fp-size-precode: 0.85em;
+  --fp-leading: 1.7;
+  --fp-leading-ui: 1.4;
+  --fp-leading-code: 1.5;
+
+  --fp-radius-sm: 4px;
+  --fp-radius-md: 6px;
+  --fp-radius-lg: 8px;
+  --fp-radius-xl: 12px;
+  --fp-radius-pill: 2em;
+  --fp-col-width: 52rem;
+  --fp-nav-width: 16em;
+  --fp-gutter: 1.5rem;
+  --fp-header-h: 48px;
+  --fp-pane-header-h: 32px;
+  --fp-row-pad: 0.45em 1em;
+  --fp-marker-w: 3px;
+  --fp-rhythm: 1.2em;
+  --fp-pane-pad: 1em;
+  --fp-bp-narrow: 60em;
+}
+
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --fp-bg: #282c34;
+  --fp-surface: #21252b;
+  --fp-surface-2: #313740;
+  --fp-text: #abb2bf;
+  --fp-text-strong: #e5e8ed;
+  --fp-text-muted: #939ca9;
+  --fp-text-faint: #7f8996;
+  --fp-border: #3e4451;
+  --fp-border-light: #2c313a;
+  --fp-accent: #d19a66;
+  --fp-on-accent: #1a1a1a;
+  --fp-active-bg: #413a36;
+  --fp-select: rgb(209 154 102 / 30%);
+
+  --fp-syn-red: #e4747c;
+  --fp-syn-yellow: #e5c07b;
+  --fp-syn-green: #98c379;
+  --fp-syn-cyan: #56b6c2;
+  --fp-syn-blue: #61afef;
+  --fp-syn-purple: #c678dd;
+  --fp-syn-comment: #8b949e;
+}
