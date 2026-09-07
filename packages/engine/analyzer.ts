@@ -263,13 +263,8 @@ function validateSpecialOperation(valueNode: any) {
       }
       break;
     }
-    case 'load_data': {
-      // source (positional or keyword) + valueset (keyword)
-      if (args.length === 0) {
-        diags.push({ severity: 'error', message: `load_data() requires source and valueset arguments`, loc: valueNode.loc });
-      }
-      break;
-    }
+    // `load_data` is NOT a special operation and has no case here. Its inputs
+    // are checked by `validateDataLoad` under the ordinary calling convention.
 
     // ---- Measure-algebra binary ops: M and one other operand --------
     case 'weighted':
@@ -2107,6 +2102,69 @@ function validateDistinguishedInputs(node: any, diagnostics: any[]) {
   walk(node);
 }
 
+/**
+ * `load_data`'s two named inputs, under the ORDINARY calling convention.
+ *
+ * Spec §07 "Data loading" declares `load_data(source, valueset)`, and §04
+ * "Calling conventions" governs the spellings: "All built-in ordinary callables
+ * have a defined input order and accept both positional and keyword arguments."
+ * So `load_data("x.csv", reals)`, `load_data(source = "x.csv", valueset = reals)`
+ * and the reordered keyword form are all legal, and the names are checkable.
+ *
+ * `load_data` used to sit in `SPECIAL_OPERATIONS` and carry a case in
+ * `validateSpecialOperation` that only refused the nullary call, so under- and
+ * over-supply and an unknown argument name all passed silently. Spec PR
+ * flatppl/flatppl-design#110 (owner ruling) deleted the §04 bullet declaring it
+ * "One distinguished input plus optional variadic named inputs" — it has no
+ * template, no binding scope and no variadic part — which is what moved the check
+ * here.
+ *
+ * The mixed spelling `load_data("x.csv", valueset = reals)` counts as two inputs
+ * and is NOT refused here. §05's `MixedArgs` note no longer lists `load_data`, so
+ * it is ill-formed, but no ordinary builtin's mixed spelling is refused in either
+ * engine yet; refusing this one alone would be one rule for one head. Recorded in
+ * TODO-flatppl-js.md.
+ */
+function validateDataLoad(node: any, diagnostics: any[]) {
+  const DECLARED = ['source', 'valueset'];
+
+  function check(call: any) {
+    const args = call.args || [];
+    const kwargs = args.filter((a: any) => a && a.type === 'KeywordArg');
+    for (const kw of kwargs) {
+      if (!DECLARED.includes(kw.name)) {
+        diagnostics.push({
+          severity: 'error',
+          message: `load_data() has no argument \`${kw.name}\`: spec §07 "Data `
+            + `loading" declares load_data(source, valueset)`,
+          loc: kw.loc,
+        });
+      }
+    }
+    if (args.length !== DECLARED.length) {
+      diagnostics.push({
+        severity: 'error',
+        message: `load_data() takes 2 arguments (spec §07 "Data loading": `
+          + `load_data(source, valueset)), got ${args.length}`,
+        loc: call.loc,
+      });
+    }
+  }
+
+  function walk(n: any) {
+    if (n == null || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+    if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier'
+        && n.callee.name === 'load_data') {
+      check(n);
+    }
+    for (const k of Object.keys(n)) {
+      if (k !== 'loc') walk(n[k]);
+    }
+  }
+  walk(node);
+}
+
 function validateBoundaryNames(node: any, diagnostics: any[]) {
   function checkReification(call: any) {
     const seen = new Set<string>();
@@ -3361,6 +3419,7 @@ function analyze(ast: any, source: string, opts?: any) {
     const stmtType = classifyStatement(stmt.value);
     diagnostics.push(...validateSpecialOperation(stmt.value));
     validateDistinguishedInputs(stmt.value, diagnostics);
+    validateDataLoad(stmt.value, diagnostics);
     const axisListsRefused = validateAxisListPositions(stmt.value, diagnostics);
     validateHolesAndPlaceholders(stmt.value, diagnostics, axisListsRefused);
     validateBoundaryNames(stmt.value, diagnostics);

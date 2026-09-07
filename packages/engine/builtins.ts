@@ -51,8 +51,8 @@ const SPECIAL_OPERATIONS = new Set([
   'draw', 'lawof', 'functionof', 'kernelof', 'fn',
   // Inputs
   'elementof', 'external', 'valueset',
-  // Module operations
-  'load_module', 'standard_module', 'load_data',
+  // Module operations. `load_data` is NOT here — see BUILTIN_FUNCTIONS.
+  'load_module', 'standard_module',
   // Higher-order
   'broadcast', 'broadcasted', 'reduce', 'scan',
   // Multi-axis aggregation (spec §04 §sec:aggregate): three distinguished
@@ -98,6 +98,13 @@ const BUILTIN_FUNCTIONS = new Set([
   // Array/table generation
   'array', 'fill', 'zeros', 'ones', 'eye', 'onehot',
   'linspace', 'extlinspace',
+  // Data loading (spec §07 "Data loading"). An ORDINARY builtin with two named
+  // inputs, source and valueset, so both call spellings are legal. It sat in
+  // SPECIAL_OPERATIONS until spec PR flatppl/flatppl-design#110 deleted the §04
+  // "Calling conventions" bullet that declared it one distinguished input plus
+  // variadic named inputs — it has no template, no binding scope and no variadic
+  // part, so that classification was wrong.
+  'load_data',
   // Access and reshaping. `get` is FlatPPL/FlatPPJ's 1-based
   // indexing op; `get0` is FlatPPY's 0-based variant emitted by
   // the parser when xs[i] is lowered under the FlatPPY surface.

@@ -439,3 +439,53 @@ m = lawof(a)
   assert.equal(symbols[1].name, 'm');
   assert.equal(symbols[1].type, 'lawof');
 });
+
+// `load_data` is an ORDINARY builtin with two named inputs, not a special
+// operation. Owner ruling, landed as spec PR flatppl/flatppl-design#110: it has
+// no template, no binding scope and no variadic part, so the §04 "Calling
+// conventions" bullet declaring it "One distinguished input plus optional
+// variadic named inputs" was a mis-classification and is deleted. §07 "Data
+// loading" keeps `load_data(source, valueset)`, and §04's ordinary rule governs
+// the spellings: "All built-in ordinary callables have a defined input order and
+// accept both positional and keyword arguments."
+test('analyzer: load_data accepts both ordinary calling forms', () => {
+  for (const src of [
+    'd = load_data("x.csv", reals)\n',
+    'd = load_data(source = "x.csv", valueset = reals)\n',
+    'd = load_data(valueset = reals, source = "x.csv")\n',
+    'd = load_data("x.csv", cartpow(cartprod(a = reals, b = reals), 4))\n',
+  ]) {
+    const { diagnostics, bindings } = process(src);
+    const errs = diagnostics.filter((d: any) => d.severity === 'error');
+    assert.deepEqual(errs.map((d: any) => d.message), [], src);
+    assert.equal(bindings.get('d').type, 'data', src);
+  }
+});
+
+test('analyzer: load_data is in no special-operation table', () => {
+  const builtins = require('../builtins.ts');
+  assert.equal(builtins.SPECIAL_OPERATIONS.has('load_data'), false);
+  assert.equal(builtins.isSpecialOperation('load_data'), false);
+  assert.equal(builtins.BUILTIN_FUNCTIONS.has('load_data'), true);
+  // The keyword spelling of a distinguished input is refused for every head in
+  // `DISTINGUISHED_INPUTS`; `load_data` must take no such refusal.
+  const { diagnostics } = process('d = load_data(source = "x.csv", valueset = reals)\n');
+  assert.equal(diagnostics.some((d: any) => /distinguished input/.test(d.message)), false);
+});
+
+test('analyzer: load_data checks its two inputs under the ordinary convention', () => {
+  // The guard used to refuse the nullary call only, so under- and over-supply
+  // and an unknown argument name all passed silently.
+  for (const [src, needle] of [
+    ['d = load_data()\n', /takes 2 arguments .*got 0/],
+    ['d = load_data("x.csv")\n', /takes 2 arguments .*got 1/],
+    ['d = load_data("x.csv", reals, 3)\n', /takes 2 arguments .*got 3/],
+    ['d = load_data(path = "x.csv", valueset = reals)\n', /has no argument `path`/],
+  ] as [string, RegExp][]) {
+    const { diagnostics } = process(src);
+    assert.ok(
+      diagnostics.some((d: any) => d.severity === 'error' && needle.test(d.message)),
+      `${src} must refuse matching ${needle}; got ${JSON.stringify(diagnostics.map((d: any) => d.message))}`,
+    );
+  }
+});
