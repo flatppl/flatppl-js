@@ -83,7 +83,7 @@ const SET_VALUE_TYPES: Record<string, any> = {
 // array<bool>; scalar_a < vec_b yields array<bool> too).
 const BINARY_ARITH_OPS = new Set(['add', 'sub', 'mul', 'div', 'mod', 'pow']);
 const UNARY_ARITH_OPS  = new Set([
-  'neg', 'pos', 'abs', 'abs2', 'exp', 'log', 'log10', 'sqrt',
+  'neg', 'pos', 'abs', 'abs2', 'exp', 'log', 'log2', 'log10', 'sqrt',
   'sin', 'cos', 'floor', 'ceil', 'round',
 ]);
 const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
@@ -94,7 +94,7 @@ const COMPARISON_OPS = new Set(['lt', 'le', 'gt', 'ge', 'equal', 'unequal']);
 // `floor`/`ceil`/`round`/`div`/`mod` used to lift silently and the rest of
 // the table already refused; this set makes the whole table refuse alike.
 const ELEMENTARY_OPS = new Set([
-  'exp', 'log', 'log10', 'sqrt', 'abs', 'abs2',
+  'exp', 'log', 'log2', 'log10', 'sqrt', 'abs', 'abs2',
   'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
   'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
   'log1p', 'expm1', 'min', 'max', 'floor', 'ceil', 'round',
@@ -4323,12 +4323,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
       return dims;
     }
-    // `lengthof(x)` / `length(x)` is a scalar count → a rank-1 shape
-    // `[n]`. Delegate to resolveIntegerShape so the array-of-arrays and
-    // table row-count short-circuits apply here too (resolveFixed's
-    // shape-observer reads only array types, so a table count would
-    // otherwise fall through to %dynamic — e.g. `zeros(lengthof(t))`).
-    if (ir && ir.kind === 'call' && (ir.op === 'length' || ir.op === 'lengthof')) {
+    // `lengthof(x)` is a scalar count → a rank-1 shape `[n]`. Delegate to
+    // resolveIntegerShape so the array-of-arrays and table row-count
+    // short-circuits apply here too (resolveFixed's shape-observer reads only
+    // array types, so a table count would otherwise fall through to %dynamic —
+    // e.g. `zeros(lengthof(t))`).
+    if (ir && ir.kind === 'call' && ir.op === 'lengthof') {
       const n = resolveIntegerShape(ir);
       if (n != null) return [n];
     }
@@ -4560,8 +4560,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // the only safe way to chain through expensive intermediates.
     // (`sizeof(x)` returns the shape *vector* and is handled by
     // resolveIntegerVectorShape, not here.)
-    if (ir && ir.kind === 'call'
-        && (ir.op === 'length' || ir.op === 'lengthof')
+    if (ir && ir.kind === 'call' && ir.op === 'lengthof'
         && Array.isArray(ir.args) && ir.args.length === 1) {
       const argT: any = inferExpr(ir.args[0], []);
       // Vector / array-of-arrays: the leading-axis length (rows of a
@@ -5375,6 +5374,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     Bernoulli:    [{ name: 'p', pos: 0, domain: vsLib.UNITINTERVAL, label: 'in the unit interval [0, 1]' }],
     Geometric:    [{ name: 'p', pos: 0, domain: vsLib.UNITINTERVAL, label: 'in the unit interval [0, 1]' }],
     Binomial:     [{ name: 'p', pos: 1, domain: vsLib.UNITINTERVAL, label: 'in the unit interval [0, 1]' }],
+    // §07 "Elementary functions" states `posreals` ALONE for these four, with
+    // no `complexes` beside it as `log` and `sqrt` carry. §03 "Sets" makes
+    // `posreals` the half-line (0, +inf], which excludes 0, so a provably
+    // non-positive argument is a domain violation the same way `Normal(sigma =
+    // -1.0)` is.
+    log2:         [{ name: 'x', pos: 0, domain: vsLib.POSREALS, label: 'positive (posreals; spec §07 log2 domain)' }],
+    log10:        [{ name: 'x', pos: 0, domain: vsLib.POSREALS, label: 'positive (posreals; spec §07 log10 domain)' }],
+    gamma:        [{ name: 'x', pos: 0, domain: vsLib.POSREALS, label: 'positive (posreals; spec §07 gamma domain)' }],
+    loggamma:     [{ name: 'x', pos: 0, domain: vsLib.POSREALS, label: 'positive (posreals; spec §07 loggamma domain)' }],
   };
 
   // A value set PROVABLY disjoint from `domain`. Only an interval value
@@ -6832,6 +6840,7 @@ function distributionSupport(
 // guard below then requires nonnegreals, else refuses (refuse-don't-mislower).
 const PUSHFWD_DOMAIN_GUARDS: Record<string, { isWithin: (vs: any) => boolean, label: string }> = {
   log:    { isWithin: isWithinPositiveDomain, label: 'positive (posreals; spec §07 log domain)' },
+  log2:   { isWithin: isWithinPositiveDomain, label: 'positive (posreals; spec §07 log2 domain)' },
   log10:  { isWithin: isWithinPositiveDomain, label: 'positive (posreals; spec §07 log10 domain)' },
   sqrt:   { isWithin: isWithinPositiveDomain, label: 'non-negative (nonnegreals; spec §07 sqrt domain)' },
   pow:    { isWithin: isWithinPositiveDomain, label: 'non-negative (nonnegreals; even/non-integer pow exponent, spec §06/§07 pow domain)' },

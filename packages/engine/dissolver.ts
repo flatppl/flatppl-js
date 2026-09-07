@@ -141,7 +141,7 @@ const DISSOLVE_SCALAR_ONLY_OPS: Set<string> = new Set([
   // Multiplicative arith (matrix semantics on rank-1 vectors).
   'mul', 'div', 'divide', 'mod', 'pow',
   // Unary scalar maths — broadcast1-routed, scalar-only.
-  'abs', 'abs2', 'exp', 'log', 'log10', 'log1p', 'expm1', 'sqrt',
+  'abs', 'abs2', 'exp', 'log', 'log2', 'log10', 'log1p', 'expm1', 'sqrt',
   'sin', 'cos', 'tan', 'asin', 'acos', 'atan', 'atan2',
   'sinh', 'cosh', 'tanh', 'asinh', 'acosh', 'atanh',
   'floor', 'ceil', 'round',

@@ -958,6 +958,7 @@ const SIGNATURE_FACTORIES = {
   abs2:   () => ({ args: [REAL], kwargs: {}, result: REAL }),
   exp:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
   log:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
+  log2:   () => ({ args: [REAL], kwargs: {}, result: REAL }),
   log10:  () => ({ args: [REAL], kwargs: {}, result: REAL }),
   sqrt:   () => ({ args: [REAL], kwargs: {}, result: REAL }),
   sin:    () => ({ args: [REAL], kwargs: {}, result: REAL }),

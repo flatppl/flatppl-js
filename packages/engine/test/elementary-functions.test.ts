@@ -96,3 +96,54 @@ test('max: binary maximum', () => {
   assert.equal(ev(call('max', lit(3), lit(5))), 5);
   assert.equal(ev(call('max', lit(-7), lit(-2))), -2);
 });
+
+// =====================================================================
+// log2 — spec §07, $\log_2(x)$, domain posreals
+// =====================================================================
+//
+// ORACLE: 256-bit BigFloat `log(x) / log(2)` in Julia, so no Float64 `log2`
+// and no FlatPPL engine takes part in the expected values.
+//   log2(2)     =  1
+//   log2(8)     =  3
+//   log2(0.5)   = -1
+//   log2(10)    =  3.3219280948873622
+//   log2(0.001) = -9.965784284662087
+
+test('log2: exact at the powers of two', () => {
+  assert.equal(ev(call('log2', lit(1))), 0);
+  assert.equal(ev(call('log2', lit(2))), 1);
+  assert.equal(ev(call('log2', lit(8))), 3);
+  assert.equal(ev(call('log2', lit(0.5))), -1);
+});
+
+test('log2: matches the 256-bit oracle off the powers of two', () => {
+  for (const [x, want] of [[10, 3.3219280948873622],
+                           [0.001, -9.965784284662087]] as [number, number][]) {
+    const got = ev(call('log2', lit(x)));
+    assert.ok(Math.abs(got - want) <= 1e-15 * Math.abs(want),
+      `log2(${x}): got ${got}, oracle ${want}`);
+  }
+});
+
+test('log2: pow(2, log2(x)) recovers x', () => {
+  for (const x of [0.25, 1.5, 7, 100]) {
+    const round = ev(call('pow', lit(2), call('log2', lit(x))));
+    assert.ok(Math.abs(round - x) < 1e-12 * Math.max(1, x), 'roundtrip at x=' + x);
+  }
+});
+
+// =====================================================================
+// `length` was superseded by `lengthof`
+// =====================================================================
+//
+// `lengthof` is the §07 spelling. `length` has no §07 entry and no engine
+// row, so it must resolve to nothing rather than quietly aliasing `lengthof`.
+
+test('length: the superseded spelling does not resolve; lengthof does', () => {
+  const { processSource } = require('../index.ts');
+  const errsOf = (src: any) => processSource(src).diagnostics
+    .filter((d: any) => d.severity === 'error').map((d: any) => d.message);
+  assert.ok(errsOf('v = [1.0, 2.0]\ny = length(v)')
+    .some((m: any) => /length/.test(m)), 'length(v) must be refused');
+  assert.deepEqual(errsOf('v = [1.0, 2.0]\ny = lengthof(v)'), []);
+});

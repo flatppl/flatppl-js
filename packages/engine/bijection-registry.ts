@@ -581,6 +581,14 @@ const ELEMENTARY_BIJECTIONS: Record<string, {
       _call('mul', [_lit(-0.5), _call('log', [X])]),
     ]),
   },
+  // y = log2(x) = ln(x)/ln(2) ⇒ x = 2^y; log|f'| = −log(x) − log(ln 2).
+  // Domain: posreals (spec §07; same guard as `log`).
+  log2: {
+    invert: (_i, _a, Y) => _call('pow', [_lit(2), Y]),
+    ladj: (_i, _a, X) => _call('neg', [
+      _call('add', [_call('log', [X]), _lit(Math.log(Math.log(2)))]),
+    ]),
+  },
   // y = log10(x) = ln(x)/ln(10) ⇒ x = 10^y; log|f'| = −log(x) − log(ln 10).
   // Domain: posreals (spec §07; same guard as `log`).
   log10: {

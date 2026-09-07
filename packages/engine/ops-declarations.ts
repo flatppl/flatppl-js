@@ -1418,7 +1418,7 @@ function _registerScalarLogicals(): void {
 
   // Family 1: pure-real unary elementary math (`Math.X`).
   const REAL_UNARY: Record<string, (a: number) => number> = {
-    log10: Math.log10, log1p: Math.log1p, expm1: Math.expm1,
+    log2: Math.log2, log10: Math.log10, log1p: Math.log1p, expm1: Math.expm1,
     sin: Math.sin, cos: Math.cos, tan: Math.tan,
     asin: Math.asin, acos: Math.acos, atan: Math.atan,
     sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
@@ -1567,6 +1567,7 @@ function _ensureBroadcastedRegistered(): void {
     ['tan',    1, (vs) => vo.tanElem(vs[0])],
     ['abs',    1, (vs) => vo.absElem(vs[0])],
     ['abs2',   1, (vs) => vo.abs2Elem(vs[0])],
+    ['log2',   1, (vs) => vo.log2Elem(vs[0])],
     ['log10',  1, (vs) => vo.log10Elem(vs[0])],
     ['log1p',  1, (vs) => vo.log1pElem(vs[0])],
     ['expm1',  1, (vs) => vo.expm1Elem(vs[0])],
