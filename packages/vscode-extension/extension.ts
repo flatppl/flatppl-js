@@ -1135,6 +1135,14 @@ function activate(context: any) {
     disintegrate: 'disintegrate(${1:["field"]}, ${2:joint_model})',
     load_module: 'load_module("${1:path.flatppl}")',
     standard_module: 'standard_module("${1:name}", "${2:0.1}")',
+  };
+
+  // Snippets for ordinary built-in functions whose keyword form is the one worth
+  // offering. `load_data` moved here from SPECIAL_SNIPPETS with spec PR
+  // flatppl/flatppl-design#110, which reclassified it as an ordinary builtin;
+  // the completion is now a function rather than a keyword, and the snippet has
+  // to be applied in the BUILTIN_FUNCTIONS loop to survive that move.
+  const FUNCTION_SNIPPETS: Record<string, string> = {
     load_data: 'load_data(source = "${1:path}", valueset = ${2:reals})',
   };
 
@@ -1171,6 +1179,8 @@ function activate(context: any) {
     // Built-in functions
     for (const name of builtins.BUILTIN_FUNCTIONS) {
       const item = new vscode.CompletionItem(name, vscode.CompletionItemKind.Function);
+      const snippet = FUNCTION_SNIPPETS[name];
+      if (snippet) item.insertText = new vscode.SnippetString(snippet);
       item.detail = 'built-in function';
       items.push(item);
     }
