@@ -11,9 +11,9 @@ test('the pinned theme bundle passes its manifest guard and tampering does not',
     new URL('../../../vendor/flatppl-theme/manifest.json', import.meta.url),
     'utf8',
   ));
-  assert.equal(pinnedManifest.version, '0.1.2');
-  assert.equal(pinnedManifest.source.commit, '671f2423c99c5da8a53b0450156ecad94fae2e84');
-  assert.equal(pinnedManifest.source.release, 'v0.1.2');
+  assert.equal(pinnedManifest.version, '0.1.3');
+  assert.equal(pinnedManifest.source.commit, 'd0470679cf145f83a792a823c5d4c83d0d31743c');
+  assert.equal(pinnedManifest.source.release, 'v0.1.3');
 
   const root = await mkdtemp(join(tmpdir(), 'flatppl-theme-test-'));
   t.after(() => import('node:fs/promises').then(({ rm }) =>
