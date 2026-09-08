@@ -63,6 +63,7 @@ const broadcast    = require('./mat-broadcast.ts');
 const density      = require('./mat-density.ts');
 const transforms   = require('./mat-transformations.ts');
 const samplerReg   = require('./sampler-registry.ts');
+const { MEASURE_PRODUCING } = require('./builtins.ts');
 
 const {
   nameSeed,
@@ -960,8 +961,9 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
 // measure handler's `parent.logWeights`. The guard below tests that invariant on
 // the data rather than trusting it.
 //
-// The result is renormalised to sum to one in log space, the convention
-// `matNormalize` sets, so the `logTotalmass: 0` the caller records stays true.
+// The result is renormalised to sum to one in log space. Absolute mass is
+// separate metadata: matIid preserves it when the algebra certifies a fixed
+// inner mass, rather than trying to recover it from these relative weights.
 function _foldIidBlockLogWeights(
   innerM: any, N: number, k: number, fromName: string,
 ): Float64Array | null {
@@ -1052,8 +1054,8 @@ function _foldIidBlockLogWeights(
 // (matIid strips them from the tiled measure) rather than summed and then
 // decomposed: `blockLW`'s sum cannot be un-summed afterwards.
 //
-// Renormalised to sum to one in log space, the convention `_foldIidBlockLog-
-// Weights` and `matNormalize` set, so the caller's `logTotalmass: 0` stays true.
+// Renormalised to sum to one in log space, like `_foldIidBlockLogWeights`.
+// A certified fixed inner mass is carried separately by matIid.
 // Returns null when there is nothing to carry, keeping `logWeights` absent
 // rather than an all-equal array (`propagateLogWeights`'s dedupe contract).
 function _combineIidAtomWeights(
@@ -1133,6 +1135,52 @@ function _iidLeafParentOverlay(parents: any[], N: number) {
   };
 }
 
+// A conditional inner law with a fixed mass Z has product mass Z^k even
+// when its normalized shape depends on a shared stochastic parameter. A
+// materialised inner mass may instead be pooled over that parameter, and
+// (E[Z])^k is not E[Z^k], so it is never a substitute for this certificate.
+// Unknown/unsupported algebra keeps the existing fallback metadata; generic
+// variate weights and latent-dependent masses remain outside this repair.
+function _iidFixedLogTotalmass(from: string, k: number, ctx: any): number | null {
+  const { expandMeasureIR, closedFormLogTotalmass } = require('./derivations.ts');
+  // Expansion of a marginal chain can contain only the last kernel's density
+  // fragment; its prior mass is supplied separately by the density pipeline.
+  // Certify only derivations whose expansion carries the complete mass algebra.
+  const complete = new Map<string, boolean>();
+  const hasCompleteMassAlgebra = (name: string): boolean => {
+    if (complete.has(name)) return complete.get(name)!;
+    complete.set(name, false);
+    const d = ctx.derivations[name];
+    if (!d) return false;
+    let ok = false;
+    if (d.kind === 'normalize') {
+      ok = true;
+    } else if (_isLeafDistributionDeriv(d)) {
+      ok = d.logTotalmass == null || Number.isFinite(d.logTotalmass);
+    } else if (['alias', 'weighted', 'iid', 'pushfwd'].includes(d.kind)) {
+      ok = hasCompleteMassAlgebra(d.from);
+    } else if (d.kind === 'superpose') {
+      ok = d.fromNames.every(hasCompleteMassAlgebra);
+    } else if (d.kind === 'record') {
+      ok = Object.values(d.fields).every(n => hasCompleteMassAlgebra(n as string));
+    } else if (d.kind === 'tuple') {
+      ok = d.elems.every(hasCompleteMassAlgebra);
+    }
+    complete.set(name, ok);
+    return ok;
+  };
+  if (!hasCompleteMassAlgebra(from)) return null;
+  try {
+    const ir = expandMeasureIR(from, ctx.derivations, new Set(), ctx.bindings);
+    const inner = closedFormLogTotalmass(ir, ctx.bindings);
+    return typeof inner === 'number' && Number.isFinite(inner) ? k * inner : null;
+  } catch {
+    // Some sampleable composites have no expanded density IR. Optional mass
+    // certification must not make their existing sampling path unavailable.
+    return null;
+  }
+}
+
 function matIid(name: string, d: DerivationIid, ctx: any) {
   // iid(M, n, …): N atoms × k inner draws, atom-major packed into
   // one Float64Array. Worker's sampleN takes an optional repeat=k.
@@ -1159,7 +1207,12 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
   // then dispatch to sampleN (vanilla) or truncateSampleN (truncated)
   // with `count = N * k` so iid blocks are produced in one worker
   // round-trip.
-  const resolved = _resolveIidLeaf(d.from, ctx.derivations);
+  const reifiedVariates = _reifiedVariatesUnder(
+    d.from, ctx.derivations, ctx.bindings);
+  // A captured draw's parameters belong to its copied trace. The leaf path
+  // pins parameters per atom, so only an uncaptured constructor can use it.
+  const resolved = reifiedVariates.size === 0
+    ? _resolveIidLeaf(d.from, ctx.derivations) : null;
   if (!resolved) {
     // Composite-inner fallback: when the iid's inner measure is a
     // composite (superpose / select / pushfwd / bayesupdate / nested
@@ -1207,19 +1260,14 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     // ONLY as a parameter is never exempt: `iid(Normal(mu = u, …), n)` and the
     // repeat axis share exactly as before.
     //
-    // A node in BOTH positions — the wrapper's own weight AND the replicated
-    // variate, as in `superpose(weighted(psi, lawof(psi)), …)` — is exempt, so
-    // it stops being tiled. §06 gives no tie-break there: the same node is
-    // fixed before replication as a weight and copied per coordinate as a
-    // variate. Measure position wins here because that is the direction §06
-    // states outright, and the shapes are degenerate.
+    // A stochastic node in BOTH positions needs separate parent and captured
+    // scopes. The trace walk refuses that unsupported shape instead of using
+    // one cached value for both meanings.
     if (!ctx.derivations || !ctx.derivations[d.from]) {
       return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
     }
     const k = d.dims.reduce((p: any, n: any) => p * n, 1);
     const N = ctx.sampleCount;
-    const reifiedVariates = _reifiedVariatesUnder(
-      d.from, ctx.derivations, ctx.bindings);
     const inflatedCache = new Map();
     // Weight streams a tiled value draw brings in — ONE weighting event per
     // atom, shared by its k inner draws, so they are held OFF the inflated
@@ -1283,6 +1331,8 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       return p;
     };
     return inflatedCtx.getMeasure(d.from).then((innerM: any) => {
+      const fixedLogMass = _iidFixedLogTotalmass(d.from, k, ctx);
+      const logTotalmass = fixedLogMass == null ? 0 : fixedLogMass;
       // §06 `iid` is a product measure, so the k inner positions' importance
       // weights multiply into ONE weight per atom, and a weight stream shared
       // across the block joins it once. Folded before either branch below
@@ -1348,7 +1398,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         const table: any = { __table__: true, columns, nrows: k };
         return {
           shape: 'table', __table__: true, columns, nrows: k,
-          value: table, logTotalmass: 0, n_eff: 1,
+          value: table, logTotalmass, n_eff: 1,
         };
       }
       // A TUPLE-variate inner measure — a positional `joint(M1, M2)`, or a
@@ -1406,7 +1456,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         empirical.arrayMeasure(samples, perAtomDims, foldedLW),
         {
           value: value,
-          logTotalmass: 0,
+          logTotalmass,
           // From the folded weights when there are any: k importance-weighted
           // coordinates per atom leave far fewer effective atoms than N.
           n_eff: foldedLW
@@ -1505,8 +1555,8 @@ const IID_LEAF_PRESERVING_KINDS = new Set(['alias', 'normalize']);
 // Derivation fields that hold the name of a SUB-MEASURE. A name reached
 // along one of these is a measure the walk may keep descending through;
 // distribution parameters and weight functions never appear here — they
-// live in `distIR` / `weightIR` / `ir`, which `_reifiedVariatesUnder`
-// never enters.
+// live in `distIR` / `weightIR` / `ir`. The walk enters value IR only
+// after crossing a reification boundary.
 const MEASURE_CHILD_NAME_FIELDS = ['from'];
 const MEASURE_CHILD_LIST_FIELDS = ['fromNames', 'elems'];
 const MEASURE_CHILD_MAP_FIELDS = ['fields'];
@@ -1557,16 +1607,13 @@ function _chainStepMeasureRefs(d: any): string[] {
  * reification boundary. A node reached ONLY as a distribution parameter is
  * never reached, which is what keeps `iid(Normal(mu = u, …), n)`'s `u` shared —
  * §06's own example `iid(Normal(mu = a, sigma = b), 100)` reads one `a` and
- * one `b`. A node that occupies BOTH positions (the wrapper's own weight and
- * the replicated variate) IS exempt; see the tie-break note at the call site.
+ * one `b`. A stochastic node in both the external and captured closures is
+ * refused until the materialiser can represent both scopes separately.
  *
- * The same field list keeps being followed after the walk lands on a value
- * binding, so the exemption propagates through VALUE land along those edges
- * too: `t = psi` (an `alias`) exempts `psi` as well as `t`, and a `record`
- * under a `lawof` exempts its fields. That is §06's "stochastic ancestors
- * included" as far as these edges reach it — an `evaluate` derivation
- * (`shifted = psi + 1.0`) holds its dependencies in `ir`, which is not in the
- * list, so the walk stops at `shifted`.
+ * Once a value is captured, follow all scoped self references in its IR.
+ * This includes deterministic transforms and the parameters of stochastic
+ * ancestors. Before that boundary, follow only the measure edges: ordinary
+ * constructor parameters still belong to the parent atom.
  *
  * The BASE MEASURE of a `kchain`/`jointchain` is reached the same way, through
  * `_chainStepMeasureRefs` — the chain records its components as an explicit
@@ -1574,41 +1621,80 @@ function _chainStepMeasureRefs(d: any): string[] {
  * and every coordinate of `iid(kchain(lawof(z), K), n)` shared one `z` draw
  * (cross-coordinate covariance 10 where §06's product measure requires 0).
  *
- * Under-approximates on purpose. A name this walk misses keeps the caller's
- * tiling, which reproduces today's behaviour. A false POSITIVE would
- * freshen an atom-level parameter that the atom's k inner draws must share
- * (the repeat axis, engine-concepts §22.4), so the walk follows only the
- * edges it can name.
+ * A name can occur first in measure position and later inside a captured
+ * trace. Track the modes separately so the first visit cannot hide ancestors.
  */
 function _reifiedVariatesUnder(
   name: string, derivations: any, bindings: any,
 ): Set<string> {
   const out = new Set<string>();
   if (!derivations || !bindings || !bindings.get) return out;
-  const seen = new Set<string>();
-  const visit = (nn: string) => {
-    if (!nn || seen.has(nn)) return;
-    seen.add(nn);
+  const seenMeasure = new Set<string>();
+  const seenCaptured = new Set<string>();
+  const { walkIRScoped } = require('./ir-walk.ts');
+  const externalRefs: Array<[string, Set<string>]> = [];
+  const visit = (nn: string, captured = false) => {
+    if (!nn) return;
     const b = bindings.get(nn);
     const bt = b && b.inferredType;
-    if (bt && bt.kind && bt.kind !== 'measure') out.add(nn);
+    const isValue = !!(bt && bt.kind && bt.kind !== 'measure');
+    captured = captured || isValue;
+    const seen = captured ? seenCaptured : seenMeasure;
+    if (seen.has(nn)) return;
+    seen.add(nn);
+    if (isValue) out.add(nn);
+    if (captured && b && b.ir) {
+      for (const ref of orchestrator.collectSelfRefs(b.ir)) visit(ref, true);
+    }
     const d = derivations[nn];
     if (!d) return;
+    const children = new Set<string>();
     for (const f of MEASURE_CHILD_NAME_FIELDS) {
-      if (typeof d[f] === 'string') visit(d[f]);
+      if (typeof d[f] === 'string') children.add(d[f]);
     }
     for (const f of MEASURE_CHILD_LIST_FIELDS) {
-      if (Array.isArray(d[f])) for (const c of d[f]) if (typeof c === 'string') visit(c);
+      if (Array.isArray(d[f])) for (const c of d[f]) if (typeof c === 'string') children.add(c);
     }
     for (const f of MEASURE_CHILD_MAP_FIELDS) {
       const m = d[f];
       if (m && typeof m === 'object' && !Array.isArray(m)) {
-        for (const k in m) if (typeof m[k] === 'string') visit(m[k]);
+        for (const k in m) if (typeof m[k] === 'string') children.add(m[k]);
       }
     }
-    for (const r of _chainStepMeasureRefs(d)) visit(r);
+    for (const r of _chainStepMeasureRefs(d)) children.add(r);
+    if (!captured && b && b.ir) {
+      walkIRScoped(b.ir, (node: any, shadowed: Set<string>) => {
+        if (node.kind === 'ref' && node.ns === 'self'
+            && !shadowed.has(node.name) && !children.has(node.name)) {
+          externalRefs.push([node.name, shadowed]);
+        }
+      });
+    }
+    for (const child of children) visit(child, captured);
   };
   visit(name);
+  // One name cache cannot represent both a captured copy and an external
+  // parent value. Callable inlining can expose ancestors of an external
+  // value, so check its full closure and conservatively refuse overlap.
+  const seenExternal = new Map<string, Set<string>>();
+  const checkExternal = (nn: string, shadowed: Set<string>) => {
+    if (shadowed.has(nn)) return;
+    const scopeKey = [...shadowed].sort().join('\0');
+    let seenScopes = seenExternal.get(nn);
+    if (!seenScopes) seenExternal.set(nn, seenScopes = new Set());
+    if (seenScopes.has(scopeKey)) return;
+    seenScopes.add(scopeKey);
+    const b = bindings.get(nn);
+    if (!b) return;
+    if (out.has(nn) && b.phase === 'stochastic') {
+      throw new Error('iid: binding "' + nn + '" is both captured by a reified law '
+        + 'and used as an external parameter; separate trace scopes are not implemented');
+    }
+    walkIRScoped(b.ir, (node: any, inner: Set<string>) => {
+      if (node.kind === 'ref' && node.ns === 'self') checkExternal(node.name, inner);
+    }, shadowed);
+  };
+  if (out.size > 0) for (const [ref, shadowed] of externalRefs) checkExternal(ref, shadowed);
   return out;
 }
 
@@ -1823,40 +1909,43 @@ function matRandSample(name: string, d: any, ctx: any) {
   });
 }
 
-// Materialise a joint/record/tuple's factor bindings (spec §06). The FIRST
-// occurrence of each dep name uses the shared cached materialisation —
-// preserving the shared-ancestor alignment derived factors rely on
-// (joint(a=x, b=g(x)): a and b are DISTINCT binding names, so both ride the
-// parent cache and g(x) sees the same x). A DUPLICATE direct dep
-// (joint(a=m, b=m)) is a reuse of the SAME measure as two components; the cached
-// path would hand back the identical atom batch (Corr=1), but §06 "Joint
-// composition" gives each component a FRESH coordinate, so the duplicate redraws
-// in a re-seeded child ctx (matches what materialiseMeasureIR's joint case
-// already does via foldIn-per-field).
-//
-// The re-seeded child redraws the DUPLICATE ONLY and delegates every other name
-// to the parent cache, because §06 shares what the fresh coordinate does not:
-// "a stochastic node shared between component traces (through a reified
-// component … or a stochastic constructor parameter) remains a single node of
-// the composed trace". So for `z ~ Normal(0, 1); q = Normal(mu = z, sigma = s);
-// joint(a = q, b = q)` the two coordinates are fresh but `z` is drawn ONCE,
-// giving Cov(a, b) = Var(z) — the compound law the density path scores. Redrawing
-// the child's whole sub-DAG instead produced two independent copies (Cov ≈ 0),
-// which is `iid`'s semantics, not `joint`'s. An ancestor-free `q` has nothing to
-// delegate, so §04's Identity law product (Corr ≈ 0) is unchanged.
-//
-// A reused WEIGHTED / posterior factor is refused loudly:
-// re-seeding gives independent draws whose sample-side outer weight is w1+w2,
-// but the density path reads outer-only weights — a silent IS-weight asymmetry
-// (measure-lowering-unification-plan critique B). Combining the sub-field
-// weight streams is the deferred enhancement.
-function _materialiseFactorsIndependent(deps: any[], ctx: any): Promise<any[]> {
-  const seenCount = new Map<any, number>();
+// A joint owns measure-valued descendants, but never a draw/value binding.
+// In particular lawof(x) reaches the shared x, while Normal(mu=x,...) reads
+// that same x as a parameter. Lifted anonymous constructors lack inferred
+// types, so use the existing measure-head catalogue and follow pure aliases.
+function _isJointMeasure(name: string, ctx: any, seen?: Set<string>): boolean {
+  const b = ctx.bindings && ctx.bindings.get(name);
+  if (!b || b.type === 'draw') return false;
+  if (b.inferredType && b.inferredType.kind !== 'deferred') {
+    return b.inferredType.kind === 'measure';
+  }
+  if (b.synthetic && b.ir && b.ir.kind === 'call' && MEASURE_PRODUCING.has(b.ir.op)) return true;
+  const d = ctx.derivations[name];
+  if (!d || d.kind !== 'alias') return false;
+  seen = seen || new Set<string>();
+  if (seen.has(name)) return false;
+  seen.add(name);
+  return _isJointMeasure(d.from, ctx, seen);
+}
+
+// §06 "Joint composition": every constructor component contributes a fresh
+// coordinate, including nested and wrapped measures. Each component therefore
+// owns a measure-only cache. Value bindings delegate to the parent cache,
+// retaining shared stochastic ancestors and reified nodes. Freshening only a
+// repeated direct name misses both nested collisions and joint(lawof(x), q)
+// when x was drawn from q. The enclosing binding and component index key each
+// stream, so separate joints differ and evaluation order does not affect replay.
+// Record/tuple value assembly keeps its existing cache behavior. Reused weighted
+// factors retain the existing explicit refusal pending complete weight lineage.
+function _materialiseFactorsIndependent(deps: any[], ctx: any, name: string): Promise<any[]> {
+  const binding = ctx.bindings && ctx.bindings.get(name);
+  const joint = binding && binding.ir && binding.ir.op === 'joint';
+  const firstByName = new Map<any, Promise<any>>();
   return Promise.all(deps.map((dep: any, i: number) => {
-    const n = seenCount.get(dep) || 0;
-    seenCount.set(dep, n + 1);
-    if (n === 0) return Promise.resolve(ctx.getMeasure(dep));
-    return Promise.resolve(ctx.getMeasure(dep)).then((first: any) => {
+    const firstPromise = firstByName.get(dep);
+    const fresh = joint ? _isJointMeasure(dep, ctx) : !!firstPromise;
+    const result = !fresh ? Promise.resolve(ctx.getMeasure(dep))
+      : Promise.resolve(firstPromise).then((first: any) => {
       if (first && first.logWeights) {
         return Promise.reject(new Error(
           'joint/record: measure "' + dep + '" is reused as ≥ 2 independent '
@@ -1869,13 +1958,10 @@ function _materialiseFactorsIndependent(deps: any[], ctx: any): Promise<any[]> {
       }
       const childCache = new Map();
       const child: any = Object.assign({}, ctx, {
-        rootKey: nameSeed('__jointfactor$' + dep + '$' + i, ctx.rootKey),
+        rootKey: nameSeed('__jointfactor$' + (joint ? name + '$' : '') + dep + '$' + i, ctx.rootKey),
       });
       child.getMeasure = function (nn: string) {
-        // Only the duplicate itself gets the fresh coordinate; its stochastic
-        // ancestors come from the parent cache, so every component conditions on
-        // the SAME draw of them.
-        if (nn !== dep) return ctx.getMeasure(nn);
+        if (joint ? !_isJointMeasure(nn, child) : nn !== dep) return ctx.getMeasure(nn);
         if (childCache.has(nn)) return childCache.get(nn);
         const p = materialiseMeasure(nn, child);
         childCache.set(nn, p);
@@ -1883,6 +1969,8 @@ function _materialiseFactorsIndependent(deps: any[], ctx: any): Promise<any[]> {
       };
       return child.getMeasure(dep);
     });
+    if (!firstPromise) firstByName.set(dep, result);
+    return result;
   }));
 }
 
@@ -2020,11 +2108,11 @@ function matClm(ir: any, ctx: any): Promise<any> {
   });
 }
 
-function matTuple(d: DerivationTuple, ctx: any) {
+function matTuple(d: DerivationTuple, ctx: any, name: string) {
   // Positional analogue of record. Each element materialises
   // independently; combine into a tuple Measure whose components live
   // in elems. Top-level logWeights is the join of components'.
-  return _materialiseFactorsIndependent(d.elems, ctx).then((subs: any[]) => {
+  return _materialiseFactorsIndependent(d.elems, ctx, name).then((subs: any[]) => {
     const lw = empirical.propagateLogWeights(subs);
     let lTM = 0;
     let nEff = ctx.sampleCount;
@@ -2039,7 +2127,7 @@ function matTuple(d: DerivationTuple, ctx: any) {
   });
 }
 
-function matRecord(d: DerivationRecord, ctx: any) {
+function matRecord(d: DerivationRecord, ctx: any, name: string) {
   // Multivariate (record / joint): each field's source binding gets
   // materialised; assembled into a record-shaped Measure (SoA — one
   // sub-measure per field). Top-level logWeights is the join across
@@ -2047,7 +2135,7 @@ function matRecord(d: DerivationRecord, ctx: any) {
   // measures multiply masses).
   const fieldNames = Object.keys(d.fields);
   const fieldDeps  = fieldNames.map((k) => d.fields[k]);
-  return _materialiseFactorsIndependent(fieldDeps, ctx).then((subs: any[]) => {
+  return _materialiseFactorsIndependent(fieldDeps, ctx, name).then((subs: any[]) => {
     const fields: any = {};
     let lTM = 0;
     let nEff = ctx.sampleCount;
@@ -2532,8 +2620,8 @@ const KIND_HANDLERS = {
   kscan:        (name: any, d: any, ctx: any) =>
     require('./markovchain.ts').matMarkovchain(name, d, ctx),
   randsample:   (name: any, d: any, ctx: any) => matRandSample(name, d, ctx),
-  tuple:        (name: any, d: any, ctx: any) => matTuple(d, ctx),
-  record:       (name: any, d: any, ctx: any) => matRecord(d, ctx),
+  tuple:        (name: any, d: any, ctx: any) => matTuple(d, ctx, name),
+  record:       (name: any, d: any, ctx: any) => matRecord(d, ctx, name),
   superpose:    (name: any, d: any, ctx: any) => matSuperpose(name, d, ctx),
   select:       (name: any, d: any, ctx: any) => matSelect(name, d, ctx),
   // broadcast (mat-broadcast.ts)

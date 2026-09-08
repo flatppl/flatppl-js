@@ -25,7 +25,7 @@ const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
-const { totalMassExpr } = require('./normalize-mass.ts');
+const { totalMassExpr, assertFixedMassFallback } = require('./normalize-mass.ts');
 const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
 
@@ -1246,7 +1246,8 @@ function _endpointContributionShrinks(f: (u: number[]) => number): boolean {
 // endpoint test are the more accurate answer where θ does not move.
 function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
   const inner = node.args && node.args[0];
-  if (!inner || inner.kind !== 'call' || inner.op !== 'weighted'
+  if (!inner || inner.kind !== 'call'
+      || (inner.op !== 'weighted' && inner.op !== 'logweighted')
       || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
   const fn = inner.args[0];
   if (!fn || fn.kind !== 'call' || fn.op !== 'functionof'
@@ -1264,13 +1265,38 @@ function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
   if (ctx && ctx.moduleRegistry) env.__moduleRegistry = ctx.moduleRegistry;
   const samplerLib = require('./sampler.ts');
   const { adaptiveCubature } = require('./quadrature.ts');
-  // A non-finite or non-positive weight contributes 0, matching
+  // Normalize is invariant under a constant logweight offset. Remove a
+  // representative offset before exponentiating so exp(710 + x), for example,
+  // does not overflow and silently lose the upper half of the integral.
+  const logSpace = inner.op === 'logweighted';
+  let logShift = 0;
+  if (logSpace) {
+    let pivot: number | null = null;
+    // A valid weight can vanish at the median, such as x² over Normal(0,1).
+    // Try two other interior points before declaring this rule unresolved.
+    for (const u of [0.5, 0.25, 0.75]) {
+      env[weightFn.paramNames[0]] = invcdf.quantile(base.kernel, u, base.input);
+      const raw = +samplerLib.evaluateExpr(weightFn.body, env);
+      if (Number.isFinite(raw)) { pivot = raw; break; }
+    }
+    if (pivot == null) {
+      throw new Error('normalize density: logweight quadrature cannot find a finite '
+        + 'scale; this normalizer is unresolved (spec §06)');
+    }
+    logShift = pivot;
+  }
+  // An ordinary non-finite or non-positive weight contributes 0, matching
   // `makeIntegrandND`: §06's normalizer integrates a non-negative weight, and a
   // weight that goes negative off its intended support must not corrupt the
   // quadrature.
   const integrand = (u: number[]): number => {
     env[weightFn.paramNames[0]] = invcdf.quantile(base.kernel, u[0], base.input);
-    const w = +samplerLib.evaluateExpr(weightFn.body, env);
+    const raw = +samplerLib.evaluateExpr(weightFn.body, env);
+    const w = logSpace ? Math.exp(raw - logShift) : raw;
+    if (logSpace && !Number.isFinite(w)) {
+      throw new Error('normalize density: logweight quadrature exceeded its numeric '
+        + 'range; cannot resolve a finite normalizer (spec §06)');
+    }
     return Number.isFinite(w) && w > 0 ? w : 0;
   };
   if (!_endpointContributionShrinks(integrand)) {
@@ -1301,7 +1327,7 @@ function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
       + ' after ' + res.evals + ' evals, tolerance ' + NORMALIZE_QUAD_TOL + ')');
   }
   /* c8 ignore stop */
-  return Math.log(res.Z);
+  return Math.log(res.Z) + logShift;
 }
 
 // =====================================================================
@@ -1778,6 +1804,7 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
       delete node.massFrom;
       continue;
     }
+    assertFixedMassFallback(node.args[0], ctx);
     needMaterialise.push(node);
   }
   if (needMaterialise.length === 0) return Promise.resolve(measureIR);

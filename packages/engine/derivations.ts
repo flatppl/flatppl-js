@@ -4036,7 +4036,7 @@ function resolveBijectionMeta(bij: any, bindings: any) {
 
 // Closed-form total mass (in log) of an already-expanded measure IR,
 // or null when it isn't closed-form here (data-dependent weights,
-// truncate, pushfwd, …). Mirrors the measure-algebra mass rules and
+// truncate, …). Mirrors the measure-algebra mass rules and
 // is used to lower `normalize(M)` to `logweighted(−log Z, M)` so the
 // normalized-mixture density needs no opts/worker plumbing and reuses
 // walkLogWeighted (engine-concepts §11; "totalmass is a first-class
@@ -4047,6 +4047,11 @@ function closedFormLogTotalmass(ir: any, bindings: any): any {
   const op = ir.op;
   if (op === 'MvNormal' || SAMPLEABLE_DISTRIBUTIONS.has(op)) return 0;
   if (op === 'normalize') return 0;
+  // The image of the whole target space has the base measure's mass,
+  // regardless of whether the forward map is injective or has a density.
+  if (op === 'pushfwd' && Array.isArray(ir.args) && ir.args.length === 2) {
+    return closedFormLogTotalmass(ir.args[1], bindings);
+  }
   if (op === 'logweighted') {
     const g = resolveConstant(ir.args[0], bindings || new Map(), new Set());
     if (g == null || !Number.isFinite(g)) return null;
@@ -4060,6 +4065,10 @@ function closedFormLogTotalmass(ir: any, bindings: any): any {
     return b == null ? null : Math.log(w) + b;
   }
   if (op === 'select') {
+    // A conditional selector chooses a branch; it is not the additive
+    // superposition represented by an unselected branch list. Its slice
+    // mass needs the selector context, which this scalar helper lacks.
+    if (ir.selectorName != null) return null;
     const br = ir.branches || [];
     if (br.length === 0) return null;
     const terms: any[] = [];
@@ -4099,7 +4108,7 @@ function closedFormLogTotalmass(ir: any, bindings: any): any {
     if (n == null || !Number.isFinite(n)) return null;
     return n * inner;
   }
-  // truncate / pushfwd / jointchain / unknown — not closed-form here.
+  // truncate / jointchain / unknown — not closed-form here.
   return null;
 }
 
@@ -5614,6 +5623,8 @@ module.exports = {
   expandMeasure,
   expandMeasureIR,
   expandMeasureRefsInIR,
+  // Internal algebraic certificate shared with composite iid materialisation.
+  closedFormLogTotalmass,
   implicitKernelSignature,
   implicitFunctionSignature,
   classifyBayesupdate,

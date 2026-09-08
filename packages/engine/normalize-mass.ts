@@ -85,6 +85,11 @@ function totalMassExpr(ir: any): any {
   // such a mixture, dropping the whole normalize to the θ-constant materialised
   // Z bake (Buffy #67).
   if (op === 'logweighted' && Array.isArray(ir.args) && ir.args.length === 2) {
+    // A callable logweight contributes an integral, just like a callable
+    // ordinary weight. It is not a scalar mass multiplier.
+    if (ir.args[0] && ir.args[0].kind === 'call' && ir.args[0].op === 'functionof') {
+      return null;
+    }
     const inner = totalMassExpr(ir.args[1]);
     if (inner == null) return null;
     return { kind: 'call', op: 'mul', args: [{ kind: 'call', op: 'exp', args: [ir.args[0]] }, inner] };
@@ -218,4 +223,42 @@ function constantLeafParams(ir: any): { kernel: string; input: Record<string, nu
   return { kernel: bound.kernel, input };
 }
 
-module.exports = { totalMassExpr };
+// A pooled ensemble mass can only serve as a constant density divisor when
+// the unresolved measure has no parameter dependence. Run this after the
+// supported algebraic and quadrature builders, which can retain that
+// dependence explicitly. A miss here is a support limit, not proof that the
+// integral varies: refuse conservatively instead of changing likelihood ratios.
+function assertFixedMassFallback(inner: any, ctx: any): void {
+  const { walkIRScoped } = require('./ir-walk.ts');
+  const { isCallableLikeBindingType } = require('./ir-shared.ts');
+  const seen = new Set<string>();
+  const unresolved = new Set<string>();
+  const visit = (ir: any, scope: Set<string>) => {
+    walkIRScoped(ir, (n: any, shadowed: Set<string>) => {
+      // Ref-headed calls hold their target outside the walker's IR children.
+      const ref = n.kind === 'ref' ? n : n.kind === 'call' ? n.target : null;
+      if (!ref || ref.ns !== 'self' || shadowed.has(ref.name)) return;
+      if (ctx && ctx.fixedValues && ctx.fixedValues.has(ref.name)) return;
+      const b = ctx && ctx.bindings && ctx.bindings.get(ref.name);
+      if (b && isCallableLikeBindingType(b.type) && b.ir) {
+        // A callable's free captures still belong to the enclosing measure.
+        // Keep boundary shadowing when following the referenced definition.
+        const key = ref.name + '\0' + [...shadowed].sort().join('\0');
+        if (!seen.has(key)) {
+          seen.add(key);
+          visit(b.ir, shadowed);
+        }
+        return;
+      }
+      unresolved.add(ref.name);
+    }, scope);
+  };
+  visit(inner, new Set());
+  if (unresolved.size > 0) {
+    throw new Error('normalize density: parameter-dependent mass is not supported '
+      + 'for this measure (unresolved: ' + [...unresolved].sort().join(', ')
+      + '); refusing a pooled divisor that can change likelihood ratios (spec §06)');
+  }
+}
+
+module.exports = { totalMassExpr, assertFixedMassFallback };
