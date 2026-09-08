@@ -4354,6 +4354,7 @@ function _validateModuleSubstitutions(loweredModule: any, modules: any, diagnost
 function isValidBindingName(name: any) {
   if (typeof name !== 'string' || name.length === 0) return false;
   if (name === 'self' || name === 'base') return false;
+  if (name === 'im' || name === 'pi' || name === 'inf') return false;
   if (name === '_') return false; // discard, not a renameable target
   // Public:        ^[A-Za-z][A-Za-z0-9_]*$
   // Private:       ^_[A-Za-z]([A-Za-z0-9_]*[A-Za-z0-9])?$

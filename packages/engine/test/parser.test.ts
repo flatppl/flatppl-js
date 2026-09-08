@@ -240,8 +240,8 @@ test('parser: error recovery skips to next line', () => {
 // reserved words", post flatppl-design cc81e4b): `in`, `true`, `false`
 // are recognized before `Name` and cannot be a binding LHS. The former
 // FlatPPY-only reservations (and/or/not/True/False) were removed.
-test('parser: in/true/false are reserved at binding LHS', () => {
-  for (const name of ['in', 'true', 'false']) {
+test('parser: keywords and numeric constants are reserved at binding LHS', () => {
+  for (const name of ['in', 'true', 'false', 'im', 'pi', 'inf']) {
     const { diagnostics } = parseSrc(name + ' = 1');
     assert.ok(diagnostics.some((d: any) => d.severity === 'error'
       && /reserved name/.test(d.message)),

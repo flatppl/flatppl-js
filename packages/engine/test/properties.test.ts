@@ -38,7 +38,7 @@ const { disintegratePlan } = require('../disintegrate.ts');
 const arbBindingName = fc.string({
   unit: fc.constantFrom('a','b','c','d','e','f','g','h','i','j','k','l','m','n'),
   minLength: 1, maxLength: 3,
-}).filter((s: string) => /^[a-z]+$/.test(s) && !['in','if','do','of'].includes(s));
+}).filter((s: string) => /^[a-z]+$/.test(s) && !['in','if','do','of','im','pi','inf'].includes(s));
 
 // A scalar-measure generator: `Normal(mu = <small int>, sigma = <small posint>)`.
 const arbScalarMeasure = fc.tuple(
