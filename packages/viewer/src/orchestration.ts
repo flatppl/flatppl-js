@@ -93,6 +93,7 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
       ctx.currentBindings = result.bindings;
       ctx.currentLinkedBindings = result.linkedBindings || result.bindings;
       ctx.currentLoweredModule = result.loweredModule;
+      ctx.currentModuleRegistry = result.linkedModuleRegistry;
       // ctx.currentBundleSources was set above via moduleContextOnUpdate — the
       // raw bundle (spec §04) the off-thread MCMC pool re-processes in workers
       // to resolve `load_module` deps (else a cross-module posterior has no

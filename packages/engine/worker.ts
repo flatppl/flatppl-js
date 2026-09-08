@@ -240,7 +240,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // leaves `mod.member` refs unresolved). `processOpts.bundle` (shipped
             // by runMcmcPool) is what makes linkedBindings cross-module-complete;
             // single-file models have linkedBindings === bindings.
-            const built0 = orchestratorLib.buildDerivations(proc0.linkedBindings || proc0.bindings);
+            const built0 = orchestratorLib.buildDerivations(proc0.linkedBindings || proc0.bindings,
+              { moduleRegistry: proc0.linkedModuleRegistry });
             cachedModel = { proc: proc0, built: built0 };
             modelCache.set(cacheKey, cachedModel);
           }
@@ -256,7 +257,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // The uint32 this also passed as `rootKey` pre-empted that and keyed
             // every in-worker prior pool from [0, 0], for any seed.
             rootSeed: msg.seed,
-            moduleRegistry: proc.loweredModule && proc.loweredModule.moduleRegistry,
+            moduleRegistry: built.moduleRegistry,
             inferenceOpts: msg.inferenceOpts,
             // Streamed to the host as mcmcProgress; the samplers call it with
             // (frac in [0,1], phase). No-op when no sink is wired (tests).

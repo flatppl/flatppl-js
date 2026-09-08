@@ -27,21 +27,17 @@
 // Built-in signatures use type variables (`weighted: (real,
 // measure<T>) → measure<T>`); types.js's unify handles them.
 //
-// User-defined function/kernel signatures carry their result type
-// directly (computed at definition time by inferring the body in the
-// scope where parameters take their declared types). For now we
-// don't recompute the body's type per call site — that polymorphic
-// flow is in the FlatPIR spec but unused in practice for the
-// visualizer's current scope. Added when needed.
+// User-defined function/kernel signatures carry a definition-time result.
+// Direct local and imported reifications also specialize a private body copy
+// with concrete call arguments. Imported bodies retain their own module's
+// fixed resolver and annotations. Unresolved early signatures remain partial.
 //
 // Scopes
 // ======
-// `functionof(body, kw=...)` and `kernelof(body, kw=...)` introduce
-// an inner `%local` scope. Inside their bodies, parameter refs are
-// `(%ref %local <name>)`. The inference pass tracks an active scope
-// stack: a Map<paramName, type> for each enclosing reified callable.
-// %local refs resolve against this stack; %self refs against the
-// module's binding map.
+// Placeholder parameters use `%local`. Identifier-bound cuts retain `self`
+// references and carry their source names on the scope map. Derived bindings
+// below those cuts infer in a scope-specific cache. Unaffected self references
+// use the module's binding types.
 
 import type { IRNode } from './engine-types';
 
@@ -212,7 +208,7 @@ function inferExprInScope(loweredModule: any, expr: IRNode, paramTypes: any) {
  * rules. Cycle detection (visiting/visited) is per-context, so
  * separate contexts don't interfere.
  */
-function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any; modules?: any }) {
+function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any; modules?: any; reuseInferred?: boolean }) {
   const diagnostics: any[] = [];
   const visiting = new Set();
   const visited  = new Set();
@@ -222,16 +218,52 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // Absent for a standalone single-file compile or an on-demand
   // inferExprInScope call — then `mod.x` stays `deferred`.
   const modules = opts && opts.modules;
+  const scopedBindings = new WeakMap<object, Map<string, any>>();
+  const reportedCycles = new Set<string>();
+  const { mapIR, identifierBoundParams } = require('./ir-walk.ts');
 
-  function inferBinding(name: any): any {
+  // Inference replaces metadata slots, not the immutable type/value objects
+  // they contain. Copy IR nodes and metadata owners without copying those
+  // potentially large annotation trees at every call site.
+  function copyForInference(ir: any): any {
+    return mapIR(ir, (node: any) => node && typeof node === 'object'
+      ? { ...node, ...(node.meta ? { meta: { ...node.meta } } : {}) } : node);
+  }
+
+  function inferBinding(name: any, scopes?: any[]): any {
     const b = loweredModule.bindings.get(name);
     if (!b)                   return T.failed('unknown binding "' + name + '"');
-    if (visited.has(name))    return b.inferredType || T.deferred();
+    // Recursion remains a cycle even when a nested reification changes scope.
     if (visiting.has(name)) {
-      const t = T.failed('cyclic type inference at "' + name + '"');
-      b.inferredType = t;
-      return t;
+      if (!reportedCycles.has(name)) {
+        reportedCycles.add(name);
+        diagnostics.push({ severity: 'error', message: 'cyclic binding dependency at "' + name + '"',
+          loc: b.rhs?.loc });
+      }
+      return T.failed('cyclic type inference at "' + name + '"');
     }
+    // Placeholder scopes cannot change a module self reference. Only
+    // identifier-bound cuts require a separate binding inference cache.
+    if (scopes && scopes.some((scope: any) => scope.bindingNames?.size > 0)) {
+      let types = scopedBindings.get(scopes);
+      if (!types) {
+        types = new Map();
+        scopedBindings.set(scopes, types);
+      }
+      if (types.has(name)) return types.get(name);
+      visiting.add(name);
+      // Call-site inference owns its annotations. Never specialize the
+      // module's stored binding or expression metadata in place.
+      try {
+        const t = inferExpr(copyForInference(b.rhs), scopes);
+        types.set(name, t);
+        return t;
+      } finally { visiting.delete(name); }
+    }
+    // Imported modules already carry type, value-set, and mass refinements.
+    // Recomputing an unaffected binding here would overwrite those refinements.
+    if (opts?.reuseInferred && b.inferredType) return b.inferredType;
+    if (visited.has(name))    return b.inferredType || T.deferred();
     visiting.add(name);
     const t: any = inferExpr(b.rhs, []);   // [] = no enclosing scopes
     visiting.delete(name);
@@ -288,7 +320,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return T.failed('unbound %local "' + expr.name + '"');
     }
     if (expr.ns === 'self') {
-      if (loweredModule.bindings.has(expr.name)) return inferBinding(expr.name);
+      for (let i = scopes.length - 1; i >= 0; i--) {
+        if (scopes[i].bindingNames?.has(expr.name)) return scopes[i].get(expr.name);
+      }
+      if (loweredModule.bindings.has(expr.name)) return inferBinding(expr.name, scopes);
       // Some surface idents (constants, set names) lower as refs
       // rather than const — handle that gracefully here too.
       if (CONST_TYPES[expr.name])    return CONST_TYPES[expr.name];
@@ -4632,7 +4667,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // that were written `kernelof`, which the §04 check below needs.
     const params      = expr.params      || [];   // scope-local names
     const paramKwargs = expr.paramKwargs || [];   // surface kwarg names
-    const newScope = new Map();
+    const newScope: any = new Map();
+    newScope.bindingNames = new Set(identifierBoundParams(expr) || []);
     for (let i = 0; i < params.length; i++) {
       let paramType = T.any();
       const kwName = paramKwargs[i];
@@ -4708,15 +4744,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   // -------------------------------------------------------------------
-  // User-defined call: callee is a (%ref self <fn-name>)
+  // User-defined call: resolve local and imported callable references.
   // -------------------------------------------------------------------
 
   function inferUserCall(expr: any, scopes: any): any {
     const head = expr.target;
-    if (!head || head.ns !== 'self') {
-      // Cross-module user calls — not yet implemented.
-      return write(T.deferred(), expr);
-    }
+    if (!head) return write(T.deferred(), expr);
+    const local = head.ns === 'self';
 
     // `broadcasted(f)` wrapper recognition. The lift rewrites
     // `bc(args)` (where bc = broadcasted(f)) to `broadcast(f, args)`
@@ -4735,7 +4769,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // lower.ts) and stores as a lit-null placeholder. Use the
     // via-binding form `bc = broadcasted(f); bc(args)` to get
     // type-level routing.
-    const b = loweredModule.bindings.get(head.name);
+    const b = local ? loweredModule.bindings.get(head.name) : null;
     if (b && b.rhs && b.rhs.kind === 'call' && b.rhs.op === 'broadcasted'
         && b.rhs.args && b.rhs.args.length === 1) {
       const f = b.rhs.args[0];
@@ -4748,7 +4782,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return write(inferBroadcast(broadcastIR, scopes), expr);
     }
 
-    const calleeType: any = inferBinding(head.name);
+    const calleeType: any = local ? inferBinding(head.name, scopes) : inferRef(head, scopes);
     if (!T.isCallable(calleeType)) {
       // Cascade silently when the callee already failed or is still
       // deferred (couldn't infer its type — e.g. unknown built-in,
@@ -4766,13 +4800,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return write(T.failed('not callable'), expr);
     }
 
-    // For now: take the callee's `result` directly. This is the
-    // "monomorphic-at-definition" simplification. Once we add full
-    // polymorphism, we'd traverse the callee's body with the call
-    // site's actual argument types.
-    //
-    // We DO type-check the call args against the callee's input
-    // types — that catches passing wrong-typed values to functions.
+    // Check the available signature first. Direct reification bodies below
+    // also receive the concrete argument types at this call site.
     const inputs = calleeType.inputs;
     let args   = expr.args   || [];
     let kwargs = expr.kwargs || {};
@@ -4853,6 +4882,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
     }
 
+    // Empty early signatures can still await implicit-boundary promotion in
+    // the lift pass. Do not mistake those for proven nullary callables.
+    if (inputs.length > 0 && args.length > inputs.length) {
+      diagnostics.push({ severity: 'error',
+        message: 'call to "' + head.name + '" expects ' + inputs.length
+          + ' arguments, got ' + args.length + ' positional arguments', loc: expr.loc });
+    }
+    for (const key of inputs.length > 0 ? Object.keys(kwargs) : []) {
+      const index = inputs.findIndex((input: any) => input.name === key);
+      if (index < 0 || index < args.length) {
+        diagnostics.push({ severity: 'error',
+          message: 'call to "' + head.name + '" has '
+            + (index < 0 ? 'unknown' : 'duplicate') + ' argument "' + key + '"',
+          loc: expr.loc });
+      }
+    }
+
     // Positional first, then keyword. Spec allows both calling
     // conventions for user-defined callables with explicit boundaries.
     for (let i = 0; i < inputs.length; i++) {
@@ -4905,14 +4951,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // doesn't sharpen (e.g. recursive calls — body inference re-enters
     // and bails to deferred via the visiting set — or when the
     // binding's IR isn't a functionof shape we can walk).
-    const callee = loweredModule.bindings.get(head.name);
+    const reg = !local && loweredModule.moduleRegistry && loweredModule.moduleRegistry[head.ns];
+    const calleeModule = local ? loweredModule
+      : (reg && modules && modules.get(reg.path)?.loweredModule);
+    const callee = calleeModule && calleeModule.bindings.get(head.name);
     const calleeIR = callee && callee.rhs;
     if (calleeIR && calleeIR.kind === 'call' && calleeIR.op === 'functionof'
         && calleeIR.body && Array.isArray(calleeIR.params)
-        && !visiting.has(head.name)) {
+        && (!local || !visiting.has(head.name))) {
       const params = calleeIR.params;
       const paramKwargs = calleeIR.paramKwargs || [];
-      const newScope = new Map<string, any>();
+      const newScope: any = new Map<string, any>();
+      newScope.bindingNames = new Set(identifierBoundParams(calleeIR) || []);
       for (let i = 0; i < params.length; i++) {
         let argT: any = T.any();
         if (i < args.length) {
@@ -4926,7 +4976,27 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
         newScope.set(params[i], argT);
       }
-      const polymorphic: any = inferExpr(calleeIR.body, [newScope]);
+      // Imported self references belong to the dependency, not the caller.
+      const importedContext = local ? null : createInferenceContext(calleeModule, {
+        modules,
+        reuseInferred: true,
+        resolveFixed: require('./fixed-eval.ts').makeResolver({ loweredModule: calleeModule }),
+      });
+      const callBody = copyForInference(calleeIR.body);
+      const polymorphic: any = importedContext
+        ? importedContext.inferExpr(callBody, [newScope])
+        : inferExpr(callBody, [newScope]);
+      if (importedContext) {
+        for (const diagnostic of importedContext.diagnostics) {
+          diagnostics.push({ ...diagnostic, loc: expr.loc });
+        }
+      }
+      if (polymorphic && polymorphic.kind === 'failed') {
+        diagnostics.push({ severity: 'error',
+          message: 'call to "' + head.name + '": argument types make the body invalid ('
+            + T.show(polymorphic) + ')', loc: expr.loc });
+        return write(polymorphic, expr);
+      }
       // Only use the polymorphic result when it sharpens — i.e. is
       // concrete and not failed. If the body re-inference produces
       // failed / deferred / any, keep the monomorphic `calleeType.result`

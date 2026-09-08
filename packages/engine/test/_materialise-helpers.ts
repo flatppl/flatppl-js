@@ -29,6 +29,7 @@ interface MatCtx {
   derivations: any;
   bindings:    any;
   fixedValues: any;
+  moduleRegistry: any;
   sampleCount: number;
   rootSeed:    number;
   getMeasure:  (name: string) => Promise<any>;
@@ -51,7 +52,9 @@ function makeMatCtx(source: string, opts?: { sampleCount?: number; rootSeed?: nu
     throw new Error('makeMatCtx: source has parse/analyze errors: '
       + errs.map((d: any) => d.message).join('; '));
   }
-  const built = orchestrator.buildDerivations(lifted.bindings);
+  const built = orchestrator.buildDerivations(lifted.linkedBindings, {
+    moduleRegistry: lifted.linkedModuleRegistry,
+  });
   const worker = createWorkerHandler();
   worker.handle({ type: 'init', seed: rootSeed });
   const cache = new Map();
@@ -59,6 +62,7 @@ function makeMatCtx(source: string, opts?: { sampleCount?: number; rootSeed?: nu
     derivations: built.derivations,
     bindings:    built.bindings,
     fixedValues: built.fixedValues || new Map(),
+    moduleRegistry: built.moduleRegistry,
     sampleCount,
     rootSeed,
     getMeasure(name: string) {

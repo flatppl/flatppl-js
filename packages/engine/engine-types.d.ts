@@ -802,8 +802,8 @@ export interface DerivationsState {
   /** Classifier diagnostics surfaced by buildDerivations (e.g.
    *  fixed-phase dead ends). Empty when nothing to report. */
   diagnostics?: Array<{ message: string; [extra: string]: any }>;
-  /** alias → resolved module descriptor, copied from the lowered
-   *  module by the viewer bridge. Populated by pir.lowerToModule. */
+  /** alias → resolved module descriptor for these bindings. Supplied to
+   *  buildDerivations from processSource.linkedModuleRegistry. */
   moduleRegistry?: Record<string, any>;
 }
 

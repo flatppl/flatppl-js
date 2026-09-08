@@ -465,6 +465,7 @@ export function materialiseConcreteMeasure(ctx: Ctx, ir: any, count: number, see
     derivations: ctx.derivationsState!.derivations,
     bindings:    ctx.derivationsState!.bindings,
     fixedValues: ctx.derivationsState!.fixedValues,
+    moduleRegistry: ctx.derivationsState!.moduleRegistry,
     getMeasure:  function(n: any) {
       return require('./engine-facade.js').getMeasure(ctx, n);
     },
@@ -492,6 +493,7 @@ export function materialiseAppliedKernelByName(ctx: Ctx, applied: any, count: nu
     derivations: applied.derivations,
     bindings:    applied.bindings,
     fixedValues: applied.fixedValues,
+    moduleRegistry: applied.moduleRegistry,
     getMeasure:  function(n: any) {
       if (cache.has(n)) return cache.get(n);
       const m = FlatPPLEngine.materialiser.materialiseMeasure(n, matCtx);
@@ -509,4 +511,3 @@ export function materialiseAppliedKernelByName(ctx: Ctx, applied: any, count: nu
   };
   return matCtx.getMeasure(applied.name);
 }
-

@@ -294,6 +294,7 @@ export interface Ctx {
    *  model. Null at boot. */
   currentLinkedBindings: Map<string, any> | null;
   currentLoweredModule: any;
+  currentModuleRegistry?: Record<string, any>;
   currentVariantId: string | null;
   currentPlotBindingName: string | null;
   currentPlotPlan: Plan | null;

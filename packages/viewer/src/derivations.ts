@@ -24,17 +24,8 @@ export function rebuildDerivations(ctx: Ctx) {
     // the primary bindings for a single-file model. The DAG still renders
     // `currentBindings` (the primary module alone).
     ctx.derivationsState = FlatPPLEngine.orchestrator.buildDerivations(
-      ctx.currentLinkedBindings || ctx.currentBindings);
-    // Thread the module registry from the lowered module into
-    // derivationsState so the cross-module call dispatch path
-    // (sampler.ts's `_evaluateStandardModuleCall`) finds it via
-    // the setEnv push below. `currentLoweredModule.moduleRegistry`
-    // is populated by `pir.lowerToModule` for every `standard
-    // _module(name, compat)` binding.
-    if (ctx.derivationsState && ctx.currentLoweredModule
-        && ctx.currentLoweredModule.moduleRegistry) {
-      ctx.derivationsState.moduleRegistry = ctx.currentLoweredModule.moduleRegistry;
-    }
+      ctx.currentLinkedBindings || ctx.currentBindings,
+      { moduleRegistry: ctx.currentModuleRegistry });
     // Surface classification diagnostics instead of letting a
     // silently-dropped binding turn into a confusing plot-time
     // error far from its cause. buildDerivations only emits the

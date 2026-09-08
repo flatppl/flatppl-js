@@ -18,6 +18,53 @@ const { FixedValues } = require('../fixed-values.ts');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
 const { processSource, orchestrator } = require('..');
 
+test('fixed standard-module calls resolve through dependent values', () => {
+  const parsed = processSource(`
+poly = standard_module("polynomials", "0.1")
+x = poly.chebyshev(2, 0.5)
+y = x + 1.0
+`);
+  const built = orchestrator.buildDerivations(parsed.bindings, {
+    moduleRegistry: parsed.loweredModule.moduleRegistry,
+  });
+  // §09: T2(x) = 2x² - 1. A dependent fixed value uses the same registry.
+  assert.deepEqual(parsed.diagnostics, []);
+  assert.equal(built.fixedValues.get('x'), -0.5);
+  assert.equal(built.fixedValues.get('y'), 0.5);
+  assert.deepEqual(built.diagnostics, []);
+});
+
+test('a fixed standard-module result supplies the inferred array shape', () => {
+  const parsed = processSource(`
+poly = standard_module("polynomials", "0.1")
+n = integer(poly.chebyshev(2, 2.0))
+ys = zeros(n)
+`);
+  // T2(2) = 7. Shape inference must evaluate the qualified call itself.
+  assert.deepEqual(parsed.diagnostics, []);
+  const built = orchestrator.buildDerivations(parsed.bindings, {
+    moduleRegistry: parsed.loweredModule.moduleRegistry,
+  });
+  const ys = built.fixedValues.get('ys');
+  assert.deepEqual(ys.shape, [7]);
+  assert.deepEqual(Array.from(ys.data), [0, 0, 0, 0, 0, 0, 0]);
+  assert.deepEqual(parsed.loweredModule.bindings.get('ys').inferredType.shape, [7]);
+});
+
+test('linked fixed calls use the renamed standard-module alias', () => {
+  const parsed = processSource('m = load_module("child.flatppl")\ny = m.x + 1.0', {
+    bundle: { sources: {
+      'child.flatppl': 'poly = standard_module("polynomials", "0.1")\nx = poly.chebyshev(2, 0.5)',
+    } },
+  });
+  assert.deepEqual(parsed.diagnostics, []);
+  const built = orchestrator.buildDerivations(parsed.linkedBindings, {
+    moduleRegistry: parsed.linkedModuleRegistry,
+  });
+  assert.equal(built.fixedValues.get('y'), 0.5);
+  assert.deepEqual(built.diagnostics, []);
+});
+
 // Build a FixedValues over a tiny mock binding graph. Each binding is
 // `{ phase, ir }` where `ir` is `{ refs: [names], val: (env) => value }`.
 // `collectSelfRefs` reads `ir.refs`; `evaluateExpr` calls `ir.val(env)`
