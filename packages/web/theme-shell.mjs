@@ -17,6 +17,7 @@ export async function insertThemeShell(html, { themeDir, mainTarget, footerLinks
   let header = await readFile(join(themeDir, 'header.html'), 'utf8');
   let footer = await readFile(join(themeDir, 'footer.html'), 'utf8');
   header = header.replace('href="#main-content"', `href="#${mainTarget}"`);
+  header = header.replace('href="https://github.com/flatppl"', 'href="https://github.com/flatppl/flatppl-js"');
   for (const link of footerLinks) {
     const label = escapeText(link.label);
     const replacement = `<a href="${escapeAttribute(link.href)}">${label}</a>`;
