@@ -44,6 +44,11 @@
 // empirical.js stdlib- and rng-free means it compiles into the main
 // engine bundle without dragging stdlib in.
 
+// Weight ancestry (weight-lineage.ts). `propagateLogWeights` needs to know
+// which weighting events a parent's array already sums, because reference
+// identity alone cannot see through a merge.
+const lineage = require('./weight-lineage.ts');
+
 /**
  * Numerically-stable log(sum(exp(arr_i))). Returns:
  *   -Infinity when the array is empty or every element is -Infinity
@@ -140,6 +145,11 @@ function materialiseUniform(measure: any) {
   const w = new Float64Array(N);
   const c = N > 0 ? -Math.log(N) : 0;
   for (let i = 0; i < N; i++) w[i] = c;
+  // The baseline is one CONSTANT weighting event, so a later merge re-sums it
+  // from the offset alone and this array need not stay alive. A fresh id per
+  // call preserves the engine's existing mass convention: two independently
+  // lifted uniform parents still contribute two baselines.
+  lineage.register(w, [lineage.newEvent(null, c)]);
   return { samples: measure.samples, logWeights: w };
 }
 
@@ -152,24 +162,30 @@ function materialiseUniform(measure: any) {
  * proposal — i.e. the product in linear space, sum in log space — over
  * the INDEPENDENT weighting events the parents bring in.
  *
- * Independence is detected by reference identity of the `logWeights`
- * arrays: two parents whose `logWeights` point at the same Float64Array
- * trace the same weighting event (the typical case when one parent is
- * a deterministic transform of another), so we count those weights
- * once. Distinct array references describe independent events whose IS
- * weights multiply. This contract requires the engine to NEVER clone
- * `logWeights` along an inheritance chain (evaluate-kind, alias, iid,
- * record projection, …): always pass the same reference forward;
- * allocate fresh only when introducing a new weighting event (a draw
- * from a non-trivial measure, weighted / logweighted, bayesupdate).
+ * Independence is decided per WEIGHTING EVENT, not per array. Each
+ * non-null `logWeights` array carries the ordered list of events it
+ * sums (weight-lineage.ts), and the result is the union of the
+ * parents' events: a shared event enters the atom's weight ONCE
+ * however many parents route it in. Reference identity remains the
+ * fallback — an array from a site that registers no lineage becomes one
+ * opaque event keyed by that array — so this stays a superset of the
+ * older rule, which recognised a shared event only while an
+ * inheritance chain passed the same array forward.
+ *
+ * That fallback is why the engine must still NEVER clone `logWeights`
+ * along an inheritance chain (evaluate-kind, alias, iid, record
+ * projection, …): pass the same reference forward, and allocate fresh
+ * only when introducing a new weighting event (a draw from a
+ * non-trivial measure, weighted / logweighted, bayesupdate).
  *
  * Returns:
  *   - null when every parent has null logWeights (uniform).
- *   - the shared reference when exactly one independent weight stream
- *     is present (preserves reference identity so downstream dedupe
- *     keeps working).
- *   - a fresh Float64Array equal to the per-atom sum when two or more
- *     independent streams are combined.
+ *   - a parent's array BY REFERENCE when that parent already sums every
+ *     event in the union — the single-stream case, two parents sharing
+ *     an array, and a merged descendant met alongside its own
+ *     constituents. Preserves the exact stored values and the array
+ *     identity downstream dedupe keys on.
+ *   - a fresh Float64Array summing the union's events otherwise.
  *
  * @param {Iterable<{logWeights: Float64Array | null}>} parents
  * @returns {Float64Array | null}
@@ -192,11 +208,20 @@ function propagateLogWeights(parents: Iterable<any>) {
         + 'every parent must share the engine\'s N-atom axis');
     }
   }
-  const out = new Float64Array(N);
-  for (const w of unique) {
-    for (let i = 0; i < N; i++) out[i] += w[i];
+  const events = lineage.unionEvents(unique);
+  for (const e of events) {
+    const len = lineage.eventLength(e);
+    // A per-atom event must span the same axis as the measures being combined;
+    // equal array lengths above do not prove a registered event agrees.
+    if (len >= 0 && len !== N) {
+      throw new Error('propagateLogWeights: a weighting event spans ' + len
+        + ' atoms, not the measure\'s ' + N);
+    }
   }
-  return out;
+  for (const w of unique) {
+    if (lineage.coversExactly(w, events)) return w;
+  }
+  return lineage.sumEvents(events, N);
 }
 
 /**
