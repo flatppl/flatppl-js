@@ -20,6 +20,7 @@ import type {
 } from './engine-types';
 
 const empirical    = require('./empirical.ts');
+const lineage      = require('./weight-lineage.ts');
 const orchestrator = require('./orchestrator.ts');
 const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
@@ -589,6 +590,12 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
     const existingLW = parent.logWeights;
     const uniformLW = -Math.log(N);
     const newLW = new Float64Array(N);
+    // The summed likelihood is kept as its own array so the posterior's weights
+    // can be registered as the prior's weighting events PLUS this one (spec §06
+    // `bayesupdate(L, prior) = logweighted(fn(logdensityof(L, _)), prior)`).
+    // Without it a later `record` over both the posterior and the prior latents
+    // behind it counts the prior's tilt twice.
+    const logpDelta = new Float64Array(N);
     for (let i = 0; i < N; i++) {
       let logp = 0;
       for (const reply of replies) {
@@ -596,9 +603,14 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         // A term materialised at N=1 broadcasts its single value across atoms.
         logp += s[s.length === 1 ? 0 : i];
       }
+      logpDelta[i] = logp;
       const base = existingLW ? existingLW[i] : uniformLW;
       newLW[i] = base + logp;
     }
+    lineage.register(newLW, (existingLW
+      ? lineage.lineageOf(existingLW).events
+      : [lineage.newEvent(null, uniformLW)]
+    ).concat([lineage.newEvent(logpDelta, 0)]));
     const lTM = empirical.logSumExp(newLW);
     const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });
     // IS log-evidence: with prior atoms and logWeights = priorLW + logp, the

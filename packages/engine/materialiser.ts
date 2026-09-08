@@ -58,6 +58,7 @@ import type {
 } from './engine-types';
 
 const empirical    = require('./empirical.ts');
+const lineage      = require('./weight-lineage.ts');
 const valueLib     = require('./value.ts');
 const orchestrator = require('./orchestrator.ts');
 const rng          = require('./rng.ts');
@@ -329,18 +330,68 @@ function _spreadOverAtomCells(
   return out;
 }
 
+// The baseline weights a reweighting operation accumulates onto, together with
+// the weighting events they already sum (weight-lineage.ts). An
+// implicit-uniform parent contributes ONE constant -log(N) event, the same
+// representation `empirical.materialiseUniform` registers.
+function _baseWeightEvents(parent: any, N: number) {
+  if (parent && parent.logWeights) {
+    return {
+      base: parent.logWeights as Float64Array,
+      events: lineage.lineageOf(parent.logWeights).events as readonly any[],
+    };
+  }
+  const c = N > 0 ? -Math.log(N) : 0;
+  const base = new Float64Array(N);
+  for (let i = 0; i < N; i++) base[i] = c;
+  const events = [lineage.newEvent(null, c)];
+  lineage.register(base, events);
+  return { base, events: events as readonly any[] };
+}
+
+// Register a reweighted array as its parent's events plus this operation's own
+// correction, so a later merge that meets both this array and one of its
+// constituents counts the shared events once (F05: `record` over a draw and
+// the latents it was drawn from doubled every inherited weight).
+function _registerReweighted(
+  out: Float64Array, baseEvents: readonly any[],
+  values: Float64Array | null, offset: number,
+): Float64Array {
+  return lineage.register(out, baseEvents.concat([lineage.newEvent(values, offset)]));
+}
+
+// A weighting event ADDS its contribution, so a divisor becomes an event only
+// once negated. A fresh array, because the caller's is a divisor other code
+// still reads.
+function _negated(v: Float64Array | null): Float64Array | null {
+  if (!v) return null;
+  const out = new Float64Array(v.length);
+  for (let i = 0; i < v.length; i++) out[i] = -v[i];
+  return out;
+}
+
+/**
+ * Fill `w[i] = baseLW[i] + log(weights[i])`, and the same log correction into
+ * `delta` for the caller to register as this operation's weighting event.
+ *
+ * `delta` is a separate buffer rather than `weights` converted in place. The
+ * worker hands back a REF ARRAY it does not own for a bare-ref weight — a
+ * `weighted(theta, …)` reply IS theta's samples buffer — so writing through it
+ * rewrites the latent's own draws, and a registered event's values must anyway
+ * stay immutable for as long as the array they explain lives.
+ */
 function _addWeightedLogSamples(
   w: Float64Array, baseLW: Float64Array, weights: Float64Array, N: number,
-  isVariateWeight: boolean,
-): void {
+  isVariateWeight: boolean, delta: Float64Array,
+): Float64Array {
   let nonPos = 0;
   for (let i = 0; i < N; i++) {
     const v = weights[i];
-    if (v > 0) { w[i] = baseLW[i] + Math.log(v); continue; }
-    if (v === 0) { w[i] = -Infinity; continue; }
+    if (v > 0) { delta[i] = Math.log(v); w[i] = baseLW[i] + delta[i]; continue; }
+    if (v === 0) { delta[i] = -Infinity; w[i] = -Infinity; continue; }
     // v < 0, or NaN (isVariateWeight treats NaN the same as a negative:
     // "not positive" collapses to -Infinity, matching addLogWOfVariate).
-    if (isVariateWeight) { w[i] = -Infinity; nonPos++; continue; }
+    if (isVariateWeight) { delta[i] = -Infinity; w[i] = -Infinity; nonPos++; continue; }
     const err: any = new Error('weighted: sampled weight #' + i + ' is '
       + (Number.isNaN(v) ? 'NaN (not a number)' : v) + ', but §06 requires a '
       + 'non-negative weight ("f is a non-negative weight") — a negative '
@@ -357,6 +408,23 @@ function _addWeightedLogSamples(
       + 'contributes nothing there, matching the density path\'s '
       + 'addLogWOfVariate), treated as zero mass');
   }
+  return delta;
+}
+
+// `w[i] = baseLW[i] + correction[i]` for either weight spelling, returning the
+// correction as its own buffer so the caller can register it as one weighting
+// event (weight-lineage.ts).
+function _weightDelta(
+  w: Float64Array, baseLW: Float64Array, weights: Float64Array, N: number,
+  isLog: boolean, isVariateWeight: boolean,
+): Float64Array {
+  const delta = new Float64Array(N);
+  if (!isLog) return _addWeightedLogSamples(w, baseLW, weights, N, isVariateWeight, delta);
+  for (let i = 0; i < N; i++) {
+    delta[i] = weights[i];
+    w[i] = baseLW[i] + delta[i];
+  }
+  return delta;
 }
 
 // Do a measure's per-atom log weights carry a variate-INDEPENDENT per-atom MASS
@@ -437,14 +505,7 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
     const isTuple  = parent && parent.shape === 'tuple'  && parent.elems;
     if (isRecord || isTuple) {
       const N = ctx.sampleCount;
-      const baseLW = parent.logWeights
-        ? parent.logWeights
-        : (() => {
-            const c = N > 0 ? -Math.log(N) : 0;
-            const a = new Float64Array(N);
-            for (let i = 0; i < N; i++) a[i] = c;
-            return a;
-          })();
+      const { base: baseLW, events: baseEvents } = _baseWeightEvents(parent, N);
       const w = new Float64Array(N);
       const finalise = (logTotalmass: number | null, weights: Float64Array) => {
         const out = isRecord
@@ -479,12 +540,9 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
             refArrays: refArrays,
           })
         ).then((reply: any) => {
-          const weights = reply.samples;
-          if (d.isLog) {
-            for (let i = 0; i < N; i++) w[i] = baseLW[i] + weights[i];
-          } else {
-            _addWeightedLogSamples(w, baseLW, weights, N, !!d.isVariateWeight);
-          }
+          const delta = _weightDelta(w, baseLW, reply.samples, N,
+            !!d.isLog, !!d.isVariateWeight);
+          _registerReweighted(w, baseEvents, delta, 0);
           // Result totalmass = ∫ f · dM (spec §06). The empirical
           // estimator logSumExp(baseLW + log(f(x_i))) gives
           // log(avg(f)·exp(parent.logTotalmass / 1))... actually the
@@ -496,12 +554,16 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
           return finalise(addMass(massOf(parent), empirical.logSumExp(w)), w);
         });
       }
-      // Constant shift fast path.
-      for (let i = 0; i < N; i++) w[i] = baseLW[i] + d.logShift;
-      return finalise(addMass(massOf(parent), d.logShift), w);
+      // Constant shift fast path. Reached only when the orchestrator
+      // pre-computed the shift, so it is a number here.
+      const shift = d.logShift as number;
+      for (let i = 0; i < N; i++) w[i] = baseLW[i] + shift;
+      _registerReweighted(w, baseEvents, null, shift);
+      return finalise(addMass(massOf(parent), shift), w);
     }
     const lifted = empirical.materialiseUniform(parent);
     const N = lifted.logWeights.length;
+    const baseEvents = lineage.lineageOf(lifted.logWeights).events;
     const w = new Float64Array(N);
     if (d.weightIR) {
       // An ARRAY-atom base (`MvNormal`, `iid`) holds one atom per `dims` cell,
@@ -522,11 +584,9 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
         const weights = perAtom > 1
           ? _spreadOverAtomCells(reply.samples, perAtom, N)
           : reply.samples;
-        if (d.isLog) {
-          for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] + weights[i];
-        } else {
-          _addWeightedLogSamples(w, lifted.logWeights, weights, N, !!d.isVariateWeight);
-        }
+        const delta = _weightDelta(w, lifted.logWeights, weights, N,
+          !!d.isLog, !!d.isVariateWeight);
+        _registerReweighted(w, baseEvents, delta, 0);
         // Spec §06 totalmass = ∫ f · dM. Parent's mass (e.g.
         // log(b−a) for `Lebesgue(interval(a,b))`) lives on
         // `parent.logTotalmass`; the empirical estimator captures
@@ -542,10 +602,12 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
     }
     // Constant fast path: orchestrator pre-computed d.logShift (a
     // uniform per-atom additive shift). totalmass simply scales.
-    for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] + d.logShift;
+    const shift = d.logShift as number;
+    for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] + shift;
+    _registerReweighted(w, baseEvents, null, shift);
     const out: any = scalarMeasureN(lifted.samples, {
       logWeights: w,
-      logTotalmass: addMass(massOf(parent), d.logShift),
+      logTotalmass: addMass(massOf(parent), shift),
       n_eff: (typeof parent.n_eff === 'number') ? parent.n_eff : N,
     });
     _keepAtomShape(out, parent);
@@ -618,12 +680,7 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
   const k = columns.length;
   const N = ctx.sampleCount;
   const parentLTM = massOf(parent);
-  const baseLW = parent.logWeights || (() => {
-    const c = N > 0 ? -Math.log(N) : 0;
-    const a = new Float64Array(N);
-    for (let i = 0; i < N; i++) a[i] = c;
-    return a;
-  })();
+  const { base: baseLW, events: baseEvents } = _baseWeightEvents(parent, N);
   const w = new Float64Array(N);
   const emit = (logTotalmass: number | null) => {
     const m: any = scalarMeasureN(parent.samples, {
@@ -639,6 +696,7 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
 
   if (!d.weightIR) {
     for (let i = 0; i < N; i++) w[i] = baseLW[i] + d.logShift;
+    _registerReweighted(w, baseEvents, null, d.logShift);
     return Promise.resolve(emit(addMass(parentLTM, d.logShift)));
   }
 
@@ -687,12 +745,9 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
   return collectRefArrays(evalIR, evalCtx).then((refArrays: any) => ctx.sendWorker({
     type: 'evaluateN', ir: evalIR, count: N, refArrays,
   })).then((reply: any) => {
-    const weights = reply.samples;
-    if (d.isLog) {
-      for (let i = 0; i < N; i++) w[i] = baseLW[i] + weights[i];
-    } else {
-      _addWeightedLogSamples(w, baseLW, weights, N, !!d.isVariateWeight);
-    }
+    const delta = _weightDelta(w, baseLW, reply.samples, N,
+      !!d.isLog, !!d.isVariateWeight);
+    _registerReweighted(w, baseEvents, delta, 0);
     return emit(addMass(parentLTM, empirical.logSumExp(w)));
   });
 }
@@ -872,14 +927,7 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
     const isTuple  = parent && parent.shape === 'tuple'  && parent.elems;
     if (isRecord || isTuple) {
       const N = ctx.sampleCount;
-      const baseLW = parent.logWeights
-        ? parent.logWeights
-        : (() => {
-            const c = N > 0 ? -Math.log(N) : 0;
-            const a = new Float64Array(N);
-            for (let i = 0; i < N; i++) a[i] = c;
-            return a;
-          })();
+      const { base: baseLW, events: baseEvents } = _baseWeightEvents(parent, N);
       // The structured branch takes the same per-atom divisor as the scalar
       // one: a record variate does not make the parent's mass constant, and
       // `weighted(theta, joint(a = …, b = …))` tilted E[θ] to the identical
@@ -891,6 +939,11 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
         }
         const lse = empirical.logSumExp(w);
         for (let i = 0; i < N; i++) w[i] -= lse;
+        // §06 "Normalization and mass" divides by the total mass, which is the
+        // per-atom divisor plus the pooled shift — ONE weighting event on top
+        // of the parent's, kept as a stored correction rather than re-derived
+        // by subtracting arrays (a mask's -Infinity would give NaN).
+        _registerReweighted(w, baseEvents, _negated(perAtomLogZ), -lse);
         // From the OUTPUT weights, as the scalar branch does: the per-atom
         // divisor changes them, so the parent's own n_eff no longer describes
         // this ensemble.
@@ -908,6 +961,7 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
     }
     const lifted = empirical.materialiseUniform(parent);
     const N = lifted.logWeights.length;
+    const baseEvents = lineage.lineageOf(lifted.logWeights).events;
     return _perAtomLogMass(name, ctx, N).then((perAtomLogZ: Float64Array | null) => {
       const w = new Float64Array(N);
       // Divide by the per-atom mass FIRST when there is one, then renormalise:
@@ -920,6 +974,9 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
       }
       const lse = empirical.logSumExp(w);
       for (let i = 0; i < N; i++) w[i] -= lse;
+      // One weighting event over the parent's: the per-atom divisor and the
+      // pooled shift (§06 "Normalization and mass").
+      _registerReweighted(w, baseEvents, _negated(perAtomLogZ), -lse);
       const nEff = empirical.effectiveSampleSize({ samples: lifted.samples, logWeights: w });
       const out: any = scalarMeasureN(lifted.samples,
         { logWeights: w, logTotalmass: 0, n_eff: nEff });
