@@ -3336,16 +3336,21 @@ function evaluateCall(ir: any, env: any): any {
     }
     return { __table__: true, columns, nrows: nrows || 0 };
   }
-  // rnginit(<bytes>) — produces a fresh Philox state from a byte vector
-  // via FNV-1a-based key derivation (rng.seedFromBytes).
+  // rnginit(<bytes>) / rnginit(<integer>) — produces a fresh Philox state
+  // from a byte vector via FNV-1a-based key derivation (rng.seedFromBytes).
+  // A scalar seed goes through the SAME byte path, per spec §07 `rnginit`:
+  // an integer n in {0, …, 2^64 - 1} "denotes the byte vector of the 8-byte
+  // little-endian unsigned encoding of n".
   if (op === 'rnginit') {
     const args = ir.args || [];
     if (args.length !== 1) {
       throw new Error(`evaluateExpr: rnginit expects 1 arg, got ${args.length}`);
     }
     const seedRaw: any = evaluateExpr(args[0], env);
+    const scalar = seedScalar(seedRaw);
+    if (scalar !== null) return rng.seedFromBytes(seedBytesFromInteger(scalar));
     if (!isByteVector(seedRaw)) {
-      throw new Error(`evaluateExpr: rnginit seed must be a byte vector (array of integers in 0..255)`);
+      throw new Error(`evaluateExpr: rnginit seed must be a byte vector (array of integers in 0..255) or an integer in 0..2^64-1`);
     }
     const seed = valueLib.isValue(seedRaw) ? Array.from(seedRaw.data) : seedRaw;
     return rng.seedFromBytes(seed);
@@ -3527,6 +3532,54 @@ function isByteVector(x: any) {
     if (v < 0 || v > 255 || Math.floor(v) !== v) return false;
   }
   return true;
+}
+
+// 2^64 — the exclusive upper bound on a scalar `rnginit` seed. Exact as a
+// double (a power of two), so the `< SEED_SCALAR_BOUND` test is exact.
+const SEED_SCALAR_BOUND = 18446744073709551616;
+
+// The scalar value of an `rnginit` seed argument, or null when the argument is
+// not a scalar (and so is a byte vector for `isByteVector` to judge). Throws on
+// a scalar the spec's set {0, …, 2^64 - 1} excludes, rather than returning null
+// and letting the byte-vector refusal report a shape problem instead.
+//
+// An integer reaches here as a DOUBLE — a plain number, or a rank-0 Value whose
+// storage is a length-1 Float64Array. Nothing in the engine produces a bigint,
+// so no bigint case is carried here.
+//
+// A rank-0 Value is a scalar even though its storage is a length-1
+// Float64Array, which `isByteVector` would otherwise read as a one-byte vector.
+function seedScalar(x: any): number | null {
+  let n: number;
+  if (typeof x === 'number') {
+    n = x;
+  } else if (valueLib.isValue(x) && x.shape.length === 0) {
+    n = x.data[0];
+  } else {
+    return null;
+  }
+  if (!Number.isInteger(n) || n < 0 || n >= SEED_SCALAR_BOUND) {
+    throw new Error(`evaluateExpr: rnginit integer seed must lie in 0..2^64-1, got ${n}`);
+  }
+  return n;
+}
+
+// The 8-byte little-endian unsigned encoding of `n`, per spec §07 `rnginit`.
+//
+// Exact for every integer a double represents exactly: such an `n` is
+// m * 2^e with m < 2^53, so each `n / 256` stays exactly representable and
+// `Math.floor` returns the true quotient. A seed above 2^53 that the source
+// spelled as a non-representable literal was already rounded to a nearby
+// representable integer before reaching here; this encodes the value the
+// engine holds.
+function seedBytesFromInteger(n: number): number[] {
+  const bytes = new Array(8);
+  let rest = n;
+  for (let i = 0; i < 8; i++) {
+    bytes[i] = rest % 256;
+    rest = Math.floor(rest / 256);
+  }
+  return bytes;
 }
 
 function evaluateRand(ir: any, env: any): any {
