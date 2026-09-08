@@ -52,6 +52,16 @@ mass = totalmass(M)
   close((await ctx.getMeasure('mass')).samples[0], 36);
 });
 
+test('a repeated constructor remains a unit-mass product beneath a scalar weight', async () => {
+  const { ctx } = makeMatCtx(`
+q = Normal(0.0, 1.0)
+M = iid(weighted(2.0, joint(a = q, b = q)), 2)
+mass = totalmass(M)
+`, { sampleCount: 1, rootSeed: 818 });
+  // The product of normalized factors has mass one. Two weighted copies have 2².
+  close((await ctx.getMeasure('mass')).samples[0], 4);
+});
+
 test('iid retains translated pushforward mass and its exact density', async () => {
   const { ctx } = makeMatCtx(`
 M = iid(pushfwd(fn(_ + 1.0), weighted(2.0, Normal(0.0, 1.0))), 2)

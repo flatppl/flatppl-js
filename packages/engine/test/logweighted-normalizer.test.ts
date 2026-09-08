@@ -71,3 +71,33 @@ lp = logdensityof(m, 0.5)
   const got = (await ctx.getMeasure('lp')).samples[0];
   assert.ok(Math.abs(got - exact) < 1e-8, `${got} versus ${exact}`);
 });
+
+test('a zero logweighted measure cannot produce a normalized density', async () => {
+  const { proc, ctx } = ctxFor(`flatppl_compat = "0.1"
+m = normalize(logweighted(fn(log(0.0 * _)), Normal(0.0, 1.0)))
+lp = logdensityof(m, 0.5)
+`, 1);
+  const errors = proc.diagnostics.filter((d: any) => d.severity === 'error');
+  if (errors.length) {
+    assert.match(errors.map((d: any) => d.message).join('\n'), /zero|normaliz|finite scale/i);
+    return;
+  }
+  await assert.rejects(ctx.getMeasure('lp'), /cannot find a finite scale/);
+});
+
+test('an extreme logweight tilt gives its exact density or an explicit range refusal', async () => {
+  const { ctx } = ctxFor(`flatppl_compat = "0.1"
+m = normalize(logweighted(fn(1000.0 * _), Normal(0.0, 1.0)))
+lp = logdensityof(m, 0.5)
+`, 1);
+  let got: number;
+  try {
+    got = (await ctx.getMeasure('lp')).samples[0];
+  } catch (error) {
+    assert.match(String(error), /exceeded its numeric range/);
+    return;
+  }
+  // Exponential tilting yields Normal(1000,1). Better integration may score it.
+  const exact = -0.5 * Math.log(2 * Math.PI) - 0.5 * (0.5 - 1000) ** 2;
+  assert.ok(Math.abs(got - exact) < 1e-7, `${got} versus ${exact}`);
+});
