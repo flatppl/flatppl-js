@@ -136,7 +136,7 @@
    *  this returns true. */
   function hasUnsavedWork(): boolean {
     const eph = window.FlatPPLWebEphemeral;
-    if (eph && eph.list && eph.list().length > 0) return true;
+    if (eph && eph.list && eph.list().some((entry: { text: string }) => entry.text.length > 0)) return true;
     if (!sourceEditor || !editEnabled) return false;
     const cur = window.FlatPPLWebRouter
       ? window.FlatPPLWebRouter.parseHash() : { model: null };

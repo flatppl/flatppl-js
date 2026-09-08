@@ -1,7 +1,7 @@
 // @flatppl/web — gallery footer.
 //
 // Adapts the shared theme footer to deployment-specific pages. The release
-// fragment supplies the stable Legal Notice / AI Declaration / GitHub shape;
+// fragment supplies the Legal Notice link;
 // a deployment overlay may retarget a matching label to its local page or add
 // another deployment-owned link.
 //

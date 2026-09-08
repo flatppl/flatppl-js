@@ -133,6 +133,17 @@ html {
 }
 
 .fp-theme-toggle {
+  align-self: center;
+  margin-inline-start: 6px;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 90px;
+  flex-shrink: 0;
+  font-size: calc(var(--fp-size-sm) * 0.8);
+  line-height: 1.2;
   white-space: nowrap;
 }
 
