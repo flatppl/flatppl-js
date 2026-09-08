@@ -5,6 +5,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
+const { ENGINE_LIMITATION } = require('../limitations.ts');
 
 function close(actual: number, expected: number) {
   assert.ok(Math.abs(actual - expected) < 1e-11,
@@ -109,5 +110,70 @@ mass = totalmass(M)
   for (const col of [a, b]) {
     const noise = Float64Array.from(col, (x, i) => x - z[i]);
     assert.ok(Math.abs(cov(noise, noise) - 0.36) < 0.025);
+  }
+});
+
+// ---------------------------------------------------------------------
+// An UNCERTIFIED product mass is unknown, not 1 (see `limitations.ts`)
+// ---------------------------------------------------------------------
+
+test('an uncertified composite iid refuses totalmass instead of answering 1', async () => {
+  // `truncate` is outside `_iidFixedLogTotalmass`'s certified algebra, and its
+  // real mass is NOT one: the inner measure has 2·P(|X| < 1) = 1.36537898…, so
+  // the product over k = 2 is 1.86425977…. Answering 1 was a wrong scalar, not
+  // a missing one, which is exactly what the marker now prevents.
+  const { ctx } = makeMatCtx(`
+q = truncate(weighted(2.0, Normal(0.0, 1.0)), interval(-1.0, 1.0))
+M = iid(q, 2)
+mass = totalmass(M)
+`, { sampleCount: 64, rootSeed: 818 });
+  // Sampling still works — the refusal costs the mass query alone.
+  const m = await ctx.getMeasure('M');
+  assert.equal(m.logTotalmassUnknown, 'a composite iid product mass');
+  assert.equal(typeof m.logTotalmass, 'undefined');
+  assert.equal(m.samples.length, 128);
+  await assert.rejects(() => ctx.getMeasure('mass'), (e: any) => {
+    assert.equal(e.code, ENGINE_LIMITATION, e.message);
+    assert.deepEqual(e.limitation,
+      { construct: 'totalmass of a composite iid product mass', route: 'density' });
+    assert.match(e.message, /carries no certified mass/);
+    return true;
+  });
+});
+
+test('a certified composite iid still reports a mass and no marker', async () => {
+  // The guard must not fire on the certified path: `weighted` IS in the
+  // algebra, so this keeps its exact 2² and never reaches the refusal.
+  const { ctx } = makeMatCtx(`
+q = weighted(2.0, Normal(0.0, 1.0))
+x ~ Normal(0.0, 1.0)
+r = weighted(2.0, lawof(x))
+M = iid(r, 2)
+mass = totalmass(M)
+`, { sampleCount: 64, rootSeed: 818 });
+  const m = await ctx.getMeasure('M');
+  assert.equal(m.logTotalmassUnknown, undefined);
+  close((await ctx.getMeasure('mass')).samples[0], 4);
+});
+
+test('an expansion error during certification is not swallowed', async () => {
+  // The former untyped catch turned ANY expansion failure into an uncertified
+  // mass. A measure with no expanded density IR RETURNS null rather than
+  // throwing, so the catch only ever hid real faults — including
+  // `jointchain`'s duplicate-label model error. Inject one and require it out.
+  const derivations = require('../derivations.ts');
+  const original = derivations.expandMeasureIR;
+  const injected = new Error('expandMeasureIR: injected expansion fault');
+  derivations.expandMeasureIR = () => { throw injected; };
+  try {
+    const { ctx } = makeMatCtx(`
+q = weighted(2.0, Normal(0.0, 1.0))
+x ~ Normal(0.0, 1.0)
+r = weighted(2.0, lawof(x))
+M = iid(r, 2)
+`, { sampleCount: 64, rootSeed: 818 });
+    await assert.rejects(() => ctx.getMeasure('M'), /injected expansion fault/);
+  } finally {
+    derivations.expandMeasureIR = original;
   }
 });

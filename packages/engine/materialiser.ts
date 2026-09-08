@@ -14,6 +14,13 @@
 //     value?:       Value,                    // shape-explicit view
 //     logWeights:   Float64Array | null,      // null = uniform 1/N
 //     logTotalmass: number,                   // default 0 (= totalmass 1)
+//     logTotalmassUnknown?: string,           // mass NOT certified: the field
+//                                             //   above is ABSENT and a
+//                                             //   `totalmass` query raises the
+//                                             //   engine limitation naming
+//                                             //   this construct. Never write
+//                                             //   both, and never read the 0
+//                                             //   default as a real mass.
 //     n_eff:        number,                   // default = samples.length
 //     fields?:      { name → Measure },       // record/joint shape
 //     elems?:       Measure[],                // tuple shape
@@ -1170,15 +1177,16 @@ function _iidFixedLogTotalmass(from: string, k: number, ctx: any): number | null
     return ok;
   };
   if (!hasCompleteMassAlgebra(from)) return null;
-  try {
-    const ir = expandMeasureIR(from, ctx.derivations, new Set(), ctx.bindings);
-    const inner = closedFormLogTotalmass(ir, ctx.bindings);
-    return typeof inner === 'number' && Number.isFinite(inner) ? k * inner : null;
-  } catch {
-    // Some sampleable composites have no expanded density IR. Optional mass
-    // certification must not make their existing sampling path unavailable.
-    return null;
-  }
+  // NOT wrapped in a catch. A measure with no expanded density IR makes
+  // `expandMeasure` RETURN null — it does not throw — and
+  // `closedFormLogTotalmass(null)` then declines, which is the decline this
+  // function already reports. The one throw reachable from here is
+  // `jointchain`'s duplicate-label refusal, a genuine model error that must
+  // reach the user rather than degrade into an uncertified mass. Removing the
+  // former untyped catch changed no test in the engine suite.
+  const ir = expandMeasureIR(from, ctx.derivations, new Set(), ctx.bindings);
+  const inner = closedFormLogTotalmass(ir, ctx.bindings);
+  return typeof inner === 'number' && Number.isFinite(inner) ? k * inner : null;
 }
 
 function matIid(name: string, d: DerivationIid, ctx: any) {
@@ -1332,7 +1340,16 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     };
     return inflatedCtx.getMeasure(d.from).then((innerM: any) => {
       const fixedLogMass = _iidFixedLogTotalmass(d.from, k, ctx);
-      const logTotalmass = fixedLogMass == null ? 0 : fixedLogMass;
+      // §06 makes an iid product measure's mass Z^k. When the algebra cannot
+      // certify Z, this measure's mass is UNKNOWN, and recording 0 would claim
+      // totalmass exactly 1 — a silent WRONG answer rather than a missing one.
+      // Carry the uncertified marker instead, so `totalmass` raises the engine
+      // limitation (`mat-density.matTotalmass`). Sampling and density read the
+      // samples, not this field, so a model that never asks for the mass is
+      // unaffected: the refusal costs the query, not the whole measure.
+      const massMeta: any = fixedLogMass == null
+        ? { logTotalmassUnknown: 'a composite iid product mass' }
+        : { logTotalmass: fixedLogMass };
       // §06 `iid` is a product measure, so the k inner positions' importance
       // weights multiply into ONE weight per atom, and a weight stream shared
       // across the block joins it once. Folded before either branch below
@@ -1398,7 +1415,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         const table: any = { __table__: true, columns, nrows: k };
         return {
           shape: 'table', __table__: true, columns, nrows: k,
-          value: table, logTotalmass, n_eff: 1,
+          value: table, ...massMeta, n_eff: 1,
         };
       }
       // A TUPLE-variate inner measure — a positional `joint(M1, M2)`, or a
@@ -1456,7 +1473,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         empirical.arrayMeasure(samples, perAtomDims, foldedLW),
         {
           value: value,
-          logTotalmass,
+          ...massMeta,
           // From the folded weights when there are any: k importance-weighted
           // coordinates per atom leave far fewer effective atoms than N.
           n_eff: foldedLW

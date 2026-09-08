@@ -370,6 +370,7 @@ function _stripLeafWeights(m: any): any {
   // Drop them via shallow copy.
   const hasWeights = m.logWeights != null
                   || typeof m.logTotalmass === 'number'
+                  || m.logTotalmassUnknown != null
                   || typeof m.n_eff === 'number';
   // Always recurse into nested composites; mutate the copy when we
   // need to.
@@ -409,6 +410,10 @@ function _stripLeafWeights(m: any): any {
     // sample storage is shared with the binding cache and not
     // semantically tied to the weighting channel.
     delete copy.logTotalmass;
+    // The uncertified-mass marker is mass metadata too, so it obeys the same
+    // outer-level-only invariant. Leaving it on a stripped sub-measure would
+    // let a stale refusal ride along inside a composite.
+    delete copy.logTotalmassUnknown;
     delete copy.n_eff;
   }
   return copy || m;

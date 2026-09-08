@@ -26,6 +26,7 @@ const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
 const { totalMassExpr, assertFixedMassFallback } = require('./normalize-mass.ts');
+const { engineLimitation } = require('./limitations.ts');
 const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
 
@@ -1599,6 +1600,15 @@ function matTotalmass(d: DerivationTotalmass, ctx: any) {
   // per-atom scalar value — broadcast since we track a single ensemble
   // logTotalmass per measure today (per-atom tracking is a refinement).
   return ctx.getMeasure(d.measureName).then((m: any) => {
+    // An uncertified mass is UNKNOWN, not 1. Answering 1 here silently
+    // reported the wrong scalar for every composite iid whose product mass the
+    // algebra could not certify; §06 gives that mass a value, so the gap is
+    // this engine's and the refusal is an ENGINE LIMITATION, not a model error.
+    if (m && m.logTotalmassUnknown) {
+      throw engineLimitation('totalmass of ' + m.logTotalmassUnknown, 'density',
+        'measure "' + d.measureName + '" carries no certified mass, and '
+        + 'answering 1 would be a wrong scalar rather than a missing one');
+    }
     const N = ctx.sampleCount;
     const tm = Math.exp(typeof m.logTotalmass === 'number' ? m.logTotalmass : 0);
     const samples = new Float64Array(N);
