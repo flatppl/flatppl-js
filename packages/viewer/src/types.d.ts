@@ -274,6 +274,7 @@ export interface Ctx {
   // ---- current-render state ----
   plotEchart: any;
   plotEnabled: boolean;
+  graphEnabled: boolean;
   currentSource: string | null;
   /** Resolved path of the module whose DAG is currently shown (the host's
    *  bundle / router key). Drives cross-module back source-sync (spec §04);
@@ -378,6 +379,7 @@ export interface HostAdapter {
 /** Arguments accepted by FlatPPLViewer.mount(). */
 export interface MountOpts {
   host?: HostAdapter;
+  controlsContainer?: HTMLElement | null;
   [extra: string]: any;
 }
 

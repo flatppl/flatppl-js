@@ -777,6 +777,14 @@ export function renderDAG(ctx: Ctx, data: any) {
       }
     }
   }
+  const collapseButton = document.getElementById('collapse-all-btn') as HTMLButtonElement | null;
+  if (collapseButton) {
+    const groups = data.reifications || [];
+    const allCollapsed = groups.length > 0 && groups.every((group: any) => ctx.collapsedReifications.has(group.name));
+    collapseButton.textContent = allCollapsed ? 'Expand all' : 'Collapse all';
+    collapseButton.title = (allCollapsed ? 'Expand' : 'Collapse') + ' every reification bubble in view';
+    collapseButton.disabled = !ctx.graphEnabled || groups.length === 0;
+  }
   const dropCountByAnchor: Record<string, number> = {};
   dropped.forEach(function(_anchorName, memId) {
     const finalAnchor = resolveDroppedChain(dropped, memId);

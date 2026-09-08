@@ -34,6 +34,7 @@ export function saveViewState(ctx: Ctx): void {
   try {
     ctx.host.saveState({
       plotEnabled: ctx.plotEnabled,
+      graphEnabled: ctx.graphEnabled,
       inferenceOpts: ctx.inferenceOpts,
       collapsedReifications: Array.from(ctx.collapsedReifications || []),
     });
@@ -240,17 +241,25 @@ function openExportMenu(anchor: HTMLElement, measure: any, bindingName: any) {
   setTimeout(function () { document.addEventListener('mousedown', onDown, true); }, 0);
 }
 
-export function setPlotEnabled(ctx: Ctx, enabled: any) {
-  ctx.plotEnabled = !!enabled;
+function updatePanelVisibility(ctx: Ctx) {
   const plot    = $('plot-panel');
   const graph   = $('graph-panel');
   const divider = $('plot-divider');
   const btn     = $('plot-toggle');
   plot.classList.toggle('hidden', !ctx.plotEnabled);
+  plot.classList.toggle('full', !ctx.graphEnabled);
+  graph.classList.toggle('hidden', !ctx.graphEnabled);
   graph.classList.toggle('full',  !ctx.plotEnabled);
-  divider.classList.toggle('hidden', !ctx.plotEnabled);
+  divider.classList.toggle('hidden', !ctx.plotEnabled || !ctx.graphEnabled);
+  $('panels-hidden').hidden = ctx.plotEnabled || ctx.graphEnabled;
+  const graphBtn = $('graph-toggle');
+  graphBtn.classList.toggle('on', ctx.graphEnabled);
+  graphBtn.setAttribute('aria-pressed', String(ctx.graphEnabled));
+  graphBtn.textContent = 'Graph: ' + (ctx.graphEnabled ? 'on' : 'off');
+  ($('collapse-all-btn') as HTMLButtonElement).disabled = !ctx.graphEnabled || !ctx.currentState?.data.reifications?.length;
   btn.classList.toggle('on', ctx.plotEnabled);
-  btn.textContent = 'Plot: ' + (ctx.plotEnabled ? 'on' : 'off');
+  btn.setAttribute('aria-pressed', String(ctx.plotEnabled));
+  btn.textContent = 'Plots: ' + (ctx.plotEnabled ? 'on' : 'off');
   // Drop any user-dragged inline flex so the class-based defaults
   // (flex: 1 1 100% on graph-full, flex: 0 0 0 on plot-hidden, or
   // the regular 60/40 split when both are showing) take effect.
@@ -262,6 +271,20 @@ export function setPlotEnabled(ctx: Ctx, enabled: any) {
   // Persist across panel reopens. VS Code restores webview state
   // automatically when the panel is shown again.
   saveViewState(ctx);
+}
+
+export function setGraphEnabled(ctx: Ctx, enabled: boolean) {
+  ctx.graphEnabled = enabled;
+  updatePanelVisibility(ctx);
+  requestAnimationFrame(function () {
+    if (ctx.graphEnabled && ctx.cy) ctx.cy.resize();
+    if (ctx.plotEchart) ctx.plotEchart.resize();
+  });
+}
+
+export function setPlotEnabled(ctx: Ctx, enabled: any) {
+  ctx.plotEnabled = !!enabled;
+  updatePanelVisibility(ctx);
   if (ctx.plotEnabled) {
     // Render whatever the current plan says — including the
     // "not plottable" message if the focused binding isn't

@@ -44,18 +44,16 @@ body {
 #inference-controls { flex: 0 0 auto; }
 #header .target-name { font-weight: 600; }
 #header .target-eq { opacity: 0.5; margin: 0 4px; }
-/* Vertical split layout: graph on top, plot on bottom. The header
-   hosts a Plot on/off toggle (default off). When the toggle is off
-   the plot panel collapses to zero height and the graph fills the
-   content area. When on, the area is split 60/40 between the two
-   panels. The plot panel is always rendered when enabled — even
+/* Independent Graph/Plots toggles, hosted here or in the web header.
+   One visible panel fills the content area; both split it 60/40.
+   Graph defaults on, plots off. The plot panel renders when enabled — even
    for non-plottable bindings it shows a "Not plottable" message,
    so users navigating the graph see a stable layout instead of
    the panel appearing/disappearing.
 
    Heights subtract header(~32px) + info(60px). */
-#plot-toggle {
-  margin-left: auto;
+#view-controls { display: flex; gap: 6px; margin-left: auto; }
+#graph-toggle, #plot-toggle {
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
   border: 1px solid var(--vscode-button-border, transparent);
@@ -66,13 +64,13 @@ body {
   font-family: var(--vscode-font-family, sans-serif);
   flex-shrink: 0;
 }
-#plot-toggle:hover { background: var(--vscode-button-secondaryHoverBackground, #505355); }
-#plot-toggle.on {
+#graph-toggle:hover, #plot-toggle:hover { background: var(--vscode-button-secondaryHoverBackground, #505355); }
+#graph-toggle.on, #plot-toggle.on {
   background: var(--vscode-button-background, #0e639c);
   color: var(--vscode-button-foreground, #fff);
   border-color: var(--vscode-button-border, transparent);
 }
-#plot-toggle.on:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+#graph-toggle.on:hover, #plot-toggle.on:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
 #main {
   display: flex; flex-direction: column;
   width: 100vw; height: calc(100vh - 86px);
@@ -83,6 +81,10 @@ body {
   position: relative; overflow: hidden;
 }
 #graph-panel.full { flex: 1 1 100%; }
+#graph-panel.hidden { display: none; }
+#plot-panel.full { flex: 1 1 100%; border-top: none; }
+#panels-hidden { margin: auto; padding: 1em; opacity: 0.65; text-align: center; }
+#panels-hidden[hidden] { display: none; }
 #plot-panel {
   flex: 1 1 40%; min-height: 80px;
   border-top: 1px solid var(--vscode-panel-border, #444);
@@ -351,7 +353,7 @@ body {
 #back-btn:hover {
   background: var(--vscode-button-secondaryHoverBackground, #505355);
 }
-#collapse-all-btn, #expand-all-btn {
+#collapse-all-btn {
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
   border: 1px solid var(--vscode-button-border, transparent);
@@ -363,7 +365,7 @@ body {
   flex-shrink: 0;
   margin-right: 6px;
 }
-#collapse-all-btn:hover, #expand-all-btn:hover {
+#collapse-all-btn:hover {
   background: var(--vscode-button-secondaryHoverBackground, #505355);
 }
 `;
@@ -374,8 +376,10 @@ export var VIEWER_BODY_HTML = `
 <span id="header-expr"></span>
 <span id="inference-controls"></span>
 <button id="collapse-all-btn" title="Collapse every reification bubble in view">Collapse all</button>
-<button id="expand-all-btn" title="Expand every reification bubble in view">Expand all</button>
-<button id="plot-toggle" title="Toggle the plot panel">Plot: off</button>
+<span id="view-controls">
+<button id="graph-toggle" type="button" aria-pressed="true" title="Toggle the graph panel">Graph: on</button>
+<button id="plot-toggle" type="button" aria-pressed="false" title="Toggle the plot panel">Plots: off</button>
+</span>
 </div>
 <div id="main">
 <div id="graph-panel" class="full">
@@ -385,6 +389,7 @@ export var VIEWER_BODY_HTML = `
 <div id="plot-panel" class="hidden">
   <div id="plot-content"></div>
 </div>
+<p id="panels-hidden" hidden>Graph and plots are hidden.</p>
 </div>
 <div id="tooltip"></div>
 <div id="info">
