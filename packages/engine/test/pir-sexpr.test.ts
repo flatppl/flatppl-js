@@ -12,6 +12,16 @@ function buildModule(src: any) {
   return processSource(src).loweredModule;
 }
 
+test('FlatPIR round-trip preserves scalar string content', () => {
+  // §05 StringChar permits these controls, and \0 is its NUL escape.
+  // Keep a literal backslash-u sequence distinct from an encoded NUL.
+  const source = String.raw`x = "a\0b\n\t\r\"\\u0000` + '\b\f' + '"';
+  const { module, diagnostics } = pirSexpr.fromSexpr(
+    pirSexpr.toSexpr(buildModule(source)));
+  assert.deepEqual(diagnostics, []);
+  assert.equal(module.bindings.get('x').rhs.value, 'a\0b\n\t\r"\\u0000\b\f');
+});
+
 // ---------------------------------------------------------------------
 // Printer
 // ---------------------------------------------------------------------

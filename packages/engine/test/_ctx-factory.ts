@@ -11,7 +11,9 @@ const SEED = 0xBA5E;
 // Build a materialiser context for a given source text and sample count.
 function ctxFor(src: string, N: number) {
   const proc = processSource(src);
-  const built = orchestrator.buildDerivations(proc.bindings);
+  const built = orchestrator.buildDerivations(proc.linkedBindings, {
+    moduleRegistry: proc.linkedModuleRegistry,
+  });
   const w = createWorkerHandler();
   w.handle({ type: 'init', seed: SEED });
   const cache = new Map();
@@ -23,7 +25,7 @@ function ctxFor(src: string, N: number) {
     rootKey: SEED,
     rootSeed: SEED,
     marginalizationCount: 64,
-    moduleRegistry: proc.loweredModule && proc.loweredModule.moduleRegistry,
+    moduleRegistry: built.moduleRegistry,
     getMeasure: (n: string) => {
       if (cache.has(n)) return cache.get(n);
       const m = materialiser.materialiseMeasure(n, ctx);

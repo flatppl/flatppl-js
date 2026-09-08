@@ -73,7 +73,9 @@ const UNSUPPORTED: unique symbol = Symbol('fixed-eval:unsupported-op');
  */
 function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
   const loweredModule = opts && opts.loweredModule;
-  const baseEnv: any = (opts && opts.baseEnv) || {};
+  const baseEnv: any = Object.assign({
+    __moduleRegistry: loweredModule && loweredModule.moduleRegistry,
+  }, opts && opts.baseEnv);
   const cache = new Map<string, any>();        // binding name → resolved value (undefined ⇒ couldn't)
   const visiting = new Set<string>();          // cycle protection
 
@@ -241,6 +243,9 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
         ? passthrough[i] : { kind: 'lit', value: evaledArgs[i] });
     }
     const synthIR: any = { kind: 'call', op: ir.op, args: synthArgs };
+    // §04 qualified calls carry a target instead of a builtin op. Keep it
+    // when literalising operands so shape evaluation reaches the same member.
+    if (ir.target) synthIR.target = ir.target;
     if (evaledKwargs) {
       const sk: Record<string, any> = {};
       for (const k in evaledKwargs) sk[k] = { kind: 'lit', value: evaledKwargs[k] };

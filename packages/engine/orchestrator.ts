@@ -334,7 +334,8 @@ function buildSampleChain(targetName: string, bindings: any) {
  * `env` maps each input's `paramName` → a concrete value (number | boolean |
  * number[] | nested record object) — the same env the kernel-sample path builds.
  */
-function deriveAppliedKernel(bindings: any, kernelName: string, sig: any, env: any): any {
+function deriveAppliedKernel(bindings: any, kernelName: string, sig: any, env: any,
+  options: { moduleRegistry?: Record<string, any> } = {}): any {
   const L = null;        // synthetic nodes carry no source location
   function valueToAst(v: any): any {
     if (typeof v === 'number') return AST.NumberLiteral(v, String(v), L);
@@ -374,12 +375,13 @@ function deriveAppliedKernel(bindings: any, kernelName: string, sig: any, env: a
   const appAst = AST.CallExpr(AST.Identifier(kernelName, L), argRefs, L);
   const synthName = '__kernelsample';
   clone.set(synthName, mkSynthBinding(synthName, appAst, [kernelName].concat(pointNames)));
-  const built = buildDerivations(clone);
+  const built = buildDerivations(clone, options);
   return {
     name: synthName,
     derivations: built.derivations,
     bindings: built.bindings,
     fixedValues: built.fixedValues,
+    moduleRegistry: built.moduleRegistry,
   };
 }
 

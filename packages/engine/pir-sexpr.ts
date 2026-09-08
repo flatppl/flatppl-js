@@ -136,7 +136,7 @@ function _docToSexpr(doc: any): string | null {
   if (lines.length === 0) return null;
   const markup = typeof doc.markup === 'string' ? doc.markup : 'md';
   const parts = ['%doc', markup];
-  for (const ln of lines) parts.push(JSON.stringify(ln));
+  for (const ln of lines) parts.push(_stringToSexpr(ln));
   return '(' + parts.join(' ') + ')';
 }
 
@@ -186,7 +186,7 @@ function _typeToSexpr(t: any): string {
   if (!t || t.kind === 'deferred') return '%deferred';
   switch (t.kind) {
     case 'failed':
-      return '(%failed ' + JSON.stringify(String(t.reason || 'inference failed')) + ')';
+      return '(%failed ' + _stringToSexpr(String(t.reason || 'inference failed')) + ')';
     case 'any': return '%any';
     case 'scalar': return '(%scalar ' + t.prim + ')';
     case 'array': {
@@ -255,11 +255,25 @@ function _massToSexpr(mass: any): string | null {
   }
 }
 
+// §11 scalar strings use §05 escapes. JSON adds \u, \b and \f escapes
+// that the language does not define, so preserve those characters literally.
+function _stringToSexpr(value: string): string {
+  return '"' + value.replace(/["\\\n\r\t\0]/g, (c) => {
+    switch (c) {
+      case '\n': return '\\n';
+      case '\r': return '\\r';
+      case '\t': return '\\t';
+      case '\0': return '\\0';
+      default: return '\\' + c;
+    }
+  }) + '"';
+}
+
 function _atomToSexpr(v: any, numType?: string): string {
   if (v === true) return 'true';
   if (v === false) return 'false';
   if (v === null) return 'null';
-  if (typeof v === 'string') return JSON.stringify(v);
+  if (typeof v === 'string') return _stringToSexpr(v);
   if (typeof v === 'number') {
     if (!Number.isFinite(v)) {
       if (v === Infinity)  return 'inf';
@@ -937,6 +951,7 @@ function _tokenize(text: any) {
           if (esc === 'n')      { str += '\n'; j += 2; continue; }
           if (esc === 't')      { str += '\t'; j += 2; continue; }
           if (esc === 'r')      { str += '\r'; j += 2; continue; }
+          if (esc === '0')      { str += '\0'; j += 2; continue; }
           if (esc === '\\')     { str += '\\'; j += 2; continue; }
           if (esc === '"')      { str += '"';  j += 2; continue; }
           str += esc; j += 2; continue;

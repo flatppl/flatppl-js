@@ -212,7 +212,8 @@ export function renderKernelSampleForCurrent(ctx: Ctx) {
       let applied: any;
       try {
         applied = FlatPPLEngine.orchestrator.deriveAppliedKernel(
-          ctx.currentBindings, plan.name, sig, env);
+          ctx.currentLinkedBindings || ctx.currentBindings, plan.name, sig, env,
+          { moduleRegistry: ctx.currentModuleRegistry });
       } catch (e) { applied = null; }
       if (applied && applied.derivations && applied.derivations[applied.name]) {
         return materialiseAppliedKernelByName(ctx, applied, ctx.SAMPLE_COUNT, nameSeed(ctx, plan.name));

@@ -97,6 +97,7 @@ interface FixedValuesDeps {
   lowerExpr: any;           // (ast) → IR
   diagnostics?: any[];      // shared build-time diagnostics array (optional: tests may omit it)
   bindingLoc?: any;         // (name) → source loc | undefined
+  moduleRegistry?: Record<string, any>; // alias → module descriptor from lowering
 }
 
 class FixedValues {
@@ -215,7 +216,9 @@ class FixedValues {
     // threads rng state through any stochastic ancestor sampling. This is
     // what makes `data, _ = rand(rstate, lawof(obs))` resolve even when
     // obs's distribution params depend on stochastic ancestors.
-    const env: any = { __resolveMeasureRef: resolveMeasureRef };
+    // §04 qualified calls use the module's registry in fixed evaluation too.
+    const env: any = { __resolveMeasureRef: resolveMeasureRef,
+      __moduleRegistry: this._deps.moduleRegistry };
     const seenMeasure = new Set();
     const valueRefs = new Set<string>();
     const deferredRefs = new Set();

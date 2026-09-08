@@ -334,7 +334,8 @@ function _mSlotIsFunctionShaped(mIR: IRNode, bindings: Map<string, BindingInfo>)
   return true;
 }
 
-function buildDerivations(bindings: Map<string, BindingInfo>) {
+function buildDerivations(bindings: Map<string, BindingInfo>,
+  options: { moduleRegistry?: Record<string, any> } = {}) {
   // Inline named set bindings (Uniform(S) → Uniform(interval(…))) before the
   // lift/classify passes so a set used as a distribution support survives the
   // cascade-prune instead of dropping its dependent posterior silently.
@@ -621,6 +622,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
     lowerExpr,
     diagnostics,
     bindingLoc,
+    moduleRegistry: options.moduleRegistry,
   });
 
   // Second classification pass. Classifiers that depend on
@@ -953,7 +955,8 @@ function buildDerivations(bindings: Map<string, BindingInfo>) {
   // (the viewer's profile-plot path) can call signatureOf without
   // re-running the lift pass. Backward-compatible: existing callers
   // that destructure just { derivations, discrete } are unaffected.
-  return { derivations, discrete, bindings, fixedValues, diagnostics };
+  return { derivations, discrete, bindings, fixedValues, diagnostics,
+    moduleRegistry: options.moduleRegistry };
 }
 
 /**

@@ -380,19 +380,11 @@ test('§04: an alias CHAIN to the lift is the same program — two hops and '
     `two-hop hits the oracle: got ${twoHop}`);
 });
 
-test('§04: a CYCLIC alias chain terminates instead of looping', () => {
-  // TERMINATION is the whole guarantee here, and it is the only one asserted.
-  // `a = b`, `b = a` is NOT reported by any pass — measured: zero error
-  // diagnostics either side of the cycle guard, so the earlier claim that
-  // "other passes report the cycle" was wrong. The cycle is silently
-  // undiagnosed and is carded in TODO-flatppl-js.md; what this pass owes is
-  // simply not to hang walking it, which the guard delivers.
+test('§04: a cyclic alias chain reports a static error', () => {
   const ds = diagnosticsOf(PARAMS
     + 'a = b\nb = a\nmix = normalize(a(mu = means, sigma = sigmas))\n');
-  assert.ok(Array.isArray(ds), 'the pass returned rather than looping');
-  assert.deepEqual(ds, [],
-    'documenting the gap, not endorsing it: nothing diagnoses the cycle — '
-    + 'if a pass starts reporting it, update this and close the TODO card');
+  assert.ok(ds.some((d: any) => d.severity === 'error' && /cyclic binding dependency/.test(d.message)),
+    'a cyclic dependency must be diagnosed');
 });
 
 // =====================================================================

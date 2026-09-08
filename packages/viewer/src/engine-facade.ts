@@ -50,6 +50,7 @@ export function getMeasure(ctx: Ctx, name: any) {
     derivations: ctx.derivationsState.derivations,
     bindings:    ctx.derivationsState.bindings,
     fixedValues: ctx.derivationsState.fixedValues,
+    moduleRegistry: ctx.derivationsState.moduleRegistry,
     // Bind ctx into 1-arg callbacks: the engine's
     // materialiseMeasure expects callbacks with the original
     // signatures (`getMeasure(name)`, `sendWorker(msg)`); our

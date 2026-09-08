@@ -94,9 +94,14 @@ function processSource(source: string, opts?: any) {
   // `primary`/`modules` are authoritative (the canonical, non-flattened
   // view), and the DAG uses `bindings` (the primary module alone).
   let linkedBindings = primary.bindings;
+  let linkedModuleRegistry = primary.loweredModule.moduleRegistry;
   if (modules.size > 0) {
     const linkedAst = linkModules(primary, modules);
-    linkedBindings = analyze(linkedAst, '').bindings;
+    const linked = analyze(linkedAst, '');
+    linkedBindings = linked.bindings;
+    // Linking renames standard-module aliases too (e.g. child$poly).
+    // Keep the matching registry for evaluation of the flattened graph.
+    linkedModuleRegistry = linked.loweredModule.moduleRegistry;
   }
 
   // loweredModule is forwarded for downstream consumers that need
@@ -112,7 +117,7 @@ function processSource(source: string, opts?: any) {
     loweredModule: primary.loweredModule,
     symbols: primary.symbols,
     diagnostics: primary.diagnostics,
-    variant, bundle, modules, linkedBindings, path: entryPath,
+    variant, bundle, modules, linkedBindings, linkedModuleRegistry, path: entryPath,
   };
 }
 

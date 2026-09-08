@@ -31,6 +31,7 @@ function makeCtx(state: any, N: number) {
   const ctx: any = {
     derivations: state.derivations, bindings: state.bindings,
     fixedValues: state.fixedValues || new Map(), sampleCount: N, rootKey: 7,
+    moduleRegistry: state.moduleRegistry,
     rootSeed: 7, marginalizationCount: 32,
     getMeasure: (n: string) => {
       if (cache.has(n)) return cache.get(n);
@@ -40,6 +41,26 @@ function makeCtx(state: any, N: number) {
   };
   return ctx;
 }
+
+test('an applied kernel keeps standard-module calls and fixed dependencies', async () => {
+  const parsed = processSource(`
+poly = standard_module("polynomials", "0.1")
+offset = poly.chebyshev(2, 0.5)
+t = elementof(reals)
+m = Dirac(poly.chebyshev(2, t) + offset)
+K = functionof(m, t = t)
+`);
+  assert.deepEqual(parsed.diagnostics, []);
+  const options = { moduleRegistry: parsed.loweredModule.moduleRegistry };
+  const built = orchestrator.buildDerivations(parsed.bindings, options);
+  const sig = orchestrator.signatureOf('K', built.bindings, built.derivations);
+  const env = Object.fromEntries(sig.inputs.map((i: any) => [i.paramName, 2]));
+  const applied = orchestrator.deriveAppliedKernel(parsed.bindings, 'K', sig, env, options);
+  const m = await makeCtx(applied, 16).getMeasure(applied.name);
+  // T2(2) + T2(.5) = 7 - .5. A Dirac draw has no Monte Carlo error.
+  assert.deepEqual(Array.from(m.samples), Array(16).fill(6.5));
+});
+
 function meanOf(m: any, cap: number): number {
   const f = m && (m.samples || (m.value && m.value.data));
   let s = 0; const n = Math.min(f.length, cap); for (let i = 0; i < n; i++) s += f[i];
