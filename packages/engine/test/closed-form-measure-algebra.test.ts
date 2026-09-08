@@ -1490,3 +1490,211 @@ lp = logdensityof(nu, 1.2)
     /requires a bijection annotation/,
     'a non-projection pushfwd density must refuse without a bijection');
 });
+
+// =====================================================================
+// Structural projection over a RECORD-VALUED base — spec §06 case-2
+// with the product structure one step away from the pushfwd.
+//
+// Three base shapes, one identity each:
+//   - `joint(aa = …, bb = …)` — the plain named product, and a
+//     single-element ARRAY selector `["aa"]` stays record-shaped (§07
+//     subset selection) where the bare name `"aa"` does not (§07 element
+//     access).
+//   - `lawof(record(c = a, d = b))` — the total law of recorded variates
+//     (§04 "Reification to measures"). A law pushed through a
+//     deterministic map is the law of the mapped value, so the projection
+//     is the law of the retained subrecord.
+//   - a base whose product structure is NOT readable in the IR (a `joint`
+//     behind a `normalize`). No closed form is claimed; sampling is the
+//     exact projection of the base's own weighted atoms.
+//
+// Oracles are closed form, cross-checked against Distributions.jl:
+// logpdf(Normal(0,1), 0.5) = −1.0439385332046727,
+// logpdf(Exponential(rate=2), 0.5) = −0.3068528194400547,
+// logpdf(Normal(1.5,2), 0.5) = −1.737085713764618,
+// logpdf(Normal(2,1), 2.3) = −0.9639385332046727.
+// =====================================================================
+
+test('projection of a joint: a one-element array selector keeps the record shape', async () => {
+  const ctx = makeCtx(`
+M = joint(aa = Normal(0.0, 1.0), bb = Exponential(2.0))
+pa = pushfwd(fn(get(_, ["aa"])), M)
+pb = pushfwd(fn(get(_, ["bb"])), M)
+lpa = logdensityof(pa, record(aa = 0.5))
+lpb = logdensityof(pb, record(bb = 0.5))
+`);
+  assert.deepEqual(ctx.derivations.pa, { kind: 'record', fields: { aa: '__anon0' } });
+  const pa = await ctx.getMeasure('pa');
+  assert.deepEqual(Object.keys(pa.fields), ['aa'],
+    'an array selector is §07 subset selection — the variate stays a record');
+  const lpa = await ctx.getMeasure('lpa');
+  assert.ok(Math.abs(lpa.samples[0] - normalLogpdf(0.5, 0, 1)) < 1e-12,
+    `Normal marginal: got ${lpa.samples[0]}, expected ${normalLogpdf(0.5, 0, 1)}`);
+  // Exponential(rate) per §08: logpdf = log(rate) − rate·x.
+  const expLp = Math.log(2) - 2 * 0.5;
+  const lpb = await ctx.getMeasure('lpb');
+  assert.ok(Math.abs(lpb.samples[0] - expLp) < 1e-12,
+    `Exponential marginal: got ${lpb.samples[0]}, expected ${expLp}`);
+  // Sampled marginal moments: Normal(0,1) and Exponential(rate=2)
+  // (mean 1/2, var 1/4). 3σ at N = 8192 is ~0.033 for the Normal mean.
+  const pb = await ctx.getMeasure('pb');
+  assert.ok(Math.abs(weightedMean(pa.fields.aa.samples, pa.logWeights)) < 0.04);
+  assert.ok(Math.abs(weightedVar(pa.fields.aa.samples, pa.logWeights) - 1) < 0.06);
+  assert.ok(Math.abs(weightedMean(pb.fields.bb.samples, pb.logWeights) - 0.5) < 0.02);
+  assert.ok(Math.abs(weightedVar(pb.fields.bb.samples, pb.logWeights) - 0.25) < 0.03);
+});
+
+test('projection of a record law is the law of the retained subrecord (§04, §06 case-2)', async () => {
+  const ctx = makeCtx(`
+a ~ Normal(1.5, 2.0)
+b ~ Exponential(2.0)
+R = lawof(record(c = a, d = b))
+pc = pushfwd(fn(get(_, ["c"])), R)
+bare = pushfwd(fn(get(_, "c")), R)
+lpc = logdensityof(pc, record(c = 0.5))
+lbare = logdensityof(bare, 0.5)
+`);
+  // The projection resolves to the retained draw itself, so the marginal
+  // scores against that binding's own law with no bijection in sight.
+  assert.deepEqual(ctx.derivations.pc, { kind: 'record', fields: { c: 'a' } });
+  assert.deepEqual(ctx.derivations.bare, { kind: 'alias', from: 'a' });
+  const expected = normalLogpdf(0.5, 1.5, 2.0);   // −1.737085713764618
+  for (const nm of ['lpc', 'lbare']) {
+    const lp = await ctx.getMeasure(nm);
+    assert.ok(Math.abs(lp.samples[0] - expected) < 1e-12,
+      `${nm}: got ${lp.samples[0]}, expected ${expected}`);
+  }
+  const pc = await ctx.getMeasure('pc');
+  assert.deepEqual(Object.keys(pc.fields), ['c'], 'the d column is dropped');
+  assert.ok(Math.abs(weightedMean(pc.fields.c.samples, pc.logWeights) - 1.5) < 0.08);
+  assert.ok(Math.abs(weightedVar(pc.fields.c.samples, pc.logWeights) - 4) < 0.25);
+});
+
+test('projection descends a nested path (§07 `r.a` ≡ `get(r, "a")`)', async () => {
+  // §07's ARRAY selector is subset selection WITHIN one record, so
+  // `get(_, ["a", "x"])` names two fields of the same record and is NOT a
+  // path into `a`. A path is spelled as nested element accesses, in either
+  // the `get` or the dot form; both must reach the same closed form.
+  for (const f of ['fn(get(get(_, "a"), "x"))', 'fn(_.a.x)']) {
+    const ctx = makeCtx(`
+M = joint(a = joint(x = Normal(2.0, 1.0), y = Normal(-4.0, 1.0)), b = Exponential(2.0))
+px = pushfwd(${f}, M)
+lp = logdensityof(px, 2.3)
+`);
+    assert.equal(ctx.derivations.px.kind, 'alias', `${f} → the inner component`);
+    const lp = await ctx.getMeasure('lp');
+    const expected = normalLogpdf(2.3, 2.0, 1.0);   // −0.9639385332046727
+    assert.ok(Math.abs(lp.samples[0] - expected) < 1e-12,
+      `${f}: got ${lp.samples[0]}, expected ${expected}`);
+    const px = await ctx.getMeasure('px');
+    assert.ok(Math.abs(weightedMean(px.samples, px.logWeights) - 2.0) < 0.04);
+  }
+});
+
+test('projection of a same-level subset keeps a whole sub-record (§06 case-2)', async () => {
+  // `get(_, ["a"])` over a record of records selects the sub-record whole,
+  // and its density is the sub-record's own product — y is NOT marginalised
+  // (it is inside the selected field), b is.
+  const ctx = makeCtx(`
+M = joint(a = joint(x = Normal(0.0, 1.0), y = Normal(3.0, 1.0)), b = Exponential(2.0))
+pa = pushfwd(fn(get(_, ["a"])), M)
+lp = logdensityof(pa, record(a = record(x = 0.5, y = 3.1)))
+`);
+  assert.equal(ctx.derivations.pa.kind, 'record');
+  assert.deepEqual(Object.keys(ctx.derivations.pa.fields), ['a']);
+  const lp = await ctx.getMeasure('lp');
+  const expected = normalLogpdf(0.5, 0, 1) + normalLogpdf(3.1, 3, 1);
+  assert.ok(Math.abs(lp.samples[0] - expected) < 1e-12,
+    `nested sub-record marginal: got ${lp.samples[0]}, expected ${expected}`);
+});
+
+test('projection of a base with no readable product structure still samples', async () => {
+  // `normalize(joint(…))` hides the product from the classifier, so this
+  // stays a `pushfwd` derivation. Sampling is exact anyway: the base is N
+  // weighted atoms of a record, and the projection drops columns and keeps
+  // every weight. Density has no closed form on this path and §06 case-2
+  // lets the engine refuse rather than estimate.
+  const ctx = makeCtx(`
+M = normalize(joint(aa = Normal(1.5, 2.0), bb = Exponential(2.0)))
+pa = pushfwd(fn(get(_, ["aa"])), M)
+bare = pushfwd(fn(get(_, "aa")), M)
+`);
+  assert.equal(ctx.derivations.pa.kind, 'pushfwd');
+  const pa = await ctx.getMeasure('pa');
+  assert.deepEqual(Object.keys(pa.fields), ['aa'], 'the bb column is dropped');
+  assert.ok(Math.abs(weightedMean(pa.fields.aa.samples, pa.logWeights) - 1.5) < 0.08,
+    'the aa marginal is Normal(1.5, 2)');
+  assert.ok(Math.abs(weightedVar(pa.fields.aa.samples, pa.logWeights) - 4) < 0.25);
+  // The bare-name spelling is element access, so the variate is the column.
+  const bare = await ctx.getMeasure('bare');
+  assert.ok(bare.samples && !bare.fields, 'a bare name yields the field itself');
+  assert.ok(Math.abs(weightedMean(bare.samples, bare.logWeights) - 1.5) < 0.08);
+});
+
+test('projection of an unreadable base descends a nested path too', async () => {
+  const ctx = makeCtx(`
+M = normalize(joint(a = joint(x = Normal(2.0, 1.0), y = Normal(-4.0, 1.0)),
+                    b = Exponential(2.0)))
+px = pushfwd(fn(_.a.x), M)
+sub = pushfwd(fn(get(get(_, "a"), ["x"])), M)
+`);
+  assert.equal(ctx.derivations.px.kind, 'pushfwd');
+  const px = await ctx.getMeasure('px');
+  assert.ok(Math.abs(weightedMean(px.samples, px.logWeights) - 2.0) < 0.04);
+  const sub = await ctx.getMeasure('sub');
+  assert.deepEqual(Object.keys(sub.fields), ['x']);
+  assert.ok(Math.abs(weightedMean(sub.fields.x.samples, sub.logWeights) - 2.0) < 0.04);
+});
+
+test('a nested path through a non-record field is not a projection', async () => {
+  // Both halves of the path walk have to give up: `a` is a scalar component,
+  // so there is no sub-record to descend into, and `zz` is not a field at
+  // all. Neither may be rewritten, and neither may be taken as a column
+  // projection.
+  for (const f of ['fn(_.a.x)', 'fn(_.zz.x)']) {
+    const ctx = makeCtx(`
+M = joint(a = Normal(0.0, 1.0), b = Exponential(2.0))
+nu = pushfwd(${f}, M)
+`);
+    assert.equal(ctx.derivations.nu.kind, 'pushfwd', `${f} stays a pushfwd`);
+    await assert.rejects(() => Promise.resolve(ctx.getMeasure('nu')), undefined,
+      `${f} must not silently produce a measure`);
+  }
+});
+
+test('a mid-path subset selector is not a projection (§07 selects within one record)', async () => {
+  // `get(get(_, ["a", "b"]), "x")` would select "x" from TWO sub-records at
+  // once, which §07's subset selection does not mean. It must not be
+  // rewritten, and it must not be taken as a column projection either.
+  const ctx = makeCtx(`
+M = joint(a = joint(x = Normal(0.0, 1.0)), b = joint(x = Normal(5.0, 1.0)))
+nu = pushfwd(fn(get(get(_, ["a", "b"]), "x")), M)
+`);
+  assert.equal(ctx.derivations.nu.kind, 'pushfwd');
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('nu')),
+    /non-scalar per-atom result/,
+    'a mid-path subset selector reaches the generic evaluator and fails there');
+});
+
+test('projection of a shared-ancestor joint marginalises the shared ancestor', async () => {
+  // The components share the ancestor `t`, so the base is not a product and
+  // the marginal is not a component's own law. §06 reduces such a joint as
+  // its equivalent record law, and the projected record inherits that: the
+  // aa marginal integrates t out, giving Normal(0, √2) since
+  // Var(t) + 1 = 2.
+  const ctx = makeCtx(`
+t ~ Normal(0.0, 1.0)
+mm = joint(aa = Normal(t, 1.0), bb = Normal(t, 1.0))
+pa = pushfwd(fn(get(_, ["aa"])), mm)
+lp = logdensityof(pa, record(aa = 0.5))
+`);
+  assert.equal(ctx.derivations.pa.kind, 'record');
+  const pa = await ctx.getMeasure('pa');
+  assert.deepEqual(Object.keys(pa.fields), ['aa']);
+  const lp = await ctx.getMeasure('lp');
+  const expected = normalLogpdf(0.5, 0, Math.sqrt(2));  // −1.3280121234846453
+  assert.ok(Math.abs(lp.samples[0] - expected) < 1e-10,
+    `shared-ancestor marginal: got ${lp.samples[0]}, expected ${expected}`);
+  assert.ok(Math.abs(weightedMean(pa.fields.aa.samples, pa.logWeights)) < 0.06);
+  assert.ok(Math.abs(weightedVar(pa.fields.aa.samples, pa.logWeights) - 2) < 0.12);
+});
