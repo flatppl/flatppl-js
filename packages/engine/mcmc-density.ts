@@ -25,7 +25,7 @@ const density       = require('./density.ts');
 const irShared      = require('./ir-shared.ts');
 const sampler       = require('./sampler.ts');
 const lower         = require('./lower.ts');
-const { totalMassExpr } = require('./normalize-mass.ts');
+const { totalMassExpr, assertFixedMassFallback } = require('./normalize-mass.ts');
 const { crnNormalizeMassExpr } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
 
@@ -198,6 +198,17 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
         continue;
       }
     }
+    // A fixed scalar leaf admits the same deterministic quadrature used by
+    // standalone density queries. Preserve weight/logweight equivalence and
+    // avoid making this constant depend on the prior's sampling seed or count.
+    const leafLogZ = require('./mat-density.ts').weightedLeafQuadLogZ(node, ctx);
+    if (leafLogZ != null) {
+      node.op = 'logweighted';
+      node.args = [{ kind: 'lit', value: -leafLogZ }, inner];
+      delete node.massFrom;
+      continue;
+    }
+    assertFixedMassFallback(inner, ctx, 'MCMC');
     needMaterialise.push(node);
   }
   if (needMaterialise.length === 0) return measureIR;

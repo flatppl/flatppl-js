@@ -197,13 +197,9 @@ test('a stochastic base PARAMETER of the chain stays shared', async () => {
     + 'b ~ iid(C, 3)\n', 'b', 3), 0.0, 3.0, 1.0);
 });
 
-// `m ~ N(0, 1)` shifts BOTH branches, so E[Y|m] = m and Var(Y|m) = 1 + 9 + 1 =
-// 11: Var = 12, Cov = Var(m) = 1. Before the fix this row measured 1.5632,
-// because the shared `m` contributed its 1 and the shared reified `u`, `w`
-// added `Var((u + w) / 2 - m) = 0.5` on top — so this row discriminates in
-// BOTH directions at once: it fails at 1.5 if the base does not freshen, and
-// at 0 if the parameter wrongly does.
-test('a shared component PARAMETER survives while the branches freshen',
+// lawof(u) and lawof(w) capture m as their stochastic ancestor. iid copies
+// the whole captured trace, so Var = 1 + 1 + 9 + 1 = 12 and Cov = 0.
+test('a captured component ancestor is copied with the reified branches',
   async () => {
     assertMoments('component mean', await momentsOf(
       'm ~ Normal(mu = 0.0, sigma = 1.0)\n'
@@ -211,8 +207,17 @@ test('a shared component PARAMETER survives while the branches freshen',
       + 'w ~ Normal(mu = m + 3.0, sigma = 1.0)\n'
       + 'S = superpose(weighted(0.5, lawof(u)), weighted(0.5, lawof(w)))\n'
       + 'C = kchain(S, fn(Normal(mu = _, sigma = 1.0)))\n'
-      + 'b ~ iid(C, 3)\n', 'b', 3), 0.0, 12.0, 1.0);
+      + 'b ~ iid(C, 3)\n', 'b', 3), 0.0, 12.0, 0.0);
   });
+
+test('an external constructor parameter stays shared across chain copies', async () => {
+  assertMoments('constructor mean', await momentsOf(
+    'm ~ Normal(mu = 0.0, sigma = 1.0)\n'
+    + 'S = superpose(weighted(0.5, Normal(m - 3.0, 1.0)), '
+    + 'weighted(0.5, Normal(m + 3.0, 1.0)))\n'
+    + 'C = kchain(S, fn(Normal(mu = _, sigma = 1.0)))\n'
+    + 'b ~ iid(C, 3)\n', 'b', 3), 0.0, 12.0, 1.0);
+});
 
 // `psi ~ Uniform(interval(0, 1))` is the mixing WEIGHT, reached through
 // `weightIR`. E[Y|psi] = 3 - 6psi, so Cov = Var(3 - 6psi) = 36/12 = 3, and

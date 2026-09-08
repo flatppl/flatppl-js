@@ -212,7 +212,7 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         // total mass regardless of the bijection.
         return measureFromValue(result, {
           logWeights:   M.logWeights || null,
-          logTotalmass: (typeof M.logTotalmass === 'number') ? M.logTotalmass : 0,
+          logTotalmass: shared.massOf(M),
           n_eff:        (typeof M.n_eff === 'number') ? M.n_eff : N,
         });
       });
@@ -355,7 +355,7 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
 function matTruncate(d: DerivationTruncate, ctx: any) {
   return ctx.getMeasure(d.from).then((parent: any) => {
     const N = ctx.sampleCount;
-    const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
+    const parentLTM = shared.massOf(parent);
     const bounds = setBoundsForMat(d.setDescr);
     if (!bounds) {
       return Promise.reject(new Error(
@@ -383,7 +383,7 @@ function matTruncate(d: DerivationTruncate, ctx: any) {
           seed: seed,
         }).then((reply: any) => scalarMeasureN(reply.samples, {
           logWeights: null,
-          logTotalmass: parentLTM + reply.logShift,
+          logTotalmass: shared.addMass(parentLTM, reply.logShift),
           n_eff: reply.n_eff,
         }));
       }
@@ -415,7 +415,7 @@ function matTruncate(d: DerivationTruncate, ctx: any) {
           }
           return scalarMeasureN(samples, {
             logWeights: logWeights,
-            logTotalmass: parentLTM + reply.logShift,
+            logTotalmass: shared.addMass(parentLTM, reply.logShift),
             n_eff: reply.n_eff,
           });
         });
@@ -452,7 +452,7 @@ function matTruncate(d: DerivationTruncate, ctx: any) {
       const logShift = isFinite(lseA) && isFinite(lseT) ? (lseA - lseT) : -Infinity;
       return scalarMeasureN(out, {
         logWeights: outW,
-        logTotalmass: parentLTM + logShift,
+        logTotalmass: shared.addMass(parentLTM, logShift),
         n_eff: n_eff,
       });
     }
@@ -474,7 +474,7 @@ function matTruncate(d: DerivationTruncate, ctx: any) {
       : -Infinity;
     return scalarMeasureN(out, {
       logWeights: logWeights,
-      logTotalmass: parentLTM + logShift,
+      logTotalmass: shared.addMass(parentLTM, logShift),
       n_eff: n_eff,
     });
   });

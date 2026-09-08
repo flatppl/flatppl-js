@@ -368,8 +368,11 @@ function _stripLeafWeights(m: any): any {
   if (!m || typeof m !== 'object') return m;
   // A leaf carries weighting metadata if any of these are present.
   // Drop them via shallow copy.
+  // `logTotalmass === null` is an UNCERTIFIED mass, not an absent one, so it
+  // counts as mass metadata and must be stripped like a number would be.
   const hasWeights = m.logWeights != null
                   || typeof m.logTotalmass === 'number'
+                  || m.logTotalmass === null
                   || typeof m.n_eff === 'number';
   // Always recurse into nested composites; mutate the copy when we
   // need to.

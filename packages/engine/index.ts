@@ -32,6 +32,7 @@ const perfConfig = require('./perf-config.ts');
 const optimizer = require('./optimizer/index.ts');
 const generatedQuantities = require('./generated-quantities.ts');
 const posteriorPredictive = require('./posterior-predictive.ts');
+const limitations = require('./limitations.ts');
 // NOTE: ./sampler and ./worker are NOT re-exported here. The main-thread
 // engine bundle (lib/engine.min.js) is kept small by stubbing @stdlib at
 // build time via build-vendor.mjs + build-stdlib-stub.cjs; the sampler-
@@ -335,4 +336,8 @@ module.exports = {
   generatedQuantities,
   // Posterior-predictive sampling for plain-distribution likelihoods.
   posteriorPredictive,
+  // Tell an unimplemented route apart from an invalid model: a host or a
+  // conformance harness matches `err.code === ENGINE_LIMITATION` instead of
+  // grepping the message text.
+  limitations,
 };

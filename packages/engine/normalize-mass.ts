@@ -5,6 +5,7 @@
 // so a normalize(...) whose mass depends on a latent is scored per-θ rather than
 // baked as a materialised constant.
 const orchestrator = require('./orchestrator.ts');
+const { engineLimitation } = require('./limitations.ts');
 
 // Build an IR EXPRESSION for the total mass Z of a measure IR, as a function of
 // the current point θ (the weights may reference latents). Returns null when
@@ -85,6 +86,11 @@ function totalMassExpr(ir: any): any {
   // such a mixture, dropping the whole normalize to the θ-constant materialised
   // Z bake (Buffy #67).
   if (op === 'logweighted' && Array.isArray(ir.args) && ir.args.length === 2) {
+    // A callable logweight contributes an integral, just like a callable
+    // ordinary weight. It is not a scalar mass multiplier.
+    if (ir.args[0] && ir.args[0].kind === 'call' && ir.args[0].op === 'functionof') {
+      return null;
+    }
     const inner = totalMassExpr(ir.args[1]);
     if (inner == null) return null;
     return { kind: 'call', op: 'mul', args: [{ kind: 'call', op: 'exp', args: [ir.args[0]] }, inner] };
@@ -218,4 +224,51 @@ function constantLeafParams(ir: any): { kernel: string; input: Record<string, nu
   return { kernel: bound.kernel, input };
 }
 
-module.exports = { totalMassExpr };
+// A pooled ensemble mass can only serve as a constant density divisor when
+// the unresolved measure has no parameter dependence. Run this after the
+// supported algebraic and quadrature builders, which can retain that
+// dependence explicitly. A miss here is a support limit, not proof that the
+// integral varies: refuse conservatively instead of changing likelihood ratios.
+//
+// The refusal is an ENGINE LIMITATION, not a model error: §06 defines
+// normalize(M) as M shifted by −log totalmass(M) at the SCORED θ, so a
+// θ-dependent mass is perfectly valid FlatPPL. Only this engine's mass
+// builders fall short of it, so the error carries the `ENGINE_LIMITATION`
+// code (see `limitations.ts`) and names the route that hit the gap. Both
+// callers reach the same construct by different paths, so `route` is theirs
+// to supply.
+function assertFixedMassFallback(inner: any, ctx: any, route: string): void {
+  const { walkIRScoped } = require('./ir-walk.ts');
+  const { isCallableLikeBindingType } = require('./ir-shared.ts');
+  const seen = new Set<string>();
+  const unresolved = new Set<string>();
+  const visit = (ir: any, scope: Set<string>) => {
+    walkIRScoped(ir, (n: any, shadowed: Set<string>) => {
+      // Ref-headed calls hold their target outside the walker's IR children.
+      const ref = n.kind === 'ref' ? n : n.kind === 'call' ? n.target : null;
+      if (!ref || ref.ns !== 'self' || shadowed.has(ref.name)) return;
+      if (ctx && ctx.fixedValues && ctx.fixedValues.has(ref.name)) return;
+      const b = ctx && ctx.bindings && ctx.bindings.get(ref.name);
+      if (b && isCallableLikeBindingType(b.type) && b.ir) {
+        // A callable's free captures still belong to the enclosing measure.
+        // Keep boundary shadowing when following the referenced definition.
+        const key = ref.name + '\0' + [...shadowed].sort().join('\0');
+        if (!seen.has(key)) {
+          seen.add(key);
+          visit(b.ir, shadowed);
+        }
+        return;
+      }
+      unresolved.add(ref.name);
+    }, scope);
+  };
+  visit(inner, new Set());
+  if (unresolved.size > 0) {
+    throw engineLimitation(
+      'normalize over a parameter-dependent total mass', route,
+      'unresolved: ' + [...unresolved].sort().join(', ')
+      + '; a pooled divisor would change likelihood ratios, spec §06');
+  }
+}
+
+module.exports = { totalMassExpr, assertFixedMassFallback };

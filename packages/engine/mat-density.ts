@@ -25,7 +25,8 @@ const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
-const { totalMassExpr } = require('./normalize-mass.ts');
+const { totalMassExpr, assertFixedMassFallback } = require('./normalize-mass.ts');
+const { engineLimitation } = require('./limitations.ts');
 const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
 
@@ -1246,7 +1247,8 @@ function _endpointContributionShrinks(f: (u: number[]) => number): boolean {
 // endpoint test are the more accurate answer where θ does not move.
 function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
   const inner = node.args && node.args[0];
-  if (!inner || inner.kind !== 'call' || inner.op !== 'weighted'
+  if (!inner || inner.kind !== 'call'
+      || (inner.op !== 'weighted' && inner.op !== 'logweighted')
       || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
   const fn = inner.args[0];
   if (!fn || fn.kind !== 'call' || fn.op !== 'functionof'
@@ -1264,13 +1266,40 @@ function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
   if (ctx && ctx.moduleRegistry) env.__moduleRegistry = ctx.moduleRegistry;
   const samplerLib = require('./sampler.ts');
   const { adaptiveCubature } = require('./quadrature.ts');
-  // A non-finite or non-positive weight contributes 0, matching
+  // Normalize is invariant under a constant logweight offset. Remove a
+  // representative offset before exponentiating so exp(710 + x), for example,
+  // does not overflow and silently lose the upper half of the integral.
+  const logSpace = inner.op === 'logweighted';
+  let logShift = 0;
+  if (logSpace) {
+    let pivot: number | null = null;
+    // A valid weight can vanish at the median, such as x² over Normal(0,1).
+    // Try two other interior points before declaring this rule unresolved.
+    for (const u of [0.5, 0.25, 0.75]) {
+      env[weightFn.paramNames[0]] = invcdf.quantile(base.kernel, u, base.input);
+      const raw = +samplerLib.evaluateExpr(weightFn.body, env);
+      if (Number.isFinite(raw)) { pivot = raw; break; }
+    }
+    if (pivot == null) {
+      throw engineLimitation('logweight quadrature', 'density',
+        'cannot find a finite scale, so this normalizer is unresolved '
+        + '(spec §06)');
+    }
+    logShift = pivot;
+  }
+  // An ordinary non-finite or non-positive weight contributes 0, matching
   // `makeIntegrandND`: §06's normalizer integrates a non-negative weight, and a
   // weight that goes negative off its intended support must not corrupt the
   // quadrature.
   const integrand = (u: number[]): number => {
     env[weightFn.paramNames[0]] = invcdf.quantile(base.kernel, u[0], base.input);
-    const w = +samplerLib.evaluateExpr(weightFn.body, env);
+    const raw = +samplerLib.evaluateExpr(weightFn.body, env);
+    const w = logSpace ? Math.exp(raw - logShift) : raw;
+    if (logSpace && !Number.isFinite(w)) {
+      throw engineLimitation('logweight quadrature', 'density',
+        'exceeded its numeric range, so a finite normalizer cannot be '
+        + 'resolved (spec §06)');
+    }
     return Number.isFinite(w) && w > 0 ? w : 0;
   };
   if (!_endpointContributionShrinks(integrand)) {
@@ -1301,7 +1330,7 @@ function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
       + ' after ' + res.evals + ' evals, tolerance ' + NORMALIZE_QUAD_TOL + ')');
   }
   /* c8 ignore stop */
-  return Math.log(res.Z);
+  return Math.log(res.Z) + logShift;
 }
 
 // =====================================================================
@@ -1573,6 +1602,16 @@ function matTotalmass(d: DerivationTotalmass, ctx: any) {
   // per-atom scalar value — broadcast since we track a single ensemble
   // logTotalmass per measure today (per-atom tracking is a refinement).
   return ctx.getMeasure(d.measureName).then((m: any) => {
+    // `null` is an UNCERTIFIED mass, not 0. Exponentiating it answered a
+    // confident 1 for every composite iid whose product mass the algebra could
+    // not certify. §06 gives that mass a value, so the gap is this engine's:
+    // an ENGINE LIMITATION, not a model error. Every other reader propagates
+    // the null (`massOf` / `addMass`); this query is where it surfaces.
+    if (shared.massOf(m) === null) {
+      throw engineLimitation('totalmass', 'composite iid',
+        'measure "' + d.measureName + '" carries an uncertified mass, and '
+        + 'answering 1 would be a wrong scalar rather than a missing one');
+    }
     const N = ctx.sampleCount;
     const tm = Math.exp(typeof m.logTotalmass === 'number' ? m.logTotalmass : 0);
     const samples = new Float64Array(N);
@@ -1778,6 +1817,7 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
       delete node.massFrom;
       continue;
     }
+    assertFixedMassFallback(node.args[0], ctx, 'density');
     needMaterialise.push(node);
   }
   if (needMaterialise.length === 0) return Promise.resolve(measureIR);

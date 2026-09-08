@@ -24,6 +24,7 @@ const empirical    = require('./empirical.ts');
 const orchestrator = require('./orchestrator.ts');
 const valueLib     = require('./value.ts');
 const shared       = require('./materialiser-shared.ts');
+const { engineLimitation } = require('./limitations.ts');
 const axisStackMod = require('./axis-stack.ts');
 // Loading this module registers the built-in KERNEL_BROADCAST_FAST_PATHS
 // handlers (Normal etc.) as a side effect. The dispatch helper is
@@ -1386,6 +1387,21 @@ function _executeMeasureAlgebraComposite(
         const cm = cellMeasures[cell];
         if (!cm) continue;
         const clw = cm.logWeights;
+        // This mass merges into the per-atom SAMPLE weights below, so an
+        // uncertified cell cannot be guessed from its weights or taken as
+        // zero. Refuse rather than emit draws at silently wrong weights.
+        //
+        // Unreachable today, hence the ignore: `matIid`'s composite product
+        // mass is the only source of a null, and a cell body must produce
+        // SCALAR samples (the throw above), which an iid variate never does.
+        // Kept so the invariant survives the next producer of a null mass.
+        /* c8 ignore start */
+        if (shared.massOf(cm) === null) {
+          throw engineLimitation(
+            'broadcast over a cell measure with an uncertified mass', 'sampling',
+            'the per-cell weights need that measure\'s total mass');
+        }
+        /* c8 ignore stop */
         const mass = (typeof cm.logTotalmass === 'number')
           ? cm.logTotalmass
           : (clw ? empirical.logSumExp(clw) : 0);

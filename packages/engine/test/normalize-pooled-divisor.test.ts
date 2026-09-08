@@ -58,14 +58,16 @@ async function joint(src: string, n = N, latent = 'theta', target = 'y') {
     ? y.samples
     : (y.fields ? y.fields[Object.keys(y.fields)[0]].samples
                 : (y.elems ? y.elems[0].samples : null));
-  let et = 0; let ey = 0; let ety = 0; let et2 = 0;
+  let et = 0; let ey = 0; let ety = 0; let et2 = 0; let ey2 = 0;
   for (let i = 0; i < n; i++) {
     const w = Math.exp(lw[i] - norm);
     et += w * ts[i];
     et2 += w * ts[i] * ts[i];
-    if (sv) { ey += w * sv[i]; ety += w * ts[i] * sv[i]; }
+    if (sv) { ey += w * sv[i]; ey2 += w * sv[i] * sv[i]; ety += w * ts[i] * sv[i]; }
   }
-  return { et, ey, cov: ety - et * ey, varT: et2 - et * et, m: y, n_eff: y.n_eff };
+  return { et, ey, cov: ety - et * ey, varT: et2 - et * et,
+    varY: ey2 - ey * ey, priorMean: ts.reduce((s, x) => s + x, 0) / n,
+    m: y, n_eff: y.n_eff };
 }
 
 // =====================================================================
@@ -189,11 +191,8 @@ test('a joint of a truncate is expressed exactly, so the θ-marginal is the prio
     // which is 0.44 away against a Monte-Carlo error of ~4e-3 — so the tilted
     // hypothesis is excluded, not merely un-asserted.
     //
-    // The mass is θ·Z_t: a CONSTANT times the θ-dependent factor. Dividing it
-    // out therefore leaves the SAME ensemble as the mass-1 spelling
-    // `normalize(weighted(θ, Normal(0,1)))`, whose two moments the row below
-    // pins bit-for-bit — so both are asserted here to 1e-12, which is a far
-    // sharper statement than either moment's own sampling band.
+    // The mass is θ·Z_t. Exact cancellation preserves this context's prior
+    // ensemble. The independent a coordinate still has the N(0,1) law.
     const r = await joint(H
       + 'theta ~ Uniform(interval(1.0, 5.0))\n'
       + 'm = normalize(weighted(theta, joint(a = Normal(mu = 0.0, sigma = 1.0), '
@@ -201,10 +200,10 @@ test('a joint of a truncate is expressed exactly, so the θ-marginal is the prio
       + 'y ~ m\n', N, 'theta', 'y');
     assert.ok(Math.abs(r.et - 3.0) < 0.02,
       `E[θ] = ${r.et}, prior mean 3.0 (the tilted hypothesis is 3.4444444444)`);
-    assert.ok(Math.abs(r.et - 3.003582380503686) < 1e-12,
-      `E[θ] = ${r.et} left the mass-1 spelling's ensemble (3.003582380503686)`);
-    assert.ok(Math.abs(r.ey - -0.004265923637528699) < 1e-12,
-      `E[a] = ${r.ey} left the mass-1 spelling's ensemble (−0.004265923637528699)`);
+    assert.ok(Math.abs(r.et - r.priorMean) < 1e-12,
+      `E[θ] = ${r.et}, this context's prior mean ${r.priorMean}`);
+    assert.ok(Math.abs(r.ey) < 0.02, `E[a] = ${r.ey}, oracle 0`);
+    assert.ok(Math.abs(r.varY - 1) < 0.03, `Var[a] = ${r.varY}, oracle 1`);
     // The divisor cancels the per-atom mass exactly, so the weights come back
     // uniform — a residual tilt would show as n_eff below N.
     assert.ok(Math.abs(r.n_eff - N) < 1e-6, `n_eff = ${r.n_eff}, expected N = ${N}`);

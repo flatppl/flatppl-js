@@ -1422,8 +1422,7 @@ posterior = bayesupdate(L, prior)
 // is a MARGINALIZATION over the un-selected components. The engine rewrites
 // it at classification time to the projected product (a `record` derivation,
 // or an `alias` for a single-name selector), so sampling drops the
-// marginalized fields (selected fields stay atom-for-atom equal to M's, the
-// exact projection of the joint draw) and density scores Σ_{k∈S} logp_{M_k}
+// marginalized fields and density scores Σ_{k∈S} logp_{M_k}
 // closed-form (the dropped components integrate to 1). Non-projection f and
 // non-named-product bases (positional iid + integer indices, jointchain)
 // stay on the bijection-required `pushfwd` path.
@@ -1445,21 +1444,23 @@ lp = logdensityof(proj, record(a = 0.5, c = -0.3))
     `projection marginal density: got ${lp.samples[0]}, expected ${expected}`);
 });
 
-test('structural projection: sampling drops marginalised fields, keeps selected atom-for-atom (§06 case-2)', async () => {
+test('structural projection: sampling has the selected marginal law (§06 case-2)', async () => {
   const ctx = makeCtx(`
 M = joint(a = Normal(0.0, 1.0), b = Normal(5.0, 1.0), c = Normal(-2.0, 1.0))
 proj = pushfwd(fn(get(_, ["a", "c"])), M)
 `);
-  const [M, proj] = await Promise.all([ctx.getMeasure('M'), ctx.getMeasure('proj')]);
+  const proj = await ctx.getMeasure('proj');
   assert.deepEqual(Object.keys(proj.fields).sort(), ['a', 'c'],
     'projection keeps only the selected fields (b marginalised out)');
-  let maxA = 0; let maxC = 0;
-  for (let i = 0; i < SAMPLE_COUNT; i++) {
-    maxA = Math.max(maxA, Math.abs(proj.fields.a.samples[i] - M.fields.a.samples[i]));
-    maxC = Math.max(maxC, Math.abs(proj.fields.c.samples[i] - M.fields.c.samples[i]));
-  }
-  assert.equal(maxA, 0, 'projected a is exactly M.a (same sub-measure refs)');
-  assert.equal(maxC, 0, 'projected c is exactly M.c');
+  // M is a constructor, not a captured draw. Its marginal fixes the law,
+  // not the random stream used to represent that law.
+  const a = proj.fields.a.samples;
+  const c = proj.fields.c.samples;
+  assert.ok(Math.abs(unweightedMean(a)) < 0.06);
+  assert.ok(Math.abs(unweightedMean(c) + 2) < 0.06);
+  assert.ok(Math.abs(unweightedVar(a) - 1) < 0.08);
+  assert.ok(Math.abs(unweightedVar(c) - 1) < 0.08);
+  assert.ok(Math.abs(unweightedCov(a, c)) < 0.06);
 });
 
 test('structural projection: single-name selector is the bare component (alias), density exact (§06 case-2)', async () => {
