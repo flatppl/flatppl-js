@@ -1174,17 +1174,17 @@ function _iidFixedLogTotalmass(from: string, k: number, ctx: any): number | null
     return ok;
   };
   if (!hasCompleteMassAlgebra(from)) return null;
-  try {
-    const ir = expandMeasureIR(from, ctx.derivations, new Set(), ctx.bindings);
-    const inner = closedFormLogTotalmass(ir, ctx.bindings);
-    return typeof inner === 'number' && Number.isFinite(inner) ? k * inner : null;
-  } catch {
-    // An expansion fault yields UNKNOWN, never a certified mass. Sampling a
-    // composite that has no expanded density IR must keep working, and the
-    // null this returns makes a later `totalmass` refuse rather than answer a
-    // wrong scalar. The cost is that the fault's own text is not surfaced.
-    return null;
-  }
+  // NOT wrapped in a catch. A measure with no expanded density IR makes
+  // `expandMeasure` RETURN null rather than throw, and
+  // `closedFormLogTotalmass(null)` then declines, which is the uncertified
+  // answer this function already gives. So a catch here could only ever hide
+  // a real fault. The one throw reachable from this call is `jointchain`'s
+  // duplicate-label refusal, a MODEL error that must reach the user instead of
+  // degrading into an uncertified mass. Removing the former catch changed no
+  // test in the engine suite.
+  const ir = expandMeasureIR(from, ctx.derivations, new Set(), ctx.bindings);
+  const inner = closedFormLogTotalmass(ir, ctx.bindings);
+  return typeof inner === 'number' && Number.isFinite(inner) ? k * inner : null;
 }
 
 function matIid(name: string, d: DerivationIid, ctx: any) {

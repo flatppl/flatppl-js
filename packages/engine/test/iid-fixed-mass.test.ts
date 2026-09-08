@@ -157,10 +157,12 @@ mass = totalmass(M)
   close((await ctx.getMeasure('mass')).samples[0], 4);
 });
 
-test('an expansion fault yields an uncertified mass, never a certified one', async () => {
-  // The catch keeps sampling available for a composite with no expanded
-  // density IR. What it must NOT do is report a mass: the fault degrades to
-  // null (unknown), so the `totalmass` query refuses instead of answering 1.
+test('an expansion error during certification is not swallowed', async () => {
+  // Mass certification is OPTIONAL, but it must not hide a fault to stay
+  // optional. A measure with no expanded density IR RETURNS null rather than
+  // throwing, so a catch here could only ever swallow a real error — and the
+  // one throw reachable from this call is `jointchain`'s duplicate-label
+  // MODEL error, which the user has to see. Inject a fault and require it out.
   const derivations = require('../derivations.ts');
   const original = derivations.expandMeasureIR;
   derivations.expandMeasureIR = () => {
@@ -171,15 +173,8 @@ test('an expansion fault yields an uncertified mass, never a certified one', asy
 x ~ Normal(0.0, 1.0)
 r = weighted(2.0, lawof(x))
 M = iid(r, 2)
-mass = totalmass(M)
 `, { sampleCount: 64, rootSeed: 818 });
-    const m = await ctx.getMeasure('M');
-    assert.equal(m.logTotalmass, null);
-    assert.equal(m.samples.length, 128);
-    await assert.rejects(() => ctx.getMeasure('mass'), (e: any) => {
-      assert.equal(e.code, ENGINE_LIMITATION, e.message);
-      return true;
-    });
+    await assert.rejects(() => ctx.getMeasure('M'), /injected expansion fault/);
   } finally {
     derivations.expandMeasureIR = original;
   }
