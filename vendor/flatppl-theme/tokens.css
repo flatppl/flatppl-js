@@ -1,14 +1,14 @@
 :root {
   color-scheme: light;
-  --fp-bg: #fafaf8;
-  --fp-surface: #f6f8fa;
-  --fp-surface-2: #e8eaed;
-  --fp-text: #24292f;
-  --fp-text-strong: #1f2328;
-  --fp-text-muted: #57606a;
+  --fp-bg: #f7f6f2;
+  --fp-surface: #eeede7;
+  --fp-surface-2: #e6e5de;
+  --fp-text: #30332f;
+  --fp-text-strong: #252923;
+  --fp-text-muted: #5c625b;
   --fp-text-faint: #8e9199;
-  --fp-border: #d0d7de;
-  --fp-border-light: #eaeef2;
+  --fp-border: #dcded6;
+  --fp-border-light: #e7e8e0;
   --fp-brand: #224535;
   --fp-accent: #0860ca;
   --fp-on-accent: #fff;
@@ -18,7 +18,7 @@
   --fp-shadow: 0 2px 8px rgb(0 0 0 / 15%);
 
   --fp-syn-red: #a31515;
-  --fp-syn-yellow: #946200;
+  --fp-syn-yellow: #8c5c00;
   --fp-syn-green: #397900;
   --fp-syn-cyan: #007181;
   --fp-syn-blue: #1c4d9a;
