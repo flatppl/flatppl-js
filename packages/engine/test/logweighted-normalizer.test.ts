@@ -83,9 +83,12 @@ lp = logdensityof(m, 0.5)
     assert.match(errors.map((d: any) => d.message).join('\n'), /zero|normaliz|finite scale/i);
     return;
   }
-  // An engine limit, not an invalid model: assert the code, not just the text.
+  // An engine limit, not an invalid model: assert the code and the tagged
+  // construct/route, not just the text.
   await assert.rejects(ctx.getMeasure('lp'), (e: any) => {
     assert.equal(e.code, ENGINE_LIMITATION, e.message);
+    assert.deepEqual(e.limitation,
+      { construct: 'logweight quadrature', route: 'density' });
     assert.match(e.message, /cannot find a finite scale/);
     return true;
   });
@@ -101,6 +104,8 @@ lp = logdensityof(m, 0.5)
     got = (await ctx.getMeasure('lp')).samples[0];
   } catch (error: any) {
     assert.equal(error.code, ENGINE_LIMITATION, error.message);
+    assert.deepEqual(error.limitation,
+      { construct: 'logweight quadrature', route: 'density' });
     assert.match(String(error), /exceeded its numeric range/);
     return;
   }
