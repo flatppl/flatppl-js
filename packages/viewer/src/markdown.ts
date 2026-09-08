@@ -23,7 +23,7 @@
 // they survive the CommonMark pipeline without being chewed up as
 // emphasis (`*x*`) or being HTML-escaped before Temml sees them.
 
-import { marked, type MarkedExtension } from 'marked';
+import { Marked, type MarkedExtension } from 'marked';
 import * as temmlNs from 'temml';
 
 // Temml's CJS export shape is `{ default: { renderToString, ... } }`
@@ -34,7 +34,7 @@ const temml: { renderToString: (tex: string, opts?: any) => string } =
 
 function renderTexSafe(tex: string, displayMode: boolean): string {
   try {
-    return temml.renderToString(tex, { displayMode, throwOnError: false });
+    return temml.renderToString(tex, { displayMode, throwOnError: false, trust: false });
   } catch (err) {
     // Temml's `throwOnError: false` already swallows parse errors and
     // returns an inline error node; this catch covers anything else
@@ -111,10 +111,42 @@ function mathExtension(): MarkedExtension {
   };
 }
 
+// Documents can come from uploads, URL-loaded models, or doc comments. Keep
+// their renderer local, escape raw HTML, and allow only web/mail destinations.
+// Marked's default URL renderer escapes attributes but does not reject scripts.
+const marked = new Marked();
+
+function safeDestination(href: string, image: boolean): boolean {
+  // An HTML entity before the first path/query/fragment delimiter could hide
+  // a scheme character or colon. Refuse that ambiguous prefix. Entities in
+  // ordinary path/query text retain Marked's normal CommonMark rendering.
+  if (href.split(/[/?#]/, 1)[0].includes('&')) return false;
+  try {
+    const protocol = new URL(href, 'https://flatppl.invalid/').protocol;
+    return protocol === 'http:' || protocol === 'https:'
+      || (!image && protocol === 'mailto:');
+  } catch (_) {
+    return false;
+  }
+}
+
 let _mathWired = false;
 function ensureMarkedConfigured() {
   if (_mathWired) return;
   marked.use(mathExtension());
+  marked.use({ renderer: {
+    html({ text }) { return escapeHtml(text); },
+    link(token) {
+      if (safeDestination(token.href, false)) return false;
+      return this.parser.parseInline(token.tokens);
+    },
+    image(token) {
+      if (safeDestination(token.href, true)) return false;
+      const text = token.tokens
+        ? this.parser.parseInline(token.tokens, this.parser.textRenderer) : token.text;
+      return escapeHtml(text);
+    },
+  } });
   // Multi-line doc-comments rarely intend hard line breaks; treat the
   // collected `lines` array as standard CommonMark paragraphs.
   marked.setOptions({ gfm: true, breaks: false });

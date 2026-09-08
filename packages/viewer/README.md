@@ -74,6 +74,10 @@ Mirror what `embed-test.html` does:
 4. The viewer auto-mounts inside `#flatppl-viewer-root` on
    `DOMContentLoaded`. Feed it source by `postMessage`:
 
+   The standalone listener accepts messages from the same window and origin.
+   To control an embedded viewer, use its mount/update handle in that window.
+   VS Code uses its separate webview host channel.
+
    ```html
    <script>
      document.addEventListener('DOMContentLoaded', function() {
@@ -91,6 +95,12 @@ Mirror what `embed-test.html` does:
    ignore the auto-mount marker.
 
 ## Host adapter
+
+Markdown documents and doc comments render GFM and math. Raw HTML displays as
+text. Links accept HTTP, HTTPS, mailto, and relative destinations. Images accept
+HTTP, HTTPS, and relative destinations. An HTML entity in a destination's
+scheme or leading path segment is refused. This applies to uploaded and
+URL-loaded content as well as bundled examples.
 
 The viewer delegates IDE-only concerns to an optional host adapter
 (`opts.host`):

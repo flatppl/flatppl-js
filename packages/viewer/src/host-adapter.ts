@@ -18,6 +18,20 @@ export function getVscodeApi(): VsCodeApi | null {
   return cachedVscodeApi;
 }
 
+/**
+ * Accept the documented self-message API in standalone pages. A foreign
+ * window must not replace source or settings just because it holds a window
+ * reference. VS Code delivers its own host messages with different event
+ * source/origin values. Detect that channel without consuming its one-shot API.
+ */
+export function hostMessageListener(receive: (event: MessageEvent) => void): (event: MessageEvent) => void {
+  const vscode = cachedVscodeApi !== null || typeof acquireVsCodeApi === 'function';
+  return function(event) {
+    if (!vscode && (event.source !== window || event.origin !== window.location.origin)) return;
+    receive(event);
+  };
+}
+
 export function defaultVscodeHost(): HostAdapter {
   // `const` (vs. the previous `var`) lets TS narrow `api` to non-null
   // inside the closures below — `var` reads as "possibly reassigned" and
@@ -50,12 +64,12 @@ export function defaultVscodeHost(): HostAdapter {
     promptForName: function(args: any) {
       const nonce = 'pn_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
       return new Promise(function(resolve) {
-        function listener(event: any) {
+        const listener = hostMessageListener(function(event: any) {
           const m = event.data;
           if (!m || m.type !== 'promptForNameResponse' || m.nonce !== nonce) return;
           window.removeEventListener('message', listener);
           resolve(m.name || null);
-        }
+        });
         window.addEventListener('message', listener);
         api.postMessage({
           type: 'promptForName',

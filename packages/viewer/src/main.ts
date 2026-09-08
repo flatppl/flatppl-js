@@ -188,7 +188,7 @@ import {
 
 
 import { VIEWER_BODY_HTML, ensureCssInjected } from './templates.js';
-import { defaultVscodeHost } from './host-adapter.js';
+import { defaultVscodeHost, hostMessageListener } from './host-adapter.js';
 
 
 
@@ -1518,7 +1518,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // Stored on ctx so dispose() can removeEventListener it — a host that
   // swaps this surface out (the gallery's per-file-type pane dispatch)
   // must not leave a dangling window 'message' listener behind.
-  ctx._onWindowMessage = function(event: any) {
+  ctx._onWindowMessage = hostMessageListener(function(event: any) {
     const msg = event.data;
     if (!msg) return;
 
@@ -1573,7 +1573,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
 
     if (msg.type !== 'sourceUpdate' && msg.type !== 'showModule') return;
     applySourceUpdate(ctx, msg);
-  };
+  });
   window.addEventListener('message', ctx._onWindowMessage);
 
   initCy(ctx);
