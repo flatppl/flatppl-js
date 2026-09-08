@@ -56,7 +56,10 @@
         '<div class="surface-placeholder"><p>FlatPPL viewer unavailable.</p></div>';
       return { update: function () {}, dispose: function () {} };
     }
-    const handle = V.mount(container, { host: ctx && ctx.host });
+    const handle = V.mount(container, {
+      host: ctx && ctx.host,
+      controlsContainer: document.getElementById('visualization-controls'),
+    });
     return {
       update: function (input: any) {
         handle.update(input.source, input.target || null, input.opts || {});

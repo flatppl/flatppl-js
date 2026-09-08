@@ -213,6 +213,9 @@ html, body {
   color: var(--fp-on-accent);
 }
 .pane-header button[hidden] { display: none; }
+#visualization-controls { flex: 0 0 auto; }
+#visualization-controls button { font-size: 12px; }
+#viewer-pane > .pane-header { overflow-x: auto; }
 
 .pane-body {
   flex: 1 1 auto;

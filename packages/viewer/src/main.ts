@@ -111,6 +111,7 @@ import {
   resetPlotContentStyle,
   saveViewState,
   setPlotEnabled,
+  setGraphEnabled,
   showPlotMessage,
 } from './render-frame.js';
 
@@ -398,6 +399,8 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     }
     ensureCssInjected();
     container.innerHTML = VIEWER_BODY_HTML;
+    const viewControls = $('view-controls');
+    if (opts.controlsContainer) opts.controlsContainer.appendChild(viewControls);
     // Host adapter: IDE-only concerns the viewer delegates outward
     // (cross-pane source navigation, panel-title updates, persistent
     // UI state). Each method is optional; missing methods become
@@ -787,6 +790,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // reflects the current focused binding, so flipping plotEnabled
   // back on never shows stale data.
   ctx.plotEnabled = false;
+  ctx.graphEnabled = true;
 
 
 
@@ -1354,15 +1358,17 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   $('plot-toggle').addEventListener('click', function() {
     setPlotEnabled(ctx, !ctx.plotEnabled);
   });
+  $('graph-toggle').addEventListener('click', function() {
+    setGraphEnabled(ctx, !ctx.graphEnabled);
+  });
 
   // Graph-view compactor toolbar: collapse/expand every reification
   // bubble in the currently focused sub-DAG (shift+click on a single
   // anchor toggles just that one — see dag.ts's tap handler).
   $('collapse-all-btn').addEventListener('click', function() {
-    toggleAllReifications(ctx, true);
-  });
-  $('expand-all-btn').addEventListener('click', function() {
-    toggleAllReifications(ctx, false);
+    const groups = ctx.currentState?.data.reifications || [];
+    const allCollapsed = groups.length > 0 && groups.every((group: any) => ctx.collapsedReifications.has(group.name));
+    toggleAllReifications(ctx, !allCollapsed);
   });
 
   // The inference-backend control now lives in the record-measure plot toolbar
@@ -1388,7 +1394,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // size change and refit cytoscape / echarts automatically — no
   // explicit resize / fit calls needed here.
   $('plot-divider').addEventListener('mousedown', function (ev) {
-    if (!ctx.plotEnabled) return;
+    if (!ctx.plotEnabled || !ctx.graphEnabled) return;
     ev.preventDefault();
     const graph = $('graph-panel');
     const plot  = $('plot-panel');
@@ -1631,6 +1637,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // initial DAG-only experience clean.
   let prevState: any = null;
   if (ctx.host.loadState) { try { prevState = ctx.host.loadState(); } catch (_) {} }
+  ctx.graphEnabled = prevState?.graphEnabled !== false;
   setPlotEnabled(ctx, prevState && prevState.plotEnabled === true);
   // Restore which reification bubbles were collapsed last session. A
   // restored anchor is marked "seen" so the >=3-member default in
@@ -1688,6 +1695,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     // the window 'message' listener. Idempotent and exception-safe — each
     // teardown is independent so one failure never blocks the rest.
     dispose: function() {
+      viewControls.remove();
       try { cancelAllSampling(ctx); } catch (_) {}  // terminate sampler worker + reject in-flight
       if (ctx.cy) { try { ctx.cy.destroy(); } catch (_) {} ctx.cy = null; }
       if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
