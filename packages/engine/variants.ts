@@ -47,7 +47,7 @@ const FLATPPL = Object.freeze({
   chainedComparison: true,
   semiKwargs: false,
   indexingLowersTo: 'get',
-  reservedAtBinding: new Set(['in', 'true', 'false', 'all', 'only']),
+  reservedAtBinding: new Set(['in', 'true', 'false', 'all', 'only', 'im', 'pi', 'inf']),
 });
 
 /**

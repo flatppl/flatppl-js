@@ -272,6 +272,13 @@ function parse(tokensIn: any[], variant: any) {
     const rewritten = rewriteFreeIdsToPlaceholders(body, argSet);
     const kwargs: any[] = [];
     for (let i = 0; i < argNames.length; i++) {
+      if (argNames[i] === 'im' || argNames[i] === 'pi' || argNames[i] === 'inf') {
+        diagnostics.push({
+          severity: 'error',
+          message: `'${argNames[i]}' is a numeric constant and cannot be an argument name`,
+          loc: argLocs[i],
+        });
+      }
       kwargs.push(AST.KeywordArg(
         argNames[i],
         AST.Placeholder(argNames[i], argLocs[i]),
