@@ -1281,8 +1281,9 @@ function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
       if (Number.isFinite(raw)) { pivot = raw; break; }
     }
     if (pivot == null) {
-      throw new Error('normalize density: logweight quadrature cannot find a finite '
-        + 'scale; this normalizer is unresolved (spec §06)');
+      throw engineLimitation('normalize over a logweight with no finite scale',
+        'density', 'logweight quadrature cannot find a finite scale, so this '
+        + 'normalizer is unresolved (spec §06)');
     }
     logShift = pivot;
   }
@@ -1295,8 +1296,9 @@ function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
     const raw = +samplerLib.evaluateExpr(weightFn.body, env);
     const w = logSpace ? Math.exp(raw - logShift) : raw;
     if (logSpace && !Number.isFinite(w)) {
-      throw new Error('normalize density: logweight quadrature exceeded its numeric '
-        + 'range; cannot resolve a finite normalizer (spec §06)');
+      throw engineLimitation('normalize over a logweight beyond the numeric range',
+        'density', 'logweight quadrature exceeded its numeric range, so a finite '
+        + 'normalizer cannot be resolved (spec §06)');
     }
     return Number.isFinite(w) && w > 0 ? w : 0;
   };
@@ -1600,13 +1602,14 @@ function matTotalmass(d: DerivationTotalmass, ctx: any) {
   // per-atom scalar value — broadcast since we track a single ensemble
   // logTotalmass per measure today (per-atom tracking is a refinement).
   return ctx.getMeasure(d.measureName).then((m: any) => {
-    // An uncertified mass is UNKNOWN, not 1. Answering 1 here silently
-    // reported the wrong scalar for every composite iid whose product mass the
-    // algebra could not certify; §06 gives that mass a value, so the gap is
-    // this engine's and the refusal is an ENGINE LIMITATION, not a model error.
-    if (m && m.logTotalmassUnknown) {
-      throw engineLimitation('totalmass of ' + m.logTotalmassUnknown, 'density',
-        'measure "' + d.measureName + '" carries no certified mass, and '
+    // `null` is an UNCERTIFIED mass, not 0. Exponentiating it answered a
+    // confident 1 for every composite iid whose product mass the algebra could
+    // not certify. §06 gives that mass a value, so the gap is this engine's:
+    // an ENGINE LIMITATION, not a model error. Every other reader propagates
+    // the null (`massOf` / `addMass`); this query is where it surfaces.
+    if (shared.massOf(m) === null) {
+      throw engineLimitation('totalmass', 'composite iid',
+        'measure "' + d.measureName + '" carries an uncertified mass, and '
         + 'answering 1 would be a wrong scalar rather than a missing one');
     }
     const N = ctx.sampleCount;

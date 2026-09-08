@@ -13,14 +13,12 @@
 //   { samples:      Float64Array,             // per-atom values (scalar-leaf view)
 //     value?:       Value,                    // shape-explicit view
 //     logWeights:   Float64Array | null,      // null = uniform 1/N
-//     logTotalmass: number,                   // default 0 (= totalmass 1)
-//     logTotalmassUnknown?: string,           // mass NOT certified: the field
-//                                             //   above is ABSENT and a
-//                                             //   `totalmass` query raises the
-//                                             //   engine limitation naming
-//                                             //   this construct. Never write
-//                                             //   both, and never read the 0
-//                                             //   default as a real mass.
+//     logTotalmass: number | null,            // absent = 0 (= totalmass 1);
+//                                             //   null = UNCERTIFIED, i.e.
+//                                             //   unknown. Never read null as
+//                                             //   0 — propagate it (`massOf` /
+//                                             //   `addMass`) or refuse. Only a
+//                                             //   `totalmass` query raises.
 //     n_eff:        number,                   // default = samples.length
 //     fields?:      { name → Measure },       // record/joint shape
 //     elems?:       Measure[],                // tuple shape
@@ -71,6 +69,7 @@ const density      = require('./mat-density.ts');
 const transforms   = require('./mat-transformations.ts');
 const samplerReg   = require('./sampler-registry.ts');
 const { MEASURE_PRODUCING } = require('./builtins.ts');
+const { engineLimitation } = require('./limitations.ts');
 
 const {
   nameSeed,
@@ -89,6 +88,8 @@ const {
   valueOf,
   isFunctionLikeBinding,
   isCallableLayerBinding,
+  massOf,
+  addMass,
 } = shared;
 
 // =====================================================================
@@ -445,7 +446,7 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
             return a;
           })();
       const w = new Float64Array(N);
-      const finalise = (logTotalmass: number, weights: Float64Array) => {
+      const finalise = (logTotalmass: number | null, weights: Float64Array) => {
         const out = isRecord
           ? Object.assign(empirical.recordMeasure(parent.fields, weights),
               { logTotalmass, n_eff: (typeof parent.n_eff === 'number' ? parent.n_eff : N) })
@@ -492,14 +493,12 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
           // = log(b−a)) the parent mass lives on `parent.logTotalmass`
           // and must be added explicitly. Cf. spec-canonical
           // ∫_a^b f · dx = (b−a) · E_{Uniform}[f].
-          const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
-          return finalise(parentLTM + empirical.logSumExp(w), w);
+          return finalise(addMass(massOf(parent), empirical.logSumExp(w)), w);
         });
       }
       // Constant shift fast path.
       for (let i = 0; i < N; i++) w[i] = baseLW[i] + d.logShift;
-      const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
-      return finalise(parentLTM + d.logShift, w);
+      return finalise(addMass(massOf(parent), d.logShift), w);
     }
     const lifted = empirical.materialiseUniform(parent);
     const N = lifted.logWeights.length;
@@ -532,8 +531,7 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
         // log(b−a) for `Lebesgue(interval(a,b))`) lives on
         // `parent.logTotalmass`; the empirical estimator captures
         // only the avg(f) factor over the parent's atoms.
-        const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
-        const lTM = parentLTM + empirical.logSumExp(w);
+        const lTM = addMass(massOf(parent), empirical.logSumExp(w));
         const nEff = empirical.effectiveSampleSize({ samples: lifted.samples, logWeights: w });
         const out: any = scalarMeasureN(lifted.samples,
           { logWeights: w, logTotalmass: lTM, n_eff: nEff });
@@ -545,10 +543,9 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
     // Constant fast path: orchestrator pre-computed d.logShift (a
     // uniform per-atom additive shift). totalmass simply scales.
     for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i] + d.logShift;
-    const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
     const out: any = scalarMeasureN(lifted.samples, {
       logWeights: w,
-      logTotalmass: parentLTM + d.logShift,
+      logTotalmass: addMass(massOf(parent), d.logShift),
       n_eff: (typeof parent.n_eff === 'number') ? parent.n_eff : N,
     });
     _keepAtomShape(out, parent);
@@ -620,7 +617,7 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
   const columns: Float64Array[] = parent._boxAxisColumns;
   const k = columns.length;
   const N = ctx.sampleCount;
-  const parentLTM = (typeof parent.logTotalmass === 'number') ? parent.logTotalmass : 0;
+  const parentLTM = massOf(parent);
   const baseLW = parent.logWeights || (() => {
     const c = N > 0 ? -Math.log(N) : 0;
     const a = new Float64Array(N);
@@ -628,7 +625,7 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
     return a;
   })();
   const w = new Float64Array(N);
-  const emit = (logTotalmass: number) => {
+  const emit = (logTotalmass: number | null) => {
     const m: any = scalarMeasureN(parent.samples, {
       logWeights: w,
       logTotalmass,
@@ -642,7 +639,7 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
 
   if (!d.weightIR) {
     for (let i = 0; i < N; i++) w[i] = baseLW[i] + d.logShift;
-    return Promise.resolve(emit(parentLTM + d.logShift));
+    return Promise.resolve(emit(addMass(parentLTM, d.logShift)));
   }
 
   let evalIR = d.weightIR;
@@ -696,7 +693,7 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
     } else {
       _addWeightedLogSamples(w, baseLW, weights, N, !!d.isVariateWeight);
     }
-    return emit(parentLTM + empirical.logSumExp(w));
+    return emit(addMass(parentLTM, empirical.logSumExp(w)));
   });
 }
 
@@ -1177,16 +1174,17 @@ function _iidFixedLogTotalmass(from: string, k: number, ctx: any): number | null
     return ok;
   };
   if (!hasCompleteMassAlgebra(from)) return null;
-  // NOT wrapped in a catch. A measure with no expanded density IR makes
-  // `expandMeasure` RETURN null — it does not throw — and
-  // `closedFormLogTotalmass(null)` then declines, which is the decline this
-  // function already reports. The one throw reachable from here is
-  // `jointchain`'s duplicate-label refusal, a genuine model error that must
-  // reach the user rather than degrade into an uncertified mass. Removing the
-  // former untyped catch changed no test in the engine suite.
-  const ir = expandMeasureIR(from, ctx.derivations, new Set(), ctx.bindings);
-  const inner = closedFormLogTotalmass(ir, ctx.bindings);
-  return typeof inner === 'number' && Number.isFinite(inner) ? k * inner : null;
+  try {
+    const ir = expandMeasureIR(from, ctx.derivations, new Set(), ctx.bindings);
+    const inner = closedFormLogTotalmass(ir, ctx.bindings);
+    return typeof inner === 'number' && Number.isFinite(inner) ? k * inner : null;
+  } catch {
+    // An expansion fault yields UNKNOWN, never a certified mass. Sampling a
+    // composite that has no expanded density IR must keep working, and the
+    // null this returns makes a later `totalmass` refuse rather than answer a
+    // wrong scalar. The cost is that the fault's own text is not surfaced.
+    return null;
+  }
 }
 
 function matIid(name: string, d: DerivationIid, ctx: any) {
@@ -1339,17 +1337,14 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       return p;
     };
     return inflatedCtx.getMeasure(d.from).then((innerM: any) => {
-      const fixedLogMass = _iidFixedLogTotalmass(d.from, k, ctx);
       // §06 makes an iid product measure's mass Z^k. When the algebra cannot
       // certify Z, this measure's mass is UNKNOWN, and recording 0 would claim
       // totalmass exactly 1 — a silent WRONG answer rather than a missing one.
-      // Carry the uncertified marker instead, so `totalmass` raises the engine
-      // limitation (`mat-density.matTotalmass`). Sampling and density read the
-      // samples, not this field, so a model that never asks for the mass is
-      // unaffected: the refusal costs the query, not the whole measure.
-      const massMeta: any = fixedLogMass == null
-        ? { logTotalmassUnknown: 'a composite iid product mass' }
-        : { logTotalmass: fixedLogMass };
+      // `null` IS that unknown, and every mass reader must propagate it or
+      // refuse (`massOf` / `addMass` in `materialiser-shared.ts`); only a
+      // `totalmass` query raises. Sampling and density read the samples, not
+      // this field, so the refusal costs the query, not the whole measure.
+      const logTotalmass: number | null = _iidFixedLogTotalmass(d.from, k, ctx);
       // §06 `iid` is a product measure, so the k inner positions' importance
       // weights multiply into ONE weight per atom, and a weight stream shared
       // across the block joins it once. Folded before either branch below
@@ -1415,7 +1410,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         const table: any = { __table__: true, columns, nrows: k };
         return {
           shape: 'table', __table__: true, columns, nrows: k,
-          value: table, ...massMeta, n_eff: 1,
+          value: table, logTotalmass, n_eff: 1,
         };
       }
       // A TUPLE-variate inner measure — a positional `joint(M1, M2)`, or a
@@ -1473,7 +1468,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         empirical.arrayMeasure(samples, perAtomDims, foldedLW),
         {
           value: value,
-          ...massMeta,
+          logTotalmass,
           // From the folded weights when there are any: k importance-weighted
           // coordinates per atom leave far fewer effective atoms than N.
           n_eff: foldedLW
@@ -2144,10 +2139,10 @@ function matTuple(d: DerivationTuple, ctx: any, name: string) {
   // in elems. Top-level logWeights is the join of components'.
   return _materialiseFactorsIndependent(d.elems, ctx, name).then((subs: any[]) => {
     const lw = empirical.propagateLogWeights(subs);
-    let lTM = 0;
+    let lTM: number | null = 0;
     let nEff = ctx.sampleCount;
     for (const s of subs) {
-      if (typeof s.logTotalmass === 'number') lTM += s.logTotalmass;
+      lTM = addMass(lTM, massOf(s));
       if (typeof s.n_eff === 'number') nEff = Math.min(nEff, s.n_eff);
     }
     return Object.assign(
@@ -2167,11 +2162,11 @@ function matRecord(d: DerivationRecord, ctx: any, name: string) {
   const fieldDeps  = fieldNames.map((k) => d.fields[k]);
   return _materialiseFactorsIndependent(fieldDeps, ctx, name).then((subs: any[]) => {
     const fields: any = {};
-    let lTM = 0;
+    let lTM: number | null = 0;
     let nEff = ctx.sampleCount;
     for (let i = 0; i < fieldNames.length; i++) {
       fields[fieldNames[i]] = subs[i];
-      if (typeof subs[i].logTotalmass === 'number') lTM += subs[i].logTotalmass;
+      lTM = addMass(lTM, massOf(subs[i]));
       if (typeof subs[i].n_eff === 'number') nEff = Math.min(nEff, subs[i].n_eff);
     }
     const lw = empirical.propagateLogWeights(subs);
@@ -2210,6 +2205,15 @@ function _superposeComponentWeights(p: any) {
   // `logTotalmass`, an infinite mass (§06 leaves Z = ∞ undefined), or a
   // zero-mass component whose weights are already all −∞ — that last one is
   // the superposition matSuperpose refuses below.
+  // Unlike the mass sums above, this offset feeds the SAMPLE weights, so an
+  // uncertified component cannot be carried as unknown and cannot default to
+  // zero either: `null - x` is `-x` in JavaScript, a finite and wrong offset.
+  // §06 fixes these mixture weights from the component masses, so without one
+  // the superposition is not computable here at all.
+  if (massOf(p) === null) {
+    throw engineLimitation('superpose over a component with an uncertified mass',
+      'sampling', 'the mixture weights of §06 need that component\'s total mass');
+  }
   const off = p.logTotalmass - empirical.logSumExp(u.logWeights);
   if (!Number.isFinite(off) || Math.abs(off) < 1e-12) return u;
   const lw = new Float64Array(u.logWeights.length);
@@ -3459,9 +3463,9 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
       // tupleMeasure strip them at the leaves so the composite-measure
       // invariant holds at every layer (empirical.ts).
       const lw = empirical.propagateLogWeights(subs);
-      let lTM = 0; let nEff = ctx.sampleCount;
+      let lTM: number | null = 0; let nEff = ctx.sampleCount;
       for (const s of subs) {
-        if (typeof s.logTotalmass === 'number') lTM += s.logTotalmass;
+        lTM = addMass(lTM, massOf(s));
         if (typeof s.n_eff === 'number') nEff = Math.min(nEff, s.n_eff);
       }
       if (isPositionalJoint) {

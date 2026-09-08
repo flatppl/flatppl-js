@@ -2,6 +2,7 @@
 
 // logweighted(f,M) and weighted(exp(f),M) define the same measure (§06).
 // Exponential tilting of Normal(0,1) by exp(x) yields Normal(1,1).
+const { ENGINE_LIMITATION } = require('../limitations.ts');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ctxFor } = require('./_ctx-factory.ts');
@@ -82,7 +83,12 @@ lp = logdensityof(m, 0.5)
     assert.match(errors.map((d: any) => d.message).join('\n'), /zero|normaliz|finite scale/i);
     return;
   }
-  await assert.rejects(ctx.getMeasure('lp'), /cannot find a finite scale/);
+  // An engine limit, not an invalid model: assert the code, not just the text.
+  await assert.rejects(ctx.getMeasure('lp'), (e: any) => {
+    assert.equal(e.code, ENGINE_LIMITATION, e.message);
+    assert.match(e.message, /cannot find a finite scale/);
+    return true;
+  });
 });
 
 test('an extreme logweight tilt gives its exact density or an explicit range refusal', async () => {
@@ -93,7 +99,8 @@ lp = logdensityof(m, 0.5)
   let got: number;
   try {
     got = (await ctx.getMeasure('lp')).samples[0];
-  } catch (error) {
+  } catch (error: any) {
+    assert.equal(error.code, ENGINE_LIMITATION, error.message);
     assert.match(String(error), /exceeded its numeric range/);
     return;
   }

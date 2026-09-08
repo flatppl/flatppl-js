@@ -6,6 +6,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
 const { ENGINE_LIMITATION } = require('../limitations.ts');
+const shared = require('../materialiser-shared.ts');
 
 function close(actual: number, expected: number) {
   assert.ok(Math.abs(actual - expected) < 1e-11,
@@ -129,21 +130,20 @@ mass = totalmass(M)
 `, { sampleCount: 64, rootSeed: 818 });
   // Sampling still works — the refusal costs the mass query alone.
   const m = await ctx.getMeasure('M');
-  assert.equal(m.logTotalmassUnknown, 'a composite iid product mass');
-  assert.equal(typeof m.logTotalmass, 'undefined');
+  assert.equal(m.logTotalmass, null, 'an uncertified mass is null, not 0');
   assert.equal(m.samples.length, 128);
   await assert.rejects(() => ctx.getMeasure('mass'), (e: any) => {
     assert.equal(e.code, ENGINE_LIMITATION, e.message);
     assert.deepEqual(e.limitation,
-      { construct: 'totalmass of a composite iid product mass', route: 'density' });
-    assert.match(e.message, /carries no certified mass/);
+      { construct: 'totalmass', route: 'composite iid' });
+    assert.match(e.message, /carries an uncertified mass/);
     return true;
   });
 });
 
-test('a certified composite iid still reports a mass and no marker', async () => {
+test('a certified composite iid still reports k times the inner mass', async () => {
   // The guard must not fire on the certified path: `weighted` IS in the
-  // algebra, so this keeps its exact 2² and never reaches the refusal.
+  // algebra, so the mass stays k · log 2 = log 4 and never reaches the refusal.
   const { ctx } = makeMatCtx(`
 q = weighted(2.0, Normal(0.0, 1.0))
 x ~ Normal(0.0, 1.0)
@@ -152,28 +152,77 @@ M = iid(r, 2)
 mass = totalmass(M)
 `, { sampleCount: 64, rootSeed: 818 });
   const m = await ctx.getMeasure('M');
-  assert.equal(m.logTotalmassUnknown, undefined);
+  // k · inner = 2 · log 2, the certified product mass, and never null.
+  assert.equal(m.logTotalmass, 2 * Math.log(2));
   close((await ctx.getMeasure('mass')).samples[0], 4);
 });
 
-test('an expansion error during certification is not swallowed', async () => {
-  // The former untyped catch turned ANY expansion failure into an uncertified
-  // mass. A measure with no expanded density IR RETURNS null rather than
-  // throwing, so the catch only ever hid real faults — including
-  // `jointchain`'s duplicate-label model error. Inject one and require it out.
+test('an expansion fault yields an uncertified mass, never a certified one', async () => {
+  // The catch keeps sampling available for a composite with no expanded
+  // density IR. What it must NOT do is report a mass: the fault degrades to
+  // null (unknown), so the `totalmass` query refuses instead of answering 1.
   const derivations = require('../derivations.ts');
   const original = derivations.expandMeasureIR;
-  const injected = new Error('expandMeasureIR: injected expansion fault');
-  derivations.expandMeasureIR = () => { throw injected; };
+  derivations.expandMeasureIR = () => {
+    throw new Error('expandMeasureIR: injected expansion fault');
+  };
   try {
     const { ctx } = makeMatCtx(`
-q = weighted(2.0, Normal(0.0, 1.0))
 x ~ Normal(0.0, 1.0)
 r = weighted(2.0, lawof(x))
 M = iid(r, 2)
+mass = totalmass(M)
 `, { sampleCount: 64, rootSeed: 818 });
-    await assert.rejects(() => ctx.getMeasure('M'), /injected expansion fault/);
+    const m = await ctx.getMeasure('M');
+    assert.equal(m.logTotalmass, null);
+    assert.equal(m.samples.length, 128);
+    await assert.rejects(() => ctx.getMeasure('mass'), (e: any) => {
+      assert.equal(e.code, ENGINE_LIMITATION, e.message);
+      return true;
+    });
   } finally {
     derivations.expandMeasureIR = original;
   }
+});
+
+test('an uncertified mass propagates through a wrapper instead of becoming 1', async () => {
+  // Every derived mass goes through `massOf` / `addMass`, so a wrapper around
+  // an uncertified iid stays uncertified. Reading the null as 0 here would
+  // reintroduce the wrong answer one level out.
+  for (const wrapper of ['weighted(3.0, M)', 'pushfwd(fn(_ + 1.0), M)',
+                         'joint(a = M, b = Normal(0.0, 1.0))']) {
+    const { ctx } = makeMatCtx(`
+q = truncate(weighted(2.0, Normal(0.0, 1.0)), interval(-1.0, 1.0))
+M = iid(q, 2)
+W = ${wrapper}
+mass = totalmass(W)
+`, { sampleCount: 64, rootSeed: 818 });
+    const w = await ctx.getMeasure('W');
+    assert.equal(shared.massOf(w), null, wrapper);
+    await assert.rejects(() => ctx.getMeasure('mass'), (e: any) => {
+      assert.equal(e.code, ENGINE_LIMITATION, wrapper + ': ' + e.message);
+      return true;
+    });
+  }
+});
+
+test('superpose refuses a component whose mass is uncertified', async () => {
+  // Unlike the mass sums, §06's mixture weights are BUILT from the component
+  // masses, so this reader needs a number for sampling and cannot carry the
+  // unknown forward. `null - x` is `-x` in JavaScript, so defaulting would
+  // have produced a finite, wrong offset and silently mis-weighted draws.
+  const { ctx } = makeMatCtx(`
+q = truncate(weighted(2.0, Normal(0.0, 1.0)), interval(-1.0, 1.0))
+A = iid(q, 2)
+B = iid(weighted(2.0, Normal(0.0, 1.0)), 2)
+S = superpose(A, B)
+`, { sampleCount: 32, rootSeed: 818 });
+  await assert.rejects(() => ctx.getMeasure('S'), (e: any) => {
+    assert.equal(e.code, ENGINE_LIMITATION, e.message);
+    assert.deepEqual(e.limitation, {
+      construct: 'superpose over a component with an uncertified mass',
+      route: 'sampling',
+    });
+    return true;
+  });
 });

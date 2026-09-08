@@ -1007,7 +1007,9 @@ function measureFromValue(v: any, extras: any) {
     samples:      v.data,
     value:        v,
     logWeights:   extras.logWeights != null ? extras.logWeights : null,
-    logTotalmass: extras.logTotalmass != null ? extras.logTotalmass : 0,
+    // `null` is a DELIBERATE uncertified mass and must survive; only an
+    // absent field means 0.
+    logTotalmass: extras.logTotalmass !== undefined ? extras.logTotalmass : 0,
     n_eff:        extras.n_eff != null ? extras.n_eff : N,
   };
   if (dims) {
@@ -1303,6 +1305,35 @@ function resolveFnBody(binding: any, bindings: any): any {
   return { body: binding.ir.body, paramName: params[0], params };
 }
 
+// =====================================================================
+// Uncertified mass (`logTotalmass === null`)
+// =====================================================================
+//
+// A measure's `logTotalmass` is a number, absent (meaning 0, mass 1), or
+// NULL — which means the engine could not certify the mass at all. Null is
+// NOT zero: reading it as 0 answers `totalmass` with a confident 1, which is
+// a WRONG scalar rather than a missing one (`matIid`'s composite product mass
+// is the case that produces it).
+//
+// So every reader that DERIVES one measure's mass from another goes through
+// these two helpers. `massOf` distinguishes "absent, so 0" from "null, so
+// unknown"; `addMass` keeps a sum unknown as soon as one term is. A reader
+// that needs a plain number for SAMPLING must not consult the mass at all.
+// Only `mat-density.matTotalmass` turns the unknown into a refusal, so an
+// uncertified mass costs the mass query and nothing else.
+
+/** A parent's log mass for deriving another measure's: null = uncertified. */
+function massOf(m: any): number | null {
+  if (!m) return 0;
+  if (m.logTotalmass === null) return null;
+  return typeof m.logTotalmass === 'number' ? m.logTotalmass : 0;
+}
+
+/** Sum of log masses, unknown (null) as soon as any term is unknown. */
+function addMass(a: number | null, b: number | null): number | null {
+  return (a === null || b === null) ? null : a + b;
+}
+
 module.exports = {
   inlineCallableRefs,
   nameSeed,
@@ -1333,4 +1364,6 @@ module.exports = {
   collectionAxesOf,
   classifyBroadcastArg,
   resolveFnBody,
+  massOf,
+  addMass,
 };
