@@ -8,6 +8,7 @@ body {
   background: var(--fp-bg);
   color: var(--fp-text);
   font-family: var(--fp-font-sans);
+  font-size: var(--fp-size-base);
   line-height: var(--fp-leading);
 }
 
@@ -18,24 +19,52 @@ body {
 }
 
 #page-main {
-  box-sizing: border-box;
-  width: min(100%, var(--fp-col-width));
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  box-sizing: content-box;
+  max-width: var(--fp-col-width);
+  margin: 0 auto;
   flex: 1 1 auto;
-  padding: var(--fp-gutter) var(--fp-gutter) 3rem;
+  padding: 2em 2em 4em 3em;
+  overflow-wrap: break-word;
+}
+
+#page-main :where(h1, h2, h3) {
+  color: var(--fp-text-strong);
+  line-height: var(--fp-leading-ui);
 }
 
 #page-main h1 {
   margin: 0 0 var(--fp-rhythm);
-  color: var(--fp-text-strong);
   font-size: var(--fp-size-h1);
 }
 
 #page-main h2 {
-  margin: 1.6em 0 0.5em;
-  color: var(--fp-text-strong);
+  margin: 2em 0 0.6em;
+  font-size: var(--fp-size-h2);
+}
+
+#page-main h3 {
   font-size: var(--fp-size-h3);
 }
 
-#page-main p {
-  margin: 0.6em 0;
+#page-main :where(p, ul, ol, pre, table) {
+  margin-block: var(--fp-rhythm);
+}
+
+#page-main :where(p, ul, ol) { margin-block: 1em; }
+#page-main :where(ul, ol) { padding-left: 2.5em; }
+#page-main :where(ul, ol) > li { margin-bottom: 0.25em; }
+
+html { scroll-padding-top: calc(var(--fp-header-h) + 1rem); }
+.fp-shell-header { position: sticky; top: 0; z-index: 300; }
+.fp-shell-footer { position: sticky; bottom: 0; z-index: 110; }
+
+@media (max-width: 60em) {
+  #page-main {
+    margin-inline: 0;
+    padding: 3.5em 1.2em 2em;
+  }
+
+  .fp-shell-footer { position: static; }
 }
