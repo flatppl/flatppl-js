@@ -2725,12 +2725,23 @@ function _selectorNames(sel: any): string[] | null {
   return null;
 }
 
-// The component map { fieldName → sub-measure binding ref } of a measure
+// The component map { fieldName → component binding ref } of a measure
 // binding whose IR is an explicit NAMED product (`joint`/`record` with
-// `fields`), following plain aliases. Returns null for any other shape
-// (positional joint, iid, relabel, distribution, …). Mirrors
+// `fields`), following plain aliases and `lawof`. Returns null for any other
+// shape (positional joint, iid, relabel, distribution, …). Mirrors
 // classifyRecordOrJoint's named-field extraction so the projected derivation
-// references the exact same sub-measure bindings the base uses.
+// references the exact same sub-bindings the base uses.
+//
+// `lawof` is transparent here in both of its readings, and the projection
+// identity holds for each. On a MEASURE argument `lawof` is the identity
+// (spec §04 "Reification to measures"), so the base is the product itself.
+// On a record VALUE — `lawof(record(c = a, d = b))`, whose components are
+// draw bindings rather than sub-measures — the argument reifies to "the
+// total law of the recorded variates" (§04), and a law pushed forward
+// through a deterministic map is the law of the mapped value. Projecting to
+// a field subset is therefore the law of the retained subrecord, which is
+// the same `record` derivation over the same component bindings. Both
+// readings collapse to dropping the un-selected components.
 function _namedProductComponents(
   name: string, bindings: any, seen: Set<string>,
 ): Record<string, string> | null {
@@ -2741,6 +2752,10 @@ function _namedProductComponents(
   const ir = b.ir;
   if (ir.kind === 'ref' && ir.ns === 'self') {
     return _namedProductComponents(ir.name, bindings, seen);
+  }
+  if (ir.kind === 'call' && ir.op === 'lawof' && Array.isArray(ir.args)
+      && ir.args.length === 1 && isSelfRef(ir.args[0])) {
+    return _namedProductComponents(ir.args[0].name, bindings, seen);
   }
   if (ir.kind === 'call' && (ir.op === 'joint' || ir.op === 'record')
       && Array.isArray(ir.fields) && ir.fields.length > 0) {
@@ -2763,38 +2778,88 @@ function _detectStructuralProjection(
   fnRef: string, baseRef: string, bindings: any,
 ): DerivationRecord | DerivationAlias | null {
   const fb = bindings.get(fnRef);
-  // The caller already verified fnRef is a callable-like binding; an
-  // `fn(...)` projection lowers to a `functionof` IR but carries binding
-  // type 'fn', so gate on the IR op, not the type label.
-  if (!fb || !fb.ir || fb.ir.op !== 'functionof') return null;
-  const body = fb.ir.body;
-  // A pure single-input projection: body is `get(<the lone param>, <selector>)`.
-  if (!body || body.kind !== 'call' || body.op !== 'get'
-      || !Array.isArray(body.args) || body.args.length !== 2) return null;
-  const params: any[] = Array.isArray(fb.ir.params) ? fb.ir.params : [];
-  if (params.length !== 1) return null;
-  const holeRef = body.args[0];
-  // The lone param ref: `%local` (fn-hole / placeholder form) or a
-  // `self` ref of the param's name (identifier-bound boundary form,
-  // spec-shaped bodies §11 — `functionof(get(x, [...]), x = x)`).
-  if (!holeRef || holeRef.kind !== 'ref'
-      || (holeRef.ns !== '%local' && holeRef.ns !== 'self')
-      || holeRef.name !== params[0]) return null;
-  const names = _selectorNames(body.args[1]);
-  if (!names) return null;
-  const comp = _namedProductComponents(baseRef, bindings, new Set<string>());
+  const sel = fieldProjectionSelector(fb && fb.ir);
+  if (!sel) return null;
+  let comp = _namedProductComponents(baseRef, bindings, new Set<string>());
+  // Each `prefix` step descends one level into a nested named product, so a
+  // record of records projects field-by-field (`fn(_.a.x)`).
+  for (const nm of sel.prefix) {
+    if (!comp || !Object.prototype.hasOwnProperty.call(comp, nm)) return null;
+    comp = _namedProductComponents(comp[nm], bindings, new Set<string>());
+  }
   if (!comp) return null;
-  for (const nm of names) {
+  for (const nm of sel.names) {
     if (!Object.prototype.hasOwnProperty.call(comp, nm)) return null;
   }
   // Single-name selector → the bare component value (a scalar measure): an
   // alias to that sub-measure. Multi-name → the projected record.
-  if (body.args[1].kind === 'lit') {
-    return { kind: 'alias', from: comp[names[0]] };
+  if (sel.bare) {
+    return { kind: 'alias', from: comp[sel.names[0]] };
   }
   const fields: Record<string, string> = {};
-  for (const nm of names) fields[nm] = comp[nm];   // selector order (get semantics)
+  for (const nm of sel.names) fields[nm] = comp[nm]; // selector order (get semantics)
   return { kind: 'record', fields };
+}
+
+// The field selection a callable's IR performs when it is a PURE record
+// projection of its lone parameter — spec §06 case-2's
+// `fn(get(_, [...]))` — else null.
+//
+// `names` are the fields the LAST `get` selects, and `bare` marks the
+// single-name spelling `get(_, "a")`, spec §07's element access, whose result
+// is the field's own value rather than a one-field sub-record. `prefix` holds
+// the intermediate field names of a nested path — `fn(_.a.x)`, which §07
+// lowers to `get(get(_, "a"), "x")`. Note that §07's array selector is
+// SUBSET SELECTION within one record, so `get(_, ["a", "x"])` names two
+// fields of the SAME record and is not a path; a path is spelled as nested
+// `get`s. Every intermediate step must be element access, since a subset
+// selection mid-path would select from several sub-records at once.
+//
+// Shared by the classifier (which rewrites a projection of an explicit named
+// product to the projected product) and by matPushfwd (which projects an
+// already-materialised record base by selecting its columns). Both must agree
+// on what counts as a projection, or one path rewrites a shape the other
+// evaluates.
+function fieldProjectionSelector(
+  ir: any,
+): { prefix: string[]; names: string[]; bare: boolean } | null {
+  // An `fn(...)` projection lowers to a `functionof` IR but carries binding
+  // type 'fn', so gate on the IR op, not the type label.
+  if (!ir || ir.op !== 'functionof') return null;
+  const params: any[] = Array.isArray(ir.params) ? ir.params : [];
+  if (params.length !== 1) return null;
+  // Peel the `get` chain from the outside in, so the last step read is the
+  // innermost one — the one applied to the parameter.
+  const steps: { names: string[]; bare: boolean }[] = [];
+  let node = ir.body;
+  for (;;) {
+    // A pure projection: `get(<selectable>, <name selector>)`, bottoming out
+    // at the lone param. §07 makes dot access the same construct —
+    // "`r.a` ≡ `get(r, "a")`" — and the lowerer spells the sugar `get_field`,
+    // so both ops select here or `fn(_.a)` would lose the closed-form
+    // marginal that `fn(get(_, "a"))` gets.
+    if (!node || node.kind !== 'call'
+        || (node.op !== 'get' && node.op !== 'get_field')
+        || !Array.isArray(node.args) || node.args.length !== 2) return null;
+    const names = _selectorNames(node.args[1]);
+    if (!names) return null;
+    steps.push({ names, bare: node.args[1].kind === 'lit' });
+    const inner = node.args[0];
+    // The lone param ref: `%local` (fn-hole / placeholder form) or a
+    // `self` ref of the param's name (identifier-bound boundary form,
+    // spec-shaped bodies §11 — `functionof(get(x, [...]), x = x)`).
+    if (inner && inner.kind === 'ref'
+        && (inner.ns === '%local' || inner.ns === 'self')
+        && inner.name === params[0]) break;
+    node = inner;
+  }
+  const last = steps[0];
+  const prefix: string[] = [];
+  for (let i = steps.length - 1; i >= 1; i--) {
+    if (!steps[i].bare) return null;
+    prefix.push(steps[i].names[0]);
+  }
+  return { prefix, names: last.names, bare: last.bare };
 }
 
 // The ordered component list of a measure IR that is an explicit product
@@ -5617,6 +5682,8 @@ module.exports = {
   classifyTotalmass,
   classifyTruncate,
   classifyPushfwd,
+  // Spec §06 case-2 projection-shape test, shared with matPushfwd.
+  fieldProjectionSelector,
   classifyJointchain,
   MEASURE_OP_CLASSIFIERS,
   derivationRefsValid,

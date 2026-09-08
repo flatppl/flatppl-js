@@ -217,6 +217,55 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         });
       });
     }
+    // Spec §06 case-2, sampling side: a pure field projection of a
+    // RECORD-valued base. `classifyPushfwd` rewrites a projection of an
+    // explicit named product to the projected product, so those shapes never
+    // reach matPushfwd. It cannot rewrite a base whose product structure is
+    // not readable in the IR — a `joint` behind a `normalize`, a joint over
+    // shared stochastic ancestors — and such a base lands here, where the
+    // generic path evaluates f per atom and fails: `get` of a record returns
+    // a record, and the batched evaluator is scalar-per-atom.
+    //
+    // Projecting an already-materialised record measure needs no evaluator.
+    // The base is N weighted atoms of a record, and the pushforward under a
+    // coordinate projection is those same atoms with the un-selected fields
+    // dropped and every weight unchanged.
+    //
+    // The projected measure carries the BASE's total mass, not the selected
+    // fields': §06 `pushfwd` is `(f_*M)(Y) = M(f^{-1}(Y))`, and the whole
+    // space pulls back to the whole space, so a dropped component's mass
+    // stays in the marginal. The base's top-level `logWeights` is the join
+    // over every field's weighting events, so carrying it is what keeps that
+    // mass on the atoms — a dropped field's importance weight belongs in the
+    // marginal, and taking the selected field's own weights instead would
+    // silently divide it out.
+    const projSel = derivations.fieldProjectionSelector(fBinding.ir);
+    // Descend the nested-path prefix (`fn(_.a.x)`) before selecting.
+    let projBase = projSel ? M : null;
+    if (projSel) {
+      for (const nm of projSel.prefix) {
+        projBase = (projBase && projBase.fields) ? projBase.fields[nm] : null;
+      }
+    }
+    if (projSel && projBase && projBase.fields
+        && projSel.names.every((nm: string) => !!projBase.fields[nm])) {
+      const carried = {
+        logWeights:   M.logWeights || null,
+        logTotalmass: shared.massOf(M),
+        n_eff:        (typeof M.n_eff === 'number') ? M.n_eff : measureN(M),
+      };
+      // §07 `get`: a single NAME selector is element access, so the variate
+      // is the field's own value; an ARRAY selector is subset selection and
+      // stays record-shaped, one field included.
+      if (projSel.bare) {
+        return Object.assign({}, projBase.fields[projSel.names[0]], carried);
+      }
+      const projFields: any = {};
+      for (const nm of projSel.names) projFields[nm] = projBase.fields[nm];
+      return Object.assign(
+        empirical.recordMeasure(projFields, carried.logWeights), carried,
+      );
+    }
     // AST path (pre-§22 baseline).
     //
     // H5 (transitive boundary substitution): f's body may reach its
