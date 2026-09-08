@@ -1,6 +1,6 @@
 name: Test
 
-# Runs the engine unit tests on every push and pull request, plus a
+# Runs all workspace unit tests on every push and pull request, plus a
 # smoke build of the web and vscode-extension packages so a regression
 # that breaks bundling (missing export, ESM/CJS mistake, vendored-lib
 # path drift) shows up before it hits a release or a Pages deploy.
@@ -85,7 +85,7 @@ jobs:
         # --if-present. Each workspace's script writes an LCOV
         # report to packages/<name>/coverage/lcov.info; the
         # Codecov upload step below picks all of them up via glob.
-        # Today only packages/engine has tests; new packages with
+        # Today only packages/engine has a coverage script; new packages with
         # test:coverage scripts are picked up automatically.
         run: npm run test:coverage
 
@@ -129,8 +129,7 @@ jobs:
       - name: Build web package
         # End-to-end smoke: confirms the resolver, bundler, and
         # vendored-asset paths all line up. Builds the convert wasm-api from the
-        # flatppl-rust sibling (FLATPPL_RUST_DIR). No tests here yet —
-        # add them under packages/web/test when they land.
+        # flatppl-rust sibling (FLATPPL_RUST_DIR).
         run: npm run build --workspace=packages/web
 
       - name: Build vscode-extension lib (vendor + engine bundle)
@@ -138,3 +137,8 @@ jobs:
         # esbuild bundle resolves every engine import and the
         # third-party-licenses generator finds every dep.
         run: npm run build:vendor
+
+      - name: Run viewer, extension, and web tests
+        # Extension tests import generated .js files from build:vendor.
+        # These packages have test scripts but no test:coverage scripts.
+        run: npm test --workspace=packages/viewer --workspace=packages/vscode-extension --workspace=packages/web

@@ -8,7 +8,9 @@ the Flat Portable Probabilistic Language.
 > ships only as part of the [`flatppl-js`](https://github.com/flatppl/flatppl-js)
 > monorepo and is consumed via npm workspace symlinks by sibling packages.
 
-This package has no runtime dependencies and uses only Node.js built-ins.
+The engine uses `@stdlib` distribution and random-sampling packages at runtime.
+The current workspace runs TypeScript sources directly. Package publication
+still requires a complete JavaScript build and a consumer installation check.
 
 ## About FlatPPL
 
@@ -22,14 +24,14 @@ example suite).
 
 ## Modules
 
-- [`tokenizer.js`](tokenizer.js) — source text → token stream
-- [`ast.js`](ast.js) — AST node constructors
-- [`parser.js`](parser.js) — recursive-descent parser → AST + diagnostics
-- [`analyzer.js`](analyzer.js) — scope, classification, dependencies, diagnostics
-- [`dag.js`](dag.js) — ancestor sub-DAG extraction
-- [`disintegrate.js`](disintegrate.js) — structural disintegration rewriter
-- [`builtins.js`](builtins.js) — catalog of known FlatPPL names
-- [`index.js`](index.js) — public API
+- [`tokenizer.ts`](tokenizer.ts) — source text → token stream
+- [`ast.ts`](ast.ts) — AST node constructors
+- [`parser.ts`](parser.ts) — recursive-descent parser → AST + diagnostics
+- [`analyzer.ts`](analyzer.ts) — scope, classification, dependencies, diagnostics
+- [`dag.ts`](dag.ts) — ancestor sub-DAG extraction
+- [`disintegrate.ts`](disintegrate.ts) — structural disintegration rewriter
+- [`builtins.ts`](builtins.ts) — catalog of known FlatPPL names
+- [`index.ts`](index.ts) — public API
 
 ## Testing
 
@@ -40,8 +42,11 @@ npm test                          # via the workspace's test script
 Or run directly from inside this package:
 
 ```sh
-node --test 'test/*.test.js'
+node --test 'test/**/*.test.ts'
 ```
+
+These commands require a Node version that runs the repository's TypeScript
+sources. The audit checks used Node 26.3.0.
 
 ## License
 
