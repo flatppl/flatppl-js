@@ -208,7 +208,7 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
       delete node.massFrom;
       continue;
     }
-    assertFixedMassFallback(inner, ctx);
+    assertFixedMassFallback(inner, ctx, 'MCMC');
     needMaterialise.push(node);
   }
   if (needMaterialise.length === 0) return measureIR;

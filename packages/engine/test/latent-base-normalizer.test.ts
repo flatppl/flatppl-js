@@ -7,9 +7,23 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ctxFor } = require('./_ctx-factory.ts');
 const { buildLogPi } = require('../mcmc-density.ts');
+const { ENGINE_LIMITATION, isEngineLimitation } = require('../limitations.ts');
 
 const H = 'flatppl_compat = "0.1"\n';
-const refusal = /normalize.*parameter-dependent.*mass/i;
+
+// The refusal is an engine limitation, not a model error: §06 gives a
+// θ-dependent normalizer a value, and only this engine's mass builders fall
+// short. Assert the structured code, so rewording the sentence cannot let a
+// model error pass here and a tool cannot mistake the gap for invalid source.
+function assertLimitation(err: any, route: string): boolean {
+  assert.equal(err.code, ENGINE_LIMITATION, `code was ${err.code}: ${err.message}`);
+  assert.ok(isEngineLimitation(err));
+  assert.deepEqual(err.limitation,
+    { construct: 'normalize over a parameter-dependent total mass', route });
+  assert.match(err.message, /not implemented/);
+  assert.match(err.message, /not invalid/);
+  return true;
+}
 
 for (const weight of ['weighted(fn(exp(_))', 'logweighted(fn(_)']) {
   const model = H + 'theta ~ Uniform(interval(0.5, 2.0))\n'
@@ -21,7 +35,8 @@ for (const weight of ['weighted(fn(exp(_))', 'logweighted(fn(_)']) {
   test(`${weight}: likelihood refuses a pooled latent-base normalizer`, async () => {
     const { proc, ctx } = ctxFor(model, 32);
     assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
-    await assert.rejects(async () => ctx.getMeasure('lp'), refusal);
+    await assert.rejects(async () => ctx.getMeasure('lp'),
+      (e: any) => assertLimitation(e, 'density'));
   });
 
   test(`${weight}: MCMC refuses the same unsupported normalizer`, async () => {
@@ -29,7 +44,8 @@ for (const weight of ['weighted(fn(exp(_))', 'logweighted(fn(_)']) {
     assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
     const deriv = Object.values(ctx.derivations).find((d: any) => d.kind === 'bayesupdate');
     assert.ok(deriv);
-    await assert.rejects(async () => buildLogPi(ctx, deriv), refusal);
+    await assert.rejects(async () => buildLogPi(ctx, deriv),
+      (e: any) => assertLimitation(e, 'MCMC'));
   });
 }
 
@@ -75,5 +91,6 @@ lp = logdensityof(L, 1.0)
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   // The Dirichlet base is fixed. Only the helper's free theta changes
   // the integral, so checking the base parameters alone misses this case.
-  await assert.rejects(async () => ctx.getMeasure('lp'), refusal);
+  await assert.rejects(async () => ctx.getMeasure('lp'),
+    (e: any) => assertLimitation(e, 'density'));
 });

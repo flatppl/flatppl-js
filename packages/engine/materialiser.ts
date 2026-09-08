@@ -1260,9 +1260,9 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     // ONLY as a parameter is never exempt: `iid(Normal(mu = u, …), n)` and the
     // repeat axis share exactly as before.
     //
-    // A stochastic node in BOTH positions needs separate parent and captured
-    // scopes. The trace walk refuses that unsupported shape instead of using
-    // one cached value for both meanings.
+    // A stochastic node in BOTH positions asks to be fresh per coordinate and
+    // shared across coordinates at once. The trace walk refuses that as an
+    // invalid model instead of using one cached value for both meanings.
     if (!ctx.derivations || !ctx.derivations[d.from]) {
       return Promise.reject(new Error('iid: cannot resolve leaf sample IR for ' + d.from));
     }
@@ -1608,7 +1608,8 @@ function _chainStepMeasureRefs(d: any): string[] {
  * never reached, which is what keeps `iid(Normal(mu = u, …), n)`'s `u` shared —
  * §06's own example `iid(Normal(mu = a, sigma = b), 100)` reads one `a` and
  * one `b`. A stochastic node in both the external and captured closures is
- * refused until the materialiser can represent both scopes separately.
+ * refused as an invalid model (`IID_REIFIED_EXTERNAL_OVERLAP`), because §06
+ * asks the same node to be fresh per coordinate and shared across them.
  *
  * Once a value is captured, follow all scoped self references in its IR.
  * This includes deterministic transforms and the parameters of stochastic
@@ -1673,9 +1674,10 @@ function _reifiedVariatesUnder(
     for (const child of children) visit(child, captured);
   };
   visit(name);
-  // One name cache cannot represent both a captured copy and an external
-  // parent value. Callable inlining can expose ancestors of an external
-  // value, so check its full closure and conservatively refuse overlap.
+  // A captured copy and an external parent value make incompatible demands of
+  // one node, so the overlap is an invalid model rather than a missing feature.
+  // Callable inlining can expose ancestors of an external value, so check its
+  // full closure rather than only the names written at the call site.
   const seenExternal = new Map<string, Set<string>>();
   const checkExternal = (nn: string, shadowed: Set<string>) => {
     if (shadowed.has(nn)) return;
@@ -1687,8 +1689,19 @@ function _reifiedVariatesUnder(
     const b = bindings.get(nn);
     if (!b) return;
     if (out.has(nn) && b.phase === 'stochastic') {
-      throw new Error('iid: binding "' + nn + '" is both captured by a reified law '
-        + 'and used as an external parameter; separate trace scopes are not implemented');
+      // A MODEL error, deliberately NOT an `ENGINE_LIMITATION`: §06 replicates
+      // a captured node per coordinate and shares a constructor parameter
+      // across them, so the two roles demand contradictory things of one node
+      // and no engine can honour both. Waiting for a better materialiser would
+      // never resolve it — the source has to say which role it means.
+      const err: any = new Error('iid: binding "' + nn + '" is both captured by a '
+        + 'reified law and used as an external constructor parameter of the same '
+        + 'inner measure. §06 replicates the captured copy per coordinate and '
+        + 'shares the constructor parameter across them, so one node cannot carry '
+        + 'both roles: this model is invalid, not merely unsupported. Bind the two '
+        + 'roles to separate names to say which one you mean.');
+      err.code = 'IID_REIFIED_EXTERNAL_OVERLAP';
+      throw err;
     }
     walkIRScoped(b.ir, (node: any, inner: Set<string>) => {
       if (node.kind === 'ref' && node.ns === 'self') checkExternal(node.name, inner);

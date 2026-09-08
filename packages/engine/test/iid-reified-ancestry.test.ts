@@ -6,6 +6,18 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
+const { isEngineLimitation } = require('../limitations.ts');
+
+// A MODEL error, not an engine limitation: no engine can make one node both
+// fresh per coordinate and shared across them. Assert the code so the two
+// verdicts cannot be swapped by a reworded sentence.
+function assertBothRoles(err: any, name: string): boolean {
+  assert.equal(err.code, 'IID_REIFIED_EXTERNAL_OVERLAP', err.message);
+  assert.equal(isEngineLimitation(err), false);
+  assert.match(err.message, new RegExp('"' + name + '"'));
+  assert.match(err.message, /invalid, not merely unsupported/);
+  return true;
+}
 
 function covariance(a: Float64Array, b: Float64Array): number {
   const ma = a.reduce((s, x) => s + x, 0) / a.length;
@@ -60,7 +72,8 @@ M = iid(pushfwd(fn(0.0 * _ + z), lawof(x)), 2)
 `, { sampleCount: 256, rootSeed: 717 });
   // The output is Dirac(parent z). One cache cannot represent both parent z
   // and its captured copies. Refuse instead of returning independent z's.
-  await assert.rejects(() => ctx.getMeasure('M'), /iid:.*z.*captured.*external.*not implemented/);
+  await assert.rejects(() => ctx.getMeasure('M'),
+    (e: any) => assertBothRoles(e, 'z'));
 });
 
 test('iid detects captured overlap through an external value expression', async () => {
@@ -70,7 +83,8 @@ x ~ Normal(z, 0.6)
 offset = z + 1.0
 M = iid(pushfwd(fn(0.0 * _ + offset), lawof(x)), 2)
 `, { sampleCount: 256, rootSeed: 717 });
-  await assert.rejects(() => ctx.getMeasure('M'), /iid:.*z.*captured.*external.*not implemented/);
+  await assert.rejects(() => ctx.getMeasure('M'),
+    (e: any) => assertBothRoles(e, 'z'));
 });
 
 test('iid respects a named kernel boundary while copying its captured base', async () => {

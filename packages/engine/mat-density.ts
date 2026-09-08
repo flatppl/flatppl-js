@@ -1804,7 +1804,7 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
       delete node.massFrom;
       continue;
     }
-    assertFixedMassFallback(node.args[0], ctx);
+    assertFixedMassFallback(node.args[0], ctx, 'density');
     needMaterialise.push(node);
   }
   if (needMaterialise.length === 0) return Promise.resolve(measureIR);
