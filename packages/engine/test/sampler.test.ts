@@ -497,6 +497,91 @@ test('rnginit: rejects non-byte vectors', () => {
   assert.throws(() => sampler.evaluateExpr(ir, {}), /byte vector/);
 });
 
+// ---------------------------------------------------------------------
+// Scalar seed (spec §07 `rnginit`)
+// ---------------------------------------------------------------------
+//
+// "A single integer n ∈ {0, …, 2^64 - 1} is also accepted, and denotes the
+// byte vector of the 8-byte little-endian unsigned encoding of n." The two
+// spellings must therefore produce the SAME state, hence the same stream —
+// asserted directly rather than by re-running the engine's own encoder.
+
+function bytesLE(hex: string) {
+  // Little-endian bytes of a 16-hex-digit (8-byte) unsigned value.
+  const out = [];
+  for (let i = 7; i >= 0; i--) out.push(parseInt(hex.slice(i * 2, i * 2 + 2), 16));
+  return out;
+}
+function initScalar(n: number) {
+  return sampler.evaluateExpr(call('rnginit', [lit(n)]), {});
+}
+function initBytes(bytes: number[]) {
+  return sampler.evaluateExpr(
+    call('rnginit', [call('vector', bytes.map((b: number) => lit(b)))]), {});
+}
+
+test('rnginit: a scalar seed equals its 8-byte little-endian byte vector', () => {
+  for (const [n, hex] of [
+    [0, '0000000000000000'],
+    [1, '0000000000000001'],
+    [7, '0000000000000007'],
+    [255, '00000000000000ff'],
+    [256, '0000000000000100'],
+    // Five distinct non-zero bytes, and small enough to be an exact double.
+    [0x1f2f3f4f5f, '0000001f2f3f4f5f'],
+  ] as [number, string][]) {
+    const scalar: any = initScalar(n);
+    const bytes: any = initBytes(bytesLE(hex));
+    assert.deepEqual(scalar.key, bytes.key, `key differs for seed ${n}`);
+    assert.deepEqual(scalar.counter, bytes.counter, `counter differs for seed ${n}`);
+  }
+});
+
+test('rnginit: a scalar seed and its byte vector give the same stream', () => {
+  const measureIR = call('Normal', [], { mu: lit(0), sigma: lit(1) });
+  const draw = (state: any) => sampler.evaluateExpr(
+    call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }, measureIR]),
+    { rs: state });
+  const fromScalar = draw(initScalar(7));
+  const fromBytes = draw(initBytes([7, 0, 0, 0, 0, 0, 0, 0]));
+  assert.equal(fromScalar[0], fromBytes[0], 'same variate');
+  assert.deepEqual(fromScalar[1].counter, fromBytes[1].counter, 'same successor state');
+});
+
+test('rnginit: accepts the largest exactly-representable seed below 2^64', () => {
+  // Doubles are spaced 2^11 = 2048 apart just below 2^64, so 2^64 - 2048 is
+  // the last exact integer in the spec's set, and encodes as 0xfffffffffffff800.
+  const n = 18446744073709549568;
+  const scalar: any = initScalar(n);
+  const bytes: any = initBytes(bytesLE('fffffffffffff800'));
+  assert.deepEqual(scalar.key, bytes.key);
+});
+
+test('rnginit: accepts 2^53, the first seed a double no longer counts through', () => {
+  const scalar: any = initScalar(9007199254740992);
+  const bytes: any = initBytes(bytesLE('0020000000000000'));
+  assert.deepEqual(scalar.key, bytes.key);
+});
+
+test('rnginit: rejects a scalar seed outside {0, …, 2^64 - 1}', () => {
+  // 2^64 itself, the first double above the spec's set.
+  assert.throws(() => initScalar(18446744073709551616), /0\.\.2\^64-1/);
+  assert.throws(() => initScalar(-1), /0\.\.2\^64-1/);
+  assert.throws(() => initScalar(-0.5), /0\.\.2\^64-1/);
+  assert.throws(() => initScalar(1.5), /0\.\.2\^64-1/);
+  assert.throws(() => initScalar(Infinity), /0\.\.2\^64-1/);
+  assert.throws(() => initScalar(NaN), /0\.\.2\^64-1/);
+});
+
+test('rnginit: a rank-0 Value seed reads as a scalar, not a one-byte vector', () => {
+  // Storage for shape=[] is a length-1 Float64Array, which the byte-vector
+  // predicate would otherwise accept as `[7]`.
+  const state: any = sampler.evaluateExpr(
+    call('rnginit', [{ kind: 'ref', ns: 'self', name: 'seed', loc: synthLoc() }]),
+    { seed: { shape: [], data: new Float64Array([7]) } });
+  assert.deepEqual(state.key, (initBytes([7, 0, 0, 0, 0, 0, 0, 0]) as any).key);
+});
+
 test('rngstate <-> bytes round-trip (rng.bytesFromState ∘ rng.stateFromBytes)', () => {
   const original = rng.seedFromBytes([1, 2, 3, 4]);
   const bytes = rng.bytesFromState(original);

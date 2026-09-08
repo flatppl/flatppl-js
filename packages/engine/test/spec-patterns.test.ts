@@ -567,6 +567,18 @@ xs, rstate3 = rand(rstate2, iid(Normal(0, 1), 10))
 `);
 });
 
+test('§07 random: rnginit accepts a scalar integer seed', () => {
+  // §07 `rnginit`: "A single integer n ∈ {0, …, 2^64 - 1} is also accepted,
+  // and denotes the byte vector of the 8-byte little-endian unsigned
+  // encoding of n."
+  parsesCleanly(`
+rstate = rnginit(0)
+rstate2 = rnginit(12345)
+x, _ = rand(rstate, Normal(0, 1))
+y, _ = rand(rstate2, Normal(0, 1))
+`);
+});
+
 test('§07 random: rand with multi-axis iid (the regression motivator)', () => {
   parsesCleanly(`
 rstate = rnginit([0xb2, 0x51, 0xa4, 0x93])

@@ -525,6 +525,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'Lebesgue':  return write(inferReferenceMeasure(expr, scopes, T.REAL), expr);
       case 'Counting':  return write(inferReferenceMeasure(expr, scopes, T.INTEGER), expr);
       case 'vector':    return write(inferVector(expr, scopes), expr);
+      // rnginit's seed is either a byte vector or a single integer (spec
+      // §07), a two-form domain the signature table cannot state.
+      case 'rnginit':   return write(inferRngInit(expr, scopes), expr);
       case 'truncate':  return write(inferTruncate(expr, scopes), expr);
       case 'iid':       return write(inferIid(expr, scopes), expr);
       case 'markovchain': return write(inferMarkovchain(expr, scopes), expr);
@@ -3162,6 +3165,40 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // Spec §04: no measure / kernel / likelihood / function inside an array.
     checkContainerElem(elemT, expr.loc, 'array', 'element');
     return T.array(1, [args.length], elemT);
+  }
+
+  // `rnginit(seed)` — spec §07 admits TWO seed forms: a byte vector
+  // (integers in {0, …, 255}) and a single integer in {0, …, 2^64 - 1},
+  // which "denotes the byte vector of the 8-byte little-endian unsigned
+  // encoding of n". The signature table holds one argument type per slot,
+  // so the two-form domain is decided here instead.
+  //
+  // Only the TYPE is decided here. The seed's RANGE is a runtime refusal in
+  // the sampler, exactly as the byte vector's {0, …, 255} element range
+  // already is — `rnginit([1, 2, 300])` and `rnginit(-7)` both type-check
+  // and both throw when evaluated.
+  function inferRngInit(expr: any, scopes: any) {
+    const args = expr.args || [];
+    if (args.length !== 1) return arityError('rnginit', 1, args.length, expr.loc);
+    const at: any = inferExpr(args[0], scopes);
+    if (at && at.kind === 'failed') return T.failed('rnginit arg type (cascade)');
+    // A type variable or %any argument is not decided against.
+    if (at && (at.kind === 'any' || at.kind === 'var' || at.kind === 'deferred')) {
+      return T.RNGSTATE;
+    }
+    const isScalarSeed = at && at.kind === 'scalar' && at.prim === 'integer';
+    const isVectorSeed = at && at.kind === 'array' && at.rank === 1
+      && at.elem && at.elem.kind === 'scalar' && at.elem.prim === 'integer';
+    if (isScalarSeed || isVectorSeed) return T.RNGSTATE;
+    diagnostics.push({
+      severity: 'error',
+      message: 'rnginit: arg 1 expects a byte vector (array of integer) or an '
+        + 'integer seed, got ' + T.show(at)
+        + ' — spec §07 `rnginit` accepts a seed byte vector or a single integer '
+        + 'in {0, …, 2^64 - 1}',
+      loc: args[0].loc || expr.loc,
+    });
+    return T.failed('rnginit arg type');
   }
 
   // -------------------------------------------------------------------

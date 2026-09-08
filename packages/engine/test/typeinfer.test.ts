@@ -1370,6 +1370,57 @@ test('multi-LHS rand: each name gets the projected element type', () => {
   assert.deepEqual(bindings.get('rstate2').effectiveDeps, [synName]);
 });
 
+test('rnginit: a scalar integer seed is admissible', () => {
+  // §07 `rnginit`: "A single integer n ∈ {0, …, 2^64 - 1} is also accepted."
+  const { bindings, errors } = infer(`rstate = rnginit(12345)`);
+  assert.deepEqual(errors, [], `unexpected errors: ${JSON.stringify(errors)}`);
+  assert.equal(typeOf(bindings, 'rstate').kind, 'rngstate');
+});
+
+test('rnginit: refuses a seed that is neither a byte vector nor an integer', () => {
+  for (const seed of ['1.5', 'true', '"abc"', '[1.5, 2.5]']) {
+    const { errors } = infer(`rstate = rnginit(${seed})`);
+    assert.equal(errors.length, 1, `seed ${seed}: ${JSON.stringify(errors)}`);
+    assert.match(errors[0].message,
+      /rnginit: arg 1 expects a byte vector \(array of integer\) or an integer seed/);
+  }
+});
+
+test('rnginit: an undecided seed type is not decided against', () => {
+  // `external(...)` types `%deferred`, and the two-form check must not turn
+  // that into a refusal — the same abstention every other domain check makes.
+  const { bindings, errors } = infer(`
+    seed = external(cartpow(integers, 4))
+    rstate = rnginit(seed)
+  `);
+  assert.deepEqual(errors, [], `unexpected errors: ${JSON.stringify(errors)}`);
+  assert.equal(typeOf(bindings, 'rstate').kind, 'rngstate');
+});
+
+test('rnginit: takes exactly one seed', () => {
+  for (const [call, got] of [['rnginit()', 0], ['rnginit([1, 2], [3, 4])', 2]] as [string, number][]) {
+    const { errors } = infer(`rstate = ${call}`);
+    assert.equal(errors.length, 1, `${call}: ${JSON.stringify(errors)}`);
+    assert.equal(errors[0].message,
+      `rnginit expects 1 positional argument(s), got ${got}`);
+  }
+});
+
+test('rnginit: an already-failed seed reports nothing further', () => {
+  // The undefined name is the one error worth reading; a second refusal on the
+  // seed it produced would be noise.
+  const { errors } = infer(`rstate = rnginit(nosuchname)`);
+  assert.equal(errors.length, 1, JSON.stringify(errors));
+  assert.match(errors[0].message, /Undefined variable 'nosuchname'/);
+});
+
+test('rnginit: a negative integer seed is a runtime refusal, not a type error', () => {
+  // Mirrors the byte vector, whose {0, …, 255} element range the sampler
+  // checks and type inference does not.
+  const { errors } = infer(`rstate = rnginit(-7)`);
+  assert.deepEqual(errors, [], `unexpected errors: ${JSON.stringify(errors)}`);
+});
+
 test('multi-LHS rand: chained rand calls keep type+phase consistent', () => {
   const { bindings, loweredModule, diagnostics } = processSource(`
     rngseed = [0xb2, 0x51, 0xa4, 0x93, 0x49, 0xd8, 0x68, 0x88]

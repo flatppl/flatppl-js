@@ -1331,6 +1331,10 @@ const SIGNATURE_FACTORIES = {
 
   // ---- RNG (per spec §sec:random) ----------------------------------
   // rnginit(seed) — seed is a byte-vector; result is an opaque rngstate.
+  // §07 also admits a single integer seed, a two-form domain no signature
+  // row can state: `typeinfer.inferRngInit` decides the argument and this
+  // row is never reached for `rnginit`. It stays for arity, hover, and the
+  // shared builtin-row bookkeeping.
   rnginit: () => ({ args: [array(1, ['%dynamic'], INTEGER)], kwargs: {}, result: RNGSTATE }),
   // rand(rstate, m) — draw one sample from m using rstate; returns
   // (value, new_rstate). The variate type is m's domain — we keep it
