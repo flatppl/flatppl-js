@@ -49,7 +49,11 @@ const arbScalarMeasure = fc.tuple(
 // A small joint-record source. Returns { src, names } where names is
 // the list of field names introduced. Ensures unique names.
 function arbJointRecordSrc(): any {
-  return fc.uniqueArray(arbBindingName, { minLength: 2, maxLength: 4 }).chain((names: string[]) =>
+  // `j` is excluded from the variate pool: the joint binding below is named
+  // `j`, and a variate of the same name would REBIND it, so a downstream
+  // reference to that variate would reach the joint instead of the draw.
+  return fc.uniqueArray(arbBindingName.filter((n: string) => n !== 'j'),
+    { minLength: 2, maxLength: 4 }).chain((names: string[]) =>
     fc.array(arbScalarMeasure, { minLength: names.length, maxLength: names.length })
       .map((measures: string[]) => {
         const draws = names.map((n, i) => `${n} = draw(${measures[i]})`).join('\n');
@@ -147,34 +151,53 @@ test('property: bodyDeps and paramSourceDeps partition deps', () => {
 });
 
 // ---------------------------------------------------------------------
-// Property 4: Function/kernel values are always %fixed (spec §04 §sec:functionof)
+// Property 4: A reification's phase follows its captured ancestors
+//              (spec §04 §sec:functionof, §sec:captured-draws)
 // ---------------------------------------------------------------------
 //
-// "The function/kernel value itself is %fixed" — spec §04 line 1019
-// quoted in our analyzer. No matter what the body or kwargs reference,
-// the binding that holds the function value has phase = fixed.
+// "FlatPPL has no closures over fixed or parameterized ancestors: a fixed
+// ancestor is resolved to its value rather than retained as a binding, and a
+// parameterized ancestor of the reified sub-graph is traced back to an input."
+// So a `functionof` whose boundary names every drawn ancestor is a function of
+// its inputs alone, and its value is %fixed.
+//
+// Leave one drawn ancestor unnamed and §04 *Captured draws* applies instead:
+// it "remains a shared ancestor [...] with a single realisation", the callable
+// is "conditional on that realisation", and "the phase of a reification follows
+// the reified sub-graph" — %stochastic. Both directions are generated from the
+// same joint so the boundary list is the only thing that differs.
 
-const arbFnSrc = arbJointRecordSrc().chain(({ src, names }: any) => {
-  // Pick one variate and wrap its arithmetic in a functionof keyed by
-  // the others as boundary inputs.
-  return fc.constantFrom(...names).chain((target: string) => {
+/** `src` plus `myfn`, with every drawn ancestor of the body boundary-named. */
+const arbClosedFnSrc = arbJointRecordSrc().chain(({ src, names }: any) =>
+  fc.constantFrom(...names).map((target: string) => ({
+    src: src + '\n' + `myfn = functionof(2 * ${target}, ${target} = ${target})`,
+  })));
+
+/** `src` plus `myfn`, whose body CAPTURES `target` — no boundary entry for it. */
+const arbCapturingFnSrc = arbJointRecordSrc().chain(({ src, names }: any) =>
+  fc.constantFrom(...names).chain((target: string) => {
     const others = names.filter((n: string) => n !== target);
-    if (others.length === 0) return fc.constant({ src, names });
     const kwargs = others.map((n: string) => `${n} = ${n}`).join(', ');
-    const body = `2 * ${target}`;
+    // `others` is non-empty (the joint carries ≥ 2 variates), so every case
+    // still exercises a boundary alongside the capture.
     return fc.constant({
-      src: src + '\n' + `myfn = functionof(${body}, ${kwargs})`,
-      names: [...names, 'myfn'],
+      src: src + '\n' + `myfn = functionof(2 * ${target}, ${kwargs})`,
     });
-  });
-});
+  }));
 
-test('property: functionof binding always has phase = fixed', () => {
-  fc.assert(fc.property(arbFnSrc, ({ src }: any) => {
+test('property: a functionof over boundary-named draws has phase = fixed', () => {
+  fc.assert(fc.property(arbClosedFnSrc, ({ src }: any) => {
     const { bindings } = processSource(src);
     const fn = bindings.get('myfn');
-    if (!fn) return true; // skip if generator didn't add myfn
-    return fn.phase === 'fixed';
+    return !fn || fn.phase === 'fixed';
+  }), { numRuns: 60 });
+});
+
+test('property: a functionof that captures a draw has phase = stochastic', () => {
+  fc.assert(fc.property(arbCapturingFnSrc, ({ src }: any) => {
+    const { bindings } = processSource(src);
+    const fn = bindings.get('myfn');
+    return !fn || fn.phase === 'stochastic';
   }), { numRuns: 60 });
 });
 

@@ -1474,7 +1474,15 @@ function computePhases(bindings: any) {
       // body's phase, evaluated on per-call inputs, is a separate
       // computation handled by computePhasesForScope inside the
       // reification bubble.
-      phase = 'fixed';
+      //
+      // UNLESS it captures a draw. §04 *Captured draws*: a captured draw is a
+      // shared ancestor with ONE realisation, and the callable is conditional
+      // on it, so "the phase of a reification follows the reified sub-graph".
+      // A callable over a draw is not fixed — see reificationCapturesDraw for
+      // the cut rules and why `kernelof` is exempt.
+      phase = (cn !== 'kernelof'
+               && reificationCapturesDraw(b.node && b.node.value, bindings, phaseOf))
+        ? 'stochastic' : 'fixed';
     } else if (rhsContainsInlineDraw(b && b.node && b.node.value)) {
       // Hidden draw inside arithmetic / call — e.g. `s = 2 * draw(m)`.
       // The top-level callee isn't 'draw' so the cn check above
@@ -1497,6 +1505,139 @@ function computePhases(bindings: any) {
 
   for (const name of bindings.keys()) phaseOf(name);
   return phases;
+}
+
+/**
+ * True iff the reification `node` (a `functionof` / `fn` CallExpr — which is
+ * also what a lambda desugars to at parse time) CAPTURES a draw: the reified
+ * sub-graph reaches a `draw` node that no boundary input names and no `lawof`
+ * absorbs.
+ *
+ * Spec §04 *Captured draws*: "the sub-graph reified by `functionof` — and hence
+ * by any lambda — may contain `draw` nodes of the enclosing graph. Such a
+ * captured draw remains a shared ancestor of the reification and of the
+ * enclosing graph, with a single realisation." The callable is conditional on
+ * that realisation — "neither resampled per call nor marginalized". What that
+ * costs is determinism, and the phase is where it is paid: "The phase of a
+ * reification follows the reified sub-graph by the same ancestor rule as any
+ * other binding [...] it is stochastic when the sub-graph holds a captured
+ * `draw` whose phase no `lawof` node absorbs."
+ *
+ * The walk traces the sub-graph the way §04's ancestor trace does, THROUGH
+ * intermediate bindings rather than reading their phase, because a stochastic
+ * intermediate may reach the draw only through a name the boundary substitutes:
+ * in `functionof(resolution, raw = raw)` the binding `resolution = 2.5 *
+ * exp(0.12 * raw)` is stochastic, yet the sub-graph's copy of it descends from
+ * the declared input, so nothing is captured. It cuts at:
+ *
+ *  - a BOUNDARY name of this reification or of any reification it walks into —
+ *    §04 substitutes each with a fresh `elementof(valueset(a))` input BEFORE
+ *    the ancestor trace runs, so `functionof(m, raw = raw)` is the conditional
+ *    kernel over a declared input and captures nothing;
+ *  - a `lawof` call, which "absorbs stochasticity into the reified law rather
+ *    than propagating it outward" — so `functionof(lawof(x))` stays fixed and
+ *    marginal;
+ *  - a `kernelof` call, whose body sits under an implicit `lawof`: §04 *Kernels
+ *    and `kernelof`* makes `kernelof(x, kwargs…)` equivalent to
+ *    `functionof(lawof(x), kwargs…)`, so every draw it reaches is absorbed (the
+ *    marginalization the eight-schools `forward_kernel` relies on);
+ *  - an `elementof` call, whose set argument lies outside the sub-graph (§04
+ *    traces back TO the `elementof` leaves, not through them);
+ *  - a binding the analyzer does not know, and any binding whose own phase is
+ *    not stochastic — it reaches no draw at all, so nothing below it can be
+ *    captured. That dominator is what covers a `rand` or `external` ancestor.
+ *
+ * A nested `functionof` / `fn` is walked into under the union of the enclosing
+ * formals and its own, so a draw the inner boundary names is cut there too.
+ *
+ * Mirrors `captured_draws` in `flatppl-rust`'s `crates/infer/src/ops.rs`, which
+ * cuts at the same four constructs. It differs on one edge: rust stops at any
+ * nested reification, where this walks into it, so `functionof(inner())` over a
+ * capturing `inner` is stochastic here. §04's "same ancestor rule as any other
+ * binding" makes that the spec reading — `z = inner()` outside a reification is
+ * stochastic for exactly this reason — and the two engines answer to the spec,
+ * not to each other.
+ */
+function reificationCapturesDraw(node: any, bindings: any, phaseOf: any): boolean {
+  // Visited names, keyed by name AND the formals in force. The formals matter:
+  // a nested reification's boundary cuts a path that the enclosing body does
+  // not cut, so `mid` can be a non-capture inside `inner` and a capture at the
+  // level that called it. Keying on the name alone loses the second verdict.
+  // Bounded because formals only grow along a finite nesting chain, so a
+  // mutually recursive pair of reifications repeats a key and stops here.
+  const seen = new Set<string>();
+  return capturesFrom(node, new Set<string>());
+
+  /** Stable `seen` key for one name under one formals set. */
+  function visitKey(name: string, formals: Set<string>): string {
+    return name + '\u0000' + [...formals].sort().join('\u0001');
+  }
+
+  /** Boundary names a reification CallExpr declares, in body-ref spelling. */
+  function formalsOf(call: any, inherited: Set<string>): Set<string> {
+    const out = new Set<string>(inherited);
+    for (let i = 1; i < call.args.length; i++) {
+      const arg = call.args[i];
+      if (!arg || arg.type !== 'KeywordArg' || !arg.value) continue;
+      // Identifier form (`a = a`) cuts on the plain name; placeholder form
+      // (`a = _a_`, what a lambda desugars to) on the sentinel-wrapped local.
+      if (arg.value.type === 'Identifier') out.add(arg.value.name);
+      else if (arg.value.type === 'Placeholder') out.add('_' + arg.value.name + '_');
+    }
+    return out;
+  }
+
+  /** Walk one reification's BODY (its first positional arg) only. */
+  function capturesFrom(call: any, inherited: Set<string>): boolean {
+    if (!call || call.type !== 'CallExpr' || !Array.isArray(call.args)) return false;
+    const body = call.args[0];
+    if (!body || body.type === 'KeywordArg') return false;
+    return walk(body, formalsOf(call, inherited));
+  }
+
+  function walk(n: any, formals: Set<string>): boolean {
+    if (!n || typeof n !== 'object') return false;
+    if (Array.isArray(n)) {
+      for (const c of n) if (walk(c, formals)) return true;
+      return false;
+    }
+    if (n.type === 'Identifier') return walkRef(n.name, formals);
+    if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier') {
+      const op = n.callee.name;
+      if (op === 'draw') return true;                     // a draw written inline
+      if (op === 'lawof' || op === 'kernelof' || op === 'elementof') return false;
+      if (op === 'functionof' || op === 'fn') return capturesFrom(n, formals);
+      if (walkRef(op, formals)) return true;              // applying a callable binding
+      return walk(n.args, formals);
+    }
+    for (const k of ['args', 'value', 'left', 'right', 'operand', 'object',
+                     'elements', 'indices', 'callee']) {
+      if (walk(n[k], formals)) return true;
+    }
+    return false;
+  }
+
+  /** One body reference, resolved through the binding it names. */
+  function walkRef(name: string, formals: Set<string>): boolean {
+    if (formals.has(name)) return false;                  // boundary-substituted
+    const b = bindings.get(name);
+    if (!b || !b.node || !b.node.value) return false;
+    const key = visitKey(name, formals);
+    if (seen.has(key)) return false;
+    seen.add(key);
+    // Cheap dominator: a binding of fixed or parameterized phase reaches no
+    // draw at all, boundary or not, so nothing below it can be captured.
+    if (phaseOf(name) !== 'stochastic') return false;
+    const v = b.node.value;
+    const cn = (v.type === 'CallExpr' && v.callee && v.callee.type === 'Identifier')
+      ? v.callee.name : null;
+    if (cn === 'draw') return true;                       // the captured draw itself
+    // No `lawof` / `rand` / `kernelof` / `elementof` / `external` case is
+    // needed: each of those gets a non-stochastic phase above, so the
+    // dominator already returned.
+    if (cn === 'functionof' || cn === 'fn') return capturesFrom(v, formals);
+    return walk(v, formals);
+  }
 }
 
 /**
