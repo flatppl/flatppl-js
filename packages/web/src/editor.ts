@@ -244,6 +244,7 @@
         lineHeight: '1.45',
       },
       '.cm-content':  { caretColor: 'var(--fp-text)' },
+      '.cm-placeholder': { color: 'var(--fp-text-muted)' },
       '.cm-gutters':  {
         backgroundColor: 'var(--fp-bg)',
         borderRight: '1px solid var(--fp-border)',
@@ -348,6 +349,7 @@
       return [
         bundle.EditorState.readOnly.of(ro),
         bundle.EditorView.editable.of(!ro),
+        ...(ro ? [] : [bundle.placeholder('Write a model, open an example, or upload a file.')]),
       ];
     }
 

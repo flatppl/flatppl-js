@@ -69,6 +69,18 @@ html {
   margin-left: auto;
 }
 
+.fp-current-site,
+.fp-current-site > span {
+  display: none;
+}
+
+:root[data-fp-active="site"] [data-fp-current="site"],
+:root[data-fp-active="spec"] [data-fp-current="spec"],
+:root[data-fp-active="play"] [data-fp-current="play"],
+:root[data-fp-active="docs"] [data-fp-current="docs"] {
+  display: inline;
+}
+
 .fp-product-nav {
   display: flex;
   align-items: stretch;
@@ -182,8 +194,10 @@ html {
     display: inline-flex;
   }
 
-  .fp-wordmark {
-    display: none;
+  .fp-current-site {
+    display: inline;
+    color: var(--fp-text-muted);
+    font-size: var(--fp-size-xs);
   }
 
   .fp-product-nav {

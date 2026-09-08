@@ -14,7 +14,7 @@ import { EditorState, Compartment, Prec } from '@codemirror/state';
 import {
   EditorView, keymap, lineNumbers, highlightActiveLine,
   highlightActiveLineGutter, ViewPlugin, Decoration, hoverTooltip,
-  drawSelection, rectangularSelection, crosshairCursor,
+  drawSelection, rectangularSelection, crosshairCursor, placeholder,
 } from '@codemirror/view';
 import { defaultKeymap, history, historyKeymap } from '@codemirror/commands';
 import { searchKeymap, selectNextOccurrence } from '@codemirror/search';
@@ -31,7 +31,7 @@ window.FlatPPLEditorBundle = {
   EditorState, Compartment, Prec,
   EditorView, keymap, lineNumbers, highlightActiveLine,
   highlightActiveLineGutter, ViewPlugin, Decoration, hoverTooltip,
-  drawSelection, rectangularSelection, crosshairCursor,
+  drawSelection, rectangularSelection, crosshairCursor, placeholder,
   defaultKeymap, history, historyKeymap,
   searchKeymap, selectNextOccurrence,
   linter, lintGutter,
