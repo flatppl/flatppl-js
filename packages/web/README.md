@@ -51,6 +51,25 @@ are not present in deployed builds.
 Demo content is composed of `web/demo` and
 [flatppl-examples](https://github.com/flatppl/flatppl-examples)
 
+## Visual theme (flatppl-theme)
+
+The page shell, tokens and brand assets come from
+[flatppl-theme](https://github.com/flatppl/flatppl-theme), provisioned
+into the git-ignored `vendor/flatppl-theme/` on every build
+(`scripts/fetch-theme.mjs`), in this order:
+
+1. `FLATPPL_THEME_DIR`, else a sibling `../flatppl-theme` checkout: its
+   source files are copied as they are, **unverified** (the build says
+   so). Edit `tokens.css` there, rebuild, see it. `FLATPPL_THEME_NO_SIBLING=1`
+   skips this step.
+2. Otherwise the pinned release (`THEME_PIN` in `fetch-theme.mjs`,
+   `FLATPPL_THEME_REF` overrides it for a candidate): the release archive
+   is downloaded from GitHub and verified against its own manifest. A
+   verified copy already in place is reused. This is what CI does.
+
+Adopting a new theme release is a one-line bump of `THEME_PIN`.
+`npm run verify:theme` provisions and reports the state of the copy.
+
 ## Syntax highlighting (flatppl-grammars)
 
 The editor's lexical highlighting comes from the canonical TextMate

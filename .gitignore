@@ -21,6 +21,13 @@ packages/vscode-extension/src/visualPanel.js
 # after a `build:vendor` if needed.
 packages/viewer/vendor/
 
+# flatppl-theme drop dir, provisioned by packages/web/scripts/fetch-theme.mjs
+# on every web build: a copy of the sibling `flatppl-theme` checkout when
+# there is one (unverified — the dev loop), else the pinned GitHub release
+# bundle verified against its own manifest. The pin (a release tag) lives
+# in fetch-theme.mjs.
+vendor/flatppl-theme/
+
 # Build output of packages/web/build.mjs. Self-contained static-site
 # directory deployed to GitHub Pages by the Pages workflow. Re-run
 # `npm run build` (or `npm run watch`) under packages/web/ to refresh.

@@ -49,7 +49,7 @@ import { MODEL_EXTENSIONS, typeForPath, hideTestExamplesEnv } from './src/file-t
 import { buildSite } from './build-site.mjs';
 import { provisionWasmApi, WASM_GLUE } from './provision-wasm-api.mjs';
 import { insertThemeShell } from './theme-shell.mjs';
-import { verifyThemeBundle } from './scripts/verify-theme.mjs';
+import { syncTheme } from './scripts/fetch-theme.mjs';
 
 const here     = dirname(fileURLToPath(import.meta.url));   // packages/web/
 const repoRoot = dirname(dirname(here));                    // flatppl-js/
@@ -112,13 +112,16 @@ const buildFlags = {
 const WATCH = process.argv.includes('--watch');
 
 await mkdir(vendorDir, { recursive: true });
-const themeErrors = await verifyThemeBundle(themeDir);
-if (themeErrors.length > 0) {
-  throw new Error(`vendored flatppl-theme failed verification:\n${themeErrors.join('\n')}`);
-}
+
+// ---------------------------------------------------------------------
+// 0. Provision flatppl-theme into vendor/flatppl-theme (sibling checkout
+//    first — unverified, the dev loop — else the pinned release, verified
+//    against its own manifest; see scripts/fetch-theme.mjs), then copy it
+//    to dist/theme/ for the shell to load.
+const theme = await syncTheme({ repoRoot, themeDir, log: (m) => console.log('  ' + m) });
 await rm(distThemeDir, { recursive: true, force: true });
 await copyDirRecursive(themeDir, distThemeDir);
-console.log('  verified + copied flatppl-theme v0.1.8 -> dist/theme/');
+console.log(`  copied flatppl-theme${theme.version ? ' v' + theme.version : ''} -> dist/theme/`);
 
 // ---------------------------------------------------------------------
 // 1. Copy ready-made UMD/min bundles from node_modules into dist/vendor/.

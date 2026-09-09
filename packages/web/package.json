@@ -22,7 +22,8 @@
     "dev": "node ./dev.mjs",
     "typecheck": "tsc -p tsconfig.json",
     "typecheck:watch": "tsc -p tsconfig.json --watch",
-    "verify:theme": "node ./scripts/verify-theme.mjs"
+    "fetch:theme": "node ./scripts/fetch-theme.mjs",
+    "verify:theme": "npm run fetch:theme && node ./scripts/verify-theme.mjs"
   },
   "devDependencies": {
     "@codemirror/autocomplete": "^6.18.0",

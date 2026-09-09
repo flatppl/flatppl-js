@@ -1,9 +1,15 @@
+// The theme bundle's self-check: every file `manifest.json` declares is
+// present with the declared size and SHA-256, and nothing else is in the
+// bundle. This is what a fetched release is held to (fetch-theme.mjs). A
+// drop dir without a manifest is a copy of a checkout — the development
+// path — and is reported as unverified, not as an error.
+
 import { createHash } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const EXPECTED_MANIFEST_SHA256 = '37ceb2ee6efa6b395cdcdc42c0a96782096535d7aaa8c179bb10ecabe8c44fbd';
 const defaultBundle = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../../../vendor/flatppl-theme',
@@ -30,17 +36,23 @@ async function digest(path) {
   return createHash('sha256').update(await readFile(path)).digest('hex');
 }
 
-/** Verify the exact pinned release manifest and every file it declares. */
+/** Verify a bundle against its own manifest. Returns the list of
+ *  problems, empty when it checks out. A missing manifest is a problem
+ *  here; callers that accept checkout copies ask describeThemeBundle. */
 export async function verifyThemeBundle(bundle = defaultBundle) {
   const root = resolve(bundle);
   const manifestPath = join(root, 'manifest.json');
   const errors = [];
-  if (await digest(manifestPath) !== EXPECTED_MANIFEST_SHA256) {
-    errors.push('manifest.json: does not match pinned flatppl-theme v0.1.8');
-    return errors;
+  if (!existsSync(manifestPath)) return ['manifest.json: missing'];
+  let manifest;
+  try {
+    manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
+  } catch (err) {
+    return [`manifest.json: unreadable (${err.message})`];
   }
+  if (manifest.name !== 'flatppl-theme') errors.push(`manifest.json: unexpected name ${JSON.stringify(manifest.name)}`);
+  if (!Array.isArray(manifest.files)) return [...errors, 'manifest.json: no file list'];
 
-  const manifest = JSON.parse(await readFile(manifestPath, 'utf8'));
   const declared = new Map(manifest.files.map((file) => [file.path, file]));
   const actual = (await filesUnder(root)).filter((path) => path !== 'manifest.json');
   const actualSet = new Set(actual);
@@ -60,8 +72,31 @@ export async function verifyThemeBundle(bundle = defaultBundle) {
   return errors;
 }
 
+/** What the drop dir holds: `verified` (a release bundle passing its
+ *  manifest), `unverified` (a checkout copy: no manifest), or `missing`
+ *  (nothing provisioned yet). `errors` is non-empty only for a bundle
+ *  that has a manifest and fails it. */
+export async function describeThemeBundle(bundle = defaultBundle) {
+  const root = resolve(bundle);
+  if (!existsSync(join(root, 'tokens.css'))) return { status: 'missing', version: null, errors: [] };
+  if (!existsSync(join(root, 'manifest.json'))) return { status: 'unverified', version: null, errors: [] };
+  const errors = await verifyThemeBundle(root);
+  let version = null;
+  try { version = JSON.parse(await readFile(join(root, 'manifest.json'), 'utf8')).version ?? null; } catch (_) { /* reported above */ }
+  return { status: errors.length ? 'invalid' : 'verified', version, errors };
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const errors = await verifyThemeBundle(process.argv[2]);
-  for (const error of errors) console.error(error);
-  if (errors.length > 0) process.exitCode = 1;
+  const info = await describeThemeBundle(process.argv[2]);
+  if (info.status === 'missing') {
+    console.error('theme: nothing at vendor/flatppl-theme — run `npm run fetch:theme` (or the build) first');
+    process.exitCode = 1;
+  } else if (info.status === 'unverified') {
+    console.warn('theme: UNVERIFIED checkout copy (no manifest) — fine for development, not for a release build');
+  } else if (info.status === 'invalid') {
+    for (const error of info.errors) console.error(error);
+    process.exitCode = 1;
+  } else {
+    console.log(`theme: flatppl-theme v${info.version} verified against its manifest`);
+  }
 }
