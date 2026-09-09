@@ -2840,11 +2840,24 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
   }
   const branchP = branchEntries.map((b: any, bi: any) => {
     if (b && b.ref != null) return ctx.getMeasure(b.ref);
-    // An INLINE branch draws through the worker, which replies about the draw
-    // alone: a parameter measure carrying importance weights reaches it only as
-    // per-atom POSITIONS through `collectRefArrays`. So collect the parameter
-    // MEASURES the branch resolved and fold their weights in, exactly as
-    // `matSample` does for a binding-graph leaf draw.
+    // A COMPOSITE inline branch — anything but a sampleable leaf, so a
+    // `logweighted` wrapper carrying the branch's own mass — goes through the
+    // measure path, which knows how to apply it. The worker below samples leaf
+    // kernels only and reported `'logweighted' is not a known distribution`.
+    // Keeping such a branch whole is what lets its MASS reach the gather: the
+    // bridge used to peel the weight off into `synthWeights`, which an external
+    // selector then ignored, and the branch arrived massless.
+    const irShared2 = require('./ir-shared.ts');
+    if (b && b.ir && b.ir.kind === 'call'
+        && !(irShared2.SAMPLEABLE_DISTRIBUTIONS
+             && irShared2.SAMPLEABLE_DISTRIBUTIONS.has(b.ir.op))) {
+      return materialiseMeasureIR(b.ir, ctx);
+    }
+    // An INLINE leaf branch draws through the worker, which replies about the
+    // draw alone: a parameter measure carrying importance weights reaches it
+    // only as per-atom POSITIONS through `collectRefArrays`. So collect the
+    // parameter MEASURES the branch resolved and fold their weights in, exactly
+    // as `matSample` does for a binding-graph leaf draw.
     const parents: any[] = [];
     return collectRefArrays(b.ir, ctx, parents)
       .then((refArrays: any) => ctx.sendWorker({
@@ -3569,6 +3582,16 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     const branches: any[] = [];
     const synthWeights: number[] = [];
     let allConst = true;
+    // Peeling a branch's weight is only right when the weight IS the selector,
+    // i.e. a constant-weight mixture with nothing external choosing a branch.
+    // With an external `selectorName` the peeled weights went into
+    // `synthWeights`, which matSelect then ignores in favour of the selector —
+    // so each branch's own mass was silently DISCARDED. Measured, the branches
+    // of a chain body's select arrived with mass 0 apiece, the gather took its
+    // equal-mass path, and `jointchain(aa = ifelse(c, weighted(2, N(0,1)),
+    // weighted(3, N(5,1))), bb = fn(Normal(_, 1)))` answered totalmass 1
+    // against the exact 0.25·2 + 0.75·3 = 2.75.
+    const peelWeights = ir.selectorName == null;
     for (const b of ir.branches) {
       let inner = b;
       let w = 1;
@@ -3577,7 +3600,8 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
       // `logweighted`, so the expanded superpose/select branches carry
       // `logweighted`). Extract the linear weight either way; a non-constant
       // weight flips `allConst` off → matSelect refuses loudly (no synth).
-      if (b && b.kind === 'call' && (b.op === 'weighted' || b.op === 'logweighted')
+      if (peelWeights && b && b.kind === 'call'
+          && (b.op === 'weighted' || b.op === 'logweighted')
           && Array.isArray(b.args) && b.args.length === 2) {
         const wv = irShared.resolveConstant(b.args[0], childCtx.bindings,
           new Set(), childCtx.fixedValues);
@@ -3595,6 +3619,12 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
       selectorBase: (ir.selectorBase != null) ? ir.selectorBase : 1 };
     if (ir.selectorName) dSel.selectorRef = ir.selectorName;
     else if (allConst) dSel.synthWeights = synthWeights;
+    // Carry the inline node's per-branch log-weights so the mixture's mass can
+    // be CERTIFIED in closed form, exactly as it is for a by-name select. The
+    // by-name derivation calls the same field `logweightIRs`.
+    if (Array.isArray(ir.logweights) && ir.logweights.length === branches.length) {
+      dSel.logweightIRs = ir.logweights;
+    }
     return dSel;
   }
   // pushfwd(f, M) — variable transformation / projection (spec §06; §22's

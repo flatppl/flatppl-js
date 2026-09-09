@@ -95,17 +95,25 @@ v = ifelse(c, 1.0, 2.0)
     'ifelse over numbers is a value, not a measure');
 });
 
-test('select classify: a selector-driven select as a chain base DECLINES', async () => {
-  // Deliberate. With the measure-expression arm the chain would classify and
-  // then answer totalmass 1 against the exact 2.75, because the chain body
-  // loses the base's weights. The decline keeps the loud failure until that is
-  // fixed; see TODO-flatppl-js.md.
+test('select classify: a selector-driven select as a chain base ANSWERS', async () => {
+  // This test used to assert the opposite. The shape was fenced off in
+  // `classifyJointchain` for one PR, because the chain body lost the base's
+  // weights and answered totalmass 1 against the exact 2.75 — a loud decline
+  // beat a silent wrong number. The loss was the bridge peeling each branch's
+  // constant weight into `synthWeights`, which an external selector ignores;
+  // with that fixed the fence is gone and this guards the other sign, so the
+  // fence cannot come back unnoticed.
   const { ctx } = ctxFor(UNEVEN + `
 M = jointchain(aa = S, bb = fn(Normal(_, 1.0)))
 tm = totalmass(M)
+lp = logdensityof(M, record(aa = 0.5, bb = 0.5))
 `, 4096);
-  assert.ok(!ctx.derivations.M,
-    'the chain over an ifelse base must not classify while its mass is lost');
-  await assert.rejects(() => Promise.resolve(ctx.getMeasure('tm')),
-    (e: any) => /no derivation/.test(e.message));
+  assert.ok(ctx.derivations.M, 'the chain over an ifelse base classifies');
+  const tm = await ctx.getMeasure('tm');
+  assert.equal(tm.samples[0], 2.75,
+    `chain over a certified select: totalmass ${tm.samples[0]}, expected 2.75`);
+  const lp = await ctx.getMeasure('lp');
+  const want = -2.655819968151698;   // select density at 0.5 + logpdf(N(0.5,1), 0.5)
+  assert.ok(Math.abs(lp.samples[0] - want) < 1e-12,
+    `chain over a certified select: density ${lp.samples[0]}, expected ${want}`);
 });
