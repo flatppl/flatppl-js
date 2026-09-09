@@ -6,7 +6,7 @@
 
 import { createHash } from 'node:crypto';
 import { readFile, readdir, stat } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, realpathSync } from 'node:fs';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -19,17 +19,23 @@ function portable(path) {
   return path.split(sep).join('/');
 }
 
+/** Every entry under `root`: regular files as paths, anything else
+ *  (symlinks above all — a link in a bundle would be dereferenced by the
+ *  copy into the site and could publish files off the build machine) as
+ *  a problem. */
 async function filesUnder(root) {
   const paths = [];
+  const problems = [];
   async function visit(directory) {
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const path = join(directory, entry.name);
       if (entry.isDirectory()) await visit(path);
       else if (entry.isFile()) paths.push(portable(relative(root, path)));
+      else problems.push(`${portable(relative(root, path))}: not a regular file`);
     }
   }
   await visit(root);
-  return paths.sort();
+  return { paths: paths.sort(), problems };
 }
 
 async function digest(path) {
@@ -54,7 +60,9 @@ export async function verifyThemeBundle(bundle = defaultBundle) {
   if (!Array.isArray(manifest.files)) return [...errors, 'manifest.json: no file list'];
 
   const declared = new Map(manifest.files.map((file) => [file.path, file]));
-  const actual = (await filesUnder(root)).filter((path) => path !== 'manifest.json');
+  const { paths, problems } = await filesUnder(root);
+  errors.push(...problems);
+  const actual = paths.filter((path) => path !== 'manifest.json');
   const actualSet = new Set(actual);
 
   for (const path of actual) {
@@ -86,7 +94,9 @@ export async function describeThemeBundle(bundle = defaultBundle) {
   return { status: errors.length ? 'invalid' : 'verified', version, errors };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Node realpaths the main module, so compare realpaths (a checkout reached
+// through a symlinked path would otherwise make this a silent no-op).
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const info = await describeThemeBundle(process.argv[2]);
   if (info.status === 'missing') {
     console.error('theme: nothing at vendor/flatppl-theme — run `npm run fetch:theme` (or the build) first');

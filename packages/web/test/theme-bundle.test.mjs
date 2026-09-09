@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -153,9 +153,67 @@ test('the release path downloads the pinned tarball, verifies it, and then reuse
   assert.equal(calls.length, 1, 'no second download');
   assert.equal(logs.at(-1), `theme: using cached flatppl-theme ${THEME_PIN} (verified)`);
 
-  // A stale cache (another tag) is replaced, not reused.
-  await syncTheme({ repoRoot: join(root, 'repo'), themeDir, env: { ...env, FLATPPL_THEME_REF: 'v0.0.1' }, log: () => {}, fetchImpl: impl })
-    .catch((err) => assert.match(err.message, /could not download .*v0\.0\.1/));
+  // A cache for another tag is not reused: the pinned tag is fetched
+  // (and here, 404s) instead.
+  await assert.rejects(
+    syncTheme({ repoRoot: join(root, 'repo'), themeDir, env: { ...env, FLATPPL_THEME_REF: 'v0.0.1' }, log: () => {}, fetchImpl: impl }),
+    /could not download .*v0\.0\.1/,
+  );
+  assert.equal(calls.length, 5, 'the other tag was actually requested (with retries)');
+});
+
+test('a symlink inside a bundle fails verification and is never installed', async (t) => {
+  const root = await tmp(t, 'theme-sync-symlink-');
+  const src = join(root, 'src');
+  await fakeBundle(src);
+  await symlink('/etc/hostname', join(src, 'leak.txt'));
+  assert.ok((await verifyThemeBundle(src)).includes('leak.txt: not a regular file'));
+  const archive = join(root, 'bundle.tar.gz');
+  await tarGz(src, archive);
+  const { impl } = fakeFetch(themeReleaseUrl(THEME_PIN), archive);
+  const themeDir = join(root, 'drop');
+  await assert.rejects(
+    syncTheme({ repoRoot: join(root, 'repo'), themeDir, env: { FLATPPL_THEME_NO_SIBLING: '1' }, log: () => {}, fetchImpl: impl }),
+    /leak\.txt: not a regular file/,
+  );
+  assert.equal((await describeThemeBundle(themeDir)).status, 'missing');
+});
+
+test('a release that no longer bundles a required file is refused', async (t) => {
+  const root = await tmp(t, 'theme-sync-dropped-');
+  const src = join(root, 'src');
+  const manifest = await fakeBundle(src);
+  manifest.files = manifest.files.filter((f) => f.path !== 'shell.js');
+  await rm(join(src, 'shell.js'));
+  await writeFile(join(src, 'manifest.json'), JSON.stringify(manifest) + '\n');
+  const archive = join(root, 'bundle.tar.gz');
+  await tarGz(src, archive);
+  const { impl } = fakeFetch(themeReleaseUrl(THEME_PIN), archive);
+  await assert.rejects(
+    syncTheme({ repoRoot: join(root, 'repo'), themeDir: join(root, 'drop'), env: { FLATPPL_THEME_NO_SIBLING: '1' }, log: () => {}, fetchImpl: impl }),
+    /does not bundle shell\.js/,
+  );
+});
+
+test('a sibling copy takes every file under assets/, not only the listed ones', async (t) => {
+  const root = await tmp(t, 'theme-sync-assets-');
+  const checkout = join(root, 'checkout');
+  await fakeCheckout(checkout);
+  await writeFile(join(checkout, 'assets', 'new-icon.svg'), '<svg/>\n');
+  const themeDir = join(root, 'drop');
+  await syncTheme({ repoRoot: join(root, 'repo'), themeDir, env: { FLATPPL_THEME_DIR: checkout }, log: () => {} });
+  assert.equal(await readFile(join(themeDir, 'assets', 'new-icon.svg'), 'utf8'), '<svg/>\n');
+});
+
+test('syncTheme derives the default drop dir from the repo root it is given', async (t) => {
+  const root = await tmp(t, 'theme-sync-default-');
+  const checkout = join(root, 'flatppl-theme');
+  await fakeCheckout(checkout);
+  const repoRoot = join(root, 'flatppl-js');
+  await mkdir(repoRoot);
+  const r = await syncTheme({ repoRoot, env: {}, log: () => {} });
+  assert.equal(r.source.label, 'sibling');
+  assert.equal(await readFile(join(repoRoot, 'vendor', 'flatppl-theme', 'tokens.css'), 'utf8'), 'fixture tokens.css\n');
 });
 
 test('a tarball whose contents fail their manifest is rejected and nothing is installed', async (t) => {

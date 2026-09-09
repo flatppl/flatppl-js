@@ -21,9 +21,8 @@
 // The drop dir (vendor/flatppl-theme at the repo root) is build output,
 // gitignored. No CDN at runtime, no submodule, no global installs.
 
-import { createHash } from 'node:crypto';
-import { copyFile, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { copyFile, cp, mkdir, mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { existsSync, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -36,7 +35,10 @@ export const THEME_REPOSITORY = 'https://github.com/flatppl/flatppl-theme';
 export const THEME_PIN = 'v0.1.8';
 
 /** The bundle's file list (flatppl-theme's scripts/bundle.ts
- *  REQUIRED_FILES) — what a sibling copy takes from the checkout. */
+ *  REQUIRED_FILES): what a sibling copy must find in the checkout, and
+ *  what a release must declare. The theme bundles `assets/` recursively,
+ *  so a sibling copy takes that whole directory, not just the entries
+ *  listed here. */
 export const THEME_FILES = [
   'assets/android-chrome-192x192.png',
   'assets/android-chrome-512x512.png',
@@ -63,6 +65,14 @@ export const THEME_FILES = [
 const here = dirname(fileURLToPath(import.meta.url));            // packages/web/scripts/
 const defaultRepoRoot = dirname(dirname(dirname(here)));         // flatppl-js/
 
+/** What to do when neither source is reachable — attached to every
+ *  provisioning error so any caller (the build, not only the CLI) shows it. */
+const HINT = 'Set FLATPPL_THEME_DIR to a flatppl-theme checkout, check one out as a sibling of this repo, or restore network access to GitHub.';
+
+function fail(message) {
+  return new Error(`${message}\n${HINT}`);
+}
+
 export function themeReleaseUrl(tag) {
   return `${THEME_REPOSITORY}/releases/download/${tag}/flatppl-theme-${tag}.tar.gz`;
 }
@@ -76,17 +86,21 @@ export function resolveThemeSource({ repoRoot = defaultRepoRoot, env = process.e
   return { kind: 'release', tag: env.FLATPPL_THEME_REF || THEME_PIN };
 }
 
-/** Copy the theme's source files from a checkout into the drop dir. */
+/** Copy the theme's source files from a checkout into the drop dir:
+ *  the listed files, plus everything under assets/ (bundled recursively
+ *  by the theme's own builder, so an asset added upstream is not lost). */
 async function copyThemeSource(srcDir, themeDir) {
   const missing = THEME_FILES.filter((f) => !existsSync(join(srcDir, f)));
   if (missing.length) {
-    throw new Error(`theme: ${srcDir} is not a flatppl-theme checkout — missing ${missing.join(', ')}`);
+    throw fail(`theme: ${srcDir} is not a flatppl-theme checkout — missing ${missing.join(', ')}`);
   }
   await rm(themeDir, { recursive: true, force: true });
   for (const f of THEME_FILES) {
+    if (f.startsWith('assets/')) continue;
     await mkdir(dirname(join(themeDir, f)), { recursive: true });
     await copyFile(join(srcDir, f), join(themeDir, f));
   }
+  await cp(join(srcDir, 'assets'), join(themeDir, 'assets'), { recursive: true, dereference: true });
 }
 
 async function readManifest(themeDir) {
@@ -105,26 +119,36 @@ async function cachedRelease(themeDir, tag) {
   return (await verifyThemeBundle(themeDir)).length === 0;
 }
 
+/** A bundle is well under a few MB; anything larger is not the theme. */
+const MAX_ARCHIVE_BYTES = 32 * 1024 * 1024;
+const DOWNLOAD_TIMEOUT_MS = 30_000;
+
 async function download(url, fetchImpl, attempts = 4) {
   let lastErr;
   for (let i = 1; i <= attempts; i++) {
     try {
-      const res = await fetchImpl(url, { redirect: 'follow' });
+      // The timeout bounds a stalled connection; the retry loop only helps
+      // with hard errors.
+      const res = await fetchImpl(url, { redirect: 'follow', signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) });
       if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-      return Buffer.from(await res.arrayBuffer());
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (buf.length > MAX_ARCHIVE_BYTES) throw new Error(`archive is ${buf.length} bytes, more than a theme bundle can be`);
+      return buf;
     } catch (err) {
       lastErr = err;
       if (i < attempts) await new Promise((r) => setTimeout(r, 500 * 2 ** (i - 1)));
     }
   }
-  throw new Error(`theme: could not download ${url}: ${lastErr?.message || lastErr}`);
+  throw fail(`theme: could not download ${url}: ${lastErr?.message || lastErr}`);
 }
 
 function untar(archive, dir) {
   return new Promise((resolveP, reject) => {
     const tar = spawn('tar', ['-xzf', archive, '-C', dir], { stdio: ['ignore', 'inherit', 'inherit'] });
-    tar.on('error', reject);
-    tar.on('exit', (code) => (code === 0 ? resolveP() : reject(new Error(`tar exit ${code}`))));
+    tar.on('error', (err) => reject(err.code === 'ENOENT'
+      ? new Error('theme: `tar` is not on PATH — it is needed to unpack the release archive')
+      : err));
+    tar.on('exit', (code) => (code === 0 ? resolveP() : reject(new Error(`theme: tar could not unpack the release archive (exit ${code})`))));
   });
 }
 
@@ -146,12 +170,19 @@ async function fetchRelease(tag, themeDir, fetchImpl) {
     }
     const errors = await verifyThemeBundle(extract);
     if (errors.length) throw new Error(`theme: ${url} fails its own manifest:\n${errors.join('\n')}`);
+    // A release that dropped a file the consumers rely on is a contract
+    // break, not something to discover at page load.
+    const declared = new Set(manifest.files.map((x) => x.path));
+    const absent = THEME_FILES.filter((f) => !declared.has(f));
+    if (absent.length) throw new Error(`theme: ${url} does not bundle ${absent.join(', ')}`);
     await rm(themeDir, { recursive: true, force: true });
     await mkdir(dirname(themeDir), { recursive: true });
     try {
       await rename(extract, themeDir);
-    } catch (_) {
-      // Cross-device temp dir: copy instead.
+    } catch (err) {
+      if (err.code !== 'EXDEV') throw err;
+      // Temp dir on another filesystem: copy the verified files (the
+      // manifest last, so an interrupted copy never looks like a cache).
       for (const f of [...manifest.files.map((x) => x.path), 'manifest.json']) {
         await mkdir(dirname(join(themeDir, f)), { recursive: true });
         await copyFile(join(extract, f), join(themeDir, f));
@@ -170,7 +201,7 @@ async function fetchRelease(tag, themeDir, fetchImpl) {
  */
 export async function syncTheme({
   repoRoot = defaultRepoRoot,
-  themeDir = join(defaultRepoRoot, 'vendor', 'flatppl-theme'),
+  themeDir = join(repoRoot, 'vendor', 'flatppl-theme'),
   env = process.env,
   log = console.log,
   fetchImpl = globalThis.fetch,
@@ -192,12 +223,13 @@ export async function syncTheme({
   return { source, verified: true, version: manifest?.version ?? null };
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// Node realpaths the main module, so compare realpaths (a checkout reached
+// through a symlinked path would otherwise make this a silent no-op).
+if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     await syncTheme();
   } catch (err) {
     console.error(err.message);
-    console.error('Set FLATPPL_THEME_DIR to a flatppl-theme checkout, check out one as a sibling of this repo, or restore network access to GitHub.');
     process.exitCode = 1;
   }
 }

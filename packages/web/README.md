@@ -60,8 +60,10 @@ into the git-ignored `vendor/flatppl-theme/` on every build
 
 1. `FLATPPL_THEME_DIR`, else a sibling `../flatppl-theme` checkout: its
    source files are copied as they are, **unverified** (the build says
-   so). Edit `tokens.css` there, rebuild, see it. `FLATPPL_THEME_NO_SIBLING=1`
-   skips this step.
+   so). Edit `tokens.css` there, then run the build again (or restart
+   `npm run dev`; nothing watches the checkout). `FLATPPL_THEME_NO_SIBLING=1`
+   ignores a sibling, so the release path can be tested; an explicit
+   `FLATPPL_THEME_DIR` still wins.
 2. Otherwise the pinned release (`THEME_PIN` in `fetch-theme.mjs`,
    `FLATPPL_THEME_REF` overrides it for a candidate): the release archive
    is downloaded from GitHub and verified against its own manifest. A
