@@ -1632,13 +1632,13 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   }
 
   // Restore Plot toggle state from the host's persistent state so the
-  // user's preference survives panel close/reopen and reloads. Default
-  // is OFF for first-time use — the plot panel is opt-in to keep the
-  // initial DAG-only experience clean.
+  // user's preference survives panel close/reopen and reloads. The host
+  // chooses the first-use default; embedded viewers default to OFF.
   let prevState: any = null;
   if (ctx.host.loadState) { try { prevState = ctx.host.loadState(); } catch (_) {} }
   ctx.graphEnabled = prevState?.graphEnabled !== false;
-  setPlotEnabled(ctx, prevState && prevState.plotEnabled === true);
+  setPlotEnabled(ctx, typeof prevState?.plotEnabled === 'boolean'
+    ? prevState.plotEnabled : opts.defaultPlotEnabled === true);
   // Restore which reification bubbles were collapsed last session. A
   // restored anchor is marked "seen" so the >=3-member default in
   // renderDAG doesn't recompute over it — see the `_reifSeen` comment
