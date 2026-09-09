@@ -10,7 +10,8 @@
 //
 // (b) A selector-driven select over branches of DIFFERENT mass. §06 makes
 //     `ifelse(c, A, B)` with `c ~ Bernoulli(p)` the marginal over c, so the
-//     mass is p·mass(A) + (1−p)·mass(B). The gather read the branches as
+//     mass is p·mass(A) + (1−p)·mass(B), which the engine now RECORDS in closed
+//     form (see `certified-mass.test.ts`). The gather read the branches as
 //     parents of one PRODUCT, multiplying every branch's weight into every
 //     atom: `totalmass` reported 5.9999999999999964 — the product 2·3 —
 //     against the exact 0.25·2 + 0.75·3 = 2.75. A constant weight cannot
@@ -115,16 +116,17 @@ M = ifelse(c, A, B)
 `;
 
 test('select mass: unequal branch masses give the selector-weighted sum', async () => {
-  // The mass is an IMPORTANCE ESTIMATE here — the selector is realised, so the
-  // branch proportions are sampled — hence the band. The engine reported the
-  // PRODUCT 6 before, which no band would admit. The density is exact.
+  // The engine reported the PRODUCT 6 before this rule landed. The mass was
+  // then an importance estimate for a while, and is now the recorded closed
+  // form Σ pᵢ Zᵢ — hence `assert.equal` rather than the band this test first
+  // carried. The `certified-mass` file sweeps N to pin that exactness.
   const { ctx } = ctxFor(UNEVEN + `
 tm = totalmass(M)
 lp = logdensityof(M, 0.5)
 `, 32768);
   const tm = await ctx.getMeasure('tm');
-  assert.ok(Math.abs(tm.samples[0] - 2.75) < 0.05,
-    `uneven-branch select totalmass: got ${tm.samples[0]}, expected 2.75`);
+  assert.equal(tm.samples[0], 2.75,
+    `uneven-branch select totalmass: got ${tm.samples[0]}, expected exactly 2.75`);
   const lp = await ctx.getMeasure('lp');
   assert.ok(Math.abs(lp.samples[0] - SEL_DENS) < 1e-12,
     `uneven-branch select density: got ${lp.samples[0]}, expected ${SEL_DENS}`);

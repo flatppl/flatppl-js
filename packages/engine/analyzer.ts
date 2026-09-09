@@ -75,6 +75,28 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
         }
         return isMeasureExpr(k, bindings, seen);
       }
+      // `ifelse` is DUAL the same way `broadcast` is: `ifelse(c, 1.0, 2.0)` is
+      // a value, while `ifelse(c, A, B)` over measure-typed branches is the
+      // discrete-selector mixture (§06's marginal over the selector) — a
+      // measure. So it is measure-producing iff its branches are, and it must
+      // NOT go into `MEASURE_PRODUCING`, which is unconditional and also drives
+      // `inlineRelabel`.
+      //
+      // Without this arm, `normalize(ifelse(c, A, B))` and such a select as a
+      // `jointchain` base both failed `resolveMeasureBaseName` and produced NO
+      // derivation at all — the query died as "no derivation for 'tm'" — so
+      // their exact masses (1 for the normalize, 2.75 for the chain over
+      // `weighted(2, N(0,1))` / `weighted(3, N(5,1))` under Bernoulli(0.25))
+      // were unreachable.
+      //
+      // Each branch gets its OWN copy of the cycle guard: the guard exists to
+      // stop an identifier chain recursing, and sharing one set across the
+      // branches would make `ifelse(c, A, A)` decline its second branch purely
+      // because the first had already visited that name.
+      if (name === 'ifelse' && Array.isArray(node.args) && node.args.length === 3) {
+        return isMeasureExpr(node.args[1], bindings, new Set(seen))
+          && isMeasureExpr(node.args[2], bindings, new Set(seen));
+      }
       // `record(field = expr, ...)` with every field value resolving
       // to a draw / lawof / measure-typed call is a record-measure —
       // matches the engine's `classifyRecordOrJoint` derivation

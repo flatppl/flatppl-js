@@ -61,6 +61,12 @@ export type WeightEvent = {
    *  for. One baseline covers a whole product's atom axis, so a mass reader
    *  counts the model's events and drops these. */
   baseline?: boolean;
+  /** The log mass this event contributes, KNOWN IN CLOSED FORM. Set only where
+   *  the producer can state it exactly — a selector mixture's Σ pᵢ Zᵢ — and it
+   *  then supersedes anything a reader could infer from the atoms. Absent means
+   *  "not certified", which is not the same as zero: a reader must then fall
+   *  back to the atom-derived accounting. */
+  mass?: number;
 };
 
 export type WeightLineage = {
@@ -82,10 +88,13 @@ export function newEvent(
   values: Float64Array | null,
   offset: number = 0,
   baseline: boolean = false,
+  mass?: number,
 ): WeightEvent {
-  return baseline
+  const e: WeightEvent = baseline
     ? { id: nextEventId++, values, offset, baseline: true }
     : { id: nextEventId++, values, offset };
+  if (mass != null) e.mass = mass;
+  return e;
 }
 
 /**

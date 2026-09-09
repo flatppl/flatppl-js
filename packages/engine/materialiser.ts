@@ -146,9 +146,14 @@ function matSample(name: string, d: DerivationSample, ctx: any) {
       // Otherwise the mass follows the resulting weights, as matEvaluate's
       // does — `normalize` leaves them summing to one, so a kernel draw at a
       // normalized parameter ensemble still reports mass 0 in log space.
+      // A CERTIFIED event states its share exactly and supersedes the atoms'
+      // sum: a draw at a certified parameter ensemble inherits the certificate,
+      // so one product cannot end up contributing the certificate through one
+      // factor and the estimate through its descendant.
+      const certifiedLw = _massFromEvents(lw);
       const logTotalmass = (typeof d.logTotalmass === 'number')
         ? d.logTotalmass
-        : (lw ? empirical.logSumExp(lw) : 0);
+        : (certifiedLw != null ? certifiedLw : (lw ? empirical.logSumExp(lw) : 0));
       // A weighted parameter ensemble caps the draw's own quality: the atoms
       // downweighted at theta stay downweighted at y.
       let n_eff = reply.samples.length;
@@ -2109,12 +2114,14 @@ function _clmFedParentOverlay(out: any, parents: any[]) {
   const lw = empirical.propagateLogWeights([out].concat(parents));
   // A shallow copy, not a mutation: the body's measure is the value the walk
   // handed back and may be cached against its own name.
+  const certifiedFed = _massFromEvents(lw);
   return Object.assign({}, out, {
     logWeights: lw,
     // Read off the resulting weights, so the mass follows them however many
-    // streams joined. `normalize` leaves its weights summing to one, so a
-    // kernel draw at a normalized prior still reports mass 0 in log space.
-    logTotalmass: empirical.logSumExp(lw),
+    // streams joined — unless an event CERTIFIES its share, which supersedes
+    // the atoms. `normalize` leaves its weights summing to one, so a kernel
+    // draw at a normalized prior still reports mass 0 in log space.
+    logTotalmass: certifiedFed != null ? certifiedFed : empirical.logSumExp(lw),
     // A weighted prior leaves far fewer effective atoms than N, so the output
     // must not report a confident N.
     n_eff: empirical.effectiveSampleSize({ logWeights: lw }),
@@ -2248,26 +2255,50 @@ function _productLogTotalmass(subs: any[]): number | null {
       shared += c;
     }
     lTM = addMass(lTM, m - shared);
-    // Credit only the mass the WEIGHTS carry. The residue belongs to the
-    // factor, not to any event, so a descendant must not subtract it.
-    const attributable = (w ? empirical.logSumExp(w) : 0) - shared;
-    const opaque = fresh.filter((e: any) => e.values);
+    // ACCOUNTED versus RESIDUE, stated rather than inferred. A factor's events
+    // account for part of its mass; whatever is left over is an atom-derived
+    // residue, which belongs to the factor and not to any event, so a
+    // descendant must never subtract it.
+    //
+    // Which part is "accounted" depends on whether an event CERTIFIES its own
+    // share. A certified event states an exact closed form (a selector
+    // mixture's Σ pᵢ Zᵢ), and the recorded mass then IS that certificate, so
+    // there is no residue at all — reading the gap between the recorded mass
+    // and the atoms' `logSumExp` would invent one out of the estimator's error
+    // and double-count it in every dependent product. Without a certificate the
+    // atoms' own sum is what the events account for, and the gap is the genuine
+    // residue: a `truncate`'s accept rate, a `Lebesgue(interval(a,b))`'s volume.
+    const atomMass = w ? empirical.logSumExp(w) : 0;
+    const certified = fresh.filter((e: any) => e.mass != null);
+    const accounted = certified.length > 0 ? m : atomMass;
+    const residue = m - accounted;          // exactly 0 in the certified case
+    // A certified event takes its stated share; the rest split what the events
+    // account for beyond it, less what an ancestor already contributed.
+    let rest = accounted - shared;
+    for (const e of certified) {
+      credited.set(e.id, e.mass);
+      rest -= e.mass;
+    }
+    const opaque = fresh.filter((e: any) => e.values && e.mass == null);
     if (opaque.length > 1) {
-      // Two opaque arrays introduced together cannot be told apart by this
-      // rule. Credit both unknown; a later factor sharing one of them makes
-      // the product uncertified rather than answering.
-      for (const e of fresh) credited.set(e.id, null);
+      // Two uncertified opaque arrays introduced together cannot be told apart
+      // by this rule. Credit both unknown; a later factor sharing one of them
+      // makes the product uncertified rather than answering.
+      for (const e of fresh) if (e.mass == null) credited.set(e.id, null);
     } else {
       // A constant event carries its own offset, so the split is exact, and
       // whatever is left over is the lone opaque event's share.
-      let rest = attributable;
       for (const e of fresh) {
-        if (e.values) continue;
+        if (e.values || e.mass != null) continue;
         credited.set(e.id, e.offset);
         rest -= e.offset;
       }
       if (opaque.length === 1) credited.set(opaque[0].id, rest);
     }
+    // The contribution above is `accounted - shared + residue`, which is
+    // `m - shared` either way; naming both terms is what keeps the credit
+    // above honest about which of them an event may claim.
+    void residue;
   }
   return lTM;
 }
@@ -2667,13 +2698,44 @@ function _synthSelectorSamples(
 // contract: the usual case — every branch parameterised by the SAME weighted
 // measure — is one stream, passed forward BY REFERENCE rather than cloned,
 // which is how the independence dedupe recognises it downstream.
+// The log mass a weight ARRAY states, preferring a CERTIFIED event's closed form
+// over the atoms' own `logSumExp`, or null when the events cannot say.
+//
+// A certified event carries the exact mass it contributes (a selector mixture's
+// Σ pᵢ Zᵢ), and the atoms are only an importance estimate of the same number.
+// Reading the atoms where a certificate exists makes two accountings of one
+// event disagree — measured, the dependent product over a certified select then
+// lands on 2.7467956542971845 instead of 2.75, because one factor contributes
+// the certificate while its descendant contributes the estimate and the credit
+// cannot match both.
+//
+// Returns null when nothing is certified (the caller keeps the atom sum, which
+// is the only thing available) and when an UNCERTIFIED per-atom event is mixed
+// in, since then the events cannot account for the array on their own.
+function _massFromEvents(lw: any): number | null {
+  if (!lw) return null;
+  const lineage = require('./weight-lineage.ts');
+  const events: any[] = lineage.lineageOf(lw).events as any[];
+  if (!events.some((e: any) => e.mass != null)) return null;
+  let acc = 0;
+  for (const e of events) {
+    if (e.baseline) continue;
+    if (e.mass != null) { acc += e.mass; continue; }
+    if (e.values) return null;
+    acc += e.offset;
+  }
+  return acc;
+}
+
 function _selectParentOverlay(parents: any[], N: number) {
   const lw = empirical.propagateLogWeights(parents);
+  const certified = _massFromEvents(lw);
   return {
     logWeights: lw,
     // `normalize` leaves its weights summing to one, so a mixture over a
-    // normalized parent still reports mass 0 in log space.
-    logTotalmass: lw ? empirical.logSumExp(lw) : 0,
+    // normalized parent still reports mass 0 in log space. A CERTIFIED event
+    // states its share exactly and supersedes the atoms' sum.
+    logTotalmass: certified != null ? certified : (lw ? empirical.logSumExp(lw) : 0),
     // A weighted parent leaves far fewer effective atoms than N, so the gather
     // must not report a confident N.
     n_eff: lw ? empirical.effectiveSampleSize({ logWeights: lw }) : N,
@@ -2685,14 +2747,60 @@ function _selectParentOverlay(parents: any[], N: number) {
 // events — it picks one branch per atom — so a fresh per-atom event is the
 // honest lineage, and the baseline is split out so a product over this measure
 // has one to drop.
-function _registerGatheredSelect(lw: Float64Array): Float64Array {
+//
+// `certified` is the mixture's closed-form log mass when there is one. Carrying
+// it ON THE EVENT is what lets a dependent product credit this factor its exact
+// share instead of inferring one from the gap between the recorded mass and the
+// atoms' own sum — see `_productLogTotalmass`.
+function _registerGatheredSelect(
+  lw: Float64Array, certified?: number | null,
+): Float64Array {
   const lineage = require('./weight-lineage.ts');
   const N = lw.length;
   const c = N > 0 ? -Math.log(N) : 0;
   const delta = new Float64Array(N);
   for (let i = 0; i < N; i++) delta[i] = lw[i] - c;
   return lineage.register(lw, [lineage.newEvent(null, c, true),
-    lineage.newEvent(delta, 0)]);
+    lineage.newEvent(delta, 0, false,
+      certified == null ? undefined : certified)]);
+}
+
+// The mixture's exact log mass `log Σᵢ pᵢ Zᵢ`, or null when the branch
+// probabilities are not closed form here.
+//
+// The probabilities come from the derivation's own per-branch weights —
+// `logweightIRs` for an `ifelse` over a closed-form selector, `synthWeights`
+// for a constant-weight mixture. A selector whose branch probabilities are NOT
+// closed form (`classifyIfelse`'s per-atom indicator arm, e.g. `u > 0`) has
+// none to read, and the atom-derived estimate stands.
+function _selectClosedFormMass(d: any, masses: any[], ctx: any): number | null {
+  if (masses.some((x: any) => x === null)) return null;
+  // No per-branch weights to read, or not one per branch: nothing to certify.
+  if (!Array.isArray(d.logweightIRs)
+      || d.logweightIRs.length !== masses.length) return null;
+  const irShared = require('./ir-shared.ts');
+  const logps: number[] = [];
+  for (const ir of d.logweightIRs) {
+    // The classifier emits each of these as a `log(p)` call and
+    // `resolveConstant` folds arithmetic but no transcendental, so peel the
+    // `log` and take it here; `p` itself is what has to be constant. Any other
+    // shape, and a `p` that does not resolve — `classifyIfelse`'s per-atom
+    // indicator arm for a non-closed-form condition such as `u > 0` — declines,
+    // and the atom-derived estimate stands.
+    if (!ir || ir.kind !== 'call' || ir.op !== 'log'
+        || !Array.isArray(ir.args) || ir.args.length !== 1) return null;
+    const pv = irShared.resolveConstant(ir.args[0], ctx.bindings, new Set(),
+      ctx.fixedValues);
+    if (pv == null || !(pv > 0) || !Number.isFinite(pv)) return null;
+    logps.push(Math.log(pv));
+  }
+  const terms = logps.map((lp: number, i: number) => lp + masses[i]);
+  let mx = -Infinity;
+  for (const t of terms) if (t > mx) mx = t;
+  if (!Number.isFinite(mx)) return null;
+  let acc = 0;
+  for (const t of terms) acc += Math.exp(t - mx);
+  return mx + Math.log(acc);
 }
 
 function matSelect(name: string, d: DerivationSelect, ctx: any) {
@@ -2733,11 +2841,24 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
   }
   const branchP = branchEntries.map((b: any, bi: any) => {
     if (b && b.ref != null) return ctx.getMeasure(b.ref);
-    // An INLINE branch draws through the worker, which replies about the draw
-    // alone: a parameter measure carrying importance weights reaches it only as
-    // per-atom POSITIONS through `collectRefArrays`. So collect the parameter
-    // MEASURES the branch resolved and fold their weights in, exactly as
-    // `matSample` does for a binding-graph leaf draw.
+    // A COMPOSITE inline branch — anything but a sampleable leaf, so a
+    // `logweighted` wrapper carrying the branch's own mass — goes through the
+    // measure path, which knows how to apply it. The worker below samples leaf
+    // kernels only and reported `'logweighted' is not a known distribution`.
+    // Keeping such a branch whole is what lets its MASS reach the gather: the
+    // bridge used to peel the weight off into `synthWeights`, which an external
+    // selector then ignored, and the branch arrived massless.
+    const irShared2 = require('./ir-shared.ts');
+    if (b && b.ir && b.ir.kind === 'call'
+        && !(irShared2.SAMPLEABLE_DISTRIBUTIONS
+             && irShared2.SAMPLEABLE_DISTRIBUTIONS.has(b.ir.op))) {
+      return materialiseMeasureIR(b.ir, ctx);
+    }
+    // An INLINE leaf branch draws through the worker, which replies about the
+    // draw alone: a parameter measure carrying importance weights reaches it
+    // only as per-atom POSITIONS through `collectRefArrays`. So collect the
+    // parameter MEASURES the branch resolved and fold their weights in, exactly
+    // as `matSample` does for a binding-graph leaf draw.
     const parents: any[] = [];
     return collectRefArrays(b.ir, ctx, parents)
       .then((refArrays: any) => ctx.sendWorker({
@@ -2815,14 +2936,18 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
     // collapsed to the UNWEIGHTED gather mean — 3.74338 against 4.09091.
     const selLW = selM && selM.logWeights;
     if (selLW) for (let i = 0; i < N; i++) perBranch[i] += selLW[i] + Math.log(N);
-    const gathered = _registerGatheredSelect(perBranch);
+    // §06 makes the selector mixture the marginal over the selector, so its mass
+    // is Σᵢ pᵢ Zᵢ — a CLOSED FORM whenever the branch probabilities resolve to
+    // constants, which they do for an `ifelse` over a Bernoulli and for a
+    // constant-weight mixture. Record that, not the atoms' `logSumExp`: the
+    // gather realises the selector, so the atom sum is only an importance
+    // estimate of the same number (2.7467956542971845 against 2.75 at
+    // N = 32768). The per-atom weights are untouched either way.
+    const certified = _selectClosedFormMass(d, masses, ctx);
+    const gathered = _registerGatheredSelect(perBranch, certified);
     return scalarMeasureN(out, {
       logWeights: gathered,
-      // The gathered weights ARE the mass. Unequal branch masses make this an
-      // importance estimate, which is inherent once the selector is realised;
-      // the DENSITY path stays exact. Equal masses take the branch above and
-      // are untouched.
-      logTotalmass: empirical.logSumExp(gathered),
+      logTotalmass: certified != null ? certified : empirical.logSumExp(gathered),
       n_eff: empirical.effectiveSampleSize({ logWeights: gathered }),
     });
   });
@@ -3458,6 +3583,16 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     const branches: any[] = [];
     const synthWeights: number[] = [];
     let allConst = true;
+    // Peeling a branch's weight is only right when the weight IS the selector,
+    // i.e. a constant-weight mixture with nothing external choosing a branch.
+    // With an external `selectorName` the peeled weights went into
+    // `synthWeights`, which matSelect then ignores in favour of the selector —
+    // so each branch's own mass was silently DISCARDED. Measured, the branches
+    // of a chain body's select arrived with mass 0 apiece, the gather took its
+    // equal-mass path, and `jointchain(aa = ifelse(c, weighted(2, N(0,1)),
+    // weighted(3, N(5,1))), bb = fn(Normal(_, 1)))` answered totalmass 1
+    // against the exact 0.25·2 + 0.75·3 = 2.75.
+    const peelWeights = ir.selectorName == null;
     for (const b of ir.branches) {
       let inner = b;
       let w = 1;
@@ -3466,7 +3601,8 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
       // `logweighted`, so the expanded superpose/select branches carry
       // `logweighted`). Extract the linear weight either way; a non-constant
       // weight flips `allConst` off → matSelect refuses loudly (no synth).
-      if (b && b.kind === 'call' && (b.op === 'weighted' || b.op === 'logweighted')
+      if (peelWeights && b && b.kind === 'call'
+          && (b.op === 'weighted' || b.op === 'logweighted')
           && Array.isArray(b.args) && b.args.length === 2) {
         const wv = irShared.resolveConstant(b.args[0], childCtx.bindings,
           new Set(), childCtx.fixedValues);
@@ -3484,6 +3620,12 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
       selectorBase: (ir.selectorBase != null) ? ir.selectorBase : 1 };
     if (ir.selectorName) dSel.selectorRef = ir.selectorName;
     else if (allConst) dSel.synthWeights = synthWeights;
+    // Carry the inline node's per-branch log-weights so the mixture's mass can
+    // be CERTIFIED in closed form, exactly as it is for a by-name select. The
+    // by-name derivation calls the same field `logweightIRs`.
+    if (Array.isArray(ir.logweights) && ir.logweights.length === branches.length) {
+      dSel.logweightIRs = ir.logweights;
+    }
     return dSel;
   }
   // pushfwd(f, M) — variable transformation / projection (spec §06; §22's
@@ -3804,6 +3946,9 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
 }
 
 module.exports = {
+  // Exported for a direct unit assertion that a mixed event set certifies
+  // nothing; no production caller reads it by this name.
+  _massFromEventsForTest: _massFromEvents,
   materialiseMeasure,
   materialiseKernelBroadcastIR,
   materialiseMeasureIR,

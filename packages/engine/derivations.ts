@@ -3533,6 +3533,14 @@ function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): D
     const v = labels ? labels[i] : ('s' + i);
     const isKernelComp = !!(d.kernelIR || d.isKernel);
     if (i === 0) {
+      // A selector-driven select base was FENCED OFF here for one PR, because
+      // the chain body lost the base's weights and the chain answered totalmass
+      // 1 against the exact 2.75. The loss was the bridge peeling each branch's
+      // constant weight into `synthWeights`, which an external selector then
+      // ignored; with that fixed the chain reports the exact mass and the fence
+      // is gone. `test/select-derivation.test.ts` now guards the other sign —
+      // that the shape classifies and answers — so the fence cannot come back
+      // unnoticed.
       // Base: a measure, or (kernel-first) a kernel.
       const step: any = { var: v, role: 'base', kernel: isKernelComp };
       if (d.ref != null) step.ref = d.ref;
