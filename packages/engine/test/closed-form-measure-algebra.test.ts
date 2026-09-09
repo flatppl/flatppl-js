@@ -2331,3 +2331,119 @@ lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
   assert.ok(ctx.derivations.A.weightIR, 'the weight is a function of the variate');
   assert.ok(!ctx.derivations.lp, 'the variate-weighted chain gains no density route');
 });
+
+// =====================================================================
+// Product mass over an OPAQUE weighting event.
+//
+// A superposition's per-atom weights are one opaque array — no scalar offset of
+// its own — so the product rule could not tell how much of a descendant's mass
+// came from it and counted the whole thing twice.
+//
+// Oracle literals: a superposition of weighted probability measures has the sum
+// of the weights as its mass (§06 superpose, "ν(A) = M₁(A) + M₂(A) + …"), and
+// the mixture density at 0.5 is 1.5·pdf(N(0,1),0.5) + 1.5·pdf(N(5,1),0.5) =
+// 0.5281219657581097 from Distributions.jl, so the record law's log-density at
+// (0.5, 0.5) is log of that plus logpdf(N(0.5,1), 0.5).
+// =====================================================================
+
+const MIX_RECORD_LOGDENS = -1.5573665594019641;
+
+test('opaque mass: a superposition latent is counted once, not squared', async () => {
+  // Exact mass 1.5 + 1.5 = 3; the engine reported 8.99999999999999.
+  const ctx = makeCtx(`
+theta ~ superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0)))
+x ~ Normal(theta, 1.0)
+A = lawof(record(t = theta, xx = x))
+lp = logdensityof(A, record(t = 0.5, xx = 0.5))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
+    `superposition latent record law totalmass: got ${tm.samples[0]}, expected 3`);
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - MIX_RECORD_LOGDENS) < 1e-12,
+    `superposition latent record law density: got ${lp.samples[0]}, `
+    + `expected ${MIX_RECORD_LOGDENS}`);
+});
+
+test('opaque mass: asymmetric superposition weights give the sum, not its square', async () => {
+  // Exact 2 + 3 = 5; the engine reported 25.00000000000045, the square.
+  const ctx = makeCtx(`
+theta ~ superpose(weighted(2.0, Normal(0.0, 1.0)), weighted(3.0, Normal(5.0, 1.0)))
+x ~ Normal(theta, 1.0)
+A = lawof(record(t = theta, xx = x))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 5) < 1e-10,
+    `asymmetric superposition totalmass: got ${tm.samples[0]}, expected 5`);
+});
+
+test('opaque mass: the named-joint spelling takes the same rule', async () => {
+  const ctx = makeCtx(`
+theta ~ superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0)))
+A = joint(t = lawof(theta), xx = Normal(theta, 1.0))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
+    `named-joint superposition totalmass: got ${tm.samples[0]}, expected 3`);
+});
+
+test('opaque mass: an INDEPENDENT superposition factor still contributes whole', async () => {
+  // Nothing is shared here, so the superposition's mass enters once as before.
+  const ctx = makeCtx(`
+S = superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0)))
+A = joint(aa = S, bb = Normal(0.0, 1.0))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
+    `independent superposition factor totalmass: got ${tm.samples[0]}, expected 3`);
+});
+
+test('opaque mass: a constant weight beside the opaque one splits exactly', async () => {
+  // The latent's weights carry the superposition's opaque event AND the outer
+  // weighted's constant shift. The constant takes its own offset and the
+  // remainder is the opaque event's share, so the mass is 2 * 3 = 6.
+  const ctx = makeCtx(`
+theta ~ weighted(2.0, superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0))))
+x ~ Normal(theta, 1.0)
+A = lawof(record(t = theta, xx = x))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 6) < 1e-10,
+    `weighted-over-superposition totalmass: got ${tm.samples[0]}, expected 6`);
+});
+
+test('opaque mass: two superposition ancestors each credit their own', async () => {
+  // Each opaque event is introduced by its own factor, so both are attributable
+  // and the product is 3 * 4 = 12.
+  const ctx = makeCtx(`
+theta ~ superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0)))
+phi ~ superpose(weighted(2.0, Normal(0.0, 1.0)), weighted(2.0, Normal(7.0, 1.0)))
+x ~ Normal(theta, 1.0)
+A = lawof(record(t = theta, p = phi, xx = x))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 12) < 1e-10,
+    `two-superposition product totalmass: got ${tm.samples[0]}, expected 12`);
+});
+
+test('opaque mass: two opaque events introduced together refuse rather than guess', async () => {
+  // `x` depends on BOTH superpositions and is materialised first, so it brings
+  // in two opaque arrays at once and its mass cannot be split between them.
+  // The exact mass is 12 and this engine cannot certify it, so the query
+  // refuses; it used to answer 0.03515625, the square over the atom count.
+  const ctx = makeCtx(`
+theta ~ superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0)))
+phi ~ superpose(weighted(2.0, Normal(0.0, 1.0)), weighted(2.0, Normal(7.0, 1.0)))
+x ~ Normal(theta + phi, 1.0)
+A = lawof(record(xx = x, t = theta, p = phi))
+tm = totalmass(A)
+`);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('tm')),
+    (e: any) => e.code === 'ENGINE_LIMITATION' && /uncertified mass/.test(e.message));
+});
