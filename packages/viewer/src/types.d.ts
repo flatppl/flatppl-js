@@ -275,6 +275,9 @@ export interface Ctx {
   plotEchart: any;
   plotEnabled: boolean;
   graphEnabled: boolean;
+  /** Math pane (render-math.ts) visibility — the third panel of the
+   *  vertical split (panels.ts). Persisted with the other two. */
+  mathEnabled: boolean;
   currentSource: string | null;
   /** Resolved path of the module whose DAG is currently shown (the host's
    *  bundle / router key). Drives cross-module back source-sync (spec §04);
@@ -381,6 +384,9 @@ export interface MountOpts {
   host?: HostAdapter;
   controlsContainer?: HTMLElement | null;
   defaultPlotEnabled?: boolean;
+  /** First-use default for the math pane (off unless the host says
+   *  otherwise); a persisted user choice from loadState() wins. */
+  defaultMathEnabled?: boolean;
   [extra: string]: any;
 }
 

@@ -9,7 +9,10 @@
 // codicon-based icon button used by preset/domain controls.
 
 import { renderPlotForCurrent } from './render-plot.js';
+import { renderMathForCurrent } from './render-math.js';
 import { renderSampleStats } from './render-record.js';
+import { computePanelLayout, dividerPartner, clampSplit } from './panels.js';
+import type { PanelId } from './panels.js';
 import { $, displayBindingName, esc, listScalarAxes, renderDocTitle } from './util.js';
 import { downloadMeasure } from './export-samples.js';
 /**
@@ -35,6 +38,7 @@ export function saveViewState(ctx: Ctx): void {
     ctx.host.saveState({
       plotEnabled: ctx.plotEnabled,
       graphEnabled: ctx.graphEnabled,
+      mathEnabled: ctx.mathEnabled,
       inferenceOpts: ctx.inferenceOpts,
       collapsedReifications: Array.from(ctx.collapsedReifications || []),
     });
@@ -241,41 +245,114 @@ function openExportMenu(anchor: HTMLElement, measure: any, bindingName: any) {
   setTimeout(function () { document.addEventListener('mousedown', onDown, true); }, 0);
 }
 
-function updatePanelVisibility(ctx: Ctx) {
-  const plot    = $('plot-panel');
-  const graph   = $('graph-panel');
-  const divider = $('plot-divider');
-  const btn     = $('plot-toggle');
-  plot.classList.toggle('hidden', !ctx.plotEnabled);
-  plot.classList.toggle('full', !ctx.graphEnabled);
-  graph.classList.toggle('hidden', !ctx.graphEnabled);
-  graph.classList.toggle('full',  !ctx.plotEnabled);
-  divider.classList.toggle('hidden', !ctx.plotEnabled || !ctx.graphEnabled);
-  $('panels-hidden').hidden = ctx.plotEnabled || ctx.graphEnabled;
-  const graphBtn = $('graph-toggle');
-  graphBtn.classList.toggle('on', ctx.graphEnabled);
-  graphBtn.setAttribute('aria-pressed', String(ctx.graphEnabled));
-  graphBtn.textContent = 'Graph: ' + (ctx.graphEnabled ? 'on' : 'off');
+/** The toggle buttons and the label each carries. */
+const PANEL_TOGGLES: Record<PanelId, { button: string; label: string }> = {
+  graph: { button: 'graph-toggle', label: 'Graph' },
+  plot:  { button: 'plot-toggle',  label: 'Plots' },
+  math:  { button: 'math-toggle',  label: 'Math' },
+};
+
+/** The divider element that follows each panel (the last panel has none). */
+const PANEL_DIVIDERS: Partial<Record<PanelId, string>> = {
+  graph: 'plot-divider',
+  plot:  'math-divider',
+};
+
+function panelEnabled(ctx: Ctx): Record<PanelId, boolean> {
+  return { graph: !!ctx.graphEnabled, plot: !!ctx.plotEnabled, math: !!ctx.mathEnabled };
+}
+
+/**
+ * Apply the three toggle flags to the DOM through the one layout rule
+ * (panels.ts computePanelLayout): panel visibility + flex share, the
+ * `full` state (lone panel, no top border), which dividers are live,
+ * the toggle buttons' on/off face, and the "everything hidden" note.
+ */
+function applyPanelLayout(ctx: Ctx) {
+  const layout = computePanelLayout(panelEnabled(ctx));
+  for (const p of layout.panels) {
+    const el = $(p.id + '-panel');
+    el.classList.toggle('hidden', !p.visible);
+    el.classList.toggle('full', p.full);
+    // The share is set inline from the layout rule, which also drops
+    // any user-dragged px split: a toggle-off-then-on resets the split
+    // rather than holding the previous drag position into the hidden
+    // state.
+    el.style.flex = p.flex;
+    const t = PANEL_TOGGLES[p.id];
+    const btn = $(t.button);
+    btn.classList.toggle('on', p.visible);
+    btn.setAttribute('aria-pressed', String(p.visible));
+    btn.textContent = t.label + ': ' + (p.visible ? 'on' : 'off');
+  }
+  for (const d of layout.dividers) {
+    const id = PANEL_DIVIDERS[d.after];
+    if (id) $(id).classList.toggle('hidden', !d.visible);
+  }
+  $('panels-hidden').hidden = layout.visibleCount > 0;
   ($('collapse-all-btn') as HTMLButtonElement).disabled = !ctx.graphEnabled || !ctx.currentState?.data.reifications?.length;
-  btn.classList.toggle('on', ctx.plotEnabled);
-  btn.setAttribute('aria-pressed', String(ctx.plotEnabled));
-  btn.textContent = 'Plots: ' + (ctx.plotEnabled ? 'on' : 'off');
-  // Drop any user-dragged inline flex so the class-based defaults
-  // (flex: 1 1 100% on graph-full, flex: 0 0 0 on plot-hidden, or
-  // the regular 60/40 split when both are showing) take effect.
-  // Inline-style takes precedence over our class rules; clearing
-  // it here means a toggle-off-then-on resets the split rather
-  // than holding the previous drag position into the hidden state.
-  graph.style.flex = '';
-  plot.style.flex = '';
   // Persist across panel reopens. VS Code restores webview state
   // automatically when the panel is shown again.
   saveViewState(ctx);
 }
 
+/**
+ * Wire the drag handle that follows panel `after` to resize that panel
+ * against the next visible one (panels.ts dividerPartner). Both sides
+ * keep a minimum height; the split is written as px flex-basis on both
+ * so it is exactly what the user dragged to, while flex-grow stays 1 so
+ * later host resizes redistribute proportionally.
+ */
+export function installPanelDivider(ctx: Ctx, after: PanelId) {
+  const dividerId = PANEL_DIVIDERS[after];
+  if (!dividerId) return;
+  $(dividerId).addEventListener('mousedown', function (ev) {
+    const partner = dividerPartner(computePanelLayout(panelEnabled(ctx)), after);
+    if (!partner || !panelEnabled(ctx)[after]) return;
+    ev.preventDefault();
+    const upper = $(after + '-panel');
+    const lower = $(partner + '-panel');
+    const startY = ev.clientY;
+    const startUpperPx = upper.getBoundingClientRect().height;
+    const startLowerPx = lower.getBoundingClientRect().height;
+    const MIN_PX = 80;
+    function onMove(mv: any) {
+      const s = clampSplit(startUpperPx, startLowerPx, mv.clientY - startY, MIN_PX);
+      upper.style.flex = '1 1 ' + s.a + 'px';
+      lower.style.flex = '1 1 ' + s.b + 'px';
+    }
+    function onUp() {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    }
+    document.body.style.cursor = 'row-resize';
+    document.body.style.userSelect = 'none';
+    document.addEventListener('mousemove', onMove);
+    document.addEventListener('mouseup', onUp);
+  });
+}
+
 export function setGraphEnabled(ctx: Ctx, enabled: boolean) {
   ctx.graphEnabled = enabled;
-  updatePanelVisibility(ctx);
+  applyPanelLayout(ctx);
+  requestAnimationFrame(function () {
+    if (ctx.graphEnabled && ctx.cy) ctx.cy.resize();
+    if (ctx.plotEchart) ctx.plotEchart.resize();
+  });
+}
+
+/**
+ * Show or hide the math pane. Its content is owned by render-math.ts
+ * (renderMathForCurrent), which is called on enable; while hidden the
+ * pane keeps whatever it last rendered — the rows are cheap DOM and
+ * re-render on the next source change anyway.
+ */
+export function setMathEnabled(ctx: Ctx, enabled: any) {
+  ctx.mathEnabled = !!enabled;
+  applyPanelLayout(ctx);
+  if (ctx.mathEnabled) renderMathForCurrent(ctx);
   requestAnimationFrame(function () {
     if (ctx.graphEnabled && ctx.cy) ctx.cy.resize();
     if (ctx.plotEchart) ctx.plotEchart.resize();
@@ -284,7 +361,7 @@ export function setGraphEnabled(ctx: Ctx, enabled: boolean) {
 
 export function setPlotEnabled(ctx: Ctx, enabled: any) {
   ctx.plotEnabled = !!enabled;
-  updatePanelVisibility(ctx);
+  applyPanelLayout(ctx);
   if (ctx.plotEnabled) {
     // Render whatever the current plan says — including the
     // "not plottable" message if the focused binding isn't
