@@ -36,8 +36,11 @@ flatppl-js/
 │   ├── engine/                          ← parser, analyzer, IR, orchestrator, sampler
 │   │   ├── ARCHITECTURE.md              ← READ THIS before non-trivial engine work
 │   │   └── *.ts                         ← ~65 top-level modules, ~60 KLOC
-│   ├── viewer/                          ← browser-side DAG + plot rendering
-│   │   └── src/                         ← ~24 TS modules, ~9 KLOC
+│   ├── viewer/                          ← browser-side DAG + plot + math rendering
+│   │   └── src/                         ← ~30 TS modules, ~10 KLOC; panels.ts is the
+│   │                                      graph/plots/math split rule, render-math.ts
+│   │                                      + math-view.ts the math pane (fed by the
+│   │                                      flatppl-rust wasm API's render_math)
 │   ├── vscode-extension/                ← thin VS Code wrapper
 │   │   ├── extension.ts                 ← extension host
 │   │   ├── src/visualPanel.ts           ← webview panel singleton
@@ -53,9 +56,12 @@ flatppl-js/
 │       ├── src/                         ← page entry, app, resolver, router,
 │       │                                  manifest loader, syntax highlighter, footer
 │       ├── demo/                        ← in-package demo .flatppl programs
-│       └── build-site.mjs               ← renders a deployment's site overlay (legal
-│                                          notice etc. → dist/*.html + footer links;
-│                                          FLATPPL_SITE_DIR; format in its header)
+│       ├── build-site.mjs               ← renders a deployment's site overlay (legal
+│       │                                  notice etc. → dist/*.html + footer links;
+│       │                                  FLATPPL_SITE_DIR; format in its header)
+│       └── provision-wasm-api.mjs       ← the flatppl-rust wasm API artifact (Convert
+│                                          command + math pane), shared by the web and
+│                                          extension builds
 ├── deploy/live.flatppl.org/site/        ← the public deploy's overlay content (legal
 │                                          notice); deployment-specific, NOT package
 │                                          content — pages.yml points the build at it
@@ -179,6 +185,22 @@ These are the things that catch out first-time contributors. Read each one.
   `npm run build:vendor` alone only refreshes the extension's `lib/` (it is
   an alias for `npm run --workspace=packages/vscode-extension build:vendor`).
   Don't assume the user is testing one host — rebuild all.
+
+  **The flatppl-rust wasm API rides along.** `flatppl_wasm_api.js` +
+  `flatppl_wasm_api_bg.wasm` (crate `crates/wasm-api` in the sibling
+  flatppl-rust: pyhf/HS3 → FlatPPL `convert`, and `render_math` behind the
+  viewer's math pane) are provisioned into `packages/web/dist/vendor/` and
+  `packages/vscode-extension/lib/` by the shared
+  `packages/web/provision-wasm-api.mjs`: a CI-staged `FLATPPL_WASM_DIR`, else
+  a `wasm-pack` build from the sibling (`FLATPPL_RUST_DIR` overrides its
+  location). Same no-magic stance as the LSP: the wasm toolchain is a build
+  prerequisite, never installed by the build; `FLATPPL_CONVERT=off` drops the
+  artifact deterministically (no Convert command, math pane reports itself
+  unavailable). The hosts hand the viewer the glue URL as
+  `__FLATPPL_CONFIG__.wasmApiUrl` (the web build writes it into
+  `build-flags.js`, the webview only when the file exists); the viewer
+  imports it lazily on the pane's first use. After a flatppl-rust change that
+  touches `mathdoc`/`wasm-api`, rebuild both hosts.
 
   **LSP provisioning (`build-vendor.mjs`).** As part of `build:vendor`,
   `packages/vscode-extension/build-vendor.mjs` puts a `flatppl-lsp` binary into
