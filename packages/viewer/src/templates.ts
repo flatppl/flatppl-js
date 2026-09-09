@@ -44,16 +44,18 @@ body {
 #inference-controls { flex: 0 0 auto; }
 #header .target-name { font-weight: 600; }
 #header .target-eq { opacity: 0.5; margin: 0 4px; }
-/* Independent Graph/Plots toggles, hosted here or in the web header.
-   One visible panel fills the content area; both split it 60/40.
-   Graph defaults on, plots off. The plot panel renders when enabled — even
-   for non-plottable bindings it shows a "Not plottable" message,
-   so users navigating the graph see a stable layout instead of
-   the panel appearing/disappearing.
+/* Independent Graph / Plots / Math toggles, hosted here or in the web
+   header. The visible panels share the content area by the weights in
+   panels.ts (graph 3 : plots 2 : math 2 — two panels keep the historical
+   60/40 split; a lone panel fills the area). Graph defaults on, plots
+   and math off (hosts pick their own first-use default). A panel renders
+   whenever enabled — even for a non-plottable binding the plot pane shows
+   a "Not plottable" message, so users navigating the graph see a stable
+   layout instead of panels appearing/disappearing.
 
    Heights subtract header(~32px) + info(60px). */
 #view-controls { display: flex; gap: 6px; margin-left: auto; }
-#graph-toggle, #plot-toggle {
+#graph-toggle, #plot-toggle, #math-toggle {
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
   border: 1px solid var(--vscode-button-border, transparent);
@@ -64,62 +66,71 @@ body {
   font-family: var(--vscode-font-family, sans-serif);
   flex-shrink: 0;
 }
-#graph-toggle:hover, #plot-toggle:hover { background: var(--vscode-button-secondaryHoverBackground, #505355); }
-#graph-toggle.on, #plot-toggle.on {
+#graph-toggle:hover, #plot-toggle:hover, #math-toggle:hover { background: var(--vscode-button-secondaryHoverBackground, #505355); }
+#graph-toggle.on, #plot-toggle.on, #math-toggle.on {
   background: var(--vscode-button-background, #0e639c);
   color: var(--vscode-button-foreground, #fff);
   border-color: var(--vscode-button-border, transparent);
 }
-#graph-toggle.on:hover, #plot-toggle.on:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+#graph-toggle.on:hover, #plot-toggle.on:hover, #math-toggle.on:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
 #main {
   display: flex; flex-direction: column;
   width: 100vw; height: calc(100vh - 86px);
   overflow: hidden;
 }
-#graph-panel {
-  flex: 1 1 60%; min-height: 80px;
-  position: relative; overflow: hidden;
+/* Each panel's flex share is set INLINE by applyPanelLayout from
+   panels.ts (the one layout rule); the rules here carry only what is
+   not a share: the minimum height, the top border between panels, and
+   the hidden / full states. */
+.viewer-panel { min-height: 80px; position: relative; overflow: hidden; }
+.viewer-panel.hidden { display: none; }
+#graph-panel { }
+#plot-panel, #math-panel {
+  border-top: 1px solid var(--vscode-panel-border, #444);
 }
-#graph-panel.full { flex: 1 1 100%; }
-#graph-panel.hidden { display: none; }
-#plot-panel.full { flex: 1 1 100%; border-top: none; }
+#plot-panel {
+  display: flex; align-items: center; justify-content: center;
+}
+#plot-panel.full, #math-panel.full { border-top: none; }
 #panels-hidden { margin: auto; padding: 1em; opacity: 0.65; text-align: center; }
 #panels-hidden[hidden] { display: none; }
-#plot-panel {
-  flex: 1 1 40%; min-height: 80px;
-  border-top: 1px solid var(--vscode-panel-border, #444);
-  display: flex; align-items: center; justify-content: center;
-  overflow: hidden;
-  position: relative;
-}
-#plot-panel.hidden {
-  flex: 0 0 0; min-height: 0; border-top: none;
-}
 #plot-content { width: 100%; height: 100%; }
-/* Drag handle between #graph-panel and #plot-panel. Lets the user
-   redistribute vertical space between the DAG view and the plot
-   pane. Hidden when the plot panel itself is hidden; the existing
-   border-top on #plot-panel doubles as the handle's visible band
-   while in resting state, so the divider only adds the
-   interactive hover affordance. */
-#plot-divider {
+/* Math pane: a scrollable column of per-binding rows (render-math.ts). */
+#math-content {
+  width: 100%; height: 100%;
+  overflow: auto;
+}
+/* The pane's placeholder messages ("not available", "rendering…"),
+   styled like the plot pane's hints. */
+#math-content .math-empty {
+  padding: 1.6em; text-align: center;
+  font-size: 1.08em; line-height: 1.5;
+  font-style: italic; opacity: 0.5;
+}
+/* Drag handles between adjacent visible panels (one after the graph
+   panel, one after the plot panel — see panels.ts for the pairing rule).
+   Hidden when their panel or every later panel is hidden; the border-top
+   on the following panel doubles as the handle's visible band while in
+   resting state, so the divider only adds the interactive hover
+   affordance. */
+.viewer-divider {
   flex: 0 0 5px;
   cursor: row-resize;
   user-select: none;
   position: relative;
   background: transparent;
 }
-#plot-divider::before {
+.viewer-divider::before {
   content: '';
   position: absolute;
   left: 0; right: 0; top: 2px; bottom: 2px;
   background: transparent;
   transition: background 0.15s ease;
 }
-#plot-divider:hover::before {
+.viewer-divider:hover::before {
   background: var(--vscode-button-background, #0e639c);
 }
-#plot-divider.hidden { display: none; }
+.viewer-divider.hidden { display: none; }
 /* Plot pane layout, controls, and chart ctx.host are styled inline by
    renderPlotFrame — no CSS rules needed here for the per-renderer
    layout. The constant-value / message blocks below still rely on
@@ -380,18 +391,23 @@ export var VIEWER_BODY_HTML = `
 <span id="view-controls">
 <button id="graph-toggle" type="button" aria-pressed="true" title="Toggle the graph panel">Graph: on</button>
 <button id="plot-toggle" type="button" aria-pressed="false" title="Toggle the plot panel">Plots: off</button>
+<button id="math-toggle" type="button" aria-pressed="false" title="Toggle the math panel">Math: off</button>
 </span>
 </div>
 <div id="main">
-<div id="graph-panel" class="full">
+<div id="graph-panel" class="viewer-panel full">
   <div id="cy"></div>
   <button id="collapse-all-btn" type="button" title="Collapse every reification bubble in view">Collapse all</button>
 </div>
-<div id="plot-divider" class="hidden" title="Drag to resize"></div>
-<div id="plot-panel" class="hidden">
+<div id="plot-divider" class="viewer-divider hidden" title="Drag to resize"></div>
+<div id="plot-panel" class="viewer-panel hidden">
   <div id="plot-content"></div>
 </div>
-<p id="panels-hidden" hidden>Graph and plots are hidden.</p>
+<div id="math-divider" class="viewer-divider hidden" title="Drag to resize"></div>
+<div id="math-panel" class="viewer-panel hidden">
+  <div id="math-content"></div>
+</div>
+<p id="panels-hidden" hidden>Graph, plots and math are hidden.</p>
 </div>
 <div id="tooltip"></div>
 <div id="info">
