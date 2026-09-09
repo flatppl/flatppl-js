@@ -248,6 +248,9 @@ function _isStochastic(b: any): boolean {
 // user-facing name arriving here untyped is a classification this function cannot
 // make, and must not answer.
 function _namesADraw(name: string, b: any): boolean {
+  // A draw is a coordinate even if a fixed reified law's phase propagated to
+  // its binding. Phase does not turn draw(M) into a value rename (§04).
+  if (b && b.type === 'draw') return true;
   if (!_isStochastic(b)) return false;
   if (!b.inferredType) {
     if (!_isInternalName(name)) {
@@ -286,11 +289,15 @@ function _isInternalName(name: string): boolean {
 // it binds a draw's variate — i.e. whether the component reifies a DRAW rather
 // than naming a constructor measure. Phase lives on the user binding, not on the
 // lifted anon sample, so the whole chain is inspected.
-function _aliasChain(name: string, ctx: any): { root: string; isDraw: boolean } {
+function _aliasChain(name: string, ctx: any, coordinate = false): { root: string; isDraw: boolean } {
   const derivations = ctx && ctx.derivations;
   let n = name;
   let isDraw = _namesADraw(n, ctx.bindings && ctx.bindings.get ? ctx.bindings.get(n) : null);
   for (let guard = 0; guard < 64; guard++) {
+    // §04: draw(M) creates a coordinate, unlike a value rename. Structural
+    // lookup still follows its measure, but noise identity must stop here.
+    const b = ctx.bindings && ctx.bindings.get(n);
+    if (coordinate && b && b.ir && b.ir.kind === 'call' && b.ir.op === 'draw') break;
     const d = derivations && derivations[n];
     if (!d || d.kind !== 'alias') break;
     n = d.from;
@@ -348,7 +355,7 @@ function _structuralChildren(d: any): string[] | null {
 function _noiseRoots(name: string, ctx: any, seen?: Set<string>): Set<string> {
   const out = new Set<string>();
   const visited = seen || new Set<string>();
-  const { root } = _aliasChain(name, ctx);
+  const { root } = _aliasChain(name, ctx, true);
   if (visited.has(root)) return out;
   visited.add(root);
   const d = ctx.derivations && ctx.derivations[root];
@@ -943,7 +950,7 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
         }
         const lg = require('./linear-gaussian.ts');
         const identity = {
-          keyOf: (nm: string) => _aliasChain(nm, ctx).root,
+          keyOf: (nm: string) => _aliasChain(nm, ctx, true).root,
           componentKeys: _componentKeys(body, input, ctx),
         };
         const g = lg.recogniseGaussianMarginal(body, marg, ctx, substituted, identity);

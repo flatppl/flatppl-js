@@ -72,6 +72,52 @@ const scoreOf = async (src: string, N: number) => {
   return m.samples[0];
 };
 
+test('a fresh draw from a reified transform has an independent density coordinate', async () => {
+  const got = await scoreOf(`
+x ~ Normal(0.0, 1.0)
+M = functionof(lawof(2.0*x))()
+y ~ M
+ld = logdensityof(lawof(record(x=x, y=y)), record(x=0.0, y=1.0))
+`, 1);
+  // Independent N(0,1) and N(0,2), not a diagonal transform of one draw.
+  assert.ok(Math.abs(got - (-Math.log(2*Math.PI) - Math.log(2) - 1/8)) < F64_TOL);
+  const fresh = await scoreOf(`
+x ~ Normal(0.0, 1.0)
+M = functionof(lawof(2.0*x))()
+y ~ M
+z ~ M
+ld = logdensityof(lawof(record(y=y, z=z)), record(y=1.0, z=2.0))
+`, 1);
+  assert.ok(Math.abs(fresh - (-Math.log(2*Math.PI) - 2*Math.log(2) - 5/8)) < F64_TOL);
+  // Reusing one fresh draw is still diagonal, including the direct lawof
+  // spelling whose fixed measure phase must not erase the draw identity.
+  await assert.rejects(() => scoreOf(`
+x ~ Normal(0.0, 1.0)
+M = lawof(2.0*x)
+y ~ M
+z = y
+ld = logdensityof(lawof(record(x=x, y=y, z=z)), record(x=0.0, y=1.0, z=1.0))
+`, 1), (e: any) => e.code === 'CLM_SINGULAR_JOINT');
+});
+
+test('draws from a named stochastic constructor retain distinct conditional noise', async () => {
+  const prefix = `
+p ~ Normal(0.0, 2.0)
+M = Normal(p, 1.0)
+a ~ M
+b ~ M
+`;
+  const full = await scoreOf(prefix + `
+ld = logdensityof(lawof(record(p=p, a=a, b=b)), record(p=0.0, a=1.0, b=2.0))
+`, 1);
+  assert.ok(Math.abs(full - (-1.5*Math.log(2*Math.PI) - Math.log(2) - 2.5)) < F64_TOL);
+  const marginal = await scoreOf(prefix + `
+ld = logdensityof(lawof(record(a=a, b=b)), record(a=1.0, b=2.0))
+`, 1);
+  // Covariance [[5,4],[4,5]] has determinant 9 and quadratic form 1.
+  assert.ok(Math.abs(marginal - (-Math.log(2*Math.PI) - Math.log(3) - 0.5)) < F64_TOL);
+});
+
 test('shared-ancestor record law scores the analytic MvNormal marginal (N=1)', async () => {
   const got = await scoreOf(RECORD_LAW, 1);
   assert.ok(Math.abs(got - MVN_ORACLE) < F64_TOL,
