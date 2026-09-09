@@ -75,11 +75,12 @@ export interface MathBinding {
 
 export interface MathDiagnostic { binding: string; message: string }
 
-/** A notation key entry: MathML expression content without a <math> root,
- *  and the explanation as an HTML fragment (inline MathML for parameter
- *  names), both produced by the same trusted renderer as the binding
- *  fragments; only `source` is plain text. */
-export interface MathNotation { mathml: string; source: string; note: string }
+/** A notation key entry: the builtin's name (a key, not for display),
+ *  the symbol as MathML content without a <math> root, and the
+ *  explanation as an HTML fragment (inline MathML for parameter names),
+ *  the latter two produced by the same trusted renderer as the binding
+ *  fragments. The math view shows no code spelling beside its notation. */
+export interface MathNotation { name: string; mathml: string; note: string }
 
 export interface MathResponse {
   /** Complete article and scoped styles from Rust's HTML document renderer.
@@ -227,14 +228,13 @@ export function moduleDocHtml(doc: MathModuleDoc | null | undefined): string {
 
 /** A collapsed key after the equations (the per-binding view; the
  *  document view carries its own key). The symbol and the note are the
- *  Rust renderer's trusted fragments and go in verbatim; the source
- *  spelling is plain text and is escaped. */
+ *  Rust renderer's trusted fragments and go in verbatim; `name` is a key
+ *  and is not shown. */
 export function notationHtml(entries: MathResponse['notation']): string {
   if (!entries?.length) return '';
   let h = '<details class="math-notation"><summary>Notation</summary><dl>';
   for (const e of entries) {
-    h += '<dt><math>' + e.mathml + '</math></dt><dd><code>' + esc(e.source)
-      + '</code><p>' + e.note + '</p></dd>';
+    h += '<dt><math>' + e.mathml + '</math></dt><dd>' + e.note + '</dd>';
   }
   return h + '</dl></details>';
 }
