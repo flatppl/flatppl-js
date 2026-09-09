@@ -15,7 +15,7 @@ registerHooks({
   }
 });
 
-const { moduleContextOnUpdate } = await import('./orchestration.ts');
+const { moduleContextOnUpdate, lowerInputsChanged } = await import('./orchestration.ts');
 
 // moduleContextOnUpdate decides the (path, bundleSources) a sourceUpdate lowers
 // against. Both are STICKY to the current model: a model switch carries `path`
@@ -53,4 +53,38 @@ test('an explicit null path (a path-less module, e.g. an embedded block) clears 
   const r = moduleContextOnUpdate(PREV, { source: '...', path: null });
   assert.equal(r.path, null);
   assert.equal(r.bundleSources, null);
+});
+
+// lowerInputsChanged decides whether an update re-lowers the model. The
+// text is not the only input: the VS Code whole-module command used to post
+// the source without its load_module bundle, and the bundle arriving with
+// the next same-text update was recorded but never lowered, so nothing
+// across the module boundary was plottable until the text changed.
+const SRC = 'common = load_module("common.flatppl")\nx ~ common.prior';
+const BUNDLE = { '/m/common.flatppl': 'prior = Normal(0, 1)' };
+
+test('same text, same path, same bundle: no re-lower', () => {
+  assert.equal(lowerInputsChanged(
+    { source: SRC, path: '/m/a.flatppl', bundleSources: BUNDLE },
+    { source: SRC, path: '/m/a.flatppl', bundleSources: { ...BUNDLE } }), false);
+  assert.equal(lowerInputsChanged(
+    { source: SRC, path: null, bundleSources: null },
+    { source: SRC, path: undefined, bundleSources: undefined }), false);
+});
+
+test('a bundle arriving for the same text re-lowers (the module-view-then-visualize-binding case)', () => {
+  assert.equal(lowerInputsChanged(
+    { source: SRC, path: '/m/a.flatppl', bundleSources: null },
+    { source: SRC, path: '/m/a.flatppl', bundleSources: BUNDLE }), true);
+  assert.equal(lowerInputsChanged(
+    { source: SRC, path: '/m/a.flatppl', bundleSources: BUNDLE },
+    { source: SRC, path: '/m/a.flatppl', bundleSources: null }), true);
+});
+
+test('a changed dependency text, an extra dependency, or a different path re-lowers', () => {
+  const base = { source: SRC, path: '/m/a.flatppl', bundleSources: BUNDLE };
+  assert.equal(lowerInputsChanged(base, { ...base, bundleSources: { '/m/common.flatppl': 'prior = Normal(0, 2)' } }), true);
+  assert.equal(lowerInputsChanged(base, { ...base, bundleSources: { ...BUNDLE, '/m/extra.flatppl': 'y = 1' } }), true);
+  assert.equal(lowerInputsChanged(base, { ...base, path: '/m/b.flatppl' }), true);
+  assert.equal(lowerInputsChanged(base, { ...base, source: SRC + '\n' }), true);
 });

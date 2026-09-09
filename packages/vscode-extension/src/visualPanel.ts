@@ -328,10 +328,23 @@ class FlatPPLPanel {
       // virtual uri's path (which drops scheme + authority).
       path: enginePathOf(this._sourceUri),
     };
-    // Multi-file (spec §04 load_module): if the source loads other modules,
-    // pre-fetch their `.flatppl` sources via the workspace file system and
-    // ship them as `bundleSources` (keyed by resolved path). Single-file
-    // sources skip this and post synchronously (the common case, no I/O).
+    this._postWithBundle(base, source);
+  }
+
+  /**
+   * Post a sourceUpdate / showModule message, first pre-fetching the
+   * `load_module` dependencies the source declares (spec §04) so the
+   * webview lowers the model with cross-module references resolved.
+   * Every path that hands the webview a model goes through here: a
+   * module view posted without its bundle lowered the model unlinked,
+   * so nothing across the boundary was plottable until the source text
+   * changed (the whole-module command was that path).
+   *
+   * Multi-file: read each dependency through the workspace file system
+   * and ship them as `bundleSources` (keyed by resolved path). Single-
+   * file sources post synchronously (the common case, no I/O).
+   */
+  _postWithBundle(base: any, source: any) {
     let rels: string[] = [];
     try { rels = moduleDeps(source); } catch (_) { rels = []; }
     if (rels.length === 0 || !this._sourceUri) {
@@ -437,7 +450,7 @@ class FlatPPLPanel {
       if (sourceUri && sourceUri.scheme !== REMOTE_SCHEME) this._localBaseUri = sourceUri;
     }
     this._panel.title = 'FlatPPL: module';
-    this._post({
+    this._postWithBundle({
       type: 'showModule',
       source,
       pushHistory: !!pushHistory,
@@ -445,9 +458,9 @@ class FlatPPLPanel {
       // Carry the module's path (null when embedded; the URL for a remote
       // module) so the engine resolves load_module deps against it — the
       // registry powers drill-down from the whole-module view. Sticky viewer
-      // context: never omit.
+      // context: never omit. The bundle rides along like updateSource's.
       path: enginePathOf(this._sourceUri),
-    });
+    }, source);
   }
 
   _getHtml() {

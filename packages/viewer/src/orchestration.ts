@@ -54,8 +54,28 @@ export function moduleContextOnUpdate(
   return { path: prev.path, bundleSources: prev.bundleSources };
 }
 
+/** Whether the inputs the engine lowers — the source text, the module's
+ *  path and its `load_module` bundle — differ between the model on screen
+ *  and an incoming update. Same text with a different context is a
+ *  re-lower too: a module view posted before its bundle arrived (or
+ *  without one) must link across modules once the bundle is there,
+ *  otherwise nothing beyond the boundary is plottable until the text
+ *  happens to change. */
+export function lowerInputsChanged(
+  prev: { source: any; path: any; bundleSources: any },
+  next: { source: any; path: any; bundleSources: any },
+): boolean {
+  if (prev.source !== next.source) return true;
+  if ((prev.path ?? null) !== (next.path ?? null)) return true;
+  const a = prev.bundleSources || null, b = next.bundleSources || null;
+  if (!a || !b) return a !== b;
+  const ka = Object.keys(a), kb = Object.keys(b);
+  if (ka.length !== kb.length) return true;
+  for (const k of ka) if (!(k in b) || a[k] !== b[k]) return true;
+  return false;
+}
+
 export function applySourceUpdate(ctx: Ctx, msg: any) {
-  const sourceChanged = (msg.source !== ctx.currentSource);
   // Captured BEFORE the sourceChanged block below (re)assigns
   // ctx.currentBindings, so this distinguishes an edit of an ALREADY-open
   // model from the very first sourceUpdate that opens one (hadPriorBindings
@@ -69,6 +89,10 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
   // a cross-module back-navigation can re-sync the editor source (spec §04).
   const modCtx = moduleContextOnUpdate(
     { path: ctx.currentPath, bundleSources: ctx.currentBundleSources }, msg);
+  // Re-lower on any change of what the engine sees: text, path or bundle.
+  const sourceChanged = lowerInputsChanged(
+    { source: ctx.currentSource, path: ctx.currentPath, bundleSources: ctx.currentBundleSources },
+    { source: msg.source, path: modCtx.path, bundleSources: modCtx.bundleSources });
   ctx.currentPath = modCtx.path;
   ctx.currentBundleSources = modCtx.bundleSources;
   // currentVariantId is initialised to 'flatppl' in main.ts and
