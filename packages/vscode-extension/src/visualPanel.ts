@@ -1,5 +1,6 @@
 'use strict';
 const vscode = require('vscode');
+const fs = require('fs');
 // Same vendored-bundle require pattern as extension.js — the
 // installed VSIX doesn't ship node_modules/, so the path goes
 // through the build-vendor output instead of the workspace
@@ -508,6 +509,17 @@ class FlatPPLPanel {
     const temmlCssUri = webview.asWebviewUri(
       vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'temml.css')
     );
+    // flatppl-wasm-api (wasm-pack `--target web` glue + wasm next to it),
+    // provisioned into lib/ by build-vendor.mjs; the viewer's math pane
+    // imports the glue lazily on first use (render_math). Handed over as a
+    // URL ONLY when the artifact shipped, so an opted-out build makes the
+    // pane report itself unavailable instead of failing a fetch. The CSP
+    // below carries 'wasm-unsafe-eval' for the instantiation and the
+    // webview origin in script-src for the dynamic module import.
+    const wasmGluePath = vscode.Uri.joinPath(this._context.extensionUri, 'lib', 'flatppl_wasm_api.js');
+    const wasmApiUrl = fs.existsSync(wasmGluePath.fsPath)
+      ? webview.asWebviewUri(wasmGluePath).toString()
+      : null;
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -515,7 +527,7 @@ class FlatPPLPanel {
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="Content-Security-Policy"
-    content="default-src 'none'; script-src 'nonce-${nonce}' ${webview.cspSource} blob:; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; worker-src ${webview.cspSource} blob:; connect-src ${webview.cspSource};">
+    content="default-src 'none'; script-src 'nonce-${nonce}' ${webview.cspSource} blob: 'wasm-unsafe-eval'; style-src ${webview.cspSource} 'unsafe-inline'; font-src ${webview.cspSource}; worker-src ${webview.cspSource} blob:; connect-src ${webview.cspSource};">
   <title>FlatPPL</title>
   <link rel="stylesheet" href="${temmlCssUri}">
 </head>
@@ -536,6 +548,8 @@ class FlatPPLPanel {
     // do the same — no other host-specific wiring is needed.
     window.__FLATPPL_CONFIG__ = {
       samplerWorkerUrl: ${JSON.stringify(samplerWorkerUri.toString())},
+      // Math pane renderer (see wasmApiUrl above); null when not shipped.
+      wasmApiUrl: ${JSON.stringify(wasmApiUrl)},
     };
   </script>
   <script nonce="${nonce}" src="${viewerUri}"></script>
