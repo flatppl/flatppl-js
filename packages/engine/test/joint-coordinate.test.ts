@@ -12,6 +12,64 @@ function covariance(a: Float64Array, b: Float64Array): number {
   return a.reduce((s, x, i) => s + (x - ma) * (b[i] - mb), 0) / a.length;
 }
 
+test('a fresh draw copies a reified trace, while joining its laws retains identity', async () => {
+  const { ctx } = makeMatCtx(`
+x ~ Normal(0.0, 1.0)
+f = functionof(lawof(2.0 * x))
+M = f()
+y ~ M
+z ~ M
+traced = joint(x = lawof(x), y = M)
+drawn = lawof(record(x = x, y = y, z = z))
+`, { sampleCount: 30000, rootSeed: 707 });
+  const traced = await ctx.getMeasure('traced');
+  assert.deepEqual(traced.fields.y.samples,
+    Float64Array.from(traced.fields.x.samples, (x: number) => 2 * x));
+  const drawn = await ctx.getMeasure('drawn');
+  const { x, y, z } = drawn.fields;
+  assert.ok(Math.abs(covariance(y.samples, y.samples) - 4) < 0.15);
+  for (const [a, b] of [[x, y], [x, z], [y, z]]) {
+    assert.ok(Math.abs(covariance(a.samples, b.samples)) < 0.1,
+      'fresh draws have zero covariance with each other and the original trace');
+  }
+});
+
+test('separate draws from a constructor share its parameter, not its noise', async () => {
+  const { ctx } = makeMatCtx(`
+p ~ Normal(0.0, 2.0)
+M = Normal(p, 1.0)
+a ~ M
+b ~ M
+`, { sampleCount: 30000, rootSeed: 808 });
+  const p = (await ctx.getMeasure('p')).samples;
+  const a = (await ctx.getMeasure('a')).samples;
+  const b = (await ctx.getMeasure('b')).samples;
+  const ea = Float64Array.from(a, (x: number, i: number) => x - p[i]);
+  const eb = Float64Array.from(b, (x: number, i: number) => x - p[i]);
+  assert.ok(Math.abs(covariance(ea, ea) - 1) < 0.05);
+  assert.ok(Math.abs(covariance(eb, eb) - 1) < 0.05);
+  assert.ok(Math.abs(covariance(ea, eb)) < 0.05);
+  assert.ok(Math.abs(covariance(a, b) - 4) < 0.15);
+});
+
+test('a fresh joint draw retains external ancestors shared with a reified component', async () => {
+  const { ctx } = makeMatCtx(`
+p ~ Normal(0.0, 2.0)
+x ~ Normal(p, 1.0)
+M = joint(a = lawof(x), b = Normal(p, 1.0), p = lawof(p))
+y ~ M
+`, { sampleCount: 30000, rootSeed: 909 });
+  const p = (await ctx.getMeasure('p')).samples;
+  const x = (await ctx.getMeasure('x')).samples;
+  const y = (await ctx.getMeasure('y')).fields;
+  assert.deepEqual(y.p.samples, p);
+  const residual = (xs: Float64Array) => Float64Array.from(xs, (v, i) => v - p[i]);
+  assert.ok(Math.abs(covariance(y.a.samples, y.a.samples) - 5) < 0.15);
+  assert.ok(Math.abs(covariance(y.a.samples, y.b.samples) - 4) < 0.15);
+  assert.ok(Math.abs(covariance(residual(y.a.samples), residual(x))) < 0.05);
+  assert.ok(Math.abs(covariance(residual(y.a.samples), residual(y.b.samples))) < 0.05);
+});
+
 for (const rootSeed of [101, 202]) {
   test(`nested joint coordinates match the independent Normal law, seed ${rootSeed}`, async () => {
     const { ctx } = makeMatCtx(`

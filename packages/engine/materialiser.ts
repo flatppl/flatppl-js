@@ -237,11 +237,29 @@ function matLebesgueBox(name: string, d: any, ctx: any) {
   });
 }
 
-function matAlias(d: DerivationAlias, ctx: any) {
-  // Alias: same measure record — reference equality is intentional so
-  // click-flipping between a variate and its measure is free, and the
-  // shared logWeights ref preserves propagateLogWeights's dedupe contract.
-  return ctx.getMeasure(d.from);
+function matAlias(name: string, d: DerivationAlias, ctx: any) {
+  const binding = ctx.bindings && ctx.bindings.get(name);
+  // Renaming and reifying a value preserve its trace. A draw instead owns a
+  // new coordinate (§04): copy the measure and any reified ancestors, while
+  // retaining external constructor parameters in the parent atom.
+  if (!binding || binding.type !== 'draw') return ctx.getMeasure(d.from);
+  const reified = _reifiedVariatesUnder(d.from, ctx.derivations, ctx.bindings, false);
+  // Lift creates a unique synthetic measure for each inline constructor.
+  // Its stream is already draw-local unless it reaches a reified trace.
+  const base = ctx.bindings.get(d.from);
+  if (base && base.synthetic && reified.size === 0) return ctx.getMeasure(d.from);
+  const cache = new Map();
+  const child: any = Object.assign({}, ctx, {
+    rootKey: nameSeed(name + ':draw', ctx.rootKey),
+  });
+  child.getMeasure = function (nn: string) {
+    if (!_isJointMeasure(nn, child) && !reified.has(nn)) return ctx.getMeasure(nn);
+    if (cache.has(nn)) return cache.get(nn);
+    const p = materialiseMeasure(nn, child);
+    cache.set(nn, p);
+    return p;
+  };
+  return child.getMeasure(d.from);
 }
 
 function matEvaluate(d: DerivationEvaluate, ctx: any) {
@@ -1670,8 +1688,8 @@ function _chainStepMeasureRefs(d: any): string[] {
 }
 
 /**
- * The value bindings that are the VARIATE of a reified law inside the
- * measure `name` denotes — the nodes §06 `iid` copies per coordinate:
+ * The bindings inside the captured trace of a reified law in the measure
+ * `name` denotes — the nodes §06 `iid` copies per coordinate:
  * "When `M` is a reified law, each of the $N$ copies carries its own copy
  * of the reified sub-DAG, stochastic ancestors included; `iid` never shares
  * nodes between copies."
@@ -1689,6 +1707,8 @@ function _chainStepMeasureRefs(d: any): string[] {
  * This includes deterministic transforms and the parameters of stochastic
  * ancestors. Before that boundary, follow only the measure edges: ordinary
  * constructor parameters still belong to the parent atom.
+ * A single draw uses the same walk, but retains the external ancestor
+ * closure rather than applying iid's captured/external overlap rejection.
  *
  * The BASE MEASURE of a `kchain`/`jointchain` is reached the same way, through
  * `_chainStepMeasureRefs` — the chain records its components as an explicit
@@ -1700,7 +1720,7 @@ function _chainStepMeasureRefs(d: any): string[] {
  * trace. Track the modes separately so the first visit cannot hide ancestors.
  */
 function _reifiedVariatesUnder(
-  name: string, derivations: any, bindings: any,
+  name: string, derivations: any, bindings: any, independentCopies = true,
 ): Set<string> {
   const out = new Set<string>();
   if (!derivations || !bindings || !bindings.get) return out;
@@ -1717,7 +1737,7 @@ function _reifiedVariatesUnder(
     const seen = captured ? seenCaptured : seenMeasure;
     if (seen.has(nn)) return;
     seen.add(nn);
-    if (isValue) out.add(nn);
+    if (captured) out.add(nn);
     if (captured && b && b.ir) {
       for (const ref of orchestrator.collectSelfRefs(b.ir)) visit(ref, true);
     }
@@ -1745,7 +1765,10 @@ function _reifiedVariatesUnder(
         }
       });
     }
-    for (const child of children) visit(child, captured);
+    // Lifted expressions can lack inferred types. An explicit lawof edge
+    // still enters the captured trace, including anonymous transforms.
+    const reifies = b && b.ir && b.ir.kind === 'call' && b.ir.op === 'lawof';
+    for (const child of children) visit(child, captured || reifies);
   };
   visit(name);
   // A captured copy and an external parent value make incompatible demands of
@@ -1762,6 +1785,11 @@ function _reifiedVariatesUnder(
     seenScopes.add(scopeKey);
     const b = bindings.get(nn);
     if (!b) return;
+    // A single draw retains external ancestors of a stochastic measure.
+    // Only iid demands both a shared parent and independent copies, which
+    // makes that overlap invalid. Continue through the external closure so
+    // all shared ancestors stay in the parent context for a single draw.
+    if (!independentCopies) out.delete(nn);
     if (out.has(nn) && b.phase === 'stochastic') {
       // A MODEL error, deliberately NOT an `ENGINE_LIMITATION`: §06 replicates
       // a captured node per coordinate and shares a constructor parameter
@@ -2958,7 +2986,7 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
 
 const KIND_HANDLERS = {
   // basic
-  alias:        (name: any, d: any, ctx: any) => matAlias(d, ctx),
+  alias:        (name: any, d: any, ctx: any) => matAlias(name, d, ctx),
   sample:       (name: any, d: any, ctx: any) => matSample(name, d, ctx),
   lebesguebox:  (name: any, d: any, ctx: any) => matLebesgueBox(name, d, ctx),
   evaluate:     (name: any, d: any, ctx: any) => matEvaluate(d, ctx),

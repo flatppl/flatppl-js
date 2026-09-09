@@ -264,6 +264,13 @@ optional `fields` (record) / `elems` (tuple) / `dims`. Composite measures
 recurse via `ctx.getMeasure(name)`; the CALLER memoises (the viewer's
 `engine-facade.ts` `getMeasure` caches per name in the per-`Ctx` `measureCache`).
 
+**Draw identity** (§04). A draw through an alias edge owns a measure cache
+and seed stream. Reified traces copy their internal nodes, including untyped
+lifted expressions, but external constructor ancestors stay in the parent
+cache. Plain aliases and joints of reified laws retain trace identity.
+Synthetic inline constructors without captured traces already own a unique
+stream and retain that path. IID still rejects captured/external overlap.
+
 **Ragged-per-atom value (engine-concepts §2.3; `PoissonProcess`).** A
 `PoissonProcess` atom is a variable-length point set, so the uniform `[N,…]`
 Value doesn't hold; `ragged.ts` owns the flat-`data`+`offsets`+`kernelShape`
