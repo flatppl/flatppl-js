@@ -3,7 +3,7 @@ import { readFile, readdir, stat } from 'node:fs/promises';
 import { dirname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const EXPECTED_MANIFEST_SHA256 = '513c39fbf37c1ed3eb863d2b01edf721f26756a8bc57cb36730faca5b83437fe';
+const EXPECTED_MANIFEST_SHA256 = '37ceb2ee6efa6b395cdcdc42c0a96782096535d7aaa8c179bb10ecabe8c44fbd';
 const defaultBundle = resolve(
   dirname(fileURLToPath(import.meta.url)),
   '../../../vendor/flatppl-theme',
@@ -36,7 +36,7 @@ export async function verifyThemeBundle(bundle = defaultBundle) {
   const manifestPath = join(root, 'manifest.json');
   const errors = [];
   if (await digest(manifestPath) !== EXPECTED_MANIFEST_SHA256) {
-    errors.push('manifest.json: does not match pinned flatppl-theme v0.1.6');
+    errors.push('manifest.json: does not match pinned flatppl-theme v0.1.8');
     return errors;
   }
 
