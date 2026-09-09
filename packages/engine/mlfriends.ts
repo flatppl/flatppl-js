@@ -292,13 +292,22 @@ function buildRegion(liveU: Float64Array[], prng: () => number, opts: any = {}) 
   }
   // Leave-one-out bootstrap radius: max over resamples of each original point's
   // nearest-neighbour distance (in the region's metric) to a DISTINCT resampled point.
-  let r2 = 0;
+  // Draw the same resamples first, then reuse each point's distance row across
+  // them. Metric solves now cost O(K²·dim²), not O(B·K²·dim²), with only
+  // O(B·K + K) scratch storage rather than a quadratic distance matrix.
+  const resamples: Int32Array[] = [];
   for (let b = 0; b < B; b++) {
     const idx = new Int32Array(K);
     for (let i = 0; i < K; i++) idx[i] = Math.floor(prng() * K);
-    for (let i = 0; i < K; i++) {
+    resamples.push(idx);
+  }
+  let r2 = 0;
+  const distances = new Float64Array(K);
+  for (let i = 0; i < K; i++) {
+    for (let j = 0; j < K; j++) distances[j] = j === i ? Infinity : dist2(liveU[i], liveU[j]);
+    for (const idx of resamples) {
       let best = Infinity;
-      for (let j = 0; j < K; j++) { if (idx[j] === i) continue; const d2 = dist2(liveU[i], liveU[idx[j]]); if (d2 < best) best = d2; }
+      for (let j = 0; j < K; j++) { const d2 = distances[idx[j]]; if (d2 < best) best = d2; }
       if (Number.isFinite(best) && best > r2) r2 = best;
     }
   }
