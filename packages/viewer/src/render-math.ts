@@ -33,7 +33,8 @@ import { esc } from './util.js';
 import { focusNode } from './dag.js';
 import { updatePlotForBinding } from './render-plot.js';
 import {
-  buildMathRequest, composeMathRows, rowHtml, focusedBindingName, mathModelKey, mathWasmUrl,
+  buildMathRequest, composeMathRows, rowHtml, moduleDocHtml, focusedBindingName, mathModelKey, mathWasmUrl,
+  MODULE_DOC_BINDING,
 } from './math-view.js';
 import type { MathResponse } from './math-view.js';
 import type { Ctx } from './types';
@@ -130,6 +131,7 @@ function buildRows(ctx: Ctx, el: HTMLElement, res: MathResponse, notice: string 
   });
   let h = '';
   if (notice) h += '<div class="math-notice">' + notice + '</div>';
+  h += moduleDocHtml(bindingDoc(ctx, MODULE_DOC_BINDING));
   if (moduleDiagnostics.length) {
     h += '<ul class="math-module-diags">';
     for (const d of moduleDiagnostics) h += '<li>' + esc(d) + '</li>';
@@ -139,7 +141,8 @@ function buildRows(ctx: Ctx, el: HTMLElement, res: MathResponse, notice: string 
   for (const r of rows) h += rowHtml(r);
   // SECURITY: rowHtml escapes everything it interpolates except the row's
   // `mathml` (our own Rust printer's trusted fragment) and renderDoc()'s
-  // sanitised output; the notices above are esc()'d or constant.
+  // sanitised output (also what the module doc goes through); the notices
+  // above are esc()'d or constant.
   el.innerHTML = h;
   ctx.mathView = { key: modelKey(ctx), response: res, rowCount: rows.length };
   scrollFocusedIntoView(el);

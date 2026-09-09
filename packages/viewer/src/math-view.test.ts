@@ -12,7 +12,7 @@ registerHooks({
   }
 });
 
-const { buildMathRequest, composeMathRows, rowNameFor, rowHtml, focusedBindingName, mathModelKey, mathWasmUrl } = await import('./math-view.ts');
+const { buildMathRequest, composeMathRows, rowNameFor, rowHtml, moduleDocHtml, focusedBindingName, mathModelKey, mathWasmUrl, MODULE_DOC_BINDING } = await import('./math-view.ts');
 
 // The math pane consumes flatppl-rust's `render_math` contract
 // (flatppl-dev/math-view-design.md §4 plus the Rust session's deltas):
@@ -174,4 +174,15 @@ test('mathWasmUrl resolves a relative glue URL against the page, keeps absolute 
   assert.equal(mathWasmUrl({ wasmApiUrl: '  ' }, 'https://x.org/'), null);
   assert.equal(mathWasmUrl({}, 'https://x.org/'), null);
   assert.equal(mathWasmUrl(null, 'https://x.org/'), null);
+});
+
+test('the module introduction is the flatppl_compat doc-comment, rendered as Markdown+math, or nothing', () => {
+  assert.equal(MODULE_DOC_BINDING, 'flatppl_compat');
+  const html = moduleDocHtml({ markup: 'md', lines: ['# Eight Schools', '', 'Effects $y_j$ with <b>known</b> errors.'] });
+  assert.ok(html.startsWith('<div class="math-module-doc">'));
+  assert.ok(html.includes('<h1>Eight Schools</h1>'));
+  assert.ok(html.includes('<math'));
+  assert.ok(!html.includes('<b>known</b>'), 'raw HTML in a doc-comment is not passed through');
+  assert.equal(moduleDocHtml(null), '');
+  assert.equal(moduleDocHtml({ markup: 'md', lines: [] }), '');
 });
