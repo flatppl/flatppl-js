@@ -106,7 +106,7 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Install wasm-pack (prebuilt)
-        uses: taiki-e/install-action@v2.82.7
+        uses: taiki-e/install-action@v2.87.7
         with:
           tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
 
