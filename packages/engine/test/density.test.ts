@@ -13,6 +13,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const density = require('../density.ts');
+const { inBothModes } = require('./_perf-helpers.ts');
 
 // Convenience IR constructors — keeps the asserts focused on the
 // density math rather than IR plumbing.
@@ -196,10 +197,57 @@ test('density: positional joint with leftover vector entries throws', () => {
 // iid(M, n) — n copies of M's footprint
 // =====================================================================
 
+inBothModes('density: iid leaf keeps batched inputs, observation overlays and rest', 'density.iidLeaf', () => {
+  const leaf = { kind: 'call', op: 'Normal', kwargs: {
+    mu: refSelf('mu'), sigma: refSelf('sigma'),
+  } };
+  const plate = callOp('iid', [leaf, lit(3)]);
+  const xs = [-0.5, 0.2, 2.0];
+  const refs = { mu: Float64Array.of(-1, 1), sigma: Float64Array.of(0.5, 2) };
+  const normalLogp = (x: number, mu: number, sigma: number) =>
+    -Math.log(sigma) - 0.5 * LOG_TWO_PI - 0.5 * ((x - mu) / sigma) ** 2;
+  for (const values of [[...xs, 99], Float64Array.from([...xs, 99]),
+    {shape: [4], data: Float64Array.from([...xs, 99])}]) {
+    const result = density.logDensityConsumeN(plate, values, refs, 2,
+      {baseEnv: {mu: 100, sigma: 100}});
+    for (let i = 0; i < 2; i++) {
+      const expected = xs.reduce((s, x) => s + normalLogp(x, refs.mu[i], refs.sigma[i]), 0);
+      assert.ok(Math.abs(result.logps[i] - expected) < 1e-12);
+    }
+    assert.deepEqual(Array.from(result.rest.data || result.rest), [99]);
+  }
+  const joint = callOp('joint', null, [
+    {name: 'mu', value: Normal(0, 1)}, {name: 'xs', value: plate},
+  ]);
+  const result = density.logDensityN(joint, {mu: 0.25, xs}, refs, 2, {});
+  for (let i = 0; i < 2; i++) {
+    const expected = xs.reduce((s, x) => s + normalLogp(x, 0.25, refs.sigma[i]), normalLogp(0.25, 0, 1));
+    assert.ok(Math.abs(result[i] - expected) < 1e-12);
+  }
+});
+
 test('density: iid(Normal, 3) at [0, 0, 0] = 3 × logp(0)', () => {
   const ir = callOp('iid', [Normal(0, 1), lit(3)]);
   const logp = density.logDensity(ir, [0, 0, 0], {});
   assert.ok(Math.abs(logp - 3 * STD_NORMAL_LOGP_AT_ZERO) < 1e-12);
+});
+
+inBothModes('density: scalar iid mixture preserves atom parameters and rest', 'density.iidScalar', () => {
+  const component = (mu: any, sigma: number) => callOp('Normal', [mu, lit(sigma)]);
+  const mix = callOp('normalize', [callOp('superpose', [
+    callOp('weighted', [lit(2), component(refSelf('mu'), 1)]),
+    callOp('weighted', [lit(3), component(lit(-1), 2)]),
+  ])]);
+  const result = density.logDensityConsumeN(callOp('iid', [mix, lit(2)]),
+    [-0.2, 0.5, 100], {mu: Float64Array.of(0, 1)}, 2, {});
+  const pdf = (x: number, mu: number, sigma: number) =>
+    Math.exp(-0.5 * ((x - mu) / sigma) ** 2) / (sigma * Math.sqrt(2 * Math.PI));
+  for (let i = 0; i < 2; i++) {
+    const expected = [-0.2, 0.5].reduce((s, x) =>
+      s + Math.log((2 * pdf(x, i, 1) + 3 * pdf(x, -1, 2)) / 5), 0);
+    assert.ok(Math.abs(result.logps[i] - expected) < 1e-12);
+  }
+  assert.deepEqual(result.rest, [100]);
 });
 
 test('density: iid count mismatch surfaces as leftover', () => {

@@ -66,6 +66,12 @@
 // lift to a context option.
 
 const OPTIMIZATIONS: Record<string, boolean> = {
+  // Consume scalar composite iid observations without suffix copies.
+  'density.iidScalar': true,
+  // Reuse axis scans only within one synchronous compiled batch/sweep.
+  'aggregate.profileShape': true,
+  // Reuse scalar leaf parameters across an iid observation vector.
+  'density.iidLeaf': true,
   // aggregate(...) pattern dispatch — matmul, dot-product, outer-
   // product, etc. specialisers in sampler-aggregate.AGGREGATE_PATTERNS.
   // When disabled, every aggregate falls through to the

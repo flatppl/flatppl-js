@@ -1184,6 +1184,7 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
   const prog = _profileProgramFor(ir);
   if (prog !== null) {
     callEnv.__bodyEval = prog.bodyEval;
+    callEnv.__aggregateShapeScope = {};
     for (let i = 0; i < N; i++) {
       for (let j = 0; j < refNames.length; j++) {
         const k = refNames[j];

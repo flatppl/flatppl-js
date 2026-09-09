@@ -239,6 +239,21 @@ test('propagateLogWeights: null entries in parent list tolerated', () => {
 // systematicResample
 // =====================================================================
 
+test('systematicResample: reused buffers preserve draws as weights change', () => {
+  const scratch = { cumulative: new Float64Array(3), indices: new Int32Array(1) };
+  for (const [weights, u, expected] of [
+    [[-Infinity, 0, -Infinity], 0.2, 1],
+    [[0, -Infinity, -Infinity], 0.8, 0],
+    [[-Infinity, -Infinity, 0], 0.9, 2],
+  ] as Array<[number[], number, number]>) {
+    let calls = 0;
+    const result = systematicResample(weights, 1, () => { calls++; return u; }, scratch);
+    assert.equal(result[0], expected);
+    assert.equal(result, scratch.indices);
+    assert.equal(calls, 1);
+  }
+});
+
 test('systematicResample: indices are in [0, N) and length n', () => {
   const w = new Float64Array([0, 0, 0, 0]); // uniform
   const idx = systematicResample(w, 7, () => 0.5);

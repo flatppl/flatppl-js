@@ -732,6 +732,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // into this program so a repeated subtree inside an aggregate
             // body shares the outer body's memo slots.
             evalEnv.__bodyEval = prog.bodyEval;
+            evalEnv.__aggregateShapeScope = {};
             for (let i = 0; i < count; i++) {
               const t = count === 1 ? 0 : i / (count - 1);
               evalEnv[sweepName] = lo + t * (hi - lo);

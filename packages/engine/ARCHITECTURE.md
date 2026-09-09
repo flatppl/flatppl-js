@@ -257,6 +257,19 @@ after the table.
 | `kernel-broadcast-axes.ts` (~75) | Pure §04 broadcast-axis resolver `resolveBroadcastAxes` (+ `coordToOffset`/`cellToCoord`) — ONE source of truth shared by the mat-broadcast executor and density's `walkBroadcast` (agree-by-construction axis alignment); sizes-only, dependency-free leaf. |
 | `variants.ts` (~85) | Surface-syntax registry (spec §05): ONE canonical variant (`.flatppl`); `variantForPath` + `resolveVariant` (retired FlatPPY/FlatPPJ ids throw — forward-compat seam). |
 
+**Local performance reuse.** `density.iidLeaf` batches direct scalar IID
+density leaves, resolving parameters once per atom while preserving observation
+sum order and consume/rest semantics. Composite footprints keep the general
+walker. `matSuperpose` reuses caller-owned cumulative/index buffers within one
+materialisation, without changing weights or RNG draws. Callable-head validation
+deduplicates shared IR nodes within each query, never across binding edits.
+Scalar composite IID leaves also avoid repeated suffix copies while retaining
+the general per-observation walker. Composite kernel broadcasts reuse a private
+per-atom environment, except when compiled memoization requires fresh per-cell
+identity. `aggregate.profileShape` reuses structural axis scans only within a
+synchronous compiled batch/sweep, keyed by its fresh `__aggregateShapeScope`.
+Standalone evaluation and later batches/edits retain structural rescanning.
+
 **`EmpiricalMeasure` shape** (engine-concepts §2 universal value): `samples`
 (per-atom scalar view) · optional `value` (shape-`[N,…dims]` batched Value) ·
 `logWeights` (null ⇒ uniform) · `logTotalmass` (0 ⇒ probability) · `n_eff` ·

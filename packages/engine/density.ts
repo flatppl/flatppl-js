@@ -70,6 +70,7 @@ const valueLib   = require('./value.ts');
 const densityPrims = require('./density-prims.ts');
 const bcAxes = require('./kernel-broadcast-axes.ts');
 const shared  = require('./materialiser-shared.ts');
+const { getOptimization } = require('./perf-config.ts');
 
 // =====================================================================
 // Shape helpers — atom-independent consume/rest splitting
@@ -708,11 +709,10 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
 
 // ---- Per-op handlers (the in-place accumulators) --------------------
 
-function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  // The only per-atom work in the entire walk: consume one entry from
-  // the value, then loop atoms resolving params and adding logpdf to
-  // acc[i]. consumeScalar is atom-independent (head + rest are derived
-  // from `value`, which is shared).
+function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any, repeat = 1) {
+  // Consume the shared observation(s), resolve parameters once per atom,
+  // then add logpdfs to acc[i] in observation order. An iid scalar leaf
+  // supplies repeat > 1 to avoid repeating setup and suffix copies.
   //
   // FlatPDL note (spec §07 §sec:measure-eval-prims, engine-concepts §13.6):
   // per-atom dispatch routes through `densityPrims.builtinLogdensityofPositional`
@@ -767,13 +767,15 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
     return null;
   }
 
-  const { head, rest } = consumeScalar(value);
+  const { head, rest } = repeat > 1 ? consumeVector(value, repeat) : consumeScalar(value);
   // Hot path: no per-atom refs AND no overlay → params constant across
   // atoms. Resolve once, broadcast.
   if (refNames.length === 0 && !overlayKeys) {
     const params = samplerLib.resolveParams(ir, entry, baseEnv);
-    const logp = blp(kernelName, params, head);
-    for (let i = 0; i < N; i++) acc[i] += logp;
+    for (let j = 0; j < repeat; j++) {
+      const logp = blp(kernelName, params, repeat > 1 ? head[j] : head);
+      for (let i = 0; i < N; i++) acc[i] += logp;
+    }
     return rest;
   }
   // Per-atom path. callEnv layering (bottom-up): baseEnv, refArrays[i],
@@ -822,7 +824,9 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
       }
     }
     const params = samplerLib.resolveParams(ir, entry, callEnv);
-    acc[i] += blp(kernelName, params, head);
+    for (let j = 0; j < repeat; j++) {
+      acc[i] += blp(kernelName, params, repeat > 1 ? head[j] : head);
+    }
   }
   return rest;
 }
@@ -1328,6 +1332,23 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
   throw new Error('density: joint with neither fields nor args');
 }
 
+// Conservative footprint proof: only scalar leaves and wrappers that preserve
+// their scalar variate. Unknown, reified and array-valued forms keep the walker.
+function hasScalarDensityFootprint(ir: any): boolean {
+  if (!ir || ir.kind !== 'call') return false;
+  if (!(OP_HANDLERS as any)[ir.op]) return samplerLib.isKnownDistribution(ir.op);
+  const args = ir.args || [];
+  if ((ir.op === 'weighted' || ir.op === 'logweighted') && args.length === 2) {
+    // Leave variate-function binding on its existing consume/rest path.
+    if (args[0]?.kind === 'call' && args[0].op === 'functionof') return false;
+    return hasScalarDensityFootprint(args[1]);
+  }
+  if (ir.op === 'normalize' || ir.op === 'truncate') return hasScalarDensityFootprint(args[0]);
+  const branches = ir.op === 'superpose' ? args
+    : ir.op === 'select' && !ir.selectorName ? ir.branches : null;
+  return Array.isArray(branches) && branches.length > 0 && branches.every(hasScalarDensityFootprint);
+}
+
 function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // iid(M, size): prod(size) copies of M's footprint. Size is
   // atom-independent — a value-position expression typically of
@@ -1420,6 +1441,27 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
       }
     }
     return value.length === total ? null : value.slice(total);
+  }
+  // §06 iid density is the ordered sum of the leaf log-densities. Resolve
+  // its parameters once per atom, not per observation, and consume the
+  // vector once instead of repeatedly copying its shrinking suffix.
+  // Other footprints and points-batched calls retain the general walker.
+  const leaf = args[0];
+  const length = valueLib.isValue(value)
+    ? (value.shape.length === 1 ? value.shape[0] : 0) : value?.length;
+  if (total > 1 && length >= total && !opts.pointsBatched
+      && leaf.kind === 'call' && !OP_HANDLERS[leaf.op as keyof typeof OP_HANDLERS]
+      && samplerLib.isKnownDistribution(leaf.op) && getOptimization('density.iidLeaf')) {
+    return walkLeaf(leaf, value, refArrays, N, opts, acc, baseEnv, overlay, total);
+  }
+  if (total > 1 && length >= total && !opts.pointsBatched
+      && getOptimization('density.iidScalar') && hasScalarDensityFootprint(leaf)) {
+    const { head, rest } = consumeVector(value, total);
+    for (let j = 0; j < total; j++) {
+      // Keep every composite operation and addition in its original order.
+      walkAcc(leaf, head[j], refArrays, N, opts, acc, baseEnv, overlay);
+    }
+    return rest;
   }
   let cur = value;
   for (let i = 0; i < total; i++) {
@@ -2330,8 +2372,8 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
   // Consume the nested [d1]...[dm] variate into a flat row-major scalar buffer.
   const { cells, rest } = flattenNestedVariate(value, axes);
 
-  // Score one (atom i, cell) pair: bind the kernel's declared param(s) to
-  // this cell's input value(s), then recurse the EXISTING measure-density
+  // Score one atom across all cells: bind the kernel's declared param(s) to
+  // each cell's input value(s), then recurse the EXISTING measure-density
   // walker on the (inline, already-fully-expanded — derivations.ts's
   // `_expandStructural` broadcast case resolves any nested measure-position
   // refs like a mixture's component names ahead of time) body, scoring it
@@ -2341,8 +2383,7 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
   // needed (contrast walkWeighted's functionof-weight case, which threads a
   // per-atom scalar into the OUTER N-atom batch rather than a fresh N=1
   // sub-walk).
-  function scoreCell(i: number, cell: number): number {
-    const coord = bcAxes.cellToCoord(cell, axes);
+  function scoreAtom(i: number): number {
     const callEnv: any = Object.assign({}, baseEnv);
     if (overlay) Object.assign(callEnv, overlay);
     // Atom i's value of every per-atom ref, so a body ref that is fed as a
@@ -2355,26 +2396,33 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
       const v = refArrays[refNames[j]];
       callEnv[refNames[j]] = valueLib.isValue(v) ? _atomSlice(v, i) : v[i];
     }
-    for (let pi = 0; pi < P; pi++) {
-      callEnv[internalNames[pi]] = accessors[pi](i, bcAxes.coordToOffset(coord, resolved.strides[internalNames[pi]]));
-    }
     const cellAcc = new Float64Array(1);
-    walkAcc(fnHead.body, cells[cell], {}, 1, opts, cellAcc, callEnv, undefined);
-    return cellAcc[0];
+    let total = 0;
+    // Only the formal parameters vary across cells. Reuse this atom's
+    // private environment and accumulator, overwriting every formal.
+    for (let cell = 0; cell < Ktot; cell++) {
+      const coord = bcAxes.cellToCoord(cell, axes);
+      // Compiled value memoization keys on env identity within a point.
+      const cellEnv = callEnv.__bodyEval ? Object.assign({}, callEnv) : callEnv;
+      for (let pi = 0; pi < P; pi++) {
+        cellEnv[internalNames[pi]] = accessors[pi](i, bcAxes.coordToOffset(coord, resolved.strides[internalNames[pi]]));
+      }
+      cellAcc[0] = 0;
+      walkAcc(fnHead.body, cells[cell], {}, 1, opts, cellAcc, cellEnv, undefined);
+      total += cellAcc[0];
+    }
+    return total;
   }
 
   if (!anyAtomDep) {
     // Atom-indep: compute the sum once, fan out.
-    let total = 0;
-    for (let cell = 0; cell < Ktot; cell++) total += scoreCell(0, cell);
+    const total = scoreAtom(0);
     if (total !== 0) for (let i = 0; i < N; i++) acc[i] += total;
     return rest;
   }
   // Per-atom × per-cell loop.
   for (let i = 0; i < N; i++) {
-    let total = 0;
-    for (let cell = 0; cell < Ktot; cell++) total += scoreCell(i, cell);
-    acc[i] += total;
+    acc[i] += scoreAtom(i);
   }
   return rest;
 }

@@ -32,6 +32,24 @@ const perfConfig = require('./perf-config.ts');
 const { _matmul } = require('./sampler-linalg.ts');
 const aggregateShape = require('./aggregate-shape.ts');
 
+// Batch/sweep owners supply a fresh scope while synchronously evaluating
+// fixed IR. Never retain structural metadata across batches or user edits.
+interface ProfileShapeMemo {
+  canonical: WeakMap<object, any>;
+  axisRefs: WeakMap<object, boolean>;
+}
+const profileShapeMemos = new WeakMap<object, ProfileShapeMemo>();
+function profileShapeMemo(env: any): ProfileShapeMemo | null {
+  const scope = env && env.__aggregateShapeScope;
+  if (!scope || !perfConfig.getOptimization('aggregate.profileShape')) return null;
+  let memo = profileShapeMemos.get(scope);
+  if (!memo) {
+    memo = { canonical: new WeakMap(), axisRefs: new WeakMap() };
+    profileShapeMemos.set(scope, memo);
+  }
+  return memo;
+}
+
 // Lazy access to sampler.ts (cycle: aggregate calls `evaluateExpr` /
 // `ARITH_OPS`, which the evaluator re-enters via `_evalAggregate`).
 // We do NOT memoise the require — sampler.ts re-requires aggregate
@@ -838,10 +856,18 @@ function _flatToValueSP(data: Float64Array, shape: number[]): any {
 // boundaries — both close an axis scope (spec §04 §sec:aggregate,
 // §sec:metricsum), so an axis under either binder does not make the
 // subtree depend on the enclosing aggregate's axes.
-function _containsAxisRef(node: any): boolean {
+function _containsAxisRef(node: any, memo?: WeakMap<object, boolean>): boolean {
   if (!node || typeof node !== 'object') return false;
+  const cached = memo && memo.get(node);
+  if (cached !== undefined) return cached;
+  const result = _scanAxisRef(node, memo);
+  if (memo) memo.set(node, result);
+  return result;
+}
+
+function _scanAxisRef(node: any, memo?: WeakMap<object, boolean>): boolean {
   if (Array.isArray(node)) {
-    for (const c of node) if (_containsAxisRef(c)) return true;
+    for (const c of node) if (_containsAxisRef(c, memo)) return true;
     return false;
   }
   if (node.kind === 'axis') return true;
@@ -850,7 +876,7 @@ function _containsAxisRef(node: any): boolean {
   for (const k of Object.keys(node)) {
     if (k === 'loc' || k === 'kind' || k === 'op'
         || k === 'name' || k === 'ns') continue;
-    if (_containsAxisRef(node[k])) return true;
+    if (_containsAxisRef(node[k], memo)) return true;
   }
   return false;
 }
@@ -1182,9 +1208,10 @@ function _liftAggregateExpr(
   node: any, canonicalAxes: string[],
   axisLengths: Record<string, number>, env: any,
   atomCfg: AtomConfig,
+  axisRefs?: WeakMap<object, boolean>,
 ): { data: Float64Array; shape: number[] } {
   // Constant-hoist: subtree with no axis refs evaluates once.
-  if (!_containsAxisRef(node)) {
+  if (!_containsAxisRef(node, axisRefs)) {
     const v = evaluateExpr(node, env);
     return _alignedConstTensor(v, node, canonicalAxes, atomCfg);
   }
@@ -1196,8 +1223,8 @@ function _liftAggregateExpr(
   if (node.kind === 'call' && node.args && node.args.length === 2) {
     const fn = _AGG_BIN[node.op];
     if (fn) {
-      const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env, atomCfg);
-      const b = _liftAggregateExpr(node.args[1], canonicalAxes, axisLengths, env, atomCfg);
+      const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env, atomCfg, axisRefs);
+      const b = _liftAggregateExpr(node.args[1], canonicalAxes, axisLengths, env, atomCfg, axisRefs);
       return _broadcastBinary(a, b, fn);
     }
   }
@@ -1205,7 +1232,7 @@ function _liftAggregateExpr(
   if (node.kind === 'call' && node.args && node.args.length === 1) {
     const fn = _AGG_UN[node.op];
     if (fn) {
-      const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env, atomCfg);
+      const a = _liftAggregateExpr(node.args[0], canonicalAxes, axisLengths, env, atomCfg, axisRefs);
       return _broadcastUnary(a, fn);
     }
   }
@@ -1299,7 +1326,12 @@ function _evalAggregateGeneric(
 
   // P1: read the canonical form (typeinfer populated it; runtime
   // resolves any %dynamic lengths via the body walker).
-  const canonical = aggregateShape.getCanonical(ir);
+  const shapeMemo = !isBatched ? profileShapeMemo(env) : null;
+  let canonical = shapeMemo ? shapeMemo.canonical.get(ir) : undefined;
+  if (canonical === undefined) {
+    canonical = aggregateShape.getCanonical(ir);
+    if (shapeMemo) shapeMemo.canonical.set(ir, canonical);
+  }
   if (!canonical) {
     throw new Error(`${tag}: output_axes must be an array literal of axis names`);
   }
@@ -1350,7 +1382,7 @@ function _evalAggregateGeneric(
   for (const a of Object.keys(resolved)) lengths[a] = resolved[a];
 
   // Lift the body to an aligned tensor over the full canonical shape.
-  const lifted = _liftAggregateExpr(exprIR, canonicalAxes, lengths, runEnv, liftCfg);
+  const lifted = _liftAggregateExpr(exprIR, canonicalAxes, lengths, runEnv, liftCfg, shapeMemo?.axisRefs);
 
   // Output shape: drop reduce axes. Atom-batched output is a Value
   // {shape, data} with leading atom dim; single-point returns the
