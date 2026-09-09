@@ -1353,8 +1353,8 @@ function weightedLeafQuadLogZ(node: any, ctx: any): number | null {
 // `normalize(logweighted(functionof(Σ logdensityof(Mᵢ, x)), M0))` to the
 // constant shift `logweighted(−logZ, <inner>)` evaluated at the point `theta`.
 // −logZ is closed-form when every factor is a Normal over the shared variate
-// (the product of Gaussians is Gaussian); other recognised reference measures
-// fall to numeric quadrature. An unrecognised factor mix throws (loud, not a
+// (the product of Gaussians is Gaussian); counting bases use support sums,
+// and other recognised continuous measures use quadrature. An unrecognised mix throws (not a
 // silently-unnormalized density).
 function resolveProductNormalizers(node: any, theta: any, ctx: any, seen?: any) {
   if (!node || typeof node !== 'object') return;
@@ -1371,6 +1371,12 @@ function resolveProductNormalizers(node: any, theta: any, ctx: any, seen?: any) 
     const fold = sharedVariateProductFold(inner);
     if (fold) {
       const negLogZ = -productLogZ(fold.factors, fold.variate, theta, ctx);
+      // The worker cannot resolve named measure values inside a weight. Keep
+      // its numerator on the same expanded factors used for the support sum.
+      inner.args[1] = orchestrator.expandMeasure(inner.args[1], ctx) || inner.args[1];
+      for (const term of fold.terms) {
+        term.args[0] = orchestrator.expandMeasure(term.args[0], ctx) || term.args[0];
+      }
       // Rewrite IN PLACE: normalize(inner) → logweighted(−logZ, inner).
       node.op = 'logweighted';
       node.args = [{ kind: 'lit', value: negLogZ }, inner];
@@ -1393,7 +1399,10 @@ function sharedVariateProductFold(inner: any): any {
       || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
   const fn = inner.args[0];
   if (!fn || fn.kind !== 'call' || fn.op !== 'functionof' || !fn.body) return null;
+  if (!Array.isArray(fn.params) || fn.params.length !== 1) return null;
+  const variate = fn.paramKwargs?.[0] || fn.params[0];
   const factors = [inner.args[1]];
+  const terms: any[] = [];
   const collect = (n: any): boolean => {
     if (n && n.kind === 'call' && n.op === 'add'
         && Array.isArray(n.args) && n.args.length === 2) {
@@ -1401,21 +1410,23 @@ function sharedVariateProductFold(inner: any): any {
     }
     if (n && n.kind === 'call' && n.op === 'logdensityof'
         && Array.isArray(n.args) && n.args.length === 2) {
+      const point = n.args[1];
+      if (point?.kind !== 'ref' || (point.name !== fn.params[0] && point.name !== variate)) return false;
       factors.push(n.args[0]);
+      terms.push(n);
       return true;
     }
     return false;
   };
-  const variate = Array.isArray(fn.paramKwargs) ? fn.paramKwargs[0] : undefined;
-  return collect(fn.body) ? { factors, variate } : null;
+  return collect(fn.body) ? { factors, variate, terms } : null;
 }
 
 // log Z for a shared-variate product of reference measures, at point `theta`.
 // Closed form when every factor is a Normal (the product of Gaussians is
-// Gaussian); otherwise numeric quadrature of ∫ ∏ᵢ gᵢ over the variate's
-// declared domain.
+// Gaussian). Counting bases use support sums independently of plotting domains.
+// Other continuous products retain the existing declared-domain quadrature.
 function productLogZ(factorIRs: any[], variate: any, theta: any, ctx: any): number {
-  const kernels = factorIRs.map((m) => asScalarFactor(m, theta));
+  const kernels = factorIRs.map((m) => productFactor(m, theta, ctx));
   if (kernels.some((k) => k == null)) {
     throw new Error('density: shared-variate product_dist factor is not a '
       + 'recognised scalar reference measure — cannot resolve its normalizer');
@@ -1424,9 +1435,12 @@ function productLogZ(factorIRs: any[], variate: any, theta: any, ctx: any): numb
   // measure needs a support sum, not midpoint integration of its PMF.
   // The declared plotting/domain interval does not truncate that support.
   const { lookupDistribution } = require('./sampler-registry.ts');
-  if (kernels.some((k: any) => lookupDistribution({ kind: 'call', op: k.kernel }).discrete)) {
-    throw engineLimitation('normalize', 'shared-variate product density',
-      'discrete factors require a support sum; this normalizer only supports continuous factors');
+  const discrete = kernels.map((k: any) => lookupDistribution({ kind: 'call', op: k.kernel }).discrete);
+  if (discrete[0]) {
+    return require('./discrete-product.ts').discreteProductLogZ(kernels);
+  }
+  if (discrete.some(Boolean)) {
+    throw new Error('normalize density: discrete PMF weight has zero mass on a continuous base');
   }
   if (kernels.every((k: any) => k.kernel === 'Normal')) {
     // Product of Gaussians is Gaussian: log ∫ ∏ N(x|μᵢ,σᵢ) dx.
@@ -1446,6 +1460,39 @@ function productLogZ(factorIRs: any[], variate: any, theta: any, ctx: any): numb
     return -0.5 * sumLogTerm + 0.5 * Math.log(2 * Math.PI / tau) - 0.5 * C;
   }
   return numericProductLogZ(kernels, variate, ctx);
+}
+
+// Product factors may remain named inside a weighting function. Resolve the
+// measure first, then bind parameters at theta; never materialize random draws
+// to guess a normalizer. Categorical has a scalar variate but a vector input.
+function productFactor(m: any, theta: any, ctx: any): any {
+  let k = orchestrator.expandMeasure(m, ctx) || m;
+  while (k?.kind === 'call' && (k.op === 'relabel' || k.op === 'record')) {
+    if (k.op === 'relabel') k = k.args?.[0];
+    else if (k.fields?.length === 1) k = k.fields[0].value;
+    else return null;
+  }
+  const bound = require('./leaf-params.ts').leafParamIRs(k);
+  if (!bound) return null;
+  const values = {
+    has: (name: string) => Object.prototype.hasOwnProperty.call(theta || {}, name) || !!ctx.fixedValues?.has(name),
+    get: (name: string) => Object.prototype.hasOwnProperty.call(theta || {}, name) ? theta[name] : ctx.fixedValues?.get(name),
+  };
+  const input: Record<string, any> = {};
+  for (let i = 0; i < bound.paramIRs.length; i++) {
+    const ir = bound.paramIRs[i];
+    let value = resolveScalarAtPoint(ir, theta);
+    if (!Number.isFinite(value)) value = orchestrator.resolveIRToValue(ir, ctx.bindings, values);
+    if ((bound.kernel === 'Categorical' || bound.kernel === 'Categorical0') && i === 0) {
+      const arr = Array.isArray(value) ? value : (value as any)?.data;
+      if (!arr || !Array.from(arr).every(Number.isFinite)) return null;
+      input.p = Array.from(arr);
+    } else {
+      if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+      input[bound.entry.params[i]] = value;
+    }
+  }
+  return { kernel: bound.kernel, input };
 }
 
 // Numeric log ∫ ∏ᵢ gᵢ(x) dx over the variate's declared domain [lo, hi], by
@@ -1727,6 +1774,9 @@ function assertRewriteTargetsPrivate(nodes: any[], measureIR: any, ctx: any) {
 }
 
 function resolveNormalizeMasses(measureIR: any, ctx: any) {
+  // Fixed products use this direct-density route rather than likelihood theta
+  // substitution. Resolve their support sums before the empirical mass fallback.
+  resolveProductNormalizers(measureIR, null, ctx);
   const nodes: any[] = [];
   collectNormalizeMassNodes(measureIR, nodes, new Set());
   if (nodes.length === 0) return Promise.resolve(measureIR);

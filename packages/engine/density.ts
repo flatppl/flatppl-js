@@ -1007,14 +1007,14 @@ function walkLogWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: a
 // `value` into the accumulator. Any other body shape is a lowering we don't
 // recognise — fail loud rather than silently drop the weight.
 function addFunctionofVariateWeight(fnIR: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  accumulateLogdensityFold(fnIR.body, value, refArrays, N, opts, acc, baseEnv, overlay);
+  accumulateLogdensityFold(fnIR.body, value, refArrays, N, opts, acc, baseEnv, overlay, new Float64Array(N));
 }
 
-function accumulateLogdensityFold(node: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+function accumulateLogdensityFold(node: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any, scratch: Float64Array) {
   if (node && node.kind === 'call' && node.op === 'add'
       && Array.isArray(node.args) && node.args.length === 2) {
-    accumulateLogdensityFold(node.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
-    accumulateLogdensityFold(node.args[1], value, refArrays, N, opts, acc, baseEnv, overlay);
+    accumulateLogdensityFold(node.args[0], value, refArrays, N, opts, acc, baseEnv, overlay, scratch);
+    accumulateLogdensityFold(node.args[1], value, refArrays, N, opts, acc, baseEnv, overlay, scratch);
     return;
   }
   if (node && node.kind === 'call' && node.op === 'logdensityof'
@@ -1028,7 +1028,14 @@ function accumulateLogdensityFold(node: any, value: any, refArrays: any, N: any,
     // logDensityN still asserts the whole value was consumed — so the rest
     // here is discarded rather than required empty (it is non-empty inside an
     // iid plate, where the base consumes one entry of many).
-    walkAcc(node.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+    scratch.fill(0);
+    walkAcc(node.args[0], value, refArrays, N, opts, scratch, baseEnv, overlay);
+    // §06 reweighting cannot create mass at a null base atom. In particular,
+    // a zero PMF times an infinite density weight is zero, not NaN.
+    for (let i = 0; i < N; i++) {
+      acc[i] = acc[i] === -Infinity || scratch[i] === -Infinity
+        ? -Infinity : acc[i] + scratch[i];
+    }
     return;
   }
   throw new Error('density: unsupported logweighted functionof weight — expected an '
