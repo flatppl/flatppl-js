@@ -18,15 +18,16 @@ const { buildMathRequest, composeMathRows, rowNameFor, rowHtml, focusedBindingNa
 // (flatppl-dev/math-view-design.md §4 plus the Rust session's deltas):
 // one row per module-level binding, a decomposition being ONE row named
 // after its first target with every name in `names`; `order` lists row
-// names; diagnostics carry a binding name ("" = module-level). The pure
+// names; `refs` lists the OTHER bindings a row refers to; diagnostics carry a
+// binding name ("" = module-level). The pure
 // composition below is what turns that into rows the pane renders.
 
 const response = {
   order: ['y_data', 'a', 'posterior'],
   bindings: [
-    { name: 'y_data', names: ['y_data'], kind: 'value', mathml: '<math data-flatppl-binding="y_data"><mi>y</mi></math>', refs: ['y_data'], loc: { start: 10, end: 20 }, annotation: '8 values' },
-    { name: 'a', names: ['a', 'b'], kind: 'draw', mathml: '<math data-flatppl-binding="a"><mi>a</mi></math>', refs: ['a', 'b', 'M'] },
-    { name: 'posterior', names: ['posterior'], kind: 'measure', mathml: '<math data-flatppl-binding="posterior"><mi>p</mi></math>', refs: ['posterior', 'L'] },
+    { name: 'y_data', names: ['y_data'], kind: 'value', mathml: '<math data-flatppl-binding="y_data"><mi>y</mi></math>', refs: [], loc: { start: 10, end: 20 }, annotation: '8 values' },
+    { name: 'a', names: ['a', 'b'], kind: 'draw', mathml: '<math data-flatppl-binding="a"><mi>a</mi></math>', refs: ['M'] },
+    { name: 'posterior', names: ['posterior'], kind: 'measure', mathml: '<math data-flatppl-binding="posterior"><mi>p</mi></math>', refs: ['L'] },
   ],
   diagnostics: [
     { binding: '', message: 'format `typst` is not available yet' },
@@ -66,7 +67,7 @@ test('composeMathRows keeps the response order and carries the row fields', () =
   assert.equal(rows[0].annotation, '8 values');
   assert.equal(rows[1].annotation, null);
   assert.equal(rows[0].mathml, response.bindings[0].mathml);
-  assert.deepEqual(rows[2].refs, ['posterior', 'L']);
+  assert.deepEqual(rows[2].refs, ['L']);   // other bindings only (own names excluded, per contract)
 });
 
 test('the focused row is the one whose names include the focus — also a secondary decomposition name', () => {

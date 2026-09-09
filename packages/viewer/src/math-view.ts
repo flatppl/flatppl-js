@@ -19,7 +19,9 @@
 //   - response { order, bindings, diagnostics }: one row per
 //     module-level binding; a decomposition (`a, b ~ M`) is ONE row named
 //     after its first target with every name in `names`; `order` lists
-//     row names; `diagnostics[].binding` is "" for module-level ones.
+//     row names, in source order; `refs` lists the OTHER bindings a row
+//     refers to (its own names excluded); `diagnostics[].binding` is "" for
+//     module-level ones.
 //   - `mathml` is a trusted `<math display="block"
 //     data-flatppl-binding="NAME">` fragment whose identifier leaves
 //     carry `data-flatppl-ref="NAME"` on their OUTERMOST element (an
