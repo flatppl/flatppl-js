@@ -191,6 +191,16 @@ body {
 #math-content .math-row-diags {
   margin: 0.2em 0 0 1.2em; font-size: 0.88em; color: #E57373;
 }
+/* The shared notation key stays collapsed until requested. */
+#math-content .math-notation {
+  margin: 0.8em 1em; padding-top: 0.6em;
+  border-top: 1px solid var(--vscode-panel-border, #444);
+  font-size: 0.9em;
+}
+#math-content .math-notation summary { cursor: pointer; }
+#math-content .math-notation dt { margin-top: 1em; overflow-x: auto; padding: 0.2em 0; }
+#math-content .math-notation dd { margin: 0.35em 0 0; overflow-wrap: anywhere; }
+#math-content .math-notation p { margin: 0.3em 0; opacity: 0.8; }
 /* Drag handles between adjacent visible panels (one after the graph
    panel, one after the plot panel — see panels.ts for the pairing rule).
    Hidden when their panel or every later panel is hidden; the border-top

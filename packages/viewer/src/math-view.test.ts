@@ -12,7 +12,7 @@ registerHooks({
   }
 });
 
-const { buildMathRequest, composeMathRows, rowNameFor, rowHtml, moduleDocHtml, focusedBindingName, mathModelKey, mathWasmUrl } = await import('./math-view.ts');
+const { buildMathRequest, composeMathRows, rowNameFor, rowHtml, moduleDocHtml, notationHtml, focusedBindingName, mathModelKey, mathWasmUrl } = await import('./math-view.ts');
 
 // The math pane consumes flatppl-rust's `render_math` contract
 // (flatppl-dev/math-view-design.md §4 plus the Rust session's deltas):
@@ -192,4 +192,13 @@ test('the module introduction is the title (escaped) as h1 plus the rendered bod
   assert.equal(moduleDocHtml(null), '');
   assert.equal(moduleDocHtml(undefined), '');
   assert.equal(moduleDocHtml({ title: null, html: '' }), '');
+});
+
+test('notation starts collapsed with rendered symbols and escaped explanations, or is omitted when empty', () => {
+  assert.equal(notationHtml([{ mathml: '<mi>μ</mi>', source: 'mu < x & y', note: 'Mean <location> & scale.' }]),
+    '<details class="math-notation"><summary>Notation</summary><dl>'
+    + '<dt><math><mi>μ</mi></math></dt><dd><code>mu &lt; x &amp; y</code>'
+    + '<p>Mean &lt;location&gt; &amp; scale.</p></dd></dl></details>');
+  assert.equal(notationHtml([]), '');
+  assert.equal(notationHtml(undefined), '');
 });

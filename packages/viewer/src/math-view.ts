@@ -35,6 +35,8 @@
 //     html }` (the `flatppl_compat` doc-comment, spec §04, its first
 //     heading split off as the title). Both absent without a comment. The
 //     viewer's own marked + Temml pipeline stays for tooltips and hovers.
+//   - optional `notation` entries provide a shared key after the rows:
+//     trusted MathML expression content, source spelling and explanatory text.
 
 import { esc, escAttr } from './util.js';
 
@@ -72,11 +74,16 @@ export interface MathBinding {
 
 export interface MathDiagnostic { binding: string; message: string }
 
+/** A notation key entry: MathML expression content without a <math> root,
+ *  produced by the same trusted renderer as the binding fragments. */
+export interface MathNotation { mathml: string; source: string; note: string }
+
 export interface MathResponse {
   order: string[];
   bindings: MathBinding[];
   diagnostics: MathDiagnostic[];
   doc?: MathModuleDoc;
+  notation?: MathNotation[];
 }
 
 /** One rendered row of the pane. */
@@ -209,6 +216,18 @@ export function moduleDocHtml(doc: MathModuleDoc | null | undefined): string {
   const body = typeof doc.html === 'string' ? doc.html : '';
   if (!title && !body) return '';
   return '<div class="math-module-doc">' + title + body + '</div>';
+}
+
+/** A collapsed key after the equations. Only the Rust-rendered MathML
+ *  content is trusted; source spellings and explanations remain plain text. */
+export function notationHtml(entries: MathResponse['notation']): string {
+  if (!entries?.length) return '';
+  let h = '<details class="math-notation"><summary>Notation</summary><dl>';
+  for (const e of entries) {
+    h += '<dt><math>' + e.mathml + '</math></dt><dd><code>' + esc(e.source)
+      + '</code><p>' + esc(e.note) + '</p></dd>';
+  }
+  return h + '</dl></details>';
 }
 
 /** The binding the pane highlights: what the plot pane shows, else the
