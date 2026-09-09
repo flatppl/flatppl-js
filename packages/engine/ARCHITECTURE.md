@@ -184,6 +184,7 @@ after the table.
 
 | Module (~lines) | Responsibility · key exports |
 |---|---|
+| `discrete-product.ts` | Counting-reference product normalizers: exact finite-support sums and infinite-support sums with geometric remainder bounds. Supports the eight scalar discrete families and Normal density weights. Poisson products anchor near their mode. The tail certificate excludes primitive floating-point error; non-convergence never returns a truncated mass. Called by `mat-density` for both fixed products and likelihood parameters. |
 | `tokenizer.ts` (~520) | source → Token[]. Tracks paren/bracket depth (implicit line continuation); distinguishes `_` HOLE / `_name_` PLACEHOLDER / identifier at lex time. |
 | `parser.ts` (~1200) | Token[] → AST, recursive-descent precedence climbing. `(x)` parens, `(x,y)` tuple, `(x,)` rejected. MixedArgs admitted (analyzer flags ops disallowing it). |
 | `ast.ts` (~150) | AST node factories (`type` discriminator + `loc`). `synthLoc` for engine-synthesized nodes. |

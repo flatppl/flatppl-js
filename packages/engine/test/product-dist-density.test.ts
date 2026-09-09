@@ -141,6 +141,97 @@ dom = cartprod(x = interval(${bounds}))
 L = likelihoodof(prod, 2)
 ld = logdensityof(L, record(mu = 2.0, nu = 3.0))
 `, 1);
-    await assert.rejects(() => ctx.getMeasure('ld'), /discrete.*support sum/);
+    const m = await ctx.getMeasure('ld');
+    assert.ok(Math.abs(m.samples[0] - (-1.0173273100296354)) < 1e-12);
+  }
+});
+
+test('product_dist: finite support sums include endpoint atoms and fixed factors', async () => {
+  // Bernoulli(0.25)*Bernoulli(0.6) has normalized mass 1/3 at one.
+  const ctx = buildCtx(`
+p = elementof(unitinterval)
+g1 = Bernoulli(p)
+g2 = Bernoulli(0.6)
+prod = normalize(logweighted(x -> logdensityof(g2, x), g1))
+L = likelihoodof(prod, 1)
+ld = logdensityof(L, record(p=0.25))
+`, 1);
+  assert.ok(Math.abs((await ctx.getMeasure('ld')).samples[0] - Math.log(1/3)) < 1e-12);
+});
+
+test('product_dist: infinite geometric support normalizes without a plotting domain', async () => {
+  // The product has geometric ratio (1-.2)*(1-.3)=.56.
+  const ctx = buildCtx(`
+g1 = Geometric(0.2)
+g2 = Geometric(0.3)
+prod = normalize(logweighted(x -> logdensityof(g2, x), g1))
+ld = logdensityof(prod, 7)
+`, 1);
+  assert.ok(Math.abs((await ctx.getMeasure('ld')).samples[0] - (Math.log(.44)+7*Math.log(.56))) < 1e-12);
+});
+
+test('product_dist: counting support and tail sums match finite and tilted-law oracles', async () => {
+  // Geometric weighting tilts NB(r,q) into NB(r,q*(1-p)). The r=.5
+  // case has increasing adjacent ratios, so the last ratio is not a tail bound.
+  const cases = [
+    ['Categorical([0.2,0.3,0.5])', 'Categorical([0.6,0.3,0.1])', 2, Math.log(.09/.26)],
+    ['Categorical0([0.2,0.3,0.5])', 'Categorical0([0.6,0.3,0.1])', 1, Math.log(.09/.26)],
+    ['Binomial(2,0.25)', 'Binomial(3,0.5)', 1, Math.log(.6)],
+    ['NegativeBinomial(0.5,2.0)', 'Geometric(0.4)', 3, Math.log((.5*1.5*2.5/6)*Math.sqrt(.8)*.2**3)],
+    ['NegativeBinomial2(6.0,2.0)', 'Geometric(0.2)', 7, Math.log(8*.4**2*.6**7)],
+    ['Poisson(0.0)', 'Poisson(3.0)', 0, 0],
+    ['Bernoulli(1.0)', 'Poisson(2.0)', 1, 0],
+    ['Bernoulli(0.5)', 'Normal(0.0,1.0)', 1, -Math.log1p(Math.exp(.5))],
+    ['Categorical0([0.0,1.0])', 'Gamma(0.5,1.0)', 1, 0],
+    ['Categorical0([0.0,1.0])', 'Gamma(0.5,1.0)', 0, -Infinity],
+    // Independent mode-relative PMF-ratio sum. The tolerance covers the
+    // primitive log-PMF roundoff, not omitted tail mass.
+    ['Poisson(1000000.0)', 'Poisson(1000000.0)', 1000000, -7.480120451073515],
+  ] as const;
+  for (const [base, weight, x, want] of cases) {
+    const ctx = buildCtx(`
+g1=${base}
+g2=${weight}
+prod=normalize(logweighted(x -> logdensityof(g2,x),g1))
+ld=logdensityof(prod,${x})
+`, 1);
+    const got = (await ctx.getMeasure('ld')).samples[0];
+    assert.ok(got === want || Math.abs(got-want) < (x === 1000000 ? 1e-8 : 1e-12), `${base} * ${weight}: ${got} versus ${want}`);
+  }
+});
+
+test('product_dist: runtime inputs must satisfy the tail-bound parameter domains', async () => {
+  const ctx = buildCtx(`
+a=elementof(posreals)
+g1=NegativeBinomial(a,2.0)
+g2=Bernoulli(0.5)
+prod=normalize(logweighted(x -> logdensityof(g2,x),g1))
+L=likelihoodof(prod,0)
+ld=logdensityof(L,record(a=-0.5))
+`, 1);
+  await assert.rejects(() => ctx.getMeasure('ld'), /invalid NegativeBinomial parameters/);
+});
+
+test('product_dist: a transformed scoring point does not use the shared-variate normalizer', async () => {
+  const ctx = buildCtx(`
+g1=Normal(0.0,1.0)
+g2=Normal(0.0,1.0)
+prod=normalize(logweighted(x -> logdensityof(g2,2.0*x),g1))
+ld=logdensityof(prod,0.0)
+`, 1);
+  // This general weight still lacks named-measure closure support. It must
+  // not silently score the different product g1(x)*g2(x).
+  await assert.rejects(() => ctx.getMeasure('ld'), /measure ref/);
+});
+
+test('product_dist: disjoint supports and continuous-base PMF weights have zero mass', async () => {
+  for (const [base, weight] of [['Bernoulli(0.0)','Bernoulli(1.0)'], ['Normal(0.0,1.0)','Poisson(2.0)']]) {
+    const ctx = buildCtx(`
+g1=${base}
+g2=${weight}
+prod=normalize(logweighted(x -> logdensityof(g2,x),g1))
+ld=logdensityof(prod,0)
+`, 1);
+    await assert.rejects(() => ctx.getMeasure('ld'), /mass is zero|zero mass/);
   }
 });
