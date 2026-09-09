@@ -477,7 +477,7 @@ export var VIEWER_BODY_HTML = `
 </div>
 <div id="tooltip"></div>
 <div id="info">
-<span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source &middot; click &#8862;/&#8863; or Shift+click an anchor to collapse/expand that group</span>
+<span class="hint">Click a node or equation to see details <span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to sourcemiddot; double-click to drill down <span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to sourcemiddot; Ctrl+click to jump to source &middot; click &#8862;/&#8863; or Shift+click an anchor to collapse/expand that group</span>
 </div>
 `;
 
