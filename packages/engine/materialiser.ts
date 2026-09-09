@@ -2679,6 +2679,21 @@ function _selectParentOverlay(parents: any[], N: number) {
   };
 }
 
+// The gathered select weights, registered as ONE `-log(N)` baseline plus one
+// opaque per-atom event. The array is genuinely NOT a sum of the branches'
+// events — it picks one branch per atom — so a fresh per-atom event is the
+// honest lineage, and the baseline is split out so a product over this measure
+// has one to drop.
+function _registerGatheredSelect(lw: Float64Array): Float64Array {
+  const lineage = require('./weight-lineage.ts');
+  const N = lw.length;
+  const c = N > 0 ? -Math.log(N) : 0;
+  const delta = new Float64Array(N);
+  for (let i = 0; i < N; i++) delta[i] = lw[i] - c;
+  return lineage.register(lw, [lineage.newEvent(null, c, true),
+    lineage.newEvent(delta, 0)]);
+}
+
 function matSelect(name: string, d: DerivationSelect, ctx: any) {
   // Discrete-selector mixture generation (engine-concepts §12): the SAMPLING
   // half of the ONE select sampler (density is walkSelect). Eval-all-branches-
@@ -2752,10 +2767,24 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
     const selM = results[0];
     const sel = empirical.materialiseUniform(selM).samples;
     const branchMs = results.slice(1);
-    const branches = branchMs.map((m: any) => empirical.materialiseUniform(m).samples);
+    const lifted = branchMs.map((m: any) => empirical.materialiseUniform(m));
+    const branches = lifted.map((m: any) => m.samples);
     const K = branches.length;
     const N = ctx.sampleCount;
     const out = new Float64Array(N);
+    // The gather only has to touch the weights when the branches' MASSES
+    // differ. That is the narrow case the old accounting got wrong, and tying
+    // the switch to the masses rather than to the weight ARRAYS matters: two
+    // branches can be mass 1 apiece and still carry different streams (one a
+    // reweighted representation, one directly sampled), and there the old path
+    // is exact — every branch contributes the same constant, so the mixture's
+    // mass stays exactly 1 — while a per-atom gather would turn it into an
+    // importance estimate. Equal masses keep the exact path.
+    const masses = branchMs.map((m: any) => massOf(m));
+    const uneven = masses.some((x: any) => x === null)
+      ? false
+      : masses.some((x: any) => Math.abs(x - masses[0]) > 1e-12);
+    const perBranch = uneven ? new Float64Array(N) : null;
     const base = (d.selectorBase != null) ? d.selectorBase : 1;
     for (let i = 0; i < N; i++) {
       let k;
@@ -2766,8 +2795,35 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
       }
       if (k < 0) k = 0; else if (k >= K) k = K - 1;
       out[i] = branches[k][i];
+      if (perBranch) perBranch[i] = lifted[k].logWeights[i];
     }
-    return scalarMeasureN(out, _selectParentOverlay([selM].concat(branchMs), N));
+    if (!perBranch) {
+      // Equal branch masses: the parents' own array passes through, keeping the
+      // reference identity the downstream event dedupe and the independence
+      // tests rely on, and keeping a probability mixture's mass exactly 1.
+      return scalarMeasureN(out, _selectParentOverlay([selM].concat(branchMs), N));
+    }
+    // Branches with DIFFERENT masses: atom i came from ONE branch, so its
+    // weight is THAT branch's, gathered by the same index as the sample.
+    // Reading the branches as parents of one PRODUCT instead multiplied every
+    // branch's weight into every atom: for
+    // `ifelse(c, weighted(2, N(0,1)), weighted(3, N(5,1)))` under a
+    // Bernoulli(0.25) selector that made every atom's weight the constant
+    // log 6, so `totalmass` read 6 against the exact 0.25·2 + 0.75·3 = 2.75,
+    // and a constant weight cannot re-weight anything, so the weighted mean
+    // collapsed to the UNWEIGHTED gather mean — 3.74338 against 4.09091.
+    const selLW = selM && selM.logWeights;
+    if (selLW) for (let i = 0; i < N; i++) perBranch[i] += selLW[i] + Math.log(N);
+    const gathered = _registerGatheredSelect(perBranch);
+    return scalarMeasureN(out, {
+      logWeights: gathered,
+      // The gathered weights ARE the mass. Unequal branch masses make this an
+      // importance estimate, which is inherent once the selector is realised;
+      // the DENSITY path stays exact. Equal masses take the branch above and
+      // are untouched.
+      logTotalmass: empirical.logSumExp(gathered),
+      n_eff: empirical.effectiveSampleSize({ logWeights: gathered }),
+    });
   });
 }
 
