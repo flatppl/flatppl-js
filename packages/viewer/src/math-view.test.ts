@@ -12,7 +12,7 @@ registerHooks({
   }
 });
 
-const { buildMathRequest, composeMathRows, rowNameFor, rowHtml, moduleDocHtml, focusedBindingName, mathModelKey, mathWasmUrl, MODULE_DOC_BINDING } = await import('./math-view.ts');
+const { buildMathRequest, composeMathRows, rowNameFor, rowHtml, moduleDocHtml, focusedBindingName, mathModelKey, mathWasmUrl } = await import('./math-view.ts');
 
 // The math pane consumes flatppl-rust's `render_math` contract
 // (flatppl-dev/math-view-design.md §4 plus the Rust session's deltas):
@@ -27,7 +27,7 @@ const response = {
   bindings: [
     { name: 'y_data', names: ['y_data'], kind: 'value', mathml: '<math data-flatppl-binding="y_data"><mi>y</mi></math>', refs: [], loc: { start: 10, end: 20 }, annotation: '8 values' },
     { name: 'a', names: ['a', 'b'], kind: 'draw', mathml: '<math data-flatppl-binding="a"><mi>a</mi></math>', refs: ['M'] },
-    { name: 'posterior', names: ['posterior'], kind: 'measure', mathml: '<math data-flatppl-binding="posterior"><mi>p</mi></math>', refs: ['L'] },
+    { name: 'posterior', names: ['posterior'], kind: 'measure', mathml: '<math data-flatppl-binding="posterior"><mi>p</mi></math>', refs: ['L'], doc: { html: '<p>The posterior.</p>', block: true } },
   ],
   diagnostics: [
     { binding: '', message: 'format `typst` is not available yet' },
@@ -89,16 +89,22 @@ test('per-binding diagnostics attach to their row by any of its names; the rest 
   ]);
 });
 
-test('composeMathRows resolves the source line and doc-comment per row through the callbacks', () => {
+test('composeMathRows resolves the source line per row through the callback and carries the rendered doc', () => {
   const { rows } = composeMathRows(response, {
     lineOf: (name) => (name === 'a' ? 15 : name === 'posterior' ? 25 : null),
-    docOf: (name) => (name === 'posterior' ? { markup: 'md', lines: ['The posterior.'] } : null),
   });
   assert.equal(rows[0].line, null);
   assert.equal(rows[1].line, 15);
   assert.equal(rows[2].line, 25);
   assert.equal(rows[0].doc, null);
-  assert.deepEqual(rows[2].doc, { markup: 'md', lines: ['The posterior.'] });
+  assert.deepEqual(rows[2].doc, { html: '<p>The posterior.</p>', block: true });
+});
+
+test('a doc without a block flag is a caption; a doc without html is no doc', () => {
+  const res = { order: ['x'], bindings: [{ name: 'x', names: ['x'], kind: 'value', mathml: '<math/>', refs: [], doc: { html: '<p>c</p>' } }], diagnostics: [] };
+  assert.deepEqual(composeMathRows(res, {}).rows[0].doc, { html: '<p>c</p>', block: false });
+  res.bindings[0].doc = { block: true };
+  assert.equal(composeMathRows(res, {}).rows[0].doc, null);
 });
 
 test('rowNameFor maps any binding name to its row, or null when there is none', () => {
@@ -140,14 +146,16 @@ test('rowHtml escapes the binding name in the data attribute and the annotation 
   assert.ok(!html.includes('math-row-doc'));
 });
 
-test('rowHtml renders a doc-comment through the shared Markdown+math pipeline when present', () => {
-  const html = rowHtml({
+test('rowHtml places the Rust-rendered doc fragment verbatim above the equation, block docs marked as prose', () => {
+  const base = {
     name: 'x', names: ['x'], kind: 'value', mathml: '<math/>', refs: [], annotation: null, diagnostics: [],
-    focused: false, line: null, doc: { markup: 'md', lines: ['The *mean* $\\mu$.'] },
-  });
-  assert.ok(html.includes('math-row-doc'));
-  assert.ok(html.includes('<em>mean</em>'));
-  assert.ok(html.includes('<math'));
+    focused: false, line: null,
+  };
+  const caption = rowHtml({ ...base, doc: { html: '<p>The <em>mean</em> <math><mi>μ</mi></math>.</p>', block: false } });
+  assert.ok(caption.includes('<div class="math-row-doc"><p>The <em>mean</em> <math><mi>μ</mi></math>.</p></div><div class="math-row-eq">'));
+  const prose = rowHtml({ ...base, doc: { html: '<h2>Why</h2><p>Because.</p>', block: true } });
+  assert.ok(prose.includes('<div class="math-row-doc block"><h2>Why</h2>'));
+  assert.ok(!rowHtml({ ...base, doc: { html: '', block: false } }).includes('math-row-doc'));
 });
 
 test('focusedBindingName follows the plot binding, else the sub-DAG root, and nothing in module view', () => {
@@ -176,13 +184,12 @@ test('mathWasmUrl resolves a relative glue URL against the page, keeps absolute 
   assert.equal(mathWasmUrl(null, 'https://x.org/'), null);
 });
 
-test('the module introduction is the flatppl_compat doc-comment, rendered as Markdown+math, or nothing', () => {
-  assert.equal(MODULE_DOC_BINDING, 'flatppl_compat');
-  const html = moduleDocHtml({ markup: 'md', lines: ['# Eight Schools', '', 'Effects $y_j$ with <b>known</b> errors.'] });
-  assert.ok(html.startsWith('<div class="math-module-doc">'));
-  assert.ok(html.includes('<h1>Eight Schools</h1>'));
-  assert.ok(html.includes('<math'));
-  assert.ok(!html.includes('<b>known</b>'), 'raw HTML in a doc-comment is not passed through');
+test('the module introduction is the title (escaped) as h1 plus the rendered body, or nothing', () => {
+  const html = moduleDocHtml({ title: 'Eight Schools <Rubin>', html: '<p>Effects <math><mi>y</mi></math>.</p>' });
+  assert.equal(html, '<div class="math-module-doc"><h1>Eight Schools &lt;Rubin&gt;</h1><p>Effects <math><mi>y</mi></math>.</p></div>');
+  assert.equal(moduleDocHtml({ title: null, html: '<p>Untitled.</p>' }), '<div class="math-module-doc"><p>Untitled.</p></div>');
+  assert.equal(moduleDocHtml({ title: 'Only a title', html: '' }), '<div class="math-module-doc"><h1>Only a title</h1></div>');
   assert.equal(moduleDocHtml(null), '');
-  assert.equal(moduleDocHtml({ markup: 'md', lines: [] }), '');
+  assert.equal(moduleDocHtml(undefined), '');
+  assert.equal(moduleDocHtml({ title: null, html: '' }), '');
 });

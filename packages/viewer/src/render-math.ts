@@ -23,7 +23,7 @@
 // every focus change (updatePlotForBinding), when the pane is enabled,
 // and after a source update that failed to parse. It renders the ANALYSED
 // source — the one the DAG's bindings came from (ctx.analyzedSource) —
-// so rows, doc-comments and source lines always describe one model; when
+// so rows, their doc-comments and source lines describe one model; when
 // the editor's source no longer parses the pane keeps that model and says
 // so. It re-renders only when the model changed (memoised by
 // mathModelKey); otherwise it just moves the focus highlight. A rendering
@@ -34,7 +34,6 @@ import { focusNode } from './dag.js';
 import { updatePlotForBinding } from './render-plot.js';
 import {
   buildMathRequest, composeMathRows, rowHtml, moduleDocHtml, focusedBindingName, mathModelKey, mathWasmUrl,
-  MODULE_DOC_BINDING,
 } from './math-view.js';
 import type { MathResponse } from './math-view.js';
 import type { Ctx } from './types';
@@ -104,11 +103,6 @@ function bindingLine(ctx: Ctx, name: string): number | null {
   return b && typeof b.line === 'number' && b.line >= 0 ? b.line : null;
 }
 
-function bindingDoc(ctx: Ctx, name: string): any | null {
-  const b = ctx.currentBindings && ctx.currentBindings.get(name);
-  return (b && b.node && b.node.doc) || null;
-}
-
 /** The current model's memo key (the analysed source, not the editor's). */
 function modelKey(ctx: Ctx): string {
   return mathModelKey(ctx.analyzedSource, ctx.currentPath, ctx.currentBundleSources);
@@ -127,11 +121,10 @@ function buildRows(ctx: Ctx, el: HTMLElement, res: MathResponse, notice: string 
   const { rows, moduleDiagnostics } = composeMathRows(res, {
     focus: focusedBindingName(ctx),
     lineOf: function (name) { return bindingLine(ctx, name); },
-    docOf: function (name) { return bindingDoc(ctx, name); },
   });
   let h = '';
   if (notice) h += '<div class="math-notice">' + notice + '</div>';
-  h += moduleDocHtml(bindingDoc(ctx, MODULE_DOC_BINDING));
+  h += moduleDocHtml(res.doc);
   if (moduleDiagnostics.length) {
     h += '<ul class="math-module-diags">';
     for (const d of moduleDiagnostics) h += '<li>' + esc(d) + '</li>';
@@ -139,10 +132,9 @@ function buildRows(ctx: Ctx, el: HTMLElement, res: MathResponse, notice: string 
   }
   if (rows.length === 0) h += '<div class="math-empty">No bindings to show.</div>';
   for (const r of rows) h += rowHtml(r);
-  // SECURITY: rowHtml escapes everything it interpolates except the row's
-  // `mathml` (our own Rust printer's trusted fragment) and renderDoc()'s
-  // sanitised output (also what the module doc goes through); the notices
-  // above are esc()'d or constant.
+  // SECURITY: rowHtml and moduleDocHtml escape everything they interpolate
+  // except the fragments our own Rust renderer produced (row MathML and the
+  // sanitised doc-comment HTML); the notices above are esc()'d or constant.
   el.innerHTML = h;
   ctx.mathView = { key: modelKey(ctx), response: res, rowCount: rows.length };
   scrollFocusedIntoView(el);
