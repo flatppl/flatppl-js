@@ -3381,6 +3381,23 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
   // non-constant weight with no named selector leaves both unset → matSelect
   // refuses loudly (never a silently-wrong selector).
   if (op === 'select' && Array.isArray(ir.branches) && ir.branches.length >= 1) {
+    // A select with NO selector and NO explicit logweights is not a mixture at
+    // all: it is §06's measure ADDITION, the shape an expanded `superpose`
+    // derivation takes. `normalize-mass.totalMassExpr` already reads exactly
+    // this shape as an additive superpose when it computes a mass, so routing
+    // it to matSelect made sampling and mass disagree on one node. matSelect
+    // synthesises a selector over the NORMALISED branch weights, which divides
+    // the superposition's total away: measured, a `jointchain` over
+    // `superpose(weighted(1.5, N(0,1)), weighted(1.5, N(5,1)))` reported
+    // totalmass 1 against the exact 3, and 1/3 against 1 with the base under a
+    // `normalize`. §06's normalized MIXTURE is `normalize(superpose(…))`, whose
+    // `normalize` is its own derivation, so the bare shape is additive and the
+    // wrapper still divides.
+    if (ir.selectorName == null && ir.logweights == null) {
+      const fromNames = ir.branches.map((b: any, i: number) =>
+        _bridgeMeasureFrom(b, register, 'select:superpose:c' + i));
+      if (fromNames.every((n: any) => !!n)) return { kind: 'superpose', fromNames };
+    }
     const branches: any[] = [];
     const synthWeights: number[] = [];
     let allConst = true;
