@@ -194,11 +194,11 @@ test('the module introduction is the title (escaped) as h1 plus the rendered bod
   assert.equal(moduleDocHtml({ title: null, html: '' }), '');
 });
 
-test('notation starts collapsed with rendered symbols and escaped explanations, or is omitted when empty', () => {
-  assert.equal(notationHtml([{ mathml: '<mi>μ</mi>', source: 'mu < x & y', note: 'Mean <location> & scale.' }]),
+test('notation starts collapsed with the rendered symbol and note verbatim and the source escaped, or is omitted when empty', () => {
+  assert.equal(notationHtml([{ mathml: '<mi>μ</mi>', source: 'mu < x & y', note: 'Mean <math><mi>μ</mi></math> &amp; scale.' }]),
     '<details class="math-notation"><summary>Notation</summary><dl>'
     + '<dt><math><mi>μ</mi></math></dt><dd><code>mu &lt; x &amp; y</code>'
-    + '<p>Mean &lt;location&gt; &amp; scale.</p></dd></dl></details>');
+    + '<p>Mean <math><mi>μ</mi></math> &amp; scale.</p></dd></dl></details>');
   assert.equal(notationHtml([]), '');
   assert.equal(notationHtml(undefined), '');
 });

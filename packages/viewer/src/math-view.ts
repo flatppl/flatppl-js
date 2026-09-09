@@ -76,7 +76,9 @@ export interface MathBinding {
 export interface MathDiagnostic { binding: string; message: string }
 
 /** A notation key entry: MathML expression content without a <math> root,
- *  produced by the same trusted renderer as the binding fragments. */
+ *  and the explanation as an HTML fragment (inline MathML for parameter
+ *  names), both produced by the same trusted renderer as the binding
+ *  fragments; only `source` is plain text. */
 export interface MathNotation { mathml: string; source: string; note: string }
 
 export interface MathResponse {
@@ -223,14 +225,16 @@ export function moduleDocHtml(doc: MathModuleDoc | null | undefined): string {
   return '<div class="math-module-doc">' + title + body + '</div>';
 }
 
-/** A collapsed key after the equations. Only the Rust-rendered MathML
- *  content is trusted; source spellings and explanations remain plain text. */
+/** A collapsed key after the equations (the per-binding view; the
+ *  document view carries its own key). The symbol and the note are the
+ *  Rust renderer's trusted fragments and go in verbatim; the source
+ *  spelling is plain text and is escaped. */
 export function notationHtml(entries: MathResponse['notation']): string {
   if (!entries?.length) return '';
   let h = '<details class="math-notation"><summary>Notation</summary><dl>';
   for (const e of entries) {
     h += '<dt><math>' + e.mathml + '</math></dt><dd><code>' + esc(e.source)
-      + '</code><p>' + esc(e.note) + '</p></dd>';
+      + '</code><p>' + e.note + '</p></dd>';
   }
   return h + '</dl></details>';
 }
