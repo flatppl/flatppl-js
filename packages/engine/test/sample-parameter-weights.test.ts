@@ -143,9 +143,17 @@ test('two independent weighted parameters combine as a joint IS weight',
     assert.ok(y.logWeights, 'y must carry both parameter streams');
     assert.notEqual(y.logWeights, a.logWeights);
     assert.notEqual(y.logWeights, sb.logWeights);
+    // The two streams' PRODUCT, up to one `-log(N)` empirical baseline: each
+    // parent brought its own and the merge keeps a single one for the merged
+    // array's atom axis. Pinning the shift exactly, rather than allowing any
+    // constant, is what keeps this a statement about the merge. Asserting the
+    // bare sum instead pinned two baselines, and a probability measure then
+    // reported `totalmass` 1/N — see the mass assertion below.
+    const baseline = Math.log(N);
     for (let i = 0; i < 64; i++) {
-      assert.ok(Math.abs(y.logWeights[i] - (a.logWeights[i] + sb.logWeights[i]))
-        < 1e-12, `atom ${i}: y's weight is not the sum of the two streams`);
+      assert.ok(Math.abs(y.logWeights[i]
+        - (a.logWeights[i] + sb.logWeights[i]) - baseline) < 1e-12,
+      `atom ${i}: y's weight is not the two streams' product over one baseline`);
     }
     const b = await ctx.getMeasure('b');
     const s = stats(y.logWeights, [a.samples, b.samples, y.samples], N);
