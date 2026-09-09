@@ -58,7 +58,6 @@
     }
     const handle = V.mount(container, {
       host: ctx && ctx.host,
-      controlsContainer: document.getElementById('visualization-controls'),
     });
     return {
       update: function (input: any) {

@@ -354,6 +354,10 @@ body {
   background: var(--vscode-button-secondaryHoverBackground, #505355);
 }
 #collapse-all-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 5;
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
   border: 1px solid var(--vscode-button-border, transparent);
@@ -362,8 +366,6 @@ body {
   font-size: 12px;
   cursor: pointer;
   font-family: var(--vscode-font-family, sans-serif);
-  flex-shrink: 0;
-  margin-right: 6px;
 }
 #collapse-all-btn:hover {
   background: var(--vscode-button-secondaryHoverBackground, #505355);
@@ -375,7 +377,6 @@ export var VIEWER_BODY_HTML = `
 <button id="back-btn">&larr; Back</button>
 <span id="header-expr"></span>
 <span id="inference-controls"></span>
-<button id="collapse-all-btn" title="Collapse every reification bubble in view">Collapse all</button>
 <span id="view-controls">
 <button id="graph-toggle" type="button" aria-pressed="true" title="Toggle the graph panel">Graph: on</button>
 <button id="plot-toggle" type="button" aria-pressed="false" title="Toggle the plot panel">Plots: off</button>
@@ -384,6 +385,7 @@ export var VIEWER_BODY_HTML = `
 <div id="main">
 <div id="graph-panel" class="full">
   <div id="cy"></div>
+  <button id="collapse-all-btn" type="button" title="Collapse every reification bubble in view">Collapse all</button>
 </div>
 <div id="plot-divider" class="hidden" title="Drag to resize"></div>
 <div id="plot-panel" class="hidden">
