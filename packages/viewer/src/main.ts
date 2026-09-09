@@ -116,7 +116,7 @@ import {
   installPanelDivider,
   showPlotMessage,
 } from './render-frame.js';
-import { installMathPaneNavigation } from './render-math.js';
+import { installMathPaneNavigation, disposeMathPane } from './render-math.js';
 
 
 import {
@@ -1681,6 +1681,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     // teardown is independent so one failure never blocks the rest.
     dispose: function() {
       viewControls.remove();
+      disposeMathPane(ctx);   // a renderer load settling later must not paint into a successor
       try { cancelAllSampling(ctx); } catch (_) {}  // terminate sampler worker + reject in-flight
       if (ctx.cy) { try { ctx.cy.destroy(); } catch (_) {} ctx.cy = null; }
       if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }

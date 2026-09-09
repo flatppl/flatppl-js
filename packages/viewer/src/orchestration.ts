@@ -10,6 +10,7 @@
 
 import { rebuildDerivations } from './derivations.js';
 import { updatePlotForBinding } from './render-plot.js';
+import { renderMathForCurrent } from './render-math.js';
 
 /**
  * FNV-1a 32-bit string hash, then XOR the root seed. Used to give
@@ -91,6 +92,9 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
         path: ctx.currentPath || undefined,
       });
       ctx.currentBindings = result.bindings;
+      // The source these bindings came from — what the math pane renders;
+      // `currentSource` may run ahead of it while an edit fails to parse.
+      ctx.analyzedSource = msg.source;
       ctx.currentLinkedBindings = result.linkedBindings || result.bindings;
       ctx.currentLoweredModule = result.loweredModule;
       ctx.currentModuleRegistry = result.linkedModuleRegistry;
@@ -109,6 +113,8 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
       // own diagnostics (VS Code editor squiggles, embed page
       // markers, …) surface the error to the user.
       console.error('FlatPPL parse error:', e);
+      // The math pane keeps the last valid model too, but says so.
+      if (ctx.mathEnabled) renderMathForCurrent(ctx);
       return;
     }
   }

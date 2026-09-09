@@ -5,14 +5,15 @@
 // panels — graph, plots, math, top to bottom — each behind its own
 // toggle. This module is the ONE rule that turns the three toggle
 // states into a layout: which panels show, how the height is shared,
-// which drag dividers are live and what pair each divider resizes.
-// It is pure data so every combination is testable without a DOM;
-// render-frame.ts applies the result to the elements.
+// which is the first visible one (no top border), which drag dividers
+// are live and what pair each divider resizes. It is pure data so every
+// combination is testable without a DOM; render-frame.ts applies the
+// result to the elements named in PANEL_DOM.
 //
 // Weights, not fixed percentages: graph 3, plots 2, math 2. Two visible
 // panels therefore keep the historical 60/40 (graph + plots) split, all
 // three share 3:2:2, plots + math are 50/50, and a lone panel fills the
-// area (and gets `full`, which drops its top border).
+// area (and gets `full`).
 //
 // Dividers sit AFTER a panel in the DOM (graph → divider → plots →
 // divider → math). A divider is live when its panel is visible and some
@@ -26,8 +27,17 @@ export const PANEL_ORDER: PanelId[] = ['graph', 'plot', 'math'];
 
 export const PANEL_WEIGHTS: Record<PanelId, number> = { graph: 3, plot: 2, math: 2 };
 
+/** The DOM the layout drives: the panel element, its toggle button and
+ *  label, and the divider element that FOLLOWS the panel (none after the
+ *  last). Pinned by tests so a renamed id fails loudly. */
+export const PANEL_DOM: Record<PanelId, { panel: string; toggle: string; label: string; dividerAfter: string | null }> = {
+  graph: { panel: 'graph-panel', toggle: 'graph-toggle', label: 'Graph', dividerAfter: 'plot-divider' },
+  plot:  { panel: 'plot-panel',  toggle: 'plot-toggle',  label: 'Plots', dividerAfter: 'math-divider' },
+  math:  { panel: 'math-panel',  toggle: 'math-toggle',  label: 'Math',  dividerAfter: null },
+};
+
 export interface PanelLayout {
-  panels: { id: PanelId; visible: boolean; flex: string; full: boolean }[];
+  panels: { id: PanelId; visible: boolean; flex: string; full: boolean; first: boolean }[];
   /** One entry per panel that can have a divider after it (the last
    *  panel never does). */
   dividers: { after: PanelId; visible: boolean }[];
@@ -44,6 +54,7 @@ export function computePanelLayout(enabled: Record<PanelId, boolean>): PanelLayo
       visible,
       flex: visible ? '1 1 ' + (100 * PANEL_WEIGHTS[id] / total) + '%' : '',
       full: visible && visibleIds.length === 1,
+      first: visible && visibleIds[0] === id,
     };
   });
   const dividers = PANEL_ORDER.slice(0, -1).map((id, i) => ({

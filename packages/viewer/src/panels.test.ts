@@ -12,7 +12,7 @@ registerHooks({
   }
 });
 
-const { PANEL_ORDER, computePanelLayout, clampSplit, dividerPartner } = await import('./panels.ts');
+const { PANEL_ORDER, PANEL_DOM, computePanelLayout, clampSplit, dividerPartner } = await import('./panels.ts');
 
 // The viewer's content area is a vertical split of up to three panels —
 // graph, plots, math (top to bottom). Which ones show is three independent
@@ -104,4 +104,20 @@ test('clampSplit moves the divider by dy and clamps both sides at the minimum', 
   assert.deepEqual(clampSplit(300, 200, 500, 80), { a: 420, b: 80 });
   // Dragging past the upper panel's minimum stops there.
   assert.deepEqual(clampSplit(300, 200, -500, 80), { a: 80, b: 420 });
+});
+
+test('the first visible panel is marked first (it carries no top border); full implies first', () => {
+  const l = computePanelLayout({ graph: true, plot: true, math: true });
+  assert.deepEqual(l.panels.map((p) => p.first), [true, false, false]);
+  const l2 = computePanelLayout({ graph: false, plot: true, math: true });
+  assert.deepEqual(l2.panels.map((p) => p.first), [false, true, false]);
+  assert.equal(l2.panels[1].full, false);
+  const l3 = computePanelLayout({ graph: false, plot: false, math: true });
+  assert.deepEqual(l3.panels.map((p) => [p.first, p.full]), [[false, false], [false, false], [true, true]]);
+});
+
+test('PANEL_DOM pins the element ids the layout drives (panel, toggle, divider after)', () => {
+  assert.deepEqual(PANEL_DOM.graph, { panel: 'graph-panel', toggle: 'graph-toggle', label: 'Graph', dividerAfter: 'plot-divider' });
+  assert.deepEqual(PANEL_DOM.plot,  { panel: 'plot-panel',  toggle: 'plot-toggle',  label: 'Plots', dividerAfter: 'math-divider' });
+  assert.deepEqual(PANEL_DOM.math,  { panel: 'math-panel',  toggle: 'math-toggle',  label: 'Math',  dividerAfter: null });
 });

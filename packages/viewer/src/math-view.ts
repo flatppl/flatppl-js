@@ -3,10 +3,12 @@
 //
 // The viewer side of flatppl-rust's `render_math` contract
 // (flatppl-dev/math-view-design.md §4, as implemented on the Rust
-// `mathdoc` crate): what the request looks like, and how a response
-// becomes the rows the pane renders. No DOM, no wasm here — the wasm
-// call and the DOM live in render-math.ts, so this contract logic is
-// testable on its own and the fixture-backed tests pin it.
+// `mathdoc` crate): what the request looks like, how a response becomes
+// the rows the pane renders, how a row becomes markup, and the small
+// rules the pane needs (which binding is focused, what identifies a
+// model, where the renderer lives). No DOM, no wasm here — the wasm call
+// and the DOM live in render-math.ts, so this contract logic is testable
+// on its own and the fixture-backed tests pin it.
 //
 // Contract essentials:
 //   - request  { source, path, bundle: { resolvedPath: text }, formats }
@@ -21,7 +23,11 @@
 //   - `mathml` is a trusted `<math display="block"
 //     data-flatppl-binding="NAME">` fragment whose identifier leaves
 //     carry `data-flatppl-ref="NAME"` on their OUTERMOST element (an
-//     `<mi>`, or `<msub>` for a subscripted symbol).
+//     `<mi>`, or `<msub>` for a subscripted symbol). It is optional in
+//     the wire format (the Rust side only emits requested formats).
+
+import { esc, escAttr } from './util.js';
+import { renderDoc } from './markdown.js';
 
 export const MATH_FORMATS: string[] = ['mathml'];
 
@@ -39,7 +45,7 @@ export interface MathBinding {
   name: string;
   names: string[];
   kind: 'draw' | 'value' | 'measure' | 'callable' | 'likelihood' | 'module' | string;
-  mathml: string;
+  mathml?: string;
   refs: string[];
   loc?: { start: number; end: number };
   annotation?: string;
@@ -95,9 +101,11 @@ export function rowNameFor(res: MathResponse, name: string): string | null {
 
 /**
  * Turn a response into rows in `order`, with the focus, per-row
- * diagnostics, source lines and doc-comments attached. Diagnostics that
- * name no row (binding "" or an unknown name) become module-level so
- * nothing the Rust side reported is dropped.
+ * diagnostics, source lines and doc-comments attached. Nothing the Rust
+ * side reported is dropped: diagnostics that name no row (binding "" or
+ * an unknown name) become module-level, a binding `order` forgot is
+ * reported at module level, and a row without a fragment renders empty
+ * with its own diagnostic instead of the text "undefined".
  */
 export function composeMathRows(res: MathResponse, opts: {
   focus?: string | null;
@@ -109,28 +117,35 @@ export function composeMathRows(res: MathResponse, opts: {
 
   const rowDiagnostics = new Map<string, string[]>();
   const moduleDiagnostics: string[] = [];
+  const addRowDiagnostic = (owner: string, message: string) => {
+    if (!rowDiagnostics.has(owner)) rowDiagnostics.set(owner, []);
+    rowDiagnostics.get(owner)!.push(message);
+  };
   for (const d of res.diagnostics || []) {
     const owner = d.binding ? rowNameFor(res, d.binding) : null;
-    if (owner) {
-      if (!rowDiagnostics.has(owner)) rowDiagnostics.set(owner, []);
-      rowDiagnostics.get(owner)!.push(d.message);
-    } else {
-      moduleDiagnostics.push(d.binding ? d.binding + ': ' + d.message : d.message);
-    }
+    if (owner) addRowDiagnostic(owner, d.message);
+    else moduleDiagnostics.push(d.binding ? d.binding + ': ' + d.message : d.message);
+  }
+
+  const order = res.order || [];
+  const listed = new Set(order);
+  for (const b of res.bindings || []) {
+    if (!listed.has(b.name)) moduleDiagnostics.push(b.name + ': rendered but missing from the row order (not shown)');
   }
 
   const focus = opts.focus || null;
   const rows: MathRow[] = [];
-  for (const name of res.order || []) {
+  for (const name of order) {
     const b = byName.get(name);
     if (!b) continue;
     const names = b.names && b.names.length ? b.names : [b.name];
     const line = opts.lineOf ? opts.lineOf(b.name) : null;
+    if (typeof b.mathml !== 'string') addRowDiagnostic(b.name, 'no MathML fragment in the response');
     rows.push({
       name: b.name,
       names,
       kind: b.kind,
-      mathml: b.mathml,
+      mathml: typeof b.mathml === 'string' ? b.mathml : '',
       refs: b.refs || [],
       annotation: b.annotation || null,
       diagnostics: rowDiagnostics.get(b.name) || [],
@@ -140,4 +155,63 @@ export function composeMathRows(res: MathResponse, opts: {
     });
   }
   return { rows, moduleDiagnostics };
+}
+
+/**
+ * One row's markup. The ONLY markup taken verbatim is `row.mathml`, the
+ * trusted fragment of our own Rust printer (text and attribute values
+ * escaped there); the doc-comment goes through renderDoc (the shared
+ * Markdown + math pipeline, which escapes raw HTML), and every other
+ * interpolation is escaped here — the name as an attribute value.
+ */
+export function rowHtml(row: MathRow): string {
+  let h = '<div class="math-row' + (row.focused ? ' focused' : '') + '" data-binding="' + escAttr(row.name) + '">';
+  if (row.doc) {
+    const doc = renderDoc(row.doc);
+    if (doc) h += '<div class="math-row-doc">' + doc + '</div>';
+  }
+  h += '<div class="math-row-eq">' + row.mathml;
+  if (row.annotation) h += '<span class="math-row-annotation">' + esc(row.annotation) + '</span>';
+  h += '</div>';
+  if (row.diagnostics.length) {
+    h += '<ul class="math-row-diags">';
+    for (const d of row.diagnostics) h += '<li>' + esc(d) + '</li>';
+    h += '</ul>';
+  }
+  return h + '</div>';
+}
+
+/** The binding the pane highlights: what the plot pane shows, else the
+ *  sub-DAG root; none in module view. */
+export function focusedBindingName(ctx: {
+  currentPlotBindingName: string | null;
+  currentState: { targetName: string } | null;
+  MODULE_TARGET: string;
+}): string | null {
+  if (ctx.currentPlotBindingName) return ctx.currentPlotBindingName;
+  const t = ctx.currentState && ctx.currentState.targetName;
+  return t && t !== ctx.MODULE_TARGET ? t : null;
+}
+
+/** Identity of a model as the Rust side sees it: the analysed source,
+ *  its path and the dependency bundle — the pane's memo key. */
+export function mathModelKey(
+  source: string | null | undefined,
+  path: string | null | undefined,
+  bundle: Record<string, string> | null | undefined,
+): string {
+  return JSON.stringify([source || '', path || null, bundle || null]);
+}
+
+/** Resolve the host-configured glue URL against the page (relative URLs
+ *  are relative to the document, as the gallery's `vendor/…` is), or null
+ *  when the host configured none. */
+export function mathWasmUrl(config: { wasmApiUrl?: string | null } | null | undefined, baseURI: string | undefined): string | null {
+  const raw = config && typeof config.wasmApiUrl === 'string' ? config.wasmApiUrl.trim() : '';
+  if (!raw) return null;
+  try {
+    return new URL(raw, baseURI).href;
+  } catch (_) {
+    return raw;
+  }
 }
