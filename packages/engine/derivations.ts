@@ -3533,6 +3533,23 @@ function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): D
     const v = labels ? labels[i] : ('s' + i);
     const isKernelComp = !!(d.kernelIR || d.isKernel);
     if (i === 0) {
+      // A SELECTOR-DRIVEN select as the base is declined, deliberately, and
+      // this is a scope fence rather than a shape the chain cannot describe.
+      // Making `ifelse(c, A, B)` a measure expression (analyzer.isMeasureExpr)
+      // is what lets `normalize` over one classify, and it would let the chain
+      // classify too — but the chain body then loses the base's weights
+      // entirely, so `jointchain(aa = ifelse(c, weighted(2, N(0,1)),
+      // weighted(3, N(5,1))), bb = fn(Normal(_, 1)))` under Bernoulli(0.25)
+      // answers totalmass 1 against the exact 2.75. A loud decline beats a
+      // silent wrong number; the mass loss is a third chain-body mechanism
+      // after the inline superposition one, carded in TODO-flatppl-js.md.
+      if (d.ref != null && !isKernelComp) {
+        const bb = bindings && bindings.get(d.ref);
+        const bir = bb && bb.ir;
+        // The binding's OWN ir is the surface `ifelse` (the `select` shape with
+        // a `selectorName` only appears in the expanded body), so match that.
+        if (bir && bir.kind === 'call' && bir.op === 'ifelse') return null;
+      }
       // Base: a measure, or (kernel-first) a kernel.
       const step: any = { var: v, role: 'base', kernel: isKernelComp };
       if (d.ref != null) step.ref = d.ref;
