@@ -242,19 +242,26 @@ function propagateLogWeights(parents: Iterable<any>) {
  * @param {number} n                 desired output size
  * @param {() => number} prng        returns a uniform in [0, 1); called
  *                                   exactly once
+ * @param {object} [scratch] Caller-owned buffers, overwritten on every call.
+ *                          cumulative has N entries, indices has n entries.
+ *                          The returned array aliases scratch.indices.
  * @returns {Int32Array} length-n array of source indices in [0, N)
  */
-function systematicResample(logWeights: ArrayLike<number>, n: number, prng: () => number) {
+function systematicResample(logWeights: ArrayLike<number>, n: number, prng: () => number,
+  scratch?: { cumulative: Float64Array; indices: Int32Array }) {
   const N = logWeights.length;
   if (N === 0) throw new Error('systematicResample: source measure has no atoms');
   if (n <= 0) throw new Error(`systematicResample: n must be > 0 (got ${n})`);
+  if (scratch && (scratch.cumulative.length !== N || scratch.indices.length !== n)) {
+    throw new Error('systematicResample: scratch buffers must match source and output counts');
+  }
 
   // Cumulative normalised weights via stable logsumexp. The final
   // cumulative entry is pinned to 1.0 to absorb floating-point
   // round-off; without that, a position close to 1.0 might fall
   // past the last entry and trip the j < N-1 guard incorrectly.
   const lse = logSumExp(logWeights);
-  const cum = new Float64Array(N);
+  const cum = scratch ? scratch.cumulative : new Float64Array(N);
   let acc = 0;
   for (let i = 0; i < N; i++) {
     acc += Math.exp(logWeights[i] - lse);
@@ -267,7 +274,7 @@ function systematicResample(logWeights: ArrayLike<number>, n: number, prng: () =
   // the phase. With u0 = 0 we'd always pick the same indices for the
   // same weights; with the offset we get one fresh draw per resample.
   const u0 = prng() / n;
-  const indices = new Int32Array(n);
+  const indices = scratch ? scratch.indices : new Int32Array(n);
   let j = 0;
   for (let i = 0; i < n; i++) {
     const u = u0 + i / n;

@@ -37,6 +37,17 @@ test('mlfriends: region contains all its live points', () => {
   assert.ok(region.radius > 0);
 });
 
+test('mlfriends: bootstrap radius uses distinct indices and preserves the RNG stream', () => {
+  const live = [0.1, 0.4, 0.7, 0.9].map(x => Float64Array.of(x));
+  const draws = [0.01, 0.01, 0.26, 0.26, 0.51, 0.51, 0.76, 0.76, 0.123];
+  let at = 0;
+  const prng = () => draws[at++];
+  const region = buildRegion(live, prng, { metric: 'identity', bootstrap: 2 });
+  // Resamples {0,1} and {2,3}: farthest nearest neighbour is 0.1 -> 0.7.
+  assert.equal(region.radius, 0.7 - 0.1);
+  assert.equal(prng(), 0.123);
+});
+
 test('mlfriends: sampled points lie inside the cube and the region', () => {
   const prng = lcg(2);
   const live = Array.from({ length: 80 }, () => Float64Array.from([prng(), prng()]));

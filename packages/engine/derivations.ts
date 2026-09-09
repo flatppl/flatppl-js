@@ -3924,9 +3924,13 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   // used as a measure source in `logdensityof(k, x)` — see the
   // orchestrator test for that case, which must still cascade-prune
   // when k isn't materialisable as a measure).
-  function _collectCallableHeadRefs(ir: any, seen?: Set<string>): Set<string> {
+  function _collectCallableHeadRefs(ir: any, seen?: Set<string>, visited = new Set<object>()): Set<string> {
     if (!seen) seen = new Set();
     if (!ir || typeof ir !== 'object') return seen;
+    // Lifted IR is a DAG. Each node contributes the same names on every
+    // visit, so scan it once per query without caching across binding edits.
+    if (visited.has(ir)) return seen;
+    visited.add(ir);
     if (ir.kind === 'call' && ir.op
         && (ir.op === 'broadcast' || ir.op === 'aggregate')
         && Array.isArray(ir.args) && ir.args.length > 0) {
@@ -3953,10 +3957,10 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       }
     }
     // Recurse — broadcasts can nest inside other expression trees.
-    if (ir.args)    for (const a of ir.args)            _collectCallableHeadRefs(a, seen);
-    if (ir.kwargs)  for (const k in ir.kwargs)          _collectCallableHeadRefs(ir.kwargs[k], seen);
-    if (Array.isArray(ir.fields)) for (const f of ir.fields) _collectCallableHeadRefs(f && f.value, seen);
-    if (ir.body)                                        _collectCallableHeadRefs(ir.body, seen);
+    if (ir.args)    for (const a of ir.args)            _collectCallableHeadRefs(a, seen, visited);
+    if (ir.kwargs)  for (const k in ir.kwargs)          _collectCallableHeadRefs(ir.kwargs[k], seen, visited);
+    if (Array.isArray(ir.fields)) for (const f of ir.fields) _collectCallableHeadRefs(f && f.value, seen, visited);
+    if (ir.body)                                        _collectCallableHeadRefs(ir.body, seen, visited);
     return seen;
   }
 

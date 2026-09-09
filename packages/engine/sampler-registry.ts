@@ -1691,6 +1691,20 @@ function _surplusNameError(op: string, surplus: string[], entry: any) {
   );
 }
 
+// The valid hot path needs no key/filter arrays. Preserve own-key order for
+// the error, allocating its list only when a surplus parameter exists.
+function _checkParamNames(op: string, kwargs: any, entry: any): void {
+  const bindable = _bindableParamNames(entry);
+  let surplus: string[] | undefined;
+  for (const k in kwargs) {
+    if (Object.prototype.hasOwnProperty.call(kwargs, k) && !bindable.has(k)) {
+      if (!surplus) surplus = [];
+      surplus.push(k);
+    }
+  }
+  if (surplus) throw _surplusNameError(op, surplus, entry);
+}
+
 function lookupDistribution(measureIR: any) {
   if (!measureIR || measureIR.kind !== 'call') {
     throw new Error(
@@ -1720,9 +1734,7 @@ function lookupDistribution(measureIR: any) {
   // still has empty `kwargs` at recognition time, so `resolveParams` keeps its
   // own post-splat check.
   if (measureIR.kwargs) {
-    const bindable = _bindableParamNames(entry);
-    const surplus = Object.keys(measureIR.kwargs).filter((k) => !bindable.has(k));
-    if (surplus.length > 0) throw _surplusNameError(name, surplus, entry);
+    _checkParamNames(name, measureIR.kwargs, entry);
   }
   return entry;
 }
@@ -1757,7 +1769,7 @@ function resolveParams(measureIR: any, entry: any, env: any) {
   // so `Poisson(record(zzz = 0.5))` scored NaN with no error at all.
   // Splatting is shallow. A record/table meant as one parameter's value is
   // spelled `Dist(param = <record>)`, which has kwargs and is untouched.
-  if (Object.keys(kwargs).length === 0 && positional.length === 1) {
+  if (positional.length === 1 && Object.keys(kwargs).length === 0) {
     const a0 = positional[0];
     if (a0 && a0.kind === 'call' && (a0.op === 'record' || a0.op === 'table')
         && Array.isArray(a0.fields)) {
@@ -1776,9 +1788,7 @@ function resolveParams(measureIR: any, entry: any, env: any) {
   // This check exists IN ADDITION to `lookupDistribution`'s because it runs
   // AFTER the splat: a `Dist(record(...))` call carries empty `kwargs` at
   // recognition time, so the record spelling is only checkable here.
-  const bindable = _bindableParamNames(entry);
-  const surplus = Object.keys(kwargs).filter((k) => !bindable.has(k));
-  if (surplus.length > 0) throw _surplusNameError(measureIR.op, surplus, entry);
+  _checkParamNames(measureIR.op, kwargs, entry);
 
   const out: any[] = [];
   for (let i = 0; i < entry.params.length; i++) {

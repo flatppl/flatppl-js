@@ -2570,12 +2570,13 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     if (perIndex) {
       const P = lifted.length;
       const slotLW = new Float64Array(P);
+      const scratch = { cumulative: new Float64Array(P), indices: new Int32Array(1) };
       for (let i = 0; i < sc; i++) {
         // An array-atom parent's log-weights run per CELL and are constant
         // within an atom (§06's weight does not depend on the coordinate), so
         // the atom's first cell carries its weight.
         for (let p = 0; p < P; p++) slotLW[p] = lifted[p].logWeights[i * cells];
-        const pick = empirical.systematicResample(slotLW, 1, prng)[0];
+        const pick = empirical.systematicResample(slotLW, 1, prng, scratch)[0];
         for (let c = 0; c < cells; c++) {
           out[i * cells + c] = lifted[pick].samples[i * cells + c];
         }

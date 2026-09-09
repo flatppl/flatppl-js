@@ -246,7 +246,7 @@ after the table.
 | `amis-sample.ts` (~260) | EAMIS adaptive IS backend (El-Laham et al. 2019): Gaussian proposal adapted by weighted moment-matching; importance weights via the (approximated) temporal deterministic mixture (single-Gaussian proposal collapses on funnels — TODO mixture-PMC). |
 | `smc-sample.ts` (~220) | Adaptive-tempered waste-free SMC backend (Dau & Chopin 2022): CESS-bisection temperature ladder, population-covariance Metropolis moves; reports evidence (`logZ`). Output resampled to `sampleCount` atoms. |
 | `composite-prior.ts` (~50) | `recognizeCompositeIidDraw` — density-side recogniser for a draw whose measure is a kernel-broadcast over a user function returning an iid block (per-draw prior scored per cell, matching the forward sampler). |
-| `diagnostics.ts` (~60) | MCMC convergence diagnostics: `splitRHat` (split-chain between/within R̂, Gelman) + `essBulk` (a valid Geyer-variant). Per-vector-coordinate keys are 0-indexed (see the render-table join caveat). |
+| `diagnostics.ts` (~130) | MCMC convergence diagnostics: `splitRHat` (split-chain between/within R̂, Gelman) + `essBulk` (a valid Geyer-variant). ESS starts with direct lag sums, then uses zero-padded FFT autocovariances for long chains requiring more than 64 lags. Subnormal/nonfinite variance stays direct. Per-vector-coordinate keys are 0-indexed (see the render-table join caveat). |
 | `transforms.ts` (~180) | Constrained↔unconstrained bijections + log-Jacobians (standard Stan transforms) for the MCMC samplers: `transformFor` (scalar, keyed by `supportOf`/`SUPPORT_BY_DIST`) + `simplexTransform` (exported but not yet wired — Dirichlet latents currently refuse) + `regionBounds`. |
 | `limitations.ts` (~55) | `ENGINE_LIMITATION` / `engineLimitation(construct, route, detail)` / `isEngineLimitation` — the single structured marker separating "this engine does not implement the route yet" from "your model is invalid". Set as `err.code`, in the same style as `CLM_SUBSET_VIOLATION`; hosts and conformance harnesses match the CODE, never the message text. Model errors keep their own codes (`CLM_SINGULAR_JOINT`, `IID_REIFIED_EXTERNAL_OVERLAP`, …) and must NOT use this one. Also raised by `matTotalmass` when a measure's `logTotalmass` is `null` (uncertified — unknown, never the 0 log-mass default), by the two logweight-quadrature limits in `mat-density`, and by the `superpose`/`broadcast` guards that need a certified component mass to build sample weights. |
 | `materialiser-shared.ts` mass helpers | `massOf(m)` / `addMass(a, b)` — the ONLY sanctioned way to read one measure's `logTotalmass` while deriving another's. `null` means UNCERTIFIED, and `null + x` is `x` in JavaScript, so a raw `+` silently invents a mass. `massOf` separates absent (0) from null (unknown); `addMass` keeps a sum unknown once any term is. A reader that needs a number for SAMPLING must refuse instead (`_superposeComponentWeights`, the broadcast cell-mass guard). |
@@ -256,6 +256,19 @@ after the table.
 | `posterior-predictive.ts` (~440) | `buildPosteriorPredictive` — PPC for bayesupdate likelihoods (`lawof(record(field = iid(Dist, n), …))`): feeds posterior draw-columns through worker `sampleN` to replicate `y_rep` per posterior atom. Exported as `FlatPPLEngine.posteriorPredictive`. |
 | `kernel-broadcast-axes.ts` (~75) | Pure §04 broadcast-axis resolver `resolveBroadcastAxes` (+ `coordToOffset`/`cellToCoord`) — ONE source of truth shared by the mat-broadcast executor and density's `walkBroadcast` (agree-by-construction axis alignment); sizes-only, dependency-free leaf. |
 | `variants.ts` (~85) | Surface-syntax registry (spec §05): ONE canonical variant (`.flatppl`); `variantForPath` + `resolveVariant` (retired FlatPPY/FlatPPJ ids throw — forward-compat seam). |
+
+**Local performance reuse.** `density.iidLeaf` batches direct scalar IID
+density leaves, resolving parameters once per atom while preserving observation
+sum order and consume/rest semantics. Composite footprints keep the general
+walker. `matSuperpose` reuses caller-owned cumulative/index buffers within one
+materialisation, without changing weights or RNG draws. Callable-head validation
+deduplicates shared IR nodes within each query, never across binding edits.
+Scalar composite IID leaves also avoid repeated suffix copies while retaining
+the general per-observation walker. Composite kernel broadcasts reuse a private
+per-atom environment, except when compiled memoization requires fresh per-cell
+identity. `aggregate.profileShape` reuses structural axis scans only within a
+synchronous compiled batch/sweep, keyed by its fresh `__aggregateShapeScope`.
+Standalone evaluation and later batches/edits retain structural rescanning.
 
 **`EmpiricalMeasure` shape** (engine-concepts §2 universal value): `samples`
 (per-atom scalar view) · optional `value` (shape-`[N,…dims]` batched Value) ·

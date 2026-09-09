@@ -24,6 +24,7 @@ const PC = require('../sampler-profile-compile.ts');
 const valueLib = require('../value.ts');
 const { createWorkerHandler } = require('../worker.ts');
 const FlatPPLEngine = require('../index.ts');
+const { inBothModes } = require('./_perf-helpers.ts');
 
 function synthLoc() {
   return { start: { line: -1, col: -1 }, end: { line: -1, col: -1 }, synthetic: true };
@@ -295,7 +296,7 @@ test('profile-compile: profileN turns a per-point throw into a NaN gap', () => {
   assert.equal(r.samples[2], 1);
 });
 
-test('profile-compile: an aggregate body re-enters through the compiler', () => {
+inBothModes('profile-compile: an aggregate body re-enters through the compiler', 'aggregate.profileShape', () => {
   // `metricsum` lowers to a sum-aggregate, so this body evaluates through
   // sampler-aggregate's re-entry. `y[1]` appears twice, which is what the
   // env.__bodyEval seam exists to let the compiler share.
@@ -352,6 +353,24 @@ test('profile-compile: a Value-valued repeated subtree stays correct', () => {
   const got = prog.evalPoint(env);
   assert.deepEqual(Array.from(got.data), [4, 8, 12]);
   assert.deepEqual(sampler.evaluateExpr(ir, env), got);
+});
+
+inBothModes('profile-compile: a new sweep sees an edited aggregate body', 'aggregate.profileShape', () => {
+  const term = call('get', [ref('v'), {kind: 'axis', name: 'i'}]);
+  const ir = call('aggregate', [ref('sum'), call('vector', []), call('mul', [term, lit(2)])]);
+  const worker = createWorkerHandler();
+  worker.handle({type: 'init', seed: 1});
+  const run = () => {
+    const result = worker.handle({type: 'profileN', ir, mode: 'function',
+      sweepName: 'unused', range: [0, 1], count: 2,
+      fixedEnv: {v: Float64Array.of(1, 2, 3)}});
+    assert.equal(result.type, 'samples');
+    return Array.from(result.samples);
+  };
+  assert.deepEqual(run(), [12, 12]);
+  // Keep the parent identities but remove the axis-dependent child.
+  term.args[1] = lit(1);
+  assert.deepEqual(run(), [2, 2]);
 });
 
 // =====================================================================
