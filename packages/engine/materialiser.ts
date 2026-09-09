@@ -2205,41 +2205,69 @@ function matClm(ir: any, ctx: any): Promise<any> {
 // `propagateLogWeights` de-duplicates on the weighting events; only the mass
 // read past them.
 //
-// So read the same events. Each DISTINCT event the model asked for contributes
-// its offset once, however many factors inherited it. The `-log(N)` empirical
-// baselines are dropped: one covers the product's whole atom axis, and a
-// factor's `logTotalmass` excludes its own anyway. On top of that each factor
-// adds its RESIDUE — the part of its mass its weights do not carry, which is
-// where `truncate` records its accept rate and a `Lebesgue(interval(a, b))` its
-// volume (§06 `truncate`: "Does not normalize automatically").
+// So read the same events, and credit each one to the FIRST factor that
+// carries it: a factor contributes its own `logTotalmass` MINUS whatever an
+// ancestor already contributed through the events the two share. What is left
+// over is the factor's own — the weighting it introduced, plus the residue its
+// weights do not carry, which is where `truncate` records its accept rate and a
+// `Lebesgue(interval(a, b))` its volume (§06 `truncate`: "Does not normalize
+// automatically"). The `-log(N)` empirical baselines are excluded throughout:
+// one covers the product's whole atom axis, and a factor's own `logTotalmass`
+// excludes its own anyway.
 //
-// An OPAQUE event (a per-atom array, from a superposition, a resample, or a
-// worker-boundary crossing the WeakMap cannot follow) has no scalar offset to
-// attribute, so that factor keeps the whole-mass accounting it had. That is
-// this rule's limit, not a claim about it.
+// Crediting by SUBTRACTION is what makes an OPAQUE event — a per-atom array
+// from a superposition or a resample, which has no scalar offset of its own —
+// attributable. Its share is whatever mass the factor that introduced it had
+// left after its own shared events, so a descendant inheriting it subtracts a
+// known number rather than double-counting the whole. Before this, a
+// superposition latent under `lawof(record(t = theta, xx = x))` reported
+// totalmass 9 against the exact 3, and 25 against 5 at asymmetric weights.
+//
+// Where a factor introduces SEVERAL events that cannot be split — at least one
+// of them opaque — each is credited UNKNOWN, and a later factor sharing one
+// makes the whole product uncertified rather than answering. Refusing beats a
+// confident wrong number.
 function _productLogTotalmass(subs: any[]): number | null {
   const lineage = require('./weight-lineage.ts');
-  const counted = new Set<number>();
+  // Event id → the log mass already credited to it, or null when this product
+  // could not tell how much of a factor's mass belonged to that event.
+  const credited = new Map<number, number | null>();
   let lTM: number | null = 0;
   for (const s of subs) {
+    const m = massOf(s);
+    if (m === null) return null;
     const w = s && s.logWeights;
     const events: any[] = w ? (lineage.lineageOf(w).events as any[]) : [];
     const model = events.filter((e: any) => !e.baseline);
-    if (model.some((e: any) => e.values)) {
-      lTM = addMass(lTM, massOf(s));
-      continue;
-    }
-    const m = massOf(s);
-    if (m === null) return null;
-    let fresh = 0;
-    let carried = 0;
+    let shared = 0;
+    const fresh: any[] = [];
     for (const e of model) {
-      carried += e.offset;
-      if (counted.has(e.id)) continue;
-      counted.add(e.id);
-      fresh += e.offset;
+      if (!credited.has(e.id)) { fresh.push(e); continue; }
+      const c = credited.get(e.id);
+      if (c == null) return null;
+      shared += c;
     }
-    lTM = addMass(lTM, fresh + (m - carried));
+    lTM = addMass(lTM, m - shared);
+    // Credit only the mass the WEIGHTS carry. The residue belongs to the
+    // factor, not to any event, so a descendant must not subtract it.
+    const attributable = (w ? empirical.logSumExp(w) : 0) - shared;
+    const opaque = fresh.filter((e: any) => e.values);
+    if (opaque.length > 1) {
+      // Two opaque arrays introduced together cannot be told apart by this
+      // rule. Credit both unknown; a later factor sharing one of them makes
+      // the product uncertified rather than answering.
+      for (const e of fresh) credited.set(e.id, null);
+    } else {
+      // A constant event carries its own offset, so the split is exact, and
+      // whatever is left over is the lone opaque event's share.
+      let rest = attributable;
+      for (const e of fresh) {
+        if (e.values) continue;
+        credited.set(e.id, e.offset);
+        rest -= e.offset;
+      }
+      if (opaque.length === 1) credited.set(opaque[0].id, rest);
+    }
   }
   return lTM;
 }
