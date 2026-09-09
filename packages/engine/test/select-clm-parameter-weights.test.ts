@@ -333,11 +333,11 @@ const K1 = 'mu1 = elementof(reals)\n'
 // A tilted base drawn once more, so a chain over it has Var 2 at the base.
 const BASE = 'base2 = Normal(mu = theta, sigma = 1.0)\n';
 
-// The tilted measure IS the chain base: the boundary feed binds tm's atoms and
+// The reified tilted draw IS the chain base: the boundary feed binds its atoms and
 // the final kernel draws at them. y = theta + Normal(0, 1), so E[y] = 1,
 // Var[y] = Var[theta] + 1 = 2, cov(theta, y) = Var[theta] = 1.
 test('a marginal kchain over a weighted base carries its weights', async () => {
-  await assertCarriesTilt('kchain(tm, K)', K1 + 'y = kchain(tm, K1)\n',
+  await assertCarriesTilt('kchain(lawof(theta), K)', K1 + 'y = kchain(lawof(theta), K1)\n',
     { mean: [1], variance: [2], thetaCov: [1], crossCov: () => 0 });
 });
 

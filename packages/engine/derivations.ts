@@ -17,20 +17,16 @@
 //                                             other binding names —
 //                                             those are resolved via
 //                                             the cache at compute time)
-//   { kind: 'alias',    from: '<name>' }   — share another binding's
-//                                            sample array, no fresh draws.
-//                                            Used for variates
-//                                              theta1 = draw(theta1_dist)
-//                                            and lawof aliases
-//                                              x = lawof(y)
+//   { kind: 'alias',    from: '<name>' }   — resolve another binding.
+//                                            Renames and lawof retain its
+//                                            trace; draw bindings create a
+//                                            fresh coordinate at materialisation.
 //   { kind: 'evaluate', ir }               — element-wise deterministic
 //                                            compute, e.g. s = mu + 1
 //
-// The variate-vs-measure semantics live entirely in the alias rule:
-// `theta1 = draw(theta1_dist)` becomes alias→theta1_dist, so theta1
-// and theta1_dist literally share their cached Float64Array. There is
-// never a "second draw" that happens to look statistically the same;
-// they are the same array.
+// `theta1 = draw(theta1_dist)` records alias→theta1_dist, but the draw's
+// binding type tells the materialiser to own a new coordinate. Reification
+// and plain aliases instead preserve cached samples and weight identity.
 //
 // Bindings that can't be derived (reified scopes, modules, multivariate
 // laws like lawof(record(...)), unsupported distributions) are omitted
@@ -972,9 +968,8 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
  *
  * The 'draw' case is the interesting one: it can resolve to either an
  * inline distribution call or an alias to another binding (the
- * underlying measure). When the inner is a ref, we emit an alias —
- * NOT a sample. This is what gives variates and their measures the
- * same cached samples.
+ * underlying measure). A ref records an alias edge. The materialiser reads
+ * the binding's draw type to distinguish a fresh coordinate from a rename.
  */
 function classifyDerivation(
   binding: BindingInfo, bindings: Map<string, BindingInfo>, fixedValues?: any,
@@ -999,8 +994,7 @@ function classifyDerivation(
     if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'draw') return null;
     const inner = (rhsIR.args && rhsIR.args[0]) || null;
     if (!inner) return null;
-    // draw(<ref>): alias. The samples of the variate ARE the samples
-    // of the underlying measure; no extra RNG consumption.
+    // draw(<ref>): resolve the measure by name in a draw-owned context.
     if (inner.kind === 'ref' && inner.ns === 'self') {
       if (!bindings.has(inner.name)) return null;
       return { kind: 'alias', from: inner.name };
