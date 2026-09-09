@@ -27,21 +27,21 @@
 //     carry `data-flatppl-ref="NAME"` on their OUTERMOST element (an
 //     `<mi>`, or `<msub>` for a subscripted symbol). It is optional in
 //     the wire format (the Rust side only emits requested formats).
+//   - doc-comments are rendered by the SAME crate (Markdown + `$…$` as
+//     MathML, raw HTML escaped, unsafe link targets dropped), so doc math
+//     and row math share one generator and one sanitiser: per binding
+//     `doc: { html, block }` (`block` = a `%%%` multi-line comment, prose;
+//     false = a one-line `%` caption), at module level `doc: { title,
+//     html }` (the `flatppl_compat` doc-comment, spec §04, its first
+//     heading split off as the title). Both absent without a comment. The
+//     viewer's own marked + Temml pipeline stays for tooltips and hovers.
 
 import { esc, escAttr } from './util.js';
-import { renderDoc } from './markdown.js';
 
 export const MATH_FORMATS: string[] = ['mathml'];
 
 /** The path the Rust side assumes when the host supplies none. */
 export const DEFAULT_MODULE_PATH = 'model.flatppl';
-
-/** The binding whose doc-comment documents the module itself (spec §04,
- *  "Module-level documentation"). The Rust side prints no row for it —
- *  in its HTML document the doc is the title + abstract — so the pane
- *  renders it from the engine's own parse as the introduction above the
- *  rows. */
-export const MODULE_DOC_BINDING = 'flatppl_compat';
 
 export interface MathRequest {
   source: string;
@@ -49,6 +49,15 @@ export interface MathRequest {
   bundle: Record<string, string>;
   formats: string[];
 }
+
+/** A rendered doc-comment: a trusted HTML fragment of our own Rust
+ *  renderer. `block` marks a `%%%` multi-line comment (prose) as opposed
+ *  to a one-line `%` caption. */
+export interface MathDoc { html: string; block: boolean }
+
+/** The module documentation (the `flatppl_compat` doc-comment) with its
+ *  first Markdown heading split off as the title. */
+export interface MathModuleDoc { title: string | null; html: string }
 
 export interface MathBinding {
   name: string;
@@ -58,6 +67,7 @@ export interface MathBinding {
   refs: string[];
   loc?: { start: number; end: number };
   annotation?: string;
+  doc?: MathDoc;
 }
 
 export interface MathDiagnostic { binding: string; message: string }
@@ -66,6 +76,7 @@ export interface MathResponse {
   order: string[];
   bindings: MathBinding[];
   diagnostics: MathDiagnostic[];
+  doc?: MathModuleDoc;
 }
 
 /** One rendered row of the pane. */
@@ -81,8 +92,8 @@ export interface MathRow {
   /** 0-based source line of the binding (the engine's per-binding line),
    *  null when unknown — drives Ctrl+click → source. */
   line: number | null;
-  /** The binding's doc-comment `{ markup, lines }` for renderDoc, or null. */
-  doc: any | null;
+  /** The binding's rendered doc-comment, or null. */
+  doc: MathDoc | null;
 }
 
 export function buildMathRequest(m: {
@@ -110,7 +121,7 @@ export function rowNameFor(res: MathResponse, name: string): string | null {
 
 /**
  * Turn a response into rows in `order`, with the focus, per-row
- * diagnostics, source lines and doc-comments attached. Nothing the Rust
+ * diagnostics and source lines attached. Nothing the Rust
  * side reported is dropped: diagnostics that name no row (binding "" or
  * an unknown name) become module-level, a binding `order` forgot is
  * reported at module level, and a row without a fragment renders empty
@@ -119,7 +130,6 @@ export function rowNameFor(res: MathResponse, name: string): string | null {
 export function composeMathRows(res: MathResponse, opts: {
   focus?: string | null;
   lineOf?: (name: string) => number | null | undefined;
-  docOf?: (name: string) => any;
 }): { rows: MathRow[]; moduleDiagnostics: string[] } {
   const byName = new Map<string, MathBinding>();
   for (const b of res.bindings || []) byName.set(b.name, b);
@@ -160,24 +170,23 @@ export function composeMathRows(res: MathResponse, opts: {
       diagnostics: rowDiagnostics.get(b.name) || [],
       focused: focus !== null && names.indexOf(focus) !== -1,
       line: typeof line === 'number' ? line : null,
-      doc: (opts.docOf && opts.docOf(b.name)) || null,
+      doc: b.doc && typeof b.doc.html === 'string' ? { html: b.doc.html, block: b.doc.block === true } : null,
     });
   }
   return { rows, moduleDiagnostics };
 }
 
 /**
- * One row's markup. The ONLY markup taken verbatim is `row.mathml`, the
- * trusted fragment of our own Rust printer (text and attribute values
- * escaped there); the doc-comment goes through renderDoc (the shared
- * Markdown + math pipeline, which escapes raw HTML), and every other
- * interpolation is escaped here — the name as an attribute value.
+ * One row's markup. The ONLY markup taken verbatim is what our own Rust
+ * renderer produced — `row.mathml` and the doc-comment fragment, both
+ * escaped/sanitised there — and every other interpolation is escaped
+ * here: the name as an attribute value, the annotation and diagnostics as
+ * text.
  */
 export function rowHtml(row: MathRow): string {
   let h = '<div class="math-row' + (row.focused ? ' focused' : '') + '" data-binding="' + escAttr(row.name) + '">';
-  if (row.doc) {
-    const doc = renderDoc(row.doc);
-    if (doc) h += '<div class="math-row-doc">' + doc + '</div>';
+  if (row.doc && row.doc.html) {
+    h += '<div class="math-row-doc' + (row.doc.block ? ' block' : '') + '">' + row.doc.html + '</div>';
   }
   h += '<div class="math-row-eq">' + row.mathml;
   if (row.annotation) h += '<span class="math-row-annotation">' + esc(row.annotation) + '</span>';
@@ -190,12 +199,16 @@ export function rowHtml(row: MathRow): string {
   return h + '</div>';
 }
 
-/** The module introduction: the `flatppl_compat` doc-comment through the
- *  shared Markdown + math pipeline (renderDoc escapes raw HTML), or ''
- *  when the module carries none. */
-export function moduleDocHtml(doc: any | null | undefined): string {
-  const html = doc ? renderDoc(doc) : null;
-  return html ? '<div class="math-module-doc">' + html + '</div>' : '';
+/** The module introduction above the rows: the title (escaped here) as
+ *  the pane's own heading, then the rendered body (the Rust renderer's
+ *  trusted fragment, its headings already shifted below h1). '' when the
+ *  module carries no doc-comment. */
+export function moduleDocHtml(doc: MathModuleDoc | null | undefined): string {
+  if (!doc) return '';
+  const title = typeof doc.title === 'string' && doc.title.trim() ? '<h1>' + esc(doc.title) + '</h1>' : '';
+  const body = typeof doc.html === 'string' ? doc.html : '';
+  if (!title && !body) return '';
+  return '<div class="math-module-doc">' + title + body + '</div>';
 }
 
 /** The binding the pane highlights: what the plot pane shows, else the

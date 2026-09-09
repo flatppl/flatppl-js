@@ -154,6 +154,24 @@ body {
   font-size: 0.9em; opacity: 0.7; margin-bottom: 0.15em;
 }
 #math-content .math-row-doc p { margin: 0; }
+/* A %%% multi-line comment is prose, not a caption: full size, room
+   between paragraphs, headings (already shifted below h1 by the renderer). */
+#math-content .math-row-doc.block {
+  font-size: 0.95em; opacity: 0.85; line-height: 1.45; margin: 0.2em 0 0.35em;
+}
+#math-content .math-row-doc.block p { margin: 0.3em 0; }
+#math-content .math-row-doc.block h2, #math-content .math-row-doc.block h3,
+#math-content .math-row-doc.block h4 { font-size: 1.05em; margin: 0.4em 0 0.2em; }
+/* Doc-comment fragments the renderer could not convert: a refused TeX
+   expression stays as its source; Typst markup is shown as source. */
+#math-content .math-error {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 0.9em;
+  border-bottom: 1px dotted #FFB300;
+}
+#math-content .flatppl-typst-src {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 0.9em;
+  margin: 0.2em 0; white-space: pre-wrap;
+}
 #math-content .math-row-eq {
   display: flex; align-items: baseline; gap: 1em;
   font-size: 1.15em;
