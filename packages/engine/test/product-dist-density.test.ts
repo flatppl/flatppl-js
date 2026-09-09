@@ -124,3 +124,23 @@ ld = logdensityof(L, record(a = 0.0, s = 1.0))
   assert.ok(Math.abs(m.samples[0] - expect) < 1e-12,
     `3-factor score ${m.samples[0]} = logN(0.4 | μ*, σ*=${sStar}) = ${expect}`);
 });
+
+test('product_dist: a discrete product never uses a continuous domain integral', async () => {
+  // Poisson(2)*Poisson(3) has Z = exp(-5) Σ 6^k/(k!)² and log p(2)
+  // = -1.0173273100296354. Midpoint integration instead gives Infinity on
+  // [0,40], or a finite wrong score on [-1,16383] (twice the even-count sum).
+  // Neither an unrelated domain declaration nor a finite answer certifies Z.
+  for (const bounds of ['0.0, 40.0', '-1.0, 16383.0']) {
+    const ctx = buildCtx(`
+mu = elementof(posreals)
+nu = elementof(posreals)
+g1 = Poisson(rate = mu)
+g2 = Poisson(rate = nu)
+prod = normalize(logweighted(x -> logdensityof(g2, x), g1))
+dom = cartprod(x = interval(${bounds}))
+L = likelihoodof(prod, 2)
+ld = logdensityof(L, record(mu = 2.0, nu = 3.0))
+`, 1);
+    await assert.rejects(() => ctx.getMeasure('ld'), /discrete.*support sum/);
+  }
+});

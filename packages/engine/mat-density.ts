@@ -1420,6 +1420,14 @@ function productLogZ(factorIRs: any[], variate: any, theta: any, ctx: any): numb
     throw new Error('density: shared-variate product_dist factor is not a '
       + 'recognised scalar reference measure — cannot resolve its normalizer');
   }
+  // Reweighting retains the base reference measure (§06). A counting
+  // measure needs a support sum, not midpoint integration of its PMF.
+  // The declared plotting/domain interval does not truncate that support.
+  const { lookupDistribution } = require('./sampler-registry.ts');
+  if (kernels.some((k: any) => lookupDistribution({ kind: 'call', op: k.kernel }).discrete)) {
+    throw engineLimitation('normalize', 'shared-variate product density',
+      'discrete factors require a support sum; this normalizer only supports continuous factors');
+  }
   if (kernels.every((k: any) => k.kernel === 'Normal')) {
     // Product of Gaussians is Gaussian: log ∫ ∏ N(x|μᵢ,σᵢ) dx.
     //   τ = Σ 1/σᵢ²,  μ* = (Σ μᵢ/σᵢ²)/τ,  C = Σ μᵢ²/σᵢ² − τ·μ*²
