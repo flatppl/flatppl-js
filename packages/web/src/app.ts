@@ -1601,11 +1601,19 @@
     // standpoint; we implement only what makes sense for a web
     // gallery.
     //
-    //   revealSourceLine(line) — Ctrl+click on a DAG node fires this
-    //                            with the binding's source line. We
-    //                            scroll the source pane to that line
-    //                            and flash-highlight it. The line is
-    //                            zero-indexed, matching the tokenizer
+    //   revealSourceLine(line, name, opts)
+    //                          — Ctrl+click on a DAG node or a math-pane
+    //                            row fires this with the binding's
+    //                            source line: we move the caret there,
+    //                            scroll and flash-highlight it, and the
+    //                            caret move routes through onNavigate
+    //                            like a click in the code would. The
+    //                            math pane's PLAIN click passes
+    //                            preserveFocus: the caret follows
+    //                            silently (no onNavigate, no focus), so
+    //                            the pane and the code stay in step
+    //                            without re-targeting the DAG. The line
+    //                            is zero-indexed, matching the tokenizer
     //                            (and the data-line attributes the
     //                            highlighter writes).
     //   setTitle(name)         — viewer requests a panel-title
@@ -1617,9 +1625,9 @@
     // is the source of truth for navigation state, no per-tab storage
     // needed yet.
     const webHost = {
-      revealSourceLine: function (line: any) {
+      revealSourceLine: function (line: any, _name: any, opts: any) {
         if (sourceEditor && typeof sourceEditor.revealLine === 'function') {
-          sourceEditor.revealLine(line);
+          sourceEditor.revealLine(line, { silent: !!(opts && opts.preserveFocus) });
         }
       },
       setTitle: function (name: any) {

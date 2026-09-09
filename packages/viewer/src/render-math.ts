@@ -242,11 +242,14 @@ export function disposeMathPane(ctx: Ctx) {
 
 // ---- navigation ------------------------------------------------------
 
-/** Click wiring for the pane (event delegation, installed once at mount),
- *  the DAG's own gestures:
+/** Click wiring for the pane (event delegation, installed once at mount).
+ *  The pane is the source in another notation, so unlike the graph its
+ *  plain click also moves the source cursor — quietly, keeping focus here,
+ *  the mirror of the editor's cursor moving the pane:
  *    click on an identifier / row → select that binding (plot pane follows)
+ *                                   and the source cursor follows, no focus change
  *    double-click                  → drill the sub-DAG down to it
- *    Ctrl/Cmd+click                → jump to the binding's source line
+ *    Ctrl/Cmd+click                → jump INTO the editor at the binding's line
  *  Identifiers carry `data-flatppl-ref` on their outermost MathML element
  *  (an <mi>, or an <msub> for a subscripted symbol), so the lookup walks
  *  up from the click target to the nearest carrier. The failed-load
@@ -274,14 +277,14 @@ export function installMathPaneNavigation(ctx: Ctx) {
     const name = bindingAt(ev);
     if (!name) return;
     ev.preventDefault();
+    const line = bindingLine(ctx, name);
+    const reveal = ctx.host && typeof ctx.host.revealSourceLine === 'function' ? ctx.host.revealSourceLine.bind(ctx.host) : null;
     if (ev.ctrlKey || ev.metaKey) {
-      const line = bindingLine(ctx, name);
-      if (line !== null && ctx.host && typeof ctx.host.revealSourceLine === 'function') {
-        ctx.host.revealSourceLine(line, name);
-      }
+      if (reveal && line !== null) reveal(line, name);
       return;
     }
     updatePlotForBinding(ctx, name);
+    if (reveal && line !== null) reveal(line, name, { preserveFocus: true });
   });
   el.addEventListener('dblclick', function (ev: MouseEvent) {
     const name = bindingAt(ev);

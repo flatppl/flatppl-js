@@ -114,9 +114,15 @@ class FlatPPLPanel {
         const embedded = this._sourceUri == null;
         const uri = embedded ? this._navUri : this._sourceUri;
         const line = (embedded ? this._navBaseLine : 0) + msg.line;
+        // preserveFocus: the math pane's plain click moves the cursor and
+        // viewport but leaves focus in the webview; Ctrl/Cmd+click (and the
+        // DAG's) take the user into the editor. The cursor follower in
+        // extension.ts ignores this programmatic selection change (its
+        // kind is neither Keyboard nor Mouse), so the panel is not
+        // re-targeted by its own navigation.
         vscode.window.showTextDocument(uri, {
           viewColumn: vscode.ViewColumn.One,
-          preserveFocus: false,
+          preserveFocus: !!msg.preserveFocus,
         }).then((editor: any) => {
           const pos = new vscode.Position(line, 0);
           editor.selection = new vscode.Selection(pos, pos);

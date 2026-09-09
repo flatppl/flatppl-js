@@ -39,7 +39,9 @@ export function defaultVscodeHost(): HostAdapter {
   const api = getVscodeApi();
   if (!api) return {};
   return {
-    revealSourceLine: function(line) { api.postMessage({ type: 'navigateTo', line: line }); },
+    revealSourceLine: function(line, _name, opts) {
+      api.postMessage({ type: 'navigateTo', line: line, preserveFocus: !!(opts && opts.preserveFocus) });
+    },
     setTitle:         function(name) { api.postMessage({ type: 'updateTitle', name: name }); },
     // Cross-module navigation (spec §04 load_module): open the loaded
     // module's file. `path` is resolved relative to the current document;

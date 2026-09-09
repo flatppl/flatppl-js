@@ -744,15 +744,29 @@
           matching the engine's tokenizer's positions). Adds a
           short-lived line-flash decoration so the destination is
           visually obvious. The DAG → source flow lands here. */
-      revealLine: function (line: any) {
+      // `silent` (the math pane's plain click): the caret and viewport
+      // move and the line flashes, but the move neither fires onNavigate
+      // nor takes focus — the code follows the pane, nothing else changes.
+      revealLine: function (line: any, revealOpts: any) {
+        const silent = !!(revealOpts && revealOpts.silent);
         const totalLines = view.state.doc.lines;
         const n = Math.max(1, Math.min(((line | 0) + 1), totalLines));
         const info = view.state.doc.line(n);
-        view.dispatch({
-          selection: { anchor: info.from },
-          effects: bundle.EditorView.scrollIntoView(info.from, { y: 'center' }),
-        });
+        if (silent) suppressNavigate = true;
+        try {
+          view.dispatch({
+            selection: { anchor: info.from },
+            effects: bundle.EditorView.scrollIntoView(info.from, { y: 'center' }),
+          });
+        } finally {
+          if (silent) suppressNavigate = false;
+        }
+        // A later user click on the same identifier must still navigate
+        // only when it is a change, exactly as if the caret had been
+        // moved by hand: record where the caret now is.
+        if (silent) lastCursorBinding = bindingAtCursor();
         if (flashView) flashView.flashLine(n);
+        if (silent) return;
         // Don't auto-focus in view mode — the caret isn't visible
         // there anyway, and focusing the editor steals focus from
         // the DAG pane (Ctrl-click target).

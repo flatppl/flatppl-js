@@ -381,7 +381,11 @@ export interface HostAdapter {
   postMessage?(msg: any): void;
   getState?(): any;
   setState?(s: any): void;
-  revealSourceLine?(line: number, name?: string): void;
+  /** Move the host's source view to `line` (0-based). With
+   *  `preserveFocus` the cursor and viewport move but keyboard focus
+   *  stays where it is (the math pane's plain click); without it the
+   *  host takes the user into the editor (Ctrl/Cmd+click). */
+  revealSourceLine?(line: number, name?: string, opts?: { preserveFocus?: boolean }): void;
   setTitle?(title: string): void;
   /** Navigate the host to a loaded module's file (spec §04 load_module).
    *  `path` is the resolved module path (the bundle / router key); `member`,
