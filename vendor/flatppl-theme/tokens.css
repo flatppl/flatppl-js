@@ -60,19 +60,19 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  /* Dark Tafelgrün-inspired ground with deeper header and panel surfaces. */
-  --fp-bg: #1e3b34;
-  --fp-surface: #18312b;
-  --fp-surface-2: #26443b;
-  --fp-text: #c6cec7;
-  --fp-text-strong: #dde2da;
-  --fp-text-muted: #acbcb0;
-  --fp-text-faint: #a8bab0;
-  --fp-border: #325248;
-  --fp-border-light: #29463d;
+  /* Tafelgrün-inspired ground at the original grey Blackboard's luminance. */
+  --fp-bg: #19302b;
+  --fp-surface: #142822;
+  --fp-surface-2: #203930;
+  --fp-text: #b8c2ba;
+  --fp-text-strong: #d8dfd6;
+  --fp-text-muted: #a0b2a6;
+  --fp-text-faint: #96aa9e;
+  --fp-border: #2a463c;
+  --fp-border-light: #233b33;
   --fp-accent: #e9a04e;
-  --fp-on-accent: #122822;
-  --fp-active-bg: #294a40;
+  --fp-on-accent: #10231d;
+  --fp-active-bg: #234034;
   --fp-select: rgb(233 160 78 / 18%);
 
   --fp-syn-red: #f58189;
@@ -81,5 +81,5 @@
   --fp-syn-cyan: #55c6bb;
   --fp-syn-blue: #6bb8f0;
   --fp-syn-purple: #cd8fee;
-  --fp-syn-comment: #98bda6;
+  --fp-syn-comment: #8bb29b;
 }

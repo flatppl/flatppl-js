@@ -1,11 +1,11 @@
 {
   "schema": 1,
   "name": "flatppl-theme",
-  "version": "0.1.7",
+  "version": "0.1.8",
   "source": {
     "repository": "https://github.com/flatppl/flatppl-theme",
-    "commit": "a646899a9ea6b0bf671b330f820e94740d6a682e",
-    "release": "v0.1.7"
+    "commit": "0febddef1c01760186432ab03ceeb132f109a6f7",
+    "release": "v0.1.8"
   },
   "files": [
     {
@@ -105,8 +105,8 @@
     },
     {
       "path": "tokens.css",
-      "sha256": "91ea495bf7bfb322cd9a33f2a35e552212e3263da09fc0e80cd3411cdca01e07",
-      "size": 2164
+      "sha256": "932c2339ded91fa81ddbba26fd4a6b43add0de86e5035694b3949bc7e53473d8",
+      "size": 2165
     }
   ]
 }
