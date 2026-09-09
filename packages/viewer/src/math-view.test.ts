@@ -12,7 +12,7 @@ registerHooks({
   }
 });
 
-const { buildMathRequest, composeMathRows, rowNameFor } = await import('./math-view.ts');
+const { buildMathRequest, composeMathRows, rowNameFor, rowHtml, focusedBindingName, mathModelKey, mathWasmUrl } = await import('./math-view.ts');
 
 // The math pane consumes flatppl-rust's `render_math` contract
 // (flatppl-dev/math-view-design.md §4 plus the Rust session's deltas):
@@ -110,4 +110,67 @@ test('rowNameFor maps any binding name to its row, or null when there is none', 
 test('a row listed in order but missing from bindings is skipped, not fabricated', () => {
   const { rows } = composeMathRows({ ...response, order: ['y_data', 'ghost', 'a'] }, {});
   assert.deepEqual(rows.map((r) => r.name), ['y_data', 'a']);
+});
+
+test('a binding present in bindings but absent from order surfaces as a module-level diagnostic', () => {
+  const { rows, moduleDiagnostics } = composeMathRows({ ...response, order: ['y_data', 'a'] }, {});
+  assert.deepEqual(rows.map((r) => r.name), ['y_data', 'a']);
+  assert.ok(moduleDiagnostics.some((d) => d.includes('posterior')), moduleDiagnostics.join(' | '));
+});
+
+test('a binding without a mathml fragment renders empty and says so, never the text "undefined"', () => {
+  const res = { order: ['x'], bindings: [{ name: 'x', names: ['x'], kind: 'value', refs: ['x'] }], diagnostics: [] };
+  const { rows } = composeMathRows(res, {});
+  assert.equal(rows[0].mathml, '');
+  assert.equal(rows[0].diagnostics.length, 1);
+  assert.ok(!rowHtml(rows[0]).includes('undefined'));
+});
+
+test('rowHtml escapes the binding name in the data attribute and the annotation / diagnostics in text', () => {
+  const html = rowHtml({
+    name: 'a"b<c', names: ['a"b<c'], kind: 'value', mathml: '<math><mi>a</mi></math>', refs: [],
+    annotation: '<8 & "values">', diagnostics: ['bad <thing>'], focused: true, line: 3, doc: null,
+  });
+  assert.ok(html.includes('data-binding="a&quot;b&lt;c"'), html);
+  assert.ok(html.includes('<math><mi>a</mi></math>'));
+  assert.ok(html.includes('&lt;8 &amp; "values"&gt;'));   // text position: quotes stay
+  assert.ok(html.includes('bad &lt;thing&gt;'));
+  assert.ok(html.includes('class="math-row focused"'));
+  assert.ok(!html.includes('math-row-doc'));
+});
+
+test('rowHtml renders a doc-comment through the shared Markdown+math pipeline when present', () => {
+  const html = rowHtml({
+    name: 'x', names: ['x'], kind: 'value', mathml: '<math/>', refs: [], annotation: null, diagnostics: [],
+    focused: false, line: null, doc: { markup: 'md', lines: ['The *mean* $\\mu$.'] },
+  });
+  assert.ok(html.includes('math-row-doc'));
+  assert.ok(html.includes('<em>mean</em>'));
+  assert.ok(html.includes('<math'));
+});
+
+test('focusedBindingName follows the plot binding, else the sub-DAG root, and nothing in module view', () => {
+  const MODULE = '<module>';
+  assert.equal(focusedBindingName({ currentPlotBindingName: 'tau', currentState: { targetName: 'posterior' }, MODULE_TARGET: MODULE }), 'tau');
+  assert.equal(focusedBindingName({ currentPlotBindingName: null, currentState: { targetName: 'posterior' }, MODULE_TARGET: MODULE }), 'posterior');
+  assert.equal(focusedBindingName({ currentPlotBindingName: null, currentState: { targetName: MODULE }, MODULE_TARGET: MODULE }), null);
+  assert.equal(focusedBindingName({ currentPlotBindingName: null, currentState: null, MODULE_TARGET: MODULE }), null);
+});
+
+test('mathModelKey changes with the analysed source, the path and the bundle, and only those', () => {
+  const k = mathModelKey('x = 1', 'm.flatppl', { 'lib/h.flatppl': 'h = 1' });
+  assert.equal(k, mathModelKey('x = 1', 'm.flatppl', { 'lib/h.flatppl': 'h = 1' }));
+  assert.notEqual(k, mathModelKey('x = 2', 'm.flatppl', { 'lib/h.flatppl': 'h = 1' }));
+  assert.notEqual(k, mathModelKey('x = 1', 'n.flatppl', { 'lib/h.flatppl': 'h = 1' }));
+  assert.notEqual(k, mathModelKey('x = 1', 'm.flatppl', { 'lib/h.flatppl': 'h = 2' }));
+  assert.equal(mathModelKey('x = 1', null, null), mathModelKey('x = 1', undefined, undefined));
+});
+
+test('mathWasmUrl resolves a relative glue URL against the page, keeps absolute ones, and is null when unset', () => {
+  assert.equal(mathWasmUrl({ wasmApiUrl: 'vendor/flatppl_wasm_api.js' }, 'https://live.flatppl.org/'), 'https://live.flatppl.org/vendor/flatppl_wasm_api.js');
+  assert.equal(mathWasmUrl({ wasmApiUrl: 'vendor/flatppl_wasm_api.js' }, 'https://x.org/gallery/index.html'), 'https://x.org/gallery/vendor/flatppl_wasm_api.js');
+  assert.equal(mathWasmUrl({ wasmApiUrl: 'https://cdn.example/api.js' }, 'https://x.org/'), 'https://cdn.example/api.js');
+  assert.equal(mathWasmUrl({ wasmApiUrl: '  ' }, 'https://x.org/'), null);
+  assert.equal(mathWasmUrl({}, 'https://x.org/'), null);
+  assert.equal(mathWasmUrl(null, 'https://x.org/'), null);
 });

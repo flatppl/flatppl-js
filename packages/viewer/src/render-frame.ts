@@ -11,7 +11,7 @@
 import { renderPlotForCurrent } from './render-plot.js';
 import { renderMathForCurrent } from './render-math.js';
 import { renderSampleStats } from './render-record.js';
-import { computePanelLayout, dividerPartner, clampSplit } from './panels.js';
+import { computePanelLayout, dividerPartner, clampSplit, PANEL_DOM } from './panels.js';
 import type { PanelId } from './panels.js';
 import { $, displayBindingName, esc, listScalarAxes, renderDocTitle } from './util.js';
 import { downloadMeasure } from './export-samples.js';
@@ -245,48 +245,37 @@ function openExportMenu(anchor: HTMLElement, measure: any, bindingName: any) {
   setTimeout(function () { document.addEventListener('mousedown', onDown, true); }, 0);
 }
 
-/** The toggle buttons and the label each carries. */
-const PANEL_TOGGLES: Record<PanelId, { button: string; label: string }> = {
-  graph: { button: 'graph-toggle', label: 'Graph' },
-  plot:  { button: 'plot-toggle',  label: 'Plots' },
-  math:  { button: 'math-toggle',  label: 'Math' },
-};
-
-/** The divider element that follows each panel (the last panel has none). */
-const PANEL_DIVIDERS: Partial<Record<PanelId, string>> = {
-  graph: 'plot-divider',
-  plot:  'math-divider',
-};
-
 function panelEnabled(ctx: Ctx): Record<PanelId, boolean> {
   return { graph: !!ctx.graphEnabled, plot: !!ctx.plotEnabled, math: !!ctx.mathEnabled };
 }
 
 /**
  * Apply the three toggle flags to the DOM through the one layout rule
- * (panels.ts computePanelLayout): panel visibility + flex share, the
- * `full` state (lone panel, no top border), which dividers are live,
- * the toggle buttons' on/off face, and the "everything hidden" note.
+ * (panels.ts computePanelLayout, element ids from PANEL_DOM): panel
+ * visibility + flex share, the `full` (lone panel) and `first` (topmost,
+ * no top border) states, which dividers are live, the toggle buttons'
+ * on/off face, and the "everything hidden" note.
  */
 function applyPanelLayout(ctx: Ctx) {
   const layout = computePanelLayout(panelEnabled(ctx));
   for (const p of layout.panels) {
-    const el = $(p.id + '-panel');
+    const dom = PANEL_DOM[p.id];
+    const el = $(dom.panel);
     el.classList.toggle('hidden', !p.visible);
     el.classList.toggle('full', p.full);
+    el.classList.toggle('first', p.first);
     // The share is set inline from the layout rule, which also drops
     // any user-dragged px split: a toggle-off-then-on resets the split
     // rather than holding the previous drag position into the hidden
     // state.
     el.style.flex = p.flex;
-    const t = PANEL_TOGGLES[p.id];
-    const btn = $(t.button);
+    const btn = $(dom.toggle);
     btn.classList.toggle('on', p.visible);
     btn.setAttribute('aria-pressed', String(p.visible));
-    btn.textContent = t.label + ': ' + (p.visible ? 'on' : 'off');
+    btn.textContent = dom.label + ': ' + (p.visible ? 'on' : 'off');
   }
   for (const d of layout.dividers) {
-    const id = PANEL_DIVIDERS[d.after];
+    const id = PANEL_DOM[d.after].dividerAfter;
     if (id) $(id).classList.toggle('hidden', !d.visible);
   }
   $('panels-hidden').hidden = layout.visibleCount > 0;
@@ -304,14 +293,14 @@ function applyPanelLayout(ctx: Ctx) {
  * later host resizes redistribute proportionally.
  */
 export function installPanelDivider(ctx: Ctx, after: PanelId) {
-  const dividerId = PANEL_DIVIDERS[after];
+  const dividerId = PANEL_DOM[after].dividerAfter;
   if (!dividerId) return;
   $(dividerId).addEventListener('mousedown', function (ev) {
     const partner = dividerPartner(computePanelLayout(panelEnabled(ctx)), after);
     if (!partner || !panelEnabled(ctx)[after]) return;
     ev.preventDefault();
-    const upper = $(after + '-panel');
-    const lower = $(partner + '-panel');
+    const upper = $(PANEL_DOM[after].panel);
+    const lower = $(PANEL_DOM[partner].panel);
     const startY = ev.clientY;
     const startUpperPx = upper.getBoundingClientRect().height;
     const startLowerPx = lower.getBoundingClientRect().height;
@@ -353,8 +342,10 @@ export function setMathEnabled(ctx: Ctx, enabled: any) {
   ctx.mathEnabled = !!enabled;
   applyPanelLayout(ctx);
   if (ctx.mathEnabled) renderMathForCurrent(ctx);
+  // The graph pane changed height: resize AND refit cytoscape (as the
+  // plot toggle does), else the DAG stays clipped at its old layout.
   requestAnimationFrame(function () {
-    if (ctx.graphEnabled && ctx.cy) ctx.cy.resize();
+    if (ctx.graphEnabled && ctx.cy) { ctx.cy.resize(); ctx.cy.fit(undefined, 40); }
     if (ctx.plotEchart) ctx.plotEchart.resize();
   });
 }

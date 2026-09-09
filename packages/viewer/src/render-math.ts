@@ -7,8 +7,9 @@
 // binding. The FlatPPL → mathematics conversion is flatppl-rust's job
 // (`flatppl_wasm_api.render_math`, the `mathdoc` crate); this module
 // owns the renderer loading, the pane's DOM and the navigation hooks.
-// The request/response shapes and the row composition are the pure
-// module math-view.ts. Design + contract: flatppl-dev/math-view-design.md.
+// The request/response shapes, the row composition and markup, and the
+// focus / model-key rules are the pure module math-view.ts. Design +
+// contract: flatppl-dev/math-view-design.md.
 //
 // Renderer seam. The host names the wasm-pack `--target web` glue of
 // flatppl_wasm_api through `__FLATPPL_CONFIG__.wasmApiUrl` (relative
@@ -16,29 +17,32 @@
 // wasm-pack lays it out). It is imported lazily on the first render, so
 // hosts and users who never open the pane pay nothing. A host that
 // ships no artifact leaves the field unset and the pane says so — no
-// probe, no broken button.
+// probe, no broken button. A failed load offers a retry.
 //
 // One entry point, idempotent: renderMathForCurrent(ctx) is called on
-// every focus change (updatePlotForBinding) and when the pane is
-// enabled. It re-renders only when the model changed (memoised by
-// source + path + bundle); otherwise it just moves the focus highlight.
-// A rendering failure keeps the last good rows on screen with a notice,
-// mirroring how the DAG keeps the previous bindings on a parse error.
+// every focus change (updatePlotForBinding), when the pane is enabled,
+// and after a source update that failed to parse. It renders the ANALYSED
+// source — the one the DAG's bindings came from (ctx.analyzedSource) —
+// so rows, doc-comments and source lines always describe one model; when
+// the editor's source no longer parses the pane keeps that model and says
+// so. It re-renders only when the model changed (memoised by
+// mathModelKey); otherwise it just moves the focus highlight. A rendering
+// failure keeps the last good rows on screen with a notice.
 
-import { $, esc } from './util.js';
-import { renderDoc } from './markdown.js';
+import { esc } from './util.js';
 import { focusNode } from './dag.js';
-import { buildMathRequest, composeMathRows } from './math-view.js';
-import type { MathResponse, MathRow } from './math-view.js';
+import { updatePlotForBinding } from './render-plot.js';
+import {
+  buildMathRequest, composeMathRows, rowHtml, focusedBindingName, mathModelKey, mathWasmUrl,
+} from './math-view.js';
+import type { MathResponse } from './math-view.js';
 import type { Ctx } from './types';
 
 // ---- renderer loading -------------------------------------------------
 
-type Renderer = (requestJson: string) => string;
-
 interface RendererState {
   status: 'unconfigured' | 'loading' | 'ready' | 'failed';
-  render: Renderer | null;
+  render: ((requestJson: string) => string) | null;
   error: string | null;
 }
 
@@ -49,26 +53,16 @@ function rendererState(ctx: Ctx): RendererState {
   return ctx.mathRenderer;
 }
 
-/** Resolve the configured glue URL against the page, or null when the
- *  host configured none. */
-export function mathWasmUrl(config: { wasmApiUrl?: string } | null | undefined): string | null {
-  const raw = config && typeof config.wasmApiUrl === 'string' ? config.wasmApiUrl.trim() : '';
-  if (!raw) return null;
-  try {
-    return new URL(raw, (typeof document !== 'undefined' && document.baseURI) || undefined).href;
-  } catch (_) {
-    return raw;
-  }
-}
-
 /** Kick off (once) the lazy import of the wasm glue; re-renders the
- *  pane when it settles either way. */
-function ensureRenderer(ctx: Ctx) {
+ *  pane when it settles either way. Returns false when the host
+ *  configured no renderer. */
+function ensureRenderer(ctx: Ctx): boolean {
   const st = rendererState(ctx);
-  if (st.status !== 'unconfigured') return;
-  const url = mathWasmUrl(ctx.CONFIG);
-  if (!url) return;
+  if (st.status !== 'unconfigured') return true;
+  const url = mathWasmUrl(ctx.CONFIG, typeof document !== 'undefined' ? document.baseURI : undefined);
+  if (!url) return false;
   st.status = 'loading';
+  st.error = null;
   // The glue is an ES module; `import()` with a computed URL keeps the
   // bundler from trying to resolve it at build time. default() runs the
   // wasm init (fetches the .wasm next to the glue).
@@ -83,22 +77,25 @@ function ensureRenderer(ctx: Ctx) {
     st.status = 'failed';
     st.error = String(err && err.message || err);
   }).then(function () {
+    // The pane may have been disposed or hidden meanwhile (disposeMathPane
+    // clears mathEnabled), so this re-render is conditional.
     if (ctx.mathEnabled) renderMathForCurrent(ctx);
   });
+  return true;
 }
 
 // ---- rendering --------------------------------------------------------
 
-function showMathMessage(el: HTMLElement, html: string) {
-  el.innerHTML = '<div class="math-empty">' + html + '</div>';
+/** The pane's content element, or null once the viewer was disposed
+ *  (callbacks such as the renderer load can outlive the skeleton, so no
+ *  throwing `$()` here). */
+function contentEl(ctx: Ctx): HTMLElement | null {
+  if (!ctx.mathEnabled || typeof document === 'undefined') return null;
+  return document.getElementById('math-content');
 }
 
-/** The binding the pane highlights: what the plot pane shows, else the
- *  sub-DAG root; none in module view. */
-function focusedBindingName(ctx: Ctx): string | null {
-  if (ctx.currentPlotBindingName) return ctx.currentPlotBindingName;
-  const t = ctx.currentState && ctx.currentState.targetName;
-  return t && t !== ctx.MODULE_TARGET ? t : null;
+function showMathMessage(el: HTMLElement, html: string) {
+  el.innerHTML = '<div class="math-empty">' + html + '</div>';
 }
 
 function bindingLine(ctx: Ctx, name: string): number | null {
@@ -111,26 +108,18 @@ function bindingDoc(ctx: Ctx, name: string): any | null {
   return (b && b.node && b.node.doc) || null;
 }
 
-/** Memo key: the model as the Rust side sees it. */
+/** The current model's memo key (the analysed source, not the editor's). */
 function modelKey(ctx: Ctx): string {
-  return JSON.stringify([ctx.currentSource, ctx.currentPath || null, ctx.currentBundleSources || null]);
+  return mathModelKey(ctx.analyzedSource, ctx.currentPath, ctx.currentBundleSources);
 }
 
-function rowHtml(row: MathRow): string {
-  let h = '<div class="math-row' + (row.focused ? ' focused' : '') + '" data-binding="' + esc(row.name) + '">';
-  if (row.doc) {
-    const doc = renderDoc(row.doc);
-    if (doc) h += '<div class="math-row-doc">' + doc + '</div>';
+/** The notice shown above the rows when the editor's source is not the
+ *  model on screen (it failed to parse; the DAG keeps the last model too). */
+function staleSourceNotice(ctx: Ctx): string | null {
+  if (ctx.currentSource != null && ctx.analyzedSource != null && ctx.currentSource !== ctx.analyzedSource) {
+    return 'The source does not parse; showing the last valid model.';
   }
-  h += '<div class="math-row-eq">' + row.mathml;
-  if (row.annotation) h += '<span class="math-row-annotation">' + esc(row.annotation) + '</span>';
-  h += '</div>';
-  if (row.diagnostics.length) {
-    h += '<ul class="math-row-diags">';
-    for (const d of row.diagnostics) h += '<li>' + esc(d) + '</li>';
-    h += '</ul>';
-  }
-  return h + '</div>';
+  return null;
 }
 
 function buildRows(ctx: Ctx, el: HTMLElement, res: MathResponse, notice: string | null) {
@@ -148,11 +137,11 @@ function buildRows(ctx: Ctx, el: HTMLElement, res: MathResponse, notice: string 
   }
   if (rows.length === 0) h += '<div class="math-empty">No bindings to show.</div>';
   for (const r of rows) h += rowHtml(r);
-  // SECURITY: the only markup not produced here is each row's `mathml`,
-  // the trusted fragment of our own Rust printer (text escaped there);
-  // everything else is esc()'d or renderDoc()'s sanitised output.
+  // SECURITY: rowHtml escapes everything it interpolates except the row's
+  // `mathml` (our own Rust printer's trusted fragment) and renderDoc()'s
+  // sanitised output; the notices above are esc()'d or constant.
   el.innerHTML = h;
-  ctx.mathView = { key: modelKey(ctx), response: res, lines: new Map(rows.map(function (r) { return [r.name, r.line]; })) };
+  ctx.mathView = { key: modelKey(ctx), response: res, rowCount: rows.length };
   scrollFocusedIntoView(el);
 }
 
@@ -181,74 +170,101 @@ function updateFocus(ctx: Ctx, el: HTMLElement) {
 /** Render (or re-render) the math pane for the current model; cheap
  *  when only the focus moved. Safe to call whenever the pane is enabled. */
 export function renderMathForCurrent(ctx: Ctx) {
-  const el = $('math-content');
-  if (!el || !ctx.mathEnabled) return;
-  if (!ctx.currentSource) {
-    showMathMessage(el, 'Load a model to see it as mathematics.');
+  const el = contentEl(ctx);
+  if (!el) return;
+  if (!ctx.analyzedSource) {
+    showMathMessage(el, ctx.currentSource
+      ? 'The source does not parse yet.'
+      : 'Load a model to see it as mathematics.');
+    return;
+  }
+  if (!ensureRenderer(ctx)) {
+    showMathMessage(el, 'Math view is not available in this build.');
     return;
   }
   const st = rendererState(ctx);
-  if (st.status === 'unconfigured') {
-    ensureRenderer(ctx);
-    if (rendererState(ctx).status === 'unconfigured') {
-      showMathMessage(el, 'Math view is not available in this build.');
-      return;
-    }
-  }
   if (st.status === 'loading') {
     showMathMessage(el, 'Loading the math renderer…');
     return;
   }
   if (st.status === 'failed') {
-    showMathMessage(el, 'Math view could not load its renderer: ' + esc(st.error || 'unknown error'));
+    showMathMessage(el, 'Math view could not load its renderer: ' + esc(st.error || 'unknown error')
+      + ' <a href="#" class="math-retry">Retry</a>');
     return;
   }
   const key = modelKey(ctx);
-  if (ctx.mathView && ctx.mathView.key === key && el.querySelector('.math-row')) {
+  const notice = staleSourceNotice(ctx);
+  if (ctx.mathView && ctx.mathView.key === key) {
     updateFocus(ctx, el);
+    // The stale-source notice is the one thing that can change while the
+    // model on screen stays the same.
+    const shown = el.querySelector('.math-notice.stale');
+    if (notice && !shown) el.insertAdjacentHTML('afterbegin', '<div class="math-notice stale">' + notice + '</div>');
+    else if (!notice && shown) shown.remove();
     return;
   }
   let res: MathResponse;
   try {
     res = JSON.parse(st.render!(JSON.stringify(buildMathRequest({
-      source: ctx.currentSource,
+      source: ctx.analyzedSource,
       path: ctx.currentPath,
       bundleSources: ctx.currentBundleSources,
     }))));
   } catch (err: any) {
     const msg = esc(String(err && err.message || err));
     if (ctx.mathView && ctx.mathView.response) {
-      // Keep the last good rendering visible (as the DAG keeps its
-      // previous bindings on a parse error) and say why it is stale.
+      // Keep the last good rendering visible and say why it is stale.
       buildRows(ctx, el, ctx.mathView.response, 'Math view is out of date: ' + msg);
       ctx.mathView.key = key;   // don't retry until the model changes again
     } else {
       showMathMessage(el, 'Math view could not render this model: ' + msg);
+      ctx.mathView = { key, response: null, rowCount: 0 };
     }
     return;
   }
-  buildRows(ctx, el, res, null);
+  buildRows(ctx, el, res, notice ? '<span class="stale">' + notice + '</span>' : null);
+}
+
+/** Forget the pane's state on viewer teardown, so a renderer load that
+ *  settles later neither throws nor paints into a successor viewer. */
+export function disposeMathPane(ctx: Ctx) {
+  ctx.mathEnabled = false;
+  ctx.mathRenderer = null;
+  ctx.mathView = null;
 }
 
 // ---- navigation ------------------------------------------------------
 
-/** Click wiring for the pane (event delegation, installed once at mount):
- *    click on an identifier   → focus that binding (as a cursor move would)
- *    click on a row           → focus the row's binding
- *    Ctrl/Cmd+click on either → jump to the binding's source line
+/** Click wiring for the pane (event delegation, installed once at mount),
+ *  the DAG's own gestures:
+ *    click on an identifier / row → select that binding (plot pane follows)
+ *    double-click                  → drill the sub-DAG down to it
+ *    Ctrl/Cmd+click                → jump to the binding's source line
  *  Identifiers carry `data-flatppl-ref` on their outermost MathML element
  *  (an <mi>, or an <msub> for a subscripted symbol), so the lookup walks
- *  up from the click target to the nearest carrier. */
+ *  up from the click target to the nearest carrier. The failed-load
+ *  message's Retry link is handled here too. */
 export function installMathPaneNavigation(ctx: Ctx) {
-  const el = $('math-content');
+  const el = document.getElementById('math-content');
   if (!el) return;
-  el.addEventListener('click', function (ev: MouseEvent) {
+  function bindingAt(ev: MouseEvent): string | null {
     const target = ev.target as Element | null;
-    if (!target) return;
+    if (!target) return null;
     const refEl = target.closest('[data-flatppl-ref]');
     const rowEl = target.closest('.math-row') as HTMLElement | null;
     const name = refEl ? refEl.getAttribute('data-flatppl-ref') : (rowEl ? rowEl.getAttribute('data-binding') : null);
-    if (!name || !ctx.currentBindings || !ctx.currentBindings.has(name)) return;
+    return name && ctx.currentBindings && ctx.currentBindings.has(name) ? name : null;
+  }
+  el.addEventListener('click', function (ev: MouseEvent) {
+    const target = ev.target as Element | null;
+    if (target && target.closest('.math-retry')) {
+      ev.preventDefault();
+      ctx.mathRenderer = null;
+      renderMathForCurrent(ctx);
+      return;
+    }
+    const name = bindingAt(ev);
+    if (!name) return;
     ev.preventDefault();
     if (ev.ctrlKey || ev.metaKey) {
       const line = bindingLine(ctx, name);
@@ -257,6 +273,12 @@ export function installMathPaneNavigation(ctx: Ctx) {
       }
       return;
     }
+    updatePlotForBinding(ctx, name);
+  });
+  el.addEventListener('dblclick', function (ev: MouseEvent) {
+    const name = bindingAt(ev);
+    if (!name || ev.ctrlKey || ev.metaKey) return;
+    ev.preventDefault();
     focusNode(ctx, name, true);
   });
 }

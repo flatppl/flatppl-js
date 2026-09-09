@@ -41,6 +41,11 @@ export function esc(s: any) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+/** Escape for a double-quoted HTML attribute value (esc plus the quote). */
+export function escAttr(s: any) {
+  return esc(s).replace(/"/g, '&quot;');
+}
+
 // A cross-module member's LINKED binding name (module-link.ts) is
 // `module$field`, `$`-joined so it can't collide with a source
 // identifier. That separator is an internal wiring detail; the DAG

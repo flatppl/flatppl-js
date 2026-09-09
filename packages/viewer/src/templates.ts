@@ -82,16 +82,19 @@ body {
    panels.ts (the one layout rule); the rules here carry only what is
    not a share: the minimum height, the top border between panels, and
    the hidden / full states. */
-.viewer-panel { min-height: 80px; position: relative; overflow: hidden; }
-.viewer-panel.hidden { display: none; }
-#graph-panel { }
-#plot-panel, #math-panel {
+.viewer-panel {
+  flex: 1 1 0; min-height: 80px; position: relative; overflow: hidden;
   border-top: 1px solid var(--vscode-panel-border, #444);
 }
+/* Floor for the skeleton before the first applyPanelLayout; the inline
+   share written by the layout rule overrides it. */
+.viewer-panel.full { flex: 1 1 100%; }
+.viewer-panel.hidden { display: none; }
+/* The first visible panel sits directly under the header: no border. */
+.viewer-panel.first { border-top: none; }
 #plot-panel {
   display: flex; align-items: center; justify-content: center;
 }
-#plot-panel.full, #math-panel.full { border-top: none; }
 #panels-hidden { margin: auto; padding: 1em; opacity: 0.65; text-align: center; }
 #panels-hidden[hidden] { display: none; }
 #plot-content { width: 100%; height: 100%; }
@@ -121,6 +124,7 @@ body {
   list-style: none;
 }
 #math-content .math-module-diags li { margin: 0.15em 0; }
+#math-content .math-empty .math-retry { color: var(--vscode-textLink-foreground, #3794ff); font-style: normal; }
 #math-content .math-row {
   padding: 0.45em 1em;
   border-left: 3px solid transparent;
