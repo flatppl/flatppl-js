@@ -36,6 +36,13 @@ export const MATH_FORMATS: string[] = ['mathml'];
 /** The path the Rust side assumes when the host supplies none. */
 export const DEFAULT_MODULE_PATH = 'model.flatppl';
 
+/** The binding whose doc-comment documents the module itself (spec §04,
+ *  "Module-level documentation"). The Rust side prints no row for it —
+ *  in its HTML document the doc is the title + abstract — so the pane
+ *  renders it from the engine's own parse as the introduction above the
+ *  rows. */
+export const MODULE_DOC_BINDING = 'flatppl_compat';
+
 export interface MathRequest {
   source: string;
   path: string;
@@ -181,6 +188,14 @@ export function rowHtml(row: MathRow): string {
     h += '</ul>';
   }
   return h + '</div>';
+}
+
+/** The module introduction: the `flatppl_compat` doc-comment through the
+ *  shared Markdown + math pipeline (renderDoc escapes raw HTML), or ''
+ *  when the module carries none. */
+export function moduleDocHtml(doc: any | null | undefined): string {
+  const html = doc ? renderDoc(doc) : null;
+  return html ? '<div class="math-module-doc">' + html + '</div>' : '';
 }
 
 /** The binding the pane highlights: what the plot pane shows, else the

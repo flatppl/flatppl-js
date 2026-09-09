@@ -128,6 +128,17 @@ body {
   list-style: none;
 }
 #math-content .math-module-diags li { margin: 0.15em 0; }
+/* The module introduction (the flatppl_compat doc-comment): prose
+   above the rows, its first heading the model's title. */
+#math-content .math-module-doc {
+  padding: 0.6em 1em 0.5em;
+  border-bottom: 1px solid var(--vscode-panel-border, #444);
+  font-size: 0.95em; line-height: 1.45;
+}
+#math-content .math-module-doc h1, #math-content .math-module-doc h2,
+#math-content .math-module-doc h3 { font-size: 1.1em; margin: 0 0 0.3em; }
+#math-content .math-module-doc p { margin: 0.3em 0; }
+#math-content .math-module-doc p:last-child { margin-bottom: 0; }
 #math-content .math-empty .math-retry { color: var(--vscode-textLink-foreground, #3794ff); font-style: normal; }
 #math-content .math-row {
   padding: 0.45em 1em;
