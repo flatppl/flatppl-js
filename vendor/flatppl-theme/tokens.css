@@ -60,25 +60,26 @@
 
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --fp-bg: #282c34;
-  --fp-surface: #21252b;
-  --fp-surface-2: #313740;
-  --fp-text: #abb2bf;
-  --fp-text-strong: #e5e8ed;
-  --fp-text-muted: #939ca9;
-  --fp-text-faint: #7f8996;
-  --fp-border: #3e4451;
-  --fp-border-light: #2c313a;
-  --fp-accent: #d19a66;
-  --fp-on-accent: #1a1a1a;
-  --fp-active-bg: #413a36;
-  --fp-select: rgb(209 154 102 / 30%);
+  /* Dark Tafelgrün-inspired ground with deeper header and panel surfaces. */
+  --fp-bg: #1e3b34;
+  --fp-surface: #18312b;
+  --fp-surface-2: #26443b;
+  --fp-text: #c6cec7;
+  --fp-text-strong: #dde2da;
+  --fp-text-muted: #acbcb0;
+  --fp-text-faint: #a8bab0;
+  --fp-border: #325248;
+  --fp-border-light: #29463d;
+  --fp-accent: #e9a04e;
+  --fp-on-accent: #122822;
+  --fp-active-bg: #294a40;
+  --fp-select: rgb(233 160 78 / 18%);
 
-  --fp-syn-red: #e4747c;
-  --fp-syn-yellow: #e5c07b;
-  --fp-syn-green: #98c379;
-  --fp-syn-cyan: #56b6c2;
-  --fp-syn-blue: #61afef;
-  --fp-syn-purple: #c678dd;
-  --fp-syn-comment: #8b949e;
+  --fp-syn-red: #f58189;
+  --fp-syn-yellow: #e8be59;
+  --fp-syn-green: #a5cc62;
+  --fp-syn-cyan: #55c6bb;
+  --fp-syn-blue: #6bb8f0;
+  --fp-syn-purple: #cd8fee;
+  --fp-syn-comment: #98bda6;
 }
