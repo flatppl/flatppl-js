@@ -116,6 +116,7 @@ import {
   installPanelDivider,
   showPlotMessage,
 } from './render-frame.js';
+import { installMathPaneNavigation } from './render-math.js';
 
 
 import {
@@ -1402,6 +1403,9 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // needed here.
   installPanelDivider(ctx, 'graph');
   installPanelDivider(ctx, 'plot');
+  // Math pane clicks: identifier / row → focus that binding; Ctrl/Cmd →
+  // jump to its source line (same gestures as the DAG).
+  installMathPaneNavigation(ctx);
 
   // --- DAG rendering ---
 
