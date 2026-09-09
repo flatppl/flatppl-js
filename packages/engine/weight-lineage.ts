@@ -156,9 +156,25 @@ export function unionEvents(
 ): WeightEvent[] {
   const seen = new Set<number>();
   const out: WeightEvent[] = [];
+  let haveBaseline = false;
   for (const arr of arrays) {
     for (const e of lineageOf(arr).events) {
       if (seen.has(e.id)) continue;
+      // ONE `-log(N)` baseline covers the merged array's atom axis, so the
+      // extras each parent brought are dropped. Keeping them left the merged
+      // array's ABSOLUTE normalisation short by (k-1)·log(N) for k weighted
+      // parents, and a measure derived from them reported its mass divided by
+      // N^(k-1) — measured, `theta ~ weighted(3, N(0,1))`,
+      // `phi ~ weighted(4, N(0,1))`, `x ~ Normal(theta + phi, 1)` gave
+      // totalmass 12/N against the exact 12, and a third ancestor 24/N².
+      // The parents share the atom axis (the caller refuses a length
+      // disagreement), so every baseline here has the same offset and dropping
+      // the extras is exact rather than an approximation. Relative weights are
+      // unchanged either way: a baseline is a constant.
+      if (e.baseline) {
+        if (haveBaseline) continue;
+        haveBaseline = true;
+      }
       seen.add(e.id);
       out.push(e);
     }
