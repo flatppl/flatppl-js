@@ -21,6 +21,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const fc = require('fast-check');
 const { processSource, computePhases } = require('../index.ts');
+const { isKnownName } = require('../builtins.ts');
 const { buildDerivations, collectSelfRefs } = require('../orchestrator.ts');
 const { disintegratePlan } = require('../disintegrate.ts');
 
@@ -33,12 +34,12 @@ const { disintegratePlan } = require('../disintegrate.ts');
 // disintegrate-of-disintegrate, no nested reifications — because the
 // invariants we test only require small examples to exercise.
 
-// A safe binding-name generator. Just lowercase letters with optional
-// digit suffix; avoids placeholder/reserved patterns.
+// Structural properties use ordinary names, not builtin-shadowing cases.
+// Use the shared catalogue so reserved sets such as `all` cannot enter.
 const arbBindingName = fc.string({
   unit: fc.constantFrom('a','b','c','d','e','f','g','h','i','j','k','l','m','n'),
   minLength: 1, maxLength: 3,
-}).filter((s: string) => /^[a-z]+$/.test(s) && !['in','if','do','of','im','pi','inf'].includes(s));
+}).filter((s: string) => !isKnownName(s) && !['in','if','do','of'].includes(s));
 
 // A scalar-measure generator: `Normal(mu = <small int>, sigma = <small posint>)`.
 const arbScalarMeasure = fc.tuple(
