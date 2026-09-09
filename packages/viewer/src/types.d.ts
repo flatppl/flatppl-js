@@ -380,6 +380,7 @@ export interface HostAdapter {
 export interface MountOpts {
   host?: HostAdapter;
   controlsContainer?: HTMLElement | null;
+  defaultPlotEnabled?: boolean;
   [extra: string]: any;
 }
 

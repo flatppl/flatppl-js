@@ -58,6 +58,7 @@
     }
     const handle = V.mount(container, {
       host: ctx && ctx.host,
+      defaultPlotEnabled: true,
     });
     return {
       update: function (input: any) {
