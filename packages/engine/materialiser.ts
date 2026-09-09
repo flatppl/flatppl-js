@@ -2832,6 +2832,11 @@ function _clearMaterialiserPipeline(): void {
 const kindDispatchStage: MaterialiserStage = function (name, ctx, _next) {
   const d = ctx.derivations[name];
   if (!d) return Promise.reject(new Error("no derivation for '" + name + "'"));
+  try {
+    orchestrator.assertProjectionMassCertified(name, d);
+  } catch (e) {
+    return Promise.reject(e);
+  }
   const handler = (KIND_HANDLERS as any)[d.kind];
   if (!handler) {
     return Promise.reject(new Error('unknown derivation kind: ' + d.kind));

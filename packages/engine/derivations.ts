@@ -121,6 +121,7 @@ const {
 // `isKernel` predicate elsewhere is intentionally narrower
 // (kernel-producing only) and stays separate.
 const { isCallableLikeBindingType } = require('./ir-shared.ts');
+const { engineLimitation } = require('./limitations.ts');
 
 // Smell D — propagate phase to lift-introduced anons.
 //
@@ -641,6 +642,10 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
     const d = classifyDerivation(binding, bindings, fixedValues);
     if (d) derivations[name] = d;
   }
+
+  // Every classification pass has run, so a dropped component's derivation
+  // now exists and its total mass can be certified.
+  _carryProjectionDroppedMass(bindings, derivations);
 
   // Classification diagnostics. "No derivation" is a heavily
   // overloaded state — inputs (`elementof`), callables (`functionof`,
@@ -2774,6 +2779,13 @@ function _namedProductComponents(
 // components. Returns a `record` derivation (multi-name S) or an `alias`
 // derivation (single-name S — the bare component), or null when this is not
 // a structural projection of a named product (→ the bijection path).
+//
+// The returned derivation carries `projectionDropped`: every component
+// binding the projection integrates out, at every level of a nested path.
+// §06's pushfwd is mass-preserving — `(f_*M)(Y) = M(f^{-1}(Y))` gives
+// `(π₁* M)(A) = M₁(A)·M₂(Ω₂)` — so those components contribute a scalar mass
+// factor to the marginal, NOT nothing. `_carryProjectionDroppedMass` resolves
+// the factor once classification is complete.
 function _detectStructuralProjection(
   fnRef: string, baseRef: string, bindings: any,
 ): DerivationRecord | DerivationAlias | null {
@@ -2781,24 +2793,120 @@ function _detectStructuralProjection(
   const sel = fieldProjectionSelector(fb && fb.ir);
   if (!sel) return null;
   let comp = _namedProductComponents(baseRef, bindings, new Set<string>());
+  const dropped: string[] = [];
   // Each `prefix` step descends one level into a nested named product, so a
-  // record of records projects field-by-field (`fn(_.a.x)`).
+  // record of records projects field-by-field (`fn(_.a.x)`). The siblings
+  // passed over at EVERY level are integrated out, so each level's
+  // un-descended components join the dropped set.
   for (const nm of sel.prefix) {
     if (!comp || !Object.prototype.hasOwnProperty.call(comp, nm)) return null;
+    for (const other of Object.keys(comp)) {
+      if (other !== nm) dropped.push(comp[other]);
+    }
     comp = _namedProductComponents(comp[nm], bindings, new Set<string>());
   }
   if (!comp) return null;
   for (const nm of sel.names) {
     if (!Object.prototype.hasOwnProperty.call(comp, nm)) return null;
   }
+  const kept = new Set<string>(sel.names);
+  for (const other of Object.keys(comp)) {
+    if (!kept.has(other)) dropped.push(comp[other]);
+  }
   // Single-name selector → the bare component value (a scalar measure): an
   // alias to that sub-measure. Multi-name → the projected record.
   if (sel.bare) {
-    return { kind: 'alias', from: comp[sel.names[0]] };
+    return { kind: 'alias', from: comp[sel.names[0]], projectionDropped: dropped };
   }
   const fields: Record<string, string> = {};
   for (const nm of sel.names) fields[nm] = comp[nm]; // selector order (get semantics)
-  return { kind: 'record', fields };
+  return { kind: 'record', fields, projectionDropped: dropped };
+}
+
+// The scalar mass factor §06's mass-preserving pushforward leaves on a
+// structural projection's marginal: `weighted(Z_dropped, marginal)` with
+// `Z_dropped = ∏ totalmass(dropped_k)`. Runs after classification because
+// certifying a dropped component's mass needs its EXPANDED measure IR, hence
+// its derivation.
+//
+// `Z_dropped = 1` needs no wrapper (`weighted(1, M) ≡ M`), so a projection
+// whose dropped components are all probability measures keeps exactly the
+// derivation it had.
+//
+// `closedFormLogTotalmass` is the certificate. It declines a `truncate`
+// component (whose mass the engine only ESTIMATES from an accept rate) and a
+// latent-dependent weight (whose "mass" is not a scalar at all), so an
+// uncertified factor is tagged for refusal rather than guessed: a marginal
+// wrong by an unknown factor is worse than no marginal.
+function _carryProjectionDroppedMass(bindings: any, derivations: any): void {
+  for (const name of Object.keys(derivations)) {
+    const d: any = derivations[name];
+    const dropped: string[] | undefined = d && d.projectionDropped;
+    if (!dropped) continue;
+    delete d.projectionDropped;
+    let logZ = 0;
+    let uncertified: string | null = null;
+    for (const ref of dropped) {
+      const ir = expandMeasureIR(ref, derivations, undefined, bindings);
+      const z = ir == null ? null : closedFormLogTotalmass(ir, bindings);
+      if (z == null || !Number.isFinite(z)) { uncertified = ref; break; }
+      logZ += z;
+    }
+    if (uncertified != null) {
+      d.uncertifiedDroppedMass = uncertified;
+      continue;
+    }
+    if (logZ === 0) continue;
+    // An `alias` marginal already names a binding, so `weighted` can wrap it
+    // directly. A `record` marginal is a fresh product with no name of its
+    // own, so it moves to a synthetic binding for `weighted.from` to point at.
+    if (d.kind === 'alias') {
+      derivations[name] = { kind: 'weighted', from: d.from, logShift: logZ };
+      continue;
+    }
+    const inner = '%projmarginal:' + name;
+    const refs = Object.keys(d.fields).map((f: string) => d.fields[f]);
+    bindings.set(inner, {
+      name: inner,
+      names: [inner],
+      line: 0,
+      rhs: null,
+      type: 'call',
+      deps: refs,
+      callDeps: [],
+      bodyDeps: [],
+      paramSourceDeps: [],
+      // No AST: this pass sets the derivation, so nothing re-classifies it.
+      node: { value: null, loc: null },
+      nameLoc: null,
+      // Keeps the synthetic binding out of the fixed-phase dead-end sweep.
+      phase: null,
+      inferredType: null,
+      ir: {
+        kind: 'call', op: 'joint',
+        fields: Object.keys(d.fields).map((f: string) => (
+          { name: f, value: { kind: 'ref', ns: 'self', name: d.fields[f] } })),
+      },
+    });
+    derivations[inner] = d;
+    derivations[name] = { kind: 'weighted', from: inner, logShift: logZ };
+  }
+}
+
+// Refuse a structural projection whose dropped components' total mass the
+// engine cannot certify. Called from the two derivation dispatch points —
+// the materialiser's kind dispatch and `_expandByName` — so neither the
+// sampled measure nor the scored density can answer past the gap.
+function assertProjectionMassCertified(name: string, d: any): void {
+  const ref = d && d.uncertifiedDroppedMass;
+  if (!ref) return;
+  throw engineLimitation(
+    'a structural projection over a component with an uncertified mass',
+    'sampling and density',
+    "'" + name + "' marginalises '" + ref + "', whose total mass this engine "
+    + 'does not certify. §06 makes pushfwd mass-preserving, so the marginal '
+    + "carries that component's mass as a factor — normalize the component to "
+    + 'make the factor 1');
 }
 
 // The field selection a callable's IR performs when it is a PURE record
@@ -4286,6 +4394,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
   const bindings = ctx && ctx.bindings;
   const d = derivations && derivations[name];
   if (d) {
+    assertProjectionMassCertified(name, d);
     switch (d.kind) {
       case 'alias':
         return _expandByName(d.from, ctx, next);
@@ -5684,6 +5793,9 @@ module.exports = {
   classifyPushfwd,
   // Spec §06 case-2 projection-shape test, shared with matPushfwd.
   fieldProjectionSelector,
+  // Refusal gate for a projection whose dropped mass is uncertified —
+  // called from both derivation dispatch points.
+  assertProjectionMassCertified,
   classifyJointchain,
   MEASURE_OP_CLASSIFIERS,
   derivationRefsValid,

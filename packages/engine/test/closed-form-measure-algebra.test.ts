@@ -1698,3 +1698,160 @@ lp = logdensityof(pa, record(aa = 0.5))
   assert.ok(Math.abs(weightedMean(pa.fields.aa.samples, pa.logWeights)) < 0.06);
   assert.ok(Math.abs(weightedVar(pa.fields.aa.samples, pa.logWeights) - 2) < 0.12);
 });
+
+// =====================================================================
+// A structural projection carries the DROPPED components' mass
+// =====================================================================
+//
+// §06's `pushfwd` entry is mass-preserving — "(f_* M)(Y) = M(f^{-1}(Y))" —
+// so for a product measure and a coordinate projection
+// (π₁* M)(A) = M(A × Ω₂) = M₁(A)·M₂(Ω₂). The dropped components contribute
+// the scalar factor Z_dropped = ∏ₖ totalmass(Mₖ), which is 1 only when every
+// dropped component is a probability measure.
+//
+// Oracles are closed form, cross-checked against Distributions.jl:
+// logpdf(Normal(0,1), 0.5)            = −1.0439385332046727
+//   + log 3                           =  0.05467375546343711
+//   + log 15                          =  1.6641116678975374
+//   + log 8                           =  1.035503008475163
+// logpdf(Normal(2,1), 2.3) + log 12   =  1.5209681165833278
+// =====================================================================
+
+const LOGPHI_HALF = -1.0439385332046727;
+
+test('projection: a dropped weighted component scales the marginal by its mass', async () => {
+  const ctx = makeCtx(`
+M = joint(aa = Normal(0.0, 1.0), bb = weighted(3.0, Normal(0.0, 1.0)))
+A = pushfwd(fn(get(_, ["aa"])), M)
+lp = logdensityof(A, record(aa = 0.5))
+tm = totalmass(A)
+`);
+  // §06's mass factor rides on `weighted`, the existing scalar-mass carrier.
+  assert.equal(ctx.derivations.A.kind, 'weighted');
+  assert.ok(Math.abs(ctx.derivations.A.logShift - Math.log(3)) < 1e-15);
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - 0.05467375546343711) < 1e-12,
+    `dropped-mass marginal density: got ${lp.samples[0]}, expected 0.05467375546343711`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-12,
+    `dropped-mass marginal totalmass: got ${tm.samples[0]}, expected 3`);
+});
+
+test('projection: a bare-name selector wraps the component binding directly', async () => {
+  // An `alias` marginal already names a binding, so no synthetic one is made.
+  const ctx = makeCtx(`
+M = joint(aa = Normal(0.0, 1.0), bb = weighted(3.0, Normal(0.0, 1.0)))
+A = pushfwd(fn(get(_, "aa")), M)
+lp = logdensityof(A, 0.5)
+tm = totalmass(A)
+`);
+  assert.equal(ctx.derivations.A.kind, 'weighted');
+  assert.equal(ctx.derivations.A.from, '__anon0');
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - 0.05467375546343711) < 1e-12,
+    `bare-selector marginal density: got ${lp.samples[0]}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-12, `bare-selector totalmass: got ${tm.samples[0]}`);
+});
+
+test('projection: the KEPT component\'s own weight multiplies the dropped factor', async () => {
+  const ctx = makeCtx(`
+M = joint(aa = weighted(5.0, Normal(0.0, 1.0)), bb = weighted(3.0, Normal(0.0, 1.0)))
+A = pushfwd(fn(get(_, ["aa"])), M)
+lp = logdensityof(A, record(aa = 0.5))
+tm = totalmass(A)
+`);
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - 1.6641116678975374) < 1e-12,
+    `both-weighted marginal density: got ${lp.samples[0]}, expected 1.6641116678975374`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 15) < 1e-11,
+    `both-weighted totalmass: got ${tm.samples[0]}, expected 15`);
+});
+
+test('projection: a dropped iid of an unnormalised inner measure contributes Z^n', async () => {
+  // totalmass(iid(weighted(2, Normal), 3)) = 2³ = 8.
+  const ctx = makeCtx(`
+M = joint(aa = Normal(0.0, 1.0), bb = iid(weighted(2.0, Normal(0.0, 1.0)), 3))
+A = pushfwd(fn(get(_, ["aa"])), M)
+lp = logdensityof(A, record(aa = 0.5))
+tm = totalmass(A)
+`);
+  assert.ok(Math.abs(ctx.derivations.A.logShift - Math.log(8)) < 1e-14);
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - 1.035503008475163) < 1e-12,
+    `dropped-iid marginal density: got ${lp.samples[0]}, expected 1.035503008475163`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 8) < 1e-11,
+    `dropped-iid totalmass: got ${tm.samples[0]}, expected 8`);
+});
+
+test('projection: a nested path drops the siblings at EVERY level', async () => {
+  // `_.a.x` keeps x, dropping y (mass 4) inside `a` and b (mass 3) outside:
+  // Z = 12.
+  const ctx = makeCtx(`
+M = joint(a = joint(x = Normal(2.0, 1.0), y = weighted(4.0, Normal(0.0, 1.0))),
+          b = weighted(3.0, Normal(0.0, 1.0)))
+A = pushfwd(fn(_.a.x), M)
+lp = logdensityof(A, 2.3)
+tm = totalmass(A)
+`);
+  assert.ok(Math.abs(ctx.derivations.A.logShift - Math.log(12)) < 1e-14);
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - 1.5209681165833278) < 1e-12,
+    `nested-path marginal density: got ${lp.samples[0]}, expected 1.5209681165833278`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 12) < 1e-11,
+    `nested-path totalmass: got ${tm.samples[0]}, expected 12`);
+});
+
+test('projection: a probability-only base keeps its unwrapped marginal', async () => {
+  // Z = 1, so `weighted(1, M) ≡ M` and the derivation is the bare marginal.
+  const ctx = makeCtx(`
+M = joint(aa = Normal(0.0, 1.0), bb = iid(Normal(0.0, 1.0), 3))
+A = pushfwd(fn(get(_, ["aa"])), M)
+lp = logdensityof(A, record(aa = 0.5))
+tm = totalmass(A)
+`);
+  assert.deepEqual(ctx.derivations.A, { kind: 'record', fields: { aa: '__anon0' } });
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - LOGPHI_HALF) < 1e-12,
+    `probability-base marginal density: got ${lp.samples[0]}, expected ${LOGPHI_HALF}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 1) < 1e-12, `probability-base totalmass: got ${tm.samples[0]}`);
+});
+
+test('projection: an uncertified dropped mass refuses on both routes', async () => {
+  // The engine only ESTIMATES a truncate's mass from an accept rate, so the
+  // factor is not closed form. A marginal wrong by an unknown factor is worse
+  // than no marginal, so both dispatch points refuse.
+  const ctx = makeCtx(`
+M = joint(aa = Normal(0.0, 1.0),
+          bb = iid(truncate(weighted(2.0, Normal(0.0, 1.0)), interval(-1.0, 1.0)), 2))
+A = pushfwd(fn(get(_, ["aa"])), M)
+lp = logdensityof(A, record(aa = 0.5))
+`);
+  assert.equal(ctx.derivations.A.kind, 'record');
+  const isLimitation = (e: any) => e.code === 'ENGINE_LIMITATION'
+    && /uncertified mass/.test(e.message);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('A')), isLimitation,
+    'sampling an uncertified-mass projection must refuse');
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('lp')), isLimitation,
+    'scoring an uncertified-mass projection must refuse');
+});
+
+test('projection: the sampled marginal carries the dropped mass on its atoms', async () => {
+  // The empirical projection needs no integration: the atoms are the base's
+  // own, and the mass factor rides on the log-weights, so the total mass is
+  // log 3 and the importance-weighted mean is still the kept component's.
+  const ctx = makeCtx(`
+M = joint(aa = Normal(1.5, 2.0), bb = weighted(3.0, Normal(0.0, 1.0)))
+A = pushfwd(fn(get(_, ["aa"])), M)
+`);
+  const A = await ctx.getMeasure('A');
+  assert.ok(Math.abs(A.logTotalmass - Math.log(3)) < 1e-12,
+    `sampled marginal logTotalmass: got ${A.logTotalmass}, expected ${Math.log(3)}`);
+  assert.deepEqual(Object.keys(A.fields), ['aa']);
+  assert.ok(Math.abs(weightedMean(A.fields.aa.samples, A.logWeights) - 1.5) < 0.09);
+  assert.ok(Math.abs(weightedVar(A.fields.aa.samples, A.logWeights) - 4) < 0.25);
+});

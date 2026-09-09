@@ -287,6 +287,18 @@ export interface DerivationAlias {
   kind: 'alias';
   name?: string;
   from: string;
+
+/** Spec §06 case-2 structural projection: the component bindings the
+ *  marginal integrates out. `pushfwd` is mass-preserving, so their total
+ *  mass is a scalar factor on the marginal. Present only between
+ *  classification and `_carryProjectionDroppedMass`, which resolves the
+ *  factor and deletes the field. */
+  projectionDropped?: string[];
+/** Set by `_carryProjectionDroppedMass` when a dropped component's total
+ *  mass has no closed form: names that component. Both derivation dispatch
+ *  points refuse on it rather than answer a marginal off by an unknown
+ *  factor. */
+  uncertifiedDroppedMass?: string;
 }
 
 /** Numeric array literal (e.g. `xs = [1, 2, 3]`). */
@@ -309,6 +321,18 @@ export interface DerivationRecord {
   name?: string;
   /** Field name → referenced binding name. */
   fields: Record<string, string>;
+
+/** Spec §06 case-2 structural projection: the component bindings the
+ *  marginal integrates out. `pushfwd` is mass-preserving, so their total
+ *  mass is a scalar factor on the marginal. Present only between
+ *  classification and `_carryProjectionDroppedMass`, which resolves the
+ *  factor and deletes the field. */
+  projectionDropped?: string[];
+/** Set by `_carryProjectionDroppedMass` when a dropped component's total
+ *  mass has no closed form: names that component. Both derivation dispatch
+ *  points refuse on it rather than answer a marginal off by an unknown
+ *  factor. */
+  uncertifiedDroppedMass?: string;
 }
 
 /** Sample N draws from `distIR` per atom (the universal leaf).
