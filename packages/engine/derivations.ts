@@ -4677,8 +4677,29 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
   if (d) {
     assertProjectionMassCertified(name, d);
     switch (d.kind) {
-      case 'alias':
+      case 'alias': {
+        // §04 lawof reifies a value transform. An alias through draw(M)
+        // can reach it outside a record field, so use the same inverse/Jacobian
+        // recognition here rather than emitting arithmetic as a measure op.
+        const root = _resolveAliasRoot(d.from, derivations);
+        if (bindings && bindings.get(name)?.type === 'draw'
+            && derivations[root]?.kind === 'evaluate') {
+          const law = _recognizeDiagonalPushforwardFields(
+            { value: root }, derivations, bindings, next)[0].value;
+          const param = law.bijection.logVolume.paramName;
+          // The forward map belongs to this fresh law. Retaining a ref to
+          // the original transformed value would leak its absorbed ancestor
+          // into CLM's external-input analysis.
+          law.args[0] = {
+            kind: 'call', op: 'functionof', params: [param], paramKwargs: [param],
+            body: require('./ir-walk.ts').mapIR(derivations[root].ir, (n: any) =>
+              n.kind === 'ref' && n.ns === 'self' && n.name === param
+                ? { ...n, ns: '%local' } : n),
+          };
+          return law;
+        }
         return _expandByName(d.from, ctx, next);
+      }
       case 'sample':
         // Leaf distribution call — return the distIR verbatim. Refs
         // in its kwargs are value refs (per-i params).

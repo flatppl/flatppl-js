@@ -174,6 +174,11 @@ pure ESM). That esbuild warning is the canary — SHOULD be `logOverride: error`
 
 ## Module reference
 
+Density coordinate identity stops at each `draw(M)` even when its derivation
+uses an alias edge. Structural measure lookup still follows that edge, so
+singularity inside a drawn joint remains visible. Fresh draws from a reified
+scalar transform reuse the inverse/Jacobian lowering with a closed forward map.
+
 Line counts are approximate size hints. Bug-preventing caveats are called out
 after the table.
 
