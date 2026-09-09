@@ -13,6 +13,7 @@ import { getMeasure } from './engine-facade.js';
 import { applyRememberedSelections, rememberPlanSelections } from './overrides.js';
 import { showPlotMessage, updatePlotProgress } from './render-frame.js';
 import { renderProfilePlotForCurrent } from './render-profile.js';
+import { renderMathForCurrent } from './render-math.js';
 import { buildInferenceControl, shouldDeferAutoSample } from './render-controls.js';
 import { esc } from './util.js';
 import { errorsForBinding } from './render-frame.js';
@@ -309,4 +310,7 @@ export function updatePlotForBinding(ctx: Ctx, bindingName: string | null, opts?
   // a "Not plottable" message in place of a chart. `opts` (autoTrigger)
   // passes through unchanged — see renderPlotForCurrent's doc comment.
   if (ctx.plotEnabled) renderPlotForCurrent(ctx, opts);
+  // The math pane follows the same focus (its highlighted row); it only
+  // re-renders when the model itself changed (render-math.ts memo).
+  if (ctx.mathEnabled) renderMathForCurrent(ctx);
 }

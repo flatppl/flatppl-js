@@ -107,6 +107,53 @@ body {
   font-size: 1.08em; line-height: 1.5;
   font-style: italic; opacity: 0.5;
 }
+/* Rows: one per binding, the equation left-aligned (MathML Core lays
+   it out; Temml's stylesheet, loaded by both hosts, supplies the math
+   font chain), an optional one-line doc-comment above it, the Rust
+   side's short annotation to its right, per-row diagnostics below.
+   The focused row gets the phase-neutral selection tint. Identifiers
+   are links back to their binding (render-math.ts). */
+#math-content .math-notice,
+#math-content .math-module-diags {
+  margin: 0.6em 1em 0.2em; padding: 0.4em 0.8em;
+  font-size: 0.92em; opacity: 0.85;
+  border-left: 3px solid #FFB300;
+  list-style: none;
+}
+#math-content .math-module-diags li { margin: 0.15em 0; }
+#math-content .math-row {
+  padding: 0.45em 1em;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+}
+#math-content .math-row:hover { background: rgba(127, 127, 127, 0.08); }
+#math-content .math-row.focused {
+  background: var(--vscode-list-inactiveSelectionBackground, rgba(14, 99, 156, 0.18));
+  border-left-color: var(--vscode-button-background, #0e639c);
+}
+#math-content .math-row-doc {
+  font-size: 0.9em; opacity: 0.7; margin-bottom: 0.15em;
+}
+#math-content .math-row-doc p { margin: 0; }
+#math-content .math-row-eq {
+  display: flex; align-items: baseline; gap: 1em;
+  font-size: 1.15em;
+}
+#math-content .math-row-eq math[display="block"] {
+  display: inline-block; margin: 0; text-align: left;
+}
+#math-content .math-row-annotation {
+  margin-left: auto; font-size: 0.78em; opacity: 0.6;
+  font-family: var(--vscode-font-family, sans-serif);
+  white-space: nowrap;
+}
+#math-content [data-flatppl-ref] { cursor: pointer; border-radius: 2px; }
+#math-content [data-flatppl-ref]:hover {
+  background: var(--vscode-editor-selectionBackground, rgba(14, 99, 156, 0.35));
+}
+#math-content .math-row-diags {
+  margin: 0.2em 0 0 1.2em; font-size: 0.88em; color: #E57373;
+}
 /* Drag handles between adjacent visible panels (one after the graph
    panel, one after the plot panel — see panels.ts for the pairing rule).
    Hidden when their panel or every later panel is hidden; the border-top

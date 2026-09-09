@@ -60,6 +60,9 @@ declare global {
 
   interface FlatPPLConfig {
     samplerWorkerUrl?: string;
+    /** URL of the flatppl_wasm_api wasm-pack `--target web` glue
+     *  (its .wasm next to it); unset ⇒ the math pane is unavailable. */
+    wasmApiUrl?: string;
     playground?: boolean;
     [extra: string]: any;
   }
@@ -278,6 +281,11 @@ export interface Ctx {
   /** Math pane (render-math.ts) visibility — the third panel of the
    *  vertical split (panels.ts). Persisted with the other two. */
   mathEnabled: boolean;
+  /** Lazy-loaded flatppl_wasm_api `render_math` (render-math.ts). */
+  mathRenderer?: { status: 'unconfigured' | 'loading' | 'ready' | 'failed'; render: ((requestJson: string) => string) | null; error: string | null };
+  /** The math pane's last rendering: the model key it was built for,
+   *  the Rust response, and each row's source line. */
+  mathView?: { key: string; response: import('./math-view').MathResponse; lines: Map<string, number | null> } | null;
   currentSource: string | null;
   /** Resolved path of the module whose DAG is currently shown (the host's
    *  bundle / router key). Drives cross-module back source-sync (spec §04);
