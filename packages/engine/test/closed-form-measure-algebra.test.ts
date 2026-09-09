@@ -1822,12 +1822,14 @@ tm = totalmass(A)
 });
 
 test('projection: an uncertified dropped mass refuses on both routes', async () => {
-  // The engine only ESTIMATES a truncate's mass from an accept rate, so the
-  // factor is not closed form. A marginal wrong by an unknown factor is worse
-  // than no marginal, so both dispatch points refuse.
+  // A truncation's mass is the CDF difference over the interval, and eleven
+  // registered continuous kernels have no CDF row — VonMises among them — so
+  // the factor has no closed form. A marginal wrong by an unknown factor is
+  // worse than no marginal, so both dispatch points refuse. (A truncated
+  // Normal is certified instead; see the CDF-difference tests below.)
   const ctx = makeCtx(`
 M = joint(aa = Normal(0.0, 1.0),
-          bb = iid(truncate(weighted(2.0, Normal(0.0, 1.0)), interval(-1.0, 1.0)), 2))
+          bb = iid(truncate(weighted(2.0, VonMises(0.0, 1.0)), interval(-1.0, 1.0)), 2))
 A = pushfwd(fn(get(_, ["aa"])), M)
 lp = logdensityof(A, record(aa = 0.5))
 `);
@@ -1854,4 +1856,299 @@ A = pushfwd(fn(get(_, ["aa"])), M)
   assert.deepEqual(Object.keys(A.fields), ['aa']);
   assert.ok(Math.abs(weightedMean(A.fields.aa.samples, A.logWeights) - 1.5) < 0.09);
   assert.ok(Math.abs(weightedVar(A.fields.aa.samples, A.logWeights) - 4) < 0.25);
+});
+
+// =====================================================================
+// Structural projection, continued: a dropped truncation's exact mass, and
+// the two product bases the named-`joint` detector does not reach.
+//
+// Oracle literals. Phi(1) - Phi(-1) = 0.6826894921370861 and
+// logpdf(Normal(0,1), x) for x = 0.5, 0.25, 0.0 are
+// -1.0439385332046727, -0.9501885332046728 and -0.9189385332046727, all from
+// Distributions.jl. Every expected value below is written as a closed-form
+// expression over those, never taken from the engine.
+// =====================================================================
+
+const PHI_BAND = 0.6826894921370861;     // cdf(Normal(),1) - cdf(Normal(),-1)
+const LOGPDF_HALF = -1.0439385332046727; // logpdf(Normal(0,1), 0.5)
+const LOGPDF_QUARTER = -0.9501885332046728;
+const LOGPDF_ZERO = -0.9189385332046727;
+
+test('projection: a dropped truncate carries its exact CDF-difference mass', async () => {
+  // §06 "Support restriction": nu(A) = M(A ∩ S), so mass(truncate(M, S)) is
+  // M(S) — here Phi(1) - Phi(-1), NOT 1 and NOT the sampler's accept rate.
+  const ctx = makeCtx(`
+M = joint(aa = Normal(0.0, 1.0), bb = truncate(Normal(0.0, 1.0), interval(-1.0, 1.0)))
+A = pushfwd(fn(get(_, ["aa"])), M)
+lp = logdensityof(A, record(aa = 0.5))
+tm = totalmass(A)
+`);
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF + Math.log(PHI_BAND);
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-12,
+    `truncate-dropped marginal density: got ${lp.samples[0]}, expected ${wantLp}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - PHI_BAND) < 1e-12,
+    `truncate-dropped marginal totalmass: got ${tm.samples[0]}, expected ${PHI_BAND}`);
+});
+
+test('projection: a constant weight under the dropped truncate multiplies its mass', async () => {
+  // Restricting the support does not touch the weight, so
+  // mass(truncate(weighted(2, M), S)) = 2 * M(S).
+  const ctx = makeCtx(`
+M = joint(aa = Normal(0.0, 1.0),
+          bb = truncate(weighted(2.0, Normal(0.0, 1.0)), interval(-1.0, 1.0)))
+A = pushfwd(fn(get(_, ["aa"])), M)
+lp = logdensityof(A, record(aa = 0.5))
+tm = totalmass(A)
+`);
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF + Math.log(2 * PHI_BAND);
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-12,
+    `weighted-truncate marginal density: got ${lp.samples[0]}, expected ${wantLp}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 2 * PHI_BAND) < 1e-12,
+    `weighted-truncate marginal totalmass: got ${tm.samples[0]}, expected ${2 * PHI_BAND}`);
+});
+
+test('projection: the truncate certificate leaves the normalize lowering alone', async () => {
+  // `closedFormLogTotalmass`'s truncate arm is opt-in, so a normalize over a
+  // truncation keeps its massFrom route: the mass is still a runtime
+  // resolution, not a rewrite-time logweighted shift.
+  const ctx = makeCtx(`
+B = normalize(truncate(Normal(0.0, 1.0), interval(-1.0, 1.0)))
+lp = logdensityof(B, 0.5)
+`);
+  const ir = require('../derivations.ts').expandMeasureIR(
+    'B', ctx.derivations, undefined, ctx.bindings);
+  assert.equal(ir.op, 'normalize');
+  assert.ok(ir.massFrom, 'normalize over a truncate keeps its massFrom spec');
+  // The value is still right: the normalized truncated Normal at 0.5.
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF - Math.log(PHI_BAND);
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-6,
+    `normalized truncate density: got ${lp.samples[0]}, expected ${wantLp}`);
+});
+
+test('projection: a positional iid keeping one coordinate contributes Z^(n-1)', async () => {
+  // §06 case 2: "projections onto whole factors of independent joint or iid
+  // products … Omitted factors contribute their total masses." Keeping
+  // coordinate 1 of iid(weighted(2, Normal), 3) leaves 2^2 on the marginal,
+  // whose own mass is 2, so the density carries 3 log 2 and the mass is 8.
+  const ctx = makeCtx(`
+M = iid(weighted(2.0, Normal(0.0, 1.0)), 3)
+A = pushfwd(fn(get(_, 1)), M)
+lp = logdensityof(A, 0.5)
+tm = totalmass(A)
+`);
+  assert.equal(ctx.derivations.A.kind, 'weighted');
+  assert.ok(Math.abs(ctx.derivations.A.logShift - 2 * Math.log(2)) < 1e-15);
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF + 3 * Math.log(2);
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-12,
+    `iid coordinate marginal density: got ${lp.samples[0]}, expected ${wantLp}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 8) < 1e-11,
+    `iid coordinate marginal totalmass: got ${tm.samples[0]}, expected 8`);
+});
+
+test('projection: a positional iid keeping two coordinates is iid over the same inner', async () => {
+  // The coordinates are identically distributed, so which two the selector
+  // names does not matter: the marginal is iid(M, 2) scaled by Z^2.
+  const ctx = makeCtx(`
+M = iid(weighted(3.0, Normal(0.0, 1.0)), 4)
+A = pushfwd(fn(get(_, [2, 4])), M)
+lp = logdensityof(A, [0.5, 0.25])
+tm = totalmass(A)
+`);
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF + LOGPDF_QUARTER + 4 * Math.log(3);
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-12,
+    `iid two-coordinate marginal density: got ${lp.samples[0]}, expected ${wantLp}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 81) < 1e-10,
+    `iid two-coordinate marginal totalmass: got ${tm.samples[0]}, expected 81`);
+});
+
+test('projection: a probability-only iid base keeps a mass-1 marginal', async () => {
+  const ctx = makeCtx(`
+M = iid(Normal(0.0, 1.0), 4)
+A = pushfwd(fn(get(_, [1, 2])), M)
+lp = logdensityof(A, [0.5, 0.25])
+tm = totalmass(A)
+`);
+  assert.deepEqual(ctx.derivations.A, { kind: 'iid', from: ctx.derivations.M.from, dims: [2] });
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF + LOGPDF_QUARTER;
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-12,
+    `iid probability marginal density: got ${lp.samples[0]}, expected ${wantLp}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 1) < 1e-12);
+});
+
+test('projection: an uncertified iid coordinate refuses rather than answers', async () => {
+  const ctx = makeCtx(`
+M = iid(truncate(VonMises(0.0, 1.0), interval(-1.0, 1.0)), 3)
+A = pushfwd(fn(get(_, 1)), M)
+`);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('A')),
+    (e: any) => e.code === 'ENGINE_LIMITATION' && /uncertified mass/.test(e.message));
+});
+
+test('projection: a jointchain prefix keeps the base and carries the dropped transition', async () => {
+  // §06 jointchain density is p(a)*p(b|a), so integrating b out leaves
+  // p(a) * totalmass(K(a)) = 3 p(a) for an unnormalized transition.
+  const ctx = makeCtx(`
+M = jointchain(aa = Normal(0.0, 1.0), bb = fn(weighted(3.0, Normal(_, 1.0))))
+A = pushfwd(fn(get(_, "aa")), M)
+lp = logdensityof(A, 0.5)
+tm = totalmass(A)
+`);
+  assert.equal(ctx.derivations.A.kind, 'weighted');
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF + Math.log(3);
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-12,
+    `chain prefix marginal density: got ${lp.samples[0]}, expected ${wantLp}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
+    `chain prefix marginal totalmass: got ${tm.samples[0]}, expected 3`);
+});
+
+test('projection: a positional jointchain prefix takes the same rule', async () => {
+  const ctx = makeCtx(`
+M = jointchain(Normal(0.0, 1.0), fn(weighted(3.0, Normal(_, 1.0))))
+A = pushfwd(fn(get(_, 1)), M)
+lp = logdensityof(A, 0.5)
+`);
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF + Math.log(3);
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-12,
+    `positional chain prefix density: got ${lp.samples[0]}, expected ${wantLp}`);
+});
+
+test('projection: a two-step jointchain prefix over normalized transitions scores', async () => {
+  // Keeping (aa, bb) of a three-step chain drops a normalized transition, so
+  // the marginal is the two-step chain itself: p(aa) * p(bb|aa).
+  const ctx = makeCtx(`
+M = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)), cc = fn(Normal(0.0, 1.0)))
+A = pushfwd(fn(get(_, ["aa", "bb"])), M)
+lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
+tm = totalmass(A)
+`);
+  assert.equal(ctx.derivations.A.kind, 'jointchain');
+  assert.deepEqual(ctx.derivations.A.labels, ['aa', 'bb']);
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF + LOGPDF_ZERO;   // bb | aa = 0.5 evaluated at 0.5
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-12,
+    `two-step chain prefix density: got ${lp.samples[0]}, expected ${wantLp}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 1) < 1e-12);
+});
+
+test('projection: a two-step chain prefix over an unnormalized transition refuses', async () => {
+  // The factor is closed form (3) and the engine has no carrier for it on a
+  // chain, so it refuses rather than report the prefix scaled twice.
+  const ctx = makeCtx(`
+M = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)),
+               cc = fn(weighted(3.0, Normal(0.0, 1.0))))
+A = pushfwd(fn(get(_, ["aa", "bb"])), M)
+lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
+`);
+  const isLimitation = (e: any) => e.code === 'ENGINE_LIMITATION'
+    && /no carrier for that factor on a chain/.test(e.message);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('A')), isLimitation);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('lp')), isLimitation);
+});
+
+test('projection: a chain transition whose mass moves with the variate refuses', async () => {
+  // mass(K(a)) = a is not a scalar factor, so the marginal is not
+  // Z * p(a) at all. The certificate reads the kernel body, where `a` is an
+  // unresolvable local ref, and declines.
+  const ctx = makeCtx(`
+M = jointchain(aa = Exponential(1.0), bb = fn(weighted(_, Normal(0.0, 1.0))))
+A = pushfwd(fn(get(_, "aa")), M)
+`);
+  await assert.rejects(() => Promise.resolve(ctx.getMeasure('A')),
+    (e: any) => e.code === 'ENGINE_LIMITATION' && /uncertified mass/.test(e.message));
+});
+
+test('projection: a dropped chain PREFIX is not closed form and keeps the general path', async () => {
+  // Integrating out an early step leaves a genuine integral over its variate,
+  // which §06 sends to the composed-measure rules. No rewrite, so the density
+  // keeps demanding a bijection annotation.
+  const ctx = makeCtx(`
+M = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
+A = pushfwd(fn(get(_, "bb")), M)
+`);
+  assert.equal(ctx.derivations.A.kind, 'pushfwd');
+});
+
+test('projection: a one-name keyword chain selector keeps a one-field record', async () => {
+  // `get(_, ["aa"])` is subset selection, so the marginal is a record over the
+  // base step, where `get(_, "aa")` gives the step's own value.
+  const ctx = makeCtx(`
+M = jointchain(aa = Normal(0.0, 1.0), bb = fn(weighted(3.0, Normal(_, 1.0))))
+A = pushfwd(fn(get(_, ["aa"])), M)
+lp = logdensityof(A, record(aa = 0.5))
+tm = totalmass(A)
+`);
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF + Math.log(3);
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-12,
+    `record-selector chain prefix density: got ${lp.samples[0]}, expected ${wantLp}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11);
+});
+
+test('projection: a one-element index selector on a positional chain declines', async () => {
+  // The marginal would be a one-element tuple, which this rewrite has no
+  // derivation for, so the projection keeps the general pushfwd path.
+  const ctx = makeCtx(`
+M = jointchain(Normal(0.0, 1.0), fn(Normal(_, 1.0)))
+A = pushfwd(fn(get(_, [1])), M)
+`);
+  assert.equal(ctx.derivations.A.kind, 'pushfwd');
+});
+
+test('projection: a name selector over an iid base names no coordinate', async () => {
+  // An iid's factors are indexed, so a field name selects nothing here.
+  const ctx = makeCtx(`
+M = iid(Normal(0.0, 1.0), 3)
+A = pushfwd(fn(get(_, "aa")), M)
+`);
+  assert.equal(ctx.derivations.A.kind, 'pushfwd');
+});
+
+test('projection: a dropped pushfwd component contributes its base mass', async () => {
+  // §06 pushfwd is mass-preserving, so the image of the whole space carries
+  // the base's mass whatever the forward map is: 2 here.
+  const ctx = makeCtx(`
+M = joint(aa = Normal(0.0, 1.0),
+          bb = pushfwd(fn(exp(_)), weighted(2.0, Normal(0.0, 1.0))))
+A = pushfwd(fn(get(_, ["aa"])), M)
+lp = logdensityof(A, record(aa = 0.5))
+tm = totalmass(A)
+`);
+  assert.equal(ctx.derivations.A.kind, 'weighted');
+  assert.ok(Math.abs(ctx.derivations.A.logShift - Math.log(2)) < 1e-15);
+  const lp = await ctx.getMeasure('lp');
+  const wantLp = LOGPDF_HALF + Math.log(2);
+  assert.ok(Math.abs(lp.samples[0] - wantLp) < 1e-12,
+    `pushfwd-dropped marginal density: got ${lp.samples[0]}, expected ${wantLp}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 2) < 1e-11,
+    `pushfwd-dropped marginal totalmass: got ${tm.samples[0]}, expected 2`);
+});
+
+test('projection: a projection OF a projection keeps the general path', async () => {
+  // The inner marginal still owes 2^2 when the outer projection is lowered, so
+  // reading its structure would build a marginal low by that factor. The outer
+  // projection stays a pushfwd rather than answering low.
+  const ctx = makeCtx(`
+M = iid(weighted(2.0, Normal(0.0, 1.0)), 4)
+B = pushfwd(fn(get(_, [1, 2])), M)
+A = pushfwd(fn(get(_, 1)), B)
+`);
+  assert.equal(ctx.derivations.A.kind, 'pushfwd');
+  assert.equal(ctx.derivations.B.kind, 'weighted');
 });

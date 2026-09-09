@@ -271,4 +271,8 @@ function assertFixedMassFallback(inner: any, ctx: any, route: string): void {
   }
 }
 
-module.exports = { totalMassExpr, assertFixedMassFallback };
+// `truncateMassLit` is exported for derivations.ts's `closedFormLogTotalmass`,
+// which certifies a dropped structural-projection component's total mass and
+// needs the same exact CDF difference. The two callers must not diverge: one
+// arm computing M(S) means one accepted set and one refusal boundary.
+module.exports = { totalMassExpr, truncateMassLit, assertFixedMassFallback };

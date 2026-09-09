@@ -643,8 +643,10 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
     if (d) derivations[name] = d;
   }
 
-  // Every classification pass has run, so a dropped component's derivation
-  // now exists and its total mass can be certified.
+  // Every classification pass has run, so a product base's coordinate or step
+  // structure is available to lower a projection over it, and a dropped
+  // component's derivation exists so its total mass can be certified.
+  _projectProductBases(bindings, derivations);
   _carryProjectionDroppedMass(bindings, derivations);
 
   // Classification diagnostics. "No derivation" is a heavily
@@ -2833,23 +2835,43 @@ function _detectStructuralProjection(
 // whose dropped components are all probability measures keeps exactly the
 // derivation it had.
 //
-// `closedFormLogTotalmass` is the certificate. It declines a `truncate`
-// component (whose mass the engine only ESTIMATES from an accept rate) and a
-// latent-dependent weight (whose "mass" is not a scalar at all), so an
-// uncertified factor is tagged for refusal rather than guessed: a marginal
-// wrong by an unknown factor is worse than no marginal.
+// `closedFormLogTotalmass` is the certificate, with its `truncate` arm on: a
+// dropped `truncate`'s mass is the exact CDF difference over the interval, and
+// the engine's own tracked mass for one is an accept-rate ESTIMATE that would
+// make a closed-form marginal density depend on the sampler's seed. The
+// certificate still declines a latent-dependent weight (whose "mass" is not a
+// scalar at all) and a truncation with no closed-form CDF, so an uncertified
+// factor is tagged for refusal rather than guessed: a marginal wrong by an
+// unknown factor is worse than no marginal.
+//
+// `projectionDroppedIR` carries the same certification for a dropped
+// `jointchain` transition, whose mass belongs to a KERNEL BODY rather than to
+// a binding, so there is nothing for `expandMeasureIR` to expand.
 function _carryProjectionDroppedMass(bindings: any, derivations: any): void {
+  const CERT = { truncate: true };
   for (const name of Object.keys(derivations)) {
     const d: any = derivations[name];
     const dropped: string[] | undefined = d && d.projectionDropped;
-    if (!dropped) continue;
+    const droppedIR: { label: string; ir: any }[] | undefined
+      = d && d.projectionDroppedIR;
+    if (!dropped && !droppedIR) continue;
     delete d.projectionDropped;
+    delete d.projectionDroppedIR;
     let logZ = 0;
     let uncertified: string | null = null;
-    for (const ref of dropped) {
+    for (const ref of (dropped || [])) {
       const ir = expandMeasureIR(ref, derivations, undefined, bindings);
-      const z = ir == null ? null : closedFormLogTotalmass(ir, bindings);
+      const z = ir == null ? null : closedFormLogTotalmass(ir, bindings, CERT);
       if (z == null || !Number.isFinite(z)) { uncertified = ref; break; }
+      logZ += z;
+    }
+    for (const e of (uncertified == null ? (droppedIR || []) : [])) {
+      // A kernel body reaches its own sub-measures by ref, so expand the
+      // measure positions first — the certificate reads structure, and a bare
+      // ref would decline a mass that is closed-form one hop away.
+      const ir = expandMeasureRefsInIR(e.ir, derivations, undefined, bindings);
+      const z = ir == null ? null : closedFormLogTotalmass(ir, bindings, CERT);
+      if (z == null || !Number.isFinite(z)) { uncertified = e.label; break; }
       logZ += z;
     }
     if (uncertified != null) {
@@ -2858,38 +2880,256 @@ function _carryProjectionDroppedMass(bindings: any, derivations: any): void {
     }
     if (logZ === 0) continue;
     // An `alias` marginal already names a binding, so `weighted` can wrap it
-    // directly. A `record` marginal is a fresh product with no name of its
+    // directly. Any other marginal is a fresh measure with no name of its
     // own, so it moves to a synthetic binding for `weighted.from` to point at.
     if (d.kind === 'alias') {
       derivations[name] = { kind: 'weighted', from: d.from, logShift: logZ };
       continue;
     }
+    // A multi-step chain marginal has no carrier for the factor, so refuse
+    // rather than answer a mass that is wrong by it. Both of the engine's
+    // carriers for a scalar mass on a chain are already broken, independently
+    // of this projection: `weighted` OVER a chain has no lowerable density (the
+    // lowering reports the chain's step variates as undeclared inputs, and the
+    // density query is cascade-pruned), and scaling the chain's BASE STEP
+    // double-counts, because the chain's mass sums each step's while the
+    // kernel's atoms already carry the base's weights — spelled directly,
+    // `jointchain(aa = weighted(3, Normal(0,1)), bb = fn(Normal(_, 1)))` reports
+    // totalmass 9 against the exact 3. §06 mandates this projection only "when
+    // the omitted transitions are normalized", which is the Z = 1 case handled
+    // above, so the refusal costs no required behaviour.
+    if (d.kind === 'jointchain') {
+      d.uncarriedDroppedMassLog = logZ;
+      continue;
+    }
     const inner = '%projmarginal:' + name;
-    const refs = Object.keys(d.fields).map((f: string) => d.fields[f]);
-    bindings.set(inner, {
-      name: inner,
-      names: [inner],
-      line: 0,
-      rhs: null,
-      type: 'call',
-      deps: refs,
-      callDeps: [],
-      bodyDeps: [],
-      paramSourceDeps: [],
-      // No AST: this pass sets the derivation, so nothing re-classifies it.
-      node: { value: null, loc: null },
-      nameLoc: null,
-      // Keeps the synthetic binding out of the fixed-phase dead-end sweep.
-      phase: null,
-      inferredType: null,
-      ir: {
-        kind: 'call', op: 'joint',
-        fields: Object.keys(d.fields).map((f: string) => (
-          { name: f, value: { kind: 'ref', ns: 'self', name: d.fields[f] } })),
-      },
-    });
+    bindings.set(inner, _syntheticMeasureBinding(inner, d));
     derivations[inner] = d;
     derivations[name] = { kind: 'weighted', from: inner, logShift: logZ };
+  }
+}
+
+// A binding for a marginal derivation that has no name of its own, so that
+// `weighted.from` can point at it. The derivation is set alongside, so nothing
+// re-classifies the binding; the IR mirrors the derivation only for consumers
+// that read a binding's own RHS.
+function _syntheticMeasureBinding(inner: string, d: any): any {
+  let deps: string[] = [];
+  let ir: any = null;
+  const selfRef = (n: string) => ({ kind: 'ref', ns: 'self', name: n });
+  if (d.kind === 'record') {
+    deps = Object.keys(d.fields).map((f: string) => d.fields[f]);
+    ir = {
+      kind: 'call', op: 'joint',
+      fields: Object.keys(d.fields).map((f: string) => (
+        { name: f, value: selfRef(d.fields[f]) })),
+    };
+  } else {
+    // iid.
+    deps = [d.from];
+    ir = {
+      kind: 'call', op: 'iid',
+      args: [selfRef(d.from), { kind: 'lit', value: d.dims[0] }],
+    };
+  }
+  return {
+    name: inner,
+    names: [inner],
+    line: 0,
+    rhs: null,
+    type: 'call',
+    deps,
+    callDeps: [],
+    bodyDeps: [],
+    paramSourceDeps: [],
+    // No AST: the caller sets the derivation, so nothing re-classifies it.
+    node: { value: null, loc: null },
+    nameLoc: null,
+    // Keeps the synthetic binding out of the fixed-phase dead-end sweep.
+    phase: null,
+    inferredType: null,
+    ir,
+  };
+}
+
+// The integer-index selection a callable performs when it is a PURE index
+// projection of its lone parameter — §07's 1-based array and tuple selectors
+// inside §06 case-2's `pushfwd(fn(get(_, [...])), M)`. `bare` marks the
+// element-access spelling `get(_, 1)`, whose result is the coordinate's own
+// value rather than a one-element array.
+//
+// The name-selector sibling `fieldProjectionSelector` reads a nested path; this
+// one refuses any nesting. An `iid` coordinate and a chain step are whole
+// factors of the product being projected, not containers to descend into, so a
+// second `get` on the way in is a different operation with a different answer.
+function _indexProjectionSelector(
+  ir: any,
+): { indices: number[]; bare: boolean } | null {
+  if (!ir || ir.op !== 'functionof') return null;
+  const params: any[] = Array.isArray(ir.params) ? ir.params : [];
+  if (params.length !== 1) return null;
+  const node = ir.body;
+  if (!node || node.kind !== 'call' || node.op !== 'get'
+      || !Array.isArray(node.args) || node.args.length !== 2) return null;
+  const inner = node.args[0];
+  if (!inner || inner.kind !== 'ref'
+      || (inner.ns !== '%local' && inner.ns !== 'self')
+      || inner.name !== params[0]) return null;
+  const sel = node.args[1];
+  if (!sel) return null;
+  if (sel.kind === 'lit' && Number.isInteger(sel.value)) {
+    return { indices: [sel.value], bare: true };
+  }
+  if (sel.kind === 'call' && sel.op === 'vector'
+      && Array.isArray(sel.args) && sel.args.length > 0) {
+    const indices: number[] = [];
+    for (const a of sel.args) {
+      if (!a || a.kind !== 'lit' || !Number.isInteger(a.value)) return null;
+      indices.push(a.value);
+    }
+    return { indices, bare: false };
+  }
+  return null;
+}
+
+// The closed-form marginal of a structural projection onto k coordinates of a
+// positional `iid(M, n)`, or null when this is not that projection.
+//
+// §06 case 2: "Engines must support projections onto whole factors of
+// independent `joint` or `iid` products … Omitted factors contribute their
+// total masses." An `iid`'s coordinates are independent and IDENTICALLY
+// distributed, so which k of them the selector keeps does not matter: the
+// marginal is `iid(M, k)` and the dropped n − k coordinates contribute
+// `totalmass(M)^(n−k)`. Repeating M's ref once per dropped coordinate is how
+// that power reaches `_carryProjectionDroppedMass`, which multiplies the list.
+function _iidFactorProjection(fIR: any, base: any): any {
+  // A multi-axis `iid` is a product over a shape, not a flat coordinate list,
+  // so an integer selector does not name one of its factors.
+  if (!Array.isArray(base.dims) || base.dims.length !== 1) return null;
+  const n = base.dims[0];
+  const sel = _indexProjectionSelector(fIR);
+  if (!sel) return null;
+  const kept = new Set<number>();
+  for (const i of sel.indices) {
+    // Out of range, or the same coordinate twice: not a projection onto whole
+    // distinct factors. Leave it to the general pushfwd path.
+    if (i < 1 || i > n || kept.has(i)) return null;
+    kept.add(i);
+  }
+  const dropped: string[] = [];
+  for (let j = kept.size; j < n; j++) dropped.push(base.from);
+  if (sel.bare) {
+    return { kind: 'alias', from: base.from, projectionDropped: dropped };
+  }
+  return { kind: 'iid', from: base.from, dims: [kept.size], projectionDropped: dropped };
+}
+
+// The `functionof` IR of a kernel step held as a binding ref, mirroring the
+// fallback in `expandMeasureIR`'s jointchain case.
+function _kernelFunctionIR(ref: any, bindings: any): any {
+  const b = ref == null ? null : bindings && bindings.get(ref);
+  const ir = b && b.ir;
+  return (ir && ir.kind === 'call' && ir.op === 'functionof') ? ir : null;
+}
+
+// The closed-form marginal of a structural projection onto a PREFIX of a
+// `jointchain`, or null when this is not that projection.
+//
+// §06 case 2: "Engines must also support `jointchain` prefix projections when
+// the omitted transitions are normalized and the retained prefix density is
+// supported." Only a dependency-respecting prefix is closed form. The chain's
+// density is `p(a)·p(b|a)·p(c|a,b)` (§06 `jointchain`), so integrating the LAST
+// transitions out leaves `∫p(c|a,b) dc = totalmass(K(a,b))` as a factor on the
+// retained prefix — the general mass rule, not a normalization assumption, so
+// an unnormalized dropped transition scales the prefix instead of refusing.
+// Integrating out an EARLY step instead leaves a genuine integral over that
+// step's variate, which §06 sends to the composed-measure rules and their
+// refusals: this returns null there and the projection keeps the general
+// pushfwd path.
+//
+// The factor is a scalar only when a dropped transition's mass does not move
+// with the retained variates. The certificate reads the kernel BODY, where
+// those variates appear as `%local` refs that `resolveConstant` cannot resolve,
+// so a mass that depends on them declines and the projection refuses.
+function _chainPrefixProjection(fIR: any, base: any, bindings: any): any {
+  // `kchain` marginalizes the intermediate variate, so its variate is the last
+  // step alone and a prefix selector does not name a factor of it.
+  if (base.marginalize) return null;
+  const steps: any[] = Array.isArray(base.steps) ? base.steps : [];
+  if (steps.length < 2) return null;
+  const labels: string[] | null = base.labels || null;
+  let keep: number;
+  let bare: boolean;
+  if (labels) {
+    const sel = fieldProjectionSelector(fIR);
+    if (!sel || sel.prefix.length > 0) return null;
+    keep = sel.names.length;
+    for (let i = 0; i < keep; i++) if (sel.names[i] !== labels[i]) return null;
+    bare = sel.bare;
+  } else {
+    const sel = _indexProjectionSelector(fIR);
+    if (!sel) return null;
+    keep = sel.indices.length;
+    for (let i = 0; i < keep; i++) if (sel.indices[i] !== i + 1) return null;
+    bare = sel.bare;
+  }
+  // Nothing dropped is the identity map, which needs no rewrite.
+  if (keep < 1 || keep >= steps.length) return null;
+  const droppedIR: { label: string; ir: any }[] = [];
+  for (let j = keep; j < steps.length; j++) {
+    const f = steps[j].kernelIR || _kernelFunctionIR(steps[j].ref, bindings);
+    droppedIR.push({ label: steps[j].var, ir: (f && f.body) || null });
+  }
+  if (keep > 1) {
+    return {
+      kind: 'jointchain',
+      marginalize: false,
+      labels: labels ? labels.slice(0, keep) : null,
+      steps: steps.slice(0, keep),
+      projectionDroppedIR: droppedIR,
+    };
+  }
+  // A one-step prefix is the base measure itself. A bare selector yields its
+  // own value; a one-name keyword selector yields a one-field record over it.
+  // A one-element POSITIONAL selector would yield a one-element tuple, a shape
+  // this rewrite has no derivation for, so it declines.
+  const b0 = steps[0];
+  if (b0.kernel || b0.ref == null) return null;
+  if (bare) return { kind: 'alias', from: b0.ref, projectionDroppedIR: droppedIR };
+  if (!labels) return null;
+  return {
+    kind: 'record',
+    fields: { [labels[0]]: b0.ref },
+    projectionDroppedIR: droppedIR,
+  };
+}
+
+// Spec §06 case-2 for the two product bases `_namedProductComponents` cannot
+// reach: a positional `iid` and a `jointchain`. Both were classified as a
+// general `pushfwd`, whose density then demanded a bijection annotation for a
+// marginal §06 requires an engine to support.
+//
+// Runs after classification, because the base's step or coordinate structure
+// lives in ITS derivation, and before the cascade-prune, because that prune
+// drops a `logdensityof` over a projection `pushfwd` — a rewrite after it would
+// come too late for the density query to survive.
+function _projectProductBases(bindings: any, derivations: any): void {
+  for (const name of Object.keys(derivations)) {
+    const d: any = derivations[name];
+    if (!d || d.kind !== 'pushfwd' || d.from == null || d.fnRef == null) continue;
+    const base: any = derivations[d.from];
+    if (!base) continue;
+    // A base that is ITSELF a marginal still owes a mass factor that this pass
+    // has not resolved. Reading its structure would build a marginal carrying
+    // only the second projection's dropped mass, low by the first's, so leave
+    // the projection on the general path instead.
+    if (base.projectionDropped || base.projectionDroppedIR) continue;
+    const fb = bindings.get(d.fnRef);
+    const fIR = fb && fb.ir;
+    const marginal = base.kind === 'iid' ? _iidFactorProjection(fIR, base)
+      : base.kind === 'jointchain' ? _chainPrefixProjection(fIR, base, bindings)
+        : null;
+    if (marginal) derivations[name] = marginal;
   }
 }
 
@@ -2899,14 +3139,26 @@ function _carryProjectionDroppedMass(bindings: any, derivations: any): void {
 // sampled measure nor the scored density can answer past the gap.
 function assertProjectionMassCertified(name: string, d: any): void {
   const ref = d && d.uncertifiedDroppedMass;
-  if (!ref) return;
+  if (ref) {
+    throw engineLimitation(
+      'a structural projection over a component with an uncertified mass',
+      'sampling and density',
+      "'" + name + "' marginalises '" + ref + "', whose total mass this engine "
+      + 'does not certify. §06 makes pushfwd mass-preserving, so the marginal '
+      + "carries that component's mass as a factor — normalize the component to "
+      + 'make the factor 1');
+  }
+  // The factor is known here, and still not answerable: see the jointchain arm
+  // of `_carryProjectionDroppedMass` for the two broken carriers.
+  const logZ = d && d.uncarriedDroppedMassLog;
+  if (logZ == null) return;
   throw engineLimitation(
-    'a structural projection over a component with an uncertified mass',
+    'a jointchain prefix projection over unnormalized dropped transitions',
     'sampling and density',
-    "'" + name + "' marginalises '" + ref + "', whose total mass this engine "
-    + 'does not certify. §06 makes pushfwd mass-preserving, so the marginal '
-    + "carries that component's mass as a factor — normalize the component to "
-    + 'make the factor 1');
+    "'" + name + "' has a closed-form marginal — the retained prefix scaled by "
+    + Math.exp(logZ) + ' — but this engine has no carrier for that factor on a '
+    + 'chain. §06 requires the projection when the dropped transitions are '
+    + 'normalized; normalize them, or project onto the base step alone');
 }
 
 // The field selection a callable's IR performs when it is a PURE record
@@ -4218,7 +4470,16 @@ function resolveBijectionMeta(bij: any, bindings: any) {
 // walkLogWeighted (engine-concepts §11; "totalmass is a first-class
 // node concern"). All stdlib leaf distributions are normalized (unit
 // mass); weighted/superpose/iid compose multiplicatively/additively.
-function closedFormLogTotalmass(ir: any, bindings: any): any {
+//
+// `opts.truncate` adds the `truncate` arm. It is OPT-IN because the two
+// callers want different answers for the same node. The structural-projection
+// certificate wants the exact CDF difference, which is the only deterministic
+// mass a dropped `truncate` has. The `normalize` lowering must keep declining,
+// so that a `normalize(truncate(…))` stays on its `massFrom` route: the
+// runtime helpers there own the discrete-base and multivariate-set refusals,
+// and mcmc-density re-resolves a latent-dependent truncation per density call.
+// Turning the arm on for `normalize` would pre-empt all of that.
+function closedFormLogTotalmass(ir: any, bindings: any, opts?: any): any {
   if (!ir || ir.kind !== 'call') return null;
   const op = ir.op;
   if (op === 'MvNormal' || SAMPLEABLE_DISTRIBUTIONS.has(op)) return 0;
@@ -4226,19 +4487,49 @@ function closedFormLogTotalmass(ir: any, bindings: any): any {
   // The image of the whole target space has the base measure's mass,
   // regardless of whether the forward map is injective or has a density.
   if (op === 'pushfwd' && Array.isArray(ir.args) && ir.args.length === 2) {
-    return closedFormLogTotalmass(ir.args[1], bindings);
+    return closedFormLogTotalmass(ir.args[1], bindings, opts);
   }
   if (op === 'logweighted') {
     const g = resolveConstant(ir.args[0], bindings || new Map(), new Set());
     if (g == null || !Number.isFinite(g)) return null;
-    const b: any = closedFormLogTotalmass(ir.args[1], bindings);
+    const b: any = closedFormLogTotalmass(ir.args[1], bindings, opts);
     return b == null ? null : g + b;
   }
   if (op === 'weighted') {
     const w = resolveConstant(ir.args[0], bindings || new Map(), new Set());
     if (w == null || !(w > 0) || !Number.isFinite(w)) return null;
-    const b: any = closedFormLogTotalmass(ir.args[1], bindings);
+    const b: any = closedFormLogTotalmass(ir.args[1], bindings, opts);
     return b == null ? null : Math.log(w) + b;
+  }
+  // §06 "Support restriction": `ν(A) = M(A ∩ S)`, so mass(truncate(M, S)) is
+  // M(S) — the CDF difference over the interval, NOT 1 and not the sampler's
+  // accept-rate estimate. `normalize-mass.truncateMassLit` is the one place
+  // that computes it, and it accepts only a constant-parameter continuous
+  // scalar leaf over a constant `interval`.
+  if (op === 'truncate' && opts && opts.truncate
+      && Array.isArray(ir.args) && ir.args.length === 2) {
+    // A constant scalar weight outside the restriction factors through it:
+    // truncate(logweighted(ℓ, M), S) has mass exp(ℓ)·M(S), since restricting
+    // the support does not touch the weight. Peeling it here is what lets
+    // `truncateMassLit` see the bare leaf it requires. An expanded `weighted`
+    // derivation always carries its constant shift as `logweighted` (the
+    // derivation's pre-computed `logShift`), so that one op covers both
+    // spellings; a non-constant weight declines below and refuses.
+    let base = ir.args[0];
+    let logW = 0;
+    while (base && base.kind === 'call' && base.op === 'logweighted'
+           && Array.isArray(base.args) && base.args.length === 2) {
+      const g = resolveConstant(base.args[0], bindings || new Map(), new Set());
+      if (g == null || !Number.isFinite(g)) return null;
+      logW += g;
+      base = base.args[1];
+    }
+    const { truncateMassLit } = require('./normalize-mass.ts');
+    const m = truncateMassLit(base, ir.args[1]);
+    // truncateMassLit already declines a non-finite or zero mass, so the log
+    // below is finite whenever it answers.
+    if (m == null) return null;
+    return logW + Math.log(m.value);
   }
   if (op === 'select') {
     // A conditional selector chooses a branch; it is not the additive
@@ -4249,7 +4540,7 @@ function closedFormLogTotalmass(ir: any, bindings: any): any {
     if (br.length === 0) return null;
     const terms: any[] = [];
     for (let k = 0; k < br.length; k++) {
-      const b = closedFormLogTotalmass(br[k], bindings);
+      const b = closedFormLogTotalmass(br[k], bindings, opts);
       if (b == null) return null;
       let lw = 0;
       if (ir.logweights) {
@@ -4271,20 +4562,21 @@ function closedFormLogTotalmass(ir: any, bindings: any): any {
     if (!comps) return null;
     let acc = 0;
     for (const c of comps) {
-      const t = closedFormLogTotalmass(c, bindings);
+      const t = closedFormLogTotalmass(c, bindings, opts);
       if (t == null) return null;
       acc += t;
     }
     return acc;
   }
   if (op === 'iid' && Array.isArray(ir.args) && ir.args.length === 2) {
-    const inner: any = closedFormLogTotalmass(ir.args[0], bindings);
+    const inner: any = closedFormLogTotalmass(ir.args[0], bindings, opts);
     if (inner == null) return null;
     const n = resolveConstant(ir.args[1], bindings || new Map(), new Set());
     if (n == null || !Number.isFinite(n)) return null;
     return n * inner;
   }
-  // truncate / jointchain / unknown — not closed-form here.
+  // jointchain / unknown — not closed-form here, and neither is `truncate`
+  // unless `opts.truncate` turned its arm on above.
   return null;
 }
 
