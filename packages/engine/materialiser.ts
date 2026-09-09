@@ -344,7 +344,7 @@ function _baseWeightEvents(parent: any, N: number) {
   const c = N > 0 ? -Math.log(N) : 0;
   const base = new Float64Array(N);
   for (let i = 0; i < N; i++) base[i] = c;
-  const events = [lineage.newEvent(null, c)];
+  const events = [lineage.newEvent(null, c, true)];
   lineage.register(base, events);
   return { base, events: events as readonly any[] };
 }
@@ -2190,16 +2190,69 @@ function matClm(ir: any, ctx: any): Promise<any> {
   });
 }
 
+// The total log mass of a product of atom-aligned factors, or null when a
+// factor's own mass is uncertified.
+//
+// The factors are NOT independent in general. A `jointchain` kernel step, and a
+// field of a shared-ancestor record law, are materialised with their ancestors'
+// atoms as parameters, so their measures INHERIT those ancestors' weighting
+// events. Summing the factors' `logTotalmass` therefore counted a weighted
+// ancestor once per descendant: both
+// `jointchain(aa = weighted(3.0, Normal(0,1)), bb = fn(Normal(_, 1.0)))` and
+// `lawof(record(t = theta, xx = x))` over `theta ~ weighted(3.0, Normal(0,1))`
+// reported totalmass 9 against the exact 3 (the double integral of
+// 3 p(a) p(b|a)). The per-atom WEIGHTS were right throughout, because
+// `propagateLogWeights` de-duplicates on the weighting events; only the mass
+// read past them.
+//
+// So read the same events. Each DISTINCT event the model asked for contributes
+// its offset once, however many factors inherited it. The `-log(N)` empirical
+// baselines are dropped: one covers the product's whole atom axis, and a
+// factor's `logTotalmass` excludes its own anyway. On top of that each factor
+// adds its RESIDUE — the part of its mass its weights do not carry, which is
+// where `truncate` records its accept rate and a `Lebesgue(interval(a, b))` its
+// volume (§06 `truncate`: "Does not normalize automatically").
+//
+// An OPAQUE event (a per-atom array, from a superposition, a resample, or a
+// worker-boundary crossing the WeakMap cannot follow) has no scalar offset to
+// attribute, so that factor keeps the whole-mass accounting it had. That is
+// this rule's limit, not a claim about it.
+function _productLogTotalmass(subs: any[]): number | null {
+  const lineage = require('./weight-lineage.ts');
+  const counted = new Set<number>();
+  let lTM: number | null = 0;
+  for (const s of subs) {
+    const w = s && s.logWeights;
+    const events: any[] = w ? (lineage.lineageOf(w).events as any[]) : [];
+    const model = events.filter((e: any) => !e.baseline);
+    if (model.some((e: any) => e.values)) {
+      lTM = addMass(lTM, massOf(s));
+      continue;
+    }
+    const m = massOf(s);
+    if (m === null) return null;
+    let fresh = 0;
+    let carried = 0;
+    for (const e of model) {
+      carried += e.offset;
+      if (counted.has(e.id)) continue;
+      counted.add(e.id);
+      fresh += e.offset;
+    }
+    lTM = addMass(lTM, fresh + (m - carried));
+  }
+  return lTM;
+}
+
 function matTuple(d: DerivationTuple, ctx: any, name: string) {
   // Positional analogue of record. Each element materialises
   // independently; combine into a tuple Measure whose components live
   // in elems. Top-level logWeights is the join of components'.
   return _materialiseFactorsIndependent(d.elems, ctx, name).then((subs: any[]) => {
     const lw = empirical.propagateLogWeights(subs);
-    let lTM: number | null = 0;
+    const lTM = _productLogTotalmass(subs);
     let nEff = ctx.sampleCount;
     for (const s of subs) {
-      lTM = addMass(lTM, massOf(s));
       if (typeof s.n_eff === 'number') nEff = Math.min(nEff, s.n_eff);
     }
     return Object.assign(
@@ -2219,14 +2272,13 @@ function matRecord(d: DerivationRecord, ctx: any, name: string) {
   const fieldDeps  = fieldNames.map((k) => d.fields[k]);
   return _materialiseFactorsIndependent(fieldDeps, ctx, name).then((subs: any[]) => {
     const fields: any = {};
-    let lTM: number | null = 0;
     let nEff = ctx.sampleCount;
     for (let i = 0; i < fieldNames.length; i++) {
       fields[fieldNames[i]] = subs[i];
-      lTM = addMass(lTM, massOf(subs[i]));
       if (typeof subs[i].n_eff === 'number') nEff = Math.min(nEff, subs[i].n_eff);
     }
     const lw = empirical.propagateLogWeights(subs);
+    const lTM = _productLogTotalmass(subs);
     return Object.assign(
       empirical.recordMeasure(fields, lw),
       { logTotalmass: lTM, n_eff: nEff },
@@ -3525,9 +3577,9 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
       // tupleMeasure strip them at the leaves so the composite-measure
       // invariant holds at every layer (empirical.ts).
       const lw = empirical.propagateLogWeights(subs);
-      let lTM: number | null = 0; let nEff = ctx.sampleCount;
+      const lTM = _productLogTotalmass(subs);
+      let nEff = ctx.sampleCount;
       for (const s of subs) {
-        lTM = addMass(lTM, massOf(s));
         if (typeof s.n_eff === 'number') nEff = Math.min(nEff, s.n_eff);
       }
       if (isPositionalJoint) {

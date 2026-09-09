@@ -609,7 +609,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
     }
     lineage.register(newLW, (existingLW
       ? lineage.lineageOf(existingLW).events
-      : [lineage.newEvent(null, uniformLW)]
+      : [lineage.newEvent(null, uniformLW, true)]
     ).concat([lineage.newEvent(logpDelta, 0)]));
     const lTM = empirical.logSumExp(newLW);
     const nEff = empirical.effectiveSampleSize({ samples: parent.samples || new Float64Array(N), logWeights: newLW });

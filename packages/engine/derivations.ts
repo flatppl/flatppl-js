@@ -2886,22 +2886,6 @@ function _carryProjectionDroppedMass(bindings: any, derivations: any): void {
       derivations[name] = { kind: 'weighted', from: d.from, logShift: logZ };
       continue;
     }
-    // A multi-step chain marginal has no carrier for the factor, so refuse
-    // rather than answer a mass that is wrong by it. Both of the engine's
-    // carriers for a scalar mass on a chain are already broken, independently
-    // of this projection: `weighted` OVER a chain has no lowerable density (the
-    // lowering reports the chain's step variates as undeclared inputs, and the
-    // density query is cascade-pruned), and scaling the chain's BASE STEP
-    // double-counts, because the chain's mass sums each step's while the
-    // kernel's atoms already carry the base's weights — spelled directly,
-    // `jointchain(aa = weighted(3, Normal(0,1)), bb = fn(Normal(_, 1)))` reports
-    // totalmass 9 against the exact 3. §06 mandates this projection only "when
-    // the omitted transitions are normalized", which is the Z = 1 case handled
-    // above, so the refusal costs no required behaviour.
-    if (d.kind === 'jointchain') {
-      d.uncarriedDroppedMassLog = logZ;
-      continue;
-    }
     const inner = '%projmarginal:' + name;
     bindings.set(inner, _syntheticMeasureBinding(inner, d));
     derivations[inner] = d;
@@ -2924,13 +2908,24 @@ function _syntheticMeasureBinding(inner: string, d: any): any {
       fields: Object.keys(d.fields).map((f: string) => (
         { name: f, value: selfRef(d.fields[f]) })),
     };
-  } else {
-    // iid.
+  } else if (d.kind === 'iid') {
     deps = [d.from];
     ir = {
       kind: 'call', op: 'iid',
       args: [selfRef(d.from), { kind: 'lit', value: d.dims[0] }],
     };
+  } else {
+    // jointchain. Each step is a base or kernel binding ref, or an inline
+    // kernel, which is how the surface spells the chain's own arguments.
+    const argOf = (st: any) => (st.ref != null ? selfRef(st.ref) : st.kernelIR);
+    deps = d.steps.filter((st: any) => st.ref != null).map((st: any) => st.ref);
+    ir = d.labels
+      ? {
+        kind: 'call', op: 'jointchain',
+        fields: d.steps.map((st: any, i: number) => (
+          { name: d.labels[i], value: argOf(st) })),
+      }
+      : { kind: 'call', op: 'jointchain', args: d.steps.map(argOf) };
   }
   return {
     name: inner,
@@ -3139,26 +3134,14 @@ function _projectProductBases(bindings: any, derivations: any): void {
 // sampled measure nor the scored density can answer past the gap.
 function assertProjectionMassCertified(name: string, d: any): void {
   const ref = d && d.uncertifiedDroppedMass;
-  if (ref) {
-    throw engineLimitation(
-      'a structural projection over a component with an uncertified mass',
-      'sampling and density',
-      "'" + name + "' marginalises '" + ref + "', whose total mass this engine "
-      + 'does not certify. §06 makes pushfwd mass-preserving, so the marginal '
-      + "carries that component's mass as a factor — normalize the component to "
-      + 'make the factor 1');
-  }
-  // The factor is known here, and still not answerable: see the jointchain arm
-  // of `_carryProjectionDroppedMass` for the two broken carriers.
-  const logZ = d && d.uncarriedDroppedMassLog;
-  if (logZ == null) return;
+  if (!ref) return;
   throw engineLimitation(
-    'a jointchain prefix projection over unnormalized dropped transitions',
+    'a structural projection over a component with an uncertified mass',
     'sampling and density',
-    "'" + name + "' has a closed-form marginal — the retained prefix scaled by "
-    + Math.exp(logZ) + ' — but this engine has no carrier for that factor on a '
-    + 'chain. §06 requires the projection when the dropped transitions are '
-    + 'normalized; normalize them, or project onto the base step alone');
+    "'" + name + "' marginalises '" + ref + "', whose total mass this engine "
+    + 'does not certify. §06 makes pushfwd mass-preserving, so the marginal '
+    + "carries that component's mass as a factor — normalize the component to "
+    + 'make the factor 1');
 }
 
 // The field selection a callable's IR performs when it is a PURE record

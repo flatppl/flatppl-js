@@ -2045,19 +2045,25 @@ tm = totalmass(A)
   assert.ok(Math.abs(tm.samples[0] - 1) < 1e-12);
 });
 
-test('projection: a two-step chain prefix over an unnormalized transition refuses', async () => {
-  // The factor is closed form (3) and the engine has no carrier for it on a
-  // chain, so it refuses rather than report the prefix scaled twice.
+test('projection: a two-step chain prefix carries an unnormalized dropped factor', async () => {
+  // Dropping `cc` leaves totalmass(K_cc) = 3 on the retained two-step prefix,
+  // so the marginal is 3 * p(aa) * p(bb|aa). This refused while the chain had
+  // no working carrier for a scalar mass; both carriers are fixed now.
   const ctx = makeCtx(`
 M = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)),
                cc = fn(weighted(3.0, Normal(0.0, 1.0))))
 A = pushfwd(fn(get(_, ["aa", "bb"])), M)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
+tm = totalmass(A)
 `);
-  const isLimitation = (e: any) => e.code === 'ENGINE_LIMITATION'
-    && /no carrier for that factor on a chain/.test(e.message);
-  await assert.rejects(() => Promise.resolve(ctx.getMeasure('A')), isLimitation);
-  await assert.rejects(() => Promise.resolve(ctx.getMeasure('lp')), isLimitation);
+  assert.equal(ctx.derivations.A.kind, 'weighted');
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - CHAIN_W3_DENSITY) < 1e-12,
+    `two-step prefix with a dropped factor: got ${lp.samples[0]}, `
+    + `expected ${CHAIN_W3_DENSITY}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
+    `two-step prefix totalmass: got ${tm.samples[0]}, expected 3`);
 });
 
 test('projection: a chain transition whose mass moves with the variate refuses', async () => {
@@ -2151,4 +2157,177 @@ A = pushfwd(fn(get(_, 1)), B)
 `);
   assert.equal(ctx.derivations.A.kind, 'pushfwd');
   assert.equal(ctx.derivations.B.kind, 'weighted');
+});
+
+// =====================================================================
+// Product mass over DEPENDENT factors.
+//
+// A `jointchain` kernel step, and a field of a shared-ancestor record law, are
+// materialised from their ancestors' atoms and inherit those ancestors'
+// weighting events, so summing the factors' masses counted a weighted ancestor
+// once per descendant.
+//
+// Oracle literals from Distributions.jl: logpdf(Normal(0,1), 0.5) =
+// -1.0439385332046727 and logpdf(Normal(0.5,1), 0.5) = -0.9189385332046728, so
+// the two-variate chain density at (0.5, 0.5) is log w + their sum.
+// =====================================================================
+
+const CHAIN_W3_DENSITY = -0.8642647777412357;    // log 3 + the two logpdfs
+const CHAIN_W2W5_DENSITY = 0.33970802658470045;  // log 10 + the two logpdfs
+
+test('chain mass: a weighted base is counted once, not once per step', async () => {
+  // Exact: the double integral of 3 p(a) p(b|a) over both variates is 3. The
+  // engine reported 8.999999999999993.
+  const ctx = makeCtx(`
+A = jointchain(aa = weighted(3.0, Normal(0.0, 1.0)), bb = fn(Normal(_, 1.0)))
+lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
+    `weighted-base chain totalmass: got ${tm.samples[0]}, expected 3`);
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - CHAIN_W3_DENSITY) < 1e-12,
+    `weighted-base chain density: got ${lp.samples[0]}, expected ${CHAIN_W3_DENSITY}`);
+});
+
+test('chain mass: a weighted TRANSITION multiplies the base rather than doubling it', async () => {
+  // The transition's own weight is a FRESH event and the base's an inherited
+  // one, so the product is 2 * 5. The engine reported 20.000000000000007.
+  const ctx = makeCtx(`
+A = jointchain(aa = weighted(2.0, Normal(0.0, 1.0)), bb = fn(weighted(5.0, Normal(_, 1.0))))
+lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 10) < 1e-10,
+    `two-weight chain totalmass: got ${tm.samples[0]}, expected 10`);
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - CHAIN_W2W5_DENSITY) < 1e-12,
+    `two-weight chain density: got ${lp.samples[0]}, expected ${CHAIN_W2W5_DENSITY}`);
+});
+
+test('chain mass: a truncate base reaches the product through the residue', async () => {
+  // A truncation keeps uniform weights and records its accept rate on
+  // logTotalmass, so it has no weighting event to share and arrives as the
+  // factor's residue instead.
+  const ctx = makeCtx(`
+A = jointchain(aa = truncate(Normal(0.0, 1.0), interval(-1.0, 1.0)), bb = fn(Normal(_, 1.0)))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - PHI_BAND) < 1e-11,
+    `truncate-base chain totalmass: got ${tm.samples[0]}, expected ${PHI_BAND}`);
+});
+
+test('chain mass: an all-normalized chain still has mass 1', async () => {
+  const ctx = makeCtx(`
+A = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 1) < 1e-12);
+});
+
+test('chain mass: a shared-ancestor record law counts its latent once', async () => {
+  // The same defect off the chain path. Both fields of the record law are
+  // materialised from theta's atoms, so both inherit its weighting event. The
+  // joint law's mass is 3; the engine reported 9.000000000000002.
+  const ctx = makeCtx(`
+theta ~ weighted(3.0, Normal(0.0, 1.0))
+x ~ Normal(theta, 1.0)
+A = lawof(record(t = theta, xx = x))
+lp = logdensityof(A, record(t = 0.5, xx = 0.5))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
+    `shared-ancestor record law totalmass: got ${tm.samples[0]}, expected 3`);
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - CHAIN_W3_DENSITY) < 1e-12,
+    `shared-ancestor record law density: got ${lp.samples[0]}, `
+    + `expected ${CHAIN_W3_DENSITY}`);
+});
+
+test('chain mass: two INDEPENDENT weighted components still multiply', async () => {
+  // Distinct events, so the product is 3 * 5 exactly as before. This is the
+  // case a mass read off the PROPAGATED weights would get wrong, since two
+  // independently lifted factors carry two -log(N) baselines.
+  const ctx = makeCtx(`
+A = joint(aa = weighted(3.0, Normal(0.0, 1.0)), bb = weighted(5.0, Normal(0.0, 1.0)))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 15) < 1e-10,
+    `independent two-weight joint totalmass: got ${tm.samples[0]}, expected 15`);
+});
+
+test('chain mass: a positional tuple product takes the same rule', async () => {
+  const ctx = makeCtx(`
+A = jointchain(weighted(3.0, Normal(0.0, 1.0)), fn(Normal(_, 1.0)))
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
+    `positional weighted-base chain totalmass: got ${tm.samples[0]}, expected 3`);
+});
+
+test('chain mass: a weighted OVER a chain scores instead of being pruned', async () => {
+  // The lowering reads the chain's step variates through the mass-only
+  // wrapper, so they are declared inputs. Before, the chain's `aa` surfaced as
+  // an undeclared body self-ref, the lowering refused the shape as not
+  // self-contained, and the density derivation was cascade-pruned.
+  const ctx = makeCtx(`
+B = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
+A = weighted(3.0, B)
+lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
+tm = totalmass(A)
+`);
+  assert.ok(ctx.derivations.lp, 'the density query keeps its derivation');
+  const lp = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - CHAIN_W3_DENSITY) < 1e-12,
+    `weighted-over-chain density: got ${lp.samples[0]}, expected ${CHAIN_W3_DENSITY}`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
+    `weighted-over-chain totalmass: got ${tm.samples[0]}, expected 3`);
+});
+
+test('chain mass: an ALIAS to a chain is read through too', async () => {
+  const ctx = makeCtx(`
+B = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
+A = B
+lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
+`);
+  const lp = await ctx.getMeasure('lp');
+  const want = -1.0439385332046727 + -0.9189385332046728;
+  assert.ok(Math.abs(lp.samples[0] - want) < 1e-12,
+    `alias-to-chain density: got ${lp.samples[0]}, expected ${want}`);
+});
+
+test('chain mass: a weighted over a MARGINALIZING chain is left alone', async () => {
+  // A `kchain` lowering also needs its `marginal` reduce, which a wrapper does
+  // not carry, so the wrapper is NOT read through: declaring the boundary
+  // without the reduce would drop the marginalisation silently. Its density is
+  // this engine's Monte-Carlo chain marginal, so only the exact mass is pinned.
+  const ctx = makeCtx(`
+B = kchain(Normal(0.0, 1.0), fn(Normal(_, 1.0)))
+A = weighted(3.0, B)
+tm = totalmass(A)
+`);
+  const tm = await ctx.getMeasure('tm');
+  assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
+    `weighted-over-kchain totalmass: got ${tm.samples[0]}, expected 3`);
+});
+
+test('chain mass: a variate weight over a chain is not read through', async () => {
+  // A weight that is a FUNCTION of the variate is not a scalar shift on the
+  // chain's mass, so the wrapper is opaque here and the shape keeps whatever
+  // it had — it gains no density derivation.
+  const ctx = makeCtx(`
+B = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
+A = weighted(fn(exp(0.0 * _)), B)
+lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
+`);
+  assert.ok(ctx.derivations.A.weightIR, 'the weight is a function of the variate');
+  assert.ok(!ctx.derivations.lp, 'the variate-weighted chain gains no density route');
 });

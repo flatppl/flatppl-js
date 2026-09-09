@@ -149,7 +149,7 @@ function materialiseUniform(measure: any) {
   // from the offset alone and this array need not stay alive. A fresh id per
   // call preserves the engine's existing mass convention: two independently
   // lifted uniform parents still contribute two baselines.
-  lineage.register(w, [lineage.newEvent(null, c)]);
+  lineage.register(w, [lineage.newEvent(null, c, true)]);
   return { samples: measure.samples, logWeights: w };
 }
 
