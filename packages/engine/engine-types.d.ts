@@ -282,23 +282,30 @@ export interface DerivationBase {
 // internal synthesised derivations the materialiser builds in flight
 // omit it.
 
-/** Alias to another binding — shares samples / logWeights / metadata. */
-export interface DerivationAlias {
-  kind: 'alias';
-  name?: string;
-  from: string;
-
-/** Spec §06 case-2 structural projection: the component bindings the
- *  marginal integrates out. `pushfwd` is mass-preserving, so their total
- *  mass is a scalar factor on the marginal. Present only between
- *  classification and `_carryProjectionDroppedMass`, which resolves the
- *  factor and deletes the field. */
+/** What a spec §06 case-2 structural projection leaves on the marginal it
+ *  lowers to. Mixed into every derivation kind a marginal can take. */
+export interface ProjectionMarginal {
+/** The component bindings the marginal integrates out. `pushfwd` is
+ *  mass-preserving, so their total mass is a scalar factor on the marginal.
+ *  Present only between classification and `_carryProjectionDroppedMass`,
+ *  which resolves the factor and deletes the field. */
   projectionDropped?: string[];
+/** The same, for a dropped `jointchain` transition, whose mass belongs to a
+ *  kernel body rather than to a binding: the measure IR to certify, labelled
+ *  by the step's variate name for the refusal message. */
+  projectionDroppedIR?: { label: string; ir: any }[];
 /** Set by `_carryProjectionDroppedMass` when a dropped component's total
  *  mass has no closed form: names that component. Both derivation dispatch
  *  points refuse on it rather than answer a marginal off by an unknown
  *  factor. */
   uncertifiedDroppedMass?: string;
+}
+
+/** Alias to another binding — shares samples / logWeights / metadata. */
+export interface DerivationAlias extends ProjectionMarginal {
+  kind: 'alias';
+  name?: string;
+  from: string;
 }
 
 /** Numeric array literal (e.g. `xs = [1, 2, 3]`). */
@@ -316,23 +323,11 @@ export interface DerivationTuple {
 }
 
 /** Record-typed joint over named-binding refs. */
-export interface DerivationRecord {
+export interface DerivationRecord extends ProjectionMarginal {
   kind: 'record';
   name?: string;
   /** Field name → referenced binding name. */
   fields: Record<string, string>;
-
-/** Spec §06 case-2 structural projection: the component bindings the
- *  marginal integrates out. `pushfwd` is mass-preserving, so their total
- *  mass is a scalar factor on the marginal. Present only between
- *  classification and `_carryProjectionDroppedMass`, which resolves the
- *  factor and deletes the field. */
-  projectionDropped?: string[];
-/** Set by `_carryProjectionDroppedMass` when a dropped component's total
- *  mass has no closed form: names that component. Both derivation dispatch
- *  points refuse on it rather than answer a marginal off by an unknown
- *  factor. */
-  uncertifiedDroppedMass?: string;
 }
 
 /** Sample N draws from `distIR` per atom (the universal leaf).
@@ -423,7 +418,7 @@ export interface DerivationSuperpose {
 }
 
 /** IID measure: `iid(M, n)` — atom-major buffer of shape [N, n]. */
-export interface DerivationIid {
+export interface DerivationIid extends ProjectionMarginal {
   kind: 'iid';
   name?: string;
   from: string;
@@ -608,7 +603,7 @@ export interface DerivationBroadcastLogdensity {
 }
 
 /** First-class jointchain / kchain (engine-concepts §10 consume/rest). */
-export interface DerivationJointchain {
+export interface DerivationJointchain extends ProjectionMarginal {
   kind: 'jointchain';
   name?: string;
   /** kchain ⇒ true (keep last only); jointchain ⇒ false. */
