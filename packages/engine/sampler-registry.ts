@@ -1102,6 +1102,8 @@ function randNLogNormal(state: any, params: any, n: number, out?: Float64Array) 
 // falling through the comparison into the formula.
 function _continuedPoissonLogpdf(x: number, rate: number): number {
   if (!(x >= 0)) return -Infinity;
+  // §09 permits rate=0. Use the density limit, avoiding 0 * log(0).
+  if (rate === 0) return x === 0 ? 0 : -Infinity;
   return x * Math.log(rate) - rate - stdlibGammaln(x + 1);
 }
 

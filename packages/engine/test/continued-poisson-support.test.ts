@@ -104,6 +104,20 @@ L = likelihoodof(aux_model, ${obs})
 ld = logdensityof(L, record(g = [1.0, 1.0]))
 `;
 
+test('zero-rate ContinuedPoisson uses the density limit in a likelihood', async () => {
+  // §09: λ^0 exp(-λ)/Γ(1) = 1 at λ=0; λ^x = 0 for x>0.
+  for (const [x, want] of [[0, 0], [0.5, -Infinity]]) {
+    const got = await score(`
+hepphys = standard_module("particle-physics", "0.1")
+rates = elementof(cartpow(nonnegreals, 1))
+M = hepphys.ContinuedPoisson.(rates)
+L = likelihoodof(M, [${x}])
+ld = logdensityof(L, record(rates = [0.0]))
+`, 'ld');
+    assert.equal(got, want);
+  }
+});
+
 test('a §09 aux term scores −∞ at a negative observation', async () => {
   // One in-support and one out-of-support entry. The sum is −∞, so the negative
   // half-space is excluded; before the mask the −0.5 entry contributed
