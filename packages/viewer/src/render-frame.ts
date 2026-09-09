@@ -271,8 +271,11 @@ function applyPanelLayout(ctx: Ctx) {
     el.style.flex = p.flex;
     const btn = $(dom.toggle);
     btn.classList.toggle('on', p.visible);
+    // The face is just the label; the on/off state is the button's
+    // filled/outlined rendering (templates.ts `.on`) plus aria-pressed —
+    // a ": on"/": off" suffix crowded the header's binding line.
     btn.setAttribute('aria-pressed', String(p.visible));
-    btn.textContent = dom.label + ': ' + (p.visible ? 'on' : 'off');
+    btn.textContent = dom.label;
   }
   for (const d of layout.dividers) {
     const id = PANEL_DOM[d.after].dividerAfter;

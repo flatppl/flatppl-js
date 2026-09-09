@@ -444,9 +444,9 @@ export var VIEWER_BODY_HTML = `
 <span id="header-expr"></span>
 <span id="inference-controls"></span>
 <span id="view-controls">
-<button id="graph-toggle" type="button" aria-pressed="true" title="Toggle the graph panel">Graph: on</button>
-<button id="plot-toggle" type="button" aria-pressed="false" title="Toggle the plot panel">Plots: off</button>
-<button id="math-toggle" type="button" aria-pressed="false" title="Toggle the math panel">Math: off</button>
+<button id="graph-toggle" type="button" aria-pressed="true" title="Toggle the graph panel">Graph</button>
+<button id="plot-toggle" type="button" aria-pressed="false" title="Toggle the plot panel">Plots</button>
+<button id="math-toggle" type="button" aria-pressed="false" title="Toggle the math panel">Math</button>
 </span>
 </div>
 <div id="main">
