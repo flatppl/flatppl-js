@@ -585,6 +585,38 @@ function _buildBody(input: any, deriv: any, ctx: any, opts?: any): { body: any; 
   return { body, boundarySet, mc };
 }
 
+// The `jointchain` a derivation IS, or the one it WRAPS through mass-only
+// layers — else null.
+//
+// `weighted(3.0, <chain>)` and an alias to one expand to the chain's own body
+// under a scalar log shift, so the chain's step variates are the same fed cut.
+// Reading that cut off `deriv.kind` alone misses it: the variates then surface
+// as undeclared body self-refs, the lowering refuses the shape as not
+// self-contained (`CLM_SUBSET_VIOLATION` naming the chain's first step
+// variate), `derivationRefsValid` turns the refusal into a dropped derivation,
+// and the density query fails with the flat "no derivation".
+//
+// A MARGINALIZING chain (`kchain`) is deliberately NOT read through a wrapper.
+// Its lowering also needs the `marginal` reduce, which `_reduce` reads off
+// `deriv.kind` and a wrapper does not carry, so declaring the boundary here
+// would drop the marginalisation silently. A wrapped `kchain` keeps whatever it
+// had.
+function _chainOf(deriv: any, ctx: any): any {
+  let d = deriv;
+  // A hop cap rather than a cycle set: `buildDerivations` already prunes a
+  // cyclic derivation, so this only bounds a pathological wrapper tower.
+  for (let hop = 0; d && hop < 8; hop++) {
+    if (d.kind === 'jointchain') {
+      return (Array.isArray(d.steps) && (d === deriv || !d.marginalize)) ? d : null;
+    }
+    // Only a CONSTANT mass layer is transparent. A per-atom weight (`weightIR`)
+    // is a function of the variate, not a shift on the chain.
+    if (d.kind === 'weighted' ? !!d.weightIR : d.kind !== 'alias') break;
+    d = ctx && ctx.derivations ? ctx.derivations[d.from] : null;
+  }
+  return null;
+}
+
 // The fed-boundary names for a derivation, by kind.
 function _boundarySet(deriv: any, ctx: any): Set<string> {
   const s = new Set<string>();
@@ -602,18 +634,19 @@ function _boundarySet(deriv: any, ctx: any): Set<string> {
     // p = a)`). Both are the fed cut — inlining must stop at either
     // (feedInputs binds the columns under both via `localAlias`).
     if (Array.isArray(deriv.params)) for (const p of deriv.params) s.add(p);
-  } else if (deriv.kind === 'jointchain' && Array.isArray(deriv.steps)) {
+  } else if (_chainOf(deriv, ctx)) {
     // Prior step variates: the base var (+ its record fields) and every
     // non-final kernel step's variate are integration variables the kernel
     // bodies splat over. The 2-step kchain rewires its hole to the base
     // BINDING ref, so include that too.
-    const base = deriv.steps[0];
+    const chain = _chainOf(deriv, ctx);
+    const base = chain.steps[0];
     if (base) {
       if (base.ref != null) s.add(base.ref);
       s.add(base.var);
       if (Array.isArray(base.baseFields)) for (const f of base.baseFields) s.add(f);
     }
-    for (let i = 1; i < deriv.steps.length; i++) s.add(deriv.steps[i].var);
+    for (let i = 1; i < chain.steps.length; i++) s.add(chain.steps[i].var);
   }
   return s;
 }
@@ -652,7 +685,7 @@ function _reduce(deriv: any): any {
 // its fields must still be declared so feedInputs materialises them and the
 // marginal knows what to integrate over. ⊆ allows inputs ⊇ body self-refs, so
 // declaring extras is sound.
-function _structuralBoundaries(deriv: any): any[] {
+function _structuralBoundaries(deriv: any, ctx: any): any[] {
   const out: any[] = [];
   if (!deriv) return out;
   const push = (name: any, from: any, field?: any) => {
@@ -672,8 +705,9 @@ function _structuralBoundaries(deriv: any): any[] {
       if (plc[i] && plc[i] !== k) src.localAlias = plc[i];
       out.push({ name: k, source: src });
     }
-  } else if (deriv.kind === 'jointchain' && Array.isArray(deriv.steps)) {
-    const base = deriv.steps[0];
+  } else if (_chainOf(deriv, ctx)) {
+    const chain = _chainOf(deriv, ctx);
+    const base = chain.steps[0];
     if (base && base.ref != null) {
       push(base.ref, base.ref);                  // the prior measure itself
       if (Array.isArray(base.baseFields)) {
@@ -683,8 +717,8 @@ function _structuralBoundaries(deriv: any): any[] {
     // Intermediate step variates are history columns; their precise `from`
     // (the materialised retained history) is reconstructed by the Phase-3
     // consumer — declare them against base.ref as a best-effort anchor.
-    for (let i = 1; i < deriv.steps.length - 1; i++) {
-      const v = deriv.steps[i].var;
+    for (let i = 1; i < chain.steps.length - 1; i++) {
+      const v = chain.steps[i].var;
       if (v != null) push(v, base && base.ref != null ? base.ref : null, v);
     }
   }
@@ -703,7 +737,7 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
   const inputs: any[] = [];
   const seen = new Set<string>();
   const missing: string[] = [];
-  const priorFrom = _priorFrom(deriv);
+  const priorFrom = _priorFrom(deriv, ctx);
   // Refs the BODY satisfies from its own observed value (see the exclusion
   // below). Read off the lowered body rather than off `deriv.kind`: a
   // markovchain density can be inlined into any enclosing measure — a record
@@ -750,7 +784,7 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
   //    the kwarg name) is marked seen too: feedInputs binds the column
   //    under BOTH names, so a body ref to the alias is covered by the
   //    declared input — it must not re-classify as shared/missing.
-  for (const sb of _structuralBoundaries(deriv)) {
+  for (const sb of _structuralBoundaries(deriv, ctx)) {
     add(sb.name, sb.source);
     if (sb.source && sb.source.localAlias) seen.add(sb.source.localAlias);
   }
@@ -795,11 +829,12 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
 }
 
 // The caller measure a derivation's boundaries are fed from.
-function _priorFrom(deriv: any): string | null {
+function _priorFrom(deriv: any, ctx: any): string | null {
   if (!deriv) return null;
   if (deriv.kind === 'bayesupdate') return deriv.from || null;
-  if (deriv.kind === 'jointchain' && Array.isArray(deriv.steps)) {
-    const base = deriv.steps[0];
+  const chain = _chainOf(deriv, ctx);
+  if (chain) {
+    const base = chain.steps[0];
     return (base && base.ref != null) ? base.ref : null;
   }
   return null;

@@ -57,6 +57,10 @@ export type WeightEvent = {
   id: number;
   values: Float64Array | null;
   offset: number;
+  /** The `-log(N)` empirical baseline rather than a weighting the model asked
+   *  for. One baseline covers a whole product's atom axis, so a mass reader
+   *  counts the model's events and drops these. */
+  baseline?: boolean;
 };
 
 export type WeightLineage = {
@@ -77,8 +81,11 @@ const lineages: WeakMap<Float64Array, WeightLineage> = new WeakMap();
 export function newEvent(
   values: Float64Array | null,
   offset: number = 0,
+  baseline: boolean = false,
 ): WeightEvent {
-  return { id: nextEventId++, values, offset };
+  return baseline
+    ? { id: nextEventId++, values, offset, baseline: true }
+    : { id: nextEventId++, values, offset };
 }
 
 /**
