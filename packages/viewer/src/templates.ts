@@ -89,7 +89,11 @@ body {
 /* Floor for the skeleton before the first applyPanelLayout; the inline
    share written by the layout rule overrides it. */
 .viewer-panel.full { flex: 1 1 100%; }
-.viewer-panel.hidden { display: none; }
+/* Hidden panels. Spelled with the ids so the rule outranks the per-panel
+   id rules below (#plot-panel sets display: flex; an id beats any number
+   of classes) — a bare .viewer-panel.hidden left the plot panel and its
+   toolbar on screen at min-height while "off". */
+#graph-panel.hidden, #plot-panel.hidden, #math-panel.hidden { display: none; }
 /* The first visible panel sits directly under the header: no border. */
 .viewer-panel.first { border-top: none; }
 #plot-panel {

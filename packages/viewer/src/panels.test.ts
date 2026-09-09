@@ -121,3 +121,15 @@ test('PANEL_DOM pins the element ids the layout drives (panel, toggle, divider a
   assert.deepEqual(PANEL_DOM.plot,  { panel: 'plot-panel',  toggle: 'plot-toggle',  label: 'Plots', dividerAfter: 'math-divider' });
   assert.deepEqual(PANEL_DOM.math,  { panel: 'math-panel',  toggle: 'math-toggle',  label: 'Math',  dividerAfter: null });
 });
+
+// The stylesheet is a string, so the one CSS regression that bit — a
+// hidden panel still displayed because an id rule (#plot-panel { display:
+// flex }) outranked the class rule hiding it — is pinned here: every panel
+// id must have an id-qualified `.hidden` rule that sets display: none.
+test('VIEWER_CSS hides each panel with an id-qualified .hidden rule (ids outrank classes)', async () => {
+  const { VIEWER_CSS } = await import('./templates.ts');
+  for (const id of Object.values(PANEL_DOM).map((d) => d.panel)) {
+    const rule = new RegExp('#' + id + '\\.hidden[^{]*\\{[^}]*display:\\s*none');
+    assert.ok(rule.test(VIEWER_CSS), `no id-qualified hidden rule for #${id}`);
+  }
+});
