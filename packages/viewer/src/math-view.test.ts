@@ -38,7 +38,7 @@ const response = {
 
 test('buildMathRequest defaults path, bundle and formats per the contract', () => {
   assert.deepEqual(buildMathRequest({ source: 'x = 1' }), {
-    source: 'x = 1', path: 'model.flatppl', bundle: {}, formats: ['mathml'],
+    source: 'x = 1', path: 'model.flatppl', bundle: {}, formats: ['mathml'], document: true,
   });
 });
 

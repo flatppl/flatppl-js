@@ -50,6 +50,7 @@ export interface MathRequest {
   path: string;
   bundle: Record<string, string>;
   formats: string[];
+  document: boolean;
 }
 
 /** A rendered doc-comment: a trusted HTML fragment of our own Rust
@@ -79,6 +80,9 @@ export interface MathDiagnostic { binding: string; message: string }
 export interface MathNotation { mathml: string; source: string; note: string }
 
 export interface MathResponse {
+  /** Complete article and scoped styles from Rust's HTML document renderer.
+   *  Optional so hosts with older WASM retain the per-binding view. */
+  document?: { html: string; css: string };
   order: string[];
   bindings: MathBinding[];
   diagnostics: MathDiagnostic[];
@@ -113,6 +117,7 @@ export function buildMathRequest(m: {
     path: m.path || DEFAULT_MODULE_PATH,
     bundle: m.bundleSources ? Object.assign({}, m.bundleSources) : {},
     formats: MATH_FORMATS.slice(),
+    document: true,
   };
 }
 

@@ -102,7 +102,22 @@ body {
 #panels-hidden { margin: auto; padding: 1em; opacity: 0.65; text-align: center; }
 #panels-hidden[hidden] { display: none; }
 #plot-content { width: 100%; height: 100%; }
-/* Math pane: a scrollable column of per-binding rows (render-math.ts). */
+/* Rust supplies the document's scoped layout. Host rules only set the pane's
+   spacing, theme and interactive row states. Older WASM uses per-binding rows. */
+#math-content .flatppl-doc { margin: 0 auto; padding: 0.5em 1em; font-family: inherit; font-size: 16px; }
+/* Temml's global flex layout is for its own output. Rust emits native MathML,
+   whose table spacing requires the browser's math formatting context. */
+#math-content .flatppl-doc math { display: inline math; font-family: math; }
+#math-content .flatppl-doc math[display="block"] { display: block math; }
+#math-content .flatppl-doc math > mrow { padding: 0; }
+#math-content .flatppl-doc mtd { padding: 0.5ex 0.4em; }
+#math-content .flatppl-doc .flatppl-data, #math-content .flatppl-doc .flatppl-notation { overflow-x: auto; }
+#math-content .flatppl-doc [data-flatppl-binding] { cursor: pointer; }
+#math-content .flatppl-doc mtr[data-flatppl-binding]:hover > mtd { background: rgba(127, 127, 127, 0.08); }
+#math-content .flatppl-doc mtr.focused > mtd { background: var(--vscode-list-inactiveSelectionBackground, rgba(14, 99, 156, 0.18)); }
+#math-content .flatppl-doc .flatppl-diagnostics,
+#math-content .flatppl-doc .flatppl-row-diag,
+#math-content .flatppl-doc .math-error { color: var(--vscode-errorForeground, #f48771); }
 #math-content {
   width: 100%; height: 100%;
   overflow: auto;

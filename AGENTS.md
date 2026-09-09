@@ -202,6 +202,12 @@ These are the things that catch out first-time contributors. Read each one.
   imports it lazily on the pane's first use. After a flatppl-rust change that
   touches `mathdoc`/`wasm-api`, rebuild both hosts.
 
+  The math pane requests `document: true` from `render_math`. Rust supplies
+  the same article and scoped CSS as its standalone HTML export, including
+  data grids and the full notation legend. Binding metadata still drives
+  focus and source navigation. Older artifacts retain the per-binding view.
+  Math starts off beside Graph and Plots in both hosts.
+
   **LSP provisioning (`build-vendor.mjs`).** As part of `build:vendor`,
   `packages/vscode-extension/build-vendor.mjs` puts a `flatppl-lsp` binary into
   `packages/vscode-extension/bin/`, choosing a source by precedence (decision
