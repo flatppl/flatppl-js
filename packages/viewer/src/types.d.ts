@@ -60,6 +60,9 @@ declare global {
 
   interface FlatPPLConfig {
     samplerWorkerUrl?: string;
+    /** URL of the flatppl_wasm_api wasm-pack `--target web` glue
+     *  (its .wasm next to it); unset ⇒ the math pane is unavailable. */
+    wasmApiUrl?: string;
     playground?: boolean;
     [extra: string]: any;
   }
@@ -275,6 +278,19 @@ export interface Ctx {
   plotEchart: any;
   plotEnabled: boolean;
   graphEnabled: boolean;
+  /** Math pane (render-math.ts) visibility — the third panel of the
+   *  vertical split (panels.ts). Persisted with the other two. */
+  mathEnabled: boolean;
+  /** Lazy-loaded flatppl_wasm_api `render_math` (render-math.ts). */
+  mathRenderer?: { status: 'unconfigured' | 'loading' | 'ready' | 'failed'; render: ((requestJson: string) => string) | null; error: string | null } | null;
+  /** The math pane's last rendering: the model key it was built for,
+   *  the Rust response (null after a failed first render) and the row
+   *  count. */
+  mathView?: { key: string; response: import('./math-view').MathResponse | null; rowCount: number } | null;
+  /** The source text the current bindings were analysed from. Differs from
+   *  `currentSource` while the editor's text fails to parse (the viewer
+   *  keeps the last valid model); the math pane renders THIS source. */
+  analyzedSource?: string | null;
   currentSource: string | null;
   /** Resolved path of the module whose DAG is currently shown (the host's
    *  bundle / router key). Drives cross-module back source-sync (spec §04);
@@ -381,6 +397,9 @@ export interface MountOpts {
   host?: HostAdapter;
   controlsContainer?: HTMLElement | null;
   defaultPlotEnabled?: boolean;
+  /** First-use default for the math pane (off unless the host says
+   *  otherwise); a persisted user choice from loadState() wins. */
+  defaultMathEnabled?: boolean;
   [extra: string]: any;
 }
 

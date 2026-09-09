@@ -47,6 +47,7 @@ import * as esbuild from 'esbuild';
 import { MODEL_EXTENSIONS, typeForPath, hideTestExamplesEnv } from './src/file-types.mjs';
 // Deploy-specific site overlay (legal notice etc. + the footer links).
 import { buildSite } from './build-site.mjs';
+import { provisionWasmApi, WASM_GLUE } from './provision-wasm-api.mjs';
 import { insertThemeShell } from './theme-shell.mjs';
 import { verifyThemeBundle } from './scripts/verify-theme.mjs';
 
@@ -64,14 +65,11 @@ const nm        = join(repoRoot, 'node_modules');
 // shared source of truth with surfaces.ts) — adding a format is a one-line
 // change there and both the build and the runtime pick it up.
 
-// flatppl-wasm-api convert artifact (the `wasm-pack --target web` output:
-// an ESM glue + the wasm binary). Provisioned into dist/vendor/ by
-// provisionWasmConvert() — staged (CI) or built from the flatppl-rust sibling
-// with wasm-pack. No download fallback (same no-magic stance as the LSP
-// build): convert is built from source, or REQUIRED-but-absent fails the
-// build unless FLATPPL_CONVERT=off.
-const WASM_GLUE = 'flatppl_wasm_api.js';
-const WASM_BIN  = 'flatppl_wasm_api_bg.wasm';
+// flatppl-wasm-api artifact (the `wasm-pack --target web` output: an ESM
+// glue + the wasm binary) — the Convert command AND the viewer's math pane.
+// Provisioned into dist/vendor/ by provisionWasmConvert() through the
+// shared provision-wasm-api.mjs (staged, or built from the flatppl-rust
+// sibling with wasm-pack; no download fallback; FLATPPL_CONVERT=off opts out).
 
 // flatppl-examples sibling: the natural sibling layout where developers
 // clone all FlatPPL repos next to each other. When this exists we copy
@@ -485,68 +483,16 @@ function watchDirDebounced(dir, options, onChange) {
   });
 }
 
-// flatppl-wasm-api convert artifact provisioning. Convert is ON by default:
-// copy a CI-staged artifact, else build it from the flatppl-rust sibling using
-// the wasm toolchain ON PATH (cargo + wasm-pack + the wasm32 target). The build
-// does NOT install any of that — adding a target / installing wasm-pack mutates
-// the user's whole Rust installation, which is their responsibility, not a
-// project build's. A missing prerequisite FAILS THE BUILD with the exact
-// one-time setup commands — no silent degradation, so a build that exits 0 has
-// a PREDICTABLE convert state. Opt out with FLATPPL_CONVERT=off for a
-// deterministic convert-less gallery. The page reads the flag from the
-// generated build-flags.js (no runtime probe).
+// flatppl-wasm-api artifact provisioning (Convert command + the viewer's
+// math pane). The source precedence, the no-magic toolchain stance and the
+// FLATPPL_CONVERT=off opt-out live in provision-wasm-api.mjs, shared with
+// the VS Code extension build so both hosts ship the SAME artifact the same
+// way. The page reads the resulting flags from the generated build-flags.js
+// (no runtime probe): `convert` and `wasmApiUrl` are produced together with
+// the artifact, so the UI never promises a feature the build didn't ship.
 async function provisionWasmConvert() {
-  if (process.env.FLATPPL_CONVERT === 'off') {
-    // Explicit opt-out → deterministic convert-less build.
-    await rm(join(vendorDir, WASM_GLUE), { force: true });
-    await rm(join(vendorDir, WASM_BIN), { force: true });
-    await writeConvertFlag(false);
-    console.log('  flatppl-wasm-api: convert DISABLED (FLATPPL_CONVERT=off)');
-    return;
-  }
-
-  // (a) A CI-staged prebuilt artifact wins and needs no toolchain.
-  const staged = process.env.FLATPPL_WASM_DIR;
-  if (staged && existsSync(join(staged, WASM_GLUE))) {
-    await copyFile(join(staged, WASM_GLUE), join(vendorDir, WASM_GLUE));
-    await copyFile(join(staged, WASM_BIN), join(vendorDir, WASM_BIN));
-    await writeConvertFlag(true);
-    console.log(`  flatppl-wasm-api: convert ENABLED (staged ${staged})`);
-    return;
-  }
-
-  // (b) Build from the flatppl-rust sibling, using the wasm toolchain ON PATH.
-  // The build NEVER installs it — `rustup target add` / `cargo install` mutate
-  // the user's whole Rust installation, which is the user's job, not a project
-  // build's. It uses what's on PATH and errors with the exact one-time setup
-  // commands when a piece is missing.
-  const rustSibling = process.env.FLATPPL_RUST_DIR
-    || join(dirname(repoRoot), 'flatppl-rust');
-  const crateDir = join(rustSibling, 'crates', 'wasm-api');
-  if (!existsSync(crateDir)) {
-    throw new Error(
-      'flatppl-wasm-api: convert is on but the wasm-api crate was not found at\n'
-      + `      ${crateDir}\n`
-      + '  Clone flatppl-rust as a sibling (or set FLATPPL_RUST_DIR), point '
-      + 'FLATPPL_WASM_DIR at a prebuilt artifact, or build convert-less with '
-      + 'FLATPPL_CONVERT=off.');
-  }
-  if (!(await hasCmd('wasm-pack'))) {
-    throw new Error(
-      'flatppl-wasm-api: wasm-pack not found on PATH — needed to build the convert '
-      + 'wasm. Set up the wasm build toolchain once yourself (the build will not '
-      + 'mutate your global Rust install):\n'
-      + '      rustup target add wasm32-unknown-unknown\n'
-      + '      cargo install wasm-pack\n'
-      + '  Or build convert-less with FLATPPL_CONVERT=off.');
-  }
-  const pkg = join(crateDir, 'pkg');
-  await runCmd('wasm-pack', ['build', '--target', 'web', '--release',
-    '--no-typescript', '--out-dir', pkg, crateDir]);
-  await copyFile(join(pkg, WASM_GLUE), join(vendorDir, WASM_GLUE));
-  await copyFile(join(pkg, WASM_BIN), join(vendorDir, WASM_BIN));
-  await writeConvertFlag(true);
-  console.log('  flatppl-wasm-api: convert ENABLED (built from sibling flatppl-rust)');
+  const on = await provisionWasmApi({ destDir: vendorDir, repoRoot });
+  await writeConvertFlag(on);
 }
 
 // Bake the build-time feature flags into the page (no runtime probe):
@@ -569,6 +515,11 @@ async function provisionWasmConvert() {
 // file, so the last write always carries every flag.
 async function writeConvertFlag(convertOn) {
   buildFlags.convert = convertOn;
+  // The same artifact carries render_math for the viewer's math pane;
+  // the viewer resolves the glue URL against the page and loads it
+  // lazily, and leaves the pane unavailable when the field is absent.
+  if (convertOn) buildFlags.wasmApiUrl = 'vendor/' + WASM_GLUE;
+  else delete buildFlags.wasmApiUrl;
   await writeBuildFlags();
 }
 
@@ -594,22 +545,6 @@ async function syncSite() {
   console.log(n
     ? `  site: rendered ${n} page(s) from ${siteDir} -> dist/ (${buildFlags.footerLinks.map(l => l.href).join(', ')})`
     : `  site: no pages (no site.json under ${siteDir}); shared footer only`);
-}
-
-function hasCmd(cmd) {
-  return new Promise((resolve) => {
-    const p = spawn(cmd, ['--version'], { stdio: 'ignore' });
-    p.on('error', () => resolve(false));
-    p.on('exit', (code) => resolve(code === 0));
-  });
-}
-
-function runCmd(cmd, args) {
-  return new Promise((resolve, reject) => {
-    const p = spawn(cmd, args, { stdio: 'inherit' });
-    p.on('error', reject);
-    p.on('exit', (code) => (code === 0 ? resolve() : reject(new Error(`${cmd} exited ${code}`))));
-  });
 }
 
 async function copyDirRecursive(srcDir, dstDir) {

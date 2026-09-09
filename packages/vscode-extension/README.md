@@ -20,6 +20,8 @@ Work in progress. Currently:
 - Diagnostics, hover, go-to-definition, document symbols, rename
 - Interactive ancestor-DAG visualization with reification scopes,
   per-distribution coloring, and tether annotations
+- A math pane (toggle "Math" in the visualization) rendering the model as
+  mathematical notation, one row per binding, linked back to the source
 
 ## Language server
 

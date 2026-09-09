@@ -41,6 +41,9 @@ const MIME = {
   '.jpg':     'image/jpeg',
   '.ico':     'image/x-icon',
   '.map':     'application/json',
+  // flatppl_wasm_api_bg.wasm: without the proper type the browser refuses
+  // WebAssembly.instantiateStreaming and warns before falling back.
+  '.wasm':    'application/wasm',
   '.flatppl': 'text/plain; charset=utf-8',
   '.csv':     'text/csv; charset=utf-8',
   '.wsv':     'text/plain; charset=utf-8',

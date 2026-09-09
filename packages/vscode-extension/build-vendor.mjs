@@ -41,6 +41,7 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import { hostTripleForNode, chooseLspSource } from './build-lsp-source.cjs';
+import { provisionWasmApi } from '../web/provision-wasm-api.mjs';
 import { createRequire } from 'node:module';
 const _require = createRequire(import.meta.url);
 const { stubStdlibPlugin } = _require('./build-stdlib-stub.cjs');
@@ -103,6 +104,17 @@ for (const { pkg, src, dst } of COPY_LIBS) {
   await copyFile(from, to);
   console.log(`  copied ${pkg} -> lib/${dst}`);
 }
+
+// ---------------------------------------------------------------------
+// 1b. Provision the flatppl-wasm-api artifact (glue + wasm) into lib/ for
+//     the viewer's math pane (`render_math`). Same shared provisioning as
+//     the web gallery (packages/web/provision-wasm-api.mjs): a CI-staged
+//     FLATPPL_WASM_DIR, else a wasm-pack build from the flatppl-rust sibling;
+//     FLATPPL_CONVERT=off drops it deterministically (the pane then reports
+//     itself unavailable). src/visualPanel.ts hands the webview the glue's
+//     URI as `wasmApiUrl` only when the artifact is present.
+
+await provisionWasmApi({ destDir: libDir, repoRoot });
 
 // Webview viewer JS — sourced from the sibling @flatppl/viewer
 // workspace package. From Phase 4 the viewer lives as ES modules

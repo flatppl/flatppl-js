@@ -77,12 +77,56 @@ jobs:
           name: flatppl-lsp-${{ matrix.target }}
           path: dist/flatppl-lsp-*
 
+  # Build flatppl-wasm-api (the viewer's math pane renderer) ONCE — the wasm
+  # is platform-independent — and stage it for every vsix leg through
+  # FLATPPL_WASM_DIR (build-vendor.mjs / provision-wasm-api.mjs precedence).
+  wasm-api:
+    name: wasm-api
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Pinned so the wasm-pack install is reproducible.
+      WASM_PACK_VERSION: '0.15.0'
+      CARGO_NET_RETRY: '10'
+      CARGO_HTTP_MULTIPLEXING: 'false'
+    steps:
+      - name: Check out flatppl-rust (tip of main)
+        uses: actions/checkout@v7
+        with:
+          repository: flatppl/flatppl-rust
+          ref: main
+
+      - name: Install Rust toolchain (+ wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install wasm-pack (prebuilt)
+        uses: taiki-e/install-action@v2.82.7
+        with:
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
+
+      - name: Build flatppl-wasm-api for the web target
+        run: wasm-pack build --target web --release --no-typescript --out-dir dist crates/wasm-api
+
+      - name: Upload wasm-api artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: flatppl-wasm-api
+          path: |
+            crates/wasm-api/dist/flatppl_wasm_api.js
+            crates/wasm-api/dist/flatppl_wasm_api_bg.wasm
+
   # Package ONE platform-specific vsix per target — each bundles only its own
   # flatppl-lsp binary (vsce --target). VS Code installs the matching one; the
   # install.sh/install.ps1 scripts pick it for manual installs.
   package:
     name: Package VSIX (${{ matrix.vsce_target }})
-    needs: lsp
+    needs: [lsp, wasm-api]
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -98,6 +142,9 @@ jobs:
     env:
       GRAMMARS_DIR: ${{ github.workspace }}/.grammars
       FLATPPL_LSP_BIN_DIR: ${{ github.workspace }}/.lsp-bin
+      # The staged wasm-api artifact (from the wasm-api job above); with it
+      # build:vendor needs no Rust toolchain here.
+      FLATPPL_WASM_DIR: ${{ github.workspace }}/.wasm-api
     steps:
       - uses: actions/checkout@v7
 
@@ -115,6 +162,12 @@ jobs:
           pattern: flatppl-lsp-${{ matrix.triple }}
           merge-multiple: true
 
+      - name: Collect the wasm-api artifact
+        uses: actions/download-artifact@v8
+        with:
+          path: .wasm-api
+          name: flatppl-wasm-api
+
       - uses: actions/setup-node@v6
         with:
           node-version: 22
@@ -123,7 +176,7 @@ jobs:
       - name: Install workspace dev dependencies
         run: npm ci
 
-      - name: Build vendor bundle (stages the single binary from FLATPPL_LSP_BIN_DIR)
+      - name: Build vendor bundle (stages the LSP binary from FLATPPL_LSP_BIN_DIR and the wasm-api from FLATPPL_WASM_DIR)
         run: npm run build:vendor --workspace=flatppl
 
       - name: Package platform-specific VSIX

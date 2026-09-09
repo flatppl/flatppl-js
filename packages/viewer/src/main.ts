@@ -112,8 +112,11 @@ import {
   saveViewState,
   setPlotEnabled,
   setGraphEnabled,
+  setMathEnabled,
+  installPanelDivider,
   showPlotMessage,
 } from './render-frame.js';
+import { installMathPaneNavigation, disposeMathPane } from './render-math.js';
 
 
 import {
@@ -428,7 +431,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     //   samplerWorkerUrl: string  — URL of the sampler-worker bundle,
     //                                loaded as a Web Worker.
     ctx.CONFIG = (typeof window !== 'undefined' && window.__FLATPPL_CONFIG__) || {};
-    ctx.HINT = 'Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source &middot; click ⊞/⊟ or Shift+click an anchor to collapse/expand that group';
+    ctx.HINT = 'Click a node or equation to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source &middot; click ⊞/⊟ or Shift+click an anchor to collapse/expand that group';
     // Sampler-worker URL. Used lazily — no worker is spawned until the
     // user picks a binding for which the Plot tab is enabled (a 'draw'
     // of a known distribution with literal params).
@@ -791,6 +794,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // back on never shows stale data.
   ctx.plotEnabled = false;
   ctx.graphEnabled = true;
+  ctx.mathEnabled = false;
 
 
 
@@ -1361,6 +1365,9 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   $('graph-toggle').addEventListener('click', function() {
     setGraphEnabled(ctx, !ctx.graphEnabled);
   });
+  $('math-toggle').addEventListener('click', function() {
+    setMathEnabled(ctx, !ctx.mathEnabled);
+  });
 
   // Graph-view compactor toolbar: collapse/expand every reification
   // bubble in the currently focused sub-DAG (shift+click on a single
@@ -1387,46 +1394,18 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     if (ctx.plotEnabled) renderPlotForCurrent(ctx);
   };
 
-  // Drag handle between the DAG and plot panes. Lets the user
-  // redistribute vertical space; both panes have a min-height clamp
-  // so neither can be dragged into invisibility. The DAG and plot
-  // ResizeObservers (set up further below) pick up the resulting
-  // size change and refit cytoscape / echarts automatically — no
-  // explicit resize / fit calls needed here.
-  $('plot-divider').addEventListener('mousedown', function (ev) {
-    if (!ctx.plotEnabled || !ctx.graphEnabled) return;
-    ev.preventDefault();
-    const graph = $('graph-panel');
-    const plot  = $('plot-panel');
-    const startY = ev.clientY;
-    const startGraphPx = graph.getBoundingClientRect().height;
-    const startPlotPx  = plot.getBoundingClientRect().height;
-    const combinedPx = startGraphPx + startPlotPx;
-    const MIN_PX = 80;
-    function onMove(mv: any) {
-      const dy = mv.clientY - startY;
-      let newGraph = startGraphPx + dy;
-      let newPlot  = startPlotPx  - dy;
-      if (newGraph < MIN_PX) { newGraph = MIN_PX; newPlot = combinedPx - MIN_PX; }
-      if (newPlot  < MIN_PX) { newPlot  = MIN_PX; newGraph = combinedPx - MIN_PX; }
-      // Use flex-basis in px so the two panes' relative split is
-      // exactly what the user dragged to. flex-grow stays 1 on
-      // both so subsequent host-pane resizes redistribute the
-      // delta proportionally rather than parking it on one side.
-      graph.style.flex = '1 1 ' + newGraph + 'px';
-      plot.style.flex  = '1 1 ' + newPlot  + 'px';
-    }
-    function onUp() {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    }
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  });
+  // Drag handles between adjacent visible panels (graph / plots / math).
+  // Each divider resizes its panel against the next visible one
+  // (panels.ts pairing rule); both have a min-height clamp so neither
+  // can be dragged into invisibility. The DAG and plot ResizeObservers
+  // (set up further below) pick up the resulting size change and refit
+  // cytoscape / echarts automatically — no explicit resize / fit calls
+  // needed here.
+  installPanelDivider(ctx, 'graph');
+  installPanelDivider(ctx, 'plot');
+  // Math pane clicks: identifier / row → focus that binding; Ctrl/Cmd →
+  // jump to its source line (same gestures as the DAG).
+  installMathPaneNavigation(ctx);
 
   // --- DAG rendering ---
 
@@ -1637,8 +1616,14 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   let prevState: any = null;
   if (ctx.host.loadState) { try { prevState = ctx.host.loadState(); } catch (_) {} }
   ctx.graphEnabled = prevState?.graphEnabled !== false;
+  // The math pane's flag is set BEFORE setPlotEnabled applies the layout
+  // so the first paint already reflects all three toggles; its own
+  // setMathEnabled call below then (re)renders its content.
+  ctx.mathEnabled = typeof prevState?.mathEnabled === 'boolean'
+    ? prevState.mathEnabled : opts.defaultMathEnabled === true;
   setPlotEnabled(ctx, typeof prevState?.plotEnabled === 'boolean'
     ? prevState.plotEnabled : opts.defaultPlotEnabled === true);
+  setMathEnabled(ctx, ctx.mathEnabled);
   // Restore which reification bubbles were collapsed last session. A
   // restored anchor is marked "seen" so the >=3-member default in
   // renderDAG doesn't recompute over it — see the `_reifSeen` comment
@@ -1696,6 +1681,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     // teardown is independent so one failure never blocks the rest.
     dispose: function() {
       viewControls.remove();
+      disposeMathPane(ctx);   // a renderer load settling later must not paint into a successor
       try { cancelAllSampling(ctx); } catch (_) {}  // terminate sampler worker + reject in-flight
       if (ctx.cy) { try { ctx.cy.destroy(); } catch (_) {} ctx.cy = null; }
       if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }

@@ -44,16 +44,18 @@ body {
 #inference-controls { flex: 0 0 auto; }
 #header .target-name { font-weight: 600; }
 #header .target-eq { opacity: 0.5; margin: 0 4px; }
-/* Independent Graph/Plots toggles, hosted here or in the web header.
-   One visible panel fills the content area; both split it 60/40.
-   Graph defaults on, plots off. The plot panel renders when enabled — even
-   for non-plottable bindings it shows a "Not plottable" message,
-   so users navigating the graph see a stable layout instead of
-   the panel appearing/disappearing.
+/* Independent Graph / Plots / Math toggles, hosted here or in the web
+   header. The visible panels share the content area by the weights in
+   panels.ts (graph 3 : plots 2 : math 2 — two panels keep the historical
+   60/40 split; a lone panel fills the area). Graph defaults on, plots
+   and math off (hosts pick their own first-use default). A panel renders
+   whenever enabled — even for a non-plottable binding the plot pane shows
+   a "Not plottable" message, so users navigating the graph see a stable
+   layout instead of panels appearing/disappearing.
 
    Heights subtract header(~32px) + info(60px). */
 #view-controls { display: flex; gap: 6px; margin-left: auto; }
-#graph-toggle, #plot-toggle {
+#graph-toggle, #plot-toggle, #math-toggle {
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
   border: 1px solid var(--vscode-button-border, transparent);
@@ -64,62 +66,180 @@ body {
   font-family: var(--vscode-font-family, sans-serif);
   flex-shrink: 0;
 }
-#graph-toggle:hover, #plot-toggle:hover { background: var(--vscode-button-secondaryHoverBackground, #505355); }
-#graph-toggle.on, #plot-toggle.on {
+#graph-toggle:hover, #plot-toggle:hover, #math-toggle:hover { background: var(--vscode-button-secondaryHoverBackground, #505355); }
+#graph-toggle.on, #plot-toggle.on, #math-toggle.on {
   background: var(--vscode-button-background, #0e639c);
   color: var(--vscode-button-foreground, #fff);
   border-color: var(--vscode-button-border, transparent);
 }
-#graph-toggle.on:hover, #plot-toggle.on:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
+#graph-toggle.on:hover, #plot-toggle.on:hover, #math-toggle.on:hover { background: var(--vscode-button-hoverBackground, #1177bb); }
 #main {
   display: flex; flex-direction: column;
   width: 100vw; height: calc(100vh - 86px);
   overflow: hidden;
 }
-#graph-panel {
-  flex: 1 1 60%; min-height: 80px;
-  position: relative; overflow: hidden;
+/* Each panel's flex share is set INLINE by applyPanelLayout from
+   panels.ts (the one layout rule); the rules here carry only what is
+   not a share: the minimum height, the top border between panels, and
+   the hidden / full states. */
+.viewer-panel {
+  flex: 1 1 0; min-height: 80px; position: relative; overflow: hidden;
+  border-top: 1px solid var(--vscode-panel-border, #444);
 }
-#graph-panel.full { flex: 1 1 100%; }
-#graph-panel.hidden { display: none; }
-#plot-panel.full { flex: 1 1 100%; border-top: none; }
+/* Floor for the skeleton before the first applyPanelLayout; the inline
+   share written by the layout rule overrides it. */
+.viewer-panel.full { flex: 1 1 100%; }
+/* Hidden panels. Spelled with the ids so the rule outranks the per-panel
+   id rules below (#plot-panel sets display: flex; an id beats any number
+   of classes) — a bare .viewer-panel.hidden left the plot panel and its
+   toolbar on screen at min-height while "off". */
+#graph-panel.hidden, #plot-panel.hidden, #math-panel.hidden { display: none; }
+/* The first visible panel sits directly under the header: no border. */
+.viewer-panel.first { border-top: none; }
+#plot-panel {
+  display: flex; align-items: center; justify-content: center;
+}
 #panels-hidden { margin: auto; padding: 1em; opacity: 0.65; text-align: center; }
 #panels-hidden[hidden] { display: none; }
-#plot-panel {
-  flex: 1 1 40%; min-height: 80px;
-  border-top: 1px solid var(--vscode-panel-border, #444);
-  display: flex; align-items: center; justify-content: center;
-  overflow: hidden;
-  position: relative;
-}
-#plot-panel.hidden {
-  flex: 0 0 0; min-height: 0; border-top: none;
-}
 #plot-content { width: 100%; height: 100%; }
-/* Drag handle between #graph-panel and #plot-panel. Lets the user
-   redistribute vertical space between the DAG view and the plot
-   pane. Hidden when the plot panel itself is hidden; the existing
-   border-top on #plot-panel doubles as the handle's visible band
-   while in resting state, so the divider only adds the
-   interactive hover affordance. */
-#plot-divider {
+/* Rust supplies the document's scoped layout. Host rules only set the pane's
+   spacing, theme and interactive row states. Older WASM uses per-binding rows. */
+#math-content .flatppl-doc { margin: 0 auto; padding: 0.5em 1em; font-family: inherit; font-size: 16px; }
+/* Temml's global flex layout is for its own output. Rust emits native MathML,
+   whose table spacing requires the browser's math formatting context. */
+#math-content .flatppl-doc math { display: inline math; font-family: math; }
+#math-content .flatppl-doc math[display="block"] { display: block math; }
+#math-content .flatppl-doc math > mrow { padding: 0; }
+#math-content .flatppl-doc mtd { padding: 0.5ex 0.4em; }
+#math-content .flatppl-doc .flatppl-data, #math-content .flatppl-doc .flatppl-notation { overflow-x: auto; }
+#math-content .flatppl-doc [data-flatppl-binding] { cursor: pointer; }
+#math-content .flatppl-doc mtr[data-flatppl-binding]:hover > mtd { background: rgba(127, 127, 127, 0.08); }
+#math-content .flatppl-doc mtr.focused > mtd { background: var(--vscode-list-inactiveSelectionBackground, rgba(14, 99, 156, 0.18)); }
+#math-content .flatppl-doc .flatppl-diagnostics,
+#math-content .flatppl-doc .flatppl-row-diag,
+#math-content .flatppl-doc .math-error { color: var(--vscode-errorForeground, #f48771); }
+#math-content {
+  width: 100%; height: 100%;
+  overflow: auto;
+}
+/* The pane's placeholder messages ("not available", "rendering…"),
+   styled like the plot pane's hints. */
+#math-content .math-empty {
+  padding: 1.6em; text-align: center;
+  font-size: 1.08em; line-height: 1.5;
+  font-style: italic; opacity: 0.5;
+}
+/* Rows: one per binding, the equation left-aligned (MathML Core lays
+   it out; Temml's stylesheet, loaded by both hosts, supplies the math
+   font chain), an optional one-line doc-comment above it, the Rust
+   side's short annotation to its right, per-row diagnostics below.
+   The focused row gets the phase-neutral selection tint. Identifiers
+   are links back to their binding (render-math.ts). */
+#math-content .math-notice,
+#math-content .math-module-diags {
+  margin: 0.6em 1em 0.2em; padding: 0.4em 0.8em;
+  font-size: 0.92em; opacity: 0.85;
+  border-left: 3px solid #FFB300;
+  list-style: none;
+}
+#math-content .math-module-diags li { margin: 0.15em 0; }
+/* The module introduction (the flatppl_compat doc-comment): prose
+   above the rows, its first heading the model's title. */
+#math-content .math-module-doc {
+  padding: 0.6em 1em 0.5em;
+  border-bottom: 1px solid var(--vscode-panel-border, #444);
+  font-size: 0.95em; line-height: 1.45;
+}
+#math-content .math-module-doc h1, #math-content .math-module-doc h2,
+#math-content .math-module-doc h3 { font-size: 1.1em; margin: 0 0 0.3em; }
+#math-content .math-module-doc p { margin: 0.3em 0; }
+#math-content .math-module-doc p:last-child { margin-bottom: 0; }
+#math-content .math-empty .math-retry { color: var(--vscode-textLink-foreground, #3794ff); font-style: normal; }
+#math-content .math-row {
+  padding: 0.45em 1em;
+  border-left: 3px solid transparent;
+  cursor: pointer;
+}
+#math-content .math-row:hover { background: rgba(127, 127, 127, 0.08); }
+#math-content .math-row.focused {
+  background: var(--vscode-list-inactiveSelectionBackground, rgba(14, 99, 156, 0.18));
+  border-left-color: var(--vscode-button-background, #0e639c);
+}
+#math-content .math-row-doc {
+  font-size: 0.9em; opacity: 0.7; margin-bottom: 0.15em;
+}
+#math-content .math-row-doc p { margin: 0; }
+/* A %%% multi-line comment is prose, not a caption: full size, room
+   between paragraphs, headings (already shifted below h1 by the renderer). */
+#math-content .math-row-doc.block {
+  font-size: 0.95em; opacity: 0.85; line-height: 1.45; margin: 0.2em 0 0.35em;
+}
+#math-content .math-row-doc.block p { margin: 0.3em 0; }
+#math-content .math-row-doc.block h2, #math-content .math-row-doc.block h3,
+#math-content .math-row-doc.block h4 { font-size: 1.05em; margin: 0.4em 0 0.2em; }
+/* Doc-comment fragments the renderer could not convert: a refused TeX
+   expression stays as its source; Typst markup is shown as source. */
+#math-content .math-error {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 0.9em;
+  border-bottom: 1px dotted #FFB300;
+}
+#math-content .flatppl-typst-src {
+  font-family: var(--vscode-editor-font-family, monospace); font-size: 0.9em;
+  margin: 0.2em 0; white-space: pre-wrap;
+}
+#math-content .math-row-eq {
+  display: flex; align-items: baseline; gap: 1em;
+  font-size: 1.15em;
+}
+#math-content .math-row-eq math[display="block"] {
+  display: inline-block; margin: 0; text-align: left;
+}
+#math-content .math-row-annotation {
+  margin-left: auto; font-size: 0.78em; opacity: 0.6;
+  font-family: var(--vscode-font-family, sans-serif);
+  white-space: nowrap;
+}
+#math-content [data-flatppl-ref] { cursor: pointer; border-radius: 2px; }
+#math-content [data-flatppl-ref]:hover {
+  background: var(--vscode-editor-selectionBackground, rgba(14, 99, 156, 0.35));
+}
+#math-content .math-row-diags {
+  margin: 0.2em 0 0 1.2em; font-size: 0.88em; color: #E57373;
+}
+/* The shared notation key stays collapsed until requested. */
+#math-content .math-notation {
+  margin: 0.8em 1em; padding-top: 0.6em;
+  border-top: 1px solid var(--vscode-panel-border, #444);
+  font-size: 0.9em;
+}
+#math-content .math-notation summary { cursor: pointer; }
+#math-content .math-notation dt { margin-top: 1em; overflow-x: auto; padding: 0.2em 0; }
+#math-content .math-notation dd { margin: 0.35em 0 0; overflow-wrap: anywhere; }
+#math-content .math-notation p { margin: 0.3em 0; opacity: 0.8; }
+/* Drag handles between adjacent visible panels (one after the graph
+   panel, one after the plot panel — see panels.ts for the pairing rule).
+   Hidden when their panel or every later panel is hidden; the border-top
+   on the following panel doubles as the handle's visible band while in
+   resting state, so the divider only adds the interactive hover
+   affordance. */
+.viewer-divider {
   flex: 0 0 5px;
   cursor: row-resize;
   user-select: none;
   position: relative;
   background: transparent;
 }
-#plot-divider::before {
+.viewer-divider::before {
   content: '';
   position: absolute;
   left: 0; right: 0; top: 2px; bottom: 2px;
   background: transparent;
   transition: background 0.15s ease;
 }
-#plot-divider:hover::before {
+.viewer-divider:hover::before {
   background: var(--vscode-button-background, #0e639c);
 }
-#plot-divider.hidden { display: none; }
+.viewer-divider.hidden { display: none; }
 /* Plot pane layout, controls, and chart ctx.host are styled inline by
    renderPlotFrame — no CSS rules needed here for the per-renderer
    layout. The constant-value / message blocks below still rely on
@@ -378,24 +498,29 @@ export var VIEWER_BODY_HTML = `
 <span id="header-expr"></span>
 <span id="inference-controls"></span>
 <span id="view-controls">
-<button id="graph-toggle" type="button" aria-pressed="true" title="Toggle the graph panel">Graph: on</button>
-<button id="plot-toggle" type="button" aria-pressed="false" title="Toggle the plot panel">Plots: off</button>
+<button id="graph-toggle" type="button" aria-pressed="true" title="Toggle the graph panel">Graph</button>
+<button id="plot-toggle" type="button" aria-pressed="false" title="Toggle the plot panel">Plots</button>
+<button id="math-toggle" type="button" aria-pressed="false" title="Toggle the math panel">Math</button>
 </span>
 </div>
 <div id="main">
-<div id="graph-panel" class="full">
+<div id="graph-panel" class="viewer-panel full">
   <div id="cy"></div>
   <button id="collapse-all-btn" type="button" title="Collapse every reification bubble in view">Collapse all</button>
 </div>
-<div id="plot-divider" class="hidden" title="Drag to resize"></div>
-<div id="plot-panel" class="hidden">
+<div id="plot-divider" class="viewer-divider hidden" title="Drag to resize"></div>
+<div id="plot-panel" class="viewer-panel hidden">
   <div id="plot-content"></div>
 </div>
-<p id="panels-hidden" hidden>Graph and plots are hidden.</p>
+<div id="math-divider" class="viewer-divider hidden" title="Drag to resize"></div>
+<div id="math-panel" class="viewer-panel hidden">
+  <div id="math-content"></div>
+</div>
+<p id="panels-hidden" hidden>Graph, plots and math are hidden.</p>
 </div>
 <div id="tooltip"></div>
 <div id="info">
-<span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source &middot; click &#8862;/&#8863; or Shift+click an anchor to collapse/expand that group</span>
+<span class="hint">Click a node or equation to see details <span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to sourcemiddot; double-click to drill down <span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to sourcemiddot; Ctrl+click to jump to source &middot; click &#8862;/&#8863; or Shift+click an anchor to collapse/expand that group</span>
 </div>
 `;
 
