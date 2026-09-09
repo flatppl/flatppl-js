@@ -33,7 +33,7 @@ import { esc } from './util.js';
 import { focusNode } from './dag.js';
 import { updatePlotForBinding } from './render-plot.js';
 import {
-  buildMathRequest, composeMathRows, rowHtml, moduleDocHtml, focusedBindingName, mathModelKey, mathWasmUrl,
+  buildMathRequest, composeMathRows, rowHtml, moduleDocHtml, notationHtml, focusedBindingName, mathModelKey, mathWasmUrl,
 } from './math-view.js';
 import type { MathResponse } from './math-view.js';
 import type { Ctx } from './types';
@@ -132,8 +132,9 @@ function buildRows(ctx: Ctx, el: HTMLElement, res: MathResponse, notice: string 
   }
   if (rows.length === 0) h += '<div class="math-empty">No bindings to show.</div>';
   for (const r of rows) h += rowHtml(r);
-  // SECURITY: rowHtml and moduleDocHtml escape everything they interpolate
-  // except the fragments our own Rust renderer produced (row MathML and the
+  h += notationHtml(res.notation);
+  // SECURITY: markup helpers escape everything they interpolate except the
+  // fragments our own Rust renderer produced (row and notation MathML, plus
   // sanitised doc-comment HTML); the notices above are esc()'d or constant.
   el.innerHTML = h;
   ctx.mathView = { key: modelKey(ctx), response: res, rowCount: rows.length };
