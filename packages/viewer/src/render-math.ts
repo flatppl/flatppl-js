@@ -33,7 +33,7 @@ import { esc } from './util.js';
 import { focusNode } from './dag.js';
 import { updatePlotForBinding } from './render-plot.js';
 import {
-  buildMathRequest, composeMathRows, rowHtml, moduleDocHtml, notationHtml, focusedBindingName, mathModelKey, mathWasmUrl,
+  buildMathRequest, focusedBindingName, mathModelKey, mathWasmUrl,
 } from './math-view.js';
 import type { MathResponse } from './math-view.js';
 import type { Ctx } from './types';
@@ -117,43 +117,27 @@ function staleSourceNotice(ctx: Ctx): string | null {
   return null;
 }
 
+/** Put the Rust-rendered article on screen. The article carries rows,
+ *  module documentation, diagnostics and the notation key; the pane adds
+ *  only the notice and the focus highlight. */
 function buildRows(ctx: Ctx, el: HTMLElement, res: MathResponse, notice: string | null) {
-  // Rust owns document layout, appendices and the legend. Keep the row renderer
-  // below for hosts that still carry an older WASM artifact.
-  if (res.document) {
-    el.innerHTML = (notice ? '<div class="math-notice">' + notice + '</div>' : '') + res.document.html;
-    const style = document.createElement('style');
-    style.textContent = res.document.css;
-    el.prepend(style);
-    ctx.mathView = { key: modelKey(ctx), response: res, rowCount: res.bindings.length };
-    updateFocus(ctx, el);
+  if (!res.document || typeof res.document.html !== 'string') {
+    showMathMessage(el, 'Math view needs a newer renderer: the response carries no document.');
+    ctx.mathView = { key: modelKey(ctx), response: res, rowCount: 0 };
     return;
   }
-  const { rows, moduleDiagnostics } = composeMathRows(res, {
-    focus: focusedBindingName(ctx),
-    lineOf: function (name) { return bindingLine(ctx, name); },
-  });
-  let h = '';
-  if (notice) h += '<div class="math-notice">' + notice + '</div>';
-  h += moduleDocHtml(res.doc);
-  if (moduleDiagnostics.length) {
-    h += '<ul class="math-module-diags">';
-    for (const d of moduleDiagnostics) h += '<li>' + esc(d) + '</li>';
-    h += '</ul>';
-  }
-  if (rows.length === 0) h += '<div class="math-empty">No bindings to show.</div>';
-  for (const r of rows) h += rowHtml(r);
-  h += notationHtml(res.notation);
-  // SECURITY: markup helpers escape everything they interpolate except the
-  // fragments our own Rust renderer produced (row and notation MathML, plus
-  // sanitised doc-comment HTML); the notices above are esc()'d or constant.
-  el.innerHTML = h;
-  ctx.mathView = { key: modelKey(ctx), response: res, rowCount: rows.length };
-  scrollFocusedIntoView(el);
+  // SECURITY: the article is our own Rust renderer's output (its text and
+  // doc-comments escaped there); the notice is esc()'d or constant.
+  el.innerHTML = (notice ? '<div class="math-notice">' + notice + '</div>' : '') + res.document.html;
+  const style = document.createElement('style');
+  style.textContent = res.document.css;
+  el.prepend(style);
+  ctx.mathView = { key: modelKey(ctx), response: res, rowCount: res.bindings.length };
+  updateFocus(ctx, el);
 }
 
 function scrollFocusedIntoView(el: HTMLElement) {
-  const f = el.querySelector('.math-row.focused, mtr[data-flatppl-binding].focused') as HTMLElement | null;
+  const f = el.querySelector('mtr[data-flatppl-binding].focused') as HTMLElement | null;
   if (f && typeof f.scrollIntoView === 'function') {
     try { f.scrollIntoView({ block: 'nearest' }); } catch (_) { f.scrollIntoView(); }
   }
@@ -163,10 +147,10 @@ function scrollFocusedIntoView(el: HTMLElement) {
 function updateFocus(ctx: Ctx, el: HTMLElement) {
   const focus = focusedBindingName(ctx);
   const res = ctx.mathView && ctx.mathView.response;
-  const rows = el.querySelectorAll('.math-row, mtr[data-flatppl-binding]');
+  const rows = el.querySelectorAll('mtr[data-flatppl-binding]');
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i] as HTMLElement;
-    const name = r.getAttribute('data-flatppl-binding') || r.getAttribute('data-binding');
+    const name = r.getAttribute('data-flatppl-binding');
     const b = res && res.bindings.find(function (x) { return x.name === name; });
     const names = b && b.names && b.names.length ? b.names : (name ? [name] : []);
     r.classList.toggle('focused', focus !== null && names.indexOf(focus) !== -1);
@@ -261,9 +245,8 @@ export function installMathPaneNavigation(ctx: Ctx) {
     const target = ev.target as Element | null;
     if (!target) return null;
     const refEl = target.closest('[data-flatppl-ref]');
-    const rowEl = target.closest('mtr[data-flatppl-binding], .math-row');
-    const name = refEl ? refEl.getAttribute('data-flatppl-ref')
-      : rowEl && (rowEl.getAttribute('data-flatppl-binding') || rowEl.getAttribute('data-binding'));
+    const rowEl = target.closest('mtr[data-flatppl-binding]');
+    const name = refEl ? refEl.getAttribute('data-flatppl-ref') : rowEl && rowEl.getAttribute('data-flatppl-binding');
     return name && ctx.currentBindings && ctx.currentBindings.has(name) ? name : null;
   }
   el.addEventListener('click', function (ev: MouseEvent) {

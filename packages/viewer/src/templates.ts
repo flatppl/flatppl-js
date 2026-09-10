@@ -103,7 +103,7 @@ body {
 #panels-hidden[hidden] { display: none; }
 #plot-content { width: 100%; height: 100%; }
 /* Rust supplies the document's scoped layout. Host rules only set the pane's
-   spacing, theme and interactive row states. Older WASM uses per-binding rows. */
+   spacing, theme and interactive row states. */
 #math-content .flatppl-doc { margin: 0 auto; padding: 0.5em 1em; font-family: inherit; font-size: 16px; }
 /* Temml's global flex layout is for its own output. Rust emits native MathML,
    whose table spacing requires the browser's math formatting context. */
@@ -129,93 +129,23 @@ body {
   font-size: 1.08em; line-height: 1.5;
   font-style: italic; opacity: 0.5;
 }
-/* Rows: one per binding, the equation left-aligned (MathML Core lays
-   it out; Temml's stylesheet, loaded by both hosts, supplies the math
-   font chain), an optional one-line doc-comment above it, the Rust
-   side's short annotation to its right, per-row diagnostics below.
-   The focused row gets the phase-neutral selection tint. Identifiers
-   are links back to their binding (render-math.ts). */
-#math-content .math-notice,
-#math-content .math-module-diags {
+/* The pane's own notice above the article (stale source, out of date). */
+#math-content .math-notice {
   margin: 0.6em 1em 0.2em; padding: 0.4em 0.8em;
   font-size: 0.92em; opacity: 0.85;
   border-left: 3px solid #FFB300;
-  list-style: none;
 }
-#math-content .math-module-diags li { margin: 0.15em 0; }
-/* The module introduction (the flatppl_compat doc-comment): prose
-   above the rows, its first heading the model's title. */
-#math-content .math-module-doc {
-  padding: 0.6em 1em 0.5em;
-  border-bottom: 1px solid var(--vscode-panel-border, #444);
-  font-size: 0.95em; line-height: 1.45;
-}
-#math-content .math-module-doc h1, #math-content .math-module-doc h2,
-#math-content .math-module-doc h3 { font-size: 1.1em; margin: 0 0 0.3em; }
-#math-content .math-module-doc p { margin: 0.3em 0; }
-#math-content .math-module-doc p:last-child { margin-bottom: 0; }
 #math-content .math-empty .math-retry { color: var(--vscode-textLink-foreground, #3794ff); font-style: normal; }
-#math-content .math-row {
-  padding: 0.45em 1em;
-  border-left: 3px solid transparent;
-  cursor: pointer;
-}
-#math-content .math-row:hover { background: rgba(127, 127, 127, 0.08); }
-#math-content .math-row.focused {
-  background: var(--vscode-list-inactiveSelectionBackground, rgba(14, 99, 156, 0.18));
-  border-left-color: var(--vscode-button-background, #0e639c);
-}
-#math-content .math-row-doc {
-  font-size: 0.9em; opacity: 0.7; margin-bottom: 0.15em;
-}
-#math-content .math-row-doc p { margin: 0; }
-/* A %%% multi-line comment is prose, not a caption: full size, room
-   between paragraphs, headings (already shifted below h1 by the renderer). */
-#math-content .math-row-doc.block {
-  font-size: 0.95em; opacity: 0.85; line-height: 1.45; margin: 0.2em 0 0.35em;
-}
-#math-content .math-row-doc.block p { margin: 0.3em 0; }
-#math-content .math-row-doc.block h2, #math-content .math-row-doc.block h3,
-#math-content .math-row-doc.block h4 { font-size: 1.05em; margin: 0.4em 0 0.2em; }
-/* Doc-comment fragments the renderer could not convert: a refused TeX
-   expression stays as its source; Typst markup is shown as source. */
-#math-content .math-error {
-  font-family: var(--vscode-editor-font-family, monospace); font-size: 0.9em;
-  border-bottom: 1px dotted #FFB300;
-}
+/* Doc-comment fragments the renderer could not convert: Typst markup is
+   shown as source. */
 #math-content .flatppl-typst-src {
   font-family: var(--vscode-editor-font-family, monospace); font-size: 0.9em;
   margin: 0.2em 0; white-space: pre-wrap;
-}
-#math-content .math-row-eq {
-  display: flex; align-items: baseline; gap: 1em;
-  font-size: 1.15em;
-}
-#math-content .math-row-eq math[display="block"] {
-  display: inline-block; margin: 0; text-align: left;
-}
-#math-content .math-row-annotation {
-  margin-left: auto; font-size: 0.78em; opacity: 0.6;
-  font-family: var(--vscode-font-family, sans-serif);
-  white-space: nowrap;
 }
 #math-content [data-flatppl-ref] { cursor: pointer; border-radius: 2px; }
 #math-content [data-flatppl-ref]:hover {
   background: var(--vscode-editor-selectionBackground, rgba(14, 99, 156, 0.35));
 }
-#math-content .math-row-diags {
-  margin: 0.2em 0 0 1.2em; font-size: 0.88em; color: #E57373;
-}
-/* The shared notation key stays collapsed until requested. */
-#math-content .math-notation {
-  margin: 0.8em 1em; padding-top: 0.6em;
-  border-top: 1px solid var(--vscode-panel-border, #444);
-  font-size: 0.9em;
-}
-#math-content .math-notation summary { cursor: pointer; }
-#math-content .math-notation dt { margin-top: 1em; overflow-x: auto; padding: 0.2em 0; }
-#math-content .math-notation dd { margin: 0.35em 0 0; overflow-wrap: anywhere; }
-#math-content .math-notation p { margin: 0.3em 0; opacity: 0.8; }
 /* Drag handles between adjacent visible panels (one after the graph
    panel, one after the plot panel — see panels.ts for the pairing rule).
    Hidden when their panel or every later panel is hidden; the border-top
