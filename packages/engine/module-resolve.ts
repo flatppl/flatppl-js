@@ -62,13 +62,31 @@ function isUrl(s: any): boolean {
   return /^https?:\/\//i.test(String(s == null ? '' : s));
 }
 
+function validateSource(source: string): void {
+  if (/^[a-z]:[/\\]/i.test(source)) return; // Windows drive path.
+  const scheme = /^([a-z][a-z0-9+.-]*):/i.exec(source.trimStart());
+  if (scheme && !['file', 'http', 'https'].includes(scheme[1].toLowerCase())) {
+    throw new Error('FlatPPL source: only file, http and https URL schemes are allowed');
+  }
+}
+
 function resolveModulePath(importerPath: string | null, relPath: string): string {
   relPath = String(relPath == null ? '' : relPath);
+  validateSource(relPath);
+  if (/^file:/i.test(relPath)) {
+    const url = new URL(relPath);
+    if (url.hostname && url.hostname !== 'localhost') {
+      throw new Error('FlatPPL source: file URL must name a local path');
+    }
+    return url.href;
+  }
   // URL sources (spec §04 #sec:url-cache): an absolute http(s) dependency is
   // used verbatim (it is its own request URL / cache key); a relative
   // dependency inside a URL-loaded module resolves against the importer URL.
   if (isUrl(relPath)) return relPath;
-  if (isUrl(importerPath)) return new URL(relPath, String(importerPath)).href;
+  if (isUrl(importerPath) || /^file:/i.test(importerPath || '')) {
+    return new URL(relPath, String(importerPath)).href;
+  }
   if (relPath.startsWith('/')) {
     return '/' + _normalize(relPath.split('/'), true).join('/');
   }
@@ -81,4 +99,4 @@ function resolveModulePath(importerPath: string | null, relPath: string): string
   return (importerAbsolute ? '/' : '') + segs.join('/');
 }
 
-module.exports = { resolveModulePath, isUrl };
+module.exports = { resolveModulePath, isUrl, validateSource };

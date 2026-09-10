@@ -55,6 +55,29 @@ before(async () => {
 after(async () => { if (SRV) await SRV.close(); });
 
 // ---------------------------------------------------------------- cache dir
+test('redirect destinations require their own approval before fetching', async () => {
+  const cacheDir = await tmpCacheDir();
+  const start = 'https://example.test/start.flatppl';
+  const end = 'https://example.test/end.flatppl';
+  const fetched: string[] = [];
+  const opts = { cacheDir, env: {}, approve: (url: string) => url === start,
+    fetchImpl: async (url: string, init: any) => {
+      fetched.push(url);
+      assert.equal(init.redirect, 'manual');
+      return new Response(null, { status: 302, headers: { location: end } });
+    } };
+  await assert.rejects(fetchToCache(start, opts), /not a trusted URL/);
+  assert.deepEqual(fetched, [start]);
+  assert.equal(fs.existsSync(cachePaths(cacheDir, start).object), false);
+  await fsp.rm(cacheDir, { recursive: true });
+});
+
+test('the cache refuses non-network schemes even with blanket trust', async () => {
+  for (const url of ['file:///tmp/model.flatppl', 'ftp://example.test/model.flatppl']) {
+    await assert.rejects(fetchToCache(url, { trustAll: true }), /only http and https/);
+  }
+});
+
 test('resolveCacheDir: FLATPPL_CACHEDIR overrides everything', () => {
   assert.equal(resolveCacheDir({ env: { FLATPPL_CACHEDIR: '/custom/cache' }, platform: 'linux', homedir: '/home/u' }),
     '/custom/cache');

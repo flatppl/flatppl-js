@@ -205,10 +205,13 @@ function lowerToModule(parsedBindings: Map<string, any>, opts?: any) {
       const pathArg = rhs.args[0];
       const relPath = (pathArg && pathArg.kind === 'lit'
         && typeof pathArg.value === 'string') ? pathArg.value : null;
+      let resolvedPath = null;
+      try { resolvedPath = relPath != null ? resolveModulePath(modulePath, relPath) : null; }
+      catch (_) { /* The compiler reports the invalid source at its call site. */ }
       moduleRegistry[name] = {
         kind: 'load_module',
         relPath,
-        path: relPath != null ? resolveModulePath(modulePath, relPath) : null,
+        path: resolvedPath,
       };
     }
     // Public-by-default: any name not starting with underscore. The
