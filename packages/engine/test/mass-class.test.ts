@@ -38,6 +38,32 @@ function errorsOf(src: string): string[] {
     .map((d: any) => d.message);
 }
 
+test('simplex weights give drawable mixtures with unit mass', () => {
+  for (const src of [
+    'n = external(posintegers)\np = elementof(stdsimplex(n))\nm = ksuperpose(Normal, p)(mu = 0, sigma = 1)',
+    'p = elementof(stdsimplex(3))\nq = p\nm = superpose(weighted(q[3], Normal(2, 1)), weighted(p[1], Normal(0, 1)), weighted(p[2], Normal(1, 1)))',
+    'p = elementof(stdsimplex(1))\nm = ksuperpose(Dirac, p)(value = [2])',
+  ]) {
+    assert.equal(massOf(src, 'm'), 'normalized', src);
+    assert.deepEqual(errorsOf(src + '\nx ~ m'), []);
+  }
+});
+
+test('simplex recognition requires all coordinates of one node and probability components', () => {
+  const prefix = 'p = elementof(stdsimplex(3))\nq = elementof(stdsimplex(3))\n';
+  for (const rhs of [
+    'superpose(weighted(p[1], Normal(0,1)), weighted(p[2], Normal(0,1)))',
+    'superpose(weighted(p[1], Normal(0,1)), weighted(p[1], Normal(0,1)), weighted(p[3], Normal(0,1)))',
+    'superpose(weighted(p[1], Normal(0,1)), weighted(p[2], Normal(0,1)), weighted(q[3], Normal(0,1)))',
+    'ksuperpose(x -> weighted(2, Dirac(x)), p)(x = [0,1,2])',
+  ]) assert.notEqual(massOf(prefix + 'm = ' + rhs, 'm'), 'normalized', rhs);
+  for (const [kernel, support] of [['Lebesgue', 'reals'], ['Counting', 'integers']]) {
+    const src = `n = external(posintegers)\np = elementof(stdsimplex(n))\nm = ksuperpose(${kernel}, p)(support = ${support})`;
+    assert.notEqual(massOf(src, 'm'), 'normalized', src);
+    assert.ok(errorsOf(src + '\nx ~ m').length > 0);
+  }
+});
+
 // Annotated FlatPIR (%meta on) for a source module.
 function sexprOf(src: string): string {
   const r = processSource(src);
