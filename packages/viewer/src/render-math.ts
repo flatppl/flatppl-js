@@ -283,14 +283,9 @@ export function installMathPaneNavigation(ctx: Ctx) {
       if (reveal && line !== null) reveal(line, name);
       return;
     }
-    // Reveal first: following the source must not depend on the plot
-    // succeeding (a model whose binding has no derivation still navigates).
+    // Reveal first, so following the source never waits on the plot.
     if (reveal && line !== null) reveal(line, name, { preserveFocus: true });
-    try {
-      updatePlotForBinding(ctx, name);
-    } catch (err) {
-      console.error('FlatPPL: plot update failed for ' + name + ':', err);
-    }
+    updatePlotForBinding(ctx, name);
   });
   el.addEventListener('dblclick', function (ev: MouseEvent) {
     const name = bindingAt(ev);

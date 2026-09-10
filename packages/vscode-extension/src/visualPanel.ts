@@ -58,6 +58,7 @@ class FlatPPLPanel {
   // navigateTo handler); one decoration type per panel, cleared on dispose.
   _flashDecoration: any;
   _flashTimer: any;
+  _flashEditor: any;
 
   static createOrShow(context: any) {
     const column = vscode.ViewColumn.Beside;
@@ -400,10 +401,16 @@ class FlatPPLPanel {
       });
     }
     clearTimeout(this._flashTimer);
+    // A navigation into another editor must not leave the previous one lit.
+    if (this._flashEditor && this._flashEditor !== editor) {
+      try { this._flashEditor.setDecorations(this._flashDecoration, []); } catch (_) { /* editor gone */ }
+    }
+    this._flashEditor = editor;
     const range = new vscode.Range(new vscode.Position(line, 0), new vscode.Position(line, 0));
     editor.setDecorations(this._flashDecoration, [range]);
     this._flashTimer = setTimeout(() => {
       try { editor.setDecorations(this._flashDecoration, []); } catch (_) { /* editor gone */ }
+      if (this._flashEditor === editor) this._flashEditor = null;
     }, 1200);
   }
 

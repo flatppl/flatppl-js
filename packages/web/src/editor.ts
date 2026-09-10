@@ -448,7 +448,12 @@
           && !suppressNavigate
           && typeof opts.onNavigate === 'function') {
         const binding = bindingAtCursor();
-        if (binding !== lastCursorBinding) {
+        // A deliberate click on an identifier always navigates, even when
+        // the caret was already there (a silent reveal from the math pane
+        // may have put it there); the router de-duplicates identical
+        // targets. Keyboard moves and edits still navigate only on a change.
+        const pointer = u.transactions.some((t: any) => t.isUserEvent('select.pointer'));
+        if (binding !== lastCursorBinding || (pointer && binding)) {
           lastCursorBinding = binding;
           if (binding) opts.onNavigate(binding);
         }
