@@ -12,6 +12,20 @@ const assert = require('node:assert/strict');
 
 const { resolveModulePath, isUrl } = require('../module-resolve.ts');
 
+test('source schemes are checked before local or remote resolution', () => {
+  for (const base of ['/model.flatppl', 'https://example.test/model.flatppl']) {
+    assert.throws(() => resolveModulePath(base, 'ftp://example.test/data'), /only file, http and https/);
+    assert.equal(resolveModulePath(base, 'file:///tmp/a%20b.flatppl'), 'file:///tmp/a%20b.flatppl');
+  }
+  assert.equal(resolveModulePath('file:///tmp/a.flatppl', 'b.flatppl'), 'file:///tmp/b.flatppl');
+  const { processSource } = require('../index.ts');
+  for (const expr of ['load_module("ftp://example.test/model.flatppl")',
+    'load_data("ftp://example.test/data", reals)']) {
+    assert.ok(processSource('m = ' + expr).diagnostics.some((d: any) =>
+      d.severity === 'error' && /only file, http and https/.test(d.message)));
+  }
+});
+
 test('sibling file resolves against the importer directory', () => {
   // importer at repo root → dirname is "" → sibling stays bare.
   assert.equal(resolveModulePath('model.flatppl', 'helpers.flatppl'),

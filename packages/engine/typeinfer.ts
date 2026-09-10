@@ -482,6 +482,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // leaving exactly one site that knows the rule.
     const splatFailure = _applyBuiltinSplat(expr, scopes);
     if (splatFailure) return write(splatFailure, expr);
+    if (expr.op === 'load_data') {
+      const source = resolveBindingRefs(expr.kwargs?.source || expr.args?.[0]);
+      if (source?.kind === 'lit' && typeof source.value === 'string') {
+        try { require('./module-resolve.ts').validateSource(source.value); }
+        catch (e: any) {
+          diagnostics.push({ severity: 'error', message: e.message, loc: expr.loc });
+          return write(T.failed('unsupported source scheme'), expr);
+        }
+      }
+    }
 
     // §07's collection domain, on the BARE call, for the same reason and from
     // the same table. Sited here for the reason the splat is: many of these

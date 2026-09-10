@@ -107,6 +107,7 @@ async function atomicWrite(cacheDir: string, destPath: string, data: any): Promi
 // FLATPPL_CACHE_OFFLINE / FLATPPL_TRUST environment variables; `force` performs
 // the spec's explicit update (re-fetch + atomic replace, ignoring a cache hit).
 async function fetchToCache(url: string, opts: any): Promise<any> {
+  if (!isUrl(url)) throw new Error('FlatPPL cache: only http and https URLs can be cached');
   opts = opts || {};
   const env = opts.env || process.env;
   const cacheDir = opts.cacheDir || resolveCacheDir(opts);
@@ -126,26 +127,33 @@ async function fetchToCache(url: string, opts: any): Promise<any> {
 
   // Trust gate (per-URL). FLATPPL_TRUST trusts every URL without creating markers.
   const trustAll = opts.trustAll != null ? opts.trustAll : !!env.FLATPPL_TRUST;
-  if (!trustAll && !(await isTrusted(cacheDir, url))) {
-    const approve = opts.approve;
-    const ok = typeof approve === 'function' ? await approve(url) : false;
-    if (!ok) throw new Error('FlatPPL cache: "' + url + '" is not a trusted URL (approval required before fetching)');
-    await markTrusted(cacheDir, url);
-  }
-
-  // Fetch, following redirects. Network error / non-2xx / unresolvable redirect → error.
   const fetchImpl = opts.fetchImpl || (globalThis as any).fetch;
   let res: any;
-  try { res = await fetchImpl(url, { redirect: 'follow' }); }
-  catch (e: any) { throw new Error('FlatPPL cache: network error fetching "' + url + '": ' + (e && e.message || e)); }
-  if (!res.ok) throw new Error('FlatPPL cache: fetching "' + url + '" failed with HTTP status ' + res.status);
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    if (!isUrl(current)) throw new Error('FlatPPL cache: redirect requires an http or https URL');
+    if (hop > 10) throw new Error('FlatPPL cache: too many redirects');
+    if (!trustAll && !(await isTrusted(cacheDir, current))) {
+      const ok = typeof opts.approve === 'function' && await opts.approve(current);
+      if (!ok) throw new Error('FlatPPL cache: "' + current + '" is not a trusted URL (approval required before fetching)');
+      await markTrusted(cacheDir, current);
+    }
+    try { res = await fetchImpl(current, { redirect: 'manual' }); }
+    catch (e: any) { throw new Error('FlatPPL cache: network error fetching "' + current + '": ' + (e && e.message || e)); }
+    if (![301, 302, 303, 307, 308].includes(res.status)) break;
+    const location = res.headers.get('location');
+    await res.body?.cancel();
+    if (!location) throw new Error('FlatPPL cache: redirect has no Location header');
+    current = new URL(location, current).href;
+  }
+  if (!res.ok) throw new Error('FlatPPL cache: fetching "' + current + '" failed with HTTP status ' + res.status);
 
   const content = Buffer.from(await res.arrayBuffer());
   const now = opts.now || (() => new Date().toISOString());
   const h = res.headers;
   const meta = {
     url: url,
-    resolved_url: res.url || url,
+    resolved_url: current,
     retrieved: now(),
     content_type: (h && h.get) ? h.get('content-type') : null,
     etag: (h && h.get) ? h.get('etag') : null,

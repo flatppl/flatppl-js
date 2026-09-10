@@ -12,7 +12,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri } = require('../src/remoteModule.js');
+const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri, localSourceUri } = require('../src/remoteModule.js');
+
+test('explicit file URLs do not inherit the importer scheme', () => {
+  const base = { with: fields => ({ scheme: REMOTE_SCHEME, ...fields }) };
+  const parseUri = value => ({ scheme: 'file', value });
+  assert.deepEqual(localSourceUri(base, 'file:///tmp/a.flatppl', parseUri),
+    { scheme: 'file', value: 'file:///tmp/a.flatppl' });
+  assert.deepEqual(localSourceUri(base, '/tmp/a.flatppl', parseUri),
+    { scheme: REMOTE_SCHEME, path: '/tmp/a.flatppl' });
+});
 
 const URL = 'https://raw.githubusercontent.com/flatppl/flatppl-examples/refs/heads/main/examples/bayesian_inference_common.flatppl';
 const remoteUri = { scheme: REMOTE_SCHEME, path: '/flatppl/.../bayesian_inference_common.flatppl', query: URL };

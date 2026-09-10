@@ -36,11 +36,14 @@
    * Cached on first success.
    */
   async function fetchSource(url: any) {
+    if (!/^https?:\/\//i.test(url)) throw new Error('Browser sources require an http or https URL');
     if (sourceCache.has(url)) return sourceCache.get(url);
 
     let response;
     try {
-      response = await fetch(url);
+      // Browsers hide redirect destinations in manual mode. Refuse redirects
+      // rather than fetch a hop whose scheme and trust cannot be checked.
+      response = await fetch(url, { redirect: 'error' });
     } catch (e: any) {
       throw new Error('Network error fetching ' + url + ': ' + (e && e.message || e));
     }

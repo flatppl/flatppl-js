@@ -147,8 +147,9 @@ loaded module's typed bindings (spec §11). Standard modules are engine-provided
   #sec:url-cache) is resolved by the URL-aware `resolveModulePath` and fetched
   by each host's `readSource`: the VS Code host routes it through the Node
   on-disk cache (`url-cache.ts`, vendored as `lib/url-cache.cjs`) with a
-  one-time trust prompt; the browser fetches directly (no on-disk cache —
-  CORS-limited, browser-cached).
+  per-URL trust prompt before each redirect hop. Only file/http/https schemes
+  are accepted; file URLs stay local. The browser fetches directly (CORS-limited,
+  browser-cached) and refuses redirects because Fetch hides their destinations.
 
 Open: `load_data` URL sources (gated on `load_data` end-to-end below). (The VS Code
 "Download / Update Dependencies" commands over the cache's `force` re-fetch have

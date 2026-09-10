@@ -156,7 +156,12 @@ function _compileModuleGraph(
           loc: dep.loc });
         continue;
       }
-      const resolved = resolveModulePath(path, dep.relPath);
+      let resolved: string;
+      try { resolved = resolveModulePath(path, dep.relPath); }
+      catch (e: any) {
+        depDiags.push({ severity: 'error', message: e.message, loc: dep.loc });
+        continue;
+      }
       if (stack.has(resolved)) {
         depDiags.push({ severity: 'error',
           message: "Module dependency cycle detected: '" + resolved
@@ -244,7 +249,9 @@ async function resolveBundle(
     let rels: string[];
     try { rels = moduleDeps(text); } catch (_) { return; }
     for (const rel of rels) {
-      const resolved = resolveModulePath(importerPath, rel);
+      let resolved: string;
+      try { resolved = resolveModulePath(importerPath, rel); }
+      catch (_) { continue; } // Compilation reports the source error.
       if (resolved in sources || seen.has(resolved)) continue;
       seen.add(resolved);
       let depText: string | null | undefined;

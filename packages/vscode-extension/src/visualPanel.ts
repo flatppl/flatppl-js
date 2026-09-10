@@ -16,7 +16,7 @@ const urlCache = require('../lib/url-cache.cjs');
 // scheme + URL<->uri-path derivation. A URL load_module opens as a read-only
 // virtual document under the flatppl-remote: scheme; enginePathOf yields the
 // URL (not the virtual uri's path) so relative deps still resolve against it.
-const { REMOTE_SCHEME, enginePathOf, resolveBaseUri } = require('./remoteModule');
+const { REMOTE_SCHEME, enginePathOf, resolveBaseUri, localSourceUri } = require('./remoteModule');
 
 /** There is one canonical FlatPPL surface syntax (flatppl-design
     cc81e4b removed FlatPPY/FlatPPJ). Retained as a function so the
@@ -188,10 +188,10 @@ class FlatPPLPanel {
         // leak into the file uri (`flatppl-remote://<host>/<localpath>`) and the
         // open would fail, so the back-button never returned.
         const cur = resolveBaseUri(this._sourceUri, this._localBaseUri);
-        const absPath = String(msg.path).charAt(0) === '/'
+        const absPath = /^file:/i.test(msg.path) || String(msg.path).charAt(0) === '/'
           ? msg.path
           : cur.path.replace(/\/[^/]*$/, '') + '/' + msg.path;
-        const depUri = cur.with({ path: absPath });
+        const depUri = localSourceUri(cur, absPath, vscode.Uri.parse);
         vscode.window.showTextDocument(depUri, {
           viewColumn: vscode.ViewColumn.One,
           preserveFocus: false,
@@ -443,7 +443,7 @@ class FlatPPLPanel {
           return null;   // left out of the bundle; the engine reports the dep at its call
         }
       }
-      const bytes = await vscode.workspace.fs.readFile(sourceUri.with({ path: resolved }));
+      const bytes = await vscode.workspace.fs.readFile(localSourceUri(sourceUri, resolved, vscode.Uri.parse));
       return Buffer.from(bytes).toString('utf8');
     };
     return resolveBundle(enginePathOf(sourceUri), source, readSource);

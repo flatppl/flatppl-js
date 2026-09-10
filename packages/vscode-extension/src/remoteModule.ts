@@ -45,4 +45,9 @@ function resolveBaseUri(currentUri: any, localBaseUri: any): any {
     : currentUri;
 }
 
-module.exports = { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri };
+/** Explicit file URLs stay local, even when the importer is a remote document. */
+function localSourceUri(base: any, resolved: string, parseUri: (s: string) => any): any {
+  return /^file:/i.test(resolved) ? parseUri(resolved) : base.with({ path: resolved });
+}
+
+module.exports = { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri, localSourceUri };
