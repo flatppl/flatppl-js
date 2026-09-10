@@ -53,18 +53,17 @@ function poissonLogpmf(k: number, lam: number): number {
 }
 
 // ---------------------------------------------------------------------
-// Focused: bare `record` head → array of records.
+// Focused: bare `record` head → table rows.
 // ---------------------------------------------------------------------
 
-test('broadcast(record, rate = [..]) → array of {rate} records', () => {
+test('broadcast(record, rate = [..]) → table with a rate column', () => {
   const recs = fixedValue(
     'flatppl_compat = "0.1"\n' +
     'recs = broadcast(record, rate = [2.0, 3.0])\n',
     'recs');
-  assert.ok(Array.isArray(recs), `expected array, got ${JSON.stringify(recs)}`);
-  assert.equal(recs.length, 2);
-  assert.equal(recs[0].rate, 2.0);
-  assert.equal(recs[1].rate, 3.0);
+  assert.equal(recs.__table__, true);
+  assert.equal(recs.nrows, 2);
+  assert.deepEqual(recs.columns.rate, [2.0, 3.0]);
 });
 
 // ---------------------------------------------------------------------

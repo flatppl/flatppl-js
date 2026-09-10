@@ -48,6 +48,7 @@
 // fall back to a nested JS array.
 
 const valueLib = require('./value.ts');
+const { _isComplex } = require('./sampler-complex.ts');
 
 // ---------------------------------------------------------------------
 // Slot descriptors
@@ -317,8 +318,27 @@ function tryStackBroadcastCells(cells: any[], bshape: number[]): any {
   return stacked;
 }
 
+// A table keeps array-valued fields as cells, not extra row axes. The
+// inferred schema supplies the columns when there are no rows to inspect.
+function tryCollectTableRows(rows: any[], shape: number[], schema?: any): any {
+  const first = rows[0];
+  const isRecord = (v: any) => v && typeof v === 'object'
+    && !Array.isArray(v) && !ArrayBuffer.isView(v) && !valueLib.isValue(v)
+    && !v.__table__ && !_isComplex(v);
+  if (schema?.kind !== 'table' && schema?.kind !== 'record' && !isRecord(first)) return null;
+  if (shape.length !== 1) throw new Error('record-valued broadcast requires one axis (spec §04)');
+  const columns: Record<string, any> = {};
+  const fields = schema?.columns || schema?.fields;
+  for (const name of Object.keys(fields || first)) {
+    const cells = rows.map(row => row[name]);
+    columns[name] = tryCollectTableRows(cells, shape, fields?.[name]) ?? cells;
+  }
+  return { __table__: true, columns, nrows: rows.length };
+}
+
 module.exports = {
   classifyAxisStructure,
   classifyNestedJSArray,
   tryStackBroadcastCells,
+  tryCollectTableRows,
 };

@@ -2578,7 +2578,7 @@ function _broadcastLogical(ir: any, ctx: any): any {
   // a module-load cycle with sampler.ts (ops-declarations is
   // required during sampler.ts module load).
   const samplerMod = require('./sampler.ts');
-  return samplerMod._internal._broadcastApply(fn, inputs, ctx.env);
+  return samplerMod._internal._broadcastApply(fn, inputs, ctx.env, ir.meta?.type);
 }
 
 ops.register({

@@ -370,6 +370,7 @@ class FixedValues {
       }
       return {
         body:        fIR.body,
+        resultType:  fb.inferredType?.result,
         params:      fIR.params,
         paramKwargs: fIR.paramKwargs,
         paramName:   fIR.params[0],
