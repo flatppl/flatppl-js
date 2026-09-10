@@ -54,6 +54,10 @@ class FlatPPLPanel {
   // Sequence of the latest model post (see _postWithBundle): a bundle
   // resolution that finishes after a newer post has gone out is stale.
   _postSeq: number = 0;
+  // The line flash a webview navigation leaves in the editor (see the
+  // navigateTo handler); one decoration type per panel, cleared on dispose.
+  _flashDecoration: any;
+  _flashTimer: any;
 
   static createOrShow(context: any) {
     const column = vscode.ViewColumn.Beside;
@@ -92,6 +96,8 @@ class FlatPPLPanel {
     this._panel.webview.html = this._getHtml();
     this._panel.onDidDispose(() => {
       FlatPPLPanel.currentPanel = undefined;
+      clearTimeout(this._flashTimer);
+      if (this._flashDecoration) { this._flashDecoration.dispose(); this._flashDecoration = null; }
     });
     this._panel.webview.onDidReceiveMessage((msg: any) => {
       if (msg.type === 'webviewReady') {
@@ -120,6 +126,11 @@ class FlatPPLPanel {
         // extension.ts ignores this programmatic selection change (its
         // kind is neither Keyboard nor Mouse), so the panel is not
         // re-targeted by its own navigation.
+        //
+        // An unfocused editor draws no caret, and the reveal only scrolls
+        // when the line is off-screen — so a focus-preserving move to a
+        // line already in view would change nothing visible. The line
+        // flash (the web editor's too) is what makes the follow readable.
         vscode.window.showTextDocument(uri, {
           viewColumn: vscode.ViewColumn.One,
           preserveFocus: !!msg.preserveFocus,
@@ -130,6 +141,7 @@ class FlatPPLPanel {
             new vscode.Range(pos, pos),
             vscode.TextEditorRevealType.InCenterIfOutsideViewport
           );
+          this._flashLine(editor, line);
         });
       }
       if (msg.type === 'updateTitle') {
@@ -376,6 +388,23 @@ class FlatPPLPanel {
       // panel is never blank; the engine reports unresolved deps.
       this._post(base);
     });
+  }
+
+  /** Highlight `line` in `editor` for a moment (whole line, the theme's
+   *  find-match colour), replacing any flash still showing. */
+  _flashLine(editor: any, line: number) {
+    if (!this._flashDecoration) {
+      this._flashDecoration = vscode.window.createTextEditorDecorationType({
+        isWholeLine: true,
+        backgroundColor: new vscode.ThemeColor('editor.findMatchHighlightBackground'),
+      });
+    }
+    clearTimeout(this._flashTimer);
+    const range = new vscode.Range(new vscode.Position(line, 0), new vscode.Position(line, 0));
+    editor.setDecorations(this._flashDecoration, [range]);
+    this._flashTimer = setTimeout(() => {
+      try { editor.setDecorations(this._flashDecoration, []); } catch (_) { /* editor gone */ }
+    }, 1200);
   }
 
   /**
