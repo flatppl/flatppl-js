@@ -2418,6 +2418,7 @@ function _resolveFn(fnIR: any, env: any) {
       && Array.isArray(fnIR.params) && fnIR.body) {
     return {
       body: fnIR.body,
+      resultType: fnIR.meta?.type?.result,
       params: fnIR.params,
       paramKwargs: fnIR.paramKwargs,
       paramName: fnIR.params[0],
@@ -2500,7 +2501,7 @@ function _synthStdModuleFn(refIR: any, env: any): any {
 // finite scalar / boolean and there are no nested-vector loop axes —
 // the engine-concepts §2.1 convention) or a nested JS array of the
 // broadcast shape.
-function _broadcastApply(fn: any, inputs: any, env: any): any {
+function _broadcastApply(fn: any, inputs: any, env: any, resultType?: any): any {
   const P = fn.params.length;
   const slots = new Array(P);
   for (let i = 0; i < P; i++) {
@@ -2555,6 +2556,11 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
 
   const idx = new Array(rank).fill(0);
   const total = bshape.reduce((a: number, b: number) => a * b, 1);
+  const schema = resultType || fn.resultType || fn.body.meta?.type;
+  if (total === 0) {
+    const table = _broadcastShape.tryCollectTableRows([], bshape, schema);
+    if (table) return table;
+  }
   // Fast-path packing: if NO nested-vector slot is present AND every
   // cell returns a finite scalar / boolean, pack into a shape-explicit
   // Value. With a nested-vector slot the per-cell result need not be
@@ -2583,6 +2589,9 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
       out[i] = child;
       if (axis === rank - 1) {
         // Leaf level — `child` is one cell's value.
+        if (rank > 1 && typeof child === 'object') {
+          _broadcastShape.tryCollectTableRows([child], bshape, schema);
+        }
         if (anyNested) {
           cellResults[pos++] = child;
         } else if (allNumeric) {
@@ -2599,6 +2608,10 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
     return out;
   }
   const nested = recur(0);
+  if (rank === 1) {
+    const table = _broadcastShape.tryCollectTableRows(nested, bshape, schema);
+    if (table) return table;
+  }
   if (!anyNested && allNumeric && total === pos) {
     return { shape: bshape.slice(), data: flat };
   }

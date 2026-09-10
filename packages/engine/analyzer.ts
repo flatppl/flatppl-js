@@ -4019,7 +4019,10 @@ function analyze(ast: any, source: string, opts?: any) {
     });
     for (const [name, lb] of loweredModule.bindings) {
       const b = bindings.get(name);
-      if (b) b.inferredType = lb.inferredType;
+      if (b) {
+        b.inferredType = lb.inferredType;
+        retainTableSchemas(b.effectiveValue || b.node?.value, lb.rhs);
+      }
     }
     return td;
   };
@@ -4288,6 +4291,27 @@ function _maxPhase(a: string, b: any): string {
   const ra = rank[a] != null ? rank[a] : 0;
   const rb = rank[b] != null ? rank[b] : 0;
   return ra >= rb ? a : (b as string);
+}
+
+// Lift re-lowers the AST for evaluation. Keep table schemas on their source
+// calls: a zero-row broadcast cannot recover its columns from runtime values.
+function retainTableSchemas(ast: any, ir: any): void {
+  const schemas = new Map<string, any>();
+  const key = (node: any) => JSON.stringify(node.loc);
+  function walk(node: any, visit: (node: any) => void): void {
+    if (!node || typeof node !== 'object') return;
+    visit(node);
+    for (const [name, child] of Object.entries(node)) {
+      if (name !== 'meta' && name !== 'inferredTableType') walk(child, visit);
+    }
+  }
+  walk(ir, node => {
+    if (node.loc && node.meta?.type?.kind === 'table') schemas.set(key(node), node.meta.type);
+  });
+  if (schemas.size === 0) return;
+  walk(ast, node => {
+    if (node.type === 'CallExpr' && schemas.has(key(node))) node.inferredTableType = schemas.get(key(node));
+  });
 }
 
 // The phase of a substitution VALUE expression (spec §04 phases). Direct

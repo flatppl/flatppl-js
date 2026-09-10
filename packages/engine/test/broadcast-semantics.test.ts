@@ -27,6 +27,19 @@ const addAB = fnOf(['a', 'b'],
 const dblA = fnOf(['a'],
   { kind: 'call', op: 'mul', args: [ref('a'), lit(2)] });
 
+test('broadcast: record cells collect into nested table columns', () => {
+  const f = fnOf(['a'], { kind: 'call', op: 'record', fields: [
+    { name: 'x', value: ref('a') },
+    { name: 'nested', value: { kind: 'call', op: 'record', fields: [
+      { name: 'y', value: { kind: 'call', op: 'mul', args: [ref('a'), lit(2)] } },
+    ] } },
+  ] });
+  const rows = evRaw(bc(f, lit([1, 2])));
+  assert.equal(rows.nrows, 2);
+  assert.deepEqual(toJS(rows.columns.x), [1, 2]);
+  assert.deepEqual(toJS(rows.columns.nested.columns.y), [2, 4]);
+});
+
 // ---- back-compat: equal-length 1-D ------------------------------------
 
 test('broadcast: equal-length vectors (unchanged behaviour)', () => {

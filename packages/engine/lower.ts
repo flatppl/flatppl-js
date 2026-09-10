@@ -377,8 +377,11 @@ function _lowerExpr(node: any, ctx: any): IRNode {
       };
     }
 
-    case 'CallExpr':
-      return _lowerCallExpr(node, ctx);
+    case 'CallExpr': {
+      const ir = _lowerCallExpr(node, ctx);
+      if (node.inferredTableType) ir.meta = { ...ir.meta, type: node.inferredTableType };
+      return ir;
+    }
 
     default:
       throw new Error(`lower: unsupported AST node type '${node.type}'`);

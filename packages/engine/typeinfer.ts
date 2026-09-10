@@ -3641,6 +3641,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       const calleeType: any = inferExpr(fn, scopes);
       if (T.isCallable(calleeType)) {
         elem = calleeType.result;
+        if (calleeType.kind === 'function') {
+          const kwargs: Record<string, any> = {};
+          for (let i = 0; i < cellTypes.length; i++) {
+            const name = calleeType.inputs?.[i]?.name;
+            if (name) kwargs[name] = { __splatType: cellTypes[i] };
+          }
+          elem = inferUserCall({ kind: 'call', target: fn, args: [], kwargs, loc: expr.loc }, scopes);
+        }
       } else {
         // Not a user-defined callable binding. A bare builtin
         // measure-producing head (`Normal`, `Binomial`, …) shadows to
@@ -3690,6 +3698,22 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (!hasCollection) {
       // No collection args ⇒ single call; result = cell-result.
       return concrete ? elem : T.deferred();
+    }
+    if (elem?.kind === 'record') {
+      if (outerShape!.length !== 1) {
+        diagnostics.push({ severity: 'error', loc: expr.loc,
+          message: 'record-valued broadcast requires one axis (spec §04)' });
+        return T.failed('multi-axis record broadcast');
+      }
+      // §03: a nested record field collects into a nested table column.
+      function collectRows(record: any): any {
+        const columns: Record<string, any> = {};
+        for (const [name, field] of Object.entries(record.fields) as [string, any][]) {
+          columns[name] = field.kind === 'record' ? collectRows(field) : field;
+        }
+        return T.table(columns, outerShape![0]);
+      }
+      return collectRows(elem);
     }
     // Default to real for unknown cell types — broadcast is by design
     // numeric, and downstream consumers (viewer plot-routing, materialise

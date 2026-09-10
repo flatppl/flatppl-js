@@ -92,6 +92,10 @@ The linked registry contains renamed standard-module aliases. Pass the resulting
 The canonical `result.loweredModule.moduleRegistry` still describes the primary
 module and serves source/type tooling.
 
+Record-valued broadcasts collect into tables, including nested record columns.
+Inference retains table schemas on source calls across lift's re-lowering, so
+empty broadcasts keep their columns without evaluating a cell.
+
 **`sampler.ts` / `worker.ts` are deliberately NOT re-exported** from the main
 entry — they pull in ~1 MB of stdlib distribution code only needed in the
 worker bundle. Host/main-thread code that needs to sample drives the worker
