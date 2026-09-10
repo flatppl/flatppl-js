@@ -51,6 +51,9 @@ class FlatPPLPanel {
   _localBaseUri: any;
   _webviewReady: any;
   _pendingMessages: any;
+  // Sequence of the latest model post (see _postWithBundle): a bundle
+  // resolution that finishes after a newer post has gone out is stale.
+  _postSeq: number = 0;
 
   static createOrShow(context: any) {
     const column = vscode.ViewColumn.Beside;
@@ -345,16 +348,24 @@ class FlatPPLPanel {
    * file sources post synchronously (the common case, no I/O).
    */
   _postWithBundle(base: any, source: any) {
+    const seq = ++this._postSeq;
     let rels: string[] = [];
     try { rels = moduleDeps(source); } catch (_) { rels = []; }
     if (rels.length === 0 || !this._sourceUri) {
       this._post(base);
       return;
     }
+    // The resolution is asynchronous (workspace reads; a URL dependency may
+    // even wait on the trust prompt). A newer post — a single-file model
+    // posted synchronously meanwhile, say — must not be clobbered by this
+    // older one landing late, so a stale resolution is dropped.
+    const stale = () => seq !== this._postSeq;
     this._resolveBundle(source, this._sourceUri).then((bundle: any) => {
+      if (stale()) return;
       base.bundleSources = bundle.sources;   // base.path already == bundle.primaryPath
       this._post(base);
     }, () => {
+      if (stale()) return;
       // Resolution failed entirely — still render the primary so the
       // panel is never blank; the engine reports unresolved deps.
       this._post(base);

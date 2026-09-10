@@ -70,6 +70,9 @@ test('same text, same path, same bundle: no re-lower', () => {
   assert.equal(lowerInputsChanged(
     { source: SRC, path: null, bundleSources: null },
     { source: SRC, path: undefined, bundleSources: undefined }), false);
+  assert.equal(lowerInputsChanged(
+    { source: SRC, path: '/m/a.flatppl', bundleSources: null },
+    { source: SRC, path: '/m/a.flatppl', bundleSources: {} }), false, 'an empty bundle is no bundle');
 });
 
 test('a bundle arriving for the same text re-lowers (the module-view-then-visualize-binding case)', () => {

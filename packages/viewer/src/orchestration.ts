@@ -67,7 +67,9 @@ export function lowerInputsChanged(
 ): boolean {
   if (prev.source !== next.source) return true;
   if ((prev.path ?? null) !== (next.path ?? null)) return true;
-  const a = prev.bundleSources || null, b = next.bundleSources || null;
+  // An absent bundle and an empty one are the same input to the engine.
+  const norm = (x: any) => (x && Object.keys(x).length ? x : null);
+  const a = norm(prev.bundleSources), b = norm(next.bundleSources);
   if (!a || !b) return a !== b;
   const ka = Object.keys(a), kb = Object.keys(b);
   if (ka.length !== kb.length) return true;
