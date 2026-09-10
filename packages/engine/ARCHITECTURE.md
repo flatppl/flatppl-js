@@ -92,6 +92,10 @@ The linked registry contains renamed standard-module aliases. Pass the resulting
 The canonical `result.loweredModule.moduleRegistry` still describes the primary
 module and serves source/type tooling.
 
+Mass inference recognizes simplex-weighted probability mixtures: whole vectors
+for `ksuperpose`, or every coordinate of the same node exactly once for `superpose`.
+Reference measures and unnormalized components do not satisfy this proof.
+
 **`sampler.ts` / `worker.ts` are deliberately NOT re-exported** from the main
 entry — they pull in ~1 MB of stdlib distribution code only needed in the
 worker bundle. Host/main-thread code that needs to sample drives the worker

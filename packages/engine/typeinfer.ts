@@ -5966,6 +5966,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (ir.target && ir.target.ns === 'self' && !ir.op) {
       return kernelOutputMass(ir.target.name);
     }
+    if (ir.callee && !ir.op && resolveBindingRefs(ir.callee)?.op === 'ksuperpose') {
+      return massOfExpr(resolveBindingRefs(ir.callee));
+    }
     const op = ir.op;
     const args = ir.args || [];
 
@@ -6125,6 +6128,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // are PROVEN to sum to one is the exception: its total mass is
       // exactly one, so §11's `%normalized` applies rather than merely
       // `%finite`.
+      case 'ksuperpose': {
+        const head = resolveBindingRefs(args[0]);
+        const component = head && head.kind === 'ref' && builtins.DISTRIBUTIONS.has(head.name)
+          && head.name !== 'Lebesgue' && head.name !== 'Counting'
+          ? T.MASS_NORMALIZED : componentMass(head);
+        if (valuesetOfExpr(args[1])?.vs !== 'stdsimplex') return T.MASS_DEFERRED;
+        return component === T.MASS_NORMALIZED ? T.MASS_NORMALIZED : T.MASS_UNKNOWN;
+      }
       case 'superpose':
         if (superposeIsProvablyNormalized(ir)) return T.MASS_NORMALIZED;
         return additiveMass(args.map(massOfExpr));
@@ -6346,7 +6357,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // weights are unrecoverable from the folded class.
   //
   // Requires ALL of: every argument is the positional `weighted(wᵢ, mᵢ)`
-  // with `mᵢ` proven normalized; the weights sum to one by one of the two
+  // with `mᵢ` proven normalized; the weights sum to one by one of the three
   // decidable readings below; and every weight is provably in [0, 1], so
   // each component is a measure and the sum is a mixture rather than a
   // signed combination. Mirrors flatppl-rust
@@ -6354,7 +6365,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // ------------------------------------------------------------------
   function superposeIsProvablyNormalized(ir: any): boolean {
     const args = ir.args || [];
-    if (args.length < 2) return false;
+    if (args.length === 0) return false;
     if (ir.kwargs && Object.keys(ir.kwargs).length > 0) return false;
     const weights: any[] = [];
     for (const arg of args) {
@@ -6363,7 +6374,28 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (massOfExpr(parts.base) !== T.MASS_NORMALIZED) return false;
       weights.push(parts.weight);
     }
-    return literalWeightsSumToOne(weights) || complementPair(weights);
+    return literalWeightsSumToOne(weights) || complementPair(weights)
+      || simplexWeightsCoverVector(weights);
+  }
+
+  /** §06: exhaust every coordinate of the same simplex node exactly once. */
+  function simplexWeightsCoverVector(weights: any[]): boolean {
+    let vector: any;
+    const seen = new Set<number>();
+    for (const weight of weights) {
+      const node = resolveBindingRefs(weight);
+      if (node?.op !== 'get' || node.args?.length !== 2) return false;
+      const base = resolveBindingRefs(node.args[0]);
+      const set = valuesetOfExpr(base);
+      if ((vector && vector !== base) || set?.vs !== 'stdsimplex'
+          || set.n !== weights.length) return false;
+      const index = node.args[1];
+      if (index?.kind !== 'lit' || !Number.isInteger(index.value)
+          || index.value < 1 || index.value > weights.length || seen.has(index.value)) return false;
+      seen.add(index.value);
+      vector = base;
+    }
+    return weights.length > 0;
   }
 
   // `{weight, base}` of a `weighted(w, M)` call, looking through binding
