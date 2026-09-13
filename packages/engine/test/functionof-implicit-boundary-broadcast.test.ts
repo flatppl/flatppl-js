@@ -66,6 +66,21 @@ function meanOf(xs: ArrayLike<number>): number {
   return s / xs.length;
 }
 
+test('nested broadcasts retain parameterized vector captures', () => {
+  const model = `x = elementof(reals)
+v = [x]
+y = sum(((a, b) -> a + b).([1.0, 2.0], v))
+f = functionof(y, x = x)`;
+  const query = 'm = load_module("model.flatppl")\nf = m.f\nY = f.([3.0, 5.0])';
+  const proc = processSource(query, {
+    path: 'query.flatppl', bundle: { sources: { 'model.flatppl': model } },
+  });
+  const built = orchestrator.buildDerivations(proc.linkedBindings, {
+    moduleRegistry: proc.linkedModuleRegistry,
+  });
+  assert.deepEqual(asArray(built.fixedValues.get('Y')), [9, 13]);
+});
+
 test('functionof(intermediate).(stochastic iid) materialises to [N,k] of x^2', async () => {
   const N = 4000;
   const src = `x = elementof(reals)

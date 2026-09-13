@@ -602,8 +602,15 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
       const isBoxMeasure = !!drv
         && (drv.kind === 'lebesguebox'
           || (drv.kind === 'weighted' && typeof drv.boxAxes === 'number'));
+      // Before cascade pruning, a vector of parameter refs can still carry
+      // a provisional tuple derivation. It is a computed value (§03 arrays),
+      // not a draw: retain its boundary dependency inside the reified body.
+      const isParameterizedVector = drv?.kind === 'tuple'
+        && target?.phase === 'parameterized'
+        && target.ir?.kind === 'call' && target.ir.op === 'vector';
       const isEvaluableValue = !isInputLeaf
         && ((drv && drv.kind === 'evaluate')
+          || isParameterizedVector
           || isBoxMeasure
           || (!drv && target && target.ir && target.ir.kind === 'call'));
       if (isEvaluableValue && target && target.ir) {

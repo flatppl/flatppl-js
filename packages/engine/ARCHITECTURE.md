@@ -456,6 +456,9 @@ when a declared boundary the body references has no fed column (Phase 6).
 `pir-sexpr` consequently carries bodies VERBATIM (no serialization-
 boundary namespace translation).
 
+Callable self-containment inlines parameterized vector values even while they
+carry provisional tuple derivations before pruning. Stochastic tuples stay refs.
+
 ## Phase analysis
 
 Per spec §04: `'fixed'` / `'parameterized'` / `'stochastic'` by ancestor
