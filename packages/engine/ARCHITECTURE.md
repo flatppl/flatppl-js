@@ -96,6 +96,10 @@ Record-valued broadcasts collect into tables, including nested record columns.
 Inference retains table schemas on source calls across lift's re-lowering, so
 empty broadcasts keep their columns without evaluating a cell.
 
+Array indexing preserves nested element types and runtime nesting tags.
+Leading slices retain complex components and view semantics; transposed matrix
+rows gather only the selected row, while contiguous slices borrow storage.
+
 **`sampler.ts` / `worker.ts` are deliberately NOT re-exported** from the main
 entry — they pull in ~1 MB of stdlib distribution code only needed in the
 worker bundle. Host/main-thread code that needs to sample drives the worker

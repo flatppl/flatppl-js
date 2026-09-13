@@ -2661,8 +2661,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (containerT && containerT.kind === 'array') {
       // Nested arrays (`[[1,2],[3,4]]` lowers to vector(vector(…))) carry
       // a rank-1 outer with an array-typed elem; for indexing purposes
-      // the spec treats them as a single multi-dim array (`A[i, j]` ≡
-      // `A[i][j]`). Flatten before walking the selectors.
+      // multi-index access follows `A[i, j] ≡ A[i][j]`. Flatten the axis
+      // lengths for selector validation, but preserve nested result types.
       const flat = _flattenArrayType(containerT);
       const rank = flat.rank;
       const shape = flat.shape;
@@ -2676,12 +2676,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         });
         return T.failed('get over-selected');
       }
-      const outShape: any[] = [];
+      const selectedShape: any[] = new Array(rank).fill(null);
       for (let k = 0; k < sels.length; k++) {
         const sel = sels[k];
         const dim = shape[k];
         if (sel && sel.kind === 'const' && sel.name === 'all') {
-          outShape.push(dim);                        // keep dim
+          selectedShape[k] = dim;                    // keep dim
           continue;
         }
         if (sel && sel.kind === 'const' && sel.name === 'only') {
@@ -2708,7 +2708,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         if (sel && sel.kind === 'call' && sel.op === 'vector') {
           // Subset selection — new dim length = number of vector args
           // (or %dynamic if the args list is variadic at runtime).
-          outShape.push(Array.isArray(sel.args) ? sel.args.length : '%dynamic');
+          selectedShape[k] = Array.isArray(sel.args) ? sel.args.length : '%dynamic';
           continue;
         }
         // Array-valued selector (array-of-indices subset selection / gather,
@@ -2724,7 +2724,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           const selT: any = inferExpr(sel, scopes);
           if (selT && selT.kind === 'array' && Array.isArray(selT.shape)
               && selT.shape.length === 1) {
-            outShape.push(selT.shape[0]);
+            selectedShape[k] = selT.shape[0];
             continue;
           }
         }
@@ -2734,9 +2734,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         // (Falls through; no push.)
       }
       // Tail dims that weren't selected stay verbatim.
-      for (let k = sels.length; k < rank; k++) outShape.push(shape[k]);
-      if (outShape.length === 0) return flat.elem;
-      return T.array(outShape.length, outShape, flat.elem);
+      for (let k = sels.length; k < rank; k++) selectedShape[k] = shape[k];
+      // §03: an array element can itself be an array, not an implicit matrix.
+      // Rebuild each surviving array layer after dropping selected axes.
+      let axis = 0;
+      function selectedType(t: any): any {
+        if (t.kind !== 'array') return t;
+        const dims = selectedShape.slice(axis, axis + t.rank).filter(d => d !== null);
+        axis += t.rank;
+        const elem = selectedType(t.elem);
+        return dims.length ? T.array(dims.length, dims, elem) : elem;
+      }
+      return selectedType(containerT);
     }
 
     // Deferred / any / tvector / measure — no shape inference yet.
