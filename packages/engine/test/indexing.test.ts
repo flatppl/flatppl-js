@@ -2,9 +2,37 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { processSource } = require('../index.ts');
+const { buildDerivations } = require('../orchestrator.ts');
+const { toJS } = require('./_value-helpers.ts');
 
 function errors(src: any) {
   return processSource(src).diagnostics.filter((d: any) => d.severity === 'error');
+}
+
+for (const { name, source, expected } of [
+  {
+    name: 'nested arrays',
+    source: 'A = [[[0.0,0.0],[0.0,0.0]], [[0.0,1.0],[1.0,0.0]]]\ny = sum(exp.(sum.(A[i])))',
+    expected: [2, 2 * Math.E],
+  },
+  {
+    name: 'complex arrays',
+    source: 'A = complex.(rowstack([[1,3],[5,7]]), rowstack([[2,4],[6,8]]))\ny = sum(imag.(A[i])) + imag(A[i,1])',
+    expected: [8, 20],
+  },
+  {
+    name: 'complex views',
+    source: 'A = complex.(rowstack([[1,3,5],[7,9,11]]), rowstack([[2,4,6],[8,10,12]]))\n'
+      + 'y = sum(imag.(transpose(A)[i])) + imag(conj.(A)[i,1]) + imag(adjoint(A[1])[i])',
+    expected: [6, 2],
+  },
+]) {
+  test(`indexing: dynamic element access preserves ${name}`, () => {
+    const proc = processSource(`${source}\ni = elementof(integers)\nf = functionof(y, i = i)\nz = f.(i = [1,2])\n`);
+    assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
+    const value = buildDerivations(proc.bindings).fixedValues.get('z');
+    assert.deepEqual(toJS(value), expected);
+  });
 }
 
 // --- Valid 1-based indices ---

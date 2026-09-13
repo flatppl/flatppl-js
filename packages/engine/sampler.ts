@@ -2828,39 +2828,35 @@ function evaluateCall(ir: any, env: any): any {
     });
     const isArrayLike = (c: any) => Array.isArray(c) || ArrayBuffer.isView(c)
                                   || valueLib.isValue(c);
-    // Slice a Value along its leading axis. Rank-1 returns a scalar
-    // number; rank≥2 returns a Value of one rank lower (sharing the
-    // underlying data — no copy when the rest of the shape is
-    // contiguous in row-major order, which is the engine's convention).
+    // §07 leading-axis selection preserves §03 element kind and nesting.
+    // Borrow contiguous storage; a transposed matrix row needs a gather.
+    // Keep surviving view tags so conjugation happens exactly once.
     function _sliceLeading(v: any, idx: number): any {
-      let dense = v;
-      if (v.t === 'T' || v.t === 'A' || v.struct !== undefined) {
-        dense = valueLib.densify(v);
-        // densify preserves the transpose tag; for indexing we need
-        // physical contiguous-leading-axis data, so apply the tag
-        // (rare path — only matters when M came in as transpose-tagged).
-        if (dense.t === 'T' || dense.t === 'A') {
-          // For rank-2 only — apply transpose physically.
-          const m = dense.shape[dense.shape.length - 2];
-          const n = dense.shape[dense.shape.length - 1];
-          if (dense.shape.length === 2) {
-            const src = dense.data;
-            const out = new Float64Array(m * n);
-            for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) {
-              out[i * n + j] = src[j * m + i];
-            }
-            dense = { shape: [m, n], data: out };
-          }
-        }
-      }
+      const dense = v.struct !== undefined ? valueLib.densify(v) : v;
+      const transposed = valueLib.isTransposeView(v);
+      const conjugated = valueLib.isConjugateView(v);
       const shape = dense.shape;
       if (shape.length === 1) {
-        return dense.data[idx];   // scalar number
+        if (dense.im) return { re: dense.data[idx], im: conjugated ? -dense.im[idx] : dense.im[idx] };
+        return dense.data[idx];
       }
       const tail = shape.slice(1);
       const tailLen = tail.reduce((a: number, b: number) => a * b, 1);
-      const sub = dense.data.subarray(idx * tailLen, (idx + 1) * tailLen);
-      return { shape: tail, data: sub };
+      function slice(data: Float64Array): Float64Array {
+        if (transposed && shape.length === 2) {
+          const row = new Float64Array(tailLen);
+          for (let j = 0; j < tailLen; j++) row[j] = data[j * shape[0] + idx];
+          return row;
+        }
+        return data.subarray(idx * tailLen, (idx + 1) * tailLen);
+      }
+      const result: any = { shape: tail, data: slice(dense.data) };
+      if (dense.outerRank > 1) result.outerRank = dense.outerRank - 1;
+      if (dense.dtype) result.dtype = dense.dtype;
+      if (dense.im) result.im = slice(dense.im);
+      if (transposed && shape.length > 2) result.t = v.t;
+      else if (conjugated) result.t = 'C';
+      return result;
     }
     const applyGet = (c: any, ss: any): any => {
       if (ss.length === 0) return c;
