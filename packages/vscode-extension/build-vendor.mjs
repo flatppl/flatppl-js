@@ -114,7 +114,32 @@ for (const { pkg, src, dst } of COPY_LIBS) {
 //     itself unavailable). src/visualPanel.ts hands the webview the glue's
 //     URI as `wasmApiUrl` only when the artifact is present.
 
-await provisionWasmApi({ destDir: libDir, repoRoot });
+const wasmApiOn = await provisionWasmApi({ destDir: libDir, repoRoot });
+
+// 1c. The same artifact for the EXTENSION HOST: the "Export math as …"
+//     commands call `export_math` from Node (extension.ts), not from the
+//     webview. wasm-pack's `--target web` glue is an ES module, while VS
+//     Code loads the extension as CommonJS, so esbuild wraps the glue as
+//     lib/flatppl_wasm_api.cjs. The glue reads `import.meta.url` only to
+//     locate the .wasm when init gets no bytes; the host always hands it
+//     the bytes (fs.readFileSync of the .wasm beside it), so the
+//     empty-import-meta warning is silenced deliberately. Absent artifact
+//     ⇒ no .cjs, and extension.ts hides the commands.
+const wasmApiCjs = join(libDir, 'flatppl_wasm_api.cjs');
+if (wasmApiOn) {
+  await esbuild.build({
+    entryPoints: [join(libDir, 'flatppl_wasm_api.js')],
+    outfile: wasmApiCjs,
+    bundle: true,
+    format: 'cjs',
+    platform: 'node',
+    target: ['node16'],
+    logOverride: { 'empty-import-meta': 'silent' },
+  });
+  console.log('  bundled wasm-api glue -> lib/flatppl_wasm_api.cjs');
+} else {
+  await rm(wasmApiCjs, { force: true });
+}
 
 // Webview viewer JS — sourced from the sibling @flatppl/viewer
 // workspace package. From Phase 4 the viewer lives as ES modules
@@ -313,6 +338,10 @@ const EXTENSION_TS_SOURCES = [
   // half: scheme + URL<->uri derivation). No vscode import, so type-stripping is
   // enough and the unit tests require it directly.
   { in: 'src/remoteModule.ts',  out: 'src/remoteModule.js' },
+  // "Export math as …" core (host deps injected; requires lib/math-view.cjs
+  // built below). No vscode import, so type-stripping is enough and the
+  // unit tests require it directly.
+  { in: 'src/mathExport.ts',    out: 'src/mathExport.js' },
   // NOTE: src/lspClient.ts is NOT type-stripped here — it imports the
   // `vscode-languageclient` npm package, which must be BUNDLED into the
   // output (the packaged .vsix ships no node_modules; vsce runs with
@@ -429,6 +458,23 @@ const mathBuildOpts = {
   legalComments: 'inline',
 };
 
+// The viewer's math contract layer (packages/viewer/src/math-view.ts: the
+// `render_math` / `export_math` request builders, the document catalogue,
+// the export file-name rule) as a Node-CJS artifact so src/mathExport.ts
+// can `require('../lib/math-view.cjs')` — the extension and the gallery
+// then derive an export's request and file name from ONE source. Pure
+// (no DOM), so it bundles unchanged.
+const mathViewBuildOpts = {
+  entryPoints: [join(viewerPkg, 'src', 'math-view.ts')],
+  outfile: join(libDir, 'math-view.cjs'),
+  bundle: true,
+  minify: true,
+  format: 'cjs',
+  platform: 'node',
+  target: ['node16'],
+  legalComments: 'inline',
+};
+
 // The URL cache (spec §04 Remote file caching) — the Node host primitive for
 // fetching http/https load_module / load_data sources into the shared on-disk
 // cache. Bundled as a Node-CJS artifact so visualPanel.ts can
@@ -474,9 +520,10 @@ if (WATCH) {
   const lspCtx     = await esbuild.context(lspClientBuildOpts);
   const echartsCtx = await esbuild.context(echartsCustomBuildOpts);
   const urlCacheCtx = await esbuild.context(urlCacheBuildOpts);
+  const mathViewCtx = await esbuild.context(mathViewBuildOpts);
   await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(),
                      viewerCtx.rebuild(), mathCtx.rebuild(), lspCtx.rebuild(),
-                     echartsCtx.rebuild(), urlCacheCtx.rebuild()]);
+                     echartsCtx.rebuild(), urlCacheCtx.rebuild(), mathViewCtx.rebuild()]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
@@ -484,9 +531,10 @@ if (WATCH) {
   console.log('  bundled lsp-client    -> src/lspClient.js');
   console.log('  bundled echarts       -> lib/echarts.min.js');
   console.log('  bundled url-cache     -> lib/url-cache.cjs');
+  console.log('  bundled math-view     -> lib/math-view.cjs');
   await Promise.all([engineCtx.watch(), workerCtx.watch(),
                      viewerCtx.watch(), mathCtx.watch(), lspCtx.watch(),
-                     echartsCtx.watch(), urlCacheCtx.watch()]);
+                     echartsCtx.watch(), urlCacheCtx.watch(), mathViewCtx.watch()]);
   console.log('  watching packages/engine/ + packages/viewer/ for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
@@ -497,6 +545,7 @@ if (WATCH) {
     esbuild.build(lspClientBuildOpts),
     esbuild.build(echartsCustomBuildOpts),
     esbuild.build(urlCacheBuildOpts),
+    esbuild.build(mathViewBuildOpts),
   ]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
@@ -505,6 +554,7 @@ if (WATCH) {
   console.log('  bundled lsp-client    -> src/lspClient.js');
   console.log('  bundled echarts       -> lib/echarts.min.js');
   console.log('  bundled url-cache     -> lib/url-cache.cjs');
+  console.log('  bundled math-view     -> lib/math-view.cjs');
 }
 
 // ---------------------------------------------------------------------

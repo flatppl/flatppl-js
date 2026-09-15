@@ -5,3 +5,4 @@ src/inferenceLens.js
 src/dependencyPrefetch.js
 src/lspUrlFeed.js
 src/remoteModule.js
+src/mathExport.js

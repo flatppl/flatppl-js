@@ -22,6 +22,10 @@ Work in progress. Currently:
   per-distribution coloring, and tether annotations
 - A math pane (toggle "Math" in the visualization) rendering the model as
   mathematical notation, one row per binding, linked back to the source
+- Commands "FlatPPL: Export math as HTML / LaTeX / Typst" writing the
+  model's mathematics as a document next to the source (the HTML is
+  viewable as is; LaTeX needs LuaLaTeX or XeLaTeX with unicode-math,
+  Typst the `typst` compiler)
 
 ## Language server
 

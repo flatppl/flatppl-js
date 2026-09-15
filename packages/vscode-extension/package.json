@@ -87,6 +87,18 @@
       {
         "command": "flatppl.updateDependencies",
         "title": "FlatPPL: Update Dependencies"
+      },
+      {
+        "command": "flatppl.exportMathHtml",
+        "title": "FlatPPL: Export math as HTML"
+      },
+      {
+        "command": "flatppl.exportMathLatex",
+        "title": "FlatPPL: Export math as LaTeX"
+      },
+      {
+        "command": "flatppl.exportMathTypst",
+        "title": "FlatPPL: Export math as Typst"
       }
     ],
     "menus": {
@@ -118,6 +130,18 @@
         {
           "command": "flatppl.updateDependencies",
           "when": "editorLangId == flatppl"
+        },
+        {
+          "command": "flatppl.exportMathHtml",
+          "when": "editorLangId == flatppl && flatppl.mathExportAvailable"
+        },
+        {
+          "command": "flatppl.exportMathLatex",
+          "when": "editorLangId == flatppl && flatppl.mathExportAvailable"
+        },
+        {
+          "command": "flatppl.exportMathTypst",
+          "when": "editorLangId == flatppl && flatppl.mathExportAvailable"
         }
       ],
       "editor/context": [

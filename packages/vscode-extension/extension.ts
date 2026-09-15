@@ -33,7 +33,15 @@ const { collectUrlSources } = require('./src/lspUrlFeed');
 // Remote (URL) module drill-down: a URL load_module opens as a read-only
 // `flatppl-remote:` virtual document whose content is served from the on-disk
 // cache (the content provider registered in activate).
-const { REMOTE_SCHEME, urlFromRemoteUri } = require('./src/remoteModule');
+const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf } = require('./src/remoteModule');
+// "Export math as HTML / LaTeX / Typst": the host-agnostic core (bundle
+// walk → flatppl-rust `export_math` → write beside the source). The wasm
+// API runs here in the extension host from lib/flatppl_wasm_api.cjs (the
+// build's CommonJS wrap of the wasm-pack glue); the commands below supply
+// the VS Code pieces (workspace reads and writes, the overwrite prompt).
+const { runMathExport, mathExportFileName } = require('./src/mathExport');
+const fs = require('fs');
+const path = require('path');
 const { FlatPPLPanel } = require('./src/visualPanel');
 const { createLspManager } = require('./src/lspClient');
 const { registerInferenceLens } = require('./src/inferenceLens');
@@ -904,6 +912,133 @@ function activate(context: any) {
   const updateDepsCmd = vscode.commands.registerCommand(
     'flatppl.updateDependencies', () => runDependencyFetch(true));
 
+  // --- Export math as a document (flatppl-wasm-api `export_math`) ---
+  //
+  // Availability is decided by the build: lib/flatppl_wasm_api.cjs exists
+  // iff build-vendor.mjs provisioned the wasm artifact (FLATPPL_CONVERT=off
+  // drops it). The palette gates the three commands on this context key, so
+  // a build without the artifact never shows a command it cannot run.
+  const wasmApiCjs = path.join(context.extensionPath, 'lib', 'flatppl_wasm_api.cjs');
+  const wasmApiBin = path.join(context.extensionPath, 'lib', 'flatppl_wasm_api_bg.wasm');
+  vscode.commands.executeCommand('setContext', 'flatppl.mathExportAvailable',
+    fs.existsSync(wasmApiCjs) && fs.existsSync(wasmApiBin));
+
+  // The initialised wasm API, loaded on the first export (the ~2 MB module
+  // is instantiated once per extension host). The glue's init takes the
+  // wasm bytes directly — Node cannot fetch() the file: URL the glue would
+  // otherwise derive from import.meta.url (which the CJS wrap empties).
+  let wasmApi: any = null;
+  let wasmApiLoading: Promise<any> | null = null;
+  async function loadWasmApi() {
+    if (wasmApi) return wasmApi;
+    // One instantiation, shared by overlapping first calls.
+    if (!wasmApiLoading) {
+      wasmApiLoading = (async () => {
+        const mod = require(wasmApiCjs);
+        await mod.default({ module_or_path: fs.readFileSync(wasmApiBin) });
+        if (typeof mod.export_math !== 'function') {
+          throw new Error('the bundled wasm API has no export_math (rebuild lib/ from a current flatppl-rust)');
+        }
+        wasmApi = mod;
+        return mod;
+      })().catch((e: any) => { wasmApiLoading = null; throw e; });
+    }
+    return wasmApiLoading;
+  }
+
+  // One command per format. The document is rendered from the editor buffer
+  // (unsaved edits included — the same text the math pane shows) with its
+  // load_module dependencies read the way the visualizer reads them, and
+  // written as `<stem>.<ext>` next to the source, asking before replacing an
+  // existing file; an untitled or remote (URL) buffer has no "next to", so it
+  // asks where. The result opens in the editor: the outputs are sources
+  // (only the HTML is viewable as is, in a browser).
+  async function runMathExportCommand(format: 'html' | 'tex' | 'typ') {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || !isFlatPPLDoc(editor.document)) {
+      vscode.window.showInformationMessage('FlatPPL: open a .flatppl file to export its math.');
+      return;
+    }
+    const doc = editor.document;
+    const enginePath = enginePathOf(doc.uri) || 'model.flatppl';
+
+    // Where the file goes: beside a workspace file; a save dialog otherwise.
+    // A dialog already confirms a replacement itself, so a picked target
+    // skips the command's own overwrite prompt.
+    let baseUri = doc.uri;       // scheme + authority for the target (remote / WSL too)
+    let target: string | null = null;
+    if (doc.isUntitled || doc.uri.scheme === REMOTE_SCHEME) {
+      const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+      const picked = await vscode.window.showSaveDialog({
+        defaultUri: folder ? vscode.Uri.joinPath(folder.uri, mathExportFileName(enginePath, format)) : undefined,
+        saveLabel: 'Export',
+      });
+      if (!picked) return;
+      baseUri = picked;
+      target = picked.path;
+    }
+    const uriFor = (p: string) => baseUri.with({ path: p });
+
+    try {
+      const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'FlatPPL: exporting math…' },
+        async () => {
+          const api = await loadWasmApi();
+          return runMathExport({
+            document: format,
+            source: doc.getText(),
+            path: enginePath,
+            resolveBundle,
+            // The same dependency read as the visualizer's bundle: a URL through
+            // the on-disk cache (trust prompt on a first, unknown URL), a local
+            // path through the workspace file system on the source's scheme. A
+            // dependency that cannot be read is left out — the document reports
+            // it — and the user is told, as the visualizer tells them.
+            readSource: async (resolved: string) => {
+              try {
+                if (urlCache.isUrl(resolved)) {
+                  return await urlCache.readText(resolved, { approve: (u: any) => approveUrl(u) });
+                }
+                const bytes = await vscode.workspace.fs.readFile(doc.uri.with({ path: resolved }));
+                return Buffer.from(bytes).toString('utf8');
+              } catch (e: any) {
+                vscode.window.showWarningMessage(
+                  'FlatPPL: could not load ' + resolved + ' — ' + ((e && e.message) || e));
+                return null;
+              }
+            },
+            exportMath: api.export_math,
+            target,
+            exists: async (p: string) => {
+              try { await vscode.workspace.fs.stat(uriFor(p)); return true; }
+              catch (_e) { return false; }
+            },
+            confirmOverwrite: async (p: string) => {
+              const pick = await vscode.window.showWarningMessage(
+                'FlatPPL: ' + path.posix.basename(p) + ' already exists. Replace it?',
+                { modal: true }, 'Replace');
+              return pick === 'Replace';
+            },
+            write: async (p: string, text: string) => {
+              await vscode.workspace.fs.writeFile(uriFor(p), Buffer.from(text, 'utf8'));
+            },
+          });
+        });
+      if (result.status === 'written') {
+        await vscode.window.showTextDocument(uriFor(result.target), { preview: false });
+      }
+    } catch (e: any) {
+      vscode.window.showErrorMessage('FlatPPL: math export failed — ' + ((e && e.message) || e));
+    }
+  }
+
+  const exportMathHtmlCmd = vscode.commands.registerCommand(
+    'flatppl.exportMathHtml', () => runMathExportCommand('html'));
+  const exportMathLatexCmd = vscode.commands.registerCommand(
+    'flatppl.exportMathLatex', () => runMathExportCommand('tex'));
+  const exportMathTypstCmd = vscode.commands.registerCommand(
+    'flatppl.exportMathTypst', () => runMathExportCommand('typ'));
+
   // --- Live DAG update on cursor move ---
 
   let updateTimeout: any;
@@ -1386,6 +1521,7 @@ function activate(context: any) {
   context.subscriptions.push(
     showDagCmd, showModuleCmd, activateEmbeddedCmd, deactivateEmbeddedCmd,
     downloadDepsCmd, updateDepsCmd,
+    exportMathHtmlCmd, exportMathLatexCmd, exportMathTypstCmd,
     selectionListener, changeListener, openListener, saveListener, closeListener,
     defProvider, hoverProvider, symbolProvider, completionProvider,
     renameProvider, referenceProvider, highlightProvider, selectionRangeProvider,
