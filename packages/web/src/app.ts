@@ -171,7 +171,8 @@
       showModuleBtn.hidden = !cur.model || type !== 'flatppl';
     }
     // Editor tools button (wrench) — shown when the active file has any
-    // applicable tool (currently Convert to FlatPPL for pyhf / hs3).
+    // applicable tool (Convert to FlatPPL for pyhf / hs3, Export math as …
+    // for a model).
     const toolsBtn = document.getElementById('tools-btn');
     if (toolsBtn) {
       toolsBtn.hidden = toolsForFile(cur.model).length === 0;
@@ -271,27 +272,111 @@
     input.addEventListener('blur', function () { finish(false); });
   }
 
-  // --- Convert pyhf / HS3 → FlatPPL (via flatppl-wasm-api, lazy wasm) -----
+  // --- The flatppl-wasm-api artifact (lazy wasm) --------------------------
   //
-  // The wasm convert artifact is provisioned into vendor/ by the build ONLY
-  // when available (sibling wasm-pack build, or the nightly download).
-  // Absent ⇒ convertAvailable stays false and every Convert affordance stays
+  // One artifact, three uses: Convert (pyhf / HS3 → FlatPPL), the viewer's
+  // math pane (`render_math`, loaded by the viewer itself through
+  // `__FLATPPL_CONFIG__.wasmApiUrl`) and the "Export math as …" tools
+  // (`export_math`). It is provisioned into vendor/ by the build ONLY when
+  // available (sibling wasm-pack build, or a CI-staged artifact). Absent ⇒
+  // convertAvailable stays false and every affordance that needs it stays
   // hidden, so the gallery degrades cleanly with no broken button.
   let convertAvailable = false;
-  let _wasmConvert: any = null;
+  let _wasmApi: any = null;
+  let _wasmApiLoading: Promise<any> | null = null;
   // Glue path in a variable so tsc treats the import as runtime-only (no
   // compile-time resolution of the build-provisioned, possibly-absent glue).
   const _wasmGluePath = './vendor/flatppl_wasm_api.js';
 
+  /** The initialised wasm API module (its exports: convert, render_math,
+   *  export_math), imported once on first use. */
+  async function loadWasmApi() {
+    if (_wasmApi) return _wasmApi;
+    // One init at a time: two first calls (Convert and an export, say) must
+    // share the instantiation, not each run it.
+    if (!_wasmApiLoading) {
+      _wasmApiLoading = (async () => {
+        // Dynamic ESM import of the wasm-pack `--target web` glue, resolved at
+        // runtime against the page (app.js is a classic script; esbuild's
+        // transform leaves import() untouched). default() runs the wasm init.
+        const mod: any = await import(_wasmGluePath);
+        if (mod && typeof mod.default === 'function') await mod.default();
+        _wasmApi = mod;
+        return mod;
+      })().catch((e) => { _wasmApiLoading = null; throw e; });
+    }
+    return _wasmApiLoading;
+  }
+
   async function loadWasmConvert() {
-    if (_wasmConvert) return _wasmConvert;
-    // Dynamic ESM import of the wasm-pack `--target web` glue, resolved at
-    // runtime against the page (app.js is a classic script; esbuild's
-    // transform leaves import() untouched). default() runs the wasm init.
-    const mod: any = await import(_wasmGluePath);
-    if (mod && typeof mod.default === 'function') await mod.default();
-    _wasmConvert = mod.convert;
-    return _wasmConvert;
+    return (await loadWasmApi()).convert;
+  }
+
+  // --- Export math as a document (via flatppl-wasm-api `export_math`) ------
+  //
+  // The model's mathematics as a whole document — HTML (MathML), Markdown,
+  // LaTeX or Typst — saved into the user area and opened; design:
+  // flatppl-dev/math-view-design.md §4 "Whole documents". The catalogue,
+  // the request and the file name come from the viewer's contract layer
+  // (FlatPPLViewer.mathExport) so this host and VS Code derive them alike.
+  // The source is the editor buffer when the file is the one being edited
+  // (what the math pane renders), else the stored text; the dependency
+  // bundle is the same map the viewer gets.
+
+  /** Text of `path` as the user sees it: the live editor buffer when
+   *  `path` is the active file (edits included), null otherwise. */
+  function editorBufferFor(path: string): string | null {
+    const cur = window.FlatPPLWebRouter.parseHash();
+    if (sourceEditor && cur && cur.model === path) return sourceEditor.getSource();
+    return null;
+  }
+
+  async function exportMathDocument(srcPath: string, format: string) {
+    const userStore = window.FlatPPLWebUserStore;
+    const mathExport = window.FlatPPLViewer && window.FlatPPLViewer.mathExport;
+    if (!userStore || !mathExport) return;
+    try {
+      // The buffer as edited walks its own load_module deps; the stored text
+      // tells whether those edits are unsaved.
+      const buffer = editorBufferFor(srcPath);
+      const bundle = await window.FlatPPLWebResolver.resolveBundle(srcPath, buffer);
+      if (!bundle || typeof bundle.primarySource !== 'string') {
+        showToast('Could not read ' + srcPath + '.');
+        return;
+      }
+      const api = await loadWasmApi();
+      if (typeof api.export_math !== 'function') {
+        showToast('Math export is not available in this build.');
+        return;
+      }
+      const request = mathExport.buildRequest({
+        source: bundle.primarySource,
+        path: srcPath,
+        bundleSources: bundle.sources,
+        document: format,
+      });
+      const out = api.export_math(JSON.stringify(request));   // throws on a malformed module
+      // A derived file with a fixed name (`<stem>.<ext>`, as VS Code writes
+      // beside the source): a repeat export replaces it after asking, it
+      // never piles up numbered copies.
+      const dest = 'user/' + mathExport.fileName(srcPath, format);
+      if (userStore.has(dest) && !window.confirm('Replace "' + dest + '"?')) return;
+      const persisted = userStore.save(dest, out, { parent: null });
+      // Opening the result replaces the editor content. With unsaved edits in
+      // the buffer that would throw them away, so then the file only appears
+      // under User for the user to open.
+      const dirty = buffer !== null && buffer !== (await window.FlatPPLWebResolver.resolveBundle(srcPath)).primarySource;
+      let note = persisted ? '' : ' (for this session only: browser storage is full)';
+      if (dirty) {
+        showToast('Exported → ' + dest + note + '. Open it under User; your unsaved edits stay here.');
+      } else {
+        showToast('Exported → ' + dest + note + '.');
+        window.FlatPPLWebRouter.navigateTo({ model: dest });
+      }
+    } catch (e: any) {
+      console.error('[@flatppl/web] math export failed:', e);
+      showToast('Export failed: ' + ((e && e.message) || e));
+    }
   }
 
   /** Destination basename for a converted file: strip the import extension
@@ -966,6 +1051,18 @@
         action: function () { convertToFlatppl(path); },
       });
     }
+    // "Export math as …" for a model: one entry per document format of the
+    // viewer's catalogue (HTML, Markdown, LaTeX, Typst). The same artifact
+    // as Convert, so the same build-time availability gate.
+    const mathExport = window.FlatPPLViewer && window.FlatPPLViewer.mathExport;
+    if (path && convertAvailable && mathExport && t === 'flatppl') {
+      mathExport.formats.forEach(function (f: { document: string; label: string }) {
+        tools.push({
+          label: 'Export math as ' + f.label,
+          action: function () { exportMathDocument(path, f.document); },
+        });
+      });
+    }
     return tools;
   }
 
@@ -1163,7 +1260,13 @@
   function onUploadClick() {
     const input = document.createElement('input');
     input.type = 'file';
-    input.accept = '.flatppl,.md,.markdown,.hs3.json,.pyhf.json';
+    // Everything the gallery has a surface for: the model types plus the
+    // document types the math export writes (drag-drop accepts the same set
+    // through typeForPath; the picker needs the list spelled out).
+    const ft = window.FlatPPLFileTypes;
+    input.accept = ft
+      ? ft.MODEL_EXTENSIONS.concat(ft.DOCUMENT_EXTENSIONS).join(',')
+      : '.flatppl,.md,.markdown,.hs3.json,.pyhf.json,.html,.htm,.tex,.typ';
     input.multiple = true;
     input.style.display = 'none';
     document.body.appendChild(input);

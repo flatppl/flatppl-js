@@ -29,12 +29,15 @@
 // localStorage can fail in two ways we care about:
 //   1. Private-browsing modes that throw on write (Safari ≤ 11,
 //      some embedded WebViews).
-//   2. Quota exceeded (5–10 MB depending on browser; a hard cap
-//      we won't usually hit since source files are KB-scale).
+//   2. Quota exceeded (5–10 MB depending on browser). Source files
+//      are KB-scale, but a math export — an HTML page with a data
+//      appendix — can reach a few hundred kB, so a full store is
+//      reachable.
 // Every read and write is wrapped in try/catch so a failure
 // degrades gracefully — the store stays usable for the rest of
 // the session via an in-memory fallback, and the user just sees
-// their changes vanish on reload.
+// their changes vanish on reload. `save` reports whether the entry
+// reached localStorage so a caller can say so.
 //
 // Lives on globalThis as window.FlatPPLWebUserStore.
 
@@ -179,8 +182,10 @@
   /** Persist `path` ← `source`. `opts.parent` records the read-only
    *  path this was forked from, for the sidebar's "from examples/X"
    *  affordance and the "Reset to original" action. Pass `null` for
-   *  fresh user-created files. */
-  function save(path: string, source: string, opts?: { parent?: string | null }) {
+   *  fresh user-created files. Returns whether the entry was written
+   *  to localStorage; false means it lives in memory for this session
+   *  only (storage unavailable or its quota exceeded). */
+  function save(path: string, source: string, opts?: { parent?: string | null }): boolean {
     if (path.indexOf(USER_PREFIX) !== 0) {
       throw new Error('FlatPPLWebUserStore.save: path must start with "user/", got: ' + path);
     }
@@ -193,9 +198,10 @@
     const isNew = !entries.has(path);
     entries.set(path, entry);
     if (isNew) pathOrder.push(path);
-    writeEntry(path, entry);
-    if (isNew) writeIndex(pathOrder);
+    let persisted = writeEntry(path, entry);
+    if (isNew) persisted = writeIndex(pathOrder) && persisted;
     emit();
+    return persisted;
   }
 
   /** Update only the source text (modifiedAt bumps; parent

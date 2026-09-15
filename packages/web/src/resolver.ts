@@ -83,8 +83,13 @@
    * `sources` maps each dependency's RESOLVED path to its text — the
    * canonical key the engine's bundle compiler expects.
    */
-  async function resolveBundle(primaryPath: any) {
-    const { source: primarySource, url: primaryUrl } = await resolveSource(primaryPath);
+  async function resolveBundle(primaryPath: any, sourceOverride?: string | null) {
+    // `sourceOverride` (the live editor buffer) walks the deps the user just
+    // typed, not the stored text's; the stored text is still resolved so the
+    // caller learns the primary's URL and can tell whether the buffer is dirty.
+    const resolved = await resolveSource(primaryPath);
+    const primaryUrl = resolved.url;
+    const primarySource = typeof sourceOverride === 'string' ? sourceOverride : resolved.source;
     const FE = globalScope.FlatPPLEngine;
     let sources = Object.create(null);
     if (FE && FE.resolveBundle) {

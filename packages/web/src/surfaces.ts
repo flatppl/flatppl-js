@@ -100,18 +100,48 @@
     };
   }
 
+  // HTML: the page as the browser shows it — the "Export math as HTML"
+  // document (MathML + its own scoped CSS, no scripts) or any .html the
+  // user uploaded. Shown in a sandboxed iframe with an EMPTY sandbox
+  // list: no scripts, no forms, no same-origin access, so an uploaded
+  // page cannot reach the gallery's storage or run anything. Content
+  // rides `srcdoc`; a fresh iframe per update keeps a page's own state
+  // from leaking across files.
+  function htmlSurface(container: any, _ctx: any): any {
+    container.innerHTML = '<div class="surface-html"></div>';
+    const host = container.querySelector('.surface-html');
+    return {
+      update: function (input: any) {
+        if (!host) return;
+        const frame = document.createElement('iframe');
+        frame.setAttribute('sandbox', '');
+        frame.setAttribute('title', (input && input.fileName) || 'HTML document');
+        frame.srcdoc = input && input.source != null ? String(input.source) : '';
+        host.innerHTML = '';
+        host.appendChild(frame);
+      },
+      dispose: function () { try { container.innerHTML = ''; } catch (_) {} },
+    };
+  }
+
   // Placeholder: neutral "nothing to visualise yet" pane for any type
   // without a registered surface (pyhf / HS3 / Stan / Julia / …). The
   // reserved slot a future native surface drops into. hs3/pyhf get a
   // pointer to the Tools button's converter — those two DO have a path
-  // to a visualisable surface, just not directly.
+  // to a visualisable surface, just not directly; the LaTeX and Typst
+  // math exports are sources for a compiler, so they name it.
   function placeholderSurface(container: any, _ctx: any): any {
     return {
       update: function (input: any) {
         const type = input && input.type;
-        const msg = (type === 'hs3' || type === 'pyhf')
-          ? 'No visualization available. Use the Tools button to convert this file to FlatPPL.'
-          : 'No visualization available.';
+        let msg = 'No visualization available.';
+        if (type === 'hs3' || type === 'pyhf') {
+          msg = 'No visualization available. Use the Tools button to convert this file to FlatPPL.';
+        } else if (type === 'latex') {
+          msg = 'A LaTeX source. Compile it with LuaLaTeX or XeLaTeX (unicode-math).';
+        } else if (type === 'typst') {
+          msg = 'A Typst source. Compile it with the typst compiler.';
+        }
         container.innerHTML = '<div class="surface-placeholder"><p>' + msg + '</p></div>';
       },
       dispose: function () { try { container.innerHTML = ''; } catch (_) {} },
@@ -126,6 +156,7 @@
   const REGISTRY: Record<string, any> = {
     flatppl: flatpplSurface,
     markdown: markdownSurface,
+    html: htmlSurface,
   };
 
   function resolveSurface(type: any): any {

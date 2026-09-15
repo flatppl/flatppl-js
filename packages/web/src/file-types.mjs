@@ -26,6 +26,14 @@ export const MODEL_EXTENSIONS = [
   '.flatppl', '.md', '.markdown', '.hs3.json', '.pyhf.json',
 ];
 
+// Document types the gallery holds but does not treat as models: what the
+// "Export math as …" tools write into the user area (an HTML page with
+// MathML, a LaTeX or a Typst source; Markdown is a model extension above).
+// NOT part of the manifest filter — a stray .html in the corpus is not a
+// gallery entry — but uploads and user files of these types get a surface:
+// the HTML renders as is, the two sources show a compile hint.
+export const DOCUMENT_EXTENSIONS = ['.html', '.htm', '.tex', '.typ'];
+
 /** Map a path to its surface type. Empty/missing defaults to 'flatppl'
  *  (the gallery is FlatPPL-first); an unrecognised extension is 'unknown'
  *  (routes to the placeholder surface). hs3/pyhf are named distinctly so
@@ -37,6 +45,9 @@ export function typeForPath(path) {
   if (p.endsWith('.md') || p.endsWith('.markdown')) return 'markdown';
   if (p.endsWith('.hs3.json') || p.endsWith('.hs3')) return 'hs3';
   if (p.endsWith('.pyhf.json') || p.endsWith('.pyhf')) return 'pyhf';
+  if (p.endsWith('.html') || p.endsWith('.htm')) return 'html';
+  if (p.endsWith('.tex')) return 'latex';
+  if (p.endsWith('.typ')) return 'typst';
   return 'unknown';
 }
 
