@@ -12,7 +12,10 @@ registerHooks({
   }
 });
 
-const { buildMathRequest, focusedBindingName, mathModelKey, mathWasmUrl } = await import('./math-view.ts');
+const {
+  buildMathRequest, focusedBindingName, mathModelKey, mathWasmUrl,
+  MATH_DOCUMENT_FORMATS, mathDocumentFormat, buildMathExportRequest, mathExportFileName,
+} = await import('./math-view.ts');
 
 // The math pane shows flatppl-rust's rendered document; this pure layer
 // only builds the request and holds the small rules the pane needs
@@ -67,3 +70,34 @@ test('mathWasmUrl resolves a relative glue URL against the page, keeps absolute 
   assert.equal(mathWasmUrl(null, 'https://x.org/'), null);
 });
 
+
+// ---- whole documents (`export_math`, design §4 "Whole documents") ------
+
+test('the document catalogue names the four formats the contract fixes', () => {
+  assert.deepEqual(MATH_DOCUMENT_FORMATS.map((f) => f.document), ['html', 'md', 'tex', 'typ']);
+  assert.equal(mathDocumentFormat('tex').label, 'LaTeX');
+  assert.equal(mathDocumentFormat('docx'), null);
+});
+
+test('buildMathExportRequest carries the pane\'s source, path and bundle plus the format', () => {
+  assert.deepEqual(buildMathExportRequest({
+    source: 'x = 1', path: 'examples/m.flatppl', bundleSources: { 'examples/d.flatppl': 'y = 2' }, document: 'typ',
+  }), {
+    source: 'x = 1', path: 'examples/m.flatppl', bundle: { 'examples/d.flatppl': 'y = 2' }, document: 'typ',
+  });
+  // No path / bundle: the same defaults as the pane's request.
+  assert.deepEqual(buildMathExportRequest({ source: '', document: 'html' }),
+    { source: '', path: 'model.flatppl', bundle: {}, document: 'html' });
+});
+
+test('mathExportFileName is the model stem with the format extension', () => {
+  assert.equal(mathExportFileName('examples/hep/model.flatppl', 'html'), 'model.html');
+  assert.equal(mathExportFileName('/home/u/work/eight_schools.flatppl', 'tex'), 'eight_schools.tex');
+  assert.equal(mathExportFileName('C:\\models\\m.flatppl', 'typ'), 'm.typ');
+  // Only the .flatppl suffix is stripped; other dots stay.
+  assert.equal(mathExportFileName('a.b.flatppl', 'md'), 'a.b.md');
+  assert.equal(mathExportFileName('notes', 'md'), 'notes.md');
+  // No path: the default module name.
+  assert.equal(mathExportFileName(null, 'html'), 'model.html');
+  assert.throws(() => mathExportFileName('m.flatppl', 'docx'), /unknown math document format/);
+});

@@ -13,6 +13,9 @@
 
 import { mount } from './main.js';
 import { renderDoc } from './markdown.js';
+import {
+  MATH_DOCUMENT_FORMATS, buildMathExportRequest, mathExportFileName,
+} from './math-view.js';
 
 var FlatPPLViewer: FlatPPLViewerGlobal;
 if (typeof window !== 'undefined') {
@@ -34,6 +37,15 @@ FlatPPLViewer.mount = mount;
 // styling stays consistent across surfaces, and the gallery
 // doesn't have to bundle marked + temml itself.
 (FlatPPLViewer as any).renderDoc = renderDoc;
+// The math document contract (flatppl-dev/math-view-design.md §4, "Whole
+// documents") for hosts that save a model's mathematics as a file through
+// the wasm API's `export_math`: the format catalogue, the request builder
+// and the file-name rule, so a host derives them exactly as the pane does.
+(FlatPPLViewer as any).mathExport = {
+  formats: MATH_DOCUMENT_FORMATS,
+  buildRequest: buildMathExportRequest,
+  fileName: mathExportFileName,
+};
 
 // Auto-mount when the host provides a marker container in the DOM
 // (id="flatppl-viewer-root"). Hosts that want explicit control over

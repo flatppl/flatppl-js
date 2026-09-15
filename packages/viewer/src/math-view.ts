@@ -135,3 +135,75 @@ export function mathWasmUrl(config: { wasmApiUrl?: string | null } | null | unde
     return raw;
   }
 }
+
+// ---- whole documents (`export_math`) ------------------------------------
+//
+// The second entry point of the same wasm API (design §4, "Whole
+// documents"): `export_math({ source, path, bundle, document })` returns
+// one document — what `flatppl convert model.flatppl model.<ext>` writes,
+// without the CLI's generated-file banner. The hosts own the save (the
+// gallery's user area, a workspace file beside the source in VS Code);
+// this layer fixes the format catalogue, the request and the file name so
+// both hosts derive them the same way.
+
+/** A document format `export_math` writes. `document` is the request
+ *  value — the CLI's target extension, and so the saved file's — `label`
+ *  the menu / command wording. The outputs are sources: only the HTML is
+ *  viewable as is, LaTeX needs LuaLaTeX or XeLaTeX with unicode-math,
+ *  Typst the `typst` compiler. */
+export interface MathDocumentFormat {
+  document: 'html' | 'md' | 'tex' | 'typ';
+  label: string;
+}
+
+export const MATH_DOCUMENT_FORMATS: readonly MathDocumentFormat[] = [
+  { document: 'html', label: 'HTML' },
+  { document: 'md',   label: 'Markdown' },
+  { document: 'tex',  label: 'LaTeX' },
+  { document: 'typ',  label: 'Typst' },
+];
+
+/** The catalogue entry for a `document` value, or null for one the
+ *  contract does not name. */
+export function mathDocumentFormat(document: string): MathDocumentFormat | null {
+  return MATH_DOCUMENT_FORMATS.find(function (f) { return f.document === document; }) || null;
+}
+
+export interface MathExportRequest {
+  source: string;
+  path: string;
+  bundle: Record<string, string>;
+  document: MathDocumentFormat['document'];
+}
+
+/** The `export_math` request: the same source, path and bundle the pane
+ *  renders (buildMathRequest) plus the target format. Rust reads the
+ *  document title from the path's stem, so the host passes the real path
+ *  rather than the default. */
+export function buildMathExportRequest(m: {
+  source: string;
+  path?: string | null;
+  bundleSources?: Record<string, string> | null;
+  document: MathDocumentFormat['document'];
+}): MathExportRequest {
+  return {
+    source: m.source,
+    path: m.path || DEFAULT_MODULE_PATH,
+    bundle: m.bundleSources ? Object.assign({}, m.bundleSources) : {},
+    document: m.document,
+  };
+}
+
+/** The saved file's name: the model's stem with the format's extension
+ *  (`examples/model.flatppl` + `html` → `model.html`). Only a `.flatppl`
+ *  suffix is a model extension; any other trailing part of the name is
+ *  kept (`a.b.flatppl` → `a.b.html`). A path without a name exports as
+ *  `model.<ext>`, matching the default module path. */
+export function mathExportFileName(path: string | null | undefined, document: MathDocumentFormat['document']): string {
+  const fmt = mathDocumentFormat(document);
+  if (!fmt) throw new Error('unknown math document format: ' + document);
+  const p = path || DEFAULT_MODULE_PATH;
+  const base = p.slice(Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\')) + 1);
+  const stem = base.replace(/\.flatppl$/i, '');
+  return (stem || 'model') + '.' + fmt.document;
+}
