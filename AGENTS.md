@@ -208,6 +208,19 @@ These are the things that catch out first-time contributors. Read each one.
   focus and source navigation. Older artifacts retain the per-binding view.
   Math starts off beside Graph and Plots in both hosts.
 
+  **The same artifact exports whole documents (`export_math`).** The
+  gallery's source-file tools menu ("Export math as HTML / Markdown /
+  LaTeX / Typst", `app.ts` `toolsForFile`) saves `<stem>.<ext>` into the
+  user area (`file-types.mjs` `DOCUMENT_EXTENSIONS`; the HTML gets a
+  sandboxed-iframe surface, the two sources a compile hint); the VS Code
+  commands "FlatPPL: Export math as HTML / LaTeX / Typst" write beside the
+  source and open the result, running the wasm IN THE EXTENSION HOST from
+  `lib/flatppl_wasm_api.cjs` (build-vendor's CommonJS wrap of the glue) —
+  no webview file plumbing. The format catalogue, the request and the
+  file-name rule live once, in `viewer/src/math-view.ts` (exposed as
+  `FlatPPLViewer.mathExport` for the gallery and bundled to
+  `lib/math-view.cjs` for the extension's `src/mathExport.ts`).
+
   **LSP provisioning (`build-vendor.mjs`).** As part of `build:vendor`,
   `packages/vscode-extension/build-vendor.mjs` puts a `flatppl-lsp` binary into
   `packages/vscode-extension/bin/`, choosing a source by precedence (decision
