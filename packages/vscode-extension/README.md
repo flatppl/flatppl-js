@@ -26,6 +26,35 @@ Work in progress. Currently:
   model's mathematics as a document next to the source (the HTML is
   viewable as is; LaTeX needs LuaLaTeX or XeLaTeX with unicode-math,
   Typst the `typst` compiler)
+- Command "FlatPPL: Convert HS3 / pyhf to FlatPPL" importing a statistical
+  workspace as FlatPPL source
+
+## Converting HS3 and pyhf workspaces
+
+**FlatPPL: Convert HS3 / pyhf to FlatPPL** imports an HS3 (HEP Statistics
+Serialization Standard) or pyhf JSON workspace and opens the resulting
+FlatPPL source in a new untitled editor beside it. Nothing is written to
+disk: review the model, then save it where you want it.
+
+The input is the active editor when it holds JSON (unsaved edits included),
+and a file picker otherwise — so the command works with no editor open. The
+importer is chosen by the file name: `*.hs3.json` / `*.hs3` read as HS3,
+`*.pyhf.json` / `*.pyhf` read as pyhf, the same rule the web playground
+uses. A plain `*.json` names neither schema, so the command asks which one
+to use rather than guessing.
+
+An importer error — an unsupported modifier, a malformed document — is
+reported with the importer's own diagnostic, which names the construct at
+fault.
+
+The conversion is flatppl-rust's `flatppl-wasm-api`, bundled into the
+extension and run in the extension host. No external binary and no network
+access are involved. A build made without that artifact (`FLATPPL_CONVERT=off`,
+or no flatppl-rust source to build it from — see
+[When to re-run `build:vendor`](#when-to-re-run-buildvendor)) reports
+"converter not shipped in this build" instead. Unlike the math-export
+commands, this one stays visible in the palette so the reason is
+discoverable.
 
 ## Language server
 

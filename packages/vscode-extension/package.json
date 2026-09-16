@@ -43,7 +43,8 @@
     "temml": "^0.13.3"
   },
   "activationEvents": [
-    "onLanguage:flatppl"
+    "onLanguage:flatppl",
+    "onCommand:flatppl.convert"
   ],
   "categories": [
     "Programming Languages",
@@ -99,6 +100,10 @@
       {
         "command": "flatppl.exportMathTypst",
         "title": "FlatPPL: Export math as Typst"
+      },
+      {
+        "command": "flatppl.convert",
+        "title": "FlatPPL: Convert HS3 / pyhf to FlatPPL"
       }
     ],
     "menus": {
