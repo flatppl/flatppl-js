@@ -1387,7 +1387,7 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
   // truth for row extraction; recurses into table-valued columns) and feed
   // each row through the normal dispatch so M's record/joint walker consumes
   // it. Do NOT resolve the row through refArrays/getMeasure — the per-row
-  // record IS the observed value (measure-algebra-audit scar zone). There is
+  // record IS the observed value (a measure-algebra scar zone). There is
   // no downstream consumer of "the rest of a table", so a row count that
   // doesn't match `total` is fail-loud (trailing rows would be silently
   // unscored data).

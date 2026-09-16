@@ -10,7 +10,7 @@
 // makes `normalize(M)` a probability measure, so the θ-marginal of the sampled
 // joint must be the prior unchanged; the residue tilted it towards large-Z θ
 // instead, while `logdensityof` of the same measure divided by Ẑ(θ) per θ. Two
-// routes, one measure, two answers — the class measure-algebra-audit.md exists
+// routes, one measure, two answers — the measure-algebra scar-zone class exists
 // for.
 //
 // ORACLES, independent of the engine (scipy.integrate.quad, and the exact

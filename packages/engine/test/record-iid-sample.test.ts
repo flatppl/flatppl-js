@@ -1,6 +1,6 @@
 'use strict';
 // G1 sampling: iid over a record measure must produce a TABLE the density path
-// scores — sampling and density stay in agreement (measure-algebra-audit scar
+// scores — sampling and density stay in agreement (a measure-algebra scar
 // zone). The round-trip below samples the table, then scores those SAME draws
 // through the density path and checks the score equals an independent hand
 // closed-form normal-logpdf sum over the drawn values (never engine-vs-engine).

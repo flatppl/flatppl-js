@@ -789,7 +789,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
   // Loud-fail a pruned posterior. A `bayesupdate` binding left without a
   // derivation was cascade-pruned because its prior is not the law of the
   // likelihood's boundary draws — the H1 boundary-conflation scar zone
-  // (flatppl-dev/measure-algebra-audit.md). The engine materialises only
+  // (ARCHITECTURE.md "Measure-algebra scar zones"). The engine materialises only
   // `bayesupdate(L, lawof(draws))` and the disintegration idiom; a hand-built
   // `joint` prior over free `elementof` params (the spec's own
   // 06-measure-algebra.md "Posterior construction" example) otherwise vanishes
@@ -807,7 +807,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
         + `(jointchain → disintegrate → likelihoodof → bayesupdate), but not a `
         + `hand-built joint prior over free elementof parameters (see `
         + `flatppl-design 06-measure-algebra.md "Posterior construction"; `
-        + `measure-algebra-audit H1). Rebuild the posterior via disintegration.`,
+        + `measure-algebra audit, 2026-06, H1). Rebuild the posterior via disintegration.`,
       loc: bindingLoc(name),
     });
   }
@@ -3548,7 +3548,7 @@ function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): D
       // (matJointchain.bindLeaf, runtime priorVars.length) and density
       // side (expandMeasure's rewireHole, expand-time spreadFields) each
       // deriving cat-arity independently and drifting
-      // (measure-lowering-unification-plan critique A). Additive — null /
+      // (the CLM unification's critique A). Additive — null /
       // absent ⇒ scalar or opaque base (single column), today's behaviour.
       if (!isKernelComp) {
         const bf = _baseRecordFields(d, bindings);

@@ -3,7 +3,7 @@
 // The spec's own "Posterior construction" example — a `joint` prior over a free
 // `elementof` parameter, a likelihood of a point-free `functionof(model)` — used
 // to be cascade-pruned (the H1 boundary-conflation scar zone,
-// flatppl-dev/measure-algebra-audit.md): the engine materialised only
+// measure-algebra audit, 2026-06, H1): the engine materialised only
 // bayesupdate(L, lawof(draws)) and the disintegration idiom, so this posterior
 // got no derivation and the viewer reported it unplottable.
 //

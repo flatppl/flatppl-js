@@ -5,7 +5,7 @@
 // the SAMPLE walker (materialiser / sampler) and the DENSITY walker
 // (density.ts) will consume unchanged, so "sampling ≡ density" becomes a
 // STRUCTURAL property rather than a hoped-for test invariant.
-// Design: flatppl-dev/measure-lowering-unification-plan.md.
+// Design: the `clm.ts` row in packages/engine/ARCHITECTURE.md.
 //
 // Today the engine walks the same measure IR along two independent paths
 // (plus a third inliner in the viewer), each re-deriving the same five

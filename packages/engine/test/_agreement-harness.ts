@@ -2,7 +2,7 @@
 
 // Sampling ≡ density agreement harness (no test() calls — imported by
 // sampling-density-agreement.test.ts and usable from scratch probes).
-// See flatppl-dev/measure-lowering-unification-plan.md (Phase 0).
+// See the `clm.ts` row in packages/engine/ARCHITECTURE.md.
 //
 // For a CLOSED scalar measure M: compares logdensityof(M, x) against the
 // empirical log-density of the SAMPLE histogram of M, as a RATIO between probe

@@ -137,8 +137,8 @@ function forEachIRChild(node: any, visit: (child: any) => void): void {
   // the registry `paramIRs`. These hold captured `ns:'self'` refs to free
   // boundaries (e.g. an affine shift `b` reading a prior field), so a
   // self-ref collector MUST descend them or the CLM ⊆-invariant
-  // undercounts and passes vacuously (measure-lowering-unification-plan
-  // critique D / audit H4). Formal-parameter refs inside the bodies are
+  // undercounts and passes vacuously (the CLM unification's critique D;
+  // measure-algebra audit, 2026-06, H4). Formal-parameter refs inside the bodies are
   // `ns:'%local'`, so a `ns:'self'`-only collector naturally excludes the
   // bound variable; `paramIRs` was already hand-descended in
   // materialiser-shared.prepareDensityRefs, so surfacing it here is

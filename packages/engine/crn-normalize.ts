@@ -41,7 +41,8 @@
 //      surrogate posterior, with no noisy-acceptance pathology.
 //   2. The IS route (mat-density) and the MH route (mcmc-density) build the
 //      SAME expression for the same model, so the two routes of one measure
-//      cannot disagree — the failure class measure-algebra-audit.md exists for.
+//      cannot disagree — the measure-algebra scar-zone failure class
+//      (ARCHITECTURE.md "Measure-algebra scar zones").
 //   3. Two SPELLINGS of one measure agree bit-for-bit. Seeding off the weight
 //      body instead broke exactly this: a lambda weight and the equivalent
 //      `functionof` reification differ in parameter names, so they drew

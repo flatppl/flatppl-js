@@ -865,7 +865,7 @@ function _perAtomMassExpr(name: string, ctx: any): any | null {
   // spelling in the corpus. Refusing would reject shapes that sample correctly.
   // Where the sum genuinely moves with a latent the pooled divisor leaves the
   // usual residue; that is the open shape recorded in
-  // flatppl-dev/measure-algebra-audit.md, now narrowed to non-leaf components.
+  // flatppl-dev/TODO-flatppl-js.md, now narrowed to non-leaf components.
   if (isSup) return null;
   // A θ-dependent mass with no expression to divide by. The pooled divisor
   // would return a measure whose θ-marginal is the prior TILTED by Z(θ), and
@@ -1465,7 +1465,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
           // lying about nrows (columns would hold N·k entries while a table's
           // nrows is k), and tableRow/table-indexing would then mis-extract.
           // Refuse rather than emit an ambiguous table (refuse-don't-mislower;
-          // measure-algebra-audit scar zone). N=1 — a single sampled dataset,
+          // a measure-algebra scar zone). N=1 — a single sampled dataset,
           // the real use — is produced below.
           return Promise.reject(new Error(
             'iid: sampling iid over a record measure at >1 atoms (an ensemble '
@@ -1500,7 +1500,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       // carry no names to key one by. Building the tuple arm means threading
       // the k axis through every `elem` of the tuple measure, and for
       // `jointchain` it has no density counterpart to agree with — the
-      // sampler-vs-density asymmetry `measure-algebra-audit.md` tracks. Out of
+      // sampler-vs-density asymmetry the measure-algebra scar zones track. Out of
       // scope rather than impossible: a positional `joint` variate IS scored
       // exactly on the density side, so the k-fold sampling case is
       // unimplemented, not unrepresentable. Refuse loudly and name the

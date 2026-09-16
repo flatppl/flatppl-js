@@ -2,7 +2,7 @@
 
 // ════════════════════════════════════════════════════════════════════════
 // STANDING INVARIANT for the measure-lowering unification
-// (flatppl-dev/measure-lowering-unification-plan.md, Phase 0).
+// (the CLM unification's standing invariant; ARCHITECTURE.md "Measure-algebra scar zones").
 //
 // The engine walks the SAME measure IR along two paths — SAMPLE and DENSITY —
 // that drift. This harness pins the property the unification must make

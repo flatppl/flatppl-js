@@ -1070,7 +1070,7 @@ ld = logdensityof(J, record(a = 2.5, b = -1.0))
   });
 
 // KNOWN SAMPLING DEFECT, filed in flatppl-dev/TODO-flatppl-js.md and
-// measure-algebra-audit.md: NESTING a constructor joint inside another joint that
+// Measure-algebra scar zone: NESTING a constructor joint inside another joint that
 // also names the same constructor. `joint(u = joint(a = q, b = q), c = q)` should
 // be three fresh coordinates over one shared `z`, so all three pairwise
 // correlations are s0²/(s0²+σ²). The inner pair is correct, but `c` comes back
