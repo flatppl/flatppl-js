@@ -117,14 +117,16 @@ for (const { pkg, src, dst } of COPY_LIBS) {
 const wasmApiOn = await provisionWasmApi({ destDir: libDir, repoRoot });
 
 // 1c. The same artifact for the EXTENSION HOST: the "Export math as …"
-//     commands call `export_math` from Node (extension.ts), not from the
+//     commands call `export_math` and "Convert HS3 / pyhf to FlatPPL"
+//     calls `convert`, both from Node (extension.ts), not from the
 //     webview. wasm-pack's `--target web` glue is an ES module, while VS
 //     Code loads the extension as CommonJS, so esbuild wraps the glue as
 //     lib/flatppl_wasm_api.cjs. The glue reads `import.meta.url` only to
 //     locate the .wasm when init gets no bytes; the host always hands it
 //     the bytes (fs.readFileSync of the .wasm beside it), so the
 //     empty-import-meta warning is silenced deliberately. Absent artifact
-//     ⇒ no .cjs, and extension.ts hides the commands.
+//     ⇒ no .cjs; extension.ts then hides the math exports and lets
+//     Convert report that this build ships no converter.
 const wasmApiCjs = join(libDir, 'flatppl_wasm_api.cjs');
 if (wasmApiOn) {
   await esbuild.build({
@@ -342,6 +344,12 @@ const EXTENSION_TS_SOURCES = [
   // built below). No vscode import, so type-stripping is enough and the
   // unit tests require it directly.
   { in: 'src/mathExport.ts',    out: 'src/mathExport.js' },
+  // The bundled wasm API as the extension host loads it, and the
+  // "Convert HS3 / pyhf to FlatPPL" core over its `convert` entry. Both
+  // inject their host pieces (no vscode import), so type-stripping is
+  // enough and the unit tests require them directly.
+  { in: 'src/wasmApiHost.ts',   out: 'src/wasmApiHost.js' },
+  { in: 'src/convert.ts',       out: 'src/convert.js' },
   // NOTE: src/lspClient.ts is NOT type-stripped here — it imports the
   // `vscode-languageclient` npm package, which must be BUNDLED into the
   // output (the packaged .vsix ships no node_modules; vsce runs with
