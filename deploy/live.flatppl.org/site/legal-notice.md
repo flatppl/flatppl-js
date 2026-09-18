@@ -13,7 +13,7 @@ e.V.
 ## Address
 
 Max-Planck-Gesellschaft zur Förderung der Wissenschaften e.V.\
-Hofgartenstrasse 8\
+Hofgartenstraße 8\
 D-80539 Munich\
 Phone: [+49 89 2108-0](tel:+498921080)\
 WWW: [https://www.mpg.de](https://www.mpg.de/)
