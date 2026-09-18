@@ -111,10 +111,11 @@ in the respective repositories of the
 
 ## Data processing in the browser
 
-The FlatPPL live demo runs entirely in your browser. Models you open, enter,
-edit, upload, or convert are processed locally on your device and are not
-transmitted to the provider. Files you choose to save are stored only in your
-browser's local storage, from where you can delete them at any time.
+The FlatPPL live demo runs entirely in the visitor's browser. Models opened,
+entered, edited, uploaded, or converted are processed locally on the visitor's
+device and are not transmitted to the provider. Files saved by the visitor are
+stored only in the browser's local storage, from where they can be deleted at
+any time.
 
 ## Data protection information
 
@@ -129,3 +130,9 @@ Use of this website is subject to GitHub's
 [terms of service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service).
 The Max Planck Society does not process personal data of visitors to this
 website.
+
+Files in the interactive editor can reference external URLs and may cause the
+visitor's browser to access third-party servers. No such files are included by
+default, but they can be created or opened by the visitor. In such cases, the
+visitor, not the provider, is responsible for the resulting access to those
+servers.
