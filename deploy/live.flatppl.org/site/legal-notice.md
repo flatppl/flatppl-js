@@ -128,8 +128,9 @@ and its
 [note on data collection for GitHub Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages#data-collection).
 Use of this website is subject to GitHub's
 [terms of service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service).
-The Max Planck Society does not process personal data of visitors to this
-website.
+The Max Planck Society is not a controller within the meaning of the EU
+General Data Protection Regulation (GDPR), as it does not process personal
+data of visitors to this website.
 
 Files in the interactive editor can reference external URLs and may cause the
 visitor's browser to access third-party servers. No such files are included by
