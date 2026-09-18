@@ -59,8 +59,9 @@ but as a rule have no legal capacity of their own.
 ## Liability for contents of online information
 
 As the provider of contents in accordance with Section 7 Paragraph 1 of the
-Tele-Media Law, the Max Planck Society shall be responsible for any contents
-which it makes available for use in accordance with general legal provisions.
+Digitale-Dienste-Gesetz (German Digital Service Act), the Max Planck Society
+shall be responsible for any contents which it makes available for use in
+accordance with general legal provisions.
 The Max Planck Society makes every effort to provide timely and accurate
 information on this Web site. Nevertheless, errors and inaccuracies cannot be
 completely ruled out. Therefore, the Max Planck Society does not assume any
