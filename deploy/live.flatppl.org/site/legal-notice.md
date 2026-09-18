@@ -28,7 +28,7 @@ number VR 13378 B.
 
 The Max Planck Society is legally represented by its Board of Directors
 which, in turn, is represented by the President of the Society, Prof. Dr.
-Patrick Cramer, and by Secretary General Simone Schwanitz.
+Patrick Cramer, and by Secretary General Dr. Simone Schwanitz.
 
 ## Value added tax identification number
 
