@@ -708,30 +708,12 @@ function _substituteAllowingAxes(
 // Nested-aggregate fusion (fusion thread (c) sub-item 1)
 // =====================================================================
 //
-// When an outer aggregate's body contains an inner aggregate as a
-// sub-expression, the inner can be FUSED into the outer: the inner's
-// body replaces the inner call, and the inner's reduction axes become
-// additional implicit reduction axes of the outer.
-//
-// Soundness: this rewrite is valid iff the SAME reducer is used at
-// both levels (only sum-sum or mean-mean preserves semantics — mixed
-// reducers don't commute through nesting). Additionally, the inner's
-// reduction axes must NOT appear ANYWHERE ELSE in the outer body
-// (otherwise lifting would conflate the inner's local reduction axis
-// with an outer free axis of the same name).
-//
-// Example (sum-sum):
-//   aggregate(sum, [.i], A[.i, .j] * aggregate(sum, [.j], B[.j, .l]))
-//   ≡ aggregate(sum, [.i], A[.i, .j] * B[.j, .l])
-// where the fused form has .j AND .l as implicit reduction axes
-// (neither appears in outer's output_axes).
-//
-// After fusion, the matmul/matvec recognisers still operate on the
-// outer body. If they fail (because the fused body has more than 2
-// multiplicands or unfamiliar structure), the aggregate stays in its
-// fused form for the runtime AGGREGATE_PATTERNS path — strictly an
-// improvement over the original nested form (cleaner IR, one
-// contraction op for backends, simpler to reason about).
+// §04 Multi-axis aggregation: inner axes are lexically scoped. A scalar
+// inner sum/mean can join the outer reduction only through multiplication
+// by factors independent of its axes, or unary +/-:
+//   sum_i(a_i * sum_j(b_j)) = sum_ij(a_i * b_j).
+// Retained inner axes, containers, nonlinear calls and addition are barriers.
+// In particular, sum_i(a_i + sum_j(b_j)) cannot flatten: it repeats a_i.
 
 // Collect all axis names that appear in an IR expression. Used to
 // check no shadowing between an inner aggregate's reduction axes
@@ -775,70 +757,43 @@ function _classifyInnerAggregate(ir: any): {
   return { reducer: fIR.name, outputAxes, body: bodyIR };
 }
 
-// Walk an outer aggregate body and lift any nested aggregates whose
-// reducer matches the outer's. Soundness gate per nest: the inner's
-// reduction axes (axes in inner body but not in inner's output_axes)
-// must not appear anywhere ELSE in the outer body. Returns the
-// rewritten body IR; identity-passes the input on no-op.
-//
-// Lifts inner aggregates DEPTH-FIRST so a doubly-nested case lifts
-// inside-out: the innermost aggregate inlines first, then the next.
+// blockedAxes includes outer output axes and every sibling operand's axes.
+// Refuse collisions even with outer *reduced* axes: their scopes differ too.
 function _fuseNestedAggregates(
   outerBody: any,
   outerReducer: string,
-  outerOutputAxes: Set<string>,
+  blockedAxes: Set<string>,
 ): any {
   if (!outerBody || outerBody.kind !== 'call') return outerBody;
-
-  // Recurse into children first (depth-first lift).
-  let changed = false;
-  const newArgs: any[] = [];
-  for (const a of (outerBody.args || [])) {
-    const r = _fuseNestedAggregates(a, outerReducer, outerOutputAxes);
-    newArgs.push(r);
-    if (r !== a) changed = true;
-  }
-  let walked: any = outerBody;
-  if (changed) {
-    walked = Object.assign({}, outerBody);
-    walked.args = newArgs;
-  }
-
-  // After children are lifted, see if THIS node is itself an inner
-  // aggregate eligible for lifting.
-  if (walked.op === 'aggregate') {
-    const inner = _classifyInnerAggregate(walked);
-    if (!inner) return walked;
-    // Same reducer required (sum-sum or mean-mean).
-    if (inner.reducer !== outerReducer) return walked;
-    // Identify the inner's reduction axes: axis names in the inner
-    // body that are NOT in inner.outputAxes.
+  if (outerBody.op === 'aggregate') {
+    const inner = _classifyInnerAggregate(outerBody);
+    if (!inner || inner.reducer !== outerReducer || inner.outputAxes.size !== 0) {
+      return outerBody;
+    }
     const innerBodyAxes = new Set<string>();
     _collectAxisNames(inner.body, innerBodyAxes);
-    const innerReductionAxes: string[] = [];
     for (const name of innerBodyAxes) {
-      if (!inner.outputAxes.has(name)) innerReductionAxes.push(name);
+      if (blockedAxes.has(name)) return outerBody;
     }
-    // Soundness: inner reduction axes must NOT collide with the
-    // OUTER's output axes (would shadow user-visible axes) or
-    // be guaranteed-unique in the outer body. We can't easily
-    // inspect "the rest of the outer body" from here (we're in a
-    // recursive walk), so the caller pre-collects outerOutputAxes
-    // and we check against THOSE. A subsequent walk after lifting
-    // verifies that the merged body's axis names are still well-
-    // formed.
-    for (const name of innerReductionAxes) {
-      if (outerOutputAxes.has(name)) {
-        // Inner reduction collides with outer output — refusing
-        // lift keeps semantics safe; the cold path still works.
-        return walked;
-      }
-    }
-    // Lift: replace this aggregate node with the inner body.
     return inner.body;
   }
 
-  return walked;
+  const args = outerBody.args || [];
+  const linear = (outerBody.op === 'mul' && args.length === 2)
+    || ((outerBody.op === 'neg' || outerBody.op === 'pos') && args.length === 1);
+  if (!linear || Object.keys(outerBody.kwargs || {}).length !== 0) return outerBody;
+
+  let changed = false;
+  const newArgs = args.map((arg: any, index: number) => {
+    const blocked = new Set(blockedAxes);
+    for (let sibling = 0; sibling < args.length; sibling++) {
+      if (sibling !== index) _collectAxisNames(args[sibling], blocked);
+    }
+    const fused = _fuseNestedAggregates(arg, outerReducer, blocked);
+    if (fused !== arg) changed = true;
+    return fused;
+  });
+  return changed ? { ...outerBody, args: newArgs } : outerBody;
 }
 
 // Wrap a dissolved IR in a closed-form reduction-correction factor.
@@ -928,16 +883,9 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
     if (inlined) bodyIR = inlined;
   }
 
-  // Nested-aggregate fusion (engine-concepts §20.9 fusion thread (c)
-  // sub-item 1): if the body contains an inner aggregate with the
-  // SAME reducer and no axis-name conflicts, lift the inner's body
-  // in place of the inner call. The inner's reduction axes become
-  // implicit reduction axes of the outer. After fusion the matmul/
-  // matvec recognisers below operate on the fused body; if they
-  // don't catch the shape, the outer aggregate is rebuilt with the
-  // fused body and returned via _fusedFallback() — strictly cleaner
-  // IR (one aggregate, not nested) for backends and the runtime
-  // AGGREGATE_PATTERNS path.
+  // Fuse only scalar reductions through the linear contexts above. The
+  // matmul/matvec recognisers then inspect the fused body, or the runtime
+  // aggregate evaluates it through _fusedFallback().
   const outerOutputAxesSet = new Set<string>();
   for (const a of outAxes) {
     if (a && a.kind === 'axis') outerOutputAxesSet.add(a.name);

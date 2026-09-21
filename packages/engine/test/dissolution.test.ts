@@ -743,12 +743,11 @@ test('aggregate mean with dynamic contraction axis stays on cold path', () => {
 // Fusion thread (c) sub-item 1: aggregate-with-aggregate-body fusion
 // ---------------------------------------------------------------------
 
-test('nested aggregate fusion: matvec-of-rowsum collapses to one aggregate', () => {
+test('nested aggregate fusion: retained inner axes prevent flattening', () => {
   // Outer:   aggregate(sum, [.i], A[.i, .j] * inner)
   // Inner:   aggregate(sum, [.j], B[.j, .l])
-  // After fusion: aggregate(sum, [.i], A[.i, .j] * B[.j, .l])
-  // (.j is reduced by outer; .l is reduced by the implicit
-  // any-axis-not-in-output rule.)
+  // The inner produces a vector. Its .j is not the outer's .j, and
+  // replacing that vector with a scalar element changes the shape.
   const dissolver = require('../dissolver.ts');
   const inner = {
     kind: 'call', op: 'aggregate',
@@ -791,18 +790,19 @@ test('nested aggregate fusion: matvec-of-rowsum collapses to one aggregate', () 
     ['B', { inferredType: { kind: 'array', rank: 2, shape: [3, 5], elem: { kind: 'scalar', prim: 'real' } }, phase: 'fixed' }],
   ]);
   const result = dissolver._tryDissolveAggregate(outer, bindings);
-  assert.ok(result, 'nested aggregate fuses');
-  // Result is a single aggregate (the matmul matcher won't catch
-  // the 3-way contraction A * B-with-internal-l-summed; the fused
-  // aggregate is returned via _fusedFallback).
-  assert.equal(result.op, 'aggregate', 'one-level aggregate after fusion');
-  // The fused body should be the original mul(A[.i,.j], B[.j,.l])
-  // shape with the inner aggregate replaced by B's get.
-  const fusedBody = result.args[2];
-  assert.equal(fusedBody.op, 'mul', 'fused body is a mul');
-  assert.equal(fusedBody.args[1].op, 'get',
-    'inner aggregate replaced by raw get(B, .j, .l)');
-  assert.equal(fusedBody.args[1].args[0].name, 'B');
+  assert.equal(result, null, 'vector-valued inner aggregate stays nested');
+
+  // Reducing every inner axis is scalar and permits the same product
+  // rewrite, provided its axes do not appear in the other operand.
+  inner.args[1] = { kind: 'call', op: 'vector', args: [] };
+  inner.args[2] = { kind: 'call', op: 'get', args: [
+    { kind: 'ref', ns: 'self', name: 'B' },
+    { kind: 'axis', name: 'k' },
+    { kind: 'axis', name: 'l' },
+  ] };
+  const fused = dissolver._tryDissolveAggregate(outer, bindings);
+  assert.equal(fused.op, 'aggregate');
+  assert.equal(fused.args[2].args[1], inner.args[2]);
 });
 
 test('nested aggregate fusion: mismatched reducer (sum-outer × mean-inner) refuses', () => {
@@ -811,12 +811,12 @@ test('nested aggregate fusion: mismatched reducer (sum-outer × mean-inner) refu
     kind: 'call', op: 'aggregate',
     args: [
       { kind: 'ref', ns: 'self', name: 'mean' },
-      { kind: 'call', op: 'vector', args: [{ kind: 'axis', name: 'j' }] },
+      { kind: 'call', op: 'vector', args: [] },
       {
         kind: 'call', op: 'get',
         args: [
           { kind: 'ref', ns: 'self', name: 'B' },
-          { kind: 'axis', name: 'j' },
+          { kind: 'axis', name: 'k' },
           { kind: 'axis', name: 'l' },
         ],
       },
@@ -865,12 +865,12 @@ test('nested aggregate fusion: inner reduction axis colliding with outer output 
     kind: 'call', op: 'aggregate',
     args: [
       { kind: 'ref', ns: 'self', name: 'sum' },
-      { kind: 'call', op: 'vector', args: [{ kind: 'axis', name: 'j' }] },
+      { kind: 'call', op: 'vector', args: [] },
       {
         kind: 'call', op: 'get',
         args: [
           { kind: 'ref', ns: 'self', name: 'B' },
-          { kind: 'axis', name: 'j' },
+          { kind: 'axis', name: 'k' },
           { kind: 'axis', name: 'l' },  // inner's reduction axis
         ],
       },
