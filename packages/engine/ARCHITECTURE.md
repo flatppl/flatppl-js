@@ -670,6 +670,11 @@ is statically known (cap 4096; `%dynamic` / `%local` refuse) — the prerequisit
 for fusion (a). **Fusion (a)** (`_tryDissolveBroadcastReduction`):
 `broadcast(<head>, args)` whose body is `R(<plain elementwise>)` for R ∈
 {sum,mean,prod} → `aggregate(R, [.atom], <body>)` (conservative MVP gates).
+**Nested aggregate fusion** preserves §04's lexical axis scopes. It lifts only
+scalar inner sum/mean reductions with the same reducer, through multiplication
+or unary +/- only. Inner axes must differ from outer output axes and every
+sibling operand's axes, including outer reduction axes. Retained inner axes,
+container construction, indexing, addition and nonlinear calls block lifting.
 **Fusion (b)** (`_tryDissolveKernelBroadcast`): `broadcast(<user-kernel ref>,
 args)` with body `functionof(lawof(<BuiltinDist>(kw)), …)` →
 `broadcast(<BuiltinDist>, mapped_kwargs)`, letting `matKernelBroadcast` take its
