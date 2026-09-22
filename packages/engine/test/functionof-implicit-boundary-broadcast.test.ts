@@ -27,6 +27,7 @@ const { processSource } = require('../index.ts');
 const orchestrator = require('../orchestrator.ts');
 const materialiser = require('../materialiser.ts');
 const { createWorkerHandler } = require('../worker.ts');
+const { makeMatCtx } = require('./_materialise-helpers.ts');
 
 function build(src: string) {
   const lifted = processSource(src);
@@ -58,6 +59,40 @@ Y = f.(X)`;
   const y = ds.fixedValues.get('Y');
   assert.deepEqual(y.shape, [3], 'Y shape [3]');
   assert.deepEqual(asArray(y), [1, 4, 9], 'Y = X .^ 2');
+});
+
+test('functionof captures a derived reference-only vector', async () => {
+  const { ctx } = makeMatCtx(`
+x = elementof(reals)
+v = exp.([x])
+f = functionof(v[1], x = x)
+result = broadcast(f, x = [0.0, 1.0])
+`);
+  const result = await ctx.getMeasure('result');
+  assert.deepEqual(asArray(result.value), [1, Math.E]);
+});
+
+test('functionof retains shared draws inside a reference-only vector', async () => {
+  const { ctx } = makeMatCtx(`
+z ~ Normal(0.0, 1.0)
+x = elementof(reals)
+v = exp.([x, z, z])
+f = functionof(v[1] + v[2], x = x)
+g = functionof(v[1] + (v[2] - v[3]), x = x)
+result = broadcast(f, x = [0.0, 1.0])
+cancelled = broadcast(g, x = [0.0, 1.0])
+`, { sampleCount: 32, rootSeed: 42 });
+  const z = (await ctx.getMeasure('z')).samples;
+  const result = (await ctx.getMeasure('result')).samples;
+  const cancelled = (await ctx.getMeasure('cancelled')).samples;
+  assert.equal(result.length, 2 * z.length);
+  assert.equal(cancelled.length, 2 * z.length);
+  for (let i = 0; i < z.length; i++) {
+    assert.equal(result[2 * i], 1 + Math.exp(z[i]));
+    assert.equal(result[2 * i + 1], Math.E + Math.exp(z[i]));
+    assert.equal(cancelled[2 * i], 1);
+    assert.equal(cancelled[2 * i + 1], Math.E);
+  }
 });
 
 function meanOf(xs: ArrayLike<number>): number {
