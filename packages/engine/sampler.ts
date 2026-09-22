@@ -463,6 +463,10 @@ function density(measureIR: any, env: any, opts: any) {
  * pre-resolved values in env.
  */
 function evaluateExpr(ir: IRNode, env: any): any {
+  // Do not probe a lazy binding Proxy for an absent evaluator hook.
+  if (ir.kind === 'call' && env
+      && Object.prototype.hasOwnProperty.call(env, '__bodyEval')
+      && typeof env.__bodyEval === 'function') return env.__bodyEval(ir, env);
   switch (ir.kind) {
     case 'lit':
       return ir.value;
@@ -2500,7 +2504,23 @@ function _synthStdModuleFn(refIR: any, env: any): any {
 // finite scalar / boolean and there are no nested-vector loop axes —
 // the engine-concepts §2.1 convention) or a nested JS array of the
 // broadcast shape.
+// Plans follow IR lifetime; point values must not survive an invocation.
+const broadcastPlans = new WeakMap<object, any>();
+
 function _broadcastApply(fn: any, inputs: any, env: any): any {
+  let bodyPlan = broadcastPlans.get(fn.body);
+  if (!bodyPlan) {
+    bodyPlan = _profileCompile.compileProfileBody(fn.body);
+    broadcastPlans.set(fn.body, bodyPlan);
+  }
+  try {
+    return _broadcastApplyFrame(fn, inputs, env, bodyPlan);
+  } finally {
+    bodyPlan.clearMemo();
+  }
+}
+
+function _broadcastApplyFrame(fn: any, inputs: any, env: any, bodyPlan: any): any {
   const P = fn.params.length;
   const slots = new Array(P);
   for (let i = 0; i < P; i++) {
@@ -2508,14 +2528,18 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
     slots[i] = _classifyBroadcastSlot(v);
   }
 
-  const elemEnv = Object.assign({}, env);
+  const elemEnv = Object.assign({}, env, { __bodyEval: bodyPlan.bodyEval });
+  function evalBody() {
+    bodyPlan.nextPoint();
+    return bodyPlan.evalPoint(elemEnv);
+  }
   const colls: any[] = [];
   for (let i = 0; i < P; i++) if (slots[i].coll) colls.push(slots[i]);
 
   if (colls.length === 0) {
     // No collection arguments → a single call (spec).
     for (let p = 0; p < P; p++) elemEnv[fn.params[p]] = slots[p].val;
-    return evaluateExpr(fn.body, elemEnv);
+    return evalBody();
   }
 
   // Same number of OUTER axes across all collections. For flat slots
@@ -2574,7 +2598,7 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
         if (collOf[p] < 0) { elemEnv[fn.params[p]] = slots[p].val; continue; }
         elemEnv[fn.params[p]] = colls[collOf[p]].getCell(idx);
       }
-      return evaluateExpr(fn.body, elemEnv);
+      return evalBody();
     }
     const out = new Array(bshape[axis]);
     for (let i = 0; i < bshape[axis]; i++) {
