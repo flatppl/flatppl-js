@@ -602,9 +602,16 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
       const isBoxMeasure = !!drv
         && (drv.kind === 'lebesguebox'
           || (drv.kind === 'weighted' && typeof drv.boxAxes === 'number'));
+      // Reference-only value arrays also carry a tuple derivation. Inline
+      // their constructor, retaining draw refs through the existing rules.
+      // A tuple measure such as joint(...) must still remain a reference.
+      const isVectorValue = drv && drv.kind === 'tuple'
+        && target && target.ir && target.ir.kind === 'call'
+        && target.ir.op === 'vector';
       const isEvaluableValue = !isInputLeaf
         && ((drv && drv.kind === 'evaluate')
           || isBoxMeasure
+          || isVectorValue
           || (!drv && target && target.ir && target.ir.kind === 'call'));
       if (isEvaluableValue && target && target.ir) {
         visiting.add(name);
