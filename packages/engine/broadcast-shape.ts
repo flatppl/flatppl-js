@@ -310,6 +310,9 @@ function tryStackBroadcastCells(cells: any[], bshape: number[]): any {
     shape: bshape.concat(packed.innerShape),
     data: packed.data,
   };
+  // §03: an array of array-valued cells is not a matrix. Keep the loop/cell
+  // split when this packed result becomes another broadcast's input (§04).
+  if (packed.innerShape.length) stacked.outerRank = bshape.length;
   if (packed.im !== undefined) {
     stacked.im = packed.im;
     stacked.dtype = 'complex';

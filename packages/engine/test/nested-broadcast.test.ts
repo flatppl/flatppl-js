@@ -69,6 +69,17 @@ function get(values: Map<string, any>, name: string): any {
   return toJS(values.get(name));
 }
 
+test('broadcast array results retain their cell rank when reused', () => {
+  const values = run(`
+combine(x, y) = sum(x) + sum(y)
+shift(x) = x .+ reverse(x)
+points = [[1.0, 2.0], [3.0, 4.0]]
+shared = shift.(points)
+scores = combine.(points, shared)
+`);
+  assert.deepEqual(get(values, 'scores'), [9, 21]);
+});
+
 // =====================================================================
 // A. Single-level Ref-wrap (motivating case + variants)
 // =====================================================================
