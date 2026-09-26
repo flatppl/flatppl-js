@@ -118,6 +118,23 @@ ld = logdensityof(L, record(rates = [0.0]))
   }
 });
 
+test('large-count Poisson likelihoods retain near-mean precision', async () => {
+  // Independent 80-digit x*log(rate)-rate-loggamma(x+1), rounded to binary64.
+  for (const [law, count, expected] of [
+    ['Poisson', 1e12, -14.73444909116903],
+    ['hepphys.ContinuedPoisson', 189281768783.48367, -13.902189824170838],
+  ] as const) {
+    const got = await score(`
+hepphys = standard_module("particle-physics", "0.1")
+rates = elementof(cartpow(nonnegreals, 1))
+M = ${law}.(rates)
+L = likelihoodof(M, [${count}])
+ld = logdensityof(L, record(rates = [${count}]))
+`, 'ld');
+    assert.ok(Math.abs(got - expected) < 1e-12, `${law}: ${got} vs ${expected}`);
+  }
+});
+
 test('a §09 aux term scores −∞ at a negative observation', async () => {
   // One in-support and one out-of-support entry. The sum is −∞, so the negative
   // half-space is excluded; before the mask the −0.5 entry contributed

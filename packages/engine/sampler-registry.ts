@@ -86,7 +86,6 @@ const logpdfCauchy      = require('@stdlib/stats-base-dists-cauchy-logpdf');
 const logpdfT           = require('@stdlib/stats-base-dists-t-logpdf');
 const pmfBernoulli      = require('@stdlib/stats-base-dists-bernoulli-pmf');
 const logpmfBinomial    = require('@stdlib/stats-base-dists-binomial-logpmf');
-const logpmfPoisson     = require('@stdlib/stats-base-dists-poisson-logpmf');
 
 // Bernoulli ships pmf only — wrap with Math.log. For two atoms this is
 // numerically fine; if stdlib adds -logpmf-bernoulli in the future we
@@ -1104,7 +1103,38 @@ function _continuedPoissonLogpdf(x: number, rate: number): number {
   if (!(x >= 0)) return -Infinity;
   // §09 permits rate=0. Use the density limit, avoiding 0 * log(0).
   if (rate === 0) return x === 0 ? 0 : -Infinity;
-  return x * Math.log(rate) - rate - stdlibGammaln(x + 1);
+  if (x < 64) return x * Math.log(rate) - rate - stdlibGammaln(x + 1);
+
+  // Loader (2002), equation 7: subtract the deviance and Stirling correction,
+  // not two terms of order x*log(x). Five Stirling terms at x>=16 have
+  // absolute truncation error <1.1e-16 (DLMF 5.11.1 and 5.11(ii)).
+  const inverse = 1 / x, inverse2 = inverse * inverse;
+  const correction = inverse * (1 / 12 + inverse2 * (-1 / 360 + inverse2 * (
+    1 / 1260 + inverse2 * (-1 / 1680 + inverse2 / 1188))));
+  const difference = x - rate;
+  const v = (difference / (0.5 * x + 0.5 * rate)) * 0.5;
+  let deviance: number;
+  if (Math.abs(v) < 0.1) {
+    // The odd-power deviance series avoids cancellation at the mean.
+    const v2 = v * v;
+    let series = 1 / 17;
+    for (let denominator = 15; denominator >= 3; denominator -= 2) {
+      series = 1 / denominator + v2 * series;
+    }
+    deviance = difference * v + (2 * (x * v)) * v2 * series;
+  } else {
+    const ratio = rate / x;
+    const logRatio = ratio > 0 ? -Math.log(ratio) : Math.log(x) - Math.log(rate);
+    deviance = x * logRatio + (rate - x);
+  }
+  return -deviance - 0.5 * Math.log(x) - 0.5 * Math.log(2 * Math.PI) - correction;
+}
+
+/** §08's integer support with §09's shared, stable Poisson arithmetic. */
+function logpmfPoisson(x: number, rate: number): number {
+  if (Number.isNaN(x) || Number.isNaN(rate) || rate < 0) return NaN;
+  if (!Number.isInteger(x) || x < 0) return -Infinity;
+  return _continuedPoissonLogpdf(x, rate);
 }
 
 // ContinuedPoisson is density-only (spec §09): the continuous extension of
