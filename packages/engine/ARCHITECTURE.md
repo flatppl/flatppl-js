@@ -497,8 +497,8 @@ test harnesses that mirror the old bulk push green). **No negative cache**: an
 UNRESOLVED outcome (cycle / evaluator throw / unresolvable dep) is not remembered
 — recomputed on next demand (preserves the old fixpoint's retry).
 
-**Who demands (and the one bounded eager site).** `resolveConstant` pulls an iid
-count during pass-2 classification (only that subgraph). **Cascade-prune**
+**Who demands (and the one bounded eager site).** `resolveConstant` pulls iid
+counts and fixed truncation bounds during pass-2 classification (only their subgraphs). **Cascade-prune**
 (`derivationRefsValid.resolvable`) answers by PHASE for derivation-having
 bindings (no resolve — the laziness win for a never-displayed `B = expensive(A)`)
 and only force-resolves an *underived* fixed binding to confirm it has a value
