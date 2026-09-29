@@ -465,7 +465,7 @@ const NAMED_SETS: Record<string, any> = {
   booleans:        { kind: 'booleans' },
 };
 
-function parseSetIR(setIR: any, bindings: any) {
+function parseSetIR(setIR: any, bindings: any, fixedValues?: any) {
   if (!setIR) return null;
   if (setIR.kind === 'const' && NAMED_SETS[setIR.name])
     return NAMED_SETS[setIR.name];
@@ -476,10 +476,11 @@ function parseSetIR(setIR: any, bindings: any) {
     // Bounds resolve via the same constant-folder used elsewhere — so
     // `interval(-2.0, 2.0)` (which lowers `-2.0` to `(neg (lit 2.0))`),
     // `interval(0, inf)`, and `interval(LO, HI)` with constant-bound
-    // refs all reduce to numeric bounds.
+    // refs all reduce to numeric bounds. The lazy fixed-value resolver
+    // handles computed bindings outside the small arithmetic fold.
     const seen = new Set();
-    const lo = resolveConstant(setIR.args[0], bindings || new Map(), seen);
-    const hi = resolveConstant(setIR.args[1], bindings || new Map(), new Set());
+    const lo = resolveConstant(setIR.args[0], bindings || new Map(), seen, fixedValues);
+    const hi = resolveConstant(setIR.args[1], bindings || new Map(), new Set(), fixedValues);
     if (typeof lo === 'number' && typeof hi === 'number') {
       return { kind: 'interval', lo, hi };
     }
@@ -493,7 +494,7 @@ function parseSetIR(setIR: any, bindings: any) {
   // element-set restriction (e.g. positivity).
   if (setIR.kind === 'call' && setIR.op === 'cartpow'
       && Array.isArray(setIR.args) && setIR.args.length >= 1) {
-    return parseSetIR(setIR.args[0], bindings);
+    return parseSetIR(setIR.args[0], bindings, fixedValues);
   }
   return null;
 }

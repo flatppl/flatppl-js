@@ -2678,16 +2678,16 @@ function classifyTotalmass(rhsIR: IRNode, ast: any, bindings: any): DerivationTo
  * Supported shape:
  *   - M is a self-ref to a measure binding (anything resolveMeasureBaseName
  *     accepts; the materialiser walks the parent measure for samples).
- *   - S is a literal set expression parseSetIR can lift to a structural
- *     descriptor: interval(lo, hi) with literal bounds, or one of the
+ *   - S is a set expression parseSetIR can lift to a structural
+ *     descriptor: interval(lo, hi) with fixed bounds, or one of the
  *     named real / integer / boolean sets. Dynamic sets defer to a
  *     future pass — they'd require per-atom set membership evaluation.
  */
-function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any): DerivationTruncate | null {
+function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): DerivationTruncate | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
-  const setDescr = parseSetIR(rhsIR.args[1], bindings);
+  const setDescr = parseSetIR(rhsIR.args[1], bindings, fixedValues);
   if (setDescr == null) return null;
   return { kind: 'truncate', from: baseName, setDescr };
 }
