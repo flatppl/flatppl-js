@@ -397,7 +397,17 @@ function _matMatMul(A: any, B: any) {
   // Inner-loop indexing functions: pick per-operand based on tag once.
   // (Branching inside the i,j,k loop would dominate small-matrix
   // benchmarks; this version branches once at the top.)
-  if (!aSwap && !bSwap) {
+  if (!bSwap && p >= 16) {
+    // Wide rows amortize output stores and keep B's reads contiguous.
+    // Each cell still accumulates in ascending k; narrow rows use registers.
+    const rowStride = aSwap ? 1 : n, colStride = aSwap ? m : 1;
+    for (let i = 0; i < m; i++) {
+      for (let k = 0; k < n; k++) {
+        const a = A.data[i * rowStride + k * colStride];
+        for (let j = 0; j < p; j++) out[i * p + j] += a * B.data[k * p + j];
+      }
+    }
+  } else if (!aSwap && !bSwap) {
     for (let i = 0; i < m; i++) {
       for (let j = 0; j < p; j++) {
         let s = 0;
