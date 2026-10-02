@@ -73,7 +73,7 @@ function fitGaussian(pts: Float64Array[], mu: Float64Array, L: Float64Array, dim
   for (let d = 0; d < dim; d++) mu[d] /= n;
   const Sigma = new Float64Array(dim * dim);
   for (const p of pts) {
-    for (let a = 0; a < dim; a++) { const da = p[a] - mu[a]; for (let b = 0; b <= a; b++) { const c = da * (p[b] - mu[b]); Sigma[a * dim + b] += c; Sigma[b * dim + a] += c; } }
+    for (let a = 0; a < dim; a++) { const da = p[a] - mu[a]; for (let b = 0; b <= a; b++) { const c = da * (p[b] - mu[b]); Sigma[a * dim + b] += c; if (b !== a) Sigma[b * dim + a] += c; } }
   }
   for (let i = 0; i < dim * dim; i++) Sigma[i] /= n;
   for (let d = 0; d < dim; d++) Sigma[d * dim + d] += ridge;

@@ -92,12 +92,9 @@ function amisSample(mv: any, opts: any) {
   const seed = opts.seed ?? 0;
   const epsK = opts.amisEpsK ?? 0.005;      // auto-K threshold on ‖Δμ‖₂ (paper §IV-D)
   const ridge = 1e-6;
-  // Per-coordinate proposal-variance floor, as a fraction of the initial
-  // (prior-scale) variance. A single Gaussian proposal that overshoots toward a
-  // tight mode can collapse: low ESS → weighted moment cov ≈ a single point →
-  // proposal narrows → still low ESS → degenerate spiral. Flooring each variance
-  // at floorFrac·Σ₁ keeps the proposal broad enough to keep covering the target
-  // (so ESS recovers) while still allowing it to tighten ~10× toward the mode.
+  // Prior-scale diagonal regularization protects every covariance direction,
+  // including nearly collinear fitted samples. Raising marginal variances by
+  // row/column scaling alone preserves near-singular correlations.
   const floorFrac = opts.amisFloorFrac ?? 0.01;
   const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
 
@@ -117,7 +114,7 @@ function amisSample(mv: any, opts: any) {
     for (const y of initPts) {
       for (let i = 0; i < dim; i++) for (let j = 0; j <= i; j++) {
         const c = (y[i] - mu[i]) * (y[j] - mu[j]);
-        Sigma[i * dim + j] += c; Sigma[j * dim + i] += c;
+        Sigma[i * dim + j] += c; if (j !== i) Sigma[j * dim + i] += c;
       }
     }
     const inflate = 4 / initPts.length;   // 2× std over the empirical prior cov
@@ -248,22 +245,14 @@ function amisSample(mv: any, opts: any) {
         const da = x[a] - newMu[a];
         for (let b = 0; b <= a; b++) {
           const c = w * da * (x[b] - newMu[b]);
-          newSigma[a * dim + b] += c; newSigma[b * dim + a] += c;
+          newSigma[a * dim + b] += c; if (b !== a) newSigma[b * dim + a] += c;
         }
       }
     }
     for (let d = 0; d < dim; d++) newSigma[d * dim + d] += ridge;
-    // Floor each variance so the proposal cannot collapse to a delta. If a
-    // diagonal is lifted to the floor, shrink that coordinate's off-diagonals
-    // proportionally so the correlation stays consistent (and Σ stays PD).
-    for (let d = 0; d < dim; d++) {
-      const v = newSigma[d * dim + d];
-      if (v < floorVar[d] && floorVar[d] > 0) {
-        const s = Math.sqrt(floorVar[d] / (v > 0 ? v : ridge));
-        for (let j = 0; j < dim; j++) { newSigma[d * dim + j] *= s; newSigma[j * dim + d] *= s; }
-        newSigma[d * dim + d] = floorVar[d];
-      }
-    }
+    // Sigma >= diag(floorVar) in PSD order; the same regularized proposal
+    // supplies both draws and their Gaussian importance denominator.
+    for (let d = 0; d < dim; d++) newSigma[d * dim + d] += floorVar[d];
     prevMu = mu;
     mu = newMu;
     Sigma = newSigma;

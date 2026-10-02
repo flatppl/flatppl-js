@@ -75,6 +75,7 @@ function buildModelView(spec: any) {
 async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any> {
   const { buildLogPi } = require('./mcmc-density.ts');
   const modelSpec = require('./model-spec.ts');
+  const empirical = require('./empirical.ts');
 
   // 1. Enumerate latents in declaration order.
   const leafLatents = modelSpec.enumerateLatents(posteriorDeriv, ctx);
@@ -94,17 +95,22 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   //     truth for scalar / vector / MATRIX latents alike (a matrix latent such
   //     as p ~ beta_row_K.(a,b) has a [G,N] per-atom shape that the derivation
   //     walk can't infer statically; the materialised measure carries it); and
-  //     (b) a random atom per latent gives an overdispersed prior-distributed
-  //     init for the samplers.
+  //     (b) one JOINT atom supplies all latents for sampler initialization.
+  // Draw bindings share the context's atom axis: matSample reads its parents'
+  // atom-i values for its own atom i. Constructor-joint fields instead belong
+  // to the joint's independently seeded factor scopes, so read those actual
+  // fields rather than looking up their distribution bindings individually.
+  const drawPrior = leafLatents.every((l: any) => ctx.bindings.get(l.name)?.type === 'draw');
+  let priorMeasure: any = null;
+  try { priorMeasure = await ctx.getMeasure(posteriorDeriv.from); } catch (_) { /* density-only setup can still succeed */ }
   const priorPools: any[] = [];   // per latent: { samples, stride, n } or null
+  const weightParents: any[] = priorMeasure ? [priorMeasure] : [];
   for (const l of leafLatents) {
     let pool: any = null;
     try {
-      // The latent's prior pool comes from its measure-source binding. On the
-      // draw path that is the latent name; for a joint-of-distributions prior
-      // the latent name is an `elementof` boundary input with no measure, so
-      // we sample the field's distribution binding (l.measureName) instead.
-      const m: any = await ctx.getMeasure(l.measureName || l.name);
+      // Draws use the shared context cache. A constructor joint's free inputs
+      // instead read its materialized fields, including independent factors.
+      const m: any = drawPrior ? await ctx.getMeasure(l.name) : priorMeasure?.fields?.[l.name];
       const s = m && (m.samples || (m.value && m.value.data));
       if (s && s.length > 0) {
         // Per-atom size = product of all but the leading (atom) axis.
@@ -115,6 +121,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
           stride = l.shape.dims[0];
         }
         pool = { samples: s, stride, n: Math.floor(s.length / stride) };
+        if (drawPrior) weightParents.push(m);
         // Reconcile the latent's shape with the pool: a >1 per-atom size is a
         // vector latent of that width (fixes matrix/pool-sized latents that the
         // static walk left as scalar or dims:[0]). `atomShape` keeps the FULL
@@ -270,13 +277,25 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
 
   // Build `nWalkers` initial unconstrained positions from prior draws.
   function initFromPrior(nWalkers: number, prng: () => number): Float64Array[] {
+    // §04 reified ancestry and §06 joint composition: select the whole row,
+    // retaining shared weighting events once. Zero fallback positions are not
+    // draws from a missing prior and must never enter SMC at equal weight.
+    const N = priorPools[0]?.n;
+    if (!priorMeasure || !(N > 0) || priorPools.some((p: any) => !p || p.n !== N)
+        || N !== ctx.sampleCount) {
+      throw new Error('model-view: prior initialization requires complete, aligned joint prior atoms');
+    }
+    const weights = empirical.propagateLogWeights(weightParents);
+    if (weights && weights.length !== N) {
+      throw new Error('model-view: prior initialization requires one weight per joint atom');
+    }
+    const indices = weights ? empirical.multinomialResample(weights, nWalkers, prng) : null;
     const out: Float64Array[] = [];
     for (let w = 0; w < nWalkers; w++) {
+      const a = indices ? indices[w] : Math.min(N - 1, Math.floor(prng() * N));
       const scorerPt: Record<string, any> = {};
       for (let li = 0; li < leafLatents.length; li++) {
         const l = leafLatents[li], pool = priorPools[li];
-        if (!pool) { scorerPt[l.name] = l.shape.kind === 'vector' ? new Float64Array(l.shape.dims[0]) : 0; continue; }
-        const a = Math.min(pool.n - 1, Math.floor(prng() * pool.n));
         if (l.shape.kind === 'vector') {
           const d = pool.stride; const v = new Float64Array(d);
           for (let j = 0; j < d; j++) v[j] = pool.samples[a * d + j];
