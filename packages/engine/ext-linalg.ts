@@ -6,8 +6,8 @@
 // =====================================================================
 //
 // Pure-algorithm leaf module — operates on row-major Float64Array data
-// (the §2.1 shape contract). No engine-internal deps beyond
-// sampler-linalg's existing LU primitive.
+// (the §2.1 shape contract). value.ts resolves storage views at each
+// boundary; sampler-linalg supplies the existing LU primitive.
 //
 // Each function takes either flat data + shape or a Value, and returns
 // a fresh Value (or record-of-Values for multi-output decompositions).
@@ -15,10 +15,9 @@
 // `_registerExtLinearAlgebra` function.
 
 const sLinalg = require('./sampler-linalg.ts');
+const valueLib = require('./value.ts');
 
-// Small helpers — Value constructors live in value.ts but we don't want
-// the cross-cycle (value.ts → ops.ts → ... → ext-linalg.ts would be a
-// risk). Use the canonical Value shape directly.
+// Small helpers for fresh, canonical dense output Values.
 function _matValue(data: Float64Array, rows: number, cols: number): any {
   return { shape: [rows, cols], data };
 }
@@ -42,6 +41,7 @@ function _vecValue(data: Float64Array, n: number): any {
 // canonical (P, L, U) record shape.
 
 function _lu(A: any): any {
+  A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('lu: A must be a square matrix');
   const { LU, piv, sign } = sLinalg._luDecompValue(A.data, n);
@@ -81,6 +81,8 @@ function _lu(A: any): any {
 // inputs; defer until profile demands.
 
 function _kron(A: any, B: any): any {
+  A = valueLib._logicalDense(A);
+  B = valueLib._logicalDense(B);
   const m = A.shape[0], n = A.shape[1];
   const p = B.shape[0], q = B.shape[1];
   const outRows = m * p, outCols = n * q;
@@ -162,6 +164,7 @@ function _norm1(A: Float64Array, n: number): number {
 }
 
 function _matexp(A: any): any {
+  A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('matexp: A must be a square matrix');
   // Scaling: pick s = max(0, ceil(log2(||A||_1 / θ_13))).
@@ -251,6 +254,7 @@ function _matexp(A: any): any {
 // same impl.
 
 function _qr(A: any): any {
+  A = valueLib._logicalDense(A);
   const m = A.shape[0], n = A.shape[1];
   if (m < n) throw new Error('qr: requires m >= n (got ' + m + 'x' + n + ')');
   // Work on a fresh copy of A; we'll modify it into R in-place.
@@ -332,6 +336,8 @@ function _qr(A: any): any {
 // A is poorly conditioned.
 
 function _lstsq(A: any, b: any): any {
+  A = valueLib._logicalDense(A);
+  b = valueLib._logicalDense(b);
   const m = A.shape[0], k = A.shape[1];
   if (b.shape.length !== 1 || b.shape[0] !== m) {
     throw new Error('lstsq: b must be a length-m vector (got shape '
@@ -399,6 +405,7 @@ function _isSymmetric(A: any, n: number, tol: number): boolean {
 }
 
 function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array; n: number } {
+  A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('eigen: A must be a square matrix');
   // Tolerance scales with the input magnitude — Frobenius norm of A.
@@ -541,6 +548,7 @@ function _eigmin(A: any): number {
 // algorithms until a profile shows it.
 
 function _svd(A: any): any {
+  A = valueLib._logicalDense(A);
   const m = A.shape[0], n = A.shape[1];
   if (m < n) throw new Error('svd: requires m >= n (got ' + m + 'x' + n + '); transpose first');
   // Work on a fresh copy.

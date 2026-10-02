@@ -221,12 +221,19 @@ function inferShapeFromNested(arr: any) {
   return { shape, jsNestingDepth };
 }
 
-// Flatten a (possibly nested) JS Array into a Float64Array in row-major
-// order. Caller has already validated rectangularity via
+// Flatten a (possibly nested) JS Array into a Value's planar buffers in
+// row-major order. Caller has already validated rectangularity via
 // `inferShapeFromNested`.
 function flattenNested(arr: any, out: any, offset: number, depth: number, shape: ArrayLike<number>) {
   if (depth === shape.length) {
-    out[offset] = +arr;
+    if (arr && typeof arr.re === 'number' && typeof arr.im === 'number') {
+      out.data[offset] = arr.re;
+      if (!out.im) {
+        out.im = new Float64Array(out.data.length);
+        out.dtype = 'complex';
+      }
+      out.im[offset] = arr.im;
+    } else out.data[offset] = +arr;
     return offset + 1;
   }
   for (let i = 0; i < arr.length; i++) {
@@ -642,6 +649,7 @@ function densify(v: any) {
       out.im = im;
       out.dtype = 'complex';
     }
+    if (v.t && v.t !== 'N') out.t = v.t;
     // Diag-stored ⇒ matrix semantics; outerRank tag (if any) does not
     // carry through expansion. The expanded form is a flat m×m matrix.
     return out;                       // struct cleared ⇒ dense
@@ -659,6 +667,34 @@ function densify(v: any) {
   // (diag etc.) but the nested-vs-flat semantic distinction must
   // survive the round-trip.
   if (typeof v.outerRank === 'number') out.outerRank = v.outerRank;
+  return out;
+}
+
+/** Materialize logical entries for contiguous kernels (spec §03 arrays, §07
+ * transpose/adjoint). Unlike densify, this also resolves view tags. Canonical
+ * dense inputs are borrowed; vector transpose remains a semantic orientation.
+ */
+function _logicalDense(v: any): any {
+  const d = densify(v);
+  const swapped = isTransposeView(d) && d.shape.length >= 2;
+  const conjugated = isComplexValue(d) && isConjugateView(d);
+  if (!swapped && !conjugated) return d;
+  const copy = (src: Float64Array, sign: number) => {
+    const out = new Float64Array(src.length);
+    if (swapped) {
+      const m = d.shape[d.shape.length - 2], n = d.shape[d.shape.length - 1];
+      for (let base = 0; base < src.length; base += m * n) {
+        for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) {
+          out[base + i * n + j] = sign * src[base + j * m + i];
+        }
+      }
+    } else for (let i = 0; i < src.length; i++) out[i] = sign * src[i];
+    return out;
+  };
+  const out = { ...d, data: swapped ? copy(d.data, 1) : d.data };
+  delete out.t;
+  if (d.shape.length < 2 && isTransposeView(d)) out.t = 'T';
+  if (d.im) out.im = copy(d.im, conjugated ? -1 : 1);
   return out;
 }
 
@@ -903,6 +939,9 @@ function asValue(x: any): any {
   if (typeof x === 'number' || typeof x === 'boolean') {
     return scalar(+x);
   }
+  if (typeof x.re === 'number' && typeof x.im === 'number') {
+    return complexValue([x.re], [x.im], []);
+  }
   if (x instanceof Float64Array) {
     return { shape: [x.length], data: x };
   }
@@ -915,8 +954,8 @@ function asValue(x: any): any {
     const inferred = inferShapeFromNested(x);
     const shape = inferred.shape;
     const data = new Float64Array(numel(shape));
-    flattenNested(x, data, 0, 0, shape);
     const out: any = { shape: shape, data: data };
+    flattenNested(x, out, 0, 0, shape);
     // Set outerRank for user-nested-literal input per spec §03: a
     // value like `[[1,2],[3,4]]` (two consecutive JS-Array levels) is
     // a vector-of-vectors, NOT a matrix. The flat storage is
@@ -1000,21 +1039,16 @@ function asBatch(v: any, N: number) {
 // vector-per-entry table column (spec §03 "3-vector per entry") yields the
 // per-row vector rather than a flat-buffer scalar.
 function _sliceRow(v: any, idx: number) {
-  let dense = v;
-  if (v.t === 'T' || v.t === 'A' || v.struct !== undefined) {
-    dense = densify(v);
-    if ((dense.t === 'T' || dense.t === 'A') && dense.shape.length === 2) {
-      const m = dense.shape[0], n = dense.shape[1];
-      const src = dense.data, out = new Float64Array(m * n);
-      for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) out[i * n + j] = src[j * m + i];
-      dense = { shape: [m, n], data: out };
-    }
+  const dense = _logicalDense(v);
+  if (dense.shape.length === 1) {
+    return dense.im ? { re: dense.data[idx], im: dense.im[idx] } : dense.data[idx];
   }
   const tail = dense.shape.slice(1);
   const tailLen = numel(tail);
   const row: any = { shape: tail, data: dense.data.subarray(idx * tailLen, (idx + 1) * tailLen) };
   if (dense.im instanceof Float64Array) row.im = dense.im.subarray(idx * tailLen, (idx + 1) * tailLen);
   if (dense.dtype) row.dtype = dense.dtype;
+  if (dense.outerRank > 1) row.outerRank = dense.outerRank - 1;
   return row;
 }
 
@@ -1029,7 +1063,7 @@ function tableRow(t: any, idx: number) {
     // the per-row sub-Value via a leading-axis slice. Non-Value columns
     // (legacy JS arrays of inner values) index directly.
     if (isValue(col)) {
-      row[k] = (col.shape.length > 1) ? _sliceRow(col, idx) : col.data[idx];
+      row[k] = _sliceRow(col, idx);
     } else {
       row[k] = col[idx];
     }
@@ -1041,6 +1075,7 @@ module.exports = {
   // accessors
   getShape: getShape,
   tableRow: tableRow,
+  _sliceRow: _sliceRow,
   getData: getData,
   getDType: getDType,
   getTag: getTag,
@@ -1074,6 +1109,7 @@ module.exports = {
   isDiagStored: isDiagStored,
   diagMatrix: diagMatrix,
   densify: densify,
+  _logicalDense,
   packUniformCells: packUniformCells,
   // tag-flipping operations (lazy; never touch data)
   transpose: transpose,

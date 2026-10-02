@@ -5,7 +5,7 @@
 //
 // Extracted from sampler.ts as part of the sampler split
 // (engine-concepts §11). Pure leaf module — operates on plain
-// Float64Array / nested-array data; no engine-internal deps.
+// Float64Array / nested-array data; value.ts resolves logical storage views.
 //
 // Two parallel surfaces:
 // - nested-array form (`_luDecomp` / `_detLU` / `_logAbsDetLU` /
@@ -23,6 +23,9 @@
 // (on and above diagonal) in a single n×n array. piv[i] holds the row
 // at row i after permutation; sign tracks the parity of row swaps so
 // the caller can recover det(A) = sign · prod(diag(U)).
+import * as valueModule from './value.ts';
+const valueLib: any = (valueModule as any).default;
+
 export function _luDecomp(A: any) {
   const n = A.length;
   // Deep-copy A so the caller's matrix isn't mutated.
@@ -136,6 +139,8 @@ export function _logAbsDetLUValue(V: any): number {
 // {shape:[n]} or Value matrix {shape:[n, p]}. Returns the same shape
 // as b. Forward + back substitution after one LU factorisation.
 export function _linsolveLUValue(A: any, b: any): any {
+  A = valueLib._logicalDense(A);
+  b = valueLib._logicalDense(b);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('linsolve: A must be a square matrix');
   const { LU, piv, sign } = _luDecompValue(A.data, n);
@@ -188,6 +193,7 @@ export function _invValue(A: any): any {
 // Cholesky-Banachiewicz on a row-major Float64Array. Returns Value
 // shape=[n, n] with lower-triangular L (zeros above the diagonal).
 export function _choleskyValue(A: any): any {
+  A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('lower_cholesky: argument must be a square matrix');
   const data = A.data;
