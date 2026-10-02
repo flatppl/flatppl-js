@@ -834,7 +834,7 @@ const SIGNATURE_FACTORIES = {
   PoissonProcess: () => ({ args: null, kwargs: { intensity: any() },
                            result: measure(array(1, ['%dynamic'], REAL)) }),
   // BinnedPoissonProcess: per-bin integer count vector.
-  BinnedPoissonProcess: () => ({ args: null, kwargs: { rates: any() },
+  BinnedPoissonProcess: () => ({ args: null, kwargs: { bins: any(), intensity: any(), rates: any() },
                            result: measure(array(1, ['%dynamic'], INTEGER)) }),
   // Fundamental reference measures (spec §06). The optional `support = S`
   // kwarg parameterises on the set the measure lives on; default is `reals`
@@ -846,9 +846,8 @@ const SIGNATURE_FACTORIES = {
   Counting:  () => ({ args: null, kwargs: { support: any() }, result: measure(INTEGER), special: 'counting' }),
   // Dirac accepts either `Dirac(x)` or `Dirac(value = x)` per spec §04
   // (built-ins admit both positional and keyword forms with identical
-  // semantics). Same shape as the other distributions: `args: null`
-  // skips the positional arity check (kwargs path is the typed contract).
-  Dirac:     () => ({ args: null, kwargs: { value: tvar('T') }, result: measure(tvar('T')) }),
+  // semantics). Both forms infer the point's value type as the measure domain.
+  Dirac:     () => ({ args: [tvar('T')], kwargs: { value: tvar('T') }, result: measure(tvar('T')) }),
 
   // ---- Measure algebra ---------------------------------------------
   weighted:    () => ({ args: [REAL, measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
@@ -1011,10 +1010,10 @@ const SIGNATURE_FACTORIES = {
   le:      () => ({ args: [REAL, REAL], kwargs: {}, result: BOOLEAN }),
   gt:      () => ({ args: [REAL, REAL], kwargs: {}, result: BOOLEAN }),
   ge:      () => ({ args: [REAL, REAL], kwargs: {}, result: BOOLEAN }),
-  isfinite:() => ({ args: [REAL], kwargs: {}, result: BOOLEAN }),
-  isinf:   () => ({ args: [REAL], kwargs: {}, result: BOOLEAN }),
-  isnan:   () => ({ args: [REAL], kwargs: {}, result: BOOLEAN }),
-  iszero:  () => ({ args: [REAL], kwargs: {}, result: BOOLEAN }),
+  isfinite:() => ({ args: [COMPLEX], kwargs: {}, result: BOOLEAN }),
+  isinf:   () => ({ args: [COMPLEX], kwargs: {}, result: BOOLEAN }),
+  isnan:   () => ({ args: [COMPLEX], kwargs: {}, result: BOOLEAN }),
+  iszero:  () => ({ args: [COMPLEX], kwargs: {}, result: BOOLEAN }),
 
   // ---- Approximation functions (spec §07) ---------------------------
   // Pure value functions. polynomial / bernstein take a real-array of

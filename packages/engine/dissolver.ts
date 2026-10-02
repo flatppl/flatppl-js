@@ -734,7 +734,7 @@ function _collectAxisNames(expr: any, out: Set<string>): void {
 }
 
 // Detect whether an IR is an inner-aggregate call shape:
-//   aggregate(<reducer-ref>, [<axis>...], <body>)
+//   aggregate(<reducer-ref-or-const>, [<axis>...], <body>)
 // Returns the parsed pieces (reducer name, outputAxes set, body) or
 // null when the shape doesn't match.
 function _classifyInnerAggregate(ir: any): {
@@ -746,7 +746,7 @@ function _classifyInnerAggregate(ir: any): {
   const args = ir.args || [];
   if (args.length !== 3) return null;
   const fIR = args[0], axesIR = args[1], bodyIR = args[2];
-  if (!fIR || fIR.kind !== 'ref') return null;
+  if (!fIR || (fIR.kind !== 'ref' && fIR.kind !== 'const')) return null;
   if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
   const outputAxes = new Set<string>();
   for (const a of (axesIR.args || [])) {
@@ -862,7 +862,7 @@ function _tryDissolveAggregate(aggIR: any, bindings: any): any | null {
   // is the contraction-axis length (resolved from operand shape).
   // Other reductions (prod / var / std / min / max) don't have a
   // closed-form matmul equivalent and stay on the cold path.
-  if (!fIR || fIR.kind !== 'ref') return null;
+  if (!fIR || (fIR.kind !== 'ref' && fIR.kind !== 'const')) return null;
   const reducer = fIR.name;
   if (reducer !== 'sum' && reducer !== 'mean') return null;
   if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;

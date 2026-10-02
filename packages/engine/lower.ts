@@ -232,8 +232,8 @@ function _lowerExpr(node: any, ctx: any): IRNode {
       return { kind: 'const', name: node.name, loc: node.loc };
 
     case 'SetRef':
-      // reals, posreals, integers, booleans, … — also bare-symbol builtins.
-      return { kind: 'const', name: node.name, loc: node.loc };
+      // §04 permits module bindings to shadow built-in set names.
+      return _lowerIdentifier(node, ctx);
 
     case 'SliceAll':
       // The `:` slice marker. Per spec, lowers to bare `all`.
@@ -346,18 +346,9 @@ function _lowerExpr(node: any, ctx: any): IRNode {
           };
         }
         if (objName === 'base') {
-          // Spec §11: explicit built-in refs share the same bare-
-          // headed IR shape as implicit built-in calls. The lowerer
-          // emits a `ref` here with no `ns` — downstream consumers
-          // that need to resolve a base-ref look it up by name in
-          // the built-ins catalog. (Most code paths see `base.foo`
-          // exclusively in HEAD position of a call, where _lower
-          // CallExpr handles it; bare value-position `base.foo`
-          // produces a callable ref the caller is expected to apply
-          // immediately.)
-          return {
-            kind: 'ref', ns: 'base', name: node.field, loc: node.loc,
-          };
+          if (!ALL_KNOWN.has(node.field)) throw new Error(`lower: unknown built-in '${node.field}'`);
+          // §11 requires the same bare symbol as an unqualified builtin.
+          return { kind: 'const', name: node.field, loc: node.loc };
         }
         if (ctx && ctx.moduleNames && ctx.moduleNames.has(objName)) {
           return {
@@ -387,11 +378,13 @@ function _lowerExpr(node: any, ctx: any): IRNode {
 
 function _lowerIdentifier(node: any, ctx: any): IRNode {
   const { name, loc } = node;
+  if (node.builtin) return { kind: 'const', name, loc };
 
   // 1. %local scope wins (innermost reified scope's params).
   if (ctx.localScope && ctx.localScope.has(name)) {
     return { kind: 'ref', ns: '%local', name, loc };
   }
+  if (ctx.bindingNames?.has(name)) return { kind: 'ref', ns: 'self', name, loc };
 
   // 2. Boolean literals — defensive path for any Identifier-typed
   // name that happens to spell a boolean across any variant. The
@@ -489,7 +482,15 @@ function _lowerUnaryExpr(node: any, ctx: any): any {
   return { kind: 'call', op, args, loc: node.loc };
 }
 
-function _lowerCallExpr(node: any, ctx: any): any {
+function _lowerCallExpr(node: any, ctx: any, builtinHead = false): any {
+  if (node.callee?.type === 'FieldAccess' && node.callee.object?.type === 'Identifier'
+      && node.callee.object.name === 'base') {
+    if (!ALL_KNOWN.has(node.callee.field)) throw new Error(`lower: unknown built-in '${node.callee.field}'`);
+    // Force only this call head. Arguments retain the module's name scope.
+    return _lowerCallExpr({ ...node, callee: {
+      type: 'Identifier', name: node.callee.field, loc: node.callee.loc,
+    } }, ctx, true);
+  }
   if (!node.callee || node.callee.type !== 'Identifier') {
     // Special case: `broadcasted(f)(args...)` — the spec §04
     // curried form `broadcasted(f)(args) ≡ broadcast(f, args)`.
@@ -562,7 +563,7 @@ function _lowerCallExpr(node: any, ctx: any): any {
     // the value-position `mod.X → (%ref mod X)` rule in the FieldAccess case.
     if (node.callee && node.callee.type === 'FieldAccess'
         && node.callee.object && node.callee.object.type === 'Identifier'
-        && ctx && ctx.moduleNames && ctx.moduleNames.has(node.callee.object.name)) {
+        && (node.callee.object.name === 'self' || ctx.moduleNames?.has(node.callee.object.name))) {
       const lowered: any = {
         kind: 'call',
         target: { ns: node.callee.object.name, name: node.callee.field },
@@ -584,32 +585,34 @@ function _lowerCallExpr(node: any, ctx: any): any {
     throw new Error(`lower: unsupported callee type '${node.callee?.type}'`);
   }
   const calleeName = node.callee.name;
+  // Lambda syntax synthesizes functionof, independent of name shadowing.
+  const builtin = builtinHead || node.builtin || node.fromLambda || !ctx.bindingNames?.has(calleeName);
 
   // Special-case dispatchers, in priority order:
 
-  if (REIFICATION_FORMS.has(calleeName)) {
+  if (builtin && REIFICATION_FORMS.has(calleeName)) {
     return _lowerReification(calleeName, node, ctx);
   }
-  if (calleeName === 'fn') {
+  if (builtin && calleeName === 'fn') {
     return _lowerFn(node, ctx);
   }
-  if (FIELD_FORMS.has(calleeName)) {
+  if (builtin && FIELD_FORMS.has(calleeName)) {
     return _lowerFieldsForm(calleeName, node, ctx);
   }
-  if (MODULE_LOAD_FORMS.has(calleeName)) {
+  if (builtin && MODULE_LOAD_FORMS.has(calleeName)) {
     return _lowerModuleLoad(calleeName, node, ctx);
   }
-  if (calleeName === 'broadcast') {
+  if (builtin && calleeName === 'broadcast') {
     return _lowerBroadcast(node, ctx);
   }
-  if (calleeName === 'builtin_logdensityof') {
+  if (builtin && calleeName === 'builtin_logdensityof') {
     return _lowerBuiltinLogdensityof(node, ctx);
   }
-  if (calleeName === 'builtin_touniform' || calleeName === 'builtin_fromuniform'
-      || calleeName === 'builtin_tonormal' || calleeName === 'builtin_fromnormal') {
+  if (builtin && (calleeName === 'builtin_touniform' || calleeName === 'builtin_fromuniform'
+      || calleeName === 'builtin_tonormal' || calleeName === 'builtin_fromnormal')) {
     return _lowerBuiltinTransport(calleeName, node, ctx);
   }
-  if (calleeName === 'builtin_sample') {
+  if (builtin && calleeName === 'builtin_sample') {
     return _lowerBuiltinSample(node, ctx);
   }
 
@@ -631,7 +634,7 @@ function _lowerCallExpr(node: any, ctx: any): any {
   }
 
   const out: any = { kind: 'call', loc: node.loc };
-  if (ALL_KNOWN.has(calleeName)) {
+  if (builtin && ALL_KNOWN.has(calleeName)) {
     // Built-in: bare-symbol head per FlatPIR.
     out.op = calleeName;
   } else {
@@ -676,10 +679,13 @@ function _lowerBroadcast(node: any, ctx: any) {
     }
   }
   let head: any;
-  if (calleeArg.type === 'Identifier'
-      && BUILTIN_FUNCTIONS.has(calleeArg.name)) {
+  const builtinName = calleeArg.type === 'Identifier' && !ctx.bindingNames?.has(calleeArg.name)
+    ? calleeArg.name
+    : calleeArg.type === 'FieldAccess' && calleeArg.object?.type === 'Identifier'
+      && calleeArg.object.name === 'base' ? calleeArg.field : null;
+  if (BUILTIN_FUNCTIONS.has(builtinName)) {
     const arity = hasKwargs ? kwOrder.length : posArgs.length;
-    head = _synthOpFunctionof(calleeArg.name, arity);
+    head = _synthOpFunctionof(builtinName, arity);
     // Keyword form: match the synthesized params to the caller's
     // kwarg names (in order) so `_broadcastApply`'s kwarg path binds.
     if (hasKwargs) head.paramKwargs = kwOrder.slice();
@@ -944,6 +950,10 @@ function _lowerFn(node: any, ctx: any) {
   function rewriteHoles(astNode: any): any {
     if (astNode == null || typeof astNode !== 'object') return astNode;
     if (Array.isArray(astNode)) return astNode.map(rewriteHoles);
+    // §04: every fn delimits its own hole scope, including nested fn bodies.
+    if (astNode.type === 'CallExpr' && astNode.callee?.type === 'Identifier'
+        && astNode.callee.name === 'fn'
+        && (astNode.builtin || !ctx.bindingNames?.has('fn'))) return astNode;
     if (astNode.type === 'Hole') {
       counter++;
       return { type: 'Placeholder', name: 'arg' + counter, loc: astNode.loc };
