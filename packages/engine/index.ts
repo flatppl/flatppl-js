@@ -104,6 +104,9 @@ function processSource(source: string, opts?: any) {
     // Keep the matching registry for evaluation of the flattened graph.
     linkedModuleRegistry = linked.loweredModule.moduleRegistry;
   }
+  if (!primary.diagnostics.some((d: any) => d.severity === 'error')) {
+    primary.diagnostics.push(..._chainDensityDiagnostics(linkedBindings, linkedModuleRegistry));
+  }
 
   // loweredModule is forwarded for downstream consumers that need
   // on-demand type specialization (e.g. typeinfer.inferExprInScope used
@@ -120,6 +123,56 @@ function processSource(source: string, opts?: any) {
     diagnostics: primary.diagnostics,
     variant, bundle, modules, linkedBindings, linkedModuleRegistry, path: entryPath,
   };
+}
+
+// §06 permits kchain sampling independently of whether its marginal density
+// has a closed form. Ask the same CLM capability that the scoring path uses,
+// only for actual scoring demands in a module containing a kchain.
+function _chainDensityDiagnostics(bindings: any, moduleRegistry: any): any[] {
+  let chain = false, score = false;
+  const seen = new Set<object>();
+  function scan(node: any): void {
+    if (!node || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+    const name = node.type === 'CallExpr' && node.callee?.type === 'Identifier'
+      ? node.callee.name : node.type === 'Identifier' ? node.name
+        : node.type === 'FieldAccess' && node.object?.name === 'base' ? node.field : null;
+    if (name === 'kchain') chain = true;
+    if (name === 'densityof' || name === 'logdensityof' || name === 'bayesupdate') score = true;
+    for (const key of Object.keys(node)) if (key !== 'meta' && key !== 'loc') scan(node[key]);
+  }
+  for (const binding of bindings.values()) scan(binding.effectiveValue || binding.node?.value);
+  if (!chain || !score) return [];
+  const ctx = orchestrator.buildDerivations(bindings, { moduleRegistry });
+  const diagnostics: any[] = [];
+  for (const [name, derivation] of Object.entries(ctx.derivations)) {
+    const d: any = derivation;
+    const targets: any[] = [];
+    if (d.kind === 'logdensityof' || d.kind === 'broadcast_logdensity') {
+      targets.push({ input: d.measureName });
+    } else if (d.kind === 'likelihood_density' || d.kind === 'bayesupdate'
+        || d.kind === 'joint_likelihood_density' || d.kind === 'posterior_density') {
+      if (d.priorName) targets.push({ input: d.priorName });
+      for (const term of d.subs || [d]) {
+        targets.push({ input: term.bodyIR || term.bodyName, opts: { derivation: term } });
+      }
+    }
+    for (const target of targets) {
+      if (target.input == null) continue;
+      let reason: string | null;
+      try { reason = clm.chainDensityRefusal(target.input, ctx, target.opts); }
+      catch (_) { continue; } // Other lowering refusals retain their existing diagnostic path.
+      if (reason) {
+        const binding = bindings.get(name) || ctx.bindings.get(name);
+        diagnostics.push({ severity: 'error',
+          message: reason,
+          loc: binding?.node?.value?.loc || binding?.node?.loc,
+        });
+        break;
+      }
+    }
+  }
+  return diagnostics;
 }
 
 // Compile the primary source plus, transitively, every `.flatppl` module
@@ -266,11 +319,17 @@ async function resolveBundle(
 // argument is not a literal (an error, surfaced by the caller).
 function _collectLoadModuleDeps(ast: any): Array<{ relPath: string | null; loc: any }> {
   const out: Array<{ relPath: string | null; loc: any }> = [];
+  const shadowed = ast.body?.some((s: any) => s.type === 'AssignStatement'
+    && s.names.some((n: any) => n.name === 'load_module'));
   function visit(node: any) {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) { for (const c of node) visit(c); return; }
-    if (node.type === 'CallExpr' && node.callee
-        && node.callee.type === 'Identifier' && node.callee.name === 'load_module') {
+    const callee = node.callee;
+    const builtin = callee?.type === 'Identifier' && callee.name === 'load_module'
+      && (!shadowed || node.builtin);
+    const qualified = callee?.type === 'FieldAccess' && callee.object?.type === 'Identifier'
+      && callee.object.name === 'base' && callee.field === 'load_module';
+    if (node.type === 'CallExpr' && (builtin || qualified)) {
       const first = node.args && node.args[0];
       out.push({
         relPath: (first && first.type === 'StringLiteral') ? String(first.value) : null,

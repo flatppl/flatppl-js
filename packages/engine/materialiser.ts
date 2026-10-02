@@ -340,7 +340,7 @@ function matArray(d: DerivationArray) {
 function _weightAtomStride(parent: any, N: number): number {
   if (!parent || parent.shape !== 'array' || !Array.isArray(parent.dims)) return 1;
   const perAtom = parent.dims.reduce((p: number, n: number) => p * n, 1);
-  if (!(perAtom > 1) || N % perAtom !== 0) return 1;
+  if (!(perAtom > 1) || N !== parent.samples.length) return 1;
   return perAtom;
 }
 
@@ -370,6 +370,17 @@ function _baseWeightEvents(parent: any, N: number) {
   const events = [lineage.newEvent(null, c, true)];
   lineage.register(base, events);
   return { base, events: events as readonly any[] };
+}
+
+// §06 reweighting changes mass by E_M[w], with M normalized for this ratio.
+// Explicit parent weights may already contain its mass, whereas an implicit
+// uniform representation leaves that mass only in logTotalmass.
+function _reweightedLogMass(parent: any, base: Float64Array, weights: Float64Array) {
+  const mass = massOf(parent);
+  if (mass === null) return null;
+  const weighted = empirical.logSumExp(weights);
+  return weighted === -Infinity ? -Infinity
+    : mass + weighted - empirical.logSumExp(base);
 }
 
 // Register a reweighted array as its parent's events plus this operation's own
@@ -555,7 +566,8 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
           overlay[d.from] = shared.measureToPerAtomRecords(parent, d.from, 'matWeighted');
           refCtx = Object.assign({}, ctx, { _extraRefArrays: overlay });
         }
-        return collectRefArrays(d.weightIR, refCtx).then((refArrays: any) =>
+        const parameterMeasures: any[] = [];
+        return collectRefArrays(d.weightIR, refCtx, parameterMeasures).then((refArrays: any) =>
           ctx.sendWorker({
             type: 'evaluateN',
             ir: d.weightIR,
@@ -563,18 +575,14 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
             refArrays: refArrays,
           })
         ).then((reply: any) => {
-          const delta = _weightDelta(w, baseLW, reply.samples, N,
+          const jointParent = shared.withParameterWeights(parent, parameterMeasures);
+          const combined = _baseWeightEvents(jointParent, N);
+          const delta = _weightDelta(w, combined.base, reply.samples, N,
             !!d.isLog, !!d.isVariateWeight);
-          _registerReweighted(w, baseEvents, delta, 0);
-          // Result totalmass = ∫ f · dM (spec §06). The empirical
-          // estimator logSumExp(baseLW + log(f(x_i))) gives
-          // log(avg(f)·exp(parent.logTotalmass / 1))... actually the
-          // parent's totalmass is implicit in baseLW only when it's
-          // 0; for unnormalised parents (Lebesgue with logTotalmass
-          // = log(b−a)) the parent mass lives on `parent.logTotalmass`
-          // and must be added explicitly. Cf. spec-canonical
-          // ∫_a^b f · dx = (b−a) · E_{Uniform}[f].
-          return finalise(addMass(massOf(parent), empirical.logSumExp(w)), w);
+          _registerReweighted(w, combined.events, delta, 0);
+          // §06 ∫ f dM: the ratio of new and old weight sums changes
+          // the parent's mass once, whether stored in weights or metadata.
+          return finalise(_reweightedLogMass(jointParent, combined.base, w), w);
         });
       }
       // Constant shift fast path. Reached only when the orchestrator
@@ -596,7 +604,8 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
       // its own atom's coordinates. Reached by a §06 multivariate mixture,
       // whose per-component weight is `w[i]` rather than a folded constant.
       const perAtom = _weightAtomStride(parent, N);
-      return collectRefArrays(d.weightIR, ctx).then((refArrays: any) =>
+      const parameterMeasures: any[] = [];
+      return collectRefArrays(d.weightIR, ctx, parameterMeasures).then((refArrays: any) =>
         ctx.sendWorker({
           type: 'evaluateN',
           ir: d.weightIR,
@@ -607,14 +616,13 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
         const weights = perAtom > 1
           ? _spreadOverAtomCells(reply.samples, perAtom, N)
           : reply.samples;
-        const delta = _weightDelta(w, lifted.logWeights, weights, N,
+        const jointParent = shared.withParameterWeights(parent, parameterMeasures);
+        const combined = _baseWeightEvents(jointParent, N);
+        const delta = _weightDelta(w, combined.base, weights, N,
           !!d.isLog, !!d.isVariateWeight);
-        _registerReweighted(w, baseEvents, delta, 0);
-        // Spec §06 totalmass = ∫ f · dM. Parent's mass (e.g.
-        // log(b−a) for `Lebesgue(interval(a,b))`) lives on
-        // `parent.logTotalmass`; the empirical estimator captures
-        // only the avg(f) factor over the parent's atoms.
-        const lTM = addMass(massOf(parent), empirical.logSumExp(w));
+        _registerReweighted(w, combined.events, delta, 0);
+        // Compare weight sums so a mass already in the parent is not squared.
+        const lTM = _reweightedLogMass(jointParent, combined.base, w);
         const nEff = empirical.effectiveSampleSize({ samples: lifted.samples, logWeights: w });
         const out: any = scalarMeasureN(lifted.samples,
           { logWeights: w, logTotalmass: lTM, n_eff: nEff });
@@ -765,13 +773,16 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
   }
   const evalCtx = overlay ? Object.assign({}, ctx, { _extraRefArrays: overlay }) : ctx;
 
-  return collectRefArrays(evalIR, evalCtx).then((refArrays: any) => ctx.sendWorker({
+  const parameterMeasures: any[] = [];
+  return collectRefArrays(evalIR, evalCtx, parameterMeasures).then((refArrays: any) => ctx.sendWorker({
     type: 'evaluateN', ir: evalIR, count: N, refArrays,
   })).then((reply: any) => {
-    const delta = _weightDelta(w, baseLW, reply.samples, N,
+    const jointParent = shared.withParameterWeights(parent, parameterMeasures);
+    const combined = _baseWeightEvents(jointParent, N);
+    const delta = _weightDelta(w, combined.base, reply.samples, N,
       !!d.isLog, !!d.isVariateWeight);
-    _registerReweighted(w, baseEvents, delta, 0);
-    return emit(addMass(parentLTM, empirical.logSumExp(w)));
+    _registerReweighted(w, combined.events, delta, 0);
+    return emit(_reweightedLogMass(jointParent, combined.base, w));
   });
 }
 
@@ -938,6 +949,18 @@ function _perAtomLogMass(name: string, ctx: any, N: number): Promise<Float64Arra
 }
 
 function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
+  let source = ctx.derivations[d.from];
+  const seen = new Set<string>();
+  while (source && source.kind === 'alias' && !seen.has(source.from)) {
+    seen.add(source.from);
+    source = ctx.derivations[source.from];
+  }
+  if (source && source.kind === 'truncate') {
+    const ir = orchestrator.expandMeasure(source.from, ctx);
+    if (ir && ir.kind === 'call' && require('./forward-cdf.ts').hasCdf(ir.op)) {
+      return transforms.matTruncate(source, ctx, true);
+    }
+  }
   // normalize(base): shift weights so they sum to 1 (logTotalmass = 0).
   // Record/tuple-typed parents: same logic as matWeighted's record
   // branch — the top-level logWeights array carries the joint
@@ -1267,6 +1290,49 @@ function _iidFixedLogTotalmass(from: string, k: number, ctx: any): number | null
   return typeof inner === 'number' && Number.isFinite(inner) ? k * inner : null;
 }
 
+/** Preserve the inferred column schema without sampling an empty product (§06
+ * iid). Lifted anonymous measures can borrow the type of their draw alias. */
+function _emptyRecordIid(name: string, ctx: any) {
+  let tableType: any = null;
+  for (const [bindingName, binding] of ctx.bindings) {
+    let type = binding.inferredType;
+    if (type && type.kind === 'measure') type = type.domain;
+    if (!type || type.kind !== 'table') continue;
+    let current = bindingName;
+    const seen = new Set<string>();
+    while (current !== name && !seen.has(current)) {
+      seen.add(current);
+      const deriv = ctx.derivations[current];
+      if (!deriv || deriv.kind !== 'alias') break;
+      current = deriv.from;
+    }
+    if (current === name) { tableType = type; break; }
+  }
+  if (!tableType) throw engineLimitation('iid', 'empty record product',
+    'the inferred column schema is unavailable');
+  const emptyColumn = (type: any): any => {
+    if (type.kind === 'table' || type.kind === 'record') {
+      const columns: Record<string, any> = {};
+      for (const [key, value] of Object.entries(type.columns || type.fields)) {
+        columns[key] = emptyColumn(value);
+      }
+      return { __table__: true, columns, nrows: 0 };
+    }
+    const shape = [0];
+    let elem = type;
+    for (; elem && elem.kind === 'array'; elem = elem.elem) shape.push(...elem.shape);
+    const value: any = { shape, data: new Float64Array(0) };
+    if (shape.length > 1) value.outerRank = 1;
+    if (elem?.prim === 'complex') {
+      value.dtype = 'complex';
+      value.im = new Float64Array(0);
+    }
+    return value;
+  };
+  const table = emptyColumn(tableType);
+  return { shape: 'table', ...table, value: table, logTotalmass: 0, n_eff: 1 };
+}
+
 function matIid(name: string, d: DerivationIid, ctx: any) {
   // iid(M, n, …): N atoms × k inner draws, atom-major packed into
   // one Float64Array. Worker's sampleN takes an optional repeat=k.
@@ -1276,16 +1342,11 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
   // totalmass: M^k (in log: k · M.logTotalmass).
   // n_eff: inherits M's n_eff.
   //
-  // Spec §06 iid: a size derived to 0 over a record-valued M is an error,
-  // not the empty product measure — a table has no zero-row form. Caught
-  // here, before dispatch, so it never reaches the leaf/composite paths
-  // below at sampleCount 0 (which fail on an unrelated worker invariant
-  // instead of citing the spec).
+  // §06 permits a derived-zero record product, with its column schema intact.
   const _k0 = d.dims.reduce((p: any, n: any) => p * n, 1);
   if (_k0 === 0
       && require('./derivations.ts')._isRecordValuedMeasureBase(d.from, ctx.bindings)) {
-    throw new Error('iid: the record measure "' + d.from + '" has a derived '
-      + 'size of 0 (spec §06 iid: a table has no zero-row form)');
+    return Promise.resolve(_emptyRecordIid(name, ctx));
   }
   // Resolution: peel through alias / normalize (both sample-
   // preserving — normalize just adjusts logTotalmass, samples
@@ -1586,6 +1647,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         budget: ctx.rejectionBudget != null ? ctx.rejectionBudget : 1000,
         refArrays: refArrays,
         seed: nameSeed(name, ctx.rootKey),
+        normalized: resolved.normalized,
       }))
       .then((reply: any) => {
         // outerRank=1 per the locked decision (see fallback above).
@@ -1593,17 +1655,17 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
           shape: [N | 0].concat(d.dims), data: reply.samples, outerRank: 1,
         };
         const pw = _iidLeafParentOverlay(leafParents, N);
-        return Object.assign(
+        return shared.withSliceMasses(Object.assign(
           empirical.arrayMeasure(reply.samples, d.dims, pw.logWeights),
           // logTotalmass scales by k (independent product of k iid
           // truncated draws — each contributes the same logShift), plus the
           // parameter measures' own mass.
           {
             value: value,
-            logTotalmass: k * (reply.logShift || 0) + pw.logMass,
+            logTotalmass: (resolved.normalized ? 0 : k * (reply.logShift || 0)) + pw.logMass,
             n_eff: pw.n_eff,
           },
-        );
+        ), reply.logMasses);
       });
   }
 
@@ -1825,14 +1887,15 @@ function _reifiedVariatesUnder(
 // an inflated sample count.
 function _resolveIidLeaf(
   name: string, derivations: any, visited?: Set<string>,
-): { kind: 'sample' | 'truncate'; distIR: any; setDescr?: any } | null {
+): { kind: 'sample' | 'truncate'; distIR: any; setDescr?: any; normalized?: boolean } | null {
   visited = visited || new Set();
   if (visited.has(name)) return null;
   visited.add(name);
   const d = derivations[name];
   if (!d) return null;
   if (IID_LEAF_PRESERVING_KINDS.has(d.kind)) {
-    return _resolveIidLeaf(d.from, derivations, visited);
+    const inner = _resolveIidLeaf(d.from, derivations, visited);
+    return inner && d.kind === 'normalize' ? { ...inner, normalized: true } : inner;
   }
   if (d.kind === 'sample') {
     return { kind: 'sample', distIR: d.distIR };
@@ -2457,8 +2520,6 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     }
     const sc = ctx.sampleCount;
     const combinedSamples = new Float64Array(totalN);
-    const combinedLogWeights = new Float64Array(totalN);
-    let offset = 0;
     // A parent carrying NON-UNIFORM per-atom importance weights (e.g.
     // `normalize(weighted(fn, Lebesgue))`: uniform sample positions whose
     // density lives in the logWeights) must be SIR-resampled to equal-weight
@@ -2513,10 +2574,14 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       ew.fill(tm - Math.log(sc));
       return { samples: rs, logWeights: ew };
     });
+    const combinedLogWeights = new Float64Array(lifted.reduce(
+      (count: number, l: any) => count + l.logWeights.length, 0));
+    let sampleOffset = 0, weightOffset = 0;
     for (const l of lifted) {
-      combinedSamples.set(l.samples, offset);
-      combinedLogWeights.set(l.logWeights, offset);
-      offset += l.samples.length;
+      combinedSamples.set(l.samples, sampleOffset);
+      combinedLogWeights.set(l.logWeights, weightOffset);
+      sampleOffset += l.samples.length;
+      weightOffset += l.logWeights.length;
     }
     // Zero total mass — spec §06 makes this UNDEFINED to sample, for both
     // spellings that reach here: `superpose(weighted(0, M₁), weighted(0, M₂))`
@@ -2572,10 +2637,8 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       const slotLW = new Float64Array(P);
       const scratch = { cumulative: new Float64Array(P), indices: new Int32Array(1) };
       for (let i = 0; i < sc; i++) {
-        // An array-atom parent's log-weights run per CELL and are constant
-        // within an atom (§06's weight does not depend on the coordinate), so
-        // the atom's first cell carries its weight.
-        for (let p = 0; p < P; p++) slotLW[p] = lifted[p].logWeights[i * cells];
+        // One weight selects the component for the whole vector atom.
+        for (let p = 0; p < P; p++) slotLW[p] = lifted[p].logWeights[i];
         const pick = empirical.systematicResample(slotLW, 1, prng, scratch)[0];
         for (let c = 0; c < cells; c++) {
           out[i * cells + c] = lifted[pick].samples[i * cells + c];
@@ -2611,9 +2674,9 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       const P = lifted.length;
       const slot = new Float64Array(P);
       for (let i = 0; i < sc; i++) {
-        for (let p = 0; p < P; p++) slot[p] = lifted[p].logWeights[i * cells];
+        for (let p = 0; p < P; p++) slot[p] = lifted[p].logWeights[i];
         const lw = empirical.logSumExp(slot);
-        for (let c = 0; c < cells; c++) outW[i * cells + c] = lw;
+        outW[i] = lw;
       }
     } else {
       outW.fill(totalLogMass - Math.log(sc));

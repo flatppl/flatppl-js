@@ -100,8 +100,8 @@ __score__ = logdensityof(ch, 1.0)
   const v = m.value ? m.value.data[0] : m.samples[0];
   // ∫ N(1; mu, 1) N(mu; 0, 1) dmu = N(1; 0, sqrt2); scipy norm.logpdf(1, 0, sqrt2).
   const CONJ_ORACLE = -1.5155121234846454;
-  assert.ok(Math.abs(v - CONJ_ORACLE) < 0.05,
-    `kchain MC marginal ${v} should match the closed-form ${CONJ_ORACLE}`);
+  assert.ok(Math.abs(v - CONJ_ORACLE) < 1e-12,
+    `kchain marginal ${v} should match the closed-form ${CONJ_ORACLE}`);
 });
 
 test('C3: positional joint into 2+ inputs is an analyzer error', () => {

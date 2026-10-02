@@ -114,7 +114,8 @@ function isCallableLayerBinding(binding: any): boolean {
  * shape=[N]; vector-leaf measures already carry the Value shape=[N, k]
  * (or higher rank) in `.value`. Hand-crafted Measure inputs in tests
  * that omit `.value` fall through the Float64Array branch via
- * batchedScalar so they keep working unchanged.
+ * batchedScalar so they keep working unchanged. Record measures use the
+ * existing per-atom record representation consumed by field access.
  */
 function measureToRefValue(m: any, name: string, label: string) {
   if (m == null) {
@@ -124,8 +125,9 @@ function measureToRefValue(m: any, name: string, label: string) {
   if (m.samples && m.samples.BYTES_PER_ELEMENT !== undefined) {
     return valueLib.batchedScalar(m.samples);
   }
+  if (m.fields) return measureToPerAtomRecords(m, name, label);
   throw new Error(label + ': measure for "' + name +
-    '" has neither .value nor .samples');
+    '" has no .value, .samples, or .fields');
 }
 
 /**
@@ -1341,6 +1343,36 @@ function addMass(a: number | null, b: number | null): number | null {
   return (a === null || b === null) ? null : a + b;
 }
 
+/** Carry captured parameter laws through a conditional operation (§04 captured
+ * draws, §06 reweighting/pushforward). Shared weighting events enter once. */
+function withParameterWeights(measure: any, parents: any[]) {
+  const weights = empirical.propagateLogWeights([measure, ...parents]);
+  if (weights === measure.logWeights || (!weights && !measure.logWeights)) return measure;
+  const previous = measure.logWeights ? empirical.logSumExp(measure.logWeights) : 0;
+  const mass = empirical.logSumExp(weights);
+  return Object.assign({}, measure, {
+    logWeights: weights,
+    logTotalmass: mass === -Infinity ? -Infinity : addMass(massOf(measure), mass - previous),
+    n_eff: empirical.effectiveSampleSize({ logWeights: weights }),
+  });
+}
+
+/** Attach conditional truncation masses to their own outer atoms. */
+function withSliceMasses(measure: any, logMasses: Float64Array | null) {
+  if (!logMasses) return measure;
+  const base = empirical.materialiseUniform(measure).logWeights;
+  const weights = Float64Array.from(base, (w: number, i: number) => w + logMasses[i]);
+  const lineage = require('./weight-lineage.ts');
+  lineage.derive(weights, base, [lineage.newEvent(logMasses)]);
+  const mass = empirical.logSumExp(weights);
+  return Object.assign({}, measure, {
+    logWeights: weights,
+    logTotalmass: mass === -Infinity ? -Infinity
+      : addMass(massOf(measure), mass - empirical.logSumExp(base)),
+    n_eff: empirical.effectiveSampleSize({ logWeights: weights }),
+  });
+}
+
 module.exports = {
   inlineCallableRefs,
   nameSeed,
@@ -1373,4 +1405,6 @@ module.exports = {
   resolveFnBody,
   massOf,
   addMass,
+  withParameterWeights,
+  withSliceMasses,
 };

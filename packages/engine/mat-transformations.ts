@@ -81,6 +81,7 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
     ? derivations.resolveBijectionMeta(fBinding.bijection, ctx.bindings)
     : null;
   return ctx.getMeasure(d.from).then((M: any) => {
+    const parameterMeasures: any[] = [];
     // Registry fast path. Activates only when ALL three conditions
     // hold: (a) bijection-binding marks registryName, (b) paramIRs is
     // attached (additive-invariant pair), (c) M is vector-atom
@@ -165,6 +166,7 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         if (pir && pir.kind === 'ref' && pir.ns === 'self'
             && pir.name && ctx.bindings && ctx.bindings.has(pir.name)) {
           return ctx.getMeasure(pir.name).then((pm: any) => {
+            parameterMeasures.push(pm);
             // Flatten the param binding's measure to an atom-batched
             // [N, …] Value. Handles .value (already a Value), composite
             // .elems (e.g. `muv = [m1, m2]` → [N, D]), and scalar
@@ -210,11 +212,11 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         }
         // Mass / weights propagate through unchanged — pushfwd preserves
         // total mass regardless of the bijection.
-        return measureFromValue(result, {
+        return shared.withParameterWeights(measureFromValue(result, {
           logWeights:   M.logWeights || null,
           logTotalmass: shared.massOf(M),
           n_eff:        (typeof M.n_eff === 'number') ? M.n_eff : N,
-        });
+        }), parameterMeasures);
       });
     }
     // Spec §06 case-2, sampling side: a pure field projection of a
@@ -344,7 +346,20 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         ...(ctx._boundaryNames || []), ...fnInfo.params,
       ]),
     });
-    return collectRefArrays(body, fedCtx).then((bodyRefs: any) => ctx.sendWorker({
+    if (body.kind === 'call' && body.op === 'record' && body.fields) {
+      return Promise.all(body.fields.map((field: any) =>
+        collectRefArrays(field.value, fedCtx, parameterMeasures).then((refs: any) => ctx.sendWorker({
+          type: 'evaluateN', ir: field.value, count: N,
+          refArrays: Object.assign({}, refs, paramBind),
+        })).then((reply: any) => [field.name, measureFromReply(reply, N, {
+          logWeights: M.logWeights, logTotalmass: M.logTotalmass, n_eff: M.n_eff,
+        })]),
+      )).then((fields: any[]) => shared.withParameterWeights(Object.assign(
+        empirical.recordMeasure(Object.fromEntries(fields), M.logWeights),
+        { logTotalmass: shared.massOf(M), n_eff: M.n_eff },
+      ), parameterMeasures));
+    }
+    return collectRefArrays(body, fedCtx, parameterMeasures).then((bodyRefs: any) => ctx.sendWorker({
       type: 'evaluateN',
       ir: body,
       count: N,
@@ -365,11 +380,11 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         + `primitives and scalar / matrix-vector affine maps over a vector `
         + `variate do work; a product of two vector atoms does not.`));
     }).then((reply: any) => {
-      return measureFromReply(reply, N, {
+      return shared.withParameterWeights(measureFromReply(reply, N, {
         logWeights: M.logWeights,
         logTotalmass: M.logTotalmass,
         n_eff: M.n_eff,
-      });
+      }), parameterMeasures);
     });
   });
 }
@@ -401,7 +416,7 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
  * Per-atom rejection budget reads from ctx.rejectionBudget (defaults
  * to 1000). Configurable per host.
  */
-function matTruncate(d: DerivationTruncate, ctx: any) {
+function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
   return ctx.getMeasure(d.from).then((parent: any) => {
     const N = ctx.sampleCount;
     const parentLTM = shared.massOf(parent);
@@ -415,14 +430,16 @@ function matTruncate(d: DerivationTruncate, ctx: any) {
     const expanded = orchestrator.expandMeasure(d.from,
       { derivations: ctx.derivations, bindings: ctx.bindings });
     const parentUniform = !parent.logWeights;
-    if (expanded && expanded.kind === 'call' && parentUniform) {
+    const hasCdf = expanded && expanded.kind === 'call'
+      && require('./forward-cdf.ts').hasCdf(expanded.op);
+    if (expanded && expanded.kind === 'call' && (parentUniform || hasCdf)) {
       const valueRefs = orchestrator.collectSelfRefs(expanded);
       const hasRefs = valueRefs.size > 0 || (Array.isArray(valueRefs) && valueRefs.length > 0);
       const cdfEligible = !hasRefs && orchestrator.SAMPLEABLE_DISTRIBUTIONS
         && orchestrator.SAMPLEABLE_DISTRIBUTIONS.has(expanded.op);
       const seed = nameSeed(d.from + '|truncate', ctx.rootKey);
 
-      if (cdfEligible) {
+      if (cdfEligible && !hasCdf) {
         return ctx.sendWorker({
           type: 'truncateSampleN',
           ir: expanded,
@@ -448,9 +465,17 @@ function matTruncate(d: DerivationTruncate, ctx: any) {
           budget: ctx.rejectionBudget != null ? ctx.rejectionBudget : 1000,
           refArrays: refArrays,
           seed: seed,
+          normalized,
         }))
         .then((reply: any) => {
           const samples = reply.samples;
+          if (hasCdf || reply.logMasses) {
+            return shared.withSliceMasses(scalarMeasureN(samples, {
+              logWeights: parent.logWeights,
+              logTotalmass: normalized ? 0 : shared.addMass(parentLTM, reply.logShift || 0),
+              n_eff: reply.n_eff,
+            }), reply.logMasses);
+          }
           let anyNaN = false;
           for (let i = 0; i < samples.length; i++) {
             if (Number.isNaN(samples[i])) { anyNaN = true; break; }
@@ -473,59 +498,17 @@ function matTruncate(d: DerivationTruncate, ctx: any) {
     // Filter-only fallback.
     const parentSamples = parent.samples;
     const out = new Float64Array(parentSamples.length);
-    const outW = parent.logWeights
-      ? new Float64Array(parentSamples.length)
-      : null;
-    let n_eff = 0;
-    if (parent.logWeights) {
-      const acceptedWeights: number[] = [];
-      const totalWeights: number[] = [];
-      const outWnn = outW!;
-      for (let i = 0; i < parentSamples.length; i++) {
-        const x = parentSamples[i];
-        totalWeights.push(parent.logWeights[i]);
-        if (x >= lo && x <= hi) {
-          out[i] = x;
-          outWnn[i] = parent.logWeights[i];
-          acceptedWeights.push(parent.logWeights[i]);
-          n_eff++;
-        } else {
-          out[i] = NaN;
-          outWnn[i] = -Infinity;
-        }
-      }
-      const lseA = acceptedWeights.length
-        ? empirical.logSumExp(Float64Array.from(acceptedWeights))
-        : -Infinity;
-      const lseT = empirical.logSumExp(Float64Array.from(totalWeights));
-      const logShift = isFinite(lseA) && isFinite(lseT) ? (lseA - lseT) : -Infinity;
-      return scalarMeasureN(out, {
-        logWeights: outW,
-        logTotalmass: shared.addMass(parentLTM, logShift),
-        n_eff: n_eff,
-      });
-    }
-    let anyNaN = false;
+    const logMasses = new Float64Array(parentSamples.length);
     for (let i = 0; i < parentSamples.length; i++) {
       const x = parentSamples[i];
-      if (x >= lo && x <= hi) { out[i] = x; n_eff++; }
-      else { out[i] = NaN; anyNaN = true; }
+      if (x >= lo && x <= hi) out[i] = x;
+      else { out[i] = NaN; logMasses[i] = -Infinity; }
     }
-    let logWeights: Float64Array | null = null;
-    if (anyNaN) {
-      logWeights = new Float64Array(parentSamples.length);
-      for (let i = 0; i < parentSamples.length; i++) {
-        logWeights[i] = Number.isNaN(out[i]) ? -Infinity : 0;
-      }
-    }
-    const logShift = n_eff > 0
-      ? Math.log(n_eff / parentSamples.length)
-      : -Infinity;
-    return scalarMeasureN(out, {
-      logWeights: logWeights,
-      logTotalmass: shared.addMass(parentLTM, logShift),
-      n_eff: n_eff,
-    });
+    return shared.withSliceMasses(scalarMeasureN(out, {
+      logWeights: parent.logWeights,
+      logTotalmass: parentLTM,
+      n_eff: parent.n_eff,
+    }), logMasses);
   });
 }
 

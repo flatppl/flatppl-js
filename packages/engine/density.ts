@@ -68,6 +68,7 @@ import type { IRNode } from './engine-types';
 const samplerLib = require('./sampler.ts');
 const valueLib   = require('./value.ts');
 const densityPrims = require('./density-prims.ts');
+const forwardCdf = require('./forward-cdf.ts');
 const bcAxes = require('./kernel-broadcast-axes.ts');
 const shared  = require('./materialiser-shared.ts');
 const { getOptimization } = require('./perf-config.ts');
@@ -1243,11 +1244,13 @@ function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: 
     return null;
   }
   const kernelInput: Record<string, any> = {};
-  for (let i = 0; i < entry.params.length; i++) kernelInput[entry.params[i]] = positional[i];
+  if (kernelName === 'Uniform') {
+    kernelInput.lo = positional[0]; kernelInput.hi = positional[1];
+  } else {
+    for (let i = 0; i < entry.params.length; i++) kernelInput[entry.params[i]] = positional[i];
+  }
 
-  const cdfHi = densityPrims.builtinTouniform(kernelName, kernelInput, hi);
-  const cdfLo = densityPrims.builtinTouniform(kernelName, kernelInput, lo);
-  const Z = cdfHi - cdfLo;
+  const Z = forwardCdf.intervalProbability(kernelName, kernelInput, lo, hi);
   if (!(Z > 0) || !Number.isFinite(Z)) {
     throw new Error('density: normalize(truncate(' + kernelName + ', S)) — mass over the '
       + 'truncation set is 0 (Z = 0 is undefined per spec §06)');
@@ -1392,12 +1395,6 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
   // doesn't match `total` is fail-loud (trailing rows would be silently
   // unscored data).
   if (value && value.__table__ === true) {
-    // Spec §06 iid: a size derived to 0 over a record-valued M is an error,
-    // not the empty product measure — a table has no zero-row form.
-    if (total === 0) {
-      throw new Error('density: iid over a record variate has size 0 '
-        + '(spec §06 iid: a table has no zero-row form)');
-    }
     const rows = value.nrows;
     if (rows !== total) {
       throw new Error('density: iid over a record variate wants ' + total
@@ -2690,7 +2687,7 @@ const OP_HANDLERS = {
   MvNormal:             walkMultivariate,
   Dirichlet:            walkMultivariate,
   Multinomial:          walkMultivariate,
-  BinnedPoissonProcess: walkMultivariate,
+  BinnedPoissonProcess: walkBinnedPoissonProcess,
   // PoissonProcess is RAGGED (variable-length point sets), not a fixed-shape
   // vector atom — dedicated walker, not the MV_DENSITY_FNS path.
   PoissonProcess:       walkPoissonProcess,
@@ -2700,12 +2697,46 @@ const OP_HANDLERS = {
   LKJCholesky:          walkMultivariate,
 };
 
+function walkBinnedPoissonProcess(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const { resolveBinnedRates } = require('./binned-poisson.ts');
+  const refs = refArrays ? Object.keys(refArrays) : [];
+  const perAtom = refs.length > 0;
+  const env = Object.assign({}, baseEnv, overlay);
+  const setAtom = (i: number) => {
+    for (const name of refs) {
+      const v = refArrays[name];
+      env[name] = valueLib.isValue(v) ? _atomSlice(v, i) : v[i];
+    }
+    Object.assign(env, overlay);
+  };
+  if (perAtom) setAtom(0);
+  let rates = resolveBinnedRates(ir, env);
+  if (rates.shape.length > 1) {
+    const v = valueLib.asValue(value);
+    if (v.shape.length !== rates.shape.length || v.shape.some((n: number, j: number) => n !== rates.shape[j])) {
+      throw new Error('BinnedPoissonProcess: observation shape must match bin dimensions');
+    }
+    value = v.data;
+  }
+  const { head, rest } = consumeVector(value, rates.data.length);
+  let lp = densityPrims.builtinLogdensityof('BinnedPoissonProcess', { rates: rates.data }, head);
+  for (let i = 0; i < N; i++) {
+    if (perAtom && i > 0) {
+      setAtom(i);
+      rates = resolveBinnedRates(ir, env);
+      lp = densityPrims.builtinLogdensityof('BinnedPoissonProcess', { rates: rates.data }, head);
+    }
+    acc[i] += lp;
+  }
+  return rest;
+}
+
 // =====================================================================
 // Generic multivariate walker (FlatPDL leaf dispatch, engine-concepts §13.6)
 // =====================================================================
 //
 // Replaces the per-kernel walkMvNormal / walkDirichlet / walkMultinomial /
-// walkBinnedPoissonProcess / walkWishart / walkInverseWishart / walkLKJ /
+// walkWishart / walkInverseWishart / walkLKJ /
 // walkLKJCholesky handlers. The structural work is identical across
 // these kernels: consume a leading vector/matrix block off `value`,
 // resolve kernel kwargs, call the FlatPDL primitive

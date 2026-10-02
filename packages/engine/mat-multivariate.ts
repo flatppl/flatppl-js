@@ -5,8 +5,8 @@
 // Spec §08: MvNormal / Dirichlet / Multinomial / Wishart /
 // InverseWishart / LKJ / LKJCholesky / BinnedPoissonProcess. Each
 // produces a vector- or matrix-atom EmpiricalMeasure (Value
-// shape=[N, ...intrinsic-dims], atom-major). All eight currently
-// require atom-independent parameters — per-atom params (kernel-body
+// shape=[N, ...intrinsic-dims], atom-major). Except BinnedPoissonProcess,
+// these require atom-independent parameters — per-atom params (kernel-body
 // hierarchies over a multivariate distribution) are a documented
 // follow-up (TODO §08).
 //
@@ -503,61 +503,52 @@ function matLKJ(name: string, d: DerivationLKJ, ctx: any): Promise<EmpiricalMeas
 // matBinnedPoissonProcess — atom-batched K-vector of independent
 // Poisson counts
 // =====================================================================
-function matBinnedPoissonProcess(name: string, d: DerivationBinnedPoissonProcess, ctx: any): Promise<EmpiricalMeasure> {
-  const distIR = d.distIR as any;
-  const ratesIR = (distIR.kwargs && distIR.kwargs.rates)
-    || (distIR.args && distIR.args[0]);
-  if (!ratesIR) {
-    return Promise.reject(new Error(
-      'BinnedPoissonProcess: requires rates argument (per-bin Poisson means)'));
-  }
-  const ratesVal = orchestrator.resolveIRToValue(ratesIR, ctx.bindings, ctx.fixedValues);
-  if (ratesVal == null) {
-    return Promise.reject(new Error('BinnedPoissonProcess: cannot resolve rates (per-atom rates deferred)'));
-  }
-  const ratesValue = valueLib.asValue(ratesVal);
-  if (ratesValue.shape.length !== 1) {
-    return Promise.reject(new Error(
-      'BinnedPoissonProcess: rates must be a vector, got shape=' + JSON.stringify(ratesValue.shape)));
-  }
-  const K = ratesValue.shape[0];
-  if (K === 0) {
-    return Promise.reject(new Error('BinnedPoissonProcess: rates must be non-empty'));
-  }
-  for (let k = 0; k < K; k++) {
-    if (!(ratesValue.data[k] >= 0)) {
-      return Promise.reject(new Error(
-        'BinnedPoissonProcess: rates[' + k + '] = ' + ratesValue.data[k] + ' must be non-negative'));
+async function matBinnedPoissonProcess(name: string, d: DerivationBinnedPoissonProcess, ctx: any): Promise<EmpiricalMeasure> {
+  const distIR = orchestrator.expandMeasure(d.distIR, ctx);
+  const { fixedEnv, refArrays, parents } = await shared.prepareDensityRefs(distIR, ctx, 'BinnedPoissonProcess');
+  const refs = Object.keys(refArrays);
+  const env = { ...fixedEnv };
+  const resolveRates = require('./binned-poisson.ts').resolveBinnedRates;
+  const setAtom = (i: number) => {
+    for (const ref of refs) {
+      const v = refArrays[ref];
+      if (!valueLib.isValue(v)) { env[ref] = v[i]; continue; }
+      const size = v.data.length / v.shape[0];
+      env[ref] = v.shape.length === 1 ? v.data[i]
+        : { shape: v.shape.slice(1), data: v.data.subarray(i * size, (i + 1) * size) };
     }
-  }
-  const N = ctx.sampleCount;
-  const promises: Promise<any>[] = [];
-  for (let k = 0; k < K; k++) {
-    const rk = ratesValue.data[k];
-    if (rk === 0) {
-      // Degenerate Poisson(0) — all atoms are 0 a.s. Short-circuit
-      // because stdlib's Poisson constructor disallows rate == 0.
-      promises.push(Promise.resolve({ samples: new Float64Array(N) }));
-      continue;
+  };
+  setAtom(0);
+  const initial = resolveRates(distIR, env);
+  const K = initial.data.length, N = ctx.sampleCount;
+  const rates = Array.from({ length: K }, (_, k) => new Float64Array(N).fill(initial.data[k]));
+  if (refs.length > 0) for (let i = 1; i < N; i++) {
+    setAtom(i);
+    const current = resolveRates(distIR, env);
+    if (current.shape.length !== initial.shape.length || current.shape.some((n: number, j: number) => n !== initial.shape[j])) {
+      throw new Error('BinnedPoissonProcess: bin shape must be fixed across atoms');
     }
-    const poissonIR = {
-      kind: 'call', op: 'Poisson',
-      kwargs: { rate: { kind: 'lit', value: rk } },
-    };
-    promises.push(ctx.sendWorker({
-      type: 'sampleN', ir: poissonIR, count: N,
-      refArrays: {},
+    for (let k = 0; k < K; k++) rates[k][i] = current.data[k];
+  }
+  const replies = await Promise.all(rates.map((column, k) => {
+    if (column.every(rate => rate === 0)) return { samples: new Float64Array(N) };
+    return ctx.sendWorker({
+      type: 'sampleN', ir: { kind: 'call', op: 'Poisson',
+        kwargs: { rate: { kind: 'ref', ns: 'self', name: '__binRate' } } },
+      count: N, refArrays: { __binRate: column },
       seed: nameSeed(name + '|bin|' + k, ctx.rootKey),
-    }));
+    });
+  }));
+  const data = new Float64Array(N * K);
+  for (let k = 0; k < K; k++) {
+    if (replies[k].type === 'error') throw new Error(replies[k].message);
+    for (let i = 0; i < N; i++) data[i * K + k] = replies[k].samples[i];
   }
-  return Promise.all(promises).then((replies: any[]) => {
-    const data = new Float64Array(N * K);
-    for (let i = 0; i < N; i++) {
-      for (let k = 0; k < K; k++) data[i * K + k] = replies[k].samples[i];
-    }
-    return measureFromValue(
-      { shape: [N, K], data } as any,
-      { logWeights: null, logTotalmass: 0, n_eff: N });
+  const empirical = require('./empirical.ts');
+  const logWeights = empirical.propagateLogWeights(parents);
+  return measureFromValue({ shape: [N, ...initial.shape], data }, {
+    logWeights, logTotalmass: logWeights ? empirical.logSumExp(logWeights) : 0,
+    n_eff: parents.reduce((n: number, p: any) => Math.min(n, p.n_eff ?? N), N),
   });
 }
 

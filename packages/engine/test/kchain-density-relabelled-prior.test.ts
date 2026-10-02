@@ -72,9 +72,9 @@ ld0  = logdensityof(ch, 0.0)
   // (Pre-fix it was inverted — scored at the theta~N(0,1) draws.)
   assert.ok(lp20 > lp0 + 50,
     `logp(20)=${lp20.toFixed(2)} must dominate logp(0)=${lp0.toFixed(2)} (density must honour the prior)`);
-  // In the bulk the MC marginal is exact: Normal(20; 20, sqrt2) → -0.5·log(4π).
+  // The affine Gaussian convolution is exact: Normal(20; 20, sqrt2).
   const exact = -0.5 * Math.log(4 * Math.PI);
-  assert.ok(Math.abs(lp20 - exact) < 0.1,
+  assert.ok(Math.abs(lp20 - exact) < 1e-12,
     `logp(20)=${lp20.toFixed(4)} should match the exact marginal ${exact.toFixed(4)}`);
 });
 
@@ -91,6 +91,56 @@ ld = logdensityof(ch, 2.0)
 `, ['ch', 'ld', 'K'], 8000);
   const lp = +scalar1(await ctx.getMeasure('ld'));
   const exact = -0.5 * Math.log(2 * Math.PI * 101) - 4 / (2 * 101);
-  assert.ok(Math.abs(lp - exact) < 0.1,
+  assert.ok(Math.abs(lp - exact) < 1e-12,
     `hole-param kchain logp(2)=${lp.toFixed(4)} should match the exact marginal ${exact.toFixed(4)}`);
+});
+
+test('kchain Gaussian and finite-discrete densities are independent of sample count', async () => {
+  const cases = [
+    ['kchain(Normal(0,sqrt(10)),fn(Normal(_,1)))', '.5',
+      -0.5 * Math.log(22 * Math.PI) - 0.25 / 22],
+    ['kchain(Normal(0,1),fn(Normal(_,1)),fn(Normal(sum(_),1)))', '0',
+      -0.5 * Math.log(12 * Math.PI)],
+    ['kchain(Bernoulli(.4),fn(Bernoulli(.1+.7*_)))', '1', Math.log(.38)],
+    ['kchain(Bernoulli(.4),fn(Normal(2*_,1)))', '0',
+      Math.log((.6 + .4 * Math.exp(-2)) / Math.sqrt(2 * Math.PI))],
+  ];
+  for (const count of [1, 128]) {
+    for (const [measure, point, expected] of cases) {
+      const ctx = makeCtx(`M=${measure}\nlp=logdensityof(M,${point})`, ['M', 'lp'], count);
+      const actual = scalar1(await ctx.getMeasure('lp'));
+      assert.ok(Math.abs(actual - Number(expected)) < 1e-12, `${measure}: ${actual}`);
+    }
+  }
+  const weighted = makeCtx('M=kchain(Normal(0,1),fn(Normal(_,1)))\nW=weighted(3,M)\nlp=logdensityof(W,0)',
+    ['M', 'W', 'lp'], 1);
+  assert.ok(Math.abs(scalar1(await weighted.getMeasure('lp'))
+    - Math.log(3) + 0.5 * Math.log(4 * Math.PI)) < 1e-12);
+  for (const [base, logDensity] of [
+    ['Normal(0,1)', -0.5 * Math.log(4 * Math.PI)],
+    ['Bernoulli(.4)', Math.log((.6 + .4 * Math.exp(-.5)) / Math.sqrt(2 * Math.PI))],
+  ]) {
+    const ctx = makeCtx(`P=weighted(3,${base})\nM=kchain(P,fn(Normal(_,1)))\nW=weighted(2,M)\nlp=logdensityof(W,0)`,
+      ['P', 'M', 'W', 'lp'], 1);
+    assert.ok(Math.abs(scalar1(await ctx.getMeasure('lp')) - Math.log(6) - Number(logDensity)) < 1e-12);
+  }
+});
+
+test('unsupported kchain density refuses while its sampler remains useful', async () => {
+  const source = 'M=kchain(Normal(0,1),fn(Normal(exp(_),1)))';
+  const ctx = makeCtx(source + '\nx~M\nlp=logdensityof(M,0)', ['M', 'x', 'lp'], 16);
+  assert.ok(Array.from((await ctx.getMeasure('x')).samples).every(Number.isFinite));
+  await assert.rejects(ctx.getMeasure('lp'), /kchain requires a closed form or finite discrete enumeration/);
+});
+
+test('a positional chain prior preserves shared coordinates in its exact covariance', async () => {
+  for (const [prior, variance] of [
+    ['joint(lawof(t),lawof(t))', 5],
+    ['joint(Normal(0,1),Normal(0,1))', 3],
+  ]) {
+    const ctx = makeCtx(`t~Normal(0,1)\nM=kchain(${prior},fn(Normal(sum(_),1)))\nlp=logdensityof(M,0)`,
+      ['M', 'lp'], 1);
+    assert.ok(Math.abs(scalar1(await ctx.getMeasure('lp'))
+      + 0.5 * Math.log(2 * Math.PI * Number(variance))) < 1e-12);
+  }
 });
