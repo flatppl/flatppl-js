@@ -10,7 +10,8 @@
 // proposal has stopped moving: after an automatically-detected iteration K
 // (when ‖μ_t − μ_{t-1}‖₂ < ε), proposals K…t are collapsed into one component
 // θ_{ℓ*} (ℓ* = max(τ, K)) carrying weight (t−K+1), so each sample needs only K
-// proposal evaluations instead of t — O(MKT) vs AMIS's O(MT²).
+// proposal evaluations instead of t — O(MKT) vs AMIS's O(MT²) Gaussian scores.
+// Reweighting and covariance fitting still revisit all accumulated samples.
 //
 // Target: π(x) = ℓ(y|x)h(x) ∝ posterior (paper eq. 1). Here logπ(x) is
 // mv.logPosterior(y) over the unconstrained vector (prior + likelihood +
@@ -62,8 +63,7 @@ function makeProposal(mu: Float64Array, Sigma: Float64Array, dim: number) {
 }
 
 // log N(x; μ, Σ) using the proposal's Cholesky: solve L u = (x−μ), q = uᵀu.
-function mvnLogpdf(x: Float64Array, p: any, dim: number): number {
-  const u = new Float64Array(dim);
+function mvnLogpdf(x: Float64Array, p: any, dim: number, u: Float64Array): number {
   for (let i = 0; i < dim; i++) {
     let s = x[i] - p.mu[i];
     for (let k = 0; k < i; k++) s -= p.L[i * dim + k] * u[k];
@@ -87,6 +87,7 @@ function logsumexp(a: number[]): number {
 // K, M, T } — the caller constrains + reshapes into the posterior measure.
 function amisSample(mv: any, opts: any) {
   const dim = mv.dim;
+  const solveScratch = new Float64Array(dim);
   const M = opts.amisSamples ?? Math.max(50, Math.min(500, Math.round((opts.draws ?? 1000) / 4)));
   const T = opts.amisIters ?? 20;
   const seed = opts.seed ?? 0;
@@ -140,10 +141,8 @@ function amisSample(mv: any, opts: any) {
   const X: Float64Array[] = [];         // all samples
   const logTarget: number[] = [];       // logπ(x) per sample
   const tau: number[] = [];             // generating iteration (1-based) per sample
-  // logQ[i][j] = log q(X_i; θ_j). A sample's density under a proposal never
-  // changes, so cache it: each entry is computed ONCE. Recomputing it every
-  // iteration (as the naive temporal-mixture loop does) is O(M·T³) Gaussian
-  // evals and dominated the run; caching makes it O(M·T²) computed-once.
+  // Cache each proposal score once. After K freezes, keep only proposals
+  // 1…K−1 and the sample's representative max(tau[i], K) in slot K−1.
   const logQ: number[][] = [];
   let K: number | null = null;          // frozen when adaptation stalls
   let prevMu: Float64Array | null = null;
@@ -153,8 +152,10 @@ function amisSample(mv: any, opts: any) {
     const p = makeProposal(mu, Sigma, dim);
     proposals.push(p);
     const pIdx = t - 1;                  // 0-based index of this proposal
-    // New proposal's column for all EXISTING samples.
-    for (let i = 0; i < X.length; i++) logQ[i].push(mvnLogpdf(X[i], p, dim));
+    // A frozen mixture never reads new proposal columns for existing samples.
+    if (K === null) {
+      for (let i = 0; i < X.length; i++) logQ[i].push(mvnLogpdf(X[i], p, dim, solveScratch));
+    }
 
     // a. Draw M samples from the current proposal, then score them. AMIS's M
     // samples are independent, so score the whole iteration's batch in ONE pass
@@ -194,9 +195,13 @@ function amisSample(mv: any, opts: any) {
     for (let m = 0; m < M; m++) {
       const x = batch[m];
       X.push(x); tau.push(t); logTarget.push(lt[m]);
-      // This new sample's density under every proposal so far (0..pIdx).
-      const row: number[] = new Array(pIdx + 1);
-      for (let j = 0; j <= pIdx; j++) row[j] = mvnLogpdf(x, proposals[j], dim);
+      const row: number[] = new Array(K ?? (pIdx + 1));
+      if (K === null) {
+        for (let j = 0; j <= pIdx; j++) row[j] = mvnLogpdf(x, proposals[j], dim, solveScratch);
+      } else {
+        for (let j = 0; j < K - 1; j++) row[j] = mvnLogpdf(x, proposals[j], dim, solveScratch);
+        row[K - 1] = mvnLogpdf(x, p, dim, solveScratch);
+      }
       logQ.push(row);
     }
 
@@ -205,7 +210,14 @@ function amisSample(mv: any, opts: any) {
     if (K === null && prevMu) {
       let d2 = 0;
       for (let d = 0; d < dim; d++) { const e = mu[d] - prevMu[d]; d2 += e * e; }
-      if (Math.sqrt(d2) < epsK) K = t - 1 > 0 ? t - 1 : 1;
+      if (Math.sqrt(d2) < epsK) {
+        K = t - 1 > 0 ? t - 1 : 1;
+        for (let i = 0; i < logQ.length; i++) {
+          const row = logQ[i];
+          row[K - 1] = row[Math.max(tau[i], K) - 1];
+          row.length = K;
+        }
+      }
     }
 
     // b. Re-weight ALL samples under the temporal mixture (full for t≤K, the
@@ -214,15 +226,14 @@ function amisSample(mv: any, opts: any) {
     const useApprox = (K !== null && t > K);
     const logT = Math.log(t);
     for (let i = 0; i < X.length; i++) {
-      const lq = logQ[i];                          // cached log q(X_i; θ_j), j=0..t-1
+      const lq = logQ[i];
       let logmix: number;
       if (!useApprox) {
         logmix = logsumexp(lq) - logT;             // (1/t) Σ_{j=1}^t q_j
       } else {
-        const lstar = Math.max(tau[i], K as number);
         const comps: number[] = [];
         for (let j = 0; j < (K as number) - 1; j++) comps.push(lq[j]);
-        comps.push(Math.log(t - (K as number) + 1) + lq[lstar - 1]);
+        comps.push(Math.log(t - (K as number) + 1) + lq[(K as number) - 1]);
         logmix = logsumexp(comps) - logT;          // (1/t)(Σ_{j<K} q_j + (t−K+1) q_{ℓ*})
       }
       logW[i] = logTarget[i] - logmix;
