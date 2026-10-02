@@ -29,6 +29,29 @@
   // session (the user reloads the page if they edit a file on disk).
   // The browser's HTTP cache backs this for cross-page reuse.
   const sourceCache = new Map();
+  const trustedUrls = new Set<string>();
+
+  /** Spec §04 Remote file caching: approve an external URL before fetching.
+   *  Browser trust markers use localStorage, with a session fallback when
+   *  storage is unavailable. Same-origin gallery assets need no prompt. */
+  function approveSource(url: string) {
+    const parsed = new URL(url, document.baseURI);
+    if (!/^https?:$/.test(parsed.protocol)
+        || parsed.origin === new URL(document.baseURI).origin) return;
+    const key = url.split('#', 1)[0];
+    if (trustedUrls.has(key)) return;
+    const storageKey = 'flatppl-web:trusted-url:' + key;
+    let trusted = false;
+    try { trusted = globalScope.localStorage.getItem(storageKey) === '1'; } catch (_) {}
+    if (!trusted) {
+      if (typeof globalScope.confirm !== 'function'
+          || !globalScope.confirm('FlatPPL: fetch and trust the remote module?\n' + key)) {
+        throw new Error('Remote module not trusted: ' + key);
+      }
+      try { globalScope.localStorage.setItem(storageKey, '1'); } catch (_) {}
+    }
+    trustedUrls.add(key);
+  }
 
   /**
    * Fetch a single .flatppl source by URL.
@@ -37,6 +60,7 @@
    */
   async function fetchSource(url: any) {
     if (sourceCache.has(url)) return sourceCache.get(url);
+    approveSource(url);
 
     let response;
     try {
@@ -65,10 +89,8 @@
     if (userStore && userStore.has && userStore.has(path)) {
       return { source: userStore.getSource(path), url: path };
     }
-    // An absolute http(s) URL dependency (spec §04 #sec:url-cache) is fetched
-    // directly. The browser has no on-disk FlatPPL cache — that convention is a
-    // Node-host concern — and CORS limits which origins respond; the browser's
-    // own HTTP cache (plus this session's `sourceCache`) provides the caching.
+    // An absolute http(s) URL dependency uses browser trust markers and the
+    // HTTP/session caches. The shared on-disk cache is a Node-host concern.
     if (/^https?:\/\//i.test(path)) {
       return { source: await fetchSource(path), url: path };
     }

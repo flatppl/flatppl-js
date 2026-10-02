@@ -49,14 +49,16 @@ function resolveCacheDir(opts: any): string {
 // Key derivation (spec "Layout and keys"): `key` = lowercase-hex SHA-256 of the
 // URL with any `#`-fragment removed (no other normalization); `<ext>` is the
 // full trailing extension — everything after the first `.` in the URL's final
-// path segment — or empty when the final segment has no `.`.
+// path segment. The spec's filename/length guard falls back to the bare
+// hash for suffixes that cannot be shared safely across cache filesystems.
 function urlKey(url: string): { key: string, kk: string, ext: string } {
   const stripped = String(url).split('#')[0];
   const key = crypto.createHash('sha256').update(stripped, 'utf8').digest('hex');
   let seg = '';
   try { seg = new URL(stripped).pathname.split('/').pop() || ''; } catch (_e) { seg = ''; }
   const dot = seg.indexOf('.');
-  const ext = dot >= 0 ? seg.slice(dot + 1) : '';
+  const suffix = dot >= 0 ? seg.slice(dot + 1) : '';
+  const ext = suffix.length <= 32 && /^[A-Za-z0-9._-]*$/.test(suffix) ? suffix : '';
   return { key, kk: key.slice(0, 2), ext };
 }
 

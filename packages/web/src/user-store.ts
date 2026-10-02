@@ -236,8 +236,9 @@
   /** Rename `oldPath` → `newPath`, preserving source + parent and the
    *  sidebar position (swap-in-place, so the entry doesn't jump to the
    *  end). Returns false (no-op) when `oldPath` is absent, `newPath`
-   *  isn't user/-prefixed, or `newPath` already exists — the caller
-   *  decides how to surface a collision. */
+   *  isn't user/-prefixed, `newPath` already exists, or the durable rename
+   *  fails. Session-only files can still rename in memory when storage
+   *  is unavailable. */
   function rename(oldPath: string, newPath: string): boolean {
     if (!entries.has(oldPath)) return false;
     if (newPath.indexOf(USER_PREFIX) !== 0) return false;
@@ -249,12 +250,19 @@
       parent: existing.parent,
       modifiedAt: new Date().toISOString(),
     };
+    const nextOrder = pathOrder.map(function (p) { return p === oldPath ? newPath : p; });
+    const saved = readEntry(oldPath);
+    const wroteEntry = writeEntry(newPath, entry);
+    const persisted = wroteEntry && writeIndex(nextOrder);
+    if (!persisted) {
+      if (wroteEntry) lsRemoveItem(ENTRY_KEY_PREFIX + newPath);
+      // Retain the last durable copy and its index if either write fails.
+      if (saved) return false;
+    }
     entries.set(newPath, entry);
     entries.delete(oldPath);
-    pathOrder = pathOrder.map(function (p) { return p === oldPath ? newPath : p; });
-    writeEntry(newPath, entry);
-    lsRemoveItem(ENTRY_KEY_PREFIX + oldPath);
-    writeIndex(pathOrder);
+    pathOrder = nextOrder;
+    if (persisted) lsRemoveItem(ENTRY_KEY_PREFIX + oldPath);
     emit();
     return true;
   }
