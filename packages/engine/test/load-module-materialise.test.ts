@@ -107,6 +107,14 @@ test('cross-module value ref materialises (no substitution)', async () => {
     'm.c (2.5) * 2 = 5.0, materialised cross-module');
 });
 
+test('loaded implicit functions retain their public keyword input names', async () => {
+  const { r, ctx } = makeCrossCtx('m=load_module("h.flatppl")\ny=m.f(x=2)', {
+    'h.flatppl': 'x=elementof(reals)\nf=functionof(x+1)',
+  });
+  assert.deepEqual(r.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  assert.equal((await ctx.getMeasure('y')).samples[0], 3);
+});
+
 test('cross-module measure density (no substitution) matches closed form', async () => {
   const { r, ctx } = makeCrossCtx(
     'm = load_module("h.flatppl")\nlp = logdensityof(m.dist, 0.5)', {

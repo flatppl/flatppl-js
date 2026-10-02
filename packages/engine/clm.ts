@@ -865,7 +865,14 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
   if (explicit) {
     for (const nm in explicit) {
       if (Object.prototype.hasOwnProperty.call(explicit, nm)) {
-        add(nm, { kind: 'explicit', value: explicit[nm] });
+        const source: any = { kind: 'explicit', value: explicit[nm] };
+        // Explicit likelihood points use public kwargs; the body keeps the
+        // corresponding parameter name (including module-instance prefixes).
+        const i = deriv?.paramKwargs?.indexOf(nm) ?? -1;
+        const param = i >= 0 ? deriv.params?.[i] : null;
+        if (param && param !== nm) source.localAlias = param;
+        add(nm, source);
+        if (source.localAlias) seen.add(source.localAlias);
       }
     }
   }
@@ -1250,6 +1257,7 @@ function feedInputs(
       // bound under the bare name (collectRefArrays merges _extraRefArrays by
       // name, so the body's `%local`/`self` ref resolves to it).
       refArrays[inp.name] = _explicitToRefValue(src.value, inp.shape, ctx);
+      if (src.localAlias) refArrays[src.localAlias] = refArrays[inp.name];
     } else if (src.kind === 'fixed') {
       const nm = src.ref != null ? src.ref : inp.name;
       if (ctx.fixedValues && ctx.fixedValues.has(nm)) fixedEnv[nm] = ctx.fixedValues.get(nm);
