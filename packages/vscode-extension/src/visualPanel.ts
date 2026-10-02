@@ -96,6 +96,7 @@ class FlatPPLPanel {
     this._pendingMessages = [];
     this._panel.webview.html = this._getHtml();
     this._panel.onDidDispose(() => {
+      ++this._postSeq;   // pending dependency reads cannot post to a closed panel
       FlatPPLPanel.currentPanel = undefined;
       clearTimeout(this._flashTimer);
       if (this._flashDecoration) { this._flashDecoration.dispose(); this._flashDecoration = null; }
@@ -296,6 +297,7 @@ class FlatPPLPanel {
    */
   updateSource(source: any, targetName: any, sourceUri: any, pushHistory: any, opts?: any) {
     if (opts && opts.readOnly) {
+      ++this._postSeq;   // this direct post also supersedes pending bundles
       // Embedded cursor-follow: re-center on a binding while keeping
       // the snapshot read-only (write-back stays refused) and the
       // reveal-only host nav origin.

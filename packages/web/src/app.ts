@@ -74,6 +74,9 @@
   // change would wipe user edits and reset the cursor to the start
   // of the file.
   let lastModel: string | null = null;
+  // Every route change supersedes earlier dependency reads, including a
+  // target-only change or a return to the fallback source.
+  let navigationSeq = 0;
 
   /** Push text into the source editor. The editor's own
    *  highlight plugin walks the engine's tokenizer + binding table
@@ -1421,6 +1424,7 @@
   }
 
   async function applyState(state: any) {
+    const seq = ++navigationSeq;
     // Repaint tree highlight even before the fetch completes.
     renderTree(state.model);
     updateHeaderButtons();
@@ -1443,7 +1447,7 @@
     // editor; fall back to the last rendered text only if the editor
     // hasn't mounted yet (boot race).
 
-    if (state.model === lastModel) {
+    if (state.model && state.model === lastModel) {
       if (viewer) {
         const liveText = sourceEditor
           ? sourceEditor.getSource()
@@ -1473,19 +1477,24 @@
       lastModel = null;
       return;
     }
+    // The loading placeholder is no longer the last model's source. A
+    // return to that model must reload it rather than reuse this buffer.
+    lastModel = null;
     showSourceIfChanged('# Loading ' + state.model + ' …', state.model);
     try {
       const bundle = await window.FlatPPLWebResolver.resolveBundle(state.model);
+      if (seq !== navigationSeq) return;
       showSourceIfChanged(bundle.primarySource, state.model);
       if (viewer) viewer.update(bundle.primarySource, state.target || null,
         { bundleSources: bundle.sources, path: state.model });
       document.title = 'FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : '');
       lastModel = state.model;
     } catch (err) {
+      if (seq !== navigationSeq) return;
       console.error('[@flatppl/web] resolveBundle failed:', err);
       showError(state.model, err);
       document.title = 'FlatPPL: ' + state.model + ' (error)';
-      // Leave lastModel unchanged so a successful retry triggers the
+      // Leave lastModel null so a successful retry triggers the
       // full fetch + source-rewrite path.
     }
   }
