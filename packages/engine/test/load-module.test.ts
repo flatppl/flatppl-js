@@ -236,6 +236,18 @@ test('substitution phase-compat: fixed value into an elementof input errors', ()
     'an elementof input requires a parameterized-phase value, not fixed (spec §04: elementof ← parameterized)');
 });
 
+test('module substitutions preserve the declared input type and known refinement', () => {
+  const sources = { 'h.flatppl': 'S=posreals\nx=external(S)\nb=external(interval(2,4))\ny=log(x)+b' };
+  const valid = bundleOf('m=load_module("h.flatppl",x=2,b=3)\ny=m.y', sources);
+  assert.deepEqual(errs(valid.diagnostics), []);
+  const { orchestrator } = require('..');
+  assert.equal(orchestrator.buildDerivations(valid.linkedBindings).fixedValues.get('y'), Math.log(2) + 3);
+  for (const inputs of ['x="oops",b=3', 'x=-1,b=3', 'x=2,b=5']) {
+    const invalid = bundleOf(`m=load_module("h.flatppl",${inputs})\ny=m.y`, sources);
+    assert.ok(errs(invalid.diagnostics).some(d => d.loc?.start.line === 0));
+  }
+});
+
 test('valid substitution (parameterized → elementof input) is accepted', () => {
   const r = bundleOf('a = elementof(reals)\nm = load_module("h.flatppl", mu = a)', {
     'h.flatppl': 'mu = elementof(reals)\nobs = Normal(mu, 1)',
