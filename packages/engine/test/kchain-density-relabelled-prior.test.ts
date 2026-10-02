@@ -144,3 +144,33 @@ test('a positional chain prior preserves shared coordinates in its exact covaria
       + 0.5 * Math.log(2 * Math.PI * Number(variance))) < 1e-12);
   }
 });
+
+test('finite chain priors enumerate a shared alias once and retain fixed kernel parameters', async () => {
+  for (const count of [1, 128]) {
+    for (const [prior, probability] of [
+      ['joint(lawof(t),lawof(u))', 0.18],
+      ['joint(Bernoulli(.4),Bernoulli(.4))', 0.132],
+    ] as const) {
+      const ctx = makeCtx(`c=.1\nt~Bernoulli(.4)\nu=t\nM=kchain(${prior},fn(Bernoulli(c+.2*prod(_))))\nlp=logdensityof(M,true)`,
+        ['M', 'lp'], count);
+      // E[T*U] is .4 for U=T, but .16 for independent factors.
+      assert.ok(Math.abs(scalar1(await ctx.getMeasure('lp')) - Math.log(probability)) < 1e-12);
+    }
+  }
+});
+
+test('a nested chain retains its sampling law when its density cannot be certified', async () => {
+  const ctx = makeCtx(`C=kchain(Normal(0,1),fn(Normal(_,1)))\nM=joint(Dirac(7),C)\nlp=logdensityof(M,[7,0])`,
+    ['M', 'lp'], 8192);
+  const m = await ctx.getMeasure('M');
+  let mean = 0, second = 0;
+  for (let i = 0; i < 8192; i++) {
+    assert.equal(m.elems[0].samples[i], 7);
+    const value = m.elems[1].samples[i];
+    mean += value / 8192;
+    second += value * value / 8192;
+  }
+  assert.ok(Math.abs(mean) < 0.08);
+  assert.ok(Math.abs(second - mean * mean - 2) < 0.15);
+  await assert.rejects(ctx.getMeasure('lp'), /nested kchain density/);
+});
