@@ -152,6 +152,7 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: a
   // value set is PROVABLY outside the parameter's required domain (spec
   // §08), e.g. `Normal(sigma = -1.0)`. Reads the valuesets filled above.
   ctx.checkDomainContracts();
+  ctx.checkModuleSubstitutionTypes();
   // Spec §06 "Known-bijection registry": a domain-restricted pushfwd
   // forward (log/log10/sqrt/log1p/logit/probit) additionally requires the
   // base measure's support to lie within that domain — refuse (error
@@ -5483,10 +5484,61 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _provablyDisjoint(vs: any, domain: any): boolean {
     if (!vs || typeof vs !== 'object' || vs.vs !== 'interval') return false;
     const lo = vs.lo, hi = vs.hi;
-    if (domain === vsLib.POSREALS)     return hi <= 0;
-    if (domain === vsLib.NONNEGREALS)  return hi < 0;
+    if (domain === vsLib.POSREALS || domain === vsLib.POSINTEGERS) return hi <= 0;
+    if (domain === vsLib.NONNEGREALS || domain === vsLib.NONNEGINTEGERS) return hi < 0;
     if (domain === vsLib.UNITINTERVAL) return hi < 0 || lo > 1;
+    if (domain?.vs === 'interval') return hi < domain.lo || lo > domain.hi;
     return false;
+  }
+
+  // §04 load-time substitution preserves the declared input domain. Read
+  // that declaration in its own module: external's ordinary inferred type
+  // may be deferred, and a named set belongs to the loaded namespace.
+  function checkModuleSubstitutionTypes() {
+    if (!modules?.size) return;
+    const reg = loweredModule.moduleRegistry || {};
+    for (const [name, b] of loweredModule.bindings) {
+      if (b.rhs?.op !== 'load_module' || !b.rhs.assigns?.length) continue;
+      const dep = modules.get(reg[name]?.path);
+      if (!dep) continue;
+      const depContext = createInferenceContext(dep.loweredModule, {
+        modules, reuseInferred: true,
+        resolveFixed: require('./fixed-eval.ts').makeResolver({ loweredModule: dep.loweredModule }),
+      });
+      for (const a of b.rhs.assigns) {
+        const input = dep.loweredModule.bindings.get(a.name)?.rhs;
+        if (input?.op !== 'external' && input?.op !== 'elementof') continue;
+        const expected = depContext.setValueType(input.args?.[0], []);
+        const actual = inferExpr(a.value, []);
+        if (!expected || actual.kind === 'failed') continue;
+        const loc = a.value.loc || b.rhs.loc;
+        if (T.unify(expected, actual, new Map()) == null) {
+          diagnostics.push({ severity: 'error', loc,
+            message: `module '${name}' input '${a.name}' expects ${T.show(expected)}, got ${T.show(actual)} (spec §04)`,
+          });
+          continue;
+        }
+        // Keep the existing domain validator's conservative policy: only a
+        // proven exclusion is an error. Literal bounds retain their exact
+        // value here even when the published integer valueset is wider.
+        let value = a.value;
+        if (value.kind === 'ref') {
+          const owner = value.ns === 'self' ? loweredModule
+            : modules.get(reg[value.ns]?.path)?.loweredModule;
+          value = owner?.bindings.get(value.name)?.rhs || value;
+        }
+        const vs = value.kind === 'lit' && typeof value.value === 'number'
+          ? vsLib.interval(value.value, value.value)
+          : value.meta?.valueset || vsLib.UNKNOWN;
+        const domain = input.meta?.valueset;
+        if (_provablyDisjoint(vs, domain)) {
+          diagnostics.push({ severity: 'error', loc,
+            message: `module '${name}' input '${a.name}' requires ${vsLib.toSexpr(domain)}, `
+              + `but the substituted value is provably outside that domain (${vsLib.toSexpr(vs)}) (spec §04)`,
+          });
+        }
+      }
+    }
   }
 
   function checkDomainContracts() {
@@ -6750,7 +6802,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return !!(ir.meta && ir.meta.type && ir.meta.type.kind === 'measure');
   }
 
-  return { diagnostics, inferBinding, inferExpr, fillValuesets, fillMasses, checkDomainContracts,
+  return { diagnostics, inferBinding, inferExpr, setValueType, fillValuesets, fillMasses, checkDomainContracts,
+    checkModuleSubstitutionTypes,
     checkPushfwdDomainContracts, checkCrossModuleReification, checkDrawMass,
     checkLawofMass };
 }
