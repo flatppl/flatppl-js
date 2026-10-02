@@ -1039,10 +1039,11 @@ function asBatch(v: any, N: number) {
 // vector-per-entry table column (spec §03 "3-vector per entry") yields the
 // per-row vector rather than a flat-buffer scalar.
 function _sliceRow(v: any, idx: number) {
-  const dense = _logicalDense(v);
-  if (dense.shape.length === 1) {
-    return dense.im ? { re: dense.data[idx], im: dense.im[idx] } : dense.data[idx];
+  // A scalar row needs only one conjugation, not a dense copy of its column.
+  if (v.shape.length === 1) {
+    return v.im ? { re: v.data[idx], im: isConjugateView(v) ? -v.im[idx] : v.im[idx] } : v.data[idx];
   }
+  const dense = _logicalDense(v);
   const tail = dense.shape.slice(1);
   const tailLen = numel(tail);
   const row: any = { shape: tail, data: dense.data.subarray(idx * tailLen, (idx + 1) * tailLen) };
