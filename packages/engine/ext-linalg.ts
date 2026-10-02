@@ -404,7 +404,9 @@ function _isSymmetric(A: any, n: number, tol: number): boolean {
   return true;
 }
 
-function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array; n: number } {
+function _jacobiSymmetric(A: any, computeVectors = true): {
+  values: Float64Array; vectors: Float64Array | null; n: number;
+} {
   A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('eigen: A must be a square matrix');
@@ -439,8 +441,8 @@ function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array
     }
   }
   // V starts as identity; will hold eigenvectors as columns.
-  const V = new Float64Array(n * n);
-  for (let i = 0; i < n; i++) V[i * n + i] = 1;
+  const V = computeVectors ? new Float64Array(n * n) : null;
+  if (V) for (let i = 0; i < n; i++) V[i * n + i] = 1;
 
   for (let sweep = 0; sweep < _JACOBI_MAX_SWEEPS; sweep++) {
     // Off-diagonal sum-of-squares.
@@ -498,7 +500,7 @@ function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array
           }
         }
         // Accumulate the rotation into V.
-        for (let i = 0; i < n; i++) {
+        if (V) for (let i = 0; i < n; i++) {
           const vip = V[i * n + p], viq = V[i * n + q];
           V[i * n + p] = c * vip - s * viq;
           V[i * n + q] = s * vip + c * viq;
@@ -518,20 +520,20 @@ function _eigen(A: any): any {
     shape: 'record',
     fields: {
       values:  _vecValue(values, n),
-      vectors: _matValue(vectors, n, n),
+      vectors: _matValue(vectors!, n, n),
     },
   };
 }
 
 function _eigmax(A: any): number {
-  const { values } = _jacobiSymmetric(A);
+  const { values } = _jacobiSymmetric(A, false);
   let max = values[0];
   for (let i = 1; i < values.length; i++) if (values[i] > max) max = values[i];
   return max;
 }
 
 function _eigmin(A: any): number {
-  const { values } = _jacobiSymmetric(A);
+  const { values } = _jacobiSymmetric(A, false);
   let min = values[0];
   for (let i = 1; i < values.length; i++) if (values[i] < min) min = values[i];
   return min;
