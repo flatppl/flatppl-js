@@ -151,8 +151,7 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
   // and comment-only lines in between do not end the continuation —
   // they emit no significant token, so the trailing operator is still
   // the last one seen here.
-  function continuesLine() {
-    if (lexErrorOnLine) return false;
+  function continuesSignificantLine() {
     const tok = priorSignificant(0);
     if (!tok) return false;
     // `in` is a CompOp spelled as a keyword, so it lexes as an IDENT.
@@ -175,6 +174,20 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
       }
     }
     return true;
+  }
+
+  // Appending only comments cannot change the continuation decision. Inspect
+  // each new comment once instead of rescanning the entire run at every line.
+  let continuationSeen = 0;
+  let cachedContinuation = false;
+  function continuesLine() {
+    if (lexErrorOnLine) return false;
+    let i = tokens.length - 1;
+    while (i >= continuationSeen && tokens[i].type === T.COMMENT) i--;
+    const changed = i >= continuationSeen;
+    continuationSeen = tokens.length;
+    if (changed) cachedContinuation = continuesSignificantLine();
+    return cachedContinuation;
   }
 
   while (pos < source.length) {
