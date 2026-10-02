@@ -4330,7 +4330,7 @@ function _maxPhase(a: string, b: any): string {
 // The phase of a substitution VALUE expression (spec §04 phases). Direct
 // phase-bearing ops short-circuit; otherwise the phase is the dominant
 // phase of the loading-module bindings the expression references.
-function _irPhase(ir: any, loweredModule: any): string {
+function _irPhase(ir: any, loweredModule: any, modules: any): string {
   if (ir && ir.kind === 'call') {
     if (ir.op === 'draw')      return 'stochastic';
     if (ir.op === 'elementof') return 'parameterized';
@@ -4342,6 +4342,25 @@ function _irPhase(ir: any, loweredModule: any): string {
     const b = loweredModule.bindings.get(refName);
     ph = _maxPhase(ph, b && b.phase);
   }
+  const { walkIRScoped } = require('./ir-walk.ts');
+  const seen = new Set<string>();
+  const visit = (node: any, shadowed: Set<string>) => {
+    if (node?.kind !== 'ref') return;
+    if (node.ns === 'self') {
+      if (shadowed.has(node.name) || seen.has(node.name)) return;
+      seen.add(node.name);
+      const b = loweredModule.bindings.get(node.name);
+      // Only recover foreign dependencies missed by the local phase pass.
+      // A callable's body is evaluated at application, behind its input cut.
+      if (b && !require('./types.ts').isCallable(b.inferredType)) walkIRScoped(b.rhs, visit);
+      return;
+    }
+    const reg = loweredModule.moduleRegistry?.[node.ns];
+    if (reg?.kind !== 'load_module') return;
+    const b = modules.get(reg.path)?.loweredModule.bindings.get(node.name);
+    ph = _maxPhase(ph, b?.phase);
+  };
+  walkIRScoped(ir, visit);
   return ph;
 }
 
@@ -4372,7 +4391,7 @@ function _validateModuleSubstitutions(loweredModule: any, modules: any, diagnost
           loc });
         continue;
       }
-      const vphase = _irPhase(a.value, loweredModule);
+      const vphase = _irPhase(a.value, loweredModule, modules);
       if (vphase === 'stochastic') {
         diagnostics.push({ severity: 'error',
           message: "cannot bind a stochastic value to module input '" + a.name

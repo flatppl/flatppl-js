@@ -248,6 +248,23 @@ test('module substitutions preserve the declared input type and known refinement
   }
 });
 
+test('forwarded module inputs preserve their parameterized phase', () => {
+  const source = 'm=load_module("h.flatppl")\na=m.x+1\n'
+    + 'n=load_module("g.flatppl",z=a)\ny=n.f(z=2)';
+  const r = bundleOf(source, {
+    'h.flatppl': 'x=elementof(reals)',
+    'g.flatppl': 'z=elementof(reals)\nf=functionof(z+1,z=z)',
+  });
+  assert.deepEqual(errs(r.diagnostics), []);
+  const { orchestrator } = require('..');
+  assert.equal(orchestrator.buildDerivations(r.linkedBindings).fixedValues.get('y'), 3);
+  const invalid = bundleOf(source, {
+    'h.flatppl': 'x=elementof(reals)',
+    'g.flatppl': 'z=external(reals)\nf(x)=x+z',
+  });
+  assert.ok(errs(invalid.diagnostics).some(d => d.loc?.start.line === 2));
+});
+
 test('valid substitution (parameterized → elementof input) is accepted', () => {
   const r = bundleOf('a = elementof(reals)\nm = load_module("h.flatppl", mu = a)', {
     'h.flatppl': 'mu = elementof(reals)\nobs = Normal(mu, 1)',
