@@ -882,15 +882,18 @@ function fixedValueToMeasure(v: any, sampleCount: any): any {
     }
     return m;
   }
-  // Complex scalar `z = complex(re, im)` → planar complex Value of shape=[1].
+  // Complex scalars have the same rank-zero/legacy-samples convention as
+  // real scalars above; a one-element vector would imply one atom instead.
   if (v && typeof v === 'object'
       && typeof v.re === 'number' && typeof v.im === 'number'
       && Object.keys(v).length === 2) {
-    const re = new Float64Array([v.re]);
-    const im = new Float64Array([v.im]);
-    const cv = valueLib.complexValue(re, im, [1]);
-    return measureFromValue(cv,
-      { logWeights: null, logTotalmass: 0, n_eff: 1 });
+    const re = new Float64Array(sampleCount).fill(v.re);
+    const im = new Float64Array(sampleCount).fill(v.im);
+    const m = measureFromValue(valueLib.complexValue(re, im, [sampleCount]),
+      { logWeights: null, logTotalmass: 0, n_eff: sampleCount });
+    m.value = valueLib.complexValue([v.re], [v.im], []);
+    m.rank0 = true;
+    return m;
   }
   if (v instanceof Float64Array || v instanceof Int32Array || v instanceof Uint8Array) {
     const samples = Float64Array.from(v);

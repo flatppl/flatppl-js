@@ -495,7 +495,15 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // (shape=[N, k]) returns the flat data + dims so the
             // materialiser can mark the resulting Measure as
             // vector-atom (matEvaluate threads dims into arrayMeasure).
-            if (result.shape.length === 1 && result.shape[0] === count) {
+            if (result.shape.length === 0) {
+              // A fixed scalar law can retain its atom-independent Value
+              // through arithmetic. Expand that scalar just like a number.
+              out = new Float64Array(count).fill(result.data[0]);
+              if (imag) {
+                const parts = require('./value.ts').readComplex(result);
+                imag = new Float64Array(count).fill(parts.im[0]);
+              }
+            } else if (result.shape.length === 1 && result.shape[0] === count) {
               out = result.data;
             } else if (result.shape.length >= 2 && result.shape[0] === count) {
               out = result.data;
