@@ -2519,7 +2519,6 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
         { logWeights: null, logTotalmass: -Infinity, n_eff: 0 });
     }
     const sc = ctx.sampleCount;
-    const combinedSamples = new Float64Array(totalN);
     // A parent carrying NON-UNIFORM per-atom importance weights (e.g.
     // `normalize(weighted(fn, Lebesgue))`: uniform sample positions whose
     // density lives in the logWeights) must be SIR-resampled to equal-weight
@@ -2576,11 +2575,9 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     });
     const combinedLogWeights = new Float64Array(lifted.reduce(
       (count: number, l: any) => count + l.logWeights.length, 0));
-    let sampleOffset = 0, weightOffset = 0;
+    let weightOffset = 0;
     for (const l of lifted) {
-      combinedSamples.set(l.samples, sampleOffset);
       combinedLogWeights.set(l.logWeights, weightOffset);
-      sampleOffset += l.samples.length;
       weightOffset += l.logWeights.length;
     }
     // Zero total mass — spec §06 makes this UNDEFINED to sample, for both
@@ -2591,7 +2588,8 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     // cumulative distribution built from all-−∞ weights, which pins index 0
     // and returns ONE CONSTANT repeated for every atom — a plausible-looking
     // number for a measure that has no draws at all.
-    if (!(empirical.logSumExp(combinedLogWeights) > -Infinity)) {
+    const totalLogMass = empirical.logSumExp(combinedLogWeights);
+    if (!(totalLogMass > -Infinity)) {
       throw new Error("superpose '" + name + "': every component has zero mass, "
         + 'so the superposition is the zero measure and there is nothing to '
         + 'draw from (spec §06: "when every weight is zero it is the zero '
@@ -2645,13 +2643,18 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
         }
       }
     } else {
+      const combinedSamples = new Float64Array(totalN);
+      let sampleOffset = 0;
+      for (const l of lifted) {
+        combinedSamples.set(l.samples, sampleOffset);
+        sampleOffset += l.samples.length;
+      }
       const idx = empirical.systematicResample(combinedLogWeights, sc, prng);
       for (let i = 0; i < sc; i++) out[i] = combinedSamples[idx[i]];
     }
 
     // Total mass = sum of parents' masses (unchanged by which atoms the
     // resampling keeps).
-    const totalLogMass = empirical.logSumExp(combinedLogWeights);
     const outW = new Float64Array(sc);
     if (perIndex && K === 1) {
       // Atom i's own slice mass Σ_p M_p(θ_i), from §06 `superpose`'s
