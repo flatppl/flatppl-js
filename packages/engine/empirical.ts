@@ -552,14 +552,13 @@ function shapeOf(measure: any) {
  * range (k̂ ∈ [0.2, 1.5]).
  *
  * @param {Float64Array | number[]} exceedances  upper-tail values
- *        (already shifted by threshold, all > 0). Need not be sorted.
+ *        (sorted, already shifted by threshold, all >= 0).
  * @returns {number} k̂; NaN if fit cannot be computed (degenerate input).
  */
 function gpdShapeZhangStephens(exceedances: ArrayLike<number>) {
   const n = exceedances.length;
   if (n < 2) return NaN;
-  const x = Float64Array.from(exceedances);
-  x.sort();
+  const x = exceedances; // paretoKHat supplies its owned, already sorted tail.
   // Max must be positive and finite for the GPD fit; the smallest
   // exceedance is allowed to be zero (ties at the threshold boundary
   // are common when samples cluster) — log(1 - b·0) = 0 contributes
