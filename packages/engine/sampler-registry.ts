@@ -34,6 +34,8 @@ const isPositiveNumber = require('@stdlib/assert-is-positive-number').isPrimitiv
 // Math special functions for gamma / loggamma / erf-based math.
 const stdlibGamma       = require('@stdlib/math-base-special-gamma');
 const stdlibGammaln     = require('@stdlib/math-base-special-gammaln');
+const stdlibBetaln      = require('@stdlib/math-base-special-betaln');
+const stdlibLog1pmx     = require('@stdlib/math-base-special-log1pmx');
 // @stdlib's own `ln` (not native Math.log). The scalar Exponential path
 // goes through @stdlib/random-base-exponential, whose transform is
 // `-ln(1 - u) / lambda` using THIS ln; the batched randNExponential must
@@ -73,7 +75,7 @@ const randCauchy      = require('@stdlib/random-base-cauchy');
 const randT           = require('@stdlib/random-base-t');
 const randBernoulli   = require('@stdlib/random-base-bernoulli');
 const randBinomial    = require('@stdlib/random-base-binomial');
-const randPoisson     = require('@stdlib/random-base-poisson');
+const stdlibRandPoisson = require('@stdlib/random-base-poisson');
 
 // Log-density / log-mass functions (Lebesgue or counting reference).
 const logpdfNormal      = require('@stdlib/stats-base-dists-normal-logpdf');
@@ -125,6 +127,26 @@ DiracCtor.prototype.pdf      = function(x: any) { return x === this.value ? 1 : 
 DiracCtor.prototype.logpdf   = function(x: any) { return x === this.value ? 0 : -Infinity; };
 DiracCtor.prototype.cdf      = function(x: any) { return x < this.value ? 0 : 1; };
 DiracCtor.prototype.quantile = function(this: any, _p: any) { return this.value; };
+
+// §08 includes rate zero. stdlib rejects it in both factory forms.
+const randPoisson = {
+  factory: function(...args: any[]) {
+    if (args.length === 0 || (args.length === 1 && typeof args[0] === 'object')) {
+      const draw = stdlibRandPoisson.factory(...args);
+      return (rate: number) => rate === 0 ? 0 : draw(rate);
+    }
+    if (args[0] === 0) return () => 0;
+    return stdlibRandPoisson.factory(...args);
+  },
+};
+
+function PoissonCtor(this: any, rate: number) {
+  if (rate !== 0) return new Poisson(rate);
+  DiracCtor.call(this, 0);
+  this.pmf = DiracCtor.prototype.pdf;
+  this.logpmf = DiracCtor.prototype.logpdf;
+}
+PoissonCtor.prototype = Object.create(DiracCtor.prototype);
 
 // One prng function per factory call, shared by every consumer inside it —
 // an inner stdlib factory, a local `prng()` call, or several of each. `opts`
@@ -222,14 +244,10 @@ function LogisticCtor(this: any, mu: any, s: any) {
   this.support = [-Infinity, Infinity];
 }
 LogisticCtor.prototype.pdf = function(this: any, x: any) {
-  const z = (x - this.mu) / this.s;
-  const ez = Math.exp(-z);
-  const denom = 1 + ez;
-  return ez / (this.s * denom * denom);
+  return Math.exp(logpdfLogistic(x, this.mu, this.s));
 };
 LogisticCtor.prototype.logpdf = function(this: any, x: any) {
-  const z = (x - this.mu) / this.s;
-  return -z - Math.log(this.s) - 2 * Math.log(1 + Math.exp(-z));
+  return logpdfLogistic(x, this.mu, this.s);
 };
 LogisticCtor.prototype.cdf = function(this: any, x: any) {
   return 1 / (1 + Math.exp(-(x - this.mu) / this.s));
@@ -240,8 +258,9 @@ LogisticCtor.prototype.quantile = function(this: any, p: any) {
   return this.mu + this.s * Math.log(p / (1 - p));
 };
 function logpdfLogistic(x: any, mu: any, s: any) {
-  const z = (x - mu) / s;
-  return -z - Math.log(s) - 2 * Math.log(1 + Math.exp(-z));
+  // The density is symmetric in z; use the decaying exponential in both tails.
+  const z = Math.abs((x - mu) / s);
+  return -z - Math.log(s) - 2 * Math.log1p(Math.exp(-z));
 }
 
 // Weibull(shape, scale): pdf = (k/λ)·(x/λ)^{k−1}·exp(−(x/λ)^k) for x ≥ 0
@@ -747,7 +766,7 @@ const randGeometric = {
       if (pp <= 0) throw new Error('Geometric: p must be > 0');
       if (pp >= 1) return 0;
       const u = uClip(prng());
-      return Math.floor(Math.log(1 - u) / Math.log(1 - pp));
+      return Math.floor(Math.log1p(-u) / Math.log1p(-pp));
     }
     if (args.length === 1 && args[0] === opts) {
       return function parametricGeometricSampler(p: any) { return draw(p); };
@@ -765,21 +784,18 @@ function GeometricCtor(this: any, p: any) {
   this.support = [0, Infinity];
 }
 GeometricCtor.prototype.pmf = function(this: any, k: any) {
-  const ki = k | 0;
-  if (ki < 0 || ki !== +k) return 0;
-  return this.p * Math.pow(1 - this.p, ki);
+  return Math.exp(logpdfGeometric(k, this.p));
 };
 GeometricCtor.prototype.logpmf = function(this: any, k: any) {
-  const ki = k | 0;
-  if (ki < 0 || ki !== +k) return -Infinity;
-  return Math.log(this.p) + ki * Math.log1p(-this.p);
+  return logpdfGeometric(k, this.p);
 };
 GeometricCtor.prototype.pdf    = function(k: any) { return this.pmf(k); };
 GeometricCtor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
 function logpdfGeometric(x: any, p: any) {
-  const ki = x | 0;
-  if (ki < 0 || ki !== +x) return -Infinity;
-  return Math.log(p) + ki * Math.log1p(-p);
+  const k = +x;
+  if (!Number.isInteger(k) || k < 0) return -Infinity;
+  // At p=1 the atom at zero has mass one, not 0 * log(0) = NaN.
+  return Math.log(p) + (k === 0 ? 0 : k * Math.log1p(-p));
 }
 
 // NegativeBinomial(alpha, beta) and NegativeBinomial2(mu, psi) —
@@ -821,15 +837,72 @@ NegativeBinomialCtor.prototype.logpmf = function(this: any, k: any) {
 };
 NegativeBinomialCtor.prototype.pdf    = function(k: any) { return this.pmf(k); };
 NegativeBinomialCtor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
+
+// Spec §08: C(k+shape-1,k) = 1/(k*B(k,shape)), for k >= 2.
+// Shift small shapes using B(k,a) = (k+a)/a * B(k,a+1), so the
+// log-Beta primitive never evaluates Gamma at a subnormal argument.
+function logNegativeBinomialCoefficient(k: number, shape: number): number {
+  return shape < 1
+    ? Math.log(shape) - Math.log(k) - Math.log(k + shape) - stdlibBetaln(k, shape + 1)
+    : -Math.log(k) - stdlibBetaln(k, shape);
+}
+
+// Stirling's log-Gamma correction at x >= 10, supplied as 1/x to
+// accommodate an overflowing sum. The next term is below 1.92e-14.
+function negativeBinomialStirling(inv: number): number {
+  const z = inv * inv;
+  return inv * (1 / 12 + z * (-1 / 360 + z * (1 / 1260 + z * (-1 / 1680 + z / 1188))));
+}
+
+// For k,shape >= 10, center the exponent at the mean. The linear terms
+// shape*u + k*v cancel analytically; both remaining log1pmx terms are
+// nonpositive. This avoids subtracting log probabilities of size k+shape.
+function logNegativeBinomialLarge(k: number, shape: number, u: number, v: number,
+  logP: number, logQ: number): number {
+  const a = u < -0.5 ? logP + Math.log1p(k / shape) - u : stdlibLog1pmx(u);
+  const b = v < -0.5 ? logQ + Math.log1p(shape / k) - v : stdlibLog1pmx(v);
+  const invSum = (1 / Math.max(k, shape)) / (1 + Math.min(k, shape) / Math.max(k, shape));
+  return shape * a + k * b - 0.5 * (Math.log(2 * Math.PI) + Math.log(k) + Math.log1p(k / shape))
+    + negativeBinomialStirling(invSum) - negativeBinomialStirling(1 / shape) - negativeBinomialStirling(1 / k);
+}
+
+// Retain the rounding residual in (k*beta-shape)/4 near the mean.
+// Here k,shape >= 10 and k*beta/4 is in [shape/8,shape/2]. Rebalance
+// before quartering k to preserve small beta and leave overflow headroom.
+function negativeBinomialQuarterDifference(k: number, beta: number, shape: number): number {
+  if (k > 2 ** 996) { k *= 2 ** -512; beta *= 2 ** 512; }
+  if (beta > 2 ** 996) { beta *= 2 ** -512; k *= 2 ** 512; }
+  k *= 0.25;
+  const product = k * beta, splitter = 2 ** 27 + 1;
+  const ck = splitter * k, kh = ck - (ck - k), kl = k - kh;
+  const cb = splitter * beta, bh = cb - (cb - beta), bl = beta - bh;
+  const error = ((kh * bh - product) + kh * bl + kl * bh) + kl * bl;
+  return (product - shape * 0.25) + error;
+}
+
 function _logpmfNegativeBinomial(k: any, alpha: any, beta: any) {
-  const ki = k | 0;
-  if (ki < 0 || ki !== +k) return -Infinity;
-  // Generalized binomial coefficient C(k+alpha-1, k) via gammaln. alpha is posreals
-  // (spec), so it may be non-integer; stdlibBinomcoefln returns NaN for non-integer
-  // args. gammaln agrees with binomcoefln on integer alpha.
-  return (stdlibGammaln(ki + alpha) - stdlibGammaln(alpha) - stdlibGammaln(ki + 1))
-       + alpha * (Math.log(beta) - Math.log(beta + 1))
-       - ki * Math.log(beta + 1);
+  const ki = +k;
+  if (!Number.isInteger(ki) || ki < 0) return -Infinity;
+  const logP = beta >= 1 ? -Math.log1p(1 / beta) : Math.log(beta) - Math.log1p(beta);
+  const logQ = -Math.log1p(beta);
+  if (ki >= 10 && alpha >= 10) {
+    const q = 1 / (1 + beta), p = beta >= 1 ? 1 - q : beta * q;
+    const product = (ki * 0.25) * beta;
+    let u: number, v: number;
+    if (product >= alpha * 0.125 && product <= alpha * 0.5) {
+      const delta = negativeBinomialQuarterDifference(ki, beta, alpha);
+      u = (delta / alpha) * (4 * q);
+      v = -(delta / ki) * (4 * q);
+    } else {
+      u = (ki / alpha) * p - q;
+      v = (alpha / ki) * q - p;
+    }
+    return logNegativeBinomialLarge(ki, alpha, u, v, logP, logQ);
+  }
+  const massTerm = alpha * logP;
+  if (ki === 0) return massTerm;
+  const coefficient = ki === 1 ? Math.log(alpha) : logNegativeBinomialCoefficient(ki, alpha);
+  return coefficient + ki * logQ + massTerm;
 }
 function logpdfNegativeBinomial(x: any, alpha: any, beta: any) {
   return _logpmfNegativeBinomial(x, alpha, beta);
@@ -873,14 +946,27 @@ NegativeBinomial2Ctor.prototype.logpmf = function(this: any, k: any) {
 NegativeBinomial2Ctor.prototype.pdf    = function(k: any) { return this.pmf(k); };
 NegativeBinomial2Ctor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
 function _logpmfNegativeBinomial2(k: any, mu: any, psi: any) {
-  const ki = k | 0;
-  if (ki < 0 || ki !== +k) return -Infinity;
-  // Generalized binomial coefficient C(k+psi-1, k) via gammaln. psi is posreals
-  // (spec), so it may be non-integer; stdlibBinomcoefln returns NaN for non-integer
-  // args. gammaln agrees with binomcoefln on integer psi.
-  return (stdlibGammaln(ki + psi) - stdlibGammaln(ki + 1) - stdlibGammaln(psi))
-       + ki * (Math.log(mu) - Math.log(mu + psi))
-       + psi * (Math.log(psi) - Math.log(mu + psi));
+  const ki = +k;
+  if (!Number.isInteger(ki) || ki < 0) return -Infinity;
+  // Use the smaller ratio so finite parameters cannot overflow their odds.
+  const ratio = mu / psi;
+  const logQ = mu < psi ? Math.log(mu) - Math.log(psi) - Math.log1p(ratio)
+    : -Math.log1p(psi / mu);
+  const logP = psi < mu ? Math.log(psi) - Math.log(mu) - Math.log1p(psi / mu)
+    : -Math.log1p(ratio);
+  if (ki >= 10 && psi >= 10) {
+    const scale = Math.max(psi, mu), denominator = psi / scale + mu / scale;
+    const delta = ki - mu;
+    const u = (delta / scale) / denominator;
+    const v = -(delta / ki) * ((psi / scale) / denominator);
+    return logNegativeBinomialLarge(ki, psi, u, v, logP, logQ);
+  }
+  const massTerm = ratio === 0 ? -mu : psi * logP;
+  if (ki === 0) return massTerm;
+  if (ki === 1) return Math.log(psi) + logQ + massTerm;
+  // The same log-Beta coefficient as NegativeBinomial preserves the
+  // finite large-shape limit without subtracting two nearly equal log-Gammas.
+  return logNegativeBinomialCoefficient(ki, psi) + ki * logQ + massTerm;
 }
 function logpdfNegativeBinomial2(x: any, mu: any, psi: any) {
   return _logpmfNegativeBinomial2(x, mu, psi);
@@ -1582,7 +1668,7 @@ const REGISTRY = {
     params:   ['rate'],
     aliases:  {},
     discrete: true,
-    Ctor:     Poisson,
+    Ctor:     PoissonCtor,
     randFn:   randPoisson,
     logpdfFn: logpmfPoisson,
   },

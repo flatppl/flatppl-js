@@ -43,12 +43,15 @@ const QUANTILE: Record<string, (p: number, q: any) => number> = {
   Logistic:    (p, q) => q.mu + q.s * Math.log(p / (1 - p)),
   Weibull:     (p, q) => q.scale * Math.pow(-Math.log1p(-p), 1 / q.shape),
   Pareto:      (p, q) => q.scale / Math.pow(1 - p, 1 / q.shape),   // scale = x_m, shape = α
-  Laplace:     (p, q) => { const x = p - 0.5; return q.location - q.scale * Math.sign(x) * Math.log1p(-2 * Math.abs(x)); },
+  Laplace:     (p, q) => p < 0.5 ? q.location + q.scale * Math.log(2 * p)
+    : q.location - q.scale * Math.log(2 * (1 - p)),
   Dirac:       (_p, q) => q.value,
   // X~IG(shape,scale) ⇔ scale/X ~ Gamma(shape, rate=1) ⇒ F_X(x)=1-P(shape,scale/x);
-  // invert: x = scale / gammaincinv(1-p, shape).
-  InverseGamma: (p, q) => q.scale / stdlibGammaincinv(1 - p, q.shape),
-  Cauchy: (p, q) => q.location + q.scale * Math.tan(Math.PI * (p - 0.5)),
+  // Invert the upper gamma tail directly so tiny p is not lost in 1-p.
+  InverseGamma: (p, q) => q.scale / stdlibGammaincinv(p, q.shape, true),
+  Cauchy: (p, q) => p === 0.5 ? q.location : p < 0.5
+    ? q.location - q.scale / Math.tan(Math.PI * p)
+    : q.location + q.scale / Math.tan(Math.PI * (1 - p)),
   // ChiSquared(k) ≡ Gamma(shape=k/2, rate=1/2); gammaincinv is scale-1 (rate-1),
   // so divide by rate=1/2 ⇔ multiply by 2. Verified vs scipy.stats.chi2(df=k).ppf.
   ChiSquared: (p, q) => 2 * stdlibGammaincinv(p, q.k / 2),

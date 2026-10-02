@@ -235,6 +235,13 @@ const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
       throw new Error('builtin_logdensityof(Dirichlet): alpha must be non-empty');
     }
     const xv = _asVectorOfLength(x, n, 'Dirichlet');
+    let sum = 0;
+    for (let i = 0; i < n; i++) {
+      if (!(xv[i] >= 0) || !Number.isFinite(xv[i])) return -Infinity;
+      sum += xv[i];
+    }
+    // The simplex permits rounding from normalization, not arbitrary vectors.
+    if (Math.abs(sum - 1) > 64 * Number.EPSILON * n) return -Infinity;
     let alphaSum = 0, logBeta = 0;
     for (let i = 0; i < n; i++) {
       alphaSum += alpha[i];
@@ -244,8 +251,8 @@ const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
     let lp = -logBeta;
     for (let i = 0; i < n; i++) {
       const xi = +xv[i];
-      if (!(xi > 0)) return -Infinity;
-      lp += (alpha[i] - 1) * Math.log(xi);
+      // x^0 is one even at the simplex boundary.
+      if (alpha[i] !== 1) lp += (alpha[i] - 1) * Math.log(xi);
     }
     return lp;
   },
@@ -277,26 +284,13 @@ const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
     return lp;
   },
 
-  // BinnedPoissonProcess(bins, intensity) — `intensity` is the per-bin
-  // rate vector; the variate is the per-bin count vector. Density:
-  //   log p(x) = Σ_k (x_k log λ_k − λ_k − log x_k!)
+  // BinnedPoissonProcess receives resolved bin masses from its walker.
   BinnedPoissonProcess: function (x: any, kw: any): number {
-    if (kw == null || !('intensity' in kw)) {
-      throw new Error('builtin_logdensityof(BinnedPoissonProcess): requires intensity');
-    }
-    const rates = _paramAsNumberArray(kw.intensity, 'BinnedPoissonProcess', 'intensity');
-    const K = rates.length;
-    const xv = _asVectorOfLength(x, K, 'BinnedPoissonProcess');
+    const rates = _paramAsNumberArray(kw.rates ?? kw.intensity, 'BinnedPoissonProcess', 'rates');
+    const xv = _asVectorOfLength(x, rates.length, 'BinnedPoissonProcess');
     let lp = 0;
-    for (let k = 0; k < K; k++) {
-      const xk = +xv[k];
-      const lam = +rates[k];
-      if (xk < 0 || xk !== Math.round(xk) || lam < 0) return -Infinity;
-      if (lam === 0) {
-        if (xk !== 0) return -Infinity;
-      } else {
-        lp += xk * Math.log(lam) - lam - stdlibGammaln(xk + 1);
-      }
+    for (let k = 0; k < rates.length; k++) {
+      lp += builtinLogdensityofPositional('Poisson', [rates[k]], +xv[k]);
     }
     return lp;
   },
@@ -322,7 +316,14 @@ const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
     }
     const n = +kw.n | 0;
     const eta = +kw.eta;
-    const C = _asMatrixOfSize(x, n, 'LKJ');
+    const C = valueLib.densify(_asMatrixOfSize(x, n, 'LKJ'));
+    const tol = 64 * Number.EPSILON * n;
+    for (let i = 0; i < n; i++) {
+      if (!(Math.abs(C.data[i * n + i] - 1) <= tol)) return -Infinity;
+      for (let j = 0; j < i; j++) {
+        if (!(Math.abs(C.data[i * n + j] - C.data[j * n + i]) <= tol)) return -Infinity;
+      }
+    }
     const ld = logDetSPD(C);
     if (ld == null) return -Infinity;
     return (eta - 1) * ld - _logCnLKJ(n, eta);
@@ -336,7 +337,20 @@ const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
     }
     const n = +kw.n | 0;
     const eta = +kw.eta;
-    const L = _asMatrixOfSize(x, n, 'LKJCholesky');
+    const L = valueLib.densify(_asMatrixOfSize(x, n, 'LKJCholesky'));
+    const swapped = valueLib.isTransposeView(L);
+    const tol = 64 * Number.EPSILON * n;
+    // §08: lower triangular, positive diagonal, and unit-norm rows.
+    for (let i = 0; i < n; i++) {
+      if (!(L.data[i * n + i] > 0)) return -Infinity;
+      let norm2 = 0;
+      for (let j = 0; j < n; j++) {
+        const lij = L.data[swapped ? j * n + i : i * n + j];
+        if (j > i && lij !== 0) return -Infinity;
+        norm2 += lij * lij;
+      }
+      if (!(Math.abs(norm2 - 1) <= tol)) return -Infinity;
+    }
     let lp = -_logCnLKJ(n, eta);
     for (let i = 1; i < n; i++) {
       const lii = L.data[i * n + i];
@@ -779,7 +793,7 @@ const MV_VARIATE_SHAPE: Record<string, {
   MvNormal:             { kind: 'vector', sizeFrom: (kw) => _lenOf(kw.mu) },
   Dirichlet:            { kind: 'vector', sizeFrom: (kw) => _lenOf(kw.alpha) },
   Multinomial:          { kind: 'vector', sizeFrom: (kw) => _lenOf(kw.p) },
-  BinnedPoissonProcess: { kind: 'vector', sizeFrom: (kw) => _lenOf(kw.intensity) },
+  BinnedPoissonProcess: { kind: 'vector', sizeFrom: (kw) => _lenOf(kw.rates ?? kw.intensity) },
   Wishart:              { kind: 'matrix', sizeFrom: (kw) => _matSizeOf(kw.scale) },
   InverseWishart:       { kind: 'matrix', sizeFrom: (kw) => _matSizeOf(kw.scale) },
   LKJ:                  { kind: 'matrix', sizeFrom: (kw) => (+kw.n) | 0 },
@@ -1250,30 +1264,11 @@ interface ChainCompositionResult {
  * Match step `i`'s result type against step `i+1`'s input list.
  * Returns `{ ok: true, subst }` on success, `{ ok: false, reason }`
  * on a static mismatch. Auto-splatting per spec §04
- * sec:calling-convention: a record-typed result matches multi-input
- * step boundaries by field name. A single-input step boundary
- * matches positionally against any compatible result type.
+ * sec:calling-convention: records match step inputs by field name.
+ * Non-record results bind positionally to a single compatible input.
  */
 function _matchChainBoundary(prevResult: any, nextInputs: any[]) {
-  // Single-input boundary: positional match, any compatible type. §06
-  // dependent composition binds the whole value here. A RECORD result ought
-  // to splat by field name even into a lone input (§04
-  // sec:calling-convention: "A sole positional record or table therefore
-  // always splats"), but the chain materialiser does not implement that feed
-  // — it binds the record whole and the draw comes out NaN. Typing it as the
-  // whole-value bind is what makes the body re-check in typeinfer's
-  // `checkChainStepBodies` report a located error instead. Recorded as a
-  // conformance gap in flatppl-dev/TODO-flatppl-js.md.
-  if (nextInputs.length === 1) {
-    const s = T.unify(nextInputs[0].type, prevResult, new Map());
-    if (s == null) {
-      return { ok: false,
-        reason: 'cannot unify previous step\'s result type ' + T.show(prevResult)
-              + ' with next step\'s input "' + nextInputs[0].name
-              + '" of type ' + T.show(nextInputs[0].type) };
-    }
-    return { ok: true, subst: s };
-  }
+  // Records always splat by field name, including a single-input boundary.
   // Multi-input boundary: previous result must be record-typed, with
   // exactly the field names the next step's inputs declare. Auto-splat
   // per §04 sec:calling-convention.
@@ -1311,6 +1306,17 @@ function _matchChainBoundary(prevResult: any, nextInputs: any[]) {
     }
     return { ok: true, subst: s };
   }
+  // Non-record values bind positionally to a sole compatible input.
+  if (nextInputs.length === 1) {
+    const s = T.unify(nextInputs[0].type, prevResult, new Map());
+    if (s == null) {
+      return { ok: false,
+        reason: 'cannot unify previous step\'s result type ' + T.show(prevResult)
+              + ' with next step\'s input "' + nextInputs[0].name
+              + '" of type ' + T.show(nextInputs[0].type) };
+    }
+    return { ok: true, subst: s };
+  }
   return { ok: false,
     reason: 'multi-input step boundary requires a record-typed previous result '
           + 'for auto-splatting (per spec §04 calling convention); got '
@@ -1323,28 +1329,13 @@ function _stepLabel(step: ChainStep, index: number): string {
 }
 
 /**
- * Fill in the types a step's boundary inputs DECLARE, where the step's own
- * kernel type says only `any`, and only where the fed value is an ARRAY.
- *
- * `functionof(body, mu = mu)` publishes its inputs as `any` (see
- * `_declaredBoundaryInputTypes` in typeinfer for why), so the matcher below
- * could not reject the vector §06 feeds the step and the sampler produced NaN
- * for every atom. The placeholder spelling of the same step is a located
- * error, and §06 gives both spellings one lowering, so the two must agree.
- *
- * The ARRAY gate is deliberate and is the whole scope of this fill-in. A
- * RECORD fed to a lone input is a live, separate surface: the engine's chain
- * runtime unwraps a single-field record into the input whatever the field is
- * named (measured — a `joint(theta = M)` base feeding a kernel that declares
- * `mu` samples its closed form), which no reading of §04's splat-by-field-name
- * predicts, while the same base through `kchain` samples NaN. Enforcing the
- * declared type there would refuse a program that works today. That record
- * gap is carded in flatppl-dev/TODO-flatppl-js.md; this fill-in leaves every
- * non-array boundary byte-identical.
+ * Apply declared input types before matching a structured chain boundary.
+ * Reified inputs initially type as any; arrays bind whole and records splat
+ * by field name (spec §04), so both need their declared value constraints.
  */
-function _applyDeclaredInputTypes(nextInputs: any[], arrayVariate: any,
+function _applyDeclaredInputTypes(nextInputs: any[], structuredVariate: any,
                                   declared: Map<string, any> | null | undefined) {
-  if (!declared || !arrayVariate) return nextInputs;
+  if (!declared || !structuredVariate) return nextInputs;
   return nextInputs.map((inp: any) => {
     // By NAME, not by position: `declared` carries only the inputs whose
     // boundary binding has a concrete value type, so a step mixing one of
@@ -1534,7 +1525,7 @@ function _inferKernelChain(
       ? prevVariate : null;
     const m = _matchChainBoundary(
       prevVariate,
-      _applyDeclaredInputTypes(nextInputs, arrayVariate,
+      _applyDeclaredInputTypes(nextInputs, arrayVariate || (catBoundary && prevVariate.kind === 'record'),
                                declaredInputs && declaredInputs[i + 1]));
     if (!m.ok) {
       diagnostics.push({

@@ -11,6 +11,28 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
 const density = require('../density.ts');
+const { builtinLogdensityof } = require('../density-prims.ts');
+
+test('Dirichlet density respects simplex mass and constant boundary factors', () => {
+  assert.equal(builtinLogdensityof('Dirichlet', { alpha: [1, 1] }, [1, 1]), -Infinity);
+  assert.ok(builtinLogdensityof('Dirichlet', { alpha: [1, 1] }, [0, 1]) === 0);
+});
+
+test('LKJ density requires a symmetric correlation matrix', () => {
+  const matrix = (data: number[]) => ({ shape: [2, 2], data: Float64Array.from(data) });
+  assert.equal(builtinLogdensityof('LKJ', { n: 2, eta: 1 }, matrix([2, 0, 0, 2])), -Infinity);
+  assert.equal(builtinLogdensityof('LKJ', { n: 2, eta: 1 }, matrix([1, 0.2, 0, 1])), -Infinity);
+  assert.ok(Math.abs(builtinLogdensityof('LKJ', { n: 2, eta: 1 }, matrix([1, 0, 0, 1])) + Math.LN2) < 1e-12);
+});
+
+test('LKJCholesky density requires lower unit-norm rows with positive diagonals', () => {
+  const score = (data: number[], t?: string) => builtinLogdensityof('LKJCholesky', { n: 2, eta: 1 },
+    { shape: [2, 2], data: Float64Array.from(data), t });
+  assert.equal(score([1, 0, 0, 2]), -Infinity);
+  assert.equal(score([-1, 0, 0, 1]), -Infinity);
+  assert.equal(score([1, 0, 0.6, 0.8], 'T'), -Infinity);
+  assert.ok(Math.abs(score([1, 0, 0.6, 0.8]) + Math.LN2) < 1e-12);
+});
 
 function lit(v: any)              { return { kind: 'lit', value: v }; }
 function vecLit(arr: any) {
