@@ -117,6 +117,26 @@ test('rand: Poisson(rate=3) produces non-negative integers', () => {
   }
 });
 
+test('Poisson(0) has the sampling and analytical law of Dirac(0)', () => {
+  const ir = distIR('Poisson', { rate: 0 });
+  assert.ok(takeN(ir, {}, 16).every((x: number) => x === 0));
+  const conditional = sampler.makeParametricSampler(rng.stateFromKey(7), {
+    ...ir, kwargs: { rate: refIR('rate') },
+  });
+  assert.equal(conditional.drawWith({ rate: 0 }), 0);
+  assert.ok(Number.isInteger(conditional.drawWith({ rate: 3 })));
+  assert.equal(conditional.drawWith({ rate: 0 }), 0);
+  const dist = sampler.makeAnalytical(ir, {});
+  assert.equal(dist.mean, 0);
+  assert.equal(dist.variance, 0);
+  assert.equal(dist.cdf(-1), 0);
+  assert.equal(dist.cdf(0), 1);
+  assert.equal(dist.quantile(0.5), 0);
+  const density = sampler.density(ir, {});
+  assert.deepEqual(Array.from(density.xs), [0]);
+  assert.deepEqual(Array.from(density.ys), [1]);
+});
+
 test('rand: Binomial(n=10, p=0.5) produces integers in [0, 10]', () => {
   const ir = distIR('Binomial', { n: 10, p: 0.5 });
   const samples = takeN(ir, {}, 500);

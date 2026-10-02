@@ -98,14 +98,21 @@ s = iid(g, 6)
 `, 's', 4), /ensemble of tables|>1 atoms/);
 });
 
-test('#848: iid over a record measure at a derived-zero size refuses (spec §06 iid)', async () => {
-  // §06 iid: a scalar-length size derived to 0 (here from a loaded empty
-  // column, via lengthof) is an error over a record-valued M — a table has no
-  // zero-row form — rather than the empty product measure the scalar case gets.
-  await assert.rejects(async () => sampleTable(`
+test('a derived-zero record iid preserves its empty column schema', async () => {
+  // §06 iid: the empty product is an empty table with the same column schema.
+  const result = await sampleTable(`
 x_data = zeros(0)
 n = lengthof(x_data)
-g = joint(x = Normal(mu = 0.0, sigma = 1.0), y = Normal(mu = 5.0, sigma = 1.0))
+g = joint(x = Normal(mu = 0.0, sigma = 1.0), y = iid(Normal(0,1),2),
+  z = Dirac(complex(1,2)), nested = iid(iid(Normal(0,1),2),3))
 s = iid(g, n)
-`, 's', 1), /§06|zero-row/);
+`, 's', 1);
+  assert.equal(result.nrows, 0);
+  assert.deepEqual(result.columns.x.shape, [0]);
+  assert.deepEqual(result.columns.y.shape, [0, 2]);
+  assert.equal(result.columns.y.data.length, 0);
+  assert.equal(result.columns.z.dtype, 'complex');
+  assert.equal(result.columns.z.im.length, 0);
+  assert.deepEqual(result.columns.nested.shape, [0, 3, 2]);
+  assert.equal(result.columns.nested.outerRank, 1);
 });

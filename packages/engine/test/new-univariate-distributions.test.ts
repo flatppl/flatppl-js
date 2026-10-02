@@ -170,6 +170,13 @@ test('Geometric(p=0.5): empirical mean ≈ (1-p)/p = 1', async () => {
     `Geometric(0.5) mean = ${mu}, expected ≈ 1`);
 });
 
+test('Geometric retains finite counts when p is below machine epsilon', async () => {
+  const ctx = makeCtx('m = Geometric(p=1e-20)');
+  ctx.sampleCount = 4;
+  const m = await ctx.getMeasure('m');
+  assert.ok(m.samples.every((x: number) => Number.isFinite(x) && Number.isInteger(x) && x >= 0));
+});
+
 test('Geometric: pmf(0; p) = p, pmf(1; p) = p(1-p)', () => {
   const sampler = require('../sampler.ts');
   const reg = sampler._internal.REGISTRY.Geometric;

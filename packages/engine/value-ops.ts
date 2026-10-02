@@ -93,6 +93,7 @@ function _packCx(re: any, im: any, shape: any, swapped: any) {
 // never depends on a fast-path existing). Real diagonals only; a
 // complex diagonal returns null → densify (rare; cov is real).
 function _diagMul(a: any, b: any) {
+  if (a.im || b.im) return null;
   const aD = valueLib.isDiagStored(a) && !a.im;
   const bD = valueLib.isDiagStored(b) && !b.im;
   if (!aD && !bD) return null;
@@ -396,7 +397,17 @@ function _matMatMul(A: any, B: any) {
   // Inner-loop indexing functions: pick per-operand based on tag once.
   // (Branching inside the i,j,k loop would dominate small-matrix
   // benchmarks; this version branches once at the top.)
-  if (!aSwap && !bSwap) {
+  if (!bSwap && p >= 16) {
+    // Wide rows amortize output stores and keep B's reads contiguous.
+    // Each cell still accumulates in ascending k; narrow rows use registers.
+    const rowStride = aSwap ? 1 : n, colStride = aSwap ? m : 1;
+    for (let i = 0; i < m; i++) {
+      for (let k = 0; k < n; k++) {
+        const a = A.data[i * rowStride + k * colStride];
+        for (let j = 0; j < p; j++) out[i * p + j] += a * B.data[k * p + j];
+      }
+    }
+  } else if (!aSwap && !bSwap) {
     for (let i = 0; i < m; i++) {
       for (let j = 0; j < p; j++) {
         let s = 0;
@@ -680,6 +691,7 @@ function _complexLinearBinop(scalarFn: any, a: any, b: any, opName: any) {
 }
 
 function _makeElementwiseBinop(scalarFn: any, opName: any) {
+  const preservesZero = scalarFn(0, 0) === 0;
   return function elementwiseBinop(a: any, b: any) {
     if (!isValue(a) || !isValue(b)) {
       throw new Error('value-ops.' + opName + ': both operands must be Values');
@@ -688,7 +700,7 @@ function _makeElementwiseBinop(scalarFn: any, opName: any) {
       // diag ∘ diag (real) stays diag — operate on the m-vectors.
       // Any other mix densifies the diag operand(s) (occupancy of
       // diag+dense is dense anyway) so the generic path is correct.
-      if (valueLib.isDiagStored(a) && valueLib.isDiagStored(b)
+      if (preservesZero && valueLib.isDiagStored(a) && valueLib.isDiagStored(b)
           && !a.im && !b.im && a.data.length === b.data.length) {
         const d = new Float64Array(a.data.length);
         for (let i = 0; i < d.length; i++) d[i] = scalarFn(a.data[i], b.data[i]);
@@ -696,6 +708,14 @@ function _makeElementwiseBinop(scalarFn: any, opName: any) {
       }
       if (valueLib.isDiagStored(a)) a = valueLib.densify(a);
       if (valueLib.isDiagStored(b)) b = valueLib.densify(b);
+    }
+    // Matrix transpose is a storage view, unlike vector orientation (§07).
+    // Materialize it only when elementwise indexing cannot reuse the layout.
+    if (a.shape.length >= 2 && b.shape.length >= 2
+        && (isTransposeView(a) !== isTransposeView(b)
+          || (isTransposeView(a) && !a.shape.every((n: number, i: number) => n === b.shape[i])))) {
+      a = valueLib._logicalDense(a);
+      b = valueLib._logicalDense(b);
     }
     if (_isCx(a, b)) return _complexLinearBinop(scalarFn, a, b, opName);
     const sa = a.shape, sb = b.shape;
@@ -1023,7 +1043,12 @@ const log1pElem  = _makeElementwiseUnop(Math.log1p,  'log1pElem');
 const expm1Elem  = _makeElementwiseUnop(Math.expm1,  'expm1Elem');
 const floorElem  = _makeElementwiseUnop(Math.floor,  'floorElem');
 const ceilElem   = _makeElementwiseUnop(Math.ceil,   'ceilElem');
-const roundElem  = _makeElementwiseUnop(Math.round,  'roundElem');
+/** Spec §07: nearest integer, ties to even, including signed zero. */
+function roundEven(x: number): number {
+  const rounded = Math.round(x);
+  return Math.abs(x % 1) === 0.5 && rounded % 2 !== 0 ? rounded - 1 : rounded;
+}
+const roundElem  = _makeElementwiseUnop(roundEven, 'roundElem');
 
 // =====================================================================
 // P9 additions — comparisons / predicates / logic / extra trig + math
@@ -1050,10 +1075,14 @@ const geElem     = _makeElementwiseBinop((a: any, b: any) => a >= b ? 1 : 0, 'ge
 const equalElem  = _makeElementwiseBinop((a: any, b: any) => a === b ? 1 : 0, 'equalElem');
 const unequalElem = _makeElementwiseBinop((a: any, b: any) => a !== b ? 1 : 0, 'unequalElem');
 // Predicates
-const isfiniteElem = _makeElementwiseUnop((x: any) => Number.isFinite(x) ? 1 : 0, 'isfiniteElem');
-const isinfElem    = _makeElementwiseUnop((x: any) => (!Number.isFinite(x) && !Number.isNaN(x)) ? 1 : 0, 'isinfElem');
-const isnanElem    = _makeElementwiseUnop((x: any) => Number.isNaN(x) ? 1 : 0, 'isnanElem');
-const iszeroElem   = _makeElementwiseUnop((x: any) => x === 0 ? 1 : 0, 'iszeroElem');
+const isfiniteElem = _makeElementwiseUnop((x: any) => Number.isFinite(x) ? 1 : 0, 'isfiniteElem',
+  (z: any) => Number.isFinite(z.re) && Number.isFinite(z.im) ? 1 : 0);
+const isinfElem    = _makeElementwiseUnop((x: any) => (!Number.isFinite(x) && !Number.isNaN(x)) ? 1 : 0, 'isinfElem',
+  (z: any) => Math.abs(z.re) === Infinity || Math.abs(z.im) === Infinity ? 1 : 0);
+const isnanElem    = _makeElementwiseUnop((x: any) => Number.isNaN(x) ? 1 : 0, 'isnanElem',
+  (z: any) => Number.isNaN(z.re) || Number.isNaN(z.im) ? 1 : 0);
+const iszeroElem   = _makeElementwiseUnop((x: any) => x === 0 ? 1 : 0, 'iszeroElem',
+  (z: any) => z.re === 0 && z.im === 0 ? 1 : 0);
 // Logic — assumes inputs are 0/1 booleans-as-numbers
 const landElem  = _makeElementwiseBinop((a: any, b: any) => (a && b) ? 1 : 0, 'landElem');
 const lorElem   = _makeElementwiseBinop((a: any, b: any) => (a || b) ? 1 : 0, 'lorElem');
@@ -1092,8 +1121,18 @@ const gammaElem    = _makeElementwiseUnop((x: any) => _stdlibGamma(x), 'gammaEle
 const loggammaElem = _makeElementwiseUnop((x: any) => _stdlibGammaln(x), 'loggammaElem');
 
 // Type-restrictor casts (spec §03 lattice booleans ⊂ integers ⊂ reals).
-const booleanElem = _makeElementwiseUnop((x: any) => x ? 1 : 0, 'booleanElem');
-const integerElem = _makeElementwiseUnop((x: any) => Math.trunc(x), 'integerElem');
+/** Scalar domain restrictions (§07), shared by scalar and broadcast dispatch. */
+function _booleanScalar(x: any): boolean {
+  if (x === true || x === 1) return true;
+  if (x === false || x === 0) return false;
+  throw new Error('boolean: value ' + x + ' is not a boolean');
+}
+function _integerScalar(x: any): number {
+  if (Number.isInteger(x)) return x;
+  throw new Error('integer: value ' + x + ' is not an integer');
+}
+const booleanElem = _makeElementwiseUnop((x: any) => +_booleanScalar(x), 'booleanElem');
+const integerElem = _makeElementwiseUnop(_integerScalar, 'integerElem');
 
 // Link functions (spec §07 GLM family helpers). Implementations
 // mirror sampler.ARITH_OPS — kept in sync via the test suite.
@@ -1101,38 +1140,16 @@ const integerElem = _makeElementwiseUnop((x: any) => Math.trunc(x), 'integerElem
 // inside sampler.ts's require cycle; this module must not eagerly
 // pull sampler back.
 const _SQRT2 = Math.SQRT2;
-function _erf(x: number): number {
-  // Abramowitz-Stegun 7.1.26 approximation — accurate to ~1e-7,
-  // matches what stdlib's erf returns to within the JS Math
-  // function precision. Used by probit/invprobit elementwise; the
-  // single-point sampler.ARITH_OPS variants use stdlib for higher
-  // precision but the values agree to ~1e-7.
-  const t = 1 / (1 + 0.3275911 * Math.abs(x));
-  const y = 1 - (((((1.061405429 * t - 1.453152027) * t)
-    + 1.421413741) * t - 0.284496736) * t + 0.254829592) * t * Math.exp(-x * x);
-  return x >= 0 ? y : -y;
-}
+const _stdlibErfc = require('@stdlib/math-base-special-erfc');
+const _stdlibErfcinv = require('@stdlib/math-base-special-erfcinv');
 const logitElem     = _makeElementwiseUnop(
   (p: any) => Math.log(p / (1 - p)), 'logitElem');
 const invlogitElem  = _makeElementwiseUnop(
   (x: any) => 1 / (1 + Math.exp(-x)), 'invlogitElem');
 const probitElem    = _makeElementwiseUnop(
-  (p: any) => _SQRT2 * _erfInv(2 * p - 1), 'probitElem');
+  (p: any) => -_SQRT2 * _stdlibErfcinv(2 * p), 'probitElem');
 const invprobitElem = _makeElementwiseUnop(
-  (x: any) => 0.5 * (1 + _erf(x / _SQRT2)), 'invprobitElem');
-
-// Inverse error function via Winitzki's approximation (max relative
-// error ~1.3e-4 over the whole range, much better near the centre).
-// Single-point sampler uses stdlib's erfcinv for full precision;
-// elementwise broadcast paths use this approximation when atomCount
-// is large enough that per-element stdlib calls would dominate.
-function _erfInv(x: number): number {
-  const a = 0.147;
-  const ln = Math.log(1 - x * x);
-  const term = 2 / (Math.PI * a) + ln / 2;
-  const sign = x < 0 ? -1 : 1;
-  return sign * Math.sqrt(Math.sqrt(term * term - ln / a) - term);
-}
+  (x: any) => 0.5 * _stdlibErfc(-x / _SQRT2), 'invprobitElem');
 
 // ifelse(cond, then, else) — three-arg elementwise. Doesn't fit the
 // _makeElementwiseBinop pattern; hand-rolled strided walk over the
@@ -1938,6 +1955,8 @@ function cisElem(theta: any): any {
 }
 
 module.exports = {
+  _roundEven: roundEven,
+  _booleanScalar, _integerScalar,
   mul,
   add,
   sub,

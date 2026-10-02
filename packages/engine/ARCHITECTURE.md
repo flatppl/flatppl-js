@@ -120,6 +120,26 @@ access (`mod.x`) lowers to `(ref mod x)`; cross-module type inference reads the
 loaded module's typed bindings (spec §11). Standard modules are engine-provided
 (a JS registry, not `.flatppl` text).
 
+The analyzer resolves shadowed builtin call heads to `self` before classifying
+special operations. Parser-generated operations and explicit `base` calls retain
+a builtin marker so operators, lambdas, and implicit aggregate reducers cannot
+capture module bindings. Linking rewrites explicit `self` references within the
+loaded instance and preserves those builtin markers.
+
+`processSource` checks demanded `kchain` densities through CLM's shared
+`chainDensityRefusal` capability. A source scan requires both a `kchain` reference
+and a scoring reference before building derivations for this check; ordinary
+density programs and sampling-only chains do not pay for that extra build.
+Construction of a chain whose density is unsupported remains valid.
+CLM scores recognized affine Gaussian chains through the shared moment
+recognizer and finite discrete priors through exact enumeration. It preserves
+shared draw identities and constant measure masses in both paths. Other chain
+densities are refused; ancestral sampling remains available. Truncation uses
+stable interval probabilities where a CDF is registered and carries each
+parameter slice's mass as one weight event, including IID's product of slice
+masses. Without a CDF, raw parameterized truncation uses a proposal and support
+indicator; normalized truncation uses bounded rejection.
+
 `load_module` end-to-end works as follows:
 - **Compile** — `processSource` reads `opts.bundle.sources`, recursively
   compiles each `load_module`-referenced dependency into its own

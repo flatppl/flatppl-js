@@ -63,14 +63,21 @@ function _rewriteRefs(node: any, prefix: string,
       && userAliases.has(node.object.name)) {
     return AST.Identifier(_pfx(userAliases.get(node.object.name)!, node.field), node.loc);
   }
-  if (node.type === 'Identifier') {
+  // Explicit self references belong to this instance, just like bare names.
+  if (node.type === 'FieldAccess' && node.object?.type === 'Identifier'
+      && node.object.name === 'self' && localNames.has(node.field)) {
+    return prefix === '' ? node : AST.Identifier(_pfx(prefix, node.field), node.loc);
+  }
+  if (node.type === 'Identifier' || node.type === 'SetRef') {
+    if (node.builtin) return node;
     return localNames.has(node.name)
       ? AST.Identifier(_pfx(prefix, node.name), node.loc)
       : node;
   }
   const out: Record<string, any> = {};
   for (const k in node) {
-    out[k] = (k === 'loc') ? node[k] : _rewriteRefs(node[k], prefix, localNames, userAliases);
+    out[k] = (k === 'loc' || (k === 'callee' && (node.builtin || node.fromLambda)))
+      ? node[k] : _rewriteRefs(node[k], prefix, localNames, userAliases);
   }
   return out;
 }

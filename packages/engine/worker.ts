@@ -556,25 +556,12 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           return { type: 'samples', id, samples: logps, logWeights: null };
         }
         case 'truncateSampleN': {
-          // Truncated-distribution sampling primitive for matTruncate
-          // (spec §06). Two modes:
-          //
-          //   'cdf'       — inverse-CDF sampling against an interval set.
-          //                 Draws u ~ U(0,1), maps to F^{-1}(F(lo) + u·(F(hi)−F(lo))).
-          //                 Exact, uniform-weight output. Requires the
-          //                 measure IR to be a known stdlib distribution
-          //                 with finite-or-resolved bounds; no NaN slots.
-          //                 logShift = log(F(hi) − F(lo)) — caller adds
-          //                 this to the parent's logTotalmass.
-          //
-          //   'rejection' — per-atom rejection-redraw, configurable per-
-          //                 atom budget. Draws from the distribution
-          //                 until the value falls inside `setDescr`, or
-          //                 the budget runs out; budget-exhausted atoms
-          //                 become NaN. Generic over any sampleable IR
-          //                 + any set descriptor with a numeric-bounds
-          //                 surface. logShift = log(n_eff / totalDraws)
-          //                 — empirical acceptance probability.
+          // Truncated sampling (spec §06). Registered CDFs use stable interval
+          // masses and conditional quantiles. Raw parameter slices retain
+          // their own logMasses; normalized slices omit that factor.
+          // Other parameterized laws use one proposal plus an indicator for
+          // raw truncation, or bounded rejection for normalized truncation.
+          // Fixed laws retain the stdlib CDF/rejection fallback and logShift.
           //
           // setDescr is the structural set descriptor from orchestrator's
           // parseSetIR (`{ kind: 'interval', lo, hi }` etc.). Anything
@@ -602,6 +589,45 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           let state = seed != null ? _stateFromSeed(seed) : philox;
           const total = count * repeat;
           const out = new Float64Array(total);
+          const refArrays = msg.refArrays || {};
+          const refKeys = Object.keys(refArrays);
+          const forwardCdf = require('./forward-cdf.ts');
+
+          // §06 truncate retains each parameter slice's mass. Conditioning
+          // every slice by rejection and pooling attempts loses those masses.
+          if (forwardCdf.hasCdf(msg.ir.op)) {
+            const entry = samplerLib.lookupDistribution(msg.ir);
+            const drawEnv = { ...env, ...(msg.env || {}) };
+            const logMasses = refKeys.length > 0 && !msg.normalized
+              ? new Float64Array(count) : null;
+            let params: any, mass = 0;
+            let valid = 0;
+            for (let a = 0; a < count; a++) {
+              for (const key of refKeys) drawEnv[key] = refArrays[key][a];
+              if (a === 0 || refKeys.length > 0) {
+                const values = samplerLib.resolveParams(msg.ir, entry, drawEnv);
+                params = msg.ir.op === 'Uniform'
+                  ? { lo: values[0], hi: values[1] }
+                  : Object.fromEntries(entry.params.map((key: string, i: number) => [key, values[i]]));
+                mass = forwardCdf.intervalProbability(msg.ir.op, params, lo, hi);
+              }
+              if (msg.normalized && !(mass > 0)) {
+                throw new Error('normalize(truncate): zero mass at atom ' + a);
+              }
+              if (logMasses) logMasses[a] = mass > 0 ? repeat * Math.log(mass) : -Infinity;
+              for (let r = 0; r < repeat; r++) {
+                if (!(mass > 0)) { out[a * repeat + r] = NaN; continue; }
+                const pair = rngLib.nextUniform(state);
+                state = pair[1];
+                out[a * repeat + r] = forwardCdf.truncatedQuantile(msg.ir.op, pair[0], params, lo, hi);
+                valid++;
+              }
+            }
+            if (seed == null) philox = state;
+            return { type: 'samples', id, samples: out, logWeights: null,
+              logMasses, logShift: !msg.normalized && refKeys.length === 0
+                ? Math.log(mass) : 0, n_eff: valid };
+          }
 
           if (mode === 'cdf') {
             // Inverse-CDF path. Build the analytical distribution once
@@ -633,8 +659,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           // per-i parametric) and loop per atom, redrawing until the
           // value lands in [lo, hi] or the per-atom budget is spent.
           const budget = Math.max(1, msg.budget | 0);
-          const refArrays = msg.refArrays || {};
-          const refKeys = Object.keys(refArrays);
+          const logMasses = refKeys.length > 0 && !msg.normalized
+            ? new Float64Array(count) : null;
           let totalDraws = 0;
           let n_eff = 0;
           if (refKeys.length === 0) {
@@ -645,6 +671,9 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
                 const draw = s.draw();
                 totalDraws++;
                 if (draw >= lo && draw <= hi) { v = draw; n_eff++; break; }
+              }
+              if (msg.normalized && Number.isNaN(v)) {
+                throw new Error('normalize(truncate): rejection budget exhausted');
               }
               out[i] = v;
             }
@@ -659,12 +688,18 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
               for (const k of refKeys) drawEnv[k] = refArrays[k][a];
               for (let r = 0; r < repeat; r++) {
                 let v = NaN;
-                for (let t = 0; t < budget; t++) {
+                // One proposal with an indicator is an unbiased restricted
+                // measure. Retry only when the caller explicitly normalizes.
+                for (let t = 0; t < (logMasses ? 1 : budget); t++) {
                   const draw = s.drawWith(drawEnv);
                   totalDraws++;
                   if (draw >= lo && draw <= hi) { v = draw; n_eff++; break; }
                 }
+                if (msg.normalized && Number.isNaN(v)) {
+                  throw new Error('normalize(truncate): rejection budget exhausted at atom ' + a);
+                }
                 out[a * repeat + r] = v;
+                if (logMasses && Number.isNaN(v)) logMasses[a] = -Infinity;
               }
             }
             state = s.getState();
@@ -677,7 +712,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             ? Math.log(n_eff / totalDraws)
             : -Infinity;
           return { type: 'samples', id, samples: out, logWeights: null,
-                   logShift, n_eff };
+                   logMasses, logShift: logMasses || msg.normalized ? 0 : logShift, n_eff };
         }
         case 'profileN': {
           // Profile-plot evaluator. Sweeps a single scalar input over

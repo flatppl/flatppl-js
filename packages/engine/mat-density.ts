@@ -112,9 +112,12 @@ function mcDensityOpts(ctx: any): any {
 // neither this function nor `applyReduce` may interpose on a node without a
 // marginal reduce.
 function _analyticMarginalReply(node: any, ctx: any, opts: any): any {
+  if (node.densityRefusal) throw new Error('density: ' + node.densityRefusal);
   const r = node.reduce;
   if (!r || r.kind !== 'marginal') return null;
   if (r.method === 'refuse') {
+    if (r.chain) throw new Error('density: kchain requires a closed form or finite '
+      + 'discrete enumeration (spec §06); ' + r.reason);
     throw new Error('density: the measure marginalises the stochastic ancestor(s) '
       + r.marginalize.join(', ') + ', and this engine has no exact answer for it '
       + 'here: ' + r.reason + '. Spec §06\'s `kchain` marginal rule, read across '
@@ -124,9 +127,17 @@ function _analyticMarginalReply(node: any, ctx: any, opts: any): any {
       + 'estimating so that a returned density is always exact; that is its own '
       + 'choice, not a spec requirement.');
   }
+  if (r.method === 'analytic-enumeration') {
+    const density = require('./density.ts');
+    const scores = Float64Array.from(r.terms, (term: any) => term.logw
+      + density.logDensity(r.body, opts.observed, { ...r.fixed, ...term.env }));
+    const out = new Float64Array((ctx.sampleCount | 0) || 1);
+    out.fill(empirical.logSumExp(scores) + (r.logShift || 0));
+    return { samples: out };
+  }
   if (r.method !== 'analytic-gaussian' && r.method !== 'analytic-mixture') return null;
   const lg = require('./linear-gaussian.ts');
-  const logp = lg.scoreGaussianMarginal(r.gaussian, opts.observed);
+  const logp = lg.scoreGaussianMarginal(r.gaussian, opts.observed) + (r.logShift || 0);
   const out = new Float64Array((ctx.sampleCount | 0) || 1);
   out.fill(logp);
   return { samples: out };
@@ -570,7 +581,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
          paramKwargs: d.paramKwargs, params: d.params }];
   const scores = terms.map((t: any) => {
     const node = clm.lowerMeasure(t.bodyIR || t.bodyName, ctx,
-      { derivation: Object.assign({}, d, t) });
+      { derivation: Object.assign({}, d, t), density: true });
     /* c8 ignore start */
     // lowerMeasure returning null is refused earlier by the cascade-prune
     // (derivationRefsValid), so a classified bayesupdate always lowers. Kept
@@ -705,7 +716,7 @@ function matLikelihoodDensity(d: any, ctx: any) {
       boundaries[k] = (theta as any)[field];
     }
   }
-  const node = clm.lowerMeasure(d.bodyIR || d.bodyName, ctx, { derivation: d, boundaries });
+  const node = clm.lowerMeasure(d.bodyIR || d.bodyName, ctx, { derivation: d, boundaries, density: true });
   if (!node) {
     return Promise.reject(new Error(
       'logdensityof(L, θ): cannot expand the likelihood body into measure IR'));
@@ -744,6 +755,9 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
     for (const x of node) resolveTruncateNormalizers(x, theta, ctx, seen);
     return;
   }
+  // BPP integrates its intensity's normalize/truncate algebra exactly when
+  // resolving bin rates; the generic scalar-density normalizer is not used.
+  if (node.kind === 'call' && node.op === 'BinnedPoissonProcess') return;
   if (node.kind === 'call' && node.op === 'normalize'
       && !node.massFrom
       && Array.isArray(node.args) && node.args.length === 1) {
@@ -957,9 +971,7 @@ function truncateLogMass(base: any, bounds: [number, number], ctx: any): number 
     // per-θ caching needed — the closed form IS the fast path). Infinite
     // bounds map to the CDF's limit (0 / 1) rather than evaluating the CDF
     // function at ±Infinity, mirroring forward-cdf.ts's own truncatedQuantile.
-    const Flo = Number.isFinite(lo) ? forwardCdf.cdf(base.kernel, lo, base.input) : 0;
-    const Fhi = Number.isFinite(hi) ? forwardCdf.cdf(base.kernel, hi, base.input) : 1;
-    const Z = Fhi - Flo;
+    const Z = forwardCdf.intervalProbability(base.kernel, base.input, lo, hi);
     if (!(Z > 0)) {
       throw new Error('density: normalize(truncate(' + base.kernel + ', S)) — mass over the '
         + 'truncation set is 0 (Z = 0 is undefined per spec §06)');
@@ -1711,6 +1723,8 @@ function collectNormalizeMassNodes(node: any, out: any, seen: any) {
     for (const x of node) collectNormalizeMassNodes(x, out, seen);
     return;
   }
+  // BPP owns exact intensity normalization, including named massFrom nodes.
+  if (node.kind === 'call' && node.op === 'BinnedPoissonProcess') return;
   if (node.kind === 'call' && node.op === 'normalize' && node.massFrom) {
     out.push(node);
   }
@@ -1922,19 +1936,8 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
   // logp(obs | M_i). Produces a per-i value (a scalar binding) — no
   // logWeights, no totalmass mutation.
   //
-  // chain MARGINALISATION: when the measure was originally a
-  // `kchain(prior, K)` (per spec §06 ν(B) = ∫ K(a, B) dμ(a)), the
-  // per-atom log-likelihoods we compute below are exactly the
-  // integrand evaluated at MC samples a_i ~ μ. The marginal
-  // log-density of the chain at obs is logsumexp_i { log p_K(obs |
-  // a_i) } − log N. We detect a kchain (marginalising) measure via
-  // the first-class derivation (kind:'jointchain' with
-  // marginalize:true).
-  //
-  // For N-ary kchain (engine-concepts §6 chain-associativity), the
-  // retained (n−1)-joint history (node.marginalHistoryBody) materialises
-  // ONCE and we bind its variate columns as the per-atom refArrays the
-  // last kernel's hole-rewired cat consumes.
+  // Kchain's marginal is evaluated exactly or refused by its CLM reduction;
+  // no prior/history draws are needed for an exact density query (§06).
   // Lower the measure ONCE to its canonical form (lowerMeasure): peel/expand,
   // inline derived value bindings down to the boundary inputs OR apply the
   // generative MC marginalising-pushforward form (§06 case-3), declare the
@@ -1943,7 +1946,7 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
   // carry reduce={marginal} for a kchain. The marginal reduction is now a
   // property of the node (applyReduce), not a re-derived isChain/naryKchain
   // flag scattered through this function.
-  const node = clm.lowerMeasure(d.measureName, ctx);
+  const node = clm.lowerMeasure(d.measureName, ctx, { density: true });
   if (!node) {
     return Promise.reject(new Error('logdensityof: cannot expand measure "'
       + d.measureName + '" into a self-contained IR'));
@@ -1956,7 +1959,7 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
   // history body (node.marginalHistoryBody) — the SAME structure matClm
   // samples on the sample side — so density and sample reconstruct the history
   // through ONE mechanism (the dependent-threaded retain joint), not two.
-  const innerJointP = node.marginalHistoryBody
+  const innerJointP = node.marginalHistoryBody && node.reduce?.method === 'logsumexp-logN'
     ? require('./materialiser.ts').materialiseMeasureIR(node.marginalHistoryBody, ctx)
     : Promise.resolve(null);
   const observed = orchestrator.resolveIRToValue(

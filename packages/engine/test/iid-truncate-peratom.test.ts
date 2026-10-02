@@ -18,6 +18,32 @@ const { ctxFor } = require('./density/regression-baseline.test.ts');
 function mean(a: number[]) { let s = 0; for (const v of a) s += v; return s / a.length; }
 function std(a: number[]) { const m = mean(a); let s = 0; for (const v of a) s += (v - m) * (v - m); return Math.sqrt(s / a.length); }
 
+test('truncation keeps each parameter slice mass and normalization cancels it', async () => {
+  for (const copies of [1, 2]) {
+    for (const normalized of [false, true]) {
+      const inner = 'truncate(Uniform(interval(theta,theta+1)),interval(0,1.5))';
+      const { ctx } = ctxFor(`theta~Bernoulli(0.5)
+M=iid(${normalized ? `normalize(${inner})` : inner},${copies})`, 64);
+      const theta = (await ctx.getMeasure('theta')).samples;
+      const m = await ctx.getMeasure('M');
+      // Conditional masses are exactly 1 and 1/2; IID raises that slice's
+      // mass to the number of copies, with one prior weighting per outer atom.
+      const masses = Array.from(theta, (x: any) => normalized ? 1 : (x ? 0.5 : 1) ** copies);
+      assert.ok(Math.abs(Math.exp(m.logTotalmass) - mean(masses)) < 1e-12);
+      for (let i = 0; i < theta.length; i++) {
+        const ratio = (m.logWeights?.[i] ?? 0) - (m.logWeights?.[0] ?? 0);
+        assert.ok(Math.abs(ratio - Math.log(masses[i] / masses[0])) < 1e-12);
+      }
+      assert.ok(Array.from(m.samples).every((x: any) => x >= 0 && x <= 1.5));
+    }
+  }
+});
+
+test('normalized fixed truncation has unit IID mass', async () => {
+  const { ctx } = ctxFor('M=iid(normalize(truncate(Uniform(interval(0,2)),interval(0,1))),2)', 8);
+  assert.equal((await ctx.getMeasure('M')).logTotalmass, 0);
+});
+
 test('iid(truncate(Normal(mu,1),[0,inf)), k) with per-atom mu: every draw finite', async () => {
   const src = `
 mu ~ Normal(0.5, 1.0)

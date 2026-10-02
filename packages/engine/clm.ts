@@ -35,8 +35,7 @@
 //             HOW the marginal is evaluated — the shared-ancestor marginal
 //             admits no stochastic answer (see the H8 branch below for the
 //             §06 anchor and the owner decision):
-//               'logsumexp-logN'   — the kchain reduction over the fed prior
-//                                    atoms, and the vacuous no-op case where
+//               'logsumexp-logN'   — the vacuous no-op case where
 //                                    every ancestor is a threaded record field
 //               'analytic-gaussian'— the shared-ancestor closed form
 //                                    (linear-gaussian.ts), carried on
@@ -45,6 +44,8 @@
 //                                    ENUMERATED finite discrete ancestor,
 //                                    carried on reduce.gaussian.mixture
 //                                    (deterministic and exact, not MC)
+//               'analytic-enumeration' — a finite chain prior summed against
+//                                    the final kernel's exact leaf density
 //               'refuse'           — a marginal this engine cannot close;
 //                                    reduce.reason says why, and the density
 //                                    consumer throws it
@@ -603,18 +604,15 @@ function _buildBody(input: any, deriv: any, ctx: any, opts?: any): { body: any; 
 // variate), `derivationRefsValid` turns the refusal into a dropped derivation,
 // and the density query fails with the flat "no derivation".
 //
-// A MARGINALIZING chain (`kchain`) is deliberately NOT read through a wrapper.
-// Its lowering also needs the `marginal` reduce, which `_reduce` reads off
-// `deriv.kind` and a wrapper does not carry, so declaring the boundary here
-// would drop the marginalisation silently. A wrapped `kchain` keeps whatever it
-// had.
+// Marginal chains keep their reduction through the same wrappers; `_reduce`
+// adds the wrapper's constant log weight after evaluating the integral.
 function _chainOf(deriv: any, ctx: any): any {
   let d = deriv;
   // A hop cap rather than a cycle set: `buildDerivations` already prunes a
   // cyclic derivation, so this only bounds a pathological wrapper tower.
   for (let hop = 0; d && hop < 8; hop++) {
     if (d.kind === 'jointchain') {
-      return (Array.isArray(d.steps) && (d === deriv || !d.marginalize)) ? d : null;
+      return Array.isArray(d.steps) ? d : null;
     }
     // Only a CONSTANT mass layer is transparent. A per-atom weight (`weightIR`)
     // is a function of the variate, not a shift on the chain.
@@ -666,22 +664,111 @@ function _boundarySet(deriv: any, ctx: any): Set<string> {
 // marginal reduce — it reweights prior atoms; its per-event MC marginal (when
 // the likelihood is generative) rides mcmarginal inside body.
 //
-// This kchain/jointchain marginal is a MONTE-CARLO estimator: applyReduce
-// averages the per-atom scores over the prior's SAMPLED atoms, which is the one
-// place §06's `kchain` sentence applies literally ("an engine evaluates it in
-// closed form, or by enumeration of a discrete latent, and otherwise reports a
-// static error") and the engine does neither. Out of scope for the wave that
-// made the shared-ancestor marginal exact; tracked as the third open MC density
-// site in flatppl-dev/TODO-flatppl-js.md. `test/kchain-density-relabelled-prior.
-// test.ts` pins it at 8000 prior atoms against a 0.1-nat tolerance, which is the
-// tell: an exact density would not need either number.
-function _reduce(deriv: any): any {
-  if (deriv && deriv.kind === 'jointchain' && deriv.marginalize) {
-    const base = Array.isArray(deriv.steps) ? deriv.steps[0] : null;
-    return {
-      kind: 'marginal', method: 'logsumexp-logN',
-      over: (base && base.ref != null) ? base.ref : null,
+// §06 requires a closed form, finite discrete enumeration, or a static error.
+// Give each fed chain boundary its actual prior law in a local context, then
+// reuse the Gaussian recognizer. No sampling state enters the density result.
+function _reduce(deriv: any, body: any, ctx: any, opts: any): any {
+  const chain = _chainOf(deriv, ctx);
+  if (chain && chain.marginalize) {
+    deriv = chain;
+    let logShift = 0;
+    while (body && body.op === 'logweighted' && body.args?.length === 2) {
+      const weight = orchestrator.resolveIRToValue(body.args[0], ctx.bindings, ctx.fixedValues);
+      if (typeof weight !== 'number') break;
+      logShift += weight;
+      body = body.args[1];
+    }
+    const base = deriv.steps[0];
+    const bindings = new Map<string, any>(ctx.bindings);
+    const derivations = Object.assign({}, ctx.derivations);
+    const local = { ...ctx, bindings, derivations };
+    const latents: string[] = [];
+    const identities = new Map<string, string>();
+    const massIdentities = new Set<string>();
+    const add = (name: string, law: any, identity = name) => {
+      let shift = 0;
+      while (law?.op === 'logweighted' && law.args?.length === 2) {
+        const weight = orchestrator.resolveIRToValue(law.args[0], ctx.bindings, ctx.fixedValues);
+        if (typeof weight !== 'number') break;
+        shift += weight;
+        law = law.args[1];
+      }
+      if (!massIdentities.has(identity)) logShift += shift;
+      massIdentities.add(identity);
+      // A reified deterministic value is a zero-noise node in the copied DAG.
+      if (law && !_isMeasureNode(law)) law = { kind: 'call', op: 'Dirac', args: [law] };
+      bindings.set(name, { name, phase: 'stochastic', ir: law });
+      derivations[name] = { kind: 'sample', distIR: law };
+      latents.push(name);
+      identities.set(name, identity);
     };
+    const history = _marginalHistoryBody(deriv, ctx);
+    if (history && history.args) {
+      history.args.forEach((law: any, i: number) => add(deriv.steps[i].var, law));
+    } else if (deriv.steps.length === 2) {
+      const law = orchestrator.expandMeasure(base.ref, ctx);
+      if (law && law.fields) {
+        const keys = _componentKeys(law, base.ref, ctx);
+        law.fields.forEach((field: any, i: number) => {
+          const key = keys && keys[i];
+          add(field.name, field.value, key ? _aliasChain(key, ctx, true).root : field.name);
+        });
+      } else if (law?.op === 'joint' && law.args) {
+        const keys = _componentKeys(law, base.ref, ctx);
+        const names = law.args.map((_law: any, i: number) => '%chain:' + base.ref + ':' + i);
+        law.args.forEach((part: any, i: number) => add(names[i], part,
+          keys?.[i] ? _aliasChain(keys[i], ctx, true).root : names[i]));
+        body = irWalk.mapIR(body, (ir: any) => ir?.kind === 'ref'
+          && ir.ns === 'self' && ir.name === base.ref
+          ? { kind: 'call', op: 'vector', args: names.map((name: string) => ({ kind: 'ref', ns: 'self', name })) }
+          : ir);
+      } else add(base.ref, law);
+    }
+    const blocked = new Set<string>(Object.keys(opts?.boundaries || {}));
+    for (const name of opts?.freeInputs || []) blocked.add(name);
+    const lg = require('./linear-gaussian.ts');
+    const g = latents.length ? lg.recogniseGaussianMarginal(body, latents, local,
+      blocked, { keyOf: (name: string) => identities.get(name)
+        || _aliasChain(name, ctx, true).root }) : { refuse: 'unsupported chain history' };
+    const common = { kind: 'marginal', over: base.ref, marginalize: latents,
+      chain: true, logShift };
+    if (!g.refuse) return { ...common,
+      method: g.mixture ? 'analytic-mixture' : 'analytic-gaussian', gaussian: g };
+
+    // A finite latent can be summed exactly even when the final kernel is not
+    // Gaussian. The existing finite-support recognizer enforces its 256-atom cap.
+    let terms: any[] = [{ env: {}, logw: 0 }];
+    const enumerated = new Map<string, string>();
+    for (const name of latents) {
+      const identity = identities.get(name)!;
+      const previous = enumerated.get(identity);
+      if (previous) {
+        terms = terms.map(term => ({ ...term, env: { ...term.env, [name]: term.env[previous] } }));
+        continue;
+      }
+      enumerated.set(identity, name);
+      const support = lg.enumerateFiniteMeasure(derivations[name].distIR, local);
+      if (!support || support.refuse || terms.length * support.atoms.length > 256) {
+        terms = []; break;
+      }
+      terms = terms.flatMap(term => support.atoms.map((atom: number, i: number) => ({
+        env: { ...term.env, [name]: atom }, logw: term.logw + support.logMass[i],
+      })));
+    }
+    if (terms.length && latents.length && blocked.size === 0
+        && body.kind === 'call' && builtins.DISTRIBUTIONS.has(body.op)) {
+      const refs = orchestrator.collectSelfRefs(body);
+      let closed = true;
+      const fixed: any = {};
+      for (const name of refs) {
+        if (latents.includes(name)) continue;
+        const b = bindings.get(name);
+        if (!b || b.phase !== 'fixed') { closed = false; break; }
+        fixed[name] = orchestrator.resolveIRToValue(b.ir, bindings, ctx.fixedValues);
+      }
+      if (closed) return { ...common, method: 'analytic-enumeration', body, terms, fixed };
+    }
+    return { ...common, method: 'refuse', reason: g.refuse };
   }
   return null;
 }
@@ -866,7 +953,7 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   const built = _buildBody(input, deriv, ctx, opts);
   if (!built) return null;
   const { body, boundarySet, mc } = built;
-  let reduce = _reduce(deriv);
+  let reduce = _reduce(deriv, body, ctx, opts);
   const { inputs, missing } = _enumerateInputs(body, deriv, boundarySet, ctx, opts);
 
   // Marginalised stochastic ancestor (H8 — the kchain/lawof unification). A
@@ -989,6 +1076,10 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   }
 
   const node: any = { kind: 'call', op: 'clm', body, inputs, reduce };
+  if (opts?.density && !reduce?.chain && _containsMarginalChain(input, ctx)) {
+    node.densityRefusal = 'a nested kchain density requires a closed form or finite '
+      + 'discrete enumeration (spec §06); this composition is not supported';
+  }
   if (mc) node.mc = true;          // body carries an mcmarginal recipe → MC opts
   // Explicit-boundary lowering (viewer kernel/profile plot): the boundary
   // VALUES are supplied by the caller and must be FED (matClm's feed path),
@@ -1010,6 +1101,36 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   const hist = _marginalHistoryBody(deriv, ctx);
   if (hist) node.marginalHistoryBody = hist;
   return node;
+}
+
+// Expansion can erase a nested chain's marginal boundary. Keep density demand
+// separate from sampling, which can still draw through every such boundary.
+function _containsMarginalChain(input: any, ctx: any, seen = new Set<string>()): boolean {
+  if (typeof input === 'string') {
+    if (seen.has(input)) return false;
+    seen.add(input);
+    const d = ctx.derivations?.[input];
+    if (d?.kind === 'jointchain' && d.marginalize) return true;
+    return _containsMarginalChain(ctx.bindings?.get(input)?.ir, ctx, seen);
+  }
+  let found = false;
+  irWalk.walkIR(input, (ir: any) => {
+    if (found) return;
+    if (ir?.kind === 'call' && ir.op === 'kchain') found = true;
+    if (ir?.kind === 'ref' && ir.ns === 'self') {
+      found = _containsMarginalChain(ir.name, ctx, seen);
+    }
+  });
+  return found;
+}
+
+/** The shared static/runtime density-demand gate; construction stays legal. */
+function chainDensityRefusal(input: any, ctx: any, opts?: any): string | null {
+  const node = lowerMeasure(input, ctx, { ...opts, density: true });
+  if (node?.densityRefusal) return node.densityRefusal;
+  return node?.reduce?.chain && node.reduce.method === 'refuse'
+    ? 'kchain requires a closed form or finite discrete enumeration (spec §06); '
+      + node.reduce.reason : null;
 }
 
 // Build the retained (n−1)-joint history body IR for an N-ary marginal kchain
@@ -1234,5 +1355,5 @@ function assertFedCoverage(node: any, refArrays: any, where: string): void {
 }
 
 module.exports = {
-  lowerMeasure, feedInputs, describeInputShape, assertFedCoverage,
+  lowerMeasure, feedInputs, describeInputShape, assertFedCoverage, chainDensityRefusal,
 };

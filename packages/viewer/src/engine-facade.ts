@@ -22,8 +22,13 @@ export function tryGetMeasure(ctx: Ctx, name: any) {
 }
 
 export function getMeasure(ctx: Ctx, name: any) {
-  if (ctx.measureCache.has(name)) return Promise.resolve(ctx.measureCache.get(name));
-  if (!ctx.derivationsState) return Promise.reject(new Error('no model loaded'));
+  const cache = ctx.measureCache;
+  const state = ctx.derivationsState;
+  if (cache.has(name)) return Promise.resolve(cache.get(name));
+  if (!state) return Promise.reject(new Error('no model loaded'));
+  // A source/config update replaces the cache. Keep completions in their
+  // original cache and refuse recursion across that model boundary.
+  const isCurrent = () => ctx.measureCache === cache && ctx.derivationsState === state;
 
   // MCMC/sampling backends (mh / emcee / nested / ...) for a bayesupdate
   // posterior run OFF the main thread in a worker pool — non-blocking, and
@@ -32,12 +37,12 @@ export function getMeasure(ctx: Ctx, name: any) {
   // Only the posterior binding takes this path; its sub-measures (priors,
   // etc.) materialise normally inside each worker. Other bindings under any
   // backend use the main-thread path below.
-  const io = ctx.inferenceOpts;
-  const deriv = ctx.derivationsState.derivations[name];
+  const io = ctx.inferenceOpts ? { ...ctx.inferenceOpts } : ctx.inferenceOpts;
+  const deriv = state.derivations[name];
   if (io && (io.backend === 'mh' || io.backend === 'ram' || io.backend === 'slice' || io.backend === 'emcee' || io.backend === 'demcz' || io.backend === 'amis' || io.backend === 'smc' || io.backend === 'elliptical-slice-sampler' || io.backend === 'nested')
       && deriv && deriv.kind === 'bayesupdate' && (ctx as any).currentSource) {
     const p = runMcmcPool(ctx, name, io);
-    p.then((m: any) => ctx.measureCache.set(name, m), () => {});
+    p.then((m: any) => cache.set(name, m), () => {});
     return p;
   }
   // All per-kind materialisation lives in the engine — the viewer's
@@ -47,31 +52,35 @@ export function getMeasure(ctx: Ctx, name: any) {
   // Measure record. Recursion is handled by passing getMeasure
   // itself back in so child materialisations hit the same cache.
   const promise = FlatPPLEngine.materialiser.materialiseMeasure(name, {
-    derivations: ctx.derivationsState.derivations,
-    bindings:    ctx.derivationsState.bindings,
-    fixedValues: ctx.derivationsState.fixedValues,
-    moduleRegistry: ctx.derivationsState.moduleRegistry,
+    derivations: state.derivations,
+    bindings:    state.bindings,
+    fixedValues: state.fixedValues,
+    moduleRegistry: state.moduleRegistry,
     // Bind ctx into 1-arg callbacks: the engine's
     // materialiseMeasure expects callbacks with the original
     // signatures (`getMeasure(name)`, `sendWorker(msg)`); our
     // hoisted versions added `ctx` as a first parameter, so we
     // close over `ctx` here to keep the engine ABI unchanged.
-    getMeasure:  function (n: any) { return getMeasure(ctx, n); },
-    sendWorker:  function (m: any) { return sendWorker(ctx, m); },
+    getMeasure:  function (n: any) {
+      return isCurrent() ? getMeasure(ctx, n) : Promise.reject(new Error('model changed'));
+    },
+    sendWorker:  function (m: any) {
+      return isCurrent() ? sendWorker(ctx, m) : Promise.reject(new Error('model changed'));
+    },
     sampleCount: ctx.SAMPLE_COUNT,
     rootSeed:    ctx.rootSeed,
     rejectionBudget: ctx.REJECTION_BUDGET,
     // Posterior backend selection (read by the engine's matBayesupdate).
     // Propagated to child materialisations too; only bayesupdate bindings act
     // on it, so forward measures are unaffected.
-    inferenceOpts: ctx.inferenceOpts,
+    inferenceOpts: io,
   });
   // Cache-set rides its own subscription; give it a no-op rejection handler
   // (like the MCMC branch above) so a materialise failure — e.g. getMeasure
   // on a free `elementof` input with no derivation, which callers reach via
   // the soft-failing tryGetMeasure — doesn't surface as an unhandled
   // rejection. The returned `promise` still rejects for the caller.
-  promise.then(function(m: any) { ctx.measureCache.set(name, m); }, function() {});
+  promise.then(function(m: any) { cache.set(name, m); }, function() {});
   return promise;
 }
 

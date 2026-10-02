@@ -29,7 +29,7 @@ const {
   SAMPLEABLE_DISTRIBUTIONS,
   resolveCallableAlias,
 } = require('./ir-shared.ts');
-const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS } = require('./builtins.ts');
+const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS, ALL_KNOWN } = require('./builtins.ts');
 
 // =====================================================================
 // Inline-subexpression lifting
@@ -78,6 +78,7 @@ function argSignature(op: string, numArgs: number): string[] | null {
   if (op === 'draw')                              return ['measure'];
   if (op === 'weighted' || op === 'logweighted')  return ['value', 'measure'];
   if (op === 'normalize')                         return ['measure'];
+  if (op === 'relabel')                           return ['measure', 'value'];
   if (op === 'superpose')                         return Array(numArgs).fill('measure');
   // NOTE: `ifelse` is intentionally NOT given a measure-arg
   // signature. ifelse is dual (value- OR measure-valued); forcing
@@ -2901,6 +2902,13 @@ function liftInlineSubexpressions(bindings: any) {
 
   function inlineOnce(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
+    if (astArg.builtin) return astArg;
+    // §04 explicit self qualification selects the same current-module callable.
+    if (astArg.callee?.type === 'FieldAccess'
+        && astArg.callee.object?.type === 'Identifier'
+        && astArg.callee.object.name === 'self' && out.has(astArg.callee.field)) {
+      astArg = { ...astArg, callee: makeIdent(astArg.callee.field, astArg.callee.loc) };
+    }
     // Expression-headed call (spec §11 / §05 Postfix Call*): the callee
     // is an INLINE reification applied directly — `functionof(e, p=a)(2.5)`,
     // `(x -> 2*x)(3.0)` (the parser desugars lambdas to functionof
@@ -2928,6 +2936,11 @@ function liftInlineSubexpressions(bindings: any) {
     // `f_b = common.f_b` reduces to this after linking. `resolveCallableAlias`
     // is the ONE alias-chain follow (shared with signatureOf), cycle-guarded.
     const fnName = resolveCallableAlias(astArg.callee.name, out);
+    const alias = out.get(fnName)?.node?.value;
+    if (alias?.type === 'FieldAccess' && alias.object?.type === 'Identifier'
+        && alias.object.name === 'base' && ALL_KNOWN.has(alias.field)) {
+      return { ...astArg, callee: makeIdent(alias.field, astArg.loc), builtin: true };
+    }
     if (fnName !== astArg.callee.name) {
       return inlineOnce(Object.assign({}, astArg, { callee: makeIdent(fnName, astArg.loc) }));
     }
@@ -2973,6 +2986,16 @@ function liftInlineSubexpressions(bindings: any) {
     // synthesis, which is what makes the retained semantics fall out; see
     // `_jointFanoutAsFunctionof`.
     if (fnBinding.type === 'call') {
+      const rhs = fnBinding.node && fnBinding.node.value;
+      if (fnBinding.inferredType?.kind === 'kernel' && rhs?.type === 'CallExpr'
+          && rhs.callee?.type === 'Identifier' && rhs.callee.name === 'pushfwd'
+          && rhs.args?.length === 2) {
+        // §06 uniform kernel extension: pushfwd(f, K)(x) = pushfwd(f, K(x)).
+        return { ...cloneAst(rhs), args: [cloneAst(rhs.args[0]), {
+          type: 'CallExpr', callee: cloneAst(rhs.args[1]),
+          args: cloneAst(astArg.args), loc: astArg.loc,
+        }] };
+      }
       const synth = _jointFanoutAsFunctionof(fnBinding);
       if (synth) return _inlineApplication(astArg, { type: 'functionof' }, synth);
       return astArg;
@@ -3595,6 +3618,9 @@ function liftInlineSubexpressions(bindings: any) {
     function walk(node: any): any {
       if (node == null || typeof node !== 'object') return node;
       if (Array.isArray(node)) return node.map(walk);
+      // A nested fn owns its holes, independently of this application's args.
+      if (node.type === 'CallExpr' && node.callee?.type === 'Identifier'
+          && node.callee.name === 'fn' && (node.builtin || !bindingNames.has('fn'))) return node;
       if (node.type === 'Hole') {
         const arg = positional[i++];
         return arg ? cloneAst(arg) : node;
@@ -3611,6 +3637,8 @@ function liftInlineSubexpressions(bindings: any) {
     (function walk(node: any) {
       if (node == null || typeof node !== 'object') return;
       if (Array.isArray(node)) { for (const c of node) walk(c); return; }
+      if (node.type === 'CallExpr' && node.callee?.type === 'Identifier'
+          && node.callee.name === 'fn' && (node.builtin || !bindingNames.has('fn'))) return;
       if (node.type === 'Hole') { n++; return; }
       for (const k in node) walk(node[k]);
     })(ast);
@@ -3676,6 +3704,11 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
         return true;
       }
       if (!ir.op || !EVALUABLE_OPS.has(ir.op)) return false;
+      if (ir.op === 'get_field') {
+        const args = ir.args || [];
+        return args.length === 2 && isEvaluable(args[0])
+          && args[1].kind === 'lit' && typeof args[1].value === 'string';
+      }
       // rand(state, measure) — the measure arg is a measure IR passed
       // verbatim to the trace evaluator, NOT a value expression. So we
       // only require the state (first) arg to be evaluable; whether

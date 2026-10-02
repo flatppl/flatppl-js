@@ -49,6 +49,15 @@ const ARG_NAMES: Record<string, string[]> = {
 // rate=2)`) — resolve each declared param name from `kwargs[name]` when present,
 // else the positional slot. `node` is the `{op, args?, kwargs?}` call IR.
 function resolveParams(distOp: string, node: any, env: Record<string, any>): any {
+  // Uniform's sole parameter is a support set (§08), including when it is
+  // nested under truncate. Its quantile/CDF helpers consume the endpoints.
+  if (distOp === 'Uniform') {
+    const support = node.kwargs?.support ?? node.args?.[0];
+    if (support?.kind !== 'call' || support.op !== 'interval') {
+      throw new Error('prior-transform: Uniform expects interval(lo,hi) support');
+    }
+    return { lo: evalBound(support.args[0], env), hi: evalBound(support.args[1], env) };
+  }
   const names = ARG_NAMES[distOp];
   if (!names) throw new Error(`prior-transform: unsupported base distribution '${distOp}'`);
   const kwargs = node && node.kwargs, args = (node && node.args) || [];
@@ -124,20 +133,12 @@ function planLatent(measureIR: any, ctx: any): LatentPlan {
     };
   }
   if (op === 'Uniform') {
-    // `Uniform` takes a single `interval(lo,hi)` measure-arg (not two positional
-    // scalars) — resolve lo/hi from the interval's own args and quantile directly,
-    // rather than going through resolveParams/ARG_NAMES.
-    const arg0 = measureIR.args && measureIR.args[0];
-    if (!arg0 || arg0.kind !== 'call' || arg0.op !== 'interval') {
-      throw new Error(`prior-transform: Uniform expects a single interval(lo,hi) argument, got '${arg0 && arg0.op}'`);
-    }
-    const loIR = arg0.args[0];
-    const hiIR = arg0.args[1];
+    // Uniform has an exact affine quantile; resolve its support in the same
+    // place as the truncated-Uniform plan below.
     return {
       count: 1,
       realise: (u, off, env) => {
-        const lo = +sampler.evaluateExpr(loIR, env);
-        const hi = +sampler.evaluateExpr(hiIR, env);
+        const { lo, hi } = resolveParams(op, measureIR, env);
         return lo + u[off] * (hi - lo);
       },
     };
