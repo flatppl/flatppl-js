@@ -408,11 +408,22 @@ function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array
   A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('eigen: A must be a square matrix');
-  // Tolerance scales with the input magnitude — Frobenius norm of A.
+  // Scale norm and rotation-angle arithmetic to avoid overflow. Keep
+  // the work entries in their original units: normalizing the entire
+  // matrix could erase a tiny diagonal beside a much larger block.
+  // Nonfinite inputs retain their existing propagation; zero needs no scaling.
+  let scale = 0;
+  for (let i = 0; i < n * n; i++) scale = Math.max(scale, Math.abs(A.data[i]));
+  if (scale === 0 || !Number.isFinite(scale)) scale = 1;
+  // The convergence tolerance uses the normalized Frobenius norm;
+  // symmetry retains its relative tolerance and absolute floor in A's units.
   let frob2 = 0;
-  for (let i = 0; i < n * n; i++) frob2 += A.data[i] * A.data[i];
+  for (let i = 0; i < n * n; i++) {
+    const v = A.data[i] / scale;
+    frob2 += v * v;
+  }
   const tol = _JACOBI_TOL_REL * Math.sqrt(frob2);
-  if (!_isSymmetric(A, n, Math.max(tol, 1e-10))) {
+  if (!_isSymmetric(A, n, Math.max(tol * scale, 1e-10))) {
     throw new Error('eigen: only symmetric matrices supported in this version '
       + '(non-symmetric requires complex-output path; deferred)');
   }
@@ -421,8 +432,10 @@ function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array
   const M = new Float64Array(n * n);
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
-      const v = 0.5 * (A.data[i * n + j] + A.data[j * n + i]);
-      M[i * n + j] = v;
+      const a = A.data[i * n + j], b = A.data[j * n + i];
+      const sum = a + b;
+      // Halve after adding when possible to preserve subnormal entries.
+      M[i * n + j] = Number.isFinite(sum) ? 0.5 * sum : 0.5 * a + 0.5 * b;
     }
   }
   // V starts as identity; will hold eigenvectors as columns.
@@ -434,17 +447,17 @@ function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array
     let off = 0;
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const v = M[i * n + j];
+        const v = M[i * n + j] / scale;
         off += v * v;
       }
     }
-    if (off < tol * tol) break;
+    if (off < tol * tol || (off === 0 && tol === 0)) break;
 
     // Cyclic sweep: visit every (p, q) pair with p < q.
     for (let p = 0; p < n - 1; p++) {
       for (let q = p + 1; q < n; q++) {
         const apq = M[p * n + q];
-        if (Math.abs(apq) < tol) continue;
+        if (Math.abs(apq / scale) < tol) continue;
         const app = M[p * n + p];
         const aqq = M[q * n + q];
         // Compute c, s for the rotation that zeros apq using the
@@ -458,7 +471,7 @@ function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array
         // from NR — combined with the NR rotation convention this
         // corrupted off-diagonal updates on n ≥ 3 matrices (caught by
         // the 3×3 round-trip test before commit).
-        const theta = (aqq - app) / (2 * apq);
+        const theta = (aqq / scale - app / scale) / (2 * (apq / scale));
         let t: number;
         if (Math.abs(theta) > 1e150) {
           // Avoid overflow when apq is tiny relative to (aqq - app).
