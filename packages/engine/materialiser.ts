@@ -1060,13 +1060,9 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
 // all-equal array, which preserves `propagateLogWeights`'s reference-identity
 // dedupe for the shapes that were already right.
 //
-// Summing is right for every stream that can reach `innerM.logWeights`, because
-// only a MEASURE handler introduces per-position weights and only VALUE draws
-// are held constant across the repeat axis (`tileMeasureAtomMajor`). A value
-// binding reached in measure position is a reified law's variate, and those are
-// exempt from the tiling, so a tiled — block-constant — stream never becomes a
-// measure handler's `parent.logWeights`. The guard below tests that invariant on
-// the data rather than trusting it.
+// Shared value-draw weights are removed by the repeat-axis context before this
+// fold. The remaining weights belong to each coordinate, even when a slice
+// mass depends only on their common parameter and is equal within a block.
 //
 // The result is renormalised to sum to one in log space. Absolute mass is
 // separate metadata: matIid preserves it when the algebra certifies a fixed
@@ -1087,9 +1083,6 @@ function _foldIidBlockLogWeights(
   }
   if (allEqual) return null;
   /* c8 ignore start */
-  // Two guards over shapes the engine cannot currently produce. Both are
-  // wrong-number risks, so neither may fall through to the fold.
-  //
   // The weight axis must be the inflated N·k axis: the inner measure is
   // materialised at `sampleCount = N * k`, so a different length means some
   // handler returned an ensemble off the repeat axis and the k-block fold would
@@ -1099,26 +1092,6 @@ function _foldIidBlockLogWeights(
       + lw.length + ' importance weights for ' + N + ' atoms × ' + k
       + ' inner draws; the fallback cannot fold a weight axis it cannot align '
       + 'with the repeat axis');
-  }
-  // Weights that vary across atoms but are EXACTLY equal within every block
-  // depend on the atom, not on the coordinate — one weighting event shared by
-  // the block, which summing would raise to the k-th power. A genuine
-  // per-coordinate weight cannot hit float equality k times per atom over N
-  // atoms, so this is the shared-stream invariant above failing, and the summed
-  // array cannot be decomposed afterwards. Refuse rather than guess.
-  let blockConstant = k > 1;
-  for (let b = 0; blockConstant && b < N; b++) {
-    for (let j = 1; j < k; j++) {
-      if (lw[b * k + j] !== lw[b * k]) { blockConstant = false; break; }
-    }
-  }
-  if (blockConstant) {
-    throw new Error('iid: the inner measure "' + fromName + '" gives all '
-      + k + ' inner draws of an atom the SAME importance weight, so the weight '
-      + 'is a shared per-atom event, not one per coordinate; folding it as a '
-      + 'product would raise it to the power ' + k + ' (spec §06 iid, the '
-      + 'product measure M^⊗N). Not implemented rather than silently '
-      + 'mis-weighted');
   }
   /* c8 ignore stop */
   const out = new Float64Array(N);
@@ -1140,7 +1113,7 @@ function _foldIidBlockLogWeights(
   }
   /* c8 ignore stop */
   for (let b = 0; b < N; b++) out[b] -= lse;
-  return out;
+  return _registerAtomWeightEvent(out);
 }
 
 // Combine the k-block coordinate product with the weight streams the repeat
@@ -1169,8 +1142,6 @@ function _combineIidAtomWeights(
   blockLW: Float64Array | null, sharedLW: Float64Array[], N: number,
 ): Float64Array | null {
   if (!sharedLW.length) return blockLW;
-  const out = new Float64Array(N);
-  if (blockLW) out.set(blockLW);
   for (const w of sharedLW) {
     /* c8 ignore start */
     // A shared stream is the PARENT-N measure matIid tiled, so its axis is N by
@@ -1182,12 +1153,13 @@ function _combineIidAtomWeights(
         + 'cannot align a weight axis with the atom axis');
     }
     /* c8 ignore stop */
-    for (let i = 0; i < N; i++) out[i] += w[i];
   }
-  const lse = empirical.logSumExp(out);
+  const joined = empirical.propagateLogWeights(
+    (blockLW ? [blockLW] : []).concat(sharedLW).map(logWeights => ({ logWeights })));
+  const lse = empirical.logSumExp(joined);
   /* c8 ignore start */
-  // Same guard as the block fold's: every atom weightless or infinite leaves
-  // `out[i] -= lse` writing NaN. Unreachable from a `normalize` parent, whose
+  // Same guard as the block fold's: a non-finite joint normalizer would make
+  // the subtraction below produce NaN. Unreachable from a `normalize` parent, whose
   // weights already sum to one.
   if (!Number.isFinite(lse)) {
     throw new Error('iid: the weight streams shared across the repeat axis give '
@@ -1195,8 +1167,9 @@ function _combineIidAtomWeights(
       + 'normalize undefined when Z is zero or infinite');
   }
   /* c8 ignore stop */
-  for (let i = 0; i < N; i++) out[i] -= lse;
-  return out;
+  if (lse === 0) return joined;
+  const out = Float64Array.from(joined, (w: number) => w - lse);
+  return lineage.derive(out, joined, [lineage.newEvent(null, -lse)]);
 }
 
 // The weight-carrying fields a RESOLVED-LEAF `iid` inherits from the parameter
@@ -1419,8 +1392,8 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     // Weight streams a tiled value draw brings in — ONE weighting event per
     // atom, shared by its k inner draws, so they are held OFF the inflated
     // per-position axis and folded into the atom weight once
-    // (`_combineIidAtomWeights`). Deduped by array reference, the same
-    // independence contract `propagateLogWeights` uses.
+    // (`_combineIidAtomWeights`). Repeated arrays are collected once here;
+    // the final fold also de-duplicates events shared by distinct arrays.
     const sharedAtomLW: Float64Array[] = [];
     const sharedSeen = new Set<Float64Array>();
     const inflatedCtx: any = Object.assign({}, ctx, {
@@ -2491,11 +2464,45 @@ function _superposeCellsPerAtom(lifted: any[], sc: number): number {
   return lifted.every((l: any) => l.samples.length === m * sc) ? m : 1;
 }
 
+// Captured value nodes retain their atom identity across component traces.
+// Walk the bindings before measure expansion: Dirac(theta) and lawof(theta)
+// both classify as aliases, while expanding them loses that shared identity.
+function _superposeCapturedParents(names: string[], ctx: any): Promise<any[][]> {
+  if (!ctx.bindings) return Promise.resolve(names.map(() => []));
+  const { walkIRScoped } = require('./ir-walk.ts');
+  return Promise.all(names.map(name => {
+    const captures = new Set<string>();
+    const visited = new Map<string, Set<string>>();
+    const visit = (nn: string, shadowed: Set<string>) => {
+      if (shadowed.has(nn) || ctx._extraRefArrays?.[nn] != null) return;
+      const key = [...shadowed].sort().join('\0');
+      let scopes = visited.get(nn);
+      if (!scopes) visited.set(nn, scopes = new Set());
+      if (scopes.has(key)) return;
+      scopes.add(key);
+      const b = ctx.bindings.get(nn);
+      if (!b || (b.phase === 'fixed' && !isFunctionLikeBinding(b))) return;
+      if (b.phase === 'stochastic' && !isFunctionLikeBinding(b)
+          && ((b.inferredType && b.inferredType.kind !== 'measure') || b.type === 'draw')) {
+        captures.add(nn);
+        return;
+      }
+      walkIRScoped({ kind: 'call', args: [b.ir], bijection: b.bijection },
+        (node: any, inner: Set<string>) => {
+          if (node.kind === 'ref' && node.ns === 'self') visit(node.name, inner);
+          if (node.kind === 'call' && node.target?.ns === 'self') visit(node.target.name, inner);
+        }, shadowed);
+    };
+    visit(name, new Set());
+    return Promise.all([...captures].map(ctx.getMeasure));
+  }));
+}
+
 function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
-  // Superpose: concat parents' samples + logWeights, systematic-
-  // resample to ctx.sampleCount. Mass-faithful: result's totalmass
-  // equals the sum of parents' totalmasses; resampling produces
-  // equally-weighted atoms each carrying (totalInputMass / N) of mass.
+  // Add component measures by selecting a branch for each output atom.
+  // Independent importance components can first be resampled; captured and
+  // repeated components keep their local correction on the output weights.
+  // The total mass remains the sum of the component masses.
   //
   // **Repeat axis (spec §06).** Under an `iid(superpose(…), k)`
   // composite fallback, matIid sets `ctx.repeatBlock = k` (the iid
@@ -2510,7 +2517,10 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
   // and consumes its own prng draw. A pool-resample across the whole
   // block instead pinned a component per slot (see the selection loop
   // below).
-  return Promise.all(d.fromNames.map(ctx.getMeasure)).then((parents: any[]) => {
+  return Promise.all([
+    Promise.all(d.fromNames.map(ctx.getMeasure)),
+    _superposeCapturedParents(d.fromNames, ctx),
+  ]).then(([parents, captured]: [any[], any[][]]) => {
     let totalN = 0;
     for (const p of parents) totalN += p.samples.length;
     if (totalN === 0) {
@@ -2519,38 +2529,40 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
         { logWeights: null, logTotalmass: -Infinity, n_eff: 0 });
     }
     const sc = ctx.sampleCount;
-    // A parent carrying NON-UNIFORM per-atom importance weights (e.g.
-    // `normalize(weighted(fn, Lebesgue))`: uniform sample positions whose
-    // density lives in the logWeights) must be SIR-resampled to equal-weight
-    // atoms FIRST, so its density is baked into the sample POSITIONS before
-    // the mixture selection below. Without this, the K=1 per-index
-    // selection picks between two importance-weighted parents at their
-    // (uniform) positions and never concentrates → a population mixture of
-    // density-by-formula components plots flat (Buffy #307). An already
-    // equal-weight parent (its positions already represent its law, e.g. a
-    // per-atom `Normal(mu_i, …)` draw) is left UNTOUCHED, preserving the
-    // per-index correspondence the selection below depends on
-    // (iid-repeat-axis "superpose base case"). The resampled parent keeps its
-    // own total mass (carried into the equal per-atom weight), so the mixture
-    // proportions and downstream normalize Z are unchanged.
-    // Repeat block: k inner draws per atom (iid(superpose, k)); else 1. K is
-    // read ONLY to suppress this lift. A global resample here permutes
-    // positions across the [N, k] block, decorrelating a per-atom mixing
-    // weight psi_i from the draws it conditions, so at K>1 an
-    // importance-weighted parent is left alone and its density stays
-    // unbaked — an accepted gap on that shape, tracked with the K=1
-    // density-baking case. The selection below never reads K.
+    const parameterEvents = lineage.unionEvents(captured.flat()
+      .filter(p => p.logWeights).map(p => p.logWeights));
+    const parameterIds = new Set(parameterEvents.map((e: any) => e.id));
+    const hasCaptures = captured.some(ps => ps.length > 0);
+    // Preserve the existing independent-component SIR path: its positions
+    // represent the component's law while its total mass is unchanged.
+    // Captured parameters cannot be permuted independently of their values.
+    // A repeat axis also keeps proposal positions: systematic resampling can
+    // correlate adjacent coordinates. Both paths retain the per-index local
+    // importance correction below instead of baking it into positions.
     const K = (typeof ctx.repeatBlock === 'number' && ctx.repeatBlock > 1)
       ? ctx.repeatBlock : 1;
     const liftPrng = makeMainThreadPrng(nameSeed(name + ':superpose-lift', ctx.rootKey));
-    const lifted = parents.map((p: any) => {
-      const u = _superposeComponentWeights(p);
+    const lifted = parents.map((p: any, pi: number) => {
+      let u = _superposeComponentWeights(p);
+      if (hasCaptures) {
+        // Read contributions from their events, never output-minus-parent:
+        // support masks can contain -Infinity in both arrays.
+        const original = empirical.materialiseUniform(p).logWeights;
+        const local = lineage.lineageOf(original).events
+          .filter((e: any) => !e.baseline && !parameterIds.has(e.id));
+        const residue = massOf(p) - empirical.logSumExp(original);
+        const baseline = -Math.log(sc);
+        if (Number.isFinite(residue) && residue !== 0) local.push(lineage.newEvent(null, residue));
+        const weights = lineage.sumEvents(local.concat([
+          lineage.newEvent(null, baseline, true),
+        ]), sc);
+        u = { samples: p.samples, logWeights: weights };
+      }
       const lw = u.logWeights;
       let mn = Infinity, mx = -Infinity;
       for (let i = 0; i < lw.length; i++) { if (lw[i] < mn) mn = lw[i]; if (lw[i] > mx) mx = lw[i]; }
-      // Equal-weight parent (positions already represent its law), or a repeat
-      // block (K>1, per-atom correspondence handled below) → keep as-is.
-      if (mx - mn < 1e-9 || K !== 1 || u.samples.length !== sc) return u;
+      // Keep captured nodes and repeated coordinates on their original axis.
+      if (mx - mn < 1e-9 || K !== 1 || captured[pi].length > 0 || u.samples.length !== sc) return u;
       // A parent whose spread is a variate-INDEPENDENT per-atom MASS is atom
       // i's own slice mass, not an importance weight: its positions already
       // represent that slice's law, and §06's recommended mixture spelling —
@@ -2588,7 +2600,9 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     // cumulative distribution built from all-−∞ weights, which pins index 0
     // and returns ONE CONSTANT repeated for every atom — a plausible-looking
     // number for a measure that has no draws at all.
-    const totalLogMass = empirical.logSumExp(combinedLogWeights);
+    const totalLogMass = hasCaptures
+      ? empirical.logSumExp(parents.map(massOf))
+      : empirical.logSumExp(combinedLogWeights);
     if (!(totalLogMass > -Infinity)) {
       throw new Error("superpose '" + name + "': every component has zero mass, "
         + 'so the superposition is the zero measure and there is nothing to '
@@ -2630,6 +2644,9 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
     // K = 1 is unaffected: the pool is the same P weights and the same
     // single prng call, so that stream is unchanged.
     const perIndex = lifted.every((l: any) => l.samples.length === sc * cells);
+    if (hasCaptures && !perIndex) {
+      throw new Error('superpose: captured parameter atoms require aligned component sample counts');
+    }
     if (perIndex) {
       const P = lifted.length;
       const slotLW = new Float64Array(P);
@@ -2637,7 +2654,10 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       for (let i = 0; i < sc; i++) {
         // One weight selects the component for the whole vector atom.
         for (let p = 0; p < P; p++) slotLW[p] = lifted[p].logWeights[i];
-        const pick = empirical.systematicResample(slotLW, 1, prng, scratch)[0];
+        // A zero conditional slice contributes no mass. Its stored value is
+        // immaterial, while other parameter atoms can still have positive mass.
+        const pick = slotLW.every((w: number) => w === -Infinity) ? 0
+          : empirical.systematicResample(slotLW, 1, prng, scratch)[0];
         for (let c = 0; c < cells; c++) {
           out[i * cells + c] = lifted[pick].samples[i * cells + c];
         }
@@ -2655,8 +2675,8 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
 
     // Total mass = sum of parents' masses (unchanged by which atoms the
     // resampling keeps).
-    const outW = new Float64Array(sc);
-    if (perIndex && K === 1) {
+    let outW = new Float64Array(sc);
+    if (perIndex) {
       // Atom i's own slice mass Σ_p M_p(θ_i), from §06 `superpose`'s
       // "ν(A) = M₁(A) + M₂(A) + …" applied at atom i. Pooling it instead —
       // totalLogMass − log(sc), the ensemble AVERAGE — is the same number
@@ -2665,15 +2685,8 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       // parent; it differs exactly where a parent keeps a per-atom mass, and
       // there the average is the pooled-divisor residue a downstream
       // `normalize` needs to divide out.
-      //
-      // K > 1 keeps the pooled weight. Under `iid(superpose(…), k)` the k inner
-      // draws of atom b share atom b's parameters, so they share its slice
-      // mass: §06's product measure wants Z(θ_b)^k there, and
-      // `_foldIidBlockLogWeights` refuses to fold a block-constant weight
-      // rather than raise it to the k-th power. Emitting the per-atom mass here
-      // would turn that into a refusal on shapes that sample correctly today
-      // (a mixing weight and its complement, Z ≡ 1 up to float noise), so the
-      // K > 1 gap recorded on the lift above stays as it is.
+      // The repeat axis keeps this correction for every coordinate; pooling
+      // it would discard the product's local importance ratios.
       const P = lifted.length;
       const slot = new Float64Array(P);
       for (let i = 0; i < sc; i++) {
@@ -2683,6 +2696,17 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
       }
     } else {
       outW.fill(totalLogMass - Math.log(sc));
+    }
+    if (hasCaptures || K > 1) {
+      // Choosing from local importance ratios a_j and retaining their sum S
+      // gives E[S*f(X_selected)|theta] = sum_j integral f dM_j. Parameter
+      // events multiply this mixture once and keep their identities for joins.
+      const local = outW;
+      const logN = Math.log(sc);
+      for (let i = 0; i < sc; i++) local[i] += logN;
+      const events = [lineage.newEvent(null, -logN, true),
+        ...parameterEvents.filter((e: any) => !e.baseline), lineage.newEvent(local)];
+      outW = lineage.sumEvents(events, sc);
     }
     let wMin = Infinity;
     let wMax = -Infinity;
@@ -2836,17 +2860,15 @@ function _selectParentOverlay(parents: any[], N: number) {
   };
 }
 
-// The gathered select weights, registered as ONE `-log(N)` baseline plus one
-// opaque per-atom event. The array is genuinely NOT a sum of the branches'
-// events — it picks one branch per atom — so a fresh per-atom event is the
-// honest lineage, and the baseline is split out so a product over this measure
-// has one to drop.
+// Register a newly gathered or coordinate-folded array as one empirical
+// baseline and one local atom event. Its old branch/coordinate events no
+// longer live on this atom axis. Shared parameter events are joined separately.
 //
 // `certified` is the mixture's closed-form log mass when there is one. Carrying
 // it ON THE EVENT is what lets a dependent product credit this factor its exact
 // share instead of inferring one from the gap between the recorded mass and the
 // atoms' own sum — see `_productLogTotalmass`.
-function _registerGatheredSelect(
+function _registerAtomWeightEvent(
   lw: Float64Array, certified?: number | null,
 ): Float64Array {
   const lineage = require('./weight-lineage.ts');
@@ -3038,7 +3060,7 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
     // estimate of the same number (2.7467956542971845 against 2.75 at
     // N = 32768). The per-atom weights are untouched either way.
     const certified = _selectClosedFormMass(d, masses, ctx);
-    const gathered = _registerGatheredSelect(perBranch, certified);
+    const gathered = _registerAtomWeightEvent(perBranch, certified);
     return scalarMeasureN(out, {
       logWeights: gathered,
       logTotalmass: certified != null ? certified : empirical.logSumExp(gathered),
