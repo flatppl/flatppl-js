@@ -1903,7 +1903,7 @@ const ARITH_OPS = {
   // branches on _complexVecParts and reduces over the per-element
   // modulus |v_i| = hypot(re_i, im_i).
   l1norm: (a: any) => {
-    const z = _complexVecParts(a);
+    const z = _complexVecParts(a, false);
     if (z) {
       let s = 0;
       for (let i = 0; i < z.re.length; i++) s += Math.hypot(z.re[i], z.im[i]);
@@ -1915,7 +1915,7 @@ const ARITH_OPS = {
     return s;
   },
   l2norm: (a: any) => {
-    const z = _complexVecParts(a);
+    const z = _complexVecParts(a, false);
     return z ? _l2Norm(z.re, z.im) : _l2Norm(_arrLike(a));
   },
   // linfnorm(v) = max_i |v_i| (spec §07). Empty input gives 0, the
@@ -1924,7 +1924,7 @@ const ARITH_OPS = {
   // A NaN component propagates (spec §07, "NaN inputs") — `mag > m` is
   // false against a NaN magnitude, so it needs its own isNaN check.
   linfnorm: (a: any) => {
-    const z = _complexVecParts(a);
+    const z = _complexVecParts(a, false);
     if (z) {
       let m = 0;
       for (let i = 0; i < z.re.length; i++) {
@@ -2066,10 +2066,14 @@ function _l2Norm(re: ArrayLike<number>, im?: ArrayLike<number>): number {
 //
 // Returning null (rather than an all-zero `im`) keeps the real inputs on
 // their existing single-buffer loops.
-function _complexVecParts(v: any): { re: ArrayLike<number>, im: ArrayLike<number> } | null {
+function _complexVecParts(v: any, logicalSign = true): { re: ArrayLike<number>, im: ArrayLike<number> } | null {
   // readComplex applies the lazy Klein-4 conjugation sign; reading `v.im`
   // raw would give a conjugate view the wrong imaginary sign.
-  if (valueLib.isComplexValue(v)) return valueLib.readComplex(valueLib.densify(v));
+  if (valueLib.isComplexValue(v)) {
+    const dense = valueLib.densify(v);
+    // Norms ignore conjugation, so they can borrow the stored imaginary part.
+    return logicalSign ? valueLib.readComplex(dense) : { re: dense.data, im: dense.im };
+  }
   if (!Array.isArray(v)) return null;
   let anyComplex = false;
   for (let i = 0; i < v.length; i++) {

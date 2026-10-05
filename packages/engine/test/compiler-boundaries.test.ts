@@ -126,6 +126,15 @@ test('a cycle reached through lawof stays a compiler diagnostic', () => {
   assert.equal(orchestrator.buildDerivations(new Map([['y', result.bindings.get('y')]])).fixedValues.get('y'), 7);
 });
 
+test('fixed scalar laws feed arithmetic at every atom', async () => {
+  const { proc, ctx } = ctxFor('a~lawof(3)\ny=a+2\nb~lawof(im)\nz=conj(b)', 4);
+  assert.deepEqual(errors(proc), []);
+  assert.deepEqual(Array.from((await ctx.getMeasure('y')).samples), [5, 5, 5, 5]);
+  const z = await ctx.getMeasure('z');
+  assert.deepEqual(Array.from(z.samples), [0, 0, 0, 0]);
+  assert.deepEqual(Array.from(z.value.im), [-1, -1, -1, -1]);
+});
+
 test('checked requires its condition and preserves valid checked values', () => {
   assert.ok(errors(processSource('x=checked(7)')).length > 0);
   const { values } = fixed('x=checked(value=7, condition=true)\ny=checked(8, condition=true)');

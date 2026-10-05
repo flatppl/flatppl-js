@@ -1159,8 +1159,9 @@ const SIGNATURE_FACTORIES = {
   reduce: () => ({ args: [any(), array(1, ['%dynamic'], tvar('T'))],
                    kwargs: {}, result: tvar('T') }),
   // scan(f, init, xs) — left scan; produces a vector of intermediate
-  // accumulator values, one per element of xs.
-  scan:   () => ({ args: [any(), tvar('T'), array(1, ['%dynamic'], tvar('T'))],
+  // accumulator values, one per element of xs. The input element type
+  // is independent of the accumulator type (§04 Reductions).
+  scan:   () => ({ args: [any(), tvar('T'), array(1, ['%dynamic'], tvar('U'))],
                    kwargs: {},
                    result: array(1, ['%dynamic'], tvar('T')) }),
   // filter(predicate, data) — keep elements satisfying predicate.
