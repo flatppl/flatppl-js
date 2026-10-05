@@ -25,7 +25,7 @@
 //      numbers — the example set gained a new bayesian_inference_1 that
 //      defines prior + likelihood fully separately, shifting these two):
 //        bayesian_inference_2: forward_kernel = kernelof(...) directly.
-//        bayesian_inference_3: forward_kernel = disintegrate(...).
+//        bayesian_inference_3: forward_kernel, prior = disintegrate(...).
 //      Different modules generate independent anon-binding indices,
 //      so we compare the IR's **structural skeleton** (op, params,
 //      paramKwargs) — not the anon labels themselves.

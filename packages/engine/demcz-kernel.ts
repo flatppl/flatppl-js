@@ -46,8 +46,8 @@ function makeDemczKernel(opts?: any) {
       const us = new Float64Array(n);
       for (let k = 0; k < n; k++) {
         const r1 = Math.floor(prng() * M);
-        let r2 = Math.floor(prng() * M);
-        if (r2 === r1) r2 = (r2 + 1) % M;        // two distinct archive indices (M >= n >= 4)
+        let r2 = Math.floor(prng() * (M - 1));
+        if (r2 >= r1) r2++;                    // uniform without replacement: symmetric differences
         const Xk = ensemble[k], Zr1 = Z[r1], Zr2 = Z[r2];
         const Y = new Float64Array(dim);
         for (let d = 0; d < dim; d++) Y[d] = Xk[d] + gamma * (Zr1[d] - Zr2[d]) + b * gaussianNoise(prng);

@@ -13,12 +13,12 @@ e.V.
 ## Address
 
 Max-Planck-Gesellschaft zur Förderung der Wissenschaften e.V.\
-Hofgartenstrasse 8\
+Hofgartenstraße 8\
 D-80539 Munich\
 Phone: [+49 89 2108-0](tel:+498921080)\
 WWW: [https://www.mpg.de](https://www.mpg.de/)
 
-## Register of Societies and Associations
+## Register of societies and associations
 
 The Max Planck Society is registered in the Official Register of Societies
 and Associations at Berlin-Charlottenburg Local Court under the register
@@ -28,7 +28,7 @@ number VR 13378 B.
 
 The Max Planck Society is legally represented by its Board of Directors
 which, in turn, is represented by the President of the Society, Prof. Dr.
-Patrick Cramer, and by Secretary General Simone Schwanitz.
+Patrick Cramer, and by Secretary General Dr. Simone Schwanitz.
 
 ## Value added tax identification number
 
@@ -49,18 +49,19 @@ Germany\
 Phone: [+49 89 32354-521](tel:+498932354521)\
 Email: [oschulz@mpp.mpg.de](mailto:oschulz@mpp.mpg.de)
 
-## Legal Structure
+## Legal structure
 
 The Max Planck Society is a non-profit research facility which is organized
 as a registered association. All of the institutes and facilities of the Max
 Planck Society are largely autonomous in terms of organization and research,
 but as a rule have no legal capacity of their own.
 
-## Liability for Contents of Online Information
+## Liability for contents of online information
 
 As the provider of contents in accordance with Section 7 Paragraph 1 of the
-Tele-Media Law, the Max Planck Society shall be responsible for any contents
-which it makes available for use in accordance with general legal provisions.
+Digitale-Dienste-Gesetz (German Digital Service Act), the Max Planck Society
+shall be responsible for any contents which it makes available for use in
+accordance with general legal provisions.
 The Max Planck Society makes every effort to provide timely and accurate
 information on this Web site. Nevertheless, errors and inaccuracies cannot be
 completely ruled out. Therefore, the Max Planck Society does not assume any
@@ -75,7 +76,7 @@ modify, supplement, or delete any or all of the information offered on its
 Internet site, or to temporarily or permanently cease publication thereof
 without prior and separate notification.
 
-## Links to Internet Sites of Third Parties
+## Links to internet sites of third parties
 
 This Website includes links to other external websites. The respective
 provider shall be responsible for the contents of any linked external pages.
@@ -109,14 +110,15 @@ licensed under the
 in the respective repositories of the
 [flatppl](https://github.com/flatppl) GitHub organisation.
 
-## Data Processing in the Browser
+## Data processing in the browser
 
-The FlatPPL live demo runs entirely in your browser. Models you open, enter,
-edit, upload, or convert are processed locally on your device and are not
-transmitted to the provider. Files you choose to save are stored only in your
-browser's local storage, from where you can delete them at any time.
+The FlatPPL live demo runs entirely in the visitor's browser. Models opened,
+entered, edited, uploaded, or converted are processed locally on the visitor's
+device and are not transmitted to the provider. Files saved by the visitor are
+stored only in the browser's local storage, from where they can be deleted at
+any time.
 
-## Hosting
+## Data protection information
 
 This website is hosted on GitHub Pages, a service of GitHub, Inc. GitHub may
 collect personal data from visitors, such as IP addresses, to maintain the
@@ -127,5 +129,12 @@ and its
 [note on data collection for GitHub Pages](https://docs.github.com/en/pages/getting-started-with-github-pages/what-is-github-pages#data-collection).
 Use of this website is subject to GitHub's
 [terms of service](https://docs.github.com/en/site-policy/github-terms/github-terms-of-service).
-The Max Planck Society does not process personal data of visitors to this
-website.
+The Max Planck Society is not a controller within the meaning of the EU
+General Data Protection Regulation (GDPR), as it does not process personal
+data of visitors to this website.
+
+Files in the interactive editor can reference external URLs and may cause the
+visitor's browser to access third-party servers. No such files are included by
+default, but they can be created or opened by the visitor. In such cases, the
+visitor, not the provider, is responsible for the resulting access to those
+servers.

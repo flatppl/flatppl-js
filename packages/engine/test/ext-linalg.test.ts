@@ -293,6 +293,50 @@ test('eigen: 2x2 symmetric — known case [[2,1],[1,2]] → eigvals 1, 3', () =>
   assert.ok(Math.abs(VtAV[2]) < 1e-10);
 });
 
+test('std-module eigen / eigmin / eigmax: zero and extreme finite scales', () => {
+  stdmod._registerBuiltinStandardModules();
+  const mod = stdmod.lookupStandardModule('ext-linear-algebra', '0.1');
+  const eigen = mod.bindings.get('eigen').impl;
+  const eigmin = mod.bindings.get('eigmin').impl;
+  const eigmax = mod.bindings.get('eigmax').impl;
+  // [[a,b],[b,a]] has eigenvalues a-b and a+b. Normalize validation
+  // arithmetic too, so residual checks cannot overflow or underflow.
+  for (const [a, b] of [[0, 0], [2e-200, 1e-200], [2, 1],
+                       [2e200, 1e200], [1e308, 2.5e307],
+                       [2 * Number.MIN_VALUE, Number.MIN_VALUE]]) {
+    const data = [a, b, b, a];
+    const A = matVal(2, 2, data);
+    const scale = a || 1;
+    const { fields } = eigen(A) as { fields: Record<string, { data: ArrayLike<number> }> };
+    const values = Array.from(fields.values.data, x => x / scale);
+    const expected = [(a - b) / scale, (a + b) / scale];
+    assertClose(values.slice().sort((x, y) => x - y), expected, 1e-12);
+    assertClose([eigmin(A) / scale, eigmax(A) / scale], expected, 1e-12);
+    const V = Array.from(fields.vectors.data);
+    assertClose(flatMatMul(flatTranspose(V, 2, 2), V, 2, 2, 2), [1, 0, 0, 1]);
+    const AV = flatMatMul(data.map(x => x / scale), V, 2, 2, 2);
+    assertClose(AV, V.map((x, i) => x * values[i % 2]));
+    assert.deepEqual(Array.from(A.data), data, 'input remains unchanged');
+  }
+  // Opposite large diagonals also require an overflow-safe rotation angle.
+  const indefinite = matVal(2, 2, [1e308, 5e307, 5e307, -1e308]);
+  const radius = Math.hypot(1e308, 5e307);
+  const values = Array.from(eigen(indefinite).fields.values.data as ArrayLike<number>, x => x / radius);
+  assertClose(values.sort((x, y) => x - y), [-1, 1], 1e-12);
+});
+
+test('std-module eigen: preserves mixed-scale diagonal eigenvalues', () => {
+  stdmod._registerBuiltinStandardModules();
+  const mod = stdmod.lookupStandardModule('ext-linear-algebra', '0.1');
+  const A = matVal(3, 3, [1e200, 0, 0, 0, 2e-200, 0, 0, 0, 3e-200]);
+  const values = mod.bindings.get('eigen').impl(A).fields.values.data;
+  // The eigenvalues of a diagonal matrix are exactly its entries;
+  // scaling norm arithmetic must not erase the small ones.
+  assert.deepEqual(Array.from(values), [1e200, 2e-200, 3e-200]);
+  assert.equal(mod.bindings.get('eigmin').impl(A), 2e-200);
+  assert.equal(mod.bindings.get('eigmax').impl(A), 1e200);
+});
+
 test('eigen: 3x3 symmetric — round-trip A = V · diag(values) · V^T', () => {
   // A = [[4, -2, 1], [-2, 4, -2], [1, -2, 4]]
   const A_data = [4, -2, 1, -2, 4, -2, 1, -2, 4];

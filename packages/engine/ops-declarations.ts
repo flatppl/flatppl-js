@@ -1079,6 +1079,11 @@ ops.registerVariant('linsolve', {
 // problem). Same delegation pattern as the rank-polymorphic ops.
 
 function _vectorLogical(...xs: any[]): any {
+  return _vectorFromElements(xs);
+}
+
+// Shared with collection results, which may exceed JS's argument-count limit.
+function _vectorFromElements(xs: any[]): any {
   if (xs.length === 0) return { shape: [0], data: new Float64Array(0) };
   let allScalar = true;
   for (let i = 0; i < xs.length; i++) {
@@ -1179,18 +1184,30 @@ function _catLogical(...xs: any[]): any {
   if (xs.length === 0) return { shape: [0], data: new Float64Array(0) };
   const first = xs[0];
   // cat(scalar, scalar, ...) → rank-1 Value (spec §07).
-  if (typeof first === 'number' || typeof first === 'boolean') {
-    const data = new Float64Array(xs.length);
-    for (let i = 0; i < xs.length; i++) {
-      data[i] = xs[i] === true ? 1 : xs[i] === false ? 0 : +xs[i];
-    }
-    return { shape: [xs.length], data };
+  if (typeof first === 'number' || typeof first === 'boolean'
+      || (first && typeof first.re === 'number' && typeof first.im === 'number')) {
+    return _vectorFromElements(xs);
   }
   // cat(vector, vector, ...) → rank-1 Value (concatenation along
   // the only axis).
   if (valueLib.isValue(first)
       || (first && first.BYTES_PER_ELEMENT !== undefined)
       || Array.isArray(first)) {
+    const flatReal = xs.every((v) => valueLib.isValue(v)
+      ? v.shape.length === 1 && !v.im
+      : v && v.BYTES_PER_ELEMENT !== undefined);
+    if (!flatReal) {
+      const cells: any[] = [];
+      for (const v of xs) {
+        if (valueLib.isValue(v)) {
+          const dense = valueLib._logicalDense(v);
+          for (let i = 0; i < dense.shape[0]; i++) cells.push(valueLib._sliceRow(dense, i));
+        } else {
+          for (let i = 0; i < v.length; i++) cells.push(v[i]);
+        }
+      }
+      return _vectorFromElements(cells);
+    }
     let total = 0;
     for (let j = 0; j < xs.length; j++) {
       const v = xs[j];
@@ -1296,16 +1313,18 @@ function _scanLogical(ir: any, ctx: any): any {
     throw new Error('scan: xs must be a vector');
   }
   const n = xs.length;
-  const out: Float64Array = new Float64Array(n);
+  // §04 permits any accumulator type. Preserve records and vector states
+  // instead of coercing them to NaN in a numeric buffer.
+  const out: any[] = new Array(n);
   const elemEnv = Object.assign({}, ctx.env);
   let acc = init;
   for (let i = 0; i < n; i++) {
     elemEnv[fn.params[0]] = acc;
     elemEnv[fn.params[1]] = xs[i];
     acc = ctx.evaluateExpr(fn.body, elemEnv);
-    out[i] = acc === true ? 1 : acc === false ? 0 : +acc;
+    out[i] = acc;
   }
-  return { shape: [n], data: out };
+  return _vectorFromElements(out);
 }
 
 ops.register({
@@ -1324,23 +1343,49 @@ function _filterLogical(ir: any, ctx: any): any {
     throw new Error('filter: predicate must be a unary function');
   }
   const dataRaw = ctx.evaluateExpr(irArgs[1], ctx.env);
-  const data = valueLib.isValue(dataRaw) ? dataRaw.data : dataRaw;
-  if (!Array.isArray(data) && !(data && data.BYTES_PER_ELEMENT)) {
+  const isTable = dataRaw && dataRaw.__table__ === true;
+  const isValue = valueLib.isValue(dataRaw);
+  const data = isValue ? valueLib._logicalDense(dataRaw) : dataRaw;
+  if (!isTable && !isValue && !Array.isArray(data) && !(data && data.BYTES_PER_ELEMENT)) {
     throw new Error('filter: data must be a vector (got '
       + (data === null ? 'null' : typeof data) + ')');
   }
   const elemEnv = Object.assign({}, ctx.env);
   const kept: any[] = [];
-  for (let i = 0; i < data.length; i++) {
-    elemEnv[fn.params[0]] = data[i];
+  const n = isTable ? data.nrows : isValue ? data.shape[0] : data.length;
+  for (let i = 0; i < n; i++) {
+    const cell = isTable ? valueLib.tableRow(data, i)
+      : isValue ? valueLib._sliceRow(data, i) : data[i];
+    elemEnv[fn.params[0]] = cell;
     const keep = ctx.evaluateExpr(fn.body, elemEnv);
-    if (keep) kept.push(data[i]);
+    if (keep) kept.push(isTable ? i : cell);
   }
-  const out = new Float64Array(kept.length);
-  for (let i = 0; i < kept.length; i++) {
-    out[i] = kept[i] === true ? 1 : kept[i] === false ? 0 : +kept[i];
+  return isTable ? _selectTableRows(data, kept) : _vectorFromElements(kept);
+}
+
+function _selectTableRows(table: any, rows: number[]): any {
+  const columns: Record<string, any> = {};
+  for (const name of Object.keys(table.columns)) {
+    const column = table.columns[name];
+    if (column && column.__table__ === true) {
+      columns[name] = _selectTableRows(column, rows);
+    } else if (valueLib.isValue(column)) {
+      const dense = valueLib._logicalDense(column);
+      const width = valueLib.numel(dense.shape.slice(1));
+      const data = new Float64Array(rows.length * width);
+      const im = dense.im ? new Float64Array(data.length) : null;
+      for (let i = 0; i < rows.length; i++) {
+        const start = rows[i] * width;
+        data.set(dense.data.subarray(start, start + width), i * width);
+        if (im) im.set(dense.im.subarray(start, start + width), i * width);
+      }
+      columns[name] = { ...dense, shape: [rows.length].concat(dense.shape.slice(1)), data };
+      if (im) columns[name].im = im;
+    } else {
+      columns[name] = rows.map((i) => column[i]);
+    }
   }
-  return { shape: [kept.length], data: out };
+  return { ...table, columns, nrows: rows.length };
 }
 
 ops.register({
@@ -1419,11 +1464,7 @@ function _registerScalarLogicals(): void {
   // Family 1: pure-real unary elementary math (`Math.X`).
   const REAL_UNARY: Record<string, (a: number) => number> = {
     log2: Math.log2, log10: Math.log10, log1p: Math.log1p, expm1: Math.expm1,
-    sin: Math.sin, cos: Math.cos, tan: Math.tan,
-    asin: Math.asin, acos: Math.acos, atan: Math.atan,
-    sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
-    asinh: Math.asinh, acosh: Math.acosh, atanh: Math.atanh,
-    floor: Math.floor, ceil: Math.ceil, round: Math.round,
+    floor: Math.floor, ceil: Math.ceil, round: require('./value-ops.ts')._roundEven,
   };
 
   // The full logical table (rank-polymorphic — args handed to the impl
@@ -1475,26 +1516,30 @@ function _registerScalarLogicals(): void {
     ge: (a: any, b: any) => a >= b,
     equal:   (a: any, b: any) => a === b,
     unequal: (a: any, b: any) => a !== b,
-    isfinite: (a: any) => Number.isFinite(a),
-    isinf:    (a: any) => !Number.isNaN(a) && !Number.isFinite(a),
-    isnan:    (a: any) => Number.isNaN(a),
-    iszero:   (a: any) => a === 0,
+    isfinite: (a: any) => _isC(a) ? Number.isFinite(a.re) && Number.isFinite(a.im) : Number.isFinite(a),
+    isinf:    (a: any) => _isC(a) ? Math.abs(a.re) === Infinity || Math.abs(a.im) === Infinity : !Number.isNaN(a) && !Number.isFinite(a),
+    isnan:    (a: any) => _isC(a) ? Number.isNaN(a.re) || Number.isNaN(a.im) : Number.isNaN(a),
+    iszero:   (a: any) => _isC(a) ? a.re === 0 && a.im === 0 : a === 0,
     land: (a: any, b: any) => a && b,
     lor:  (a: any, b: any) => a || b,
     lxor: (a: any, b: any) => a !== b,
     lnot: (a: any) => !a,
     ifelse: (c: any, a: any, b: any) => c ? a : b,
-    boolean: (x: any) => {
-      if (x === true || x === false) return x;
-      if (x === 0) return false;
-      if (x === 1) return true;
-      throw new Error('boolean: value ' + x + ' is not a boolean');
-    },
-    integer: (x: any) => {
-      if (Number.isInteger(x)) return x;
-      throw new Error('integer: value ' + x + ' is not an integer');
-    },
+    boolean: valueOps._booleanScalar,
+    integer: valueOps._integerScalar,
   };
+
+  // §07 extends every trig/hyperbolic function to complex scalars as well
+  // as the planar broadcast path; share its existing complex primitives.
+  const complexUnary: Record<string, (a: any) => any> = {
+    sin: cx._cSin, cos: cx._cCos, tan: cx._cTan,
+    asin: cx._cAsin, acos: cx._cAcos, atan: cx._cAtan,
+    sinh: cx._cSinh, cosh: cx._cCosh, tanh: cx._cTanh,
+    asinh: cx._cAsinh, acosh: cx._cAcosh, atanh: cx._cAtanh,
+  };
+  for (const name in complexUnary) {
+    LOGICALS[name] = (a: any) => _isC(a) ? complexUnary[name](a) : (Math as any)[name](a);
+  }
 
   for (const name in LOGICALS) {
     ops.attachLogical(name, _withArrayCase(name, LOGICALS[name]), 'rank-polymorphic');
@@ -2108,6 +2153,8 @@ function _maybeFastBroadcasted(ir: any, ctx: any): any | null {
   let paramKwargs: string[] | null = null;
 
   if (head.kind === 'ref' && head.ns === 'self') {
+    if (typeof ctx.env.__resolveFnBody === 'function'
+        && ctx.env.__resolveFnBody(head.name)) return null;
     if (!ops.hasVariantFor(head.name, 'broadcast')) return null;
     opName = head.name;
     arity = -1;  // determined by remaining IR args after head

@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MODEL_EXTENSIONS,
+  DOCUMENT_EXTENSIONS,
   typeForPath,
   bucketKeyForPath,
   defaultFolderOpen,
@@ -27,6 +28,13 @@ test('typeForPath maps extensions to surface types', () => {
   // Bare .hs3 / .pyhf (user-uploaded files) classify the same as .hs3.json / .pyhf.json.
   assert.equal(typeForPath('uploads/gaussian.hs3'), 'hs3');
   assert.equal(typeForPath('uploads/model.pyhf'), 'pyhf');
+  // The math export documents (DOCUMENT_EXTENSIONS): held and surfaced,
+  // never manifest entries.
+  assert.equal(typeForPath('user/model.html'), 'html');
+  assert.equal(typeForPath('user/model.htm'), 'html');
+  assert.equal(typeForPath('user/model.tex'), 'latex');
+  assert.equal(typeForPath('user/model.typ'), 'typst');
+  for (const ext of DOCUMENT_EXTENSIONS) assert.ok(!MODEL_EXTENSIONS.includes(ext), ext);
 });
 
 test('typeForPath is case-insensitive and FlatPPL-defaults on empty', () => {

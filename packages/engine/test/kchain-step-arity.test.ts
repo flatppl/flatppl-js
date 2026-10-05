@@ -191,22 +191,18 @@ ch = kchain(Normal(0, 1), K1, K2)
   assert.ok(errs[0].loc && errs[0].loc.start, 'diagnostic must carry a location');
 });
 
-// A record variate feeding a step's LONE input ought to splat by field name
-// (§04 sec:calling-convention: "A sole positional record or table therefore
-// always splats"). The chain materialiser does not implement that feed — it
-// binds the record whole, which sampled NaN. Until it does, the whole-value
-// bind is what typeinfer models, so the mismatch surfaces as this located
-// error. Pinned so the day the feed lands, this test fails and says so.
-// Recorded in flatppl-dev/TODO-flatppl-js.md.
-test('gap: a record variate into a lone step input errors rather than NaN', () => {
-  const errs = errorsOf(`
+// §04: a sole record splats by field name, including a lone step input.
+test('a matching record field feeds a lone step input', async () => {
+  const ctx = setupCtx(`
 flatppl_compat = "0.1"
 M0 = joint(a = Normal(0, 1))
 K1 = a -> Normal(mu = a, sigma = 1)
 ch = kchain(M0, K1)
-`);
-  assert.equal(errs.length, 1, JSON.stringify(errs.map((d: any) => d.message)));
-  assert.match(errs[0].message, /expects real, got record with fields a: real/);
+lp = logdensityof(ch, 0)
+`, 128, 11);
+  assert.ok(Array.from((await ctx.getMeasure('ch')).samples).every(Number.isFinite));
+  assert.ok(Math.abs((await ctx.getMeasure('lp')).samples[0]
+    + 0.5 * Math.log(4 * Math.PI)) < 1e-12);
 });
 
 test('no false positive: a 2-step chain still types and samples', async () => {

@@ -29,12 +29,15 @@
 // localStorage can fail in two ways we care about:
 //   1. Private-browsing modes that throw on write (Safari ≤ 11,
 //      some embedded WebViews).
-//   2. Quota exceeded (5–10 MB depending on browser; a hard cap
-//      we won't usually hit since source files are KB-scale).
+//   2. Quota exceeded (5–10 MB depending on browser). Source files
+//      are KB-scale, but a math export — an HTML page with a data
+//      appendix — can reach a few hundred kB, so a full store is
+//      reachable.
 // Every read and write is wrapped in try/catch so a failure
 // degrades gracefully — the store stays usable for the rest of
 // the session via an in-memory fallback, and the user just sees
-// their changes vanish on reload.
+// their changes vanish on reload. `save` reports whether the entry
+// reached localStorage so a caller can say so.
 //
 // Lives on globalThis as window.FlatPPLWebUserStore.
 
@@ -179,8 +182,10 @@
   /** Persist `path` ← `source`. `opts.parent` records the read-only
    *  path this was forked from, for the sidebar's "from examples/X"
    *  affordance and the "Reset to original" action. Pass `null` for
-   *  fresh user-created files. */
-  function save(path: string, source: string, opts?: { parent?: string | null }) {
+   *  fresh user-created files. Returns whether the entry was written
+   *  to localStorage; false means it lives in memory for this session
+   *  only (storage unavailable or its quota exceeded). */
+  function save(path: string, source: string, opts?: { parent?: string | null }): boolean {
     if (path.indexOf(USER_PREFIX) !== 0) {
       throw new Error('FlatPPLWebUserStore.save: path must start with "user/", got: ' + path);
     }
@@ -193,9 +198,10 @@
     const isNew = !entries.has(path);
     entries.set(path, entry);
     if (isNew) pathOrder.push(path);
-    writeEntry(path, entry);
-    if (isNew) writeIndex(pathOrder);
+    let persisted = writeEntry(path, entry);
+    if (isNew) persisted = writeIndex(pathOrder) && persisted;
     emit();
+    return persisted;
   }
 
   /** Update only the source text (modifiedAt bumps; parent
@@ -230,8 +236,9 @@
   /** Rename `oldPath` → `newPath`, preserving source + parent and the
    *  sidebar position (swap-in-place, so the entry doesn't jump to the
    *  end). Returns false (no-op) when `oldPath` is absent, `newPath`
-   *  isn't user/-prefixed, or `newPath` already exists — the caller
-   *  decides how to surface a collision. */
+   *  isn't user/-prefixed, `newPath` already exists, or the durable rename
+   *  fails. Session-only files can still rename in memory when storage
+   *  is unavailable. */
   function rename(oldPath: string, newPath: string): boolean {
     if (!entries.has(oldPath)) return false;
     if (newPath.indexOf(USER_PREFIX) !== 0) return false;
@@ -243,12 +250,19 @@
       parent: existing.parent,
       modifiedAt: new Date().toISOString(),
     };
+    const nextOrder = pathOrder.map(function (p) { return p === oldPath ? newPath : p; });
+    const saved = readEntry(oldPath);
+    const wroteEntry = writeEntry(newPath, entry);
+    const persisted = wroteEntry && writeIndex(nextOrder);
+    if (!persisted) {
+      if (wroteEntry) lsRemoveItem(ENTRY_KEY_PREFIX + newPath);
+      // Retain the last durable copy and its index if either write fails.
+      if (saved) return false;
+    }
     entries.set(newPath, entry);
     entries.delete(oldPath);
-    pathOrder = pathOrder.map(function (p) { return p === oldPath ? newPath : p; });
-    writeEntry(newPath, entry);
-    lsRemoveItem(ENTRY_KEY_PREFIX + oldPath);
-    writeIndex(pathOrder);
+    pathOrder = nextOrder;
+    if (persisted) lsRemoveItem(ENTRY_KEY_PREFIX + oldPath);
     emit();
     return true;
   }

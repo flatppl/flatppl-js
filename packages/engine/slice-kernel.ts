@@ -24,28 +24,33 @@ const SHRINK_CAP = 200;
 function makeSliceKernel(opts?: any) {
   const m = (opts && opts.m) || 50;   // max stepping-out expansions per coordinate
   return {
-    init(_nWalkers: number, dim: number, _o: any, mv: any) {
-      const w = new Float64Array(dim);
-      // Seed w_i from the prior-pool marginal std (floored). initFromPrior may be
-      // absent in a bare driver harness; fall back to unit widths.
-      let seeded = false;
-      if (mv && typeof mv.initFromPrior === 'function') {
-        const n = Math.max(64, 8 * dim);
-        const pool: Float64Array[] = mv.initFromPrior(n, Math.random);   // pool std only; RNG choice irrelevant to the width scale
-        if (pool && pool.length) {
-          for (let d = 0; d < dim; d++) {
-            let mu = 0; for (let p = 0; p < pool.length; p++) mu += pool[p][d]; mu /= pool.length;
-            let v = 0; for (let p = 0; p < pool.length; p++) { const e = pool[p][d] - mu; v += e * e; } v /= pool.length;
-            w[d] = v > 1e-12 ? Math.sqrt(v) : 1;
-          }
-          seeded = true;
-        }
-      }
-      if (!seeded) for (let d = 0; d < dim; d++) w[d] = 1;
-      return { dim, w, m, order: new Int32Array(dim) };
+    init(_nWalkers: number, dim: number, _o: any, _mv: any) {
+      return { dim, w: null, m, order: new Int32Array(dim) };
     },
     step(ensemble: Float64Array[], logp: Float64Array, mv: any, prng: () => number, adaptState: any, _phase: string) {
       const dim = adaptState.dim, order = adaptState.order;
+      // Fit once where the driver's seeded PRNG is available. Widths remain
+      // fixed thereafter, preserving both the transition law and seed replay.
+      if (!adaptState.w) {
+        const w = new Float64Array(dim);
+        // Seed w_i from the prior-pool marginal std (floored). initFromPrior may be
+        // absent in a bare driver harness; fall back to unit widths.
+        let seeded = false;
+        if (mv && typeof mv.initFromPrior === 'function') {
+          const n = Math.max(64, 8 * dim);
+          const pool: Float64Array[] = mv.initFromPrior(n, prng);
+          if (pool && pool.length) {
+            for (let d = 0; d < dim; d++) {
+              let mu = 0; for (let p = 0; p < pool.length; p++) mu += pool[p][d]; mu /= pool.length;
+              let v = 0; for (let p = 0; p < pool.length; p++) { const e = pool[p][d] - mu; v += e * e; } v /= pool.length;
+              w[d] = v > 1e-12 ? Math.sqrt(v) : 1;
+            }
+            seeded = true;
+          }
+        }
+        if (!seeded) for (let d = 0; d < dim; d++) w[d] = 1;
+        adaptState.w = w;
+      }
       // Shared random coordinate order for the sweep (so chains lock-step per coord).
       for (let d = 0; d < dim; d++) order[d] = d;
       for (let d = dim - 1; d > 0; d--) { const j = Math.floor(prng() * (d + 1)); const t = order[d]; order[d] = order[j]; order[j] = t; }

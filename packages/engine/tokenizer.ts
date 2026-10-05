@@ -54,16 +54,16 @@ function token(type: string, value: any, startLine: number, startCol: number, en
 // fence at depth > 0.
 function _atLineStart(source: string, pos: number) {
   let p = pos - 1;
-  while (p >= 0 && (source[p] === ' ' || source[p] === '\t' || source[p] === '\r')) p--;
-  return p < 0 || source[p] === '\n';
+  while (p >= 0 && (source[p] === ' ' || source[p] === '\t')) p--;
+  return p < 0 || isNewline(source[p]);
 }
 
 // The remainder of the physical line from `pos` is horizontal
 // whitespace only (spec §05 EBNF: a fence line ends `HWS* Newline`).
 function _restOfLineBlank(source: string, pos: number) {
   let p = pos;
-  while (p < source.length && (source[p] === ' ' || source[p] === '\t' || source[p] === '\r')) p++;
-  return p >= source.length || source[p] === '\n';
+  while (p < source.length && (source[p] === ' ' || source[p] === '\t')) p++;
+  return p >= source.length || isNewline(source[p]);
 }
 
 // Spec §05 EBNF `ContinuationOp` — every infix binary operator, the
@@ -90,7 +90,8 @@ function isHexDigit(ch: string) { return /[0-9a-fA-F]/.test(ch); }
 function isAlphaNum(ch: string) { return /[a-zA-Z0-9]/.test(ch); }
 function isIdentStart(ch: string) { return isAlpha(ch) || ch === '_'; }
 function isIdentChar(ch: string) { return isAlphaNum(ch) || ch === '_'; }
-function isWhitespace(ch: string) { return ch === ' ' || ch === '\t' || ch === '\r'; }
+function isWhitespace(ch: string) { return ch === ' ' || ch === '\t'; }
+function isNewline(ch: string) { return ch === '\n' || ch === '\r'; }
 
 /**
  * Tokenize FlatPPL source text into an array of tokens.
@@ -117,8 +118,17 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
   function peek(offset: number) { return source[pos + (offset || 0)] || ''; }
   function advance() {
     const ch = source[pos++];
-    if (ch === '\n') { line++; col = 0; } else { col++; }
+    if (isNewline(ch)) {
+      if (ch !== '\n' || source[pos - 2] !== '\r') line++;
+      col = 0;
+    } else { col++; }
     return ch;
+  }
+  // §05 treats CRLF as one newline. Consume raw bytes only at line boundaries,
+  // so string literal contents remain unchanged.
+  function advanceNewline() {
+    const ch = advance();
+    if (ch === '\r' && at() === '\n') advance();
   }
   function at(offset?: number) { return pos + (offset || 0) < source.length ? source[pos + (offset || 0)] : ''; }
 
@@ -141,8 +151,7 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
   // and comment-only lines in between do not end the continuation —
   // they emit no significant token, so the trailing operator is still
   // the last one seen here.
-  function continuesLine() {
-    if (lexErrorOnLine) return false;
+  function continuesSignificantLine() {
     const tok = priorSignificant(0);
     if (!tok) return false;
     // `in` is a CompOp spelled as a keyword, so it lexes as an IDENT.
@@ -167,6 +176,20 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
     return true;
   }
 
+  // Appending only comments cannot change the continuation decision. Inspect
+  // each new comment once instead of rescanning the entire run at every line.
+  let continuationSeen = 0;
+  let cachedContinuation = false;
+  function continuesLine() {
+    if (lexErrorOnLine) return false;
+    let i = tokens.length - 1;
+    while (i >= continuationSeen && tokens[i].type === T.COMMENT) i--;
+    const changed = i >= continuationSeen;
+    continuationSeen = tokens.length;
+    if (changed) cachedContinuation = continuesSignificantLine();
+    return cachedContinuation;
+  }
+
   while (pos < source.length) {
     const startLine = line, startCol = col;
     const ch = at();
@@ -178,8 +201,8 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
     }
 
     // Newline
-    if (ch === '\n') {
-      advance();
+    if (isNewline(ch)) {
+      advanceNewline();
       if (depth === 0 && !continuesLine()) {
         tokens.push(token(T.NEWLINE, '\n', startLine, startCol, line, col));
       }
@@ -205,9 +228,10 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
         // Consume the opening fence and any trailing whitespace
         // through the newline.
         advance(); advance(); advance();
-        while (pos < source.length && at() !== '\n') advance();
-        if (at() === '\n') advance();
+        while (pos < source.length && !isNewline(at())) advance();
+        if (isNewline(at())) advanceNewline();
         // Consume body lines until a closing `###` on its own line.
+        let closed = false;
         while (pos < source.length) {
           // Save start of this line.
           const lineStart = pos;
@@ -215,18 +239,21 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
           let p = pos;
           while (p < source.length && (source[p] === ' ' || source[p] === '\t')) p++;
           if (source[p] === '#' && source[p + 1] === '#' && source[p + 2] === '#'
-              && (p + 3 === source.length
-                  || source[p + 3] === '\n'
-                  || source[p + 3] === ' '
-                  || source[p + 3] === '\t')) {
+              && _restOfLineBlank(source, p + 3)) {
             // Closing fence; consume through end-of-line.
-            while (pos < source.length && at() !== '\n') advance();
-            if (at() === '\n') advance();
+            while (pos < source.length && !isNewline(at())) advance();
+            if (isNewline(at())) advanceNewline();
+            closed = true;
             break;
           }
           // Not a fence — consume the whole line.
-          while (pos < source.length && at() !== '\n') advance();
-          if (at() === '\n') advance();
+          while (pos < source.length && !isNewline(at())) advance();
+          if (isNewline(at())) advanceNewline();
+        }
+        if (!closed) {
+          diagnostics.push({ severity: 'error',
+            message: 'Unterminated block comment: missing closing `###`',
+            loc: { start: { line: startLine, col: startCol }, end: { line, col } } });
         }
         // Block comment is transparent to the parser — emit no
         // token. The block spanned ≥1 newline(s) which would have
@@ -242,7 +269,7 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
       }
       // Line comment.
       let text = '';
-      while (pos < source.length && at() !== '\n' && at() !== ';') {
+      while (pos < source.length && !isNewline(at()) && at() !== ';') {
         text += advance();
       }
       tokens.push(token(T.COMMENT, text, startLine, startCol, line, col));
@@ -281,8 +308,8 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
           }
         }
         // Skip rest of opening-fence line (trailing whitespace).
-        while (pos < source.length && at() !== '\n') advance();
-        if (at() === '\n') advance();
+        while (pos < source.length && !isNewline(at())) advance();
+        if (isNewline(at())) advanceNewline();
         // Consume body lines until a closing `%%%` on its own line.
         // No markup tag is permitted on the closing fence (per spec).
         const lines: string[] = [];
@@ -292,20 +319,17 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
           let p = pos;
           while (p < source.length && (source[p] === ' ' || source[p] === '\t')) p++;
           if (source[p] === '%' && source[p + 1] === '%' && source[p + 2] === '%'
-              && (p + 3 === source.length
-                  || source[p + 3] === '\n'
-                  || source[p + 3] === ' '
-                  || source[p + 3] === '\t')) {
+              && _restOfLineBlank(source, p + 3)) {
             // Consume closing fence through end-of-line.
-            while (pos < source.length && at() !== '\n') advance();
-            if (at() === '\n') advance();
+            while (pos < source.length && !isNewline(at())) advance();
+            if (isNewline(at())) advanceNewline();
             closed = true;
             break;
           }
           // Body line: capture verbatim up to the next `\n`.
           let bodyLine = '';
-          while (pos < source.length && at() !== '\n') bodyLine += advance();
-          if (at() === '\n') advance();
+          while (pos < source.length && !isNewline(at())) bodyLine += advance();
+          if (isNewline(at())) advanceNewline();
           lines.push(bodyLine);
         }
         if (!closed) {
@@ -349,7 +373,7 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
       // shape). The content is the rest of the line / up to `;`.
       if (at() === ' ' || at() === '\t') advance();
       let content = '';
-      while (pos < source.length && at() !== '\n' && at() !== ';') {
+      while (pos < source.length && !isNewline(at()) && at() !== ';') {
         content += advance();
       }
       // Right-trim trailing whitespace.
@@ -438,6 +462,10 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
       if (at() === 'e' || at() === 'E') {
         num += advance(); // e/E
         if (at() === '+' || at() === '-') num += advance();
+        if (!isDigit(at())) {
+          diagnostics.push({ severity: 'error', message: 'Exponent requires a decimal digit',
+            loc: { start: { line: startLine, col: startCol }, end: { line, col } } });
+        }
         while (pos < source.length && (isDigit(at()) || (at() === '_' && isDigit(at(1))))) {
           num += advance();
         }

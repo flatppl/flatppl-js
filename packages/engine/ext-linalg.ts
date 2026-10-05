@@ -6,8 +6,8 @@
 // =====================================================================
 //
 // Pure-algorithm leaf module — operates on row-major Float64Array data
-// (the §2.1 shape contract). No engine-internal deps beyond
-// sampler-linalg's existing LU primitive.
+// (the §2.1 shape contract). value.ts resolves storage views at each
+// boundary; sampler-linalg supplies the existing LU primitive.
 //
 // Each function takes either flat data + shape or a Value, and returns
 // a fresh Value (or record-of-Values for multi-output decompositions).
@@ -15,10 +15,9 @@
 // `_registerExtLinearAlgebra` function.
 
 const sLinalg = require('./sampler-linalg.ts');
+const valueLib = require('./value.ts');
 
-// Small helpers — Value constructors live in value.ts but we don't want
-// the cross-cycle (value.ts → ops.ts → ... → ext-linalg.ts would be a
-// risk). Use the canonical Value shape directly.
+// Small helpers for fresh, canonical dense output Values.
 function _matValue(data: Float64Array, rows: number, cols: number): any {
   return { shape: [rows, cols], data };
 }
@@ -42,6 +41,7 @@ function _vecValue(data: Float64Array, n: number): any {
 // canonical (P, L, U) record shape.
 
 function _lu(A: any): any {
+  A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('lu: A must be a square matrix');
   const { LU, piv, sign } = sLinalg._luDecompValue(A.data, n);
@@ -81,6 +81,8 @@ function _lu(A: any): any {
 // inputs; defer until profile demands.
 
 function _kron(A: any, B: any): any {
+  A = valueLib._logicalDense(A);
+  B = valueLib._logicalDense(B);
   const m = A.shape[0], n = A.shape[1];
   const p = B.shape[0], q = B.shape[1];
   const outRows = m * p, outCols = n * q;
@@ -162,6 +164,7 @@ function _norm1(A: Float64Array, n: number): number {
 }
 
 function _matexp(A: any): any {
+  A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('matexp: A must be a square matrix');
   // Scaling: pick s = max(0, ceil(log2(||A||_1 / θ_13))).
@@ -251,6 +254,7 @@ function _matexp(A: any): any {
 // same impl.
 
 function _qr(A: any): any {
+  A = valueLib._logicalDense(A);
   const m = A.shape[0], n = A.shape[1];
   if (m < n) throw new Error('qr: requires m >= n (got ' + m + 'x' + n + ')');
   // Work on a fresh copy of A; we'll modify it into R in-place.
@@ -332,6 +336,8 @@ function _qr(A: any): any {
 // A is poorly conditioned.
 
 function _lstsq(A: any, b: any): any {
+  A = valueLib._logicalDense(A);
+  b = valueLib._logicalDense(b);
   const m = A.shape[0], k = A.shape[1];
   if (b.shape.length !== 1 || b.shape[0] !== m) {
     throw new Error('lstsq: b must be a length-m vector (got shape '
@@ -398,14 +404,28 @@ function _isSymmetric(A: any, n: number, tol: number): boolean {
   return true;
 }
 
-function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array; n: number } {
+function _jacobiSymmetric(A: any, computeVectors = true): {
+  values: Float64Array; vectors: Float64Array | null; n: number;
+} {
+  A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('eigen: A must be a square matrix');
-  // Tolerance scales with the input magnitude — Frobenius norm of A.
+  // Scale norm and rotation-angle arithmetic to avoid overflow. Keep
+  // the work entries in their original units: normalizing the entire
+  // matrix could erase a tiny diagonal beside a much larger block.
+  // Nonfinite inputs retain their existing propagation; zero needs no scaling.
+  let scale = 0;
+  for (let i = 0; i < n * n; i++) scale = Math.max(scale, Math.abs(A.data[i]));
+  if (scale === 0 || !Number.isFinite(scale)) scale = 1;
+  // The convergence tolerance uses the normalized Frobenius norm;
+  // symmetry retains its relative tolerance and absolute floor in A's units.
   let frob2 = 0;
-  for (let i = 0; i < n * n; i++) frob2 += A.data[i] * A.data[i];
+  for (let i = 0; i < n * n; i++) {
+    const v = A.data[i] / scale;
+    frob2 += v * v;
+  }
   const tol = _JACOBI_TOL_REL * Math.sqrt(frob2);
-  if (!_isSymmetric(A, n, Math.max(tol, 1e-10))) {
+  if (!_isSymmetric(A, n, Math.max(tol * scale, 1e-10))) {
     throw new Error('eigen: only symmetric matrices supported in this version '
       + '(non-symmetric requires complex-output path; deferred)');
   }
@@ -414,30 +434,32 @@ function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array
   const M = new Float64Array(n * n);
   for (let i = 0; i < n; i++) {
     for (let j = 0; j < n; j++) {
-      const v = 0.5 * (A.data[i * n + j] + A.data[j * n + i]);
-      M[i * n + j] = v;
+      const a = A.data[i * n + j], b = A.data[j * n + i];
+      const sum = a + b;
+      // Halve after adding when possible to preserve subnormal entries.
+      M[i * n + j] = Number.isFinite(sum) ? 0.5 * sum : 0.5 * a + 0.5 * b;
     }
   }
   // V starts as identity; will hold eigenvectors as columns.
-  const V = new Float64Array(n * n);
-  for (let i = 0; i < n; i++) V[i * n + i] = 1;
+  const V = computeVectors ? new Float64Array(n * n) : null;
+  if (V) for (let i = 0; i < n; i++) V[i * n + i] = 1;
 
   for (let sweep = 0; sweep < _JACOBI_MAX_SWEEPS; sweep++) {
     // Off-diagonal sum-of-squares.
     let off = 0;
     for (let i = 0; i < n; i++) {
       for (let j = i + 1; j < n; j++) {
-        const v = M[i * n + j];
+        const v = M[i * n + j] / scale;
         off += v * v;
       }
     }
-    if (off < tol * tol) break;
+    if (off < tol * tol || (off === 0 && tol === 0)) break;
 
     // Cyclic sweep: visit every (p, q) pair with p < q.
     for (let p = 0; p < n - 1; p++) {
       for (let q = p + 1; q < n; q++) {
         const apq = M[p * n + q];
-        if (Math.abs(apq) < tol) continue;
+        if (Math.abs(apq / scale) < tol) continue;
         const app = M[p * n + p];
         const aqq = M[q * n + q];
         // Compute c, s for the rotation that zeros apq using the
@@ -451,7 +473,7 @@ function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array
         // from NR — combined with the NR rotation convention this
         // corrupted off-diagonal updates on n ≥ 3 matrices (caught by
         // the 3×3 round-trip test before commit).
-        const theta = (aqq - app) / (2 * apq);
+        const theta = (aqq / scale - app / scale) / (2 * (apq / scale));
         let t: number;
         if (Math.abs(theta) > 1e150) {
           // Avoid overflow when apq is tiny relative to (aqq - app).
@@ -478,7 +500,7 @@ function _jacobiSymmetric(A: any): { values: Float64Array; vectors: Float64Array
           }
         }
         // Accumulate the rotation into V.
-        for (let i = 0; i < n; i++) {
+        if (V) for (let i = 0; i < n; i++) {
           const vip = V[i * n + p], viq = V[i * n + q];
           V[i * n + p] = c * vip - s * viq;
           V[i * n + q] = s * vip + c * viq;
@@ -498,20 +520,20 @@ function _eigen(A: any): any {
     shape: 'record',
     fields: {
       values:  _vecValue(values, n),
-      vectors: _matValue(vectors, n, n),
+      vectors: _matValue(vectors!, n, n),
     },
   };
 }
 
 function _eigmax(A: any): number {
-  const { values } = _jacobiSymmetric(A);
+  const { values } = _jacobiSymmetric(A, false);
   let max = values[0];
   for (let i = 1; i < values.length; i++) if (values[i] > max) max = values[i];
   return max;
 }
 
 function _eigmin(A: any): number {
-  const { values } = _jacobiSymmetric(A);
+  const { values } = _jacobiSymmetric(A, false);
   let min = values[0];
   for (let i = 1; i < values.length; i++) if (values[i] < min) min = values[i];
   return min;
@@ -541,6 +563,7 @@ function _eigmin(A: any): number {
 // algorithms until a profile shows it.
 
 function _svd(A: any): any {
+  A = valueLib._logicalDense(A);
   const m = A.shape[0], n = A.shape[1];
   if (m < n) throw new Error('svd: requires m >= n (got ' + m + 'x' + n + '); transpose first');
   // Work on a fresh copy.

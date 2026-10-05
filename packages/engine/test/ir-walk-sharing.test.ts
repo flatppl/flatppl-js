@@ -149,6 +149,35 @@ test('a self-referential binding is stopped by the cycle guard, not by the memo'
   assert.deepEqual(out.args[0].args[0], ref('a'));
 });
 
+test('distinct refs to completed record recurrences keep a shared graph', () => {
+  const bindings: Record<string, any> = {};
+  const derivations: Record<string, any> = {};
+  const field = (name: string) => call('get_field', ref(name), { kind: 'lit', value: 'mean' });
+  for (let i = 0; i < 10; i++) {
+    const value = i === 0 ? call('add', ref('theta'), { kind: 'lit', value: 1 })
+      : call('add', field('s' + (i - 1)), field('s' + (i - 1)));
+    bindings['s' + i] = { ir: { kind: 'call', op: 'record', fields: [{ name: 'mean', value }] } };
+    derivations['s' + i] = { kind: 'record' };
+  }
+  const out = inlineBoundaryDerivations(call('vector', ref('s9'), ref('s9')),
+    new Set(['theta']), { bindings: new Map(Object.entries(bindings)), derivations });
+  assert.equal(out.args[0], out.args[1], 'distinct refs expanded one binding twice');
+  const seen = new Set<any>();
+  (function visit(node: any) {
+    if (!node || typeof node !== 'object' || seen.has(node)) return;
+    seen.add(node);
+    irWalk.forEachIRChild(node, visit);
+  })(out);
+  assert.ok(seen.size < 80, `record recurrence expanded to ${seen.size} distinct nodes`);
+});
+
+test('cycle-dependent expansions keep the cycle root for each entry', () => {
+  const out = inlineBoundaryDerivations(call('vector', ref('a'), ref('b')), new Set(['theta']),
+    ctxOf({ a: call('add', ref('b'), ref('theta')), b: call('neg', ref('a')) }));
+  assert.deepEqual(out.args[0].args[0].args[0], ref('a'));
+  assert.deepEqual(out.args[1].args[0].args[0], ref('b'));
+});
+
 test('the walk collapses a wide DAG instead of expanding it', () => {
   // A binary tree of shared layers: 2^depth positions over depth+1
   // objects. The pre-fix walk returned 2^depth objects.

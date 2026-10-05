@@ -156,15 +156,7 @@ function truncateMassLit(baseIR: any, setIR: any): any | null {
   // arm directly.
   if (!forwardCdf.hasCdf(base.kernel)) return null;
   const { lo, hi } = axes[0];
-  // An infinite bound takes the CDF's limit rather than an evaluation at ±∞,
-  // mirroring forward-cdf's own `truncatedQuantile`. One helper for both bounds
-  // so the two cannot diverge, and so the infinite arm is exercised by either
-  // one — a `-inf` LOWER bound never reaches here today, because it lowers to
-  // `neg(const inf)` and `parseTruncationBox`'s bound resolver folds a `lit` or
-  // a `const` but not a `neg` of one.
-  const cdfAt = (x: number, limit: number) =>
-    Number.isFinite(x) ? forwardCdf.cdf(base.kernel, x, base.input) : limit;
-  const Z = cdfAt(hi, 1) - cdfAt(lo, 0);
+  const Z = forwardCdf.intervalProbability(base.kernel, base.input, lo, hi);
   // §06 normalize leaves the result undefined at Z = 0, and the callers all
   // have their own loud refusal for a non-finite −log Z; decline rather than
   // emit a literal that makes the shift ±∞ from inside an algebraic sum, where

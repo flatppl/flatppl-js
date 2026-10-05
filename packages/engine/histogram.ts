@@ -12,8 +12,8 @@
 //     2·IQR·n^(-1/3); robust to outliers; equal-width bars overlay
 //     cleanly with a smooth PDF curve.
 //
-//   * Integer atoms (discrete, counting reference) — one bin per
-//     integer between min and max(samples).
+//   * Integer atoms (discrete, counting reference) — unit-width bins,
+//     omitting empty bins when the integer span greatly exceeds the data.
 //
 // Both return a uniform `{ xs, ys, support, reference }` shape so the
 // rendering path can dispatch on `reference` without caring which
@@ -115,12 +115,16 @@ function freedmanDiaconisHistogram(samples: ArrayLike<number>, opts: { logWeight
   const lo = qFn(trimQ);
   const hi = qFn(1 - trimQ);
   if (!(hi > lo)) {
-    // All samples coincide — emit a single 1-wide bin centred on the
-    // common value so the chart doesn't crash on zero-width bars.
-    const v = sorted[0];
+    // Trimming can collapse the range even when discarded outliers differ.
+    // Retain the in-range mass, including the zero measure (spec §06).
+    const v = lo;
+    let mass = 0;
+    for (let i = 0; i < n; i++) {
+      if (samples[i] === v) mass += weighted ? Math.exp(lw[i]) : 1 / n;
+    }
     return {
       xs: new Float64Array([v]),
-      ys: new Float64Array([1]),
+      ys: new Float64Array([mass]),
       binEdges: new Float64Array([v - 0.5, v + 0.5]),
       binWidth: 1,
       support: [v - 0.5, v + 0.5], reference: 'lebesgue',
@@ -222,6 +226,19 @@ function integerHistogram(samples: ArrayLike<number>, opts: { logWeights?: any; 
     if (v > hi) hi = v;
   }
   const span = hi - lo + 1;
+  // Sparse observations must not allocate by coordinate magnitude. Keep the
+  // ordinary dense plot while bounding its storage by the number of samples.
+  if (span > Math.max(256, 4 * n)) {
+    const masses = new Map<number, number>();
+    for (let i = 0; i < n; i++) {
+      const k = Math.round(samples[i]);
+      const mass = weighted ? Math.exp(lw[i]) : 1 / n;
+      masses.set(k, (masses.get(k) || 0) + mass);
+    }
+    const xs = Float64Array.from(masses.keys()).sort();
+    const ys = Float64Array.from(xs, x => masses.get(x)!);
+    return { xs, ys, support: [lo, hi], reference: 'counting' };
+  }
   const xs = new Float64Array(span);
   const ys = new Float64Array(span);
   for (let i = 0; i < span; i++) xs[i] = lo + i;

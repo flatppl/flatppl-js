@@ -29,6 +29,19 @@ const sampler = require('../sampler.ts');
 const { scalar, vector, matrix, transpose, adjoint, getTag } = valueLib;
 const { ARITH_OPS } = sampler._internal;
 
+test('wide matrix products preserve logical rows and accumulation order', () => {
+  for (const p of [15, 16]) {
+    const B = matrix(Array.from({ length: 2 * p }, (_, i) => i < p ? i : i - p + 2), 2, p);
+    const expected = Array.from({ length: 2 * p }, (_, i) => i < p ? 3 * i + 4 : 7 * (i - p) + 8);
+    for (const A of [matrix([1, 2, 3, 4], 2, 2), transpose(matrix([1, 3, 2, 4], 2, 2))]) {
+      assert.deepEqual(Array.from(valueOps.mul(A, B).data), expected);
+    }
+  }
+  // Ascending inner-index addition gives zero; reassociation can give one.
+  const cancellation = valueOps.mul(matrix([1e16, 1, -1e16], 1, 3), matrix(Array(48).fill(1), 3, 16));
+  assert.deepEqual(Array.from(cancellation.data), Array(16).fill(0));
+});
+
 function close(a: any, b: any, tol?: any) {
   tol = tol == null ? 1e-12 : tol;
   return Math.abs(a - b) <= tol;
