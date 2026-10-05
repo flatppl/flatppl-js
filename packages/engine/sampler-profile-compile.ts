@@ -19,7 +19,8 @@
 // calling the interpreter's own `evaluateCall`), and its main lever is
 // common-subexpression elimination across a point, which a fused numeric
 // loop cannot express.
-// Ordinary broadcasts also use a plan, with a fresh generation per cell.
+// Ordinary broadcasts and scans also use a plan, with a fresh generation
+// per cell or scan step.
 //
 // Two levers, both measured separately (see flatppl-dev/decisions-log.md):
 //   1. Closure conversion — the per-node `switch (ir.kind)`, the
@@ -466,8 +467,8 @@ function _compileVariadic(op: string, rawArgs: any[] | null | undefined,
 // re-enter through the evaluator hook where its scope remains valid.
 function _opaque(node: any): any {
   const decl = opsModule.lookup(node.op);
-  // These binders mutate one environment across iterations without advancing
-  // our generation. Broadcast owns a plan; aggregate has an explicit hook.
+  // These binders must not borrow this generation. Scan installs its own
+  // plan, reduce/filter stay interpreted, and aggregate has an explicit hook.
   const separateScope = decl && decl.kind === 'higher-order'
     && node.op !== 'broadcast' && node.op !== 'aggregate';
   return function (env: any) {

@@ -302,12 +302,13 @@ after the table.
 | `kernel-broadcast-axes.ts` (~75) | Pure §04 broadcast-axis resolver `resolveBroadcastAxes` (+ `coordToOffset`/`cellToCoord`) — ONE source of truth shared by the mat-broadcast executor and density's `walkBroadcast` (agree-by-construction axis alignment); sizes-only, dependency-free leaf. |
 | `variants.ts` (~85) | Surface-syntax registry (spec §05): ONE canonical variant (`.flatppl`); `variantForPath` + `resolveVariant` (retired FlatPPY/FlatPPJ ids throw — forward-compat seam). |
 
-Ordinary broadcasts reuse the single-point compiler too. Plans follow body-IR
-lifetime through a weak cache. Each cell starts a new generation, and each
-invocation clears cached values and environments, including on error.
+Ordinary broadcasts and scans reuse the single-point compiler too. Plans follow
+body-IR lifetime through weak caches. Each cell or scan step starts a new
+generation, and each invocation clears cached values and environments, including
+on error. Empty scans do not compile or evaluate their bodies.
 Structural children re-enter through `__bodyEval`. Mutable higher-order loops
-without their own generation keep an interpreter boundary; `reduce`, `scan`,
-and `filter` must not borrow an enclosing broadcast's memo.
+keep an interpreter boundary at entry. Scans install their own plan; `reduce`
+and `filter` stay interpreted. None borrows an enclosing loop's memo.
 
 **Local performance reuse.** `density.iidLeaf` batches direct scalar IID
 density leaves, resolving parameters once per atom while preserving observation
