@@ -1297,6 +1297,11 @@ ops.register({
   logical: _reduceLogical,
 });
 
+// Plans follow the callable IR, not a sampled point. As with broadcasts,
+// memo values belong to one step and must not retain its environment.
+const scanPlans = new WeakMap<object, any>();
+
+/** §04 Reductions: evaluate f(acc, next) in a fresh frame at each step. */
 function _scanLogical(ir: any, ctx: any): any {
   const irArgs = ir.args || [];
   if (irArgs.length !== 3) {
@@ -1316,15 +1321,28 @@ function _scanLogical(ir: any, ctx: any): any {
   // §04 permits any accumulator type. Preserve records and vector states
   // instead of coercing them to NaN in a numeric buffer.
   const out: any[] = new Array(n);
-  const elemEnv = Object.assign({}, ctx.env);
-  let acc = init;
-  for (let i = 0; i < n; i++) {
-    elemEnv[fn.params[0]] = acc;
-    elemEnv[fn.params[1]] = xs[i];
-    acc = ctx.evaluateExpr(fn.body, elemEnv);
-    out[i] = acc;
+  // An empty scan never evaluates its body, including during compilation.
+  if (n === 0) return _vectorFromElements(out);
+  let plan = scanPlans.get(fn.body);
+  if (!plan) {
+    // Lazy import: declarations load before sampler initialises the compiler.
+    plan = require('./sampler-profile-compile.ts').compileProfileBody(fn.body);
+    scanPlans.set(fn.body, plan);
   }
-  return _vectorFromElements(out);
+  const elemEnv = Object.assign({}, ctx.env, { __bodyEval: plan.bodyEval });
+  try {
+    let acc = init;
+    for (let i = 0; i < n; i++) {
+      elemEnv[fn.params[0]] = acc;
+      elemEnv[fn.params[1]] = xs[i];
+      plan.nextPoint();
+      acc = plan.evalPoint(elemEnv);
+      out[i] = acc;
+    }
+    return _vectorFromElements(out);
+  } finally {
+    plan.clearMemo();
+  }
 }
 
 ops.register({
