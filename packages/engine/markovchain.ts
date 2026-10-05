@@ -309,20 +309,27 @@ function matMarkovchain(name: string, d: any, ctx: any): Promise<any> {
         + 'value in the state space, and this engine lowers a scalar state'));
     }
 
+    // Keep step IR stable so evaluateExprN reuses its compiled plans. Only
+    // the carry and kscan index change; neither belongs in the IR cache key.
+    const stepRefs: Record<string, any> = Object.assign({}, refArrays);
+    const stepEnv = Object.assign({}, fixedEnv);
+    let indexName = '__mc_index';
+    while (indexName in stepRefs || indexName in stepEnv) indexName += '_';
+    const ir = stepDistIR(d.step, { kind: 'ref', ns: 'self', name: '__mc_prev' },
+      d.xsIR ? { kind: 'call', op: 'get', args: [d.xsIR,
+        { kind: 'ref', ns: 'self', name: indexName }] } : undefined);
     const cols: Float64Array[] = new Array(n);
     let acc: Promise<any> = Promise.resolve();
     for (let j = 0; j < n; j++) {
       const jj = j;
       acc = acc.then(() => {
         const prev = (jj === 0) ? initCol : cols[jj - 1];
-        const stepRefs: Record<string, any> = Object.assign({}, refArrays);
         stepRefs.__mc_prev = valueLib.batchedScalar(prev);
-        const ir = stepDistIR(d.step, { kind: 'ref', ns: 'self', name: '__mc_prev' },
-          d.xsIR ? xElemIR(d.xsIR, jj) : undefined);
+        stepEnv[indexName] = jj + 1;
         const distKwargs: Record<string, any> = {};
         const sampleRefs: Record<string, any> = {};
         for (const pn of Object.keys(ir.kwargs)) {
-          const pv = sampler.evaluateExprN(ir.kwargs[pn], stepRefs, N, fixedEnv, undefined);
+          const pv = sampler.evaluateExprN(ir.kwargs[pn], stepRefs, N, stepEnv, undefined);
           const col = _asColumn(pv, N);
           if (!col) {
             const shp = valueLib.isValue(pv) ? JSON.stringify(pv.shape) : typeof pv;

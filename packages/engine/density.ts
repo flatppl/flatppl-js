@@ -1258,6 +1258,66 @@ function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: 
   return -Math.log(Z);
 }
 
+const scalarJointPlans = new WeakMap<object, any>();
+
+/** Compile the argument expressions of a positional joint of scalar leaves.
+ *  §06 markovchain lowers to exactly this shape. Keep parameter binding and
+ *  density maths in their existing owners; composite leaves keep the walker. */
+function scalarJointPlan(ir: any): any {
+  if (scalarJointPlans.has(ir)) return scalarJointPlans.get(ir);
+  const leaves = ir.args;
+  let plan = null;
+  if (leaves.length > 1 && leaves.every((leaf: any) => leaf.kind === 'call'
+      && !(OP_HANDLERS as any)[leaf.op] && samplerLib.isKnownDistribution(leaf.op))) {
+    const entries = leaves.map((leaf: any) => samplerLib.lookupDistribution(leaf));
+    // Custom resolvers may consume structural arguments such as unitinterval,
+    // which are not ordinary value expressions for the compiler to evaluate.
+    if (entries.every((entry: any) => !entry.customResolveParams)) {
+      const args = leaves.flatMap((leaf: any) =>
+        (leaf.args || []).concat(Object.values(leaf.kwargs || {})));
+      plan = { entries,
+        body: samplerLib.compileProfileBody({ kind: 'call', op: 'vector', args }) };
+    }
+  }
+  scalarJointPlans.set(ir, plan);
+  return plan;
+}
+
+/** Sum §06 conditional densities in order with one private environment per
+ *  atom. Repeated suffix and growing overlay copies otherwise cost O(n²).
+ *  A new memo generation per leaf preserves changes to the threaded s{i}
+ *  names, including names that also occur in a captured environment. */
+function walkScalarJoint(ir: any, plan: any, value: any[], refArrays: any,
+    N: number, acc: Float64Array, baseEnv: any, overlay: any): any {
+  const refNames = Object.keys(refArrays);
+  const leaves = ir.args;
+  const atoms = refNames.length === 0 ? 1 : N;
+  try {
+    for (let i = 0; i < atoms; i++) {
+      const env = Object.assign({}, baseEnv);
+      for (const name of refNames) {
+        const v = refArrays[name];
+        env[name] = valueLib.isValue(v) ? _atomSlice(v, i) : v[i];
+      }
+      if (overlay) Object.assign(env, overlay);
+      env.__bodyEval = plan.body.bodyEval;
+      for (let j = 0; j < leaves.length; j++) {
+        plan.body.nextPoint();
+        const params = samplerLib.resolveParams(leaves[j], plan.entries[j], env);
+        const lp = densityPrims.builtinLogdensityofPositional(leaves[j].op, params, +value[j]);
+        // Constant atoms share parameter evaluation, but still add each term
+        // separately so an enclosing accumulator keeps its rounding order.
+        if (atoms === N) acc[i] += lp;
+        else for (let k = 0; k < N; k++) acc[k] += lp;
+        env['s' + j] = value[j];
+      }
+    }
+  } finally {
+    plan.body.clearMemo();
+  }
+  return value.length === leaves.length ? null : value.slice(leaves.length);
+}
+
 function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // record / kwarg-joint: ir.fields = [{name, value: subIR, source?}, …].
   // Consume named fields in declared order; env-thread each consumed
@@ -1322,6 +1382,12 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
   // overlay mechanism, positionally. Threading extra `s{i}` keys is
   // inert for independent joints (they never ref them).
   if (Array.isArray(ir.args)) {
+    // The general walker threads positional observations only for JS arrays.
+    // Preserve its other shape and points-batched paths unchanged.
+    const plan = getOptimization('density.scalarJoint')
+      && Array.isArray(value) && value.length >= ir.args.length
+      && !opts.pointsBatched ? scalarJointPlan(ir) : null;
+    if (plan) return walkScalarJoint(ir, plan, value, refArrays, N, acc, baseEnv, overlay);
     let cur = value;
     let curOverlay = overlay;
     for (let i = 0; i < ir.args.length; i++) {
