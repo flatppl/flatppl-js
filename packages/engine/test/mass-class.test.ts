@@ -64,6 +64,24 @@ test('simplex recognition requires all coordinates of one node and probability c
   }
 });
 
+test('normalizer mixture proofs require a nonempty input', () => {
+  // §07 returns an empty vector here, whose §06 mixture mass is the empty sum, zero.
+  for (const source of ['softmax(zeros(0))', 'softmax(reverse(zeros(0)))',
+    'softmax(external(cartpow(reals, k)))',
+    'l1unit(external(cartpow(nonnegreals, 0)))']) {
+    assert.notEqual(massOf(`k = external(nonnegintegers)\np = ${source}\nm = ksuperpose(Normal, p)(mu = 0, sigma = 1)`, 'm'),
+      'normalized', source);
+  }
+  // A declared nonempty vector, or an actual simplex, still gives unit mass.
+  for (const source of ['softmax([0, 1])', 'l1unit([3, 1])',
+    'softmax(external(cartpow(reals, 3)))',
+    'l1unit(external(cartpow(nonnegreals, 3)))',
+    'softmax(elementof(stdsimplex(n)))', 'l1unit(elementof(stdsimplex(n)))']) {
+    assert.equal(massOf(`n = external(posintegers)\np = ${source}\nm = ksuperpose(Normal, p)(mu = 0, sigma = 1)`, 'm'),
+      'normalized', source);
+  }
+});
+
 // Annotated FlatPIR (%meta on) for a source module.
 function sexprOf(src: string): string {
   const r = processSource(src);

@@ -95,6 +95,7 @@ module and serves source/type tooling.
 Mass inference recognizes simplex-weighted probability mixtures: whole vectors
 for `ksuperpose`, or every coordinate of the same node exactly once for `superpose`.
 Reference measures and unnormalized components do not satisfy this proof.
+Normalization functions establish simplex membership only for provably nonempty inputs.
 
 Array indexing preserves nested element types and runtime nesting tags.
 Leading slices retain complex components and view semantics; transposed matrix

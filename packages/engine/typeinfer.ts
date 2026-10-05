@@ -5370,11 +5370,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return vsLib.UNKNOWN;
       }
       // Normalization functions (spec §07).
-      case 'softmax': return vsLib.stdsimplex(_vectorDimOf(ir));
+      case 'softmax':
       case 'l1unit': {
         const argSet = valuesetOfExpr(args[0]);
-        return vsLib.subsetOf(argSet, vsLib.cartpow(vsLib.NONNEGREALS, '%dynamic'))
-          ? vsLib.stdsimplex(_vectorDimOf(ir)) : vsLib.UNKNOWN;
+        const dim = _vectorDimOf(ir);
+        const n = typeof dim === 'number' ? dim
+          : (argSet?.vs === 'cartpow' || argSet?.vs === 'stdsimplex') ? argSet.n : dim;
+        // §07 leaves empty inputs empty, with coordinate sum zero. A dynamic
+        // length alone cannot prove nonemptiness; an actual simplex can.
+        if (!(typeof n === 'number' ? n > 0 : argSet?.vs === 'stdsimplex')) return vsLib.UNKNOWN;
+        if (op === 'l1unit'
+            && !vsLib.subsetOf(argSet, vsLib.cartpow(vsLib.NONNEGREALS, '%dynamic'))) return vsLib.UNKNOWN;
+        return vsLib.stdsimplex(n);
       }
       case 'exp': return vsLib.POSREALS;
       case 'abs': case 'abs2': case 'sqrt': return vsLib.NONNEGREALS;
