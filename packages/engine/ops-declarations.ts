@@ -1313,16 +1313,18 @@ function _scanLogical(ir: any, ctx: any): any {
     throw new Error('scan: xs must be a vector');
   }
   const n = xs.length;
-  const out: Float64Array = new Float64Array(n);
+  // §04 permits any accumulator type. Preserve records and vector states
+  // instead of coercing them to NaN in a numeric buffer.
+  const out: any[] = new Array(n);
   const elemEnv = Object.assign({}, ctx.env);
   let acc = init;
   for (let i = 0; i < n; i++) {
     elemEnv[fn.params[0]] = acc;
     elemEnv[fn.params[1]] = xs[i];
     acc = ctx.evaluateExpr(fn.body, elemEnv);
-    out[i] = acc === true ? 1 : acc === false ? 0 : +acc;
+    out[i] = acc;
   }
-  return { shape: [n], data: out };
+  return _vectorFromElements(out);
 }
 
 ops.register({
