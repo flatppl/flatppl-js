@@ -323,6 +323,14 @@ identity. `aggregate.profileShape` reuses structural axis scans only within a
 synchronous compiled batch/sweep, keyed by its fresh `__aggregateShapeScope`.
 Standalone evaluation and later batches/edits retain structural rescanning.
 
+`density.scalarJoint` compiles positional scalar-leaf joint arguments once per
+IR and uses one private environment per atom. Conditional scores keep their
+original addition order, memo generations advance per leaf, and cleanup runs
+on errors too. Other joint shapes retain the general walker. This removes the
+growing overlay and suffix copies from `markovchain` and `kscan` scoring.
+Their sampler reuses stable step IR across transitions, including a kscan index
+whose internal name excludes captured inputs, so batched compiler plans survive.
+
 **`EmpiricalMeasure` shape** (engine-concepts §2 universal value): `samples`
 (per-atom scalar view) · optional `value` (shape-`[N,…dims]` batched Value) ·
 `logWeights` (null ⇒ uniform) · `logTotalmass` (0 ⇒ probability) · `n_eff` ·

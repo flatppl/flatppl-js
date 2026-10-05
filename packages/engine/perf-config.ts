@@ -66,6 +66,8 @@
 // lift to a context option.
 
 const OPTIMIZATIONS: Record<string, boolean> = {
+  // Compile scalar positional joints with one private environment per atom.
+  'density.scalarJoint': true,
   // Consume scalar composite iid observations without suffix copies.
   'density.iidScalar': true,
   // Reuse axis scans only within one synchronous compiled batch/sweep.
