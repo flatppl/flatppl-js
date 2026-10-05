@@ -39,6 +39,27 @@ test('get0: 0-based element', () => {
   assert.equal(ev(get('get0', [10, 20, 30], lit(2))), 30);
 });
 
+test('empty tensor selection retains all surviving dimensions', () => {
+  const result = processSource('source = elementof(cartpow(reals, [2, 1, 3]))\n'
+    + 'ix = fill(1, get([0], 1))\n'
+    + 'middle = source[:, ix, :]\nfirst = source[ix, :, :]\n'
+    + 'last = source[:, :, ix]\ndropped = source[ix, 1, :]\n'
+    + 'outputs = aggregate(sum, [.s, .b], middle[.s, .m, .b])');
+  assert.deepEqual(result.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const built = orchestrator.buildDerivations(result.bindings);
+  const env: any = { ...Object.fromEntries(built.fixedValues),
+    source: { shape: [2, 1, 3], data: new Float64Array(6).fill(1) } };
+  for (const [name, shape] of [['middle', [2, 0, 3]], ['first', [0, 1, 3]],
+    ['last', [2, 1, 0]], ['dropped', [0, 3]]] as const) {
+    env[name] = sampler.evaluateExpr(built.bindings.get(name).ir, env);
+    assert.deepEqual(env[name].shape, shape);
+    assert.equal(env[name].data.length, 0);
+  }
+  const sums = sampler.evaluateExpr(built.bindings.get('outputs').ir, env);
+  assert.deepEqual(sums.shape, [2, 3]);
+  assert.deepEqual(Array.from(sums.data), [0, 0, 0, 0, 0, 0]);
+});
+
 test('get: out-of-bounds and bad-target throw with a clear message', () => {
   assert.throws(() => ev(get('get', [1, 2], lit(5))),
     /get index 5 out of bounds for length 2/);
