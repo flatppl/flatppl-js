@@ -93,6 +93,8 @@ The canonical `result.loweredModule.moduleRegistry` still describes the primary
 module and serves source/type tooling.
 
 Record-valued broadcasts collect into tables, including nested record columns.
+Bare `record` heads infer their fields from keyword cell types and share the
+one-axis rule with record-returning functions.
 Inference retains table schemas on source calls across lift's re-lowering, so
 empty broadcasts keep their columns without evaluating a cell.
 

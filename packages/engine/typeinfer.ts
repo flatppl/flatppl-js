@@ -3513,9 +3513,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // takes the same either/or.
     const kwargs: any = expr.kwargs || {};
     const kwNames: string[] = Object.keys(kwargs);
+    const isRecordHead = args[0]?.kind === 'ref' && args[0].ns === 'self'
+      && args[0].name === 'record';
     let dataArgs: any[];
     if (kwNames.length > 0) {
-      const paramNames = broadcastHeadParamNames(args[0], scopes);
+      // The record constructor declares its field names at the call site.
+      const paramNames = isRecordHead ? kwNames : broadcastHeadParamNames(args[0], scopes);
       if (!paramNames) return T.deferred();
       // A parameter with no argument, or a keyword naming no parameter of the
       // head, is an ill-formed call the runtime binder throws on. Infer no
@@ -3637,7 +3640,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return T.failed('broadcast: collection-domain head over a scalar element');
     }
     let elem: any = T.deferred();
-    if (fn && fn.kind === 'call' && fn.op === 'functionof'
+    if (isRecordHead && kwNames.length > 0) {
+      // §04: a bare record head has the same row schema as record-returning
+      // functions, even when no cell runs because the broadcast is empty.
+      elem = T.record(Object.fromEntries(kwNames.map((name, i) => [name, cellTypes[i]])));
+    } else if (fn && fn.kind === 'call' && fn.op === 'functionof'
         && fn.body && Array.isArray(fn.params)) {
       const localScope = new Map<string, any>();
       for (let i = 0; i < fn.params.length && i < cellTypes.length; i++) {
