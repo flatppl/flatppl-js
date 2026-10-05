@@ -45,4 +45,11 @@ function resolveBaseUri(currentUri: any, localBaseUri: any): any {
     : currentUri;
 }
 
-module.exports = { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri };
+/** §04: validate canonical file URLs before dispatch, preserving remote local paths. */
+function localSourceUri(base: any, resolved: string, parseUri: (s: string) => any): any {
+  const url = require('../lib/engine.min.js').moduleResolve.validateSource(resolved);
+  if (url && url.protocol !== 'file:') throw new Error('Local sources require a file URL or path');
+  return url ? parseUri(url.href) : base.with({ path: resolved });
+}
+
+module.exports = { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri, localSourceUri };

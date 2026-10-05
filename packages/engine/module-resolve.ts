@@ -62,13 +62,37 @@ function isUrl(s: any): boolean {
   return /^https?:\/\//i.test(String(s == null ? '' : s));
 }
 
+/**
+ * §04 remote file caching: validate the URL after WHATWG normalization.
+ * Return its parsed form for host dispatch, or null for a filesystem path.
+ * A URL base also subjects network-path references to the file-host policy.
+ */
+function validateSource(source: string, base?: string): URL | null {
+  if (/^[a-z]:[/\\]/i.test(source)) return null; // Windows drive path.
+  let url: URL;
+  try { url = base ? new URL(source, base) : new URL(source); }
+  catch (error) {
+    // URL parsing removes tabs/newlines and trims surrounding C0 whitespace.
+    // Relative filesystem paths remain untouched, including their spaces.
+    const normalized = source.replace(/[\t\n\r]/g, '').replace(/^[\x00-\x20]+|[\x00-\x20]+$/g, '');
+    if (/^[a-z][a-z0-9+.-]*:/i.test(normalized)) throw error;
+    return null;
+  }
+  if (!['file:', 'http:', 'https:'].includes(url.protocol)) {
+    throw new Error('FlatPPL source: only file, http and https URL schemes are allowed');
+  }
+  if (url.protocol === 'file:' && url.hostname && url.hostname !== 'localhost') {
+    throw new Error('FlatPPL source: file URL must name a local path');
+  }
+  return url;
+}
+
 function resolveModulePath(importerPath: string | null, relPath: string): string {
   relPath = String(relPath == null ? '' : relPath);
-  // URL sources (spec §04 #sec:url-cache): an absolute http(s) dependency is
-  // used verbatim (it is its own request URL / cache key); a relative
-  // dependency inside a URL-loaded module resolves against the importer URL.
-  if (isUrl(relPath)) return relPath;
-  if (isUrl(importerPath)) return new URL(relPath, String(importerPath)).href;
+  if (/^[a-z]:[/\\]/i.test(relPath)) return relPath;
+  const baseURL = importerPath ? validateSource(importerPath) : null;
+  const url = validateSource(relPath, baseURL?.href);
+  if (url) return url.href;
   if (relPath.startsWith('/')) {
     return '/' + _normalize(relPath.split('/'), true).join('/');
   }
@@ -81,4 +105,4 @@ function resolveModulePath(importerPath: string | null, relPath: string): string
   return (importerAbsolute ? '/' : '') + segs.join('/');
 }
 
-module.exports = { resolveModulePath, isUrl };
+module.exports = { resolveModulePath, isUrl, validateSource };

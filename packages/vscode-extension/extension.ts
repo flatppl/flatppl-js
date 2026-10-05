@@ -33,7 +33,7 @@ const { collectUrlSources } = require('./src/lspUrlFeed');
 // Remote (URL) module drill-down: a URL load_module opens as a read-only
 // `flatppl-remote:` virtual document whose content is served from the on-disk
 // cache (the content provider registered in activate).
-const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf } = require('./src/remoteModule');
+const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, localSourceUri } = require('./src/remoteModule');
 // "Export math as HTML / LaTeX / Typst": the host-agnostic core (bundle
 // walk → flatppl-rust `export_math` → write beside the source). The wasm
 // API runs here in the extension host from lib/flatppl_wasm_api.cjs (the
@@ -394,7 +394,7 @@ function activate(context: any) {
         readLocal: async (resolved: any) => {
           try {
             const bytes = await vscode.workspace.fs.readFile(
-              doc.uri.with({ path: resolved }));
+              localSourceUri(doc.uri, resolved, vscode.Uri.parse));
             return Buffer.from(bytes).toString('utf8');
           } catch (_e) { return null; }
         },
@@ -867,7 +867,7 @@ function activate(context: any) {
         // `doc.uri.with({ path })` to keep scheme + authority (remote / WSL
         // too) — the same read the visualizer's readSource uses.
         readLocal: async (resolved: any) => {
-          const bytes = await vscode.workspace.fs.readFile(doc.uri.with({ path: resolved }));
+          const bytes = await vscode.workspace.fs.readFile(localSourceUri(doc.uri, resolved, vscode.Uri.parse));
           return Buffer.from(bytes).toString('utf8');
         },
         force: !!force,
@@ -988,7 +988,7 @@ function activate(context: any) {
                 if (urlCache.isUrl(resolved)) {
                   return await urlCache.readText(resolved, { approve: (u: any) => approveUrl(u) });
                 }
-                const bytes = await vscode.workspace.fs.readFile(doc.uri.with({ path: resolved }));
+                const bytes = await vscode.workspace.fs.readFile(localSourceUri(doc.uri, resolved, vscode.Uri.parse));
                 return Buffer.from(bytes).toString('utf8');
               } catch (e: any) {
                 vscode.window.showWarningMessage(

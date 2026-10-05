@@ -12,7 +12,30 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri } = require('../src/remoteModule.js');
+const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri, localSourceUri } = require('../src/remoteModule.js');
+
+test('explicit file URLs do not inherit the importer scheme', () => {
+  const base = { with: fields => ({ scheme: REMOTE_SCHEME, ...fields }) };
+  const parseUri = value => ({ scheme: 'file', value });
+  assert.deepEqual(localSourceUri(base, 'file:///tmp/a.flatppl', parseUri),
+    { scheme: 'file', value: 'file:///tmp/a.flatppl' });
+  assert.deepEqual(localSourceUri(base, '/tmp/a.flatppl', parseUri),
+    { scheme: REMOTE_SCHEME, path: '/tmp/a.flatppl' });
+});
+
+test('local dispatch validates normalized file authorities before URI parsing', () => {
+  const base = { with: fields => ({ scheme: 'vscode-remote', authority: 'ssh-remote+host', ...fields }) };
+  const parsed = [];
+  const parseUri = value => { parsed.push(value); return { scheme: 'file', value }; };
+  assert.deepEqual(localSourceUri(base, '\nfi\tle://localhost/tmp/a', parseUri),
+    { scheme: 'file', value: 'file:///tmp/a' });
+  for (const source of ['fi\tle://server/x', 'da\tta:text/plain,x', 'https://example.test/x']) {
+    assert.throws(() => localSourceUri(base, source, parseUri));
+  }
+  assert.deepEqual(parsed, ['file:///tmp/a']);
+  assert.deepEqual(localSourceUri(base, '/tmp/a', parseUri),
+    { scheme: 'vscode-remote', authority: 'ssh-remote+host', path: '/tmp/a' });
+});
 
 const URL = 'https://raw.githubusercontent.com/flatppl/flatppl-examples/refs/heads/main/examples/bayesian_inference_common.flatppl';
 const remoteUri = { scheme: REMOTE_SCHEME, path: '/flatppl/.../bayesian_inference_common.flatppl', query: URL };
