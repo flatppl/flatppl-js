@@ -63,14 +63,21 @@ function _rewriteRefs(node: any, prefix: string,
       && userAliases.has(node.object.name)) {
     return AST.Identifier(_pfx(userAliases.get(node.object.name)!, node.field), node.loc);
   }
-  if (node.type === 'Identifier') {
+  // Explicit self references belong to this instance, just like bare names.
+  if (node.type === 'FieldAccess' && node.object?.type === 'Identifier'
+      && node.object.name === 'self' && localNames.has(node.field)) {
+    return prefix === '' ? node : AST.Identifier(_pfx(prefix, node.field), node.loc);
+  }
+  if (node.type === 'Identifier' || node.type === 'SetRef') {
+    if (node.builtin) return node;
     return localNames.has(node.name)
       ? AST.Identifier(_pfx(prefix, node.name), node.loc)
       : node;
   }
   const out: Record<string, any> = {};
   for (const k in node) {
-    out[k] = (k === 'loc') ? node[k] : _rewriteRefs(node[k], prefix, localNames, userAliases);
+    out[k] = (k === 'loc' || (k === 'callee' && (node.builtin || node.fromLambda)))
+      ? node[k] : _rewriteRefs(node[k], prefix, localNames, userAliases);
   }
   return out;
 }
@@ -79,11 +86,15 @@ function _rewriteRefs(node: any, prefix: string,
 // `subs` maps an input name of THIS instance to the substitution-value AST
 // (already rewritten into the importer's namespace) bound by the enclosing
 // `load_module(input = value)` — null for the root.
-function _linkInstance(prefix: string, ast: any, moduleRegistry: any,
+function _linkInstance(prefix: string, compiled: any,
   modules: Map<string, any>, out: any[], subs: Map<string, any> | null,
   stackPaths: Set<string>): void {
+  const { ast, bindings, loweredModule } = compiled;
   const stmts = (ast && ast.body) || [];
-  const reg = moduleRegistry || {};
+  const reg = loweredModule?.moduleRegistry || {};
+  // Freeze implicit callable input names in their declaring module before
+  // namespace rewriting. Only their source references acquire the prefix.
+  const canonical = prefix ? require('./lift.ts').canonicalizeImplicitBoundaries(bindings) : bindings;
 
   const localNames = new Set<string>();
   for (const s of stmts) {
@@ -121,8 +132,7 @@ function _linkInstance(prefix: string, ast: any, moduleRegistry: any,
         if (arg.type === 'KeywordArg') childSubs.set(arg.name, rewrite(arg.value));
       }
       const childStack = new Set(stackPaths); childStack.add(e.path);
-      _linkInstance(_childPrefix(prefix, aliasName!), dep.ast,
-        dep.loweredModule && dep.loweredModule.moduleRegistry, modules, out, childSubs, childStack);
+      _linkInstance(_childPrefix(prefix, aliasName!), dep, modules, out, childSubs, childStack);
       continue;
     }
 
@@ -141,7 +151,9 @@ function _linkInstance(prefix: string, ast: any, moduleRegistry: any,
     // standard_module load): emit under namespaced name(s) with refs
     // rewritten.
     const newNames = s.names.map((nm: any) => AST.Identifier(_pfx(prefix, nm.name), nm.loc));
-    const stmt = AST.AssignStatement(newNames, rewrite(s.value), s.loc);
+    const promoted = canonical?.get(s.names[0]?.name);
+    const value = promoted?.implicitBoundaries ? promoted.node.value : s.value;
+    const stmt = AST.AssignStatement(newNames, rewrite(value), s.loc);
     if (s.doc) stmt.doc = s.doc;         // keep the binding's doc through linking (spec §04)
     out.push(stmt);
   }
@@ -153,8 +165,7 @@ function _linkInstance(prefix: string, ast: any, moduleRegistry: any,
 // for derivation building / materialisation.
 function linkModules(primary: any, modules: Map<string, any>): any {
   const out: any[] = [];
-  _linkInstance('', primary.ast,
-    primary.loweredModule && primary.loweredModule.moduleRegistry, modules, out, null, new Set());
+  _linkInstance('', primary, modules, out, null, new Set());
   return AST.Program(out, []);
 }
 

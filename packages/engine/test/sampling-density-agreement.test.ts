@@ -2,7 +2,7 @@
 
 // ════════════════════════════════════════════════════════════════════════
 // STANDING INVARIANT for the measure-lowering unification
-// (flatppl-dev/measure-lowering-unification-plan.md, Phase 0).
+// (the CLM unification's standing invariant; ARCHITECTURE.md "Measure-algebra scar zones").
 //
 // The engine walks the SAME measure IR along two paths — SAMPLE and DENSITY —
 // that drift. This harness pins the property the unification must make
@@ -63,11 +63,6 @@ theta ~ Normal(0.0, 1.0)
 K = functionof(Normal(mu = theta, sigma = 1.0), theta = theta)
 prior = lawof(theta)
 ch = kchain(prior, K)`],
-  ['hole-kernel over a RECORD base prior (cat-arity case A)', 'ch', `
-mu_p = 0.0
-joint_indep = joint(t1 = Normal(mu = mu_p, sigma = 1.0), t2 = Exponential(rate = 1.0))
-K = functionof(Normal(mu = t1, sigma = t2), t1 = t1, t2 = t2)
-ch = kchain(joint_indep, K)`],
 ];
 
 for (const [id, mname, src] of GREEN) {
@@ -76,6 +71,16 @@ for (const [id, mname, src] of GREEN) {
     assert.ok(r.ok, `expected GREEN but got ${r.crashed ? 'CRASH:' + r.reason : 'RED maxErr=' + (r.maxErr || 0).toFixed(2)} — ` + JSON.stringify(r.probes || r.reason));
   });
 }
+
+test('a continuous random scale in a record kchain is sampleable but has no exact density path', async () => {
+  const { ctxFor } = require('./_ctx-factory.ts');
+  const source = `prior=joint(t1=Normal(0,1),t2=Exponential(1))
+K=functionof(Normal(t1,t2),t1=t1,t2=t2)
+ch=kchain(prior,K)`;
+  const { ctx } = ctxFor(source + '\nlp=logdensityof(ch,0)', 128);
+  assert.ok(Array.from((await ctx.getMeasure('ch')).samples).every(Number.isFinite));
+  await assert.rejects(ctx.getMeasure('lp'), /kchain requires a closed form or finite discrete enumeration/);
+});
 
 // ---- WILL-FLIP (red today, for the right reason; flip loudly when fixed) --
 

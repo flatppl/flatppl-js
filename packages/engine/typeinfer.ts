@@ -152,6 +152,7 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: a
   // value set is PROVABLY outside the parameter's required domain (spec
   // §08), e.g. `Normal(sigma = -1.0)`. Reads the valuesets filled above.
   ctx.checkDomainContracts();
+  ctx.checkModuleSubstitutionTypes();
   // Spec §06 "Known-bijection registry": a domain-restricted pushfwd
   // forward (log/log10/sqrt/log1p/logit/probit) additionally requires the
   // base measure's support to lie within that domain — refuse (error
@@ -328,6 +329,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // rather than const — handle that gracefully here too.
       if (CONST_TYPES[expr.name])    return CONST_TYPES[expr.name];
       if (builtins.isSet(expr.name)) return setMarker(expr.name);
+      if (builtins.BUILTIN_FUNCTIONS.has(expr.name)) return T.any();
       return T.failed('undefined name "' + expr.name + '"');
     }
     // Cross-module ref — `(%ref mod X)` resolves through the
@@ -505,6 +507,26 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'lawof':     return write(inferLawof(expr, scopes), expr);
       case 'record':    return write(inferRecord(expr, scopes), expr);
       case 'table':     return write(inferTable(expr, scopes), expr);
+      case 'filter': {
+        const args = expr.args || [];
+        const kwargs = expr.kwargs || {};
+        const pred = kwargs.pred || args[0];
+        const data = kwargs.data || args[1];
+        if (pred && data && args.length + Object.keys(kwargs).length === 2
+            && Object.keys(kwargs).every(k => k === 'pred' || k === 'data')) {
+          const dataT = inferExpr(data, scopes);
+          if (dataT?.kind === 'table') {
+            inferExpr(pred, scopes);
+            // §07 filter preserves columns. Every nested table loses the same
+            // rows, so its row count is dynamic too.
+            const filtered = (t: any): any => t.kind === 'table'
+              ? T.table(Object.fromEntries(Object.entries(t.columns)
+                .map(([n, col]) => [n, filtered(col)])), '%dynamic') : t;
+            return write(filtered(dataT), expr);
+          }
+        }
+        break;
+      }
       case 'cat':       return write(inferCat(expr, scopes), expr);
       case 'joint':     return write(inferJoint(expr, scopes), expr);
       case 'tuple':     return write(inferTuple(expr, scopes), expr);
@@ -958,6 +980,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       s = next;
     }
     const result = T.substitute(sig.result, s);
+    if (op === 'BinnedPoissonProcess') {
+      const bins = kwargs.bins || (args.length >= 2 ? args[0] : null);
+      const binsT = bins && inferExpr(bins, scopes);
+      if (binsT?.kind === 'record' && Object.keys(binsT.fields).length > 0) {
+        const shape = Object.values(binsT.fields).map((t: any) =>
+          t.kind === 'array' && t.rank === 1 && typeof t.shape[0] === 'number'
+            ? Math.max(0, t.shape[0] - 1) : '%dynamic');
+        result.domain = T.array(shape.length, shape, T.INTEGER);
+      }
+    }
     // Stamp the exact vector length onto the measure-domain of the three
     // multivariate VECTOR distributions whose atom length is statically known
     // (mirrors flatppl-rust ops.rs `param_dim`; the valueset path already
@@ -1109,6 +1141,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return T.failed('checked: no value');
     }
     const vt: any = inferExpr(valueExpr, scopes);
+    if (condExpr == null) {
+      diagnostics.push({ severity: 'error', message: 'checked(): requires a condition argument', loc: expr.loc });
+      return T.failed('checked: no condition');
+    }
     if (condExpr != null) {
       const ct: any = inferExpr(condExpr, scopes);
       // Cascades (already-failed condition) don't pile on a second error.
@@ -2163,19 +2199,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     const steps: any[] = [];
     const declaredInputs: any[] = [];
-    // A `relabel`d measure keeps its UN-relabelled variate type
-    // (`inferRelabel`'s measure arm is labels-only, by design — see the rule
-    // there), so an array-typed variate to the left of a step may really be
-    // the record §06's `relabel` produces. The declared-input fill-in below
-    // reads that type, so withhold it once a relabel-rooted step is to the
-    // left: refusing on a known under-approximation would reject a program
-    // the spec allows. Carded in flatppl-dev/TODO-flatppl-js.md.
-    let untrustedLeft = false;
     for (const a of comps) {
       const name = (a && a.kind === 'ref' && a.ns === 'self') ? a.name : undefined;
       steps.push({ type: inferExpr(a, scopes), loc: a && a.loc, name });
-      declaredInputs.push(untrustedLeft ? null : _declaredBoundaryInputTypes(a));
-      if (_isRelabelRooted(a)) untrustedLeft = true;
+      declaredInputs.push(_declaredBoundaryInputTypes(a));
     }
     const densityPrims = require('./density-prims.ts');
     const r = densityPrims.inferChainComposition(steps, mode,
@@ -2221,7 +2248,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return !!(kw && ir.kwargs && ir.kwargs[kw]);
       });
       if (declared) continue;
-      const scope = _chainStepScope(params, paramKwargs, fed, i >= 2);
+      const scope = _chainStepScope(params, paramKwargs, fed);
       if (scope == null) continue;
       const before = diagnostics.length;
       inferExpr(ir.body, scopes.concat([scope]));
@@ -2251,27 +2278,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   /** A step's params bound to the type the chain feeds it, or null when the
    *  fed type does not bind — in which case the boundary matcher has already
    *  reported it and there is nothing to re-check. Same split as the matcher:
-   *  a lone input binds the whole fed value, two or more splat a record fed
-   *  type by field name.
-   *
-   *  `catOfMany` says the fed type is the `cat` of two or more left variates.
-   *  A record cat there splats into a LONE input by field name too (§04
-   *  sec:calling-convention: "A sole positional record or table therefore
-   *  always splats"), which is what the chain's runtime does — `bindKernel`
-   *  matches a param against the prior field names before treating it as a
-   *  hole. At the FIRST boundary the runtime binds the whole record instead,
-   *  so the whole-value bind stays the model there; that gap is pinned in
-   *  kchain-step-arity.test.ts. */
-  function _chainStepScope(params: any[], paramKwargs: any[], fed: any,
-      catOfMany: boolean) {
+   *  records always splat by field name, including at the first boundary.
+   *  A non-record binds whole to a single input (spec §04/§06). */
+  function _chainStepScope(params: any[], paramKwargs: any[], fed: any) {
     const scope = new Map<string, any>();
-    if (params.length === 1) {
-      const name = paramKwargs[0] || params[0];
-      if (catOfMany && fed.kind === 'record'
-          && Object.prototype.hasOwnProperty.call(fed.fields, name)) {
-        scope.set(params[0], fed.fields[name]);
-        return scope;
-      }
+    if (params.length === 1 && fed.kind !== 'record') {
       scope.set(params[0], fed);
       return scope;
     }
@@ -2306,8 +2317,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
    *  (`c ~ K3([a, b])`), and the placeholder spelling is a located error, so
    *  the two must agree.
    *
-   *  These types are advisory: the boundary walk applies them only where the
-   *  fed value is an ARRAY, and never writes them back onto the step's node.
+   *  These types are advisory: the boundary walk applies them to structured
+   *  fed values, and never writes them back onto the step's node.
    *  See `_applyDeclaredInputTypes` in density-prims for the gate. */
   function _declaredBoundaryInputTypes(comp: any): Map<string, any> | null {
     const ir = _reifiedStepIR(comp);
@@ -2337,16 +2348,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const t = inferBinding(name);
     if (!T.isValue(t) || t.kind === 'any' || t.kind === 'deferred') return null;
     return t;
-  }
-
-  /** Whether a chain step is a `relabel` call, written inline or reached
-   *  through one binding ref. Its variate type is the un-relabelled one, so
-   *  the boundary walk cannot trust an array there to be an array. */
-  function _isRelabelRooted(comp: any): boolean {
-    const rhs = (comp && comp.kind === 'ref' && comp.ns === 'self')
-      ? (loweredModule.bindings.get(comp.name) || {}).rhs
-      : comp;
-    return !!(rhs && rhs.kind === 'call' && rhs.op === 'relabel');
   }
 
   /** The `functionof` IR of a chain step written inline or bound to a
@@ -4085,10 +4086,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (m2 && m2.kind === 'kernel') {
       // pushfwd acts on the kernel's OUTPUT measures (spec §06); preserve the
       // input signature, specialize the output variate to f's codomain.
-      const outMeasure = m2.output;
+      const outMeasure = m2.result;
       const baseDomain = (outMeasure && T.isMeasure(outMeasure)) ? outMeasure.domain : null;
       const cod = baseDomain ? _pushfwdCodomain(args[0], baseDomain, scopes) : null;
-      return { kind: 'kernel', inputs: m2.inputs || {}, output: T.measure(cod || T.REAL) };
+      return T.kernelType(m2.inputs || [], T.measure(cod || T.REAL));
     }
     if (m2 && m2.kind === 'failed') return T.failed('pushfwd cascade');
     // Permissive default — pushfwd OUTSIDE measure/kernel context
@@ -4097,32 +4098,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.deferred();
   }
 
-  // relabel(X, names) — output-side axis renaming (spec §04 "Interface
-  // adaptation"). It is KIND-TRANSPARENT: the result has the same type
-  // KIND as X (only axis labels change), so the spec equivalence
-  // `named_M = relabel(M, names) ≡ pushfwd(fn(relabel(_, names)), M)`
-  // holds and relabel'd measures flow into iid / truncate / normalize /
-  // likelihoodof exactly like a bare measure. Cases:
-  //   - measure  → measure (preserve domain + sampleShape/batch/event;
-  //                the rename touches labels only, not shape).
-  //   - function → function, kernel → kernel (callable lifts).
-  //   - value    → record. Per spec lines 482-507 relabel of a value is
-  //                a record construction (array→record by position,
-  //                scalar→single-field record). lift.inlineRelabel rewrites
-  //                the statically-resolvable value cases to `record(...)`
-  //                before typeinfer, so we usually see relabel only over a
-  //                measure/kernel; for any value-typed arg that survives
-  //                (dynamic names, etc.) we still report `record` so the
-  //                kind is correct and never regresses to a measure.
-  //   - deferred/failed → propagate (don't fabricate a measure).
+  // §04 "Interface adaptation": relabel maps values to named fields and
+  // lifts the same mapping to measure variates and callable results.
   function inferRelabel(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 2) return arityError('relabel', '2', args.length, expr.loc);
     const baseT: any = inferExpr(args[0], scopes);
     inferExpr(args[1], scopes);  // names — infer so any refs resolve
-    if (T.isMeasure(baseT)) return baseT;      // labels only — shape unchanged
-    if (baseT && baseT.kind === 'function')    return baseT;
-    if (baseT && baseT.kind === 'kernel')      return baseT;
+    return relabelType(baseT, literalStringVector(args[1]));
+  }
+
+  function relabelType(baseT: any, names: string[] | null): any {
+    if (T.isMeasure(baseT)) return T.measure(relabelType(baseT.domain, names), { mass: baseT.mass });
+    if (baseT && (baseT.kind === 'function' || baseT.kind === 'kernel')) {
+      return { ...baseT, result: relabelType(baseT.result, names) };
+    }
     if (baseT && baseT.kind === 'failed')      return T.failed('relabel cascade');
     if (baseT && (baseT.kind === 'deferred' || baseT.kind === 'any')) return T.deferred();
     // value → record (spec §04 lines 482-507). When the names arg is a
@@ -4134,7 +4124,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // Without literal names (dynamic), DEFER (permissive — matches the
     // pre-rule behaviour) rather than fabricating an empty / wrong record.
     if (T.isValue(baseT)) {
-      const names = literalStringVector(args[1]);
       if (names == null || names.length === 0) return T.deferred();
       const fields: Record<string, any> = {};
       if (baseT.kind === 'array') {
@@ -4142,11 +4131,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         for (const n of names) fields[n] = elemT;
         return T.record(fields);
       }
-      if (baseT.kind === 'record') {
-        const oldVals = Object.values(baseT.fields || {});
+      if (baseT.kind === 'record' || baseT.kind === 'table') {
+        const oldVals = Object.values(baseT.fields || baseT.columns || {});
         if (oldVals.length !== names.length) return T.deferred();
         names.forEach((n: string, i: number) => { fields[n] = oldVals[i]; });
-        return T.record(fields);
+        return baseT.kind === 'table' ? T.table(fields, baseT.nrows) : T.record(fields);
       }
       // scalar (or other single value) → single-field record.
       if (names.length === 1) { fields[names[0]] = baseT; return T.record(fields); }
@@ -4588,37 +4577,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.failed(head + ' arity');
   }
 
-  // rowstack(vector_of_vectors) / colstack(vector_of_vectors). When
-  // the input is an inline vector(vector(...), vector(...), ...)
-  // literal, both dims are static — emit the precise [m, n] shape.
-  // (`colstack` swaps which dim is rows vs cols but the *type-level*
-  // shape is the same since both axes are dense real.)
+  // Stacking preserves the vectors' element type. Their count and length
+  // form the matrix dimensions; colstack places the vector length first.
   function inferRowstack(expr: any, scopes: any) {
     const args = expr.args || [];
     if (args.length !== 1) return refuseStackArity(expr, args.length);
     const outerIR = args[0];
-    // Inline literal? Read m = outer length, n = inner length(0).
-    if (outerIR && outerIR.kind === 'call' && outerIR.op === 'vector'
-        && Array.isArray(outerIR.args)) {
-      const m = outerIR.args.length;
-      if (m === 0) return T.array(2, [0, 0], T.REAL);
-      const first = outerIR.args[0];
-      if (first && first.kind === 'call' && first.op === 'vector'
-          && Array.isArray(first.args)) {
-        const n = first.args.length;
-        // Confirm every row has the same length statically.
-        for (let i = 1; i < m; i++) {
-          const row = outerIR.args[i];
-          if (!row || row.kind !== 'call' || row.op !== 'vector'
-              || !Array.isArray(row.args) || row.args.length !== n) {
-            return T.array(2, ['%dynamic', '%dynamic'], T.REAL);
-          }
-        }
-        return T.array(2, [m, n], T.REAL);
-      }
+    const outerT = inferExpr(outerIR, scopes);
+    if (outerT?.kind === 'array' && outerT.rank === 1
+        && outerT.elem?.kind === 'array' && outerT.elem.rank === 1) {
+      const shape = [outerT.shape[0], outerT.elem.shape[0]];
+      if (expr.op === 'colstack') shape.reverse();
+      return T.array(2, shape, outerT.elem.elem);
     }
-    // Non-literal outer: fall back to %dynamic (the existing
-    // SIGNATURE_FACTORIES behaviour).
+    if (outerIR && outerIR.kind === 'call' && outerIR.op === 'vector'
+        && outerIR.args?.length === 0) {
+      return T.array(2, [0, 0], T.REAL);
+    }
     return T.array(2, ['%dynamic', '%dynamic'], T.REAL);
   }
 
@@ -5533,10 +5508,61 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _provablyDisjoint(vs: any, domain: any): boolean {
     if (!vs || typeof vs !== 'object' || vs.vs !== 'interval') return false;
     const lo = vs.lo, hi = vs.hi;
-    if (domain === vsLib.POSREALS)     return hi <= 0;
-    if (domain === vsLib.NONNEGREALS)  return hi < 0;
+    if (domain === vsLib.POSREALS || domain === vsLib.POSINTEGERS) return hi <= 0;
+    if (domain === vsLib.NONNEGREALS || domain === vsLib.NONNEGINTEGERS) return hi < 0;
     if (domain === vsLib.UNITINTERVAL) return hi < 0 || lo > 1;
+    if (domain?.vs === 'interval') return hi < domain.lo || lo > domain.hi;
     return false;
+  }
+
+  // §04 load-time substitution preserves the declared input domain. Read
+  // that declaration in its own module: external's ordinary inferred type
+  // may be deferred, and a named set belongs to the loaded namespace.
+  function checkModuleSubstitutionTypes() {
+    if (!modules?.size) return;
+    const reg = loweredModule.moduleRegistry || {};
+    for (const [name, b] of loweredModule.bindings) {
+      if (b.rhs?.op !== 'load_module' || !b.rhs.assigns?.length) continue;
+      const dep = modules.get(reg[name]?.path);
+      if (!dep) continue;
+      const depContext = createInferenceContext(dep.loweredModule, {
+        modules, reuseInferred: true,
+        resolveFixed: require('./fixed-eval.ts').makeResolver({ loweredModule: dep.loweredModule }),
+      });
+      for (const a of b.rhs.assigns) {
+        const input = dep.loweredModule.bindings.get(a.name)?.rhs;
+        if (input?.op !== 'external' && input?.op !== 'elementof') continue;
+        const expected = depContext.setValueType(input.args?.[0], []);
+        const actual = inferExpr(a.value, []);
+        if (!expected || actual.kind === 'failed') continue;
+        const loc = a.value.loc || b.rhs.loc;
+        if (T.unify(expected, actual, new Map()) == null) {
+          diagnostics.push({ severity: 'error', loc,
+            message: `module '${name}' input '${a.name}' expects ${T.show(expected)}, got ${T.show(actual)} (spec §04)`,
+          });
+          continue;
+        }
+        // Keep the existing domain validator's conservative policy: only a
+        // proven exclusion is an error. Literal bounds retain their exact
+        // value here even when the published integer valueset is wider.
+        let value = a.value;
+        if (value.kind === 'ref') {
+          const owner = value.ns === 'self' ? loweredModule
+            : modules.get(reg[value.ns]?.path)?.loweredModule;
+          value = owner?.bindings.get(value.name)?.rhs || value;
+        }
+        const vs = value.kind === 'lit' && typeof value.value === 'number'
+          ? vsLib.interval(value.value, value.value)
+          : value.meta?.valueset || vsLib.UNKNOWN;
+        const domain = input.meta?.valueset;
+        if (_provablyDisjoint(vs, domain)) {
+          diagnostics.push({ severity: 'error', loc,
+            message: `module '${name}' input '${a.name}' requires ${vsLib.toSexpr(domain)}, `
+              + `but the substituted value is provably outside that domain (${vsLib.toSexpr(vs)}) (spec §04)`,
+          });
+        }
+      }
+    }
   }
 
   function checkDomainContracts() {
@@ -6800,7 +6826,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return !!(ir.meta && ir.meta.type && ir.meta.type.kind === 'measure');
   }
 
-  return { diagnostics, inferBinding, inferExpr, fillValuesets, fillMasses, checkDomainContracts,
+  return { diagnostics, inferBinding, inferExpr, setValueType, fillValuesets, fillMasses, checkDomainContracts,
+    checkModuleSubstitutionTypes,
     checkPushfwdDomainContracts, checkCrossModuleReification, checkDrawMass,
     checkLawofMass };
 }

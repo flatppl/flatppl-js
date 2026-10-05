@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { cdf, truncatedQuantile } = require('../forward-cdf.ts');
+const { cdf, intervalProbability, truncatedQuantile } = require('../forward-cdf.ts');
 const { quantile } = require('../inverse-cdf.ts');
 
 // distOp, params, [x...], scipy .cdf reference [F...] — fill from scipy.stats.
@@ -71,4 +71,31 @@ test('truncatedQuantile inverts the truncated CDF (HalfCauchy = Cauchy on [0,inf
   assert.ok(Math.abs(med - 5) < 1e-6, `got ${med}`);
   // endpoints: u→0 gives lo, u→1 gives large.
   assert.ok(truncatedQuantile('Cauchy', 1e-9, { location: 0, scale: 5 }, 0, Infinity) >= 0);
+});
+
+test('truncated Normal retains both finite tails and their conditional median', () => {
+  // Independent Simpson integration of exp(-(x*x-81)/2) on [9,10],
+  // checked at 2048 and 4096 panels (median difference below 2e-13).
+  const expected = 9.075779713738555;
+  const params = { mu: 0, sigma: 1 };
+  assert.ok(Math.abs(truncatedQuantile('Normal', 0.5, params, 9, 10) - expected) < 1e-9);
+  assert.ok(Math.abs(truncatedQuantile('Normal', 0.5, params, -10, -9) + expected) < 1e-9);
+  assert.ok(intervalProbability('Normal', params, 9, 10) > 0);
+});
+
+test('truncated inverse-gamma and Cauchy retain representable lower tails', () => {
+  // IG(1,1) has CDF exp(-1/x); Cauchy's far-tail CDF is -1/(pi*x).
+  const inverseGamma = truncatedQuantile('InverseGamma', 0.5, { shape: 1, scale: 1 }, 0.01, 0.02);
+  const expectedIG = 1 / (50 + Math.log(2) - Math.log1p(Math.exp(-50)));
+  assert.ok(Math.abs(inverseGamma / expectedIG - 1) < 1e-12);
+  const cauchy = truncatedQuantile('Cauchy', 0.5, { location: 0, scale: 1 }, -1e20, -1e19);
+  assert.ok(Math.abs(cauchy / (-2 / (1e-20 + 1e-19)) - 1) < 1e-12);
+});
+
+test('truncated exponential-family tails use their conditional mass', () => {
+  // For an exponential tail on [a,a+1], the median is a-log((1+e^-1)/2).
+  const offset = -Math.log((1 + Math.exp(-1)) / 2);
+  assert.ok(Math.abs(truncatedQuantile('Exponential', 0.5, { rate: 1 }, 50, 51) - (50 + offset)) < 1e-12);
+  assert.ok(Math.abs(truncatedQuantile('Gamma', 0.5, { shape: 1, rate: 1 }, 50, 51) - (50 + offset)) < 1e-12);
+  assert.ok(Math.abs(truncatedQuantile('Laplace', 0.5, { location: 0, scale: 1 }, -101, -100) + (100 + offset)) < 1e-12);
 });

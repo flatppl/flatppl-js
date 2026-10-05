@@ -448,7 +448,10 @@ function validateSpecialOperation(valueNode: any) {
         'sum', 'prod', 'mean', 'var', 'std', 'maximum', 'minimum',
         'median', 'lany', 'lall',
       ]);
-      if (fArg.type !== 'Identifier' || !ALLOWED_REDUCTIONS.has(fArg.name)) {
+      const fName = fArg.type === 'Identifier' ? fArg.name
+        : fArg.type === 'FieldAccess' && fArg.object?.type === 'Identifier'
+          && fArg.object.name === 'base' ? fArg.field : null;
+      if (!ALLOWED_REDUCTIONS.has(fName)) {
         diags.push({
           severity: 'error',
           message: `aggregate()'s first argument must be one of: `
@@ -940,6 +943,8 @@ function collectDeps(node: any, definedNames: Set<string>) {
 
     switch (node.type) {
       case 'Identifier':
+      case 'SetRef':
+        if (node.builtin) return;
         if (isLocal(node.name)) return;       // %local ref — body's own formal
         if (definedNames.has(node.name)) add(node.name, isCallee, bucket);
         break;
@@ -983,7 +988,7 @@ function collectDeps(node: any, definedNames: Set<string>) {
           // is a built-in name; nothing to add. (Skipped because the
           // bare-symbol callee isn't a definedNames entry anyway.)
         } else {
-          walk(node.callee, true, bucket);
+          if (!node.builtin) walk(node.callee, true, bucket);
           for (const arg of node.args) walk(arg, false, bucket);
         }
         break;
@@ -993,7 +998,11 @@ function collectDeps(node: any, definedNames: Set<string>) {
         for (const idx of node.indices) walk(idx, false, bucket);
         break;
       case 'FieldAccess':
-        walk(node.object, false, bucket);
+        if (node.object?.type === 'Identifier' && node.object.name === 'self') {
+          if (definedNames.has(node.field)) add(node.field, isCallee, bucket);
+        } else {
+          walk(node.object, false, bucket);
+        }
         break;
       case 'ArrayLiteral':
       case 'TupleLiteral':
@@ -1414,8 +1423,11 @@ function computePhases(bindings: any) {
   // `a = f(par = beta1); rand(state, lawof(a))` as parameterized
   // even when beta1 (the call's argument) is fixed.
   const absorbedCache = new Map<string, string>();
+  const absorbedVisiting = new Set<string>();
   function absorbedPhaseOf(name: string): string {
     if (absorbedCache.has(name)) return absorbedCache.get(name)!;
+    // Type inference reports cycles. Phase traversal must still terminate.
+    if (absorbedVisiting.has(name)) return 'fixed';
     const b = bindings.get(name);
     if (!b)                          { absorbedCache.set(name, 'fixed');         return 'fixed'; }
     const cn = calleeName(b);
@@ -1440,12 +1452,14 @@ function computePhases(bindings: any) {
       return 'fixed';
     }
     const deps = (b.bodyDeps != null) ? b.bodyDeps : b.deps;
+    absorbedVisiting.add(name);
     let phase = 'fixed';
     for (const dep of deps) {
       phase = maxPhase(phase, absorbedPhaseOf(dep));
       if (phase === 'parameterized') break;
     }
     absorbedCache.set(name, phase);
+    absorbedVisiting.delete(name);
     return phase;
   }
 
@@ -3546,6 +3560,29 @@ function analyze(ast: any, source: string, opts?: any) {
   const symbols: any[] = [];
   const definedNames = new Set<string>();
 
+  // §04 name precedence applies before special-operation classification and
+  // expansion. Explicit self calls already follow that user-call path.
+  const sourceNames = new Set<string>(ast.body.flatMap((s: any) =>
+    s.type === 'AssignStatement' ? s.names.map((n: any) => n.name) : []));
+  function qualifyBoundCalls(node: any): void {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { for (const child of node) qualifyBoundCalls(child); return; }
+    if (node.type === 'SetRef' && sourceNames.has(node.name)) node.type = 'Identifier';
+    if (node.type === 'CallExpr' && node.callee?.type === 'FieldAccess'
+        && node.callee.object?.type === 'Identifier' && node.callee.object.name === 'base'
+        && isKnownName(node.callee.field)) {
+      node.callee = AST.Identifier(node.callee.field, node.callee.loc);
+      node.builtin = true;
+    } else if (node.type === 'CallExpr' && !node.builtin && !node.fromLambda
+        && node.callee?.type === 'Identifier'
+        && sourceNames.has(node.callee.name) && isKnownName(node.callee.name)) {
+      node.callee = { type: 'FieldAccess', object: AST.Identifier('self', node.callee.loc),
+        field: node.callee.name, loc: node.callee.loc };
+    }
+    for (const key in node) if (key !== 'loc') qualifyBoundCalls(node[key]);
+  }
+  for (const stmt of ast.body) if (stmt.type === 'AssignStatement') qualifyBoundCalls(stmt.value);
+
   // Pre-pass: expand `restrict(M, x)` into the equivalent
   // disintegrate + likelihoodof + bayesupdate chain per spec §06
   // "Measure restriction". The rewrite is purely structural — every
@@ -4317,7 +4354,7 @@ function retainTableSchemas(ast: any, ir: any): void {
 // The phase of a substitution VALUE expression (spec §04 phases). Direct
 // phase-bearing ops short-circuit; otherwise the phase is the dominant
 // phase of the loading-module bindings the expression references.
-function _irPhase(ir: any, loweredModule: any): string {
+function _irPhase(ir: any, loweredModule: any, modules: any): string {
   if (ir && ir.kind === 'call') {
     if (ir.op === 'draw')      return 'stochastic';
     if (ir.op === 'elementof') return 'parameterized';
@@ -4329,6 +4366,25 @@ function _irPhase(ir: any, loweredModule: any): string {
     const b = loweredModule.bindings.get(refName);
     ph = _maxPhase(ph, b && b.phase);
   }
+  const { walkIRScoped } = require('./ir-walk.ts');
+  const seen = new Set<string>();
+  const visit = (node: any, shadowed: Set<string>) => {
+    if (node?.kind !== 'ref') return;
+    if (node.ns === 'self') {
+      if (shadowed.has(node.name) || seen.has(node.name)) return;
+      seen.add(node.name);
+      const b = loweredModule.bindings.get(node.name);
+      // Only recover foreign dependencies missed by the local phase pass.
+      // A callable's body is evaluated at application, behind its input cut.
+      if (b && !require('./types.ts').isCallable(b.inferredType)) walkIRScoped(b.rhs, visit);
+      return;
+    }
+    const reg = loweredModule.moduleRegistry?.[node.ns];
+    if (reg?.kind !== 'load_module') return;
+    const b = modules.get(reg.path)?.loweredModule.bindings.get(node.name);
+    ph = _maxPhase(ph, b?.phase);
+  };
+  walkIRScoped(ir, visit);
   return ph;
 }
 
@@ -4359,7 +4415,7 @@ function _validateModuleSubstitutions(loweredModule: any, modules: any, diagnost
           loc });
         continue;
       }
-      const vphase = _irPhase(a.value, loweredModule);
+      const vphase = _irPhase(a.value, loweredModule, modules);
       if (vphase === 'stochastic') {
         diagnostics.push({ severity: 'error',
           message: "cannot bind a stochastic value to module input '" + a.name

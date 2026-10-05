@@ -27,8 +27,11 @@ function constrainedSlice(u0: Float64Array, dim: number, transform: any, logLik:
   let nEval = 0;
   for (let sweep = 0; sweep < nSweeps; sweep++) {
     for (let c = 0; c < dim; c++) {
-      let lo = Math.max(0, u[c] - w * prng());
-      let hi = Math.min(1, lo + w);
+      const left = u[c] - w * prng();
+      // Clip the original random interval; shifting its right endpoint after
+      // clipping the left would bias the constrained uniform law near zero.
+      let lo = Math.max(0, left);
+      let hi = Math.min(1, left + w);
       // stepping-out is bounded by the cube; shrink until the constraint holds.
       for (let it = 0; it < 60; it++) {
         const cand = lo + prng() * (hi - lo);

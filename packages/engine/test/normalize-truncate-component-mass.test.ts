@@ -40,6 +40,24 @@ const assert = require('node:assert/strict');
 const { ctxFor } = require('./_ctx-factory.ts');
 const { totalMassExpr } = require('../normalize-mass.ts');
 
+test('tail truncation retains positive mass and the same direct and conditional density', async () => {
+  // Independent bounded integration of phi(x) on [9,10], scaled by phi(9),
+  // gives this nonzero mass without subtracting nearly equal CDF values.
+  const mass = 1.128512207423599e-19;
+  const logDensity = -2.415721900923849;
+  const direct = ctxFor(`M=truncate(Normal(0,1),interval(9,10))
+z=totalmass(M)
+lp=logdensityof(normalize(M),9.5)`, 1).ctx;
+  assert.ok(Math.abs((await direct.getMeasure('z')).samples[0] / mass - 1) < 1e-12);
+  assert.ok(Math.abs((await direct.getMeasure('lp')).samples[0] - logDensity) < 1e-12);
+  const conditional = ctxFor(`theta=elementof(reals)
+y~normalize(truncate(Normal(theta,1),interval(9,10)))
+K=kernelof(y,theta=theta)
+L=likelihoodof(K,9.5)
+lp=logdensityof(L,record(theta=0))`, 1).ctx;
+  assert.ok(Math.abs((await conditional.getMeasure('lp')).samples[0] - logDensity) < 1e-12);
+});
+
 const YDATA = [0.1, -0.2, 0.3, 9.5, 10.5];
 
 // `weighted(1.0, ·)` lowers to `logweighted(0, ·)`, so this also drives

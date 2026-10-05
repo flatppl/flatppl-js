@@ -136,6 +136,13 @@ function ensureMarkedConfigured() {
   marked.use(mathExtension());
   marked.use({ renderer: {
     html({ text }) { return escapeHtml(text); },
+    // A ```math fence is display math (GitHub's convention; what the Rust
+    // Markdown export writes for every equation). Other fences keep marked's
+    // default rendering.
+    code(token: any) {
+      if (token.lang === 'math') return renderTexSafe(token.text, /* displayMode */ true);
+      return false;
+    },
     link(token) {
       if (safeDestination(token.href, false)) return false;
       return this.parser.parseInline(token.tokens);

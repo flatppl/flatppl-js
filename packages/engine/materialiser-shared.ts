@@ -114,7 +114,8 @@ function isCallableLayerBinding(binding: any): boolean {
  * shape=[N]; vector-leaf measures already carry the Value shape=[N, k]
  * (or higher rank) in `.value`. Hand-crafted Measure inputs in tests
  * that omit `.value` fall through the Float64Array branch via
- * batchedScalar so they keep working unchanged.
+ * batchedScalar so they keep working unchanged. Record measures use the
+ * existing per-atom record representation consumed by field access.
  */
 function measureToRefValue(m: any, name: string, label: string) {
   if (m == null) {
@@ -124,8 +125,9 @@ function measureToRefValue(m: any, name: string, label: string) {
   if (m.samples && m.samples.BYTES_PER_ELEMENT !== undefined) {
     return valueLib.batchedScalar(m.samples);
   }
+  if (m.fields) return measureToPerAtomRecords(m, name, label);
   throw new Error(label + ': measure for "' + name +
-    '" has neither .value nor .samples');
+    '" has no .value, .samples, or .fields');
 }
 
 /**
@@ -537,6 +539,12 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
   const bindings = ctx && ctx.bindings;
   const derivations = ctx && ctx.derivations;
   const visiting = new Set<string>();
+  // Distinct refs to the same deterministic binding share its completed
+  // expansion. Record recurrences otherwise expand the same DAG as a tree.
+  // A cycle leaves refs dependent on the active stack, so never cache an
+  // expansion that encountered one. Boundaries remain fixed for this call.
+  const completedBindings = new Map<string, any>();
+  let cycleCount = 0;
   // Identity-preserving rebuild plus a node-identity memo. The lowered IR is a
   // DAG — on the Dalitz amplitude fixture this walk receives 787 distinct
   // objects reached 40 102 times — and the previous unconditional
@@ -570,7 +578,8 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
     if (node.kind === 'ref' && node.ns === 'self' && node.name) {
       const name = node.name;
       if (boundarySet.has(name)) return node;     // fed boundary input — keep
-      if (visiting.has(name)) return node;
+      if (visiting.has(name)) { cycleCount++; return node; }
+      if (completedBindings.has(name)) return completedBindings.get(name);
       const drv = derivations && Object.prototype.hasOwnProperty.call(derivations, name)
         ? derivations[name] : null;
       const target = bindings && bindings.get(name);
@@ -602,21 +611,23 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
       const isBoxMeasure = !!drv
         && (drv.kind === 'lebesguebox'
           || (drv.kind === 'weighted' && typeof drv.boxAxes === 'number'));
-      // Before cascade pruning, a vector of parameter refs can still carry
-      // a provisional tuple derivation. It is a computed value (§03 arrays),
-      // not a draw: retain its boundary dependency inside the reified body.
-      const isParameterizedVector = drv?.kind === 'tuple'
-        && target?.phase === 'parameterized'
-        && target.ir?.kind === 'call' && target.ir.op === 'vector';
+      // Value containers also carry tuple/record derivations. Inline their
+      // constructors so deterministic fields depend on the fed boundary.
+      // Draw refs stay refs. Measure constructors such as joint(...) stay refs.
+      const isContainerValue = drv && target && target.ir && target.ir.kind === 'call'
+        && ((drv.kind === 'tuple' && target.ir.op === 'vector')
+          || (drv.kind === 'record' && target.ir.op === 'record'));
       const isEvaluableValue = !isInputLeaf
         && ((drv && drv.kind === 'evaluate')
-          || isParameterizedVector
           || isBoxMeasure
+          || isContainerValue
           || (!drv && target && target.ir && target.ir.kind === 'call'));
       if (isEvaluableValue && target && target.ir) {
+        const before = cycleCount;
         visiting.add(name);
         const sub = walk(target.ir);
         visiting.delete(name);
+        if (cycleCount === before) completedBindings.set(name, sub);
         return sub;
       }
       return node;
@@ -880,15 +891,18 @@ function fixedValueToMeasure(v: any, sampleCount: any): any {
     }
     return m;
   }
-  // Complex scalar `z = complex(re, im)` → planar complex Value of shape=[1].
+  // Complex scalars have the same rank-zero/legacy-samples convention as
+  // real scalars above; a one-element vector would imply one atom instead.
   if (v && typeof v === 'object'
       && typeof v.re === 'number' && typeof v.im === 'number'
       && Object.keys(v).length === 2) {
-    const re = new Float64Array([v.re]);
-    const im = new Float64Array([v.im]);
-    const cv = valueLib.complexValue(re, im, [1]);
-    return measureFromValue(cv,
-      { logWeights: null, logTotalmass: 0, n_eff: 1 });
+    const re = new Float64Array(sampleCount).fill(v.re);
+    const im = new Float64Array(sampleCount).fill(v.im);
+    const m = measureFromValue(valueLib.complexValue(re, im, [sampleCount]),
+      { logWeights: null, logTotalmass: 0, n_eff: sampleCount });
+    m.value = valueLib.complexValue([v.re], [v.im], []);
+    m.rank0 = true;
+    return m;
   }
   if (v instanceof Float64Array || v instanceof Int32Array || v instanceof Uint8Array) {
     const samples = Float64Array.from(v);
@@ -1341,6 +1355,36 @@ function addMass(a: number | null, b: number | null): number | null {
   return (a === null || b === null) ? null : a + b;
 }
 
+/** Carry captured parameter laws through a conditional operation (§04 captured
+ * draws, §06 reweighting/pushforward). Shared weighting events enter once. */
+function withParameterWeights(measure: any, parents: any[]) {
+  const weights = empirical.propagateLogWeights([measure, ...parents]);
+  if (weights === measure.logWeights || (!weights && !measure.logWeights)) return measure;
+  const previous = measure.logWeights ? empirical.logSumExp(measure.logWeights) : 0;
+  const mass = empirical.logSumExp(weights);
+  return Object.assign({}, measure, {
+    logWeights: weights,
+    logTotalmass: mass === -Infinity ? -Infinity : addMass(massOf(measure), mass - previous),
+    n_eff: empirical.effectiveSampleSize({ logWeights: weights }),
+  });
+}
+
+/** Attach conditional truncation masses to their own outer atoms. */
+function withSliceMasses(measure: any, logMasses: Float64Array | null) {
+  if (!logMasses) return measure;
+  const base = empirical.materialiseUniform(measure).logWeights;
+  const weights = Float64Array.from(base, (w: number, i: number) => w + logMasses[i]);
+  const lineage = require('./weight-lineage.ts');
+  lineage.derive(weights, base, [lineage.newEvent(logMasses)]);
+  const mass = empirical.logSumExp(weights);
+  return Object.assign({}, measure, {
+    logWeights: weights,
+    logTotalmass: mass === -Infinity ? -Infinity
+      : addMass(massOf(measure), mass - empirical.logSumExp(base)),
+    n_eff: empirical.effectiveSampleSize({ logWeights: weights }),
+  });
+}
+
 module.exports = {
   inlineCallableRefs,
   nameSeed,
@@ -1373,4 +1417,6 @@ module.exports = {
   resolveFnBody,
   massOf,
   addMass,
+  withParameterWeights,
+  withSliceMasses,
 };

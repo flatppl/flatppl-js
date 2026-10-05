@@ -31,6 +31,97 @@ const engine = require('../index.ts');
 const LOG_2PI = Math.log(2 * Math.PI);
 const STD_NORMAL_LOGP_AT_ZERO = -0.5 * LOG_2PI;
 
+test('discrete densities retain large counts and the certain-success atom', () => {
+  const k = 2 ** 31, p = 1 / k;
+  const expected = Math.log(p) + k * Math.log1p(-p);
+  for (const [name, params] of [
+    ['Geometric', { p }],
+    ['NegativeBinomial', { alpha: 1, beta: 1 / (k - 1) }],
+    ['NegativeBinomial2', { mu: k - 1, psi: 1 }],
+  ] as const) {
+    assert.ok(Math.abs(densityPrims.builtinLogdensityof(name, params, k) - expected) < 1e-10);
+  }
+  assert.equal(densityPrims.builtinLogdensityof('Geometric', { p: 1 }, 0), 0);
+  assert.equal(densityPrims.builtinLogdensityof('Geometric', { p: 1 }, 1), -Infinity);
+});
+
+test('Logistic log density retains both finite tails', () => {
+  assert.equal(densityPrims.builtinLogdensityof('Logistic', { mu: 0, s: 1 }, -1000), -1000);
+  assert.equal(densityPrims.builtinLogdensityof('Logistic', { mu: 0, s: 1 }, 1000), -1000);
+});
+
+test('NegativeBinomial2 retains finite scores across extreme mean and shape ratios', () => {
+  const params = { mu: 1e-300, psi: 1e10 };
+  const zero = densityPrims.builtinLogdensityof('NegativeBinomial2', params, 0);
+  const one = densityPrims.builtinLogdensityof('NegativeBinomial2', params, 1);
+  assert.ok(Math.abs(zero / -params.mu - 1) < 1e-12);
+  assert.ok(Math.abs(one - Math.log(params.mu)) < 1e-10);
+});
+
+test('negative-binomial densities retain the finite large-shape limit', () => {
+  const shape = 1e20;
+  // Exact recurrence at mean 1, without Gamma/Beta special functions.
+  let expected = -shape * Math.log1p(1 / shape);
+  for (let k = 0; k <= 2; k++) {
+    if (k) expected += Math.log1p((k - 2) / (shape + 1)) - Math.log(k);
+    for (const [name, params] of [
+      ['NegativeBinomial', { alpha: shape, beta: shape }],
+      ['NegativeBinomial2', { mu: 1, psi: shape }],
+    ] as const) {
+      assert.ok(Math.abs(densityPrims.builtinLogdensityof(name, params, k) - expected) < 1e-12);
+    }
+  }
+});
+
+test('negative-binomial densities retain subnormal shape at nonzero counts', () => {
+  const shape = 1e-320;
+  const expected = Math.log(shape) + Math.log1p(shape) - (shape + 3) * Math.log(2);
+  assert.ok(Math.abs(densityPrims.builtinLogdensityof('NegativeBinomial',
+    { alpha: shape, beta: 1 }, 2) - expected) < 1e-12);
+  assert.ok(Math.abs(densityPrims.builtinLogdensityof('NegativeBinomial2',
+    { mu: shape, psi: shape }, 2) - expected) < 1e-12);
+});
+
+test('negative-binomial densities retain central mass at extreme counts', () => {
+  const n = Number.MAX_VALUE;
+  // C(2n,n)/(2*4^n), with a log Stirling remainder below 1/(8n).
+  const expected = -0.5 * (Math.log(4 * Math.PI) + Math.log(n));
+  for (const [name, params] of [
+    ['NegativeBinomial', { alpha: n, beta: 1 }],
+    ['NegativeBinomial2', { mu: n, psi: n }],
+  ] as const) {
+    assert.ok(Math.abs(densityPrims.builtinLogdensityof(name, params, n) - expected) < 2e-13);
+  }
+  // At beta=2, k*beta overflows at the compensation gate's upper edge.
+  // P_beta/P_1 = [1-((beta-1)/(beta+1))^2]^n for k=shape=n.
+  const tail = expected + n * Math.log1p(-1 / 9);
+  const actual = densityPrims.builtinLogdensityof('NegativeBinomial', { alpha: n, beta: 2 }, n);
+  assert.ok(Math.abs(actual / tail - 1) < 1e-13);
+  // The first centered-correction count has an exact integer coefficient.
+  const atTen = Math.log(92378) - 20 * Math.log(2);
+  assert.ok(Math.abs(densityPrims.builtinLogdensityof('NegativeBinomial2',
+    { mu: 10, psi: 10 }, 10) - atTen) < 1e-12);
+});
+
+test('NegativeBinomial preserves the supplied rate near a large mean', () => {
+  // Independent 4096-bit Gamma formula, rounded once to Float64.
+  // Substituting the rounded mean alpha/beta would lose this deviance.
+  const expected = -2.9484081443918292e66;
+  const actual = densityPrims.builtinLogdensityof('NegativeBinomial',
+    { alpha: 1e100, beta: 3 }, 1e100 / 3);
+  assert.ok(Math.abs(actual / expected - 1) < 1e-13);
+});
+
+test('NegativeBinomial retains finite tail scores when its mean overflows', () => {
+  const k = Number.MAX_VALUE, beta = 1e-320;
+  // For integer shape 10, the coefficient is product(k+j,j=1:9)/9!.
+  // Here each log(k+j) rounds to log(k).
+  let expected = 9 * Math.log(k) + 10 * (Math.log(beta) - Math.log1p(beta)) - k * Math.log1p(beta);
+  for (let j = 2; j <= 9; j++) expected -= Math.log(j);
+  const actual = densityPrims.builtinLogdensityof('NegativeBinomial', { alpha: 10, beta }, k);
+  assert.ok(Math.abs(actual - expected) < 2e-12);
+});
+
 test('builtinLogdensityof: standard Normal at 0', () => {
   const lp = densityPrims.builtinLogdensityof('Normal', { mu: 0, sigma: 1 }, 0);
   assert.ok(Math.abs(lp - STD_NORMAL_LOGP_AT_ZERO) < 1e-12);

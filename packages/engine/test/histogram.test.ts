@@ -50,6 +50,26 @@ test('freedmanDiaconisHistogram: degenerate (all-equal) yields single-bin fallba
   assert.equal(h.binWidth, 1);
 });
 
+test('collapsed histogram retains mass and the trimmed center', () => {
+  const weighted = freedmanDiaconisHistogram([4, 4], { logWeights: [Math.log(2), Math.log(3)] });
+  assert.ok(Math.abs(weighted.ys[0] - 5) < 1e-12);
+  const zero = freedmanDiaconisHistogram([4, 4], { logWeights: [-Infinity, -Infinity] });
+  assert.equal(zero.ys[0], 0);
+  const trimmed = freedmanDiaconisHistogram([-99, 5, 5, 5], { trimQ: 0.4 });
+  assert.equal(trimmed.xs[0], 5);
+  assert.equal(trimmed.ys[0], 0.75);
+});
+
+test('integer histograms retain wide-gap atoms without filling the gap', () => {
+  const samples = [1e20, 0, 1e20];
+  const plain = integerHistogram(samples);
+  assert.deepEqual(Array.from(plain.xs), [0, 1e20]);
+  assert.deepEqual(Array.from(plain.ys), [1 / 3, 2 / 3]);
+  const weighted = integerHistogram(samples, { logWeights: [0, Math.log(2), 0] });
+  assert.deepEqual(Array.from(weighted.xs), [0, 1e20]);
+  assert.deepEqual(Array.from(weighted.ys), [2, 2]);
+});
+
 test('freedmanDiaconisHistogram: trimQ=0 keeps all samples in range', () => {
   const xs = new Float64Array([0, 1, 2, 3, 4, 5, 100]);
   const h = freedmanDiaconisHistogram(xs, { trimQ: 0 });

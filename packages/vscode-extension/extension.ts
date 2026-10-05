@@ -33,7 +33,21 @@ const { collectUrlSources } = require('./src/lspUrlFeed');
 // Remote (URL) module drill-down: a URL load_module opens as a read-only
 // `flatppl-remote:` virtual document whose content is served from the on-disk
 // cache (the content provider registered in activate).
-const { REMOTE_SCHEME, urlFromRemoteUri } = require('./src/remoteModule');
+const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf } = require('./src/remoteModule');
+// "Export math as HTML / LaTeX / Typst": the host-agnostic core (bundle
+// walk → flatppl-rust `export_math` → write beside the source). The wasm
+// API runs here in the extension host from lib/flatppl_wasm_api.cjs (the
+// build's CommonJS wrap of the wasm-pack glue); the commands below supply
+// the VS Code pieces (workspace reads and writes, the overwrite prompt).
+const { runMathExport, mathExportFileName } = require('./src/mathExport');
+// The bundled wasm API as the host loads it (lib/flatppl_wasm_api.cjs + its
+// .wasm bytes, instantiated once). Shared by the math exports and by
+// "Convert HS3 / pyhf to FlatPPL", which calls the same artifact's
+// `convert` — the entry the web gallery calls in the browser.
+const { wasmApiPaths, createWasmApiHost } = require('./src/wasmApiHost');
+const { runConvert, sourceFormatForPath, SOURCE_FORMATS } = require('./src/convert');
+const fs = require('fs');
+const path = require('path');
 const { FlatPPLPanel } = require('./src/visualPanel');
 const { createLspManager } = require('./src/lspClient');
 const { registerInferenceLens } = require('./src/inferenceLens');
@@ -904,6 +918,203 @@ function activate(context: any) {
   const updateDepsCmd = vscode.commands.registerCommand(
     'flatppl.updateDependencies', () => runDependencyFetch(true));
 
+  // --- The bundled wasm API (flatppl-wasm-api) in the extension host ---
+  //
+  // Availability is decided by the build: lib/flatppl_wasm_api.cjs exists
+  // iff build-vendor.mjs provisioned the wasm artifact (FLATPPL_CONVERT=off
+  // drops it). The palette gates the three math-export commands on this
+  // context key, so a build without the artifact never shows a command it
+  // cannot run. Convert is NOT gated — it reports the absent converter, so
+  // a user who looks for it learns why the build has none.
+  const wasmHost = createWasmApiHost({
+    paths: wasmApiPaths(context.extensionPath),
+    exists: (p: string) => fs.existsSync(p),
+    loadGlue: (p: string) => require(p),
+    readBinary: (p: string) => fs.readFileSync(p),
+  });
+  vscode.commands.executeCommand('setContext', 'flatppl.mathExportAvailable',
+    wasmHost.available());
+
+  // One command per format. The document is rendered from the editor buffer
+  // (unsaved edits included — the same text the math pane shows) with its
+  // load_module dependencies read the way the visualizer reads them, and
+  // written as `<stem>.<ext>` next to the source, asking before replacing an
+  // existing file; an untitled or remote (URL) buffer has no "next to", so it
+  // asks where. The result opens in the editor: the outputs are sources
+  // (only the HTML is viewable as is, in a browser).
+  async function runMathExportCommand(format: 'html' | 'tex' | 'typ') {
+    const editor = vscode.window.activeTextEditor;
+    if (!editor || !isFlatPPLDoc(editor.document)) {
+      vscode.window.showInformationMessage('FlatPPL: open a .flatppl file to export its math.');
+      return;
+    }
+    const doc = editor.document;
+    const enginePath = enginePathOf(doc.uri) || 'model.flatppl';
+
+    // Where the file goes: beside a workspace file; a save dialog otherwise.
+    // A dialog already confirms a replacement itself, so a picked target
+    // skips the command's own overwrite prompt.
+    let baseUri = doc.uri;       // scheme + authority for the target (remote / WSL too)
+    let target: string | null = null;
+    if (doc.isUntitled || doc.uri.scheme === REMOTE_SCHEME) {
+      const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
+      const picked = await vscode.window.showSaveDialog({
+        defaultUri: folder ? vscode.Uri.joinPath(folder.uri, mathExportFileName(enginePath, format)) : undefined,
+        saveLabel: 'Export',
+      });
+      if (!picked) return;
+      baseUri = picked;
+      target = picked.path;
+    }
+    const uriFor = (p: string) => baseUri.with({ path: p });
+
+    try {
+      const result = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'FlatPPL: exporting math…' },
+        async () => {
+          const exportMath = await wasmHost.entry('export_math');
+          return runMathExport({
+            document: format,
+            source: doc.getText(),
+            path: enginePath,
+            resolveBundle,
+            // The same dependency read as the visualizer's bundle: a URL through
+            // the on-disk cache (trust prompt on a first, unknown URL), a local
+            // path through the workspace file system on the source's scheme. A
+            // dependency that cannot be read is left out — the document reports
+            // it — and the user is told, as the visualizer tells them.
+            readSource: async (resolved: string) => {
+              try {
+                if (urlCache.isUrl(resolved)) {
+                  return await urlCache.readText(resolved, { approve: (u: any) => approveUrl(u) });
+                }
+                const bytes = await vscode.workspace.fs.readFile(doc.uri.with({ path: resolved }));
+                return Buffer.from(bytes).toString('utf8');
+              } catch (e: any) {
+                vscode.window.showWarningMessage(
+                  'FlatPPL: could not load ' + resolved + ' — ' + ((e && e.message) || e));
+                return null;
+              }
+            },
+            exportMath,
+            target,
+            exists: async (p: string) => {
+              try { await vscode.workspace.fs.stat(uriFor(p)); return true; }
+              catch (_e) { return false; }
+            },
+            confirmOverwrite: async (p: string) => {
+              const pick = await vscode.window.showWarningMessage(
+                'FlatPPL: ' + path.posix.basename(p) + ' already exists. Replace it?',
+                { modal: true }, 'Replace');
+              return pick === 'Replace';
+            },
+            write: async (p: string, text: string) => {
+              await vscode.workspace.fs.writeFile(uriFor(p), Buffer.from(text, 'utf8'));
+            },
+          });
+        });
+      if (result.status === 'written') {
+        await vscode.window.showTextDocument(uriFor(result.target), { preview: false });
+      }
+    } catch (e: any) {
+      vscode.window.showErrorMessage('FlatPPL: math export failed — ' + ((e && e.message) || e));
+    }
+  }
+
+  const exportMathHtmlCmd = vscode.commands.registerCommand(
+    'flatppl.exportMathHtml', () => runMathExportCommand('html'));
+  const exportMathLatexCmd = vscode.commands.registerCommand(
+    'flatppl.exportMathLatex', () => runMathExportCommand('tex'));
+  const exportMathTypstCmd = vscode.commands.registerCommand(
+    'flatppl.exportMathTypst', () => runMathExportCommand('typ'));
+
+  // --- Convert HS3 / pyhf to FlatPPL (flatppl-wasm-api `convert`) ---
+  //
+  // The source is the active editor when it holds JSON (unsaved edits
+  // included), a file picker otherwise — so the command works with no
+  // editor open. The importer comes from the file name (.hs3.json /
+  // .pyhf.json, the gallery's rule) and is asked for when the name says
+  // nothing. The result opens as an UNTITLED flatppl document beside the
+  // source: converting is a suggestion the user reviews and names, not a
+  // file the command writes for them.
+
+  /** Whether a document can be a conversion input. A named importer wins;
+   *  otherwise any JSON buffer, since the command can still ask. */
+  function isConvertibleDoc(document: any): boolean {
+    if (!document) return false;
+    if (sourceFormatForPath(document.uri ? document.uri.path : '')) return true;
+    const id = document.languageId;
+    return id === 'json' || id === 'jsonc';
+  }
+
+  async function runConvertCommand() {
+    if (!wasmHost.available()) {
+      vscode.window.showErrorMessage('FlatPPL: converter not shipped in this build.');
+      return;
+    }
+
+    // Where the JSON comes from: the active editor's buffer, or a file.
+    const editor = vscode.window.activeTextEditor;
+    let srcPath: string;
+    let srcText: string;
+    if (editor && isConvertibleDoc(editor.document)) {
+      srcPath = enginePathOf(editor.document.uri) || editor.document.uri.path;
+      srcText = editor.document.getText();
+    } else {
+      const picked = await vscode.window.showOpenDialog({
+        canSelectMany: false,
+        openLabel: 'Convert',
+        filters: { 'HS3 / pyhf workspace': ['json', 'hs3', 'pyhf'] },
+      });
+      if (!picked || picked.length === 0) return;
+      const uri = picked[0];
+      srcPath = uri.path;
+      try {
+        srcText = Buffer.from(await vscode.workspace.fs.readFile(uri)).toString('utf8');
+      } catch (e: any) {
+        vscode.window.showErrorMessage(
+          'FlatPPL: could not read ' + uri.path + ' — ' + ((e && e.message) || e));
+        return;
+      }
+    }
+
+    // The importer: the name decides, else the user does.
+    let from = sourceFormatForPath(srcPath);
+    if (!from) {
+      const pick = await vscode.window.showQuickPick(
+        SOURCE_FORMATS.map((f: string) => ({
+          label: f,
+          description: f === 'hs3'
+            ? 'HS3 (HEP Statistics Serialization Standard) document'
+            : 'pyhf JSON workspace',
+        })),
+        { title: 'FlatPPL: which format is ' + path.posix.basename(srcPath) + '?' });
+      if (!pick) return;
+      from = pick.label;
+    }
+
+    try {
+      const convert = await wasmHost.entry('convert');
+      const result = runConvert({ path: srcPath, source: srcText, from, convert });
+      // Untitled: `language` sets the mode, so the buffer highlights and
+      // gets diagnostics before it has ever been saved.
+      const doc = await vscode.workspace.openTextDocument({
+        language: 'flatppl', content: result.source,
+      });
+      await vscode.window.showTextDocument(doc, {
+        viewColumn: vscode.ViewColumn.Beside, preview: false,
+      });
+      vscode.window.setStatusBarMessage(
+        'FlatPPL: converted ' + path.posix.basename(srcPath) + ' → ' + result.name, 5000);
+    } catch (e: any) {
+      // The importer's own diagnostic, verbatim — it names the offending
+      // modifier or spec construct, which a generic message would lose.
+      vscode.window.showErrorMessage('FlatPPL: convert failed — ' + ((e && e.message) || e));
+    }
+  }
+
+  const convertCmd = vscode.commands.registerCommand('flatppl.convert', runConvertCommand);
+
   // --- Live DAG update on cursor move ---
 
   let updateTimeout: any;
@@ -1386,6 +1597,7 @@ function activate(context: any) {
   context.subscriptions.push(
     showDagCmd, showModuleCmd, activateEmbeddedCmd, deactivateEmbeddedCmd,
     downloadDepsCmd, updateDepsCmd,
+    exportMathHtmlCmd, exportMathLatexCmd, exportMathTypstCmd, convertCmd,
     selectionListener, changeListener, openListener, saveListener, closeListener,
     defProvider, hoverProvider, symbolProvider, completionProvider,
     renameProvider, referenceProvider, highlightProvider, selectionRangeProvider,

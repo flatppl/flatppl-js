@@ -268,7 +268,7 @@ AGGREGATE_PATTERNS.push({
     const args = ir.args || [];
     if (args.length !== 3) return null;
     const [fIR, axesIR, bodyIR] = args;
-    if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
+    if (!fIR || (fIR.kind !== 'ref' && fIR.kind !== 'const') || fIR.name !== 'sum') return null;
     if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
     const outAxes = axesIR.args || [];
     if (outAxes.length !== 2) return null;
@@ -301,7 +301,7 @@ AGGREGATE_PATTERNS.push({
     const args = ir.args || [];
     if (args.length !== 3) return null;
     const [fIR, axesIR, bodyIR] = args;
-    if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
+    if (!fIR || (fIR.kind !== 'ref' && fIR.kind !== 'const') || fIR.name !== 'sum') return null;
     if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
     const outAxes = axesIR.args || [];
     if (outAxes.length !== 1) return null;
@@ -416,7 +416,7 @@ AGGREGATE_PATTERNS.push({
     const args = ir.args || [];
     if (args.length !== 3) return null;
     const [fIR, axesIR, bodyIR] = args;
-    if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
+    if (!fIR || (fIR.kind !== 'ref' && fIR.kind !== 'const') || fIR.name !== 'sum') return null;
     if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
     const outAxes = axesIR.args || [];
     if (outAxes.length !== 0) return null;
@@ -475,7 +475,7 @@ AGGREGATE_PATTERNS.push({
     const args = ir.args || [];
     if (args.length !== 3) return null;
     const [fIR, axesIR, bodyIR] = args;
-    if (!fIR || fIR.kind !== 'ref' || fIR.name !== 'sum') return null;
+    if (!fIR || (fIR.kind !== 'ref' && fIR.kind !== 'const') || fIR.name !== 'sum') return null;
     if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
     const outAxes = axesIR.args || [];
     if (outAxes.length !== 3) return null;
@@ -554,7 +554,7 @@ AGGREGATE_PATTERNS.push({
     const args = ir.args || [];
     if (args.length !== 3) return null;
     const [fIR, axesIR, bodyIR] = args;
-    const fname = (fIR && fIR.kind === 'ref' && fIR.name) || null;
+    const fname = (fIR && (fIR.kind === 'ref' || fIR.kind === 'const') && fIR.name) || null;
     if (!fname || !_AGGREGATE_REDUCTIONS[fname]) return null;
     if (!axesIR || axesIR.kind !== 'call' || axesIR.op !== 'vector') return null;
     const outAxes = axesIR.args || [];
@@ -1102,7 +1102,7 @@ const _AGG_UN: Record<string, (x: number) => number> = {
   asin:  Math.asin,   acos:  Math.acos,   atan:  Math.atan,
   sinh:  Math.sinh,   cosh:  Math.cosh,   tanh:  Math.tanh,
   asinh: Math.asinh,  acosh: Math.acosh,  atanh: Math.atanh,
-  floor: Math.floor,  ceil:  Math.ceil,   round: Math.round,
+  floor: Math.floor,  ceil:  Math.ceil,   round: valueOps._roundEven,
 };
 
 // Broadcast-elementwise binary op over two aligned tensors. Each

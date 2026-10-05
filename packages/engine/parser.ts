@@ -272,10 +272,11 @@ function parse(tokensIn: any[], variant: any) {
     const rewritten = rewriteFreeIdsToPlaceholders(body, argSet);
     const kwargs: any[] = [];
     for (let i = 0; i < argNames.length; i++) {
-      if (argNames[i] === 'im' || argNames[i] === 'pi' || argNames[i] === 'inf') {
+      if (v.reservedAtBinding?.has(argNames[i])
+          || argNames[i] === 'self' || argNames[i] === 'base') {
         diagnostics.push({
           severity: 'error',
-          message: `'${argNames[i]}' is a numeric constant and cannot be an argument name`,
+          message: `'${argNames[i]}' is a reserved name and cannot be an argument name`,
           loc: argLocs[i],
         });
       }
@@ -308,7 +309,8 @@ function parse(tokensIn: any[], variant: any) {
     if (Array.isArray(node)) {
       return node.map((x: any) => rewriteFreeIdsToPlaceholders(x, argSet));
     }
-    if (node.type === 'Identifier' && argSet.has(node.name)) {
+    if ((node.type === 'Identifier' || node.type === 'SetRef')
+        && !node.builtin && argSet.has(node.name)) {
       return AST.Placeholder(node.name, node.loc);
     }
     if (node.type === 'CallExpr' && node.callee
@@ -341,12 +343,18 @@ function parse(tokensIn: any[], variant: any) {
       return { ...node, args: newArgs };
     }
     const out: Record<string, any> = {};
-    for (const k in node) out[k] = rewriteFreeIdsToPlaceholders(node[k], argSet);
+    for (const k in node) out[k] = k === 'callee' && (node.builtin || node.fromLambda)
+      ? node[k] : rewriteFreeIdsToPlaceholders(node[k], argSet);
     return out;
   }
 
   function logicalSym(kind: string) {
     return (v.logicalSyms && v.logicalSyms[kind]) || null;
+  }
+
+  // Syntax-defined operations select the builtin even when its name is bound.
+  function builtinCall(callee: any, args: any[], loc: any) {
+    return { ...AST.CallExpr(callee, args, loc), builtin: true };
   }
 
   // Dot-notation desugaring (spec §05 Broadcasting syntax). Build a
@@ -359,8 +367,12 @@ function parse(tokensIn: any[], variant: any) {
   // `broadcast:true` (see below) and are wrapped in lower.js, which is
   // the single owner of the operator→builtin map — so the parser
   // never duplicates that table.
-  function broadcastCall(calleeNode: any, operands: any[], loc: any) {
-    return AST.CallExpr(AST.Identifier('broadcast', loc),
+  function broadcastCall(calleeNode: any, operands: any[], loc: any, builtin = false) {
+    if (builtin) calleeNode = {
+      type: 'FieldAccess', object: AST.Identifier('base', calleeNode.loc),
+      field: calleeNode.name, loc: calleeNode.loc,
+    };
+    return builtinCall(AST.Identifier('broadcast', loc),
       [calleeNode, ...operands], loc);
   }
 
@@ -386,8 +398,8 @@ function parse(tokensIn: any[], variant: any) {
                            right.loc.end.line, right.loc.end.col);
       const callee = AST.Identifier('lor', opTok.loc);
       left = opTok.dotted
-        ? broadcastCall(callee, [left, right], mloc)
-        : AST.CallExpr(callee, [left, right], mloc);
+        ? broadcastCall(callee, [left, right], mloc, true)
+        : builtinCall(callee, [left, right], mloc);
     }
     return left;
   }
@@ -403,8 +415,8 @@ function parse(tokensIn: any[], variant: any) {
                            right.loc.end.line, right.loc.end.col);
       const callee = AST.Identifier('land', opTok.loc);
       left = opTok.dotted
-        ? broadcastCall(callee, [left, right], mloc)
-        : AST.CallExpr(callee, [left, right], mloc);
+        ? broadcastCall(callee, [left, right], mloc, true)
+        : builtinCall(callee, [left, right], mloc);
     }
     return left;
   }
@@ -453,7 +465,7 @@ function parse(tokensIn: any[], variant: any) {
                                  mergeLoc(lastRight, right));
       if (opTok.dotted) cmp.broadcast = true;
       const callee = AST.Identifier('land', opTok.loc);
-      chain = AST.CallExpr(callee, [chain, cmp], mergeLoc(chain, cmp));
+      chain = builtinCall(callee, [chain, cmp], mergeLoc(chain, cmp));
       lastRight = right;
     }
     return chain;
@@ -502,8 +514,8 @@ function parse(tokensIn: any[], variant: any) {
                            operand.loc.end.line, operand.loc.end.col);
       const callee = AST.Identifier('lnot', opTok.loc);
       return opTok.dotted
-        ? broadcastCall(callee, [operand], uloc)        // `.! x` → broadcast(lnot, x)
-        : AST.CallExpr(callee, [operand], uloc);
+        ? broadcastCall(callee, [operand], uloc, true)  // `.! x` → broadcast(lnot, x)
+        : builtinCall(callee, [operand], uloc);
     }
     return parseExponential();
   }
@@ -534,8 +546,8 @@ function parse(tokensIn: any[], variant: any) {
                          exponent.loc.end.line, exponent.loc.end.col);
     const callee = AST.Identifier('pow', caretTok.loc);
     return caretTok.dotted
-      ? broadcastCall(callee, [base, exponent], eloc)   // `a .^ b` → broadcast(pow, a, b)
-      : AST.CallExpr(callee, [base, exponent], eloc);
+      ? broadcastCall(callee, [base, exponent], eloc, true) // `a .^ b` → broadcast(pow, a, b)
+      : builtinCall(callee, [base, exponent], eloc);
   }
 
   function parsePostfix(): any {
@@ -1002,10 +1014,10 @@ function parse(tokensIn: any[], variant: any) {
 
     // Build the canonical desugar:
     //   <name> = aggregate(sum, [ax1, ax2, ...], <body>)
-    const aggCall = AST.CallExpr(
+    const aggCall = builtinCall(
       AST.Identifier('aggregate', stmtLoc),
       [
-        AST.Identifier('sum', stmtLoc),
+        { ...AST.Identifier('sum', stmtLoc), builtin: true },
         AST.ArrayLiteral(axes, stmtLoc),
         body,
       ],
@@ -1046,7 +1058,7 @@ function parse(tokensIn: any[], variant: any) {
     //   <result> = metricsum(<metric>, [ax1, ax2, ...], <body>)
     // The metric reference uses the original metricTok's location so a
     // later "metric not found" diagnostic points at the source token.
-    const mCall = AST.CallExpr(
+    const mCall = builtinCall(
       AST.Identifier('metricsum', stmtLoc),
       [
         AST.Identifier(metricTok.value, metricTok.loc),
@@ -1199,7 +1211,7 @@ function parse(tokensIn: any[], variant: any) {
       // location so error messages and source ranges point back at
       // the original expression.
       const callee = AST.Identifier('draw', value.loc);
-      value = AST.CallExpr(callee, [value], value.loc);
+      value = builtinCall(callee, [value], value.loc);
     }
 
     const endLoc = value.loc;

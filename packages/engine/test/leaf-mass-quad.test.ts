@@ -212,7 +212,7 @@ test('a base whose PARAMETERS move with a latent declines — the open shape', (
   // F_B⁻¹ is evaluated at rewrite time, so a latent base parameter has no value
   // here and the arm declines. §07's `builtin_fromuniform` is the spec surface
   // that would express it per θ; recorded OPEN in
-  // flatppl-dev/measure-algebra-audit.md rather than closed here.
+  // flatppl-dev/TODO-flatppl-js.md rather than closed here.
   const latentMu = { mu: { kind: 'ref', ns: 'self', name: 'theta' },
     sigma: { kind: 'lit', value: 1 } };
   const body = { kind: 'call', op: 'exp', args: [thetaTimesX()] };

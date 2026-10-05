@@ -29,7 +29,7 @@ function infer(src: string) {
 
 test('jointchain closed-first: inferredType is measureType', () => {
   const r = infer(`
-prior = joint(theta = Normal(0, 1))
+prior = joint(mu = Normal(0, 1))
 mu = elementof(reals)
 k_inner = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
 joint_dep = jointchain(prior, k_inner)
@@ -443,7 +443,7 @@ test('kernel↔measure collapse: closed-first chain ⇒ measureType (not kernelT
   // at the engine level: a chain with NO residual inputs surfaces as
   // measureType, not kernelType with empty inputs.
   const r = infer(`
-prior = joint(theta = Normal(0, 1))
+prior = joint(mu = Normal(0, 1))
 mu = elementof(reals)
 K1 = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
 chain = jointchain(prior, K1)
