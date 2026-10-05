@@ -539,6 +539,12 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
   const bindings = ctx && ctx.bindings;
   const derivations = ctx && ctx.derivations;
   const visiting = new Set<string>();
+  // Distinct refs to the same deterministic binding share its completed
+  // expansion. Record recurrences otherwise expand the same DAG as a tree.
+  // A cycle leaves refs dependent on the active stack, so never cache an
+  // expansion that encountered one. Boundaries remain fixed for this call.
+  const completedBindings = new Map<string, any>();
+  let cycleCount = 0;
   // Identity-preserving rebuild plus a node-identity memo. The lowered IR is a
   // DAG — on the Dalitz amplitude fixture this walk receives 787 distinct
   // objects reached 40 102 times — and the previous unconditional
@@ -572,7 +578,8 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
     if (node.kind === 'ref' && node.ns === 'self' && node.name) {
       const name = node.name;
       if (boundarySet.has(name)) return node;     // fed boundary input — keep
-      if (visiting.has(name)) return node;
+      if (visiting.has(name)) { cycleCount++; return node; }
+      if (completedBindings.has(name)) return completedBindings.get(name);
       const drv = derivations && Object.prototype.hasOwnProperty.call(derivations, name)
         ? derivations[name] : null;
       const target = bindings && bindings.get(name);
@@ -616,9 +623,11 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
           || isContainerValue
           || (!drv && target && target.ir && target.ir.kind === 'call'));
       if (isEvaluableValue && target && target.ir) {
+        const before = cycleCount;
         visiting.add(name);
         const sub = walk(target.ir);
         visiting.delete(name);
+        if (cycleCount === before) completedBindings.set(name, sub);
         return sub;
       }
       return node;
