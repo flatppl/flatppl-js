@@ -92,6 +92,11 @@ The linked registry contains renamed standard-module aliases. Pass the resulting
 The canonical `result.loweredModule.moduleRegistry` still describes the primary
 module and serves source/type tooling.
 
+Mass inference recognizes simplex-weighted probability mixtures: whole vectors
+for `ksuperpose`, or every coordinate of the same node exactly once for `superpose`.
+Reference measures and unnormalized components do not satisfy this proof.
+Normalization functions establish simplex membership only for provably nonempty inputs.
+
 Record-valued broadcasts collect into tables, including nested record columns.
 Bare `record` heads infer their fields from keyword cell types and share the
 one-axis rule with record-returning functions.
