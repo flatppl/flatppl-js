@@ -92,6 +92,12 @@ The linked registry contains renamed standard-module aliases. Pass the resulting
 The canonical `result.loweredModule.moduleRegistry` still describes the primary
 module and serves source/type tooling.
 
+Record-valued broadcasts collect into tables, including nested record columns.
+Bare `record` heads infer their fields from keyword cell types and share the
+one-axis rule with record-returning functions.
+Inference retains table schemas on source calls across lift's re-lowering, so
+empty broadcasts keep their columns without evaluating a cell.
+
 Array indexing preserves nested element types and runtime nesting tags.
 Leading slices retain complex components and view semantics; transposed matrix
 rows gather only the selected row, while contiguous slices borrow storage.
@@ -488,6 +494,9 @@ worker cannot distinguish a shared ref from an unfed boundary — THROWS
 when a declared boundary the body references has no fed column (Phase 6).
 `pir-sexpr` consequently carries bodies VERBATIM (no serialization-
 boundary namespace translation).
+
+Callable self-containment inlines parameterized vector values even while they
+carry provisional tuple derivations before pruning. Stochastic tuples stay refs.
 
 ## Phase analysis
 
