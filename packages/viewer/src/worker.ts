@@ -25,47 +25,26 @@ export function ensureSamplerWorker(ctx: Ctx) {
   if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
   if (ctx.samplerWorkerPromise) return ctx.samplerWorkerPromise;
 
-  ctx.samplerWorkerPromise = (async function() {
-    // Try direct construction first — cheapest path on hosts where
-    // it works. Fall back to blob: on any failure (security error,
-    // cross-origin block, etc.). Async fetch (not sync XHR — sync
-    // XHR is blocked in the VS Code webview's Chromium for
-    // `vscode-webview:` URIs).
-    let w: Worker | null = null;
-    try {
-      w = new Worker(ctx.SAMPLER_WORKER_URL);
-    } catch (e) {
-      console.warn('FlatPPL: direct worker spawn failed, retrying via blob URL:',
-        e instanceof Error ? e.message : e);
+  const generation = ctx.samplingGeneration || 0;
+  const startup = spawnWorker(ctx, 1, generation).then(function(w) {
+    if ((ctx.samplingGeneration || 0) !== generation) {
+      w.terminate();
+      throw new Error('cancelled');
     }
-    if (!w) {
-      const resp = await fetch(ctx.SAMPLER_WORKER_URL);
-      if (!resp.ok) throw new Error('failed to fetch worker bundle: '
-        + resp.status + ' ' + resp.statusText);
-      const src = await resp.text();
-      const blob = new Blob([src], { type: 'application/javascript' });
-      const url = URL.createObjectURL(blob);
-      w = new Worker(url);
-      // The blob URL only needs to live until the Worker has parsed
-      // its source — revoke after a short delay so the URL isn't
-      // leaked (the worker keeps running independently).
-      setTimeout(function() { try { URL.revokeObjectURL(url); } catch (_) {} }, 5000);
-    }
-    wireWorker(ctx, w);
     ctx.samplerWorker = w;
-    // Initialize with a fixed seed for deterministic output. Future:
-    // plumb a "Resample" button that re-seeds (e.g. from Date.now()).
-    sendWorkerNow(ctx, w, { type: 'init', seed: 1 });
     return w;
-  })();
+  });
+  ctx.samplerWorkerPromise = startup;
 
-  ctx.samplerWorkerPromise.catch(function(err: any) {
+  startup.catch(function(err: any) {
+    // A cancelled startup must not clear a later worker's startup promise.
+    if (ctx.samplerWorkerPromise !== startup) return;
     ctx.samplerWorkerError = err;
     ctx.samplerWorkerPromise = null;
     console.error('FlatPPL: sampler worker unavailable:', err);
   });
 
-  return ctx.samplerWorkerPromise;
+  return startup;
 }
 
 export function wireWorker(ctx: Ctx, w: any) {
@@ -103,12 +82,17 @@ export function sendWorkerNow(ctx: Ctx, w: any, msg: any) {
 }
 
 export function sendWorker(ctx: Ctx, msg: any) {
-  return ensureSamplerWorker(ctx).then(function(w: any) {
-    const id = ++ctx.samplerReqId;
-    const wrapped = Object.assign({ id: id }, msg);
-    return new Promise(function(resolve, reject) {
-      ctx.pendingRequests.set(id, { resolve: resolve, reject: reject });
-      w.postMessage(wrapped);
+  const id = ++ctx.samplerReqId;
+  const requests = ctx.pendingRequests;
+  // Register before awaiting startup so Stop can reject this request even
+  // while the bundle fetch is pending, or before a direct spawn settles.
+  return new Promise(function(resolve, reject) {
+    requests.set(id, { resolve, reject });
+    ensureSamplerWorker(ctx).then(function(w: any) {
+      if (!requests.has(id)) return;
+      w.postMessage(Object.assign({ id }, msg));
+    }).catch(function(err: any) {
+      if (requests.delete(id)) reject(err);
     });
   });
 }
@@ -124,36 +108,67 @@ export function sendWorker(ctx: Ctx, msg: any) {
  * keeping a "warm" worker around.
  */
 export function cancelAllSampling(ctx: Ctx) {
+  ctx.samplingGeneration = (ctx.samplingGeneration || 0) + 1;
+  ctx.samplerWorkerPromise = null;
   if (ctx.samplerWorker) {
     try { ctx.samplerWorker.terminate(); } catch (_) {}
     ctx.samplerWorker = null;
-    ctx.samplerWorkerPromise = null;
   }
   for (const w of (ctx.mcmcPool || [])) { try { w.terminate(); } catch (_) {} }
   ctx.mcmcPool = [];
-  const entries = ctx.pendingRequests.values();
+  const requests = ctx.pendingRequests;
   ctx.pendingRequests = new Map();
-  for (const entry of entries) {
+  for (const entry of requests.values()) {
     try { entry.reject(new Error('cancelled')); } catch (_) {}
   }
+  requests.clear();
 }
 
 // Spawn ONE fresh worker (direct, blob fallback), wired to ctx.pendingRequests
-// and initialised. Used to build the MCMC pool — each worker runs an
-// independent share of chains/ensembles off the main thread.
-async function spawnWorker(ctx: Ctx, seed: number): Promise<any> {
+// and initialised. Shared by the regular sampler and the MCMC pool so both
+// respect Stop while the bundle fetch or body read is pending.
+async function spawnWorker(ctx: Ctx, seed: number, generation: number): Promise<any> {
   let w: any = null;
   try { w = new Worker(ctx.SAMPLER_WORKER_URL); } catch (_) { /* blob fallback */ }
   if (!w) {
     const resp = await fetch(ctx.SAMPLER_WORKER_URL);
+    if ((ctx.samplingGeneration || 0) !== generation) throw new Error('cancelled');
     if (!resp.ok) throw new Error('failed to fetch worker bundle: ' + resp.status);
-    const url = URL.createObjectURL(new Blob([await resp.text()], { type: 'application/javascript' }));
+    const src = await resp.text();
+    if ((ctx.samplingGeneration || 0) !== generation) throw new Error('cancelled');
+    const url = URL.createObjectURL(new Blob([src], { type: 'application/javascript' }));
     w = new Worker(url);
+    // Keep the URL alive until the worker has had time to parse its source.
     setTimeout(function () { try { URL.revokeObjectURL(url); } catch (_) {} }, 5000);
   }
   wireWorker(ctx, w);
   sendWorkerNow(ctx, w, { type: 'init', seed });
   return w;
+}
+
+// Own the pool before construction starts. Stop or a failed sibling startup
+// invalidates that ownership; late arrivals then terminate instead of joining
+// a newer run. Preserve seed order even when fetches finish out of order.
+async function spawnPool(ctx: Ctx, seeds: number[]): Promise<any[]> {
+  const generation = ctx.samplingGeneration || 0;
+  const workers: any[] = [];
+  ctx.mcmcPool = workers;
+  try {
+    await Promise.all(seeds.map(async (seed, i) => {
+      const w = await spawnWorker(ctx, seed, generation);
+      if (ctx.mcmcPool !== workers || (ctx.samplingGeneration || 0) !== generation) {
+        w.terminate();
+        throw new Error('cancelled');
+      }
+      workers[i] = w;
+    }));
+    if (ctx.mcmcPool !== workers) throw new Error('cancelled');
+    return workers;
+  } catch (err) {
+    for (const w of workers) { try { w.terminate(); } catch (_) {} }
+    if (ctx.mcmcPool === workers) ctx.mcmcPool = [];
+    throw err;
+  }
 }
 
 function sendTo(ctx: Ctx, w: any, msg: any, onProgress?: (m: any) => void): Promise<any> {
@@ -312,8 +327,7 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
   if (opts.backend === 'mh' || opts.backend === 'ram') {
     const nChains = Math.max(1, (opts.walkers ?? opts.chains ?? 4) | 0);
     const P = Math.max(1, Math.min(cap, nChains));
-    const workers = await Promise.all(Array.from({ length: P }, (_, i) => spawnWorker(ctx, baseSeed + i * 7919)));
-    ctx.mcmcPool = workers;
+    const workers = await spawnPool(ctx, Array.from({ length: P }, (_, i) => baseSeed + i * 7919));
     // Two-phase progress: warmup fills [0, wFrac] (one worker), sampling fills
     // the rest (all workers, mean). Monotonic — no reset between phases.
     const W = (opts.warmup ?? 1000) | 0, D = (opts.draws ?? 1000) | 0;
@@ -381,8 +395,7 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
   if (opts.backend === 'slice') {
     const nChains = Math.max(1, (opts.walkers ?? opts.chains ?? 4) | 0);
     const P = Math.max(1, Math.min(cap, nChains));
-    const workers = await Promise.all(Array.from({ length: P }, (_, i) => spawnWorker(ctx, baseSeed + i * 7919)));
-    ctx.mcmcPool = workers;
+    const workers = await spawnPool(ctx, Array.from({ length: P }, (_, i) => baseSeed + i * 7919));
     const counts = Array.from({ length: P }, (_, i) => Math.floor(nChains / P) + (i < nChains % P ? 1 : 0));
     const sfracs = new Array(P).fill(0);
     const report = (i: number, m: any) => {
@@ -429,8 +442,7 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
     shares.push({ inferenceOpts: Object.assign({}, opts, { seed: baseSeed }), sampleCount });
   }
 
-  const workers = await Promise.all(shares.map((_, i) => spawnWorker(ctx, baseSeed + i * 7919)));
-  ctx.mcmcPool = workers;
+  const workers = await spawnPool(ctx, shares.map((_, i) => baseSeed + i * 7919));
   const fracs = new Array(shares.length).fill(0);
   let lastPhase = 'warmup';
   const report = (i: number, m: any) => {

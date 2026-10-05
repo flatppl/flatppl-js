@@ -21,6 +21,7 @@ const ENG = '../';
 const { processSource, orchestrator, materialiser } = require(ENG + 'index.ts');
 const der = require(ENG + 'derivations.ts');
 const { createWorkerHandler } = require(ENG + 'worker.ts');
+const { makeMatCtx } = require('./_materialise-helpers.ts');
 
 function evalDensities(src: string, names: string[]) {
   const built = orchestrator.buildDerivations(processSource(src).bindings);
@@ -46,6 +47,25 @@ function evalDensities(src: string, names: string[]) {
 }
 const scalar1 = (m: any) => (m.value ? m.value.data[0] : (m.samples ? m.samples[0] : m));
 const logN01 = (x: number) => -0.5 * Math.log(2 * Math.PI) - x * x / 2;
+
+test('normalized truncation resolves a computed fixed bound when drawing and scoring', async () => {
+  const { ctx } = makeMatCtx(`
+flatppl_compat = "0.1"
+hi = exp(log(1 / 2))
+rcp ~ normalize(truncate(Beta(2, 2), interval(0, hi)))
+ld_in = logdensityof(lawof(rcp), 0.25)
+ld_out = logdensityof(lawof(rcp), 0.75)
+`, { sampleCount: 2048, rootSeed: 42 });
+  const m = await ctx.getMeasure('rcp');
+  assert.ok(m.samples.every((x: number) => x >= 0 && x <= 0.5));
+  // Symmetry gives Z=1/2. The conditional CDF is 6x²-4x³,
+  // so P(X<=1/4)=5/16, distinct from an untruncated or uniform law.
+  const below = m.samples.filter((x: number) => x <= 0.25).length / m.samples.length;
+  assert.ok(Math.abs(below - 5 / 16) < 0.05, `conditional CDF: ${below}`);
+  assert.equal(m.logTotalmass, 0);
+  assert.ok(Math.abs(scalar1(await ctx.getMeasure('ld_in')) - Math.log(12 * 0.25 * 0.75)) < 1e-9);
+  assert.equal(scalar1(await ctx.getMeasure('ld_out')), -Infinity);
+});
 
 test('truncate density: inside support = base density, outside = -inf (interval, inline base)', async () => {
   const ctx = evalDensities(`

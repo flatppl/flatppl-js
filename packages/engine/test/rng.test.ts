@@ -38,8 +38,44 @@ const {
   foldIn,
   randSplitLanes,
   philoxNUniform,
+  bytesFromState,
+  stateFromBytes,
   _internal: { mulhilo32 },
 } = require('../rng.ts');
+
+test('serialized partial blocks preserve the Philox known-answer continuation', () => {
+  const expected = [0x6627e8d5, 0xe169c58d, 0xbc57ac4c, 0x9b00dbd8];
+  let state = stateFromKey(0, 0);
+  for (const word of expected) {
+    const restored = stateFromBytes(bytesFromState(state));
+    assert.equal(nextUint32(restored)[0], word);
+    state = nextUint32(state)[1];
+  }
+  assert.equal(nextUint32(stateFromBytes(bytesFromState(state)))[0], nextUint32(state)[0]);
+});
+
+test('serialized continuation preserves the full counter and its rollover', () => {
+  let state = { ...stateFromKey(7, 9), counter: [0xffffffff, 0xffffffff, 0xffffffff, 0xffffffff] };
+  // The first draw wraps all four counter words; subsequent draws consume
+  // the cached pre-wrap block before generating the zero-counter block.
+  for (let i = 0; i < 6; i++) {
+    const [expected, next] = nextUint32(state);
+    assert.equal(nextUint32(stateFromBytes(bytesFromState(state)))[0], expected);
+    state = next;
+  }
+});
+
+test('legacy RNG states retain their stream and incompatible encodings are refused', () => {
+  const legacy = [0x50, 0x58, 0x31, 0x30, ...new Array(20).fill(0)];
+  assert.equal(nextUint32(stateFromBytes(legacy))[0], 0x6627e8d5);
+  const current = bytesFromState(stateFromKey(0, 0));
+  assert.throws(() => stateFromBytes(current.slice(0, -1)));
+  assert.throws(() => stateFromBytes([...legacy, 0]));
+  assert.throws(() => stateFromBytes([0, ...current.slice(1)]));
+  const invalidPosition = current.slice();
+  invalidPosition[31] = 5;
+  assert.throws(() => stateFromBytes(invalidPosition));
+});
 
 // =====================================================================
 // 1. mulhilo32

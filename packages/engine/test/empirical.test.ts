@@ -106,6 +106,46 @@ test('effectiveSampleSize: explicit uniform → N (matches null)', () => {
   assert.ok(Math.abs(effectiveSampleSize(m) - N) < 1e-9);
 });
 
+test('relative-weight operations retain finite common log-weight shifts', () => {
+  for (const offset of [0, 1e16, 1e308]) {
+    const logWeights = Float64Array.of(offset, offset);
+    assert.equal(effectiveSampleSize({ logWeights }), 2);
+    assert.deepEqual(Array.from(systematicResample(logWeights, 2, () => 0.75)), [0, 1]);
+    assert.deepEqual(Array.from(multinomialResample(logWeights, 2, () => 0.75)), [1, 1]);
+  }
+});
+
+test('resampling skips zero-mass CDF plateaus at exact endpoints', () => {
+  // Leading and interior zero masses both lie at valid RNG values.
+  const weights = [-Infinity, 0, -Infinity, 0];
+  assert.deepEqual(Array.from(systematicResample(weights, 2, () => 0)), [1, 3]);
+  assert.deepEqual(Array.from(multinomialResample(weights, 2, () => 0)), [1, 1]);
+  assert.deepEqual(Array.from(multinomialResample(weights, 2, () => 0.5)), [3, 3]);
+  assert.throws(() => systematicResample([-Infinity], 1, () => 0));
+  assert.throws(() => multinomialResample([-Infinity], 1, () => 0));
+});
+
+test('uniform vector measures keep one weight and ESS contribution per atom', () => {
+  const m = { samples: Float64Array.of(2, 2, 3, 3), dims: [2], logWeights: null };
+  const weighted = materialiseUniform(m);
+  assert.equal(weighted.samples, m.samples);
+  assert.deepEqual(Array.from(weighted.logWeights), [-Math.log(2), -Math.log(2)]);
+  assert.equal(effectiveSampleSize(m), 2);
+});
+
+test('empty vector atoms retain their weights and effective count', () => {
+  const samples = new Float64Array(0);
+  const m = { samples, value: { data: samples, shape: [2, 0] }, logWeights: null };
+  assert.deepEqual(Array.from(materialiseUniform(m).logWeights), [-Math.log(2), -Math.log(2)]);
+  assert.equal(effectiveSampleSize(m), 2);
+});
+
+test('systematic positions rounded to one still exclude trailing zero mass', () => {
+  const indices = systematicResample(Float64Array.of(0, -Infinity), 2,
+    () => 1 - Number.EPSILON / 2);
+  assert.deepEqual(Array.from(indices), [0, 0]);
+});
+
 test('effectiveSampleSize: degenerate (one atom dominates) → ~1', () => {
   // logWeights [0, -Inf, -Inf, …]: only atom 0 has any mass.
   const N = 20;
@@ -449,6 +489,16 @@ test('importanceSamplingQuality: single-particle dominance → unusable', () => 
   const q = importanceSamplingQuality({ samples, logWeights: logW }, 1);
   assert.equal(q.label, 'unusable');
   assert.ok(q.wmax > 0.5);
+});
+
+test('importanceSamplingQuality retains a finite common log-weight scale', () => {
+  const offsets = Float64Array.from({ length: 100 }, (_, i) => -2 * (i % 3));
+  const expected = 1 / offsets.reduce((sum, x) => sum + Math.exp(x), 0);
+  for (const shift of [0, 1e16, -1e16]) {
+    const logWeights = Float64Array.from(offsets, x => x + shift);
+    const q = importanceSamplingQuality({ samples: new Float64Array(100), logWeights }, 1);
+    assert.ok(Math.abs(q.wmax - expected) < 1e-15);
+  }
 });
 
 test('importanceSamplingQuality: small N caps at ok for non-uniform weights', () => {

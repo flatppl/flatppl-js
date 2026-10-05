@@ -596,6 +596,21 @@ html, body {
 .surface-markdown table { border-collapse: collapse; }
 .surface-markdown th,
 .surface-markdown td { border: 1px solid var(--fp-border); padding: 0.3em 0.6em; }
+/* The HTML surface (surfaces.ts htmlSurface): one sandboxed iframe filling
+   the pane. The page paints its own background, so the frame is opaque
+   white rather than the gallery's theme — it is the document as a browser
+   would show it, which is the point of exporting to HTML. */
+.surface-html {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+.surface-html iframe {
+  flex: 1 1 auto;
+  width: 100%;
+  border: 0;
+  background: #fff;
+}
 .surface-placeholder {
   flex: 1 1 auto;
   display: flex;

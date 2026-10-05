@@ -151,7 +151,7 @@ function smcSample(mv: any, opts: any) {
     const Sigma = new Float64Array(dim * dim);
     for (let i = 0; i < N; i++) {
       const xi = X[i], wi = wn[i];
-      for (let a = 0; a < dim; a++) { const da = xi[a] - mean[a]; for (let b = 0; b <= a; b++) { const c = wi * da * (xi[b] - mean[b]); Sigma[a * dim + b] += c; Sigma[b * dim + a] += c; } }
+      for (let a = 0; a < dim; a++) { const da = xi[a] - mean[a]; for (let b = 0; b <= a; b++) { const c = wi * da * (xi[b] - mean[b]); Sigma[a * dim + b] += c; if (b !== a) Sigma[b * dim + a] += c; } }
     }
     for (let d = 0; d < dim; d++) Sigma[d * dim + d] += ridge;
     const L = new Float64Array(dim * dim);

@@ -295,41 +295,26 @@ test('a declared scalar boundary fed one scalar variate still types', () => {
       .map((d: any) => d.message), []);
 });
 
-// A RECORD fed to a lone declared input is a SEPARATE surface and is
-// deliberately not touched. The engine's chain runtime unwraps a single-field
-// record into the input whatever the field is named — measured: this model
-// samples Var[y] = 2 against its closed form — which no reading of §04's
-// splat-by-field-name predicts. Enforcing the declared type there would refuse
-// a program that works today. Carded in flatppl-dev/TODO-flatppl-js.md.
-test('a record fed to a lone declared input still types (name mismatch and '
-  + 'all)', () => {
-    assert.deepEqual(
-      errorsOf(H + 'prior = joint(theta = Normal(mu = 0.0, sigma = 1.0))\n'
+test('a record fed to a lone declared input requires the matching field name', () => {
+    const errors = errorsOf(H + 'prior = joint(theta = Normal(mu = 0.0, sigma = 1.0))\n'
         + 'mu = elementof(reals)\n'
         + 'K = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)\n'
-        + 'y = jointchain(prior, K)\n').map((d: any) => d.message), []);
+        + 'y = jointchain(prior, K)\n');
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].message, /missing field "mu"/);
   });
 
-// A `relabel`d measure keeps its UN-relabelled variate type (`inferRelabel`'s
-// measure arm is labels-only, by design), so an array-typed variate to the
-// left of a step may really be the record §06's `relabel` produces. The
-// declared-input check is withheld once a relabel-rooted step is to the left —
-// refusing on a known under-approximation would reject a program the spec
-// allows.
-test('a relabel-rooted base withholds the declared-input check', () => {
+test('a relabelled record also requires the matching step field name', () => {
   const RB = H
     + 'jd = joint(Normal(mu = 0.0, sigma = 1.0), Beta(alpha = 1.0, beta = 1.0))\n'
     + 'mu = elementof(reals)\n'
     + 'K = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)\n';
-  // Through a binding ref.
-  assert.deepEqual(
-    errorsOf(RB + 'rb = relabel(jd, ["a", "b"])\n' + 'y = kchain(rb, K)\n')
-      .map((d: any) => d.message), []);
-  // Written inline as the step. Same withholding — the reason is the op, not
-  // the spelling.
-  assert.deepEqual(
-    errorsOf(RB + 'y = kchain(relabel(jd, ["a", "b"]), K)\n')
-      .map((d: any) => d.message), []);
+  for (const source of ['rb = relabel(jd, ["a", "b"])\ny = kchain(rb, K)\n',
+    'y = kchain(relabel(jd, ["a", "b"]), K)\n']) {
+    const errors = errorsOf(RB + source);
+    assert.equal(errors.length, 1);
+    assert.match(errors[0].message, /missing field "mu"/);
+  }
 });
 
 // A step naming a binding that does not exist. The declared-input walk reads

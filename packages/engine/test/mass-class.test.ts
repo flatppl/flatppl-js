@@ -366,7 +366,7 @@ test('mass: a chain component with no class keeps the chain deferred (§11)', ()
     'deferred');
   // A gap in the BASE stays a gap too — `kchain` must not report a settled
   // `unknown` for a base whose class is merely not yet inferred.
-  const deferredBase = MARKOV_K
+  const deferredBase = 'K = (a, b) -> Normal(mu = a, sigma = 1.0)\n'
     + 'jd = joint(Normal(mu = 0.0, sigma = 1.0), Beta(alpha = 1.0, beta = 1.0))\n'
     + 'rb = relabel(jd, ["a", "b"])\n';
   assert.equal(massOf(deferredBase + 'm = kchain(rb, K)', 'm'), 'deferred');

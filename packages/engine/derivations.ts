@@ -789,7 +789,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
   // Loud-fail a pruned posterior. A `bayesupdate` binding left without a
   // derivation was cascade-pruned because its prior is not the law of the
   // likelihood's boundary draws — the H1 boundary-conflation scar zone
-  // (flatppl-dev/measure-algebra-audit.md). The engine materialises only
+  // (ARCHITECTURE.md "Measure-algebra scar zones"). The engine materialises only
   // `bayesupdate(L, lawof(draws))` and the disintegration idiom; a hand-built
   // `joint` prior over free `elementof` params (the spec's own
   // 06-measure-algebra.md "Posterior construction" example) otherwise vanishes
@@ -807,7 +807,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
         + `(jointchain → disintegrate → likelihoodof → bayesupdate), but not a `
         + `hand-built joint prior over free elementof parameters (see `
         + `flatppl-design 06-measure-algebra.md "Posterior construction"; `
-        + `measure-algebra-audit H1). Rebuild the posterior via disintegration.`,
+        + `measure-algebra audit, 2026-06, H1). Rebuild the posterior via disintegration.`,
       loc: bindingLoc(name),
     });
   }
@@ -1868,7 +1868,11 @@ function classifyRecordOrJoint(rhsIR: any, ast?: any, bindings?: any): Derivatio
       }
       if (allLabeled) {
         const fields: Record<string, string> = {};
-        for (let i = 0; i < elems.length; i++) fields[labels[i]] = elems[i];
+        for (let i = 0; i < elems.length; i++) {
+          const relabel = classifyRelabel(bindings.get(elems[i]).ir, null, bindings);
+          if (!relabel || relabel.kind !== 'record') return null;
+          fields[labels[i]] = relabel.fields[labels[i]];
+        }
         return { kind: 'record', fields };
       }
     }
@@ -2298,11 +2302,8 @@ function classifyIid(
     if (n == null || !Number.isInteger(n) || n < 0) return null;
     dims.push(n);
   }
-  // §06 iid: a scalar-length size derived to 0 is the empty product measure
-  // for a scalar-valued M (still unclassified here — a pre-existing, separate
-  // gap this fix does not touch), but record-valued M has no zero-row table.
-  // Let that one shape through as a normal 'iid' derivation with dims=[0] so
-  // it reaches the runtime record branch, which raises the §06 refusal.
+  // §06 iid: a derived-zero record product has an empty table variate.
+  // Scalar empty-product classification remains separate from the table path.
   if (dims.length === 1 && dims[0] === 0) {
     if (!_isRecordValuedMeasureBase(baseName, bindings)) return null;
     return { kind: 'iid', from: baseName, dims };
@@ -2678,16 +2679,16 @@ function classifyTotalmass(rhsIR: IRNode, ast: any, bindings: any): DerivationTo
  * Supported shape:
  *   - M is a self-ref to a measure binding (anything resolveMeasureBaseName
  *     accepts; the materialiser walks the parent measure for samples).
- *   - S is a literal set expression parseSetIR can lift to a structural
- *     descriptor: interval(lo, hi) with literal bounds, or one of the
+ *   - S is a set expression parseSetIR can lift to a structural
+ *     descriptor: interval(lo, hi) with fixed bounds, or one of the
  *     named real / integer / boolean sets. Dynamic sets defer to a
  *     future pass — they'd require per-atom set membership evaluation.
  */
-function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any): DerivationTruncate | null {
+function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): DerivationTruncate | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
-  const setDescr = parseSetIR(rhsIR.args[1], bindings);
+  const setDescr = parseSetIR(rhsIR.args[1], bindings, fixedValues);
   if (setDescr == null) return null;
   return { kind: 'truncate', from: baseName, setDescr };
 }
@@ -3270,22 +3271,12 @@ function _singleRelabelName(name: string, bindings: any): string | null {
 //     components positionally — a `record` derivation whose fields are
 //     `names[i] → component_i`'s binding ref. This is case-B of the
 //     desugaring: `relabel(joint(A, B), ["a","b"])`.
-//   - M is a plain scalar/leaf measure (a bare distribution call, or a
-//     ref to one) and `names` is a single-name list: a pure rename —
-//     M's samples are unchanged, so `relabel(M, [n])` classifies exactly
-//     as M would (an `alias` to M's binding, or a `sample` off M's inline
-//     distribution call). This is the per-component shape the desugaring
-//     produces on the OTHER side: `joint(relabel(Normal(0,1), ["a"]), …)`
-//     — each relabeled component needs its OWN valid derivation so the
-//     anon binding materialises; `classifyRecordOrJoint` then recognises
-//     the all-relabeled positional joint and reassembles the record.
-//
-// A multi-name relabel of a non-product base (nothing to distribute the
-// extra names over) and any other base shape (iid, jointchain, truncate,
-// …) are documented deferrals — return null rather than the general
-// `pushfwd(fn(relabel(_,names)),M)` bijection route (no consumer needs
-// it yet; TODO §06 if a case surfaces).
-function classifyRelabel(rhsIR: IRNode, ast: any, bindings: any): DerivationRecord | DerivationAlias | DerivationSample | null {
+//   - M has one coordinate and `names` has one name: preserve the base
+//     under that record field. Lift supplies a binding for an inline leaf.
+//     classifyRecordOrJoint unwraps these fields when named components are
+//     combined, preserving the same shape as the keyword spelling.
+// A multi-name relabel needs the explicit product structure above.
+function classifyRelabel(rhsIR: IRNode, ast: any, bindings: any): DerivationRecord | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const baseIR = rhsIR.args[0];
   const names = _selectorNames(rhsIR.args[1]);
@@ -3302,10 +3293,7 @@ function classifyRelabel(rhsIR: IRNode, ast: any, bindings: any): DerivationReco
   if (names.length !== 1) return null;
   if (baseIR.kind === 'ref' && baseIR.ns === 'self') {
     if (!bindings.has(baseIR.name)) return null;
-    return { kind: 'alias', from: baseIR.name };
-  }
-  if (baseIR.kind === 'call' && baseIR.op && SAMPLEABLE_DISTRIBUTIONS.has(baseIR.op)) {
-    return { kind: 'sample', distIR: baseIR };
+    return { kind: 'record', fields: { [names[0]]: baseIR.name } };
   }
   return null;
 }
@@ -3548,7 +3536,7 @@ function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): D
       // (matJointchain.bindLeaf, runtime priorVars.length) and density
       // side (expandMeasure's rewireHole, expand-time spreadFields) each
       // deriving cat-arity independently and drifting
-      // (measure-lowering-unification-plan critique A). Additive — null /
+      // (the CLM unification's critique A). Additive — null /
       // absent ⇒ scalar or opaque base (single column), today's behaviour.
       if (!isKernelComp) {
         const bf = _baseRecordFields(d, bindings);
@@ -4995,7 +4983,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             body = _expandStructural(body, ctx, next);
             if (!body) return null;
           }
-          return { params: f.params, body };
+          return { params: f.params, names: f.paramKwargs || f.params, body };
         };
         // Spread a (record/joint) measure IR into its named field
         // descriptors (preserving `source` for env-threading); a
@@ -5069,20 +5057,6 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // unbound ref (audit M5's opaque "reading 'length'"). As a
         // `self` ref it threads through BOTH walkers' name/source
         // overlays, and the ⊆ input invariant sees it.
-        const localToSelf = (body: any, param: any) => {
-          const sub: any = (node: any) => {
-            if (node == null || typeof node !== 'object') return node;
-            if (Array.isArray(node)) return node.map(sub);
-            if (node.kind === 'ref' && node.ns === '%local'
-                && node.name === param) {
-              return { kind: 'ref', ns: 'self', name: param, loc: node.loc };
-            }
-            const out: Record<string, any> = {};
-            for (const k in node) out[k] = sub(node[k]);
-            return out;
-          };
-          return sub(body);
-        };
         // Bind a kernel's expanded body to the available prior fields.
         // A param matching a prior field NAME (the chain label) or its
         // SOURCE (the original binding a renamed label rides on)
@@ -5092,10 +5066,11 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // unsupported (clean null).
         const bindKernel = (ke: any, priorNames: any, priorSources: any) => {
           let body = ke.body;
-          for (const p of ke.params) {
-            if (priorNames.indexOf(p) >= 0
-                || (priorSources && priorSources.indexOf(p) >= 0)) {
-              body = localToSelf(body, p);
+          for (let i = 0; i < ke.params.length; i++) {
+            const p = ke.params[i], name = ke.names[i];
+            if (priorNames.indexOf(name) >= 0
+                || (priorSources && priorSources.indexOf(name) >= 0)) {
+              body = rewireHole(body, p, [name]);
             } else {
               if (ke.params.length !== 1) return null;
               body = rewireHole(body, p, priorNames);
@@ -5127,9 +5102,10 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             // matLogdensityof per-atom — normalised to `self` refs so
             // both walkers resolve them by bare name.
             let body = ke.body;
-            for (const p of ke.params) {
-              if (priorNames.indexOf(p) >= 0 || priorSources.indexOf(p) >= 0) {
-                body = localToSelf(body, p);
+            for (let i = 0; i < ke.params.length; i++) {
+              const p = ke.params[i], name = ke.names[i];
+              if (priorNames.indexOf(name) >= 0 || priorSources.indexOf(name) >= 0) {
+                body = rewireHole(body, p, [name]);
               } else {
                 if (ke.params.length !== 1) return null;
                 body = rewireHole(body, p, [base.ref]);
@@ -5543,6 +5519,35 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
     // _expandByName before reaching here, so this only fires for an inline
     // superpose (today: a PoissonProcess intensity).
     return { ...ir, args: ir.args.map((a: any) => _expandStructural(a, ctx, visited)) };
+  }
+  if (ir.op === 'BinnedPoissonProcess') {
+    // A constructor joint is independent even when it reuses a measure;
+    // stochastic record sources retain their ancestry and cannot use a
+    // product of marginal rectangle masses.
+    const expandIntensity = (node: any): any => {
+      const expanded = _expandStructural(node, ctx, visited);
+      const mark = (n: any): any => {
+        if (!n || n.kind !== 'call') return n;
+        const out = { ...n };
+        if ((n.op === 'normalize' || n.op === 'truncate') && n.args?.length) {
+          out.args = [expandIntensity(n.args[0]), ...n.args.slice(1)];
+        } else if (n.args) out.args = n.args.map(mark);
+        if (n.branches) out.branches = n.branches.map(mark);
+        if (n.fields) out.fields = n.fields.map((f: any) => {
+          const binding = f.source && ctx.bindings && ctx.bindings.get(f.source);
+          const constructor = binding && binding.ir && MEASURE_PRODUCING.has(binding.ir.op);
+          return { ...f, value: mark(f.value), source: constructor ? undefined : f.source };
+        });
+        return out;
+      };
+      return mark(expanded);
+    };
+    if (ir.kwargs && ir.kwargs.bins && ir.kwargs.intensity) {
+      return { ...ir, kwargs: { ...ir.kwargs, intensity: expandIntensity(ir.kwargs.intensity) } };
+    }
+    if (Array.isArray(ir.args) && ir.args.length >= 2) {
+      return { ...ir, args: [ir.args[0], expandIntensity(ir.args[1])] };
+    }
   }
   if (ir.op === 'PoissonProcess' && ir.kwargs && ir.kwargs.intensity) {
     // The `intensity` kwarg is a MEASURE (e.g. weighted(M, ref shape), or a

@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// sampler-profile-compile.ts — single-point compiler for profile bodies
+// sampler-profile-compile.ts — single-point compiler for reusable bodies
 // =====================================================================
 //
 // A profile plot evaluates ONE inlined body at many points of a swept
@@ -19,6 +19,7 @@
 // calling the interpreter's own `evaluateCall`), and its main lever is
 // common-subexpression elimination across a point, which a fused numeric
 // loop cannot express.
+// Ordinary broadcasts also use a plan, with a fresh generation per cell.
 //
 // Two levers, both measured separately (see flatppl-dev/decisions-log.md):
 //   1. Closure conversion — the per-node `switch (ir.kind)`, the
@@ -255,9 +256,9 @@ function _analyse(ir: any, An: Analysis): void {
 // analysis: a binder (a user-function call, a `reduce` element env)
 // builds its env with `Object.assign({}, env)`, so a subtree evaluated
 // under a different set of bindings arrives with a different env object
-// and recomputes. Env objects are never mutated in place during a point
-// — the only in-place write is `worker.profileN` setting the swept name
-// between points, which the generation bump covers.
+// and recomputes. Broadcast cells and profile points bump the generation
+// before rebinding an environment. Other mutable binder loops keep an
+// interpreter boundary, so their bodies never use an outer point's memo.
 type Session = {
   g: number;
   slots: number;
@@ -462,9 +463,20 @@ function _compileVariadic(op: string, rawArgs: any[] | null | undefined,
 // Everything the compiler does not specialise runs through the
 // interpreter's own `evaluateCall`, on the same node, so its behaviour
 // and its error messages are unchanged. The children of an opaque node
-// are NOT compiled — the interpreter walks them itself.
+// re-enter through the evaluator hook where its scope remains valid.
 function _opaque(node: any): any {
-  return function (env: any) { return _evaluateCall(node, env); };
+  const decl = opsModule.lookup(node.op);
+  // These binders mutate one environment across iterations without advancing
+  // our generation. Broadcast owns a plan; aggregate has an explicit hook.
+  const separateScope = decl && decl.kind === 'higher-order'
+    && node.op !== 'broadcast' && node.op !== 'aggregate';
+  return function (env: any) {
+    const callEnv = separateScope && env
+      && Object.prototype.hasOwnProperty.call(env, '__bodyEval')
+      && typeof env.__bodyEval === 'function'
+      ? Object.assign({}, env, { __bodyEval: undefined }) : env;
+    return _evaluateCall(node, callEnv);
+  };
 }
 
 // =====================================================================
@@ -506,6 +518,13 @@ function compileProfileBody(ir: any): any {
     bodyEval,
     evalPoint: function (env: any) { return root(env); },
     nextPoint: function () { S.g++; },
+    // Reusable plans must not retain runtime environments or tensor buffers.
+    clearMemo: function () {
+      S.gen.length = 0;
+      S.envs.length = 0;
+      S.vals.length = 0;
+      S.kinds.length = 0;
+    },
     stats: function () {
       return { slots: S.slots, distinctSubtrees: S.An.next, compiled: true };
     },

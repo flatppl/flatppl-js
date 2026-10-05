@@ -2,7 +2,7 @@
 
 // ════════════════════════════════════════════════════════════════════════
 // CLM Phase 1 — clm node + lowerMeasure, additive (assert-only).
-// flatppl-dev/measure-lowering-unification-plan.md Phase 1.
+// the CLM unification (see the `clm.ts` row in packages/engine/ARCHITECTURE.md).
 //
 // Gates the additive pass before any consumer reads it:
 //  - SNAPSHOT: lowerMeasure(name).body === expandMeasure(name) on every

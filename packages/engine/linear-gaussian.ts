@@ -241,6 +241,14 @@ function _affine(ir: any, keyFor: (nm: string) => string | null,
     /* c8 ignore stop */
   }
   if (ir.kind !== 'call' || !Array.isArray(ir.args)) return null;
+  if (ir.op === 'sum' && ir.args.length === 1 && ir.args[0].op === 'vector') {
+    return _affine({ kind: 'call', op: 'add', args: ir.args[0].args }, keyFor, atoms, ctx);
+  }
+  if (ir.op === 'get' && ir.args.length === 2 && ir.args[0].op === 'vector') {
+    const index = _constant(ir.args[1], ctx);
+    return index != null && Number.isInteger(index)
+      ? _affine(ir.args[0].args[index - 1], keyFor, atoms, ctx) : null;
+  }
   const parts: Affine[] = [];
   for (const a of ir.args) {
     const p = _affine(a, keyFor, atoms, ctx);
@@ -446,7 +454,8 @@ function _buildTable(comps: any, marginalize: string[], keyOf: (nm: string) => s
   // Classify: Normal (Gaussian) / finite discrete (enumerable) / neither.
   const discrete: TableNode[] = [];
   for (const n of nodes.values()) {
-    if (n.ir && n.ir.kind === 'call' && n.ir.op === 'Normal') continue;
+    if (n.ir && n.ir.kind === 'call'
+        && (n.ir.op === 'Normal' || (n.ir.op === 'Dirac' && n.component == null))) continue;
     // An observed coordinate is never enumerated: its variate is the point
     // scored, w.r.t. the product reference measure the Gaussian block assumes.
     if (n.component == null) {
@@ -491,13 +500,14 @@ function _blockMoments(nodes: Map<string, TableNode>, compKeys: string[],
   const laws = new Map<string, { loc: Affine; sd: number }>();
   for (const n of nodes.values()) {
     if (atoms.has(n.key)) continue;                 // enumerated, not Gaussian
-    const loc = _affine(_distParamIR(n.ir, 'mu'), keyFor, atoms, ctx);
+    const deterministic = n.ir.op === 'Dirac';
+    const loc = _affine(_distParamIR(n.ir, deterministic ? 'value' : 'mu'), keyFor, atoms, ctx);
     if (!loc) {
       return { refuse: n.what + "'s location is not an affine function of the "
         + 'sub-DAG\'s stochastic nodes with constant coefficients' };
     }
-    const sd = _constant(_distParamIR(n.ir, 'sigma'), ctx);
-    if (sd == null || !(sd > 0)) {
+    const sd = deterministic ? 0 : _constant(_distParamIR(n.ir, 'sigma'), ctx);
+    if (sd == null || (!deterministic && !(sd > 0))) {
       return { refuse: n.what + "'s scale is not a positive constant (a latent in "
         + 'the scale is not a linear-Gaussian shape)' };
     }
@@ -737,4 +747,5 @@ function _flattenNumbers(v: any): number[] {
     + 'for the shared-ancestor joint law');
 }
 
-module.exports = { recogniseGaussianMarginal, scoreGaussianMarginal };
+module.exports = { recogniseGaussianMarginal, scoreGaussianMarginal,
+  enumerateFiniteMeasure: (ir: any, ctx: any) => _discreteNode(ir, 'the chain latent', ctx) };

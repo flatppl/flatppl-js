@@ -57,3 +57,10 @@ test('Markdown retains safe destinations, formatting, code, and math', () => {
   assert.match(html, /<math/);
   assert.doesNotMatch(html, /<script>/);
 });
+
+test('Markdown renders a ```math fence as display math (the Markdown export convention)', () => {
+  const html = render('Before\n\n```math\n\\mu \\sim \\mathcal{N}(0, 1)\n```\n\nAfter');
+  assert.match(html, /<math[^>]*display="block"/);
+  assert.ok(!html.includes('<code'), 'the fence is not shown as a code block');
+  assert.match(render('```js\nlet x = 1;\n```'), /<code class="language-js">/);
+});

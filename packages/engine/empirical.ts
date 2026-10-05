@@ -96,9 +96,8 @@ function totalLogMass(measure: any) {
  *
  *    ESS = (sum w_i)^2 / sum w_i^2
  *
- * Computed in log-space:
- *
- *    log_ESS = 2 * logSumExp(logWeights) - logSumExp(2 * logWeights)
+ * Center log-weights before exponentiation. Subtracting two uncentered
+ * log normalizers loses their small correction at large common offsets.
  *
  * For uniform-weight measures (logWeights = null), all atoms
  * contribute equally so ESS = N. For a degenerate measure with all
@@ -111,21 +110,22 @@ function totalLogMass(measure: any) {
  */
 function effectiveSampleSize(measure: any) {
   const w = measure && measure.logWeights;
-  if (!w) return measure.samples.length;
+  if (!w) return measureAtomCount(measure);
   const N = w.length;
   if (N === 0) return 0;
-  const a = logSumExp(w);
+  let max = w[0];
+  for (let i = 1; i < N; i++) if (w[i] > max) max = w[i];
   // Zero total mass (every weight -inf — e.g. a posterior whose every
   // prior atom scores the data at -inf under a small-N/MC-starved run):
   // zero effective samples, not exp(2·(-inf) - (-inf)) = NaN.
-  if (a === -Infinity) return 0;
-  // Square the weights in log-space (multiply by 2). We allocate a
-  // small temp array because Float64Array doesn't have a vectorised
-  // map; for N ~ 1e5 this is well under a millisecond.
-  const tw = new Float64Array(N);
-  for (let i = 0; i < N; i++) tw[i] = 2 * w[i];
-  const b = logSumExp(tw);
-  return Math.exp(2 * a - b);
+  if (max === -Infinity) return 0;
+  let sum = 0, sumSquares = 0;
+  for (let i = 0; i < N; i++) {
+    const wi = Math.exp(w[i] - max);
+    sum += wi;
+    sumSquares += wi * wi;
+  }
+  return sum * sum / sumSquares;
 }
 
 /**
@@ -141,7 +141,7 @@ function effectiveSampleSize(measure: any) {
  */
 function materialiseUniform(measure: any) {
   if (measure.logWeights) return measure;
-  const N = measure.samples.length;
+  const N = measureAtomCount(measure);
   const w = new Float64Array(N);
   const c = N > 0 ? -Math.log(N) : 0;
   for (let i = 0; i < N; i++) w[i] = c;
@@ -224,6 +224,22 @@ function propagateLogWeights(parents: Iterable<any>) {
   return lineage.sumEvents(events, N);
 }
 
+/** Build a normalized CDF without losing scale invariance (spec §06).
+ * The caller owns the output buffer, including on the resampling scratch path.
+ */
+function cumulativeWeights(logWeights: ArrayLike<number>, cumulative: Float64Array): void {
+  let max = -Infinity;
+  for (let i = 0; i < logWeights.length; i++) if (logWeights[i] > max) max = logWeights[i];
+  let total = 0;
+  for (let i = 0; i < logWeights.length; i++) {
+    total += Math.exp(logWeights[i] - max);
+    cumulative[i] = total;
+  }
+  if (!(total > 0)) throw new Error('resample: weights must have positive finite relative mass');
+  for (let i = 0; i < cumulative.length; i++) cumulative[i] /= total;
+  cumulative[cumulative.length - 1] = 1;
+}
+
 /**
  * Systematic resampling. The standard particle-filter trick for
  * turning a weighted empirical measure with `N` atoms into a uniformly-
@@ -256,18 +272,8 @@ function systematicResample(logWeights: ArrayLike<number>, n: number, prng: () =
     throw new Error('systematicResample: scratch buffers must match source and output counts');
   }
 
-  // Cumulative normalised weights via stable logsumexp. The final
-  // cumulative entry is pinned to 1.0 to absorb floating-point
-  // round-off; without that, a position close to 1.0 might fall
-  // past the last entry and trip the j < N-1 guard incorrectly.
-  const lse = logSumExp(logWeights);
   const cum = scratch ? scratch.cumulative : new Float64Array(N);
-  let acc = 0;
-  for (let i = 0; i < N; i++) {
-    acc += Math.exp(logWeights[i] - lse);
-    cum[i] = acc;
-  }
-  cum[N - 1] = 1.0;
+  cumulativeWeights(logWeights, cum);
 
   // Single uniform offset. The N positions u0 + i/n step through the
   // [0, 1) interval at uniform spacing 1/n; the offset randomises
@@ -277,8 +283,9 @@ function systematicResample(logWeights: ArrayLike<number>, n: number, prng: () =
   const indices = scratch ? scratch.indices : new Int32Array(n);
   let j = 0;
   for (let i = 0; i < n; i++) {
-    const u = u0 + i / n;
-    while (j < N - 1 && cum[j] < u) j++;
+    // A legal offset below one can round the final sum to one.
+    const u = Math.min(1 - Number.EPSILON / 2, u0 + i / n);
+    while (j < N - 1 && cum[j] <= u) j++;
     indices[i] = j;
   }
   return indices;
@@ -304,14 +311,8 @@ function multinomialResample(logWeights: ArrayLike<number>, n: number, prng: () 
   if (n <= 0) throw new Error(`multinomialResample: n must be > 0 (got ${n})`);
 
   // Same cumulative-weights setup as systematic.
-  const lse = logSumExp(logWeights);
   const cum = new Float64Array(N);
-  let acc = 0;
-  for (let i = 0; i < N; i++) {
-    acc += Math.exp(logWeights[i] - lse);
-    cum[i] = acc;
-  }
-  cum[N - 1] = 1.0;
+  cumulativeWeights(logWeights, cum);
 
   // Binary-search each draw into the cumulative bucket. O(n log N)
   // total. We're not assuming the prng outputs are sorted (that
@@ -322,7 +323,7 @@ function multinomialResample(logWeights: ArrayLike<number>, n: number, prng: () 
     let lo = 0, hi = N - 1;
     while (lo < hi) {
       const mid = (lo + hi) >>> 1;
-      if (cum[mid] < u) lo = mid + 1;
+      if (cum[mid] <= u) lo = mid + 1;
       else              hi = mid;
     }
     indices[i] = lo;
@@ -551,14 +552,13 @@ function shapeOf(measure: any) {
  * range (k̂ ∈ [0.2, 1.5]).
  *
  * @param {Float64Array | number[]} exceedances  upper-tail values
- *        (already shifted by threshold, all > 0). Need not be sorted.
+ *        (sorted, already shifted by threshold, all >= 0).
  * @returns {number} k̂; NaN if fit cannot be computed (degenerate input).
  */
 function gpdShapeZhangStephens(exceedances: ArrayLike<number>) {
   const n = exceedances.length;
   if (n < 2) return NaN;
-  const x = Float64Array.from(exceedances);
-  x.sort();
+  const x = exceedances; // paretoKHat supplies its owned, already sorted tail.
   // Max must be positive and finite for the GPD fit; the smallest
   // exceedance is allowed to be zero (ties at the threshold boundary
   // are common when samples cluster) — log(1 - b·0) = 0 contributes
@@ -729,20 +729,17 @@ function importanceSamplingQuality(measure: any, dof: number) {
     }
     return { label: 'good', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
   }
-  // Normalise weights for max-weight check. Keep work in log-space
-  // to avoid underflow in the tail.
-  const lse = logSumExp(logW);
-  let wmax = 0;
-  for (let i = 0; i < N; i++) {
-    const w = Math.exp(logW[i] - lse);
-    if (w > wmax) wmax = w;
-  }
-
-  // PSIS k̂: linearise weights then fit. We pass exp(logW - lse) so
-  // weights are normalised to sum to 1 (k̂ is scale-invariant but
-  // numerically the bounded range avoids overflow).
+  // Center before normalizing (spec §06): a large common log scale can
+  // round away the log normalizer's small correction. Reuse the same
+  // bounded weights for the max-weight check and the PSIS tail fit.
   const w = new Float64Array(N);
-  for (let i = 0; i < N; i++) w[i] = Math.exp(logW[i] - lse);
+  let sum = 0;
+  for (let i = 0; i < N; i++) {
+    w[i] = Math.exp(logW[i] - lwMax);
+    sum += w[i];
+  }
+  const wmax = sum > 0 ? 1 / sum : 0;
+  for (let i = 0; i < N; i++) w[i] /= sum;
   const kHat = paretoKHat(w);
 
   // Sample-size-aware k̂ threshold.
@@ -778,6 +775,10 @@ function importanceSamplingQuality(measure: any, dof: number) {
 // Internal: walk a measure to find any sub-measure's atom count.
 function measureAtomCount(measure: any): number {
   if (!measure) return 0;
+  // The leading Value axis counts atoms even when each atom has zero cells.
+  if (measure.value && Array.isArray(measure.value.shape) && measure.value.shape.length > 0) {
+    return measure.value.shape[0];
+  }
   if (measure.fields) {
     const ks = Object.keys(measure.fields);
     return ks.length > 0 ? measureAtomCount(measure.fields[ks[0]]) : 0;

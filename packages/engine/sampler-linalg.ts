@@ -5,7 +5,7 @@
 //
 // Extracted from sampler.ts as part of the sampler split
 // (engine-concepts §11). Pure leaf module — operates on plain
-// Float64Array / nested-array data; no engine-internal deps.
+// Float64Array / nested-array data; value.ts resolves logical storage views.
 //
 // Two parallel surfaces:
 // - nested-array form (`_luDecomp` / `_detLU` / `_logAbsDetLU` /
@@ -23,6 +23,9 @@
 // (on and above diagonal) in a single n×n array. piv[i] holds the row
 // at row i after permutation; sign tracks the parity of row swaps so
 // the caller can recover det(A) = sign · prod(diag(U)).
+import * as valueModule from './value.ts';
+const valueLib: any = (valueModule as any).default;
+
 export function _luDecomp(A: any) {
   const n = A.length;
   // Deep-copy A so the caller's matrix isn't mutated.
@@ -136,17 +139,17 @@ export function _logAbsDetLUValue(V: any): number {
 // {shape:[n]} or Value matrix {shape:[n, p]}. Returns the same shape
 // as b. Forward + back substitution after one LU factorisation.
 export function _linsolveLUValue(A: any, b: any): any {
+  A = valueLib._logicalDense(A);
+  b = valueLib._logicalDense(b);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('linsolve: A must be a square matrix');
   const { LU, piv, sign } = _luDecompValue(A.data, n);
   if (sign === 0) throw new Error('linsolve: matrix is singular');
-  function solveOne(bvec: any) {
-    const y = new Float64Array(n);
+  function solveOne(bvec: any, y: Float64Array, x: Float64Array) {
     for (let i = 0; i < n; i++) y[i] = bvec[piv[i]];
     for (let i = 0; i < n; i++) {
       for (let j = 0; j < i; j++) y[i] -= LU[i * n + j] * y[j];
     }
-    const x = new Float64Array(n);
     for (let i = n - 1; i >= 0; i--) {
       let s = y[i];
       for (let j = i + 1; j < n; j++) s -= LU[i * n + j] * x[j];
@@ -156,7 +159,7 @@ export function _linsolveLUValue(A: any, b: any): any {
   }
   if (b.shape.length === 1) {
     if (b.shape[0] !== n) throw new Error('linsolve: dimension mismatch');
-    const x = solveOne(b.data);
+    const x = solveOne(b.data, new Float64Array(n), new Float64Array(n));
     return { shape: [n], data: x };
   }
   if (b.shape.length === 2) {
@@ -164,10 +167,12 @@ export function _linsolveLUValue(A: any, b: any): any {
     const p = b.shape[1];
     // Solve column by column — extract b's column j, solve, write back.
     const out = new Float64Array(n * p);
+    if (p === 0) return { shape: [n, p], data: out };
     const bcol = new Float64Array(n);
+    const y = new Float64Array(n), x = new Float64Array(n);
     for (let c = 0; c < p; c++) {
       for (let i = 0; i < n; i++) bcol[i] = b.data[i * p + c];
-      const xcol = solveOne(bcol);
+      const xcol = solveOne(bcol, y, x);
       for (let i = 0; i < n; i++) out[i * p + c] = xcol[i];
     }
     return { shape: [n, p], data: out };
@@ -188,6 +193,7 @@ export function _invValue(A: any): any {
 // Cholesky-Banachiewicz on a row-major Float64Array. Returns Value
 // shape=[n, n] with lower-triangular L (zeros above the diagonal).
 export function _choleskyValue(A: any): any {
+  A = valueLib._logicalDense(A);
   const n = A.shape[0];
   if (n !== A.shape[1]) throw new Error('lower_cholesky: argument must be a square matrix');
   const data = A.data;

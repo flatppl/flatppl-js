@@ -463,6 +463,10 @@ function density(measureIR: any, env: any, opts: any) {
  * pre-resolved values in env.
  */
 function evaluateExpr(ir: IRNode, env: any): any {
+  // Do not probe a lazy binding Proxy for an absent evaluator hook.
+  if (ir.kind === 'call' && env
+      && Object.prototype.hasOwnProperty.call(env, '__bodyEval')
+      && typeof env.__bodyEval === 'function') return env.__bodyEval(ir, env);
   switch (ir.kind) {
     case 'lit':
       return ir.value;
@@ -556,11 +560,11 @@ function resolveRef(ir: any, env: any) {
 // Values are deferred (storage decision: separate re/im Float64Arrays
 // in Value.im — lands when needed).
 function _shapeAwareBinop(opName: any, scalarFn: any, a: any, b: any, complexFn: any) {
+  if (valueLib.isValue(a) || valueLib.isValue(b) || Array.isArray(a) || Array.isArray(b)) {
+    return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
+  }
   if (_isComplex(a) || _isComplex(b)) {
     return complexFn(_toComplex(a), _toComplex(b));
-  }
-  if (valueLib.isValue(a) || valueLib.isValue(b)) {
-    return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
   }
   return scalarFn(a, b);
 }
@@ -706,15 +710,7 @@ const ARITH_OPS = {
   // Klein-4 transpose-tag dispatch, plus rank-0 broadcasting). Both
   // bare numbers → scalar JS fast path. No bare-number scalar unwrap
   // branch — Value scalars produce Value outputs.
-  mul: (a: any, b: any) => {
-    if (_isComplex(a) || _isComplex(b)) {
-      return _cMul(_toComplex(a), _toComplex(b));
-    }
-    if (valueLib.isValue(a) || valueLib.isValue(b)) {
-      return valueOps.mul(valueLib.asValue(a), valueLib.asValue(b));
-    }
-    return a * b;
-  },
+  mul: (a: any, b: any) => _shapeAwareBinop('mul', (x: any, y: any) => x * y, a, b, _cMul),
   // Spec §07: `div(a, b) = ⌊a/b⌋` — integer floor division (integer
   // domain, integer result), distinct from `/` which lowers to `divide`
   // (true division). Reachable only via an explicit `div(a, b)` call
@@ -752,22 +748,22 @@ const ARITH_OPS = {
   log1p: (a: any) => Math.log1p(a),
   expm1: (a: any) => Math.expm1(a),
   sqrt:  (a: any) => _isComplex(a) ? _cSqrt(a) : Math.sqrt(a),
-  sin:   (a: any) => Math.sin(a),
-  cos:   (a: any) => Math.cos(a),
-  tan:   (a: any) => Math.tan(a),
-  asin:  (a: any) => Math.asin(a),
-  acos:  (a: any) => Math.acos(a),
-  atan:  (a: any) => Math.atan(a),
+  sin:   (a: any) => _isComplex(a) ? _complex._cSin(a) : Math.sin(a),
+  cos:   (a: any) => _isComplex(a) ? _complex._cCos(a) : Math.cos(a),
+  tan:   (a: any) => _isComplex(a) ? _complex._cTan(a) : Math.tan(a),
+  asin:  (a: any) => _isComplex(a) ? _complex._cAsin(a) : Math.asin(a),
+  acos:  (a: any) => _isComplex(a) ? _complex._cAcos(a) : Math.acos(a),
+  atan:  (a: any) => _isComplex(a) ? _complex._cAtan(a) : Math.atan(a),
   atan2: (y: any, x: any) => Math.atan2(y, x),
-  sinh:  (a: any) => Math.sinh(a),
-  cosh:  (a: any) => Math.cosh(a),
-  tanh:  (a: any) => Math.tanh(a),
-  asinh: (a: any) => Math.asinh(a),
-  acosh: (a: any) => Math.acosh(a),
-  atanh: (a: any) => Math.atanh(a),
+  sinh:  (a: any) => _isComplex(a) ? _complex._cSinh(a) : Math.sinh(a),
+  cosh:  (a: any) => _isComplex(a) ? _complex._cCosh(a) : Math.cosh(a),
+  tanh:  (a: any) => _isComplex(a) ? _complex._cTanh(a) : Math.tanh(a),
+  asinh: (a: any) => _isComplex(a) ? _complex._cAsinh(a) : Math.asinh(a),
+  acosh: (a: any) => _isComplex(a) ? _complex._cAcosh(a) : Math.acosh(a),
+  atanh: (a: any) => _isComplex(a) ? _complex._cAtanh(a) : Math.atanh(a),
   floor: (a: any) => Math.floor(a),
   ceil:  (a: any) => Math.ceil(a),
-  round: (a: any) => Math.round(a),
+  round: valueOps._roundEven,
   pow:   (a: any, b: any) => {
     if (_isComplex(a) || _isComplex(b)) {
       return _cPow(_toComplex(a), _toComplex(b));
@@ -819,11 +815,11 @@ const ARITH_OPS = {
   ge:      (a: any, b: any) => a >= b,
   equal:   (a: any, b: any) => a === b,
   unequal: (a: any, b: any) => a !== b,
-  // Predicates over reals.
-  isfinite: (a: any) => Number.isFinite(a),
-  isinf:    (a: any) => !Number.isNaN(a) && !Number.isFinite(a),
-  isnan:    (a: any) => Number.isNaN(a),
-  iszero:   (a: any) => a === 0,
+  // §07 predicates inspect both components of a complex scalar.
+  isfinite: (a: any) => _isComplex(a) ? Number.isFinite(a.re) && Number.isFinite(a.im) : Number.isFinite(a),
+  isinf:    (a: any) => _isComplex(a) ? Math.abs(a.re) === Infinity || Math.abs(a.im) === Infinity : !Number.isNaN(a) && !Number.isFinite(a),
+  isnan:    (a: any) => _isComplex(a) ? Number.isNaN(a.re) || Number.isNaN(a.im) : Number.isNaN(a),
+  iszero:   (a: any) => _isComplex(a) ? a.re === 0 && a.im === 0 : a === 0,
   // Logic / conditionals (spec §07). FlatPPL booleans are strict — we
   // don't coerce truthy values, the typeinfer pass already requires
   // boolean operands. lxor is exclusive-or; ifelse is the conditional
@@ -1121,16 +1117,8 @@ const ARITH_OPS = {
   // Scalar restrictors (spec §07). Identity at runtime; static typing
   // catches domain violations at type-check time when they're
   // discernible. The runtime versions check the obvious cases.
-  boolean: (x: any) => {
-    if (x === true || x === false) return x;
-    if (x === 0) return false;
-    if (x === 1) return true;
-    throw new Error('boolean: value ' + x + ' is not a boolean');
-  },
-  integer: (x: any) => {
-    if (Number.isInteger(x)) return x;
-    throw new Error('integer: value ' + x + ' is not an integer');
-  },
+  boolean: valueOps._booleanScalar,
+  integer: valueOps._integerScalar,
   // linspace(from, to, n) — endpoint-inclusive range of n real numbers
   // evenly spaced from `from` to `to`. n=1 returns [from]; both endpoints
   // are included exactly (not computed via accumulating step). Spec §07.
@@ -1523,7 +1511,7 @@ const ARITH_OPS = {
   // vector. k=0 main diagonal, k>0 super-diagonals, k<0 sub-
   // diagonals. Spec §07.
   diag: (A: any, k?: any) => {
-    const aV = valueLib.isValue(A) ? valueLib.densify(A) : valueLib.asValue(A);
+    const aV = valueLib._logicalDense(valueLib.asValue(A));
     if (aV.shape.length !== 2) {
       throw new Error('diag: argument must be a rank-2 matrix, got shape='
         + JSON.stringify(aV.shape));
@@ -1594,8 +1582,8 @@ const ARITH_OPS = {
   // to a single scalar.
   sum: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'sum');
-    if (valueLib.isComplexValue(a)) {
-      const cplx = valueLib.readComplex(a);
+    const cplx = _complexVecParts(a);
+    if (cplx) {
       let sR = 0, sI = 0;
       for (let i = 0; i < cplx.re.length; i++) {
         sR += cplx.re[i]; sI += cplx.im[i];
@@ -1612,8 +1600,8 @@ const ARITH_OPS = {
   // rather than the 0/0 = NaN the formula would silently produce.
   mean: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'mean');
-    if (valueLib.isComplexValue(a)) {
-      const cplx = valueLib.readComplex(a);
+    const cplx = _complexVecParts(a);
+    if (cplx) {
       const n = cplx.re.length;
       if (n === 0) throw new Error('mean: undefined for an empty array — the formula divides by the element count, which is 0 (spec §07)');
       let sR = 0, sI = 0;
@@ -1628,8 +1616,8 @@ const ARITH_OPS = {
   },
   prod: (a: any) => {
     if (a && a.__table__ === true) return _tableReduceOp(a, 'prod');
-    if (valueLib.isComplexValue(a)) {
-      const cplx = valueLib.readComplex(a);
+    const cplx = _complexVecParts(a);
+    if (cplx) {
       let pR = 1, pI = 0;
       for (let i = 0; i < cplx.re.length; i++) {
         const r = cplx.re[i], j = cplx.im[i];
@@ -1915,7 +1903,7 @@ const ARITH_OPS = {
   // branches on _complexVecParts and reduces over the per-element
   // modulus |v_i| = hypot(re_i, im_i).
   l1norm: (a: any) => {
-    const z = _complexVecParts(a);
+    const z = _complexVecParts(a, false);
     if (z) {
       let s = 0;
       for (let i = 0; i < z.re.length; i++) s += Math.hypot(z.re[i], z.im[i]);
@@ -1927,18 +1915,8 @@ const ARITH_OPS = {
     return s;
   },
   l2norm: (a: any) => {
-    const z = _complexVecParts(a);
-    if (z) {
-      // |v_i|² is re² + im² — computed directly rather than as
-      // hypot(re, im)², which would round twice.
-      let s = 0;
-      for (let i = 0; i < z.re.length; i++) s += z.re[i] * z.re[i] + z.im[i] * z.im[i];
-      return Math.sqrt(s);
-    }
-    const arr = _arrLike(a);
-    let s = 0;
-    for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
-    return Math.sqrt(s);
+    const z = _complexVecParts(a, false);
+    return z ? _l2Norm(z.re, z.im) : _l2Norm(_arrLike(a));
   },
   // linfnorm(v) = max_i |v_i| (spec §07). Empty input gives 0, the
   // same convention l1norm / l2norm reach as empty sums, and what
@@ -1946,7 +1924,7 @@ const ARITH_OPS = {
   // A NaN component propagates (spec §07, "NaN inputs") — `mag > m` is
   // false against a NaN magnitude, so it needs its own isNaN check.
   linfnorm: (a: any) => {
-    const z = _complexVecParts(a);
+    const z = _complexVecParts(a, false);
     if (z) {
       let m = 0;
       for (let i = 0; i < z.re.length; i++) {
@@ -1990,17 +1968,11 @@ const ARITH_OPS = {
   },
   l2unit: (a: any) => {
     const z = _complexVecParts(a);
-    if (z) {
-      let s = 0;
-      for (let i = 0; i < z.re.length; i++) s += z.re[i] * z.re[i] + z.im[i] * z.im[i];
-      return _scaleComplexVec('l2unit', z, Math.sqrt(s));
-    }
+    if (z) return _scaleComplexVec('l2unit', z, _l2Norm(z.re, z.im));
     const arr = _arrLike(a);
     if (arr.length === 0) return { shape: [0], data: new Float64Array(0) };
-    let s = 0;
-    for (let i = 0; i < arr.length; i++) s += arr[i] * arr[i];
-    if (s === 0) throw new Error('l2unit: zero-norm vector has no unit form');
-    const r = Math.sqrt(s);
+    const r = _l2Norm(arr);
+    if (r === 0) throw new Error('l2unit: zero-norm vector has no unit form');
     const out = new Float64Array(arr.length);
     for (let i = 0; i < arr.length; i++) out[i] = arr[i] / r;
     return { shape: [arr.length], data: out };
@@ -2045,9 +2017,9 @@ const ARITH_OPS = {
     }
     let s = 0;
     for (let i = 0; i < n; i++) s += Math.exp(arr[i] - m);
-    const lse = m + Math.log(s);
+    const logShiftedSum = Math.log(s);
     const out = new Float64Array(n);
-    for (let i = 0; i < n; i++) out[i] = arr[i] - lse;
+    for (let i = 0; i < n; i++) out[i] = (arr[i] - m) - logShiftedSum;
     return { shape: [n], data: out };
   },
 };
@@ -2057,8 +2029,28 @@ const ARITH_OPS = {
 // l1norm, etc.) so they handle Value inputs uniformly without
 // branching on every loop iteration.
 function _arrLike(v: any) {
-  if (valueLib.isValue(v)) return v.data;
+  if (valueLib.isValue(v)) return valueLib.densify(v).data;
   return v;
+}
+
+/** Scaled sum of squares preserves §07's Euclidean norm at finite scales. */
+function _l2Norm(re: ArrayLike<number>, im?: ArrayLike<number>): number {
+  let scale = 0, sum = 1;
+  const n = re.length;
+  for (let i = 0; i < (im ? 2 * n : n); i++) {
+    const x = Math.abs(i < n ? re[i] : im![i - n]);
+    if (!Number.isFinite(x)) {
+      if (Number.isNaN(x)) return NaN;
+      scale = Infinity;
+      continue;
+    }
+    if (x === 0 || scale === Infinity) continue;
+    if (x > scale) {
+      sum = 1 + sum * (scale / x) ** 2;
+      scale = x;
+    } else sum += (x / scale) ** 2;
+  }
+  return scale * Math.sqrt(sum);
 }
 
 // Logical (re, im) buffers of a complex VECTOR argument, or null when the
@@ -2074,10 +2066,14 @@ function _arrLike(v: any) {
 //
 // Returning null (rather than an all-zero `im`) keeps the real inputs on
 // their existing single-buffer loops.
-function _complexVecParts(v: any): { re: ArrayLike<number>, im: ArrayLike<number> } | null {
+function _complexVecParts(v: any, logicalSign = true): { re: ArrayLike<number>, im: ArrayLike<number> } | null {
   // readComplex applies the lazy Klein-4 conjugation sign; reading `v.im`
   // raw would give a conjugate view the wrong imaginary sign.
-  if (valueLib.isComplexValue(v)) return valueLib.readComplex(v);
+  if (valueLib.isComplexValue(v)) {
+    const dense = valueLib.densify(v);
+    // Norms ignore conjugation, so they can borrow the stored imaginary part.
+    return logicalSign ? valueLib.readComplex(dense) : { re: dense.data, im: dense.im };
+  }
   if (!Array.isArray(v)) return null;
   let anyComplex = false;
   for (let i = 0; i < v.length; i++) {
@@ -2397,10 +2393,20 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
 function _resolveFn(fnIR: any, env: any) {
   if (!fnIR) return null;
   if (fnIR.kind === 'ref' && fnIR.ns === 'self') {
-    if (typeof env.__resolveFnBody !== 'function') return null;
-    const fn = env.__resolveFnBody(fnIR.name);
-    if (!fn) return null;
-    return fn;
+    if (typeof env.__resolveFnBody === 'function') {
+      const fn = env.__resolveFnBody(fnIR.name);
+      if (fn) return fn;
+    }
+    if (env[fnIR.name] !== undefined
+        || !Object.prototype.hasOwnProperty.call(ARITH_OPS, fnIR.name)) return null;
+    const { BUILTIN_PARAM_NAMES } = require('./builtin-param-names.ts');
+    const params = BUILTIN_PARAM_NAMES[fnIR.name];
+    if (!params) return null;
+    return {
+      params, paramKwargs: params, paramName: params[0],
+      body: { kind: 'call', op: fnIR.name,
+        args: params.map((name: string) => ({ kind: 'ref', ns: '%local', name })) },
+    };
   }
   // Module-aliased ref `(%ref <modAlias> <name>)` — the alias-
   // resolution pass canonicalised an `arr.f = mod.foo; broadcast(arr.f,
@@ -2500,7 +2506,23 @@ function _synthStdModuleFn(refIR: any, env: any): any {
 // finite scalar / boolean and there are no nested-vector loop axes —
 // the engine-concepts §2.1 convention) or a nested JS array of the
 // broadcast shape.
+// Plans follow IR lifetime; point values must not survive an invocation.
+const broadcastPlans = new WeakMap<object, any>();
+
 function _broadcastApply(fn: any, inputs: any, env: any): any {
+  let bodyPlan = broadcastPlans.get(fn.body);
+  if (!bodyPlan) {
+    bodyPlan = _profileCompile.compileProfileBody(fn.body);
+    broadcastPlans.set(fn.body, bodyPlan);
+  }
+  try {
+    return _broadcastApplyFrame(fn, inputs, env, bodyPlan);
+  } finally {
+    bodyPlan.clearMemo();
+  }
+}
+
+function _broadcastApplyFrame(fn: any, inputs: any, env: any, bodyPlan: any): any {
   const P = fn.params.length;
   const slots = new Array(P);
   for (let i = 0; i < P; i++) {
@@ -2508,14 +2530,18 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
     slots[i] = _classifyBroadcastSlot(v);
   }
 
-  const elemEnv = Object.assign({}, env);
+  const elemEnv = Object.assign({}, env, { __bodyEval: bodyPlan.bodyEval });
+  function evalBody() {
+    bodyPlan.nextPoint();
+    return bodyPlan.evalPoint(elemEnv);
+  }
   const colls: any[] = [];
   for (let i = 0; i < P; i++) if (slots[i].coll) colls.push(slots[i]);
 
   if (colls.length === 0) {
     // No collection arguments → a single call (spec).
     for (let p = 0; p < P; p++) elemEnv[fn.params[p]] = slots[p].val;
-    return evaluateExpr(fn.body, elemEnv);
+    return evalBody();
   }
 
   // Same number of OUTER axes across all collections. For flat slots
@@ -2574,7 +2600,7 @@ function _broadcastApply(fn: any, inputs: any, env: any): any {
         if (collOf[p] < 0) { elemEnv[fn.params[p]] = slots[p].val; continue; }
         elemEnv[fn.params[p]] = colls[collOf[p]].getCell(idx);
       }
-      return evaluateExpr(fn.body, elemEnv);
+      return evalBody();
     }
     const out = new Array(bshape[axis]);
     for (let i = 0; i < bshape[axis]; i++) {
@@ -2828,39 +2854,35 @@ function evaluateCall(ir: any, env: any): any {
     });
     const isArrayLike = (c: any) => Array.isArray(c) || ArrayBuffer.isView(c)
                                   || valueLib.isValue(c);
-    // Slice a Value along its leading axis. Rank-1 returns a scalar
-    // number; rank≥2 returns a Value of one rank lower (sharing the
-    // underlying data — no copy when the rest of the shape is
-    // contiguous in row-major order, which is the engine's convention).
+    // §07 leading-axis selection preserves §03 element kind and nesting.
+    // Borrow contiguous storage; a transposed matrix row needs a gather.
+    // Keep surviving view tags so conjugation happens exactly once.
     function _sliceLeading(v: any, idx: number): any {
-      let dense = v;
-      if (v.t === 'T' || v.t === 'A' || v.struct !== undefined) {
-        dense = valueLib.densify(v);
-        // densify preserves the transpose tag; for indexing we need
-        // physical contiguous-leading-axis data, so apply the tag
-        // (rare path — only matters when M came in as transpose-tagged).
-        if (dense.t === 'T' || dense.t === 'A') {
-          // For rank-2 only — apply transpose physically.
-          const m = dense.shape[dense.shape.length - 2];
-          const n = dense.shape[dense.shape.length - 1];
-          if (dense.shape.length === 2) {
-            const src = dense.data;
-            const out = new Float64Array(m * n);
-            for (let i = 0; i < m; i++) for (let j = 0; j < n; j++) {
-              out[i * n + j] = src[j * m + i];
-            }
-            dense = { shape: [m, n], data: out };
-          }
-        }
-      }
+      const dense = v.struct !== undefined ? valueLib.densify(v) : v;
+      const transposed = valueLib.isTransposeView(v);
+      const conjugated = valueLib.isConjugateView(v);
       const shape = dense.shape;
       if (shape.length === 1) {
-        return dense.data[idx];   // scalar number
+        if (dense.im) return { re: dense.data[idx], im: conjugated ? -dense.im[idx] : dense.im[idx] };
+        return dense.data[idx];
       }
       const tail = shape.slice(1);
       const tailLen = tail.reduce((a: number, b: number) => a * b, 1);
-      const sub = dense.data.subarray(idx * tailLen, (idx + 1) * tailLen);
-      return { shape: tail, data: sub };
+      function slice(data: Float64Array): Float64Array {
+        if (transposed && shape.length === 2) {
+          const row = new Float64Array(tailLen);
+          for (let j = 0; j < tailLen; j++) row[j] = data[j * shape[0] + idx];
+          return row;
+        }
+        return data.subarray(idx * tailLen, (idx + 1) * tailLen);
+      }
+      const result: any = { shape: tail, data: slice(dense.data) };
+      if (dense.outerRank > 1) result.outerRank = dense.outerRank - 1;
+      if (dense.dtype) result.dtype = dense.dtype;
+      if (dense.im) result.im = slice(dense.im);
+      if (transposed && shape.length > 2) result.t = v.t;
+      else if (conjugated) result.t = 'C';
+      return result;
     }
     const applyGet = (c: any, ss: any): any => {
       if (ss.length === 0) return c;

@@ -286,7 +286,7 @@ const BCAST_UNARY: Array<[string, (a: any) => any]> = [
   ['asinh',  (a) => valueOps.asinhElem(a)],
   ['acosh',  (a) => valueOps.acoshElem(a)],
   ['atanh',  (a) => valueOps.atanhElem(a)],
-  // Unary plus + casts (boolean: truthiness→0/1; integer: trunc).
+  // Unary plus + scalar domain restrictions (spec §07).
   ['pos',     (a) => valueOps.posElem(a)],
   ['boolean', (a) => valueOps.booleanElem(a)],
   ['integer', (a) => valueOps.integerElem(a)],
@@ -341,10 +341,12 @@ for (const [opName, refFn] of BCAST_BINARY) {
 
 for (const [opName, refFn] of BCAST_UNARY) {
   test('broadcast variant: ' + opName + ' on length-N vectors ≡ valueOps direct', () => {
+    const inputArb = opName === 'boolean' ? fc.integer({ min: 0, max: 1 })
+      : opName === 'integer' ? fc.integer({ min: -1000, max: 1000 }) : arbReal;
     fc.assert(fc.property(
       fc.integer({ min: 1, max: 8 }),
       (n: number) => fc.assert(fc.property(
-        fc.array(arbReal, { minLength: n, maxLength: n }),
+        fc.array(inputArb, { minLength: n, maxLength: n }),
         (a: number[]) => {
           // sqrt/log/log10/log1p domain
           let A = a;

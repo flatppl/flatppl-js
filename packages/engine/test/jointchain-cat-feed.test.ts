@@ -228,13 +228,11 @@ ld = logdensityof(ch, record(a = 0.3, b = 0.7, c = 1.1))
     `labelled logdensityof ${m.samples[0]} vs closed form ${want}`);
 });
 
-test('no false positive: a record cat splats into a lone named input', () => {
+test('a record cat rejects fields absent from the next step inputs', () => {
   // Positional form, but every component is record-valued, so the cat of the
   // two left variates is the merged record {a, b}. §04 sec:calling-convention:
   // "A sole positional record or table therefore always splats" — the third
-  // step's lone input `b` binds the field `b`, not the whole record, which is
-  // what the chain's runtime does. Shape of the det-js corpus case
-  // `fragment/jointchain_chain3`.
+  // step must accept both names, even when its body only uses `b`.
   const errs = errorsOf(`
 flatppl_compat = "0.1"
 a = draw(Normal(mu = 0.0, sigma = 1.0))
@@ -242,7 +240,8 @@ k1 = kernelof(record(b = draw(Normal(mu = a, sigma = 0.5))), a = a)
 k2 = kernelof(record(c = draw(Normal(mu = _b_, sigma = 0.25))), b = _b_)
 j = jointchain(lawof(record(a = a)), k1, k2)
 `);
-  assert.deepEqual(errs.map((d: any) => d.message), []);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].message, /extra field "a"/);
 });
 
 test('no false positive: a 2-component chain has one variate to its left',

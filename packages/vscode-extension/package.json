@@ -43,7 +43,8 @@
     "temml": "^0.13.3"
   },
   "activationEvents": [
-    "onLanguage:flatppl"
+    "onLanguage:flatppl",
+    "onCommand:flatppl.convert"
   ],
   "categories": [
     "Programming Languages",
@@ -87,6 +88,22 @@
       {
         "command": "flatppl.updateDependencies",
         "title": "FlatPPL: Update Dependencies"
+      },
+      {
+        "command": "flatppl.exportMathHtml",
+        "title": "FlatPPL: Export math as HTML"
+      },
+      {
+        "command": "flatppl.exportMathLatex",
+        "title": "FlatPPL: Export math as LaTeX"
+      },
+      {
+        "command": "flatppl.exportMathTypst",
+        "title": "FlatPPL: Export math as Typst"
+      },
+      {
+        "command": "flatppl.convert",
+        "title": "FlatPPL: Convert HS3 / pyhf to FlatPPL"
       }
     ],
     "menus": {
@@ -118,6 +135,18 @@
         {
           "command": "flatppl.updateDependencies",
           "when": "editorLangId == flatppl"
+        },
+        {
+          "command": "flatppl.exportMathHtml",
+          "when": "editorLangId == flatppl && flatppl.mathExportAvailable"
+        },
+        {
+          "command": "flatppl.exportMathLatex",
+          "when": "editorLangId == flatppl && flatppl.mathExportAvailable"
+        },
+        {
+          "command": "flatppl.exportMathTypst",
+          "when": "editorLangId == flatppl && flatppl.mathExportAvailable"
         }
       ],
       "editor/context": [

@@ -151,12 +151,7 @@ t = truncate(m, interval(-1.0, 1.0))
     'logTotalmass should ≈ log(F(1)-F(-1)), got ' + t.logTotalmass);
 });
 
-test('truncate: rejection-redraw path on parametric Normal × interval', async () => {
-  // Parametric Normal (mu from an upstream variate) → expandMeasureIR
-  // gives a self-contained call IR with a value-ref in kwargs, so the
-  // CDF path is skipped and the rejection-redraw path runs. The
-  // resulting atoms must all lie in the truncation interval (or be
-  // NaN if the per-atom budget exhausted).
+test('truncate: parametric CDF sampling stays inside the interval', async () => {
   const ctx = makeCtx(`
 mu_dist = Normal(mu = 0.0, sigma = 1.0)
 mu      = draw(mu_dist)
@@ -178,11 +173,9 @@ t       = truncate(y, interval(-1.0, 1.0))
     + inBand + '/' + SAMPLE_COUNT);
 });
 
-test('truncate: rejection budget=1 NaNs unaccepted atoms (mass shift correct)', async () => {
-  // budget=1 means no redraws — atoms that don't land in S on first
-  // try become NaN. The mass shift then equals the empirical M(S)
-  // acceptance rate, so logTotalmass should be near log(0.5) for
-  // Normal restricted to posreals (parametric case → rejection path).
+test('truncate: parametric CDF masses remain correct with rejection budget=1', async () => {
+  // A CDF-supported slice draws directly within the support and retains its
+  // slice mass as a weight; the rejection budget does not limit this path.
   const ctx = makeCtx(`
 mu_dist = Normal(mu = 0.0, sigma = 1.0)
 mu      = draw(mu_dist)
@@ -202,8 +195,9 @@ t       = truncate(y, posreals)
   const expected = Math.log(0.5);
   assert.ok(Math.abs(t.logTotalmass - expected) < 0.2,
     'logTotalmass ≈ log(0.5) for symmetric setup; got ' + t.logTotalmass);
-  assert.equal(t.n_eff, nValid,
-    'n_eff should equal count of non-NaN atoms');
+  assert.equal(nValid, SAMPLE_COUNT);
+  assert.ok(t.n_eff > 0 && t.n_eff <= nValid,
+    'ESS reflects the different slice masses');
 });
 
 // =====================================================================
@@ -705,14 +699,9 @@ predictive = kchain(prior, forward_kernel)
   assert.ok(Math.abs(v - 2.0) < 0.35, 'y marginal var ≈ 2, got ' + v);
 });
 
-test('kchain: logdensityof marginalises via MC (logsumexp − log N)', async () => {
+test('kchain: logdensityof uses the exact Gaussian marginal', async () => {
   // Closed-form check: kchain(Normal(0,1), x ↦ Normal(x, 1)) is
-  // Normal(0, √2). The MC estimator of its log-density at obs=0 is
-  //   logsumexp_i { log p(0 | Normal(prior_i, 1)) } − log N
-  // which converges to log p(0 | Normal(0, √2)) = −½log(2π) − ½log(2).
-  // We check the broadcast scalar at atom 0 against the analytic
-  // value within a generous tolerance (MC standard error at 1024
-  // atoms is roughly 0.05 on the log scale).
+  // Normal(0, √2), whose log density at zero is −½log(2π) − ½log(2).
   const ctx = makeCtx(`
 theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta1 = theta1))
@@ -722,7 +711,7 @@ predictive = kchain(prior, forward_kernel)
 lp = logdensityof(predictive, record(y = 0.0))
 `);
   const lp = await ctx.getMeasure('lp');
-  // All atoms broadcast the same MC estimate.
+  // All atoms broadcast the same exact score.
   const v0 = lp.samples[0];
   for (let i = 1; i < lp.samples.length; i++) {
     assert.equal(lp.samples[i], v0,
@@ -731,10 +720,10 @@ lp = logdensityof(predictive, record(y = 0.0))
   // Analytical marginal: Normal(0, sqrt(2)) at y=0.
   const LOG_2PI = Math.log(2 * Math.PI);
   const expected = -0.5 * LOG_2PI - 0.5 * Math.log(2);
-  assert.ok(Math.abs(v0 - expected) < 0.1,
-    'MC marginal logp should match analytic Normal(0, √2) within MC error, got '
+  assert.ok(Math.abs(v0 - expected) < 1e-12,
+    'marginal logp should match analytic Normal(0, √2), got '
     + v0 + ' (expected ' + expected + ')');
-  // n_eff collapses to 1 — there's one estimator here.
+  // There is one deterministic score.
   assert.equal(lp.n_eff, 1);
 });
 

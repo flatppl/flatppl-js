@@ -139,6 +139,14 @@ test('continuation: comment-only lines inside a join', () => {
   assert.equal(r.ast.body.length, 1);
 });
 
+test('continuation: a lexical error ends a join after a comment run', () => {
+  const source = 'x = 1 +\n' + '# c\n'.repeat(1000) + '@\ny = 2\n';
+  const result = tokenize(source);
+  assert.equal(errors(result).length, 1);
+  const breaks = result.tokens.filter((t: any) => t.type === T.NEWLINE);
+  assert.deepEqual(breaks.map((t: any) => t.loc.start.line), [1001, 1002]);
+});
+
 test('continuation: a `###` block inside a join', () => {
   const r = parseSrc('mu = 1.0 +\n###\nstill the same statement\n###\n  2.0\n');
   assert.deepEqual(errors(r), []);
