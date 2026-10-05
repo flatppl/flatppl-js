@@ -2370,6 +2370,25 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
   const inputs = (desc.sig && desc.sig.inputs) || [];
   const kwargs = ir.kwargs || {};
   const positional = ir.args || [];
+  // §04 applies the same by-name splat to standard-module members. Evaluate a
+  // sole argument once so opaque records and literal records take the same path.
+  let soleValue: any;
+  const sole = positional.length === 1 && Object.keys(kwargs).length === 0;
+  if (sole) {
+    soleValue = evaluateExpr(positional[0], env);
+    const recordType = positional[0].meta?.type?.kind === 'record';
+    const record = soleValue && typeof soleValue === 'object'
+      && !valueLib.isValue(soleValue) && !Array.isArray(soleValue)
+      && !ArrayBuffer.isView(soleValue) && (recordType || !_isComplex(soleValue));
+    const fields = soleValue?.__table__ === true ? soleValue.columns : (record ? soleValue : null);
+    if (fields) {
+      if (Object.keys(fields).length !== inputs.length
+          || inputs.some((input: any) => !Object.prototype.hasOwnProperty.call(fields, input.name))) {
+        throw new Error(`evaluateCall: '${modAlias}.${bindingName}' record/table fields do not match its arguments`);
+      }
+      return desc.impl(...inputs.map((input: any) => fields[input.name]));
+    }
+  }
   const callArgs: any[] = [];
   for (let i = 0; i < inputs.length; i++) {
     const paramName = inputs[i].name;
@@ -2378,7 +2397,7 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
     else if (i < positional.length)   argIR = positional[i];
     else throw new Error("evaluateCall: '" + modAlias + "."
       + bindingName + "' missing argument '" + paramName + "'");
-    callArgs.push(evaluateExpr(argIR, env));
+    callArgs.push(sole ? soleValue : evaluateExpr(argIR, env));
   }
   return desc.impl.apply(null, callArgs);
 }
@@ -3008,7 +3027,35 @@ function evaluateCall(ir: any, env: any): any {
       }
       throw new Error(`evaluateExpr: ${op} unsupported selector ${String(s)}`);
     };
-    return applyGet(container, sels);
+    const selected = applyGet(container, sels);
+    // Nested JS arrays cannot retain dimensions after an empty axis. Keep
+    // the source tensor's explicit shape for empty slices/subsets only.
+    // Nonempty selection and its view/conjugation rules stay unchanged.
+    if (valueLib.isValue(container) && Array.isArray(selected)
+        && (container.data.length === 0 || sels.some((s: any) =>
+          (valueLib.isValue(s) && s.shape.length === 1 && s.shape[0] === 0)
+          || (Array.isArray(s) && s.length === 0)))) {
+      const shape: number[] = [];
+      let outerRank = 0;
+      for (let axis = 0; axis < container.shape.length; axis++) {
+        const s = sels[axis];
+        const extent = s === undefined || s === ALL ? container.shape[axis]
+          : valueLib.isValue(s) && s.shape.length === 1 ? s.shape[0]
+          : Array.isArray(s) ? s.length : null;
+        if (extent !== null) {
+          shape.push(extent);
+          if (axis < container.outerRank) outerRank++;
+        }
+      }
+      if (shape.includes(0)) {
+        const empty: any = { shape, data: new Float64Array(0) };
+        if (outerRank > 0) empty.outerRank = outerRank;
+        if (container.dtype) empty.dtype = container.dtype;
+        if (container.im) empty.im = new Float64Array(0);
+        return empty;
+      }
+    }
+    return selected;
   }
   // Shape functions (spec §07 Approximation functions). All three take
   // kwargs so they don't pass through ARITH_OPS; dispatch explicitly.

@@ -623,6 +623,7 @@ function _registerExtLinearAlgebra() {
 function _registerBuiltinStandardModules() {
   _registerPolynomials();
   _registerParticlePhysics();
+  registerStandardModule(require('./standard-pyhf.ts').pyhfModule(_interpPoly6Exp, _interpPoly6Lin));
   _registerExtLinearAlgebra();
 }
 
