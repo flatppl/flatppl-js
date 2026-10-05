@@ -97,6 +97,12 @@ for `ksuperpose`, or every coordinate of the same node exactly once for `superpo
 Reference measures and unnormalized components do not satisfy this proof.
 Normalization functions establish simplex membership only for provably nonempty inputs.
 
+Record-valued broadcasts collect into tables, including nested record columns.
+Bare `record` heads infer their fields from keyword cell types and share the
+one-axis rule with record-returning functions.
+Inference retains table schemas on source calls across lift's re-lowering, so
+empty broadcasts keep their columns without evaluating a cell.
+
 Array indexing preserves nested element types and runtime nesting tags.
 Leading slices retain complex components and view semantics; transposed matrix
 rows gather only the selected row, while contiguous slices borrow storage.
@@ -176,8 +182,10 @@ indicator; normalized truncation uses bounded rejection.
   #sec:url-cache) is resolved by the URL-aware `resolveModulePath` and fetched
   by each host's `readSource`: the VS Code host routes it through the Node
   on-disk cache (`url-cache.ts`, vendored as `lib/url-cache.cjs`) with a
-  one-time trust prompt; the browser fetches directly (no on-disk cache —
-  CORS-limited, browser-cached).
+  per-URL trust prompt before each redirect hop. Only file/http/https schemes
+  are accepted after URL normalization; file URLs require a local hostname,
+  including network-path references resolved against file URL importers. The
+  browser fetches directly (CORS-limited, browser-cached) and refuses redirects because Fetch hides their destinations.
 
 Open: `load_data` URL sources (gated on `load_data` end-to-end below). (The VS Code
 "Download / Update Dependencies" commands over the cache's `force` re-fetch have
@@ -493,6 +501,9 @@ worker cannot distinguish a shared ref from an unfed boundary — THROWS
 when a declared boundary the body references has no fed column (Phase 6).
 `pir-sexpr` consequently carries bodies VERBATIM (no serialization-
 boundary namespace translation).
+
+Callable self-containment inlines parameterized vector values even while they
+carry provisional tuple derivations before pruning. Stochastic tuples stay refs.
 
 ## Phase analysis
 
