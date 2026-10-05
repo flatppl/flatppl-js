@@ -356,6 +356,10 @@ Measure)` is deferred (TODO "Smell A residue").
 
 ## Cross-file invariants
 
+Boundary inlining expands deterministic literal records and vectors through
+their fields to the declared inputs. It preserves draw references and measure
+constructors so shared stochastic identity survives density and profile lowering.
+
 These lists must agree across files; drift produces silent runtime failures.
 The cleanly-checkable ones ARE enforced by `test/invariants.test.ts`
 (distribution ↔ REGISTRY both ways, discrete flag, EVALUABLE_OPS ↔ ARITH_OPS,
