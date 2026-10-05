@@ -657,6 +657,12 @@ function liftInlineSubexpressions(bindings: any) {
 
   function visit(astNode: any) {
     if (!astNode) return;
+    if (astNode.type === 'FieldAccess') {
+      // A record-producing call can occur beneath a field read, including
+      // calls introduced by substitution inside a scan's local scope.
+      astNode.object = liftValue(astNode.object);
+      return;
+    }
     if (astNode.type === 'BinaryExpr') {
       astNode.left  = liftValue(astNode.left);
       astNode.right = liftValue(astNode.right);

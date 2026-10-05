@@ -37,6 +37,32 @@ L = likelihoodof(K, record(y = [1, 2]))
 posterior = bayesupdate(L, prior)
 `;
 
+test('scan scores record helper calls beneath field access', async () => {
+  const source = `
+mu ~ Normal(0, 1)
+predict(state) = record(mean = state.mean + mu)
+correct(pred, input) = record(mean = pred.mean + input)
+step(state, input) = correct(predict(state = state), input)
+states = scan(step, record(mean = 0), [1, 2])
+state_mean(state) = state.mean
+y ~ Normal.(state_mean.(states), 1)
+prior = lawof(record(mu = mu))
+K = kernelof(record(y = y), mu = mu)
+L = likelihoodof(K, record(y = [1, 2]))
+posterior = bayesupdate(L, prior)
+`;
+  const { ctx, built } = makeMatCtx(source);
+  const scorer = await buildLogPi(ctx, built.derivations.posterior);
+  const points = [{ mu: -0.5 }, { mu: 0.5 }];
+  const batch = scorer.priorLikBatch(points);
+  for (const [i, { mu }] of points.entries()) {
+    // Means [1 + mu, 3 + 2mu], with independent unit Normal errors.
+    const expected = -Math.log(2 * Math.PI) - 0.5 * (mu ** 2 + (1 + 2 * mu) ** 2);
+    assert.ok(Math.abs(scorer.likOf({ mu }) - expected) < 1e-12);
+    assert.ok(Math.abs(batch.lik[i] - expected) < 1e-12);
+  }
+});
+
 for (const backend of ['mh', 'ram', 'amis']) {
   test(`scan record state scores finitely in the ${backend} worker sampler`, async () => {
     const worker = createWorkerHandler();
