@@ -45,9 +45,11 @@ function resolveBaseUri(currentUri: any, localBaseUri: any): any {
     : currentUri;
 }
 
-/** Explicit file URLs stay local, even when the importer is a remote document. */
+/** §04: validate canonical file URLs before dispatch, preserving remote local paths. */
 function localSourceUri(base: any, resolved: string, parseUri: (s: string) => any): any {
-  return /^file:/i.test(resolved) ? parseUri(resolved) : base.with({ path: resolved });
+  const url = require('../lib/engine.min.js').moduleResolve.validateSource(resolved);
+  if (url && url.protocol !== 'file:') throw new Error('Local sources require a file URL or path');
+  return url ? parseUri(url.href) : base.with({ path: resolved });
 }
 
 module.exports = { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri, localSourceUri };

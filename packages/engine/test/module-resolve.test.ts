@@ -26,6 +26,24 @@ test('source schemes are checked before local or remote resolution', () => {
   }
 });
 
+test('normalized URL schemes and file hosts obey source policy in resolution and compilation', () => {
+  const { processSource } = require('../index.ts');
+  for (const raw of ['da\tta:text/plain,x', '\nfile://server/x', 'fi\tle://server/x']) {
+    assert.throws(() => resolveModulePath('https://example.test/model.flatppl', raw));
+    for (const expr of [`load_module(${JSON.stringify(raw)})`, `load_data(${JSON.stringify(raw)}, reals)`]) {
+      const result = processSource('m = ' + expr, { path: 'https://example.test/model.flatppl',
+        bundle: { sources: { 'data:text/plain,x': 'x = 7', 'file://server/x': 'x = 7' } } });
+      assert.ok(result.diagnostics.some((d: any) => d.severity === 'error'
+        && /only file, http and https|file URL must name a local path/.test(d.message)), raw);
+    }
+  }
+  assert.throws(() => resolveModulePath('file:///tmp/model.flatppl', '//server/x'));
+  assert.equal(resolveModulePath(null, ' \nht\ttps://example.test/a '), 'https://example.test/a');
+  assert.equal(resolveModulePath(null, '\nfi\tle://localhost/tmp/a'), 'file:///tmp/a');
+  assert.equal(resolveModulePath('file:///tmp/model.flatppl', '../a'), 'file:///a');
+  assert.equal(resolveModulePath('https://example.test/model.flatppl', 'C:\\models\\a.flatppl'), 'C:\\models\\a.flatppl');
+});
+
 test('sibling file resolves against the importer directory', () => {
   // importer at repo root → dirname is "" → sibling stays bare.
   assert.equal(resolveModulePath('model.flatppl', 'helpers.flatppl'),
