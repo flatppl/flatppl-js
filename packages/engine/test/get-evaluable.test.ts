@@ -39,6 +39,21 @@ test('get0: 0-based element', () => {
   assert.equal(ev(get('get0', [10, 20, 30], lit(2))), 30);
 });
 
+test('tensor subsets retain matrix semantics and complex storage', () => {
+  const result = processSource('a = rowstack([[1.0, 2.0], [3.0, 4.0]])\n'
+    + 'b = a[:, [2, 1]]\noutputs = det(b)');
+  assert.deepEqual(result.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const built = orchestrator.buildDerivations(result.linkedBindings);
+  const V = require('../value.ts');
+  assert.equal(V.asScalar(V.asValue(built.fixedValues.get('outputs'))), 2);
+  const matrix = V.complexValue([1, 2, 3, 4], [5, 6, 7, 8], [2, 2]);
+  const slice = ev(get('get', V.adjoint(matrix), { kind: 'const', name: 'all' }, lit([2, 1])));
+  assert.deepEqual(slice.shape, [2, 2]);
+  assert.equal(slice.outerRank, undefined);
+  assert.deepEqual(Array.from(slice.data), [3, 1, 4, 2]);
+  assert.deepEqual(Array.from(slice.im), [-7, -5, -8, -6]);
+});
+
 test('empty tensor selection retains all surviving dimensions', () => {
   const result = processSource('source = elementof(cartpow(reals, [2, 1, 3]))\n'
     + 'ix = fill(1, get([0], 1))\n'

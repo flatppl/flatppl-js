@@ -2332,6 +2332,21 @@ const { _evalAggregate } = _aggregate;
 // Errors are raised at the failing layer (no registry entry, no
 // binding, missing param, …) with sources pointing at the call IR's
 // `loc`.
+/** §04 records/tables splat by surface name, including residual user calls.
+ * A complex scalar's planar representation is not a record. */
+function _callSplatFields(value: any, argIR: any, names: string[], label: string): any {
+  const recordType = argIR.meta?.type?.kind === 'record';
+  const record = value && typeof value === 'object'
+    && !valueLib.isValue(value) && !Array.isArray(value)
+    && !ArrayBuffer.isView(value) && (recordType || !_isComplex(value));
+  const fields = value?.__table__ === true ? value.columns : (record ? value : null);
+  if (fields && (Object.keys(fields).length !== names.length
+      || names.some((name) => !Object.prototype.hasOwnProperty.call(fields, name)))) {
+    throw new Error(`evaluateCall: '${label}' record/table fields do not match its arguments`);
+  }
+  return fields;
+}
+
 function _evaluateStandardModuleCall(ir: any, env: any): any {
   const modAlias = ir.target.ns;
   const bindingName = ir.target.name;
@@ -2376,16 +2391,9 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
   const sole = positional.length === 1 && Object.keys(kwargs).length === 0;
   if (sole) {
     soleValue = evaluateExpr(positional[0], env);
-    const recordType = positional[0].meta?.type?.kind === 'record';
-    const record = soleValue && typeof soleValue === 'object'
-      && !valueLib.isValue(soleValue) && !Array.isArray(soleValue)
-      && !ArrayBuffer.isView(soleValue) && (recordType || !_isComplex(soleValue));
-    const fields = soleValue?.__table__ === true ? soleValue.columns : (record ? soleValue : null);
+    const fields = _callSplatFields(soleValue, positional[0],
+      inputs.map((input: any) => input.name), `${modAlias}.${bindingName}`);
     if (fields) {
-      if (Object.keys(fields).length !== inputs.length
-          || inputs.some((input: any) => !Object.prototype.hasOwnProperty.call(fields, input.name))) {
-        throw new Error(`evaluateCall: '${modAlias}.${bindingName}' record/table fields do not match its arguments`);
-      }
       return desc.impl(...inputs.map((input: any) => fields[input.name]));
     }
   }
@@ -2721,12 +2729,20 @@ function evaluateCall(ir: any, env: any): any {
       const callEnv: any = Object.assign({}, env);
       const posArgs = ir.args || [];
       const kw = ir.kwargs || {};
+      const sole = posArgs.length === 1 && Object.keys(kw).length === 0;
+      const soleValue = sole ? evaluateExpr(posArgs[0], env) : undefined;
+      const fields = sole ? _callSplatFields(soleValue, posArgs[0],
+        params.map((p, i) => paramKwargs[i] || p), ir.target.name) : null;
       for (let i = 0; i < params.length; i++) {
-        if (i < posArgs.length) {
-          callEnv[params[i]] = evaluateExpr(posArgs[i], env);
+        const surface = paramKwargs[i] || params[i];
+        if (fields) {
+          callEnv[params[i]] = fields[surface];
           continue;
         }
-        const surface = paramKwargs[i] || params[i];
+        if (i < posArgs.length) {
+          callEnv[params[i]] = sole ? soleValue : evaluateExpr(posArgs[i], env);
+          continue;
+        }
         const argIR = (kw[surface] !== undefined) ? kw[surface]
           : (kw[params[i]] !== undefined ? kw[params[i]] : undefined);
         if (argIR !== undefined) callEnv[params[i]] = evaluateExpr(argIR, env);
@@ -2916,8 +2932,24 @@ function evaluateCall(ir: any, env: any): any {
       else if (conjugated) result.t = 'C';
       return result;
     }
+    // A subset of a flat tensor stays a flat tensor (§03/§07), not a
+    // vector-of-vectors. Nested source arrays keep their cell boundaries.
+    function packSelection(source: any, cells: any[]): any {
+      if (!valueLib.isValue(source) || valueLib.isNestedVectorValue(source)) return cells;
+      // Flat tensors have homogeneous cells; scalar subsets need no cell Values.
+      if (typeof cells[0] === 'number' || typeof cells[0] === 'boolean') return valueLib.vector(cells);
+      const packed = valueLib.packUniformCells(cells.map((cell) =>
+        valueLib._logicalDense(valueLib.asValue(cell))));
+      if (!packed) return cells; // The empty shape is restored below.
+      const out: any = { shape: [cells.length, ...packed.innerShape], data: packed.data };
+      if (packed.im) { out.im = packed.im; out.dtype = 'complex'; }
+      return out;
+    }
     const applyGet = (c: any, ss: any): any => {
       if (ss.length === 0) return c;
+      // A full-axis selection preserves the value and its storage views.
+      if (valueLib.isValue(c) && ss.length <= c.shape.length
+          && ss.every((s: any) => s === ALL)) return c;
       const s = ss[0], rest = ss.slice(1);
       // Table dispatch (spec §03). A table is a `__table__`-marked
       // object holding a column-name → array map plus a row count.
@@ -2956,7 +2988,7 @@ function evaluateCall(ir: any, env: any): any {
           const n = c.shape[0];
           const out: any[] = [];
           for (let i = 0; i < n; i++) out.push(applyGet(_sliceLeading(c, i), rest));
-          return out;
+          return packSelection(c, out);
         }
         const ca = c as any;
         const out: any[] = [];
@@ -2985,7 +3017,7 @@ function evaluateCall(ir: any, env: any): any {
       // that lower to `vector(...)` and now produce a rank-1 Value.
       // Unwrap to its data view.
       if (valueLib.isValue(s) && s.shape.length === 1) {
-        return Array.from(s.data).map((si: any) => applyGet(c, [si, ...rest]));
+        return packSelection(c, Array.from(s.data).map((si: any) => applyGet(c, [si, ...rest])));
       }
       if (Array.isArray(s)) {                // subset selection
         // All-string subset of a record → a sub-record (spec §07);
@@ -2996,7 +3028,7 @@ function evaluateCall(ir: any, env: any): any {
           for (const k of s) r[k] = applyGet(c[k], rest);
           return r;
         }
-        return s.map((si: any) => applyGet(c, [si, ...rest]));
+        return packSelection(c, s.map((si: any) => applyGet(c, [si, ...rest])));
       }
       if (typeof s === 'string') {           // record field
         if (c == null || typeof c !== 'object' || isArrayLike(c)) {
@@ -3029,9 +3061,8 @@ function evaluateCall(ir: any, env: any): any {
     };
     const selected = applyGet(container, sels);
     // Nested JS arrays cannot retain dimensions after an empty axis. Keep
-    // the source tensor's explicit shape for empty slices/subsets only.
-    // Nonempty selection and its view/conjugation rules stay unchanged.
-    if (valueLib.isValue(container) && Array.isArray(selected)
+    // the source tensor's explicit shape for empty slices/subsets.
+    if (valueLib.isValue(container)
         && (container.data.length === 0 || sels.some((s: any) =>
           (valueLib.isValue(s) && s.shape.length === 1 && s.shape[0] === 0)
           || (Array.isArray(s) && s.length === 0)))) {

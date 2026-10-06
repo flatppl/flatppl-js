@@ -337,6 +337,16 @@ inBothModes('aggregate: pure row-sum (reduce other axis from 2D)',
   assert.deepEqual([...got], [6, 15, 24]);
 });
 
+inBothModes('aggregate: axis sums read logical matrix views',
+  'aggregate', () => {
+  const V = require('../value.ts');
+  const transposed = V.transpose(V.matrix([1, 2, 3, 4, 5, 6], 2, 3));
+  for (const body of ['A[.i, .j]', 'A[.i, .j] / 1.0']) {
+    const got = evalAggregateRHS(`r = aggregate(sum, [.j], ${body})`, 'r', { A: transposed });
+    assert.deepEqual([...got], [6, 15]);
+  }
+});
+
 inBothModes('aggregate: pure multi-axis reduction from 3D',
   'aggregate', () => {
   // aggregate(sum, [.i], A[.i, .j, .k])  reduces .j and .k.

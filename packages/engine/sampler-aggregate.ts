@@ -810,7 +810,8 @@ function _toFlat(val: any): { data: Float64Array; shape: number[] } {
     return { data, shape };
   }
   if (valueLib.isValue(val)) {
-    return { data: val.data as Float64Array, shape: val.shape.slice() };
+    const dense = valueLib._logicalDense(val);
+    return { data: dense.data as Float64Array, shape: dense.shape.slice() };
   }
   throw new Error(`aggregate: cannot interpret value of type ${typeof val} as a tensor`);
 }
