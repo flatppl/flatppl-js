@@ -86,6 +86,25 @@ const stdlibErfcinv  = require('@stdlib/math-base-special-erfcinv');
 // sampler-registry.ts so standard modules can add distributions
 // without touching the evaluator core here.
 const registry = require('./sampler-registry.ts');
+
+const VECTOR_SET_OPS = new Set(['stdsimplex', 'ordered', 'zerosum']);
+
+// Membership in a §03 vector set. Only the inequalities are checked:
+// `stdsimplex` entries `>= 0`, `ordered` consecutive entries strictly
+// increasing. §03 "Standard simplex" and "Zero-sum vectors" make
+// `Lebesgue(support = S)` the coordinate measure of the n-1 free coordinates,
+// with the last one determined by them, so the density is a function of the
+// free coordinates. An exact float test of the linear equality (sum 1 or sum 0)
+// would reject the points a chart produces. Every entry must be a real number.
+function inVectorSet(x: ArrayLike<number>, set: string): boolean {
+  for (let i = 0; i < x.length; i++) if (Number.isNaN(+x[i])) return false;
+  if (set === 'stdsimplex') {
+    for (let i = 0; i < x.length; i++) if (!(+x[i] >= 0)) return false;
+  } else if (set === 'ordered') {
+    for (let i = 1; i < x.length; i++) if (!(+x[i] > +x[i - 1])) return false;
+  }
+  return true;
+}
 const {
   REGISTRY,
   isKnownDistribution,
@@ -3229,6 +3248,19 @@ function evaluateCall(ir: any, env: any): any {
     // determiniser's set-valued image over a vector variate emits exactly this
     // (flatppl-rust determinizer/src/invert.rs::Image::vector_condition, e.g.
     // `y in cartpow(posreals, 3)` for `pushfwd(exp, ·)`).
+    // §03 `stdsimplex(n)`, `ordered(n)`, `zerosum(n)`: sets of whole n-vectors.
+    if (setIR && setIR.kind === 'call' && VECTOR_SET_OPS.has(setIR.op)
+        && Array.isArray(setIR.args) && setIR.args.length === 1) {
+      const sizeRaw = evaluateExpr(setIR.args[0], env);
+      const n = Number(valueLib.isValue(sizeRaw) ? sizeRaw.data[0] : sizeRaw);
+      const cells = (x != null && typeof x !== 'string' && typeof x.length === 'number')
+        ? x : null;
+      if (cells == null || !Number.isInteger(n) || cells.length !== n) {
+        throw new Error('evaluateCall: `in` over ' + setIR.op + '(' + n + ') expects a length-'
+          + n + ' 1-D point, got ' + (cells == null ? typeof x : 'length ' + cells.length));
+      }
+      return inVectorSet(cells, setIR.op);
+    }
     if (setIR && setIR.kind === 'call' && setIR.op === 'cartpow'
         && Array.isArray(setIR.args) && setIR.args.length === 2) {
       const sizeRaw = evaluateExpr(setIR.args[1], env);
@@ -4165,6 +4197,7 @@ function collectValueRefs(ir: any, out: Set<string>) {
 module.exports = {
   // Primary API
   rand,
+  inVectorSet,
   walk,
   makeSampler,
   makeParametricSampler,

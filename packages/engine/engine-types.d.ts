@@ -361,6 +361,19 @@ export interface DerivationLebesgueBox {
   discrete?: boolean;
 }
 
+/**
+ * `Lebesgue(support = S)` on a §03 vector set: `stdsimplex(n)`, `ordered(n)` or
+ * `zerosum(n)`. Density-only: the derivation scores and does not draw.
+ */
+export interface DerivationLebesgueVectorSet {
+  kind: 'lebesguevecset';
+  name?: string;
+  set: 'stdsimplex' | 'ordered' | 'zerosum';
+  n: number;
+  logTotalmass: null;
+  discrete?: boolean;
+}
+
 /** Element-wise deterministic evaluation of `ir` over upstream sample arrays. */
 export interface DerivationEvaluate {
   kind: 'evaluate';
@@ -712,6 +725,7 @@ export type Derivation =
   | DerivationRecord
   | DerivationSample
   | DerivationLebesgueBox
+  | DerivationLebesgueVectorSet
   | DerivationEvaluate
   | DerivationWeighted
   | DerivationNormalize

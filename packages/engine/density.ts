@@ -960,6 +960,12 @@ function walkLebesgue(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
     if (outside) for (let i = 0; i < N; i++) acc[i] = -Infinity;
     return rest;
   }
+  const vs = (ir as any).vectorSet;
+  if (vs) {
+    const { head, rest } = consumeVector(value, vs.n);
+    if (!samplerLib.inVectorSet(head, vs.set)) for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    return rest;
+  }
   const { rest } = consumeScalar(value);
   return rest;
 }
@@ -1067,6 +1073,11 @@ function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
       + 'set bounds are not supported in density evaluation');
   }
   const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+  if (setDescr.kind === 'vectorset') {
+    const { head } = consumeVector(value, setDescr.n);
+    if (!samplerLib.inVectorSet(head, setDescr.set)) for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    return rest;
+  }
   const consumed = inferConsumedScalar(value, rest);
   if (consumed != null && !inSet(consumed, setDescr)) {
     for (let i = 0; i < N; i++) acc[i] = -Infinity;

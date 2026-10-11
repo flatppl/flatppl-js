@@ -3804,11 +3804,29 @@ function classifyLebesgueBox(rhsIR: IRNode, ast: any, bindings: any, fixedValues
 // consumer (sampling/density, not quadrature).
 const LEBESGUE_BOX_DIM_CAP = 8;
 
+// Lebesgue on a §03 vector set: `stdsimplex(n)`, `ordered(n)` or `zerosum(n)`.
+// §06 makes it the coordinate measure of the set's free coordinates, so its
+// density with respect to itself is 1 on the set. The variate is an n-vector.
+// `ordered` and `zerosum` have infinite mass, so the derivation scores densities
+// and refuses to draw (matLebesgueVectorSet).
+function classifyLebesgueVectorSet(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): any {
+  void ast;
+  const support = _lebesgueSupportIR(rhsIR, bindings);
+  if (!support || support.kind !== 'call' || !VECTOR_SETS.has(support.op)) return null;
+  if (!Array.isArray(support.args) || support.args.length !== 1) return null;
+  const n = resolveConstant(support.args[0], bindings, new Set(), fixedValues);
+  if (!Number.isInteger(n) || n < 1) return null;
+  return { kind: 'lebesguevecset', set: support.op, n, logTotalmass: null, discrete: false };
+}
+
+const VECTOR_SETS = new Set(['stdsimplex', 'ordered', 'zerosum']);
+
 // `Lebesgue(support = S)`: the 1-D interval reading first (unchanged scalar
-// path), then the N-D box.
+// path), then the N-D box, then the §03 vector sets.
 function classifyLebesgue(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): any {
   return classifyLebesgueInterval(rhsIR, ast, bindings, fixedValues)
-      || classifyLebesgueBox(rhsIR, ast, bindings, fixedValues);
+      || classifyLebesgueBox(rhsIR, ast, bindings, fixedValues)
+      || classifyLebesgueVectorSet(rhsIR, ast, bindings, fixedValues);
 }
 
 const MEASURE_OP_CLASSIFIERS = {
@@ -4736,6 +4754,17 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
           loc: b && b.ir && b.ir.loc,
         } as any;
       }
+      case 'lebesguevecset': {
+        // The set rides on the node, as `boxAxes` does for a box, so the density
+        // walker can gate membership without resolving the support IR again.
+        const b = bindings && bindings.get(name);
+        return {
+          kind: 'call', op: 'Lebesgue',
+          kwargs: (b && b.ir && b.ir.kwargs) || {},
+          vectorSet: { set: d.set, n: d.n },
+          loc: b && b.ir && b.ir.loc,
+        } as any;
+      }
       case 'mvnormal':
         // Multivariate sampleable distribution. Same
         // treatment as 'sample': return the IR verbatim; the density
@@ -5245,6 +5274,9 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
               params: [paramName], body: rewrapped,
             };
           }
+          // A `logdensityof(M, x)` weight names its measure by a self-ref the
+          // density walker cannot resolve, so inline M's expansion in place.
+          weightIRForWalk = _inlineWeightMeasures(weightIRForWalk, derivations, next, bindings);
           return {
             kind: 'call',
             op: d.isLog ? 'logweighted' : 'weighted',
@@ -5813,6 +5845,25 @@ function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
  *
  * Resolves a binding **by name** to its canonical measure IR.
  */
+// Replace the measure ref in each `logdensityof(M, x)` of a weight by M's
+// expanded IR, where `x` is the weight's own parameter: the shared-variate fold
+// density.ts scores against the consumed point. Any other ref stays, so the
+// walker still refuses it.
+function _inlineWeightMeasures(ir: any, derivations: any, visited: any, bindings: any): any {
+  if (!ir || ir.kind !== 'call' || ir.op !== 'functionof' || !Array.isArray(ir.params)
+      || ir.params.length !== 1) return ir;
+  const param = ir.params[0];
+  const { mapIR } = require('./ir-walk.ts');
+  return mapIR(ir, (n: any) => {
+    if (!n || n.kind !== 'call' || n.op !== 'logdensityof' || !Array.isArray(n.args)) return n;
+    const [m, x] = n.args;
+    if (!x || x.kind !== 'ref' || x.ns !== '%local' || x.name !== param) return n;
+    if (!m || m.kind !== 'ref' || m.ns !== 'self' || !derivations[m.name]) return n;
+    const expanded = expandMeasureIR(m.name, derivations, visited, bindings);
+    return expanded ? { ...n, args: [expanded, x] } : n;
+  });
+}
+
 function expandMeasureIR(name: string, derivations: any, visited?: any, bindings?: any): IRNode | null {
   return expandMeasure(name, { derivations, bindings }, visited);
 }
