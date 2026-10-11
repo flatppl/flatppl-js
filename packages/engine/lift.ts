@@ -29,7 +29,7 @@ const {
   SAMPLEABLE_DISTRIBUTIONS,
   resolveCallableAlias,
 } = require('./ir-shared.ts');
-const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS, ALL_KNOWN } = require('./builtins.ts');
+const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS, DISTRIBUTIONS, ALL_KNOWN } = require('./builtins.ts');
 
 // =====================================================================
 // Inline-subexpression lifting
@@ -171,11 +171,12 @@ function argSignature(op: string, numArgs: number): string[] | null {
 /**
  * True when an op accepts only value-typed kwargs (so the visitor
  * recurses into them without treating them as measure positions).
- * Currently every op we know about that takes kwargs uses them for
- * value parameters — distribution constructors and arithmetic.
+ * Scalar and multivariate distributions have value parameters (§08).
+ * The two process constructors also take a measure-valued intensity.
  */
 function opUsesValueKwargs(op: string) {
-  return SAMPLEABLE_DISTRIBUTIONS.has(op) || EVALUABLE_OPS.has(op);
+  return EVALUABLE_OPS.has(op) || (DISTRIBUTIONS.has(op)
+    && op !== 'PoissonProcess' && op !== 'BinnedPoissonProcess');
 }
 
 /**
