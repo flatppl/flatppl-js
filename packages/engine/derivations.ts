@@ -3804,19 +3804,35 @@ function classifyLebesgueBox(rhsIR: IRNode, ast: any, bindings: any, fixedValues
 // consumer (sampling/density, not quadrature).
 const LEBESGUE_BOX_DIM_CAP = 8;
 
-// Lebesgue on a §03 vector set: `stdsimplex(n)`, `ordered(n)` or `zerosum(n)`.
-// §06 makes it the coordinate measure of the set's free coordinates, so its
-// density with respect to itself is 1 on the set. The variate is an n-vector.
-// `ordered` and `zerosum` have infinite mass, so the derivation scores densities
-// and refuses to draw (matLebesgueVectorSet).
+// Lebesgue on a set of n-vectors that is not a bounded box: a §03 vector set
+// (`stdsimplex(n)`, `ordered(n)`, `zerosum(n)`) or `cartpow(S, n)` over an
+// unbounded scalar `S` (`reals`, `posreals`, `nonnegreals`, a half-bounded
+// interval). §06 makes it the coordinate measure of the set's free
+// coordinates, so its density with respect to itself is 1 on the set. Most of
+// these sets have infinite mass, so the derivation scores densities and
+// refuses to draw.
 function classifyLebesgueVectorSet(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): any {
   void ast;
   const support = _lebesgueSupportIR(rhsIR, bindings);
-  if (!support || support.kind !== 'call' || !VECTOR_SETS.has(support.op)) return null;
-  if (!Array.isArray(support.args) || support.args.length !== 1) return null;
+  if (!support || support.kind !== 'call' || !Array.isArray(support.args)) return null;
+  if (support.op === 'cartpow' && support.args.length === 2) {
+    const elem = parseSetIR(support.args[0], bindings, fixedValues);
+    if (!elem || !_isUnboundedReal(elem)) return null;
+    const n = resolveConstant(support.args[1], bindings, new Set(), fixedValues);
+    if (!Number.isInteger(n) || n < 1) return null;
+    return { kind: 'lebesguevecset', set: 'cartpow', n, elem, logTotalmass: null, discrete: false };
+  }
+  if (!VECTOR_SETS.has(support.op) || support.args.length !== 1) return null;
   const n = resolveConstant(support.args[0], bindings, new Set(), fixedValues);
   if (!Number.isInteger(n) || n < 1) return null;
   return { kind: 'lebesguevecset', set: support.op, n, logTotalmass: null, discrete: false };
+}
+
+// A scalar set descriptor with at least one infinite end. A bounded interval is
+// a box axis instead (classifyLebesgueBox).
+function _isUnboundedReal(d: any): boolean {
+  if (d.kind === 'reals' || d.kind === 'posreals' || d.kind === 'nonnegreals') return true;
+  return d.kind === 'interval' && (!Number.isFinite(+d.lo) || !Number.isFinite(+d.hi));
 }
 
 const VECTOR_SETS = new Set(['stdsimplex', 'ordered', 'zerosum']);
@@ -4761,7 +4777,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         return {
           kind: 'call', op: 'Lebesgue',
           kwargs: (b && b.ir && b.ir.kwargs) || {},
-          vectorSet: { set: d.set, n: d.n },
+          vectorSet: { set: d.set, n: d.n, elem: d.elem },
           loc: b && b.ir && b.ir.loc,
         } as any;
       }

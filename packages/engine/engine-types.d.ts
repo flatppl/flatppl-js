@@ -362,14 +362,18 @@ export interface DerivationLebesgueBox {
 }
 
 /**
- * `Lebesgue(support = S)` on a §03 vector set: `stdsimplex(n)`, `ordered(n)` or
- * `zerosum(n)`. Density-only: the derivation scores and does not draw.
+ * `Lebesgue(support = S)` on a set of n-vectors that is not a bounded box: a §03
+ * vector set (`stdsimplex(n)`, `ordered(n)`, `zerosum(n)`) or `cartpow(S, n)`
+ * over an unbounded scalar `S`. Density-only: the derivation scores and does
+ * not draw.
  */
 export interface DerivationLebesgueVectorSet {
   kind: 'lebesguevecset';
   name?: string;
-  set: 'stdsimplex' | 'ordered' | 'zerosum';
+  set: 'stdsimplex' | 'ordered' | 'zerosum' | 'cartpow';
   n: number;
+  /** The scalar element set of a `cartpow` support. */
+  elem?: any;
   logTotalmass: null;
   discrete?: boolean;
 }
