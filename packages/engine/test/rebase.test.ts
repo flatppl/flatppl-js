@@ -81,8 +81,11 @@ effects ~ rebase(iid(Normal(7, scale), 3), Lebesgue(zerosum(3)))
 other ~ rebase(iid(Normal(0, 1), 3), Lebesgue(zerosum(3)))
 prior = lawof(record(scale = scale, effects = effects))
 score = logdensityof(prior, record(scale = 2, effects = [-1, 0, 1]))
+reverse = lawof(record(effects = effects, scale = scale))
+reverse_score = logdensityof(reverse, record(effects = [-1, 0, 1], scale = 2))
 `, { sampleCount: count });
   close((await ctx.getMeasure('score')).samples[0], -2 + zeroScore(2));
+  close((await ctx.getMeasure('reverse_score')).samples[0], -2 + zeroScore(2));
   const ordered = (await ctx.getMeasure('ordered_draw')).value.data;
   let left = 0, right = 0;
   for (let i = 0; i < count; i++) {
