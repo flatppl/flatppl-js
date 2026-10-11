@@ -3,6 +3,17 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
+const { processSource } = require('../index.ts');
+
+test('a measure cannot serve as a value boundary in reification', () => {
+  const { diagnostics } = processSource(`
+scale = elementof(posreals)
+M = Normal(0, scale)
+f = functionof(logdensityof(M, 0), measure = M)
+`);
+  assert.ok(diagnostics.some((d: any) => d.severity === 'error'
+    && d.message.includes('must be a value')));
+});
 
 test('explicit vector boundaries retain broadcast shape in functions and kernels', async () => {
   const { ctx } = makeMatCtx(`
