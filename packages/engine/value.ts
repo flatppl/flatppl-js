@@ -7,8 +7,8 @@
 // The Value type is the engine's internal representation for every
 // numeric quantity that flows through walkers, ops, and materialisers.
 // It pairs a flat Float64Array storage with an explicit `shape: number[]`
-// describing the dimensions, and an optional `dtype` slot reserved for
-// future backend tagging (TF.js / typed-tensor swaps).
+// describing the dimensions, and an optional `dtype` slot carrying source
+// precision (and backend tags for typed-tensor swaps).
 //
 // Design choices (see TODO-flatppl-js.md + ARCHITECTURE.md
 // invariant #2):
@@ -28,7 +28,8 @@
 //     monomorphic property access; no `instanceof` dispatch needed.
 //
 //   - **dtype is optional and defaults to 'f64'.** Storage is always
-//     Float64Array for now; the slot exists so future backends can
+//     Float64Array for now; f32 marks exactly widened source data for
+//     fixed-input validation. The slot also lets future backends
 //     distinguish bool / int32 / complex tensors without retrofitting
 //     every call site. TF.js's Tensor.dtype uses the same idea.
 //
@@ -948,7 +949,9 @@ function asValue(x: any): any {
   // Other typed arrays: copy through Float64Array.
   if (ArrayBuffer.isView(x) && typeof (x as any).length === 'number') {
     const data = Float64Array.from(x as any);
-    return { shape: [data.length], data: data };
+    return x instanceof Float32Array
+      ? { shape: [data.length], data, dtype: 'f32' }
+      : { shape: [data.length], data };
   }
   if (Array.isArray(x)) {
     const inferred = inferShapeFromNested(x);

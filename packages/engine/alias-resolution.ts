@@ -113,13 +113,16 @@ function _canonicalise(target: any, aliases: Map<string, any>): any | null {
  * the resolution writes to `binding.<irField>` so subsequent reads
  * see the canonical form.
  */
-function resolveAliasesOnBindings(bindings: any, irField: string): any {
+function resolveAliasesOnBindings(bindings: any, irField: string, sourceBindings?: any): any {
   if (!bindings) return bindings;
 
   // Pass 1: collect every binding whose RHS is a pure ref. These are
   // the alias candidates.
   const aliases = new Map<string, any>();
   for (const [name, lb] of bindings) {
+    // A substituted external carries a validation obligation, so uses must
+    // still pass through that binding when its host value becomes available.
+    if ((lb?.node || sourceBindings?.get(name)?.node)?.fixedInputSet) continue;
     const target = lb && _aliasTarget(lb[irField]);
     if (target) aliases.set(name, target);
   }
@@ -204,7 +207,7 @@ function resolveAliasesOnBindings(bindings: any, irField: string): any {
  */
 function resolveAliases(loweredModule: any): any {
   if (!loweredModule || !loweredModule.bindings) return loweredModule;
-  resolveAliasesOnBindings(loweredModule.bindings, 'rhs');
+  resolveAliasesOnBindings(loweredModule.bindings, 'rhs', loweredModule.source);
   return loweredModule;
 }
 

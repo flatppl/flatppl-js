@@ -59,8 +59,10 @@
 // raw value cached (never coerced) — byte-identical to the old loop.
 //
 // Dependency injection. The class takes everything the old loop closed
-// over as constructor deps, so this file imports NOTHING from the engine
-// (no circular-import risk; trivially unit-testable).
+// over as constructor deps. Fixed-input validation imports only the leaf
+// value-set vocabulary (no evaluator cycle).
+
+const { resolveFixedVectorSet, validateFixedVectorInput } = require('./fixed-inputs.ts');
 
 // Module-private sentinel: "this name has no fixed value". A unique
 // symbol so it can never collide with a real value (a fixed value may
@@ -131,6 +133,7 @@ class FixedValues {
   }
 
   set(name: string, value: any): this {
+    this._validateInput(name, value);
     this._cache.set(name, value);
     return this;
   }
@@ -180,11 +183,29 @@ class FixedValues {
     try {
       const value = this._compute(name, binding);
       if (value === UNRESOLVED) return UNRESOLVED;   // uncached → retried on next demand
+      this._validateInput(name, value);
       this._cache.set(name, value);
       return value;
     } finally {
       this._inProgress.delete(name);
     }
+  }
+
+  // §04 externals may be supplied by the host or forwarded by load_module.
+  // Check once before caching, preserving both the value and its source dtype.
+  _validateInput(name: string, value: any): void {
+    const { bindings, lowerExpr } = this._deps;
+    const binding = bindings.get(name);
+    const node = binding?.node;
+    if (!node?.fixedInputSet && node?.value?.callee?.name !== 'external') return;
+    const set = node.fixedInputSet ? lowerExpr(node.fixedInputSet) : lowerExpr(node.value).args[0];
+    const domain = resolveFixedVectorSet(set,
+      (ir: any) => this._compute(name, { ir }),
+      (ref: string) => {
+        const b = bindings.get(ref);
+        return b?.ir || (b?.node && lowerExpr(b.effectiveValue || b.node.value));
+      });
+    if (domain) validateFixedVectorInput(name, value, domain);
   }
 
   // Per-binding evaluation — the old `buildDerivations` loop body

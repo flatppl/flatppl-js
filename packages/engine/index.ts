@@ -100,6 +100,7 @@ function processSource(source: string, opts?: any) {
     const linkedAst = linkModules(primary, modules);
     const linked = analyze(linkedAst, '');
     linkedBindings = linked.bindings;
+    primary.diagnostics.push(..._fixedInputDiagnostics(linked));
     // Linking renames standard-module aliases too (e.g. child$poly).
     // Keep the matching registry for evaluation of the flattened graph.
     linkedModuleRegistry = linked.loweredModule.moduleRegistry;
@@ -123,6 +124,29 @@ function processSource(source: string, opts?: any) {
     diagnostics: primary.diagnostics,
     variant, bundle, modules, linkedBindings, linkedModuleRegistry, path: entryPath,
   };
+}
+
+// §04 load-time substitutions retain their §03 vector constraints through
+// linking. Resolve only the substituted values whose declared set needs
+// validation; forwarded host inputs are checked when supplied later.
+function _fixedInputDiagnostics(linked: any): any[] {
+  const { resolveFixedVectorSet, validateFixedVectorInput } = require('./fixed-inputs.ts');
+  const resolve = require('./fixed-eval.ts').makeResolver({ loweredModule: linked.loweredModule });
+  const resolveSet = (name: string) => linked.loweredModule.bindings.get(name)?.rhs;
+  const diagnostics: any[] = [];
+  for (const [name, binding] of linked.bindings) {
+    const set = binding.node?.fixedInputSet;
+    if (!set) continue;
+    const domain = resolveFixedVectorSet(lower.lowerExpr(set), resolve, resolveSet);
+    if (!domain) continue;
+    const value = resolve(linked.loweredModule.bindings.get(name)?.rhs);
+    if (value === undefined || value === resolve.UNSUPPORTED) continue;
+    try { validateFixedVectorInput(name, value, domain); }
+    catch (e: any) {
+      diagnostics.push({ severity: 'error', message: e.message, loc: binding.node.value.loc });
+    }
+  }
+  return diagnostics;
 }
 
 // §06 permits kchain sampling independently of whether its marginal density

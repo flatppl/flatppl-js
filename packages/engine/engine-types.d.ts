@@ -27,9 +27,9 @@
  */
 export type ValueTag = 'N' | 'T' | 'A' | 'C';
 
-/** Backend dtype tag — 'f64' is the only realised one today; 'complex'
- *  is the planar (parallel re/im) shape. */
-export type ValueDtype = 'f64' | 'complex';
+/** Numeric dtype tag: 'f32' retains the precision of exactly widened host
+ *  data; 'complex' is the planar (parallel re/im) shape. */
+export type ValueDtype = 'f64' | 'f32' | 'complex';
 
 /**
  * Shape-tagged value used throughout the engine for every numeric quantity.

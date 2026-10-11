@@ -92,6 +92,14 @@ The linked registry contains renamed standard-module aliases. Pass the resulting
 The canonical `result.loweredModule.moduleRegistry` still describes the primary
 module and serves source/type tooling.
 
+Linked external vector substitutions retain their declared sets. Fixed data
+is checked at load time when available, or before entering `FixedValues` when
+supplied by the host. `fixed-inputs.ts` owns the source-precision sum bound;
+inequalities remain exact and accepted data is never projected. These checks
+are separate from runtime `in`/density membership, which omits linear equalities.
+Validation-bearing aliases survive canonicalization so forwarded inputs keep
+their constraints. `Value.dtype = 'f32'` preserves exactly widened host precision.
+
 Mass inference recognizes simplex-weighted probability mixtures: whole vectors
 for `ksuperpose`, or every coordinate of the same node exactly once for `superpose`.
 Reference measures and unnormalized components do not satisfy this proof.
