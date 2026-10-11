@@ -114,14 +114,12 @@ function conditionalNormal(muValue: any, sigmaValue: any, n: number): any {
 function conditionalLaws(spec: any, refArrays: any, count: number, env: any, overlay?: any): any {
   const sampler = require('./sampler.ts');
   const shared = require('./materialiser-shared.ts');
-  const valueLib = require('./value.ts');
   const { collectSelfRefs } = require('./ir-shared.ts');
-  const names = Object.keys(refArrays || {});
+  const names = Object.keys(refArrays);
   const rows = [spec.mu, spec.sigma].map((param) => {
     const refs = collectSelfRefs(param);
     const v = sampler.evaluateExprN(param, refArrays, count, env, overlay ? { overlay } : undefined);
-    const usesAtom = names.some((name) => refs.has(name))
-      || (valueLib.isValue(v) && v.shape.length >= 2 && valueLib.isAtomBatched(v, count));
+    const usesAtom = names.some((name) => refs.has(name));
     const shape = shared.classifyBroadcastArg(v, count, usesAtom);
     if (!['scalar', 'K', 'N', 'NK'].includes(shape.kind)
         || (shape.K !== undefined && shape.K !== 1 && shape.K !== spec.n)) {

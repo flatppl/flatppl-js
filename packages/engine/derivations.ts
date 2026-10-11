@@ -5539,6 +5539,9 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
   }
   if (ir.op === 'tilt' && ir.args?.length === 2) {
     const expanded = { ...ir, args: ir.args.map((a: any) => _expandStructural(a, ctx, visited)) };
+    // Dependency probes have no bindings for unresolved composite operands.
+    // Keep the measure IR until the scoring/sampling expansion can resolve it.
+    if (!ctx.bindings) return expanded;
     const tilt = require('./tilt.ts');
     const exact = tilt.exactLaw(expanded, (x: any) =>
       resolveConstant(x, ctx.bindings, new Set(), ctx.fixedValues));

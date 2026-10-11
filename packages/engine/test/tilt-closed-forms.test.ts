@@ -3,8 +3,9 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
-const { orchestrator } = require('..');
+const { orchestrator, lower, materialiser, rng } = require('..');
 const density = require('../density.ts');
+const sampler = require('../sampler.ts');
 const oracle = require('./fixtures/tilt/oracle.json');
 
 const close = (actual: number, expected: number, tol = 1e-11) =>
@@ -49,8 +50,11 @@ E = tilt(iid(Exponential(rate), 3), Lebesgue(ordered(3)))
 G = tilt(iid(Gamma(shape, rate), 3), Lebesgue(ordered(3)))
 es = logdensityof(E, ${x})
 gs = logdensityof(G, ${x})
+outside_score = logdensityof(E, [0.5, 0.1, 2])
 ef = functionof(es, rate = rate)
 gf = functionof(gs, shape = shape, rate = rate)
+outside_fn = functionof(outside_score, rate = rate)
+outside = outside_fn(1)
 e = ef(1)
 g = gf(2.5, 1)
 elo = ef(0.99999)
@@ -63,12 +67,61 @@ grhi = gf(2.5, 1.00001)
   const score = async (name: string) => (await ctx.getMeasure(name)).samples[0];
   close(await score('e'), oracle.ordered_exponential.logdensity);
   close(await score('g'), oracle.ordered_gamma.logdensity);
+  assert.equal(await score('outside'), -Infinity);
   close(((await score('ehi')) - (await score('elo'))) / 0.00002,
     oracle.ordered_exponential.rate_gradient, 2e-8);
   close(((await score('ghi')) - (await score('glo'))) / 0.00002,
     oracle.ordered_gamma.shape_gradient, 2e-8);
   close(((await score('grhi')) - (await score('grlo'))) / 0.00002,
     3 * oracle.ordered_gamma.shape - oracle.ordered_gamma.point.reduce((a: number, b: number) => a + b, 0), 2e-8);
+});
+
+test('ordered normalized composite scores preserve restriction and cancel constant weights', async () => {
+  const { ctx } = makeMatCtx(`
+D = normalize(logweighted(-2, truncate(Exponential(1), interval(0, 2))))
+W = normalize(weighted(3, truncate(Exponential(1), interval(0, 2))))
+A = tilt(iid(D, 3), Lebesgue(ordered(3)))
+B = tilt(iid(W, 3), Lebesgue(ordered(3)))
+a = logdensityof(A, [0.1, 0.5, 1])
+b = logdensityof(B, [0.1, 0.5, 1])
+outside = logdensityof(A, [0.1, 0.5, 3])
+`, { sampleCount: 4 });
+  const expected = Math.log(6) - 1.6 - 3 * Math.log(-Math.expm1(-2));
+  close((await ctx.getMeasure('a')).samples[0], expected, 1e-9);
+  close((await ctx.getMeasure('b')).samples[0], expected, 1e-9);
+  assert.equal((await ctx.getMeasure('outside')).samples[0], -Infinity);
+});
+
+test('directly lowered normalized iid laws retain scores, sorted draws and RNG successors', async () => {
+  const { ctx, lifted } = makeMatCtx(`
+M = tilt(iid(normalize(Exponential(1)), 3), Lebesgue(ordered(3)))
+B = iid(Exponential(1), 3)
+`, { sampleCount: 4 });
+  const ir = lower.lowerBinding(lifted.ast.body[0]);
+  close(density.logDensity(ir, [0.1, 0.5, 2], {}), Math.log(6) - 2.6);
+  const state = rng.seedFromBytes([1, 2, 3, 4]);
+  const draw = sampler.walk(state, ir, {});
+  const base = sampler.walk(state, lower.lowerBinding(lifted.ast.body[1]), {});
+  assert.deepEqual(Array.from(draw.value), Array.from<number>(base.value).sort((a, b) => a - b));
+  assert.deepEqual(draw.state, base.state);
+  const measure = await materialiser.materialiseMeasureIR(ir, ctx);
+  for (let i = 0; i < 4; i++) {
+    const x = measure.value.data.subarray(3 * i, 3 * i + 3);
+    assert.ok(x[0] > 0 && x[0] < x[1] && x[1] < x[2]);
+    close(density.logDensity(ir, Array.from(x), {}), Math.log(6) - x.reduce((a: number, b: number) => a + b, 0));
+  }
+});
+
+test('scalar and vector Normal parameters give identical explicit draws and RNG successors', async () => {
+  const { ctx } = makeMatCtx(`
+rng = rnginit([1, 2, 3, 4])
+a, ar = rand(tilt(Normal.(1, [1, 2, 0.5]), Lebesgue(zerosum(3))), rng)
+b, br = rand(tilt(Normal.([1, 1, 1], [1, 2, 0.5]), Lebesgue(zerosum(3))), rng)
+after_a, _ = rand(Normal(0, 1), ar)
+after_b, _ = rand(Normal(0, 1), br)
+`, { sampleCount: 4 });
+  assert.deepEqual((await ctx.getMeasure('a')).value.data, (await ctx.getMeasure('b')).value.data);
+  assert.deepEqual((await ctx.getMeasure('after_a')).value.data, (await ctx.getMeasure('after_b')).value.data);
 });
 
 test('unequal zero-sum Normals match the chart oracle and all parameter derivatives', async () => {
