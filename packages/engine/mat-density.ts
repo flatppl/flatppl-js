@@ -350,7 +350,19 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         // derived from the single-field regionMetric contract the viewer's gear
         // panel exposes ('off' = region-free default) — see deriveRegionOpts.
         const { useRegion, region } = deriveRegionOpts(o);
-        const res = runNested(pt.transform, pt.dim, mv.likOf,
+        // A bare length-one array is a scalar ref to the density walker. Keep
+        // singleton vector rank at scoring, without changing the sampled records.
+        const singletonVectors = mv.latentNames.flatMap((name: string, i: number) => {
+          const shape = mv.latentShapes[i];
+          return shape.kind === 'vector' && shape.dims[0] === 1
+            ? [{ name, shape: shape.atomShape || [1] }] : [];
+        });
+        const logLik = singletonVectors.length ? (rec: Record<string, any>) => {
+          const point = { ...rec };
+          for (const { name, shape } of singletonVectors) point[name] = { shape, data: rec[name] };
+          return mv.likOf(point);
+        } : mv.likOf;
+        const res = runNested(pt.transform, pt.dim, logLik,
           { nLive: o.nLive || 400, dlogz: o.dlogz ?? 0.5, sliceSweeps: o.sliceSweeps != null ? o.sliceSweeps : 2, prng, onProgress,
             useRegion, region, rebuild: o.rebuild, regionTries: o.regionTries });
         nDraws = res.samples.length;
