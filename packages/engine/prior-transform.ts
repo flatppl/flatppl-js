@@ -5,8 +5,8 @@
 // unwraps to a base distribution, resolves that dist's params in a running env
 // holding already-realised parents (via sampler.evaluateExpr — the same param
 // resolution the density path uses), and maps the latent's cube coordinate(s)
-// through the inverse-CDF ladder. Deterministic, monotone, bijective — the hard
-// requirement nested sampling places on the transform.
+// through the inverse-CDF ladder. The transform must push uniform cube volume
+// to the normalized prior; it need not be one-to-one (sorting is many-to-one).
 const orchestrator = require('./orchestrator.ts');
 const sampler      = require('./sampler.ts');
 const modelSpec    = require('./model-spec.ts');
@@ -102,12 +102,48 @@ interface LatentPlan {
 function planLatent(measureIR: any, ctx: any): LatentPlan {
   if (measureIR.kind !== 'call') throw new Error('prior-transform: non-call measure IR');
   const op = measureIR.op;
+  if (op === 'tilt') {
+    const tilt = require('./tilt.ts');
+    const law = measureIR.tiltLaw || tilt.exactLaw(measureIR);
+    if (law?.kind !== 'iidNormal') {
+      throw new Error('nested backend: tilt prior transform supports iid Normal on ordered/zerosum sets');
+    }
+    const { n, set } = law;
+    return {
+      count: 0,
+      sizeVec: () => ({ coords: set === 'ordered' ? n : n - 1, width: n }),
+      realise: () => { throw new Error('prior-transform: tilt is a vector plan'); },
+      realiseVec: (u, off, env) => {
+        const mu = evalParam(law.mu, env), sigma = evalParam(law.sigma, env);
+        // The zero-sum law loses its common mean, but an invalid source Normal
+        // remains invalid. Resolve both parameters after the parent cube draws.
+        tilt.checkParameters(mu, sigma);
+        const x = new Float64Array(n);
+        if (set === 'ordered') {
+          for (let i = 0; i < n; i++) x[i] = quantile('Normal', u[off + i], { mu, sigma });
+          x.sort();
+        } else {
+          // Orthonormal Helmert columns map n−1 independent Normals to the
+          // conditional covariance sigma²(I−11ᵀ/n). The backward sum applies
+          // that map in O(n), without allocating an n×(n−1) matrix.
+          let sum = 0;
+          for (let j = n - 1; j > 0; j--) {
+            const z = quantile('Normal', u[off + j - 1], { mu: 0, sigma }) / Math.sqrt(j * (j + 1));
+            x[j] = sum - j * z;
+            sum += z;
+          }
+          x[0] = sum;
+        }
+        return x;
+      },
+    };
+  }
   if (op === 'Dirichlet') {
     // Spec §08 "Dirichlet": canonical transport to/from standard uniform is the
     // Connor–Mosimann stick-breaking map — "the i-th break is
     // Beta(alpha_i, sum_{j>i} alpha_j), accumulated by stick-breaking onto
-    // stdsimplex(n)". K−1 cube coords, monotone in each, so it meets nested
-    // sampling's bijective-monotone requirement.
+    // stdsimplex(n)". Each beta quantile consumes one cube coordinate, for
+    // K−1 coordinates in total.
     return {
       count: 0,                                        // set from sizeVec at build time
       sizeVec: (env) => {
