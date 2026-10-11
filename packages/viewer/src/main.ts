@@ -706,7 +706,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // Inference backend for posterior (bayesupdate) measures. 'is' is the
   // default importance-sampling path (unchanged); the selector in the header
   // switches to the MCMC driver ('mh' / 'emcee'). `chains` is used by MH,
-  // `walkers` by emcee (null → engine default of max(4, 2*dim+2)).
+  // `walkers` by emcee/DEMCz (null → each kernel's dimension-based default).
   // amisIters (T) / amisSamples (M) drive the adaptive-importance-sampling
   // backend ('amis'): T proposal-adaptation iterations of M samples each.
   // smcParticles (N) / smcSteps (chain length P) / smcCESS (ρ, the CESS target
