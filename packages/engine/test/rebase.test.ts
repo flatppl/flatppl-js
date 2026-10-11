@@ -135,12 +135,12 @@ score = logdensityof(L, record(scale = 3, effects = [-1, 0, 1]))
 test('exact rebase draws retain the iid Normal RNG continuation', async () => {
   const { ctx } = makeMatCtx(`
 rng = rnginit([1, 2, 3, 4])
-x, xs = rand(rng, iid(Normal(0, 2), 3))
-z, zs = rand(rng, rebase(iid(Normal(7, 2), 3), Lebesgue(zerosum(3))))
-o, os = rand(rng, rebase(iid(Normal(0, 2), 3), Lebesgue(ordered(3))))
-after_x, _ = rand(xs, iid(Normal(0, 1), 4))
-after_z, _ = rand(zs, iid(Normal(0, 1), 4))
-after_o, _ = rand(os, iid(Normal(0, 1), 4))
+x, xs = rand(iid(Normal(0, 2), 3), rng)
+z, zs = rand(rebase(iid(Normal(7, 2), 3), Lebesgue(zerosum(3))), rng)
+o, os = rand(rebase(iid(Normal(0, 2), 3), Lebesgue(ordered(3))), rng)
+after_x, _ = rand(iid(Normal(0, 1), 4), xs)
+after_z, _ = rand(iid(Normal(0, 1), 4), zs)
+after_o, _ = rand(iid(Normal(0, 1), 4), os)
 `, { sampleCount: 4 });
   const data = async (name: string) => Array.from((await ctx.getMeasure(name)).value.data) as number[];
   const x = await data('x');

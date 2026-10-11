@@ -37,4 +37,4 @@ posterior = bayesupdate(L, prior)
 
 model_dist = k_model(glob_pars)
 rstate = rnginit([1, 2, 3, 4])
-sim_data, _ = rand(rstate, model_dist)
+sim_data, _ = rand(model_dist, rstate)

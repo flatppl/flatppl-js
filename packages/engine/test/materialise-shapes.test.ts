@@ -2,7 +2,7 @@
 
 // Integration sweep: every binding shape FlatPPL allows must
 // materialise into a measure the viewer can plot. Closes the gap that
-// let the `rand(rstate, iid(Normal(0,1), [3, 3]))` bug ship.
+// let the `rand(iid(Normal(0,1), [3, 3]), rstate)` bug ship.
 //
 // Strategy: drive each shape from source through `processSource ->
 // buildDerivations -> materialiseMeasure` via the shared helper, and
@@ -48,7 +48,7 @@ test('materialise: rank-2 broadcast result (E-like) carries intrinsicShape', asy
   // intrinsicShape was preserved this rendered as a scalar 0 — the bug
   // the user spotted. Pin the new contract: matrix structure survives.
   const { ctx } = makeMatCtx(`rstate = rnginit([1,2,3,4])
-A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
+A, _ = rand(iid(Normal(0,1), [3, 3]), rstate)
 E = (A - A) .^ 2
 `);
   const m: any = await expectPlottable(ctx, 'E');
@@ -121,7 +121,7 @@ test('materialise: 2D nested array via rand+iid renders as flat samples (not ato
   // corner-plot dispatch.
   const { ctx } = makeMatCtx(`
 rstate = rnginit([1,2,3,4])
-A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
+A, _ = rand(iid(Normal(0,1), [3, 3]), rstate)
 `);
   const m = await expectPlottable(ctx, 'A');
   assert.equal(m.samples.length, 9);
@@ -134,7 +134,7 @@ A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
 test('materialise: 3D nested array flattens to 24 values', async () => {
   const { ctx } = makeMatCtx(`
 rstate = rnginit([1,2,3,4])
-B, _ = rand(rstate, iid(Normal(0,1), [2, 3, 4]))
+B, _ = rand(iid(Normal(0,1), [2, 3, 4]), rstate)
 `);
   const m = await expectPlottable(ctx, 'B');
   assert.equal(m.samples.length, 24);
@@ -646,7 +646,7 @@ posterior = bayesupdate(L, prior)
 test('materialise: multi-LHS where both names are kept', async () => {
   const { ctx } = makeMatCtx(`
 rstate = rnginit([7, 8, 9, 10])
-val, rstate2 = rand(rstate, Normal(0, 1))
+val, rstate2 = rand(Normal(0, 1), rstate)
 `);
   await expectPlottable(ctx, 'val');
   // rstate2 is rngstate — opaque; should not crash but may legitimately

@@ -11,7 +11,7 @@
 //     synthesises a kernel call (optionally wrapped in iid) and threads
 //     RNG state through the measure walker (sampler.walk). The cross-engine ABI: same kernel
 //     + same input + same root state ⇒ same samples. We check
-//     equivalence with `rand(state, Kernel(kw))` and confirm
+//     equivalence with `rand(Kernel(kw), state)` and confirm
 //     state-threading produces independent successive draws.
 //
 //  2. `builtin_touniform` / `builtin_fromuniform` /
@@ -56,7 +56,7 @@ flatppl_compat = "0.1"
 
 state = rnginit([0, 1, 2, 3])
 xs1, _ = builtin_sample(state, Normal, record(mu = 0.0, sigma = 1.0), 8)
-xs2, _ = rand(state, iid(Normal(mu = 0.0, sigma = 1.0), 8))
+xs2, _ = rand(iid(Normal(mu = 0.0, sigma = 1.0), 8), state)
 `;
   const r = engine.processSource(src);
   assert.deepEqual(r.diagnostics.filter((d: any) =>
@@ -86,7 +86,7 @@ flatppl_compat = "0.1"
 state = rnginit([0, 1, 2, 3])
 pars = record(mu = 0.0, sigma = 1.0)
 xs1, _ = builtin_sample(state, Normal, pars, 8)
-xs2, _ = rand(state, iid(Normal(mu = 0.0, sigma = 1.0), 8))
+xs2, _ = rand(iid(Normal(mu = 0.0, sigma = 1.0), 8), state)
 `;
   const r = engine.processSource(src);
   assert.deepEqual(r.diagnostics.filter((d: any) => d.severity === 'error'), []);

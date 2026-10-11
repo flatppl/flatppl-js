@@ -165,12 +165,12 @@ test('dag: findBindingAtLine col falls back to first binding when col is off-nam
 // drop the node itself.
 
 test('dag: multi-LHS %mlhs nodes are dissolved from the rendered DAG', () => {
-  // `data, _ = rand(rstate, M)` produces a synthetic %mlhs binding.
+  // `data, _ = rand(M, rstate)` produces a synthetic %mlhs binding.
   // Without the dissolution pass, the user would see a "%mlhs:..."
   // node sitting between rstate / M and data.
   const dag = dagOf(`
 rstate = rnginit([1, 2, 3, 4])
-data, _ = rand(rstate, Normal(mu = 0, sigma = 1))
+data, _ = rand(Normal(mu = 0, sigma = 1), rstate)
 `, 'data');
   const ids = dag.nodes.map((n: any) => n.id);
   assert.ok(!ids.some((id: any) => id && id.charAt(0) === '%'),

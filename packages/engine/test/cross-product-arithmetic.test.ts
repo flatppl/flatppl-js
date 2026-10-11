@@ -68,8 +68,8 @@ D = A - B
 test('cross: rand+iid([m,n]) matrix * rand+iid([m,n]) matrix', () => {
   const fv = ev(`
 rstate = rnginit([1,2,3,4])
-A, rs1 = rand(rstate, iid(Normal(0,1), [3, 3]))
-B, _   = rand(rs1,    iid(Normal(0,1), [3, 3]))
+A, rs1 = rand(iid(Normal(0,1), [3, 3]), rstate)
+B, _   = rand(iid(Normal(0,1), [3, 3]), rs1)
 P = A * B
 S = A + B
 D = A - B
@@ -238,8 +238,8 @@ test('cross: F = sum((C - D) .^ 2) and G = mean((C - D) .^ 2)', () => {
   // from comparing matmul-via-aggregate to matmul-via-`*`.
   const fv = ev(`
 rstate = rnginit([1,2,3,4])
-A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
-B, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
+A, _ = rand(iid(Normal(0,1), [3, 3]), rstate)
+B, _ = rand(iid(Normal(0,1), [3, 3]), rstate)
 C[.i, .k] := A[.i, .j] * B[.j, .k]
 D = A * B
 F = sum((C - D) .^ 2)

@@ -34,7 +34,7 @@
 //      produce bit-exact identical samples.
 //
 // Per the FlatPPL spec (docs/07-functions.md §Random value generation),
-// `rand(state, m)` is the user-visible primitive and `rngstates` is its
+// `rand(m, state)` is the user-visible primitive and `rngstates` is its
 // opaque type. This module sits one level below: it implements the
 // cipher and a thin state-threaded helper API the sampler builds on.
 // `rnginit`, `rand`, and `rngstate` themselves live in the sampler/engine
@@ -172,7 +172,7 @@ function philox4x32_10(counter: ArrayLike<number>, key: ArrayLike<number>) {
 // State-threaded API
 // ---------------------------------------------------------------------
 //
-// The sampler runs draws as `(value, new_state) = rand(state, measure)`,
+// The sampler runs draws as `(value, new_state) = rand(measure, state)`,
 // matching the spec's pure-functional state-threading. This module
 // exposes the lowest layer of that pattern: get one uint32 (or one
 // uniform float) per call, with state advancing.
@@ -572,7 +572,7 @@ function foldIn(key: PhiloxKey, tag: number): PhiloxKey {
 }
 
 // Composite-rand lane contract (engine-concepts §11). A composite
-// `rand(state, M)` derives BOTH its draw seed and its successor rngstate
+// `rand(M, state)` derives BOTH its draw seed and its successor rngstate
 // from the parent key via ONE 2-way split: lane 0 seeds the draw (consumed
 // by the materialiser's matRandSample), lane 1 IS the successor rngstate
 // (consumed by the value-domain `rand_succ` op when a chained `rand`

@@ -144,7 +144,7 @@ const BUILTIN_PARAM_NAMES: Record<string, string[]> = {
   pushfwd:              ['f', 'M'],
   quadform:             ['A', 'x'],
   quantile:             ['xs', 'p'],
-  rand:                 ['rstate', 'm'],
+  rand:                 ['m', 'rstate'],
   real:                 ['x'],
   reverse:              ['xs'],
   rnginit:              ['rngseed'],

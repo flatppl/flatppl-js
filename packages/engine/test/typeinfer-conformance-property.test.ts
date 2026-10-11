@@ -147,7 +147,7 @@ test('property: const-eval chain through lengthof / arithmetic / iid', () => {
       // sample's shape is exactly the iid shape — no sample
       // variability noise.
       const src = `data = ${data}
-result = rand(rnginit([1, 2, 3, 4]), iid(Dirac(value = 1.0), lengthof(data)))`;
+result = rand(iid(Dirac(value = 1.0), lengthof(data)), rnginit([1, 2, 3, 4]))`;
       const r = engine.processSource(src);
       const errs = r.diagnostics.filter((d: any) => d.severity === 'error');
       if (errs.length > 0) return true;   // skip parse errors

@@ -562,8 +562,8 @@ test('§07 random: rnginit + rand + scalar', () => {
   parsesCleanly(`
 rngseed = [0xb2, 0x51, 0xa4, 0x93, 0x49, 0xd8, 0x68, 0x88]
 rstate = rnginit(rngseed)
-x, rstate2 = rand(rstate, Normal(0, 1))
-xs, rstate3 = rand(rstate2, iid(Normal(0, 1), 10))
+x, rstate2 = rand(Normal(0, 1), rstate)
+xs, rstate3 = rand(iid(Normal(0, 1), 10), rstate2)
 `);
 });
 
@@ -574,16 +574,16 @@ test('§07 random: rnginit accepts a scalar integer seed', () => {
   parsesCleanly(`
 rstate = rnginit(0)
 rstate2 = rnginit(12345)
-x, _ = rand(rstate, Normal(0, 1))
-y, _ = rand(rstate2, Normal(0, 1))
+x, _ = rand(Normal(0, 1), rstate)
+y, _ = rand(Normal(0, 1), rstate2)
 `);
 });
 
 test('§07 random: rand with multi-axis iid (the regression motivator)', () => {
   parsesCleanly(`
 rstate = rnginit([0xb2, 0x51, 0xa4, 0x93])
-A, _ = rand(rstate, iid(Normal(0, 1), [3, 3]))
-B, _ = rand(rstate, iid(Normal(0, 1), [2, 3, 4]))
+A, _ = rand(iid(Normal(0, 1), [3, 3]), rstate)
+B, _ = rand(iid(Normal(0, 1), [2, 3, 4]), rstate)
 `);
 });
 
@@ -792,7 +792,7 @@ a, b, c = t
 test('decomposition: drop with bare `_`', () => {
   parsesCleanly(`
 rstate = rnginit([1, 2, 3, 4])
-value, _ = rand(rstate, Normal(0, 1))
+value, _ = rand(Normal(0, 1), rstate)
 `);
 });
 

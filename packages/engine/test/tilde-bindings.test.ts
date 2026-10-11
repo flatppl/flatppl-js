@@ -63,7 +63,7 @@ test('tilde: FlatPPL decomposition `a, b ~ M`', () => {
 });
 
 test('tilde: FlatPPL `_, rs ~ rand(...)` discards first', () => {
-  const r = parseOK('_, rs ~ rand(state, m)', { variant: 'flatppl' });
+  const r = parseOK('_, rs ~ rand(m, state)', { variant: 'flatppl' });
   // Should parse cleanly even though spec leans on `=` here; the
   // tilde form is still grammatically valid.
   assert.ok(r.bindings.has('rs'));

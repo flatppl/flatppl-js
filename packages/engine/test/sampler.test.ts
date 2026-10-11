@@ -560,7 +560,7 @@ test('rnginit: a scalar seed equals its 8-byte little-endian byte vector', () =>
 test('rnginit: a scalar seed and its byte vector give the same stream', () => {
   const measureIR = call('Normal', [], { mu: lit(0), sigma: lit(1) });
   const draw = (state: any) => sampler.evaluateExpr(
-    call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }, measureIR]),
+    call('rand', [measureIR, { kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }]),
     { rs: state });
   const fromScalar = draw(initScalar(7));
   const fromBytes = draw(initBytes([7, 0, 0, 0, 0, 0, 0, 0]));
@@ -622,7 +622,7 @@ test('rand on Normal: returns (value, new_state) tuple, threads state', () => {
     {});
   const measureIR = call('Normal', [], { mu: lit(0), sigma: lit(1) });
   const tuple = sampler.evaluateExpr(
-    call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }, measureIR]),
+    call('rand', [measureIR, { kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }]),
     { rs: init });
   assert.ok(Array.isArray(tuple) && tuple.length === 2);
   const [value, newState] = tuple;
@@ -638,7 +638,7 @@ test('rand on iid(Normal, n): returns array of n + new state', () => {
     lit(10),
   ]);
   const tuple = sampler.evaluateExpr(
-    call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }, iidIR]),
+    call('rand', [iidIR, { kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }]),
     { rs: init });
   const [arr, newState] = tuple;
   assert.ok(Array.isArray(arr) && arr.length === 10);
@@ -647,20 +647,20 @@ test('rand on iid(Normal, n): returns array of n + new state', () => {
 });
 
 test('rand: chained calls thread state through (deterministic)', () => {
-  // (random_data, rstate2) = rand(rstate, iid(Normal,5))
-  // (more,        rstate3) = rand(rstate2, iid(Exponential,3))
+  // (random_data, rstate2) = rand(iid(Normal,5), rstate)
+  // (more,        rstate3) = rand(iid(Exponential,3), rstate2)
   // Compute twice with same seed; results identical.
   function run() {
     const rs1 = sampler.evaluateExpr(
       call('rnginit', [call('vector', [lit(0xb2), lit(0x51), lit(0xa4), lit(0x93)])]),
       {});
     const t1 = sampler.evaluateExpr(
-      call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() },
-                    call('iid', [call('Normal', [], { mu: lit(0), sigma: lit(1) }), lit(5)])]),
+      call('rand', [call('iid', [call('Normal', [], { mu: lit(0), sigma: lit(1) }), lit(5)]),
+                    { kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }]),
       { rs: rs1 });
     const t2 = sampler.evaluateExpr(
-      call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() },
-                    call('iid', [call('Exponential', [], { rate: lit(1) }), lit(3)])]),
+      call('rand', [call('iid', [call('Exponential', [], { rate: lit(1) }), lit(3)]),
+                    { kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }]),
       { rs: t1[1] });
     return [t1[0], t2[0]];
   }
@@ -680,7 +680,7 @@ test('rand on joint(record): returns record + new state', () => {
     loc: synthLoc(),
   };
   const tuple = sampler.evaluateExpr(
-    call('rand', [{ kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }, jointIR]),
+    call('rand', [jointIR, { kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }]),
     { rs: init });
   const [rec, newState] = tuple;
   assert.equal(typeof rec, 'object');
@@ -689,10 +689,10 @@ test('rand on joint(record): returns record + new state', () => {
   assert.ok(newState && newState.key);
 });
 
-test('rand: refuses a non-state first arg with a clear error', () => {
+test('rand: refuses a non-state second arg with a clear error', () => {
   const measureIR = call('Normal', [], { mu: lit(0), sigma: lit(1) });
   assert.throws(
-    () => sampler.evaluateExpr(call('rand', [lit(42), measureIR]), {}),
+    () => sampler.evaluateExpr(call('rand', [measureIR, lit(42)]), {}),
     /must be an rngstate/);
 });
 
@@ -762,7 +762,7 @@ test('tuple_get: applied to a rand result extracts the value slot', () => {
   const init = rng.seedFromBytes([99]);
   const measureIR = call('Normal', [], { mu: lit(0), sigma: lit(1) });
   const randCall = call('rand', [
-    { kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }, measureIR]);
+    measureIR, { kind: 'ref', ns: 'self', name: 'rs', loc: synthLoc() }]);
   const valueSlot = call('tuple_get', [randCall, lit(0)]);
   const stateSlot = call('tuple_get', [randCall, lit(1)]);
   const env = { rs: init };

@@ -3,8 +3,8 @@
 // wave-j1 fix round 1: a NAMED-BINDING weighted/logweighted measure sampled
 // via `rand` is a second live route to the same defect walkWeightedRefuse
 // (sampler.ts) closes for the INLINE form. `w = weighted(...); s, _ =
-// rand(state, w)` classifies as a `randsample` derivation (materialiser.ts)
-// — a completely different code path from `rand(state, weighted(...))`
+// rand(w, state)` classifies as a `randsample` derivation (materialiser.ts)
+// — a completely different code path from `rand(weighted(...), state)`
 // written inline, which classifies `evaluate` and routes through
 // sampler.walk. `matRandSample` used to resolve `w`'s materialised measure
 // and rebuild an unweighted array measure from its `.samples`/`.value.data`,
@@ -31,7 +31,7 @@ rstate = rnginit(rngseed)
 test('randsample: named weighted binding refuses to sample rather than dropping the weight', async () => {
   const src = RNGSEED_SRC + `
 w = weighted(2.0, Normal(0, 1))
-s, rstate2 = rand(rstate, w)
+s, rstate2 = rand(w, rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 8 });
   assert.equal(built.derivations.s.kind, 'randsample',
@@ -45,7 +45,7 @@ s, rstate2 = rand(rstate, w)
 test('randsample: named logweighted binding refuses to sample rather than dropping the weight', async () => {
   const src = RNGSEED_SRC + `
 w = logweighted(0.5, Normal(0, 1))
-s, rstate2 = rand(rstate, w)
+s, rstate2 = rand(w, rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 8 });
   assert.equal(built.derivations.s.kind, 'randsample');
@@ -58,7 +58,7 @@ s, rstate2 = rand(rstate, w)
 test('randsample: function-weighted named binding names the exact op (weighted)', async () => {
   const src = RNGSEED_SRC + `
 w = weighted(fn(abs(_) + 0.1), Normal(0, 1))
-s, rstate2 = rand(rstate, w)
+s, rstate2 = rand(w, rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 8 });
   assert.equal(built.derivations.s.kind, 'randsample');
@@ -73,7 +73,7 @@ s, rstate2 = rand(rstate, w)
 test('randsample: function-logweighted named binding names the exact op (logweighted)', async () => {
   const src = RNGSEED_SRC + `
 w = logweighted(fn(-abs(_)), Normal(0, 1))
-s, rstate2 = rand(rstate, w)
+s, rstate2 = rand(w, rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 8 });
   assert.equal(built.derivations.s.kind, 'randsample');
@@ -86,7 +86,7 @@ s, rstate2 = rand(rstate, w)
 test('randsample: iid(w, n) over a named weighted binding also refuses', async () => {
   const src = RNGSEED_SRC + `
 w = weighted(2.0, Normal(0, 1))
-s, rstate2 = rand(rstate, iid(w, 5))
+s, rstate2 = rand(iid(w, 5), rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 8 });
   assert.equal(built.derivations.s.kind, 'randsample');
@@ -101,7 +101,7 @@ test('randsample: an alias chain to a weighted binding still refuses', async () 
   const src = RNGSEED_SRC + `
 w = weighted(2.0, Normal(0, 1))
 w2 = w
-s, rstate2 = rand(rstate, w2)
+s, rstate2 = rand(w2, rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 8 });
   // Alias-resolution (lift.ts) collapses the ref before classification, so
@@ -122,7 +122,7 @@ test('randsample: a non-weighted composite still samples (no regression)', async
 x ~ Normal(0, 1)
 y = 2.0 * x
 law = lawof(y)
-s, rstate2 = rand(rstate, law)
+s, rstate2 = rand(law, rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 8 });
   assert.equal(built.derivations.s.kind, 'randsample');

@@ -1232,7 +1232,7 @@ function classifyDerivation(
       const appliedChain = classifyAppliedChain(rhsIR, bindings);
       if (appliedChain) return appliedChain;
     }
-    // `samples, _ = rand(state, iid(<composite M>, n))` destructures to
+    // `samples, _ = rand(iid(<composite M>, n), state)` destructures to
     // `tuple_get(<rand>, 0)`. The DRAW of a forward composite measure
     // (lawof of a broadcast/aggregate, a pushfwd, …) can't be sampled by
     // the per-draw measure walker (sampler.walk), but the batched materialiser can —
@@ -2314,9 +2314,9 @@ function classifyIid(
 
 // Demand-driven composite `rand` draw (engine-concepts §11 (demand-driven composite rand)).
 //
-// `samples, _ = rand(state, iid(M, count))` lowers (multi-LHS) to
+// `samples, _ = rand(iid(M, count), state)` lowers (multi-LHS) to
 // `samples = tuple_get(%mlhs, 0)` / `_ = tuple_get(%mlhs, 1)` with
-// `%mlhs = rand(state, iid(M, count))`. This classifier intercepts the
+// `%mlhs = rand(iid(M, count), state)`. This classifier intercepts the
 // DRAW half — `tuple_get(<rand>, 0)` — and, when `M` is a COMPOSITE
 // measure, routes it to the batched materialiser (kind `randsample`)
 // instead of the per-draw measure walker (sampler.walk) that `evaluate`

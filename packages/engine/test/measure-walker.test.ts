@@ -247,7 +247,7 @@ test('walk: unknown op gives a clear "not a measure expression" error', () => {
 // no separate ziggurat scalar realisation. Pins the leaf-collapse.
 // =====================================================================
 
-test('walk: rand(state, Normal) === rand(state, iid(Normal, 1))[0] (one leaf endpoint)', () => {
+test('walk: rand(Normal, state) === rand(iid(Normal, 1), state)[0] (one leaf endpoint)', () => {
   const scalar = sampler.walk(rng.stateFromKey(21), STD_NORMAL, {});
   const single = sampler.walk(rng.stateFromKey(21), iid(STD_NORMAL, 1), {});
   assert.equal(Array.isArray(single.value), true);

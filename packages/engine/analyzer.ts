@@ -1422,7 +1422,7 @@ function computePhases(bindings: any) {
   // parameters' value-sets, not the function's result. Walking them
   // would propagate the formal's elementof phase through any
   // downstream `rand` / `lawof`, mis-classifying calls like
-  // `a = f(par = beta1); rand(state, lawof(a))` as parameterized
+  // `a = f(par = beta1); rand(lawof(a), state)` as parameterized
   // even when beta1 (the call's argument) is fixed.
   const absorbedCache = new Map<string, string>();
   const absorbedVisiting = new Set<string>();
@@ -1442,8 +1442,8 @@ function computePhases(bindings: any) {
     // (`k(theta)` surfaces theta's phase through the arg). Descending into
     // the body instead surfaces elementof leaves BEHIND the declared cut —
     // `kernelof(zs, pars = pars)` reaches the module `pars` through body
-    // refs — so an applied kernel with FIXED args (`rand(state,
-    // k_model(glob_pars))`) would mis-phase as parameterized, knocking the
+    // refs — so an applied kernel with FIXED args (`rand(k_model(glob_pars),
+    // state)`) would mis-phase as parameterized, knocking the
     // draw off the fixed pre-eval path (spec §07: rand propagates phases
     // normally). Type list mirrors ir-shared.isCallableLikeBindingType
     // (the canonical catalogue; inlined here because ir-shared imports
@@ -1495,7 +1495,7 @@ function computePhases(bindings: any) {
       phase = 'fixed';
     } else if (cn === 'lawof' || cn === 'rand') {
       // Absorbs stochasticity. `lawof` reifies the ancestor sub-DAG
-      // as a measure (spec §sec:lawof); `rand(state, M)` collapses
+      // as a measure (spec §sec:lawof); `rand(M, state)` collapses
       // a measure into one threaded draw, owning the state across
       // every stochastic ancestor of M. In both cases the result is
       // fixed UNLESS an elementof remains in the ancestor closure
@@ -3812,7 +3812,7 @@ function analyze(ast: any, source: string, opts?: any) {
   // Multi-LHS pass: rewrite `a, b, ... = <call returning tuple>` so each
   // named binding's effective RHS is `tuple_get(<shared-call>, <slot>)`,
   // backed by one synthetic shared binding that holds the original
-  // call. Per spec §sec:random's `rand(rstate, m)` returns a tuple
+  // call. Per spec §sec:random's `rand(m, rstate)` returns a tuple
   // `(value, new_rstate)`; this generalises to any tuple-returning
   // RHS so multi-LHS is a uniform feature.
   //

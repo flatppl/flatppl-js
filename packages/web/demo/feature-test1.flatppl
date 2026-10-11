@@ -56,9 +56,9 @@ the engine suite).
 forward_kernel2, prior2 = disintegrate(["obs"], joint_model)
 
 rstate1 = rnginit([1,2,3,4])
-rand_pars, rstate2 = rand(rstate1, prior)
+rand_pars, rstate2 = rand(prior, rstate1)
 expected_obs = forward_kernel(rand_pars)
-rand_obs_data, _ = rand(rstate2, expected_obs)
+rand_obs_data, _ = rand(expected_obs, rstate2)
 rand_obs_values = rand_obs_data.obs
 
 # Observed data

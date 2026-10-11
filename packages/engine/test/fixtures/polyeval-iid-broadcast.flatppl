@@ -30,4 +30,4 @@ Y_dist = lawof(Y)
 
 rstate = rnginit([1, 2, 3, 4])
 % Samples of the law of Y
-Y_samples, _ = rand(rstate, iid(Y_dist, 1000))
+Y_samples, _ = rand(iid(Y_dist, 1000), rstate)
