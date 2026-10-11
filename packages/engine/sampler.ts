@@ -4171,9 +4171,25 @@ function walkNormalizeRefuse(state: any, ir: IRNode, env: any, ctx: any): any {
 /** §06 exact tilt laws, sharing the iid leaf endpoint and RNG successor. */
 function walkTilt(state: any, ir: any, env: any, ctx: any): any {
   const tilt = require('./tilt.ts');
-  const spec = ir.tiltNormal || tilt.normalVector(ir, (x: any) => evaluateExpr(x, env));
+  const spec = ir.tiltLaw || tilt.exactLaw(ir, (x: any) => evaluateExpr(x, env));
   if (!spec) throw new Error('sampler.walk: tilt has no exact sampler for these operands');
+  if (spec.kind === 'orderedIid') {
+    const draw = walkInner(state, spec.source, env, ctx);
+    const data = Float64Array.from(draw.value.data || draw.value);
+    data.sort();
+    return { value: data, state: draw.state };
+  }
   state = fillEnvFromRefs(state, { args: [spec.mu, spec.sigma] }, env, ctx);
+  if (spec.kind === 'zeroSumNormals') {
+    const law = tilt.conditionalNormal(evaluateExpr(spec.mu, env), evaluateExpr(spec.sigma, env), spec.n);
+    const normal = { kind: 'call', op: 'Normal', args: [
+      { kind: 'lit', value: 0 }, { kind: 'lit', value: 1 },
+    ] };
+    const draw = sampleLeafN(state, normal, env, [spec.n]);
+    const data = Float64Array.from(draw.value.data || draw.value);
+    tilt.transformConditional(data, law);
+    return { value: data, state: draw.state };
+  }
   tilt.checkParameters(+evaluateExpr(spec.mu, env), +evaluateExpr(spec.sigma, env));
   const normal = { kind: 'call', op: 'Normal', kwargs: {
     mu: spec.set === 'zerosum' ? { kind: 'lit', value: 0 } : spec.mu,

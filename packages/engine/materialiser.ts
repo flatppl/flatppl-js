@@ -3814,8 +3814,31 @@ function _bridgeToHandler(ir: any, ctx: any): Promise<any> {
 /** Exact §06 tilt sampling uses the existing iid parameter/weight plumbing. */
 async function matTilt(ir: any, ctx: any, name = '%materialise_ir:tilt'): Promise<any> {
   const tilt = require('./tilt.ts');
-  const spec = ir.tiltNormal || tilt.normalVector(ir);
-  if (!spec) throw new Error('tilt: an exact sampler is only implemented for iid Normal on ordered/zerosum supports');
+  const spec = ir.tiltLaw || tilt.exactLaw(ir);
+  if (!spec) throw new Error('tilt: no exact sampler is implemented for these operands');
+  if (spec.kind === 'orderedIid') {
+    const measure = await materialiseMeasureIR(spec.source, { ...ctx, rootKey: nameSeed(name, ctx.rootKey) });
+    const data = Float64Array.from(measure.value.data);
+    for (let i = 0; i < ctx.sampleCount; i++) data.subarray(i * spec.n, (i + 1) * spec.n).sort();
+    return { ...measure, samples: data, value: { ...measure.value, data } };
+  }
+  if (spec.kind === 'zeroSumNormals') {
+    const params = { kind: 'call', op: 'vector', args: [spec.mu, spec.sigma] };
+    const { refArrays, fixedEnv, parents } = await prepareDensityRefs(params, ctx, 'tilt');
+    const lawAt = tilt.conditionalLaws(spec, refArrays, ctx.sampleCount, fixedEnv);
+    const normal = { kind: 'call', op: 'Normal', args: [
+      { kind: 'lit', value: 0 }, { kind: 'lit', value: 1 },
+    ] };
+    const measure = await materialiseMeasureIR({ kind: 'call', op: 'iid',
+      args: [normal, { kind: 'lit', value: spec.n }] },
+    { ...ctx, rootKey: nameSeed(name, ctx.rootKey) });
+    const data = Float64Array.from(measure.value.data);
+    for (let i = 0; i < ctx.sampleCount; i++) {
+      tilt.transformConditional(data.subarray(i * spec.n, (i + 1) * spec.n), lawAt(i));
+    }
+    return { ...measure, samples: data, value: { ...measure.value, data },
+      logWeights: empirical.propagateLogWeights([measure, ...parents]) };
+  }
   // Resolve the source parameters too: a cancelled mean must still be valid.
   const params = { kind: 'call', op: 'vector', args: [spec.mu, spec.sigma] };
   const parents: any[] = [];

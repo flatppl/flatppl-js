@@ -5539,10 +5539,13 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
   }
   if (ir.op === 'tilt' && ir.args?.length === 2) {
     const expanded = { ...ir, args: ir.args.map((a: any) => _expandStructural(a, ctx, visited)) };
+    // Dependency probes have no bindings for unresolved composite operands.
+    // Keep the measure IR until the scoring/sampling expansion can resolve it.
+    if (!ctx.bindings) return expanded;
     const tilt = require('./tilt.ts');
-    const exact = tilt.normalVector(expanded, (x: any) =>
+    const exact = tilt.exactLaw(expanded, (x: any) =>
       resolveConstant(x, ctx.bindings, new Set(), ctx.fixedValues));
-    return exact ? { ...expanded, tiltNormal: exact } : tilt.definition(expanded);
+    return exact ? { ...expanded, tiltLaw: exact } : tilt.definition(expanded);
   }
   if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
     const inner: any = _expandStructural(ir.args[0], ctx, visited);

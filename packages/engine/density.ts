@@ -936,16 +936,34 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   return rest;
 }
 
-/** §06 exact Normal tilting, evaluated at each atom's current parameters. */
+/** §06 closed tilting laws, evaluated at each atom's current parameters. */
 function walkTilt(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   const tilt = require('./tilt.ts');
-  const spec = ir.tiltNormal || tilt.normalVector(ir);
+  const spec = ir.tiltLaw || tilt.exactLaw(ir);
   if (!spec) throw new Error('density: tilt requires an evaluable normalizer');
   const { head, rest } = consumeVector(value, spec.n);
   // The coordinate convention is the same as Lebesgue(zerosum(n)); its
   // dependent coordinate is supplied by the caller's chart, not an equality
   // test on floating point sums. n=1 still consumes a one-vector.
   const inside = samplerLib.inVectorSet(head, spec.set);
+  if (spec.kind === 'orderedIid') {
+    walkAcc(spec.source, value, refArrays, N, opts, acc, baseEnv, overlay);
+    let logFactorial = 0;
+    for (let k = 2; k <= spec.n; k++) logFactorial += Math.log(k);
+    for (let i = 0; i < N; i++) acc[i] = inside ? acc[i] + logFactorial : -Infinity;
+    return rest;
+  }
+  if (spec.kind === 'zeroSumNormals') {
+    const lawAt = tilt.conditionalLaws(spec, refArrays, N, baseEnv, overlay);
+    for (let i = 0; i < N; i++) {
+      const law = lawAt(i);
+      if (!inside) { acc[i] = -Infinity; continue; }
+      let squared = 0;
+      if (spec.n > 1) for (let j = 0; j < spec.n; j++) squared += ((+head[j] - law.center[j]) / law.sigma[j]) ** 2;
+      acc[i] += law.logConstant - squared / 2;
+    }
+    return rest;
+  }
   const mus = new Float64Array(N);
   applyAtomScalar(spec.mu, refArrays, N, baseEnv, overlay, mus,
     (a: any, i: number, mu: number) => { a[i] = mu; });

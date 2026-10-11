@@ -106,9 +106,15 @@ Reference measures and unnormalized components do not satisfy this proof.
 Normalization functions establish simplex membership only for provably nonempty inputs.
 
 `tilt` retains both measure operands and live parameters until evaluation.
-`tilt.ts` recognizes iid Normal laws on ordered and zero-sum Lebesgue bases;
-density and sampling use exact normalization, with sorted or centered draws.
-Other cases expand to the defining normalize/logweighted expression and use
+`tilt.ts` recognizes continuous scalar iid laws on ordered Lebesgue bases and
+independent Normal laws on zero-sum bases, including scalar/vector broadcasting.
+The ordered normalizer is `1/n!`; sampling sorts a source iid vector. The
+zero-sum Normal normalizer is the sum density at zero. Density and sampling
+share the conditional mean and scale-relative variance calculation. Existing
+iid Normal arithmetic and RNG consumption remain unchanged. Parameter rows
+use the existing broadcast shape rules so inferred parameters stay live.
+Unsupported ordered/zero-sum source laws refuse with a named diagnostic.
+Other bases expand to the defining normalize/logweighted expression and use
 its existing capabilities. Unsupported normalizers or samplers refuse queries.
 
 Record-valued broadcasts collect into tables, including nested record columns.
