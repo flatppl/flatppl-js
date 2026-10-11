@@ -122,14 +122,30 @@ y ~ Normal(sum(effects), 1)
 model = kernelof(y, scale = s, effects = effects)
 L = likelihoodof(model, 0)
 score = logdensityof(L, record(scale = 3, effects = [-1, 0, 1]))
-rng = rnginit([0xb2, 0x51, 0xa4, 0x93, 0x49, 0xd8, 0x68, 0x88])
-draw, next = rand(rng, rebase(iid(Normal(7, 2), 3), Lebesgue(zerosum(3))))
 `, { sampleCount: 8 });
   close((await ctx.getMeasure('score')).samples[0], -0.5 * Math.log(2 * Math.PI));
   const effects = await ctx.getMeasure('effects');
   assert.deepEqual(effects.value.shape, [8, 3]);
-  const draw = await ctx.getMeasure('draw');
-  assert.deepEqual(draw.value.shape.slice(-1), [3]);
+});
+
+test('exact rebase draws retain the iid Normal RNG continuation', async () => {
+  const { ctx } = makeMatCtx(`
+rng = rnginit([1, 2, 3, 4])
+x, xs = rand(rng, iid(Normal(0, 2), 3))
+z, zs = rand(rng, rebase(iid(Normal(7, 2), 3), Lebesgue(zerosum(3))))
+o, os = rand(rng, rebase(iid(Normal(0, 2), 3), Lebesgue(ordered(3))))
+after_x, _ = rand(xs, iid(Normal(0, 1), 4))
+after_z, _ = rand(zs, iid(Normal(0, 1), 4))
+after_o, _ = rand(os, iid(Normal(0, 1), 4))
+`, { sampleCount: 4 });
+  const data = async (name: string) => Array.from((await ctx.getMeasure(name)).value.data) as number[];
+  const x = await data('x');
+  const z = await data('z');
+  const mean = x.reduce((a, b) => a + b, 0) / x.length;
+  for (let i = 0; i < x.length; i++) close(z[i], x[i] - mean);
+  assert.deepEqual(await data('o'), x.slice().sort((a, b) => a - b));
+  assert.deepEqual(await data('after_z'), await data('after_x'));
+  assert.deepEqual(await data('after_o'), await data('after_x'));
 });
 
 test('rebase applies inline kernels and refuses an unsupported sampler', async () => {

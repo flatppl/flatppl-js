@@ -3919,8 +3919,10 @@ function classifyRandTuple(rhsIR: any, bindings: any, idx: number): any {
     if (!ib || !ib.ir) break;
     innerIR = ib.ir;
   }
+  // Exact rebase sampling also threads the iid Normal successor through
+  // the per-draw walker; splitting its state would skip that continuation.
   const isComposite = !(innerIR && innerIR.kind === 'call'
-                        && SAMPLEABLE_DISTRIBUTIONS.has(innerIR.op));
+                        && (SAMPLEABLE_DISTRIBUTIONS.has(innerIR.op) || innerIR.op === 'rebase'));
 
   return { stateIR, fromIR, countIR, isComposite };
 }
