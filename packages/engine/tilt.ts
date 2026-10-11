@@ -1,6 +1,6 @@
 'use strict';
 
-// Spec §06 rebase: retain the density expression and the explicit reference
+// Spec §06 tilt: retain the density expression and the explicit reference
 // measure until scoring/sampling. In particular, an inferred Normal scale must
 // never be replaced by a normalizer evaluated at a materialised parameter draw.
 
@@ -8,7 +8,7 @@ const call = (op: string, args: any[]) => ({ kind: 'call', op, args });
 
 /** Recognise the two exact iid-Normal vector laws required by §06. */
 function normalVector(ir: any, resolveValue?: (ir: any) => any): any {
-  if (ir?.op !== 'rebase' || ir.args?.length !== 2) return null;
+  if (ir?.op !== 'tilt' || ir.args?.length !== 2) return null;
   const [m, b] = ir.args;
   if (m?.op !== 'iid' || m.args?.length !== 2 || m.args[0]?.op !== 'Normal'
       || b?.op !== 'Lebesgue') return null;
@@ -27,7 +27,7 @@ function normalVector(ir: any, resolveValue?: (ir: any) => any): any {
 
 /** Defining measure algebra for cases served by the existing normalizer. */
 function definition(ir: any): any {
-  const point = { kind: 'ref', ns: '%local', name: '%rebase_variate' };
+  const point = { kind: 'ref', ns: '%local', name: '%tilt_variate' };
   const weight = {
     kind: 'call', op: 'functionof', params: [point.name], paramKwargs: [point.name],
     body: call('logdensityof', [ir.args[0], point]),
@@ -38,7 +38,7 @@ function definition(ir: any): any {
 /** Validate the source law even where its common mean cancels algebraically. */
 function checkParameters(mu: number, sigma: number) {
   if (!Number.isFinite(mu) || !Number.isFinite(sigma) || !(sigma > 0)) {
-    throw new Error('rebase: exact Normal laws require finite mu and finite sigma > 0');
+    throw new Error('tilt: exact Normal laws require finite mu and finite sigma > 0');
   }
 }
 

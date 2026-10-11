@@ -231,7 +231,7 @@ export type DerivationKind =
   | 'evaluate'
   | 'weighted'
   | 'normalize'
-  | 'rebase'
+  | 'tilt'
   | 'superpose'
   | 'iid'
   | 'markovchain'

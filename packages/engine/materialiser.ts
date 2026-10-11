@@ -3074,7 +3074,7 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
 // =====================================================================
 
 const KIND_HANDLERS = {
-  rebase: (name: any, d: any, ctx: any) => matRebase(orchestrator.expandMeasure(name, ctx), ctx, name),
+  tilt: (name: any, d: any, ctx: any) => matTilt(orchestrator.expandMeasure(name, ctx), ctx, name),
   // basic
   alias:        (name: any, d: any, ctx: any) => matAlias(name, d, ctx),
   sample:       (name: any, d: any, ctx: any) => matSample(name, d, ctx),
@@ -3811,11 +3811,11 @@ function _bridgeToHandler(ir: any, ctx: any): Promise<any> {
   return handler('%mir:' + ir.op, d, childCtx);
 }
 
-/** Exact §06 rebase sampling uses the existing iid parameter/weight plumbing. */
-async function matRebase(ir: any, ctx: any, name = '%materialise_ir:rebase'): Promise<any> {
-  const rebase = require('./rebase.ts');
-  const spec = ir.rebaseNormal || rebase.normalVector(ir);
-  if (!spec) throw new Error('rebase: an exact sampler is only implemented for iid Normal on ordered/zerosum supports');
+/** Exact §06 tilt sampling uses the existing iid parameter/weight plumbing. */
+async function matTilt(ir: any, ctx: any, name = '%materialise_ir:tilt'): Promise<any> {
+  const tilt = require('./tilt.ts');
+  const spec = ir.tiltNormal || tilt.normalVector(ir);
+  if (!spec) throw new Error('tilt: an exact sampler is only implemented for iid Normal on ordered/zerosum supports');
   // Resolve the source parameters too: a cancelled mean must still be valid.
   const params = { kind: 'call', op: 'vector', args: [spec.mu, spec.sigma] };
   const parents: any[] = [];
@@ -3823,7 +3823,7 @@ async function matRebase(ir: any, ctx: any, name = '%materialise_ir:rebase'): Pr
   const [mus, sigmas] = await Promise.all([spec.mu, spec.sigma].map((param) =>
     ctx.sendWorker({ type: 'evaluateN', ir: param, count: ctx.sampleCount, refArrays })));
   for (let i = 0; i < ctx.sampleCount; i++) {
-    rebase.checkParameters(mus.samples[i], sigmas.samples[i]);
+    tilt.checkParameters(mus.samples[i], sigmas.samples[i]);
   }
   const normal = { kind: 'call', op: 'Normal', kwargs: {
     mu: spec.set === 'zerosum' ? { kind: 'lit', value: 0 } : spec.mu,
@@ -3835,7 +3835,7 @@ async function matRebase(ir: any, ctx: any, name = '%materialise_ir:rebase'): Pr
   // Copy because a cached iid source may have other consumers.
   const data = Float64Array.from(measure.value.data);
   for (let i = 0; i < ctx.sampleCount; i++) {
-    rebase.transform(data.subarray(i * spec.n, (i + 1) * spec.n), spec.set);
+    tilt.transform(data.subarray(i * spec.n, (i + 1) * spec.n), spec.set);
   }
   return { ...measure, samples: data, value: { ...measure.value, data },
     logWeights: empirical.propagateLogWeights([measure, ...parents]) };
@@ -3848,7 +3848,7 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
       "materialiseMeasureIR: non-call IR (kind '" + ir.kind + "')"));
   }
   _ensureRootKey(ctx);
-  if (ir.op === 'rebase') return matRebase(ir, ctx);
+  if (ir.op === 'tilt') return matTilt(ir, ctx);
   // clm{body, inputs, reduce} — the canonical lowered measure (measure-
   // lowering unification Phase 4, sample half). matClm feeds the boundary
   // inputs via clm.feedInputs, then walks the SAME body the density side

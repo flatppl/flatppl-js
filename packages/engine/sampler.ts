@@ -4168,20 +4168,20 @@ function walkNormalizeRefuse(state: any, ir: IRNode, env: any, ctx: any): any {
   );
 }
 
-/** §06 exact rebase laws, sharing the iid leaf endpoint and RNG successor. */
-function walkRebase(state: any, ir: any, env: any, ctx: any): any {
-  const rebase = require('./rebase.ts');
-  const spec = ir.rebaseNormal || rebase.normalVector(ir, (x: any) => evaluateExpr(x, env));
-  if (!spec) throw new Error('sampler.walk: rebase has no exact sampler for these operands');
+/** §06 exact tilt laws, sharing the iid leaf endpoint and RNG successor. */
+function walkTilt(state: any, ir: any, env: any, ctx: any): any {
+  const tilt = require('./tilt.ts');
+  const spec = ir.tiltNormal || tilt.normalVector(ir, (x: any) => evaluateExpr(x, env));
+  if (!spec) throw new Error('sampler.walk: tilt has no exact sampler for these operands');
   state = fillEnvFromRefs(state, { args: [spec.mu, spec.sigma] }, env, ctx);
-  rebase.checkParameters(+evaluateExpr(spec.mu, env), +evaluateExpr(spec.sigma, env));
+  tilt.checkParameters(+evaluateExpr(spec.mu, env), +evaluateExpr(spec.sigma, env));
   const normal = { kind: 'call', op: 'Normal', kwargs: {
     mu: spec.set === 'zerosum' ? { kind: 'lit', value: 0 } : spec.mu,
     sigma: spec.sigma,
   } };
   const draw = sampleLeafN(state, normal, env, [spec.n]);
   const data = Float64Array.from(draw.value.data || draw.value);
-  rebase.transform(data, spec.set);
+  tilt.transform(data, spec.set);
   return { value: data, state: draw.state };
 }
 
@@ -4192,7 +4192,7 @@ const MEASURE_OP_WALKERS = {
   weighted:    walkWeightedRefuse,
   logweighted: walkWeightedRefuse,
   normalize:   walkNormalizeRefuse,
-  rebase:      walkRebase,
+  tilt:        walkTilt,
   lawof:       walkUnwrap,
   draw:        walkUnwrap,
 };

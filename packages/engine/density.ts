@@ -936,11 +936,11 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   return rest;
 }
 
-/** §06 exact Normal rebasing, evaluated at each atom's current parameters. */
-function walkRebase(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
-  const rebase = require('./rebase.ts');
-  const spec = ir.rebaseNormal || rebase.normalVector(ir);
-  if (!spec) throw new Error('density: rebase requires an evaluable normalizer');
+/** §06 exact Normal tilting, evaluated at each atom's current parameters. */
+function walkTilt(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
+  const tilt = require('./tilt.ts');
+  const spec = ir.tiltNormal || tilt.normalVector(ir);
+  if (!spec) throw new Error('density: tilt requires an evaluable normalizer');
   const { head, rest } = consumeVector(value, spec.n);
   // The coordinate convention is the same as Lebesgue(zerosum(n)); its
   // dependent coordinate is supplied by the caller's chart, not an equality
@@ -953,7 +953,7 @@ function walkRebase(ir: any, value: any, refArrays: any, N: any, opts: any, acc:
   for (let k = 2; k <= spec.n; k++) logFactorial += Math.log(k);
   applyAtomScalar(spec.sigma, refArrays, N, baseEnv, overlay, acc,
     (a: any, i: number, sigma: number) => {
-      rebase.checkParameters(mus[i], sigma);
+      tilt.checkParameters(mus[i], sigma);
       if (!inside) { a[i] = -Infinity; return; }
       let squared = 0;
       for (let j = 0; j < spec.n; j++) {
@@ -2779,7 +2779,7 @@ const OP_HANDLERS = {
   logweighted: walkLogWeighted,
   truncate:    walkTruncate,
   normalize:   walkNormalize,
-  rebase:      walkRebase,
+  tilt:        walkTilt,
   Lebesgue:    walkLebesgue,
   joint:       walkJointFieldsOrPositional,
   record:      walkJointFieldsOrPositional,

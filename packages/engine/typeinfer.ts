@@ -791,7 +791,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // "weighted(measure, measure)" reject path).
       case 'weighted':
       case 'logweighted': return write(inferWeighted(expr, scopes), expr);
-      case 'rebase':      return write(inferRebase(expr, scopes), expr);
+      case 'tilt':        return write(inferTilt(expr, scopes), expr);
       case 'pushfwd':     return write(inferPushfwd(expr, scopes), expr);
       // relabel(X, names) — output-side axis renaming (spec §04). Kind-
       // transparent: a relabel'd measure stays a measure (so iid /
@@ -4089,17 +4089,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.isValue(bodyT) ? bodyT : null;
   }
 
-  /** §06 rebase keeps B's variate and a common named kernel interface. */
-  function inferRebase(expr: any, scopes: any): any {
+  /** §06 tilt keeps B's variate and a common named kernel interface. */
+  function inferTilt(expr: any, scopes: any): any {
     const args = expr.args || [];
-    if (args.length !== 2) return arityError('rebase', 2, args.length, expr.loc);
-    const parts = args.map((a: any) => jointComponent(a, scopes, 'rebase operand', a.loc));
-    if (parts.some((p: any) => !p || p.failed)) return T.failed('rebase operand');
+    if (args.length !== 2) return arityError('tilt', 2, args.length, expr.loc);
+    const parts = args.map((a: any) => jointComponent(a, scopes, 'tilt operand', a.loc));
+    if (parts.some((p: any) => !p || p.failed)) return T.failed('tilt operand');
     const [m, b] = parts;
     if (T.unify(m.domain, b.domain, new Map()) == null) {
       diagnostics.push({ severity: 'error', loc: expr.loc,
-        message: 'rebase: operands must have the same variate type and shape (spec §06)' });
-      return T.failed('rebase variate');
+        message: 'tilt: operands must have the same variate type and shape (spec §06)' });
+      return T.failed('tilt variate');
     }
     if (m.inputs.length && b.inputs.length
         && (m.inputs.length !== b.inputs.length || m.inputs.some((a: any) => {
@@ -4107,8 +4107,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           return !other || T.unify(a.type, other.type, new Map()) == null;
         }))) {
       diagnostics.push({ severity: 'error', loc: expr.loc,
-        message: 'rebase: non-nullary operands must have the same named input interface (spec §06)' });
-      return T.failed('rebase interface');
+        message: 'tilt: non-nullary operands must have the same named input interface (spec §06)' });
+      return T.failed('tilt interface');
     }
     const inputs = unionKernelInputs([m.inputs, b.inputs]);
     const result = T.measure(b.domain, { mass: T.MASS_NORMALIZED });
@@ -5429,7 +5429,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'lawof': return valuesetOfExpr(args[0]);
       // Reweighting / truncation never grows the support.
       case 'normalize': case 'bayesupdate': return valuesetOfExpr(args[0]);
-      case 'weighted': case 'logweighted': case 'rebase': return valuesetOfExpr(args[1]);
+      case 'weighted': case 'logweighted': case 'tilt': return valuesetOfExpr(args[1]);
       case 'truncate': {
         const s = vsLib.setExprValueset(args[1], _resolveDim, _resolveSetRef);
         return s === vsLib.UNKNOWN ? valuesetOfExpr(args[0]) : s;
@@ -6119,7 +6119,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // normalizer) that gate exists to catch.
       case 'lawof':
         return isMeasureTyped(args[0]) ? massOfExpr(args[0]) : T.MASS_NORMALIZED;
-      case 'rebase': return T.MASS_NORMALIZED;
+      case 'tilt': return T.MASS_NORMALIZED;
       case 'normalize': {
         const base = massOfExpr(args[0]);
         if (base === T.MASS_NULL) {

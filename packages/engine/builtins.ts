@@ -225,7 +225,7 @@ const MEASURE_OPS = new Set([
   // Reweighting
   'weighted', 'logweighted', 'bayesupdate',
   // Normalization and mass
-  'normalize', 'totalmass', 'rebase',
+  'normalize', 'totalmass', 'tilt',
   // Composition
   'superpose', 'joint', 'iid', 'kchain', 'jointchain', 'markovchain', 'kscan',
   // Weighted-superposition lift (spec §06 `ksuperpose`). Expanded in the
@@ -272,7 +272,7 @@ const MEASURE_OPS = new Set([
 const MEASURE_PRODUCING = new Set([
   ...DISTRIBUTIONS,
   'lawof',
-  'weighted', 'logweighted', 'bayesupdate', 'normalize', 'rebase',
+  'weighted', 'logweighted', 'bayesupdate', 'normalize', 'tilt',
   'superpose', 'joint', 'iid', 'kchain', 'jointchain', 'markovchain', 'kscan',
   'truncate', 'pushfwd',
 ]);
