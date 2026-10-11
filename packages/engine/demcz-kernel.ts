@@ -15,6 +15,7 @@ function makeDemczKernel(opts?: any) {
   // driver's init opts — the driver does not forward gamma/b/thin.
   const cfg = opts || {};
   return {
+    defaultWalkers(dim: number) { return Math.max(8, 2 * dim); },
     init(nWalkers: number, dim: number) {
       if (nWalkers < 4) {
         throw new Error(`demcz: nWalkers must be >= 4 (got ${nWalkers})`);

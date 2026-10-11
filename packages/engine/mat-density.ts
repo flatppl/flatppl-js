@@ -403,10 +403,10 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
           : backend === 'slice' ? makeSliceKernel()
           : isEss ? makeEllipticalSliceKernel() : mhKernel;
         // The viewer keeps chains=4 while walkers=null explicitly selects
-        // emcee's automatic ensemble size. Only absent walkers uses the alias.
-        const nWalkers = backend === 'emcee'
+        // automatic ensemble sizing. Only absent walkers uses the chains alias.
+        const nWalkers = backend === 'emcee' || backend === 'demcz'
           ? (o.walkers === null ? undefined : o.walkers ?? o.chains)
-          : o.walkers ?? o.chains ?? (backend === 'demcz' ? Math.max(8, 2 * mv.dim) : 4);
+          : o.walkers ?? o.chains ?? 4;
         post = driver.runMcmc(mv, kernel, {
           nWalkers, warmup: o.warmup ?? 1000, draws: o.draws ?? 1000, seed: (o.seed ?? 0), a: o.a, essMaxShrink: o.essMaxShrink, onProgress,
           // Freeze-then-parallel (mh across a worker pool): `initAdapt` (a frozen
