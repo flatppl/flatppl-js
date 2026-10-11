@@ -362,6 +362,15 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
     if (!d) return { kind: 'real' };
     if (d.kind === 'alias') { cur = d.from; continue; }
     if (d.kind === 'normalize') { cur = d.from; continue; }
+    // §06 tilt(M, B) keeps B's reference measure. Its lifted base is a
+    // measure binding, so reuse the same support walk as an ordinary draw.
+    if (d.kind === 'tilt' && d.measureIR.args[1]?.kind === 'ref') {
+      cur = d.measureIR.args[1].name; continue;
+    }
+    if (d.kind === 'lebesguevecset'
+        && (d.set === 'ordered' || d.set === 'zerosum' || d.set === 'stdsimplex')) {
+      return { kind: d.set === 'stdsimplex' ? 'simplex' : d.set, n: d.n };
+    }
     if (d.kind === 'iid') {
       return { isIid: true, dims: d.dims as number[], elementBaseName: d.from as string };
     }
@@ -511,6 +520,13 @@ function enumerateLatents(d: any, ctx: any): any[] {
       const totalDim = dims.reduce((a: number, b: number) => a * b, 1);
       const support = elementSupportOf(info.elementBaseName, derivations, ctx);
       result.push({ name: latentName, measureName, shape: { kind: 'vector', dims: [totalDim] }, support });
+      continue;
+    }
+
+    // Whole-vector reference measures carry their width even without a
+    // materialised prior pool, including the one-vector/zero-free-axis case.
+    if (info && info.n != null) {
+      result.push({ name: latentName, measureName, shape: { kind: 'vector', dims: [info.n] }, support: info });
       continue;
     }
 
