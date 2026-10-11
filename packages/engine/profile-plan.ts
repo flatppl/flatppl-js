@@ -168,7 +168,8 @@ function resolveAxisBaseSet(source: any, bindings: any) {
     if (ir && ir.kind === 'call' && ir.op === 'elementof'
         && Array.isArray(ir.args) && ir.args.length === 1) {
       const setDescr = parseSetIR(ir.args[0]);
-      if (setDescr) return setDescr;
+      // A vector set has no per-axis bounds for the viewer's auto-domain.
+      if (setDescr && setDescr.kind !== 'vectorset') return setDescr;
     }
     // Drawn variates: look up the distribution's natural support set
     // instead of degrading to `empirical` (spec §08). Tighter ranges

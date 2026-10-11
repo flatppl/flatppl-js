@@ -382,6 +382,10 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
     }
     if (d.kind === 'truncate') {
       const s = d.setDescr;
+      // No unconstraining transform covers a truncation to a vector set.
+      if (s && s.kind === 'vectorset') {
+        return { kind: 'unsupported', distOp: 'truncate(' + s.set + '(' + s.n + '))' };
+      }
       if (s) {
         const lo = (s.lo != null && Number.isFinite(+s.lo)) ? +s.lo : -Infinity;
         const hi = (s.hi != null && Number.isFinite(+s.hi)) ? +s.hi : Infinity;

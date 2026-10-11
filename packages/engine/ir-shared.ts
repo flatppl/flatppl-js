@@ -496,8 +496,16 @@ function parseSetIR(setIR: any, bindings: any, fixedValues?: any) {
       && Array.isArray(setIR.args) && setIR.args.length >= 1) {
     return parseSetIR(setIR.args[0], bindings, fixedValues);
   }
+  // §03 sets of real n-vectors, tested as a whole (density.inVectorSet).
+  if (setIR.kind === 'call' && VECTOR_SET_OPS.has(setIR.op)
+      && Array.isArray(setIR.args) && setIR.args.length === 1) {
+    const n = resolveConstant(setIR.args[0], bindings || new Map(), new Set(), fixedValues);
+    if (Number.isInteger(n) && n >= 1) return { kind: 'vectorset', set: setIR.op, n };
+  }
   return null;
 }
+
+const VECTOR_SET_OPS = new Set(['stdsimplex', 'ordered', 'zerosum']);
 
 const NAMED_SET_NAMES = new Set([
   'reals', 'posreals', 'nonnegreals', 'unitinterval',
