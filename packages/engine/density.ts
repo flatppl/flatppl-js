@@ -963,7 +963,10 @@ function walkLebesgue(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   const vs = (ir as any).vectorSet;
   if (vs) {
     const { head, rest } = consumeVector(value, vs.n);
-    if (!samplerLib.inVectorSet(head, vs.set)) for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    const inside = vs.elem
+      ? Array.from(head as ArrayLike<number>).every((x) => inSet(+x, vs.elem))
+      : samplerLib.inVectorSet(head, vs.set);
+    if (!inside) for (let i = 0; i < N; i++) acc[i] = -Infinity;
     return rest;
   }
   const { rest } = consumeScalar(value);

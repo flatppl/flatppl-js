@@ -133,3 +133,54 @@ posterior = bayesupdate(L, prior)
     () => materialiser.materialiseMeasure('posterior', ctx, { backend: 'mh', warmup: 5, draws: 5 }),
     /truncate\(ordered\(3\)\)/);
 });
+
+test('Lebesgue(support = cartpow(reals, 3)) scores 0 at a finite point', async () => {
+  assert.equal(await lebesgue('cartpow(reals, 3)', '[-2.0, 0.5, 7.0]'), 0);
+});
+
+test('Lebesgue on a cartpow of a half-line gates every cell', async () => {
+  assert.equal(await lebesgue('cartpow(posreals, 3)', '[0.5, 0.25, 1.0]'), 0);
+  assert.equal(await lebesgue('cartpow(posreals, 3)', '[0.5, 0.0, 1.0]'), -Infinity);
+  assert.equal(await lebesgue('cartpow(nonnegreals, 2)', '[0.0, 3.0]'), 0);
+  assert.equal(await lebesgue('cartpow(interval(1.0, inf), 2)', '[1.0, 0.5]'), -Infinity);
+});
+
+test('a Lebesgue measure on an unbounded cartpow refuses to draw', async () => {
+  await assert.rejects(
+    () => scoreValue('m = Lebesgue(support = cartpow(reals, 3))', 'm'),
+    /Lebesgue\(support = cartpow\(…, 3\)\) in 'm' has no draws/);
+});
+
+test('a logdensityof weight on a bounded Lebesgue box resolves its measure', async () => {
+  // The box case failed with "measure ref '__anonN' without resolveMeasureRef opt".
+  const want = [0.5, -1.0, 2.0].reduce((acc, x) => acc + normalLogpdf(x, 1), 0);
+  const got = await score(
+    '__score__ = logdensityof(logweighted(fn(logdensityof(iid(Normal(0, 1), 3), _)), '
+    + 'Lebesgue(support = cartpow(interval(-10.0, 10.0), 3))), [0.5, -1.0, 2.0])');
+  assert.ok(Math.abs(got - want) < 1e-12, `got ${got}, want ${want}`);
+});
+
+test('the plant-growth posterior scores its log prior plus its log-likelihood', async () => {
+  // Weights of R's PlantGrowth, three groups of ten. The log-likelihood at the
+  // preset point is the closed-form normal sum, -26.815734505382686.
+  const src = `
+weight_data = [4.17, 5.58, 5.18, 6.11, 4.50, 4.61, 5.17, 4.53, 5.33, 5.14, 4.81, 4.17, 4.41, 3.59, 5.87, 3.83, 6.03, 4.89, 4.32, 4.69, 6.31, 5.12, 5.54, 5.50, 5.37, 5.29, 4.92, 6.15, 5.80, 5.26]
+group = [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 3]
+mu = elementof(reals)
+effects = elementof(zerosum(3))
+sigma = elementof(posreals)
+weight ~ Normal.(mu .+ effects[group], sigma)
+K_model = kernelof(record(weight = weight), mu = mu, effects = effects, sigma = sigma)
+L = likelihoodof(K_model, record(weight = weight_data))
+effects_prior = logweighted(fn(logdensityof(iid(Normal(0, 1), 3), _)), Lebesgue(support = zerosum(3)))
+Pi_prior = joint(mu = Normal(5, 2), effects = effects_prior, sigma = Exponential(1))
+Pi_post = bayesupdate(L, Pi_prior)
+__score__ = logdensityof(Pi_post, record(mu = 5.073, effects = [-0.041, -0.412, 0.453], sigma = 0.6))
+`;
+  const logPrior = -0.5 * Math.log(2 * Math.PI * 4) - (5.073 - 5) ** 2 / 8
+    + [-0.041, -0.412, 0.453].reduce((acc, x) => acc + normalLogpdf(x, 1), 0)
+    - 0.6;
+  const want = logPrior + -26.815734505382686;
+  const got = await score(src);
+  assert.ok(Math.abs(got - want) < 1e-12, `got ${got}, want ${want}`);
+});

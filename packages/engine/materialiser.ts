@@ -3079,8 +3079,8 @@ const KIND_HANDLERS = {
   sample:       (name: any, d: any, ctx: any) => matSample(name, d, ctx),
   lebesguebox:  (name: any, d: any, ctx: any) => matLebesgueBox(name, d, ctx),
   lebesguevecset: (name: any, d: any) => Promise.reject(new Error(
-    "Lebesgue(support = " + d.set + "(" + d.n + ")) in '" + name + "' has no draws: "
-    + 'this engine scores its density but does not sample it')),
+    "Lebesgue(support = " + (d.set === 'cartpow' ? 'cartpow(…, ' + d.n + ')' : d.set + '(' + d.n + ')')
+    + ") in '" + name + "' has no draws: this engine scores its density but does not sample it")),
   evaluate:     (name: any, d: any, ctx: any) => matEvaluate(d, ctx),
   array:        (name: any, d: any) =>      matArray(d),
   // algebra
