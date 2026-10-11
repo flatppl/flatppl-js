@@ -1375,6 +1375,20 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
     const fields = ir.fields;
     let cur = value;
     let curOverlay = overlay;
+    const observedSources = new Set(fields.map((f: any) => f.source).filter(Boolean));
+    // A retained record observes ALL its source nodes simultaneously (§04
+    // lawof). Its display order need not be the trace's dependency order:
+    // bind every observed source before any conditional density reads it.
+    // Constructor joints have no source annotations and keep their existing
+    // sequential threading. Field labels may differ from source names.
+    if (isRecordValue(value) && observedSources.size) {
+      curOverlay = { ...overlay };
+      for (const f of fields) {
+        if (f.source && Object.prototype.hasOwnProperty.call(value, f.name)) {
+          curOverlay[f.source] = value[f.name];
+        }
+      }
+    }
     for (let i = 0; i < fields.length; i++) {
       const f = fields[i];
       const { head, rest: outerRest } = consumeField(cur, f.name);
@@ -1388,8 +1402,8 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
         // Copy-on-first-write: don't entangle the caller's overlay
         // across sibling joint walks.
         curOverlay = curOverlay ? Object.assign({}, curOverlay) : {};
-        curOverlay[f.name] = head;
-        if (f.source && f.source !== f.name) curOverlay[f.source] = head;
+        if (!observedSources.has(f.name)) curOverlay[f.name] = head;
+        if (f.source) curOverlay[f.source] = head;
         // #311 dependent-threaded hierarchical record/joint: `f.threadAs`
         // (set by derivations.ts's `_recognizeDiagonalPushforwardFields`
         // for a transformed field) names this field's ancestor's OWN real
