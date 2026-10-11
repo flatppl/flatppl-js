@@ -1,8 +1,8 @@
 'use strict';
 
 // exp(x) times Normal(theta,1) has mass exp(theta + 1/2).
-// A pooled divisor changes likelihood ratios. Until this mass is supported,
-// both inference paths must refuse it instead of returning a wrong score.
+// A pooled divisor changes likelihood ratios. The affine logweighted route
+// is analytic; the ordinary weighted route must still refuse a pooled divisor.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { ctxFor } = require('./_ctx-factory.ts');
@@ -25,7 +25,7 @@ function assertLimitation(err: any, route: string): boolean {
   return true;
 }
 
-for (const weight of ['weighted(fn(exp(_))', 'logweighted(fn(_)']) {
+for (const weight of ['weighted(fn(exp(_))']) {
   const model = H + 'theta ~ Uniform(interval(0.5, 2.0))\n'
     + `m = normalize(${weight}, Normal(theta, 1.0)))\n`
     + 'y ~ m\nK = kernelof(record(y = y), theta = theta)\n'
@@ -48,6 +48,23 @@ for (const weight of ['weighted(fn(exp(_))', 'logweighted(fn(_)']) {
       (e: any) => assertLimitation(e, 'MCMC'));
   });
 }
+
+test('an affine logweight gives analytic likelihood and MCMC scores with a latent base', async () => {
+  const { ctx } = ctxFor(H + `
+theta ~ Uniform(interval(0.5, 2))
+m = normalize(logweighted(fn(_), Normal(theta,1)))
+y ~ m
+K = kernelof(record(y=y), theta=theta)
+L = likelihoodof(K, record(y=0.5))
+lp = logdensityof(L,0.5)
+posterior = bayesupdate(L,lawof(theta))
+`, 2);
+  const deriv = Object.values(ctx.derivations).find((d: any) => d.kind === 'bayesupdate');
+  const { likOf } = await buildLogPi(ctx, deriv);
+  const oracle = (theta: number) => -0.5 * Math.log(2 * Math.PI) - (0.5 - theta - 1) ** 2 / 2;
+  assert.ok(Math.abs((await ctx.getMeasure('lp')).samples[0] - oracle(0.5)) < 1e-12);
+  for (const theta of [0.5, 1.5]) assert.ok(Math.abs(likOf({theta}) - oracle(theta)) < 1e-12);
+});
 
 test('a fixed application retains the exact tilted Normal density', async () => {
   const { proc, ctx } = ctxFor(H + `

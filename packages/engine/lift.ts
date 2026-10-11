@@ -436,6 +436,10 @@ function liftInlineSubexpressions(bindings: any) {
   // explicit kwargs.
   bindings = canonicalizeImplicitBoundaries(bindings);
   const out: Map<string, any> = new Map(bindings);
+  // Preserve constructor parameters only during this lift pass, before the
+  // in-place affine lowering removes the MvNormal constructor spelling.
+  const mvNormalConstructors = new WeakMap<object, any>();
+  let exponentialTiltRevision = 0;
   let counter = 0;
   function freshName() {
     let n: string;
@@ -565,6 +569,7 @@ function liftInlineSubexpressions(bindings: any) {
   // needs the lifted shape too.
   for (const [name, binding] of bindings) {
     if (!binding.node || !binding.node.value) continue;
+    const tiltRevision = exponentialTiltRevision;
     let cloned = cloneAst(binding.node.value);
     cloned = inlineUserCall(cloned);
     visit(cloned);
@@ -594,9 +599,44 @@ function liftInlineSubexpressions(bindings: any) {
     out.set(name, {
       ...binding,
       type: newType,
+      phase: exponentialTiltRevision ? out.get(name)?.phase : binding.phase,
       node: { ...binding.node, value: cloned },
       effectiveValue: effLifted,
     });
+    if (exponentialTiltRevision !== tiltRevision) {
+      // Expanding a named weight exposes its captured value dependencies.
+      // Its callable was fixed, but the resulting constructor may depend on
+      // elementof/draw nodes; subsequent reification must see that boundary.
+      const { collectDeps, computePhases } = require('./analyzer.ts');
+      const { collectSelfRefs } = require('./ir-shared.ts');
+      const defined = new Set(out.keys());
+      for (const [n, b] of out) {
+        if (n !== name && !b.synthetic) continue;
+        const value = b.effectiveValue || b.node?.value;
+        const deps = collectDeps(mvNormalConstructors.get(value) || value, defined);
+        if (b.__mvnormalLowering) {
+          for (const ir of [b.__mvnormalLowering.muIR, b.__mvnormalLowering.covIR]) {
+            for (const dep of collectSelfRefs(ir)) { deps.deps.add(dep); deps.bodyDeps.add(dep); }
+          }
+        }
+        out.set(n, { ...b, ...Object.fromEntries(Object.entries(deps)
+          .map(([k, v]: any) => [k, Array.from(v).filter(x => x !== n)])) });
+      }
+      const affected = new Set([name]);
+      let changed = true;
+      while (changed) {
+        changed = false;
+        for (const [n, b] of out) {
+          if (!affected.has(n) && b.deps?.some((dep: string) => affected.has(dep))) {
+            affected.add(n); changed = true;
+          }
+        }
+      }
+      const phases = computePhases(out);
+      for (const [n, phase] of phases) {
+        if (out.get(n)?.synthetic || affected.has(n)) out.set(n, { ...out.get(n), phase });
+      }
+    }
   }
 
   // Post-pass: cache the lowered IR alongside the AST on every binding
@@ -934,6 +974,9 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineRelabel(astArg);
       astArg = inlineFchain(astArg);
       astArg = inlineDensityof(astArg);
+      // Recognize exponential-family laws before children are hoisted and
+      // MvNormal loses its constructor head to the affine decomposition.
+      astArg = inlineExponentialTilt(astArg);
       // pushfwd is now a first-class measure-op (classifyPushfwd +
       // matPushfwd in materialiser + density.walkPushfwd). The legacy
       // AST-rewrite to lawof(f(draw(M))) is no longer needed; sampling
@@ -1137,6 +1180,293 @@ function liftInlineSubexpressions(bindings: any) {
       astArg.args[i] = makeIdent(n, astArg.loc);
     }
     return astArg;
+  }
+
+  /**
+   * §06 normalization of an affine log weight, using §08's density formulas.
+   * Return ordinary constructors so density, materialisation and explicit rand
+   * share the existing leaf implementations (and MvNormal's affine lowering).
+   * checked expressions retain the validity of parameters that cancel in the
+   * algebra; in particular an invalid original rate must not become valid
+   * merely because the tilt subtracts a more negative number from it.
+   */
+  function inlineExponentialTilt(astArg: any) {
+    const head = (e: any) => e?.type === 'CallExpr'
+      && e.callee?.type === 'Identifier' ? e.callee.name : null;
+    const names: Record<string, string[]> = {
+      Normal: ['mu', 'sigma'], Gamma: ['shape', 'rate'], Exponential: ['rate'],
+      ChiSquared: ['k'], Bernoulli: ['p'], Binomial: ['n', 'p'],
+      Poisson: ['rate'], MvNormal: ['mu', 'cov'],
+      Geometric: ['p'], NegativeBinomial: ['alpha', 'beta'], NegativeBinomial2: ['mu', 'psi'],
+    };
+    const resolve = (e: any, seen = new Set<string>()): any => {
+      if (e?.type !== 'Identifier' || seen.has(e.name)) return e;
+      const b = bindings.get(e.name) || out.get(e.name);
+      if (!b) return e;
+      seen.add(e.name);
+      const original = b.effectiveValue || b.node?.value;
+      const lifted = out.get(e.name);
+      const rewritten = lifted?.effectiveValue || lifted?.node?.value;
+      // Repeated tilts can reuse an already rewritten leaf; original MvNormal
+      // definitions remain available after their pushfwd lowering.
+      return resolve(mvNormalConstructors.get(rewritten)
+        || (names[head(rewritten)] ? rewritten : original), seen);
+    };
+    const op = head(astArg);
+    if (op !== 'normalize' && op !== 'tilt') return astArg;
+    if (astArg.args?.length !== (op === 'tilt' ? 2 : 1)) return astArg;
+    const weighted = resolve(astArg.args[0]);
+    if (head(weighted) !== 'logweighted' || weighted.args?.length !== 2) return astArg;
+    const base = resolve(op === 'tilt' ? astArg.args[1] : weighted.args[1]);
+    const family = head(base);
+    if (!family || !names[family]) return astArg;
+    const positional = (base.args || []).filter((a: any) => a.type !== 'KeywordArg');
+    const kwargs = new Map((base.args || []).filter((a: any) => a.type === 'KeywordArg')
+      .map((a: any) => [a.name, a.value]));
+    if ([...kwargs.keys()].some((k: any) => !names[family].includes(k))) return astArg;
+    const params = names[family].map((name, i) => kwargs.get(name) || positional[i]);
+    if (params.some((p: any) => !p) || positional.length > params.length) return astArg;
+    if (op === 'tilt') {
+      const reference = resolve(weighted.args[1]);
+      const refKind = head(reference);
+      const support = resolve(reference?.args?.find((a: any) => a.type === 'KeywordArg'
+        && a.name === 'support')?.value || reference?.args?.[0]);
+      const set = support?.type === 'SetRef' ? support.name : null;
+      const discrete = ['Bernoulli', 'Binomial', 'Poisson', 'Geometric',
+        'NegativeBinomial', 'NegativeBinomial2'].includes(family);
+      // Only unit-density references whose support covers B almost everywhere
+      // can be removed. A restricted interval or another probability law adds
+      // a genuine factor to p_M and must retain the generic definition.
+      if (discrete) {
+        if (refKind !== 'Counting' || !(['integers', 'nonnegintegers'].includes(set)
+            || (family === 'Bernoulli' && set === 'booleans'))) return astArg;
+      } else if (family === 'MvNormal') {
+        const dim = __discoveredMvNormalD(params[0], out, 1);
+        if (refKind !== 'Lebesgue' || head(support) !== 'cartpow'
+            || support.args?.[0]?.name !== 'reals'
+            || support.args?.[1]?.type !== 'NumberLiteral'
+            || support.args[1].value !== dim) return astArg;
+      } else if (refKind !== 'Lebesgue' || !(set === 'reals'
+          || (family !== 'Normal' && set === 'nonnegreals'))) {
+        return astArg;
+      }
+    }
+    let fn = resolve(weighted.args[0]);
+    let param: string, body: any;
+    if (head(fn) === 'fn' && fn.args?.length === 1) {
+      param = '%exponential_tilt_variate';
+      body = cloneAst(fn.args[0]);
+      const replaceHole = (node: any): any => {
+        if (!node || typeof node !== 'object') return node;
+        if (node.type === 'Hole') return { type: 'Placeholder', name: param, loc: node.loc };
+        // Nested reifiers own their holes; they are not this fn's variate.
+        if (['fn', 'functionof', 'kernelof'].includes(head(node))) return node;
+        for (const k of Object.keys(node)) {
+          if (k === 'loc') continue;
+          node[k] = Array.isArray(node[k]) ? node[k].map(replaceHole) : replaceHole(node[k]);
+        }
+        return node;
+      };
+      body = replaceHole(body);
+    } else {
+      const resolved = __resolveFunctionofRef(fn);
+      if (!resolved) return astArg;
+      ({ param, body } = resolved);
+      const boundary = fn.args.find((a: any) => a?.type === 'KeywordArg')?.value;
+      if (boundary?.type === 'Identifier' || boundary?.type === 'Placeholder') param = boundary.name;
+    }
+    // transpose(theta)*x and sum(theta .* x) are the scalar linear statistic
+    // of a vector variate. Replace only for matching, keeping theta live.
+    let dot = false;
+    if (family === 'MvNormal') {
+      body = cloneAst(body);
+      const replaceDot = (node: any): any => {
+        if (!node || typeof node !== 'object') return node;
+        let pair: any[] | null = null;
+        if (node.type === 'BinaryExpr' && node.op === '*' && !node.broadcast
+            && head(node.left) === 'transpose' && node.left.args?.length === 1) {
+          pair = [node.right, node.left.args[0]];
+        }
+        const product = head(node) === 'sum' && node.args?.length === 1 ? node.args[0] : null;
+        if (product?.type === 'BinaryExpr' && product.op === '*' && product.broadcast) {
+          pair = __isParamRef(product.right, param)
+            ? [product.right, product.left] : [product.left, product.right];
+        }
+        if (pair) {
+          for (const [x, theta] of [pair]) {
+            if (__isParamRef(x, param) && !__mentionsParam(theta, param)) {
+              dot = true;
+              return { type: 'BinaryExpr', op: '*', left: theta, right: x, loc: node.loc };
+            }
+          }
+        }
+        for (const k of Object.keys(node)) {
+          if (k === 'loc') continue;
+          node[k] = Array.isArray(node[k]) ? node[k].map(replaceDot) : replaceDot(node[k]);
+        }
+        return node;
+      };
+      body = replaceDot(body);
+      if (!dot) return astArg;
+    }
+    const affine = __matchScalarAffineBody(body, param);
+    if (!affine) return astArg;
+    const dependsOnBoundary = (node: any, seen = new Set<string>()): boolean => {
+      if (!node || typeof node !== 'object') return false;
+      if (__isParamRef(node, param)) return true;
+      if (node.type === 'Identifier' && !seen.has(node.name)) {
+        seen.add(node.name);
+        const b = bindings.get(node.name) || out.get(node.name);
+        // Reification can pull a named ancestor into the variate's closure.
+        // Syntactic independence of `a*x` is insufficient when a=f(x).
+        for (const dep of [...(b?.deps || []), ...(b?.bodyDeps || [])]) {
+          if (dep === param || dependsOnBoundary(makeIdent(dep, node.loc), seen)) return true;
+        }
+      }
+      return Object.keys(node).some(k => k !== 'loc' && (Array.isArray(node[k])
+        ? node[k].some((n: any) => dependsOnBoundary(n, seen)) : dependsOnBoundary(node[k], seen)));
+    };
+    if (dependsOnBoundary(affine.scaleAst) || dependsOnBoundary(affine.shiftAst)) return astArg;
+    const scoped = (e: any) => containsHoleOrPlaceholder(e) || __containsFormalRef(e, out);
+    const containsDraw = (e: any): boolean => e && typeof e === 'object'
+      && (head(e) === 'draw' || Object.keys(e).some(k => k !== 'loc' && (Array.isArray(e[k])
+        ? e[k].some(containsDraw) : containsDraw(e[k]))));
+    // A scoped inline draw cannot be hoisted out of its call, nor copied into
+    // several guards/parameters without creating independent draws.
+    if ([...params, affine.scaleAst, affine.shiftAst].some(e => scoped(e) && containsDraw(e))) return astArg;
+    const loc = astArg.loc;
+    const num = (x: number) => makeNumLit(x, loc);
+    const call = (name: string, ...args: any[]) => ({ type: 'CallExpr',
+      callee: { ...makeIdent(name, loc), builtin: true }, args, builtin: true, loc });
+    // Hoist captured expressions once: copying draw(...) into both a guard
+    // and a parameter would otherwise create independent draws. Formal-bearing
+    // expressions stay scoped; their ordinary deterministic evaluation is safe.
+    const hold = (e: any): any => {
+      e = cloneAst(e);
+      if (e.type === 'Identifier' || e.type === 'NumberLiteral'
+          || scoped(e)) return e;
+      const name = freshName();
+      e = inlineUserCall(e);
+      visit(e);
+      out.set(name, makeSyntheticBinding(name, e));
+      return makeIdent(name, loc);
+    };
+    let theta = hold(affine.scaleAst || num(1));
+    if (affine.negate) theta = call('neg', theta);
+    const offset = hold(affine.shiftAst || num(0));
+    const p = params.map(hold);
+    const conditions = [call('isfinite', offset)];
+    const finite = (x: any) => conditions.push(call('isfinite', x));
+    const positive = (x: any) => { finite(x); conditions.push(call('gt', x, num(0))); };
+    const probability = (x: any) => {
+      finite(x); conditions.push(call('ge', x, num(0)), call('le', x, num(1)));
+    };
+    let resultFamily = family, result: any[];
+    if (family === 'MvNormal') {
+      // sum(theta .* x) uses elementwise broadcasting: a scalar or length-1
+      // slope spans the entire event vector before covariance multiplication.
+      theta = call('broadcast', { ...makeIdent('add', loc), builtin: true }, theta,
+        call('fill', num(0), call('lengthof', p[0])));
+      const allFinite = (x: any) => call('lall', call('broadcast',
+        { ...makeIdent('isfinite', loc), builtin: true }, x));
+      conditions.push(allFinite(theta), allFinite(p[0]));
+      const mean = call('add', p[0], call('mul', p[1], theta));
+      conditions.push(allFinite(mean));
+      result = [mean, p[1]];
+    } else {
+      finite(theta);
+      switch (family) {
+        case 'Normal':
+          finite(p[0]); positive(p[1]);
+          result = [call('add', p[0], call('mul', call('mul', theta, p[1]), p[1])), p[1]];
+          break;
+        case 'Gamma':
+          positive(p[0]); positive(p[1]);
+          conditions.push(call('lt', theta, p[1]));
+          result = [p[0], call('sub', p[1], theta)];
+          break;
+        case 'Exponential':
+          positive(p[0]); conditions.push(call('lt', theta, p[0]));
+          result = [call('sub', p[0], theta)];
+          break;
+        case 'ChiSquared':
+          positive(p[0]); conditions.push(call('lt', theta, num(0.5)));
+          resultFamily = 'Gamma'; result = [call('divide', p[0], num(2)), call('sub', num(0.5), theta)];
+          conditions.push(call('gt', result[0], num(0)));
+          break;
+        case 'Bernoulli': case 'Binomial': {
+          const prob = p[family === 'Binomial' ? 1 : 0];
+          probability(prob);
+          if (family === 'Binomial') {
+            finite(p[0]); conditions.push(call('ge', p[0], num(0)), call('equal', p[0], call('floor', p[0])));
+          }
+          let prior = resolve(params[family === 'Binomial' ? 1 : 0]);
+          // A previous tilt retains eta even when its probability rounded to
+          // 0/1. Adding the new slope there preserves rare-event density.
+          while (head(prior) === 'checked') prior = resolve(prior.args[0]);
+          const priorOdds = prior?.exponentialTiltLogOdds ? prior.args[0]
+            : call('sub', call('log', prob), call('log1p', call('neg', prob)));
+          const odds = call('add', priorOdds, theta);
+          const tilted = { ...call('invlogit', odds), exponentialTiltLogOdds: true };
+          result = family === 'Binomial' ? [p[0], tilted] : [tilted];
+          break;
+        }
+        case 'Geometric': {
+          probability(p[0]); conditions.push(call('gt', p[0], num(0)));
+          let prior = resolve(params[0]);
+          while (head(prior) === 'checked') prior = resolve(prior.args[0]);
+          const failure = head(prior) === 'neg' && prior.args[0]?.exponentialTiltLogFailure
+            ? prior.args[0].args[0] : call('log1p', call('neg', p[0]));
+          const tiltedFailure = call('add', failure, theta);
+          conditions.push(call('lt', tiltedFailure, num(0)));
+          result = [call('neg', { ...call('expm1', tiltedFailure), exponentialTiltLogFailure: true })];
+          conditions.push(call('gt', result[0], num(0)));
+          break;
+        }
+        case 'NegativeBinomial': {
+          positive(p[0]); positive(p[1]);
+          let prior = resolve(params[1]);
+          while (head(prior) === 'checked') prior = resolve(prior.args[0]);
+          const boundary = prior?.exponentialTiltLogInverseFailure
+            ? prior.args[0].args[0] : call('log1p', p[1]);
+          conditions.push(call('lt', theta, boundary));
+          const tail = call('sub', boundary, theta);
+          result = [p[0], { ...call('expm1', call('min', tail, num(Math.log(Number.MAX_VALUE)))),
+            exponentialTiltLogInverseFailure: true }];
+          conditions.push(call('gt', result[1], num(0)));
+          break;
+        }
+        case 'NegativeBinomial2': {
+          positive(p[0]); positive(p[1]);
+          let prior = resolve(params[0]);
+          while (head(prior) === 'checked') prior = resolve(prior.args[0]);
+          const logMean = prior?.exponentialTiltLogMean ? prior.args[0].args[0] : call('log', p[0]);
+          const ratio = call('sub', call('log', p[1]), logMean);
+          const boundary = call('add', call('max', ratio, num(0)),
+            call('log1p', call('exp', call('neg', call('abs', ratio)))));
+          conditions.push(call('lor', call('le', theta, num(0)), call('lt', theta, boundary)));
+          const delta = call('sub', boundary, theta);
+          const logDenominator = call('add', delta, call('log', call('neg', call('expm1', call('neg', delta)))));
+          const nextMean = call('ifelse', call('equal', theta, num(0)), logMean,
+            call('sub', call('log', p[1]), logDenominator));
+          result = [{ ...call('exp', call('max', nextMean, num(Math.log(Number.MIN_VALUE)))),
+            exponentialTiltLogMean: true }, p[1]];
+          conditions.push(call('gt', result[0], num(0)));
+          break;
+        }
+        default: // Poisson; the zero-rate law stays Dirac even if exp(theta) overflows.
+          finite(p[0]); conditions.push(call('ge', p[0], num(0)));
+          let prior = resolve(params[0]);
+          while (head(prior) === 'checked') prior = resolve(prior.args[0]);
+          const logRate = prior?.exponentialTiltLogRate ? prior.args[0] : call('log', p[0]);
+          result = [{ ...call('exp', call('add', logRate, theta)), exponentialTiltLogRate: true }];
+      }
+      for (const x of result) finite(x);
+    }
+    const condition = conditions.reduce((a, b) => call('land', a, b));
+    result[0] = call('checked', result[0], condition);
+    exponentialTiltRevision++;
+    return call(resultFamily, ...result);
   }
 
   /**
@@ -1373,6 +1703,7 @@ function liftInlineSubexpressions(bindings: any) {
     // Rewrite the original MvNormal call IN PLACE — the caller's
     // slot (e.g. the user's binding X = MvNormal(...)) now references
     // pushfwd(__bij_N, __iid_N).
+    mvNormalConstructors.set(astArg, { ...astArg });
     astArg.callee = makeIdent('pushfwd', astArg.loc);
     astArg.args = [
       makeIdent(bijName, astArg.loc),
@@ -3523,7 +3854,10 @@ function liftInlineSubexpressions(bindings: any) {
       // the fresh closure name with no binding behind it.
       const orig = out.get(origName) || bindings.get(origName);
       if (!orig || !orig.node || !orig.node.value) continue;
-      let newRhs = substituteIdents(cloneAst(orig.node.value), argMap);
+      // Re-lower an affine Gaussian AFTER boundary substitution. Copying its
+      // pushfwd AST would discard the bijection's parameter IR side marker.
+      let newRhs = substituteIdents(cloneAst(mvNormalConstructors.get(orig.node.value)
+        || orig.node.value), argMap);
       newRhs = inlineUserCall(newRhs);
       visit(newRhs);
       const fresh = argMap[origName].name;
@@ -3605,7 +3939,8 @@ function liftInlineSubexpressions(bindings: any) {
       visiting.add(name);
       reachable.add(name);
       const refs = new Set<string>();
-      identsOf(b.node && b.node.value, refs);
+      const value = b.node && b.node.value;
+      identsOf(mvNormalConstructors.get(value) || value, refs);
       directRefs.set(name, refs);
       for (const r of refs) walk(r);
       visiting.delete(name);

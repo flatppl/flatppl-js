@@ -127,6 +127,27 @@ const {
 // finishes when no op's ARITH_OPS entry is needed any more.
 const opsModule = require('./ops.ts');
 require('./ops-declarations.ts');     // side-effect: trigger op registrations
+// Only sampling consumes the retained logarithmic parameter. The public
+// parameter resolver and density primitives keep their declared arities.
+function resolveSamplingParams(measureIR: any, entry: any, env: any) {
+  const params = resolveParams(measureIR, entry, env);
+  if (measureIR.op === 'NegativeBinomial') {
+    const beta = measureIR.kwargs?.beta || measureIR.args?.[1];
+    if (beta?.exponentialTiltLogInverseFailure) {
+      const tail = +evaluateExpr(beta.args[0].args[0], env);
+      if (tail > Math.log(Number.MAX_VALUE)) params.push(tail);
+    }
+  } else if (measureIR.op === 'NegativeBinomial2') {
+    let mu = measureIR.kwargs?.mu || measureIR.args?.[0];
+    while (mu?.op === 'checked') mu = mu.args[0];
+    if (mu?.exponentialTiltLogMean && (!Number.isFinite(params[1]/params[0]) || params[1]/params[0] === 0)) {
+      params.push(+evaluateExpr(mu.args[0].args[0], env));
+    }
+  }
+  return params;
+}
+
+
 /**
  * Sample one value from a built-in measure expression.
  *
@@ -140,9 +161,10 @@ require('./ops-declarations.ts');     // side-effect: trigger op registrations
  * check `isKnownDistribution(op)` first when they expect non-builtin
  * measures (or use `canSample()`).
  */
+
 function rand(state: any, measureIR: any, env: any) {
   const entry = lookupDistribution(measureIR);
-  const params = resolveParams(measureIR, entry, env);
+  const params = resolveSamplingParams(measureIR, entry, env);
 
   // Bridge our pure Philox to stdlib's stateful prng option.
   const prng = makePhiloxPrngAdapter(state);
@@ -176,7 +198,7 @@ function rand(state: any, measureIR: any, env: any) {
  */
 function makeSampler(state: any, measureIR: any, env: any) {
   const entry = lookupDistribution(measureIR);
-  const params = resolveParams(measureIR, entry, env);
+  const params = resolveSamplingParams(measureIR, entry, env);
   const prng = makePhiloxPrngAdapter(state);
   const sampler = entry.randFn.factory(...params, { prng });
   return {
@@ -222,7 +244,7 @@ function makeParametricSampler(state: any, measureIR: any) {
   const sampler = entry.randFn.factory({ prng });
   return {
     drawWith(env: any) {
-      const params = resolveParams(measureIR, entry, env);
+      const params = resolveSamplingParams(measureIR, entry, env);
       return sampler(...params);
     },
     getState: () => prng.getState(),
@@ -308,7 +330,7 @@ function makeBulkSampler(
     return { samples: r.out, state: r.state };
   }
 
-  const params = resolveParams(measureIR, entry, env);
+  const params = resolveSamplingParams(measureIR, entry, env);
 
   if (typeof entry.randNFn === 'function') {
     // Path 1: explicit batched. randNFn handles the philoxN* call +

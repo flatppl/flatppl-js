@@ -370,6 +370,14 @@ function _lowerExpr(node: any, ctx: any): IRNode {
 
     case 'CallExpr': {
       const ir = _lowerCallExpr(node, ctx);
+      // A generated exponential tilt retains natural parameters for scoring
+      // beyond the sampler parameter's float range. Its arguments remain
+      // ordinary IR, traversed by every existing scope rewrite.
+      if (node.exponentialTiltLogOdds) ir.exponentialTiltLogOdds = true;
+      if (node.exponentialTiltLogFailure) ir.exponentialTiltLogFailure = true;
+      if (node.exponentialTiltLogRate) ir.exponentialTiltLogRate = true;
+      if (node.exponentialTiltLogInverseFailure) ir.exponentialTiltLogInverseFailure = true;
+      if (node.exponentialTiltLogMean) ir.exponentialTiltLogMean = true;
       if (node.inferredTableType) ir.meta = { ...ir.meta, type: node.inferredTableType };
       return ir;
     }

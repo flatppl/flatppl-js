@@ -68,6 +68,7 @@ import type { IRNode } from './engine-types';
 const samplerLib = require('./sampler.ts');
 const valueLib   = require('./value.ts');
 const densityPrims = require('./density-prims.ts');
+const stdlibBetaln = require('@stdlib/math-base-special-betaln');
 const forwardCdf = require('./forward-cdf.ts');
 const bcAxes = require('./kernel-broadcast-axes.ts');
 const shared  = require('./materialiser-shared.ts');
@@ -710,6 +711,78 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
 
 // ---- Per-op handlers (the in-place accumulators) --------------------
 
+// Keep log-space tilt scoring outside the ordinary leaf's atom loop.
+function exponentialTiltLogpdf(ir: IRNode, kernelName: string) {
+  const ordinaryLogpdf = densityPrims.builtinLogdensityofPositional;
+  let prob = (ir as any).kwargs?.p || (ir as any).args?.[kernelName === 'Binomial' ? 1 : 0];
+  while (prob?.op === 'checked') prob = prob.args[0];
+  const logOdds = (kernelName === 'Bernoulli' || kernelName === 'Binomial')
+    && prob?.exponentialTiltLogOdds ? prob.args[0] : null;
+  const logFailure = kernelName === 'Geometric' && prob?.op === 'neg'
+    && prob.args[0]?.exponentialTiltLogFailure ? prob.args[0].args[0] : null;
+  let rateParam = (ir as any).kwargs?.rate || (ir as any).args?.[0];
+  while (rateParam?.op === 'checked') rateParam = rateParam.args[0];
+  const logRate = kernelName === 'Poisson' && rateParam?.exponentialTiltLogRate ? rateParam.args[0] : null;
+  const tailParam = (ir as any).kwargs?.beta || (ir as any).args?.[1];
+  const inverseFailure = kernelName === 'NegativeBinomial' && tailParam?.exponentialTiltLogInverseFailure
+    ? tailParam.args[0].args[0] : null;
+  const logMean = kernelName === 'NegativeBinomial2' && rateParam?.exponentialTiltLogMean
+    ? rateParam.args[0].args[0] : null;
+  // Preserve rare-event scores when the equivalent sampler parameter rounds
+  // or exceeds float range. Natural parameters remain ordinary IR children,
+  // so reification and substitution keep them attached to current inputs.
+  if (!logOdds && !logFailure && !logRate && !inverseFailure && !logMean) return ordinaryLogpdf;
+  return (kernel: string, params: any[], x: number, env: any) => {
+    if (logRate) {
+      const rate = +samplerLib.evaluateExpr(logRate, env);
+      if (params[0] !== 0 || rate === -Infinity) return ordinaryLogpdf(kernel, params, x);
+      if (!Number.isInteger(x) || x < 0) return -Infinity;
+      return ordinaryLogpdf('Poisson', [1], x) + 1 + (x === 0 ? 0 : x * rate);
+    }
+    if (inverseFailure) {
+      const tail = +samplerLib.evaluateExpr(inverseFailure, env);
+      const capped = Math.log1p(params[1]);
+      const ordinary = ordinaryLogpdf(kernel, params, x);
+      if (tail === capped || !Number.isInteger(x) || x < 0) return ordinary;
+      const success = (t: number) => t < Math.LN2
+        ? Math.log(-Math.expm1(-t)) : Math.log1p(-Math.exp(-t));
+      // Multiplying after exp(-tail) underflows would erase a finite mass
+      // when alpha is large. On the capped branch higher series terms are
+      // below float precision, so combine log(alpha)-tail first.
+      const mass = tail > Math.log(Number.MAX_VALUE)
+        ? -Math.exp(Math.log(params[0]) - tail) : params[0] * success(tail);
+      if (x === 0) return mass;
+      return ordinary - params[0] * success(capped) + mass + x * (capped - tail);
+    }
+    if (logMean) {
+      const mean = +samplerLib.evaluateExpr(logMean, env);
+      const ordinary = ordinaryLogpdf(kernel, params, x);
+      // The representable leaf owns ordinary-scale scoring, including its
+      // cancellation-safe large-shape branch. Correct only underflowed tails.
+      if (mean >= Math.log(Number.MIN_VALUE) || !Number.isInteger(x) || x < 0) return ordinary;
+      return ordinary + (x === 0 ? 0 : x * (mean - Math.log(params[0])));
+    }
+    if (logFailure) {
+      if (!Number.isInteger(x) || x < 0) return -Infinity;
+      const failure = +samplerLib.evaluateExpr(logFailure, env);
+      const success = failure < -Math.LN2 ? Math.log1p(-Math.exp(failure)) : Math.log(-Math.expm1(failure));
+      return success + (x === 0 ? 0 : x * failure);
+    }
+    const n = kernel === 'Binomial' ? params[0] : 1;
+    if (!Number.isInteger(x) || x < 0 || x > n) return -Infinity;
+    const eta = +samplerLib.evaluateExpr(logOdds, env);
+    const common = Math.log1p(Math.exp(-Math.abs(eta)));
+    const success = -Math.max(-eta, 0) - common;
+    const failure = -Math.max(eta, 0) - common;
+    const k = Math.min(x, n - x);
+    const choose = kernel === 'Binomial' && k !== 0
+      ? -Math.log(k) - stdlibBetaln(k, n - k + 1) : 0;
+    const successes = x === 0 ? 0 : eta > 37 ? -Math.exp(Math.log(x) - eta) : x * success;
+    const failures = x === n ? 0 : eta < -37 ? -Math.exp(Math.log(n - x) + eta) : (n - x) * failure;
+    return choose + successes + failures;
+  };
+}
+
 function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any, repeat = 1) {
   // Consume the shared observation(s), resolve parameters once per atom,
   // then add logpdfs to acc[i] in observation order. An iid scalar leaf
@@ -722,7 +795,7 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   // is the cross-engine ABI any future codegen path lowers to.
   const entry = samplerLib.lookupDistribution(ir);
   const kernelName: string = (ir as any).op;
-  const blp = densityPrims.builtinLogdensityofPositional;
+  const blp = exponentialTiltLogpdf(ir, kernelName);
   const refNames = Object.keys(refArrays);
   const overlayKeys = overlay ? Object.keys(overlay) : null;
 
@@ -742,7 +815,7 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
     if (refNames.length === 0 && !overlayKeys) {
       const params = samplerLib.resolveParams(ir, entry, baseEnv);
       for (let i = 0; i < N; i++) {
-        acc[i] += blp(kernelName, params, ptAt(i));
+        acc[i] += blp(kernelName, params, ptAt(i), baseEnv);
       }
       return null;
     }
@@ -763,7 +836,7 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
         }
       }
       const params = samplerLib.resolveParams(ir, entry, callEnv);
-      acc[i] += blp(kernelName, params, ptAt(i));
+      acc[i] += blp(kernelName, params, ptAt(i), callEnv);
     }
     return null;
   }
@@ -774,7 +847,7 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   if (refNames.length === 0 && !overlayKeys) {
     const params = samplerLib.resolveParams(ir, entry, baseEnv);
     for (let j = 0; j < repeat; j++) {
-      const logp = blp(kernelName, params, repeat > 1 ? head[j] : head);
+      const logp = blp(kernelName, params, repeat > 1 ? head[j] : head, baseEnv);
       for (let i = 0; i < N; i++) acc[i] += logp;
     }
     return rest;
@@ -826,7 +899,7 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
     }
     const params = samplerLib.resolveParams(ir, entry, callEnv);
     for (let j = 0; j < repeat; j++) {
-      acc[i] += blp(kernelName, params, repeat > 1 ? head[j] : head);
+      acc[i] += blp(kernelName, params, repeat > 1 ? head[j] : head, callEnv);
     }
   }
   return rest;

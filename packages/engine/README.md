@@ -22,6 +22,57 @@ Julia, Python, …). Cross-implementation conformance is anchored by
 [`flatppl-examples`](https://github.com/flatppl/flatppl-examples) (the shared
 example suite).
 
+## Analytic exponential tilting
+
+Affine log weights normalize analytically for `Normal`, `Gamma` (shape/rate),
+`Exponential`, `ChiSquared`, `Bernoulli`, `Binomial`, `Poisson`, `Geometric`,
+`NegativeBinomial` (alpha/beta), `NegativeBinomial2` (mu/psi), and `MvNormal`.
+The resulting law supports density evaluation, materialisation, and explicit
+RNG sampling through the ordinary distribution routes. For example:
+
+```flatppl
+theta = elementof(reals)
+B = Normal(0, 1)
+w = fn(theta * _ + 710)
+T = normalize(logweighted(w, B))
+U = tilt(logweighted(w, Lebesgue(reals)), B)
+lp = logdensityof(T, 0.4)
+f = functionof(lp, theta = theta)
+score = f(0.3)
+P = functionof(T, theta = theta)
+x, next_state = rand(P(0.3), rnginit(42))
+```
+
+Here both `T` and `U` are `Normal(theta, 1)`: a finite additive constant in
+its log weight cancels. Parameters and aliases can remain inferred, and
+successive tilts compose. For vectors, use `fn(sum(theta .* _))`; this shifts
+an `MvNormal` mean by `cov * theta` and retains its covariance. The
+`transpose(theta) * _` spelling still has an inherited type-inference gap.
+
+For equivalent `tilt` forms, the source reference must have unit density on
+the base's support: `Lebesgue(reals)`, `Lebesgue(nonnegreals)` for the positive
+scalar families, `Lebesgue(cartpow(reals, D))` for vectors, or
+`Counting(integers)`/`Counting(nonnegintegers)` for counts (`Counting(booleans)`
+also works for Bernoulli). Restricted or nonconstant references retain the
+generic route. In particular `Lebesgue(posreals)` is not erased, because its
+zero density at zero can change point scoring.
+
+Original parameters, the slope and the offset must be finite and valid.
+The MGF domain requires `theta < rate` for Gamma/Exponential, `theta < 1/2`
+for ChiSquared, `theta < -log1p(-p)` for Geometric, `theta < log1p(beta)` for
+NegativeBinomial, and `theta < log1p(psi/mu)` for NegativeBinomial2. Runtime
+guards reject invalid laws or divergent tilts before sampling. Transformed
+locations/rates that cannot be represented as finite numbers also refuse;
+this is not an arbitrary-weight normalization algorithm.
+
+Scoring retains log odds and log parameters when sampler parameters round
+to endpoints or underflow. For example a Poisson rate of one tilted by
+`theta = -1000` still scores one event as `-1000`. Repeated tilts retain this
+information. Sampling uses finite-precision probabilities, so events below
+representable resolution can collapse to a zero draw even though their log
+scores remain finite. Overflowing NegativeBinomial beta uses its retained
+log parameter when sampling rather than changing the shape parameter.
+
 ## Modules
 
 - [`tokenizer.ts`](tokenizer.ts) — source text → token stream
