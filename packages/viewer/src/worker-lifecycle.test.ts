@@ -202,3 +202,49 @@ test('pool startup failure terminates late siblings without inference dispatch',
   assert.equal(wire.workers[0].terminated, true);
   assert.equal(message(wire.workers[0], 'mcmcRun'), undefined);
 });
+
+test('AMIS pool reports the Kish ESS of equally weighted normalized workers', async t => {
+  const wire = transport(t), ctx = context();
+  // Explicit weights give an oracle independent of the pooling formula. The
+  // second case is the equal-ESS baseline, where summing happens to be valid.
+  for (const weights of [[[0.5, 0.5], [0.9, 0.1]], [[0.5, 0.5], [0.5, 0.5]]]) {
+    const start = wire.workers.length;
+    const request = runMcmcPool(ctx, 'post', { backend: 'amis', parallel: 2 });
+    await until(() => wire.workers[start + 1] && message(wire.workers[start + 1], 'mcmcRun'));
+    for (let i = 0; i < weights.length; i++) {
+      const w = wire.workers[start + i], msg = message(w, 'mcmcRun');
+      assert.equal(msg.sampleCount, 2);
+      const ess = 1 / weights[i].reduce((s, x) => s + x * x, 0);
+      const m = measure(i);
+      m.fields.x.samples = new Float64Array(msg.sampleCount).fill(i);
+      m.diagnostics = { method: 'amis', ess, nSamples: weights[i].length,
+        perParam: { x: { rHat: NaN, essBulk: ess } } };
+      w.reply(msg, { type: 'mcmcResult', measure: m });
+    }
+    const pooled = await request;
+    const expected = 1 / weights.flatMap(ws => ws.map(x => x / weights.length))
+      .reduce((s, x) => s + x * x, 0);
+    assert.ok(Math.abs(pooled.diagnostics.ess - expected) < 1e-12);
+    assert.equal(pooled.diagnostics.essFrac, pooled.diagnostics.ess / 4);
+    assert.equal(pooled.diagnostics.perParam.x.essBulk, pooled.diagnostics.ess);
+    assert.equal(pooled.fields.x.diagnostics, pooled.diagnostics);
+    assert.deepEqual(Array.from(pooled.fields.x.samples), [0, 0, 1, 1]);
+  }
+});
+
+test('AMIS pool cannot report positive ESS when a worker ESS is missing', async t => {
+  const wire = transport(t), ctx = context();
+  const request = runMcmcPool(ctx, 'post', { backend: 'amis', parallel: 2 });
+  await until(() => wire.workers[1] && message(wire.workers[1], 'mcmcRun'));
+  for (let i = 0; i < 2; i++) {
+    const w = wire.workers[i], m = measure(i);
+    m.diagnostics = { method: 'amis', nSamples: 2,
+      perParam: { x: { rHat: NaN, essBulk: 2 } } };
+    if (i === 0) m.diagnostics.ess = 2;
+    w.reply(message(w, 'mcmcRun'), { type: 'mcmcResult', measure: m });
+  }
+  const pooled = await request;
+  assert.equal(pooled.diagnostics.ess, 0);
+  assert.equal(pooled.diagnostics.essFrac, 0);
+  assert.equal(pooled.diagnostics.perParam.x.essBulk, 0);
+});
