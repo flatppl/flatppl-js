@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
-const { processSource } = require('..');
+const { processSource, lower, materialiser, density } = require('..');
 
 const close = (actual: number, expected: number, tol = 1e-12) =>
   assert.ok(Math.abs(actual - expected) < tol, `${actual} != ${expected}`);
@@ -47,6 +47,23 @@ hi = f(2.00001)
   const lo = (await ctx.getMeasure('lo')).samples[0];
   const hi = (await ctx.getMeasure('hi')).samples[0];
   close((hi - lo) / 0.00002, -0.75, 1e-9);
+});
+
+test('tilt materialises and scores directly lowered measure IR', async () => {
+  const { ctx, lifted } = makeMatCtx(
+    'M = tilt(iid(Normal(7, 2), 3), Lebesgue(zerosum(3)))',
+    { sampleCount: 4 });
+  const ir = lower.lowerBinding(lifted.ast.body[0]);
+  const measure = await materialiser.materialiseMeasureIR(ir, ctx);
+  assert.deepEqual(measure.value.shape, [4, 3]);
+  for (let i = 0; i < 4; i++) {
+    const x = Array.from(measure.value.data.subarray(3 * i, 3 * i + 3)) as number[];
+    close(x.reduce((a, b) => a + b, 0), 0);
+    // Coordinate density: sqrt(3) / (2*pi*sigma^2) times exp(-||x||^2/(2*sigma^2)).
+    const expected = Math.log(3) / 2 - Math.log(8 * Math.PI)
+      - x.reduce((a, b) => a + b * b, 0) / 8;
+    close(density.logDensity(ir, x, {}), expected);
+  }
 });
 
 test('tilt generic Normal-product fallback and matching named kernel inputs', async () => {
