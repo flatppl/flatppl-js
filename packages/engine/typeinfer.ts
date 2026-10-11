@@ -2313,19 +2313,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   /** The type each of a chain step's boundary inputs DECLARES, by input name,
    *  or null when the step declares none.
    *
-   *  `functionof(body, mu = mu)` records the boundary in `paramSources` and
-   *  drops it from `kwargs`, so `inferReification` finds no boundary
-   *  expression to read and types the input `any`. `any` unifies with
-   *  anything, so the chain's boundary matcher could not reject the `cat` §06
-   *  feeds the step, and the body re-check below cannot reach that spelling
-   *  either — an identifier-bound boundary's body refs are `self`-namespaced
-   *  module names, which `inferRef` resolves through `loweredModule.bindings`
-   *  rather than through the pushed scope. So the step's body type-checked
-   *  against the boundary node's OWN type while the chain fed it a vector,
-   *  and every atom sampled NaN with no diagnostic. §06 dependent composition
-   *  gives that step and its placeholder spelling one lowering
-   *  (`c ~ K3([a, b])`), and the placeholder spelling is a located error, so
-   *  the two must agree.
+   *  Identifier boundaries in `paramSources` declare the type of their
+   *  module node. Preserve that declaration when checking the `cat` of
+   *  upstream variates that §06 dependent composition feeds to this step.
    *
    *  These types are advisory: the boundary walk applies them to structured
    *  fed values, and never writes them back onto the step's node.
@@ -4735,14 +4725,20 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (let i = 0; i < params.length; i++) {
       let paramType = T.any();
       const kwName = paramKwargs[i];
-      if (kwName && expr.kwargs && expr.kwargs[kwName]) {
-        const boundaryT = inferExpr(expr.kwargs[kwName], scopes);
+      // Identifier boundaries live in paramSources after lowering. Preserve
+      // their value types when substituting elementof(valueset(boundary))
+      // (spec §04), before the new scope shadows the original binding.
+      const source = expr.paramSources?.[i];
+      const boundary = expr.kwargs?.[kwName] ?? (source?.kind === 'binding'
+        ? { kind: 'ref', ns: 'self', name: source.name, loc: expr.loc } : null);
+      if (boundary) {
+        const boundaryT = inferExpr(boundary, scopes);
         if (T.isMeasure(boundaryT)) {
           diagnostics.push({
             severity: 'error',
             message: 'functionof boundary "' + kwName
               + '" must be a value, got ' + T.show(boundaryT),
-            loc: expr.kwargs[kwName].loc || expr.loc,
+            loc: boundary.loc || expr.loc,
           });
           paramType = T.failed('functionof boundary type');
         } else if (T.isValue(boundaryT)) {
