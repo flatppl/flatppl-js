@@ -142,6 +142,13 @@ function _linkInstance(prefix: string, compiled: any,
       const subStmt = AST.AssignStatement(
         [AST.Identifier(_pfx(prefix, aliasName), s.names[0].loc)],
         subs.get(aliasName), s.loc);
+      // Keep fixed-input constraints after replacing the declaration. A
+      // forwarded host value may only become available at materialisation.
+      const domain = loweredModule.bindings.get(aliasName)?.rhs?.meta?.valueset;
+      if (s.value.callee.name === 'external'
+          && ['stdsimplex', 'ordered', 'zerosum'].includes(domain?.vs)) {
+        subStmt.fixedInputSet = rewrite(s.value.args[0]);
+      }
       if (s.doc) subStmt.doc = s.doc;   // keep the binding's doc through linking
       out.push(subStmt);
       continue;
