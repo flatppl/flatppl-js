@@ -1334,7 +1334,7 @@ test('multi-LHS rand: each name gets the projected element type', () => {
   const { bindings, loweredModule, diagnostics } = processSource(`
     rngseed = [0xb2, 0x51, 0xa4, 0x93, 0x49, 0xd8, 0x68, 0x88]
     rstate = rnginit(rngseed)
-    random_data, rstate2 = rand(rstate, iid(Normal(0, 1), 10))
+    random_data, rstate2 = rand(iid(Normal(0, 1), 10), rstate)
   `);
   // Type errors break the whole spec example, so guard hard.
   const errors = diagnostics.filter((d: any) => d.severity === 'error');
@@ -1425,8 +1425,8 @@ test('multi-LHS rand: chained rand calls keep type+phase consistent', () => {
   const { bindings, loweredModule, diagnostics } = processSource(`
     rngseed = [0xb2, 0x51, 0xa4, 0x93, 0x49, 0xd8, 0x68, 0x88]
     rstate = rnginit(rngseed)
-    random_data, rstate2 = rand(rstate, iid(Normal(0, 1), 10))
-    more_random_data, rstate3 = rand(rstate2, iid(Exponential(1), 5))
+    random_data, rstate2 = rand(iid(Normal(0, 1), 10), rstate)
+    more_random_data, rstate3 = rand(iid(Exponential(1), 5), rstate2)
   `);
   const errors = diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(errors, [], `unexpected errors: ${JSON.stringify(errors)}`);

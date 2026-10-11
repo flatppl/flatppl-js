@@ -31,7 +31,7 @@ Y_dist = lawof(Y)
 rstate = rnginit([1, 2, 3, 4])
 
 % First composite draw + its successor rngstate (NON-discard state half).
-Y1, s2 = rand(rstate, iid(Y_dist, 200))
+Y1, s2 = rand(iid(Y_dist, 200), rstate)
 
 % Chain a second composite draw off the successor.
-Y2, _ = rand(s2, iid(Y_dist, 200))
+Y2, _ = rand(iid(Y_dist, 200), s2)

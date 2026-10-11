@@ -1928,7 +1928,7 @@ function _isLeafDistributionDeriv(d: any): boolean {
 function matRandSample(name: string, d: any, ctx: any) {
   // Demand-driven composite `rand` draw (engine-concepts §11 (demand-driven composite rand);
   // classifier: derivations.classifyRandSample). `samples, _ =
-  // rand(state, iid(M, count))` for a COMPOSITE M: produce `count`
+  // rand(iid(M, count), state)` for a COMPOSITE M: produce `count`
   // independent iid draws by materialising M in a CHILD ctx at
   // sampleCount = count — each atom IS one iid draw (the materialiser
   // draws M's whole ancestor DAG fresh per atom). The result is a fixed
@@ -1956,7 +1956,7 @@ function matRandSample(name: string, d: any, ctx: any) {
   // is always a named binding (classifyRandTuple, lift.ts, requires a
   // ref) whose own derivation carries the ORIGINAL kind — a `weighted`
   // measure classifies `kind:'weighted'` whether reached bare
-  // (`rand(state, w)`) or via `iid(w, n)` (same `d.from`, engine-concepts
+  // (`rand(w, state)`) or via `iid(w, n)` (same `d.from`, engine-concepts
   // §11's iid-of-composite folds through this same field). This is the
   // named-binding twin of sampler.ts's `walkWeightedRefuse`: that walker
   // only ever sees an INLINE `weighted(...)` call (composite escape-hatch
@@ -1988,7 +1988,7 @@ function matRandSample(name: string, d: any, ctx: any) {
     );
   }
   // normalize(...) named binding (spec §06 normalize, §07 sec:random): a
-  // NAMED `nw = normalize(w); rand(state, nw)` never reaches sampler.ts's
+  // NAMED `nw = normalize(w); rand(nw, state)` never reaches sampler.ts's
   // walkNormalizeRefuse (that walker only ever sees an INLINE `normalize(...)`
   // call) — it resolves here via `d.from`'s own 'normalize' derivation kind
   // instead, dispatching (via ctx.getMeasure → matNormalize) to whatever

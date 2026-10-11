@@ -129,7 +129,7 @@ test('composite-rand succession: a LEAF state half is NOT rewritten (stays threa
   // chaining.
   const src = `
 rstate = rnginit([1, 2, 3, 4])
-A, As = rand(rstate, iid(Normal(0, 1), [3, 3]))
+A, As = rand(iid(Normal(0, 1), [3, 3]), rstate)
 `;
   const { built } = makeMatCtx(src, { sampleCount: 16 });
   const as = built.bindings.get('As');
@@ -141,7 +141,7 @@ A, As = rand(rstate, iid(Normal(0, 1), [3, 3]))
 });
 
 test('composite-rand succession: a BARE composite rand fails loud (deferred)', async () => {
-  // A bare un-destructured `r = rand(state, iid(<composite>, n))` has no
+  // A bare un-destructured `r = rand(iid(<composite>, n), state)` has no
   // tuple_get projection to reclassify, so its 2-tuple (async display-array
   // draw + sync rngstate successor) has no value representation yet
   // (deferred — see TODO). It FAILS LOUD at the walker (never silently
@@ -155,7 +155,7 @@ X ~ iid(Normal(0, 1), 10)
 Y = polyeval.([C], X)
 Y_dist = lawof(Y)
 rstate = rnginit([1, 2, 3, 4])
-r = rand(rstate, iid(Y_dist, 200))
+r = rand(iid(Y_dist, 200), rstate)
 `;
   const { ctx } = makeMatCtx(src, { sampleCount: 16 });
   await assert.rejects(

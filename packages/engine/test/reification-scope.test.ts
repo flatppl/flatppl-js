@@ -127,7 +127,7 @@ test('reif/deps: non-reification bindings have empty paramSourceDeps; bodyDeps m
 // Phase: absorbedPhaseOf must not propagate paramSource phases
 // ---------------------------------------------------------------------
 //
-// These pin the original regression: `rand(state, expected_obs)` where
+// These pin the original regression: `rand(expected_obs, state)` where
 // expected_obs is the result of a kernel application — the kernel's
 // internal formal parameters (e.g. theta1/theta2 bound to user-side
 // theta1/theta2 of `draw` phase) used to leak `parameterized` through
@@ -147,7 +147,7 @@ test('reif/phase: rand of kernel-applied measure is fixed (no elementof leak)', 
     a = f_a(par = beta1)
     M = Normal(mu = a, sigma = 1)
     rstate0 = rnginit([1,2,3,4])
-    sample, _ = rand(rstate0, M)
+    sample, _ = rand(M, rstate0)
   `);
   const sample = bindings.get('sample');
   assert.equal(sample.phase, 'fixed',
@@ -155,7 +155,7 @@ test('reif/phase: rand of kernel-applied measure is fixed (no elementof leak)', 
 });
 
 test('reif/phase: kernel-applied measure used as rand argument is fixed', () => {
-  // feature-test1.flatppl shape: `rand_obs_data, _ = rand(rstate2, forward_kernel(rand_pars))`.
+  // feature-test1.flatppl shape: `rand_obs_data, _ = rand(forward_kernel(rand_pars), rstate2)`.
   const { bindings } = bindingsOf(`
     theta1 = draw(Normal(mu = 0, sigma = 1))
     theta2 = draw(Exponential(rate = 1))
@@ -163,12 +163,12 @@ test('reif/phase: kernel-applied measure used as rand argument is fixed', () => 
     prior = lawof(record(theta1 = theta1, theta2 = theta2))
     forward_kernel = functionof(obs_dist, theta1 = theta1, theta2 = theta2)
     rs0 = rnginit([1,2,3,4])
-    rp, rs1 = rand(rs0, prior)
-    ro, _ = rand(rs1, forward_kernel(rp))
+    rp, rs1 = rand(prior, rs0)
+    ro, _ = rand(forward_kernel(rp), rs1)
   `);
   const ro = bindings.get('ro');
   assert.equal(ro.phase, 'fixed',
-    'ro = rand(state, forward_kernel(rp)) is fixed end-to-end');
+    'ro = rand(forward_kernel(rp), state) is fixed end-to-end');
 });
 
 test('reif/phase: rand under elementof closure remains parameterized', () => {
@@ -179,7 +179,7 @@ test('reif/phase: rand under elementof closure remains parameterized', () => {
     mu = elementof(reals)
     M = Normal(mu = mu, sigma = 1)
     rstate0 = rnginit([1,2,3,4])
-    sample, _ = rand(rstate0, M)
+    sample, _ = rand(M, rstate0)
   `);
   assert.equal(bindings.get('sample').phase, 'parameterized',
     'rand under elementof remains parameterized');

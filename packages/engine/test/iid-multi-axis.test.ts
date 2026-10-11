@@ -79,10 +79,10 @@ test('iid multi-axis: zero-prod size produces an empty Value', () => {
   assert.equal(r.value.data.length, 0);
 });
 
-test('iid multi-axis: end-to-end `rand(state, iid(N, [3, 3]))` parses + analyses', () => {
+test('iid multi-axis: end-to-end `rand(iid(N, [3, 3]), state)` parses + analyses', () => {
   const src = `
 rstate = rnginit([1,2,3,4])
-A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
+A, _ = rand(iid(Normal(0,1), [3, 3]), rstate)
 `;
   const ctx = processSource(src);
   const errs = ctx.diagnostics.filter((d: any) => d.severity === 'error');
@@ -93,14 +93,14 @@ A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
 test('iid multi-axis: fixed 2D A produces a flat-samples measure (viewer plot path)', async () => {
   // Regression for the bug where the viewer threw
   // "Cannot read properties of undefined (reading 'length')" when
-  // plotting A from `A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))`.
+  // plotting A from `A, _ = rand(iid(Normal(0,1), [3, 3]), rstate)`.
   // Root cause: fixedValueToMeasure treated the nested 3x3 numeric
   // array as a 3-tuple of inner arrays (elems-shape) instead of a
   // flat numeric matrix. The viewer's array-mode renderer then read
   // measure.samples (undefined) and blew up on .length.
   const src = `
 rstate = rnginit([1,2,3,4])
-A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
+A, _ = rand(iid(Normal(0,1), [3, 3]), rstate)
 `;
   const { orchestrator, materialiser } = require('..');
   const lifted = processSource(src);
@@ -127,7 +127,7 @@ A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))
 test('iid multi-axis: fixed 3D A flattens to length-24 samples', async () => {
   const src = `
 rstate = rnginit([1,2,3,4])
-B, _ = rand(rstate, iid(Normal(0,1), [2, 3, 4]))
+B, _ = rand(iid(Normal(0,1), [2, 3, 4]), rstate)
 `;
   const { orchestrator, materialiser } = require('..');
   const lifted = processSource(src);

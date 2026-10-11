@@ -231,11 +231,11 @@ class FixedValues {
     // Collect self-refs into TWO buckets based on where they're reached:
     // "value-context" refs that must resolve before we can evaluate (the
     // classic gate), and "measure-context" refs reached through a measure
-    // subtree (e.g. `rand(rstate, ref d)` where d's expansion has
+    // subtree (e.g. `rand(ref d, rstate)` where d's expansion has
     // `Normal(mu = ref a, sigma = ref b)`). The latter never block — they
     // are resolved lazily at evaluation time via __resolveValueRef, which
     // threads rng state through any stochastic ancestor sampling. This is
-    // what makes `data, _ = rand(rstate, lawof(obs))` resolve even when
+    // what makes `data, _ = rand(lawof(obs), rstate)` resolve even when
     // obs's distribution params depend on stochastic ancestors.
     // §04 qualified calls use the module's registry in fixed evaluation too.
     const env: any = { __resolveMeasureRef: resolveMeasureRef,

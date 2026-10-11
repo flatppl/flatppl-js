@@ -176,7 +176,7 @@ beta1 = 2.0
 a = f(par = beta1)
 obs_dist = Normal(mu = a, sigma = 1)
 rstate0 = rnginit([1,2,3,4])
-sample, _ = rand(rstate0, obs_dist)
+sample, _ = rand(obs_dist, rstate0)
 `);
   // _par alone is parameterized — it's an elementof.
   assert.equal(p._par, 'parameterized');
@@ -367,7 +367,7 @@ test('rand of an APPLIED kernel with fixed args is fixed-phase (absorbed walk st
   // not by the elementof leaves behind the declared cut. The absorbed
   // walk (lawof/rand) must therefore stop at callable bindings: descending
   // into k_model_n's body reaches the module `pars` elementof THROUGH the
-  // cut and mis-phased `sim = rand(state, k(fixed))` as parameterized —
+  // cut and mis-phased `sim = rand(k(fixed), state)` as parameterized —
   // knocking the draw off the fixed pre-eval path (the simple-transport
   // sim_data shape).
   const { bindings } = processSource(`
@@ -376,7 +376,7 @@ x ~ Normal(mu = pars, sigma = 0.1)
 K = kernelof(x, pars = pars)
 model_dist = K(1.5)
 rstate = rnginit([1, 2, 3])
-sim, rs2 = rand(rstate, model_dist)
+sim, rs2 = rand(model_dist, rstate)
 `);
   assert.equal(bindings.get('model_dist').phase, 'fixed');
   assert.equal(bindings.get('sim').phase, 'fixed');
@@ -389,7 +389,7 @@ x ~ Normal(mu = pars, sigma = 0.1)
 K = kernelof(x, pars = pars)
 model_dist = K(other)
 rstate = rnginit([1, 2, 3])
-sim, rs2 = rand(rstate, model_dist)
+sim, rs2 = rand(model_dist, rstate)
 `).bindings;
   assert.equal(p2.get('sim').phase, 'parameterized');
 });

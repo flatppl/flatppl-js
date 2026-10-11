@@ -75,7 +75,7 @@ export function formatConstantMeasure(ctx: Ctx, m: any): string {
       // couldn't represent it (an rngstate, typically). Surface
       // a placeholder so the rest of the tuple's structure stays
       // visible — e.g. `(record(obs = […]), <rngstate>)` for a
-      // single-LHS `rand(rs, m)` result.
+      // single-LHS `rand(m, rs)` result.
       eparts[ei] = m.elems[ei] ? formatConstantMeasure(ctx, m.elems[ei]) : '<rngstate>';
     }
     return '(' + eparts.join(', ') + ')';

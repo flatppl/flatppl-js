@@ -196,7 +196,7 @@ function likelihood(inputs?: any) {
 /**
  * Opaque RNG-state type (per spec §sec:random / §03 `rngstates`):
  *  rng = rnginit(seed)             — produces an rngstate
- *  value, rng' = rand(rng, m)      — threads rngstate through draws
+ *  value, rng' = rand(m, rng)      — threads rngstate through draws
  * Equality is structural-by-kind only (no internal shape exposed),
  * matching the spec's "algorithm-dependent opaque values" guarantee.
  * Engines back this with their own RNG state representation; the JS
@@ -1337,11 +1337,11 @@ const SIGNATURE_FACTORIES = {
   // row is never reached for `rnginit`. It stays for arity, hover, and the
   // shared builtin-row bookkeeping.
   rnginit: () => ({ args: [array(1, ['%dynamic'], INTEGER)], kwargs: {}, result: RNGSTATE }),
-  // rand(rstate, m) — draw one sample from m using rstate; returns
+  // rand(m, rstate) — draw one sample from m using rstate; returns
   // (value, new_rstate). The variate type is m's domain — we keep it
   // as a tvar('T') unified against measure(T)'s argument.
   rand: () => ({
-    args:   [RNGSTATE, measure(tvar('T'))],
+    args:   [measure(tvar('T')), RNGSTATE],
     kwargs: {},
     result: tuple([tvar('T'), RNGSTATE]),
   }),

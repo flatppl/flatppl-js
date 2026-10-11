@@ -36,14 +36,14 @@ result = scan(step, 0, [1, 2, 3])
 test('scan advances explicit RNG state like sequential calls', async () => {
   const { ctx } = makeMatCtx(`
 s0 = rnginit([4, 5, 6, 7])
-step = (s, x) -> record(rstate = rand(s.rstate, Normal(0, 1))[2],
-    value = rand(s.rstate, Normal(0, 1))[1])
+step = (s, x) -> record(rstate = rand(Normal(0, 1), s.rstate)[2],
+    value = rand(Normal(0, 1), s.rstate)[1])
 states = scan(step, record(rstate = s0, value = 0), [0, 0, 0])
 value = s -> s.value
 result = value.(states)
-x1, s1 = rand(s0, Normal(0, 1))
-x2, s2 = rand(s1, Normal(0, 1))
-x3, s3 = rand(s2, Normal(0, 1))
+x1, s1 = rand(Normal(0, 1), s0)
+x2, s2 = rand(Normal(0, 1), s1)
+x3, s3 = rand(Normal(0, 1), s2)
 expected = [x1, x2, x3]
 `);
   assert.deepEqual(toJS((await ctx.getMeasure('result')).value),

@@ -482,7 +482,7 @@ export interface DerivationKscan {
 
 /**
  * Demand-driven composite `rand` draw (engine-concepts §11 (demand-driven composite rand)).
- * The draw half (`samples, _ = rand(state, iid(M, count))`, i.e.
+ * The draw half (`samples, _ = rand(iid(M, count), state)`, i.e.
  * `tuple_get(<rand>, 0)`) for a COMPOSITE inner measure `M` — one the
  * per-draw measure walker (sampler.walk) can't sample (a forward `lawof` of a
  * broadcast / aggregate, a `pushfwd`, …). Materialised on demand by
@@ -495,9 +495,9 @@ export interface DerivationRandSample {
   name?: string;
   /** Measure-binding ref name to draw from (the iid's inner / the bare M). */
   from: string;
-  /** Number of iid draws (the iid `size`; 1 for a bare `rand(state, M)`). */
+  /** Number of iid draws (the iid `size`; 1 for a bare `rand(M, state)`). */
   count: number;
-  /** IR of the rand's first arg (the rng state) — resolved at materialise. */
+  /** IR of the rand's second arg (the rng state) — resolved at materialise. */
   stateIR: any;
 }
 

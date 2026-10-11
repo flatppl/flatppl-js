@@ -11,7 +11,7 @@
 // **materialiser ↔ viewer contract** untested for unusual fixed-phase
 // shapes. A bug shipped where the viewer's array-mode renderer read
 // `measure.samples` (undefined) and threw "Cannot read properties of
-// undefined" for `A, _ = rand(rstate, iid(Normal(0,1), [3, 3]))`.
+// undefined" for `A, _ = rand(iid(Normal(0,1), [3, 3]), rstate)`.
 //
 // These helpers close the gap: every binding-shape test that goes
 // through here also drives materialiseMeasure(name), so a "viewer

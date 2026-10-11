@@ -4,7 +4,7 @@
 // Demand-driven composite `rand` (engine-concepts §11 (demand-driven composite rand)).
 // =====================================================================
 //
-// `samples, _ = rand(state, iid(M, count))` for a COMPOSITE M — a
+// `samples, _ = rand(iid(M, count), state)` for a COMPOSITE M — a
 // forward measure the per-draw measure walker (sampler.walk) can't sample (here
 // `Y_dist = lawof(Y)` with `Y = polyeval.([C], X)`, a deterministic
 // transform of a stochastic iid vector). The classifier routes the
@@ -97,14 +97,14 @@ test('composite rand: Y_samples is fixed — independent of session N', async ()
 });
 
 test('composite rand: leaf-distribution inner stays off the randsample path', () => {
-  // `A, _ = rand(rstate, iid(Normal(0,1), [3,3]))` — a single known
+  // `A, _ = rand(iid(Normal(0,1), [3,3]), rstate)` — a single known
   // distribution inner. The leaf gate keeps it on the existing batched
   // path (pre-eval / sampleLeafN, bit-for-bit `builtin_sample ≡
   // rand+iid`), NOT `randsample`.
   const src = `
 flatppl_compat = "0.1"
 rstate = rnginit([9, 8, 7, 6])
-A, _ = rand(rstate, iid(Normal(mu = 0, sigma = 1), [3, 3]))
+A, _ = rand(iid(Normal(mu = 0, sigma = 1), [3, 3]), rstate)
 `;
   const r = processSource(src);
   const errs = r.diagnostics.filter((dd: any) => dd.severity === 'error');
@@ -120,7 +120,7 @@ A, _ = rand(rstate, iid(Normal(mu = 0, sigma = 1), [3, 3]))
 
 // =====================================================================
 // rand of a NAMED non-iid composite measure (the applied-kernel /
-// lawof-binding draw — `sim_data, _ = rand(rstate, model_dist)` in the
+// lawof-binding draw — `sim_data, _ = rand(model_dist, rstate)` in the
 // simple-transport fixtures). The shared classifyRandTuple gate used to
 // overwrite the measure REF with its resolved IR while probing for the
 // iid shape, so the no-iid fallback handed a `lawof` CALL to the
@@ -139,7 +139,7 @@ ys ~ iid(Normal(mu = x, sigma = 0.1), 4)
 K = kernelof(ys, mu0 = mu0)
 model_dist = K(1.5)
 rstate = rnginit([1, 2, 3, 4])
-sim, rs2 = rand(rstate, model_dist)
+sim, rs2 = rand(model_dist, rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 64 });
   const d = built.derivations.sim;

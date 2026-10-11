@@ -345,8 +345,8 @@ function makeBulkSampler(
  * caller continues — matching `rand`'s `(value, new_state)` and
  * `builtin_sample`'s `(X, new_rngstate)` contracts (spec §07). This is
  * the single batched realisation of the leaf endpoint shared by
- * `builtin_sample`, `rand(state, iid(<leaf>, dims))`, and a bare scalar
- * leaf draw `rand(state, <leaf>)` (walkLeaf delegates here at dims=[]),
+ * `builtin_sample`, `rand(iid(<leaf>, dims), state)`, and a bare scalar
+ * leaf draw `rand(<leaf>, state)` (walkLeaf delegates here at dims=[]),
  * so all leaf paths in the value-position rand primitive agree
  * bit-for-bit and leaves are batched draws per engine-concepts §11.
  *
@@ -3528,7 +3528,7 @@ function evaluateCall(ir: any, env: any): any {
     const bytes = valueLib.isValue(bytesRaw) ? Array.from(bytesRaw.data) : bytesRaw;
     return rng.stateFromBytes(bytes);
   }
-  // rand(<state>, <measure-IR>) — generate a sample from a closed
+  // rand(<measure-IR>, <state>) — generate a sample from a closed
   // measure with explicit state threading. Per spec §sec:random rand
   // returns a tuple (value, new_state). The measure arg is NOT
   // evaluated as a value — it's passed verbatim to the in-module measure
@@ -3542,7 +3542,7 @@ function evaluateCall(ir: any, env: any): any {
   }
   // rand_succ(state) — the value-domain successor rngstate for a COMPOSITE
   // `rand` (engine-concepts §11). Synthesised by the lift rand_succ
-  // rewrite for the state half `tuple_get(rand(state, iid(<composite>,n)), 1)`;
+  // rewrite for the state half `tuple_get(rand(iid(<composite>,n), state), 1)`;
   // never surface syntax. The composite draw (matRandSample) takes split
   // lane 0 of the parent key; the successor is split lane 1 — so this
   // depends ONLY on the parent state and never walks the (unwalkable)
@@ -3744,11 +3744,11 @@ function seedBytesFromInteger(n: number): number[] {
 function evaluateRand(ir: any, env: any): any {
   const args = ir.args || [];
   if (args.length !== 2) {
-    throw new Error(`evaluateExpr: rand expects 2 args (state, measure), got ${args.length}`);
+    throw new Error(`evaluateExpr: rand expects 2 args (measure, state), got ${args.length}`);
   }
-  const state: any = evaluateExpr(args[0], env);
+  const state: any = evaluateExpr(args[1], env);
   if (!state || typeof state !== 'object' || !state.key || !state.counter) {
-    throw new Error(`evaluateExpr: rand's first arg must be an rngstate (got ${typeof state})`);
+    throw new Error(`evaluateExpr: rand's second arg must be an rngstate (got ${typeof state})`);
   }
   // resolveMeasureRef: when the measure arg is a self-ref to another
   // binding (e.g. `m_alias`), the walker needs an IR for that binding.
@@ -3769,14 +3769,14 @@ function evaluateRand(ir: any, env: any): any {
   if (env && typeof env.__resolveValueRef === 'function') {
     opts.resolveValueRef = env.__resolveValueRef;
   }
-  const r: any = walk(state, args[1], env, opts);
+  const r: any = walk(state, args[0], env, opts);
   return [r.value, r.state];
 }
 
 // Build a synthetic measure IR `kernel(...kernelInputKwargs)` from a
 // kernel name + the kernel_input IR + optional trailing dim IRs. Used
 // by `builtin_sample(rngstate, kernel, kernel_input, n, m, ...)` to
-// route through the in-module `walk` — same path `rand(state, m)` takes.
+// route through the in-module `walk` — same path `rand(m, state)` takes.
 //
 // `kernelInputIR` may be:
 //   - an inline `record(...)` call (fields → kernel call kwargs),
@@ -3881,7 +3881,7 @@ function _resolveKernelName(ir: any, _env: any): string {
 //   opts.resolveMeasureRef - `(name) → measureIR` for measure self-refs.
 //   opts.resolveValueRef   - `(name, state) → [value, newState]` lazy
 //                            resolution of value-position self-refs (e.g.
-//                            `rand(state, M)` where M's params reference
+//                            `rand(M, state)` where M's params reference
 //                            stochastic ancestors); threads state and is
 //                            expected to cache through env so two refs to
 //                            one name share a draw.
@@ -3901,7 +3901,7 @@ function walkInner(state: any, ir: IRNode, env: any, ctx: any): any {
   if (ir && ir.kind === 'ref' && ir.ns === 'self') {
     if (!ctx.resolveRef) {
       // This is where a BARE un-destructured composite `rand` surfaces: a
-      // `r = rand(state, iid(<composite>, n))` reaches the worker's bare
+      // `r = rand(iid(<composite>, n), state)` reaches the worker's bare
       // evaluate path (no resolver), and walking its inner measure ref hits
       // here. The supported surface is to DESTRUCTURE — the draw half then
       // materialises (matRandSample) and the state half threads via
@@ -3911,7 +3911,7 @@ function walkInner(state: any, ir: IRNode, env: any, ctx: any): any {
       throw new Error(
         `sampler.walk: encountered measure ref '${ir.name}' but no ` +
         `resolveMeasureRef was supplied. If this is a bare ` +
-        `\`rand(state, <measure>)\`, destructure it — \`draw, succ = rand(...)\` ` +
+        `\`rand(<measure>, state)\`, destructure it — \`draw, succ = rand(...)\` ` +
         `— so the draw materialises and the state half threads via rand_succ ` +
         `(a bare un-destructured composite rand is not yet supported). ` +
         `Otherwise inline the measure or pass opts.resolveMeasureRef.`
@@ -3964,7 +3964,7 @@ function walkLeaf(state: any, ir: IRNode, env: any, ctx: any) {
   // Single leaf endpoint: a scalar draw is sampleLeafN at dims=[] (a batch
   // of 1). Collapses the former scalar realisation (a per-draw stdlib
   // randFn.factory — ziggurat for Normal/LogNormal) onto the one batched
-  // endpoint, so `rand(state, <leaf>)` and `rand(state, iid(<leaf>, 1))[0]`
+  // endpoint, so `rand(<leaf>, state)` and `rand(iid(<leaf>, 1), state)[0]`
   // are now bit-for-bit identical with no second leaf realisation in the
   // value-position rand / builtin_sample path (engine-concepts §11
   // stage 4). The worker's per-binding materialisation samplers (rand /
@@ -4020,7 +4020,7 @@ function walkIid(state: any, ir: IRNode, env: any, ctx: any) {
   // makeBulkSampler call (the single batched leaf endpoint, sampleLeafN)
   // instead of looping the per-draw walker. iid semantics: the leaf's
   // params are resolved ONCE here and shared across every draw. Both
-  // builtin_sample and rand(state, iid(<leaf>, dims)) route through here,
+  // builtin_sample and rand(iid(<leaf>, dims), state) route through here,
   // so they stay bit-for-bit equal (engine-concepts §11). Composite inner
   // measures keep the per-draw recursion below. The lift pass hoists an
   // inline inner measure to an anon, so M can arrive as `(ref self <anon>)`

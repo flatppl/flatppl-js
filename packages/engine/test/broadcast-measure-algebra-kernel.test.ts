@@ -314,12 +314,12 @@ async () => {
   }
 });
 
-test('sampling: `rand(state, iid(lawof(E), n))` draws the broadcast\'s '
+test('sampling: `rand(iid(lawof(E), n), state)` draws the broadcast\'s '
   + 'product measure', async () => {
   const src = HEAD + `w_ev = [${W_EV.join(', ')}]\n` + MIX_LAMBDA + `
 E ~ mix.(w_ev)
 rstate = rnginit([1, 2, 3, 4])
-Es, _ = rand(rstate, iid(lawof(E), 4000))
+Es, _ = rand(iid(lawof(E), 4000), rstate)
 `;
   const { ctx } = ctxFor(src, 8);
   const m = await ctx.getMeasure('Es');

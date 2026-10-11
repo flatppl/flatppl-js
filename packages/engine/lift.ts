@@ -730,7 +730,7 @@ function liftInlineSubexpressions(bindings: any) {
         // Composite rand uses a named measure for its draw/successor split.
         // Keep the existing inline leaf/iid realization; rebase needs this
         // hoist so its Lebesgue operand is never treated as a value to draw.
-        const expected = op === 'rand' && i === 1 && a?.callee?.name === 'rebase'
+        const expected = op === 'rand' && i === 0 && a?.callee?.name === 'rebase'
           ? 'measure' : sig ? sig[i] : null;
         if      (op === 'joint' && expected === 'measure') astNode.args[i] = liftJointComponent(a);
         else if (expected === 'measure')          astNode.args[i] = liftMeasure(a);
@@ -3758,16 +3758,16 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
         return args.length === 2 && isEvaluable(args[0])
           && args[1].kind === 'lit' && typeof args[1].value === 'string';
       }
-      // rand(state, measure) — the measure arg is a measure IR passed
+      // rand(measure, state) — the measure arg is a measure IR passed
       // verbatim to the trace evaluator, NOT a value expression. So we
-      // only require the state (first) arg to be evaluable; whether
+      // only require the state (second) arg to be evaluable; whether
       // the measure is sampleable is the trace evaluator's call. Same
       // logic for any future state-threaded primitive that takes a
       // measure literal (none today besides rand).
       if (ir.op === 'rand') {
         const args = ir.args || [];
         if (args.length !== 2) return false;
-        return isEvaluable(args[0]);
+        return isEvaluable(args[1]);
       }
       // rand_succ(state) — the value-domain composite-rand successor
       // (split lane 1). One arg, the rngstate (itself evaluable).
@@ -3875,17 +3875,17 @@ function classifyRandTuple(rhsIR: any, bindings: any, idx: number): any {
   const randIR = randB && randB.ir;
   if (!randIR || randIR.op !== 'rand' || !Array.isArray(randIR.args)
       || randIR.args.length !== 2) return null;
-  const stateIR = randIR.args[0];
+  const stateIR = randIR.args[1];
 
   // Decompose the measure arg (iid inline or a lift-hoisted anon ref).
   // The resolved IR is inspected for the iid shape ONLY — the no-iid
   // fallback hands back the ORIGINAL node, so a by-name ref to a non-iid
-  // composite measure (`v, s2 = rand(state, model_dist)` over an
+  // composite measure (`v, s2 = rand(model_dist, state)` over an
   // applied-kernel / lawof binding) keeps its ref and classifies as a
   // count-1 randsample instead of failing the must-be-a-ref check below
   // and falling onto the per-draw evaluator (which cannot resolve a
   // measure ref — "no resolveMeasureRef was supplied").
-  const measureArg: any = randIR.args[1];
+  const measureArg: any = randIR.args[0];
   let measureIR: any = measureArg;
   if (measureIR && measureIR.kind === 'ref' && measureIR.ns === 'self') {
     const mb = bindings.get(measureIR.name);

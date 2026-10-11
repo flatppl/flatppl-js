@@ -3312,8 +3312,8 @@ test('pre-eval: spec example computes random_data + threads state', () => {
   const { bindings } = processSource(`
     rngseed = [0xb2, 0x51, 0xa4, 0x93, 0x49, 0xd8, 0x68, 0x88]
     rstate = rnginit(rngseed)
-    random_data, rstate2 = rand(rstate, iid(Normal(0, 1), 10))
-    more_random_data, rstate3 = rand(rstate2, iid(Exponential(1), 5))
+    random_data, rstate2 = rand(iid(Normal(0, 1), 10), rstate)
+    more_random_data, rstate3 = rand(iid(Exponential(1), 5), rstate2)
   `);
   const { derivations, fixedValues } = buildDerivations(bindings);
 
@@ -3352,21 +3352,21 @@ test('pre-eval: deterministic across calls (same seed → same values)', () => {
   const src = `
     seed = [1, 2, 3, 4, 5, 6, 7, 8]
     s = rnginit(seed)
-    x, s2 = rand(s, iid(Normal(0, 1), 10))
+    x, s2 = rand(iid(Normal(0, 1), 10), s)
   `;
   const r1 = buildDerivations(processSource(src).bindings);
   const r2 = buildDerivations(processSource(src).bindings);
   assert.deepEqual(
     Array.from(r1.fixedValues.get('x')),
     Array.from(r2.fixedValues.get('x')),
-    'rand(rnginit(...), ...) is deterministic w.r.t. seed');
+    'rand(..., rnginit(...)) is deterministic w.r.t. seed');
 });
 
 test('pre-eval: downstream scalars consume fixed arrays', () => {
   const { bindings } = processSource(`
     seed = [9, 9, 9, 9]
     s = rnginit(seed)
-    samples, s2 = rand(s, iid(Normal(0, 1), 100))
+    samples, s2 = rand(iid(Normal(0, 1), 100), s)
     s_max = maximum(samples)
     s_min = minimum(samples)
   `);
@@ -3384,7 +3384,7 @@ test('pre-eval: downstream scalars consume fixed arrays', () => {
   assert.equal(fixedValues.get('s_min'), expectedMin);
 });
 
-test('pre-eval: rand(state, lawof(stochastic_var)) samples through value-ref resolver', () => {
+test('pre-eval: rand(lawof(stochastic_var), state) samples through value-ref resolver', () => {
   // Generic state-threaded sampling: rand draws from a measure whose
   // distribution params depend on stochastic ancestors. Pre-eval lands
   // a deterministic, reproducible draw in fixedValues without help from
@@ -3406,7 +3406,7 @@ test('pre-eval: rand(state, lawof(stochastic_var)) samples through value-ref res
     b = abs(theta1) * theta2
     obs ~ iid(Normal(mu = a, sigma = b), 10)
     rstate = rnginit([1, 2, 3, 4])
-    data, _ = rand(rstate, lawof(obs))
+    data, _ = rand(lawof(obs), rstate)
   `);
   const { fixedValues } = buildDerivations(bindings);
 
@@ -3424,7 +3424,7 @@ test('pre-eval: rand(state, lawof(stochastic_var)) samples through value-ref res
     b = abs(theta1) * theta2
     obs ~ iid(Normal(mu = a, sigma = b), 10)
     rstate = rnginit([1, 2, 3, 4])
-    data, _ = rand(rstate, lawof(obs))
+    data, _ = rand(lawof(obs), rstate)
   `).bindings);
   assert.deepEqual(
     Array.from(fixedValues.get('data')),
@@ -3456,7 +3456,7 @@ test('pre-eval: rand uses ONE shared draw of a stochastic ancestor across multi-
     theta1 ~ Normal(mu = 0, sigma = 1)
     obs ~ iid(Normal(mu = theta1, sigma = abs(theta1) + 0.001), 5)
     rstate = rnginit([9, 8, 7, 6])
-    data, _ = rand(rstate, lawof(obs))
+    data, _ = rand(lawof(obs), rstate)
   `);
   const { fixedValues } = buildDerivations(bindings);
   assert.ok(fixedValues.has('data'));
@@ -3468,8 +3468,8 @@ test('pre-eval: rand uses ONE shared draw of a stochastic ancestor across multi-
   }
 });
 
-test('pre-eval: rand(state, lawof(...)) reachable through a multi-LHS rewrite', () => {
-  // `data, rs2 = rand(rs, M)` lifts to a tuple_get pair on a synthetic
+test('pre-eval: rand(lawof(...), state) reachable through a multi-LHS rewrite', () => {
+  // `data, rs2 = rand(M, rs)` lifts to a tuple_get pair on a synthetic
   // %mlhs binding. Pre-eval must succeed for BOTH the %mlhs intermediate
   // and the data / rs2 leaves — that's the path the user's debug.flatppl
   // shape exercises, and it's what was failing before the resolver fix.
@@ -3477,7 +3477,7 @@ test('pre-eval: rand(state, lawof(...)) reachable through a multi-LHS rewrite', 
     theta ~ Normal(mu = 0, sigma = 1)
     obs ~ iid(Normal(mu = theta, sigma = 1), 3)
     rstate = rnginit([4, 3, 2, 1])
-    data, rstate2 = rand(rstate, lawof(obs))
+    data, rstate2 = rand(lawof(obs), rstate)
   `);
   const { fixedValues } = buildDerivations(bindings);
   assert.ok(fixedValues.has('data'),
@@ -3503,7 +3503,7 @@ test('classify: bayesupdate observation can be a dynamically-computed value', ()
     a           = 5.0 * theta1
     obs         = draw(iid(Normal(mu = a, sigma = 1), 4))
     rstate      = rnginit([1, 2, 3, 4])
-    observed_data, _ = rand(rstate, lawof(obs))
+    observed_data, _ = rand(lawof(obs), rstate)
     forward_kernel = kernelof(record(obs = obs), theta1 = theta1)
     prior          = lawof(record(theta1 = theta1))
     L              = likelihoodof(forward_kernel, record(obs = observed_data))
@@ -3559,8 +3559,8 @@ test('auto-splat: forward_kernel(rand_pars) drives end-to-end rand chain', () =>
     forward_kernel = functionof(joint(obs = iid(Normal(mu = theta1, sigma = theta2), 10)), theta1 = theta1, theta2 = theta2)
     prior = lawof(record(theta1 = theta1, theta2 = theta2))
     rs = rnginit([1,2,3,4])
-    rp, rs2 = rand(rs, prior)
-    ro, _ = rand(rs2, forward_kernel(rp))
+    rp, rs2 = rand(prior, rs)
+    ro, _ = rand(forward_kernel(rp), rs2)
   `);
   const errs = diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(errs, [], `unexpected errors: ${JSON.stringify(errs)}`);

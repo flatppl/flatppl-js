@@ -1,12 +1,12 @@
 'use strict';
 
 // wave SMALLS-JS: `normalize` was entirely absent from sampler.ts's
-// MEASURE_OP_WALKERS, so `rand(state, normalize(weighted(w, M)))` refused
+// MEASURE_OP_WALKERS, so `rand(normalize(weighted(w, M)), state)` refused
 // even though §07 sec:random makes sampling a normalized measure legal in
 // principle. Fixed for the INLINE form in sampler.ts (walkNormalizeRefuse).
 //
 // This file covers the SECOND, materialiser-side route, mirroring wave-j1's
-// weighted fix: a NAMED `nw = normalize(w); rand(state, nw)` never reaches
+// weighted fix: a NAMED `nw = normalize(w); rand(nw, state)` never reaches
 // sampler.walk at all — `classifyRandTuple` (lift.ts) resolves `nw` to a
 // binding ref and classifies the draw as a `randsample` derivation, which
 // routes through `matRandSample` (materialiser.ts) instead. Before this
@@ -16,7 +16,7 @@
 // empirical measure with non-uniform logWeights) and then discarded those
 // logWeights (`empirical.arrayMeasure(data, variateDims, null)`), silently
 // handing back a plain draw from the UNNORMALIZED base. Reproduced live
-// against pre-fix HEAD: `rand(state, normalize(w))` for
+// against pre-fix HEAD: `rand(normalize(w), state)` for
 // `w = weighted(2.0, Normal(0, 1))` returned a bare Normal(0,1) draw with no
 // throw — the same weight-dropping defect class wave-j1's `walkWeightedRefuse`
 // / `matRandSample` weighted-check closes, one `normalize(...)` wrapper away.
@@ -35,7 +35,7 @@ test('randsample: named normalize(weighted(...)) binding refuses rather than dro
   const src = RNGSEED_SRC + `
 w = weighted(2.0, Normal(0, 1))
 nw = normalize(w)
-s, rstate2 = rand(rstate, nw)
+s, rstate2 = rand(nw, rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 8 });
   assert.equal(built.derivations.s.kind, 'randsample',
@@ -50,7 +50,7 @@ test('randsample: named normalize(logweighted(...)) binding refuses too (same wa
   const src = RNGSEED_SRC + `
 w = logweighted(0.5, Normal(0, 1))
 nw = normalize(w)
-s, rstate2 = rand(rstate, nw)
+s, rstate2 = rand(nw, rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 8 });
   assert.equal(built.derivations.s.kind, 'randsample');
@@ -65,7 +65,7 @@ test('randsample: normalize(alias(weighted(...))) still refuses (alias/normalize
 w = weighted(2.0, Normal(0, 1))
 w2 = w
 nw = normalize(w2)
-s, rstate2 = rand(rstate, nw)
+s, rstate2 = rand(nw, rstate)
 `;
   const { ctx } = makeMatCtx(src, { sampleCount: 8 });
   await assert.rejects(
@@ -78,7 +78,7 @@ test('randsample: named normalize(m) identity binding samples — no regression'
   const src = RNGSEED_SRC + `
 m = Normal(0, 1)
 nm = normalize(m)
-s, rstate2 = rand(rstate, iid(nm, 5000))
+s, rstate2 = rand(iid(nm, 5000), rstate)
 `;
   const { ctx, built } = makeMatCtx(src, { sampleCount: 5000 });
   assert.equal(built.derivations.s.kind, 'randsample');
