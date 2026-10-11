@@ -29,6 +29,27 @@ test('scalar affine pushforwards preserve discrete and real atomic masses and su
   assert.equal(await score(dirac, String(atom + 0.01), 'z ~ Dirac(1.2)'), -Infinity);
 });
 
+test('Boolean Dirac atoms preserve mass through numeric affine embeddings', async () => {
+  assert.equal(await score('Dirac(true)', 'true'), 0);
+  assert.equal(await score('Dirac(false)', 'false'), 0);
+  assert.equal(await score('Dirac(true)', 'false'), -Infinity);
+  assert.equal(await score('Dirac(false)', 'true'), -Infinity);
+  assert.equal(await score('locscale(Dirac(true), 0.1, 0.3)', '0.4'), 0);
+  assert.equal(await score('locscale(Dirac(false), 0.1, 0.3)', '0.1'), 0);
+  assert.equal(await score('locscale(Dirac(true), 0.1, 0.3)', '0.1'), -Infinity);
+  assert.equal(await score('locscale(Dirac(false), 0.1, 0.3)', '0.4'), -Infinity);
+  assert.equal(await score('pushfwd(x -> 0.3 .* x .+ 0.1, iid(Dirac(true), 2))', '[0.4, 0.4]'), 0);
+  assert.equal(await score('pushfwd(x -> 0.3 .* x .+ 0.1, iid(Dirac(true), 2))', '[0.4, 0.1]'), -Infinity);
+  assert.equal(await score('pushfwd(x -> 0.3 .* x .+ 0.1, Dirac.([true, false]))', '[0.4, 0.1]'), 0);
+});
+
+test('affine density refuses incompatible mixture reference classes and dimensions', async () => {
+  const mixed = 'locscale(superpose(weighted(0.5, Normal(0, 1)), weighted(0.5, Dirac(1.2))), 0.1, 0.3)';
+  await assert.rejects(() => score(mixed, '0.46'), /does not establish a homogeneous reference measure/);
+  const dimensions = 'pushfwd(x -> 2 .* x .+ 3, superpose(weighted(0.5, iid(Normal(0, 1), 2)), weighted(0.5, Dirichlet(alpha = [1, 1]))))';
+  await assert.rejects(() => score(dimensions, '[3.5, 4.5]'), /mixture branches have different reference dimensions/);
+});
+
 test('constructor-broadcast affine density retains each counting factor', async () => {
   const measure = 'pushfwd(x -> (x .* 0.3) .+ 0.1, Bernoulli.([0.2, 0.3]))';
   assert.ok(Math.abs(await score(measure, '[0.1, 0.4]') - Math.log(0.8 * 0.3)) < 1e-14);
@@ -116,4 +137,16 @@ posterior = bayesupdate(L, lawof(record(atom = atom, p = p)))`, 3);
   assert.ok(Math.abs(batch[0] - Math.log(0.3)) < 1e-14);
   assert.ok(Math.abs(batch[1] - Math.log(0.2)) < 1e-14);
   assert.equal(batch[2], -Infinity);
+});
+
+test('affine likelihood batches resolve live Boolean atom support per row', async () => {
+  const { proc, ctx } = ctxFor(`
+atom ~ Normal(0, 1)
+y ~ locscale(Dirac(atom > 0), 0.1, 0.3)
+K = kernelof(record(y = y), atom = atom)
+L = likelihoodof(K, record(y = 0.4))
+posterior = bayesupdate(L, lawof(record(atom = atom)))`, 2);
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const scorer = await buildLogPi(ctx, ctx.derivations.posterior);
+  assert.deepEqual(Array.from(scorer.priorLikBatch([{ atom: -1 }, { atom: 1 }]).lik), [-Infinity, 0]);
 });
