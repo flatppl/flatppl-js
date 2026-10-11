@@ -706,6 +706,11 @@ log` is the record. What survives as standing knowledge:
 
 ## Broadcast / aggregate dissolution (JS-engine specifics)
 
+Zero-axis `locscale` broadcasts over a scalar-variate measure lower in lift to
+the ordinary scalar affine `pushfwd`, retaining live scalar shift/scale inputs.
+The measure operand is held constant (§04); a measure's variate axes never
+become broadcast axes. Scalar shifts over non-scalar variates are diagnosed.
+
 Cross-engine architecture in engine-concepts §20; JS notes here. The dissolver
 runs in `buildDerivations` **immediately after `liftInlineSubexpressions`** (each
 binding has cached lifted `.ir` + `inferredType`), rewriting `.ir` in place when
