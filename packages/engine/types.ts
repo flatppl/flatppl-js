@@ -852,6 +852,7 @@ const SIGNATURE_FACTORIES = {
   // ---- Measure algebra ---------------------------------------------
   weighted:    () => ({ args: [REAL, measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
   logweighted: () => ({ args: [REAL, measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
+  rebase:      () => ({ args: [measure(tvar('T')), measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
   normalize:   () => ({ args: [measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')) }),
   superpose:   () => ({ args: [measure(tvar('T'))], kwargs: {}, result: measure(tvar('T')), variadic: 'positional' }),
 

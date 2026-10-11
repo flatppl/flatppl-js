@@ -77,6 +77,7 @@ const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS, DISTRIBUTIONS, ALL_KNOWN } = requi
 function argSignature(op: string, numArgs: number): string[] | null {
   if (op === 'draw')                              return ['measure'];
   if (op === 'weighted' || op === 'logweighted')  return ['value', 'measure'];
+  if (op === 'rebase')                            return ['measure', 'measure'];
   if (op === 'normalize')                         return ['measure'];
   if (op === 'relabel')                           return ['measure', 'value'];
   if (op === 'superpose')                         return Array(numArgs).fill('measure');
@@ -726,7 +727,11 @@ function liftInlineSubexpressions(bindings: any) {
           }
           continue;
         }
-        const expected = sig ? sig[i] : null;
+        // Composite rand uses a named measure for its draw/successor split.
+        // Keep the existing inline leaf/iid realization; rebase needs this
+        // hoist so its Lebesgue operand is never treated as a value to draw.
+        const expected = op === 'rand' && i === 1 && a?.callee?.name === 'rebase'
+          ? 'measure' : sig ? sig[i] : null;
         if      (op === 'joint' && expected === 'measure') astNode.args[i] = liftJointComponent(a);
         else if (expected === 'measure')          astNode.args[i] = liftMeasure(a);
         else if (expected === 'value-or-measure') astNode.args[i] = liftMeasureOrValue(a);
@@ -2907,6 +2912,39 @@ function liftInlineSubexpressions(bindings: any) {
     return recursive;
   }
 
+  /** §06 rebase fans a common named input out, ignoring closed operands. */
+  function inlineRebaseApplication(application: any, rhs: any): any {
+    const inputNames = (a: any): string[] => {
+      if (a.type === 'Identifier') {
+        const b = out.get(resolveCallableAlias(a.name, out));
+        const t = b?.inferredType;
+        if (t?.kind === 'kernel') return t.inputs.map((x: any) => x.name);
+        // Lift-created inline reifications have not run type inference.
+        return b?.synthetic ? inputNames(b.effectiveValue || b.node.value) : [];
+      }
+      if (['functionof', 'kernelof', 'fn'].includes(a.callee?.name)) {
+        return lowerExpr(a).paramKwargs || [];
+      }
+      if (a.callee?.name === 'rebase') {
+        return inputNames(a.args[0]).length ? inputNames(a.args[0]) : inputNames(a.args[1]);
+      }
+      return [];
+    };
+    const perOperand = rhs.args.map(inputNames);
+    const names = perOperand.find((ns: string[]) => ns.length);
+    if (!names) return application;
+    // Repack positional inputs in the result's order. An operand may declare
+    // those same names in a different order; forwarding positions would swap
+    // their meanings. Type inference has already checked matching interfaces.
+    let position = 0;
+    const kwargs = application.args.map((a: any) => a.type === 'KeywordArg' ? cloneAst(a) : {
+      type: 'KeywordArg', name: names[position++], value: cloneAst(a), loc: a.loc,
+    });
+    return { ...cloneAst(rhs), args: rhs.args.map((a: any, i: number) => perOperand[i].length
+      ? inlineOnce({ type: 'CallExpr', callee: cloneAst(a), args: kwargs, loc: application.loc })
+      : cloneAst(a)) };
+  }
+
   function inlineOnce(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (astArg.builtin) return astArg;
@@ -2932,6 +2970,9 @@ function liftInlineSubexpressions(bindings: any) {
           || astArg.callee.callee.name === 'fn')) {
       return _inlineApplication(astArg,
         { type: astArg.callee.callee.name }, astArg.callee);
+    }
+    if (astArg.callee?.callee?.name === 'rebase') {
+      return inlineRebaseApplication(astArg, astArg.callee);
     }
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     // Callable ALIAS (spec §04 "Aliasing is just assignment"): resolve the
@@ -2994,6 +3035,7 @@ function liftInlineSubexpressions(bindings: any) {
     // `_jointFanoutAsFunctionof`.
     if (fnBinding.type === 'call') {
       const rhs = fnBinding.node && fnBinding.node.value;
+      if (rhs?.callee?.name === 'rebase') return inlineRebaseApplication(astArg, rhs);
       if (fnBinding.inferredType?.kind === 'kernel' && rhs?.type === 'CallExpr'
           && rhs.callee?.type === 'Identifier' && rhs.callee.name === 'pushfwd'
           && rhs.args?.length === 2) {
