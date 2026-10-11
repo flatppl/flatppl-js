@@ -9,17 +9,17 @@ const close = (actual: number, expected: number, tol = 1e-12) =>
   assert.ok(Math.abs(actual - expected) < tol, `${actual} != ${expected}`);
 const zeroScore = (s: number) => Math.log(3) / 2 - 2 * Math.log(s * Math.sqrt(2 * Math.PI)) - 1 / s ** 2;
 
-test('rebase scores ordered and zero-sum Normal laws with the coordinate reference', async () => {
+test('tilt scores ordered and zero-sum Normal laws with the coordinate reference', async () => {
   const { ctx } = makeMatCtx(`
 n = 3
-A = rebase(iid(Normal(mu = 1, sigma = 2), n), Lebesgue(support = ordered(n)))
-B = rebase(iid(Normal(7, 2), 3), Lebesgue(zerosum(3)))
+A = tilt(iid(Normal(mu = 1, sigma = 2), n), Lebesgue(support = ordered(n)))
+B = tilt(iid(Normal(7, 2), 3), Lebesgue(zerosum(3)))
 a = logdensityof(A, [-1, 0, 3])
 b = logdensityof(B, [-1, 0, 1])
 outside = logdensityof(A, [0, 0, 1])
-unit = rebase(iid(Normal(8, 2), 1), Lebesgue(zerosum(1)))
+unit = tilt(iid(Normal(8, 2), 1), Lebesgue(zerosum(1)))
 z = logdensityof(unit, [0])
-tiny = logdensityof(rebase(iid(Normal(8, 1e-200), 1), Lebesgue(zerosum(1))), [0])
+tiny = logdensityof(tilt(iid(Normal(8, 1e-200), 1), Lebesgue(zerosum(1))), [0])
 `, { sampleCount: 4 });
   close((await ctx.getMeasure('a')).samples[0], Math.log(6) - 3 * Math.log(2 * Math.sqrt(2 * Math.PI)) - 9 / 8);
   close((await ctx.getMeasure('b')).samples[0], zeroScore(2));
@@ -31,10 +31,10 @@ tiny = logdensityof(rebase(iid(Normal(8, 1e-200), 1), Lebesgue(zerosum(1))), [0]
   assert.ok(unit.value.data.every((x: number) => x === 0));
 });
 
-test('rebase retains inferred scales and the normalizer derivative through reification', async () => {
+test('tilt retains inferred scales and the normalizer derivative through reification', async () => {
   const { ctx } = makeMatCtx(`
 s = elementof(posreals)
-M = rebase(iid(Normal(7, s), 3), Lebesgue(zerosum(3)))
+M = tilt(iid(Normal(7, s), 3), Lebesgue(zerosum(3)))
 score = logdensityof(M, [-1, 0, 1])
 f = functionof(score, scale = s)
 a = f(2)
@@ -49,14 +49,14 @@ hi = f(2.00001)
   close((hi - lo) / 0.00002, -0.75, 1e-9);
 });
 
-test('rebase generic Normal-product fallback and matching named kernel inputs', async () => {
+test('tilt generic Normal-product fallback and matching named kernel inputs', async () => {
   const { ctx } = makeMatCtx(`
 s = elementof(posreals)
 m = elementof(reals)
 N = Normal(m, s)
 K = functionof(N, location = m, scale = s)
 B = functionof(Normal(m, 1), scale = s, location = m)
-R = rebase(K, B)
+R = tilt(K, B)
 Q = R(scale = 2, location = 1)
 score = logdensityof(Q, 0)
 `, { sampleCount: 4 });
@@ -64,21 +64,22 @@ score = logdensityof(Q, 0)
   close((await ctx.getMeasure('score')).samples[0], -0.5 * Math.log(2 * Math.PI * 0.8) - 1 / 1.6);
 });
 
-test('rebase rejects mismatched variates, interfaces, and keyword operands', () => {
+test('tilt rejects mismatched operands and the removed rebase spelling', () => {
   for (const src of [
-    'R = rebase(Normal(0,1), Lebesgue(zerosum(3)))',
-    'R = rebase(M = Normal(0,1), B = Normal(0,1))',
-    'x = elementof(reals)\nK = functionof(Normal(x,1), a=x)\nB = functionof(Normal(x,1), b=x)\nR = rebase(K,B)',
+    'R = tilt(Normal(0,1), Lebesgue(zerosum(3)))',
+    'R = tilt(M = Normal(0,1), B = Normal(0,1))',
+    'x = elementof(reals)\nK = functionof(Normal(x,1), a=x)\nB = functionof(Normal(x,1), b=x)\nR = tilt(K,B)',
+    'R = rebase(Normal(0,1), Normal(0,1))',
   ]) assert.ok(processSource(src).diagnostics.some((d: any) => d.severity === 'error'));
 });
 
-test('rebase sampling matches ordered moments and zero-sum conditional covariance', async () => {
+test('tilt sampling matches ordered moments and zero-sum conditional covariance', async () => {
   const count = 16384;
   const { ctx } = makeMatCtx(`
-ordered_draw ~ rebase(iid(Normal(1, 2), 2), Lebesgue(ordered(2)))
+ordered_draw ~ tilt(iid(Normal(1, 2), 2), Lebesgue(ordered(2)))
 scale ~ Exponential(1)
-effects ~ rebase(iid(Normal(7, scale), 3), Lebesgue(zerosum(3)))
-other ~ rebase(iid(Normal(0, 1), 3), Lebesgue(zerosum(3)))
+effects ~ tilt(iid(Normal(7, scale), 3), Lebesgue(zerosum(3)))
+other ~ tilt(iid(Normal(0, 1), 3), Lebesgue(zerosum(3)))
 prior = lawof(record(scale = scale, effects = effects))
 score = logdensityof(prior, record(scale = 2, effects = [-1, 0, 1]))
 reverse = lawof(record(effects = effects, scale = scale))
@@ -115,12 +116,12 @@ reverse_score = logdensityof(reverse, record(effects = [-1, 0, 1], scale = 2))
   close(cross / count, 0, 0.03);
 });
 
-test('rebase supports closed operands, kernel application and explicit likelihood boundaries', async () => {
+test('tilt supports closed operands, kernel application and explicit likelihood boundaries', async () => {
   const { ctx } = makeMatCtx(`
 s = elementof(posreals)
 M = iid(Normal(0, s), 3)
 K = functionof(M, scale = s)
-R = rebase(K, Lebesgue(zerosum(3)))
+R = tilt(K, Lebesgue(zerosum(3)))
 effects ~ R(2)
 y ~ Normal(sum(effects), 1)
 model = kernelof(y, scale = s, effects = effects)
@@ -132,12 +133,12 @@ score = logdensityof(L, record(scale = 3, effects = [-1, 0, 1]))
   assert.deepEqual(effects.value.shape, [8, 3]);
 });
 
-test('exact rebase draws retain the iid Normal RNG continuation', async () => {
+test('exact tilt draws retain the iid Normal RNG continuation', async () => {
   const { ctx } = makeMatCtx(`
 rng = rnginit([1, 2, 3, 4])
 x, xs = rand(iid(Normal(0, 2), 3), rng)
-z, zs = rand(rebase(iid(Normal(7, 2), 3), Lebesgue(zerosum(3))), rng)
-o, os = rand(rebase(iid(Normal(0, 2), 3), Lebesgue(ordered(3))), rng)
+z, zs = rand(tilt(iid(Normal(7, 2), 3), Lebesgue(zerosum(3))), rng)
+o, os = rand(tilt(iid(Normal(0, 2), 3), Lebesgue(ordered(3))), rng)
 after_x, _ = rand(iid(Normal(0, 1), 4), xs)
 after_z, _ = rand(iid(Normal(0, 1), 4), zs)
 after_o, _ = rand(iid(Normal(0, 1), 4), os)
@@ -152,24 +153,24 @@ after_o, _ = rand(iid(Normal(0, 1), 4), os)
   assert.deepEqual(await data('after_o'), await data('after_x'));
 });
 
-test('rebase applies inline kernels and refuses an unsupported sampler', async () => {
+test('tilt applies inline kernels and refuses an unsupported sampler', async () => {
   const { ctx } = makeMatCtx(`
 s = elementof(posreals)
-R = rebase(functionof(iid(Normal(0, s), 3), scale = s), Lebesgue(zerosum(3)))
+R = tilt(functionof(iid(Normal(0, s), 3), scale = s), Lebesgue(zerosum(3)))
 a = logdensityof(R(2), [-1, 0, 1])
-b = logdensityof(rebase(functionof(iid(Normal(0, s), 3), scale = s), Lebesgue(zerosum(3)))(3), [-1, 0, 1])
-G = rebase(Normal(0, 1), Normal(1, 1))
+b = logdensityof(tilt(functionof(iid(Normal(0, s), 3), scale = s), Lebesgue(zerosum(3)))(3), [-1, 0, 1])
+G = tilt(Normal(0, 1), Normal(1, 1))
 `, { sampleCount: 4 });
   close((await ctx.getMeasure('a')).samples[0], zeroScore(2));
   close((await ctx.getMeasure('b')).samples[0], zeroScore(3));
-  await assert.rejects(ctx.getMeasure('G'), /rebase:.*sampl/);
+  await assert.rejects(ctx.getMeasure('G'), /tilt:.*sampl/);
 });
 
-test('rebase normalizers stay live in the MCMC point scorer', async () => {
+test('tilt normalizers stay live in the MCMC point scorer', async () => {
   const { buildLogPi } = require('../mcmc-density.ts');
   const { ctx } = makeMatCtx(`
 scale ~ Exponential(1)
-effects ~ rebase(iid(Normal(7, scale), 3), Lebesgue(zerosum(3)))
+effects ~ tilt(iid(Normal(7, scale), 3), Lebesgue(zerosum(3)))
 prior = lawof(record(scale = scale, effects = effects))
 y ~ Normal(sum(effects), 1)
 K = kernelof(y, scale = scale, effects = effects)
@@ -182,13 +183,13 @@ post = bayesupdate(L, prior)
   close((score(2.00001) - score(1.99999)) / 0.00002, -1.75, 1e-9);
 });
 
-test('rebase refuses invalid Normal parameters even when the mean cancels', async () => {
+test('tilt refuses invalid Normal parameters even when the mean cancels', async () => {
   for (const [mu, sigma] of [['inf', '2'], ['0', '0'], ['0', 'inf']]) {
     const { ctx } = makeMatCtx(`
-M = rebase(iid(Normal(${mu}, ${sigma}), 3), Lebesgue(zerosum(3)))
+M = tilt(iid(Normal(${mu}, ${sigma}), 3), Lebesgue(zerosum(3)))
 score = logdensityof(M, [-1, 0, 1])
 `, { sampleCount: 4 });
-    await assert.rejects(ctx.getMeasure('score'), /rebase:.*finite.*sigma > 0/);
-    await assert.rejects(ctx.getMeasure('M'), /rebase:.*finite.*sigma > 0/);
+    await assert.rejects(ctx.getMeasure('score'), /tilt:.*finite.*sigma > 0/);
+    await assert.rejects(ctx.getMeasure('M'), /tilt:.*finite.*sigma > 0/);
   }
 });

@@ -105,8 +105,8 @@ for `ksuperpose`, or every coordinate of the same node exactly once for `superpo
 Reference measures and unnormalized components do not satisfy this proof.
 Normalization functions establish simplex membership only for provably nonempty inputs.
 
-`rebase` retains both measure operands and live parameters until evaluation.
-`rebase.ts` recognizes iid Normal laws on ordered and zero-sum Lebesgue bases;
+`tilt` retains both measure operands and live parameters until evaluation.
+`tilt.ts` recognizes iid Normal laws on ordered and zero-sum Lebesgue bases;
 density and sampling use exact normalization, with sorted or centered draws.
 Other cases expand to the defining normalize/logweighted expression and use
 its existing capabilities. Unsupported normalizers or samplers refuse queries.

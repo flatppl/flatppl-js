@@ -2221,7 +2221,7 @@ const DISTINGUISHED_INPUTS = new Map<string, number>([
   ['lawof', 1], ['fixed', 1], ['broadcasted', 1],
   ['functionof', 1], ['kernelof', 1], ['broadcast', 1],
   ['get', 1], ['load_module', 1],
-  ['standard_module', 2], ['ksuperpose', 2], ['rebase', 2],
+  ['standard_module', 2], ['ksuperpose', 2], ['tilt', 2],
   ['aggregate', 3], ['metricsum', 3], ['markovchain', 3], ['kscan', 3],
 ]);
 

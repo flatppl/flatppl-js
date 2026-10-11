@@ -77,7 +77,7 @@ const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS, DISTRIBUTIONS, ALL_KNOWN } = requi
 function argSignature(op: string, numArgs: number): string[] | null {
   if (op === 'draw')                              return ['measure'];
   if (op === 'weighted' || op === 'logweighted')  return ['value', 'measure'];
-  if (op === 'rebase')                            return ['measure', 'measure'];
+  if (op === 'tilt')                              return ['measure', 'measure'];
   if (op === 'normalize')                         return ['measure'];
   if (op === 'relabel')                           return ['measure', 'value'];
   if (op === 'superpose')                         return Array(numArgs).fill('measure');
@@ -728,9 +728,9 @@ function liftInlineSubexpressions(bindings: any) {
           continue;
         }
         // Composite rand uses a named measure for its draw/successor split.
-        // Keep the existing inline leaf/iid realization; rebase needs this
+        // Keep the existing inline leaf/iid realization; tilt needs this
         // hoist so its Lebesgue operand is never treated as a value to draw.
-        const expected = op === 'rand' && i === 0 && a?.callee?.name === 'rebase'
+        const expected = op === 'rand' && i === 0 && a?.callee?.name === 'tilt'
           ? 'measure' : sig ? sig[i] : null;
         if      (op === 'joint' && expected === 'measure') astNode.args[i] = liftJointComponent(a);
         else if (expected === 'measure')          astNode.args[i] = liftMeasure(a);
@@ -2912,8 +2912,8 @@ function liftInlineSubexpressions(bindings: any) {
     return recursive;
   }
 
-  /** §06 rebase fans a common named input out, ignoring closed operands. */
-  function inlineRebaseApplication(application: any, rhs: any): any {
+  /** §06 tilt fans a common named input out, ignoring closed operands. */
+  function inlineTiltApplication(application: any, rhs: any): any {
     const inputNames = (a: any): string[] => {
       if (a.type === 'Identifier') {
         const b = out.get(resolveCallableAlias(a.name, out));
@@ -2925,7 +2925,7 @@ function liftInlineSubexpressions(bindings: any) {
       if (['functionof', 'kernelof', 'fn'].includes(a.callee?.name)) {
         return lowerExpr(a).paramKwargs || [];
       }
-      if (a.callee?.name === 'rebase') {
+      if (a.callee?.name === 'tilt') {
         return inputNames(a.args[0]).length ? inputNames(a.args[0]) : inputNames(a.args[1]);
       }
       return [];
@@ -2971,8 +2971,8 @@ function liftInlineSubexpressions(bindings: any) {
       return _inlineApplication(astArg,
         { type: astArg.callee.callee.name }, astArg.callee);
     }
-    if (astArg.callee?.callee?.name === 'rebase') {
-      return inlineRebaseApplication(astArg, astArg.callee);
+    if (astArg.callee?.callee?.name === 'tilt') {
+      return inlineTiltApplication(astArg, astArg.callee);
     }
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     // Callable ALIAS (spec §04 "Aliasing is just assignment"): resolve the
@@ -3035,7 +3035,7 @@ function liftInlineSubexpressions(bindings: any) {
     // `_jointFanoutAsFunctionof`.
     if (fnBinding.type === 'call') {
       const rhs = fnBinding.node && fnBinding.node.value;
-      if (rhs?.callee?.name === 'rebase') return inlineRebaseApplication(astArg, rhs);
+      if (rhs?.callee?.name === 'tilt') return inlineTiltApplication(astArg, rhs);
       if (fnBinding.inferredType?.kind === 'kernel' && rhs?.type === 'CallExpr'
           && rhs.callee?.type === 'Identifier' && rhs.callee.name === 'pushfwd'
           && rhs.args?.length === 2) {
@@ -3919,10 +3919,10 @@ function classifyRandTuple(rhsIR: any, bindings: any, idx: number): any {
     if (!ib || !ib.ir) break;
     innerIR = ib.ir;
   }
-  // Exact rebase sampling also threads the iid Normal successor through
+  // Exact tilt sampling also threads the iid Normal successor through
   // the per-draw walker; splitting its state would skip that continuation.
   const isComposite = !(innerIR && innerIR.kind === 'call'
-                        && (SAMPLEABLE_DISTRIBUTIONS.has(innerIR.op) || innerIR.op === 'rebase'));
+                        && (SAMPLEABLE_DISTRIBUTIONS.has(innerIR.op) || innerIR.op === 'tilt'));
 
   return { stateIR, fromIR, countIR, isComposite };
 }
