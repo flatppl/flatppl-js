@@ -131,7 +131,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
         const atomShape = (m.value && Array.isArray(m.value.shape) && m.value.shape.length > 1)
           ? m.value.shape.slice(1) : (stride > 1 ? [stride] : null);
         if (stride > 1) l.shape = { kind: 'vector', dims: [stride], atomShape };
-        else if (stride === 1 && l.shape.kind === 'vector') l.shape = { kind: 'scalar' };
+        else if (stride === 1 && l.shape.kind === 'vector' && l.support?.n == null) l.shape = { kind: 'scalar' };
       }
     } catch (_) { /* no pool → keep the statically-inferred shape */ }
     priorPools.push(pool);
@@ -142,16 +142,14 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   // A block owns one contiguous slice of the unconstrained vector `y` and the
   // bijection onto its constrained coordinates. Most latents give one scalar
   // block per element, so the unconstrained dimension equals the constrained
-  // one. A latent constrained as a WHOLE VECTOR does not: a `Dirichlet(alpha)`
-  // draw lives on `stdsimplex(K)` (spec §08 "Dirichlet": "Domain/Support:
-  // cartpow(reals, n)/stdsimplex(n)", density stated only for Σpᵢ = 1, pᵢ ≥ 0),
-  // which is a K−1 dimensional manifold — so it is ONE block of K−1
-  // unconstrained coordinates carrying the stick-breaking transform.
+  // one. Whole-vector supports use ONE block: ordered(K) has K free
+  // coordinates, while stdsimplex(K) and zerosum(K) have K−1. Each transform's
+  // Jacobian uses that set's reference measure (spec §03).
   //
   // Consequence for consumers: `dim` (unconstrained, what the kernels move in)
   // and `names.length` (constrained output coordinates, what `constrainAll`
   // returns and `drawsByName` keys on) are no longer the same number.
-  const blocks: any[]         = [];   // { kind, latent, name?, elem?, K?, y0, t }
+  const blocks: any[]         = [];   // { kind, latent, name?, elem?, K?, yDim?, y0, t }
   const coordNames: string[]  = [];   // e.g. ['mu','tau','p[0]','p[1]','p[2]']
   const latentNames: string[] = [];   // unique latent names
   const latentShapes: any[]   = [];   // { kind:'scalar'|'vector', dims?:[d] }
@@ -169,15 +167,19 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
         + `transform in this engine; use backend 'is', which forward-samples the prior `
         + `rather than exploring an unconstrained space`);
     }
-    if (kind === 'simplex') {
-      if (l.shape.kind !== 'vector' || !(width >= 2)) {
+    if (kind === 'simplex' || kind === 'ordered' || kind === 'zerosum') {
+      const minWidth = kind === 'simplex' ? 2 : 1;
+      if (l.shape.kind !== 'vector' || !(width >= minWidth)) {
         throw new Error(
-          `model-view: simplex latent '${l.name}' needs a vector shape of width ≥ 2; got `
+          `model-view: ${kind} latent '${l.name}' needs a vector shape of width ≥ ${minWidth}; got `
           + `${JSON.stringify(l.shape)}`);
       }
-      blocks.push({ kind: 'simplex', latent: l.name, K: width, y0: ydim, t: T.simplexTransform(width) });
+      const t = kind === 'simplex' ? T.simplexTransform(width)
+        : kind === 'ordered' ? T.orderedTransform(width) : T.zerosumTransform(width);
+      const yDim = kind === 'ordered' ? width : width - 1;
+      blocks.push({ kind: 'vector', latent: l.name, K: width, yDim, y0: ydim, t });
       for (let i = 0; i < width; i++) coordNames.push(`${l.name}[${i}]`);
-      ydim += width - 1;
+      ydim += yDim;
       continue;
     }
     const t = T.transformFor(l.support);
@@ -321,11 +323,10 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
         const d = shp.dims[0];
         const vec = new Float64Array(d);
         for (let j = 0; j < d; j++) vec[j] = flatPt[`${nm}[${j}]`];
-        // A multi-axis latent (e.g. a [2,16] matrix) must keep its shape so the
-        // likelihood/prior can index it (p[g][j]); a bare flat array would lose
-        // the structure. Carry it as a Value of its per-atom shape.
-        rec[nm] = (shp.atomShape && shp.atomShape.length > 1)
-          ? { shape: shp.atomShape.slice(), data: vec }
+        // Preserve a matrix's axes and a singleton vector's rank: the scorer
+        // otherwise interprets a one-element bare array as a scalar atom.
+        rec[nm] = d === 1 || (shp.atomShape && shp.atomShape.length > 1)
+          ? { shape: shp.atomShape ? shp.atomShape.slice() : [d], data: vec }
           : vec;
       }
     }
@@ -348,14 +349,14 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   }
 
   // 5. Driver-compatible constrainAll: Float64Array(dim) → flat record keyed by
-  //    the CONSTRAINED coordinate names (`names`, which for a simplex latent is
-  //    one key wider than that latent's slice of `y`).
+  //    the CONSTRAINED coordinate names (`names`, which for a simplex or
+  //    zero-sum latent is one key wider than that latent's slice of `y`).
   function constrainAll(y: Float64Array): Record<string, any> {
     const flat: Record<string, any> = {};
     for (let bi = 0; bi < blocks.length; bi++) {
       const b = blocks[bi];
-      if (b.kind === 'simplex') {
-        const p = b.t.constrain(y.subarray(b.y0, b.y0 + b.K - 1));
+      if (b.kind === 'vector') {
+        const p = b.t.constrain(y.subarray(b.y0, b.y0 + b.yDim));
         for (let i = 0; i < b.K; i++) flat[`${b.latent}[${i}]`] = p[i];
       } else {
         flat[b.name] = b.t.constrain(y[b.y0]);
@@ -369,12 +370,12 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     const y = new Float64Array(dim);
     for (let bi = 0; bi < blocks.length; bi++) {
       const b = blocks[bi];
-      if (b.kind === 'simplex') {
+      if (b.kind === 'vector') {
         const src = scorerPt[b.latent];
         const p = new Float64Array(b.K);
         for (let i = 0; i < b.K; i++) p[i] = elemOf(src, i);
         const yv = b.t.unconstrain(p);
-        for (let k = 0; k < b.K - 1; k++) y[b.y0 + k] = yv[k];
+        for (let k = 0; k < b.yDim; k++) y[b.y0 + k] = yv[k];
       } else {
         const src = scorerPt[b.latent];
         const v = b.elem == null
@@ -391,8 +392,8 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     let j = 0;
     for (let bi = 0; bi < blocks.length; bi++) {
       const b = blocks[bi];
-      j += b.kind === 'simplex'
-        ? b.t.logDetJ(y.subarray(b.y0, b.y0 + b.K - 1))
+      j += b.kind === 'vector'
+        ? b.t.logDetJ(y.subarray(b.y0, b.y0 + b.yDim))
         : b.t.logDetJ(y[b.y0]);
     }
     return j;
@@ -452,7 +453,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     dim,
     // CONSTRAINED output coordinate names. `names.length` is the number of
     // output coordinates and `dim` the unconstrained dimension the kernels move
-    // in; they differ whenever a block transform is in play (simplex latents),
+    // in; they differ for simplex and zero-sum block transforms,
     // so a consumer building `drawsByName` must iterate `names.length`.
     names: coordNames,
     hasDiscrete: false,       // only continuous latents reach here
