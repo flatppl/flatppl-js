@@ -255,16 +255,24 @@ function poolMeasures(measures: any[], globalPerParam?: any): any {
     const logZ = k > 0 ? mx + Math.log(s / k) : NaN;
     diag = { method: 'smc', logZ, rungs: rMax, acceptRate: accS / measures.length, nSamples: nSamp };
   } else if (first.diagnostics && first.diagnostics.method === 'amis') {
-    // AMIS is an importance sampler, not MCMC: report combined IS quality
-    // (effective sample sizes add across independent runs) and the worst auto-K.
-    // Each run's logZ is an independent unbiased Ẑ estimate of the SAME evidence,
-    // so pool by averaging on the linear scale (log-sum-exp − log k), like SMC.
-    let essSum = 0, kMax = 0;
-    for (const m of measures) { const dg = m.diagnostics || {}; essSum += (dg.ess || 0); kMax = Math.max(kMax, dg.K || 0); }
+    // Every worker returns the same atom count, resampled from its own normalized
+    // weights. The concatenation gives each worker mass 1/R, so its pre-resampling
+    // weight-concentration ESS is R² / Σ_r(1/ESS_r), not Σ_r ESS_r. Missing or
+    // invalid worker ESS cannot certify positive pooled weight ESS.
+    let inverseEss = 0, kMax = 0;
+    for (const m of measures) {
+      const dg = m.diagnostics || {};
+      inverseEss += Number.isFinite(dg.ess) && dg.ess > 0 ? 1 / dg.ess : Infinity;
+      kMax = Math.max(kMax, dg.K || 0);
+    }
+    const ess = measures.length * measures.length / inverseEss;
+    for (const k of Object.keys(perParam)) perParam[k].essBulk = ess;
+    // Pool evidence estimates on the original scale, then take the logarithm.
+    // Adaptive reuse/mixture approximation need not give unbiased estimates.
     let mxZ = -Infinity; for (const m of measures) { const z = (m.diagnostics || {}).logZ; if (Number.isFinite(z) && z > mxZ) mxZ = z; }
     let sZ = 0, kZ = 0; for (const m of measures) { const z = (m.diagnostics || {}).logZ; if (Number.isFinite(z)) { sZ += Math.exp(z - mxZ); kZ++; } }
     const amisLogZ = kZ > 0 ? mxZ + Math.log(sZ / kZ) : NaN;
-    diag = { method: 'amis', logZ: amisLogZ, ess: essSum, essFrac: nSamp > 0 ? essSum / nSamp : 0, K: kMax, nSamples: nSamp, perParam };
+    diag = { method: 'amis', logZ: amisLogZ, ess, essFrac: nSamp > 0 ? ess / nSamp : 0, K: kMax, nSamples: nSamp, perParam };
   } else if (first.diagnostics && first.diagnostics.method === 'nested') {
     // Nested currently always runs as a single share (see runMcmcPool's
     // else-branch below), so this is unreachable in practice — poolMeasures

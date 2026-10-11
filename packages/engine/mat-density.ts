@@ -315,8 +315,8 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
         const perParam: Record<string, any> = {};
         for (let d2 = 0; d2 < mv.names.length; d2++) perParam[mv.names[d2]] = { rHat: NaN, essBulk: ess };
         // Log-evidence: AMIS's logW = logπ̃(x) − log q_mix(x) are RAW importance
-        // weights, so logmeanexp(logW) is an unbiased log Ẑ (same estimator the
-        // IS path puts on logTotalmass). Reported for the evidence readout.
+        // weights. Report the log of their arithmetic mean for the evidence
+        // readout; neither taking logs nor adaptive reuse guarantees unbiasedness.
         const amisLogZ = empirical.logSumExp(lw) - Math.log(nDraws);
         post = { drawsByName, diagnostics: { method: 'amis', ess, essFrac: ess / nDraws, K: res.K, nSamples: nDraws, logZ: amisLogZ, perParam } };
       } else if (backend === 'smc') {
