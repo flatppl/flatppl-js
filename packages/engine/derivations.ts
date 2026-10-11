@@ -3849,6 +3849,7 @@ const MEASURE_OP_CLASSIFIERS = {
   weighted:     classifyWeighted,
   logweighted:  classifyLogWeighted,
   normalize:    classifyNormalize,
+  rebase:       (ir: any) => ({ kind: 'rebase', measureIR: ir }),
   superpose:    classifySuperpose,
   ifelse:       classifyIfelse,
   get:          classifyStochasticIndex,
@@ -4065,6 +4066,10 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   const viaClm = _clmRefsValid();
   if (viaClm != null) return viaClm;
 
+  if (d.kind === 'rebase') {
+    return (d as any).measureIR.args.every((ir: any) =>
+      ir.kind === 'ref' && resolvable(ir.name));
+  }
   if (d.kind === 'alias' || d.kind === 'normalize') {
     return resolvable(d.from);
   }
@@ -4496,7 +4501,7 @@ function closedFormLogTotalmass(ir: any, bindings: any, opts?: any): any {
   if (!ir || ir.kind !== 'call') return null;
   const op = ir.op;
   if (op === 'MvNormal' || SAMPLEABLE_DISTRIBUTIONS.has(op)) return 0;
-  if (op === 'normalize') return 0;
+  if (op === 'normalize' || op === 'rebase') return 0;
   // The image of the whole target space has the base measure's mass,
   // regardless of whether the forward map is injective or has a density.
   if (op === 'pushfwd' && Array.isArray(ir.args) && ir.args.length === 2) {
@@ -4701,6 +4706,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
   if (d) {
     assertProjectionMassCertified(name, d);
     switch (d.kind) {
+      case 'rebase': return _expandStructural((d as any).measureIR, ctx, next);
       case 'alias': {
         // §04 lawof reifies a value transform. An alias through draw(M)
         // can reach it outside a record field, so use the same inverse/Jacobian
@@ -5530,6 +5536,13 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
   if ((ir.op === 'draw' || ir.op === 'lawof')
       && Array.isArray(ir.args) && ir.args.length === 1) {
     return _expandStructural(ir.args[0], ctx, visited);
+  }
+  if (ir.op === 'rebase' && ir.args?.length === 2) {
+    const expanded = { ...ir, args: ir.args.map((a: any) => _expandStructural(a, ctx, visited)) };
+    const rebase = require('./rebase.ts');
+    const exact = rebase.normalVector(expanded, (x: any) =>
+      resolveConstant(x, ctx.bindings, new Set(), ctx.fixedValues));
+    return exact ? { ...expanded, rebaseNormal: exact } : rebase.definition(expanded);
   }
   if (ir.op === 'iid' && Array.isArray(ir.args) && ir.args.length >= 2) {
     const inner: any = _expandStructural(ir.args[0], ctx, visited);

@@ -936,6 +936,38 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   return rest;
 }
 
+/** §06 exact Normal rebasing, evaluated at each atom's current parameters. */
+function walkRebase(ir: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
+  const rebase = require('./rebase.ts');
+  const spec = ir.rebaseNormal || rebase.normalVector(ir);
+  if (!spec) throw new Error('density: rebase requires an evaluable normalizer');
+  const { head, rest } = consumeVector(value, spec.n);
+  // The coordinate convention is the same as Lebesgue(zerosum(n)); its
+  // dependent coordinate is supplied by the caller's chart, not an equality
+  // test on floating point sums. n=1 still consumes a one-vector.
+  const inside = samplerLib.inVectorSet(head, spec.set);
+  const mus = new Float64Array(N);
+  applyAtomScalar(spec.mu, refArrays, N, baseEnv, overlay, mus,
+    (a: any, i: number, mu: number) => { a[i] = mu; });
+  let logFactorial = 0;
+  for (let k = 2; k <= spec.n; k++) logFactorial += Math.log(k);
+  applyAtomScalar(spec.sigma, refArrays, N, baseEnv, overlay, acc,
+    (a: any, i: number, sigma: number) => {
+      rebase.checkParameters(mus[i], sigma);
+      if (!inside) { a[i] = -Infinity; return; }
+      let squared = 0;
+      for (let j = 0; j < spec.n; j++) {
+        const z = (+head[j] - (spec.set === 'ordered' ? mus[i] : 0)) / sigma;
+        squared += z * z;
+      }
+      const dimension = spec.set === 'ordered' ? spec.n : spec.n - 1;
+      const constant = spec.set === 'ordered' ? logFactorial : Math.log(spec.n) / 2;
+      a[i] += constant - dimension * (Math.log(sigma) + Math.log(2 * Math.PI) / 2)
+        - squared / 2;
+    });
+  return rest;
+}
+
 function walkLebesgue(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   // Lebesgue(S): the reference measure on the reals. Its density w.r.t.
   // itself is ≡ 1, so it contributes log 1 = 0 to the accumulator — it is
@@ -2733,6 +2765,7 @@ const OP_HANDLERS = {
   logweighted: walkLogWeighted,
   truncate:    walkTruncate,
   normalize:   walkNormalize,
+  rebase:      walkRebase,
   Lebesgue:    walkLebesgue,
   joint:       walkJointFieldsOrPositional,
   record:      walkJointFieldsOrPositional,

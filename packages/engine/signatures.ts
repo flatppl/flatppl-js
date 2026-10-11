@@ -101,7 +101,7 @@ function signatureOf(name: string, bindings: any): any {
 // type as 'deferred'. Conservative: only returns true when we can
 // see a measure-shaped op or a self-ref to a measure-typed binding.
 const KNOWN_MEASURE_OPS = new Set([
-  'joint', 'record', 'iid', 'weighted', 'logweighted', 'normalize',
+  'joint', 'record', 'iid', 'weighted', 'logweighted', 'normalize', 'rebase',
   'superpose', 'lawof', 'pushfwd', 'truncate', 'mixture',
   // leaf distributions are measures too — we don't enumerate them
   // here; they'd need the full SAMPLEABLE_DISTRIBUTIONS set, but a
