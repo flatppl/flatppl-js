@@ -56,3 +56,18 @@ test('emcee rejects odd or too-small walker counts', () => {
   const spec = { latents:[{name:'mu',distOp:'Normal',params:{mu:0,sigma:10},support:{kind:'real'},discrete:false}], logLikelihood:()=>0 };
   assert.throws(() => runMcmc(MV.buildModelView(spec), makeEmceeKernel(), { nWalkers:3, warmup:1, draws:1, seed:0 }), /even and >= 4/);
 });
+
+test('emcee defaults to a dimension-aware ensemble and refuses an undersized request', () => {
+  const mv = MV.buildModelView({
+    latents: Array.from({ length: 5 }, (_, j) => ({
+      name: `x${j}`, distOp: 'Normal', params: { mu: 0, sigma: 1 }, support: { kind: 'real' }, discrete: false,
+    })),
+    logLikelihood: () => 0,
+  });
+  const opts = { warmup: 20, draws: 20, seed: 3 };
+  const auto = runMcmc(mv, makeEmceeKernel(), opts);
+  const explicit = runMcmc(mv, makeEmceeKernel(), { ...opts, nWalkers: 12 });
+  assert.equal(auto.walkers.x0.length, 12);
+  assert.deepEqual(auto.drawsByName, explicit.drawsByName);
+  assert.throws(() => runMcmc(mv, makeEmceeKernel(), { ...opts, nWalkers: 8 }), /even and >= 10.*dim=5/);
+});

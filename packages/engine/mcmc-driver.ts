@@ -49,7 +49,7 @@ function fixedProposalBatchStep(ensemble: Float64Array[], logp: Float64Array, mv
 function runMcmc(mv: any, kernel: any, opts: any) {
   const dim = mv.dim;                       // unconstrained: what the kernels move in
   const outDim = mv.names.length;           // constrained output coordinates
-  const nWalkers = opts.nWalkers ?? 4;
+  const nWalkers = opts.nWalkers ?? kernel.defaultWalkers?.(dim) ?? 4;
   const warmup = opts.warmup ?? 1000;
   const draws = opts.draws ?? 1000;
   const seed = opts.seed ?? 0;

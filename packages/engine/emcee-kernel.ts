@@ -9,9 +9,13 @@
 function makeEmceeKernel(a?: number) {
   const Adefault = a ?? 2;
   return {
+    defaultWalkers(dim: number) { return Math.max(4, 2 * dim + 2); },
     init(nWalkers: number, dim: number, opts: any) {
-      if (nWalkers < 4 || nWalkers % 2 !== 0) {
-        throw new Error(`emcee: nWalkers must be even and >= 4 (got ${nWalkers}); use >= 2*dim+2 for dim=${dim}`);
+      // Stretch moves stay in the ensemble's affine span. The split-ensemble
+      // algorithm requires at least twice the unconstrained dimension.
+      const minimum = Math.max(4, 2 * dim);
+      if (nWalkers < minimum || nWalkers % 2 !== 0) {
+        throw new Error(`emcee: nWalkers must be even and >= ${minimum} for dim=${dim} (got ${nWalkers})`);
       }
       return { a: opts.a ?? Adefault };
     },
