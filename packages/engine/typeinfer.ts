@@ -4729,8 +4729,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // their value types when substituting elementof(valueset(boundary))
       // (spec §04), before the new scope shadows the original binding.
       const source = expr.paramSources?.[i];
-      const boundary = expr.kwargs?.[kwName] ?? (source?.kind === 'binding'
-        ? { kind: 'ref', ns: 'self', name: source.name, loc: expr.loc } : null);
+      const boundary = source?.kind === 'binding'
+        ? { kind: 'ref', ns: 'self', name: source.name, loc: expr.loc } : null;
       if (boundary) {
         const boundaryT = inferExpr(boundary, scopes);
         if (T.isMeasure(boundaryT)) {
@@ -4738,7 +4738,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
             severity: 'error',
             message: 'functionof boundary "' + kwName
               + '" must be a value, got ' + T.show(boundaryT),
-            loc: boundary.loc || expr.loc,
+            loc: expr.loc,
           });
           paramType = T.failed('functionof boundary type');
         } else if (T.isValue(boundaryT)) {
