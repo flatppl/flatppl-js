@@ -42,6 +42,20 @@ function buildCtx(src: string, N: number) {
 const logN = (x: number, mu: number, s: number) =>
   -0.5 * Math.log(2 * Math.PI) - Math.log(s) - ((x - mu) ** 2) / (2 * s * s);
 
+test('a named vector function in a distribution parameter scores in a likelihood', async () => {
+  const { makeMatCtx } = require('./_materialise-helpers.ts');
+  const { ctx } = makeMatCtx(`
+probabilities(x) = [x, 1.0 - x]
+x = elementof(unitinterval)
+y ~ Multinomial(n = 4, p = probabilities(x))
+L = likelihoodof(kernelof(y), [1, 3])
+score = logdensityof(L, 0.25)
+`, { sampleCount: 4 });
+  // 4!/(1!3!) * (1/4) * (3/4)^3 = 27/64.
+  const actual = (await ctx.getMeasure('score')).samples[0];
+  assert.ok(Math.abs(actual - Math.log(27 / 64)) < 1e-12);
+});
+
 test('logdensityof(L, θ) scores the kernel at the given scalar θ (closed form)', async () => {
   const ctx = buildCtx(`
 theta ~ Normal(0, 1)
