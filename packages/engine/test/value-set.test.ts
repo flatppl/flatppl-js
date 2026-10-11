@@ -54,6 +54,10 @@ test('valueset: elementof / reference-measure supports / draw', () => {
   assert.equal(vsOf('m = elementof(interval(0.0, 5.0))', 'm'), '(interval 0.0 5.0)');
   assert.equal(vsOf('m = Lebesgue(support = reals)', 'm'), 'reals');
   assert.equal(vsOf('m = Counting(support = nonnegintegers)', 'm'), 'nonnegintegers');
+  // §03 "Ordered vectors" / "Zero-sum vectors".
+  assert.equal(vsOf('m = elementof(ordered(3))', 'm'), '(ordered 3)');
+  assert.equal(vsOf('m = elementof(zerosum(4))', 'm'), '(zerosum 4)');
+  assert.equal(vsOf('m = Lebesgue(support = zerosum(3))', 'm'), '(zerosum 3)');
   // A draw lands in the measure's support (golden: Dirichlet draw → simplex).
   assert.equal(vsOf('x ~ Dirichlet(alpha = [1.0, 1.0, 1.0])', 'x'), '(stdsimplex 3)');
 });
@@ -95,6 +99,12 @@ test('valueset lattice: isBounded', () => {
   assert.equal(VS.isBounded(VS.UNITINTERVAL), true);
   assert.equal(VS.isBounded(VS.BOOLEANS), true);
   assert.equal(VS.isBounded(VS.stdsimplex(3)), true);
+  // ordered(1) is all of ℝ; zerosum(1) is the single point {[0]}.
+  assert.equal(VS.isBounded(VS.ordered(1)), false);
+  assert.equal(VS.isBounded(VS.ordered(3)), false);
+  assert.equal(VS.isBounded(VS.zerosum(1)), true);
+  assert.equal(VS.isBounded(VS.zerosum(2)), false);
+  assert.equal(VS.isBounded(VS.zerosum('%dynamic')), null);
   assert.equal(VS.isBounded(VS.interval(0, 1)), true);
   assert.equal(VS.isBounded(VS.interval(0, Infinity)), false);
   assert.equal(VS.isBounded(VS.REALS), false);
@@ -163,6 +173,14 @@ test('valueset lattice: subsetOf (conservative)', () => {
   assert.equal(VS.subsetOf(VS.interval(-1, 1), VS.NONNEGREALS), false);
   assert.equal(VS.subsetOf(VS.stdsimplex(3), VS.cartpow(VS.UNITINTERVAL, 3)), true);
   assert.equal(VS.subsetOf(VS.stdsimplex(3), VS.cartpow(VS.NONNEGREALS, '%dynamic')), true);
+  // ordered(n) and zerosum(n) are real n-vectors with no sign constraint.
+  assert.equal(VS.subsetOf(VS.ordered(3), VS.cartpow(VS.REALS, 3)), true);
+  assert.equal(VS.subsetOf(VS.zerosum(3), VS.cartpow(VS.REALS, '%dynamic')), true);
+  assert.equal(VS.subsetOf(VS.ordered(3), VS.cartpow(VS.REALS, 4)), false);
+  assert.equal(VS.subsetOf(VS.zerosum(3), VS.cartpow(VS.NONNEGREALS, 3)), false);
+  assert.equal(VS.subsetOf(VS.ordered(3), VS.zerosum(3)), false);
+  assert.equal(VS.equal(VS.ordered(3), VS.ordered(3)), true);
+  assert.equal(VS.equal(VS.ordered(3), VS.zerosum(3)), false);
   // Unproven (not disproven) → false.
   assert.equal(VS.subsetOf(VS.REALS, VS.POSREALS), false);
   assert.equal(VS.subsetOf(VS.UNKNOWN, VS.REALS), false);

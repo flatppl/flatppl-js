@@ -61,7 +61,7 @@ export function tupleAxisLabelsFromIR(name: string, rhsIR: any): string[] | null
 // Set constructors (spec §03). A binding whose RHS builds a set holds a value
 // that is not a measure, so it has no plot — the same category as a module
 // namespace, and render-plot says so.
-const SET_CONSTRUCTOR_OPS = new Set(['interval', 'cartprod', 'cartpow', 'stdsimplex']);
+const SET_CONSTRUCTOR_OPS = new Set(['interval', 'cartprod', 'cartpow', 'stdsimplex', 'ordered', 'zerosum']);
 
 export function isSetConstructorBinding(name: string | null | undefined, ctx: Ctx): boolean {
   if (name == null) return false;

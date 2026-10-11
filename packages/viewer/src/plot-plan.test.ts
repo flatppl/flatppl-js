@@ -15,7 +15,7 @@ registerHooks({
   }
 });
 
-const { buildPlotPlan, fixedTupleColumnMode, tupleAxisLabelsFromIR } = await import('./plot-plan.ts');
+const { buildPlotPlan, fixedTupleColumnMode, tupleAxisLabelsFromIR, isSetConstructorBinding } = await import('./plot-plan.ts');
 
 // fixedTupleColumnMode narrows a fixed-phase `tuple` type to the
 // paired-columns plan: every element must be a rank-1 array, all of
@@ -145,4 +145,17 @@ test('buildPlotPlan: a fixed record keeps mode "fixed-record" (unaffected by the
   const ctx = baseCtx(name, null);
   const plan = buildPlotPlan(ctx, binding);
   assert.equal(plan.mode, 'fixed-record');
+});
+
+// A §03 set binding is not a measure and gets no plot.
+test('isSetConstructorBinding recognises ordered and zerosum', () => {
+  const bindings = new Map([
+    ['o', { ir: { kind: 'call', op: 'ordered', args: [{ kind: 'lit', value: 3 }] } }],
+    ['z', { ir: { kind: 'call', op: 'zerosum', args: [{ kind: 'lit', value: 3 }] } }],
+    ['m', { ir: { kind: 'call', op: 'Normal', args: [] } }],
+  ]);
+  const ctx = { derivationsState: { bindings } };
+  assert.equal(isSetConstructorBinding('o', ctx), true);
+  assert.equal(isSetConstructorBinding('z', ctx), true);
+  assert.equal(isSetConstructorBinding('m', ctx), false);
 });

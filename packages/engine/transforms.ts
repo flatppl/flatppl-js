@@ -2,7 +2,8 @@
 
 // Constrained <-> unconstrained bijections and their log-Jacobians, for the
 // gradient-free (MH) and gradient (NUTS) samplers. Standard Stan transforms.
-// Scalar transforms here; simplex (vector) is `simplexTransform`.
+// Scalar transforms here; the vector sets have `simplexTransform`,
+// `orderedTransform` and `zerosumTransform`.
 
 function transformFor(support: any) {
   switch (support.kind) {
@@ -142,6 +143,56 @@ function simplexTransform(K: number) {
   };
 }
 
+// §03 "Ordered vectors" <-> R^K, Stan's ordered transform: x1 = y1, xk =
+// x(k-1) + exp(yk). ordered(K) is open in R^K, so its reference measure is plain
+// Lebesgue on R^K. The Jacobian is lower triangular with diagonal
+// (1, exp(y2), ..., exp(yK)), so log|det J| = y2 + ... + yK.
+function orderedTransform(K: number) {
+  return {
+    unconstrain(x: Float64Array): Float64Array {
+      const y = new Float64Array(K);
+      y[0] = x[0];
+      for (let k = 1; k < K; k++) {
+        // A tie unconstrains to a large-but-finite gap, as in `positive`.
+        const gap = x[k] - x[k - 1];
+        y[k] = Math.log(gap > 1e-300 ? gap : 1e-300);
+      }
+      return y;
+    },
+    constrain(y: Float64Array): Float64Array {
+      const x = new Float64Array(K);
+      x[0] = y[0];
+      for (let k = 1; k < K; k++) x[k] = x[k - 1] + Math.exp(y[k]);
+      return x;
+    },
+    logDetJ(y: Float64Array): number {
+      let acc = 0;
+      for (let k = 1; k < K; k++) acc += y[k];
+      return acc;
+    },
+  };
+}
+
+// §03 "Zero-sum vectors" <-> R^(K-1). The reference measure of zerosum(K) is the
+// coordinate Lebesgue measure of x1..x(K-1), with xK = -(x1 + ... + x(K-1)).
+// This chart is that coordinate map itself, so log|det J| = 0. Stan's isometric
+// sum-to-zero transform instead targets the surface measure, a different constant.
+function zerosumTransform(K: number) {
+  return {
+    unconstrain(x: Float64Array): Float64Array {
+      return Float64Array.from(x.subarray(0, K - 1));
+    },
+    constrain(y: Float64Array): Float64Array {
+      const x = new Float64Array(K);
+      let sum = 0;
+      for (let k = 0; k < K - 1; k++) { x[k] = y[k]; sum += y[k]; }
+      x[K - 1] = -sum;
+      return x;
+    },
+    logDetJ(_y: Float64Array): number { return 0; },
+  };
+}
+
 const SUPPORT_BY_DIST: Record<string, (params?: any) => any> = {
   Normal:       () => ({ kind: 'real' }),
   Cauchy:       () => ({ kind: 'real' }),
@@ -186,4 +237,7 @@ function supportOf(distOp: string, params?: any) {
   return f(params);
 }
 
-module.exports = { transformFor, simplexTransform, supportOf, SUPPORT_BY_DIST, regionBounds };
+module.exports = {
+  transformFor, simplexTransform, orderedTransform, zerosumTransform,
+  supportOf, SUPPORT_BY_DIST, regionBounds,
+};

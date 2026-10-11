@@ -2404,7 +2404,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // Lebesgue(support = S) / Counting(support = S). The support kwarg is
   // optional; missing → use the default scalar. When present, the support
   // is a set expression whose value-type drives the result's measure-domain
-  // (cartpow → array, cartprod → record/tuple, stdsimplex → array<real,n>).
+  // (cartpow → array, cartprod → record/tuple, stdsimplex/ordered/zerosum →
+  // array<real,n>).
   // Falls back to the default scalar when the support shape can't be
   // statically resolved (e.g. the support is itself a binding ref).
   function inferReferenceMeasure(expr: any, scopes: any, defaultElem: any) {
@@ -5126,7 +5127,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (expr.kind !== 'call') return null;
     switch (expr.op) {
       case 'interval':   return T.REAL;
-      case 'stdsimplex': {
+      case 'stdsimplex':
+      case 'ordered':
+      case 'zerosum': {
         const n = expr.args && expr.args[0] && expr.args[0].kind === 'lit'
           && Number.isInteger(expr.args[0].value) ? expr.args[0].value : '%dynamic';
         return T.array(1, [n], T.REAL);
