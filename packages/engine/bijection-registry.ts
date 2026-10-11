@@ -415,6 +415,67 @@ registerBijection({
   shapeContract: { inShape: '[D]', outShape: '[D]' },
 });
 
+/**
+ * §04 scalar broadcasting: one coefficient is shared by all D coordinates
+ * of each atom. Fixed coefficients have rank zero; live coefficients have
+ * the single atom axis [N]. No diagonal matrix is constructed.
+ */
+function diagonalAffineCoefficient(v: any, N: number, name: string): any {
+  if (typeof v === 'number') return { data: [v], stride: 0 };
+  if (v?.shape?.length === 0 && v.data?.length === 1) return { data: v.data, stride: 0 };
+  if (v?.shape?.length === 1 && v.shape[0] === N && v.data?.length === N) {
+    return { data: v.data, stride: 1 };
+  }
+  throw new Error('bijection.diagonal_affine: ' + name + ' must be scalar or [N]');
+}
+
+/** §06 affine pushforward/inverse, preserving the vector and atom axes. */
+function diagonalAffineMap(value: any, params: any, N: number, inverse: boolean): any {
+  if (value?.shape?.length !== 2 || value.shape[0] !== N) {
+    throw new Error('bijection.diagonal_affine: value must have shape [N, D]');
+  }
+  const D = value.shape[1];
+  const scale = diagonalAffineCoefficient(params.scale, N, 'scale');
+  const shift = diagonalAffineCoefficient(params.shift, N, 'shift');
+  const data = new Float64Array(N * D);
+  for (let n = 0; n < N; n++) {
+    const s = scale.data[n * scale.stride], b = shift.data[n * shift.stride];
+    if (inverse && D > 0 && (!Number.isFinite(s) || s === 0)) {
+      throw new Error('bijection.diagonal_affine: inverse requires finite nonzero scale');
+    }
+    for (let j = n * D; j < (n + 1) * D; j++) {
+      data[j] = inverse ? (value.data[j] - b) / s : s * value.data[j] + b;
+    }
+  }
+  return { shape: [N, D], data };
+}
+
+/**
+ * §06 continuous inverse volume: -D log|scale|. The density walker chooses
+ * the reference measure and omits this volume for counting-reference bases.
+ */
+function diagonalAffineLogDetJ(y: any, params: any, N: number): number | Float64Array {
+  const D = y.shape[1];
+  if (D === 0) return 0;
+  const scale = diagonalAffineCoefficient(params.scale, N, 'scale');
+  const volume = (s: number) => {
+    if (!Number.isFinite(s) || s === 0) {
+      throw new Error('bijection.diagonal_affine: volume requires finite nonzero scale');
+    }
+    return -D * Math.log(Math.abs(s));
+  };
+  if (scale.stride === 0) return volume(scale.data[0]);
+  return Float64Array.from(scale.data, volume);
+}
+
+registerBijection({
+  name: 'diagonal_affine',
+  atomBatchedForward: (z, params, N) => diagonalAffineMap(z, params, N, false),
+  atomBatchedInverse: (y, params, N) => diagonalAffineMap(y, params, N, true),
+  logDetJ: diagonalAffineLogDetJ,
+  shapeContract: { inShape: '[D]', outShape: '[D]' },
+});
+
 // =====================================================================
 // Elementary scalar bijections + symbolic path inversion (spec §06)
 // =====================================================================

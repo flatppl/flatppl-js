@@ -442,6 +442,17 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
       binding.bijection.registryName = 'affine';
       binding.bijection.paramIRs = { L: affineLowering.LIR, b: affineLowering.bIR };
     }
+    // Keep a coordinatewise affine map outside its base measure's trace.
+    // Scalar parameters avoid constructing a dense diagonal matrix per atom.
+    const diagonalLowering = (binding as any).__pushfwdDiagonalAffineLowering;
+    if (diagonalLowering) {
+      binding.bijection.registryName = 'diagonal_affine';
+      binding.bijection.paramIRs = {
+        scale: diagonalLowering.scaleIR,
+        shift: diagonalLowering.shiftIR,
+        size: diagonalLowering.sizeIR,
+      };
+    }
   }
 
   const derivations = Object.create(null);
@@ -2098,6 +2109,8 @@ function _recognizeDiagonalPushforwardFields(
       perField.push({
         name, bindingName, ancestor, ancestorDisplay: freeName,
         bijMeta: {
+          fForward: { body: require('./ir-walk.ts').mapIR(ir, (n: any) => n?.kind === 'ref' && n.name === freeName
+            ? { ...n, ns: '%local' } : n), paramName: freeName },
           fInv: { body: inv.inverseIR, paramName: FINV_PARAM },
           logVolume: { kind: 'fn', body: inv.ladjIR, paramName: freeName },
         },
@@ -4475,6 +4488,8 @@ function resolveBijectionMeta(bij: any, bindings: any) {
   // site in the pushfwd case, search the file for
   // `out.bijection = bijMeta`) and become visible to density.walkPushfwd.
   const out: any = { fInv, logVolume };
+  const fForward = fnBodyOf(bij.fName, false);
+  if (fForward) out.fForward = fForward;
   if (bij.registryName) out.registryName = bij.registryName;
   if (bij.paramIRs)     out.paramIRs    = bij.paramIRs;
   return out;
@@ -5398,6 +5413,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
               // fInv body is in terms of FINV_PARAM (= y); logVolume (forward
               // LADJ) is in terms of holeName (= the preimage x).
               bijMeta = {
+                fForward: { body: fBinding.ir.body, paramName: holeName },
                 fInv: { body: inv.inverseIR, paramName: FINV_PARAM },
                 logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName },
               };

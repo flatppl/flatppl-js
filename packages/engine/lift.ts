@@ -2022,6 +2022,8 @@ function liftInlineSubexpressions(bindings: any) {
     const fAst = args[0], baseAst = args[1];
     const fn = __resolveFunctionofRef(fAst);
     if (!fn) return astArg;
+    const componentwise = __routeVectorAffineBroadcast(astArg, baseAst, fn);
+    if (componentwise) return componentwise;
     const affine = __matchAffineBody(fn.body, fn.param);
     // `2.0 * x + b` matches the matrix body shape too — only the scale tells
     // the two apart — so a statically-scalar scale goes to the scalar route,
@@ -2080,9 +2082,45 @@ function liftInlineSubexpressions(bindings: any) {
   }
 
   /**
-   * Route `pushfwd(f, <iid base>)` to the affine registry, given the affine
-   * map's scale matrix and shift vector as ASTs. Mutates `astArg` in place and
-   * returns it.
+   * §04 broadcasting and §06 pushfwd: recognize a scalar affine map over a
+   * numeric vector without moving the map across the base's trace boundary.
+   * The diagonal registry keeps shared parameters outside reified iid copies
+   * and stores one scale per atom rather than a dense diagonal matrix.
+   */
+  function __routeVectorAffineBroadcast(astArg: any, baseAst: any, fn: any) {
+    const m = __matchScalarAffineBody(fn.body, fn.param, true);
+    if (!m || !m.broadcast) return null;
+    if (m.scaleAst && !__staticNonzeroScalar(m.scaleAst)) return null;
+    if (m.shiftAst && (!m.broadcastShift || !__staticScalar(m.shiftAst))) return null;
+    const domain = __knownAstType(baseAst)?.domain;
+    if (domain?.kind !== 'array' || domain.rank !== 1
+        || domain.elem?.kind !== 'scalar'
+        || !['real', 'integer', 'boolean'].includes(domain.elem.prim)) return null;
+    const loc = astArg.loc;
+    let sizeAst: any;
+    if (Number.isInteger(domain.shape[0]) && domain.shape[0] >= 0) {
+      sizeAst = makeNumLit(domain.shape[0], loc);
+    } else {
+      // A data-derived iid count can be unknown to shape inference but is
+      // still the exact event extent. Other dynamic vector laws fall through.
+      if (!__affineBaseIsIid(baseAst)) return null;
+      let base = baseAst;
+      while (base.type === 'Identifier') base = out.get(base.name).node.value;
+      sizeAst = base.args[1];
+      if (__knownAstType(sizeAst)?.kind !== 'scalar') return null;
+    }
+    const signed = (e: any, negative: boolean) => negative
+      ? { type: 'UnaryExpr', op: '-', operand: cloneAst(e), loc }
+      : cloneAst(e);
+    const scaleAst = signed(m.scaleAst || makeNumLit(1, loc), m.negate);
+    const shiftAst = signed(m.shiftAst || makeNumLit(0, loc), m.negateShift);
+    return __emitAffineRegistryPushfwd(astArg, baseAst, scaleAst, shiftAst, sizeAst);
+  }
+
+  /**
+   * Route `pushfwd(f, base)` to the affine registry. A supplied size selects
+   * the scalar-coefficient diagonal representation; otherwise L and b are a
+   * matrix and vector. Mutates `astArg` in place and returns it.
    *
    * Shared by the matrix-vector spelling (`x -> L * x + b`, where LAst/bAst are
    * the user's own operands) and the scalar spelling (`x -> s * x + b`, where
@@ -2091,13 +2129,19 @@ function liftInlineSubexpressions(bindings: any) {
    * both want the registry's atom-batched forward on the sample side.
    */
   function __emitAffineRegistryPushfwd(astArg: any, baseAst: any,
-                                       LAst: any, bAst: any) {
-    // Synthetic bijection stub + registry marker, identical in shape to the
-    // locscale and MvNormal lowerings: fn-hole forward / inverse and a
-    // scalar-0 log-volume, pre-hoisted so derivations' bijection-construction
-    // loop sees Identifiers.
+                                       LAst: any, bAst: any, sizeAst: any = null) {
+    // Synthetic bijection + registry marker, shaped like the locscale and
+    // MvNormal lowerings. The registry supplies inverse and volume; pre-hoist
+    // the callable slots so derivations' construction loop sees Identifiers.
     const fwdAnon = freshName();
-    out.set(fwdAnon, makeSyntheticBinding(fwdAnon, makeFnHole(astArg.loc)));
+    // Keep the actual broadcast map for the sampler's non-registry fallback
+    // (a reified vector need not carry the iid outerRank storage marker).
+    let forwardAst = makeFnHole(astArg.loc);
+    if (sizeAst) {
+      const f = astArg.args[0];
+      forwardAst = cloneAst(f.type === 'Identifier' ? out.get(f.name).node.value : f);
+    }
+    out.set(fwdAnon, makeSyntheticBinding(fwdAnon, forwardAst));
     const invAnon = freshName();
     out.set(invAnon, makeSyntheticBinding(invAnon, makeFnHole(astArg.loc)));
     const bijAst = {
@@ -2112,14 +2156,25 @@ function liftInlineSubexpressions(bindings: any) {
     };
     const bijName = freshBijName();
     const bijBinding = makeSyntheticBinding(bijName, bijAst);
-    (bijBinding as any).__pushfwdAffineLowering = {
-      LIR: lowerExpr(cloneAst(LAst), liftLowerCtx),
-      bIR: lowerExpr(cloneAst(bAst), liftLowerCtx),
-    };
+    if (sizeAst) {
+      // The registry's live-parameter resolver consumes direct binding refs.
+      // Hoist signed coefficients so `mu .- scale .* x` retains a live scale.
+      const coefficientIR = (a: any) => lowerExpr(
+        a.type === 'Identifier' || a.type === 'NumberLiteral' ? cloneAst(a)
+          : finishLiftMeasure(cloneAst(a)), liftLowerCtx);
+      (bijBinding as any).__pushfwdDiagonalAffineLowering = {
+        scaleIR: coefficientIR(LAst), shiftIR: coefficientIR(bAst),
+        sizeIR: coefficientIR(sizeAst),
+      };
+    } else {
+      (bijBinding as any).__pushfwdAffineLowering = {
+        LIR: lowerExpr(cloneAst(LAst), liftLowerCtx),
+        bIR: lowerExpr(cloneAst(bAst), liftLowerCtx),
+      };
+    }
     out.set(bijName, bijBinding);
-    // The registry density path requires the base to classify as
-    // `iid(<ref-to-scalar-dist>, D)`, so liftMeasure hoists the iid's inner
-    // distribution call to its own anon ref and hands back a bare ref.
+    // Hoist the base without moving the map into it: reified iid copies keep
+    // their original ancestry, and a named base retains its existing identity.
     const baseRef = liftMeasure(baseAst);
     astArg.args = [makeIdent(bijName, astArg.loc), baseRef];
     return astArg;
@@ -2279,10 +2334,9 @@ function liftInlineSubexpressions(bindings: any) {
    * negates the shift (`x - b`). The caller owns every shape and value check —
    * this matcher only decides the SYNTACTIC form.
    *
-   * The parameter must occur exactly once: `s * x + x` is not affine in x. A
-   * dotted (broadcast) operator is refused — `.+` / `.*` lower to a
-   * `broadcast(...)` call, a different map from the scalar-array arithmetic
-   * §07 gives `add` and `mul`.
+   * The parameter must occur exactly once: `s * x + x` is not affine in x.
+   * Dotted operators are admitted only for the diagonal registry route, whose
+   * scalar-coefficient checks distinguish broadcast shifts from array add.
    *
    * §06 case 1 also admits `divide`, but `x / s` is NOT matched: typeinfer's
    * `divide` carries a scalars-only `(real, real) → real` signature (it is
@@ -2291,13 +2345,17 @@ function liftInlineSubexpressions(bindings: any) {
    * consulted. Routing it would emit a correct number alongside a static
    * error. Reinstating the form needs the typeinfer fix first.
    */
-  function __matchScalarAffineBody(body: any, param: string): {
+  function __matchScalarAffineBody(body: any, param: string, allowBroadcast = false): {
     scaleAst: any; negate: boolean;
     shiftAst: any; negateShift: boolean;
+    broadcast: boolean; broadcastShift: boolean;
   } | null {
     // A null body cannot mention the parameter, so this also covers it.
     if (!__mentionsParam(body, param)) return null;
-    if (body.broadcast) return null;
+    if (body.broadcast && !allowBroadcast) return null;
+    let broadcast = !!body.broadcast;
+    const broadcastShift = !!body.broadcast
+      && body.type === 'BinaryExpr' && (body.op === '+' || body.op === '-');
     // Peel the optional outer additive layer first: after this, `linear` holds
     // the (possibly negated) scalar-rescale part and the shift is settled.
     let linear = body, shiftAst: any = null, negateShift = false;
@@ -2320,7 +2378,8 @@ function liftInlineSubexpressions(bindings: any) {
     // Then peel any unary minuses off the linear part; each flips the sign.
     let negate = shiftNegatesLinear;
     while (linear && linear.type === 'UnaryExpr' && linear.op === '-') {
-      if (linear.broadcast) return null;
+      if (linear.broadcast && !allowBroadcast) return null;
+      broadcast ||= !!linear.broadcast;
       negate = !negate;
       linear = linear.operand;
     }
@@ -2332,15 +2391,16 @@ function liftInlineSubexpressions(bindings: any) {
     /* c8 ignore stop */
     // Finally the rescale itself: a bare parameter, or one scalar factor.
     if (__isParamRef(linear, param)) {
-      return { scaleAst: null, negate, shiftAst, negateShift };
+      return { scaleAst: null, negate, shiftAst, negateShift, broadcast, broadcastShift };
     }
-    if (linear.type !== 'BinaryExpr' || linear.broadcast) return null;
+    if (linear.type !== 'BinaryExpr' || (linear.broadcast && !allowBroadcast)) return null;
+    broadcast ||= !!linear.broadcast;
     if (linear.op !== '*') return null;
     for (const [pSide, factor] of [
       [linear.left, linear.right], [linear.right, linear.left]] as any[]) {
       if (!__isParamRef(pSide, param)) continue;
       if (__mentionsParam(factor, param)) continue;
-      return { scaleAst: factor, negate, shiftAst, negateShift };
+      return { scaleAst: factor, negate, shiftAst, negateShift, broadcast, broadcastShift };
     }
     return null;
   }
@@ -2353,6 +2413,12 @@ function liftInlineSubexpressions(bindings: any) {
    * unknown here, exactly as a named matrix scale's singularity is.
    */
   function __staticNonzeroScalar(e: any): boolean {
+    return __staticScalar(e, true);
+  }
+
+  // Scalar shape proof shared by affine scales and broadcast shifts. A shift
+  // may be zero, while a known zero scale cannot define a bijection (§06).
+  function __staticScalar(e: any, nonzero = false): boolean {
     let inner = e;
     while (inner && inner.type === 'UnaryExpr' && inner.op === '-') {
       inner = inner.operand;
@@ -2364,7 +2430,7 @@ function liftInlineSubexpressions(bindings: any) {
     /* c8 ignore stop */
     if (inner.type === 'NumberLiteral') {
       return typeof inner.value === 'number' && Number.isFinite(inner.value)
-        && inner.value !== 0;
+        && (!nonzero || inner.value !== 0);
     }
     if (inner.type === 'Identifier') {
       const b = out.get(inner.name);

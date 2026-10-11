@@ -26,7 +26,7 @@
  *   selector     IR                               (select)
  *   logweights   array of IR | null               (select)
  *   assigns      array of {name, value: IR}       (load_module)
- *   bijection    pushfwd metadata (READ-side only) — `.fInv.body`,
+ *   bijection    pushfwd metadata (READ-side only) — `.fForward.body`, `.fInv.body`,
  *                  `.logVolume.body` (when kind:'fn'), `.paramIRs[*]`
  *                  carry IR. Attached by expandMeasureIR's pushfwd case;
  *                  see the note in forEachIRChild.
@@ -132,8 +132,8 @@ function forEachIRChild(node: any, visit: (child: any) => void): void {
     }
   }
   // `.bijection` (pushfwd metadata attached by expandMeasureIR's pushfwd
-  // case, see resolveBijectionMeta) carries IR in three sub-positions:
-  // the inverse-function body, the optional log-volume function body, and
+  // case, see resolveBijectionMeta) carries IR in the forward and
+  // inverse-function bodies, the optional log-volume function body, and
   // the registry `paramIRs`. These hold captured `ns:'self'` refs to free
   // boundaries (e.g. an affine shift `b` reading a prior field), so a
   // self-ref collector MUST descend them or the CLM ⊆-invariant
@@ -152,6 +152,7 @@ function forEachIRChild(node: any, visit: (child: any) => void): void {
   // under-rewriting them is the conservative direction for the ⊆ check.
   if (node.bijection) {
     const bj = node.bijection;
+    if (bj.fForward && bj.fForward.body) visit(bj.fForward.body);
     if (bj.fInv && bj.fInv.body) visit(bj.fInv.body);
     if (bj.logVolume && bj.logVolume.kind === 'fn' && bj.logVolume.body) {
       visit(bj.logVolume.body);

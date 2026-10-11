@@ -1743,6 +1743,129 @@ function _pushfwdInverseAtomIndependent(bij: any, y: number, baseEnv: any, overl
   return x;
 }
 
+/** §06 counting densities score atoms, even when inversion rounds off their coordinates.
+ * Recover a candidate from the base's lattice or point support; the forward
+ * round trip below must reproduce the query exactly before it can be scored.
+ */
+function countingCandidate(ir: any, x: any, env: any): any {
+  if (ir.op === 'Dirac') {
+    const atom = samplerLib.resolveParams(ir, samplerLib.lookupDistribution(ir), env)[0];
+    if (typeof atom !== 'number' && typeof atom !== 'boolean') {
+      throw new Error('density: affine pushfwd of a container-valued Dirac is not supported');
+    }
+    return +atom;
+  }
+  if (samplerLib.isKnownDistribution(ir.op)) return Math.round(x);
+  if (ir.op === 'Multinomial' || ir.op === 'BinnedPoissonProcess') {
+    return { shape: x.shape, data: Float64Array.from(x.data, Math.round) };
+  }
+  if (ir.op === 'iid') {
+    return { shape: x.shape, data: Float64Array.from(x.data, (v: number) => countingCandidate(ir.args[0], v, env)) };
+  }
+  if (ir.op === 'joint' && !ir.fields) {
+    return { shape: x.shape, data: Float64Array.from(x.data, (v: number, i: number) => countingCandidate(ir.args[i], v, env)) };
+  }
+  if (ir.op === 'broadcast') {
+    if (ir.args[0].name === 'Dirac') {
+      const atom = samplerLib.evaluateExpr(ir.kwargs?.value || ir.args[1], env);
+      const atoms = valueLib.isValue(atom) ? atom.data : atom;
+      return { shape: x.shape, data: Float64Array.from(x.data, (_: number, i: number) =>
+        typeof atoms === 'number' ? atoms : atoms[atoms.length === 1 ? 0 : i]) };
+    }
+    return { shape: x.shape, data: Float64Array.from(x.data, Math.round) };
+  }
+  if (ir.op === 'weighted' || ir.op === 'logweighted') return countingCandidate(ir.args[1], x, env);
+  if (ir.op === 'normalize' || ir.op === 'truncate' || ir.op === 'relabel') return countingCandidate(ir.args[0], x, env);
+  const branches = ir.op === 'select' ? ir.branches : ir.op === 'superpose' ? ir.args : null;
+  if (branches?.length) {
+    let nearest = x, distance = Infinity;
+    for (const branch of branches) {
+      const candidate = countingCandidate(branch, x, env);
+      const d = typeof x === 'number' ? Math.abs(candidate - x)
+        : candidate.data.reduce((sum: number, v: number, i: number) => sum + (v - x.data[i]) ** 2, 0);
+      if (d < distance) { nearest = candidate; distance = d; }
+    }
+    return nearest;
+  }
+  if (ir.op === 'pushfwd' && ir.bijection) {
+    const bij = ir.bijection;
+    if (bij.registryName) {
+      const entry = require('./bijection-registry.ts').getBijection(bij.registryName);
+      const params: any = {};
+      for (const name of Object.keys(bij.paramIRs)) {
+        const v = samplerLib.evaluateExpr(bij.paramIRs[name], env);
+        params[name] = Array.isArray(v) ? valueLib.asValue(v) : v;
+      }
+      const z = entry.atomBatchedInverse({ shape: [1, x.data.length], data: x.data }, params, 1);
+      const candidate = countingCandidate(ir.args[1], { shape: x.shape, data: z.data }, env);
+      const mapped = entry.atomBatchedForward({ shape: z.shape, data: candidate.data }, params, 1);
+      return { shape: x.shape, data: mapped.data };
+    }
+    if (bij.fForward) {
+      const z = _pushfwdInverseAtomIndependent(bij, x, env, null);
+      const atom = countingCandidate(ir.args[1], z, env);
+      return samplerLib.evaluateExpr(bij.fForward.body, { ...env, [bij.fForward.paramName]: atom });
+    }
+  }
+  return x;
+}
+
+function sameCountingPoint(a: any, b: any): boolean {
+  if (typeof a === 'number' && typeof b === 'number') return a === b;
+  return a.length === b.length && Array.from(a).every((v, i) => v === b[i]);
+}
+
+function countingRoundtrip(bij: any, x: number, y: number, env: any): boolean {
+  if (!bij.fForward) throw new Error('density: counting pushfwd requires its forward map');
+  const at = Object.assign({}, env, { [bij.fForward.paramName]: x });
+  return sameCountingPoint(samplerLib.evaluateExpr(bij.fForward.body, at), y);
+}
+
+/** Only atom locations need per-particle inversion; a live Bernoulli probability does not. */
+function countingSupportRefs(ir: any, refs: any): boolean {
+  let live = false;
+  require('./ir-walk.ts').walkIR(ir, (node: any) => {
+    if (node.op === 'Dirac' || (node.op === 'broadcast' && node.args?.[0]?.name === 'Dirac')) {
+      live ||= _bijBodyRefsAny(node, refs);
+    }
+    if (node.bijection) {
+      const bij = node.bijection;
+      live ||= [bij.fInv?.body, bij.fForward?.body, ...Object.values(bij.paramIRs || {})]
+        .some((body) => _bijBodyRefsAny(body, refs));
+    }
+  });
+  return live;
+}
+
+/** §03 simplex/zero-sum charts have one fewer free coordinate than their array. */
+function diagonalReferenceDimension(ir: any, ambient: number): number {
+  if (ir.op === 'Dirichlet' || (ir.op === 'Lebesgue'
+      && (ir.vectorSet?.set === 'stdsimplex' || ir.vectorSet?.set === 'zerosum'))) return ambient - 1;
+  if (ir.op === 'weighted' || ir.op === 'logweighted' || ir.op === 'pushfwd' || ir.op === 'tilt') {
+    return diagonalReferenceDimension(ir.args[1], ambient);
+  }
+  if (ir.op === 'normalize' || ir.op === 'truncate' || ir.op === 'relabel') {
+    return diagonalReferenceDimension(ir.args[0], ambient);
+  }
+  const branches = ir.op === 'select' ? ir.branches : ir.op === 'superpose' ? ir.args : null;
+  if (branches?.length) {
+    const dimension = diagonalReferenceDimension(branches[0], ambient);
+    if (branches.some((b: any) => diagonalReferenceDimension(b, ambient) !== dimension)) {
+      throw new Error('density: affine mixture branches have different reference dimensions');
+    }
+    return dimension;
+  }
+  if (ir.op === 'joint' && (ir.fields?.map((f: any) => f.value) || ir.args)
+      .some((part: any) => diagonalReferenceDimension(part, 1) !== 1)) {
+    throw new Error('density: affine product with singular components has no established reference dimension');
+  }
+  return ambient;
+}
+
+// Expanded measure IR is stable during scoring, like the scalar-joint plans.
+// Reference classification depends on structure, never on live parameter values.
+const pushfwdReferences = new WeakMap<object, ReturnType<typeof measureReferenceClass>>();
+
 function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // pushfwd(f, M) density per spec §06: requires f to be a
   // `bijection(f, f_inv, logvolume)` annotation so we have an inverse
@@ -1773,6 +1896,15 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   // step.
   const bij = ir.bijection;
   const M_ir = ir.args[1];
+  let reference = pushfwdReferences.get(M_ir);
+  if (reference === undefined) {
+    reference = measureReferenceClass(M_ir, 0);
+    pushfwdReferences.set(M_ir, reference);
+  }
+  if (reference === 'mixed' || (reference == null && bij?.registryName === 'diagonal_affine')) {
+    throw new Error('density: pushfwd base does not establish a homogeneous reference measure');
+  }
+  const counting = reference === 'noncontinuous';
   if (!bij) {
     const fRef = ir.args[0];
     const fName = fRef && fRef.name;
@@ -1862,6 +1994,8 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
       if (params.b && params.b.shape && params.b.shape.length >= 1) {
         D = params.b.shape[params.b.shape.length - 1];
       }
+    } else if (bij.registryName === 'diagonal_affine') {
+      D = params.size;
     }
     if (typeof D !== 'number') {
       throw new Error("density: pushfwd bijection '" + fNameForErr
@@ -1898,9 +2032,22 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
         + "' registry call to '" + bij.registryName
         + "'.atomBatchedInverse failed: " + (err as any).message);
     }
+    if (counting) {
+      const candidate = countingCandidate(M_ir, { shape: [D], data: z.data }, paramEnv);
+      const back = entry.atomBatchedForward({ shape: [1, D], data: candidate.data }, params, 1);
+      if (!sameCountingPoint(back.data, yHead)) {
+        for (let i = 0; i < N; i++) acc[i] = -Infinity;
+        return yRest;
+      }
+      z = { shape: z.shape, data: candidate.data };
+    }
     let logDetJ;
     try {
-      logDetJ = entry.logDetJ(yValue, params, /*N=*/1);
+      logDetJ = counting ? 0 : entry.logDetJ(yValue, params, /*N=*/1);
+      if (!counting && bij.registryName === 'diagonal_affine') {
+        const dimension = diagonalReferenceDimension(M_ir, D);
+        if (dimension !== D) logDetJ *= dimension / D;
+      }
     } catch (err) {
       throw new Error("density: pushfwd bijection '" + fNameForErr
         + "' registry call to '" + bij.registryName
@@ -1938,7 +2085,9 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   const refNames = Object.keys(refArrays);
   const needsPerAtom = refNames.length > 0 && (
     _bijBodyRefsAny(bij.fInv.body, refArrays)
-    || (bij.logVolume.kind !== 'scalar' && bij.logVolume.body
+    || (counting && (countingSupportRefs(M_ir, refArrays)
+        || _bijBodyRefsAny(bij.fForward?.body, refArrays)))
+    || (!counting && bij.logVolume.kind !== 'scalar' && bij.logVolume.body
         && _bijBodyRefsAny(bij.logVolume.body, refArrays)));
 
   if (needsPerAtom) {
@@ -1957,7 +2106,7 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
         }
       }
       envI[bij.fInv.paramName] = y;
-      const xi = samplerLib.evaluateExpr(bij.fInv.body, envI);
+      let xi = samplerLib.evaluateExpr(bij.fInv.body, envI);
       // Defensive: a scalar bijection's f_inv always returns a number here;
       // mirrors the identical (also-unreached) guard on the atom-independent
       // fast path below. Vector-valued bijections are rejected upstream, so
@@ -1969,6 +2118,13 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
           + 'supported here');
       }
       /* c8 ignore stop */
+      if (counting) {
+        xi = countingCandidate(M_ir, xi, envI);
+        if (!countingRoundtrip(bij, xi, y, envI)) {
+          acc[i] = -Infinity;
+          continue;
+        }
+      }
       // Score the base measure for THIS atom only (N=1). Slice each refArray
       // to a length-1 view so M's own latent-param refs resolve to atom i.
       const refArraysI: Record<string, any> = {};
@@ -2004,6 +2160,7 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
       const accI = new Float64Array(1);
       walkAcc(M_ir, xi, refArraysI, 1, opts, accI, baseEnv, overlay);
       acc[i] += accI[0];
+      if (counting) continue;
       // Subtract logvolume at xi for this atom.
       let lv: number;
       if (bij.logVolume.kind === 'scalar') {
@@ -2018,10 +2175,19 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   }
 
   // Atom-independent fast path (unchanged): compute x = f_inv(y) once.
-  const x = _pushfwdInverseAtomIndependent(bij, y, baseEnv, overlay);
+  let x = _pushfwdInverseAtomIndependent(bij, y, baseEnv, overlay);
+  if (counting) {
+    const env = Object.assign({}, baseEnv, overlay);
+    x = countingCandidate(M_ir, x, env);
+    if (!countingRoundtrip(bij, x, y, env)) {
+      for (let i = 0; i < N; i++) acc[i] = -Infinity;
+      return rest;
+    }
+  }
   // Recurse on M scoring at x. x is atom-independent → walks through
   // M's structure with the standard consume/rest semantics.
   walkAcc(M_ir, x, refArrays, N, opts, acc, baseEnv, overlay);
+  if (counting) return rest;
   // Subtract logvolume(x). Scalar logvolume is a uniform shift; a
   // function evaluates body at x.
   if (bij.logVolume.kind === 'scalar') {
@@ -2662,12 +2828,12 @@ function restSize(r: any) {
   return 1;
 }
 
-// Reference-measure class of a select branch's expanded measure IR:
+// Reference-measure class of expanded measure IR, shared by mixtures and pushforwards:
 // 'continuous' (density w.r.t. Lebesgue) vs 'noncontinuous' (pmf
 // w.r.t. counting, OR an atomic point mass / Dirac). `null` =
-// undeterminable — caller PERMITS those (zero-false-positive
-// discipline: never reject a valid homogeneous mixture; an unknown is
-// no worse than today). The spike-and-slab trap is mixing the two:
+// undeterminable. Existing density paths retain their prior handling of an
+// unknown; the new diagonal-affine route requires a proven reference.
+// The spike-and-slab trap is mixing the two:
 // logsumexp-ing a per-length density with a per-atom probability is
 // dimensionally meaningless. Note `Dirac.discrete` is deliberately
 // false in the REGISTRY (the engine can't tell its scalar type from
@@ -2675,36 +2841,52 @@ function restSize(r: any) {
 // case. weighted/logweighted/normalize/truncate/pushfwd don't change
 // the reference measure (they scale / restrict / bijection-map), so
 // recurse into the base; a nested select inherits its branches'.
-function selectBranchRefClass(ir: any, depth: any) {
+function measureReferenceClass(ir: any, depth: number): 'continuous' | 'noncontinuous' | 'mixed' | null {
   if (!ir || ir.kind !== 'call' || (depth | 0) > 64) return null;
   const op = ir.op;
   if (op === 'Dirac') return 'noncontinuous';   // atomic point mass
+  if (op === 'Lebesgue') return 'continuous';
+  if (op === 'Multinomial' || op === 'BinnedPoissonProcess') return 'noncontinuous';
+  if (densityPrims.isBuiltinKernel(op) && !samplerLib.isKnownDistribution(op)) return 'continuous';
   if (samplerLib.isKnownDistribution(op)) {
     const entry = samplerLib.lookupDistribution(ir);
     return entry && entry.discrete ? 'noncontinuous' : 'continuous';
   }
-  if ((op === 'weighted' || op === 'logweighted' || op === 'pushfwd')
+  if (op === 'broadcast') {
+    const head = ir.args?.[0];
+    const name = head?.kind === 'ref' ? head.name : head?.kind === 'lit' ? head.value : null;
+    return name && samplerLib.isKnownDistribution(name)
+      ? measureReferenceClass({ kind: 'call', op: name }, (depth | 0) + 1) : null;
+  }
+  if ((op === 'weighted' || op === 'logweighted' || op === 'pushfwd' || op === 'tilt' || op === 'bayesupdate')
       && Array.isArray(ir.args) && ir.args.length === 2) {
-    return selectBranchRefClass(ir.args[1], (depth | 0) + 1);
+    return measureReferenceClass(ir.args[1], (depth | 0) + 1);
   }
-  if ((op === 'normalize' || op === 'truncate')
+  if ((op === 'normalize' || op === 'truncate' || op === 'iid' || op === 'relabel')
       && Array.isArray(ir.args) && ir.args.length >= 1) {
-    return selectBranchRefClass(ir.args[0], (depth | 0) + 1);
+    return measureReferenceClass(ir.args[0], (depth | 0) + 1);
   }
-  if (op === 'select' && Array.isArray(ir.branches)) {
+  const components = op === 'select' ? ir.branches
+    : (op === 'joint' || op === 'superpose') ? (ir.fields ? ir.fields.map((f: any) => f.value) : ir.args) : null;
+  if (Array.isArray(components)) {
     let cont = false, nonc = false;
-    for (const b of ir.branches) {
-      const c = selectBranchRefClass(b, (depth | 0) + 1);
+    let unknown = false;
+    for (const b of components) {
+      const c = measureReferenceClass(b, (depth | 0) + 1);
       if (c === 'continuous') cont = true;
       else if (c === 'noncontinuous') nonc = true;
+      else if (c === 'mixed') return 'mixed';
+      else unknown = true;
     }
-    if (cont && nonc) return 'mixed';            // nested heterogeneous
+    // A product has a valid Lebesgue⊗Counting reference, but neither scalar
+    // class describes it. Mixtures of such products retain the existing path.
+    if (cont && nonc) return op === 'joint' ? null : 'mixed';
+    if (unknown) return null;
     if (cont) return 'continuous';
     if (nonc) return 'noncontinuous';
     return null;
   }
-  // joint / record / iid / MvNormal-as-vector / unknown: not a scalar
-  // leaf we classify for this guard → permit (null).
+  // Unknown references cannot justify a change-of-variables volume term.
   return null;
 }
 
@@ -2784,14 +2966,14 @@ function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, a
   // well-defined and stays allowed.
   let sawCont = false, sawNonc = false, sawMixed = false;
   for (let k = 0; k < K; k++) {
-    const c = selectBranchRefClass(branches[k], 0);
+    const c = measureReferenceClass(branches[k], 0);
     if (c === 'continuous') sawCont = true;
     else if (c === 'noncontinuous') sawNonc = true;
     else if (c === 'mixed') sawMixed = true;
   }
   if (sawMixed || (sawCont && sawNonc)) {
     const cls = branches.map((b, k) =>
-      `  branch ${k}: ${selectBranchRefClass(b, 0) || 'unknown'}`).join('\n');
+      `  branch ${k}: ${measureReferenceClass(b, 0) || 'unknown'}`).join('\n');
     throw new Error(
       'density: select/mixture combines branches with incommensurable '
       + 'reference measures — cannot logsumexp a continuous (Lebesgue) '
