@@ -3545,6 +3545,38 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       dataTypes.push(t);
     }
 
+    // §04 holds a measure operand constant. With scalar shift/scale there
+    // is no collection axis, so dotted locscale is the ordinary §06 call.
+    // Keep the variate domain: an iid measure is not an array of measures.
+    const head = args[0];
+    const builtinLocscale = head?.name === 'locscale'
+      && (head.kind === 'const' || (head.kind === 'ref' && head.ns === 'self'
+        && !loweredModule.bindings.has(head.name)));
+    if (builtinLocscale && dataTypes.length === 3
+        && T.isMeasure(dataTypes[0])
+        && dataTypes[1]?.kind === 'scalar' && dataTypes[2]?.kind === 'scalar') {
+      const domainKind = dataTypes[0].domain?.kind;
+      if (domainKind === 'array' || domainKind === 'table'
+          || domainKind === 'record' || domainKind === 'tuple') {
+        diagnostics.push({ severity: 'error', loc: expr.loc,
+          message: 'locscale: a scalar shift is incompatible with a non-scalar '
+            + 'variate (spec §06); use iid(locscale(M, shift, scale), size) '
+            + 'for independent scalar location-scale transforms' });
+        return T.failed('locscale scalar shift over non-scalar variate');
+      }
+      if (domainKind !== 'scalar') return T.deferred();
+      // Match the ordinary locscale pre-pass's literal-scale validation.
+      const scale = dataArgs[2];
+      if (scale?.kind === 'lit' && typeof scale.value === 'number'
+          && (scale.value === 0 || !Number.isFinite(scale.value))) {
+        diagnostics.push({ severity: 'error', loc: scale.loc || expr.loc,
+          message: 'locscale() scale must be a nonzero finite value; '
+            + 'a zero or non-finite scale is a degenerate, non-invertible affine map' });
+        return T.failed('locscale degenerate literal scale');
+      }
+      return dataTypes[0];
+    }
+
     // Phase 2: per-arg classification — collection (outer shape +
     // cell type) or held-constant.
     function classifyArg(t: any): any {

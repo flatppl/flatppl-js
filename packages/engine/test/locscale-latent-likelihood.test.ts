@@ -70,6 +70,54 @@ test('locscale likelihood with latent loc+scale scores against scipy oracle (y=3
     `got ${m.samples[0]}, expected -2.5325528906644554`);
 });
 
+test('zero-axis locscale broadcast holds its measure constant and scores live scalar parameters', async () => {
+  // §04: a measure is held constant, and no collections means one call.
+  // Both spellings therefore give Normal(mu + 0.5, 2*tau), with the
+  // likelihood's explicit parameter point supplying mu=0.5 and tau=2.
+  const oracle = -0.5 * Math.log(2 * Math.PI) - Math.log(4) - 0.5 * (0.5 / 4) ** 2;
+  for (const expression of [
+    'locscale.(base_measure, mu + 0.5, 2 * tau)',
+    'broadcast(locscale, Normal(0, 1), mu + 0.5, 2 * tau)',
+  ]) {
+    const ctx = buildCtx(
+      'mu ~ Normal(0, 10)\n'
+      + 'tau ~ LogNormal(0, 1)\n'
+      + 'base_measure = Normal(0, 1)\n'
+      + `obs ~ ${expression}\n`
+      + 'fk = kernelof(record(obs = obs), mu = mu, tau = tau)\n'
+      + 'L = likelihoodof(fk, record(obs = 1.5))\n'
+      + 'ld = logdensityof(L, record(mu = 0.5, tau = 2))\n', 8);
+    const score = await ctx.getMeasure('ld');
+    assert.ok(Math.abs(score.samples[0] - oracle) < 1e-12);
+    const draws = await ctx.getMeasure('obs');
+    assert.equal(draws.samples.length, 8);
+    assert.ok(Array.from(draws.samples).every(Number.isFinite));
+  }
+  const vectorBase = processSource('M = locscale.(iid(Normal(0, 1), 2), 1, 4)');
+  assert.ok(vectorBase.diagnostics.some(d => d.severity === 'error'));
+  // The iid variate is held constant, not broadcast over. Put the scalar
+  // transform inside iid to obtain two independent Normal(1, 4) coordinates.
+  const iid = buildCtx('M = iid(locscale.(Normal(0, 1), 1, 4), 2)\n'
+    + 'ld = logdensityof(M, [1.5, 1.5])\n', 8);
+  const jointScore = await iid.getMeasure('ld');
+  assert.ok(Math.abs(jointScore.samples[0] - 2 * oracle) < 1e-12);
+});
+
+test('locscale broadcast respects a user callable and an explicit base constructor', async () => {
+  const ctx = buildCtx(
+    'locscale(m, a, b) = a + b\n'
+    + 'y = locscale.(Normal(0, 1), 0, 0)\n'
+    + 'M = base.locscale.(Normal(0, 1), 0, 2)\n'
+    + 'ld = logdensityof(M, 1)\n', 8);
+  const y = await ctx.getMeasure('y');
+  assert.equal(y.samples[0], 0);
+  const degenerate = processSource('M = base.locscale.(Normal(0, 1), 0, 0)');
+  assert.ok(degenerate.diagnostics.some(d => d.severity === 'error'));
+  const score = await ctx.getMeasure('ld');
+  const oracle = -0.5 * Math.log(2 * Math.PI) - Math.log(2) - 0.5 * (1 / 2) ** 2;
+  assert.ok(Math.abs(score.samples[0] - oracle) < 1e-12);
+});
+
 // Per-atom path with a SCALAR (literal-0.0) logVolume. The latent oracle
 // tests above route through locscale → an affine bijection whose logVolume
 // is a FUNCTION (−log scale); they never exercise the per-atom loop's
