@@ -80,7 +80,7 @@ for (const model of MODELS) {
     test(`matrix: ${model.name} × ${backend}`, async () => {
       const { ctx } = ctxFor(model.src, 60);
       ctx.inferenceOpts = {
-        backend, chains: 4, warmup: 40, draws: 80,
+        backend, chains: 4, walkers: null, warmup: 40, draws: 80,
         smcParticles: 200, smcSteps: 5, amisSamples: 150, amisIters: 3, seed: 1,
       };
       const m = await ctx.getMeasure('posterior');

@@ -15,7 +15,7 @@ function specNormalNormal(obs: number) {
 
 test('runMcmc+mhKernel recovers Normal-Normal posterior; output shape correct', () => {
   const mv = MV.buildModelView(specNormalNormal(5.0));
-  const r = runMcmc(mv, mhKernel, { nWalkers: 4, warmup: 1000, draws: 2000, seed: 7 });
+  const r = runMcmc(mv, mhKernel, { warmup: 1000, draws: 2000, seed: 7 });
   const draws = r.drawsByName.mu;
   assert.equal(draws.length, 4 * 2000);
   assert.equal(r.walkers.mu.length, 4);
