@@ -11,7 +11,8 @@ const zeroScore = (s: number) => Math.log(3) / 2 - 2 * Math.log(s * Math.sqrt(2 
 
 test('rebase scores ordered and zero-sum Normal laws with the coordinate reference', async () => {
   const { ctx } = makeMatCtx(`
-A = rebase(iid(Normal(1, 2), 3), Lebesgue(ordered(3)))
+n = 3
+A = rebase(iid(Normal(mu = 1, sigma = 2), n), Lebesgue(support = ordered(n)))
 B = rebase(iid(Normal(7, 2), 3), Lebesgue(zerosum(3)))
 a = logdensityof(A, [-1, 0, 3])
 b = logdensityof(B, [-1, 0, 1])
@@ -56,7 +57,7 @@ N = Normal(m, s)
 K = functionof(N, location = m, scale = s)
 B = functionof(Normal(m, 1), scale = s, location = m)
 R = rebase(K, B)
-Q = R(1, 2)
+Q = R(scale = 2, location = 1)
 score = logdensityof(Q, 0)
 `, { sampleCount: 4 });
   // Product N(1,2)N(1,1), normalized: N(1,sqrt(4/5)).
