@@ -3964,7 +3964,9 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
         // callable producer (fn / functionof / kernelof / bijection
         // / fchain) as a legitimate head ref. Adding fchain here
         // surfaces `broadcast(myFchain, xs)` and similar correctly.
-        if (b && isCallableLikeBindingType(b.type)) {
+        // The builtin density head also dispatches as a callable; its
+        // measure operand is checked separately as a real dependency.
+        if ((b && isCallableLikeBindingType(b.type)) || (!b && head.name === 'logdensityof')) {
           seen.add(head.name);
         }
         // Aggregate's first arg is the REDUCER (sum / mean / prod /
@@ -5861,22 +5863,29 @@ function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
  *
  * Resolves a binding **by name** to its canonical measure IR.
  */
-// Replace the measure ref in each `logdensityof(M, x)` of a weight by M's
-// expanded IR, where `x` is the weight's own parameter: the shared-variate fold
-// density.ts scores against the consumed point. Any other ref stays, so the
-// walker still refuses it.
+// Replace a weight's held measure in `logdensityof(M, x)` or
+// `logdensityof.(M, x)` by M's expanded IR, where x is the variate. The worker
+// receives measure IR instead of sampling M to obtain an ordinary value.
 function _inlineWeightMeasures(ir: any, derivations: any, visited: any, bindings: any): any {
   if (!ir || ir.kind !== 'call' || ir.op !== 'functionof' || !Array.isArray(ir.params)
       || ir.params.length !== 1) return ir;
   const param = ir.params[0];
   const { mapIR } = require('./ir-walk.ts');
   return mapIR(ir, (n: any) => {
-    if (!n || n.kind !== 'call' || n.op !== 'logdensityof' || !Array.isArray(n.args)) return n;
-    const [m, x] = n.args;
+    if (!n || n.kind !== 'call' || !Array.isArray(n.args)) return n;
+    const head = n.args[0];
+    const broadcast = n.op === 'broadcast' && head?.kind === 'ref'
+      && head.ns === 'self' && head.name === 'logdensityof' && !bindings?.has(head.name);
+    if (n.op !== 'logdensityof' && !broadcast) return n;
+    const mi = broadcast ? 1 : 0;
+    const m = n.args[mi], x = n.args[mi + 1];
     if (!x || x.kind !== 'ref' || x.ns !== '%local' || x.name !== param) return n;
     if (!m || m.kind !== 'ref' || m.ns !== 'self' || !derivations[m.name]) return n;
     const expanded = expandMeasureIR(m.name, derivations, visited, bindings);
-    return expanded ? { ...n, args: [expanded, x] } : n;
+    if (!expanded) return n;
+    const args = n.args.slice();
+    args[mi] = expanded;
+    return { ...n, args };
   });
 }
 
