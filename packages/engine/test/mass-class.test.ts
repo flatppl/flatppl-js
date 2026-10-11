@@ -167,6 +167,10 @@ test('mass: Lebesgue/Counting boundedness', () => {
   // Bounded only when BOTH bounds are finite.
   assert.equal(massOf('m = Lebesgue(support = interval(0.0, inf))', 'm'), 'locallyfinite');
   assert.equal(massOf('m = Lebesgue(support = stdsimplex(3))', 'm'), 'finite');
+  assert.equal(massOf('m = Lebesgue(support = ordered(3))', 'm'), 'locallyfinite');
+  assert.equal(massOf('m = Lebesgue(support = zerosum(3))', 'm'), 'locallyfinite');
+  // zerosum(1) = {[0]}: the coordinate measure of zero free coordinates, mass 1.
+  assert.equal(massOf('m = Lebesgue(support = zerosum(1))', 'm'), 'finite');
   assert.equal(massOf('m = Counting(support = integers)', 'm'), 'locallyfinite');
   // Parametric bound → boundedness unknown → mass unknown (conservative).
   assert.equal(massOf('hi = elementof(posreals)\nm = Lebesgue(support = interval(0.0, hi))', 'm'), 'unknown');

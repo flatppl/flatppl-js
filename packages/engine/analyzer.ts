@@ -861,12 +861,14 @@ function validateSpecialOperation(valueNode: any) {
       break;
     }
 
-    case 'stdsimplex': {
-      // stdsimplex(n) — single positional integer.
+    case 'stdsimplex':
+    case 'ordered':
+    case 'zerosum': {
+      // stdsimplex(n), ordered(n), zerosum(n) — single positional integer.
       if (args.length !== 1) {
-        diags.push({ severity: 'error', message: `stdsimplex() takes exactly one argument (n)`, loc: valueNode.loc });
+        diags.push({ severity: 'error', message: `${name}() takes exactly one argument (n)`, loc: valueNode.loc });
       } else if (args[0].type === 'KeywordArg') {
-        diags.push({ severity: 'error', message: `stdsimplex() argument must be positional`, loc: args[0].loc });
+        diags.push({ severity: 'error', message: `${name}() argument must be positional`, loc: args[0].loc });
       }
       break;
     }

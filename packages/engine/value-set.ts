@@ -15,7 +15,8 @@
 // intersection-closed, so `UNKNOWN` is always a sound fallback.
 //
 // Representation: atom sets are plain strings; the parameterised sets
-// (`interval` / `stdsimplex` / `cartpow`) are tagged `{vs, …}` objects.
+// (`interval` / `stdsimplex` / `ordered` / `zerosum` / `cartpow`) are tagged
+// `{vs, …}` objects.
 // `DEFERRED` (not yet inferred) and `UNKNOWN` (inferred, no constraint)
 // are distinct, per spec §11.
 
@@ -35,6 +36,10 @@ const ANYTHING = 'anything';
 
 function interval(lo: number, hi: number): any { return { vs: 'interval', lo, hi }; }
 function stdsimplex(n: any): any { return { vs: 'stdsimplex', n }; }     // n: number | '%dynamic'
+// §03 "Ordered vectors": strictly increasing real n-vectors, open in ℝⁿ.
+function ordered(n: any): any { return { vs: 'ordered', n }; }
+// §03 "Zero-sum vectors": real n-vectors summing to zero, an (n-1)-dim subspace.
+function zerosum(n: any): any { return { vs: 'zerosum', n }; }
 function cartpow(elem: any, n: any): any { return { vs: 'cartpow', elem, n }; }
 // Positional `cartprod(S1, S2, …)` — spec §03 gives it an ARRAY variate, so
 // unlike cartpow the components may differ. Mirrors Rust `ValueSet::CartProd`.
@@ -45,7 +50,7 @@ function equal(a: any, b: any): boolean {
   if (!a || !b || typeof a === 'string' || typeof b === 'string') return false;
   if (a.vs !== b.vs) return false;
   if (a.vs === 'interval') return a.lo === b.lo && a.hi === b.hi;
-  if (a.vs === 'stdsimplex') return a.n === b.n;
+  if (a.vs === 'stdsimplex' || a.vs === 'ordered' || a.vs === 'zerosum') return a.n === b.n;
   if (a.vs === 'cartpow') return a.n === b.n && equal(a.elem, b.elem);
   if (a.vs === 'cartprod') {
     return a.elems.length === b.elems.length
@@ -92,6 +97,11 @@ function isBounded(vs: any): boolean | null {
     || vs === COMPLEXES) return false;
   if (vs === DEFERRED || vs === UNKNOWN || vs === ANYTHING || vs === RNGSTATES) return null;
   if (vs && vs.vs === 'stdsimplex') return true;
+  // `ordered(1)` is all of ℝ; `zerosum(1)` is the single point {[0]}.
+  if (vs && (vs.vs === 'ordered' || vs.vs === 'zerosum')) {
+    if (vs.n === '%dynamic') return null;
+    return vs.vs === 'ordered' ? vs.n === 0 : vs.n <= 1;
+  }
   if (vs && vs.vs === 'interval') {
     return Number.isFinite(vs.lo) && Number.isFinite(vs.hi);
   }
@@ -134,6 +144,9 @@ function subsetOf(a: any, b: any): boolean {
   if (a && a.vs === 'stdsimplex' && b && b.vs === 'cartpow') {
     return (a.n === b.n || b.n === '%dynamic') && subsetOf(UNITINTERVAL, b.elem);
   }
+  if (a && (a.vs === 'ordered' || a.vs === 'zerosum') && b && b.vs === 'cartpow') {
+    return (a.n === b.n || b.n === '%dynamic') && subsetOf(REALS, b.elem);
+  }
   if (a && a.vs === 'cartpow' && b && b.vs === 'cartpow') {
     return (a.n === b.n || b.n === '%dynamic') && subsetOf(a.elem, b.elem);
   }
@@ -156,6 +169,8 @@ function toSexpr(vs: any): string {
   if (vs === UNKNOWN) return '%unknown';
   if (typeof vs === 'string') return vs;     // the named atom sets
   if (vs.vs === 'stdsimplex') return '(stdsimplex ' + _renderDim(vs.n) + ')';
+  if (vs.vs === 'ordered') return '(ordered ' + _renderDim(vs.n) + ')';
+  if (vs.vs === 'zerosum') return '(zerosum ' + _renderDim(vs.n) + ')';
   if (vs.vs === 'interval') return '(interval ' + _renderReal(vs.lo) + ' ' + _renderReal(vs.hi) + ')';
   if (vs.vs === 'cartpow') return '(cartpow ' + toSexpr(vs.elem) + ' ' + _renderDim(vs.n) + ')';
   if (vs.vs === 'cartprod') {
@@ -222,6 +237,8 @@ function setExprValueset(
       const n = _dim(args[0], resolveDim);
       return stdsimplex(n);
     }
+    case 'ordered': return ordered(_dim(args[0], resolveDim));
+    case 'zerosum': return zerosum(_dim(args[0], resolveDim));
     case 'cartpow': {
       const elem = setExprValueset(args[0], resolveDim, resolveSetRef, refHops);
       if (elem === UNKNOWN) return UNKNOWN;
@@ -286,7 +303,7 @@ function constValueset(name: string): any {
 module.exports = {
   DEFERRED, UNKNOWN, REALS, POSREALS, NONNEGREALS, UNITINTERVAL,
   INTEGERS, POSINTEGERS, NONNEGINTEGERS, BOOLEANS, COMPLEXES, RNGSTATES, ANYTHING,
-  interval, stdsimplex, cartpow, cartprod,
+  interval, stdsimplex, ordered, zerosum, cartpow, cartprod,
   equal, naturalOf, isBounded, subsetOf, toSexpr,
   constSetValueset, setExprValueset, literalValueset, constValueset,
 };

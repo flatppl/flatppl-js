@@ -32,7 +32,7 @@ const SETS = new Set([
 
 // Set constructors (callables that build sets)
 const SET_CONSTRUCTORS = new Set([
-  'interval', 'cartprod', 'cartpow', 'stdsimplex',
+  'interval', 'cartprod', 'cartpow', 'stdsimplex', 'ordered', 'zerosum',
 ]);
 
 // Reserved names (not bindable as ordinary names)

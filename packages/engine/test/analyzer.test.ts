@@ -415,6 +415,11 @@ test('analyzer: interval / cartpow / stdsimplex set constructors', () => {
   // empty form errors.
   assert.ok(process(`s = cartprod()\n`).diagnostics.some((d: any) => /at least one/.test(d.message)));
   assert.ok(process(`s = stdsimplex()\n`).diagnostics.some((d: any) => /takes exactly one/.test(d.message)));
+  for (const op of ['ordered', 'zerosum']) {
+    assert.ok(process(`s = ${op}(2, 3)\n`).diagnostics.some((d: any) => d.message === `${op}() takes exactly one argument (n)`));
+    assert.ok(process(`s = ${op}(n = 3)\n`).diagnostics.some((d: any) => d.message === `${op}() argument must be positional`));
+    assert.ok(!process(`s = ${op}(3)\n`).diagnostics.some((d: any) => d.severity === 'error'));
+  }
 });
 
 test('analyzer: cartprod accepts both positional and keyword forms', () => {
