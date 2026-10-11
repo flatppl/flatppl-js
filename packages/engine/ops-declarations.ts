@@ -2351,8 +2351,9 @@ function _synthBuiltinHeadFn(head: any, args: any[], kwargs: any): any {
   // Only builtins that evaluate to a VALUE in a call position: the
   // elementary / measure-eval builtin FUNCTIONS and the ordered-named
   // structural constructors (`record`/`joint`/…). Distributions,
-  // measure ops, constants and sets are not value-callable heads.
-  if (!builtins.BUILTIN_FUNCTIONS.has(name) && !isFieldForm) return null;
+  // measure constructors, constants and sets are not value-callable heads.
+  // `logdensityof` is catalogued as a measure op but returns a scalar value.
+  if (!builtins.BUILTIN_FUNCTIONS.has(name) && !isFieldForm && name !== 'logdensityof') return null;
 
   const kwKeys = Object.keys(kwargs || {});
   if (kwKeys.length > 0) {
@@ -2399,23 +2400,19 @@ function _synthBuiltinHeadFn(head: any, args: any[], kwargs: any): any {
   /* c8 ignore stop */
 }
 
-// Hold symbolic kernel-NAME data args inline in the body. Per spec §07 a
-// `builtin_logdensityof` / transport kernel arg is a bare kernel NAME,
-// not an evaluable value: it must reach `_resolveKernelName` (sampler.ts)
-// as a name-shaped IR node. A broadcast data-arg source that reads as a
-// known built-in kernel is loop-invariant and can never evaluate as a
-// value, so we substitute its IR directly into the body (replacing the
-// param ref) and drop it from the params/sources the zip iterates. Fully
-// general — fires for any head whose data arg is a bare kernel name,
-// never for ordinary value args; returns the fn/sources unchanged when
-// there is none.
-function _inlineHeldKernelArgs(fn: any, sources: any[]): any {
+// §04 holds measures constant in a broadcast; §07's primitive density and
+// transport operations likewise take symbolic kernel names. These operands
+// must reach their walkers as IR, never as sampled/evaluated values. Inline
+// them in the body and remove them from the parameters the zip iterates.
+function _inlineHeldMeasureArgs(fn: any, sources: any[]): any {
   const densityPrims = require('./density-prims.ts');
+  const measureArg = fn.body?.op === 'logdensityof' ? fn.body.args?.[0] : null;
   const subst = new Map<string, any>();
   const keep: number[] = [];
   for (let i = 0; i < fn.params.length; i++) {
     const kname = _headNameOf(sources[i]);
-    if (kname != null && densityPrims.isBuiltinKernel(kname)) {
+    if ((measureArg?.kind === 'ref' && measureArg.name === fn.params[i])
+        || (kname != null && densityPrims.isBuiltinKernel(kname))) {
       subst.set(fn.params[i], sources[i]);
     } else {
       keep.push(i);
@@ -2623,10 +2620,9 @@ function _broadcastLogical(ir: any, ctx: any): any {
     }
     for (let i = 0; i < fn.params.length; i++) sources[i] = posArgs[i];
   }
-  // Held symbolic kernel-name args (e.g. `Poisson` in
-  // `builtin_logdensityof.(Poisson, …)`) are inlined into the body so
-  // they reach `_resolveKernelName` as IR, not as an evaluated value.
-  const held = _inlineHeldKernelArgs(fn, sources);
+  // Held measures / kernel names reach the density walker as IR, not as
+  // evaluated values (spec §04 non-collection broadcasting inputs).
+  const held = _inlineHeldMeasureArgs(fn, sources);
   fn = held.fn;
   // Rank-d (nested, d≥2) kernel-broadcast DENSITY: try the flattened
   // evaluator first (see its header comment). It only fires for the

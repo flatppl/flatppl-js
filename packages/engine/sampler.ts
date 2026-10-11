@@ -2557,6 +2557,20 @@ function _synthStdModuleFn(refIR: any, env: any): any {
 const broadcastPlans = new WeakMap<object, any>();
 
 function _broadcastApply(fn: any, inputs: any, env: any, resultType?: any): any {
+  // §04 holds the measure in logdensityof.(M, points) constant. Its body
+  // needs the density walker, not numeric evaluation of measure IR. Keep
+  // this dispatch inside broadcast: a top-level score still goes through
+  // the materialiser's canonical measure expansion and normalizer handling.
+  if (fn.body?.op === 'logdensityof') {
+    const density = require('./density.ts');
+    return _broadcastApplyFrame(fn, inputs, env, {
+      nextPoint() {},
+      evalPoint(pointEnv: any) {
+        return density.logDensity(fn.body.args[0], evaluateExpr(fn.body.args[1], pointEnv),
+          pointEnv, { tally: 'clamped', resolveMeasureRef: pointEnv.__resolveMeasureRef });
+      },
+    }, resultType);
+  }
   let bodyPlan = broadcastPlans.get(fn.body);
   if (!bodyPlan) {
     bodyPlan = _profileCompile.compileProfileBody(fn.body);
