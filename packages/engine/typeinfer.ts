@@ -3573,12 +3573,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return { collection: false, cellType: t };
       }
       if (t && (t.kind === 'any' || t.kind === 'deferred')) {
-        // Common inside a `functionof` body where a boundary has no
-        // declared type — the param is `any`, and downstream broadcasts
-        // over it still need to flow some cell type to the callable's
-        // body inference (signature lookups can tighten the result).
-        // Treat as held-constant; cellType propagates through.
-        return { collection: false, cellType: t };
+        // An untyped formal may be scalar or collection-valued. Infer the
+        // head's result kind, but leave the outer shape unresolved until
+        // inferUserCall supplies the concrete argument types (spec §04).
+        return { collection: false, cellType: t, unknownShape: true };
       }
       // measure / failed / tuple / record (records are explicitly
       // disallowed as broadcast inputs per spec §04) / etc.
@@ -3690,6 +3688,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return T.deferred();
     }
     if (elem && elem.kind === 'failed') return T.failed('broadcast cascade');
+    if (argClassif.some((c) => c.unknownShape)) {
+      if (!hasCollection) {
+        // Keep a generic kernel callable measure-valued without claiming its
+        // variate is scalar. A value broadcast likewise has no proven shape.
+        return elem?.kind === 'measure' ? T.measure(T.deferred()) : T.deferred();
+      }
+      // A known collection fixes the outer rank, but its singleton axes
+      // can still expand when the unknown argument's shape becomes known.
+      outerShape = outerShape!.map((dim) => dim === 1 ? '%dynamic' : dim);
+    }
 
     // Kernel-broadcast result type (spec §04 "broadcast(kernel, ...)
     // returns an array-valued measure: the independent product measure

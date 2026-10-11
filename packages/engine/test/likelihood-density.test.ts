@@ -56,6 +56,23 @@ score = logdensityof(L, 0.25)
   assert.ok(Math.abs(actual - Math.log(27 / 64)) < 1e-12);
 });
 
+test('a generic vector broadcast helper scores through explicit likelihood boundaries', async () => {
+  const { makeMatCtx } = require('./_materialise-helpers.ts');
+  const { ctx } = makeMatCtx(`
+rating_probs(cuts, location) = cat(invlogit.(cuts .- location), [1.0]) .- cat([0.0], invlogit.(cuts .- location))
+cuts = elementof(ordered(2))
+location = elementof(reals)
+y ~ Multinomial(n = 4, p = rating_probs(cuts, location))
+K = kernelof(y, cuts = cuts, location = location)
+L = likelihoodof(K, [2, 1, 1])
+score = logdensityof(L, record(cuts = [1, 1 + log(3)], location = 1))
+`, { sampleCount: 4 });
+  // Cumulative probabilities [1/2, 3/4] give category masses [1/2, 1/4, 1/4].
+  // 4!/(2!1!1!) * (1/2)^2 * (1/4)^2 = 3/16.
+  const actual = (await ctx.getMeasure('score')).samples[0];
+  assert.ok(Math.abs(actual - Math.log(3 / 16)) < 1e-12);
+});
+
 test('logdensityof(L, θ) scores the kernel at the given scalar θ (closed form)', async () => {
   const ctx = buildCtx(`
 theta ~ Normal(0, 1)
