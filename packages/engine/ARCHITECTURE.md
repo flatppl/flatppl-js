@@ -711,6 +711,14 @@ the ordinary scalar affine `pushfwd`, retaining live scalar shift/scale inputs.
 The measure operand is held constant (§04); a measure's variate axes never
 become broadcast axes. Scalar shifts over non-scalar variates are diagnosed.
 
+Scalar affine broadcasts over numeric vector laws use the `diagonal_affine`
+registry entry, with scalar or per-atom coefficients and no dense matrices.
+The map stays outside the base law to preserve captured-node identity.
+Counting-reference maps preserve point mass; their inverse candidates must
+map back to the queried atom before the base mass is scored.
+Continuous maps use the reference's free dimension, including the `n-1`
+coordinates of simplex and zero-sum laws.
+
 Cross-engine architecture in engine-concepts §20; JS notes here. The dissolver
 runs in `buildDerivations` **immediately after `liftInlineSubexpressions`** (each
 binding has cached lifted `.ir` + `inferredType`), rewriting `.ir` in place when

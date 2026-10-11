@@ -94,7 +94,7 @@ test('zero-axis locscale broadcast holds its measure constant and scores live sc
     assert.ok(Array.from(draws.samples).every(Number.isFinite));
   }
   const vectorBase = processSource('M = locscale.(iid(Normal(0, 1), 2), 1, 4)');
-  assert.ok(vectorBase.diagnostics.some(d => d.severity === 'error'));
+  assert.ok(vectorBase.diagnostics.some((d: any) => d.severity === 'error'));
   // The iid variate is held constant, not broadcast over. Put the scalar
   // transform inside iid to obtain two independent Normal(1, 4) coordinates.
   const iid = buildCtx('M = iid(locscale.(Normal(0, 1), 1, 4), 2)\n'
@@ -112,7 +112,7 @@ test('locscale broadcast respects a user callable and an explicit base construct
   const y = await ctx.getMeasure('y');
   assert.equal(y.samples[0], 0);
   const degenerate = processSource('M = base.locscale.(Normal(0, 1), 0, 0)');
-  assert.ok(degenerate.diagnostics.some(d => d.severity === 'error'));
+  assert.ok(degenerate.diagnostics.some((d: any) => d.severity === 'error'));
   const score = await ctx.getMeasure('ld');
   const oracle = -0.5 * Math.log(2 * Math.PI) - Math.log(2) - 0.5 * (1 / 2) ** 2;
   assert.ok(Math.abs(score.samples[0] - oracle) < 1e-12);

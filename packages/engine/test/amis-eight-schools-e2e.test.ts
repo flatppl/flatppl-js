@@ -27,7 +27,10 @@ test('eight-schools: amis backend returns finite draws and IS diagnostics', asyn
   // A realistic prior pool (the proposal is initialised from prior draws, so a
   // single-atom pool would force the degenerate-init fallback rather than
   // exercising the real adaptation path).
-  const src = fs.readFileSync(FIXTURE, 'utf8');
+  const src = fs.readFileSync(FIXTURE, 'utf8').replace(
+    'theta ~ iid(Normal(mu, tau), J)',
+    'ls(x) = (x .* tau) .+ mu\ntheta ~ pushfwd(ls, iid(Normal(0, 1), J))',
+  );
   const { ctx } = ctxFor(src, 2000);
 
   const m = await materialiser.materialiseMeasure('posterior', ctx, {

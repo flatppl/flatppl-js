@@ -38,6 +38,28 @@ function arrEq(a: any, b: number[], eps = 1e-12) {
   }
 }
 
+test('diagonal affine registry preserves atom coefficients and reference volumes', () => {
+  const diagonal = bij.getBijection('diagonal_affine');
+  const params = { scale: val([2], [2, -3]), shift: val([], [0.5]) };
+  const z = val([2, 2], [1, 2, 3, 4]);
+  const y = diagonal.atomBatchedForward(z, params, 2);
+  arrEq(y.data, [2.5, 4.5, -8.5, -11.5]);
+  arrEq(diagonal.atomBatchedInverse(y, params, 2).data, [1, 2, 3, 4]);
+  arrEq(diagonal.logDetJ(y, params, 2), [-2 * Math.log(2), -2 * Math.log(3)]);
+
+  const collapsed = { scale: 0, shift: 0.5 };
+  arrEq(diagonal.atomBatchedForward(z, collapsed, 2).data, [0.5, 0.5, 0.5, 0.5]);
+  assert.throws(() => diagonal.atomBatchedInverse(y, collapsed, 2));
+  assert.throws(() => diagonal.logDetJ(y, collapsed, 2));
+  const empty = val([1, 0], []);
+  assert.deepEqual(Array.from(diagonal.atomBatchedInverse(empty, collapsed, 1).data), []);
+  assert.equal(diagonal.logDetJ(empty, collapsed, 1), 0);
+
+  // Atom and event axes are distinct, including when both have extent two.
+  assert.throws(() => diagonal.atomBatchedForward(val([4], [1, 2, 3, 4]), params, 2));
+  assert.throws(() => diagonal.atomBatchedForward(z, { ...params, scale: val([1, 2], [2, 3]) }, 2));
+});
+
 // =====================================================================
 // R6 — atom-batched forward (per-atom matvec)
 // =====================================================================

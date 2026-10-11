@@ -1061,6 +1061,8 @@ function logpdfCategorical(x: any, p: any)  { return _catLogpmf(x, p, 1); }
 function logpdfCategorical0(x: any, p: any) { return _catLogpmf(x, p, 0); }
 
 function logpdfDirac(x: any, value: any) {
+  // §03 embeds booleans in integers; scalar density observations use 0/1.
+  if (typeof value === 'boolean') value = +value;
   return x === value ? 0 : -Infinity;
 }
 
