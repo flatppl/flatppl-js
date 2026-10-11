@@ -809,15 +809,17 @@ const randNegativeBinomial = {
     const prng = _sharedPrng(opts);
     const innerGamma   = randGamma.factory({ prng });
     const innerPoisson = randPoisson.factory({ prng });
-    function draw(alpha: any, beta: any) {
-      const lambda = innerGamma(+alpha, +beta);
+    function draw(alpha: any, beta: any, logBeta?: number) {
+      const lambda = logBeta === undefined ? innerGamma(+alpha, +beta)
+        : Math.exp(Math.log(innerGamma(+alpha, +alpha)) + Math.log(+alpha) - logBeta);
       return innerPoisson(lambda);
     }
     if (args.length === 1 && args[0] === opts) {
-      return function parametricNBSampler(alpha: any, beta: any) { return draw(alpha, beta); };
+      return function parametricNBSampler(alpha: any, beta: any, logBeta?: number) { return draw(alpha, beta, logBeta); };
     }
     const alpha = +args[0], beta = +args[1];
-    return function staticNBSampler() { return draw(alpha, beta); };
+    const logBeta = typeof args[2] === 'number' ? args[2] : undefined;
+    return function staticNBSampler() { return draw(alpha, beta, logBeta); };
   },
 };
 
@@ -917,15 +919,17 @@ const randNegativeBinomial2 = {
     const prng = _sharedPrng(opts);
     const innerGamma   = randGamma.factory({ prng });
     const innerPoisson = randPoisson.factory({ prng });
-    function draw(mu: any, psi: any) {
-      const lambda = innerGamma(+psi, (+psi) / (+mu));
+    function draw(mu: any, psi: any, logMean?: number) {
+      const lambda = logMean === undefined ? innerGamma(+psi, (+psi) / (+mu))
+        : Math.exp(Math.log(innerGamma(+psi, +psi)) + logMean);
       return innerPoisson(lambda);
     }
     if (args.length === 1 && args[0] === opts) {
-      return function parametricNB2Sampler(mu: any, psi: any) { return draw(mu, psi); };
+      return function parametricNB2Sampler(mu: any, psi: any, logMean?: number) { return draw(mu, psi, logMean); };
     }
     const mu = +args[0], psi = +args[1];
-    return function staticNB2Sampler() { return draw(mu, psi); };
+    const logMean = typeof args[2] === 'number' ? args[2] : undefined;
+    return function staticNB2Sampler() { return draw(mu, psi, logMean); };
   },
 };
 

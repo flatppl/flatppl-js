@@ -195,6 +195,12 @@ export interface IRCall extends IRBase {
   target?: { ns: string; name: string };
   args?: IRNode[];
   kwargs?: Record<string, IRNode>;
+  /** Internal exponential-tilt annotations on natural-parameter expressions. */
+  exponentialTiltLogOdds?: boolean;
+  exponentialTiltLogFailure?: boolean;
+  exponentialTiltLogRate?: boolean;
+  exponentialTiltLogInverseFailure?: boolean;
+  exponentialTiltLogMean?: boolean;
   fields?: Array<{ name: string; value: IRNode }>;
   assigns?: Array<{ name: string; value: IRNode }>;
   // Reification-specific:

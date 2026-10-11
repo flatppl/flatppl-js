@@ -48,18 +48,17 @@ z=totalmass(M)`, 8);
 });
 
 test('a callable weight carries its captured parameter law', async () => {
-  // §06 conditional normalization gives x|theta ~ N(theta,1). Against the
-  // proposal phi(theta)phi(x), the joint log ratio is theta+theta*x-theta²/2.
+  // §06 conditional normalization gives x|theta ~ N(theta,1), now sampled
+  // exactly. Only the captured theta proposal carries importance weight;
+  // the conditional law must not reapply its old theta*x-theta²/2 ratio.
   const ctx = context(`theta~normalize(weighted(fn(exp(_)),Normal(0,1)))
 x~normalize(logweighted(fn(theta*_),Normal(0,1)))`);
   const theta = await ctx.getMeasure('theta');
   const x = await ctx.getMeasure('x');
-  const logRatio = (i: number) => theta.samples[i]
-    + theta.samples[i] * x.samples[i] - theta.samples[i] ** 2 / 2;
+  const logRatio = (i: number) => theta.samples[i];
   for (let i = 0; i < x.samples.length; i++) {
     const actual = x.logWeights[i] - x.logWeights[0];
-    // The existing deterministic conditional normalizer has 3.25e-7 error.
-    assert.ok(Math.abs(actual - logRatio(i) + logRatio(0)) < 1e-6);
+    assert.ok(Math.abs(actual - logRatio(i) + logRatio(0)) < 1e-12);
   }
 });
 
