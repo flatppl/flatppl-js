@@ -4832,15 +4832,11 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
       case 'iid': {
         const inner: any = expandMeasureIR(d.from, derivations, next, bindings);
         if (!inner) return null;
-        // dims is a multi-dim shape; flatten to a single iid count.
-        // The walker's iid case handles the n-shape uniformly via
-        // observed length — multi-dim observations would need to be
-        // flattened to match (1D arrays). For typical bayesupdate the
-        // dims are 1D and obs is a flat array, which already matches.
-        const total = d.dims.reduce((a: any, b: any) => a * b, 1);
+        const size = d.dims.length === 1 ? { kind: 'lit', value: d.dims[0] }
+          : { kind: 'call', op: 'vector', args: d.dims.map((n: number) => ({ kind: 'lit', value: n })) };
         return {
           kind: 'call', op: 'iid',
-          args: [inner, { kind: 'lit', value: total }],
+          args: [inner, size],
         };
       }
       case 'record': {
