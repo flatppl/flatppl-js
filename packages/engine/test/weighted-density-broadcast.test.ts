@@ -4,6 +4,21 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
 
+test('an inline weight binds inputs hidden in a reified measure expression', async () => {
+  const { ctx } = makeMatCtx(`
+p ~ Uniform(interval(0, 1))
+l = (value -> logdensityof(weighted(p, Dirac(0)), value)).([0, 0])
+f = functionof(l, p = p)
+M = logweighted(q -> sum(f(p = q)), Uniform(interval(0, 1)))
+a = logdensityof(M, 0.3)
+b = logdensityof(M, 0.7)
+`, { sampleCount: 1 });
+  for (const [name, point] of [['a', 0.3], ['b', 0.7]] as const) {
+    const score = (await ctx.getMeasure(name)).samples[0];
+    assert.ok(Math.abs(score - 2 * Math.log(point)) < 1e-12, `${score} != 2 log(${point})`);
+  }
+});
+
 test('an inline weight binds derived reification inputs at the scored point', async () => {
   const { ctx } = makeMatCtx(`
 a ~ Normal(0, 1)
