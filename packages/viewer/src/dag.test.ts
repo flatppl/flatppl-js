@@ -23,7 +23,35 @@ const {
   glyphStartOffset,
   GLYPH_COLLAPSED,
   GLYPH_EXPANDED,
+  fitGraph,
+  zoomGraph,
 } = await import('./dag.ts');
+
+test('graph fit caps magnification, still fits large graphs, and keeps manual zoom across resize', async (t) => {
+  const { default: cytoscape } = await import('cytoscape');
+  const { resizeAndFitCy } = await import('./orchestration.ts');
+  const cy = cytoscape({ headless: true, styleEnabled: true,
+    elements: [{ data: { id: 'x' }, position: { x: 0, y: 0 } }],
+    layout: { name: 'preset' } });
+  t.after(() => cy.destroy());
+  t.mock.method(cy, 'width', () => 600);
+  t.mock.method(cy, 'height', () => 400);
+  const ctx = { cy };
+  fitGraph(ctx);
+  assert.equal(cy.zoom(), 1);
+  cy.add({ data: { id: 'y' }, position: { x: 2000, y: 0 } });
+  fitGraph(ctx);
+  assert.ok(cy.zoom() < 1);
+  const box = cy.elements().renderedBoundingBox();
+  assert.ok(box.w <= 520 && box.h <= 320);
+  zoomGraph(ctx, 1.25);
+  const zoom = cy.zoom(), pan = cy.pan();
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  resizeAndFitCy(ctx);
+  t.mock.timers.tick(150);
+  assert.equal(cy.zoom(), zoom);
+  assert.deepEqual(cy.pan(), pan);
+});
 
 // Regression for #176: the graph-view compactor collapsed a reification
 // bubble whose anchor was ITSELF a member of an outer collapsed bubble.

@@ -34,6 +34,10 @@
   let titleEl:      any = null;
   let viewer:       any = null;
   let manifest:     any = null;
+  let layout:       any = null;
+  let fileFilter: HTMLInputElement | null = null;
+  // Edited files keep their source and baseline across route changes.
+  const drafts = new Map<string, { source: string; baseline: string | null }>();
 
   // Unified source surface: one CodeMirror instance, eagerly mounted
   // at boot, toggled between view-only (readOnly + non-editable) and
@@ -48,25 +52,9 @@
   // legal only while the user is in edit mode).
   let editEnabled = false;
 
-  // The source string currently rendered in the source pane. Used by
-  // showSourceIfChanged to skip the full innerHTML rewrite (and the
-  // CSS / repaint flash that comes with it) when the user is only
-  // navigating between bindings inside the same file.
+  // Fallback for hosts without an editor and the active draft's saved baseline.
   let lastRenderedSource: string | null = null;
-
-  // The source text as it was last persisted (loaded or saved). The
-  // dirty marker on the source-pane header reads
-  //   dirty = (sourceEditor.getSource() !== lastSavedSource)
-  // and the save button flips between active and idle on the same
-  // signal. Updated by showSource (which loads a file) and by
-  // handleSave (which writes it back). Stays null until the first
-  // file loads so the dirty marker doesn't briefly flash on boot
-  // while the empty initial buffer compares unequal to nothing.
   let lastSavedSource: string | null = null;
-  // The model path whose source `lastSavedSource` belongs to. Reset
-  // alongside lastSavedSource on every showSource so navigation
-  // between files re-anchors the dirty check correctly.
-  let lastSavedModel: string | null = null;
 
   // The currently loaded model path, so we can short-circuit when a
   // navigation event only changes the focus target. Critical in
@@ -78,14 +66,8 @@
   // target-only change or a return to the fallback source.
   let navigationSeq = 0;
 
-  /** Push text into the source editor. The editor's own
-   *  highlight plugin walks the engine's tokenizer + binding table
-   *  on every doc change and applies decorations — so we don't need
-   *  to pre-classify here. setSource is silent (suppresses onChange)
-   *  so callers don't have to worry about a redundant viewer
-   *  re-render. Also resets the dirty-tracking baseline — loading a
-   *  fresh file is by definition not dirty. */
-  function showSource(text: any, label?: any) {
+  /** Set source silently, restoring a retained draft's baseline when supplied. */
+  function showSource(text: any, label?: any, baseline: string | null = text) {
     if (sourceHeader) sourceHeader.textContent = label || 'Source';
     if (!sourceEditor) return;
     // Pick the editor language pack from the active model's path so a
@@ -102,35 +84,17 @@
     }
     sourceEditor.setSource(text);
     lastRenderedSource = text;
-    const cur = window.FlatPPLWebRouter
-      ? window.FlatPPLWebRouter.parseHash() : { model: null };
-    lastSavedSource = text;
-    lastSavedModel  = cur.model;
+    lastSavedSource = baseline;
     updateDirtyMarker();
   }
 
-  /** True when the path has work that would be lost on reload:
-   *
-   *  - It's the currently-loaded model AND the editor buffer
-   *    differs from `lastSavedSource` (we're in edit mode and
-   *    the user has typed something since the last persist).
-   *  - It's any path in the ephemeral store — those are session-
-   *    only buffers (cleared on reload), so they always count as
-   *    "would lose work".
-   *
-   *  Used by the sidebar's per-entry save-icon marker AND by the
-   *  beforeunload tab-close warning so the two stay in sync. */
+  /** Drafts and failed saves remain dirty even while another file is open. */
   function isPathDirty(path: string): boolean {
     if (!path) return false;
     const eph = window.FlatPPLWebEphemeral;
     if (eph && eph.has && eph.has(path)) return true;
-    if (!sourceEditor) return false;
-    if (!editEnabled) return false;
-    const cur = window.FlatPPLWebRouter
-      ? window.FlatPPLWebRouter.parseHash() : { model: null };
-    if (cur.model !== path) return false;
-    if (lastSavedModel !== path) return false;
-    return sourceEditor.getSource() !== lastSavedSource;
+    const store = window.FlatPPLWebUserStore;
+    return drafts.has(path) || !!(store && store.has(path) && !store.isPersisted(path));
   }
 
   /** True iff anything in the gallery currently holds unsaved
@@ -140,12 +104,8 @@
   function hasUnsavedWork(): boolean {
     const eph = window.FlatPPLWebEphemeral;
     if (eph && eph.list && eph.list().some((entry: { text: string }) => entry.text.length > 0)) return true;
-    if (!sourceEditor || !editEnabled) return false;
-    const cur = window.FlatPPLWebRouter
-      ? window.FlatPPLWebRouter.parseHash() : { model: null };
-    if (!cur.model) return false;
-    if (lastSavedModel !== cur.model) return false;
-    return sourceEditor.getSource() !== lastSavedSource;
+    const store = window.FlatPPLWebUserStore;
+    return drafts.size > 0 || !!(store && store.hasUnpersisted());
   }
 
   /** Refresh visibility of the source-pane header buttons that
@@ -189,7 +149,7 @@
 
   function onDownloadClick() {
     const cur = window.FlatPPLWebRouter.parseHash();
-    if (cur && cur.model) downloadFile(cur.model);
+    if (cur && cur.model) return downloadFile(cur.model);
   }
 
   function onDeleteClick() {
@@ -224,6 +184,8 @@
       showToast('Rename failed.');
       return;
     }
+    const draft = drafts.get(oldPath);
+    if (draft) { drafts.set(newPath, draft); drafts.delete(oldPath); }
     const cur = window.FlatPPLWebRouter.parseHash();
     if (cur && cur.model === oldPath) {
       window.FlatPPLWebRouter.navigateTo({ model: newPath, target: cur.target || null });
@@ -250,6 +212,7 @@
     prefix.textContent = userStore.USER_PREFIX;       // "user/" shown static
     const input = document.createElement('input');
     input.type = 'text';
+    input.setAttribute('aria-label', 'File name');
     input.className = 'rename-input';
     input.value = base;
     input.spellcheck = false;
@@ -330,8 +293,8 @@
    *  `path` is the active file (edits included), null otherwise. */
   function editorBufferFor(path: string): string | null {
     const cur = window.FlatPPLWebRouter.parseHash();
-    if (sourceEditor && cur && cur.model === path) return sourceEditor.getSource();
-    return null;
+    if (sourceEditor && cur && cur.model === path && lastModel === path) return sourceEditor.getSource();
+    return drafts.get(path)?.source ?? null;
   }
 
   async function exportMathDocument(srcPath: string, format: string) {
@@ -398,14 +361,14 @@
     const from = type === 'pyhf' ? 'pyhf' : (type === 'hs3' ? 'hs3' : null);
     if (!from || !userStore) return;
     try {
-      const bundle = await window.FlatPPLWebResolver.resolveBundle(srcPath);
+      const bundle = await window.FlatPPLWebResolver.resolveBundle(srcPath, editorBufferFor(srcPath));
       const input = bundle && bundle.primarySource;
       if (typeof input !== 'string') { showToast('Could not read ' + srcPath + '.'); return; }
       const convert = await loadWasmConvert();
       const out = convert(input, from, 'flatppl');   // throws on importer error
       const dest = userStore.pathForUpload(convertedFlatpplName(srcPath));
-      userStore.save(dest, out, { parent: null });
-      showToast('Converted → ' + dest + '.');
+      const persisted = userStore.save(dest, out, { parent: null });
+      showToast('Converted → ' + dest + (persisted ? '.' : '. Save failed — draft kept in this tab.'));
       window.FlatPPLWebRouter.navigateTo({ model: dest });
     } catch (e: any) {
       console.error('[@flatppl/web] convert failed:', e);
@@ -413,66 +376,30 @@
     }
   }
 
-  /** Click handler for the inline save (💾) icon next to a dirty
-   *  entry in the file tree. For the currently-loaded model this is
-   *  just `handleSave`. For an ephemeral entry that ISN'T currently
-   *  loaded we promote it directly without changing the active
-   *  view — picks the same `user/<basename>` target the regular
-   *  promote path would, drops the ephemeral entry, and lets the
-   *  user keep working where they are. */
   function onEntrySaveClick(path: string) {
-    const cur = window.FlatPPLWebRouter.parseHash();
-    if (cur && cur.model === path) {
-      handleSave();
-      return;
-    }
-    // Non-active path. Only ephemerals reach here in practice —
-    // a user-store or read-only entry can only be "dirty" when
-    // it's the active model.
-    const eph = window.FlatPPLWebEphemeral;
-    const userStore = window.FlatPPLWebUserStore;
-    if (eph && userStore && eph.has && eph.has(path)) {
-      const text = eph.get(path) || '';
-      const target = userStore.pathForUpload(basenameOf(path));
-      userStore.save(target, text, { parent: null });
-      eph.remove(path);
-    }
+    const text = editorBufferFor(path)
+      ?? window.FlatPPLWebEphemeral?.get(path)
+      ?? window.FlatPPLWebUserStore?.getSource(path);
+    if (text != null) saveFile(path, text);
   }
 
-  /** Click handler for the inline revert (↺) icon. Mirrors the
-   *  destructive actions in the context menu but does NOT prompt
-   *  for confirmation — the icon is right there, deliberate, and
-   *  the user can re-edit by typing again. */
   function onEntryRevertClick(path: string) {
+    if (!window.confirm('Discard unsaved changes to "' + basenameOf(path) + '"?')) return;
     const cur = window.FlatPPLWebRouter.parseHash();
     const eph = window.FlatPPLWebEphemeral;
-    if (eph && eph.has && eph.has(path)) {
-      eph.remove(path);
-      if (cur && cur.model === path) {
-        const fallback = manifest && manifest.entries && manifest.entries[0]
-          ? manifest.entries[0].path : null;
-        if (fallback) window.FlatPPLWebRouter.navigateTo({ model: fallback });
-      }
-      return;
+    const store = window.FlatPPLWebUserStore;
+    drafts.delete(path);
+    if (eph?.has(path)) eph.remove(path);
+    else if (store?.has(path)) store.revert(path);
+    renderTree(cur.model);
+    if (cur.model !== path) return;
+    lastModel = null;
+    if (path.startsWith('new/') || (path.startsWith('user/') && !store?.has(path))) {
+      const fallback = manifest?.entries?.[0]?.path || null;
+      window.FlatPPLWebRouter.navigateTo({ model: fallback });
+    } else {
+      applyState(cur);
     }
-    // Non-ephemeral revert: discard the editor buffer and reload
-    // the persisted source. Only meaningful for the currently-
-    // loaded model with a dirty buffer.
-    if (!cur || cur.model !== path || !sourceEditor) return;
-    (async function () {
-      try {
-        const bundle = await window.FlatPPLWebResolver.resolveBundle(path);
-        if (bundle && typeof bundle.primarySource === 'string') {
-          showSource(bundle.primarySource, path);
-          // Refresh the viewer from the restored source (+ pre-resolved
-          // load_module deps, spec §04).
-          if (viewer) viewer.update(bundle.primarySource, cur.target || null,
-            { bundleSources: bundle.sources, path: path });
-        }
-      } catch (e: any) {
-        console.error('[@flatppl/web] revert failed:', e);
-      }
-    })();
   }
 
   // Was the current model dirty on the previous keystroke? Used to
@@ -482,24 +409,31 @@
   // already-dirty buffer further.
   let _wasDirty = false;
 
-  /** Update the source-pane header's "* " dirty prefix and the
-   *  save button's visual state to reflect the buffer's
-   *  agreement (or not) with the last persisted source. Cheap to
-   *  call on every keystroke. Also fires a sidebar re-render on
-   *  the transition from clean→dirty or dirty→clean so the inline
-   *  save/revert icons appear/disappear in step. */
+  /** Keep save state visible even after leaving edit mode or changing files. */
   function updateDirtyMarker() {
-    if (!sourceHeader) return;
-    const cur = window.FlatPPLWebRouter
-      ? window.FlatPPLWebRouter.parseHash() : { model: null };
-    const text = sourceEditor ? sourceEditor.getSource() : '';
-    const dirty = !!editEnabled
-      && lastSavedModel === cur.model
-      && text !== lastSavedSource;
-    const baseLabel = (sourceHeader.textContent || '').replace(/^\* /, '');
-    sourceHeader.textContent = (dirty ? '* ' : '') + baseLabel;
+    const cur = window.FlatPPLWebRouter.parseHash();
+    const store = window.FlatPPLWebUserStore;
+    const dirty = isPathDirty(cur.model);
+    const failed = !!(cur.model && store?.has(cur.model) && !store.isPersisted(cur.model));
+    if (sourceHeader) {
+      const label = (sourceHeader.textContent || '').replace(/^\* /, '');
+      sourceHeader.textContent = (dirty ? '* ' : '') + label;
+    }
+    const status = document.getElementById('source-status');
+    if (status) status.textContent = failed ? 'Save failed — kept in this tab'
+      : dirty ? 'Unsaved draft' : store?.has(cur.model) ? 'Saved in this browser' : 'Example';
+    const error = document.getElementById('save-error');
+    if (error) error.hidden = !failed;
+    const message = document.getElementById('save-error-message');
+    if (message && failed) message.textContent = 'Browser storage is full or unavailable. Download your draft or retry saving before closing this tab.';
     const saveBtn = document.getElementById('save-btn');
-    if (saveBtn) saveBtn.setAttribute('aria-pressed', dirty ? 'true' : 'false');
+    if (saveBtn) saveBtn.setAttribute('data-dirty', String(dirty));
+    const welcome = document.getElementById('welcome-actions');
+    if (welcome) {
+      welcome.hidden = !sourceEditor || sourceEditor.getSource().trim().length > 0;
+      const surface = document.getElementById('surface-root');
+      if (surface) surface.hidden = !welcome.hidden;
+    }
     if (dirty !== _wasDirty) {
       _wasDirty = dirty;
       renderTree(cur.model);
@@ -559,7 +493,7 @@
     const toggleBtn = document.getElementById('edit-toggle');
     const saveBtn   = document.getElementById('save-btn');
     editEnabled = !!on;
-    sourceEditor.setReadOnly(!editEnabled);
+    sourceEditor.setReadOnly(!editEnabled || !lastModel);
     if (toggleBtn) toggleBtn.setAttribute('aria-pressed', editEnabled ? 'true' : 'false');
     // Save action only makes sense in edit mode. The Ctrl/Cmd-S
     // keymap binding stays installed at all times (it's a single
@@ -591,13 +525,7 @@
     }
   }
 
-  /** Prompt the user for a `user/`-prefixed target path for a
-   *  read-only fork. Returns the validated path or null when the
-   *  user cancelled. Allows either `user/<name>.flatppl` or a
-   *  bare `<name>.flatppl` (prepended with `user/` automatically);
-   *  rejects names that don't end in `.flatppl`. If the chosen
-   *  name already exists in the store, asks for overwrite
-   *  confirmation before returning. */
+  /** Name a saved copy, preserving its type and confirming an overwrite. */
   function promptForUserPath(origPath: string): string | null {
     const userStore = window.FlatPPLWebUserStore;
     if (!userStore) return null;
@@ -605,15 +533,16 @@
     const raw = window.prompt(
       'Save your edits as (the original "' + origPath
       + '" stays unchanged):',
-      suggested);
+      basenameOf(suggested));
     if (raw == null) return null;
     let typed = raw.trim();
     if (!typed) return null;
     if (typed.indexOf(userStore.USER_PREFIX) !== 0) {
       typed = userStore.USER_PREFIX + typed;
     }
-    if (!/\.flatppl$/.test(typed)) {
-      window.alert('File name must end with .flatppl');
+    const S = window.FlatPPLWebSurfaces;
+    if (S && S.typeForPath(typed) !== S.typeForPath(origPath)) {
+      window.alert('Keep the same file extension when saving a copy.');
       return null;
     }
     if (userStore.has(typed)) {
@@ -624,83 +553,48 @@
     return typed;
   }
 
-  /** Save-on-action. Called by the save button and the Ctrl/Cmd-S
-   *  keymap binding. Behaviour depends on the current model path:
-   *
-   *  - `user/...`  — already a user file. Persist via
-   *    `FlatPPLWebUserStore.updateSource`.
-   *  - `new/...`   — ephemeral session-only buffer. Promote into
-   *    the user store under `user/<basename>` (with collision
-   *    bumping), drop the ephemeral entry, and re-route the URL
-   *    hash so the gallery follows the new path.
-   *  - read-only  — prompt the user for a `user/`-prefixed
-   *    filename (default `user/<stem>-modified.flatppl`, with
-   *    `-modified2` / `-modified3` / ... bumping if the default
-   *    is taken). The user can edit the suggestion; an existing
-   *    name triggers an overwrite confirm. The saved file has
-   *    NO linkage back to the original — it's an ordinary user
-   *    file from there on. Then re-route the URL hash to it.
-   *
-   *  In every case `lastSavedSource` is bumped so the dirty marker
-   *  clears, and the sidebar redraws via the user-store's own
-   *  change emitter. */
-  function handleSave() {
-    if (!sourceEditor || !editEnabled) return;
-    const userStore = window.FlatPPLWebUserStore;
-    if (!userStore) return;
+  /** Save explicitly. Failed writes remain in the store's in-memory fallback. */
+  function saveFile(path: string, text: string) {
+    const store = window.FlatPPLWebUserStore;
+    if (!store || !(window.__FLATPPL_CONFIG__ || {}).allowEdit) return;
     const cur = window.FlatPPLWebRouter.parseHash();
-    if (!cur.model) return;
-    const text = sourceEditor.getSource();
-
-    let target = cur.model;
-
-    if (cur.model.indexOf(userStore.USER_PREFIX) === 0) {
-      // Already a user file. Quiet update — modifiedAt bumps,
-      // parent preserved by updateSource.
-      userStore.updateSource(cur.model, text);
-    } else if (cur.model.indexOf('new/') === 0) {
-      // Ephemeral → user/. Promote, then drop the ephemeral
-      // entry so the "Unsaved" section empties.
-      target = userStore.pathForUpload(basenameOf(cur.model));
-      userStore.save(target, text, { parent: null });
-      if (window.FlatPPLWebEphemeral) {
-        window.FlatPPLWebEphemeral.remove(cur.model);
+    const fromTree = fileTree?.contains(document.activeElement);
+    let target = path;
+    if (path.startsWith('new/')) target = store.pathForUpload(basenameOf(path));
+    else if (!path.startsWith(store.USER_PREFIX)) {
+      const chosen = promptForUserPath(path);
+      if (chosen == null) return;
+      target = chosen;
+    }
+    const persisted = store.has(target)
+      ? store.updateSource(target, text) : store.save(target, text, { parent: null });
+    drafts.delete(path);
+    drafts.delete(target);
+    if (window.FlatPPLWebEphemeral?.has(path)) window.FlatPPLWebEphemeral.remove(path);
+    if (cur.model === path) {
+      if (target !== path) window.FlatPPLWebRouter.navigateTo({ model: target, target: cur.target });
+      else {
+        lastSavedSource = text;
+        updateDirtyMarker();
       }
-    } else {
-      // Read-only (examples/ or test-cases/). Forks become
-      // independent files — no metadata linkage back to the
-      // original — so the user picks a name explicitly and the
-      // sidebar later treats the fork like any other user file.
-      // The default suggestion follows the user's stated
-      // convention: `user/<stem>-modified.flatppl`, with the
-      // suffix bumped (-modified2, -modified3, ...) until free.
-      // The user can edit the suggestion; existing names trigger
-      // an overwrite confirm rather than silent collision.
-      const typed = promptForUserPath(cur.model);
-      if (typed == null) return;
-      target = typed;
-      userStore.save(target, text, { parent: null });
+    } else if (cur.model === target) {
+      lastModel = null;
+      applyState(cur);
     }
-
-    lastSavedSource = text;
-    lastSavedModel  = target;
-    updateDirtyMarker();
-
-    if (target !== cur.model) {
-      window.FlatPPLWebRouter.navigateTo({ model: target, target: cur.target });
+    renderTree(cur.model === path ? target : cur.model);
+    revealFile(target);
+    if (fromTree) {
+      const link = Array.from(fileTree.querySelectorAll('.file-list-link'))
+        .find((el: any) => el.dataset.path === target) as HTMLElement | undefined;
+      link?.focus({ preventScroll: true });
     }
+    if (!persisted && cur.model !== path) showToast('Save failed for ' + basenameOf(target) + '. Draft kept in this tab.');
   }
 
-  /** Cheap variant of showSource: skip the full re-highlight when the
-      content didn't change. Lets binding-click navigation (which only
-      changes the focused target, not the source) avoid an innerHTML
-      rewrite and the brief flicker that would come with it. */
-  function showSourceIfChanged(text: any, label?: any) {
-    if (text === lastRenderedSource) {
-      if (sourceHeader) sourceHeader.textContent = label || 'Source';
-      return;
-    }
-    showSource(text, label);
+  function handleSave() {
+    const cur = window.FlatPPLWebRouter.parseHash();
+    if (!sourceEditor || !cur.model || lastModel !== cur.model) return;
+    saveFile(cur.model, sourceEditor.getSource());
   }
 
   function showError(label: any, err: any) {
@@ -736,165 +630,121 @@
     return i < 0 ? path : path.slice(i + 1);
   }
 
-  /** Append the inline save (💾) + revert (↺) action icons to a
-   *  file-tree entry. Right-floated so they sit at the row's
-   *  trailing edge regardless of filename length, with
-   *  pointer-events restricted so clicking the icons doesn't also
-   *  trigger the row's navigation click. */
-  function attachEntryActions(li: HTMLElement, path: string) {
-    const revert = document.createElement('span');
-    revert.className = 'file-list-action file-list-action-revert';
-    revert.setAttribute('aria-hidden', 'true');
-    revert.textContent = '↺';   // ↺ anticlockwise open circle arrow
-    revert.title = 'Revert (discard changes / delete ephemeral)';
-    revert.addEventListener('click', function (ev: any) {
-      ev.stopPropagation();
-      onEntryRevertClick(path);
-    });
-    const save = document.createElement('span');
-    save.className = 'file-list-action file-list-action-save';
-    save.setAttribute('aria-hidden', 'true');
-    save.textContent = '💾';   // 💾 floppy disk
-    save.title = 'Save';
-    save.addEventListener('click', function (ev: any) {
-      ev.stopPropagation();
-      onEntrySaveClick(path);
-    });
-    // Float order: rightmost span = first floated, so save floats
-    // first (right edge), then revert (left of save).
-    li.appendChild(save);
-    li.appendChild(revert);
-    li.classList.add('file-list-item--dirty');
+  function matchesFilter(entry: any): boolean {
+    const query = (fileFilter?.value || '').trim().toLowerCase();
+    return !query || [entry.path, entry.title, entry.description]
+      .join(' ').toLowerCase().includes(query);
   }
 
-  /** Render the file pane as three top-level folders
-   *  (examples / test-cases / user) plus an optional "Unsaved"
-   *  section above them for ephemeral session-only buffers.
-   *  Folders are collapsible; open/closed state persists in
-   *  localStorage. A read-only file with a user fork shows a small
-   *  modified-dot indicator and clicking it routes to the fork
-   *  (the original is still reachable via "Reset to original"
-   *  on the fork). */
+  function fileRow(entry: any, currentModel: string, kind: string): HTMLElement {
+    const li = document.createElement('li');
+    li.className = 'file-list-item fp-nav-item';
+    li.dataset.path = entry.path;
+    if (kind === 'new') li.classList.add('file-list-item--ephemeral');
+    if (entry.path === currentModel) li.classList.add('selected', 'is-active');
+    const link = document.createElement('a');
+    link.className = 'file-list-link';
+    link.href = '#model=' + encodeURIComponent(entry.path);
+    link.dataset.path = entry.path;
+    link.dataset.action = 'open';
+    link.title = entry.path;
+    if (entry.path === currentModel) link.setAttribute('aria-current', 'page');
+    const label = document.createElement('span');
+    label.textContent = entry.title || basenameOf(entry.path);
+    link.appendChild(label);
+    if (entry.description) {
+      const description = document.createElement('small');
+      description.className = 'file-list-description';
+      description.textContent = entry.description;
+      link.appendChild(description);
+    }
+    link.addEventListener('click', onTreeClick);
+    link.addEventListener('contextmenu', function (ev: MouseEvent) {
+      ev.preventDefault();
+      showTreeContextMenu(ev, { path: entry.path, isUser: kind === 'user', isEphemeral: kind === 'new' });
+    });
+    li.appendChild(link);
+    if (isPathDirty(entry.path)) {
+      li.classList.add('file-list-item--dirty');
+      for (const [action, symbol, handler] of [
+        ['save', '💾', onEntrySaveClick], ['discard', '↺', onEntryRevertClick],
+      ] as const) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'file-list-action file-list-action-' + (action === 'discard' ? 'revert' : action);
+        button.dataset.path = entry.path;
+        button.dataset.action = action;
+        button.textContent = symbol;
+        button.setAttribute('aria-label', (action === 'save' ? 'Save ' : 'Discard changes to ') + basenameOf(entry.path));
+        button.title = button.getAttribute('aria-label')!;
+        button.addEventListener('click', function () { handler(entry.path); });
+        li.appendChild(button);
+      }
+    }
+    return li;
+  }
+
+  /** Redraw without losing the current file-list focus or scroll position. */
   function renderTree(currentModel: any) {
     if (!fileTree) return;
+    const active = document.activeElement as HTMLElement | null;
+    const focus = active && fileTree.contains(active) ? { ...active.dataset } : null;
+    const focusedFolder = active?.closest('.file-folder')?.getAttribute('data-key');
+    const scrollTop = fileTree.scrollTop;
     fileTree.innerHTML = '';
-
-    const eph = window.FlatPPLWebEphemeral;
-    const ephEntries = (eph && eph.list) ? eph.list() : [];
-    const userStore = window.FlatPPLWebUserStore;
-    const userEntries = (userStore && userStore.list) ? userStore.list() : [];
-
-    // Bucket manifest entries into left-pane folders. The path→bucket
-    // decision lives in the shared file-types module (single source of
-    // truth with build.mjs); see window.FlatPPLFileTypes.bucketKeyForPath.
-    const FT = window.FlatPPLFileTypes;
+    const ephEntries = window.FlatPPLWebEphemeral?.list() || [];
+    const userEntries = window.FlatPPLWebUserStore?.list() || [];
     const buckets: Record<string, any[]> = { examples: [], 'test-cases': [] };
-    if (manifest && manifest.entries) {
-      for (let i = 0; i < manifest.entries.length; i++) {
-        const e = manifest.entries[i];
-        if (typeof e.path !== 'string') continue;
-        const key = FT ? FT.bucketKeyForPath(e.path) : 'examples';
-        (buckets[key] || buckets.examples).push(e);
-      }
+    for (const entry of manifest?.entries || []) {
+      if (typeof entry.path !== 'string') continue;
+      const key = window.FlatPPLFileTypes?.bucketKeyForPath(entry.path) || 'examples';
+      (buckets[key] || buckets.examples).push(entry);
     }
-
-    // The deploy can hide the "Test cases" folder (demo/ + test-cases/)
-    // via the build-time hideTestExamples flag — set in CI (pages.yml),
-    // unset in local dev so the feature tests stay one click away. The
-    // flag is baked into build-flags.js (no runtime probe).
-    const hideTestExamples = !!((window.__FLATPPL_CONFIG__ || {}).hideTestExamples);
-
-    // Unsaved (ephemeral) section above the folders.
-    if (ephEntries.length > 0) {
-      const ephHeader = document.createElement('div');
-      ephHeader.className = 'file-list-header';
-      ephHeader.textContent = 'Unsaved';
-      fileTree.appendChild(ephHeader);
-      const ephUl = document.createElement('ul');
-      ephUl.className = 'file-list';
-      for (let i = 0; i < ephEntries.length; i++) {
-        const ent = ephEntries[i];
-        const li = document.createElement('li');
-        li.className = 'file-list-item fp-nav-item file-list-item--ephemeral';
-        if (ent.path === currentModel) li.classList.add('selected', 'is-active');
-        li.textContent = ent.path.replace(/^new\//, '');
-        li.title = ent.path + ' (session-only)';
-        li.dataset.path = ent.path;
-        li.addEventListener('click', onTreeClick);
-        li.addEventListener('contextmenu', (function (path: string) {
-          return function (ev: any) {
-            ev.preventDefault();
-            showTreeContextMenu(ev, {
-              path: path, targetPath: path,
-              isEphemeral: true,
-            });
-          };
-        })(ent.path));
-        // Every ephemeral is by definition "unsaved" (session-only;
-        // lost on reload), so the save + revert action icons live
-        // on every ephemeral row.
-        attachEntryActions(li, ent.path);
-        ephUl.appendChild(li);
-      }
-      fileTree.appendChild(ephUl);
+    if (ephEntries.length) renderFolder('new', 'Unsaved', ephEntries, currentModel);
+    renderFolder('examples', 'Examples', buckets.examples, currentModel);
+    if (!(window.__FLATPPL_CONFIG__ || {}).hideTestExamples) {
+      renderFolder('test-cases', 'Test cases', buckets['test-cases'], currentModel);
     }
-
-    // Open/closed defaults are resolved inside renderFolder (persisted
-    // preference, else FlatPPLFileTypes.defaultFolderOpen) so the call
-    // sites and the header-click handler share one source.
-    renderFolder('examples',   'Examples',   buckets.examples,
-      currentModel, /* italic */ false);
-    if (!hideTestExamples) {
-      renderFolder('test-cases', 'Test cases', buckets['test-cases'],
-        currentModel, /* italic */ false);
+    renderFolder('user', 'Saved in this browser', userEntries, currentModel);
+    if (fileFilter?.value ? !fileTree.querySelector('.file-list-link')
+      : !ephEntries.length && !userEntries.length && !manifest?.entries?.length) {
+      const empty = document.createElement('p');
+      empty.className = 'pane-placeholder';
+      empty.textContent = fileFilter?.value ? 'No models match your search.' : 'Open a file or create a model to begin.';
+      fileTree.appendChild(empty);
     }
-    renderFolder('user',       'User',       userEntries.map(function (u: any) {
-        return { path: u.path, title: basenameOf(u.path) };
-      }),
-      currentModel, /* italic */ false);
-
-    // Empty state — only relevant if literally nothing is in any
-    // folder and there are no ephemeral entries. The folders
-    // themselves render their own per-folder empty labels.
-    if (ephEntries.length === 0
-        && buckets.examples.length === 0
-        && buckets['test-cases'].length === 0
-        && userEntries.length === 0) {
-      const p = document.createElement('div');
-      p.className = 'pane-placeholder';
-      p.textContent = 'No models.json — open a model with #model=path/to/file.flatppl.';
-      fileTree.appendChild(p);
+    if (focus) {
+      const targets = Array.from(fileTree.querySelectorAll('a, button')) as HTMLElement[];
+      const target = targets.find((el) =>
+        focus.folder ? el.dataset.folder === focus.folder
+          : el.dataset.path === focus.path && el.dataset.action === focus.action)
+        || targets.find((el) => el.dataset.path === focus.path && el.dataset.action === 'open')
+        || targets.find((el) => el.dataset.folder === focusedFolder);
+      target?.focus({ preventScroll: true });
     }
+    fileTree.scrollTop = scrollTop;
   }
 
-  /** Render one folder header + entry list. Open/closed state is
-   *  toggled on click and persisted across reloads. Entries are
-   *  rendered as plain navigation targets; user files are
-   *  independent of any read-only origin (saving a fork prompts
-   *  for a fresh `user/...` name rather than tying back to the
-   *  original). */
-  function renderFolder(key: string, label: string, items: any[],
-                        currentModel: any, italic: boolean) {
-    // Resolve open/closed once: persisted preference wins, else the shared
-    // default (FlatPPLFileTypes.defaultFolderOpen). The header-click handler
-    // below recomputes the same default so the two never diverge.
-    const FT = window.FlatPPLFileTypes;
-    function defaultOpen(): boolean {
-      return FT ? FT.defaultFolderOpen(key, items.length) : (key === 'examples');
-    }
-    const open = (function () {
-      const st = readFolderState();
-      return st[key] !== undefined ? !!st[key] : defaultOpen();
-    })();
+  function renderFolder(key: string, label: string, entries: any[], currentModel: string) {
+    const items = entries.filter(matchesFilter);
+    const filtering = !!fileFilter?.value.trim();
+    if (filtering && !items.length) return;
+    const st = readFolderState();
+    const defaultOpen = key === 'new'
+      || (window.FlatPPLFileTypes?.defaultFolderOpen(key, items.length) ?? key === 'examples');
+    const open = filtering || (st[key] ?? defaultOpen);
     const folder = document.createElement('div');
     folder.className = 'file-folder' + (open ? ' file-folder--open' : '');
     folder.dataset.key = key;
-
-    const header = document.createElement('div');
+    const header = document.createElement('button');
+    header.type = 'button';
     header.className = 'file-folder-header fp-nav-item';
+    header.dataset.folder = key;
+    header.setAttribute('aria-expanded', String(open));
+    header.setAttribute('aria-controls', 'folder-' + key);
     const chev = document.createElement('span');
     chev.className = 'file-folder-chev';
-    chev.textContent = open ? '▾' : '▸';  // ▾ / ▸
+    chev.textContent = open ? '▾' : '▸';
     chev.setAttribute('aria-hidden', 'true');
     const name = document.createElement('span');
     name.className = 'file-folder-name';
@@ -902,59 +752,39 @@
     const count = document.createElement('span');
     count.className = 'file-folder-count';
     count.textContent = String(items.length);
-    header.appendChild(chev);
-    header.appendChild(name);
-    header.appendChild(count);
+    header.append(chev, name, count);
     header.addEventListener('click', function () {
       const state = readFolderState();
-      const wasOpen = state[key] !== undefined ? !!state[key] : defaultOpen();
-      state[key] = !wasOpen;
+      state[key] = !open;
       writeFolderState(state as Record<string, boolean>);
-      // Cheapest correct redraw — re-render the whole tree, which
-      // keeps the per-folder open/closed states + selection in sync.
       renderTree(currentModel);
     });
     folder.appendChild(header);
-
+    const list = document.createElement('ul');
+    list.id = 'folder-' + key;
+    list.className = 'file-list';
+    list.hidden = !open;
     if (open) {
-      if (items.length === 0) {
-        const empty = document.createElement('div');
-        empty.className = 'file-folder-empty';
-        empty.textContent = '(empty)';
-        folder.appendChild(empty);
-      } else {
-        const ul = document.createElement('ul');
-        ul.className = 'file-list';
-        for (let i = 0; i < items.length; i++) {
-          const entry = items[i];
-          const li = document.createElement('li');
-          li.className = 'file-list-item fp-nav-item';
-          if (italic) li.classList.add('file-list-item--ephemeral');
-          if (entry.path === currentModel) li.classList.add('selected', 'is-active');
-          li.textContent = entry.title || basenameOf(entry.path);
-          li.title = entry.path;
-          li.dataset.path = entry.path;
-          li.addEventListener('click', onTreeClick);
-          li.addEventListener('contextmenu', (function (path: string) {
-            return function (ev: any) {
-              ev.preventDefault();
-              showTreeContextMenu(ev, {
-                path:   path,
-                isUser: key === 'user',
-              });
-            };
-          })(entry.path));
-          // Surface the save + revert action icons when the row's
-          // path has unsaved work — currently-loaded read-only or
-          // user file with a dirty editor buffer.
-          if (isPathDirty(entry.path)) attachEntryActions(li, entry.path);
-          ul.appendChild(li);
-        }
-        folder.appendChild(ul);
-      }
+      for (const entry of items) list.appendChild(fileRow(entry, currentModel, key));
     }
-
+    folder.appendChild(list);
     fileTree.appendChild(folder);
+  }
+
+  /** Reveal only on navigation/save. Keystrokes leave file-list scroll alone. */
+  function revealFile(path: string) {
+    if (!fileTree || !path) return;
+    const entry = manifest?.entries?.find((entry: any) => entry.path === path) || { path };
+    if (fileFilter?.value && !matchesFilter(entry)) fileFilter.value = '';
+    const key = path.startsWith('new/') ? 'new'
+      : path.startsWith('user/') ? 'user' : (window.FlatPPLFileTypes?.bucketKeyForPath(path) || 'examples');
+    const state = readFolderState();
+    state[key] = true;
+    writeFolderState(state as Record<string, boolean>);
+    renderTree(window.FlatPPLWebRouter.parseHash().model);
+    const link = Array.from(fileTree.querySelectorAll('.file-list-link'))
+      .find((el: any) => el.dataset.path === path) as HTMLElement | undefined;
+    link?.scrollIntoView({ block: 'nearest' });
   }
 
   // -------------------- Tree context menu --------------------
@@ -1180,10 +1010,12 @@
    *  the on-disk read-only original. */
   async function downloadFile(path: string) {
     if (!path) return;
-    let text: string | null = null;
+    let text: string | null = editorBufferFor(path);
     try {
-      const bundle = await window.FlatPPLWebResolver.resolveBundle(path);
-      text = bundle && bundle.primarySource;
+      if (text == null) {
+        const bundle = await window.FlatPPLWebResolver.resolveBundle(path);
+        text = bundle && bundle.primarySource;
+      }
     } catch (e: any) {
       window.alert('Download failed: ' + (e && e.message ? e.message : String(e)));
       return;
@@ -1222,6 +1054,7 @@
     const accepted: string[] = [];
     let skipped = 0;
     let oversized = 0;
+    let unsaved = 0;
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
       if (!f) { skipped += 1; continue; }
@@ -1238,7 +1071,7 @@
         // a real user complains.
         const text = await f.text();
         const path = userStore.pathForUpload(f.name);
-        userStore.save(path, text, { parent: null });
+        if (!userStore.save(path, text, { parent: null })) unsaved += 1;
         accepted.push(path);
       } catch (e: any) {
         console.warn('[@flatppl/web] upload read failed for', f.name, e);
@@ -1249,6 +1082,7 @@
     if (accepted.length > 0) notes.push('Uploaded ' + accepted.length + ' file' + (accepted.length > 1 ? 's' : ''));
     if (skipped > 0)         notes.push('skipped ' + skipped + ' unsupported');
     if (oversized > 0)       notes.push('skipped ' + oversized + ' over 1 MB');
+    if (unsaved > 0)         notes.push(unsaved + ' kept only in this tab because saving failed');
     if (notes.length > 0) showToast(notes.join('; ') + '.');
     if (accepted.length > 0) {
       window.FlatPPLWebRouter.navigateTo({ model: accepted[0] });
@@ -1350,6 +1184,7 @@
   function deleteUserFile(path: string, navigateTo: string | null) {
     const userStore = window.FlatPPLWebUserStore;
     if (!userStore) return;
+    drafts.delete(path);
     userStore.remove(path);
     if (navigateTo) {
       window.FlatPPLWebRouter.navigateTo({ model: navigateTo });
@@ -1372,7 +1207,7 @@
       user can delete it or build from it. The variant comes from
       the file extension; the engine handles the rest. */
   function starterSourceFor(path: any) {
-    return '# ' + path + ' — new ephemeral file (session-only, not saved to disk).\n';
+    return '# ' + basenameOf(path) + '\n';
   }
 
   /** Sanitize a user-supplied filename into a path the rest of the
@@ -1382,7 +1217,7 @@
   function normalizeEphemeralPath(raw: any) {
     let s = String(raw || '').trim();
     if (!s) return null;
-    if (s.indexOf('/') === -1) s = 'new/' + s;
+    if (!s.startsWith('new/')) s = 'new/' + s;
     const FT = window.FlatPPLFileTypes;
     const exts: string[] = (FT && FT.MODEL_EXTENSIONS) || ['.flatppl'];
     const lower = s.toLowerCase();
@@ -1400,7 +1235,7 @@
     if (!eph) return;
     const defaultPath = eph.nextUntitled('.flatppl');
     const raw = window.prompt(
-      'New ephemeral file (session-only). Path:', defaultPath);
+      'New file name. Save keeps it in this browser:', basenameOf(defaultPath));
     if (raw == null) return;
     const path = normalizeEphemeralPath(raw);
     if (!path) return;
@@ -1408,7 +1243,7 @@
     const collidesWithManifest = manifest && manifest.entries
       && manifest.entries.some(function (e: any) { return e.path === path; });
     if (eph.has(path) || collidesWithManifest) {
-      window.alert('Path already exists: ' + path);
+      window.alert('A file with this name already exists: ' + basenameOf(path));
       return;
     }
     eph.add(path, starterSourceFor(path));
@@ -1416,11 +1251,18 @@
       setEditMode(true);
     }
     window.FlatPPLWebRouter.navigateTo({ model: path });
+    layout?.closeFiles();
+    layout?.showPane('source');
   }
 
   function onTreeClick(ev: any) {
+    if (ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+    ev.preventDefault();
     const path = ev.currentTarget.dataset.path;
-    if (path) window.FlatPPLWebRouter.navigateTo({ model: path });
+    if (path) {
+      window.FlatPPLWebRouter.navigateTo({ model: path });
+      layout?.closeFiles();
+    }
   }
 
   async function applyState(state: any) {
@@ -1428,6 +1270,7 @@
     // Repaint tree highlight even before the fetch completes.
     renderTree(state.model);
     updateHeaderButtons();
+    if (state.model !== lastModel) revealFile(state.model);
 
     // Ephemeral files have no on-disk source — they're meaningless
     // outside edit mode. Auto-enable edit mode when navigating to
@@ -1471,7 +1314,7 @@
     }
 
     if (!state.model) {
-      showSourceIfChanged(FALLBACK_SOURCE, 'untitled');
+      showSource(FALLBACK_SOURCE, 'untitled');
       if (viewer) viewer.update(FALLBACK_SOURCE, state.target || null);
       document.title = 'FlatPPL';
       lastModel = null;
@@ -1480,11 +1323,14 @@
     // The loading placeholder is no longer the last model's source. A
     // return to that model must reload it rather than reuse this buffer.
     lastModel = null;
-    showSourceIfChanged('# Loading ' + state.model + ' …', state.model);
+    sourceEditor?.setReadOnly?.(true);
+    showSource('# Loading ' + state.model + ' …', state.model);
     try {
-      const bundle = await window.FlatPPLWebResolver.resolveBundle(state.model);
+      const draft = drafts.get(state.model);
+      const bundle = await window.FlatPPLWebResolver.resolveBundle(state.model, draft?.source);
       if (seq !== navigationSeq) return;
-      showSourceIfChanged(bundle.primarySource, state.model);
+      showSource(bundle.primarySource, state.model, draft ? draft.baseline : bundle.primarySource);
+      sourceEditor?.setReadOnly?.(!editEnabled);
       if (viewer) viewer.update(bundle.primarySource, state.target || null,
         { bundleSources: bundle.sources, path: state.model });
       document.title = 'FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : '');
@@ -1493,6 +1339,7 @@
       if (seq !== navigationSeq) return;
       console.error('[@flatppl/web] resolveBundle failed:', err);
       showError(state.model, err);
+      sourceEditor?.setReadOnly?.(true);
       document.title = 'FlatPPL: ' + state.model + ' (error)';
       // Leave lastModel null so a successful retry triggers the
       // full fetch + source-rewrite path.
@@ -1503,6 +1350,43 @@
     sourceHeader = document.getElementById('source-header');
     fileTree     = document.getElementById('file-tree');
     titleEl      = document.getElementById('app-title');
+    fileFilter   = document.getElementById('file-filter') as HTMLInputElement | null;
+    fileFilter?.addEventListener('input', function () {
+      renderTree(window.FlatPPLWebRouter.parseHash().model);
+    });
+    fileFilter?.addEventListener('keydown', function (ev: KeyboardEvent) {
+      if (ev.key === 'Enter') {
+        ev.preventDefault();
+        fileTree?.querySelector('.file-list-link')?.click();
+      } else if (ev.key === 'Escape' && fileFilter?.value) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        fileFilter.value = '';
+        renderTree(window.FlatPPLWebRouter.parseHash().model);
+      }
+    });
+    document.addEventListener('keydown', function (ev: KeyboardEvent) {
+      if ((ev.metaKey || ev.ctrlKey) && ev.key.toLowerCase() === 'k') {
+        ev.preventDefault();
+        layout?.revealFiles();
+        fileFilter?.focus();
+        fileFilter?.select();
+      }
+    });
+    document.getElementById('retry-save-btn')?.addEventListener('click', handleSave);
+    document.getElementById('save-error-download-btn')?.addEventListener('click', onDownloadClick);
+    document.getElementById('try-model-btn')?.addEventListener('click', function () {
+      window.FlatPPLWebRouter.navigateTo({ model: 'examples/linear-regression.flatppl' });
+    });
+    document.getElementById('browse-examples-btn')?.addEventListener('click', function () {
+      layout?.revealFiles();
+      fileFilter?.focus();
+    });
+    const welcomeUpload = document.getElementById('welcome-upload-btn');
+    if (welcomeUpload) {
+      welcomeUpload.hidden = !(window.__FLATPPL_CONFIG__ || {}).allowEdit;
+      welcomeUpload.addEventListener('click', onUploadClick);
+    }
 
     // Inline rename of the active user/ file: click the header filename, or
     // press F2 anywhere outside a form field. Both no-op for read-only /
@@ -1612,7 +1496,7 @@
     // manager owns #app's grid-template-columns and persists the
     // user's chosen widths + collapse state in localStorage.
     if (window.FlatPPLWebLayout) {
-      window.FlatPPLWebLayout.install({
+      layout = window.FlatPPLWebLayout.install({
         toggleButton: document.getElementById('toggle-files'),
       });
     }
@@ -1631,32 +1515,27 @@
       // Debounced viewer refresh — every keystroke triggering a
       // full DAG rebuild would be wasteful. 250ms collapses bursts
       // into one render after the user pauses typing.
-      const debouncedViewerUpdate = debounce(function (text: any, target: any) {
-        if (viewer) viewer.update(text, target || null);
+      const debouncedViewerUpdate = debounce(function (text: string, target: string, path: string, seq: number) {
+        if (viewer && seq === navigationSeq && path === lastModel) viewer.update(text, target || null);
       }, 250);
       sourceEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
         initialSource: '',
         initialReadOnly: true,
         onChange: function (text: any) {
-          // Persistence requires an explicit save (Ctrl/Cmd-S or
-          // the save button) — no implicit auto-save into the user
-          // store, even for files that already live there. The
-          // dirty marker reflects the buffer-vs-persisted gap.
-          //
-          // The single in-keystroke side-effect we DO keep is the
-          // ephemeral-store update for `new/...` paths: ephemeral
-          // is the in-memory session buffer, not persistent
-          // storage, so keeping it in sync just makes
-          // navigate-away-and-back non-destructive within the
-          // session.
+          // Retain edits in memory. Only an explicit Save writes browser storage.
           if (!editEnabled) return;
           const cur = window.FlatPPLWebRouter.parseHash();
+          if (!cur.model || lastModel !== cur.model) return;
           if (cur.model && cur.model.indexOf('new/') === 0
               && window.FlatPPLWebEphemeral) {
             window.FlatPPLWebEphemeral.update(cur.model, text);
+          } else if (text !== lastSavedSource) {
+            drafts.set(cur.model, { source: text, baseline: lastSavedSource });
+          } else {
+            drafts.delete(cur.model);
           }
           updateDirtyMarker();
-          debouncedViewerUpdate(text, cur.target);
+          debouncedViewerUpdate(text, cur.target, cur.model, navigationSeq);
         },
         onSave: handleSave,
         onNavigate: function (name: any) {
@@ -1738,6 +1617,7 @@
     // needed yet.
     const webHost = {
       revealSourceLine: function (line: any, _name: any, opts: any) {
+        if (!opts?.preserveFocus) layout?.showPane('source');
         if (sourceEditor && typeof sourceEditor.revealLine === 'function') {
           sourceEditor.revealLine(line, { silent: !!(opts && opts.preserveFocus) });
         }
@@ -1885,7 +1765,11 @@
       const scratch = ephBoot.nextUntitled('.flatppl');
       ephBoot.add(scratch, '');
       window.FlatPPLWebRouter.navigateTo({ model: scratch });
+      layout?.showPane('viewer');
     } else {
+      if (initial.model?.startsWith('new/') && ephBoot && !ephBoot.has(initial.model)) {
+        ephBoot.add(initial.model, '');
+      }
       window.FlatPPLWebRouter.emitInitial();
     }
 

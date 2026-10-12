@@ -204,6 +204,75 @@ export function renderDensityStrips(ctx: Ctx, hostEl: any, measure: any, binding
   });
 }
 
+/** Mouse dragging scrolls the corner viewport; touch keeps native scrolling. */
+function installCornerPanning(host: HTMLElement): () => void {
+  let drag: { pointer: number; x: number; y: number; left: number; top: number; moved: boolean } | null = null;
+  let suppressClick = false;
+  const overflows = () => host.scrollWidth > host.clientWidth || host.scrollHeight > host.clientHeight;
+  function updateCursor(ev: PointerEvent) {
+    host.classList.toggle('plot-pannable', ev.pointerType === 'mouse' && overflows());
+  }
+  function onDown(ev: PointerEvent) {
+    updateCursor(ev);
+    suppressClick = false;
+    if (drag || ev.pointerType !== 'mouse' || ev.button !== 0) return;
+    const target = ev.target as Element | null;
+    if (target?.closest('button, input, select, textarea, a, [role="button"], [contenteditable="true"]')) return;
+    if (!overflows()) return;
+    drag = { pointer: ev.pointerId, x: ev.clientX, y: ev.clientY,
+      left: host.scrollLeft, top: host.scrollTop, moved: false };
+  }
+  function onMove(ev: PointerEvent) {
+    if (!drag) updateCursor(ev);
+    if (!drag || ev.pointerId !== drag.pointer) return;
+    const dx = ev.clientX - drag.x, dy = ev.clientY - drag.y;
+    if (!drag.moved) {
+      if (Math.hypot(dx, dy) < 4) return;
+      drag.moved = true;
+      host.setPointerCapture(ev.pointerId);
+      host.classList.add('plot-panning');
+    }
+    ev.preventDefault();
+    host.scrollLeft = Math.max(0, Math.min(host.scrollWidth - host.clientWidth, drag.left - dx));
+    host.scrollTop = Math.max(0, Math.min(host.scrollHeight - host.clientHeight, drag.top - dy));
+  }
+  function stop(ev?: PointerEvent) {
+    if (!drag || (ev && ev.pointerId !== drag.pointer)) return;
+    const pointer = drag.pointer;
+    suppressClick = ev?.type === 'pointerup' && drag.moved;
+    drag = null;
+    host.classList.remove('plot-panning');
+    if (host.hasPointerCapture(pointer)) host.releasePointerCapture(pointer);
+  }
+  function onLeave(ev: PointerEvent) { if (drag && !drag.moved) stop(ev); }
+  function onClick(ev: MouseEvent) {
+    if (!suppressClick) return;
+    suppressClick = false;
+    ev.preventDefault();
+    ev.stopPropagation();
+  }
+  host.addEventListener('pointerover', updateCursor);
+  host.addEventListener('pointerdown', onDown);
+  host.addEventListener('pointermove', onMove);
+  host.addEventListener('pointerup', stop);
+  host.addEventListener('pointercancel', stop);
+  host.addEventListener('lostpointercapture', stop);
+  host.addEventListener('pointerleave', onLeave);
+  host.addEventListener('click', onClick, true);
+  return () => {
+    stop();
+    host.classList.remove('plot-pannable');
+    host.removeEventListener('pointerover', updateCursor);
+    host.removeEventListener('pointerdown', onDown);
+    host.removeEventListener('pointermove', onMove);
+    host.removeEventListener('pointerup', stop);
+    host.removeEventListener('pointercancel', stop);
+    host.removeEventListener('lostpointercapture', stop);
+    host.removeEventListener('pointerleave', onLeave);
+    host.removeEventListener('click', onClick, true);
+  };
+}
+
 /**
  * Build the corner-plot grid (diagonal marginals + below-diagonal
  * scatters) for the currently-selected axes. ctx.host is the parent
@@ -211,6 +280,8 @@ export function renderDensityStrips(ctx: Ctx, hostEl: any, measure: any, binding
  * with a fixed height so the inner grid expands correctly.
  */
 export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingName: any, axesArg?: ReturnType<typeof listScalarAxes>) {
+  ctx.stopPlotPanning?.();
+  ctx.stopPlotPanning = undefined;
   hostEl.innerHTML = '';
   const axes = (axesArg || listScalarAxes(measure))
     .filter(function(a: any) { return ctx.recordSelection!.selected.indexOf(a.key) >= 0; });
@@ -232,23 +303,26 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
 
   // Grid layout with two extra tracks: a leftmost column for
   // vertical y-axis labels (one per plot row), and a bottom row
-  // for horizontal x-axis labels (one per plot column). The y
-  // labels' track is auto-sized to the label width; the x
-  // labels' track to the label height.
+  // for horizontal x-axis labels (one per plot column). The
+  // label tracks are bounded so long names cannot enlarge the grid.
   //
-  //   col:    [auto] [1fr] [1fr] ... [1fr]       n+1 columns
+  //   col:    [label] [1fr] [1fr] ... [1fr]      n+1 columns
   //   row:    [1fr]                              n rows of plots
   //           [1fr]
   //           ...
-  //           [auto]                             1 row of x labels
+  //           [label]                            1 row of x labels
   hostEl.style.display = 'grid';
-  hostEl.style.gridTemplateColumns = 'auto repeat(' + n + ', 1fr)';
-  hostEl.style.gridTemplateRows    = 'repeat(' + n + ', 1fr) auto';
-  hostEl.style.gap = '6px';
+  // All selected dimensions fit the pane. Keep the total gap budget bounded
+  // as the axis count grows, including in short or narrow mobile panes.
+  hostEl.style.gridTemplateColumns = 'min(14px, 4%) repeat(' + n + ', minmax(0, 1fr))';
+  hostEl.style.gridTemplateRows    = 'repeat(' + n + ', minmax(0, 1fr)) min(16px, 8%)';
+  hostEl.style.gap = 'min(3px, ' + (4 / n) + '%)';
   hostEl.style.minHeight = '0';
+  hostEl.style.overflow = 'auto';
+  ctx.stopPlotPanning = installCornerPanning(hostEl);
 
   // ---- y-axis labels (left column, vertical) -----------------
-  // Each label sits in column 1 (the auto-sized leftmost
+  // Each label sits in column 1 (the bounded leftmost
   // track) at row r+1, naming the variable on the y-axis of
   // every cell in that row. Rotated 90deg counterclockwise so
   // it reads bottom-up.
@@ -259,6 +333,7 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
     // back to the plain label; an ordinary record-field path (e.g.
     // "mu.sigma") never matches a binding and stays plain text.
     if (!renderDocTitle(ctx, ylab, axes[yi].label)) ylab.textContent = axes[yi].label;
+    ylab.title = axes[yi].label;
     ylab.style.gridColumn = '1 / span 1';
     ylab.style.gridRow = (yi + 1) + ' / span 1';
     ylab.style.writingMode = 'vertical-rl';
@@ -267,27 +342,38 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
     ylab.style.alignItems = 'center';
     ylab.style.justifyContent = 'center';
     ylab.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
-    ylab.style.fontSize = '0.92em';
+    ylab.style.fontSize = '10px';
+    ylab.style.lineHeight = '1';
     ylab.style.opacity = '0.85';
-    ylab.style.padding = '0 0.3em';
+    ylab.style.minHeight = '0';
+    ylab.style.minWidth = '0';
+    ylab.style.overflow = 'hidden';
+    ylab.style.whiteSpace = 'nowrap';
+    ylab.style.textOverflow = 'ellipsis';
     hostEl.appendChild(ylab);
   }
 
   // ---- x-axis labels (bottom row, horizontal) ----------------
-  // Each label sits in row n+1 (the auto-sized bottom track)
+  // Each label sits in row n+1 (the bounded bottom track)
   // at column c+2 (skipping the leftmost y-label track),
   // naming the variable on the x-axis of every cell in that
   // column.
   for (let xi = 0; xi < n; xi++) {
     const xlab = document.createElement('div');
     if (!renderDocTitle(ctx, xlab, axes[xi].label)) xlab.textContent = axes[xi].label;
+    xlab.title = axes[xi].label;
     xlab.style.gridColumn = (xi + 2) + ' / span 1';
     xlab.style.gridRow = (n + 1) + ' / span 1';
     xlab.style.textAlign = 'center';
     xlab.style.fontFamily = 'var(--vscode-editor-font-family, monospace)';
-    xlab.style.fontSize = '0.92em';
+    xlab.style.fontSize = '10px';
+    xlab.style.lineHeight = '1';
     xlab.style.opacity = '0.85';
-    xlab.style.padding = '0.2em 0';
+    xlab.style.minHeight = '0';
+    xlab.style.minWidth = '0';
+    xlab.style.overflow = 'hidden';
+    xlab.style.whiteSpace = 'nowrap';
+    xlab.style.textOverflow = 'ellipsis';
     hostEl.appendChild(xlab);
   }
 
@@ -300,11 +386,45 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
     cell.style.gridColumn = (col + 2) + ' / span 1';
     cell.style.minHeight = '0';
     cell.style.minWidth  = '0';
+    cell.style.position = 'relative';
+    cell.style.overflow = 'hidden';
     cell.style.background = 'rgba(255,255,255,0.02)';
     cell.style.border = '1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))';
     cell.style.borderRadius = '3px';
     hostEl.appendChild(cell);
     return cell;
+  }
+
+  function cellAxes(chart: any, row: number, col: number) {
+    const diagonal = row === col;
+    function axis(showLabels: boolean, splitLines: boolean, horizontal: boolean) {
+      return {
+        type: 'value', scale: true, splitNumber: 3,
+        axisLine: { show: showLabels, onZero: false, lineStyle: { color: fg, opacity: 0.4 } },
+        axisTick: { show: showLabels, inside: true, length: 2, lineStyle: { color: fg, opacity: 0.4 } },
+        axisLabel: { show: showLabels, inside: true, color: fg, opacity: 0.6, fontSize: 8, margin: 2, hideOverlap: true,
+          ...(horizontal ? { alignMinLabel: 'left', alignMaxLabel: 'right' }
+            : { verticalAlignMinLabel: 'bottom', verticalAlignMaxLabel: 'top' }),
+          formatter: (value: number) => {
+            if (chart.getWidth() < 56 || chart.getHeight() < 36) return '';
+            // Leave the inside x-label band clear, including in short cells
+            // where more than the lowest y tick can overlap its text.
+            if (!horizontal && (diagonal || row === n - 1)
+                && chart.convertToPixel({ yAxisIndex: 0 }, value) > chart.getHeight() * 0.99 - 14) return '';
+            return formatScalar(value);
+          } },
+        splitLine: { show: splitLines, lineStyle: { color: fg, opacity: 0.1 } },
+      };
+    }
+    return {
+      // Inside labels need no gutters. Uniform proportional insets keep
+      // scatter frames aligned and leave positive space even in tiny cells.
+      grid: { left: '1%', right: '1%', top: '1%', bottom: '1%', outerBoundsMode: 'none' },
+      // Diagonals have trimmed histogram ranges and need their own x ticks;
+      // scatters share the sampled column/row ranges and only label the edges.
+      xAxis: axis(diagonal || row === n - 1, !diagonal, true),
+      yAxis: { ...axis(diagonal || col === 0, true, false), ...(diagonal ? { min: 0 } : {}) },
+    };
   }
 
   // ---- Diagonals: 1D marginals --------------------------------
@@ -317,26 +437,12 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
   // setOption renders synchronously, but resize-triggered
   // re-renders pick up the wrong data and the upper cells go
   // blank.)
-  function renderDiagonalCell(inner: any, rects: any, color: any) {
+  function renderDiagonalCell(inner: any, rects: any, color: any, index: number) {
     const ec1 = echarts.init(inner);
     ec1.setOption({
       backgroundColor: 'transparent',
       animation: false,
-      grid: { left: 50, right: 12, top: 6, bottom: 24, containLabel: false },
-      xAxis: {
-        type: 'value', scale: true,
-        axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-        axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-        axisLabel: { color: fg, opacity: 0.6, fontSize: 10, formatter: formatScalar },
-        splitLine: { show: false },
-      },
-      yAxis: {
-        type: 'value', scale: true,
-        axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-        axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-        axisLabel: { color: fg, opacity: 0.5, fontSize: 10, formatter: formatScalar },
-        splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
-      },
+      ...cellAxes(ec1, index, index),
       series: [{
         type: 'custom',
         data: rects,
@@ -366,7 +472,7 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
         x1: hist.binEdges[k + 1],
       });
     }
-    renderDiagonalCell(inner, rects, color);
+    renderDiagonalCell(inner, rects, color, i);
   }
 
   if (n < 2) return;   // single-field record: only the diagonal
@@ -452,21 +558,7 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
       ec2.setOption({
         backgroundColor: 'transparent',
         animation: false,
-        grid: { left: 50, right: 12, top: 6, bottom: 24, containLabel: false },
-        xAxis: {
-          type: 'value', scale: true,
-          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.6, fontSize: 10, formatter: formatScalar },
-          splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
-        },
-        yAxis: {
-          type: 'value', scale: true,
-          axisLine:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisTick:  { lineStyle: { color: fg, opacity: 0.4 } },
-          axisLabel: { color: fg, opacity: 0.5, fontSize: 10, formatter: formatScalar },
-          splitLine: { lineStyle: { color: fg, opacity: 0.1 } },
-        },
+        ...cellAxes(ec2, row, col),
         series: [{
           type: 'scatter',
           data: pts,

@@ -13,6 +13,7 @@
 
 import { mount } from './main.js';
 import { renderDoc } from './markdown.js';
+import { formatDiagnosticMessage } from './diagnostics.js';
 import {
   MATH_DOCUMENT_FORMATS, buildMathExportRequest, mathExportFileName,
 } from './math-view.js';
@@ -37,6 +38,7 @@ FlatPPLViewer.mount = mount;
 // styling stays consistent across surfaces, and the gallery
 // doesn't have to bundle marked + temml itself.
 (FlatPPLViewer as any).renderDoc = renderDoc;
+FlatPPLViewer.formatDiagnosticMessage = formatDiagnosticMessage;
 // The math document contract (flatppl-dev/math-view-design.md §4, "Whole
 // documents") for hosts that save a model's mathematics as a file through
 // the wasm API's `export_math`: the format catalogue, the request builder

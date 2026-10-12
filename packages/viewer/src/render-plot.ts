@@ -11,7 +11,7 @@ import { renderFixedRecord, renderFixedTuple, renderKernelSampleForCurrent } fro
 
 import { getMeasure } from './engine-facade.js';
 import { applyRememberedSelections, rememberPlanSelections } from './overrides.js';
-import { showPlotMessage, updatePlotProgress } from './render-frame.js';
+import { showPlotMessage, showPlotDiagnostics, updatePlotProgress } from './render-frame.js';
 import { renderProfilePlotForCurrent } from './render-profile.js';
 import { renderMathForCurrent } from './render-math.js';
 import { buildInferenceControl, shouldDeferAutoSample } from './render-controls.js';
@@ -75,16 +75,16 @@ export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean })
   const name = ctx.currentPlotBindingName ? esc(ctx.currentPlotBindingName) : 'this binding';
   const typeErrors = errorsForBinding(ctx, ctx.currentPlotBindingName);
   if (typeErrors && typeErrors.length > 0) {
-    let msg = '<strong>' + name + '</strong> is semantically invalid:'
-      + '<ul>';
-    for (let i = 0; i < typeErrors.length; i++) {
-      msg += '<li style="color: #E57373;">' + esc(typeErrors[i].message) + '</li>';
-    }
-    msg += '</ul>';
-    showPlotMessage(ctx, msg);
+    showPlotDiagnostics(ctx, typeErrors);
     return;
   }
   if (!ctx.currentPlotPlan) {
+    if (!ctx.currentState?.data.nodes?.length) {
+      showPlotMessage(ctx, ctx.currentSource == null
+        ? 'Open a model, then select a binding in its source or graph.'
+        : 'Add a binding to this model, then select it to see a plot.', { hint: true });
+      return;
+    }
     if (ctx.currentState && ctx.currentState.targetName === ctx.MODULE_TARGET) {
       showPlotMessage(ctx, 'Click a binding in the graph to plot it.', { hint: true });
       return;

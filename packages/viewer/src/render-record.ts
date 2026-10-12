@@ -17,7 +17,7 @@ import { sendWorker } from './worker.js';
 
 import { showPlotMessage } from './render-frame.js';
 import { esc, formatCount, formatLogTotalmass, formatSampleCount, formatScalar, formatValue } from './util.js';
-import { renderPlotFrame, renderConstantValue } from './render-frame.js';
+import { renderPlotFrame, renderConstantValue, disposePlotCharts } from './render-frame.js';
 import { listScalarAxes, qualityTooltip, samplesAreConstant } from './util.js';
 export function measureIsConstant(ctx: Ctx, m: any): boolean {
   if (!m) return false;
@@ -211,15 +211,14 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
   }
 
   // Reset selection when the focused binding changes. Defaults:
-  //   mode='correlations'; selected = first CORRELATIONS_MAX_AXES
-  //                                    axes (per-axis selection)
+  //   mode='correlations'; selected = first four axes (uncapped after selection)
   //   marginalGroups = all groups (group-level selection used in
   //                                marginals mode)
   if (!ctx.recordSelection || ctx.recordSelection!.bindingName !== bindingName) {
     ctx.recordSelection = {
       bindingName: bindingName,
       mode: 'correlations',
-      selected: axes.slice(0, ctx.CORRELATIONS_MAX_AXES).map(function(a: any) { return a.key; }),
+      selected: axes.slice(0, 4).map(function(a: any) { return a.key; }),
       marginalGroups: allGroups.slice(),
       genQuantities: [],
     };
@@ -239,7 +238,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     const prevSelected = ctx.recordSelection!.selected;
     const keptSelected = prevSelected.filter(function(k: any) { return present[k]; });
     ctx.recordSelection!.selected = (prevSelected.length > 0 && keptSelected.length === 0)
-      ? axes.slice(0, ctx.CORRELATIONS_MAX_AXES).map(function(a: any) { return a.key; })
+      ? axes.slice(0, 4).map(function(a: any) { return a.key; })
       : keptSelected;
     if (!ctx.recordSelection!.marginalGroups) ctx.recordSelection!.marginalGroups = allGroups.slice();
     else {
@@ -306,6 +305,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
   // used by axis-selection toggles so the open dropdown survives.
   function rerenderChart() {
     if (!chartHostRef) return;
+    disposePlotCharts(ctx, chartHostRef);
     chartHostRef.innerHTML = '';
     // Reset inline styles the strip / grid renderer may have set
     // on a previous pass (display:grid for cornerGrid; flex for
@@ -434,10 +434,6 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
     const modeKey = modeSel.value;
     if (ctx.recordSelection!.mode === modeKey) return;
     ctx.recordSelection!.mode = modeKey as any;
-    if (modeKey === 'correlations'
-        && ctx.recordSelection!.selected.length > ctx.CORRELATIONS_MAX_AXES) {
-      ctx.recordSelection!.selected = ctx.recordSelection!.selected.slice(0, ctx.CORRELATIONS_MAX_AXES);
-    }
     onModeChange();
   });
   bar.appendChild(modeSel);
@@ -455,7 +451,7 @@ export function renderRecordToolbar(ctx: Ctx, axes: any[], groups: string[], onM
   }
 
   // Axis-level selector in correlations mode (per-leaf
-  // checkboxes, capped at CORRELATIONS_MAX_AXES); group-level
+  // checkboxes); group-level
   // selector in marginals mode (one entry per name-prefix —
   // obs[1]…obs[10] collapse into a single "obs" toggle).
   // Joint 2D reads the same per-axis selection, positionally: the first three
@@ -696,8 +692,7 @@ export function renderSampleStats(ctx: Ctx, measure: any) {
  * Compact dropdown axis selector for correlations mode. Button
  * shows the count ("Plot axes (3 / 12) ▾"); click opens a
  * popup-anchored panel with a scrollable checkbox list. Outside
- * clicks close it. Cap enforcement (max 4) shows an inline red
- * note in the panel when the user tries to exceed.
+ * clicks close it. Every scalar axis can be selected.
  */
 export function renderAxisDropdown(ctx: Ctx, axes: any[], onChange: () => void) {
   const wrap = document.createElement('div');
@@ -741,16 +736,6 @@ export function renderAxisDropdown(ctx: Ctx, axes: any[], onChange: () => void) 
   panel.style.display = 'none';
   wrap.appendChild(panel);
 
-  // Cap-error slot inside the panel (red note shown briefly when
-  // the user tries to add a 5th).
-  const capErr = document.createElement('div');
-  capErr.style.color = '#E57373';
-  capErr.style.fontSize = '0.92em';
-  capErr.style.padding = '0.3em 0.4em';
-  capErr.style.opacity = '0';
-  capErr.style.transition = 'opacity 0.2s';
-  panel.appendChild(capErr);
-
   axes.forEach(function(axis) {
     const label = document.createElement('label');
     label.style.display = 'flex';
@@ -772,18 +757,10 @@ export function renderAxisDropdown(ctx: Ctx, axes: any[], onChange: () => void) 
       const idx = ctx.recordSelection!.selected.indexOf(axis.key);
       if (cb.checked) {
         if (idx >= 0) return;
-        if (ctx.recordSelection!.selected.length >= ctx.CORRELATIONS_MAX_AXES) {
-          cb.checked = false;
-          capErr.textContent = 'At most ' + ctx.CORRELATIONS_MAX_AXES
-            + ' axes — uncheck one first.';
-          capErr.style.opacity = '1';
-          return;
-        }
         ctx.recordSelection!.selected.push(axis.key);
       } else {
         if (idx >= 0) ctx.recordSelection!.selected.splice(idx, 1);
       }
-      capErr.style.opacity = '0';
       // Update the count on the button without rebuilding the
       // toolbar (which would tear down this dropdown's open
       // panel). The axis-dropdown stays open until the user
@@ -1011,13 +988,7 @@ export function renderGenQuantitiesDropdown(ctx: Ctx, candidates: Array<{ name: 
       // re-filters these by present axis keys, so stale entries self-heal.
       if (cb.checked) {
         if (idx < 0) sel.genQuantities.push(c.name);
-        // Respect the correlations axis cap (the Variates dropdown enforces the
-        // same limit): register the derived field and seed it into marginals
-        // unconditionally, but only auto-add it to the correlations selection
-        // when there's room — otherwise a gen-quantity toggle would silently
-        // push `selected` past CORRELATIONS_MAX_AXES.
-        if (sel.selected.indexOf(c.name) < 0
-            && sel.selected.length < ctx.CORRELATIONS_MAX_AXES) {
+        if (sel.selected.indexOf(c.name) < 0) {
           sel.selected.push(c.name);
         }
         if (sel.marginalGroups.indexOf(c.name) < 0) sel.marginalGroups.push(c.name);

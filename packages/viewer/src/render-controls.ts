@@ -18,6 +18,7 @@ type ControlEntry = {
   longLabel: string;
 };
 type OutsideClickHandler = ((ev: MouseEvent) => void) | null;
+let settingsId = 0;
 
 // `trailing`, when given, is placed immediately right of the dropdown and
 // LEFT of the reset/save action group — so a caller's action button (e.g. the
@@ -450,7 +451,10 @@ export function shouldDeferAutoSample(opts: { autoTrigger: boolean; sampling: bo
 // button for these same backends — see shouldDeferAutoSample above and its
 // use in render-plot.ts.
 export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterior: boolean = true): HTMLElement {
+  ctx.closeInferenceSettings?.();
   const opts = ctx.inferenceOpts;
+  const prefix = 'sampler-settings-' + (++settingsId);
+  let fieldId = 0;
 
   // The row set + selector state key off the EFFECTIVE backend: the chosen
   // posterior backend, or the synthetic 'forward' mode on non-posterior plots.
@@ -477,6 +481,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     el.style.fontFamily = 'var(--vscode-font-family, sans-serif)';
     el.style.borderRadius = '2px';
     el.style.cursor = 'pointer';
+    el.classList.add('viewer-control');
   }
 
   const wrap = document.createElement('span');
@@ -490,6 +495,9 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   lbl.style.opacity = '0.6';
 
   const sel = document.createElement('select');
+  sel.id = prefix + '-backend';
+  sel.name = 'sampler';
+  lbl.htmlFor = sel.id;
   // Blank option added only in the non-posterior (forward) mode, where there
   // is no backend to choose.
   if (!isPosterior) {
@@ -525,12 +533,19 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   gear.type = 'button';
   gear.textContent = '⚙';
   gear.title = 'Sampler settings';
+  gear.setAttribute('aria-label', 'Sampler settings');
+  gear.setAttribute('aria-expanded', 'false');
+  gear.setAttribute('aria-haspopup', 'dialog');
+  gear.setAttribute('aria-controls', prefix);
   styleControl(gear);
 
   // Advanced popup. Position:fixed (not absolute) so it escapes the header's
   // `overflow: hidden` clip and renders above the graph canvas's stacking
   // context; coordinates are set from the gear button's rect on open.
   const panel = document.createElement('div');
+  panel.id = prefix;
+  panel.setAttribute('role', 'dialog');
+  panel.setAttribute('aria-label', 'Sampler settings');
   panel.style.position = 'fixed';
   panel.style.zIndex = '9999';
   panel.style.padding = '0.5em';
@@ -541,6 +556,9 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   panel.style.display = 'none';
   panel.style.fontSize = '0.9em';
   panel.style.minWidth = '12em';
+  panel.style.maxWidth = 'calc(100vw - 16px)';
+  panel.style.maxHeight = 'calc(100dvh - 16px)';
+  panel.style.overflowY = 'auto';
 
   // Rows tagged with the backends they apply to, so the popup shows only the
   // knobs relevant to the current sampler (MCMC vs AMIS have different params).
@@ -561,6 +579,9 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     rl.textContent = label;
     rl.style.opacity = '0.7';
     const inp = document.createElement('input');
+    inp.id = prefix + '-' + (++fieldId);
+    inp.name = label;
+    rl.htmlFor = inp.id;
     inp.type = 'number';
     inp.style.width = '5.5em';
     // Default integer step (counts); callers override for fractional knobs (the
@@ -596,6 +617,9 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     rl.textContent = label;
     rl.style.opacity = '0.7';
     const rsel = document.createElement('select');
+    rsel.id = prefix + '-' + (++fieldId);
+    rsel.name = label;
+    rl.htmlFor = rsel.id;
     for (const [v, t] of options) {
       const o = document.createElement('option');
       o.value = v; o.textContent = t;
@@ -619,6 +643,8 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   const countLabel = document.createElement('label');
   countLabel.style.opacity = '0.7';
   const countInput = document.createElement('input');
+  countInput.id = prefix + '-count';
+  countLabel.htmlFor = countInput.id;
   countInput.type = 'number';
   countInput.style.width = '5.5em';
   styleControl(countInput);
@@ -632,10 +658,12 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   function refreshCountRow() {
     if (opts.backend === 'emcee' || opts.backend === 'demcz') {
       countLabel.textContent = 'walkers';
+      countInput.name = 'walkers';
       countInput.value = opts.walkers == null ? '' : String(opts.walkers);
       countInput.placeholder = 'auto';
     } else {
       countLabel.textContent = 'chains';
+      countInput.name = 'chains';
       countInput.value = String(opts.chains);
       countInput.placeholder = '';
     }
@@ -694,8 +722,16 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   let outside: ((ev: MouseEvent) => void) | null = null;
   function closePanel() {
     panel.style.display = 'none';
+    gear.setAttribute('aria-expanded', 'false');
     if (outside) { document.removeEventListener('mousedown', outside); outside = null; }
   }
+  ctx.closeInferenceSettings = closePanel;
+  panel.addEventListener('keydown', (ev) => {
+    if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); closePanel(); gear.focus(); }
+  });
+  wrap.addEventListener('focusout', (ev) => {
+    if (ev.relatedTarget && !wrap.contains(ev.relatedTarget as Node)) closePanel();
+  });
   gear.addEventListener('click', function () {
     if (gear.disabled) return;
     if (panel.style.display === 'none') {
@@ -705,6 +741,11 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
       panel.style.top = (r.bottom + 4) + 'px';
       panel.style.right = Math.max(4, window.innerWidth - r.right) + 'px';
       panel.style.display = 'block';
+      gear.setAttribute('aria-expanded', 'true');
+      const bounds = panel.getBoundingClientRect();
+      panel.style.top = Math.max(8, Math.min(r.bottom + 4, window.innerHeight - bounds.height - 8)) + 'px';
+      const first = rows.find((row) => row.el.style.display !== 'none');
+      first?.el.querySelector<HTMLInputElement | HTMLSelectElement>('input, select')?.focus();
       outside = function (ev: MouseEvent) {
         if (!wrap.contains(ev.target as Node)) closePanel();
       };
@@ -746,6 +787,7 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
   }
   function markDirty() { refreshApply(); }
   applyBtn.addEventListener('click', function () {
+    closePanel();
     // A CLEAN click means "re-draw with the current settings". For the
     // deterministic forward PRNG (forward mode, and IS whose importance draws
     // are seeded by rootSeed) re-running the same seed reproduces the identical

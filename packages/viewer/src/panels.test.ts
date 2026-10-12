@@ -104,6 +104,9 @@ test('clampSplit moves the divider by dy and clamps both sides at the minimum', 
   assert.deepEqual(clampSplit(300, 200, 500, 80), { a: 420, b: 80 });
   // Dragging past the upper panel's minimum stops there.
   assert.deepEqual(clampSplit(300, 200, -500, 80), { a: 80, b: 420 });
+  // A short viewport cannot meet both floors. Share the remaining room
+  // instead of returning a negative height for one of the panels.
+  assert.deepEqual(clampSplit(40, 40, 500, 80), { a: 40, b: 40 });
 });
 
 test('the first visible panel is marked first (it carries no top border); full implies first', () => {

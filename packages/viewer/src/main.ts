@@ -115,6 +115,7 @@ import {
   setMathEnabled,
   installPanelDivider,
   showPlotMessage,
+  disposePlotCharts,
 } from './render-frame.js';
 import { installMathPaneNavigation, disposeMathPane } from './render-math.js';
 
@@ -123,6 +124,8 @@ import {
   drawReificationLassos,
   enterModuleView,
   focusNode,
+  fitGraph,
+  zoomGraph,
   initCy,
   renderDAG,
   showNodeInfo,
@@ -191,8 +194,9 @@ import {
 } from './orchestration.js';
 
 
-import { VIEWER_BODY_HTML, ensureCssInjected } from './templates.js';
+import { VIEWER_BODY_HTML, VIEWER_HINT, ensureCssInjected } from './templates.js';
 import { defaultVscodeHost, hostMessageListener } from './host-adapter.js';
+import { observeChartTheme } from './chart-theme.js';
 
 
 
@@ -431,7 +435,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     //   samplerWorkerUrl: string  — URL of the sampler-worker bundle,
     //                                loaded as a Web Worker.
     ctx.CONFIG = (typeof window !== 'undefined' && window.__FLATPPL_CONFIG__) || {};
-    ctx.HINT = 'Click a node or equation to see details &middot; double-click to drill down &middot; Ctrl+click to jump to source &middot; click ⊞/⊟ or Shift+click an anchor to collapse/expand that group';
+    ctx.HINT = VIEWER_HINT;
     // Sampler-worker URL. Used lazily — no worker is spawned until the
     // user picks a binding for which the Plot tab is enabled (a 'draw'
     // of a known distribution with literal params).
@@ -922,12 +926,9 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // Reset when the focused binding changes; survives re-renders
   // triggered by checkbox / toggle clicks.
   //
-  // Correlations mode (NxN matrix of marginals + joint scatters)
-  // becomes unreadable past 4x4, so we cap selection at 4. Marginals
-  // mode (one density-shaded column per axis) scales linearly to
-  // the full axis count and ignores the selection.
+  // Correlations mode fits the grid for every selected axis.
+  // Marginals mode scales linearly to the full axis count.
   ctx.recordSelection = null;
-  ctx.CORRELATIONS_MAX_AXES = 4;
   // Graph-view compactor state: anchor names whose reification bubble is
   // collapsed. `_reifSeen` (untyped, session-only) tracks which anchors
   // have already had their >=3-member default decided, so a manual
@@ -938,7 +939,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
 
   /**
    * Render a record-shaped EmpiricalMeasure as a corner plot,
-   * with a checkbox row above for axis selection (max 4 axes).
+   * with a checkbox row above for axis selection.
    *
    * Corner plot:
    *   - diagonal:        1D marginal histogram of each selected axis
@@ -1401,8 +1402,10 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // (set up further below) pick up the resulting size change and refit
   // cytoscape / echarts automatically — no explicit resize / fit calls
   // needed here.
-  installPanelDivider(ctx, 'graph');
-  installPanelDivider(ctx, 'plot');
+  const dividerCleanup = [installPanelDivider(ctx, 'graph'), installPanelDivider(ctx, 'plot')];
+  $('graph-fit').addEventListener('click', () => fitGraph(ctx));
+  $('graph-zoom-in').addEventListener('click', () => zoomGraph(ctx, 1.25));
+  $('graph-zoom-out').addEventListener('click', () => zoomGraph(ctx, 1 / 1.25));
   // Math pane clicks: identifier / row → focus that binding; Ctrl/Cmd →
   // jump to its source line (same gestures as the DAG).
   installMathPaneNavigation(ctx);
@@ -1562,6 +1565,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   window.addEventListener('message', ctx._onWindowMessage);
 
   initCy(ctx);
+  const stopObservingTheme = observeChartTheme($('plot-content'));
 
   // Tell the host the message listener is attached. VS Code's
   // webview.postMessage doesn't reliably buffer pre-load — messages
@@ -1680,11 +1684,15 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     // the window 'message' listener. Idempotent and exception-safe — each
     // teardown is independent so one failure never blocks the rest.
     dispose: function() {
+      stopObservingTheme();
+      ctx.closeInferenceSettings?.();
+      dividerCleanup.forEach((cleanup) => cleanup());
+      if (ctx._cyFitTimer) { clearTimeout(ctx._cyFitTimer); ctx._cyFitTimer = null; }
       viewControls.remove();
       disposeMathPane(ctx);   // a renderer load settling later must not paint into a successor
       try { cancelAllSampling(ctx); } catch (_) {}  // terminate sampler worker + reject in-flight
       if (ctx.cy) { try { ctx.cy.destroy(); } catch (_) {} ctx.cy = null; }
-      if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
+      disposePlotCharts(ctx, container);
       if (ctx._plotResizeObserver) { try { ctx._plotResizeObserver.disconnect(); } catch (_) {} ctx._plotResizeObserver = null; }
       if (ctx._cyResizeObserver) { try { ctx._cyResizeObserver.disconnect(); } catch (_) {} ctx._cyResizeObserver = null; }
       if (ctx._onWindowMessage) {

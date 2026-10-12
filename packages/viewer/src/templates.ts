@@ -5,6 +5,8 @@
 // markup mount() drops into its container. ensureCssInjected is
 // idempotent — the cssInjected flag is module-level state so a
 // second mount() on the same page doesn't re-inject.
+export const VIEWER_HINT = 'Select a node or equation for details · double-click to drill down · Ctrl/Cmd+click to show source · select ⊞/⊟ to expand or collapse a group';
+
 export var VIEWER_CSS = `
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -97,11 +99,41 @@ body {
 /* The first visible panel sits directly under the header: no border. */
 .viewer-panel.first { border-top: none; }
 #plot-panel {
-  display: flex; align-items: center; justify-content: center;
+  display: flex; flex-direction: column;
 }
+#graph-panel, #math-panel { display: flex; flex-direction: column; }
+.panel-toolbar {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px; flex: 0 0 auto;
+  min-height: 32px; padding: 3px 8px; font-size: 12px;
+  background: var(--vscode-editor-background);
+}
+.panel-toolbar > strong { font-weight: 500; opacity: 0.8; }
+.graph-actions { display: flex; flex-wrap: wrap; gap: 4px; min-width: 0; }
+.graph-actions[hidden] { display: none; }
+.viewer-action {
+  min-height: 28px; min-width: 28px; padding: 3px 8px;
+  background: var(--vscode-button-secondaryBackground, #3a3d41);
+  color: var(--vscode-button-secondaryForeground, #ccc);
+  border: 1px solid var(--vscode-button-border, transparent);
+  border-radius: 3px; font: inherit; cursor: pointer;
+}
+.viewer-action:hover { background: var(--vscode-button-secondaryHoverBackground, #505355); }
+.viewer-control { min-height: 28px; }
+.viewer-source-notice {
+  flex: 0 0 auto; padding: 4px 8px; font-size: 12px;
+  color: var(--vscode-errorForeground, #f48771);
+}
+.viewer-source-notice[hidden] { display: none; }
+.viewer-action:focus-visible, .viewer-divider:focus-visible,
+#main button:focus-visible, #main input:focus-visible, #main select:focus-visible {
+  outline: 2px solid var(--vscode-focusBorder, #3794ff); outline-offset: -2px;
+}
+#graph-panel > #cy, #plot-content, #math-content { flex: 1 1 0; min-height: 0; }
 #panels-hidden { margin: auto; padding: 1em; opacity: 0.65; text-align: center; }
 #panels-hidden[hidden] { display: none; }
 #plot-content { width: 100%; height: 100%; }
+.plot-pannable, .plot-pannable canvas { cursor: grab !important; }
+.plot-panning, .plot-panning canvas { cursor: grabbing !important; user-select: none; }
 /* Rust supplies the document's scoped layout. Host rules only set the pane's
    spacing, theme and interactive row states. */
 #math-content .flatppl-doc { margin: 0 auto; padding: 0.5em 1em; font-family: inherit; font-size: 16px; }
@@ -153,17 +185,18 @@ body {
    resting state, so the divider only adds the interactive hover
    affordance. */
 .viewer-divider {
-  flex: 0 0 5px;
+  flex: 0 0 12px;
   cursor: row-resize;
   user-select: none;
+  touch-action: none;
   position: relative;
   background: transparent;
 }
 .viewer-divider::before {
   content: '';
   position: absolute;
-  left: 0; right: 0; top: 2px; bottom: 2px;
-  background: transparent;
+  left: 0; right: 0; top: 5px; bottom: 5px;
+  background: var(--vscode-panel-border, #444);
   transition: background 0.15s ease;
 }
 .viewer-divider:hover::before {
@@ -404,10 +437,6 @@ body {
   background: var(--vscode-button-secondaryHoverBackground, #505355);
 }
 #collapse-all-btn {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  z-index: 5;
   background: var(--vscode-button-secondaryBackground, #3a3d41);
   color: var(--vscode-button-secondaryForeground, #ccc);
   border: 1px solid var(--vscode-button-border, transparent);
@@ -419,6 +448,17 @@ body {
 }
 #collapse-all-btn:hover {
   background: var(--vscode-button-secondaryHoverBackground, #505355);
+}
+#collapse-all-btn[hidden] { display: none; }
+@media (max-width: 900px), (pointer: coarse) {
+  #header button, .viewer-panel button, .viewer-panel select, .viewer-panel input { min-height: 44px; }
+  .viewer-panel button { min-width: 44px; }
+  .viewer-divider { flex-basis: 24px; }
+  .viewer-divider::before { top: 11px; bottom: 11px; }
+}
+@media (max-width: 600px) {
+  #header { padding: 4px 8px; }
+  #info { min-height: 0; max-height: 4em; overflow: auto; }
 }
 `;
 
@@ -435,22 +475,33 @@ export var VIEWER_BODY_HTML = `
 </div>
 <div id="main">
 <div id="graph-panel" class="viewer-panel full">
+  <div class="panel-toolbar">
+    <strong>Graph</strong>
+    <span id="graph-actions" class="graph-actions" hidden>
+      <button id="graph-fit" class="viewer-action" type="button" aria-label="Fit graph" title="Fit graph">Fit</button>
+      <button id="graph-zoom-out" class="viewer-action" type="button" aria-label="Zoom out graph">−</button>
+      <button id="graph-zoom-in" class="viewer-action" type="button" aria-label="Zoom in graph">+</button>
+      <button id="collapse-all-btn" class="viewer-action" type="button" title="Collapse every reification bubble in view" hidden>Collapse all</button>
+    </span>
+  </div>
+  <p id="graph-source-notice" class="viewer-source-notice" role="status" hidden></p>
   <div id="cy"></div>
-  <button id="collapse-all-btn" type="button" title="Collapse every reification bubble in view">Collapse all</button>
 </div>
-<div id="plot-divider" class="viewer-divider hidden" title="Drag to resize"></div>
+<div id="plot-divider" class="viewer-divider hidden" role="separator" tabindex="0" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="60" aria-label="Resize graph and plots" title="Drag or use arrow keys to resize"></div>
 <div id="plot-panel" class="viewer-panel hidden">
+  <div class="panel-toolbar"><strong>Plots</strong></div>
   <div id="plot-content"></div>
 </div>
-<div id="math-divider" class="viewer-divider hidden" title="Drag to resize"></div>
+<div id="math-divider" class="viewer-divider hidden" role="separator" tabindex="0" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" aria-label="Resize plots and math" title="Drag or use arrow keys to resize"></div>
 <div id="math-panel" class="viewer-panel hidden">
+  <div class="panel-toolbar"><strong>Math</strong></div>
   <div id="math-content"></div>
 </div>
 <p id="panels-hidden" hidden>Graph, plots and math are hidden.</p>
 </div>
 <div id="tooltip"></div>
 <div id="info">
-<span class="hint">Click a node or equation to see details <span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to sourcemiddot; double-click to drill down <span class="hint">Click a node to see details &middot; double-click to drill down &middot; Ctrl+click to jump to sourcemiddot; Ctrl+click to jump to source &middot; click &#8862;/&#8863; or Shift+click an anchor to collapse/expand that group</span>
+<span class="hint">Open a model, then select a binding in its source or graph.</span>
 </div>
 `;
 

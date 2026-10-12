@@ -35,9 +35,9 @@
 //      reachable.
 // Every read and write is wrapped in try/catch so a failure
 // degrades gracefully — the store stays usable for the rest of
-// the session via an in-memory fallback, and the user just sees
-// their changes vanish on reload. `save` reports whether the entry
-// reached localStorage so a caller can say so.
+// the session via an in-memory fallback. `save` and `updateSource`
+// report whether the entry reached localStorage. Pending entries
+// stay distinct from the last saved copy for warnings and Revert.
 //
 // Lives on globalThis as window.FlatPPLWebUserStore.
 
@@ -64,6 +64,7 @@
   //   - Fallback for environments where localStorage is unavailable
   //     or throws — the store still works for the session.
   const entries  = new Map<string, Entry>();
+  const savedEntries = new Map<string, Entry>();
   let   pathOrder: string[] = [];
   const listeners = new Set<() => void>();
 
@@ -141,6 +142,7 @@
   // is repaired by the next save).
   function loadFromStorage() {
     entries.clear();
+    savedEntries.clear();
     pathOrder = [];
     const ix = readIndex();
     const repaired: string[] = [];
@@ -149,6 +151,7 @@
       const e = readEntry(p);
       if (e) {
         entries.set(p, e);
+        savedEntries.set(p, e);
         pathOrder.push(p);
         repaired.push(p);
       }
@@ -158,6 +161,19 @@
 
   /** True iff `path` is in the user store. */
   function has(path: string): boolean { return entries.has(path); }
+
+  /** True when the current entry is the last durable copy. */
+  function isPersisted(path: string): boolean {
+    return entries.has(path) && entries.get(path) === savedEntries.get(path);
+  }
+
+  /** Pending saves need an unload warning even when another file is open. */
+  function hasUnpersisted(): boolean {
+    for (const path of pathOrder) {
+      if (!isPersisted(path)) return true;
+    }
+    return false;
+  }
 
   /** Full entry record, or null. Use `getSource` when you only
    *  need the text. */
@@ -179,12 +195,26 @@
     });
   }
 
+  /** Keep failed drafts out of the durable index. Write the index first:
+   *  failure then leaves an existing file's last saved body untouched.
+   *  A failed body write rolls the index back and leaves the draft in memory. */
+  function persist(path: string, entry: Entry): boolean {
+    const nextOrder = pathOrder.filter(function (p) { return p === path || savedEntries.has(p); });
+    if (!writeIndex(nextOrder)) return false;
+    if (!writeEntry(path, entry)) {
+      writeIndex(pathOrder.filter(function (p) { return savedEntries.has(p); }));
+      return false;
+    }
+    savedEntries.set(path, entry);
+    return true;
+  }
+
   /** Persist `path` ← `source`. `opts.parent` records the read-only
    *  path this was forked from, for the sidebar's "from examples/X"
    *  affordance and the "Reset to original" action. Pass `null` for
-   *  fresh user-created files. Returns whether the entry was written
-   *  to localStorage; false means it lives in memory for this session
-   *  only (storage unavailable or its quota exceeded). */
+   *  fresh user-created files. Returns whether the entry and index
+   *  reached localStorage; false retains the new source in memory
+   *  without replacing its last durable copy. */
   function save(path: string, source: string, opts?: { parent?: string | null }): boolean {
     if (path.indexOf(USER_PREFIX) !== 0) {
       throw new Error('FlatPPLWebUserStore.save: path must start with "user/", got: ' + path);
@@ -198,28 +228,26 @@
     const isNew = !entries.has(path);
     entries.set(path, entry);
     if (isNew) pathOrder.push(path);
-    let persisted = writeEntry(path, entry);
-    if (isNew) persisted = writeIndex(pathOrder) && persisted;
+    const persisted = persist(path, entry);
     emit();
     return persisted;
   }
 
-  /** Update only the source text (modifiedAt bumps; parent
-   *  preserved). Cheaper-feeling alias of `save` for auto-save
-   *  paths where the parent doesn't change. */
-  function updateSource(path: string, source: string) {
+  /** Update source while preserving parent metadata. An unchanged pending
+   *  source still retries both writes after storage becomes available. */
+  function updateSource(path: string, source: string): boolean {
     const existing = entries.get(path);
-    if (!existing) return;
-    if (existing.source === source) return;
+    if (!existing) return false;
+    if (existing.source === source && isPersisted(path)) return true;
     const entry: Entry = {
       source: source,
       parent: existing.parent,
       modifiedAt: new Date().toISOString(),
     };
     entries.set(path, entry);
-    writeEntry(path, entry);
     // No emit() — text edits shouldn't redraw the tree. Sidebar
     // listeners only care about add/remove.
+    return persist(path, entry);
   }
 
   /** Drop `path`. The original read-only file (if any) becomes the
@@ -227,10 +255,24 @@
   function remove(path: string) {
     if (!entries.has(path)) return;
     entries.delete(path);
+    savedEntries.delete(path);
     pathOrder = pathOrder.filter(function (p) { return p !== path; });
     lsRemoveItem(ENTRY_KEY_PREFIX + path);
-    writeIndex(pathOrder);
+    writeIndex(pathOrder.filter(function (p) { return savedEntries.has(p); }));
     emit();
+  }
+
+  /** Restore the last durable source. A failed new save has no saved copy,
+   *  so Revert removes it. Returns whether the path still has a saved entry. */
+  function revert(path: string): boolean {
+    const saved = savedEntries.get(path);
+    if (!saved) {
+      remove(path);
+      return false;
+    }
+    entries.set(path, saved);
+    emit();
+    return true;
   }
 
   /** Rename `oldPath` → `newPath`, preserving source + parent and the
@@ -251,9 +293,11 @@
       modifiedAt: new Date().toISOString(),
     };
     const nextOrder = pathOrder.map(function (p) { return p === oldPath ? newPath : p; });
-    const saved = readEntry(oldPath);
+    const saved = savedEntries.has(oldPath);
     const wroteEntry = writeEntry(newPath, entry);
-    const persisted = wroteEntry && writeIndex(nextOrder);
+    const persisted = wroteEntry && writeIndex(nextOrder.filter(function (p) {
+      return p === newPath || savedEntries.has(p);
+    }));
     if (!persisted) {
       if (wroteEntry) lsRemoveItem(ENTRY_KEY_PREFIX + newPath);
       // Retain the last durable copy and its index if either write fails.
@@ -262,7 +306,11 @@
     entries.set(newPath, entry);
     entries.delete(oldPath);
     pathOrder = nextOrder;
-    if (persisted) lsRemoveItem(ENTRY_KEY_PREFIX + oldPath);
+    if (persisted) {
+      savedEntries.delete(oldPath);
+      savedEntries.set(newPath, entry);
+      lsRemoveItem(ENTRY_KEY_PREFIX + oldPath);
+    }
     emit();
     return true;
   }
@@ -310,12 +358,15 @@
   globalScope.FlatPPLWebUserStore = {
     USER_PREFIX:   USER_PREFIX,
     has:           has,
+    isPersisted:   isPersisted,
+    hasUnpersisted: hasUnpersisted,
     get:           get,
     getSource:     getSource,
     list:          list,
     save:          save,
     updateSource:  updateSource,
     remove:        remove,
+    revert:        revert,
     rename:        rename,
     pathForUpload: pathForUpload,
     subscribe:     subscribe,

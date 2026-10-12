@@ -309,8 +309,11 @@ and the web gallery host has its own dev server
 (`npm run --workspace=packages/web build && npm run --workspace=packages/web serve`
 → http://localhost:8001/). The two web servers target different concerns —
 viewer is the DAG/plot viewer in isolation; `packages/web` is the full
-three-pane gallery shell with file tree, source view, syntax highlighting,
-and source ↔ DAG cross-pane navigation. CI deploys
+gallery shell with file search, source editing, and source ↔ DAG navigation.
+`web/src/layout.ts` owns desktop splits and the compact Files drawer / pane
+switch at 900px. `app.ts` retains per-file drafts until explicit Save or
+Discard. `user-store.ts` keeps failed saves distinct from durable entries
+for Retry, Revert, and unload warnings. CI deploys
 `packages/web/dist/` to GitHub Pages on push to main (see
 `.github/workflows/pages.yml` — needs the one-time repo setting Pages →
 Source: GitHub Actions before its first run takes effect).

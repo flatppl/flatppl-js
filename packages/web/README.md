@@ -2,6 +2,28 @@
 
 Standalone web host for the FlatPPL viewer.
 
+Use **Find models** or **Ctrl/Cmd+K** to search model names and paths. All
+example models appear together under **Examples**. The welcome action opens
+linear regression. On phones and narrow
+windows, **Files** opens a drawer and **Source** / **Visualization** switch
+the main pane. Wide windows also offer **Split**. Drag a divider or focus it
+and use the arrow keys.
+
+Edits stay in this tab when you switch files. **Save** stores a copy in this
+browser. **Export** downloads the current source, including unsaved edits.
+If saving fails, the draft stays in memory with **Retry** and **Download**
+actions. Unsaved drafts do not survive closing or reloading the tab.
+
+The **Graph**, **Plots**, and **Math** toggles choose visible panels. A lone panel
+fills the Visualization pane. **Fit** fits the graph without enlarging small
+graphs beyond normal scale. Theme changes update existing charts without
+drawing new samples.
+
+Plots select the first four variables by default. Use **Variates** to select
+any number. Correlation grids shrink to fit the plot pane, with compact axes.
+If content overflows, drag with the mouse to pan, or use touch scrolling and
+the scrollbars.
+
 ## About FlatPPL
 
 FlatPPL is a minimal, inference-agnostic stochastic language for specifying

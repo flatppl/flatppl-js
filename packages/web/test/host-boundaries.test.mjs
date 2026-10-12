@@ -13,42 +13,63 @@ function runSource(name, globals) {
 }
 
 /** Boot the real gallery over an inert editor and pane, then drive its router. */
-async function gallery() {
-  let boot, onChange, source = '';
+async function gallery({ editable = false, store } = {}) {
+  let boot, onChange, editorOptions, beforeUnload, source = '', download, readOnly = true;
   let route = { model: null };
   const requests = [];
   const renders = [];
+  const elements = new Map();
+  for (const id of ['edit-toggle', 'save-btn', 'retry-save-btn', 'download-btn', 'source-status', 'save-error', 'save-error-message']) {
+    elements.set(id, { hidden: false, textContent: '', handlers: {},
+      setAttribute() {}, addEventListener(name, fn) { this.handlers[name] = fn; },
+    });
+  }
   const document = {
     readyState: 'loading', title: '',
     addEventListener(name, fn) { if (name === 'DOMContentLoaded') boot = fn; },
-    getElementById(id) { return id === 'source-editor' ? {} : null; },
+    getElementById(id) { return id === 'source-editor' ? {} : elements.get(id) || null; },
+    createElement() { return { click() {} }; },
+    body: { appendChild() {}, removeChild() {} },
   };
   const window = {
-    addEventListener() {},
+    __FLATPPL_CONFIG__: { allowEdit: editable },
+    FlatPPLWebUserStore: store,
+    addEventListener(name, fn) { if (name === 'beforeunload') beforeUnload = fn; },
     FlatPPLViewer: { mount() {} },
     FlatPPLWebManifest: { load: async () => ({ entries: [] }) },
-    FlatPPLWebResolver: { resolveBundle(path) {
+    FlatPPLWebResolver: { resolveBundle(path, override) {
+      if (store?.has(path)) return Promise.resolve({ primarySource: override ?? store.getSource(path), sources: {} });
       const pending = Promise.withResolvers();
       requests.push({ path, ...pending });
-      return pending.promise;
+      return pending.promise.then(bundle => ({ ...bundle, primarySource: override ?? bundle.primarySource }));
     } },
     FlatPPLWebRouter: {
       parseHash: () => route,
       onChange(fn) { onChange = fn; },
       emitInitial() {},
+      navigateTo(state) { route = state; return onChange(state); },
     },
-    FlatPPLWebEditor: { mountEditor: () => ({
-      setSource(text) { source = text; }, getSource: () => source,
-    }) },
+    FlatPPLWebEditor: { mountEditor: (_container, opts) => {
+      editorOptions = opts;
+      return { setSource(text) { source = text; }, getSource: () => source, setReadOnly(value) { readOnly = value; } };
+    } },
     FlatPPLWebSurfaces: { createPaneController: () => ({
       update(text, target, opts) { renders.push({ text, target, path: opts?.path }); },
     }) },
   };
-  runSource('app', { window, document, console: { error() {}, warn() {} }, setTimeout, clearTimeout });
+  runSource('app', { window, document, console: { error() {}, warn() {} }, setTimeout, clearTimeout, Blob,
+    URL: { createObjectURL(blob) { download = blob; return 'blob:test'; }, revokeObjectURL() {} },
+  });
   await boot();
   return {
-    requests, renders, document,
+    requests, renders, document, elements,
     source: () => source,
+    readOnly: () => readOnly,
+    edit(text) { source = text; editorOptions.onChange(text); },
+    toggleEdit() { elements.get('edit-toggle').handlers.click(); },
+    save() { editorOptions.onSave(); },
+    async download() { await elements.get('download-btn').handlers.click(); return download.text(); },
+    warnsOnUnload() { let warned = false; beforeUnload({ preventDefault() { warned = true; } }); return warned; },
     navigate(state) { route = state; return onChange(state); },
   };
 }
@@ -79,6 +100,85 @@ test('the fallback route supersedes a pending gallery load', async () => {
   await old;
   assert.equal(g.source(), fallback);
   assert.equal(g.document.title, 'FlatPPL');
+});
+
+test('edited files survive navigation and still warn in view mode', async () => {
+  const g = await gallery({ editable: true });
+  const first = g.navigate({ model: 'example.flatppl' });
+  g.requests[0].resolve({ primarySource: 'x = 1', sources: {} });
+  await first;
+  g.toggleEdit();
+  g.edit('x = 42');
+  const away = g.navigate({ model: 'away.flatppl' });
+  g.requests[1].resolve({ primarySource: 'y = 2', sources: {} });
+  await away;
+  assert.equal(g.warnsOnUnload(), true);
+  const back = g.navigate({ model: 'example.flatppl' });
+  g.requests[2].resolve({ primarySource: 'x = 1', sources: {} });
+  await back;
+  g.toggleEdit();
+  assert.equal(g.source(), 'x = 42');
+  assert.equal(g.warnsOnUnload(), true);
+  assert.equal(await g.download(), 'x = 42');
+  g.toggleEdit();
+  g.edit('x = 1');
+  assert.equal(g.warnsOnUnload(), false);
+});
+
+test('an edit awaiting debounce cannot render over a different file', async () => {
+  const g = await gallery({ editable: true });
+  const first = g.navigate({ model: 'old.flatppl' });
+  g.requests[0].resolve({ primarySource: 'x = 1', sources: {} });
+  await first;
+  g.toggleEdit();
+  g.edit('x = 42');
+  const next = g.navigate({ model: 'new.flatppl' });
+  g.requests[1].resolve({ primarySource: 'y = 2', sources: {} });
+  await next;
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.equal(g.renders.at(-1).text, 'y = 2');
+});
+
+test('Edit cannot unlock a loading or failed source buffer', async () => {
+  const g = await gallery({ editable: true });
+  const pending = g.navigate({ model: 'slow.flatppl' });
+  g.toggleEdit();
+  assert.equal(g.readOnly(), true);
+  g.requests[0].resolve({ primarySource: 'x = 1', sources: {} });
+  await pending;
+  assert.equal(g.readOnly(), false);
+  const failed = g.navigate({ model: 'missing.flatppl' });
+  g.requests[1].reject(new Error('missing'));
+  await failed;
+  g.toggleEdit();
+  g.toggleEdit();
+  assert.equal(g.readOnly(), true);
+});
+
+test('a failed save stays recoverable across navigation and Retry clears the warning', async () => {
+  const ls = storage();
+  const store = userStore(ls);
+  store.save('user/model.flatppl', 'x = 1');
+  const g = await gallery({ editable: true, store });
+  await g.navigate({ model: 'user/model.flatppl' });
+  g.toggleEdit();
+  g.edit('x = 42');
+  ls.fail = () => true;
+  g.save();
+  assert.equal(g.elements.get('save-error').hidden, false);
+  assert.equal(g.warnsOnUnload(), true);
+  const away = g.navigate({ model: 'away.flatppl' });
+  g.requests[0].resolve({ primarySource: 'y = 2', sources: {} });
+  await away;
+  assert.equal(g.warnsOnUnload(), true);
+  await g.navigate({ model: 'user/model.flatppl' });
+  assert.equal(g.source(), 'x = 42');
+  assert.equal(await g.download(), 'x = 42');
+  ls.fail = () => false;
+  g.elements.get('retry-save-btn').handlers.click();
+  assert.equal(g.elements.get('save-error').hidden, true);
+  assert.equal(g.warnsOnUnload(), false);
+  assert.equal(userStore(ls).getSource('user/model.flatppl'), 'x = 42');
 });
 
 test('returning to a loaded model replaces the intervening loading placeholder', async () => {

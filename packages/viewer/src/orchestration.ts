@@ -9,8 +9,9 @@
 // seed, deterministic across runs.
 
 import { rebuildDerivations } from './derivations.js';
-import { updatePlotForBinding } from './render-plot.js';
+import { updatePlotForBinding, renderPlotForCurrent } from './render-plot.js';
 import { renderMathForCurrent } from './render-math.js';
+import { sourceErrorsFor } from './diagnostics.js';
 
 /**
  * FNV-1a 32-bit string hash, then XOR the root seed. Used to give
@@ -18,7 +19,7 @@ import { renderMathForCurrent } from './render-math.js';
  * arrival order — two independent variables stay independent
  * regardless of which one the user clicked first.
  */
-import { enterModuleView, focusNode } from './dag.js';
+import { enterModuleView, focusNode, fitGraph } from './dag.js';
 import type { Ctx } from './types';
 export function nameSeed(ctx: Ctx, name: any) {
   let h = 2166136261;
@@ -117,6 +118,9 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
         bundle: ctx.currentBundleSources ? { sources: ctx.currentBundleSources } : undefined,
         path: ctx.currentPath || undefined,
       });
+      ctx.sourceErrors = sourceErrorsFor(result);
+      const notice = document.getElementById('graph-source-notice');
+      if (notice) { notice.hidden = ctx.sourceErrors.length === 0; notice.textContent = 'Source needs attention.'; }
       ctx.currentBindings = result.bindings;
       // The source these bindings came from — what the math pane renders;
       // `currentSource` may run ahead of it while an edit fails to parse.
@@ -139,6 +143,11 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
       // own diagnostics (VS Code editor squiggles, embed page
       // markers, …) surface the error to the user.
       console.error('FlatPPL parse error:', e);
+      ctx.sourceErrors = [{ severity: 'error', message: e instanceof Error ? e.message : String(e) }];
+      const notice = document.getElementById('graph-source-notice');
+      if (notice) { notice.hidden = false; notice.textContent = 'Source needs attention. The graph shows the last valid model.'; }
+      ctx.currentPlotPlan = null;
+      if (ctx.plotEnabled) renderPlotForCurrent(ctx);
       // The math pane keeps the last valid model too, but says so.
       if (ctx.mathEnabled) renderMathForCurrent(ctx);
       return;
@@ -216,6 +225,6 @@ export function resizeAndFitCy(ctx: Ctx) {
   ctx._cyFitTimer = setTimeout(function () {
     ctx._cyFitTimer = null;
     if (!ctx.cy) return;
-    try { ctx.cy.fit(undefined, 40); } catch (_) {}
+    if (ctx.graphAutoFit) try { fitGraph(ctx); } catch (_) {}
   }, 150);
 }
