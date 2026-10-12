@@ -1088,14 +1088,12 @@ lps = broadcast(logdensityof, mix, [${grid}])
 
 // =====================================================================
 // Reference-measure guard (engine-concepts §11/§12). logsumexp-ing a
-// continuous (Lebesgue) branch with a discrete/atomic (counting /
-// point-mass) one is dimensionally meaningless — the spike-and-slab
-// trap. The guard refuses such a logdensityof with a clear error,
-// while leaving SAMPLING (well-defined) allowed, and never rejects a
-// homogeneous mixture (zero-false-positive).
+// continuous (Lebesgue) branch with a discrete branch requires a common
+// reference. Fixed scalar atoms extend Lebesgue with Dirac references;
+// general counting mixtures still refuse. Sampling is unchanged.
 // =====================================================================
 
-test('ref-measure guard: spike-and-slab ifelse(c,Normal,Dirac) density is refused', async () => {
+test('fixed-atom reference: spike-and-slab scores its atom probability', async () => {
   const ctx = makeCtx(`
 A = Normal(mu = 0.0, sigma = 1.0)
 S = Dirac(value = 0.0)
@@ -1103,8 +1101,8 @@ c = draw(Bernoulli(p = 0.3))
 M = ifelse(c, A, S)
 lp = logdensityof(M, 0.0)
 `);
-  await assert.rejects(() => ctx.getMeasure('lp'),
-    /incommensurable reference measures|spike-and-slab/);
+  const m = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(m.samples[0] - Math.log(0.7)) < 1e-12);
 });
 
 test('ref-measure guard: spike-and-slab SAMPLING stays well-defined (density-only guard)', async () => {
@@ -1162,7 +1160,7 @@ lp = logdensityof(superpose(A, B), 0.5)
     `Normal+Cauchy superpose: got ${m.samples[0]}, expected ${expected}`);
 });
 
-test('ref-measure guard: nested heterogeneity (branch is itself mixed) is refused', async () => {
+test('fixed-atom reference: nested mixture retains its atom probability', async () => {
   const ctx = makeCtx(`
 A = Normal(mu = 0.0, sigma = 1.0)
 B = Normal(mu = 3.0, sigma = 1.0)
@@ -1172,8 +1170,8 @@ c = draw(Bernoulli(p = 0.5))
 M = ifelse(c, A, inner)
 lp = logdensityof(M, 0.0)
 `);
-  await assert.rejects(() => ctx.getMeasure('lp'),
-    /incommensurable reference measures|spike-and-slab/);
+  const m = await ctx.getMeasure('lp');
+  assert.ok(Math.abs(m.samples[0] - Math.log(0.5)) < 1e-12);
 });
 
 // =====================================================================
