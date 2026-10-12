@@ -346,6 +346,10 @@ after the table.
 | `kernel-broadcast-axes.ts` (~75) | Pure §04 broadcast-axis resolver `resolveBroadcastAxes` (+ `coordToOffset`/`cellToCoord`) — ONE source of truth shared by the mat-broadcast executor and density's `walkBroadcast` (agree-by-construction axis alignment); sizes-only, dependency-free leaf. |
 | `variants.ts` (~85) | Surface-syntax registry (spec §05): ONE canonical variant (`.flatppl`); `variantForPath` + `resolveVariant` (retired FlatPPY/FlatPPJ ids throw — forward-compat seam). |
 
+Worker `sampleN` and `truncateSampleN` bind whole parameter atoms, including
+vector and matrix values, through `value._sliceRow`. View materialization happens
+once per parameter column; IID replicates share that atom's parameter values.
+
 Ordinary broadcasts and scans reuse the single-point compiler too. Plans follow
 body-IR lifetime through weak caches. Each cell or scan step starts a new
 generation, and each invocation clears cached values and environments, including
