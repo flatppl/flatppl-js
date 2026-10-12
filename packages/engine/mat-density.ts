@@ -26,7 +26,7 @@ const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
-const { totalMassExpr, assertFixedMassFallback } = require('./normalize-mass.ts');
+const { totalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
 const { engineLimitation } = require('./limitations.ts');
 const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
@@ -1863,6 +1863,10 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
       // has its own loud error for the same condition.
       node.fromNormalize = true;
       continue;   // do NOT add this node to the materialise list
+    }
+    if (canDeferTruncateNormalizer(node.args[0])) {
+      delete node.massFrom;
+      continue;
     }
     // #322: normalize(weighted(w, Lebesgue(interval))) with a θ-independent
     // weight → deterministic quadrature Z (∫ w over the interval), instead of

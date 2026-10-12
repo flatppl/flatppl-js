@@ -1300,14 +1300,25 @@ function accumulateLogdensityFold(node: any, value: any, refArrays: any, N: any,
 function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // truncate(M, S): indicator(S) × base density. Per spec §06 this does
   // NOT normalise — density inside S equals base density; outside S
-  // it's -Infinity. The consumed scalar is atom-independent (lives in
-  // `value`), so the indicator gate is evaluated once and applied
-  // uniformly to acc when out-of-support.
+  // it's -Infinity. The consumed scalar is atom-independent, but interval
+  // bounds may vary with the current parameters in refArrays or overlay.
   const parseSet = opts.parseSet;
   if (typeof parseSet !== 'function') {
     throw new Error('density: truncate requires parseSet opt');
   }
-  const setDescr = parseSet(ir.args[1]);
+  const set: any = ir.args[1];
+  if (set.kind === 'call' && set.op === 'interval' && set.args?.length === 2) {
+    const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+    const consumed = inferConsumedScalar(value, rest);
+    if (consumed != null) {
+      applyAtomScalar(set.args[0], refArrays, N, baseEnv, overlay, acc,
+        (a: Float64Array, i: number, lo: number) => { if (!(consumed >= lo)) a[i] = -Infinity; });
+      applyAtomScalar(set.args[1], refArrays, N, baseEnv, overlay, acc,
+        (a: Float64Array, i: number, hi: number) => { if (!(consumed <= hi)) a[i] = -Infinity; });
+    }
+    return rest;
+  }
+  const setDescr = parseSet(set);
   // Unreducible set IR (dynamic / per-atom bounds): scoring while IGNORING
   // the support restriction would return the un-truncated density for
   // out-of-support points — silent-wrong (audit Phase 6, inSet(null)→throw).
@@ -1354,16 +1365,21 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   // RAW functionof body per row) — a bare normalize(truncate(...)) there
   // would otherwise fall through to the "Z treated as 1" case below and
   // silently drop the per-row truncation normalizer (Buffy #73 item 4).
-  // Resolve Z = M(S) here, worker-side, from the env-bound base. Anything
-  // this can't resolve (unrecognised set, discrete/multivariate base) falls
-  // through unchanged to the legacy bare-normalize behaviour; the inner
-  // walkTruncate still gates out-of-support points to −∞ regardless.
+  // Resolve Z = M(S) from the current atom, including observed record fields
+  // in overlay. Refuse an unresolved normalizer instead of dropping it.
   const inner: any = ir.args && ir.args[0];
   if (inner && inner.kind === 'call' && inner.op === 'truncate'
       && Array.isArray(inner.args) && inner.args.length === 2) {
-    const shift = tryResolveTruncateNormalizerShift(inner, opts, baseEnv, overlay);
-    if (shift != null) {
-      for (let i = 0; i < N; i++) acc[i] += shift;
+    const refs = Object.keys(refArrays || {}).filter(name =>
+      !(overlay && name in overlay) && _exprUsesAny(inner, [name]));
+    const accessors = refs.map(name => _refAtomAccessor(refArrays[name]));
+    const env = Object.assign({}, baseEnv, overlay);
+    for (let i = 0; i < (refs.length ? N : 1); i++) {
+      for (let j = 0; j < refs.length; j++) env[refs[j]] = accessors[j](i);
+      const shift = tryResolveTruncateNormalizerShift(inner, opts, env, null);
+      if (shift == null) throw new Error('density: cannot resolve truncated normalizer at current parameters');
+      if (refs.length) acc[i] += shift;
+      else for (let j = 0; j < N; j++) acc[j] += shift;
     }
   }
   // Bare normalize(superpose(weighted(w_k, M_k), …)) — §06's recommended
@@ -1462,7 +1478,12 @@ function tryResolveSuperposeNormalizerShift(
 function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: any, overlay: any): number | null {
   const parseSet = opts && opts.parseSet;
   if (typeof parseSet !== 'function') return null;
-  const setDescr = parseSet(truncateIR.args[1]);
+  const callEnv = overlay ? Object.assign({}, baseEnv, overlay) : baseEnv;
+  const setIR = truncateIR.args[1];
+  const setDescr = setIR?.op === 'interval' && setIR.args?.length === 2
+    ? { kind: 'interval', lo: +samplerLib.evaluateExpr(setIR.args[0], callEnv),
+      hi: +samplerLib.evaluateExpr(setIR.args[1], callEnv) }
+    : parseSet(setIR);
   if (!setDescr) return null;
   let lo: number, hi: number;
   if (setDescr.kind === 'interval') {
@@ -1477,7 +1498,6 @@ function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: 
     // Discrete / unrecognised continuous set shape — not a CDF-bounds case.
     return null;
   }
-  if (!Number.isFinite(lo) && !Number.isFinite(hi)) return null;
 
   const baseIR: any = truncateIR.args[0];
   if (!baseIR || baseIR.kind !== 'call' || typeof baseIR.op !== 'string') return null;
@@ -1493,8 +1513,8 @@ function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: 
       + 'discrete base measure’s support-restricted normalizer (Σ pmf over S) '
       + 'is not implemented; refusing to score with a dropped normalizer (spec §06)');
   }
+  if (lo === -Infinity && hi === Infinity) return 0;
 
-  const callEnv = overlay ? Object.assign({}, baseEnv, overlay) : baseEnv;
   let positional: any[];
   try {
     positional = samplerLib.resolveParams(baseIR, entry, callEnv);

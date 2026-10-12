@@ -421,11 +421,10 @@ function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
     const N = ctx.sampleCount;
     const parentLTM = shared.massOf(parent);
     const bounds = setBoundsForMat(d.setDescr);
-    if (!bounds) {
+    if (!bounds && !d.setIR) {
       return Promise.reject(new Error(
         'truncate: unsupported set kind \'' + (d.setDescr && d.setDescr.kind) + '\''));
     }
-    const [lo, hi] = bounds;
 
     const expanded = orchestrator.expandMeasure(d.from,
       { derivations: ctx.derivations, bindings: ctx.bindings });
@@ -433,9 +432,11 @@ function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
     const hasCdf = expanded && expanded.kind === 'call'
       && require('./forward-cdf.ts').hasCdf(expanded.op);
     if (expanded && expanded.kind === 'call' && (parentUniform || hasCdf)) {
-      const valueRefs = orchestrator.collectSelfRefs(expanded);
+      const measureIR = d.setIR
+        ? { kind: 'call', op: 'truncate', args: [expanded, d.setIR] } : expanded;
+      const valueRefs = orchestrator.collectSelfRefs(measureIR);
       const hasRefs = valueRefs.size > 0 || (Array.isArray(valueRefs) && valueRefs.length > 0);
-      const cdfEligible = !hasRefs && orchestrator.SAMPLEABLE_DISTRIBUTIONS
+      const cdfEligible = !d.setIR && !hasRefs && orchestrator.SAMPLEABLE_DISTRIBUTIONS
         && orchestrator.SAMPLEABLE_DISTRIBUTIONS.has(expanded.op);
       const seed = nameSeed(d.from + '|truncate', ctx.rootKey);
 
@@ -455,11 +456,13 @@ function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
       }
 
       // Rejection-redraw. Need refArrays for parametric params.
-      return collectRefArrays(expanded, ctx)
+      const parameterParents: any[] = [];
+      return collectRefArrays(measureIR, ctx, parameterParents)
         .then((refArrays: any) => ctx.sendWorker({
           type: 'truncateSampleN',
           ir: expanded,
           setDescr: d.setDescr,
+          setIR: d.setIR,
           count: N,
           mode: 'rejection',
           budget: ctx.rejectionBudget != null ? ctx.rejectionBudget : 1000,
@@ -470,11 +473,12 @@ function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
         .then((reply: any) => {
           const samples = reply.samples;
           if (hasCdf || reply.logMasses) {
-            return shared.withSliceMasses(scalarMeasureN(samples, {
+            const measure = shared.withParameterWeights(scalarMeasureN(samples, {
               logWeights: parent.logWeights,
               logTotalmass: normalized ? 0 : shared.addMass(parentLTM, reply.logShift || 0),
               n_eff: reply.n_eff,
-            }), reply.logMasses);
+            }), parameterParents);
+            return shared.withSliceMasses(measure, reply.logMasses);
           }
           let anyNaN = false;
           for (let i = 0; i < samples.length; i++) {
@@ -496,6 +500,8 @@ function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
     }
 
     // Filter-only fallback.
+    if (!bounds) throw new Error('truncate: live interval bounds require a sampleable scalar base');
+    const [lo, hi] = bounds;
     const parentSamples = parent.samples;
     const out = new Float64Array(parentSamples.length);
     const logMasses = new Float64Array(parentSamples.length);
