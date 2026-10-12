@@ -589,11 +589,14 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           const mode    = msg.mode    || 'rejection';
           if (count <= 0) throw new Error(`truncateSampleN.count must be positive integer (got ${msg.count})`);
           if (repeat <= 0) throw new Error(`truncateSampleN.repeat must be positive integer (got ${msg.repeat})`);
-          if (!setDescr) throw new Error('truncateSampleN.setDescr is required');
-          const [lo, hi] = setBoundsFor(setDescr);
-          if (!(hi >= lo)) {
-            throw new Error('truncateSampleN: degenerate set bounds [' + lo + ', ' + hi + ']');
-          }
+          if (!setDescr && !msg.setIR) throw new Error('truncateSampleN requires a set');
+          const boundsAt = (drawEnv: any): [number, number] => {
+            const bounds = setBoundsFor(setDescr || makeParseSet(drawEnv)(msg.setIR));
+            if (!(bounds[1] >= bounds[0])) {
+              throw new Error('truncateSampleN: degenerate set bounds [' + bounds.join(', ') + ']');
+            }
+            return bounds;
+          };
           let state = seed != null ? _stateFromSeed(seed) : philox;
           const total = count * repeat;
           const out = new Float64Array(total);
@@ -608,11 +611,12 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             const drawEnv = { ...env, ...(msg.env || {}) };
             const logMasses = refKeys.length > 0 && !msg.normalized
               ? new Float64Array(count) : null;
-            let params: any, mass = 0;
+            let params: any, mass = 0, lo = 0, hi = 0;
             let valid = 0;
             for (let a = 0; a < count; a++) {
               for (const key of refKeys) drawEnv[key] = refArrays[key][a];
               if (a === 0 || refKeys.length > 0) {
+                [lo, hi] = boundsAt(drawEnv);
                 const values = samplerLib.resolveParams(msg.ir, entry, drawEnv);
                 params = msg.ir.op === 'Uniform'
                   ? { lo: values[0], hi: values[1] }
@@ -642,6 +646,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // (static params required — refArrays not supported here),
             // pre-compute F(lo) and F(hi), then per-draw Q(F(lo) + u·Δ).
             const callEnv = msg.env ? { ...env, ...msg.env } : env;
+            const [lo, hi] = boundsAt(callEnv);
             const dist = samplerLib.makeAnalytical(msg.ir, callEnv);
             const Flo = isFinite(lo) ? dist.cdf(lo) : 0;
             const Fhi = isFinite(hi) ? dist.cdf(hi) : 1;
@@ -672,6 +677,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           let totalDraws = 0;
           let n_eff = 0;
           if (refKeys.length === 0) {
+            const [lo, hi] = boundsAt(env);
             const s = samplerLib.makeSampler(state, msg.ir, env);
             for (let i = 0; i < total; i++) {
               let v = NaN;
@@ -694,6 +700,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // conditional independence).
             for (let a = 0; a < count; a++) {
               for (const k of refKeys) drawEnv[k] = refArrays[k][a];
+              const [lo, hi] = boundsAt(drawEnv);
               for (let r = 0; r < repeat; r++) {
                 let v = NaN;
                 // One proposal with an indicator is an unbiased restricted

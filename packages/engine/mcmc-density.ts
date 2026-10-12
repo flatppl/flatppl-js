@@ -25,7 +25,7 @@ const density       = require('./density.ts');
 const irShared      = require('./ir-shared.ts');
 const sampler       = require('./sampler.ts');
 const lower         = require('./lower.ts');
-const { totalMassExpr, assertFixedMassFallback } = require('./normalize-mass.ts');
+const { totalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
 const { crnNormalizeMassExpr } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
 
@@ -73,48 +73,6 @@ function collectNormalizeMassNodes(node: any, out: any[], seen: Set<any>) {
   }
 }
 
-
-// ---------------------------------------------------------------------------
-// canDeferTruncateNormalizer — Buffy #384: normalize(truncate(D(θ), S)) whose
-// base D's params (or S's bounds) reference a LIVE latent (a draw, or a
-// derived binding depending on one) cannot have its −log Z baked at setup:
-// Z(θ) changes every MCMC step. Rather than re-implement the CDF-difference
-// math here, recognise when the bare (massFrom-stripped) node reaching
-// density.ts's walker will be resolved CORRECTLY and DYNAMICALLY, per call,
-// by density.ts's own tryResolveTruncateNormalizerShift — the exact mechanism
-// the per-cell kernel-broadcast walk already relies on for the same shape
-// (density.ts:996 "Resolve Z = M(S) here, worker-side, from the env-bound
-// base"). That path evaluates the base's params from `opts.baseEnv`
-// (== the current point's `env` here) via `samplerLib.resolveParams`, so it
-// is automatically correct at every θ — we just need to NOT bake a stale
-// constant over it first.
-//
-// Returns true only when the shape is one that path is GUARANTEED to resolve
-// (never silently falls through to "Z treated as 1"): a truncate over a
-// KNOWN, CONTINUOUS (non-discrete) univariate distribution, with a bounds set
-// that is structurally an `interval(lo, hi)` call or one of the named
-// continuous sets (reals/posreals/nonnegreals) tryResolveTruncateNormalizerShift
-// recognises. Anything else (discrete base, unknown op, an unrecognised set
-// shape) is NOT deferred — it keeps the pre-existing materialise/bake path
-// (correct for θ-independent params; may throw for a θ-dependent case this
-// function can't safely classify, same as before this fix).
-const NAMED_CONTINUOUS_SETS = new Set(['reals', 'posreals', 'nonnegreals']);
-function canDeferTruncateNormalizer(inner: any): boolean {
-  if (!inner || inner.kind !== 'call' || inner.op !== 'truncate'
-      || !Array.isArray(inner.args) || inner.args.length !== 2) return false;
-  const baseIR = inner.args[0];
-  if (!baseIR || baseIR.kind !== 'call' || typeof baseIR.op !== 'string') return false;
-  if (!sampler.isKnownDistribution(baseIR.op)) return false;
-  let entry: any;
-  try { entry = sampler.lookupDistribution(baseIR); } catch (_) { return false; }
-  if (!entry || entry.discrete) return false;
-  const boundsIR = inner.args[1];
-  if (boundsIR && boundsIR.kind === 'call' && boundsIR.op === 'interval'
-      && Array.isArray(boundsIR.args) && boundsIR.args.length === 2) return true;
-  if (boundsIR && (boundsIR.kind === 'const' || (boundsIR.kind === 'ref' && boundsIR.ns === 'self'))
-      && NAMED_CONTINUOUS_SETS.has(boundsIR.name)) return true;
-  return false;
-}
 
 // Does `ir` reference any name in `atomDep` (a draw, or a value derived from
 // one)? Used to decide whether a normalize(truncate(...)) node's mass is

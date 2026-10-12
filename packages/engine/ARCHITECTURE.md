@@ -254,6 +254,11 @@ Explicit likelihood inputs also retain shape and logical matrix views. CLM
 feeds one constant tensor per atom as `[N, ...shape]`, so the density worker's
 atom slice keeps every intrinsic matrix axis.
 
+Truncation derivations retain live interval bounds as IR. Sampling evaluates
+those bounds per outer atom; density uses the current point and observed record
+fields for both membership and the conditional CDF normalizer. Raw truncation
+retains each slice's mass, while normalization removes that conditional factor.
+
 Line counts are approximate size hints. Bug-preventing caveats are called out
 after the table.
 

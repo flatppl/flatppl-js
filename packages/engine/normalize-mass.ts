@@ -7,6 +7,23 @@
 const orchestrator = require('./orchestrator.ts');
 const { engineLimitation } = require('./limitations.ts');
 
+// The density walker evaluates these CDF normalizers at the current atom.
+// Both standalone density and MCMC must defer them rather than freeze a
+// captured parameter's pooled mass during setup.
+function canDeferTruncateNormalizer(inner: any): boolean {
+  if (!inner || inner.kind !== 'call' || inner.op !== 'truncate'
+      || !Array.isArray(inner.args) || inner.args.length !== 2) return false;
+  const base = inner.args[0];
+  if (!base || base.kind !== 'call' || typeof base.op !== 'string') return false;
+  if (!require('./forward-cdf.ts').hasCdf(base.op)) return false;
+  const sampler = require('./sampler.ts');
+  if (!sampler.isKnownDistribution(base.op) || sampler.lookupDistribution(base).discrete) return false;
+  const set = inner.args[1];
+  return set?.kind === 'call' && set.op === 'interval' && set.args?.length === 2
+    || (set?.kind === 'const' || set?.kind === 'ref' && set.ns === 'self')
+      && ['reals', 'posreals', 'nonnegreals'].includes(set.name);
+}
+
 // Build an IR EXPRESSION for the total mass Z of a measure IR, as a function of
 // the current point θ (the weights may reference latents). Returns null when
 // the structure isn't a closed-form mass we can express symbolically.
@@ -267,4 +284,4 @@ function assertFixedMassFallback(inner: any, ctx: any, route: string): void {
 // which certifies a dropped structural-projection component's total mass and
 // needs the same exact CDF difference. The two callers must not diverge: one
 // arm computing M(S) means one accepted set and one refusal boundary.
-module.exports = { totalMassExpr, truncateMassLit, assertFixedMassFallback };
+module.exports = { totalMassExpr, truncateMassLit, assertFixedMassFallback, canDeferTruncateNormalizer };

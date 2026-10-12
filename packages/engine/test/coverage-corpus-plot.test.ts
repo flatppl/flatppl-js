@@ -64,7 +64,7 @@ const EXPECTED_MATERIALISES: Record<string, string[]> = {
   sensor_calibration:  ['X', 'y_obs', 'beta', 'mu_pred', 'y', 'prior', 'posterior'],
   spectral_lines:      ['centers', 'y_obs', 'w', 'sigma', 'line', 'y', 'prior', 'posterior'],
   two_instruments:     ['obs_a', 'obs_b', 'prior'],
-  censored_lifetimes:  ['t_obs', 'prior'],
+  censored_lifetimes:  ['t_obs', 'prior', 'posterior'],
   stdmod_interp_poly6: ['reference_point'],
   beam_bunch:          ['s', 'b', 'sig_shape', 'bkg_shape', 'intensity', 'prior'],
   kscan_walk:          ['dts', 'traj_obs', 'prior'],
@@ -82,7 +82,6 @@ const EXPECTED_GAPS: Record<string, Record<string, string>> = {
   beam_bunch:         { events: 'PoissonProcess', posterior: 'PoissonProcess' },
   kscan_walk:         { posterior: "measure op 'kscan'" },
   paired_assay:       { tab: 'iid over a record measure' },
-  censored_lifetimes: { posterior: 'truncate set could not be resolved' },
   mv_mixture_sample:  { draws: '' },
   b_mass_peak:        { posterior: '' },
 };

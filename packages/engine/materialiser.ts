@@ -1604,11 +1604,14 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
     // Truncated leaf: route to truncateSampleN with count = N*k.
     // Output is shape=[N, ...dims] atom-major; the worker returns
     // a flat N*k Float64Array which we wrap directly.
-    return collectRefArrays(resolved.distIR, ctx, leafParents)
+    const measureIR = resolved.setIR
+      ? { kind: 'call', op: 'truncate', args: [resolved.distIR, resolved.setIR] } : resolved.distIR;
+    return collectRefArrays(measureIR, ctx, leafParents)
       .then((refArrays: any) => ctx.sendWorker({
         type: 'truncateSampleN',
         ir: resolved.distIR,
         setDescr: resolved.setDescr,
+        setIR: resolved.setIR,
         // count = N outer atoms, repeat = k iid replicates per atom (atom-major
         // output of length N*k). Passing repeat (not an inflated count=N*k)
         // keeps per-atom param columns length-N so the worker indexes them by
@@ -1860,7 +1863,7 @@ function _reifiedVariatesUnder(
 // an inflated sample count.
 function _resolveIidLeaf(
   name: string, derivations: any, visited?: Set<string>,
-): { kind: 'sample' | 'truncate'; distIR: any; setDescr?: any; normalized?: boolean } | null {
+): { kind: 'sample' | 'truncate'; distIR: any; setDescr?: any; setIR?: any; normalized?: boolean } | null {
   visited = visited || new Set();
   if (visited.has(name)) return null;
   visited.add(name);
@@ -1878,7 +1881,7 @@ function _resolveIidLeaf(
     // underlying dist IR + the set descriptor.
     const parentLeaf = _resolveIidLeaf(d.from, derivations, visited);
     if (!parentLeaf || parentLeaf.kind !== 'sample') return null;
-    return { kind: 'truncate', distIR: parentLeaf.distIR, setDescr: d.setDescr };
+    return { kind: 'truncate', distIR: parentLeaf.distIR, setDescr: d.setDescr, setIR: d.setIR };
   }
   return null;
 }
@@ -3619,7 +3622,7 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
   if (op === 'truncate' && Array.isArray(ir.args) && ir.args.length === 2) {
     const from = register(ir.args[0], 'truncate:base');
     const setDescr = irShared.parseSetIR(ir.args[1], childCtx.bindings);
-    return { kind: 'truncate', from, setDescr };
+    return { kind: 'truncate', from, setDescr, setIR: setDescr ? undefined : ir.args[1] };
   }
   // weighted(w, M) / logweighted(lw, M) with a CONSTANT weight: a log-mass shift
   // on the base (matWeighted's `logShift` path). `weighted(const, M)` lowers to

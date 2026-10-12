@@ -513,6 +513,8 @@ export interface DerivationTruncate {
   name?: string;
   from: string;
   setDescr: any;
+  /** Interval IR when bounds depend on live parameters. */
+  setIR?: IRNode;
 }
 
 /** Pushforward of `from` measure through function-binding `fnRef`. */

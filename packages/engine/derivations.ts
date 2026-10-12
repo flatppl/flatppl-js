@@ -2695,15 +2695,19 @@ function classifyTotalmass(rhsIR: IRNode, ast: any, bindings: any): DerivationTo
  *     accepts; the materialiser walks the parent measure for samples).
  *   - S is a set expression parseSetIR can lift to a structural
  *     descriptor: interval(lo, hi) with fixed bounds, or one of the
- *     named real / integer / boolean sets. Dynamic sets defer to a
- *     future pass — they'd require per-atom set membership evaluation.
+ *     named real / integer / boolean sets. An interval with live bounds keeps
+ *     its IR for per-atom membership and normalization.
  */
 function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): DerivationTruncate | null {
   if (!Array.isArray(rhsIR.args) || rhsIR.args.length !== 2) return null;
   const baseName = resolveMeasureBaseName(ast.args[0], bindings);
   if (baseName == null) return null;
   const setDescr = parseSetIR(rhsIR.args[1], bindings, fixedValues);
-  if (setDescr == null) return null;
+  if (setDescr == null) {
+    const setIR = rhsIR.args[1];
+    if (!isCallOp(setIR, 'interval', 2)) return null;
+    return { kind: 'truncate', from: baseName, setDescr: null, setIR };
+  }
   return { kind: 'truncate', from: baseName, setDescr };
 }
 
@@ -4314,7 +4318,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     return resolvable(d.measureName);
   }
   if (d.kind === 'truncate') {
-    return resolvable(d.from);
+    return resolvable(d.from) && Array.from(collectSelfRefs(d.setIR)).every(resolvable);
   }
   const ir = d.kind === 'sample' ? d.distIR : d.ir;
   const refs = collectSelfRefs(ir);
