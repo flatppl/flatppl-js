@@ -180,6 +180,10 @@ parameter slice's mass as one weight event, including IID's product of slice
 masses. Without a CDF, raw parameterized truncation uses a proposal and support
 indicator; normalized truncation uses bounded rejection.
 
+Mixture reference classification follows the density walker's measure resolver,
+including references retained inside pointwise callbacks. Fixed scalar atoms
+extend Lebesgue; unresolved moving atom locations still refuse density scoring.
+
 `load_module` end-to-end works as follows:
 - **Compile** — `processSource` reads `opts.bundle.sources`, recursively
   compiles each `load_module`-referenced dependency into its own
