@@ -606,7 +606,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       throw new Error('bayesupdate: cannot expand body into measure IR');
     }
     /* c8 ignore stop */
-    const observed = orchestrator.resolveIRToValue(t.obsIR, ctx.bindings, ctx.fixedValues);
+    const observed = orchestrator.resolveIRToValue(t.obsIR, ctx.bindings, ctx.fixedValues, true);
     return matScore(node, ctx, { observed });
   });
   return Promise.all([
@@ -751,7 +751,7 @@ function matLikelihoodDensity(d: any, ctx: any) {
   // function of θ, so resolve it HERE at the fixed point, the same way the §12
   // product normalizer above does, before scoring.
   resolveTruncateNormalizers(node.body, theta, ctx);
-  const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
+  const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues, true);
   return matScore(node, ctx, { observed })
     .then((reply: any) => applyReduce(reply, node));
 }
@@ -1979,7 +1979,7 @@ function matLogdensityof(d: DerivationLogdensityof, ctx: any) {
     ? require('./materialiser.ts').materialiseMeasureIR(node.marginalHistoryBody, ctx)
     : Promise.resolve(null);
   const observed = orchestrator.resolveIRToValue(
-    d.obsIR, ctx.bindings, ctx.fixedValues);
+    d.obsIR, ctx.bindings, ctx.fixedValues, true);
   return innerJointP.then((innerJoint: any) => {
     const extraRefArrays: Record<string, any> = {};
     if (innerJoint) {

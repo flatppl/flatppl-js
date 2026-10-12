@@ -288,8 +288,10 @@ function resolveCallableAlias(name: string, bindings: any): string {
  * an expression the deterministic evaluator itself rejects). The
  * thrown message names the failure so the viewer can surface it
  * directly as a plot-time error rather than a silent failure.
+ * Density observations opt into `preserveShape`: keep evaluated Values so
+ * matrix/view/outerRank metadata survives point-mass support comparison.
  */
-function resolveIRToValue(ir: any, bindings: any, fixedValues: any) {
+function resolveIRToValue(ir: any, bindings: any, fixedValues: any, preserveShape = false) {
   return walk(ir, new Set());
   function walk(ir: any, seen: Set<any>): any {
     if (!ir || typeof ir !== 'object') {
@@ -301,7 +303,7 @@ function resolveIRToValue(ir: any, bindings: any, fixedValues: any) {
         // resolveIRToValue's documented output contract is plain JS
         // (not shape-tagged Values), so the engine-concepts §2.1
         // migration of producers to Values is invisible here.
-        return valueToPlain(fixedValues.get(ir.name));
+        return preserveShape ? fixedValues.get(ir.name) : valueToPlain(fixedValues.get(ir.name));
       }
       if (seen.has(ir.name)) {
         throw new Error(`resolveIRToValue: cycle through '${ir.name}'`);
@@ -350,7 +352,8 @@ function resolveIRToValue(ir: any, bindings: any, fixedValues: any) {
       },
     });
     const samplerLib = require('./sampler.ts');
-    return valueToPlain(samplerLib.evaluateExpr(ir, env));
+    const value = samplerLib.evaluateExpr(ir, env);
+    return preserveShape ? value : valueToPlain(value);
   }
 }
 

@@ -463,6 +463,7 @@ function builtinLogdensityof(kernelName: string, kernelInput: any, x: any): numb
     // list is spec-legal, not just a record. Route those to the
     // positional helper below; the record path is unchanged.
     if (!_isRecordLike(kernelInput)) {
+      if (kernelName === 'Dirac') return builtinLogdensityofPositional(kernelName, [kernelInput], x);
       const positionalParams = Array.isArray(kernelInput)
         ? kernelInput
         : [valueLib.isValue(kernelInput) ? _scalarOf(kernelInput, kernelName) : kernelInput];
@@ -482,7 +483,7 @@ function builtinLogdensityof(kernelName: string, kernelInput: any, x: any): numb
         throw new Error(`builtin_logdensityof(${kernelName}): missing param '${pName}'`);
       }
     }
-    return entry.logpdfFn(_scalarOf(x, kernelName), ...params);
+    return entry.logpdfFn(kernelName === 'Dirac' ? x : _scalarOf(x, kernelName), ...params);
   }
   // Multivariate.
   const fn = MV_DENSITY_FNS[kernelName];
@@ -502,7 +503,7 @@ function builtinLogdensityofPositional(kernelName: string, params: any[], x: any
       + `REGISTRY kernel — use the record form for multivariate kernels`);
   }
   const entry = samplerLib._internal.REGISTRY[kernelName];
-  return entry.logpdfFn(_scalarOf(x, kernelName), ...params);
+  return entry.logpdfFn(kernelName === 'Dirac' ? x : _scalarOf(x, kernelName), ...params);
 }
 
 // Whether `kernelInput` is a record `{ paramName: value, ... }` rather
@@ -907,6 +908,7 @@ function staticConsume(ir: any, variateType: any): StaticConsumeResult {
     return { logpType: T.REAL, rest: variateType, deferred: true };
   }
   const op = ir.op;
+  if (op === 'Dirac') return _consumeDiracType(diracAtomType(ir), variateType);
   // --- Univariate scalar leaves -------------------------------------
   if (samplerLib.isKnownDistribution(op)) {
     return _consumeScalarLeaf(variateType);
@@ -953,6 +955,47 @@ function staticConsume(ir: any, variateType: any): StaticConsumeResult {
   // Defer rather than error: the value-mode walker handles these;
   // the type-mode check just doesn't statically verify them yet.
   return { logpType: T.REAL, rest: null, deferred: true };
+}
+
+/** The inferred atom domain owns Dirac's footprint. Literal scalar fallback
+ * keeps the scalar density optimizations available after metadata stripping. */
+function diracAtomType(ir: any): any {
+  const atom = ir.kwargs?.value || ir.args?.[0];
+  return ir.meta?.type?.domain || atom?.meta?.type
+    || (atom?.kind === 'lit' && (typeof atom.value === 'number' || typeof atom.value === 'boolean') ? T.REAL : null);
+}
+
+function _consumeDiracType(atom: any, t: any): StaticConsumeResult {
+  if (!atom || !t || ['deferred', 'any', 'typevar'].includes(atom.kind) || ['deferred', 'any', 'typevar'].includes(t.kind)) {
+    return { logpType: T.REAL, rest: t, deferred: true };
+  }
+  if (atom.kind === 'scalar') return _consumeScalarLeaf(t);
+  if (atom.kind === 'table' && t.kind === 'table' && atom.nrows === t.nrows) {
+    return _consumeDiracType(T.rowRecordType(atom), T.rowRecordType(t));
+  }
+  if (atom.kind === 'record' && t.kind === 'record') {
+    const fields = { ...t.fields };
+    for (const k of Object.keys(atom.fields)) {
+      if (!fields[k]) return { logpType: T.REAL, rest: t, error: 'Dirac missing record field "' + k + '"' };
+      const part = _consumeDiracType(atom.fields[k], fields[k]);
+      if (part.error || part.rest && !part.deferred) return { ...part, error: part.error || 'Dirac record field has the wrong shape' };
+      delete fields[k];
+    }
+    return { logpType: T.REAL, rest: Object.keys(fields).length ? T.record(fields) : null };
+  }
+  if (atom.kind === 'array' && t.kind === 'array' && atom.rank === t.rank) {
+    if (atom.shape.some((n: any) => typeof n !== 'number') || t.shape.some((n: any) => typeof n !== 'number')) {
+      return { logpType: T.REAL, rest: t, deferred: true };
+    }
+    const prefix = atom.rank === 1 && t.shape[0] >= atom.shape[0];
+    const matched = atom.shape.every((n: number, i: number) => n === t.shape[i] || i === 0 && prefix);
+    const elem = _consumeDiracType(atom.elem, t.elem);
+    if (matched && !elem.error && (!elem.rest || elem.deferred)) {
+      return { logpType: T.REAL, rest: prefix && t.shape[0] > atom.shape[0]
+        ? T.array(1, [t.shape[0] - atom.shape[0]], t.elem) : null };
+    }
+  }
+  return { logpType: T.REAL, rest: t, error: 'Dirac atom and variate have incompatible shapes' };
 }
 
 function _consumeScalarLeaf(t: any): StaticConsumeResult {
@@ -1733,6 +1776,7 @@ module.exports = {
   MV_DENSITY_FNS,
   // Type-mode consume/rest (engine-concepts §17.3)
   staticConsume,
+  diracAtomType,
   staticDensityShapeCheck,
   // Chain composition (engine-concepts §19) — consume/rest at the
   // chain's input-set level. Used by fchain (mode='func') and, in

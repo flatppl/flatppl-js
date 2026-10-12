@@ -471,7 +471,7 @@ async function buildLogPi(
   const likBodyIR = await resolveNormalizeMasses(likNode.body, ctx, atomDep);
 
   // ── SETUP: observed ───────────────────────────────────────────────────────
-  const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
+  const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues, true);
   if (observed == null) {
     throw new Error('buildLogPi: cannot resolve observed value from obsIR');
   }

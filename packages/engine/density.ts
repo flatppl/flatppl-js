@@ -82,6 +82,7 @@ const { getOptimization } = require('./perf-config.ts');
 function isEmptyRest(rest: any) {
   if (rest == null) return true;
   if (typeof rest === 'number') return false;
+  if (valueLib.isValue(rest)) return rest.shape.some((n: number) => n === 0);
   if (rest && rest.BYTES_PER_ELEMENT && typeof rest.length === 'number') {
     return rest.length === 0;
   }
@@ -346,7 +347,8 @@ function consumeMatrix(value: any, n: any) {
   if (valueLib.isValue(value)) {
     if (value.shape.length === 2
         && value.shape[0] === n && value.shape[1] === n) {
-      return { head: value, rest: null };
+      // Matrix kernels consume contiguous logical entries, not structured storage.
+      return { head: valueLib._logicalDense(value), rest: null };
     }
     if (value.shape.length === 1) {
       const k = value.shape[0];
@@ -700,6 +702,9 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
   }
   const handler: any = op != null ? (OP_HANDLERS as any)[op] : null;
   if (handler) return handler(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
+  if (op === 'Dirac' && !hasScalarDensityFootprint(ir)) {
+    return walkDirac(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
+  }
 
   // Leaf distribution — the only kind not in OP_HANDLERS (because
   // there are many of them and they're discovered via the REGISTRY).
@@ -781,6 +786,75 @@ function exponentialTiltLogpdf(ir: IRNode, kernelName: string) {
     const failures = x === n ? 0 : eta < -37 ? -Math.exp(Math.log(n - x) + eta) : (n - x) * failure;
     return choose + successes + failures;
   };
+}
+
+/** §06 Dirac consumes the atom's structural footprint. Positional joints
+ * concatenate vectors and merge records; nested fields are complete values.
+ * Keep observation field order for the atom's exact structural comparison. */
+function consumeDirac(value: any, atom: any): any {
+  if (typeof atom === 'number' || typeof atom === 'boolean') return consumeScalar(value);
+  const prefix = (n: number, scalar = false) => {
+    const length = valueLib.isValue(value) ? value.shape[0] : value?.length;
+    if (length < n) throw new Error('density: Dirac atom has more entries than the variate');
+    if (valueLib.isValue(value) && value.shape.length === 1) {
+      const slice = (start: number, end: number) => ({ ...value, shape: [end - start],
+        data: value.data.subarray(start, end), ...(value.im ? { im: value.im.subarray(start, end) } : {}) });
+      return { head: scalar ? valueLib._sliceRow(value, 0) : slice(0, n), rest: length === n ? null : slice(n, length) };
+    }
+    if (Array.isArray(value) || value?.BYTES_PER_ELEMENT) {
+      return { head: scalar ? value[0] : value.slice(0, n), rest: length === n ? null : value.slice(n) };
+    }
+    return { head: value, rest: null };
+  };
+  if (typeof atom !== 'object' || atom == null) return prefix(1, true);
+  if (atom.__table__) return { head: value, rest: null };
+  if (isRecordValue(atom)) {
+    if (Array.isArray(value) || valueLib.isValue(value)) return prefix(1, true);
+    let rest = value;
+    for (const k of Object.keys(atom)) rest = consumeField(rest, k).rest;
+    const head: Record<string, any> = {};
+    for (const k of Object.keys(value)) if (Object.prototype.hasOwnProperty.call(atom, k)) head[k] = value[k];
+    return { head, rest };
+  }
+  if (Array.isArray(atom)) return atom.some(Array.isArray) ? { head: value, rest: null } : prefix(atom.length);
+  const a = valueLib.asValue(atom);
+  if (a.shape.length === 0) return prefix(1, true);
+  if (a.shape.length === 1 && !valueLib.isTransposeView(a)) {
+    return prefix(a.shape[0]);
+  }
+  // Matrices and nested arrays remain whole atoms: flattening would erase
+  // the §03 distinction between a matrix and a vector of vectors.
+  return { head: value, rest: null };
+}
+
+function walkDirac(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  const entry = samplerLib.lookupDistribution(ir);
+  const names = Object.keys(refArrays);
+  const live = _exprUsesAny(ir, names);
+  const env = Object.assign({}, baseEnv, overlay);
+  const resolveAtom = (i: number) => {
+    if (live) {
+      for (const k of names) env[k] = valueLib.isValue(refArrays[k])
+        ? valueLib._sliceRow(refArrays[k], i) : refArrays[k][i];
+      Object.assign(env, overlay);
+    }
+    return samplerLib.resolveParams(ir, entry, env)[0];
+  };
+  const first = resolveAtom(0);
+  // Unresolved scalar parameters keep the established scalar walker too.
+  if (typeof first === 'number' || typeof first === 'boolean') return walkLeaf(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
+  if (opts.pointsBatched) {
+    for (let i = 0; i < N; i++) {
+      const point = valueLib.isValue(value) ? valueLib._sliceRow(value, i) : value[i];
+      acc[i] += densityPrims.builtinLogdensityofPositional('Dirac', [live ? resolveAtom(i) : first], point);
+    }
+    return null;
+  }
+  const { head, rest } = consumeDirac(value, first);
+  const logp = densityPrims.builtinLogdensityofPositional('Dirac', [first], head);
+  for (let i = 0; i < N; i++) acc[i] += live && i > 0
+    ? densityPrims.builtinLogdensityofPositional('Dirac', [resolveAtom(i)], head) : logp;
+  return rest;
 }
 
 function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any, repeat = 1) {
@@ -1405,7 +1479,7 @@ function scalarJointPlan(ir: any): any {
   const leaves = ir.args;
   let plan = null;
   if (leaves.length > 1 && leaves.every((leaf: any) => leaf.kind === 'call'
-      && !(OP_HANDLERS as any)[leaf.op] && samplerLib.isKnownDistribution(leaf.op))) {
+      && !(OP_HANDLERS as any)[leaf.op] && samplerLib.isKnownDistribution(leaf.op) && hasScalarDensityFootprint(leaf))) {
     const entries = leaves.map((leaf: any) => samplerLib.lookupDistribution(leaf));
     // Custom resolvers may consume structural arguments such as unitinterval,
     // which are not ordinary value expressions for the compiler to evaluate.
@@ -1533,8 +1607,8 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
   // overlay mechanism, positionally. Threading extra `s{i}` keys is
   // inert for independent joints (they never ref them).
   if (Array.isArray(ir.args)) {
-    // The general walker threads positional observations only for JS arrays.
-    // Preserve its other shape and points-batched paths unchanged.
+    // The fused scalar plan uses JS arrays; other carriers retain the
+    // general walker and its observation threading below.
     const plan = getOptimization('density.scalarJoint')
       && Array.isArray(value) && value.length >= ir.args.length
       && !opts.pointsBatched ? scalarJointPlan(ir) : null;
@@ -1545,12 +1619,11 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
       const before = cur;
       cur = walkAcc(ir.args[i], before, refArrays, N, opts, acc, baseEnv,
         curOverlay);
-      if (i + 1 < ir.args.length && Array.isArray(before)) {
-        const restLen = Array.isArray(cur) ? cur.length
-          : (cur == null ? 0 : 1);
-        if (before.length - restLen === 1) {     // consumed one scalar
+      if (i + 1 < ir.args.length && (Array.isArray(before)
+          || valueLib.isValue(before) && before.shape.length === 1)) {
+        if (_consumedLen(before, cur) === 1) {     // consumed one scalar
           curOverlay = curOverlay ? Object.assign({}, curOverlay) : {};
-          curOverlay['s' + i] = before[0];
+          curOverlay['s' + i] = valueLib.isValue(before) ? valueLib._sliceRow(before, 0) : before[0];
         }
       }
     }
@@ -1563,6 +1636,10 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
 // their scalar variate. Unknown, reified and array-valued forms keep the walker.
 function hasScalarDensityFootprint(ir: any): boolean {
   if (!ir || ir.kind !== 'call') return false;
+  if (ir.op === 'Dirac') {
+    const t = densityPrims.diracAtomType(ir);
+    return t?.kind === 'scalar' && ['real', 'integer', 'boolean'].includes(t.prim);
+  }
   if (!(OP_HANDLERS as any)[ir.op]) return samplerLib.isKnownDistribution(ir.op);
   const args = ir.args || [];
   if ((ir.op === 'weighted' || ir.op === 'logweighted') && args.length === 2) {
@@ -1645,23 +1722,29 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
   //       base leaf consumes whole — so this branch is correct there too,
   //       but we keep the rest-threading path for it untouched to avoid
   //       disturbing the many flat-iid callers.)
-  const nestedFootprint = Array.isArray(value) && value.length > 0
+  const nestedValue = valueLib.isValue(value) && value.shape.length > 1 && valueLib.outerRankOf(value) === 1;
+  const nestedFootprint = nestedValue || Array.isArray(value) && value.length > 0
     && value.every((el: any) =>
       Array.isArray(el) || valueLib.isValue(el)
       || (el && el.BYTES_PER_ELEMENT && typeof el.length === 'number'));
   if (nestedFootprint) {
-    if (value.length < total) {
+    const length = nestedValue ? value.shape[0] : value.length;
+    if (length < total) {
       throw new Error('density: iid wants ' + total + ' sub-values, only '
-        + value.length + ' available');
+        + length + ' available');
     }
     for (let i = 0; i < total; i++) {
-      const innerRest = walkAcc(args[0], value[i], refArrays, N, opts, acc, baseEnv, overlay);
+      const point = nestedValue ? valueLib._sliceRow(value, i) : value[i];
+      const innerRest = walkAcc(args[0], point, refArrays, N, opts, acc, baseEnv, overlay);
       if (!isEmptyRest(innerRest)) {
         throw new Error('density: iid element ' + i
           + ' did not fully consume its sub-value');
       }
     }
-    return value.length === total ? null : value.slice(total);
+    if (length === total) return null;
+    return nestedValue ? { ...value, shape: [length - total, ...value.shape.slice(1)],
+      data: value.data.subarray(total * value.data.length / length),
+      ...(value.im ? { im: value.im.subarray(total * value.data.length / length) } : {}) } : value.slice(total);
   }
   // §06 iid density is the ordered sum of the leaf log-densities. Resolve
   // its parameters once per atom, not per observation, and consume the
@@ -1672,7 +1755,7 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
     ? (value.shape.length === 1 ? value.shape[0] : 0) : value?.length;
   if (total > 1 && length >= total && !opts.pointsBatched
       && leaf.kind === 'call' && !OP_HANDLERS[leaf.op as keyof typeof OP_HANDLERS]
-      && samplerLib.isKnownDistribution(leaf.op) && getOptimization('density.iidLeaf')) {
+      && samplerLib.isKnownDistribution(leaf.op) && hasScalarDensityFootprint(leaf) && getOptimization('density.iidLeaf')) {
     return walkLeaf(leaf, value, refArrays, N, opts, acc, baseEnv, overlay, total);
   }
   if (total > 1 && length >= total && !opts.pointsBatched
@@ -1750,10 +1833,7 @@ function _pushfwdInverseAtomIndependent(bij: any, y: number, baseEnv: any, overl
 function countingCandidate(ir: any, x: any, env: any): any {
   if (ir.op === 'Dirac') {
     const atom = samplerLib.resolveParams(ir, samplerLib.lookupDistribution(ir), env)[0];
-    if (typeof atom !== 'number' && typeof atom !== 'boolean') {
-      throw new Error('density: affine pushfwd of a container-valued Dirac is not supported');
-    }
-    return +atom;
+    return typeof atom === 'number' || typeof atom === 'boolean' ? +atom : valueLib.asValue(atom);
   }
   if (samplerLib.isKnownDistribution(ir.op)) return Math.round(x);
   if (ir.op === 'Multinomial' || ir.op === 'BinnedPoissonProcess') {
@@ -3644,16 +3724,11 @@ function inferConsumedVector(value: any, n: number): number[] | null {
 function _valueLen(v: any): number {
   if (v == null) return 0;
   if (typeof v === 'number') return 1;
-  /* c8 ignore start */
-  // A shape-explicit Value and an unrecognised carrier: the walkers normalise
-  // the scored point to a typed array before reaching a weight, so only the
-  // null / number / typed-array arms run today. A rank-≥2 Value returns 0
-  // rather than a wrong coordinate count, which keeps the caller on
-  // `_baseBoxDim` instead of guessing.
+  // Preserved vector observations participate in weights and positional
+  // threading. Higher-rank Values have no flat scalar footprint here.
   if (valueLib.isValue(v)) {
     return v.shape.length === 1 ? v.shape[0] : 0;
   }
-  /* c8 ignore stop */
   if (v.BYTES_PER_ELEMENT !== undefined || Array.isArray(v)) return v.length;
   /* c8 ignore next */
   return 0;
@@ -3670,6 +3745,7 @@ function inferConsumedScalar(value: any, rest: any) {
   // by the recursive call is value[0]. We recover it cheaply rather
   // than threading it through the return shape.
   if (typeof value === 'number') return value;
+  if (valueLib.isValue(value) && value.shape.length <= 1) return value.data[0];
   if (value && value.BYTES_PER_ELEMENT) return +value[0];
   if (Array.isArray(value) && value.length > 0) return +value[0];
   return null;
