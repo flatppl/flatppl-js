@@ -924,6 +924,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const args   = expr.args   || [];
     const kwargs = expr.kwargs || {};
 
+    // Numeric branches have a common type, independent of branch order.
+    // Infer them once, then seed T before the directional signature checks.
+    const argTypes = op === 'ifelse' && args.length === 3
+      ? args.map((arg: any) => inferExpr(arg, scopes)) : null;
+    if (argTypes && argTypes[1].kind === 'scalar' && argTypes[2].kind === 'scalar') {
+      const joined = T.unifyArith(argTypes[1], argTypes[2], s);
+      if (joined) s = T.unify(sig.result, joined.result, s);
+    }
+
     if (sig.args !== null) {
       const rawN = sig.args.length;
       const got  = args.length;
@@ -945,7 +954,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           return arityError(op, rawN, got, expr.loc);
         }
         for (let i = 0; i < fixedN; i++) {
-          const at: any = inferExpr(args[i], scopes);
+          const at: any = argTypes ? argTypes[i] : inferExpr(args[i], scopes);
           // The §07 table members that never lifted (tan, tanh, min, max, the
           // gamma and link functions, …) refuse here. Route them through the
           // shared refusal so the whole table reads alike rather than falling
