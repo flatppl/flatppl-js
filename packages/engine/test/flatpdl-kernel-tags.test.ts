@@ -32,7 +32,7 @@ const { DISTRIBUTIONS, FLATPDL_KERNEL_TAGS, ALL_KNOWN } = builtins;
 
 const SEP = ['CrystalBall', 'DoubleSidedCrystalBall', 'Argus',
              'RelativisticBreitWigner', 'Voigtian', 'Landau',
-             'BifurcatedNormal', 'ContinuedPoisson'];
+             'BifurcatedNormal', 'ContinuedPoisson', 'Flat'];
 
 /** Lower one bare RHS expression to FlatPIR-JSON. */
 function lowerRHS(expr: string): any {

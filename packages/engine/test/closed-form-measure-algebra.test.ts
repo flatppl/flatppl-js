@@ -2319,17 +2319,15 @@ tm = totalmass(A)
     `weighted-over-kchain totalmass: got ${tm.samples[0]}, expected 3`);
 });
 
-test('chain mass: a variate weight over a chain is not read through', async () => {
-  // A weight that is a FUNCTION of the variate is not a scalar shift on the
-  // chain's mass, so the wrapper is opaque here and the shape keeps whatever
-  // it had — it gains no density derivation.
+test('chain density: a constant variate weight preserves the retained density', async () => {
   const ctx = makeCtx(`
 B = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
 A = weighted(fn(exp(0.0 * _)), B)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `);
-  assert.ok(ctx.derivations.A.weightIR, 'the weight is a function of the variate');
-  assert.ok(!ctx.derivations.lp, 'the variate-weighted chain gains no density route');
+  const actual = (await ctx.getMeasure('lp')).samples[0];
+  const expected = -Math.log(2 * Math.PI) - 0.5 * 0.5 ** 2;
+  assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} != ${expected}`);
 });
 
 // =====================================================================

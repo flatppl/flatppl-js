@@ -21,7 +21,7 @@
 //
 // This file lands the REGISTRY SKELETON. Initial registry is empty;
 // each standard module is added in its own follow-up commit (see TODO
-// §09 — particle-physics, generalized-linear-models, ext-linear-algebra,
+// §09 — particle-physics, regression, ext-linear-algebra,
 // special-functions, polynomials, distances).
 
 // One entry per registered (name, compat) pair.
@@ -52,6 +52,8 @@ interface BindingDescriptor {
   /** Optional type signature in the engine's types.ts SIGNATURE_FACTORIES
    *  shape. When omitted, typeinfer falls back to `deferred`. */
   sig?: any;
+  /** Internal density-kernel name for a standard-module measure constructor. */
+  op?: string;
 }
 
 // The registry. Indexed by `${name}@${compat}` — exact-match for now;
@@ -65,6 +67,17 @@ const _REGISTRY = new Map<string, StandardModuleEntry>();
 function lookupStandardModule(name: string, compat: string): StandardModuleEntry | null {
   const key = `${name}@${compat}`;
   return _REGISTRY.get(key) || null;
+}
+
+/** Resolve a §09 measure constructor without exposing its name in base. */
+function standardDistributionOp(call: any, bindings: any, irField: string): string | null {
+  const target = call?.target;
+  if (call?.kind !== 'call' || !target || target.ns === 'self') return null;
+  const module = bindings.get(target.ns)?.[irField];
+  if (module?.op !== 'standard_module') return null;
+  const entry = lookupStandardModule(module.args?.[0]?.value, module.args?.[1]?.value);
+  const desc = entry?.bindings.get(target.name);
+  return desc?.kind === 'distribution' ? desc.op ?? null : null;
 }
 
 /**
@@ -116,6 +129,14 @@ function _clearStandardModules(): void {
 //     sampler-complex.ts's scalar convention.
 
 const T = require('./types.ts');
+
+/** §09 regression.Flat is an improper prior, never a sampling distribution. */
+function _registerRegression() {
+  registerStandardModule({ name: 'regression', compat: '0.1', bindings: new Map([
+    ['Flat', { kind: 'distribution', op: 'Flat',
+      sig: T.kernelType([], T.measure(T.REAL, { mass: T.MASS_LOCALLY_FINITE })) }],
+  ]) });
+}
 
 // --- polynomials ------------------------------------------------------
 //
@@ -621,6 +642,7 @@ function _registerExtLinearAlgebra() {
 // call `_clearStandardModules()` and re-register with bespoke
 // descriptors via `registerStandardModule` directly.
 function _registerBuiltinStandardModules() {
+  _registerRegression();
   _registerPolynomials();
   _registerParticlePhysics();
   registerStandardModule(require('./standard-pyhf.ts').pyhfModule(_interpPoly6Exp, _interpPoly6Lin));
@@ -631,6 +653,7 @@ _registerBuiltinStandardModules();
 
 module.exports = {
   lookupStandardModule,
+  standardDistributionOp,
   registerStandardModule,
   listStandardModules,
   _clearStandardModules,

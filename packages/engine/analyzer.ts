@@ -33,6 +33,7 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
       seen.add(name);
       const b = bindings.get(name);
       if (!b) return false;
+      if (b.ir?.op === 'Flat') return true;
       if (b.type === 'lawof') return true;
       // 'call'-type bindings can be measure-typed (e.g., theta_dist = Normal(...)).
       if (b.type === 'call' && b.node && b.node.value) {
@@ -41,6 +42,14 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
       return false;
     }
     case 'CallExpr': {
+      if (node.callee?.type === 'FieldAccess' && node.callee.object?.type === 'Identifier') {
+        const mod = bindings.get(node.callee.object.name)?.node?.value;
+        if (mod?.callee?.name === 'standard_module') {
+          const entry = require('./standard-modules.ts')
+            .lookupStandardModule(mod.args?.[0]?.value, mod.args?.[1]?.value);
+          if (entry?.bindings.get(node.callee.field)?.kind === 'distribution') return true;
+        }
+      }
       // §06 `ksuperpose(κ, w)` "is itself a kernel", so APPLYING it "yields
       // the mixture ν = Σᵢ wᵢ κ(θᵢ)" — a measure. The applied form is an
       // expression-headed call, so its callee is a CallExpr and the

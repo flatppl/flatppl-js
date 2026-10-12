@@ -1012,7 +1012,8 @@ function classifyDerivation(
     }
     // draw(<inline-dist-call>): treat the inline dist as if it were
     // a freshly-named anonymous measure binding. We sample directly.
-    if (inner.kind === 'call' && inner.op && SAMPLEABLE_DISTRIBUTIONS.has(inner.op)) {
+    if (inner.kind === 'call' && inner.op
+        && (SAMPLEABLE_DISTRIBUTIONS.has(inner.op) || inner.op === 'Flat')) {
       return { kind: 'sample', distIR: inner };
     }
     return null;
@@ -1068,7 +1069,7 @@ function classifyDerivation(
     const normalizedRhsIR = normalizeMeasureIR(rhsIR, bindings);
     // Measure construction: call to a sampleable distribution.
     if (normalizedRhsIR && normalizedRhsIR.kind === 'call' && normalizedRhsIR.op
-        && SAMPLEABLE_DISTRIBUTIONS.has(normalizedRhsIR.op)) {
+        && (SAMPLEABLE_DISTRIBUTIONS.has(normalizedRhsIR.op) || normalizedRhsIR.op === 'Flat')) {
       // Dirac(value = ref-to-binding) is mathematically a plain
       // alias — same equivalence class as lawof(ref-to-binding) —
       // so classify as 'alias' for the lighter, sampler-free path.
@@ -4515,6 +4516,7 @@ function resolveBijectionMeta(bij: any, bindings: any) {
 function closedFormLogTotalmass(ir: any, bindings: any, opts?: any): any {
   if (!ir || ir.kind !== 'call') return null;
   const op = ir.op;
+  if (op === 'Flat') return Infinity;
   if (op === 'MvNormal' || SAMPLEABLE_DISTRIBUTIONS.has(op)) return 0;
   if (op === 'normalize' || op === 'tilt') return 0;
   // The image of the whole target space has the base measure's mass,
@@ -5271,13 +5273,11 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             }
           }
         }
-        // NOT self-threaded, unlike the positional route above. The record
-        // route's fields reach `matScore` as DECLARED boundary inputs, and
-        // declaring them threaded only converts the corpus case
-        // `fragment/jointchain_chain3`'s loud "declared boundary input 'b'
-        // … feed gap" into a silent NaN — the overlay on this path does not
-        // supply them. Its feed gap stays pinned in TODO-flatppl-js.md.
-        return { kind: 'call', op: 'joint', fields: outFields };
+        // The retained fields supply their observed values to later factors.
+        // Density evaluation must not draw the base merely to feed names
+        // that the joint walker already binds from the queried point.
+        return { kind: 'call', op: 'joint', fields: outFields,
+          selfThreaded: [...priorNames, ...priorSources] };
       }
       case 'weighted': {
         const inner: any = expandMeasureIR(d.from, derivations, next, bindings);

@@ -218,6 +218,8 @@ const FLATPDL_KERNEL_TAGS = new Set([
   // §09 `particle-physics` (spec §09 "Distributions").
   'CrystalBall', 'DoubleSidedCrystalBall', 'Argus', 'RelativisticBreitWigner',
   'Voigtian', 'Landau', 'BifurcatedNormal', 'ContinuedPoisson',
+  // §09 `regression`.
+  'Flat',
 ]);
 
 // Measure algebra operations

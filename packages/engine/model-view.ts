@@ -285,7 +285,8 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     const N = priorPools[0]?.n;
     if (!priorMeasure || !(N > 0) || priorPools.some((p: any) => !p || p.n !== N)
         || N !== ctx.sampleCount) {
-      throw new Error('model-view: prior initialization requires complete, aligned joint prior atoms');
+      throw new Error('model-view: prior initialization requires complete, aligned joint prior atoms. '
+        + 'Choose a proper prior or supply finite initPositions for posterior MCMC.');
     }
     const weights = empirical.propagateLogWeights(weightParents);
     if (weights && weights.length !== N) {
