@@ -489,7 +489,6 @@ export var VIEWER_BODY_HTML = `
 </div>
 <div id="plot-divider" class="viewer-divider hidden" role="separator" tabindex="0" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="60" aria-label="Resize graph and plots" title="Drag or use arrow keys to resize"></div>
 <div id="plot-panel" class="viewer-panel hidden">
-  <div class="panel-toolbar"><strong>Plots</strong></div>
   <div id="plot-content"></div>
 </div>
 <div id="math-divider" class="viewer-divider hidden" role="separator" tabindex="0" aria-orientation="horizontal" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50" aria-label="Resize plots and math" title="Drag or use arrow keys to resize"></div>
