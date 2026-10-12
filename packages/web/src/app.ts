@@ -421,7 +421,7 @@
     }
     const status = document.getElementById('source-status');
     if (status) status.textContent = failed ? 'Save failed — kept in this tab'
-      : dirty ? 'Unsaved draft' : store?.has(cur.model) ? 'Saved in this browser' : 'Example';
+      : dirty ? 'Unsaved draft' : store?.has(cur.model) ? 'Saved in this browser' : '';
     const error = document.getElementById('save-error');
     if (error) error.hidden = !failed;
     const message = document.getElementById('save-error-message');
