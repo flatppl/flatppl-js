@@ -56,7 +56,7 @@ const HAVE_CORPUS = CORPUS !== '';
 // the diagnostic the binding must still produce — recorded, never silent.
 const EXPECTED_MATERIALISES: Record<string, string[]> = {
   allele_freq:         ['counts_data', 'p', 'prior', 'posterior'],
-  ar1_drift:           ['x_data', 'sigma_step', 'prior', 'x', 'posterior'],
+  ar1_drift:           ['x_data', 'sigma_step', 'Pi_prior', 'x', 'Pi_post'],
   dose_surface:        ['square', 'm1', 'm2', 'lp1', 'lp2', 'lp'],
   mv_mixture:          ['mus', 'cA', 'cB', 'covs', 'w', 'mix'],
   out_of_window:       ['obs_w', 'n', 'prior', 'posterior'],

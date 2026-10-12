@@ -24,8 +24,8 @@
 //      flatppl-examples; "BI1"/"BI2" below name those ROLES, not file
 //      numbers — the example set gained a new bayesian_inference_1 that
 //      defines prior + likelihood fully separately, shifting these two):
-//        bayesian_inference_2: forward_kernel = kernelof(...) directly.
-//        bayesian_inference_3: forward_kernel, prior = disintegrate(...).
+//        bayesian_inference_2: K_model = kernelof(...) directly.
+//        bayesian_inference_3: K_model, Pi_prior = disintegrate(...).
 //      Different modules generate independent anon-binding indices,
 //      so we compare the IR's **structural skeleton** (op, params,
 //      paramKwargs) — not the anon labels themselves.
@@ -135,33 +135,33 @@ function ifaceOf(ir: any): any {
 // `disintegrate.delegate=on` (BI2's disintegrate(["obs"], joint) hits
 // the delegate path and returns the existing forward_kernel binding
 // directly) and `=off` (the synthesize path emits fresh AST). Both
-// must produce a forward_kernel whose interface matches BI1's
+// must produce a K_model whose interface matches BI1's
 // direct kernelof. The feature-test1 SAME-MODULE test above tests
 // delegate-path-specific output equality and stays single-mode.
-inBothModes('BI1 forward_kernel (direct kernelof) ≡ BI2 forward_kernel (disintegrate) — structural interface',
+inBothModes('BI1 K_model (direct kernelof) ≡ BI2 K_model (disintegrate) — structural interface',
   'disintegrate.delegate', () => {
-  const bi1Src = loadIfPresent('bayesian_inference_2.flatppl');
-  const bi2Src = loadIfPresent('bayesian_inference_3.flatppl');
-  if (!bi1Src || !bi2Src) {
+  const bi1 = loadExampleBundle('bayesian_inference_2.flatppl');
+  const bi2 = loadExampleBundle('bayesian_inference_3.flatppl');
+  if (!bi1 || !bi2) {
     // Tests inert if the flatppl-examples sibling isn't available.
     return;
   }
 
-  const ctx1 = processSource(bi1Src);
-  const ctx2 = processSource(bi2Src);
+  const ctx1 = processSource(bi1.source, bi1.opts);
+  const ctx2 = processSource(bi2.source, bi2.opts);
   assert.equal(ctx1.diagnostics.filter((d: any) => d.severity === 'error').length, 0,
     'BI1 parses + analyzes cleanly');
   assert.equal(ctx2.diagnostics.filter((d: any) => d.severity === 'error').length, 0,
     'BI2 parses + analyzes cleanly');
 
-  // Both files declare `forward_kernel`. In BI1 it's a direct
+  // Both files declare `K_model`. In BI1 it's a direct
   // kernelof; in BI2 it's the kernel result of disintegrate (the
   // analyzer attaches an effectiveValue synthesized by the disintegrate
   // rewriter, then the lift lowers it to the same IR shape).
-  const b1 = liftInlineSubexpressions(ctx1.bindings).get('forward_kernel');
-  const b2 = liftInlineSubexpressions(ctx2.bindings).get('forward_kernel');
-  assert.ok(b1, 'BI1 has forward_kernel');
-  assert.ok(b2, 'BI2 has forward_kernel');
+  const b1 = liftInlineSubexpressions(ctx1.linkedBindings).get('K_model');
+  const b2 = liftInlineSubexpressions(ctx2.linkedBindings).get('K_model');
+  assert.ok(b1, 'BI1 has K_model');
+  assert.ok(b2, 'BI2 has K_model');
 
   // The IR's top-level shape: a functionof (since kernelof lowers to
   // functionof(lawof(...))) with `params`, `paramKwargs`, and a body.
@@ -181,19 +181,19 @@ inBothModes('BI1 forward_kernel (direct kernelof) ≡ BI2 forward_kernel (disint
   // Body: structural shape only (the body wraps a record(obs = ref-
   // to-anon); anon names differ between modules but the shape doesn't).
   assert.deepEqual(ifaceOf(b1.ir), ifaceOf(b2.ir),
-    'forward_kernel kernel-interface matches between BI1 and BI2');
+    'K_model kernel-interface matches between BI1 and BI2');
 });
 
 inBothModes('BI1 prior (direct lawof) ≡ BI2 prior (disintegrate result)',
   'disintegrate.delegate', () => {
-  const bi1Src = loadIfPresent('bayesian_inference_2.flatppl');
-  const bi2Src = loadIfPresent('bayesian_inference_3.flatppl');
-  if (!bi1Src || !bi2Src) return;
+  const bi1 = loadExampleBundle('bayesian_inference_2.flatppl');
+  const bi2 = loadExampleBundle('bayesian_inference_3.flatppl');
+  if (!bi1 || !bi2) return;
 
-  const ctx1 = processSource(bi1Src);
-  const ctx2 = processSource(bi2Src);
-  const b1 = liftInlineSubexpressions(ctx1.bindings).get('prior');
-  const b2 = liftInlineSubexpressions(ctx2.bindings).get('prior');
+  const ctx1 = processSource(bi1.source, bi1.opts);
+  const ctx2 = processSource(bi2.source, bi2.opts);
+  const b1 = liftInlineSubexpressions(ctx1.linkedBindings).get('Pi_prior');
+  const b2 = liftInlineSubexpressions(ctx2.linkedBindings).get('Pi_prior');
   assert.ok(b1 && b2);
 
   // Both should classify as the same kind of measure (lawof of a record
@@ -205,24 +205,24 @@ inBothModes('BI1 prior (direct lawof) ≡ BI2 prior (disintegrate result)',
 
 inBothModes('BI1 posterior derivation kind = BI2 posterior derivation kind',
   'disintegrate.delegate', () => {
-  const bi1Src = loadIfPresent('bayesian_inference_2.flatppl');
+  const bi1 = loadExampleBundle('bayesian_inference_2.flatppl');
   // BI2 (bayesian_inference_3) is multi-file — derivations must build from
   // its LINKED graph so the cross-module posterior chain classifies.
   const bi2 = loadExampleBundle('bayesian_inference_3.flatppl');
-  if (!bi1Src || !bi2) return;
+  if (!bi1 || !bi2) return;
 
   const { buildDerivations } = require('../orchestrator.ts');
-  const ctx1 = processSource(bi1Src);
+  const ctx1 = processSource(bi1.source, bi1.opts);
   const ctx2 = processSource(bi2.source, bi2.opts);
-  const dctx1 = buildDerivations(ctx1.bindings, ctx1.diagnostics);
+  const dctx1 = buildDerivations(ctx1.linkedBindings, ctx1.diagnostics);
   const dctx2 = buildDerivations(ctx2.linkedBindings, ctx2.diagnostics);
 
   // Both should classify posterior as bayesupdate, with the same
   // bodyName ('obs' — the iid Normal binding) and structurally equal
   // obsIR.
-  assert.equal(dctx1.derivations.posterior?.kind, 'bayesupdate');
-  assert.equal(dctx2.derivations.posterior?.kind, 'bayesupdate');
-  assert.equal(dctx1.derivations.posterior?.bodyName,
-               dctx2.derivations.posterior?.bodyName,
+  assert.equal(dctx1.derivations.Pi_post?.kind, 'bayesupdate');
+  assert.equal(dctx2.derivations.Pi_post?.kind, 'bayesupdate');
+  assert.equal(dctx1.derivations.Pi_post?.bodyName,
+               dctx2.derivations.Pi_post?.bodyName,
     'same bodyName for posterior\'s bayesupdate derivation');
 });
