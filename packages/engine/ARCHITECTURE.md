@@ -250,6 +250,10 @@ vectors before scoring; other resolver callers retain the plain-JS default.
 Sampling aliases for named Dirac values retain the constructor during density
 expansion, rather than interpreting the aliased value as a measure.
 
+Explicit likelihood inputs also retain shape and logical matrix views. CLM
+feeds one constant tensor per atom as `[N, ...shape]`, so the density worker's
+atom slice keeps every intrinsic matrix axis.
+
 Line counts are approximate size hints. Bug-preventing caveats are called out
 after the table.
 
