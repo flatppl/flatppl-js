@@ -1384,13 +1384,15 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     // A named base still needs its own mass; it is not implicitly normalized.
     return walkNormalize({ ...ir, args: [resolved] }, value, refArrays, N, opts, acc, baseEnv, overlay);
   }
-  if (inner?.kind === 'call' && (inner.op === 'weighted' || inner.op === 'logweighted')) {
+  if (inner?.kind === 'call'
+      && ['weighted', 'logweighted', 'truncate'].includes(inner.op)) {
     const logMass = require('./normalize-mass.ts').logTotalMassExpr(inner);
     if (logMass != null) {
       const shift = { kind: 'call', op: 'neg', args: [logMass] };
       // Raw callback bodies bypass the main-thread normalizer rewrite. Use
       // its mass expression and validity check at each captured parameter.
       applyAtomScalar(shift, refArrays, N, baseEnv, overlay, acc, addNormalizeShift);
+      return walkAcc(inner, value, refArrays, N, opts, acc, baseEnv, overlay);
     }
   }
   if (inner && inner.kind === 'call' && inner.op === 'truncate'

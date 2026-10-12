@@ -127,6 +127,8 @@ function totalMassExpr(ir: any): any {
   // weight that read E[y] = 7.8501 (pooled 7.8550) against the exact
   // 7.7783296397108580, with E[p] tilted to 0.27692 off the prior's 2/7.
   if (op === 'truncate' && Array.isArray(ir.args) && ir.args.length === 2) {
+    const logMass = positiveCountLogMassExpr(ir);
+    if (logMass != null) return { kind: 'call', op: 'exp', args: [logMass] };
     const m = truncateMassLit(ir.args[0], ir.args[1]);
     if (m == null) return null;
     return m;
@@ -142,6 +144,8 @@ function totalMassExpr(ir: any): any {
 // normalize(logweighted(±1000, M)) is well-defined for a probability M.
 function logTotalMassExpr(ir: any): any {
   if (!ir || ir.kind !== 'call') return null;
+  const countMass = positiveCountLogMassExpr(ir);
+  if (countMass != null) return countMass;
   if (ir.op === 'locscale' && ir.args?.length === 3) return logTotalMassExpr(ir.args[0]);
   if (ir.op === 'pushfwd' && ir.args?.length === 2) return logTotalMassExpr(ir.args[1]);
   if ((ir.op === 'weighted' || ir.op === 'logweighted') && ir.args?.length === 2) {
@@ -155,6 +159,31 @@ function logTotalMassExpr(ir: any): any {
   }
   const mass = totalMassExpr(ir);
   return mass == null ? null : { kind: 'call', op: 'log', args: [mass] };
+}
+
+// For these nonnegative count laws, [1, inf] retains exactly 1 - P(0).
+// Keep live parameters and expm1: small positive masses must not round to zero.
+function positiveCountLogMassExpr(ir: any): any | null {
+  if (ir.op !== 'truncate' || ir.args?.length !== 2) return null;
+  const [base, set] = ir.args;
+  if (!['Poisson', 'NegativeBinomial'].includes(base?.op)
+      || set?.op !== 'interval' || set.args?.length !== 2) return null;
+  const { resolveConstant } = require('./ir-shared.ts');
+  const bounds = set.args.map((x: any) => resolveConstant(x, new Map(), new Set()));
+  if (bounds[0] !== 1 || bounds[1] !== Infinity) return null;
+  const bound = require('./leaf-params.ts').leafParamIRs(base);
+  if (!bound || bound.paramIRs.some((x: any) => x == null)) return null;
+  const call = (op: string, ...args: any[]) => ({ kind: 'call', op, args });
+  const lit = (value: number | boolean) => ({ kind: 'lit', value });
+  const [first, second] = bound.paramIRs;
+  const logP0 = base.op === 'Poisson' ? call('neg', first)
+    : call('neg', call('mul', first, call('log1p', call('divide', lit(1), second))));
+  let valid: any = lit(true);
+  for (const parameter of bound.paramIRs) {
+    const positive = call(base.op === 'Poisson' ? 'ge' : 'gt', parameter, lit(0));
+    valid = call('land', valid, call('land', positive, call('isfinite', parameter)));
+  }
+  return call('ifelse', valid, call('log', call('neg', call('expm1', logP0))), lit(NaN));
 }
 
 // M(S) for `truncate(M, S)` as a rewrite-time LITERAL, or null when this arm
@@ -307,4 +336,5 @@ function assertFixedMassFallback(inner: any, ctx: any, route: string): void {
 // which certifies a dropped structural-projection component's total mass and
 // needs the same exact CDF difference. The two callers must not diverge: one
 // arm computing M(S) means one accepted set and one refusal boundary.
-module.exports = { totalMassExpr, logTotalMassExpr, truncateMassLit, assertFixedMassFallback, canDeferTruncateNormalizer };
+module.exports = { totalMassExpr, logTotalMassExpr, positiveCountLogMassExpr,
+  truncateMassLit, assertFixedMassFallback, canDeferTruncateNormalizer };

@@ -27,7 +27,7 @@ const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
 const { isValue } = require('./value.ts');
-const { logTotalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
+const { logTotalMassExpr, positiveCountLogMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
 const { engineLimitation } = require('./limitations.ts');
 const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
@@ -784,6 +784,13 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
     const inner = node.args[0];
     if (inner && inner.kind === 'call' && inner.op === 'truncate'
         && Array.isArray(inner.args) && inner.args.length === 2) {
+      const logMass = positiveCountLogMassExpr(inner);
+      if (logMass != null) {
+        node.op = 'logweighted';
+        node.args = [{ kind: 'call', op: 'neg', args: [logMass] }, inner];
+        node.fromNormalize = true;
+        return;
+      }
       // parseTruncationBox recognises `interval(...)` (1-D) and the
       // POSITIONAL `cartprod(interval, ...)` (N-D, ≤ TRUNCATE_DIM_CAP axes)
       // — it throws above the cap, throws for the record-form (keyword)
@@ -1834,6 +1841,7 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
   const needMaterialise: any[] = [];
   const samplerLib = require('./sampler.ts');
   for (const node of nodes) {
+    const logMassExpr = logTotalMassExpr(node.args[0]);
     // normalize(truncate(<discrete base>, S)): the materialised logTotalmass
     // comes from the worker's continuous CDF-difference (F(hi)−F(lo)), which
     // is wrong for a discrete base (drops the lower endpoint; the true mass is
@@ -1843,7 +1851,7 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
     const innerT = node.args[0];
     const truncBase = innerT && innerT.op === 'truncate' && innerT.args && innerT.args[0];
     const baseOp = truncBase && typeof truncBase.op === 'string' ? truncBase.op : null;
-    if (baseOp && samplerLib.isKnownDistribution(baseOp)
+    if (logMassExpr == null && baseOp && samplerLib.isKnownDistribution(baseOp)
         && samplerLib.lookupDistribution({ kind: 'call', op: baseOp }).discrete) {
       throw new Error('density: normalize(truncate(' + baseOp + ', S)) — a '
         + 'discrete base measure’s support-restricted normalizer (Σ pmf over S) '
@@ -1851,7 +1859,6 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
     }
     // Per-θ normalizer when the inner is a recognised superpose-of-weighted
     // probability measures (Z depends on the latent weights); else materialise.
-    const logMassExpr = logTotalMassExpr(node.args[0]);
     if (logMassExpr != null) {
       node.op = 'logweighted';
       node.args = [{ kind: 'call', op: 'neg', args: [logMassExpr] }, node.args[0]];
