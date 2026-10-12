@@ -418,6 +418,20 @@ lp = logdensityof(m, 0.5)
     `normalize(weighted(2, trunc)) logp: got ${m.samples[0]}, expected ${expected}`);
 });
 
+test('likelihood records may have a parameter named shape', async () => {
+  const ctx = makeCtx(`
+mu = elementof(reals)
+shape = elementof(posreals)
+y ~ Normal(mu, shape)
+K = kernelof(y, mu = mu, shape = shape)
+L = likelihoodof(K, 1)
+lp = logdensityof(L, record(mu = 0, shape = 2))
+`);
+  const actual = (await ctx.getMeasure('lp')).samples[0];
+  const expected = normalLogpdf(1, 0, 2);
+  assert.ok(Math.abs(actual - expected) < 1e-12, `${actual} != ${expected}`);
+});
+
 test('likelihoodof(iid(normalize(truncate(Normal(θ), S)))) applies −logZ(θ) per atom', async () => {
   // Inline normalize(truncate(M, S)) where M's params are the fed θ (the HS3
   // check-time likelihood, spec §06 `model_R = normalize(truncate(model, R))`).
@@ -2322,7 +2336,7 @@ tm = totalmass(A)
 test('chain density: a constant variate weight preserves the retained density', async () => {
   const ctx = makeCtx(`
 B = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
-A = weighted(fn(exp(0.0 * _)), B)
+A = weighted(fn(exp(0.0 * _.aa)), B)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `);
   const actual = (await ctx.getMeasure('lp')).samples[0];

@@ -26,6 +26,7 @@ const shared       = require('./materialiser-shared.ts');
 const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
+const { isValue } = require('./value.ts');
 const { totalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
 const { engineLimitation } = require('./limitations.ts');
 const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
@@ -688,11 +689,10 @@ function matLikelihoodDensity(d: any, ctx: any) {
   // (the kernel's input space is the cat of its params, spec §04).
   const kwargs: string[] = d.paramKwargs || [];
   const boundaries: Record<string, any> = {};
-  // A resolved record θ is a plain object (no Value `.shape`/`.data`); a
-  // scalar/vector point is a number / array / Value.
+  // Tensor storage has a structural discriminant; `shape` and `data` alone
+  // remain legal parameter names in a record θ.
   const isRecord = theta !== null && typeof theta === 'object'
-    && !Array.isArray(theta)
-    && (theta as any).shape === undefined && (theta as any).data === undefined;
+    && !Array.isArray(theta) && !ArrayBuffer.isView(theta) && !isValue(theta);
   // Match a kernel input name to a θ record field BY PUBLIC NAME. When the
   // kernel comes from a `load_module` instance the linker prefixes the input
   // node's name with the instance alias (`model$theta1`, spec §11 internal

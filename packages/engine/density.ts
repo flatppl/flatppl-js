@@ -1037,7 +1037,16 @@ function _bindVariateWeightBody(wIR: any, baseIR: any, value: any, rest: any): a
   const boxK = consumedK >= 2 ? consumedK : _baseBoxDim(baseIR);
   const pName = wIR.params[0];
   let bound: any;
-  if (boxK >= 1) {
+  if (isRecordValue(value)) {
+    // §06 passes a unary weight the whole variate, including named fields
+    // and their array/matrix shapes. A surrounding joint may leave fields
+    // for its next factor; only the fields consumed by this base belong here.
+    const consumed = { ...value };
+    if (isRecordValue(rest)) {
+      for (const name of Object.keys(rest)) delete consumed[name];
+    }
+    bound = { kind: 'lit', value: consumed };
+  } else if (boxK >= 1) {
     const coords = inferConsumedVector(value, boxK);
     /* c8 ignore start */
     // Unreachable for the same reason as the k-parameter branch above.
