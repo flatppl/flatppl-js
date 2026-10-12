@@ -1483,15 +1483,23 @@ function _voigtianLogpdf(x: number, mean: number, width: number, sigma: number):
 
 const REGISTRY = {
   Flat: {
-    params: [], aliases: {}, discrete: false, densityOnly: true,
+    params: ['support'], aliases: {}, discrete: false, densityOnly: true,
     Ctor: function FlatCtor() {
-      throw new Error('regression.Flat is an improper prior and has no probability distribution');
+      throw new Error('regression.Flat has no prior sampler');
     },
     randFn: { factory: () => {
-      throw new Error('regression.Flat has infinite mass and no prior sampler. '
+      throw new Error('regression.Flat has no prior sampler, including on bounded supports. '
         + 'Use posterior MCMC with finite initial positions or choose a proper prior.');
     } },
-    logpdfFn: (x: number) => Number.isFinite(x) ? 0 : -Infinity,
+    customResolveParams: (ir: any, env: any) => {
+      const support = require('./reference-support.ts');
+      const s = support.resolveSupport(support.supportArg(ir),
+        (n: any) => require('./sampler.ts').evaluateExpr(n, env));
+      if (!s) throw new Error('regression.Flat: cannot resolve the continuous support');
+      return [s];
+    },
+    logpdfFn: (x: any, support: any = { kind: 'reals' }) =>
+      require('./reference-support.ts').contains(support, x) ? 0 : -Infinity,
   },
   Normal: {
     params:   ['mu', 'sigma'],

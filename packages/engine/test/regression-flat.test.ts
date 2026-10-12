@@ -66,8 +66,8 @@ mass = totalmass(collapsed)
   // retain a proper coordinate or a constant. Unsupported integrals may refuse.
   assert.notEqual(proc.loweredModule.bindings.get('projected').inferredType.mass, 'normalized');
   assert.notEqual(proc.loweredModule.bindings.get('collapsed').inferredType.mass, 'normalized');
-  await assert.rejects(() => ctx.getMeasure('score'), /infinite mass|marginali/);
-  await assert.rejects(() => ctx.getMeasure('mass'), /infinite mass|marginali/);
+  await assert.rejects(() => ctx.getMeasure('score'), /infinite mass|marginali|no prior sampler/);
+  await assert.rejects(() => ctx.getMeasure('mass'), /infinite mass|marginali|no prior sampler/);
 });
 
 test('Flat refuses prior draws and prior-drawing importance sampling', async () => {

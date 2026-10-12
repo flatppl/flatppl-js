@@ -71,7 +71,14 @@ function lookupStandardModule(name: string, compat: string): StandardModuleEntry
 
 /** Resolve a §09 measure constructor without exposing its name in base. */
 function standardDistributionOp(call: any, bindings: any, irField: string): string | null {
-  const target = call?.target;
+  let target = call?.target;
+  const seen = new Set<string>();
+  while (target?.ns === 'self' && !seen.has(target.name)) {
+    seen.add(target.name);
+    const rhs = bindings.get(target.name)?.[irField];
+    if (rhs?.kind !== 'ref') return null;
+    target = rhs;
+  }
   if (call?.kind !== 'call' || !target || target.ns === 'self') return null;
   const module = bindings.get(target.ns)?.[irField];
   if (module?.op !== 'standard_module') return null;
@@ -130,11 +137,11 @@ function _clearStandardModules(): void {
 
 const T = require('./types.ts');
 
-/** §09 regression.Flat is an improper prior, never a sampling distribution. */
+/** §09 regression.Flat keeps the declared support volume and has no sampler. */
 function _registerRegression() {
   registerStandardModule({ name: 'regression', compat: '0.1', bindings: new Map([
     ['Flat', { kind: 'distribution', op: 'Flat',
-      sig: T.kernelType([], T.measure(T.REAL, { mass: T.MASS_LOCALLY_FINITE })) }],
+      sig: T.kernelType(null, T.measure(T.REAL, { mass: T.MASS_LOCALLY_FINITE })) }],
   ]) });
 }
 

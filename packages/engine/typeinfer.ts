@@ -2406,6 +2406,27 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.measure(t || defaultElem);
   }
 
+  /** §09 Flat accepts continuous supports; it never selects Counting implicitly. */
+  function inferFlat(expr: any, scopes: any): any {
+    if ((expr.args?.length || 0) + Object.keys(expr.kwargs || {}).length > 1
+        || Object.keys(expr.kwargs || {}).some(k => k !== 'support')) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: 'regression.Flat accepts one optional support set' });
+      return T.failed('invalid Flat arguments');
+    }
+    const result = inferReferenceMeasure(expr, scopes, T.REAL);
+    const continuous = (t: any): boolean => t?.kind === 'scalar' ? t.prim === 'real'
+      : t?.kind === 'array' ? continuous(t.elem)
+      : t?.kind === 'record' ? Object.values(t.fields).every(continuous)
+      : false;
+    if (!continuous(result.domain)) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: 'regression.Flat requires a continuous support set' });
+      return T.failed('noncontinuous Flat support');
+    }
+    return result;
+  }
+
   // truncate(M, S) — spec §06: "restricts the support of measure `M` to the set
   // `S`: ν(A) = M(A ∩ S)". That intersection is only meaningful when `S` lives
   // in the same space as `M`'s variate. A region whose members have a DIFFERENT
@@ -4870,6 +4891,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function inferUserCall(expr: any, scopes: any): any {
     const head = expr.target;
     if (!head) return write(T.deferred(), expr);
+    if (require('./standard-modules.ts').standardDistributionOp(expr, loweredModule.bindings, 'rhs') === 'Flat') {
+      return write(inferFlat(expr, scopes), expr);
+    }
     const local = head.ns === 'self';
     const reg = !local && loweredModule.moduleRegistry?.[head.ns];
     const calleeModule = local ? loweredModule : modules?.get(reg?.path)?.loweredModule;
@@ -5454,6 +5478,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return loweredModule.bindings.has(ir.name) ? vsetOfBinding(ir.name) : vsLib.UNKNOWN;
     }
     if (ir.kind !== 'call') return vsLib.UNKNOWN;
+    if (require('./standard-modules.ts').standardDistributionOp(ir, loweredModule.bindings, 'rhs') === 'Flat') {
+      return vsLib.setExprValueset(require('./reference-support.ts').supportArg(ir), _resolveDim, _resolveSetRef);
+    }
     const op = ir.op;
     const args = ir.args || [];
     switch (op) {
@@ -6148,7 +6175,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     if (ir.kind !== 'call') return T.MASS_DEFERRED;
     if (require('./standard-modules.ts').standardDistributionOp(ir, loweredModule.bindings, 'rhs') === 'Flat') {
-      return T.MASS_LOCALLY_FINITE;
+      const bounded = setBounded(require('./reference-support.ts').supportArg(ir));
+      return bounded === true ? T.MASS_FINITE : bounded === false ? T.MASS_LOCALLY_FINITE : T.MASS_UNKNOWN;
     }
     // APPLYING a kernel yields its output measure, and §11 makes a kernel's
     // `%mass` "the total-mass class of the output measure, uniform over all

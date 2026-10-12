@@ -1698,8 +1698,11 @@ function matTotalmass(d: DerivationTotalmass, ctx: any) {
   // §09 Flat's mass is exact even though its prior cannot be sampled.
   const { expandMeasureIR, closedFormLogTotalmass } = require('./derivations.ts');
   const ir = expandMeasureIR(d.measureName, ctx.derivations, undefined, ctx.bindings);
-  if (closedFormLogTotalmass(ir, ctx.bindings) === Infinity) {
-    return Promise.resolve(scalarMeasureN(new Float64Array(ctx.sampleCount).fill(Infinity),
+  const exact = closedFormLogTotalmass(ir, ctx.bindings);
+  let hasFlat = false;
+  require('./ir-walk.ts').walkIR(ir, (n: any) => { if (n.op === 'Flat') hasFlat = true; });
+  if (exact === Infinity || (hasFlat && exact != null)) {
+    return Promise.resolve(scalarMeasureN(new Float64Array(ctx.sampleCount).fill(Math.exp(exact)),
       { logWeights: null, logTotalmass: 0, n_eff: ctx.sampleCount }));
   }
   // totalmass(M): per spec §06, scalar mass of a (possibly

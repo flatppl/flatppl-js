@@ -2,10 +2,9 @@
 
 // Membership in the §03 vector sets `stdsimplex(n)`, `ordered(n)` and
 // `zerosum(n)`, through `x in S`, `Lebesgue(support = S)`, a weighted Lebesgue
-// prior and `truncate`. Only the inequalities are checked (simplex entries
-// >= 0, ordered entries strictly increasing). §03 makes the Lebesgue measure on
-// `stdsimplex(n)` and `zerosum(n)` the coordinate measure of the n-1 free
-// coordinates, so the linear equality is not tested. Expected values are by hand.
+// prior and `truncate`. Both inequalities and affine sums are part of the set;
+// a coordinate reference does not extend the density off its support. Expected
+// values are by hand; valid chart outputs may differ by summation roundoff.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -39,17 +38,19 @@ test('`v in ordered(3)` needs strictly increasing entries', async () => {
   assert.equal(await inSet('[2.0, 1.0, 3.0]'), 0.0);
 });
 
-test('`v in stdsimplex(3)` checks signs, not the unit sum', async () => {
+test('`v in stdsimplex(3)` checks signs and the unit sum', async () => {
   const inSet = async (v: string) => scoreValue(`lp = ifelse(${v} in stdsimplex(3), 1.0, 0.0)`, 'lp');
   assert.equal(await inSet('[0.2, 0.3, 0.5]'), 1.0);
-  assert.equal(await inSet('[0.2, 0.3, 0.6]'), 1.0);
+  assert.equal(await inSet('[0.2, 0.3, 0.6]'), 0.0);
   assert.equal(await inSet('[-0.1, 0.6, 0.5]'), 0.0);
 });
 
-test('`v in zerosum(3)` does not check the zero sum', async () => {
+test('`v in zerosum(3)` checks the sum without an absolute tolerance floor', async () => {
   const inSet = async (v: string) => scoreValue(`lp = ifelse(${v} in zerosum(3), 1.0, 0.0)`, 'lp');
   assert.equal(await inSet('[0.5, 0.25, -0.75]'), 1.0);
-  assert.equal(await inSet('[0.5, 0.25, -0.7]'), 1.0);
+  assert.equal(await inSet('[0.5, 0.25, -0.7]'), 0.0);
+  assert.equal(await inSet('[1e-8, 1e-8, 1e-8]'), 0.0);
+  assert.equal(await inSet('[0, 0, 0]'), 1.0);
 });
 
 test('`in` over a vector set refuses a point of the wrong length', async () => {
@@ -63,14 +64,32 @@ test('Lebesgue(support = ordered(3)) scores 0 on the set and -inf at a tie', asy
   assert.equal(await lebesgue('ordered(3)', '[0.0, 0.0, 1.0]'), -Infinity);
 });
 
-test('Lebesgue(support = zerosum(3)) scores 0 off the zero sum too: equality not checked', async () => {
+test('Lebesgue(support = zerosum(3)) has zero density off the hyperplane', async () => {
   assert.equal(await lebesgue('zerosum(3)', '[0.5, 0.25, -0.75]'), 0);
-  assert.equal(await lebesgue('zerosum(3)', '[0.5, 0.25, -0.7]'), 0);
+  assert.equal(await lebesgue('zerosum(3)', '[0.5, 0.25, -0.7]'), -Infinity);
 });
 
-test('Lebesgue(support = stdsimplex(3)) scores -inf at a negative entry', async () => {
+test('Lebesgue(support = stdsimplex(3)) checks signs and the unit sum', async () => {
   assert.equal(await lebesgue('stdsimplex(3)', '[0.2, 0.3, 0.5]'), 0);
   assert.equal(await lebesgue('stdsimplex(3)', '[-0.1, 0.6, 0.5]'), -Infinity);
+  assert.equal(await lebesgue('stdsimplex(3)', '[0.2, 0.3, 0.6]'), -Infinity);
+});
+
+test('affine set membership retains valid chart outputs at different scales', async () => {
+  const { simplexTransform, zerosumTransform } = require('../transforms.ts');
+  const cases = [
+    ['stdsimplex', simplexTransform(5), [-8, 2, -1, 4]],
+    ['stdsimplex', simplexTransform(3), [0, 0]],
+    ['zerosum', zerosumTransform(4), [0.1, -0.7, 0.2]],
+    ['zerosum', zerosumTransform(4), [1e8, 0.1, -2e8]],
+    ['zerosum', zerosumTransform(4), [1e-8, 2e-8, -4e-8]],
+  ];
+  for (const [set, transform, unconstrained] of cases) {
+    const point = (transform as any).constrain(Float64Array.from(unconstrained as number[]));
+    const literal = JSON.stringify(Array.from(point));
+    assert.equal(await scoreValue(`valid = ifelse(${literal} in ${set}(${point.length}), 1, 0)`, 'valid'), 1);
+    assert.equal(await lebesgue(`${set}(${point.length})`, literal), 0);
+  }
 });
 
 test('a weighted Lebesgue prior on ordered(3) scores its weight on the set', async () => {

@@ -503,7 +503,7 @@ function builtinLogdensityofPositional(kernelName: string, params: any[], x: any
       + `REGISTRY kernel — use the record form for multivariate kernels`);
   }
   const entry = samplerLib._internal.REGISTRY[kernelName];
-  return entry.logpdfFn(kernelName === 'Dirac' ? x : _scalarOf(x, kernelName), ...params);
+  return entry.logpdfFn(kernelName === 'Dirac' || kernelName === 'Flat' ? x : _scalarOf(x, kernelName), ...params);
 }
 
 // Whether `kernelInput` is a record `{ paramName: value, ... }` rather
