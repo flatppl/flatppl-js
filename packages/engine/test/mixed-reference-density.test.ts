@@ -74,6 +74,32 @@ score = logdensityof(response(${p.join(',')}), ${x})`))[0];
   }
 });
 
+test('pointwise Gamma scores retain the atomic mass through held measure refs', async () => {
+  const actual = await evaluate(`
+point(alpha,x) = logdensityof(normalize(superpose(weighted(.3,Dirac(0.0)),
+  weighted(.7,Gamma(alpha,.6)))),x)
+score = point.([.5,.5],[0.0,1.2])`);
+  close(actual[0], Math.log(.3));
+  close(actual[1], Math.log(.7) + .5*Math.log(.6) - .5*Math.log(Math.PI)
+    - .5*Math.log(1.2) - .6*1.2);
+});
+
+test('pointwise Beta scores retain the atomic mass through held measure refs', async () => {
+  const actual = await evaluate(`
+point(alpha,x) = logdensityof(normalize(superpose(weighted(.3,Dirac(0.0)),
+  weighted(.7,Beta(alpha,.5)))),x)
+score = point.([.5,.5],[0.0,.25])`);
+  close(actual[0], Math.log(.3));
+  close(actual[1], Math.log(.7 / (Math.PI*Math.sqrt(.25*.75))));
+});
+
+test('pointwise mixed density still refuses an unproven moving atom', async () => {
+  await assert.rejects(() => evaluate(`
+point(a,x) = logdensityof(normalize(superpose(weighted(.3,Dirac(a)),
+  weighted(.7,Beta(.5,.5)))),x)
+score = point.([.2,.2],[.2,.25])`), /incommensurable reference/);
+});
+
 test('mixed iid likelihoods preserve record posterior scores and shared parameters', async () => {
   const score = async (p: number) => (await evaluate(`${betaLaw}
 p ~ Beta(1,1)

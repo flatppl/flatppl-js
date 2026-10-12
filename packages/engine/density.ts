@@ -3035,8 +3035,14 @@ function restSize(r: any) {
 // weighted/logweighted/normalize/truncate/pushfwd don't change
 // the reference measure (they scale / restrict / bijection-map), so
 // recurse into the base; a nested select inherits its branches'.
-function measureReferenceClass(ir: any, depth: number): 'continuous' | 'noncontinuous' | 'mixed' | null {
-  if (!ir || ir.kind !== 'call' || (depth | 0) > 64) return null;
+// Pointwise callbacks can retain measure refs: classification must use the
+// same resolver as walkAcc or a hidden atomic branch loses its reference.
+function measureReferenceClass(ir: any, depth: number, resolveMeasureRef?: (name: string) => any): 'continuous' | 'noncontinuous' | 'mixed' | null {
+  if (!ir || (depth | 0) > 64) return null;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    return measureReferenceClass(resolveMeasureRef?.(ir.name), depth + 1, resolveMeasureRef);
+  }
+  if (ir.kind !== 'call') return null;
   const op = ir.op;
   if (op === 'Dirac') return 'noncontinuous';   // atomic point mass
   if (op === 'Lebesgue') return 'continuous';
@@ -3050,16 +3056,16 @@ function measureReferenceClass(ir: any, depth: number): 'continuous' | 'nonconti
     const head = ir.args?.[0];
     const name = head?.kind === 'ref' ? head.name : head?.kind === 'lit' ? head.value : null;
     return name && samplerLib.isKnownDistribution(name)
-      ? measureReferenceClass({ kind: 'call', op: name }, (depth | 0) + 1) : null;
+      ? measureReferenceClass({ kind: 'call', op: name }, (depth | 0) + 1, resolveMeasureRef) : null;
   }
   if ((op === 'weighted' || op === 'logweighted' || op === 'pushfwd' || op === 'tilt' || op === 'bayesupdate')
       && Array.isArray(ir.args) && ir.args.length === 2) {
-    return measureReferenceClass(ir.args[1], (depth | 0) + 1);
+    return measureReferenceClass(ir.args[1], (depth | 0) + 1, resolveMeasureRef);
   }
   if ((op === 'normalize' || op === 'truncate' || op === 'iid' || op === 'relabel'
       || op === 'locscale' || op === 'draw' || op === 'lawof')
       && Array.isArray(ir.args) && ir.args.length >= 1) {
-    return measureReferenceClass(ir.args[0], (depth | 0) + 1);
+    return measureReferenceClass(ir.args[0], (depth | 0) + 1, resolveMeasureRef);
   }
   const components = op === 'select' ? ir.branches
     : (op === 'joint' || op === 'superpose') ? (ir.fields ? ir.fields.map((f: any) => f.value) : ir.args) : null;
@@ -3067,7 +3073,7 @@ function measureReferenceClass(ir: any, depth: number): 'continuous' | 'nonconti
     let cont = false, nonc = false;
     let unknown = false;
     for (const b of components) {
-      const c = measureReferenceClass(b, (depth | 0) + 1);
+      const c = measureReferenceClass(b, (depth | 0) + 1, resolveMeasureRef);
       if (c === 'continuous') cont = true;
       else if (c === 'noncontinuous') nonc = true;
       else if (c === 'mixed') return 'mixed';
@@ -3089,34 +3095,38 @@ function measureReferenceClass(ir: any, depth: number): 'continuous' | 'nonconti
  * Inspect measure operands only: a weight or distribution parameter does not
  * contribute an output atom. A transformed/dynamic atom needs a separate proof
  * of its image, so it cannot enter this reference plan. */
-function fixedScalarReferenceAtoms(ir: any, depth = 0): number[] | null {
-  if (!ir || ir.kind !== 'call' || depth > 64) return null;
+function fixedScalarReferenceAtoms(ir: any, depth = 0, resolveMeasureRef?: (name: string) => any): number[] | null {
+  if (!ir || depth > 64) return null;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    return fixedScalarReferenceAtoms(resolveMeasureRef?.(ir.name), depth + 1, resolveMeasureRef);
+  }
+  if (ir.kind !== 'call') return null;
   const op = ir.op, args = ir.args || [];
   if (op === 'Dirac') {
     const atom = require('./ir-shared.ts').resolveConstant(ir.kwargs?.value || args[0], new Map(), new Set());
     return typeof atom === 'number' && Number.isFinite(atom) ? [atom] : null;
   }
   if (op === 'weighted' || op === 'logweighted' || op === 'bayesupdate') {
-    return fixedScalarReferenceAtoms(args[1], depth + 1);
+    return fixedScalarReferenceAtoms(args[1], depth + 1, resolveMeasureRef);
   }
   if (op === 'normalize' || op === 'truncate' || op === 'relabel' || op === 'draw' || op === 'lawof') {
-    return fixedScalarReferenceAtoms(args[0], depth + 1);
+    return fixedScalarReferenceAtoms(args[0], depth + 1, resolveMeasureRef);
   }
   if (op === 'pushfwd' || op === 'locscale') {
-    const base = fixedScalarReferenceAtoms(args[op === 'locscale' ? 0 : 1], depth + 1);
+    const base = fixedScalarReferenceAtoms(args[op === 'locscale' ? 0 : 1], depth + 1, resolveMeasureRef);
     return base?.length === 0 ? base : null;
   }
   const branches = op === 'select' ? ir.branches : op === 'superpose' ? args : null;
   if (Array.isArray(branches)) {
     const atoms = new Set<number>();
     for (const branch of branches) {
-      const inner = fixedScalarReferenceAtoms(branch, depth + 1);
+      const inner = fixedScalarReferenceAtoms(branch, depth + 1, resolveMeasureRef);
       if (inner == null) return null;
       for (const atom of inner) atoms.add(atom);
     }
     return [...atoms];
   }
-  return hasScalarDensityFootprint(ir) && measureReferenceClass(ir, depth) === 'continuous' ? [] : null;
+  return hasScalarDensityFootprint(ir) && measureReferenceClass(ir, depth, resolveMeasureRef) === 'continuous' ? [] : null;
 }
 
 /** Convert a scalar branch density to the mixture's fixed common reference.
@@ -3159,13 +3169,14 @@ function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, a
 
   let sawCont = false, sawNonc = false, sawMixed = false;
   for (let k = 0; k < K; k++) {
-    const c = measureReferenceClass(branches[k], 0);
+    const c = measureReferenceClass(branches[k], 0, opts.resolveMeasureRef);
     if (c === 'continuous') sawCont = true;
     else if (c === 'noncontinuous') sawNonc = true;
     else if (c === 'mixed') sawMixed = true;
   }
   const heterogeneous = sawMixed || (sawCont && sawNonc);
-  const referenceAtoms = heterogeneous ? branches.map(b => fixedScalarReferenceAtoms(b)) : null;
+  const referenceAtoms = heterogeneous
+    ? branches.map(b => fixedScalarReferenceAtoms(b, 0, opts.resolveMeasureRef)) : null;
   const reference = referenceAtoms?.every((atoms): atoms is number[] => atoms != null)
     ? { branches: referenceAtoms, atoms: [...new Set(referenceAtoms.flat())] } : null;
 
@@ -3174,7 +3185,7 @@ function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, a
   // unknown images retain the refusal. Sampling is independently well-defined.
   if (heterogeneous && !reference) {
     const cls = branches.map((b, k) =>
-      `  branch ${k}: ${measureReferenceClass(b, 0) || 'unknown'}`).join('\n');
+      `  branch ${k}: ${measureReferenceClass(b, 0, opts.resolveMeasureRef) || 'unknown'}`).join('\n');
     throw new Error(
       'density: select/mixture combines branches with incommensurable '
       + 'reference measures — a continuous/discrete mixture requires '
