@@ -1183,8 +1183,8 @@ function _marginalHistoryBody(deriv: any, ctx: any): any {
 // refArray entry the body's `%local`/`self` ref resolves to. Atom-independent
 // (one value for every atom): a record becomes the per-atom-record array
 // get_field consumes (matching measureToPerAtomRecords — N identical refs, the
-// preset is constant across atoms); a scalar/vector becomes a shape-tagged
-// Value (rank-0 broadcasts; rank-1 is an atom-indep vector).
+// preset is constant across atoms); a scalar or tensor gets a leading atom
+// axis with the same value repeated at every position.
 function _explicitToRefValue(value: any, shape: any, ctx: any): any {
   const N = (ctx && ctx.sampleCount) || 1;
   // A record param → the per-atom-record array get_field consumes (atom-
@@ -1192,24 +1192,25 @@ function _explicitToRefValue(value: any, shape: any, ctx: any): any {
   if (shape && shape.kind === 'record') {
     return new Array(N).fill(value);
   }
-  // Scalar / vector → BROADCAST the atom-independent constant to a per-atom
-  // batched column ([N] or [N, k]). A refArray entry consumed as a distribution
-  // parameter must be the per-atom shape measureToRefValue produces (a rank-0
+  // BROADCAST the constant to a per-atom column ([N, ...intrinsicShape]).
+  // A refArray distribution parameter must have measureToRefValue's shape (a rank-0
   // Value is the FIXED-value/session-env contract, not the refArray one — the
   // worker's param path would read it as NaN).
-  const v = valueLib.asValue(value);
+  const v = valueLib._logicalDense(valueLib.asValue(value));
   if (!v.shape || v.shape.length === 0) {
     return valueLib.batchedScalar(new Float64Array(N).fill(v.data[0]));
   }
-  if (v.shape.length === 1) {
-    const k = v.shape[0];
+  const k = v.data.length;
+  const repeat = (source: Float64Array) => {
     const data = new Float64Array(N * k);
-    for (let i = 0; i < N; i++) data.set(v.data, i * k);
-    const out: any = { shape: [N, k], data };
-    if (v.outerRank != null) out.outerRank = v.outerRank;
-    return out;
-  }
-  return v;                              // higher-rank constant: pass through
+    for (let i = 0; i < N; i++) data.set(source, i * k);
+    return data;
+  };
+  const out: any = { shape: [N, ...v.shape], data: repeat(v.data) };
+  if (v.im) out.im = repeat(v.im);
+  if (v.dtype) out.dtype = v.dtype;
+  if (v.outerRank != null) out.outerRank = v.outerRank;
+  return out;
 }
 
 function feedInputs(

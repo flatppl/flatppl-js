@@ -678,7 +678,7 @@ function matLikelihoodDensity(d: any, ctx: any) {
   // an atom-independent value broadcast across N) instead of from a
   // prior's atoms. Result is a per-atom scalar (constant across atoms,
   // matching the matTotalmass broadcast convention).
-  const theta = orchestrator.resolveIRToValue(d.pointIR, ctx.bindings, ctx.fixedValues);
+  const theta = orchestrator.resolveIRToValue(d.pointIR, ctx.bindings, ctx.fixedValues, true);
   if (theta == null) {
     return Promise.reject(new Error(
       'logdensityof(L, θ): cannot resolve θ to a concrete value'));
