@@ -173,7 +173,9 @@ CLM scores recognized affine Gaussian chains through the shared moment
 recognizer and finite discrete priors through exact enumeration. It preserves
 shared draw identities and constant measure masses in both paths. Other chain
 densities are refused; ancestral sampling remains available. Truncation uses
-stable interval probabilities where a CDF is registered and carries each
+stable interval probabilities where a CDF is registered, using exact CDF and
+survival limits at infinite endpoints rather than passing them to special
+functions. It carries each
 parameter slice's mass as one weight event, including IID's product of slice
 masses. Without a CDF, raw parameterized truncation uses a proposal and support
 indicator; normalized truncation uses bounded rejection.
