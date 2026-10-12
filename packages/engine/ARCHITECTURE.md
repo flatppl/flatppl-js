@@ -755,6 +755,10 @@ Zero-axis `locscale` broadcasts over a scalar-variate measure lower in lift to
 the ordinary scalar affine `pushfwd`, retaining live scalar shift/scale inputs.
 The measure operand is held constant (§04); a measure's variate axes never
 become broadcast axes. Scalar shifts over non-scalar variates are diagnosed.
+Collection shift/scale operands lower to a scalar measure callback. Both named
+and synthesized `locscale` callbacks use the measure-algebra broadcast executor,
+which binds each cell before constructing shared affine pushforward IR for
+density and sampling. Each cell redraws its base; captured value draws stay shared.
 
 Scalar affine broadcasts over numeric vector laws use the `diagonal_affine`
 registry entry, with scalar or per-atom coefficients and no dense matrices.

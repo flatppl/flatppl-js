@@ -1025,7 +1025,7 @@ interface MeasureAlgebraKernelDescriptor {
 const _MEASURE_CONSTRUCTION_OPS = new Set([
   'iid', 'joint', 'jointchain', 'kchain', 'broadcast', 'aggregate',
   'superpose', 'weighted', 'normalize', 'truncate', 'pushfwd',
-  'mixture', 'lawof',
+  'mixture', 'lawof', 'locscale',
 ]);
 
 // Deref a `self`-ref through module VALUE bindings one level. Returns the
@@ -1070,8 +1070,10 @@ function _internalDrawDist(ir: any, bindings: any): any {
 // for. `pushfwd` is absent because a non-bijective pushfwd has no density,
 // so admitting it would give a sampleable broadcast the density path
 // refuses — the two halves must agree on the same set of bodies.
+// `locscale` has the known scalar affine inverse and reuses pushfwd on both
+// paths after its cell's operands bind; it is not a general arbitrary map.
 const _MEASURE_ALGEBRA_BODY_OPS = new Set([
-  'normalize', 'superpose', 'weighted', 'logweighted', 'truncate',
+  'normalize', 'superpose', 'weighted', 'logweighted', 'truncate', 'locscale',
 ]);
 
 /**
@@ -1081,7 +1083,7 @@ const _MEASURE_ALGEBRA_BODY_OPS = new Set([
  * Accepts the following IR shape (post-lowering + post-lift):
  *
  *     functionof(
- *       <normalize|superpose|weighted|logweighted|truncate>(…),
+ *       <normalize|superpose|weighted|logweighted|truncate|locscale>(…),
  *       kernel_kwargs...
  *     )
  *

@@ -1195,7 +1195,7 @@ function _executeGenerativeComposite(
 // across the cells while each cell's component draws are fresh.
 
 // Measure-position names in a §06 algebra tree: the base of
-// `normalize`/`truncate`, the base of `weighted`/`logweighted` (arg 1 —
+// `normalize`/`truncate`/`locscale`, the base of `weighted`/`logweighted` (arg 1 —
 // arg 0 is the WEIGHT, a value), every arg of `superpose`. A weight or a
 // truncation region is value position and is deliberately not walked.
 function _algebraMeasureRefs(ir: any, out: Set<string>): void {
@@ -1206,7 +1206,7 @@ function _algebraMeasureRefs(ir: any, out: Set<string>): void {
     _algebraMeasureRefs(node, out);
   };
   const args = Array.isArray(ir.args) ? ir.args : [];
-  if (ir.op === 'normalize') push(args[0]);
+  if (ir.op === 'normalize' || ir.op === 'locscale') push(args[0]);
   else if (ir.op === 'truncate') push(args[0]);
   else if (ir.op === 'weighted' || ir.op === 'logweighted') push(args[1]);
   else if (ir.op === 'superpose') for (const a of args) push(a);
@@ -1349,7 +1349,8 @@ function _executeMeasureAlgebraComposite(
           return p;
         };
         return materialiser.materialiseMeasureIR(cellIR, child).then((m: any) => {
-          if (!m || !m.samples) {
+          if (!m || !m.samples || m.samples.length !== N
+              || (m.value && m.value.shape.length !== 1)) {
             throw new Error('broadcast(' + d.distOp + '): cell ' + cc
               + ' produced no scalar samples (a record- or vector-variate '
               + 'measure-algebra body is not supported yet)');
@@ -1425,7 +1426,8 @@ function _executeMeasureAlgebraComposite(
         lw = merged;
       }
       return Object.assign(
-        empirical.arrayMeasure(out, axes.length === 0 ? [1] : axes, lw),
+        axes.length === 0 ? shared.scalarMeasureN(out, { logWeights: lw })
+          : empirical.arrayMeasure(out, axes, lw),
         {
           logTotalmass: lw ? empirical.logSumExp(lw) : wt.logTotalmass,
           n_eff: lw ? empirical.effectiveSampleSize({ logWeights: lw }) : wt.n_eff,

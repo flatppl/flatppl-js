@@ -826,7 +826,36 @@ function isFixedPhaseValueIR(ir: any, bindings: any) {
   return false;
 }
 
+/** §06 scalar affine pushforward, after the caller has bound scoped operands. */
+function scalarLocscalePushfwd(ir: IRNode): IRNode {
+  const [base, shift, scale] = ir.args;
+  const captured = new Set<string>();
+  walkIR({ args: [shift, scale] }, (node: any) => {
+    if (node.kind === 'ref') captured.add(node.name);
+  });
+  let paramName = '__locscale_input';
+  while (captured.has(paramName)) paramName += '_';
+  const point = { kind: 'ref', ns: '%local', name: paramName };
+  const forward = { kind: 'call', op: 'add', args: [
+    { kind: 'call', op: 'mul', args: [scale, point] }, shift,
+  ] };
+  const inverse = { kind: 'call', op: 'divide', args: [
+    { kind: 'call', op: 'sub', args: [point, shift] }, scale,
+  ] };
+  const logVolume = { kind: 'call', op: 'log', args: [
+    { kind: 'call', op: 'abs', args: [scale] },
+  ] };
+  const fn = { kind: 'call', op: 'functionof', body: forward,
+    params: [paramName], paramKwargs: [paramName] };
+  return { kind: 'call', op: 'pushfwd', args: [fn, base], bijection: {
+    fForward: { body: forward, paramName },
+    fInv: { body: inverse, paramName },
+    logVolume: { kind: 'fn', body: logVolume, paramName: null },
+  } };
+}
+
 module.exports = {
+  scalarLocscalePushfwd,
   resolveMeasureBaseName,
   resolveConstant,
   isCallOp,
