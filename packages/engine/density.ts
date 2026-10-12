@@ -1170,6 +1170,53 @@ function walkLebesgue(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   return rest;
 }
 
+/** §09 Flat keeps the support indicator without any volume normalization. */
+function walkFlat(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
+  const support = require('./reference-support.ts');
+  const entry = samplerLib.lookupDistribution(ir);
+  const env = Object.assign({}, baseEnv, overlay);
+  const refs = Object.keys(refArrays);
+  const at = (i: number) => {
+    for (const name of refs) env[name] = valueLib.isValue(refArrays[name])
+      ? valueLib._sliceRow(refArrays[name], i) : refArrays[name][i];
+    Object.assign(env, overlay);
+    return samplerLib.resolveParams(ir, entry, env)[0];
+  };
+  const first = at(0);
+  if (opts.pointsBatched) {
+    for (let i = 0; i < N; i++) {
+      const point = valueLib.isValue(value) ? valueLib._sliceRow(value, i) : value[i];
+      if (!support.contains(refs.length ? at(i) : first, point)) acc[i] = -Infinity;
+    }
+    return null;
+  }
+  let head: any, rest: any;
+  if (first.kind === 'record') {
+    head = {};
+    rest = value;
+    for (const field of first.fields) {
+      const consumed = consumeField(rest, field.name);
+      head[field.name] = consumed.head;
+      rest = consumed.rest;
+    }
+  } else if (['vectorset', 'power', 'product'].includes(first.kind)) {
+    const axes = support.axes(first);
+    if (axes.length > 1) {
+      const consumed = flattenNestedVariate(value, axes);
+      head = consumed.cells;
+      rest = consumed.rest;
+    } else {
+      ({ head, rest } = consumeVector(value, support.width(first)));
+    }
+  } else {
+    ({ head, rest } = consumeScalar(value));
+  }
+  for (let i = 0; i < N; i++) {
+    if (!support.contains(i && refs.length ? at(i) : first, head)) acc[i] = -Infinity;
+  }
+  return rest;
+}
+
 function walkLogWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   // logweighted(g, base): adds g directly per atom. -Infinity is
   // permitted; NaN is left as-is (callers detect downstream).
@@ -3134,6 +3181,7 @@ const OP_HANDLERS = {
   normalize:   walkNormalize,
   tilt:        walkTilt,
   Lebesgue:    walkLebesgue,
+  Flat:        walkFlat,
   joint:       walkJointFieldsOrPositional,
   record:      walkJointFieldsOrPositional,
   iid:         walkIid,

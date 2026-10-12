@@ -182,7 +182,7 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
       ydim += yDim;
       continue;
     }
-    const t = T.transformFor(l.support);
+    const t = kind === 'product' ? null : T.transformFor(l.support);
     if (l.shape.kind === 'scalar') {
       blocks.push({ kind: 'scalar', latent: l.name, name: l.name, elem: null, y0: ydim, t });
       coordNames.push(l.name);
@@ -191,7 +191,8 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
       // vector / flattened matrix — one scalar block per coordinate (shared support)
       for (let i = 0; i < width; i++) {
         const nm = `${l.name}[${i}]`;
-        blocks.push({ kind: 'scalar', latent: l.name, name: nm, elem: i, y0: ydim, t });
+        blocks.push({ kind: 'scalar', latent: l.name, name: nm, elem: i, y0: ydim,
+          t: kind === 'product' ? T.transformFor(l.support.elements[i]) : t });
         coordNames.push(nm);
         ydim += 1;
       }

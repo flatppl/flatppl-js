@@ -407,6 +407,16 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
     if (d.kind === 'sample') {
       const distIR = d.distIR;
       if (!distIR) return { kind: 'real' };
+      if (distIR.op === 'Flat') {
+        const support = require('./reference-support.ts');
+        const { resolveConstant } = require('./ir-shared.ts');
+        const resolved = support.resolveSupport(support.supportArg(distIR),
+          (n: any) => resolveConstant(n, ctx?.bindings || new Map(), new Set(), ctx?.fixedValues),
+          (n: any) => ctx?.bindings.get(n.name)?.ir);
+        // A dependent bound stays a density constraint in original coordinates;
+        // it cannot be frozen to one prior draw for a static coordinate chart.
+        return resolved ? support.transformSupport(resolved) : { kind: 'real' };
+      }
       if (distIR.op === 'Uniform') {
         const s = uniformSupportFromDistIR(
           distIR, ctx && ctx.bindings, ctx && ctx.fixedValues);

@@ -4516,7 +4516,13 @@ function resolveBijectionMeta(bij: any, bindings: any) {
 function closedFormLogTotalmass(ir: any, bindings: any, opts?: any): any {
   if (!ir || ir.kind !== 'call') return null;
   const op = ir.op;
-  if (op === 'Flat') return Infinity;
+  if (op === 'Flat') {
+    const support = require('./reference-support.ts');
+    const resolved = support.resolveSupport(support.supportArg(ir),
+      (n: any) => resolveConstant(n, bindings || new Map(), new Set()),
+      (n: any) => bindings?.get(n.name)?.ir);
+    return resolved ? support.logVolume(resolved) : null;
+  }
   if (op === 'MvNormal' || SAMPLEABLE_DISTRIBUTIONS.has(op)) return 0;
   if (op === 'normalize' || op === 'tilt') return 0;
   // The image of the whole target space has the base measure's mass,
