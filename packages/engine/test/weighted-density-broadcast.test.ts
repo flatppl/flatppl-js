@@ -2,7 +2,41 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
+const { density, orchestrator } = require('..');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
+
+test('density log weights bind both the nested measure and its score point', async () => {
+  const { ctx } = makeMatCtx(`
+shifted = logweighted(q -> logdensityof(Normal(0, 1), q + 1), Normal(0, 1))
+dependent = logweighted(q -> logdensityof(Normal(q, 1), 0), Normal(0, 1))
+composite = logweighted(q -> logdensityof(weighted(q, Dirac(0)), 0), Uniform(interval(0, 1)))
+a = logdensityof(shifted, 2)
+b = logdensityof(dependent, 2)
+c = logdensityof(composite, 0.3)
+`, { sampleCount: 1 });
+  const a = (await ctx.getMeasure('a')).samples[0];
+  const b = (await ctx.getMeasure('b')).samples[0];
+  const c = (await ctx.getMeasure('c')).samples[0];
+  assert.ok(Math.abs(a - (-Math.log(2 * Math.PI) - 6.5)) < 1e-12);
+  assert.ok(Math.abs(b - (-Math.log(2 * Math.PI) - 4)) < 1e-12);
+  assert.ok(Math.abs(c - Math.log(0.3)) < 1e-12);
+});
+
+test('a density log weight evaluates its score point for each input atom', () => {
+  const { ctx } = makeMatCtx(`
+t = elementof(reals)
+M = logweighted(q -> logdensityof(Normal(0, 1), q + t), Normal(0, 1))
+`, { sampleCount: 4 });
+  const t = Float64Array.from([-0.5, 0, 0.5, 2]);
+  const score = density.logDensityN(orchestrator.expandMeasure('M', ctx), 2, { t }, t.length, {
+    resolveMeasureRef: (name: string) => orchestrator.expandMeasure(name, ctx),
+  });
+  assert.equal(score.length, t.length);
+  for (let i = 0; i < t.length; i++) {
+    const expected = -Math.log(2 * Math.PI) - 2 - 0.5 * (2 + t[i]) ** 2;
+    assert.ok(Math.abs(score[i] - expected) < 1e-12, `${score[i]} != ${expected}`);
+  }
+});
 
 test('an inline weight binds inputs hidden in a reified measure expression', async () => {
   const { ctx } = makeMatCtx(`

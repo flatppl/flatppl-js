@@ -979,10 +979,9 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   return rest;
 }
 
-// True when a `functionof` log-weight body is the §12 product_dist lowering —
-// an add-fold of `logdensityof(M, x)`. Those terms are SCORED against the
-// consumed variate rather than evaluated as arithmetic, so they take their own
-// path; any other body is an ordinary weight expression.
+// Direct density calls and their additive folds use the density walker rather
+// than the scalar arithmetic evaluator. Their actual score arguments need not
+// equal the outer weight's variate.
 function _isLogdensityFold(node: any): boolean {
   if (!node || node.kind !== 'call') return false;
   if (node.op === 'add' && Array.isArray(node.args) && node.args.length === 2) {
@@ -1231,15 +1230,12 @@ function walkLogWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: a
   // permitted; NaN is left as-is (callers detect downstream).
   const gIR = ir.args[0];
   const rest: any = walkAcc(ir.args[1], value, refArrays, N, opts, acc, baseEnv, overlay);
-  // A `functionof` weight is a function of the SAME variate the base just
-  // consumed — the §12 shared-variate product_dist lowering
-  // `logweighted(x -> logdensityof(M2, x) + …, M1)`: the log-weight at the
-  // scored point x is Σ logdensityof(Mᵢ, x). Score each Mᵢ at the same `value`
-  // and add. (A plain atom-scalar weight — the closed-form-Z / massFrom
-  // rewrite, a constant or env/ref expression — takes the original path.)
+  // Bind the weight's consumed variate before scoring any nested density.
+  // Both the nested measure and its point may depend on that input.
   if (gIR && gIR.kind === 'call' && gIR.op === 'functionof'
       && _isLogdensityFold(gIR.body)) {
-    addFunctionofVariateWeight(gIR, value, refArrays, N, opts, acc, baseEnv, overlay);
+    const body = _bindVariateWeightBody(gIR, ir.args[1], value, rest);
+    accumulateLogdensityFold(body, refArrays, N, opts, acc, baseEnv, overlay, new Float64Array(N));
   } else if (gIR && gIR.kind === 'call' && gIR.op === 'functionof') {
     // An ordinary weighting FUNCTION, in log space. §06's arity rule admits
     // the k-parameter form for `logweighted` too, so bind the parameters the
@@ -1264,35 +1260,39 @@ function walkLogWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: a
   return rest;
 }
 
-// Add a `functionof`-variate log-weight (§12 shared-variate product_dist): the
-// weight body is an `add`-fold of `logdensityof(Mᵢ, <param>)`; the parameter is
-// the same point `value` the logweighted base consumed. Score each Mᵢ at
-// `value` into the accumulator. Any other body shape is a lowering we don't
-// recognise — fail loud rather than silently drop the weight.
-function addFunctionofVariateWeight(fnIR: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  accumulateLogdensityFold(fnIR.body, value, refArrays, N, opts, acc, baseEnv, overlay, new Float64Array(N));
-}
-
-function accumulateLogdensityFold(node: any, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any, scratch: Float64Array) {
+function accumulateLogdensityFold(node: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any, scratch: Float64Array) {
   if (node && node.kind === 'call' && node.op === 'add'
       && Array.isArray(node.args) && node.args.length === 2) {
-    accumulateLogdensityFold(node.args[0], value, refArrays, N, opts, acc, baseEnv, overlay, scratch);
-    accumulateLogdensityFold(node.args[1], value, refArrays, N, opts, acc, baseEnv, overlay, scratch);
+    accumulateLogdensityFold(node.args[0], refArrays, N, opts, acc, baseEnv, overlay, scratch);
+    accumulateLogdensityFold(node.args[1], refArrays, N, opts, acc, baseEnv, overlay, scratch);
     return;
   }
   if (node && node.kind === 'call' && node.op === 'logdensityof'
       && Array.isArray(node.args) && node.args.length === 2) {
-    // Score Mᵢ (args[0]) at the consumed variate. The point arg (args[1]) is
-    // the functionof parameter, which IS `value` — so re-walk Mᵢ against
-    // `value`, accumulating its log-density into the shared `acc`. Mᵢ shares
-    // the variate footprint with the logweighted base (§12), so it consumes
-    // the same prefix and leaves the same rest; the base's rest (returned by
-    // walkLogWeighted) drives any outer threading, and the top-level
-    // logDensityN still asserts the whole value was consumed — so the rest
-    // here is discarded rather than required empty (it is non-empty inside an
-    // iid plate, where the base consumes one entry of many).
-    scratch.fill(0);
-    walkAcc(node.args[0], value, refArrays, N, opts, scratch, baseEnv, overlay);
+    const refs = refArrays ? Object.keys(refArrays) : [];
+    let pointVaries = false;
+    if (refs.length) {
+      require('./ir-walk.ts').walkIR(node.args[1], (n: any) => {
+        if (n.kind === 'ref' && refs.includes(n.name)) pointVaries = true;
+      });
+    }
+    if (pointVaries) {
+      const accessors = refs.map(name => _refAtomAccessor(refArrays[name]));
+      const env = Object.assign({}, baseEnv);
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < refs.length; j++) env[refs[j]] = accessors[j](i);
+        if (overlay) Object.assign(env, overlay);
+        const point = samplerLib.evaluateExpr(node.args[1], env);
+        scratch[i] = logDensity(node.args[0], point, env, opts);
+      }
+    } else {
+      // Preserve one batched walk for the common shared-point product form.
+      const env = Object.assign({}, baseEnv, overlay);
+      const point = samplerLib.evaluateExpr(node.args[1], env);
+      scratch.fill(0);
+      const rest = walkAcc(node.args[0], point, refArrays, N, opts, scratch, env, overlay);
+      if (!isEmptyRest(rest)) throw new Error('density: logdensityof weight did not consume its scored point');
+    }
     // §06 reweighting cannot create mass at a null base atom. In particular,
     // a zero PMF times an infinite density weight is zero, not NaN.
     for (let i = 0; i < N; i++) {
@@ -1302,7 +1302,7 @@ function accumulateLogdensityFold(node: any, value: any, refArrays: any, N: any,
     return;
   }
   throw new Error('density: unsupported logweighted functionof weight — expected an '
-    + 'add-fold of logdensityof(M, x) (§12 product_dist), got op='
+    + 'add-fold of logdensityof(M, x), got op='
     + (node && node.op));
 }
 
