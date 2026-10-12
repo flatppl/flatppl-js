@@ -438,6 +438,26 @@ m = LKJCholesky(n = 4, eta = 1.0)
   }
 });
 
+test('LKJCholesky: row radii follow the LKJ beta law', async () => {
+  const n = 4;
+  const eta = 2;
+  const m = await makeCtx(`m = LKJCholesky(${n}, ${eta})`).getMeasure('m');
+  for (let i = 1; i < n; i++) {
+    let sum = 0;
+    for (let atom = 0; atom < SAMPLE_COUNT; atom++) {
+      for (let j = 0; j < i; j++) sum += m.samples[atom * n * n + i * n + j] ** 2;
+    }
+    // Polar coordinates in the i-ball give r² ~ Beta(i/2, eta+(n-i-1)/2).
+    const a = i / 2;
+    const b = eta + (n - i - 1) / 2;
+    const expected = a / (a + b);
+    const variance = a * b / ((a + b) ** 2 * (a + b + 1));
+    const observed = sum / SAMPLE_COUNT;
+    assert.ok(Math.abs(observed - expected) < 6 * Math.sqrt(variance / SAMPLE_COUNT),
+      `row ${i}: mean squared radius ${observed}, expected ${expected}`);
+  }
+});
+
 test('LKJ: classifier produces shape=[N, n, n]; diagonals are 1', async () => {
   const ctx = makeCtx(`
 m = LKJ(n = 3, eta = 1.0)
