@@ -93,18 +93,32 @@ test('VonMises(mu, kappa): classifier OK + samples within (μ−π, μ+π]', asy
   }
 });
 
-test('VonMises: density value pinned at canonical point (mu=0, kappa=1, x=0)', () => {
-  const sampler = require('../sampler.ts');
-  // At x = μ: logpdf = κ·cos(0) − log(2π) − log(I_0(κ)) = 1 − log(2π) − log(I_0(1)).
-  // I_0(1) = 1.2660658777520084, so the exact value is -1.0737914249165241 (matches
-  // Distributions.jl / numpyro). The engine's Chebyshev I_0 approximation is within
-  // ~2.3e-8, so pin the TRUE value with a tolerance just looser than that — not the
-  // old loose 1e-3 against a wrong target (flatppl-js#22).
-  const reg = sampler._internal.REGISTRY.VonMises;
-  // Reach into the logpdfFn directly (mu, kappa).
-  const lp = reg.logpdfFn(0, 0, 1);
-  assert.ok(Math.abs(lp - (-1.0737914249165241)) < 1e-6,
-    `VonMises logpdf(x=0, mu=0, kappa=1) = ${lp}, expected ≈ -1.0737914249`);
+test('VonMises: fixed and live concentration scores retain double precision', async () => {
+  // Independent quadrature: density(mu) = 1/(2*integral(exp(k*(cos(t)-1)), t=0..pi)).
+  // These points cover tiny/large concentration and both sides of the expansion boundary.
+  const cases = [
+    [1e-8, -1.8378770564093454],
+    [1, -1.073791424916524],
+    [2.3, -0.5780144046166286],
+    [7.999, 0.1039539094409345],
+    [8, 0.10401867816284069],
+    [8.001, 0.1040834384546118],
+    [1000, 2.534814043721169],
+  ];
+  for (const [kappa, expected] of cases) {
+    const ctx = makeCtx(`
+      kappa ~ Dirac(${kappa})
+      fixed = logdensityof(VonMises(0.4, ${kappa}), 0.4)
+      live = logdensityof(VonMises(0.4, kappa), 0.4)
+    `);
+    ctx.sampleCount = 1;
+    for (const name of ['fixed', 'live']) {
+      const score = await ctx.getMeasure(name);
+      const actual = score.value ? score.value.data[0] : score.samples[0];
+      assert.ok(Math.abs(actual - expected) < 1e-11,
+        `${name} kappa=${kappa}: ${actual}, expected ${expected}`);
+    }
+  }
 });
 
 test('VonMises: kappa=0 reduces to uniform density 1/(2π) at any x', () => {

@@ -30,6 +30,9 @@ Multivariate density binds positional parameters through `density-prims` using
 the declared `types.ts` signature order before resolving shapes or live values.
 FlatPDL bare inputs stay whole, including Dirichlet's concentration vector.
 
+VonMises scoring uses `bessel.ts`'s scaled, double-precision Cephes expansion for
+log I0. Static and live parameters share that normalization; sampling is separate.
+
 ## Pipeline overview
 
 ```
