@@ -452,6 +452,12 @@ weighted callback densities reuse `normalize-mass.logTotalMassExpr`; affine
 pushforwards preserve base mass. Scalar factors stay in log space, including
 captured logweights. Sampling refuses a nonfinite pooled log mass.
 
+Positive-count Poisson and NegativeBinomial restrictions to `interval(1, inf)`
+use `log(1 - P(0))` from `normalize-mass`, evaluated with `expm1` for small
+masses. Direct densities, likelihoods and pointwise callbacks share this rule
+and reject nonfinite or zero normalization mass. Other discrete restrictions
+retain their existing capability checks.
+
 ## Cross-file invariants
 
 Boundary inlining expands deterministic literal records and vectors through
