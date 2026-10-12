@@ -99,3 +99,28 @@ test('truncated exponential-family tails use their conditional mass', () => {
   assert.ok(Math.abs(truncatedQuantile('Gamma', 0.5, { shape: 1, rate: 1 }, 50, 51) - (50 + offset)) < 1e-12);
   assert.ok(Math.abs(truncatedQuantile('Laplace', 0.5, { location: 0, scale: 1 }, -101, -100) + (100 + offset)) < 1e-12);
 });
+
+test('Gamma-family interval masses retain infinite support endpoints', () => {
+  for (const [op, params] of [
+    ['Gamma', { shape: .01, rate: .01 }],
+    ['ChiSquared', { k: 2 }],
+  ] as Array<[string, any]>) {
+    assert.equal(cdf(op, -Infinity, params), 0);
+    assert.equal(cdf(op, Infinity, params), 1);
+    assert.equal(intervalProbability(op, params, 0, Infinity), 1);
+  }
+  // Erlang(2, rate): P(X > x) = exp(-rate*x) * (1 + rate*x).
+  const params = { shape: 2, rate: .1 };
+  assert.ok(Math.abs(intervalProbability('Gamma', params, 5, Infinity)
+    - Math.exp(-.5)*1.5) < 1e-14);
+  assert.ok(Math.abs(intervalProbability('Gamma', params, 20, Infinity)
+    - Math.exp(-2)*3) < 1e-14);
+});
+
+test('unbounded Gamma quantiles preserve exponential memorylessness', () => {
+  // Gamma(1,2) is Exponential(2); conditioning above a shifts every quantile by a.
+  for (const lo of [0, 1]) {
+    const actual = truncatedQuantile('Gamma', .5, { shape: 1, rate: 2 }, lo, Infinity);
+    assert.ok(Math.abs(actual - (lo + Math.log(2)/2)) < 1e-12);
+  }
+});

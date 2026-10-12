@@ -87,7 +87,17 @@ function hasCdf(distOp: string): boolean { return Object.prototype.hasOwnPropert
 function cdf(distOp: string, x: number, params: any): number {
   const f = CDF[distOp];
   if (!f) throw new Error(`forward-cdf: no CDF for '${distOp}'`);
+  // The registered scalar laws have CDF limits 0 and 1 at infinity (§08).
+  // Special functions such as gammainc may instead return NaN there.
+  if (x === -Infinity) return 0;
+  if (x === Infinity) return 1;
   return f(x, params);
+}
+
+function survival(distOp: string, x: number, params: any): number {
+  if (x === -Infinity) return 1;
+  if (x === Infinity) return 0;
+  return SURVIVAL[distOp](x, params);
 }
 
 /** Mass of a scalar interval under a registered probability law (§06 truncate). */
@@ -95,7 +105,7 @@ function intervalProbability(distOp: string, params: any, lo: number, hi: number
   if (lo >= hi) return 0;
   const Flo = cdf(distOp, lo, params);
   return Flo >= 0.5
-    ? SURVIVAL[distOp](lo, params) - SURVIVAL[distOp](hi, params)
+    ? survival(distOp, lo, params) - survival(distOp, hi, params)
     : cdf(distOp, hi, params) - Flo;
 }
 
@@ -111,7 +121,7 @@ function truncatedQuantile(distOp: string, u: number, params: any, lo: number, h
   if (!(mass > 0)) throw new Error('truncatedQuantile: interval has no representable probability mass');
   let result: number;
   if (Flo >= 0.5) {
-    const Slo = SURVIVAL[distOp](lo, params), Shi = SURVIVAL[distOp](hi, params);
+    const Slo = survival(distOp, lo, params), Shi = survival(distOp, hi, params);
     result = UPPER_QUANTILE[distOp]((1 - u) * Slo + u * Shi, params);
   } else if (QUANTILE[distOp]) {
     result = QUANTILE[distOp](Flo + u * mass, params);
