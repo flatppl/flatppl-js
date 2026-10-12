@@ -268,6 +268,9 @@ stochastic draws, reified laws, and separate callable scopes retain their refs.
 Direct density terms in a log weight bind and evaluate their actual score
 arguments. Shared points retain one batched density walk; varying points use
 the existing per-atom accessors and strict density API.
+Scoped `locscale` operands stay in their reification until its inputs bind.
+Concrete applications use the affine pushforward lift; row score callbacks
+lower to the same pushforward metadata at density evaluation, after binding.
 
 Truncation derivations retain live interval bounds as IR. Sampling evaluates
 those bounds per outer atom; density uses the current point and observed record

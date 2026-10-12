@@ -3260,6 +3260,10 @@ function _rewriteLocscale(node: any, synth: any[], diagnostics: any[], body: any
     }
     return out;
   }
+  // Reification inputs belong to this scope. Hoisting affine helpers here
+  // would move their captured placeholders outside the owning callback.
+  if (node.type === 'CallExpr' && node.callee?.type === 'Identifier'
+      && ['fn', 'functionof', 'kernelof'].includes(node.callee.name)) return node;
   if (node.type === 'CallExpr' && node.callee
       && node.callee.type === 'Identifier'
       && node.callee.name === 'locscale') {

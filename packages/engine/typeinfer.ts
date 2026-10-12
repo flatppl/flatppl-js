@@ -4067,25 +4067,25 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // via-exp, affine-transformed Normals). Per-call bijection
   // annotations could later refine this; the classifier validates
   // the f / M shapes structurally at routing time.
-  // A surviving non-scalar `locscale(base, shift, scale)` node (the
-  // analyzer pre-pass leaves vector/matrix forms unexpanded so they reach
-  // lift's affine-registry routing). An affine pushforward preserves the
-  // base measure's type (domain + shape), so the result type is the base
-  // measure's type. Modeled on inferPushfwd.
+  // Vector/matrix forms and scoped callbacks retain locscale until lift.
+  // Scalar affine arithmetic may promote a discrete base's numeric type.
   function inferLocscale(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 3) return arityError('locscale', '3', args.length, expr.loc);
     const baseT = inferExpr(args[0], scopes);  // base measure
-    inferExpr(args[1], scopes);                // shift — infer so refs resolve
-    inferExpr(args[2], scopes);                // scale — infer so refs resolve
-    // An affine pushforward preserves the base measure's type (domain +
-    // shape), so the result type IS the base measure's type. When the base
-    // doesn't infer to a clean measure (e.g. `iid(Normal, D)` with a bare
-    // `Normal` distribution-symbol infers `failed`, exactly as it does when
-    // used directly — see inferIid), DEFER rather than fabricating a scalar
-    // `measure(real)`: a scalar default would wrongly drive the density
-    // shape check to expect a real point for a vector-variate locscale.
-    if (T.isMeasure(baseT)) return baseT;
+    const shiftT = inferExpr(args[1], scopes);
+    const scaleT = inferExpr(args[2], scopes);
+    // Preserve the shape of a non-scalar base. When the base is unresolved,
+    // defer rather than fabricating a scalar measure for a vector variate.
+    if (T.isMeasure(baseT)) {
+      if (baseT.domain?.kind === 'scalar' && shiftT?.kind === 'scalar'
+          && scaleT?.kind === 'scalar') {
+        const product = T.unifyArith(baseT.domain, scaleT, new Map());
+        const result = product && T.unifyArith(product.result, shiftT, product.subst);
+        if (result) return T.measure(result.result, { mass: baseT.mass });
+      }
+      return baseT;
+    }
     return T.deferred();
   }
 

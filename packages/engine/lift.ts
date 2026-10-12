@@ -989,7 +989,7 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineRelabel(astArg);
       astArg = inlineFchain(astArg);
       astArg = inlineDensityof(astArg);
-      astArg = inlineScalarLocscaleBroadcast(astArg);
+      astArg = inlineScalarLocscale(astArg);
       // Recognize exponential-family laws before children are hoisted and
       // MvNormal loses its constructor head to the affine decomposition.
       astArg = inlineExponentialTilt(astArg);
@@ -1058,36 +1058,38 @@ function liftInlineSubexpressions(bindings: any) {
    * §04: no collection operands means one call; measures are held constant.
    * Route the scalar-variate locscale case through the ordinary scalar affine
    * pushforward, whose inverse and Jacobian are already recognized (§06).
+   * Scoped calls reach here after ordinary function application binds them.
    * Never treat a measure's variate axes as broadcast axes.
    */
-  function inlineScalarLocscaleBroadcast(astArg: any) {
-    if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier'
-        || astArg.callee.name !== 'broadcast') return astArg;
-    const args = astArg.args || [];
-    if (args.length !== 4 || args.some((a: any) => a?.type === 'KeywordArg')) return astArg;
-    const head = args[0];
+  function inlineScalarLocscale(astArg: any) {
+    if (astArg?.type !== 'CallExpr') return astArg;
+    const broadcast = astArg.callee?.type === 'Identifier' && astArg.callee.name === 'broadcast';
+    const head = broadcast ? astArg.args?.[0] : astArg.callee;
     const builtinHead = head?.type === 'Identifier' && head.name === 'locscale'
-      && !out.has(head.name);
+      && (astArg.builtin || !out.has(head.name));
     const qualifiedHead = head?.type === 'FieldAccess' && head.object?.type === 'Identifier'
       && head.object.name === 'base' && head.field === 'locscale';
     if (!builtinHead && !qualifiedHead) return astArg;
-    const base = __knownAstType(args[1]);
+    const args = broadcast ? astArg.args.slice(1) : astArg.args || [];
+    if (args.length !== 3 || args.some((a: any) => a?.type === 'KeywordArg')
+        || containsHoleOrPlaceholder(astArg)) return astArg;
+    const base = __knownAstType(args[0]);
     if (base?.kind !== 'measure' || base.domain?.kind !== 'scalar'
-        || __knownAstType(args[2])?.kind !== 'scalar'
-        || __knownAstType(args[3])?.kind !== 'scalar') return astArg;
-    if (args[3].type === 'NumberLiteral'
-        && (args[3].value === 0 || !Number.isFinite(args[3].value))) return astArg;
+        || __knownAstType(args[1])?.kind !== 'scalar'
+        || __knownAstType(args[2])?.kind !== 'scalar') return astArg;
+    if (args[2].type === 'NumberLiteral'
+        && (args[2].value === 0 || !Number.isFinite(args[2].value))) return astArg;
     const loc = astArg.loc;
     const x = { type: 'Placeholder', name: 'x', loc };
     const f = {
       type: 'CallExpr', callee: makeIdent('functionof', loc), builtin: true, loc,
       args: [{ type: 'BinaryExpr', op: '+', loc,
-        left: { type: 'BinaryExpr', op: '*', left: args[3], right: x, loc },
-        right: args[2] },
+        left: { type: 'BinaryExpr', op: '*', left: args[2], right: x, loc },
+        right: args[1] },
       { type: 'KeywordArg', name: 'x', value: x, loc }],
     };
     return { type: 'CallExpr', callee: makeIdent('pushfwd', loc), builtin: true,
-      args: [f, args[1]], loc };
+      args: [f, args[0]], loc };
   }
 
   /**
