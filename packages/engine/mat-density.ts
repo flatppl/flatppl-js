@@ -469,10 +469,14 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
       // identical field names/shapes to the IS posterior (drop-in). The fields
       // may be draws (alpha, beta, mu, tau, theta) OR deterministic transforms
       // of draws (sigma = sqrt(sigma2)); evaluateDerivedBindings yields all of
-      // them in one env per atom. We fetch the prior measure ONLY for its field
-      // structure (names + per-field shape), then fill with MCMC values.
+      // them in one env per atom. Read field names from the prior's type: an
+      // improper prior has a schema even though it has no prior samples.
       const mcmcDensity = require('./mcmc-density.ts');
-      return Promise.resolve(ctx.getMeasure(d.from)).then((parent: any) => {
+      const domain = ctx.bindings.get(d.from)?.inferredType?.domain;
+      const structure = domain
+        ? Promise.resolve(domain.kind === 'record' ? { fields: domain.fields } : null)
+        : ctx.getMeasure(d.from);
+      return Promise.resolve(structure).then((parent: any) => {
         const buildScalar = (stream: Float64Array) => {
           const out = new Float64Array(total);
           for (let i = 0; i < total; i++) out[i] = stream[idx[i]];
@@ -1691,6 +1695,13 @@ function matPosteriorDensity(d: any, ctx: any) {
 // =====================================================================
 
 function matTotalmass(d: DerivationTotalmass, ctx: any) {
+  // §09 Flat's mass is exact even though its prior cannot be sampled.
+  const { expandMeasureIR, closedFormLogTotalmass } = require('./derivations.ts');
+  const ir = expandMeasureIR(d.measureName, ctx.derivations, undefined, ctx.bindings);
+  if (closedFormLogTotalmass(ir, ctx.bindings) === Infinity) {
+    return Promise.resolve(scalarMeasureN(new Float64Array(ctx.sampleCount).fill(Infinity),
+      { logWeights: null, logTotalmass: 0, n_eff: ctx.sampleCount }));
+  }
   // totalmass(M): per spec §06, scalar mass of a (possibly
   // unnormalized) measure. The orchestrator tracks each measure's
   // logTotalmass through every materialisation step; expose it as a

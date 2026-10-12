@@ -194,6 +194,7 @@ function zerosumTransform(K: number) {
 }
 
 const SUPPORT_BY_DIST: Record<string, (params?: any) => any> = {
+  Flat: () => ({ kind: 'real' }),
   Normal:       () => ({ kind: 'real' }),
   Cauchy:       () => ({ kind: 'real' }),
   Logistic:     () => ({ kind: 'real' }),

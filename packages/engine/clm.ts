@@ -886,6 +886,7 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
   //    under BOTH names, so a body ref to the alias is covered by the
   //    declared input — it must not re-classify as shared/missing.
   for (const sb of _structuralBoundaries(deriv, ctx)) {
+    if (opts?.density && selfThreaded.has(sb.name)) continue;
     add(sb.name, sb.source);
     if (sb.source && sb.source.localAlias) seen.add(sb.source.localAlias);
   }

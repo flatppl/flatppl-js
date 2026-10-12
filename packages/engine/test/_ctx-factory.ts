@@ -9,8 +9,8 @@ const { createWorkerHandler } = require('../worker.ts');
 const SEED = 0xBA5E;
 
 // Build a materialiser context for a given source text and sample count.
-function ctxFor(src: string, N: number) {
-  const proc = processSource(src);
+function ctxFor(src: string, N: number, opts?: any) {
+  const proc = processSource(src, opts);
   const built = orchestrator.buildDerivations(proc.linkedBindings, {
     moduleRegistry: proc.linkedModuleRegistry,
   });

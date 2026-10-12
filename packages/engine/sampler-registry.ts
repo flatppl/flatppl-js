@@ -1482,6 +1482,17 @@ function _voigtianLogpdf(x: number, mean: number, width: number, sigma: number):
 }
 
 const REGISTRY = {
+  Flat: {
+    params: [], aliases: {}, discrete: false, densityOnly: true,
+    Ctor: function FlatCtor() {
+      throw new Error('regression.Flat is an improper prior and has no probability distribution');
+    },
+    randFn: { factory: () => {
+      throw new Error('regression.Flat has infinite mass and no prior sampler. '
+        + 'Use posterior MCMC with finite initial positions or choose a proper prior.');
+    } },
+    logpdfFn: (x: number) => Number.isFinite(x) ? 0 : -Infinity,
+  },
   Normal: {
     params:   ['mu', 'sigma'],
     aliases:  {},

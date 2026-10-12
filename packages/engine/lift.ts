@@ -669,6 +669,20 @@ function liftInlineSubexpressions(bindings: any) {
   }
   const { resolveAliasesOnBindings } = require('./alias-resolution.ts');
   resolveAliasesOnBindings(out, 'ir');
+  // §09 measure constructors keep their public namespace through inference.
+  // Runtime walkers dispatch the resolved density kernel, including Flat's
+  // explicit no-sampler entry, through the ordinary measure machinery.
+  const { standardDistributionOp } = require('./standard-modules.ts');
+  const { mapIR } = require('./ir-walk.ts');
+  for (const [, b] of out) {
+    if (!b?.ir) continue;
+    b.ir = mapIR(b.ir, (n: any) => {
+      const op = standardDistributionOp(n, out, 'ir');
+      if (!op) return n;
+      const { target, ...rest } = n;
+      return { ...rest, op };
+    });
+  }
   // C5 fusion pass: collapse broadcast(K, outer…) where K is a
   // functionof whose body is broadcast(<bareDist>, params…) and every
   // inner arg is exactly the matching kernel param (1:1, in order).
