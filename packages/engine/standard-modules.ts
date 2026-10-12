@@ -69,8 +69,8 @@ function lookupStandardModule(name: string, compat: string): StandardModuleEntry
   return _REGISTRY.get(key) || null;
 }
 
-/** Resolve a §09 measure constructor without exposing its name in base. */
-function standardDistributionOp(call: any, bindings: any, irField: string): string | null {
+/** Resolve a qualified §09 binding, following local callable aliases. */
+function standardModuleBinding(call: any, bindings: any, irField: string): BindingDescriptor | null {
   let target = call?.target;
   const seen = new Set<string>();
   while (target?.ns === 'self' && !seen.has(target.name)) {
@@ -83,7 +83,12 @@ function standardDistributionOp(call: any, bindings: any, irField: string): stri
   const module = bindings.get(target.ns)?.[irField];
   if (module?.op !== 'standard_module') return null;
   const entry = lookupStandardModule(module.args?.[0]?.value, module.args?.[1]?.value);
-  const desc = entry?.bindings.get(target.name);
+  return entry?.bindings.get(target.name) ?? null;
+}
+
+/** Resolve a §09 measure constructor without exposing its name in base. */
+function standardDistributionOp(call: any, bindings: any, irField: string): string | null {
+  const desc = standardModuleBinding(call, bindings, irField);
   return desc?.kind === 'distribution' ? desc.op ?? null : null;
 }
 
@@ -660,6 +665,7 @@ _registerBuiltinStandardModules();
 
 module.exports = {
   lookupStandardModule,
+  standardModuleBinding,
   standardDistributionOp,
   registerStandardModule,
   listStandardModules,
