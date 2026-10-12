@@ -1377,6 +1377,15 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   // Resolve Z = M(S) from the current atom, including observed record fields
   // in overlay. Refuse an unresolved normalizer instead of dropping it.
   const inner: any = ir.args && ir.args[0];
+  if (inner?.kind === 'call' && (inner.op === 'weighted' || inner.op === 'logweighted')) {
+    const logMass = require('./normalize-mass.ts').logTotalMassExpr(inner);
+    if (logMass != null) {
+      const shift = { kind: 'call', op: 'neg', args: [logMass] };
+      // Raw callback bodies bypass the main-thread normalizer rewrite. Use
+      // its mass expression and validity check at each captured parameter.
+      applyAtomScalar(shift, refArrays, N, baseEnv, overlay, acc, addNormalizeShift);
+    }
+  }
   if (inner && inner.kind === 'call' && inner.op === 'truncate'
       && Array.isArray(inner.args) && inner.args.length === 2) {
     const refs = Object.keys(refArrays || {}).filter(name =>

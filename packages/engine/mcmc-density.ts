@@ -25,7 +25,7 @@ const density       = require('./density.ts');
 const irShared      = require('./ir-shared.ts');
 const sampler       = require('./sampler.ts');
 const lower         = require('./lower.ts');
-const { totalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
+const { logTotalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
 const { crnNormalizeMassExpr } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
 
@@ -95,12 +95,12 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
   const needMaterialise: any[] = [];
   for (const node of nodes) {
     const inner = node.args[0];
-    const massExpr = totalMassExpr(inner);
-    if (massExpr != null) {
+    const logMassExpr = logTotalMassExpr(inner);
+    if (logMassExpr != null) {
       // normalize(inner) → logweighted(−log Z(θ), inner). walkLogWeighted
       // evaluates the (non-functionof) weight per atom against θ.
       node.op = 'logweighted';
-      node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [massExpr] }] }, inner];
+      node.args = [{ kind: 'call', op: 'neg', args: [logMassExpr] }, inner];
       delete node.massFrom;
       // Same mark as mat-density.ts's copy of this rewrite: Z = 0 makes the
       // shift +∞ and §06 leaves normalize undefined, so the density walker

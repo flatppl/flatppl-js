@@ -443,6 +443,12 @@ the §21 generative / scalar pushforward, plus the iid-of-LEAF `sampleN repeat=k
 fast path. The full collapse `materialiseMeasure ≡ materialiseMeasureIR(expand
 Measure)` is deferred (TODO "Smell A residue").
 
+The bridge registers its root as well as its children, so normalization can
+recover the complete mass expression at each captured parameter. Scalar
+weighted callback densities reuse `normalize-mass.logTotalMassExpr`; affine
+pushforwards preserve base mass. Scalar factors stay in log space, including
+captured logweights. Sampling refuses a nonfinite pooled log mass.
+
 ## Cross-file invariants
 
 Boundary inlining expands deterministic literal records and vectors through
