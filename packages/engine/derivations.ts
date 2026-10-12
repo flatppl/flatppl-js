@@ -1350,13 +1350,10 @@ function _unwrapHoistedFormalRoot(
 // substituted by the lift, which is why a PERMUTED composition
 // (`f(x, y) = g(b = x, a = y)`) reduces correctly.
 //
-// A MEASURE binding stays a ref for the density walker. The kind-based test
-// `_unwrapHoistedFormalRoot` uses is too strict here: a reified function with a
-// record output stores its applied body as a `record` derivation over
-// formal-carrying fields, which is a value composition, not a measure — leaving
-// it a ref keeps the body unresolvable. `isMeasureBinding` is the criterion that
-// separates the two, and the carries-a-formal test already excludes anything
-// materialisable in its own right.
+// Draws and reified laws stay refs for the density walker. Value compositions
+// and explicit measure constructors carrying a formal must inline: a lifted
+// `weighted(p, Dirac(0))` has no standalone meaning while p is a local input.
+// Callable bindings stay refs, preserving their separate reification scopes.
 //
 // The memo returns one shared node per binding, so a diamond in the graph stays
 // a diamond rather than expanding exponentially.
@@ -1370,8 +1367,10 @@ function _inlineFormalCarryingRefs(
     if (memo.has(name)) return memo.get(name);
     if (active.has(name)) return null;              // cycle guard
     const target = bindings && bindings.get(name);
-    if (isMeasureBinding(target)) return null;
     if (!target || !target.ir || target.ir.kind !== 'call') return null;
+    if (target.type === 'draw') return null;
+    if (isMeasureBinding(target)
+        && !DISTRIBUTIONS.has(target.ir.op) && !MEASURE_OPS.has(target.ir.op)) return null;
     if (target.ir.op === 'elementof' || target.ir.op === 'external') return null;
     if (!mentionsFormal(name)) return null;
     active.add(name);
@@ -5910,13 +5909,12 @@ function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
  *
  * Resolves a binding **by name** to its canonical measure IR.
  */
-// Replace a weight's held measure in `logdensityof(M, x)` or
-// `logdensityof.(M, x)` by M's expanded IR, where x is the variate. The worker
-// receives measure IR instead of sampling M to obtain an ordinary value.
+// Expand measures scored inside a weight, including nested row functions.
+// The worker receives measure IR instead of sampling a held measure or trying
+// to resolve its component references without the module's bindings.
 function _inlineWeightMeasures(ir: any, derivations: any, visited: any, bindings: any): any {
   if (!ir || ir.kind !== 'call' || ir.op !== 'functionof' || !Array.isArray(ir.params)
       || ir.params.length !== 1) return ir;
-  const param = ir.params[0];
   const { mapIR } = require('./ir-walk.ts');
   return mapIR(ir, (n: any) => {
     if (!n || n.kind !== 'call' || !Array.isArray(n.args)) return n;
@@ -5925,11 +5923,9 @@ function _inlineWeightMeasures(ir: any, derivations: any, visited: any, bindings
       && head.ns === 'self' && head.name === 'logdensityof' && !bindings?.has(head.name);
     if (n.op !== 'logdensityof' && !broadcast) return n;
     const mi = broadcast ? 1 : 0;
-    const m = n.args[mi], x = n.args[mi + 1];
-    if (!x || x.kind !== 'ref' || x.ns !== '%local' || x.name !== param) return n;
-    if (!m || m.kind !== 'ref' || m.ns !== 'self' || !derivations[m.name]) return n;
-    const expanded = expandMeasureIR(m.name, derivations, visited, bindings);
-    if (!expanded) return n;
+    const m = n.args[mi];
+    const expanded = _expandKernelBodyMeasureRefs(m, { derivations, bindings }, visited);
+    if (!expanded || expanded === m) return n;
     const args = n.args.slice();
     args[mi] = expanded;
     return { ...n, args };

@@ -219,9 +219,9 @@ g2=Normal(0.0,1.0)
 prod=normalize(logweighted(x -> logdensityof(g2,2.0*x),g1))
 ld=logdensityof(prod,0.0)
 `, 1);
-  // This general weight still lacks named-measure closure support. It must
-  // not silently score the different product g1(x)*g2(x).
-  await assert.rejects(() => ctx.getMeasure('ld'), /measure ref/);
+  // Scalar quadrature still lacks general density evaluation. It must not
+  // silently score the different product g1(x)*g2(x).
+  await assert.rejects(() => ctx.getMeasure('ld'), /logdensityof.*not evaluable in sampler context/);
 });
 
 test('product_dist: disjoint supports and continuous-base PMF weights have zero mass', async () => {
