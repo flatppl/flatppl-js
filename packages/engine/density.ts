@@ -1377,6 +1377,13 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   // Resolve Z = M(S) from the current atom, including observed record fields
   // in overlay. Refuse an unresolved normalizer instead of dropping it.
   const inner: any = ir.args && ir.args[0];
+  if (inner?.kind === 'ref') {
+    const resolved = opts.resolveMeasureRef?.(inner.name);
+    if (!resolved) throw new Error('density: normalize requires a resolved base measure');
+    // Fixed evaluation can precede the materialiser's canonical expansion.
+    // A named base still needs its own mass; it is not implicitly normalized.
+    return walkNormalize({ ...ir, args: [resolved] }, value, refArrays, N, opts, acc, baseEnv, overlay);
+  }
   if (inner?.kind === 'call' && (inner.op === 'weighted' || inner.op === 'logweighted')) {
     const logMass = require('./normalize-mass.ts').logTotalMassExpr(inner);
     if (logMass != null) {

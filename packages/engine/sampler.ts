@@ -2597,7 +2597,8 @@ function _broadcastApply(fn: any, inputs: any, env: any, resultType?: any): any 
       nextPoint() {},
       evalPoint(pointEnv: any) {
         return density.logDensity(fn.body.args[0], evaluateExpr(fn.body.args[1], pointEnv),
-          pointEnv, { tally: 'clamped', resolveMeasureRef: pointEnv.__resolveMeasureRef });
+          pointEnv, { tally: 'clamped', resolveMeasureRef: pointEnv.__resolveMeasureRef,
+            parseSet: (setIR: any) => require('./ir-shared.ts').parseSetIR(setIR, null) });
       },
     }, resultType);
   }
