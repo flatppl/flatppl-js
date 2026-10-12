@@ -14,6 +14,7 @@ import { renderSampleStats } from './render-record.js';
 import { computePanelLayout, dividerPartner, clampSplit, PANEL_DOM } from './panels.js';
 import type { PanelId } from './panels.js';
 import { fitGraph } from './dag.js';
+import { resizeAllEchartsInPlot } from './orchestration.js';
 import { $, displayBindingName, esc, listScalarAxes, renderDocTitle } from './util.js';
 import { downloadMeasure } from './export-samples.js';
 import { formatDiagnosticMessage } from './diagnostics.js';
@@ -444,7 +445,7 @@ export function setGraphEnabled(ctx: Ctx, enabled: boolean) {
   saveViewState(ctx);
   requestAnimationFrame(function () {
     if (ctx.graphEnabled && ctx.cy) ctx.cy.resize();
-    if (ctx.plotEchart) ctx.plotEchart.resize();
+    resizeAllEchartsInPlot(ctx);
   });
 }
 
@@ -463,7 +464,7 @@ export function setMathEnabled(ctx: Ctx, enabled: any) {
   // plot toggle does), else the DAG stays clipped at its old layout.
   requestAnimationFrame(function () {
     if (ctx.graphEnabled && ctx.cy) { ctx.cy.resize(); if (ctx.graphAutoFit) fitGraph(ctx); }
-    if (ctx.plotEchart) ctx.plotEchart.resize();
+    resizeAllEchartsInPlot(ctx);
   });
 }
 
@@ -477,7 +478,7 @@ export function setPlotEnabled(ctx: Ctx, enabled: any) {
     // chainable. Echarts also needs resize after becoming visible
     // (it measures 0×0 while collapsed).
     renderPlotForCurrent(ctx);
-    if (ctx.plotEchart) ctx.plotEchart.resize();
+    resizeAllEchartsInPlot(ctx);
   } else {
     // Tear down the echart instance to avoid keeping its canvas /
     // event listeners alive while the panel is collapsed. It'll

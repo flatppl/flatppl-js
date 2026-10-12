@@ -16,9 +16,10 @@ const { renderPlotForCurrent } = await import('./render-plot.ts');
 const { buildInferenceControl } = await import('./render-controls.ts');
 const { sourceErrorsFor } = await import('./diagnostics.ts');
 const { enterModuleView } = await import('./dag.ts');
-const { applySourceUpdate } = await import('./orchestration.ts');
+const { applySourceUpdate, resizeAllEchartsInPlot } = await import('./orchestration.ts');
 const { VIEWER_BODY_HTML } = await import('./templates.ts');
 const { renderRecordMarginals, renderGenQuantitiesDropdown } = await import('./render-record.ts');
+const { renderCornerGrid } = await import('./render-density.ts');
 const { listScalarAxes } = await import('./util.ts');
 const { disposePlotCharts } = await import('./render-frame.ts');
 const echarts = await import('echarts');
@@ -327,7 +328,10 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
         'a histogram keeps its labeled trimmed range rather than flattening the bulk to an outlier');
     } else {
       assert.equal(series.type, 'scatter');
-      assert.deepEqual(series.data, Array.from(axes[col].samples, (x, i) => [x, axes[row].samples[i]]));
+      const points = ArrayBuffer.isView(series.data)
+        ? Array.from({ length: series.data.length / 2 }, (_, i) => [series.data[2 * i], series.data[2 * i + 1]])
+        : series.data;
+      assert.deepEqual(points, Array.from(axes[col].samples, (x, i) => [x, axes[row].samples[i]]));
     }
     const dataBeforeResize = option.series.map((s) => s.data);
     for (const [width, height] of [[52, 34], [12, 8], [56, 36], [96, 60], [180, 110], [220, 180]]) {
@@ -480,4 +484,90 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
   assert.ok(baseline >= 530 && baseline <= 540, 'large histograms keep compact density-axis space');
   assert.equal(single.getOption().yAxis[0].axisLabel.formatter(0.5), '0.5');
   disposePlotCharts(ctx);
+});
+
+test('weighted corner scatters retain joint pairs and binary64 coordinates', (t) => {
+  const doc = mountDOM(t);
+  const priorEngine = globalThis.FlatPPLEngine, priorStyle = globalThis.getComputedStyle;
+  globalThis.FlatPPLEngine = engine;
+  globalThis.getComputedStyle = () => ({ color: '#333' });
+  t.after(() => { globalThis.FlatPPLEngine = priorEngine; globalThis.getComputedStyle = priorStyle; });
+  const axes = [
+    { key: 'x', label: 'x', samples: Float64Array.of(1 + 2 ** -30, 2, 3, 4, 5, 6, 7, 8) },
+    { key: 'y', label: 'y', samples: Float64Array.of(8, 7, 6, 5, 4, 3, 2, 1) },
+  ];
+  const measure = { logWeights: Float64Array.from([1, 1, 2, 4, 0, 0, 0, 0], Math.log) };
+  const originals = axes.map(a => a.samples.slice());
+  const mounted = new Map();
+  globalThis.echarts = {
+    init(element) {
+      const chart = echarts.init(null, null, { renderer: 'svg', ssr: true, width: 180, height: 110 });
+      mounted.set(element, chart);
+      return chart;
+    },
+    getInstanceByDom: element => mounted.get(element),
+  };
+  t.after(() => { for (const chart of mounted.values()) if (!chart.isDisposed()) chart.dispose(); });
+  const ctx = { recordSelection: { selected: ['x', 'y'] }, rootSeed: 42,
+    TYPE_STYLE: { draw: { color: '#82b366' }, unknown: { color: '#82b366' } } };
+  const host = doc.createElement('div');
+  renderCornerGrid(ctx, host, measure, 'points', axes);
+  const scatter = [...mounted.values()].find(c => c.getOption().series[0].type === 'scatter');
+  const series = scatter.getOption().series[0];
+  const points = ArrayBuffer.isView(series.data)
+    ? Array.from({ length: series.data.length / 2 }, (_, i) => [series.data[2 * i], series.data[2 * i + 1]])
+    : series.data;
+  // Eight draws and integer masses give exact systematic-resampling counts.
+  assert.deepEqual(points, [0, 1, 2, 2, 3, 3, 3, 3].map(i => [axes[0].samples[i], axes[1].samples[i]]));
+  const plotted = scatter.getModel().getSeriesByIndex(0).getData();
+  assert.equal(plotted.count(), points.length);
+  for (let i = 0; i < plotted.count(); i++) assert.deepEqual([plotted.get('x', i), plotted.get('y', i)], points[i]);
+  assert.equal(series.itemStyle.opacity, 0.6);
+  assert.match(scatter.renderToSVGString(), /<path/);
+  assert.deepEqual(axes.map(a => a.samples), originals);
+  disposePlotCharts(ctx, host);
+  assert.ok([...mounted.values()].every(c => c.isDisposed()));
+});
+
+test('plot resize skips unchanged content sizes and keeps root and padded charts responsive', (t) => {
+  const doc = mountDOM(t), root = doc.getElementById('plot-content');
+  const child = doc.createElement('div');
+  root.appendChild(child);
+  Object.assign(root, { clientWidth: 220, clientHeight: 180 });
+  Object.assign(child, { clientWidth: 110, clientHeight: 80 });
+  const priorStyle = globalThis.getComputedStyle;
+  const childStyle = { width: '110px', height: '80px', paddingLeft: '3px', paddingRight: '7px', paddingTop: '5px', paddingBottom: '15px' };
+  globalThis.getComputedStyle = node => node === child
+    ? childStyle
+    : { width: '220px', height: '180px' };
+  t.after(() => { globalThis.getComputedStyle = priorStyle; });
+  const mounted = new Map(), sizes = [];
+  for (const [node, width, height] of [[root, 220, 180], [child, 100, 60]]) {
+    const chart = echarts.init(null, null, { renderer: 'svg', ssr: true, width, height });
+    const resize = chart.resize.bind(chart);
+    chart.resize = opts => { sizes.push([opts.width, opts.height]); resize(opts); };
+    mounted.set(node, chart);
+  }
+  globalThis.echarts = { getInstanceByDom: node => mounted.get(node) };
+  t.after(() => { for (const chart of mounted.values()) chart.dispose(); });
+  resizeAllEchartsInPlot({});
+  assert.deepEqual(sizes, [], 'unchanged charts avoid the full ECharts update');
+  child.clientWidth = 111;
+  root.clientHeight = 190;
+  resizeAllEchartsInPlot({});
+  assert.deepEqual(sizes, [[220, 190], [101, 60]]);
+  resizeAllEchartsInPlot({});
+  assert.equal(sizes.length, 2);
+  child.clientWidth = 0;
+  child.clientHeight = 0;
+  resizeAllEchartsInPlot({});
+  assert.deepEqual(sizes.at(-1), [100, 60], 'hidden hosts retain ECharts CSS fallback sizing');
+  childStyle.width = 'auto'; childStyle.height = 'auto';
+  resizeAllEchartsInPlot({});
+  assert.deepEqual(sizes.at(-1), [0, 0], 'an unsized hidden host has zero content size');
+  child.clientWidth = 120;
+  child.clientHeight = 90;
+  resizeAllEchartsInPlot({});
+  assert.equal(mounted.get(child).getWidth(), 110);
+  assert.equal(mounted.get(child).getHeight(), 70);
 });
