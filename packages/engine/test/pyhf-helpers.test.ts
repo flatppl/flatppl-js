@@ -10,7 +10,7 @@ const { evaluateExpr } = require('../sampler.ts');
 test('pyhf normsys call forms preserve the portable reference values', () => {
   const reference = 'hep = standard_module("particle-physics", "0.1")\n'
     + 'normsys_factor(lo, hi, alpha) = hep.interp_poly6_exp(lo, 1.0, hi, alpha)';
-  const result = processSource('pyhf = standard_module("pyhf_helpers", "0.1")\n'
+  const result = processSource('pyhf = standard_module("pyhf-helpers", "0.1")\n'
     + 'reference = load_module("reference.flatppl")\n'
     + 'lo = elementof(posreals)\nhi = elementof(posreals)\nalpha = elementof(reals)\n'
     + 'outputs = [pyhf.normsys_factor(lo, hi, alpha),\n'
@@ -41,7 +41,7 @@ test('pyhf normsys call forms preserve the portable reference values', () => {
 });
 
 test('pyhf histosys broadcasts additive shifts without adding the nominal', () => {
-  const result = processSource('pyhf = standard_module("pyhf_helpers", "0.1")\n'
+  const result = processSource('pyhf = standard_module("pyhf-helpers", "0.1")\n'
     + 'alpha = [-5.0, -1.0, -0.4, 0.0, 0.4, 1.0, 5.0]\n'
     + 'outputs = pyhf.histosys_shift.(5.0, 10.0, 30.0, alpha)');
   assert.deepEqual(result.diagnostics.filter((d: any) => d.severity === 'error'), []);

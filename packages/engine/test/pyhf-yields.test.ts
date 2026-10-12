@@ -14,7 +14,7 @@ const reference = 'flatppl_compat = "0.1"\n'
   + 'expected_counts(samples) = aggregate(sum, [.b], samples[.s, .b] / 1.0)\n';
 
 function evaluator(body: string, portable = false) {
-  const module = portable ? 'load_module("reference.flatppl")' : 'standard_module("pyhf_helpers", "0.1")';
+  const module = portable ? 'load_module("reference.flatppl")' : 'standard_module("pyhf-helpers", "0.1")';
   const result = processSource(`flatppl_compat = "0.1"\npyhf = ${module}\n${body}`,
     { bundle: { sources: { 'reference.flatppl': reference } } });
   assert.deepEqual(result.diagnostics.filter((d: any) => d.severity === 'error'), []);

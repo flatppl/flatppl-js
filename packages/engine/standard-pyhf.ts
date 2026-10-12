@@ -11,7 +11,7 @@ type Value = import('./engine-types').Value;
 function realArray(value: unknown, rank: number, name: string): Value {
   const array: Value = V.asValue(value);
   if (array.shape.length !== rank || V.outerRankOf(array) !== rank || V.isComplexValue(array)) {
-    throw new Error(`pyhf_helpers.${name}: expected a real rank-${rank} array`);
+    throw new Error(`pyhf-helpers.${name}: expected a real rank-${rank} array`);
   }
   return V._logicalDense(array);
 }
@@ -25,7 +25,7 @@ function sampleYields(n: unknown, a: unknown, m: unknown): Value {
   const [samples, bins] = nominal.shape;
   if (shifts.shape[0] !== samples || factors.shape[0] !== samples
       || shifts.shape[2] !== bins || factors.shape[2] !== bins) {
-    throw new Error('pyhf_helpers.sample_yields: sample and bin extents must agree');
+    throw new Error('pyhf-helpers.sample_yields: sample and bin extents must agree');
   }
   const additive = shifts.shape[1], multiplicative = factors.shape[1];
   const data = new Float64Array(samples * bins);
@@ -63,7 +63,7 @@ function pyhfModule(
   const matrix = T.array(2, ['%dynamic', '%dynamic'], T.REAL);
   const modifiers = T.array(3, ['%dynamic', '%dynamic', '%dynamic'], T.REAL);
   return {
-    name: 'pyhf_helpers',
+    name: 'pyhf-helpers',
     compat: '0.1',
     bindings: new Map([
       ['normsys_factor', {
