@@ -415,8 +415,8 @@ function matLKJCholesky(name: string, d: DerivationLKJCholesky, ctx: any): Promi
   }
   const betaPromises: Promise<any>[] = [];
   for (let i = 1; i < n; i++) {
-    const a = eta + (n - i - 1) / 2;
-    const b = i / 2;
+    const a = i / 2;
+    const b = eta + (n - i - 1) / 2;
     const betaIR = {
       kind: 'call', op: 'Beta',
       kwargs: { alpha: { kind: 'lit', value: a },
