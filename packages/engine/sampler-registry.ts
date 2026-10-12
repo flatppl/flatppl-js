@@ -24,6 +24,7 @@
 const rng      = require('./rng.ts');
 const valueLib = require('./value.ts');
 const transforms = require('./transforms.ts');
+const { logBesselI0 } = require('./bessel.ts');
 
 // Same primitive @stdlib's own random-base-beta/lib/validate.js uses to
 // reject a non-positive-number alpha/beta, so the Beta two-gamma
@@ -614,33 +615,6 @@ function logpdfChiSquared(x: any, k: any) {
 }
 
 // VonMises(mu, kappa) — Best & Fisher (1979) rejection sampler.
-// I_0(κ) computed via Chebyshev approximation (A&S 9.8.1/9.8.2).
-function logBesselI0(x: any) {
-  const ax = Math.abs(+x);
-  if (ax < 3.75) {
-    const t = (ax / 3.75); const t2 = t * t;
-    const I0 = 1
-      + t2 * (3.5156229
-      + t2 * (3.0899424
-      + t2 * (1.2067492
-      + t2 * (0.2659732
-      + t2 * (0.0360768
-      + t2 * 0.0045813)))));
-    return Math.log(I0);
-  }
-  const y = 3.75 / ax;
-  const poly = 0.39894228
-    + y * (0.01328592
-    + y * (0.00225319
-    + y * (-0.00157565
-    + y * (0.00916281
-    + y * (-0.02057706
-    + y * (0.02635537
-    + y * (-0.01647633
-    + y * 0.00392377)))))));
-  return ax - 0.5 * Math.log(ax) + Math.log(poly);
-}
-
 function _vmDraw(mu: any, kappa: any, prng: any) {
   const k = +kappa;
   const m = +mu;
