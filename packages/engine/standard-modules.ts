@@ -656,6 +656,7 @@ function _registerExtLinearAlgebra() {
 function _registerBuiltinStandardModules() {
   _registerRegression();
   _registerPolynomials();
+  registerStandardModule(require('./standard-splines.ts').splinesModule());
   _registerParticlePhysics();
   registerStandardModule(require('./standard-pyhf.ts').pyhfModule(_interpPoly6Exp, _interpPoly6Lin));
   _registerExtLinearAlgebra();
