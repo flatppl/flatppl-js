@@ -3643,7 +3643,7 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     const w = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
       childCtx.fixedValues);
     if (w != null && Number.isFinite(w) && w > 0) {
-      const from = register(ir.args[1], 'weighted:base');
+      const from = _bridgeMeasureFrom(ir.args[1], register, 'weighted:base');
       return { kind: 'weighted', from, logShift: Math.log(w) };
     }
     // Non-constant weight — a LATENT-dependent per-atom mass (§06's
@@ -3661,7 +3661,7 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     const lw = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
       childCtx.fixedValues);
     if (lw != null && Number.isFinite(lw)) {
-      const from = register(ir.args[1], 'logweighted:base');
+      const from = _bridgeMeasureFrom(ir.args[1], register, 'logweighted:base');
       return { kind: 'weighted', from, logShift: lw };
     }
     const lwFrom = _bridgeMeasureFrom(ir.args[1], register, 'logweighted:base');
