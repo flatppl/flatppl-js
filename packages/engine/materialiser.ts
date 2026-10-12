@@ -799,7 +799,7 @@ function _weightIsThetaDependent(inner: any, ctx: any): boolean {
     { weightParams: isFn ? w.params : [], weightBody: isFn ? w.body : w, axes: [] }, ctx);
 }
 
-// IR expression for the per-atom mass Z(θ_i) of a `normalize`, or null when the
+// IR expression for the per-atom log mass log Z(θ_i), or null when the
 // pooled divisor is already right for the shape. THROWS when the mass moves
 // with a latent and no expression is available — see the refusal below.
 //
@@ -808,11 +808,11 @@ function _weightIsThetaDependent(inner: any, ctx: any): boolean {
 //   • crn-normalize's fixed-sample Ẑ(θ) for `weighted(f, Lebesgue(box))`.
 //   • leaf-mass-quad's fixed graded quadrature Ẑ(θ) for `weighted(f, B)` with a
 //     continuous scalar probability leaf `B`.
-//   • normalize-mass's `totalMassExpr` for a scalar mass factor over a
-//     probability leaf — Z(θ) = w(θ) · 1, algebraic and exact.
-function _perAtomMassExpr(name: string, ctx: any): any | null {
+//   • normalize-mass's `logTotalMassExpr` for scalar factors, without
+//     exponentiating a logweight before taking its logarithm again.
+function _perAtomLogMassExpr(name: string, ctx: any): any | null {
   const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
-  const { totalMassExpr } = require('./normalize-mass.ts');
+  const { logTotalMassExpr } = require('./normalize-mass.ts');
   const { expandMeasureIR } = require('./derivations.ts');
   const ir = expandMeasureIR(name, ctx.derivations, new Set(), ctx.bindings);
   const shape = crnRecognize(ir);
@@ -820,14 +820,15 @@ function _perAtomMassExpr(name: string, ctx: any): any | null {
     // Over the node budget this THROWS rather than returning null: the pooled
     // divisor is the wrong number under a θ-dependent weight, and it is the one
     // the caller would fall back to.
-    return crnNormalizeMassExpr(ir, { points: ctx.crnNormalizePoints, ctx });
+    const mass = crnNormalizeMassExpr(ir, { points: ctx.crnNormalizePoints, ctx });
+    return mass == null ? null : { kind: 'call', op: 'log', args: [mass] };
   }
   // The same for a continuous scalar probability LEAF base — the shape this
   // route used to REFUSE while the density route baked a constant. Both now
   // divide by the same expression (leaf-mass-quad.ts).
   const { leafMassExpr } = require('./leaf-mass-quad.ts');
   const leafExpr = leafMassExpr(ir, ctx);
-  if (leafExpr != null) return leafExpr;
+  if (leafExpr != null) return { kind: 'call', op: 'log', args: [leafExpr] };
   if (!ir || ir.kind !== 'call' || ir.op !== 'normalize'
       || !Array.isArray(ir.args) || ir.args.length !== 1) return null;
   const inner = ir.args[0];
@@ -865,7 +866,7 @@ function _perAtomMassExpr(name: string, ctx: any): any | null {
     c && c.kind === 'call' && (c.op === 'weighted' || c.op === 'logweighted')
     && Array.isArray(c.args) && c.args.length === 2);
   if (!wComps.some((c: any) => _weightIsThetaDependent(c, ctx))) return null;
-  const expr = totalMassExpr(inner);
+  const expr = logTotalMassExpr(inner);
   if (expr != null) return expr;
   // A superpose with a component `totalMassExpr` cannot express — a nested
   // `normalize`, a `truncate`, an `iid` — has no closed-form Σ_i w_i. (A `lawof`
@@ -920,13 +921,13 @@ function _perAtomMassExpr(name: string, ctx: any): any | null {
 // NOTHING is caught here. A null means the pooled divisor is right for the
 // shape — a θ-INDEPENDENT weight, whose mass is one constant. Every path where
 // it would be wrong throws instead: an `expandMeasureIR` failure, a θ-dependent
-// mass with no expression (the refusal in `_perAtomMassExpr`), and a θ-dependent
+// mass with no expression (the refusal in `_perAtomLogMassExpr`), and a θ-dependent
 // weight body over crn-normalize's node budget. Catching any of them would
 // reinstate the pooled divisor, the wrong number this path exists to remove.
 function _perAtomLogMass(name: string, ctx: any, N: number): Promise<Float64Array | null> {
   let expr: any = null;
   try {
-    expr = _perAtomMassExpr(name, ctx);
+    expr = _perAtomLogMassExpr(name, ctx);
   } catch (e) {
     return Promise.reject(e);
   }
@@ -936,13 +937,13 @@ function _perAtomLogMass(name: string, ctx: any, N: number): Promise<Float64Arra
     .then((reply: any) => {
       const out = new Float64Array(N);
       for (let i = 0; i < N; i++) {
-        const z = reply.samples[i];
-        if (!(z > 0) || !Number.isFinite(z)) {
+        const logZ = reply.samples[i];
+        if (!Number.isFinite(logZ)) {
           throw new Error('normalize(' + name + '): the estimated total mass of the inner '
-            + 'measure is ' + z + ' at atom ' + i + '; spec §06 leaves normalize undefined '
-            + 'when Z is zero or infinite');
+            + 'measure is ' + Math.exp(logZ) + ' at atom ' + i
+            + '; spec §06 leaves normalize undefined when Z is zero or infinite');
         }
-        out[i] = Math.log(z);
+        out[i] = logZ;
       }
       return out;
     });
@@ -984,6 +985,9 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
           w[i] = perAtomLogZ ? baseLW[i] - perAtomLogZ[i] : baseLW[i];
         }
         const lse = empirical.logSumExp(w);
+        if (!Number.isFinite(lse)) {
+          throw new Error('normalize(' + name + '): total mass must be positive and finite (spec §06)');
+        }
         for (let i = 0; i < N; i++) w[i] -= lse;
         // §06 "Normalization and mass" divides by the total mass, which is the
         // per-atom divisor plus the pooled shift — ONE weighting event on top
@@ -1019,6 +1023,9 @@ function matNormalize(d: DerivationNormalize, ctx: any, name: string) {
         for (let i = 0; i < N; i++) w[i] = lifted.logWeights[i];
       }
       const lse = empirical.logSumExp(w);
+      if (!Number.isFinite(lse)) {
+        throw new Error('normalize(' + name + '): total mass must be positive and finite (spec §06)');
+      }
       for (let i = 0; i < N; i++) w[i] -= lse;
       // One weighting event over the parent's: the per-atom divisor and the
       // pooled shift (§06 "Normalization and mass").
@@ -3643,7 +3650,7 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     const w = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
       childCtx.fixedValues);
     if (w != null && Number.isFinite(w) && w > 0) {
-      const from = register(ir.args[1], 'weighted:base');
+      const from = _bridgeMeasureFrom(ir.args[1], register, 'weighted:base');
       return { kind: 'weighted', from, logShift: Math.log(w) };
     }
     // Non-constant weight — a LATENT-dependent per-atom mass (§06's
@@ -3661,7 +3668,7 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     const lw = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
       childCtx.fixedValues);
     if (lw != null && Number.isFinite(lw)) {
-      const from = register(ir.args[1], 'logweighted:base');
+      const from = _bridgeMeasureFrom(ir.args[1], register, 'logweighted:base');
       return { kind: 'weighted', from, logShift: lw };
     }
     const lwFrom = _bridgeMeasureFrom(ir.args[1], register, 'logweighted:base');
@@ -3814,13 +3821,14 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
 // later stages land).
 function _bridgeToHandler(ir: any, ctx: any): Promise<any> {
   const { register, childCtx } = _bridgeRegister(ctx);
-  const d = _bridgeDerivation(ir, register, childCtx);
+  const name = register(ir, ir.op);
+  const d = childCtx.derivations[name];
   const handler = (KIND_HANDLERS as any)[d.kind];
   if (!handler) {
     return Promise.reject(new Error(
       'materialiseMeasureIR bridge: no handler for kind ' + d.kind));
   }
-  return handler('%mir:' + ir.op, d, childCtx);
+  return handler(name, d, childCtx);
 }
 
 /** Exact §06 tilt sampling uses the existing iid parameter/weight plumbing. */

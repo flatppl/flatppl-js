@@ -42,6 +42,10 @@ function canDeferTruncateNormalizer(inner: any): boolean {
 function totalMassExpr(ir: any): any {
   if (!ir || ir.kind !== 'call') return null;
   const op = ir.op;
+  // Pushforward changes coordinates, not total mass (§06). locscale may
+  // remain scoped until its callback arguments are bound.
+  if (op === 'locscale' && ir.args?.length === 3) return totalMassExpr(ir.args[0]);
+  if (op === 'pushfwd' && ir.args?.length === 2) return totalMassExpr(ir.args[1]);
   // superpose / logweights-null select: Σ component masses. A select with
   // explicit logweights or a retain-mode selectorName is NOT a raw additive
   // superpose — fall back to the constant bake rather than guess its mass.
@@ -132,6 +136,25 @@ function totalMassExpr(ir: any): any {
     return { kind: 'lit', value: 1 };
   }
   return null;
+}
+
+// Keep scalar factors in log space: exp(±1000) is not representable, but
+// normalize(logweighted(±1000, M)) is well-defined for a probability M.
+function logTotalMassExpr(ir: any): any {
+  if (!ir || ir.kind !== 'call') return null;
+  if (ir.op === 'locscale' && ir.args?.length === 3) return logTotalMassExpr(ir.args[0]);
+  if (ir.op === 'pushfwd' && ir.args?.length === 2) return logTotalMassExpr(ir.args[1]);
+  if ((ir.op === 'weighted' || ir.op === 'logweighted') && ir.args?.length === 2) {
+    const weight = ir.args[0];
+    if (weight?.kind === 'call' && weight.op === 'functionof') return null;
+    const inner = logTotalMassExpr(ir.args[1]);
+    if (inner == null) return null;
+    const factor = ir.op === 'weighted'
+      ? { kind: 'call', op: 'log', args: [weight] } : weight;
+    return { kind: 'call', op: 'add', args: [factor, inner] };
+  }
+  const mass = totalMassExpr(ir);
+  return mass == null ? null : { kind: 'call', op: 'log', args: [mass] };
 }
 
 // M(S) for `truncate(M, S)` as a rewrite-time LITERAL, or null when this arm
@@ -284,4 +307,4 @@ function assertFixedMassFallback(inner: any, ctx: any, route: string): void {
 // which certifies a dropped structural-projection component's total mass and
 // needs the same exact CDF difference. The two callers must not diverge: one
 // arm computing M(S) means one accepted set and one refusal boundary.
-module.exports = { totalMassExpr, truncateMassLit, assertFixedMassFallback, canDeferTruncateNormalizer };
+module.exports = { totalMassExpr, logTotalMassExpr, truncateMassLit, assertFixedMassFallback, canDeferTruncateNormalizer };

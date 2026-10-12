@@ -27,7 +27,7 @@ const mcRecipe     = require('./mc-recipe.ts');
 const clm          = require('./clm.ts');
 const densityPrims = require('./density-prims.ts');
 const { isValue } = require('./value.ts');
-const { totalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
+const { logTotalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
 const { engineLimitation } = require('./limitations.ts');
 const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
@@ -1851,10 +1851,10 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
     }
     // Per-θ normalizer when the inner is a recognised superpose-of-weighted
     // probability measures (Z depends on the latent weights); else materialise.
-    const massExpr = totalMassExpr(node.args[0]);
-    if (massExpr != null) {
+    const logMassExpr = logTotalMassExpr(node.args[0]);
+    if (logMassExpr != null) {
       node.op = 'logweighted';
-      node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [massExpr] }] }, node.args[0]];
+      node.args = [{ kind: 'call', op: 'neg', args: [logMassExpr] }, node.args[0]];
       delete node.massFrom;
       // The shift is `-log Z`, so §06's "If Z = 0 or Z = ∞, the result is
       // undefined" shows up as a non-finite shift. Mark the node so the
