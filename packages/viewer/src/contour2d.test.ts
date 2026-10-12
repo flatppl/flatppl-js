@@ -40,13 +40,18 @@ function bboxArea(segments) {
   return (xmax - xmin) * (ymax - ymin);
 }
 
-test('degenerate (all points identical) yields empty contours', () => {
+test('constant coordinates yield empty contours, including inside explicit bounds', () => {
   const n = 500;
   const xs = new Float64Array(n).fill(2.5);
   const ys = new Float64Array(n).fill(-1.0);
-  const levels = densityContours(xs, ys, [0.68, 0.95]);
-  assert.equal(levels.length, 2);
-  for (const l of levels) assert.equal(l.segments.length, 0);
+  for (const varyY of [false, true]) {
+    if (varyY) for (let i = 0; i < n; i++) ys[i] = -1 + 2 * i / (n - 1);
+    for (const opts of [{}, { range: [2, 3, -2, 2] }]) {
+      const levels = densityContours(xs, ys, [0.68, 0.95], opts);
+      assert.equal(levels.length, 2);
+      for (const l of levels) assert.equal(l.segments.length, 0);
+    }
+  }
 });
 
 test('too few points → empty (below minPoints)', () => {
@@ -107,4 +112,20 @@ test('a standard-normal 2D blob 68% contour ~ radius 1.5 (2D HPD)', () => {
   const expected = Math.sqrt(-2 * Math.log(1 - 0.68));  // ≈ 1.51
   assert.ok(Math.abs(meanR - expected) < 0.5,
     `mean 68% contour radius ${meanR.toFixed(3)} vs expected ${expected.toFixed(3)}`);
+});
+
+test('a bounded contour grid preserves total mass when distant tails leave the viewport', () => {
+  const blob = gaussianBlob(4000, 123);
+  const xs = Float64Array.from([...blob.xs, ...Array.from({ length: 1000 }, (_, i) => 1000 + i % 32 * 100)]);
+  const ys = Float64Array.from([...blob.ys, ...Array.from({ length: 1000 }, (_, i) => 1000 + Math.floor(i / 32) * 100)]);
+  const [l68, l95] = densityContours(xs, ys, [0.68, 0.95], { range: [-5, 5, -5, 5] });
+  assert.ok(l68.segments.length > 0, 'the visible cloud retains its contour despite the distant tail');
+  const radii = l68.segments.map(([[x0, y0], [x1, y1]]) => {
+    for (const v of [x0, y0, x1, y1]) assert.ok(v >= -5 && v <= 5);
+    return Math.hypot((x0 + x1) / 2, (y0 + y1) / 2);
+  });
+  // 68% of the full mixture is 85% of its unit-normal component.
+  const expected = Math.sqrt(-2 * Math.log(1 - 0.68 / 0.8));
+  assert.ok(Math.abs(radii.reduce((a, b) => a + b, 0) / radii.length - expected) < 0.2);
+  assert.deepEqual(l95.segments, [], 'the viewport contains only 80% of the full mass');
 });
