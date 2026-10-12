@@ -151,11 +151,8 @@ B, _ = rand(iid(Normal(0,1), [2, 3, 4]), rstate)
 
 test('iid multi-axis: density(iid(N, [3, 3]), x) reduces over prod(size) cells', () => {
   // Sum-of-logpdf over 9 standard-normal cells, all zero. The
-  // consume/rest density walker operates on the flattened
-  // footprint, so the value here is a 9-element array — what the
-  // walker would receive after the surrounding measure-handler
-  // (matLogdensityof / matBayesupdate / etc.) flattens the
-  // user-facing nested input.
+  // legacy consume/rest entry point also accepts a flattened footprint.
+  // Public source tests separately cover shape-explicit matrix observations.
   const density = require('../density.ts');
   const ir = makeIid(vec(3, 3));
   const x = [0, 0, 0, 0, 0, 0, 0, 0, 0];

@@ -1726,6 +1726,20 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
     }
   }
   if (total < 0) throw new Error('density: iid size negative: ' + total);
+  if (valueLib.isValue(value) && typeof sizeVal !== 'number') {
+    const axes = Array.from(valueLib.isValue(sizeVal) ? sizeVal.data : sizeVal) as number[];
+    if (axes.length > 1) {
+      if (valueLib.outerRankOf(value) !== axes.length
+          || axes.some((dim, i) => value.shape[i] !== dim)) {
+        throw new Error('density: iid shape [' + axes.join(',')
+          + '] does not match observation shape [' + value.shape.join(',') + ']');
+      }
+      // Collapse only the iid axes. An array-valued base keeps its inner
+      // shape and is consumed one whole value at a time by the path below.
+      const dense = valueLib._logicalDense(value);
+      value = { ...dense, shape: [total, ...dense.shape.slice(axes.length)], outerRank: 1 };
+    }
+  }
   // G1 (spec §06 iid + §03 tables): a record-valued M observed as a TABLE —
   // one row-record per copy. Reuse value.ts tableRow (the single source of
   // truth for row extraction; recurses into table-valued columns) and feed
