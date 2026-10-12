@@ -97,6 +97,7 @@ const rngLib = require('./rng.ts');
 const samplerLib = require('./sampler.ts');
 const densityLib = require('./density.ts');
 const irShared = require('./ir-shared.ts');
+const valueLib = require('./value.ts');
 
 // Resolve a `truncate(M, S)` set IR to a structural descriptor for
 // density.walkTruncate (`opts.parseSet`). The dumb worker has no `bindings`
@@ -125,17 +126,9 @@ function makeParseSet(env: any) {
   };
 }
 
-// refArrays uniformly carry Values internally (post-
-// unification). Worker handlers like sampleN / truncateSampleN read
-// refArrays per-atom via `refArrays[k][i]` and only need the scalar
-// per-atom value, not shape metadata. Unwrap Values to their data
-// buffer (the Float64Array of the leading-N axis) at handler entry
-// so the existing hot-loop indexing keeps working unchanged.
-//
-// shape=[N] Values reduce to a Float64Array(N) — the legacy form.
-// shape=[N, k] vector-atom Values are NOT a valid sampleN input
-// (kwarg expressions expect scalar refs); we leave them as-is and
-// any downstream `[i]` indexing will surface a clear error.
+// Scalar real columns can use the legacy Float64Array representation.
+// Vector/matrix and complex columns retain their Value metadata so each
+// parameter environment receives a whole atom, including indexed refs.
 function _unwrapRefArrays(refArrays: any) {
   if (!refArrays) return refArrays;
   let needsCopy = false;
@@ -164,6 +157,14 @@ function _unwrapRefArrays(refArrays: any) {
       : v;
   }
   return out;
+}
+
+function _refAtomAccessor(column: any): (i: number) => any {
+  if (!valueLib.isValue(column)) return (i: number) => column[i];
+  // Resolve views once per column, not once per atom. Dense columns are
+  // borrowed; row slices retain the trailing shape and complex buffers.
+  const dense = valueLib._logicalDense(column);
+  return (i: number) => valueLib._sliceRow(dense, i);
 }
 
 // A Philox key as exchanged across the worker boundary: a uint32 pair.
@@ -328,8 +329,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
         case 'sampleN': {
           // Per-binding sampling primitive. distIR may have refs in
           // its kwargs; refArrays maps each ref-name to a pre-computed
-          // Float64Array of length `count` holding the upstream's
-          // samples. For draw i, env[k] = refArrays[k][i].
+          // sample column with leading axis `count`. For draw i,
+          // env[k] is the entire ith atom, scalar or array-valued.
           //
           // `seed` re-keys Philox locally for this call, so the same
           // (distIR, refArrays, seed) always produce the same output.
@@ -413,8 +414,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // (distribution preserved), matching the static path and the
             // stage-4 value-position fold.
             //
-            // Everything else keeps the per-draw makeParametricSampler loop
-            // VERBATIM — no randNFn (Dirac/Gamma/Beta/Weibull/…), or a
+            // Everything else uses the per-draw makeParametricSampler loop:
+            // no randNFn (Dirac/Gamma/Beta/Weibull/…), or a
             // Uniform whose support isn't interval(lo, hi). One factory
             // closure (prng bound, params unbound), .drawWith(per-atom env).
             // One endpoint, not one algorithm: ziggurat/rejection survive
@@ -432,14 +433,15 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             if (!handled) {
               const s = samplerLib.makeParametricSampler(state, msg.ir);
               const drawEnv = { ...env };
+              const accessors = refKeys.map(k => _refAtomAccessor(refArrays[k]));
               if (repeat === 1) {
                 for (let i = 0; i < count; i++) {
-                  for (const k of refKeys) drawEnv[k] = refArrays[k][i];
+                  for (let k = 0; k < refKeys.length; k++) drawEnv[refKeys[k]] = accessors[k](i);
                   out[i] = s.drawWith(drawEnv);
                 }
               } else {
                 for (let i = 0; i < count; i++) {
-                  for (const k of refKeys) drawEnv[k] = refArrays[k][i];
+                  for (let k = 0; k < refKeys.length; k++) drawEnv[refKeys[k]] = accessors[k](i);
                   const base = i * repeat;
                   for (let j = 0; j < repeat; j++) out[base + j] = s.drawWith(drawEnv);
                 }
@@ -602,6 +604,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           const out = new Float64Array(total);
           const refArrays = msg.refArrays || {};
           const refKeys = Object.keys(refArrays);
+          const accessors = refKeys.map(k => _refAtomAccessor(refArrays[k]));
           const forwardCdf = require('./forward-cdf.ts');
 
           // §06 truncate retains each parameter slice's mass. Conditioning
@@ -614,7 +617,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             let params: any, mass = 0, lo = 0, hi = 0;
             let valid = 0;
             for (let a = 0; a < count; a++) {
-              for (const key of refKeys) drawEnv[key] = refArrays[key][a];
+              for (let k = 0; k < refKeys.length; k++) drawEnv[refKeys[k]] = accessors[k](a);
               if (a === 0 || refKeys.length > 0) {
                 [lo, hi] = boundsAt(drawEnv);
                 const values = samplerLib.resolveParams(msg.ir, entry, drawEnv);
@@ -699,7 +702,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // atom's `repeat` replicates from them (spec §06 within-atom
             // conditional independence).
             for (let a = 0; a < count; a++) {
-              for (const k of refKeys) drawEnv[k] = refArrays[k][a];
+              for (let k = 0; k < refKeys.length; k++) drawEnv[refKeys[k]] = accessors[k](a);
               const [lo, hi] = boundsAt(drawEnv);
               for (let r = 0; r < repeat; r++) {
                 let v = NaN;

@@ -55,7 +55,7 @@ const HAVE_CORPUS = CORPUS !== '';
 // The dirs with a remaining engine gap carry it in EXPECTED_GAPS instead, with
 // the diagnostic the binding must still produce — recorded, never silent.
 const EXPECTED_MATERIALISES: Record<string, string[]> = {
-  allele_freq:         ['counts_data', 'p', 'prior', 'posterior'],
+  allele_freq:         ['counts_data', 'p', 'y', 'prior', 'posterior'],
   ar1_drift:           ['x_data', 'sigma_step', 'Pi_prior', 'x', 'Pi_post'],
   dose_surface:        ['square', 'm1', 'm2', 'lp1', 'lp2', 'lp'],
   mv_mixture:          ['mus', 'cA', 'cB', 'covs', 'w', 'mix'],
@@ -78,7 +78,6 @@ const EXPECTED_MATERIALISES: Record<string, string[]> = {
 // binding materialises and the assertion below says so), which is the point:
 // the list cannot rot into a silencer.
 const EXPECTED_GAPS: Record<string, Record<string, string>> = {
-  allele_freq:        { y: '' },
   beam_bunch:         { events: 'PoissonProcess', posterior: 'PoissonProcess' },
   kscan_walk:         { posterior: "measure op 'kscan'" },
   paired_assay:       { tab: 'iid over a record measure' },
