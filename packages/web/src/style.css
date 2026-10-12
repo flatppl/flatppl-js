@@ -68,10 +68,13 @@ html, body {
    runs, plus a no-JS fallback. */
 #app {
   display: grid;
-  grid-template-rows: auto var(--fp-pane-header-h) 1fr auto;
-  grid-template-columns: 240px 5px 1fr 5px 1.5fr;
-  width: 100vw;
+  grid-template-rows: auto minmax(var(--fp-pane-header-h), auto) minmax(0, 1fr) auto;
+  grid-template-columns: 240px 12px minmax(0, 1fr) 12px minmax(0, 1.5fr);
+  width: 100%;
   height: 100vh;
+  height: 100dvh;
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
 }
 
 /* Pin every pane and handle to an explicit grid column so that
@@ -100,6 +103,24 @@ html, body {
   font-weight: 600;
   letter-spacing: 0.02em;
 }
+#pane-switch {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: auto;
+}
+#pane-switch .fp-btn {
+  padding: 0.2em 0.65em;
+  border-color: transparent;
+}
+#pane-switch [aria-pressed="true"] {
+  color: var(--fp-accent);
+  background: var(--fp-active-bg);
+  border-color: var(--fp-border);
+}
+#files-backdrop,
+#close-files-btn,
+.touch-label { display: none; }
 
 #toggle-files,
 #nav-back,
@@ -136,17 +157,20 @@ html, body {
   /* Keep the visible band narrower than the actual hit-target so
      the user can grab without pixel-perfect aiming. */
   position: relative;
+  touch-action: none;
 }
 .resize-handle::before {
   content: '';
   position: absolute;
-  inset: 0;
+  inset: 0 5px;
   background: var(--border);
   transition: background 0.15s ease;
 }
-.resize-handle:hover::before {
+.resize-handle:hover::before,
+.resize-handle:focus-visible::before {
   background: var(--accent);
 }
+.resize-handle:focus-visible { outline-offset: -2px; }
 
 .pane {
   display: flex;
@@ -157,15 +181,10 @@ html, body {
   border-right: 1px solid var(--border);
 }
 .pane:last-child { border-right: none; }
+.pane[hidden], .resize-handle[hidden], #surface-root[hidden] { display: none; }
 
-/* All three pane headers (Files / Source / Visualization) lock to
-   the same pixel height regardless of which icon buttons they
-   carry. Emoji glyphs in particular render larger than text at
-   the same em size, so without an explicit height + button
-   font-size cap, a header with more emoji buttons would push
-   taller than a text-only one. flex: 0 0 32px stops a flex
-   parent (.pane is `flex-direction: column`) from collapsing the
-   header to fit smaller content either. */
+/* Dense desktop headers share a baseline. Source actions wrap when needed,
+   and touch layouts use taller controls instead of clipping those actions. */
 .pane-header {
   background: var(--bg-header);
   border-bottom: 1px solid var(--border);
@@ -193,12 +212,19 @@ html, body {
   text-overflow: ellipsis;
 }
 
+#source-pane > .pane-header {
+  flex-wrap: wrap;
+  flex: 0 0 auto;
+  height: auto;
+  max-height: none;
+  overflow: visible;
+  padding-top: 3px;
+  padding-bottom: 3px;
+}
+#source-header { min-width: 8em; }
+.file-list-description { display: block; white-space: normal; font-size: 11px; color: var(--fp-text-muted); }
 
-/* Buttons inside a pane header. Pixel-pinned font + line-height
-   so the icon glyph (emoji, text, img) stays exactly 14 px tall;
-   the .pane-header height (32 px) then has 9 px of breathing
-   room above and below regardless of which icons live in the
-   header. */
+/* Icon size stays stable when the surrounding touch target grows. */
 .pane-header button {
   flex: 0 0 auto;
   color: var(--fg);
@@ -214,6 +240,26 @@ html, body {
 }
 .pane-header button[hidden] { display: none; }
 #viewer-pane > .pane-header { overflow-x: auto; }
+#source-status {
+  flex: 0 0 auto;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--fg-muted);
+}
+#source-status:empty { display: none; }
+#save-error {
+  flex: 0 0 auto;
+  max-height: 35vh;
+  overflow: auto;
+  padding: 8px 12px;
+  border-bottom: 2px solid var(--fp-syn-red);
+  background: var(--fp-surface);
+  font-size: 13px;
+  line-height: 1.4;
+}
+#save-error[hidden] { display: none; }
+.save-error-actions { display: flex; gap: 8px; margin-top: 6px; }
 
 .pane-body {
   flex: 1 1 auto;
@@ -228,7 +274,9 @@ html, body {
   padding: 0.8em;
 }
 
-#file-tree { padding: 0.5em 0; }
+#file-search { flex: 0 0 auto; padding: 8px; border-bottom: 1px solid var(--border); }
+#file-filter { font-size: 13px; }
+#file-tree { padding: 0.5em 0; overscroll-behavior: contain; }
 
 .file-list {
   list-style: none;
@@ -237,7 +285,9 @@ html, body {
 }
 
 .file-list-item {
-  padding: var(--fp-row-pad);
+  display: flex;
+  align-items: center;
+  padding: 0;
   border-left: var(--fp-marker-w) solid transparent;
   cursor: pointer;
   font-size: 0.9em;
@@ -246,6 +296,19 @@ html, body {
   text-overflow: ellipsis;
   user-select: none;
 }
+.file-list-link {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: var(--fp-row-pad);
+  color: inherit;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.file-list-link:focus-visible,
+.file-list-action:focus-visible,
+.file-folder-header:focus-visible { outline-offset: -2px; }
 .file-list-item:hover    { color: var(--fp-accent); background: var(--fp-surface); }
 .file-list-item.selected {
   background: var(--fp-active-bg);
@@ -271,27 +334,24 @@ html, body {
   font-style: italic;
 }
 
-/* Inline save (💾) / revert (↺) icons that appear on file-tree
-   entries with unsaved work — every ephemeral row, plus the
-   currently-loaded read-only-or-user file when its editor buffer
-   differs from the last-persisted source. Floated right so they
-   sit at the row's trailing edge regardless of filename length;
-   the filename truncates first via the existing
-   .file-list-item text-overflow rule. The icons are clickable
-   (with click-stop in JS so the row navigation doesn't fire); the
-   row's own click target still works on the rest of the row. */
+/* Separate row buttons keep Save and Revert reachable without a context menu.
+   Only the link shrinks when space is tight, so the actions stay visible. */
 .file-list-item--dirty {
   padding-right: 0.4em;          /* tighten so the icons don't fall off */
 }
 .file-list-action {
-  float: right;
-  margin-left: 0.4em;
-  padding: 0 2px;
+  flex: 0 0 auto;
+  min-width: 28px;
+  min-height: 28px;
+  padding: 2px;
+  color: inherit;
+  background: transparent;
+  border: 0;
+  font-family: inherit;
   font-size: 12px;
   line-height: 1.4;
   cursor: pointer;
-  filter: grayscale(100%);
-  opacity: 0.7;
+  opacity: 0.85;
   border-radius: 2px;
 }
 .file-list-action:hover {
@@ -316,6 +376,12 @@ html, body {
   cursor: pointer;
   font-size: 0.85em;
   color: var(--fg-muted);
+  width: 100%;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: left;
+  font-family: inherit;
 }
 .file-folder-header:hover { color: var(--fg); }
 .file-folder-chev {
@@ -334,7 +400,7 @@ html, body {
   opacity: 0.6;
   font-size: 0.9em;
 }
-.file-folder .file-list-item {
+.file-folder .file-list-link {
   padding-left: 1.6em;     /* indent under the folder header */
 }
 .file-folder-empty {
@@ -350,7 +416,7 @@ html, body {
    of one action per row; rows highlight on hover. */
 #tree-context-menu {
   position: fixed;
-  z-index: 1000;
+  z-index: 2100;
   min-width: 160px;
   background: var(--fp-surface);
   border: 1px solid var(--fp-border);
@@ -397,10 +463,12 @@ html, body {
   padding: 0.5em 1em;
   font-size: 0.9em;
   box-shadow: var(--fp-shadow);
-  z-index: 1100;
+  z-index: 2200;
   opacity: 0;
   transition: opacity 0.3s ease;
   pointer-events: none;
+  max-width: calc(100vw - 32px);
+  box-sizing: border-box;
 }
 
 /* CodeMirror line-flash decoration — re-installed by editor.ts on
@@ -543,6 +611,23 @@ html, body {
   flex-direction: column;
   overflow: hidden;
 }
+#welcome-actions {
+  position: absolute;
+  inset: 0;
+  z-index: 2;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  overflow: auto;
+  padding: 24px;
+  background: var(--bg-pane);
+  text-align: center;
+}
+#welcome-actions[hidden] { display: none; }
+#welcome-actions h1 { margin: 0 0 8px; font-size: 22px; }
+#welcome-actions p { max-width: 36ch; margin: 0 0 20px; line-height: 1.5; color: var(--fg-muted); }
+.welcome-buttons { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
 #surface-root > #header,
 #surface-root > #info {
   flex: 0 0 auto;
@@ -635,4 +720,69 @@ html, body {
   border: 1px solid var(--fp-border);
   border-radius: var(--fp-radius-sm);
   background: var(--fp-bg);
+}
+
+/* A content breakpoint avoids three unusable columns on tablets and phones.
+   The drawer occupies the viewport rather than stealing editor width. */
+@media (max-width: 900px) {
+  #app { grid-template-columns: minmax(0, 1fr); }
+  #source-pane, #viewer-pane { grid-column: 1; border-right: 0; }
+  #app-toolbar { min-height: 48px; gap: 4px; padding: 2px 4px; }
+  #app-title, #show-split-btn { display: none; }
+  #pane-switch { flex: 1 1 auto; justify-content: flex-end; gap: 1px; }
+  #pane-switch .fp-btn { padding: 0 6px; font-size: 12px; }
+  #app-toolbar > .fp-btn { flex: 0 0 44px; }
+  #files-pane {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 2001;
+    width: min(360px, calc(100% - 48px));
+    height: 100%;
+    height: 100dvh;
+    box-sizing: border-box;
+    padding: env(safe-area-inset-top) 0 env(safe-area-inset-bottom) env(safe-area-inset-left);
+    box-shadow: var(--fp-shadow);
+  }
+  #files-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 2000;
+    border: 0;
+    border-radius: 0;
+    padding: 0;
+    background: var(--fp-scrim);
+  }
+  #files-backdrop[hidden] { display: none; }
+  #close-files-btn { display: inline-flex; }
+  #file-filter { min-height: 44px; font-size: 16px; }
+  .resize-handle { display: none; }
+  .pane-header {
+    flex: 0 0 auto;
+    height: auto;
+    min-height: 44px;
+    max-height: none;
+    padding: 2px 8px;
+    gap: 4px;
+  }
+  #source-pane > .pane-header { flex-wrap: wrap; overflow: visible; }
+  #source-header { flex: 1 0 100%; min-height: 24px; line-height: 24px; }
+  #source-status { padding: 5px 8px; }
+  .cm-tooltip.cm-tooltip-hover .cm-source-hover { max-width: calc(100vw - 32px); }
+}
+
+/* The same generous targets help a touch laptop in the wide layout. */
+@media (max-width: 900px), (pointer: coarse) {
+  #app-toolbar .fp-btn,
+  .pane-header .fp-btn,
+  .file-list-action,
+  .welcome-buttons .fp-btn,
+  .save-error-actions .fp-btn { min-width: 44px; min-height: 44px; }
+  .pane-header { flex-basis: auto; height: auto; min-height: 48px; max-height: none; }
+  .pane-header .file-action-label { gap: 4px; padding: 4px 8px; }
+  .touch-label { display: inline; font-size: 12px; }
+  .file-list-link { box-sizing: border-box; min-height: 44px; padding-top: 12px; padding-bottom: 12px; }
+  .file-folder-header, .tree-ctx-item { box-sizing: border-box; min-height: 44px; }
+  .tree-ctx-item { display: flex; align-items: center; }
+  .resize-handle::after { content: ''; position: absolute; inset: 0 -6px; }
 }

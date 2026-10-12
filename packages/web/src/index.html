@@ -2,21 +2,13 @@
 <!--
   @flatppl/web — gallery shell entry point.
 
-  Three-pane layout:
-    - left:   file tree (populated from a manifest fetched at startup,
-              wired in step 1.4)
-    - middle: source view (read-only; syntax highlighting added in
-              step 1.5)
-    - right:  the FlatPPL DAG / plot viewer
-
-  This step (1.2) wires the layout itself and mounts the viewer
-  against an inline source string so the integration works end-to-end
-  before fetch and the manifest land.
+  Wide screens share space between Files, Source, and Visualization.
+  Narrow screens use a Files drawer and one main pane at a time.
 -->
 <html lang="en" data-fp-active="play">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
   <title>FlatPPL Playground</title>
   <script src="theme/shell.js"></script>
   <link rel="icon" href="theme/assets/favicon.ico" sizes="any">
@@ -40,7 +32,7 @@
     <!-- flatppl-theme:header -->
     <div id="app-toolbar" aria-label="Playground navigation">
       <button class="fp-btn fp-btn--icon" id="toggle-files" type="button"
-              aria-expanded="true" title="Hide file list">
+              aria-controls="files-pane" aria-expanded="true" title="Hide file list">
         <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zm3 0v9M3.5 5.5h1m-1 2h1m-1 2h1"/></svg>
         <span class="fp-sr-only">Toggle file list</span>
       </button>
@@ -53,13 +45,22 @@
         <span class="fp-sr-only">Forward</span>
       </button>
       <span id="app-title">Playground</span>
+      <div id="pane-switch" role="group" aria-label="Workspace layout">
+        <button class="fp-btn" id="show-source-btn" type="button"
+                aria-controls="source-pane" aria-pressed="false" title="Focus Source">Source</button>
+        <button class="fp-btn" id="show-viewer-btn" type="button"
+                aria-controls="viewer-pane" aria-pressed="false" title="Focus Visualization">Visualization</button>
+        <button class="fp-btn" id="show-split-btn" type="button"
+                aria-controls="source-pane viewer-pane" aria-pressed="true" title="Show Source and Visualization">Split</button>
+      </div>
     </div>
 
-    <aside class="pane" id="files-pane">
+    <button id="files-backdrop" type="button" tabindex="-1" aria-label="Close Files" hidden></button>
+    <aside class="pane" id="files-pane" aria-label="Files">
       <div class="pane-header pane-header--row">
         <span class="pane-header-text">Files</span>
         <button class="fp-btn fp-btn--icon" id="new-file-btn" type="button"
-                title="New ephemeral file (session-only, not saved to disk)"
+                title="New file (unsaved draft)"
                 aria-label="New file"
                 hidden>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
@@ -70,13 +71,20 @@
                 hidden>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2m0 0L5 5m3-3 3 3M3 9v4h10V9"/></svg>
         </button>
+        <button class="fp-btn fp-btn--icon" id="close-files-btn" type="button" aria-label="Close Files" title="Close Files">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div id="file-search">
+        <label class="fp-sr-only" for="file-filter">Find models</label>
+        <input class="fp-input" id="file-filter" type="search" placeholder="Find models" autocomplete="off" spellcheck="false">
       </div>
       <div class="pane-body" id="file-tree">
         <div class="pane-placeholder">File tree appears here once a manifest is loaded.</div>
       </div>
     </aside>
 
-    <section class="pane" id="source-pane">
+    <section class="pane" id="source-pane" aria-label="Source">
       <div class="pane-header pane-header--row">
         <span id="source-header" class="pane-header-text">Source</span>
         <button class="fp-btn fp-btn--icon" id="edit-toggle" type="button"
@@ -86,16 +94,18 @@
                 hidden>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m3 11 8-8 2 2-8 8-3 1zm7-7 2 2"/></svg>
         </button>
-        <button class="fp-btn fp-btn--icon" id="save-btn" type="button"
-                title="Save, copying to user/ unless already there (Ctrl/Cmd+S)"
+        <button class="fp-btn fp-btn--icon file-action-label" id="save-btn" type="button"
+                title="Save in this browser (Ctrl/Cmd+S)"
                 aria-label="Save"
                 hidden>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 2.5h9l2 2v9h-11zm2 0v4h6v-4m-6 11v-5h7v5"/></svg>
+          <span class="touch-label" aria-hidden="true">Save</span>
         </button>
-        <button class="fp-btn fp-btn--icon" id="download-btn" type="button"
-                title="Download this file"
-                aria-label="Download">
+        <button class="fp-btn fp-btn--icon file-action-label" id="download-btn" type="button"
+                title="Export this file as a download"
+                aria-label="Export file">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 2v8m0 0 3-3m-3 3L5 7M3 12v2h10v-2"/></svg>
+          <span class="touch-label" aria-hidden="true">Export</span>
         </button>
         <button class="fp-btn fp-btn--icon" id="delete-btn" type="button"
                 title="Delete this file from user/"
@@ -120,6 +130,14 @@
           </svg>
         </button>
       </div>
+      <div id="source-status" role="status" aria-live="polite"></div>
+      <div id="save-error" role="alert" hidden>
+        <span id="save-error-message">This file could not be saved in this browser. Your draft is still open.</span>
+        <div class="save-error-actions">
+          <button class="fp-btn" id="retry-save-btn" type="button">Retry</button>
+          <button class="fp-btn" id="save-error-download-btn" type="button">Download</button>
+        </div>
+      </div>
       <div class="pane-body">
         <!-- Unified source viewer + editor (CodeMirror 6). View mode
              starts read-only; the edit-toggle button flips it to
@@ -128,9 +146,18 @@
       </div>
     </section>
 
-    <section class="pane" id="viewer-pane">
+    <section class="pane" id="viewer-pane" aria-label="Visualization">
       <div class="pane-header pane-header--row"><span class="pane-header-text">Visualization</span></div>
       <div class="pane-body">
+        <div id="welcome-actions" hidden>
+          <h1>Explore a model</h1>
+          <p>Open a model to connect its source, graph, plots, and math.</p>
+          <div class="welcome-buttons">
+            <button class="fp-btn fp-btn--primary" id="try-model-btn" type="button">Try linear regression</button>
+            <button class="fp-btn" id="browse-examples-btn" type="button">Browse examples</button>
+            <button class="fp-btn" id="welcome-upload-btn" type="button">Upload</button>
+          </div>
+        </div>
         <!-- Neutral surface container: the PaneController mounts a
              file-type-dependent surface here (FlatPPL viewer / Markdown
              preview / placeholder). Renamed from #flatppl-viewer-root so

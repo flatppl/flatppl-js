@@ -272,13 +272,17 @@
       for (let i = 0; i < diags.length; i++) {
         const d = diags[i];
         if (!d || !d.loc || !d.loc.start) continue;
+        if (String(d.message).includes('__error__') && diags.some((other: any) =>
+          other !== d && other.severity === 'error' && !String(other.message).includes('__error__'))) continue;
         let from = offsetOf(d.loc.start, lineStarts);
         let to = d.loc.end ? offsetOf(d.loc.end, lineStarts) : from;
         from = Math.max(0, Math.min(from, text.length));
         to = Math.max(0, Math.min(to, text.length));
         if (to <= from) to = Math.min(from + 1, text.length);
         const sev = (d.severity === 'warning' || d.severity === 'info') ? d.severity : 'error';
-        out.push({ from: from, to: to, severity: sev, message: String(d.message || 'error') });
+        const format = globalScope.FlatPPLViewer?.formatDiagnosticMessage;
+        const message = format ? format(String(d.message || 'error')) : String(d.message || 'error');
+        out.push({ from: from, to: to, severity: sev, message: message });
       }
       return out;
     });
@@ -349,6 +353,7 @@
       return [
         bundle.EditorState.readOnly.of(ro),
         bundle.EditorView.editable.of(!ro),
+        bundle.EditorView.contentAttributes.of({ 'aria-label': 'Model source', 'aria-readonly': String(ro), tabindex: '0' }),
         ...(ro ? [] : [bundle.placeholder('Write a model, open an example, or upload a file.')]),
       ];
     }

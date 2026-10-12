@@ -13,8 +13,11 @@ import { renderMathForCurrent } from './render-math.js';
 import { renderSampleStats } from './render-record.js';
 import { computePanelLayout, dividerPartner, clampSplit, PANEL_DOM } from './panels.js';
 import type { PanelId } from './panels.js';
+import { fitGraph } from './dag.js';
 import { $, displayBindingName, esc, listScalarAxes, renderDocTitle } from './util.js';
 import { downloadMeasure } from './export-samples.js';
+import { formatDiagnosticMessage } from './diagnostics.js';
+import type { SourceDiagnostic } from './diagnostics.js';
 /**
  * Return the analyzer-level error diagnostics that landed on a
  * binding (typeinfer mismatches, undefined refs, etc.), or null
@@ -46,6 +49,7 @@ export function saveViewState(ctx: Ctx): void {
 }
 
 export function errorsForBinding(ctx: Ctx, bindingName: any) {
+  if (ctx.sourceErrors?.length) return ctx.sourceErrors;
   if (!bindingName || !ctx.currentState || !ctx.currentState.data
       || !ctx.currentState.data.nodes) return null;
   const nodes = ctx.currentState.data.nodes;
@@ -53,6 +57,32 @@ export function errorsForBinding(ctx: Ctx, bindingName: any) {
     if (nodes[i].id === bindingName) return nodes[i].errors || null;
   }
   return null;
+}
+
+/** Clear an invalid plot and make its source errors reachable by keyboard. */
+export function showPlotDiagnostics(ctx: Ctx, diagnostics: SourceDiagnostic[]): void {
+  showPlotMessage(ctx, '<strong>Source needs attention</strong>');
+  const message = $('plot-empty');
+  message.setAttribute('role', 'status');
+  for (const diagnostic of diagnostics) {
+    const point = diagnostic.loc?.start;
+    const row = document.createElement('p');
+    row.textContent = formatDiagnosticMessage(diagnostic.message);
+    message.appendChild(row);
+    if (point) {
+      const location = document.createElement('p');
+      location.textContent = 'Line ' + (point.line + 1) + ', column ' + (point.col + 1) + ' ';
+      if (ctx.host.revealSourceLine) {
+        const button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'viewer-action';
+        button.textContent = 'Jump to error';
+        button.addEventListener('click', () => ctx.host.revealSourceLine?.(point.line));
+        location.appendChild(button);
+      }
+      message.appendChild(location);
+    }
+  }
 }
 
 /**
@@ -72,6 +102,22 @@ export function resetPlotContentStyle(ctx: Ctx) {
   el.style.flexDirection = '';
 }
 
+/** Dispose every chart before replacing its DOM, including corner-grid cells. */
+export function disposePlotCharts(ctx: Ctx, root: HTMLElement = $('plot-content')): void {
+  ctx.stopPlotPanning?.();
+  ctx.stopPlotPanning = undefined;
+  const charts = new Set<any>();
+  if (ctx.plotEchart) charts.add(ctx.plotEchart);
+  for (const element of [root, ...Array.from(root.querySelectorAll('div'))]) {
+    const chart = echarts.getInstanceByDom(element);
+    if (chart) charts.add(chart);
+  }
+  for (const chart of charts) {
+    try { chart.dispose(); } catch (_) {}
+  }
+  ctx.plotEchart = null;
+}
+
 /**
  * Render a message into the plot pane in place of a chart.
  *
@@ -82,7 +128,7 @@ export function resetPlotContentStyle(ctx: Ctx) {
  * strings and future inputs can — every current call site escapes; keep it so.
  */
 export function showPlotMessage(ctx: Ctx, html: string, options?: { cancellable?: boolean; hint?: boolean; progress?: boolean }) {
-  if (ctx.plotEchart) { ctx.plotEchart.dispose(); ctx.plotEchart = null; }
+  disposePlotCharts(ctx);
   resetPlotContentStyle(ctx);
   const el = $('plot-content');
   const cancellable = options && options.cancellable;
@@ -249,6 +295,13 @@ function panelEnabled(ctx: Ctx): Record<PanelId, boolean> {
   return { graph: !!ctx.graphEnabled, plot: !!ctx.plotEnabled, math: !!ctx.mathEnabled };
 }
 
+function panelLayout(ctx: Ctx) {
+  const count = ctx.currentState?.data.nodes?.length;
+  return computePanelLayout(panelEnabled(ctx), {
+    compactGraph: count > 0 && count <= 3,
+  });
+}
+
 /**
  * Apply the three toggle flags to the DOM through the one layout rule
  * (panels.ts computePanelLayout, element ids from PANEL_DOM): panel
@@ -256,37 +309,51 @@ function panelEnabled(ctx: Ctx): Record<PanelId, boolean> {
  * no top border) states, which dividers are live, the toggle buttons'
  * on/off face, and the "everything hidden" note.
  */
-function applyPanelLayout(ctx: Ctx) {
-  const layout = computePanelLayout(panelEnabled(ctx));
+export function applyPanelLayout(ctx: Ctx) {
+  const enabled = panelEnabled(ctx);
+  const layout = panelLayout(ctx);
   for (const p of layout.panels) {
     const dom = PANEL_DOM[p.id];
     const el = $(dom.panel);
     el.classList.toggle('hidden', !p.visible);
     el.classList.toggle('full', p.full);
     el.classList.toggle('first', p.first);
-    // The share is set inline from the layout rule, which also drops
-    // any user-dragged px split: a toggle-off-then-on resets the split
-    // rather than holding the previous drag position into the hidden
-    // state.
-    el.style.flex = p.flex;
+    // A lone panel fills the area without overwriting stored divider sizes.
+    el.style.flex = !p.visible || p.full ? p.flex : ctx.panelSizes?.[p.id] || p.flex;
     const btn = $(dom.toggle);
-    btn.classList.toggle('on', p.visible);
+    btn.classList.toggle('on', enabled[p.id]);
     // The face is just the label; the on/off state is the button's
     // filled/outlined rendering (templates.ts `.on`) plus aria-pressed —
     // a ": on"/": off" suffix crowded the header's binding line.
-    btn.setAttribute('aria-pressed', String(p.visible));
+    btn.setAttribute('aria-pressed', String(enabled[p.id]));
     btn.textContent = dom.label;
   }
   for (const d of layout.dividers) {
     const id = PANEL_DOM[d.after].dividerAfter;
-    if (id) $(id).classList.toggle('hidden', !d.visible);
+    if (id) {
+      $(id).classList.toggle('hidden', !d.visible);
+      if (d.visible) updateDividerLabel(ctx, d.after);
+    }
   }
   $('panels-hidden').hidden = layout.visibleCount > 0;
   ($('collapse-all-btn') as HTMLButtonElement).disabled = !ctx.graphEnabled || !ctx.currentState?.data.reifications?.length;
-  // Persist across panel reopens. VS Code restores webview state
-  // automatically when the panel is shown again.
-  saveViewState(ctx);
 }
+
+function updateDividerLabel(ctx: Ctx, after: PanelId): void {
+  const partner = dividerPartner(panelLayout(ctx), after);
+  const id = PANEL_DOM[after].dividerAfter;
+  if (!partner || !id) return;
+  const a = $(PANEL_DOM[after].panel).getBoundingClientRect().height;
+  const b = $(PANEL_DOM[partner].panel).getBoundingClientRect().height;
+  const pct = a + b > 0 ? Math.round(100 * a / (a + b)) : 50;
+  const divider = $(id);
+  divider.setAttribute('aria-label', 'Resize ' + PANEL_DOM[after].label.toLowerCase() + ' and ' + PANEL_DOM[partner].label.toLowerCase());
+  divider.setAttribute('aria-controls', PANEL_DOM[after].panel + ' ' + PANEL_DOM[partner].panel);
+  divider.setAttribute('aria-valuenow', String(pct));
+  divider.setAttribute('aria-valuetext', PANEL_DOM[after].label + ' ' + pct + '%');
+}
+
+const activePanelDrags = new WeakSet<Ctx>();
 
 /**
  * Wire the drag handle that follows panel `after` to resize that panel
@@ -295,40 +362,86 @@ function applyPanelLayout(ctx: Ctx) {
  * so it is exactly what the user dragged to, while flex-grow stays 1 so
  * later host resizes redistribute proportionally.
  */
-export function installPanelDivider(ctx: Ctx, after: PanelId) {
+export function installPanelDivider(ctx: Ctx, after: PanelId): () => void {
   const dividerId = PANEL_DOM[after].dividerAfter;
-  if (!dividerId) return;
-  $(dividerId).addEventListener('mousedown', function (ev) {
-    const partner = dividerPartner(computePanelLayout(panelEnabled(ctx)), after);
-    if (!partner || !panelEnabled(ctx)[after]) return;
+  if (!dividerId) return () => {};
+  const divider = $(dividerId);
+  const main = $('main');
+  let drag: { pointer: number; y: number; a: number; b: number; partner: PanelId } | null = null;
+  let priorCursor = '', priorSelect = '';
+  function resize(partner: PanelId, a: number, b: number, dy: number) {
+    const split = clampSplit(a, b, dy, 80);
+    // Snapshot all visible sizes so resizing a pair does not change
+    // the third panel's share when a default percentage becomes pixels.
+    ctx.panelSizes ||= {};
+    for (const panel of panelLayout(ctx).panels) {
+      if (panel.visible) {
+        const el = $(PANEL_DOM[panel.id].panel);
+        ctx.panelSizes[panel.id] = '1 1 ' + el.getBoundingClientRect().height + 'px';
+      }
+    }
+    ctx.panelSizes[after] = '1 1 ' + split.a + 'px';
+    ctx.panelSizes[partner] = '1 1 ' + split.b + 'px';
+    applyPanelLayout(ctx);
+  }
+  function onDown(ev: PointerEvent) {
+    const partner = dividerPartner(panelLayout(ctx), after);
+    if (activePanelDrags.has(ctx) || ev.button !== 0 || !partner || !panelEnabled(ctx)[after]) return;
     ev.preventDefault();
-    const upper = $(PANEL_DOM[after].panel);
-    const lower = $(PANEL_DOM[partner].panel);
-    const startY = ev.clientY;
-    const startUpperPx = upper.getBoundingClientRect().height;
-    const startLowerPx = lower.getBoundingClientRect().height;
-    const MIN_PX = 80;
-    function onMove(mv: any) {
-      const s = clampSplit(startUpperPx, startLowerPx, mv.clientY - startY, MIN_PX);
-      upper.style.flex = '1 1 ' + s.a + 'px';
-      lower.style.flex = '1 1 ' + s.b + 'px';
-    }
-    function onUp() {
-      document.removeEventListener('mousemove', onMove);
-      document.removeEventListener('mouseup', onUp);
-      document.body.style.cursor = '';
-      document.body.style.userSelect = '';
-    }
-    document.body.style.cursor = 'row-resize';
-    document.body.style.userSelect = 'none';
-    document.addEventListener('mousemove', onMove);
-    document.addEventListener('mouseup', onUp);
-  });
+    divider.focus();
+    divider.setPointerCapture(ev.pointerId);
+    activePanelDrags.add(ctx);
+    drag = { pointer: ev.pointerId, y: ev.clientY, partner,
+      a: $(PANEL_DOM[after].panel).getBoundingClientRect().height,
+      b: $(PANEL_DOM[partner].panel).getBoundingClientRect().height };
+    priorCursor = main.style.cursor;
+    priorSelect = main.style.userSelect;
+    main.style.cursor = 'row-resize';
+    main.style.userSelect = 'none';
+  }
+  function onMove(ev: PointerEvent) {
+    if (drag && ev.pointerId === drag.pointer) resize(drag.partner, drag.a, drag.b, ev.clientY - drag.y);
+  }
+  function onUp(ev?: PointerEvent) {
+    if (!drag || (ev && ev.pointerId !== drag.pointer)) return;
+    const pointer = drag.pointer;
+    drag = null;
+    activePanelDrags.delete(ctx);
+    if (divider.hasPointerCapture(pointer)) divider.releasePointerCapture(pointer);
+    main.style.cursor = priorCursor;
+    main.style.userSelect = priorSelect;
+  }
+  function onKey(ev: KeyboardEvent) {
+    const partner = dividerPartner(panelLayout(ctx), after);
+    if (!partner || !['ArrowUp', 'ArrowDown', 'Home', 'End'].includes(ev.key)) return;
+    ev.preventDefault();
+    const a = $(PANEL_DOM[after].panel).getBoundingClientRect().height;
+    const b = $(PANEL_DOM[partner].panel).getBoundingClientRect().height;
+    const step = ev.shiftKey ? 48 : 16;
+    const dy = ev.key === 'Home' ? -a : ev.key === 'End' ? b : ev.key === 'ArrowUp' ? -step : step;
+    resize(partner, a, b, dy);
+  }
+  divider.addEventListener('pointerdown', onDown);
+  divider.addEventListener('pointermove', onMove);
+  divider.addEventListener('pointerup', onUp);
+  divider.addEventListener('pointercancel', onUp);
+  divider.addEventListener('lostpointercapture', onUp);
+  divider.addEventListener('keydown', onKey);
+  return () => {
+    onUp();
+    divider.removeEventListener('pointerdown', onDown);
+    divider.removeEventListener('pointermove', onMove);
+    divider.removeEventListener('pointerup', onUp);
+    divider.removeEventListener('pointercancel', onUp);
+    divider.removeEventListener('lostpointercapture', onUp);
+    divider.removeEventListener('keydown', onKey);
+  };
 }
 
 export function setGraphEnabled(ctx: Ctx, enabled: boolean) {
   ctx.graphEnabled = enabled;
   applyPanelLayout(ctx);
+  saveViewState(ctx);
   requestAnimationFrame(function () {
     if (ctx.graphEnabled && ctx.cy) ctx.cy.resize();
     if (ctx.plotEchart) ctx.plotEchart.resize();
@@ -344,11 +457,12 @@ export function setGraphEnabled(ctx: Ctx, enabled: boolean) {
 export function setMathEnabled(ctx: Ctx, enabled: any) {
   ctx.mathEnabled = !!enabled;
   applyPanelLayout(ctx);
+  saveViewState(ctx);
   if (ctx.mathEnabled) renderMathForCurrent(ctx);
   // The graph pane changed height: resize AND refit cytoscape (as the
   // plot toggle does), else the DAG stays clipped at its old layout.
   requestAnimationFrame(function () {
-    if (ctx.graphEnabled && ctx.cy) { ctx.cy.resize(); ctx.cy.fit(undefined, 40); }
+    if (ctx.graphEnabled && ctx.cy) { ctx.cy.resize(); if (ctx.graphAutoFit) fitGraph(ctx); }
     if (ctx.plotEchart) ctx.plotEchart.resize();
   });
 }
@@ -356,6 +470,7 @@ export function setMathEnabled(ctx: Ctx, enabled: any) {
 export function setPlotEnabled(ctx: Ctx, enabled: any) {
   ctx.plotEnabled = !!enabled;
   applyPanelLayout(ctx);
+  saveViewState(ctx);
   if (ctx.plotEnabled) {
     // Render whatever the current plan says — including the
     // "not plottable" message if the focused binding isn't
@@ -363,19 +478,18 @@ export function setPlotEnabled(ctx: Ctx, enabled: any) {
     // (it measures 0×0 while collapsed).
     renderPlotForCurrent(ctx);
     if (ctx.plotEchart) ctx.plotEchart.resize();
-  } else if (ctx.plotEchart) {
+  } else {
     // Tear down the echart instance to avoid keeping its canvas /
     // event listeners alive while the panel is collapsed. It'll
     // be reconstructed on the next renderDensity call.
-    try { ctx.plotEchart.dispose(); } catch (_) {}
-    ctx.plotEchart = null;
+    disposePlotCharts(ctx);
   }
   // Cytoscape skipped resize while the graph pane was at a
   // different height — kick it now so the layout fills correctly.
   if (ctx.cy) {
     // requestAnimationFrame so the flex re-layout has settled
     // before we ask cytoscape for the new size.
-    requestAnimationFrame(function() { ctx.cy.resize(); ctx.cy.fit(undefined, 40); });
+    requestAnimationFrame(function() { if (ctx.cy) { ctx.cy.resize(); if (ctx.graphAutoFit) fitGraph(ctx); } });
   }
 }
 
@@ -408,7 +522,7 @@ export function setPlotEnabled(ctx: Ctx, enabled: any) {
  */
 export function renderPlotFrame(ctx: Ctx, opts: any) {
   resetPlotContentStyle(ctx);
-  if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
+  disposePlotCharts(ctx);
   const el = $('plot-content');
   el.innerHTML = '';
   el.style.display = 'flex';
@@ -533,7 +647,7 @@ export function renderConstantValue(ctx: Ctx, bindingName: any, text: any, toolb
 
 export function renderTextValue(ctx: Ctx, bindingName: any, text: any) {
   resetPlotContentStyle(ctx);
-  if (ctx.plotEchart) { try { ctx.plotEchart.dispose(); } catch (_) {} ctx.plotEchart = null; }
+  disposePlotCharts(ctx);
   const el = $('plot-content');
   const name = bindingName ? esc(displayBindingName(bindingName)) : '';
   // Atomic values (e.g. "5", "Dirac(5)", "true") get the hero

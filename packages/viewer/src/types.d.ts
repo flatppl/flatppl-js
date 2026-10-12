@@ -242,9 +242,10 @@ export interface Ctx {
    *  caches, persists the choice, and re-renders. Set once in main.ts init;
    *  consumed by the record-measure plot toolbar (bayesupdate-only). */
   onInferenceChange?: () => void;
+  /** Mouse-drag listeners owned by the currently mounted corner viewport. */
+  stopPlotPanning?: () => void;
   SAMPLER_WORKER_URL: string;
   HISTORY_CAP: number;
-  CORRELATIONS_MAX_AXES: number;
   MODULE_TARGET: string;
   PALETTE: Record<string, string>;
   PHASE_COLORS: Record<'stochastic' | 'parameterized' | 'fixed', string>;
@@ -278,6 +279,9 @@ export interface Ctx {
   plotEchart: any;
   plotEnabled: boolean;
   graphEnabled: boolean;
+  panelSizes?: Partial<Record<import('./panels').PanelId, string>>;
+  graphAutoFit?: boolean;
+  sourceErrors?: import('./diagnostics').SourceDiagnostic[];
   /** Math pane (render-math.ts) visibility — the third panel of the
    *  vertical split (panels.ts). Persisted with the other two. */
   mathEnabled: boolean;

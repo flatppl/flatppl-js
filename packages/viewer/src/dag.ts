@@ -13,7 +13,8 @@ import { updatePlotForBinding } from './render-plot.js';
 import { $, bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
 import { renderDoc } from './markdown.js';
 import { resolveNodeColor } from './palette.js';
-import { errorsForBinding, saveViewState } from './render-frame.js';
+import { errorsForBinding, saveViewState, applyPanelLayout } from './render-frame.js';
+import { formatDiagnosticMessage } from './diagnostics.js';
 import type { Ctx } from './types';
 // The `load_module` registry entry for a DAG node, if it is a user
 // module-load binding with a resolved path (spec §04) — the handle for
@@ -154,7 +155,7 @@ export function showNodeInfo(ctx: Ctx, d: any) {
   const errors = errorsForBinding(ctx, d.id);
   if (errors && errors.length > 0) {
     for (let i = 0; i < errors.length; i++) {
-      errorRow += '<div class="expr" style="color:#E57373;">' + esc(errors[i].message) + '</div>';
+      errorRow += '<div class="expr" style="color:var(--vscode-errorForeground, #f48771);">' + esc(formatDiagnosticMessage(errors[i].message)) + '</div>';
     }
   }
   // Construction kind (binding.type — draw, lawof, call, …) is
@@ -406,6 +407,9 @@ export function initCy(ctx: Ctx) {
     elements: [],
     layout: { name: 'preset' },
     wheelSensitivity: 2,
+  });
+  ctx.cy.on('pan zoom', () => {
+    if (!ctx._fittingGraph) ctx.graphAutoFit = false;
   });
 
   if (typeof ctx.cy.bubbleSets === 'function') {
@@ -728,9 +732,32 @@ export function rewriteEdgesForCollapse(
   return out;
 }
 
+/** Fit large graphs, but keep small graphs at their normal drawing scale. */
+export function fitGraph(ctx: Ctx): void {
+  if (!ctx.cy || !ctx.cy.nodes().length) return;
+  ctx._fittingGraph = true;
+  try {
+    ctx.cy.fit(undefined, 40);
+    if (ctx.cy.zoom() > 1) { ctx.cy.zoom(1); ctx.cy.center(); }
+    ctx.graphAutoFit = true;
+  } finally {
+    ctx._fittingGraph = false;
+  }
+}
+
+/** Zoom around the pane's center. A manual viewport survives pane resizes. */
+export function zoomGraph(ctx: Ctx, factor: number): void {
+  if (!ctx.cy) return;
+  ctx.graphAutoFit = false;
+  ctx.cy.zoom({ level: Math.max(ctx.cy.minZoom(), Math.min(ctx.cy.maxZoom(), ctx.cy.zoom() * factor)),
+    renderedPosition: { x: ctx.cy.width() / 2, y: ctx.cy.height() / 2 } });
+}
+
 export function renderDAG(ctx: Ctx, data: any) {
   if (!ctx.cy) initCy(ctx);
   updateHeader(ctx, data);
+  $('graph-actions').hidden = data.nodes.length === 0;
+  applyPanelLayout(ctx);
 
   const elements: any[] = [];
 
@@ -784,6 +811,7 @@ export function renderDAG(ctx: Ctx, data: any) {
     collapseButton.textContent = allCollapsed ? 'Expand all' : 'Collapse all';
     collapseButton.title = (allCollapsed ? 'Expand' : 'Collapse') + ' every reification bubble in view';
     collapseButton.disabled = !ctx.graphEnabled || groups.length === 0;
+    collapseButton.hidden = groups.length === 0;
   }
   const dropCountByAnchor: Record<string, number> = {};
   dropped.forEach(function(_anchorName, memId) {
@@ -947,9 +975,10 @@ export function renderDAG(ctx: Ctx, data: any) {
     rankSep: 55,
     padding: 30,
     animate: false,
+    fit: false,
   }).run();
 
-  ctx.cy.fit(undefined, 40);
+  fitGraph(ctx);
   drawReificationLassos(ctx, data);
 
   // Show details for the target node automatically (the cursor is already
@@ -963,7 +992,7 @@ export function renderDAG(ctx: Ctx, data: any) {
       expr: target.expr || '',
     });
   } else {
-    $('info').innerHTML = '<span class="hint">' + ctx.HINT + '</span>';
+    $('info').innerHTML = '<span class="hint">' + (data.nodes.length ? ctx.HINT : 'Add a binding to see its graph and plot.') + '</span>';
   }
 }
 
@@ -981,6 +1010,7 @@ export function renderDAG(ctx: Ctx, data: any) {
  */
 export function focusNode(ctx: Ctx, targetName: any, pushHistory: any, opts?: { autoTrigger?: boolean }) {
   if (!ctx.currentBindings) return;
+  if (ctx.currentBindings.size === 0) { enterModuleView(ctx, pushHistory); return; }
   // No targetName supplied → prefer keeping the current focus.
   // This is the path used by source-only updates from the host
   // (the user is editing the RHS of the already-shown binding —
@@ -999,7 +1029,7 @@ export function focusNode(ctx: Ctx, targetName: any, pushHistory: any, opts?: { 
   }
   const dagData = FlatPPLEngine.computeSubDAG(ctx.currentBindings, targetName,
     { linkedBindings: ctx.currentLinkedBindings });
-  if (!dagData || dagData.nodes.length === 0) return;
+  if (!dagData) return;
 
   // History grows only when (a) the caller asked us to push, and
   // (b) the target actually changed from what's currently shown.
@@ -1044,7 +1074,7 @@ export function enterModuleView(ctx: Ctx, pushHistory: any) {
   if (!ctx.currentBindings) return;
   const dagData = FlatPPLEngine.computeFullDAG(ctx.currentBindings,
     { linkedBindings: ctx.currentLinkedBindings });
-  if (!dagData || dagData.nodes.length === 0) return;
+  if (!dagData) return;
 
   if (pushHistory && ctx.currentState && ctx.currentState.targetName !== ctx.MODULE_TARGET) {
     ctx.history.push(ctx.currentState);

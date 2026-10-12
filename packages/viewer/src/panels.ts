@@ -44,22 +44,27 @@ export interface PanelLayout {
   visibleCount: number;
 }
 
-export function computePanelLayout(enabled: Record<PanelId, boolean>): PanelLayout {
+export function computePanelLayout(enabled: Record<PanelId, boolean>, options: {
+  compactGraph?: boolean;
+} = {}): PanelLayout {
   const visibleIds = PANEL_ORDER.filter((id) => !!enabled[id]);
-  const total = visibleIds.reduce((s, id) => s + PANEL_WEIGHTS[id], 0);
+  // A small graph needs less room than its plot. Explicit divider
+  // sizes take precedence when render-frame applies this default layout.
+  const weights = options.compactGraph ? { ...PANEL_WEIGHTS, graph: 1 } : PANEL_WEIGHTS;
+  const total = visibleIds.reduce((s, id) => s + weights[id], 0);
   const panels = PANEL_ORDER.map((id) => {
-    const visible = !!enabled[id];
+    const visible = visibleIds.includes(id);
     return {
       id,
       visible,
-      flex: visible ? '1 1 ' + (100 * PANEL_WEIGHTS[id] / total) + '%' : '',
+      flex: visible ? '1 1 ' + (100 * weights[id] / total) + '%' : '',
       full: visible && visibleIds.length === 1,
       first: visible && visibleIds[0] === id,
     };
   });
   const dividers = PANEL_ORDER.slice(0, -1).map((id, i) => ({
     after: id,
-    visible: !!enabled[id] && PANEL_ORDER.slice(i + 1).some((later) => !!enabled[later]),
+    visible: visibleIds.includes(id) && PANEL_ORDER.slice(i + 1).some((later) => visibleIds.includes(later)),
   }));
   return { panels, dividers, visibleCount: visibleIds.length };
 }
@@ -79,6 +84,7 @@ export function dividerPartner(layout: PanelLayout, after: PanelId): PanelId | n
  *  preserved. */
 export function clampSplit(startA: number, startB: number, dy: number, minPx: number): { a: number; b: number } {
   const total = startA + startB;
+  minPx = Math.min(minPx, total / 2);
   let a = startA + dy;
   let b = startB - dy;
   if (a < minPx) { a = minPx; b = total - minPx; }
