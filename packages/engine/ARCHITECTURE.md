@@ -829,7 +829,11 @@ container construction, indexing, addition and nonlinear calls block lifting.
 **Fusion (b)** (`_tryDissolveKernelBroadcast`): `broadcast(<user-kernel ref>,
 args)` with body `functionof(lawof(<BuiltinDist>(kw)), …)` →
 `broadcast(<BuiltinDist>, mapped_kwargs)`, letting `matKernelBroadcast` take its
-per-atom path. **`propagateAxisStack`** annotates measure-op IR with outer-axis
+per-atom path. Scalar constructors retain their callback when a parameter has
+its own axes (such as Categorical's probability vector), or its expression is
+not safe to evaluate over the whole broadcast array. Those callbacks reuse the
+scalar measure executor and density walker, binding each row before evaluating
+the constructor. **`propagateAxisStack`** annotates measure-op IR with outer-axis
 `{source, size}` entries (iid / broadcast / kernel_broadcast / aggregate),
 outer-to-inner; the atom axis is deliberately excluded (engine-internal). It is
 **authoritative** (via `axis-stack.ts`) for the literal-size axes it records:

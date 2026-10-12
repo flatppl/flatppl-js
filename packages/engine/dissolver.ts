@@ -41,6 +41,7 @@
 
 const collectionDomain = require('./collection-domain-heads.ts');
 const { MEASURE_PRODUCING, DISTRIBUTIONS } = require('./builtins.ts');
+const { DISTRIBUTION_PARAM_RANKS } = require('./distribution-param-ranks.ts');
 
 // ---------------------------------------------------------------------
 // Dissolve-safe op set
@@ -1794,6 +1795,12 @@ function _tryDissolveKernelBroadcast(bcIR: any, bindings: any): any | null {
   // Poisson, MvNormal, …). This rules out non-dist calls cheaply
   // without consulting the sampler REGISTRY.
   if (!/^[A-Z]/.test(distCall.op)) return null;
+  const scalarDist = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS.has(distCall.op);
+  // A scalar outcome can have a vector parameter (Categorical's p). Its
+  // parameter axes belong to one cell, not to the outer product measure.
+  const paramRanks: Record<string, number> | undefined = DISTRIBUTION_PARAM_RANKS[distCall.op];
+  if (scalarDist && paramRanks
+      && Object.values(paramRanks).some((rank) => rank > 0)) return null;
 
   // Build broadcast args→param substitution.
   const posBc = bcArgs.slice(1);
@@ -1828,9 +1835,14 @@ function _tryDissolveKernelBroadcast(bcIR: any, bindings: any): any | null {
     replacementList[i] = paramReplacement.get(params[i]);
   }
 
-  // The dist call may have args (positional) and/or kwargs.
-  // Substitute placeholders throughout.
+  // Constructor parameter expressions may leave the callback only when they
+  // are elementwise. Reductions and container construction must run per cell.
+  const argsAreAllScalar = replacementList.every((arg) =>
+    _argTypeAndPhase(arg, bindings)?.type?.kind === 'scalar');
   function subst(expr: any): any | null {
+    if (scalarDist && expr && expr.kind === 'call') {
+      return _substituteBody(expr, paramIndex, replacementList, bindings, argsAreAllScalar);
+    }
     return _substituteAllowingAxes(expr, paramIndex, replacementList);
   }
   const newDistArgs: any[] = [];
