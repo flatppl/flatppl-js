@@ -1060,10 +1060,38 @@ Categorical0Ctor.prototype.logpdf = function(this: any, k: any) { return this.lo
 function logpdfCategorical(x: any, p: any)  { return _catLogpmf(x, p, 1); }
 function logpdfCategorical0(x: any, p: any) { return _catLogpmf(x, p, 0); }
 
+/** §06 Dirac compares one complete atom, including §03 array structure and
+ * ordered record fields. This is point-support equality, not the language's
+ * scalar `equal` operator. Logical views and numeric storage are incidental. */
+function sameDiracAtom(a: any, b: any): boolean {
+  if (typeof a === 'boolean') a = +a;
+  if (typeof b === 'boolean') b = +b;
+  if (a == null || b == null || typeof a !== 'object' && typeof b !== 'object') return a === b;
+  const numericContainer = (v: any) => valueLib.isValue(v) || ArrayBuffer.isView(v);
+  if (numericContainer(a) || numericContainer(b)) {
+    const numeric = (v: any) => typeof v === 'number' || Array.isArray(v) || numericContainer(v);
+    if (!numeric(a) || !numeric(b)) return false;
+    const x = valueLib._logicalDense(valueLib.asValue(a));
+    const y = valueLib._logicalDense(valueLib.asValue(b));
+    if (x.shape.length !== y.shape.length || x.shape.some((n: number, i: number) => n !== y.shape[i])
+        || valueLib.outerRankOf(x) !== valueLib.outerRankOf(y)
+        || (x.shape.length === 1 && valueLib.isTransposeView(x) !== valueLib.isTransposeView(y))) return false;
+    for (let i = 0; i < x.data.length; i++) {
+      if (x.data[i] !== y.data[i] || (x.im?.[i] ?? 0) !== (y.im?.[i] ?? 0)) return false;
+    }
+    return true;
+  }
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return Array.isArray(a) && Array.isArray(b) && a.length === b.length
+      && a.every((v: any, i: number) => sameDiracAtom(v, b[i]));
+  }
+  if (typeof a !== 'object' || typeof b !== 'object') return false;
+  const keys = Object.keys(a), other = Object.keys(b);
+  return keys.length === other.length && keys.every((k, i) => k === other[i] && sameDiracAtom(a[k], b[k]));
+}
+
 function logpdfDirac(x: any, value: any) {
-  // §03 embeds booleans in integers; scalar density observations use 0/1.
-  if (typeof value === 'boolean') value = +value;
-  return x === value ? 0 : -Infinity;
+  return sameDiracAtom(x, value) ? 0 : -Infinity;
 }
 
 // =====================================================================

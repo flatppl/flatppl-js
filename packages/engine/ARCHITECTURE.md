@@ -240,6 +240,16 @@ uses an alias edge. Structural measure lookup still follows that edge, so
 singularity inside a drawn joint remains visible. Fresh draws from a reified
 scalar transform reuse the inverse/Jacobian lowering with a closed forward map.
 
+Dirac density consumes one complete atom. Its static footprint follows the
+atom's inferred domain; runtime consumption preserves joint suffixes and
+ordered record fields. Only numeric/Boolean scalar atoms use scalar-leaf
+optimizations. The Dirac primitive compares exact structural values, including
+array nesting and logical matrix views. Observation resolution opts into
+`resolveIRToValue`'s shape-preserving mode so matrices do not become nested
+vectors before scoring; other resolver callers retain the plain-JS default.
+Sampling aliases for named Dirac values retain the constructor during density
+expansion, rather than interpreting the aliased value as a measure.
+
 Line counts are approximate size hints. Bug-preventing caveats are called out
 after the table.
 

@@ -29,6 +29,15 @@ test('multivariate density accepts positional parameters through the public API'
   }
 });
 
+test('matrix density preserves analytic values for structured observations', async () => {
+  // §08, n = 2 and nu = 3: the common normalizer is 4π. For the
+  // inverse Wishart at diag(1, 2), |X| = 2 and tr(inv(X)) = 3/2.
+  assert.ok(Math.abs(await score('logdensityof(Wishart(3, I), eye(2))')
+    - (-1 - Math.log(4 * Math.PI))) < 1e-12);
+  assert.ok(Math.abs(await score('logdensityof(InverseWishart(3, I), diagmat([1, 2]))')
+    - (-3 * Math.LN2 - 0.75 - Math.log(4 * Math.PI))) < 1e-12);
+});
+
 test('Dirichlet call forms agree with the analytic density, including the FlatPDL primitive', async () => {
   for (const input of ['[2, 3]', 'alpha', 'record(alpha = alpha)']) {
     const expression = `builtin_logdensityof(Dirichlet, ${input}, [0.25, 0.75])`;

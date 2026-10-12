@@ -4723,6 +4723,10 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
     switch (d.kind) {
       case 'tilt': return _expandStructural((d as any).measureIR, ctx, next);
       case 'alias': {
+        // Sampling can alias a Dirac's value, but density must retain the
+        // point-mass constructor rather than reinterpret that value as a law.
+        const point = bindings?.get(name)?.ir;
+        if (point?.op === 'Dirac') return _expandStructural(normalizeMeasureIR(point, bindings), ctx, next);
         // §04 lawof reifies a value transform. An alias through draw(M)
         // can reach it outside a record field, so use the same inverse/Jacobian
         // recognition here rather than emitting arithmetic as a measure op.
