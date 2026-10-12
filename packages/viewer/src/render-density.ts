@@ -301,6 +301,26 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
   const logWeights = measure.logWeights;
   const histOptsBase = logWeights ? { logWeights: logWeights } : {};
 
+  // One trimmed range per variate keeps marginals and pairs comparable,
+  // including when an outlier or weighted resampling changes the scatter.
+  const histograms = axes.map(a => FlatPPLEngine.histogram.freedmanDiaconisHistogram(a.samples, histOptsBase));
+  function formatTick(value: number, span: number) {
+    // Keep offset coordinates distinct even when their spread is small.
+    const precision = Math.min(15, Math.max(4, 3 + Math.ceil(Math.log10(Math.max(Math.abs(value), span) / span))));
+    const plain = Number.isInteger(value) ? String(value) : String(Number(value.toPrecision(precision)));
+    const scientific = Number(plain).toExponential().replace('e+', 'e');
+    return scientific.length < plain.length ? scientific : plain;
+  }
+  // Numeric ticks use ten-pixel text. Reserve one shared left gutter for
+  // both integer ticks and formatted bounds, including small densities.
+  const tickValues = histograms.flatMap(hist => {
+    const span = hist.support[1] - hist.support[0], peak = Math.max(0, ...hist.ys);
+    return [[hist.support[0], span], [hist.support[1], span], [peak, peak || 1]];
+  });
+  const tickChars = Math.max(...tickValues.map(([value, span]) =>
+    Math.max(formatTick(value, span).length, formatTick(Math.trunc(value), span).length)));
+  const leftGutter = Math.max(42, tickChars * 6 + 6);
+
   // Grid layout with two extra tracks: a leftmost column for
   // vertical y-axis labels (one per plot row), and a bottom row
   // for horizontal x-axis labels (one per plot column). The
@@ -397,33 +417,49 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
 
   function cellAxes(chart: any, row: number, col: number) {
     const diagonal = row === col;
+    const leftEdge = col === 0, bottomEdge = row === n - 1;
     function axis(showLabels: boolean, splitLines: boolean, horizontal: boolean) {
       return {
         type: 'value', scale: true, splitNumber: 3,
         axisLine: { show: showLabels, onZero: false, lineStyle: { color: fg, opacity: 0.4 } },
-        axisTick: { show: showLabels, inside: true, length: 2, lineStyle: { color: fg, opacity: 0.4 } },
-        axisLabel: { show: showLabels, inside: true, color: fg, opacity: 0.6, fontSize: 8, margin: 2, hideOverlap: true,
-          ...(horizontal ? { alignMinLabel: 'left', alignMaxLabel: 'right' }
-            : { verticalAlignMinLabel: 'bottom', verticalAlignMaxLabel: 'top' }),
+        axisTick: { show: showLabels, inside: false, length: 3, lineStyle: { color: fg, opacity: 0.4 } },
+        axisLabel: { show: showLabels, inside: false, color: fg, opacity: 0.85, fontSize: 10, margin: 5, hideOverlap: true,
+          ...(horizontal ? { alignMinLabel: 'left', alignMaxLabel: 'right', showMinLabel: true, showMaxLabel: true } : {}),
           formatter: (value: number) => {
-            if (chart.getWidth() < 56 || chart.getHeight() < 36) return '';
-            // Leave the inside x-label band clear, including in short cells
-            // where more than the lowest y tick can overlap its text.
-            if (!horizontal && (diagonal || row === n - 1)
-                && chart.convertToPixel({ yAxisIndex: 0 }, value) > chart.getHeight() * 0.99 - 14) return '';
-            return formatScalar(value);
+            if (chart.getWidth() < 72 || chart.getHeight() < 50) return '';
+            const span = horizontal ? histograms[col].support[1] - histograms[col].support[0]
+              : diagonal ? Math.max(1e-300, ...histograms[row].ys) : histograms[row].support[1] - histograms[row].support[0];
+            const text = formatTick(value, span);
+            if (!horizontal && text.length * 6 + 6 > Math.min(leftGutter, chart.getWidth() * 0.7)) return '';
+            if (horizontal) {
+              const left = leftEdge ? Math.min(leftGutter, chart.getWidth() * 0.7) : chart.getWidth() * 0.02;
+              const right = chart.getWidth() * 0.98;
+              const [min, max] = histograms[col].support;
+              const x = left + (value - min) / (max - min) * (right - left);
+              const width = text.length * 6;
+              if (width > right - left) return '';
+              if (value > min && value < max && (x - width / 2 < left || x + width / 2 > right)) return '';
+            }
+            return text;
           } },
         splitLine: { show: splitLines, lineStyle: { color: fg, opacity: 0.1 } },
       };
     }
     return {
-      // Inside labels need no gutters. Uniform proportional insets keep
-      // scatter frames aligned and leave positive space even in tiny cells.
-      grid: { left: '1%', right: '1%', top: '1%', bottom: '1%', outerBoundsMode: 'none' },
-      // Diagonals have trimmed histogram ranges and need their own x ticks;
-      // scatters share the sampled column/row ranges and only label the edges.
-      xAxis: axis(diagonal || row === n - 1, !diagonal, true),
-      yAxis: { ...axis(diagonal || col === 0, true, false), ...(diagonal ? { min: 0 } : {}) },
+      // Only the outer edges reserve label space. Each column and row uses
+      // the same inset, so its histograms and pairs remain pixel-aligned.
+      grid: { left: leftEdge ? leftGutter : '2%', right: '2%', top: 8, bottom: bottomEdge ? 24 : 8, outerBoundsMode: 'none' },
+      xAxis: { ...axis(bottomEdge, !diagonal, true), min: histograms[col].support[0], max: histograms[col].support[1] },
+      yAxis: { ...axis(leftEdge, true, false), ...(diagonal ? { min: 0 }
+        : { min: histograms[row].support[0], max: histograms[row].support[1] }) },
+      // Bound the gutters in tiny cells without allowing resize to choose
+      // different data rectangles for charts that share a row or column.
+      media: [
+        { query: { maxWidth: leftGutter / 0.7 }, option: { grid: { left: leftEdge ? '70%' : '2%' } } },
+        { query: { minWidth: leftGutter / 0.7 }, option: { grid: { left: leftEdge ? leftGutter : '2%' } } },
+        { query: { maxHeight: 80 }, option: { grid: { top: '10%', bottom: bottomEdge ? '30%' : '10%' } } },
+        { query: { minHeight: 80 }, option: { grid: { top: 8, bottom: bottomEdge ? 24 : 8 } } },
+      ],
     };
   }
 
@@ -461,9 +497,8 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
     });
   }
   for (let i = 0; i < n; i++) {
-    const samples = axes[i].samples;
     const inner = makeCell(i, i);
-    const hist = FlatPPLEngine.histogram.freedmanDiaconisHistogram(samples, histOptsBase);
+    const hist = histograms[i];
     const rects: Array<{ value: number[]; x0: number; x1: number }> = [];
     for (let k = 0; k < hist.xs.length; k++) {
       rects.push({
@@ -528,14 +563,17 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
       // Point opacity scales with point count — denser data
       // gets more transparency so clouds don't saturate.
       const alpha = Math.max(0.05, Math.min(0.6, 800 / indices.length));
-      // Credible-region contours over the SAME plotted points, so the curves
-      // share the scatter's axis frame (the overlaid `lines` series stays
-      // inside the cloud's data range and never perturbs echarts' auto-scale).
+      // Bin contours in the shared viewport too, so an excluded outlier does
+      // not collapse the visible cloud into one coarse density bin.
       // Inner curve = 68% HPD region, outer = 95% (corner-plot convention).
       const cxs = new Float64Array(indices.length);
       const cys = new Float64Array(indices.length);
       for (let p = 0; p < indices.length; p++) { cxs[p] = pts[p * 2]; cys[p] = pts[p * 2 + 1]; }
-      const contourLevels = densityContours(cxs, cys, [0.68, 0.95]);
+      const contourLevels = histograms[col].xs.length > 1 && histograms[row].xs.length > 1
+        ? densityContours(cxs, cys, [0.68, 0.95], {
+        range: [histograms[col].support[0], histograms[col].support[1],
+          histograms[row].support[0], histograms[row].support[1]],
+        }) : [];
       const contourSeries = contourLevels
         .filter(function (lvl) { return lvl.segments.length > 0; })
         .map(function (lvl) {

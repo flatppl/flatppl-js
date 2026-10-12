@@ -116,6 +116,8 @@ export function binGrid(
  * @param opts.smooth   Gaussian smoothing sigma in bin units (default 1.0)
  * @param opts.minPoints below this many points the estimate is too noisy to be
  *                       meaningful; returns [] (default 30)
+ * @param opts.range explicit plot window [xmin, xmax, ymin, ymax]. Fractions
+ *                   still refer to all input points, including excluded tails.
  * @returns one ContourLevel per requested fraction, in the SAME order; a level
  *          with no crossing (degenerate data) yields empty `segments`.
  */
@@ -123,22 +125,37 @@ export function densityContours(
   xs: ArrayLike<number>,
   ys: ArrayLike<number>,
   fracs: number[],
-  opts: { grid?: number; smooth?: number; minPoints?: number } = {},
+  opts: { grid?: number; smooth?: number; minPoints?: number; range?: [number, number, number, number] } = {},
 ): ContourLevel[] {
   const n = Math.min(xs.length, ys.length);
   const minPoints = opts.minPoints != null ? opts.minPoints : 30;
   const empty = fracs.map(function (f) { return { frac: f, segments: [] as ContourLevel['segments'] }; });
   if (n < minPoints) return empty;
 
+  if (opts.range) {
+    // Explicit bounds must not turn a constant coordinate into a 2D cloud.
+    let xmin = Infinity, xmax = -Infinity, ymin = Infinity, ymax = -Infinity;
+    for (let i = 0; i < n; i++) {
+      if (!Number.isFinite(xs[i]) || !Number.isFinite(ys[i])) continue;
+      xmin = Math.min(xmin, xs[i]); xmax = Math.max(xmax, xs[i]);
+      ymin = Math.min(ymin, ys[i]); ymax = Math.max(ymax, ys[i]);
+      if (xmax > xmin && ymax > ymin) break;
+    }
+    if (!(xmax > xmin) || !(ymax > ymin)) return empty;
+  }
+
   const G = Math.max(8, opts.grid != null ? opts.grid : 48);
-  const binned = binGrid(xs, ys, G);
+  const binned = binGrid(xs, ys, G, null, opts.range);
   if (!binned) return empty;
 
   const sigma = opts.smooth != null ? opts.smooth : 1.0;
   const field = sigma > 0 ? gaussianBlur(binned.field, G, sigma) : binned.field;
 
   return fracs.map(function (frac) {
-    const level = hpdLevel(field, frac);
+    // A trimmed viewport must not renormalize the retained mass. If it holds
+    // too little mass for this level, no enclosed contour can be drawn.
+    const retainedFrac = opts.range ? frac * n / binned.count : frac;
+    const level = retainedFrac <= 1 ? hpdLevel(field, retainedFrac) : 0;
     const segments = level > 0 ? marchingSquares(field, G, binned.gx, binned.gy, level) : [];
     return { frac: frac, segments: segments };
   });

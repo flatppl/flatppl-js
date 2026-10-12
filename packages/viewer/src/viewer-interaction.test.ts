@@ -245,7 +245,7 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
   globalThis.getComputedStyle = () => ({ color: '#333' });
   t.after(() => { globalThis.FlatPPLEngine = priorEngine; globalThis.getComputedStyle = priorStyle; });
   const { createWorkerHandler } = createRequire(import.meta.url)('@flatppl/engine/worker.ts');
-  const source = 'flatppl_compat = "0.1"\nx ~ Normal(0, 1)\npoints = (x, 2*x, 3*x, 4*x, 5*x, 6*x)';
+  const source = 'flatppl_compat = "0.1"\nx ~ Normal(0, 1000000)\npoints = (x, 2*x, 3*x, 4*x, 5*x, 6*x)';
   const processed = engine.processSource(source);
   assert.deepEqual(processed.diagnostics, []);
   const worker = createWorkerHandler();
@@ -264,9 +264,8 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
     },
   };
   const measure = await materialiser.getMeasure('points');
-  // A deterministic tail distinguishes the histogram's trimmed view from
-  // the scatter range, without changing the known coordinate relationships.
-  measure.samples.set([1000, 2000, 3000, 4000, 5000, 6000], measure.samples.length - 6);
+  // A distant tail must not give the histogram and pairs different axes.
+  measure.samples.set([1e9, 2e9, 3e9, 4e9, 5e9, 6e9], measure.samples.length - 6);
   const axes = listScalarAxes(measure);
   const keys = ['[1]', '[2]', '[3]', '[4]', '[5]', '[6]'];
   assert.deepEqual(axes.map((axis) => axis.key), keys);
@@ -275,18 +274,9 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
   }
   const originalSamples = measure.samples.slice();
   const mounted = new Map();
-  let coordinateCalls = 0;
   globalThis.echarts = {
     init(element) {
       const chart = echarts.init(null, null, { renderer: 'svg', ssr: true, width: 220, height: 180 });
-      const convertToPixel = chart.convertToPixel.bind(chart);
-      chart.convertToPixel = (finder, value) => {
-        const pixels = convertToPixel(finder, value);
-        assert.ok((Array.isArray(pixels) ? pixels : [pixels]).every(Number.isFinite),
-          'label formatters have initialized coordinates on first render and resize');
-        coordinateCalls++;
-        return pixels;
-      };
       mounted.set(element, chart);
       return chart;
     },
@@ -302,7 +292,6 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
     CODICON_PATHS: { 'save-as': '' },
   };
   renderRecordMarginals(ctx, measure, 'points', null);
-  assert.ok(coordinateCalls > 0, 'the first paint uses real chart geometry for inside labels');
   assert.deepEqual(ctx.recordSelection.selected, keys.slice(0, 4));
   assert.equal(liveCharts().length, 10, 'the first four variates are selected by default');
   const content = doc.getElementById('plot-content');
@@ -313,19 +302,26 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
   }
   assert.deepEqual(ctx.recordSelection.selected, keys);
   assert.equal(liveCharts().length, 21, 'six marginals plus all fifteen coordinate pairs');
-  const scatterX = new Map(), scatterY = new Map();
+  const columnX = new Map(), scatterY = new Map(), domains = new Map();
+  for (const [element, chart] of mounted) {
+    if (chart.isDisposed()) continue;
+    const row = parseInt(element.style.gridRow) - 1, col = parseInt(element.style.gridColumn) - 2;
+    if (row === col) domains.set(col, chart.getModel().getComponent('xAxis').axis.scale.getExtent());
+  }
   for (const [element, chart] of mounted) {
     if (chart.isDisposed()) continue;
     const row = parseInt(element.style.gridRow) - 1, col = parseInt(element.style.gridColumn) - 2;
     const option = chart.getOption(), series = option.series[0];
-    assert.equal(option.xAxis[0].axisLabel.show, row === col || row === 5);
-    assert.equal(option.yAxis[0].axisLabel.show, row === col || col === 0);
+    assert.deepEqual(chart.getModel().getComponent('xAxis').axis.scale.getExtent(), domains.get(col),
+      'histograms and pairs share the column range');
+    if (row !== col) assert.deepEqual(chart.getModel().getComponent('yAxis').axis.scale.getExtent(), domains.get(row),
+      'pair rows share their variable range with the histogram');
     if (row === col) {
       assert.equal(series.type, 'custom');
       assert.ok(series.data.length > 0, 'each diagonal retains its histogram');
       assert.equal(option.yAxis[0].min, 0, 'density bars start at zero');
-      assert.ok(chart.convertToPixel({ xAxisIndex: 0 }, 1000 * (col + 1)) > chart.getWidth(),
-        'a histogram keeps its labeled trimmed range rather than flattening the bulk to an outlier');
+      assert.ok(chart.convertToPixel({ xAxisIndex: 0 }, 1e9 * (col + 1)) > chart.getWidth(),
+        'the shared range retains the histogram bulk instead of stretching to an outlier');
     } else {
       assert.equal(series.type, 'scatter');
       const points = ArrayBuffer.isView(series.data)
@@ -334,26 +330,26 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
       assert.deepEqual(points, Array.from(axes[col].samples, (x, i) => [x, axes[row].samples[i]]));
     }
     const dataBeforeResize = option.series.map((s) => s.data);
-    for (const [width, height] of [[52, 34], [12, 8], [56, 36], [96, 60], [180, 110], [220, 180]]) {
+    for (const [width, height] of [[52, 34], [12, 8], [56, 36], [80, 52], [96, 60], [180, 110], [220, 180]]) {
       chart.resize({ width, height });
       const points = row === col
         ? [[series.data[0].value[0], 0], [series.data.at(-1).value[0], Math.max(...series.data.map((bin) => bin.value[1]))]]
-        : [[Math.min(...axes[col].samples), Math.min(...axes[row].samples)],
-          [Math.max(...axes[col].samples), Math.max(...axes[row].samples)]];
+        : [[domains.get(col)[0], domains.get(row)[0]], [domains.get(col)[1], domains.get(row)[1]]];
       const pixels = points.map((point) => chart.convertToPixel({ seriesIndex: 0 }, point));
       for (const [x, y] of pixels) {
         assert.ok(Number.isFinite(x) && x >= 0 && x <= width, 'x stays inside the resized cell');
         assert.ok(Number.isFinite(y) && y >= 0 && y <= height, 'y stays inside the resized cell');
       }
       assert.ok(pixels[1][0] > pixels[0][0] && pixels[1][1] < pixels[0][1], 'tiny plot areas stay positive');
-      assert.equal(option.xAxis[0].axisLabel.formatter(0), width < 56 ? '' : '0');
+      const x = chart.convertToPixel({ xAxisIndex: 0 }, axes[col].samples[0]);
+      const xKey = width + ':' + col;
+      if (columnX.has(xKey)) assert.ok(Math.abs(x - columnX.get(xKey)) < 1e-8, 'histograms and pair columns align');
+      columnX.set(xKey, x);
       if (row !== col) {
-        const x = chart.convertToPixel({ xAxisIndex: 0 }, axes[col].samples[0]);
         const y = chart.convertToPixel({ yAxisIndex: 0 }, axes[row].samples[0]);
-        const xKey = width + ':' + col, yKey = width + ':' + row;
-        if (scatterX.has(xKey)) assert.ok(Math.abs(x - scatterX.get(xKey)) < 1e-8, 'scatter columns align');
+        const yKey = height + ':' + row;
         if (scatterY.has(yKey)) assert.ok(Math.abs(y - scatterY.get(yKey)) < 1e-8, 'scatter rows align');
-        scatterX.set(xKey, x); scatterY.set(yKey, y);
+        scatterY.set(yKey, y);
       }
       const labels = [...chart.renderToSVGString().matchAll(/<text([^>]*)>([^<]*)<\/text>/g)].map(([, attributes, text]) => {
         const position = /transform="translate\(([-\d.]+) ([-\d.]+)\)"/.exec(attributes);
@@ -365,14 +361,22 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
         return { text, left: x + rect.x, right: x + rect.x + rect.width,
           top: y + rect.y, bottom: y + rect.y + rect.height };
       });
+      if (width >= 72 && height >= 50 && (col === 0 || row === 5)) {
+        assert.ok(labels.length > 0, 'outer ticks stay readable in mobile-sized cells: '
+          + JSON.stringify({ row, col, width, height, grid: chart.getOption().grid }));
+      }
+      const frame = chart.getModel().getComponent('grid').coordinateSystem.getRect();
       for (let i = 0; i < labels.length; i++) {
         const a = labels[i];
-        assert.ok(a.left >= 0 && a.right <= width && a.top >= 0 && a.bottom <= height,
-          'numeric text stays inside the SVG cell');
+        // SVG rounds transforms; allow subpixel serialization error.
+        assert.ok(a.left >= -0.01 && a.right <= width + 0.01 && a.top >= -0.01 && a.bottom <= height + 0.01,
+          'numeric text stays inside the SVG cell: ' + JSON.stringify({ row, col, width, height, ...a }));
+        assert.ok(a.right <= frame.x || a.top >= frame.y + frame.height,
+          'numeric text stays outside the data rectangle');
         for (const b of labels.slice(i + 1)) {
           const overlaps = Math.min(a.right, b.right) > Math.max(a.left, b.left)
             && Math.min(a.bottom, b.bottom) > Math.max(a.top, b.top);
-          assert.equal(overlaps, false, 'numeric labels ' + a.text + ' and ' + b.text + ' do not collide');
+          assert.equal(overlaps, false, 'numeric labels do not collide: ' + JSON.stringify({ row, col, width, height, a, b }));
         }
       }
     }
@@ -481,7 +485,7 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
   const single = liveCharts()[0];
   single.resize({ width: 960, height: 540 });
   const baseline = single.convertToPixel({ yAxisIndex: 0 }, 0);
-  assert.ok(baseline >= 530 && baseline <= 540, 'large histograms keep compact density-axis space');
+  assert.ok(baseline >= 512 && baseline <= 524, 'large histograms leave a compact outside x-axis gutter');
   assert.equal(single.getOption().yAxis[0].axisLabel.formatter(0.5), '0.5');
   disposePlotCharts(ctx);
 });
