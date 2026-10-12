@@ -1056,8 +1056,8 @@ function liftInlineSubexpressions(bindings: any) {
 
   /**
    * §04: no collection operands means one call; measures are held constant.
-   * Route the scalar-variate locscale case through the ordinary scalar affine
-   * pushforward, whose inverse and Jacobian are already recognized (§06).
+   * Route scalar-variate locscale through an affine pushforward (§06), or
+   * through a measure callback when shift/scale supply collection axes.
    * Scoped calls reach here after ordinary function application binds them.
    * Never treat a measure's variate axes as broadcast axes.
    */
@@ -1074,9 +1074,26 @@ function liftInlineSubexpressions(bindings: any) {
     if (args.length !== 3 || args.some((a: any) => a?.type === 'KeywordArg')
         || containsHoleOrPlaceholder(astArg)) return astArg;
     const base = __knownAstType(args[0]);
-    if (base?.kind !== 'measure' || base.domain?.kind !== 'scalar'
-        || __knownAstType(args[1])?.kind !== 'scalar'
-        || __knownAstType(args[2])?.kind !== 'scalar') return astArg;
+    if (base?.kind !== 'measure' || base.domain?.kind !== 'scalar') return astArg;
+    const shiftType = __knownAstType(args[1]);
+    const scaleType = __knownAstType(args[2]);
+    if (broadcast && (shiftType?.kind === 'array' || scaleType?.kind === 'array')) {
+      // §04 holds the measure constant while the existing measure-algebra
+      // broadcast binds shift/scale per cell and draws each base independently.
+      const loc = astArg.loc;
+      const shift = { type: 'Placeholder', name: 'shift', loc };
+      const scale = { type: 'Placeholder', name: 'scale', loc };
+      const row = { type: 'CallExpr', callee: makeIdent('functionof', loc), builtin: true, loc,
+        args: [{ type: 'CallExpr', callee: makeIdent('locscale', loc), builtin: true,
+          args: [args[0], shift, scale], loc },
+        { type: 'KeywordArg', name: 'shift', value: shift, loc },
+        { type: 'KeywordArg', name: 'scale', value: scale, loc }] };
+      const name = freshName();
+      out.set(name, makeSyntheticBinding(name, row));
+      return { type: 'CallExpr', callee: makeIdent('broadcast', loc), builtin: true,
+        args: [makeIdent(name, loc), args[1], args[2]], loc };
+    }
+    if (shiftType?.kind !== 'scalar' || scaleType?.kind !== 'scalar') return astArg;
     if (args[2].type === 'NumberLiteral'
         && (args[2].value === 0 || !Number.isFinite(args[2].value))) return astArg;
     const loc = astArg.loc;

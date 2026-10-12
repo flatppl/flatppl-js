@@ -2039,28 +2039,8 @@ const pushfwdReferences = new WeakMap<object, ReturnType<typeof measureReference
 // Scoped locscale operands must pass through ordinary callback binding before
 // becoming bijection metadata, whose bodies are intentionally not rewritten.
 function walkLocscale(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
-  const [base, shift, scale] = ir.args;
-  const captured = new Set<string>();
-  require('./ir-walk.ts').walkIR({ args: [shift, scale] }, (node: any) => {
-    if (node.kind === 'ref') captured.add(node.name);
-  });
-  let paramName = '__locscale_input';
-  while (captured.has(paramName)) paramName += '_';
-  const point = { kind: 'ref', ns: '%local', name: paramName };
-  const forward = { kind: 'call', op: 'add', args: [
-    { kind: 'call', op: 'mul', args: [scale, point] }, shift,
-  ] };
-  const inverse = { kind: 'call', op: 'divide', args: [
-    { kind: 'call', op: 'sub', args: [point, shift] }, scale,
-  ] };
-  const logVolume = { kind: 'call', op: 'log', args: [
-    { kind: 'call', op: 'abs', args: [scale] },
-  ] };
-  return walkPushfwd({ kind: 'call', op: 'pushfwd', args: [null, base], bijection: {
-    fForward: { body: forward, paramName },
-    fInv: { body: inverse, paramName },
-    logVolume: { kind: 'fn', body: logVolume, paramName: null },
-  } }, value, refArrays, N, opts, acc, baseEnv, overlay);
+  const pushfwd = require('./ir-shared.ts').scalarLocscalePushfwd(ir);
+  return walkPushfwd(pushfwd, value, refArrays, N, opts, acc, baseEnv, overlay);
 }
 
 function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {

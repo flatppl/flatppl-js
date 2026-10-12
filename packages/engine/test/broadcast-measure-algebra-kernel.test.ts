@@ -345,8 +345,8 @@ test('sampling: a latent-dependent mixing weight stays correlated with its '
   // (1-p)·mu is affine in p. A weight that decoupled from the latent
   // (a pooled E[p]) would measure ≈ 0.
   // A scalar (rank-0) broadcast argument is held constant across the cells
-  // per §04 "Non-collection inputs", so there is one cell and `E` is
-  // [N, 1].
+  // per §04 "Non-collection inputs", so there is one scalar call and `E`
+  // has only its atom axis [N].
   const N = 200000;
   const src = HEAD + `
 p ~ Uniform(interval(0.2, 0.8))
@@ -354,7 +354,7 @@ p ~ Uniform(interval(0.2, 0.8))
   const { ctx } = ctxFor(src, N);
   const pm = await ctx.getMeasure('p');
   const em = await ctx.getMeasure('E');
-  assert.deepEqual(em.value.shape, [N, 1], 'a held-constant argument gives one cell');
+  assert.deepEqual(em.value.shape, [N], 'a held-constant argument adds no collection axis');
   const ps: Float64Array = pm.samples;
   const es: Float64Array = em.value.data;
   let mp = 0; let me = 0;

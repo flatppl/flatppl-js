@@ -3301,6 +3301,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // binding (e.g. `Dirac(value=T)`); shape/type mismatches in the cell
   // args are not diagnosed here (the result type is all we need).
   function inferMeasureHeadCellResult(opName: any, cellTypes: any): any {
+    if (opName === 'locscale' && cellTypes.length === 3) {
+      return locscaleType(cellTypes[0], cellTypes[1], cellTypes[2]);
+    }
     const sig: any = T.signatureOf(opName);
     if (!sig || !T.isMeasure(sig.result)) return null;
     let s = new Map();
@@ -3630,8 +3633,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return null;
     }
     const argClassif: any[] = [];
-    for (const t of dataTypes) {
-      const c = classifyArg(t);
+    for (const [i, t] of dataTypes.entries()) {
+      const c = builtinLocscale && i === 0 && T.isMeasure(t)
+        ? { collection: false, cellType: t } : classifyArg(t);
       if (c == null) return T.deferred();
       argClassif.push(c);
     }
@@ -3691,6 +3695,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // §04: a bare record head has the same row schema as record-returning
       // functions, even when no cell runs because the broadcast is empty.
       elem = T.record(Object.fromEntries(kwNames.map((name, i) => [name, cellTypes[i]])));
+    } else if (builtinLocscale) {
+      elem = inferMeasureHeadCellResult('locscale', cellTypes);
     } else if (fn && fn.kind === 'call' && fn.op === 'functionof'
         && fn.body && Array.isArray(fn.params)) {
       const localScope = new Map<string, any>();
@@ -4075,6 +4081,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const baseT = inferExpr(args[0], scopes);  // base measure
     const shiftT = inferExpr(args[1], scopes);
     const scaleT = inferExpr(args[2], scopes);
+    return locscaleType(baseT, shiftT, scaleT);
+  }
+
+  /** §06 affine result type, shared by scalar and broadcast cell inference. */
+  function locscaleType(baseT: any, shiftT: any, scaleT: any): any {
     // Preserve the shape of a non-scalar base. When the base is unresolved,
     // defer rather than fabricating a scalar measure for a vector variate.
     if (T.isMeasure(baseT)) {
@@ -6280,6 +6291,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         let cell = T.MASS_DEFERRED;
         if (head && head.kind === 'ref' && builtins.DISTRIBUTIONS.has(head.name)) {
           cell = T.MASS_NORMALIZED;
+        } else if (head?.name === 'locscale' && (head.kind === 'const'
+            || (head.kind === 'ref' && head.ns === 'self'
+              && !loweredModule.bindings.has(head.name)))) {
+          cell = mass(args[1]);
         } else {
           const resolved = resolveBindingRefs(head);
           if (resolved && resolved.kind === 'call' && resolved.body) {

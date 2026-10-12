@@ -3616,6 +3616,15 @@ function _bridgeMeasureFrom(ir: any, register: any, label: string): string | nul
 function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
   const irShared = require('./ir-shared.ts');
   const op = ir && ir.op;
+  // Scoped affine operands have now bound to one broadcast cell. Reuse the
+  // same §06 lowering as density and the ordinary pushforward sampler.
+  if (op === 'locscale') {
+    const lowered = irShared.scalarLocscalePushfwd(ir);
+    const fnRef = register(lowered.args[0], 'locscale:fn');
+    childCtx.bindings.get(fnRef).type = 'functionof';
+    const from = _bridgeMeasureFrom(ir.args[0], register, 'locscale:base');
+    return { kind: 'pushfwd', from, fnRef };
+  }
   if (op && irShared.SAMPLEABLE_DISTRIBUTIONS && irShared.SAMPLEABLE_DISTRIBUTIONS.has(op)) {
     return { kind: 'sample', distIR: ir };
   }
@@ -3875,6 +3884,7 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
   }
   _ensureRootKey(ctx);
   if (ir.op === 'tilt') return matTilt(ir, ctx);
+  if (ir.op === 'locscale') return _bridgeToHandler(ir, ctx);
   // clm{body, inputs, reduce} — the canonical lowered measure (measure-
   // lowering unification Phase 4, sample half). matClm feeds the boundary
   // inputs via clm.feedInputs, then walks the SAME body the density side
