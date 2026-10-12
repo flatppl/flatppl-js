@@ -196,18 +196,29 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
   }
 }
 
+/** Resize changed chart content boxes, reading layout before canvas writes. */
 export function resizeAllEchartsInPlot(ctx: Ctx) {
   const root = document.getElementById('plot-content');
   if (!root) return;
-  const nodes = root.querySelectorAll('div');
-  for (let i = 0; i < nodes.length; i++) {
-    const inst = echarts.getInstanceByDom(nodes[i]);
-    if (inst) try { inst.resize(); } catch (_) {}
+  const pending: Array<{ chart: any; width: number; height: number }> = [];
+  // The root itself can host a single chart. Corner grids host one per cell.
+  for (const node of [root, ...Array.from(root.querySelectorAll('div'))]) {
+    const chart = echarts.getInstanceByDom(node);
+    if (!chart) continue;
+    // Match ECharts' content sizing: client dimensions exclude borders but
+    // include padding. Its CSS fallback also covers temporarily hidden hosts.
+    const style = getComputedStyle(node);
+    const width = ((node.clientWidth || parseInt(style.width) || parseInt(node.style.width))
+      - (parseInt(style.paddingLeft) || 0) - (parseInt(style.paddingRight) || 0)) || 0;
+    const height = ((node.clientHeight || parseInt(style.height) || parseInt(node.style.height))
+      - (parseInt(style.paddingTop) || 0) - (parseInt(style.paddingBottom) || 0)) || 0;
+    // Even an unchanged ECharts resize reruns layout and every scatter series.
+    // A one-pixel pane drag leaves most small corner cells the same size.
+    if (width !== chart.getWidth() || height !== chart.getHeight()) pending.push({ chart, width, height });
   }
-  // The root itself may host a single chart (samples / array /
-  // profile single-line modes) — resize that too.
-  const rootInst = echarts.getInstanceByDom(root);
-  if (rootInst) try { rootInst.resize(); } catch (_) {}
+  for (const { chart, width, height } of pending) {
+    try { chart.resize({ width, height }); } catch (_) {}
+  }
 }
 
 export function resizeAndFitCy(ctx: Ctx) {

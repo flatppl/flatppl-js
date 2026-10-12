@@ -517,21 +517,24 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
     for (let col = 0; col < row; col++) {
       const xCol = cols[col], yCol = cols[row];
       const inner2 = makeCell(row, col);
-      const pts = new Array(indices.length);
+      // ECharts accepts interleaved typed coordinates. Preserve binary64
+      // values without allocating and cloning a separate array per point.
+      const pts = new Float64Array(indices.length * 2);
       for (let p = 0; p < indices.length; p++) {
         const idx = indices[p];
-        pts[p] = [xCol[idx], yCol[idx]];
+        pts[p * 2] = xCol[idx];
+        pts[p * 2 + 1] = yCol[idx];
       }
       // Point opacity scales with point count — denser data
       // gets more transparency so clouds don't saturate.
-      const alpha = Math.max(0.05, Math.min(0.6, 800 / pts.length));
+      const alpha = Math.max(0.05, Math.min(0.6, 800 / indices.length));
       // Credible-region contours over the SAME plotted points, so the curves
       // share the scatter's axis frame (the overlaid `lines` series stays
       // inside the cloud's data range and never perturbs echarts' auto-scale).
       // Inner curve = 68% HPD region, outer = 95% (corner-plot convention).
-      const cxs = new Float64Array(pts.length);
-      const cys = new Float64Array(pts.length);
-      for (let p = 0; p < pts.length; p++) { cxs[p] = pts[p][0]; cys[p] = pts[p][1]; }
+      const cxs = new Float64Array(indices.length);
+      const cys = new Float64Array(indices.length);
+      for (let p = 0; p < indices.length; p++) { cxs[p] = pts[p * 2]; cys[p] = pts[p * 2 + 1]; }
       const contourLevels = densityContours(cxs, cys, [0.68, 0.95]);
       const contourSeries = contourLevels
         .filter(function (lvl) { return lvl.segments.length > 0; })
@@ -562,6 +565,8 @@ export function renderCornerGrid(ctx: Ctx, hostEl: any, measure: any, bindingNam
         series: [{
           type: 'scatter',
           data: pts,
+          dimensions: ['x', 'y'],
+          encode: { x: 0, y: 1 },
           symbolSize: 3,
           large: true,
           largeThreshold: 2000,
