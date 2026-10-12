@@ -5531,7 +5531,7 @@ function _expandKernelBodyMeasureRefs(ir: any, ctx: any, visited: Set<string>): 
     return expanded || ir;
   }
   if (ir.kind !== 'call') return ir;
-  if ((ir.op === 'normalize' || ir.op === 'truncate')
+  if ((ir.op === 'normalize' || ir.op === 'truncate' || ir.op === 'locscale')
       && Array.isArray(ir.args) && ir.args.length >= 1) {
     const inner = _expandKernelBodyMeasureRefs(ir.args[0], ctx, visited);
     return { ...ir, args: [inner, ...ir.args.slice(1)] };
