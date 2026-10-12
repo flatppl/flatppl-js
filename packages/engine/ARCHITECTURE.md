@@ -257,6 +257,9 @@ Explicit likelihood inputs also retain shape and logical matrix views. CLM
 feeds one constant tensor per atom as `[N, ...shape]`, so the density worker's
 atom slice keeps every intrinsic matrix axis.
 
+Unary density weights receive the whole consumed variate. Record fields retain
+their array and matrix shapes; unconsumed fields belong to the surrounding joint.
+
 Truncation derivations retain live interval bounds as IR. Sampling evaluates
 those bounds per outer atom; density uses the current point and observed record
 fields for both membership and the conditional CDF normalizer. Raw truncation

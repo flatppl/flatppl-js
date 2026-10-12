@@ -2322,7 +2322,7 @@ tm = totalmass(A)
 test('chain density: a constant variate weight preserves the retained density', async () => {
   const ctx = makeCtx(`
 B = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
-A = weighted(fn(exp(0.0 * _)), B)
+A = weighted(fn(exp(0.0 * _.aa)), B)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `);
   const actual = (await ctx.getMeasure('lp')).samples[0];

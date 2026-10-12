@@ -4,6 +4,16 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
 
+test('a unary log weight receives the whole record variate', async () => {
+  const { ctx } = makeMatCtx(`
+M = logweighted(p -> p.a, joint(a = Normal(0, 1)))
+score = logdensityof(M, record(a = 2))
+`, { sampleCount: 1 });
+  const score = (await ctx.getMeasure('score')).samples[0];
+  const expected = -0.5 * Math.log(2 * Math.PI) - 2 + 2;
+  assert.ok(Math.abs(score - expected) < 1e-12, `${score} != ${expected}`);
+});
+
 test('a Normal density broadcast weights ordered Lebesgue at the scored vector', async () => {
   const { ctx } = makeMatCtx(`
 M = logweighted(fn(sum(logdensityof.(Normal(0, 5), _))), Lebesgue(ordered(8)))
