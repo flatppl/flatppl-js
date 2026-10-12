@@ -256,6 +256,8 @@ expansion, rather than interpreting the aliased value as a measure.
 Explicit likelihood inputs also retain shape and logical matrix views. CLM
 feeds one constant tensor per atom as `[N, ...shape]`, so the density worker's
 atom slice keeps every intrinsic matrix axis.
+Likelihood parameter records use the Value discriminant, so public fields named
+`shape` or `data` are not mistaken for tensor storage.
 
 Unary density weights receive the whole consumed variate. Record fields retain
 their array and matrix shapes; unconsumed fields belong to the surrounding joint.
