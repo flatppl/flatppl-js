@@ -4213,7 +4213,7 @@ function _isLiteralNumericVector(ir: any): boolean {
  * not 100% sure the evaluator handles, so the orchestrator can short-
  * circuit before involving the worker.
  */
-function isEvaluable(ir: IRNode | null | undefined): boolean {
+function isEvaluable(ir: IRNode | null | undefined, bindings?: any): boolean {
   if (!ir) return false;
   switch (ir.kind) {
     case 'lit':         return typeof ir.value === 'number' || typeof ir.value === 'boolean';
@@ -4237,10 +4237,13 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
       if (ir.op === 'vector' && Array.isArray(ir.args) && _isLiteralNumericVector(ir)) {
         return true;
       }
-      if (!ir.op || !EVALUABLE_OPS.has(ir.op)) return false;
+      const standard = ir.target && bindings
+        ? require('./standard-modules.ts').standardModuleBinding(ir, bindings, 'ir') : null;
+      if ((!ir.op || !EVALUABLE_OPS.has(ir.op))
+          && !(standard?.kind === 'function' && typeof standard.impl === 'function')) return false;
       if (ir.op === 'get_field') {
         const args = ir.args || [];
-        return args.length === 2 && isEvaluable(args[0])
+        return args.length === 2 && isEvaluable(args[0], bindings)
           && args[1].kind === 'lit' && typeof args[1].value === 'string';
       }
       // rand(measure, state) — the measure arg is a measure IR passed
@@ -4252,7 +4255,7 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
       if (ir.op === 'rand') {
         const args = ir.args || [];
         if (args.length !== 2) return false;
-        return isEvaluable(args[1]);
+        return isEvaluable(args[1], bindings);
       }
       // rand_succ(state) — the value-domain composite-rand successor
       // (split lane 1). One arg, the rngstate (itself evaluable).
@@ -4260,7 +4263,7 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
       if (ir.op === 'rand_succ') {
         const args = ir.args || [];
         if (args.length !== 1) return false;
-        return isEvaluable(args[0]);
+        return isEvaluable(args[0], bindings);
       }
       // aggregate(f_reduction, output_axes, expr) — the second arg is
       // always a `vector(...)` of axis refs by construction (the
@@ -4273,7 +4276,7 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
       if (ir.op === 'aggregate') {
         const args = ir.args || [];
         if (args.length !== 3) return false;
-        return isEvaluable(args[0]) && isEvaluable(args[2]);
+        return isEvaluable(args[0], bindings) && isEvaluable(args[2], bindings);
       }
       // broadcast(f, args, kwargs) — args[0] is a CALLABLE (a function
       // ref OR an inline `functionof(...)` produced by the dotted-
@@ -4290,10 +4293,10 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
         const args = ir.args || [];
         if (args.length < 1) return false;
         for (let i = 1; i < args.length; i++) {
-          if (!isEvaluable(args[i])) return false;
+          if (!isEvaluable(args[i], bindings)) return false;
         }
         if (ir.kwargs) {
-          for (const k in ir.kwargs) if (!isEvaluable(ir.kwargs[k])) return false;
+          for (const k in ir.kwargs) if (!isEvaluable(ir.kwargs[k], bindings)) return false;
         }
         return true;
       }
@@ -4307,20 +4310,20 @@ function isEvaluable(ir: IRNode | null | undefined): boolean {
       if (ir.op === 'in') {
         const args = ir.args || [];
         if (args.length !== 2) return false;
-        return isEvaluable(args[0]);
+        return isEvaluable(args[0], bindings);
       }
       // All args / kwargs / fields must themselves be evaluable.
       // record IR uses `fields: [{name, value}, ...]` instead of args,
       // so we walk that shape too — a record(a=x, b=y) is evaluable
       // only if every field value is.
       if (ir.args) {
-        for (const a of ir.args) if (!isEvaluable(a)) return false;
+        for (const a of ir.args) if (!isEvaluable(a, bindings)) return false;
       }
       if (ir.kwargs) {
-        for (const k in ir.kwargs) if (!isEvaluable(ir.kwargs[k])) return false;
+        for (const k in ir.kwargs) if (!isEvaluable(ir.kwargs[k], bindings)) return false;
       }
       if (Array.isArray(ir.fields)) {
-        for (const f of ir.fields) if (!isEvaluable(f && f.value)) return false;
+        for (const f of ir.fields) if (!isEvaluable(f && f.value, bindings)) return false;
       }
       return true;
     default:

@@ -1257,7 +1257,7 @@ function classifyDerivation(
       if (randSample) return randSample;
     }
     // Deterministic arithmetic on cached samples.
-    if (isEvaluable(rhsIR)) {
+    if (isEvaluable(rhsIR, bindings)) {
       return { kind: 'evaluate', ir: rhsIR };
     }
     return null;
