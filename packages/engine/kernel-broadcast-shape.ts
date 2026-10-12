@@ -1099,8 +1099,9 @@ const _MEASURE_ALGEBRA_BODY_OPS = new Set([
  * the body to the by-name materialiser.
  *
  * Declines (returns null) when the binding isn't a `functionof` with at
- * least one formal, or when the peeled body's outer op is not a
- * measure-algebra op.
+ * least one formal, or when the peeled body's outer op is neither a
+ * measure-algebra op nor a scalar distribution constructor. Leaf callbacks
+ * whose parameter expressions cannot be dissolved use the same cell executor.
  */
 function detectMeasureAlgebraKernelBinding(
   name: string, bindings: any,
@@ -1116,7 +1117,8 @@ function detectMeasureAlgebraKernelBinding(
     ? ir.paramKwargs : params;
   const bodyMeasureIR = _peelKernelBody(ir.body);
   if (!bodyMeasureIR || bodyMeasureIR.kind !== 'call'
-      || !_MEASURE_ALGEBRA_BODY_OPS.has(bodyMeasureIR.op)) return null;
+      || (!_MEASURE_ALGEBRA_BODY_OPS.has(bodyMeasureIR.op)
+        && !require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS.has(bodyMeasureIR.op))) return null;
   return {
     binding: b,
     params,
