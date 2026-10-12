@@ -3026,12 +3026,11 @@ function restSize(r: any) {
 // w.r.t. counting, OR an atomic point mass / Dirac). `null` =
 // undeterminable. Existing density paths retain their prior handling of an
 // unknown; the new diagonal-affine route requires a proven reference.
-// The spike-and-slab trap is mixing the two:
-// logsumexp-ing a per-length density with a per-atom probability is
-// dimensionally meaningless. Note `Dirac.discrete` is deliberately
-// false in the REGISTRY (the engine can't tell its scalar type from
-// IR), so Dirac is special-cased atomic here — exactly the slab/spike
-// case. weighted/logweighted/normalize/truncate/pushfwd don't change
+// These coarse classes are enough for homogeneous change of variables;
+// a mixture additionally proves and converts its fixed atomic reference below.
+// `Dirac.discrete` is deliberately false in the REGISTRY (the engine can't
+// tell its scalar type from IR), so Dirac is special-cased atomic here.
+// weighted/logweighted/normalize/truncate/pushfwd don't change
 // the reference measure (they scale / restrict / bijection-map), so
 // recurse into the base; a nested select inherits its branches'.
 function measureReferenceClass(ir: any, depth: number): 'continuous' | 'noncontinuous' | 'mixed' | null {
@@ -3055,7 +3054,8 @@ function measureReferenceClass(ir: any, depth: number): 'continuous' | 'nonconti
       && Array.isArray(ir.args) && ir.args.length === 2) {
     return measureReferenceClass(ir.args[1], (depth | 0) + 1);
   }
-  if ((op === 'normalize' || op === 'truncate' || op === 'iid' || op === 'relabel')
+  if ((op === 'normalize' || op === 'truncate' || op === 'iid' || op === 'relabel'
+      || op === 'locscale' || op === 'draw' || op === 'lawof')
       && Array.isArray(ir.args) && ir.args.length >= 1) {
     return measureReferenceClass(ir.args[0], (depth | 0) + 1);
   }
@@ -3083,6 +3083,56 @@ function measureReferenceClass(ir: any, depth: number): 'continuous' | 'nonconti
   return null;
 }
 
+/** §06: scalar Lebesgue plus fixed finite atoms is a common reference.
+ * Inspect measure operands only: a weight or distribution parameter does not
+ * contribute an output atom. A transformed/dynamic atom needs a separate proof
+ * of its image, so it cannot enter this reference plan. */
+function fixedScalarReferenceAtoms(ir: any, depth = 0): number[] | null {
+  if (!ir || ir.kind !== 'call' || depth > 64) return null;
+  const op = ir.op, args = ir.args || [];
+  if (op === 'Dirac') {
+    const atom = require('./ir-shared.ts').resolveConstant(ir.kwargs?.value || args[0], new Map(), new Set());
+    return typeof atom === 'number' && Number.isFinite(atom) ? [atom] : null;
+  }
+  if (op === 'weighted' || op === 'logweighted' || op === 'bayesupdate') {
+    return fixedScalarReferenceAtoms(args[1], depth + 1);
+  }
+  if (op === 'normalize' || op === 'truncate' || op === 'relabel' || op === 'draw' || op === 'lawof') {
+    return fixedScalarReferenceAtoms(args[0], depth + 1);
+  }
+  if (op === 'pushfwd' || op === 'locscale') {
+    const base = fixedScalarReferenceAtoms(args[op === 'locscale' ? 0 : 1], depth + 1);
+    return base?.length === 0 ? base : null;
+  }
+  const branches = op === 'select' ? ir.branches : op === 'superpose' ? args : null;
+  if (Array.isArray(branches)) {
+    const atoms = new Set<number>();
+    for (const branch of branches) {
+      const inner = fixedScalarReferenceAtoms(branch, depth + 1);
+      if (inner == null) return null;
+      for (const atom of inner) atoms.add(atom);
+    }
+    return [...atoms];
+  }
+  return hasScalarDensityFootprint(ir) && measureReferenceClass(ir, depth) === 'continuous' ? [] : null;
+}
+
+/** Convert a scalar branch density to the mixture's fixed common reference.
+ * Keep the ordinary walk (including normalization validity) but overwrite its
+ * inactive score before logsumexp; singular endpoint values cannot leak into
+ * the result. This numeric evaluator does not differentiate inactive arithmetic. */
+function maskReferenceAtoms(scores: Float64Array, value: any, atoms: number[], own: number[], pointsBatched: boolean) {
+  if (pointsBatched) {
+    const points = valueLib.isValue(value) ? value.data : value;
+    for (let i = 0; i < scores.length; i++) {
+      if (atoms.includes(points[i]) && !own.includes(points[i])) scores[i] = -Infinity;
+    }
+  } else {
+    const { head } = consumeScalar(value);
+    if (atoms.includes(head) && !own.includes(head)) scores.fill(-Infinity);
+  }
+}
+
 function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
   // select(branches, logweights): the discrete-selector mixture — the
   // EXACT (finite, no −logN) discrete sibling of the kchain MC
@@ -3104,6 +3154,32 @@ function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, a
     throw new Error('density: select requires a non-empty branches array');
   }
   const K = branches.length;
+
+  let sawCont = false, sawNonc = false, sawMixed = false;
+  for (let k = 0; k < K; k++) {
+    const c = measureReferenceClass(branches[k], 0);
+    if (c === 'continuous') sawCont = true;
+    else if (c === 'noncontinuous') sawNonc = true;
+    else if (c === 'mixed') sawMixed = true;
+  }
+  const heterogeneous = sawMixed || (sawCont && sawNonc);
+  const referenceAtoms = heterogeneous ? branches.map(b => fixedScalarReferenceAtoms(b)) : null;
+  const reference = referenceAtoms?.every((atoms): atoms is number[] => atoms != null)
+    ? { branches: referenceAtoms, atoms: [...new Set(referenceAtoms.flat())] } : null;
+
+  // §06 requires one common reference even when the selector is retained.
+  // Fixed scalar atoms extend Lebesgue; moving atoms, general counting and
+  // unknown images retain the refusal. Sampling is independently well-defined.
+  if (heterogeneous && !reference) {
+    const cls = branches.map((b, k) =>
+      `  branch ${k}: ${measureReferenceClass(b, 0) || 'unknown'}`).join('\n');
+    throw new Error(
+      'density: select/mixture combines branches with incommensurable '
+      + 'reference measures — a continuous/discrete mixture requires '
+      + 'proven fixed scalar Dirac atoms for a common Lebesgue-plus-atoms reference. '
+      + 'Its SAMPLING is well-defined and still allowed; only its '
+      + 'logdensityof is refused.\n' + cls);
+  }
 
   // Retain mode (engine-concepts §11 — discrete sibling of jointchain
   // retain): if the selector binding has already been consumed by an
@@ -3139,47 +3215,19 @@ function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, a
       // In marginalize mode (the fall-through below), logw_k IS the
       // selector prior — the anonymous-selector case has no separate
       // field to bill it to.
-      return walkAcc(branches[k], value, refArrays, N, opts, acc,
+      const rest = walkAcc(branches[k], value, refArrays, N, opts, acc,
         baseEnv, overlay);
+      if (reference) maskReferenceAtoms(acc, value, reference.atoms, reference.branches[k], opts.pointsBatched);
+      return rest;
     }
   }
 
-  // Reference-measure guard (engine-concepts §11/§12). logsumexp-ing
-  // branch log-densities is only meaningful when every branch scores
-  // w.r.t. the SAME reference measure. Mixing a continuous (Lebesgue)
-  // branch with a discrete/atomic one (the spike-and-slab trap, e.g.
-  // ifelse(c, Normal, Dirac) or superpose(Normal, Poisson)) combines a
-  // per-length density with a per-atom probability — dimensionally
-  // meaningless. Refuse with a clear error rather than return a wrong
-  // number. Zero-false-positive: throw ONLY when ≥1 branch is
-  // positively continuous AND ≥1 is positively non-continuous (or a
-  // nested select is itself heterogeneous); undeterminable branches
-  // are permitted (a homogeneous mixture is never rejected). This is a
-  // DENSITY-only guard — sampling such a mixture (matSelect) is
-  // well-defined and stays allowed.
-  let sawCont = false, sawNonc = false, sawMixed = false;
-  for (let k = 0; k < K; k++) {
-    const c = measureReferenceClass(branches[k], 0);
-    if (c === 'continuous') sawCont = true;
-    else if (c === 'noncontinuous') sawNonc = true;
-    else if (c === 'mixed') sawMixed = true;
-  }
-  if (sawMixed || (sawCont && sawNonc)) {
-    const cls = branches.map((b, k) =>
-      `  branch ${k}: ${measureReferenceClass(b, 0) || 'unknown'}`).join('\n');
-    throw new Error(
-      'density: select/mixture combines branches with incommensurable '
-      + 'reference measures — cannot logsumexp a continuous (Lebesgue) '
-      + 'density with a discrete/atomic (counting / point-mass) one '
-      + '(the spike-and-slab case, e.g. ifelse(c, Normal, Dirac)). '
-      + 'Its SAMPLING is well-defined and still allowed; only its '
-      + 'logdensityof is refused.\n' + cls);
-  }
   const bacc = new Array(K);
   let rest0; let haveRest = false;
   for (let k = 0; k < K; k++) {
     const a = new Float64Array(N);
     const rk = walkAcc(branches[k], value, refArrays, N, opts, a, baseEnv, overlay);
+    if (reference) maskReferenceAtoms(a, value, reference.atoms, reference.branches[k], opts.pointsBatched);
     bacc[k] = a;
     if (!haveRest) { rest0 = rk; haveRest = true; }
     else if (restSize(rk) !== restSize(rest0)) {
