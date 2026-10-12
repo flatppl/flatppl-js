@@ -89,19 +89,27 @@ const registry = require('./sampler-registry.ts');
 
 const VECTOR_SET_OPS = new Set(['stdsimplex', 'ordered', 'zerosum']);
 
-// Membership in a §03 vector set. Only the inequalities are checked:
-// `stdsimplex` entries `>= 0`, `ordered` consecutive entries strictly
-// increasing. §03 "Standard simplex" and "Zero-sum vectors" make
-// `Lebesgue(support = S)` the coordinate measure of the n-1 free coordinates,
-// with the last one determined by them, so the density is a function of the
-// free coordinates. An exact float test of the linear equality (sum 1 or sum 0)
-// would reject the points a chart produces. Every entry must be a real number.
+// Membership in a §03 vector set, shared by `in`, reference densities and
+// truncate. The affine equations still apply under the free-coordinate
+// reference measure. Allow summation/chart roundoff scaled to the coordinates;
+// a fixed absolute tolerance would accept small but wholly non-zero vectors.
 function inVectorSet(x: ArrayLike<number>, set: string): boolean {
   for (let i = 0; i < x.length; i++) if (Number.isNaN(+x[i])) return false;
   if (set === 'stdsimplex') {
     for (let i = 0; i < x.length; i++) if (!(+x[i] >= 0)) return false;
   } else if (set === 'ordered') {
     for (let i = 1; i < x.length; i++) if (!(+x[i] > +x[i - 1])) return false;
+  }
+  if (set === 'stdsimplex' || set === 'zerosum') {
+    let sum = 0, magnitude = 0;
+    for (let i = 0; i < x.length; i++) {
+      sum += +x[i];
+      magnitude += Math.abs(+x[i]);
+    }
+    const target = set === 'stdsimplex' ? 1 : 0;
+    const tolerance = 8 * x.length * Number.EPSILON * Math.max(magnitude, target);
+    return Number.isFinite(sum) && Number.isFinite(magnitude)
+      && Math.abs(sum - target) <= tolerance;
   }
   return true;
 }
