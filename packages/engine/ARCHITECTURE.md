@@ -259,6 +259,8 @@ atom slice keeps every intrinsic matrix axis.
 
 Unary density weights receive the whole consumed variate. Record fields retain
 their array and matrix shapes; unconsumed fields belong to the surrounding joint.
+Weight classification inlines formal-carrying derived refs before substituting
+the scored variate, including inline lambdas with nested reification calls.
 
 Truncation derivations retain live interval bounds as IR. Sampling evaluates
 those bounds per outer atom; density uses the current point and observed record

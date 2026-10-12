@@ -1523,6 +1523,11 @@ function _classifyWeightedByFunction(
     };
   }
   const paramName = fnIR.params[0];
+  // Inline lambdas do not pass through the named-function self-containment
+  // pass. Expose formals behind derived reification clones before replacing
+  // them, or those clones keep references to the lambda's unbound parameter.
+  const body = _inlineFormalCarryingRefs(fnIR.body, bindings,
+    _makeMentionsFormal(new Set(fnIR.params), bindings));
   // Replace every `(ref %local <paramName>)` in the body with
   // `(ref self <baseName>)`. mapIR's identity-preserving rebuild
   // means any sub-tree that doesn't mention the parameter shares
@@ -1531,7 +1536,7 @@ function _classifyWeightedByFunction(
   const { mapIR } = require('./ir-walk.ts');
   // The formal's ref is `%local` (placeholder form) or a `self` ref of
   // the param's name (identifier-bound boundary, spec-shaped bodies §11).
-  const synth = mapIR(fnIR.body, (n: any) => {
+  const synth = mapIR(body, (n: any) => {
     if (n && n.kind === 'ref' && n.name === paramName
         && (n.ns === '%local' || n.ns === 'self')) {
       return { kind: 'ref', ns: 'self', name: baseName, loc: n.loc };
