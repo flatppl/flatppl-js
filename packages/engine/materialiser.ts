@@ -262,7 +262,7 @@ function matAlias(name: string, d: DerivationAlias, ctx: any) {
   return child.getMeasure(d.from);
 }
 
-function matEvaluate(d: DerivationEvaluate, ctx: any) {
+function matEvaluate(name: string, d: DerivationEvaluate, ctx: any) {
   // Deterministic transform of variates. Per-atom: c_i = f(parents_i).
   // logWeights propagate via joint IS (sum independent events, dedupe
   // shared via reference identity). logTotalmass follows from the
@@ -277,9 +277,18 @@ function matEvaluate(d: DerivationEvaluate, ctx: any) {
   // refs walk below also skips function-like bindings (the inlined
   // body's `%local` placeholder refs aren't `self`-refs, so they
   // don't enter the perAtomNames / fixedEnv pre-fetch).
-  const inlinedIR = inlineCallableRefs(d.ir, ctx.bindings);
+  const inlinedIR = require('./derivations.ts').inlineDensityMeasures(
+    inlineCallableRefs(d.ir, ctx.bindings), ctx.derivations, new Set(), ctx.bindings);
   return prepareDensityRefs(inlinedIR, ctx, 'matEvaluate').then((prep: any) => {
     const { refArrays, fixedEnv, perAtomNames } = prep;
+    const binding = ctx.bindings?.get(name);
+    if (binding?.phase === 'fixed' && binding.inferredType?.kind === 'array'
+        && Object.keys(refArrays).length === 0) {
+      // Fixed arrays retain their intrinsic shape, without a sample axis.
+      return pushFixedEnv(ctx, fixedEnv)
+        .then(() => ctx.sendWorker({ type: 'evaluate', ir: inlinedIR }))
+        .then((reply: any) => fixedValueToMeasure(reply.value, ctx.sampleCount));
+    }
     return Promise.all(perAtomNames.map(ctx.getMeasure)).then((parentMeasures: any[]) => {
       return pushFixedEnv(ctx, fixedEnv).then(() => ctx.sendWorker({
         type: 'evaluateN',
@@ -3092,7 +3101,7 @@ const KIND_HANDLERS = {
   lebesguevecset: (name: any, d: any) => Promise.reject(new Error(
     "Lebesgue(support = " + (d.set === 'cartpow' ? 'cartpow(…, ' + d.n + ')' : d.set + '(' + d.n + ')')
     + ") in '" + name + "' has no draws: this engine scores its density but does not sample it")),
-  evaluate:     (name: any, d: any, ctx: any) => matEvaluate(d, ctx),
+  evaluate:     (name: any, d: any, ctx: any) => matEvaluate(name, d, ctx),
   array:        (name: any, d: any) =>      matArray(d),
   // algebra
   weighted:     (name: any, d: any, ctx: any) => matWeighted(d, ctx),

@@ -5329,7 +5329,10 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
           }
           // A `logdensityof(M, x)` weight names its measure by a self-ref the
           // density walker cannot resolve, so inline M's expansion in place.
-          weightIRForWalk = _inlineWeightMeasures(weightIRForWalk, derivations, next, bindings);
+          if (weightIRForWalk?.kind === 'call' && weightIRForWalk.op === 'functionof'
+              && Array.isArray(weightIRForWalk.params) && weightIRForWalk.params.length === 1) {
+            weightIRForWalk = inlineDensityMeasures(weightIRForWalk, derivations, next, bindings);
+          }
           return {
             kind: 'call',
             op: d.isLog ? 'logweighted' : 'weighted',
@@ -5909,12 +5912,10 @@ function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
  *
  * Resolves a binding **by name** to its canonical measure IR.
  */
-// Expand measures scored inside a weight, including nested row functions.
+// Expand measure operands of density expressions, including nested row functions.
 // The worker receives measure IR instead of sampling a held measure or trying
 // to resolve its component references without the module's bindings.
-function _inlineWeightMeasures(ir: any, derivations: any, visited: any, bindings: any): any {
-  if (!ir || ir.kind !== 'call' || ir.op !== 'functionof' || !Array.isArray(ir.params)
-      || ir.params.length !== 1) return ir;
+function inlineDensityMeasures(ir: any, derivations: any, visited: any, bindings: any): any {
   const { mapIR } = require('./ir-walk.ts');
   return mapIR(ir, (n: any) => {
     if (!n || n.kind !== 'call' || !Array.isArray(n.args)) return n;
@@ -6231,6 +6232,7 @@ module.exports = {
   expandMeasure,
   expandMeasureIR,
   expandMeasureRefsInIR,
+  inlineDensityMeasures,
   // Internal algebraic certificate shared with composite iid materialisation.
   closedFormLogTotalmass,
   implicitKernelSignature,
