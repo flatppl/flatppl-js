@@ -3157,7 +3157,7 @@ function walkMultivariate(ir: IRNode, value: any, refArrays: any, N: any, opts: 
     throw new Error('density: walkMultivariate called with non-multivariate kernel '
       + kernelName);
   }
-  const kwargsIR: Record<string, any> = (ir as any).kwargs || {};
+  const kwargsIR = densityPrims.bindMultivariateParams(kernelName, (ir as any).args, (ir as any).kwargs);
   const refNames = refArrays ? Object.keys(refArrays) : [];
   const overlayKeys = overlay ? Object.keys(overlay) : null;
   // Atom-independent env baseline. Per-atom names get added inside the

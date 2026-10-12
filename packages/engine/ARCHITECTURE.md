@@ -26,6 +26,10 @@ engine-concepts §22; status/scope incl. the 5h-A/5h-B split: TODO §5.1).
 Outstanding work + per-area status: `flatppl-dev/TODO-flatppl-js.md` and
 `git log` (not duplicated here).
 
+Multivariate density binds positional parameters through `density-prims` using
+the declared `types.ts` signature order before resolving shapes or live values.
+FlatPDL bare inputs stay whole, including Dirichlet's concentration vector.
+
 ## Pipeline overview
 
 ```

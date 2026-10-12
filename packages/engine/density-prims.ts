@@ -25,8 +25,8 @@
 //     also be a bare scalar/Value or a positional list — spec §07 also
 //     allows the POSITIONAL application `kernel(kernel_input)` (e.g.
 //     `Poisson(rate)`) — in which case this delegates to
-//     `builtinLogdensityofPositional`. Multivariate kernels still
-//     require the record form.
+//     `builtinLogdensityofPositional`. A multivariate kernel's bare
+//     input binds whole to its first parameter, e.g. Dirichlet's alpha.
 //
 //   builtinLogdensityofPositional(name, params, x)
 //     `params` is the same positional list `REGISTRY[name].logpdfFn`
@@ -48,6 +48,7 @@ import type { Value as _Value } from './engine-types';
 const valueLib  = require('./value.ts');
 const valueOps  = require('./value-ops.ts');
 const samplerLib = require('./sampler.ts');
+const T = require('./types.ts');
 const stdlibGammaln = require('@stdlib/math-base-special-gammaln');
 
 // =====================================================================
@@ -433,8 +434,8 @@ function isBuiltinKernel(kernelName: string): boolean {
  *     interface, but for a univariate REGISTRY kernel a bare
  *     scalar/Value or a positional list is also spec-legal (the
  *     POSITIONAL application form, e.g. `Poisson(rate)`) — that case
- *     delegates to `builtinLogdensityofPositional`. Multivariate
- *     kernels still require the record form.
+ *     delegates to `builtinLogdensityofPositional`. A multivariate
+ *     kernel's bare input stays whole, e.g. Dirichlet's alpha vector.
  *   - `x` is the variate value; scalar (number) for univariate kernels,
  *     a length-n vector or n×n matrix Value for multivariate.
  * Returns the scalar log-density, `-Infinity` outside support.
@@ -485,7 +486,8 @@ function builtinLogdensityof(kernelName: string, kernelInput: any, x: any): numb
   }
   // Multivariate.
   const fn = MV_DENSITY_FNS[kernelName];
-  if (fn) return fn(x, kernelInput);
+  if (fn) return fn(x, _isRecordLike(kernelInput)
+    ? kernelInput : bindMultivariateParams(kernelName, [kernelInput]));
   throw new Error(`builtin_logdensityof: unknown kernel '${kernelName}'`);
 }
 
@@ -800,6 +802,25 @@ const MV_VARIATE_SHAPE: Record<string, {
   LKJCholesky:          { kind: 'matrix', sizeFrom: (kw) => (+kw.n) | 0 },
 };
 
+// §04/§08: use the declared signature order, as type inference does.
+// Read it once, not during each posterior density evaluation.
+const MV_PARAM_NAMES: Record<string, string[]> = Object.fromEntries(
+  Object.keys(MV_VARIATE_SHAPE).map(name => [name, Object.keys(T.signatureOf(name).kwargs)]));
+
+/** Bind multivariate positional arguments without evaluating their IR or values. */
+function bindMultivariateParams(name: string, args: any[] = [], kwargs: Record<string, any> = {}) {
+  if (args.length === 0) return kwargs;
+  const names = MV_PARAM_NAMES[name];
+  if (args.length > names.length) {
+    throw new Error(`${name}: expected at most ${names.length} positional arguments, got ${args.length}`);
+  }
+  const bound = Object.assign({}, kwargs);
+  for (let i = 0; i < args.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(bound, names[i])) bound[names[i]] = args[i];
+  }
+  return bound;
+}
+
 function _lenOf(v: any): number {
   if (valueLib.isValue(v)) return v.shape[0];
   if (Array.isArray(v) || (v && v.BYTES_PER_ELEMENT)) return v.length;
@@ -859,7 +880,6 @@ function multivariateShape(kernelName: string) {
 // whose footprint is a known vector/matrix dim. Select/pushfwd are
 // open follow-ups.
 
-const T = require('./types.ts');
 const SC = require('./shape-contract.ts');
 
 type StaticRest = any | null;
@@ -1709,6 +1729,7 @@ module.exports = {
   isBuiltinKernel,
   isMultivariateKernel,
   multivariateShape,
+  bindMultivariateParams,
   MV_DENSITY_FNS,
   // Type-mode consume/rest (engine-concepts §17.3)
   staticConsume,
