@@ -914,6 +914,10 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
   for (const [name, b] of bindings) {
     if (!b || b.phase !== 'fixed') continue;
     if (_isObjectBindingType(b.type)) continue;         // legit underived
+    // Sets are first-class metadata, not sampled values. Only builtin calls
+    // qualify; a user callable shadowing a set constructor still needs a value.
+    if (b.ir?.kind === 'call' && !b.ir.target && !b.ir.callee
+        && SET_CONSTRUCTORS.has(b.ir.op)) continue;
     if (derivations[name]) continue;
     if (cyclicNames.has(name)) continue;                // already flagged as a cycle, not an engine gap
     if (malformedPushfwdNames.has(name)) continue;      // already flagged as reversed pushfwd args

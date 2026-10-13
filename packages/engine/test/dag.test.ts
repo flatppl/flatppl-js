@@ -2,6 +2,25 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { processSource, computeSubDAG, computeFullDAG, findBindingAtLine, orchestrator } = require('../index.ts');
+const { makeMatCtx } = require('./_materialise-helpers.ts');
+
+test('dag: set metadata does not report a missing value or shadow user calls', async () => {
+  const { ctx, built } = makeMatCtx(`
+cartprod(x) = x + 1
+theta ~ Uniform(interval(0, 1))
+Pi_post = lawof(theta)
+Pi_post_domain = base.cartprod(theta = unitinterval)
+vector_domain = cartpow(reals, 2)
+p = logdensityof(Pi_post, 0.25)
+answer = cartprod(2)
+`, { sampleCount: 1 });
+  assert.deepEqual(built.diagnostics, []);
+  const dag = computeFullDAG(built.bindings);
+  assert.ok(dag.nodes.some((n: any) => n.id === 'Pi_post_domain'));
+  assert.ok(dag.nodes.some((n: any) => n.id === 'Pi_post'));
+  assert.equal((await ctx.getMeasure('p')).value.data[0], 0);
+  assert.equal((await ctx.getMeasure('answer')).value.data[0], 3);
+});
 
 function dagOf(src: any, target: any) {
   const { bindings } = processSource(src);
