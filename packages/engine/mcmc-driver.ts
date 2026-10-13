@@ -58,26 +58,37 @@ function runMcmc(mv: any, kernel: any, opts: any) {
   const baseKey = rng.keyFromSeed(seed);
   const prng = sampler.makePhiloxPrngAdapter(rng.stateFromKey(baseKey[0], baseKey[1]));
 
-  // Ensemble init. `opts.initPositions` (one unconstrained Float64Array per
-  // walker) starts each walker from a PRIOR DRAW — in-region and overdispersed,
-  // which matters when the prior isn't centred at the origin (e.g. mu~Normal(100,…))
-  // or has a degenerate corner the origin sits near (Student-t nu). Without it,
-  // fall back to a dispersed ball around the origin (dispersion is required for
-  // emcee so identical walkers don't collapse the stretch move).
+  // Explicit free-coordinate positions take precedence. Otherwise use aligned
+  // prior atoms when available. Density-only priors (such as Flat) have no
+  // sampler: initialize MCMC in a bounded free-coordinate box and require a
+  // finite posterior for every walker. These points are never prior draws.
+  const freeInit = !opts.initPositions && mv.hasPriorSamples === false;
   const init: Float64Array[] | null = opts.initPositions
-    || (typeof mv.initFromPrior === 'function' ? mv.initFromPrior(nWalkers, prng) : null);
+    || (!freeInit && typeof mv.initFromPrior === 'function' ? mv.initFromPrior(nWalkers, prng) : null);
   const ensemble = new Array(nWalkers);
   const logp = new Float64Array(nWalkers);
   for (let w = 0; w < nWalkers; w++) {
     let y: Float64Array;
-    if (init && init[w]) {
+    if (freeInit) {
+      y = new Float64Array(dim);
+      for (let attempt = 0; attempt < 100; attempt++) {
+        for (let d = 0; d < dim; d++) y[d] = 4 * prng() - 2;
+        logp[w] = mv.logPosterior(y);
+        if (Number.isFinite(logp[w])) break;
+      }
+      if (!Number.isFinite(logp[w])) {
+        throw new Error(`sampler: could not find a finite log-posterior for walker ${w + 1} `
+          + 'after 100 initial positions in [-2,2] free coordinates. '
+          + 'Supply finite initPositions inside the posterior support.');
+      }
+    } else if (init && init[w]) {
       y = Float64Array.from(init[w]);
     } else {
       y = new Float64Array(dim);
       for (let d = 0; d < dim; d++) y[d] = initSpread * gaussianNoise(prng);
     }
     ensemble[w] = y;
-    logp[w] = mv.logPosterior(y);
+    if (!freeInit) logp[w] = mv.logPosterior(y);
   }
 
   // Every walker starting at a non-finite logπ means the target has no mass

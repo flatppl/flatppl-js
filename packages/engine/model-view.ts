@@ -466,6 +466,9 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     logPriorLikBatch,
     logPosteriorConstrained,
     likOf,
+    // Availability only: malformed atom/weight axes must still fail inside
+    // initFromPrior. Density-only MCMC can initialize without prior samples.
+    hasPriorSamples: priorPools.every(p => p !== null),
     initFromPrior,
     gaussianPrior,
     latentNames,

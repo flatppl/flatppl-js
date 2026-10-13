@@ -52,6 +52,56 @@ score = logdensityof(posterior, record(b = 0.5))
   assert.ok(Math.abs(variance - 1) < 0.25, `Normal(2,1) variance: ${variance}`);
 });
 
+test('RAM initializes a Flat location posterior without drawing its prior', async () => {
+  const { ctx } = ctxFor(LOCATION, 3200);
+  const posterior = await materialiser.materialiseMeasure('posterior', ctx, {
+    backend: 'ram', chains: 4, draws: 800, warmup: 500, seed: 12,
+  });
+  const draws = posterior.fields.b.samples;
+  const mean = draws.reduce((s: number, x: number) => s + x, 0) / draws.length;
+  const variance = draws.reduce((s: number, x: number) => s + (x - mean) ** 2, 0) / draws.length;
+  assert.ok(Math.abs(mean - 2) < 0.15, `Normal(2,1) mean: ${mean}`);
+  assert.ok(Math.abs(variance - 1) < 0.25, `Normal(2,1) variance: ${variance}`);
+  await assert.rejects(() => ctx.getMeasure('prior'), /no prior sampler/);
+});
+
+test('Flat MCMC retries inside the posterior support and replays seeded starts', async () => {
+  const source = REG + `
+b ~ reg.Flat()
+prior = lawof(record(b = b))
+y ~ Uniform(interval(b, b + 1))
+K = kernelof(y, b = b)
+L = likelihoodof(K, 2)
+posterior = bayesupdate(L, prior)
+`;
+  const opts = { backend: 'ram', chains: 4, warmup: 0, draws: 20, seed: 18 };
+  const run = async () => {
+    const { ctx } = ctxFor(source, 80);
+    return (await materialiser.materialiseMeasure('posterior', ctx, opts)).fields.b.samples;
+  };
+  const first = await run();
+  assert.ok(first.every((x: number) => x >= 1 && x <= 2));
+  assert.deepEqual(first, await run());
+});
+
+test('Flat MCMC bounds initialization attempts and accepts explicit distant starts', async () => {
+  const { ctx } = ctxFor(REG + `
+b ~ reg.Flat()
+prior = lawof(record(b = b))
+y ~ Uniform(interval(b, b + 1))
+K = kernelof(y, b = b)
+L = likelihoodof(K, 100)
+posterior = bayesupdate(L, prior)
+`, 80);
+  const opts = { backend: 'ram', chains: 4, warmup: 0, draws: 20, seed: 18 };
+  await assert.rejects(() => materialiser.materialiseMeasure('posterior', ctx, opts),
+    /after 100 initial positions.*Supply finite initPositions/);
+  const posterior = await materialiser.materialiseMeasure('posterior', ctx, {
+    ...opts, initPositions: [99.1, 99.3, 99.6, 99.9].map(x => Float64Array.of(x)),
+  });
+  assert.ok(posterior.fields.b.samples.every((x: number) => x >= 99 && x <= 100));
+});
+
 test('improper ancestors cannot disappear through projection or constant maps', async () => {
   const { proc, ctx } = ctxFor(REG + `
 a ~ reg.Flat()
@@ -75,6 +125,10 @@ test('Flat refuses prior draws and prior-drawing importance sampling', async () 
   await assert.rejects(() => ctx.getMeasure('sample'), /no prior sampler/);
   await assert.rejects(() => materialiser.materialiseMeasure('posterior', ctx,
     { backend: 'is' }), /no prior sampler/);
+  for (const backend of ['amis', 'smc', 'elliptical-slice-sampler']) {
+    await assert.rejects(() => materialiser.materialiseMeasure('posterior', ctx,
+      { backend, chains: 4, draws: 2, warmup: 0 }), /prior initialization/);
+  }
 });
 
 test('Flat source admission does not admit arbitrary unnormalized reweightings', () => {
