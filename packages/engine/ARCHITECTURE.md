@@ -404,6 +404,13 @@ growing overlay and suffix copies from `markovchain` and `kscan` scoring.
 Their sampler reuses stable step IR across transitions, including a kscan index
 whose internal name excludes captured inputs, so batched compiler plans survive.
 
+`density.scalarMixture` resolves component parameters and scalar weights once
+per atom for selector-free mixtures of one scalar distribution family. Fixed
+scalar expressions fold without a binding environment. Runtime values clear
+after each call. An IID observation plate reuses the resolved components, while
+a mixture of IID components retains one shared choice. Other shapes, callable
+weights and mixed references retain the general walker.
+
 **`EmpiricalMeasure` shape** (engine-concepts §2 universal value): `samples`
 (per-atom scalar view) · optional `value` (shape-`[N,…dims]` batched Value) ·
 `logWeights` (null ⇒ uniform) · `logTotalmass` (0 ⇒ probability) · `n_eff` ·

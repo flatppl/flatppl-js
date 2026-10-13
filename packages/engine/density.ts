@@ -701,6 +701,13 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
     return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
   }
   const handler: any = op != null ? (OP_HANDLERS as any)[op] : null;
+  if (!opts.pointsBatched && (op === 'select' || op === 'superpose' || op === 'logweighted')
+      && getOptimization('density.scalarMixture')) {
+    const plan = scalarMixturePlan(ir);
+    if (plan && scalarMixtureValue(value)) {
+      return walkScalarMixture(plan, value, refArrays, N, acc, baseEnv, overlay);
+    }
+  }
   if (handler) return handler(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
   if (op === 'Dirac' && !hasScalarDensityFootprint(ir)) {
     return walkDirac(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
@@ -1861,6 +1868,13 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
   const leaf = args[0];
   const length = valueLib.isValue(value)
     ? (value.shape.length === 1 ? value.shape[0] : 0) : value?.length;
+  if (total > 1 && length >= total && !opts.pointsBatched
+      && getOptimization('density.scalarMixture')) {
+    const plan = scalarMixturePlan(leaf);
+    if (plan && plan.size === 1 && scalarMixtureValue(value)) {
+      return walkScalarMixture(plan, value, refArrays, N, acc, baseEnv, overlay, total);
+    }
+  }
   if (total > 1 && length >= total && !opts.pointsBatched
       && leaf.kind === 'call' && !OP_HANDLERS[leaf.op as keyof typeof OP_HANDLERS]
       && samplerLib.isKnownDistribution(leaf.op) && hasScalarDensityFootprint(leaf) && getOptimization('density.iidLeaf')) {
@@ -3159,6 +3173,149 @@ function maskReferenceAtoms(scores: Float64Array, value: any, atoms: number[], o
     const { head } = consumeScalar(value);
     if (atoms.includes(head) && !own.includes(head)) scores.fill(-Infinity);
   }
+}
+
+const scalarMixturePlans = new WeakMap<object, any>();
+
+/** Recognize §06 superpositions of one scalar distribution family, optionally
+ *  with a fixed iid component. Keep selectors, mixed references, callable
+ *  weights and other composite measures on the consume/rest walker. */
+function scalarMixturePlan(ir: any): any {
+  if (scalarMixturePlans.has(ir)) return scalarMixturePlans.get(ir);
+  scalarMixturePlans.set(ir, null);
+  let mixture = ir;
+  let shift = null;
+  if (mixture.op === 'logweighted' && mixture.args?.length === 2
+      && mixture.args[0]?.op !== 'functionof') {
+    shift = { expr: mixture.args[0], combine: mixture.fromNormalize ? addNormalizeShift : addRaw };
+    mixture = mixture.args[1];
+  }
+  const branches = mixture.op === 'superpose' ? mixture.args
+    : mixture.op === 'select' && !mixture.selectorName && mixture.logweights == null ? mixture.branches : null;
+  if (!Array.isArray(branches) || branches.length < 2) return null;
+  const components = [];
+  let kernel = null;
+  let size = null;
+  const expressions = [];
+  for (const branch of branches) {
+    let leaf = branch;
+    let weight = null;
+    if ((leaf.op === 'weighted' || leaf.op === 'logweighted') && leaf.args?.length === 2) {
+      if (leaf.args[0]?.op === 'functionof') return null;
+      weight = { expr: leaf.args[0], combine: leaf.op === 'weighted' ? addLogW
+        : leaf.fromNormalize ? addNormalizeShift : addRaw };
+      expressions.push(weight.expr);
+      leaf = leaf.args[1];
+    }
+    let repeat = 1;
+    if (leaf.op === 'iid' && leaf.args?.length === 2) {
+      const count = leaf.args[1];
+      if (count.kind !== 'lit' || !Number.isSafeInteger(count.value) || count.value < 1) return null;
+      repeat = count.value;
+      leaf = leaf.args[0];
+    }
+    if (leaf.kind !== 'call' || (OP_HANDLERS as any)[leaf.op]
+        || !samplerLib.isKnownDistribution(leaf.op) || !hasScalarDensityFootprint(leaf)) return null;
+    if (kernel !== null && (kernel !== leaf.op || size !== repeat)) return null;
+    kernel = leaf.op;
+    size = repeat;
+    const entry = samplerLib.lookupDistribution(leaf);
+    if (entry.customResolveParams) return null;
+    expressions.push(...(leaf.args || []), ...Object.values(leaf.kwargs || {}));
+    components.push({ leaf, entry, weight, logpdf: exponentialTiltLogpdf(leaf, leaf.op) });
+  }
+  if (shift) expressions.push(shift.expr);
+  // Fold only self-contained scalar expressions. In particular, a fixed
+  // family selector must not rebuild its source array at every scored point.
+  // No binding environment enters this cache, so live parameters stay live.
+  const resolveFixed = require('./fixed-eval.ts').makeResolver();
+  const fixed = new WeakMap<object, number>();
+  for (const expr of expressions) {
+    const value = resolveFixed(expr);
+    if (expr.kind === 'call' && typeof value === 'number') fixed.set(expr, value);
+  }
+  const body = samplerLib.compileProfileBody({ kind: 'call', op: 'vector', args: expressions });
+  const plan = { components, size, shift, body,
+    bodyEval: (expr: any, env: any) => fixed.has(expr) ? fixed.get(expr) : body.bodyEval(expr, env) };
+  scalarMixturePlans.set(ir, plan);
+  return plan;
+}
+
+/** Only scalar observation streams have the footprint this plan proves. */
+function scalarMixtureValue(value: any): boolean {
+  return typeof value === 'number' || typeof value === 'boolean'
+    || valueLib.isValue(value) && value.shape.length === 1 && !value.im
+    || ArrayBuffer.isView(value) && !(value instanceof DataView)
+    || Array.isArray(value) && value.every(x => typeof x === 'number' || typeof x === 'boolean');
+}
+
+/** Resolve component parameters and scalar weights once per scoring atom.
+ *  iid(mixture,n) sums n logsumexp terms. A mixture of iid components sums
+ *  within each component first, retaining its one shared component choice.
+ *  The existing expression compiler shares repeated family arrays only within
+ *  this call; no runtime values or environments survive the final clear. */
+function walkScalarMixture(plan: any, value: any, refArrays: any, N: number,
+    acc: Float64Array, baseEnv: any, overlay: any, repeat = 1): any {
+  const total = repeat * plan.size;
+  const { head, rest } = total === 1 ? consumeScalar(value) : consumeVector(value, total);
+  const refs = Object.keys(refArrays);
+  const atoms = refs.length ? N : Math.min(N, 1);
+  const components = plan.components;
+  const scores = new Float64Array(components.length);
+  const params = new Array(components.length);
+  const weights = new Array(components.length);
+  try {
+    for (let i = 0; i < atoms; i++) {
+      const env = Object.assign({}, baseEnv);
+      for (const name of refs) {
+        const values = refArrays[name];
+        env[name] = valueLib.isValue(values) ? _atomSlice(values, i) : values[i];
+      }
+      if (overlay) Object.assign(env, overlay);
+      env.__bodyEval = plan.bodyEval;
+      plan.body.nextPoint();
+      for (let k = 0; k < components.length; k++) {
+        const component = components[k];
+        params[k] = samplerLib.resolveParams(component.leaf, component.entry, env);
+        if (component.weight) weights[k] = scalarMixtureWeight(component.weight.expr, env);
+      }
+      const shift = plan.shift ? scalarMixtureWeight(plan.shift.expr, env) : 0;
+      for (let j = 0; j < repeat; j++) {
+        let max = -Infinity;
+        for (let k = 0; k < components.length; k++) {
+          const component = components[k];
+          scores[k] = 0;
+          for (let t = 0; t < plan.size; t++) {
+            const x = total === 1 ? head : head[j * plan.size + t];
+            scores[k] += component.logpdf(component.leaf.op, params[k], x, env);
+          }
+          if (component.weight) component.weight.combine(scores, k, weights[k]);
+          if (scores[k] > max) max = scores[k];
+        }
+        let logp = max;
+        if (max !== -Infinity && max !== Infinity) {
+          let sum = 0;
+          for (let k = 0; k < components.length; k++) sum += Math.exp(scores[k] - max);
+          logp += Math.log(sum);
+        }
+        for (let dst = i; dst < (refs.length ? i + 1 : N); dst++) {
+          acc[dst] += logp;
+          if (plan.shift) plan.shift.combine(acc, dst, shift);
+        }
+      }
+    }
+  } finally {
+    plan.body.clearMemo();
+  }
+  return rest;
+}
+
+function scalarMixtureWeight(expr: any, env: any): number {
+  const value = samplerLib.evaluateExpr(expr, env);
+  if (typeof value === 'number' || typeof value === 'boolean') return +value;
+  const data = valueLib.isValue(value) ? value.data : value;
+  if (data?.length === 1) return +data[0];
+  throw new Error('density: a mixture weight must be scalar per atom');
 }
 
 function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
