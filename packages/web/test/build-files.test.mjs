@@ -76,6 +76,19 @@ test('a full rebuild removes deleted models and collections but keeps web assets
   assert.equal(await readFile(join(options.distDir, 'vendor/engine.js'), 'utf8'), 'web asset');
 });
 
+test('collection exclusions hide entries while preserving data and import paths', async t => {
+  const options = await corpus(t);
+  await put(join(options.siblingDir, 'collections.json'), JSON.stringify([
+    collections[0], { ...collections[1], exclude: ['group/shared.flatppl'] },
+  ]));
+  const result = await syncExampleCollections(options);
+  assert.deepEqual(result.entries.map(entry => entry.path), [
+    'examples/model.flatppl', 'posteriordb/group/README.md',
+    'posteriordb/group/data.json', 'posteriordb/group/model.flatppl',
+  ]);
+  assert.equal(await readFile(join(options.distDir, 'posteriordb/group/shared.flatppl'), 'utf8'), 'x = 2');
+});
+
 test('invalid catalogs cannot overwrite assets or partially publish a collection', async t => {
   const options = await corpus(t);
   await put(join(options.distDir, 'examples/model.flatppl'), 'previous example');
@@ -86,6 +99,8 @@ test('invalid catalogs cannot overwrite assets or partially publish a collection
     [collections[0], { path: 'vendor', title: 'Assets' }],
     [collections[0], { path: 'EXAMPLES', title: 'Duplicate' }],
     [collections[0], { path: 'posteriordb', title: ' ' }],
+    [collections[0], { ...collections[1], exclude: 'model.flatppl' }],
+    [collections[0], { ...collections[1], exclude: ['../model.flatppl'] }],
     [collections[1]],
     [collections[0], { path: 'absent', title: 'Missing directory' }],
   ]) {
