@@ -2130,6 +2130,22 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
         + "' has registryName='" + bij.registryName
         + "' without paramIRs (additive-invariant violation — producer bug)");
     }
+    // A conditional registry transform has the same per-atom inputs as a
+    // scalar pushforward. Bind whole scalar/vector/matrix atoms before
+    // evaluating its parameter expressions; the existing registry inverse
+    // and volume calculation remain authoritative for each conditional law.
+    const refNames = Object.keys(refArrays);
+    if (refNames.length > 0 && _anyKwUsesPerAtom(bij.paramIRs, refNames)) {
+      const accessors = refNames.map(name => _refAtomAccessor(refArrays[name]));
+      const env = Object.assign({}, baseEnv);
+      let rest: any = null;
+      for (let i = 0; i < N; i++) {
+        for (let j = 0; j < refNames.length; j++) env[refNames[j]] = accessors[j](i);
+        Object.assign(env, overlay);
+        rest = walkPushfwd(ir, value, {}, 1, opts, acc.subarray(i, i + 1), env, null);
+      }
+      return rest;
+    }
     const bijRegistry = require('./bijection-registry.ts');
     const entry = bijRegistry.getBijection(bij.registryName);
     if (!entry) {
