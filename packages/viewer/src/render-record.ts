@@ -108,7 +108,10 @@ export function renderConstantRecord(ctx: Ctx, measure: any, bindingName: string
   renderConstantValue(ctx, bindingName, formatConstantMeasure(ctx, measure), toolbarControls);
 }
 
-export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: string, extraToolbarControls: any, axisLabelOverride?: string[]) {
+export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: string, extraToolbarControls: any, axisLabelOverride?: string[], staleGuard?: () => boolean) {
+  const state = ctx.derivationsState, cache = ctx.measureCache;
+  const isCurrent = () => ctx.derivationsState === state && ctx.measureCache === cache
+    && (!staleGuard || staleGuard());
   // Detect whether this binding is a bayesupdate posterior. If so,
   // generated-quantity detection is available and the toolbar
   // will offer a "Generated" toggle group.
@@ -266,7 +269,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
   // rerender so the dropdown option appears and the chart renders.
   // On failure ppc stays null and we fall through to correlations.
   async function ensurePpc() {
-    if (ppcBuilt) return;
+    if (ppcBuilt || !isCurrent()) return;
     ppcBuilt = true;
     if (!isBayesupdate || !ctx.derivationsState) return;
     const deriv = ctx.derivationsState.derivations[bindingName];
@@ -276,13 +279,15 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
       bindings:    ctx.derivationsState.bindings,
       fixedValues: ctx.derivationsState.fixedValues,
       rootKey:     ctx.rootSeed,
-      sendWorker:  function(m: any) { return sendWorker(ctx, m); },
+      sendWorker:  function(m: any) {
+        return isCurrent() ? sendWorker(ctx, m) : Promise.reject(new Error('model changed'));
+      },
     };
     try {
       const result = await FlatPPLEngine.posteriorPredictive.buildPosteriorPredictive(
         deriv, matCtx, measure,
       );
-      if (result) {
+      if (result && isCurrent()) {
         ppc = result;
         ppcAvailable = true;
         // Full rerender so the toolbar gains the PPC dropdown option
