@@ -9,8 +9,9 @@
 //   • EXACT  — when the unconstrained prior is itself an independent Gaussian
 //     (mv.gaussianPrior); then h = logπ − log(prior) = the likelihood, the
 //     textbook ESS. Most efficient.
-//   • FITTED — otherwise a Gaussian fit to the prior-pool population, re-fit
-//     from the warmup population (a preconditioned elliptical slice).
+//   • FITTED — otherwise a Gaussian fit to the prior-pool population, or an
+//     identity reference when prior samples are unavailable, re-fit from the
+//     warmup population (a preconditioned elliptical slice).
 //
 // Batching: all chains step out / shrink together — each shrink round scores the
 // active chains' proposals in ONE mv.logPosteriorBatch call.
@@ -45,14 +46,18 @@ function logGauss(x: Float64Array, A: any, dim: number): number {
   return -0.5 * (dim * LN_2PI + A.logDet + q);
 }
 
-// Build the Gaussian reference (exact from mv.gaussianPrior, else fitted from a
-// prior-pool sample). Lazy — runs on the first step, where a PRNG is available.
+// Build the Gaussian reference from the prior when available, otherwise use
+// identity. Lazy — runs on the first step, where a PRNG is available.
 function buildRef(A: any, mv: any, prng: () => number, dim: number): void {
   const L = new Float64Array(dim * dim);
   const mu = new Float64Array(dim);
   if (A.mode === 'exact') {
     const g = mv.gaussianPrior;
     for (let d = 0; d < dim; d++) { mu[d] = g.mu[d]; L[d * dim + d] = g.sigma[d]; }
+  } else if (mv.hasPriorSamples === false) {
+    // The slice score subtracts log g, so an identity reference preserves the
+    // full posterior without pretending to sample a density-only prior.
+    for (let d = 0; d < dim; d++) L[d * dim + d] = 1;
   } else {
     const pool: Float64Array[] = mv.initFromPrior(Math.max(256, 20 * dim), prng);
     fitGaussian(pool, mu, L, dim);

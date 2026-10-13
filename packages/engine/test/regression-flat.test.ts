@@ -65,6 +65,19 @@ test('RAM initializes a Flat location posterior without drawing its prior', asyn
   await assert.rejects(() => ctx.getMeasure('prior'), /no prior sampler/);
 });
 
+test('elliptical slice corrects a density-only reference to the Flat location posterior', async () => {
+  const { ctx } = ctxFor(LOCATION, 3200);
+  const posterior = await materialiser.materialiseMeasure('posterior', ctx, {
+    backend: 'elliptical-slice-sampler', chains: 4, draws: 800, warmup: 0, seed: 12,
+  });
+  const draws = posterior.fields.b.samples;
+  const mean = draws.reduce((s: number, x: number) => s + x, 0) / draws.length;
+  const variance = draws.reduce((s: number, x: number) => s + (x - mean) ** 2, 0) / draws.length;
+  assert.ok(Math.abs(mean - 2) < 0.15, `Normal(2,1) mean: ${mean}`);
+  assert.ok(Math.abs(variance - 1) < 0.25, `Normal(2,1) variance: ${variance}`);
+  await assert.rejects(() => ctx.getMeasure('prior'), /no prior sampler/);
+});
+
 test('Flat MCMC retries inside the posterior support and replays seeded starts', async () => {
   const source = REG + `
 b ~ reg.Flat()
@@ -125,7 +138,7 @@ test('Flat refuses prior draws and prior-drawing importance sampling', async () 
   await assert.rejects(() => ctx.getMeasure('sample'), /no prior sampler/);
   await assert.rejects(() => materialiser.materialiseMeasure('posterior', ctx,
     { backend: 'is' }), /no prior sampler/);
-  for (const backend of ['amis', 'smc', 'elliptical-slice-sampler']) {
+  for (const backend of ['amis', 'smc']) {
     await assert.rejects(() => materialiser.materialiseMeasure('posterior', ctx,
       { backend, chains: 4, draws: 2, warmup: 0 }), /prior initialization/);
   }

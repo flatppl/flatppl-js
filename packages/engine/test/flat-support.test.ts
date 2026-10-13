@@ -127,7 +127,7 @@ posterior = bayesupdate(L, prior)
   await assert.rejects(() => materialiser.materialiseMeasure('posterior', ctx, { backend: 'is' }), /no prior sampler/);
 });
 
-for (const backend of ['ram', 'slice']) {
+for (const backend of ['ram', 'slice', 'elliptical-slice-sampler']) {
   test(`positive Flat initializes ${backend} through the existing free-coordinate chart`, async () => {
     const { ctx } = ctxFor(REG + `
 b ~ reg.Flat(posreals)
