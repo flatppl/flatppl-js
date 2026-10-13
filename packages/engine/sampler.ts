@@ -565,6 +565,7 @@ function resolveConst(name: any) {
     case 'inf': return Infinity;
     case '-inf': return -Infinity;
     case 'im':  return { re: 0, im: 1 };  // imaginary unit (spec §03)
+    case 'unitinterval': return { kind: 'interval', a: 0, b: 1 };
     default:
       throw new Error(`evaluateExpr: unknown constant '${name}'`);
   }

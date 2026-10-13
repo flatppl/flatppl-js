@@ -1961,6 +1961,11 @@ function regionBoundsFromIR(ir: any, env: any) {
   // Recognised region shapes live in transforms.regionBounds (shared with the
   // MCMC constraining transform); endpoints evaluate in the sampler's env.
   const bounds = transforms.regionBounds(ir, (a: any) => evaluateExpr(a, env));
+  if (!bounds && (ir.kind === 'ref' || ir.kind === 'lit')) {
+    // FlatPDL kernel-input records carry hoisted or evaluated set values.
+    const support = evaluateExpr(ir, env);
+    if (support?.kind === 'interval') return [support.a, support.b];
+  }
   if (!bounds) {
     throw new Error('regionBoundsFromIR: unsupported region shape (kind='
       + ir.kind + (ir.op ? ', op=' + ir.op : '') + ')');

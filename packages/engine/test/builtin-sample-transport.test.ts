@@ -103,6 +103,27 @@ xs2, _ = rand(iid(Normal(mu = 0.0, sigma = 1.0), 8), state)
   }
 });
 
+test('builtin_sample preserves interval support values and RNG state', () => {
+  const r = engine.processSource(`
+state = rnginit([0, 1, 2, 3])
+pars = record(support = interval(-2, 3))
+xs, s1 = builtin_sample(state, Uniform, record(support = unitinterval), 8)
+ys, s2 = builtin_sample(state, Uniform, pars, 8)
+us, s3 = rand(iid(Uniform(interval(0, 1)), 8), state)
+`);
+  const orchestrator = require('../orchestrator.ts');
+  const { fixedValues } = orchestrator.buildDerivations(r.bindings, r.loweredModule);
+  const array = (name: string) => {
+    const v = fixedValues.get(name);
+    return Array.isArray(v) ? v : Array.from(v.data);
+  };
+  const us = array('us');
+  assert.deepEqual(array('xs'), us);
+  assert.deepEqual(array('ys'), us.map((u: number) => -2 + 5 * u));
+  assert.deepEqual(fixedValues.get('s1'), fixedValues.get('s3'));
+  assert.deepEqual(fixedValues.get('s2'), fixedValues.get('s3'));
+});
+
 test('builtin_sample (no dims) returns a scalar + threaded state', () => {
   const src = `
 flatppl_compat = "0.1"

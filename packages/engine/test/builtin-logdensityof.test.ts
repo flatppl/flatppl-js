@@ -267,6 +267,19 @@ lp = builtin_logdensityof(Normal, record(mu = 0.0, sigma = 1.0), 0.0)
   assert.ok(Math.abs(lp - STD_NORMAL_LOGP_AT_ZERO) < 1e-12);
 });
 
+test('surface: Uniform(unitinterval) scores its closed support through FlatPDL', () => {
+  const orchestrator = require('../orchestrator.ts');
+  for (const x of [-0.25, 0, 0.5, 1, 1.25]) {
+    const r = engine.processSource(`
+lp = builtin_logdensityof(Uniform, record(support = unitinterval), ${x})
+`);
+    const derivs = orchestrator.buildDerivations(r.bindings, r.loweredModule);
+    const lp = derivs.fixedValues.get('lp');
+    // The interval has length one, so its normalized density is one.
+    assert.ok(lp === (x >= 0 && x <= 1 ? 0 : -Infinity), `log density at ${x}: ${lp}`);
+  }
+});
+
 // =====================================================================
 // Rank-d (nested) kernel-broadcast density — the determiniser's
 // flattened nested-iid lowering.
