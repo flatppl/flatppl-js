@@ -313,7 +313,10 @@ gallery shell with file search, source editing, and source ↔ DAG navigation.
 `web/src/layout.ts` owns desktop splits and the compact Files drawer / pane
 switch at 900px. `app.ts` retains per-file drafts until explicit Save or
 Discard. `user-store.ts` keeps failed saves distinct from durable entries
-for Retry, Revert, and unload warnings. CI deploys
+for Retry, Revert, and unload warnings. `build-files.mjs` publishes the ordered
+`flatppl-examples/collections.json` roots and their support assets. `app.ts`
+indexes the manifest once for nested folders, persistent expansion, and global
+search. Restart the build after changing sibling collections. CI deploys
 `packages/web/dist/` to GitHub Pages on push to main (see
 `.github/workflows/pages.yml` — needs the one-time repo setting Pages →
 Source: GitHub Actions before its first run takes effect).

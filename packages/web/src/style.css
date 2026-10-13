@@ -359,7 +359,7 @@ html, body {
   background: var(--fp-surface-2);
 }
 
-/* Folder grouping in the file pane (Examples / Test cases / User).
+/* Published collections and local file folders share disclosure rows.
    Each folder has a clickable header with a chevron + name + count
    badge; click toggles open/closed (persisted via the gallery's
    FOLDER_STATE_KEY localStorage key). When open, the entries
@@ -373,10 +373,12 @@ html, body {
   align-items: center;
   gap: 0.4em;
   padding: 0.45em 1em 0.3em 0.6em;
+  padding-left: calc(0.6em + var(--file-depth, 0) * 12px);
   cursor: pointer;
   font-size: 0.85em;
   color: var(--fg-muted);
   width: 100%;
+  box-sizing: border-box;
   border: 0;
   border-radius: 0;
   background: transparent;
@@ -386,6 +388,7 @@ html, body {
 .file-folder-header:hover { color: var(--fg); }
 .file-folder-chev {
   display: inline-block;
+  flex: 0 0 auto;
   width: 0.9em;
   font-size: 0.85em;
   text-align: center;
@@ -393,15 +396,18 @@ html, body {
 }
 .file-folder-name {
   flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 .file-folder-count {
+  flex: 0 0 auto;
   opacity: 0.6;
   font-size: 0.9em;
 }
 .file-folder .file-list-link {
-  padding-left: 1.6em;     /* indent under the folder header */
+  padding-left: calc(1.6em + var(--file-depth, 0) * 12px);
 }
 .file-folder-empty {
   padding: 0.35em 1em 0.6em 1.6em;

@@ -19,7 +19,7 @@
 //                               examples don't have to be duplicated
 //                               into this repo
 //     models.json             — auto-generated manifest covering both
-//                               demo/ and examples/ (the gallery shell
+//                               demo/ and declared collections (the gallery shell
 //                               fetches it on boot)
 //     legal-notice.html, …    — standalone site pages rendered from the
 //                               deployment's site overlay (FLATPPL_SITE_DIR;
@@ -34,19 +34,18 @@
 //   npm run build         # one-shot
 //   npm run watch         # rebuild engine bundles on source changes
 
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync, statSync, watch as fsWatch } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { tmpdir } from 'node:os';
-import { spawn } from 'node:child_process';
 import * as esbuild from 'esbuild';
 // Single source of truth for file-type / tree-bucket decisions, shared with
 // the runtime (bundled to vendor/file-types.js below). Importing it here keeps
 // the manifest filter + typing from drifting against surfaces.ts / app.ts.
-import { MODEL_EXTENSIONS, typeForPath, hideTestExamplesEnv } from './src/file-types.mjs';
+import { typeForPath, hideTestExamplesEnv } from './src/file-types.mjs';
 // Deploy-specific site overlay (legal notice etc. + the footer links).
 import { buildSite } from './build-site.mjs';
+import { copyDirRecursive, fetchAndExtractTarball, listModelFiles, syncExampleCollections } from './build-files.mjs';
 import { provisionWasmApi, WASM_GLUE } from './provision-wasm-api.mjs';
 import { insertThemeShell } from './theme-shell.mjs';
 import { syncTheme } from './scripts/fetch-theme.mjs';
@@ -268,12 +267,14 @@ async function syncDemoTree({ clean = true } = {}) {
 await syncDemoTree({ clean: !WATCH });
 
 // ---------------------------------------------------------------------
-// 5. Sync flatppl-examples (canonical public examples) into dist/examples/.
+// 5. Publish the declared flatppl-examples collections at their original paths.
 //    Sibling-clone first (fastest dev loop, no network), GitHub tarball
 //    fallback otherwise (the CI workflow path — actions/checkout only
 //    fetches flatppl-js, so the sibling is absent there).
 
-await syncExamples();
+const exampleManifest = await syncExampleCollections({
+  siblingDir: examplesSibling, archiveURL: examplesRemote, distDir, clean: !WATCH,
+});
 const hasCmHighlighter = await syncGrammars();
 
 // ---------------------------------------------------------------------
@@ -284,8 +285,8 @@ const hasCmHighlighter = await syncGrammars();
 await syncSite();
 
 // ---------------------------------------------------------------------
-// 6. Generate dist/models.json from the assembled dist/{demo,examples}.
-//    Demo entries first, then examples; each group sorted alphabetically.
+// 6. Generate dist/models.json from demo and the declared collections.
+//    Demo entries first, then catalog order; each root sorted alphabetically.
 //    Title falls back to the file basename without the .flatppl
 //    extension. Future enhancement: allow a sidecar metadata file
 //    (e.g. demo-meta.json) to override titles for hand-curated content.
@@ -550,101 +551,6 @@ async function syncSite() {
     : `  site: no pages (no site.json under ${siteDir}); shared footer only`);
 }
 
-async function copyDirRecursive(srcDir, dstDir) {
-  if (!existsSync(srcDir)) return;
-  await mkdir(dstDir, { recursive: true });
-  const entries = await readdir(srcDir, { withFileTypes: true });
-  for (const ent of entries) {
-    const src = join(srcDir, ent.name);
-    const dst = join(dstDir, ent.name);
-    if (ent.isDirectory()) {
-      await copyDirRecursive(src, dst);
-    } else {
-      await copyFile(src, dst);
-    }
-  }
-}
-
-async function syncExamples() {
-  const dst = join(distDir, 'examples');
-  // When running under --watch alongside serve.mjs (npm run dev),
-  // serve.mjs holds a recursive fs.watch on the dist/ tree for live-
-  // reload. `rm -rf` on dist/examples kills that watcher (ENOENT
-  // scandir) — same trap that syncDemoTree avoids in watch mode.
-  // In watch mode we therefore merge-copy without the prior rm.
-  // One-shot builds (`npm run build`) start from `rm -rf dist`
-  // outside this script anyway, so cleanliness isn't lost.
-  if (!WATCH) {
-    await rm(dst, { recursive: true, force: true });
-  }
-  await mkdir(dst, { recursive: true });
-
-  if (existsSync(examplesSibling)) {
-    console.log(`  examples: using sibling clone at ${examplesSibling}`);
-    const src = join(examplesSibling, 'examples');
-    if (!existsSync(src)) {
-      throw new Error(`sibling exists but ${src} not found — flatppl-examples may have moved its content`);
-    }
-    await copyDirRecursive(src, dst);
-  } else {
-    console.log(`  examples: fetching pinned ref '${examplesPin}' from GitHub`);
-    await fetchAndExtractExamples(examplesRemote, dst);
-  }
-}
-
-// Fetch a .tar.gz, extract the whole archive into a fresh temp dir, and
-// return its single top-level directory (GitHub archives unpack into one
-// `<repo>-<ref>/` dir) plus a cleanup() to remove the temp tree. The
-// caller copies whatever subdir it needs out of `topLevel`, then awaits
-// cleanup() in a finally. Two-step "extract then copy" (vs a tar wildcard)
-// avoids portability issues across GNU tar / bsdtar / macOS / Windows
-// MSYS / CI ubuntu-latest. Shared by syncExamples and syncGrammars.
-async function fetchAndExtractTarball(url, prefix) {
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok) {
-    throw new Error(`failed to fetch ${url}: ${res.status} ${res.statusText}`);
-  }
-  const tmpRoot = await mkdtemp(join(tmpdir(), prefix));
-  const tmpFile = join(tmpRoot, 'archive.tar.gz');
-  const tmpExtract = join(tmpRoot, 'extract');
-  const cleanup = () => rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
-  try {
-    await writeFile(tmpFile, Buffer.from(await res.arrayBuffer()));
-    await mkdir(tmpExtract, { recursive: true });
-    await new Promise((resolve, reject) => {
-      const tar = spawn('tar', ['-xzf', tmpFile, '-C', tmpExtract], {
-        stdio: ['ignore', 'inherit', 'inherit'],
-      });
-      tar.on('error', reject);
-      tar.on('exit', code =>
-        code === 0 ? resolve() : reject(new Error(`tar exit ${code}`))
-      );
-    });
-    const entries = await readdir(tmpExtract, { withFileTypes: true });
-    const topDir = entries.find(e => e.isDirectory());
-    if (!topDir) {
-      throw new Error(`archive extracted no top-level directory: ${url}`);
-    }
-    return { topLevel: join(tmpExtract, topDir.name), cleanup };
-  } catch (err) {
-    await cleanup();
-    throw err;
-  }
-}
-
-async function fetchAndExtractExamples(url, dstDir) {
-  const { topLevel, cleanup } = await fetchAndExtractTarball(url, 'flatppl-examples-');
-  try {
-    const src = join(topLevel, 'examples');
-    if (!existsSync(src)) {
-      throw new Error(`expected examples/ subdir under ${topLevel}, not found`);
-    }
-    await copyDirRecursive(src, dstDir);
-  } finally {
-    await cleanup();
-  }
-}
-
 async function syncGrammars() {
   // Vendor flatppl.tmLanguage.json -> dist/vendor/ (fetched at runtime) and
   // codemirror/textmate-highlight.ts -> src/vendor/ (esbuild entry below).
@@ -695,30 +601,6 @@ async function syncGrammars() {
   }
 }
 
-/** Recursively list model/representation files under rootDir, sorted
-    alphabetically. Paths are relative to rootDir (forward slashes).
-    Matches MODEL_EXTENSIONS — the gallery is multi-format, no longer
-    FlatPPL-only. */
-async function listModelFiles(rootDir) {
-  const out = [];
-  async function walk(dir, prefix) {
-    if (!existsSync(dir)) return;
-    const entries = await readdir(dir, { withFileTypes: true });
-    for (const ent of entries) {
-      const childRelPath = prefix ? prefix + '/' + ent.name : ent.name;
-      if (ent.isDirectory()) {
-        await walk(join(dir, ent.name), childRelPath);
-      } else if (ent.isFile()
-          && MODEL_EXTENSIONS.some((e) => ent.name.toLowerCase().endsWith(e))) {
-        out.push(childRelPath);
-      }
-    }
-  }
-  await walk(rootDir, '');
-  out.sort();
-  return out;
-}
-
 // Use the basename (not the full path) as the gallery title so the
 // tree renders cleanly. The .flatppl extension stays in the label
 // so the file type is obvious at a glance.
@@ -729,7 +611,6 @@ function basenameTitle(path) {
 
 async function generateManifest() {
   const demoFiles     = await listModelFiles(join(distDir, 'demo'));
-  const exampleFiles  = await listModelFiles(join(distDir, 'examples'));
 
   // `type` is carried for the gallery (surface routing / future icons +
   // model→representations grouping). The runtime still derives type from
@@ -739,17 +620,16 @@ async function generateManifest() {
   for (const path of demoFiles) {
     entries.push({ path: 'demo/' + path,     title: basenameTitle(path), type: typeForPath(path) });
   }
-  for (const path of exampleFiles) {
-    entries.push({ path: 'examples/' + path, title: basenameTitle(path), type: typeForPath(path) });
-  }
+  entries.push(...exampleManifest.entries);
 
   const manifest = {
     title: 'FlatPPL examples',
+    collections: exampleManifest.collections,
     entries: entries,
   };
   await writeFile(
     join(distDir, 'models.json'),
     JSON.stringify(manifest, null, 2) + '\n'
   );
-  console.log(`  wrote dist/models.json (${entries.length} entries: ${demoFiles.length} demo, ${exampleFiles.length} examples)`);
+  console.log(`  wrote dist/models.json (${entries.length} entries: ${demoFiles.length} demo, ${exampleManifest.entries.length} examples)`);
 }
