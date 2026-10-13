@@ -74,6 +74,8 @@ const OPTIMIZATIONS: Record<string, boolean> = {
   'aggregate.profileShape': true,
   // Reuse scalar leaf parameters across an iid observation vector.
   'density.iidLeaf': true,
+  // Resolve one scalar mixture's parameters once per atom and iid plate.
+  'density.scalarMixture': true,
   // aggregate(...) pattern dispatch — matmul, dot-product, outer-
   // product, etc. specialisers in sampler-aggregate.AGGREGATE_PATTERNS.
   // When disabled, every aggregate falls through to the
