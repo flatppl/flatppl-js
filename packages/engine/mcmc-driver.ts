@@ -59,9 +59,10 @@ function runMcmc(mv: any, kernel: any, opts: any) {
   const prng = sampler.makePhiloxPrngAdapter(rng.stateFromKey(baseKey[0], baseKey[1]));
 
   // Explicit free-coordinate positions take precedence. Otherwise use aligned
-  // prior atoms when available. Density-only priors (such as Flat) have no
-  // sampler: initialize MCMC in a bounded free-coordinate box and require a
-  // finite posterior for every walker. These points are never prior draws.
+  // prior atoms when available. Missing prior samples or a non-finite posterior
+  // at an automatic start use a bounded free-coordinate box. Retrying the prior
+  // pool alone cannot recover when warmup has only one atom. These fallback
+  // points are MCMC starts, never prior draws.
   const freeInit = !opts.initPositions && mv.hasPriorSamples === false;
   const init: Float64Array[] | null = opts.initPositions
     || (!freeInit && typeof mv.initFromPrior === 'function' ? mv.initFromPrior(nWalkers, prng) : null);
@@ -71,6 +72,14 @@ function runMcmc(mv: any, kernel: any, opts: any) {
     let y: Float64Array;
     if (freeInit) {
       y = new Float64Array(dim);
+    } else if (init && init[w]) {
+      y = Float64Array.from(init[w]);
+    } else {
+      y = new Float64Array(dim);
+      for (let d = 0; d < dim; d++) y[d] = initSpread * gaussianNoise(prng);
+    }
+    if (!freeInit) logp[w] = mv.logPosterior(y);
+    if (freeInit || (!opts.initPositions && !Number.isFinite(logp[w]))) {
       for (let attempt = 0; attempt < 100; attempt++) {
         for (let d = 0; d < dim; d++) y[d] = 4 * prng() - 2;
         logp[w] = mv.logPosterior(y);
@@ -79,24 +88,15 @@ function runMcmc(mv: any, kernel: any, opts: any) {
       if (!Number.isFinite(logp[w])) {
         throw new Error(`sampler: could not find a finite log-posterior for walker ${w + 1} `
           + 'after 100 initial positions in [-2,2] free coordinates. '
+          + 'The chain cannot move. '
           + 'Supply finite initPositions inside the posterior support.');
       }
-    } else if (init && init[w]) {
-      y = Float64Array.from(init[w]);
-    } else {
-      y = new Float64Array(dim);
-      for (let d = 0; d < dim; d++) y[d] = initSpread * gaussianNoise(prng);
     }
     ensemble[w] = y;
-    if (!freeInit) logp[w] = mv.logPosterior(y);
   }
 
-  // Every walker starting at a non-finite logπ means the target has no mass
-  // anywhere the prior put a walker. No proposal can ever be accepted from
-  // there, so the run would return the init positions verbatim — one frozen
-  // value per chain, accept rate 0 — which reads as a converged answer in the
-  // viewer. Refuse the way the SMC path already refuses a vanished population,
-  // rather than shipping the init points as draws.
+  // Explicit positions are left unchanged. Refuse an entirely non-finite
+  // ensemble instead of risking frozen positions being presented as draws.
   {
     let anyFinite = false;
     for (let w = 0; w < nWalkers; w++) if (Number.isFinite(logp[w])) { anyFinite = true; break; }

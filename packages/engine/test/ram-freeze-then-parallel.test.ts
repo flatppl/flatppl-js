@@ -61,3 +61,42 @@ test('ram freeze-then-parallel: sampling from the frozen proposal recovers the m
   let mean = 0; for (let i = 0; i < draws.length; i++) mean += draws[i]; mean /= draws.length;
   assert.ok(Math.abs(mean - postMean) < 0.15, `ram freeze mean ${mean.toFixed(4)} vs analytic ${postMean.toFixed(4)}`);
 });
+
+const BINOMIAL = `
+mu ~ Normal(0, 100)
+y ~ Binomial(10, invlogit(mu))
+K = kernelof(record(y = y), mu = mu)
+prior = lawof(record(mu = mu))
+posterior = bayesupdate(likelihoodof(K, record(y = 5)), prior)
+`;
+
+test('RAM warmup recovers from a saturated broad-prior atom and replays its seed', async () => {
+  // The viewer requests only one atom for warmup. At this seed, the aligned
+  // prior draw rounds invlogit(mu) to one, giving the observed count zero mass.
+  const run = () => createWorkerHandler().handle({
+    type: 'mcmcRun', source: BINOMIAL, name: 'posterior', seed: 4, sampleCount: 1,
+    inferenceOpts: { backend: 'ram', chains: 4, warmup: 200, draws: 1, seed: 4, mcmcPhase: 'warmup' },
+  });
+  const result = await run();
+  assert.equal(result.type, 'mcmcResult', result.message);
+  const positions = result.measure.diagnostics.warmup.endPositions;
+  assert.ok(result.measure.diagnostics.acceptRate > 0);
+  // Independent score: Normal(0,100) times choose(10,5) p^5 (1-p)^5.
+  for (const [mu] of positions) {
+    const p = 1 / (1 + Math.exp(-mu));
+    const logp = -Math.log(100 * Math.sqrt(2 * Math.PI)) - mu ** 2 / 20000
+      + Math.log(252) + 5 * Math.log(p) + 5 * Math.log1p(-p);
+    assert.ok(Number.isFinite(logp), `non-finite posterior at ${mu}`);
+  }
+  assert.deepEqual(positions, (await run()).measure.diagnostics.warmup.endPositions);
+});
+
+test('RAM does not replace explicitly supplied non-finite starting points', async () => {
+  const result = await createWorkerHandler().handle({
+    type: 'mcmcRun', source: BINOMIAL, name: 'posterior', seed: 4, sampleCount: 1,
+    inferenceOpts: { backend: 'ram', chains: 4, warmup: 0, draws: 1, seed: 4,
+      initPositions: Array.from({ length: 4 }, () => Float64Array.of(100)) },
+  });
+  assert.equal(result.type, 'error');
+  assert.match(result.message, /log-posterior is not finite/);
+});
