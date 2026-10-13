@@ -411,6 +411,10 @@ after each call. An IID observation plate reuses the resolved components, while
 a mixture of IID components retains one shared choice. Other shapes, callable
 weights and mixed references retain the general walker.
 
+`mcmc.scalarEnv` shares the batch scorer's dependency check: when both density
+terms reference only draws and fixed values, scalar scoring skips unused derived
+bindings too. Composite priors and required derived values keep the full environment.
+
 **`EmpiricalMeasure` shape** (engine-concepts §2 universal value): `samples`
 (per-atom scalar view) · optional `value` (shape-`[N,…dims]` batched Value) ·
 `logWeights` (null ⇒ uniform) · `logTotalmass` (0 ⇒ probability) · `n_eff` ·
