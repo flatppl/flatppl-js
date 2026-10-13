@@ -34,6 +34,34 @@ export const MODEL_EXTENSIONS = [
 // the HTML renders as is, the two sources show a compile hint.
 export const DOCUMENT_EXTENSIONS = ['.html', '.htm', '.tex', '.typ'];
 
+const RESERVED_COLLECTION_ROOTS = new Set(['demo', 'test-cases', 'new', 'user', 'vendor', 'theme']);
+
+/** Collection outputs must stay separate from web assets and local stores. */
+export function isCollectionPath(path) {
+  return typeof path === 'string' && /^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(path)
+    && !RESERVED_COLLECTION_ROOTS.has(path.toLowerCase());
+}
+
+/** Validate the publication list in both the build and manifest loader.
+ * Roots share the deploy namespace with web assets and local file stores. */
+export function normalizeCollections(raw, source = 'collections.json') {
+  if (!Array.isArray(raw)) throw new Error(`${source}: expected a collection list`);
+  const seen = new Set();
+  const collections = raw.map((entry, index) => {
+    const label = `${source}: collection #${index + 1} (${String(entry?.path)})`;
+    if (!isCollectionPath(entry?.path)) {
+      throw new Error(`${label}: expected an unreserved directory name using letters, digits, underscores, or hyphens`);
+    }
+    const key = entry.path.toLowerCase();
+    if (seen.has(key)) throw new Error(`${label}: duplicate path`);
+    if (typeof entry.title !== 'string' || !entry.title.trim()) throw new Error(`${label}: missing display title`);
+    seen.add(key);
+    return { path: entry.path, title: entry.title };
+  });
+  if (!collections.some(entry => entry.path === 'examples')) throw new Error(`${source}: missing examples collection`);
+  return collections;
+}
+
 /** Map a path to its surface type. Empty/missing defaults to 'flatppl'
  *  (the gallery is FlatPPL-first); an unrecognised extension is 'unknown'
  *  (routes to the placeholder surface). hs3/pyhf are named distinctly so

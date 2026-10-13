@@ -613,10 +613,14 @@
       const raw = window.localStorage && window.localStorage.getItem(FOLDER_STATE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
-        if (parsed && typeof parsed === 'object') return parsed;
+        if (parsed && typeof parsed === 'object') {
+          return Object.assign(Object.create(null), Object.fromEntries(
+            Object.entries(parsed).filter(([, value]) => typeof value === 'boolean')
+          ));
+        }
       }
     } catch (_) {}
-    return {};
+    return Object.create(null);
   }
   function writeFolderState(state: Record<string, boolean>) {
     try {
@@ -630,10 +634,80 @@
     return i < 0 ? path : path.slice(i + 1);
   }
 
-  function matchesFilter(entry: any): boolean {
+  type TreeEntry = { path: string; title?: string; description?: string };
+  type FileFolder = {
+    key: string; label: string; kind: string; parent: FileFolder | null;
+    folders: FileFolder[]; entries: TreeEntry[]; count: number;
+  };
+  const folderState = readFolderState();
+  let corpusFolders: FileFolder[] = [];
+  const corpusPaths = new Map<string, { entry: TreeEntry; folder: FileFolder }>();
+  let searchQuery = '';
+  const searchOpen = new Map<string, boolean>();
+
+  function makeFolder(key: string, label: string, kind: string, entries: TreeEntry[] = [], parent: FileFolder | null = null): FileFolder {
+    return { key, label, kind, parent, entries, folders: [], count: entries.length };
+  }
+
+  /** The published corpus is immutable during a page visit. Index its paths
+   * once so reveal walks ancestors, and redraw never rebuilds the hierarchy. */
+  function buildCorpusTree() {
+    corpusPaths.clear();
+    const collections = manifest?.collections;
+    const roots = (collections || [{ path: 'examples', title: 'Examples' }])
+      .map((entry: any) => makeFolder(entry.path, entry.title, 'examples')) as FileFolder[];
+    const testCases = makeFolder('test-cases', 'Test cases', 'test-cases');
+    const folders = new Map<string, FileFolder>(roots.map(folder => [folder.key, folder]));
+    for (const entry of manifest?.entries || []) {
+      const parts = entry.path.split('/');
+      const internal = parts[0] === 'demo' || parts[0] === 'test-cases';
+      let parent = internal ? testCases : collections ? folders.get(parts[0])! : roots[0];
+      if (collections && !internal) {
+        for (const name of parts.slice(1, -1)) {
+          const key = parent.key + '/' + name;
+          let child = folders.get(key);
+          if (!child) {
+            child = makeFolder(key, name, parent.kind, [], parent);
+            parent.folders.push(child);
+            folders.set(key, child);
+          }
+          parent = child;
+        }
+      }
+      parent.entries.push(entry);
+      corpusPaths.set(entry.path, { entry, folder: parent });
+      for (let ancestor: FileFolder | null = parent; ancestor; ancestor = ancestor.parent) ancestor.count++;
+    }
+    function sortFolder(folder: FileFolder) {
+      folder.folders.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+      folder.entries.sort((a, b) => a.path < b.path ? -1 : a.path > b.path ? 1 : 0);
+      folder.folders.forEach(sortFolder);
+    }
+    roots.forEach(sortFolder);
+    corpusFolders = [...roots, testCases];
+  }
+
+  function currentFilter(): string {
     const query = (fileFilter?.value || '').trim().toLowerCase();
-    return !query || [entry.path, entry.title, entry.description]
+    if (query !== searchQuery) {
+      searchQuery = query;
+      searchOpen.clear();
+    }
+    return query;
+  }
+
+  function matchesFilter(entry: TreeEntry, query: string, collectionTitle = ''): boolean {
+    return !query || [entry.path, entry.title, entry.description, collectionTitle]
       .join(' ').toLowerCase().includes(query);
+  }
+
+  /** One traversal produces the filtered tree and descendant counts. Filtered
+   * expansion is transient, so searching never rewrites normal preferences. */
+  function filterFolder(folder: FileFolder, query: string, collectionTitle: string): FileFolder {
+    const entries = folder.entries.filter(entry => matchesFilter(entry, query, collectionTitle));
+    const folders = folder.folders.map(child => filterFolder(child, query, collectionTitle))
+      .filter(child => child.count > 0);
+    return { ...folder, entries, folders, count: entries.length + folders.reduce((sum, child) => sum + child.count, 0) };
   }
 
   function fileRow(entry: any, currentModel: string, kind: string): HTMLElement {
@@ -648,6 +722,7 @@
     link.dataset.path = entry.path;
     link.dataset.action = 'open';
     link.title = entry.path;
+    link.setAttribute('aria-label', (entry.title || basenameOf(entry.path)) + ' (' + entry.path + ')');
     if (entry.path === currentModel) link.setAttribute('aria-current', 'page');
     const label = document.createElement('span');
     label.textContent = entry.title || basenameOf(entry.path);
@@ -684,33 +759,31 @@
     return li;
   }
 
-  /** Redraw without losing the current file-list focus or scroll position. */
+  /** Redraw only visible rows without losing file-list focus or scroll. */
   function renderTree(currentModel: any) {
     if (!fileTree) return;
     const active = document.activeElement as HTMLElement | null;
     const focus = active && fileTree.contains(active) ? { ...active.dataset } : null;
-    const focusedFolder = active?.closest('.file-folder')?.getAttribute('data-key');
+    const focusedFolders: string[] = [];
+    for (let folder = active?.closest('.file-folder'); folder; folder = folder.parentElement?.closest('.file-folder')) {
+      focusedFolders.push(folder.getAttribute('data-key')!);
+    }
     const scrollTop = fileTree.scrollTop;
     fileTree.innerHTML = '';
     const ephEntries = window.FlatPPLWebEphemeral?.list() || [];
     const userEntries = window.FlatPPLWebUserStore?.list() || [];
-    const buckets: Record<string, any[]> = { examples: [], 'test-cases': [] };
-    for (const entry of manifest?.entries || []) {
-      if (typeof entry.path !== 'string') continue;
-      const key = window.FlatPPLFileTypes?.bucketKeyForPath(entry.path) || 'examples';
-      (buckets[key] || buckets.examples).push(entry);
-    }
-    if (ephEntries.length) renderFolder('new', 'Unsaved', ephEntries, currentModel);
-    renderFolder('examples', 'Examples', buckets.examples, currentModel);
-    if (!(window.__FLATPPL_CONFIG__ || {}).hideTestExamples) {
-      renderFolder('test-cases', 'Test cases', buckets['test-cases'], currentModel);
-    }
-    renderFolder('user', 'Saved in this browser', userEntries, currentModel);
-    if (fileFilter?.value ? !fileTree.querySelector('.file-list-link')
-      : !ephEntries.length && !userEntries.length && !manifest?.entries?.length) {
+    const query = currentFilter();
+    let folders = [
+      ...(ephEntries.length ? [makeFolder('new', 'Unsaved', 'new', ephEntries)] : []),
+      ...corpusFolders.filter(folder => folder.kind !== 'test-cases' || !(window.__FLATPPL_CONFIG__ || {}).hideTestExamples),
+      makeFolder('user', 'Saved in this browser', 'user', userEntries),
+    ];
+    if (query) folders = folders.map(folder => filterFolder(folder, query, folder.label)).filter(folder => folder.count > 0);
+    for (const folder of folders) renderFolder(folder, fileTree, currentModel, query, 0);
+    if (!folders.some(folder => folder.count > 0)) {
       const empty = document.createElement('p');
       empty.className = 'pane-placeholder';
-      empty.textContent = fileFilter?.value ? 'No models match your search.' : 'Open a file or create a model to begin.';
+      empty.textContent = query ? 'No models match your search.' : 'Open a file or create a model to begin.';
       fileTree.appendChild(empty);
     }
     if (focus) {
@@ -719,29 +792,30 @@
         focus.folder ? el.dataset.folder === focus.folder
           : el.dataset.path === focus.path && el.dataset.action === focus.action)
         || targets.find((el) => el.dataset.path === focus.path && el.dataset.action === 'open')
-        || targets.find((el) => el.dataset.folder === focusedFolder);
+        || focusedFolders.map(key => targets.find(el => el.dataset.folder === key)).find(Boolean);
       target?.focus({ preventScroll: true });
     }
     fileTree.scrollTop = scrollTop;
   }
 
-  function renderFolder(key: string, label: string, entries: any[], currentModel: string) {
-    const items = entries.filter(matchesFilter);
-    const filtering = !!fileFilter?.value.trim();
-    if (filtering && !items.length) return;
-    const st = readFolderState();
+  /** Native disclosure buttons retain keyboard behavior at every depth. Only
+   * expanded branches get descendant DOM, even when the manifest is large. */
+  function renderFolder(node: FileFolder, parent: HTMLElement, currentModel: string, query: string, depth: number) {
+    const { key, label, count } = node;
     const defaultOpen = key === 'new'
-      || (window.FlatPPLFileTypes?.defaultFolderOpen(key, items.length) ?? key === 'examples');
-    const open = filtering || (st[key] ?? defaultOpen);
-    const folder = document.createElement('div');
+      || (window.FlatPPLFileTypes?.defaultFolderOpen(key, count) ?? key === 'examples');
+    const open = query ? (searchOpen.get(key) ?? true) : (folderState[key] ?? defaultOpen);
+    const folder = document.createElement(depth ? 'li' : 'div');
     folder.className = 'file-folder' + (open ? ' file-folder--open' : '');
     folder.dataset.key = key;
+    folder.style.setProperty('--file-depth', String(Math.min(depth, 4)));
     const header = document.createElement('button');
     header.type = 'button';
     header.className = 'file-folder-header fp-nav-item';
     header.dataset.folder = key;
     header.setAttribute('aria-expanded', String(open));
-    header.setAttribute('aria-controls', 'folder-' + key);
+    const id = 'folder-' + encodeURIComponent(key);
+    header.setAttribute('aria-controls', id);
     const chev = document.createElement('span');
     chev.className = 'file-folder-chev';
     chev.textContent = open ? '▾' : '▸';
@@ -749,38 +823,50 @@
     const name = document.createElement('span');
     name.className = 'file-folder-name';
     name.textContent = label;
-    const count = document.createElement('span');
-    count.className = 'file-folder-count';
-    count.textContent = String(items.length);
-    header.append(chev, name, count);
+    const countLabel = document.createElement('span');
+    countLabel.className = 'file-folder-count';
+    countLabel.textContent = String(count);
+    header.append(chev, name, countLabel);
     header.addEventListener('click', function () {
-      const state = readFolderState();
-      state[key] = !open;
-      writeFolderState(state as Record<string, boolean>);
+      if (query) searchOpen.set(key, !open);
+      else {
+        folderState[key] = !open;
+        writeFolderState(folderState as Record<string, boolean>);
+      }
       renderTree(currentModel);
     });
     folder.appendChild(header);
     const list = document.createElement('ul');
-    list.id = 'folder-' + key;
+    list.id = id;
     list.className = 'file-list';
     list.hidden = !open;
     if (open) {
-      for (const entry of items) list.appendChild(fileRow(entry, currentModel, key));
+      for (const child of node.folders) renderFolder(child, list, currentModel, query, depth + 1);
+      for (const entry of node.entries) list.appendChild(fileRow(entry, currentModel, node.kind));
     }
     folder.appendChild(list);
-    fileTree.appendChild(folder);
+    parent.appendChild(folder);
   }
 
-  /** Reveal only on navigation/save. Keystrokes leave file-list scroll alone. */
+  /** Reveal on navigation/save, walking indexed parents instead of scanning
+   * the corpus. Keystrokes and plot updates leave folder state alone. */
   function revealFile(path: string) {
     if (!fileTree || !path) return;
-    const entry = manifest?.entries?.find((entry: any) => entry.path === path) || { path };
-    if (fileFilter?.value && !matchesFilter(entry)) fileFilter.value = '';
-    const key = path.startsWith('new/') ? 'new'
-      : path.startsWith('user/') ? 'user' : (window.FlatPPLFileTypes?.bucketKeyForPath(path) || 'examples');
-    const state = readFolderState();
-    state[key] = true;
-    writeFolderState(state as Record<string, boolean>);
+    const indexed = corpusPaths.get(path);
+    const ancestors: FileFolder[] = [];
+    for (let folder = indexed?.folder; folder; folder = folder.parent || undefined) ancestors.push(folder);
+    if (!matchesFilter(indexed?.entry || { path }, currentFilter(), ancestors[ancestors.length - 1]?.label)) {
+      if (fileFilter) fileFilter.value = '';
+    }
+    const query = currentFilter();
+    const keys = ancestors.length ? ancestors.map(folder => folder.key)
+      : [path.startsWith('new/') ? 'new' : path.startsWith('user/') ? 'user'
+        : (window.FlatPPLFileTypes?.bucketKeyForPath(path) || 'examples')];
+    for (const key of keys) {
+      if (query) searchOpen.set(key, true);
+      else folderState[key] = true;
+    }
+    if (!query) writeFolderState(folderState as Record<string, boolean>);
     renderTree(window.FlatPPLWebRouter.parseHash().model);
     const link = Array.from(fileTree.querySelectorAll('.file-list-link'))
       .find((el: any) => el.dataset.path === path) as HTMLElement | undefined;
@@ -1745,12 +1831,14 @@
     // tree empty and the gallery still works for hash-driven navigation.
     try {
       manifest = await window.FlatPPLWebManifest.load();
+      buildCorpusTree();
       if (titleEl && manifest.title) {
         titleEl.textContent = manifest.title;
       }
     } catch (err: any) {
       console.warn('[@flatppl/web] manifest load failed (non-fatal):', err.message);
       manifest = null;
+      buildCorpusTree();
     }
 
     window.FlatPPLWebRouter.onChange(applyState);

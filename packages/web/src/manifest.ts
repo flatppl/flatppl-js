@@ -9,6 +9,7 @@
 //
 //   {
 //     "title": "FlatPPL examples",
+//     "collections": [{ "path": "examples", "title": "Examples" }],
 //     "entries": [
 //       { "path": "demo/foo.flatppl", "title": "Optional display name" },
 //       { "path": "demo/bar.flatppl" }
@@ -42,23 +43,37 @@
 
   /**
    * Normalize a raw manifest into the canonical shape:
-   *   { title: string, entries: [{ path, title }] }
+   *   { title: string, collections?: [{ path, title }], entries: [{ path, title }] }
    * Missing titles fall back to the file basename. Missing entries
-   * yields an empty array. Unknown top-level fields are preserved
-   * for forward compatibility.
+   * yields an empty array. An omitted collection list keeps the minimal
+   * manifest's flat Examples/Test cases grouping. Declared roots are explicit.
    */
   function normalize(raw: any) {
-    const out: { title: string; entries: any[] } = {
-      title:   typeof raw.title === 'string' ? raw.title : 'FlatPPL',
+    const out: { title: string; collections?: { path: string; title: string }[]; entries: any[] } = {
+      title:   typeof raw?.title === 'string' ? raw.title : 'FlatPPL',
       entries: [],
     };
-    if (Array.isArray(raw.entries)) {
+    if (raw?.collections !== undefined) {
+      out.collections = globalScope.FlatPPLFileTypes.normalizeCollections(raw.collections, 'models.json: collections');
+    }
+    const roots = out.collections && new Set(out.collections.map(entry => entry.path));
+    if (Array.isArray(raw?.entries)) {
       for (let i = 0; i < raw.entries.length; i++) {
         const e = raw.entries[i];
         if (!e || typeof e.path !== 'string') continue;
+        if (roots) {
+          const parts = e.path.split('/');
+          const internal = parts[0] === 'demo' || parts[0] === 'test-cases';
+          if ((!internal && !roots.has(parts[0])) || parts.length < 2
+              || parts.some((part: string) => !part || part === '.' || part === '..') || e.path.includes('\\')) {
+            throw new Error('models.json: entry outside a declared collection: ' + e.path);
+          }
+        }
         out.entries.push({
           path: e.path,
           title: typeof e.title === 'string' ? e.title : basename(e.path),
+          ...(typeof e.description === 'string' ? { description: e.description } : {}),
+          ...(typeof e.type === 'string' ? { type: e.type } : {}),
         });
       }
     }
