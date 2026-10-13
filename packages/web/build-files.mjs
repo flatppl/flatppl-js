@@ -62,10 +62,11 @@ export async function syncExampleCollections({ siblingDir, archiveURL, distDir, 
       for (const path of owned) await rm(join(distDir, path), { recursive: true, force: true });
     }
     const entries = [];
-    for (const { path: root } of collections) {
+    for (const { path: root, exclude = [] } of collections) {
       const destination = join(distDir, root);
       await copyDirRecursive(join(sourceDir, root), destination);
       for (const file of await listModelFiles(destination)) {
+        if (exclude.includes(file)) continue;
         const path = root + '/' + file;
         entries.push({ path, title: file.slice(file.lastIndexOf('/') + 1), type: typeForPath(path) });
       }

@@ -58,8 +58,14 @@ export function normalizeCollections(raw, source = 'collections.json') {
     const key = entry.path.toLowerCase();
     if (seen.has(key)) throw new Error(`${label}: duplicate path`);
     if (typeof entry.title !== 'string' || !entry.title.trim()) throw new Error(`${label}: missing display title`);
+    if (entry.exclude !== undefined && (!Array.isArray(entry.exclude)
+        || !entry.exclude.every(path => typeof path === 'string' && !path.includes('\\')
+          && path.split('/').every(part => part && part !== '.' && part !== '..')))) {
+      throw new Error(`${label}: exclude must list relative file paths`);
+    }
     seen.add(key);
-    return { path: entry.path, title: entry.title };
+    return { path: entry.path, title: entry.title,
+      ...(entry.exclude !== undefined ? { exclude: entry.exclude } : {}) };
   });
   if (!collections.some(entry => entry.path === 'examples')) throw new Error(`${source}: missing examples collection`);
   return collections;
