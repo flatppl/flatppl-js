@@ -413,7 +413,7 @@ function resolver(localStorage, approve) {
   const requests = [];
   const prompts = [];
   const window = {
-    localStorage, FlatPPLEngine: engine,
+    localStorage, FlatPPLEngine: engine, FlatPPLFileTypes: fileTypes,
     confirm: approve == null ? undefined : (message) => { prompts.push(message); return approve; },
     FlatPPLWebEphemeral: {
       has: (path) => path === 'new/main.flatppl',
@@ -426,6 +426,16 @@ function resolver(localStorage, approve) {
   });
   return { api: window.FlatPPLWebResolver, requests, prompts };
 }
+
+test('opening data does not interpret text as a module dependency', async () => {
+  const r = resolver(storage(), false);
+  const source = 'model = load_module("https://remote.invalid/model.flatppl")';
+  const bundle = await r.api.resolveBundle('data/observations.csv', source);
+  assert.equal(bundle.primarySource, source);
+  assert.deepEqual(Object.keys(bundle.sources), []);
+  assert.deepEqual(r.requests, ['https://gallery.invalid/data/observations.csv']);
+  assert.deepEqual(r.prompts, []);
+});
 
 test('a refused remote dependency does not fetch, while same-origin sources load', async () => {
   const r = resolver(storage(), false);

@@ -45,6 +45,7 @@ test('sibling and archive builds publish the same listed models and support file
   assert.deepEqual(local.collections, collections);
   assert.deepEqual(local.entries.map(entry => entry.path), [
     'examples/model.flatppl', 'posteriordb/group/README.md',
+    'posteriordb/group/data.json',
     'posteriordb/group/model.flatppl', 'posteriordb/group/shared.flatppl',
   ]);
   const remoteDir = join(options.root, 'remote-dist');

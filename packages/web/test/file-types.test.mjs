@@ -7,6 +7,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
   MODEL_EXTENSIONS,
+  DATA_EXTENSIONS,
   DOCUMENT_EXTENSIONS,
   typeForPath,
   bucketKeyForPath,
@@ -22,8 +23,9 @@ test('typeForPath maps extensions to surface types', () => {
   // double extension must win over a naive `.json` check.
   assert.equal(typeForPath('uploads/gaussian.hs3.json'), 'hs3');
   assert.equal(typeForPath('uploads/model.pyhf.json'), 'pyhf');
-  // Plain .json / unrecognised extensions are 'unknown' (placeholder surface).
-  assert.equal(typeForPath('data.json'), 'unknown');
+  assert.equal(typeForPath('data.json'), 'json');
+  assert.equal(typeForPath('data.csv'), 'data');
+  assert.equal(typeForPath('data.wsv'), 'data');
   assert.equal(typeForPath('notes.txt'), 'unknown');
   // Bare .hs3 / .pyhf (user-uploaded files) classify the same as .hs3.json / .pyhf.json.
   assert.equal(typeForPath('uploads/gaussian.hs3'), 'hs3');
@@ -45,11 +47,9 @@ test('typeForPath is case-insensitive and FlatPPL-defaults on empty', () => {
   assert.equal(typeForPath(undefined), 'flatppl');
 });
 
-test('every MODEL_EXTENSIONS entry classifies to a non-unknown type', () => {
-  // The build only lists files whose extension is in MODEL_EXTENSIONS; each
-  // such file must route to a real surface type, or the gallery would surface
-  // a file it can't place. (Guards adding an extension without a type arm.)
-  for (const ext of MODEL_EXTENSIONS) {
+test('every model and data extension classifies to a non-unknown type', () => {
+  // Every listed extension must have a surface so the gallery can open it.
+  for (const ext of [...MODEL_EXTENSIONS, ...DATA_EXTENSIONS]) {
     assert.notEqual(typeForPath('x' + ext), 'unknown', `extension ${ext}`);
   }
 });
