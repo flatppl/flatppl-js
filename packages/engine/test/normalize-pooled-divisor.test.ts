@@ -209,33 +209,16 @@ test('a joint of a truncate is expressed exactly, so the θ-marginal is the prio
     assert.ok(Math.abs(r.n_eff - N) < 1e-6, `n_eff = ${r.n_eff}, expected N = ${N}`);
   });
 
-// =====================================================================
-// REFUSED — a θ-dependent mass with no per-θ expression
-// =====================================================================
-
-test('an iid component gets no expression, so a θ-dependent factor over it is refused',
+test('normalizing a live factor over a joint with iid preserves prior weights',
   async () => {
-    // §06's independent product gives mass(joint) = ∏ mass(Mᵢ), which is only
-    // closed-form when every component's is. `totalMassExpr` expresses a leaf
-    // (mass 1), a `weighted`/`logweighted` factor over one, a `superpose` sum,
-    // a `joint` product and a constant-parameter `truncate` (its CDF
-    // difference) — an `iid` component is none of those, so the product
-    // declines and the θ-dependent factor in front of it has nothing to divide
-    // by. The pooled divisor would hand back the prior tilted by Z(θ), so the
-    // sampling route refuses instead.
-    //
-    // THIS ROW USED TO USE A `truncate` COMPONENT, on the premise that its mass
-    // had no expression. It has one now (see the joint-of-truncate row above),
-    // so the witness moved to the component kind that still has none. The
-    // refusal itself is unchanged and must keep firing.
     const src = H
       + 'theta ~ Uniform(interval(1.0, 5.0))\n'
       + 'm = normalize(weighted(theta, joint(a = Normal(mu = 0.0, sigma = 1.0), '
       + 'b = iid(Normal(mu = 0.0, sigma = 1.0), 2))))\n'
       + 'y ~ m\n';
-    const { ctx } = ctxFor(src, 64);
-    await assert.rejects(() => Promise.resolve(ctx.getMeasure('y')),
-      /moves with a latent[\s\S]*no per-θ expression/);
+    const r = await joint(src, 256);
+    assert.ok(Math.abs(r.et - r.priorMean) < 1e-12);
+    assert.ok(Math.abs(r.n_eff - 256) < 1e-9);
   });
 
 // =====================================================================

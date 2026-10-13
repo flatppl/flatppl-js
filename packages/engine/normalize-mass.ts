@@ -46,6 +46,14 @@ function totalMassExpr(ir: any): any {
   // remain scoped until its callback arguments are bound.
   if (op === 'locscale' && ir.args?.length === 3) return totalMassExpr(ir.args[0]);
   if (op === 'pushfwd' && ir.args?.length === 2) return totalMassExpr(ir.args[1]);
+  if (op === 'iid') {
+    const count = iidCount(ir);
+    if (count == null) return null;
+    if (count === 0) return { kind: 'lit', value: 1 };
+    const mass = totalMassExpr(ir.args[0]);
+    return mass == null ? null : { kind: 'call', op: 'pow',
+      args: [mass, { kind: 'lit', value: count }] };
+  }
   // superpose / logweights-null select: Σ component masses. A select with
   // explicit logweights or a retain-mode selectorName is NOT a raw additive
   // superpose — fall back to the constant bake rather than guess its mass.
@@ -144,6 +152,14 @@ function totalMassExpr(ir: any): any {
 // normalize(logweighted(±1000, M)) is well-defined for a probability M.
 function logTotalMassExpr(ir: any): any {
   if (!ir || ir.kind !== 'call') return null;
+  if (ir.op === 'iid') {
+    const count = iidCount(ir);
+    if (count == null) return null;
+    if (count === 0) return { kind: 'lit', value: 0 };
+    const mass = logTotalMassExpr(ir.args[0]);
+    return mass == null ? null : { kind: 'call', op: 'mul',
+      args: [{ kind: 'lit', value: count }, mass] };
+  }
   const countMass = positiveCountLogMassExpr(ir);
   if (countMass != null) return countMass;
   if (ir.op === 'locscale' && ir.args?.length === 3) return logTotalMassExpr(ir.args[0]);
@@ -159,6 +175,18 @@ function logTotalMassExpr(ir: any): any {
   }
   const mass = totalMassExpr(ir);
   return mass == null ? null : { kind: 'call', op: 'log', args: [mass] };
+}
+
+// Expanded iid nodes carry the resolved product shape. Leave unresolved sizes
+// to the existing fallback rather than treating a shape vector as a scalar.
+function iidCount(ir: any): number | null {
+  if (ir.args?.length !== 2) return null;
+  const size = ir.args[1];
+  const axes = size?.kind === 'call' && size.op === 'vector' ? size.args : [size];
+  if (!Array.isArray(axes) || !axes.every((a: any) =>
+    a?.kind === 'lit' && Number.isSafeInteger(a.value) && a.value >= 0)) return null;
+  const count = axes.reduce((n: number, a: any) => n * a.value, 1);
+  return Number.isSafeInteger(count) ? count : null;
 }
 
 // For these nonnegative count laws, [1, inf] retains exactly 1 - P(0).
