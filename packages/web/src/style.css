@@ -702,6 +702,16 @@ html, body {
   border: 0;
   background: #fff;
 }
+.surface-data {
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  overflow: auto;
+  padding: 1rem 1.25rem;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 0.92em/1.5 var(--mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace);
+}
 .surface-placeholder {
   flex: 1 1 auto;
   display: flex;

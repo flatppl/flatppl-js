@@ -268,7 +268,7 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
       renderConstantRecord(ctx, measure, name, opts.toolbarControls);
       return;
     }
-    renderRecordMarginals(ctx, measure, name, opts.toolbarControls);
+    renderRecordMarginals(ctx, measure, name, opts.toolbarControls, undefined, opts.staleGuard);
     return;
   }
   // Ragged point-process measure (PoissonProcess, engine-concepts §2.3): N
@@ -293,7 +293,7 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   // render its marginals; anything else gets a message that names the binding.
   if (measure.samples == null) {
     if (measure.fields) {
-      renderRecordMarginals(ctx, measure, name, opts.toolbarControls);
+      renderRecordMarginals(ctx, measure, name, opts.toolbarControls, undefined, opts.staleGuard);
       return;
     }
     renderConstantValue(ctx, name,

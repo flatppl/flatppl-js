@@ -102,6 +102,8 @@ test('prior initialization rejects incompatible atom and weight axes', async () 
     };
     const mv = await buildModelViewFromCtx(ctx, ctx.derivations.posterior);
     assert.throws(() => mv.initFromPrior(2, mulberry32(1)));
+    assert.throws(() => runMcmc(mv, makeDemczKernel(),
+      { nWalkers: 4, warmup: 0, draws: 1, seed: 1 }), /prior initialization/);
   }
 });
 

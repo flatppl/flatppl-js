@@ -50,12 +50,10 @@ const limitations = require('./limitations.ts');
  *                    the only surface form (spec §05); the seam is
  *                    retained for forward-compatibility. Wins over
  *                    path.
- *   - opts.path    — source path; reserved for future per-file
- *                    surface detection. Currently ignored.
- *   - opts.bundle  — module bundle for multi-file models (spec §04
- *                    load_module). Shape:
+ *   - opts.path    — source path, used to resolve relative module/data paths.
+ *   - opts.bundle  — prefetched module/data bundle (spec §04/§07). Shape:
  *                      { sources: { [path: string]: text: string } }
- *                    The engine consumes pre-resolved .flatppl text;
+ *                    The engine consumes pre-resolved module and data text;
  *                    async I/O is the host's responsibility (VS Code:
  *                    vscode.workspace.fs; web: fetch). Defaults to an
  *                    empty bundle when omitted. Architectural decisions
@@ -264,7 +262,8 @@ function _compileModuleGraph(
       modules.set(resolved, compile(resolved, depSource, childStack));
     }
 
-    const a = analyze(ast, src, { modulePath: path, modules });
+    const a = analyze(ast, src, { modulePath: path, modules,
+      dataSources: bundleProvided ? bundle.sources : undefined });
     return {
       path, ast,
       bindings: a.bindings,
@@ -297,9 +296,9 @@ function moduleDeps(source: string, opts?: any): string[] {
   return out;
 }
 
-// Host-agnostic transitive `load_module` bundle walker (spec §04 Module
-// composition). The web gallery and the VS Code extension share THIS one
-// walk — `moduleDeps` to discover deps, `resolveModulePath` to key each by
+// Host-agnostic transitive module/data bundle walker (spec §04/§07).
+// The web gallery and the VS Code extension share THIS one
+// walk — load-call discovery, `resolveModulePath` to key each dependency by
 // its resolved path, dedupe by resolved path, tolerate a missing dep — and
 // supply ONLY their own async `readSource(resolvedPath)` primitive (web's
 // three-tier fetch vs VS Code's `workspace.fs`). Owning the structure here
@@ -322,20 +321,32 @@ async function resolveBundle(
 ): Promise<{ primaryPath: string; primarySource: string; sources: Record<string, string> }> {
   const sources: Record<string, string> = Object.create(null);
   const seen = new Set<string>([primaryPath]);
+  const walked = new Set<string>();
   async function walk(importerPath: string, text: string): Promise<void> {
-    let rels: string[];
-    try { rels = moduleDeps(text); } catch (_) { return; }
-    for (const rel of rels) {
+    if (walked.has(importerPath)) return;
+    walked.add(importerPath);
+    let dependencies: Array<{ relPath: string | null; module: boolean }>;
+    try {
+      const { tokens } = tokenize(text, variants.resolveVariant());
+      const { ast } = parse(tokens, variants.resolveVariant());
+      dependencies = [
+        ..._collectLoadModuleDeps(ast).map(dep => ({ ...dep, module: true })),
+        ..._collectLoadDeps(ast, 'load_data').map(dep => ({ ...dep, module: false })),
+      ];
+    } catch (_) { return; }
+    for (const dep of dependencies) {
+      if (dep.relPath == null) continue;
       let resolved: string;
-      try { resolved = resolveModulePath(importerPath, rel); }
+      try { resolved = resolveModulePath(importerPath, dep.relPath); }
       catch (_) { continue; } // Compilation reports the source error.
-      if (resolved in sources || seen.has(resolved)) continue;
-      seen.add(resolved);
-      let depText: string | null | undefined;
-      try { depText = await readSource(resolved); } catch (_) { depText = null; }
-      if (depText == null) continue;   // missing dep — engine diagnoses it at the call
-      sources[resolved] = depText;
-      await walk(resolved, depText);
+      if (!seen.has(resolved)) {
+        seen.add(resolved);
+        let depText: string | null | undefined;
+        try { depText = await readSource(resolved); } catch (_) { depText = null; }
+        if (depText != null) sources[resolved] = depText;
+      }
+      // Data text shares the cache, never the FlatPPL parser/module graph.
+      if (dep.module && sources[resolved] !== undefined) await walk(resolved, sources[resolved]);
     }
   }
   await walk(primaryPath, primarySource);
@@ -349,19 +360,26 @@ async function resolveBundle(
 // per call: `relPath` is the string-literal path, or null when the path
 // argument is not a literal (an error, surfaced by the caller).
 function _collectLoadModuleDeps(ast: any): Array<{ relPath: string | null; loc: any }> {
+  return _collectLoadDeps(ast, 'load_module');
+}
+
+function _collectLoadDeps(ast: any, operation: string): Array<{ relPath: string | null; loc: any }> {
   const out: Array<{ relPath: string | null; loc: any }> = [];
   const shadowed = ast.body?.some((s: any) => s.type === 'AssignStatement'
-    && s.names.some((n: any) => n.name === 'load_module'));
+    && s.names.some((n: any) => n.name === operation));
   function visit(node: any) {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) { for (const c of node) visit(c); return; }
     const callee = node.callee;
-    const builtin = callee?.type === 'Identifier' && callee.name === 'load_module'
+    const builtin = callee?.type === 'Identifier' && callee.name === operation
       && (!shadowed || node.builtin);
     const qualified = callee?.type === 'FieldAccess' && callee.object?.type === 'Identifier'
-      && callee.object.name === 'base' && callee.field === 'load_module';
+      && callee.object.name === 'base' && callee.field === operation;
     if (node.type === 'CallExpr' && (builtin || qualified)) {
-      const first = node.args && node.args[0];
+      const first = operation === 'load_data'
+        ? node.args?.find((a: any) => a.type === 'KeywordArg' && a.name === 'source')?.value
+          || node.args?.find((a: any) => a.type !== 'KeywordArg')
+        : node.args && node.args[0];
       out.push({
         relPath: (first && first.type === 'StringLiteral') ? String(first.value) : null,
         loc: node.loc,

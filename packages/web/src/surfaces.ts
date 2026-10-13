@@ -124,6 +124,22 @@
     };
   }
 
+  // Data are text, never markup or FlatPPL. Preserve the original numeric
+  // tokens rather than parsing and serializing JSON through binary64.
+  function dataSurface(container: any, _ctx: any): any {
+    const pre = document.createElement('pre');
+    pre.className = 'surface-data';
+    pre.tabIndex = 0;
+    pre.setAttribute('aria-label', 'Data file');
+    container.appendChild(pre);
+    return {
+      update: function (input: any) {
+        pre.textContent = input && input.source != null ? String(input.source) : '';
+      },
+      dispose: function () { pre.remove(); },
+    };
+  }
+
   // Placeholder: neutral "nothing to visualise yet" pane for any type
   // without a registered surface (pyhf / HS3 / Stan / Julia / …). The
   // reserved slot a future native surface drops into. hs3/pyhf get a
@@ -157,6 +173,8 @@
     flatppl: flatpplSurface,
     markdown: markdownSurface,
     html: htmlSurface,
+    json: dataSurface,
+    data: dataSurface,
   };
 
   function resolveSurface(type: any): any {

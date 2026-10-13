@@ -34,9 +34,10 @@ function makeSliceKernel(opts?: any) {
       if (!adaptState.w) {
         const w = new Float64Array(dim);
         // Seed w_i from the prior-pool marginal std (floored). initFromPrior may be
-        // absent in a bare driver harness; fall back to unit widths.
+        // absent in a bare harness or unavailable for a density-only prior;
+        // fall back to unit widths.
         let seeded = false;
-        if (mv && typeof mv.initFromPrior === 'function') {
+        if (mv && mv.hasPriorSamples !== false && typeof mv.initFromPrior === 'function') {
           const n = Math.max(64, 8 * dim);
           const pool: Float64Array[] = mv.initFromPrior(n, prng);
           if (pool && pool.length) {

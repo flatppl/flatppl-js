@@ -41,12 +41,13 @@ interface MatCtx {
  * { ctx, lifted, built } so tests can also inspect bindings /
  * derivations / fixedValues directly.
  */
-function makeMatCtx(source: string, opts?: { sampleCount?: number; rootSeed?: number }): {
+function makeMatCtx(source: string, opts?: { sampleCount?: number; rootSeed?: number;
+  path?: string; bundle?: { sources: Record<string, string> } }): {
   ctx: MatCtx; lifted: any; built: any;
 } {
   const sampleCount = opts?.sampleCount ?? 1024;
   const rootSeed = opts?.rootSeed ?? 0xC0FFEEEE;
-  const lifted = processSource(source);
+  const lifted = processSource(source, opts);
   const errs = lifted.diagnostics.filter((d: any) => d.severity === 'error');
   if (errs.length > 0) {
     throw new Error('makeMatCtx: source has parse/analyze errors: '

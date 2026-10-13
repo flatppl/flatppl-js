@@ -224,22 +224,8 @@ export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean })
         // with the old backend before they could change it. Non-posteriors
         // have no sampler to pick, so keep the graph-retry hint.
         const nm = ctx.currentPlotBindingName;
-        const isPosterior = !!(
-          nm && ctx.derivationsState && ctx.derivationsState.derivations &&
-          ctx.derivationsState.derivations[nm] &&
-          ctx.derivationsState.derivations[nm].kind === 'bayesupdate'
-        );
-        if (isPosterior && ctx.onInferenceChange) {
+        if (gateIsPosterior && ctx.onInferenceChange) {
           showPlotMessage(ctx, 'Sampling cancelled. Pick a sampler and press <strong>Sample</strong> to retry.', { hint: true });
-          const host = document.getElementById('plot-empty');
-          if (host) {
-            const row = document.createElement('div');
-            row.style.marginTop = '0.6em';
-            row.style.display = 'flex';
-            row.style.justifyContent = 'center';
-            row.appendChild(buildInferenceControl(ctx, ctx.onInferenceChange));
-            host.appendChild(row);
-          }
         } else {
           const name = nm ? esc(nm) : 'this binding';
           showPlotMessage(ctx, 'Sampling cancelled. Click <strong>' + name + '</strong> in the graph to retry.', { hint: true });
@@ -247,6 +233,17 @@ export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean })
       } else {
         // Real errors are actionable; not italic/dimmed.
         showPlotMessage(ctx, 'Could not compute plot: ' + esc(msg));
+      }
+      if (gateIsPosterior && ctx.onInferenceChange) {
+        const host = document.getElementById('plot-empty');
+        if (host) {
+          const row = document.createElement('div');
+          row.style.marginTop = '0.6em';
+          row.style.display = 'flex';
+          row.style.justifyContent = 'center';
+          row.appendChild(buildInferenceControl(ctx, ctx.onInferenceChange));
+          host.appendChild(row);
+        }
       }
     })
     .then(function () { ctx.onSamplingProgress = null; }, function () { ctx.onSamplingProgress = null; });

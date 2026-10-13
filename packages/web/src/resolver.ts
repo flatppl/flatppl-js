@@ -116,8 +116,10 @@
     const primaryUrl = resolved.url;
     const primarySource = typeof sourceOverride === 'string' ? sourceOverride : resolved.source;
     const FE = globalScope.FlatPPLEngine;
+    const fileType = globalScope.FlatPPLFileTypes?.typeForPath(primaryPath);
     let sources = Object.create(null);
-    if (FE && FE.resolveBundle) {
+    // Data and documents do not contain executable module dependencies.
+    if (FE && FE.resolveBundle && (!fileType || fileType === 'flatppl')) {
       // Host primitive only: resolve one source by path through the three-tier
       // order (ephemeral → user store → network fetch); a missing/broken dep
       // returns null and is left out (the engine reports it at the call). The

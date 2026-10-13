@@ -841,8 +841,13 @@
     list.className = 'file-list';
     list.hidden = !open;
     if (open) {
+      // A folder's introduction precedes both its subfolders and its models.
+      const readmes = node.entries.filter(entry => /^readme\.(md|markdown)$/i.test(basenameOf(entry.path)));
+      for (const entry of readmes) list.appendChild(fileRow(entry, currentModel, node.kind));
       for (const child of node.folders) renderFolder(child, list, currentModel, query, depth + 1);
-      for (const entry of node.entries) list.appendChild(fileRow(entry, currentModel, node.kind));
+      for (const entry of node.entries) {
+        if (!readmes.includes(entry)) list.appendChild(fileRow(entry, currentModel, node.kind));
+      }
     }
     folder.appendChild(list);
     parent.appendChild(folder);
@@ -1188,8 +1193,8 @@
     // through typeForPath; the picker needs the list spelled out).
     const ft = window.FlatPPLFileTypes;
     input.accept = ft
-      ? ft.MODEL_EXTENSIONS.concat(ft.DOCUMENT_EXTENSIONS).join(',')
-      : '.flatppl,.md,.markdown,.hs3.json,.pyhf.json,.html,.htm,.tex,.typ';
+      ? ft.MODEL_EXTENSIONS.concat(ft.DATA_EXTENSIONS, ft.DOCUMENT_EXTENSIONS).join(',')
+      : '.flatppl,.md,.markdown,.hs3.json,.pyhf.json,.json,.csv,.wsv,.html,.htm,.tex,.typ';
     input.multiple = true;
     input.style.display = 'none';
     document.body.appendChild(input);

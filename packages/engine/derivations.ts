@@ -691,7 +691,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
     // namespace handle (spec §11), never a value. Without it every model
     // that names a standard module drew a spurious "produced no value —
     // this is an engine gap" error.
-    if (t === 'input' || t === 'lawof' || t === 'likelihood' || t === 'module') return true;
+    if (t === 'input' || t === 'data' || t === 'lawof' || t === 'likelihood' || t === 'module') return true;
     return isCallableLikeBindingType(t);
   }
   // (`bindingLoc` declared above, ahead of `fixedValues`.)
@@ -914,6 +914,10 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
   for (const [name, b] of bindings) {
     if (!b || b.phase !== 'fixed') continue;
     if (_isObjectBindingType(b.type)) continue;         // legit underived
+    // Sets are first-class metadata, not sampled values. Only builtin calls
+    // qualify; a user callable shadowing a set constructor still needs a value.
+    if (b.ir?.kind === 'call' && !b.ir.target && !b.ir.callee
+        && SET_CONSTRUCTORS.has(b.ir.op)) continue;
     if (derivations[name]) continue;
     if (cyclicNames.has(name)) continue;                // already flagged as a cycle, not an engine gap
     if (malformedPushfwdNames.has(name)) continue;      // already flagged as reversed pushfwd args

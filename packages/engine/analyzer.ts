@@ -4014,6 +4014,12 @@ function analyze(ast: any, source: string, opts?: any) {
   // diagnostics).
   const pir = require('./pir.ts');
   let loweredModule = pir.lowerToModule(bindings, { modulePath: moduleCtx.modulePath });
+  if (moduleCtx.dataSources) {
+    const loaded = require('./data-bindings.ts').expandDataBindings(bindings, loweredModule,
+      { sources: moduleCtx.dataSources, modulePath: moduleCtx.modulePath }, diagnostics,
+      (binding: any, rhs: any) => attachEffectiveRhs(binding, rhs, definedNames));
+    if (loaded) loweredModule = pir.lowerToModule(bindings, { modulePath: moduleCtx.modulePath });
+  }
 
   // Surface lowering-time failures. pir.lowerToModule catches a lowerExpr
   // throw and stashes it as `lowerError` on a null-lit placeholder so

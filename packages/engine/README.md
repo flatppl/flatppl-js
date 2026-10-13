@@ -22,6 +22,52 @@ Julia, Python, …). Cross-implementation conformance is anchored by
 [`flatppl-examples`](https://github.com/flatppl/flatppl-examples) (the shared
 example suite).
 
+## Loading model data
+
+`load_data(source, valueset)` reads prefetched JSON, CSV or WSV text. Hosts
+use the same resolver for models and data:
+
+```javascript
+const bundle = await resolveBundle(modelPath, source, readText);
+const model = processSource(source, { path: modelPath, bundle });
+```
+
+`readText(resolvedPath)` is the host's asynchronous file or URL reader. Data
+paths resolve relative to the module that declares them. The resolver discovers
+literal paths and caches shared files once; data files are not parsed as modules.
+
+```flatppl
+dimensions = load_data("data.json", cartprod(n = posintegers))
+n = dimensions.n
+data = load_data("data.json", cartprod(y = cartpow(reals, n)))
+```
+
+The schema selects scalar values, numeric tensors, nested vectors, records or
+tables. Records select named fields; vectors and tables may select a prefix.
+Selected values must satisfy the declared shape and domain. JSON records may
+contain tensors and arrays of different lengths. CSV/WSV headers name columns;
+one column can also be loaded as a vector. Empty selected cells are errors.
+
+`anything` remains an opaque placeholder and errors when accessed. Schemas and
+their dimensions must resolve within the declaring module; dimensions supplied
+only by a later module input substitution and imported schema references are
+not supported yet. Multi-axis arrays with structured or complex elements,
+Arrow IPC and Safetensors also report unsupported loading rather than guessing
+a value or shape.
+
+## Posterior MCMC with density-only priors
+
+`regression.Flat(support)` contributes its declared density and has no prior
+sampler. MH, RAM, slice, emcee and DEMCz can still sample a proper posterior.
+When prior atoms are unavailable, they try seeded uniform starting points in
+`[-2,2]` for each free coordinate, using the existing support transforms. Each
+walker must find a finite posterior score within 100 attempts. The host may
+instead supply `initPositions`, one unconstrained vector per walker.
+
+These starting points are not prior draws. Direct prior sampling, prior-based
+importance sampling, SMC and AMIS still refuse unavailable prior samples. The
+current fitted elliptical-slice implementation also requires a prior pool.
+
 ## Analytic exponential tilting
 
 Affine log weights normalize analytically for `Normal`, `Gamma` (shape/rate),

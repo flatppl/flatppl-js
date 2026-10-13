@@ -126,3 +126,25 @@ posterior = bayesupdate(L, prior)
   assert.ok(Math.abs(mean - Math.sqrt(2 / Math.PI)) < 0.12, `half-Normal mean: ${mean}`);
   await assert.rejects(() => materialiser.materialiseMeasure('posterior', ctx, { backend: 'is' }), /no prior sampler/);
 });
+
+for (const backend of ['ram', 'slice', 'elliptical-slice-sampler']) {
+  test(`positive Flat initializes ${backend} through the existing free-coordinate chart`, async () => {
+    const { ctx } = ctxFor(REG + `
+b ~ reg.Flat(posreals)
+prior = lawof(record(b = b))
+y ~ Normal(b, 1)
+K = kernelof(y, b = b)
+L = likelihoodof(K, 0)
+posterior = bayesupdate(L, prior)
+`, 3200);
+    const posterior = await materialiser.materialiseMeasure('posterior', ctx, {
+      backend, chains: 4, draws: 800, warmup: 500, seed: 12,
+    });
+    const draws = posterior.fields.b.samples;
+    assert.ok(draws.every((x: number) => Number.isFinite(x) && x > 0));
+    const mean = draws.reduce((s: number, x: number) => s + x, 0) / draws.length;
+    const second = draws.reduce((s: number, x: number) => s + x * x, 0) / draws.length;
+    assert.ok(Math.abs(mean - Math.sqrt(2 / Math.PI)) < 0.12, `half-Normal mean: ${mean}`);
+    assert.ok(Math.abs(second - 1) < 0.2, `half-Normal second moment: ${second}`);
+  });
+}

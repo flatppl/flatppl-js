@@ -13,6 +13,7 @@ registerHooks({
 });
 const { applyPanelLayout, installPanelDivider, setGraphEnabled } = await import('./render-frame.ts');
 const { renderPlotForCurrent } = await import('./render-plot.ts');
+const { renderEmpiricalMeasure } = await import('./render-samples.ts');
 const { buildInferenceControl } = await import('./render-controls.ts');
 const { sourceErrorsFor } = await import('./diagnostics.ts');
 const { enterModuleView } = await import('./dag.ts');
@@ -488,6 +489,50 @@ test('six-coordinate plots default to four and preserve uncapped selection, pann
   assert.ok(baseline >= 512 && baseline <= 524, 'large histograms leave a compact outside x-axis gutter');
   assert.equal(single.getOption().yAxis[0].axisLabel.formatter(0.5), '0.5');
   disposePlotCharts(ctx);
+});
+
+test('late posterior predictive completion cannot repaint a replacement model', async (t) => {
+  const doc = mountDOM(t);
+  const previous = globalThis.FlatPPLEngine;
+  globalThis.FlatPPLEngine = engine;
+  t.after(() => { globalThis.FlatPPLEngine = previous; });
+  const pending = [];
+  t.mock.method(engine.posteriorPredictive, 'buildPosteriorPredictive', (_d, matCtx) =>
+    new Promise(resolve => pending.push({ resolve, matCtx })));
+  const ctx = { host: {}, SAMPLE_COUNT: 4, currentPlotBindingName: 'Pi_post',
+    currentBindings: new Map(), CODICON_PATHS: { 'save-as': '' },
+    recordSelection: { bindingName: 'Pi_post', mode: 'table', selected: [], marginalGroups: [] },
+  };
+  function show(names, nSamples) {
+    ctx.derivationsState = { derivations: { Pi_post: { kind: 'bayesupdate' } },
+      bindings: new Map(), fixedValues: new Map() };
+    ctx.measureCache = new Map();
+    const plan = ctx.currentPlotPlan = { name: 'Pi_post', mode: 'samples' };
+    const measure = { shape: 'record', logWeights: null, diagnostics: { nSamples },
+      fields: Object.fromEntries(names.map(name => [name, { samples: Float64Array.of(1, 2, 3, 4) }])) };
+    renderEmpiricalMeasure(ctx, measure, {
+      name: 'Pi_post', mode: 'samples', staleGuard: () => ctx.currentPlotPlan === plan,
+    });
+  }
+  const content = doc.getElementById('plot-content');
+  const rows = () => content.querySelector('tbody').children.map(row => row.children[0].textContent);
+  const hasPpc = () => content.querySelectorAll('option').some(opt => opt.value === 'ppc');
+  const hasDraws = text => content.querySelectorAll('span').some(span => span.textContent === text);
+  show(['old_a', 'old_b', 'old_c'], 12);
+  show(['new_a', 'new_b', 'new_c', 'new_d'], 28);
+  assert.deepEqual(rows(), ['new_a', 'new_b', 'new_c', 'new_d']);
+  assert.equal(hasPpc(), false);
+  pending[0].resolve({ fields: {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(rows(), ['new_a', 'new_b', 'new_c', 'new_d']);
+  assert.equal(hasDraws('28 draws'), true);
+  assert.equal(hasDraws('12 draws'), false);
+  assert.equal(hasPpc(), false, 'the old predictive result does not enable current controls');
+  await assert.rejects(() => pending[0].matCtx.sendWorker({ type: 'sampleN' }), /model changed/);
+  pending[1].resolve({ fields: {} });
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(hasPpc(), true, 'the current predictive result remains usable');
+  assert.deepEqual(rows(), ['new_a', 'new_b', 'new_c', 'new_d']);
 });
 
 test('weighted corner scatters retain joint pairs and binary64 coordinates', (t) => {

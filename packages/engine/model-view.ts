@@ -283,15 +283,16 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     // §04 reified ancestry and §06 joint composition: select the whole row,
     // retaining shared weighting events once. Zero fallback positions are not
     // draws from a missing prior and must never enter SMC at equal weight.
+    const caller = ctx.inferenceOpts?.backend ? `backend '${ctx.inferenceOpts.backend}'` : 'model-view';
     const N = priorPools[0]?.n;
     if (!priorMeasure || !(N > 0) || priorPools.some((p: any) => !p || p.n !== N)
         || N !== ctx.sampleCount) {
-      throw new Error('model-view: prior initialization requires complete, aligned joint prior atoms. '
-        + 'Choose a proper prior or supply finite initPositions for posterior MCMC.');
+      throw new Error(`${caller}: prior initialization requires complete, aligned atoms from a sampleable joint prior. `
+        + 'For density-only priors, use MH, RAM, slice, emcee, DEMCz or ESS.');
     }
     const weights = empirical.propagateLogWeights(weightParents);
     if (weights && weights.length !== N) {
-      throw new Error('model-view: prior initialization requires one weight per joint atom');
+      throw new Error(`${caller}: prior initialization requires one weight per joint atom`);
     }
     const indices = weights ? empirical.multinomialResample(weights, nWalkers, prng) : null;
     const out: Float64Array[] = [];
@@ -466,6 +467,9 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     logPriorLikBatch,
     logPosteriorConstrained,
     likOf,
+    // Availability only: malformed atom/weight axes must still fail inside
+    // initFromPrior. Density-only MCMC can initialize without prior samples.
+    hasPriorSamples: priorPools.every(p => p !== null),
     initFromPrior,
     gaussianPrior,
     latentNames,

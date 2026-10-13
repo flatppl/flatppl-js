@@ -159,7 +159,9 @@ function _linkInstance(prefix: string, compiled: any,
     // rewritten.
     const newNames = s.names.map((nm: any) => AST.Identifier(_pfx(prefix, nm.name), nm.loc));
     const promoted = canonical?.get(s.names[0]?.name);
-    const value = promoted?.implicitBoundaries ? promoted.node.value : s.value;
+    const loaded = compiled.bindings?.get(s.names[0]?.name);
+    const value = loaded?.loadedData ? loaded.effectiveValue
+      : promoted?.implicitBoundaries ? promoted.node.value : s.value;
     const stmt = AST.AssignStatement(newNames, rewrite(value), s.loc);
     if (s.doc) stmt.doc = s.doc;         // keep the binding's doc through linking (spec §04)
     out.push(stmt);

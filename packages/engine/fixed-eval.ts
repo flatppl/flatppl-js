@@ -71,7 +71,8 @@ const UNSUPPORTED: unique symbol = Symbol('fixed-eval:unsupported-op');
  *   - `baseEnv` — atom-independent env (host's session env); merged
  *     in as the outermost lookup layer. Optional.
  */
-function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
+function makeResolver(opts?: { loweredModule?: any; baseEnv?: any;
+  resolveData?: (ir: any, resolve: (ir: any) => any) => any }) {
   const loweredModule = opts && opts.loweredModule;
   const baseEnv: any = Object.assign({
     __moduleRegistry: loweredModule && loweredModule.moduleRegistry,
@@ -82,6 +83,10 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
   function evalIR(ir: any, env?: any): any | undefined {
     if (!ir) return undefined;
     if (ir.kind === 'lit') return ir.value;
+    if (ir.kind === 'const') {
+      try { return samplerLib.evaluateExpr(ir, baseEnv); }
+      catch (_) { return undefined; } // Sets are not scalar values.
+    }
     if (ir.kind === 'ref' && ir.ns === 'self') {
       const name = ir.name;
       // Ref lookup precedence: caller env > baseEnv > binding cache /
@@ -93,6 +98,9 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
       return resolveBinding(name);
     }
     if (ir.kind === 'call') {
+      if (ir.op === 'load_data' && !ir.target && opts?.resolveData) {
+        return opts.resolveData(ir, (child: any) => evalIR(child, env));
+      }
       // Shape-observer short-circuit: read the result off the
       // operand's INFERRED TYPE without recursing into its value.
       // The single most important pattern for keeping const-eval
@@ -243,6 +251,16 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any }) {
         ? passthrough[i] : { kind: 'lit', value: evaledArgs[i] });
     }
     const synthIR: any = { kind: 'call', op: ir.op, args: synthArgs };
+    // Records/tables carry named operands in fields rather than kwargs.
+    // Loaded records commonly supply the dimensions of another data value.
+    if (ir.fields) {
+      synthIR.fields = [];
+      for (const field of ir.fields) {
+        const v = evalIR(field.value, env);
+        if (v === UNSUPPORTED || v === undefined) return v;
+        synthIR.fields.push({ name: field.name, value: { kind: 'lit', value: v } });
+      }
+    }
     // §04 qualified calls carry a target instead of a builtin op. Keep it
     // when literalising operands so shape evaluation reaches the same member.
     if (ir.target) synthIR.target = ir.target;

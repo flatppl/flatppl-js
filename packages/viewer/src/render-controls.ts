@@ -516,8 +516,9 @@ export function buildInferenceControl(ctx: Ctx, onChange: () => void, isPosterio
     sel.title = 'Posterior inference backend. IS = importance sampling (default); '
       + 'MH / RAM / slice / emcee / DEMCz run MCMC (DEMCz = differential-evolution ensemble, auto-adapts to covariance); AMIS = adaptive multiple importance sampling; '
       + 'SMC = sequential Monte Carlo (robust on funnels; reports evidence); '
+      + 'IS / AMIS / SMC require a sampleable joint prior. '
       + 'nested = nested sampling (robust on multimodal posteriors; reports evidence logZ); '
-      + 'ESS = elliptical slice sampling (gradient- and tuning-free).';
+      + 'ESS = elliptical slice sampling (uses a Gaussian reference; model priors need not be Gaussian).';
   } else {
     // Forward / tractable plots draw directly — no backend to pick. Blank +
     // disable the selector; the cog still exposes the forward draw count + seed.

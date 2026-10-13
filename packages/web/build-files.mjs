@@ -7,7 +7,7 @@ import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { spawn } from 'node:child_process';
-import { MODEL_EXTENSIONS, isCollectionPath, normalizeCollections, typeForPath } from './src/file-types.mjs';
+import { DATA_EXTENSIONS, MODEL_EXTENSIONS, isCollectionPath, normalizeCollections, typeForPath } from './src/file-types.mjs';
 
 /** Include the source path in malformed JSON diagnostics as well as I/O errors. */
 async function readJson(path) {
@@ -133,12 +133,12 @@ export async function fetchAndExtractTarball(url, prefix) {
   }
 }
 
-/** Recursively list model/representation files under rootDir, sorted
+/** Recursively list models, documents and data under rootDir, sorted
     alphabetically. Paths are relative to rootDir (forward slashes).
-    Matches MODEL_EXTENSIONS — the gallery is multi-format, no longer
-    FlatPPL-only. */
+    Other support assets are copied but have no inspectable surface. */
 export async function listModelFiles(rootDir) {
   const out = [];
+  const extensions = [...MODEL_EXTENSIONS, ...DATA_EXTENSIONS];
   async function walk(dir, prefix) {
     if (!existsSync(dir)) return;
     const entries = await readdir(dir, { withFileTypes: true });
@@ -147,7 +147,7 @@ export async function listModelFiles(rootDir) {
       if (ent.isDirectory()) {
         await walk(join(dir, ent.name), childRelPath);
       } else if (ent.isFile()
-          && MODEL_EXTENSIONS.some((e) => ent.name.toLowerCase().endsWith(e))) {
+          && extensions.some((e) => ent.name.toLowerCase().endsWith(e))) {
         out.push(childRelPath);
       }
     }

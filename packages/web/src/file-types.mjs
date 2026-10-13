@@ -26,6 +26,9 @@ export const MODEL_EXTENSIONS = [
   '.flatppl', '.md', '.markdown', '.hs3.json', '.pyhf.json',
 ];
 
+// Data remain separate files and open as text without invoking an engine.
+export const DATA_EXTENSIONS = ['.json', '.csv', '.wsv'];
+
 // Document types the gallery holds but does not treat as models: what the
 // "Export math as …" tools write into the user area (an HTML page with
 // MathML, a LaTeX or a Typst source; Markdown is a model extension above).
@@ -73,6 +76,8 @@ export function typeForPath(path) {
   if (p.endsWith('.md') || p.endsWith('.markdown')) return 'markdown';
   if (p.endsWith('.hs3.json') || p.endsWith('.hs3')) return 'hs3';
   if (p.endsWith('.pyhf.json') || p.endsWith('.pyhf')) return 'pyhf';
+  if (p.endsWith('.json')) return 'json';
+  if (p.endsWith('.csv') || p.endsWith('.wsv')) return 'data';
   if (p.endsWith('.html') || p.endsWith('.htm')) return 'html';
   if (p.endsWith('.tex')) return 'latex';
   if (p.endsWith('.typ')) return 'typst';
