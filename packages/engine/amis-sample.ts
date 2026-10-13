@@ -4,14 +4,20 @@
 // El-Laham, Martino, Elvira & Bugallo, "Efficient Adaptive Multiple Importance
 // Sampling", EUSIPCO 2019 (Table II). A gradient-free adaptive importance
 // sampler: a single Gaussian proposal q_t = N(μ_t, Σ_t) is adapted over T
-// iterations by weighted moment-matching (as in AMIS, Table I), and the
+// iterations by weighted moment-matching, and the
 // importance weights use the AMIS *temporal deterministic mixture* in the
 // denominator. EAMIS's contribution is to APPROXIMATE that mixture once the
 // proposal has stopped moving: after an automatically-detected iteration K
-// (when ‖μ_t − μ_{t-1}‖₂ < ε), proposals K…t are collapsed into one component
+// (when successive Gaussian KL divergence is below ε), proposals K…t are collapsed into one component
 // θ_{ℓ*} (ℓ* = max(τ, K)) carrying weight (t−K+1), so each sample needs only K
 // proposal evaluations instead of t — O(MKT) vs AMIS's O(MT²) Gaussian scores.
 // Reweighting and covariance fitting still revisit all accumulated samples.
+// Proposal fitting first follows prior·likelihood^β, with an ESS-controlled β
+// rising from zero to one. This avoids a sharp likelihood selecting one prior
+// point and collapsing the next covariance. Without a split scorer, the initial
+// Gaussian supplies the reference for q_1^(1−β)·π^β. If q_t misses the current
+// bridge target, a local bridge fits that target before β advances. This extension
+// never tempers the returned posterior weights or changes their mixture denominator.
 //
 // Target: π(x) = ℓ(y|x)h(x) ∝ posterior (paper eq. 1). Here logπ(x) is
 // mv.logPosterior(y) over the unconstrained vector (prior + likelihood +
@@ -83,6 +89,53 @@ function logsumexp(a: number[]): number {
   return mx + Math.log(s);
 }
 
+/** KL(current || previous), including covariance changes in the stopping rule.
+ * A stationary mean alone cannot establish that a narrowing proposal is stable. */
+function proposalKL(p: any, previous: any, dim: number): number {
+  const u = new Float64Array(dim);
+  let trace = 0, distance = 0;
+  for (let column = 0; column <= dim; column++) {
+    for (let i = 0; i < dim; i++) {
+      let s = column === dim ? p.mu[i] - previous.mu[i] : p.L[i * dim + column];
+      for (let j = 0; j < i; j++) s -= previous.L[i * dim + j] * u[j];
+      u[i] = s / previous.L[i * dim + i];
+      if (column === dim) distance += u[i] * u[i];
+      else trace += u[i] * u[i];
+    }
+  }
+  return Math.max(0, 0.5 * (trace + distance - dim + previous.logdet - p.logdet));
+}
+
+/** Fit a reachable intermediate target using fresh proposal draws. The ESS
+ * bound limits weight concentration; these weights are never returned as samples. */
+function bridgeWeights(logBase: number[], logTarget: ArrayLike<number>, logProposal: number[], beta: number, minEss: number) {
+  const weightsAt = (b: number) => {
+    const lw = logBase.map((base, i) => {
+      if (b === 0) return base - logProposal[i];
+      if (b === 1) return logTarget[i] - logProposal[i];
+      return (1 - b) * base + b * logTarget[i] - logProposal[i];
+    });
+    const lse = logsumexp(lw);
+    const weights = Float64Array.from(lw, w => Number.isFinite(lse) ? Math.exp(w - lse) : 0);
+    let sumSq = 0;
+    for (const w of weights) sumSq += w * w;
+    return { weights, ess: sumSq > 0 ? 1 / sumSq : 0, beta: b };
+  };
+  const full = weightsAt(1);
+  if (full.ess >= minEss) return full;
+  let fit = weightsAt(beta);
+  // Refit this rung when the Gaussian misses it. Do not assume ESS is monotone
+  // away from a well-represented endpoint, or advance using a degenerate fit.
+  if (fit.ess < minEss) return fit;
+  let hi = 1;
+  for (let i = 0; i < 40; i++) {
+    const mid = (fit.beta + hi) / 2, candidate = weightsAt(mid);
+    if (candidate.ess >= minEss) fit = candidate;
+    else hi = mid;
+  }
+  return fit;
+}
+
 // EAMIS. Returns { samples (unconstrained y vectors), logW (final IS weights),
 // K, M, T } — the caller constrains + reshapes into the posterior measure.
 function amisSample(mv: any, opts: any) {
@@ -91,12 +144,11 @@ function amisSample(mv: any, opts: any) {
   const M = opts.amisSamples ?? Math.max(50, Math.min(500, Math.round((opts.draws ?? 1000) / 4)));
   const T = opts.amisIters ?? 20;
   const seed = opts.seed ?? 0;
-  const epsK = opts.amisEpsK ?? 0.005;      // auto-K threshold on ‖Δμ‖₂ (paper §IV-D)
+  const epsK = opts.amisEpsK ?? 0.005;      // auto-K Gaussian KL threshold (§IV-D)
   const ridge = 1e-6;
-  // Prior-scale diagonal regularization protects every covariance direction,
-  // including nearly collinear fitted samples. Raising marginal variances by
-  // row/column scaling alone preserves near-singular correlations.
-  const floorFrac = opts.amisFloorFrac ?? 0.01;
+  // Numerical diagonal regularization, not an exploration floor: a fixed 1%
+  // of prior variance can dwarf every posterior direction in an informative model.
+  const floorFrac = opts.amisFloorFrac ?? 1e-12;
   const onProgress = typeof opts.onProgress === 'function' ? opts.onProgress : null;
 
   const baseKey = rng.keyFromSeed(seed);
@@ -145,8 +197,8 @@ function amisSample(mv: any, opts: any) {
   // 1…K−1 and the sample's representative max(tau[i], K) in slot K−1.
   const logQ: number[][] = [];
   let K: number | null = null;          // frozen when adaptation stalls
-  let prevMu: Float64Array | null = null;
   let finalLogW = new Float64Array(0);
+  let beta = 0;
 
   for (let t = 1; t <= T; t++) {
     const p = makeProposal(mu, Sigma, dim);
@@ -173,7 +225,11 @@ function amisSample(mv: any, opts: any) {
       }
       batch[m] = x;
     }
-    const lt = (typeof mv.logPosteriorBatch === 'function')
+    const split = typeof mv.logPriorLikBatch === 'function' ? mv.logPriorLikBatch(batch) : null;
+    const lt = split ? Float64Array.from(split.prior, (x: number, i: number) => {
+      const lp = x + split.lik[i];
+      return Number.isFinite(lp) ? lp : -Infinity;
+    }) : (typeof mv.logPosteriorBatch === 'function')
       ? mv.logPosteriorBatch(batch)
       : batch.map((x: Float64Array) => mv.logPosterior(x));
     // A first proposal (drawn at prior scale) whose every sample scores −∞ means
@@ -205,12 +261,10 @@ function amisSample(mv: any, opts: any) {
       logQ.push(row);
     }
 
-    // Auto-K (§IV-D): once the proposal mean stops moving, freeze K = t−1 and
-    // switch to the reduced (efficient) mixture for subsequent re-weightings.
-    if (K === null && prevMu) {
-      let d2 = 0;
-      for (let d = 0; d < dim; d++) { const e = mu[d] - prevMu[d]; d2 += e * e; }
-      if (Math.sqrt(d2) < epsK) {
+    // Freeze only after fitting the full target and checking both Gaussian
+    // moments. Bridge stages can keep the mean fixed while changing the scale.
+    if (K === null && pIdx > 0 && beta === 1) {
+      if (proposalKL(p, proposals[pIdx - 1], dim) < epsK) {
         K = t - 1 > 0 ? t - 1 : 1;
         for (let i = 0; i < logQ.length; i++) {
           const row = logQ[i];
@@ -247,11 +301,37 @@ function amisSample(mv: any, opts: any) {
     const wbar = new Float64Array(X.length);
     for (let i = 0; i < X.length; i++) wbar[i] = Math.exp(logW[i] - lse);
 
+    const minEss = Math.min(M, Math.max(dim + 2, M / 10));
+    let sumSq = 0;
+    for (const w of wbar) sumSq += w * w;
+    // Hard support can make the first positive temperature discontinuous.
+    // Accumulated posterior hits can still support a full-target covariance.
+    if (1 / sumSq >= minEss) beta = 1;
+    let fitWeights = wbar, fitX = X;
+    if (beta < 1) {
+      const lq = batch.map(x => mvnLogpdf(x, p, dim, solveScratch));
+      const lq0: number[] = split ? Array.from(split.prior)
+        : batch.map(x => mvnLogpdf(x, proposals[0], dim, solveScratch));
+      let fit = bridgeWeights(lq0, lt, lq, beta, minEss);
+      if (fit.ess < minEss) {
+        // A Gaussian may miss even the prior, especially with heavy tails.
+        // Fit toward this rung from q_t without advancing the outer bridge.
+        const logRung = lq0.map((v, i) => beta === 0 ? v : (1 - beta) * v + beta * lt[i]);
+        fit = { ...bridgeWeights(lq, logRung, lq, 0, minEss), beta };
+      }
+      if (fit.ess <= dim) {
+        if (onProgress) onProgress(t / T, 'amis');
+        continue;
+      }
+      beta = fit.beta;
+      fitX = batch;
+      fitWeights = fit.weights;
+    }
     const newMu = new Float64Array(dim);
-    for (let i = 0; i < X.length; i++) for (let d = 0; d < dim; d++) newMu[d] += wbar[i] * X[i][d];
+    for (let i = 0; i < fitX.length; i++) for (let d = 0; d < dim; d++) newMu[d] += fitWeights[i] * fitX[i][d];
     const newSigma = new Float64Array(dim * dim);
-    for (let i = 0; i < X.length; i++) {
-      const w = wbar[i], x = X[i];
+    for (let i = 0; i < fitX.length; i++) {
+      const w = fitWeights[i], x = fitX[i];
       for (let a = 0; a < dim; a++) {
         const da = x[a] - newMu[a];
         for (let b = 0; b <= a; b++) {
@@ -260,13 +340,13 @@ function amisSample(mv: any, opts: any) {
         }
       }
     }
-    for (let d = 0; d < dim; d++) newSigma[d * dim + d] += ridge;
     // Sigma >= diag(floorVar) in PSD order; the same regularized proposal
     // supplies both draws and their Gaussian importance denominator.
     for (let d = 0; d < dim; d++) newSigma[d * dim + d] += floorVar[d];
-    prevMu = mu;
     mu = newMu;
-    Sigma = newSigma;
+    // A new tail hit can dominate historical weights even after the bridge.
+    // Retain the last covariance until enough points support another fit.
+    if (fitX !== X || 1 / sumSq >= minEss) Sigma = newSigma;
     if (onProgress) onProgress(t / T, 'amis');
   }
 

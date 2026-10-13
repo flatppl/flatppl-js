@@ -1,0 +1,24 @@
+%%%
+# Bayesian linear regression
+
+PosteriorDB's `sblri-blr`. Normal coefficient priors and a half-Normal
+noise prior accompany the supplied design matrix. Normalizing the half-Normal
+adds the constant log(2) to the original Stan target.
+%%%
+flatppl_compat = "0.1"
+
+N = 100
+D = 5
+data = load_data("data/sblri.json", cartprod(
+    X = cartpow(reals, [N, D]), y = cartpow(reals, N)))
+
+beta ~ iid(Normal(0, 10), D)
+sigma ~ normalize(truncate(Normal(0, 10), interval(0, inf)))
+y ~ Normal.(data.X * beta, sigma)
+
+Pi_prior = lawof(record(beta = beta, sigma = sigma))
+K_model = kernelof(record(y = y), beta = beta, sigma = sigma)
+L = likelihoodof(K_model, record(y = data.y))
+Pi_post = bayesupdate(L, Pi_prior)
+Pi_post_domain = cartprod(beta = cartpow(reals, D), sigma = posreals)
+Pi_post_input = record(beta = zeros(D), sigma = 1.0)
