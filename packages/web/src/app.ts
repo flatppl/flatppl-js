@@ -841,8 +841,13 @@
     list.className = 'file-list';
     list.hidden = !open;
     if (open) {
+      // A folder's introduction precedes both its subfolders and its models.
+      const readmes = node.entries.filter(entry => /^readme\.(md|markdown)$/i.test(basenameOf(entry.path)));
+      for (const entry of readmes) list.appendChild(fileRow(entry, currentModel, node.kind));
       for (const child of node.folders) renderFolder(child, list, currentModel, query, depth + 1);
-      for (const entry of node.entries) list.appendChild(fileRow(entry, currentModel, node.kind));
+      for (const entry of node.entries) {
+        if (!readmes.includes(entry)) list.appendChild(fileRow(entry, currentModel, node.kind));
+      }
     }
     folder.appendChild(list);
     parent.appendChild(folder);
