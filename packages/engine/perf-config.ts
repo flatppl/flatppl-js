@@ -76,6 +76,8 @@ const OPTIMIZATIONS: Record<string, boolean> = {
   'density.iidLeaf': true,
   // Resolve one scalar mixture's parameters once per atom and iid plate.
   'density.scalarMixture': true,
+  // Reuse the batch scorer's dependency proof for scalar point environments.
+  'mcmc.scalarEnv': true,
   // aggregate(...) pattern dispatch — matmul, dot-product, outer-
   // product, etc. specialisers in sampler-aggregate.AGGREGATE_PATTERNS.
   // When disabled, every aggregate falls through to the

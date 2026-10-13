@@ -25,6 +25,7 @@ const density       = require('./density.ts');
 const irShared      = require('./ir-shared.ts');
 const sampler       = require('./sampler.ts');
 const lower         = require('./lower.ts');
+const { getOptimization } = require('./perf-config.ts');
 const { logTotalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
 const { crnNormalizeMassExpr } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
@@ -444,6 +445,11 @@ async function buildLogPi(
   // Build the scoring env at a point: fixed + draws + derived (eval only, no
   // lowering). Vector draws land as plain arrays so index ops resolve.
   function buildEnv(pt: Record<string, any>): Record<string, any> {
+    // Use the batch scorer's existing proof: both terms need only draws
+    // and fixed values. Composite/derived-dependent priors keep this walk.
+    if (likPerAtomAllDraws && !priorNeedsDerived && getOptimization('mcmc.scalarEnv')) {
+      return leanEnvOf(pt);
+    }
     const env: Record<string, any> = Object.assign({}, fixedEnvObj);
     for (const k in pt) {
       const v = pt[k];
