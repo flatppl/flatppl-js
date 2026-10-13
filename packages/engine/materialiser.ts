@@ -3232,6 +3232,9 @@ function _clearMaterialiserPipeline(): void {
 // `next` for symmetry but never calls it — it IS the final step.
 const kindDispatchStage: MaterialiserStage = function (name, ctx, _next) {
   const d = ctx.derivations[name];
+  if (!d && ctx.bindings?.get(name)?.type === 'data') {
+    return Promise.reject(new Error(`load_data '${name}' cannot be accessed: supply an explicit valueset instead of anything and prefetch the source in the module bundle`));
+  }
   if (!d) return Promise.reject(new Error("no derivation for '" + name + "'"));
   try {
     orchestrator.assertProjectionMassCertified(name, d);

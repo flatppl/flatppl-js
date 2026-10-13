@@ -1,224 +1,217 @@
 'use strict';
 
-// =====================================================================
-// dataload — CSV / WSV / JSON parsers for `load_data` (spec §07)
-// =====================================================================
-//
-// Per spec §07: load_data(source, valueset) reads an external data
-// source and returns either a vector or a table whose shape is
-// governed by `valueset`. All engines must support at least:
-//
-//   - JSON  (.json)  — array of objects, object of arrays, or vector
-//   - CSV   (.csv)   — comma-separated, column names in first row
-//   - WSV   (.wsv)   — whitespace-separated, column names in first row
-//   - Arrow IPC      — deferred (binary format)
-//
-// Architectural decisions per TODO-flatppl-js.md "Multi-file models":
-//   - Lazy fetching for data values: a separate dataResolver(path)
-//     callback (sampler/plot only) returns parsed values.
-//   - CSV + JSON parsers ship in the engine bundle. Arrow deferred.
-//
-// This module exposes the PARSERS (synchronous, text → value). The
-// host-side resolver layer wraps these with async fetch (web) or
-// fs.readFile (vscode-extension).
+// §07 load_data: text decoding does not infer a FlatPPL shape. The declared
+// set selects and validates one value, then constructs ordinary fixed-value
+// syntax shared by inference, linking and execution. Hosts own all I/O.
+const AST = require('./ast.ts');
+const { validateFixedVectorInput } = require('./fixed-inputs.ts');
+const { inSet } = require('./density.ts')._internal;
 
-import type { Value as ValueType } from './engine-types';
-
-// Discriminate file format by extension.
 function detectFormat(path: string): 'json' | 'csv' | 'wsv' | null {
-  const lower = path.toLowerCase();
-  if (lower.endsWith('.json'))  return 'json';
-  if (lower.endsWith('.csv'))   return 'csv';
-  if (lower.endsWith('.wsv'))   return 'wsv';
+  const lower = path.split(/[?#]/, 1)[0].toLowerCase();
+  if (lower.endsWith('.json')) return 'json';
+  if (lower.endsWith('.csv')) return 'csv';
+  if (lower.endsWith('.wsv')) return 'wsv';
   return null;
 }
 
-// =====================================================================
-// JSON
-// =====================================================================
-//
-// Three accepted shapes per spec §07:
-//   - array of objects     [{a: 1, b: 2}, {a: 3, b: 4}]
-//     → table { a: Value, b: Value }
-//   - object of arrays     { a: [1, 3], b: [2, 4] }
-//     → table { a: Value, b: Value }
-//   - vector               [1.0, 2.0, 3.0]
-//     → Value rank-1
-//
-// The engine doesn't validate against `valueset` here — that's a
-// caller responsibility (typeinfer + downstream classifier).
+function parseJSON(text: string): any { return JSON.parse(text); }
+function parseCSV(text: string): any { return parseDelimited(text, ','); }
+function parseWSV(text: string): any { return parseDelimited(text, /\s+/); }
 
-function parseJSON(text: string): any {
-  const data = JSON.parse(text);
-  // Vector (array of scalars)
-  if (Array.isArray(data) && data.length > 0
-      && (typeof data[0] === 'number' || typeof data[0] === 'boolean')) {
-    const out = new Float64Array(data.length);
-    for (let i = 0; i < data.length; i++) {
-      out[i] = data[i] === true ? 1 : data[i] === false ? 0 : +data[i];
-    }
-    return { shape: [data.length], data: out };
+// Keep cells as text until their selected scalar schema is known. In
+// particular, an empty cell is missing data, not JavaScript Number('') = 0.
+function parseDelimited(text: string, separator: string | RegExp): any {
+  const rows = text.split(/\r?\n/).filter(line => line.trim() && !line.trim().startsWith('#'))
+    .map(line => splitRow(line, separator));
+  if (!rows.length) throw new Error('load_data: missing column headers');
+  const header = rows[0].map(cell => cell.trim());
+  if (header.some(name => !name) || new Set(header).size !== header.length) {
+    throw new Error('load_data: column headers must be nonempty and distinct');
   }
-  // Array of objects (array-of-structs).
-  if (Array.isArray(data) && data.length > 0
-      && typeof data[0] === 'object' && data[0] !== null
-      && !Array.isArray(data[0])) {
-    const keys = Object.keys(data[0]);
-    const table: Record<string, ValueType> = {};
-    for (const k of keys) {
-      const col = new Float64Array(data.length);
-      for (let i = 0; i < data.length; i++) {
-        const v = (data[i] as any)[k];
-        col[i] = v === true ? 1 : v === false ? 0 : +v;
-      }
-      table[k] = { shape: [data.length], data: col };
-    }
-    return table;
-  }
-  // Object of arrays (struct-of-arrays).
-  if (data && typeof data === 'object' && !Array.isArray(data)) {
-    const table: Record<string, ValueType> = {};
-    let n = -1;
-    for (const k in data) {
-      if (!Object.prototype.hasOwnProperty.call(data, k)) continue;
-      const col = data[k];
-      if (!Array.isArray(col)) {
-        throw new Error('parseJSON: struct-of-arrays column "' + k
-          + '" must be an array, got ' + typeof col);
-      }
-      if (n < 0) n = col.length;
-      else if (col.length !== n) {
-        throw new Error('parseJSON: struct-of-arrays columns have unequal length ('
-          + n + ' vs ' + col.length + ' at "' + k + '")');
-      }
-      const c = new Float64Array(col.length);
-      for (let i = 0; i < col.length; i++) {
-        c[i] = col[i] === true ? 1 : col[i] === false ? 0 : +col[i];
-      }
-      table[k] = { shape: [col.length], data: c };
-    }
-    return table;
-  }
-  // Empty array — empty vector.
-  if (Array.isArray(data)) return { shape: [0], data: new Float64Array(0) };
-  throw new Error('parseJSON: unsupported JSON shape; expected array-of-objects, '
-    + 'object-of-arrays, or vector');
-}
-
-// =====================================================================
-// CSV / WSV
-// =====================================================================
-//
-// First row: column names.  Subsequent rows: numeric values.
-//
-// CSV: comma-separated, optional surrounding double-quotes on cells,
-//      double-quote-escaped internal quotes ("a""b" → a"b). No multi-
-//      line cells.
-// WSV: any run of whitespace is a separator.
-//
-// Empty trailing rows are dropped. Lines starting with '#' are
-// treated as comments (skipped) — common convention in scientific
-// data sets.
-
-function parseCSV(text: string): any {
-  return _parseDelimited(text, ',');
-}
-
-function parseWSV(text: string): any {
-  return _parseDelimited(text, /\s+/);
-}
-
-function _parseDelimited(text: string, sep: string | RegExp): any {
-  const lines = text.split(/\r?\n/);
-  // Filter out empty + comment lines.
-  const rows: string[][] = [];
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed === '' || trimmed.startsWith('#')) continue;
-    rows.push(_splitRow(line, sep));
-  }
-  if (rows.length === 0) return { shape: [0], data: new Float64Array(0) };
-  const header = rows[0];
-  // Single-column case → vector (per spec §07 "Tabular data with a
-  // single column can be loaded as a vector instead of a table,
-  // depending on valueset"). Without the valueset we don't know;
-  // return a vector of the second-row-onwards if there's exactly
-  // one column.
-  if (header.length === 1) {
-    const data = new Float64Array(rows.length - 1);
-    for (let i = 1; i < rows.length; i++) {
-      data[i - 1] = +rows[i][0];
-    }
-    return { shape: [data.length], data };
-  }
-  // Multi-column → table.
-  const table: Record<string, ValueType> = {};
+  const columns: Record<string, Array<string | undefined>> = Object.create(null);
   for (let c = 0; c < header.length; c++) {
-    const col = new Float64Array(rows.length - 1);
-    for (let i = 1; i < rows.length; i++) {
-      const cell = rows[i][c];
-      col[i - 1] = cell == null ? NaN : +cell;
-    }
-    table[header[c]] = { shape: [rows.length - 1], data: col };
+    columns[header[c]] = rows.slice(1).map(row => row[c]);
   }
-  return table;
+  return columns;
 }
 
-function _splitRow(line: string, sep: string | RegExp): string[] {
-  if (typeof sep !== 'string') {
-    // Whitespace: trim + split on /\s+/.
-    return line.trim().split(sep);
+function splitRow(line: string, separator: string | RegExp): string[] {
+  if (typeof separator !== 'string') return line.trim().split(separator);
+  const cells: string[] = [];
+  let cell = '', quoted = false, closed = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (quoted) {
+      if (c !== '"') cell += c;
+      else if (line[i + 1] === '"') { cell += '"'; i++; }
+      else { quoted = false; closed = true; }
+    } else if (c === separator) {
+      cells.push(cell); cell = ''; closed = false;
+    } else if (c === '"' && !cell.trim() && !closed) {
+      cell = ''; quoted = true;
+    } else if (closed && !/\s/.test(c)) {
+      throw new Error('load_data: unexpected text after a quoted CSV cell');
+    } else cell += c;
   }
-  // CSV: simple split with quoted-cell handling.
-  const out: string[] = [];
-  let i = 0;
-  while (i < line.length) {
-    if (line[i] === '"') {
-      // Quoted cell.
-      let j = i + 1;
-      let cell = '';
-      while (j < line.length) {
-        if (line[j] === '"') {
-          if (line[j + 1] === '"') { cell += '"'; j += 2; continue; }
-          break;
-        }
-        cell += line[j]; j++;
-      }
-      out.push(cell);
-      i = j + 1;
-      // Skip the separator after the closing quote, if any.
-      if (line[i] === sep) i++;
-      continue;
-    }
-    // Bare cell up to next separator.
-    let j = i;
-    while (j < line.length && line[j] !== sep) j++;
-    out.push(line.slice(i, j));
-    i = j + 1;     // skip separator
-  }
-  return out;
+  if (quoted) throw new Error('load_data: unterminated quoted CSV cell');
+  cells.push(cell);
+  return cells;
 }
-
-// =====================================================================
-// Format dispatch
-// =====================================================================
-//
-// Given a path + raw text, decide which parser to use and run it.
-// Used by host-side resolvers that have already fetched the text.
 
 function parseByExtension(path: string, text: string): any {
-  const fmt = detectFormat(path);
-  if (fmt === 'json') return parseJSON(text);
-  if (fmt === 'csv')  return parseCSV(text);
-  if (fmt === 'wsv')  return parseWSV(text);
-  throw new Error('load_data: unsupported file extension for "' + path
-    + '"; engine supports .json, .csv, .wsv (Arrow IPC deferred)');
+  const format = detectFormat(path);
+  if (format === 'json') return parseJSON(text);
+  if (format === 'csv') return parseCSV(text);
+  if (format === 'wsv') return parseWSV(text);
+  throw new Error(`load_data: unsupported file extension for '${path}'; this engine supports JSON, CSV and WSV text (Arrow IPC and Safetensors are not implemented)`);
 }
 
-module.exports = {
-  detectFormat,
-  parseJSON,
-  parseCSV,
-  parseWSV,
-  parseByExtension,
-};
+// Resolve schemas separately from values: a named set is not an ordinary
+// evaluated value, whereas its bounds and dimensions are fixed values.
+function resolveSchema(ir: any, resolveValue: (ir: any) => any,
+  resolveSet: (ir: any) => any, depth = 0): any {
+  if (!ir || depth > 64) throw new Error('load_data: valueset must be a fixed, supported set');
+  if (ir.kind === 'ref') return resolveSchema(resolveSet(ir), resolveValue, resolveSet, depth + 1);
+  if (ir.kind === 'const') return { kind: ir.name };
+  if (ir.kind !== 'call') throw new Error('load_data: valueset must be a set');
+  const args = ir.args || [];
+  const child = (s: any) => resolveSchema(s, resolveValue, resolveSet, depth + 1);
+  const dimension = (s: any): number => {
+    const n = resolveValue(s);
+    if (!Number.isSafeInteger(n) || n < 0) throw new Error('load_data: dimensions must be fixed nonnegative integers');
+    return n;
+  };
+  if (ir.op === 'interval') {
+    const lo = resolveValue(args[0]), hi = resolveValue(args[1]);
+    if (typeof lo !== 'number' || typeof hi !== 'number' || !(lo <= hi)) {
+      throw new Error('load_data: interval bounds must be fixed ordered real values');
+    }
+    return { kind: 'interval', lo, hi };
+  }
+  if (['ordered', 'zerosum', 'stdsimplex'].includes(ir.op)) {
+    return { kind: ir.op, n: dimension(args[0]) };
+  }
+  if (ir.op === 'cartprod') {
+    return ir.fields ? { kind: 'record', fields: ir.fields.map((f: any) => ({ name: f.name, schema: child(f.value) })) }
+      : { kind: 'product', elements: args.map(child) };
+  }
+  if (ir.op === 'cartpow') {
+    const size = resolveValue(args[1]);
+    const shape = typeof size === 'number' ? [size]
+      : size?.shape?.length === 1 ? Array.from(size.data) : null;
+    if (!shape || shape.some((n: any) => !Number.isSafeInteger(n) || n < 0)) {
+      throw new Error('load_data: dimensions must be a fixed integer or integer vector');
+    }
+    return { kind: 'array', shape, element: child(args[0]) };
+  }
+  throw new Error(`load_data: unsupported valueset '${ir.op}'`);
+}
+
+function containsAnything(schema: any): boolean {
+  return schema.kind === 'anything' || (schema.element && containsAnything(schema.element))
+    || schema.fields?.some((f: any) => containsAnything(f.schema))
+    || schema.elements?.some(containsAnything) || false;
+}
+
+/** Produce a fixed RHS without changing the original source AST. */
+function valueExpression(raw: any, schema: any, loc: any, textCells = false, at = 'value'): any {
+  const fail = (reason: string): never => { throw new Error(`load_data: ${at} ${reason}`); };
+  const call = (name: string, args: any[]) => ({ ...AST.CallExpr(AST.Identifier(name, loc), args, loc), builtin: true });
+  const number = (n: number, real = false) => AST.NumberLiteral(n,
+    real && Number.isInteger(n) ? `${n}.0` : String(n), loc);
+  const vector = (items: any[]) => AST.ArrayLiteral(items, loc);
+  const convert = (v: any, s: any, path: string) => valueExpression(v, s, loc, textCells, path);
+  const field = (object: any, name: string) => {
+    if (!object || typeof object !== 'object' || Array.isArray(object)
+        || !Object.prototype.hasOwnProperty.call(object, name)) fail(`is missing field '${name}'`);
+    return object[name];
+  };
+  if (schema.kind === 'record') {
+    return call('record', schema.fields.map((f: any) =>
+      AST.KeywordArg(f.name, convert(field(raw, f.name), f.schema, `${at}.${f.name}`), loc)));
+  }
+  if (schema.kind === 'product') {
+    // §03 positional products concatenate component vectors, rather than
+    // nesting them. Consume those contiguous components from the source.
+    const length = (s: any): number => {
+      if (s.kind === 'product') return s.elements.reduce((n: number, child: any) => n + length(child), 0);
+      if (s.kind === 'array' && s.shape.length === 1) return s.shape[0];
+      if (['ordered', 'zerosum', 'stdsimplex'].includes(s.kind)) return s.n;
+      if (s.kind === 'array' || s.kind === 'record') fail('uses an unsupported positional product shape');
+      return 1;
+    };
+    const lengths = schema.elements.map(length);
+    if (!Array.isArray(raw) || raw.length !== lengths.reduce((a: number, b: number) => a + b, 0)) fail('does not match the product shape');
+    let offset = 0;
+    return call('cat', schema.elements.map((s: any, i: number) => {
+      const array = ['array', 'product', 'ordered', 'zerosum', 'stdsimplex'].includes(s.kind);
+      const value = array ? raw.slice(offset, offset + lengths[i]) : raw[offset];
+      offset += lengths[i];
+      return convert(value, s, `${at}[${i + 1}]`);
+    }));
+  }
+  if (schema.kind === 'array') {
+    const shape: number[] = schema.shape;
+    if (shape.length === 1 && schema.element.kind === 'record') {
+      const n = shape[0];
+      return call('table', schema.element.fields.map((f: any) => {
+        const column = Array.isArray(raw)
+          ? raw.slice(0, n).map((row, i) => {
+            if (!row || !Object.prototype.hasOwnProperty.call(row, f.name)) fail(`row ${i + 1} is missing field '${f.name}'`);
+            return row[f.name];
+          }) : field(raw, f.name);
+        return AST.KeywordArg(f.name, convert(column,
+          { kind: 'array', shape: [n], element: f.schema }, `${at}.${f.name}`), loc);
+      }));
+    }
+    // A single delimited column may be selected as a vector, per §07.
+    if (textCells && shape.length === 1 && raw && !Array.isArray(raw)
+        && typeof raw === 'object' && Object.keys(raw).length === 1) raw = raw[Object.keys(raw)[0]];
+    const leaves: any[] = [];
+    function descend(value: any, axis: number, path: string): void {
+      if (axis === shape.length) { leaves.push(convert(value, schema.element, path)); return; }
+      if (!Array.isArray(value) || value.length < shape[axis]
+          || (shape.length !== 1 && value.length !== shape[axis])) fail(`does not match shape [${shape}] at ${path}`);
+      for (let i = 0; i < shape[axis]; i++) descend(value[i], axis + 1, `${path}[${i + 1}]`);
+    }
+    descend(raw, 0, at);
+    if (shape.length === 1) return vector(leaves);
+    if (['array', 'product', 'record', 'ordered', 'zerosum', 'stdsimplex', 'complexes'].includes(schema.element.kind)) {
+      fail('requires a multidimensional array with unsupported element structure');
+    }
+    if (shape.length === 2 && shape[0] > 0) {
+      const rows = Array.from({ length: shape[0] }, (_, i) => vector(leaves.slice(i * shape[1], (i + 1) * shape[1])));
+      return call('rowstack', [vector(rows)]);
+    }
+    return call('array', [vector(leaves), vector(shape.map(n => number(n))),
+      vector(shape.map((_, i) => number(i + 1)))]);
+  }
+  if (['ordered', 'zerosum', 'stdsimplex'].includes(schema.kind)) {
+    if (!Array.isArray(raw) || raw.length !== schema.n) fail(`does not match ${schema.kind}(${schema.n})`);
+    const elements = raw.map((v: any, i: number) => convert(v, { kind: 'reals' }, `${at}[${i + 1}]`));
+    const values = elements.map((e: any) => e.value);
+    try { validateFixedVectorInput(at, values, { vs: schema.kind, n: schema.n }); }
+    catch (_) { fail(`is outside ${schema.kind}(${schema.n})`); }
+    return vector(elements);
+  }
+  if (textCells && typeof raw === 'string') {
+    const cell = raw.trim();
+    if (schema.kind === 'booleans' && /^(true|false)$/i.test(cell)) raw = cell.toLowerCase() === 'true';
+    else if (cell && /^[+-]?(?:(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|inf(?:inity)?)$/i.test(cell)) {
+      raw = /inf/i.test(cell) ? (cell.startsWith('-') ? -Infinity : Infinity) : Number(cell);
+    } else fail('is missing or is not a scalar of its declared set');
+  }
+  if (schema.kind === 'booleans') {
+    if (typeof raw !== 'boolean') fail('is not a boolean');
+    return AST.BoolLiteral(raw, loc);
+  }
+  if (typeof raw !== 'number' || Number.isNaN(raw)) fail(`is not a number in ${schema.kind}`);
+  if (schema.kind === 'complexes') return call('complex', [number(raw, true), number(0, true)]);
+  if (!inSet(raw, schema)) fail(`is outside ${schema.kind}`);
+  if (schema.kind.endsWith('integers') && !Number.isSafeInteger(raw)) fail('is outside the exact JavaScript integer range');
+  return number(raw, !schema.kind.endsWith('integers'));
+}
+
+module.exports = { detectFormat, parseJSON, parseCSV, parseWSV, parseByExtension,
+  resolveSchema, containsAnything, valueExpression };

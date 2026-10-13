@@ -487,6 +487,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           return write(T.failed('unsupported source scheme'), expr);
         }
       }
+      return write(setValueType(expr.kwargs?.valueset || expr.args?.[1], scopes) || T.deferred(), expr);
     }
 
     // §07's collection domain, on the BARE call, for the same reason and from

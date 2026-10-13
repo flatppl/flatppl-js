@@ -691,7 +691,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
     // namespace handle (spec §11), never a value. Without it every model
     // that names a standard module drew a spurious "produced no value —
     // this is an engine gap" error.
-    if (t === 'input' || t === 'lawof' || t === 'likelihood' || t === 'module') return true;
+    if (t === 'input' || t === 'data' || t === 'lawof' || t === 'likelihood' || t === 'module') return true;
     return isCallableLikeBindingType(t);
   }
   // (`bindingLoc` declared above, ahead of `fixedValues`.)

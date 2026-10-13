@@ -75,7 +75,8 @@ const nm        = join(repoRoot, 'node_modules');
 // from it directly; otherwise we fetch the pinned ref from GitHub. Same
 // pattern as packages/vscode-extension/build-vendor.mjs uses for
 // flatppl-grammars.
-const examplesSibling = join(dirname(repoRoot), 'flatppl-examples');
+// Isolated previews can use a worktree without repointing the shared sibling.
+const examplesSibling = process.env.EXAMPLES_DIR || join(dirname(repoRoot), 'flatppl-examples');
 // Pin to a branch (`main`) during dev; switch to a commit SHA or release
 // tag for stable nightly deploys.
 const examplesPin = 'main';
