@@ -140,7 +140,12 @@ test('Flat refuses prior draws and prior-drawing importance sampling', async () 
     { backend: 'is' }), /no prior sampler/);
   for (const backend of ['amis', 'smc']) {
     await assert.rejects(() => materialiser.materialiseMeasure('posterior', ctx,
-      { backend, chains: 4, draws: 2, warmup: 0 }), /prior initialization/);
+      { backend, chains: 4, draws: 2, warmup: 0 }), (error: Error) => {
+      assert.ok(error.message.includes(`backend '${backend}'`));
+      assert.match(error.message, /sampleable joint prior/);
+      assert.doesNotMatch(error.message, /initPositions/);
+      return true;
+    });
   }
 });
 
