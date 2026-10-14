@@ -35,17 +35,20 @@
 // cycle and keeps those internals unexported.
 
 const opsModule = require('./ops.ts');
+const { getOptimization } = require('./perf-config.ts');
 
 let _OPS: any = null;
 let _evaluateExpr: any = null;
 let _evaluateCall: any = null;
 let _resolveConst: any = null;
+let _getField: any = null;
 
 function initProfileCompiler(deps: any): void {
   _OPS = deps.ARITH_OPS;
   _evaluateExpr = deps.evaluateExpr;
   _evaluateCall = deps.evaluateCall;
   _resolveConst = deps.resolveConst;
+  _getField = deps.getField;
 }
 
 // Ops that read or advance RNG state, or whose value otherwise depends
@@ -408,6 +411,24 @@ function _compileCall(node: any, S: Session): any {
   // from the env at run time — opaque.
   if (node.target && node.target.ns) return _opaque(node);
   const op = node.op;
+  if (getOptimization('evaluate.recordBodies')) {
+    if (op === 'get_field' && node.args?.length === 2) {
+      const object = _compileNode(node.args[0], S);
+      const key = _compileNode(node.args[1], S);
+      return function (env: any) { return _getField(object(env), key(env)); };
+    }
+    if (op === 'record' && Array.isArray(node.fields)
+        && !(node.fields.length === 0 && node.args?.length === 1)) {
+      const fields = node.fields.map((field: any) => ({
+        name: field.name, value: _compileNode(field.value, S),
+      }));
+      return function (env: any) {
+        const out: Record<string, any> = {};
+        for (const field of fields) out[field.name] = field.value(env);
+        return out;
+      };
+    }
+  }
   // Anything without an ARITH_OPS entry is opaque. That INCLUDES the
   // higher-order ops — `aggregate`, `broadcast`, `reduce`, `scan`,
   // `filter` — which `evaluateCall` dispatches through

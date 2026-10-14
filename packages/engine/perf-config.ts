@@ -66,6 +66,8 @@
 // lift to a context option.
 
 const OPTIMIZATIONS: Record<string, boolean> = {
+  // Compile record construction and field access in reusable value bodies.
+  'evaluate.recordBodies': true,
   // Compile scalar positional joints with one private environment per atom.
   'density.scalarJoint': true,
   // Consume scalar composite iid observations without suffix copies.
