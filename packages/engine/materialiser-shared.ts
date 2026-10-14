@@ -529,7 +529,8 @@ function inlineCallableRefs(ir: any, bindings: any): any {
 // bindings (no measure derivation), so prepareDensityRefs would try to
 // getMeasure them → "no derivation for 'a'".
 //
-// This walk inlines every evaluable VALUE binding (recursively) so the
+// This walk inlines evaluable VALUE bindings (recursively), except prepared
+// fixed tensors that cannot depend on the boundary, so the
 // dist-params end up expressed in the boundary inputs, which it keeps as
 // `self` refs (NOT %local) so the caller's fed-column overlay + the
 // per-atom accessor — both keyed by bare self-ref name — still resolve them.
@@ -538,6 +539,12 @@ function inlineCallableRefs(ir: any, bindings: any): any {
 function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any): any {
   const bindings = ctx && ctx.bindings;
   const derivations = ctx && ctx.derivations;
+  // Fixed values belong to this initialized context (§04 phases). An explicit
+  // boundary can override a fixed ancestor through arbitrarily many bindings
+  // or named callables. Keep the existing expansion for that whole query.
+  const preserveFixed = ctx?.fixedValues
+    && !Array.from(boundarySet).some(name => ctx.fixedValues.has(name));
+  const resolveFixed = preserveFixed && require('./fixed-eval.ts').makeResolver();
   const visiting = new Set<string>();
   // Distinct refs to the same deterministic binding share its completed
   // expansion. Record recurrences otherwise expand the same DAG as a tree.
@@ -623,6 +630,12 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
           || isContainerValue
           || (!drv && target && target.ir && target.ir.kind === 'call'));
       if (isEvaluableValue && target && target.ir) {
+        if (preserveFixed && !isBoxMeasure && ctx.fixedValues.has(name)) {
+          const value = ctx.fixedValues.get(name);
+          // Exact normalizers still need scalar and set expressions expanded.
+          // Keep prepared tensor data in the existing fixed-value channel.
+          if (valueLib.isValue(value) && value.shape.length > 0) return node;
+        }
         const before = cycleCount;
         visiting.add(name);
         const sub = walk(target.ir);
@@ -639,7 +652,22 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
       if (!out) { out = {}; for (const key in node) out[key] = node[key]; }
       out[k] = walked;
     }
-    return out || node;
+    const result = out || node;
+    const container = result.args?.[0];
+    // Scalar selections remain visible to exact normalizers and mixture plans,
+    // while the source tensor stays shared through the fixed-value channel.
+    if (preserveFixed && result.kind === 'call' && !result.target
+        && (result.op === 'get' || result.op === 'get0') && result.args.length >= 2
+        && container?.kind === 'ref' && container.ns === 'self'
+        && result.args.slice(1).every((arg: any) => arg.kind === 'lit' && typeof arg.value === 'number')) {
+      const value = ctx.fixedValues.get(container.name);
+      if (valueLib.isValue(value) && value.shape.length > 0) {
+        const selected = resolveFixed({ ...result,
+          args: [{ kind: 'lit', value }, ...result.args.slice(1)] });
+        if (typeof selected === 'number') return { kind: 'lit', value: selected, loc: result.loc };
+      }
+    }
+    return result;
   }
   return walk(ir);
 }
