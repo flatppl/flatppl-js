@@ -423,6 +423,18 @@ factory and logarithmic tilt corrections retain their ordinary scorer. Normal
 broadcast plates also share scalar or singleton scale terms while means vary.
 No prepared parameter values survive a scoring call.
 
+`density.fixedLikelihood` reduces scalar IID Normal, Gamma, Beta, small-count
+Poisson, fixed-trial Binomial and Exponential likelihoods to sufficient statistics.
+Rank-1 constructor broadcasts also reduce when all parameters are shared scalars,
+singletons or fixed homogeneous vectors; fixed expressions and splat proofs cache
+once, while runtime vectors retain ordinary scoring.
+`buildLogPi` creates one private observation snapshot per scorer; summaries belong
+only to its storage regions, including typed subviews. Public `logDensityN` keeps
+caller observations live. Runtime parameters resolve on every call, Gamma/Beta boundaries
+and Poisson counts >=64 fall back, and logarithmic tilt scorers retain their own
+formulas. Custom density pipeline stages receive a disposable copy with reductions
+disabled, preserving hooks without exposing the retained snapshot.
+
 `density.binomialCoefficients` memoizes at most 1,024 resolved `(n, k)` pairs per
 Binomial IR and coefficient formula. Scalar, broadcast, IID and mixture scoring
 share the memo without retaining environments. Changed inputs miss the cache;

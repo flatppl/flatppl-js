@@ -75,7 +75,9 @@ const stdlibLog1p = require('@stdlib/math-base-special-log1p');
 const forwardCdf = require('./forward-cdf.ts');
 const bcAxes = require('./kernel-broadcast-axes.ts');
 const shared  = require('./materialiser-shared.ts');
+const fixedLikelihood = require('./fixed-likelihood.ts');
 const { getOptimization } = require('./perf-config.ts');
+const FIXED_OBSERVATIONS = Symbol('fixed observations');
 
 // =====================================================================
 // Shape helpers — atom-independent consume/rest splitting
@@ -998,11 +1000,27 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
     return null;
   }
 
-  const { head, rest } = repeat > 1 ? consumeVector(value, repeat) : consumeScalar(value);
+  // Delay ordinary consumption: its plain-array prefix conversion is linear,
+  // while a valid fixed-data reduction needs only the owned region descriptor.
+  let consumed: any;
+  const consume = () => consumed ??= repeat > 1 ? consumeVector(value, repeat) : consumeScalar(value);
+  const restOfPlate = () => repeat > 1
+    && (valueLib.isValue(value) ? value.shape[0] : value.length) === repeat ? null : consume().rest;
+  // Only the internal prepared scorer can attach ownership. Tilt corrections
+  // have their own natural-parameter arithmetic and must never be replaced.
+  const ordinary = kernelName === 'Binomial' ? binomialLogpdf(ir) : densityPrims.builtinLogdensityofPositional;
+  const reduction = repeat > 1 && blp === ordinary && getOptimization('density.fixedLikelihood')
+    ? opts[FIXED_OBSERVATIONS]?.reduce : null;
   // Hot path: no per-atom refs AND no overlay → params constant across
   // atoms. Resolve once, broadcast.
   if (refNames.length === 0 && !overlayKeys) {
     const params = samplerLib.resolveParams(ir, entry, baseEnv);
+    const reduced = reduction ? reduction(ir, value, repeat, params) : null;
+    if (reduced !== null) {
+      for (let i = 0; i < N; i++) acc[i] += reduced;
+      return restOfPlate();
+    }
+    const { head, rest } = consume();
     const prepared = repeat > 1 && getOptimization('density.sharedParameters')
       ? prepareLogpdf(entry, params, blp) : null;
     for (let j = 0; j < repeat; j++) {
@@ -1057,13 +1075,16 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
       }
     }
     const params = samplerLib.resolveParams(ir, entry, callEnv);
+    const reduced = reduction ? reduction(ir, value, repeat, params) : null;
+    if (reduced !== null) { acc[i] += reduced; continue; }
+    const { head } = consume();
     const prepared = repeat > 1 && getOptimization('density.sharedParameters')
       ? prepareLogpdf(entry, params, blp) : null;
     for (let j = 0; j < repeat; j++) {
       acc[i] += prepared ? prepared(head[j]) : blp(kernelName, params, repeat > 1 ? head[j] : head, callEnv);
     }
   }
-  return rest;
+  return restOfPlate();
 }
 
 // Direct density calls and their additive folds use the density walker rather
@@ -2913,20 +2934,28 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   const refNames: string[] = refArrays ? Object.keys(refArrays).filter(
     name => !overlay || !Object.prototype.hasOwnProperty.call(overlay, name)) : [];
   const evalOpts = overlay ? { overlay } : undefined;
+  const overlayNames = overlay ? Object.keys(overlay) : [];
   const accessors: Array<(i: number, j: number) => number> = new Array(paramNames.length);
   const perAtomFlags: boolean[] = new Array(paramNames.length);
   const paramVals: any[] = new Array(paramNames.length);
   const paramUsesAtom: boolean[] = new Array(paramNames.length);
+  const reduction = getOptimization('density.fixedLikelihood') ? opts[FIXED_OBSERVATIONS] : null;
+  const sharedParams: boolean[] | null = reduction ? new Array(paramNames.length) : null;
   let anyAtomDep = false;
   for (let pi = 0; pi < paramNames.length; pi++) {
     const pIR = paramIRs[pi];
-    const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
+    const candidate = reduction?.fixedParameter(pIR);
+    const fixed = candidate && !candidate.refs.some((name: string) => refNames.includes(name) || overlayNames.includes(name))
+      ? candidate : null;
+    const v: any = fixed ? fixed.value : samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
     paramVals[pi] = v;
     // §04 collection axes belong to the value. A leading dimension equal
     // to N is not evidence of an atom axis; only per-atom references are.
-    const usesAtom = _exprUsesAny(pIR, refNames);
+    const usesAtom = !fixed && _exprUsesAny(pIR, refNames);
     perAtomFlags[pi] = usesAtom;
     paramUsesAtom[pi] = usesAtom;
+    if (sharedParams) sharedParams[pi] = fixed?.scalar !== undefined
+      || (shared.collectionAxesOf(v, N, usesAtom) || []).every((dim: number) => dim === 1);
     if (usesAtom) anyAtomDep = true;
     accessors[pi] = _broadcastParamAccessor(v, usesAtom, N,
       "broadcast(" + kernelName + ") parameter '" + paramNames[pi] + "'");
@@ -2939,6 +2968,25 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     })));
   const axes: number[] = resolved.axes;
   const Ktot: number = axes.reduce((a: number, b: number) => a * b, 1);
+
+  // §04 fixed splats and scalar/singleton inputs encode the same rank-1
+  // product as IID. Reduce only when every parameter is proved shared;
+  // generated or varying vectors retain the existing broadcast scorer.
+  if (reduction && axes.length === 1 && Ktot > 1 && sharedParams!.every(Boolean)) {
+    const reduced = new Float64Array(anyAtomDep ? N : 1);
+    let complete = true;
+    for (let i = 0; i < reduced.length; i++) {
+      const params = accessors.map(accessor => accessor(i, 0));
+      const score = reduction.reduce(ir, value, Ktot, params, kernelName);
+      if (score === null) { complete = false; break; }
+      reduced[i] = score;
+    }
+    if (complete) {
+      for (let i = 0; i < N; i++) acc[i] += reduced[anyAtomDep ? i : 0];
+      const length = valueLib.isValue(value) ? value.shape[0] : value?.length;
+      return length === Ktot ? null : consumeVector(value, Ktot).rest;
+    }
+  }
 
   // Consume the nested [d1]...[dm] variate into a flat row-major scalar buffer.
   const { cells, rest } = flattenNestedVariate(value, axes);
@@ -4102,6 +4150,27 @@ function logDensityN(ir: any, value: any, refArrays: any, count: any, opts: any)
   return logps;
 }
 
+/** Internal §04/§06 likelihood setup: capture observations once, while each
+ * invocation still resolves its current parameters and owns its environment.
+ * A custom pipeline stage may inspect or mutate values, so pass those hooks a
+ * disposable copy without cache access; the retained snapshot stays private. */
+function _prepareFixedDensityN(ir: any, observed: any, fixedEnv: any) {
+  const prepared = fixedLikelihood.prepareObservations(observed, (leaf: any) => {
+    const nIR = leaf.kwargs?.n ?? leaf.args?.[0];
+    try {
+      const n = samplerLib.evaluateExpr(nIR, fixedEnv);
+      return typeof n === 'number' && Number.isSafeInteger(n) && n >= 0 ? n : null;
+    } catch (_) { return null; }
+  }, (parameter: any) => samplerLib.evaluateExpr(parameter, fixedEnv));
+  return (refArrays: any, count: number, opts: any) => {
+    if (_DENSITY_PIPELINE.length) {
+      return logDensityN(ir, fixedLikelihood.copyObservations(prepared.snapshot), refArrays, count, opts);
+    }
+    return logDensityN(ir, prepared.snapshot, refArrays, count,
+      { ...opts, [FIXED_OBSERVATIONS]: prepared });
+  };
+}
+
 /**
  * Single-point consume — count=1 wrapper. Returns { logp, rest } in
  * the same shape as the original logDensityConsume API.
@@ -4232,6 +4301,7 @@ module.exports = {
   logDensityConsumeN,
   // Strict batched
   logDensityN,
+  _prepareFixedDensityN,
   // Single-point conveniences (count=1 of the foundation)
   logDensityConsume,
   logDensity,

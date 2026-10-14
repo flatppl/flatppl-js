@@ -78,6 +78,8 @@ const OPTIMIZATIONS: Record<string, boolean> = {
   'density.iidLeaf': true,
   // Reuse prepared parameter terms across independent observation plates.
   'density.sharedParameters': true,
+  // Reduce scalar IID likelihoods only on a prepared scorer's owned data.
+  'density.fixedLikelihood': true,
   // Reuse numeric Binomial coefficients without retaining runtime bindings.
   'density.binomialCoefficients': true,
   // Resolve one scalar mixture's parameters once per atom and iid plate.

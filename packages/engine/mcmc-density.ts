@@ -483,6 +483,9 @@ async function buildLogPi(
     try { baseEnvConst[db.name] = sampler.evaluateExpr(db.ir, baseEnvConst); } catch (_) { /* skip */ }
   }
   if (moduleReg) baseEnvConst.__moduleRegistry = moduleReg;
+  // Fixed §04 data belongs to this scorer. Repeated scalar and batch calls
+  // share private observation summaries, never the caller's mutable storage.
+  const scoreLikelihood = density._prepareFixedDensityN(likBodyIR, observed, baseEnvConst);
   // Which atom-dependent names the likelihood body actually references — only
   // those need a per-atom refArray (avoids replicating unused intermediates).
   const likRefSet = new Set<string>(); collectRefNames(likBodyIR, likRefSet);
@@ -601,7 +604,7 @@ async function buildLogPi(
     const { refArrays } = pointToRefArrays(pt);
     const opts = { parseSet: makeParseSet(env), resolveMeasureRef: NULL_REF, baseEnv: env };
     try {
-      const logps = density.logDensityN(likBodyIR, observed, refArrays, 1, opts);
+      const logps = scoreLikelihood(refArrays, 1, opts);
       const v = logps[0];
       return Number.isFinite(v) ? v : -Infinity;
     } catch (_err) { return -Infinity; }
@@ -642,7 +645,7 @@ async function buildLogPi(
     const { refArrays } = pointToRefArrays(pt);
     const opts = { parseSet: makeParseSet(env), resolveMeasureRef: NULL_REF, baseEnv: env };
     try {
-      density.logDensityN(likBodyIR, observed, refArrays, 1, opts);
+      scoreLikelihood(refArrays, 1, opts);
     } catch (err: any) {
       // ONLY the tagged §06-undefined-normalize refusal is a verdict on the
       // model. Everything else is swallowed on purpose: the probe point is
@@ -705,7 +708,7 @@ async function buildLogPi(
     }
     try {
       const opts = { parseSet: constParseSet, resolveMeasureRef: NULL_REF, baseEnv: baseEnvConst };
-      const r = density.logDensityN(likBodyIR, observed, refArrays, N, opts);
+      const r = scoreLikelihood(refArrays, N, opts);
       // If any per-atom result is NaN the density walker hit an unresolvable shape
       // conflict (e.g. atom-batched vs atom-indep ambiguity in an atom-indep param)
       // — fall back to the scalar path rather than propagating NaN as −∞.
