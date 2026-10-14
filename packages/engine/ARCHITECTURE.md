@@ -411,6 +411,12 @@ after each call. An IID observation plate reuses the resolved components, while
 a mixture of IID components retains one shared choice. Other shapes, callable
 weights and mixed references retain the general walker.
 
+`density.sharedParameters` uses each distribution's existing logpdf factory
+once per atom for IID leaves and scalar mixture components. Families without a
+factory and logarithmic tilt corrections retain their ordinary scorer. Normal
+broadcast plates also share scalar or singleton scale terms while means vary.
+No prepared parameter values survive a scoring call.
+
 `mcmc.scalarEnv` shares the batch scorer's dependency check: when both density
 terms reference only draws and fixed values, scalar scoring skips unused derived
 bindings too. Composite priors and required derived values keep the full environment.

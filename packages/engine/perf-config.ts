@@ -74,6 +74,8 @@ const OPTIMIZATIONS: Record<string, boolean> = {
   'aggregate.profileShape': true,
   // Reuse scalar leaf parameters across an iid observation vector.
   'density.iidLeaf': true,
+  // Reuse prepared parameter terms across independent observation plates.
+  'density.sharedParameters': true,
   // Resolve one scalar mixture's parameters once per atom and iid plate.
   'density.scalarMixture': true,
   // Reuse the batch scorer's dependency proof for scalar point environments.
