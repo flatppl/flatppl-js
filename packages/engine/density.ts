@@ -69,6 +69,9 @@ const samplerLib = require('./sampler.ts');
 const valueLib   = require('./value.ts');
 const densityPrims = require('./density-prims.ts');
 const stdlibBetaln = require('@stdlib/math-base-special-betaln');
+const stdlibBinomcoefln = require('@stdlib/math-base-special-binomcoefln');
+const stdlibLn = require('@stdlib/math-base-special-ln');
+const stdlibLog1p = require('@stdlib/math-base-special-log1p');
 const forwardCdf = require('./forward-cdf.ts');
 const bcAxes = require('./kernel-broadcast-axes.ts');
 const shared  = require('./materialiser-shared.ts');
@@ -726,14 +729,69 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
 /** §08: reuse a kernel's prepared formula for one numeric parameter tuple.
  * Factories own support and parameter checks. The walker retains their result
  * only for the current observation plate and parameter atom. */
-function prepareLogpdf(entry: any, params: number[]): ((x: number) => number) | null {
-  return typeof entry.logpdfFn.factory === 'function' && params.every(Number.isFinite)
-    ? entry.logpdfFn.factory(...params) : null;
+function prepareLogpdf(entry: any, params: number[], score: any = densityPrims.builtinLogdensityofPositional): ((x: number) => number) | null {
+  const logpdf = score === densityPrims.builtinLogdensityofPositional ? entry.logpdfFn : score;
+  return typeof logpdf.factory === 'function' && params.every(Number.isFinite)
+    ? logpdf.factory(...params) : null;
+}
+
+/** §08 Binomial: coefficients depend on resolved numeric n and k alone.
+ * Bound each IR-owned memo when observations or trial counts keep changing.
+ * Once full, compute new pairs without replacing useful entries. Large fixed
+ * plates then retain their cached prefix instead of cycling through clears. */
+function memoBinomialCoefficient(compute: (n: number, k: number) => number) {
+  const rows = new Map<number, Map<number, number>>();
+  let size = 0;
+  return (n: number, k: number): number => {
+    let row = rows.get(n);
+    const cached = row?.get(k);
+    if (cached !== undefined) return cached;
+    if (size === 1024) return compute(n, k);
+    if (!row) rows.set(n, row = new Map());
+    const value = compute(n, k);
+    row.set(k, value);
+    size++;
+    return value;
+  };
+}
+
+const binomialLogpdfs = new WeakMap<object, any>();
+const tiltedBinomialCoefficients = new WeakMap<object, (n: number, k: number) => number>();
+
+/** Use the installed Binomial formula and retain its scalar-coercion fallback.
+ * Prepared p terms belong to one atom; only numeric coefficients outlive it. */
+function binomialLogpdf(ir: IRNode) {
+  if (binomialLogpdfs.has(ir)) return binomialLogpdfs.get(ir);
+  const choose = memoBinomialCoefficient(stdlibBinomcoefln);
+  const ordinary = densityPrims.builtinLogdensityofPositional;
+  const validParams = (n: number, p: number) => Number.isInteger(n) && n >= 0
+    && typeof p === 'number' && p > 0 && p < 1;
+  const validPoint = (k: any, n: number) => Number.isInteger(k) && k >= 0 && k <= n;
+  function score(kernel: string, params: number[], x: any): number {
+    const [n, p] = params;
+    if (!getOptimization('density.binomialCoefficients') || !validParams(n, p) || !validPoint(x, n)) {
+      return ordinary(kernel, params, x);
+    }
+    return choose(n, x) + (x * stdlibLn(p) + (n - x) * stdlibLog1p(-p));
+  }
+  score.factory = (n: number, p: number) => {
+    const params = [n, p];
+    if (!getOptimization('density.binomialCoefficients') || !validParams(n, p)) {
+      const prepared = samplerLib._internal.REGISTRY.Binomial.logpdfFn.factory(n, p);
+      return (x: any) => typeof x === 'number' ? prepared(x) : ordinary('Binomial', params, x);
+    }
+    const success = stdlibLn(p), failure = stdlibLog1p(-p);
+    return (x: any) => validPoint(x, n)
+      ? choose(n, x) + (x * success + (n - x) * failure)
+      : ordinary('Binomial', params, x);
+  };
+  binomialLogpdfs.set(ir, score);
+  return score;
 }
 
 // Keep log-space tilt scoring outside the ordinary leaf's atom loop.
 function exponentialTiltLogpdf(ir: IRNode, kernelName: string) {
-  const ordinaryLogpdf = densityPrims.builtinLogdensityofPositional;
+  const ordinaryLogpdf = kernelName === 'Binomial' ? binomialLogpdf(ir) : densityPrims.builtinLogdensityofPositional;
   let prob = (ir as any).kwargs?.p || (ir as any).args?.[kernelName === 'Binomial' ? 1 : 0];
   while (prob?.op === 'checked') prob = prob.args[0];
   const logOdds = (kernelName === 'Bernoulli' || kernelName === 'Binomial')
@@ -752,6 +810,16 @@ function exponentialTiltLogpdf(ir: IRNode, kernelName: string) {
   // or exceeds float range. Natural parameters remain ordinary IR children,
   // so reification and substitution keep them attached to current inputs.
   if (!logOdds && !logFailure && !logRate && !inverseFailure && !logMean) return ordinaryLogpdf;
+  // Retain the tilt branch's coefficient arithmetic separately from stdlib's
+  // ordinary logpmf: both are exact formulas, but their rounding differs.
+  let tiltChoose = tiltedBinomialCoefficients.get(ir);
+  if (kernelName === 'Binomial' && !tiltChoose) {
+    tiltChoose = memoBinomialCoefficient((n, x) => {
+      const k = Math.min(x, n - x);
+      return k === 0 ? 0 : -Math.log(k) - stdlibBetaln(k, n - k + 1);
+    });
+    tiltedBinomialCoefficients.set(ir, tiltChoose);
+  }
   return (kernel: string, params: any[], x: number, env: any) => {
     if (logRate) {
       const rate = +samplerLib.evaluateExpr(logRate, env);
@@ -795,8 +863,8 @@ function exponentialTiltLogpdf(ir: IRNode, kernelName: string) {
     const success = -Math.max(-eta, 0) - common;
     const failure = -Math.max(eta, 0) - common;
     const k = Math.min(x, n - x);
-    const choose = kernel === 'Binomial' && k !== 0
-      ? -Math.log(k) - stdlibBetaln(k, n - k + 1) : 0;
+    const choose = kernel !== 'Binomial' ? 0 : getOptimization('density.binomialCoefficients')
+      ? tiltChoose!(n, x) : k === 0 ? 0 : -Math.log(k) - stdlibBetaln(k, n - k + 1);
     const successes = x === 0 ? 0 : eta > 37 ? -Math.exp(Math.log(x) - eta) : x * success;
     const failures = x === n ? 0 : eta < -37 ? -Math.exp(Math.log(n - x) + eta) : (n - x) * failure;
     return choose + successes + failures;
@@ -935,8 +1003,8 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   // atoms. Resolve once, broadcast.
   if (refNames.length === 0 && !overlayKeys) {
     const params = samplerLib.resolveParams(ir, entry, baseEnv);
-    const prepared = repeat > 1 && blp === densityPrims.builtinLogdensityofPositional
-      && getOptimization('density.sharedParameters') ? prepareLogpdf(entry, params) : null;
+    const prepared = repeat > 1 && getOptimization('density.sharedParameters')
+      ? prepareLogpdf(entry, params, blp) : null;
     for (let j = 0; j < repeat; j++) {
       const logp = prepared ? prepared(head[j]) : blp(kernelName, params, repeat > 1 ? head[j] : head, baseEnv);
       for (let i = 0; i < N; i++) acc[i] += logp;
@@ -989,8 +1057,8 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
       }
     }
     const params = samplerLib.resolveParams(ir, entry, callEnv);
-    const prepared = repeat > 1 && blp === densityPrims.builtinLogdensityofPositional
-      && getOptimization('density.sharedParameters') ? prepareLogpdf(entry, params) : null;
+    const prepared = repeat > 1 && getOptimization('density.sharedParameters')
+      ? prepareLogpdf(entry, params, blp) : null;
     for (let j = 0; j < repeat; j++) {
       acc[i] += prepared ? prepared(head[j]) : blp(kernelName, params, repeat > 1 ? head[j] : head, callEnv);
     }
@@ -2883,7 +2951,7 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
 
   // Consume the nested [d1]...[dm] variate into a flat row-major scalar buffer.
   const { cells, rest } = flattenNestedVariate(value, axes);
-  const blp = densityPrims.builtinLogdensityofPositional;
+  const blp = kernelName === 'Binomial' ? binomialLogpdf(ir) : densityPrims.builtinLogdensityofPositional;
   const P = paramNames.length;
   const params = new Array(P);
 
@@ -3312,8 +3380,8 @@ function walkScalarMixture(plan: any, value: any, refArrays: any, N: number,
       for (let k = 0; k < components.length; k++) {
         const component = components[k];
         params[k] = samplerLib.resolveParams(component.leaf, component.entry, env);
-        prepared[k] = total > 1 && component.logpdf === densityPrims.builtinLogdensityofPositional
-          && getOptimization('density.sharedParameters') ? prepareLogpdf(component.entry, params[k]) : null;
+        prepared[k] = total > 1 && getOptimization('density.sharedParameters')
+          ? prepareLogpdf(component.entry, params[k], component.logpdf) : null;
         if (component.weight) weights[k] = scalarMixtureWeight(component.weight.expr, env);
       }
       const shift = plan.shift ? scalarMixtureWeight(plan.shift.expr, env) : 0;

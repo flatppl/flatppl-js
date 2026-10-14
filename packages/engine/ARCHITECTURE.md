@@ -417,6 +417,12 @@ factory and logarithmic tilt corrections retain their ordinary scorer. Normal
 broadcast plates also share scalar or singleton scale terms while means vary.
 No prepared parameter values survive a scoring call.
 
+`density.binomialCoefficients` memoizes at most 1,024 resolved `(n, k)` pairs per
+Binomial IR and coefficient formula. Scalar, broadcast, IID and mixture scoring
+share the memo without retaining environments. Changed inputs miss the cache;
+once full, new pairs compute without insertion. Logarithmic tilt coefficients retain
+their existing formula separately, while parameter preparation still applies.
+
 `mcmc.scalarEnv` shares the batch scorer's dependency check: when both density
 terms reference only draws and fixed values, scalar scoring skips unused derived
 bindings too. Composite priors and required derived values keep the full environment.
