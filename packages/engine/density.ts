@@ -723,6 +723,14 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
 
 // ---- Per-op handlers (the in-place accumulators) --------------------
 
+/** §08: reuse a kernel's prepared formula for one numeric parameter tuple.
+ * Factories own support and parameter checks. The walker retains their result
+ * only for the current observation plate and parameter atom. */
+function prepareLogpdf(entry: any, params: number[]): ((x: number) => number) | null {
+  return typeof entry.logpdfFn.factory === 'function' && params.every(Number.isFinite)
+    ? entry.logpdfFn.factory(...params) : null;
+}
+
 // Keep log-space tilt scoring outside the ordinary leaf's atom loop.
 function exponentialTiltLogpdf(ir: IRNode, kernelName: string) {
   const ordinaryLogpdf = densityPrims.builtinLogdensityofPositional;
@@ -927,8 +935,10 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   // atoms. Resolve once, broadcast.
   if (refNames.length === 0 && !overlayKeys) {
     const params = samplerLib.resolveParams(ir, entry, baseEnv);
+    const prepared = repeat > 1 && blp === densityPrims.builtinLogdensityofPositional
+      && getOptimization('density.sharedParameters') ? prepareLogpdf(entry, params) : null;
     for (let j = 0; j < repeat; j++) {
-      const logp = blp(kernelName, params, repeat > 1 ? head[j] : head, baseEnv);
+      const logp = prepared ? prepared(head[j]) : blp(kernelName, params, repeat > 1 ? head[j] : head, baseEnv);
       for (let i = 0; i < N; i++) acc[i] += logp;
     }
     return rest;
@@ -979,8 +989,10 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
       }
     }
     const params = samplerLib.resolveParams(ir, entry, callEnv);
+    const prepared = repeat > 1 && blp === densityPrims.builtinLogdensityofPositional
+      && getOptimization('density.sharedParameters') ? prepareLogpdf(entry, params) : null;
     for (let j = 0; j < repeat; j++) {
-      acc[i] += blp(kernelName, params, repeat > 1 ? head[j] : head, callEnv);
+      acc[i] += prepared ? prepared(head[j]) : blp(kernelName, params, repeat > 1 ? head[j] : head, callEnv);
     }
   }
   return rest;
@@ -2875,6 +2887,28 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   const P = paramNames.length;
   const params = new Array(P);
 
+  // §04 independent products and §08 Normal: a scalar or singleton scale is
+  // shared across the observation plate. Prepare the existing logpdf formula
+  // once per atom, retaining the ordinary path for invalid parameters.
+  if (kernelName === 'Normal' && Ktot > 1
+      && resolved.strides.sigma.every((stride: number) => stride === 0)
+      && getOptimization('density.sharedParameters')) {
+    const atoms = anyAtomDep ? N : Math.min(N, 1);
+    for (let i = 0; i < atoms; i++) {
+      const sigma = accessors[1](i, 0);
+      const prepared = Number.isFinite(sigma) && sigma > 0 ? prepareLogpdf(entry, [0, sigma]) : null;
+      let total = 0;
+      for (let cell = 0; cell < Ktot; cell++) {
+        const coord = bcAxes.cellToCoord(cell, axes);
+        const mu = accessors[0](i, bcAxes.coordToOffset(coord, resolved.strides.mu));
+        total += prepared ? prepared(cells[cell] - mu) : blp(kernelName, [mu, sigma], cells[cell]);
+      }
+      if (anyAtomDep) acc[i] += total;
+      else if (total !== 0) for (let dst = 0; dst < N; dst++) acc[dst] += total;
+    }
+    return rest;
+  }
+
   if (!anyAtomDep) {
     // Atom-indep: compute the sum once, fan out.
     let total = 0;
@@ -3264,6 +3298,7 @@ function walkScalarMixture(plan: any, value: any, refArrays: any, N: number,
   const scores = new Float64Array(components.length);
   const params = new Array(components.length);
   const weights = new Array(components.length);
+  const prepared = new Array(components.length);
   try {
     for (let i = 0; i < atoms; i++) {
       const env = Object.assign({}, baseEnv);
@@ -3277,6 +3312,8 @@ function walkScalarMixture(plan: any, value: any, refArrays: any, N: number,
       for (let k = 0; k < components.length; k++) {
         const component = components[k];
         params[k] = samplerLib.resolveParams(component.leaf, component.entry, env);
+        prepared[k] = total > 1 && component.logpdf === densityPrims.builtinLogdensityofPositional
+          && getOptimization('density.sharedParameters') ? prepareLogpdf(component.entry, params[k]) : null;
         if (component.weight) weights[k] = scalarMixtureWeight(component.weight.expr, env);
       }
       const shift = plan.shift ? scalarMixtureWeight(plan.shift.expr, env) : 0;
@@ -3287,7 +3324,7 @@ function walkScalarMixture(plan: any, value: any, refArrays: any, N: number,
           scores[k] = 0;
           for (let t = 0; t < plan.size; t++) {
             const x = total === 1 ? head : head[j * plan.size + t];
-            scores[k] += component.logpdf(component.leaf.op, params[k], x, env);
+            scores[k] += prepared[k] ? prepared[k](x) : component.logpdf(component.leaf.op, params[k], x, env);
           }
           if (component.weight) component.weight.combine(scores, k, weights[k]);
           if (scores[k] > max) max = scores[k];
