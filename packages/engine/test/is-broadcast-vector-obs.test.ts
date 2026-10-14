@@ -3,11 +3,11 @@
 // kernel-broadcast-of-builtin likelihood (`y ~ Bernoulli.(p)`) over a VECTOR
 // observation, where the per-observation parameter `p` derives from a per-atom
 // latent. walkBroadcast computed `paramUsesAtom` from a STATIC scan of the
-// refArrays names only; in the IS path the derived per-atom `p` is threaded via
-// baseEnv, so the scan missed it → collectionAxesOf kept the leading N (atom)
+// refArrays names only, without visiting the function body that captures beta.
+// The scan missed it → collectionAxesOf kept the leading N (atom)
 // axis → axes=[N, Nobs] while the shared observed is [Nobs] → flattenNestedVariate
-// "axis 0 wants dim=N but got Array of length <Nobs>". Fix: also treat a rank-≥2
-// param value whose leading axis is the atom axis as atom-batched (unambiguous).
+// "axis 0 wants dim=N but got Array of length <Nobs>". Follow captured refs,
+// since ordinary matrices can also have a leading dimension equal to N.
 //
 // Oracle (Distributions.jl, independent): the Bernoulli log-likelihood of the
 // hierarchical-logistic model at mu=[0.3,-0.5], sigma=[1.2,0.8],

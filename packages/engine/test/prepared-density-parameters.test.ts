@@ -31,12 +31,12 @@ posterior = bayesupdate(L, P)
 });
 
 inBothModes('Normal matrix plates distinguish singleton and varying scales', 'density.sharedParameters', async () => {
-  for (const scales of [[[2]], [[.5, 2]]]) {
+  for (const count of [1, 2, 3]) for (const scales of [[[2]], [[.5, 2]]]) {
     const { ctx } = ctxFor(`
 means = rowstack([[0, 1], [2, 3]])
 scales = rowstack(${JSON.stringify(scales)})
 score = logdensityof(Normal.(means, scales), rowstack([[.2, 1.4], [2.7, 2.8]]))
-`, 3);
+`, count);
     const result = await ctx.getMeasure('score');
     const observed = [.2, 1.4, 2.7, 2.8];
     const expected = observed.reduce((s, x, i) => s + normal(x, i, scales[0][i % scales[0].length]), 0);
@@ -62,6 +62,34 @@ plain = logdensityof(iid(A, 3), ${JSON.stringify(ys)})
   ] as const) {
     const result = await ctx.getMeasure(name);
     near((result.value?.data || result.samples)[0], expected);
+  }
+});
+
+inBothModes('matrix kernel arguments retain axes when their rows equal the atom count', 'density.sharedParameters', async () => {
+  const observed = [.2, 1.4, 2.7, 2.8];
+  const expected = observed.reduce((s, x, i) => s + Math.log(
+    .3 * Math.exp(normal(x, i, 2)) + .7 * Math.exp(normal(x, i + 1, 2))), 0);
+  const { ctx } = ctxFor(`
+means = rowstack([[0, 1], [2, 3]])
+K = m -> superpose(weighted(.3, Normal(m, 2)), weighted(.7, Normal(m + 1, 2)))
+score = logdensityof(K.(means), rowstack([[.2, 1.4], [2.7, 2.8]]))
+`, 2);
+  const result = await ctx.getMeasure('score');
+  for (const score of result.value?.data || result.samples) near(score, expected);
+});
+
+inBothModes('observed joint fields replace captured sample columns during broadcast scoring', 'density.sharedParameters', async () => {
+  for (const law of ['Normal.(p, 1)', 'K.(p)']) {
+    const { ctx } = ctxFor(`
+a ~ iid(Normal(0, 1), 2)
+f = x -> sum(a) + x
+p = f.([0, 1])
+K = m -> superpose(weighted(.3, Normal(m, 1)), weighted(.7, Normal(m, 1)))
+y ~ ${law}
+score = logdensityof(lawof(record(a = a, y = y)), record(a = [0, 0], y = [0, 1]))
+`, 2);
+    const result = await ctx.getMeasure('score');
+    for (const score of result.value?.data || result.samples) near(score, 4 * normal(0, 0, 1));
   }
 });
 
