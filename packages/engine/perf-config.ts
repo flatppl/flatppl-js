@@ -76,6 +76,8 @@ const OPTIMIZATIONS: Record<string, boolean> = {
   'density.iidLeaf': true,
   // Reuse prepared parameter terms across independent observation plates.
   'density.sharedParameters': true,
+  // Reuse numeric Binomial coefficients without retaining runtime bindings.
+  'density.binomialCoefficients': true,
   // Resolve one scalar mixture's parameters once per atom and iid plate.
   'density.scalarMixture': true,
   // Reuse the batch scorer's dependency proof for scalar point environments.
