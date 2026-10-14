@@ -1,7 +1,8 @@
 // @flatppl/web — responsive workspace layout.
 //
 // Wide screens retain the user's saved pane widths. Narrow screens use one
-// main pane and a modal Files drawer, without overwriting those desktop widths.
+// column with a modal Files drawer, without overwriting those desktop widths.
+// Content toggles always leave at least one pane visible, at every viewport size.
 // The viewer observes its container, so changing panes needs no data reload.
 
 'use strict';
@@ -66,12 +67,11 @@
     const backdrop = document.getElementById('files-backdrop');
     const sourceButton = document.getElementById('show-source-btn');
     const viewerButton = document.getElementById('show-viewer-btn');
-    const splitButton = document.getElementById('show-split-btn');
+    const sourceToolbar = document.getElementById('source-toolbar');
     const media = globalScope.matchMedia('(max-width: 900px)') as MediaQueryList;
     const state = loadState();
     let compact = media.matches;
-    let mainPane: MainPane = 'source';
-    let focusedPane: MainPane | null = null;
+    let focusedPane: MainPane | null = compact ? 'source' : null;
     let drawerOpen = false;
     let drawerOpener: HTMLElement | null = null;
     let finishResize: (() => void) | null = null;
@@ -137,9 +137,11 @@
       app!.style.gridTemplateColumns = compact ? 'minmax(0, 1fr)'
         : `${filesWidth}px ${state.collapsed ? 0 : HANDLE_PX}px minmax(0, ${sourcePart}) ${focusedPane ? 0 : HANDLE_PX}px minmax(0, ${viewerPart})`;
       app!.dataset.layout = compact ? 'compact' : 'wide';
+      app!.dataset.mainPane = focusedPane || 'split';
       filesPane!.hidden = compact ? !drawerOpen : state.collapsed;
-      sourcePane!.hidden = compact ? mainPane !== 'source' : focusedPane === 'viewer';
-      viewerPane!.hidden = compact ? mainPane !== 'viewer' : focusedPane === 'source';
+      sourcePane!.hidden = focusedPane === 'viewer';
+      if (sourceToolbar) sourceToolbar.hidden = sourcePane!.hidden;
+      viewerPane!.hidden = focusedPane === 'source';
       handleFS.hidden = compact || state.collapsed;
       handleSV.hidden = compact || focusedPane !== null;
       if (backdrop) backdrop.hidden = !compact || !drawerOpen;
@@ -155,12 +157,14 @@
       }
       const filesVisible = compact ? drawerOpen : !state.collapsed;
       toggleButton?.setAttribute('aria-expanded', String(filesVisible));
+      toggleButton?.setAttribute('aria-pressed', String(filesVisible));
       if (toggleButton) toggleButton.title = filesVisible ? 'Hide file list' : 'Show file list';
-      sourceButton?.setAttribute('aria-pressed', String(compact ? mainPane === 'source' : focusedPane === 'source'));
-      viewerButton?.setAttribute('aria-pressed', String(compact ? mainPane === 'viewer' : focusedPane === 'viewer'));
-      splitButton?.setAttribute('aria-pressed', String(!focusedPane));
-      if (sourceButton) sourceButton.title = compact ? 'Show Source' : 'Focus Source';
-      if (viewerButton) viewerButton.title = compact ? 'Show Visualization' : 'Focus Visualization';
+      sourceButton?.setAttribute('aria-pressed', String(!sourcePane!.hidden));
+      viewerButton?.setAttribute('aria-pressed', String(!viewerPane!.hidden));
+      if (sourceButton) sourceButton.title = sourcePane!.hidden ? 'Show Source'
+        : focusedPane ? 'Switch to Visualization' : 'Hide Source';
+      if (viewerButton) viewerButton.title = viewerPane!.hidden ? 'Show Visualization'
+        : focusedPane ? 'Switch to Source' : 'Hide Visualization';
       if (!handleFS.hidden) setRange(handleFS, MIN_FILES_WIDTH, maxFiles, filesWidth, 'Files');
       if (!handleSV.hidden) setRange(handleSV, MIN_PANE_PX, area - MIN_PANE_PX, sourcePx, 'Source');
     }
@@ -255,29 +259,30 @@
       }
     }
 
-    /** Reveal cross-pane navigation targets without changing a desktop split view. */
+    /** Reveal cross-pane navigation targets without changing an existing split view. */
     function showPane(pane: MainPane) {
       const otherPane = pane === 'source' ? viewerPane : sourcePane;
-      const moveFocus = (compact || focusedPane !== null) && otherPane!.contains(document.activeElement);
-      mainPane = pane;
+      const moveFocus = focusedPane !== null && (otherPane!.contains(document.activeElement)
+        || (pane === 'viewer' && sourceToolbar?.contains(document.activeElement)));
       if (focusedPane) focusedPane = pane;
       closeFiles();
       applyGrid();
       if (moveFocus) (pane === 'source' ? sourceButton : viewerButton)?.focus();
     }
 
-    function focusPane(pane: MainPane) {
-      mainPane = pane;
-      if (!compact) focusedPane = pane;
+    /** Hiding the sole visible pane switches to its peer, so the workspace stays usable. */
+    function togglePane(pane: MainPane) {
+      finishResize?.();
+      const other = pane === 'source' ? 'viewer' : 'source';
+      focusedPane = focusedPane === other ? null : other;
       applyGrid();
     }
 
     toggleButton?.addEventListener('click', toggleFiles);
     closeButton?.addEventListener('click', closeFiles);
     backdrop?.addEventListener('click', closeFiles);
-    sourceButton?.addEventListener('click', () => focusPane('source'));
-    viewerButton?.addEventListener('click', () => focusPane('viewer'));
-    splitButton?.addEventListener('click', () => { focusedPane = null; applyGrid(); });
+    sourceButton?.addEventListener('click', () => togglePane('source'));
+    viewerButton?.addEventListener('click', () => togglePane('viewer'));
 
     // The modal drawer keeps focus within Files. Inert siblings also block
     // pointer activation and screen-reader navigation through the backdrop.
@@ -300,8 +305,6 @@
       finishResize?.();
       closeFiles();
       compact = media.matches;
-      if (viewerPane!.contains(document.activeElement)) mainPane = 'viewer';
-      else if (sourcePane!.contains(document.activeElement)) mainPane = 'source';
       applyGrid();
     });
     globalScope.addEventListener('resize', () => { finishResize?.(); applyGrid(); });

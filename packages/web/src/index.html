@@ -3,7 +3,7 @@
   @flatppl/web — gallery shell entry point.
 
   Wide screens share space between Files, Source, and Visualization.
-  Narrow screens use a Files drawer and one main pane at a time.
+  Narrow screens use a Files drawer and stack the active content panes.
 -->
 <html lang="en" data-fp-active="play">
 <head>
@@ -31,61 +31,15 @@
   <div id="app">
     <!-- flatppl-theme:header -->
     <div id="app-toolbar" aria-label="Playground navigation">
-      <button class="fp-btn fp-btn--icon" id="toggle-files" type="button"
-              aria-controls="files-pane" aria-expanded="true" title="Hide file list">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 3.5h11v9h-11zm3 0v9M3.5 5.5h1m-1 2h1m-1 2h1"/></svg>
-        <span class="fp-sr-only">Toggle file list</span>
-      </button>
-      <button class="fp-btn fp-btn--icon" id="nav-back" type="button" title="Back (Alt+Left)">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 3 4.5 8l5 5"/></svg>
-        <span class="fp-sr-only">Back</span>
-      </button>
-      <button class="fp-btn fp-btn--icon" id="nav-forward" type="button" title="Forward (Alt+Right)">
-        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6.5 3 5 5-5 5"/></svg>
-        <span class="fp-sr-only">Forward</span>
-      </button>
-      <span id="app-title">Playground</span>
       <div id="pane-switch" role="group" aria-label="Workspace layout">
+        <button class="fp-btn" id="toggle-files" type="button"
+                aria-controls="files-pane" aria-expanded="true" aria-pressed="true" title="Hide file list">Files</button>
         <button class="fp-btn" id="show-source-btn" type="button"
-                aria-controls="source-pane" aria-pressed="false" title="Focus Source">Source</button>
+                aria-controls="source-toolbar source-pane" aria-pressed="true" title="Hide Source">Source</button>
         <button class="fp-btn" id="show-viewer-btn" type="button"
-                aria-controls="viewer-pane" aria-pressed="false" title="Focus Visualization">Visualization</button>
-        <button class="fp-btn" id="show-split-btn" type="button"
-                aria-controls="source-pane viewer-pane" aria-pressed="true" title="Show Source and Visualization">Split</button>
+                aria-controls="viewer-pane" aria-pressed="true" title="Hide Visualization">Visualization</button>
       </div>
-    </div>
-
-    <button id="files-backdrop" type="button" tabindex="-1" aria-label="Close Files" hidden></button>
-    <aside class="pane" id="files-pane" aria-label="Files">
-      <div class="pane-header pane-header--row">
-        <span class="pane-header-text">Files</span>
-        <button class="fp-btn fp-btn--icon" id="new-file-btn" type="button"
-                title="New file (unsaved draft)"
-                aria-label="New file"
-                hidden>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
-        </button>
-        <button class="fp-btn fp-btn--icon" id="upload-btn" type="button"
-                title="Upload .flatppl, .md/.markdown, .hs3.json, or .pyhf.json files (or drag-and-drop into the file list)"
-                aria-label="Upload"
-                hidden>
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2m0 0L5 5m3-3 3 3M3 9v4h10V9"/></svg>
-        </button>
-        <button class="fp-btn fp-btn--icon" id="close-files-btn" type="button" aria-label="Close Files" title="Close Files">
-          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>
-        </button>
-      </div>
-      <div id="file-search">
-        <label class="fp-sr-only" for="file-filter">Find models</label>
-        <input class="fp-input" id="file-filter" type="search" placeholder="Find models" autocomplete="off" spellcheck="false">
-      </div>
-      <div class="pane-body" id="file-tree">
-        <div class="pane-placeholder">File tree appears here once a manifest is loaded.</div>
-      </div>
-    </aside>
-
-    <section class="pane" id="source-pane" aria-label="Source">
-      <div class="pane-header pane-header--row">
+      <div id="source-toolbar" class="pane-header pane-header--row">
         <span id="source-header" class="pane-header-text">Source</span>
         <button class="fp-btn fp-btn--icon" id="edit-toggle" type="button"
                 title="Toggle edit mode"
@@ -130,6 +84,46 @@
           </svg>
         </button>
       </div>
+    </div>
+
+    <button id="files-backdrop" type="button" tabindex="-1" aria-label="Close Files" hidden></button>
+    <aside class="pane" id="files-pane" aria-label="Files">
+      <div class="pane-header pane-header--row">
+        <span class="pane-header-text">Files</span>
+        <button class="fp-btn fp-btn--icon" id="nav-back" type="button" title="Back (Alt+Left)">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.5 3 4.5 8l5 5"/></svg>
+          <span class="fp-sr-only">Back</span>
+        </button>
+        <button class="fp-btn fp-btn--icon" id="nav-forward" type="button" title="Forward (Alt+Right)">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m6.5 3 5 5-5 5"/></svg>
+          <span class="fp-sr-only">Forward</span>
+        </button>
+        <button class="fp-btn fp-btn--icon" id="new-file-btn" type="button"
+                title="New file (unsaved draft)"
+                aria-label="New file"
+                hidden>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
+        </button>
+        <button class="fp-btn fp-btn--icon" id="upload-btn" type="button"
+                title="Upload .flatppl, .md/.markdown, .hs3.json, or .pyhf.json files (or drag-and-drop into the file list)"
+                aria-label="Upload"
+                hidden>
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2m0 0L5 5m3-3 3 3M3 9v4h10V9"/></svg>
+        </button>
+        <button class="fp-btn fp-btn--icon" id="close-files-btn" type="button" aria-label="Close Files" title="Close Files">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="m4 4 8 8M12 4l-8 8"/></svg>
+        </button>
+      </div>
+      <div id="file-search">
+        <label class="fp-sr-only" for="file-filter">Find models</label>
+        <input class="fp-input" id="file-filter" type="search" placeholder="Find models" autocomplete="off" spellcheck="false">
+      </div>
+      <div class="pane-body" id="file-tree">
+        <div class="pane-placeholder">File tree appears here once a manifest is loaded.</div>
+      </div>
+    </aside>
+
+    <section class="pane" id="source-pane" aria-label="Source">
       <div id="source-status" role="status" aria-live="polite"></div>
       <div id="save-error" role="alert" hidden>
         <span id="save-error-message">This file could not be saved in this browser. Your draft is still open.</span>
@@ -147,7 +141,6 @@
     </section>
 
     <section class="pane" id="viewer-pane" aria-label="Visualization">
-      <div class="pane-header pane-header--row"><span class="pane-header-text">Visualization</span></div>
       <div class="pane-body">
         <div id="welcome-actions" hidden>
           <h1>Explore a model</h1>

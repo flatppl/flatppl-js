@@ -310,10 +310,11 @@ and the web gallery host has its own dev server
 → http://localhost:8001/). The two web servers target different concerns —
 viewer is the DAG/plot viewer in isolation; `packages/web` is the full
 gallery shell with file search, source editing, and source ↔ DAG navigation.
-`web/src/layout.ts` owns desktop splits and the compact Files drawer / pane
-switch at 900px. `app.ts` retains per-file drafts until explicit Save or
-Discard. `user-store.ts` keeps failed saves distinct from durable entries
-for Retry, Revert, and unload warnings. `build-files.mjs` publishes the ordered
+`web/src/layout.ts` owns independent Files visibility and Source/Visualization
+toggles that always retain at least one content pane. At 900px, Files uses a drawer
+and two visible content panes stack vertically. `app.ts` retains per-file drafts
+until explicit Save or Discard. `user-store.ts` keeps failed saves distinct from
+durable entries for Retry, Revert, and unload warnings. `build-files.mjs` publishes the ordered
 `flatppl-examples/collections.json` roots and their support assets. `app.ts`
 indexes the manifest once for nested folders, persistent expansion, and global
 search. Restart the build after changing sibling collections. CI deploys

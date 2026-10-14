@@ -31,7 +31,6 @@
 
   let sourceHeader: any = null;
   let fileTree:     any = null;
-  let titleEl:      any = null;
   let viewer:       any = null;
   let manifest:     any = null;
   let layout:       any = null;
@@ -1440,7 +1439,6 @@
   async function boot() {
     sourceHeader = document.getElementById('source-header');
     fileTree     = document.getElementById('file-tree');
-    titleEl      = document.getElementById('app-title');
     fileFilter   = document.getElementById('file-filter') as HTMLInputElement | null;
     fileFilter?.addEventListener('input', function () {
       renderTree(window.FlatPPLWebRouter.parseHash().model);
@@ -1505,7 +1503,7 @@
     if (backBtn) backBtn.addEventListener('click', function () { window.history.back(); });
     if (fwdBtn)  fwdBtn.addEventListener('click',  function () { window.history.forward(); });
 
-    // "Visualize whole module" button in the source-pane header.
+    // "Visualize whole module" button in the shared source toolbar.
     // Drops the focused target so the DAG renders every binding.
     // Routes purely through the hash router — the viewer's
     // host.setTarget hook keeps URL = viewer focus in sync, so
@@ -1837,9 +1835,6 @@
     try {
       manifest = await window.FlatPPLWebManifest.load();
       buildCorpusTree();
-      if (titleEl && manifest.title) {
-        titleEl.textContent = manifest.title;
-      }
     } catch (err: any) {
       console.warn('[@flatppl/web] manifest load failed (non-fatal):', err.message);
       manifest = null;

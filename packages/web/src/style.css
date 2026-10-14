@@ -97,8 +97,9 @@ html, body {
   background: var(--fp-bg);
   border-bottom: 1px solid var(--fp-border);
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 0.6em;
+  gap: 0 0.6em;
   padding: 0 var(--fp-gutter);
   font-weight: 600;
   letter-spacing: 0.02em;
@@ -107,7 +108,6 @@ html, body {
   display: flex;
   align-items: center;
   gap: 3px;
-  margin-left: auto;
 }
 #pane-switch .fp-btn {
   padding: 0.2em 0.65em;
@@ -122,12 +122,10 @@ html, body {
 #close-files-btn,
 .touch-label { display: none; }
 
-#toggle-files,
 #nav-back,
 #nav-forward {
   color: var(--fp-text-muted);
 }
-#toggle-files:hover,
 #nav-back:hover,
 #nav-forward:hover { color: var(--fp-accent); }
 #app-toolbar svg,
@@ -181,9 +179,9 @@ html, body {
   border-right: 1px solid var(--border);
 }
 .pane:last-child { border-right: none; }
-.pane[hidden], .resize-handle[hidden], #surface-root[hidden] { display: none; }
+.pane[hidden], .resize-handle[hidden], #surface-root[hidden], #source-toolbar[hidden] { display: none; }
 
-/* Dense desktop headers share a baseline. Source actions wrap when needed,
+/* Dense desktop headers share a baseline. File actions wrap when needed,
    and touch layouts use taller controls instead of clipping those actions. */
 .pane-header {
   background: var(--bg-header);
@@ -212,7 +210,8 @@ html, body {
   text-overflow: ellipsis;
 }
 
-#source-pane > .pane-header {
+#files-pane > .pane-header,
+#source-toolbar {
   flex-wrap: wrap;
   flex: 0 0 auto;
   height: auto;
@@ -220,6 +219,16 @@ html, body {
   overflow: visible;
   padding-top: 3px;
   padding-bottom: 3px;
+}
+#source-toolbar {
+  flex: 1 1 300px;
+  min-width: 0;
+  padding-left: 0;
+  padding-right: 0;
+  background: transparent;
+  border-bottom: 0;
+  font-weight: normal;
+  letter-spacing: normal;
 }
 #source-header { min-width: 8em; }
 .file-list-description { display: block; white-space: normal; font-size: 11px; color: var(--fp-text-muted); }
@@ -239,7 +248,6 @@ html, body {
   color: var(--fp-on-accent);
 }
 .pane-header button[hidden] { display: none; }
-#viewer-pane > .pane-header { overflow-x: auto; }
 #source-status {
   flex: 0 0 auto;
   padding: 4px 12px;
@@ -743,11 +751,14 @@ html, body {
 @media (max-width: 900px) {
   #app { grid-template-columns: minmax(0, 1fr); }
   #source-pane, #viewer-pane { grid-column: 1; border-right: 0; }
-  #app-toolbar { min-height: 48px; gap: 4px; padding: 2px 4px; }
-  #app-title, #show-split-btn { display: none; }
-  #pane-switch { flex: 1 1 auto; justify-content: flex-end; gap: 1px; }
+  #app-toolbar { min-height: 48px; gap: 0 4px; padding: 2px 4px; }
+  #pane-switch { flex: 1 1 auto; gap: 3px; }
   #pane-switch .fp-btn { padding: 0 6px; font-size: 12px; }
-  #app-toolbar > .fp-btn { flex: 0 0 44px; }
+  #app[data-main-pane="split"] {
+    grid-template-rows: auto minmax(var(--fp-pane-header-h), auto) minmax(0, 1fr) minmax(0, 1fr) auto;
+  }
+  #app[data-main-pane="split"] #viewer-pane { grid-row: 4; }
+  #app[data-main-pane="split"] > .fp-shell-footer { grid-row: 5; }
   #files-pane {
     position: fixed;
     inset: 0 auto 0 0;
@@ -781,7 +792,6 @@ html, body {
     padding: 2px 8px;
     gap: 4px;
   }
-  #source-pane > .pane-header { flex-wrap: wrap; overflow: visible; }
   #source-header { flex: 1 0 100%; min-height: 24px; line-height: 24px; }
   #source-status { padding: 5px 8px; }
   .cm-tooltip.cm-tooltip-hover .cm-source-hover { max-width: calc(100vw - 32px); }
