@@ -2321,7 +2321,7 @@ _evalBatched.initARITHOPSN(ARITH_OPS);
 // already bound here.
 const _profileCompile = require('./sampler-profile-compile.ts');
 _profileCompile.initProfileCompiler({
-  ARITH_OPS, evaluateExpr, evaluateCall, resolveConst,
+  ARITH_OPS, evaluateExpr, evaluateCall, resolveConst, getField,
 });
 
 // =====================================================================
@@ -2753,6 +2753,14 @@ function _broadcastApplyFrame(fn: any, inputs: any, env: any, bodyPlan: any, res
 const _classifyBroadcastSlot = _broadcastShape.classifyAxisStructure;
 const _tryStackBroadcastCells = _broadcastShape.tryStackBroadcastCells;
 
+function getField(obj: any, key: any): any {
+  if (obj == null || typeof obj !== 'object') {
+    throw new Error(`evaluateExpr: get_field target is not a record (got ${typeof obj})`);
+  }
+  // Tables store their fields in the column map.
+  return obj.__table__ === true && obj.columns ? obj.columns[key] : obj[key];
+}
+
 function evaluateCall(ir: any, env: any): any {
   // Cross-module call dispatch — `(call target=({ns: <module-alias>,
   // name: X}) args, kwargs)` where <module-alias> is a load_module /
@@ -2928,15 +2936,7 @@ function evaluateCall(ir: any, env: any): any {
     }
     const obj: any = evaluateExpr(args[0], env);
     const key: any = args[1] && args[1].kind === 'lit' ? args[1].value : evaluateExpr(args[1], env);
-    if (obj == null || typeof obj !== 'object') {
-      throw new Error(`evaluateExpr: get_field target is not a record (got ${typeof obj})`);
-    }
-    // Table column access (spec §03): a __table__-marked value's
-    // fields are in `obj.columns`, not directly on `obj`.
-    if (obj.__table__ === true && obj.columns) {
-      return obj.columns[key];
-    }
-    return obj[key];
+    return getField(obj, key);
   }
   // get(container, sel, ...) / get0(...) — spec §07 unified element /
   // subset / axis-slice access. All of `v[i]`, `A[i,j]`, `A[:,j]`,

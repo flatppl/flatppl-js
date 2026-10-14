@@ -396,7 +396,9 @@ deduplicates shared IR nodes within each query, never across binding edits.
 Scalar composite IID leaves also avoid repeated suffix copies while retaining
 the general per-observation walker. Composite kernel broadcasts reuse a private
 per-atom environment, except when compiled memoization requires fresh per-cell
-identity. `aggregate.profileShape` reuses structural axis scans only within a
+identity. `evaluate.recordBodies` compiles record construction and field access
+in reusable bodies, including scan steps; field access shares the interpreter's
+value operation. `aggregate.profileShape` reuses structural axis scans only within a
 synchronous compiled batch/sweep, keyed by its fresh `__aggregateShapeScope`.
 Standalone evaluation and later batches/edits retain structural rescanning.
 
