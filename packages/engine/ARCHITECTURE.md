@@ -134,6 +134,10 @@ Array indexing preserves nested element types and runtime nesting tags.
 Leading slices retain complex components and view semantics; transposed matrix
 rows gather only the selected row, while contiguous slices borrow storage.
 
+Broadcast density distinguishes sample axes from collection axes through input
+references, including function captures. A matrix dimension equal to the sample
+count does not establish a sample axis.
+
 **`sampler.ts` / `worker.ts` are deliberately NOT re-exported** from the main
 entry — they pull in ~1 MB of stdlib distribution code only needed in the
 worker bundle. Host/main-thread code that needs to sample drives the worker

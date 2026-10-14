@@ -2908,10 +2908,10 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     }
   }
   // Evaluate each parameter expression once over the atom batch. The
-  // resulting shape (combined with `_exprUsesAny` to disambiguate
-  // length-N atom-indep vectors from per-atom scalars) classifies the
-  // accessor pattern.
-  const refNames: string[] = refArrays ? Object.keys(refArrays) : [];
+  // resulting shape and captured refs classify the accessor pattern.
+  // Observed joint fields in overlay replace sample columns during scoring.
+  const refNames: string[] = refArrays ? Object.keys(refArrays).filter(
+    name => !overlay || !Object.prototype.hasOwnProperty.call(overlay, name)) : [];
   const evalOpts = overlay ? { overlay } : undefined;
   const accessors: Array<(i: number, j: number) => number> = new Array(paramNames.length);
   const perAtomFlags: boolean[] = new Array(paramNames.length);
@@ -2922,18 +2922,9 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     const pIR = paramIRs[pi];
     const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
     paramVals[pi] = v;
-    // usesAtom: the param varies per atom (so collectionAxesOf strips the
-    // leading N axis and the per-atom loop drives it). Static signal = the
-    // expression references an atom-batched refArrays name. But a derived
-    // per-atom param can be threaded via baseEnv instead — e.g. the IS
-    // likelihood's `p = logit_p.(…)` over a per-atom (matrix/vector) latent,
-    // which the static refArrays scan misses — yielding axes=[N, …] and a
-    // shared [9]-observation mismatch. So ALSO treat a rank-≥2 value whose
-    // leading axis is the atom axis as atom-batched: that is unambiguous (a
-    // genuine collection arg would be [K, D] with K≠N). Rank-1 [N] stays on the
-    // static signal alone, preserving the K===N collection disambiguation.
-    const usesAtom = _exprUsesAny(pIR, refNames)
-      || (valueLib.isValue(v) && v.shape.length >= 2 && valueLib.isAtomBatched(v, N));
+    // §04 collection axes belong to the value. A leading dimension equal
+    // to N is not evidence of an atom axis; only per-atom references are.
+    const usesAtom = _exprUsesAny(pIR, refNames);
     perAtomFlags[pi] = usesAtom;
     paramUsesAtom[pi] = usesAtom;
     if (usesAtom) anyAtomDep = true;
@@ -3051,7 +3042,8 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
     }
   }
 
-  const refNames: string[] = refArrays ? Object.keys(refArrays) : [];
+  const refNames: string[] = refArrays ? Object.keys(refArrays).filter(
+    name => !overlay || !Object.prototype.hasOwnProperty.call(overlay, name)) : [];
   const evalOpts = overlay ? { overlay } : undefined;
   const accessors: Array<(i: number, j: number) => number> = new Array(P);
   const paramVals: any[] = new Array(P);
@@ -3061,8 +3053,7 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
     const pIR = paramIRs[pi];
     const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
     paramVals[pi] = v;
-    const usesAtom = _exprUsesAny(pIR, refNames)
-      || (valueLib.isValue(v) && v.shape.length >= 2 && valueLib.isAtomBatched(v, N));
+    const usesAtom = _exprUsesAny(pIR, refNames);
     paramUsesAtom[pi] = usesAtom;
     if (usesAtom) anyAtomDep = true;
     accessors[pi] = _broadcastParamAccessor(v, usesAtom, N,
@@ -3932,6 +3923,11 @@ function _atomSlice(v: any, i: number): any {
 function _exprUsesAny(ir: any, names: string[]): boolean {
   if (!ir || typeof ir !== 'object') return false;
   if (ir.kind === 'ref' && names.indexOf(ir.name) >= 0) return true;
+  if (ir.body) {
+    const captured = ir.op === 'functionof' && Array.isArray(ir.params)
+      ? names.filter(name => !ir.params.includes(name)) : names;
+    if (_exprUsesAny(ir.body, captured)) return true;
+  }
   if (Array.isArray(ir.args)) {
     for (const a of ir.args) if (_exprUsesAny(a, names)) return true;
   }
