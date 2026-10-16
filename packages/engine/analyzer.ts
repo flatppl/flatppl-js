@@ -213,17 +213,13 @@ function validateSpecialOperation(valueNode: any) {
   switch (name) {
     case 'functionof':
     case 'kernelof': {
-      // First arg must be a positional expression, rest must be keyword args.
+      // First arg must be a positional expression. Boundary syntax was
+      // normalized and checked after resolving the call head below.
       // The keyword spelling of the first arg is refused by
       // `validateDistinguishedInputs`.
       if (args.length === 0) {
         diags.push({ severity: 'error', message: `${name}() requires at least one argument`, loc: valueNode.loc });
         break;
-      }
-      for (let i = 1; i < args.length; i++) {
-        if (args[i].type !== 'KeywordArg') {
-          diags.push({ severity: 'error', message: `Arguments after the first in ${name}() must be keyword boundary inputs (name = node)`, loc: args[i].loc });
-        }
       }
       break;
     }
@@ -3593,6 +3589,32 @@ function analyze(ast: any, source: string, opts?: any) {
         && sourceNames.has(node.callee.name) && isKnownName(node.callee.name)) {
       node.callee = { type: 'FieldAccess', object: AST.Identifier('self', node.callee.loc),
         field: node.callee.name, loc: node.callee.loc };
+    }
+    if (node.type === 'CallExpr') {
+      const reification = node.callee?.type === 'Identifier'
+        && (node.callee.name === 'functionof' || node.callee.name === 'kernelof');
+      let seenKeyword = false;
+      for (let i = 0; i < node.args.length; i++) {
+        const arg = node.args[i];
+        const bareName = arg.bareBoundary;
+        delete arg.bareBoundary;
+        if (reification && i > 0) {
+          // Spec §05 ReificationArgs: normalize only after name resolution,
+          // so a user callable named functionof/kernelof keeps ordinary args.
+          if (bareName) node.args[i] = AST.KeywordArg(bareName, arg, arg.loc);
+          else if (arg.type !== 'KeywordArg') diagnostics.push({
+            severity: 'error',
+            message: `Arguments after the first in ${node.callee.name}() must be bare names or keyword boundary inputs (name = node)`,
+            loc: arg.loc,
+          });
+        } else if (node.reificationSyntax && !reification) {
+          if (arg.type === 'KeywordArg') seenKeyword = true;
+          else if (seenKeyword) diagnostics.push({
+            severity: 'error', message: 'Positional argument cannot follow keyword argument', loc: arg.loc,
+          });
+        }
+      }
+      delete node.reificationSyntax;
     }
     for (const key in node) if (key !== 'loc') qualifyBoundCalls(node[key]);
   }

@@ -28,6 +28,7 @@ function parse(tokensIn: any[], variant: any) {
 
   const diagnostics: any[] = [];
   let pos = 0;
+  let sourceNames = new Set<string>();
 
   // Per spec §04: "Each occurrence of `_` on the left-hand side
   // (standalone or inside a decomposition) lowers to a distinct
@@ -267,9 +268,8 @@ function parse(tokensIn: any[], variant: any) {
   // build `functionof(body', arg1 = _arg1_, ...)` where body' has every free
   // occurrence of each arg rewritten to its placeholder. `f(args) = expr` and
   // `f = (args) -> expr` go through this same path, producing identical output.
+  // Capture rewriting waits until parseProgram has collected module names.
   function desugarLambdaToFunctionof(argNames: string[], argLocs: any[], body: any, lloc: any): any {
-    const argSet = new Set(argNames);
-    const rewritten = rewriteFreeIdsToPlaceholders(body, argSet);
     const kwargs: any[] = [];
     for (let i = 0; i < argNames.length; i++) {
       if (v.reservedAtBinding?.has(argNames[i])
@@ -287,7 +287,7 @@ function parse(tokensIn: any[], variant: any) {
     }
     const out = AST.CallExpr(
       AST.Identifier('functionof', lloc),
-      [rewritten, ...kwargs],
+      [body, ...kwargs],
       lloc);
     // Provenance for the §04 placeholder scoping check, which refuses the
     // nested shape `x -> y -> x + y` desugars to (a closure). The refusal is
@@ -311,17 +311,20 @@ function parse(tokensIn: any[], variant: any) {
     }
     if ((node.type === 'Identifier' || node.type === 'SetRef')
         && !node.builtin && argSet.has(node.name)) {
-      return AST.Placeholder(node.name, node.loc);
+      const placeholder = AST.Placeholder(node.name, node.loc);
+      if (node.bareBoundary) placeholder.bareBoundary = node.bareBoundary;
+      return placeholder;
     }
-    if (node.type === 'CallExpr' && node.callee
-        && node.callee.type === 'Identifier'
-        && (node.callee.name === 'functionof' || node.callee.name === 'kernelof')
+    if (node.type === 'CallExpr' && isReificationHead(node.callee)
+        && (node.fromLambda || node.builtin || node.callee.type === 'FieldAccess'
+          || !sourceNames.has(node.callee.name))
         && node.args && node.args.length > 0) {
       // Collect shadowing names from kwarg LHS (positions 1..n).
       const shadow = new Set<string>();
       for (let i = 1; i < node.args.length; i++) {
         const a = node.args[i];
         if (a && a.type === 'KeywordArg') shadow.add(a.name);
+        else if (a?.bareBoundary) shadow.add(a.bareBoundary);
       }
       // Inner body gets the reduced argSet; kwarg values stay full.
       const bodyArg = node.args[0];
@@ -557,11 +560,13 @@ function parse(tokensIn: any[], variant: any) {
       if (at(T.LPAREN)) {
         // Function call: expr(args)
         advance(); // (
-        const args = parseArgList();
+        const reificationSyntax = isReificationHead(expr);
+        const args = parseArgList(reificationSyntax);
         const rparen = expect(T.RPAREN);
         const endLoc = rparen ? rparen.loc : args.length > 0 ? args[args.length - 1].loc : expr.loc;
         expr = AST.CallExpr(expr, args,
           AST.loc(expr.loc.start.line, expr.loc.start.col, endLoc.end.line, endLoc.end.col));
+        if (reificationSyntax) expr.reificationSyntax = true;
       } else if (at(T.LBRACKET)) {
         // Index: expr[indices]. The lowering target (`get` for 1-
         // based / `get0` for 0-based) is fixed at parse time from
@@ -676,6 +681,24 @@ function parse(tokensIn: any[], variant: any) {
       return parseAxisFromTokens();
     }
 
+    // Spec §05 "Note on records": Name '=' after '(' selects a record,
+    // including a singleton. Select the builtin so a local `record` cannot
+    // change the meaning of this literal syntax.
+    if (at(T.LPAREN) && tokens[pos + 1]?.type === T.IDENT
+        && tokens[pos + 2]?.type === T.EQUALS) {
+      const lparen = advance();
+      const fields = parseArgList();
+      const rparen = expect(T.RPAREN);
+      const endLoc = rparen ? rparen.loc : fields[fields.length - 1].loc;
+      for (const field of fields) {
+        if (field.type !== 'KeywordArg') diagnostics.push({
+          severity: 'error', message: 'Record literals require named fields (name = value)', loc: field.loc,
+        });
+      }
+      return builtinCall(AST.Identifier('record', lparen.loc), fields,
+        AST.loc(lparen.loc.start.line, lparen.loc.start.col, endLoc.end.line, endLoc.end.col));
+    }
+
     // Parenthesized expression or tuple literal: (expr) | (expr, expr [, expr...])
     if (at(T.LPAREN)) {
       const lparen = advance(); // (
@@ -743,9 +766,27 @@ function parse(tokensIn: any[], variant: any) {
     return AST.Identifier('__error__', bad.loc);
   }
 
-  function parseArgList() {
+  /** Candidate special heads retain bare-name syntax until name resolution. */
+  function isReificationHead(callee: any): boolean {
+    const name = callee?.type === 'Identifier' ? callee.name
+      : callee?.type === 'FieldAccess' && callee.object?.type === 'Identifier'
+        && callee.object.name === 'base' ? callee.field : null;
+    return name === 'functionof' || name === 'kernelof';
+  }
+
+  function parseArgList(reificationSyntax = false) {
     const args: any[] = [];
     if (at(T.RPAREN)) return args;
+
+    function nextArg() {
+      const start = pos;
+      const arg = parseArg();
+      // Parenthesized identifiers and compound expressions are not bare names.
+      // Keep the written name if lambda capture rewriting changes the value.
+      if (reificationSyntax && args.length > 0 && pos === start + 1
+          && tokens[start].type === T.IDENT) arg.bareBoundary = tokens[start].value;
+      return arg;
+    }
 
     // FlatPPJ allows a Julia-style semicolon separator that switches
     // the arg list from positional to keyword: `f(x, y; a = 1, b = 2)`
@@ -756,11 +797,11 @@ function parse(tokensIn: any[], variant: any) {
     // pure-kwargs calls. In FlatPPL/FlatPPY we fall through to the
     // semicolon-rejection branch.
     if (!at(T.SEMI)) {
-      args.push(parseArg());
+      args.push(nextArg());
       while (at(T.COMMA)) {
         advance();
         if (at(T.RPAREN) || at(T.SEMI)) break; // trailing comma
-        args.push(parseArg());
+        args.push(nextArg());
       }
     }
     if (at(T.SEMI)) {
@@ -802,6 +843,10 @@ function parse(tokensIn: any[], variant: any) {
         }
       }
     }
+
+    // A candidate reification can mix bare names and keywords. The analyzer
+    // resolves shadowed heads before normalizing boundaries or checking order.
+    if (reificationSyntax) return args;
 
     // Enforce: positional args must come before keyword args
     let seenKwarg = false;
@@ -1301,6 +1346,20 @@ function parse(tokensIn: any[], variant: any) {
   }
 
   const ast = parseProgram();
+  // Resolve lambda captures after all module names are known. A shadowed
+  // functionof/kernelof is an ordinary call and cannot bind names in its body.
+  sourceNames = new Set(ast.body.flatMap((stmt: any) => stmt.type === 'AssignStatement'
+    ? stmt.names.map((name: any) => name.name) : []));
+  function finishLambdas(node: any): void {
+    if (!node || typeof node !== 'object') return;
+    if (Array.isArray(node)) { for (const child of node) finishLambdas(child); return; }
+    for (const key in node) if (key !== 'loc') finishLambdas(node[key]);
+    if (node.type === 'CallExpr' && node.fromLambda) {
+      const names = new Set<string>(node.args.slice(1).map((arg: any) => arg.name));
+      node.args[0] = rewriteFreeIdsToPlaceholders(node.args[0], names);
+    }
+  }
+  finishLambdas(ast);
   return { ast, diagnostics };
 }
 
