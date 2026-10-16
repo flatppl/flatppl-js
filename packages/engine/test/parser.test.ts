@@ -46,9 +46,9 @@ test('parser: decomposition', () => {
 test('parser: decomposition with bare _', () => {
   // Per spec §04: each `_` LHS lowers to a distinct auto-generated
   // private name (the `__discard_N` convention). The discard name
-  // is namespaced so multi-LHS `value, _ = f()` doesn't trip the
+  // is namespaced so multi-LHS `value, _ = f(1)` doesn't trip the
   // duplicate-name check and `_, _ = …` is two distinct bindings.
-  const { ast, diagnostics } = parseSrc('value, _ = f()');
+  const { ast, diagnostics } = parseSrc('value, _ = f(1)');
   assert.equal(diagnostics.length, 0);
   const stmt = ast.body[0];
   assert.equal(stmt.names.length, 2);
@@ -57,7 +57,7 @@ test('parser: decomposition with bare _', () => {
 });
 
 test('parser: bare _ as LHS', () => {
-  const { ast, diagnostics } = parseSrc('_ = f()');
+  const { ast, diagnostics } = parseSrc('_ = f(1)');
   assert.equal(diagnostics.length, 0);
   assert.match(ast.body[0].names[0].name, /^__discard_/);
 });
@@ -96,6 +96,17 @@ test('parser: function call with positional args', () => {
   assert.equal(v.type, 'CallExpr');
   assert.equal(v.args.length, 3);
   for (const a of v.args) assert.equal(a.type, 'Identifier');
+});
+
+test('parser: empty calls are rejected while empty aggregate axis lists remain valid', () => {
+  for (const expression of ['f()', 'm.f()', '(fchain(f, g))()', 'f.()', 'vector()']) {
+    const { diagnostics } = parseSrc(`x = ${expression}`);
+    assert.ok(diagnostics.some((d: any) => /Nullary calls.*argument/.test(d.message)), expression);
+  }
+  const { ast, diagnostics } = parseSrc('x = aggregate(sum, [], a)');
+  assert.deepEqual(diagnostics, []);
+  assert.equal(ast.body[0].value.args[1].type, 'ArrayLiteral');
+  assert.deepEqual(ast.body[0].value.args[1].elements, []);
 });
 
 test('parser: function call with keyword args', () => {

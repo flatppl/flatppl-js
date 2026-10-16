@@ -546,6 +546,16 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
     && !Array.from(boundarySet).some(name => ctx.fixedValues.has(name));
   const resolveFixed = preserveFixed && require('./fixed-eval.ts').makeResolver();
   const visiting = new Set<string>();
+  function isReferenceAlgebra(name: string, seen = new Set<string>()): boolean {
+    if (seen.has(name)) return false;
+    seen.add(name);
+    const drv = derivations?.[name];
+    if (!drv) return false;
+    if (drv.kind === 'lebesgue' || drv.kind === 'lebesguebox'
+        || bindings?.get(name)?.ir?.op === 'Lebesgue') return true;
+    return ['alias', 'weighted', 'truncate', 'normalize'].includes(drv.kind)
+      && typeof drv.from === 'string' && isReferenceAlgebra(drv.from, seen);
+  }
   // Distinct refs to the same deterministic binding share its completed
   // expansion. Record recurrences otherwise expand the same DAG as a tree.
   // A cycle leaves refs dependent on the active stack, so never cache an
@@ -604,20 +614,10 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
       const isInputLeaf = !drv && target && target.ir
         && target.ir.kind === 'call'
         && (target.ir.op === 'elementof' || target.ir.op === 'external');
-      // N-D box measures are inlined rather than left as boundary refs. They
-      // are the ONLY measure derivations treated this way, and deliberately:
-      // the §12 `normalize(truncate(weighted(w, Lebesgue(box)), box))` shape
-      // is resolved by mat-density's EXACT adaptive cubature, which pattern-
-      // matches the full `weighted(<functionof>, Lebesgue(...))` IR. Before
-      // the box kinds existed these anon bindings had no derivation and so
-      // were inlined by the rule below; leaving them as refs now would send
-      // that shape down the Monte-Carlo normalizer instead and lose the
-      // closed-form Z. Inlining restores the IR those consumers already
-      // expect, and is limited to the box kinds so no pre-existing measure
-      // binding changes behavior.
-      const isBoxMeasure = !!drv
-        && (drv.kind === 'lebesguebox'
-          || (drv.kind === 'weighted' && typeof drv.boxAxes === 'number'));
+      // Exact quadrature matches the full normalize/truncate/weighted
+      // algebra over Lebesgue. Keep that IR visible when native reference
+      // derivations exist; materializing an unbounded reference is invalid.
+      const isReferenceMeasure = isReferenceAlgebra(name);
       // Value containers also carry tuple/record derivations. Inline their
       // constructors so deterministic fields depend on the fed boundary.
       // Draw refs stay refs. Measure constructors such as joint(...) stay refs.
@@ -626,11 +626,11 @@ function inlineBoundaryDerivations(ir: any, boundarySet: Set<string>, ctx: any):
           || (drv.kind === 'record' && target.ir.op === 'record'));
       const isEvaluableValue = !isInputLeaf
         && ((drv && drv.kind === 'evaluate')
-          || isBoxMeasure
+          || isReferenceMeasure
           || isContainerValue
           || (!drv && target && target.ir && target.ir.kind === 'call'));
       if (isEvaluableValue && target && target.ir) {
-        if (preserveFixed && !isBoxMeasure && ctx.fixedValues.has(name)) {
+        if (preserveFixed && !isReferenceMeasure && ctx.fixedValues.has(name)) {
           const value = ctx.fixedValues.get(name);
           // Exact normalizers still need scalar and set expressions expanded.
           // Keep prepared tensor data in the existing fixed-value channel.

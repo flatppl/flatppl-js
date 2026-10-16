@@ -385,6 +385,12 @@ export interface DerivationLebesgueVectorSet {
   discrete?: boolean;
 }
 
+/** Reference density with support resolved at the scored parameter point. */
+export interface DerivationLebesgue {
+  kind: 'lebesgue';
+  measureIR: IRNode;
+}
+
 /** Element-wise deterministic evaluation of `ir` over upstream sample arrays. */
 export interface DerivationEvaluate {
   kind: 'evaluate';
@@ -739,6 +745,7 @@ export type Derivation =
   | DerivationSample
   | DerivationLebesgueBox
   | DerivationLebesgueVectorSet
+  | DerivationLebesgue
   | DerivationEvaluate
   | DerivationWeighted
   | DerivationNormalize

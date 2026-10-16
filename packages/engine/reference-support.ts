@@ -1,6 +1,6 @@
 'use strict';
 
-// Continuous reference supports (§03, §06, §09 regression.Flat). This resolver
+// Continuous reference supports (§03, §06). This resolver
 // keeps support geometry separate from probability normalization and sampling.
 // Numeric bounds may be fixed during planning or supplied by a density's env.
 const { parseSetIR } = require('./ir-shared.ts');
@@ -9,7 +9,7 @@ const values = require('./value.ts');
 type Support = { kind: string; [key: string]: any };
 
 function supportArg(ir: any): any {
-  return ir.kwargs?.support ?? ir.args?.[0] ?? { kind: 'const', name: 'reals' };
+  return ir.kwargs?.support ?? ir.args?.[0];
 }
 
 /** Resolve the continuous subset of §03; null means unavailable geometry. */
@@ -75,7 +75,7 @@ function width(s: Support): number {
   if (s.kind === 'vectorset') return s.n;
   if (s.kind === 'power') return s.n * width(s.elem);
   if (s.kind === 'product') return s.parts.reduce((n: number, p: Support) => n + width(p), 0);
-  if (s.kind === 'record') throw new Error('regression.Flat: a record support is not a positional vector');
+  if (s.kind === 'record') throw new Error('reference support: a record support is not a positional vector');
   return 1;
 }
 
@@ -129,7 +129,7 @@ function transformSupport(s: Support): any {
   if (s.kind === 'product' && s.parts.every((p: Support) => width(p) === 1 && p.kind !== 'vectorset')) {
     return { kind: 'product', elements: s.parts.map(transformSupport), n: s.parts.length };
   }
-  return { kind: 'unsupported', distOp: 'Flat with structured support' };
+  return { kind: 'unsupported', distOp: 'Lebesgue with structured support' };
 }
 
 module.exports = { supportArg, resolveSupport, logVolume, width, axes, contains, transformSupport };

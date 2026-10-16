@@ -33,7 +33,6 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
       seen.add(name);
       const b = bindings.get(name);
       if (!b) return false;
-      if (b.ir?.op === 'Flat') return true;
       if (b.type === 'lawof') return true;
       // 'call'-type bindings can be measure-typed (e.g., theta_dist = Normal(...)).
       if (b.type === 'call' && b.node && b.node.value) {
@@ -4185,7 +4184,9 @@ function analyze(ast: any, source: string, opts?: any) {
               const d = pn.splatDecision(op, present, sig.args.length);
               if (d && d.order) {
                 const agg = args[0];
-                node.args = d.order.map((k: string) => AST.FieldAccess(agg, k, agg.loc));
+                node.args = d.order.map((k: string) => (agg.callee?.name === 'record'
+                  ? agg.args.find((a: any) => a.name === k)?.value : null)
+                  || AST.FieldAccess(agg, k, agg.loc));
                 node.__splatApplied = d.order.slice();
               }
             }

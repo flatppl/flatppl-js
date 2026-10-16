@@ -1017,7 +1017,7 @@ function classifyDerivation(
     // draw(<inline-dist-call>): treat the inline dist as if it were
     // a freshly-named anonymous measure binding. We sample directly.
     if (inner.kind === 'call' && inner.op
-        && (SAMPLEABLE_DISTRIBUTIONS.has(inner.op) || inner.op === 'Flat')) {
+        && SAMPLEABLE_DISTRIBUTIONS.has(inner.op)) {
       return { kind: 'sample', distIR: inner };
     }
     return null;
@@ -1073,7 +1073,7 @@ function classifyDerivation(
     const normalizedRhsIR = normalizeMeasureIR(rhsIR, bindings);
     // Measure construction: call to a sampleable distribution.
     if (normalizedRhsIR && normalizedRhsIR.kind === 'call' && normalizedRhsIR.op
-        && (SAMPLEABLE_DISTRIBUTIONS.has(normalizedRhsIR.op) || normalizedRhsIR.op === 'Flat')) {
+        && SAMPLEABLE_DISTRIBUTIONS.has(normalizedRhsIR.op)) {
       // Dirac(value = ref-to-binding) is mathematically a plain
       // alias — same equivalence class as lawof(ref-to-binding) —
       // so classify as 'alias' for the lighter, sampler-free path.
@@ -3711,32 +3711,24 @@ function classifyAppliedChain(rhsIR: any, bindings: any): any {
 // consumers cancel it out; `weighted(<function>, Lebesgue(...))`
 // composes it with the per-atom function weights.
 //
-// Bounds resolution. classifyLebesgueInterval consults `resolveConstant`
-// for each interval endpoint:
-//   - both literal → log(b − a) attached to the derivation.
-//   - either unresolvable (stochastic / refs-to-elementof) → the
-//     totalmass shift becomes per-atom and currently isn't tracked;
-//     the derivation drops it with `logTotalmass = undefined` and
-//     downstream sees the default 0. Documented as an open follow-up;
-//     in practice Lebesgue's interval bounds are literals.
+// Only fixed finite bounds admit this sampling representation. Dynamic and
+// improper intervals keep their original reference IR so density evaluation
+// never substitutes a normalized Uniform or freezes a parameter's bounds.
 //
 // N-D box supports (`cartprod(interval, …)` positional, `cartpow(interval,
 // n)`) classify as `kind:'lebesguebox'` instead — see classifyLebesgue below.
 function classifyLebesgueInterval(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): any {
   void ast;
-  // KWARG form only, deliberately. The bare-positional spelling
-  // `Lebesgue(interval(0, inf))` is left UNCLASSIFIED so that
-  // `inlineBoundaryDerivations` keeps inlining it — mat-density's exact
-  // 1-D normalizer (`weightedBaseWeightFn` → `asScalarFactor`) pattern-
-  // matches the inlined `weighted(w, Lebesgue(...))` IR, and giving this
-  // shape a derivation turns it into a boundary ref the matcher misses,
-  // silently replacing an exact log Z with 0. The N-D box reader below
-  // accepts both spellings because its own kinds are inlined explicitly.
-  if (!rhsIR.kwargs) return null;
+  // Both argument spellings preserve the reference IR in boundary expansion;
+  // the exact weighted-density normalizer must still see Lebesgue itself.
   const support = _lebesgueSupportIR(rhsIR, bindings);
   if (!support || support.kind !== 'call' || support.op !== 'interval') return null;
   if (!Array.isArray(support.args) || support.args.length !== 2) return null;
   const aIR = support.args[0], bIR = support.args[1];
+  const aVal = resolveConstant(aIR, bindings, new Set(), fixedValues);
+  const bVal = resolveConstant(bIR, bindings, new Set(), fixedValues);
+  if (typeof aVal !== 'number' || typeof bVal !== 'number'
+      || !Number.isFinite(aVal) || !Number.isFinite(bVal) || !(bVal > aVal)) return null;
   // Synthetic Uniform sample distIR — same atom positions as
   // Lebesgue, the (b − a) factor lives in the derivation's
   // logTotalmass.
@@ -3745,16 +3737,7 @@ function classifyLebesgueInterval(rhsIR: IRNode, ast: any, bindings: any, fixedV
     kwargs: { support },
     loc: rhsIR.loc,
   };
-  const out: any = { kind: 'sample', distIR, discrete: false };
-  const aVal = resolveConstant(aIR, bindings, new Set(), fixedValues);
-  const bVal = resolveConstant(bIR, bindings, new Set(), fixedValues);
-  if (typeof aVal === 'number' && typeof bVal === 'number'
-      && Number.isFinite(aVal) && Number.isFinite(bVal) && bVal > aVal) {
-    out.logTotalmass = Math.log(bVal - aVal);
-  }
-  // else: per-atom or improper-support case — totalmass tracking
-  // deferred (downstream sees default 0).
-  return out;
+  return { kind: 'sample', distIR, discrete: false, logTotalmass: Math.log(bVal - aVal) };
 }
 
 // The support set IR of a `Lebesgue(...)` / `Counting(...)` call. Falls back to
@@ -3888,7 +3871,8 @@ const VECTOR_SETS = new Set(['stdsimplex', 'ordered', 'zerosum']);
 function classifyLebesgue(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: any): any {
   return classifyLebesgueInterval(rhsIR, ast, bindings, fixedValues)
       || classifyLebesgueBox(rhsIR, ast, bindings, fixedValues)
-      || classifyLebesgueVectorSet(rhsIR, ast, bindings, fixedValues);
+      || classifyLebesgueVectorSet(rhsIR, ast, bindings, fixedValues)
+      || { kind: 'lebesgue', measureIR: rhsIR };
 }
 
 const MEASURE_OP_CLASSIFIERS = {
@@ -4548,7 +4532,7 @@ function resolveBijectionMeta(bij: any, bindings: any) {
 function closedFormLogTotalmass(ir: any, bindings: any, opts?: any): any {
   if (!ir || ir.kind !== 'call') return null;
   const op = ir.op;
-  if (op === 'Flat') {
+  if (op === 'Lebesgue') {
     const support = require('./reference-support.ts');
     const resolved = support.resolveSupport(support.supportArg(ir),
       (n: any) => resolveConstant(n, bindings || new Map(), new Set()),
@@ -4825,12 +4809,11 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // shift belongs here. Adding one would report log(volume) instead of
         // 0 for `logdensityof(Lebesgue(box), x)`.
         //
-        // The axes ride along on the node so the density walker knows how
-        // many scalars the variate occupies and where the support ends — it
-        // must not re-derive them from a support IR it may not be able to
-        // resolve in the density context.
+        // Preserve both argument spellings for the shared support resolver;
+        // boxAxes remains available to the existing box consumers.
         const b = bindings && bindings.get(name);
         return {
+          ...b?.ir,
           kind: 'call', op: 'Lebesgue',
           kwargs: (b && b.ir && b.ir.kwargs) || {},
           boxAxes: d.axes,
@@ -4838,16 +4821,17 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         } as any;
       }
       case 'lebesguevecset': {
-        // The set rides on the node, as `boxAxes` does for a box, so the density
-        // walker can gate membership without resolving the support IR again.
+        // Keep the original support alongside the existing vector metadata.
         const b = bindings && bindings.get(name);
         return {
+          ...b?.ir,
           kind: 'call', op: 'Lebesgue',
           kwargs: (b && b.ir && b.ir.kwargs) || {},
           vectorSet: { set: d.set, n: d.n, elem: d.elem },
           loc: b && b.ir && b.ir.loc,
         } as any;
       }
+      case 'lebesgue': return d.measureIR;
       case 'mvnormal':
         // Multivariate sampleable distribution. Same
         // treatment as 'sample': return the IR verbatim; the density

@@ -3098,6 +3098,8 @@ const KIND_HANDLERS = {
   alias:        (name: any, d: any, ctx: any) => matAlias(name, d, ctx),
   sample:       (name: any, d: any, ctx: any) => matSample(name, d, ctx),
   lebesguebox:  (name: any, d: any, ctx: any) => matLebesgueBox(name, d, ctx),
+  lebesgue: (name: string) => Promise.reject(new Error(
+    `Lebesgue measure '${name}' has no prior sampler for this support; use posterior MCMC or a normalized finite measure`)),
   lebesguevecset: (name: any, d: any) => Promise.reject(new Error(
     "Lebesgue(support = " + (d.set === 'cartpow' ? 'cartpow(…, ' + d.n + ')' : d.set + '(' + d.n + ')')
     + ") in '" + name + "' has no draws: this engine scores its density but does not sample it")),

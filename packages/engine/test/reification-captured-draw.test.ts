@@ -36,19 +36,22 @@ function phaseOf(src: string, name: string): string {
 const mean = (a: any) => Array.from(a as number[]).reduce((s, x) => s + x, 0) / a.length;
 
 // ---------------------------------------------------------------------
-// The §02 overview witness: a boundary-less `functionof` over a value
-// descending from a drawn systematic.
+// Captured draws stay stochastic with either an empty interface or an explicit
+// input. Calls supply that explicit input; measures need no empty call syntax.
 // ---------------------------------------------------------------------
 
 const WITNESS = `
 raw_syst ~ Normal(mu = 0.0, sigma = 1.0)
-resolution = 2.5 * exp(0.12 * raw_syst)
-f = functionof(resolution)
-y = f()
+scale = elementof(reals)
+resolution = scale * exp(0.12 * raw_syst)
+closed = functionof(2.5 * exp(0.12 * raw_syst))
+f = functionof(resolution, scale = scale)
+y = f(2.5)
 `;
 
 test('a functionof that captures a draw is stochastic, and so is its call', () => {
   const { bindings } = processSource(WITNESS);
+  assert.equal(bindings.get('closed').phase, 'stochastic');
   assert.equal(bindings.get('f').phase, 'stochastic');
   assert.equal(bindings.get('y').phase, 'stochastic');
 });
@@ -78,9 +81,10 @@ test('every call of a capturing callable sees the same realisation', async () =>
   const n = 4096;
   const { ctx } = makeMatCtx(`
 raw_syst ~ Normal(mu = 0.0, sigma = 1.0)
-f = functionof(2.5 * exp(0.12 * raw_syst))
-a = f()
-b = f()
+scale = elementof(reals)
+f = functionof(scale * exp(0.12 * raw_syst), scale = scale)
+a = f(2.5)
+b = f(2.5)
 d = a - b
 `, { sampleCount: n, rootSeed: 606 });
   const d = (await ctx.getMeasure('d')).samples;
@@ -110,10 +114,13 @@ test('functionof(lawof(...)) stays fixed and marginal', async () => {
   // reified law rather than propagating it outward", so nothing is captured.
   const src = `
 raw ~ Normal(mu = 0.0, sigma = 1.0)
-g = functionof(lawof(2.5 * exp(0.12 * raw)))
-mm = g()
+scale = elementof(reals)
+closed = functionof(lawof(2.5 * exp(0.12 * raw)))
+g = functionof(lawof(scale * exp(0.12 * raw)), scale = scale)
+mm = g(2.5)
 `;
   const { bindings } = processSource(src);
+  assert.equal(bindings.get('closed').phase, 'fixed');
   assert.equal(bindings.get('g').phase, 'fixed');
   assert.equal(bindings.get('mm').phase, 'fixed');
   // And the reified law is the MARGINAL pushforward of raw's law, not a
@@ -177,11 +184,12 @@ closed = functionof(functionof(2.0 * raw, raw = raw))
 
 test('applying a capturing callable inside a body captures too', () => {
   // §04 gives a reification "the same ancestor rule as any other binding", and
-  // outside a reification `z = inner()` is stochastic for this reason.
+  // outside a reification `z = inner(2.0)` is stochastic for this reason.
   assert.equal(phaseOf(`
 raw ~ Normal(mu = 0.0, sigma = 1.0)
-inner = functionof(2.0 * raw)
-outer = functionof(inner())
+scale = elementof(reals)
+inner = functionof(scale * raw, scale = scale)
+outer = functionof(inner(2.0))
 `, 'outer'), 'stochastic');
   assert.equal(phaseOf(`
 raw ~ Normal(mu = 0.0, sigma = 1.0)

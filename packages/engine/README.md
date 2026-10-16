@@ -57,16 +57,18 @@ a value or shape.
 
 ## Posterior MCMC with density-only priors
 
-`regression.Flat(support)` contributes its declared density and has no prior
-sampler. MH, RAM, slice, emcee and DEMCz can still sample a proper posterior.
+Use `b = elementof(reals)` and `prior = joint(b = Lebesgue(reals))`
+for an improper reference prior. Combine proper draws in a `lawof` record, then
+join the two measures. Dependent prior blocks use `jointchain` with explicit
+kernel boundaries. MH, RAM, slice, emcee, DEMCz and elliptical slice can sample
+a proper posterior without prior draws.
 When prior atoms are unavailable, they try seeded uniform starting points in
 `[-2,2]` for each free coordinate, using the existing support transforms. Each
 walker must find a finite posterior score within 100 attempts. The host may
 instead supply `initPositions`, one unconstrained vector per walker.
 
 These starting points are not prior draws. Direct prior sampling, prior-based
-importance sampling, SMC and AMIS still refuse unavailable prior samples. The
-current fitted elliptical-slice implementation also requires a prior pool.
+importance sampling, SMC and AMIS still refuse unavailable prior samples.
 
 ## Analytic exponential tilting
 

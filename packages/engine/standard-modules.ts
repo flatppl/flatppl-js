@@ -86,12 +86,6 @@ function standardModuleBinding(call: any, bindings: any, irField: string): Bindi
   return entry?.bindings.get(target.name) ?? null;
 }
 
-/** Resolve a §09 measure constructor without exposing its name in base. */
-function standardDistributionOp(call: any, bindings: any, irField: string): string | null {
-  const desc = standardModuleBinding(call, bindings, irField);
-  return desc?.kind === 'distribution' ? desc.op ?? null : null;
-}
-
 /**
  * Register a standard module. Called once at engine boot per module;
  * subsequent calls for the same (name, compat) replace the previous
@@ -141,14 +135,6 @@ function _clearStandardModules(): void {
 //     sampler-complex.ts's scalar convention.
 
 const T = require('./types.ts');
-
-/** §09 regression.Flat keeps the declared support volume and has no sampler. */
-function _registerRegression() {
-  registerStandardModule({ name: 'regression', compat: '0.1', bindings: new Map([
-    ['Flat', { kind: 'distribution', op: 'Flat',
-      sig: T.kernelType(null, T.measure(T.REAL, { mass: T.MASS_LOCALLY_FINITE })) }],
-  ]) });
-}
 
 // --- polynomials ------------------------------------------------------
 //
@@ -654,7 +640,6 @@ function _registerExtLinearAlgebra() {
 // call `_clearStandardModules()` and re-register with bespoke
 // descriptors via `registerStandardModule` directly.
 function _registerBuiltinStandardModules() {
-  _registerRegression();
   _registerPolynomials();
   registerStandardModule(require('./standard-splines.ts').splinesModule());
   _registerParticlePhysics();
@@ -667,7 +652,6 @@ _registerBuiltinStandardModules();
 module.exports = {
   lookupStandardModule,
   standardModuleBinding,
-  standardDistributionOp,
   registerStandardModule,
   listStandardModules,
   _clearStandardModules,

@@ -777,8 +777,8 @@ function _reduce(deriv: any, body: any, ctx: any, opts: any): any {
 // whether they surface as body self-refs. The named record-kernel case threads
 // its params as `%local` (so collectSelfRefs can't see them) yet the prior and
 // its fields must still be declared so feedInputs materialises them and the
-// marginal knows what to integrate over. ⊆ allows inputs ⊇ body self-refs, so
-// declaring extras is sound.
+// marginal knows what to integrate over. Retained record-chain densities can
+// instead supply these fields from the observed value (see _enumerateInputs).
 function _structuralBoundaries(deriv: any, ctx: any): any[] {
   const out: any[] = [];
   if (!deriv) return out;
@@ -846,6 +846,12 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
       for (const nm of nd.selfThreaded) selfThreaded.add(nm);
     }
   });
+  const bodyRefs = orchestrator.collectSelfRefs(body);
+  const chain = opts?.density ? _chainOf(deriv, ctx) : null;
+  const base = chain && !chain.marginalize ? chain.steps[0] : null;
+  const observedRecordBase = base?.baseFields?.length > 0
+    && base.baseFields.every((name: string) => selfThreaded.has(name))
+    && !bodyRefs.has(base.ref) ? base.ref : null;
 
   const add = (name: string, source: any) => {
     if (seen.has(name)) return;
@@ -887,13 +893,17 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
   //    declared input — it must not re-classify as shared/missing.
   for (const sb of _structuralBoundaries(deriv, ctx)) {
     if (opts?.density && selfThreaded.has(sb.name)) continue;
+    // A retained record chain already scores its base fields at the observed
+    // point. Feeding the unused aggregate would draw its prior, which need
+    // not be normalizable. Marginal chains still need their integration input.
+    if (sb.name === observedRecordBase) continue;
     add(sb.name, sb.source);
     if (sb.source && sb.source.localAlias) seen.add(sb.source.localAlias);
   }
 
   // 2. Remaining body self-refs: classify fixed / shared (the explicit
   //    surviving getMeasure path) / boundary, mirroring prepareDensityRefs.
-  orchestrator.collectSelfRefs(body).forEach((n: string) => {
+  bodyRefs.forEach((n: string) => {
     if (seen.has(n)) return;
     const b = bindings && bindings.get ? bindings.get(n) : null;
     // Callable refs (fn / functionof / kernelof / bijection) resolve by name

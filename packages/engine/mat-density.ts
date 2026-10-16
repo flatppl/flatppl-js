@@ -779,7 +779,7 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
   // resolving bin rates; the generic scalar-density normalizer is not used.
   if (node.kind === 'call' && node.op === 'BinnedPoissonProcess') return;
   if (node.kind === 'call' && node.op === 'normalize'
-      && !node.massFrom
+      && (!node.massFrom || weightedBaseWeightFn(node.args?.[0]?.args?.[0]) != null)
       && Array.isArray(node.args) && node.args.length === 1) {
     const inner = node.args[0];
     if (inner && inner.kind === 'call' && inner.op === 'truncate'
@@ -847,6 +847,7 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
         }
         node.op = 'logweighted';
         node.args = [{ kind: 'lit', value: -logZ }, inner];
+        delete node.massFrom;
         resolveTruncateNormalizers(inner, theta, ctx, seen);
         return;
       }
@@ -1180,14 +1181,20 @@ function weightedFixedWeightEnv(
   return env;
 }
 
-// Recognise `weighted(w, <ref-over-interval(a,b)>)` (no truncate) and, when `w`
-// is θ-independent, resolve its normalizer deterministically by quadrature.
-// The base reference is a bounded `Lebesgue(interval)` — which the lowering
-// rewrites to `Uniform(interval)` (density 1/(b−a), the density walker applies
-// it in the numerator), so the correct −log Z for the normalize to cancel is
-// `log ∫_a^b w dx − log(b−a)`. `Lebesgue(reals)` / an unbounded or non-literal
-// support / a θ-dependent weight all return null (caller → Monte-Carlo).
+// Fixed weights over Lebesgue use deterministic quadrature. An explicit
+// truncation reuses the adaptive support-restriction normalizer; a bounded
+// reference alone uses the existing scalar rule below.
 function weightedLebesgueQuadLogZ(node: any, ctx: any): number | null {
+  const truncated = node.args?.[0];
+  if (truncated?.op === 'truncate') {
+    const weightFn = weightedBaseWeightFn(truncated.args?.[0]);
+    if (!weightFn) return null;
+    const env = weightedFixedWeightEnv(weightFn, ctx);
+    if (env == null) return null;
+    const resolved = { kind: 'call', op: 'normalize', args: [truncated] };
+    resolveTruncateNormalizers(resolved, env, ctx);
+    return resolved.op === 'logweighted' ? -resolved.args[0].value : null;
+  }
   const inner = node.args && node.args[0];
   if (!inner || inner.kind !== 'call' || inner.op !== 'weighted'
       || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
@@ -1702,13 +1709,13 @@ function matPosteriorDensity(d: any, ctx: any) {
 // =====================================================================
 
 function matTotalmass(d: DerivationTotalmass, ctx: any) {
-  // §09 Flat's mass is exact even though its prior cannot be sampled.
+  // Reference volume does not require materialising prior samples.
   const { expandMeasureIR, closedFormLogTotalmass } = require('./derivations.ts');
   const ir = expandMeasureIR(d.measureName, ctx.derivations, undefined, ctx.bindings);
   const exact = closedFormLogTotalmass(ir, ctx.bindings);
-  let hasFlat = false;
-  require('./ir-walk.ts').walkIR(ir, (n: any) => { if (n.op === 'Flat') hasFlat = true; });
-  if (exact === Infinity || (hasFlat && exact != null)) {
+  let hasReference = false;
+  require('./ir-walk.ts').walkIR(ir, (n: any) => { if (n.op === 'Lebesgue') hasReference = true; });
+  if (exact === Infinity || (hasReference && exact != null)) {
     return Promise.resolve(scalarMeasureN(new Float64Array(ctx.sampleCount).fill(Math.exp(exact)),
       { logWeights: null, logTotalmass: 0, n_eff: ctx.sampleCount }));
   }
@@ -2142,6 +2149,7 @@ module.exports = {
   weightedBaseWeightFn,
   resolveTruncateNormalizers,
   deriveRegionOpts,
+  weightedLebesgueQuadLogZ,
   weightedLeafQuadLogZ,
   // Shared with leaf-mass-quad.ts, so the θ-dependent and θ-independent leaf
   // arms accept exactly the same set of base measures.
