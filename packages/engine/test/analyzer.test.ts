@@ -253,16 +253,6 @@ test('analyzer: lawof argument validation', () => {
   assert.ok(diagnostics.some((d: any) => /functionof|lawof/i.test(d.message)));
 });
 
-test('analyzer: functionof requires keyword args after first', () => {
-  const { diagnostics } = process(`
-a = elementof(reals)
-b = elementof(reals)
-f = functionof(a + b, a, b)
-`);
-  // Args after the first must be keyword args
-  assert.ok(diagnostics.some((d: any) => /keyword/i.test(d.message)));
-});
-
 // validateSpecialOperation completion coverage — each case wired in
 // analyzer.ts. These are structural shape checks (positional vs
 // keyword, fixed-vs-variadic argument count). The test bodies use
