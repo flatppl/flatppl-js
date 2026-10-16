@@ -112,6 +112,10 @@ for `ksuperpose`, or every coordinate of the same node exactly once for `superpo
 Reference measures and unnormalized components do not satisfy this proof.
 Normalization functions establish simplex membership only for provably nonempty inputs.
 
+Record Lebesgue supports lower to named products of reference measures.
+Positional record joints merge fields. MCMC collects each component's free
+coordinates, including explicit improper measures alongside reified proper laws.
+
 `tilt` retains both measure operands and live parameters until evaluation.
 `tilt.ts` recognizes continuous scalar iid laws on ordered Lebesgue bases and
 independent Normal laws on zero-sum bases, including scalar/vector broadcasting.

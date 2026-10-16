@@ -989,6 +989,7 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineRelabel(astArg);
       astArg = inlineFchain(astArg);
       astArg = inlineDensityof(astArg);
+      astArg = inlineRecordLebesgue(astArg);
       astArg = inlineScalarLocscale(astArg);
       // Recognize exponential-family laws before children are hoisted and
       // MvNormal loses its constructor head to the affine decomposition.
@@ -1264,6 +1265,27 @@ function liftInlineSubexpressions(bindings: any) {
       astArg.args[i] = makeIdent(n, astArg.loc);
     }
     return astArg;
+  }
+
+  // Reference volume on a record product factors by field (§06).
+  function inlineRecordLebesgue(astArg: any) {
+    if (astArg?.type !== 'CallExpr' || astArg.callee?.name !== 'Lebesgue') return astArg;
+    let support = astArg.args?.find((a: any) => a.type === 'KeywordArg' && a.name === 'support')?.value
+      || astArg.args?.[0];
+    const seen = new Set<string>();
+    while (support?.type === 'Identifier' && !seen.has(support.name)) {
+      seen.add(support.name);
+      const binding = out.get(support.name);
+      support = binding?.effectiveValue || binding?.node?.value;
+    }
+    if (support?.type !== 'CallExpr' || support.callee?.name !== 'cartprod'
+        || !support.args?.length || !support.args.every((a: any) => a.type === 'KeywordArg')) return astArg;
+    return { ...astArg, callee: makeIdent('joint', astArg.loc),
+      args: support.args.map((field: any) => ({ ...field, value: {
+        type: 'CallExpr', callee: makeIdent('Lebesgue', astArg.loc),
+        args: [{ type: 'KeywordArg', name: 'support', value: cloneAst(field.value), loc: astArg.loc }],
+        loc: astArg.loc, builtin: true,
+      } })), builtin: true };
   }
 
   /**
