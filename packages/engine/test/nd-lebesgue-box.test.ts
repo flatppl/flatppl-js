@@ -25,8 +25,7 @@
 //     Tolerances below are set well inside the error a DROPPED weight would
 //     produce (a flat density, off by a factor, not by permille).
 //
-// The record-form (keyword) `cartprod(a = S1, …)` spelling stays out of
-// scope and is asserted to refuse rather than mislower.
+// Record products retain named fields and the same reference-volume rule.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -156,12 +155,19 @@ test('cartpow box dimension runs from 1 up to the axis cap', () => {
     'lebesguebox', 'cartpow(interval, 8) is exactly at the cap');
 });
 
-test('the record-form cartprod spelling does not classify as a box', () => {
-  // Out of scope: a record variate has no positional axis order. Refuse
-  // rather than mislower it to the positional reading.
-  const { d } = derivOf(
-    'L = Lebesgue(support = cartprod(a = interval(0.0, 1.0), b = interval(0.0, 1.0)))', 'L');
-  assert.equal(d, undefined, 'record-form cartprod must not classify as a positional box');
+test('record Lebesgue keeps its volume and support after field decomposition', async () => {
+  const {ctx} = require('./_ctx-factory.ts').ctxFor(`
+S = cartprod(x = interval(0, 2), y = interval(1, 4))
+M = Lebesgue(S)
+mass = totalmass(M)
+inside = logdensityof(M, (x = 1, y = 2))
+outside = logdensityof(M, (x = 1, y = 5))
+normalized = logdensityof(normalize(M), (x = 1, y = 2))
+`, 32);
+  assert.ok(Math.abs((await ctx.getMeasure('mass')).samples[0] - 6) < 1e-12);
+  assert.equal((await ctx.getMeasure('inside')).samples[0], 0);
+  assert.equal((await ctx.getMeasure('outside')).samples[0], -Infinity);
+  assert.ok(Math.abs((await ctx.getMeasure('normalized')).samples[0] + Math.log(6)) < 1e-12);
 });
 
 test('a set-binding support resolves to the box (the Dalitz spelling)', () => {

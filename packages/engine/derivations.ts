@@ -1850,7 +1850,7 @@ function classifyIfelse(rhsIR: IRNode, ast: any, bindings: any): DerivationSelec
 // joint to the same `tuple` derivation kind used for array literals
 // of measure refs; downstream matTuple materialises a positional
 // EmpiricalMeasure (SoA across the components).
-function classifyRecordOrJoint(rhsIR: any, ast?: any, bindings?: any): DerivationRecord | DerivationTuple | null {
+function classifyRecordOrJoint(rhsIR: any, ast?: any, bindings?: any, _opts?: any, seen = new Set<string>()): DerivationRecord | DerivationTuple | null {
   if (Array.isArray(rhsIR.fields) && rhsIR.fields.length > 0) {
     const fields: Record<string, any> = {};
     for (const f of rhsIR.fields) {
@@ -1868,6 +1868,26 @@ function classifyRecordOrJoint(rhsIR: any, ast?: any, bindings?: any): Derivatio
       if (!a || a.kind !== 'ref' || a.ns !== 'self') return null;
       elems.push(a.name);
     }
+    const fields: Record<string, string> = {};
+    const recordComponent = (ir: any, path: Set<string>): DerivationRecord | null => {
+      if (ir?.kind === 'ref' && ir.ns === 'self' && !path.has(ir.name)) {
+        return recordComponent(bindings?.get(ir.name)?.ir, new Set([...path, ir.name]));
+      }
+      if (ir?.op === 'lawof' && ir.args?.length === 1) return recordComponent(ir.args[0], path);
+      if (ir?.op !== 'joint' && ir?.op !== 'record') return null;
+      const component = classifyRecordOrJoint(ir, null, bindings, undefined, path);
+      return component?.kind === 'record' ? component : null;
+    };
+    let allRecords = true;
+    for (const name of elems) {
+      const component = recordComponent({ kind: 'ref', ns: 'self', name }, seen);
+      if (!component) { allRecords = false; break; }
+      for (const [label, source] of Object.entries(component.fields)) {
+        if (Object.prototype.hasOwnProperty.call(fields, label)) return null;
+        fields[label] = source;
+      }
+    }
+    if (allRecords) return { kind: 'record', fields };
     // Named-form desugaring (spec §06): `joint(name=M, …) ≡
     // joint(relabel(M, ["name"]), …)`. When EVERY positional component
     // is itself a single-name relabel of its base — the exact shape the

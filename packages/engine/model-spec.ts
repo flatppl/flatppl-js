@@ -371,6 +371,9 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
         && (d.set === 'ordered' || d.set === 'zerosum' || d.set === 'stdsimplex')) {
       return { kind: d.set === 'stdsimplex' ? 'simplex' : d.set, n: d.n };
     }
+    if (d.kind === 'lebesguevecset' && d.set === 'cartpow') {
+      return require('./reference-support.ts').transformSupport({ kind: 'power', elem: d.elem, n: d.n });
+    }
     if (d.kind === 'iid') {
       return { isIid: true, dims: d.dims as number[], elementBaseName: d.from as string };
     }
@@ -502,6 +505,21 @@ function collectDrawNames(rootName: string, ctx: any): string[] {
 //     distribution binding. There are no `~` draws, so the latents are the field
 //     labels and each label's measure is the binding it points at.
 function priorLatentSources(d: any, ctx: any): Array<{ latentName: string; measureName: string }> {
+  const ir = ctx.bindings.get(d.from)?.ir;
+  if (ir?.op === 'joint' && ir.args?.length && !ir.fields?.length) {
+    const sources = ir.args.flatMap((component: any) =>
+      component.kind === 'ref' && component.ns === 'self'
+        ? priorLatentSources({ from: component.name }, ctx) : []);
+    const unique = new Map<string, { latentName: string; measureName: string }>();
+    for (const source of sources) {
+      const previous = unique.get(source.latentName);
+      if (previous && previous.measureName !== source.measureName) {
+        throw new Error(`model-view: prior field '${source.latentName}' conflicts with a draw name; rename the field or draw`);
+      }
+      unique.set(source.latentName, source);
+    }
+    return Array.from(unique.values());
+  }
   const draws = collectDrawNames(d.from, ctx);
   if (draws.length > 0) return draws.map((nm) => ({ latentName: nm, measureName: nm }));
   const der = (ctx.derivations || {})[d.from];
