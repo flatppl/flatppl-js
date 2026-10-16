@@ -25,6 +25,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { processSource, orchestrator } = require('..');
+const { ctxFor } = require('./_ctx-factory.ts');
 
 function errorsOf(src: string): string[] {
   return processSource(src).diagnostics
@@ -104,6 +105,20 @@ test('the nine §04 carve-out names still take the aggregate WHOLE', () => {
 test('an ordinary positional call is untouched', () => {
   assert.equal(valueOf('s = atan2(1.0, 2.0)', 's'), 0.4636476090008061);
   assert.equal(valueOf('s = pow(2.0, 10.0)', 's'), 1024);
+});
+
+test('a reference constructor splats support without losing its shape or volume', async () => {
+  const { proc, ctx } = ctxFor(`
+M = Lebesgue(record(support = cartpow(interval(1, 3), 2)))
+inside = logdensityof(M, [2, 2])
+outside = logdensityof(M, [2, 4])
+volume = totalmass(M)
+`, 1);
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  assert.equal((await ctx.getMeasure('inside')).samples[0], 0);
+  assert.equal((await ctx.getMeasure('outside')).samples[0], -Infinity);
+  assert.equal((await ctx.getMeasure('volume')).samples[0], 4);
+  assert.match(errorsOf('M = Lebesgue(record(other = reals))').join('\n'), /no argument is named "other"/);
 });
 
 test('a record bound by keyword is not splatted — but the KEYWORD FORM of a '

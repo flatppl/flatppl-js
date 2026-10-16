@@ -1397,13 +1397,11 @@ test('rnginit: an undecided seed type is not decided against', () => {
   assert.equal(typeOf(bindings, 'rstate').kind, 'rngstate');
 });
 
-test('rnginit: takes exactly one seed', () => {
-  for (const [call, got] of [['rnginit()', 0], ['rnginit([1, 2], [3, 4])', 2]] as [string, number][]) {
-    const { errors } = infer(`rstate = ${call}`);
-    assert.equal(errors.length, 1, `${call}: ${JSON.stringify(errors)}`);
-    assert.equal(errors[0].message,
-      `rnginit expects 1 positional argument(s), got ${got}`);
-  }
+test('rnginit: rejects more than one seed', () => {
+  // Empty calls are rejected by the parser before the argument-type check.
+  const { errors } = infer('rstate = rnginit([1, 2], [3, 4])');
+  assert.equal(errors.length, 1, JSON.stringify(errors));
+  assert.equal(errors[0].message, 'rnginit expects 1 positional argument(s), got 2');
 });
 
 test('rnginit: an already-failed seed reports nothing further', () => {

@@ -157,10 +157,12 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
         continue;
       }
     }
-    // A fixed scalar leaf admits the same deterministic quadrature used by
+    // Fixed reference and scalar leaf measures use the same quadrature as
     // standalone density queries. Preserve weight/logweight equivalence and
     // avoid making this constant depend on the prior's sampling seed or count.
-    const leafLogZ = require('./mat-density.ts').weightedLeafQuadLogZ(node, ctx);
+    const density = require('./mat-density.ts');
+    const leafLogZ = density.weightedLebesgueQuadLogZ(node, ctx)
+      ?? density.weightedLeafQuadLogZ(node, ctx);
     if (leafLogZ != null) {
       node.op = 'logweighted';
       node.args = [{ kind: 'lit', value: -leafLogZ }, inner];
@@ -350,7 +352,7 @@ async function buildLogPi(
   // boundary inputs — 06-measure-algebra.md §joint) the latent is the field
   // LABEL and its measure is the distribution binding the label points at.
   const modelSpec = require('./model-spec.ts');
-  const sources: Array<{ latentName: string; measureName: string }> = modelSpec.priorLatentSources(d, ctx);
+  const sources: Array<{ latentName: string; measureName: string; measureIR?: any }> = modelSpec.priorLatentSources(d, ctx);
   if (sources.length === 0) {
     throw new Error(`buildLogPi: prior '${priorName}' has no stochastic draws to sample`);
   }
@@ -359,6 +361,7 @@ async function buildLogPi(
   const drawNames: string[] = sources.map((s) => s.latentName);
   const measureOf: Record<string, string> = {};
   for (const s of sources) measureOf[s.latentName] = s.measureName;
+  const conditionalIR = new Map(sources.filter(s => s.measureIR).map(s => [s.latentName, s.measureIR]));
   // A draw whose measure is a kernel-broadcast over a user function returning
   // an iid block (e.g. p ~ beta_row_K.(a,b)) cannot be scored by expandMeasure's
   // IR directly (its head is a user function, not a built-in distribution). For
@@ -406,7 +409,7 @@ async function buildLogPi(
     const msrc = measureOf[nm];   // measure-source binding (= nm on the draw path)
     const comp = recognizeCompositeIidDraw(msrc, ctx);
     if (comp) { compositeDesc[nm] = comp; continue; }
-    const raw = orchestrator.expandMeasure(
+    const raw = conditionalIR.get(nm) || orchestrator.expandMeasure(
       msrc, { derivations: ctx.derivations, bindings: ctx.bindings },
     );
     if (!raw) throw new Error(`buildLogPi: cannot expand draw measure '${msrc}'`);

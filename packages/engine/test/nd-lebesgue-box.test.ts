@@ -121,38 +121,14 @@ test('a single-component positional cartprod is a ONE-axis box, not the scalar c
     'logTotalmass ' + d.logTotalmass + ' ≠ log 4');
 });
 
-test('an unbounded box axis is refused, not silently given finite mass', () => {
-  // Spec §06: normalize / totalmass of an infinite-mass measure is
-  // undefined. An unbounded axis makes the box mass infinite, so the
-  // derivation must decline rather than invent a side length.
-  const { d } = derivOf('L = Lebesgue(support = cartprod(interval(0.0, 1.0), reals))', 'L');
-  assert.equal(d, undefined, 'expected no box derivation for an unbounded axis');
-});
-
-test('an INFINITE box axis bound is refused', () => {
-  // Distinct from the `reals` factor above: this factor IS an interval, but a
-  // semi-infinite one, so the box volume diverges and §06 leaves
-  // normalize/totalmass undefined. Refuse rather than emit an infinite mass.
-  assert.equal(derivOf(
-    'L = Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, inf)))', 'L').d,
-    undefined);
-  // A degenerate axis (hi == lo) is zero-volume, likewise refused.
-  assert.equal(derivOf(
-    'L = Lebesgue(support = cartprod(interval(0.0, 1.0), interval(2.0, 2.0)))', 'L').d,
-    undefined);
-});
-
-test('cartpow box dimension runs from 1 up to the axis cap', () => {
-  // k = 1 is a ONE-axis box, matching the single-component cartprod above.
-  // `cartpow(reals, 1)` is R¹, a one-element ARRAY, so it carries a length-1
-  // vector variate and never collapses to the scalar interval case.
-  const one = derivOf('L = Lebesgue(support = cartpow(interval(0.0, 1.0), 1))', 'L').d;
-  assert.equal(one?.kind, 'lebesguebox', 'cartpow(interval, 1) is a 1-axis box');
-  assert.equal(one.axes.length, 1);
-  assert.equal(derivOf('L = Lebesgue(support = cartpow(interval(0.0, 1.0), 9))', 'L').d,
-    undefined, 'cartpow(interval, 9) exceeds the 8-axis cap');
-  assert.equal(derivOf('L = Lebesgue(support = cartpow(interval(0.0, 1.0), 8))', 'L').d?.kind,
-    'lebesguebox', 'cartpow(interval, 8) is exactly at the cap');
+test('reference density and volume remain exact beyond the sampling box cap', async () => {
+  const {ctx} = require('./_ctx-factory.ts').ctxFor(`
+M = Lebesgue(cartpow(interval(0, 2), 9))
+mass = totalmass(M)
+score = logdensityof(M, [1, 1, 1, 1, 1, 1, 1, 1, 1])
+`, 1);
+  assert.ok(Math.abs((await ctx.getMeasure('mass')).samples[0] - 512) < 1e-10);
+  assert.equal((await ctx.getMeasure('score')).samples[0], 0);
 });
 
 test('record Lebesgue keeps its volume and support after field decomposition', async () => {

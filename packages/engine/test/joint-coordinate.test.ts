@@ -15,8 +15,7 @@ function covariance(a: Float64Array, b: Float64Array): number {
 test('a fresh draw copies a reified trace, while joining its laws retains identity', async () => {
   const { ctx } = makeMatCtx(`
 x ~ Normal(0.0, 1.0)
-f = functionof(lawof(2.0 * x))
-M = f()
+M = lawof(2.0 * x)
 y ~ M
 z ~ M
 traced = joint(x = lawof(x), y = M)

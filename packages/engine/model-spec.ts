@@ -374,6 +374,22 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
     if (d.kind === 'lebesguevecset' && d.set === 'cartpow') {
       return require('./reference-support.ts').transformSupport({ kind: 'power', elem: d.elem, n: d.n });
     }
+    if (d.kind === 'lebesgue') {
+      const support = require('./reference-support.ts');
+      const { resolveConstant } = require('./ir-shared.ts');
+      const fixed = (n: any) => resolveConstant(n, ctx?.bindings || new Map(), new Set(), ctx?.fixedValues);
+      // Unknown interval bounds use real coordinates, preserving the shape of
+      // surrounding products. The density still enforces the original bounds.
+      const geometry = require('./ir-walk.ts').mapIR(support.supportArg(d.measureIR), (n: any) =>
+        n.op === 'interval' && n.args?.some((bound: any) => fixed(bound) == null)
+          ? { kind: 'const', name: 'reals' } : n);
+      const resolved = support.resolveSupport(geometry, fixed,
+        (n: any) => ctx?.bindings.get(n.name)?.ir);
+      // Dependent bounds remain density constraints. A static chart must not
+      // freeze them to a prior draw or another parameter point.
+      return resolved ? support.transformSupport(resolved)
+        : { kind: 'unsupported', distOp: 'Lebesgue with unresolved support' };
+    }
     if (d.kind === 'iid') {
       return { isIid: true, dims: d.dims as number[], elementBaseName: d.from as string };
     }
@@ -410,16 +426,6 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
     if (d.kind === 'sample') {
       const distIR = d.distIR;
       if (!distIR) return { kind: 'real' };
-      if (distIR.op === 'Flat') {
-        const support = require('./reference-support.ts');
-        const { resolveConstant } = require('./ir-shared.ts');
-        const resolved = support.resolveSupport(support.supportArg(distIR),
-          (n: any) => resolveConstant(n, ctx?.bindings || new Map(), new Set(), ctx?.fixedValues),
-          (n: any) => ctx?.bindings.get(n.name)?.ir);
-        // A dependent bound stays a density constraint in original coordinates;
-        // it cannot be frozen to one prior draw for a static coordinate chart.
-        return resolved ? support.transformSupport(resolved) : { kind: 'real' };
-      }
       if (distIR.op === 'Uniform') {
         const s = uniformSupportFromDistIR(
           distIR, ctx && ctx.bindings, ctx && ctx.fixedValues);
@@ -504,13 +510,31 @@ function collectDrawNames(rootName: string, ctx: any): string[] {
 //     as a `record`-kind derivation whose fields map each variate LABEL to the
 //     distribution binding. There are no `~` draws, so the latents are the field
 //     labels and each label's measure is the binding it points at.
-function priorLatentSources(d: any, ctx: any): Array<{ latentName: string; measureName: string }> {
+type PriorLatentSource = { latentName: string; measureName: string; measureIR?: any };
+
+function priorLatentSources(d: any, ctx: any): PriorLatentSource[] {
   const ir = ctx.bindings.get(d.from)?.ir;
+  const der = (ctx.derivations || {})[d.from];
+  if (der?.kind === 'jointchain' && !der.marginalize) {
+    // §06 record chains already lower to conditional field densities. Reuse
+    // that lowering rather than treating boundary-bound draws as prior draws.
+    const expanded = orchestrator.expandMeasure(d.from, ctx);
+    if (!expanded?.fields) throw new Error('model-view: a prior jointchain must produce named fields');
+    const names = new Map<string, string>(expanded.fields.map((f: any) => [f.source, f.name]));
+    return expanded.fields.map((f: any) => ({
+      latentName: f.name,
+      measureName: f.source || f.name,
+      measureIR: require('./ir-walk.ts').mapIRScoped(f.value, (n: any, shadowed: Set<string>) =>
+        n?.kind === 'ref' && (n.ns === 'self' || n.ns === '%local')
+          && !shadowed.has(n.name) && names.has(n.name)
+          ? { ...n, name: names.get(n.name) } : n),
+    }));
+  }
   if (ir?.op === 'joint' && ir.args?.length && !ir.fields?.length) {
     const sources = ir.args.flatMap((component: any) =>
       component.kind === 'ref' && component.ns === 'self'
         ? priorLatentSources({ from: component.name }, ctx) : []);
-    const unique = new Map<string, { latentName: string; measureName: string }>();
+    const unique = new Map<string, PriorLatentSource>();
     for (const source of sources) {
       const previous = unique.get(source.latentName);
       if (previous && previous.measureName !== source.measureName) {
@@ -522,7 +546,6 @@ function priorLatentSources(d: any, ctx: any): Array<{ latentName: string; measu
   }
   const draws = collectDrawNames(d.from, ctx);
   if (draws.length > 0) return draws.map((nm) => ({ latentName: nm, measureName: nm }));
-  const der = (ctx.derivations || {})[d.from];
   if (der && der.kind === 'record' && der.fields && typeof der.fields === 'object') {
     return Object.keys(der.fields).map((label) => ({ latentName: label, measureName: der.fields[label] }));
   }

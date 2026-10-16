@@ -1249,54 +1249,19 @@ function walkTilt(ir: any, value: any, refArrays: any, N: any, opts: any, acc: a
   return rest;
 }
 
+/** §06 reference density is one on support, with bounds evaluated at each point. */
 function walkLebesgue(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
-  // Lebesgue(S): the reference measure on the reals. Its density w.r.t.
-  // itself is ≡ 1, so it contributes log 1 = 0 to the accumulator — it is
-  // the trivial base of a `weighted(w, Lebesgue(...))` generic density
-  // (§12 generic_dist), where the weight carries the whole density. Consume
-  // one scalar (the variate) so rest-threading and the enclosing truncate's
-  // support gate (which reads the consumed scalar) work as for a leaf.
-  //
-  // An N-D BOX support (`boxAxes`, attached by derivations.ts's
-  // 'lebesguebox' expansion) has a k-array variate (spec §03), so it
-  // consumes k scalars instead of one. Spec §06 restricts the measure to its
-  // support — "density is zero outside" — so a coordinate outside its axis
-  // collapses the atom to −∞ rather than reporting the interior density.
-  const axes = (ir as any).boxAxes;
-  if (Array.isArray(axes) && axes.length > 1) {
-    const { head, rest } = consumeVector(value, axes.length);
-    let outside = false;
-    for (let i = 0; i < axes.length; i++) {
-      const x = +head[i];
-      if (!(x >= axes[i].lo && x <= axes[i].hi)) { outside = true; break; }
-    }
-    if (outside) for (let i = 0; i < N; i++) acc[i] = -Infinity;
-    return rest;
-  }
-  const vs = (ir as any).vectorSet;
-  if (vs) {
-    const { head, rest } = consumeVector(value, vs.n);
-    const inside = vs.elem
-      ? Array.from(head as ArrayLike<number>).every((x) => inSet(+x, vs.elem))
-      : samplerLib.inVectorSet(head, vs.set);
-    if (!inside) for (let i = 0; i < N; i++) acc[i] = -Infinity;
-    return rest;
-  }
-  const { rest } = consumeScalar(value);
-  return rest;
-}
-
-/** §09 Flat keeps the support indicator without any volume normalization. */
-function walkFlat(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): any {
   const support = require('./reference-support.ts');
-  const entry = samplerLib.lookupDistribution(ir);
   const env = Object.assign({}, baseEnv, overlay);
   const refs = Object.keys(refArrays);
   const at = (i: number) => {
     for (const name of refs) env[name] = valueLib.isValue(refArrays[name])
       ? valueLib._sliceRow(refArrays[name], i) : refArrays[name][i];
     Object.assign(env, overlay);
-    return samplerLib.resolveParams(ir, entry, env)[0];
+    const resolved = support.resolveSupport(support.supportArg(ir),
+      (n: any) => samplerLib.evaluateExpr(n, env));
+    if (!resolved) throw new Error('Lebesgue: cannot resolve the continuous support');
+    return resolved;
   };
   const first = at(0);
   if (opts.pointsBatched) {
@@ -3625,7 +3590,6 @@ const OP_HANDLERS = {
   normalize:   walkNormalize,
   tilt:        walkTilt,
   Lebesgue:    walkLebesgue,
-  Flat:        walkFlat,
   joint:       walkJointFieldsOrPositional,
   record:      walkJointFieldsOrPositional,
   iid:         walkIid,

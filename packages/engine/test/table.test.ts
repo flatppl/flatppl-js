@@ -57,7 +57,7 @@ function valueOf(name: string, src: string) {
 // =====================================================================
 
 test('table: empty bare-record broadcast retains its named columns', () => {
-  const src = 't = broadcast(record, a = vector())\ncolumn = t.a\nrows = lengthof(t)';
+  const src = 't = broadcast(record, a = filter(fn(_ < 0), [1]))\ncolumn = t.a\nrows = lengthof(t)';
   const { errors } = infer(src);
   assert.deepEqual(errors, []);
   const t = valueOf('t', src);
@@ -73,19 +73,19 @@ test('table: bare-record broadcast statically rejects multiple axes', () => {
 });
 
 test('table: record broadcast preserves nested columns, including zero rows', () => {
-  for (const data of ['[1,2]', 'vector()']) {
+  for (const data of ['[1,2]', 'filter(fn(_ < 0), [1])']) {
     const src = `t = table(a = ${data})\nf(r) = record(b = r.a, nested = record(c = r.a), copy = r)\nu = broadcast(f, r = t)`;
     const { bindings, errors } = infer(src);
     assert.deepEqual(errors, []);
     assert.equal(typeOf(bindings, 'u').kind, 'table');
     const u = valueOf('u', src);
-    const expected = data === 'vector()' ? [] : [1, 2];
+    const expected = data === '[1,2]' ? [1, 2] : [];
     assert.equal(u.nrows, expected.length);
     assert.deepEqual(toJS(u.columns.b), expected);
     assert.deepEqual(toJS(u.columns.nested.columns.c), expected);
     assert.deepEqual(toJS(u.columns.copy.columns.a), expected);
   }
-  assert.deepEqual(toJS(valueOf('x', 'x = broadcast(a -> record(x = a), vector()).x')), []);
+  assert.deepEqual(toJS(valueOf('x', 'x = broadcast(a -> record(x = a), filter(fn(_ < 0), [1])).x')), []);
 });
 
 test('table: record broadcast rejects multiple axes but leaves a scalar call alone', () => {

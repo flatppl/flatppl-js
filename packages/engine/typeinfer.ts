@@ -138,8 +138,7 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: a
   // normalize-of-infinite/null static error.
   ctx.fillValuesets();
   ctx.fillMasses();
-  // §04 admits normalized sources and Flat's explicit improper-prior
-  // compositions. Neither draw nor reification silently normalizes them.
+  // §04 draw and measure reification require normalized sources.
   ctx.checkDrawMass();
   ctx.checkLawofMass();
   // Consumer of the valueset domain: flag distribution parameters whose
@@ -855,10 +854,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // and "A call with field or column names that do not match the callable's
   // argument names is a static error."
   //
-  // On a match this REWRITES `expr.args` into one field access per argument, in
-  // the row's declared order — the same `get_field` IR the surface `r.name`
-  // lowers to (§03: "Field access uses dot syntax: `r.name1`"; a table column
-  // reads the same way). Every downstream consumer — the other inference paths,
+  // On a match this REWRITES `expr.args` into the row's declared order. An
+  // inline record supplies its field expressions directly; other aggregates
+  // use the `get_field` IR that surface `r.name` lowers to (§03). Every
+  // downstream consumer — the other inference paths,
   // the evaluator, the dissolver — therefore sees an ordinary positional call
   // and needs no splat logic of its own.
   // Returns a failed type when §04 makes the call a static error, else null.
@@ -906,7 +905,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return T.failed(op + ' splat name mismatch');
     }
     const agg = args[0];
-    expr.args = decision.order.map((k: string) => ({
+    // Keep literal fields as their original expressions: a support set's
+    // structural shape must remain visible to the reference-measure rules.
+    expr.args = decision.order.map((k: string) => (agg.op === 'record'
+      ? agg.fields?.find((f: any) => f.name === k)?.value : null) || ({
       kind: 'call', op: 'get_field',
       args: [agg, { kind: 'lit', value: k, loc: agg.loc }],
       loc: agg.loc,
@@ -2396,8 +2398,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.tuple(args.map((a: any) => inferExpr(a, scopes)));
   }
 
-  // Lebesgue(support = S) / Counting(support = S). The support kwarg is
-  // optional; missing → use the default scalar. When present, the support
+  // Lebesgue(support = S) / Counting(support = S). The support
   // is a set expression whose value-type drives the result's measure-domain
   // (cartpow → array, cartprod → record/tuple, stdsimplex/ordered/zerosum →
   // array<real,n>).
@@ -2414,27 +2415,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (!support) return T.measure(defaultElem);
     const t = setValueType(support, scopes);
     return T.measure(t || defaultElem);
-  }
-
-  /** §09 Flat accepts continuous supports; it never selects Counting implicitly. */
-  function inferFlat(expr: any, scopes: any): any {
-    if ((expr.args?.length || 0) + Object.keys(expr.kwargs || {}).length > 1
-        || Object.keys(expr.kwargs || {}).some(k => k !== 'support')) {
-      diagnostics.push({ severity: 'error', loc: expr.loc,
-        message: 'regression.Flat accepts one optional support set' });
-      return T.failed('invalid Flat arguments');
-    }
-    const result = inferReferenceMeasure(expr, scopes, T.REAL);
-    const continuous = (t: any): boolean => t?.kind === 'scalar' ? t.prim === 'real'
-      : t?.kind === 'array' ? continuous(t.elem)
-      : t?.kind === 'record' ? Object.values(t.fields).every(continuous)
-      : false;
-    if (!continuous(result.domain)) {
-      diagnostics.push({ severity: 'error', loc: expr.loc,
-        message: 'regression.Flat requires a continuous support set' });
-      return T.failed('noncontinuous Flat support');
-    }
-    return result;
   }
 
   // truncate(M, S) — spec §06: "restricts the support of measure `M` to the set
@@ -4912,9 +4892,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function inferUserCall(expr: any, scopes: any): any {
     const head = expr.target;
     if (!head) return write(T.deferred(), expr);
-    if (require('./standard-modules.ts').standardDistributionOp(expr, loweredModule.bindings, 'rhs') === 'Flat') {
-      return write(inferFlat(expr, scopes), expr);
-    }
     const local = head.ns === 'self';
     const reg = !local && loweredModule.moduleRegistry?.[head.ns];
     const calleeModule = local ? loweredModule : modules?.get(reg?.path)?.loweredModule;
@@ -5499,9 +5476,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return loweredModule.bindings.has(ir.name) ? vsetOfBinding(ir.name) : vsLib.UNKNOWN;
     }
     if (ir.kind !== 'call') return vsLib.UNKNOWN;
-    if (require('./standard-modules.ts').standardDistributionOp(ir, loweredModule.bindings, 'rhs') === 'Flat') {
-      return vsLib.setExprValueset(require('./reference-support.ts').supportArg(ir), _resolveDim, _resolveSetRef);
-    }
     const op = ir.op;
     const args = ir.args || [];
     switch (op) {
@@ -6074,9 +6048,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   const massNodeCache = new WeakMap<object, any>();
   const massCallActive = new Set<string>();
   const appliedBodyCache = new WeakMap<object, any>();
-  const admissionCache = new WeakMap<object, boolean>();
 
-  /** Imported refinements and source proofs belong to the dependency. */
+  /** Imported refinements belong to the dependency. */
   function importedBinding(ir: any): any {
     if (ir?.kind !== 'ref' || ir.ns === 'self' || ir.ns === '%local') return null;
     const path = loweredModule.moduleRegistry?.[ir.ns]?.path;
@@ -6195,10 +6168,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         ? mass(binding.rhs) : T.MASS_DEFERRED;
     }
     if (ir.kind !== 'call') return T.MASS_DEFERRED;
-    if (require('./standard-modules.ts').standardDistributionOp(ir, loweredModule.bindings, 'rhs') === 'Flat') {
-      const bounded = setBounded(require('./reference-support.ts').supportArg(ir));
-      return bounded === true ? T.MASS_FINITE : bounded === false ? T.MASS_LOCALLY_FINITE : T.MASS_UNKNOWN;
-    }
     // APPLYING a kernel yields its output measure, and §11 makes a kernel's
     // `%mass` "the total-mass class of the output measure, uniform over all
     // inputs" — so an application carries the callee's class unchanged, at every
@@ -6240,8 +6209,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (builtins.DISTRIBUTIONS.has(op)) return T.MASS_NORMALIZED;
 
     switch (op) {
-      // §04 reification preserves the source measure. In particular, an
-      // admitted Flat draw does not become a probability law through lawof.
+      // Reification retains source mass so invalid draws cannot hide it.
       case 'lawof':
         return reifiedLawMass(args[0], boundary, mass);
       case 'tilt': return T.MASS_NORMALIZED;
@@ -6499,12 +6467,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const masses = comps.map((c: any) =>
       isKernelTyped(c) ? componentMass(c, mass, boundary) : mass(c));
     const product = productMass(masses);
-    // §06 integrates unbound draw ancestors once. A normalized conditional
-    // factor cannot erase the infinite mass of an improper ancestor.
-    if (comps.some((c: any) => drawSources(c, boundary).some((m: any) =>
-      mass(m) !== T.MASS_NORMALIZED && mass(m) !== T.MASS_DEFERRED))) {
-      return T.MASS_UNKNOWN;
-    }
     if (product !== T.MASS_FINITE && product !== T.MASS_LOCALLY_FINITE) {
       return product;
     }
@@ -6619,52 +6581,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return T.MASS_UNKNOWN;
     }
     return T.MASS_DEFERRED;
-  }
-
-  /** §04's improper-prior exception follows construction, not mass class. */
-  function admittedPrior(ir: any, seen = new Set<any>()): boolean {
-    const resolved = resolveBindingRefs(ir);
-    if (resolved && admissionCache.has(resolved)) return admissionCache.get(resolved)!;
-    if (!resolved || seen.has(resolved)) return false;
-    const result = admitResolvedPrior(resolved, seen);
-    admissionCache.set(resolved, result);
-    return result;
-  }
-
-  function admitResolvedPrior(resolved: any, seen: Set<any>): boolean {
-    seen.add(resolved);
-    const imported = importedBinding(resolved);
-    if (imported) return imported.admittedPrior === true;
-    const mass = massOfExpr(resolved);
-    if (mass === T.MASS_NORMALIZED) return true;
-    if (require('./standard-modules.ts').standardDistributionOp(resolved, loweredModule.bindings, 'rhs') === 'Flat') {
-      return true;
-    }
-    if (resolved.kind !== 'call') return false;
-    const admit = (node: any) => admittedPrior(node, new Set(seen));
-    const body = appliedFunctionBody(resolved);
-    if (body) {
-      const fn = loweredModule.bindings.get(resolved.target.name)?.rhs;
-      if (seen.has(fn)) return false;
-      for (const arg of [...(resolved.args || []), ...Object.values(resolved.kwargs || {})]) {
-        if (isMeasureTyped(arg)) admit(arg);
-      }
-      seen.add(fn);
-      return admit(body);
-    }
-    if (resolved.op === 'iid') return admit(resolved.args[0]);
-    if (resolved.op === 'joint' || resolved.op === 'jointchain') {
-      const comps = resolved.fields?.map((f: any) => f.value) || resolved.args || [];
-      return comps.every((c: any) => {
-        const source = resolveBindingRefs(c);
-        return admit(source?.body || source);
-      });
-    }
-    if (resolved.op === 'lawof') {
-      const source = resolved.args[0];
-      return isMeasureTyped(source) ? admit(source) : drawSources(source).every(admit);
-    }
-    return false;
   }
 
   function isKernelTyped(ir: any): boolean {
@@ -7000,20 +6916,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       irWalk.forEachIRChild(ir, visit);
     };
     for (const [, b] of loweredModule.bindings) visit(b.rhs);
-    // Keep construction permission separate from the mass class. A loaded
-    // module may export Flat or its law, but locally finite Lebesgue does not
-    // acquire draw permission merely by crossing the same module boundary.
-    for (const [, b] of loweredModule.bindings) {
-      if (b.inferredType?.kind === 'measure') b.admittedPrior = admittedPrior(b.rhs);
-    }
   }
 
   // ===================================================================
   // The `draw` total-mass gate (spec §04 "Reification")
   // ===================================================================
   //
-  // Reject unnormalized sources unless their construction is explicitly
-  // admitted by §04. An unresolved mass remains deferred; a known unknown
+  // Reject unnormalized sources. An unresolved mass remains deferred; a known unknown
   // class does not grant permission. The parser rewrites tilde to draw.
   function checkDrawMass() {
     const irWalk = require('./ir-walk.ts');
@@ -7024,8 +6933,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         const offending = unprovableNormalization(arg);
         if (offending) {
           diagnostics.push({ severity: 'error',
-            message: 'draw requires a probability measure or an admitted Flat prior '
-              + 'composition, but this argument\'s total mass is ' + offending
+            message: 'draw requires a probability measure, but this argument\'s total mass is ' + offending
               + ' (spec §04). Wrap it in normalize(...) to state that intent '
               + '— draw never normalizes its argument',
             loc: (arg && arg.loc) || ir.loc });
@@ -7036,9 +6944,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const [, b] of loweredModule.bindings) visit(b.rhs);
   }
 
-  // Measure reification admits the same sources as draw. Their induced
-  // measures retain full ancestor mass; value arguments are classified by
-  // reifiedLawMass instead of being assumed normalized.
+  // Measure reification admits the same normalized sources as draw. Deferred
+  // proofs stay deferred; reification cannot hide an invalid draw's mass.
   function checkLawofMass() {
     const irWalk = require('./ir-walk.ts');
     const visit = (ir: any) => {
@@ -7048,8 +6955,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         const offending = unprovableNormalization(arg);
         if (offending) {
           diagnostics.push({ severity: 'error',
-            message: 'lawof requires a %normalized measure or an admitted Flat prior '
-              + 'composition (spec §04), but this argument\'s total mass is '
+            message: 'lawof requires a %normalized measure (spec §04), but this argument\'s total mass is '
               + offending + '. Wrap it in normalize(...) to state that intent '
               + '— lawof never normalizes its argument',
             loc: (arg && arg.loc) || ir.loc });
@@ -7077,7 +6983,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // Proven normalized, or not yet inferred — let it through.
     if (mass === T.MASS_NORMALIZED || mass === T.MASS_DEFERRED
       || mass === undefined) return null;
-    if (admittedPrior(ir)) return null;
     // Every class string is its FlatPIR symbol without the sigil (§11).
     return '%' + mass;
   }

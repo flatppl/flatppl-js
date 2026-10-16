@@ -836,14 +836,13 @@ const SIGNATURE_FACTORIES = {
   // BinnedPoissonProcess: per-bin integer count vector.
   BinnedPoissonProcess: () => ({ args: null, kwargs: { bins: any(), intensity: any(), rates: any() },
                            result: measure(array(1, ['%dynamic'], INTEGER)) }),
-  // Fundamental reference measures (spec §06). The optional `support = S`
-  // kwarg parameterises on the set the measure lives on; default is `reals`
-  // for Lebesgue and `integers` for Counting. The result's measure-domain
+  // Fundamental reference measures (spec §06). `support = S` parameterises
+  // the set the measure lives on. The result's measure-domain
   // tracks the support's value-type — `Lebesgue(support = cartpow(reals,
   // n))` is `measure(array(real, n))`. Resolved by the `lebesgue` /
   // `counting` special handlers in typeinfer.js.
-  Lebesgue:  () => ({ args: null, kwargs: { support: any() }, result: measure(REAL),    special: 'lebesgue' }),
-  Counting:  () => ({ args: null, kwargs: { support: any() }, result: measure(INTEGER), special: 'counting' }),
+  Lebesgue:  () => ({ args: [any()], kwargs: { support: any() }, result: measure(REAL),    special: 'lebesgue' }),
+  Counting:  () => ({ args: [any()], kwargs: { support: any() }, result: measure(INTEGER), special: 'counting' }),
   // Dirac accepts either `Dirac(x)` or `Dirac(value = x)` per spec §04
   // (built-ins admit both positional and keyword forms with identical
   // semantics). Both forms infer the point's value type as the measure domain.

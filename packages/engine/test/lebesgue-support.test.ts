@@ -1,15 +1,14 @@
 'use strict';
 
-// §09 Flat support restrictions use reference volume, never Uniform density.
+// §06 reference supports retain volume and the canonical coordinate charts.
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { processSource, materialiser } = require('..');
+const { materialiser } = require('..');
 const { ctxFor } = require('./_ctx-factory.ts');
 const { buildModelViewFromCtx } = require('../model-view.ts');
-const REG = 'reg = standard_module("regression", "0.1")\n';
 const normal = (x: number) => -(Math.log(2 * Math.PI) + x * x) / 2;
 
-test('Flat support density and volume follow continuous reference geometry', async () => {
+test('Lebesgue support density and volume follow continuous reference geometry', async () => {
   const cases = [
     ['posreals', '2', '-1', Infinity],
     ['interval(2, inf)', '3', '1', Infinity],
@@ -27,10 +26,9 @@ test('Flat support density and volume follow continuous reference geometry', asy
     ['zerosum(1)', '[0]', '[inf]', 1],
   ];
   for (const [support, inside, outside, volume] of cases) {
-    const { proc, ctx } = ctxFor(REG + `
-Flat = reg.Flat
+    const { proc, ctx } = ctxFor(`
 S = ${support}
-M = Flat(support = S)
+M = Lebesgue(support = S)
 inside = logdensityof(M, ${inside})
 outside = logdensityof(M, ${outside})
 mass = totalmass(M)
@@ -43,20 +41,20 @@ mass = totalmass(M)
   }
 });
 
-test('dependent Flat bounds, iid and lawof keep zero prior contribution', async () => {
-  const { proc, ctx } = ctxFor(REG + `
-a ~ Normal(0, 1)
-b ~ iid(reg.Flat(interval(a, a + 3)), 2)
-prior = lawof(record(a = a, b = b))
+test('dependent Lebesgue bounds and iid keep zero reference contribution', async () => {
+  const { proc, ctx } = ctxFor(`
+a = elementof(reals)
+K = functionof(iid(Lebesgue(interval(a, a + 3)), 2), a)
+prior = jointchain(a = Normal(0, 1), b = K)
 inside = logdensityof(prior, record(a = 1, b = [2, 3]))
 outside = logdensityof(prior, record(a = 1, b = [2, 5]))
 `, 1);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   assert.ok(Math.abs((await ctx.getMeasure('inside')).samples[0] - normal(1)) < 1e-12);
   assert.equal((await ctx.getMeasure('outside')).samples[0], -Infinity);
-  const conditional = ctxFor(REG + `
+  const conditional = ctxFor(`
 upper = elementof(posreals)
-M = reg.Flat(interval(0, upper))
+M = Lebesgue(interval(0, upper))
 mass = totalmass(M)
 f = functionof(mass, upper = upper)
 volume = f(3)
@@ -64,22 +62,7 @@ volume = f(3)
   assert.ok(Math.abs((await conditional.getMeasure('volume')).samples[0] - 3) < 1e-12);
 });
 
-test('bounded unit-volume Flat and its law still have no prior sampler', async () => {
-  const { ctx } = ctxFor(REG + `
-b ~ reg.Flat(interval(0, 1))
-prior = lawof(record(b = b))
-sample, state = rand(reg.Flat(interval(0, 1)), rnginit(7))
-copy, state2 = rand(prior, rnginit(8))
-`, 1);
-  await assert.rejects(() => ctx.getMeasure('sample'), /no prior sampler/);
-  await assert.rejects(() => ctx.getMeasure('copy'), /no prior sampler/);
-  for (const source of ['reg.Flat(integers)', 'reg.Flat(cartpow(integers, 2))']) {
-    const proc = processSource(REG + `b ~ ${source}`);
-    assert.ok(proc.diagnostics.some((d: any) => d.severity === 'error' && /continuous support/.test(d.message)));
-  }
-});
-
-test('Flat supports use the existing MCMC charts and reference Jacobians', async () => {
+test('Lebesgue supports use the existing MCMC charts and reference Jacobians', async () => {
   const cases = [
     ['posreals', 'Normal(b,1)', '0', [1], 1, 0],
     ['interval(2, 6)', 'Normal(b,1)', '0', [4], 1, 0],
@@ -90,9 +73,9 @@ test('Flat supports use the existing MCMC charts and reference Jacobians', async
     ['cartprod(interval(2, 6), posreals)', 'Normal.(b,1)', '[0,0]', [4, 1], 2, 0],
   ];
   for (const [support, likelihood, observed, point, dim, jacobian] of cases) {
-    const { ctx } = ctxFor(REG + `
-b ~ reg.Flat(${support})
-prior = lawof(record(b = b))
+    const { ctx } = ctxFor(`
+b = elementof(${support})
+prior = joint(b = Lebesgue(${support}))
 y ~ ${likelihood}
 K = kernelof(y, b = b)
 L = likelihoodof(K, ${observed})
@@ -107,10 +90,10 @@ posterior = bayesupdate(L, prior)
   }
 });
 
-test('positive Flat supports posterior MCMC and still refuses prior-based inference', async () => {
-  const { ctx } = ctxFor(REG + `
-b ~ reg.Flat(posreals)
-prior = lawof(record(b = b))
+test('positive Lebesgue supports posterior MCMC and still refuses prior-based inference', async () => {
+  const { ctx } = ctxFor(`
+b = elementof(posreals)
+prior = joint(b = Lebesgue(posreals))
 y ~ Normal(b, 1)
 K = kernelof(y, b = b)
 L = likelihoodof(K, 0)
@@ -128,10 +111,10 @@ posterior = bayesupdate(L, prior)
 });
 
 for (const backend of ['ram', 'slice', 'elliptical-slice-sampler']) {
-  test(`positive Flat initializes ${backend} through the existing free-coordinate chart`, async () => {
-    const { ctx } = ctxFor(REG + `
-b ~ reg.Flat(posreals)
-prior = lawof(record(b = b))
+  test(`positive Lebesgue initializes ${backend} through the existing free-coordinate chart`, async () => {
+    const { ctx } = ctxFor(`
+b = elementof(posreals)
+prior = joint(b = Lebesgue(posreals))
 y ~ Normal(b, 1)
 K = kernelof(y, b = b)
 L = likelihoodof(K, 0)

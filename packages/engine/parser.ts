@@ -776,7 +776,6 @@ function parse(tokensIn: any[], variant: any) {
 
   function parseArgList(reificationSyntax = false) {
     const args: any[] = [];
-    if (at(T.RPAREN)) return args;
 
     function nextArg() {
       const start = pos;
@@ -796,7 +795,7 @@ function parse(tokensIn: any[], variant: any) {
     // A leading `;` (e.g. `f(; a = 1)`) is allowed in FlatPPJ for
     // pure-kwargs calls. In FlatPPL/FlatPPY we fall through to the
     // semicolon-rejection branch.
-    if (!at(T.SEMI)) {
+    if (!at(T.SEMI) && !at(T.RPAREN)) {
       args.push(nextArg());
       while (at(T.COMMA)) {
         advance();
@@ -842,6 +841,12 @@ function parse(tokensIn: any[], variant: any) {
           args.push(kw);
         }
       }
+    }
+
+    if (args.length === 0) {
+      diagnostics.push({ severity: 'error',
+        message: 'Nullary calls are not allowed; supply at least one argument (spec §04)',
+        loc: peek().loc });
     }
 
     // A candidate reification can mix bare names and keywords. The analyzer

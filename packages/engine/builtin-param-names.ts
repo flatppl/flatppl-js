@@ -35,6 +35,8 @@
 //     because their names are still wanted for an ordinary keyword call.
 
 const BUILTIN_PARAM_NAMES: Record<string, string[]> = {
+  Counting:             ['support'],
+  Lebesgue:             ['support'],
   abs:                  ['x'],
   abs2:                 ['x'],
   acos:                 ['x'],
