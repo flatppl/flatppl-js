@@ -29,6 +29,36 @@ const assert = require('node:assert');
 const ENG = '../';
 const { processSource, orchestrator, materialiser } = require(ENG + 'index.ts');
 const { createWorkerHandler } = require(ENG + 'worker.ts');
+const { makeMatCtx } = require('./_materialise-helpers.ts');
+
+for (const [label, source, expected] of [
+  ['inline record', 'f = fn(_)\na = f(record(arg1 = 7))', [7]],
+  ['named record', 'f = fn(_)\nr = record(arg1 = 7)\na = f(r)', [7]],
+  ['record field', 'f = fn(_)\nr = record(nested = record(arg1 = 7))\na = f(r.nested)', [7]],
+  ['record expression', 'f = fn(_)\nr = record(arg1 = 7)\na = f(ifelse(true, r, r))', [7]],
+  ['expression-headed call', 'a = fn(_)(record(arg1 = 7))', [7]],
+  ['field order', 'f = fn(_ - _)\na = f(record(arg2 = 2, arg1 = 9))', [7]],
+  ['inline table', 'f = fn(_)\na = f(table(arg1 = [2, 5]))', [2, 5]],
+  ['named table', 'f = fn(_)\nt = table(arg1 = [2, 5])\na = f(t)', [2, 5]],
+  ['table expression', 'f = fn(_)\nt = table(arg1 = [2, 5])\na = f(ifelse(true, t, t))', [2, 5]],
+  ['functionof record field', 'x = elementof(reals)\nf = functionof(x, x = x)\nr = record(nested = record(x = 7))\na = f(r.nested)', [7]],
+  ['parameterized call', 'x = elementof(reals)\nf = fn(_ * 2)\ny = f(record(arg1 = x))\ng = functionof(y, x = x)\na = g(3)', [6]],
+] as const) {
+  test(`fn auto-splat: ${label} binds before substituting holes`, async () => {
+    const { ctx } = makeMatCtx(source, { sampleCount: 1 });
+    const actual = await ctx.getMeasure('a');
+    assert.deepEqual(Array.from(actual.value.data), expected);
+  });
+}
+
+test('fn keyword arguments and identity retain a whole record', async () => {
+  const { ctx } = makeMatCtx('f = fn(_)\nr = record(x = 7)\na = f(arg1 = r)\nb = identity(r)',
+    { sampleCount: 1 });
+  for (const name of ['a', 'b']) {
+    const actual = await ctx.getMeasure(name);
+    assert.deepEqual(Array.from(actual.fields.x.value.data), [7]);
+  }
+});
 
 const NORMAL_AT_MEAN = 0.6904993792294276;   // closed form; NOT an engine output
 

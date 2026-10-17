@@ -3811,28 +3811,6 @@ function liftInlineSubexpressions(bindings: any) {
     const bodyAst = fnAst.args[0];
     if (!bodyAst || bodyAst.type === 'KeywordArg') return astArg;
 
-    // fn(<body>) at the AST level: substitute holes positionally.
-    // (lower.js handles the equivalent IR-level lowering for type
-    // inference, but we work on AST here for the orchestrator's
-    // inlining.)
-    if (fnBinding.type === 'fn') {
-      const numHoles = countHoles(bodyAst);
-      const positional = new Array(numHoles).fill(undefined);
-      let posIdx = 0;
-      for (const a of (astArg.args || [])) {
-        if (a.type === 'KeywordArg') {
-          const m = /^arg(\d+)$/.exec(a.name);
-          if (m) {
-            const idx = parseInt(m[1], 10) - 1;
-            if (idx >= 0 && idx < numHoles) positional[idx] = a.value;
-          }
-        } else if (posIdx < numHoles) {
-          positional[posIdx++] = a;
-        }
-      }
-      return substituteHolesPositional(cloneAst(bodyAst), positional);
-    }
-
     // Build the substitution: surface kwarg name → call's arg AST.
     // Then map surface → internal (the placeholder/binding name used
     // in the body via %local) so we can substitute body identifiers.
@@ -3848,7 +3826,10 @@ function liftInlineSubexpressions(bindings: any) {
     //     body (substituteIdents reads both shapes).
     //   - anything else (complex boundary expr) → use the surface
     //     name as a fallback; real boundary surgery deferred.
-    const surfaceOrder: any[] = [];
+    // §04: fn inputs are arg1, arg2, … and use ordinary call binding.
+    const surfaceOrder: string[] = fnBinding.type === 'fn'
+      ? Array.from({ length: countHoles(bodyAst) }, (_, i) => `arg${i + 1}`)
+      : [];
     const internalForSurface: Record<string, any> = {};
     for (let i = 1; i < fnAst.args.length; i++) {
       const a = fnAst.args[i];
@@ -3887,8 +3868,8 @@ function liftInlineSubexpressions(bindings: any) {
     // table columns. We detect two splat sources:
     //   - inline `record(...)` / `table(...)` calls — splat their
     //     KeywordArg children directly.
-    //   - Identifier ref to a record- or table-typed binding — synthesize
-    //     a FieldAccess per RECORD FIELD / TABLE COLUMN.
+    //   - Other record- or table-typed expressions — synthesize a FieldAccess
+    //     per record field / table column using their inferred type.
     // A sole positional record ALWAYS splats — §04: "A sole positional
     // record or table therefore always splats: whether its field or
     // column names match the callable's argument names decides only
@@ -3918,9 +3899,9 @@ function liftInlineSubexpressions(bindings: any) {
           && arg0.callee.type === 'Identifier'
           && (arg0.callee.name === 'record' || arg0.callee.name === 'table')) {
         splatted = (arg0.args || []).filter((f: any) => f.type === 'KeywordArg');
-      } else if (arg0.type === 'Identifier') {
-        const recBinding = out.get(arg0.name);
-        const t = recBinding && recBinding.inferredType;
+      } else {
+        const t = arg0.type === 'Identifier'
+          ? out.get(arg0.name)?.inferredType : __knownAstType(arg0);
         // An unknown or non-record/table type is not a splat source we can
         // expand — leave the call alone. That is an unresolved-type bail,
         // not a name-conditioned choice. Records and table columns both
@@ -3944,6 +3925,19 @@ function liftInlineSubexpressions(bindings: any) {
         if (!surfaceOrder.every((n: string) => splatNames.has(n))) return astArg;
         callArgs = splatted;
       }
+    }
+
+    // Bind fn arguments before substituting holes, including record/table splats.
+    if (fnBinding.type === 'fn') {
+      const positional = new Array(surfaceOrder.length).fill(undefined);
+      let posIdx = 0;
+      for (const a of callArgs) {
+        const idx = a.type === 'KeywordArg' ? surfaceOrder.indexOf(a.name) : posIdx++;
+        if (idx >= 0 && idx < positional.length) {
+          positional[idx] = a.type === 'KeywordArg' ? a.value : a;
+        }
+      }
+      return substituteHolesPositional(cloneAst(bodyAst), positional);
     }
 
     // Walk the call's args. KeywordArg → match by surface name;
