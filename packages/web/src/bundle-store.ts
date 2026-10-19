@@ -81,7 +81,8 @@
     }
   }
 
-  function owner(path: string): Mounted | undefined {
+  function owner(path: string | null | undefined): Mounted | undefined {
+    if (!path) return undefined;
     let current = path;
     for (;;) {
       const found = Array.from(mounts.values()).find(m => current === m.id || current.startsWith(m.folder + '/'));
@@ -369,8 +370,9 @@
 
   scope.FlatPPLWebBundles = { init, open, save, snapshot, read, canonical, displayPath, list,
     registerGraph, select, draftFor,
-    has: (path: string) => !!owner(path), folder: (path: string) => owner(path)?.folder,
-    isSaved: (path: string) => !!owner(path)?.saved,
+    has: (path: string | null | undefined) => !!owner(path),
+    folder: (path: string | null | undefined) => owner(path)?.folder,
+    isSaved: (path: string | null | undefined) => !!owner(path)?.saved,
     hasUnsaved: () => Array.from(mounts.values()).some(m => !m.saved), discard, remove,
     subscribe(fn: () => void) { listeners.add(fn); return () => listeners.delete(fn); },
   };
