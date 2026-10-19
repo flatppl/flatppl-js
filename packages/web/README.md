@@ -14,6 +14,17 @@ browser. **Export** downloads the current source, including unsaved edits.
 If saving fails, the draft stays in memory with **Retry** and **Download**
 actions. Unsaved drafts do not survive closing or reloading the tab.
 
+**Share** creates a link and, when it fits, a downloadable QR code. Built-in
+examples use readable `#/files/examples/model.flatppl` links. Other links include
+the source, imports, and data in the URL fragment. The playground never uploads
+these files or stores shares on a server.
+
+Open a `.flatppl.zip` through **Upload** or drag it into **Files**. It opens as an
+unsaved preview. **Save** keeps the whole bundle under one browser folder. An
+identical saved bundle is reused. **Tools → Download bundle** includes imports,
+data, and current edits. Use a ZIP when a link or QR code is too large. See
+[bundle format and limits](bundles.md).
+
 The **Graph**, **Plots**, and **Math** toggles choose visible panels. A lone panel
 fills the Visualization pane. **Fit** fits the graph without enlarging small
 graphs beyond normal scale. Theme changes update existing charts without

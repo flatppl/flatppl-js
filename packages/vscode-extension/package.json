@@ -44,7 +44,8 @@
   },
   "activationEvents": [
     "onLanguage:flatppl",
-    "onCommand:flatppl.convert"
+    "onCommand:flatppl.convert",
+    "onCommand:flatppl.openBundle"
   ],
   "categories": [
     "Programming Languages",
@@ -52,6 +53,10 @@
   ],
   "contributes": {
     "commands": [
+      { "command": "flatppl.openBundle", "title": "FlatPPL: Open Bundle" },
+      { "command": "flatppl.browseBundle", "title": "FlatPPL: Browse Bundle Files" },
+      { "command": "flatppl.extractBundle", "title": "FlatPPL: Extract Bundle" },
+      { "command": "flatppl.exportBundle", "title": "FlatPPL: Export Bundle" },
       {
         "command": "flatppl.visualize",
         "title": "FlatPPL: Visualize Binding",
@@ -107,7 +112,11 @@
       }
     ],
     "menus": {
+      "explorer/context": [
+        { "command": "flatppl.openBundle", "when": "resourceExtname == .zip", "group": "navigation" }
+      ],
       "commandPalette": [
+        { "command": "flatppl.exportBundle", "when": "editorLangId == flatppl" },
         {
           "command": "flatppl.visualize",
           "when": "editorLangId == flatppl || editorLangId == python || editorLangId == julia"

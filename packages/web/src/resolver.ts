@@ -58,7 +58,7 @@
    * Returns the text on success; throws on network/HTTP error.
    * Cached on first success.
    */
-  async function fetchSource(url: any) {
+  async function fetchBytes(url: string): Promise<Uint8Array> {
     if (!/^https?:\/\//i.test(url)) throw new Error('Browser sources require an http or https URL');
     if (sourceCache.has(url)) return sourceCache.get(url);
     approveSource(url);
@@ -74,9 +74,31 @@
     if (!response.ok) {
       throw new Error(response.status + ' ' + response.statusText + ' at ' + url);
     }
-    const text = await response.text();
-    sourceCache.set(url, text);
-    return text;
+    const limits = globalScope.FlatPPLEngine?.DEFAULT_LIMITS;
+    const maxBytes = /\.zip(?:[?#]|$)/i.test(url) ? (limits?.maxArchiveBytes ?? 64 * 1024 ** 2)
+      : (limits?.maxMemberBytes ?? 128 * 1024 ** 2);
+    const reader = response.body?.getReader();
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    if (reader) {
+      try {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          size += value.byteLength;
+          if (size > maxBytes) throw new Error('File exceeds the browser size limit: ' + url);
+          chunks.push(value);
+        }
+      } catch (error) {
+        await reader.cancel().catch(() => {});
+        throw error;
+      } finally { reader.releaseLock(); }
+    }
+    const bytes = new Uint8Array(size);
+    let offset = 0;
+    for (const chunk of chunks) { bytes.set(chunk, offset); offset += chunk.byteLength; }
+    sourceCache.set(url, bytes);
+    return bytes;
   }
 
   /**
@@ -85,20 +107,25 @@
    * `{ source, url }` (url is the path itself for in-memory tiers).
    * Throws on a network/HTTP error.
    */
-  async function resolveSource(path: any) {
+  async function readBytes(path: string, drafts: Record<string, string> = {}): Promise<Uint8Array | null> {
+    const bundles = globalScope.FlatPPLWebBundles;
+    const display = bundles?.displayPath(path) || path;
+    const draft = bundles?.draftFor ? await bundles.draftFor(path, drafts) : drafts[display];
+    if (draft !== undefined) return new TextEncoder().encode(draft);
+    if (bundles?.has(path)) return bundles.read(path);
     const eph = globalScope.FlatPPLWebEphemeral;
-    if (eph && eph.has && eph.has(path)) return { source: eph.get(path), url: path };
+    if (eph?.has(path)) return new TextEncoder().encode(eph.get(path));
     const userStore = globalScope.FlatPPLWebUserStore;
-    if (userStore && userStore.has && userStore.has(path)) {
-      return { source: userStore.getSource(path), url: path };
-    }
+    if (userStore?.has(path)) return new TextEncoder().encode(userStore.getSource(path));
+    if (path.startsWith('flatppl-zip:')) return null;
+    if (/^(?:new\/|user\/)/.test(path)) throw new Error('File is not available: ' + display);
     // An absolute http(s) URL dependency uses browser trust markers and the
     // HTTP/session caches. The shared on-disk cache is a Node-host concern.
     if (/^https?:\/\//i.test(path)) {
-      return { source: await fetchSource(path), url: path };
+      return fetchBytes(path);
     }
     const url = new URL(path, document.baseURI).href;
-    return { source: await fetchSource(url), url: url };
+    return fetchBytes(url);
   }
 
   /**
@@ -108,32 +135,32 @@
    * `sources` maps each dependency's RESOLVED path to its text — the
    * canonical key the engine's bundle compiler expects.
    */
-  async function resolveBundle(primaryPath: any, sourceOverride?: string | null) {
-    // `sourceOverride` (the live editor buffer) walks the deps the user just
-    // typed, not the stored text's; the stored text is still resolved so the
-    // caller learns the primary's URL and can tell whether the buffer is dirty.
-    const resolved = await resolveSource(primaryPath);
-    const primaryUrl = resolved.url;
-    const primarySource = typeof sourceOverride === 'string' ? sourceOverride : resolved.source;
+  async function resolveBundle(primaryPath: string, sourceOverride?: string | null,
+      options: { drafts?: Record<string, string>; strict?: boolean } = {}) {
+    const drafts = { ...options.drafts };
+    if (typeof sourceOverride === 'string') drafts[primaryPath] = sourceOverride;
+    const bytes = await readBytes(primaryPath, drafts);
+    if (!bytes) throw new Error('File is not available: ' + primaryPath);
+    const path = globalScope.FlatPPLWebBundles?.canonical(primaryPath) || primaryPath;
     const FE = globalScope.FlatPPLEngine;
     const fileType = globalScope.FlatPPLFileTypes?.typeForPath(primaryPath);
-    let sources = Object.create(null);
-    // Data and documents do not contain executable module dependencies.
-    if (FE && FE.resolveBundle && (!fileType || fileType === 'flatppl')) {
-      // Host primitive only: resolve one source by path through the three-tier
-      // order (ephemeral → user store → network fetch); a missing/broken dep
-      // returns null and is left out (the engine reports it at the call). The
-      // shared engine walk (FE.resolveBundle) owns the moduleDeps +
-      // resolveModulePath + dedupe + cycle-safety, identical to the VS Code
-      // host's — neither re-implements it.
-      const readSource = async (resolved: any) => {
-        try { return (await resolveSource(resolved)).source; }
-        catch (_) { return null; }
-      };
-      ({ sources } = await FE.resolveBundle(primaryPath, primarySource, readSource));
+    if (FE?.resolveBundleBytes && (!fileType || fileType === 'flatppl' || /\.zip$/i.test(path))) {
+      const graph = await FE.resolveBundleBytes(path, bytes, (dep: string) => readBytes(dep, drafts),
+        { strict: !!options.strict });
+      return { ...graph, primaryUrl: path };
     }
-    return { primaryPath: primaryPath, primaryUrl: primaryUrl,
-      primarySource: primarySource, sources: sources };
+    let source: string, binary = false;
+    try {
+      source = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+      if (source.includes('\0')) throw new Error('binary');
+    } catch (_) {
+      binary = true;
+      source = 'Binary file · ' + bytes.byteLength.toLocaleString() + ' bytes\n\n'
+        + Array.from(bytes.subarray(0, 256), byte => byte.toString(16).padStart(2, '0')).join(' ')
+        + (bytes.length > 256 ? '\n…' : '');
+    }
+    return { primaryPath: path, primaryUrl: path, primarySource: source, binary,
+      sources: Object.create(null), files: { [path]: bytes }, resolutions: Object.create(null) };
   }
 
   /**
@@ -150,6 +177,7 @@
 
   globalScope.FlatPPLWebResolver = {
     resolveBundle: resolveBundle,
+    readBytes: readBytes,
     invalidate: invalidate,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

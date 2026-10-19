@@ -19,21 +19,19 @@ const vscode = require('vscode');
 // watch task keeps it fresh.
 const { processSource, findBindingAtLine, builtins,
   planRename, isValidBindingName, isValidPlaceholderText,
-  findEnclosingRanges, variants, resolveBundle } = require('./lib/engine.min.js');
+  findEnclosingRanges, variants } = require('./lib/engine.min.js');
 // URL cache (spec §04 #sec:url-cache): the Node host primitive for fetching
 // http/https load_module sources into the shared on-disk cache — the same
 // vendored bundle the visualizer uses. dependencyPrefetch is the host-agnostic
 // walk/counter over it that backs the Download/Update Dependencies commands.
 const urlCache = require('./lib/url-cache.cjs');
 const { prefetchDependencies } = require('./src/dependencyPrefetch');
-// lspUrlFeed walks the same cache to gather the model's transitive URL closure
-// for the flatppl-rust LSP, which resolves URL load_module deps but cannot
-// fetch them (the extension is the sole fetcher+truster).
-const { collectUrlSources } = require('./src/lspUrlFeed');
 // Remote (URL) module drill-down: a URL load_module opens as a read-only
 // `flatppl-remote:` virtual document whose content is served from the on-disk
 // cache (the content provider registered in activate).
-const { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, localSourceUri } = require('./src/remoteModule');
+const { REMOTE_SCHEME, BUNDLE_SCHEME, urlFromRemoteUri, enginePathOf, localSourceUri } = require('./src/remoteModule');
+const bundleApi = require('./lib/bundle.cjs');
+const { createBundleHost } = require('./src/bundleHost');
 // "Export math as HTML / LaTeX / Typst": the host-agnostic core (bundle
 // walk → flatppl-rust `export_math` → write beside the source). The wasm
 // API runs here in the extension host from lib/flatppl_wasm_api.cjs (the
@@ -328,6 +326,85 @@ function remapWorkspaceEdit(vscode: any, edit: any, dl: any) {
 let lspManager: import('./src/lspClient').LspManager | undefined;
 
 function activate(context: any) {
+  const bundleHost = createBundleHost(vscode, bundleApi, urlCache, (url: string) => approveUrl(url));
+  context.bundleHost = bundleHost;
+  context.subscriptions.push(bundleHost,
+    vscode.workspace.registerFileSystemProvider(BUNDLE_SCHEME, bundleHost.provider,
+      { isReadonly: true, isCaseSensitive: true }));
+  bundleHost.onMount((graph: any) => {
+    if (!lspManager || Object.keys(graph.archives).length === 0) return;
+    const sources = { ...graph.sources, [graph.primaryPath]: graph.primarySource };
+    const uris: Record<string, string> = {};
+    for (const id of Object.keys(sources)) {
+      if (bundleApi.parseArchiveMemberId(id)) uris[id] = bundleHost.uriFor(id).toString();
+    }
+    void lspManager.feedBundleSources({ sources, resolutions: graph.resolutions, uris })
+      .catch((error: any) => vscode.window.showWarningMessage('FlatPPL: could not send bundle to language server: ' + error.message));
+  });
+
+  let lastBundle: string | undefined;
+  /** Archive commands ask before every write. Opening mounts only virtual files. */
+  function bundleCommand(name: string, action: (uri?: any) => Promise<void>) {
+    context.subscriptions.push(vscode.commands.registerCommand(name, async (uri?: any) => {
+      try { await action(uri); }
+      catch (error: any) { vscode.window.showErrorMessage('FlatPPL: ' + error.message); }
+    }));
+  }
+  function selectedBundle() {
+    const uri = vscode.window.activeTextEditor?.document.uri;
+    if (uri?.scheme === BUNDLE_SCHEME) return enginePathOf(uri);
+    if (lastBundle) return lastBundle;
+    throw new Error('Open a FlatPPL ZIP bundle first.');
+  }
+  bundleCommand('flatppl.openBundle', async (uri?: any) => {
+    if (!uri) {
+      const picked = await vscode.window.showOpenDialog({ canSelectMany: false,
+        filters: { 'FlatPPL bundles': ['zip'] }, openLabel: 'Open Bundle' });
+      if (!picked?.length) return;
+      uri = picked[0];
+    }
+    const graph = await bundleHost.resolve(uri, undefined, true);
+    lastBundle = graph.primaryPath;
+    const memberUri = bundleHost.uriFor(graph.primaryPath);
+    const editor = await vscode.window.showTextDocument(memberUri, { preview: false });
+    FlatPPLPanel.createOrShow(context);
+    FlatPPLPanel.currentPanel.showModule(editor.document.getText(), memberUri, false, false, null);
+  });
+  bundleCommand('flatppl.browseBundle', async () => {
+    const files = bundleHost.members(selectedBundle()).filter((member: any) => !member.directory);
+    const choice = await vscode.window.showQuickPick(files.map((member: any) => ({ label: member.path, id: member.id })),
+      { title: 'Bundle files', placeHolder: 'Open a read-only source or data file' });
+    if (choice) await vscode.commands.executeCommand('vscode.open', bundleHost.uriFor(choice.id));
+  });
+  bundleCommand('flatppl.extractBundle', async () => {
+    const id = selectedBundle();
+    const picked = await vscode.window.showOpenDialog({ canSelectFolders: true, canSelectFiles: false,
+      canSelectMany: false, openLabel: 'Choose Parent Folder' });
+    if (!picked?.length) return;
+    const name = await vscode.window.showInputBox({ title: 'New working-copy folder', value: 'flatppl-model',
+      validateInput: (text: string) => !text.trim() || /[\\/\0]/.test(text) || text === '.' || text === '..'
+        ? 'Use one new folder name.' : null });
+    if (!name) return;
+    const destination = vscode.Uri.joinPath(picked[0], name);
+    await bundleHost.extract(id, destination);
+    await vscode.window.showTextDocument(vscode.Uri.joinPath(destination, 'main.flatppl'), { preview: false });
+  });
+  bundleCommand('flatppl.exportBundle', async () => {
+    const doc = vscode.window.activeTextEditor?.document;
+    if (!isFlatPPLDoc(doc)) throw new Error('Open a FlatPPL module to export its bundle.');
+    const graph = await bundleHost.resolve(doc.uri, doc.getText(), true);
+    const folder = vscode.workspace.workspaceFolders?.[0];
+    const filename = path.posix.basename(doc.uri.path).replace(/\.flatppl$/i, '') + '.flatppl.zip';
+    const defaultUri = doc.uri.scheme === BUNDLE_SCHEME || doc.uri.scheme === REMOTE_SCHEME || doc.isUntitled
+      ? (folder && vscode.Uri.joinPath(folder.uri, filename))
+      : doc.uri.with({ path: path.posix.join(path.posix.dirname(doc.uri.path), filename) });
+    const target = await vscode.window.showSaveDialog({ defaultUri,
+      filters: { 'FlatPPL bundles': ['zip'] }, saveLabel: 'Export Bundle' });
+    if (!target) return;
+    const bytes = await bundleHost.pack(graph);
+    await vscode.workspace.fs.writeFile(target, bytes);
+    vscode.window.showInformationMessage('FlatPPL: bundle exported.');
+  });
   // Cache parsed results to avoid re-parsing on every cursor move
   let cachedUri = '';
   let cachedVersion = -1;
@@ -374,31 +451,9 @@ function activate(context: any) {
   async function feedUrlSourcesForDoc(doc: any) {
     if (!lspManager || !isFlatPPLDoc(doc)) return;
     try {
-      const { sources } = await collectUrlSources({
-        primaryPath: doc.uri.path,
-        primarySource: doc.getText(),
-        resolveBundle,
-        isUrl: urlCache.isUrl,
-        // offline ⇒ return cached bytes if present, else throw → null (never
-        // fetch, never prompt: this runs on open/save/restart, not on a user
-        // action). Download/Update Dependencies is the explicit fetch path.
-        readUrlCached: async (url: any) => {
-          try {
-            const r = await urlCache.fetchToCache(url, { offline: true });
-            return r.content.toString('utf8');
-          } catch (_e) { return null; }
-        },
-        // Same workspace read the visualizer / prefetch use (scheme + authority
-        // preserved for remote / WSL); locals are read to recurse THROUGH them
-        // to deeper URL deps, but the LSP reads local files itself.
-        readLocal: async (resolved: any) => {
-          try {
-            const bytes = await vscode.workspace.fs.readFile(
-              localSourceUri(doc.uri, resolved, vscode.Uri.parse));
-            return Buffer.from(bytes).toString('utf8');
-          } catch (_e) { return null; }
-        },
-      });
+      const graph = await bundleHost.resolve(doc.uri, doc.getText(), false, { offline: true });
+      const sources = Object.entries(graph.sources)
+        .filter(([uri]) => urlCache.isUrl(uri)).map(([uri, text]) => ({ uri, text: String(text) }));
       await lspManager.feedUrlSources(sources);
     } catch (_e) { /* never throw from a listener / lifecycle hook */ }
   }
@@ -841,8 +896,7 @@ function activate(context: any) {
   // The walk + counting live in the host-agnostic prefetchDependencies; here
   // we supply only the host pieces (engine walk, cache primitive, trust
   // prompt, workspace reader) and report a summary. New URLs prompt for trust
-  // once; already-cached/trusted ones are silent. (load_data sources are not
-  // yet walked — that arrives with load_data end-to-end.)
+  // once; already-cached/trusted ones are silent. ZIPs and data keep their bytes.
   async function runDependencyFetch(force: any) {
     const editor = vscode.window.activeTextEditor;
     if (!editor || !isFlatPPLDoc(editor.document)) {
@@ -852,24 +906,24 @@ function activate(context: any) {
       return;
     }
     const doc = editor.document;
+    const readSnapshot = bundleHost.reader(doc.uri, { force: !!force });
     const { fetched, cached, failed } = await vscode.window.withProgress(
       { location: vscode.ProgressLocation.Notification,
         title: force ? 'FlatPPL: updating dependencies…'
                      : 'FlatPPL: downloading dependencies…' },
       () => prefetchDependencies({
-        primaryPath: doc.uri.path,
+        primaryPath: enginePathOf(doc.uri),
         primarySource: doc.getText(),
-        resolveBundle,
+        binary: true,
+        resolveBundle: (primaryPath: string, source: string, readBytes: any) =>
+          bundleApi.resolveBundleBytes(primaryPath, Buffer.from(source, 'utf8'), readBytes, { strict: false }),
         isUrl: urlCache.isUrl,
         fetchToCache: urlCache.fetchToCache,
         approve: (u: any) => approveUrl(u),
         // A resolved path is a URI path component, so it rides
         // `doc.uri.with({ path })` to keep scheme + authority (remote / WSL
         // too) — the same read the visualizer's readSource uses.
-        readLocal: async (resolved: any) => {
-          const bytes = await vscode.workspace.fs.readFile(localSourceUri(doc.uri, resolved, vscode.Uri.parse));
-          return Buffer.from(bytes).toString('utf8');
-        },
+        readLocal: readSnapshot,
         force: !!force,
       }));
 
@@ -956,7 +1010,7 @@ function activate(context: any) {
     // skips the command's own overwrite prompt.
     let baseUri = doc.uri;       // scheme + authority for the target (remote / WSL too)
     let target: string | null = null;
-    if (doc.isUntitled || doc.uri.scheme === REMOTE_SCHEME) {
+    if (doc.isUntitled || doc.uri.scheme === REMOTE_SCHEME || doc.uri.scheme === BUNDLE_SCHEME) {
       const folder = vscode.workspace.workspaceFolders && vscode.workspace.workspaceFolders[0];
       const picked = await vscode.window.showSaveDialog({
         defaultUri: folder ? vscode.Uri.joinPath(folder.uri, mathExportFileName(enginePath, format)) : undefined,
@@ -977,25 +1031,7 @@ function activate(context: any) {
             document: format,
             source: doc.getText(),
             path: enginePath,
-            resolveBundle,
-            // The same dependency read as the visualizer's bundle: a URL through
-            // the on-disk cache (trust prompt on a first, unknown URL), a local
-            // path through the workspace file system on the source's scheme. A
-            // dependency that cannot be read is left out — the document reports
-            // it — and the user is told, as the visualizer tells them.
-            readSource: async (resolved: string) => {
-              try {
-                if (urlCache.isUrl(resolved)) {
-                  return await urlCache.readText(resolved, { approve: (u: any) => approveUrl(u) });
-                }
-                const bytes = await vscode.workspace.fs.readFile(localSourceUri(doc.uri, resolved, vscode.Uri.parse));
-                return Buffer.from(bytes).toString('utf8');
-              } catch (e: any) {
-                vscode.window.showWarningMessage(
-                  'FlatPPL: could not load ' + resolved + ' — ' + ((e && e.message) || e));
-                return null;
-              }
-            },
+            resolveBundle: () => bundleHost.resolve(doc.uri, doc.getText()),
             exportMath,
             target,
             exists: async (p: string) => {

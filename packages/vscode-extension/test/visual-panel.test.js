@@ -36,7 +36,11 @@ function panelHost() {
       onDidReceiveMessage(fn) { receive = fn; }, postMessage(msg) { messages.push(msg); },
     },
     onDidDispose(fn) { dispose = fn; },
-  }, { extensionUri: {} });
+  }, { extensionUri: {}, bundleHost: {
+    resolve(uri, source) {
+      return engine.resolveBundleBytes(uri.path, Buffer.from(source), () => vscode.workspace.fs.readFile(), { strict: false });
+    },
+  } });
   receive({ type: 'webviewReady' });
   return { panel, messages, pending, started, dispose: () => dispose() };
 }
@@ -56,3 +60,16 @@ for (const [next, fails] of [['embedded', false], ['embedded', true], ['disposed
     assert.deepEqual(h.messages.map((msg) => msg.source), next === 'embedded' ? ['fresh = 2'] : []);
   });
 }
+
+test('a data-only model reaches the webview with its dependency', async () => {
+  const h = panelHost();
+  h.panel.updateSource('d = load_data("data.json", reals)\nx = d + 1', 'x', {
+    scheme: 'file', path: '/model.flatppl', with: opts => opts,
+  }, false);
+  await h.started.promise;
+  h.pending.resolve(Buffer.from('7'));
+  await new Promise(setImmediate);
+  assert.equal(h.messages[0].bundleSources['/data.json'], undefined);
+  assert.deepEqual(Array.from(h.messages[0].bundleFiles['/data.json']), [55]);
+  assert.equal(h.messages[0].bundleResolutions['/model.flatppl'].data['data.json'], '/data.json');
+});

@@ -7,8 +7,9 @@
 // page reload.
 //
 // Hash format:
-//   #model=path/to/foo.flatppl
-//   #model=path/to/foo.flatppl&target=binding_name      (later step)
+//   #/files/path/to/foo.flatppl?target=binding_name
+// Legacy #model= paths still load. Unsaved bundles retain their content token
+// or hosted archive URL while navigating within the same bundle.
 //
 // `model` is the path the resolver will fetch (relative to the
 // document base, so e.g. `demo/x.flatppl` resolves under the
@@ -29,18 +30,26 @@
   function parseHash() {
     let raw = (globalScope.location && globalScope.location.hash) || '';
     if (raw.charAt(0) === '#') raw = raw.slice(1);
-    const out: { model: string | null; target: string | null } = { model: null, target: null };
+    const out: { model: string | null; target: string | null; share?: string; archive?: string } = { model: null, target: null };
     if (!raw) return out;
+    if (raw.startsWith('/files/')) {
+      const end = raw.indexOf('?');
+      try { out.model = decodeURIComponent(raw.slice(7, end < 0 ? undefined : end)); }
+      catch (_) { return out; }
+      raw = end < 0 ? '' : raw.slice(end + 1);
+    }
     const parts = raw.split('&');
     for (let i = 0; i < parts.length; i++) {
       const eq = parts[i].indexOf('=');
       if (eq <= 0) continue;
       const key = parts[i].slice(0, eq);
       var val;
-      try { val = decodeURIComponent(parts[i].slice(eq + 1)); }
+      try { val = decodeURIComponent(parts[i].slice(eq + 1).replace(/\+/g, ' ')); }
       catch (_) { val = parts[i].slice(eq + 1); }
       if (key === 'model')  out.model = val;
       if (key === 'target') out.target = val;
+      if (key === 'share') out.share = val;
+      if (key === 'archive') out.archive = val;
     }
     return out;
   }
@@ -48,9 +57,11 @@
   /** Serialize { model, target } back to a hash string (no leading #). */
   function serialize(state: any) {
     const parts: string[] = [];
-    if (state.model)  parts.push('model=' + encodeURIComponent(state.model));
     if (state.target) parts.push('target=' + encodeURIComponent(state.target));
-    return parts.join('&');
+    if (state.share) parts.push('share=' + encodeURIComponent(state.share));
+    if (state.archive) parts.push('archive=' + encodeURIComponent(state.archive));
+    const path = state.model ? '/files/' + state.model.split('/').map(encodeURIComponent).join('/') : '';
+    return path + (parts.length ? (path ? '?' : '') + parts.join('&') : '');
   }
 
   /**
@@ -61,6 +72,19 @@
    * has one place to live.
    */
   function navigateTo(state: any) {
+    const bundles = globalScope.FlatPPLWebBundles;
+    const folder = bundles?.folder(state.model);
+    if (folder) {
+      if (bundles.isSaved(state.model)) {
+        state = { ...state, share: null, archive: null };
+      } else {
+        const current = parseHash();
+        if (bundles.folder(current.model) === folder) state = { ...state,
+          share: state.share === undefined ? current.share : state.share,
+          archive: state.archive === undefined ? current.archive : state.archive,
+        };
+      }
+    }
     const next = serialize(state);
     const current = (globalScope.location.hash || '').replace(/^#/, '');
     if (next === current) return;

@@ -4034,12 +4034,15 @@ function analyze(ast: any, source: string, opts?: any) {
   // for source-level concerns (DAG display, source-located
   // diagnostics).
   const pir = require('./pir.ts');
-  let loweredModule = pir.lowerToModule(bindings, { modulePath: moduleCtx.modulePath });
+  const moduleOptions = { modulePath: moduleCtx.modulePath,
+    resolutions: moduleCtx.resolutions, pathAliases: moduleCtx.pathAliases };
+  let loweredModule = pir.lowerToModule(bindings, moduleOptions);
   if (moduleCtx.dataSources) {
     const loaded = require('./data-bindings.ts').expandDataBindings(bindings, loweredModule,
-      { sources: moduleCtx.dataSources, modulePath: moduleCtx.modulePath }, diagnostics,
+      { sources: moduleCtx.dataSources, files: moduleCtx.dataFiles,
+        modulePath: moduleCtx.modulePath, resolutions: moduleCtx.resolutions }, diagnostics,
       (binding: any, rhs: any) => attachEffectiveRhs(binding, rhs, definedNames));
-    if (loaded) loweredModule = pir.lowerToModule(bindings, { modulePath: moduleCtx.modulePath });
+    if (loaded) loweredModule = pir.lowerToModule(bindings, moduleOptions);
   }
 
   // Surface lowering-time failures. pir.lowerToModule catches a lowerExpr
@@ -4123,7 +4126,7 @@ function analyze(ast: any, source: string, opts?: any) {
   const ksExpanded = require('./ksuperpose-expand.ts')
     .expandKsuperposeApplications(ast, bindings, ksExpandDiagnostics);
   if (ksExpanded) {
-    loweredModule = pir.lowerToModule(bindings, { modulePath: moduleCtx.modulePath });
+    loweredModule = pir.lowerToModule(bindings, moduleOptions);
     inferDiagnostics = _resolveAndInfer();
   }
   for (const d of inferDiagnostics) diagnostics.push(d);

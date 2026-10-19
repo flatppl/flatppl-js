@@ -7,7 +7,7 @@ const fs = require('fs');
 // `@flatppl/engine` symlink. isValidBindingName and variants are
 // re-exported by engine/index.js, the IIFE wraps that, and the
 // bundle's footer exposes the same shape to CommonJS require.
-const { isValidBindingName, variants, moduleDeps, resolveBundle } = require('../lib/engine.min.js');
+const { isValidBindingName, variants } = require('../lib/engine.min.js');
 // The Node-side URL cache (spec §04 Remote file caching): fetches http/https
 // load_module sources into the shared on-disk cache. Vendored separately — it
 // is Node-only and deliberately NOT part of the browser engine bundle.
@@ -16,7 +16,7 @@ const urlCache = require('../lib/url-cache.cjs');
 // scheme + URL<->uri-path derivation. A URL load_module opens as a read-only
 // virtual document under the flatppl-remote: scheme; enginePathOf yields the
 // URL (not the virtual uri's path) so relative deps still resolve against it.
-const { REMOTE_SCHEME, enginePathOf, resolveBaseUri, localSourceUri } = require('./remoteModule');
+const { REMOTE_SCHEME, BUNDLE_SCHEME, enginePathOf, resolveBaseUri, localSourceUri } = require('./remoteModule');
 
 /** There is one canonical FlatPPL surface syntax (flatppl-design
     cc81e4b removed FlatPPY/FlatPPJ). Retained as a function so the
@@ -157,6 +157,16 @@ class FlatPPLPanel {
       // module path (URI path component); resolve it against the current
       // document's URI to keep the scheme/authority.
       if (msg.type === 'openModule' && msg.path && this._sourceUri) {
+        if (this._context.bundleHost?.graphFor(msg.path)) {
+          const graph = this._context.bundleHost.graphFor(msg.path);
+          if (msg.path in graph.sources && msg.path.startsWith('flatppl-zip:')) {
+            const uri = this._context.bundleHost.uriFor(msg.path);
+            vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.One }).then((editor: any) => {
+              this.updateSource(editor.document.getText(), msg.member || null, uri, false);
+            }, (error: any) => vscode.window.showErrorMessage('FlatPPL: ' + error.message));
+            return;
+          }
+        }
         // A remote (URL) dependency (spec §04 #sec:url-cache) can't be opened as
         // a file — open it as a READ-ONLY virtual document showing the URL,
         // served from the on-disk cache (the flatppl-remote content provider).
@@ -220,6 +230,10 @@ class FlatPPLPanel {
       // and can miss the change when the webview has focus, so
       // relying on it would leave the viewer with stale source.
       if (msg.type === 'editSource' && this._readOnly) {
+        if (this._sourceUri?.scheme === BUNDLE_SCHEME) {
+          vscode.window.showInformationMessage('This archive is read-only. Use FlatPPL: Extract Bundle to edit a working copy.');
+          return;
+        }
         vscode.window.showInformationMessage(this._remote
           ? 'This is a read-only cached copy of a remote FlatPPL module — '
             + 'edits are not written back. Edit it at its source.'
@@ -324,14 +338,14 @@ class FlatPPLPanel {
     // A remote (URL) module is read-only cached content; a native model is
     // writable. `opts.remote` distinguishes them — the editSource refusal and
     // the read-only DAG both read these flags.
-    this._readOnly = !!(opts && opts.remote);
-    this._remote = !!(opts && opts.remote);
+    this._readOnly = !!(opts && opts.remote) || sourceUri?.scheme === REMOTE_SCHEME || sourceUri?.scheme === BUNDLE_SCHEME;
+    this._remote = sourceUri?.scheme === REMOTE_SCHEME || !!(opts && opts.remote);
     this._navUri = null;                // not an embedded snapshot
     if (sourceUri) this._sourceUri = sourceUri;
     // Remember the last LOCAL source uri so a back-navigation out of a remote
     // (flatppl-remote) module can rebuild a proper file uri from its scheme +
     // authority, rather than one derived from the remote uri.
-    if (sourceUri && sourceUri.scheme !== REMOTE_SCHEME) this._localBaseUri = sourceUri;
+    if (sourceUri && sourceUri.scheme !== REMOTE_SCHEME && sourceUri.scheme !== BUNDLE_SCHEME) this._localBaseUri = sourceUri;
     if (targetName) this._panel.title = `FlatPPL: ${targetName}`;
     const base: any = {
       type: 'sourceUpdate',
@@ -365,14 +379,12 @@ class FlatPPLPanel {
    * changed (the whole-module command was that path).
    *
    * Multi-file: read each dependency through the workspace file system
-   * and ship them as `bundleSources` (keyed by resolved path). Single-
-   * file sources post synchronously (the common case, no I/O).
+   * and ship sources, bytes, and resolved edges together. The shared walk
+   * also handles models with only `load_data`, without a module import.
    */
   _postWithBundle(base: any, source: any) {
     const seq = ++this._postSeq;
-    let rels: string[] = [];
-    try { rels = moduleDeps(source); } catch (_) { rels = []; }
-    if (rels.length === 0 || !this._sourceUri) {
+    if (!this._sourceUri) {
       this._post(base);
       return;
     }
@@ -381,9 +393,15 @@ class FlatPPLPanel {
     // posted synchronously meanwhile, say — must not be clobbered by this
     // older one landing late, so a stale resolution is dropped.
     const stale = () => seq !== this._postSeq;
-    this._resolveBundle(source, this._sourceUri).then((bundle: any) => {
+    this._context.bundleHost.resolve(this._sourceUri, source).then((bundle: any) => {
       if (stale()) return;
       base.bundleSources = bundle.sources;   // base.path already == bundle.primaryPath
+      base.path = bundle.primaryPath;
+      const dataPaths = new Set<string>(Object.values(bundle.resolutions || {})
+        .flatMap((edges: any) => Object.values(edges.data) as string[]));
+      base.bundleFiles = bundle.files && Object.fromEntries([...dataPaths]
+        .map(path => [path, Array.from(bundle.files[path])]));
+      base.bundleResolutions = bundle.resolutions;
       this._post(base);
     }, () => {
       if (stale()) return;
@@ -414,53 +432,6 @@ class FlatPPLPanel {
       try { editor.setDecorations(this._flashDecoration, []); } catch (_) { /* editor gone */ }
       if (this._flashEditor === editor) this._flashEditor = null;
     }, 1200);
-  }
-
-  /**
-   * Pre-fetch the transitive `.flatppl` dependencies a source loads via
-   * `load_module(...)` (spec §04), reading each through the workspace file
-   * system. Returns `{ sources, primaryPath }` where `sources` maps each
-   * dependency's RESOLVED path to its text (the engine's bundle key) and
-   * `primaryPath` is the importing file's own path. Paths use the URI
-   * path component (always `/`-separated, matching spec path resolution);
-   * a missing dependency is left out (the engine reports it).
-   */
-  async _resolveBundle(source: any, sourceUri: any) {
-    // Host primitive only: read one resolved dependency through the
-    // workspace file system (a resolved path is a URI path component, so it
-    // rides `sourceUri.with({ path })` to keep scheme + authority — works
-    // under remote / WSL too). The shared engine walk (`resolveBundle`)
-    // owns the moduleDeps + resolveModulePath + dedupe + tolerate-missing
-    // structure, identical to the web host's.
-    const readSource = async (resolved: string) => {
-      // A URL dependency (spec §04 #sec:url-cache) goes through the shared
-      // on-disk cache, prompting for trust on a first, unknown URL; a local
-      // dependency is read through the workspace file system.
-      if (urlCache.isUrl(resolved)) {
-        try {
-          return await urlCache.readText(resolved, { approve: (u: string) => this._approveUrl(u) });
-        } catch (e: any) {
-          vscode.window.showWarningMessage(
-            'FlatPPL: could not load ' + resolved + ' — ' + (e && e.message || e));
-          return null;   // left out of the bundle; the engine reports the dep at its call
-        }
-      }
-      const bytes = await vscode.workspace.fs.readFile(localSourceUri(sourceUri, resolved, vscode.Uri.parse));
-      return Buffer.from(bytes).toString('utf8');
-    };
-    return resolveBundle(enginePathOf(sourceUri), source, readSource);
-  }
-
-  /**
-   * Trust prompt for a not-yet-cached remote module URL (spec §04
-   * #sec:url-cache: interactive tooling must obtain the user's approval before
-   * fetching). Returns true to fetch and persist a `trust/<kk>/<key>` marker.
-   */
-  async _approveUrl(url: string) {
-    const pick = await vscode.window.showWarningMessage(
-      'FlatPPL: fetch and trust the remote module?\n' + url,
-      { modal: false }, 'Trust', 'Cancel');
-    return pick === 'Trust';
   }
 
   /**
@@ -498,11 +469,11 @@ class FlatPPLPanel {
       this._navUri = navOrigin ? navOrigin.uri : null;
       this._navBaseLine = navOrigin ? navOrigin.baseLine : 0;
     } else {
-      this._readOnly = false;
+      this._readOnly = sourceUri?.scheme === REMOTE_SCHEME || sourceUri?.scheme === BUNDLE_SCHEME;
       this._navUri = null;
       this._navBaseLine = 0;
       if (sourceUri) this._sourceUri = sourceUri;
-      if (sourceUri && sourceUri.scheme !== REMOTE_SCHEME) this._localBaseUri = sourceUri;
+      if (sourceUri && sourceUri.scheme !== REMOTE_SCHEME && sourceUri.scheme !== BUNDLE_SCHEME) this._localBaseUri = sourceUri;
     }
     this._panel.title = 'FlatPPL: module';
     this._postWithBundle({

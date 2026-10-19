@@ -797,6 +797,23 @@ html, body {
   .cm-tooltip.cm-tooltip-hover .cm-source-hover { max-width: calc(100vw - 32px); }
 }
 
+.share-dialog {
+  box-sizing: border-box;
+  margin: auto;
+  width: min(640px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  border: 1px solid var(--fp-border, #777);
+  border-radius: 12px;
+  padding: 24px;
+  background: var(--fp-bg, #152e29);
+  color: var(--fp-text, #eee);
+}
+.share-dialog::backdrop { background: #0009; }
+.share-dialog h2 { margin-top: 0; }
+.share-url { box-sizing: border-box; width: 100%; height: 80px; margin: 8px 0; }
+.share-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.share-qr { display: block; width: min(100%, 360px); height: auto; margin: 16px auto; image-rendering: pixelated; }
+
 /* The same generous targets help a touch laptop in the wide layout. */
 @media (max-width: 900px), (pointer: coarse) {
   #app-toolbar .fp-btn,

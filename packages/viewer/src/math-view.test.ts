@@ -38,6 +38,22 @@ test('buildMathRequest passes the host path and the resolved-path bundle through
   assert.deepEqual(req.formats, ['mathml']);
 });
 
+test('Math pane and document export retain archive identities and data bytes', () => {
+  const path = 'flatppl-zip:outer.zip!/main.flatppl';
+  const imported = 'flatppl-zip:inner.zip!/main.flatppl';
+  const model = { source: 'm = load_module("inner.zip")', path,
+    bundleSources: { [imported]: 'x = 2' },
+    bundleFiles: { 'data.bin': Uint8Array.of(0, 255) },
+    bundleResolutions: { [path]: { modules: { 'inner.zip': imported }, data: { 'data.bin': 'data.bin' } } } };
+  const pane = buildMathRequest(model);
+  const document = buildMathExportRequest({ ...model, document: 'html' });
+  for (const request of [pane, document]) {
+    assert.equal(request.resolutions[path].modules['inner.zip'], imported);
+    assert.equal(request.bundle[imported], 'x = 2');
+    assert.deepEqual(JSON.parse(JSON.stringify(request)).files['data.bin'], [0, 255]);
+  }
+});
+
 test('buildMathRequest treats a null bundle and a null path as absent', () => {
   const req = buildMathRequest({ source: 'x = 1', path: null, bundleSources: null });
   assert.equal(req.path, 'model.flatppl');

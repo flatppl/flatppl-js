@@ -41,6 +41,7 @@
       </div>
       <div id="source-toolbar" class="pane-header pane-header--row">
         <span id="source-header" class="pane-header-text">Source</span>
+        <button class="fp-btn file-action-label" id="share-btn" type="button" title="Share this model with its imports and data" hidden>Share</button>
         <button class="fp-btn fp-btn--icon" id="edit-toggle" type="button"
                 title="Toggle edit mode"
                 aria-label="Toggle edit mode"
@@ -105,7 +106,7 @@
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>
         </button>
         <button class="fp-btn fp-btn--icon" id="upload-btn" type="button"
-                title="Upload .flatppl, .md/.markdown, .hs3.json, or .pyhf.json files (or drag-and-drop into the file list)"
+                title="Open a ZIP bundle or upload source, data, and document files (or drag-and-drop into the file list)"
                 aria-label="Upload"
                 hidden>
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 10V2m0 0L5 5m3-3 3 3M3 9v4h10V9"/></svg>
@@ -218,6 +219,7 @@
   <script src="vendor/file-types.js"></script>
   <script src="ephemeral.js"></script>
   <script src="user-store.js"></script>
+  <script src="bundle-store.js"></script>
   <script src="resolver.js"></script>
   <script src="surfaces.js"></script>
   <script src="router.js"></script>

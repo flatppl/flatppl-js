@@ -32,6 +32,9 @@
 //     and row math share one generator and one sanitiser. The viewer's own
 //     marked + Temml pipeline stays for tooltips and hovers.
 
+import { mathBundleFields } from './bundle-context.js';
+import type { BundleContext, BundleResolutions } from './bundle-context.js';
+
 export const MATH_FORMATS: string[] = ['mathml'];
 
 /** The path the Rust side assumes when the host supplies none. */
@@ -41,6 +44,8 @@ export interface MathRequest {
   source: string;
   path: string;
   bundle: Record<string, string>;
+  files?: Record<string, number[]>;
+  resolutions?: BundleResolutions;
   formats: string[];
   document: boolean;
 }
@@ -87,7 +92,7 @@ export interface MathResponse {
 }
 
 /** One rendered row of the pane. */
-export function buildMathRequest(m: {
+export function buildMathRequest(m: BundleContext & {
   source: string;
   path?: string | null;
   bundleSources?: Record<string, string> | null;
@@ -96,6 +101,7 @@ export function buildMathRequest(m: {
     source: m.source,
     path: m.path || DEFAULT_MODULE_PATH,
     bundle: m.bundleSources ? Object.assign({}, m.bundleSources) : {},
+    ...mathBundleFields(m),
     formats: MATH_FORMATS.slice(),
     document: true,
   };
@@ -119,8 +125,9 @@ export function mathModelKey(
   source: string | null | undefined,
   path: string | null | undefined,
   bundle: Record<string, string> | null | undefined,
+  bundleVersion?: number,
 ): string {
-  return JSON.stringify([source || '', path || null, bundle || null]);
+  return JSON.stringify([source || '', path || null, bundle || null, bundleVersion || 0]);
 }
 
 /** Resolve the host-configured glue URL against the page (relative URLs
@@ -173,6 +180,8 @@ export interface MathExportRequest {
   source: string;
   path: string;
   bundle: Record<string, string>;
+  files?: Record<string, number[]>;
+  resolutions?: BundleResolutions;
   document: MathDocumentFormat['document'];
 }
 
@@ -180,7 +189,7 @@ export interface MathExportRequest {
  *  renders (buildMathRequest) plus the target format. Rust reads the
  *  document title from the path's stem, so the host passes the real path
  *  rather than the default. */
-export function buildMathExportRequest(m: {
+export function buildMathExportRequest(m: BundleContext & {
   source: string;
   path?: string | null;
   bundleSources?: Record<string, string> | null;
@@ -190,6 +199,7 @@ export function buildMathExportRequest(m: {
     source: m.source,
     path: m.path || DEFAULT_MODULE_PATH,
     bundle: m.bundleSources ? Object.assign({}, m.bundleSources) : {},
+    ...mathBundleFields(m),
     document: m.document,
   };
 }

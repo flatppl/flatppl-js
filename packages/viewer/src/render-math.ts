@@ -105,7 +105,8 @@ function bindingLine(ctx: Ctx, name: string): number | null {
 
 /** The current model's memo key (the analysed source, not the editor's). */
 function modelKey(ctx: Ctx): string {
-  return mathModelKey(ctx.analyzedSource, ctx.currentPath, ctx.currentBundleSources);
+  return mathModelKey(ctx.analyzedSource, ctx.currentPath, ctx.currentBundleSources,
+    ctx.bundleVersion);
 }
 
 /** The notice shown above the rows when the editor's source is not the
@@ -200,6 +201,8 @@ export function renderMathForCurrent(ctx: Ctx) {
       source: ctx.analyzedSource,
       path: ctx.currentPath,
       bundleSources: ctx.currentBundleSources,
+      bundleFiles: ctx.currentBundleFiles,
+      bundleResolutions: ctx.currentBundleResolutions,
     }))));
   } catch (err: any) {
     const msg = esc(String(err && err.message || err));

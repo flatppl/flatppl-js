@@ -37,9 +37,9 @@ export interface MathExportDeps {
   resolveBundle: (
     primaryPath: string, source: string,
     readSource: (resolved: string) => Promise<string | null | undefined>,
-  ) => Promise<{ sources: Record<string, string> }>;
+  ) => Promise<{ sources: Record<string, string>; files?: Record<string, Uint8Array>; resolutions?: any }>;
   /** The host's read of one resolved dependency (null when missing). */
-  readSource: (resolved: string) => Promise<string | null | undefined>;
+  readSource?: (resolved: string) => Promise<string | null | undefined>;
   /** `flatppl_wasm_api.export_math`: JSON request in, document text out;
    *  throws for a malformed request or an unparsable module. */
   exportMath: (requestJson: string) => string;
@@ -71,16 +71,16 @@ export function mathExportTargetPath(sourcePath: string, document: MathDocument)
  *  comes first so an unparsable model fails before any overwrite prompt.
  *  Errors from the renderer propagate; the caller reports them. */
 export async function runMathExport(deps: MathExportDeps): Promise<MathExportResult> {
-  let sources: Record<string, string> = {};
+  let bundle: { sources: Record<string, string>; files?: Record<string, Uint8Array>; resolutions?: any } = { sources: {} };
   try {
-    const bundle = await deps.resolveBundle(deps.path, deps.source, deps.readSource);
-    sources = (bundle && bundle.sources) || {};
+    bundle = await deps.resolveBundle(deps.path, deps.source, deps.readSource || (async () => null));
   } catch (_e) {
     // Resolution failed entirely — still render the primary; the document
     // reports the unresolved dependencies itself.
   }
   const request = buildMathExportRequest({
-    source: deps.source, path: deps.path, bundleSources: sources, document: deps.document,
+    source: deps.source, path: deps.path, bundleSources: bundle.sources,
+    bundleFiles: bundle.files, bundleResolutions: bundle.resolutions, document: deps.document,
   });
   const text = deps.exportMath(JSON.stringify(request));
   const target = deps.target || mathExportTargetPath(deps.path, deps.document);

@@ -34,7 +34,7 @@ async function prefetchDependencies(opts: any): Promise<any> {
       try {
         const r = await fetchToCache(resolved, { approve, force: !!force });
         if (r.fromCache) cached++; else fetched++;
-        return r.content.toString('utf8');
+        return opts.binary ? r.content : r.content.toString('utf8');
       } catch (e: any) {
         failed.push({ url: resolved, error: String((e && e.message) || e) });
         return null;          // left out of the bundle; keep walking the rest

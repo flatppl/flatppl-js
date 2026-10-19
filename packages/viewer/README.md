@@ -94,6 +94,27 @@ Mirror what `embed-test.html` does:
    `opts.source`, `opts.target`, and optionally `opts.host`) and
    ignore the auto-mount marker.
 
+### ZIP bundles
+
+Resolve ZIP bytes through the engine before mounting the viewer. Loading and
+decompression never run in the sampling path.
+
+```js
+const graph = await FlatPPLEngine.resolveBundleBytes(
+  'model.flatppl.zip', new Uint8Array(await file.arrayBuffer()), async () => null,
+);
+const view = FlatPPLViewer.mount(container, {
+  source: graph.primarySource,
+  path: graph.primaryPath,
+  bundleSources: graph.sources,
+  bundleFiles: graph.files,
+  bundleResolutions: graph.resolutions,
+});
+```
+
+Pass the same bundle fields to `view.update(source, target, options)` when
+switching modules. The host owns file selection, URL trust, and source navigation.
+
 ## Host adapter
 
 Markdown documents and doc comments render GFM and math. Raw HTML displays as

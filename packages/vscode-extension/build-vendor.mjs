@@ -340,6 +340,7 @@ const EXTENSION_TS_SOURCES = [
   // half: scheme + URL<->uri derivation). No vscode import, so type-stripping is
   // enough and the unit tests require it directly.
   { in: 'src/remoteModule.ts',  out: 'src/remoteModule.js' },
+  { in: 'src/bundleHost.ts',    out: 'src/bundleHost.js' },
   // "Export math as …" core (host deps injected; requires lib/math-view.cjs
   // built below). No vscode import, so type-stripping is enough and the
   // unit tests require it directly.
@@ -499,6 +500,14 @@ const urlCacheBuildOpts = {
   legalComments: 'inline',
 };
 
+// ZIP support belongs to the JS host, including builds without Rust WASM.
+const bundleBuildOpts = {
+  entryPoints: [join(enginePkg, 'bundle.ts')],
+  outfile: join(libDir, 'bundle.cjs'),
+  bundle: true, minify: true, format: 'cjs', platform: 'node',
+  target: ['node18'], legalComments: 'inline',
+};
+
 // The LSP client. Bundles `vscode-languageclient` (a real npm runtime
 // dependency) into a single Node-loadable CommonJS file so extension.ts can
 // `require('./src/lspClient')` without node_modules at runtime — the packaged
@@ -529,9 +538,10 @@ if (WATCH) {
   const echartsCtx = await esbuild.context(echartsCustomBuildOpts);
   const urlCacheCtx = await esbuild.context(urlCacheBuildOpts);
   const mathViewCtx = await esbuild.context(mathViewBuildOpts);
+  const bundleCtx = await esbuild.context(bundleBuildOpts);
   await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(),
                      viewerCtx.rebuild(), mathCtx.rebuild(), lspCtx.rebuild(),
-                     echartsCtx.rebuild(), urlCacheCtx.rebuild(), mathViewCtx.rebuild()]);
+                     echartsCtx.rebuild(), urlCacheCtx.rebuild(), mathViewCtx.rebuild(), bundleCtx.rebuild()]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
@@ -542,7 +552,7 @@ if (WATCH) {
   console.log('  bundled math-view     -> lib/math-view.cjs');
   await Promise.all([engineCtx.watch(), workerCtx.watch(),
                      viewerCtx.watch(), mathCtx.watch(), lspCtx.watch(),
-                     echartsCtx.watch(), urlCacheCtx.watch(), mathViewCtx.watch()]);
+                     echartsCtx.watch(), urlCacheCtx.watch(), mathViewCtx.watch(), bundleCtx.watch()]);
   console.log('  watching packages/engine/ + packages/viewer/ for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
@@ -554,6 +564,7 @@ if (WATCH) {
     esbuild.build(echartsCustomBuildOpts),
     esbuild.build(urlCacheBuildOpts),
     esbuild.build(mathViewBuildOpts),
+    esbuild.build(bundleBuildOpts),
   ]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
@@ -575,6 +586,7 @@ if (WATCH) {
 const bundledNames = new Set(COPY_LIBS.map(c => c.pkg));
 // echarts is now bundled via esbuild (not copied), so add it explicitly.
 bundledNames.add('echarts');
+bundledNames.add('@zip.js/zip.js');
 
 let out = '# Third-Party Licenses\n\n';
 out += 'This extension bundles the following third-party libraries into the\n';

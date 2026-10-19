@@ -5,10 +5,11 @@
 const dataload = require('./dataload.ts');
 const lower = require('./lower.ts');
 const fixedEval = require('./fixed-eval.ts');
-const { resolveModulePath } = require('./module-resolve.ts');
+const { resolveBundlePath } = require('./module-resolve.ts');
 
 function expandDataBindings(bindings: Map<string, any>, loweredModule: any,
-  options: { sources: Record<string, string>; modulePath?: string },
+  options: { sources: Record<string, string>; files?: Record<string, Uint8Array>;
+    modulePath?: string; resolutions?: any },
   diagnostics: any[], attach: (binding: any, rhs: any) => void): boolean {
   const parsed = new Map<string, any>();
   const moduleNames = new Set(Object.keys(loweredModule.moduleRegistry || {}));
@@ -22,8 +23,11 @@ function expandDataBindings(bindings: Map<string, any>, loweredModule: any,
     if (dataload.containsAnything(schema)) return undefined;
     const source = resolve(ir.kwargs?.source || ir.args?.[0]);
     if (typeof source !== 'string') throw new Error('load_data: source must be a fixed string path');
-    const path = resolveModulePath(options.modulePath || '<entry>', source);
-    const text = options.sources[path];
+    const path = resolveBundlePath(options.modulePath || '<entry>', source, options.resolutions, 'data');
+    // Binary bytes stay opaque until a supported text format is demanded.
+    if (!dataload.detectFormat(path)) dataload.parseByExtension(path, '');
+    const text = options.sources[path] ?? (options.files?.[path]
+      ? new TextDecoder('utf-8', { fatal: true }).decode(options.files[path]) : undefined);
     if (text === undefined) throw new Error(`load_data: data source not found in bundle: '${path}'`);
     if (!parsed.has(path)) parsed.set(path, dataload.parseByExtension(path, text));
     return dataload.valueExpression(parsed.get(path), schema, ir.loc, dataload.detectFormat(path) !== 'json');

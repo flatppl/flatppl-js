@@ -29,6 +29,18 @@ Work in progress. Currently:
 - Command "FlatPPL: Convert HS3 / pyhf to FlatPPL" importing a statistical
   workspace as FlatPPL source
 
+## Portable bundles
+
+**FlatPPL: Open Bundle** opens a `.zip` containing `main.flatppl`, its imports,
+and data. Members remain read-only. Opening writes no extracted files.
+**Browse Bundle Files** opens source and data members for inspection.
+
+**Export Bundle** packages the active module and its dependencies, including
+unsaved source and data edits. **Extract Bundle** creates a new working-copy
+folder. It refuses existing folders and archives with symbolic links, because
+VS Code's filesystem API cannot preserve links. ZIP loading works without the
+optional Rust converter artifact.
+
 ## Converting HS3 and pyhf workspaces
 
 **FlatPPL: Convert HS3 / pyhf to FlatPPL** imports an HS3 (HEP Statistics

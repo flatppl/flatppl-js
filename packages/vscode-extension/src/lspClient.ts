@@ -31,7 +31,8 @@ export function createClient(
     transport: TransportKind.stdio,
   };
   const clientOptions: LanguageClientOptions = {
-    documentSelector: [{ scheme: 'file', language: 'flatppl' }],
+    documentSelector: [{ scheme: 'file', language: 'flatppl' },
+      { scheme: 'flatppl-bundle', language: 'flatppl' }],
     initializationOptions: { catalogues, diagnosticsExclude },
     outputChannelName: OUTPUT_CHANNEL,
   };
@@ -52,6 +53,7 @@ export interface LspManager {
    *  the extension is the sole fetcher+truster (spec §04 #sec:url-cache). No-op
    *  when no server is running or the payload is empty/unchanged. */
   feedUrlSources(sources: Array<{ uri: string; text: string }>): Promise<void>;
+  feedBundleSources(bundle: { sources: Record<string, string>; resolutions: any; uris: Record<string, string> }): Promise<void>;
 }
 
 /** Owns the running client lifecycle: read config → resolve binary → read
@@ -125,5 +127,10 @@ export function createLspManager(
     });
   }
 
-  return { start, stop, restart, feedUrlSources };
+  /** Archive IDs and explicit edges keep LSP navigation inside its mounted root. */
+  async function feedBundleSources(bundle: { sources: Record<string, string>; resolutions: any; uris: Record<string, string> }) {
+    if (client) await client.sendNotification('flatppl/bundleSources', bundle);
+  }
+
+  return { start, stop, restart, feedUrlSources, feedBundleSources };
 }

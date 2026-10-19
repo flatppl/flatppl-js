@@ -91,3 +91,22 @@ test('a changed dependency text, an extra dependency, or a different path re-low
   assert.equal(lowerInputsChanged(base, { ...base, path: '/m/b.flatppl' }), true);
   assert.equal(lowerInputsChanged(base, { ...base, source: SRC + '\n' }), true);
 });
+
+test('archive data and import edges survive navigation and invalidate changed inputs', () => {
+  const path = 'flatppl-zip:models.zip!/main.flatppl';
+  const data = 'flatppl-zip:models.zip!/data.json';
+  const initial = moduleContextOnUpdate({}, { path, bundleSources: {},
+    bundleFiles: { [data]: [49] },
+    bundleResolutions: { [path]: { modules: {}, data: { 'data.json': data } } } });
+  const next = moduleContextOnUpdate(initial, { source: 'x = 2' });
+  assert.equal(next.bundleFiles, initial.bundleFiles);
+  assert.deepEqual([...next.bundleFiles[data]], [49]);
+  const base = { ...initial, source: 'd = load_data("data.json", reals)' };
+  assert.equal(lowerInputsChanged(base, { ...base, ...next }), false);
+  assert.equal(lowerInputsChanged(base, { ...base, bundleFiles: { [data]: Uint8Array.of(50) } }), true);
+  assert.equal(lowerInputsChanged(base, { ...base,
+    bundleResolutions: { [path]: { modules: {}, data: { 'data.json': 'another' } } } }), true);
+  const leaf = moduleContextOnUpdate(next, { path: 'leaf.flatppl' });
+  assert.equal(leaf.bundleFiles, null);
+  assert.equal(leaf.bundleResolutions, null);
+});
