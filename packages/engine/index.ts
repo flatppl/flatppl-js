@@ -26,7 +26,8 @@ const pir = require('./pir.ts');
 const pirSexpr = require('./pir-sexpr.ts');
 const standardModules = require('./standard-modules.ts');
 const dataload = require('./dataload.ts');
-const { resolveModulePath } = require('./module-resolve.ts');
+const { resolveModulePath, resolveBundlePath } = require('./module-resolve.ts');
+const { loadDependencies, fixedStringAliases } = require('./bundle-deps.ts');
 const { linkModules } = require('./module-link.ts');
 const perfConfig = require('./perf-config.ts');
 const optimizer = require('./optimizer/index.ts');
@@ -52,8 +53,9 @@ const limitations = require('./limitations.ts');
  *                    path.
  *   - opts.path    — source path, used to resolve relative module/data paths.
  *   - opts.bundle  — prefetched module/data bundle (spec §04/§07). Shape:
- *                      { sources: { [path: string]: text: string } }
- *                    The engine consumes pre-resolved module and data text;
+ *                      { sources, files?, resolutions? }
+ *                    Sources hold module text, files hold data bytes, and
+ *                    resolutions retain mounted module/data edges.
  *                    async I/O is the host's responsibility (VS Code:
  *                    vscode.workspace.fs; web: fetch). Defaults to an
  *                    empty bundle when omitted. Architectural decisions
@@ -202,12 +204,12 @@ function _chainDensityDiagnostics(bindings: any, moduleRegistry: any): any[] {
 // dependency text into `bundle.sources` (keyed by resolved path); this
 // stays synchronous. Dependencies compile BEFORE their importer so that
 // cross-module type inference can read each dep's typed bindings.
-// Resolution failures (missing source, dependency cycle, non-literal
+// Resolution failures (missing source, dependency cycle, non-fixed
 // path) become diagnostics on the importing module — never crashes or
 // infinite loops.
 function _compileModuleGraph(
   entrySource: string, entryPath: string,
-  bundle: { sources: Record<string, string> }, variant: any,
+  bundle: { sources: Record<string, string>; files?: Record<string, Uint8Array>; resolutions?: any }, variant: any,
   bundleProvided: boolean,
 ): { primary: any; modules: Map<string, any> } {
   // Resolved-path → compiled module. Holds the dependencies only; the
@@ -226,13 +228,13 @@ function _compileModuleGraph(
     for (const dep of _collectLoadModuleDeps(ast)) {
       if (dep.relPath == null) {
         depDiags.push({ severity: 'error',
-          message: 'load_module(...) requires a string-literal path '
+          message: 'load_module(...) requires a fixed string path '
             + '(module paths are resolved at load time, spec §04)',
           loc: dep.loc });
         continue;
       }
       let resolved: string;
-      try { resolved = resolveModulePath(path, dep.relPath); }
+      try { resolved = resolveBundlePath(path, dep.relPath, bundle.resolutions); }
       catch (e: any) {
         depDiags.push({ severity: 'error', message: e.message, loc: dep.loc });
         continue;
@@ -263,7 +265,9 @@ function _compileModuleGraph(
     }
 
     const a = analyze(ast, src, { modulePath: path, modules,
-      dataSources: bundleProvided ? bundle.sources : undefined });
+      dataSources: bundleProvided ? bundle.sources : undefined,
+      dataFiles: bundle.files, resolutions: bundle.resolutions,
+      pathAliases: fixedStringAliases(ast) });
     return {
       path, ast,
       bindings: a.bindings,
@@ -282,7 +286,7 @@ function _compileModuleGraph(
 // resolver uses this (with `moduleResolve.resolveModulePath`) to walk the
 // transitive `.flatppl` dependency tree and pre-fetch each into
 // `bundle.sources` before calling `processSource`. Lightweight — tokenize
-// + parse only, no analysis. Non-literal `load_module` paths are skipped
+// + parse only, no analysis. Non-fixed `load_module` paths are skipped
 // (they error at compile time).
 function moduleDeps(source: string, opts?: any): string[] {
   const variant = variants.resolveVariant(opts);
@@ -357,48 +361,22 @@ async function resolveBundle(
 // `load_module` result is a module reference, not a value (it cannot be
 // passed to functions or stored), so in practice it appears only as a
 // binding RHS — but we walk the whole tree defensively. Returns one entry
-// per call: `relPath` is the string-literal path, or null when the path
-// argument is not a literal (an error, surfaced by the caller).
+// per call: `relPath` is the fixed string or string alias, or null when
+// the argument cannot be resolved (an error, surfaced by the caller).
 function _collectLoadModuleDeps(ast: any): Array<{ relPath: string | null; loc: any }> {
   return _collectLoadDeps(ast, 'load_module');
 }
 
 function _collectLoadDeps(ast: any, operation: string): Array<{ relPath: string | null; loc: any }> {
-  const out: Array<{ relPath: string | null; loc: any }> = [];
-  const shadowed = ast.body?.some((s: any) => s.type === 'AssignStatement'
-    && s.names.some((n: any) => n.name === operation));
-  function visit(node: any) {
-    if (!node || typeof node !== 'object') return;
-    if (Array.isArray(node)) { for (const c of node) visit(c); return; }
-    const callee = node.callee;
-    const builtin = callee?.type === 'Identifier' && callee.name === operation
-      && (!shadowed || node.builtin);
-    const qualified = callee?.type === 'FieldAccess' && callee.object?.type === 'Identifier'
-      && callee.object.name === 'base' && callee.field === operation;
-    if (node.type === 'CallExpr' && (builtin || qualified)) {
-      const first = operation === 'load_data'
-        ? node.args?.find((a: any) => a.type === 'KeywordArg' && a.name === 'source')?.value
-          || node.args?.find((a: any) => a.type !== 'KeywordArg')
-        : node.args && node.args[0];
-      out.push({
-        relPath: (first && first.type === 'StringLiteral') ? String(first.value) : null,
-        loc: node.loc,
-      });
-    }
-    for (const k in node) {
-      if (k === 'loc') continue;
-      const v = node[k];
-      if (v && typeof v === 'object') visit(v);
-    }
-  }
-  visit(ast);
-  return out;
+  const kind = operation === 'load_module' ? 'modules' : 'data';
+  return loadDependencies(ast).filter((dep: any) => dep.kind === kind)
+    .map((dep: any) => ({ relPath: dep.source, loc: dep.loc }));
 }
 
 // Canonicalise the bundle: accept undefined / empty / partial shapes
 // and always return { sources: Record<string, string> }. Subsequent
 // passes can read bundle.sources directly without conditional checks.
-function _normaliseBundle(b: any): { sources: Record<string, string> } {
+function _normaliseBundle(b: any): { sources: Record<string, string>; files?: Record<string, Uint8Array>; resolutions?: any } {
   if (!b || typeof b !== 'object') return { sources: {} };
   const sources: Record<string, string> = {};
   if (b.sources && typeof b.sources === 'object') {
@@ -409,7 +387,8 @@ function _normaliseBundle(b: any): { sources: Record<string, string> } {
       }
     }
   }
-  return { sources };
+  return { sources, ...(b.files ? { files: b.files } : {}),
+    ...(b.resolutions ? { resolutions: b.resolutions } : {}) };
 }
 
 module.exports = {
@@ -420,6 +399,8 @@ module.exports = {
   // (web fetch / vscode fs supply only the readSource primitive).
   moduleDeps,
   resolveBundle,
+  // Async host loading remains outside processSource and worker execution.
+  ...require('./bundle.ts'),
   moduleResolve: require('./module-resolve.ts'),
   variants,
   // Components

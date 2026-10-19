@@ -12,6 +12,8 @@ import { rebuildDerivations } from './derivations.js';
 import { updatePlotForBinding, renderPlotForCurrent } from './render-plot.js';
 import { renderMathForCurrent } from './render-math.js';
 import { sourceErrorsFor } from './diagnostics.js';
+import { bundleFilesFromMessage, engineBundle } from './bundle-context.js';
+import type { BundleContext } from './bundle-context.js';
 
 /**
  * FNV-1a 32-bit string hash, then XOR the root seed. Used to give
@@ -46,13 +48,15 @@ export function nameSeed(ctx: Ctx, name: any) {
  * `resolveModulePath(modulePath, relPath)`).
  */
 export function moduleContextOnUpdate(
-  prev: { path: any; bundleSources: any },
+  prev: BundleContext,
   msg: any,
-): { path: any; bundleSources: any } {
+): BundleContext {
   if (msg.path !== undefined) {
-    return { path: msg.path, bundleSources: msg.bundleSources || null };
+    return { path: msg.path, bundleSources: msg.bundleSources || null,
+      bundleFiles: bundleFilesFromMessage(msg.bundleFiles),
+      bundleResolutions: msg.bundleResolutions || null };
   }
-  return { path: prev.path, bundleSources: prev.bundleSources };
+  return prev;
 }
 
 /** Whether the inputs the engine lowers — the source text, the module's
@@ -63,18 +67,29 @@ export function moduleContextOnUpdate(
  *  otherwise nothing beyond the boundary is plottable until the text
  *  happens to change. */
 export function lowerInputsChanged(
-  prev: { source: any; path: any; bundleSources: any },
-  next: { source: any; path: any; bundleSources: any },
+  prev: BundleContext & { source: any },
+  next: BundleContext & { source: any },
 ): boolean {
   if (prev.source !== next.source) return true;
   if ((prev.path ?? null) !== (next.path ?? null)) return true;
   // An absent bundle and an empty one are the same input to the engine.
   const norm = (x: any) => (x && Object.keys(x).length ? x : null);
-  const a = norm(prev.bundleSources), b = norm(next.bundleSources);
-  if (!a || !b) return a !== b;
-  const ka = Object.keys(a), kb = Object.keys(b);
-  if (ka.length !== kb.length) return true;
-  for (const k of ka) if (!(k in b) || a[k] !== b[k]) return true;
+  for (const field of ['bundleSources', 'bundleFiles', 'bundleResolutions'] as const) {
+    if (prev[field] === next[field]) continue;
+    const a = norm(prev[field]), b = norm(next[field]);
+    if (!a || !b) { if (a !== b) return true; else continue; }
+    const ka = Object.keys(a), kb = Object.keys(b);
+    if (ka.length !== kb.length) return true;
+    for (const k of ka) {
+      if (!(k in b)) return true;
+      if (a[k] === b[k]) continue;
+      if (field === 'bundleFiles') {
+        if (a[k].length !== b[k].length || a[k].some((byte: number, i: number) => byte !== b[k][i])) return true;
+      } else if (field === 'bundleResolutions') {
+        if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) return true;
+      } else return true;
+    }
+  }
   return false;
 }
 
@@ -90,14 +105,17 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
   // (moduleContextOnUpdate): a same-model re-lower (target-nav / edit) keeps
   // them so relative load_module deps still resolve against THIS module — and
   // a cross-module back-navigation can re-sync the editor source (spec §04).
-  const modCtx = moduleContextOnUpdate(
-    { path: ctx.currentPath, bundleSources: ctx.currentBundleSources }, msg);
+  const previousContext = { path: ctx.currentPath, bundleSources: ctx.currentBundleSources,
+    bundleFiles: ctx.currentBundleFiles, bundleResolutions: ctx.currentBundleResolutions };
+  const modCtx = moduleContextOnUpdate(previousContext, msg);
   // Re-lower on any change of what the engine sees: text, path or bundle.
   const sourceChanged = lowerInputsChanged(
-    { source: ctx.currentSource, path: ctx.currentPath, bundleSources: ctx.currentBundleSources },
-    { source: msg.source, path: modCtx.path, bundleSources: modCtx.bundleSources });
+    { source: ctx.currentSource, ...previousContext },
+    { source: msg.source, ...modCtx });
   ctx.currentPath = modCtx.path;
   ctx.currentBundleSources = modCtx.bundleSources;
+  ctx.currentBundleFiles = modCtx.bundleFiles;
+  ctx.currentBundleResolutions = modCtx.bundleResolutions;
   // currentVariantId is initialised to 'flatppl' in main.ts and
   // there is only one canonical surface (spec §05); the host MAY
   // override via msg.variant for forward-compatibility but no
@@ -105,6 +123,7 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
   // genuinely-different surface form ever land.
   if (msg.variant) ctx.currentVariantId = msg.variant;
   if (sourceChanged) {
+    ctx.bundleVersion = (ctx.bundleVersion || 0) + 1;
     ctx.currentSource = msg.source;
     try {
       // Multi-file (spec §04): the host pre-resolves `load_module` deps
@@ -115,7 +134,7 @@ export function applySourceUpdate(ctx: Ctx, msg: any) {
       // derivation building / materialisation (cross-module refs resolved).
       const result = FlatPPLEngine.processSource(msg.source, {
         variant: ctx.currentVariantId,
-        bundle: ctx.currentBundleSources ? { sources: ctx.currentBundleSources } : undefined,
+        bundle: engineBundle(modCtx),
         path: ctx.currentPath || undefined,
       });
       ctx.sourceErrors = sourceErrorsFor(result);

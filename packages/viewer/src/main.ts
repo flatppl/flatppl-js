@@ -1652,6 +1652,10 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
       type: opts.target ? 'sourceUpdate' : 'showModule',
       pushHistory: false,
       variant: opts.variant,
+      path: opts.path,
+      bundleSources: opts.bundleSources,
+      bundleFiles: opts.bundleFiles,
+      bundleResolutions: opts.bundleResolutions,
     });
   }
 
@@ -1675,6 +1679,8 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
         // (resolved-path → text) + the primary's own path, supplied by
         // the host resolver. Absent for a single-file model.
         bundleSources: opts && opts.bundleSources,
+        bundleFiles: opts && opts.bundleFiles,
+        bundleResolutions: opts && opts.bundleResolutions,
         path: opts && opts.path,
       });
     },

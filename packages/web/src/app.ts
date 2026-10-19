@@ -37,6 +37,211 @@
   let fileFilter: HTMLInputElement | null = null;
   // Edited files keep their source and baseline across route changes.
   const drafts = new Map<string, { source: string; baseline: string | null }>();
+  const bundleSaves = new Map<string, Map<string, { source: string; baseline: string | null }>>();
+  let currentBundle: any = null;
+  const shareOrigins = new Map<string, string>();
+  const archiveOrigins = new Map<string, string>();
+  let editRevision = 0;
+  let shareScript: Promise<any> | null = null;
+
+  /** Freeze every edited dependency before an asynchronous load or export. */
+  function draftSnapshot(): Record<string, string> {
+    const snapshot = Object.fromEntries(Array.from(drafts, ([path, draft]) => [path, draft.source]));
+    if (lastModel && sourceEditor && !currentBundle?.binary) snapshot[lastModel] = sourceEditor.getSource();
+    return snapshot;
+  }
+
+  function bundleOptions(bundle: any, extra: any = {}) {
+    return { path: bundle?.primaryPath, bundleSources: bundle?.sources,
+      bundleFiles: bundle?.files, bundleResolutions: bundle?.resolutions, ...extra };
+  }
+
+  function resolveSnapshot(path: string, strict = false) {
+    return window.FlatPPLWebResolver.resolveBundle(path, undefined, { drafts: draftSnapshot(), strict });
+  }
+
+  /** Brotli, WASM, and QR code load only when opening or creating a share. */
+  async function loadShare() {
+    shareScript ||= import('./share-codec.js').catch(error => { shareScript = null; throw error; });
+    return shareScript;
+  }
+
+  async function bundleBytes(path: string, compression = 'store', snapshot = draftSnapshot(), graph?: any) {
+    if (window.FlatPPLWebBundles?.has(path)) {
+      return window.FlatPPLWebBundles.snapshot(path, snapshot, compression);
+    }
+    graph ||= await window.FlatPPLWebResolver.resolveBundle(path, undefined, { drafts: snapshot, strict: true });
+    return window.FlatPPLEngine.packBundle(graph, { compression });
+  }
+
+  function downloadBytes(bytes: Uint8Array, filename: string, type = 'application/zip') {
+    const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type }));
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+
+  async function downloadBundle(path: string) {
+    try { downloadBytes(await bundleBytes(path, 'deflate'), basenameOf(path).replace(/\.flatppl$/i, '') + '.flatppl.zip'); }
+    catch (error: any) { showToast('Bundle export failed: ' + error.message); }
+  }
+
+  /** Save never runs as part of opening a share link. */
+  async function saveBundle(path: string) {
+    const folder = window.FlatPPLWebBundles.folder(path);
+    if (bundleSaves.has(folder)) return;
+    const name = window.prompt('Save the whole bundle in this browser under folder:', basenameOf(folder || path).replace(/\.flatppl$/i, ''));
+    if (!name) return;
+    const changedDuringSave = new Map<string, { source: string; baseline: string | null }>();
+    bundleSaves.set(folder, changedDuringSave);
+    try {
+      const snapshot = draftSnapshot();
+      const bytes = await bundleBytes(path, 'deflate', snapshot);
+      const saved = await window.FlatPPLWebBundles.save(bytes, name,
+        window.FlatPPLWebBundles.isSaved(path) ? folder : undefined);
+      const savedFolder = window.FlatPPLWebBundles.folder(saved);
+      await window.FlatPPLWebBundles.discard(path);
+      shareOrigins.delete(folder);
+      archiveOrigins.delete(folder);
+      let current, selection: string | null = null;
+      // Selecting a nested member remounts its archive after the saved snapshot
+      // replaces the old mount. Keep navigation made during that read intact.
+      do {
+        current = window.FlatPPLWebRouter.parseHash();
+        if (!current.model?.startsWith(folder + '/')) { selection = null; break; }
+        selection = await window.FlatPPLWebBundles.select(savedFolder, current.model.slice(folder.length + 1)) || saved;
+      } while (window.FlatPPLWebRouter.parseHash().model !== current.model);
+      // Edits made while compression or storage awaited remain unsaved.
+      // Track edits separately: undoing to the old baseline removes a draft,
+      // but still differs from the snapshot that has just been saved.
+      const latest = new Map([...drafts, ...changedDuringSave]);
+      for (const [key, draft] of latest) if (key.startsWith(folder + '/')) {
+        drafts.delete(key);
+        const baseline = snapshot[key] ?? draft.baseline;
+        if (draft.source !== baseline) {
+          drafts.set(savedFolder + key.slice(folder.length),
+            { source: draft.source, baseline });
+        }
+      }
+      if (selection) {
+        lastModel = null;
+        const next = { model: selection, target: window.FlatPPLWebRouter.parseHash().target, share: null, archive: null };
+        window.FlatPPLWebRouter.navigateTo(next);
+        if (selection === current.model) void applyState(next);
+      }
+      showToast('Bundle saved in this browser.');
+    } catch (error: any) {
+      showToast('Save failed: ' + error.message + ' The preview remains unsaved.');
+    } finally { bundleSaves.delete(folder); }
+  }
+
+  /** Share an immutable snapshot. Large bundles remain downloadable without a service. */
+  async function shareModel() {
+    const state = window.FlatPPLWebRouter.parseHash();
+    if (!state.model) return;
+    let codec: any = null;
+    const dialog = document.createElement('dialog');
+    dialog.className = 'share-dialog';
+    const title = document.createElement('h2');
+    title.id = 'share-dialog-title';
+    title.textContent = 'Share model';
+    dialog.setAttribute('aria-labelledby', title.id);
+    const status = document.createElement('p');
+    status.textContent = 'Collecting source, imports, and data…';
+    status.setAttribute('role', 'status');
+    const actions = document.createElement('div');
+    actions.className = 'share-actions';
+    const close = document.createElement('button');
+    close.className = 'fp-btn';
+    close.textContent = 'Close';
+    close.onclick = () => dialog.close();
+    actions.append(close);
+    dialog.append(title, status, actions);
+    document.body.append(dialog);
+    dialog.addEventListener('close', () => {
+      codec?.dispose();
+      dialog.remove();
+    }, { once: true });
+    dialog.showModal();
+    try {
+      const snapshot = draftSnapshot();
+      const graph = await window.FlatPPLWebResolver.resolveBundle(state.model, undefined, { drafts: snapshot, strict: true });
+      const builtin = manifest?.entries?.some((entry: any) => entry.path === state.model)
+        && !Object.keys(graph.files).some(path => isPathDirty(path));
+      // Capture both formats before awaiting either, so Download and the link
+      // contain the same members even if a pending Save replaces the mount.
+      const [download, transport] = await Promise.allSettled([
+        bundleBytes(state.model, 'deflate', snapshot, graph),
+        builtin ? Promise.resolve(null) : bundleBytes(state.model, 'store', snapshot, graph),
+      ]);
+      if (!dialog.open) return;
+      if (download.status === 'rejected') throw download.reason;
+      const button = (label: string, action: () => void) => {
+        const node = document.createElement('button');
+        node.className = 'fp-btn';
+        node.textContent = label;
+        node.onclick = action;
+        actions.insertBefore(node, close);
+      };
+      button('Download ZIP', () => {
+        // This is the same snapshot as the link, even if the editor changes later.
+        downloadBytes(download.value, basenameOf(state.model).replace(/\.flatppl$/i, '') + '.flatppl.zip');
+      });
+      if (transport.status === 'rejected') {
+        status.textContent = 'Could not create a link: ' + transport.reason.message + '. Download the ZIP to share it.';
+        return;
+      }
+      const api = await loadShare();
+      if (!dialog.open) return;
+      let links: any;
+      if (builtin) {
+        const url = new URL(document.baseURI);
+        url.hash = window.FlatPPLWebRouter.serialize({ model: state.model, target: state.target });
+        links = { url: url.href, qrUrl: url.href, qrPrefix: url.href, qrToken: '', qrSuffix: '', tooLong: false };
+        status.textContent = 'This unchanged example uses a short link. Custom and edited models also support links and QR codes, including their code, imports, and data.';
+      } else {
+        codec = api.createShareCodec();
+        const payload = await codec.encode(transport.value);
+        codec.dispose();
+        if (!payload) { status.textContent = 'This bundle is too large for a share link. Download the ZIP to share it.'; return; }
+        const folder = window.FlatPPLWebBundles?.folder(state.model);
+        const model = folder ? state.model.slice(folder.length + 1) : 'main.flatppl';
+        links = api.makeShareLinks(payload, document.baseURI, { model, target: state.target });
+        status.textContent = 'The link and QR code include this model’s code, imports, and data. Opening either creates an unsaved preview.';
+      }
+      if (!dialog.open) return;
+      if (links.tooLong) { status.textContent = 'This bundle exceeds the share-link limit. Download the ZIP to share it.'; return; }
+      const field = document.createElement('textarea');
+      field.className = 'share-url';
+      field.readOnly = true;
+      field.value = links.url;
+      field.setAttribute('aria-label', 'Share link');
+      dialog.insertBefore(field, actions);
+      button('Copy link', () => {
+        navigator.clipboard.writeText(links.url).then(() => showToast('Link copied.')).catch(() => {
+          field.focus(); field.select(); showToast('Select and copy the link.');
+        });
+      });
+      const qr = await api.createShareQr(links);
+      if (!dialog.open) return;
+      if (qr) {
+        const image = document.createElement('img');
+        image.className = 'share-qr';
+        image.src = qr.png;
+        image.alt = 'QR code for this model';
+        dialog.insertBefore(image, actions);
+        button('Download QR', () => downloadBytes(new TextEncoder().encode(qr.svg), 'flatppl-model-qr.svg', 'image/svg+xml'));
+      } else {
+        const note = document.createElement('p');
+        note.textContent = 'The link is too large for a practical QR code. Use the link or ZIP.';
+        dialog.insertBefore(note, actions);
+      }
+    } catch (error: any) {
+      if (dialog.open) status.textContent = 'Sharing failed: ' + error.message;
+    }
+  }
 
   // Unified source surface: one CodeMirror instance, eagerly mounted
   // at boot, toggled between view-only (readOnly + non-editable) and
@@ -90,6 +295,7 @@
   /** Drafts and failed saves remain dirty even while another file is open. */
   function isPathDirty(path: string): boolean {
     if (!path) return false;
+    if (window.FlatPPLWebBundles?.has(path) && !window.FlatPPLWebBundles.isSaved(path)) return true;
     const eph = window.FlatPPLWebEphemeral;
     if (eph && eph.has && eph.has(path)) return true;
     const store = window.FlatPPLWebUserStore;
@@ -104,7 +310,7 @@
     const eph = window.FlatPPLWebEphemeral;
     if (eph && eph.list && eph.list().some((entry: { text: string }) => entry.text.length > 0)) return true;
     const store = window.FlatPPLWebUserStore;
-    return drafts.size > 0 || !!(store && store.hasUnpersisted());
+    return drafts.size > 0 || !!(store && store.hasUnpersisted()) || !!window.FlatPPLWebBundles?.hasUnsaved();
   }
 
   /** Refresh visibility of the source-pane header buttons that
@@ -122,6 +328,10 @@
     const downloadBtn = document.getElementById('download-btn');
     const deleteBtn   = document.getElementById('delete-btn');
     if (downloadBtn) downloadBtn.hidden = !cur.model;
+    const shareBtn = document.getElementById('share-btn');
+    if (shareBtn) shareBtn.hidden = !cur.model || window.FlatPPLWebSurfaces?.typeForPath(cur.model) !== 'flatppl';
+    const saveBtn = document.getElementById('save-btn');
+    if (saveBtn && window.FlatPPLWebBundles?.has(cur.model)) saveBtn.hidden = false;
     if (deleteBtn) deleteBtn.hidden = !isUserFile;
     // The whole-module graph view only makes sense for FlatPPL — hide it for
     // Markdown / hs3 / pyhf (and anything without a graph surface) so the
@@ -304,7 +514,7 @@
       // The buffer as edited walks its own load_module deps; the stored text
       // tells whether those edits are unsaved.
       const buffer = editorBufferFor(srcPath);
-      const bundle = await window.FlatPPLWebResolver.resolveBundle(srcPath, buffer);
+      const bundle = await resolveSnapshot(srcPath);
       if (!bundle || typeof bundle.primarySource !== 'string') {
         showToast('Could not read ' + srcPath + '.');
         return;
@@ -316,8 +526,10 @@
       }
       const request = mathExport.buildRequest({
         source: bundle.primarySource,
-        path: srcPath,
+        path: bundle.primaryPath,
         bundleSources: bundle.sources,
+        bundleFiles: bundle.files,
+        bundleResolutions: bundle.resolutions,
         document: format,
       });
       const out = api.export_math(JSON.stringify(request));   // throws on a malformed module
@@ -376,6 +588,7 @@
   }
 
   function onEntrySaveClick(path: string) {
+    if (window.FlatPPLWebBundles?.has(path)) { void saveBundle(path); return; }
     const text = editorBufferFor(path)
       ?? window.FlatPPLWebEphemeral?.get(path)
       ?? window.FlatPPLWebUserStore?.getSource(path);
@@ -383,6 +596,20 @@
   }
 
   function onEntryRevertClick(path: string) {
+    if (window.FlatPPLWebBundles?.has(path)) {
+      if (!window.confirm('Discard unsaved changes to this bundle?')) return;
+      const folder = window.FlatPPLWebBundles.folder(path);
+      for (const key of drafts.keys()) if (key.startsWith(folder + '/')) drafts.delete(key);
+      void window.FlatPPLWebBundles.discard(path).then(() => {
+        shareOrigins.delete(folder);
+        archiveOrigins.delete(folder);
+        if (!window.FlatPPLWebRouter.parseHash().model?.startsWith(folder + '/')) return;
+        lastModel = null;
+        if (window.FlatPPLWebBundles.has(path)) void applyState(window.FlatPPLWebRouter.parseHash());
+        else window.FlatPPLWebRouter.navigateTo({ model: manifest?.entries?.[0]?.path });
+      });
+      return;
+    }
     if (!window.confirm('Discard unsaved changes to "' + basenameOf(path) + '"?')) return;
     const cur = window.FlatPPLWebRouter.parseHash();
     const eph = window.FlatPPLWebEphemeral;
@@ -420,7 +647,7 @@
     }
     const status = document.getElementById('source-status');
     if (status) status.textContent = failed ? 'Save failed — kept in this tab'
-      : dirty ? 'Unsaved draft' : store?.has(cur.model) ? 'Saved in this browser' : '';
+      : dirty ? 'Unsaved draft' : store?.has(cur.model) || window.FlatPPLWebBundles?.isSaved(cur.model) ? 'Saved in this browser' : '';
     const error = document.getElementById('save-error');
     if (error) error.hidden = !failed;
     const message = document.getElementById('save-error-message');
@@ -492,13 +719,13 @@
     const toggleBtn = document.getElementById('edit-toggle');
     const saveBtn   = document.getElementById('save-btn');
     editEnabled = !!on;
-    sourceEditor.setReadOnly(!editEnabled || !lastModel);
+    sourceEditor.setReadOnly(!editEnabled || !lastModel || !!currentBundle?.binary);
     if (toggleBtn) toggleBtn.setAttribute('aria-pressed', editEnabled ? 'true' : 'false');
     // Save action only makes sense in edit mode. The Ctrl/Cmd-S
     // keymap binding stays installed at all times (it's a single
     // CodeMirror keymap entry) — handleSave's own guard turns
     // out-of-mode invocations into no-ops.
-    if (saveBtn) saveBtn.hidden = !editEnabled;
+    if (saveBtn) saveBtn.hidden = !editEnabled && !window.FlatPPLWebBundles?.has(lastModel);
     writeEditPref(editEnabled);
     updateDirtyMarker();
   }
@@ -554,6 +781,7 @@
 
   /** Save explicitly. Failed writes remain in the store's in-memory fallback. */
   function saveFile(path: string, text: string) {
+    if (window.FlatPPLWebBundles?.has(path)) { void saveBundle(path); return; }
     const store = window.FlatPPLWebUserStore;
     if (!store || !(window.__FLATPPL_CONFIG__ || {}).allowEdit) return;
     const cur = window.FlatPPLWebRouter.parseHash();
@@ -648,6 +876,28 @@
     return { key, label, kind, parent, entries, folders: [], count: entries.length };
   }
 
+  /** Bundle members use the same folder tree as published collections. */
+  function localFolder(key: string, label: string, entries: TreeEntry[]): FileFolder {
+    const root = makeFolder(key, label, key);
+    const folders = new Map([[key, root]]);
+    for (const entry of entries) {
+      let parent = root;
+      for (const part of entry.path.split('/').slice(1, -1)) {
+        const childKey = parent.key + '/' + part;
+        let child = folders.get(childKey);
+        if (!child) {
+          child = makeFolder(childKey, part, key, [], parent);
+          folders.set(childKey, child);
+          parent.folders.push(child);
+        }
+        parent = child;
+      }
+      parent.entries.push(entry);
+      for (let node: FileFolder | null = parent; node; node = node.parent) node.count++;
+    }
+    return root;
+  }
+
   /** The published corpus is immutable during a page visit. Index its paths
    * once so reveal walks ancestors, and redraw never rebuilds the hierarchy. */
   function buildCorpusTree() {
@@ -717,7 +967,12 @@
     if (entry.path === currentModel) li.classList.add('selected', 'is-active');
     const link = document.createElement('a');
     link.className = 'file-list-link';
-    link.href = '#model=' + encodeURIComponent(entry.path);
+    const route = window.FlatPPLWebRouter.parseHash();
+    const bundleFolder = window.FlatPPLWebBundles?.folder(entry.path);
+    const sameBundle = bundleFolder && bundleFolder === window.FlatPPLWebBundles?.folder(route.model)
+      && !window.FlatPPLWebBundles.isSaved(entry.path);
+    link.href = '#' + window.FlatPPLWebRouter.serialize({ model: entry.path,
+      share: sameBundle ? route.share : undefined, archive: sameBundle ? route.archive : undefined });
     link.dataset.path = entry.path;
     link.dataset.action = 'open';
     link.title = entry.path;
@@ -769,13 +1024,13 @@
     }
     const scrollTop = fileTree.scrollTop;
     fileTree.innerHTML = '';
-    const ephEntries = window.FlatPPLWebEphemeral?.list() || [];
-    const userEntries = window.FlatPPLWebUserStore?.list() || [];
+    const ephEntries = [...(window.FlatPPLWebEphemeral?.list() || []), ...(window.FlatPPLWebBundles?.list(false) || [])];
+    const userEntries = [...(window.FlatPPLWebUserStore?.list() || []), ...(window.FlatPPLWebBundles?.list(true) || [])];
     const query = currentFilter();
     let folders = [
-      ...(ephEntries.length ? [makeFolder('new', 'Unsaved', 'new', ephEntries)] : []),
+      ...(ephEntries.length ? [localFolder('new', 'Unsaved', ephEntries)] : []),
       ...corpusFolders.filter(folder => folder.kind !== 'test-cases' || !(window.__FLATPPL_CONFIG__ || {}).hideTestExamples),
-      makeFolder('user', 'Saved in this browser', 'user', userEntries),
+      localFolder('user', 'Saved in this browser', userEntries),
     ];
     if (query) folders = folders.map(folder => filterFolder(folder, query, folder.label)).filter(folder => folder.count > 0);
     for (const folder of folders) renderFolder(folder, fileTree, currentModel, query, 0);
@@ -863,9 +1118,10 @@
       if (fileFilter) fileFilter.value = '';
     }
     const query = currentFilter();
+    const local = /^(new|user)\//.test(path);
     const keys = ancestors.length ? ancestors.map(folder => folder.key)
-      : [path.startsWith('new/') ? 'new' : path.startsWith('user/') ? 'user'
-        : (window.FlatPPLFileTypes?.bucketKeyForPath(path) || 'examples')];
+      : local ? path.split('/').slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join('/'))
+        : [window.FlatPPLFileTypes?.bucketKeyForPath(path) || 'examples'];
     for (const key of keys) {
       if (query) searchOpen.set(key, true);
       else folderState[key] = true;
@@ -968,6 +1224,9 @@
     const tools: Array<{ label: string; action: () => void }> = [];
     const t = window.FlatPPLWebSurfaces
       ? window.FlatPPLWebSurfaces.typeForPath(path) : 'unknown';
+    if (t === 'flatppl' || window.FlatPPLWebBundles?.has(path)) {
+      tools.push({ label: 'Download bundle (.flatppl.zip)', action: () => { void downloadBundle(path); } });
+    }
     if (convertAvailable && (t === 'pyhf' || t === 'hs3')) {
       tools.push({
         label: 'Convert to FlatPPL',
@@ -1021,7 +1280,25 @@
       label: 'Download',
       action: function () { downloadFile(info.path); },
     });
-    if (info.isUser) {
+    const bundleMember = window.FlatPPLWebBundles?.has(info.path);
+    if (bundleMember) {
+      items.push({ label: 'Save bundle', action: () => { void saveBundle(info.path); } });
+      const saved = window.FlatPPLWebBundles.isSaved(info.path);
+      items.push({ label: saved ? 'Delete bundle' : 'Discard bundle', action: () => {
+        if (!window.confirm((saved ? 'Delete' : 'Discard') + ' this whole bundle?')) return;
+        const folder = window.FlatPPLWebBundles.folder(info.path);
+        const action = saved ? window.FlatPPLWebBundles.remove(info.path) : window.FlatPPLWebBundles.discard(info.path);
+        void action.then(() => {
+          shareOrigins.delete(folder);
+          archiveOrigins.delete(folder);
+          for (const key of drafts.keys()) if (key.startsWith(folder + '/')) drafts.delete(key);
+          if (window.FlatPPLWebRouter.parseHash().model?.startsWith(folder + '/')) {
+            window.FlatPPLWebRouter.navigateTo({ model: manifest?.entries?.[0]?.path });
+          }
+        }).catch((error: any) => showToast('Cannot remove bundle: ' + error.message));
+      } });
+    }
+    if (info.isUser && !bundleMember) {
       items.push({
         label: 'Rename',
         action: function () {
@@ -1037,7 +1314,7 @@
         },
       });
     }
-    if (info.isEphemeral) {
+    if (info.isEphemeral && !bundleMember) {
       items.push({
         label: 'Discard',
         action: function () {
@@ -1094,35 +1371,14 @@
     focusMenuItemAt(menu, 0);
   }
 
-  /** Trigger a browser download of `path`'s source. Resolves the
-   *  text the same way the gallery normally does (ephemeral → user
-   *  → network) so any in-memory or persisted override wins over
-   *  the on-disk read-only original. */
+  /** Download exact bytes, with current text drafts ahead of stored files. */
   async function downloadFile(path: string) {
     if (!path) return;
-    let text: string | null = editorBufferFor(path);
     try {
-      if (text == null) {
-        const bundle = await window.FlatPPLWebResolver.resolveBundle(path);
-        text = bundle && bundle.primarySource;
-      }
-    } catch (e: any) {
-      window.alert('Download failed: ' + (e && e.message ? e.message : String(e)));
-      return;
-    }
-    if (text == null) return;
-    const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = basenameOf(path);
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    // Revoke after a tick so the browser has time to start the
-    // download — some browsers (Safari) cancel the download if the
-    // blob URL is revoked synchronously.
-    setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+      const bytes = await window.FlatPPLWebResolver.readBytes(path, draftSnapshot());
+      if (!bytes) throw new Error('File is not available: ' + path);
+      downloadBytes(bytes, basenameOf(path), 'application/octet-stream');
+    } catch (error: any) { showToast('Download failed: ' + error.message); }
   }
 
   /** Ingest a list of files (from an `<input type="file">` change
@@ -1148,6 +1404,16 @@
     for (let i = 0; i < list.length; i++) {
       const f = list[i];
       if (!f) { skipped += 1; continue; }
+      if (/\.zip$/i.test(f.name)) {
+        try {
+          if (f.size > 64 * 1024 * 1024) throw new Error('ZIP exceeds the 64 MiB archive limit.');
+          const opened = await window.FlatPPLWebBundles.open(new Uint8Array(await f.arrayBuffer()), f.name,
+            (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')));
+          accepted.push(opened.path);
+          showToast(opened.reused ? 'Opened the matching saved bundle.' : 'Bundle preview opened. Choose Save to keep it.');
+        } catch (error: any) { showToast('Cannot open ZIP: ' + error.message); }
+        continue;
+      }
       // Accept any file the gallery has a surface for. Single source of
       // truth is surfaces.typeForPath ('unknown' = no surface registered),
       // so upload acceptance tracks the surface registry automatically as
@@ -1169,7 +1435,7 @@
       }
     }
     const notes: string[] = [];
-    if (accepted.length > 0) notes.push('Uploaded ' + accepted.length + ' file' + (accepted.length > 1 ? 's' : ''));
+    if (accepted.length > 0) notes.push('Opened ' + accepted.length + ' file' + (accepted.length > 1 ? 's' : ''));
     if (skipped > 0)         notes.push('skipped ' + skipped + ' unsupported');
     if (oversized > 0)       notes.push('skipped ' + oversized + ' over 1 MB');
     if (unsaved > 0)         notes.push(unsaved + ' kept only in this tab because saving failed');
@@ -1192,8 +1458,8 @@
     // through typeForPath; the picker needs the list spelled out).
     const ft = window.FlatPPLFileTypes;
     input.accept = ft
-      ? ft.MODEL_EXTENSIONS.concat(ft.DATA_EXTENSIONS, ft.DOCUMENT_EXTENSIONS).join(',')
-      : '.flatppl,.md,.markdown,.hs3.json,.pyhf.json,.json,.csv,.wsv,.html,.htm,.tex,.typ';
+      ? ft.MODEL_EXTENSIONS.concat(ft.DATA_EXTENSIONS, ft.DOCUMENT_EXTENSIONS, ['.zip']).join(',')
+      : '.flatppl,.zip,.md,.markdown,.hs3.json,.pyhf.json,.json,.csv,.wsv,.html,.htm,.tex,.typ';
     input.multiple = true;
     input.style.display = 'none';
     document.body.appendChild(input);
@@ -1357,6 +1623,69 @@
 
   async function applyState(state: any) {
     const seq = ++navigationSeq;
+    if (state.share && (shareOrigins.get(window.FlatPPLWebBundles?.folder(state.model)) !== state.share
+        || !window.FlatPPLWebBundles?.has(state.model))) {
+      lastModel = null;
+      sourceEditor?.setReadOnly?.(true);
+      showSource('# Opening shared bundle …', 'Shared model');
+      try {
+        const api = await loadShare();
+        const decoder = api.createShareCodec();
+        let bytes: Uint8Array;
+        try { bytes = await decoder.decode(state.share); }
+        finally { decoder.dispose(); }
+        if (seq !== navigationSeq) return;
+        const opened = await window.FlatPPLWebBundles.open(bytes, 'shared-model',
+          (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')));
+        if (seq !== navigationSeq) {
+          if (!opened.reused) await window.FlatPPLWebBundles.discard(opened.path);
+          return;
+        }
+        const folder = window.FlatPPLWebBundles.folder(opened.path);
+        const requested = state.model?.replace(/^(?:new|user)\/[^/]+\//, '');
+        const selection = requested && await window.FlatPPLWebBundles.select(folder, requested) || opened.path;
+        if (seq !== navigationSeq) {
+          if (!opened.reused) await window.FlatPPLWebBundles.discard(opened.path);
+          return;
+        }
+        shareOrigins.set(folder, state.share);
+        const next = { model: selection, target: state.target,
+          share: opened.reused ? null : state.share, archive: null };
+        if (window.FlatPPLWebRouter.serialize(next) === window.FlatPPLWebRouter.serialize(state)) {
+          return applyState(next);
+        }
+        window.FlatPPLWebRouter.navigateTo(next);
+      } catch (error) { if (seq === navigationSeq) showError('Shared model', error); }
+      return;
+    }
+    const archive = state.archive || (state.model && /\.zip(?:[?#]|$)/i.test(state.model)
+      && !window.FlatPPLWebBundles?.has(state.model) ? state.model : null);
+    if (archive && (archiveOrigins.get(window.FlatPPLWebBundles?.folder(state.model)) !== archive
+        || !window.FlatPPLWebBundles?.has(state.model))) {
+      lastModel = null;
+      sourceEditor?.setReadOnly?.(true);
+      try {
+        const bytes = await window.FlatPPLWebResolver.readBytes(archive);
+        if (seq !== navigationSeq) return;
+        const opened = await window.FlatPPLWebBundles.open(bytes, basenameOf(archive),
+          (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')));
+        const requested = state.archive && state.model?.replace(/^(?:new|user)\/[^/]+\//, '');
+        const folder = window.FlatPPLWebBundles.folder(opened.path);
+        const selection = requested && await window.FlatPPLWebBundles.select(folder, requested) || opened.path;
+        if (seq !== navigationSeq) {
+          if (!opened.reused) await window.FlatPPLWebBundles.discard(opened.path);
+          return;
+        }
+        archiveOrigins.set(folder, archive);
+        const next = { model: selection, target: state.target,
+          archive: opened.reused ? null : archive, share: null };
+        if (window.FlatPPLWebRouter.serialize(next) === window.FlatPPLWebRouter.serialize(state)) {
+          return applyState(next);
+        }
+        window.FlatPPLWebRouter.navigateTo(next);
+      } catch (error) { if (seq === navigationSeq) showError(state.model, error); }
+      return;
+    }
     // Repaint tree highlight even before the fetch completes.
     renderTree(state.model);
     updateHeaderButtons();
@@ -1394,8 +1723,7 @@
         // model will also grow the viewer history; that's acceptable
         // (history is capped, and the viewer's back-btn just walks
         // whatever's on the stack).
-        viewer.update(liveText, state.target || null,
-          { pushHistory: true });
+        viewer.update(liveText, state.target || null, bundleOptions(currentBundle, { pushHistory: true }));
       }
       document.title = state.model
         ? ('FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : ''))
@@ -1404,6 +1732,7 @@
     }
 
     if (!state.model) {
+      currentBundle = null;
       showSource(FALLBACK_SOURCE, 'untitled');
       if (viewer) viewer.update(FALLBACK_SOURCE, state.target || null);
       document.title = 'FlatPPL';
@@ -1417,14 +1746,23 @@
     showSource('# Loading ' + state.model + ' …', state.model);
     try {
       const draft = drafts.get(state.model);
-      const bundle = await window.FlatPPLWebResolver.resolveBundle(state.model, draft?.source);
+      const bundle = await window.FlatPPLWebResolver.resolveBundle(state.model, draft?.source, { drafts: draftSnapshot() });
       if (seq !== navigationSeq) return;
+      currentBundle = bundle;
+      await window.FlatPPLWebBundles?.registerGraph(bundle);
+      if (seq !== navigationSeq) return;
+      const entry = window.FlatPPLWebBundles?.displayPath(bundle.primaryPath);
+      if (entry && entry !== state.model && window.FlatPPLWebBundles?.has(entry)) {
+        window.FlatPPLWebRouter.navigateTo({ model: entry, target: state.target });
+        return;
+      }
       showSource(bundle.primarySource, state.model, draft ? draft.baseline : bundle.primarySource);
-      sourceEditor?.setReadOnly?.(!editEnabled);
+      sourceEditor?.setReadOnly?.(!editEnabled || !!bundle.binary);
       if (viewer) viewer.update(bundle.primarySource, state.target || null,
-        { bundleSources: bundle.sources, path: state.model });
+        bundleOptions(bundle));
       document.title = 'FlatPPL: ' + state.model + (state.target ? ' / ' + state.target : '');
       lastModel = state.model;
+      updateHeaderButtons();
     } catch (err) {
       if (seq !== navigationSeq) return;
       console.error('[@flatppl/web] resolveBundle failed:', err);
@@ -1547,6 +1885,7 @@
     const downloadBtn = document.getElementById('download-btn');
     const deleteBtn   = document.getElementById('delete-btn');
     if (downloadBtn) downloadBtn.addEventListener('click', onDownloadClick);
+    document.getElementById('share-btn')?.addEventListener('click', () => { void shareModel(); });
     if (deleteBtn)   deleteBtn.addEventListener('click',   onDeleteClick);
 
     // Tab-close / reload / external-navigation guard. Standard
@@ -1604,8 +1943,17 @@
       // Debounced viewer refresh — every keystroke triggering a
       // full DAG rebuild would be wasteful. 250ms collapses bursts
       // into one render after the user pauses typing.
-      const debouncedViewerUpdate = debounce(function (text: string, target: string, path: string, seq: number) {
-        if (viewer && seq === navigationSeq && path === lastModel) viewer.update(text, target || null);
+      const debouncedViewerUpdate = debounce(async function (target: string, path: string, seq: number, revision: number) {
+        const stale = () => seq !== navigationSeq || path !== lastModel || revision !== editRevision;
+        if (!viewer || stale()) return;
+        try {
+          const bundle = await resolveSnapshot(path);
+          if (stale()) return;
+          await window.FlatPPLWebBundles?.registerGraph(bundle);
+          if (stale()) return;
+          currentBundle = bundle;
+          viewer.update(bundle.primarySource, target || null, bundleOptions(bundle));
+        } catch (error: any) { if (!stale()) showToast('Cannot resolve model: ' + error.message); }
       }, 250);
       sourceEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
         initialSource: '',
@@ -1615,8 +1963,11 @@
           if (!editEnabled) return;
           const cur = window.FlatPPLWebRouter.parseHash();
           if (!cur.model || lastModel !== cur.model) return;
-          if (cur.model && cur.model.indexOf('new/') === 0
-              && window.FlatPPLWebEphemeral) {
+          ++editRevision;
+          for (const [folder, changes] of bundleSaves) {
+            if (cur.model.startsWith(folder + '/')) changes.set(cur.model, { source: text, baseline: lastSavedSource });
+          }
+          if (window.FlatPPLWebEphemeral?.has(cur.model)) {
             window.FlatPPLWebEphemeral.update(cur.model, text);
           } else if (text !== lastSavedSource) {
             drafts.set(cur.model, { source: text, baseline: lastSavedSource });
@@ -1624,11 +1975,12 @@
             drafts.delete(cur.model);
           }
           updateDirtyMarker();
-          debouncedViewerUpdate(text, cur.target, cur.model, navigationSeq);
+          debouncedViewerUpdate(cur.target, cur.model, navigationSeq, editRevision);
         },
         onSave: handleSave,
         onNavigate: function (name: any) {
           const cur = window.FlatPPLWebRouter.parseHash();
+          if (!lastModel || cur.model !== lastModel) return;
           window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: name });
         },
       });
@@ -1671,6 +2023,10 @@
         updateHeaderButtons();
       });
     }
+    window.FlatPPLWebBundles?.subscribe(() => {
+      renderTree(window.FlatPPLWebRouter.parseHash().model);
+      updateHeaderButtons();
+    });
 
     const surfaceRoot = document.getElementById('surface-root');
 
@@ -1728,6 +2084,7 @@
           change is needed. */
       setTarget: function (name: any) {
         const cur = window.FlatPPLWebRouter.parseHash();
+        if (!lastModel || cur.model !== lastModel) return;
         window.FlatPPLWebRouter.navigateTo({
           model: cur.model,
           target: name || null,
@@ -1742,6 +2099,7 @@
           editor to the module file (source-sync, spec §04). */
       openModule: function (path: any, member?: any) {
         if (!path) return;
+        path = window.FlatPPLWebBundles?.displayPath(path) || path;
         window.FlatPPLWebRouter.navigateTo({ model: path, target: member || null });
       },
       /** Whether the gallery can write to source right now. True
@@ -1841,6 +2199,7 @@
       buildCorpusTree();
     }
 
+    await window.FlatPPLWebBundles?.init();
     window.FlatPPLWebRouter.onChange(applyState);
 
     // First render: if the URL specifies a model, that wins. Otherwise
@@ -1849,13 +2208,14 @@
     // page to whichever example happens to ship first.
     const initial = window.FlatPPLWebRouter.parseHash();
     const ephBoot = window.FlatPPLWebEphemeral;
-    if (!initial.model && ephBoot) {
+    if (!initial.model && !initial.share && !initial.archive && ephBoot) {
       const scratch = ephBoot.nextUntitled('.flatppl');
       ephBoot.add(scratch, '');
       window.FlatPPLWebRouter.navigateTo({ model: scratch });
       layout?.showPane('viewer');
     } else {
-      if (initial.model?.startsWith('new/') && ephBoot && !ephBoot.has(initial.model)) {
+      if (!initial.share && !initial.archive && initial.model?.startsWith('new/') && ephBoot && !ephBoot.has(initial.model)
+          && !window.FlatPPLWebBundles?.has(initial.model)) {
         ephBoot.add(initial.model, '');
       }
       window.FlatPPLWebRouter.emitInitial();

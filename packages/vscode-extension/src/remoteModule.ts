@@ -16,6 +16,7 @@
 // via vscode.Uri.parse — stays in visualPanel.ts (smoke-tested).
 
 const REMOTE_SCHEME = 'flatppl-remote';
+const BUNDLE_SCHEME = 'flatppl-bundle';
 
 /** The original http(s) URL behind a `flatppl-remote:` uri — stored verbatim in
  *  the uri `query` (vscode round-trips it through its own percent-encoding). */
@@ -30,7 +31,7 @@ function urlFromRemoteUri(uri: any): string {
  *  null (a path-less surface clears the viewer's sticky module context). */
 function enginePathOf(uri: any): string | null {
   if (!uri) return null;
-  return uri.scheme === REMOTE_SCHEME ? urlFromRemoteUri(uri) : uri.path;
+  return uri.scheme === REMOTE_SCHEME || uri.scheme === BUNDLE_SCHEME ? uri.query : uri.path;
 }
 
 /** The uri to resolve a cross-module back-target against. Drilling OUT of a
@@ -40,7 +41,7 @@ function enginePathOf(uri: any): string | null {
  *  open would fail (the back-button never returns). A local current uri is used
  *  as-is; with no known local base, the current uri is the only fallback. */
 function resolveBaseUri(currentUri: any, localBaseUri: any): any {
-  return (currentUri && currentUri.scheme === REMOTE_SCHEME && localBaseUri)
+  return (currentUri && (currentUri.scheme === REMOTE_SCHEME || currentUri.scheme === BUNDLE_SCHEME) && localBaseUri)
     ? localBaseUri
     : currentUri;
 }
@@ -52,4 +53,4 @@ function localSourceUri(base: any, resolved: string, parseUri: (s: string) => an
   return url ? parseUri(url.href) : base.with({ path: resolved });
 }
 
-module.exports = { REMOTE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri, localSourceUri };
+module.exports = { REMOTE_SCHEME, BUNDLE_SCHEME, urlFromRemoteUri, enginePathOf, resolveBaseUri, localSourceUri };

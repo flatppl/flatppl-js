@@ -38,6 +38,7 @@
     "@dagrejs/dagre": "^3.0.0",
     "@flatppl/engine": "*",
     "@flatppl/viewer": "*",
+    "@types/qrcode": "^1.5.6",
     "cytoscape": "^3.30.4",
     "cytoscape-bubblesets": "^4.1.0",
     "cytoscape-dagre": "^4.0.0",
@@ -56,5 +57,9 @@
     "visualization",
     "gallery",
     "github-pages"
-  ]
+  ],
+  "dependencies": {
+    "brotli-wasm": "3.0.1",
+    "qrcode": "1.5.4"
+  }
 }

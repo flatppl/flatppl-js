@@ -20,6 +20,7 @@
  * also documented in the official VS Code webview samples.
  */
 import type { Ctx } from './types';
+import { engineBundle } from './bundle-context.js';
 
 export function ensureSamplerWorker(ctx: Ctx) {
   if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
@@ -316,8 +317,8 @@ export async function runMcmcPool(ctx: Ctx, name: string, opts: any): Promise<an
   // else the worker's graph leaves `mod.member` refs unresolved and the
   // posterior has no derivation. Single-file models pass an empty bundle.
   const processOpts: any = {
-    bundle: (ctx as any).currentBundleSources
-      ? { sources: (ctx as any).currentBundleSources } : undefined,
+    bundle: engineBundle({ bundleSources: ctx.currentBundleSources,
+      bundleFiles: ctx.currentBundleFiles, bundleResolutions: ctx.currentBundleResolutions }),
     path: ctx.currentPath || undefined,
   };
   const sampleCount = ctx.SAMPLE_COUNT;

@@ -88,9 +88,25 @@ plus broad cross-cutting suites (`closed-form-measure-algebra`,
 extension-host entry point. `opts`: `variant` (canonical FlatPPL is the only
 surface form, spec §05; seam retained for forward-compat), `path` (the primary
 module's own path — the importer for `load_module` resolution; defaults to
-`<entry>`), `bundle` (`{ sources: { [path]: text } }` of pre-resolved `.flatppl` deps —
+`<entry>`), `bundle` (`{ sources, files?, resolutions? }` of pre-resolved dependencies —
 the engine pipeline stays **synchronous**; async I/O is the host's job:
 `vscode.workspace.fs` in the extension, `fetch()` in the web host).
+
+`resolveBundleBytes(path, bytes, readBytes)` loads ZIP entry modules and their
+dependencies. `sources` contains module text, while `files` preserves data bytes.
+`resolutions[importer].modules[source]` and `.data[source]` retain resolved edges,
+including ZIP and directory entry modules. Virtual member IDs retain distinct
+archive roots. Hosts must carry these fields through workers and Math requests.
+The older text-only `resolveBundle` remains tolerant for editor diagnostics.
+
+`bundle.ts` owns STORE/Deflate archives, bounded lazy reads, CRC checks, contained
+symlinks, and portable export. `packBundle` follows parsed load calls, including
+fixed string aliases, and rewrites only path argument spans. Hosts retain URL
+trust policy and capture drafts before loading. Opening an archive extracts no
+files. `readArchive` exposes explicit member metadata, `read`, `readLink`, and
+`close`; `stat` also finds implicit directories. A component trie keeps deep
+paths linear. Path and link-target bytes default to ZIP's 65,535-byte filename
+ceiling, with at most 40 link expansions.
 
 Build runtime derivations with
 `buildDerivations(result.linkedBindings, { moduleRegistry: result.linkedModuleRegistry })`.
@@ -198,7 +214,7 @@ extend Lebesgue; unresolved moving atom locations still refuse density scoring.
 - **Compile** — `processSource` reads `opts.bundle.sources`, recursively
   compiles each `load_module`-referenced dependency into its own
   `LoweredModule` (`result.modules`, keyed by resolved path), with
-  cycle / missing-source / non-literal-path diagnostics. Path resolution is
+  cycle / missing-source / non-fixed-path diagnostics. Path resolution is
   `module-resolve.ts` (spec §04: `/`-separator, `..`, relative-to-importer,
   absolute importer preserved). A bundle-LESS call (editor lint) does not flag
   unresolved deps; a provided bundle does.

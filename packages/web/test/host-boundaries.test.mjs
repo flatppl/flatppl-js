@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { createRequire, stripTypeScriptTypes } from 'node:module';
 import vm from 'node:vm';
+import { build } from 'esbuild';
 import * as fileTypes from '../src/file-types.mjs';
 
 const require = createRequire(import.meta.url);
@@ -13,10 +14,43 @@ function runSource(name, globals) {
   vm.runInNewContext(stripTypeScriptTypes(readFileSync(file, 'utf8')), globals, { filename: file.pathname });
 }
 
+let shareHostSource;
+/** Stub only the codec boundary; exercise the bundled app's actual import flow. */
+async function appWithShareCodec() {
+  shareHostSource ||= build({
+    entryPoints: [new URL('../src/app.ts', import.meta.url).pathname],
+    bundle: true, platform: 'browser', format: 'iife', write: false,
+    plugins: [{ name: 'share-codec-boundary', setup(builder) {
+      builder.onResolve({ filter: /^\.\/share-codec\.js$/ }, () => ({ path: 'share-codec', namespace: 'host-test' }));
+      builder.onLoad({ filter: /.*/, namespace: 'host-test' }, () => ({ contents:
+        'export function createShareCodec() { return { decode: globalThis.decodeSharedBytes, dispose() {} }; }',
+      }));
+    } }],
+  }).then(result => result.outputFiles[0].text);
+  return shareHostSource;
+}
+
+/** Run asynchronous edits without wall-clock sleeps or changing their ordering. */
+function manualTimers() {
+  let next = 0;
+  const pending = new Map();
+  return {
+    setTimeout(fn, delay) { const id = ++next; pending.set(id, { fn, delay }); return id; },
+    clearTimeout(id) { pending.delete(id); },
+    debounce() {
+      const job = [...pending].find(([, task]) => task.delay === 250);
+      assert.ok(job, 'an editor debounce is pending');
+      pending.delete(job[0]);
+      return job[1].fn();
+    },
+  };
+}
+
 /** Boot the real gallery over an inert editor and pane, then drive its router. */
-async function gallery({ editable = false, store, sidebar = false, manifest = { entries: [] }, localStorage = storage(), loadManifest } = {}) {
+async function gallery({ editable = false, store, bundles, ephemeral, initial = { model: null }, sidebar = false,
+  manifest = { entries: [] }, localStorage = storage(), loadManifest, loadBundle, readBytes, decodeShare, timers } = {}) {
   let boot, onChange, editorOptions, beforeUnload, source = '', download, readOnly = true;
-  let route = { model: null };
+  let route = initial;
   const requests = [];
   const renders = [];
   const elements = new Map();
@@ -26,29 +60,39 @@ async function gallery({ editable = false, store, sidebar = false, manifest = { 
     });
   }
   const document = {
-    readyState: 'loading', title: '',
+    readyState: 'loading', title: '', baseURI: 'https://playground.example/',
     addEventListener(name, fn) { if (name === 'DOMContentLoaded') boot = fn; },
     getElementById(id) { return id === 'source-editor' ? {} : elements.get(id) || null; },
-    createElement() { return { click() {} }; },
+    createElement() { return { click() {}, setAttribute() {}, style: {} }; },
     body: { appendChild() {}, removeChild() {} },
   };
   if (sidebar) mountSidebar(document, elements);
   const window = {
     localStorage,
+    prompt: (_message, value) => value,
     FlatPPLFileTypes: fileTypes,
     __FLATPPL_CONFIG__: { allowEdit: editable },
     FlatPPLWebUserStore: store,
+    FlatPPLWebBundles: bundles,
+    FlatPPLWebEphemeral: ephemeral,
     addEventListener(name, fn) { if (name === 'beforeunload') beforeUnload = fn; },
     FlatPPLViewer: { mount() {} },
     FlatPPLWebManifest: { load: loadManifest || (async () => manifest) },
-    FlatPPLWebResolver: { resolveBundle(path, override) {
+    FlatPPLWebResolver: { readBytes: readBytes || (async (path, drafts = {}) => {
+      const text = drafts[path] ?? store?.getSource(path);
+      if (text === undefined) throw new Error('No test source for ' + path);
+      return new TextEncoder().encode(text);
+    }), resolveBundle(path, override, options = {}) {
+      if (loadBundle) return loadBundle(path, override, options);
       if (store?.has(path)) return Promise.resolve({ primarySource: override ?? store.getSource(path), sources: {} });
       const pending = Promise.withResolvers();
-      requests.push({ path, ...pending });
-      return pending.promise.then(bundle => ({ ...bundle, primarySource: override ?? bundle.primarySource }));
+      requests.push({ path, options, ...pending });
+      return pending.promise.then(bundle => ({ ...bundle, primaryPath: path,
+        primarySource: override ?? options.drafts?.[path] ?? bundle.primarySource }));
     } },
     FlatPPLWebRouter: {
       parseHash: () => route,
+      serialize: state => JSON.stringify(state),
       onChange(fn) { onChange = fn; },
       emitInitial() {},
       navigateTo(state) { route = state; return onChange(state); },
@@ -58,21 +102,28 @@ async function gallery({ editable = false, store, sidebar = false, manifest = { 
       return { setSource(text) { source = text; }, getSource: () => source, setReadOnly(value) { readOnly = value; } };
     } },
     FlatPPLWebSurfaces: { createPaneController: () => ({
-      update(text, target, opts) { renders.push({ text, target, path: opts?.path }); },
+      update(text, target, opts) { renders.push({ text, target, path: opts?.path, opts }); },
     }) },
   };
-  runSource('app', { window, document, console: { error() {}, warn() {} }, setTimeout, clearTimeout, Blob,
+  const globals = { window, document, console: { error() {}, warn() {} },
+    setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout, Blob,
     URL: { createObjectURL(blob) { download = blob; return 'blob:test'; }, revokeObjectURL() {} },
-  });
+    decodeSharedBytes: decodeShare,
+  };
+  if (decodeShare) vm.runInNewContext(await appWithShareCodec(), globals);
+  else runSource('app', globals);
   await boot();
   return {
     requests, renders, document, elements,
     source: () => source,
+    route: () => ({ ...route }),
+    flush: () => new Promise(resolve => setImmediate(resolve)),
     readOnly: () => readOnly,
     edit(text) { source = text; editorOptions.onChange(text); },
     toggleEdit() { elements.get('edit-toggle').handlers.click(); },
     save() { editorOptions.onSave(); },
     async download() { await elements.get('download-btn').handlers.click(); return download.text(); },
+    async downloadBytes() { await elements.get('download-btn').handlers.click(); return new Uint8Array(await download.arrayBuffer()); },
     warnsOnUnload() { let warned = false; beforeUnload({ preventDefault() { warned = true; } }); return warned; },
     navigate(state) { route = state; return onChange(state); },
   };
@@ -195,6 +246,181 @@ test('nested navigation reveals ancestors and keeps equal-basename drafts distin
   assert.equal(g.source(), 'x = 7');
   assert.equal(tree.folder('posteriordb/group/nested').getAttribute('aria-expanded'), 'true');
 });
+
+test('unsaved bundle dependency edits survive member navigation', async () => {
+  const bundles = { init() {}, subscribe() {}, list: () => [], registerGraph() {},
+    has: path => !!path?.startsWith('new/model/'), folder: () => 'new/model',
+    isSaved: () => false, hasUnsaved: () => true, displayPath: path => path };
+  const ephemeral = { has: () => false, list: () => [], update() {}, size: () => 0 };
+  const g = await gallery({ editable: true, bundles, ephemeral, initial: { model: 'new/model/main.flatppl' } });
+  const select = async (path, primarySource) => {
+    const pending = g.navigate({ model: path });
+    g.requests.at(-1).resolve({ primarySource, sources: {} });
+    await pending;
+  };
+  await select('new/model/data.json', '[1, 2]');
+  g.toggleEdit();
+  g.edit('[3, 4]');
+  await select('new/model/main.flatppl', 'x = 1');
+  await select('new/model/data.json', '[1, 2]');
+  assert.equal(g.source(), '[3, 4]');
+});
+
+/** Controllable bundle I/O boundary; archive bytes and IndexedDB have own suites. */
+function bundleBoundary() {
+  const members = new Map();
+  const opens = [];
+  let serial = 0;
+  const folder = path => members.has(path) ? path.split('/').slice(0, 2).join('/') : undefined;
+  const api = {
+    init() {}, subscribe() {}, list: () => [], registerGraph() {}, displayPath: path => path,
+    has: path => members.has(path), folder,
+    isSaved: path => members.get(path)?.saved || false,
+    hasUnsaved: () => [...members.values()].some(member => !member.saved),
+    async select(directory, path) { const selected = directory + '/' + path; return members.has(selected) ? selected : null; },
+    async open(bytes) {
+      const path = 'new/model-' + ++serial + '/main.flatppl';
+      members.set(path, { source: new TextDecoder().decode(bytes), saved: false });
+      opens.push(path);
+      return { path, reused: false };
+    },
+    async discard(path) { if (!api.isSaved(path)) members.delete(path); },
+    async snapshot(path, drafts) { return new TextEncoder().encode(drafts[path] ?? members.get(path).source); },
+  };
+  return {
+    api, opens,
+    set(path, source, saved = true) { members.set(path, { source, saved }); },
+    source: path => members.get(path)?.source,
+    async loadBundle(path, override, options) {
+      return { primaryPath: path, primarySource: override ?? options.drafts?.[path] ?? members.get(path)?.source ?? 'away = 9',
+        sources: {}, files: {}, resolutions: {} };
+    },
+  };
+}
+
+// These regressions protect editor state across public asynchronous I/O seams.
+// The existing navigation/draft tests are nearest, but do not overlap saves or loads.
+for (const navigateAway of [false, true]) {
+  test('undoing an edit during bundle Save remains dirty' + (navigateAway ? ' after navigating away' : ''), async () => {
+    const path = 'user/model/main.flatppl';
+    const bundles = bundleBoundary();
+    bundles.set(path, 'x = 1');
+    const saving = Promise.withResolvers(), finish = Promise.withResolvers();
+    bundles.api.save = async bytes => {
+      saving.resolve(bytes);
+      await finish.promise;
+      bundles.set(path, new TextDecoder().decode(bytes));
+      return path;
+    };
+    const g = await gallery({ editable: true, bundles: bundles.api, loadBundle: bundles.loadBundle,
+      initial: { model: path }, timers: manualTimers() });
+    await g.navigate({ model: path });
+    g.toggleEdit();
+    g.edit('x = 2');
+    g.save();
+    assert.equal(new TextDecoder().decode(await saving.promise), 'x = 2');
+    g.edit('x = 1');
+    if (navigateAway) await g.navigate({ model: 'away.flatppl' });
+    finish.resolve();
+    await g.flush();
+    assert.equal(bundles.source(path), 'x = 2');
+    if (navigateAway) {
+      assert.equal(g.route().model, 'away.flatppl');
+      await g.navigate({ model: path });
+    }
+    assert.equal(g.source(), 'x = 1');
+    assert.equal(g.warnsOnUnload(), true);
+  });
+}
+
+test('whole-bundle Save restores the selected nested member instead of its root', async () => {
+  const root = 'user/model/main.flatppl', selected = 'user/model/nested.zip/main.flatppl';
+  const bundles = bundleBoundary();
+  bundles.set(root, 'outer = 1');
+  bundles.set(selected, 'inner = 1');
+  bundles.api.save = async bytes => {
+    bundles.set(selected, new TextDecoder().decode(bytes));
+    return root;
+  };
+  const g = await gallery({ editable: true, bundles: bundles.api, loadBundle: bundles.loadBundle,
+    initial: { model: selected }, timers: manualTimers() });
+  await g.navigate({ model: selected });
+  g.toggleEdit();
+  g.edit('inner = 2');
+  g.save();
+  await g.flush();
+  assert.equal(g.route().model, selected);
+  assert.equal(g.source(), 'inner = 2');
+  assert.equal(g.warnsOnUnload(), false);
+});
+
+test('a binary download preserves bytes instead of the inspection text', async () => {
+  const expected = new Uint8Array([0, 255, 128, 1]);
+  const reads = [];
+  const g = await gallery({ timers: manualTimers(),
+    loadBundle: async path => ({ primaryPath: path, primarySource: 'Binary file: 00 ff 80 01', binary: true, sources: {} }),
+    readBytes: async (path, drafts) => { reads.push({ path, drafts }); return expected; },
+  });
+  await g.navigate({ model: 'data/opaque.bin' });
+  assert.deepEqual(await g.downloadBytes(), expected);
+  assert.equal(reads[0].path, 'data/opaque.bin');
+  assert.equal(Object.hasOwn(reads[0].drafts, 'data/opaque.bin'), false);
+});
+
+test('an older same-path edit load cannot replace newer source or its dependency graph', async () => {
+  const timers = manualTimers();
+  const g = await gallery({ editable: true, timers });
+  const first = g.navigate({ model: 'model.flatppl' });
+  g.requests[0].resolve({ primarySource: 'x = 0', sources: {} });
+  await first;
+  g.toggleEdit();
+  g.edit('x = 1');
+  timers.debounce();
+  g.edit('x = 2');
+  timers.debounce();
+  assert.equal(g.requests[1].options.drafts['model.flatppl'], 'x = 1');
+  assert.equal(g.requests[2].options.drafts['model.flatppl'], 'x = 2');
+  g.requests[2].resolve({ primarySource: 'x = 2', sources: { 'dep.flatppl': 'value = 2' } });
+  await g.flush();
+  g.requests[1].resolve({ primarySource: 'x = 1', sources: { 'dep.flatppl': 'value = 1' } });
+  await g.flush();
+  assert.equal(g.source(), 'x = 2');
+  assert.equal(g.renders.at(-1).text, 'x = 2');
+  assert.equal(g.renders.at(-1).opts.bundleSources['dep.flatppl'], 'value = 2');
+  // Target-only navigation reuses currentBundle, exposing a stale graph even
+  // when an implementation happens not to redraw the stale response immediately.
+  await g.navigate({ model: 'model.flatppl', target: 'x' });
+  assert.equal(g.renders.at(-1).opts.bundleSources['dep.flatppl'], 'value = 2');
+});
+
+for (const transport of ['share', 'hosted']) {
+  test('Back reuses an edited ' + transport + ' preview after another bundle opens', async () => {
+    const bundles = bundleBoundary();
+    const bytes = value => new TextEncoder().encode(value === 'A' ? 'x = 1' : 'x = 2');
+    const g = await gallery({ editable: true, bundles: bundles.api, loadBundle: bundles.loadBundle,
+      timers: manualTimers(),
+      decodeShare: transport === 'share' ? async token => bytes(token) : undefined,
+      readBytes: async url => bytes(url.includes('/A.zip') ? 'A' : 'B'),
+    });
+    const incoming = value => transport === 'share'
+      ? { model: 'main.flatppl', share: value }
+      : { model: 'https://example.org/' + value + '.zip' };
+    await g.navigate(incoming('A'));
+    await g.flush();
+    assert.equal(g.source(), 'x = 1');
+    const first = g.route();
+    g.toggleEdit();
+    g.edit('x = 41');
+    await g.navigate(incoming('B'));
+    await g.flush();
+    assert.equal(g.source(), 'x = 2');
+    await g.navigate(first);
+    await g.flush();
+    assert.equal(g.route().model, first.model);
+    assert.equal(g.source(), 'x = 41');
+    assert.equal(bundles.opens.length, 2);
+  });
+}
 
 function manifestLoader(raw) {
   const window = { FlatPPLFileTypes: fileTypes };
@@ -421,11 +647,31 @@ function resolver(localStorage, approve) {
     },
   };
   runSource('resolver', {
-    window, document: { baseURI: 'https://gallery.invalid/' }, URL,
-    fetch: async (url) => { requests.push(url); return { ok: true, text: async () => 'x = 1' }; },
+    window, document: { baseURI: 'https://gallery.invalid/' }, URL, TextEncoder, TextDecoder, Uint8Array,
+    fetch: async (url) => { requests.push(url); return new Response('x = 1'); },
   });
   return { api: window.FlatPPLWebResolver, requests, prompts };
 }
+
+test('network byte limits cancel an oversized stream without caching it', async () => {
+  let cancelled = false, requests = 0;
+  const window = { FlatPPLEngine: { DEFAULT_LIMITS: { maxMemberBytes: 3 } } };
+  runSource('resolver', { window, document: { baseURI: 'https://gallery.invalid/' },
+    URL, TextEncoder, TextDecoder, Uint8Array,
+    fetch: async () => {
+      requests++;
+      return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new Uint8Array(requests === 1 ? 4 : 2)); },
+        pull(controller) { if (requests > 1) controller.close(); },
+        cancel() { cancelled = true; },
+      }));
+    },
+  });
+  await assert.rejects(window.FlatPPLWebResolver.readBytes('data.bin'));
+  assert.equal(cancelled, true);
+  assert.deepEqual(Array.from(await window.FlatPPLWebResolver.readBytes('data.bin')), [0, 0]);
+  assert.equal(requests, 2);
+});
 
 test('opening data does not interpret text as a module dependency', async () => {
   const r = resolver(storage(), false);
@@ -433,7 +679,7 @@ test('opening data does not interpret text as a module dependency', async () => 
   const bundle = await r.api.resolveBundle('data/observations.csv', source);
   assert.equal(bundle.primarySource, source);
   assert.deepEqual(Object.keys(bundle.sources), []);
-  assert.deepEqual(r.requests, ['https://gallery.invalid/data/observations.csv']);
+  assert.deepEqual(r.requests, []);
   assert.deepEqual(r.prompts, []);
 });
 
@@ -441,7 +687,7 @@ test('a refused remote dependency does not fetch, while same-origin sources load
   const r = resolver(storage(), false);
   const bundle = await r.api.resolveBundle('new/main.flatppl');
   assert.deepEqual(r.requests, []);
-  assert.deepEqual(Object.keys(bundle.sources), []);
+  assert.deepEqual(Object.keys(bundle.sources), ['new/main.flatppl']);
   assert.equal(r.prompts.length, 1);
   assert.equal((await r.api.resolveBundle('demo/local.flatppl')).primarySource, 'x = 1');
   assert.equal((await r.api.resolveBundle('https://gallery.invalid/other.flatppl')).primarySource, 'x = 1');
@@ -452,7 +698,7 @@ test('a refused remote dependency does not fetch, while same-origin sources load
 test('external sources cannot fetch when the host has no approval UI', async () => {
   const r = resolver(storage());
   const bundle = await r.api.resolveBundle('new/main.flatppl');
-  assert.deepEqual(Object.keys(bundle.sources), []);
+  assert.deepEqual(Object.keys(bundle.sources), ['new/main.flatppl']);
   await assert.rejects(r.api.resolveBundle('//remote.invalid/primary.flatppl'));
   assert.deepEqual(r.requests, []);
 });

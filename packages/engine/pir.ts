@@ -50,7 +50,7 @@
 //     a `.flatpir` file for inspection.
 
 const lower = require('./lower.ts');
-const { resolveModulePath } = require('./module-resolve.ts');
+const { resolveBundlePath } = require('./module-resolve.ts');
 
 // =====================================================================
 // Constructors
@@ -196,17 +196,18 @@ function lowerToModule(parsedBindings: Map<string, any>, opts?: any) {
     // `load_module(<path-lit>, …)` — record the alias → resolved path so
     // cross-module ref resolution (typeinfer / materialiser) can find the
     // loaded module by its canonical key without re-resolving the path.
-    // The path arg must be a string literal (load-time-resolved, spec §04);
-    // a non-literal path is left unresolved (`path: null`) and the bundle
+    // The path must be a fixed string or string alias (spec §04);
+    // another path expression is left unresolved (`path: null`) and the bundle
     // compiler reports the diagnostic.
     if (binding.type === 'module' && rhs && rhs.kind === 'call'
         && rhs.op === 'load_module'
         && Array.isArray(rhs.args) && rhs.args.length >= 1) {
       const pathArg = rhs.args[0];
       const relPath = (pathArg && pathArg.kind === 'lit'
-        && typeof pathArg.value === 'string') ? pathArg.value : null;
+        && typeof pathArg.value === 'string') ? pathArg.value
+        : pathArg?.kind === 'ref' && pathArg.ns === 'self' ? opts?.pathAliases?.[pathArg.name] ?? null : null;
       let resolvedPath = null;
-      try { resolvedPath = relPath != null ? resolveModulePath(modulePath, relPath) : null; }
+      try { resolvedPath = relPath != null ? resolveBundlePath(modulePath, relPath, opts?.resolutions) : null; }
       catch (_) { /* The compiler reports the invalid source at its call site. */ }
       moduleRegistry[name] = {
         kind: 'load_module',

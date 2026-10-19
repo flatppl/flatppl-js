@@ -105,4 +105,15 @@ function resolveModulePath(importerPath: string | null, relPath: string): string
   return (importerAbsolute ? '/' : '') + segs.join('/');
 }
 
-module.exports = { resolveModulePath, isUrl, validateSource };
+/** §04: mounted archives supply explicit edges, including their entry module. */
+function resolveBundlePath(importer: string | null, source: string, resolutions?: any,
+  kind: 'modules' | 'data' = 'modules'): string {
+  const resolved = resolutions?.[importer || '<entry>']?.[kind]?.[source];
+  if (typeof resolved === 'string') return resolved;
+  if (importer?.startsWith('flatppl-zip:')) {
+    throw new Error(`Bundle dependency was not resolved: '${source}' from '${importer}'`);
+  }
+  return resolveModulePath(importer, source);
+}
+
+module.exports = { resolveModulePath, resolveBundlePath, isUrl, validateSource };

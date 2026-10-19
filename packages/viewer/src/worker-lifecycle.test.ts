@@ -79,6 +79,30 @@ test('late materialization cannot overwrite the replacement model cache', async 
   assert.deepEqual(Array.from((await getMeasure(ctx, 'x')).samples), [2, 2, 2, 2]);
 });
 
+test('pooled inference reprocesses archive imports and byte data inside its worker', async t => {
+  const wire = transport(t), ctx = context();
+  const archive = require('../../engine/bundle.ts');
+  const encode = text => new TextEncoder().encode(text);
+  const packed = await archive.writeArchive({
+    'main.flatppl': encode('m = load_module("helper.flatppl")\ntheta ~ Normal(0, 1)\n'
+      + 'prior = lawof(record(theta = theta))\ny ~ Normal(theta, 1)\n'
+      + 'K = kernelof(y, theta)\nL = likelihoodof(K, m.d)\npost = bayesupdate(L, prior)'),
+    'helper.flatppl': encode('d = load_data("data.json", reals)'),
+    'data.json': encode('2'),
+  });
+  const graph = await archive.resolveBundleBytes('model.zip', packed, async () => null);
+  Object.assign(ctx, { currentSource: graph.primarySource, currentPath: graph.primaryPath,
+    currentBundleSources: graph.sources, currentBundleFiles: graph.files,
+    currentBundleResolutions: graph.resolutions });
+  const result = runMcmcPool(ctx, 'post', { backend: 'slice', chains: 1, warmup: 4, draws: 8, seed: 12 });
+  await until(() => wire.workers[0] && message(wire.workers[0], 'mcmcRun'));
+  const worker = wire.workers[0], request = message(worker, 'mcmcRun');
+  assert.equal('model.zip' in request.processOpts.bundle.files, false, 'compressed archives never enter the worker');
+  worker.reply(request, await createWorkerHandler().handle(structuredClone(request)));
+  const draws = (await result).fields.theta.samples;
+  assert.ok(draws.length > 0 && Array.from(draws).every(Number.isFinite));
+});
+
 test('recursive materialization refuses to cross a model replacement', async t => {
   transport(t);
   const ctx = context();

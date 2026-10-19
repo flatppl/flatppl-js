@@ -190,6 +190,8 @@ const SRC_BUNDLE_ENTRIES = new Set([
   'codemirror-bundle-entry.ts',
   // Bundled to vendor/file-types.js (IIFE global) below, not served as-is.
   'file-types.mjs',
+  'share-codec.ts',
+  'share-worker.ts',
 ]);
 
 // Per-file transpile-or-copy: each script in src/ is loaded by the page
@@ -393,6 +395,12 @@ const viewerBuildOpts = {
 // included when syncGrammars() vendored the CM module (hasCmHighlighter);
 // otherwise a stub already sits at dist/vendor/textmate-highlight.js.
 const BUNDLES = [
+  { opts: { entryPoints: [join(here, 'src/share-codec.ts')], outdir: distDir,
+      bundle: true, minify: true, format: 'esm', splitting: true, chunkNames: 'share-chunk-[hash]',
+      platform: 'browser', target: 'es2020' }, label: 'share-codec -> dist/share-codec.js' },
+  { opts: { entryPoints: [join(here, 'src/share-worker.ts')], outfile: join(distDir, 'share-worker.js'),
+      bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2020' },
+    label: 'share-worker -> dist/share-worker.js' },
   { opts: fileTypesBuildOpts,     label: 'file-types         -> dist/vendor/file-types.js' },
   { opts: engineBuildOpts,        label: 'engine             -> dist/vendor/engine.min.js' },
   { opts: samplerWorkerBuildOpts, label: 'sampler-worker     -> dist/vendor/sampler-worker.min.js' },
@@ -402,6 +410,8 @@ const BUNDLES = [
     : []),
   { opts: viewerBuildOpts,        label: 'viewer             -> dist/vendor/viewer.js' },
 ];
+
+await copyFile(join(nm, 'brotli-wasm/pkg.web/brotli_wasm_bg.wasm'), join(distDir, 'brotli_wasm_bg.wasm'));
 
 if (WATCH) {
   const ctxs = await Promise.all(BUNDLES.map(b => esbuild.context(b.opts)));

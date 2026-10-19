@@ -49,5 +49,6 @@ interface Window {
   FlatPPLWebEditor?: any;
   FlatPPLWebEphemeral?: any;
   FlatPPLWebUserStore?: any;
+  FlatPPLWebBundles?: any;
   FlatPPLWeb?: any;
 }
