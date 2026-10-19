@@ -61,7 +61,7 @@
     return window.FlatPPLWebResolver.resolveBundle(path, undefined, { drafts: draftSnapshot(), strict });
   }
 
-  /** Brotli, WASM, and QR code load only when opening or creating a share. */
+  /** Zstandard, WASM, and QR code load only when opening or creating a share. */
   async function loadShare() {
     shareScript ||= import('./share-codec.js').catch(error => { shareScript = null; throw error; });
     return shareScript;
@@ -211,29 +211,22 @@
         status.textContent = 'Could not create a link: ' + transport.reason.message + '. Download the ZIP to share it.';
         return;
       }
-      if (!builtin) {
-        try { await window.FlatPPLWebBundles.validateLink(transport.value); }
-        catch (error: any) {
-          status.textContent = 'Could not create a link: ' + error.message + ' Download the ZIP to share it.';
-          return;
-        }
-      }
       const api = await loadShare();
       if (!dialog.open) return;
       let links: any;
       if (builtin) {
         const url = new URL(document.baseURI);
         url.hash = window.FlatPPLWebRouter.serialize({ model: state.model, target: state.target });
-        links = { url: url.href, qrUrl: url.href, qrPrefix: url.href, qrToken: '', qrSuffix: '', tooLong: false };
+        links = { url: url.href, qrUrl: url.href, tooLong: false };
         status.textContent = 'This unchanged example uses a short link. Custom and edited models also support links and QR codes, including their code, imports, and data.';
       } else {
-        codec = api.createShareCodec();
-        const payload = await codec.encode(transport.value);
-        codec.dispose();
-        if (!payload) { status.textContent = 'This bundle is too large for a share link. Download the ZIP to share it.'; return; }
         const folder = window.FlatPPLWebBundles?.folder(state.model);
         const model = folder ? state.model.slice(folder.length + 1) : 'main.flatppl';
-        links = api.makeShareLinks(payload, document.baseURI, { model, target: state.target });
+        codec = api.createShareCodec();
+        const tokens = await codec.encode(transport.value, { model, target: state.target });
+        codec.dispose();
+        if (!tokens) { status.textContent = 'This bundle does not fit a share link. Download the ZIP to share it.'; return; }
+        links = api.makeShareLinks(tokens, document.baseURI);
         status.textContent = 'The link and QR code include this model’s code, imports, and data. Opening either creates an unsaved preview.';
       }
       if (!dialog.open) return;
@@ -1668,11 +1661,11 @@
       try {
         const api = await loadShare();
         const decoder = api.createShareCodec();
-        let bytes: Uint8Array;
-        try { bytes = await decoder.decode(state.share); }
+        let shared: any;
+        try { shared = await decoder.decode(state.share); }
         finally { decoder.dispose(); }
         if (seq !== navigationSeq) return;
-        const opened = await window.FlatPPLWebBundles.open(bytes, 'shared-model',
+        const opened = await window.FlatPPLWebBundles.open(shared.archive, 'shared-model',
           (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')),
           { limits: window.FlatPPLWebBundles.LINK_LIMITS });
         if (seq !== navigationSeq) {
@@ -1681,15 +1674,18 @@
         }
         const folder = window.FlatPPLWebBundles.folder(opened.path);
         previewFolders.add(folder);
-        const requested = state.model?.replace(/^(?:new|user)\/[^/]+\//, '');
-        const selection = requested && await window.FlatPPLWebBundles.select(folder, requested) || opened.path;
+        // The shared view applies until the URL names a member, as after navigating and reloading.
+        const view = state.model ? { model: state.model.replace(/^(?:new|user)\/[^/]+\//, ''), target: state.target }
+          : { model: shared.model, target: state.target ?? shared.target };
+        const selection = view.model && await window.FlatPPLWebBundles.select(folder, view.model) || opened.path;
         if (seq !== navigationSeq) {
           if (!opened.reused) await window.FlatPPLWebBundles.discard(opened.path);
           return;
         }
-        shareOrigins.set(folder, state.share);
-        const next = { model: selection, target: state.target,
-          share: opened.reused ? null : state.share, archive: null };
+        // The address bar keeps the shorter link token, also after a QR code.
+        shareOrigins.set(folder, shared.link);
+        const next = { model: selection, target: view.target,
+          share: opened.reused ? null : shared.link, archive: null };
         if (window.FlatPPLWebRouter.serialize(next) === window.FlatPPLWebRouter.serialize(state)) {
           return applyState(next);
         }

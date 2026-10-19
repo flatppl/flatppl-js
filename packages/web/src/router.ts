@@ -9,7 +9,8 @@
 // Hash format:
 //   #/files/path/to/foo.flatppl?target=binding_name
 // Legacy #model= paths still load. Unsaved bundles retain their content token
-// or hosted archive URL while navigating within the same bundle.
+// or hosted archive URL while navigating within the same bundle. Share links
+// use #share=<token>, QR codes #~<digits> (see share-links.md).
 //
 // `model` is the path the resolver will fetch (relative to the
 // document base, so e.g. `demo/x.flatppl` resolves under the
@@ -35,6 +36,13 @@
     if (raw.length > 64 * 1024) return { ...out, error: 'This link is too long. Open the ZIP bundle instead.' };
     if (!raw) return out;
     const seen = new Set<string>();
+    // A QR share token starts with its marker `~` and stands alone.
+    if (raw.startsWith('~')) {
+      const end = raw.indexOf('&');
+      out.share = raw.slice(0, end < 0 ? undefined : end);
+      seen.add('share');
+      raw = end < 0 ? '' : raw.slice(end + 1);
+    }
     if (raw.startsWith('/files/')) {
       const end = raw.indexOf('?');
       try { out.model = decodeURIComponent(raw.slice(7, end < 0 ? undefined : end)); }

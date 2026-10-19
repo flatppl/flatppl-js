@@ -169,10 +169,12 @@
     if (FE?.resolveBundleBytes && (!fileType || fileType === 'flatppl' || /\.zip$/i.test(path))) {
       const graph = await FE.resolveBundleBytes(path, bytes,
         (dep: string) => readBytes(dep, drafts, limits?.maxMemberBytes),
-        // The graph also captures whole ZIP containers as files. Individual
-        // members remain bounded by the mount and external reads above.
+        // The graph captures the root ZIP as well as its members. Its capture
+        // budget includes that serialization; mounted reads still enforce the
+        // smaller member and expanded-content budgets.
         { strict: !!options.strict, limits: limits?.maxArchiveBytes === undefined ? limits
-          : { ...limits, maxMemberBytes: limits.maxArchiveBytes } });
+          : { ...limits, maxMemberBytes: limits.maxArchiveBytes,
+            ...(limits.maxTotalBytes === undefined ? {} : { maxTotalBytes: limits.maxTotalBytes + limits.maxArchiveBytes }) } });
       return { ...graph, primaryUrl: path };
     }
     let source: string, binary = false;

@@ -1,72 +1,80 @@
 /**
- * Brotli work for the browser share transport. §04 ZIP contents stay opaque
- * here. Stream through fixed buffers so declared or adversarial expansion
- * cannot make the decoder allocate an unbounded JS output buffer.
+ * Share-link work on untrusted input runs here, under the caller's timeout:
+ * token text, Zstandard and the member container. The rebuilt ZIP then passes
+ * the archive reader on the page.
  */
-import brotliReady from 'brotli-wasm';
+import dictionary1 from './share-dictionaries/v1.zdict';
+import { loadZstd, type Zstd } from './zstd.ts';
 import {
-  MAX_SHARE_ARCHIVE_BYTES, MAX_SHARE_COMPRESSED_BYTES,
-  type ShareWorkerRequest, type ShareWorkerReply,
-} from './share-codec';
+  MAX_SHARE_CONTENT_BYTES, MAX_SHARE_PAYLOAD_BYTES, ShareLimitError, ZSTD_MAGIC,
+  decodeContainer, encodeContainer, framePayload, linkToken, payloadFrame, qrToken, tokenPayload,
+  type ShareMember, type ShareView,
+} from './share-format.ts';
+import type { ShareTokens, ShareWorkerRequest, ShareWorkerReply } from './share-codec.ts';
 
-const CHUNK_BYTES = 64 * 1024;
+/** Payload version to dictionary. Never change or reuse a version: printed links must keep opening. */
+const DICTIONARIES: Record<number, Uint8Array> = { 1: dictionary1 };
+const VERSION = 1;
+const LEVEL = 19;
+/** Level 19 needs between 64 and 128 MiB for the largest content. */
+const MAX_HEAP_BYTES = 128 * 1024 * 1024;
+
 const worker = self as unknown as {
   addEventListener: (type: 'message', listener: (event: MessageEvent<ShareWorkerRequest>) => void) => void;
   postMessage: (message: ShareWorkerReply, transfer?: Transferable[]) => void;
 };
 
-/** Release WASM results promptly. Concatenate only after the actual size passes. */
-async function transform(operation: ShareWorkerRequest['operation'], input: Uint8Array): Promise<Uint8Array | null> {
-  const encode = operation === 'encode';
-  const inputLimit = encode ? MAX_SHARE_ARCHIVE_BYTES : MAX_SHARE_COMPRESSED_BYTES;
-  const outputLimit = encode ? MAX_SHARE_COMPRESSED_BYTES : MAX_SHARE_ARCHIVE_BYTES;
-  if (input.byteLength > inputLimit) return null;
-  const brotli = await brotliReady;
-  const stream = encode ? new brotli.CompressStream(11) : new brotli.DecompressStream();
-  const chunks: Uint8Array[] = [];
-  let offset = 0, total = 0;
-  try {
-    while (true) {
-      const source = input.subarray(offset, offset + CHUNK_BYTES);
-      const result = encode
-        ? (stream as InstanceType<typeof brotli.CompressStream>).compress(offset === input.length ? undefined : source, CHUNK_BYTES)
-        : (stream as InstanceType<typeof brotli.DecompressStream>).decompress(source, CHUNK_BYTES);
-      let code: number, consumed: number, bytes: Uint8Array;
-      try {
-        code = result.code;
-        consumed = result.input_offset;
-        bytes = result.buf;
-      } finally { result.free(); }
-      offset += consumed;
-      total += bytes.length;
-      if (total > outputLimit) return null;
-      if (bytes.length) chunks.push(bytes);
-      if (code === brotli.BrotliStreamResultCode.ResultSuccess) {
-        if (offset !== input.length) throw new Error('The share contains trailing compressed data.');
-        break;
-      }
-      if (!encode && code === brotli.BrotliStreamResultCode.NeedsMoreInput && offset === input.length) {
-        throw new Error('The share link is incomplete.');
-      }
-      if (!consumed && !bytes.length) {
-        throw new Error('The share link contains invalid compressed data.');
-      }
-    }
-  } finally { stream.free(); }
-  const output = new Uint8Array(total);
-  let position = 0;
-  for (const chunk of chunks) { output.set(chunk, position); position += chunk.length; }
-  return output;
+let zstd: Promise<Zstd> | undefined;
+function codec(): Promise<Zstd> {
+  return zstd ||= fetch(new URL('zstd.wasm', import.meta.url)).then(response => {
+    if (!response.ok) throw new Error('The share codec could not load.');
+    return response.arrayBuffer();
+  }).then(wasm => loadZstd(wasm, MAX_HEAP_BYTES));
+}
+
+async function contentOf(payload: Uint8Array): Promise<Uint8Array> {
+  const { version, frame } = payloadFrame(payload);
+  const dictionary = DICTIONARIES[version];
+  if (!dictionary) throw new Error('This share link needs a newer version of the FlatPPL playground.');
+  return (await codec()).decompress(frame, dictionary, MAX_SHARE_CONTENT_BYTES);
+}
+
+/** Null when the bundle exceeds what a link can open. Its ZIP remains downloadable. */
+async function encode(view: ShareView, members: ShareMember[]): Promise<ShareTokens | null> {
+  // The container stores main.flatppl as a file, not as a link.
+  if (members.find(member => member.name === 'main.flatppl')?.kind !== 'file') return null;
+  const content = encodeContainer(view, members);
+  if (content.length > MAX_SHARE_CONTENT_BYTES) return null;
+  try { decodeContainer(content); } catch (error) {
+    if (error instanceof ShareLimitError) return null;
+    throw error;
+  }
+  const frame = (await codec()).compress(content, DICTIONARIES[VERSION], LEVEL,
+    MAX_SHARE_PAYLOAD_BYTES + ZSTD_MAGIC.length - 1);
+  if (!frame) return null;
+  const payload = framePayload(VERSION, frame);
+  const link = linkToken(payload);
+  // Hand out only links that this decoder opens.
+  const opened = await contentOf(tokenPayload(link));
+  if (opened.length !== content.length || opened.some((byte, i) => byte !== content[i])) {
+    throw new Error('The share codec failed to reproduce this bundle.');
+  }
+  return { link, qr: qrToken(payload) };
 }
 
 worker.addEventListener('message', async ({ data }) => {
   try {
-    if (!(data.bytes instanceof Uint8Array) || !['encode', 'decode'].includes(data.operation)) {
+    if (data.operation === 'encode' && Array.isArray(data.members)) {
+      worker.postMessage({ id: data.id, tokens: await encode(data.view, data.members) });
+    } else if (data.operation === 'decode' && typeof data.token === 'string') {
+      const payload = tokenPayload(data.token);
+      const { view, members } = decodeContainer(await contentOf(payload));
+      worker.postMessage({ id: data.id, link: linkToken(payload), view, members },
+        members.map(member => member.bytes.buffer as ArrayBuffer));
+    } else {
       throw new Error('Invalid share codec request.');
     }
-    const bytes = await transform(data.operation, data.bytes);
-    worker.postMessage({ id: data.id, bytes }, bytes ? [bytes.buffer as ArrayBuffer] : []);
   } catch (error) {
-    worker.postMessage({ id: data.id, error: error instanceof Error ? error.message : 'Invalid compressed share data.' });
+    worker.postMessage({ id: data.id, error: error instanceof Error ? error.message : 'Invalid share link.' });
   }
 });

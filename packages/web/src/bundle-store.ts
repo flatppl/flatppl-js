@@ -22,7 +22,7 @@
     depth: number;
   }
   const mounts = new Map<string, Mounted>();
-  /** Folders of previews still being mounted. */
+  /** Folders being mounted or checked for saved reuse. */
   const reserved = new Set<string>();
   const scopes = new Map<string, ArchiveScope>();
   const pendingScopes = new Map<string, Promise<ArchiveScope>>();
@@ -31,7 +31,8 @@
   const engine = () => scope.FlatPPLEngine;
   const changed = () => listeners.forEach(fn => fn());
   // URL previews have a smaller budget than deliberate local ZIP uploads.
-  const LINK_LIMITS = { maxArchiveBytes: 8 * 1024 ** 2, maxMemberBytes: 2 * 1024 ** 2,
+  // Reserve 1 MiB for ZIP headers around at most 8 MiB of expanded members.
+  const LINK_LIMITS = { maxArchiveBytes: 9 * 1024 ** 2, maxMemberBytes: 2 * 1024 ** 2,
     maxTotalBytes: 8 * 1024 ** 2, maxEntries: 256, maxDepth: 4, maxPathBytes: 1024 };
 
   function db(): Promise<IDBDatabase> {
@@ -66,13 +67,6 @@
         throw new Error('Shared bundle paths exceed the browser folder depth limit.');
       }
     }
-  }
-
-  /** Do not publish a link the receiving playground would refuse to mount. */
-  async function validateLink(bytes: Uint8Array) {
-    const archive = await engine().readArchive(bytes, { id: 'share.zip', limits: LINK_LIMITS });
-    try { checkLinkPaths(archive, 'new/shared-model'); }
-    finally { await archive.close(); }
   }
 
   /** Cache link identities without decoding regular members. */
@@ -297,7 +291,10 @@
     finally { reserved.delete(folder); }
     try {
       for (const existing of mounts.values()) {
-        if (existing.saved && canReuse(existing.folder) && await equal(existing.archive, m.archive)) {
+        if (!existing.saved || reserved.has(existing.folder) || !canReuse(existing.folder)) continue;
+        reserved.add(existing.folder);
+        try {
+          if (!await equal(existing.archive, m.archive)) continue;
           // Readers capture their limits. Replacing the field alone leaves
           // already-open nested archives using the local-upload budget.
           if (options.limits) {
@@ -313,7 +310,7 @@
           scopes.delete(m.id);
           await m.archive.close();
           return { path: existing.folder + '/' + existing.archive.entryPath, reused: true };
-        }
+        } finally { reserved.delete(existing.folder); }
       }
     } catch (error) {
       mounts.delete(folder);
@@ -416,7 +413,7 @@
     }
   }
 
-  scope.FlatPPLWebBundles = { init, open, save, snapshot, read, canonical, displayPath, list, LINK_LIMITS, validateLink,
+  scope.FlatPPLWebBundles = { init, open, save, snapshot, read, canonical, displayPath, list, LINK_LIMITS,
     registerGraph, select, draftFor,
     has: (path: string | null | undefined) => !!owner(path),
     folder: (path: string | null | undefined) => owner(path)?.folder,

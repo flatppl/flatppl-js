@@ -192,6 +192,7 @@ const SRC_BUNDLE_ENTRIES = new Set([
   // Bundled to vendor/file-types.js (IIFE global) below, not served as-is.
   'file-types.mjs',
   'share-codec.ts',
+  'share-format.ts',
   'share-worker.ts',
   'zstd.ts',
 ]);
@@ -401,7 +402,8 @@ const BUNDLES = [
       bundle: true, minify: true, format: 'esm', splitting: true, chunkNames: 'share-chunk-[hash]',
       platform: 'browser', target: 'es2020' }, label: 'share-codec -> dist/share-codec.js' },
   { opts: { entryPoints: [join(here, 'src/share-worker.ts')], outfile: join(distDir, 'share-worker.js'),
-      bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2020' },
+      bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2020',
+      loader: { '.zdict': 'binary' } },
     label: 'share-worker -> dist/share-worker.js' },
   { opts: fileTypesBuildOpts,     label: 'file-types         -> dist/vendor/file-types.js' },
   { opts: engineBuildOpts,        label: 'engine             -> dist/vendor/engine.min.js' },
@@ -413,7 +415,6 @@ const BUNDLES = [
   { opts: viewerBuildOpts,        label: 'viewer             -> dist/vendor/viewer.js' },
 ];
 
-await copyFile(join(nm, 'brotli-wasm/pkg.web/brotli_wasm_bg.wasm'), join(distDir, 'brotli_wasm_bg.wasm'));
 // src/zstd.ts calls this binary's minified exports directly. After upgrading
 // @bokuweb/zstd-wasm, check those names and the imports, then update the hash.
 const ZSTD_WASM_SHA256 = '80260eee5795ee8072bb5821e203730c74dca3909938f5ac1128da67f96223df';
