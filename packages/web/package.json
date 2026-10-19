@@ -59,6 +59,7 @@
     "github-pages"
   ],
   "dependencies": {
+    "@bokuweb/zstd-wasm": "0.0.27",
     "brotli-wasm": "3.0.1",
     "qrcode": "1.5.4"
   }
