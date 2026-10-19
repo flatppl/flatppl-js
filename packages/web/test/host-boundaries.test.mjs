@@ -184,6 +184,21 @@ function sidebar(g) {
   };
 }
 
+test('the homepage restores edit mode and loads examples with the bundle store enabled', async () => {
+  const window = { FlatPPLEngine: engine };
+  runSource('bundle-store', { window, console: { warn() {} } });
+  const ls = storage();
+  ls.setItem('flatppl-web-edit-on', '1');
+  const g = await gallery({ editable: true, sidebar: true, manifest: collectionManifest,
+    localStorage: ls, bundles: window.FlatPPLWebBundles });
+  await g.navigate({ model: null });
+  assert.deepEqual(sidebar(g).paths(), ['examples/model.flatppl']);
+  const selected = g.navigate({ model: 'examples/model.flatppl' });
+  g.requests[0].resolve({ primarySource: 'x = 1', sources: {} });
+  await selected;
+  assert.equal(g.source(), 'x = 1');
+});
+
 test('nested sidebar search keeps folder counts, focus, and normal expansion choices', async () => {
   const ls = storage();
   const g = await gallery({ sidebar: true, manifest: collectionManifest, localStorage: ls });
