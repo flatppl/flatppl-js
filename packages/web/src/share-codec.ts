@@ -9,7 +9,7 @@ import type { QRCode, QRCodeSegment } from 'qrcode';
 export const MAX_SHARE_URL_LENGTH = 64 * 1024;
 export const MAX_SHARE_ARCHIVE_BYTES = 64 * 1024 * 1024;
 export const MAX_SHARE_COMPRESSED_BYTES = 1024 * 1024;
-export const MAX_SHARE_QR_VERSION = 25;
+export const MAX_SHARE_QR_VERSION = 40;
 
 const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const WORKER_TIMEOUT_MS = 60_000;
@@ -193,7 +193,7 @@ export function makeShareLinks(payload: SharePayload, baseUrl: string, selection
 
 /**
  * Compare actual QR matrices, not URL lengths. Use medium error correction and
- * cap dense symbols for print/talk use. Both candidates retain the same state.
+ * allow every standard QR size. Both candidates retain the same state.
  * The QR library and its renderers enter the page only when this function runs.
  */
 export async function createShareQr(links: ShareLinks) {

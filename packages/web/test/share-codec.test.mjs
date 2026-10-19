@@ -119,11 +119,21 @@ test('noncanonical and unknown link encodings do not open a preview', async (t) 
   await assert.rejects(codec.decode('br2.AA'));
 });
 
-test('large links and QR symbols retain the ZIP fallback', async (t) => {
+test('dense QR symbols render while oversized links retain the ZIP fallback', async (t) => {
   const codec = createShareCodec('worker.js');
   t.after(() => codec.dispose());
   assert.equal(await codec.encode(new Uint8Array(MAX_SHARE_ARCHIVE_BYTES + 1)), null);
   const payload = await codec.encode(zip);
+  const writer = new ZipWriter(new Uint8ArrayWriter(), { level: 0, useWebWorkers: false });
+  await writer.add('main.flatppl', new Uint8ArrayReader(new TextEncoder().encode('x = 1\n')));
+  const data = createHash('shake256', { outputLength: 1600 }).update('Dense FlatPPL share').digest();
+  await writer.add('data.bin', new Uint8ArrayReader(data));
+  const denseZip = await writer.close();
+  const denseLinks = makeShareLinks(await codec.encode(denseZip), 'https://live.flatppl.org/');
+  const denseQr = await createShareQr(denseLinks);
+  assert.ok(denseQr && denseQr.version > 25 && denseQr.version <= 40);
+  const shared = new URLSearchParams(new URL(denseQr.url).hash.slice(1)).get('share');
+  assert.deepEqual(await codec.decode(shared), denseZip);
   const links = makeShareLinks(payload, 'https://live.flatppl.org/', { target: 'x'.repeat(MAX_SHARE_URL_LENGTH) });
   assert.equal(links.tooLong, true);
   assert.equal(await createShareQr(links), null);
