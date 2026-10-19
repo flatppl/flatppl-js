@@ -1674,7 +1674,7 @@
         if (seq !== navigationSeq) return;
         const opened = await window.FlatPPLWebBundles.open(bytes, 'shared-model',
           (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')),
-          window.FlatPPLWebBundles.LINK_LIMITS);
+          { limits: window.FlatPPLWebBundles.LINK_LIMITS });
         if (seq !== navigationSeq) {
           if (!opened.reused) await window.FlatPPLWebBundles.discard(opened.path);
           return;
@@ -1709,7 +1709,7 @@
         if (seq !== navigationSeq) return;
         const opened = await window.FlatPPLWebBundles.open(bytes, basenameOf(archive),
           (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')),
-          window.FlatPPLWebBundles.LINK_LIMITS);
+          { limits: window.FlatPPLWebBundles.LINK_LIMITS });
         const requested = state.archive && state.model?.replace(/^(?:new|user)\/[^/]+\//, '');
         const folder = window.FlatPPLWebBundles.folder(opened.path);
         previewFolders.add(folder);

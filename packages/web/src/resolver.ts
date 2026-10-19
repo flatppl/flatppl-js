@@ -171,7 +171,8 @@
         (dep: string) => readBytes(dep, drafts, limits?.maxMemberBytes),
         // The graph also captures whole ZIP containers as files. Individual
         // members remain bounded by the mount and external reads above.
-        { strict: !!options.strict, limits: limits && { ...limits, maxMemberBytes: limits.maxArchiveBytes } });
+        { strict: !!options.strict, limits: limits?.maxArchiveBytes === undefined ? limits
+          : { ...limits, maxMemberBytes: limits.maxArchiveBytes } });
       return { ...graph, primaryUrl: path };
     }
     let source: string, binary = false;

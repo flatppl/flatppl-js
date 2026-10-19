@@ -10,6 +10,8 @@
     saved: boolean;
     budget: { bytes: number; entries: number };
     limits?: Record<string, number>;
+    /** An unlisted preview stays out of the file tree and the unsaved-work warning. */
+    listed: boolean;
   }
   interface ArchiveScope {
     id: string;
@@ -20,6 +22,8 @@
     depth: number;
   }
   const mounts = new Map<string, Mounted>();
+  /** Folders of previews still being mounted. */
+  const reserved = new Set<string>();
   const scopes = new Map<string, ArchiveScope>();
   const pendingScopes = new Map<string, Promise<ArchiveScope>>();
   const listeners = new Set<() => void>();
@@ -41,11 +45,13 @@
     return database;
   }
 
-  async function mount(folder: string, bytes: Uint8Array, saved: boolean, limits?: Record<string, number>): Promise<Mounted> {
+  /** Nested archives inherit the limits of their mount. */
+  async function mount(folder: string, bytes: Uint8Array, saved: boolean,
+    limits?: Record<string, number>, listed = true): Promise<Mounted> {
     const id = folder + '.flatppl.zip';
     const budget = { bytes: 0, entries: 0 };
     const archive = await engine().readArchive(bytes, { id, budget, limits });
-    const entry = { folder, id, bytes, archive, saved, budget, limits };
+    const entry = { folder, id, bytes, archive, saved, budget, limits, listed };
     mounts.set(folder, entry);
     try { await addScope(id, archive, entry, folder); }
     catch (error) { mounts.delete(folder); await archive.close(); throw error; }
@@ -139,7 +145,9 @@
       const member = engine().parseArchiveMemberId(id);
       if (!member) throw new Error('Bundle is not open: ' + id);
       const outer = await ensureScope(member.archiveId, graph);
-      if (outer.depth >= (outer.owner.limits?.maxDepth ?? engine().DEFAULT_LIMITS.maxDepth)) throw new Error('Bundle exceeds the archive nesting limit');
+      if (outer.depth >= (outer.owner.limits?.maxDepth ?? engine().DEFAULT_LIMITS.maxDepth)) {
+        throw new Error('Bundle exceeds the archive nesting limit');
+      }
       const path = await outer.archive.resolve(relativeMember(outer.archive, member.path));
       const directory = (await outer.archive.stat(path))?.directory;
       const archive = directory ? await outer.archive.subdirectory(path)
@@ -226,7 +234,7 @@
 
   function list(saved: boolean) {
     const files = new Map<string, any>();
-    for (const s of scopes.values()) if (s.owner.saved === saved) {
+    for (const s of scopes.values()) if (s.owner.saved === saved && s.owner.listed) {
       for (const [name, meta] of Object.entries(s.archive.entries) as [string, any][]) {
         if (!meta.directory) files.set(s.prefix + '/' + name,
           { path: s.prefix + '/' + name, title: name.split('/').pop(), bundle: true });
@@ -254,7 +262,7 @@
   function available(folder: string): boolean {
     const loose = scope.FlatPPLWebUserStore?.list() || [];
     const unsaved = scope.FlatPPLWebEphemeral?.list() || [];
-    return !mounts.has(folder) && ![...loose, ...unsaved].some(e =>
+    return !mounts.has(folder) && !reserved.has(folder) && ![...loose, ...unsaved].some(e =>
       e.path === folder || e.path.startsWith(folder + '/') || folder.startsWith(e.path + '/'));
   }
 
@@ -280,20 +288,23 @@
 
   /** Open a whole bundle without writes. Reuse only an unchanged saved copy. */
   async function open(bytes: Uint8Array, name: string, canReuse: (folder: string) => boolean = () => true,
-      limits?: Record<string, number>) {
+    options: { limits?: Record<string, number>; listed?: boolean } = {}) {
     let folder = 'new/' + nameOf(name);
     for (let n = 2; !available(folder); n++) folder = 'new/' + nameOf(name) + '-' + n;
-    const m = await mount(folder, bytes, false, limits);
+    reserved.add(folder);
+    let m: Mounted;
+    try { m = await mount(folder, bytes, false, options.limits, options.listed); }
+    finally { reserved.delete(folder); }
     try {
       for (const existing of mounts.values()) {
         if (existing.saved && canReuse(existing.folder) && await equal(existing.archive, m.archive)) {
           // Readers capture their limits. Replacing the field alone leaves
           // already-open nested archives using the local-upload budget.
-          if (limits) {
+          if (options.limits) {
             // Logical equality permits different ZIP compression. Reuse the
             // validated incoming representation, and keep old readers intact
             // until its replacement has mounted.
-            try { await mount(existing.folder, m.bytes, true, limits); }
+            try { await mount(existing.folder, m.bytes, true, options.limits); }
             catch (error) { mounts.set(existing.folder, existing); throw error; }
             await existing.archive.close();
             await release(existing);
@@ -365,7 +376,7 @@
       throw error;
     }
     if (previous) await release(previous);
-    const mounted = { folder, id: folder + '.flatppl.zip', bytes, archive, saved: true, budget };
+    const mounted = { folder, id: folder + '.flatppl.zip', bytes, archive, saved: true, budget, listed: true };
     mounts.set(folder, mounted);
     await addScope(mounted.id, archive, mounted, folder);
     changed();
@@ -407,11 +418,12 @@
 
   scope.FlatPPLWebBundles = { init, open, save, snapshot, read, canonical, displayPath, list, LINK_LIMITS, validateLink,
     registerGraph, select, draftFor,
-    limits: (path: string) => owner(path)?.limits,
     has: (path: string | null | undefined) => !!owner(path),
     folder: (path: string | null | undefined) => owner(path)?.folder,
+    /** The archive limits a path's bundle was opened with, if any. */
+    limits: (path: string | null | undefined) => owner(path)?.limits,
     isSaved: (path: string | null | undefined) => !!owner(path)?.saved,
-    hasUnsaved: () => Array.from(mounts.values()).some(m => !m.saved), discard, remove,
+    hasUnsaved: () => Array.from(mounts.values()).some(m => !m.saved && m.listed), discard, remove,
     subscribe(fn: () => void) { listeners.add(fn); return () => listeners.delete(fn); },
   };
 })(typeof window !== 'undefined' ? window : globalThis);
