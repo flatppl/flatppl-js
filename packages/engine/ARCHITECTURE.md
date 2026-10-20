@@ -462,7 +462,10 @@ singletons or fixed homogeneous vectors; fixed expressions and splat proofs cach
 once, while runtime vectors retain ordinary scoring.
 `buildLogPi` creates one private observation snapshot per scorer; summaries belong
 only to its storage regions, including typed subviews. Public `logDensityN` keeps
-caller observations live. Runtime parameters resolve on every call, Gamma/Beta boundaries
+caller observations live. Mixtures of IID components prepare the same region's
+reducers once while retaining one shared component choice; each reducer receives
+fresh parameters and preserves the fixed-trial check. Runtime parameters resolve
+on every call, Gamma/Beta boundaries
 and Poisson counts >=64 fall back, and logarithmic tilt scorers retain their own
 formulas. Custom density pipeline stages receive a disposable copy with reductions
 disabled, preserving hooks without exposing the retained snapshot.
