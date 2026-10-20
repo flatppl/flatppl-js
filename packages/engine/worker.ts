@@ -99,6 +99,7 @@ const samplerLib = require('./sampler.ts');
 const densityLib = require('./density.ts');
 const irShared = require('./ir-shared.ts');
 const valueLib = require('./value.ts');
+const { errorReply, errorFromReply } = require('./worker-errors.ts');
 
 // Resolve a `truncate(M, S)` set IR to a structural descriptor for
 // density.walkTruncate (`opts.parseSet`). The dumb worker has no `bindings`
@@ -291,14 +292,15 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
               return m;
             },
             sendWorker(m: any) {
-              const r = handle(m);
-              if (r && typeof r.then === 'function') return r;
-              return (r && r.type === 'error') ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+              return Promise.resolve(handle(m)).then((r: any) => {
+                if (r?.type === 'error') throw errorFromReply(r);
+                return r;
+              });
             },
           };
           return Promise.resolve(subCtx.getMeasure(msg.name)).then(
             (measure: any) => ({ type: 'mcmcResult', id, measure }),
-            (err: any) => ({ type: 'error', id, message: err && err.message ? err.message : String(err) }),
+            (err: any) => errorReply(err, id),
           );
         }
         case 'poolDiagnostics': {
@@ -903,12 +905,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           throw new Error(`unknown message type: ${msg.type}`);
       }
     } catch (err: any) {
-      return {
-        type: 'error',
-        id,
-        message: err && err.message ? err.message : String(err),
-        stack: err && err.stack ? err.stack : undefined,
-      };
+      return errorReply(err, id);
     }
   }
 

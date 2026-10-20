@@ -291,6 +291,9 @@ per-atom evaluation uses logical row slices to retain complex and layout tags.
 Worker sessions register retained input buffers at `init`/`setEnv`. An
 `evaluateN` result borrowing that storage is copied before transfer; owned
 outputs retain their zero-copy transfer path.
+`worker-errors.ts` carries clone-safe message, stack, code and limitation
+metadata through both handler catches, nested requests and viewer rejections.
+Hosts can distinguish unsupported routes from invalid models by code.
 
 Explicit likelihood inputs also retain shape and logical matrix views. CLM
 feeds one constant tensor per atom as `[N, ...shape]`, so the density worker's

@@ -61,6 +61,29 @@ function setModel(ctx, source) {
   ctx.measureCache = new Map();
 }
 
+test('worker rejections preserve model and limitation metadata for callers', async t => {
+  const wire = transport(t), ctx = context();
+  for (const metadata of [
+    { code: 'JOINT_FANOUT_INLINE_FN_COMPONENT' },
+    { code: 'ENGINE_LIMITATION', limitation: { construct: 'projection mass', route: 'density' } },
+  ]) {
+    const pending = sendWorker(ctx, { type: 'evaluate' });
+    const rejected = assert.rejects(pending, error => {
+      assert.equal(error.message, 'request refused');
+      assert.equal(error.stack, 'worker stack');
+      assert.equal(error.code, metadata.code);
+      assert.deepEqual(error.limitation, metadata.limitation);
+      return true;
+    });
+    await until(() => wire.workers[0]?.messages.some(m => m.type === 'evaluate'));
+    const w = wire.workers[0];
+    const request = w.messages.find(m => m.type === 'evaluate');
+    w.messages.splice(w.messages.indexOf(request), 1);
+    w.reply(request, { type: 'error', message: 'request refused', stack: 'worker stack', ...metadata });
+    await rejected;
+  }
+});
+
 test('late materialization cannot overwrite the replacement model cache', async t => {
   const wire = transport(t), ctx = context();
   const handler = createWorkerHandler();

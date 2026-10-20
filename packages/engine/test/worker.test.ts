@@ -1013,7 +1013,7 @@ test('profileN: logdensity mode evaluates Normal logpdf along mu axis', () => {
 // (continuing the entry-shim end-to-end tests from before)
 // =====================================================================
 
-test('entry shim: error replies survive postMessage', async () => {
+test('entry shim: plain, model and limitation errors survive postMessage', async () => {
   const entry = join(__dirname, '..', 'worker-entry.ts');
   const worker = new Worker(entry);
   try {
@@ -1025,6 +1025,29 @@ test('entry shim: error replies survive postMessage', async () => {
     assert.equal(reply.type, 'error');
     assert.equal(reply.id, 42);
     assert.match(reply.message, /unknown message type/);
+
+    // Build-time model refusal reaches the synchronous catch; the projection
+    // limitation is raised during asynchronous materialisation.
+    for (const [source, name, code, limitation] of [
+      [`K = joint(a = kernelof(Normal(mu = z, sigma = 1.0), z = z),
+          b = fn(z -> Normal(mu = z, sigma = 2.0)))
+y ~ K(3.0)`, 'y', 'JOINT_FANOUT_INLINE_FN_COMPONENT', undefined],
+      [`M = joint(aa = Normal(0, 1),
+          bb = iid(truncate(weighted(2, VonMises(0, 1)), interval(-1, 1)), 2))
+A = pushfwd(fn(get(_, ["aa"])), M)`, 'A', 'ENGINE_LIMITATION',
+      { construct: 'a structural projection over a component with an uncertified mass',
+        route: 'sampling and density' }],
+    ] as const) {
+      const error: any = await new Promise((resolve, reject) => {
+        worker.once('message', resolve);
+        worker.once('error', reject);
+        worker.postMessage({ type: 'mcmcRun', id: 43, source, name, sampleCount: 4, seed: 37 });
+      });
+      assert.equal(error.code, code);
+      assert.deepEqual(error.limitation, limitation);
+      assert.ok(error.message.length > 0);
+      assert.ok(error.stack.includes(error.message));
+    }
   } finally {
     await worker.terminate();
   }
