@@ -130,6 +130,28 @@ inBothModes('profile-compile: record projections preserve eager fields and speci
     }
   });
 
+test('profile-compile: record field names remain literal data', () => {
+  const name = 'a"\\\n}; throw new Error("unescaped"); //';
+  const record = { kind: 'call', op: 'record', fields: [
+    { name, value: ref('x') },
+    { name: 'tail', value: ref('y') },
+    { name, value: call('add', [ref('x'), lit(1)]) },
+  ] };
+  const envs = [{ x: -0, y: 2 }, { x: 3, y: -4 }];
+  assertSameAsInterpreter(record, envs, 'escaped field names');
+  assertSameAsInterpreter(call('get_field', [record, lit(name)]), envs, 'escaped projection');
+});
+
+test('profile-compile: records work when CSP blocks string compilation', (t: any) => {
+  t.mock.method(globalThis, 'Function', function () { throw new EvalError('CSP blocks unsafe-eval'); });
+  const record = { kind: 'call', op: 'record', fields: [
+    { name: 'a', value: ref('x') }, { name: 'b', value: ref('y') },
+  ] };
+  const envs = [{ x: 2, y: 3 }, { x: 2 }, {}];
+  assertSameAsInterpreter(record, envs, 'CSP record');
+  assertSameAsInterpreter(call('get_field', [record, lit('a')]), envs, 'CSP projection');
+});
+
 test('profile-compile: every specialised node kind matches the interpreter', () => {
   const envs = [{ x: 0.5, y: 2.0 }, { x: -3.25, y: 0.0 }, { x: 1e-9, y: 1e9 }];
   const cases: [string, any][] = [
