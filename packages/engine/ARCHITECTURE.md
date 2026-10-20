@@ -284,6 +284,8 @@ array nesting and logical matrix views. Observation resolution opts into
 vectors before scoring; other resolver callers retain the plain-JS default.
 Sampling aliases for named Dirac values retain the constructor during density
 expansion, rather than interpreting the aliased value as a measure.
+IID products preserve complex buffers in both array atoms and table columns;
+per-atom evaluation uses logical row slices to retain complex and layout tags.
 
 Explicit likelihood inputs also retain shape and logical matrix views. CLM
 feeds one constant tensor per atom as `[N, ...shape]`, so the density worker's

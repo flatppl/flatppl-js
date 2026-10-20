@@ -1536,6 +1536,10 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
           const innerElemShape = (fv.value && Array.isArray(fv.value.shape)
             && fv.value.shape.length > 1) ? fv.value.shape.slice(1) : [];
           columns[fk] = { shape: [k].concat(innerElemShape), data: fdata };
+          if (valueLib.isComplexValue(fv.value)) {
+            columns[fk].im = fv.value.im;
+            columns[fk].dtype = 'complex';
+          }
         }
         const table: any = { __table__: true, columns, nrows: k };
         return {
@@ -1591,21 +1595,19 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       const innerElemShape = (innerM.value && Array.isArray(innerM.value.shape)
         && innerM.value.shape.length > 1) ? innerM.value.shape.slice(1) : [];
       const perAtomDims = d.dims.concat(innerElemShape);
-      const value = {
+      const value: any = {
         shape: [N | 0].concat(perAtomDims), data: samples, outerRank: 1,
       };
-      return Object.assign(
-        empirical.arrayMeasure(samples, perAtomDims, foldedLW),
-        {
-          value: value,
-          logTotalmass,
-          // From the folded weights when there are any: k importance-weighted
-          // coordinates per atom leave far fewer effective atoms than N.
-          n_eff: foldedLW
-            ? empirical.effectiveSampleSize({ logWeights: foldedLW })
-            : N,
-        },
-      );
+      if (valueLib.isComplexValue(innerM.value)) {
+        value.im = innerM.value.im;
+        value.dtype = 'complex';
+      }
+      return measureFromValue(value, {
+        logWeights: foldedLW, logTotalmass,
+        // k importance-weighted coordinates may leave fewer effective atoms.
+        n_eff: foldedLW
+          ? empirical.effectiveSampleSize({ logWeights: foldedLW }) : N,
+      });
     });
   }
   const k = d.dims.reduce((p: any, n: any) => p * n, 1);

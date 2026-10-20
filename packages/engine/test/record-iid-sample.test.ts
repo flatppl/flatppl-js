@@ -116,3 +116,29 @@ s = iid(g, n)
   assert.deepEqual(result.columns.nested.shape, [0, 3, 2]);
   assert.equal(result.columns.nested.outerRank, 1);
 });
+
+test('iid preserves complex coordinates in array atoms and table columns', async () => {
+  // §06 iid is a product of the original atoms: the constant imaginary
+  // coordinate remains 2 regardless of the sampled real coordinate.
+  const { ctx } = ctxFor(`flatppl_compat = "0.1"
+M = pushfwd(fn(complex(_, 2)), Normal(0, 1))
+z ~ iid(M, 2)
+out = imag.(z)
+`, 3);
+  const z = await ctx.getMeasure('z');
+  assert.equal(z.value.dtype, 'complex');
+  assert.deepEqual(z.value.shape, [3, 2]);
+  assert.deepEqual(Array.from(z.value.im), [2, 2, 2, 2, 2, 2]);
+  assert.equal(z.imag, z.value.im);
+  const out = await ctx.getMeasure('out');
+  assert.deepEqual(Array.from(out.samples), [2, 2, 2, 2, 2, 2]);
+
+  const table = await sampleTable(`
+M = pushfwd(fn(complex(_, 2)), Normal(0, 1))
+g = joint(z = M)
+s = iid(g, 4)
+`, 's', 1);
+  assert.deepEqual(table.columns.z.shape, [4]);
+  assert.equal(table.columns.z.dtype, 'complex');
+  assert.deepEqual(Array.from(table.columns.z.im), [2, 2, 2, 2]);
+});
