@@ -7,6 +7,7 @@
     id: string;
     bytes: Uint8Array;
     archive: any;
+    standalone: boolean;
     saved: boolean;
     budget: { bytes: number; entries: number };
     limits?: Record<string, number>;
@@ -30,6 +31,14 @@
   let database: Promise<IDBDatabase> | undefined;
   const engine = () => scope.FlatPPLEngine;
   const changed = () => listeners.forEach(fn => fn());
+  const isStandalone = (archive: any) => Object.keys(archive.entries).length === 1
+    && archive.entries['main.flatppl'] && !archive.entries['main.flatppl'].directory
+    && !archive.entries['main.flatppl'].symlink;
+  const entryPath = (m: Mounted) => m.standalone ? m.folder + '.flatppl' : m.folder + '/' + m.archive.entryPath;
+  const memberPath = (s: ArchiveScope, path: string) => s.owner.standalone && s.id === s.owner.id && path === 'main.flatppl'
+    ? entryPath(s.owner) : s.prefix + '/' + path;
+  const relativePath = (s: ArchiveScope, path: string) => path === entryPath(s.owner) && s.owner.standalone
+    ? 'main.flatppl' : path.slice(s.prefix.length + 1);
   // URL previews have a smaller budget than deliberate local ZIP uploads.
   // Reserve 1 MiB for ZIP headers around at most 8 MiB of expanded members.
   const LINK_LIMITS = { maxArchiveBytes: 9 * 1024 ** 2, maxMemberBytes: 2 * 1024 ** 2,
@@ -52,7 +61,7 @@
     const id = folder + '.flatppl.zip';
     const budget = { bytes: 0, entries: 0 };
     const archive = await engine().readArchive(bytes, { id, budget, limits });
-    const entry = { folder, id, bytes, archive, saved, budget, limits, listed };
+    const entry = { folder, id, bytes, archive, standalone: !!isStandalone(archive), saved, budget, limits, listed };
     mounts.set(folder, entry);
     try { await addScope(id, archive, entry, folder); }
     catch (error) { mounts.delete(folder); await archive.close(); throw error; }
@@ -108,7 +117,8 @@
     if (!path) return undefined;
     let current = path;
     for (;;) {
-      const found = Array.from(mounts.values()).find(m => current === m.id || current.startsWith(m.folder + '/'));
+      const found = Array.from(mounts.values()).find(m => current === m.id || current === entryPath(m)
+        || current.startsWith(m.folder + '/'));
       if (found) return found;
       const member = engine().parseArchiveMemberId(current);
       if (!member) return undefined;
@@ -127,7 +137,8 @@
   }
 
   function displayedScope(path: string): ArchiveScope | undefined {
-    return Array.from(scopes.values()).filter(s => path.startsWith(s.prefix + '/'))
+    return Array.from(scopes.values()).filter(s => path.startsWith(s.prefix + '/')
+      || (s.owner.standalone && s.id === s.owner.id && path === entryPath(s.owner)))
       .sort((a, b) => b.prefix.length - a.prefix.length)[0];
   }
 
@@ -184,7 +195,7 @@
       }
       if (!boundary) {
         const meta = await s.archive.stat(path);
-        return !meta || meta.directory ? null : s.prefix + '/' + await s.archive.resolve(path);
+        return !meta || meta.directory ? null : memberPath(s, await s.archive.resolve(path));
       }
       const resolved = await s.archive.resolve(boundary.path);
       const suffix = path.slice(boundary.path.length + 1);
@@ -203,14 +214,14 @@
     const parsed = engine().parseArchiveMemberId(path);
     const s = parsed ? scopes.get(parsed.archiveId) : displayedScope(path);
     if (!s) return path;
-    const relative = parsed ? relativeMember(s.archive, parsed.path) : path.slice(s.prefix.length + 1);
+    const relative = parsed ? relativeMember(s.archive, parsed.path) : relativePath(s, path);
     return memberId(s, s.aliases.get(relative) || relative);
   }
 
   function displayPath(path: string): string {
     const member = engine().parseArchiveMemberId(path);
     const s = member && scopes.get(member.archiveId);
-    return s ? s.prefix + '/' + relativeMember(s.archive, member.path) : path;
+    return s ? memberPath(s, relativeMember(s.archive, member.path)) : path;
   }
 
   async function read(path: string): Promise<Uint8Array | null> {
@@ -220,7 +231,7 @@
     const member = engine().parseArchiveMemberId(path);
     const s = member ? await ensureScope(member.archiveId) : displayedScope(path);
     if (!s) return null;
-    const relative = member ? relativeMember(s.archive, member.path) : path.slice(s.prefix.length + 1);
+    const relative = member ? relativeMember(s.archive, member.path) : relativePath(s, path);
     const resolved = await s.archive.resolve(relative);
     if (relative !== resolved) s.aliases.set(relative, resolved);
     return s.archive.read(resolved);
@@ -230,8 +241,10 @@
     const files = new Map<string, any>();
     for (const s of scopes.values()) if (s.owner.saved === saved && s.owner.listed) {
       for (const [name, meta] of Object.entries(s.archive.entries) as [string, any][]) {
-        if (!meta.directory) files.set(s.prefix + '/' + name,
-          { path: s.prefix + '/' + name, title: name.split('/').pop(), bundle: true });
+        if (!meta.directory) {
+          const path = memberPath(s, name);
+          files.set(path, { path, title: path.split('/').pop(), bundle: !s.owner.standalone });
+        }
       }
     }
     return [...files.values()];
@@ -253,11 +266,15 @@
     return stem.replace(/[^\p{L}\p{N}_. -]/gu, '-').replace(/^\.+/, '').trim() || 'model';
   }
 
+  /** Reserve both display forms until decoding determines whether this is a file or folder. */
   function available(folder: string): boolean {
     const loose = scope.FlatPPLWebUserStore?.list() || [];
     const unsaved = scope.FlatPPLWebEphemeral?.list() || [];
-    return !mounts.has(folder) && !reserved.has(folder) && ![...loose, ...unsaved].some(e =>
-      e.path === folder || e.path.startsWith(folder + '/') || folder.startsWith(e.path + '/'));
+    const occupied = [...loose, ...unsaved].map(e => e.path).concat(
+      [...mounts.keys()], [...mounts.values()].filter(m => m.standalone).map(entryPath),
+      [...reserved], [...reserved].map(name => name + '.flatppl'));
+    return !occupied.some(path => [folder, folder + '.flatppl'].some(name =>
+      path === name || path.startsWith(name + '/') || name.startsWith(path + '/')));
   }
 
   /** Equality compares every member, independent of ZIP timestamps and compression. */
@@ -309,7 +326,7 @@
           mounts.delete(folder);
           scopes.delete(m.id);
           await m.archive.close();
-          return { path: existing.folder + '/' + existing.archive.entryPath, reused: true };
+          return { path: entryPath(existing), reused: true };
         } finally { reserved.delete(existing.folder); }
       }
     } catch (error) {
@@ -319,7 +336,7 @@
       throw error;
     }
     changed();
-    return { path: folder + '/' + m.archive.entryPath, reused: false };
+    return { path: entryPath(m), reused: false };
   }
 
   /** Capture all members and current drafts before compression or asynchronous Save. */
@@ -373,11 +390,12 @@
       throw error;
     }
     if (previous) await release(previous);
-    const mounted = { folder, id: folder + '.flatppl.zip', bytes, archive, saved: true, budget, listed: true };
+    const mounted = { folder, id: folder + '.flatppl.zip', bytes, archive,
+      standalone: !!isStandalone(archive), saved: true, budget, listed: true };
     mounts.set(folder, mounted);
     await addScope(mounted.id, archive, mounted, folder);
     changed();
-    return folder + '/' + archive.entryPath;
+    return entryPath(mounted);
   }
 
   async function discard(path: string) {
@@ -416,6 +434,7 @@
   scope.FlatPPLWebBundles = { init, open, save, snapshot, read, canonical, displayPath, list, LINK_LIMITS,
     registerGraph, select, draftFor,
     has: (path: string | null | undefined) => !!owner(path),
+    isStandalone: (path: string | null | undefined) => !!owner(path)?.standalone,
     folder: (path: string | null | undefined) => owner(path)?.folder,
     /** The archive limits a path's bundle was opened with, if any. */
     limits: (path: string | null | undefined) => owner(path)?.limits,

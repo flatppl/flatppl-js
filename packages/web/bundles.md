@@ -22,10 +22,12 @@ to the network. Nested ZIPs retain separate roots. Symbolic links must remain
 inside the root. Entry names cannot be absolute or contain `..` segments.
 Relative imports such as `modules/../data/observations.json` are valid within the root.
 
-Use **Tools → Download bundle** to collect a model's reachable imports and data.
+Use **Tools → Download with dependencies** to collect a model's reachable imports and data.
 Export adjusts import paths without changing the original files. Missing
 dependencies make export fail. Undeclared external input values are not captured.
 Opening an existing ZIP preserves all its files, including binary data.
+A standalone model downloads as one `.flatppl` file. A ZIP containing only a
+regular `main.flatppl` also opens as one file, without a bundle folder.
 
 **Share** is available in the web playground. It takes one snapshot of any model
 and its edited dependencies, including custom models. The link
@@ -33,10 +35,14 @@ holds the compressed bundle in the fragment. The browser keeps that fragment
 while navigating members. Reload restores the shared snapshot, not later edits.
 Save or download edits before closing the tab.
 
-Opening a link never saves a user file. Save asks for one folder name. Saved
-bundles use IndexedDB. A storage failure leaves the preview available for
+Opening a link never saves a user file. Standalone shares open as
+`shared-model.flatppl`; the link format does not retain the original filename.
+Save asks for a filename or, for a bundle, a folder name. Archives use IndexedDB
+even when shown as one file, retaining their import limits and confinement.
+A storage failure leaves the preview available for
 download. Existing loose files remain accessible. Two bundles count as equal
 only when their member paths, contents, and link metadata match.
+The header's Delete or Discard action removes the entire opened bundle, after confirmation.
 
 Links open a source preview. **Run preview** enables analysis, imports, plots,
 and other document views. Inspect unfamiliar files first: running a model can

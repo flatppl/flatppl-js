@@ -149,7 +149,7 @@
       update(input: any) {
         container.innerHTML = '';
         const note = document.createElement('p');
-        note.textContent = 'Shared bundle preview. Inspect the files before running. Models can use substantial time and memory.';
+        note.textContent = 'Shared model preview. Inspect the files before running. Models can use substantial time and memory.';
         const run = document.createElement('button');
         run.className = 'fp-btn';
         run.textContent = 'Run preview';

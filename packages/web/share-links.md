@@ -72,6 +72,8 @@ mounted reads retain the member and expansion limits. Before the playground
 hands out a link, it opens the link this way itself, selects its view and resolves
 the view's dependencies. A bundle that fails gets no link. Incoming links show
 source until the visitor chooses **Run preview**.
+A container holding only the regular `main.flatppl` opens as one file. This
+changes its presentation, not the archive rules or version-1 wire format.
 
 ## Versions
 
