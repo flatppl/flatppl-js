@@ -818,6 +818,9 @@ log` is the record. What survives as standing knowledge:
   `test/joint-coordinate.test.ts` pins zero covariance for fresh draws and retained
   identity for `lawof` components; `test/joint-shared-ancestor-density.test.ts`
   pins the density-side refusal for shapes that still share an ancestor.
+- **Conditional mixture masses stay in log space.** `normalize-mass.ts`
+  recursively combines superposition log masses with `logsumexp`, so a finite
+  common logweight cancels even when its exponential is not representable.
 - **A bare stochastic weight (`weighted(theta, m)`) is NOT statically rejected, by
   decision.** A blanket reject is spec-illegal: §10's HEP example writes
   `weighted(mu_sig * efficiency, …)` with a stochastic factor, and the
