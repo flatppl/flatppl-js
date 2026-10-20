@@ -21,6 +21,7 @@
  */
 import type { Ctx } from './types';
 import { engineBundle } from './bundle-context.js';
+import { errorFromReply } from '../../engine/worker-errors.js';
 
 export function ensureSamplerWorker(ctx: Ctx) {
   if (ctx.samplerWorker) return Promise.resolve(ctx.samplerWorker);
@@ -58,7 +59,7 @@ export function wireWorker(ctx: Ctx, w: any) {
     // (the final mcmcResult/error reply is what resolves it).
     if (reply.type === 'mcmcProgress') { if (p.onProgress) p.onProgress(reply); return; }
     ctx.pendingRequests.delete(reply.id);
-    if (reply.type === 'error') p.reject(new Error(reply.message || 'worker error'));
+    if (reply.type === 'error') p.reject(errorFromReply(reply));
     else p.resolve(reply);
   });
   w.addEventListener('error', function(e: any) {

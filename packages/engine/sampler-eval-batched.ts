@@ -1153,18 +1153,9 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
     const k = refNames[j];
     const v = refArrays[k];
     if (valueLib.isValue(v)) {
-      const shape = v.shape;
-      const data = v.data;
-      if (shape.length === 1) {
-        accessors[j] = (i: any) => data[i];
-      } else {
-        const tailDims = shape.slice(1);
-        const tailLen = tailDims.reduce((a: any, b: any) => a * b, 1);
-        accessors[j] = (i: any) => ({
-          shape: tailDims,
-          data: data.subarray(i * tailLen, (i + 1) * tailLen),
-        });
-      }
+      // Keep the atom's complex coordinates and layout tags across slicing.
+      const dense = valueLib._logicalDense(v);
+      accessors[j] = (i: number) => valueLib._sliceRow(dense, i);
     } else {
       // Back-compat: refArrays passed directly as a Float64Array (by
       // tests / external callers that haven't migrated to Values).

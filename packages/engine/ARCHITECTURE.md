@@ -282,8 +282,18 @@ optimizations. The Dirac primitive compares exact structural values, including
 array nesting and logical matrix views. Observation resolution opts into
 `resolveIRToValue`'s shape-preserving mode so matrices do not become nested
 vectors before scoring; other resolver callers retain the plain-JS default.
-Sampling aliases for named Dirac values retain the constructor during density
-expansion, rather than interpreting the aliased value as a measure.
+Dirac sampling keeps complete atoms in the worker's sample arrays until
+materialisation packs numeric cells or retains structured values. Named and
+inline atoms share this path; a fixed array atom acquires a leading sample
+axis rather than becoming a scalar ensemble of its elements.
+IID products preserve complex buffers in both array atoms and table columns;
+per-atom evaluation uses logical row slices to retain complex and layout tags.
+Worker sessions register retained input buffers at `init`/`setEnv`. An
+`evaluateN` result borrowing that storage is copied before transfer; owned
+outputs retain their zero-copy transfer path.
+`worker-errors.ts` carries clone-safe message, stack, code and limitation
+metadata through both handler catches, nested requests and viewer rejections.
+Hosts can distinguish unsupported routes from invalid models by code.
 
 Explicit likelihood inputs also retain shape and logical matrix views. CLM
 feeds one constant tensor per atom as `[N, ...shape]`, so the density worker's
@@ -822,6 +832,9 @@ log` is the record. What survives as standing knowledge:
   `test/joint-coordinate.test.ts` pins zero covariance for fresh draws and retained
   identity for `lawof` components; `test/joint-shared-ancestor-density.test.ts`
   pins the density-side refusal for shapes that still share an ancestor.
+- **Conditional mixture masses stay in log space.** `normalize-mass.ts`
+  recursively combines superposition log masses with `logsumexp`, so a finite
+  common logweight cancels even when its exponential is not representable.
 - **A bare stochastic weight (`weighted(theta, m)`) is NOT statically rejected, by
   decision.** A blanket reject is spec-illegal: §10's HEP example writes
   `weighted(mu_sig * efficiency, …)` with a stochastic factor, and the

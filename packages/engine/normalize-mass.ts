@@ -173,6 +173,18 @@ function logTotalMassExpr(ir: any): any {
       ? { kind: 'call', op: 'log', args: [weight] } : weight;
     return { kind: 'call', op: 'add', args: [factor, inner] };
   }
+  // §06 superpose adds masses. Keep the sum in log space as well as each
+  // factor: log(exp(theta) + exp(theta)) must remain theta + log(2),
+  // including finite theta whose exponential overflows or underflows.
+  const components = ir.op === 'superpose' ? ir.args
+    : ir.op === 'select' && ir.logweights == null && ir.selectorName == null
+      ? ir.branches : null;
+  if (Array.isArray(components) && components.length > 0) {
+    const terms = components.map(logTotalMassExpr);
+    if (terms.some((term: any) => term == null)) return null;
+    return { kind: 'call', op: 'logsumexp',
+      args: [{ kind: 'call', op: 'vector', args: terms }] };
+  }
   const mass = totalMassExpr(ir);
   return mass == null ? null : { kind: 'call', op: 'log', args: [mass] };
 }

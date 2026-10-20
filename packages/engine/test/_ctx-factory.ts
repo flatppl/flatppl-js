@@ -5,6 +5,7 @@
 
 const { processSource, orchestrator, materialiser } = require('..');
 const { createWorkerHandler } = require('../worker.ts');
+const { errorFromReply } = require('../worker-errors.ts');
 
 const SEED = 0xBA5E;
 
@@ -33,10 +34,10 @@ function ctxFor(src: string, N: number, opts?: any) {
       return m;
     },
     sendWorker: (m: any) => {
-      const r = w.handle(m);
-      return r && r.type === 'error'
-        ? Promise.reject(new Error(r.message))
-        : Promise.resolve(r);
+      return Promise.resolve(w.handle(m)).then((r: any) => {
+        if (r?.type === 'error') throw errorFromReply(r);
+        return r;
+      });
     },
   };
   return { proc, ctx };

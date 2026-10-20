@@ -1077,12 +1077,43 @@ function measureFromValue(v: any, extras: any) {
  * handling the real / complex and scalar-atom / vector-atom cases.
  */
 function measureFromReply(reply: any, count: any, extras: any) {
+  if (Array.isArray(reply.samples)) return measureFromAtoms(reply.samples, extras);
   const dims = reply.dims;
   const shape = dims ? [count | 0].concat(dims) : [reply.samples.length];
   const v = reply.imag
     ? valueLib.complexValue(reply.samples, reply.imag, shape)
     : { shape: shape, data: reply.samples };
   return measureFromValue(v, extras);
+}
+
+/** §06 Dirac samples whole atoms. Pack numeric cells with their intrinsic
+ * shape, expose record fields, and retain other variates as per-atom values
+ * for the evaluator (strings, tables and heterogeneous arrays are not f64).
+ */
+function measureFromAtoms(atoms: any[], extras: any = {}) {
+  const cells = atoms.map(v => {
+    if (valueLib.isValue(v)) return valueLib._logicalDense(v);
+    if (v && typeof v.re === 'number' && typeof v.im === 'number'
+        && Object.keys(v).length === 2) return valueLib.asValue(v);
+    return v;
+  });
+  const packed = require('./broadcast-shape.ts').tryStackBroadcastCells(cells, [atoms.length]);
+  if (packed) {
+    if (cells[0]?.outerRank) packed.outerRank = cells[0].outerRank + 1;
+    return measureFromValue(packed, extras);
+  }
+  const first = atoms[0];
+  if (first && typeof first === 'object' && !Array.isArray(first)
+      && !ArrayBuffer.isView(first) && !valueLib.isValue(first) && !first.__table__) {
+    const fields: any = {};
+    for (const key of Object.keys(first)) {
+      fields[key] = measureFromAtoms(atoms.map(v => v[key]));
+    }
+    return Object.assign(empirical.recordMeasure(fields, extras.logWeights),
+      { value: atoms, logTotalmass: 0, n_eff: atoms.length }, extras);
+  }
+  return { samples: atoms, value: atoms, logWeights: null,
+    logTotalmass: 0, n_eff: atoms.length, ...extras };
 }
 
 /**
@@ -1435,6 +1466,7 @@ module.exports = {
   scalarMeasureN,
   measureFromValue,
   measureFromReply,
+  measureFromAtoms,
   setBoundsForMat,
   elemScalarAtJ,
   perAtomColumnAtJ,

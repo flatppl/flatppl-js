@@ -353,7 +353,12 @@ function makeBulkSampler(
   // rejection samplers refill on demand.
   const prng = makeBulkUniformPrngAdapter(state, n);
   const sampler = entry.randFn.factory(...params, { prng });
-  const dest = out ?? new Float64Array(n);
+  // §06 Dirac admits any variate type. Only real scalar atoms fit the
+  // numeric leaf buffer; preserve every other atom for structured packing.
+  const point = params[0];
+  const dest = measureIR.op === 'Dirac'
+    && typeof point !== 'number' && typeof point !== 'boolean'
+    ? new Array(n) : (out ?? new Float64Array(n));
   for (let i = 0; i < n; i++) dest[i] = sampler();
   return { samples: dest, state: prng.getState() };
 }
@@ -398,6 +403,9 @@ function sampleLeafN(state: any, distIR: any, env: any, dims: number[]) {
   // shape-explicit Value form is reserved for rank ≥ 2. Matches the
   // historic per-draw walkIid output so consumers index it unchanged.
   if (dims.length === 1) return { value: Array.from(r.samples), state: r.state };
+  if (Array.isArray(r.samples)) {
+    return { value: _reshapeNested(r.samples, dims), state: r.state };
+  }
   // Multi-axis: an explicit rank-≥2 array as a shape-explicit Value
   // (spec §03 "vectors of vectors are not matrices" — flat storage + a
   // dims descriptor; the form downstream mul/add/sub recognise).

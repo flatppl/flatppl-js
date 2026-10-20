@@ -62,6 +62,30 @@ posterior = bayesupdate(L, lawof(theta))
   }
 });
 
+test('conditional mixtures cancel a common extreme logweight in scoring and sampling', async () => {
+  // Cancelling exp(theta) leaves an equal mixture at every finite theta.
+  const exact = -0.5 * Math.log(2 * Math.PI) - 0.125
+    + Math.log1p(Math.exp(-45)) - Math.LN2;
+  for (const offset of [710, -750]) {
+    const { ctx } = ctxFor(`
+theta ~ Uniform(interval(${offset - 1}, ${offset + 1}))
+M = normalize(superpose(logweighted(theta, Normal(0,1)),
+                        logweighted(theta, Normal(10,1))))
+y ~ M
+K = kernelof(record(y=y), theta=theta)
+L = likelihoodof(K, record(y=0.5))
+posterior = bayesupdate(L, lawof(theta))
+`, 8);
+    const { likOf } = await buildLogPi(ctx, ctx.derivations.posterior);
+    assert.ok(Math.abs(likOf({ theta: offset }) - exact) < 1e-12);
+    const m = await ctx.getMeasure('M');
+    assert.ok(Array.from(m.samples).every(Number.isFinite));
+    for (const weight of m.logWeights || []) {
+      assert.ok(Math.abs(weight + Math.log(8)) < 1e-12);
+    }
+  }
+});
+
 test('logweight scaling permits a zero weight at the median', async () => {
   // E[X²]=1 for standard Normal, so x²*phi(x) already has mass one.
   const exact = -0.5 * Math.log(2 * Math.PI) - 0.5 * 0.5 ** 2 + Math.log(0.25);

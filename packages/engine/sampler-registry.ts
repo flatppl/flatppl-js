@@ -110,9 +110,9 @@ const randDirac = {
     const args = Array.prototype.slice.call(arguments);
     if (args.length === 1 && args[0] && typeof args[0] === 'object'
         && ('prng' in args[0] || 'seed' in args[0])) {
-      return function parametricDiracSampler(value: any) { return +value; };
+      return function parametricDiracSampler(value: any) { return value; };
     }
-    const value = +args[0];
+    const value = args[0];
     return function staticDiracSampler() { return value; };
   },
 };

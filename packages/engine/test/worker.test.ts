@@ -326,6 +326,52 @@ test('entry shim: full round-trip via worker_threads (init, sample, density, dis
   }
 });
 
+test('entry shim: returned views leave retained session data intact', async () => {
+  const worker = new Worker(join(__dirname, '..', 'worker-entry.ts'));
+  let id = 0;
+  const rpc = (msg: any): Promise<any> => new Promise((resolve, reject) => {
+    const onMessage = (reply: any) => { worker.off('error', onError); resolve(reply); };
+    const onError = (error: Error) => { worker.off('message', onMessage); reject(error); };
+    worker.once('message', onMessage);
+    worker.once('error', onError);
+    worker.postMessage({ ...msg, id: ++id });
+  });
+  const data = refIR('data');
+  const sum = { kind: 'call', op: 'sum', args: [data] };
+  try {
+    await rpc({ type: 'init', env: { data: valueLib.asValue([1, 2, 3]) } });
+    const result = await rpc({ type: 'evaluateN', ir: data, count: 3 });
+    assert.deepEqual(Array.from(result.samples), [1, 2, 3]);
+    assert.equal((await rpc({ type: 'evaluate', ir: sum })).value, 6);
+
+    // A view's identity differs from its retained backing buffer. Registration
+    // follows nested inputs on setEnv without walking typed-array elements.
+    const backing = Float64Array.of(99, 4, 5, 6, 99);
+    const view = { shape: [3], data: backing.subarray(1, 4) };
+    const nested: any = { table: { __table__: true, columns: { x: view }, nrows: 3 } };
+    nested.self = nested;
+    await rpc({ type: 'setEnv', env: { nested, data: view } });
+    const copied = await rpc({ type: 'evaluateN', ir: data, count: 3 });
+    assert.deepEqual(Array.from(copied.samples), [4, 5, 6]);
+    assert.equal((await rpc({ type: 'evaluate', ir: sum })).value, 15);
+
+    // An ordinary allocated result still crosses the transfer path correctly.
+    const doubled = await rpc({ type: 'evaluateN',
+      ir: { kind: 'call', op: 'add', args: [data, data] }, count: 3 });
+    assert.deepEqual(Array.from(doubled.samples), [8, 10, 12]);
+    assert.equal((await rpc({ type: 'evaluate', ir: sum })).value, 15);
+
+    // Public materialisation can return a fixed input through a pushforward.
+    const { ctxFor } = require('./_ctx-factory.ts');
+    const { ctx } = ctxFor('data = [1, 2, 3]\nf = x -> data\nM = pushfwd(f, Normal(0, 1))', 3);
+    ctx.sendWorker = rpc;
+    await ctx.getMeasure('M');
+    assert.equal((await rpc({ type: 'evaluate', ir: sum })).value, 6);
+  } finally {
+    await worker.terminate();
+  }
+});
+
 // =====================================================================
 // sampleN — N-sample sampling with per-i ref env. The orchestrator's
 // sample-step IRs go through this primitive on the main thread; tests
@@ -967,7 +1013,7 @@ test('profileN: logdensity mode evaluates Normal logpdf along mu axis', () => {
 // (continuing the entry-shim end-to-end tests from before)
 // =====================================================================
 
-test('entry shim: error replies survive postMessage', async () => {
+test('entry shim: plain, model and limitation errors survive postMessage', async () => {
   const entry = join(__dirname, '..', 'worker-entry.ts');
   const worker = new Worker(entry);
   try {
@@ -979,6 +1025,29 @@ test('entry shim: error replies survive postMessage', async () => {
     assert.equal(reply.type, 'error');
     assert.equal(reply.id, 42);
     assert.match(reply.message, /unknown message type/);
+
+    // Build-time model refusal reaches the synchronous catch; the projection
+    // limitation is raised during asynchronous materialisation.
+    for (const [source, name, code, limitation] of [
+      [`K = joint(a = kernelof(Normal(mu = z, sigma = 1.0), z = z),
+          b = fn(z -> Normal(mu = z, sigma = 2.0)))
+y ~ K(3.0)`, 'y', 'JOINT_FANOUT_INLINE_FN_COMPONENT', undefined],
+      [`M = joint(aa = Normal(0, 1),
+          bb = iid(truncate(weighted(2, VonMises(0, 1)), interval(-1, 1)), 2))
+A = pushfwd(fn(get(_, ["aa"])), M)`, 'A', 'ENGINE_LIMITATION',
+      { construct: 'a structural projection over a component with an uncertified mass',
+        route: 'sampling and density' }],
+    ] as const) {
+      const error: any = await new Promise((resolve, reject) => {
+        worker.once('message', resolve);
+        worker.once('error', reject);
+        worker.postMessage({ type: 'mcmcRun', id: 43, source, name, sampleCount: 4, seed: 37 });
+      });
+      assert.equal(error.code, code);
+      assert.deepEqual(error.limitation, limitation);
+      assert.ok(error.message.length > 0);
+      assert.ok(error.stack.includes(error.message));
+    }
   } finally {
     await worker.terminate();
   }

@@ -3060,21 +3060,13 @@ test('Dirac: leafSampleIR returns the Dirac IR for measure-alias bindings', () =
 // Dirac(value = e) so downstream consumers see one shape per
 // equivalence class.
 
-test('Dirac canonicalisation: positional Dirac with binding ref classifies as alias', () => {
-  // m = Dirac(some_lit) — positional. classifyDerivation
-  // canonicalises to Dirac(value = some_lit), then promotes the
-  // ref-to-binding case to 'alias' (same equivalence class as
-  // lawof(ref) — the binding's per-atom value is the ref's
-  // per-atom value, so getMeasure can short-circuit through the
-  // alias chain without invoking the sampler).
-  const { bindings } = processSource(`
+test('Dirac canonicalisation preserves a named scalar atom', async () => {
+  const { ctxFor } = require('./_ctx-factory.ts');
+  const { ctx } = ctxFor(`
 some_lit = 5.0
 m = Dirac(some_lit)
-`);
-  const { derivations } = buildDerivations(bindings);
-  assert.ok(derivations.m, 'm derivable');
-  assert.equal(derivations.m.kind, 'alias');
-  assert.equal(derivations.m.from, 'some_lit');
+`, 3);
+  assert.deepEqual(Array.from((await ctx.getMeasure('m')).samples), [5, 5, 5]);
 });
 
 test('Dirac canonicalisation: positional Dirac with literal value stays a sample step', () => {

@@ -42,11 +42,12 @@
 //        Single-shot scalar eval — used by tests.
 //
 //   sampleN { distIR, count, refArrays?, seed? }
-//        → samples { samples: Float64Array }
+//        → samples { samples: Float64Array | any[] }
 //        N-sample draw with per-i env: each row of refArrays supplies
 //        the ref values for one Monte Carlo draw. The orchestrator's
 //        sample-step IRs feed into here. `seed` (if provided) re-keys
 //        Philox before drawing so per-binding seeding is deterministic.
+//        Non-real Dirac atoms stay whole in an array until materialisation.
 //
 //        `seed` accepts either a uint32 (legacy hosts) or a uint32-pair
 //        `[k0, k1]` PhiloxKey (post commit 2). The handler routes both
@@ -98,6 +99,7 @@ const samplerLib = require('./sampler.ts');
 const densityLib = require('./density.ts');
 const irShared = require('./ir-shared.ts');
 const valueLib = require('./value.ts');
+const { errorReply, errorFromReply } = require('./worker-errors.ts');
 
 // Resolve a `truncate(M, S)` set IR to a structural descriptor for
 // density.walkTruncate (`opts.parseSet`). The dumb worker has no `bindings`
@@ -193,6 +195,22 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
   // call seed and doesn't touch this.
   let philox: any = _stateFromSeed(opts.seed);
   let env: Record<string, unknown> | null = { ...(opts.env ?? {}) };
+  let retainedBuffers = new WeakSet<ArrayBufferLike>();
+  // Values, records and tables may alias storage (including subarray views).
+  // Index buffers when inputs enter the session; replying needs only an O(1)
+  // ownership check. Never walk numeric elements or rescan the merged env.
+  function retainBuffers(value: any, seen = new WeakSet<object>()) {
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    if (ArrayBuffer.isView(value)) {
+      retainedBuffers.add(value.buffer);
+    } else if (value instanceof ArrayBuffer) {
+      retainedBuffers.add(value);
+    } else {
+      for (const child of Object.values(value)) retainBuffers(child, seen);
+    }
+  }
+  retainBuffers(env);
   // Optional progress channel: worker-entry wires this to postMessage so a
   // long mcmcRun can stream {type:'mcmcProgress', id, frac, phase} to the host
   // mid-computation (Web Workers deliver these while the handler is still busy).
@@ -216,6 +234,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
         case 'init': {
           philox = _stateFromSeed(msg.seed);
           env = { ...(msg.env ?? {}) };
+          retainedBuffers = new WeakSet();
+          retainBuffers(env);
           return { type: 'ready', id };
         }
         case 'mcmcRun': {
@@ -272,14 +292,15 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
               return m;
             },
             sendWorker(m: any) {
-              const r = handle(m);
-              if (r && typeof r.then === 'function') return r;
-              return (r && r.type === 'error') ? Promise.reject(new Error(r.message)) : Promise.resolve(r);
+              return Promise.resolve(handle(m)).then((r: any) => {
+                if (r?.type === 'error') throw errorFromReply(r);
+                return r;
+              });
             },
           };
           return Promise.resolve(subCtx.getMeasure(msg.name)).then(
             (measure: any) => ({ type: 'mcmcResult', id, measure }),
-            (err: any) => ({ type: 'error', id, message: err && err.message ? err.message : String(err) }),
+            (err: any) => errorReply(err, id),
           );
         }
         case 'poolDiagnostics': {
@@ -298,6 +319,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
         }
         case 'setEnv': {
           env = msg.merge === false ? { ...(msg.env ?? {}) } : { ...env, ...(msg.env ?? {}) };
+          if (msg.merge === false) retainedBuffers = new WeakSet();
+          retainBuffers(msg.env);
           return { type: 'ok', id };
         }
         case 'setSeed': {
@@ -371,7 +394,10 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           const refKeys = Object.keys(refArrays);
           let state = msg.seed != null ? _stateFromSeed(msg.seed) : philox;
           const total = count * repeat;
-          const out = new Float64Array(total);
+          // A Dirac's atom need not be a real scalar. The parametric path
+          // preserves whole values; the static sampler selects its own buffer.
+          let out: any = msg.ir.op === 'Dirac' && refKeys.length
+            ? new Array(total) : new Float64Array(total);
 
           if (refKeys.length === 0) {
             // Static-params fast path. Commit 3 (RNG split, Option C)
@@ -395,8 +421,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // 1)`) resolve at param-resolution time rather than failing
             // as unbound.
             const r = samplerLib.makeBulkSampler(state, msg.ir, env, total, out);
-            // makeBulkSampler writes into `out` when supplied, so we
-            // don't need to copy r.samples back — they share storage.
+            out = r.samples;
             state = r.state;
           } else {
             // Per-i-params path: at least one kwarg references an upstream
@@ -523,6 +548,10 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           // The main thread is responsible for plumbing the parent's
           // logWeights through; the worker just emits null here and
           // lets that wrap-up happen at the cache boundary.
+          // transferablesOf moves the result buffer out of this worker. A
+          // borrowed env result must own a copy before that move, or the next
+          // request observes detached fixed data. Fresh results stay zero-copy.
+          if (retainedBuffers.has(out.buffer)) out = out.slice();
           const reply: any = { type: 'samples', id, samples: out, logWeights: null };
           if (dims) reply.dims = dims;
           if (imag) reply.imag = imag;
@@ -876,12 +905,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           throw new Error(`unknown message type: ${msg.type}`);
       }
     } catch (err: any) {
-      return {
-        type: 'error',
-        id,
-        message: err && err.message ? err.message : String(err),
-        stack: err && err.stack ? err.stack : undefined,
-      };
+      return errorReply(err, id);
     }
   }
 
