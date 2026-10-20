@@ -72,15 +72,15 @@ result = broadcast(f, x = [0.0, 1.0])
   assert.deepEqual(asArray(result.value), [1, Math.E]);
 });
 
-test('functionof retains shared draws inside a reference-only vector', async () => {
+test('functionof retains repeated explicit inputs inside a reference-only vector', async () => {
   const { ctx } = makeMatCtx(`
 z ~ Normal(0.0, 1.0)
 x = elementof(reals)
 v = exp.([x, z, z])
-f = functionof(v[1] + v[2], x = x)
-g = functionof(v[1] + (v[2] - v[3]), x = x)
-result = broadcast(f, x = [0.0, 1.0])
-cancelled = broadcast(g, x = [0.0, 1.0])
+f = functionof(v[1] + v[2], x = x, z = z)
+g = functionof(v[1] + (v[2] - v[3]), x = x, z = z)
+result = broadcast(f, x = [0.0, 1.0], z = z)
+cancelled = broadcast(g, x = [0.0, 1.0], z = z)
 `, { sampleCount: 32, rootSeed: 42 });
   const z = (await ctx.getMeasure('z')).samples;
   const result = (await ctx.getMeasure('result')).samples;

@@ -68,10 +68,10 @@ test('iid refuses a captured ancestor also used as an external wrapper input', a
   const { ctx } = makeMatCtx(`
 z ~ Normal(0.0, 2.0)
 x ~ Normal(z, 0.6)
-M = iid(pushfwd(fn(0.0 * _ + z), lawof(x)), 2)
+M = iid(locscale(lawof(x), z, 1), 2)
 `, { sampleCount: 256, rootSeed: 717 });
-  // The output is Dirac(parent z). One cache cannot represent both parent z
-  // and its captured copies. Refuse instead of returning independent z's.
+  // The shift reads parent z while the base law contains its absorbed copy.
+  // This intermediate tree retains the existing IID overlap refusal.
   await assert.rejects(() => ctx.getMeasure('M'),
     (e: any) => assertBothRoles(e, 'z'));
 });
@@ -81,7 +81,7 @@ test('iid detects captured overlap through an external value expression', async 
 z ~ Normal(0.0, 2.0)
 x ~ Normal(z, 0.6)
 offset = z + 1.0
-M = iid(pushfwd(fn(0.0 * _ + offset), lawof(x)), 2)
+M = iid(locscale(lawof(x), offset, 1), 2)
 `, { sampleCount: 256, rootSeed: 717 });
   await assert.rejects(() => ctx.getMeasure('M'),
     (e: any) => assertBothRoles(e, 'z'));

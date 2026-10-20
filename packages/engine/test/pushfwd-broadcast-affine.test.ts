@@ -7,8 +7,9 @@ const { ctxFor } = require('./_ctx-factory.ts');
 const SOURCE = `
 mu ~ Normal(0, 1)
 scale ~ Uniform(interval(1, 3))
-ls(x) = mu .- (x .* scale)
-theta ~ pushfwd(ls, iid(Normal(0.5, 0.7), 3))
+location = [mu, mu, mu]
+transform = -scale .* eye(3)
+theta ~ locscale(iid(Normal(0.5, 0.7), 3), location, transform)
 prior = lawof(record(mu = mu, scale = scale, theta = theta))
 `;
 
@@ -42,7 +43,7 @@ lp = logdensityof(M, [0, 1, 3])
   assert.ok(Math.abs(lp.samples[0] - expected) < 1e-11);
 });
 
-test('broadcast affine density keeps shared latent parameters and the full Jacobian', async () => {
+test('affine density keeps explicit live parameters and the full Jacobian', async () => {
   // An off-centre base distinguishes mu - scale*x from mu + scale*x.
   for (const [mu, scale] of [[1, 2], [-0.5, 1.5]]) {
     const point = [0, 1, 3];
@@ -58,9 +59,10 @@ lp = logdensityof(prior, record(mu = ${mu}, scale = ${scale}, theta = [0, 1, 3])
   }
 });
 
-test('broadcast affine draws retain their shared location and scale', async () => {
+test('affine draws retain their explicit shared location and scale', async () => {
   const N = 2048;
-  const { ctx } = ctxFor(SOURCE, N);
+  const { proc, ctx } = ctxFor(SOURCE, N);
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const prior = await ctx.getMeasure('prior');
   const mu = prior.fields.mu.samples;
   const scale = prior.fields.scale.samples;
@@ -80,11 +82,13 @@ test('broadcast affine draws retain their shared location and scale', async () =
 });
 
 test('an outer shift stays shared when the iid base reifies the same node', async () => {
-  const { ctx } = ctxFor(`
+  const { proc, ctx } = ctxFor(`
 mu ~ Normal(0, 1)
-theta ~ pushfwd(x -> x .+ mu, iid(lawof(mu), 2))
+location = [mu, mu]
+theta ~ locscale(iid(lawof(mu), 2), location, [[1, 0], [0, 1]])
 prior = lawof(record(mu = mu, theta = theta))
 `, 2048);
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const prior = await ctx.getMeasure('prior');
   const mu = prior.fields.mu.samples;
   const theta = prior.fields.theta.value.data;
@@ -98,13 +102,15 @@ prior = lawof(record(mu = mu, theta = theta))
   assert.ok(Math.abs(squares / mu.length - 2) < 0.2);
 });
 
-test('a reified iid affine density preserves the outer captured parameter', async () => {
-  const { ctx } = ctxFor(`
+test('a reified iid affine density preserves the explicit outer parameter', async () => {
+  const { proc, ctx } = ctxFor(`
 mu ~ Normal(0, 1)
-theta ~ pushfwd(x -> (2 .* x) .+ mu, iid(lawof(mu), 2))
+location = [mu, mu]
+theta ~ locscale(iid(lawof(mu), 2), location, [[2, 0], [0, 2]])
 prior = lawof(record(mu = mu, theta = theta))
 lp = logdensityof(prior, record(mu = 1, theta = [0, 1]))
 `, 1);
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const lp = await ctx.getMeasure('lp');
   const expected = normalLogpdf(1, 0, 1)
     + normalLogpdf(0, 1, 2) + normalLogpdf(1, 1, 2);

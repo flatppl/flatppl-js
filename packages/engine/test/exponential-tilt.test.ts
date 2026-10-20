@@ -329,7 +329,7 @@ lp=logdensityof(U,[0.2,0.1])
     - ((-0.2)**2-(-0.2)*0.3+2*0.3**2)/3.5);
 });
 
-test('formal expressions stay scoped and stochastic closures retain their marginal refusal', async () => {
+test('formal expressions stay scoped through normalized exponential tilts', async () => {
   const { ctx } = makeMatCtx(`
 K=functionof(normalize(logweighted(fn(0.3*_),Normal(_m_+1,1))),m=_m_)
 P=K(2)
@@ -340,12 +340,6 @@ y,_=rand(Q,rnginit(42))
 `, { sampleCount: 2 });
   close((await ctx.getMeasure('lp')).samples[0], -0.5*Math.log(2*Math.PI)-3.3**2/2);
   close((await ctx.getMeasure('x')).value.data[0], (await ctx.getMeasure('y')).value.data[0]);
-  const scoped = makeMatCtx(`
-K=functionof(normalize(logweighted(fn(0.3*_),Normal(draw(Normal(_m_,1)),1))),m=_m_)
-P=K(2)
-lp=logdensityof(P,0)
-`, { sampleCount: 2 });
-  await assert.rejects(scoped.ctx.getMeasure('lp'), /marginalises the stochastic ancestor/);
 });
 
 

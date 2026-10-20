@@ -1653,7 +1653,7 @@ function scalarJointPlan(ir: any): any {
     if (entries.every((entry: any) => !entry.customResolveParams)) {
       const args = leaves.flatMap((leaf: any) =>
         (leaf.args || []).concat(Object.values(leaf.kwargs || {})));
-      plan = { entries,
+      plan = { entries, logpdfs: leaves.map((leaf: any) => exponentialTiltLogpdf(leaf, leaf.op)),
         body: samplerLib.compileProfileBody({ kind: 'call', op: 'vector', args }) };
     }
   }
@@ -1665,7 +1665,7 @@ function scalarJointPlan(ir: any): any {
  *  atom. Repeated suffix and growing overlay copies otherwise cost O(n²).
  *  A new memo generation per leaf preserves changes to the threaded s{i}
  *  names, including names that also occur in a captured environment. */
-function walkScalarJoint(ir: any, plan: any, value: any[], refArrays: any,
+function walkScalarJoint(ir: any, plan: any, value: any[] | Float64Array, refArrays: any,
     N: number, acc: Float64Array, baseEnv: any, overlay: any): any {
   const refNames = Object.keys(refArrays);
   const leaves = ir.args;
@@ -1682,7 +1682,7 @@ function walkScalarJoint(ir: any, plan: any, value: any[], refArrays: any,
       for (let j = 0; j < leaves.length; j++) {
         plan.body.nextPoint();
         const params = samplerLib.resolveParams(leaves[j], plan.entries[j], env);
-        const lp = densityPrims.builtinLogdensityofPositional(leaves[j].op, params, +value[j]);
+        const lp = plan.logpdfs[j](leaves[j].op, params, +value[j], env);
         // Constant atoms share parameter evaluation, but still add each term
         // separately so an enclosing accumulator keeps its rounding order.
         if (atoms === N) acc[i] += lp;
@@ -1774,12 +1774,16 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
   // overlay mechanism, positionally. Threading extra `s{i}` keys is
   // inert for independent joints (they never ref them).
   if (Array.isArray(ir.args)) {
-    // The fused scalar plan uses JS arrays; other carriers retain the
-    // general walker and its observation threading below.
+    // A fully consumed dense real vector can lend its storage to the same
+    // scalar plan. Prefix Values retain the walker's shaped remainder.
+    const scalarValues = valueLib.isValue(value)
+      && value.shape.length === 1 && value.shape[0] === ir.args.length
+      && value.data.length === value.shape[0] && !value.im && valueLib.isDenseStruct(value)
+      ? value.data : value;
     const plan = getOptimization('density.scalarJoint')
-      && Array.isArray(value) && value.length >= ir.args.length
+      && (scalarValues !== value || Array.isArray(value) && value.length >= ir.args.length)
       && !opts.pointsBatched ? scalarJointPlan(ir) : null;
-    if (plan) return walkScalarJoint(ir, plan, value, refArrays, N, acc, baseEnv, overlay);
+    if (plan) return walkScalarJoint(ir, plan, scalarValues, refArrays, N, acc, baseEnv, overlay);
     let cur = value;
     let curOverlay = overlay;
     for (let i = 0; i < ir.args.length; i++) {
@@ -2916,7 +2920,7 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     paramVals[pi] = v;
     // §04 collection axes belong to the value. A leading dimension equal
     // to N is not evidence of an atom axis; only per-atom references are.
-    const usesAtom = !fixed && _exprUsesAny(pIR, refNames);
+    const usesAtom = !fixed && _preparedExprUsesAny(pIR, refNames, opts);
     perAtomFlags[pi] = usesAtom;
     paramUsesAtom[pi] = usesAtom;
     if (sharedParams) sharedParams[pi] = fixed?.scalar !== undefined
@@ -3066,7 +3070,7 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
     const pIR = paramIRs[pi];
     const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
     paramVals[pi] = v;
-    const usesAtom = _exprUsesAny(pIR, refNames);
+    const usesAtom = _preparedExprUsesAny(pIR, refNames, opts);
     paramUsesAtom[pi] = usesAtom;
     if (usesAtom) anyAtomDep = true;
     accessors[pi] = _broadcastParamAccessor(v, usesAtom, N,
@@ -3077,7 +3081,7 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
   // argument) makes the score atom-dependent too: a kernel BOUNDARY like
   // `lam` varies per atom under `logdensityof(L, …)`, so the fan-out-once
   // path below would score every atom at atom 0's value.
-  if (_exprUsesAny(fnHead.body, refNames)) anyAtomDep = true;
+  if (_preparedExprUsesAny(fnHead.body, refNames, opts)) anyAtomDep = true;
 
   const resolved = bcAxes.resolveBroadcastAxes(
     internalNames.map((nm: string, pi: number) => ({
@@ -3952,6 +3956,23 @@ function _exprUsesAny(ir: any, names: string[]): boolean {
   return false;
 }
 
+const DEPENDENCY_QUERIES = Symbol('dependencyQueries');
+
+// Prepared scorers own stable IR. Cache only the scoped dependency predicate,
+// including the effective names after observed fields replace live inputs.
+function _preparedExprUsesAny(ir: any, names: string[], opts: any): boolean {
+  if (names.length === 0) return false;
+  if (ir?.kind !== 'call') return _exprUsesAny(ir, names);
+  const cache = opts?.[DEPENDENCY_QUERIES];
+  if (!cache || !ir || typeof ir !== 'object') return _exprUsesAny(ir, names);
+  const previous = cache.get(ir);
+  if (previous && previous.names.length === names.length
+      && previous.names.every((name: string, i: number) => name === names[i])) return previous.result;
+  const result = _exprUsesAny(ir, names);
+  cache.set(ir, { names: names.slice(), result });
+  return result;
+}
+
 function _anyKwUsesPerAtom(kwargsIR: Record<string, any>, refNames: string[]): boolean {
   for (const k in kwargsIR) {
     if (Object.prototype.hasOwnProperty.call(kwargsIR, k)
@@ -4119,6 +4140,7 @@ function logDensityN(ir: any, value: any, refArrays: any, count: any, opts: any)
  * A custom pipeline stage may inspect or mutate values, so pass those hooks a
  * disposable copy without cache access; the retained snapshot stays private. */
 function _prepareFixedDensityN(ir: any, observed: any, fixedEnv: any) {
+  let dependencies = new WeakMap();
   const prepared = fixedLikelihood.prepareObservations(observed, (leaf: any) => {
     const nIR = leaf.kwargs?.n ?? leaf.args?.[0];
     try {
@@ -4128,10 +4150,11 @@ function _prepareFixedDensityN(ir: any, observed: any, fixedEnv: any) {
   }, (parameter: any) => samplerLib.evaluateExpr(parameter, fixedEnv));
   return (refArrays: any, count: number, opts: any) => {
     if (_DENSITY_PIPELINE.length) {
+      dependencies = new WeakMap();
       return logDensityN(ir, fixedLikelihood.copyObservations(prepared.snapshot), refArrays, count, opts);
     }
     return logDensityN(ir, prepared.snapshot, refArrays, count,
-      { ...opts, [FIXED_OBSERVATIONS]: prepared });
+      { ...opts, [FIXED_OBSERVATIONS]: prepared, [DEPENDENCY_QUERIES]: dependencies });
   };
 }
 

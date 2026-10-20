@@ -162,7 +162,7 @@ test('the density route divides by the SAME Z(θ) the sampler now does', async (
 
 test('a θ-dependent mass over a probability LEAF is sampled untilted',
   async () => {
-    // `weighted(x -> exp(θx), Normal(0,1))` has Z(θ) = e^{θ²/2}: not a scalar
+    // `weighted((x,t) -> exp(t*x), Normal(0,1), θ)` has Z(θ) = e^{θ²/2}: not a scalar
     // factor (the weight is a function of the variate) and not an integral over
     // a Lebesgue box (the base is a probability measure). `leaf-mass-quad` now
     // emits Z(θ) = ∫₀¹ w(F_B⁻¹(u); θ) du as a fixed graded quadrature, so this
@@ -172,7 +172,7 @@ test('a θ-dependent mass over a probability LEAF is sampled untilted',
     // carries the density-side oracles for the same measure.
     const r = await joint(H
       + 'theta ~ Uniform(interval(0.0, 2.0))\n'
-      + 'm = normalize(weighted(x -> exp(theta * x), Normal(mu = 0.0, sigma = 1.0)))\n'
+      + 'm = normalize(weighted((x, t) -> exp(t * x), Normal(mu = 0.0, sigma = 1.0), theta))\n'
       + 'y ~ m\n');
     assert.ok(Math.abs(r.et - 1.0) < 0.03, `E[θ] = ${r.et}, prior mean 1.0`);
     assert.ok(Math.abs(r.et - 1.3510637950) > 0.2,

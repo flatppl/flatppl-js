@@ -46,30 +46,31 @@ const H = 'flatppl_compat = "0.1"\n';
 
 const M1D = H
   + 'theta ~ Uniform(interval(0.5, 2.0))\n'
-  + 'm = normalize(weighted(x -> exp(0.0 - x / theta), Lebesgue(support = interval(0.0, 1.0))))\n'
+  + 'm = normalize(weighted((x, t) -> exp(0.0 - x / t), Lebesgue(support = interval(0.0, 1.0)), theta))\n'
   + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = 0.5))\n'
   + 'posterior = bayesupdate(L, lawof(theta))\n';
 
 const M2D = H
   + 'theta ~ Uniform(interval(0.5, 2.0))\n'
-  + 'm = normalize(weighted((u, v) -> exp(0.0 - (u + v) / theta), '
-  + 'Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0)))))\n'
+  + 'm = normalize(weighted((x, t) -> exp(0.0 - (x[1] + x[2]) / t), '
+  + 'Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0))), theta))\n'
   + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = [0.3, 0.7]))\n'
   + 'posterior = bayesupdate(L, lawof(theta))\n';
 
 const M2D_ASYM = H
   + 'theta ~ Uniform(interval(0.5, 2.0))\n'
-  + 'm = normalize(weighted((u, v) -> exp(0.0 - (u + 2.0 * v) / theta), '
-  + 'Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0)))))\n'
+  + 'm = normalize(weighted((x, t) -> exp(0.0 - (x[1] + 2.0 * x[2]) / t), '
+  + 'Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0))), theta))\n'
   + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = [0.3, 0.7]))\n'
   + 'posterior = bayesupdate(L, lawof(theta))\n';
 
-// One-parameter weight over the same 2-D box: §06 says it "receives the variate
-// whole", so it indexes the array. It denotes the SAME measure as M2D.
+// A named weight with a record parameter receives the same whole 2-D variate
+// as M2D. The record changes the parameter's representation, not the measure.
 const M2D_VARIATE = H
   + 'theta ~ Uniform(interval(0.5, 2.0))\n'
-  + 'm = normalize(weighted(w -> exp(0.0 - (w[1] + w[2]) / theta), '
-  + 'Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0)))))\n'
+  + 'weight = (w, p) -> exp(0.0 - (w[1] + w[2]) / p.theta)\n'
+  + 'm = normalize(weighted(weight, '
+  + 'Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0))), record(theta = theta)))\n'
   + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = [0.3, 0.7]))\n'
   + 'posterior = bayesupdate(L, lawof(theta))\n';
 
@@ -80,8 +81,8 @@ const M2D_VARIATE = H
 // binding at k = 1 must reproduce the scalar-interval numbers exactly.
 const M1D_BOX = H
   + 'theta ~ Uniform(interval(0.5, 2.0))\n'
-  + 'm = normalize(weighted(w -> exp(0.0 - w[1] / theta), '
-  + 'Lebesgue(support = cartprod(interval(0.0, 1.0)))))\n'
+  + 'm = normalize(weighted((w, t) -> exp(0.0 - w[1] / t), '
+  + 'Lebesgue(support = cartprod(interval(0.0, 1.0))), theta))\n'
   + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = [0.5]))\n'
   + 'posterior = bayesupdate(L, lawof(theta))\n';
 
@@ -153,7 +154,7 @@ test('2-D: a θ-dependent normalizer over a box tracks Z(θ)', async () => {
   }
 });
 
-test('2-D: parameter i binds to axis i, not the transpose', async () => {
+test('2-D: variate index i binds to axis i, not the transpose', async () => {
   for (const t of ['0.6', '1.25', '1.9']) {
     const got = await likAt(M2D_ASYM, +t, 2048);
     assert.ok(Math.abs(got - ORACLE_2D_ASYM[t]) < 5e-2,
@@ -166,9 +167,9 @@ test('2-D: parameter i binds to axis i, not the transpose', async () => {
     `got ${at06}, which is the TRANSPOSED oracle ${ORACLE_2D_TRANSPOSED['0.6']}`);
 });
 
-test('a one-parameter weight over a box receives the variate whole (§06)', async () => {
-  // Same measure as M2D by §06's arity rule, so the same oracle. Binding only
-  // the first coordinate would score a different function without erroring.
+test('a named weight with a record parameter receives the variate whole', async () => {
+  // Same measure as M2D, so the same oracle. Binding only the first coordinate
+  // would score a different function without erroring.
   for (const t of ['0.6', '1.9']) {
     const got = await likAt(M2D_VARIATE, +t, 2048);
     assert.ok(Math.abs(got - ORACLE_2D[t]) < 2e-2,
@@ -422,8 +423,8 @@ test('two spellings of one measure score bit-for-bit alike', async () => {
     + 'theta ~ Uniform(interval(0.5, 2.0))\n'
     + 'xv = elementof(interval(0.0, 1.0))\n'
     + 'wbody = exp(0.0 - xv / theta)\n'
-    + 'wfn = functionof(wbody, xv = xv)\n'
-    + 'm = normalize(weighted(wfn, Lebesgue(support = interval(0.0, 1.0))))\n'
+    + 'wfn = functionof(wbody, xv = xv, theta = theta)\n'
+    + 'm = normalize(weighted(wfn, Lebesgue(support = interval(0.0, 1.0)), theta))\n'
     + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = 0.5))\n'
     + 'posterior = bayesupdate(L, lawof(theta))\n';
   const a = await likAt(lam, 1.25);

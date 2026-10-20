@@ -143,7 +143,11 @@ function _propagateLiftedPhases(bindings: Map<string, any>): Map<string, any> {
   for (const [name, b] of bindings) {
     if (b && b.synthetic && b.phase == null && b.ir) {
       any = true;
-      withDeps.set(name, { ...b, deps: Array.from(collectSelfRefs(b.ir)) });
+      // Lowered affine measures retain explicit constructor parameters even
+      // when their generated callable hides those parameters from phase flow.
+      withDeps.set(name, { ...b, deps: Array.from(new Set([
+        ...(b.deps || []), ...collectSelfRefs(b.ir),
+      ])) });
     } else {
       withDeps.set(name, b);
     }
@@ -3458,8 +3462,8 @@ function classifyMarkovchain(
 ): any {
   if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'markovchain') return null;
   const args = Array.isArray(rhsIR.args) ? rhsIR.args : [];
-  if (args.length !== 3) return null;
-  const step = require('./markovchain.ts').describeStepKernel(args[0], bindings);
+  if (args.length !== 3 && args.length !== 4) return null;
+  const step = require('./markovchain.ts').describeStepKernel(args[0], bindings, 'markovchain', args[3]);
   if (!step || step.reason) return null;
   const n = resolveConstant(args[2], bindings, new Set(), fixedValues);
   if (n == null || !Number.isInteger(n) || n <= 0) return null;
@@ -3475,9 +3479,9 @@ function classifyKscan(
 ): any {
   if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'kscan') return null;
   const args = Array.isArray(rhsIR.args) ? rhsIR.args : [];
-  if (args.length !== 3) return null;
+  if (args.length !== 3 && args.length !== 4) return null;
   const mc = require('./markovchain.ts');
-  const step = mc.describeStepKernel(args[0], bindings, 'kscan');
+  const step = mc.describeStepKernel(args[0], bindings, 'kscan', args[3]);
   if (!step || step.reason) return null;
   const n = mc.resolveXsLength(args[2], bindings, fixedValues);
   if (n == null) return null;
@@ -5914,6 +5918,12 @@ function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
 function inlineDensityMeasures(ir: any, derivations: any, visited: any, bindings: any): any {
   const { mapIR } = require('./ir-walk.ts');
   return mapIR(ir, (n: any) => {
+    if (n?.kind === 'ref' && n.ns === 'self' && !visited.has(n.name)) {
+      const callable = bindings?.get(n.name)?.ir;
+      if (callable?.op === 'functionof') {
+        return inlineDensityMeasures(callable, derivations, new Set([...visited, n.name]), bindings);
+      }
+    }
     if (!n || n.kind !== 'call' || !Array.isArray(n.args)) return n;
     const head = n.args[0];
     const broadcast = n.op === 'broadcast' && head?.kind === 'ref'
@@ -6204,6 +6214,7 @@ module.exports = {
   isCallableLikeBindingType,
   classifyWeighted,
   classifyLogWeighted,
+  _classifyWeightedByFunction,
   classifyNormalize,
   classifySuperpose,
   classifyRecordOrJoint,

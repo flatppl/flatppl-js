@@ -188,7 +188,7 @@ test('a θ-independent tilt of a leaf base resolves in both spellings', async ()
 
 const TILT_THETA = (leaf: string) =>
   'theta ~ Uniform(interval(0.5, 2.0))\n'
-  + `m = normalize(weighted(x -> exp(theta * x), ${leaf}))\n`
+  + `m = normalize(weighted((x, t) -> exp(t * x), ${leaf}, theta))\n`
   + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = 0.5))\n'
   + 'posterior = bayesupdate(L, lawof(theta))\n';
 

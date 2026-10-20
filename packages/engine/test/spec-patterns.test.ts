@@ -696,7 +696,7 @@ test('§10 worked example: Bayesian posterior add-on', () => {
 mu_sig_prior ~ Uniform(support = interval(0, 20))
 raw_eff_syst_prior ~ Normal(mu = 0, sigma = 1)
 prior = lawof(record(mu_sig = mu_sig_prior, raw_eff_syst = raw_eff_syst_prior))
-L_obs = likelihoodof(functionof(Normal(mu = mu_sig_prior, sigma = 1)), 1.0)
+L_obs = likelihoodof(functionof(Normal(mu = mu_sig_prior, sigma = 1), mu_sig = mu_sig_prior), 1.0)
 posterior = bayesupdate(L_obs, prior)
 `);
 });

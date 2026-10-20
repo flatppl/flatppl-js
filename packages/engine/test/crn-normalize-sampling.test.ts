@@ -45,13 +45,13 @@ const H = 'flatppl_compat = "0.1"\n';
 // shape the closed-form mass routes decline and the fixed-sample estimator owns.
 const S1D = H
   + 'theta ~ Uniform(interval(0.0, 4.0))\n'
-  + 'm = normalize(weighted(x -> exp(theta * x), Lebesgue(support = interval(0.0, 1.0))))\n'
+  + 'm = normalize(weighted((x, t) -> exp(t * x), Lebesgue(support = interval(0.0, 1.0)), theta))\n'
   + 'y ~ m\n';
 
 const S2D = H
   + 'theta ~ Uniform(interval(0.5, 2.0))\n'
-  + 'm = normalize(weighted((u, v) -> exp(0.0 - (u + v) / theta), '
-  + 'Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0)))))\n'
+  + 'm = normalize(weighted((x, t) -> exp(0.0 - (x[1] + x[2]) / t), '
+  + 'Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0))), theta))\n'
   + 'y ~ m\n';
 
 // The same box and the same base measure, with a weight that does NOT reference
@@ -143,7 +143,7 @@ test('the sampler divides by the SAME Ẑ(θ) the density subtracts', async () =
   const m = await jointMoments(S1D, 1, 512);
   const score = H
     + 'theta ~ Uniform(interval(0.0, 4.0))\n'
-    + 'm = normalize(weighted(x -> exp(theta * x), Lebesgue(support = interval(0.0, 1.0))))\n'
+    + 'm = normalize(weighted((x, t) -> exp(t * x), Lebesgue(support = interval(0.0, 1.0)), theta))\n'
     + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = ' + YSTAR + '))\n'
     + 'posterior = bayesupdate(L, lawof(theta))\n';
   const { ctx } = ctxFor(score, 1);
@@ -170,8 +170,8 @@ test('2-D: the sampler divides by the SAME Ẑ(θ) the density subtracts', async
   const m = await jointMoments(S2D, 2, 512);
   const score = H
     + 'theta ~ Uniform(interval(0.5, 2.0))\n'
-    + 'm = normalize(weighted((u, v) -> exp(0.0 - (u + v) / theta), '
-    + 'Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0)))))\n'
+    + 'm = normalize(weighted((x, t) -> exp(0.0 - (x[1] + x[2]) / t), '
+    + 'Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0))), theta))\n'
     + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = [0.3, 0.7]))\n'
     + 'posterior = bayesupdate(L, lawof(theta))\n';
   const { ctx } = ctxFor(score, 1);
@@ -198,7 +198,7 @@ test('a weight whose mass estimates to zero is refused, not sampled', async () =
   // same measure rather than divide by zero and hand back a garbage ensemble.
   const zero = H
     + 'theta ~ Uniform(interval(0.5, 2.0))\n'
-    + 'm = normalize(weighted(x -> 0.0 * theta * x, Lebesgue(support = interval(0.0, 1.0))))\n'
+    + 'm = normalize(weighted((x, t) -> 0.0 * t * x, Lebesgue(support = interval(0.0, 1.0)), theta))\n'
     + 'y ~ m\n';
   const { ctx } = ctxFor(zero, 16);
   await assert.rejects(() => Promise.resolve(ctx.getMeasure('y')),

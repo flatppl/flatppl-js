@@ -312,9 +312,8 @@ test('a jointchain-bodied broadcast carries the parameter weights',
 
 // -- 7. the nested-broadcast batch-flatten --------------------------------
 //
-// y[i, p, v] ~ Normal(theta_i + inner_offs[v], sigmas[p]). theta arrives as a
-// closed-over per-atom ref inside the INNER broadcast's mu, which is the route
-// that keeps both axis-ladder sizes resolvable. sigmas differ across the outer
+// y[i, p, v] ~ Normal(theta_i + inner_offs[v], sigmas[p]). theta is an explicit
+// scalar input to the outer callback. sigmas differ across the outer
 // axis, so Var[y_{p,v}] = Var[theta] + sigmas[p]² separates the two.
 // Positions are (outer p, inner v) row-major.
 test('a nested broadcast carries the parameter weights', async () => {
@@ -323,10 +322,8 @@ test('a nested broadcast carries the parameter weights', async () => {
     + 'sigmas = [1.0, 2.0]\n'
     + 'ok = functionof(Normal(mu = _mu_, sigma = _sigma_), '
     + 'mu = _mu_, sigma = _sigma_)\n'
-    + 'shifted = inner_offs .+ theta\n'
-    + 'pk = functionof(broadcast(ok, mu = shifted, sigma = _sigma_g_), '
-    + 'sigma_g = _sigma_g_)\n'
-    + 'y = broadcast(pk, sigma_g = sigmas)\n',
+    + 'pk(theta, sigma_g) = broadcast(ok, mu = inner_offs .+ theta, sigma = sigma_g)\n'
+    + 'y = broadcast(pk, theta = theta, sigma_g = sigmas)\n',
     {
       mean: [1, 2, 1, 2],
       variance: [2, 2, 5, 5],

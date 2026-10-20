@@ -3675,39 +3675,22 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     const setDescr = irShared.parseSetIR(ir.args[1], childCtx.bindings);
     return { kind: 'truncate', from, setDescr, setIR: setDescr ? undefined : ir.args[1] };
   }
-  // weighted(w, M) / logweighted(lw, M) with a CONSTANT weight: a log-mass shift
-  // on the base (matWeighted's `logShift` path). `weighted(const, M)` lowers to
-  // `logweighted(log const, M)`, so the CLM body usually carries `logweighted`;
-  // handle both. A function-of-the-variate weight (spec §06) needs the
-  // _classifyWeightedByFunction param-substitution and is deferred — it falls
-  // through to the leaf default below (an unchanged clear diagnostic).
-  if (op === 'weighted' && Array.isArray(ir.args) && ir.args.length === 2) {
-    const w = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
+  // Expanded kernels retain callable weights. Bind their variate through the
+  // same classifier as named measures before considering scalar mass weights.
+  if ((op === 'weighted' || op === 'logweighted') && ir.args?.length === 2) {
+    const from = _bridgeMeasureFrom(ir.args[1], register, op + ':base');
+    if (!from) return null;
+    const callable = require('./derivations.ts')._classifyWeightedByFunction(
+      ir.args[0], from, childCtx.bindings, op === 'logweighted');
+    if (callable) return callable;
+    // Scalar weights shift the base mass. Nonconstant scalars evaluate per atom.
+    const value = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
       childCtx.fixedValues);
-    if (w != null && Number.isFinite(w) && w > 0) {
-      const from = _bridgeMeasureFrom(ir.args[1], register, 'weighted:base');
-      return { kind: 'weighted', from, logShift: Math.log(w) };
+    const isLog = op === 'logweighted';
+    if (value != null && Number.isFinite(value) && (isLog || value > 0)) {
+      return { kind: 'weighted', from, logShift: isLog ? value : Math.log(value) };
     }
-    // Non-constant weight — a LATENT-dependent per-atom mass (§06's
-    // mixture proportion, `weighted(w(θ), M)`). matWeighted evaluates
-    // `weightIR` per atom through `evaluateN`, exactly as the by-name
-    // classifier's `weightIR` arm does; the two produce the same
-    // derivation, so an inline weight and a named one sample alike.
-    // `isVariateWeight` stays false: a function OF THE VARIATE needs the
-    // param-substitution the by-name classifier does from the AST, which
-    // an already-expanded IR has lost.
-    const wFrom = _bridgeMeasureFrom(ir.args[1], register, 'weighted:base');
-    if (wFrom) return { kind: 'weighted', from: wFrom, weightIR: ir.args[0], isLog: false };
-  }
-  if (op === 'logweighted' && Array.isArray(ir.args) && ir.args.length === 2) {
-    const lw = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
-      childCtx.fixedValues);
-    if (lw != null && Number.isFinite(lw)) {
-      const from = _bridgeMeasureFrom(ir.args[1], register, 'logweighted:base');
-      return { kind: 'weighted', from, logShift: lw };
-    }
-    const lwFrom = _bridgeMeasureFrom(ir.args[1], register, 'logweighted:base');
-    if (lwFrom) return { kind: 'weighted', from: lwFrom, weightIR: ir.args[0], isLog: true };
+    return { kind: 'weighted', from, weightIR: ir.args[0], isLog };
   }
   // superpose(M1, M2, …) — §06's measure sum. matSuperpose combines the
   // components' atom batches by per-index selection on their masses, so

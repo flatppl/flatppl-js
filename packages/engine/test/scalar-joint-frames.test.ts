@@ -3,8 +3,10 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const density = require('../density.ts');
+const valueLib = require('../value.ts');
 const { inBothModes } = require('./_perf-helpers.ts');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
+const { orchestrator } = require('..');
 
 const lit = (value: any) => ({ kind: 'lit', value });
 const ref = (name: string) => ({ kind: 'ref', ns: 'self', name });
@@ -14,13 +16,31 @@ const logpdf = (x: number, mu: number) => -0.5 * Math.log(2 * Math.PI) - 0.5 * (
 
 inBothModes('constant scalar joint scores broadcast across atoms', 'density.scalarJoint', () => {
   const ir = call('joint', [normal(lit(0)), normal(ref('s0'))]);
-  const actual = density.logDensityN(ir, [0.5, 1], {}, 3, {});
-  for (const lp of actual) assert.ok(Math.abs(lp - logpdf(0.5, 0) - logpdf(1, 0.5)) < 1e-12);
+  for (const observed of [[0.5, 1], valueLib.vector([0.5, 1])]) {
+    const actual = density.logDensityN(ir, observed, {}, 3, {});
+    for (const lp of actual) assert.ok(Math.abs(lp - logpdf(0.5, 0) - logpdf(1, 0.5)) < 1e-12);
+  }
 });
 
 inBothModes('scalar joint keeps structural distribution arguments', 'density.scalarJoint', () => {
   const ir = call('joint', [call('Uniform', [{ kind: 'const', name: 'unitinterval' }]), normal(lit(0))]);
   assert.ok(Math.abs(density.logDensity(ir, [0.2, 0.3], {}) - logpdf(0.3, 0)) < 1e-12);
+});
+
+inBothModes('scalar joint retains finite tilted tail scores', 'density.scalarJoint', async () => {
+  const { ctx } = makeMatCtx(`
+T = normalize(logweighted(fn(1000 * _), Bernoulli(0.5)))
+J = joint(T, Bernoulli(0.5))
+rare = logdensityof(J, [false, false])
+`);
+  // log P_T(false) = -log(1 + exp(1000)), rounded to -1000.
+  const expected = -1000 - Math.log(2);
+  assert.equal((await ctx.getMeasure('rare')).value.data[0], expected);
+  const ir = orchestrator.expandMeasure('J', ctx);
+  for (const observed of [[0, 0], valueLib.vector([0, 0])]) {
+    assert.equal(density.logDensity(ir, observed, {}), expected);
+    assert.deepEqual(Array.from(valueLib.isValue(observed) ? observed.data : observed), [0, 0]);
+  }
 });
 
 inBothModes('scalar joint reads current state and per-atom inputs', 'density.scalarJoint', () => {
@@ -29,14 +49,18 @@ inBothModes('scalar joint reads current state and per-atom inputs', 'density.sca
   const ir = call('joint', [leaf, leaf, leaf]);
   const refs = { s0: Float64Array.of(10, 20), delta: Float64Array.of(0.25, -0.5) };
   for (const xs of [[1, 2, 3], [0, -1, 4]]) {
-    const result = density.logDensityConsumeN(ir, [...xs, 99], refs, 2, {});
-    for (let i = 0; i < 2; i++) {
-      const expected = logpdf(xs[0], 2 * (refs.s0[i] + refs.delta[i]))
-        + logpdf(xs[1], 2 * (xs[0] + refs.delta[i]))
-        + logpdf(xs[2], 2 * (xs[0] + refs.delta[i]));
-      assert.ok(Math.abs(result.logps[i] - expected) < 1e-10);
+    for (const wrap of [(x: number[]) => x, valueLib.vector]) {
+      for (const suffix of [[], [99]]) {
+        const result = density.logDensityConsumeN(ir, wrap([...xs, ...suffix]), refs, 2, {});
+        for (let i = 0; i < 2; i++) {
+          const expected = logpdf(xs[0], 2 * (refs.s0[i] + refs.delta[i]))
+            + logpdf(xs[1], 2 * (xs[0] + refs.delta[i]))
+            + logpdf(xs[2], 2 * (xs[0] + refs.delta[i]));
+          assert.ok(Math.abs(result.logps[i] - expected) < 1e-10);
+        }
+        assert.deepEqual(result.rest, suffix.length ? wrap(suffix) : null);
+      }
     }
-    assert.deepEqual(result.rest, [99]);
   }
 });
 

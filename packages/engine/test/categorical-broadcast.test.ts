@@ -62,11 +62,11 @@ held_score = logdensityof(held.([1, 2]), [2, 2])
   assert.ok(Math.abs((await ctx.getMeasure('held_score')).samples[0] - 2 * Math.log(.8)) < 1e-12);
 });
 
-test('categorical rows draw independently conditional on the shared captured parameter', async () => {
+test('categorical rows draw independently conditional on the shared parameter', async () => {
   const { ctx } = makeMatCtx(`
 p ~ Normal(0, .4)
-f(a) = Categorical(softmax([0., a + p]))
-y ~ f.([-1, 1])
+f(a, p) = Categorical(softmax([0., a + p]))
+y ~ f.([-1, 1], p)
 `, { sampleCount: 4096, rootSeed: 117 });
   const p = (await ctx.getMeasure('p')).samples;
   const y = (await ctx.getMeasure('y')).value;

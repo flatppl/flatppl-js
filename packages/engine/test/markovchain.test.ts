@@ -35,6 +35,54 @@ const { createWorkerHandler } = require('../worker.ts');
 const SAMPLE_COUNT = 60000;
 const ROOT_SEED    = 0xABCD;
 
+test('inferred drift and scale are supplied through one chain parameter record', async () => {
+  const ctx = makeCtx(`
+drift ~ Normal(0, 1)
+sigma ~ Exponential(1)
+step(state, p) = Normal(state + p.drift, p.sigma)
+x ~ markovchain(step, 0.0, 3, (drift=drift, sigma=sigma))
+K = kernelof(x, drift=drift, sigma=sigma)
+ld = logdensityof(K(0.4, 0.75), [1.0, 1.5, 2.0])
+`, 1);
+  const expected = -1.5 * Math.log(2 * Math.PI) - 3 * Math.log(0.75)
+    - (0.6 ** 2 + 0.1 ** 2 + 0.1 ** 2) / (2 * 0.75 ** 2);
+  assert.ok(Math.abs((await ctx.getMeasure('ld')).samples[0] - expected) < 1e-13);
+});
+
+test('chain sampling holds an inferred parameter constant across steps', async () => {
+  const ctx = makeCtx(`
+drift ~ Normal(0, 1)
+step(state, p) = Normal(state + p, 1)
+x ~ markovchain(step, 0.0, 2, drift)
+`, 4096);
+  const { samples, dims } = await ctx.getMeasure('x');
+  assert.deepEqual(dims, [2]);
+  let a = 0, b = 0, aa = 0, bb = 0, ab = 0;
+  for (let i = 0; i < 4096; i++) {
+    const x = samples[2 * i], y = samples[2 * i + 1];
+    a += x; b += y; aa += x * x; bb += y * y; ab += x * y;
+  }
+  // Shared drift: Var(x1)=2, Var(x2)=6, Cov(x1,x2)=3.
+  // Redrawing drift at each step would instead give 2, 4, 2.
+  assert.ok(Math.abs(aa / 4096 - (a / 4096) ** 2 - 2) < 0.2);
+  assert.ok(Math.abs(bb / 4096 - (b / 4096) ** 2 - 6) < 0.5);
+  assert.ok(Math.abs(ab / 4096 - a * b / 4096 ** 2 - 3) < 0.3);
+});
+
+test('kscan varies its exogenous input while keeping its parameter record', async () => {
+  const ctx = makeCtx(`
+drift ~ Normal(0, 1)
+sigma ~ Exponential(1)
+step(state, dt, p) = Normal(state + p.drift * dt, p.sigma)
+x ~ kscan(step, 0.0, [1.0, 2.0, 3.0], (drift=drift, sigma=sigma))
+K = kernelof(x, drift=drift, sigma=sigma)
+ld = logdensityof(K(0.4, 0.75), [1.0, 1.5, 2.0])
+`, 1);
+  const expected = -1.5 * Math.log(2 * Math.PI) - 3 * Math.log(0.75)
+    - (0.6 ** 2 + 0.3 ** 2 + 0.7 ** 2) / (2 * 0.75 ** 2);
+  assert.ok(Math.abs((await ctx.getMeasure('ld')).samples[0] - expected) < 1e-13);
+});
+
 function makeCtx(source: any, sampleCount?: number) {
   const lifted = processSource(source);
   const built  = orchestrator.buildDerivations(lifted.bindings);

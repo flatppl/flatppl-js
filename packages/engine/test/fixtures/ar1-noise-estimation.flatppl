@@ -7,9 +7,9 @@ A one-dimensional random walk with a *known* constant drift $\delta$ and an
 $$x_k \sim \mathrm{Normal}(x_{k-1} + \delta,\ \sigma), \qquad x_0 = 0 .$$
 
 The whole trajectory is one measure, built with `markovchain` (§06 dependent
-composition): the step kernel is the single-input Markov kernel
-$(x) \mapsto \mathrm{Normal}(x + \delta, \sigma)$, and the initial state is a
-value, so it carries no density and is not a trajectory element.
+composition). Each step receives the same inferred noise scale explicitly.
+The initial state is a value, so it carries no density and is not a trajectory
+element.
 
 Only $\sigma$ is inferred. The increments $x_k - x_{k-1} - \delta$ are
 $n$ independent $\mathrm{Normal}(0, \sigma)$ draws, so the posterior depends on
@@ -64,9 +64,9 @@ sigma_step ~ normalize(truncate(Cauchy(0, 1), interval(0, inf)))
 prior = lawof(record(sigma_step = sigma_step))
 
 % One step of the walk: the state enters the mean, the drift is fixed.
-step_kernel = prev -> Normal(prev + drift, sigma_step)
+step_kernel(prev, sigma) = Normal(prev + drift, sigma)
 
-x ~ markovchain(step_kernel, x_init, n)
+x ~ markovchain(step_kernel, x_init, n, sigma_step)
 
 ###
 The reference engine cannot yet score this posterior: its CLM lowering of the

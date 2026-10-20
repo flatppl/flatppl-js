@@ -77,7 +77,7 @@ const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS, DISTRIBUTIONS, ALL_KNOWN } = requi
  */
 function argSignature(op: string, numArgs: number): string[] | null {
   if (op === 'draw')                              return ['measure'];
-  if (op === 'weighted' || op === 'logweighted')  return ['value', 'measure'];
+  if (op === 'weighted' || op === 'logweighted')  return ['value', 'measure', 'value'].slice(0, numArgs);
   if (op === 'tilt')                              return ['measure', 'measure'];
   if (op === 'normalize')                         return ['measure'];
   if (op === 'relabel')                           return ['measure', 'value'];
@@ -384,6 +384,7 @@ function bfsImplicitElementofLeavesAst(bodyAst: any, bindings: any) {
     if (node == null || typeof node !== 'object') return;
     if (Array.isArray(node)) { for (const c of node) collectIds(c, into); return; }
     if (node.type === 'Identifier') into.push(node.name);
+    if (node.type === 'FieldAccess' && node.object?.name === 'self') into.push(node.field);
     for (const k in node) collectIds(node[k], into);
   }
 }
@@ -439,7 +440,7 @@ function liftInlineSubexpressions(bindings: any) {
   const out: Map<string, any> = new Map(bindings);
   // Preserve constructor parameters only during this lift pass, before the
   // in-place affine lowering removes the MvNormal constructor spelling.
-  const mvNormalConstructors = new WeakMap<object, any>();
+  const measureConstructors = new WeakMap<object, any>();
   let exponentialTiltRevision = 0;
   let counter = 0;
   function freshName() {
@@ -489,13 +490,15 @@ function liftInlineSubexpressions(bindings: any) {
     return { type: 'Identifier', name, loc: loc || null };
   }
   function makeSyntheticBinding(name: string, ast: any) {
+    const constructor = measureConstructors.get(ast);
     return {
       name,
       names: [name],
       line: ast.loc && ast.loc.start ? ast.loc.start.line : -1,
       rhs: '',
       type: inferSyntheticType(ast),
-      deps: [], callDeps: [],
+      deps: constructor ? Array.from(collectSelfRefs(lowerExpr(constructor, liftLowerCtx))) : [],
+      callDeps: [],
       node: { value: ast, names: [makeIdent(name, ast.loc)], loc: ast.loc, type: 'AssignStatement' },
       nameLoc: ast.loc,
       synthetic: true,
@@ -621,7 +624,7 @@ function liftInlineSubexpressions(bindings: any) {
       for (const [n, b] of out) {
         if (n !== name && !b.synthetic) continue;
         const value = b.effectiveValue || b.node?.value;
-        const deps = collectDeps(mvNormalConstructors.get(value) || value, defined);
+        const deps = collectDeps(measureConstructors.get(value) || value, defined);
         if (b.__mvnormalLowering) {
           for (const ir of [b.__mvnormalLowering.muIR, b.__mvnormalLowering.covIR]) {
             for (const dep of collectSelfRefs(ir)) { deps.deps.add(dep); deps.bodyDeps.add(dep); }
@@ -984,6 +987,7 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineDensityof(astArg);
       astArg = inlineRecordLebesgue(astArg);
       astArg = inlineScalarLocscale(astArg);
+      astArg = inlineWeightParameters(astArg);
       // Recognize exponential-family laws before children are hoisted and
       // MvNormal loses its constructor head to the affine decomposition.
       astArg = inlineExponentialTilt(astArg);
@@ -1011,9 +1015,7 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineMvNormalLift(astArg);
       // P3 — lower a surviving non-scalar `locscale(base, shift, scale)` to
       // the canonical affine-registry pushfwd (mirrors inlineMvNormalLift).
-      // Scalar locscale never reaches here — the analyzer pre-pass expands
-      // it; only detected-non-scalar locscale with an iid base survives to
-      // this routing.
+      // Scalar locscale uses inlineScalarLocscale before this route.
       astArg = inlineLocscaleAffineLift(astArg);
       // Metric-aware Einstein summation (spec §04 §sec:metricsum). The
       // surface shorthand `metric: result[output_indices] := expr`
@@ -1035,17 +1037,49 @@ function liftInlineSubexpressions(bindings: any) {
     return astArg;
   }
 
+  // Instantiate f(x, p) only after the analyzer validates the user's fixed
+  // callable. The private unary body reuses the existing weight machinery;
+  // p remains an explicit dependency of the measure, including its mass.
+  function inlineWeightParameters(astArg: any) {
+    if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier'
+        || !['weighted', 'logweighted'].includes(astArg.callee.name)
+        || astArg.args?.length !== 3) return astArg;
+    const param = { type: 'Placeholder', name: freshName(), loc: astArg.loc };
+    const application = {
+      type: 'CallExpr', callee: cloneAst(astArg.args[0]),
+      args: [param, liftValue(cloneAst(astArg.args[2]))], loc: astArg.loc,
+    };
+    const body = inlineOnce(application);
+    const weight = {
+      type: 'CallExpr', callee: makeIdent('functionof', astArg.loc),
+      args: [body, { type: 'KeywordArg', name: param.name, value: param, loc: astArg.loc }],
+      loc: astArg.loc,
+    };
+    return { ...astArg, args: [weight, astArg.args[1]] };
+  }
+
   /** Infer an AST operand against already-typed binding cuts (§11). */
   function __knownAstType(a: any): any {
     const ir = lowerExpr(a, liftLowerCtx);
     const scope: any = new Map();
-    for (const name of collectSelfRefs(ir)) {
-      const t = out.get(name)?.inferredType;
-      if (t) scope.set(name, t);
+    const lowered = new Map();
+    const pending = new Set<string>(collectSelfRefs(ir));
+    for (const name of pending) {
+      const binding = out.get(name);
+      if (binding?.inferredType) {
+        scope.set(name, binding.inferredType);
+        continue;
+      }
+      const body = binding?.effectiveValue || binding?.node?.value;
+      if (!body) continue;
+      const rhs = lowerExpr(body, liftLowerCtx);
+      lowered.set(name, { rhs });
+      for (const dependency of collectSelfRefs(rhs)) pending.add(dependency);
     }
-    // Avoid re-inferring module bindings or copying their DAG to prove shape.
+    // Typed bindings cut the graph. Only newly lifted intermediates need
+    // inference, including nested measure operands already replaced by refs.
     scope.bindingNames = new Set(scope.keys());
-    return require('./typeinfer.ts').inferExprInScope({ bindings: new Map() }, ir, scope);
+    return require('./typeinfer.ts').inferExprInScope({ bindings: lowered }, ir, scope);
   }
 
   /**
@@ -1099,8 +1133,12 @@ function liftInlineSubexpressions(bindings: any) {
         right: args[1] },
       { type: 'KeywordArg', name: 'x', value: x, loc }],
     };
-    return { type: 'CallExpr', callee: makeIdent('pushfwd', loc), builtin: true,
-      args: [f, args[0]], loc };
+    const result = { type: 'CallExpr', callee: makeIdent('pushfwd', loc), builtin: true,
+      args: [f, liftMeasure(args[0])], loc };
+    // Keep the constructor's explicit shift/scale dependencies. The generated
+    // affine callable is fixed, but its resulting measure need not be.
+    measureConstructors.set(result, astArg);
+    return result;
   }
 
   /**
@@ -1306,15 +1344,16 @@ function liftInlineSubexpressions(bindings: any) {
       const original = b.effectiveValue || b.node?.value;
       const lifted = out.get(e.name);
       const rewritten = lifted?.effectiveValue || lifted?.node?.value;
-      // Repeated tilts can reuse an already rewritten leaf; original MvNormal
-      // definitions remain available after their pushfwd lowering.
-      return resolve(mvNormalConstructors.get(rewritten)
-        || (names[head(rewritten)] ? rewritten : original), seen);
+      // Retain lifted weight parameters, especially inline draws. Repeated
+      // tilts reuse rewritten leaves; MvNormal keeps its original constructor.
+      return resolve(measureConstructors.get(rewritten)
+        || (names[head(rewritten)] || head(rewritten) === 'logweighted'
+          ? rewritten : original), seen);
     };
     const op = head(astArg);
     if (op !== 'normalize' && op !== 'tilt') return astArg;
     if (astArg.args?.length !== (op === 'tilt' ? 2 : 1)) return astArg;
-    const weighted = resolve(astArg.args[0]);
+    const weighted = inlineWeightParameters(resolve(astArg.args[0]));
     if (head(weighted) !== 'logweighted' || weighted.args?.length !== 2) return astArg;
     const base = resolve(op === 'tilt' ? astArg.args[1] : weighted.args[1]);
     const family = head(base);
@@ -1818,7 +1857,7 @@ function liftInlineSubexpressions(bindings: any) {
     // Rewrite the original MvNormal call IN PLACE — the caller's
     // slot (e.g. the user's binding X = MvNormal(...)) now references
     // pushfwd(__bij_N, __iid_N).
-    mvNormalConstructors.set(astArg, { ...astArg });
+    measureConstructors.set(astArg, { ...astArg });
     astArg.callee = makeIdent('pushfwd', astArg.loc);
     astArg.args = [
       makeIdent(bijName, astArg.loc),
@@ -1914,7 +1953,7 @@ function liftInlineSubexpressions(bindings: any) {
   /**
    * P3 — lower a surviving non-scalar `locscale(base, shift, scale)` to the
    * canonical affine-registry pushfwd, mirroring `inlineMvNormalLift`. The
-   * analyzer pre-pass leaves vector/matrix locscale unexpanded (only iid-base
+   * analyzer validates vector/matrix locscale without expanding it (only iid-base
    * forms reach here; other bases are diagnosed in the pre-pass), so the call
    * arrives as `locscale(<base>, <shift [D]>, <scale [D,D]>)`.
    *
@@ -2041,6 +2080,7 @@ function liftInlineSubexpressions(bindings: any) {
     // resolveMeasureBaseName sees an Identifier) and returns a bare ref to
     // the (possibly newly-hoisted) base binding.
     const baseRef = liftMeasure(baseAst);
+    measureConstructors.set(astArg, { ...astArg });
     astArg.callee = makeIdent('pushfwd', astArg.loc);
     astArg.args = [makeIdent(bijName, astArg.loc), baseRef];
     if (astArg.kwargs) delete astArg.kwargs;
@@ -4031,7 +4071,7 @@ function liftInlineSubexpressions(bindings: any) {
       if (!orig || !orig.node || !orig.node.value) continue;
       // Re-lower an affine Gaussian AFTER boundary substitution. Copying its
       // pushfwd AST would discard the bijection's parameter IR side marker.
-      let newRhs = substituteIdents(cloneAst(mvNormalConstructors.get(orig.node.value)
+      let newRhs = substituteIdents(cloneAst(measureConstructors.get(orig.node.value)
         || orig.node.value), argMap);
       newRhs = inlineUserCall(newRhs);
       visit(newRhs);
@@ -4096,6 +4136,8 @@ function liftInlineSubexpressions(bindings: any) {
       if (node == null || typeof node !== 'object') return;
       if (Array.isArray(node)) { for (const c of node) identsOf(c, acc); return; }
       if (node.type === 'Identifier') acc.add(node.name);
+      if (node.type === 'FieldAccess' && node.object?.type === 'Identifier'
+          && node.object.name === 'self') acc.add(node.field);
       // Placeholder refs (arrow-style `par -> ...` boundaries) are a
       // distinct node shape from Identifier — substituteIdents matches
       // them via the sentinel-prefixed key (see PLACEHOLDER_SUB_PREFIX
@@ -4115,7 +4157,7 @@ function liftInlineSubexpressions(bindings: any) {
       reachable.add(name);
       const refs = new Set<string>();
       const value = b.node && b.node.value;
-      identsOf(mvNormalConstructors.get(value) || value, refs);
+      identsOf(measureConstructors.get(value) || value, refs);
       directRefs.set(name, refs);
       for (const r of refs) walk(r);
       visiting.delete(name);
@@ -4156,6 +4198,10 @@ function liftInlineSubexpressions(bindings: any) {
       // Replace with a clone of the substitute so mutations to either
       // side don't bleed across the boundary.
       return cloneAst(sub[ast.name]);
+    }
+    if (ast.type === 'FieldAccess' && ast.object?.type === 'Identifier'
+        && ast.object.name === 'self' && sub[ast.field]) {
+      return cloneAst(sub[ast.field]);
     }
     if (ast.type === 'Placeholder' && sub[PLACEHOLDER_SUB_PREFIX + ast.name]) {
       // Placeholder boundary applied — substitute with the call's arg.

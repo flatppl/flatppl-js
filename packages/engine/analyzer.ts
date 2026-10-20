@@ -294,7 +294,17 @@ function validateSpecialOperation(valueNode: any) {
 
     // ---- Measure-algebra binary ops: M and one other operand --------
     case 'weighted':
-    case 'logweighted':
+    case 'logweighted': {
+      if (args.length !== 2 && args.length !== 3) {
+        diags.push({ severity: 'error', message: `${name}() takes two or three arguments`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `${name}() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
     case 'truncate':
     case 'pushfwd':
     case 'bayesupdate':
@@ -1510,21 +1520,9 @@ function computePhases(bindings: any) {
         if (phase === 'parameterized') break;
       }
     } else if (cn === 'functionof' || cn === 'kernelof' || cn === 'fn') {
-      // The function/kernel *value* itself is fixed — the definition
-      // doesn't change with inputs (spec §sec:functionof example
-      // line 492-495: "the function value itself is %fixed"). Its
-      // body's phase, evaluated on per-call inputs, is a separate
-      // computation handled by computePhasesForScope inside the
-      // reification bubble.
-      //
-      // UNLESS it captures a draw. §04 *Captured draws*: a captured draw is a
-      // shared ancestor with ONE realisation, and the callable is conditional
-      // on it, so "the phase of a reification follows the reified sub-graph".
-      // A callable over a draw is not fixed — see reificationCapturesDraw for
-      // the cut rules and why `kernelof` is exempt.
-      phase = (cn !== 'kernelof'
-               && reificationCapturesDraw(b.node && b.node.value, bindings, phaseOf))
-        ? 'stochastic' : 'fixed';
+      // Formal inputs do not affect the callable value's phase. Free draws
+      // are invalid and checked separately at every callable construction.
+      phase = 'fixed';
     } else if (rhsContainsInlineDraw(b && b.node && b.node.value)) {
       // Hidden draw inside arithmetic / call — e.g. `s = 2 * draw(m)`.
       // The top-level callee isn't 'draw' so the cn check above
@@ -1555,16 +1553,6 @@ function computePhases(bindings: any) {
  * sub-graph reaches a `draw` node that no boundary input names and no `lawof`
  * absorbs.
  *
- * Spec §04 *Captured draws*: "the sub-graph reified by `functionof` — and hence
- * by any lambda — may contain `draw` nodes of the enclosing graph. Such a
- * captured draw remains a shared ancestor of the reification and of the
- * enclosing graph, with a single realisation." The callable is conditional on
- * that realisation — "neither resampled per call nor marginalized". What that
- * costs is determinism, and the phase is where it is paid: "The phase of a
- * reification follows the reified sub-graph by the same ancestor rule as any
- * other binding [...] it is stochastic when the sub-graph holds a captured
- * `draw` whose phase no `lawof` node absorbs."
- *
  * The walk traces the sub-graph the way §04's ancestor trace does, THROUGH
  * intermediate bindings rather than reading their phase, because a stochastic
  * intermediate may reach the draw only through a name the boundary substitutes:
@@ -1592,13 +1580,8 @@ function computePhases(bindings: any) {
  * A nested `functionof` / `fn` is walked into under the union of the enclosing
  * formals and its own, so a draw the inner boundary names is cut there too.
  *
- * Mirrors `captured_draws` in `flatppl-rust`'s `crates/infer/src/ops.rs`, which
- * cuts at the same four constructs. It differs on one edge: rust stops at any
- * nested reification, where this walks into it, so `functionof(inner())` over a
- * capturing `inner` is stochastic here. §04's "same ancestor rule as any other
- * binding" makes that the spec reading — `z = inner()` outside a reification is
- * stochastic for exactly this reason — and the two engines answer to the spec,
- * not to each other.
+ * Each nested construction is also validated separately, even beneath an
+ * absorbing law. An outer law cannot legalize an invalid inner callable.
  */
 function reificationCapturesDraw(node: any, bindings: any, phaseOf: any): boolean {
   // Visited names, keyed by name AND the formals in force. The formals matter:
@@ -1644,6 +1627,8 @@ function reificationCapturesDraw(node: any, bindings: any, phaseOf: any): boolea
       return false;
     }
     if (n.type === 'Identifier') return walkRef(n.name, formals);
+    if (n.type === 'FieldAccess' && n.object?.type === 'Identifier'
+        && n.object.name === 'self') return walkRef(n.field, formals);
     if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier') {
       const op = n.callee.name;
       if (op === 'draw') return true;                     // a draw written inline
@@ -2255,7 +2240,8 @@ function validateDistinguishedInputs(node: any, diagnostics: any[]) {
     const name = call.callee.name;
     const distinguished = DISTINGUISHED_INPUTS.get(name)!;
     const args = call.args || [];
-    for (let i = 0; i < args.length && i < distinguished; i++) {
+    const positional = name === 'markovchain' || name === 'kscan' ? args.length : distinguished;
+    for (let i = 0; i < args.length && i < positional; i++) {
       if (!args[i] || args[i].type !== 'KeywordArg') continue;
       diagnostics.push({
         severity: 'error',
@@ -3185,31 +3171,8 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
   ast.body = newBody;
 }
 
-// `locscale(m, shift, scale)` expansion (spec §06 "locscale").
-//
-// `locscale(m, shift, scale)` is shorthand for the affine pushforward
-// `pushfwd(x -> scale * x + shift, m)`. We expand it before analysis to
-// a synthetic `bijection(fwd, inv, logvolume)` driving a `pushfwd`, so
-// the existing pushforward density (density.walkPushfwd, AST bijection
-// path) and sampler (matPushfwd) handle it with no new derivation kind —
-// exactly as `restrict` reduces to disintegrate/bayesupdate. The
-// synthesised `__locscale_*` names carry the conventional `__`-prefix for
-// auto-generated bindings (spec §04); like `__restrict_*` they are NOT
-// elided inside this engine — they appear in the exported `symbols` array
-// the same way restrict's synthetics do (any LSP/outline elision happens in
-// the downstream consumer, not here).
-//
-//   __locscale_fwd_N = scale * _x + shift        # functionof, arg x
-//   __locscale_inv_N = (_y - shift) / scale       # functionof, arg y
-//   __locscale_lv_N  = log(abs(scale))            # forward log|J|, 0-arg
-//   __locscale_bij_N = bijection(fwd, inv, lv)
-//   <original RHS with locscale(m, .., ..) → pushfwd(__locscale_bij_N, m)>
-//
-// Scope: SCALAR shift and SCALAR scale only. A non-scalar literal shift or
-// scale is rejected with a diagnostic in _buildLocscalePushfwd; a matrix or
-// vector affine map should use pushfwd directly (spec §06). (Multivariate
-// locscale via type-inference-directed routing is tracked separately.)
-let _locscaleCounter = 0;
+// Validate explicit location and scale before lift lowers the affine map.
+// Keep them as values so analysis does not invent captured-draw callables.
 
 const _LOCSCALE_LITERAL_TYPES = new Set([
   'NumberLiteral', 'StringLiteral', 'BoolLiteral', 'ArrayLiteral', 'TupleLiteral']);
@@ -3485,69 +3448,18 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
     }
     return call;  // iid base, routable shape: survive to lift's lowering
   }
-  // The base measure may itself contain a nested locscale.
-  const mExpr = _rewriteLocscale(args[0], synth, diagnostics, body);
-  const shiftExpr = args[1];
-  const scaleExpr = args[2];
-  const clone = (n: any) => structuredClone(n);
-
-  const n = _locscaleCounter++;
-  const fwdName = `__locscale_fwd_${n}`;
-  const invName = `__locscale_inv_${n}`;
-  const lvName  = `__locscale_lv_${n}`;
-  const bijName = `__locscale_bij_${n}`;
-
-  // fwd: functionof(scale * _x + shift, x = _x) — mirrors the parser's
-  // single-arg lambda desugaring (functionof body + Placeholder kwarg).
-  const fwdBody = AST.BinaryExpr('+',
-    AST.BinaryExpr('*', clone(scaleExpr), AST.Placeholder('x', sloc), sloc),
-    clone(shiftExpr), sloc);
-  const fwd = AST.CallExpr(AST.Identifier('functionof', sloc),
-    [fwdBody, AST.KeywordArg('x', AST.Placeholder('x', sloc), sloc)], sloc);
-
-  // inv: functionof((_y - shift) / scale, y = _y)
-  const invBody = AST.BinaryExpr('/',
-    AST.BinaryExpr('-', AST.Placeholder('y', sloc), clone(shiftExpr), sloc),
-    clone(scaleExpr), sloc);
-  const inv = AST.CallExpr(AST.Identifier('functionof', sloc),
-    [invBody, AST.KeywordArg('y', AST.Placeholder('y', sloc), sloc)], sloc);
-
-  // logvolume: the forward Jacobian of x -> scale*x + shift is constant
-  // |scale|, so log|J| = log(abs(scale)). When `scale` is a numeric
-  // literal we fold it to a scalar NumberLiteral (the cheapest density
-  // path); otherwise a 0-arg `functionof(log(abs(scale)))` constant.
-  let lvArg: any;
-  if (scaleExpr.type === 'NumberLiteral') {
-    const sv = +scaleExpr.value;
-    if (sv === 0 || !Number.isFinite(sv)) {
-      diagnostics.push({
-        severity: 'error',
-        message: `locscale() scale must be a nonzero finite value `
-          + `(got ${scaleExpr.value}); a zero or non-finite scale is a `
-          + `degenerate, non-invertible affine map`,
-        loc: scaleExpr.loc,
-      });
-      return call;
-    }
-    const v = Math.log(Math.abs(sv));
-    lvArg = AST.NumberLiteral(v, String(v), sloc);
-  } else {
-    const lvBody = AST.CallExpr(AST.Identifier('log', sloc),
-      [AST.CallExpr(AST.Identifier('abs', sloc), [clone(scaleExpr)], sloc)], sloc);
-    const lv = AST.CallExpr(AST.Identifier('functionof', sloc), [lvBody], sloc);
-    synth.push(AST.AssignStatement([AST.Identifier(lvName, sloc)], lv, sloc));
-    lvArg = AST.Identifier(lvName, sloc);
+  // Keep location and scale as explicit measure parameters through analysis.
+  // Lift lowers the affine map after the user's callable captures are checked.
+  // Expanding it here creates synthetic callables that capture these draws.
+  const scale = args[2];
+  if (scale.type === 'NumberLiteral' && (scale.value === 0 || !Number.isFinite(scale.value))) {
+    diagnostics.push({
+      severity: 'error',
+      message: 'locscale() scale must be a nonzero finite value',
+      loc: scale.loc,
+    });
   }
-
-  const bij = AST.CallExpr(AST.Identifier('bijection', sloc),
-    [AST.Identifier(fwdName, sloc), AST.Identifier(invName, sloc), lvArg], sloc);
-
-  synth.push(AST.AssignStatement([AST.Identifier(fwdName, sloc)], fwd, sloc));
-  synth.push(AST.AssignStatement([AST.Identifier(invName, sloc)], inv, sloc));
-  synth.push(AST.AssignStatement([AST.Identifier(bijName, sloc)], bij, sloc));
-
-  return AST.CallExpr(AST.Identifier('pushfwd', sloc),
-    [AST.Identifier(bijName, sloc), mExpr], sloc);
+  return call;
 }
 
 /**
@@ -3933,6 +3845,33 @@ function analyze(ast: any, source: string, opts?: any) {
   for (const [name, phase] of phases) {
     const b = bindings.get(name);
     if (b) b.phase = phase;
+  }
+
+  // Validate constructions, not just named function bindings. An inline
+  // lambda, including one inside lawof, has the same no-capture contract.
+  {
+    const seen = new Set<object>();
+    const checkReification = (ast: any) => {
+      if (!ast || typeof ast !== 'object' || seen.has(ast)) return;
+      seen.add(ast);
+      if (ast.type === 'CallExpr' && ast.callee?.type === 'Identifier'
+          && (ast.callee.name === 'functionof' || ast.callee.name === 'fn')
+          && reificationCapturesDraw(ast, bindings, (name: string) => phases.get(name))) {
+        diagnostics.push({
+          severity: 'error',
+          message: 'A reified callable cannot capture a draw. '
+            + 'Expose it as a boundary input, or reify its law with lawof or kernelof.',
+          loc: ast.loc,
+        });
+      }
+      for (const key in ast) {
+        if (key === 'loc') continue;
+        const value = ast[key];
+        if (Array.isArray(value)) value.forEach(checkReification);
+        else checkReification(value);
+      }
+    };
+    for (const b of bindings.values()) checkReification(b.node?.value);
   }
 
   // Phase check: per spec §04 sec:functionof, "Boundary inputs themselves

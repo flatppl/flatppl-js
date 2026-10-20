@@ -2040,8 +2040,13 @@ function _executeNestedBroadcastComposite(
   // binding-name size const-folded against `ctx.fixedValues` at materialise
   // time (a fixed-phase collection whose length the type pass left %dynamic).
   // Only a genuinely '%dynamic' / unresolvable size stays null below.
-  const Kout = axisStackMod.resolveOuterAxisSize(stack, 'kernel_broadcast', ctx);
-  const Kin = axisStackMod.resolveOuterAxisSize(stack, 'broadcast', ctx);
+  // Explicit scalar parameters may precede the collection argument. Use the
+  // inferred nested domain before the syntax-based axis annotation.
+  const domain = ctx.bindings.get(name)?.inferredType?.domain;
+  const Kout = domain?.kind === 'array' && typeof domain.shape?.[0] === 'number'
+    ? domain.shape[0] : axisStackMod.resolveOuterAxisSize(stack, 'kernel_broadcast', ctx);
+  const Kin = domain?.elem?.kind === 'array' && typeof domain.elem.shape?.[0] === 'number'
+    ? domain.elem.shape[0] : axisStackMod.resolveOuterAxisSize(stack, 'broadcast', ctx);
   if (Kout && Kout >= 1 && Kin && Kin >= 1) {
     return _executeNestedBroadcastBatchFlatten(name, d, ctx, compositeBody, Kout, Kin);
   }

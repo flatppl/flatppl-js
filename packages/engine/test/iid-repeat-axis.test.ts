@@ -179,36 +179,33 @@ y = iid(m, ${k})
 });
 
 // ---------------------------------------------------------------------
-// 3. pushfwd — ORDER-PRESERVING composite. `pushfwd(fn(_ + mu), base)`
-//    has out[a] = base[a] + mu[a], so tiling the per-atom `mu` alone
-//    yields within-atom conditional independence (no resampling
-//    handler involved). Also a regression for the general gap: the
-//    scalar pushfwd path must pass the fn body's EXTERNAL refs (`mu`),
-//    not just f's own parameter — else the worker eval of `_ + mu`
-//    leaves `mu` unbound.
+// 3. locscale lowers to an ORDER-PRESERVING affine pushforward.
+//    Its explicit location parameter gives out[a] = base[a] + mu[a],
+//    so tiling the per-atom `mu` yields within-atom conditional
+//    independence without a resampling handler.
 // ---------------------------------------------------------------------
 
-test('pushfwd: fn body referencing an external per-atom draw materialises', async () => {
+test('affine pushforward: an explicit per-atom location materialises', async () => {
   const N = 2000;
   const src = `
 mu = draw(Normal(0, 10))
-shifted = pushfwd(fn(_ + mu), Normal(0, 0.001))
+shifted = locscale(Normal(0, 0.001), mu, 1)
 `;
   const { ctx } = setupCtx(src, N);
   const m = await ctx.getMeasure('shifted');
   assert.ok(m && m.samples && m.samples.length === N,
-    'pushfwd of fn(_ + mu) materialises N scalar samples (mu passed to the worker)');
+    'the affine pushforward materialises N scalar samples with its explicit location');
   // shifted ≈ mu ~ Normal(0, 10): pooled mean ≈ 0, std ≈ 10.
   const xs = Array.from(m.samples as Float64Array);
   assert.ok(Math.abs(mean(xs)) < 1.0, 'mean ≈ 0; got ' + mean(xs).toFixed(3));
   assert.ok(Math.abs(std(xs) - 10) < 1.5, 'std ≈ 10; got ' + std(xs).toFixed(3));
 });
 
-test('matIid repeat axis: pushfwd composite (order-preserving) shares mu via tiling', async () => {
+test('matIid repeat axis: affine pushforward shares its explicit location via tiling', async () => {
   const N = 2000, k = 4;
   const src = `
 mu = draw(Normal(0, 10))
-shifted = pushfwd(fn(_ + mu), Normal(0, 0.001))
+shifted = locscale(Normal(0, 0.001), mu, 1)
 y = iid(shifted, ${k})
 `;
   const { ctx } = setupCtx(src, N);

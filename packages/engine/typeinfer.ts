@@ -1181,7 +1181,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function inferWeighted(expr: any, scopes: any): any {
     const op = expr.op;
     const args = expr.args || [];
-    if (args.length !== 2) return arityError(op, 2, args.length, expr.loc);
+    if (args.length !== 2 && args.length !== 3) return arityError(op, '2 or 3', args.length, expr.loc);
     const wT: any = inferExpr(args[0], scopes);
     const mT: any = inferExpr(args[1], scopes);
     // Measure check first (matches existing diagnostic style).
@@ -1203,6 +1203,39 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const isFunction = wT && wT.kind === 'function';
     const isDeferred = wT && (wT.kind === 'deferred' || wT.kind === 'any'
       || wT.kind === 'var');
+    if (args.length === 3) {
+      const parameterType = inferExpr(args[2], scopes);
+      if (!isDeferred && (!isFunction || wT.inputs.length !== 2)) {
+        diagnostics.push({
+          severity: 'error',
+          message: op + ': explicit parameters require a function with two inputs, f(x, p)',
+          loc: args[0].loc,
+        });
+        return T.failed(op + ' weight inputs');
+      }
+      const reif = _reificationWithArity(args[0], 2);
+      const callable = resolveBindingRefs(args[0]);
+      let result = reif ? _bodyTypeUnder(reif, [mT.domain, parameterType], scopes, true) : wT.result;
+      if (!reif && (callable?.kind === 'const'
+          || (callable?.kind === 'ref' && callable.ns === 'self'
+            && builtins.BUILTIN_FUNCTIONS.has(callable.name)))) {
+        const names = ['%weight_variate', '%weight_parameter'];
+        const scope = new Map([[names[0], mT.domain], [names[1], parameterType]]);
+        result = inferCall({
+          kind: 'call', op: callable.name, loc: expr.loc,
+          args: names.map(name => ({ kind: 'ref', ns: '%local', name, loc: expr.loc })),
+        }, scopes.concat([scope]));
+      }
+      if (result?.kind === 'failed') return result;
+      if (result && !['any', 'deferred', 'failed', 'var'].includes(result.kind)
+          && !(result.kind === 'scalar' && ['integer', 'real'].includes(result.prim))) {
+        diagnostics.push({
+          severity: 'error', message: op + ': f(x, p) must return a scalar real weight',
+          loc: args[0].loc,
+        });
+        return T.failed(op + ' weight result');
+      }
+    }
     if (!isReal && !isFunction && !isDeferred) {
       diagnostics.push({
         severity: 'error',
@@ -1244,31 +1277,31 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return mT;  // result is the same measure type
   }
 
-  // Resolve an expression in function position to a single-parameter
+  // Resolve an expression in function position to a reification of known arity:
   // reification node: an inline `fn(...)` / `functionof(...)`, or a self-ref
   // binding to one. null for anything else.
-  function _unaryReification(fExpr: any): any {
+  function _reificationWithArity(fExpr: any, arity = 1): any {
     let reif: any = null;
     if (fExpr && fExpr.op === 'functionof') reif = fExpr;
     else if (fExpr && fExpr.kind === 'ref' && fExpr.ns === 'self') {
       const b = loweredModule.bindings.get(fExpr.name);
       if (b && b.rhs && b.rhs.op === 'functionof') reif = b.rhs;
     }
-    if (!reif || !Array.isArray(reif.params) || reif.params.length !== 1 || !reif.body) {
+    if (!reif || !Array.isArray(reif.params) || reif.params.length !== arity || !reif.body) {
       return null;
     }
     return reif;
   }
 
-  // Type of a unary reification's body with its parameter bound to
-  // `paramType`. Speculative: the walk's diagnostics are dropped rather than
-  // leaked into the module's stream, exactly as `_pushfwdCodomain` does.
-  function _bodyTypeUnder(reif: any, paramType: any, scopes: any): any {
+  // Type of a reification's body with its parameters bound to `paramTypes`.
+  // Most callers use speculative inference. Explicit weight parameters require
+  // the ordinary application checks and retain their diagnostics.
+  function _bodyTypeUnder(reif: any, paramTypes: any[], scopes: any, reportErrors = false): any {
     const scope = new Map();
-    scope.set(reif.params[0], paramType);
+    for (let i = 0; i < reif.params.length; i++) scope.set(reif.params[i], paramTypes[i]);
     const savedLen = diagnostics.length;
     const t: any = inferExpr(reif.body, scopes.concat([scope]));
-    diagnostics.length = savedLen;
+    if (!reportErrors) diagnostics.length = savedLen;
     return t;
   }
 
@@ -1297,9 +1330,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _scalarFormWeightRefusal(expr: any, args: any, mT: any, scopes: any): any {
     const domain = mT && mT.domain;
     if (!domain || domain.kind !== 'array' || domain.rank !== 1) return null;
-    const reif = _unaryReification(args[0]);
+    const reif = _reificationWithArity(args[0]);
     if (!reif) return null;
-    const bodyT: any = _bodyTypeUnder(reif, domain, scopes);
+    const bodyT: any = _bodyTypeUnder(reif, [domain], scopes);
     const bad = bodyT && (bodyT.kind === 'array' || bodyT.kind === 'tvector'
       || bodyT.kind === 'record');
     if (!bad) return null;
@@ -4104,7 +4137,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _pushfwdCodomain(fExpr: any, inputType: any, scopes: any): any {
     if (!inputType || inputType.kind === 'failed' || inputType.kind === 'deferred'
         || inputType.kind === 'any') return null;
-    const reif = _unaryReification(fExpr);
+    const reif = _reificationWithArity(fExpr);
     if (!reif) return null;
     const scope = new Map();
     scope.set(reif.params[0], inputType);
@@ -4337,7 +4370,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // an array of records this engine would then refuse to build.)
   function inferMarkovchain(expr: any, scopes: any): any {
     const args = expr.args || [];
-    if (args.length !== 3) return arityError('markovchain', '3', args.length, expr.loc);
+    if (args.length !== 3 && args.length !== 4) return arityError('markovchain', '3 or 4', args.length, expr.loc);
     const kT: any = inferExpr(args[0], scopes);
     if (kT && kT.kind === 'failed') return T.failed('markovchain cascade');
     if (kT && kT.kind !== 'kernel' && kT.kind !== 'deferred' && kT.kind !== 'function') {
@@ -4385,7 +4418,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // `inferMarkovchain`.
   function inferKscan(expr: any, scopes: any): any {
     const args = expr.args || [];
-    if (args.length !== 3) return arityError('kscan', '3', args.length, expr.loc);
+    if (args.length !== 3 && args.length !== 4) return arityError('kscan', '3 or 4', args.length, expr.loc);
     const kT: any = inferExpr(args[0], scopes);
     if (kT && kT.kind === 'failed') return T.failed('kscan cascade');
     if (kT && kT.kind !== 'kernel' && kT.kind !== 'deferred' && kT.kind !== 'function') {

@@ -41,7 +41,8 @@ M = logweighted(q -> logdensityof(Normal(0, 1), q + t), Normal(0, 1))
 test('an inline weight binds inputs hidden in a reified measure expression', async () => {
   const { ctx } = makeMatCtx(`
 p ~ Uniform(interval(0, 1))
-l = (value -> logdensityof(weighted(p, Dirac(0)), value)).([0, 0])
+row(value, p) = logdensityof(weighted(p, Dirac(0)), value)
+l = row.([0, 0], p)
 f = functionof(l, p = p)
 M = logweighted(q -> sum(f(p = q)), Uniform(interval(0, 1)))
 a = logdensityof(M, 0.3)
