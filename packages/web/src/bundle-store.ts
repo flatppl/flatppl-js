@@ -9,6 +9,7 @@
     archive: any;
     saved: boolean;
     budget: { bytes: number; entries: number };
+    limits?: Record<string, number>;
   }
   interface ArchiveScope {
     id: string;
@@ -25,6 +26,9 @@
   let database: Promise<IDBDatabase> | undefined;
   const engine = () => scope.FlatPPLEngine;
   const changed = () => listeners.forEach(fn => fn());
+  // URL previews have a smaller budget than deliberate local ZIP uploads.
+  const LINK_LIMITS = { maxArchiveBytes: 8 * 1024 ** 2, maxMemberBytes: 2 * 1024 ** 2,
+    maxTotalBytes: 8 * 1024 ** 2, maxEntries: 256, maxDepth: 4, maxPathBytes: 1024 };
 
   function db(): Promise<IDBDatabase> {
     if (!database) database = new Promise((resolve, reject) => {
@@ -37,19 +41,38 @@
     return database;
   }
 
-  async function mount(folder: string, bytes: Uint8Array, saved: boolean): Promise<Mounted> {
+  async function mount(folder: string, bytes: Uint8Array, saved: boolean, limits?: Record<string, number>): Promise<Mounted> {
     const id = folder + '.flatppl.zip';
     const budget = { bytes: 0, entries: 0 };
-    const archive = await engine().readArchive(bytes, { id, budget });
-    const entry = { folder, id, bytes, archive, saved, budget };
+    const archive = await engine().readArchive(bytes, { id, budget, limits });
+    const entry = { folder, id, bytes, archive, saved, budget, limits };
     mounts.set(folder, entry);
-    await addScope(id, archive, entry, folder);
+    try { await addScope(id, archive, entry, folder); }
+    catch (error) { mounts.delete(folder); await archive.close(); throw error; }
     return entry;
+  }
+
+  function checkLinkPaths(archive: any, prefix: string) {
+    // The web tree stores full prefixes and renders folders recursively.
+    // Bound URL-supplied names before any tree construction.
+    for (const name of Object.keys(archive.entries)) {
+      if ((prefix + '/' + name).split('/').length > 32) {
+        throw new Error('Shared bundle paths exceed the browser folder depth limit.');
+      }
+    }
+  }
+
+  /** Do not publish a link the receiving playground would refuse to mount. */
+  async function validateLink(bytes: Uint8Array) {
+    const archive = await engine().readArchive(bytes, { id: 'share.zip', limits: LINK_LIMITS });
+    try { checkLinkPaths(archive, 'new/shared-model'); }
+    finally { await archive.close(); }
   }
 
   /** Cache link identities without decoding regular members. */
   async function addScope(id: string, archive: any, owner: Mounted, prefix: string, depth = 1): Promise<ArchiveScope> {
     const result = { id, archive, owner, prefix, depth, aliases: new Map<string, string>() };
+    if (owner.limits) checkLinkPaths(archive, prefix);
     for (const [name, meta] of Object.entries(archive.entries) as [string, any][]) {
       if (meta.symlink) result.aliases.set(name, await archive.resolve(name));
     }
@@ -116,12 +139,14 @@
       const member = engine().parseArchiveMemberId(id);
       if (!member) throw new Error('Bundle is not open: ' + id);
       const outer = await ensureScope(member.archiveId, graph);
-      if (outer.depth >= engine().DEFAULT_LIMITS.maxDepth) throw new Error('Bundle exceeds the archive nesting limit');
+      if (outer.depth >= (outer.owner.limits?.maxDepth ?? engine().DEFAULT_LIMITS.maxDepth)) throw new Error('Bundle exceeds the archive nesting limit');
       const path = await outer.archive.resolve(relativeMember(outer.archive, member.path));
       const directory = (await outer.archive.stat(path))?.directory;
       const archive = directory ? await outer.archive.subdirectory(path)
-        : await engine().readArchive(graph?.files?.[id] || await outer.archive.read(path), { id, budget: outer.owner.budget });
-      return addScope(id, archive, outer.owner, outer.prefix + '/' + path, outer.depth + 1);
+        : await engine().readArchive(graph?.files?.[id] || await outer.archive.read(path),
+          { id, budget: outer.owner.budget, limits: outer.owner.limits });
+      try { return await addScope(id, archive, outer.owner, outer.prefix + '/' + path, outer.depth + 1); }
+      catch (error) { await archive.close(); throw error; }
     })();
     pendingScopes.set(id, pending);
     try { return await pending; } finally { pendingScopes.delete(id); }
@@ -254,13 +279,25 @@
   }
 
   /** Open a whole bundle without writes. Reuse only an unchanged saved copy. */
-  async function open(bytes: Uint8Array, name: string, canReuse: (folder: string) => boolean = () => true) {
+  async function open(bytes: Uint8Array, name: string, canReuse: (folder: string) => boolean = () => true,
+      limits?: Record<string, number>) {
     let folder = 'new/' + nameOf(name);
     for (let n = 2; !available(folder); n++) folder = 'new/' + nameOf(name) + '-' + n;
-    const m = await mount(folder, bytes, false);
+    const m = await mount(folder, bytes, false, limits);
     try {
       for (const existing of mounts.values()) {
         if (existing.saved && canReuse(existing.folder) && await equal(existing.archive, m.archive)) {
+          // Readers capture their limits. Replacing the field alone leaves
+          // already-open nested archives using the local-upload budget.
+          if (limits) {
+            // Logical equality permits different ZIP compression. Reuse the
+            // validated incoming representation, and keep old readers intact
+            // until its replacement has mounted.
+            try { await mount(existing.folder, m.bytes, true, limits); }
+            catch (error) { mounts.set(existing.folder, existing); throw error; }
+            await existing.archive.close();
+            await release(existing);
+          }
           mounts.delete(folder);
           scopes.delete(m.id);
           await m.archive.close();
@@ -368,8 +405,9 @@
     }
   }
 
-  scope.FlatPPLWebBundles = { init, open, save, snapshot, read, canonical, displayPath, list,
+  scope.FlatPPLWebBundles = { init, open, save, snapshot, read, canonical, displayPath, list, LINK_LIMITS, validateLink,
     registerGraph, select, draftFor,
+    limits: (path: string) => owner(path)?.limits,
     has: (path: string | null | undefined) => !!owner(path),
     folder: (path: string | null | undefined) => owner(path)?.folder,
     isSaved: (path: string | null | undefined) => !!owner(path)?.saved,

@@ -7,7 +7,7 @@
 import type { QRCode, QRCodeSegment } from 'qrcode';
 
 export const MAX_SHARE_URL_LENGTH = 64 * 1024;
-export const MAX_SHARE_ARCHIVE_BYTES = 64 * 1024 * 1024;
+export const MAX_SHARE_ARCHIVE_BYTES = 8 * 1024 * 1024;
 export const MAX_SHARE_COMPRESSED_BYTES = 1024 * 1024;
 export const MAX_SHARE_QR_VERSION = 40;
 

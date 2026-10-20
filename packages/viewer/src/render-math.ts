@@ -30,6 +30,7 @@
 // failure keeps the last good rows on screen with a notice.
 
 import { esc } from './util.js';
+import { documentHtml } from './markdown.js';
 import { focusNode } from './dag.js';
 import { updatePlotForBinding } from './render-plot.js';
 import {
@@ -129,7 +130,7 @@ function buildRows(ctx: Ctx, el: HTMLElement, res: MathResponse, notice: string 
   }
   // SECURITY: the article is our own Rust renderer's output (its text and
   // doc-comments escaped there); the notice is esc()'d or constant.
-  el.innerHTML = (notice ? '<div class="math-notice">' + notice + '</div>' : '') + res.document.html;
+  el.innerHTML = (notice ? '<div class="math-notice">' + notice + '</div>' : '') + documentHtml(res.document.html);
   const style = document.createElement('style');
   style.textContent = res.document.css;
   el.prepend(style);

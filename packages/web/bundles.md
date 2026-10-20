@@ -38,16 +38,33 @@ bundles use IndexedDB. A storage failure leaves the preview available for
 download. Existing loose files remain accessible. Two bundles count as equal
 only when their member paths, contents, and link metadata match.
 
+Links open a source preview. **Run preview** enables analysis, imports, plots,
+and other document views. Inspect unfamiliar files first: running a model can
+use substantial time and memory. Saving a preview does not run it.
+The Share dialog lists every file in the exported snapshot. Mounted bundles
+include unused members too.
+
 The QR image can use Base32 to fit more content than a byte-encoded URL. The
 browser selects the smaller QR matrix and exports an SVG suitable for print.
-The first version limits QR codes to version 25 with medium error correction.
+QR codes support version 40 with medium error correction.
 Large models should use a downloadable ZIP instead.
 
 The browser accepts STORE and Deflate ZIPs. Defaults limit a compressed archive
 to 64 MiB, one member to 128 MiB, total expanded data to 256 MiB, 10,000 entries,
-and eight nested archives. Decoders check actual output sizes and CRCs. Share
-links have a 64 KiB URL limit and a 64 MiB expanded ZIP limit.
+and eight nested archives. Decoders check actual output sizes and CRCs.
 Paths and symbolic-link targets have a 65,535-byte limit, matching ZIP's filename field.
+
+Share links have a 64 KiB URL limit. URL-opened bundles have stricter browser
+limits: 8 MiB per archive and in total expanded members, 2 MiB per member,
+256 entries, four nested archives, 1,024 bytes per path, and 32 folder components.
+Local ZIP uploads retain the general limits above. Both STORE and Deflate work.
+The Math view limits data conversion to 8 MiB before constructing its JSON request.
+
+Document images require consent before loading, including images in Markdown
+hovers and the Math view. Image approval lasts for the current page session.
+HTML opens in a sandbox with network loads blocked. **Load external resources**
+allows its images, styles, fonts, media, and frames to contact servers, including
+redirect destinations. Scripts and access to playground storage stay blocked.
 
 You can host a ZIP yourself and open its URL through a `#model=` link. The host
 must allow browser access through CORS. Otherwise download the ZIP and open it

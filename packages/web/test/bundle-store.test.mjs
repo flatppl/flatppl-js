@@ -9,9 +9,22 @@ const engine = require('../../engine/index.ts');
 const encode = text => new TextEncoder().encode(text);
 const decode = bytes => new TextDecoder().decode(bytes);
 
-function store() {
+function store(records) {
   const window = { FlatPPLEngine: engine };
-  Object.defineProperty(window, 'indexedDB', { get() { throw new Error('Preview touched persistent storage'); } });
+  if (records) window.indexedDB = {
+    open() {
+      const request = { result: { transaction: () => ({ objectStore: () => ({
+        getAll() {
+          const read = { result: records };
+          queueMicrotask(() => read.onsuccess());
+          return read;
+        },
+      }) }) } };
+      queueMicrotask(() => request.onsuccess());
+      return request;
+    },
+  };
+  else Object.defineProperty(window, 'indexedDB', { get() { throw new Error('Preview touched persistent storage'); } });
   vm.runInNewContext(stripTypeScriptTypes(readFileSync(new URL('../src/bundle-store.ts', import.meta.url), 'utf8')),
     { window, console, TextEncoder, Uint8Array });
   return window.FlatPPLWebBundles;
@@ -141,4 +154,83 @@ test('share selection parameters decode URLSearchParams spaces and retain litera
   const selection = new URLSearchParams({ share: 'br1.snapshot', model: 'a folder/model+1.flatppl' });
   r.window.location.hash = '#' + selection;
   assert.equal(r.parseHash().model, 'a folder/model+1.flatppl');
+});
+
+test('URL inputs enforce the link budget and a single value per routing field', () => {
+  const r = router();
+  for (const hash of [
+    '#share=' + 'A'.repeat(64 * 1024),
+    '#share=first&share=second',
+    '#/files/a.flatppl?model=b.flatppl',
+    '#share=first&archive=https%3A%2F%2Fexample.org%2Fa.zip',
+    '#model=%XX',
+  ]) {
+    r.window.location.hash = hash;
+    assert.ok(r.parseHash().error);
+  }
+  r.window.location.hash = '#/files/caf%C3%A9.flatppl?target=x';
+  assert.equal(r.parseHash().model, 'café.flatppl');
+  assert.equal(r.parseHash().target, 'x');
+});
+
+test('incoming and outgoing link limits preserve local ZIP support', async () => {
+  const bundles = store();
+  const long = 'a/'.repeat(33) + 'x.txt';
+  const deep = await engine.writeArchive({ 'main.flatppl': encode('x=1'), [long]: encode('data') });
+  await assert.rejects(bundles.validateLink(deep));
+  await assert.rejects(bundles.open(deep, 'deep.zip', undefined, bundles.LINK_LIMITS));
+  assert.deepEqual(Array.from(bundles.list(false)), []);
+  const local = await bundles.open(deep, 'deep.zip');
+  assert.equal(decode(await bundles.read(bundles.folder(local.path) + '/' + long)), 'data');
+  await bundles.discard(local.path);
+  const large = await engine.writeArchive({
+    'main.flatppl': encode('x=1'), 'data.txt': new Uint8Array(2 * 1024 ** 2 + 1),
+  }, { compression: 'deflate' });
+  await assert.rejects(bundles.validateLink(large));
+  await assert.rejects(bundles.open(large, 'large.zip', undefined, bundles.LINK_LIMITS));
+  assert.deepEqual(Array.from(bundles.list(false)), []);
+});
+
+test('nested archives retain the URL preview budgets and accept ordinary Deflate', async () => {
+  const bundles = store();
+  const nested = await engine.writeArchive({
+    'main.flatppl': encode('x=2'), 'data.txt': new Uint8Array(2 * 1024 ** 2 + 1),
+  }, { compression: 'deflate' });
+  const outer = await engine.writeArchive({ 'main.flatppl': encode('x=1'), 'nested.zip': nested },
+    { compression: 'deflate' });
+  await bundles.validateLink(outer);
+  assert.equal(bundles.list(false).length, 0);
+  const opened = await bundles.open(outer, 'outer.zip', undefined, bundles.LINK_LIMITS);
+  assert.equal(decode(await bundles.read(opened.path)), 'x=1');
+  await assert.rejects(bundles.select(bundles.folder(opened.path), 'nested.zip/main.flatppl'));
+  assert.equal(bundles.list(false).length, 2);
+  await bundles.discard(opened.path);
+});
+
+test('reusing a saved bundle replaces nested readers that had local upload limits', async () => {
+  const nested = await engine.writeArchive({
+    'main.flatppl': encode('x=2'), 'data.bin': new Uint8Array(2 * 1024 ** 2 + 1),
+  }, { compression: 'deflate' });
+  const bytes = await engine.writeArchive({ 'main.flatppl': encode('x=1'), 'nested.zip': nested });
+  const bundles = store([{ folder: 'user/saved', bytes }]);
+  await bundles.init();
+  assert.equal(await bundles.select('user/saved', 'nested.zip/main.flatppl'), 'user/saved/nested.zip/main.flatppl');
+  const reopened = await bundles.open(bytes, 'shared', undefined, bundles.LINK_LIMITS);
+  assert.equal(reopened.reused, true);
+  assert.equal(reopened.path, 'user/saved/main.flatppl');
+  await assert.rejects(bundles.select('user/saved', 'nested.zip/main.flatppl'));
+});
+
+test('saved reuse accepts a smaller ZIP representation of the same files', async () => {
+  const files = { 'main.flatppl': encode('x=1'), 'data.bin': new Uint8Array(8192) };
+  const stored = await engine.writeArchive(files, { compression: 'store' });
+  const compressed = await engine.writeArchive(files, { compression: 'deflate' });
+  assert.ok(stored.length > compressed.length);
+  const bundles = store([{ folder: 'user/saved', bytes: stored }]);
+  await bundles.init();
+  const opened = await bundles.open(compressed, 'shared', undefined,
+    { ...bundles.LINK_LIMITS, maxArchiveBytes: compressed.length });
+  assert.equal(opened.reused, true);
+  assert.equal(decode(await bundles.read(opened.path)), 'x=1');
+  assert.equal((await bundles.read('user/saved/data.bin')).length, files['data.bin'].length);
 });

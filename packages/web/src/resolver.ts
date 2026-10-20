@@ -30,6 +30,14 @@
   // The browser's HTTP cache backs this for cross-page reuse.
   const sourceCache = new Map();
   const trustedUrls = new Set<string>();
+  const imageDecisions = new Map<string, boolean>();
+
+  function canonicalUrl(url: string): string {
+    const parsed = new URL(url, document.baseURI);
+    if (!/^https?:$/.test(parsed.protocol)) throw new Error('Browser sources require an http or https URL');
+    parsed.hash = '';
+    return parsed.href;
+  }
 
   /** Spec §04 Remote file caching: approve an external URL before fetching.
    *  Browser trust markers use localStorage, with a session fallback when
@@ -38,7 +46,7 @@
     const parsed = new URL(url, document.baseURI);
     if (!/^https?:$/.test(parsed.protocol)
         || parsed.origin === new URL(document.baseURI).origin) return;
-    const key = url.split('#', 1)[0];
+    const key = canonicalUrl(url);
     if (trustedUrls.has(key)) return;
     const storageKey = 'flatppl-web:trusted-url:' + key;
     let trusted = false;
@@ -53,14 +61,30 @@
     trustedUrls.add(key);
   }
 
+  /** Native images need no CORS permission. Ask before assigning their src,
+   *  including the fact that the browser may follow redirects to other hosts. */
+  function approveImage(url: string): boolean {
+    const key = canonicalUrl(url);
+    if (!imageDecisions.has(key)) imageDecisions.set(key, !!globalScope.confirm?.(
+      'Load this document image? The server and any redirect destinations will receive a request.\n' + key));
+    return imageDecisions.get(key)!;
+  }
+
   /**
    * Fetch a single .flatppl source by URL.
    * Returns the text on success; throws on network/HTTP error.
    * Cached on first success.
    */
-  async function fetchBytes(url: string): Promise<Uint8Array> {
-    if (!/^https?:\/\//i.test(url)) throw new Error('Browser sources require an http or https URL');
-    if (sourceCache.has(url)) return sourceCache.get(url);
+  async function fetchBytes(url: string, byteLimit?: number): Promise<Uint8Array> {
+    url = canonicalUrl(url);
+    const limits = globalScope.FlatPPLEngine?.DEFAULT_LIMITS;
+    const maxBytes = byteLimit ?? (/\.zip(?:[?#]|$)/i.test(url) ? (limits?.maxArchiveBytes ?? 64 * 1024 ** 2)
+      : (limits?.maxMemberBytes ?? 128 * 1024 ** 2));
+    if (sourceCache.has(url)) {
+      const bytes = sourceCache.get(url);
+      if (bytes.byteLength > maxBytes) throw new Error('File exceeds the browser size limit: ' + url);
+      return bytes;
+    }
     approveSource(url);
 
     let response;
@@ -74,9 +98,6 @@
     if (!response.ok) {
       throw new Error(response.status + ' ' + response.statusText + ' at ' + url);
     }
-    const limits = globalScope.FlatPPLEngine?.DEFAULT_LIMITS;
-    const maxBytes = /\.zip(?:[?#]|$)/i.test(url) ? (limits?.maxArchiveBytes ?? 64 * 1024 ** 2)
-      : (limits?.maxMemberBytes ?? 128 * 1024 ** 2);
     const reader = response.body?.getReader();
     const chunks: Uint8Array[] = [];
     let size = 0;
@@ -107,7 +128,7 @@
    * `{ source, url }` (url is the path itself for in-memory tiers).
    * Throws on a network/HTTP error.
    */
-  async function readBytes(path: string, drafts: Record<string, string> = {}): Promise<Uint8Array | null> {
+  async function readBytes(path: string, drafts: Record<string, string> = {}, byteLimit?: number): Promise<Uint8Array | null> {
     const bundles = globalScope.FlatPPLWebBundles;
     const display = bundles?.displayPath(path) || path;
     const draft = bundles?.draftFor ? await bundles.draftFor(path, drafts) : drafts[display];
@@ -122,10 +143,10 @@
     // An absolute http(s) URL dependency uses browser trust markers and the
     // HTTP/session caches. The shared on-disk cache is a Node-host concern.
     if (/^https?:\/\//i.test(path)) {
-      return fetchBytes(path);
+      return fetchBytes(path, byteLimit);
     }
     const url = new URL(path, document.baseURI).href;
-    return fetchBytes(url);
+    return fetchBytes(url, byteLimit);
   }
 
   /**
@@ -143,10 +164,14 @@
     if (!bytes) throw new Error('File is not available: ' + primaryPath);
     const path = globalScope.FlatPPLWebBundles?.canonical(primaryPath) || primaryPath;
     const FE = globalScope.FlatPPLEngine;
+    const limits = globalScope.FlatPPLWebBundles?.limits?.(primaryPath);
     const fileType = globalScope.FlatPPLFileTypes?.typeForPath(primaryPath);
     if (FE?.resolveBundleBytes && (!fileType || fileType === 'flatppl' || /\.zip$/i.test(path))) {
-      const graph = await FE.resolveBundleBytes(path, bytes, (dep: string) => readBytes(dep, drafts),
-        { strict: !!options.strict });
+      const graph = await FE.resolveBundleBytes(path, bytes,
+        (dep: string) => readBytes(dep, drafts, limits?.maxMemberBytes),
+        // The graph also captures whole ZIP containers as files. Individual
+        // members remain bounded by the mount and external reads above.
+        { strict: !!options.strict, limits: limits && { ...limits, maxMemberBytes: limits.maxArchiveBytes } });
       return { ...graph, primaryUrl: path };
     }
     let source: string, binary = false;
@@ -170,7 +195,7 @@
    */
   function invalidate(pathOrUrl: any) {
     let url;
-    try { url = new URL(pathOrUrl, document.baseURI).href; }
+    try { url = canonicalUrl(pathOrUrl); }
     catch (_) { url = pathOrUrl; }
     sourceCache.delete(url);
   }
@@ -179,5 +204,6 @@
     resolveBundle: resolveBundle,
     readBytes: readBytes,
     invalidate: invalidate,
+    approveImage: approveImage,
   };
 })(typeof window !== 'undefined' ? window : globalThis);

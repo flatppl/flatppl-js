@@ -49,7 +49,7 @@ function manualTimers() {
 /** Boot the real gallery over an inert editor and pane, then drive its router. */
 async function gallery({ editable = false, store, bundles, ephemeral, initial = { model: null }, sidebar = false,
   manifest = { entries: [] }, localStorage = storage(), loadManifest, loadBundle, readBytes, decodeShare, timers } = {}) {
-  let boot, onChange, editorOptions, beforeUnload, source = '', download, readOnly = true;
+  let boot, onChange, editorOptions, beforeUnload, source = '', download, readOnly = true, language;
   let route = initial;
   const requests = [];
   const renders = [];
@@ -99,14 +99,15 @@ async function gallery({ editable = false, store, bundles, ephemeral, initial = 
     },
     FlatPPLWebEditor: { mountEditor: (_container, opts) => {
       editorOptions = opts;
-      return { setSource(text) { source = text; }, getSource: () => source, setReadOnly(value) { readOnly = value; } };
+      return { setSource(text) { source = text; }, getSource: () => source, setReadOnly(value) { readOnly = value; },
+        setLanguage(value) { language = value; } };
     } },
-    FlatPPLWebSurfaces: { createPaneController: () => ({
+    FlatPPLWebSurfaces: { typeForPath: fileTypes.typeForPath, createPaneController: () => ({
       update(text, target, opts) { renders.push({ text, target, path: opts?.path, opts }); },
     }) },
   };
   const globals = { window, document, console: { error() {}, warn() {} },
-    setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout, Blob,
+    setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout, Blob, TextDecoder,
     URL: { createObjectURL(blob) { download = blob; return 'blob:test'; }, revokeObjectURL() {} },
     decodeSharedBytes: decodeShare,
   };
@@ -119,6 +120,7 @@ async function gallery({ editable = false, store, bundles, ephemeral, initial = 
     route: () => ({ ...route }),
     flush: () => new Promise(resolve => setImmediate(resolve)),
     readOnly: () => readOnly,
+    language: () => language,
     edit(text) { source = text; editorOptions.onChange(text); },
     toggleEdit() { elements.get('edit-toggle').handlers.click(); },
     save() { editorOptions.onSave(); },
@@ -415,7 +417,8 @@ for (const transport of ['share', 'hosted']) {
     const g = await gallery({ editable: true, bundles: bundles.api, loadBundle: bundles.loadBundle,
       timers: manualTimers(),
       decodeShare: transport === 'share' ? async token => bytes(token) : undefined,
-      readBytes: async url => bytes(url.includes('/A.zip') ? 'A' : 'B'),
+      readBytes: async (url, drafts = {}) => new TextEncoder().encode(
+        drafts[url] ?? bundles.source(url) ?? new TextDecoder().decode(bytes(url.includes('/A.zip') ? 'A' : 'B'))),
     });
     const incoming = value => transport === 'share'
       ? { model: 'main.flatppl', share: value }
@@ -423,6 +426,8 @@ for (const transport of ['share', 'hosted']) {
     await g.navigate(incoming('A'));
     await g.flush();
     assert.equal(g.source(), 'x = 1');
+    assert.equal(g.language(), 'unknown');
+    assert.equal(g.renders.at(-1).opts.preview, true);
     const first = g.route();
     g.toggleEdit();
     g.edit('x = 41');
@@ -436,6 +441,92 @@ for (const transport of ['share', 'hosted']) {
     assert.equal(bundles.opens.length, 2);
   });
 }
+
+test('a link remains inert through edits and target changes until Run', async () => {
+  const bundles = bundleBoundary();
+  const timers = manualTimers();
+  let resolutions = 0;
+  const g = await gallery({ editable: true, bundles: bundles.api, timers,
+    decodeShare: async () => new TextEncoder().encode('x = ones(1000000000)'),
+    readBytes: async (path, drafts = {}) => new TextEncoder().encode(drafts[path] ?? bundles.source(path)),
+    loadBundle: (...args) => { resolutions++; return bundles.loadBundle(...args); },
+  });
+  await g.navigate({ share: 'br1.test', model: 'main.flatppl', target: 'x' });
+  await g.flush();
+  assert.equal(g.source(), 'x = ones(1000000000)');
+  assert.equal(g.language(), 'unknown');
+  assert.equal(resolutions, 0);
+  const staleRun = g.renders.at(-1).opts.run;
+  g.toggleEdit();
+  g.edit('x = 3');
+  await timers.debounce();
+  await g.navigate({ ...g.route(), target: 'x' });
+  assert.equal(resolutions, 0);
+  staleRun();
+  assert.equal(resolutions, 0);
+  g.renders.at(-1).opts.run();
+  await g.flush();
+  assert.equal(resolutions, 1);
+  assert.equal(g.renders.at(-1).text, 'x = 3');
+  assert.equal(g.renders.at(-1).opts.preview, undefined);
+});
+
+test('saving a shared preview preserves the Run gate', async () => {
+  const bundles = bundleBoundary();
+  let resolutions = 0;
+  bundles.api.save = async bytes => {
+    bundles.set('user/saved/main.flatppl', new TextDecoder().decode(bytes));
+    return 'user/saved/main.flatppl';
+  };
+  const g = await gallery({ editable: true, bundles: bundles.api,
+    decodeShare: async () => new TextEncoder().encode('x=1'),
+    readBytes: async path => new TextEncoder().encode(bundles.source(path)),
+    loadBundle: (...args) => { resolutions++; return bundles.loadBundle(...args); },
+  });
+  await g.navigate({ share: 'br1.test', model: 'main.flatppl' });
+  await g.flush();
+  g.save();
+  await g.flush();
+  assert.equal(g.route().model, 'user/saved/main.flatppl');
+  assert.equal(g.renders.at(-1).opts.preview, true);
+  assert.equal(resolutions, 0);
+});
+
+test('file labels expose bidirectional controls without changing file identity', async () => {
+  const path = 'examples/a\u202etxt.flatppl';
+  const g = await gallery({ sidebar: true, manifest: { entries: [{ path }] } });
+  await g.navigate({ model: null });
+  const link = g.elements.get('file-tree').querySelector('a');
+  assert.equal(link.dataset.path, path);
+  assert.equal(link.children[0].textContent, 'a\\u202etxt.flatppl');
+  assert.equal(link.title, 'examples/a\\u202etxt.flatppl');
+});
+
+test('URL approval, fetch and cache share one canonical identity', async () => {
+  const r = resolver(storage(), true);
+  const raw = 'https://REMOTE.invalid:443/a/../model.flatppl\n?x=1#fragment';
+  const canonical = 'https://remote.invalid/model.flatppl?x=1';
+  await r.api.readBytes(raw);
+  await r.api.readBytes(canonical);
+  assert.deepEqual(r.requests, [canonical]);
+  assert.equal(r.prompts.length, 1);
+  assert.equal(r.prompts[0].split('\n').at(-1), canonical);
+  r.api.invalidate(raw);
+  await r.api.readBytes(canonical);
+  assert.deepEqual(r.requests, [canonical, canonical]);
+  assert.equal(r.prompts.length, 1);
+});
+
+test('image consent is separate from module trust and cached only for the session', async () => {
+  const r = resolver(storage(), false);
+  assert.equal(r.api.approveImage('https://remote.invalid/image.png'), false);
+  assert.equal(r.api.approveImage('https://REMOTE.invalid:443/image.png'), false);
+  assert.equal(r.prompts.length, 1);
+  assert.deepEqual(r.requests, []);
+  const approved = resolver(storage(), true);
+  assert.equal(approved.api.approveImage('https://remote.invalid/image.png'), true);
+  assert.match(approved.prompts[0], /redirect/);
+});
 
 function manifestLoader(raw) {
   const window = { FlatPPLFileTypes: fileTypes };
