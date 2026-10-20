@@ -1074,22 +1074,6 @@ function classifyDerivation(
     // Measure construction: call to a sampleable distribution.
     if (normalizedRhsIR && normalizedRhsIR.kind === 'call' && normalizedRhsIR.op
         && SAMPLEABLE_DISTRIBUTIONS.has(normalizedRhsIR.op)) {
-      // Dirac(value = ref-to-binding) is mathematically a plain
-      // alias — same equivalence class as lawof(ref-to-binding) —
-      // so classify as 'alias' for the lighter, sampler-free path.
-      // getMeasure recursively follows the alias chain to the
-      // source binding's measure object; sampling never runs and
-      // the Dirac REGISTRY's scalar-only limitation is sidestepped.
-      // (Without this, `m = Dirac(observed_data)` would hit the
-      // sample path with refArrays missing per-atom values for the
-      // literal-array source, producing garbage samples.)
-      if (normalizedRhsIR.op === 'Dirac'
-          && normalizedRhsIR.kwargs && normalizedRhsIR.kwargs.value
-          && normalizedRhsIR.kwargs.value.kind === 'ref'
-          && normalizedRhsIR.kwargs.value.ns === 'self'
-          && bindings.has(normalizedRhsIR.kwargs.value.name)) {
-        return { kind: 'alias', from: normalizedRhsIR.kwargs.value.name };
-      }
       return { kind: 'sample', distIR: normalizedRhsIR };
     }
 

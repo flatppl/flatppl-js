@@ -10,6 +10,68 @@ const density = require('../density.ts');
 const { orchestrator } = require('..');
 const T = require('../types.ts');
 
+test('Dirac sampling retains whole inline and named atoms for later expressions', async () => {
+  const { proc, ctx } = ctxFor(`
+atom = [1, 2]
+x ~ Dirac([1, 2])
+y ~ Dirac(atom)
+sx = sum(x)
+sy = sum(y)
+z ~ Dirac(complex(1, 2))
+iz = imag(z)
+r ~ Dirac(value = record(label = "a", xs = [1, 2]))
+sr = sum(r.xs)
+s ~ Dirac("a")
+t ~ Dirac(value = table(a = [1, 2]))
+st = sum(t.a)
+m ~ Dirac(transpose(rowstack([[1, 3], [2, 4]])))
+dm = det(m)
+v ~ Dirac([[1, 2], [3, 4]])
+sv = sum(v[2])
+`, 3);
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  for (const [name, oracle] of [['sx', 3], ['sy', 3], ['iz', 2], ['sr', 3], ['st', 3], ['dm', -2], ['sv', 7]]) {
+    assert.deepEqual(Array.from((await ctx.getMeasure(name)).samples), Array(3).fill(oracle), name);
+  }
+  assert.deepEqual((await ctx.getMeasure('x')).value.shape, [3, 2]);
+  assert.deepEqual((await ctx.getMeasure('r')).value.map((v: any) => v.label), ['a', 'a', 'a']);
+  assert.deepEqual((await ctx.getMeasure('s')).samples, ['a', 'a', 'a']);
+});
+
+test('Dirac vector parameters retain their per-atom values and weights', async () => {
+  const { proc, ctx } = ctxFor(`
+tilt = a -> exp(a)
+tm = normalize(weighted(tilt, Normal(0, 1)))
+theta ~ tm
+x ~ Dirac([theta, theta + 1])
+out = sum(x)
+`, 4);
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const theta = await ctx.getMeasure('theta');
+  const out = await ctx.getMeasure('out');
+  assert.deepEqual(Array.from(out.samples), Array.from(theta.samples, (v: number) => v + (v + 1)));
+  assert.deepEqual(out.logWeights, theta.logWeights);
+});
+
+test('Dirac array and complex atoms survive iid and value-position rand', async () => {
+  const { ctx } = ctxFor(`
+x ~ iid(Dirac([1, 2]), 2)
+z ~ iid(Dirac(complex(1, 2)), 2)
+iz = imag.(z)
+s ~ iid(Dirac("a"), [2, 1])
+v, state = rand(Dirac([1, 2]), rnginit([1, 2, 3, 4]))
+sv = sum(v)
+`, 3);
+  const x = await ctx.getMeasure('x');
+  assert.deepEqual(x.value.shape, [3, 2, 2]);
+  assert.deepEqual(Array.from(x.samples), [1, 2, 1, 2, 1, 2, 1, 2, 1, 2, 1, 2]);
+  assert.deepEqual(Array.from((await ctx.getMeasure('iz')).samples), [2, 2, 2, 2, 2, 2]);
+  assert.deepEqual(Array.from((await ctx.getMeasure('sv')).samples), [3, 3, 3]);
+  assert.deepEqual((await ctx.getMeasure('s')).value, [[['a'], ['a']], [['a'], ['a']], [['a'], ['a']]]);
+  const table = await ctxFor('t ~ iid(Dirac(value = record(label = "a")), 2)', 1).ctx.getMeasure('t');
+  assert.deepEqual(table.columns.label, ['a', 'a']);
+});
+
 async function score(measure: string, point: string, prefix = ''): Promise<number> {
   const { proc, ctx } = ctxFor(`${prefix}\nM = ${measure}\nlp = logdensityof(M, ${point})`, 1);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);

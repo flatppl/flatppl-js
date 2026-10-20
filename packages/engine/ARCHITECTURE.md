@@ -282,8 +282,10 @@ optimizations. The Dirac primitive compares exact structural values, including
 array nesting and logical matrix views. Observation resolution opts into
 `resolveIRToValue`'s shape-preserving mode so matrices do not become nested
 vectors before scoring; other resolver callers retain the plain-JS default.
-Sampling aliases for named Dirac values retain the constructor during density
-expansion, rather than interpreting the aliased value as a measure.
+Dirac sampling keeps complete atoms in the worker's sample arrays until
+materialisation packs numeric cells or retains structured values. Named and
+inline atoms share this path; a fixed array atom acquires a leading sample
+axis rather than becoming a scalar ensemble of its elements.
 IID products preserve complex buffers in both array atoms and table columns;
 per-atom evaluation uses logical row slices to retain complex and layout tags.
 

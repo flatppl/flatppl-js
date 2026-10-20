@@ -42,11 +42,12 @@
 //        Single-shot scalar eval — used by tests.
 //
 //   sampleN { distIR, count, refArrays?, seed? }
-//        → samples { samples: Float64Array }
+//        → samples { samples: Float64Array | any[] }
 //        N-sample draw with per-i env: each row of refArrays supplies
 //        the ref values for one Monte Carlo draw. The orchestrator's
 //        sample-step IRs feed into here. `seed` (if provided) re-keys
 //        Philox before drawing so per-binding seeding is deterministic.
+//        Non-real Dirac atoms stay whole in an array until materialisation.
 //
 //        `seed` accepts either a uint32 (legacy hosts) or a uint32-pair
 //        `[k0, k1]` PhiloxKey (post commit 2). The handler routes both
@@ -371,7 +372,10 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           const refKeys = Object.keys(refArrays);
           let state = msg.seed != null ? _stateFromSeed(msg.seed) : philox;
           const total = count * repeat;
-          const out = new Float64Array(total);
+          // A Dirac's atom need not be a real scalar. The parametric path
+          // preserves whole values; the static sampler selects its own buffer.
+          let out: any = msg.ir.op === 'Dirac' && refKeys.length
+            ? new Array(total) : new Float64Array(total);
 
           if (refKeys.length === 0) {
             // Static-params fast path. Commit 3 (RNG split, Option C)
@@ -395,8 +399,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // 1)`) resolve at param-resolution time rather than failing
             // as unbound.
             const r = samplerLib.makeBulkSampler(state, msg.ir, env, total, out);
-            // makeBulkSampler writes into `out` when supplied, so we
-            // don't need to copy r.samples back — they share storage.
+            out = r.samples;
             state = r.state;
           } else {
             // Per-i-params path: at least one kwarg references an upstream

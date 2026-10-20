@@ -160,7 +160,7 @@ function matSample(name: string, d: DerivationSample, ctx: any) {
       for (const p of parents) {
         if (typeof p.n_eff === 'number') n_eff = Math.min(n_eff, p.n_eff);
       }
-      return scalarMeasureN(reply.samples, {
+      return measureFromReply(reply, ctx.sampleCount, {
         logWeights: lw,
         logTotalmass,
         n_eff,
@@ -1529,6 +1529,10 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
             return Promise.reject(new Error(
               'iid: record field "' + fk + '" produced no samples'));
           }
+          if (Array.isArray(fv.value)) {
+            columns[fk] = fv.value;
+            continue;
+          }
           // A field's per-row value may itself be a vector (nested iid,
           // kernel-broadcast, MvNormal): its inner element dims follow the k
           // row axis. Read them from the field Value's trailing shape (its
@@ -1576,6 +1580,18 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       if (!samples) {
         return Promise.reject(new Error(
           'iid: inner measure for ' + d.from + ' produced no samples'));
+      }
+      if (Array.isArray(samples)) {
+        // Non-numeric atoms keep the iid array shape as nested values.
+        const nest = (start: number, dims: number[]): any[] => {
+          if (dims.length === 1) return samples.slice(start, start + dims[0]);
+          const stride = dims.slice(1).reduce((a, b) => a * b, 1);
+          return Array.from({ length: dims[0] }, (_, i) => nest(start + i * stride, dims.slice(1)));
+        };
+        return shared.measureFromAtoms(
+          Array.from({ length: N }, (_, i) => nest(i * k, d.dims)),
+          { logWeights: foldedLW, logTotalmass, n_eff: foldedLW
+            ? empirical.effectiveSampleSize({ logWeights: foldedLW }) : N });
       }
       // outerRank=1: the [N, ...d.dims] Value is a nested vector —
       // N outer atoms × inner-of-shape-d.dims SAMPLES from the inner
@@ -1892,6 +1908,9 @@ function _resolveIidLeaf(
     return inner && d.kind === 'normalize' ? { ...inner, normalized: true } : inner;
   }
   if (d.kind === 'sample') {
+    // A point atom may be a record or array. The composite path preserves
+    // its shape before adding iid's axes; this fast path assumes scalar cells.
+    if (d.distIR.op === 'Dirac') return null;
     return { kind: 'sample', distIR: d.distIR };
   }
   if (d.kind === 'truncate') {
