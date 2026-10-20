@@ -461,6 +461,13 @@ function liftInlineSubexpressions(bindings: any) {
     do { n = '__iid' + (counter++); } while (out.has(n));
     return n;
   }
+  // Factors must not renumber the existing RNG-bearing synthetic bindings.
+  let choleskyCounter = 0;
+  function freshCholeskyName() {
+    let n: string;
+    do { n = '__chol' + (choleskyCounter++); } while (out.has(n));
+    return n;
+  }
   // Module-name set hoisted up here (it was previously built after
   // the binding loop) so `inlineMvNormalLift` can call `lowerExpr`
   // on the synthetic-binding's muIR / covIR with the same
@@ -1574,8 +1581,10 @@ function liftInlineSubexpressions(bindings: any) {
    *             // .__mvnormalLowering field, which buildDerivations'
    *             // bijection-construction loop reads to populate
    *             // binding.bijection.registryName = 'affine' and
-   *             // binding.bijection.paramIRs = {L: lower_cholesky(cov),
-   *             //                                b: mu}.
+   *             // binding.bijection.paramIRs = {L: factor, b: mu}.
+   *   __chol_N = lower_cholesky(cov)
+   *             // retained only when post-lift phase analysis proves fixed;
+   *             // otherwise L keeps the original inline expression.
    *   __iid_N = iid(Normal(mu = 0.0, sigma = 1.0), D)
    *
    * Gate (conservative MVP — see ast_construction_recipes RECIPE 4):
@@ -1718,6 +1727,19 @@ function liftInlineSubexpressions(bindings: any) {
       }
     }
     // (inline non-ref cov with unknown shape: lower — runtime checks own it)
+    // §08's synthesized factor is an ordinary value. Let post-lift phase
+    // analysis decide whether FixedValues can own it; locals stay inline.
+    let factorName: string | undefined;
+    if (!containsHoleOrPlaceholder(covAst) && !__containsFormalRef(covAst, out)) {
+      factorName = freshCholeskyName();
+      out.set(factorName, makeSyntheticBinding(factorName, {
+        type: 'CallExpr',
+        callee: makeIdent('lower_cholesky', astArg.loc),
+        builtin: true,
+        args: [cloneAst(covAst)],
+        loc: astArg.loc,
+      }));
+    }
     // Emit the synthetic bijection binding `__bij_N`. AST shape is the
     // same identity-stub form used in test/bijection-registry-
     // dispatch.test.ts — `fn(_)` for forward AND inverse, scalar 0
@@ -1759,6 +1781,7 @@ function liftInlineSubexpressions(bindings: any) {
     (bijBinding as any).__mvnormalLowering = {
       muIR:  lowerExpr(cloneAst(muAst),  liftLowerCtx),
       covIR: lowerExpr(cloneAst(covAst), liftLowerCtx),
+      factorName,
     };
     out.set(bijName, bijBinding);
     // Emit the synthetic iid base binding `__iid_N`. The inner

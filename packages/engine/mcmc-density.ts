@@ -260,31 +260,24 @@ function evaluateDerivedBindings(
 // Vector latents (Float64Array or Array with length > 1) CANNOT go into
 // refArrays: the walker would do refArrays[k][0] and get a single scalar,
 // losing the vector.  Instead they are injected directly into baseEnv
-// (additionalEnv) so the walker finds the full array for indexing operations
-// like `a[group_data]` or `theta[person]`.  evaluateExpr resolves plain
-// Array indexing correctly; Float64Array indexing also works for integer
-// indices but we convert to Array to be safe with arbitrary index expressions.
+// (additionalEnv) by buildEnv so the walker finds the full array for indexing
+// operations like `a[group_data]` or `theta[person]`. This adapter only adds
+// the scalar-per-atom entries; it does not copy the vectors already in env.
 // ---------------------------------------------------------------------------
 function pointToRefArrays(
   pt: Record<string, any>,
-): { refArrays: Record<string, Float64Array>; vectorEnv: Record<string, any> } {
+): { refArrays: Record<string, Float64Array> } {
   const refArrays: Record<string, Float64Array> = {};
-  const vectorEnv: Record<string, any> = {};
   for (const [k, v] of Object.entries(pt)) {
     if (typeof v === 'number') {
       refArrays[k] = new Float64Array([v]);
     } else if (v instanceof Float64Array) {
       if (v.length === 1) {
         refArrays[k] = v;
-      } else {
-        // Full vector → env so indexing works at atom i=0
-        vectorEnv[k] = Array.from(v);
       }
     } else if (Array.isArray(v)) {
       if (v.length === 1) {
         refArrays[k] = new Float64Array([+(v as any)[0]]);
-      } else {
-        vectorEnv[k] = v;
       }
     } else if (v && (v as any).data instanceof Float64Array && Array.isArray((v as any).shape)) {
       // Multi-axis (matrix) latent — a Value {shape,data}, e.g. a [G,N] block
@@ -293,12 +286,12 @@ function pointToRefArrays(
       // matrix; flattening it to a 1-axis vector — or the +Value=NaN fallback
       // below — makes the broadcast axis count mismatch). Keep the Value in the
       // env (same form buildEnv threads), never a scalar refArray.
-      vectorEnv[k] = v;
+      continue;
     } else {
       refArrays[k] = new Float64Array([+(v as any)]);
     }
   }
-  return { refArrays, vectorEnv };
+  return { refArrays };
 }
 
 // Collect the names of all `{kind:'ref'}` nodes in an IR (free identifiers the
