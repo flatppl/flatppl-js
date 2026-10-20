@@ -194,6 +194,22 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
   // call seed and doesn't touch this.
   let philox: any = _stateFromSeed(opts.seed);
   let env: Record<string, unknown> | null = { ...(opts.env ?? {}) };
+  let retainedBuffers = new WeakSet<ArrayBufferLike>();
+  // Values, records and tables may alias storage (including subarray views).
+  // Index buffers when inputs enter the session; replying needs only an O(1)
+  // ownership check. Never walk numeric elements or rescan the merged env.
+  function retainBuffers(value: any, seen = new WeakSet<object>()) {
+    if (!value || typeof value !== 'object' || seen.has(value)) return;
+    seen.add(value);
+    if (ArrayBuffer.isView(value)) {
+      retainedBuffers.add(value.buffer);
+    } else if (value instanceof ArrayBuffer) {
+      retainedBuffers.add(value);
+    } else {
+      for (const child of Object.values(value)) retainBuffers(child, seen);
+    }
+  }
+  retainBuffers(env);
   // Optional progress channel: worker-entry wires this to postMessage so a
   // long mcmcRun can stream {type:'mcmcProgress', id, frac, phase} to the host
   // mid-computation (Web Workers deliver these while the handler is still busy).
@@ -217,6 +233,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
         case 'init': {
           philox = _stateFromSeed(msg.seed);
           env = { ...(msg.env ?? {}) };
+          retainedBuffers = new WeakSet();
+          retainBuffers(env);
           return { type: 'ready', id };
         }
         case 'mcmcRun': {
@@ -299,6 +317,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
         }
         case 'setEnv': {
           env = msg.merge === false ? { ...(msg.env ?? {}) } : { ...env, ...(msg.env ?? {}) };
+          if (msg.merge === false) retainedBuffers = new WeakSet();
+          retainBuffers(msg.env);
           return { type: 'ok', id };
         }
         case 'setSeed': {
@@ -526,6 +546,10 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           // The main thread is responsible for plumbing the parent's
           // logWeights through; the worker just emits null here and
           // lets that wrap-up happen at the cache boundary.
+          // transferablesOf moves the result buffer out of this worker. A
+          // borrowed env result must own a copy before that move, or the next
+          // request observes detached fixed data. Fresh results stay zero-copy.
+          if (retainedBuffers.has(out.buffer)) out = out.slice();
           const reply: any = { type: 'samples', id, samples: out, logWeights: null };
           if (dims) reply.dims = dims;
           if (imag) reply.imag = imag;
