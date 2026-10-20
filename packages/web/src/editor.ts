@@ -363,6 +363,7 @@
     // the editor isn't focusable for typing, but it still receives
     // mousedown events.
     function jumpToBindingDefinition(name: any) {
+      if (activeLang !== 'flatppl') return;
       const FE = globalScope.FlatPPLEngine;
       if (!FE) return;
       const doc = view.state.doc.toString();
@@ -424,6 +425,7 @@
     let lastCursorBinding: any = null;
 
     function bindingAtCursor() {
+      if (activeLang !== 'flatppl') return null;
       const FE = globalScope.FlatPPLEngine;
       if (!FE) return null;
       const head = view.state.selection.main.head;
@@ -561,6 +563,7 @@
     }
 
     const initialLang = langKeyFor(opts.fileType || 'flatppl');
+    let activeLang = initialLang;
 
     const extensions: any[] = [
       bundle.EditorState.allowMultipleSelections.of(true),
@@ -746,8 +749,9 @@
        *  'hs3' | 'pyhf' | 'unknown'. Called from showSource on every file
        *  load so a `.md` / `.json` buffer never rides the FlatPPL grammar. */
       setLanguage: function (type: any) {
+        activeLang = langKeyFor(type);
         view.dispatch({
-          effects: languageCompartment.reconfigure(languagePack(langKeyFor(type))),
+          effects: languageCompartment.reconfigure(languagePack(activeLang)),
         });
       },
       /** Scroll the editor to the given source line (zero-indexed,

@@ -16,7 +16,22 @@ registerHooks({
 });
 
 const { binGrid } = await import('./contour2d.ts');
-const { jointDensityField, jointMeanField } = await import('./render-field.ts');
+const { jointDensityField, jointMeanField, renderField2D } = await import('./render-field.ts');
+
+test('field tooltip labels render as text in the HTML formatter', (t) => {
+  t.after(() => {
+    delete globalThis.document; delete globalThis.echarts; delete globalThis.getComputedStyle;
+  });
+  let options;
+  globalThis.document = { body: {}, createElement: () => ({ style: {} }) };
+  globalThis.getComputedStyle = () => ({ color: '#fff' });
+  globalThis.echarts = { init: () => ({ setOption(value) { options = value; } }) };
+  renderField2D({ appendChild() {} }, { xs: [0], ys: [0], z: [1] }, {
+    xLabel: '<img src=x>', yLabel: 'y & z', zLabel: 'density',
+  });
+  assert.equal(options.tooltip.formatter({ value: [0, 0, 1] }),
+    '&lt;img src=x&gt;: 0<br/>y &amp; z: 0<br/>density: 1');
+});
 
 // Deterministic PRNG (mulberry32) + Box-Muller, same as contour2d.test.ts, so
 // the oracle comparisons below are reproducible run to run.

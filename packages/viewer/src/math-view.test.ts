@@ -54,6 +54,17 @@ test('Math pane and document export retain archive identities and data bytes', (
   }
 });
 
+test('Math requests bound data before copying bytes to JSON number arrays', (t) => {
+  t.after(() => { delete globalThis.window; });
+  globalThis.window = { __FLATPPL_CONFIG__: { maxMathDataBytes: 2 } };
+  let iterated = false;
+  const large = Uint8Array.of(1, 2, 3);
+  large[Symbol.iterator] = () => { iterated = true; throw new Error('copied before budget check'); };
+  assert.throws(() => buildMathRequest({ source: 'x=1', bundleFiles: { data: large } }), /size limit/);
+  assert.equal(iterated, false);
+  assert.deepEqual(buildMathRequest({ source: 'x=1', bundleFiles: { data: Uint8Array.of(1, 2) } }).files.data, [1, 2]);
+});
+
 test('buildMathRequest treats a null bundle and a null path as absent', () => {
   const req = buildMathRequest({ source: 'x = 1', path: null, bundleSources: null });
   assert.equal(req.path, 'model.flatppl');

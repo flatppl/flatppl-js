@@ -702,10 +702,13 @@ html, body {
 .surface-html {
   flex: 1 1 auto;
   display: flex;
+  flex-direction: column;
   min-height: 0;
 }
+.surface-html > button { align-self: flex-start; }
 .surface-html iframe {
   flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
   border: 0;
   background: #fff;

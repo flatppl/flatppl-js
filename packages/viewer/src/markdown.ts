@@ -130,6 +130,31 @@ function safeDestination(href: string, image: boolean): boolean {
   }
 }
 
+/** Web hosts can require consent before a document assigns an image URL.
+ *  Node exports and hosts with their own resource policy retain their renderer. */
+function documentImageUrl(href: string): string | null {
+  if (!safeDestination(href, true)) return null;
+  const approve = typeof window !== 'undefined' && window.__FLATPPL_CONFIG__?.approveDocumentImage;
+  if (!approve) return href;
+  const url = new URL(href, document.baseURI).href;
+  return approve(url) ? url : null;
+}
+
+/** Rust math articles carry Markdown images too. A template is inert: inspect
+ *  its images before inserting any of them in the live document. */
+export function documentHtml(html: string): string {
+  if (!html.includes('<img') || typeof window === 'undefined' || !window.__FLATPPL_CONFIG__?.approveDocumentImage) return html;
+  const template = document.createElement('template');
+  template.innerHTML = html;
+  for (const image of template.content.querySelectorAll('img')) {
+    const url = documentImageUrl(image.getAttribute('src') || '');
+    image.removeAttribute('srcset');
+    if (url) image.setAttribute('src', url);
+    else image.replaceWith(document.createTextNode(image.alt));
+  }
+  return template.innerHTML;
+}
+
 let _mathWired = false;
 function ensureMarkedConfigured() {
   if (_mathWired) return;
@@ -172,7 +197,7 @@ export function renderDoc(doc: DocComment | null | undefined): string | null {
   ensureMarkedConfigured();
   const text = doc.lines.join('\n');
   if (doc.markup === 'md') {
-    return marked.parse(text, { async: false }) as string;
+    return documentHtml(marked.parse(text, { async: false }) as string);
   }
   if (doc.markup === 'typ') {
     // No client-side Typst renderer. Show the source verbatim — same

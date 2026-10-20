@@ -41,6 +41,7 @@
   let currentBundle: any = null;
   const shareOrigins = new Map<string, string>();
   const archiveOrigins = new Map<string, string>();
+  const previewFolders = new Set<string>();
   let editRevision = 0;
   let shareScript: Promise<any> | null = null;
 
@@ -102,6 +103,7 @@
       const saved = await window.FlatPPLWebBundles.save(bytes, name,
         window.FlatPPLWebBundles.isSaved(path) ? folder : undefined);
       const savedFolder = window.FlatPPLWebBundles.folder(saved);
+      if (previewFolders.delete(folder)) previewFolders.add(savedFolder);
       await window.FlatPPLWebBundles.discard(path);
       shareOrigins.delete(folder);
       archiveOrigins.delete(folder);
@@ -178,6 +180,22 @@
       ]);
       if (!dialog.open) return;
       if (download.status === 'rejected') throw download.reason;
+      const archive = await window.FlatPPLEngine.readArchive(download.value, { id: 'share.zip' });
+      try {
+        const contents = document.createElement('details');
+        const heading = document.createElement('summary');
+        heading.textContent = 'Included files (the whole bundle, including unused members)';
+        const files = document.createElement('ul');
+        for (const [path, entry] of Object.entries(archive.entries) as [string, any][]) {
+          if (entry.directory) continue;
+          const item = document.createElement('li');
+          item.textContent = displayName(path) + ' — ' + entry.size + ' bytes';
+          files.appendChild(item);
+        }
+        contents.append(heading, files);
+        dialog.insertBefore(contents, actions);
+      } finally { await archive.close(); }
+      if (!dialog.open) return;
       const button = (label: string, action: () => void) => {
         const node = document.createElement('button');
         node.className = 'fp-btn';
@@ -192,6 +210,13 @@
       if (transport.status === 'rejected') {
         status.textContent = 'Could not create a link: ' + transport.reason.message + '. Download the ZIP to share it.';
         return;
+      }
+      if (!builtin) {
+        try { await window.FlatPPLWebBundles.validateLink(transport.value); }
+        catch (error: any) {
+          status.textContent = 'Could not create a link: ' + error.message + ' Download the ZIP to share it.';
+          return;
+        }
       }
       const api = await loadShare();
       if (!dialog.open) return;
@@ -270,10 +295,20 @@
   // target-only change or a return to the fallback source.
   let navigationSeq = 0;
 
+  /** Reveal control characters without changing the path used to open a file. */
+  function displayName(text: string): string {
+    return text.replace(/[\u0000-\u001f\u007f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069]/g,
+      char => '\\u' + char.charCodeAt(0).toString(16).padStart(4, '0'));
+  }
+
   /** Set source silently, restoring a retained draft's baseline when supplied. */
-  function showSource(text: any, label?: any, baseline: string | null = text) {
-    if (sourceHeader) sourceHeader.textContent = label || 'Source';
+  function showSource(text: any, label?: any, baseline: string | null = text, preview = false) {
+    if (sourceHeader) sourceHeader.textContent = displayName(label || 'Source');
     if (!sourceEditor) return;
+    // Drop semantic extensions before replacing a possibly inert source.
+    // Reconfiguring to FlatPPL first would analyze the previous document.
+    sourceEditor.setLanguage?.('unknown');
+    sourceEditor.setSource(text);
     // Pick the editor language pack from the active model's path so a
     // .md / .json buffer is highlighted (and folded) on its own terms,
     // not as FlatPPL. The router's model path is authoritative for the
@@ -284,9 +319,8 @@
       const cur = window.FlatPPLWebRouter
         ? window.FlatPPLWebRouter.parseHash() : { model: null };
       const p = (cur && cur.model) || label;
-      sourceEditor.setLanguage(S ? S.typeForPath(p) : 'flatppl');
+      if (!preview) sourceEditor.setLanguage(S ? S.typeForPath(p) : 'flatppl');
     }
-    sourceEditor.setSource(text);
     lastRenderedSource = text;
     lastSavedSource = baseline;
     updateDirtyMarker();
@@ -603,6 +637,7 @@
       void window.FlatPPLWebBundles.discard(path).then(() => {
         shareOrigins.delete(folder);
         archiveOrigins.delete(folder);
+        previewFolders.delete(folder);
         if (!window.FlatPPLWebRouter.parseHash().model?.startsWith(folder + '/')) return;
         lastModel = null;
         if (window.FlatPPLWebBundles.has(path)) void applyState(window.FlatPPLWebRouter.parseHash());
@@ -975,11 +1010,11 @@
       share: sameBundle ? route.share : undefined, archive: sameBundle ? route.archive : undefined });
     link.dataset.path = entry.path;
     link.dataset.action = 'open';
-    link.title = entry.path;
-    link.setAttribute('aria-label', (entry.title || basenameOf(entry.path)) + ' (' + entry.path + ')');
+    link.title = displayName(entry.path);
+    link.setAttribute('aria-label', displayName((entry.title || basenameOf(entry.path)) + ' (' + entry.path + ')'));
     if (entry.path === currentModel) link.setAttribute('aria-current', 'page');
     const label = document.createElement('span');
-    label.textContent = entry.title || basenameOf(entry.path);
+    label.textContent = displayName(entry.title || basenameOf(entry.path));
     link.appendChild(label);
     if (entry.description) {
       const description = document.createElement('small');
@@ -1076,7 +1111,7 @@
     chev.setAttribute('aria-hidden', 'true');
     const name = document.createElement('span');
     name.className = 'file-folder-name';
-    name.textContent = label;
+    name.textContent = displayName(label);
     const countLabel = document.createElement('span');
     countLabel.className = 'file-folder-count';
     countLabel.textContent = String(count);
@@ -1291,6 +1326,7 @@
         void action.then(() => {
           shareOrigins.delete(folder);
           archiveOrigins.delete(folder);
+          previewFolders.delete(folder);
           for (const key of drafts.keys()) if (key.startsWith(folder + '/')) drafts.delete(key);
           if (window.FlatPPLWebRouter.parseHash().model?.startsWith(folder + '/')) {
             window.FlatPPLWebRouter.navigateTo({ model: manifest?.entries?.[0]?.path });
@@ -1623,6 +1659,7 @@
 
   async function applyState(state: any) {
     const seq = ++navigationSeq;
+    if (state.error) { showError('Link', new Error(state.error)); return; }
     if (state.share && (shareOrigins.get(window.FlatPPLWebBundles?.folder(state.model)) !== state.share
         || !window.FlatPPLWebBundles?.has(state.model))) {
       lastModel = null;
@@ -1636,12 +1673,14 @@
         finally { decoder.dispose(); }
         if (seq !== navigationSeq) return;
         const opened = await window.FlatPPLWebBundles.open(bytes, 'shared-model',
-          (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')));
+          (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')),
+          window.FlatPPLWebBundles.LINK_LIMITS);
         if (seq !== navigationSeq) {
           if (!opened.reused) await window.FlatPPLWebBundles.discard(opened.path);
           return;
         }
         const folder = window.FlatPPLWebBundles.folder(opened.path);
+        previewFolders.add(folder);
         const requested = state.model?.replace(/^(?:new|user)\/[^/]+\//, '');
         const selection = requested && await window.FlatPPLWebBundles.select(folder, requested) || opened.path;
         if (seq !== navigationSeq) {
@@ -1665,12 +1704,15 @@
       lastModel = null;
       sourceEditor?.setReadOnly?.(true);
       try {
-        const bytes = await window.FlatPPLWebResolver.readBytes(archive);
+        const bytes = await window.FlatPPLWebResolver.readBytes(archive, {},
+          window.FlatPPLWebBundles.LINK_LIMITS?.maxArchiveBytes);
         if (seq !== navigationSeq) return;
         const opened = await window.FlatPPLWebBundles.open(bytes, basenameOf(archive),
-          (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')));
+          (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')),
+          window.FlatPPLWebBundles.LINK_LIMITS);
         const requested = state.archive && state.model?.replace(/^(?:new|user)\/[^/]+\//, '');
         const folder = window.FlatPPLWebBundles.folder(opened.path);
+        previewFolders.add(folder);
         const selection = requested && await window.FlatPPLWebBundles.select(folder, requested) || opened.path;
         if (seq !== navigationSeq) {
           if (!opened.reused) await window.FlatPPLWebBundles.discard(opened.path);
@@ -1690,6 +1732,29 @@
     renderTree(state.model);
     updateHeaderButtons();
     if (state.model !== lastModel) revealFile(state.model);
+
+    const previewFolder = window.FlatPPLWebBundles?.folder(state.model);
+    if (previewFolders.has(previewFolder)) {
+      try {
+        // Read only this member. Module resolution also parses sources, so it
+        // must wait alongside the editor's semantic analysis and the viewer.
+        const bytes = await window.FlatPPLWebResolver.readBytes(state.model, draftSnapshot());
+        if (seq !== navigationSeq) return;
+        const source = new TextDecoder().decode(bytes);
+        currentBundle = null;
+        showSource(source, state.model, drafts.get(state.model)?.baseline ?? source, true);
+        lastModel = state.model;
+        sourceEditor?.setReadOnly?.(!editEnabled);
+        viewer?.update(source, null, { preview: true, run: () => {
+          if (seq !== navigationSeq) return;
+          previewFolders.delete(previewFolder);
+          lastModel = null;
+          void applyState(window.FlatPPLWebRouter.parseHash());
+        } });
+        document.title = 'FlatPPL: ' + displayName(state.model) + ' (preview)';
+      } catch (error) { if (seq === navigationSeq) showError(state.model, error); }
+      return;
+    }
 
     // Ephemeral files have no on-disk source — they're meaningless
     // outside edit mode. Auto-enable edit mode when navigating to
@@ -1775,6 +1840,9 @@
   }
 
   async function boot() {
+    const config = window.__FLATPPL_CONFIG__ ||= {};
+    config.approveDocumentImage = window.FlatPPLWebResolver.approveImage;
+    config.maxMathDataBytes = 8 * 1024 ** 2;
     sourceHeader = document.getElementById('source-header');
     fileTree     = document.getElementById('file-tree');
     fileFilter   = document.getElementById('file-filter') as HTMLInputElement | null;
@@ -1945,7 +2013,7 @@
       // into one render after the user pauses typing.
       const debouncedViewerUpdate = debounce(async function (target: string, path: string, seq: number, revision: number) {
         const stale = () => seq !== navigationSeq || path !== lastModel || revision !== editRevision;
-        if (!viewer || stale()) return;
+        if (!viewer || stale() || previewFolders.has(window.FlatPPLWebBundles?.folder(path))) return;
         try {
           const bundle = await resolveSnapshot(path);
           if (stale()) return;

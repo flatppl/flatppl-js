@@ -41,8 +41,13 @@ export function bundleFilesFromMessage(files: Record<string, Uint8Array | number
 
 /** Math's JSON boundary uses arrays, while the engine and workers use typed bytes. */
 export function mathBundleFields(context: BundleContext) {
+  const files = dataFiles(context);
+  const limit = typeof window !== 'undefined' && window.__FLATPPL_CONFIG__?.maxMathDataBytes;
+  if (limit && Object.values(files).reduce((sum, bytes) => sum + bytes.byteLength, 0) > limit) {
+    throw new Error('Math view data exceed the browser size limit.');
+  }
   return {
-    ...(context.bundleFiles ? { files: Object.fromEntries(Object.entries(dataFiles(context))
+    ...(context.bundleFiles ? { files: Object.fromEntries(Object.entries(files)
       .map(([path, bytes]) => [path, Array.from(bytes)])) } : {}),
     ...(context.bundleResolutions ? { resolutions: context.bundleResolutions } : {}),
   };

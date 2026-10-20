@@ -1232,7 +1232,7 @@ export function renderProfileLine(ctx: Ctx, values: any, range: any, plan: Profi
           formatter: function(params: any) {
             if (!params || !params.length) return '';
             const x = params[0].axisValue;
-            return sweepAxis.label + ' = ' + formatScalar(x);
+            return esc(sweepAxis.label) + ' = ' + formatScalar(x);
           },
         },
         xAxis: {

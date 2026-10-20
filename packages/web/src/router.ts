@@ -30,12 +30,16 @@
   function parseHash() {
     let raw = (globalScope.location && globalScope.location.hash) || '';
     if (raw.charAt(0) === '#') raw = raw.slice(1);
-    const out: { model: string | null; target: string | null; share?: string; archive?: string } = { model: null, target: null };
+    const out: { model: string | null; target: string | null; share?: string; archive?: string; error?: string } = { model: null, target: null };
+    // Apply the generation budget on input too, before splitting or decoding.
+    if (raw.length > 64 * 1024) return { ...out, error: 'This link is too long. Open the ZIP bundle instead.' };
     if (!raw) return out;
+    const seen = new Set<string>();
     if (raw.startsWith('/files/')) {
       const end = raw.indexOf('?');
       try { out.model = decodeURIComponent(raw.slice(7, end < 0 ? undefined : end)); }
-      catch (_) { return out; }
+      catch (_) { return { ...out, error: 'Invalid file path in link.' }; }
+      seen.add('model');
       raw = end < 0 ? '' : raw.slice(end + 1);
     }
     const parts = raw.split('&');
@@ -43,14 +47,18 @@
       const eq = parts[i].indexOf('=');
       if (eq <= 0) continue;
       const key = parts[i].slice(0, eq);
+      if (!['model', 'target', 'share', 'archive'].includes(key)) continue;
+      if (seen.has(key)) return { model: null, target: null, error: 'Duplicate parameter in link: ' + key };
+      seen.add(key);
       var val;
       try { val = decodeURIComponent(parts[i].slice(eq + 1).replace(/\+/g, ' ')); }
-      catch (_) { val = parts[i].slice(eq + 1); }
+      catch (_) { return { model: null, target: null, error: 'Invalid encoding in link.' }; }
       if (key === 'model')  out.model = val;
       if (key === 'target') out.target = val;
       if (key === 'share') out.share = val;
       if (key === 'archive') out.archive = val;
     }
+    if (out.share && out.archive) return { model: null, target: null, error: 'A link cannot contain both share and archive.' };
     return out;
   }
 
@@ -103,7 +111,7 @@
   let lastSerialized: string | null = null;
   function emitIfChanged() {
     const state = parseHash();
-    const ser = serialize(state);
+    const ser = state.error || serialize(state);
     if (ser === lastSerialized) return;
     lastSerialized = ser;
     for (let i = 0; i < changeListeners.length; i++) {

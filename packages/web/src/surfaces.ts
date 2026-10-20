@@ -73,8 +73,8 @@
   // Markdown: a live preview over the viewer's renderDoc pipeline
   // (marked + Temml MathML) — the SAME renderer that drives the DAG
   // tooltips, so styling stays consistent and the gallery bundles no
-  // extra markdown library. Content is trusted gallery/demo text;
-  // sanitising arbitrary user markdown is a later hardening step.
+  // extra markdown library. The renderer escapes HTML and the web host
+  // supplies image consent for every Markdown surface, including hovers.
   function markdownSurface(container: any, _ctx: any): any {
     container.innerHTML = '<div class="surface-markdown markdown-body" tabindex="0"></div>';
     const host = container.querySelector('.surface-markdown');
@@ -113,14 +113,51 @@
     return {
       update: function (input: any) {
         if (!host) return;
-        const frame = document.createElement('iframe');
-        frame.setAttribute('sandbox', '');
-        frame.setAttribute('title', (input && input.fileName) || 'HTML document');
-        frame.srcdoc = input && input.source != null ? String(input.source) : '';
         host.innerHTML = '';
-        host.appendChild(frame);
+        const source = input && input.source != null ? String(input.source) : '';
+        let frame: HTMLIFrameElement | undefined;
+        function render(allowNetwork: boolean) {
+          frame?.remove();
+          frame = document.createElement('iframe');
+          frame.setAttribute('sandbox', '');
+          frame.setAttribute('title', (input && input.fileName) || 'HTML document');
+          // The empty sandbox blocks scripts and storage, not resource loads.
+          // Install CSP before any document bytes, including its own meta tags.
+          const policy = "default-src 'none'; base-uri 'none'; form-action 'none';"
+            + " style-src 'unsafe-inline'; img-src data: blob:; font-src data:; media-src data: blob:";
+          // Explicit approval restores the existing HTML rendering contract,
+          // including media, embedded resources and relative URLs via <base>.
+          // The empty sandbox remains in force for both versions.
+          frame.srcdoc = allowNetwork ? source
+            : '<!doctype html><meta http-equiv="Content-Security-Policy" content="' + policy + '">' + source;
+          host.appendChild(frame);
+        }
+        const load = document.createElement('button');
+        load.className = 'fp-btn';
+        load.textContent = 'Load external resources';
+        load.title = 'Allow this HTML document to contact external servers, including redirect destinations.';
+        load.onclick = () => { load.remove(); render(true); };
+        host.appendChild(load);
+        render(false);
       },
       dispose: function () { try { container.innerHTML = ''; } catch (_) {} },
+    };
+  }
+
+  function previewSurface(container: any): any {
+    return {
+      update(input: any) {
+        container.innerHTML = '';
+        const note = document.createElement('p');
+        note.textContent = 'Shared bundle preview. Inspect the files before running. Models can use substantial time and memory.';
+        const run = document.createElement('button');
+        run.className = 'fp-btn';
+        run.textContent = 'Run preview';
+        run.onclick = input.opts.run;
+        container.appendChild(note);
+        container.appendChild(run);
+      },
+      dispose() { container.innerHTML = ''; },
     };
   }
 
@@ -175,6 +212,7 @@
     html: htmlSurface,
     json: dataSurface,
     data: dataSurface,
+    preview: previewSurface,
   };
 
   function resolveSurface(type: any): any {
@@ -203,7 +241,7 @@
     return {
       update: function (source: any, target: any, opts: any) {
         const path = (typeof getActivePath === 'function') ? getActivePath() : null;
-        const type = typeForPath(path);
+        const type = opts?.preview ? 'preview' : typeForPath(path);
         ensure(type);
         if (handle) {
           handle.update({ source: source, target: target || null, fileName: path, type: type, opts: opts });

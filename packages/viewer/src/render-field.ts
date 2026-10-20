@@ -11,7 +11,7 @@
 
 import { binGrid, gaussianBlur } from './contour2d.js';
 import type { ContourLevel } from './contour2d.js';
-import { formatScalar } from './util.js';
+import { esc, formatScalar } from './util.js';
 
 /** A scalar field on a regular grid. `z` is row-major (`row * xs.length + col`);
  *  a NaN entry means "no data here" and renders transparent. */
@@ -275,9 +275,9 @@ export function renderField2D(hostEl: any, field: Field2D, opts: Field2DOptions)
     grid: { left: 64, right: 96, top: 16, bottom: 52, containLabel: false },
     tooltip: {
       formatter: function (p: any) {
-        return opts.xLabel + ': ' + formatScalar(p.value[0])
-          + '<br/>' + opts.yLabel + ': ' + formatScalar(p.value[1])
-          + '<br/>' + opts.zLabel + ': ' + formatScalar(p.value[2]);
+        return esc(opts.xLabel) + ': ' + formatScalar(p.value[0])
+          + '<br/>' + esc(opts.yLabel) + ': ' + formatScalar(p.value[1])
+          + '<br/>' + esc(opts.zLabel) + ': ' + formatScalar(p.value[2]);
       },
     },
     xAxis: Object.assign({}, axisCommon, {

@@ -1,7 +1,7 @@
 // @ts-nocheck — Node runs tests directly; the viewer build targets the browser.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { renderDoc } from './markdown.ts';
+import { renderDoc, documentHtml } from './markdown.ts';
 
 const render = (source: string) => renderDoc({ markup: 'md', lines: source.split('\n') })!;
 
@@ -63,4 +63,42 @@ test('Markdown renders a ```math fence as display math (the Markdown export conv
   assert.match(html, /<math[^>]*display="block"/);
   assert.ok(!html.includes('<code'), 'the fence is not shown as a code block');
   assert.match(render('```js\nlet x = 1;\n```'), /<code class="language-js">/);
+});
+
+test('document images require web host consent before emitting a network URL', (t) => {
+  const requests = [];
+  let allow = false;
+  t.after(() => { delete globalThis.window; delete globalThis.document; });
+  globalThis.window = { __FLATPPL_CONFIG__: {
+    approveDocumentImage(url) { requests.push(url); return allow; },
+  } };
+  globalThis.document = {
+    baseURI: 'https://live.flatppl.org/',
+    createTextNode: text => text,
+    createElement(tag) {
+      assert.equal(tag, 'template');
+      // Model the inert template boundary for the one image in this fixture.
+      // The browser parses attributes before the approval callback sees them.
+      let html, replacement;
+      const image = {
+        alt: 'plot', getAttribute: () => html.match(/src="([^"]+)"/)[1],
+        removeAttribute() {},
+        setAttribute(_key, url) { replacement = html.match(/<img[^>]*>/)[0].replace(/src="[^"]+"/, 'src="' + url + '"'); },
+        replaceWith(text) { replacement = text; },
+      };
+      return {
+        set innerHTML(value) { html = value; },
+        get innerHTML() { return html.replace(/<img[^>]*>/, replacement); },
+        content: { querySelectorAll: () => [image] },
+      };
+    },
+  };
+  assert.doesNotMatch(render('![plot](https://example.org/plot.png)'), /<img/);
+  allow = true;
+  const html = render('![plot](//example.org/plot.png "title")');
+  assert.match(html, /<img src="https:\/\/example.org\/plot.png" alt="plot" title="title">/);
+  allow = false;
+  assert.equal(documentHtml('<article><img src="https://example.org/plot.png" alt="plot"></article>'),
+    '<article>plot</article>');
+  assert.deepEqual(requests, Array(3).fill('https://example.org/plot.png'));
 });
