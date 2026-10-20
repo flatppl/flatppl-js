@@ -141,7 +141,7 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
         const refs = orchestrator.collectSelfRefs(pir);
         let allFixed = true;
         for (const r of refs) {
-          if (ctx.fixedValues && ctx.fixedValues.has(r)) continue;
+          if (ctx.bindings?.get(r)?.phase === 'fixed' || ctx.fixedValues?.has(r)) continue;
           allFixed = false;
           break;
         }

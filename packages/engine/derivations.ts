@@ -416,15 +416,19 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
     // Loose coupling: lift owns AST recognition, derivations owns the
     // registry-binding contract.
     //
-    // paramIRs.L: lower_cholesky is an EVALUABLE_OPS member
-    // (ir-shared.ts), so matPushfwd's resolveIRToValue pass evaluates
-    // this call on demand at materialise time — same numerical path
-    // matMvNormal's L computation already uses.
+    // Fixed factors use the ordinary lazy value resolver once per context.
+    // Keep parameter-dependent covariance on its existing inline path and
+    // remove the unused candidate before classification can consume it.
     if ((binding as any).__mvnormalLowering) {
       const m = (binding as any).__mvnormalLowering;
+      const factor = m.factorName && bindings.get(m.factorName);
+      const fixedFactor = factor && factor.phase === 'fixed';
+      if (factor && !fixedFactor) bindings.delete(m.factorName);
       binding.bijection.registryName = 'affine';
       binding.bijection.paramIRs = {
-        L: { kind: 'call', op: 'lower_cholesky', args: [m.covIR] },
+        L: fixedFactor
+          ? { kind: 'ref', ns: 'self', name: m.factorName }
+          : { kind: 'call', op: 'lower_cholesky', args: [m.covIR] },
         b: m.muIR,
       };
     }

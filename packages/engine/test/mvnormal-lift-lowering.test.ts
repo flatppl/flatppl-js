@@ -12,17 +12,19 @@
 //      calls in the AST.
 //   2. When mu and cov both resolve to ArrayLiteral (literal at the
 //      call site or one-level ref to an ArrayLiteral binding), the
-//      helper emits two synthetic bindings:
+//      helper emits synthetic bindings:
 //        - __bij_N = bijection(fn(_), fn(_), 0.0)
 //                    with the side-channel marker
-//                    `binding.__mvnormalLowering = {muIR, covIR}`
+//                    `binding.__mvnormalLowering = {muIR, covIR, factorName}`
 //        - __iid_N = iid(Normal(mu=0, sigma=1), D)
+//        - a candidate factor retained only when covariance is fixed
 //      and rewrites the original `MvNormal(...)` call to
 //      `pushfwd(__bij_N, __iid_N)` in place.
 //   3. `derivations.buildDerivations` bijection-construction loop
 //      reads the marker and additively attaches
 //      `binding.bijection.registryName = 'affine'` and
-//      `paramIRs = {L: lower_cholesky(covIR), b: muIR}`.
+//      `paramIRs = {L: factor, b: muIR}`. A fixed factor is resolved
+//      lazily through FixedValues; live covariance stays inline.
 //   4. At materialise / density time, matPushfwd / walkPushfwd
 //      (Session 5d) consume registryName + paramIRs and dispatch
 //      through the bijection-registry's affine atom-batched paths —
@@ -65,47 +67,6 @@ function makeCtx(source: any) {
 }
 
 // =====================================================================
-// 1. Structural pin — synthetic bindings + classifier kind=pushfwd
-// =====================================================================
-
-test('5e: ref-form mu + cov → synthetic __bij + __iid bindings, X classifies pushfwd', () => {
-  const ctx = makeCtx(`
-mu_vec = [1.0, 2.0]
-cov_mat = [[2.0, 0.5], [0.5, 1.0]]
-X = MvNormal(mu = mu_vec, cov = cov_mat)
-`);
-  // Find the synthetic bindings.
-  const names = Array.from(ctx.bindings.keys());
-  const bijName = names.find((n: any) => /^__bij/.test(n));
-  const iidName = names.find((n: any) => /^__iid/.test(n));
-  assert.ok(bijName, 'a __bij_N synthetic binding exists');
-  assert.ok(iidName, 'an __iid_N synthetic binding exists');
-
-  const bijBinding = ctx.bindings.get(bijName);
-  assert.equal(bijBinding.type, 'bijection',
-    '__bij_N typed as bijection so buildDerivations populates binding.bijection');
-  assert.ok(bijBinding.bijection, 'binding.bijection metadata attached');
-  assert.equal(bijBinding.bijection.registryName, 'affine',
-    'registryName forwarded onto binding.bijection');
-  assert.ok(bijBinding.bijection.paramIRs, 'paramIRs forwarded');
-  // paramIRs.L IR: {kind:'call', op:'lower_cholesky', args:[<covIR>]}
-  assert.equal(bijBinding.bijection.paramIRs.L.op, 'lower_cholesky');
-  assert.equal(bijBinding.bijection.paramIRs.L.args.length, 1);
-  // paramIRs.b IR: ref to mu_vec.
-  assert.equal(bijBinding.bijection.paramIRs.b.kind, 'ref');
-  assert.equal(bijBinding.bijection.paramIRs.b.name, 'mu_vec');
-
-  // The original X binding rewrites to pushfwd(__bij_N, __iid_N).
-  // Classifier emits kind='pushfwd', NOT 'mvnormal'.
-  assert.equal(ctx.derivations.X.kind, 'pushfwd',
-    'X classified as pushfwd (not mvnormal) — lift rewrote the IR');
-  assert.equal(ctx.derivations.X.fnRef, bijName,
-    'pushfwd.fnRef points at the synthetic __bij_N');
-  assert.equal(ctx.derivations.X.from, iidName,
-    'pushfwd.from points at the synthetic __iid_N base');
-});
-
-// =====================================================================
 // 2. End-to-end materialisation — lowered path matches matMvNormal
 // =====================================================================
 //
@@ -116,7 +77,7 @@ X = MvNormal(mu = mu_vec, cov = cov_mat)
 test('5e: lowered-path materialisation produces shape [N, D] with finite samples', async () => {
   const ctx = makeCtx(`
 mu_vec = [1.0, 2.0]
-cov_mat = [[2.0, 0.5], [0.5, 1.0]]
+cov_mat = rowstack([[2.0, 0.5], [0.5, 1.0]])
 X = MvNormal(mu = mu_vec, cov = cov_mat)
 `);
   const X = await ctx.getMeasure('X');
@@ -134,7 +95,7 @@ X = MvNormal(mu = mu_vec, cov = cov_mat)
 test('5e: lowered-path empirical mean ≈ mu_vec (4-sigma N=4000)', async () => {
   const src = `
 mu_vec = [1.0, -2.0, 3.0]
-cov_mat = [[1.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 2.0]]
+cov_mat = rowstack([[1.0, 0.0, 0.0], [0.0, 0.5, 0.0], [0.0, 0.0, 2.0]])
 X = MvNormal(mu = mu_vec, cov = cov_mat)
 `;
   // Use a larger N for the mean check.
@@ -197,38 +158,27 @@ X = MvNormal(mu = [1.0, 2.0], cov = rowstack([[2.0, 0.5], [0.5, 1.0]]))
 // 4. Density side smoke — closed-form MvNormal density
 // =====================================================================
 
-test('5e: walkPushfwd registry density matches density-prims MvNormal closed form', () => {
-  // Use INLINE literals so paramIRs are self-contained (no refs
-  // requiring density-time binding-env resolution). Hierarchical
-  // models with stochastic mu/cov refs need the matLogdensityof
-  // path that threads fixedValues into baseEnv; the present test
-  // pins the registry-walker density math directly via the
-  // top-level density.logDensity entry point.
+test('MvNormal fixed dense covariance preserves the builtin factor under name shadowing', async () => {
+  // §08: det(C)=7/4, C^-1=(1/det(C))*[[1,-1/2],[-1/2,2]].
+  // Exercise fixed-value resolution through the public materialisation path.
   const ctx = makeCtx(`
+lower_cholesky = x -> x
 X = MvNormal(mu = [1.0, 2.0], cov = rowstack([[2.0, 0.5], [0.5, 1.0]]))
+p = logdensityof(X, [0.5, 1.5])
+q = logdensityof(X, [2.5, -1.0])
 `);
-  const expanded = orchestrator.expandMeasure(
-    'X', { derivations: ctx.derivations, bindings: ctx.bindings });
-  assert.ok(expanded, 'X expands');
-  assert.equal(expanded.bijection.registryName, 'affine');
-
+  const expanded = orchestrator.expandMeasure('X', ctx);
+  const fixedEnv = Object.fromEntries(ctx.fixedValues);
   const density = require('../density.ts');
-  const obs = { shape: [2], data: new Float64Array([0.5, 1.5]) };
-  const lp = density.logDensity(expanded, obs, {}, {});
-
-  // Compare to the density-prims closed form (which itself routes
-  // through the registry's affine entry — see density-prims.ts
-  // MvNormal closed form refactored in Session 3).
-  const densityPrims = require('../density-prims.ts');
-  const muVec = { shape: [2], data: new Float64Array([1.0, 2.0]) };
-  const covMat = { shape: [2, 2], data: new Float64Array([2.0, 0.5, 0.5, 1.0]) };
-  const xObs = { shape: [2], data: new Float64Array([0.5, 1.5]) };
-  const expected = densityPrims.MV_DENSITY_FNS.MvNormal(xObs,
-    { mu: muVec, cov: covMat });
-
-  assert.ok(Number.isFinite(lp), 'lift-rewritten density is finite');
-  assert.ok(Math.abs(lp - expected) < 1e-10,
-    `lift-rewritten density ${lp} vs closed-form MvNormal ${expected}`);
+  for (const [name, dx, dy] of [['p', -0.5, -0.5], ['q', 1.5, -3.0]] as const) {
+    const quadratic = (dx * dx - dx * dy + 2 * dy * dy) / 1.75;
+    const expected = -Math.log(2 * Math.PI) - 0.5 * Math.log(1.75) - 0.5 * quadratic;
+    for (const score of (await ctx.getMeasure(name)).samples) {
+      assert.ok(Math.abs(score - expected) < 1e-12, `${score} vs ${expected}`);
+    }
+    const direct = density.logDensity(expanded, [dx + 1, dy + 2], fixedEnv, {});
+    assert.ok(Math.abs(direct - expected) < 1e-12, `${direct} vs ${expected}`);
+  }
 });
 
 // =====================================================================
