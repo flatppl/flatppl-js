@@ -701,6 +701,10 @@ refs; resolve value-context refs via `this._resolve`; `evaluateExpr`,
 catch→UNRESOLVED) is `FixedValues._compute` — moved verbatim from the former
 eager `while (progress)` sweep.
 
+MvNormal lowering exposes its synthesized Cholesky factor as a fixed value
+when post-lift phase analysis proves the covariance fixed. Parameter-dependent
+and locally scoped factors retain their inline evaluation.
+
 **Map-compatible** (`.has`/`.get`/`.set` + iteration) so the ~100 consumers that
 read it as a `Map` are untouched. `.has(name)`/`.get(name)` resolve on demand
 (compute + cache). **iterate-forces-all**: `size`/`forEach`/`keys`/`values`/
