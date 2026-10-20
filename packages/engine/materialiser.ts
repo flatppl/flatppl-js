@@ -2134,7 +2134,7 @@ function _materialiseFactorsIndependent(deps: any[], ctx: any, name: string): Pr
   const firstByName = new Map<any, Promise<any>>();
   return Promise.all(deps.map((dep: any, i: number) => {
     const firstPromise = firstByName.get(dep);
-    const fresh = joint ? _isJointMeasure(dep, ctx) : !!firstPromise;
+    const fresh = joint && _isJointMeasure(dep, ctx);
     const result = !fresh ? Promise.resolve(ctx.getMeasure(dep))
       : Promise.resolve(firstPromise).then((first: any) => {
       if (first && first.logWeights) {

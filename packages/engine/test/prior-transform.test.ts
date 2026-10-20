@@ -6,6 +6,37 @@ const path = require('node:path');
 const { ctxFor } = require('./_ctx-factory.ts');
 const { buildPriorTransform } = require('../prior-transform.ts');
 
+test('copied law priors retain renamed derived parameters for transforms and MCMC', async () => {
+  const { proc, ctx } = ctxFor(`
+x ~ Exponential(1)
+s = sqrt(x)
+y ~ Normal(0, s)
+prior = joint(lawof((a = x, b = y)), joint(c = Normal(0, 1)))
+a = elementof(reals)
+b = elementof(reals)
+c = elementof(reals)
+K = functionof(Normal(a + b + c, 1), a, b, c)
+posterior = bayesupdate(likelihoodof(K, 0), prior)
+`, 16);
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const posterior = ctx.derivations.posterior;
+  const transform = buildPriorTransform(ctx, posterior);
+  // Exponential median and Phi(1): b is one conditional standard deviation.
+  const expected = { a: Math.LN2, b: Math.sqrt(Math.LN2), c: 0 };
+  const point = transform.transform(Float64Array.of(0.5, 0.8413447460685429, 0.5));
+  for (const key of ['a', 'b', 'c'] as const) {
+    assert.ok(Math.abs(point[key] - expected[key]) < 1e-10, `${key}: ${point[key]}`);
+  }
+
+  const { buildModelViewFromCtx } = require('../model-view.ts');
+  const view = await buildModelViewFromCtx(ctx, posterior);
+  const normal = (x: number, mu: number, sigma: number) =>
+    -0.5 * Math.log(2 * Math.PI) - Math.log(sigma) - 0.5 * ((x - mu) / sigma) ** 2;
+  const oracle = -expected.a + normal(expected.b, 0, Math.sqrt(expected.a))
+    + normal(expected.c, 0, 1) + normal(0, expected.a + expected.b + expected.c, 1);
+  assert.ok(Math.abs(view.logPosteriorConstrained(point) - oracle) < 1e-10);
+});
+
 // Independent prior: mu ~ Normal(1,2), rate ~ Exponential(0.5). No likelihood
 // dependence needed for the prior transform, but the model needs a posterior
 // derivation to enumerate latents — use a trivial observed likelihood.

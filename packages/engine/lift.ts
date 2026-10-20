@@ -783,7 +783,7 @@ function liftInlineSubexpressions(bindings: any) {
         // hoist so its Lebesgue operand is never treated as a value to draw.
         const expected = op === 'rand' && i === 0 && a?.callee?.name === 'tilt'
           ? 'measure' : sig ? sig[i] : null;
-        if      (op === 'joint' && expected === 'measure') astNode.args[i] = liftJointComponent(a);
+        if      ((op === 'joint' || op === 'iid') && expected === 'measure') astNode.args[i] = liftJointComponent(a);
         else if (expected === 'measure')          astNode.args[i] = liftMeasure(a);
         else if (expected === 'value-or-measure') astNode.args[i] = liftMeasureOrValue(a);
         else                                      astNode.args[i] = liftValue(a);
@@ -857,35 +857,102 @@ function liftInlineSubexpressions(bindings: any) {
 
   function liftMeasure(astArg: any) {
     if (!astArg) return astArg;
-    astArg = inlineUserCall(astArg);
-    return finishLiftMeasure(astArg);
+    return finishLiftMeasure(inlineUserCall(astArg));
   }
 
-  // A `joint` component keeps an inline `kernelof`/`functionof` reification
-  // AS-IS rather than routing it through `liftMeasure`'s generic hoist. A
-  // hoisted synthetic binding never gets an `inferredType` (typeinfer runs
-  // over the pre-lift module; synthetic bindings created here don't exist
-  // yet), and the applied-density hoist (`_jointComponentAsMeasure`) tells a
-  // kernel component from a measure component by reading that type off the
-  // resolved binding — an untyped synthetic binding reads as a bare measure,
-  // silently dropping the component's kernel-ness. That is the inline
-  // `joint(p = K1, q = kernelof(u, z = z))` shape: hoisting `q` erased its
-  // kernel type and the fan-out scored as if `q` were absent. Left inline,
-  // `_jointComponentAsMeasure` reads the CallExpr head directly instead —
-  // exactly the same shape a named `K2 = kernelof(u, z = z)` binding gives
-  // it, just without the lookup.
+  // Keep inline kernels visible to the fan-out lowering. Measure components
+  // retain their domain so density evaluation can split a positional variate.
   function liftJointComponent(astArg: any) {
     if (!astArg) return astArg;
-    astArg = inlineUserCall(astArg);
+    astArg = copyComponentLaws(inlineUserCall(astArg));
     if (astArg.type === 'CallExpr' && astArg.callee && astArg.callee.type === 'Identifier'
         && (astArg.callee.name === 'kernelof' || astArg.callee.name === 'functionof')) {
       visit(astArg);
       return astArg;
     }
-    return finishLiftMeasure(astArg);
+    return finishLiftMeasure(astArg, __knownAstType(astArg));
   }
 
-  function finishLiftMeasure(astArg: any) {
+  // A product uses a law value independently of every other component.
+  // Copy only the graph absorbed by lawof. Free constructor parameters keep
+  // their original names, while repeated references inside one law stay shared.
+  function copyComponentLaws(component: any): any {
+    const measures = new Map<string, any>();
+    function copyCaptured(ast: any, copies: Map<string, any>): any {
+      if (!ast || typeof ast !== 'object') return ast;
+      if (Array.isArray(ast)) return ast.map(a => copyCaptured(a, copies));
+      const ref = ast.type === 'Identifier' ? ast.name
+        : ast.type === 'FieldAccess' && ast.object?.name === 'self' ? ast.field : null;
+      if (ref) {
+        if (copies.has(ref)) return copies.get(ref);
+        const b = out.get(ref) || bindings.get(ref);
+        const lowered = b?.effectiveValue || b?.node?.value;
+        const rhs = measureConstructors.get(lowered) || lowered;
+        if (!rhs || b.phase === 'fixed' || b.phase === 'parameterized' || b.type === 'elementof'
+            || ['functionof', 'kernelof', 'fn', 'module'].includes(b.type)) return ast;
+        const fresh = freshName();
+        const replacement = makeIdent(fresh, ast.loc);
+        copies.set(ref, replacement);
+        let body = inlineUserCall(copyCaptured(cloneAst(rhs), copies));
+        visit(body);
+        body = inlineUserCall(body);
+        const synth: any = makeSyntheticBinding(fresh, body);
+        synth.phase = b.phase;
+        synth.inferredType = b.inferredType;
+        synth.closureOf = ref;
+        synth.absorbedByLaw = true;
+        synth.deps = Array.from(collectSelfRefs(lowerExpr(body, liftLowerCtx)));
+        out.set(fresh, synth);
+        return replacement;
+      }
+      const result: any = {};
+      for (const key in ast) {
+        result[key] = key === 'loc' ? ast[key] : copyCaptured(ast[key], copies);
+      }
+      return result;
+    }
+    function measure(ast: any): any {
+      const name = ast?.type === 'Identifier' ? ast.name
+        : ast?.type === 'FieldAccess' && ast.object?.name === 'self' ? ast.field : null;
+      if (name) {
+        if (measures.has(name)) return measures.get(name);
+        measures.set(name, ast);
+        const b = out.get(name) || bindings.get(name);
+        const rhs = b?.effectiveValue || b?.node?.value;
+        if (!rhs) return ast;
+        const body = measure(rhs);
+        if (body === rhs) return ast;
+        const fresh = freshName();
+        const replacement = makeIdent(fresh, ast.loc);
+        const synth: any = makeSyntheticBinding(fresh, body);
+        synth.phase = b.phase;
+        synth.inferredType = b.inferredType;
+        synth.deps = Array.from(collectSelfRefs(lowerExpr(body, liftLowerCtx)));
+        out.set(fresh, synth);
+        measures.set(name, replacement);
+        return replacement;
+      }
+      if (ast?.type !== 'CallExpr' || ast.callee?.type !== 'Identifier') return ast;
+      const op = ast.callee.name;
+      if (op === 'lawof') {
+        return { ...ast, args: [copyCaptured(ast.args[0], new Map())] };
+      }
+      const sig = argSignature(op, ast.args?.length || 0);
+      let changed = false;
+      const args = (ast.args || []).map((arg: any, i: number) => {
+        const named = arg.type === 'KeywordArg';
+        if (!(named && op === 'joint') && sig?.[i] !== 'measure') return arg;
+        const old = named ? arg.value : arg;
+        const value = measure(old);
+        changed ||= value !== old;
+        return named ? { ...arg, value } : value;
+      });
+      return changed ? { ...ast, args } : ast;
+    }
+    return measure(component);
+  }
+
+  function finishLiftMeasure(astArg: any, inferredType?: any) {
     visit(astArg);
     if (astArg.type === 'Identifier') return astArg;
     // `weighted(w, M)` / `logweighted(g, M)` (spec §06: the weight/
@@ -914,7 +981,7 @@ function liftInlineSubexpressions(bindings: any) {
       return astArg;
     }
     const name = freshName();
-    out.set(name, makeSyntheticBinding(name, astArg));
+    out.set(name, { ...makeSyntheticBinding(name, astArg), inferredType });
     return makeIdent(name, astArg.loc);
   }
 
@@ -3617,232 +3684,46 @@ function liftInlineSubexpressions(bindings: any) {
     return _inlineApplication(astArg, fnBinding, fnAst);
   }
 
-  // ── applied kernel `joint`: the commuting identity ────────────────────
-  //
-  // `joint(p = kernelof(a1, z = z), q = kernelof(a2, z = z))` is a kernel, and
-  // §06's ancestry rule governs its output measure at each input point:
-  // components whose traces share a stochastic node yield the correlated
-  // record law, components sharing none yield the product. So the fan-out
-  // COMMUTES with the reification — it equals
-  // `kernelof(record(p = a1, q = a2), z = z)` — and applying it must synthesize
-  // the shared sub-DAG ONCE.
-  //
-  // Rewriting the application per component instead (`joint(p = K1(v), q =
-  // K2(v))`) would give each component its own closure copy, hence its own
-  // `u`, hence the PRODUCT of the marginals — a different measure (the probe
-  // scores −3.0310242469693 instead of −3.3871832107434). So the rewrite hoists
-  // the boundary to a single enclosing `functionof` over a body that is the
-  // measure-`joint` of the components' laws, and hands that to
-  // `_inlineApplication`. The resulting `joint(p = lawof(â1), q = lawof(â2))`
-  // over one synthesized `û` is the ordinary measure-joint shape, so the
-  // ancestry rule, the singular-joint refusal and the sampler all apply to it
-  // unchanged.
-  //
-  // The identity is LICENSED ONLY WHEN THE MERGED BOUNDARY SET IS STILL AN
-  // ALL-OR-NONE COMPLETE CUT FOR EVERY COMPONENT — the premise the maths doc
-  // states as "(each all-or-none complete for its own component)", resting on
-  // §04 "Specifying reification boundaries". It holds for matched boundary sets,
-  // for disjoint non-nested ones, and for a measure component (empty set). It
-  // FAILS when a boundary node of component i is an INTERIOR ancestor of
-  // component j: merging then cuts a path j deliberately marginalizes over, so
-  // j's own input goes dead and j is scored at the wrong law. That shape needs
-  // no ruling to be wrong — it violates the marginalization floor (the i-th
-  // marginal of the composed law must equal K_i at the same input), which both
-  // candidate conventions satisfy — so it must refuse, not answer.
-  //
-  // Returns null — leaving the call un-inlined, so the classifier refuses
-  // rather than lowering something else — for every shape this rewrite cannot
-  // resolve: a non-`joint` binding, an all-measure `joint` (not callable), a
-  // component whose reification boundary is a placeholder or a complex
-  // expression, an inline (unlifted) reification component, a nested boundary
-  // scope (above), and a boundary naming conflict in either direction.
+  // Apply each kernel within its own boundary before forming the product.
+  // A shared input name fans out, but never substitutes an ambient parameter
+  // inside another component's measure or marginal law.
   function _jointFanoutAsFunctionof(fnBinding: any) {
-    const jAst = fnBinding.node && fnBinding.node.value;
-    if (!jAst || jAst.type !== 'CallExpr' || !jAst.callee
-        || jAst.callee.type !== 'Identifier' || jAst.callee.name !== 'joint') {
-      return null;
-    }
-    const outerOfSurface = new Map<string, string>();
-    const surfaceOfOuter = new Map<string, string>();
-    const newArgs: any[] = [];
-    const kernelReps: any[] = [];
-    const measureReps: any[] = [];
-    for (const a of (jAst.args || [])) {
-      const isKw = a.type === 'KeywordArg';
-      const rep = _jointComponentAsMeasure(isKw ? a.value : a, isKw ? a.name : undefined);
-      if (!rep) return null;
-      if (!rep.boundaries) measureReps.push(rep);
-      if (rep.boundaries) {
-        kernelReps.push(rep);
-        for (const [surface, outer] of rep.boundaries) {
-          const prevOuter = outerOfSurface.get(surface);
-          const prevSurface = surfaceOfOuter.get(outer);
-          // One input name must denote one node, and one node must be reached
-          // through one input name. The first is §06's boundary-naming clause.
-          // The second rejects one LEGAL shape too — trace-disjoint components
-          // binding one node under two names — because a single substitution
-          // map cannot give one node two fed values; recorded as a gap in
-          // flatppl-dev/TODO-flatppl-js.md.
-          if (prevOuter !== undefined && prevOuter !== outer) return null;
-          if (prevSurface !== undefined && prevSurface !== surface) return null;
-          outerOfSurface.set(surface, outer);
-          surfaceOfOuter.set(outer, surface);
-        }
+    const jAst = fnBinding.node?.value;
+    const inputs = fnBinding.inferredType?.inputs;
+    if (jAst?.callee?.name !== 'joint' || !inputs?.length) return null;
+    const inputKeys = new Map(inputs.map((input: any) => [input.name, freshName()]));
+    const newArgs = jAst.args.map((arg: any) => {
+      const component = arg.type === 'KeywordArg' ? arg.value : arg;
+      const ref = component.type === 'Identifier' ? component.name
+        : component.type === 'FieldAccess' && component.object?.name === 'self'
+          ? component.field : null;
+      const name = ref ? resolveCallableAlias(ref, out) : null;
+      const binding = name && (out.get(name) || bindings.get(name));
+      let names = binding?.inferredType?.kind === 'kernel'
+        ? binding.inferredType.inputs.map((input: any) => input.name) : [];
+      const head = component.callee?.name;
+      if (head === 'functionof' || head === 'kernelof') {
+        names = component.args.slice(1).map((kw: any) => kw.name);
+      } else if (head === 'fn') {
+        names = Array.from({ length: countHoles(component.args[0]) }, (_, i) => 'arg' + (i + 1));
       }
-      newArgs.push(isKw
-        ? { type: 'KeywordArg', name: a.name, value: rep.measureAst, loc: a.loc }
-        : rep.measureAst);
-    }
-    if (kernelReps.length === 0) return null;
-    // The complete-cut check.
-    for (const rj of kernelReps) {
-      const interior = _reachableAncestors(rj.measureAst,
-        new Set(rj.boundaries.values()));
-      for (const ri of kernelReps) {
-        if (ri === rj) continue;
-        for (const outer of ri.boundaries.values()) {
-          if (interior.has(outer)) return null;
-        }
-      }
-    }
-    // A measure component binds nothing (§06's nullary case), so its coordinate
-    // reads the AMBIENT parameter — never the fed input. The hoist has one
-    // substitution map for the whole body, so a measure component that reaches a
-    // hoisted boundary node would be rewritten with the fed value: that is the
-    // W1 bug (kernel-joint-w1-maths.md §9 item 2, "the substitution map … must
-    // never rewrite nodes inside a measure component"). Refuse instead.
-    //
-    // The illegal sharing shape is already a located static error in typeinfer;
-    // this covers the LEGAL non-sharing parameterized case too (§5, third
-    // bullet), which the maths doc scores only when the ambient parameter is
-    // bound — a value this rewrite cannot see, so refusing is the correct
-    // behavior rather than a gap.
-    for (const rm of measureReps) {
-      const reach = _reachableAncestors(rm.measureAst, new Set<string>());
-      for (const outer of outerOfSurface.values()) if (reach.has(outer)) return null;
-    }
-    const boundaryArgs: any[] = [];
-    for (const [surface, outer] of outerOfSurface) {
-      boundaryArgs.push({
-        type: 'KeywordArg', name: surface,
-        value: makeIdent(outer, jAst.loc), loc: jAst.loc,
-      });
-    }
+      const value = names.length ? {
+        type: 'CallExpr', callee: name ? makeIdent(name, component.loc) : cloneAst(component),
+        loc: component.loc,
+        args: names.map((name: string) => ({
+          type: 'KeywordArg', name,
+          value: { type: 'Placeholder', name: inputKeys.get(name), loc: component.loc }, loc: component.loc,
+        })),
+      } : cloneAst(component);
+      return arg.type === 'KeywordArg' ? { ...arg, value } : value;
+    });
     return {
-      type: 'CallExpr', callee: makeIdent('functionof', jAst.loc),
-      args: [
-        { type: 'CallExpr', callee: makeIdent('joint', jAst.loc), args: newArgs, loc: jAst.loc },
-        ...boundaryArgs,
-      ],
-      loc: jAst.loc,
+      type: 'CallExpr', callee: makeIdent('functionof', jAst.loc), loc: jAst.loc,
+      args: [{ ...jAst, args: newArgs }, ...inputs.map((input: any) => ({
+        type: 'KeywordArg', name: input.name, loc: jAst.loc,
+        value: { type: 'Placeholder', name: inputKeys.get(input.name), loc: jAst.loc },
+      }))],
     };
-  }
-
-  // Every binding name `ast` reaches transitively through identifier refs,
-  // stopping at (and excluding) `stopAt` — the INTERIOR of a reification whose
-  // boundary is `stopAt`. Substituting any of these names rewrites the
-  // reification's interior, which is what the complete-cut check must detect.
-  //
-  // Deliberately NOT `computeClosure`: that walk reports the boundary-DEPENDENT
-  // subset (the members needing a fresh copy), and a member left out of it is
-  // shared by name — so a merged substitution still rewrites it. `v ~ Normal(0,1)`
-  // (not descended from the boundary) with `a2 ~ Normal(v + z, 1)` and a boundary
-  // at `z` is the case: `v` is reachable but not boundary-dependent, so
-  // `computeClosure` omits it while `argMap[v]` would still substitute it.
-  function _reachableAncestors(ast: any, stopAt: Set<string>): Set<string> {
-    const found = new Set<string>();
-    const idents = (node: any, acc: Set<string>) => {
-      if (node == null || typeof node !== 'object') return;
-      if (Array.isArray(node)) { for (const c of node) idents(c, acc); return; }
-      if (node.type === 'Identifier' && typeof node.name === 'string') acc.add(node.name);
-      for (const k in node) if (k !== 'loc') idents(node[k], acc);
-    };
-    const walk = (name: string) => {
-      if (stopAt.has(name) || found.has(name)) return;
-      const b = out.get(name) || bindings.get(name);
-      if (!b) return;
-      found.add(name);
-      const rhs = b.node && b.node.value;
-      if (!rhs) return;
-      const refs = new Set<string>();
-      idents(rhs, refs);
-      for (const r of refs) walk(r);
-    };
-    const seeds = new Set<string>();
-    idents(ast, seeds);
-    for (const s of seeds) walk(s);
-    return found;
-  }
-
-  // One `joint` component, expressed as the measure it contributes to the
-  // hoisted body, plus the reification boundary it declares (null for a
-  // measure component — §06's nullary case, which "ignores the input").
-  function _jointComponentAsMeasure(compAst: any, compLabel?: string) {
-    if (!compAst) return null;
-    const inlineHead = compAst.type === 'CallExpr' && compAst.callee
-      && compAst.callee.type === 'Identifier' && compAst.callee.name;
-    let kAst: any;
-    if (compAst.type === 'Identifier') {
-      const name = resolveCallableAlias(compAst.name, out);
-      const b = out.get(name) || bindings.get(name);
-      const t = b && b.inferredType;
-      if (!t || t.kind !== 'kernel') {
-        return { measureAst: cloneAst(compAst), boundaries: null };
-      }
-      kAst = b.effectiveValue || (b.node && b.node.value);
-    } else if (inlineHead === 'kernelof' || inlineHead === 'functionof') {
-      // Written out verbatim as a joint component, not bound to a name first.
-      // Spec §06's uniform kernel extension does not distinguish a named
-      // kernel from an inline one, so this hoists the same way the Identifier
-      // branch above does — the literal CallExpr already IS the reification,
-      // no binding lookup needed.
-      kAst = compAst;
-    } else {
-      // `fn(...)` written out verbatim (not bound to a name first) would need
-      // its own boundary hoist that this reader does not perform — refuse
-      // rather than mistake it for a measure (a silent null here surfaces
-      // only as the fanout's generic "no derivation" fallback, which does not
-      // say why). Named `fn(...)` kernel components hit the Identifier branch
-      // above and resolve through the binding's effective value the same as
-      // any other kernel; only the inline literal reaches this refusal.
-      if (inlineHead === 'fn') {
-        const where = compLabel ? `joint kwarg "${compLabel}"` : 'a joint component';
-        const err: any = new Error(
-          `${where} is an inline fn(...) reification used directly as a kernel `
-          + 'in a joint fan-out (spec §06 "Uniform kernel extension"); the '
-          + 'fan-out hoist only reads kernelof(...) / functionof(...) inline, '
-          + 'or a name bound to any kernel. Bind it to a name first, e.g. '
-          + `k = fn(...); joint(${compLabel ? compLabel + ' = k' : 'k'}, ...).`);
-        err.code = 'JOINT_FANOUT_INLINE_FN_COMPONENT';
-        throw err;
-      }
-      return { measureAst: cloneAst(compAst), boundaries: null };
-    }
-    if (!kAst || kAst.type !== 'CallExpr' || !kAst.callee
-        || kAst.callee.type !== 'Identifier') return null;
-    const head = kAst.callee.name;
-    if (head !== 'kernelof' && head !== 'functionof') return null;
-    const bodyAst = kAst.args && kAst.args[0];
-    if (!bodyAst || bodyAst.type === 'KeywordArg') return null;
-    const boundaries = new Map<string, string>();
-    for (let i = 1; i < kAst.args.length; i++) {
-      const kw = kAst.args[i];
-      if (kw.type !== 'KeywordArg') return null;
-      if (!kw.value || kw.value.type !== 'Identifier') return null;
-      boundaries.set(kw.name, kw.value.name);
-    }
-    if (boundaries.size === 0) return null;
-    // `kernelof(x, kw…)` reifies a VALUE, so the component's output measure is
-    // that value's law — the same wrapping lower.ts applies when it rewrites
-    // `kernelof(x, kw)` to `functionof(lawof(x), kw)`. A `functionof` typed as
-    // a kernel already has a measure body.
-    const measureAst = head === 'kernelof'
-      ? {
-        type: 'CallExpr', callee: makeIdent('lawof', bodyAst.loc),
-        args: [cloneAst(bodyAst)], loc: bodyAst.loc,
-      }
-      : cloneAst(bodyAst);
-    return { measureAst, boundaries };
   }
 
   // Apply a reified callable's AST (`fnAst` — a functionof / kernelof /

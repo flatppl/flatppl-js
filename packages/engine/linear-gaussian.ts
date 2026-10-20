@@ -2,18 +2,9 @@
 
 // ════════════════════════════════════════════════════════════════════════
 // Linear-Gaussian marginal recognition — the ANALYTIC closed form for a
-// shared-ancestor joint law's density, optionally mass-weighted over a
-// FINITE DISCRETE latent's support. Spec anchors, verbatim from
-// flatppl-design 52df5de:
-//
-//   §06 "Equivalent record law" — "`joint(a = lawof(a), b = lawof(b))` is
-//   equivalent to `lawof(record(a = a, b = b))`; the positional form is the
-//   corresponding `cat` law". (The traced-once statement lives in §04 "Trace of
-//   the reified law", a different section.)
-//
-//   §06 "Density of composed measures" — "A `joint` with shared ancestry
-//   reduces as its equivalent record law; a singular joint has no density and
-//   the query is refused."
+// reified law's density, optionally mass-weighted over a finite discrete
+// latent's support. §04 preserves dependence within one law. §06 products of
+// law values instead own independent copies of those absorbed graphs.
 //
 // `lawof(record(a = a, b = b))` over draws that share a stochastic ancestor is
 // therefore the MARGINAL law of the component vector, ∫ p(a, b | z) p(z) dz.
@@ -54,7 +45,7 @@
 // references a stochastic name adds that name's own law as a node. Composing
 // affine maps through the intermediate nodes is what makes a hierarchical CHAIN
 // analytic — `z ~ Normal(0,1); a ~ Normal(z,1); b ~ Normal(a,1)` scored as
-// `joint(a = lawof(a), b = lawof(b))` is exactly MvNormal([0,0], [[2,2],[2,3]]),
+// `lawof(record(a = a, b = b))` is exactly MvNormal([0,0], [[2,2],[2,3]]),
 // with `a` a component AND `b`'s parent. Propagating moments over the whole
 // table (rather than substituting a sibling's location into `b`) is what keeps
 // Cov(a, b) = Var(a) = 2 instead of dropping the noise `a` and `b` share.
@@ -617,10 +608,9 @@ function _blockMoments(nodes: Map<string, TableNode>, compKeys: string[],
  * `identity` is REQUIRED and throws when absent. Its `keyOf` maps a binding name
  * to its draw identity (clm's alias root) so a component and an ancestor that are
  * the same draw collapse to one node. Defaulting it to the identity function
- * `nm => nm` would be name keying — precisely the defect that made
- * `joint(lawof(a), lawof(b))` over a hierarchical chain SCORE `[[2,1],[1,3]]`
- * instead of `[[2,2],[2,3]]`, silently, before this recogniser was rewritten. A
- * caller that cannot supply draw identities must get an error, never a number.
+ * `nm => nm` would incorrectly treat aliases within one law as independent
+ * draws. Product components already have distinct law scopes. A caller that
+ * cannot supply draw identities must get an error, never a number.
  *
  * Returns `{ labels, mean, cov }` for a pure linear-Gaussian sub-DAG,
  * `{ labels, mixture: [{ logw, mean, cov }, …] }` when a finite discrete

@@ -65,30 +65,31 @@ x~normalize(logweighted((v,t)->t*v,Normal(0,1),theta))`);
 });
 
 test('a truncation indicator preserves shared parameter weight provenance', async () => {
-  // GeneralizedNormal uses the filter fallback. Joining the same theta again
-  // must retain its exp(theta) importance event exactly once on accepted atoms.
+  // GeneralizedNormal uses the filter fallback. The conditional chain retains
+  // its base t's exp(t) importance event exactly once on accepted atoms.
   const ctx = context(`theta~normalize(weighted(fn(exp(_)),Normal(0,1)))
-M=truncate(GeneralizedNormal(theta,1,2),interval(-1,1))
-J=joint(t=lawof(theta),y=M)`);
-  const theta = await ctx.getMeasure('theta');
+K=t->truncate(GeneralizedNormal(t,1,2),interval(-1,1))
+J=jointchain(t=lawof(theta),y=K)`);
   const joint = await ctx.getMeasure('J');
+  const theta = joint.fields.t.samples;
   const accepted = Array.from(joint.logWeights, (_w: number, i: number) => i)
     .filter((i: number) => Number.isFinite(joint.logWeights[i]));
   assert.ok(accepted.length > 1);
   const first = accepted[0];
   for (const i of accepted) {
     const actual = joint.logWeights[i] - joint.logWeights[first];
-    assert.ok(Math.abs(actual - theta.samples[i] + theta.samples[first]) < 1e-12);
+    assert.ok(Math.abs(actual - theta[i] + theta[first]) < 1e-12);
   }
 });
 
-test('superposition retains captured point values and their weighting event', async () => {
-  // Both branches are Dirac(theta), including the pushforward spelling.
-  // Their normalized sum is the same point measure, with theta weighted once.
+test('a conditional superposition retains point values and their weighting event', async () => {
+  // Both branches are Dirac(theta), including the affine spelling. One reified
+  // law retains x=theta and the parameter's weighting event once (§04).
   for (const component of ['Dirac(theta)', 'locscale(Dirac(0),theta,1)']) {
     const ctx = context(`theta~normalize(weighted(fn(_+1),Bernoulli(.5)))
 M=normalize(superpose(${component},${component}))
-J=joint(t=lawof(theta),x=M)`);
+x~M
+J=lawof(record(t=theta,x=x))`);
     const joint = await ctx.getMeasure('J');
     const t = joint.fields.t.samples, x = joint.fields.x.samples;
     for (let i = 0; i < t.length; i++) {
@@ -99,12 +100,13 @@ J=joint(t=lawof(theta),x=M)`);
   }
 });
 
-test('unequal mixture branches retain both independent captured laws', async () => {
+test('unequal conditional mixture branches retain both independent parameter laws', async () => {
   // Both priors belong to the joint, including the unselected branch's.
   const ctx = context(`a~normalize(weighted(fn(1+_),Bernoulli(.5)))
 b~normalize(weighted(fn(1+3*_),Bernoulli(.5)))
 M=normalize(superpose(Dirac(2*a),weighted(3,Dirac(2*b+1))))
-J=joint(a=lawof(a),b=lawof(b),x=M)`);
+x~M
+J=lawof(record(a=a,b=b,x=x))`);
   const joint = await ctx.getMeasure('J');
   const a = joint.fields.a.samples, b = joint.fields.b.samples, x = joint.fields.x.samples;
   for (let i = 0; i < x.length; i++) {
@@ -115,9 +117,12 @@ J=joint(a=lawof(a),b=lawof(b),x=M)`);
 });
 
 test('a zero conditional mixture slice retains zero weight', async () => {
+  // θ has target P(θ=1)=2/3. Weighting its joint law with an independent
+  // Bernoulli variate by 2θ gives the zero slice and total mass 4/3 (§06).
+  // A zero-mass slice admits neither normalization nor a draw.
   const ctx = context(`theta~normalize(weighted(fn(1+_),Bernoulli(.5)))
-S=superpose(weighted(ifelse(theta,1.0,0.0),Dirac(0)),weighted(ifelse(theta,1.0,0.0),Dirac(1)))
-J=joint(t=lawof(theta),x=S)`);
+u~Bernoulli(.5)
+J=weighted(r->ifelse(r.t,2.0,0.0),lawof(record(t=theta,x=u)))`);
   const joint = await ctx.getMeasure('J');
   const theta = joint.fields.t.samples;
   assert.ok(theta.includes(0) && theta.includes(1));
@@ -156,11 +161,12 @@ V=iid(M,2)`, 8192);
   assert.ok(Math.abs(both / mass - .16) < .025);
 });
 
-test('composite iid preserves shared parameter lineage in a later joint', async () => {
+test('a conditional iid draw preserves parameter lineage in one joint law', async () => {
   for (const base of ['Normal(theta,1)', 'locscale(Dirac(0),theta,1)']) {
     const ctx = context(`theta~normalize(weighted(fn(_+1),Bernoulli(.5)))
 V=iid(${base},2)
-J=joint(t=lawof(theta),x=V)`);
+x~V
+J=lawof(record(t=theta,x=x))`);
     const joint = await ctx.getMeasure('J');
     const t = joint.fields.t.samples;
     // The normalized parameter law has target/proposal ratio proportional

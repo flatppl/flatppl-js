@@ -48,7 +48,6 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { processSource } = require('..');
 const { ctxFor } = require('./_ctx-factory.ts');
 
 const N = 20000;
@@ -56,9 +55,6 @@ const MEAN_TOL = 0.15;
 const VAR_TOL = 0.30;
 const COV_TOL = 0.45;
 const F64_TOL = 1e-12;
-
-const infer = (src: string) => (processSource(src).diagnostics || [])
-  .filter((d: any) => d.severity === 'error').map((d: any) => d.message);
 
 // Per-coordinate means and variances, plus the covariance of coordinate 0
 // against each coordinate, read off a materialised iid measure's atom-major
@@ -331,87 +327,3 @@ test('iid(kchain(superpose, K), 3) no longer pins a branch per coordinate',
       assert.ok(Math.abs(varr[i] - 11.0) < VAR_TOL, `var[${i}] = ${varr[i]}`);
     }
   });
-
-// ── The static sharing walk agrees with the fixed sampler ────────────────────
-//
-// typeinfer's §06 ancestry walk held `superpose` out of the `iid` skip while
-// the sampler pinned a branch per coordinate — over-reporting is the safe half
-// of the sequencing rule (sampler first, then the report). The sampler now
-// freshens, so the report is a false rejection of a legal program and
-// `superpose` joins the roster.
-
-const W1_PREAMBLE = `
-z = elementof(reals)
-u ~ Normal(mu = z, sigma = 1.0)
-w ~ Normal(mu = 0.0, sigma = 1.0)
-a1 ~ Normal(mu = u, sigma = 1.0)
-K1 = kernelof(a1, z = z)
-`;
-
-const SUPERPOSE_COMPONENTS: Array<[string, string]> = [
-  ['weighted branches',
-    'M = iid(superpose(weighted(0.5, lawof(u)), weighted(0.5, lawof(w))), 3)'],
-  ['bare branches', 'M = iid(superpose(lawof(u), lawof(w)), 3)'],
-  ['mixed law / distribution branches',
-    'M = iid(superpose(weighted(0.5, lawof(u)), '
-    + 'weighted(0.5, Normal(mu = 0.0, sigma = 1.0))), 3)'],
-  ['normalize over superpose',
-    'M = iid(normalize(superpose(weighted(0.5, lawof(u)), '
-    + 'weighted(0.5, lawof(w)))), 3)'],
-  // §04 "Aliasing is just assignment" — the chain resolves.
-  ['alias chain',
-    'S = superpose(weighted(0.5, lawof(u)), weighted(0.5, lawof(w)))\n'
-    + 'S2 = S\nM = iid(S2, 3)'],
-];
-
-for (const [label, decl] of SUPERPOSE_COMPONENTS) {
-  test(`a component that is an iid over a superpose (${label}) is not reported`,
-    () => {
-      assert.deepEqual(
-        infer(W1_PREAMBLE + decl + '\nKJ = joint(p = K1, q = M)\n'), []);
-    });
-}
-
-test('a shared mixing WEIGHT inside a replicated superpose still reports', () => {
-  // The branch's other arguments are still walked. `p` is the mixing weight,
-  // read once before replication, and the sampler still shares it — so the
-  // report and the sampler agree, which is the property the skip exists to
-  // keep.
-  const errors = infer(`
-z = elementof(reals)
-p ~ Normal(mu = z, sigma = 1.0)
-u ~ Normal(mu = 0.0, sigma = 1.0)
-w ~ Normal(mu = 5.0, sigma = 1.0)
-a1 ~ Normal(mu = p, sigma = 1.0)
-K1 = kernelof(a1, z = z)
-M = iid(superpose(weighted(p, lawof(u)), weighted(1.0 - p, lawof(w))), 3)
-KJ = joint(p = K1, q = M)
-`);
-  assert.ok(errors.some((m: string) => /share the stochastic node 'p'/.test(m)),
-    'got: ' + errors.join(' | '));
-});
-
-test('a DISTRIBUTION branch of a replicated superpose is still walked', () => {
-  // A branch that replicates nothing keeps its report: `Normal(mu = p, …)`
-  // reads one `p` fixed before replication.
-  const errors = infer(`
-z = elementof(reals)
-p ~ Normal(mu = z, sigma = 1.0)
-u ~ Normal(mu = 0.0, sigma = 1.0)
-a1 ~ Normal(mu = p, sigma = 1.0)
-K1 = kernelof(a1, z = z)
-M = iid(superpose(weighted(0.5, lawof(u)), weighted(0.5, Normal(mu = p, sigma = 1.0))), 3)
-KJ = joint(p = K1, q = M)
-`);
-  assert.ok(errors.some((m: string) => /share the stochastic node 'p'/.test(m)),
-    'got: ' + errors.join(' | '));
-});
-
-test('a superpose NOT under an iid still reports its shared node', () => {
-  // The skip is scoped to an `iid` measure argument. A bare superpose
-  // component shares `u` with the kernel and must still report.
-  const errors = infer(W1_PREAMBLE
-    + 'M = superpose(weighted(0.5, lawof(u)), weighted(0.5, lawof(w)))\n'
-    + 'KJ = joint(p = K1, q = M)\n');
-  assert.ok(errors.length > 0, 'expected the sharing report to stay');
-});

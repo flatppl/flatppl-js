@@ -3961,10 +3961,19 @@ function walkInner(state: any, ir: IRNode, env: any, ctx: any): any {
     if (!inner) {
       throw new Error(`sampler.walk: resolveMeasureRef returned no IR for '${ir.name}'`);
     }
+    // Repeated references to one draw within a law denote one value.
+    // Measure references still sample afresh at each product coordinate.
+    if (inner.kind === 'call' && inner.op === 'draw' && ctx.draws) {
+      if (ctx.draws.has(ir.name)) return { value: ctx.draws.get(ir.name), state };
+      const result = walkInner(state, inner, env, ctx);
+      ctx.draws.set(ir.name, result.value);
+      return result;
+    }
     return walkInner(state, inner, env, ctx);
   }
 
   if (!ir || ir.kind !== 'call') {
+    if (ctx.lawValue) return walkLawValue(state, ir, env, ctx);
     throw new Error(
       `sampler.walk: expected a measure call IR (or self-ref), got ` +
       `kind=${ir && ir.kind}`
@@ -3981,6 +3990,7 @@ function walkInner(state: any, ir: IRNode, env: any, ctx: any): any {
   // new measure-algebra walker is one entry there plus the handler.
   const handler: any = op != null ? (MEASURE_OP_WALKERS as any)[op] : null;
   if (handler) return handler(state, ir, env, ctx);
+  if (ctx.lawValue) return walkLawValue(state, ir, env, ctx);
   // A forward-composite value-op in measure position (broadcast / aggregate
   // / scan / reduce / filter, typically under a `lawof`) is a COMPOSITE
   // rand whose DRAW half the materialiser samples (matRandSample) and whose
@@ -4137,13 +4147,32 @@ function walkWeightedRefuse(state: any, ir: IRNode, env: any, ctx: any): any {
   );
 }
 
-// lawof(M) / draw(M): pass-through wrappers per `lawof(draw(M)) ≡ M`.
+// Each law samples its own graph. References within that graph share draws.
 function walkUnwrap(state: any, ir: IRNode, env: any, ctx: any): any {
   const args = ir.args || [];
   if (args.length !== 1) {
     throw new Error(`sampler.walk: ${ir.op} expected 1 arg, got ${args.length}`);
   }
-  return walkInner(state, args[0], env, ctx);
+  if (ir.op !== 'lawof') return walkInner(state, args[0], env, ctx);
+  // A new law owns its random values. Keep evaluator hooks, but no sampled
+  // ancestors from another law or an earlier IID copy.
+  const local = Object.fromEntries(Object.entries(env || {}).filter(([key]) => key.startsWith('__')));
+  return walkInner(state, args[0], local, { ...ctx, lawValue: true, draws: new Map() });
+}
+
+function walkLawValue(state: any, ir: IRNode, env: any, ctx: any): any {
+  state = fillEnvFromRefs(state, ir, env, ctx);
+  return { value: evaluateExpr(ir, env), state };
+}
+
+function walkRecord(state: any, ir: IRNode, env: any, ctx: any): any {
+  const value: Record<string, any> = {};
+  for (const field of ir.fields || []) {
+    const result = walkLawValue(state, field.value, env, ctx);
+    value[field.name] = result.value;
+    state = result.state;
+  }
+  return { value, state };
 }
 
 // Structural, conservative check: true only when `ir` is PROVABLY already a
@@ -4243,7 +4272,7 @@ function walkTilt(state: any, ir: any, env: any, ctx: any): any {
 
 const MEASURE_OP_WALKERS = {
   joint:       walkJoint,
-  record:      walkJoint,
+  record:      walkRecord,
   iid:         walkIid,
   weighted:    walkWeightedRefuse,
   logweighted: walkWeightedRefuse,
@@ -4264,7 +4293,7 @@ function fillEnvFromRefs(state: any, ir: any, env: any, ctx: any) {
   collectValueRefs(ir, refs);
   for (const name of refs) {
     if (env && env[name] !== undefined) continue;
-    const r = ctx.resolveValueRef(name, state);
+    const r = ctx.resolveValueRef(name, state, env);
     if (!r) continue;
     env[name] = r[0];
     state = r[1];

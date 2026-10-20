@@ -45,15 +45,11 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { processSource } = require('..');
 const { ctxFor } = require('./_ctx-factory.ts');
 
 const N = 20000;
 const MOMENT_TOL = 0.06;
 const F64_TOL = 1e-12;
-
-const infer = (src: string) => (processSource(src).diagnostics || [])
-  .filter((d: any) => d.severity === 'error').map((d: any) => d.message);
 
 // Per-coordinate variances and the covariances of coordinate 0 against the
 // rest, read off a materialised iid measure's flat atom-major samples.
@@ -283,116 +279,3 @@ test('normalize and pushfwd wrappers score the unweighted product', async () => 
     + 'ld = logdensityof(M, [1.1, 1.2, 1.3])\n');
   assert.ok(Math.abs(push - SUM_LOGPDF) < F64_TOL, `pushfwd got ${push}`);
 });
-
-// ── The static sharing walk agrees with the fixed sampler ────────────────────
-//
-// typeinfer's §06 ancestry walk skipped an `iid` only when its measure argument
-// was a BARE reified law, so the wrapped spelling kept descending and reported
-// sharing. That static error was the right posture while the sampler returned
-// the diagonal — it was the only thing standing between a user and that number.
-// With the sampler freshening, the report is a FALSE rejection of a legal
-// program, so the skip widens to the same wrapper roster the sampler freshens.
-
-const W1_PREAMBLE = `
-z = elementof(reals)
-u ~ Normal(mu = z, sigma = 1.0)
-w ~ Normal(mu = 0.0, sigma = 1.0)
-a1 ~ Normal(mu = u, sigma = 1.0)
-K1 = kernelof(a1, z = z)
-`;
-
-const WRAPPED_COMPONENTS: Array<[string, string]> = [
-  ['weighted',    'M = iid(weighted(2.0, lawof(u)), 3)'],
-  ['logweighted', 'M = iid(logweighted(0.5, lawof(u)), 3)'],
-  ['normalize',   'M = iid(normalize(lawof(u)), 3)'],
-  ['truncate',    'M = iid(truncate(lawof(u), interval(-1.0, 1.0)), 3)'],
-  ['pushfwd',     'M = iid(pushfwd(x -> x + 1.0, lawof(u)), 3)'],
-  ['nested iid',  'M = iid(iid(weighted(2.0, lawof(u)), 2), 3)'],
-  // §04 "Aliasing is just assignment" — the chain resolves.
-  ['alias chain', 'L = lawof(u)\nL2 = L\nW = weighted(2.0, L2)\nM = iid(W, 3)'],
-  // `joint` / `record` replicate every component, so each one prunes its own
-  // law. The BARE record spelling was singular at da7391c for the same reason
-  // the wrapped one was — it takes the same composite fallback — and the
-  // sampler freshens it now, so the walk must stop reporting it.
-  ['bare record',    'M = iid(joint(a = lawof(u), b = lawof(w)), 3)'],
-  ['wrapped record', 'M = iid(joint(a = weighted(2.0, lawof(u)), b = weighted(2.0, lawof(w))), 3)'],
-  ['positional joint', 'M = iid(joint(lawof(u), lawof(w)), 3)'],
-];
-
-for (const [label, decl] of WRAPPED_COMPONENTS) {
-  test(`a component that is an iid over ${label}(… lawof(u) …) is not reported`,
-    () => {
-      assert.deepEqual(
-        infer(W1_PREAMBLE + decl + '\nKJ = joint(p = K1, q = M)\n'), []);
-    });
-}
-
-test('the wrapper ARGUMENTS are still walked — a shared weight node reports',
-  () => {
-    // `p` is the weight, not the replicated law: it is drawn once and every copy
-    // reads it, exactly like a distribution parameter. Widening the skip over
-    // the whole `iid` subtree would have dropped this diagnostic.
-    const errors = infer(`
-z = elementof(reals)
-p ~ Normal(mu = z, sigma = 1.0)
-u ~ Normal(mu = 0.0, sigma = 1.0)
-a1 ~ Normal(mu = p, sigma = 1.0)
-K1 = kernelof(a1, z = z)
-M = iid(weighted(p, lawof(u)), 3)
-KJ = joint(p = K1, q = M)
-`);
-    assert.ok(errors.some((m: string) => /share the stochastic node 'p'/.test(m)),
-      'got: ' + errors.join(' | '));
-  });
-
-test('a DISTRIBUTION component of a replicated joint is still walked', () => {
-  // Pruning a `joint` component by component must not prune a component that
-  // replicates nothing: `Normal(mu = p, …)` reads one `p` fixed before
-  // replication, so the sharing report stands for that component alone.
-  const errors = infer(`
-z = elementof(reals)
-p ~ Normal(mu = z, sigma = 1.0)
-u ~ Normal(mu = 0.0, sigma = 1.0)
-a1 ~ Normal(mu = p, sigma = 1.0)
-K1 = kernelof(a1, z = z)
-M = iid(joint(a = lawof(u), b = Normal(mu = p, sigma = 1.0)), 3)
-KJ = joint(p = K1, q = M)
-`);
-  assert.ok(errors.some((m: string) => /share the stochastic node 'p'/.test(m)),
-    'got: ' + errors.join(' | '));
-});
-
-test('a shared node in a TRUNCATION region is still walked', () => {
-  const errors = infer(`
-z = elementof(reals)
-p ~ Normal(mu = z, sigma = 1.0)
-u ~ Normal(mu = 0.0, sigma = 1.0)
-a1 ~ Normal(mu = p, sigma = 1.0)
-K1 = kernelof(a1, z = z)
-M = iid(truncate(lawof(u), interval(p, p + 1.0)), 3)
-KJ = joint(p = K1, q = M)
-`);
-  assert.ok(errors.some((m: string) => /share the stochastic node 'p'/.test(m)),
-    'got: ' + errors.join(' | '));
-});
-
-test('superpose IS in the roster now that its sampler freshens per coordinate',
-  () => {
-    // This row was the inverse assertion while `matSuperpose` pinned a
-    // component per coordinate: `iid(superpose(weighted(0.5, lawof(u)),
-    // weighted(0.5, lawof(w))), 3)` gave per-coordinate means -3.0 / 0.0 / +3.0
-    // for laws centred at -3 and +3, where §06's product of mixtures is mean 0
-    // in every coordinate, and the sequencing rule kept the static report until
-    // the sampler was fixed. The sampler now selects per output index, so the
-    // report became a false rejection and `superpose` joined the roster. Its
-    // own moment, control and density rows live in
-    // `test/iid-superpose-branch-freshness.test.ts`.
-    assert.deepEqual(infer(`
-z = elementof(reals)
-u ~ Normal(mu = z, sigma = 1.0)
-a1 ~ Normal(mu = u, sigma = 1.0)
-K1 = kernelof(a1, z = z)
-M = iid(superpose(weighted(0.5, lawof(u)), weighted(0.5, Normal(mu = 0.0, sigma = 1.0))), 3)
-KJ = joint(p = K1, q = M)
-`), []);
-  });

@@ -612,9 +612,14 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
   // can't resolve, fall back to the raw lowered IR — those tend to
   // already be primitive distribution calls that the walker handles.
   function resolveMeasureRef(refName: any) {
+    const b = bindings.get(refName);
+    // Sampling a reified value needs its graph, including repeated draws.
+    // The density expander erases these scopes when it builds product factors.
+    if (b?.ir && (b.ir.kind === 'ref'
+        || ['lawof', 'draw', 'record', 'vector', 'joint', 'iid',
+          'weighted', 'logweighted', 'normalize'].includes(b.ir.op))) return b.ir;
     const expanded = expandMeasureIR(refName, derivations);
     if (expanded) return expanded;
-    const b = bindings.get(refName);
     return (b && b.ir) || null;
   }
 

@@ -336,15 +336,15 @@ function buildPriorTransform(ctx: any, d: any) {
   const latentNames: string[] = [];
   const coordSupports: any[] = [];
   let dim = 0;
-  for (const { latentName, measureName } of sources) {
+  for (const { latentName, measureName, measureIR } of sources) {
     const comp = recognizeCompositeIidDraw(measureName, ctx);
     let plan: LatentPlan;
     if (comp) {
       const seedEnv = Object.assign({}, fixedEnv); refreshDerived(seedEnv);
       plan = makeCompositePlan(comp, seedEnv);
     } else {
-      const measureIR = orchestrator.expandMeasure(measureName, { derivations: ctx.derivations, bindings: ctx.bindings });
-      plan = planLatent(measureIR, ctx);
+      const measure = measureIR || orchestrator.expandMeasure(measureName, { derivations: ctx.derivations, bindings: ctx.bindings });
+      plan = planLatent(measure, ctx);
     }
     // A vector plan (Dirichlet) consumes fewer cube coords than the constrained
     // width it produces; size both from the seed env.

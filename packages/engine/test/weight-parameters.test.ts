@@ -39,6 +39,22 @@ c = score(-0.75)
   }
 });
 
+test('normalization retains a named measure’s inline parameter draw', async () => {
+  const { ctx } = makeMatCtx(`
+M = logweighted((x, p) -> p * x, Normal(0, 1), draw(Normal(0, 1)))
+a = logdensityof(M, 1)
+b = logdensityof(normalize(M), 0)
+L = lawof(record(a = a, b = b))
+`, { sampleCount: 16, rootSeed: 4711 });
+  const law = await ctx.getMeasure('L');
+  const a = law.fields.a.samples, b = law.fields.b.samples;
+  const constant = -0.5 * Math.log(2 * Math.PI);
+  for (let i = 0; i < a.length; i++) {
+    const parameter = a[i] - constant + 0.5;
+    assert.ok(Math.abs(b[i] - (constant - 0.5 * parameter ** 2)) < 1e-12);
+  }
+});
+
 test('explicit weight parameters apply a builtin function', async () => {
   const { ctx } = makeMatCtx(`
 M = weighted(pow, Uniform(unitinterval), 2)

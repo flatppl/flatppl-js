@@ -515,6 +515,27 @@ type PriorLatentSource = { latentName: string; measureName: string; measureIR?: 
 function priorLatentSources(d: any, ctx: any): PriorLatentSource[] {
   const ir = ctx.bindings.get(d.from)?.ir;
   const der = (ctx.derivations || {})[d.from];
+  if (ir?.op === 'lawof' && der?.kind === 'alias') {
+    const record = ctx.derivations[der.from];
+    const fields = Object.entries(record?.fields || {}) as Array<[string, string]>;
+    if (fields.some(([, name]) => ctx.bindings.get(name)?.absorbedByLaw)) {
+      // A copied law keeps its public field names. Internal draw names only
+      // connect factors within that copy, never to another product component.
+      const names = new Map(fields.filter(([, name]) => ctx.bindings.get(name)?.type === 'draw')
+        .map(([label, name]) => [name, label]));
+      const boundary = new Set(names.keys());
+      return collectDrawNames(d.from, ctx).map(name => ({
+        latentName: names.get(name) || name,
+        measureName: name,
+        measureIR: require('./ir-walk.ts').mapIRScoped(
+          require('./materialiser-shared.ts').inlineBoundaryDerivations(
+            orchestrator.expandMeasure(name, ctx), boundary, ctx),
+          (n: any, shadowed: Set<string>) =>
+            n?.kind === 'ref' && n.ns === 'self' && !shadowed.has(n.name) && names.has(n.name)
+              ? { ...n, name: names.get(n.name) } : n),
+      }));
+    }
+  }
   if (der?.kind === 'jointchain' && !der.marginalize) {
     // §06 record chains already lower to conditional field densities. Reuse
     // that lowering rather than treating boundary-bound draws as prior draws.
