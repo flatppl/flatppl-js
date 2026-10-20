@@ -583,26 +583,25 @@ for (const saved of [false, true]) {
   });
 }
 
-test('Share downloads a frozen standalone file and keeps dependencies in a ZIP', async () => {
+test('Share downloads a frozen standalone file and keeps dependencies in a ZIP', { timeout: 10000 }, async () => {
   for (const withData of [false, true]) {
     const path = 'user/model.flatppl';
     const source = (withData ? 'data=load_data("data/data.json", cartpow(reals,2))\n' : '') + 'x=1\n';
     const files = { [path]: new TextEncoder().encode(source) };
     if (withData) files['user/data/data.json'] = new TextEncoder().encode('[1,2]\n');
-    let encoded;
+    const encoded = Promise.withResolvers();
     const g = await gallery({ editable: true, timers: manualTimers(),
       loadBundle: async (_path, _override, options) => ({
         primaryPath: path, primarySource: options.drafts?.[path] ?? source,
         files, sources: { [path]: source },
         resolutions: { [path]: { data: { 'data/data.json': 'user/data/data.json' } } },
       }),
-      encodeShare: async bytes => { encoded = bytes; return { link: 'snapshot', qr: null }; },
+      encodeShare: async bytes => { encoded.resolve(bytes); return { link: 'snapshot', qr: null }; },
     });
     await g.navigate({ model: path });
     g.share();
-    // Compression and the lazy codec import are asynchronous.
-    for (let attempt = 0; !encoded && attempt < 100; attempt++) await g.flush();
-    assert.ok(encoded);
+    // Wait for compression and the lazy codec import, independent of host speed.
+    await encoded.promise;
     g.toggleEdit();
     g.edit('x=2\n');
     const dialog = g.document.body.querySelector('dialog');
