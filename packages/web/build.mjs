@@ -34,6 +34,7 @@
 //   npm run build         # one-shot
 //   npm run watch         # rebuild engine bundles on source changes
 
+import { createHash } from 'node:crypto';
 import { copyFile, mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync, statSync, watch as fsWatch } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -191,7 +192,9 @@ const SRC_BUNDLE_ENTRIES = new Set([
   // Bundled to vendor/file-types.js (IIFE global) below, not served as-is.
   'file-types.mjs',
   'share-codec.ts',
+  'share-format.ts',
   'share-worker.ts',
+  'zstd.ts',
 ]);
 
 // Per-file transpile-or-copy: each script in src/ is loaded by the page
@@ -399,7 +402,8 @@ const BUNDLES = [
       bundle: true, minify: true, format: 'esm', splitting: true, chunkNames: 'share-chunk-[hash]',
       platform: 'browser', target: 'es2020' }, label: 'share-codec -> dist/share-codec.js' },
   { opts: { entryPoints: [join(here, 'src/share-worker.ts')], outfile: join(distDir, 'share-worker.js'),
-      bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2020' },
+      bundle: true, minify: true, format: 'esm', platform: 'browser', target: 'es2020',
+      loader: { '.zdict': 'binary' } },
     label: 'share-worker -> dist/share-worker.js' },
   { opts: fileTypesBuildOpts,     label: 'file-types         -> dist/vendor/file-types.js' },
   { opts: engineBuildOpts,        label: 'engine             -> dist/vendor/engine.min.js' },
@@ -411,7 +415,14 @@ const BUNDLES = [
   { opts: viewerBuildOpts,        label: 'viewer             -> dist/vendor/viewer.js' },
 ];
 
-await copyFile(join(nm, 'brotli-wasm/pkg.web/brotli_wasm_bg.wasm'), join(distDir, 'brotli_wasm_bg.wasm'));
+// src/zstd.ts calls this binary's minified exports directly. After upgrading
+// @bokuweb/zstd-wasm, check those names and the imports, then update the hash.
+const ZSTD_WASM_SHA256 = '80260eee5795ee8072bb5821e203730c74dca3909938f5ac1128da67f96223df';
+const zstdWasm = await readFile(join(nm, '@bokuweb/zstd-wasm/dist/web/zstd.wasm'));
+if (createHash('sha256').update(zstdWasm).digest('hex') !== ZSTD_WASM_SHA256) {
+  throw new Error('@bokuweb/zstd-wasm ships an unexpected zstd.wasm. See ZSTD_WASM_SHA256 in build.mjs.');
+}
+await writeFile(join(distDir, 'zstd.wasm'), zstdWasm);
 
 if (WATCH) {
   const ctxs = await Promise.all(BUNDLES.map(b => esbuild.context(b.opts)));

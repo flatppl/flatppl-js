@@ -9,8 +9,7 @@ const engine = require('../../engine/index.ts');
 const encode = text => new TextEncoder().encode(text);
 const decode = bytes => new TextDecoder().decode(bytes);
 
-function store(records) {
-  const window = { FlatPPLEngine: engine };
+function store(records, window = { FlatPPLEngine: engine }) {
   if (records) window.indexedDB = {
     open() {
       const request = { result: { transaction: () => ({ objectStore: () => ({
@@ -28,6 +27,19 @@ function store(records) {
   vm.runInNewContext(stripTypeScriptTypes(readFileSync(new URL('../src/bundle-store.ts', import.meta.url), 'utf8')),
     { window, console, TextEncoder, Uint8Array });
   return window.FlatPPLWebBundles;
+}
+
+/** The bundle store, the resolver reading through it, and the options of each graph resolution. */
+function storeWithResolver() {
+  const resolutions = [];
+  const window = { FlatPPLEngine: { ...engine, resolveBundleBytes(...args) {
+    resolutions.push(args[3]);
+    return engine.resolveBundleBytes(...args);
+  } } };
+  const bundles = store(undefined, window);
+  vm.runInNewContext(stripTypeScriptTypes(readFileSync(new URL('../src/resolver.ts', import.meta.url), 'utf8')),
+    { window, console, document: { baseURI: 'https://gallery.invalid/' }, URL, TextEncoder, TextDecoder, Uint8Array });
+  return { bundles, resolver: window.FlatPPLWebResolver, resolutions };
 }
 
 test('bundle preview mounts nested scopes without storage and saves every member with its drafts', async () => {
@@ -118,6 +130,59 @@ test('restoring a member cannot bypass the shared archive nesting limit', async 
   await bundles.discard(opened.path);
 });
 
+test('limits given when opening a bundle also bound its nested archives', async () => {
+  const inner = await engine.writeArchive({ 'main.flatppl': encode('x=1\n'), 'a.flatppl': encode('a=1\n'),
+    'b.flatppl': encode('b=1\n') });
+  const outer = await engine.writeArchive({ 'main.flatppl': encode('m=load_module("inner.zip")\n'), 'inner.zip': inner });
+  const bundles = store();
+  const limited = await bundles.open(outer, 'limited.zip', undefined, { limits: { maxEntries: 4 } });
+  await assert.rejects(bundles.select(bundles.folder(limited.path), 'inner.zip/main.flatppl'), /entry count/);
+  const unlimited = await bundles.open(outer, 'unlimited.zip');
+  assert.equal(await bundles.select(bundles.folder(unlimited.path), 'inner.zip/main.flatppl'),
+    'new/unlimited/inner.zip/main.flatppl');
+  const shallow = await bundles.open(outer, 'shallow.zip', undefined, { limits: { maxDepth: 1 } });
+  await assert.rejects(bundles.select(bundles.folder(shallow.path), 'inner.zip/main.flatppl'), /nesting limit/);
+  for (const opened of [limited, unlimited, shallow]) await bundles.discard(opened.path);
+});
+
+test('concurrent opens under one name get separate folders', async () => {
+  const bundles = store();
+  const archives = await Promise.all(['x=1\n', 'x=2\n'].map(source => engine.writeArchive({ 'main.flatppl': encode(source) })));
+  const [first, second] = await Promise.all(archives.map(bytes => bundles.open(bytes, 'same.zip')));
+  assert.notEqual(first.path, second.path);
+  assert.equal(decode(await bundles.read(first.path)), 'x=1\n');
+  assert.equal(decode(await bundles.read(second.path)), 'x=2\n');
+  for (const opened of [first, second]) await bundles.discard(opened.path);
+});
+
+test('an unlisted preview stays out of the file tree and the unsaved-work warning', async () => {
+  const bundles = store();
+  const bytes = await engine.writeArchive({ 'main.flatppl': encode('x=1\n') });
+  const hidden = await bundles.open(bytes, 'hidden.zip', undefined, { listed: false });
+  assert.equal(await bundles.read(hidden.path) instanceof Uint8Array, true);
+  assert.equal(bundles.list(false).length, 0);
+  assert.equal(bundles.hasUnsaved(), false);
+  const shown = await bundles.open(bytes, 'shown.zip');
+  assert.deepEqual(Array.from(bundles.list(false), entry => entry.path), [shown.path]);
+  assert.equal(bundles.hasUnsaved(), true);
+  for (const opened of [hidden, shown]) await bundles.discard(opened.path);
+});
+
+test('resolving a dependency graph applies the limits of its bundle', async () => {
+  const inner = await engine.writeArchive({ 'main.flatppl': encode('x=1\n') });
+  const outer = await engine.writeArchive({ 'main.flatppl': encode('m=load_module("inner.zip")\n'), 'inner.zip': inner });
+  const { bundles, resolver, resolutions } = storeWithResolver();
+  const limits = { maxEntries: 9, maxPathBytes: 64 };
+  const limited = await bundles.open(outer, 'limited.zip', undefined, { limits });
+  const unlimited = await bundles.open(outer, 'unlimited.zip');
+  // Graph resolution reads nested archives itself, so it needs the same bounds as the mount.
+  for (const opened of [limited, unlimited]) {
+    const graph = await resolver.resolveBundle(opened.path, undefined, { strict: true });
+    assert.ok(Object.keys(graph.sources).some(path => path.includes('inner.zip')));
+  }
+  assert.deepEqual(resolutions.map(options => options.limits), [limits, undefined]);
+});
+
 function router(bundles) {
   const window = { FlatPPLWebBundles: bundles, location: { hash: '' } };
   vm.runInNewContext(stripTypeScriptTypes(readFileSync(new URL('../src/router.ts', import.meta.url), 'utf8')),
@@ -132,7 +197,7 @@ test('routes retain content or hosted origins only within their unsaved bundle',
   const second = await bundles.open(bytes, 'second.zip');
   const r = router({ ...bundles, isSaved: path => path.startsWith('user/') || bundles.isSaved(path),
     folder: path => path?.startsWith('user/saved/') ? 'user/saved' : bundles.folder(path) });
-  for (const origin of [{ share: 'br1.snapshot' }, { archive: 'https://example.org/model.zip?revision=2' }]) {
+  for (const origin of [{ share: 'AQIDBA' }, { archive: 'https://example.org/model.zip?revision=2' }]) {
     r.window.location.hash = r.serialize({ model: first.path, ...origin });
     r.navigateTo({ model: 'new/first/other.flatppl', target: 'x' });
     const same = r.parseHash();
@@ -149,9 +214,18 @@ test('routes retain content or hosted origins only within their unsaved bundle',
   await bundles.discard(first.path); await bundles.discard(second.path);
 });
 
+test('a QR share URL holds its token, marker included, right after #', () => {
+  const r = router();
+  r.window.location.hash = '#~1234567';
+  assert.equal(r.parseHash().share, '~1234567');
+  r.window.location.hash = '#~1234567&target=x';
+  assert.equal(r.parseHash().share, '~1234567');
+  assert.equal(r.parseHash().target, 'x');
+});
+
 test('share selection parameters decode URLSearchParams spaces and retain literal plus signs', () => {
   const r = router();
-  const selection = new URLSearchParams({ share: 'br1.snapshot', model: 'a folder/model+1.flatppl' });
+  const selection = new URLSearchParams({ share: 'AQIDBA', model: 'a folder/model+1.flatppl' });
   r.window.location.hash = '#' + selection;
   assert.equal(r.parseHash().model, 'a folder/model+1.flatppl');
 });
@@ -161,6 +235,9 @@ test('URL inputs enforce the link budget and a single value per routing field', 
   for (const hash of [
     '#share=' + 'A'.repeat(64 * 1024),
     '#share=first&share=second',
+    '#~123&share=second',
+    '#~123&archive=https%3A%2F%2Fexample.org%2Fa.zip',
+    '#~' + '1'.repeat(64 * 1024),
     '#/files/a.flatppl?model=b.flatppl',
     '#share=first&archive=https%3A%2F%2Fexample.org%2Fa.zip',
     '#model=%XX',
@@ -173,12 +250,11 @@ test('URL inputs enforce the link budget and a single value per routing field', 
   assert.equal(r.parseHash().target, 'x');
 });
 
-test('incoming and outgoing link limits preserve local ZIP support', async () => {
+test('incoming link limits preserve local ZIP support', async () => {
   const bundles = store();
   const long = 'a/'.repeat(33) + 'x.txt';
   const deep = await engine.writeArchive({ 'main.flatppl': encode('x=1'), [long]: encode('data') });
-  await assert.rejects(bundles.validateLink(deep));
-  await assert.rejects(bundles.open(deep, 'deep.zip', undefined, bundles.LINK_LIMITS));
+  await assert.rejects(bundles.open(deep, 'deep.zip', undefined, { limits: bundles.LINK_LIMITS }));
   assert.deepEqual(Array.from(bundles.list(false)), []);
   const local = await bundles.open(deep, 'deep.zip');
   assert.equal(decode(await bundles.read(bundles.folder(local.path) + '/' + long)), 'data');
@@ -186,8 +262,7 @@ test('incoming and outgoing link limits preserve local ZIP support', async () =>
   const large = await engine.writeArchive({
     'main.flatppl': encode('x=1'), 'data.txt': new Uint8Array(2 * 1024 ** 2 + 1),
   }, { compression: 'deflate' });
-  await assert.rejects(bundles.validateLink(large));
-  await assert.rejects(bundles.open(large, 'large.zip', undefined, bundles.LINK_LIMITS));
+  await assert.rejects(bundles.open(large, 'large.zip', undefined, { limits: bundles.LINK_LIMITS }));
   assert.deepEqual(Array.from(bundles.list(false)), []);
 });
 
@@ -198,9 +273,7 @@ test('nested archives retain the URL preview budgets and accept ordinary Deflate
   }, { compression: 'deflate' });
   const outer = await engine.writeArchive({ 'main.flatppl': encode('x=1'), 'nested.zip': nested },
     { compression: 'deflate' });
-  await bundles.validateLink(outer);
-  assert.equal(bundles.list(false).length, 0);
-  const opened = await bundles.open(outer, 'outer.zip', undefined, bundles.LINK_LIMITS);
+  const opened = await bundles.open(outer, 'outer.zip', undefined, { limits: bundles.LINK_LIMITS });
   assert.equal(decode(await bundles.read(opened.path)), 'x=1');
   await assert.rejects(bundles.select(bundles.folder(opened.path), 'nested.zip/main.flatppl'));
   assert.equal(bundles.list(false).length, 2);
@@ -215,7 +288,7 @@ test('reusing a saved bundle replaces nested readers that had local upload limit
   const bundles = store([{ folder: 'user/saved', bytes }]);
   await bundles.init();
   assert.equal(await bundles.select('user/saved', 'nested.zip/main.flatppl'), 'user/saved/nested.zip/main.flatppl');
-  const reopened = await bundles.open(bytes, 'shared', undefined, bundles.LINK_LIMITS);
+  const reopened = await bundles.open(bytes, 'shared', undefined, { limits: bundles.LINK_LIMITS });
   assert.equal(reopened.reused, true);
   assert.equal(reopened.path, 'user/saved/main.flatppl');
   await assert.rejects(bundles.select('user/saved', 'nested.zip/main.flatppl'));
@@ -229,8 +302,47 @@ test('saved reuse accepts a smaller ZIP representation of the same files', async
   const bundles = store([{ folder: 'user/saved', bytes: stored }]);
   await bundles.init();
   const opened = await bundles.open(compressed, 'shared', undefined,
-    { ...bundles.LINK_LIMITS, maxArchiveBytes: compressed.length });
+    { limits: { ...bundles.LINK_LIMITS, maxArchiveBytes: compressed.length } });
   assert.equal(opened.reused, true);
   assert.equal(decode(await bundles.read(opened.path)), 'x=1');
   assert.equal((await bundles.read('user/saved/data.bin')).length, files['data.bin'].length);
+});
+
+test('concurrent saved reuse keeps both previews readable and bounded', async () => {
+  const bytes = await engine.writeArchive({
+    'main.flatppl': encode('x=1'), 'alias.flatppl': encode('main.flatppl'),
+  }, { symlinks: ['alias.flatppl'] });
+  const entered = Promise.withResolvers(), resume = Promise.withResolvers();
+  let replacements = 0;
+  const bundles = store([{ folder: 'user/saved', bytes }], { FlatPPLEngine: {
+    ...engine,
+    async readArchive(bytes, options) {
+      const archive = await engine.readArchive(bytes, options);
+      if (options.id === 'user/saved.flatppl.zip' && options.limits && ++replacements === 1) {
+        const resolve = archive.resolve.bind(archive);
+        archive.resolve = async path => {
+          entered.resolve();
+          await resume.promise;
+          return resolve(path);
+        };
+      }
+      return archive;
+    },
+  } });
+  await bundles.init();
+  const first = bundles.open(bytes, 'shared', undefined, { limits: bundles.LINK_LIMITS });
+  await entered.promise;
+  let second;
+  try { second = await bundles.open(bytes, 'shared', undefined, { limits: bundles.LINK_LIMITS }); }
+  finally { resume.resolve(); }
+  const reused = await first;
+  assert.equal(reused.reused, true);
+  assert.equal(second.reused, false);
+  for (const opened of [reused, second]) {
+    assert.equal(decode(await bundles.read(opened.path)), 'x=1');
+    assert.equal(bundles.limits(opened.path), bundles.LINK_LIMITS);
+    assert.equal(decode(await bundles.read(bundles.folder(opened.path) + '/alias.flatppl')), 'x=1');
+  }
+  await bundles.discard(second.path);
+  assert.equal(decode(await bundles.read(reused.path)), 'x=1');
 });

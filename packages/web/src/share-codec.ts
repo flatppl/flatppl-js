@@ -1,111 +1,94 @@
 /**
- * Browser transport for complete §04 bundles. A share holds Brotli-compressed
- * STORE ZIP bytes in a fragment, never in a request to a storage service.
- * The archive reader owns member validation. This layer bounds the outer codec.
+ * Browser transport for complete §04 bundles. A share holds the bundle in a
+ * fragment, never in a request to a storage service. The worker decodes
+ * untrusted links. The archive reader then validates the rebuilt ZIP like any
+ * other bundle. The format is described in ../share-links.md.
  * Load this module only when opening or making a share.
  */
-import type { QRCode, QRCodeSegment } from 'qrcode';
+import type { QRCode } from 'qrcode';
+import { MAX_SHARE_URL_LENGTH, SHARE_ARCHIVE_LIMITS, type ShareMember, type ShareView } from './share-format.ts';
 
-export const MAX_SHARE_URL_LENGTH = 64 * 1024;
-export const MAX_SHARE_ARCHIVE_BYTES = 8 * 1024 * 1024;
-export const MAX_SHARE_COMPRESSED_BYTES = 1024 * 1024;
+export { MAX_SHARE_URL_LENGTH, SHARE_ARCHIVE_LIMITS };
 export const MAX_SHARE_QR_VERSION = 40;
 
-const BASE32 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567';
 const WORKER_TIMEOUT_MS = 60_000;
 
-export interface SharePayload {
-  base64Token: string;
-  base32Token: string;
-  archiveBytes: number;
-  compressedBytes: number;
+export interface ShareTokens {
+  link: string;
+  /** Null when the payload exceeds the largest QR code. */
+  qr: string | null;
 }
 
 export interface ShareLinks {
   url: string;
-  qrUrl: string;
+  /** The same share with a decimal token, or null when no QR code can hold it. */
+  qrUrl: string | null;
   tooLong: boolean;
-  urlLength: number;
-  qrPrefix: string;
-  qrToken: string;
-  qrSuffix: string;
 }
 
-export type ShareWorkerRequest = { id: number; operation: 'encode' | 'decode'; bytes: Uint8Array };
-export type ShareWorkerReply = { id: number; bytes?: Uint8Array | null; error?: string };
-
-/** Encode RFC 4648 base64url without padding or large argument lists. */
-function base64url(bytes: Uint8Array): string {
-  let binary = '';
-  for (let i = 0; i < bytes.length; i += 8192) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
-  }
-  return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+/** A shared bundle as a STORE ZIP, and the member and binding it opens. */
+export interface OpenedShare {
+  archive: Uint8Array;
+  model: string | null;
+  target: string | null;
+  /** The link token for the same payload, also when a QR token was opened. */
+  link: string;
 }
 
-/** Base32 costs more URL characters but fewer QR bits in alphanumeric mode. */
-function base32(bytes: Uint8Array): string {
-  let result = '', bits = 0, value = 0;
-  for (const byte of bytes) {
-    value = (value << 8) | byte;
-    bits += 8;
-    while (bits >= 5) {
-      bits -= 5;
-      result += BASE32[(value >>> bits) & 31];
-    }
-  }
-  if (bits) result += BASE32[(value << (5 - bits)) & 31];
-  return result;
+export type ShareWorkerTask = { operation: 'encode'; view: ShareView; members: ShareMember[] }
+  | { operation: 'decode'; token: string };
+export type ShareWorkerRequest = ShareWorkerTask & { id: number };
+export type ShareWorkerReply = {
+  id: number; tokens?: ShareTokens | null; link?: string; view?: ShareView; members?: ShareMember[]; error?: string;
+};
+
+interface ArchiveEngine {
+  readArchive(bytes: Uint8Array, options: { id: string }): Promise<any>;
+  writeArchive(files: Record<string, Uint8Array>, options: object): Promise<Uint8Array>;
 }
 
-/** Require a single canonical spelling, including zero unused trailing bits. */
-function tokenBytes(token: string): Uint8Array {
-  if (token.startsWith('br1.')) {
-    const body = token.slice(4);
-    if (!body || body.length > Math.ceil(MAX_SHARE_COMPRESSED_BYTES * 4 / 3)
-        || !/^[A-Za-z0-9_-]+$/.test(body) || body.length % 4 === 1) {
-      throw new Error('Invalid or oversized share link. Open the ZIP bundle instead.');
+/** The page's engine, bundle store and resolver, which open shares. */
+interface ShareHost {
+  FlatPPLEngine: ArchiveEngine;
+  FlatPPLWebBundles: any;
+  FlatPPLWebResolver: any;
+}
+
+/** Members relative to the bundle root, as the archive reader sees them. */
+async function archiveMembers(zip: Uint8Array, engine: ArchiveEngine): Promise<ShareMember[]> {
+  const archive = await engine.readArchive(zip, { id: 'share.flatppl.zip' });
+  try {
+    const members: ShareMember[] = [];
+    for (const [name, entry] of Object.entries(archive.entries) as [string, any][]) {
+      members.push(entry.directory ? { name, kind: 'directory', bytes: new Uint8Array() }
+        : entry.symlink ? { name, kind: 'symlink', bytes: new TextEncoder().encode(await archive.readLink(name)) }
+        : { name, kind: 'file', bytes: await archive.read(name) });
     }
-    const binary = atob(body.replace(/-/g, '+').replace(/_/g, '/'));
-    const bytes = Uint8Array.from(binary, char => char.charCodeAt(0));
-    if (bytes.length > MAX_SHARE_COMPRESSED_BYTES || base64url(bytes) !== body) {
-      throw new Error('Invalid share encoding.');
-    }
-    return bytes;
+    return members;
+  } finally { await archive.close(); }
+}
+
+/** A STORE ZIP of the members, as an opened share rebuilds it. */
+function membersArchive(members: ShareMember[], engine: ArchiveEngine): Promise<Uint8Array> {
+  const files: Record<string, Uint8Array> = Object.create(null);
+  const symlinks: string[] = [];
+  for (const member of members) {
+    files[member.kind === 'directory' ? member.name + '/' : member.name] = member.bytes;
+    if (member.kind === 'symlink') symlinks.push(member.name);
   }
-  if (token.startsWith('BR1.')) {
-    const body = token.slice(4);
-    if (!body || body.length > Math.ceil(MAX_SHARE_COMPRESSED_BYTES * 8 / 5)
-        || !/^[A-Z2-7]+$/.test(body)) {
-      throw new Error('Invalid or oversized QR share. Open the ZIP bundle instead.');
-    }
-    const bytes = new Uint8Array(Math.floor(body.length * 5 / 8));
-    let value = 0, bits = 0, offset = 0;
-    for (const char of body) {
-      value = (value << 5) | BASE32.indexOf(char);
-      bits += 5;
-      if (bits >= 8) {
-        bits -= 8;
-        bytes[offset++] = (value >>> bits) & 255;
-      }
-    }
-    if (bytes.length > MAX_SHARE_COMPRESSED_BYTES || base32(bytes) !== body) {
-      throw new Error('Invalid share encoding.');
-    }
-    return bytes;
-  }
-  throw new Error('This share link uses an unsupported codec version.');
+  return engine.writeArchive(files, { compression: 'store', symlinks, limits: SHARE_ARCHIVE_LIMITS });
 }
 
 /**
- * Start the codec worker on first use. Keep caller-owned snapshots intact by
- * transferring a copy. Dispose on dialog/preview teardown to release WASM memory.
- * Timeouts terminate the worker, including a decoder stuck on hostile input.
+ * Start the codec worker on first use. Dispose on dialog/preview teardown to
+ * release WASM memory. Timeouts terminate the worker, including a decoder
+ * stuck on hostile input.
  */
-export function createShareCodec(workerUrl?: string | URL) {
+export function createShareCodec(workerUrl?: string | URL, host: ShareHost = globalThis as any) {
+  const engine = host.FlatPPLEngine;
   let worker: Worker | undefined, disposed = false, nextId = 0;
   const pending = new Map<number, {
-    resolve: (value: Uint8Array | null) => void;
+    resolve: (reply: ShareWorkerReply) => void;
     reject: (reason: Error) => void;
     timer: ReturnType<typeof setTimeout>;
   }>();
@@ -131,107 +114,114 @@ export function createShareCodec(workerUrl?: string | URL) {
       pending.delete(reply.id);
       clearTimeout(job.timer);
       if (reply.error) job.reject(new Error(reply.error));
-      else if (reply.bytes === null || reply.bytes instanceof Uint8Array) job.resolve(reply.bytes);
-      else job.reject(new Error('The share codec returned an invalid response.'));
+      else job.resolve(reply);
     });
     worker.addEventListener('error', () => stop(new Error('The share codec could not load. Try again or download the ZIP bundle.')));
     worker.addEventListener('messageerror', () => stop(new Error('The share codec could not read its response.')));
     return worker;
   }
 
-  function run(operation: ShareWorkerRequest['operation'], bytes: Uint8Array): Promise<Uint8Array | null> {
+  function run(task: ShareWorkerTask): Promise<ShareWorkerReply> {
     return new Promise((resolve, reject) => {
       const active = start();
       const id = nextId++;
       const timer = setTimeout(() => stop(new Error('The share codec timed out. Download the ZIP bundle instead.')), WORKER_TIMEOUT_MS);
       pending.set(id, { resolve, reject, timer });
-      const owned = bytes.slice();
-      try { active.postMessage({ id, operation, bytes: owned } satisfies ShareWorkerRequest, [owned.buffer]); }
+      try { active.postMessage({ id, ...task } satisfies ShareWorkerRequest); }
       catch (error) { stop(error instanceof Error ? error : new Error(String(error))); }
     });
   }
 
+  const invalidReply = () => new Error('The share codec returned an invalid response.');
+
+  /** Open the archive with `SHARE_ARCHIVE_LIMITS`. */
+  async function decode(token: string): Promise<OpenedShare> {
+    if (token.length > MAX_SHARE_URL_LENGTH) throw new Error('This share link is too long. Open the ZIP bundle instead.');
+    const { link, view, members } = await run({ operation: 'decode', token });
+    if (typeof link !== 'string' || !Array.isArray(members) || typeof view?.model !== 'string'
+        || typeof view.target !== 'string') throw invalidReply();
+    return { archive: await membersArchive(members, engine), model: view.model || null, target: view.target || null, link };
+  }
+
+  /**
+   * Open a link as a visitor's page does, in an unlisted preview: mount it
+   * under the share limits, select its view, resolve and register its graph.
+   */
+  async function opens(token: string): Promise<boolean> {
+    const bundles = host.FlatPPLWebBundles;
+    let path: string | undefined;
+    try {
+      const shared = await decode(token);
+      path = (await bundles.open(shared.archive, 'share-check', () => false,
+        { limits: bundles.LINK_LIMITS, listed: false })).path;
+      const selection = shared.model && await bundles.select(bundles.folder(path), shared.model) || path;
+      await bundles.registerGraph(await host.FlatPPLWebResolver.resolveBundle(selection, undefined, { strict: true }));
+      return true;
+    } catch (_) {
+      return false;
+    } finally {
+      if (path) await bundles.discard(path);
+    }
+  }
+
   return {
-    /** Null means the bundle exceeds the transport budget. ZIP download remains available. */
-    async encode(zip: Uint8Array): Promise<SharePayload | null> {
-      if (zip.byteLength > MAX_SHARE_ARCHIVE_BYTES) return null;
-      const bytes = await run('encode', zip);
-      return bytes === null ? null : {
-        base64Token: 'br1.' + base64url(bytes),
-        base32Token: 'BR1.' + base32(bytes),
-        archiveBytes: zip.byteLength,
-        compressedBytes: bytes.byteLength,
-      };
+    /**
+     * `model` is a member path within the bundle. Null means the bundle does
+     * not open as a share. ZIP download remains available.
+     */
+    async encode(zip: Uint8Array, selection: { model?: string; target?: string } = {}): Promise<ShareTokens | null> {
+      const view = { model: selection.model === 'main.flatppl' ? '' : selection.model ?? '', target: selection.target ?? '' };
+      const { tokens } = await run({ operation: 'encode', view, members: await archiveMembers(zip, engine) });
+      if (tokens !== null && typeof tokens?.link !== 'string') throw invalidReply();
+      return tokens && await opens(tokens.link) ? tokens : null;
     },
-    async decode(token: string): Promise<Uint8Array> {
-      const bytes = await run('decode', tokenBytes(token));
-      if (bytes === null) throw new Error('The shared bundle exceeds the size limit. Open the ZIP bundle instead.');
-      return bytes;
-    },
+    decode,
     dispose() { disposed = true; stop(new Error('The share codec is closed.')); },
   };
 }
 
-/** Keep all model data and view state in the fragment, including QR links. */
-export function makeShareLinks(payload: SharePayload, baseUrl: string, selection: { model?: string; target?: string } = {}): ShareLinks {
+/**
+ * The token holds the bundle and the view, so the fragment holds nothing else.
+ * A QR token starts with its marker and needs no `share=`.
+ */
+export function makeShareLinks(tokens: ShareTokens, baseUrl: string): ShareLinks {
   const base = new URL(baseUrl);
   base.search = '';
   base.hash = '';
   if (!['http:', 'https:'].includes(base.protocol)) throw new Error('Share links require an HTTP or HTTPS playground URL.');
-  const qrPrefix = base.href + '#share=';
-  const suffix = new URLSearchParams();
-  if (selection.model) suffix.set('model', selection.model);
-  if (selection.target) suffix.set('target', selection.target);
-  const qrSuffix = suffix.size ? '&' + suffix : '';
-  const url = qrPrefix + payload.base64Token + qrSuffix;
+  const url = base.href + '#share=' + tokens.link;
   return {
-    url, qrUrl: qrPrefix + payload.base32Token + qrSuffix,
-    tooLong: url.length > MAX_SHARE_URL_LENGTH, urlLength: url.length,
-    qrPrefix, qrToken: payload.base32Token, qrSuffix,
+    url, qrUrl: tokens.qr === null ? null : base.href + '#' + tokens.qr,
+    tooLong: url.length > MAX_SHARE_URL_LENGTH,
   };
 }
 
 /**
- * Compare actual QR matrices, not URL lengths. Use medium error correction and
- * allow every standard QR size. Both candidates retain the same state.
- * The QR library and its renderers enter the page only when this function runs.
+ * The QR library splits the text into optimal segments: numeric for the
+ * token. Scheme and host ignore case, so upper case fits them into the
+ * alphanumeric mode. Use medium error correction and allow every standard QR
+ * size. The QR library and its renderers enter the page only when this runs.
  */
 export async function createShareQr(links: ShareLinks) {
-  if (links.tooLong) return null;
+  if (links.tooLong || links.qrUrl === null) return null;
   const imported = await import('qrcode');
   const qr = imported.default ?? imported;
-  const utf8 = new TextEncoder();
-  const candidates: { url: string; encoding: 'base64url' | 'base32'; segments: QRCodeSegment[] }[] = [
-    { url: links.url, encoding: 'base64url', segments: [{ data: utf8.encode(links.url), mode: 'byte' }] },
-    { url: links.qrUrl, encoding: 'base32', segments: [
-      { data: utf8.encode(links.qrPrefix), mode: 'byte' },
-      { data: links.qrToken, mode: 'alphanumeric' },
-      ...(links.qrSuffix ? [{ data: utf8.encode(links.qrSuffix), mode: 'byte' as const }] : []),
-    ] },
-  ];
-  let best: (typeof candidates[number] & { matrix: QRCode }) | undefined;
-  for (const candidate of candidates) {
-    // A version-40 M symbol holds at most 3391 alphanumeric or 2331 byte
-    // characters. Avoid constructing a huge matrix just to find overflow.
-    if (candidate.url.length > 3391) continue;
-    let matrix: QRCode;
-    try { matrix = qr.create(candidate.segments, { errorCorrectionLevel: 'M' }); }
-    catch (error) {
-      if (error instanceof Error && error.message.includes('amount of data is too big')) continue;
-      throw error;
-    }
-    if (matrix.version <= MAX_SHARE_QR_VERSION && (!best || matrix.modules.size < best.matrix.modules.size)) {
-      best = { ...candidate, matrix };
-    }
+  const { origin } = new URL(links.qrUrl);
+  const text = origin.toUpperCase() + links.qrUrl.slice(origin.length);
+  let matrix: QRCode;
+  try { matrix = qr.create(text, { errorCorrectionLevel: 'M' }); }
+  catch (error) {
+    if (error instanceof Error && error.message.includes('amount of data is too big')) return null;
+    throw error;
   }
-  if (!best) return null;
+  if (matrix.version > MAX_SHARE_QR_VERSION) return null;
   const options = {
-    errorCorrectionLevel: 'M' as const, version: best.matrix.version,
-    maskPattern: best.matrix.maskPattern, margin: 4, scale: 8,
+    errorCorrectionLevel: 'M' as const, version: matrix.version,
+    maskPattern: matrix.maskPattern, margin: 4, scale: 8,
   };
   const [svg, png] = await Promise.all([
-    qr.toString(best.segments, { ...options, type: 'svg' }),
-    qr.toDataURL(best.segments, { ...options, type: 'image/png' }),
+    qr.toString(text, { ...options, type: 'svg' }),
+    qr.toDataURL(text, { ...options, type: 'image/png' }),
   ]);
-  return { url: best.url, encoding: best.encoding, svg, png, size: best.matrix.modules.size, version: best.matrix.version };
+  return { url: text, svg, png, size: matrix.modules.size, version: matrix.version };
 }

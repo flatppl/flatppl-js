@@ -23,7 +23,7 @@ async function appWithShareCodec() {
     plugins: [{ name: 'share-codec-boundary', setup(builder) {
       builder.onResolve({ filter: /^\.\/share-codec\.js$/ }, () => ({ path: 'share-codec', namespace: 'host-test' }));
       builder.onLoad({ filter: /.*/, namespace: 'host-test' }, () => ({ contents:
-        'export function createShareCodec() { return { decode: globalThis.decodeSharedBytes, dispose() {} }; }',
+        'export function createShareCodec() { return { decode: globalThis.decodeShared, dispose() {} }; }',
       }));
     } }],
   }).then(result => result.outputFiles[0].text);
@@ -109,7 +109,7 @@ async function gallery({ editable = false, store, bundles, ephemeral, initial = 
   const globals = { window, document, console: { error() {}, warn() {} },
     setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout, Blob, TextDecoder,
     URL: { createObjectURL(blob) { download = blob; return 'blob:test'; }, revokeObjectURL() {} },
-    decodeSharedBytes: decodeShare,
+    decodeShared: decodeShare,
   };
   if (decodeShare) vm.runInNewContext(await appWithShareCodec(), globals);
   else runSource('app', globals);
@@ -416,7 +416,8 @@ for (const transport of ['share', 'hosted']) {
     const bytes = value => new TextEncoder().encode(value === 'A' ? 'x = 1' : 'x = 2');
     const g = await gallery({ editable: true, bundles: bundles.api, loadBundle: bundles.loadBundle,
       timers: manualTimers(),
-      decodeShare: transport === 'share' ? async token => bytes(token) : undefined,
+      decodeShare: transport === 'share'
+        ? async token => ({ archive: bytes(token), model: null, target: null, link: token }) : undefined,
       readBytes: async (url, drafts = {}) => new TextEncoder().encode(
         drafts[url] ?? bundles.source(url) ?? new TextDecoder().decode(bytes(url.includes('/A.zip') ? 'A' : 'B'))),
     });
@@ -447,14 +448,17 @@ test('a link remains inert through edits and target changes until Run', async ()
   const timers = manualTimers();
   let resolutions = 0;
   const g = await gallery({ editable: true, bundles: bundles.api, timers,
-    decodeShare: async () => new TextEncoder().encode('x = ones(1000000000)'),
+    decodeShare: async () => ({ archive: new TextEncoder().encode('x = ones(1000000000)'),
+      model: 'main.flatppl', target: 'x', link: 'snapshot' }),
     readBytes: async (path, drafts = {}) => new TextEncoder().encode(drafts[path] ?? bundles.source(path)),
     loadBundle: (...args) => { resolutions++; return bundles.loadBundle(...args); },
   });
-  await g.navigate({ share: 'br1.test', model: 'main.flatppl', target: 'x' });
+  await g.navigate({ share: '~123' });
   await g.flush();
   assert.equal(g.source(), 'x = ones(1000000000)');
   assert.equal(g.language(), 'unknown');
+  assert.equal(g.route().target, 'x');
+  assert.equal(g.route().share, 'snapshot');
   assert.equal(resolutions, 0);
   const staleRun = g.renders.at(-1).opts.run;
   g.toggleEdit();
@@ -479,11 +483,12 @@ test('saving a shared preview preserves the Run gate', async () => {
     return 'user/saved/main.flatppl';
   };
   const g = await gallery({ editable: true, bundles: bundles.api,
-    decodeShare: async () => new TextEncoder().encode('x=1'),
+    decodeShare: async () => ({ archive: new TextEncoder().encode('x=1'),
+      model: null, target: null, link: 'snapshot' }),
     readBytes: async path => new TextEncoder().encode(bundles.source(path)),
     loadBundle: (...args) => { resolutions++; return bundles.loadBundle(...args); },
   });
-  await g.navigate({ share: 'br1.test', model: 'main.flatppl' });
+  await g.navigate({ share: 'snapshot', model: 'main.flatppl' });
   await g.flush();
   g.save();
   await g.flush();

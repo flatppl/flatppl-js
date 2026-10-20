@@ -29,7 +29,7 @@ Opening an existing ZIP preserves all its files, including binary data.
 
 **Share** is available in the web playground. It takes one snapshot of any model
 and its edited dependencies, including custom models. The link
-holds a Brotli-compressed ZIP in the fragment. The browser keeps that fragment
+holds the compressed bundle in the fragment. The browser keeps that fragment
 while navigating members. Reload restores the shared snapshot, not later edits.
 Save or download edits before closing the tab.
 
@@ -44,10 +44,11 @@ use substantial time and memory. Saving a preview does not run it.
 The Share dialog lists every file in the exported snapshot. Mounted bundles
 include unused members too.
 
-The QR image can use Base32 to fit more content than a byte-encoded URL. The
-browser selects the smaller QR matrix and exports an SVG suitable for print.
-QR codes support version 40 with medium error correction.
-Large models should use a downloadable ZIP instead.
+The QR code holds the same content as decimal digits, which QR codes store
+more compactly than other text. It uses medium error correction and up to
+version 40. The browser exports an SVG suitable for print. Large models should
+use a downloadable ZIP instead. [Share-link format](share-links.md) describes
+the encoding.
 
 The browser accepts STORE and Deflate ZIPs. Defaults limit a compressed archive
 to 64 MiB, one member to 128 MiB, total expanded data to 256 MiB, 10,000 entries,
@@ -55,7 +56,7 @@ and eight nested archives. Decoders check actual output sizes and CRCs.
 Paths and symbolic-link targets have a 65,535-byte limit, matching ZIP's filename field.
 
 Share links have a 64 KiB URL limit. URL-opened bundles have stricter browser
-limits: 8 MiB per archive and in total expanded members, 2 MiB per member,
+limits: 9 MiB per archive (including ZIP headers), 8 MiB in total expanded members, 2 MiB per member,
 256 entries, four nested archives, 1,024 bytes per path, and 32 folder components.
 Local ZIP uploads retain the general limits above. Both STORE and Deflate work.
 The Math view limits data conversion to 8 MiB before constructing its JSON request.
