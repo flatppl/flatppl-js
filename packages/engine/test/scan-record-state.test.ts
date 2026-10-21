@@ -33,7 +33,7 @@ state_mean(state) = state.mean
 y ~ Normal.(state_mean.(states), 1)
 prior = lawof(record(mu = mu))
 K = kernelof(record(y = y), mu = mu)
-L = likelihoodof(K, record(y = [1, 2]))
+L = likelihoodof(pars -> K(mu = pars.mu), record(y = [1, 2]))
 posterior = bayesupdate(L, prior)
 `;
 
@@ -48,7 +48,7 @@ state_mean(state) = state.mean
 y ~ Normal.(state_mean.(states), 1)
 prior = lawof(record(mu = mu))
 K = kernelof(record(y = y), mu = mu)
-L = likelihoodof(K, record(y = [1, 2]))
+L = likelihoodof(pars -> K(mu = pars.mu), record(y = [1, 2]))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx, built } = makeMatCtx(source);

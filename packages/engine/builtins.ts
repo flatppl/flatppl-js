@@ -78,8 +78,6 @@ const SPECIAL_OPERATIONS = new Set([
   '_ms_check_symmetric',
   // Function composition / annotation
   'fchain', 'bijection',
-  // Assertions
-  'checked',
   // Tuple/record/table constructors with structural meaning
   'record', 'table', 'tuple', 'vector', 'fixed',
   // Engine-internal: tuple_get(tuple_expr, slot_lit) — projects the
@@ -93,6 +91,7 @@ const SPECIAL_OPERATIONS = new Set([
 
 // Built-in functions (with defined argument order — positional calling allowed)
 const BUILTIN_FUNCTIONS = new Set([
+  'checked',
   // Identity
   'identity',
   // Array/table generation

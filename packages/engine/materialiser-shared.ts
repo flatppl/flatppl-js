@@ -214,7 +214,7 @@ function measureToPerAtomRecords(m: any, name: string, label: string): any[] {
   // Per-field per-atom accessor, precomputed so the N-loop stays tight.
   const access = fnames.map((f) => {
     const fm = m.fields[f];
-    if (fm && fm.samples && fm.samples.BYTES_PER_ELEMENT !== undefined) {
+    if (fm && !fm.value && fm.samples && fm.samples.BYTES_PER_ELEMENT !== undefined) {
       const s = fm.samples;
       if (N === 0 && typeof s.length === 'number') N = s.length;
       return (i: number) => s[i];
@@ -1382,7 +1382,8 @@ function resolveFnBody(binding: any, bindings: any): any {
   // `params` carries the full list for multi-input callables — the
   // caller decides how to bind them (matPushfwd auto-splats a record
   // base by field name, spec §04).
-  return { body: binding.ir.body, paramName: params[0], params };
+  return { body: binding.ir.body, paramName: params[0], params,
+    paramKwargs: binding.ir.paramKwargs, orderedInputs: binding.ir.orderedInputs };
 }
 
 // =====================================================================

@@ -10,7 +10,7 @@ p ~ Normal(0, 1)
 f(a) = Categorical(softmax([0., a]))
 y ~ f.([p, p + .3, p - .5])
 K = kernelof(record(y = y), p = p)
-L = likelihoodof(K, record(y = [1, 2, 1]))
+L = likelihoodof(pars -> K(p = pars.p), record(y = [1, 2, 1]))
 P = bayesupdate(L, lawof(record(p = p)))
 `;
   const score = async (p: number) => {

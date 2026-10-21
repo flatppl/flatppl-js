@@ -49,7 +49,7 @@ probabilities(x) = [x, 1.0 - x]
 x = elementof(unitinterval)
 y ~ Multinomial(n = 4, p = probabilities(x))
 L = likelihoodof(kernelof(y), [1, 3])
-score = logdensityof(L, 0.25)
+score = logdensityof(L, (x = 0.25))
 `, { sampleCount: 4 });
   // 4!/(1!3!) * (1/4) * (3/4)^3 = 27/64.
   const actual = (await ctx.getMeasure('score')).samples[0];

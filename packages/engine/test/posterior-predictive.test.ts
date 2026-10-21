@@ -12,7 +12,7 @@ mu ~ Normal(0.0, 2.0)
 prior = lawof(record(mu = mu))
 y ~ iid(Normal(mu, 1.0), 5)
 forward_kernel = kernelof(record(y = y), mu = mu)
-L = likelihoodof(forward_kernel, record(y = y_data))
+L = likelihoodof(pars -> forward_kernel(mu = pars.mu), record(y = y_data))
 posterior = bayesupdate(L, prior)
 `;
 
@@ -88,7 +88,7 @@ mu ~ Normal(0.0, 2.0)
 prior = lawof(record(mu = mu))
 y ~ Normal(mu, 1.0)
 forward_kernel = kernelof(y, mu = mu)
-L = likelihoodof(forward_kernel, 1.3)
+L = likelihoodof(pars -> forward_kernel(mu = pars.mu), 1.3)
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 20000);
@@ -120,7 +120,7 @@ sigma ~ Uniform(interval(0.5, 5.0))
 prior = lawof(record(sigma = sigma))
 y ~ iid(locscale(StudentT(nu), shift0, sigma), 5)
 forward_kernel = kernelof(record(y = y), sigma = sigma)
-L = likelihoodof(forward_kernel, record(y = y_data))
+L = likelihoodof(pars -> forward_kernel(sigma = pars.sigma), record(y = y_data))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 8000);
@@ -150,7 +150,7 @@ mu ~ Normal(0.0, 5.0)
 prior = lawof(record(mu = mu))
 y ~ iid(superpose(Normal(mu, 1.0), Normal(mu + 3.0, 1.0)), 5)
 forward_kernel = kernelof(record(y = y), mu = mu)
-L = likelihoodof(forward_kernel, record(y = y_data))
+L = likelihoodof(pars -> forward_kernel(mu = pars.mu), record(y = y_data))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 8000);
@@ -179,7 +179,7 @@ mu ~ Normal(0.0, 1.0)
 prior = lawof(record(mu = mu))
 y ~ iid(pushfwd(fn(exp(_)), Normal(mu, 1.0)), 5)
 forward_kernel = kernelof(record(y = y), mu = mu)
-L = likelihoodof(forward_kernel, record(y = y_data))
+L = likelihoodof(pars -> forward_kernel(mu = pars.mu), record(y = y_data))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 40000);

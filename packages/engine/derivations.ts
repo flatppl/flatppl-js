@@ -2572,6 +2572,7 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): Derivatio
       obsIR: lk.obsIR,
       paramKwargs: lk.paramKwargs,
       params: lk.params,
+      orderedInputs: lk.orderedInputs,
       pointIR: obsIR,
     };
   }
@@ -2598,6 +2599,7 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): Derivatio
           obsIR: plk.obsIR,
           paramKwargs: plk.paramKwargs,
           params: plk.params,
+          orderedInputs: plk.orderedInputs,
           pointIR: obsIR,
         } as any;
       }
@@ -5017,7 +5019,8 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             body = _expandStructural(body, ctx, next);
             if (!body) return null;
           }
-          return { params: f.params, names: f.paramKwargs || f.params, body };
+          return { params: f.params, names: f.paramKwargs || f.params,
+            orderedInputs: f.orderedInputs, body };
         };
         // Spread a (record/joint) measure IR into its named field
         // descriptors (preserving `source` for env-threading); a
@@ -5060,13 +5063,16 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         };
         // Rewire a lone hole/placeholder param to the prior cat: one
         // prior ⇒ ref(prior_0); ≥2 ⇒ vector(ref prior_0, …).
-        const rewireHole = (body: any, param: any, priorNames: any) => {
+        const rewireHole = (body: any, param: any, priorNames: any, record = false) => {
           const sub: any = (node: any) => {
             if (node == null || typeof node !== 'object') return node;
             if (Array.isArray(node)) return node.map(sub);
             if (node.kind === 'ref'
                 && (node.ns === '%local' || node.ns === 'self')
                 && node.name === param) {
+              if (record) return { kind: 'call', op: 'record', fields: priorNames.map((name: string) => ({
+                name, value: { kind: 'ref', ns: 'self', name, loc: node.loc },
+              })) };
               if (priorNames.length === 1) {
                 return { kind: 'ref', ns: 'self', name: priorNames[0],
                   loc: node.loc };
@@ -5077,6 +5083,13 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             }
             const out: Record<string, any> = {};
             for (const k in node) out[k] = sub(node[k]);
+            // Applying a whole-record adapter introduces projections of this
+            // literal record. Reduce those before marginal/affine recognition.
+            if (out.op === 'get_field' && out.args?.[0]?.op === 'record'
+                && out.args[1]?.kind === 'lit') {
+              const field = out.args[0].fields?.find((f: any) => f.name === out.args[1].value);
+              if (field) return field.value;
+            }
             return out;
           };
           return sub(body);
@@ -5098,8 +5111,12 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // a `self` ref. A single unmatched param is a hole bound to
         // the prior cat; an unmatched param in a multi-param kernel is
         // unsupported (clean null).
+        const recordFeed = labelled || !!base.baseFields || !!baseIR.fields;
         const bindKernel = (ke: any, priorNames: any, priorSources: any) => {
           let body = ke.body;
+          if (require('./types.ts').acceptsPositional(ke, 1)) {
+            return rewireHole(body, ke.params[0], priorNames, recordFeed);
+          }
           for (let i = 0; i < ke.params.length; i++) {
             const p = ke.params[i], name = ke.names[i];
             if (priorNames.indexOf(name) >= 0
@@ -5136,6 +5153,9 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             // matLogdensityof per-atom — normalised to `self` refs so
             // both walkers resolve them by bare name.
             let body = ke.body;
+            if (require('./types.ts').acceptsPositional(ke, 1)) {
+              return rewireHole(body, ke.params[0], recordFeed ? priorNames : [base.ref], recordFeed);
+            }
             for (let i = 0; i < ke.params.length; i++) {
               const p = ke.params[i], name = ke.names[i];
               if (priorNames.indexOf(name) >= 0 || priorSources.indexOf(name) >= 0) {
@@ -5962,7 +5982,7 @@ function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited?: an
 // prior's atoms, standalone density from the given point θ.
 function _resolveLikelihood(Lref: any, bindings: any): {
   bodyName: string | null; bodyIR: any; obsIR: any;
-  paramKwargs: string[]; params: string[];
+  paramKwargs: string[]; params: string[]; orderedInputs: boolean;
 } | null {
   if (!isSelfRef(Lref)) return null;
   const Lbinding = bindings.get(Lref.name);
@@ -5976,7 +5996,7 @@ function _resolveLikelihood(Lref: any, bindings: any): {
 // kernel (Path A) nor a point-free measure with elementof params (Path B).
 function _resolveLikelihoodIR(Lir: any, bindings: any): {
   bodyName: string | null; bodyIR: any; obsIR: any;
-  paramKwargs: string[]; params: string[];
+  paramKwargs: string[]; params: string[]; orderedInputs: boolean;
 } | null {
   if (!isCallOp(Lir, 'likelihoodof', 2)) return null;
   const Kref = Lir.args[0];
@@ -6007,6 +6027,7 @@ function _resolveLikelihoodIR(Lir: any, bindings: any): {
         paramKwargs: Array.isArray(Kir.paramKwargs) ? Kir.paramKwargs.slice()
           : (Array.isArray(Kir.params) ? Kir.params.slice() : []),
         params: Array.isArray(Kir.params) ? Kir.params.slice() : [],
+        orderedInputs: Kir.orderedInputs !== false,
       };
     }
   }
@@ -6040,7 +6061,7 @@ function _resolveLikelihoodIR(Lir: any, bindings: any): {
   }
   const params = _freeElementofParams(startRefs, bindings);
   if (params.length === 0) return null;
-  return { bodyName, bodyIR, obsIR, paramKwargs: params, params };
+  return { bodyName, bodyIR, obsIR, paramKwargs: params, params, orderedInputs: false };
 }
 
 // Per-term resolutions of a `joint_likelihood(L1, …, Lk)` binding, else null.
@@ -6153,6 +6174,7 @@ function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate
     obsIR: lk.obsIR,
     paramKwargs: lk.paramKwargs,
     params: lk.params,
+      orderedInputs: lk.orderedInputs,
   };
 }
 

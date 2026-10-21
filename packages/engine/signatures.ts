@@ -93,7 +93,7 @@ function signatureOf(name: string, bindings: any): any {
   // happens once in canonicalizeImplicitBoundaries (called from
   // liftInlineSubexpressions before lowering), so ir.params here is
   // already complete — no second auto-promote pass needed.
-  return { kind, inputs, output: { type: t && t.result }, body: ir.body || null };
+  return { kind, inputs, orderedInputs: ir.orderedInputs !== false, output: { type: t && t.result }, body: ir.body || null };
 }
 
 // Decide if a reified body returns a measure (→ kernel) by walking
@@ -187,6 +187,7 @@ function signatureOfLikelihood(b: any, bindings: any): any {
   return {
     kind: 'likelihood',
     inputs: inner.inputs,
+    orderedInputs: inner.orderedInputs,
     output: { type: { kind: 'scalar', prim: 'real' } },
     obsIR,
     kernelName: Kref.name,

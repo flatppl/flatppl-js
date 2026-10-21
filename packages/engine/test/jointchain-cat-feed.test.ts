@@ -215,7 +215,7 @@ test('the keyword form still binds by field name, not off a cat', async () => {
 flatppl_compat = "0.1"
 k1 = functionof(Normal(mu = a, sigma = 1.0), a = a)
 k2 = functionof(Normal(mu = b, sigma = 1.0), b = b)
-ch = jointchain(a = Normal(mu = 0.0, sigma = 1.0), b = k1, c = k2)
+ch = jointchain(a = Normal(mu = 0.0, sigma = 1.0), b = pars -> k1(a = pars.a), c = pars -> k2(b = pars.b))
 ld = logdensityof(ch, record(a = 0.3, b = 0.7, c = 1.1))
 `;
   assert.deepEqual(errorsOf(src).map((d: any) => d.message), []);
@@ -228,17 +228,13 @@ ld = logdensityof(ch, record(a = 0.3, b = 0.7, c = 1.1))
     `labelled logdensityof ${m.samples[0]} vs closed form ${want}`);
 });
 
-test('a record cat rejects fields absent from the next step inputs', () => {
-  // Positional form, but every component is record-valued, so the cat of the
-  // two left variates is the merged record {a, b}. §04 sec:calling-convention:
-  // "A sole positional record or table therefore always splats" — the third
-  // step must accept both names, even when its body only uses `b`.
+test('a record cat rejects fields absent from keyword-only step inputs', () => {
   const errs = errorsOf(`
-flatppl_compat = "0.1"
-a = draw(Normal(mu = 0.0, sigma = 1.0))
-k1 = kernelof(record(b = draw(Normal(mu = a, sigma = 0.5))), a = a)
-k2 = kernelof(record(c = draw(Normal(mu = _b_, sigma = 0.25))), b = _b_)
-j = jointchain(lawof(record(a = a)), k1, k2)
+a = elementof(reals)
+b = elementof(reals)
+k1 = functionof(joint(b = Normal(a, 0.5)))
+k2 = functionof(joint(c = Normal(b, 0.25)))
+j = jointchain(joint(a = Normal(0, 1)), k1, k2)
 `);
   assert.equal(errs.length, 1);
   assert.match(errs[0].message, /extra field "a"/);

@@ -2,17 +2,9 @@
 
 // §04 auto-splatting for BUILTINS.
 //
-// §04 "Calling conventions": "`f(record(a = x, b = y, ...))` and `f(table(a = x,
-// b = y, ...))` are equivalent to `f(a = x, b = y, ...)`. The order of fields or
-// columns is not relevant. A call with field or column names that do not match
-// the callable's argument names is a static error." Over the general rule that
-// "Arguments are bound to inputs by name".
-//
-// The engine implemented this for user callables only; for §07 builtins it had
-// no argument names at all, so a sole positional record or table could not bind
-// and `atan2(record(y = …, x = …))` was rejected although §04 makes it valid.
-// The name data now lives in `builtin-param-names.ts`, read from §07's Arguments
-// column.
+// A callable that requires multiple positional inputs binds a sole record or
+// table by name. Unary and optional-unary interfaces consume the whole object.
+// Names and declaration order come from builtin-param-names.ts and types.ts.
 //
 // ORACLES are hand arithmetic, never another engine's output:
 //   atan2(y, x) — §07 Arguments "y, x"
@@ -92,9 +84,7 @@ test('a missing argument is named in the §04 error', () => {
   assert.match(errs[0], /nothing binds "exponent"/);
 });
 
-test('the nine §04 carve-out names still take the aggregate WHOLE', () => {
-  // design#78. `sum`'s only argument is `xs`, so splatting would reject a call
-  // §07's "Table reductions" paragraph defines.
+test('unary reductions take the aggregate whole', () => {
   const T = 't = table(mass = [1.0, 2.0, 3.0], pt = [4.0, 5.0, 6.0])\n';
   assert.deepEqual(errorsOf(T + 's = sum(t)'), []);
   assert.deepEqual(valueOf(T + 's = sum(t)', 's'), { mass: 6, pt: 15 });
@@ -107,9 +97,9 @@ test('an ordinary positional call is untouched', () => {
   assert.equal(valueOf('s = pow(2.0, 10.0)', 's'), 1024);
 });
 
-test('a reference constructor splats support without losing its shape or volume', async () => {
+test('a reference constructor accepts named support without losing its shape or volume', async () => {
   const { proc, ctx } = ctxFor(`
-M = Lebesgue(record(support = cartpow(interval(1, 3), 2)))
+M = Lebesgue(support = cartpow(interval(1, 3), 2))
 inside = logdensityof(M, [2, 2])
 outside = logdensityof(M, [2, 4])
 volume = totalmass(M)
@@ -118,25 +108,10 @@ volume = totalmass(M)
   assert.equal((await ctx.getMeasure('inside')).samples[0], 0);
   assert.equal((await ctx.getMeasure('outside')).samples[0], -Infinity);
   assert.equal((await ctx.getMeasure('volume')).samples[0], 4);
-  assert.match(errorsOf('M = Lebesgue(record(other = reals))').join('\n'), /no argument is named "other"/);
+  assert.match(errorsOf('M = Lebesgue(record(other = reals))').join('\n'), /support|set/);
 });
 
-test('a record bound by keyword is not splatted — but the KEYWORD FORM of a '
-  + 'builtin call is itself an unmet §04 gap', () => {
-  // §04 excludes a keyword-bound record from splatting ("a record ... bound to a
-  // parameter by keyword, is an ordinary value and is not splatted"), and this
-  // wave does not splat one. It cannot be pinned positively yet, because §04
-  // also says "All built-in ordinary callables ... accept both positional and
-  // keyword arguments" and this engine accepts NO keyword form for a §07 builtin
-  // whose signature stores its arguments positionally — `atan2(y = 1.0, x = 1.0)`
-  // is rejected too. That is the same missing name data this wave adds, applied
-  // to a different call form, and it is recorded in TODO-flatppl-js.md rather
-  // than fixed here.
-  //
-  // Pinning today's state so the gap is visible and a future fix flips this.
-  const errs = errorsOf('s = atan2(y = 1.0, x = 1.0)');
-  assert.equal(errs.length, 1, 'got: ' + errs.join(' | '));
-  assert.match(errs[0], /expects 2 positional argument\(s\), got 0/);
-  // What matters for THIS wave: the keyword form is not silently mis-splatted.
-  assert.doesNotMatch(errs[0], /spec §04/);
+test('ordinary builtin keywords bind in declaration order', () => {
+  assert.equal(valueOf('s = atan2(x = 1.0, y = 1.0)', 's'), Math.PI/4);
+  assert.ok(errorsOf('s = atan2(y = (y = 1.0, x = 1.0), x = 1.0)').length);
 });

@@ -3741,24 +3741,18 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     }
     return dSel;
   }
-  // pushfwd(f, M) — variable transformation / projection (spec §06; §22's
-  // pushfwd(affine, iid) for multivariate dists). expandMeasure always emits
-  // the fn as a self-ref to the real fn/bijection binding (matPushfwd reads its
-  // registry metadata / callable body from ctx.bindings) and the base inline.
-  // So pass the fn ref through as fnRef; register an inline base (a self-ref
-  // base is used directly). An inline (non-ref) fn would need synthetic
-  // bijection-binding construction — deferred: it falls through to the leaf
-  // default below (a loud diagnostic, never a silently-wrong transform). A
-  // bare-builtin fn (`pushfwd(exp, M)`) is not a binding, so it also falls
-  // through — matching the by-name path, which doesn't classify it either.
-  if (op === 'pushfwd' && Array.isArray(ir.args) && ir.args.length === 2) {
-    const fIR = ir.args[0];
-    const mIR = ir.args[1];
-    if (fIR && fIR.kind === 'ref' && fIR.ns === 'self'
-        && childCtx.bindings && childCtx.bindings.has(fIR.name)) {
-      const from = (mIR && mIR.kind === 'ref' && mIR.ns === 'self')
-        ? mIR.name : register(mIR, 'pushfwd:base');
-      return { kind: 'pushfwd', from, fnRef: fIR.name };
+  // Applied unary adapters can expose an inline callable. Register it with
+  // the same callable metadata that the named pushforward handler consumes.
+  if (op === 'pushfwd' && ir.args?.length === 2) {
+    const [fIR, mIR] = ir.args;
+    let fnRef = fIR?.kind === 'ref' && fIR.ns === 'self' ? fIR.name : null;
+    if (fIR?.op === 'functionof') {
+      fnRef = register(fIR, 'pushfwd:fn');
+      childCtx.bindings.get(fnRef).type = 'functionof';
+    }
+    if (fnRef && childCtx.bindings.has(fnRef)) {
+      const from = _bridgeMeasureFrom(mIR, register, 'pushfwd:base');
+      return { kind: 'pushfwd', from, fnRef };
     }
   }
   // iid(M, n…) over a COMPOSITE inner — route to matIid for the REPEAT axis

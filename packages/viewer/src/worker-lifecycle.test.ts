@@ -109,7 +109,7 @@ test('pooled inference reprocesses archive imports and byte data inside its work
   const packed = await archive.writeArchive({
     'main.flatppl': encode('m = load_module("helper.flatppl")\ntheta ~ Normal(0, 1)\n'
       + 'prior = lawof(record(theta = theta))\ny ~ Normal(theta, 1)\n'
-      + 'K = kernelof(y, theta)\nL = likelihoodof(K, m.d)\npost = bayesupdate(L, prior)'),
+      + 'K = kernelof(y, theta)\nL = likelihoodof(pars -> K(theta = pars.theta), m.d)\npost = bayesupdate(L, prior)'),
     'helper.flatppl': encode('d = load_data("data.json", reals)'),
     'data.json': encode('2'),
   });

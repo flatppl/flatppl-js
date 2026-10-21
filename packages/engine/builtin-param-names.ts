@@ -2,13 +2,9 @@
 
 // Spec parameter NAMES for the builtins whose signatures are positional.
 //
-// §04 "Calling conventions" defines auto-splatting as equivalence to the
-// KEYWORD form — "`f(record(a = x, b = y, ...))` and `f(table(a = x, b = y,
-// ...))` are equivalent to `f(a = x, b = y, ...)`" — over the general rule that
-// "Arguments are bound to inputs by name, the order of the arguments is not
-// relevant". A splat therefore needs the callee's argument NAMES, and §04 makes
-// a mismatch a static error: "A call with field or column names that do not
-// match the callable's argument names is a static error."
+// §04 uses these names when a callable cannot accept one positional input
+// and therefore binds a sole record/table by name. Unary and optional-unary
+// callables consume the whole object; type/domain validation follows binding.
 //
 // `SIGNATURE_FACTORIES` stores a distribution's parameters as kwargs, which
 // already carry names, but stores every §07 function row as a positional `args`
@@ -30,9 +26,6 @@
 //     `get`/`get0`'s trailing selectors) — §04 gives their inputs no names to
 //     bind, so they stay permissive. Recorded in TODO-flatppl-js.md.
 //   - distributions and other kwarg-signature ops — already named.
-//   - the nine §04 carve-out names, which take an aggregate WHOLE and so must
-//     never splat. They are filtered at the call site rather than omitted here,
-//     because their names are still wanted for an ordinary keyword call.
 
 const BUILTIN_PARAM_NAMES: Record<string, string[]> = {
   Counting:             ['support'],
@@ -58,6 +51,7 @@ const BUILTIN_PARAM_NAMES: Record<string, string[]> = {
   builtin_tonormal:     ['kernel', 'kernel_input', 'x'],
   builtin_touniform:    ['kernel', 'kernel_input', 'x'],
   ceil:                 ['x'],
+  checked:              ['value', 'condition'],
   cis:                  ['theta'],
   col_gram:             ['A'],
   colstack:             ['vs'],
@@ -74,6 +68,7 @@ const BUILTIN_PARAM_NAMES: Record<string, string[]> = {
   cumsum:               ['xs'],
   densityof:            ['M', 'x'],
   det:                  ['A'],
+  diag:                 ['A', 'k'],
   diagmat:              ['x'],
   div:                  ['a', 'b'],
   divide:               ['a', 'b'],
@@ -184,65 +179,21 @@ function builtinParamNames(opName: string): string[] | null {
     : null;
 }
 
-// §04's single-input carve-out (design#78): "A callable with exactly one input
-// whose documented domain admits records or tables is exempt and receives a sole
-// positional record or table whole, so that `sum(t)` and `lengthof(t)` reduce
-// over the table rather than splatting."
-//
-// These fifteen MUST NOT splat. `sum`'s only argument is named `xs`, so
-// splatting `sum(table(mass = …, pt = …))` would compare `{mass, pt}` against
-// `{xs}` and reject a call §07's "Table reductions" paragraph defines. They keep
-// their entries above because an ordinary keyword call still binds by name.
-//
-// The set: `sum`, `mean`, `var`, `std`, `prod`, `maximum`, `minimum`, `median`,
-// `lany`, `lall` (the ten table reductions §07's "Table reductions" paragraph
-// names), `lengthof`, `reverse` (Domains `vectors, tables`), `indicesof`,
-// `indicesof0` (Domains `vectors, arrays, tables`), and `identity` (Domains
-// `any`).
-//
-// `quantile` is NOT here: §07 gives it the domain `real arrays` and omits it
-// from the table reductions, so it takes two arguments and splats like any other
-// two-argument builtin.
-const SPLAT_EXEMPT_BUILTINS: ReadonlySet<string> = new Set([
-  'sum', 'mean', 'var', 'std', 'lengthof', 'reverse',
-  'indicesof', 'indicesof0', 'identity', 'prod', 'maximum', 'minimum',
-  'median', 'lany', 'lall',
-]);
-
-/** Whether §04's carve-out exempts `opName` from splatting. */
-function isSplatExemptBuiltin(opName: string): boolean {
-  return SPLAT_EXEMPT_BUILTINS.has(opName);
+// The same interface decision serves the inferred IR and the executable AST.
+// Unary eligibility wins before domain or field-name checks (§04).
+function splatDecision(opName: string, present: string[], sig: any): any {
+  const T = require('./types.ts');
+  const iface = T.builtinInterface(opName, sig);
+  if (!iface || T.acceptsPositional(iface, 1)) return null;
+  return namedDecision(iface, present);
 }
 
-// The §04 name decision, in ONE place. `present` is the record's field names or
-// the table's column names. Returns:
-//   null                       — no splat applies to this op at all
-//   { order }                  — the declared order the fields bind in
-//   { unbindable, missing }     — §04 static error, with the offending names
-//
-// Both rewrite sites (typeinfer's lowered IR and the analyzer's AST, which feed
-// type inference and the evaluator respectively) call this rather than
-// re-deriving the rule, because two sites drifting is precisely how the
-// surplus-name gap in `resolveParams` / `resolveParamsN` arose.
-// Formerly held `prod`, `maximum`, `minimum` pending the owner ruling that
-// §07's "Table reductions" paragraph now encodes; they sit in the carve-out set
-// above. Empty for now; a future op with unsettled table-reduction status goes
-// here, not straight into the carve-out set.
-const SPLAT_HELD_TABLE_REDUCTIONS: ReadonlySet<string> = new Set([]);
-
-function splatDecision(opName: string, present: string[], arity: number): any {
-  if (isSplatExemptBuiltin(opName)) return null;
-  if (SPLAT_HELD_TABLE_REDUCTIONS.has(opName)) return null;
-  const declared = builtinParamNames(opName);
-  if (!declared || declared.length !== arity) return null;
-  const unbindable = present.filter((k) => declared.indexOf(k) === -1);
-  const missing = declared.filter((k) => present.indexOf(k) === -1);
-  if (unbindable.length > 0 || missing.length > 0) return { unbindable, missing, declared };
-  return { order: declared.slice(), declared };
+function namedDecision(iface: any, present: string[]): any {
+  const declared = iface.inputs.map((p: any) => p.name);
+  const unbindable = present.filter(k => !declared.includes(k));
+  const missing = declared.slice(0, iface.minArgs).filter((k: string) => !present.includes(k));
+  if (unbindable.length || missing.length) return { unbindable, missing, declared };
+  return { order: declared.filter((k: string) => present.includes(k)), declared };
 }
 
-module.exports = {
-  BUILTIN_PARAM_NAMES, builtinParamNames,
-  SPLAT_EXEMPT_BUILTINS, isSplatExemptBuiltin,
-  SPLAT_HELD_TABLE_REDUCTIONS, splatDecision,
-};
+module.exports = { BUILTIN_PARAM_NAMES, builtinParamNames, splatDecision, namedDecision };

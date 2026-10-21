@@ -17,7 +17,7 @@ k = (z) -> Normal(z, 1)
 y ~ k.(x)
 prior = lawof(record(x = x))
 forward_kernel = kernelof(record(y = y), x = x)
-L = likelihoodof(forward_kernel, record(y = [0.5]))
+L = likelihoodof(pars -> forward_kernel(x = pars.x), record(y = [0.5]))
 posterior = bayesupdate(L, prior)
 `;
 }

@@ -156,10 +156,11 @@ test('broadcast(<builtin>, …) works (the form dotted ops lower to)', () => {
 
 // --- IR shape: dotted sugar ≡ explicit broadcast ----------------------
 
-test('dotted op lowers identically to explicit broadcast(builtin,…)', () => {
-  const dotted = lowerExpr('[1.0] .+ [2.0]');
+test('explicit builtin broadcast preserves names and agrees with dotted application', () => {
   const explicit = lowerExpr('broadcast(add, [1.0], [2.0])');
-  assert.deepEqual(stripLoc(dotted), stripLoc(explicit));
+  assert.deepEqual(explicit.args[0].paramKwargs, ['a', 'b']);
+  assert.deepEqual(ev('[1.0] .+ [2.0]'), [3]);
+  assert.deepEqual(ev('broadcast(add, b = [2.0], a = [1.0])'), [3]);
 });
 
 test('dot-call lowers identically to explicit broadcast(f,…)', () => {

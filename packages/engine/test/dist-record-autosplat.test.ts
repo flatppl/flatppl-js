@@ -225,12 +225,7 @@ test('dist name check: the enumerated mixture still scores its oracle', async ()
   assert.ok(Math.abs(got - MIXTURE_ORACLE) < 1e-12, `${got} ≈ ${MIXTURE_ORACLE}`);
 });
 
-test('dist auto-splat: a ONE-parameter constructor also errors on a bad field name', async () => {
-  // §04 always-splat. Gating the splat on the fields covering the params
-  // left this record bound to `rate` itself, and `Poisson(<record>)` then
-  // scored NaN with no error — a single-parameter constructor was the one
-  // shape where the name rule went unenforced entirely.
-  const ctx = buildCtx(`ld = logdensityof(Poisson(record(zzz = 0.5)), 2)`, 1, 1);
-  await assert.rejects(() => Promise.resolve(ctx.getMeasure('ld')),
-    /'Poisson' has no parameter 'zzz' \(parameters: rate\)/);
+test('a unary constructor rejects a whole record as an invalid scalar domain', () => {
+  const result = require('../index.ts').processSource('M = Poisson((rate = 0.5))');
+  assert.ok(result.diagnostics.some((d: any) => d.severity === 'error'));
 });

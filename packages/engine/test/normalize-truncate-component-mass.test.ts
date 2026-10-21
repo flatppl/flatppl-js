@@ -53,7 +53,7 @@ lp=logdensityof(normalize(M),9.5)`, 1).ctx;
   const conditional = ctxFor(`theta=elementof(reals)
 y~normalize(truncate(Normal(theta,1),interval(9,10)))
 K=kernelof(y,theta=theta)
-L=likelihoodof(K,9.5)
+L=likelihoodof(pars -> K(theta = pars.theta),9.5)
 lp=logdensityof(L,record(theta=0))`, 1).ctx;
   assert.ok(Math.abs((await conditional.getMeasure('lp')).samples[0] - logDensity) < 1e-12);
 });
@@ -67,7 +67,7 @@ theta ~ Beta(2.0, 2.0)
 mixdir = normalize(superpose(weighted(theta, truncate(${trunc}, interval(-1.0, 1.0))), weighted(1.0, ${other})))
 y ~ iid(mixdir, 5)
 forward_kernel = kernelof(record(y = y), theta = theta)
-L = likelihoodof(forward_kernel, record(y = [${YDATA.join(', ')}]))
+L = likelihoodof(pars -> forward_kernel(theta = pars.theta), record(y = [${YDATA.join(', ')}]))
 __score__ = logdensityof(L, record(theta = ${theta.toFixed(6)}))
 `;
 
@@ -152,7 +152,7 @@ test('a truncated Uniform component is expressed too, not left to the bake',
       + 'weighted(1.0, Normal(mu = 10.0, sigma = 1.0))))\n'
       + 'y ~ iid(mixdir, 1)\n'
       + 'forward_kernel = kernelof(record(y = y), theta = theta)\n'
-      + 'L = likelihoodof(forward_kernel, record(y = [0.5]))\n'
+      + 'L = likelihoodof(pars -> forward_kernel(theta = pars.theta), record(y = [0.5]))\n'
       + '__score__ = logdensityof(L, record(theta = ' + theta.toFixed(6) + '))\n';
     // (0.8·0.25 + N(0.5; 10, 1)) / (0.8·0.25 + 1), in logs — mpmath, 40 digits.
     const exact = -1.7917594692280550;
@@ -291,7 +291,7 @@ test('the half-open spelling reaches the normalize shift end to end', async () =
       + 'weighted(1.0, Normal(mu = 10.0, sigma = 1.0))))\n'
       + 'y ~ iid(mixdir, 1)\n'
       + 'forward_kernel = kernelof(record(y = y), theta = theta)\n'
-      + 'L = likelihoodof(forward_kernel, record(y = [0.5]))\n'
+      + 'L = likelihoodof(pars -> forward_kernel(theta = pars.theta), record(y = [0.5]))\n'
       + '__score__ = logdensityof(L, record(theta = ' + theta.toFixed(6) + '))\n';
     // log((0.6·N(0.5;0,1) + N(0.5;10,1)) / (0.6·0.5 + 1)) — mpmath, 40 digits.
     const exact = -1.8171284214381545;

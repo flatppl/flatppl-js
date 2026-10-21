@@ -71,7 +71,7 @@ mu ~ iid(Normal(0.0, 5.0), 2)
 ydir = Normal(mu[1], 1.0)
 y ~ iid(ydir, N)
 forward_kernel = kernelof(record(y = y), mu = mu)
-L = likelihoodof(forward_kernel, record(y = y_data))
+L = likelihoodof(pars -> forward_kernel(mu = pars.mu), record(y = y_data))
 __score__ = logdensityof(L, record(mu = [0.5, -0.5]))
 `;
 
@@ -82,7 +82,7 @@ mu ~ iid(Normal(0.0, 5.0), 2)
 yfn(dummy) = Normal(mu[1] + dummy, 1.0)
 y ~ iid(yfn(0.0), N)
 forward_kernel = kernelof(record(y = y), mu = mu)
-L = likelihoodof(forward_kernel, record(y = y_data))
+L = likelihoodof(pars -> forward_kernel(mu = pars.mu), record(y = y_data))
 __score__ = logdensityof(L, record(mu = [0.5, -0.5]))
 `;
 
@@ -177,7 +177,7 @@ a = f_a(beta1)
 M = Normal(a, 1.0)
 y_obs = 0.3
 forward_kernel = kernelof(record(y = M), beta1 = beta1)
-L = likelihoodof(forward_kernel, record(y = y_obs))
+L = likelihoodof(pars -> forward_kernel(beta1 = pars.beta1), record(y = y_obs))
 __score__ = logdensityof(L, record(beta1 = 0.7))
 `;
 
@@ -188,7 +188,7 @@ aInlined = c * beta1
 M = Normal(aInlined, 1.0)
 y_obs = 0.3
 forward_kernel = kernelof(record(y = M), beta1 = beta1)
-L = likelihoodof(forward_kernel, record(y = y_obs))
+L = likelihoodof(pars -> forward_kernel(beta1 = pars.beta1), record(y = y_obs))
 __score__ = logdensityof(L, record(beta1 = 0.7))
 `;
 

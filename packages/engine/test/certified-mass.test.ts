@@ -153,7 +153,7 @@ test('certified mass: a truncate accept rate is still an atom-derived residue', 
   // on the mass, so nothing certifies it and the product must still pick it up.
   const { ctx } = ctxFor(`
 M = jointchain(aa = truncate(Normal(mu = 0.0, sigma = 1.0), interval(-1.0, 1.0)),
-               bb = fn(Normal(_, 1.0)))
+               bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
 tm = totalmass(M)
 `, 8192);
   const tm = await ctx.getMeasure('tm');

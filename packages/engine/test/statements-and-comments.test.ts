@@ -62,7 +62,7 @@ test('§05: `;` inside parens is FlatPPJ kwargs (not a statement separator)', ()
   // two top-level statements when it's inside a call.
   const r = engine.processSource(`a = 1
 b = 2
-f = identity
+f(a, b) = a + b
 x = f(a, b)`);
   assert.deepEqual(errors(r), []);
 });

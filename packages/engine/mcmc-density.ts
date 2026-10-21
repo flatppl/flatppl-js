@@ -382,7 +382,10 @@ async function buildLogPi(
   const NULL_REF = (_n: string) => null as any;
   // Atom-dependent derived = transitive closure of bindings whose lowered RHS
   // references a draw or another atom-dependent name.
-  const atomDep = new Set<string>(drawNames);
+  // Adapter closures retain the likelihood's local boundary names until the
+  // body is bound below. They vary with the point too, so do not try to
+  // evaluate their dependent bindings as constants during preparation.
+  const atomDep = new Set<string>([...drawNames, ...(d.params || [])]);
   {
     let grew = true;
     while (grew) {
@@ -427,11 +430,46 @@ async function buildLogPi(
   // sources. Rename simultaneously: one input may reuse another source's name.
   const boundaryNames = new Map((d.params || []).map((name: string, i: number) =>
     [name, d.paramKwargs[i]]));
-  const likelihood = require('./ir-walk.ts').mapIRScoped(likNode.body,
-    (n: any, shadowed: Set<string>) =>
-      n?.kind === 'ref' && (n.ns === 'self' || n.ns === '%local')
-        && !shadowed.has(n.name) && boundaryNames.has(n.name)
-        ? { ...n, name: boundaryNames.get(n.name), ns: 'self' } : n);
+  const whole = require('./types.ts').acceptsPositional(d, 1);
+  const priorType = ctx.bindings.get(priorName)?.inferredType;
+  const priorFields = priorType?.domain?.fields;
+  const wholePoint = priorFields ? { kind: 'call', op: 'record',
+    fields: Object.keys(priorFields).map(name => ({ name,
+      value: { kind: 'ref', ns: 'self', name } })) }
+    : { kind: 'ref', ns: 'self', name: drawNames[0] };
+  const { mapIRScoped } = require('./ir-walk.ts');
+  function bindPoint(n: any, shadowed: Set<string>): any {
+    if (n?.kind === 'ref' && (n.ns === 'self' || n.ns === '%local')
+        && !shadowed.has(n.name) && boundaryNames.has(n.name)) {
+      return whole ? wholePoint : { ...n, name: boundaryNames.get(n.name), ns: 'self' };
+    }
+    // A whole-record adapter often projects a single prior field. Resolve
+    // that projection during preparation, without constructing records per score.
+    if (n?.op === 'get_field' && n.args?.[0]?.op === 'record'
+        && n.args[1]?.kind === 'lit') {
+      const field = n.args[0].fields?.find((f: any) => f.name === n.args[1].value);
+      if (field) return field.value;
+    }
+    // The generic mapper leaves bijection metadata untouched. Its captured
+    // parameters need the same point binding as the surrounding likelihood.
+    if (n?.bijection) {
+      const bijection = { ...n.bijection };
+      if (bijection.paramIRs) {
+        bijection.paramIRs = Object.fromEntries(Object.entries(bijection.paramIRs)
+          .map(([key, value]) => [key, mapIRScoped(value, bindPoint, shadowed)]));
+      }
+      for (const key of ['fForward', 'fInv', 'logVolume']) {
+        const fn = bijection[key];
+        if (!fn?.body) continue;
+        const inner = new Set(shadowed);
+        if (fn.paramName) inner.add(fn.paramName);
+        bijection[key] = { ...fn, body: mapIRScoped(fn.body, bindPoint, inner) };
+      }
+      return { ...n, bijection };
+    }
+    return n;
+  }
+  const likelihood = mapIRScoped(likNode.body, bindPoint);
   const likBodyIR = await resolveNormalizeMasses(likelihood, ctx, atomDep);
 
   // ── SETUP: observed ───────────────────────────────────────────────────────

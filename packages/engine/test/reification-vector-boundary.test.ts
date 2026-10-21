@@ -24,7 +24,7 @@ f = functionof(joined, points = cuts)
 value = f(points = [2.0, 4.0])
 y ~ Normal.(mu = joined, sigma = 1.0)
 K = kernelof(y, points = cuts)
-L = likelihoodof(K, [1.0, 3.0, 1.0])
+L = likelihoodof(pars -> K(points = pars.points), [1.0, 3.0, 1.0])
 score = logdensityof(L, record(points = [2.0, 4.0]))
 `, { sampleCount: 4 });
 

@@ -2602,7 +2602,8 @@ function _broadcastLogical(ir: any, ctx: any): any {
   if (!fn) fn = _synthBuiltinHeadFn(args[0], args, kwargs);
   if (!fn) throw new Error('broadcast: first arg must be a function');
   const kwargKeys = Object.keys(kwargs);
-  const sources = new Array(fn.params.length);
+  let sources = new Array(fn.params.length);
+  let bindRowByName = false;
   if (kwargKeys.length > 0) {
     // kwargs form: match by surface kwarg name first
     // (paramKwargs), fall back to internal placeholder name (params).
@@ -2616,12 +2617,23 @@ function _broadcastLogical(ir: any, ctx: any): any {
     }
   } else {
     const posArgs = args.slice(1);
-    /* c8 ignore next 4 -- defensive: positional arity guard */
-    if (posArgs.length !== fn.params.length) {
+    const positional = require('./types.ts').acceptsPositional(fn, posArgs.length);
+    if (posArgs.length === 1 && !positional) {
+      // A table contributes one row record per cell. Bind that record by
+      // name inside the cell loop, preserving its single outer row axis.
+      sources = posArgs;
+      bindRowByName = true;
+    } else if (!positional) {
       throw new Error('broadcast: expected ' + fn.params.length
         + ' positional arrays, got ' + posArgs.length);
+    } else {
+      sources = posArgs;
+      if (posArgs.length < fn.params.length) {
+        fn = { ...fn, params: fn.params.slice(0, posArgs.length),
+          paramKwargs: fn.paramKwargs?.slice(0, posArgs.length),
+          body: { ...fn.body, args: fn.body.args.slice(0, posArgs.length) } };
+      }
     }
-    for (let i = 0; i < fn.params.length; i++) sources[i] = posArgs[i];
   }
   // Held measures / kernel names reach the density walker as IR, not as
   // evaluated values (spec §04 non-collection broadcasting inputs).
@@ -2642,7 +2654,7 @@ function _broadcastLogical(ir: any, ctx: any): any {
   // a module-load cycle with sampler.ts (ops-declarations is
   // required during sampler.ts module load).
   const samplerMod = require('./sampler.ts');
-  return samplerMod._internal._broadcastApply(fn, inputs, ctx.env, ir.meta?.type);
+  return samplerMod._internal._broadcastApply(fn, inputs, ctx.env, ir.meta?.type, bindRowByName);
 }
 
 ops.register({

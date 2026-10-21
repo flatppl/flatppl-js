@@ -104,7 +104,7 @@ test('select classify: a selector-driven select as a chain base ANSWERS', async 
   // with that fixed the fence is gone and this guards the other sign, so the
   // fence cannot come back unnoticed.
   const { ctx } = ctxFor(UNEVEN + `
-M = jointchain(aa = S, bb = fn(Normal(_, 1.0)))
+M = jointchain(aa = S, bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
 tm = totalmass(M)
 lp = logdensityof(M, record(aa = 0.5, bb = 0.5))
 `, 4096);

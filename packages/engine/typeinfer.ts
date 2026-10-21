@@ -322,7 +322,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // rather than const — handle that gracefully here too.
       if (CONST_TYPES[expr.name])    return CONST_TYPES[expr.name];
       if (builtins.isSet(expr.name)) return setMarker(expr.name);
-      if (builtins.BUILTIN_FUNCTIONS.has(expr.name)) return T.any();
+      if (builtins.BUILTIN_FUNCTIONS.has(expr.name) || builtins.DISTRIBUTIONS.has(expr.name)) {
+        const sig = T.signatureOf(expr.name), iface = T.builtinInterface(expr.name, sig);
+        if (iface) return { kind: T.isMeasure(sig.result) ? 'kernel' : 'function',
+          ...iface, result: sig.result };
+        return T.any();
+      }
       return T.failed('undefined name "' + expr.name + '"');
     }
     // Cross-module ref — `(%ref mod X)` resolves through the
@@ -458,7 +463,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (expr.callee) {
       const calleeT = inferExpr(expr.callee, scopes);
       if (calleeT && (calleeT.kind === 'function' || calleeT.kind === 'kernel')) {
-        return write(calleeT.result != null ? calleeT.result : T.deferred(), expr);
+        return checkUserCall({ ...expr, target: { ns: 'self', name: '<expression>' } },
+          scopes, calleeT, { rhs: expr.callee }, loweredModule, true, null);
       }
       if (calleeT && calleeT.kind === 'failed') {
         return write(T.failed('expression-headed call cascade'), expr);
@@ -588,8 +594,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // operates column-wise and returns a record whose fields are the
       // column names". `quantile` is deliberately absent — it is
       // two-argument, and §07 lists its domain as `real arrays`.
-      // Read the exempt set for §04's carve-out off §07, never off this
-      // list.
       case 'sum':
       case 'mean':
       case 'var':
@@ -848,19 +852,28 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _applyBuiltinSplat(expr: any, scopes: any): any {
     const args = expr.args || [];
     const kwargs = expr.kwargs || {};
-    if (args.length !== 1 || Object.keys(kwargs).length > 0) return null;
+    if (args.length !== 1 && !(args.length === 0 && Object.keys(kwargs).length)) return null;
     if (expr.meta && expr.meta.splatApplied) return null;   // idempotent
     const op = expr.op;
     if (typeof op !== 'string') return null;
-    // The nine carve-out names take the aggregate WHOLE (design#78).
-    if (paramNames.isSplatExemptBuiltin(op)) return null;
-    const declared = paramNames.builtinParamNames(op);
-    if (!declared) return null;
     const sig = T.signatureOf(op);
-    // Variadic rows have no named inputs to bind (§04), and a row whose arity
-    // disagrees with its spec name list is not one this can reason about.
-    if (!sig || sig.args === null || sig.variadic) return null;
-    if (declared.length !== sig.args.length) return null;
+    const iface = T.builtinInterface(op, sig);
+    if (!iface) return null;
+    if (!args.length) {
+      // Constructors already have a named representation consumed by measure
+      // recognition. Only positional-signature builtins need normalization.
+      if (sig.args === null) return null;
+      const d = paramNames.namedDecision(iface, Object.keys(kwargs));
+      if (d.order) {
+        expr.args = d.order.map((name: string) => kwargs[name]);
+        delete expr.kwargs;
+        return null;
+      }
+      diagnostics.push({ severity: 'error', loc: expr.loc, message: op + ': named arguments do not match its input interface' });
+      return T.failed(op + ' named input interface');
+    }
+    if (Object.keys(kwargs).length || T.acceptsPositional(iface, 1)) return null;
+    const declared = iface.inputs.map((p: any) => p.name);
     // Only a record or table splats; anything else is an ordinary argument.
     const at: any = inferExpr(args[0], scopes);
     const fields: any = (at && at.kind === 'record') ? at.fields
@@ -868,7 +881,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
                  : null;
     if (!fields) return null;
     const present = Object.keys(fields);
-    const decision = paramNames.splatDecision(op, present, sig.args.length);
+    const decision = paramNames.splatDecision(op, present, sig);
     if (!decision) return null;
     const unbindable = decision.unbindable || [];
     const missing = decision.missing || [];
@@ -909,7 +922,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
     let s = new Map();
     const args   = expr.args   || [];
-    const kwargs = expr.kwargs || {};
+    let kwargs = expr.kwargs || {};
+    if (sig.args === null && args.length === 1 && Object.keys(sig.kwargs).length === 1
+        && ['record', 'table'].includes(inferExpr(args[0], scopes).kind)) {
+      const names = Object.keys(sig.kwargs);
+      if (args.length) kwargs = { ...kwargs,
+        ...Object.fromEntries(args.map((arg: any, i: number) => [names[i], arg])) };
+    }
 
     // Numeric branches have a common type, independent of branch order.
     // Infer them once, then seed T before the directional signature checks.
@@ -937,10 +956,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (!kwargsCoverPositional) {
         if (variadic) {
           if (got < fixedN) return arityError(op, '≥' + fixedN, got, expr.loc);
-        } else if (got !== rawN) {
+        } else if (got < (sig.minArgs ?? rawN) || got > rawN) {
           return arityError(op, rawN, got, expr.loc);
         }
-        for (let i = 0; i < fixedN; i++) {
+        for (let i = 0; i < Math.min(fixedN, got); i++) {
           const at: any = argTypes ? argTypes[i] : inferExpr(args[i], scopes);
           // The §07 table members that never lifted (tan, tanh, min, max, the
           // gamma and link functions, …) refuse here. Route them through the
@@ -1031,7 +1050,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // K is a kernel; a measure (nullary kernel) has no parameter
       // interface. Carry the kernel's inputs as the likelihood's params.
       const inputs = (kT && kT.kind === 'kernel') ? kT.inputs : undefined;
-      return T.likelihood(inputs);
+      return { ...T.likelihood(inputs), orderedInputs: kT.orderedInputs !== false };
     }
     // `joint_likelihood(L1, …, Lk)` (spec §06 "Combining likelihoods") is the
     // product of independent likelihood terms, so it is itself a likelihood.
@@ -1299,7 +1318,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return _bodyTypeUnder(fn, inputs, scopes, true);
     }
     if (fn?.kind === 'ref' && fnT.inputs?.length === inputs.length) {
-      // Named arguments also prevent a sole record variate from auto-splatting.
+      // Bind the explicit callback inputs whole, including final p.
       const kwargs = Object.fromEntries(fnT.inputs.map((input: any, i: number) => [input.name, args[i]]));
       return inferUserCall({ kind: 'call', target: fn, args: [], kwargs, loc }, scopes.concat([scope]));
     }
@@ -1948,7 +1967,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     return inputs.length === 0
       ? T.measure(variate)
-      : T.kernelType(inputs, T.measure(variate));
+      : { ...T.kernelType(inputs, T.measure(variate)), orderedInputs: false };
   }
 
   /**
@@ -2067,7 +2086,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return !!(kw && ir.kwargs && ir.kwargs[kw]);
       });
       if (declared) continue;
-      const scope = _chainStepScope(params, paramKwargs, fed);
+      const scope = _chainStepScope(params, paramKwargs, fed, ir.orderedInputs);
       if (scope == null) continue;
       const before = diagnostics.length;
       inferExpr(ir.body, scopes.concat([scope]));
@@ -2097,11 +2116,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   /** A step's params bound to the type the chain feeds it, or null when the
    *  fed type does not bind — in which case the boundary matcher has already
    *  reported it and there is nothing to re-check. Same split as the matcher:
-   *  records always splat by field name, including at the first boundary.
-   *  A non-record binds whole to a single input (spec §04/§06). */
-  function _chainStepScope(params: any[], paramKwargs: any[], fed: any) {
+   *  an interface admitting one positional input takes the whole result;
+   *  otherwise records bind by field name (spec §04/§06). */
+  function _chainStepScope(params: any[], paramKwargs: any[], fed: any, orderedInputs: any) {
     const scope = new Map<string, any>();
-    if (params.length === 1 && fed.kind !== 'record') {
+    if (T.acceptsPositional({ params, orderedInputs }, 1)) {
       scope.set(params[0], fed);
       return scope;
     }
@@ -2215,6 +2234,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if ('support' in kwargs)        support = kwargs.support;
     else if (args.length === 1)     support = args[0];
     if (!support) return T.measure(defaultElem);
+    const supportType = inferExpr(support, scopes);
+    if (supportType.kind === 'record' || supportType.kind === 'table') {
+      const message = expr.op + ': support must be a set, got ' + T.show(supportType);
+      diagnostics.push({ severity: 'error', message, loc: support.loc || expr.loc });
+      return T.failed(message);
+    }
     const t = setValueType(support, scopes);
     return T.measure(t || defaultElem);
   }
@@ -3203,20 +3228,20 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const mark = diagnostics.length;
     const argT: any = inferExpr(args[0], scopes);
     diagnostics.length = mark;
-    // Only a resolved scalar decides. `failed` is a cascade, and `any` /
+    // Only a resolved scalar or record decides. `failed` is a cascade, and `any` /
     // `deferred` is the common shape of an untyped `functionof` boundary, whose
     // argument may be a collection at every actual use.
-    if (!argT || argT.kind !== 'scalar') return null;
+    if (!argT || (argT.kind !== 'scalar' && argT.kind !== 'record')) return null;
     const cellRow = collectionDomain.domainCellFor(head)!;
     diagnostics.push({
       severity: 'error',
       message: head + ': spec §07 "' + cellRow.section + '" gives `' + head
         + '` the domain ' + cellRow.domains + ' — argument 1 here is '
-        + T.show(argT) + ', and spec §03 defines no rank-0 array; pass a '
-        + 'collection',
+        + T.show(argT) + (argT.kind === 'scalar' ? ', and spec §03 defines no rank-0 array' : '')
+        + '; pass a collection',
       loc: expr.loc,
     });
-    return T.failed(head + ': collection-domain head over a scalar');
+    return T.failed(head + ': collection-domain head over a non-collection');
   }
 
   // Spec §04 + §07: a broadcast hands its head one ELEMENT, and a head whose
@@ -3470,8 +3495,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
 
     // Phase 4: resolve cell-result type via the callable.
-    const cellTypes = argClassif.map((c) => c.cellType);
+    let cellTypes = argClassif.map((c) => c.cellType);
     const fn = args[0];
+    const iface = inferExpr(fn, scopes);
+    if (!kwNames.length && T.isCallable(iface) && !T.acceptsPositional(iface, cellTypes.length)) {
+      const row = cellTypes.length === 1 && cellTypes[0];
+      const decision = row?.kind === 'record'
+        && require('./builtin-param-names.ts').namedDecision({ ...iface,
+          minArgs: iface.minArgs ?? iface.inputs.length }, Object.keys(row.fields));
+      if (!decision?.order) {
+        diagnostics.push({ severity: 'error', loc: expr.loc,
+          message: 'broadcast: inputs do not match the callable interface' });
+        return T.failed('broadcast input interface');
+      }
+      cellTypes = decision.order.map((name: string) => row.fields[name]);
+    }
     // Domain gate first: a §07 collection-domain head over a scalar cell is
     // a static error, not a type to infer. Runs before the callable is
     // resolved so the diagnostic names the domain rather than whatever the
@@ -3502,7 +3540,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // result to WHAT the head is, not to where it was written.
       const calleeType: any = inferExpr(fn, scopes);
       if (T.isCallable(calleeType)) {
-        elem = calleeType.result;
+        const builtin = fn.ns === 'self' && !loweredModule.bindings.has(fn.name)
+          ? inferMeasureHeadCellResult(fn.name, cellTypes) : null;
+        elem = builtin || calleeType.result;
         if (calleeType.kind === 'function') {
           const kwargs: Record<string, any> = {};
           for (let i = 0; i < cellTypes.length; i++) {
@@ -3996,7 +4036,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       const baseDomain = (outMeasure && T.isMeasure(outMeasure)) ? outMeasure.domain : null;
       const cod = baseDomain ? codomain(baseDomain) : null;
       if (cod?.kind === 'failed') return cod;
-      return T.kernelType(m2.inputs || [], T.measure(cod || T.REAL));
+      return { ...m2, result: T.measure(cod || T.REAL) };
     }
     if (m2 && m2.kind === 'failed') return T.failed('pushfwd cascade');
     // Permissive default — pushfwd OUTSIDE measure/kernel context
@@ -4696,8 +4736,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
     // Per spec §sec:functionof-measure: a functionof with a measure
     // body produces a kernel; with a value body, a function.
-    if (T.isMeasure(bodyT))      return T.kernelType(inputs, bodyT);
-    if (T.isValue(bodyT))        return T.funcType(inputs,   bodyT);
+    const iface = expr.orderedInputs === false ? { orderedInputs: false } : {};
+    if (T.isMeasure(bodyT))      return { ...T.kernelType(inputs, bodyT), ...iface };
+    if (T.isValue(bodyT))        return { ...T.funcType(inputs, bodyT), ...iface };
     if (bodyT.kind === 'failed') return T.failed('functionof cascade');
     return T.deferred();
   }
@@ -4713,6 +4754,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const reg = !local && loweredModule.moduleRegistry?.[head.ns];
     const calleeModule = local ? loweredModule : modules?.get(reg?.path)?.loweredModule;
     const callee = calleeModule?.bindings.get(head.name);
+    if (local && !callee && T.hasSignature(head.name)) {
+      return inferCall({ ...expr, target: undefined, op: head.name }, scopes);
+    }
 
     // `broadcasted(f)` wrapper recognition. The lift rewrites
     // `bc(args)` (where bc = broadcasted(f)) to `broadcast(f, args)`
@@ -4775,39 +4819,22 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return write(T.failed('not callable'), expr);
     }
 
+    return checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg);
+  }
+
+  function checkUserCall(expr: any, scopes: any, calleeType: any, callee: any,
+      calleeModule: any, local: boolean, reg: any): any {
+    const head = expr.target;
     // Check the available signature first. Direct reification bodies below
     // also receive the concrete argument types at this call site.
     const inputs = calleeType.inputs;
     let args   = expr.args   || [];
     let kwargs = expr.kwargs || {};
 
-    // Auto-splatting (spec §04 sec:calling-convention): a single
-    // positional record argument is equivalent to passing each field
-    // as a kwarg, and it ALWAYS splats — "A sole positional record or
-    // table therefore always splats: whether its field or column names
-    // match the callable's argument names decides only whether the call
-    // is valid, never whether the splat occurs." So a field with no
-    // matching input is §04's static error ("A call with field or column
-    // names that do not match the callable's argument names is a static
-    // error"), NOT a signal to bind the whole record to input 0. The
-    // keyword spelling `f(pars = <record>)` is the way to pass a record
-    // as one ordinary argument; it never reaches here (kwargs non-empty).
-    //
-    // §04's single-input carve-out (design#78) — "A callable with exactly one
-    // input whose documented domain admits records or tables is exempt and
-    // receives a sole positional record or table whole" — needs no test here,
-    // because it keys on the DOCUMENTED domain and so reaches §07 builtins only.
-    // A user callable with one record-domain input is NOT exempt and still
-    // splats (ruled 2026-08-10, narrow; the builtin/user asymmetry is the
-    // accepted cost). This branch only sees callables that DECLARE `inputs`:
-    // user functionof / kernelof / lambdas. Every exempt callable is a
-    // §07 builtin (`sum`, `mean`, `var`, `std`, `lengthof`, `reverse`, `indicesof`,
-    // `indicesof0`, `identity`) typed by dedicated inference that never reaches
-    // this code. Do NOT widen this check to builtins without implementing the
-    // exemption first — `sum(t)` would start reporting that `sum` has no
-    // argument named after each of the table's columns.
-    // Pinned by test/always-splat.test.ts's "carve-out:" cases.
-    if (args.length === 1 && Object.keys(kwargs).length === 0 && inputs.length > 0) {
+    // Decide from the interface first. A unary callable receives the whole
+    // value, even if its domain later rejects that record or table.
+    if (args.length === 1 && Object.keys(kwargs).length === 0
+        && !T.acceptsPositional(calleeType, 1)) {
       const splatType = inferExpr(args[0], scopes);
       // A table's columns splat exactly like a record's fields (spec §04:
       // "of records and table columns"). `splatType.columns[k]` is the
@@ -4842,9 +4869,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
             message: 'call to "' + head.name + '" splats a sole positional ' + what + ', but '
               + head.name + ' has no argument named '
               + unbindable.map((k) => '"' + k + '"').join(', ')
-              + ' (spec §04: a sole positional ' + what + ' always splats; to pass the '
-              + whatNoun + 's as one argument name it, e.g. ' + head.name + '('
-              + inputs[0].name + ' = …))',
+              + ' (spec §04: this callable does not admit one positional input)',
             loc: args[0].loc || expr.loc,
           });
         }
@@ -4857,8 +4882,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
     }
 
-    // Empty early signatures can still await implicit-boundary promotion in
-    // the lift pass. Do not mistake those for proven nullary callables.
+    if (args.length && !T.acceptsPositional(calleeType, args.length)) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: 'call to "' + head.name + '" does not accept ' + args.length
+          + ' positional arguments' });
+      return write(T.failed('positional input interface'), expr);
+    }
     if (inputs.length > 0 && args.length > inputs.length) {
       diagnostics.push({ severity: 'error',
         message: 'call to "' + head.name + '" expects ' + inputs.length
@@ -4893,6 +4922,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           actualLoc = kw.loc;
         }
       } else {
+        if (inp.optional || i >= (calleeType.minArgs ?? inputs.length)) continue;
         // Missing argument. Diagnostic but don't bail — the result
         // type doesn't depend on which inputs were supplied (we use
         // the function's declared result).
@@ -5808,7 +5838,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const visit = (ir: any) => {
       if (!ir || typeof ir !== 'object') return;
       if (ir.kind === 'call' && ir.op === 'functionof') {
-        const hasBoundaries = Array.isArray(ir.params) && ir.params.length > 0;
+        const hasBoundaries = ir.orderedInputs !== false && Array.isArray(ir.params) && ir.params.length > 0;
         if (hasBoundaries) {
           // Explicit-boundary clause. A boundary's origin is `paramSources`
           // (a bare FieldAccess boundary like `p = m.theta` is rejected at

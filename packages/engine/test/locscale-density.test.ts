@@ -157,7 +157,7 @@ test('locscale rejects a non-finite literal scale', () => {
 // assert the analyzer no longer emits a rejection diagnostic.
 test('locscale with matrix-literal scale is not rejected by the analyzer', () => {
   const lifted = processSource(
-    'B = locscale(iid(Normal, 2), [0.0, 0.0], [[2.0, 0.0], [0.0, 1.5]])\n');
+    'B = locscale(iid(Normal(0, 1), 2), [0.0, 0.0], [[2.0, 0.0], [0.0, 1.5]])\n');
   const errs = lifted.diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(errs, [], 'expected no analyzer error: ' + JSON.stringify(errs));
 });

@@ -103,7 +103,7 @@ test('flag ON: kchain sets marginalize:true', () => {
 test('flag ON: kwarg form carries labels (record-shaped)', () => {
   withFirstClass(() => {
     const { derivations } = buildDerivations(
-      processSource(KDEF + 'jc = jointchain(p = M, q = K)\n').bindings);
+      processSource(KDEF + 'jc = jointchain(p = M, q = pars -> K(x = pars.p))\n').bindings);
     const d = derivations['jc'];
     assert.equal(d.kind, 'jointchain');
     assert.deepEqual(d.labels, ['p', 'q']);
@@ -204,7 +204,7 @@ test('matJointchain: kwarg jointchain(p=M,q=K) → record-shaped', async () => {
   const m = await materialise(
     'M = Normal(mu = 0.0, sigma = 1.0)\n' +
     'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
-    'jc = jointchain(p = M, q = K)\n', 'jc', 4000);
+    'jc = jointchain(p = M, q = pars -> K(x = pars.p))\n', 'jc', 4000);
   assert.ok(m.fields && m.fields.p && m.fields.q, 'record { p, q }');
 });
 
@@ -302,7 +302,7 @@ test('density 2c: labelled jointchain joint logdensity = p(a)·p(b|a)', async ()
   const m = await materialise(
     'M = Normal(mu = 0.0, sigma = 1.0)\n' +
     'K = functionof(Normal(mu = x, sigma = 1.0), x = x)\n' +
-    'jc = jointchain(p = M, q = K)\n' +
+    'jc = jointchain(p = M, q = pars -> K(x = pars.p))\n' +
     'lp = logdensityof(jc, record(p = 0.5, q = 1.0))\n', 'lp', 2000);
   const got = m.samples[0];
   const want = normLogpdf(0.5, 0, 1) + normLogpdf(1.0, 0.5, 1); // ≈ -2.0879
@@ -317,7 +317,7 @@ test('density 2b-ext: N-ary labelled jointchain joint logdensity (3-step)', asyn
     'M  = Normal(mu = 0.0, sigma = 1.0)\n' +
     'K1 = fn(Normal(mu = _, sigma = 1.0))\n' +
     'K2 = fn(Normal(mu = get(_, 2), sigma = 1.0))\n' +
-    'jc = jointchain(p = M, q = K1, r = K2)\n' +
+    'jc = jointchain(p = M, q = pars -> K1(pars.p), r = pars -> K2([pars.p, pars.q]))\n' +
     'lp = logdensityof(jc, record(p = 0.3, q = 0.5, r = 0.9))\n',
     'lp', 2000);
   const got = m.samples[0];

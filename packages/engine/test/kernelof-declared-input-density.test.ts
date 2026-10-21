@@ -128,7 +128,7 @@ test('functionof(lawof(x), mu = mu) scopes the inner lawof the same way', async 
 mu_a ~ Normal(mu = 0.0, sigma = 5.0)
 x ~ Normal(mu = mu_a, sigma = 1.0)
 K = functionof(lawof(record(x = x)), mu_a = mu_a)
-L = likelihoodof(K, record(x = 0.61))
+L = likelihoodof(pars -> K(mu_a = pars.mu_a), record(x = 0.61))
 lp = logdensityof(L, record(mu_a = 0.3))
 `, 0xBA5E);
   assert.ok(Math.abs(v - (-0.9669885332046727)) < 1e-12, `got ${v}, want -0.9669885332046727`);
@@ -148,7 +148,7 @@ test('a mid-chain declared input erases the upstream prior', async () => {
 mu_a ~ Normal(mu = 0.0, sigma = 5.0)
 x ~ Normal(mu = mu_a, sigma = 1.0)
 y ~ Normal(mu = x, sigma = 2.0)
-L = likelihoodof(kernelof(record(y = y), x = x), record(y = 1.1))
+L = likelihoodof(pars -> kernelof(record(y = y), x = x)(x = pars.x), record(y = 1.1))
 lp = logdensityof(L, record(x = 0.3))
 `, 0xBA5E);
   assert.ok(Math.abs(v - MID_CHAIN) < 1e-12, `got ${v}, want ${MID_CHAIN}`);
@@ -220,7 +220,7 @@ test('a kernelof likelihood score does not depend on the seed', async () => {
 mu_a ~ Normal(mu = 0.0, sigma = 5.0)
 x ~ Normal(mu = mu_a, sigma = 1.0)
 y ~ Normal(mu = x, sigma = 2.0)
-L = likelihoodof(kernelof(record(y = y), x = x), record(y = 1.1))
+L = likelihoodof(pars -> kernelof(record(y = y), x = x)(x = pars.x), record(y = 1.1))
 lp = logdensityof(L, record(x = 0.3))
 `]) {
     const a = await score(src, 1);

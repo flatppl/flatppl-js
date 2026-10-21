@@ -54,7 +54,7 @@ mu = draw(Normal(mu = 0.0, sigma = 10.0))
 prior = lawof(record(mu = mu))
 obs_dist = joint(y = Normal(mu = mu, sigma = 1.0))
 K = functionof(obs_dist, mu = mu)
-L = likelihoodof(K, record(y = 5.0))
+L = likelihoodof(pars -> K(mu = pars.mu), record(y = 5.0))
 posterior = bayesupdate(L, prior)
 `;
 
@@ -128,7 +128,12 @@ test('mismatched kwarg name throws rather than silently using 0', () => {
   // call buildPosteriorSpec(d, ctx) to get the production logLikelihood, then
   // assert it throws when theta is missing the required kwarg 'mu'.
   const modelSpec = require('../model-spec.ts');
-  const { errs, ctx } = setupCtx(MODEL, 100);
+  const { errs, ctx } = setupCtx(`
+mu = elementof(reals)
+prior = joint(mu = Normal(0, 10))
+K = functionof(joint(y = Normal(mu, 1)))
+L = likelihoodof(K, (y = 5))
+posterior = bayesupdate(L, prior)`, 100);
   assert.equal(errs.length, 0, `parse errors: ${errs.map((e: any) => e.message).join('; ')}`);
   // The real bayesupdate derivation produced by orchestrator.buildDerivations.
   const d = ctx.derivations['posterior'];

@@ -80,7 +80,7 @@ const perfConfig = require('./perf-config.ts');
 function mkIdent(name: any, source: any)        { return ast.Identifier(name, ast.synthLoc(source)); }
 function mkKwArg(name: any, value: any, source: any) { return ast.KeywordArg(name, value, ast.synthLoc(source)); }
 function mkCall(name: any, args: any, source: any)   {
-  return ast.CallExpr(mkIdent(name, source), args, ast.synthLoc(source));
+  return { ...ast.CallExpr(mkIdent(name, source), args, ast.synthLoc(source)), builtin: true };
 }
 
 // ---------------------------------------------------------------------
@@ -137,6 +137,9 @@ function namedOutputFields(node: any, bindings: any, seen?: any) {
     return [];
   }
   const callee = node.callee.name;
+  if (!node.builtin && bindings.has(callee)) {
+    return namedOutputFields(node.callee, bindings, seen);
+  }
   if (callee === 'lawof' || callee === 'kernelof' || callee === 'functionof') {
     const firstArg = node.args.find((a: any) => a.type !== 'KeywordArg');
     if (!firstArg) return [];
@@ -643,7 +646,7 @@ function admissibilityCheck(decomp: Decomposition, partition: Partition, node: a
 // Delegate detection: both sides exactly one bound binding ref
 // ---------------------------------------------------------------------
 
-function tryDelegate(decomp: Decomposition, partition: Partition) {
+function tryDelegate(decomp: Decomposition, partition: Partition, ctx: any) {
   // Delegate when:
   //   - each side is exactly one source COMPONENT (not just one variate
   //     — a single component might contribute multiple fields).
@@ -659,7 +662,16 @@ function tryDelegate(decomp: Decomposition, partition: Partition) {
   const sComp = decomp.components[[...sIdxs][0]];
   const uComp = decomp.components[[...uIdxs][0]];
   if (!sComp.bindingRef || !uComp.bindingRef) return null;
-  return delegate(sComp.bindingRef, uComp.bindingRef);
+  // The recovered callable must expose complement fields by name, even if
+  // the existing factor accepts an ordered whole-record input. Ordinary
+  // application in this adapter preserves that factor's interface.
+  const names = partition.unselected.map(v => v.name);
+  const placeholders = names.map(name => ({ type: 'Placeholder', name, loc: ast.synthLoc(ctx.source) }));
+  const point = mkCall('record', names.map((name, i) => mkKwArg(name, placeholders[i], ctx.source)), ctx.source);
+  const body = ast.CallExpr(mkIdent(sComp.bindingRef, ctx.source), [point], ast.synthLoc(ctx.source));
+  const fn = { ...mkCall('functionof', [body, ...names.map((name, i) =>
+    mkKwArg(name, placeholders[i], ctx.source))], ctx.source), orderedInputs: false };
+  return synthesized(fn, mkIdent(uComp.bindingRef, ctx.source));
 }
 
 // ---------------------------------------------------------------------
@@ -728,7 +740,7 @@ function synthesizeLawofRecord(decomp: Decomposition, partition: Partition, ctx:
   for (const u of partition.unselected) {
     kernelArgs.push(mkKwArg(u.name, mkIdent(recordVar.get(u.name)!, ctx.source), ctx.source));
   }
-  return synthesized(mkCall('kernelof', kernelArgs, ctx.source), priorExpr);
+  return synthesized({ ...mkCall('kernelof', kernelArgs, ctx.source), orderedInputs: false }, priorExpr);
 }
 
 function synthesizeJoint(decomp: Decomposition, partition: Partition, ctx: any) {
@@ -752,7 +764,11 @@ function synthesizeJoint(decomp: Decomposition, partition: Partition, ctx: any) 
     partition.unselected.map(u => mkKwArg(u.name, u.expr, ctx.source)),
     ctx.source);
   void decomp;
-  return synthesized(kernelExpr, priorExpr);
+  const inputs = partition.unselected.map(u => mkKwArg(u.name,
+    { type: 'Placeholder', name: u.name, loc: ast.synthLoc(ctx.source) }, ctx.source));
+  const kernel = inputs.length ? { ...mkCall('functionof', [kernelExpr, ...inputs], ctx.source),
+    orderedInputs: false } : kernelExpr;
+  return synthesized(kernel, priorExpr);
 }
 
 function synthesizeJointchain(decomp: Decomposition, partition: Partition, bindings: any, ctx: any) {
@@ -776,6 +792,18 @@ function synthesizeJointchain(decomp: Decomposition, partition: Partition, bindi
             ctx.source));
 
   // Kernel body: same shape, over selected components.
+  const names = partition.unselected.map(u => u.name);
+  const placeholders = names.map(name => ({ type: 'Placeholder', name, loc: ast.synthLoc(ctx.source) }));
+  const point = mkCall('record', names.map((name, i) =>
+    mkKwArg(name, placeholders[i], ctx.source)), ctx.source);
+  if (sComps.length === 1) {
+    const applied = isMeasureExpr(sComps[0].expr, bindings) ? sComps[0].expr
+      : ast.CallExpr(sComps[0].expr, [point], ast.synthLoc(ctx.source));
+    const body = !decomp.positional && !ctx.selectorBareString
+      ? mkCall('joint', [mkKwArg(sComps[0].fields[0], applied, ctx.source)], ctx.source) : applied;
+    return synthesized({ ...mkCall('functionof', [body, ...names.map((name, i) =>
+      mkKwArg(name, placeholders[i], ctx.source))], ctx.source), orderedInputs: false }, priorExpr);
+  }
   const kernelBody = sComps.length === 1
     ? sComps[0].expr
     : (decomp.positional
@@ -806,7 +834,69 @@ function wrapAsKernelOrFunctionOf(body: any, boundaryNames: string[], bindings: 
     args.push(mkKwArg(n, mkIdent(n, ctx.source), ctx.source));
   }
   const op = isMeasureExpr(body, bindings) ? 'functionof' : 'kernelof';
-  return mkCall(op, args, ctx.source);
+  return { ...mkCall(op, args, ctx.source), orderedInputs: false };
+}
+
+/** Structural indexed disintegration of an explicit scalar DAG or product.
+ * The complement is one vector input, even when only one coordinate remains.
+ * Reverse conditioning still requires integration and is refused here. */
+function positionalPlan(node: any, selected: number[], bindings: any, ctx: any): any {
+  const law = node.callee?.name === 'lawof';
+  const value = law ? node.args[0] : null;
+  const coordinates = value?.type === 'ArrayLiteral' ? value.elements
+    : value?.callee?.name === 'vector' ? value.args
+    : node.callee?.name === 'joint' && node.args.every((a: any) => a.type !== 'KeywordArg')
+      ? node.args : null;
+  if (!coordinates) return unsupported('indexed disintegration requires an explicit vector law or product', node);
+  if (!selected.length || new Set(selected).size !== selected.length
+      || selected.some(i => !Number.isInteger(i) || i < 1 || i > coordinates.length)) {
+    return unsupported('disintegration indices must be distinct coordinates of the joint', node);
+  }
+  const remaining = coordinates.map((_: any, i: number) => i + 1).filter((i: number) => !selected.includes(i));
+  if (!remaining.length) return unsupported('indexed disintegration requires a nonempty complement', node);
+  const loc = ast.synthLoc(ctx.source);
+  const point = { type: 'Placeholder', name: 'complement', loc };
+  const cuts = new Map<string, any>();
+  if (law) {
+    if (coordinates.some((x: any) => x.type !== 'Identifier')) {
+      return unsupported('indexed law coordinates must name value nodes', node);
+    }
+    remaining.forEach((i: number, j: number) => cuts.set(coordinates[i - 1].name,
+      mkCall('get', [point, { type: 'NumberLiteral', value: j + 1, raw: String(j + 1), loc }], ctx.source)));
+    const selectedNames = new Set(selected.map(i => coordinates[i - 1].name));
+    const dependsOnSelected = (name: string, seen = new Set<string>()): boolean => {
+      if (selectedNames.has(name)) return true;
+      if (seen.has(name)) return false;
+      seen.add(name);
+      const b = bindings.get(name);
+      return !!b && [...(b.deps || [])].some((dep: string) => dependsOnSelected(dep, seen));
+    };
+    if (remaining.some((i: number) => dependsOnSelected(coordinates[i - 1].name))) {
+      return unsupported('the complement depends on selected coordinates and requires integration', node);
+    }
+  }
+  const pick = (indices: number[]) => indices.map(i => coordinates[i - 1]);
+  const selectedValues = pick(selected);
+  let body;
+  if (law) {
+    // Reify the named value graph once. Expanding each selected coordinate
+    // separately would duplicate shared draws, changing their joint law.
+    const output = ctx.selectorBareString ? selectedValues[0]
+      : { type: 'ArrayLiteral', elements: selectedValues, loc };
+    const inner = mkCall('kernelof', [output, ...remaining.map((i: number) => {
+      const coordinate = coordinates[i - 1];
+      return mkKwArg(coordinate.name, coordinate, ctx.source);
+    })], ctx.source);
+    body = ast.CallExpr(inner, remaining.map((i: number) => {
+      const name = coordinates[i - 1].name;
+      return mkKwArg(name, cuts.get(name), ctx.source);
+    }), loc);
+  } else {
+    body = ctx.selectorBareString ? selectedValues[0] : mkCall('joint', selectedValues, ctx.source);
+  }
+  const prior = law ? mkCall('lawof', [{ type: 'ArrayLiteral', elements: pick(remaining), loc }], ctx.source)
+    : mkCall('joint', pick(remaining), ctx.source);
+  return synthesized(mkCall('functionof', [body, mkKwArg('complement', point, ctx.source)], ctx.source), prior);
 }
 
 // ---------------------------------------------------------------------
@@ -832,6 +922,8 @@ function disintegratePlan(joint: any, selector: any, bindings: any, ctx: any): a
     ctx = Object.assign({}, ctx, { seen });
   }
 
+  if (selector.every((x: any) => typeof x === 'number')) return positionalPlan(node, selector, bindings, ctx);
+
   // 1. Decompose.
   const decomp = decompose(node, bindings, ctx);
   if (isUnsupported(decomp)) {
@@ -855,7 +947,7 @@ function disintegratePlan(joint: any, selector: any, bindings: any, ctx: any): a
   // optimisation toggle so equivalence tests can force the
   // synthesize path through the dual-mode runner.
   if (perfConfig.getOptimization('disintegrate.delegate')) {
-    const del = tryDelegate(decomp, partition);
+    const del = tryDelegate(decomp, partition, ctx);
     if (del) return del;
   }
 

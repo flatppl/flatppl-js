@@ -48,7 +48,7 @@ test('discrete-base truncate normalizer fails loud through a kernelof/likelihood
   // Exercises the guard through the likelihood-scoring plumbing.
   const src = `mu ~ Poisson(3.0)
 k = kernelof(record(y = normalize(truncate(Poisson(3.0), interval(0.0, 5.0)))), mu = mu)
-L = likelihoodof(k, record(y = 2.0))
+L = likelihoodof(pars -> k(mu = pars.mu), record(y = 2.0))
 __score__ = logdensityof(L, record(mu = 3.0))
 `;
   const r = await scoreThrows(src);

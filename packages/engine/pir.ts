@@ -128,6 +128,7 @@ function lowerToModule(parsedBindings: Map<string, any>, opts?: any) {
   // module registry use. Null for a standalone single-file compile.
   const modulePath: string | null = (opts && opts.modulePath) || null;
   const m = loweredModule({ source: parsedBindings });
+  parsedBindings = require('./lift.ts').canonicalizeImplicitBoundaries(parsedBindings);
   // Module-typed bindings (`load_module(...)` / `standard_module(...)` —
   // analyzer's classifier sets `binding.type === 'module'`). The lower
   // pass consults this set when it sees `<name>.field`: if `<name>` is

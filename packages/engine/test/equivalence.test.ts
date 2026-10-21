@@ -101,7 +101,7 @@ theta = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta = theta))
 obs_dist = joint(y = Normal(mu = theta, sigma = 1.0))
 forward_kernel = functionof(obs_dist, theta = theta)
-joint_model = jointchain(prior, forward_kernel)
+joint_model = jointchain(prior, pars -> forward_kernel(theta = pars.theta))
 lp    = logdensityof(joint_model, record(theta = 0.0, y = 0.0))
 `;
 
@@ -195,7 +195,7 @@ obs_dist1 = joint(theta2 = Normal(mu = theta1, sigma = 1.0))
 obs_dist2 = joint(y = Normal(mu = theta2, sigma = 1.0))
 K1 = functionof(obs_dist1, theta1 = theta1)
 K2 = functionof(obs_dist2, theta1 = theta1, theta2 = theta2)
-joint_model = jointchain(prior, K1, K2)
+joint_model = jointchain(prior, pars -> K1(theta1 = pars.theta1), K2)
 lp = logdensityof(joint_model, record(theta1 = 0.0, theta2 = 0.0, y = 0.0))
 `;
 

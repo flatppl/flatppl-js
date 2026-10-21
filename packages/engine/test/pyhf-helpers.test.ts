@@ -14,7 +14,7 @@ test('pyhf normsys call forms preserve the portable reference values', () => {
     + 'reference = load_module("reference.flatppl")\n'
     + 'lo = elementof(posreals)\nhi = elementof(posreals)\nalpha = elementof(reals)\n'
     + 'outputs = [pyhf.normsys_factor(lo, hi, alpha),\n'
-    + '  pyhf.normsys_factor(lo, alpha = alpha, hi = hi),\n'
+    + '  pyhf.normsys_factor(lo = lo, alpha = alpha, hi = hi),\n'
     + '  pyhf.normsys_factor(record(alpha = alpha, hi = hi, lo = lo)),\n'
     + '  reference.normsys_factor(lo, hi, alpha)]',
   { bundle: { sources: { 'reference.flatppl': reference } } });

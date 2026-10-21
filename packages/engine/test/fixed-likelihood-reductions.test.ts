@@ -129,7 +129,7 @@ v ~ iid(Binomial(6, a), 2)
 w ~ joint(iid(Binomial(4, a), 2), iid(Binomial(6, a), 2))
 P = lawof(record(a = a))
 K = kernelof(record(u = u, v = v, w = w), a = a)
-L = likelihoodof(K, record(u = [0, 4], v = [1, 5], w = [0, 4, 1, 5]))
+L = likelihoodof(pars -> K(a = pars.a), record(u = [0, 4], v = [1, 5], w = [0, 4, 1, 5]))
 posterior = bayesupdate(L, P)
 `, 1);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);
@@ -209,7 +209,7 @@ independent ~ iid(superpose(weighted(.25, A), weighted(.75, B)), 2)
 shared ~ superpose(weighted(.25, iid(A, 2)), weighted(.75, iid(B, 2)))
 P = lawof(record(a = a))
 K = kernelof(record(independent = independent, shared = shared), a = a)
-L = likelihoodof(K, record(independent = [0, 2], shared = [0, 2]))
+L = likelihoodof(pars -> K(a = pars.a), record(independent = [0, 2], shared = [0, 2]))
 posterior = bayesupdate(L, P)
 `, 1);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);
@@ -228,7 +228,7 @@ transform = a .* eye(2)
 y ~ locscale(iid(Normal(0, 1), 2), [1, 1], transform)
 P = lawof(record(a = a))
 K = kernelof(record(y = y), a = a)
-L = likelihoodof(K, record(y = [2, 3]))
+L = likelihoodof(pars -> K(a = pars.a), record(y = [2, 3]))
 posterior = bayesupdate(L, P)
 `, 1);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);
@@ -242,7 +242,7 @@ a ~ Normal(0, 1)
 K = x -> Normal(x, 1)
 y ~ jointchain(Normal(a, 1), K)
 P = lawof(record(a = a))
-L = likelihoodof(kernelof(y, a = a), [1, 2])
+L = likelihoodof(pars -> kernelof(y, a = a)(a = pars.a), [1, 2])
 posterior = bayesupdate(L, P)
 `, 1);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);

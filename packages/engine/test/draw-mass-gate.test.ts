@@ -250,12 +250,10 @@ test('§06: an unnormalized component defeats the literal proof', () => {
   assert.equal(gateErrors(src).length, 1);
 });
 
-test('§06: the keyword spelling of weighted is declined, not proven', () => {
-  // §04 admits `weighted(weight = w, base = m)`; the proof reads the
-  // positional spelling only, so this stays unproven rather than wrong.
+test('§06: the keyword spelling of weighted retains its mass proof', () => {
   const src = `m = superpose(weighted(weight = 0.3, base = ${N0}), `
     + `weighted(weight = 0.7, base = ${N1}))`;
-  assert.notEqual(massOf(src, 'm'), 'normalized');
+  assert.equal(massOf(src, 'm'), 'normalized');
 });
 
 test('§06: logweighted is not proven — its weight is exp(logweight)', () => {

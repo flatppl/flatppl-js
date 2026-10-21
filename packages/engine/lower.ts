@@ -694,11 +694,16 @@ function _lowerBroadcast(node: any, ctx: any) {
     : calleeArg.type === 'FieldAccess' && calleeArg.object?.type === 'Identifier'
       && calleeArg.object.name === 'base' ? calleeArg.field : null;
   if (BUILTIN_FUNCTIONS.has(builtinName)) {
-    const arity = hasKwargs ? kwOrder.length : posArgs.length;
+    const T = require('./types.ts');
+    const iface = T.builtinInterface(builtinName);
+    const names = iface?.inputs.map((p: any) => p.name);
+    const order = hasKwargs && iface
+      ? require('./builtin-param-names.ts').namedDecision(iface, kwOrder).order : null;
+    const arity = hasKwargs ? kwOrder.length
+      : posArgs.length === 1 && iface && !T.acceptsPositional(iface, 1)
+        ? names.length : posArgs.length;
     head = _synthOpFunctionof(builtinName, arity);
-    // Keyword form: match the synthesized params to the caller's
-    // kwarg names (in order) so `_broadcastApply`'s kwarg path binds.
-    if (hasKwargs) head.paramKwargs = kwOrder.slice();
+    head.paramKwargs = order || names?.slice(0, arity) || head.paramKwargs;
   } else {
     head = _lowerExpr(calleeArg, ctx);
   }
@@ -922,6 +927,7 @@ function _lowerReification(op: string, node: any, ctx: any): any {
     params,
     paramKwargs,
     paramSources,
+    ...(node.orderedInputs === false || args.length === 1 ? { orderedInputs: false } : {}),
     body,
     // `kernelof` is its own FlatPIR head (spec §11 "Reified callables"),
     // and §11 "Normalization" licenses no desugaring, so the export must

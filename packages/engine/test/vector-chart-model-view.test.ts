@@ -14,7 +14,7 @@ async function view(prior: string, mean = 'x[1]') {
   const { ctx } = ctxFor(`${prior}
 y ~ Normal(${mean}, 1)
 P = lawof(record(x = x))
-L = likelihoodof(kernelof(y, x = x), 0)
+L = likelihoodof(pars -> kernelof(y, x = x)(x = pars.x), 0)
 posterior = bayesupdate(L, P)
 `, 32);
   return buildModelViewFromCtx(ctx, ctx.derivations.posterior);

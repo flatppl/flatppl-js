@@ -16,7 +16,7 @@ function setup(source: string, fields = 'x = x') {
   const { ctx } = ctxFor(`${source}
 prior = lawof(record(${fields}))
 y ~ Normal(x[1], 1)
-L = likelihoodof(kernelof(y, x = x), 0)
+L = likelihoodof(pars -> kernelof(y, x = x)(x = pars.x), 0)
 posterior = bayesupdate(L, prior)
 `, 32);
   const d = ctx.derivations.posterior;

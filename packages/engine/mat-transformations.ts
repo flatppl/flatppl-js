@@ -298,7 +298,7 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
     const baseVal = M.value;
     const vectorAtom = !!baseVal && Array.isArray(baseVal.shape)
       && baseVal.shape.length >= 2 && baseVal.shape[0] === N;
-    if (fnInfo.params.length === 1) {
+    if (require('./types.ts').acceptsPositional(fnInfo, 1)) {
       const p0 = fnInfo.params[0];
       if (vectorAtom) {
         paramBind[p0] = baseVal;
@@ -316,8 +316,8 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
           + fnInfo.params.length + ` inputs but base measure '${d.from}' is `
           + `not record-shaped (auto-splat needs named fields, spec §04)`));
       }
-      for (const p of fnInfo.params) {
-        const fm = M.fields[p];
+      for (const [i, p] of fnInfo.params.entries()) {
+        const fm = M.fields[fnInfo.paramKwargs?.[i] || p];
         if (!fm || !fm.samples) {
           return Promise.reject(new Error(`pushfwd: function input '${p}' has `
             + `no matching field in the record variate of '${d.from}' `

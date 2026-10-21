@@ -112,7 +112,7 @@ a ~ Exponential(1)
 y ~ iid(${law}, 3)
 P = lawof(record(a = a))
 K = kernelof(y, a = a)
-L = likelihoodof(K, ${JSON.stringify(observed)})
+L = likelihoodof(pars -> K(a = pars.a), ${JSON.stringify(observed)})
 posterior = bayesupdate(L, P)
 `, 1);
     const scorer = await buildLogPi(ctx, ctx.derivations.posterior);

@@ -644,9 +644,9 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // way so there is a single reweighting below.
   const terms: any[] = Array.isArray(d.subs)
     ? d.subs.map((sub: any) => ({ bodyIR: sub.bodyIR, bodyName: sub.bodyName,
-        obsIR: sub.obsIR, paramKwargs: sub.paramKwargs, params: sub.params }))
+        obsIR: sub.obsIR, paramKwargs: sub.paramKwargs, params: sub.params, orderedInputs: sub.orderedInputs }))
     : [{ bodyIR: d.bodyIR, bodyName: d.bodyName, obsIR: d.obsIR,
-         paramKwargs: d.paramKwargs, params: d.params }];
+         paramKwargs: d.paramKwargs, params: d.params, orderedInputs: d.orderedInputs }];
   const scores = terms.map((t: any) => {
     const node = clm.lowerMeasure(t.bodyIR || t.bodyName, ctx,
       { derivation: Object.assign({}, d, t), density: true });
@@ -764,7 +764,7 @@ function matLikelihoodDensity(d: any, ctx: any) {
     for (const kk of kwargs) if (publicOf(kk) === pub) shared++;
     return shared === 1 ? pub : null;
   };
-  if (kwargs.length === 1 && matchField(kwargs[0]) === null) {
+  if (require('./types.ts').acceptsPositional({ params: kwargs, orderedInputs: d.orderedInputs }, 1)) {
     // Single kernel input fed the whole θ value (scalar/vector point).
     boundaries[kwargs[0]] = theta;
   } else {
@@ -1691,7 +1691,7 @@ function matJointLikelihoodDensity(d: any, ctx: any) {
     matLikelihoodDensity({
       kind: 'likelihood_density',
       bodyName: sub.bodyName, bodyIR: sub.bodyIR, obsIR: sub.obsIR,
-      paramKwargs: sub.paramKwargs, params: sub.params, pointIR: d.pointIR,
+      paramKwargs: sub.paramKwargs, params: sub.params, orderedInputs: sub.orderedInputs, pointIR: d.pointIR,
     }, ctx)
   )).then((measures: any[]) => {
     const out = new Float64Array(N);
@@ -1723,12 +1723,12 @@ function matPosteriorDensity(d: any, ctx: any) {
     ? d.subs.map((sub: any) => ({
         kind: 'likelihood_density',
         bodyName: sub.bodyName, bodyIR: sub.bodyIR, obsIR: sub.obsIR,
-        paramKwargs: sub.paramKwargs, params: sub.params, pointIR: d.pointIR,
+        paramKwargs: sub.paramKwargs, params: sub.params, orderedInputs: sub.orderedInputs, pointIR: d.pointIR,
       }))
     : [{
         kind: 'likelihood_density',
         bodyName: d.bodyName, bodyIR: d.bodyIR, obsIR: d.obsIR,
-        paramKwargs: d.paramKwargs, params: d.params, pointIR: d.pointIR,
+        paramKwargs: d.paramKwargs, params: d.params, orderedInputs: d.orderedInputs, pointIR: d.pointIR,
       }];
   return Promise.all([
     ...terms.map((t: any) => matLikelihoodDensity(t, ctx)),
