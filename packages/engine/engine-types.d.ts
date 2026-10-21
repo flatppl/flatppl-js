@@ -412,14 +412,6 @@ export interface DerivationWeighted {
   weightIR?: IRNode;
   isLog?: boolean;
   /**
-   * Axis count when the base is an N-D box and `weightIR` is a k-parameter
-   * `functionof` kept VERBATIM (parameters unsubstituted). Each parameter
-   * takes one box coordinate in axis order; the consumers bind them —
-   * matWeighted to the per-axis sample columns, density's walkWeighted to
-   * the coordinates of the scored point.
-   */
-  boxAxes?: number;
-  /**
    * True when `weightIR` is a function of the base's variate
    * (`_classifyWeightedByFunction`'s parameter-substituted body, single- or
    * multi-axis). Density's walkWeighted tells this apart from a plain

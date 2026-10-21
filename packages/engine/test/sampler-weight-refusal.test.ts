@@ -135,11 +135,11 @@ W = weighted(min(0.2, -0.3), m)
 // N-D box base (site: _matWeightedOverBox)
 // =====================================================================
 
-test('§06: a k-parameter variate-dependent weight over a box retains only '
+test('§06: a whole-vector variate-dependent weight over a box retains only '
   + 'the positive-region mass (same x-1 oracle, over [0,2]×[0,1] ⇒ 1/2)', async () => {
   const { ctx } = makeMatCtx(`
 L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 1.0)))
-f(x, y) = x - 1.0
+f(v) = v[1] - 1.0
 M = weighted(f, L)
 `, { sampleCount: 300000, rootSeed: 0xF00D });
   const m: any = await ctx.getMeasure('M');

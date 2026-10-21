@@ -23,7 +23,9 @@ async function appWithShareCodec() {
     plugins: [{ name: 'share-codec-boundary', setup(builder) {
       builder.onResolve({ filter: /^\.\/share-codec\.js$/ }, () => ({ path: 'share-codec', namespace: 'host-test' }));
       builder.onLoad({ filter: /.*/, namespace: 'host-test' }, () => ({ contents:
-        'export function createShareCodec() { return { decode: globalThis.decodeShared, dispose() {} }; }',
+        'export function createShareCodec() { return { decode: globalThis.decodeShared, encode: globalThis.encodeShared, dispose() {} }; }'
+        + 'export function makeShareLinks() { return { url: "https://playground.example/#share=snapshot" }; }'
+        + 'export async function createShareQr() { return null; }',
       }));
     } }],
   }).then(result => result.outputFiles[0].text);
@@ -48,15 +50,15 @@ function manualTimers() {
 
 /** Boot the real gallery over an inert editor and pane, then drive its router. */
 async function gallery({ editable = false, store, bundles, ephemeral, initial = { model: null }, sidebar = false,
-  manifest = { entries: [] }, localStorage = storage(), loadManifest, loadBundle, readBytes, decodeShare, timers } = {}) {
-  let boot, onChange, editorOptions, beforeUnload, source = '', download, readOnly = true, language;
+  manifest = { entries: [] }, localStorage = storage(), loadManifest, loadBundle, readBytes, decodeShare, encodeShare, timers } = {}) {
+  let boot, onChange, editorOptions, beforeUnload, source = '', download, readOnly = true, language, downloadName;
   let route = initial;
   const requests = [];
   const renders = [];
   const elements = new Map();
-  for (const id of ['edit-toggle', 'save-btn', 'retry-save-btn', 'download-btn', 'source-status', 'save-error', 'save-error-message']) {
-    elements.set(id, { hidden: false, textContent: '', handlers: {},
-      setAttribute() {}, addEventListener(name, fn) { this.handlers[name] = fn; },
+  for (const id of ['edit-toggle', 'save-btn', 'retry-save-btn', 'download-btn', 'delete-btn', 'share-btn', 'source-status', 'save-error', 'save-error-message']) {
+    elements.set(id, { hidden: false, textContent: '', handlers: {}, attributes: {},
+      setAttribute(key, value) { this.attributes[key] = value; }, addEventListener(name, fn) { this.handlers[name] = fn; },
     });
   }
   const document = {
@@ -66,10 +68,21 @@ async function gallery({ editable = false, store, bundles, ephemeral, initial = 
     createElement() { return { click() {}, setAttribute() {}, style: {} }; },
     body: { appendChild() {}, removeChild() {} },
   };
-  if (sidebar) mountSidebar(document, elements);
+  if (sidebar || encodeShare) mountSidebar(document, elements);
+  const create = document.createElement;
+  document.createElement = tag => {
+    const node = create(tag);
+    if (tag === 'a') {
+      const click = node.click;
+      node.click = () => node.download ? downloadName = node.download : click.call(node);
+    }
+    return node;
+  };
   const window = {
     localStorage,
     prompt: (_message, value) => value,
+    confirm: () => true,
+    FlatPPLEngine: engine,
     FlatPPLFileTypes: fileTypes,
     __FLATPPL_CONFIG__: { allowEdit: editable },
     FlatPPLWebUserStore: store,
@@ -107,11 +120,12 @@ async function gallery({ editable = false, store, bundles, ephemeral, initial = 
     }) },
   };
   const globals = { window, document, console: { error() {}, warn() {} },
-    setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout, Blob, TextDecoder,
+    setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout, Blob, TextDecoder, TextEncoder,
     URL: { createObjectURL(blob) { download = blob; return 'blob:test'; }, revokeObjectURL() {} },
     decodeShared: decodeShare,
+    encodeShared: encodeShare,
   };
-  if (decodeShare) vm.runInNewContext(await appWithShareCodec(), globals);
+  if (decodeShare || encodeShare) vm.runInNewContext(await appWithShareCodec(), globals);
   else runSource('app', globals);
   await boot();
   return {
@@ -126,6 +140,9 @@ async function gallery({ editable = false, store, bundles, ephemeral, initial = 
     save() { editorOptions.onSave(); },
     async download() { await elements.get('download-btn').handlers.click(); return download.text(); },
     async downloadBytes() { await elements.get('download-btn').handlers.click(); return new Uint8Array(await download.arrayBuffer()); },
+    downloaded: async () => ({ name: downloadName, bytes: new Uint8Array(await download.arrayBuffer()) }),
+    delete: () => elements.get('delete-btn').handlers.click(),
+    share: () => elements.get('share-btn').handlers.click(),
     warnsOnUnload() { let warned = false; beforeUnload({ preventDefault() { warned = true; } }); return warned; },
     navigate(state) { route = state; return onChange(state); },
   };
@@ -142,6 +159,13 @@ function mountSidebar(document, elements) {
       addEventListener(key, fn) { this.handlers[key] = fn; },
       appendChild(child) { child.parentElement = this; this.children.push(child); return child; },
       append(...children) { children.forEach(child => this.appendChild(child)); },
+      insertBefore(child, reference) {
+        child.parentElement = this;
+        this.children.splice(this.children.indexOf(reference), 0, child);
+      },
+      remove() { this.parentElement.children = this.parentElement.children.filter(child => child !== this); },
+      showModal() { this.open = true; },
+      close() { this.open = false; this.handlers.close?.(); },
       contains(node) { return node === this || this.children.some(child => child.contains(node)); },
       matches(selector) {
         return selector.split(',').some(part => {
@@ -155,7 +179,7 @@ function mountSidebar(document, elements) {
       },
       querySelector(selector) { return this.querySelectorAll(selector)[0] || null; },
       focus() { document.activeElement = this; },
-      click() { this.focus(); return this.handlers.click?.({ currentTarget: this, preventDefault() {} }); },
+      click() { this.focus(); return this.onclick?.() ?? this.handlers.click?.({ currentTarget: this, preventDefault() {} }); },
       scrollIntoView() {},
     };
     el.classList = {
@@ -167,6 +191,7 @@ function mountSidebar(document, elements) {
     return el;
   }
   document.createElement = element;
+  document.body = element('body');
   elements.set('file-tree', element('div'));
   elements.set('file-filter', element('input'));
 }
@@ -284,24 +309,27 @@ test('unsaved bundle dependency edits survive member navigation', async () => {
 });
 
 /** Controllable bundle I/O boundary; archive bytes and IndexedDB have own suites. */
-function bundleBoundary() {
+function bundleBoundary(standalone = false) {
   const members = new Map();
   const opens = [];
   let serial = 0;
-  const folder = path => members.has(path) ? path.split('/').slice(0, 2).join('/') : undefined;
+  const folder = path => members.has(path) ? standalone ? path.replace(/\.flatppl$/, '')
+    : path.split('/').slice(0, 2).join('/') : undefined;
   const api = {
     init() {}, subscribe() {}, list: () => [], registerGraph() {}, displayPath: path => path,
     has: path => members.has(path), folder,
+    isStandalone: path => standalone && members.has(path),
     isSaved: path => members.get(path)?.saved || false,
     hasUnsaved: () => [...members.values()].some(member => !member.saved),
     async select(directory, path) { const selected = directory + '/' + path; return members.has(selected) ? selected : null; },
     async open(bytes) {
-      const path = 'new/model-' + ++serial + '/main.flatppl';
+      const path = 'new/model-' + ++serial + (standalone ? '.flatppl' : '/main.flatppl');
       members.set(path, { source: new TextDecoder().decode(bytes), saved: false });
       opens.push(path);
       return { path, reused: false };
     },
     async discard(path) { if (!api.isSaved(path)) members.delete(path); },
+    async remove(path) { members.delete(path); },
     async snapshot(path, drafts) { return new TextEncoder().encode(drafts[path] ?? members.get(path).source); },
   };
   return {
@@ -317,10 +345,15 @@ function bundleBoundary() {
 
 // These regressions protect editor state across public asynchronous I/O seams.
 // The existing navigation/draft tests are nearest, but do not overlap saves or loads.
-for (const navigateAway of [false, true]) {
-  test('undoing an edit during bundle Save remains dirty' + (navigateAway ? ' after navigating away' : ''), async () => {
-    const path = 'user/model/main.flatppl';
-    const bundles = bundleBoundary();
+for (const { navigateAway, standalone } of [
+  { navigateAway: false, standalone: false },
+  { navigateAway: true, standalone: false },
+  { navigateAway: false, standalone: true },
+]) {
+  test('undoing an edit during ' + (standalone ? 'standalone' : 'bundle') + ' Save remains dirty'
+    + (navigateAway ? ' after navigating away' : ''), async () => {
+    const path = standalone ? 'user/model.flatppl' : 'user/model/main.flatppl';
+    const bundles = bundleBoundary(standalone);
     bundles.set(path, 'x = 1');
     const saving = Promise.withResolvers(), finish = Promise.withResolvers();
     bundles.api.save = async bytes => {
@@ -495,6 +528,95 @@ test('saving a shared preview preserves the Run gate', async () => {
   assert.equal(g.route().model, 'user/saved/main.flatppl');
   assert.equal(g.renders.at(-1).opts.preview, true);
   assert.equal(resolutions, 0);
+});
+
+test('a standalone share stays one file and Save preserves its Run gate', async () => {
+  const bundles = bundleBoundary(true);
+  const timers = manualTimers();
+  let resolutions = 0;
+  bundles.api.save = async bytes => {
+    bundles.set('user/saved.flatppl', new TextDecoder().decode(bytes));
+    return 'user/saved.flatppl';
+  };
+  const g = await gallery({ editable: true, bundles: bundles.api, timers,
+    decodeShare: async () => ({ archive: new TextEncoder().encode('x=1'),
+      model: null, target: 'x', link: 'snapshot' }),
+    readBytes: async (path, drafts = {}) => new TextEncoder().encode(drafts[path] ?? bundles.source(path)),
+    loadBundle: (...args) => { resolutions++; return bundles.loadBundle(...args); },
+  });
+  await g.navigate({ share: '~123' });
+  await g.flush();
+  assert.equal(g.route().model, 'new/model-1.flatppl');
+  g.toggleEdit();
+  g.edit('x=2');
+  await timers.debounce();
+  g.save();
+  await g.flush();
+  assert.equal(g.route().model, 'user/saved.flatppl');
+  assert.equal(g.source(), 'x=2');
+  assert.equal(resolutions, 0);
+  assert.equal(g.renders.at(-1).opts.preview, true);
+  g.renders.at(-1).opts.run();
+  await g.flush();
+  assert.equal(resolutions, 1);
+  assert.equal(g.renders.at(-1).text, 'x=2');
+  assert.equal(g.warnsOnUnload(), false);
+});
+
+for (const saved of [false, true]) {
+  test('the header ' + (saved ? 'deletes a saved' : 'discards an unsaved') + ' bundle and its drafts', async () => {
+    const bundles = bundleBoundary();
+    const path = (saved ? 'user' : 'new') + '/model/main.flatppl';
+    bundles.set(path, 'x=1', saved);
+    const g = await gallery({ editable: true, bundles: bundles.api,
+      loadBundle: bundles.loadBundle, timers: manualTimers() });
+    await g.navigate({ model: path });
+    g.toggleEdit();
+    g.edit('x=2');
+    assert.equal(g.elements.get('delete-btn').hidden, false);
+    assert.equal(g.elements.get('delete-btn').attributes['aria-label'], saved ? 'Delete bundle' : 'Discard bundle');
+    await g.delete();
+    await g.flush();
+    assert.equal(bundles.api.has(path), false);
+    assert.equal(g.route().model, undefined);
+    assert.equal(g.warnsOnUnload(), false);
+  });
+}
+
+test('Share downloads a frozen standalone file and keeps dependencies in a ZIP', { timeout: 10000 }, async () => {
+  for (const withData of [false, true]) {
+    const path = 'user/model.flatppl';
+    const source = (withData ? 'data=load_data("data/data.json", cartpow(reals,2))\n' : '') + 'x=1\n';
+    const files = { [path]: new TextEncoder().encode(source) };
+    if (withData) files['user/data/data.json'] = new TextEncoder().encode('[1,2]\n');
+    const encoded = Promise.withResolvers();
+    const g = await gallery({ editable: true, timers: manualTimers(),
+      loadBundle: async (_path, _override, options) => ({
+        primaryPath: path, primarySource: options.drafts?.[path] ?? source,
+        files, sources: { [path]: source },
+        resolutions: { [path]: { data: { 'data/data.json': 'user/data/data.json' } } },
+      }),
+      encodeShare: async bytes => { encoded.resolve(bytes); return { link: 'snapshot', qr: null }; },
+    });
+    await g.navigate({ model: path });
+    g.share();
+    // Wait for compression and the lazy codec import, independent of host speed.
+    await encoded.promise;
+    g.toggleEdit();
+    g.edit('x=2\n');
+    const dialog = g.document.body.querySelector('dialog');
+    const button = dialog.querySelectorAll('button').find(node => node.textContent === (withData ? 'Download ZIP' : 'Download file'));
+    button.click();
+    const download = await g.downloaded();
+    assert.equal(download.name, withData ? 'model.flatppl.zip' : 'model.flatppl');
+    if (withData) {
+      const archive = await engine.readArchive(download.bytes, { id: download.name });
+      assert.equal(new TextDecoder().decode(await archive.read('main.flatppl')), source);
+      assert.equal(Object.keys(archive.entries).length, 2);
+      await archive.close();
+    } else assert.equal(new TextDecoder().decode(download.bytes), source);
+    dialog.close();
+  }
 });
 
 test('file labels expose bidirectional controls without changing file identity', async () => {

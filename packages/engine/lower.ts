@@ -547,7 +547,7 @@ function _lowerCallExpr(node: any, ctx: any, builtinHead = false): any {
     // the ref-headed `target` form (a {ns,name} string pair). The
     // "must evaluate to a callable" condition is inference's job —
     // the lowerer stays liberal (matching the FlatPIR reader).
-    if (node.callee && node.callee.type === 'CallExpr') {
+    if (node.callee && ['CallExpr', 'Placeholder', 'IndexExpr'].includes(node.callee.type)) {
       const lowered: any = {
         kind: 'call',
         callee: _lowerExpr(node.callee, ctx),
@@ -591,8 +591,7 @@ function _lowerCallExpr(node: any, ctx: any, builtinHead = false): any {
       if (hasKw) lowered.kwargs = kw;
       return lowered;
     }
-    // Otherwise: refuse loudly (a computed callee shape outside the
-    // grammar — e.g. an indexing-produced callable — has no IR form yet).
+    // Other callee shapes have no defined lowering here.
     throw new Error(`lower: unsupported callee type '${node.callee?.type}'`);
   }
   const calleeName = node.callee.name;
