@@ -87,6 +87,24 @@ p = polynomial(coefficients = cs, x = 2.0)
   assert.equal(pirSexpr.toSexpr(mod), text, 'emit → read → emit is stable');
 });
 
+test('toSexpr: a record-splat builtin call keeps its record argument', () => {
+  // §04 binds the record's fields by name, and §11 keeps the call as written.
+  const src = `
+cs = [0.5, 1.5, 2.5]
+r = record(coefficients = cs, x = 1.0)
+p = polynomial(r)
+q = polynomial((coefficients = cs, x = 1.0))
+`;
+  const text = pirSexpr.toSexpr(buildModule(src));
+  const out = text.replace(/\s+/g, ' ');
+  assert.ok(out.includes('(%bind p (polynomial (%ref self r)))'), 'binding; got: ' + out);
+  assert.ok(out.includes('(%bind q (polynomial (record (%field coefficients (%ref self cs)) '
+    + '(%field x 1.0))))'), 'inline record; got: ' + out);
+  const { module: mod, diagnostics } = pirSexpr.fromSexpr(text);
+  assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);
+  assert.equal(pirSexpr.toSexpr(mod), text, 'emit → read → emit is stable');
+});
+
 test('toSexpr: array literal → vector', () => {
   const mod = buildModule(`v = [1.0, 2.0, 3.0]`);
   const out = pirSexpr.toSexpr(mod);

@@ -350,9 +350,10 @@ function _callToSexpr(e: any, ind: string, mopts?: any): string {
   // still receive `{meta:true}` so their own wrappers carry types (with
   // %deferred phase — only the outermost call carries the binding phase).
   const inner = mopts ? { meta: true } : null;
-  // Inference may bind keyword arguments positionally. Print them as written.
-  if (e.args && !e.surfaceKwargs) {
-    for (const a of e.args) parts.push(_exprToSexpr(a, ind, inner));
+  // Inference may rebind a keyword call or a record splat. Print the call as written.
+  const positional = e.surfaceArgs || (e.surfaceKwargs ? null : e.args);
+  if (positional) {
+    for (const a of positional) parts.push(_exprToSexpr(a, ind, inner));
   }
   const kwargs = e.kwargs || e.surfaceKwargs;
   if (kwargs) {

@@ -904,6 +904,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return T.failed(op + ' splat name mismatch');
     }
     const agg = args[0];
+    // Bare FlatPIR keeps the call as written (§11 "Normalization").
+    expr.surfaceArgs = args;
     // Keep literal fields as their original expressions: a support set's
     // structural shape must remain visible to the reference-measure rules.
     expr.args = decision.order.map((k: string) => (agg.op === 'record'
