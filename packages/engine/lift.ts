@@ -284,13 +284,14 @@ function canonicalizeImplicitBoundaries(bindings: any) {
   for (const [name, b] of bindings) {
     if (!b.node || !b.node.value) continue;
     const promoted: string[] = [];
-    const rewritten = _promoteReificationBoundaries(b.node.value, bindings, promoted);
+    const rewritten = _promoteReificationBoundaries(b.effectiveValue || b.node.value, bindings, promoted);
     if (promoted.length === 0) continue;
     out.set(name, {
       ...b,
       // Mark the rewrite so downstream tooling (diagnostics, round-
       // trip) can distinguish it from a user-authored kwarg list.
       implicitBoundaries: promoted.slice(),
+      ...(b.effectiveValue ? { effectiveValue: rewritten } : {}),
       node: { ...b.node, value: rewritten },
     });
   }
@@ -352,7 +353,7 @@ function _promoteReificationBoundaries(node: any, bindings: any, promoted: strin
     loc: bodyAst.loc || null,
   }));
   for (const leafName of leaves) promoted.push(leafName);
-  return { ...out, args: [args[0], ...newKwargs] };
+  return { ...out, orderedInputs: false, args: [args[0], ...newKwargs] };
 }
 
 /**
@@ -1191,8 +1192,9 @@ function liftInlineSubexpressions(bindings: any) {
         callee: makeIdent('functionof', ast.loc), builtin: true,
         args: [kernel], loc: ast.loc }, out, []);
     }
-    const inputs = __knownAstType(kernel)?.inputs || [];
-    const args = inputs.length > 1 ? inputs.map((input: any) => ({
+    const iface = __knownAstType(kernel);
+    const inputs = iface?.inputs || [];
+    const args = inputs.length && !require('./types.ts').acceptsPositional(iface, 1) ? inputs.map((input: any) => ({
       type: 'KeywordArg', name: input.name, loc: ast.loc,
       value: { type: 'FieldAccess', object: cloneAst(ast.args[1]), field: input.name, loc: ast.loc },
     })) : [cloneAst(ast.args[1])];
@@ -1266,7 +1268,7 @@ function liftInlineSubexpressions(bindings: any) {
     if (!builtinHead && !qualifiedHead) return astArg;
     const args = broadcast ? astArg.args.slice(1) : astArg.args || [];
     if (args.length !== 3 || args.some((a: any) => a?.type === 'KeywordArg')
-        || containsHoleOrPlaceholder(astArg)) return astArg;
+        || (containsHoleOrPlaceholder(astArg) && !astArg.scalarLocscale)) return astArg;
     const base = __knownAstType(args[0]);
     if (base?.kind !== 'measure' || base.domain?.kind !== 'scalar') return astArg;
     const shiftType = __knownAstType(args[1]);
@@ -1287,7 +1289,8 @@ function liftInlineSubexpressions(bindings: any) {
       return { type: 'CallExpr', callee: makeIdent('broadcast', loc), builtin: true,
         args: [makeIdent(name, loc), args[1], args[2]], loc };
     }
-    if (shiftType?.kind !== 'scalar' || scaleType?.kind !== 'scalar') return astArg;
+    if (!astArg.scalarLocscale
+        && (shiftType?.kind !== 'scalar' || scaleType?.kind !== 'scalar')) return astArg;
     if (args[2].type === 'NumberLiteral'
         && (args[2].value === 0 || !Number.isFinite(args[2].value))) return astArg;
     const loc = astArg.loc;
@@ -1303,7 +1306,10 @@ function liftInlineSubexpressions(bindings: any) {
       args: [f, liftMeasure(args[0])], loc };
     // Keep the constructor's explicit shift/scale dependencies. The generated
     // affine callable is fixed, but its resulting measure need not be.
-    measureConstructors.set(result, astArg);
+    // Closure substitution can replace a known scalar boundary with a field
+    // of a still-polymorphic adapter input. Retain the established scalar
+    // constructor shape while rebuilding its affine parameters.
+    measureConstructors.set(result, { ...astArg, scalarLocscale: true });
     return result;
   }
 
@@ -3664,9 +3670,26 @@ function liftInlineSubexpressions(bindings: any) {
       : cloneAst(a)) };
   }
 
+  // Aliases can expose a builtin only after the analyzer normalized source
+  // calls. Bind its keyword arguments here before lowering the generated call.
+  function bindBuiltinKeywords(ast: any): any {
+    const args = ast.args || [];
+    if (!args.length || args.some((a: any) => a.type !== 'KeywordArg')) return ast;
+    const T = require('./types.ts');
+    const sig = T.signatureOf(ast.callee?.name);
+    if (!sig || sig.args === null) return ast;
+    const iface = T.builtinInterface(ast.callee?.name, sig);
+    if (!iface) return ast;
+    const decision = require('./builtin-param-names.ts').namedDecision(iface,
+      args.map((a: any) => a.name));
+    if (!decision.order) return ast;
+    return { ...ast, args: decision.order.map((name: string) =>
+      args.find((a: any) => a.name === name).value) };
+  }
+
   function inlineOnce(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
-    if (astArg.builtin) return astArg;
+    if (astArg.builtin) return bindBuiltinKeywords(astArg);
     const selected = inlineTupleProjection(astArg.callee);
     if (selected !== astArg.callee) return inlineOnce({ ...astArg, callee: selected });
     // §04 explicit self qualification selects the same current-module callable.
@@ -3708,7 +3731,8 @@ function liftInlineSubexpressions(bindings: any) {
     const alias = out.get(fnName)?.node?.value;
     if (alias?.type === 'FieldAccess' && alias.object?.type === 'Identifier'
         && alias.object.name === 'base' && ALL_KNOWN.has(alias.field)) {
-      return { ...astArg, callee: makeIdent(alias.field, astArg.loc), builtin: true };
+      return bindBuiltinKeywords({ ...astArg,
+        callee: makeIdent(alias.field, astArg.loc), builtin: true });
     }
     if (fnName !== astArg.callee.name) {
       return inlineOnce(Object.assign({}, astArg, { callee: makeIdent(fnName, astArg.loc) }));
@@ -3716,7 +3740,7 @@ function liftInlineSubexpressions(bindings: any) {
     // Use `out`, not `bindings`, so synthesized anon bindings created
     // during the lift pass are visible to inlineOnce too.
     const fnBinding = out.get(fnName);
-    if (!fnBinding) return astArg;
+    if (!fnBinding) return bindBuiltinKeywords(astArg);
     // Recursive callable → can't beta-reduce; leave the call un-inlined so
     // the fixpoint converges (see isRecursiveCallable above).
     if (isRecursiveCallable(fnName)) return astArg;
@@ -3820,7 +3844,7 @@ function liftInlineSubexpressions(bindings: any) {
       return arg.type === 'KeywordArg' ? { ...arg, value } : value;
     });
     return {
-      type: 'CallExpr', callee: makeIdent('functionof', jAst.loc), loc: jAst.loc,
+      type: 'CallExpr', callee: makeIdent('functionof', jAst.loc), loc: jAst.loc, orderedInputs: false,
       args: [{ ...jAst, args: newArgs }, ...inputs.map((input: any) => ({
         type: 'KeywordArg', name: input.name, loc: jAst.loc,
         value: { type: 'Placeholder', name: inputKeys.get(input.name), loc: jAst.loc },
@@ -3908,35 +3932,14 @@ function liftInlineSubexpressions(bindings: any) {
     // surfaceOrder is correctly populated here regardless of whether
     // the user wrote kwargs or relied on the implicit form.
 
-    // Auto-splatting (spec §04 sec:calling-convention):
-    // `f(record(a=x, b=y))` and `f(some_record_value)` are
-    // equivalent to `f(a=x, b=y)`, and likewise for `table(...)` /
-    // table columns. We detect two splat sources:
-    //   - inline `record(...)` / `table(...)` calls — splat their
-    //     KeywordArg children directly.
-    //   - Other record- or table-typed expressions — synthesize a FieldAccess
-    //     per record field / table column using their inferred type.
-    // A sole positional record ALWAYS splats — §04: "A sole positional
-    // record or table therefore always splats: whether its field or
-    // column names match the callable's argument names decides only
-    // whether the call is valid, never whether the splat occurs." So the
-    // splat is NOT conditioned on the fields covering surfaceOrder, and a
-    // mismatch must never fall back to binding the whole record to
-    // surfaceOrder[0] — that fallback was the name-conditioned reading
-    // §04 now rules out, and it silently accepted `f(pars)` against a
-    // one-input `f`. typeinfer raises the located §04 error; here we bail
-    // out of inlining (same idiom as the complex-boundary bail above), so
-    // the classifier reports an unsupported outcome instead of emitting a
-    // body with unsubstituted boundary identifiers.
-    // The keyword spelling `f(pars = <record>)` is how a record is passed
-    // as one ordinary argument; it is a KeywordArg and never reaches here.
-    //
-    // §04's single-input carve-out (design#78) does not apply here either:
-    // `fnAst` is always a user-reified callable (functionof / kernelof / fn),
-    // and every carve-out-exempt callable is a §07 builtin, which this pass
-    // never inlines. See the note at typeinfer's matching check.
+    // §04: a sole record/table stays whole when this interface admits one
+    // positional argument. Otherwise bind its fields by name, never retrying
+    // the other convention after a domain or field mismatch.
+    const whole = require('./types.ts').acceptsPositional({
+      params: surfaceOrder, orderedInputs: fnAst.orderedInputs,
+    }, 1);
     let callArgs = astArg.args || [];
-    if (callArgs.length === 1
+    if (!whole && callArgs.length === 1
         && callArgs[0].type !== 'KeywordArg'
         && surfaceOrder.length >= 1) {
       const arg0 = callArgs[0];
@@ -3972,6 +3975,8 @@ function liftInlineSubexpressions(bindings: any) {
         callArgs = splatted;
       }
     }
+
+    if (fnAst.orderedInputs === false && callArgs.some((a: any) => a.type !== 'KeywordArg')) return astArg;
 
     // Bind fn arguments before substituting holes, including record/table splats.
     if (fnBinding.type === 'fn') {
@@ -4060,12 +4065,11 @@ function liftInlineSubexpressions(bindings: any) {
       visit(newRhs);
       const fresh = argMap[origName].name;
       const synth: any = makeSyntheticBinding(fresh, newRhs);
-      // Which model binding this copy stands for. A closure copy carries no
-      // `inferredType` (typeinfer ran before it existed), so downstream passes
-      // that must tell a copied VARIATE from a copied constructor measure have
-      // only its IR to go on — and only a copy created HERE has a boundary
-      // substitution behind it. clm's `_namesADraw` keys on this marker so the
-      // reasoning stays confined to reification closures.
+      // Boundary arguments have already passed domain checks. Preserve the
+      // inferred shape, including matrix dimensions needed by affine lowering.
+      synth.inferredType = orig.inferredType;
+      // Keep the source identity for consumers that distinguish copied draws
+      // from constructor measures when the inferred type remains unresolved.
       synth.closureOf = origName;
       out.set(fresh, synth);
     }

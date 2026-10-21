@@ -159,7 +159,7 @@ theta = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta = theta))
 obs_dist = joint(y = Normal(mu = theta, sigma = 1.0))
 K = functionof(obs_dist, theta = theta)
-joint_model = jointchain(prior, K)
+joint_model = jointchain(prior, pars -> K(theta = pars.theta))
 `);
   const m = await ctx.getMeasure('joint_model');
   assert.ok(m.fields, 'joint_model materialises as record measure');
@@ -207,7 +207,7 @@ mu = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(mu = mu))
 obs_dist = joint(y = Normal(mu = mu, sigma = 1.0))
 K = functionof(obs_dist, mu = mu)
-L = likelihoodof(K, record(y = 2.0))
+L = likelihoodof(pars -> K(mu = pars.mu), record(y = 2.0))
 posterior = bayesupdate(L, prior)
 `);
   const post = await ctx.getMeasure('posterior');
@@ -308,7 +308,7 @@ test('labelled jointchain: single-field components rename to the labels; density
 theta = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta = theta))
 K = functionof(Normal(mu = theta, sigma = 1.0), theta = theta)
-jc = jointchain(p = prior, o = K)
+jc = jointchain(p = prior, o = pars -> K(theta = pars.p))
 lp = logdensityof(jc, record(p = 0.3, o = 0.8))
 `);
   // Sampling shape: the labels, not the source names.
@@ -1304,7 +1304,7 @@ lambda = draw(Gamma(shape = 2.0, rate = 1.0))
 prior = lawof(record(lambda = lambda))
 y_dist = joint(y = iid(Poisson(rate = lambda), n))
 K = functionof(y_dist, lambda = lambda)
-L = likelihoodof(K, record(y = counts_data))
+L = likelihoodof(pars -> K(lambda = pars.lambda), record(y = counts_data))
 posterior = bayesupdate(L, prior)
 `);
   const post = await ctx.getMeasure('posterior');
@@ -2013,7 +2013,7 @@ test('projection: a jointchain prefix keeps the base and carries the dropped tra
   // §06 jointchain density is p(a)*p(b|a), so integrating b out leaves
   // p(a) * totalmass(K(a)) = 3 p(a) for an unnormalized transition.
   const ctx = makeCtx(`
-M = jointchain(aa = Normal(0.0, 1.0), bb = fn(weighted(3.0, Normal(_, 1.0))))
+M = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(weighted(3.0, Normal(_, 1.0))))(arg1 = pars.aa))
 A = pushfwd(fn(get(_, "aa")), M)
 lp = logdensityof(A, 0.5)
 tm = totalmass(A)
@@ -2044,7 +2044,7 @@ test('projection: a two-step jointchain prefix over normalized transitions score
   // Keeping (aa, bb) of a three-step chain drops a normalized transition, so
   // the marginal is the two-step chain itself: p(aa) * p(bb|aa).
   const ctx = makeCtx(`
-M = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)), cc = fn(Normal(0.0, 1.0)))
+M = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa), cc = fn(Normal(0.0, 1.0)))
 A = pushfwd(fn(get(_, ["aa", "bb"])), M)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 tm = totalmass(A)
@@ -2064,7 +2064,7 @@ test('projection: a two-step chain prefix carries an unnormalized dropped factor
   // so the marginal is 3 * p(aa) * p(bb|aa). This refused while the chain had
   // no working carrier for a scalar mass; both carriers are fixed now.
   const ctx = makeCtx(`
-M = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)),
+M = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa),
                cc = fn(weighted(3.0, Normal(0.0, 1.0))))
 A = pushfwd(fn(get(_, ["aa", "bb"])), M)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
@@ -2085,7 +2085,7 @@ test('projection: a chain transition whose mass moves with the variate refuses',
   // Z * p(a) at all. The certificate reads the kernel body, where `a` is an
   // unresolvable local ref, and declines.
   const ctx = makeCtx(`
-M = jointchain(aa = Exponential(1.0), bb = fn(weighted(_, Normal(0.0, 1.0))))
+M = jointchain(aa = Exponential(1.0), bb = pars -> (fn(weighted(_, Normal(0.0, 1.0))))(arg1 = pars.aa))
 A = pushfwd(fn(get(_, "aa")), M)
 `);
   await assert.rejects(() => Promise.resolve(ctx.getMeasure('A')),
@@ -2097,7 +2097,7 @@ test('projection: a dropped chain PREFIX is not closed form and keeps the genera
   // which §06 sends to the composed-measure rules. No rewrite, so the density
   // keeps demanding a bijection annotation.
   const ctx = makeCtx(`
-M = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
+M = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
 A = pushfwd(fn(get(_, "bb")), M)
 `);
   assert.equal(ctx.derivations.A.kind, 'pushfwd');
@@ -2107,7 +2107,7 @@ test('projection: a one-name keyword chain selector keeps a one-field record', a
   // `get(_, ["aa"])` is subset selection, so the marginal is a record over the
   // base step, where `get(_, "aa")` gives the step's own value.
   const ctx = makeCtx(`
-M = jointchain(aa = Normal(0.0, 1.0), bb = fn(weighted(3.0, Normal(_, 1.0))))
+M = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(weighted(3.0, Normal(_, 1.0))))(arg1 = pars.aa))
 A = pushfwd(fn(get(_, ["aa"])), M)
 lp = logdensityof(A, record(aa = 0.5))
 tm = totalmass(A)
@@ -2193,7 +2193,7 @@ test('chain mass: a weighted base is counted once, not once per step', async () 
   // Exact: the double integral of 3 p(a) p(b|a) over both variates is 3. The
   // engine reported 8.999999999999993.
   const ctx = makeCtx(`
-A = jointchain(aa = weighted(3.0, Normal(0.0, 1.0)), bb = fn(Normal(_, 1.0)))
+A = jointchain(aa = weighted(3.0, Normal(0.0, 1.0)), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 tm = totalmass(A)
 `);
@@ -2209,7 +2209,7 @@ test('chain mass: a weighted TRANSITION multiplies the base rather than doubling
   // The transition's own weight is a FRESH event and the base's an inherited
   // one, so the product is 2 * 5. The engine reported 20.000000000000007.
   const ctx = makeCtx(`
-A = jointchain(aa = weighted(2.0, Normal(0.0, 1.0)), bb = fn(weighted(5.0, Normal(_, 1.0))))
+A = jointchain(aa = weighted(2.0, Normal(0.0, 1.0)), bb = pars -> (fn(weighted(5.0, Normal(_, 1.0))))(arg1 = pars.aa))
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 tm = totalmass(A)
 `);
@@ -2226,7 +2226,7 @@ test('chain mass: a truncate base reaches the product through the residue', asyn
   // logTotalmass, so it has no weighting event to share and arrives as the
   // factor's residue instead.
   const ctx = makeCtx(`
-A = jointchain(aa = truncate(Normal(0.0, 1.0), interval(-1.0, 1.0)), bb = fn(Normal(_, 1.0)))
+A = jointchain(aa = truncate(Normal(0.0, 1.0), interval(-1.0, 1.0)), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
 tm = totalmass(A)
 `);
   const tm = await ctx.getMeasure('tm');
@@ -2236,7 +2236,7 @@ tm = totalmass(A)
 
 test('chain mass: an all-normalized chain still has mass 1', async () => {
   const ctx = makeCtx(`
-A = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
+A = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
 tm = totalmass(A)
 `);
   const tm = await ctx.getMeasure('tm');
@@ -2292,7 +2292,7 @@ test('chain mass: a weighted OVER a chain scores instead of being pruned', async
   // an undeclared body self-ref, the lowering refused the shape as not
   // self-contained, and the density derivation was cascade-pruned.
   const ctx = makeCtx(`
-B = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
+B = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
 A = weighted(3.0, B)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 tm = totalmass(A)
@@ -2308,7 +2308,7 @@ tm = totalmass(A)
 
 test('chain mass: an ALIAS to a chain is read through too', async () => {
   const ctx = makeCtx(`
-B = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
+B = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
 A = B
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `);
@@ -2335,7 +2335,7 @@ tm = totalmass(A)
 
 test('chain density: a constant variate weight preserves the retained density', async () => {
   const ctx = makeCtx(`
-B = jointchain(aa = Normal(0.0, 1.0), bb = fn(Normal(_, 1.0)))
+B = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
 A = weighted(fn(exp(0.0 * _.aa)), B)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `);

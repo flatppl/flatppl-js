@@ -197,7 +197,7 @@ test('a matching record field feeds a lone step input', async () => {
 flatppl_compat = "0.1"
 M0 = joint(a = Normal(0, 1))
 K1 = a -> Normal(mu = a, sigma = 1)
-ch = kchain(M0, K1)
+ch = kchain(M0, pars -> K1(a = pars.a))
 lp = logdensityof(ch, 0)
 `, 128, 11);
   assert.ok(Array.from((await ctx.getMeasure('ch')).samples).every(Number.isFinite));

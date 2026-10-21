@@ -1330,12 +1330,11 @@ interface ChainCompositionResult {
  * sec:calling-convention: records match step inputs by field name.
  * Non-record results bind positionally to a single compatible input.
  */
-function _matchChainBoundary(prevResult: any, nextInputs: any[]) {
-  // Records always splat by field name, including a single-input boundary.
-  // Multi-input boundary: previous result must be record-typed, with
-  // exactly the field names the next step's inputs declare. Auto-splat
-  // per §04 sec:calling-convention.
-  if (prevResult.kind === 'record') {
+function _matchChainBoundary(prevResult: any, nextInputs: any[], iface: any = {}) {
+  const whole = T.acceptsPositional({ ...iface, inputs: nextInputs }, 1);
+  // Keyword-only and multi-input steps bind records by name. An ordered
+  // unary step instead checks the domain of the whole previous result.
+  if (!whole && prevResult.kind === 'record') {
     const fieldNames = Object.keys(prevResult.fields);
     const inputNames = nextInputs.map(i => i.name);
     // Field-name set check: every input name must have a matching field;
@@ -1370,7 +1369,7 @@ function _matchChainBoundary(prevResult: any, nextInputs: any[]) {
     return { ok: true, subst: s };
   }
   // Non-record values bind positionally to a sole compatible input.
-  if (nextInputs.length === 1) {
+  if (whole) {
     const s = T.unify(nextInputs[0].type, prevResult, new Map());
     if (s == null) {
       return { ok: false,
@@ -1393,8 +1392,8 @@ function _stepLabel(step: ChainStep, index: number): string {
 
 /**
  * Apply declared input types before matching a structured chain boundary.
- * Reified inputs initially type as any; arrays bind whole and records splat
- * by field name (spec §04), so both need their declared value constraints.
+ * Reified inputs initially type as any. Ordinary call binding decides whether
+ * a structured value stays whole or supplies named inputs (spec §04).
  */
 function _applyDeclaredInputTypes(nextInputs: any[], structuredVariate: any,
                                   declared: Map<string, any> | null | undefined) {
@@ -1589,7 +1588,7 @@ function _inferKernelChain(
     const m = _matchChainBoundary(
       prevVariate,
       _applyDeclaredInputTypes(nextInputs, arrayVariate || (catBoundary && prevVariate.kind === 'record'),
-                               declaredInputs && declaredInputs[i + 1]));
+                               declaredInputs && declaredInputs[i + 1]), next.type);
     if (!m.ok) {
       diagnostics.push({
         severity: 'error',
@@ -1650,7 +1649,7 @@ function _inferKernelChain(
   const residual = s0kind === 'kernel' ? s0.type.inputs.slice() : [];
   const result = residual.length === 0
     ? T.measure(resultVariate)
-    : T.kernelType(residual, T.measure(resultVariate));
+    : { ...s0.type, inputs: residual, result: T.measure(resultVariate) };
   return { resultType: result, diagnostics, boundaryTypes };
 }
 
@@ -1744,7 +1743,7 @@ function inferChainComposition(
       });
       return { resultType: T.failed('fchain nullary step'), diagnostics };
     }
-    const m = _matchChainBoundary(prevResult, nextInputs);
+    const m = _matchChainBoundary(prevResult, nextInputs, next.type);
     if (!m.ok) {
       diagnostics.push({
         severity: 'error',
@@ -1756,8 +1755,8 @@ function inferChainComposition(
     }
   }
   // Chain types cleanly. Result: take step 0's inputs, step N-1's result.
-  const result = T.funcType(steps[0].type.inputs.slice(),
-                            steps[steps.length - 1].type.result);
+  const result = { ...steps[0].type, inputs: steps[0].type.inputs.slice(),
+    result: steps[steps.length - 1].type.result };
   return { resultType: result, diagnostics: [] };
 }
 

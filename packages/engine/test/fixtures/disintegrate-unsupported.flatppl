@@ -23,7 +23,7 @@ prior_b  = lawof(record(theta = draw(Normal(mu = 0, sigma = 1))))
 # kernelof would be a type error here per §sec:kernelof "x must not be a measure".
 kernel_b = functionof(joint(obs = Normal(mu = _theta_, sigma = 1.0)),
                       theta = _theta_)
-joint_d  = jointchain(prior_b, kernel_b)
+joint_d  = jointchain(prior_b, pars -> kernel_b(theta = pars.theta))
 
 # Resolves by Delegate to (kernel_b, prior_b). No dotted border.
 fk_del, pr_del = disintegrate(["obs"], joint_d)

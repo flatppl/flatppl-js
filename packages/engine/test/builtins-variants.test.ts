@@ -61,12 +61,13 @@ test('builtins.isSpecialOperation: true for ops with custom syntax rules', () =>
   for (const op of ['draw', 'lawof', 'functionof', 'kernelof', 'fn',
                     'elementof', 'external', 'load_module', 'broadcast',
                     'broadcasted', 'reduce', 'scan', 'fchain', 'bijection',
-                    'checked', 'record', 'table', 'tuple', 'vector',
+                    'record', 'table', 'tuple', 'vector',
                     'tuple_get']) {
     assert.equal(builtins.isSpecialOperation(op), true, op);
   }
   // Ordinary builtins / distributions / measure ops are NOT special.
   assert.equal(builtins.isSpecialOperation('add'),    false);
+  assert.equal(builtins.isSpecialOperation('checked'), false);
   assert.equal(builtins.isSpecialOperation('Normal'), false);
   assert.equal(builtins.isSpecialOperation('iid'),    false);
 });

@@ -28,7 +28,7 @@
 
 const orchestrator = require('./orchestrator.ts');
 const materialiser = require('./materialiser.ts');
-const { scalarMeasureN } = require('./materialiser-shared.ts');
+const { measureN } = require('./materialiser-shared.ts');
 
 // ── Types ───────────────────────────────────────────────────────────────────
 
@@ -111,16 +111,31 @@ async function buildPosteriorPredictive(
   }
   if (!bodyIR) return null;
 
-  // The body must be `lawof(<measure>)`. The measure is either a `record(...)`
-  // (per-field PPC) or a bare variate (single-field PPC).
-  if (bodyIR.kind !== 'call' || bodyIR.op !== 'lawof') return null;
-  if (!Array.isArray(bodyIR.args) || bodyIR.args.length < 1) return null;
-  const outIR = bodyIR.args[0];
+  const whole = require('./types.ts').acceptsPositional(d, 1);
+  if (whole && posteriorMeasure?.fields) {
+    // A unary adapter receives one posterior record. Substitute its fields
+    // before sampling, so the existing per-field cache still supplies atoms.
+    const body = require('./clm.ts').lowerMeasure(bodyIR, ctx, { derivation: d })?.body;
+    if (!body) return null;
+    const names = new Set([...(d.params || []), ...d.paramKwargs]);
+    const point = { kind: 'call', op: 'record', fields: Object.keys(posteriorMeasure.fields)
+      .map(name => ({ name, value: { kind: 'ref', ns: 'self', name } })) };
+    bodyIR = require('./ir-walk.ts').mapIRScoped(body, (n: any, shadowed: Set<string>) => {
+      if (n.kind === 'ref' && !shadowed.has(n.name) && names.has(n.name)) return point;
+      if (n.op === 'get_field' && n.args?.[0]?.op === 'record' && n.args[1]?.kind === 'lit') {
+        return n.args[0].fields.find((f: any) => f.name === n.args[1].value)?.value || n;
+      }
+      return n;
+    });
+  }
+
+  if (bodyIR.kind !== 'call' || (!whole && bodyIR.op !== 'lawof')) return null;
+  const outIR = whole ? bodyIR : bodyIR.args?.[0];
   if (!outIR) return null;
 
   // Enumerate the forward fields to materialise.
   let fieldSpecs: Array<{ name: string; ir: any }>;
-  if (outIR.kind === 'call' && outIR.op === 'record' && Array.isArray(outIR.fields)
+  if (outIR.kind === 'call' && ['record', 'joint'].includes(outIR.op) && Array.isArray(outIR.fields)
       && outIR.fields.length > 0) {
     fieldSpecs = outIR.fields.map((f: any) => ({ name: f.name, ir: f.value }));
   } else {
@@ -141,11 +156,13 @@ async function buildPosteriorPredictive(
   }
 
   // Posterior atom count: all parameter columns share the same length.
-  const firstParam = d.paramKwargs[0];
+  const parameterNames = whole && posteriorMeasure?.fields
+    ? Object.keys(posteriorMeasure.fields) : d.paramKwargs;
+  const firstParam = parameterNames[0];
   if (!posteriorMeasure || !posteriorMeasure.fields
       || !posteriorMeasure.fields[firstParam]
       || !posteriorMeasure.fields[firstParam].samples) return null;
-  const count: number = posteriorMeasure.fields[firstParam].samples.length;
+  const count: number = measureN(posteriorMeasure);
   const postLW: Float64Array | null = posteriorMeasure.logWeights || null;
 
   // Sub-context whose getMeasure cache is PRE-SEEDED with the posterior
@@ -172,10 +189,10 @@ async function buildPosteriorPredictive(
       return m;
     },
   };
-  for (const p of d.paramKwargs) {
+  for (const p of parameterNames) {
     const f = posteriorMeasure.fields[p];
     if (!f || !f.samples) return null;
-    cache.set(p, Promise.resolve(scalarMeasureN(f.samples, { logWeights: null })));
+    cache.set(p, Promise.resolve({ ...f, logWeights: null }));
   }
 
   const fields: Record<string, PPCField> = {};

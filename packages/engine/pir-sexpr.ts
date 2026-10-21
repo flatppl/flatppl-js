@@ -390,11 +390,8 @@ function _callToSexpr(e: any, ind: string, mopts?: any): string {
 // self/module refs), so the body is emitted VERBATIM — no namespace
 // translation at the serialization boundary.
 //
-// JS never emits a FILLED %autoinputs list — that is inference
-// metadata (strippable like %meta), and the engine's auto-trace
-// (parametric-leaf discovery for a boundary-less reification) is not
-// implemented; `inferReification`'s inputs come from authored params
-// only (TODO §11).
+// Inferred boundaries retain %autoinputs even after their entries are filled.
+// Their keyword-only interface must not become an authored ordered boundary.
 function _reificationToSexpr(e: any, ind: string, mopts?: any): string {
   const params: string[] = e.params || [];
   const paramKwargs: string[] = e.paramKwargs || [];
@@ -441,7 +438,7 @@ function _reificationToSexpr(e: any, ind: string, mopts?: any): string {
         : '(%ref ' + (s.ns || 'self') + ' ' + (s.name || p) + ')';
       return '(' + callNameOf(i) + ' ' + ref + ')';
     });
-    parts.push('%specinputs', '(' + entries.join(' ') + ')');
+    parts.push(e.orderedInputs === false ? '%autoinputs' : '%specinputs', '(' + entries.join(' ') + ')');
   }
   return '(' + parts.join(' ') + ')';
 }
@@ -742,12 +739,12 @@ function fromSexpr(text: any) {
       diagnostics.push({ severity: 'error',
         message: 'pir-sexpr: unclosed ' + op });
     }
-    // Reconstruct the engine-internal arrays for an AUTHORED boundary
-    // (%specinputs). A filled %autoinputs list is inference METADATA
-    // (spec: strippable, like %meta) — the engine re-infers; parse and
-    // drop. Entry refs map: `%local` ⇒ placeholder source; `self` (or
-    // a module ns) ⇒ identifier binding source.
-    if (tag === '%specinputs' && entries) {
+    // Retain available boundary entries for execution, with the tag preserving
+    // their authored/inferred distinction. A stripped %autoinputs list remains
+    // keyword-only and is inferred from the body. `%local` entries denote
+    // placeholders; self/module entries denote bindings.
+    if (tag === '%autoinputs') callShape.orderedInputs = false;
+    if (entries) {
       const params: string[] = [];
       const paramKwargs: string[] = [];
       const paramSources: any[] = [];

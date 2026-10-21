@@ -35,10 +35,10 @@ n = checked(value = v, condition = lt(1.0, 2.0))
   assert.equal(errs(r).length, 0, JSON.stringify(errs(r)));
 });
 
-test('checked: positional value + kwarg condition types through (integer)', () => {
+test('checked: positional value and condition type through (integer)', () => {
   const r = process(`
 k = 5
-n = checked(k, condition = equal(2, 2))
+n = checked(k, equal(2, 2))
 `);
   const lb = r.loweredModule.bindings.get('n');
   const t = lb && lb.inferredType;
@@ -98,7 +98,7 @@ test('checked: nested inside an expression is still phase-checked', () => {
   const r = process(`
 mu = elementof(reals)
 v = external(reals)
-y = 2.0 * checked(v, condition = gt(mu, 0.0))
+y = 2.0 * checked(v, gt(mu, 0.0))
 `);
   assert.ok(errs(r).some((d: any) => /condition must be fixed-phase/.test(d.message)),
     JSON.stringify(errs(r)));

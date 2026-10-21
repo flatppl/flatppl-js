@@ -160,14 +160,15 @@ theta ~ Normal(0.0, 2.0)
 obs ~ Normal(mu = theta, sigma = 1.0)
 fwd = kernelof(record(obs = obs), theta = theta)
 prior = lawof(record(theta = theta))
-L = likelihoodof(fwd, record(obs = 2.0))
+L = likelihoodof(pars -> fwd(theta = pars.theta), record(obs = 2.0))
 post = bayesupdate(L, prior)`);
   const node = lowerMeasure('post', ctx);
   assert.ok(node && node.op === 'clm', 'post lowers to a clm node');
-  const theta = node.inputs.find((i: any) => i.name === 'theta');
-  assert.ok(theta, 'kernel param theta is a declared input');
-  assert.strictEqual(theta.source.kind, 'boundary');
-  assert.strictEqual(theta.source.from, 'prior');
+  const pars = node.inputs.find((i: any) => i.name === 'pars');
+  assert.ok(pars, 'whole prior record is the declared kernel input');
+  assert.strictEqual(pars.source.kind, 'boundary');
+  assert.strictEqual(pars.source.from, 'prior');
+  assert.deepEqual(pars.shape.fields, ['theta']);
   assertSubset(node, ctx, 'bayesupdate');
 });
 

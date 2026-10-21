@@ -13,7 +13,7 @@ mu = draw(Normal(mu = 0.0, sigma = 10.0))
 prior = lawof(record(mu = mu))
 obs_dist = joint(y = Normal(mu = mu, sigma = 1.0))
 K = functionof(obs_dist, mu = mu)
-L = likelihoodof(K, record(y = 5.0))
+L = likelihoodof(pars -> K(mu = pars.mu), record(y = 5.0))
 posterior = bayesupdate(L, prior)
 `;
 
@@ -21,7 +21,7 @@ const ZERO_SUM_MODEL = `
 x ~ tilt(iid(Normal(0, 1), 6), Lebesgue(zerosum(6)))
 prior = lawof(record(x = x))
 y ~ Normal(x[1], 1)
-L = likelihoodof(kernelof(y, x = x), 0)
+L = likelihoodof(pars -> kernelof(y, x = x)(x = pars.x), 0)
 posterior = bayesupdate(L, prior)
 `;
 

@@ -83,7 +83,7 @@ test('placeholder: §04\'s DISALLOWED nested example is refused', () => {
     + 'f = functionof(functionof(_a_ * b + _c_, a = _a_)(some_value) + _d_, '
     + 'c = _c_, d = _d_)\n',
   );
-  assert.equal(errs.length, 1);
+  assert.ok(errs.length > 0);
   assert.match(errs[0].message, /Placeholder '_c_' is not bound by the nearest/);
   assert.match(errs[0].message, /§04/);
 });

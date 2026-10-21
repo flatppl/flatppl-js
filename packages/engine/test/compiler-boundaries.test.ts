@@ -137,7 +137,7 @@ test('fixed scalar laws feed arithmetic at every atom', async () => {
 
 test('checked requires its condition and preserves valid checked values', () => {
   assert.ok(errors(processSource('x=checked(7)')).length > 0);
-  const { values } = fixed('x=checked(value=7, condition=true)\ny=checked(8, condition=true)');
+  const { values } = fixed('x=checked(value=7, condition=true)\ny=checked(8, true)');
   assert.deepEqual([values.get('x'), values.get('y')], [7, 8]);
 });
 

@@ -159,26 +159,17 @@ test('a vararg rowstack inside a larger expression is refused', () => {
 // 3. The keyword spelling
 // =====================================================================
 //
-// §04 says "All built-in ordinary callables have a defined input order and
-// accept both positional and keyword arguments", so `rowstack(vs = …)` is a
-// legal §07 spelling. No ordinary §07 row supports it in this engine yet —
-// `zeros(dims = 3)`, `reverse(xs = …)`, `tile(A = …, size = …)` all refuse in
-// `inferGenericCall` — and these two answered 0x0 instead of refusing. They
-// refuse with their siblings now; the shared keyword gap is recorded in
-// flatppl-dev/TODO-flatppl-js.md.
-
-test('the keyword spelling is refused rather than answering an empty matrix', () => {
-  assertRefused('M = rowstack(vs = [[1.0, 2.0], [3.0, 4.0]])', 'rowstack', 0);
-  assertRefused('M = colstack(vs = [[1.0, 2.0], [3.0, 4.0]])', 'colstack', 0);
+test('keyword stack arguments retain their complete nested array', () => {
+  for (const op of ['rowstack', 'colstack']) {
+    const v = fixedValue(`M = ${op}(vs = [[1.0, 2.0], [3.0, 4.0]])`, 'M');
+    assert.deepEqual(v.shape, [2, 2]);
+    assert.deepEqual(Array.from(v.data), op === 'rowstack' ? [1, 2, 3, 4] : [1, 3, 2, 4]);
+  }
 });
 
-test('a sole positional record still splats into the vs argument (§04)', () => {
-  // §04 auto-splatting rewrites this to `rowstack(vs = …)`'s positional
-  // equivalent BEFORE the op switch, so it is a one-argument call here.
-  const v = fixedValue(
-    'r = record(vs = [[1.0, 2.0], [3.0, 4.0]])\nM = rowstack(r)', 'M');
-  assert.deepEqual(v.shape, [2, 2]);
-  assert.deepEqual(Array.from(v.data), [1, 2, 3, 4]);
+test('unary stack arguments reject a whole record by domain', () => {
+  const r = processSource('M = rowstack((vs = [[1, 2], [3, 4]]))');
+  assert.ok(r.diagnostics.some((d: any) => d.severity === 'error'));
 });
 
 // =====================================================================

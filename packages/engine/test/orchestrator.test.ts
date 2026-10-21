@@ -918,7 +918,7 @@ test('inline: f(arg) with no-kwargs functionof binds the elementof leaf', () => 
   //   f_sqrt = functionof(b)
   //   b      = a^0.5
   //   a      = elementof(nonnegreals)
-  //   sigma  = f_sqrt(sigma2)
+  //   sigma  = f_sqrt(a = sigma2)
   // After inlining, sigma's chain must compute sigma2^0.5 — NOT
   // contain a lingering ref to the elementof leaf `a`.
   const { bindings } = derivationsOf(`
@@ -926,7 +926,7 @@ a = elementof(nonnegreals)
 b = a^0.5
 f_sqrt = functionof(b)
 sigma2 ~ Exponential(rate = 1.0)
-sigma = f_sqrt(sigma2)
+sigma = f_sqrt(a = sigma2)
 `);
   // Sigma's lifted IR is an alias chain leading to a pow(sigma2, 0.5)
   // anon. Walk through to verify the substitution happened.
@@ -945,9 +945,8 @@ sigma = f_sqrt(sigma2)
 });
 
 test('inline: implicit boundary works with multiple elementof leaves', () => {
-  // Two parametric leaves reached through a chained body. Implicit
-  // boundary order = BFS visit order of self-refs; both must be
-  // substituted from positional call args in matching order.
+  // Two parametric leaves reached through a chained body. Both implicit
+  // boundary leaves must be substituted by their named arguments.
   const { bindings } = derivationsOf(`
 a = elementof(reals)
 b = elementof(reals)
@@ -955,7 +954,7 @@ s = a + b
 f = functionof(s)
 x = 3.0
 y = 4.0
-z = f(x, y)
+z = f(a = x, b = y)
 `);
   // z's chain should compute x + y (3 + 4 = 7 if evaluated).
   // Structurally: the lifted form should reference x and y, not a / b.
@@ -1044,7 +1043,7 @@ ext = external("data.dat")
 combo = a * ext
 f = functionof(combo)
 x = 7.0
-y = f(x)
+y = f(a = x)
 `);
   // Walk y's closure: every ref should be either a substituted leaf
   // (x), the external ref (ext), or an internal anon. NO refs to `a`.
@@ -3498,7 +3497,7 @@ test('classify: bayesupdate observation can be a dynamically-computed value', ()
     observed_data, _ = rand(lawof(obs), rstate)
     forward_kernel = kernelof(record(obs = obs), theta1 = theta1)
     prior          = lawof(record(theta1 = theta1))
-    L              = likelihoodof(forward_kernel, record(obs = observed_data))
+    L              = likelihoodof(pars -> forward_kernel(theta1 = pars.theta1), record(obs = observed_data))
     posterior      = bayesupdate(L, prior)
   `);
   const ds = buildDerivations(bindings);

@@ -45,7 +45,7 @@ test('dependent Lebesgue bounds and iid keep zero reference contribution', async
   const { proc, ctx } = ctxFor(`
 a = elementof(reals)
 K = functionof(iid(Lebesgue(interval(a, a + 3)), 2), a)
-prior = jointchain(a = Normal(0, 1), b = K)
+prior = jointchain(a = Normal(0, 1), b = pars -> K(a = pars.a))
 inside = logdensityof(prior, record(a = 1, b = [2, 3]))
 outside = logdensityof(prior, record(a = 1, b = [2, 5]))
 `, 1);
@@ -78,7 +78,7 @@ b = elementof(${support})
 prior = joint(b = Lebesgue(${support}))
 y ~ ${likelihood}
 K = kernelof(y, b = b)
-L = likelihoodof(K, ${observed})
+L = likelihoodof(pars -> K(b = pars.b), ${observed})
 posterior = bayesupdate(L, prior)
 `, 1);
     const view = await buildModelViewFromCtx(ctx, ctx.derivations.posterior);
@@ -96,7 +96,7 @@ b = elementof(posreals)
 prior = joint(b = Lebesgue(posreals))
 y ~ Normal(b, 1)
 K = kernelof(y, b = b)
-L = likelihoodof(K, 0)
+L = likelihoodof(pars -> K(b = pars.b), 0)
 posterior = bayesupdate(L, prior)
 `, 2000);
   const posterior = await materialiser.materialiseMeasure('posterior', ctx, {
@@ -117,7 +117,7 @@ b = elementof(posreals)
 prior = joint(b = Lebesgue(posreals))
 y ~ Normal(b, 1)
 K = kernelof(y, b = b)
-L = likelihoodof(K, 0)
+L = likelihoodof(pars -> K(b = pars.b), 0)
 posterior = bayesupdate(L, prior)
 `, 3200);
     const posterior = await materialiser.materialiseMeasure('posterior', ctx, {

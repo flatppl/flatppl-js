@@ -2419,7 +2419,8 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
           };
         } else {
           /* c8 ignore stop */
-          refArraysI[k] = v.subarray(i, i + 1);
+          // Whole-record boundary inputs use a per-atom object array.
+          refArraysI[k] = Array.isArray(v) ? v.slice(i, i + 1) : v.subarray(i, i + 1);
         }
       }
       const accI = new Float64Array(1);

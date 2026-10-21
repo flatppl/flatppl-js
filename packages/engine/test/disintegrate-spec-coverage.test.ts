@@ -149,7 +149,7 @@ test('spec-coverage PASS: delegate when joint components are binding refs', () =
 theta = draw(Normal(mu = 0, sigma = 1))
 prior = lawof(record(theta = theta))
 kernel = functionof(joint(obs = Normal(mu = theta, sigma = 1)), theta = theta)
-J = jointchain(prior, kernel)
+J = jointchain(prior, pars -> kernel(theta = pars.theta))
 fk, pr = disintegrate(["obs"], J)
   `;
   const plan = planOf(src, 'J', ['obs']);
@@ -219,15 +219,13 @@ J = joint(a = M1, b = M2)
   // Both succeed structurally.
   assert.equal(planBare.kind, 'synthesized');
   assert.equal(planArray.kind, 'synthesized');
-  // Kernel shapes DIFFER per the selector form.
-  // Bare: kernel is just the variate's measure expression (no joint wrap).
-  assert.equal(planBare.kernel.type, 'Identifier',
-    'bare-string selector → kernel is the bare measure ref');
-  assert.equal((planBare.kernel as any).name, 'M2');
-  // Array: kernel is `joint(b = M2)`, a single-field-record measure.
-  assert.equal(planArray.kernel.type, 'CallExpr');
-  assert.equal((planArray.kernel as any).callee.name, 'joint',
-    'array selector → kernel is joint(...) wrapping the field');
+  // Both kernels expose the complement by name; selector shape controls
+  // their measure-valued bodies.
+  assert.equal(planBare.kernel.orderedInputs, false);
+  assert.equal(planArray.kernel.orderedInputs, false);
+  assert.equal(planBare.kernel.args[0].type, 'Identifier');
+  assert.equal(planBare.kernel.args[0].name, 'M2');
+  assert.equal(planArray.kernel.args[0].callee.name, 'joint');
   // Prior shape is independent of selector form.
   assert.equal(JSON.stringify(planBare.prior), JSON.stringify(planArray.prior),
     'prior shape is independent of selector form');
@@ -296,7 +294,7 @@ K1 = functionof(Normal(mu = a, sigma = 1), a = a)
 K2 = functionof(Normal(mu = b, sigma = 1), b = b)
 a = draw(M)
 b = draw(K1(a = a))
-J = jointchain(a = M, b = K1, c = K2)
+J = jointchain(a = M, b = pars -> K1(a = pars.a), c = pars -> K2(b = pars.b))
 fk, pr = disintegrate(["b"], J)
   `;
   // The selector ["b"] is non-suffix (picks the middle field of a

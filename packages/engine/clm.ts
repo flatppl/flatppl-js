@@ -795,7 +795,8 @@ function _structuralBoundaries(deriv: any, ctx: any): any[] {
     const plc: string[] = Array.isArray(deriv.params) ? deriv.params : [];
     for (let i = 0; i < deriv.paramKwargs.length; i++) {
       const k = deriv.paramKwargs[i];
-      const src: any = { kind: 'boundary', from: deriv.from, field: k };
+      const src: any = { kind: 'boundary', from: deriv.from };
+      if (!require('./types.ts').acceptsPositional(deriv, 1)) src.field = k;
       if (plc[i] && plc[i] !== k) src.localAlias = plc[i];
       out.push({ name: k, source: src });
     }
@@ -922,7 +923,7 @@ function _enumerateInputs(body: any, deriv: any, boundarySet: Set<string>, ctx: 
       add(n, { kind: 'boundary', from: priorFrom, field: n });
     } else if (b) {
       add(n, { kind: 'shared', ref: n });
-    } else if (priorFrom != null) {
+    } else if (priorFrom != null && !builtins.ALL_KNOWN.has(n)) {
       // A synthetic prior-variate (s0 / __jc$j) the chain feeds.
       add(n, { kind: 'boundary', from: priorFrom, field: n });
     } else if (builtins.ALL_KNOWN.has(n)) {

@@ -295,16 +295,16 @@ test('a declared scalar boundary fed one scalar variate still types', () => {
       .map((d: any) => d.message), []);
 });
 
-test('a record fed to a lone declared input requires the matching field name', () => {
+test('a whole record cannot bind a declared scalar chain input', () => {
     const errors = errorsOf(H + 'prior = joint(theta = Normal(mu = 0.0, sigma = 1.0))\n'
         + 'mu = elementof(reals)\n'
         + 'K = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)\n'
         + 'y = jointchain(prior, K)\n');
     assert.equal(errors.length, 1);
-    assert.match(errors[0].message, /missing field "mu"/);
+    assert.match(errors[0].message, /cannot unify.*record.*type real/);
   });
 
-test('a relabelled record also requires the matching step field name', () => {
+test('a relabelled whole record cannot bind a scalar chain input', () => {
   const RB = H
     + 'jd = joint(Normal(mu = 0.0, sigma = 1.0), Beta(alpha = 1.0, beta = 1.0))\n'
     + 'mu = elementof(reals)\n'
@@ -313,7 +313,7 @@ test('a relabelled record also requires the matching step field name', () => {
     'y = kchain(relabel(jd, ["a", "b"]), K)\n']) {
     const errors = errorsOf(RB + source);
     assert.equal(errors.length, 1);
-    assert.match(errors[0].message, /missing field "mu"/);
+    assert.match(errors[0].message, /cannot unify.*record.*type real/);
   }
 });
 

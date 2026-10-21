@@ -35,7 +35,7 @@ mu = draw(Normal(mu = 0.0, sigma = 10.0))
 prior = lawof(record(mu = mu))
 obs_dist = joint(y = Normal(mu = mu, sigma = 1.0))
 K = functionof(obs_dist, mu = mu)
-L = likelihoodof(K, record(y = 5.0))
+L = likelihoodof(pars -> K(mu = pars.mu), record(y = 5.0))
 posterior = bayesupdate(L, prior)
 `;
 

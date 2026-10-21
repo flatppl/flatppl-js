@@ -178,7 +178,7 @@ M1 = Normal(mu = 0, sigma = 1)
 K_b = a -> Normal(mu = a, sigma = 0.1)
 hj = jointchain(
     pushfwd(fn(relabel(_, ["a"])), M1),
-    pushfwd(fn(relabel(_, ["b"])), K_b))
+    pars -> (pushfwd(fn(relabel(_, ["b"])), K_b))(a = pars.a))
 `);
 });
 

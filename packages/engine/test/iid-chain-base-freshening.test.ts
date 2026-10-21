@@ -297,7 +297,7 @@ test('the keyword form the refusal recommends materialises correctly',
     const K = 20000;
     const { ctx } = ctxFor(
       'C = jointchain(a = Normal(mu = 0.0, sigma = 1.0), '
-      + 'b = fn(Normal(mu = _, sigma = 1.0)))\nr ~ iid(C, ' + K + ')\n', 1);
+      + 'b = pars -> Normal(mu = pars.a, sigma = 1.0))\nr ~ iid(C, ' + K + ')\n', 1);
     const m = await ctx.getMeasure('r');
     assert.equal(m.nrows, K, 'row count');
     const A = Array.from(m.columns.a.data as any).map(Number);

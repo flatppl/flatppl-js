@@ -69,7 +69,7 @@ test('a truncation indicator preserves shared parameter weight provenance', asyn
   // its base t's exp(t) importance event exactly once on accepted atoms.
   const ctx = context(`theta~normalize(weighted(fn(exp(_)),Normal(0,1)))
 K=t->truncate(GeneralizedNormal(t,1,2),interval(-1,1))
-J=jointchain(t=lawof(theta),y=K)`);
+J=jointchain(t=lawof(theta),y=pars -> K(t = pars.t))`);
   const joint = await ctx.getMeasure('J');
   const theta = joint.fields.t.samples;
   const accepted = Array.from(joint.logWeights, (_w: number, i: number) => i)

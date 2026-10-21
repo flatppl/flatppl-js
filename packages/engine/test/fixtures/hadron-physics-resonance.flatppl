@@ -38,7 +38,7 @@ a = 0.5
 b = 2.5
 
 % Resonance amplitude as a complex-valued function of s = mass^2.
-resonance = s -> breit_wigner(s, m = m, width = Gamma, ma = 0, mb = 0, l = 0, d = 1.0)
+resonance = s -> breit_wigner(sigma = s, m = m, width = Gamma, ma = 0, mb = 0, l = 0, d = 1.0)
 
 % Coherent background as a function of mass.
 coherent_b = x -> c0 + c1 * x

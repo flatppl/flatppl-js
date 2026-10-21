@@ -108,7 +108,8 @@ fk, pr = disintegrate("theta1", joint_indep)
 `;
   const plan = planFor(src, 'fk');
   assert.equal(plan.kind, 'synthesized');
-  assert.equal(render(plan.kernel),
+  assert.equal(plan.kernel.orderedInputs, false);
+  assert.equal(render(plan.kernel.args[0]),
     'Normal(mu = mu_p, sigma = 1.0)');
   assert.equal(render(plan.prior),
     'joint(theta2 = Exponential(rate = 1.0))');
@@ -128,7 +129,8 @@ fk, pr = disintegrate(["theta1"], joint_indep)
 `;
   const plan = planFor(src, 'fk');
   assert.equal(plan.kind, 'synthesized');
-  assert.equal(render(plan.kernel),
+  assert.equal(plan.kernel.orderedInputs, false);
+  assert.equal(render(plan.kernel.args[0]),
     'joint(theta1 = Normal(mu = mu_p, sigma = 1.0))');
   assert.equal(render(plan.prior),
     'joint(theta2 = Exponential(rate = 1.0))');
@@ -149,7 +151,8 @@ fk, pr = disintegrate(["theta1", "theta2"], joint_indep)
 `;
   const plan = planFor(src, 'fk');
   assert.equal(plan.kind, 'synthesized');
-  assert.equal(render(plan.kernel),
+  assert.equal(plan.kernel.orderedInputs, false);
+  assert.equal(render(plan.kernel.args[0]),
     'joint(theta1 = Normal(mu = mu_p, sigma = 1.0), theta2 = Exponential(rate = 1.0))');
 });
 
@@ -177,8 +180,9 @@ fk, pr = disintegrate("b", m)
   // also produces a kernel when its body is a measure. The previous
   // implementation always emitted kernelof; the synthesizer now picks
   // the spec-compliant keyword via isMeasureExpr(body, bindings).
-  assert.equal(render(plan.kernel),
-    'functionof(Normal(mu = mu_p, sigma = 1.0), a = a)');
+  assert.equal(plan.kernel.orderedInputs, false);
+  assert.equal(render(plan.kernel.args[0]), 'Normal(mu = mu_p, sigma = 1.0)');
+  assert.equal(plan.kernel.args[1].name, 'a');
   assert.equal(render(plan.prior),
     'Normal(mu = 0.0, sigma = 1.0)');
 });
@@ -264,7 +268,8 @@ labelled = relabel(joint(m1, m2), ["a", "b"])
     labelled.node.value, ['a'], bindings,
     { seen: new Set(), source: 'labelled' });
   assert.equal(plan.kind, 'synthesized');
-  assert.equal(render(plan.kernel), 'joint(a = m1)');
+  assert.equal(render(plan.kernel.args[0]), 'joint(a = m1)');
+  assert.equal(plan.kernel.orderedInputs, false);
   assert.equal(render(plan.prior),  'joint(b = m2)');
 });
 
@@ -343,7 +348,7 @@ test('Unsupported fixture: parses cleanly and produces expected plan kinds', () 
   // type follows the delegate target — kernel_b uses `functionof`
   // (with a measure body, per spec §sec:functionof-measure → kernel),
   // not `kernelof` which would be a type error here.
-  assert.equal(bindings.get('fk_del').disintegratePlan.kind, 'delegate');
+  assert.equal(bindings.get('fk_del').disintegratePlan.kind, 'synthesized');
   assert.equal(bindings.get('fk_del').type, 'functionof');
 
   // Unsupported: chain has no structural rule.

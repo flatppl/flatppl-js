@@ -7,7 +7,7 @@
 //   x = elementof(reals)
 //   y = x ^ 2
 //   f = functionof(y)          % implicit boundary: the elementof leaf x
-//   Y = f.(X)                  % broadcast f over X
+//   Y = f.(x = X)                  % broadcast f over X
 //
 // `functionof(y)` reifies the sub-DAG rooted at `y` down to its free
 // `elementof` leaf `x` (the implicit boundary / parameter). The reified
@@ -52,7 +52,7 @@ test('functionof(intermediate).(fixed array) folds at fixed phase to [1,4,9]', (
 y = x ^ 2
 f = functionof(y)
 X = [1, 2, 3]
-Y = f.(X)`;
+Y = f.(x = X)`;
   const ds = build(src);
   assert.ok(ds.fixedValues.has('Y'),
     'Y is a fixed-phase value (all inputs fixed/deterministic)');
@@ -122,7 +122,7 @@ test('functionof(intermediate).(stochastic iid) materialises to [N,k] of x^2', a
 y = x ^ 2
 f = functionof(y)
 X ~ iid(Normal(0, 1), 5)
-Y = f.(X)`;
+Y = f.(x = X)`;
   const built = build(src);
   const worker = createWorkerHandler();
   worker.handle({ type: 'init', seed: 7 });

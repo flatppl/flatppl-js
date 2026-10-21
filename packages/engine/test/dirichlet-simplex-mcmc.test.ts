@@ -31,7 +31,7 @@ p ~ Dirichlet(alpha = [2.0, 3.0, 4.0])
 y ~ iid(Categorical(p = p), lengthof(counts_data))
 prior = lawof(record(p = p))
 forward_kernel = kernelof(record(y = y), p = p)
-L = likelihoodof(forward_kernel, record(y = counts_data))
+L = likelihoodof(pars -> forward_kernel(p = pars.p), record(y = counts_data))
 posterior = bayesupdate(L, prior)
 `;
 
@@ -210,7 +210,7 @@ R ~ LKJ(n = 3, eta = 2.0)
 prior = lawof(record(R = R))
 obs_dist = joint(z = Normal(mu = 0.0, sigma = 1.0))
 K = functionof(obs_dist, R = R)
-L = likelihoodof(K, record(z = 0.0))
+L = likelihoodof(pars -> K(R = pars.R), record(z = 0.0))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC, 200);

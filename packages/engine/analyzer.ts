@@ -714,31 +714,6 @@ function validateSpecialOperation(valueNode: any) {
       break;
     }
 
-    case 'checked': {
-      // checked(value, condition=...) OR checked(value=..., condition=...).
-      // Per spec §07 the canonical form uses keyword arguments
-      // (`value = ..., condition = ...`); the positional-value variant
-      // `checked(value_expr, condition = ...)` is also accepted.
-      if (args.length === 0) {
-        diags.push({ severity: 'error', message: `checked() requires value and condition arguments`, loc: valueNode.loc });
-        break;
-      }
-      // After any positional arg, every following arg must be a kwarg.
-      let sawKwarg = false;
-      for (const arg of args) {
-        if (arg.type === 'KeywordArg') {
-          sawKwarg = true;
-        } else if (sawKwarg) {
-          diags.push({
-            severity: 'error',
-            message: `checked() positional arguments must come before keyword arguments`,
-            loc: arg.loc,
-          });
-        }
-      }
-      break;
-    }
-
     // ---- Composite constructors --------------------------------------
     case 'record': {
       // Two forms (spec §03):
@@ -811,14 +786,14 @@ function validateSpecialOperation(valueNode: any) {
       }
       if (args.length > 0 && args[0].type !== 'KeywordArg') {
         const first = args[0];
-        const okString = first.type === 'StringLiteral';
+        const okString = first.type === 'StringLiteral' || first.type === 'NumberLiteral';
         const okArray  = first.type === 'ArrayLiteral'
           && Array.isArray(first.elements)
-          && first.elements.every((e: any) => e && e.type === 'StringLiteral');
+          && first.elements.every((e: any) => e && (e.type === 'StringLiteral' || e.type === 'NumberLiteral'));
         if (!okString && !okArray) {
           diags.push({
             severity: 'error',
-            message: `disintegrate() first argument must be a string literal or an array of string literals naming the disintegration target(s)`,
+            message: `disintegrate() first argument must select named fields or integer coordinates`,
             loc: first.loc,
           });
         }
@@ -1178,31 +1153,31 @@ function detectDisintegration(stmt: any, bindingMap: any) {
   // (kernel yields `record(b = ...)`). We preserve the distinction
   // via `selectorBareString`; downstream `disintegratePlan` reads it
   // when synthesising the kernel shape.
-  let selectorFields: string[] | null = null;
+  let selectorFields: any[] | null = null;
   let selectorBareString = false;
-  if (selectorArg.type === 'StringLiteral') {
+  if (selectorArg.type === 'StringLiteral' || selectorArg.type === 'NumberLiteral') {
     selectorFields = [selectorArg.value];
     selectorBareString = true;
   } else if (selectorArg.type === 'ArrayLiteral') {
     selectorFields = [];
     for (const el of selectorArg.elements) {
-      if (el.type !== 'StringLiteral') return null;
+      if (el.type !== 'StringLiteral' && el.type !== 'NumberLiteral') return null;
       selectorFields.push(el.value);
     }
   } else {
     return null;
   }
 
-  if (jointArg.type !== 'Identifier') return null;
-  const jointBinding = bindingMap.get(jointArg.name);
-  if (!jointBinding) return null;
+  const jointBinding = jointArg.type === 'Identifier' ? bindingMap.get(jointArg.name) : null;
+  if (!jointBinding && jointArg.type !== 'CallExpr') return null;
+  const jointExpr = jointBinding?.node.value || jointArg;
 
   // We no longer pre-screen with extractJointFields — the rewriter will
   // determine structurally whether this disintegration is supported, and
   // selector errors come back as Unsupported reasons. extractJointFields
   // is kept around for selector-error diagnostics on the cases it does
   // recognise (see pass 3 in analyze).
-  const jointInfo = extractJointFields(jointBinding.node.value);
+  const jointInfo = extractJointFields(jointExpr);
 
   return {
     kernelName: stmt.names[0].name,
@@ -1210,6 +1185,7 @@ function detectDisintegration(stmt: any, bindingMap: any) {
     selectorFields,
     selectorBareString,
     jointName: jointArg.name,
+    jointExpr,
     jointKind:   jointInfo ? jointInfo.kind   : null,
     jointFields: jointInfo ? jointInfo.fields : null,
     selectorLoc: selectorArg.loc,
@@ -1388,17 +1364,22 @@ function phaseOfAstExpr(ast: any, bindings: any, phaseOf: any): string {
   if (ast.type === 'Identifier') {
     return bindings.has(ast.name) ? phaseOf(ast.name) : 'fixed';
   }
-  if (ast.type === 'CallExpr' && Array.isArray(ast.args)) {
+  if (ast.type === 'FieldAccess' && ast.object?.name === 'self') {
+    return bindings.has(ast.field) ? phaseOf(ast.field) : 'fixed';
+  }
+  if (typeof ast === 'object') {
     let phase = 'fixed';
-    for (const a of ast.args) {
-      const argAst = (a && a.type === 'KeywordArg') ? a.value : a;
+    const children = ast.type === 'CallExpr' ? ast.args || []
+      : Array.isArray(ast) ? ast
+        : Object.entries(ast).filter(([key]) => key !== 'loc' && key !== 'meta').map(([, v]) => v);
+    for (const argAst of children) {
       const argPhase = phaseOfAstExpr(argAst, bindings, phaseOf);
       if (argPhase === 'stochastic') return 'stochastic';
       if (argPhase === 'parameterized') phase = 'parameterized';
     }
     return phase;
   }
-  // Literals (NumberLit, BoolLit, StringLit, ArrayLit, …) → fixed.
+  // Literal leaves are fixed.
   return 'fixed';
 }
 
@@ -2331,6 +2312,26 @@ function validateDataLoad(node: any, diagnostics: any[]) {
     }
   }
   walk(node);
+}
+
+/** §05 permits mixed arguments only at special operations with named tails.
+ * The parser retains their syntax; resolved call heads decide semantics here. */
+function validateMixedCalls(node: any, diagnostics: any[]) {
+  if (!node || typeof node !== 'object') return;
+  if (Array.isArray(node)) { for (const child of node) validateMixedCalls(child, diagnostics); return; }
+  if (node.type === 'CallExpr') {
+    const args = node.args || [];
+    const name = node.callee?.type === 'Identifier' ? node.callee.name : null;
+    if (args.some((a: any) => a.type === 'KeywordArg')
+        && args.some((a: any) => a.type !== 'KeywordArg')
+        && !['functionof', 'kernelof', 'broadcast', 'load_module'].includes(name)) {
+      diagnostics.push({ severity: 'error', loc: node.loc,
+        message: 'ordinary calls require either positional or keyword arguments, not both (spec §05)' });
+    }
+  }
+  for (const [key, child] of Object.entries(node)) {
+    if (key !== 'loc') validateMixedCalls(child, diagnostics);
+  }
 }
 
 function validateBoundaryNames(node: any, diagnostics: any[]) {
@@ -3570,6 +3571,7 @@ function analyze(ast: any, source: string, opts?: any) {
     const axisListsRefused = validateAxisListPositions(stmt.value, diagnostics);
     validateHolesAndPlaceholders(stmt.value, diagnostics, axisListsRefused);
     validateBoundaryNames(stmt.value, diagnostics);
+    validateMixedCalls(stmt.value, diagnostics);
     validateIndexing(stmt.value, diagnostics);
     const { deps, callDeps, bodyDeps, paramSourceDeps } = collectDeps(stmt.value, definedNames);
     const rhs = sliceSource(source, stmt.value.loc);
@@ -3700,9 +3702,9 @@ function analyze(ast: any, source: string, opts?: any) {
     // depends on whether the rewriter could resolve the joint structurally.
     const jointBinding = bindings.get(info.jointName);
     let plan: any = null;
-    if (jointBinding && jointBinding.node && jointBinding.node.value) {
+    if (info.jointExpr) {
       plan = disintegratePlan(
-        jointBinding.node.value, info.selectorFields, bindings,
+        info.jointExpr, info.selectorFields, bindings,
         { seen: new Set(), source: info.jointName,
           selectorBareString: info.selectorBareString });
     }
@@ -3913,60 +3915,6 @@ function analyze(ast: any, source: string, opts?: any) {
     }
   }
 
-  // Phase check: per spec §07, `checked(value, condition)` requires
-  // `condition` to be a fixed-phase boolean — it is "evaluated at
-  // load/inference time" and a false result is a STATIC error. A
-  // parametric / stochastic condition can't be settled at load time, so
-  // the assertion semantics don't apply. This is the phase half of the
-  // contract (validated here, the phase authority, alongside the
-  // functionof-boundary check above); arg shape is validated earlier in
-  // `validateSpecialOperation`, and the condition-is-boolean type check
-  // lives in typeinfer. Walk every binding's RHS (a `checked` can nest,
-  // e.g. `y = 2 * checked(x, condition = ...)`).
-  {
-    const condPhaseOf = (name: string) => phases.get(name) || 'fixed';
-    const checkCheckedCondition = (ast: any) => {
-      if (!ast || typeof ast !== 'object') return;
-      if (ast.type === 'CallExpr' && ast.callee
-          && ast.callee.type === 'Identifier' && ast.callee.name === 'checked') {
-        const args = ast.args || [];
-        let condAst: any = null;
-        let condLoc: any = ast.loc;
-        for (const a of args) {
-          if (a && a.type === 'KeywordArg' && a.name === 'condition') {
-            condAst = a.value;
-            condLoc = a.loc || (a.value && a.value.loc) || ast.loc;
-          }
-        }
-        if (!condAst) {
-          // Positional condition: the second positional (non-kwarg) arg.
-          const positional = args.filter((a: any) => !(a && a.type === 'KeywordArg'));
-          if (positional.length >= 2) { condAst = positional[1]; condLoc = condAst.loc; }
-        }
-        if (condAst) {
-          const ph = phaseOfAstExpr(condAst, bindings, condPhaseOf);
-          if (ph !== 'fixed') {
-            diagnostics.push({
-              severity: 'error',
-              message: `checked(): condition must be fixed-phase — spec §07 evaluates it `
-                + `at load/inference time — but it has ${ph} phase.`,
-              loc: condLoc,
-            });
-          }
-        }
-      }
-      for (const k in ast) {
-        if (k === 'loc') continue;
-        const v = ast[k];
-        if (Array.isArray(v)) v.forEach(checkCheckedCondition);
-        else if (v && typeof v === 'object') checkCheckedCondition(v);
-      }
-    };
-    for (const [, b] of bindings) {
-      if (b.node && b.node.value) checkCheckedCondition(b.node.value);
-    }
-  }
-
   // Lower to FlatPIR-aligned in-memory module. The LoweredModule is
   // the single source of truth for the program's executable form;
   // all subsequent passes (type inference now, derivation building
@@ -4119,20 +4067,20 @@ function analyze(ast: any, source: string, opts?: any) {
       if (node.type === 'CallExpr' && node.callee && node.callee.type === 'Identifier') {
         const op = node.callee.name;
         const args = node.args || [];
-        if (args.length === 1 && args[0].type !== 'KeywordArg' && !node.__splatApplied) {
-          const sig = T2.hasSignature(op) ? T2.signatureOf(op) : null;
-          if (sig && sig.args && !sig.variadic) {
-            const present = aggNames(args[0]);
-            if (present) {
-              const d = pn.splatDecision(op, present, sig.args.length);
-              if (d && d.order) {
-                const agg = args[0];
-                node.args = d.order.map((k: string) => (agg.callee?.name === 'record'
-                  ? agg.args.find((a: any) => a.name === k)?.value : null)
-                  || AST.FieldAccess(agg, k, agg.loc));
-                node.__splatApplied = d.order.slice();
-              }
-            }
+        if (!node.__splatApplied) {
+          const sig = T2.signatureOf(op);
+          const iface = T2.builtinInterface(op, sig);
+          const keywords = args.length && args.every((a: any) => a.type === 'KeywordArg');
+          const present = keywords ? args.map((a: any) => a.name)
+            : args.length === 1 && args[0].type !== 'KeywordArg' ? aggNames(args[0]) : null;
+          const d = iface && present && (keywords ? sig.args !== null && pn.namedDecision(iface, present)
+            : pn.splatDecision(op, present, sig));
+          if (d?.order) {
+            const agg = args[0];
+            node.args = d.order.map((k: string) => keywords ? args.find((a: any) => a.name === k).value
+              : (agg.callee?.name === 'record' ? agg.args.find((a: any) => a.name === k)?.value : null)
+                || AST.FieldAccess(agg, k, agg.loc));
+            node.__splatApplied = d.order.slice();
           }
         }
       }
@@ -4142,6 +4090,59 @@ function analyze(ast: any, source: string, opts?: any) {
       }
     };
     for (const [, b] of bindings) if (b && b.node) walk(b.node.value);
+  }
+
+  // Phase check: per spec §07, `checked(value, condition)` requires
+  // `condition` to be a fixed-phase boolean — it is "evaluated at
+  // load/inference time" and a false result is a STATIC error. A
+  // parametric / stochastic condition can't be settled at load time, so
+  // the assertion semantics don't apply. This is the phase half of the
+  // contract (validated here, the phase authority, alongside the
+  // functionof-boundary check above); ordinary argument binding and the condition-is-boolean type check
+  // lives in typeinfer. Walk every binding's RHS (a `checked` can nest,
+  // e.g. `y = 2 * checked(x, ...)`).
+  {
+    const condPhaseOf = (name: string) => phases.get(name) || 'fixed';
+    const checkCheckedCondition = (ast: any) => {
+      if (!ast || typeof ast !== 'object') return;
+      if (ast.type === 'CallExpr' && ast.callee
+          && ast.callee.type === 'Identifier' && ast.callee.name === 'checked') {
+        const args = ast.args || [];
+        let condAst: any = null;
+        let condLoc: any = ast.loc;
+        for (const a of args) {
+          if (a && a.type === 'KeywordArg' && a.name === 'condition') {
+            condAst = a.value;
+            condLoc = a.loc || (a.value && a.value.loc) || ast.loc;
+          }
+        }
+        if (!condAst) {
+          // Positional condition: the second positional (non-kwarg) arg.
+          const positional = args.filter((a: any) => !(a && a.type === 'KeywordArg'));
+          if (positional.length >= 2) { condAst = positional[1]; condLoc = condAst.loc; }
+        }
+        if (condAst) {
+          const ph = phaseOfAstExpr(condAst, bindings, condPhaseOf);
+          if (ph !== 'fixed') {
+            diagnostics.push({
+              severity: 'error',
+              message: `checked(): condition must be fixed-phase — spec §07 evaluates it `
+                + `at load/inference time — but it has ${ph} phase.`,
+              loc: condLoc,
+            });
+          }
+        }
+      }
+      for (const k in ast) {
+        if (k === 'loc') continue;
+        const v = ast[k];
+        if (Array.isArray(v)) v.forEach(checkCheckedCondition);
+        else if (v && typeof v === 'object') checkCheckedCondition(v);
+      }
+    };
+    for (const [, b] of bindings) {
+      if (b.node && b.node.value) checkCheckedCondition(b.node.value);
+    }
   }
 
   // C3 (#73): a non-record positional-product prior — spec §06's `joint`

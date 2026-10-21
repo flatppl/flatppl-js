@@ -395,6 +395,7 @@ class FixedValues {
         resultType:  fb.inferredType?.result,
         params:      fIR.params,
         paramKwargs: fIR.paramKwargs,
+        orderedInputs: fIR.orderedInputs,
         paramName:   fIR.params[0],
       };
     };

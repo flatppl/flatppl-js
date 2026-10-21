@@ -67,7 +67,7 @@ const EXPECTED_MATERIALISES: Record<string, string[]> = {
   censored_lifetimes:  ['t_obs', 'prior', 'posterior'],
   stdmod_interp_poly6: ['reference_point'],
   beam_bunch:          ['s', 'b', 'sig_shape', 'bkg_shape', 'intensity', 'prior'],
-  kscan_walk:          ['dts', 'traj_obs', 'prior'],
+  kscan_walk:          ['dts', 'traj_obs', 'prior', 'posterior'],
   mv_mixture_sample:   ['mus', 'cA', 'cB', 'covs', 'w', 'mix', 'y', 'y1', 'y2'],
   b_mass_peak:         ['m_obs', 'N', 'f', 'prior'],
 };
@@ -79,7 +79,6 @@ const EXPECTED_MATERIALISES: Record<string, string[]> = {
 // the list cannot rot into a silencer.
 const EXPECTED_GAPS: Record<string, Record<string, string>> = {
   beam_bunch:         { events: 'PoissonProcess', posterior: 'PoissonProcess' },
-  kscan_walk:         { posterior: "measure op 'kscan'" },
   paired_assay:       { tab: 'iid over a record measure' },
   mv_mixture_sample:  { draws: '' },
   b_mass_peak:        { posterior: '' },

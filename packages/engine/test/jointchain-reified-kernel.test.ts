@@ -38,7 +38,7 @@ theta ~ Normal(0, 1)
 obs ~ Normal(theta, 1)
 fk = kernelof(record(obs = obs), theta = theta)
 prior2 = lawof(record(theta = theta))
-chained2 = jointchain(p = prior2, o = fk)
+chained2 = jointchain(p = prior2, o = pars -> fk(theta = pars.p))
 `;
 
 function buildCtx(src: string, N: number) {

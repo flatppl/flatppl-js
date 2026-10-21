@@ -86,12 +86,11 @@ i0 = indicesof0(v)`);
   assert.deepEqual(asArray(fv.get('i0')), [0, 1, 2]);
 });
 
-test('indicesof on a bare record of columns still works', () => {
-  // The pre-existing duck-typed path (a record of equal-length vectors read as
-  // a table) must survive the `__table__` branch added in front of it.
-  const fv = ev(`r = record(a = [1.0, 2.0, 3.0])
+test('indicesof receives a record whole and rejects its domain', () => {
+  const errs = errorsOf(`r = record(a = [1.0, 2.0, 3.0])
 i = indicesof(r)`);
-  assert.deepEqual(asArray(fv.get('i')), [1, 2, 3]);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0], /indicesof.*domain.*record/);
 });
 
 // ── §07 reverse over a table ───────────────────────────────────────────────
@@ -131,16 +130,11 @@ test('reverse on a vector is unchanged', () => {
 // ── §07 sizeof rejects a table ─────────────────────────────────────────────
 
 test('sizeof(t) is rejected, not a silent empty vector (§07)', () => {
-  // Still rejected, but the REASON moved earlier once §04's builtin splat
-  // landed: `sizeof` is not one of the nine carve-out names, so a sole
-  // positional table splats into one argument per column, and a 2-column table
-  // cannot bind to the single argument §07 names `x`. That §04 name error fires
-  // before the domain check below it. The domain guard remains for a table that
-  // does reach it and for direct `ARITH_OPS.sizeof` callers (tested separately).
+  // Unary sizeof receives the table whole and rejects its domain.
   const errs = errorsOf(T3 + 's = sizeof(t)');
   assert.equal(errs.length, 1, 'got: ' + errs.join(' | '));
-  assert.match(errs[0], /sizeof: a sole positional table splats/);
-  assert.match(errs[0], /no argument is named "mass", "pt"/);
+  assert.match(errs[0], /sizeof/);
+  assert.match(errs[0], /vector or array.*got a table/);
 });
 
 test('sizeof on a vector and a rank-2 array is unchanged (§07 example)', () => {

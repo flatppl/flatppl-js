@@ -330,16 +330,16 @@ test('analyzer: reduce / scan take their spec-mandated positional counts', () =>
 });
 
 test('analyzer: checked accepts both calling forms', () => {
-  // Per spec §07: canonical form is checked(value = ..., condition = ...);
-  // checked(value_expr, condition = ...) is also accepted.
-  assert.ok(process(`y = checked()\n`).diagnostics.some((d: any) => /requires value and condition/.test(d.message)));
+  // Ordinary checked accepts all-positional or all-keyword arguments.
+  assert.ok(process(`y = checked()\n`).diagnostics.some((d: any) => /requires a value argument/.test(d.message)));
   const allKw = process(`a = 1\nb = true\ny = checked(value = a, condition = b)\n`);
   assert.ok(!allKw.diagnostics.some((d: any) => /checked/.test(d.message)));
   const mixed = process(`a = 1\nb = true\ny = checked(a, condition = b)\n`);
-  assert.ok(!mixed.diagnostics.some((d: any) => /checked/.test(d.message)));
+  assert.ok(mixed.diagnostics.some((d: any) => /either positional or keyword/.test(d.message)));
+  assert.equal(process(`y = checked(1, true)`).diagnostics.length, 0);
   // Reject positional-after-keyword (ill-formed).
   assert.ok(process(`y = checked(condition = b, a)\n`)
-    .diagnostics.some((d: any) => /positional arguments must come before keyword/.test(d.message)));
+    .diagnostics.some((d: any) => /Positional argument cannot follow keyword/.test(d.message)));
 });
 
 test('analyzer: joint_likelihood is variadic (≥2 positional)', () => {
@@ -389,13 +389,13 @@ test('analyzer: tuple / vector take positional args only', () => {
   }
 });
 
-test('analyzer: disintegrate first arg must be string literal or array of string literals', () => {
+test('analyzer: disintegrate first arg must select literal fields or coordinates', () => {
   const okString = process(`a, b = disintegrate("obs", joint_model)\njoint_model = elementof(reals)\n`);
   assert.ok(!okString.diagnostics.some((d: any) => /disintegrate/.test(d.message)));
   const okArray = process(`a, b = disintegrate(["o1", "o2"], joint_model)\njoint_model = elementof(reals)\n`);
   assert.ok(!okArray.diagnostics.some((d: any) => /disintegrate/.test(d.message)));
   const badIdent = process(`a, b = disintegrate(some_var, m)\nsome_var = "obs"\nm = elementof(reals)\n`);
-  assert.ok(badIdent.diagnostics.some((d: any) => /string literal or an array of string literals/.test(d.message)));
+  assert.ok(badIdent.diagnostics.some((d: any) => /must select named fields or integer coordinates/.test(d.message)));
 });
 
 test('analyzer: interval / cartpow / stdsimplex set constructors', () => {

@@ -91,7 +91,7 @@ function stripLocs(node: any): any {
 const featureTest1Path = path.join(
   __dirname, '..', '..', 'web', 'demo', 'feature-test1.flatppl');
 
-test('feature-test1: forward_kernel ≡ forward_kernel2 (disintegrate of jointchain delegates back)', () => {
+test('feature-test1: disintegration preserves named inputs without promoting them to ordered inputs', () => {
   if (!fs.existsSync(featureTest1Path)) return;
   const src = fs.readFileSync(featureTest1Path, 'utf8');
   const ctx = processSource(src);
@@ -103,14 +103,10 @@ test('feature-test1: forward_kernel ≡ forward_kernel2 (disintegrate of jointch
   assert.ok(fk, 'forward_kernel exists');
   assert.ok(fk2, 'forward_kernel2 (disintegrate result) exists');
 
-  // disintegrate(["obs"], jointchain(prior, forward_kernel)) takes
-  // the delegate path (both jointchain components are bare binding
-  // refs), so forward_kernel2's effective IR should equal
-  // forward_kernel's IR exactly (modulo source-location info).
-  const fkIR  = stripLocs(fk.ir);
-  const fk2IR = stripLocs(fk2.ir);
-  assert.deepEqual(fk2IR, fkIR,
-    'disintegrate delegate hands back the original forward_kernel IR');
+  assert.deepEqual(fk2.ir.paramKwargs, fk.ir.paramKwargs);
+  assert.equal(fk2.ir.orderedInputs, false);
+  assert.notEqual(fk.ir.orderedInputs, false);
+
 });
 
 // ---------------------------------------------------------------------

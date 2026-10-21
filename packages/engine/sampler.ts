@@ -2390,7 +2390,7 @@ const { _evalAggregate } = _aggregate;
 // Errors are raised at the failing layer (no registry entry, no
 // binding, missing param, …) with sources pointing at the call IR's
 // `loc`.
-/** §04 records/tables splat by surface name, including residual user calls.
+/** §04 records/tables bind by surface name when the interface excludes unary positional calls.
  * A complex scalar's planar representation is not a record. */
 function _callSplatFields(value: any, argIR: any, names: string[], label: string): any {
   const recordType = argIR.meta?.type?.kind === 'record';
@@ -2449,7 +2449,8 @@ function _evaluateStandardModuleCall(ir: any, env: any): any {
   const sole = positional.length === 1 && Object.keys(kwargs).length === 0;
   if (sole) {
     soleValue = evaluateExpr(positional[0], env);
-    const fields = _callSplatFields(soleValue, positional[0],
+    const fields = !require('./types.ts').acceptsPositional(desc.sig || { inputs }, 1)
+      && _callSplatFields(soleValue, positional[0],
       inputs.map((input: any) => input.name), `${modAlias}.${bindingName}`);
     if (fields) {
       return desc.impl(...inputs.map((input: any) => fields[input.name]));
@@ -2489,6 +2490,7 @@ function _resolveFn(fnIR: any, env: any) {
     if (!params) return null;
     return {
       params, paramKwargs: params, paramName: params[0],
+      minArgs: require('./types.ts').builtinInterface(fnIR.name)?.minArgs,
       body: { kind: 'call', op: fnIR.name,
         args: params.map((name: string) => ({ kind: 'ref', ns: '%local', name })) },
     };
@@ -2512,6 +2514,7 @@ function _resolveFn(fnIR: any, env: any) {
       resultType: fnIR.meta?.type?.result,
       params: fnIR.params,
       paramKwargs: fnIR.paramKwargs,
+      orderedInputs: fnIR.orderedInputs,
       paramName: fnIR.params[0],
     };
   }
@@ -2595,7 +2598,7 @@ function _synthStdModuleFn(refIR: any, env: any): any {
 // Plans follow IR lifetime; point values must not survive an invocation.
 const broadcastPlans = new WeakMap<object, any>();
 
-function _broadcastApply(fn: any, inputs: any, env: any, resultType?: any): any {
+function _broadcastApply(fn: any, inputs: any, env: any, resultType?: any, bindRowByName = false): any {
   // §04 holds the measure in logdensityof.(M, points) constant. Its body
   // needs the density walker, not numeric evaluation of measure IR. Keep
   // this dispatch inside broadcast: a top-level score still goes through
@@ -2609,7 +2612,7 @@ function _broadcastApply(fn: any, inputs: any, env: any, resultType?: any): any 
           pointEnv, { tally: 'clamped', resolveMeasureRef: pointEnv.__resolveMeasureRef,
             parseSet: (setIR: any) => require('./ir-shared.ts').parseSetIR(setIR, null) });
       },
-    }, resultType);
+    }, resultType, bindRowByName);
   }
   let bodyPlan = broadcastPlans.get(fn.body);
   if (!bodyPlan) {
@@ -2617,14 +2620,14 @@ function _broadcastApply(fn: any, inputs: any, env: any, resultType?: any): any 
     broadcastPlans.set(fn.body, bodyPlan);
   }
   try {
-    return _broadcastApplyFrame(fn, inputs, env, bodyPlan, resultType);
+    return _broadcastApplyFrame(fn, inputs, env, bodyPlan, resultType, bindRowByName);
   } finally {
     bodyPlan.clearMemo();
   }
 }
 
-function _broadcastApplyFrame(fn: any, inputs: any, env: any, bodyPlan: any, resultType?: any): any {
-  const P = fn.params.length;
+function _broadcastApplyFrame(fn: any, inputs: any, env: any, bodyPlan: any, resultType?: any, bindRowByName = false): any {
+  const P = inputs.length;
   const slots = new Array(P);
   for (let i = 0; i < P; i++) {
     const v = inputs[i];
@@ -2633,6 +2636,14 @@ function _broadcastApplyFrame(fn: any, inputs: any, env: any, bodyPlan: any, res
 
   const elemEnv = Object.assign({}, env, { __bodyEval: bodyPlan.bodyEval });
   function evalBody() {
+    if (bindRowByName) {
+      const row = elemEnv[fn.params[0]];
+      const fields = _callSplatFields(row, {}, fn.paramKwargs || fn.params, 'broadcast');
+      if (!fields) throw new Error('broadcast: expected a row record for named inputs');
+      for (let p = 0; p < fn.params.length; p++) {
+        elemEnv[fn.params[p]] = fields[(fn.paramKwargs || fn.params)[p]];
+      }
+    }
     bodyPlan.nextPoint();
     return bodyPlan.evalPoint(elemEnv);
   }
@@ -2812,8 +2823,12 @@ function evaluateCall(ir: any, env: any): any {
       const kw = ir.kwargs || {};
       const sole = posArgs.length === 1 && Object.keys(kw).length === 0;
       const soleValue = sole ? evaluateExpr(posArgs[0], env) : undefined;
-      const fields = sole ? _callSplatFields(soleValue, posArgs[0],
+      const fields = sole && !require('./types.ts').acceptsPositional(fn, 1)
+        ? _callSplatFields(soleValue, posArgs[0],
         params.map((p, i) => paramKwargs[i] || p), ir.target.name) : null;
+      if (!fields && posArgs.length && !require('./types.ts').acceptsPositional(fn, posArgs.length)) {
+        throw new Error('evaluateCall: callable does not admit these positional inputs');
+      }
       for (let i = 0; i < params.length; i++) {
         const surface = paramKwargs[i] || params[i];
         if (fields) {

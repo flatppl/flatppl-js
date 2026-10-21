@@ -622,7 +622,7 @@ obs_dist1 = joint(theta2 = Normal(mu = theta1, sigma = 1.0))
 obs_dist2 = joint(y = Normal(mu = theta2, sigma = 1.0))
 K1 = functionof(obs_dist1, theta1 = theta1)
 K2 = functionof(obs_dist2, theta1 = theta1, theta2 = theta2)
-joint_model = jointchain(prior, K1, K2)
+joint_model = jointchain(prior, pars -> K1(theta1 = pars.theta1), K2)
 `);
   const d = ctx.derivations.joint_model;
   assert.ok(d, 'joint_model should be derivable');
@@ -651,7 +651,7 @@ obs_dist1 = joint(theta2 = Normal(mu = theta1, sigma = 1.0))
 obs_dist2 = joint(y = Normal(mu = theta2, sigma = 1.0))
 K1 = functionof(obs_dist1, theta1 = theta1)
 K2 = functionof(obs_dist2, theta1 = theta1, theta2 = theta2)
-joint_model = jointchain(prior, K1, K2)
+joint_model = jointchain(prior, pars -> K1(theta1 = pars.theta1), K2)
 lp = logdensityof(joint_model, record(theta1 = 0.0, theta2 = 0.0, y = 0.0))
 `);
   const lp = await ctx.getMeasure('lp');
@@ -684,7 +684,7 @@ theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta1 = theta1))
 obs_dist = joint(y = Normal(mu = theta1, sigma = 1.0))
 forward_kernel = functionof(obs_dist, theta1 = theta1)
-predictive = kchain(prior, forward_kernel)
+predictive = kchain(prior, pars -> forward_kernel(theta1 = pars.theta1))
 `);
   const m = await ctx.getMeasure('predictive');
   // Prior marginalised away: no theta1 component anywhere.
@@ -707,7 +707,7 @@ theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta1 = theta1))
 obs_dist = joint(y = Normal(mu = theta1, sigma = 1.0))
 forward_kernel = functionof(obs_dist, theta1 = theta1)
-predictive = kchain(prior, forward_kernel)
+predictive = kchain(prior, pars -> forward_kernel(theta1 = pars.theta1))
 lp = logdensityof(predictive, record(y = 0.0))
 `);
   const lp = await ctx.getMeasure('lp');

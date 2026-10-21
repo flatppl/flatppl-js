@@ -133,7 +133,7 @@ recordlikelihood = likelihoodof(Normal(mu, sigma), 3)
 a = logweighted((x, p) -> logdensityof(p[1](x), p[2]), Normal(0, 1), (K, 3))
 b = weighted((x, p) -> densityof(p, x), Normal(0, 1), L)
 c = logweighted((x, p) -> logdensityof(p, x), Normal(0, 1), L)
-d = logweighted((x, p) -> logdensityof(p, x), Normal(0, 1), implicit)
+d = logweighted((x, p) -> logdensityof(p, (mu = x)), Normal(0, 1), implicit)
 recordweighted = weighted((x, p) -> densityof(p, x),
   joint(mu = Normal(0, 1), sigma = Dirac(2)), recordlikelihood)
 la = logdensityof(a, 1)

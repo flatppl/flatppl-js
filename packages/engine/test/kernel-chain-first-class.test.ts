@@ -32,7 +32,7 @@ test('jointchain closed-first: inferredType is measureType', () => {
 prior = joint(mu = Normal(0, 1))
 mu = elementof(reals)
 k_inner = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
-joint_dep = jointchain(prior, k_inner)
+joint_dep = jointchain(prior, pars -> k_inner(mu = pars.mu))
 `);
   const b = r.loweredModule.bindings.get('joint_dep');
   assert.ok(b.inferredType,
@@ -195,7 +195,7 @@ test('jointchain keyword form: retained record variate has kwarg names', () => {
 mu_dist = Normal(0, 1)
 mu = elementof(reals)
 K_inner = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
-chain = jointchain(mu = mu_dist, x = K_inner)
+chain = jointchain(mu = mu_dist, x = pars -> K_inner(mu = pars.mu))
 `);
   const b = r.loweredModule.bindings.get('chain');
   assert.equal(b.inferredType.kind, 'measure',
@@ -446,7 +446,7 @@ test('kernel↔measure collapse: closed-first chain ⇒ measureType (not kernelT
 prior = joint(mu = Normal(0, 1))
 mu = elementof(reals)
 K1 = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
-chain = jointchain(prior, K1)
+chain = jointchain(prior, pars -> K1(mu = pars.mu))
 `);
   const b = r.loweredModule.bindings.get('chain');
   assert.equal(b.inferredType.kind, 'measure',

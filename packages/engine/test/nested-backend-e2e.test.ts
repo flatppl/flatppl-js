@@ -18,7 +18,7 @@ theta ~ Normal(0.0, 1.0)
 prior = lawof(record(theta = theta))
 y ~ iid(Normal(theta, 2.0), 1)
 K = kernelof(record(y = y), theta = theta)
-L = likelihoodof(K, record(y = [0.0]))
+L = likelihoodof(pars -> K(theta = pars.theta), record(y = [0.0]))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 100);

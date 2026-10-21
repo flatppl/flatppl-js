@@ -314,12 +314,9 @@ test('lengthof on shape-explicit Value vector', () => {
   assert.equal(fv.get('n'), 7);
 });
 
-test('lengthof on a table-like record (row count = first column length)', () => {
-  // Table runtime isn't first-class yet but a record-of-columns
-  // produced by `record(...)` lets us pin the spec-correct behaviour:
-  // lengthof returns the row count.
+test('lengthof on a record explicitly converted to a table returns its row count', () => {
   const fv = ev(`
-t = record(a = [1.0, 2.0, 3.0], b = [4.0, 5.0, 6.0])
+t = table(record(a = [1.0, 2.0, 3.0], b = [4.0, 5.0, 6.0]))
 n = lengthof(t)
 `);
   assert.equal(fv.get('n'), 3);

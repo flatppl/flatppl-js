@@ -174,6 +174,33 @@ function tvar(id: any)       { return { kind: 'var', id }; }
  *  specialises it. */
 function funcType(inputs: any, result: any)   { return { kind: 'function', inputs, result }; }
 
+/** Ordinary application chooses positional eligibility before checking domains.
+ * Reified IR and runtime descriptors use `params`; inferred types use `inputs`.
+ * An absent ordering flag is the explicit/ordinary ordered interface. */
+function acceptsPositional(callable: any, count: number): boolean {
+  if (callable.orderedInputs === false) return false;
+  const inputs = callable.inputs || callable.params;
+  const arity = inputs?.length || 0;
+  let required = callable.minArgs ?? arity;
+  // Runtime params are names and are all required. Only inferred input
+  // descriptors can carry per-input optionality; avoid allocating per call.
+  if (callable.minArgs == null && callable.inputs) {
+    for (const input of inputs) if (input.optional) required--;
+  }
+  return count >= required && (callable.variadic === 'positional' || count <= arity);
+}
+
+/** Named builtin inputs, including optional trailing inputs, from the signature. */
+function builtinInterface(name: string, sig = signatureOf(name)): any {
+  if (!sig || sig.special) return null;
+  const named = require('./builtin-param-names.ts').builtinParamNames(name);
+  const names = named || Object.keys(sig.kwargs || {});
+  const types = sig.args || names.map((n: string) => sig.kwargs[n]);
+  if (!types.length || names.length !== types.length) return null;
+  return { inputs: names.map((n: string, i: number) => ({ name: n, type: types[i] })),
+    minArgs: sig.minArgs ?? types.length, variadic: sig.variadic };
+}
+
 /** User-defined transition kernel. Same shape as a function but the
  *  result type is always a measure (per spec §sec:functionof-measure:
  *  a functionof with a measure body is a kernel). Named to avoid
@@ -291,6 +318,10 @@ function equal(a: any, b: any): boolean {
       return true;
     case 'function':
     case 'kernel': {
+      if ((a.orderedInputs !== false) !== (b.orderedInputs !== false)
+          || (a.minArgs ?? a.inputs.filter((p: any) => !p.optional).length)
+            !== (b.minArgs ?? b.inputs.filter((p: any) => !p.optional).length)
+          || (a.variadic ?? null) !== (b.variadic ?? null)) return false;
       if (a.inputs.length !== b.inputs.length) return false;
       for (let i = 0; i < a.inputs.length; i++) {
         if (a.inputs[i].name !== b.inputs[i].name) return false;
@@ -952,6 +983,7 @@ const SIGNATURE_FACTORIES = {
   neg:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
   pos:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
   // identity(x) — polymorphic spec §07 identity (T → T).
+  checked: () => ({ args: [tvar('T'), BOOLEAN], kwargs: {}, result: tvar('T') }),
   identity: () => ({ args: [tvar('T')], kwargs: {}, result: tvar('T') }),
   abs:    () => ({ args: [REAL], kwargs: {}, result: REAL }),
   abs2:   () => ({ args: [REAL], kwargs: {}, result: REAL }),
@@ -1114,8 +1146,8 @@ const SIGNATURE_FACTORIES = {
   // Spec §07 matrix constructors / extractors.
   // diag(A, k=0) extracts the k-th diagonal of a matrix; result is
   // a rank-1 vector. `k` is optional (defaults to 0 per spec §07),
-  // so args is null — sampler validates arity (1 or 2) at runtime.
-  diag:           () => ({ args: null, kwargs: {},
+  // so its ordered interface admits either one or two arguments.
+  diag:           () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL), INTEGER], kwargs: {}, minArgs: 1,
                            result: array(1, ['%dynamic'], REAL) }),
   // blockdiagmat(mats) — vector-of-matrices → block-diagonal matrix.
   // bandedmat(v, rows) — rank-1 v + integer rows → rank-2 matrix.
@@ -1524,6 +1556,7 @@ function signatureOf(opName: string) {
     result:   fresh(sig.result),
     variadic: sig.variadic || null,
     special:  sig.special  || null,
+    ...(sig.minArgs !== undefined ? { minArgs: sig.minArgs } : {}),
   };
   for (const k in sig.kwargs) out.kwargs[k] = fresh(sig.kwargs[k]);
   return out;
@@ -1537,7 +1570,7 @@ function hasSignature(opName: string) {
 module.exports = {
   // Constructors
   deferred, failed, any, scalar, array, tvector, record, table, rowRecordType, tuple, measure, rngstate, tvar,
-  funcType, kernelType, likelihood, moduleType,
+  funcType, kernelType, likelihood, moduleType, acceptsPositional, builtinInterface,
   REAL, INTEGER, BOOLEAN, COMPLEX, STRING, RNGSTATE,
   // Total-mass classes (spec §11)
   MASS_DEFERRED, MASS_NULL, MASS_NORMALIZED, MASS_FINITE, MASS_LOCALLY_FINITE, MASS_UNKNOWN,

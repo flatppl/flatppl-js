@@ -76,7 +76,7 @@ lp = logdensityof(A, 0.5)
 test('ksuperpose mass: as a chain base it carries 5 into the chain', async () => {
   const { ctx } = ctxFor(KSUP + `
 S = ksuperpose(Normal, w)(mu = mus, sigma = sigs)
-A = jointchain(aa = S, bb = fn(Normal(_, 1.0)))
+A = jointchain(aa = S, bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
 tm = totalmass(A)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `, 8192);

@@ -205,6 +205,7 @@ export interface IRCall extends IRBase {
   assigns?: Array<{ name: string; value: IRNode }>;
   // Reification-specific:
   params?: string[];
+  orderedInputs?: boolean;
   paramKwargs?: string[];
   paramSources?: any[];
   body?: IRNode;
@@ -543,6 +544,7 @@ export interface DerivationBayesupdate {
    *  bayesupdate(L,prior)=logweighted(fn(logdensityof(L,_)),prior) the prior's
    *  variate IS the kernel's parametric input — rather than re-materialise a
    *  like-named module binding via getMeasure (audit §3 / H1/H6). */
+  orderedInputs?: boolean;
   paramKwargs?: string[];
   params?: string[];
 }
@@ -566,6 +568,7 @@ export interface DerivationLikelihoodDensity {
   bodyName: string | null;
   bodyIR: IRNode | null;
   obsIR: IRNode;
+  orderedInputs?: boolean;
   paramKwargs: string[];
   params: string[];
   pointIR: IRNode;
@@ -583,6 +586,7 @@ export interface DerivationJointLikelihoodDensity {
     bodyName: string | null;
     bodyIR: IRNode | null;
     obsIR: IRNode;
+    orderedInputs?: boolean;
     paramKwargs: string[];
     params: string[];
   }>;
@@ -603,6 +607,7 @@ export interface DerivationPosteriorDensity {
   bodyName?: string | null;
   bodyIR?: IRNode | null;
   obsIR?: IRNode;
+  orderedInputs?: boolean;
   paramKwargs?: string[];
   params?: string[];
   /** Set instead of the single-term fields when L is a `joint_likelihood`:

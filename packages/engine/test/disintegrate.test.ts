@@ -280,10 +280,10 @@ fk, pr = disintegrate("theta1", joint_indep)
   const ids = new Set(fk.nodes.map((n: any) => n.id));
   // mu_p is the only module-level node referenced by Normal(mu = mu_p, sigma = 1)
   assert.ok(ids.has('mu_p'), 'kernel should include mu_p as ancestor');
-  // Ensure NO "boundary" annotation — joint components are independent
-  for (const n of fk.nodes) {
-    if (n.id !== 'fk') assert.equal(n.isBoundary, false);
-  }
+  // The independent selected factor ignores its complement value, but the
+  // recovered kernel still exposes that named input.
+  assert.ok(fk.nodes.some((n: any) => n.id.includes('theta2') && n.isBoundary));
+
 });
 
 test('disintegrate Tier 2: prior ancestors come from unselected component expressions', () => {
@@ -366,7 +366,7 @@ fk, pr = disintegrate("b", m)
   // Synthetic boundary 'a' for the kernel
   const aBoundary = fk.nodes.find((n: any) => n.id === 'fk:a');
   assert.ok(aBoundary, 'expected synthetic boundary node fk:a');
-  assert.equal(aBoundary.label, 'a');
+  assert.equal(aBoundary.label, '_a_');
   assert.equal(aBoundary.isBoundary, true);
   // The kernel also picks up mu_p as ancestor (used in b's expression)
   assert.ok(ids.has('mu_p'));

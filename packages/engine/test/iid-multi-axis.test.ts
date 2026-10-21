@@ -277,7 +277,7 @@ lambda = draw(Gamma(shape = 2.0, rate = 1.0))
 y = draw(iid(Poisson(rate = lambda), n))
 prior = lawof(record(lambda = lambda))
 forward_kernel = kernelof(record(y = y), lambda = lambda)
-L = likelihoodof(forward_kernel, record(y = counts_data))
+L = likelihoodof(pars -> forward_kernel(lambda = pars.lambda), record(y = counts_data))
 posterior = bayesupdate(L, prior)
 `;
   const r = processSource(src);

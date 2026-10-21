@@ -61,7 +61,7 @@ t ~ Beta(2.0, 2.0)
 prior = lawof(record(t = t))
 z ~ Bernoulli(t)
 forward_kernel = kernelof(record(z = z), t = t)
-L = likelihoodof(forward_kernel, record(z = true))
+L = likelihoodof(pars -> forward_kernel(t = pars.t), record(z = true))
 posterior = bayesupdate(L, prior)
 `).getMeasure('posterior');
   assert.ok(po && po.logWeights, 'posterior materialised');

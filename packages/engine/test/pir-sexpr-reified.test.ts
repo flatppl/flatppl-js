@@ -141,7 +141,7 @@ test('reader: the spec helpers.flatpir text itself reconstructs the lowered surf
 // %autoinputs — boundary-less reifications (rust reified.flatpir)
 // ---------------------------------------------------------------------
 
-test('writer: boundary-less functionof emits %autoinputs %deferred', () => {
+test('writer: inferred functionof retains its keyword-only autoinputs', () => {
   const mod = buildModule(`
 a = elementof(reals)
 b = a ^ 0.5
@@ -149,8 +149,8 @@ f = functionof(b)
 `);
   const out = normWs(pirSexpr.toSexpr(mod));
   // Matches flatppl-rust reified.flatpir's `f` binding.
-  assert.ok(out.includes('(%bind f (functionof (%ref self b) %autoinputs %deferred))'),
-    'boundary-less reification must carry %autoinputs %deferred; got: ' + out);
+  assert.ok(out.includes('(%bind f (functionof (%ref self b) %autoinputs ((a (%ref self a)))))'),
+    'inferred reification must retain %autoinputs; got: ' + out);
 });
 
 test('reader: %autoinputs %deferred restores a boundary-less functionof', () => {
@@ -166,10 +166,9 @@ test('reader: %autoinputs %deferred restores a boundary-less functionof', () => 
   assert.deepEqual(stripped(f.body), { kind: 'ref', ns: 'self', name: 'b' });
 });
 
-test('reader: a FILLED %autoinputs list is inference metadata — parsed and dropped', () => {
-  // Spec §11: a filled %autoinputs list is strippable metadata (like
-  // %meta); the engine re-infers. It must NOT become an authored
-  // boundary (params/paramKwargs).
+test('reader: filled autoinputs retain their inferred keyword-only interface', () => {
+  // Filled metadata can be retained for execution without becoming an
+  // authored ordered boundary. The tag survives serialization as well.
   const text = `
 (%module
   (%bind g (functionof (%ref self b) %autoinputs ((a (%ref self a))))))
@@ -178,7 +177,10 @@ test('reader: a FILLED %autoinputs list is inference metadata — parsed and dro
   assert.deepEqual(diagnostics.filter((d: any) => d.severity === 'error'), []);
   const g = mod.bindings.get('g').rhs;
   assert.equal(g.op, 'functionof');
-  assert.equal(g.params, undefined, 'filled %autoinputs must not restore params');
+  assert.deepEqual(g.params, ['a']);
+  assert.deepEqual(g.paramKwargs, ['a']);
+  assert.equal(g.orderedInputs, false, 'cached inputs do not become an authored boundary');
+  assert.ok(pirSexpr.toSexpr(mod).includes('%autoinputs'));
   assert.deepEqual(stripped(g.body), { kind: 'ref', ns: 'self', name: 'b' });
 });
 

@@ -116,7 +116,7 @@ sig ~ normalize(truncate(Cauchy(0, 1), interval(0, inf)))
 step(prev, scale) = Normal(prev, scale)
 x ~ markovchain(step, 0.0, 5, sig)
 fk = kernelof(record(x = x), sig = sig)
-L = likelihoodof(fk, record(x = x_data))
+L = likelihoodof(pars -> fk(sig = pars.sig), record(x = x_data))
 lp = logdensityof(L, record(sig = ${sigma}))
 `, 1000);
     assert.deepEqual(ctx.errors, [], `no diagnostics at sigma = ${sigma}`);
@@ -183,7 +183,7 @@ prior = lawof(record(sig = sig))
 step(prev, scale) = Normal(prev, scale)
 x ~ markovchain(step, 0.0, 5, sig)
 fk = kernelof(record(x = x), sig = sig)
-L = likelihoodof(fk, record(x = x_data))
+L = likelihoodof(pars -> fk(sig = pars.sig), record(x = x_data))
 posterior = bayesupdate(L, prior)
 `, 200000);
   assert.deepEqual(ctx.errors, []);

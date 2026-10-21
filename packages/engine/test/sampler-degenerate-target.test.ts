@@ -26,7 +26,7 @@ theta ~ Uniform(interval(2.0, 3.0))
 obs_dist = normalize(truncate(Normal(mu = theta, sigma = 1.0), interval(0.0, 1.0)))
 z ~ obs_dist
 K = kernelof(record(z = z), theta = theta)
-L = likelihoodof(K, record(z = 5.0))
+L = likelihoodof(pars -> K(theta = pars.theta), record(z = 5.0))
 prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 `;
