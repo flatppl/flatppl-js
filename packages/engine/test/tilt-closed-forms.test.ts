@@ -141,12 +141,12 @@ sigma = elementof(cartpow(posreals, 3))
 M = tilt(Normal.(mu, sigma), Lebesgue(zerosum(3)))
 score = logdensityof(M, ${JSON.stringify(point)})
 f = functionof(score, mu = mu, sigma = sigma)
-base = f(${JSON.stringify(mu)}, ${JSON.stringify(sigma)})
+point_logdensity = f(${JSON.stringify(mu)}, ${JSON.stringify(sigma)})
 ${lines.join('\n')}
 `, { sampleCount: 4 });
   const score = async (name: string) => (await ctx.getMeasure(name)).samples[0];
-  close(await score('base'), oracle.zerosum_normal.logdensity);
-  close(await score('base'), oracle.zerosum_normal.chart_logdensity);
+  close(await score('point_logdensity'), oracle.zerosum_normal.logdensity);
+  close(await score('point_logdensity'), oracle.zerosum_normal.chart_logdensity);
   for (const parameter of ['mu', 'sigma']) {
     for (let j = 0; j < 3; j++) {
       close(((await score(`${parameter}_hi_${j}`)) - (await score(`${parameter}_lo_${j}`))) / 0.00002,

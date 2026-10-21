@@ -31,8 +31,8 @@ for (const [op, identity, positive] of [
 ] as Array<[string, number, number]>) {
   test(`${op}(${positive}) callbacks preserve normalized laws through every application shape`, async () => {
     const { ctx } = makeMatCtx(`
-base = StudentT(4)
-K(w) = normalize(${op}(w, base))
+unit_base = StudentT(4)
+K(w) = normalize(${op}(w, unit_base))
 direct ~ K(${positive})
 scalar ~ K.(${positive})
 rows ~ K.([${identity}, ${positive}])

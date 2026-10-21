@@ -272,8 +272,7 @@ function parse(tokensIn: any[], variant: any) {
   function desugarLambdaToFunctionof(argNames: string[], argLocs: any[], body: any, lloc: any): any {
     const kwargs: any[] = [];
     for (let i = 0; i < argNames.length; i++) {
-      if (v.reservedAtBinding?.has(argNames[i])
-          || argNames[i] === 'self' || argNames[i] === 'base') {
+      if (v.reservedAtBinding?.has(argNames[i])) {
         diagnostics.push({
           severity: 'error',
           message: `'${argNames[i]}' is a reserved name and cannot be an argument name`,
