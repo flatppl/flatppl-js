@@ -12,6 +12,7 @@ const binomcoefln = require('@stdlib/math-base-special-binomcoefln');
 
 type Summary = { sum?: number; logs?: number; failures?: number; constant?: number;
   center?: number; offset?: number; squares?: number };
+type Reduction = (params: number[]) => number | null;
 
 /** Copy observation structure without exposing storage shared with the host.
  * Preserve Value metadata, tables and nested arrays for the general walker. */
@@ -139,7 +140,7 @@ function score(kernel: string, s: Summary, length: number, params: number[]): nu
  * are unowned and fall back. A Binomial node owns at most one fixed n. */
 function prepareObservations(observed: any, fixedTrialCount: (ir: any) => number | null,
   resolveFixedParameter: (ir: any) => any) {
-  const storage = new WeakMap<object, Map<string, Summary | null>>();
+  const storage = new WeakMap<object, Map<string, Reduction | null>>();
   const own = (v: any) => storage.set(v instanceof Float64Array ? v.buffer : v, new Map());
   const snapshot = copyObservations(observed, own);
   const trials = new WeakMap<object, number | null>();
@@ -171,7 +172,7 @@ function prepareObservations(observed: any, fixedTrialCount: (ir: any) => number
     }
     return parameters.get(ir)!;
   }
-  function reduce(ir: any, value: any, length: number, params: number[], kernel = ir.op): number | null {
+  function prepareReduction(ir: any, value: any, length: number, kernel = ir.op): Reduction | null {
     if (!['Normal', 'Gamma', 'Beta', 'Poisson', 'Binomial', 'Exponential'].includes(kernel)) return null;
     if (valueLib.isValue(value)) {
       if (value.shape.length !== 1 || value.im || valueLib.isTransposeView(value)) return null;
@@ -188,14 +189,23 @@ function prepareObservations(observed: any, fixedTrialCount: (ir: any) => number
         trials.set(ir, typeof fixed === 'number' && Number.isSafeInteger(fixed) && fixed >= 0 ? fixed : null);
       }
       n = trials.get(ir)!;
-      if (n === null || params[0] !== n) return null;
+      if (n === null) return null;
     }
     const key = `${kernel}:${typed ? value.byteOffset : 0}:${length}:${n}`;
-    if (!cache.has(key)) cache.set(key, summarize(kernel, value, length, n));
-    const summary = cache.get(key);
-    return summary ? score(kernel, summary, length, params) : null;
+    if (!cache.has(key)) {
+      const summary = summarize(kernel, value, length, n);
+      // Capture only owned-data statistics and fixed metadata. Every score
+      // still reads its current parameters, including the fixed-n proof.
+      cache.set(key, summary ? (params: number[]) => kernel === 'Binomial' && params[0] !== n
+        ? null : score(kernel, summary, length, params) : null);
+    }
+    return cache.get(key)!;
   }
-  return { snapshot, reduce, fixedParameter };
+  function reduce(ir: any, value: any, length: number, params: number[], kernel = ir.op): number | null {
+    const reduction = prepareReduction(ir, value, length, kernel);
+    return reduction ? reduction(params) : null;
+  }
+  return { snapshot, reduce, prepareReduction, fixedParameter };
 }
 
 module.exports = { prepareObservations, copyObservations };

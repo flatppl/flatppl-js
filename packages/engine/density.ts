@@ -710,7 +710,7 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
       && getOptimization('density.scalarMixture')) {
     const plan = scalarMixturePlan(ir);
     if (plan && scalarMixtureValue(value)) {
-      return walkScalarMixture(plan, value, refArrays, N, acc, baseEnv, overlay);
+      return walkScalarMixture(plan, value, refArrays, N, opts, acc, baseEnv, overlay);
     }
   }
   if (handler) return handler(ir, value, refArrays, N, opts, acc, baseEnv, overlay);
@@ -1912,7 +1912,7 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
       && getOptimization('density.scalarMixture')) {
     const plan = scalarMixturePlan(leaf);
     if (plan && plan.size === 1 && scalarMixtureValue(value)) {
-      return walkScalarMixture(plan, value, refArrays, N, acc, baseEnv, overlay, total);
+      return walkScalarMixture(plan, value, refArrays, N, opts, acc, baseEnv, overlay, total);
     }
   }
   if (total > 1 && length >= total && !opts.pointsBatched
@@ -3302,7 +3302,9 @@ function scalarMixturePlan(ir: any): any {
     const entry = samplerLib.lookupDistribution(leaf);
     if (entry.customResolveParams) return null;
     expressions.push(...(leaf.args || []), ...Object.values(leaf.kwargs || {}));
-    components.push({ leaf, entry, weight, logpdf: exponentialTiltLogpdf(leaf, leaf.op) });
+    const logpdf = exponentialTiltLogpdf(leaf, leaf.op);
+    const ordinary = leaf.op === 'Binomial' ? binomialLogpdf(leaf) : densityPrims.builtinLogdensityofPositional;
+    components.push({ leaf, entry, weight, logpdf, ordinary: logpdf === ordinary });
   }
   if (shift) expressions.push(shift.expr);
   // Fold only self-contained scalar expressions. In particular, a fixed
@@ -3315,7 +3317,7 @@ function scalarMixturePlan(ir: any): any {
     if (expr.kind === 'call' && typeof value === 'number') fixed.set(expr, value);
   }
   const body = samplerLib.compileProfileBody({ kind: 'call', op: 'vector', args: expressions });
-  const plan = { components, size, shift, body,
+  const plan = { components, size, shift, body, reductions: new WeakMap(),
     bodyEval: (expr: any, env: any) => fixed.has(expr) ? fixed.get(expr) : body.bodyEval(expr, env) };
   scalarMixturePlans.set(ir, plan);
   return plan;
@@ -3334,7 +3336,7 @@ function scalarMixtureValue(value: any): boolean {
  *  within each component first, retaining its one shared component choice.
  *  The existing expression compiler shares repeated family arrays only within
  *  this call; no runtime values or environments survive the final clear. */
-function walkScalarMixture(plan: any, value: any, refArrays: any, N: number,
+function walkScalarMixture(plan: any, value: any, refArrays: any, N: number, opts: any,
     acc: Float64Array, baseEnv: any, overlay: any, repeat = 1): any {
   const total = repeat * plan.size;
   const { head, rest } = total === 1 ? consumeScalar(value) : consumeVector(value, total);
@@ -3345,6 +3347,21 @@ function walkScalarMixture(plan: any, value: any, refArrays: any, N: number,
   const params = new Array(components.length);
   const weights = new Array(components.length);
   const prepared = new Array(components.length);
+  // A mixture of IID components scores the same owned observation region
+  // under each leaf. Its sufficient statistics keep one component choice for
+  // the whole plate. Ordinary walking still owns non-fixed data and tilt tails.
+  const prepareReduction = repeat === 1 && plan.size > 1 && getOptimization('density.fixedLikelihood')
+    ? opts[FIXED_OBSERVATIONS]?.prepareReduction : null;
+  let reductions: any = null;
+  if (prepareReduction) {
+    reductions = plan.reductions.get(value);
+    if (!reductions) {
+      reductions = components.map((component: any) => component.ordinary
+        ? prepareReduction(component.leaf, value, plan.size) : null);
+      plan.reductions.set(value, reductions);
+    }
+  }
+  const reduced = reductions ? new Array(components.length) : null;
   try {
     for (let i = 0; i < atoms; i++) {
       const env = Object.assign({}, baseEnv);
@@ -3358,7 +3375,8 @@ function walkScalarMixture(plan: any, value: any, refArrays: any, N: number,
       for (let k = 0; k < components.length; k++) {
         const component = components[k];
         params[k] = samplerLib.resolveParams(component.leaf, component.entry, env);
-        prepared[k] = total > 1 && getOptimization('density.sharedParameters')
+        if (reduced) reduced[k] = reductions[k] ? reductions[k](params[k]) : null;
+        prepared[k] = (!reduced || reduced[k] === null) && total > 1 && getOptimization('density.sharedParameters')
           ? prepareLogpdf(component.entry, params[k], component.logpdf) : null;
         if (component.weight) weights[k] = scalarMixtureWeight(component.weight.expr, env);
       }
@@ -3367,10 +3385,13 @@ function walkScalarMixture(plan: any, value: any, refArrays: any, N: number,
         let max = -Infinity;
         for (let k = 0; k < components.length; k++) {
           const component = components[k];
-          scores[k] = 0;
-          for (let t = 0; t < plan.size; t++) {
-            const x = total === 1 ? head : head[j * plan.size + t];
-            scores[k] += prepared[k] ? prepared[k](x) : component.logpdf(component.leaf.op, params[k], x, env);
+          const summary = reduced?.[k] ?? null;
+          scores[k] = summary ?? 0;
+          if (summary === null) {
+            for (let t = 0; t < plan.size; t++) {
+              const x = total === 1 ? head : head[j * plan.size + t];
+              scores[k] += prepared[k] ? prepared[k](x) : component.logpdf(component.leaf.op, params[k], x, env);
+            }
           }
           if (component.weight) component.weight.combine(scores, k, weights[k]);
           if (scores[k] > max) max = scores[k];
