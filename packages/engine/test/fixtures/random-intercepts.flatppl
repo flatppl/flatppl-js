@@ -33,9 +33,9 @@ x_per_group = [[0.1, 0.2, 0.3, 0.4], [0.5, 0.6, 0.7, 0.8], [0.9, 1.0, 1.1, 1.2]]
 
 % Per-group observation kernel — kwarg-form placeholders.
 group_kernel = functionof(
-  iid(Normal(mu = _intercept_ + slope .* _x_group_, sigma = sigma), N_per_group),
+  iid(Normal(mu = _intercept_ + _slope_ .* _x_group_, sigma = _sigma_), N_per_group),
   intercept = _intercept_,
-  x_group = _x_group_)
+  x_group = _x_group_, slope = _slope_, sigma = _sigma_)
 
 %%%
 Broadcast the kernel: per group i, kernel applied with
@@ -43,4 +43,4 @@ intercept = intercepts[i], x_group = x_per_group[i].
 %%%
 y_obs = broadcast(group_kernel,
                   intercept = intercepts,
-                  x_group = x_per_group)
+                  x_group = x_per_group, slope = slope, sigma = sigma)

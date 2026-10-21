@@ -113,7 +113,7 @@ test('rewrite targets stay private: N-D box weight', async () => {
   // the audit passes and the score is finite rather than pinning a value —
   // the numeric oracle for this arm lives in weighted-reified-boundary.test.ts.
   const m = await scoreAudited(`
-M = normalize(weighted((u, v) -> u * v,
+M = normalize(weighted(v -> v[1] * v[2],
       Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))))
 ld = logdensityof(M, [0.5, 0.5])
 `, 'ld', 4096);

@@ -525,14 +525,13 @@ function matWeighted(d: DerivationWeighted, ctx: any) {
     // so it would read N·k "atoms" and drop `dims`. Handled separately,
     // before any of that. A Lebesgue box arrives with its axis columns
     // already split out; any other k-element-array variate (`iid(M, k)`)
-    // gets them split here, so §06's weight-arity rule reads the same over
-    // every vector variate rather than over `Lebesgue` alone.
+    // gets the same storage metadata here. The callback still receives one
+    // whole vector per atom.
     if (parent && Array.isArray(parent._boxAxisColumns)) {
       return _matWeightedOverBox(d, parent, ctx, massOnly);
     }
-    // Only a VARIATE weight needs the split: it binds the weight body's
-    // parameters to the atom's coordinates, and the generic path below has
-    // one scalar per atom to offer. A constant weight has nothing to bind,
+    // Only a VARIATE weight needs the vector path: the generic path below
+    // has one scalar per atom to offer. A constant weight has nothing to bind,
     // so it keeps the generic path — routing it here would additionally tag
     // the result with `_boxAxisColumns`, and downstream box logic would then
     // read a plain vector-variate measure (an MvNormal mixture component) as
@@ -673,7 +672,7 @@ function _vectorAtomWidth(m: any): number {
 }
 
 // Split an atom-major [N·k] buffer into k per-coordinate columns, the layout
-// matWeighted's k-parameter binding reads.
+// vector-weight path retains for downstream box consumers.
 function _splitAtomColumns(samples: any, k: number): Float64Array[] {
   const N = Math.floor(samples.length / k);
   const columns: Float64Array[] = [];
@@ -703,15 +702,7 @@ function _keepAtomShape(out: any, parent: any): void {
 // is volume · E_Uniform[w], so the box's own logTotalmass carries the volume
 // factor and the empirical logSumExp carries the mean.
 //
-// Parameter binding, the one thing this path adds over the scalar case:
-//   - a k-PARAMETER weight (`boxAxes` set by _classifyWeightedByFunction)
-//     takes one coordinate per parameter in AXIS ORDER, matching
-//     mat-density.ts's `makeIntegrandND`. Each parameter is rewritten to a
-//     synthetic self-ref fed from that axis's own sample column through the
-//     `_extraRefArrays` overlay, so the worker's evaluateN resolves it by
-//     name like any other per-atom column.
-//   - any other weight (a constant, or a 1-parameter function of the whole
-//     array variate) keeps its already-substituted IR unchanged.
+// The callback receives the whole array variate through the base reference.
 //
 // The atom buffer and `dims` pass through untouched: reweighting changes the
 // measure's weights, never its variate shape.
@@ -740,47 +731,12 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
     return Promise.resolve(emit(addMass(parentLTM, d.logShift)));
   }
 
-  let evalIR = d.weightIR;
-  let overlay: any = null;
-  if (!d.boxAxes) {
-    // A single-parameter weight is a function of the WHOLE array variate
-    // (spec §06), so its parameter was already substituted by a self-ref to
-    // the base. Feed that as an atom-batched [N, k] Value: the default
-    // `measureToRefValue` would hand the flat [N·k] buffer to
-    // `batchedScalar`, which reads it as N·k scalar atoms and silently
-    // misaligns every coordinate.
-    overlay = Object.assign({}, ctx._extraRefArrays);
-    overlay[d.from] = { shape: [N, k], data: parent.samples, outerRank: 1 };
-  } else {
-    /* c8 ignore start */
-    // Unreachable: _classifyWeightedByFunction only sets `boxAxes` after
-    // matching it against the base's own axis count, so a mismatch never
-    // classifies (asserted by "a weight-function arity that mismatches the box
-    // dimension is refused"). Re-checked here because getting it wrong would
-    // read past the axis columns and bind a parameter to undefined.
-    if (d.boxAxes !== k) {
-      return Promise.reject(new Error('weighted: weight function takes ' + d.boxAxes
-        + ' parameters but the box base has ' + k + ' axes'));
-    }
-    /* c8 ignore stop */
-    const { mapIR } = require('./ir-walk.ts');
-    const params: string[] = d.weightIR.params;
-    const synth: Record<string, string> = {};
-    overlay = Object.assign({}, ctx._extraRefArrays);
-    for (let i = 0; i < k; i++) {
-      const nm = '__boxaxis' + i + '_' + d.from;
-      synth[params[i]] = nm;
-      overlay[nm] = valueLib.batchedScalar(columns[i]);
-    }
-    evalIR = mapIR(d.weightIR.body, (n: any) => {
-      if (n && n.kind === 'ref' && n.name in synth
-          && (n.ns === '%local' || n.ns === 'self')) {
-        return { kind: 'ref', ns: 'self', name: synth[n.name], loc: n.loc };
-      }
-      return n;
-    });
-  }
-  const evalCtx = overlay ? Object.assign({}, ctx, { _extraRefArrays: overlay }) : ctx;
+  const evalIR = d.weightIR;
+  // Preserve the per-atom vector shape instead of treating N*k coordinates
+  // as scalar atoms when feeding the callback's whole variate.
+  const overlay = Object.assign({}, ctx._extraRefArrays);
+  overlay[d.from] = { shape: [N, k], data: parent.samples, outerRank: 1 };
+  const evalCtx = Object.assign({}, ctx, { _extraRefArrays: overlay });
 
   const parameterMeasures: any[] = [];
   return collectRefArrays(evalIR, evalCtx, parameterMeasures).then((refArrays: any) => ctx.sendWorker({
@@ -3675,39 +3631,22 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
     const setDescr = irShared.parseSetIR(ir.args[1], childCtx.bindings);
     return { kind: 'truncate', from, setDescr, setIR: setDescr ? undefined : ir.args[1] };
   }
-  // weighted(w, M) / logweighted(lw, M) with a CONSTANT weight: a log-mass shift
-  // on the base (matWeighted's `logShift` path). `weighted(const, M)` lowers to
-  // `logweighted(log const, M)`, so the CLM body usually carries `logweighted`;
-  // handle both. A function-of-the-variate weight (spec §06) needs the
-  // _classifyWeightedByFunction param-substitution and is deferred — it falls
-  // through to the leaf default below (an unchanged clear diagnostic).
-  if (op === 'weighted' && Array.isArray(ir.args) && ir.args.length === 2) {
-    const w = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
+  // Expanded kernels retain callable weights. Bind their variate through the
+  // same classifier as named measures before considering scalar mass weights.
+  if ((op === 'weighted' || op === 'logweighted') && ir.args?.length === 2) {
+    const from = _bridgeMeasureFrom(ir.args[1], register, op + ':base');
+    if (!from) return null;
+    const callable = require('./derivations.ts')._classifyWeightedByFunction(
+      ir.args[0], from, childCtx.bindings, op === 'logweighted');
+    if (callable) return callable;
+    // Scalar weights shift the base mass. Nonconstant scalars evaluate per atom.
+    const value = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
       childCtx.fixedValues);
-    if (w != null && Number.isFinite(w) && w > 0) {
-      const from = _bridgeMeasureFrom(ir.args[1], register, 'weighted:base');
-      return { kind: 'weighted', from, logShift: Math.log(w) };
+    const isLog = op === 'logweighted';
+    if (value != null && Number.isFinite(value) && (isLog || value > 0)) {
+      return { kind: 'weighted', from, logShift: isLog ? value : Math.log(value) };
     }
-    // Non-constant weight — a LATENT-dependent per-atom mass (§06's
-    // mixture proportion, `weighted(w(θ), M)`). matWeighted evaluates
-    // `weightIR` per atom through `evaluateN`, exactly as the by-name
-    // classifier's `weightIR` arm does; the two produce the same
-    // derivation, so an inline weight and a named one sample alike.
-    // `isVariateWeight` stays false: a function OF THE VARIATE needs the
-    // param-substitution the by-name classifier does from the AST, which
-    // an already-expanded IR has lost.
-    const wFrom = _bridgeMeasureFrom(ir.args[1], register, 'weighted:base');
-    if (wFrom) return { kind: 'weighted', from: wFrom, weightIR: ir.args[0], isLog: false };
-  }
-  if (op === 'logweighted' && Array.isArray(ir.args) && ir.args.length === 2) {
-    const lw = irShared.resolveConstant(ir.args[0], childCtx.bindings, new Set(),
-      childCtx.fixedValues);
-    if (lw != null && Number.isFinite(lw)) {
-      const from = _bridgeMeasureFrom(ir.args[1], register, 'logweighted:base');
-      return { kind: 'weighted', from, logShift: lw };
-    }
-    const lwFrom = _bridgeMeasureFrom(ir.args[1], register, 'logweighted:base');
-    if (lwFrom) return { kind: 'weighted', from: lwFrom, weightIR: ir.args[0], isLog: true };
+    return { kind: 'weighted', from, weightIR: ir.args[0], isLog };
   }
   // superpose(M1, M2, …) — §06's measure sum. matSuperpose combines the
   // components' atom batches by per-index selection on their masses, so

@@ -294,9 +294,19 @@ function validateSpecialOperation(valueNode: any) {
 
     // ---- Measure-algebra binary ops: M and one other operand --------
     case 'weighted':
-    case 'logweighted':
-    case 'truncate':
     case 'pushfwd':
+    case 'logweighted': {
+      if (args.length !== 2 && args.length !== 3) {
+        diags.push({ severity: 'error', message: `${name}() takes two or three arguments`, loc: valueNode.loc });
+      }
+      for (const arg of args) {
+        if (arg.type === 'KeywordArg') {
+          diags.push({ severity: 'error', message: `${name}() takes positional arguments only`, loc: arg.loc });
+        }
+      }
+      break;
+    }
+    case 'truncate':
     case 'bayesupdate':
     case 'likelihoodof':
     case 'densityof':
@@ -679,9 +689,9 @@ function validateSpecialOperation(valueNode: any) {
     }
 
     case 'reduce': {
-      // reduce(f, xs) — two positional args (spec §07).
-      if (args.length !== 2) {
-        diags.push({ severity: 'error', message: `reduce() takes exactly two arguments (f, xs)`, loc: valueNode.loc });
+      // §04 callback inputs: optional p follows the ordinary fold inputs.
+      if (args.length !== 2 && args.length !== 3) {
+        diags.push({ severity: 'error', message: `reduce() takes two or three arguments (f, xs, optional p)`, loc: valueNode.loc });
       }
       for (const arg of args) {
         if (arg.type === 'KeywordArg') {
@@ -692,9 +702,9 @@ function validateSpecialOperation(valueNode: any) {
     }
 
     case 'scan': {
-      // scan(f, init, xs) — three positional args (spec §07).
-      if (args.length !== 3) {
-        diags.push({ severity: 'error', message: `scan() takes exactly three arguments (f, init, xs)`, loc: valueNode.loc });
+      // §04 callback inputs: optional p follows the ordinary scan inputs.
+      if (args.length !== 3 && args.length !== 4) {
+        diags.push({ severity: 'error', message: `scan() takes three or four arguments (f, init, xs, optional p)`, loc: valueNode.loc });
       }
       for (const arg of args) {
         if (arg.type === 'KeywordArg') {
@@ -1469,6 +1479,33 @@ function computePhases(bindings: any) {
     return phase;
   }
 
+  // rand propagates its arguments' phases, retaining any inline lawof cut
+  // that the binding's flat dependency set no longer records.
+  function argumentPhase(ast: any, absorbed = false): string {
+    if (!ast || typeof ast !== 'object') return 'fixed';
+    const call = ast.type === 'CallExpr';
+    const op = call && ast.callee?.type === 'Identifier' && ast.callee.name;
+    if (op === 'lawof') return argumentPhase(ast.args, true);
+    if (op === 'elementof') return 'parameterized';
+    if (op === 'draw' && !absorbed) return 'stochastic';
+    if (['external', 'functionof', 'kernelof', 'fn'].includes(op)) return 'fixed';
+    let phase = 'fixed';
+    // Reuse dependency resolution for builtin heads and explicit self refs.
+    if (call || ast.type === 'Identifier' || ast.type === 'SetRef'
+        || (ast.type === 'FieldAccess' && ast.object?.name === 'self')) {
+      const head = call ? { ...ast, args: [] } : ast;
+      for (const name of collectDeps(head, bindings).deps) {
+        phase = maxPhase(phase, absorbed ? absorbedPhaseOf(name) : phaseOf(name));
+      }
+      if (call) phase = maxPhase(phase, argumentPhase(ast.args, absorbed));
+      return phase;
+    }
+    for (const [key, child] of Object.entries(ast)) {
+      if (key !== 'loc') phase = maxPhase(phase, argumentPhase(child, absorbed));
+    }
+    return phase;
+  }
+
   function phaseOf(name: string): string {
     if (phases.has(name)) return phases.get(name)!;
     if (visiting.has(name)) return 'fixed'; // cycle (shouldn't occur in valid code)
@@ -1497,34 +1534,21 @@ function computePhases(bindings: any) {
       phase = 'parameterized';
     } else if (cn === 'external') {
       phase = 'fixed';
-    } else if (cn === 'lawof' || cn === 'rand') {
-      // Absorbs stochasticity. `lawof` reifies the ancestor sub-DAG
-      // as a measure (spec §sec:lawof); `rand(M, state)` collapses
-      // a measure into one threaded draw, owning the state across
-      // every stochastic ancestor of M. In both cases the result is
-      // fixed UNLESS an elementof remains in the ancestor closure
-      // — then it propagates as parameterized.
+    } else if (cn === 'lawof') {
+      // lawof absorbs draws, while remaining elementof inputs still
+      // parameterize the law. rand is an ordinary deterministic call:
+      // its measure and RNG-state arguments retain their own phases.
       phase = 'fixed';
       for (const dep of b.deps) {
         phase = maxPhase(phase, absorbedPhaseOf(dep));
         if (phase === 'parameterized') break;
       }
+    } else if (cn === 'rand') {
+      phase = argumentPhase(b.node.value);
     } else if (cn === 'functionof' || cn === 'kernelof' || cn === 'fn') {
-      // The function/kernel *value* itself is fixed — the definition
-      // doesn't change with inputs (spec §sec:functionof example
-      // line 492-495: "the function value itself is %fixed"). Its
-      // body's phase, evaluated on per-call inputs, is a separate
-      // computation handled by computePhasesForScope inside the
-      // reification bubble.
-      //
-      // UNLESS it captures a draw. §04 *Captured draws*: a captured draw is a
-      // shared ancestor with ONE realisation, and the callable is conditional
-      // on it, so "the phase of a reification follows the reified sub-graph".
-      // A callable over a draw is not fixed — see reificationCapturesDraw for
-      // the cut rules and why `kernelof` is exempt.
-      phase = (cn !== 'kernelof'
-               && reificationCapturesDraw(b.node && b.node.value, bindings, phaseOf))
-        ? 'stochastic' : 'fixed';
+      // Formal inputs do not affect the callable value's phase. Free draws
+      // are invalid and checked separately at every callable construction.
+      phase = 'fixed';
     } else if (rhsContainsInlineDraw(b && b.node && b.node.value)) {
       // Hidden draw inside arithmetic / call — e.g. `s = 2 * draw(m)`.
       // The top-level callee isn't 'draw' so the cn check above
@@ -1550,57 +1574,16 @@ function computePhases(bindings: any) {
 }
 
 /**
- * True iff the reification `node` (a `functionof` / `fn` CallExpr — which is
- * also what a lambda desugars to at parse time) CAPTURES a draw: the reified
- * sub-graph reaches a `draw` node that no boundary input names and no `lawof`
- * absorbs.
+ * Trace ancestors after replacing explicit boundary nodes. Every remaining
+ * parameter leaf is an error when the boundary is explicit; an unabsorbed
+ * draw is an error for every callable. A boundary may cut an intermediate
+ * node, so tracing must follow parameterized and stochastic bindings rather
+ * than rejecting them from their phase alone. Fixed ancestors close normally.
  *
- * Spec §04 *Captured draws*: "the sub-graph reified by `functionof` — and hence
- * by any lambda — may contain `draw` nodes of the enclosing graph. Such a
- * captured draw remains a shared ancestor of the reification and of the
- * enclosing graph, with a single realisation." The callable is conditional on
- * that realisation — "neither resampled per call nor marginalized". What that
- * costs is determinism, and the phase is where it is paid: "The phase of a
- * reification follows the reified sub-graph by the same ancestor rule as any
- * other binding [...] it is stochastic when the sub-graph holds a captured
- * `draw` whose phase no `lawof` node absorbs."
- *
- * The walk traces the sub-graph the way §04's ancestor trace does, THROUGH
- * intermediate bindings rather than reading their phase, because a stochastic
- * intermediate may reach the draw only through a name the boundary substitutes:
- * in `functionof(resolution, raw = raw)` the binding `resolution = 2.5 *
- * exp(0.12 * raw)` is stochastic, yet the sub-graph's copy of it descends from
- * the declared input, so nothing is captured. It cuts at:
- *
- *  - a BOUNDARY name of this reification or of any reification it walks into —
- *    §04 substitutes each with a fresh `elementof(valueset(a))` input BEFORE
- *    the ancestor trace runs, so `functionof(m, raw = raw)` is the conditional
- *    kernel over a declared input and captures nothing;
- *  - a `lawof` call, which "absorbs stochasticity into the reified law rather
- *    than propagating it outward" — so `functionof(lawof(x))` stays fixed and
- *    marginal;
- *  - a `kernelof` call, whose body sits under an implicit `lawof`: §04 *Kernels
- *    and `kernelof`* makes `kernelof(x, kwargs…)` equivalent to
- *    `functionof(lawof(x), kwargs…)`, so every draw it reaches is absorbed (the
- *    marginalization the eight-schools `forward_kernel` relies on);
- *  - an `elementof` call, whose set argument lies outside the sub-graph (§04
- *    traces back TO the `elementof` leaves, not through them);
- *  - a binding the analyzer does not know, and any binding whose own phase is
- *    not stochastic — it reaches no draw at all, so nothing below it can be
- *    captured. That dominator is what covers a `rand` or `external` ancestor.
- *
- * A nested `functionof` / `fn` is walked into under the union of the enclosing
- * formals and its own, so a draw the inner boundary names is cut there too.
- *
- * Mirrors `captured_draws` in `flatppl-rust`'s `crates/infer/src/ops.rs`, which
- * cuts at the same four constructs. It differs on one edge: rust stops at any
- * nested reification, where this walks into it, so `functionof(inner())` over a
- * capturing `inner` is stochastic here. §04's "same ancestor rule as any other
- * binding" makes that the spec reading — `z = inner()` outside a reification is
- * stochastic for exactly this reason — and the two engines answer to the spec,
- * not to each other.
+ * Nested reifications add their own boundaries. Their bodies are also checked
+ * separately, so an outer law cannot legalize an invalid inner callable.
  */
-function reificationCapturesDraw(node: any, bindings: any, phaseOf: any): boolean {
+function reificationFreeInput(node: any, bindings: any, phaseOf: any): string | null {
   // Visited names, keyed by name AND the formals in force. The formals matter:
   // a nested reification's boundary cuts a path that the enclosing body does
   // not cut, so `mid` can be a non-capture inside `inner` and a capture at the
@@ -1608,11 +1591,12 @@ function reificationCapturesDraw(node: any, bindings: any, phaseOf: any): boolea
   // Bounded because formals only grow along a finite nesting chain, so a
   // mutually recursive pair of reifications repeats a key and stops here.
   const seen = new Set<string>();
-  return capturesFrom(node, new Set<string>());
+  const explicit = node.fromLambda || node.callee.name === 'fn' || node.args.length > 1;
+  return capturesFrom(node, new Set<string>(), node.callee.name === 'kernelof');
 
   /** Stable `seen` key for one name under one formals set. */
-  function visitKey(name: string, formals: Set<string>): string {
-    return name + '\u0000' + [...formals].sort().join('\u0001');
+  function visitKey(name: string, formals: Set<string>, absorbed: boolean): string {
+    return name + '\u0000' + absorbed + '\u0000' + [...formals].sort().join('\u0001');
   }
 
   /** Boundary names a reification CallExpr declares, in body-ref spelling. */
@@ -1630,55 +1614,55 @@ function reificationCapturesDraw(node: any, bindings: any, phaseOf: any): boolea
   }
 
   /** Walk one reification's BODY (its first positional arg) only. */
-  function capturesFrom(call: any, inherited: Set<string>): boolean {
-    if (!call || call.type !== 'CallExpr' || !Array.isArray(call.args)) return false;
+  function capturesFrom(call: any, inherited: Set<string>, absorbed: boolean): string | null {
+    if (!call || call.type !== 'CallExpr' || !Array.isArray(call.args)) return null;
     const body = call.args[0];
-    if (!body || body.type === 'KeywordArg') return false;
-    return walk(body, formalsOf(call, inherited));
+    if (!body || body.type === 'KeywordArg') return null;
+    return walk(body, formalsOf(call, inherited), absorbed);
   }
 
-  function walk(n: any, formals: Set<string>): boolean {
-    if (!n || typeof n !== 'object') return false;
+  function walk(n: any, formals: Set<string>, absorbed: boolean): string | null {
+    if (!n || typeof n !== 'object') return null;
     if (Array.isArray(n)) {
-      for (const c of n) if (walk(c, formals)) return true;
-      return false;
+      for (const c of n) { const found = walk(c, formals, absorbed); if (found) return found; }
+      return null;
     }
-    if (n.type === 'Identifier') return walkRef(n.name, formals);
+    if (n.type === 'Identifier') return walkRef(n.name, formals, absorbed);
+    if (n.type === 'FieldAccess' && n.object?.type === 'Identifier'
+        && n.object.name === 'self') return walkRef(n.field, formals, absorbed);
     if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier') {
       const op = n.callee.name;
-      if (op === 'draw') return true;                     // a draw written inline
-      if (op === 'lawof' || op === 'kernelof' || op === 'elementof') return false;
-      if (op === 'functionof' || op === 'fn') return capturesFrom(n, formals);
-      if (walkRef(op, formals)) return true;              // applying a callable binding
-      return walk(n.args, formals);
+      if (op === 'draw' && !absorbed) return 'draw';
+      if (op === 'elementof') return explicit ? 'elementof input' : null;
+      if (op === 'lawof') return walk(n.args, formals, true);
+      if (op === 'kernelof') return capturesFrom(n, formals, true);
+      if (op === 'functionof' || op === 'fn') return capturesFrom(n, formals, false);
+      return walkRef(op, formals, absorbed) || walk(n.args, formals, absorbed);
     }
     for (const k of ['args', 'value', 'left', 'right', 'operand', 'object',
                      'elements', 'indices', 'callee']) {
-      if (walk(n[k], formals)) return true;
+      const found = walk(n[k], formals, absorbed);
+      if (found) return found;
     }
-    return false;
+    return null;
   }
 
   /** One body reference, resolved through the binding it names. */
-  function walkRef(name: string, formals: Set<string>): boolean {
-    if (formals.has(name)) return false;                  // boundary-substituted
+  function walkRef(name: string, formals: Set<string>, absorbed: boolean): string | null {
+    if (formals.has(name)) return null;                  // boundary-substituted
     const b = bindings.get(name);
-    if (!b || !b.node || !b.node.value) return false;
-    const key = visitKey(name, formals);
-    if (seen.has(key)) return false;
+    if (!b || !b.node || !b.node.value) return null;
+    const key = visitKey(name, formals, absorbed);
+    if (seen.has(key)) return null;
     seen.add(key);
-    // Cheap dominator: a binding of fixed or parameterized phase reaches no
-    // draw at all, boundary or not, so nothing below it can be captured.
-    if (phaseOf(name) !== 'stochastic') return false;
+    // Fixed ancestors close over values. Parameterized ancestors still need
+    // tracing: an explicit boundary may replace a descendant of their leaves.
+    if (phaseOf(name) === 'fixed') return null;
     const v = b.node.value;
     const cn = (v.type === 'CallExpr' && v.callee && v.callee.type === 'Identifier')
       ? v.callee.name : null;
-    if (cn === 'draw') return true;                       // the captured draw itself
-    // No `lawof` / `rand` / `kernelof` / `elementof` / `external` case is
-    // needed: each of those gets a non-stochastic phase above, so the
-    // dominator already returned.
-    if (cn === 'functionof' || cn === 'fn') return capturesFrom(v, formals);
-    return walk(v, formals);
+    if (cn === 'draw' && !absorbed) return 'draw';
+    return walk(v, formals, absorbed);
   }
 }
 
@@ -2255,7 +2239,8 @@ function validateDistinguishedInputs(node: any, diagnostics: any[]) {
     const name = call.callee.name;
     const distinguished = DISTINGUISHED_INPUTS.get(name)!;
     const args = call.args || [];
-    for (let i = 0; i < args.length && i < distinguished; i++) {
+    const positional = name === 'markovchain' || name === 'kscan' ? args.length : distinguished;
+    for (let i = 0; i < args.length && i < positional; i++) {
       if (!args[i] || args[i].type !== 'KeywordArg') continue;
       diagnostics.push({
         severity: 'error',
@@ -3185,31 +3170,8 @@ function expandRestrictStatements(ast: any, diagnostics: any[]) {
   ast.body = newBody;
 }
 
-// `locscale(m, shift, scale)` expansion (spec §06 "locscale").
-//
-// `locscale(m, shift, scale)` is shorthand for the affine pushforward
-// `pushfwd(x -> scale * x + shift, m)`. We expand it before analysis to
-// a synthetic `bijection(fwd, inv, logvolume)` driving a `pushfwd`, so
-// the existing pushforward density (density.walkPushfwd, AST bijection
-// path) and sampler (matPushfwd) handle it with no new derivation kind —
-// exactly as `restrict` reduces to disintegrate/bayesupdate. The
-// synthesised `__locscale_*` names carry the conventional `__`-prefix for
-// auto-generated bindings (spec §04); like `__restrict_*` they are NOT
-// elided inside this engine — they appear in the exported `symbols` array
-// the same way restrict's synthetics do (any LSP/outline elision happens in
-// the downstream consumer, not here).
-//
-//   __locscale_fwd_N = scale * _x + shift        # functionof, arg x
-//   __locscale_inv_N = (_y - shift) / scale       # functionof, arg y
-//   __locscale_lv_N  = log(abs(scale))            # forward log|J|, 0-arg
-//   __locscale_bij_N = bijection(fwd, inv, lv)
-//   <original RHS with locscale(m, .., ..) → pushfwd(__locscale_bij_N, m)>
-//
-// Scope: SCALAR shift and SCALAR scale only. A non-scalar literal shift or
-// scale is rejected with a diagnostic in _buildLocscalePushfwd; a matrix or
-// vector affine map should use pushfwd directly (spec §06). (Multivariate
-// locscale via type-inference-directed routing is tracked separately.)
-let _locscaleCounter = 0;
+// Validate explicit location and scale before lift lowers the affine map.
+// Keep them as values so analysis does not invent captured-draw callables.
 
 const _LOCSCALE_LITERAL_TYPES = new Set([
   'NumberLiteral', 'StringLiteral', 'BoolLiteral', 'ArrayLiteral', 'TupleLiteral']);
@@ -3485,69 +3447,18 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
     }
     return call;  // iid base, routable shape: survive to lift's lowering
   }
-  // The base measure may itself contain a nested locscale.
-  const mExpr = _rewriteLocscale(args[0], synth, diagnostics, body);
-  const shiftExpr = args[1];
-  const scaleExpr = args[2];
-  const clone = (n: any) => structuredClone(n);
-
-  const n = _locscaleCounter++;
-  const fwdName = `__locscale_fwd_${n}`;
-  const invName = `__locscale_inv_${n}`;
-  const lvName  = `__locscale_lv_${n}`;
-  const bijName = `__locscale_bij_${n}`;
-
-  // fwd: functionof(scale * _x + shift, x = _x) — mirrors the parser's
-  // single-arg lambda desugaring (functionof body + Placeholder kwarg).
-  const fwdBody = AST.BinaryExpr('+',
-    AST.BinaryExpr('*', clone(scaleExpr), AST.Placeholder('x', sloc), sloc),
-    clone(shiftExpr), sloc);
-  const fwd = AST.CallExpr(AST.Identifier('functionof', sloc),
-    [fwdBody, AST.KeywordArg('x', AST.Placeholder('x', sloc), sloc)], sloc);
-
-  // inv: functionof((_y - shift) / scale, y = _y)
-  const invBody = AST.BinaryExpr('/',
-    AST.BinaryExpr('-', AST.Placeholder('y', sloc), clone(shiftExpr), sloc),
-    clone(scaleExpr), sloc);
-  const inv = AST.CallExpr(AST.Identifier('functionof', sloc),
-    [invBody, AST.KeywordArg('y', AST.Placeholder('y', sloc), sloc)], sloc);
-
-  // logvolume: the forward Jacobian of x -> scale*x + shift is constant
-  // |scale|, so log|J| = log(abs(scale)). When `scale` is a numeric
-  // literal we fold it to a scalar NumberLiteral (the cheapest density
-  // path); otherwise a 0-arg `functionof(log(abs(scale)))` constant.
-  let lvArg: any;
-  if (scaleExpr.type === 'NumberLiteral') {
-    const sv = +scaleExpr.value;
-    if (sv === 0 || !Number.isFinite(sv)) {
-      diagnostics.push({
-        severity: 'error',
-        message: `locscale() scale must be a nonzero finite value `
-          + `(got ${scaleExpr.value}); a zero or non-finite scale is a `
-          + `degenerate, non-invertible affine map`,
-        loc: scaleExpr.loc,
-      });
-      return call;
-    }
-    const v = Math.log(Math.abs(sv));
-    lvArg = AST.NumberLiteral(v, String(v), sloc);
-  } else {
-    const lvBody = AST.CallExpr(AST.Identifier('log', sloc),
-      [AST.CallExpr(AST.Identifier('abs', sloc), [clone(scaleExpr)], sloc)], sloc);
-    const lv = AST.CallExpr(AST.Identifier('functionof', sloc), [lvBody], sloc);
-    synth.push(AST.AssignStatement([AST.Identifier(lvName, sloc)], lv, sloc));
-    lvArg = AST.Identifier(lvName, sloc);
+  // Keep location and scale as explicit measure parameters through analysis.
+  // Lift lowers the affine map after the user's callable captures are checked.
+  // Expanding it here creates synthetic callables that capture these draws.
+  const scale = args[2];
+  if (scale.type === 'NumberLiteral' && (scale.value === 0 || !Number.isFinite(scale.value))) {
+    diagnostics.push({
+      severity: 'error',
+      message: 'locscale() scale must be a nonzero finite value',
+      loc: scale.loc,
+    });
   }
-
-  const bij = AST.CallExpr(AST.Identifier('bijection', sloc),
-    [AST.Identifier(fwdName, sloc), AST.Identifier(invName, sloc), lvArg], sloc);
-
-  synth.push(AST.AssignStatement([AST.Identifier(fwdName, sloc)], fwd, sloc));
-  synth.push(AST.AssignStatement([AST.Identifier(invName, sloc)], inv, sloc));
-  synth.push(AST.AssignStatement([AST.Identifier(bijName, sloc)], bij, sloc));
-
-  return AST.CallExpr(AST.Identifier('pushfwd', sloc),
-    [AST.Identifier(bijName, sloc), mExpr], sloc);
+  return call;
 }
 
 /**
@@ -3933,6 +3844,35 @@ function analyze(ast: any, source: string, opts?: any) {
   for (const [name, phase] of phases) {
     const b = bindings.get(name);
     if (b) b.phase = phase;
+  }
+
+  // Validate constructions, not just named function bindings. An inline
+  // lambda, including one inside lawof, has the same no-capture contract.
+  {
+    const seen = new Set<object>();
+    const checkReification = (ast: any) => {
+      if (!ast || typeof ast !== 'object' || seen.has(ast)) return;
+      seen.add(ast);
+      if (ast.type === 'CallExpr' && ast.callee?.type === 'Identifier'
+          && ['functionof', 'kernelof', 'fn'].includes(ast.callee.name)) {
+        const free = reificationFreeInput(ast, bindings, (name: string) => phases.get(name));
+        if (free) diagnostics.push({
+          severity: 'error',
+          message: free === 'draw' ? 'A reified callable cannot capture a draw. '
+            + 'Expose it as a boundary input, or reify its law with lawof or kernelof.'
+            : 'Explicit reification boundaries leave an elementof input unbound. '
+              + 'Every remaining parameter leaf must be replaced by a boundary input.',
+          loc: ast.loc,
+        });
+      }
+      for (const key in ast) {
+        if (key === 'loc') continue;
+        const value = ast[key];
+        if (Array.isArray(value)) value.forEach(checkReification);
+        else checkReification(value);
+      }
+    };
+    for (const b of bindings.values()) checkReification(b.node?.value);
   }
 
   // Phase check: per spec §04 sec:functionof, "Boundary inputs themselves

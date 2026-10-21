@@ -100,6 +100,7 @@ const DISCRETE_OPS = new Set(['Bernoulli', 'Categorical', 'Categorical0', 'Binom
 type Affine = { c: number; coefs: Map<string, number> };
 
 const ZERO = (): Affine => ({ c: 0, coefs: new Map() });
+const AFFINE_VARIATE = '%gaussian-affine-variate';
 
 function _addAffine(x: Affine, y: Affine, sign: number): Affine {
   const out: Affine = { c: x.c + sign * y.c, coefs: new Map(x.coefs) };
@@ -218,13 +219,16 @@ function _reachesBlocked(irs: any[], blocked: Set<string>, ctx: any): string | n
 // expression is not affine (a product of two nodes, a nonlinear op, a ref to a
 // stochastic name with no node).
 function _affine(ir: any, keyFor: (nm: string) => string | null,
-                 atoms: Map<string, number>, ctx: any): Affine | null {
+                 atoms: Map<string, number>, ctx: any, formal?: string): Affine | null {
   if (!ir || typeof ir !== 'object') return null;
   if (ir.kind === 'lit') {
     return typeof ir.value === 'number' && Number.isFinite(ir.value)
       ? { c: ir.value, coefs: new Map() } : null;
   }
   if (ir.kind === 'ref') {
+    if (formal && ir.name === formal && (ir.ns === '%local' || ir.ns === 'self')) {
+      return { c: 0, coefs: new Map([[AFFINE_VARIATE, 1]]) };
+    }
     if (ir.ns === 'self' && _stochasticName(ir.name, ctx)) {
       const key = keyFor(ir.name);
       if (key == null) return null;
@@ -242,16 +246,16 @@ function _affine(ir: any, keyFor: (nm: string) => string | null,
   }
   if (ir.kind !== 'call' || !Array.isArray(ir.args)) return null;
   if (ir.op === 'sum' && ir.args.length === 1 && ir.args[0].op === 'vector') {
-    return _affine({ kind: 'call', op: 'add', args: ir.args[0].args }, keyFor, atoms, ctx);
+    return _affine({ kind: 'call', op: 'add', args: ir.args[0].args }, keyFor, atoms, ctx, formal);
   }
   if (ir.op === 'get' && ir.args.length === 2 && ir.args[0].op === 'vector') {
     const index = _constant(ir.args[1], ctx);
     return index != null && Number.isInteger(index)
-      ? _affine(ir.args[0].args[index - 1], keyFor, atoms, ctx) : null;
+      ? _affine(ir.args[0].args[index - 1], keyFor, atoms, ctx, formal) : null;
   }
   const parts: Affine[] = [];
   for (const a of ir.args) {
-    const p = _affine(a, keyFor, atoms, ctx);
+    const p = _affine(a, keyFor, atoms, ctx, formal);
     if (!p) return null;
     parts.push(p);
   }
@@ -276,6 +280,40 @@ function _affine(ir: any, keyFor: (nm: string) => string | null,
     default:
       return null;
   }
+}
+
+// Affine pushforwards preserve Gaussianity. Keep the variate symbolic while
+// parsing the map, so nonlinear maps and latent coefficients still refuse.
+function _gaussianLaw(ir: any, keyFor: (nm: string) => string | null,
+                      atoms: Map<string, number>, ctx: any): any {
+  if (ir?.op === 'pushfwd' && ir.bijection?.fForward) {
+    const f = ir.bijection.fForward;
+    const map = _affine(f.body, keyFor, atoms, ctx, f.paramName);
+    const scale = map?.coefs.get(AFFINE_VARIATE);
+    if (!map || scale == null || !Number.isFinite(scale) || scale === 0) {
+      return { refuse: ' has no scalar affine map with a constant nonzero scale' };
+    }
+    const base = _gaussianLaw(ir.args[1], keyFor, atoms, ctx);
+    if (base.refuse) return base;
+    map.coefs.delete(AFFINE_VARIATE);
+    return { loc: _addAffine(_scaleAffine(base.loc, scale), map, 1),
+      sd: Math.abs(scale) * base.sd };
+  }
+  if (ir?.op !== 'Normal' && ir?.op !== 'Dirac') {
+    return { refuse: ' does not have a scalar Gaussian base' };
+  }
+  const deterministic = ir.op === 'Dirac';
+  const loc = _affine(_distParamIR(ir, deterministic ? 'value' : 'mu'), keyFor, atoms, ctx);
+  if (!loc) {
+    return { refuse: "'s location is not an affine function of the "
+      + "sub-DAG's stochastic nodes with constant coefficients" };
+  }
+  const sd = deterministic ? 0 : _constant(_distParamIR(ir, 'sigma'), ctx);
+  if (sd == null || (!deterministic && !(sd > 0))) {
+    return { refuse: "'s scale is not a positive constant (a latent in "
+      + 'the scale is not a linear-Gaussian shape)' };
+  }
+  return { loc, sd };
 }
 
 // A distribution call's parameter IR by declared name, accepting both the
@@ -455,7 +493,8 @@ function _buildTable(comps: any, marginalize: string[], keyOf: (nm: string) => s
   const discrete: TableNode[] = [];
   for (const n of nodes.values()) {
     if (n.ir && n.ir.kind === 'call'
-        && (n.ir.op === 'Normal' || (n.ir.op === 'Dirac' && n.component == null))) continue;
+        && (n.ir.op === 'Normal' || (n.ir.op === 'Dirac' && n.component == null)
+          || (n.ir.op === 'pushfwd' && n.ir.bijection?.fForward))) continue;
     // An observed coordinate is never enumerated: its variate is the point
     // scored, w.r.t. the product reference measure the Gaussian block assumes.
     if (n.component == null) {
@@ -500,18 +539,9 @@ function _blockMoments(nodes: Map<string, TableNode>, compKeys: string[],
   const laws = new Map<string, { loc: Affine; sd: number }>();
   for (const n of nodes.values()) {
     if (atoms.has(n.key)) continue;                 // enumerated, not Gaussian
-    const deterministic = n.ir.op === 'Dirac';
-    const loc = _affine(_distParamIR(n.ir, deterministic ? 'value' : 'mu'), keyFor, atoms, ctx);
-    if (!loc) {
-      return { refuse: n.what + "'s location is not an affine function of the "
-        + 'sub-DAG\'s stochastic nodes with constant coefficients' };
-    }
-    const sd = deterministic ? 0 : _constant(_distParamIR(n.ir, 'sigma'), ctx);
-    if (sd == null || (!deterministic && !(sd > 0))) {
-      return { refuse: n.what + "'s scale is not a positive constant (a latent in "
-        + 'the scale is not a linear-Gaussian shape)' };
-    }
-    laws.set(n.key, { loc, sd });
+    const law = _gaussianLaw(n.ir, keyFor, atoms, ctx);
+    if (law.refuse) return { refuse: n.what + law.refuse };
+    laws.set(n.key, law);
   }
 
   // Topological order over the node-to-node affine dependencies.
@@ -577,7 +607,7 @@ function _blockMoments(nodes: Map<string, TableNode>, compKeys: string[],
 /**
  * Recognise the marginal of a shared-ancestor joint law, or refuse.
  *
- * `body` is a clm body (a Normal call, or a `joint` over Normal calls);
+ * `body` is a clm body containing Normal or scalar affine Gaussian measures;
  * `marginalize` names the stochastic ancestors integrated out. `substituted`
  * names the inputs the CALLER feeds instead of the model's own values (clm's
  * `explicit` / `free` input kinds); the closed form reads constants from the

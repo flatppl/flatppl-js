@@ -259,10 +259,10 @@ test('analyzer: lawof argument validation', () => {
 // inline source so each one stays self-contained and the failure
 // message + offending source live in one place.
 
-test('analyzer: weighted/logweighted/truncate/pushfwd take exactly 2 positional args', () => {
+test('analyzer: weighting and binary measure operations validate positional args', () => {
   for (const op of ['weighted', 'logweighted', 'truncate', 'pushfwd']) {
     const wrongCount = process(`m = ${op}(1)\n`);
-    assert.ok(wrongCount.diagnostics.some((d: any) => /takes exactly two/.test(d.message)), op + ' wrongCount');
+    assert.ok(wrongCount.diagnostics.some((d: any) => /takes (exactly two|two or three)/.test(d.message)), op + ' wrongCount');
     const withKwarg = process(`m = ${op}(a = 1, b = 2)\n`);
     assert.ok(withKwarg.diagnostics.some((d: any) => /positional/i.test(d.message)), op + ' kwarg');
   }
@@ -323,10 +323,10 @@ test('analyzer: broadcast requires positional head + at least 1 more arg', () =>
 });
 
 test('analyzer: reduce / scan take their spec-mandated positional counts', () => {
-  // reduce(f, xs) — 2 positional; scan(f, init, xs) — 3 positional.
-  assert.ok(process(`y = reduce(f)\n`).diagnostics.some((d: any) => /takes exactly two/.test(d.message)));
-  assert.ok(process(`y = reduce(f, xs, init)\n`).diagnostics.some((d: any) => /takes exactly two/.test(d.message)));
-  assert.ok(process(`y = scan(f, init)\n`).diagnostics.some((d: any) => /takes exactly three/.test(d.message)));
+  // Both operations accept an optional final callback parameter object.
+  assert.ok(process(`y = reduce(f)\n`).diagnostics.some((d: any) => /takes two or three/.test(d.message)));
+  assert.ok(process(`y = reduce(f, xs, p, extra)\n`).diagnostics.some((d: any) => /takes two or three/.test(d.message)));
+  assert.ok(process(`y = scan(f, init)\n`).diagnostics.some((d: any) => /takes three or four/.test(d.message)));
 });
 
 test('analyzer: checked accepts both calling forms', () => {

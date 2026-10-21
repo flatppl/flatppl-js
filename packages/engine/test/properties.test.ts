@@ -162,11 +162,8 @@ test('property: bodyDeps and paramSourceDeps partition deps', () => {
 // So a `functionof` whose boundary names every drawn ancestor is a function of
 // its inputs alone, and its value is %fixed.
 //
-// Leave one drawn ancestor unnamed and §04 *Captured draws* applies instead:
-// it "remains a shared ancestor [...] with a single realisation", the callable
-// is "conditional on that realisation", and "the phase of a reification follows
-// the reified sub-graph" — %stochastic. Both directions are generated from the
-// same joint so the boundary list is the only thing that differs.
+// Leaving a free drawn ancestor unnamed makes the reification invalid.
+// Both cases use the same joint and differ only in the boundary list.
 
 /** `src` plus `myfn`, with every drawn ancestor of the body boundary-named. */
 const arbClosedFnSrc = arbJointRecordSrc().chain(({ src, names }: any) =>
@@ -194,11 +191,11 @@ test('property: a functionof over boundary-named draws has phase = fixed', () =>
   }), { numRuns: 60 });
 });
 
-test('property: a functionof that captures a draw has phase = stochastic', () => {
+test('property: a functionof cannot capture a free draw', () => {
   fc.assert(fc.property(arbCapturingFnSrc, ({ src }: any) => {
-    const { bindings } = processSource(src);
-    const fn = bindings.get('myfn');
-    return !fn || fn.phase === 'stochastic';
+    const { diagnostics } = processSource(src);
+    return diagnostics.some((d: any) =>
+      d.severity === 'error' && d.message.includes('cannot capture'));
   }), { numRuns: 60 });
 });
 

@@ -10,7 +10,8 @@ mu ~ Normal(0,1)
 hu ~ Beta(1,1)
 rates = exp.([0,.2] .+ mu)
 data = [0,2]
-count_rows = functionof(((rate,x) -> logdensityof(normalize(superpose(weighted(hu,Dirac(0)),weighted(1-hu,Poisson(rate)))),x)).(rates,data),mu=mu,hu=hu)
+row_score(rate,x,hu) = logdensityof(normalize(superpose(weighted(hu,Dirac(0)),weighted(1-hu,Poisson(rate)))),x)
+count_rows = functionof(row_score.(rates,data,hu),mu=mu,hu=hu)
 p = [.4,.3]
 a = count_rows(mu=p[1],hu=p[2])
 q = [-.7,.6]

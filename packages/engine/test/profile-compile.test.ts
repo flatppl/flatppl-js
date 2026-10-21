@@ -81,16 +81,53 @@ inBothModes('profile-compile: record bodies preserve fields, tables, and errors'
     assertSameAsInterpreter(record, [{ x: 1 }, { x: -4 }], 'record');
     assertSameAsInterpreter(call('get_field', [record, lit('b')]),
       [{ x: 1 }, { x: -4 }], 'constructed field');
-    assertSameAsInterpreter(call('get_field', [ref('x'), ref('key')]), [
-      { x: { a: 3 }, key: 'a' },
-      { x: { __table__: true, columns: { a: [1, 2] } }, key: 'a' },
-      { x: { a: 3 }, key: 'missing' },
-      { x: null, key: 'a' }, { x: 4, key: 'a' },
-    ], 'field access');
+    for (const key of [ref('key'), lit('a')]) {
+      assertSameAsInterpreter(call('get_field', [ref('x'), key]), [
+        { x: { a: 3 }, key: 'a' },
+        { x: { __table__: true, columns: { a: [1, 2] } }, key: 'a' },
+        { x: { a: 3 }, key: 'missing' },
+        { x: {}, key: 'a' }, {}, { x: null, key: 'a' }, { x: 4, key: 'a' },
+      ], 'field access');
+    }
     assertSameAsInterpreter({ kind: 'call', op: 'record', fields: [], args: [ref('x')] }, [
       { x: { __table__: true, columns: { a: [1, 2] } } },
       { x: { a: 2 } }, { x: 3 },
     ], 'record conversion');
+  });
+
+inBothModes('profile-compile: repeated field reads follow rebound record values',
+  'evaluate.recordBodies', () => {
+    const field = () => call('get_field', [ref('state'), lit('a')]);
+    const ir = call('add', [field(), field()]);
+    const prog = sampler.compileProfileBody(ir);
+    const env = { state: { a: 2 } };
+    for (const a of [2, 7, 2]) {
+      env.state.a = a;
+      prog.nextPoint();
+      assert.equal(prog.evalPoint(env), sampler.evaluateExpr(ir, env));
+      assert.equal(prog.evalPoint(env), 2 * a);
+    }
+  });
+
+inBothModes('profile-compile: record projections preserve eager fields and special records',
+  'evaluate.recordBodies', () => {
+    const project = (fields: any[]) => call('get_field', [
+      { kind: 'call', op: 'record', fields }, lit('a'),
+    ]);
+    for (const fields of [
+      [{ name: 'a', value: ref('x') }, { name: 'b', value: ref('missing') }],
+      [{ name: 'b', value: ref('first_missing') }, { name: 'a', value: ref('missing') }],
+      [{ name: 'a', value: lit(1) }, { name: 'a', value: ref('x') }],
+      [{ name: 'b', value: ref('x') }],
+      [{ name: '__table__', value: lit(true) }, { name: 'columns', value: ref('columns') },
+        { name: 'a', value: lit(99) }],
+      [{ name: '__proto__', value: ref('prototype') }, { name: 'a', value: lit(99) }],
+    ]) {
+      assertSameAsInterpreter(project(fields), [{
+        x: 3, columns: { a: 5 },
+        prototype: { __table__: true, columns: { a: 7 } },
+      }], 'record projection');
+    }
   });
 
 test('profile-compile: every specialised node kind matches the interpreter', () => {

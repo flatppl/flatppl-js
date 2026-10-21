@@ -189,7 +189,7 @@ square = cartprod(
 
 phase_space = Lebesgue(support = square)
 phase_weight(mass, costheta) = mass * q_of(mass) * k_of(mass) * intensity_fn(mass, costheta)
-amplitude_measure = weighted(phase_weight, phase_space)
+amplitude_measure = weighted(v -> phase_weight(v[1], v[2]), phase_space)
 
 # Normalization is intentionally optional for the first validation pass.
 # amplitude_pdf = normalize(amplitude_measure)

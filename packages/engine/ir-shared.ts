@@ -242,8 +242,11 @@ function resolveCallableAlias(name: string, bindings: any): string {
     seen.add(cur);
     const b = bindings.get(cur);
     const v = b && b.node && b.node.value;
-    if (v && v.type === 'Identifier' && typeof v.name === 'string' && v.name !== cur) {
-      cur = v.name;
+    const target = v?.type === 'Identifier' ? v.name
+      : v?.type === 'FieldAccess' && v.object?.type === 'Identifier'
+        && v.object.name === 'self' ? v.field : null;
+    if (typeof target === 'string' && target !== cur) {
+      cur = target;
       continue;
     }
     return cur;

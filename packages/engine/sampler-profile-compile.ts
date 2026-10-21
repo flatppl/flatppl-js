@@ -347,6 +347,12 @@ function _compileNode(node: any, S: Session): any {
   }
   const raw = _compileByKind(node, S);
   if (node.kind !== 'call') return raw;
+  // Reading a field of a bound reference costs less than a memo lookup.
+  // Keep the referenced value itself, as the interpreter does.
+  if (getOptimization('evaluate.recordBodies') && !node.target
+      && node.op === 'get_field' && node.args?.length === 2
+      && node.args[0]?.kind === 'ref' && node.args[1]?.kind === 'lit'
+      && typeof node.args[1].value === 'string') return raw;
   const An = S.An;
   // Read the id WITHOUT `_idOf`: that call tallies an occurrence, so
   // asking it here would push every unique node's count to 2 and hand
@@ -413,6 +419,34 @@ function _compileCall(node: any, S: Session): any {
   const op = node.op;
   if (getOptimization('evaluate.recordBodies')) {
     if (op === 'get_field' && node.args?.length === 2) {
+      if (node.args[1]?.kind === 'lit' && typeof node.args[1].value === 'string') {
+        const key = node.args[1].value;
+        const record = node.args[0];
+        if (record?.kind === 'call' && record.op === 'record' && !record.target
+            && !record.args?.length && Array.isArray(record.fields)
+            && record.fields.every((field: any) =>
+              field.name !== '__proto__' && field.name !== '__table__')) {
+          let selected = -1;
+          for (let i = 0; i < record.fields.length; i++) {
+            if (record.fields[i].name === key) selected = i;
+          }
+          if (selected !== -1) {
+            const fields = record.fields.map((field: any) => _compileNode(field.value, S));
+            // Keep eager field evaluation and its errors, but avoid allocating
+            // an intermediate record only to read one of its fields.
+            return function (env: any) {
+              let result;
+              for (let i = 0; i < fields.length; i++) {
+                const value = fields[i](env);
+                if (i === selected) result = value;
+              }
+              return result;
+            };
+          }
+        }
+        const object = _compileNode(node.args[0], S);
+        return function (env: any) { return _getField(object(env), key); };
+      }
       const object = _compileNode(node.args[0], S);
       const key = _compileNode(node.args[1], S);
       return function (env: any) { return _getField(object(env), key(env)); };

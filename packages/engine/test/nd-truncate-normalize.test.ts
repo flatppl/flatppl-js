@@ -132,7 +132,7 @@ function litBody(v: number) { return { kind: 'lit', value: v }; }
 
 test('makeIntegrandND: finite 2-D box of constant 1 integrates to area', () => {
   const axes = [{ lo: 0, hi: 2, kind: 'finite' }, { lo: -1, hi: 3, kind: 'finite' }];
-  const integ = makeIntegrandND(litBody(1), ['x', 'y'], axes, {}, {});
+  const integ = makeIntegrandND(litBody(1), ['v'], axes, {}, {}, true);
   const r = adaptiveCubature(integ, 2);
   assert.ok(Math.abs(r.Z - 8.0) < 1e-8, `Z=${r.Z}`); // area 2×4
 });
@@ -151,10 +151,8 @@ test('makeIntegrandND: semi-lo change-of-variables integrates 1/(1+x²) over (0,
 });
 
 test('makeIntegrandND: a ONE-parameter weight over an array variate gets the whole point', () => {
-  // §06: "A one-parameter weight receives the variate whole", and the
-  // per-parameter form needs k >= 2. Over a positional-cartprod support the
-  // variate is an array, so the single parameter binds to the coordinate ARRAY
-  // and the body indexes it. Same integrand as the two-parameter spelling:
+  // §06: a weight receives the variate whole. Over a positional-cartprod
+  // support it is an array, so the body indexes the coordinates:
   // ∫₀²∫₀³ v₁v₂ = (2²/2)(3²/2) = 9 (scipy.integrate.dblquad: 9.0).
   const body = { kind: 'call', op: 'mul', args: [
     { kind: 'call', op: 'get', args: [{ kind: 'ref', name: 'v' }, { kind: 'lit', value: 1 }] },
@@ -240,7 +238,7 @@ function resolvedNegLogZ(src: string) {
 test('O1 separable 2-D normalizer matches scipy oracle', () => {
   const O1 = -0.2245614818793499;
   const src = `
-D = normalize(truncate(weighted((x, y) -> exp(0.0 - 0.5*(x*x + y*y)) / (2.0*pi),
+D = normalize(truncate(weighted(v -> exp(0.0 - 0.5*(v[1]^2 + v[2]^2)) / (2.0*pi),
     Lebesgue(cartprod(interval(-2.0, 3.0), interval(-1.0, 2.0)))),
     cartprod(interval(-2.0, 3.0), interval(-1.0, 2.0))))`;
   const neg = resolvedNegLogZ(src);
@@ -251,8 +249,8 @@ test('O2b coupled+kink 2-D normalizer matches scipy oracle', () => {
   const O2 = 1.5844046542638608;
   // N(x; 1.0 - 0.5·√|y|, 0.5) as an explicit weight; box [0,1]×[-4,4]
   const src = `
-D = normalize(truncate(weighted((x, y) ->
-    exp(0.0 - 0.5*((x - (1.0 - 0.5*sqrt(abs(y))))/0.5)^2) / (0.5*sqrt(2.0*pi)),
+D = normalize(truncate(weighted(v ->
+    exp(0.0 - 0.5*((v[1] - (1.0 - 0.5*sqrt(abs(v[2]))))/0.5)^2) / (0.5*sqrt(2.0*pi)),
     Lebesgue(cartprod(interval(0.0, 1.0), interval(-4.0, 4.0)))),
     cartprod(interval(0.0, 1.0), interval(-4.0, 4.0))))`;
   const neg = resolvedNegLogZ(src);
@@ -280,7 +278,7 @@ test('record-form (keyword) cartprod truncation region refuses loudly through th
   // observable outcome on genuine IR is: the node is refused here rather
   // than silently deferred into a generic downstream classification error.
   const src = `
-D = normalize(truncate(weighted((x, y) -> 2.0,
+D = normalize(truncate(weighted(v -> 2.0,
     Lebesgue(cartprod(x = interval(-5.0, 5.0), y = interval(-5.0, 5.0)))),
     cartprod(x = interval(-5.0, 5.0), y = interval(-5.0, 5.0))))`;
   assert.throws(() => resolvedNegLogZ(src), /engine gap.*record-form.*cartprod/i);
@@ -288,7 +286,7 @@ D = normalize(truncate(weighted((x, y) -> 2.0,
 
 test('over-cap 4-D cartprod truncation refuses loudly', () => {
   const src = `
-D = normalize(truncate(weighted((a,b,c,d) -> 1.0,
+D = normalize(truncate(weighted(v -> 1.0,
     Lebesgue(cartprod(interval(0.0,1.0),interval(0.0,1.0),interval(0.0,1.0),interval(0.0,1.0)))),
     cartprod(interval(0.0,1.0),interval(0.0,1.0),interval(0.0,1.0),interval(0.0,1.0))))`;
   assert.throws(() => resolvedNegLogZ(src), /dimension 4 exceeds .*cap.*3/i);
@@ -296,7 +294,7 @@ D = normalize(truncate(weighted((a,b,c,d) -> 1.0,
 
 test('Z=0 over the region refuses (everywhere-zero weight)', () => {
   const src = `
-D = normalize(truncate(weighted((x,y) -> 0.0,
+D = normalize(truncate(weighted(v -> 0.0,
     Lebesgue(cartprod(interval(0.0,1.0), interval(0.0,1.0)))),
     cartprod(interval(0.0,1.0), interval(0.0,1.0))))`;
   assert.throws(() => resolvedNegLogZ(src), /Z = .*0|normalizer/i);

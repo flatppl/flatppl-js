@@ -142,7 +142,7 @@ mu2 = elementof(reals)
 sigma2 = elementof(posreals)
 g1 = ${g1}
 g2 = ${g2}
-prod = normalize(logweighted(x -> logdensityof(g2, x), g1))
+prod = normalize(logweighted((x, p) -> logdensityof(p, x), g1, g2))
 L = likelihoodof(prod, 0.83)
 ld = logdensityof(L, record(mu1 = 0.0, sigma1 = 1.0, mu2 = 1.0, sigma2 = 2.0))
 `;
@@ -188,7 +188,7 @@ test('a θ-independent tilt of a leaf base resolves in both spellings', async ()
 
 const TILT_THETA = (leaf: string) =>
   'theta ~ Uniform(interval(0.5, 2.0))\n'
-  + `m = normalize(weighted(x -> exp(theta * x), ${leaf}))\n`
+  + `m = normalize(weighted((x, t) -> exp(t * x), ${leaf}, theta))\n`
   + 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = 0.5))\n'
   + 'posterior = bayesupdate(L, lawof(theta))\n';
 

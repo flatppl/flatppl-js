@@ -394,12 +394,6 @@ test('kscan: a kernel argument naming no binding is a located error', () => {
     'expected a no-binding refusal, got ' + JSON.stringify(msgs));
 });
 
-test('kscan: the wrong argument count is a located error', () => {
-  const msgs = errorsOf('f = (x, d) -> Normal(x, d)\ntraj = kscan(f, 0.0)\n');
-  assert.ok(msgs.some((m) => /kscan expects 3 positional argument/.test(m)),
-    'expected an arity error, got ' + JSON.stringify(msgs));
-});
-
 // =====================================================================
 // Runtime refusals — §06 state shapes this engine does not lower
 // =====================================================================

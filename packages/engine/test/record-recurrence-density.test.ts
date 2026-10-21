@@ -10,9 +10,9 @@ const { buildLogPi } = require('../mcmc-density.ts');
 // y[1] ~ Normal(mu, 1), y[2] ~ Normal(2*mu, 1), observed at [1,2].
 const SOURCE = `
 mu ~ Normal(0, 1)
-step(x) = record(mean = x + mu)
-s1 = step(0)
-s2 = step(s1.mean)
+step(x, mu) = record(mean = x + mu)
+s1 = step(0, mu)
+s2 = step(s1.mean, mu)
 y ~ Normal.([s1.mean, s2.mean], 1)
 prior = lawof(record(mu = mu))
 K = kernelof(record(y = y), mu = mu)

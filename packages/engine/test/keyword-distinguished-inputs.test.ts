@@ -153,7 +153,7 @@ test('kscan: all three distinguished inputs are positional', () => {
   refuses('kscan',
     'f = fn(Normal(mu = _, sigma = 0.5))\n'
     + 'traj = kscan(kernel = f, init = 0.0, xs = [0.5, 1.0])\n');
-  accepts('f = fn(Normal(mu = _, sigma = 0.5))\ntraj = kscan(f, 0.0, [0.5, 1.0])\n');
+  accepts('f = (state, input) -> Normal(mu = state + input, sigma = 0.5)\ntraj = kscan(f, 0.0, [0.5, 1.0])\n');
 });
 
 test('aggregate: all three distinguished inputs are positional', () => {

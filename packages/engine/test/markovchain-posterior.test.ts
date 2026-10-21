@@ -89,8 +89,8 @@ test('markovchain: a trajectory inside lawof(record(...)) scores exactly',
   // a DIFFERENT name than the markovchain binding's. Exact, no MC.
   const ctx = makeCtx(DATA_SRC + `
 sig = 0.75
-step = prev -> Normal(prev, sig)
-x ~ markovchain(step, 0.0, 5)
+step(prev, scale) = Normal(prev, scale)
+x ~ markovchain(step, 0.0, 5, sig)
 j = lawof(record(x = x))
 lp = logdensityof(j, record(x = x_data))
 `, 1000);
@@ -113,8 +113,8 @@ test('markovchain: a likelihood over a trajectory scores at 3 sigma grid points'
   for (const sigma of [0.35, 0.6, 1.25]) {
     const ctx = makeCtx(DATA_SRC + `
 sig ~ normalize(truncate(Cauchy(0, 1), interval(0, inf)))
-step = prev -> Normal(prev, sig)
-x ~ markovchain(step, 0.0, 5)
+step(prev, scale) = Normal(prev, scale)
+x ~ markovchain(step, 0.0, 5, sig)
 fk = kernelof(record(x = x), sig = sig)
 L = likelihoodof(fk, record(x = x_data))
 lp = logdensityof(L, record(sig = ${sigma}))
@@ -180,8 +180,8 @@ test('markovchain: the AR-1 scale posterior matches a hand-integrated oracle',
   const ctx = makeCtx(DATA_SRC + `
 sig ~ normalize(truncate(Cauchy(0, 1), interval(0, inf)))
 prior = lawof(record(sig = sig))
-step = prev -> Normal(prev, sig)
-x ~ markovchain(step, 0.0, 5)
+step(prev, scale) = Normal(prev, scale)
+x ~ markovchain(step, 0.0, 5, sig)
 fk = kernelof(record(x = x), sig = sig)
 L = likelihoodof(fk, record(x = x_data))
 posterior = bayesupdate(L, prior)

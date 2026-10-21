@@ -224,7 +224,8 @@ posterior = bayesupdate(L, P)
 inBothModes('changing inverse-transform observations retain their ordinary score and Jacobian', 'density.fixedLikelihood', async () => {
   const { ctx } = ctxFor(`
 a ~ Exponential(1)
-y ~ pushfwd(x -> a .* x .+ 1, iid(Normal(0, 1), 2))
+transform = a .* eye(2)
+y ~ locscale(iid(Normal(0, 1), 2), [1, 1], transform)
 P = lawof(record(a = a))
 K = kernelof(record(y = y), a = a)
 L = likelihoodof(K, record(y = [2, 3]))

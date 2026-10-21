@@ -74,7 +74,7 @@ value = f(5, 3)
 t = (a, b)
 g = base.functionof(t[1] + 2*t[2], pair = t)
 tuplevalue = g((3, 5))
-outer = (a, b) -> base.functionof(a + 2*b, b, a)
+outer = (a, b) -> base.functionof(_a_ + 2*_b_, b, a)
 lambdavalue = ((a, b) -> a + 2*b)(3, 5)
 shadowcapture = ((x, y) -> functionof(y, y))(3, 5)
 `, { sampleCount: 1 });
@@ -83,8 +83,8 @@ shadowcapture = ((x, y) -> functionof(y, y))(3, 5)
   assert.equal(built.fixedValues.get('tuplevalue'), 13);
   assert.equal(built.fixedValues.get('lambdavalue'), 13);
   assert.equal(built.fixedValues.get('shadowcapture'), 0);
-  assert.equal(pir(INPUTS + 'outer = (a, b) -> base.functionof(a + 2*b, b, a)'),
-    pir(INPUTS + 'outer = (a, b) -> base.functionof(a + 2*b, b = b, a = a)'));
+  assert.equal(pir(INPUTS + 'outer = (a, b) -> base.functionof(_a_ + 2*_b_, b, a)'),
+    pir(INPUTS + 'outer = (a, b) -> base.functionof(_a_ + 2*_b_, b = b, a = a)'));
 });
 
 test('boundary sugar does not admit grouped lists or relax ordinary calls', () => {

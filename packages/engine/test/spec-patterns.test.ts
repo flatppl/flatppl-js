@@ -191,16 +191,16 @@ lo = elementof(reals)
 hi = elementof(reals)
 positive_normal = truncate(Normal(mu = 0, sigma = 1), interval(0, inf))
 leb = Lebesgue(support = reals)
-bern = fn(bernstein(coefficients = [c0, c1, c2], x = _))
-smooth_shape = normalize(weighted(bern, Lebesgue(support = interval(lo, hi))))
+bern = (x, p) -> bernstein(coefficients = p, x = x)
+smooth_shape = normalize(weighted(bern, Lebesgue(support = interval(lo, hi)), [c0, c1, c2]))
 `);
 });
 
 test('§02 tour: anonymous functions (lambda + fn)', () => {
   parsesCleanly(`
-a0 = elementof(reals)
-a1 = elementof(reals)
-a2 = elementof(reals)
+a0 = external(reals)
+a1 = external(reals)
+a2 = external(reals)
 poly = x -> polynomial(coefficients = [a0, a1, a2], x = x)
 squared = x -> x^2
 ratio_sq = (a, b) -> (a / b)^2
@@ -309,8 +309,8 @@ prior_predictive = kchain(prior, forward_kernel)
 
 test('§04 placeholders: nested functionof scoping', () => {
   parsesCleanly(`
-b = elementof(reals)
-some_value = elementof(reals)
+b = external(reals)
+some_value = external(reals)
 f = functionof(functionof(_a_ * b, a = _a_)(some_value) + _a_, a = _a_)
 `);
 });
@@ -683,7 +683,7 @@ rate = superpose(
 )
 events ~ PoissonProcess(intensity = rate)
 L_obs = likelihoodof(
-    kernelof(events, raw_eff_syst = raw_eff_syst),
+    kernelof(events, mu_sig = mu_sig, raw_eff_syst = raw_eff_syst),
     [3.1, 5.7, 2.4, 8.9, 4.2])
 aux_eff ~ Normal(mu = raw_eff_syst, sigma = 1.0)
 L_constr = likelihoodof(kernelof(aux_eff, raw_eff_syst = raw_eff_syst), 0.0)
@@ -696,7 +696,7 @@ test('§10 worked example: Bayesian posterior add-on', () => {
 mu_sig_prior ~ Uniform(support = interval(0, 20))
 raw_eff_syst_prior ~ Normal(mu = 0, sigma = 1)
 prior = lawof(record(mu_sig = mu_sig_prior, raw_eff_syst = raw_eff_syst_prior))
-L_obs = likelihoodof(functionof(Normal(mu = mu_sig_prior, sigma = 1)), 1.0)
+L_obs = likelihoodof(functionof(Normal(mu = mu_sig_prior, sigma = 1), mu_sig = mu_sig_prior), 1.0)
 posterior = bayesupdate(L_obs, prior)
 `);
 });
@@ -719,8 +719,8 @@ c2 = elementof(reals)
 c3 = elementof(reals)
 lo = elementof(reals)
 hi = elementof(reals)
-bern = fn(bernstein(coefficients = [c0, c1, c2, c3], x = _))
-smooth_bkg = normalize(weighted(bern, Lebesgue(support = interval(lo, hi))))
+bern = (x, p) -> bernstein(coefficients = p, x = x)
+smooth_bkg = normalize(weighted(bern, Lebesgue(support = interval(lo, hi)), [c0, c1, c2, c3]))
 `);
 });
 

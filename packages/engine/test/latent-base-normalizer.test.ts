@@ -95,18 +95,18 @@ lp = logdensityof(m, 0.5)
   assert.ok(Math.abs(got - exact) < 1e-12, `${got} versus ${exact}`);
 });
 
-test('a weight helper free capture prevents a pooled normalizer', async () => {
+test('a weight helper parameter prevents a pooled normalizer', async () => {
   const { proc, ctx } = ctxFor(H + `
 theta ~ Uniform(interval(0.5, 2.0))
-h = z -> exp(theta * z[1])
-m = normalize(weighted(v -> h(v), Dirichlet([2.0, 2.0])))
+h = (z, t) -> exp(t * z[1])
+m = normalize(weighted((v, t) -> h(v, t), Dirichlet([2.0, 2.0]), theta))
 y ~ m
 K = kernelof(record(y = y), theta = theta)
 L = likelihoodof(K, record(y = [0.5, 0.5]))
 lp = logdensityof(L, 1.0)
 `, 32);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
-  // The Dirichlet base is fixed. Only the helper's free theta changes
+  // The Dirichlet base is fixed. Only the helper's explicit theta changes
   // the integral, so checking the base parameters alone misses this case.
   await assert.rejects(async () => ctx.getMeasure('lp'),
     (e: any) => assertLimitation(e, 'density'));

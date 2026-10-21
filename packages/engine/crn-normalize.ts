@@ -146,7 +146,7 @@ function crnRecognize(node: any): CrnShape | null {
       || !Array.isArray(inner.args) || inner.args.length !== 2) return null;
   const fn = inner.args[0];
   if (!fn || fn.kind !== 'call' || fn.op !== 'functionof'
-      || !Array.isArray(fn.params) || fn.params.length < 1 || !fn.body) return null;
+      || !Array.isArray(fn.params) || fn.params.length !== 1 || !fn.body) return null;
   const supp = lebesgueBoxSupport(inner.args[1]);
   if (!supp) return null;
   const axes = _parseAxes(supp);
@@ -155,11 +155,6 @@ function crnRecognize(node: any): CrnShape | null {
   // An unbounded axis would need a change-of-variables whose Jacobian is
   // heavy-tailed, which is a high-variance estimator this does not ship.
   for (const a of axes) if (a.kind !== 'finite') return null;
-  // §06 weight arity: "A one-parameter weight receives the variate whole. If
-  // the variate is a k-element array with k >= 2, a weight of exactly k scalar
-  // parameters instead receives one component per parameter, in order; any
-  // other arity is an error."
-  if (fn.params.length !== 1 && fn.params.length !== axes.length) return null;
   const { supportIsArrayVariate } = require('./mat-density.ts');
   return {
     weightParams: fn.params.slice(), weightBody: fn.body, axes,
@@ -258,16 +253,13 @@ function crnFixedPoints(
 
 // Bind the weight function's parameters to one sample point, following the
 // SAME convention density.ts's walkWeighted and mat-density's makeIntegrandND
-// use — a k-parameter weight takes one coordinate per parameter in axis order,
-// a one-parameter weight takes the variate whole — so the normalizer integrates
+// use — the single parameter takes the variate whole — so the normalizer integrates
 // the function the density path scores. `arrayVariate` decides what "whole"
 // means at ONE axis: a `cartprod(interval(...))` support gives a length-1
 // VECTOR (§03/§07), a bare `interval(...)` support a scalar.
 function bindWeightAt(params: string[], body: any, pt: number[], arrayVariate?: boolean): any {
   const bound: Record<string, any> = {};
-  if (params.length === pt.length && pt.length > 1) {
-    for (let i = 0; i < params.length; i++) bound[params[i]] = { kind: 'lit', value: pt[i] };
-  } else if (arrayVariate) {
+  if (arrayVariate) {
     bound[params[0]] = {
       kind: 'call', op: 'vector',
       args: pt.map((c) => ({ kind: 'lit', value: c })),

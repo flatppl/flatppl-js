@@ -7,7 +7,7 @@
 // and nonzero", and §06 `normalize` makes every θ-slice a probability measure.
 //
 // THE ORACLE IS CLOSED-FORM. e^{θx}·φ(x) = e^{θ²/2}·φ(x−θ), so
-// Z(θ) = e^{θ²/2} exactly and `normalize(weighted(fn(exp(θ·_)), Normal(0,1)))`
+// Z(θ) = e^{θ²/2} exactly and `normalize(weighted((x,t)->exp(t*x), Normal(0,1), θ))`
 // is Normal(θ, 1). Every density figure below is that Gaussian's log-pdf; the
 // sampling figure is the prior mean, which §06 fixes without any quadrature.
 //
@@ -25,7 +25,7 @@ const { evaluateExpr } = require('../sampler.ts');
 const { gradedUnitCells } = require('../quadrature.ts');
 
 const H = 'flatppl_compat = "0.1"\n';
-const TILT = 'm = normalize(weighted(x -> exp(theta * x), Normal(mu = 0.0, sigma = 1.0)))\n';
+const TILT = 'm = normalize(weighted((x, t) -> exp(t * x), Normal(mu = 0.0, sigma = 1.0), theta))\n';
 const OBS = 'y ~ m\nK = kernelof(record(y = y))\nL = likelihoodof(K, record(y = 0.5))\n'
   + 'posterior = bayesupdate(L, lawof(theta))\n';
 
@@ -196,7 +196,7 @@ test('the accuracy gate hands back +∞ where the rule cannot resolve Z', () => 
 
 test('a divergent Z reaches the caller as a loud refusal, not a number', async () => {
   const { ctx } = ctxFor(H + 'theta ~ Uniform(interval(0.5, 2.0))\n'
-    + 'm = normalize(weighted(x -> exp(theta * x * x), Normal(mu = 0.0, sigma = 1.0)))\n'
+    + 'm = normalize(weighted((x, t) -> exp(t * x * x), Normal(mu = 0.0, sigma = 1.0), theta))\n'
     + 'y ~ m\n', 64);
   await assert.rejects(() => Promise.resolve(ctx.getMeasure('y')),
     /total mass of the inner measure is Infinity/);

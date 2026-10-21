@@ -27,8 +27,8 @@ totals = total.(states)
 
 const MODEL = `
 mu ~ Normal(0, 1)
-step(state, input) = record(mean = state.mean + mu * input)
-states = scan(step, record(mean = 0.0), [1.0, 1.0])
+step(state, input) = record(mean = state.mean + state.mu * input, mu = state.mu)
+states = scan(step, record(mean = 0.0, mu = mu), [1.0, 1.0])
 state_mean(state) = state.mean
 y ~ Normal.(state_mean.(states), 1)
 prior = lawof(record(mu = mu))
@@ -40,10 +40,10 @@ posterior = bayesupdate(L, prior)
 test('scan scores record helper calls beneath field access', async () => {
   const source = `
 mu ~ Normal(0, 1)
-predict(state) = record(mean = state.mean + mu)
-correct(pred, input) = record(mean = pred.mean + input)
+predict(state) = record(mean = state.mean + state.mu, mu = state.mu)
+correct(pred, input) = record(mean = pred.mean + input, mu = pred.mu)
 step(state, input) = correct(predict(state = state), input)
-states = scan(step, record(mean = 0), [1, 2])
+states = scan(step, record(mean = 0, mu = mu), [1, 2])
 state_mean(state) = state.mean
 y ~ Normal.(state_mean.(states), 1)
 prior = lawof(record(mu = mu))

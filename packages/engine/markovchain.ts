@@ -3,6 +3,8 @@
 // =====================================================================
 // markovchain.ts — spec §06 `markovchain(kernel, init, n)` and
 //                  spec §06 `kscan(kernel, init, xs)`
+// Both accept an optional fourth input p, passed unchanged after the step's
+// state (and exogenous input for kscan). The chain is Markov conditional on p.
 // =====================================================================
 //
 // §06 dependent composition, verbatim: "`kernel` is a Markov kernel
@@ -45,8 +47,8 @@
 //      markovchain no such latitude, so inheriting the tuple would import
 //      an open question into an op that does not have one.
 //
-// The Markov feed — the previous state ALONE — is what makes a native
-// scan short: there is no cat to build and no history to thread.
+// Each step receives the previous state and, when supplied, the same p.
+// There is no concatenated history to build.
 //
 // SCOPE. The kernel must be a single-input kernel whose body is a
 // sampleable scalar distribution (`fn(Normal(mu = _, sigma = s))`,
@@ -125,7 +127,7 @@ const TRAJECTORY_OPS: Record<string, { arity: number; arrow: string }> = {
  * §06 arity: one input for `markovchain`, two for `kscan`, whose second is
  * the exogenous input.
  */
-function describeStepKernel(compIR: any, bindings: any, op?: string): any {
+function describeStepKernel(compIR: any, bindings: any, op?: string, parameterIR?: any): any {
   const opName = op || 'markovchain';
   const spec = TRAJECTORY_OPS[opName];
   const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
@@ -146,11 +148,11 @@ function describeStepKernel(compIR: any, bindings: any, op?: string): any {
     };
   }
   const params: string[] = Array.isArray(ir.params) ? ir.params : [];
-  if (params.length !== spec.arity) {
+  const arity = spec.arity + (parameterIR === undefined ? 0 : 1);
+  if (params.length !== arity) {
     return {
       reason: shownAs + ' has ' + params.length + ' inputs; §06 ' + opName
-        + ' takes a ' + (spec.arity === 1 ? 'single-input' : (spec.arity + '-input'))
-        + ' kernel ' + spec.arrow,
+        + ' needs ' + arity + ' inputs for the supplied state, per-step input, and parameters',
     };
   }
   const dist = _peelLawof(ir.body);
@@ -176,6 +178,13 @@ function describeStepKernel(compIR: any, bindings: any, op?: string): any {
       };
     }
     for (let i = 0; i < positional.length; i++) distKwargs[distParams[i]] = positional[i];
+  }
+  if (parameterIR !== undefined) {
+    const param = params[spec.arity];
+    const substitute = require('./mat-broadcast.ts').substituteKernelParams;
+    for (const name of Object.keys(distKwargs)) {
+      distKwargs[name] = substitute(distKwargs[name], [param], [param], { [param]: parameterIR });
+    }
   }
   return {
     inputParam: params[0],
@@ -373,10 +382,23 @@ function matMarkovchain(name: string, d: any, ctx: any): Promise<any> {
  * length that does not resolve is a message rather than a silent non-lowering.
  */
 function resolveXsLength(xsIR: any, bindings: any, fixedValues?: any): number | null {
+  const seen = new Set<string>();
+  while (xsIR?.kind === 'ref' && xsIR.ns === 'self' && !seen.has(xsIR.name)) {
+    seen.add(xsIR.name);
+    const binding = bindings?.get(xsIR.name);
+    const size = binding?.inferredType?.shape?.[0];
+    if (Number.isInteger(size) && size > 0) return size;
+    if (!binding?.ir) break;
+    xsIR = binding.ir;
+  }
   if (xsIR && xsIR.kind === 'call' && xsIR.op === 'vector' && Array.isArray(xsIR.args)) {
     return xsIR.args.length > 0 ? xsIR.args.length : null;
   }
   const resolveConstant = require('./ir-shared.ts').resolveConstant;
+  if (xsIR?.kind === 'call' && xsIR.op === 'fill' && xsIR.args?.length === 2) {
+    const size = resolveConstant(xsIR.args[1], bindings, new Set(), fixedValues);
+    if (Number.isInteger(size) && size > 0) return size;
+  }
   const n = resolveConstant(
     { kind: 'call', op: 'lengthof', args: [xsIR] },
     bindings || new Map(), new Set(), fixedValues);
@@ -402,8 +424,8 @@ function checkTrajectoryKernels(bindings: any, fixedValues?: any): any[] {
     // Arity is typeinfer's (it reports `markovchain expects 3`), so only the
     // step-kernel shape and kscan's `xs` length are judged here.
     const args = Array.isArray(ir.args) ? ir.args : [];
-    if (args.length !== 3) continue;
-    const step = describeStepKernel(args[0], bindings, op);
+    if (args.length !== 3 && args.length !== 4) continue;
+    const step = describeStepKernel(args[0], bindings, op, args[3]);
     if (step && step.reason) {
       out.push({
         name,

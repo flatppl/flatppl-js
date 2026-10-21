@@ -1087,25 +1087,19 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   return restOfPlate();
 }
 
-// Direct density calls and their additive folds use the density walker rather
-// than the scalar arithmetic evaluator. Their actual score arguments need not
+// Additive weights containing density calls use the density walker for those
+// terms and the scalar evaluator for other summands. Score arguments need not
 // equal the outer weight's variate.
 function _isLogdensityFold(node: any): boolean {
   if (!node || node.kind !== 'call') return false;
   if (node.op === 'add' && Array.isArray(node.args) && node.args.length === 2) {
-    return _isLogdensityFold(node.args[0]) && _isLogdensityFold(node.args[1]);
+    return _isLogdensityFold(node.args[0]) || _isLogdensityFold(node.args[1]);
   }
   return node.op === 'logdensityof' && Array.isArray(node.args) && node.args.length === 2;
 }
 
-// Bind a variate weight's parameters to the coordinates the base just consumed
-// and return the resulting body IR, or null when `wIR` is not a reification.
-//
-// §06 "Weight arity": a k-parameter weight (k >= 2) takes one component per
-// parameter in order; a one-parameter weight takes the variate whole, which is
-// the k-vector for an array variate and the scalar for a scalar one. Shared by
-// `weighted` and `logweighted` — §06 admits the k-parameter form for both, so
-// they must agree on which coordinate feeds which parameter.
+// §04 callback inputs: bind one whole consumed variate. Explicit p has
+// already specialized the fixed callback to this private unary body.
 function _bindVariateWeightBody(wIR: any, baseIR: any, value: any, rest: any): any {
   /* c8 ignore start */
   // Both call sites already test `op === 'functionof'` with params + body, so
@@ -1117,26 +1111,6 @@ function _bindVariateWeightBody(wIR: any, baseIR: any, value: any, rest: any): a
   }
   /* c8 ignore stop */
   const { mapIR } = require('./ir-walk.ts');
-  if (wIR.params.length > 1) {
-    const coords = inferConsumedVector(value, wIR.params.length);
-    /* c8 ignore start */
-    // Unreachable in practice: the base was already walked, and its own walker
-    // consumed these k coordinates off `value` — a short point throws there
-    // first, with consumeVector's own message. Kept so a future base that
-    // consumes differently fails loudly instead of scoring a partly-bound
-    // weight.
-    if (coords == null) {
-      throw new Error('density: weighted(w, M) — w takes ' + wIR.params.length
-        + ' parameters but the scored point does not supply that many '
-        + 'coordinates for the base measure');
-    }
-    /* c8 ignore stop */
-    const bound: Record<string, number> = {};
-    for (let i = 0; i < wIR.params.length; i++) bound[wIR.params[i]] = coords[i];
-    return mapIR(wIR.body, (n: any) =>
-      (n && n.kind === 'ref' && n.name in bound)
-        ? { kind: 'lit', value: bound[n.name] } : n);
-  }
   if (wIR.params.length !== 1) return null;
   // The variate whole. `_baseBoxDim` distinguishes a length-1 vector variate
   // from a scalar one; two or more consumed coordinates settle it outright.
@@ -1156,7 +1130,7 @@ function _bindVariateWeightBody(wIR: any, baseIR: any, value: any, rest: any): a
   } else if (boxK >= 1) {
     const coords = inferConsumedVector(value, boxK);
     /* c8 ignore start */
-    // Unreachable for the same reason as the k-parameter branch above.
+    // The base density walk already checked that the point supplies every axis.
     if (coords == null) {
       throw new Error('density: weighted(w, M) — the scored point does not supply '
         + 'the variate\'s ' + boxK + ' coordinates');
@@ -1179,7 +1153,7 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   // A `functionof` weight is a function of the SAME variate the base just
   // consumed — the §12 generic_dist lowering
   // `weighted(x -> w(x), Lebesgue(reals))`, where `w` is the (non-log)
-  // density of the variate. Bind the weight's parameters to the coordinates
+  // density of the variate. Bind the weight's parameter to the whole variate
   // the base consumed and evaluate the body per atom, adding log(w). Any
   // OTHER ref in the body (a model parameter fed as θ) resolves via
   // refArrays / baseEnv / overlay exactly as a leaf's kwargs do. A plain
@@ -1187,8 +1161,7 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   // evaluateExprN path below.
   //
   // `_bindVariateWeightBody` owns the arity rule and is shared with
-  // walkLogWeighted, so the two spellings §06 admits cannot drift on which
-  // coordinate feeds which parameter.
+  // walkLogWeighted, so weighted and logweighted bind the same whole variate.
   if (wIR && wIR.kind === 'call' && wIR.op === 'functionof'
       && Array.isArray(wIR.params) && wIR.params.length >= 1 && wIR.body) {
     const wBody = _bindVariateWeightBody(wIR, ir.args[1], value, rest);
@@ -1310,10 +1283,8 @@ function walkLogWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: a
     const body = _bindVariateWeightBody(gIR, ir.args[1], value, rest);
     accumulateLogdensityFold(body, refArrays, N, opts, acc, baseEnv, overlay, new Float64Array(N));
   } else if (gIR && gIR.kind === 'call' && gIR.op === 'functionof') {
-    // An ordinary weighting FUNCTION, in log space. §06's arity rule admits
-    // the k-parameter form for `logweighted` too, so bind the parameters the
-    // same way `weighted` does and add the body's value directly (it is
-    // already a log-weight, so no log is taken).
+    // Bind the whole variate exactly as weighted does, then add the body's
+    // log-weight directly.
     const gBody = _bindVariateWeightBody(gIR, ir.args[1], value, rest);
     /* c8 ignore start */
     // The branch condition already established `op === 'functionof'`, which is
@@ -1374,9 +1345,8 @@ function accumulateLogdensityFold(node: any, refArrays: any, N: any, opts: any, 
     }
     return;
   }
-  throw new Error('density: unsupported logweighted functionof weight — expected an '
-    + 'add-fold of logdensityof(M, x), got op='
-    + (node && node.op));
+  applyAtomScalar(node, refArrays, N, baseEnv, overlay, acc,
+    (a: Float64Array, i: number, v: number) => { if (a[i] !== -Infinity) a[i] += v; });
 }
 
 function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
@@ -1653,7 +1623,7 @@ function scalarJointPlan(ir: any): any {
     if (entries.every((entry: any) => !entry.customResolveParams)) {
       const args = leaves.flatMap((leaf: any) =>
         (leaf.args || []).concat(Object.values(leaf.kwargs || {})));
-      plan = { entries,
+      plan = { entries, logpdfs: leaves.map((leaf: any) => exponentialTiltLogpdf(leaf, leaf.op)),
         body: samplerLib.compileProfileBody({ kind: 'call', op: 'vector', args }) };
     }
   }
@@ -1665,7 +1635,7 @@ function scalarJointPlan(ir: any): any {
  *  atom. Repeated suffix and growing overlay copies otherwise cost O(n²).
  *  A new memo generation per leaf preserves changes to the threaded s{i}
  *  names, including names that also occur in a captured environment. */
-function walkScalarJoint(ir: any, plan: any, value: any[], refArrays: any,
+function walkScalarJoint(ir: any, plan: any, value: any[] | Float64Array, refArrays: any,
     N: number, acc: Float64Array, baseEnv: any, overlay: any): any {
   const refNames = Object.keys(refArrays);
   const leaves = ir.args;
@@ -1682,7 +1652,7 @@ function walkScalarJoint(ir: any, plan: any, value: any[], refArrays: any,
       for (let j = 0; j < leaves.length; j++) {
         plan.body.nextPoint();
         const params = samplerLib.resolveParams(leaves[j], plan.entries[j], env);
-        const lp = densityPrims.builtinLogdensityofPositional(leaves[j].op, params, +value[j]);
+        const lp = plan.logpdfs[j](leaves[j].op, params, +value[j], env);
         // Constant atoms share parameter evaluation, but still add each term
         // separately so an enclosing accumulator keeps its rounding order.
         if (atoms === N) acc[i] += lp;
@@ -1774,12 +1744,16 @@ function walkJointFieldsOrPositional(ir: IRNode, value: any, refArrays: any, N: 
   // overlay mechanism, positionally. Threading extra `s{i}` keys is
   // inert for independent joints (they never ref them).
   if (Array.isArray(ir.args)) {
-    // The fused scalar plan uses JS arrays; other carriers retain the
-    // general walker and its observation threading below.
+    // A fully consumed dense real vector can lend its storage to the same
+    // scalar plan. Prefix Values retain the walker's shaped remainder.
+    const scalarValues = valueLib.isValue(value)
+      && value.shape.length === 1 && value.shape[0] === ir.args.length
+      && value.data.length === value.shape[0] && !value.im && valueLib.isDenseStruct(value)
+      ? value.data : value;
     const plan = getOptimization('density.scalarJoint')
-      && Array.isArray(value) && value.length >= ir.args.length
+      && (scalarValues !== value || Array.isArray(value) && value.length >= ir.args.length)
       && !opts.pointsBatched ? scalarJointPlan(ir) : null;
-    if (plan) return walkScalarJoint(ir, plan, value, refArrays, N, acc, baseEnv, overlay);
+    if (plan) return walkScalarJoint(ir, plan, scalarValues, refArrays, N, acc, baseEnv, overlay);
     let cur = value;
     let curOverlay = overlay;
     for (let i = 0; i < ir.args.length; i++) {
@@ -2916,7 +2890,7 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     paramVals[pi] = v;
     // §04 collection axes belong to the value. A leading dimension equal
     // to N is not evidence of an atom axis; only per-atom references are.
-    const usesAtom = !fixed && _exprUsesAny(pIR, refNames);
+    const usesAtom = !fixed && _preparedExprUsesAny(pIR, refNames, opts);
     perAtomFlags[pi] = usesAtom;
     paramUsesAtom[pi] = usesAtom;
     if (sharedParams) sharedParams[pi] = fixed?.scalar !== undefined
@@ -3066,7 +3040,7 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
     const pIR = paramIRs[pi];
     const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
     paramVals[pi] = v;
-    const usesAtom = _exprUsesAny(pIR, refNames);
+    const usesAtom = _preparedExprUsesAny(pIR, refNames, opts);
     paramUsesAtom[pi] = usesAtom;
     if (usesAtom) anyAtomDep = true;
     accessors[pi] = _broadcastParamAccessor(v, usesAtom, N,
@@ -3077,7 +3051,7 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
   // argument) makes the score atom-dependent too: a kernel BOUNDARY like
   // `lam` varies per atom under `logdensityof(L, …)`, so the fan-out-once
   // path below would score every atom at atom 0's value.
-  if (_exprUsesAny(fnHead.body, refNames)) anyAtomDep = true;
+  if (_preparedExprUsesAny(fnHead.body, refNames, opts)) anyAtomDep = true;
 
   const resolved = bcAxes.resolveBroadcastAxes(
     internalNames.map((nm: string, pi: number) => ({
@@ -3952,6 +3926,23 @@ function _exprUsesAny(ir: any, names: string[]): boolean {
   return false;
 }
 
+const DEPENDENCY_QUERIES = Symbol('dependencyQueries');
+
+// Prepared scorers own stable IR. Cache only the scoped dependency predicate,
+// including the effective names after observed fields replace live inputs.
+function _preparedExprUsesAny(ir: any, names: string[], opts: any): boolean {
+  if (names.length === 0) return false;
+  if (ir?.kind !== 'call') return _exprUsesAny(ir, names);
+  const cache = opts?.[DEPENDENCY_QUERIES];
+  if (!cache || !ir || typeof ir !== 'object') return _exprUsesAny(ir, names);
+  const previous = cache.get(ir);
+  if (previous && previous.names.length === names.length
+      && previous.names.every((name: string, i: number) => name === names[i])) return previous.result;
+  const result = _exprUsesAny(ir, names);
+  cache.set(ir, { names: names.slice(), result });
+  return result;
+}
+
 function _anyKwUsesPerAtom(kwargsIR: Record<string, any>, refNames: string[]): boolean {
   for (const k in kwargsIR) {
     if (Object.prototype.hasOwnProperty.call(kwargsIR, k)
@@ -4119,6 +4110,7 @@ function logDensityN(ir: any, value: any, refArrays: any, count: any, opts: any)
  * A custom pipeline stage may inspect or mutate values, so pass those hooks a
  * disposable copy without cache access; the retained snapshot stays private. */
 function _prepareFixedDensityN(ir: any, observed: any, fixedEnv: any) {
+  let dependencies = new WeakMap();
   const prepared = fixedLikelihood.prepareObservations(observed, (leaf: any) => {
     const nIR = leaf.kwargs?.n ?? leaf.args?.[0];
     try {
@@ -4128,10 +4120,11 @@ function _prepareFixedDensityN(ir: any, observed: any, fixedEnv: any) {
   }, (parameter: any) => samplerLib.evaluateExpr(parameter, fixedEnv));
   return (refArrays: any, count: number, opts: any) => {
     if (_DENSITY_PIPELINE.length) {
+      dependencies = new WeakMap();
       return logDensityN(ir, fixedLikelihood.copyObservations(prepared.snapshot), refArrays, count, opts);
     }
     return logDensityN(ir, prepared.snapshot, refArrays, count,
-      { ...opts, [FIXED_OBSERVATIONS]: prepared });
+      { ...opts, [FIXED_OBSERVATIONS]: prepared, [DEPENDENCY_QUERIES]: dependencies });
   };
 }
 
