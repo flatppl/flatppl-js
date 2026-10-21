@@ -323,6 +323,8 @@ function _promoteReificationBoundaries(node: any, bindings: any, promoted: strin
   let out: any = node;
   let changed = false;
   for (const k in node) {
+    // Source locations hold no reification, and every node carries one.
+    if (k === 'loc') continue;
     const r = _promoteReificationBoundaries(node[k], bindings, promoted);
     if (r !== node[k]) {
       if (!changed) { out = { ...node }; changed = true; }
