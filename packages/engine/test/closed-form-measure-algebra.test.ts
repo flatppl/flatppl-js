@@ -2399,7 +2399,7 @@ test('opaque mass: a stochastic joint keeps component mass before explicit norma
 S = superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0)))
 theta ~ normalize(S)
 A = joint(t = S, xx = Normal(theta, 1.0))
-P = lawof(normalize(A))
+P = lawof(draw(normalize(A)))
 tm = totalmass(A)
 ptm = totalmass(P)
 `;
@@ -2410,7 +2410,7 @@ ptm = totalmass(P)
     `named-joint superposition totalmass: got ${tm.samples[0]}, expected 3`);
   const ptm = await ctx.getMeasure('ptm');
   assert.ok(Math.abs(ptm.samples[0] - 1) < 1e-11,
-    `normalized stochastic measure's law totalmass: got ${ptm.samples[0]}, expected 1`);
+    `normalized draw's law totalmass: got ${ptm.samples[0]}, expected 1`);
 });
 
 test('opaque mass: an INDEPENDENT superposition factor still contributes whole', async () => {
