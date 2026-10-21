@@ -312,9 +312,10 @@ test('a NON-unit bare Uniform base is declined (its density is 1/(b−a))', () =
   }));
 });
 
-test('a weight arity that is neither 1 nor the axis count is declined (§06)', () => {
+test('a weight callback must receive its whole variate as one argument (§06)', () => {
   const box = lebesgue({ kind: 'call', op: 'cartprod', args: [interval(0, 1), interval(0, 1)] });
-  assert.ok(crn.crnRecognize(normalizeIR(weightedOver(box, ['a', 'b'], XREF))), '2 params, 2 axes');
+  assert.equal(crn.crnRecognize(normalizeIR(weightedOver(box, ['a', 'b'], XREF))), null,
+    '2 params over 2 axes must not split the vector');
   assert.ok(crn.crnRecognize(normalizeIR(weightedOver(box, ['a'], XREF))), '1 param, 2 axes');
   assert.equal(crn.crnRecognize(normalizeIR(weightedOver(box, ['a', 'b', 'c'], XREF))), null,
     '3 params over 2 axes is an arity error, not a guess');

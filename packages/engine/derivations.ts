@@ -1486,37 +1486,7 @@ function _classifyWeightedByFunction(
   } else {
     return null;
   }
-  if (!Array.isArray(fnIR.params) || fnIR.params.length < 1 || !fnIR.body) return null;
-  // MULTI-PARAMETER weight over an N-D box base. Spec §06 says the weight is
-  // "a function of the variate x of M"; for a box that variate is a k-array
-  // (§03), and a k-parameter weight takes its coordinates one per parameter,
-  // in axis order. This is the same axis↔parameter-by-position convention
-  // mat-density.ts's `makeIntegrandND` already uses for the §12
-  // `normalize(truncate(weighted(w, Lebesgue), cartprod))` normalizer, so the
-  // sampling and quadrature paths agree on which coordinate feeds which
-  // parameter. The arity must match the box dimension exactly — a mismatch
-  // has no coordinate for some parameter and is refused, not guessed.
-  //
-  // The functionof node is kept VERBATIM here (no parameter substitution):
-  // its two consumers bind the parameters themselves — matWeighted to the
-  // box's per-axis sample columns, density.ts's walkWeighted to the k
-  // scalars the base consumed at the scored point.
-  //
-  // The per-axis rule needs k >= 2. §06 states the arity rule as "A
-  // one-parameter weight receives the variate whole. If the variate is a
-  // k-element array with k >= 2, a weight of exactly k scalar parameters
-  // instead receives one component per parameter, in order", so at ONE axis
-  // only the whole-variate reading applies, and the variate is the length-1
-  // vector §03/§07 give a one-component cartprod. The one-parameter case
-  // therefore always falls through to the whole-array substitution below.
-  const boxAxes = _boxAxesOf(baseName, bindings);
-  if (fnIR.params.length > 1) {
-    if (!boxAxes || boxAxes !== fnIR.params.length) return null;
-    return {
-      kind: 'weighted', from: baseName, weightIR: fnIR, boxAxes,
-      isLog: !!isLog, isVariateWeight: true,
-    };
-  }
+  if (!Array.isArray(fnIR.params) || fnIR.params.length !== 1 || !fnIR.body) return null;
   const paramName = fnIR.params[0];
   // Inline lambdas do not pass through the named-function self-containment
   // pass. Expose formals behind derived reification clones before replacing
@@ -1542,31 +1512,6 @@ function _classifyWeightedByFunction(
     kind: 'weighted', from: baseName, weightIR: synth,
     isLog: !!isLog, isVariateWeight: true,
   };
-}
-
-// Length of a base measure's k-element-array variate, else null. §06 states
-// the weight-arity rule over "the variate", so this is not a Lebesgue-only
-// question: an `iid(M, k)` base carries the same k-element variate and takes
-// the same per-component reading.
-//
-// A Lebesgue box re-classifies rather than reading a derivations map, because
-// a weight classifier runs before the base's own derivation is necessarily
-// built; `classifyLebesgueBox` is pure, so this is a cheap re-read. Any other
-// base reads the variate off the binding's inferred measure type, whose
-// `domain` typeinfer already resolved to the variate's shape.
-function _boxAxesOf(baseName: string, bindings: any): number | null {
-  const b = bindings && bindings.get(baseName);
-  if (!b) return null;
-  if (b.ir && b.ir.kind === 'call' && b.ir.op === 'Lebesgue') {
-    const d = classifyLebesgueBox(b.ir, null, bindings);
-    return d ? d.axes.length : null;
-  }
-  const t = b.inferredType;
-  if (!t || t.kind !== 'measure') return null;
-  const dom = t.domain;
-  if (!dom || dom.kind !== 'array' || dom.rank !== 1) return null;
-  const k = Array.isArray(dom.shape) ? dom.shape[0] : null;
-  return typeof k === 'number' && k >= 2 ? k : null;
 }
 
 function classifyLogWeighted(

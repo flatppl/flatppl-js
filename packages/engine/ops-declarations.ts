@@ -1266,12 +1266,12 @@ ops.register({
 
 function _reduceLogical(ir: any, ctx: any): any {
   const irArgs = ir.args || [];
-  if (irArgs.length !== 2) {
-    throw new Error('reduce: expected 2 args (function, xs), got ' + irArgs.length);
+  if (irArgs.length !== 2 && irArgs.length !== 3) {
+    throw new Error('reduce: expected 2 or 3 args (function, xs, optional p), got ' + irArgs.length);
   }
   const fn = ctx.resolveFn(irArgs[0], ctx.env);
-  if (!fn || fn.params.length !== 2) {
-    throw new Error('reduce: function arg must be a binary function');
+  if (!fn || fn.params.length !== irArgs.length) {
+    throw new Error('reduce: callback arity does not match its whole inputs');
   }
   const xsRaw: any = ctx.evaluateExpr(irArgs[1], ctx.env);
   const xs: any = valueLib.isValue(xsRaw) ? xsRaw.data : xsRaw;
@@ -1282,6 +1282,7 @@ function _reduceLogical(ir: any, ctx: any): any {
     throw new Error('reduce: empty vector has no initial value');
   }
   const elemEnv = Object.assign({}, ctx.env);
+  if (irArgs.length === 3) elemEnv[fn.params[2]] = ctx.evaluateExpr(irArgs[2], ctx.env);
   let acc: any = xs[0];
   for (let i = 1; i < xs.length; i++) {
     elemEnv[fn.params[0]] = acc;
@@ -1304,12 +1305,12 @@ const scanPlans = new WeakMap<object, any>();
 /** §04 Reductions: evaluate f(acc, next) in a fresh frame at each step. */
 function _scanLogical(ir: any, ctx: any): any {
   const irArgs = ir.args || [];
-  if (irArgs.length !== 3) {
-    throw new Error('scan: expected 3 args (function, init, xs), got ' + irArgs.length);
+  if (irArgs.length !== 3 && irArgs.length !== 4) {
+    throw new Error('scan: expected 3 or 4 args (function, init, xs, optional p), got ' + irArgs.length);
   }
   const fn = ctx.resolveFn(irArgs[0], ctx.env);
-  if (!fn || fn.params.length !== 2) {
-    throw new Error('scan: function arg must be a binary function');
+  if (!fn || fn.params.length !== irArgs.length - 1) {
+    throw new Error('scan: callback arity does not match its whole inputs');
   }
   const init = ctx.evaluateExpr(irArgs[1], ctx.env);
   const xsRaw: any = ctx.evaluateExpr(irArgs[2], ctx.env);
@@ -1330,6 +1331,7 @@ function _scanLogical(ir: any, ctx: any): any {
     scanPlans.set(fn.body, plan);
   }
   const elemEnv = Object.assign({}, ctx.env, { __bodyEval: plan.bodyEval });
+  if (irArgs.length === 4) elemEnv[fn.params[2]] = ctx.evaluateExpr(irArgs[3], ctx.env);
   try {
     let acc = init;
     for (let i = 0; i < n; i++) {
@@ -1353,12 +1355,12 @@ ops.register({
 
 function _filterLogical(ir: any, ctx: any): any {
   const irArgs = ir.args || [];
-  if (irArgs.length !== 2) {
-    throw new Error('filter: expected 2 args (predicate, data), got ' + irArgs.length);
+  if (irArgs.length !== 2 && irArgs.length !== 3) {
+    throw new Error('filter: expected 2 or 3 args (predicate, data, optional p), got ' + irArgs.length);
   }
   const fn = ctx.resolveFn(irArgs[0], ctx.env);
-  if (!fn || fn.params.length !== 1) {
-    throw new Error('filter: predicate must be a unary function');
+  if (!fn || fn.params.length !== irArgs.length - 1) {
+    throw new Error('filter: callback arity does not match its whole inputs');
   }
   const dataRaw = ctx.evaluateExpr(irArgs[1], ctx.env);
   const isTable = dataRaw && dataRaw.__table__ === true;
@@ -1369,6 +1371,7 @@ function _filterLogical(ir: any, ctx: any): any {
       + (data === null ? 'null' : typeof data) + ')');
   }
   const elemEnv = Object.assign({}, ctx.env);
+  if (irArgs.length === 3) elemEnv[fn.params[1]] = ctx.evaluateExpr(irArgs[2], ctx.env);
   const kept: any[] = [];
   const n = isTable ? data.nrows : isValue ? data.shape[0] : data.length;
   for (let i = 0; i < n; i++) {

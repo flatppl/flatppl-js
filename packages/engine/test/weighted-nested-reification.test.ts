@@ -111,7 +111,7 @@ pw(p, q) = f(p, q)
 }
 
 const SQUARE = `
-M = weighted(pw, Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0))))
+M = weighted(v -> pw(v[1], v[2]), Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0))))
 `;
 
 // =====================================================================
@@ -153,7 +153,7 @@ test('the score is exact — it does not move with the sample count', async () =
 
 test('totalmass over the ASYMMETRIC box is 11/3, not 8/3', async () => {
   const got = await scoreOf(permutedModel('2.0') + `
-Z = totalmass(weighted(pw, Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0)))))
+Z = totalmass(weighted(v -> pw(v[1], v[2]), Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 2.0)))))
 `, 'Z');
   assert.ok(Math.abs(got - 11 / 3) / (11 / 3) < 0.01,
     'totalmass ' + got + ' ≠ 11/3 = ' + (11 / 3) + ' within 1%');

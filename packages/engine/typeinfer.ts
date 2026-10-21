@@ -463,7 +463,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (calleeT && calleeT.kind === 'failed') {
         return write(T.failed('expression-headed call cascade'), expr);
       }
-      if (calleeT && calleeT.kind === 'deferred') return write(T.deferred(), expr);
+      if (calleeT && ['any', 'deferred', 'var'].includes(calleeT.kind)) {
+        return write(T.deferred(), expr);
+      }
       return write(T.failed('expression-headed call: callee must evaluate to a '
         + 'user-defined callable (function or kernel), got '
         + T.show(calleeT)), expr);
@@ -511,26 +513,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       case 'lawof':     return write(inferLawof(expr, scopes), expr);
       case 'record':    return write(inferRecord(expr, scopes), expr);
       case 'table':     return write(inferTable(expr, scopes), expr);
-      case 'filter': {
-        const args = expr.args || [];
-        const kwargs = expr.kwargs || {};
-        const pred = kwargs.pred || args[0];
-        const data = kwargs.data || args[1];
-        if (pred && data && args.length + Object.keys(kwargs).length === 2
-            && Object.keys(kwargs).every(k => k === 'pred' || k === 'data')) {
-          const dataT = inferExpr(data, scopes);
-          if (dataT?.kind === 'table') {
-            inferExpr(pred, scopes);
-            // §07 filter preserves columns. Every nested table loses the same
-            // rows, so its row count is dynamic too.
-            const filtered = (t: any): any => t.kind === 'table'
-              ? T.table(Object.fromEntries(Object.entries(t.columns)
-                .map(([n, col]) => [n, filtered(col)])), '%dynamic') : t;
-            return write(filtered(dataT), expr);
-          }
-        }
-        break;
-      }
+      case 'filter': case 'reduce': case 'scan':
+        return write(inferCollectionCallback(expr, scopes), expr);
       case 'cat':       return write(inferCat(expr, scopes), expr);
       case 'joint':     return write(inferJoint(expr, scopes), expr);
       case 'tuple':     return write(inferTuple(expr, scopes), expr);
@@ -1203,34 +1187,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const isFunction = wT && wT.kind === 'function';
     const isDeferred = wT && (wT.kind === 'deferred' || wT.kind === 'any'
       || wT.kind === 'var');
-    if (args.length === 3) {
-      const parameterType = inferExpr(args[2], scopes);
-      if (!isDeferred && (!isFunction || wT.inputs.length !== 2)) {
-        diagnostics.push({
-          severity: 'error',
-          message: op + ': explicit parameters require a function with two inputs, f(x, p)',
-          loc: args[0].loc,
-        });
-        return T.failed(op + ' weight inputs');
-      }
-      const reif = _reificationWithArity(args[0], 2);
-      const callable = resolveBindingRefs(args[0]);
-      let result = reif ? _bodyTypeUnder(reif, [mT.domain, parameterType], scopes, true) : wT.result;
-      if (!reif && (callable?.kind === 'const'
-          || (callable?.kind === 'ref' && callable.ns === 'self'
-            && builtins.BUILTIN_FUNCTIONS.has(callable.name)))) {
-        const names = ['%weight_variate', '%weight_parameter'];
-        const scope = new Map([[names[0], mT.domain], [names[1], parameterType]]);
-        result = inferCall({
-          kind: 'call', op: callable.name, loc: expr.loc,
-          args: names.map(name => ({ kind: 'ref', ns: '%local', name, loc: expr.loc })),
-        }, scopes.concat([scope]));
-      }
+    const scalarFormT = args.length === 2 && _scalarFormWeightRefusal(expr, args, mT, scopes);
+    if (scalarFormT) return scalarFormT;
+    if (isFunction || isDeferred || args.length === 3) {
+      const inputs = [mT.domain];
+      if (args.length === 3) inputs.push(inferExpr(args[2], scopes));
+      const result = inferCallback(args[0], inputs, scopes, op, expr.loc);
       if (result?.kind === 'failed') return result;
       if (result && !['any', 'deferred', 'failed', 'var'].includes(result.kind)
           && !(result.kind === 'scalar' && ['integer', 'real'].includes(result.prim))) {
         diagnostics.push({
-          severity: 'error', message: op + ': f(x, p) must return a scalar real weight',
+          severity: 'error', message: op + ': the callback must return a scalar real weight',
           loc: args[0].loc,
         });
         return T.failed(op + ' weight result');
@@ -1272,8 +1239,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return T.failed(op + ' arg 1 sign');
       }
     }
-    const scalarFormT = _scalarFormWeightRefusal(expr, args, mT, scopes);
-    if (scalarFormT) return scalarFormT;
     return mT;  // result is the same measure type
   }
 
@@ -1297,20 +1262,113 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // Most callers use speculative inference. Explicit weight parameters require
   // the ordinary application checks and retain their diagnostics.
   function _bodyTypeUnder(reif: any, paramTypes: any[], scopes: any, reportErrors = false): any {
-    const scope = new Map();
+    const scope: any = new Map();
+    scope.bindingNames = new Set(identifierBoundParams(reif) || []);
     for (let i = 0; i < reif.params.length; i++) scope.set(reif.params[i], paramTypes[i]);
     const savedLen = diagnostics.length;
-    const t: any = inferExpr(reif.body, scopes.concat([scope]));
+    const t: any = inferExpr(copyForInference(reif.body), scopes.concat([scope]));
     if (!reportErrors) diagnostics.length = savedLen;
     return t;
   }
 
+  /** §04 callback invocation binds each input whole, including final p. */
+  function inferCallback(fExpr: any, inputs: any[], scopes: any, op: string, loc: any): any {
+    const fn = resolveBindingRefs(fExpr);
+    if (fn?.op === 'bijection') return inferCallback(fn.args[0], inputs, scopes, op, loc);
+    const fnT = inferExpr(fExpr, scopes);
+    const builtin = bareBuiltinCallable(fn, scopes);
+    if (fnT?.kind === 'failed' && !builtin) return fnT;
+    const names = inputs.map((_: any, i: number) => '%callback' + i);
+    const scope = new Map(names.map((name: string, i: number) => [name, inputs[i]]));
+    const args = names.map((name: string) => ({ kind: 'ref', ns: '%local', name, loc }));
+    if (builtin) {
+      return inferCall({ kind: 'call', op: builtin, args, loc }, scopes.concat([scope]));
+    }
+    if (!T.isCallable(fnT) && !['any', 'deferred', 'var'].includes(fnT?.kind)) {
+      diagnostics.push({ severity: 'error', loc,
+        message: op + ': expected a callable, got ' + T.show(fnT) });
+      return T.failed(op + ' callback');
+    }
+    if (fnT.inputs?.length && fnT.inputs.length !== inputs.length) {
+      diagnostics.push({ severity: 'error', loc,
+        message: op + ': callback receives ' + inputs.length + ' whole inputs, but declares '
+          + fnT.inputs.length });
+      return T.failed(op + ' callback inputs');
+    }
+    if (fn?.op === 'functionof' && fn.params?.length === inputs.length) {
+      return _bodyTypeUnder(fn, inputs, scopes, true);
+    }
+    if (fn?.kind === 'ref' && fnT.inputs?.length === inputs.length) {
+      // Named arguments also prevent a sole record variate from auto-splatting.
+      const kwargs = Object.fromEntries(fnT.inputs.map((input: any, i: number) => [input.name, args[i]]));
+      return inferUserCall({ kind: 'call', target: fn, args: [], kwargs, loc }, scopes.concat([scope]));
+    }
+    return fnT.result || T.deferred();
+  }
+
+  /** §04 reductions and §07 filtering share the optional final input rule. */
+  function inferCollectionCallback(expr: any, scopes: any): any {
+    const op = expr.op;
+    const names = op === 'scan' ? ['f', 'init', 'xs', 'p']
+      : op === 'filter' ? ['pred', 'data', 'p'] : ['f', 'xs', 'p'];
+    const args = names.map((name, i) => expr.kwargs?.[name] || expr.args?.[i]);
+    const required = names.length - 1;
+    const positional = expr.args?.length || 0;
+    const keys = Object.keys(expr.kwargs || {});
+    if (keys.some(key => !names.includes(key) || names.indexOf(key) < positional)) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: op + ': unknown or duplicate named input' });
+      return T.failed(op + ' named inputs');
+    }
+    const count = positional + keys.length;
+    if (count < required || count > names.length || args.slice(0, required).some(a => !a)) {
+      return arityError(op, required + ' or ' + names.length, count, expr.loc);
+    }
+    const data = inferExpr(args[required - 1], scopes);
+    if (data?.kind === 'failed') return data;
+    const table = op === 'filter' && data?.kind === 'table';
+    if (!table && data?.kind !== 'array' && !['any', 'deferred', 'var'].includes(data?.kind)) {
+      diagnostics.push({ severity: 'error', loc: expr.loc, message: op + ': expected a vector' + (op === 'filter' ? ' or table' : '') });
+      return T.failed(op + ' data');
+    }
+    if (data?.kind === 'array' && data.rank !== 1) {
+      diagnostics.push({ severity: 'error', loc: expr.loc, message: op + ': expected a vector' });
+      return T.failed(op + ' data rank');
+    }
+    const elem = table ? T.rowRecordType(data) : data?.elem || T.any();
+    let state = op === 'scan' ? inferExpr(args[1], scopes) : elem;
+    const inputs = op === 'filter' ? [elem] : [state, elem];
+    if (args[required]) inputs.push(inferExpr(args[required], scopes));
+    const result = inferCallback(args[0], inputs, scopes, op, expr.loc);
+    if (result?.kind === 'failed') return result;
+    if (op === 'filter' && T.unify(T.BOOLEAN, result, new Map()) == null) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: op + ': callback must return boolean' });
+      return T.failed(op + ' callback result');
+    }
+    if (op !== 'filter') {
+      const widened = T.unify(result, state, new Map());
+      if (!T.isValue(result) || (!widened && !T.unify(state, result, new Map()))) {
+        diagnostics.push({ severity: 'error', loc: expr.loc,
+          message: op + ': callback must return the accumulator value type' });
+        return T.failed(op + ' callback result');
+      }
+      if (widened && !['any', 'deferred', 'var'].includes(result.kind)) state = result;
+    }
+    if (op === 'reduce') return state;
+    if (table) {
+      const filtered = (t: any): any => t.kind === 'table'
+        ? T.table(Object.fromEntries(Object.entries(t.columns)
+          .map(([n, col]) => [n, filtered(col)])), '%dynamic') : t;
+      return filtered(data);
+    }
+    return T.array(1, [op === 'scan' ? data?.shape?.[0] || '%dynamic' : '%dynamic'], state);
+  }
+
   // §06 `weighted`: "$f$ is a non-negative weight (a constant or a function of
   // the variate $x$ of $M$)" — so the weight is REAL-VALUED — and its arity
-  // rule: "A one-parameter weight receives the variate whole. If the variate is
-  // a $k$-element array with $k \geq 2$, a weight of exactly $k$ scalar
-  // parameters instead receives one component per parameter, in order". Over a
-  // measure whose variate is an array, a ONE-parameter weight is therefore a
+  // rule gives the callback the variate whole. Over a measure whose variate
+  // is an array, a one-parameter weight is therefore a
   // function OF THAT ARRAY, at k = 1 as much as above it: §03/§07 make
   // `cartprod(<scalar set>)` the set of LENGTH-1 VECTORS.
   //
@@ -1409,13 +1467,28 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return t;
   }
 
+  // Bare builtin callables infer as %any until applied, but are still objects
+  // rather than values. Resolve aliases before checking a reification input.
+  function bareBuiltinCallable(expr: any, scopes: any): string | null {
+    if (expr?.kind === 'ref' && scopes.some((scope: any) =>
+        scope.bindingNames?.has(expr.name))) return null;
+    const resolved = resolveBindingRefs(expr);
+    return (resolved?.kind === 'const' || (resolved?.kind === 'ref' && resolved.ns === 'self'
+        && !loweredModule.bindings.has(resolved.name)))
+      && (builtins.BUILTIN_FUNCTIONS.has(resolved.name)
+        || builtins.MEASURE_PRODUCING.has(resolved.name)) ? resolved.name : null;
+  }
+
   function inferLawof(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 1) return arityError('lawof', 1, args.length, expr.loc);
     const at: any = inferExpr(args[0], scopes);
-    if (at && at.kind === 'failed') return T.failed('lawof cascade');
-    if (T.isMeasure(at)) return at;             // identity law: lawof(measure) = measure
-    if (T.isValue(at))   return T.measure(at);
+    if (at && at.kind === 'failed' && !bareBuiltinCallable(args[0], scopes)) {
+      return T.failed('lawof cascade');
+    }
+    if (T.isValue(at) && at.kind !== 'tuple' && !bareBuiltinCallable(args[0], scopes)) {
+      return T.measure(at);
+    }
     diagnostics.push({
       severity: 'error',
       message: 'lawof expects a value-typed argument, got ' + T.show(at),
@@ -4198,13 +4271,26 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
   function inferPushfwd(expr: any, scopes: any): any {
     const args = expr.args || [];
-    if (args.length !== 2) return arityError('pushfwd', '2', args.length, expr.loc);
+    if (args.length !== 2 && args.length !== 3) return arityError('pushfwd', '2 or 3', args.length, expr.loc);
     // arg 0 is the function; we don't statically check its type
     // here (callable-type tracking is the orchestrator's job).
     inferExpr(args[0], scopes);
     const m2 = inferExpr(args[1], scopes);
+    const codomain = (domain: any) => {
+      if (args.length === 2) return _pushfwdCodomain(args[0], domain, scopes);
+      const inputs = [domain, inferExpr(args[2], scopes)];
+      const cod = inferCallback(args[0], inputs, scopes, 'pushfwd', expr.loc);
+      const fn = resolveBindingRefs(args[0]);
+      if (fn?.op === 'bijection') {
+        inferCallback(fn.args[1], [cod, inputs[1]], scopes, 'pushfwd inverse', expr.loc);
+        const lv = inferExpr(fn.args[2], scopes);
+        if (lv?.kind !== 'scalar') inferCallback(fn.args[2], inputs, scopes, 'pushfwd logvolume', expr.loc);
+      }
+      return cod?.kind === 'failed' || T.isValue(cod) ? cod : null;
+    };
     if (T.isMeasure(m2)) {
-      const cod = _pushfwdCodomain(args[0], m2.domain, scopes);
+      const cod = codomain(m2.domain);
+      if (cod?.kind === 'failed') return cod;
       return T.measure(cod || T.REAL);
     }
     if (m2 && m2.kind === 'kernel') {
@@ -4212,7 +4298,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // input signature, specialize the output variate to f's codomain.
       const outMeasure = m2.result;
       const baseDomain = (outMeasure && T.isMeasure(outMeasure)) ? outMeasure.domain : null;
-      const cod = baseDomain ? _pushfwdCodomain(args[0], baseDomain, scopes) : null;
+      const cod = baseDomain ? codomain(baseDomain) : null;
+      if (cod?.kind === 'failed') return cod;
       return T.kernelType(m2.inputs || [], T.measure(cod || T.REAL));
     }
     if (m2 && m2.kind === 'failed') return T.failed('pushfwd cascade');
@@ -4384,6 +4471,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     const stateT: any = inferExpr(args[1], scopes);
     const nT: any = inferExpr(args[2], scopes);
+    const inputs = [stateT];
+    if (args.length === 4) inputs.push(inferExpr(args[3], scopes));
+    inferCallback(args[0], inputs, scopes, 'markovchain', expr.loc);
     if (T.unify(T.INTEGER, nT, new Map()) == null) {
       diagnostics.push({
         severity: 'error',
@@ -4432,6 +4522,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     const stateT: any = inferExpr(args[1], scopes);
     const xsT: any = inferExpr(args[2], scopes);
+    const inputs = [stateT, xsT?.elem || T.any()];
+    if (args.length === 4) inputs.push(inferExpr(args[3], scopes));
+    inferCallback(args[0], inputs, scopes, 'kscan', expr.loc);
     if (xsT && xsT.kind === 'failed') return T.failed('kscan cascade');
     if (xsT && (xsT.kind === 'scalar' || T.isMeasure(xsT))) {
       diagnostics.push({
@@ -4866,15 +4959,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
 
     const innerScopes = scopes.concat([newScope]);
 
-    // §04 §sec:kernelof: "`kernelof(x, kwargs...)` reifies (typically
-    // stochastic) value nodes to Markov kernels. `x` must not be a measure."
-    // The rule does NOT fall out of the lowered `functionof(lawof(x), …)`
-    // form: §sec:lawof gives `lawof` its own identity law on a measure
-    // argument, so `inferLawof` accepts one and the illegal spelling used to
-    // type clean. Check the pre-lowering argument instead. §sec:kernelof
-    // costs no expressiveness — §sec:functionof-measure gives
-    // `functionof(m, …)` for the conditional kernel and
-    // `functionof(lawof(m), …)` for the marginal.
+    // kernelof reifies a value node. Inspect its pre-lowering argument so
+    // measure and kernel mistakes get a direct diagnostic at the source.
     const kernelofArg = (expr.wasKernelof && expr.body
       && expr.body.kind === 'call' && expr.body.op === 'lawof'
       && (expr.body.args || []).length === 1) ? expr.body.args[0] : null;
@@ -4883,9 +4969,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // §04 names only the measure case. A kernel body fails the same clause
       // one step earlier, so it gets its own wording rather than being told
       // it is a measure.
+      const builtin = bareBuiltinCallable(kernelofArg, innerScopes);
       const what = (T.isMeasure(argT) || broadcastYieldsMeasure(kernelofArg))
         ? 'a measure'
-        : (argT && argT.kind === 'kernel') ? 'a kernel' : null;
+        : (argT && argT.kind === 'kernel') || (builtin && builtins.MEASURE_PRODUCING.has(builtin))
+          ? 'a kernel' : null;
       if (what) {
         const fix = what === 'a measure'
           ? 'use `functionof` to reify a measure node to a kernel directly, '

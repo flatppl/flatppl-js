@@ -81,7 +81,7 @@ test('an unresolvable body ref leaves the size dynamic, not an op gap', () => {
   const v = resolve(`
 xs = [1.0, 5.0, 9.0]
 cut = elementof(reals)
-kept = filter(fn(_ > cut), xs)
+kept = filter((x, p) -> x > p, xs, cut)
 n = lengthof(kept)
 `, 'n');
   assert.equal(v, undefined);
