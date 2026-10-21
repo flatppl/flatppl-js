@@ -84,6 +84,9 @@ async function timeMaterialise(
 
 // Random-intercepts (iid-composite kernel body), cell axis K = G groups,
 // inner iid axis = Npg. x_per_group is a G×Npg fixed regressor matrix.
+// The kernel body is a measure, so it is reified with `functionof` (§04
+// "Reifying measure-valued expressions to kernels"; `kernelof` takes a value
+// node). Every input, including the shared draws, is a boundary input.
 function genRandomIntercepts(G: number, Npg: number): string {
   const rows: string[] = [];
   for (let i = 0; i < G; i++) {
@@ -95,16 +98,17 @@ function genRandomIntercepts(G: number, Npg: number): string {
 G = ${G}
 N_per_group = ${Npg}
 mu_int ~ Normal(0, 10)
-tau_int ~ truncate(Normal(0, 5), interval(0, inf))
+tau_int ~ normalize(truncate(Normal(0, 5), interval(0, inf)))
 intercepts ~ iid(Normal(mu_int, tau_int), G)
 slope ~ Normal(0, 1)
-sigma ~ truncate(Normal(0, 1), interval(0, inf))
+sigma ~ normalize(truncate(Normal(0, 1), interval(0, inf)))
 x_per_group = [${rows.join(', ')}]
-group_kernel = kernelof(
-  iid(Normal(mu = intercept + slope .* x_group, sigma = sigma), N_per_group),
-  intercept = intercept,
-  x_group = x_group)
-y_obs = broadcast(group_kernel, intercept = intercepts, x_group = x_per_group)
+group_kernel = functionof(
+  iid(Normal(mu = _intercept_ + _slope_ .* _x_group_, sigma = _sigma_), N_per_group),
+  intercept = _intercept_,
+  x_group = _x_group_, slope = _slope_, sigma = _sigma_)
+y_obs = broadcast(group_kernel, intercept = intercepts,
+                  x_group = x_per_group, slope = slope, sigma = sigma)
 `;
 }
 
