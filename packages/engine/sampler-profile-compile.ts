@@ -431,17 +431,9 @@ function _compileCall(node: any, S: Session): any {
             if (record.fields[i].name === key) selected = i;
           }
           if (selected !== -1) {
-            const fields = record.fields.map((field: any) => _compileNode(field.value, S));
             // Keep eager field evaluation and its errors, but avoid allocating
             // an intermediate record only to read one of its fields.
-            return function (env: any) {
-              let result;
-              for (let i = 0; i < fields.length; i++) {
-                const value = fields[i](env);
-                if (i === selected) result = value;
-              }
-              return result;
-            };
+            return _compileRecordFields(record.fields, S, selected);
           }
         }
         const object = _compileNode(node.args[0], S);
@@ -453,14 +445,7 @@ function _compileCall(node: any, S: Session): any {
     }
     if (op === 'record' && Array.isArray(node.fields)
         && !(node.fields.length === 0 && node.args?.length === 1)) {
-      const fields = node.fields.map((field: any) => ({
-        name: field.name, value: _compileNode(field.value, S),
-      }));
-      return function (env: any) {
-        const out: Record<string, any> = {};
-        for (const field of fields) out[field.name] = field.value(env);
-        return out;
-      };
+      return _compileRecordFields(node.fields, S);
     }
   }
   // Anything without an ARITH_OPS entry is opaque. That INCLUDES the
@@ -492,6 +477,47 @@ function _compileCall(node: any, S: Session): any {
     return function (env: any) { return f(a0(env), a1(env)); };
   }
   return _compileVariadic(op, rawArgs, S, declared);
+}
+
+/**
+ * Compile §03 record fields at fixed call sites, retaining eager evaluation.
+ * Hosts that prohibit string compilation keep the ordinary closure loop.
+ */
+function _compileRecordFields(fields: any[], S: Session, selected = -1): any {
+  const names = fields.map((field: any) => field.name);
+  const values = fields.map((field: any) => _compileNode(field.value, S));
+  if (names.length && names.every((name: any) => typeof name === 'string'
+      && name !== '__proto__' && name !== '__table__')) {
+    const statements = names.map((name: string, i: number) =>
+      (selected < 0 ? 'out[' + JSON.stringify(name) + '] = '
+        : i === selected ? 'result = ' : '') + 'values[' + i + '](env);');
+    const body = selected < 0 ? 'const out = {};' : 'let result;';
+    try {
+      // Emit only literal property names and indices; child closures retain
+      // their original evaluation, errors, and memoization.
+      // eslint-disable-next-line no-new-func
+      return new Function('values', '"use strict"; return function (env) {'
+        + body + statements.join('') + 'return ' + (selected < 0 ? 'out' : 'result') + ';};')(values);
+    } catch (error) {
+      // CSP can prohibit string compilation while allowing ordinary closures.
+      if (!(error instanceof EvalError)) throw error;
+    }
+  }
+  if (selected < 0) {
+    return function (env: any) {
+      const out: Record<string, any> = {};
+      for (let i = 0; i < names.length; i++) out[names[i]] = values[i](env);
+      return out;
+    };
+  }
+  return function (env: any) {
+    let result;
+    for (let i = 0; i < values.length; i++) {
+      const value = values[i](env);
+      if (i === selected) result = value;
+    }
+    return result;
+  };
 }
 
 // Arity 0 and 3-plus. Split from the arity-1/2 arms so the hot closures
