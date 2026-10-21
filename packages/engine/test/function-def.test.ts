@@ -93,9 +93,17 @@ test('function def: a bare call is still not a statement', () => {
 test('function def: a reserved name cannot be defined', () => {
   // `all` is reserved at binding; the defined name follows binding-name rules.
   assert.ok(errors('all(x) = x + 1\n').length > 0, '`all(x) = …` must be rejected');
-  for (const name of ['im', 'pi', 'inf']) {
+  for (const name of ['self', 'base', 'in']) {
     assert.ok(errors(`f(${name}) = ${name}`).length > 0);
     assert.ok(errors(`f = ${name} -> ${name}`).length > 0);
     assert.ok(errors(`f = (x, ${name}) -> x + ${name}`).length > 0);
+  }
+});
+
+test('function def: the numeric constants are valid argument names', () => {
+  for (const name of ['im', 'pi', 'inf']) {
+    assert.deepEqual(errors(`f(${name}) = ${name}`), []);
+    assert.deepEqual(errors(`f = ${name} -> ${name}`), []);
+    assert.deepEqual(errors(`f = (x, ${name}) -> x + ${name}`), []);
   }
 });

@@ -228,8 +228,9 @@ function _lowerExpr(node: any, ctx: any): IRNode {
       return { kind: 'lit', value: node.value, loc: node.loc };
 
     case 'ConstantRef':
-      // pi, inf, im — bare-symbol builtins per FlatPIR.
-      return { kind: 'const', name: node.name, loc: node.loc };
+      // pi, inf, im — bare-symbol builtins per FlatPIR, unless a local
+      // argument or a module binding shadows the name (spec §05).
+      return _lowerIdentifier(node, ctx);
 
     case 'SetRef':
       // §04 permits module bindings to shadow built-in set names.

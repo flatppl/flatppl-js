@@ -3489,7 +3489,7 @@ function analyze(ast: any, source: string, opts?: any) {
   function qualifyBoundCalls(node: any): void {
     if (!node || typeof node !== 'object') return;
     if (Array.isArray(node)) { for (const child of node) qualifyBoundCalls(child); return; }
-    if (node.type === 'SetRef' && sourceNames.has(node.name)) node.type = 'Identifier';
+    if ((node.type === 'SetRef' || node.type === 'ConstantRef') && sourceNames.has(node.name)) node.type = 'Identifier';
     if (node.type === 'CallExpr' && node.callee?.type === 'FieldAccess'
         && node.callee.object?.type === 'Identifier' && node.callee.object.name === 'base'
         && isKnownName(node.callee.field)) {
@@ -4444,7 +4444,6 @@ function _validateModuleSubstitutions(loweredModule: any, modules: any, diagnost
 function isValidBindingName(name: any) {
   if (typeof name !== 'string' || name.length === 0) return false;
   if (name === 'self' || name === 'base') return false;
-  if (name === 'im' || name === 'pi' || name === 'inf') return false;
   if (name === '_') return false; // discard, not a renameable target
   // Public:        ^[A-Za-z][A-Za-z0-9_]*$
   // Private:       ^_[A-Za-z]([A-Za-z0-9_]*[A-Za-z0-9])?$
