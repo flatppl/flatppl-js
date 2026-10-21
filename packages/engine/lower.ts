@@ -929,6 +929,8 @@ function _lowerReification(op: string, node: any, ctx: any): any {
     paramKwargs,
     paramSources,
     ...(node.orderedInputs === false || args.length === 1 ? { orderedInputs: false } : {}),
+    // Traced inputs are inference metadata, so bare FlatPIR keeps them %deferred.
+    ...(node.autoInputs ? { autoInputs: true } : {}),
     body,
     // `kernelof` is its own FlatPIR head (spec §11 "Reified callables"),
     // and §11 "Normalization" licenses no desugaring, so the export must

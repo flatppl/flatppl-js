@@ -353,7 +353,7 @@ function _promoteReificationBoundaries(node: any, bindings: any, promoted: strin
     loc: bodyAst.loc || null,
   }));
   for (const leafName of leaves) promoted.push(leafName);
-  return { ...out, orderedInputs: false, args: [args[0], ...newKwargs] };
+  return { ...out, orderedInputs: false, autoInputs: true, args: [args[0], ...newKwargs] };
 }
 
 /**

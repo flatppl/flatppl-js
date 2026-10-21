@@ -866,6 +866,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       const d = paramNames.namedDecision(iface, Object.keys(kwargs));
       if (d.order) {
         expr.args = d.order.map((name: string) => kwargs[name]);
+        // Bare FlatPIR keeps the call as written (§11 "Normalization").
+        expr.surfaceKwargs = kwargs;
         delete expr.kwargs;
         return null;
       }
