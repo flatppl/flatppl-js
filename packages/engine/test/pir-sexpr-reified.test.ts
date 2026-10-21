@@ -141,16 +141,32 @@ test('reader: the spec helpers.flatpir text itself reconstructs the lowered surf
 // %autoinputs — boundary-less reifications (rust reified.flatpir)
 // ---------------------------------------------------------------------
 
-test('writer: inferred functionof retains its keyword-only autoinputs', () => {
+test('writer: a boundary-less reification exports %autoinputs %deferred', () => {
+  const mod = buildModule(`
+a = elementof(reals)
+b = a ^ 0.5
+f = functionof(b)
+obs = draw(Normal(mu = a, sigma = 1.0))
+k = kernelof(record(obs = obs))
+`);
+  const out = normWs(pirSexpr.toSexpr(mod));
+  // §11: the list "is %deferred until inference fills it". Matches
+  // flatppl-rust reified.flatpir's `f` binding.
+  assert.ok(out.includes('(%bind f (functionof (%ref self b) %autoinputs %deferred))'),
+    'bare export must defer traced inputs; got: ' + out);
+  assert.ok(out.includes('(%bind k (kernelof (record (%field obs (%ref self obs))) %autoinputs %deferred))'),
+    'bare export must defer traced kernel inputs; got: ' + out);
+});
+
+test('writer: the annotated export carries traced inputs as metadata', () => {
   const mod = buildModule(`
 a = elementof(reals)
 b = a ^ 0.5
 f = functionof(b)
 `);
-  const out = normWs(pirSexpr.toSexpr(mod));
-  // Matches flatppl-rust reified.flatpir's `f` binding.
-  assert.ok(out.includes('(%bind f (functionof (%ref self b) %autoinputs ((a (%ref self a)))))'),
-    'inferred reification must retain %autoinputs; got: ' + out);
+  const out = normWs(pirSexpr.toSexpr(mod, { meta: true }));
+  assert.match(out, /%autoinputs \(\(a \(%ref self a\)\)\)/,
+    'annotated export keeps the inferred list; got: ' + out);
 });
 
 test('reader: %autoinputs %deferred restores a boundary-less functionof', () => {

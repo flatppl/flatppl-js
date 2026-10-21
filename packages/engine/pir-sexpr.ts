@@ -350,15 +350,15 @@ function _callToSexpr(e: any, ind: string, mopts?: any): string {
   // still receive `{meta:true}` so their own wrappers carry types (with
   // %deferred phase — only the outermost call carries the binding phase).
   const inner = mopts ? { meta: true } : null;
-  // Positional args
-  if (e.args) {
-    for (const a of e.args) parts.push(_exprToSexpr(a, ind, inner));
+  // Inference may rebind a keyword call or a record splat. Print the call as written.
+  const positional = e.surfaceArgs || (e.surfaceKwargs ? null : e.args);
+  if (positional) {
+    for (const a of positional) parts.push(_exprToSexpr(a, ind, inner));
   }
-  // kwargs
-  if (e.kwargs) {
-    const names = Object.keys(e.kwargs);
-    for (const k of names) {
-      parts.push('(%kwarg ' + k + ' ' + _exprToSexpr(e.kwargs[k], ind, inner) + ')');
+  const kwargs = e.kwargs || e.surfaceKwargs;
+  if (kwargs) {
+    for (const k of Object.keys(kwargs)) {
+      parts.push('(%kwarg ' + k + ' ' + _exprToSexpr(kwargs[k], ind, inner) + ')');
     }
   }
   // record / joint / cartprod / table fields
@@ -428,7 +428,9 @@ function _reificationToSexpr(e: any, ind: string, mopts?: any): string {
   // `_wrapMeta`), not the head. The body's inner exprs keep their own
   // wrappers via {meta:true}.
   parts.push(_exprToSexpr(body, ind, mopts ? { meta: true } : null));
-  if (params.length === 0) {
+  // §11 "Reified callables": a traced list "is inference metadata", so only the
+  // annotated export carries it.
+  if (params.length === 0 || (e.autoInputs && !mopts)) {
     parts.push('%autoinputs', '%deferred');
   } else {
     const entries = params.map((p: string, i: number) => {
