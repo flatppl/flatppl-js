@@ -12,13 +12,28 @@ const decode = bytes => new TextDecoder().decode(bytes);
 function store(records, window = { FlatPPLEngine: engine }) {
   if (records) window.indexedDB = {
     open() {
-      const request = { result: { transaction: () => ({ objectStore: () => ({
+      const request = { result: { transaction: () => {
+        const tx = { objectStore: () => ({
         getAll() {
           const read = { result: records };
           queueMicrotask(() => read.onsuccess());
           return read;
         },
-      }) }) } };
+        add(record) { records.push(record); queueMicrotask(() => tx.oncomplete()); },
+        put(record) {
+          const old = records.findIndex(item => item.folder === record.folder);
+          if (old >= 0) records.splice(old, 1);
+          records.push(record);
+          queueMicrotask(() => tx.oncomplete());
+        },
+        delete(folder) {
+          const old = records.findIndex(item => item.folder === folder);
+          if (old >= 0) records.splice(old, 1);
+          queueMicrotask(() => tx.oncomplete());
+        },
+      }) };
+        return tx;
+      } } };
       queueMicrotask(() => request.onsuccess());
       return request;
     },
@@ -154,6 +169,75 @@ test('concurrent opens under one name get separate folders', async () => {
   assert.equal(decode(await bundles.read(second.path)), 'x=2\n');
   for (const opened of [first, second]) await bundles.discard(opened.path);
 });
+
+test('a standalone archive stays a single editable file through save and reload', async () => {
+  const records = [];
+  const bundles = store(records);
+  const bytes = await engine.writeArchive({ 'main.flatppl': encode('x=1\n') });
+  const opened = await bundles.open(bytes, 'model.flatppl.zip');
+  assert.equal(opened.path, 'new/model.flatppl');
+  assert.deepEqual(Array.from(bundles.list(false), entry => entry.path), [opened.path]);
+  assert.equal(await bundles.select(bundles.folder(opened.path), 'main.flatppl'), opened.path);
+  assert.equal(bundles.displayPath(bundles.canonical(opened.path)), opened.path);
+  const edited = await bundles.snapshot(opened.path, { [opened.path]: 'x=2\n' });
+  const saved = await bundles.save(edited, 'kept.flatppl');
+  await bundles.discard(opened.path);
+  assert.equal(saved, 'user/kept.flatppl');
+  const reloaded = store(records);
+  await reloaded.init();
+  assert.deepEqual(Array.from(reloaded.list(true), entry => entry.path), [saved]);
+  assert.equal(decode(await reloaded.read(saved)), 'x=2\n');
+  const reused = await reloaded.open(edited, 'shared-model');
+  assert.equal(reused.path, saved);
+  assert.equal(reused.reused, true);
+  await reloaded.remove(saved);
+  assert.equal(records.length, 0);
+  assert.equal(reloaded.has(saved), false);
+});
+
+test('a standalone archive keeps missing imports inside its root', async () => {
+  const { bundles, resolver } = storeWithResolver();
+  const opened = await bundles.open(await engine.writeArchive({
+    'main.flatppl': encode('m=load_module("missing.flatppl")\nx=m.x\n'),
+  }), 'isolated');
+  // A loose source at the apparent sibling path must not satisfy an archive import.
+  const drafts = { 'new/missing.flatppl': 'x=99\n' };
+  await assert.rejects(resolver.resolveBundle(opened.path, undefined, { strict: true, drafts }), /missing/);
+  assert.equal(decode(await bundles.read(opened.path)), 'm=load_module("missing.flatppl")\nx=m.x\n');
+});
+
+test('standalone archive names avoid loose files and later uploads avoid their aliases', async () => {
+  const window = { FlatPPLEngine: engine,
+    FlatPPLWebEphemeral: { list: () => [{ path: 'new/model.flatppl' }] } };
+  const bundles = store([], window);
+  const bytes = await engine.writeArchive({ 'main.flatppl': encode('x=1\n') });
+  const opened = await bundles.open(bytes, 'model.zip');
+  assert.equal(opened.path, 'new/model-2.flatppl');
+  const saved = await bundles.save(bytes, 'model');
+  vm.runInNewContext(stripTypeScriptTypes(readFileSync(new URL('../src/user-store.ts', import.meta.url), 'utf8')),
+    { window, console });
+  assert.equal(window.FlatPPLWebUserStore.pathForUpload('model.flatppl'), 'user/model-2.flatppl');
+  assert.equal(decode(await bundles.read(saved)), 'x=1\n');
+});
+
+for (const order of ['file first', 'bundle first', 'concurrent']) {
+  test('standalone file and bundle folder names stay distinct: ' + order, async () => {
+    const bundles = store();
+    const single = await engine.writeArchive({ 'main.flatppl': encode('x=1\n') });
+    const multiple = await engine.writeArchive({ 'main.flatppl': encode('x=2\n'), 'data.json': encode('{}') });
+    const openFile = () => bundles.open(single, 'model');
+    const openBundle = () => bundles.open(multiple, 'model.flatppl.flatppl');
+    let file, bundle;
+    if (order === 'concurrent') [file, bundle] = await Promise.all([openFile(), openBundle()]);
+    else if (order === 'file first') { file = await openFile(); bundle = await openBundle(); }
+    else { bundle = await openBundle(); file = await openFile(); }
+    assert.equal(bundle.path.startsWith(file.path + '/'), false);
+    assert.equal(decode(await bundles.read(file.path)), 'x=1\n');
+    assert.equal(decode(await bundles.read(bundle.path)), 'x=2\n');
+    await bundles.discard(file.path);
+    await bundles.discard(bundle.path);
+  });
+}
 
 test('an unlisted preview stays out of the file tree and the unsaved-work warning', async () => {
   const bundles = store();

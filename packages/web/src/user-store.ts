@@ -339,7 +339,8 @@
   }
 
   function uniquePath(candidate: string): string {
-    if (!entries.has(candidate)) return candidate;
+    const taken = (path: string) => entries.has(path) || globalScope.FlatPPLWebBundles?.has(path);
+    if (!taken(candidate)) return candidate;
     // Split off any existing extension so suffixes land before it:
     //   user/foo.flatppl + collision → user/foo-2.flatppl
     const dot = candidate.lastIndexOf('.');
@@ -348,7 +349,7 @@
     let n = 2;
     for (;;) {
       const tryPath = stem + '-' + n + ext;
-      if (!entries.has(tryPath)) return tryPath;
+      if (!taken(tryPath)) return tryPath;
       n += 1;
     }
   }
