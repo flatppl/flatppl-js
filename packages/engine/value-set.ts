@@ -271,7 +271,7 @@ function _dim(ir: any, resolveDim?: (ir: any) => any): any {
 function _resolveBound(ir: any): number | null {
   if (!ir) return null;
   if (ir.kind === 'lit' && typeof ir.value === 'number') return ir.value;
-  if ((ir.kind === 'const' || ir.kind === 'ref') && ir.name === 'inf') return Infinity;
+  if (ir.kind === 'const' && ir.name === 'inf') return Infinity;
   if (ir.kind === 'call' && ir.op === 'neg' && ir.args && ir.args.length === 1) {
     const inner = _resolveBound(ir.args[0]);
     return inner == null ? null : -inner;

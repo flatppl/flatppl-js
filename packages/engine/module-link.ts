@@ -68,7 +68,7 @@ function _rewriteRefs(node: any, prefix: string,
       && node.object.name === 'self' && localNames.has(node.field)) {
     return prefix === '' ? node : AST.Identifier(_pfx(prefix, node.field), node.loc);
   }
-  if (node.type === 'Identifier' || node.type === 'SetRef') {
+  if (node.type === 'Identifier' || node.type === 'SetRef' || node.type === 'ConstantRef') {
     if (node.builtin) return node;
     return localNames.has(node.name)
       ? AST.Identifier(_pfx(prefix, node.name), node.loc)

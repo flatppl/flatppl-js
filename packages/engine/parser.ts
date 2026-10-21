@@ -309,7 +309,7 @@ function parse(tokensIn: any[], variant: any) {
     if (Array.isArray(node)) {
       return node.map((x: any) => rewriteFreeIdsToPlaceholders(x, argSet));
     }
-    if ((node.type === 'Identifier' || node.type === 'SetRef')
+    if ((node.type === 'Identifier' || node.type === 'SetRef' || node.type === 'ConstantRef')
         && !node.builtin && argSet.has(node.name)) {
       const placeholder = AST.Placeholder(node.name, node.loc);
       if (node.bareBoundary) placeholder.bareBoundary = node.bareBoundary;

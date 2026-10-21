@@ -40,7 +40,10 @@ test('isValidBindingName rejects placeholder pattern', () => {
 test('isValidBindingName rejects reserved names', () => {
   assert.equal(isValidBindingName('self'), false);
   assert.equal(isValidBindingName('base'), false);
-  for (const name of ['im', 'pi', 'inf']) assert.equal(isValidBindingName(name), false);
+});
+
+test('isValidBindingName accepts the shadowable numeric constants', () => {
+  for (const name of ['im', 'pi', 'inf']) assert.equal(isValidBindingName(name), true);
 });
 
 test('isValidBindingName rejects non-identifiers', () => {
