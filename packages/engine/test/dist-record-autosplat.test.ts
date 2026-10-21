@@ -178,7 +178,8 @@ const CHAIN_ORACLE    = -2.2669506566893185;
 const MIXTURE_ORACLE  = -1.0439385332046727;
 
 const marginalSrc = (extra: string) => `t ~ Normal(mu = 0.0, sigma = 1.0)
-ld = logdensityof(Normal(mu = t, sigma = 0.2${extra}), 1.1)`;
+x ~ Normal(mu = t, sigma = 0.2${extra})
+ld = logdensityof(lawof(x), 1.1)`;
 const chainSrc = (extra: string) => `z ~ Normal(mu = 0.0, sigma = 1.0)
 a ~ Normal(mu = z, sigma = 1.0)
 b ~ Normal(mu = a, sigma = 1.0${extra})

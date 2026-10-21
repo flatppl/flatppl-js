@@ -1,38 +1,10 @@
 'use strict';
 
-// ════════════════════════════════════════════════════════════════════════
-// Singular joints: the STATIC gate (spec §06 "Singular joints")
-// ════════════════════════════════════════════════════════════════════════
-//
-// §06 "Singular joints", quoted verbatim from flatppl-design 9e35262:
-//
-//   "When one component's variate is determined by the others given the shared
-//   ancestors (the same draw referenced twice, a deterministic transform of
-//   another component), the joint law has no density w.r.t. the product
-//   reference measure. Sampling is well-defined; a density query is a static
-//   error where statically detectable, and is otherwise refused by the engine."
-//
-// The criterion is "determined by the others GIVEN THE SHARED ANCESTORS", not
-// "shares an ancestor". `singular-joint.ts` fires only when two components are
-// deterministic functions of ONE shared scalar value AND both components have
-// continuous support. The second half is §06 "Reference measure for product
-// measures" (verbatim, flatppl-design 9e35262): the reference is built per
-// component, "each either `Lebesgue` or `Counting` on the corresponding component
-// support" — so nullity is a claim about the COMPONENTS' supports, not about the
-// shared draw. Both directions of that distinction are tested below
-// (`floor(y)` beside `y`, and two real-typed functions of one Poisson draw).
-//
-// The NOT-SINGULAR table is the more important half of this file: a false positive
-// rejects a model the engine answers exactly, and a user cannot work around a
-// compile error.
-//
-// Two properties are asserted TOGETHER for every singular shape: the STATIC
-// diagnostic, and the runtime refusal that accompanies it. Neither alone is §06:
-// the diagnostic makes the error visible, and only the refusal makes the query
-// reach no number. A test that checked the diagnostic alone would pass against an
-// engine that then scored the joint anyway — which is the state the INHERITED
-// shapes were in until `clm._refuseIfSingular` learned to recurse through `iid`
-// and into nested components.
+// A single reified law preserves dependence between its coordinates. Singular
+// record/vector laws have no ambient continuous density; products and iid copies
+// inherit singular factors. Separate law values are independent products.
+// The static and runtime controls below also cover full-rank and counting-valued
+// laws, which must not be rejected by a continuous-support singularity test.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -63,23 +35,13 @@ function singularErrorsOf(src: string): string[] {
 
 const SINGULAR_PAIR = [
   {
-    label: 'the same draw reified twice',
+    label: 'one law of the same draw in two fields',
     ancestor: 'y',
     components: ['a', 'b'],
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
-`,
-  },
-  {
-    label: 'the equivalent record law of the same draw twice',
-    ancestor: 'y',
-    components: ['a', 'b'],
-    src: `
-y ~ Normal(mu = 0.0, sigma = 1.0)
-R = lawof(record(a = y, b = y))
-ld = logdensityof(R, record(a = 0.5, b = 0.9))
 `,
   },
   {
@@ -89,31 +51,30 @@ ld = logdensityof(R, record(a = 0.5, b = 0.9))
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 w = exp(y)
-T = joint(a = lawof(y), b = lawof(w))
+T = lawof(record(a = y, b = w))
 ld = logdensityof(T, record(a = 0.5, b = 0.9))
 `,
   },
   {
-    label: 'a NAMED reified law used as two components',
+    label: 'an alias of a named diagonal law',
     ancestor: 'y',
     components: ['a', 'b'],
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
-Ly = lawof(y)
-S = joint(a = Ly, b = Ly)
+Ly = lawof(record(a = y, b = y))
+S = Ly
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `,
   },
   {
-    // §06 "Equivalent record law": "the positional form is the corresponding
-    // `cat` law". Same measure, so the same verdict — a spelling must not decide
-    // whether the engine catches this.
-    label: 'the positional (cat-law) spelling',
+    // The same diagonal law over a vector variate reaches the runtime backstop.
+    label: 'the vector-law spelling',
+    staticDiagnostic: false, // The static gate currently inspects record fields only.
     ancestor: 'y',
     components: ['#1', '#2'],
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(lawof(y), lawof(y))
+S = lawof([y, y])
 ld = logdensityof(S, [0.5, 0.9])
 `,
   },
@@ -127,7 +88,7 @@ ld = logdensityof(S, [0.5, 0.9])
 y ~ Normal(mu = 0.0, sigma = 1.0)
 u = 2.0 * y
 v = exp(u)
-T = joint(a = lawof(y), b = lawof(v))
+T = lawof(record(a = y, b = v))
 ld = logdensityof(T, record(a = 0.5, b = 0.9))
 `,
   },
@@ -152,7 +113,7 @@ ld = logdensityof(R, record(a = 1.0, b = 2.0))
 ];
 
 for (const c of SINGULAR_PAIR) {
-  test(`STATIC: ${c.label} is a static error on the density query`, () => {
+  if ((c as any).staticDiagnostic !== false) test(`STATIC: ${c.label} is a static error on the density query`, () => {
     const errs = singularErrorsOf(c.src);
     assert.equal(errs.length, 1, 'expected exactly one singular-joint error, got: '
       + JSON.stringify(errs));
@@ -191,45 +152,21 @@ const SINGULAR_SHARED_VALUE = [
 y ~ Normal(mu = 0.0, sigma = 1.0)
 n ~ Normal(mu = 0.0, sigma = 1.0)
 u = y + n
-S = joint(a = lawof(u), b = lawof(u))
+S = lawof(record(a = u, b = u))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
-`,
-  },
-  {
-    label: 'the record spelling of the same-expression pair',
-    generator: 'u',
-    src: `
-y ~ Normal(mu = 0.0, sigma = 1.0)
-n ~ Normal(mu = 0.0, sigma = 1.0)
-u = y + n
-R = lawof(record(a = u, b = u))
-ld = logdensityof(R, record(a = 0.5, b = 0.9))
 `,
   },
   {
     label: 'one component a deterministic transform of the other',
     generator: 'u',
-    // The one shape here that clm's singular check does NOT catch — its inline
-    // `lawof(2.0 * u)` component never becomes a named binding in the derivation
-    // table, so `_refuseIfSingular` sees no component pair. It still produces no
-    // number: the linear-Gaussian recogniser refuses it one step later for being
-    // a non-Normal component. Recorded rather than smoothed over, because "which
-    // gate stopped it" is the difference between a designed refusal and luck.
-    //
-    // RISK, and what to do about it: this pins a NON-F5 gate, so widening the
-    // recogniser to accept affine components (an obvious future improvement) will
-    // redden this test for a reason unrelated to singular joints. The fix then is
-    // NOT to loosen this assertion — that would let the shape start scoring
-    // unnoticed, and it is genuinely singular. Teach clm to see inline
-    // `lawof(2.0 * u)` components first, then re-pin this to the singular
-    // refusal. Tracked with the other clm follow-ups in
-    // flatppl-dev/TODO-flatppl-js.md.
-    backstop: /component 'a' is a 'add', not a Normal/,
+    // Static detection sees the common generator. Runtime currently declines
+    // the multi-ancestor transform before reaching its singularity check.
+    backstop: /depends on 2 stochastic ancestors/,
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 n ~ Normal(mu = 0.0, sigma = 1.0)
 u = y + n
-S = joint(a = lawof(u), b = lawof(2.0 * u))
+S = lawof(record(a = u, b = 2.0 * u))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `,
   },
@@ -279,10 +216,10 @@ const SINGULAR_INHERITED = [
     label: 'iid over a singular joint',
     reason: /it is an iid product over a singular joint/,
     // The refusal names the iid's inner measure, then the offending inner pair.
-    backstop: /the iid product's inner measure: joint components 'a' and 'b'.*share the ancestor 'y'.*no density w\.r\.t\. the product reference measure/s,
+    backstop: /the iid product's inner measure: joint components 'a' and 'b'.*no density w\.r\.t\. the product reference measure/s,
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 I = iid(S, 2)
 ld = logdensityof(I, table(a = [0.1, 0.3], b = [0.2, 0.4]))
 `,
@@ -291,11 +228,11 @@ ld = logdensityof(I, table(a = [0.1, 0.3], b = [0.2, 0.4]))
     label: 'a nested singular joint component',
     reason: /component 'inner' is itself a singular joint/,
     // True support is {(u, u, t)} ⊂ R³ — 2-dimensional, R³-Lebesgue-null.
-    backstop: /component 'inner': joint components 'a' and 'b'.*share the ancestor 'y'.*no density w\.r\.t\. the product reference measure/s,
+    backstop: /component 'inner': joint components 'a' and 'b'.*no density w\.r\.t\. the product reference measure/s,
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 N = joint(inner = S, c = lawof(t))
 ld = logdensityof(N, record(inner = record(a = 0.1, b = 0.2), c = 0.3))
 `,
@@ -303,7 +240,7 @@ ld = logdensityof(N, record(inner = record(a = 0.1, b = 0.2), c = 0.3))
   {
     label: 'a nested singular record law',
     reason: /component 'inner' is itself a singular joint/,
-    backstop: /component 'inner': joint components 'a' and 'b'.*share the ancestor 'y'.*no density w\.r\.t\. the product reference measure/s,
+    backstop: /component 'inner': joint components 'a' and 'b'.*no density w\.r\.t\. the product reference measure/s,
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
@@ -368,7 +305,7 @@ ld = logdensityof(R, record(inner = record(a = 0.1, b = 0.2)))
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 P = joint(S, lawof(t))
 ld = logdensityof(P, record(a = 0.1, b = 0.2))
 `,
@@ -380,7 +317,7 @@ ld = logdensityof(P, record(a = 0.1, b = 0.2))
     backstop: /the iid product's inner measure, inside the iid product's inner measure: joint components 'a' and 'b'/,
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 I = iid(iid(S, 2), 2)
 ld = logdensityof(I, table(a = [0.1, 0.3], b = [0.2, 0.4]))
 `,
@@ -395,7 +332,7 @@ ld = logdensityof(I, table(a = [0.1, 0.3], b = [0.2, 0.4]))
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
 r ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 M = joint(inner = S, c = lawof(t))
 D = joint(deep = M, d = lawof(r))
 ld = logdensityof(D, record(deep = record(inner = record(a = 0.1, b = 0.2), c = 0.3), d = 0.4))
@@ -468,12 +405,12 @@ ld = logdensityof(R, record(c = 0.1, inner = record(a = 0.1, b = 0.2)))
     pair: /joint components 'c' and 'inner' .*share the ancestor 'y'/s,
   },
   {
-    label: 'the joint(inner = S, c = lawof(y)) spelling',
+    label: 'one law of a named inner record and its repeated draw',
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(t))
-N = joint(inner = S, c = lawof(y))
+S = record(a = y, b = t)
+N = lawof(record(inner = S, c = y))
 ld = logdensityof(N, record(inner = record(a = 0.1, b = 0.2), c = 0.1))
 `,
     pair: /joint components 'inner' and 'c' .*share the ancestor 'y'/s,
@@ -614,37 +551,37 @@ ld = logdensityof(I, [0.1, 0.3])
       `expected -1.8878770664093456, got ${m.samples[0]}`);
   });
 
-test('a LEGAL correlated joint under iid or nesting is not caught by the singular '
-  + 'recursion', async () => {
-  // Both of these already reach no number, but for the MARGINALISATION refusal
-  // (the engine has no exact answer for the shared ancestor `z`), not for
-  // singularity. Pinning which gate stops them keeps the recursion from silently
-  // becoming the reason: if it ever fires here, that is a false refusal of a
-  // full-rank law, and this assertion catches it rather than the error merely
-  // changing wording.
-  for (const src of [`
-z ~ Normal(mu = 0.0, sigma = 1.0)
-a ~ Normal(mu = z, sigma = 1.0)
-b ~ Normal(mu = z, sigma = 1.0)
-S = joint(a = lawof(a), b = lawof(b))
+test('iid preserves the density inside each correlated law and multiplies copies', async () => {
+  const { ctx } = ctxFor(`
+z ~ Normal(0.0, 1.0)
+a ~ Normal(z, 1.0)
+b ~ Normal(z, 1.0)
+S = lawof(record(a = a, b = b))
 I = iid(S, 2)
 ld = logdensityof(I, table(a = [0.1, 0.3], b = [0.2, 0.4]))
-`, `
-z ~ Normal(mu = 0.0, sigma = 1.0)
-a ~ Normal(mu = z, sigma = 1.0)
-b ~ Normal(mu = z, sigma = 1.0)
-t ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(a), b = lawof(b))
+`, 1);
+  const got = (await ctx.getMeasure('ld')).samples[0];
+  // Each block has covariance [[2,1],[1,2]], determinant 3.
+  const oracle = -2 * Math.log(2 * Math.PI) - Math.log(3)
+    - (0.01 - 0.02 + 0.04 + 0.09 - 0.12 + 0.16) / 3;
+  assert.ok(Math.abs(got - oracle) < 1e-13, `got ${got}, oracle ${oracle}`);
+});
+
+test('a nested full-rank law refuses unsupported marginalization without claiming singularity', async () => {
+  const { ctx } = ctxFor(`
+z ~ Normal(0.0, 1.0)
+a ~ Normal(z, 1.0)
+b ~ Normal(z, 1.0)
+t ~ Normal(0.0, 1.0)
+S = lawof(record(a = a, b = b))
 N = joint(inner = S, c = lawof(t))
 ld = logdensityof(N, record(inner = record(a = 0.1, b = 0.2), c = 0.3))
-`]) {
-    const { ctx } = ctxFor(src, 1);
-    await assert.rejects(async () => ctx.getMeasure('ld'), (e: any) => {
-      assert.notEqual(e.code, 'CLM_SINGULAR_JOINT');
-      assert.match(String(e.message), /marginalises the stochastic ancestor/);
-      return true;
-    });
-  }
+`, 1);
+  await assert.rejects(() => ctx.getMeasure('ld'), (e: any) => {
+    assert.notEqual(e.code, 'CLM_SINGULAR_JOINT');
+    assert.match(String(e.message), /marginalises the stochastic ancestor/);
+    return true;
+  });
 });
 
 // ════════════════════════════════════════════════════════════════════
@@ -665,7 +602,7 @@ const NOT_SINGULAR = [
 z ~ Normal(mu = 0.0, sigma = 1.0)
 a ~ Normal(mu = z, sigma = 1.0)
 b ~ Normal(mu = z, sigma = 1.0)
-S = joint(a = lawof(a), b = lawof(b))
+S = lawof(record(a = a, b = b))
 ld = logdensityof(S, record(a = 0.5, b = 0.7))
 `,
   },
@@ -682,7 +619,7 @@ n1 ~ Normal(mu = 0.0, sigma = 1.0)
 n2 ~ Normal(mu = 0.0, sigma = 1.0)
 u = y + n1
 v = y + n2
-S = joint(a = lawof(u), b = lawof(v))
+S = lawof(record(a = u, b = v))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `,
   },
@@ -705,7 +642,7 @@ ld = logdensityof(R, record(a = 0.5, b = 0.9))
 y ~ Normal(mu = 0.0, sigma = 1.0)
 n ~ Normal(mu = 0.0, sigma = 1.0)
 w = y + n
-S = joint(a = lawof(y), b = lawof(w))
+S = lawof(record(a = y, b = w))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `,
   },
@@ -722,7 +659,7 @@ y ~ Normal(mu = 0.0, sigma = 1.0)
 n ~ Normal(mu = 0.0, sigma = 1.0)
 p = y + n
 q = y - n
-S = joint(a = lawof(p), b = lawof(q))
+S = lawof(record(a = p, b = q))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `,
   },
@@ -737,7 +674,7 @@ ld = logdensityof(S, record(a = 0.5, b = 0.9))
 v ~ MvNormal(mu = [0.0, 0.0], cov = [[1.0, 0.0], [0.0, 1.0]])
 a = v[1]
 b = v[2]
-S = joint(a = lawof(a), b = lawof(b))
+S = lawof(record(a = a, b = b))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `,
   },
@@ -777,11 +714,11 @@ ld = logdensityof(R, record(a = 0.5, b = true))
 `,
   },
   {
-    label: 'the joint(lawof(y), lawof(floor(y))) spelling of the same shape',
+    label: 'the record law of a named discrete transform',
     src: `
 y ~ Normal(mu = 0.0, sigma = 1.0)
 fy = floor(y)
-S = joint(a = lawof(y), b = lawof(fy))
+S = lawof(record(a = y, b = fy))
 ld = logdensityof(S, record(a = 0.5, b = 0))
 `,
   },
@@ -798,7 +735,7 @@ ld = logdensityof(S, record(a = 0.5, b = 0))
     label: 'a duplicated BERNOULLI draw (counting reference, has a pmf)',
     src: `
 k ~ Bernoulli(p = 0.3)
-S = joint(a = lawof(k), b = lawof(k))
+S = lawof(record(a = k, b = k))
 ld = logdensityof(S, record(a = true, b = true))
 `,
   },
@@ -806,7 +743,7 @@ ld = logdensityof(S, record(a = true, b = true))
     label: 'a duplicated POISSON draw (integer support, has a pmf)',
     src: `
 c ~ Poisson(rate = 2.0)
-S = joint(a = lawof(c), b = lawof(c))
+S = lawof(record(a = c, b = c))
 ld = logdensityof(S, record(a = 1, b = 1))
 `,
   },
@@ -868,7 +805,7 @@ lp = logdensityof(prior, record(sigma = 1.5))
 z ~ Normal(mu = 0.0, sigma = 1.0)
 a ~ Normal(mu = z, sigma = 1.0)
 b ~ Normal(mu = z, sigma = 1.0)
-S = joint(a = lawof(a), b = lawof(b))
+S = lawof(record(a = a, b = b))
 I = iid(S, 2)
 ld = logdensityof(I, table(a = [0.1, 0.3], b = [0.2, 0.4]))
 `,
@@ -911,7 +848,7 @@ n1 ~ Normal(mu = 0.0, sigma = 1.0)
 n2 ~ Normal(mu = 0.0, sigma = 1.0)
 u = y + n1
 v = y + n2
-S = joint(a = lawof(u), b = lawof(v))
+S = lawof(record(a = u, b = v))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `, 1);
   // A refusal returns no number, so clm is sound-but-incapable here — which is
@@ -924,7 +861,7 @@ test('a declined DISCRETE shape is still refused by clm, and with a factually '
   + 'false reason', async () => {
   const { ctx } = ctxFor(`
 k ~ Bernoulli(p = 0.3)
-S = joint(a = lawof(k), b = lawof(k))
+S = lawof(record(a = k, b = k))
 ld = logdensityof(S, record(a = true, b = true))
 `, 1);
   // Worth stating plainly, because it is the weakest point of the discrete
@@ -946,7 +883,7 @@ test('§06 "Sampling is well-defined": a singular joint that is only SAMPLED get
   // make a legal model un-writable.
   assert.deepEqual(singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 `), []);
 });
 
@@ -954,7 +891,7 @@ test('§06 "Sampling is well-defined": drawing FROM the singular joint is not a 
   + 'density query either', () => {
   assert.deepEqual(singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 r ~ S
 `), []);
 });
@@ -964,7 +901,7 @@ r ~ S
 test('the 3-arg broadcast(logdensityof, M, pts) surface is gated', () => {
   assert.equal(singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 pts = [0.1, 0.2]
 g = broadcast(logdensityof, S, pts)
 `).length, 1);
@@ -978,7 +915,7 @@ test('the fn(logdensityof(M, _))-body surface under broadcast is gated', () => {
   // header claims; the surrounding model is not asserted valid.
   assert.equal(singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 pts = [0.1, 0.2]
 g = broadcast(fn(logdensityof(S, _)), pts)
 `).length, 1);
@@ -989,7 +926,7 @@ g = broadcast(fn(logdensityof(S, _)), pts)
 test('the diagnostic is located on the measure argument of the query', () => {
   const { diagnostics } = processSource(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 ld = logdensityof(S, record(a = 0.5, b = 0.9))
 `);
   const d = (diagnostics || []).find((x: any) =>
@@ -1004,7 +941,7 @@ ld = logdensityof(S, record(a = 0.5, b = 0.9))
 test('a three-component joint on one draw reports ONE error, not one per pair', () => {
   assert.equal(singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y), c = lawof(y))
+S = lawof(record(a = y, b = y, c = y))
 ld = logdensityof(S, record(a = 0.5, b = 0.9, c = 0.1))
 `).length, 1);
 });
@@ -1012,7 +949,7 @@ ld = logdensityof(S, record(a = 0.5, b = 0.9, c = 0.1))
 test('two density queries in SEPARATE bindings each report', () => {
   assert.equal(singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
+S = lawof(record(a = y, b = y))
 ld1 = logdensityof(S, record(a = 0.5, b = 0.9))
 ld2 = logdensityof(S, record(a = 1.5, b = 1.9))
 `).length, 2);
@@ -1025,8 +962,8 @@ test('two density queries in ONE binding each report (reporting is per query, '
   assert.equal(singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), b = lawof(y))
-T = joint(a = lawof(t), b = lawof(t))
+S = lawof(record(a = y, b = y))
+T = lawof(record(a = t, b = t))
 ld = logdensityof(S, record(a = 0.5, b = 0.9)) + logdensityof(T, record(a = 0.5, b = 0.9))
 `).length, 2);
 });
@@ -1038,7 +975,7 @@ test('a singular pair beside an independent third component still errors, and '
   const errs = singularErrorsOf(`
 y ~ Normal(mu = 0.0, sigma = 1.0)
 t ~ Normal(mu = 0.0, sigma = 1.0)
-S = joint(a = lawof(y), c = lawof(t), b = lawof(y))
+S = lawof(record(a = y, c = t, b = y))
 ld = logdensityof(S, record(a = 0.5, c = 0.2, b = 0.9))
 `);
   assert.equal(errs.length, 1);
@@ -1082,7 +1019,7 @@ y ~ Normal(mu = 0.0, sigma = 1.0)
 n ~ Normal(mu = 0.0, sigma = 1.0)
 p = y + n
 q = 2.0 * y + 2.0 * n
-S = joint(a = lawof(p), b = lawof(q))
+S = lawof(record(a = p, b = q))
 ld = logdensityof(S, record(a = 0.5, b = 1.0))
 `), []);
 });

@@ -1026,12 +1026,11 @@ test('entry shim: plain, model and limitation errors survive postMessage', async
     assert.equal(reply.id, 42);
     assert.match(reply.message, /unknown message type/);
 
-    // Build-time model refusal reaches the synchronous catch; the projection
-    // limitation is raised during asynchronous materialisation.
+    // A singular law and an unsupported projection retain distinct error codes.
     for (const [source, name, code, limitation] of [
-      [`K = joint(a = kernelof(Normal(mu = z, sigma = 1.0), z = z),
-          b = fn(z -> Normal(mu = z, sigma = 2.0)))
-y ~ K(3.0)`, 'y', 'JOINT_FANOUT_INLINE_FN_COMPONENT', undefined],
+      [`x ~ Normal(0, 1)
+M = lawof((a = x, b = x))
+score = logdensityof(M, (a = 0, b = 0))`, 'score', 'CLM_SINGULAR_JOINT', undefined],
       [`M = joint(aa = Normal(0, 1),
           bb = iid(truncate(weighted(2, VonMises(0, 1)), interval(-1, 1)), 2))
 A = pushfwd(fn(get(_, ["aa"])), M)`, 'A', 'ENGINE_LIMITATION',

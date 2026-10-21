@@ -963,10 +963,8 @@ function _priorFrom(deriv: any, ctx: any): string | null {
 function lowerMeasure(input: any, ctx: any, opts?: any): any {
   const deriv = (opts && opts.derivation)
     || (typeof input === 'string' && ctx && ctx.derivations ? ctx.derivations[input] : null);
-  // Singular joints are refused BEFORE the body is built: inlining erases the
-  // shared draw identity (two `lawof(y)` components both inline to a bare
-  // `Normal(0, 1)` call, indistinguishable from independent draws), so the
-  // check must read the derivation's component→binding map while it survives.
+  // Check singular dependence within one reified law before inlining erases
+  // its draw identities. Product components have separate law scopes.
   _refuseIfSingular(input, ctx);
   const built = _buildBody(input, deriv, ctx, opts);
   if (!built) return null;
@@ -974,49 +972,69 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   let reduce = _reduce(deriv, body, ctx, opts);
   const { inputs, missing } = _enumerateInputs(body, deriv, boundarySet, ctx, opts);
 
-  // Marginalised stochastic ancestor (H8 — the kchain/lawof unification). A
-  // standalone measure whose body references a STOCHASTIC binding that is not
-  // a retained variate (e.g. `pp = lawof(obs)`, obs ~ Normal(theta,1),
-  // theta ~ Normal(0,1)) is the marginal law: p(x) = ∫ p(x|theta) p(theta) dθ,
-  // and so is a shared-ancestor joint. §06 "Equivalent record law" (verbatim,
-  // flatppl-design 52df5de): "`joint(a = lawof(a), b = lawof(b))` is equivalent
-  // to `lawof(record(a = a, b = b))`; the positional form is the corresponding
-  // `cat` law", and §06 "Density of composed measures": "A `joint` with shared
-  // ancestry reduces as its equivalent record law".
-  //
-  // HOW that marginal may be evaluated is NOT ruled. §06 at 52df5de states no
-  // evaluation rule for the record law's marginal: the joint bullet stops at
-  // "reduces as its equivalent record law", and the closed-form/enumeration/
-  // static-error sentence one paragraph later has `kchain` as its subject
-  // ("`kchain` marginalizes the intermediate variate, so its density is the
-  // marginal integral … This is generally intractable; an engine evaluates it in
-  // closed form, or by enumeration of a discrete latent, and otherwise reports a
-  // static error"). That rule is a supporting ANALOGY here — the same marginal
-  // integral reached through the equivalent record law — not the authority.
-  // flatppl-design#72 would have made it general but was CLOSED UNMERGED, and the
-  // owner's 2026-08-06 call leaves the method unruled for now
-  // (flatppl-dev/decisions-log.md), superseding the earlier 2026-08-05
-  // no-stochastic-estimate decision. An MC marginal would therefore be conformant
-  // today, and three other density paths in this engine do estimate
-  // (TODO-flatppl-js.md). This branch nonetheless answers exactly or refuses, as
-  // its own engineering choice: the reduce declares WHICH exact device it used —
-  // 'analytic-gaussian' or 'analytic-mixture' — and refuses when neither applies,
-  // so a caller can tell a closed form from an estimate.
-  //
-  // bayesupdate is excluded by the `deriv.kind` guard below, and that guard is
-  // load-bearing: matBayesupdate DOES route through matScore, so a non-null
-  // marginal reduce on its node would make matScore answer analytically or throw
-  // instead of returning the per-atom log-likelihoods it reweights with. The
-  // protection is that its node carries reduce === null — `_reduce` returns a
-  // marginal only for `jointchain`, and this branch declines bayesupdate — so
-  // `_analyticMarginalReply` returns null and the worker scores as before. That
-  // keeps bayesupdate on the pure structural sum §06 mandates ("`logdensityof`
-  // reduces structurally to the densities of its operands, terminating at the
-  // per-kernel primitive `builtin_logdensityof`").
-  if (!reduce && (!deriv || deriv.kind !== 'bayesupdate')
+  // Only a law absorbs stochastic ancestors. A constructor's free parameters
+  // remain inputs, including when another product component absorbs that draw.
+  const root = typeof input === 'string'
+    ? ctx.bindings?.get(_aliasChain(input, ctx, true).root) : null;
+  let raw = typeof input === 'string' ? ctx.bindings?.get(input)?.ir : input;
+  const seen = new Set<string>();
+  while (raw?.kind === 'ref' && raw.ns === 'self' && !seen.has(raw.name)) {
+    seen.add(raw.name);
+    raw = ctx.bindings?.get(raw.name)?.ir;
+  }
+  // A structural projection retains its source law's marginalization scope.
+  // Its record/alias derivation contains only the selected draw references.
+  let projectionBase = raw?.op === 'pushfwd' && ['record', 'alias'].includes(deriv?.kind)
+    ? raw.args?.[1] : null;
+  const projectionSeen = new Set<string>();
+  while (projectionBase?.kind === 'ref' && projectionBase.ns === 'self'
+      && !projectionSeen.has(projectionBase.name)) {
+    projectionSeen.add(projectionBase.name);
+    projectionBase = ctx.bindings?.get(projectionBase.name)?.ir;
+  }
+  const absorbs = raw?.op === 'lawof' || projectionBase?.op === 'lawof'
+    || ['lawof', 'draw', 'record', 'array'].includes(root?.type);
+  const stochastic = inputs.filter((i: any) => i.source.kind === 'shared'
+    && _isStochastic(ctx.bindings?.get(i.source.ref)));
+  const free = stochastic.filter((i: any) =>
+    !absorbs && !ctx.bindings?.get(i.source.ref)?.absorbedByLaw);
+  const iidBase = _iidBase(input, ctx);
+  let repeated: any = null;
+  if (iidBase) {
+    const { derivation: _, ...childOpts } = opts || {};
+    const inner = lowerMeasure(iidBase, ctx, childOpts);
+    if (inner && (inner.reduce || inner.factors || inner.repeated)) {
+      const iid = ctx.derivations[_aliasChain(input, ctx).root];
+      repeated = { node: inner, dims: iid.dims };
+    }
+  }
+  let factors: any[] | null = null;
+  if (free.length > 0 && free.length < stochastic.length) {
+    // Marginalize each product component in its own scope. A whole-body
+    // Gaussian reduction would also integrate the other component's free input.
+    const parts = raw?.op === 'joint' ? _jointComponents(input, ctx) : null;
+    if (parts) {
+      const { derivation: _, ...childOpts } = opts || {};
+      let offset = 0;
+      factors = parts.map(part => {
+        const type = ctx.bindings?.get(part.binding)?.inferredType;
+        const domain = type?.kind === 'measure' ? type.domain : type;
+        const size = domain?.kind === 'scalar' ? 1
+          : domain?.kind === 'array' && domain.rank === 1 ? domain.shape?.[0] : null;
+        const selection = body.fields ? { field: part.label }
+          : Number.isInteger(size) ? { offset, size, scalar: domain.kind === 'scalar' } : null;
+        offset += size || 0;
+        const node = lowerMeasure(part.binding, ctx, childOpts);
+        return selection && node ? { selection, node } : null;
+      });
+      if (factors.some(factor => !factor)) factors = null;
+    }
+  }
+  if (!repeated && !factors && !reduce && (!deriv || deriv.kind !== 'bayesupdate')
       && (_isMeasureNode(body) || _isRecordOfMeasures(body))) {
     const latents = inputs.filter((i: any) => i.source.kind === 'shared'
-      && _isStochastic(ctx.bindings && ctx.bindings.get(i.source.ref)));
+      && _isStochastic(ctx.bindings && ctx.bindings.get(i.source.ref))
+      && (absorbs || ctx.bindings?.get(i.source.ref)?.absorbedByLaw));
     if (latents.length > 0) {
       const over = latents.map((i: any) => i.source.ref);
       // An ancestor that is itself one of the record's FIELDS is not
@@ -1053,6 +1071,7 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
           substituted.add(inp.name);
           if (inp.source.localAlias) substituted.add(inp.source.localAlias);
         }
+        for (const inp of free) substituted.add(inp.source.ref);
         const lg = require('./linear-gaussian.ts');
         const identity = {
           keyOf: (nm: string) => _aliasChain(nm, ctx, true).root,
@@ -1094,6 +1113,8 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
   }
 
   const node: any = { kind: 'call', op: 'clm', body, inputs, reduce };
+  if (factors) node.factors = factors;
+  if (repeated) node.repeated = repeated;
   if (opts?.density && !reduce?.chain && _containsMarginalChain(input, ctx)) {
     node.densityRefusal = 'a nested kchain density requires a closed form or finite '
       + 'discrete enumeration (spec §06); this composition is not supported';

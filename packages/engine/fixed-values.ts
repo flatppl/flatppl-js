@@ -321,8 +321,8 @@ class FixedValues {
     // in env. env is the SAME
     // object the outer evaluateExpr consults, so resolved values cache
     // implicitly — two refs to the same name share one draw.
-    function localResolveValueRef(refName: any, state: any): any {
-      if (env[refName] !== undefined) return [env[refName], state];
+    function localResolveValueRef(refName: any, state: any, scope: any = env): any {
+      if (scope[refName] !== undefined) return [scope[refName], state];
       // [LAZY] cross-binding memo via the resolver itself: a fixed-phase
       // dep is computed once and cached (was: a `fixedValues.has/get`
       // check that only hit if a prior fixpoint round had cached it). A
@@ -330,8 +330,8 @@ class FixedValues {
       // sampling path below, exactly as before.
       const cached = self._resolve(refName);
       if (cached !== UNRESOLVED) {
-        env[refName] = cached;
-        return [env[refName], state];
+        scope[refName] = cached;
+        return [scope[refName], state];
       }
       const dep = bindings.get(refName);
       if (!dep) throw unresolvableRefError(`resolveValueRef: unknown binding '${refName}'`);
@@ -339,7 +339,8 @@ class FixedValues {
       if (d && (d.kind === 'sample' || d.kind === 'alias'
                 || d.kind === 'iid' || d.kind === 'record'
                 || d.kind === 'weighted')) {
-        const measureIR = expandMeasureIR(refName, derivations);
+        const measureIR = (dep.ir?.op === 'draw' || dep.ir?.op === 'lawof' || dep.ir?.op === 'record')
+          ? dep.ir : expandMeasureIR(refName, derivations);
         if (!measureIR) {
           throw unresolvableRefError(`resolveValueRef: cannot expand measure for '${refName}'`);
         }
@@ -349,11 +350,11 @@ class FixedValues {
         // → walkIid → sampleLeafN, lawof/draw → unwrap, and a genuine
         // composite (joint/record/iid-of-composite/weighted) → its
         // recursive walkers — exactly as before, byte-identical.
-        const r = samplerLib.walk(state, measureIR, env, {
+        const r = samplerLib.walk(state, measureIR, scope, {
           resolveMeasureRef,
           resolveValueRef: localResolveValueRef,
         });
-        env[refName] = r.value;
+        scope[refName] = r.value;
         return [r.value, r.state];
       }
       // Deterministic binding (evaluate-kind, lifted anon, …): walk its
@@ -364,12 +365,12 @@ class FixedValues {
       }
       const inner = collectSelfRefs(innerIR);
       for (const n of inner) {
-        if (env[n] !== undefined) continue;
-        const sub = localResolveValueRef(n, state);
+        if (scope[n] !== undefined) continue;
+        const sub = localResolveValueRef(n, state, scope);
         state = sub[1];
       }
-      const v = samplerLib.evaluateExpr(innerIR, env);
-      env[refName] = v;
+      const v = samplerLib.evaluateExpr(innerIR, scope);
+      scope[refName] = v;
       return [v, state];
     }
     env.__resolveValueRef = localResolveValueRef;

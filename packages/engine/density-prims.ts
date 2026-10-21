@@ -1084,11 +1084,11 @@ function _consumeJoint(ir: any, t: any): StaticConsumeResult {
   // runtime").
   if (Array.isArray(ir.args) && ir.args.length > 0) {
     let cur: any = t;
-    let anyDeferred = false;
     for (let i = 0; i < ir.args.length; i++) {
       const sub = staticConsume(ir.args[i], cur);
       if (sub.error) return sub;
-      if (sub.deferred) anyDeferred = true;
+      // An unknown footprint cannot prove that the next component runs out.
+      if (sub.deferred) return { logpType: T.REAL, rest: null, deferred: true };
       cur = sub.rest;
       if (cur == null) {
         // Component fully consumed the variate. If more components
@@ -1100,7 +1100,7 @@ function _consumeJoint(ir: any, t: any): StaticConsumeResult {
         }
       }
     }
-    return { logpType: T.REAL, rest: cur, deferred: anyDeferred };
+    return { logpType: T.REAL, rest: cur };
   }
   return { logpType: T.REAL, rest: null, deferred: true };
 }

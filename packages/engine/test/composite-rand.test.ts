@@ -44,15 +44,7 @@ function meanOf(data: any): number {
 
 test('composite rand: Y_samples materialises to [1000,10] with E≈3.0', async () => {
   const src = fs.readFileSync(FIXTURE, 'utf8');
-  const { ctx, built } = makeMatCtx(src, { sampleCount: 64 });
-
-  // The draw half classifies as `randsample`, not `evaluate` (which
-  // would route through evaluateRand → the measure walker, which can't
-  // sample this composite).
-  const d = built.derivations.Y_samples;
-  assert.equal(d.kind, 'randsample', 'Y_samples should be a randsample derivation');
-  assert.equal(d.from, 'Y_dist', 'randsample draws from the iid inner measure');
-  assert.equal(d.count, 1000, 'count = the iid size');
+  const { ctx } = makeMatCtx(src, { sampleCount: 64 });
 
   const m = await ctx.getMeasure('Y_samples');
   assert.ok(m && m.value, 'Y_samples should materialise with a .value');

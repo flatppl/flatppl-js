@@ -6,19 +6,6 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
-const { isEngineLimitation } = require('../limitations.ts');
-
-// A MODEL error, not an engine limitation: no engine can make one node both
-// fresh per coordinate and shared across them. Assert the code so the two
-// verdicts cannot be swapped by a reworded sentence.
-function assertBothRoles(err: any, name: string): boolean {
-  assert.equal(err.code, 'IID_REIFIED_EXTERNAL_OVERLAP', err.message);
-  assert.equal(isEngineLimitation(err), false);
-  assert.match(err.message, new RegExp('"' + name + '"'));
-  assert.match(err.message, /invalid, not merely unsupported/);
-  return true;
-}
-
 function covariance(a: Float64Array, b: Float64Array): number {
   const ma = a.reduce((s, x) => s + x, 0) / a.length;
   const mb = b.reduce((s, x) => s + x, 0) / b.length;
@@ -64,28 +51,28 @@ M = iid(Normal(z, 0.6), 2)
   }
 });
 
-test('iid refuses a captured ancestor also used as an external wrapper input', async () => {
-  const { ctx } = makeMatCtx(`
+for (const location of ['z', 'z + 1.0']) {
+  test(`iid scopes absorbed ancestry separately from free location ${location}`, async () => {
+    const n = 8192;
+    const { ctx } = makeMatCtx(`
 z ~ Normal(0.0, 2.0)
 x ~ Normal(z, 0.6)
-M = iid(locscale(lawof(x), z, 1), 2)
-`, { sampleCount: 256, rootSeed: 717 });
-  // The shift reads parent z while the base law contains its absorbed copy.
-  // This intermediate tree retains the existing IID overlap refusal.
-  await assert.rejects(() => ctx.getMeasure('M'),
-    (e: any) => assertBothRoles(e, 'z'));
-});
-
-test('iid detects captured overlap through an external value expression', async () => {
-  const { ctx } = makeMatCtx(`
-z ~ Normal(0.0, 2.0)
-x ~ Normal(z, 0.6)
-offset = z + 1.0
-M = iid(locscale(lawof(x), offset, 1), 2)
-`, { sampleCount: 256, rootSeed: 717 });
-  await assert.rejects(() => ctx.getMeasure('M'),
-    (e: any) => assertBothRoles(e, 'z'));
-});
+offset = ${location}
+M = iid(locscale(lawof(x), offset, 1.0), 2)
+`, { sampleCount: n, rootSeed: 717 });
+    const flat = (await ctx.getMeasure('M')).samples;
+    const offset = (await ctx.getMeasure('offset')).samples;
+    const a = Float64Array.from({ length: n }, (_, i) => flat[2 * i]);
+    const b = Float64Array.from({ length: n }, (_, i) => flat[2 * i + 1]);
+    const residuals = [a, b].map(col => Float64Array.from(col, (x, i) => x - offset[i]));
+    assert.ok(Math.abs(covariance(a, b) - 4) < 0.65);
+    assert.ok(Math.abs(covariance(residuals[0], residuals[1])) < 0.4);
+    for (const residual of residuals) {
+      assert.ok(Math.abs(covariance(residual, residual) - 4.36) < 0.5);
+      assert.ok(Math.abs(covariance(residual, offset)) < 0.4);
+    }
+  });
+}
 
 test('iid respects a named kernel boundary while copying its captured base', async () => {
   const n = 30000;

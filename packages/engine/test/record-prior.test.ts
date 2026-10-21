@@ -36,7 +36,7 @@ score = logdensityof(prior, (beta = [0.5, -0.5], s = 1.5, b = 2))
   }
 });
 
-test('a reference field cannot silently replace a distinct proper draw coordinate', async () => {
+test('a reference field and a renamed law coordinate remain independent', async () => {
   const { ctx } = ctxFor(`
 alpha = elementof(cartpow(reals, 1))
 z ~ Normal(0, 1)
@@ -45,7 +45,10 @@ y ~ Normal(alpha[1] + z, 1)
 K = kernelof(y, z = alpha, b = z)
 posterior = bayesupdate(likelihoodof(K, 1), prior)
 `);
-  await assert.rejects(buildModelViewFromCtx(ctx, ctx.derivations.posterior), /conflicts with a draw name/);
+  const view = await buildModelViewFromCtx(ctx, ctx.derivations.posterior);
+  const point = view.unconstrainAll({ z: [0.25], b: 0.5 });
+  const expected = -Math.log(2 * Math.PI) - (0.5 ** 2 + 0.25 ** 2) / 2;
+  assert.ok(Math.abs(view.logPosterior(point) - expected) < 1e-12);
 });
 
 test('record prior chains score dependent references between proper law blocks', async () => {

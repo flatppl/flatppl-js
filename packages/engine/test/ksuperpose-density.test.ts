@@ -314,45 +314,39 @@ test('the weights may be a COMPUTED EXPRESSION — the rewrite indexes the '
   assert.ok(Math.abs(got - want) <= TOL, `got ${got}, closed form ${want}`);
 });
 
-test('GENUINELY LATENT weights: the density path refuses, naming the '
-  + 'marginalisation it cannot do — the SAMPLING path works', async () => {
-  // `wp ~ Dirichlet(1, 1)` is a real draw, so scoring the mixture would have
-  // to marginalise it. The engine has no exact answer for that here and says
-  // so rather than returning a number. The sampling half of the same spelling
-  // is the parameterized-weights control in ksuperpose-sampling.test.ts, which
-  // holds at cov 3 — so latent weights work for SAMPLING and refuse for
-  // DENSITY, and the split is asserted rather than assumed.
-  const src = 'wp ~ Dirichlet(alpha = [1.0, 1.0])\n'
-    + 'means = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
-    + 'mix = normalize(ksuperpose(Normal, wp)(mu = means, sigma = sigmas))\n'
-    + '__score__ = logdensityof(mix, 0.5)\n';
-  await assert.rejects(() => score(src), (e: any) => {
-    assert.match(e.message, /marginalises the stochastic ancestor\(s\) wp/);
-    return true;
-  });
+test('free mixture weights remain conditional through an explicit vector input', async () => {
+  // The raw measure constructor retains wp as a free parameter. The
+  // function boundary supplies its value; no enclosing law absorbs wp.
+  for (const firstWeight of [0.2, 0.7]) {
+    const src = 'wp ~ Dirichlet(alpha = [1.0, 1.0])\n'
+      + 'means = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
+      + 'mix = normalize(ksuperpose(Normal, wp)(mu = means, sigma = sigmas))\n'
+      + 'f = functionof(logdensityof(mix, 0.5), wp = wp)\n'
+      + `__score__ = f(wp = [${firstWeight}, ${1 - firstWeight}])\n`;
+    const got = await score(src);
+    const density1 = Math.exp(-0.5 * 1.5 ** 2) / Math.sqrt(2 * Math.PI);
+    const density2 = Math.exp(-0.5 * 3 ** 2) / (0.5 * Math.sqrt(2 * Math.PI));
+    const want = Math.log(firstWeight * density1 + (1 - firstWeight) * density2);
+    assert.ok(Math.abs(got - want) <= TOL, `weight ${firstWeight}: ${got} != ${want}`);
+  }
 });
 
-test('the hand-written spelling of a latent weight VECTOR now classifies, and '
-  + 'refuses for the SAME reason the Dirichlet spelling does', async () => {
-  // Was: this spelling produced `no derivation` — indexing a latent vector in
-  // weight position did not classify at all, so `wp`, `mix` and the query were
-  // silently cascade-pruned. `foldStochasticVectorGets` folds `wp[k]` to the
-  // element expression, so the model now reaches the density path and lands on
-  // the located marginalisation refusal above: a GENUINELY latent weight cannot
-  // be scored exactly whichever way it is spelled. Same class of refusal as the
-  // `wp ~ Dirichlet(...)` sibling test, and asserted against that same message
-  // so the two spellings cannot drift apart.
-  const handWritten = 'psi ~ Beta(2.0, 2.0)\nwp = [psi, 1.0 - psi]\n'
-    + 'means = [-1.0, 2.0]\n'
-    + 'mix = normalize(superpose(weighted(wp[1], Normal(means[1], 1.0)), '
-    + 'weighted(wp[2], Normal(means[2], 1.0))))\n'
-    + '__score__ = logdensityof(mix, 0.5)\n';
-  await assert.rejects(() => score(handWritten), (e: any) => {
-    assert.doesNotMatch(e.message, /no derivation/,
-      'the indexed latent weight should classify now');
-    assert.match(e.message, /marginalises the stochastic ancestor\(s\) psi/);
-    return true;
-  });
+test('indexed free weight expressions retain their explicit scalar parameter', async () => {
+  // Indexing [psi, 1-psi] must preserve the dependency on psi. Scoring
+  // away from the midpoint distinguishes the two supplied weights.
+  for (const firstWeight of [0.2, 0.7]) {
+    const handWritten = 'psi ~ Beta(2.0, 2.0)\nwp = [psi, 1.0 - psi]\n'
+      + 'means = [-1.0, 2.0]\n'
+      + 'mix = normalize(superpose(weighted(wp[1], Normal(means[1], 1.0)), '
+      + 'weighted(wp[2], Normal(means[2], 1.0))))\n'
+      + 'f = functionof(logdensityof(mix, -0.5), psi = psi)\n'
+      + `__score__ = f(psi = ${firstWeight})\n`;
+    const got = await score(handWritten);
+    const density1 = Math.exp(-0.5 * 0.5 ** 2) / Math.sqrt(2 * Math.PI);
+    const density2 = Math.exp(-0.5 * 2.5 ** 2) / Math.sqrt(2 * Math.PI);
+    const want = Math.log(firstWeight * density1 + (1 - firstWeight) * density2);
+    assert.ok(Math.abs(got - want) <= TOL, `weight ${firstWeight}: ${got} != ${want}`);
+  }
 });
 
 // =====================================================================

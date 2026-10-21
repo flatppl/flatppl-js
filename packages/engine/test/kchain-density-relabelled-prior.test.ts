@@ -133,9 +133,10 @@ test('unsupported kchain density refuses while its sampler remains useful', asyn
   await assert.rejects(ctx.getMeasure('lp'), /kchain requires a closed form or finite discrete enumeration/);
 });
 
-test('a positional chain prior preserves shared coordinates in its exact covariance', async () => {
+test('a positional chain prior distinguishes internal sharing from independent law factors', async () => {
   for (const [prior, variance] of [
-    ['joint(lawof(t),lawof(t))', 5],
+    ['lawof([t,t])', 5],
+    ['joint(lawof(t),lawof(t))', 3],
     ['joint(Normal(0,1),Normal(0,1))', 3],
   ]) {
     const ctx = makeCtx(`t~Normal(0,1)\nM=kchain(${prior},fn(Normal(sum(_),1)))\nlp=logdensityof(M,0)`,
@@ -148,7 +149,8 @@ test('a positional chain prior preserves shared coordinates in its exact covaria
 test('finite chain priors enumerate a shared alias once and retain fixed kernel parameters', async () => {
   for (const count of [1, 128]) {
     for (const [prior, probability] of [
-      ['joint(lawof(t),lawof(u))', 0.18],
+      ['lawof([t,u])', 0.18],
+      ['joint(lawof(t),lawof(u))', 0.132],
       ['joint(Bernoulli(.4),Bernoulli(.4))', 0.132],
     ] as const) {
       const ctx = makeCtx(`c=.1\nt~Bernoulli(.4)\nu=t\nM=kchain(${prior},fn(Bernoulli(c+.2*prod(_))))\nlp=logdensityof(M,true)`,

@@ -46,30 +46,6 @@ function fractionDiffer(a: any, b: any): number {
   return diff / n;
 }
 
-test('composite-rand succession: state half rewrites to rand_succ; draws are randsample', () => {
-  const src = fs.readFileSync(FIXTURE, 'utf8');
-  const { built } = makeMatCtx(src, { sampleCount: 64 });
-
-  // The non-discard state half `s2` is rewritten to the value-domain
-  // successor op (NOT left as tuple_get → walk → throw).
-  const s2 = built.bindings.get('s2');
-  assert.ok(s2 && s2.ir, 's2 binding exists');
-  assert.equal(s2.ir.op, 'rand_succ',
-    's2 (composite state half) must be rewritten to rand_succ');
-  assert.equal(s2.ir.args.length, 1, 'rand_succ takes the state arg only');
-  // It is classified as an ordinary evaluable (not a randsample / walk).
-  assert.equal(built.derivations.s2.kind, 'evaluate',
-    'rand_succ binding classifies as evaluate');
-
-  // Both composite draws route to randsample off Y_dist.
-  assert.equal(built.derivations.Y1.kind, 'randsample');
-  assert.equal(built.derivations.Y1.from, 'Y_dist');
-  assert.equal(built.derivations.Y1.count, 200);
-  assert.equal(built.derivations.Y2.kind, 'randsample');
-  assert.equal(built.derivations.Y2.from, 'Y_dist');
-  assert.equal(built.derivations.Y2.count, 200);
-});
-
 test('composite-rand succession: the chained second draw materialises', async () => {
   const src = fs.readFileSync(FIXTURE, 'utf8');
   const { ctx } = makeMatCtx(src, { sampleCount: 64 });

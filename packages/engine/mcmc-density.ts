@@ -423,7 +423,16 @@ async function buildLogPi(
   // refuses an unresolved spec — swallowed to −∞ by likWith, making logπ = −∞
   // everywhere (every sampler stuck at init; SMC's 0·(−∞)=NaN at β=0 wipes all
   // weights). Mirrors the per-draw prior resolution above.
-  const likBodyIR = await resolveNormalizeMasses(likNode.body, ctx, atomDep);
+  // The point uses public input names, while the reified body uses boundary
+  // sources. Rename simultaneously: one input may reuse another source's name.
+  const boundaryNames = new Map((d.params || []).map((name: string, i: number) =>
+    [name, d.paramKwargs[i]]));
+  const likelihood = require('./ir-walk.ts').mapIRScoped(likNode.body,
+    (n: any, shadowed: Set<string>) =>
+      n?.kind === 'ref' && (n.ns === 'self' || n.ns === '%local')
+        && !shadowed.has(n.name) && boundaryNames.has(n.name)
+        ? { ...n, name: boundaryNames.get(n.name), ns: 'self' } : n);
+  const likBodyIR = await resolveNormalizeMasses(likelihood, ctx, atomDep);
 
   // ── SETUP: observed ───────────────────────────────────────────────────────
   const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues, true);

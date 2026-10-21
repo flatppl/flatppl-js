@@ -146,6 +146,53 @@ function _analyticMarginalReply(node: any, ctx: any, opts: any): any {
 
 function matScore(node: any, ctx: any, opts?: any): Promise<any> {
   opts = opts || {};
+  if (node.repeated) {
+    // Each iid coordinate integrates its own law. Integrating the whole
+    // product would turn independent ancestors into one shared ancestor.
+    const { dims, node: inner } = node.repeated;
+    const count = dims.reduce((a: number, b: number) => a * b, 1);
+    const values = require('./value.ts');
+    let point = opts.observed;
+    const shape = point?.__table__ ? [point.nrows]
+      : isValue(point) ? point.shape : [point?.length];
+    if (dims.some((extent: number, axis: number) => shape[axis] !== extent)) {
+      return Promise.reject(new Error('density: iid observation shape does not match its size'));
+    }
+    if (isValue(point) && dims.length > 1) {
+      const dense = values._logicalDense(point);
+      point = { ...dense, shape: [count, ...dense.shape.slice(dims.length)], outerRank: 1 };
+    }
+    return Promise.all(Array.from({ length: count }, (_, i) => {
+      const observed = point?.__table__ ? values.tableRow(point, i)
+        : isValue(point) ? values._sliceRow(point, i) : point[i];
+      return matScore(inner, ctx, { ...opts, observed })
+        .then(reply => applyReduce(reply, inner).samples);
+    })).then(columns => {
+      const samples = new Float64Array((ctx.sampleCount | 0) || 1);
+      for (const column of columns) {
+        for (let i = 0; i < samples.length; i++) samples[i] += column[i];
+      }
+      return { samples };
+    });
+  }
+  if (node.factors) {
+    const point = isValue(opts.observed)
+      ? require('./value.ts')._logicalDense(opts.observed).data : opts.observed;
+    const scores = node.factors.map((factor: any) => {
+      const s = factor.selection;
+      const observed = s.field !== undefined ? point[s.field]
+        : s.scalar ? point[s.offset] : point.slice(s.offset, s.offset + s.size);
+      return matScore(factor.node, ctx, { ...opts, observed })
+        .then(reply => applyReduce(reply, factor.node).samples);
+    });
+    return Promise.all(scores).then(columns => {
+      const samples = new Float64Array((ctx.sampleCount | 0) || 1);
+      for (const column of columns) {
+        for (let i = 0; i < samples.length; i++) samples[i] += column[i];
+      }
+      return { samples };
+    });
+  }
   let analytic: any = null;
   try { analytic = _analyticMarginalReply(node, ctx, opts); }
   catch (e) { return Promise.reject(e); }

@@ -1688,19 +1688,21 @@ nu = pushfwd(fn(get(get(_, ["a", "b"]), "x")), M)
     'a mid-path subset selector reaches the generic evaluator and fails there');
 });
 
-test('projection of a shared-ancestor joint marginalises the shared ancestor', async () => {
-  // The components share the ancestor `t`, so the base is not a product and
-  // the marginal is not a component's own law. §06 reduces such a joint as
-  // its equivalent record law, and the projected record inherits that: the
-  // aa marginal integrates t out, giving Normal(0, √2) since
-  // Var(t) + 1 = 2.
-  const ctx = makeCtx(`
+test('projection of a shared-ancestor record law marginalises the shared ancestor', async () => {
+  // §04 preserves the shared t inside one reified law. Projecting aa then
+  // integrates t out: aa = t + ε with independent unit-variance Normals,
+  // so its marginal is Normal(0, √2). A raw joint of Normal(t,1) measures
+  // would instead be conditional on t's current value (§06).
+  const source = `
 t ~ Normal(0.0, 1.0)
-mm = joint(aa = Normal(t, 1.0), bb = Normal(t, 1.0))
+aa ~ Normal(t, 1.0)
+bb ~ Normal(t, 1.0)
+mm = lawof(record(aa = aa, bb = bb))
 pa = pushfwd(fn(get(_, ["aa"])), mm)
 lp = logdensityof(pa, record(aa = 0.5))
-`);
-  assert.equal(ctx.derivations.pa.kind, 'record');
+`;
+  assert.deepEqual(processSource(source).diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const ctx = makeCtx(source);
   const pa = await ctx.getMeasure('pa');
   assert.deepEqual(Object.keys(pa.fields), ['aa']);
   const lp = await ctx.getMeasure('lp');
@@ -2389,15 +2391,26 @@ tm = totalmass(A)
     `asymmetric superposition totalmass: got ${tm.samples[0]}, expected 5`);
 });
 
-test('opaque mass: the named-joint spelling takes the same rule', async () => {
-  const ctx = makeCtx(`
-theta ~ superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0)))
-A = joint(t = lawof(theta), xx = Normal(theta, 1.0))
+test('opaque mass: a stochastic joint keeps component mass before explicit normalization', async () => {
+  // S has mass 3, while the proper draw theta contributes no mass to the
+  // measure A. At every theta, totalmass(A) = 3 * 1. Its own marginal law
+  // requires explicit normalization (§04), after which its mass is 1.
+  const source = `
+S = superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0)))
+theta ~ normalize(S)
+A = joint(t = S, xx = Normal(theta, 1.0))
+P = lawof(draw(normalize(A)))
 tm = totalmass(A)
-`);
+ptm = totalmass(P)
+`;
+  assert.deepEqual(processSource(source).diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const ctx = makeCtx(source);
   const tm = await ctx.getMeasure('tm');
   assert.ok(Math.abs(tm.samples[0] - 3) < 1e-11,
     `named-joint superposition totalmass: got ${tm.samples[0]}, expected 3`);
+  const ptm = await ctx.getMeasure('ptm');
+  assert.ok(Math.abs(ptm.samples[0] - 1) < 1e-11,
+    `normalized draw's law totalmass: got ${ptm.samples[0]}, expected 1`);
 });
 
 test('opaque mass: an INDEPENDENT superposition factor still contributes whole', async () => {
