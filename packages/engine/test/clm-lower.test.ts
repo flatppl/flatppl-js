@@ -341,7 +341,7 @@ test('Phase 4: an unfed declared boundary ref throws at collectRefArrays/prepare
     { kind: 'lit', value: 1, numType: 'real' },
   ] };
   const baseCtx: any = {
-    bindings: new Map([['theta', { phase: 'parameterized', ir: null }]]),
+    bindings: new Map([['theta', { phase: 'parametric', ir: null }]]),
     fixedValues: new Map(),
     sampleCount: N,
     getMeasure: (_n: any) => Promise.reject(new Error('getMeasure must not be reached')),
@@ -454,14 +454,14 @@ test('Phase 6: a localAlias column satisfies coverage for its input', () => {
 // routes the measure kinds (bayesupdate / likelihood_density / logdensityof
 // / jointchain) through lowerMeasure: ⊆ violation (CLM_SUBSET_VIOLATION)
 // → prune; a clm node → leaf-check the DECLARED INPUTS (replacing the
-// drift-prone parameterized/stochastic body-walk skip); null / other throw
+// drift-prone parametric/stochastic body-walk skip); null / other throw
 // → the legacy walk decides (loud materialise error preserved).
 // ════════════════════════════════════════════════════════════════════════
 test('[Smell C] separate-prior bayesupdate posterior keeps its derivation', () => {
-  // The exact idiom the old parameterized/stochastic skip existed for
+  // The exact idiom the old parametric/stochastic skip existed for
   // (audit H1/H2): prior and likelihood defined fully separately — the
   // kernel's boundary inputs are fed from the prior at materialise time,
-  // so the body's parameterized internals must NOT prune the posterior.
+  // so the body's parametric internals must NOT prune the posterior.
   // Now handled structurally: they are declared boundary/shared inputs of
   // the lowering, not skipped-by-phase.
   const ctx = ctxOf(`
@@ -492,11 +492,11 @@ test('[Smell C] the ⊆ violation carries the structured CLM_SUBSET_VIOLATION co
 });
 
 test('[Smell C] derivationRefsValid prunes a lowering whose shared input is unresolvable', () => {
-  // A free parameterized binding (elementof) referenced by the kernel body
+  // A free parametric binding (elementof) referenced by the kernel body
   // WITHOUT being a declared boundary kwarg: the lowering classifies it as
   // a `shared` input; getMeasure(sigma_free) cannot materialise it, so the
   // faithful verdict is prune. The OLD body-walk skipped it by phase
-  // (parameterized → continue) and kept a binding that fails at
+  // (parametric → continue) and kept a binding that fails at
   // materialise — the drift-prone skip this replaces.
   const src = `
 theta = elementof(reals)

@@ -825,8 +825,8 @@ export interface BindingInfo {
   effectiveValue?: any;
   /** Inferred type (typeinfer.ts output). */
   inferredType?: any;
-  /** Phase: 'fixed' | 'parameterized' | 'stochastic'. */
-  phase?: 'fixed' | 'parameterized' | 'stochastic';
+  /** Phase: 'fixed' | 'parametric' | 'stochastic'. */
+  phase?: 'fixed' | 'parametric' | 'stochastic';
   /** Bijection metadata for bijection-typed bindings. */
   bijection?: { fName: string; fInvName: string; logVolume: any;
                 registryName?: string; paramIRs?: Record<string, any> };

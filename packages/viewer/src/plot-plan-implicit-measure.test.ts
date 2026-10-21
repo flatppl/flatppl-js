@@ -26,7 +26,7 @@ const { buildPlotPlan } = await import('./plot-plan.ts');
 
 // A binding with no derivation gets an IMPLICIT reification (spec §04: clicking
 // `x` is plotting `kernelof(x)` / `functionof(x)` with no boundary kwargs). The
-// dispatch used to read PHASE alone, so a parameterized MEASURE — a truncate
+// dispatch used to read PHASE alone, so a parametric MEASURE — a truncate
 // over a latent bound, a posterior over free `elementof` boundaries — was
 // handed to the implicit FUNCTION builder, which refuses a measure-typed
 // subject by contract. Both builders then declined and the viewer reported the
@@ -60,10 +60,10 @@ tau = elementof(posreals)
 m = truncate(Exponential(rate = rate), interval(0.0, tau))
 `;
 
-test('a parameterized MEASURE routes to the implicit kernel plan', () => {
+test('a parametric MEASURE routes to the implicit kernel plan', () => {
   const { ctx, bindings, derivations } = ctxFor(LATENT_TRUNCATE);
   const b = bindings.get('m');
-  assert.equal(b.phase, 'parameterized');
+  assert.equal(b.phase, 'parametric');
   assert.equal(b.inferredType.kind, 'measure');
   assert.equal(derivations.m, undefined, 'no derivation — the implicit path applies');
   const plan = buildPlotPlan(ctx, b);
@@ -72,7 +72,7 @@ test('a parameterized MEASURE routes to the implicit kernel plan', () => {
   assert.deepEqual(plan.signature.inputs.map((i) => i.paramName).sort(), ['rate', 'tau']);
 });
 
-test('a parameterized VALUE still routes to the implicit profile plan', () => {
+test('a parametric VALUE still routes to the implicit profile plan', () => {
   const { ctx, bindings } = ctxFor(`
 mu = elementof(reals)
 mu2 = mu^2

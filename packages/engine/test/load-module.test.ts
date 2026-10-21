@@ -143,7 +143,7 @@ test('single-file source: modules registry is an empty Map', () => {
 // ---------------------------------------------------------------------
 // Stage 2 — cross-module type inference (spec §04 + §11). `mod.x` resolves
 // through the loaded module's typed bindings; only public, fixed/
-// parameterized bindings cross the boundary (stochastic boundary, spec
+// parametric bindings cross the boundary (stochastic boundary, spec
 // §04); load-time substitutions are phase-compat-checked.
 // ---------------------------------------------------------------------
 
@@ -215,7 +215,7 @@ test('substitution phase-compat: stochastic value into an elementof input errors
     'binding a stochastic value to a module input is rejected (referential transparency)');
 });
 
-test('substitution phase-compat: parameterized value into an external input errors', () => {
+test('substitution phase-compat: parametric value into an external input errors', () => {
   const r = bundleOf('p = elementof(posintegers)\nm = load_module("h.flatppl", n = p)', {
     'h.flatppl': 'n = external(posintegers)\nv = iid(Normal(0, 1), n)',
   });
@@ -224,7 +224,7 @@ test('substitution phase-compat: parameterized value into an external input erro
 });
 
 test('substitution phase-compat: fixed value into an elementof input errors', () => {
-  // Spec §04: `elementof` inputs may only be bound to PARAMETERIZED values;
+  // Spec §04: `elementof` inputs may only be bound to PARAMETRIC values;
   // a fixed-phase value (here the literal `k = 5`) is NOT allowed. This is the
   // `bayesian_inference_common` `c = elementof(reals)` ← `c_scaling = 5` shape
   // the engine previously accepted silently (the symmetric counterpart of the
@@ -232,8 +232,8 @@ test('substitution phase-compat: fixed value into an elementof input errors', ()
   const r = bundleOf('k = 5\nm = load_module("h.flatppl", mu = k)', {
     'h.flatppl': 'mu = elementof(reals)\nobs = Normal(mu, 1)',
   });
-  assert.ok(errs(r.diagnostics).some((d: any) => /elementof|parameterized/i.test(d.message)),
-    'an elementof input requires a parameterized-phase value, not fixed (spec §04: elementof ← parameterized)');
+  assert.ok(errs(r.diagnostics).some((d: any) => /elementof|parametric/i.test(d.message)),
+    'an elementof input requires a parametric-phase value, not fixed (spec §04: elementof ← parametric)');
 });
 
 test('module substitutions preserve the declared input type and known refinement', () => {
@@ -248,7 +248,7 @@ test('module substitutions preserve the declared input type and known refinement
   }
 });
 
-test('forwarded module inputs preserve their parameterized phase', () => {
+test('forwarded module inputs preserve their parametric phase', () => {
   const source = 'm=load_module("h.flatppl")\na=m.x+1\n'
     + 'n=load_module("g.flatppl",z=a)\ny=n.f(z=2)';
   const r = bundleOf(source, {
@@ -265,7 +265,7 @@ test('forwarded module inputs preserve their parameterized phase', () => {
   assert.ok(errs(invalid.diagnostics).some(d => d.loc?.start.line === 2));
 });
 
-test('valid substitution (parameterized → elementof input) is accepted', () => {
+test('valid substitution (parametric → elementof input) is accepted', () => {
   const r = bundleOf('a = elementof(reals)\nm = load_module("h.flatppl", mu = a)', {
     'h.flatppl': 'mu = elementof(reals)\nobs = Normal(mu, 1)',
   });

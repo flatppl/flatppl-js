@@ -331,7 +331,7 @@ body {
    the JS ctx.PALETTE so the in-bar tag and the node fill share one
    source of truth. */
 #info .phase-fixed         { background: var(--phase-fixed);         color: #222; }
-#info .phase-parameterized { background: var(--phase-parameterized); color: #222; }
+#info .phase-parametric { background: var(--phase-parametric); color: #222; }
 #info .phase-stochastic    { background: var(--phase-stochastic);    color: #222; }
 #info .expr {
   opacity: 0.6; white-space: nowrap;

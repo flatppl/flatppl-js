@@ -119,7 +119,7 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
       //     fixed bindings, `lower_cholesky(<fixed cov>)`, …) resolve via
       //     resolveIRToValue — the fast, synchronous path.
       //   - Atom-DEPENDENT params (5f-2): a paramIR that is a direct ref
-      //     to a per-atom (stochastic / parameterized) binding can't
+      //     to a per-atom (stochastic / parametric) binding can't
       //     resolve that way — resolveIRToValue is fixed-phase only and
       //     THROWS on a `draw`. We instead materialise that binding's
       //     measure and use its per-atom `[N, …]` samples as an

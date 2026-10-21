@@ -84,7 +84,7 @@ n = checked(value = v, condition = gt(x, 0.0))
     JSON.stringify(errs(r)));
 });
 
-test('checked: parameterized condition is a phase error', () => {
+test('checked: parametric condition is a phase error', () => {
   const r = process(`
 mu = elementof(reals)
 v = external(reals)

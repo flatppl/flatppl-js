@@ -201,7 +201,7 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
   const fixedValues = ctx.derivationsState.fixedValues;
   // Or — and this is the implicit-kernelof escape hatch — a
   // stochastic binding can have its derivation pruned because
-  // its distIR depends on a parameterized (elementof) ancestor.
+  // its distIR depends on a parametric (elementof) ancestor.
   // Per spec §04, clicking on `x` is equivalent to plotting
   // `kernelof(x)` with no boundary kwargs: a kernel whose inputs
   // are x's elementof leaves. We synthesise that signature and
@@ -218,10 +218,10 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
     //   stochastic, or measure-typed → implicit kernel (synthesise
     //                  `kernelof(x)` with parametric leaves as inputs;
     //                  kernel-sample plan).
-    //   parameterized value         → implicit function (synthesise
+    //   parametric value         → implicit function (synthesise
     //                  `functionof(x)` with parametric leaves as inputs;
     //                  profile plan).
-    // A parameterized MEASURE (`m = truncate(Exponential(rate), interval(0,
+    // A parametric MEASURE (`m = truncate(Exponential(rate), interval(0,
     // tau))`, `posterior = bayesupdate(L, prior)` over free `elementof`
     // boundaries) is measure-like, not a value: it samples rather than
     // evaluates, so it takes the kernel path. That matches
@@ -258,7 +258,7 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
           };
         }
       }
-    } else if (binding.phase === 'parameterized') {
+    } else if (binding.phase === 'parametric') {
       const implicitFnSig = FlatPPLEngine.orchestrator.implicitFunctionSignature(
         name, ctx.derivationsState.bindings, ctx.derivationsState.derivations);
       if (implicitFnSig && implicitFnSig.inputs.length > 0) {
@@ -304,7 +304,7 @@ export function buildPlotPlan(ctx: Ctx, binding: any /*, bindingsMap */): Plan |
   //                          (engine-side broadcast, e.g. lp_obs).
   //                      measure type → atoms come from sampling the
   //                        fixed measure; histogram still applies.
-  //   'parameterized' → handled via callable / input bindings above.
+  //   'parametric' → handled via callable / input bindings above.
   // Records/tuples with phase='fixed' get text directly (no
   // measureIsConstant walk — phase has already classified them as
   // deterministic).

@@ -450,7 +450,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // hex here and every consumer follows.
   //
   // Naming reflects what the colour *means*, not where it shows up:
-  //   phaseStochastic / parameterized / fixed
+  //   phaseStochastic / parametric / fixed
   //                          — value-producing nodes (draw, call) and
   //                            their #info phase tags
   //   measure                — lawof bindings + measure-kind reifications
@@ -467,7 +467,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // familiar after the shift to phase-driven colouring.
   ctx.PALETTE = {
     phaseStochastic:    '#B39DDB',  // purple
-    phaseParameterized: '#4DD0E1',  // teal
+    phaseParametric:    '#4DD0E1',  // teal
     phaseFixed:         '#90A4AE',  // blue-grey
     measure:            '#42A5F5',  // bright blue
     kernel:             '#26A69A',  // teal-green
@@ -493,7 +493,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   (function bindPaletteToCss() {
     const s = document.documentElement.style;
     s.setProperty('--phase-stochastic',    ctx.PALETTE.phaseStochastic);
-    s.setProperty('--phase-parameterized', ctx.PALETTE.phaseParameterized);
+    s.setProperty('--phase-parametric', ctx.PALETTE.phaseParametric);
     s.setProperty('--phase-fixed',         ctx.PALETTE.phaseFixed);
   })();
 
@@ -502,7 +502,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // renderer and the legend.
   ctx.PHASE_COLORS = {
     stochastic:    ctx.PALETTE.phaseStochastic,
-    parameterized: ctx.PALETTE.phaseParameterized,
+    parametric:    ctx.PALETTE.phaseParametric,
     fixed:         ctx.PALETTE.phaseFixed,
   };
 
@@ -515,7 +515,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // value-producing node falls back to the matching phase colour
   // when phase metadata is missing.
   ctx.TYPE_STYLE = {
-    input:       { color: ctx.PALETTE.phaseParameterized, shape: 'diamond',         label: 'input (elementof)' },
+    input:       { color: ctx.PALETTE.phaseParametric,    shape: 'diamond',         label: 'input (elementof)' },
     draw:        { color: ctx.PALETTE.phaseStochastic,    shape: 'ellipse',         label: 'draw' },
     call:        { color: ctx.PALETTE.phaseFixed,         shape: 'round-rectangle', label: 'call' },
     lawof:       { color: ctx.PALETTE.measure,            shape: 'round-rectangle', label: 'lawof (measure)' },

@@ -2619,7 +2619,7 @@ function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
 
     // Per-INDEX component selection is the GENERAL case, not just the
     // repeat axis: output index i selects among the P components' OWN
-    // index-i draws, so a per-atom-parameterized superpose (weights or
+    // index-i draws, so a per-atom-parametric superpose (weights or
     // component params depending on a per-atom draw) keeps its
     // correspondence, and under `iid(superpose, k)` each of the k slots
     // in a block is its own iid coordinate and selects INDEPENDENTLY.

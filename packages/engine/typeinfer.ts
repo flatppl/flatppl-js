@@ -168,7 +168,7 @@ function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: a
   // (#260 (c)).
   ctx.checkPushfwdDomainContracts();
   // Spec §04 "Reification and module scope": functionof/kernelof may not
-  // take a cross-module parameterized value as an input. Needs the dep
+  // take a cross-module parametric value as an input. Needs the dep
   // registry (cross-module phases) — a no-op without a bundle.
   ctx.checkCrossModuleReification();
   return ctx.diagnostics;
@@ -383,7 +383,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // inference). The dependency was compiled (and type-inferred) before
   // this module, so its binding's `inferredType` is already available in
   // the `modules` registry. Enforces the spec §04 access rules — only
-  // PUBLIC, fixed/parameterized bindings cross the module boundary
+  // PUBLIC, fixed/parametric bindings cross the module boundary
   // (stochastic boundary) — emitting a diagnostic on the offending ref.
   function resolveUserModuleRef(expr: any, modAlias: string): any {
     if (!modules) return T.deferred();          // no compile ctx (e.g. inferExprInScope)
@@ -415,7 +415,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (depBinding.phase === 'stochastic') {
       diagnostics.push({ severity: 'error',
         message: "'" + bindingName + "' is a stochastic binding of module '"
-          + modAlias + "' — only fixed or parameterized bindings cross the "
+          + modAlias + "' — only fixed or parametric bindings cross the "
           + 'module boundary (spec §04). Reify it via lawof / kernelof first.',
         loc: expr.loc });
       return T.failed("'" + bindingName + "' is stochastic (module boundary)");
@@ -5878,19 +5878,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // ===================================================================
   // Cross-module reification scope (spec §04 "Reification and module
   // scope"). `functionof` / `kernelof` reify within the CURRENT module
-  // only: a parameterized value reached through a loaded-module reference
+  // only: a parametric value reached through a loaded-module reference
   // cannot become a reified input — neither by the automatic trace nor as
   // an explicit boundary node (directly or via a pure alias) — so such a
   // reification is a static error. A loaded module's CALLABLES and FIXED
   // values may still be used in the reified DAG (applied, or closed over);
-  // only taking a cross-module PARAMETERIZED value as an input is barred.
+  // only taking a cross-module PARAMETRIC value as an input is barred.
   // `lawof` is unrestricted (a measure has no input list), so it is not
   // checked here — only the functionof/kernelof input surface is.
   //
   // The phase of a cross-module binding is read from the dependency's
   // already-inferred `LoweredModule` (deps compile before this module —
   // mirrors `resolveUserModuleRef`'s stochastic-boundary check). Only
-  // `load_module` deps carry parameterized values; standard-module members
+  // `load_module` deps carry parametric values; standard-module members
   // are engine-provided callables (always fixed), so they are never
   // flagged. Without a bundle the dep is unresolved → nothing is flagged
   // (editor-lint tolerance, matching the load_module rule).
@@ -5929,29 +5929,29 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return cur;
     }
 
-    // The cross-module parameterized value a node designates (after pure
+    // The cross-module parametric value a node designates (after pure
     // aliasing), or null. Callables (fixed) and fixed values are excluded
     // by the phase test — exactly the spec's "callables and fixed values
     // may be used" allowance.
     function xmodParamTarget(node: any): any {
       const t = resolvePureAlias(node);
-      return xmodRefPhase(t) === 'parameterized' ? t : null;
+      return xmodRefPhase(t) === 'parametric' ? t : null;
     }
 
     function reportXmod(t: any, loc: any, how: string) {
       diagnostics.push({
         severity: 'error',
-        message: "'" + t.ns + '.' + t.name + "' is a parameterized value from a loaded "
+        message: "'" + t.ns + '.' + t.name + "' is a parametric value from a loaded "
           + 'module and cannot become a reified input (' + how + '). `functionof` / '
           + '`kernelof` reify within the current module only — a loaded module’s '
           + 'callables and fixed values may be used in a reified DAG, but not its '
-          + 'parameterized values (spec §04 "Reification and module scope").',
+          + 'parametric values (spec §04 "Reification and module scope").',
         loc,
       });
     }
 
     // Automatic-trace clause (no explicit boundary): the trace back to
-    // parametric leaves would make any cross-module parameterized value an
+    // parametric leaves would make any cross-module parametric value an
     // input. Walk the reified body's ancestor closure WITHIN this module —
     // follow self-refs into their RHS (which also follows aliases), stop at
     // cross-module refs / placeholders, and do NOT descend into a nested
@@ -5997,7 +5997,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           // source that pure-aliases the cross-module value, e.g.
           // `a = m.theta; functionof(…, p = a)`). A `placeholder` source is
           // a fresh formal — never cross-module. A `binding` source whose
-          // pure-alias chain lands on a cross-module parameterized value
+          // pure-alias chain lands on a cross-module parametric value
           // names it as an input → error; a DERIVED local binding
           // (`y = m.theta * 2`) stops the alias resolution at `y`, correctly
           // cutting the cross-module dependency.
@@ -6092,7 +6092,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
 
   // A fixed-phase scalar weight rescales by a constant — preserving the
-  // mass class (modulo normalized→finite). A parameterised / stochastic
+  // mass class (modulo normalized→finite). A parametric / stochastic
   // / function / inline weight does not qualify (spec §06 + Rust rule).
   function isFixedScalarWeight(weightIR: any): boolean {
     if (!weightIR) return false;
@@ -6311,7 +6311,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           }
           return T.MASS_UNKNOWN;
         }
-        // A parameterised / stochastic weight scales by an unknown factor,
+        // A parametric / stochastic weight scales by an unknown factor,
         // so the total mass is unknown whatever the base's class is.
         return T.MASS_UNKNOWN;
       }
@@ -6700,7 +6700,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // The complement pattern: exactly two weights, `e` and `1 - e` with the
   // SAME `e`, where `e` is provably in [0, 1]. Then the weights sum to one
   // whatever `e` turns out to be — the one sum-to-one proof that survives
-  // a stochastic or parameterized weight.
+  // a stochastic or parametric weight.
   function complementPair(weights: any[]): boolean {
     if (weights.length !== 2) return false;
     return isComplementOf(weights[0], weights[1])

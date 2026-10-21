@@ -598,7 +598,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           // Truncated sampling (spec §06). Registered CDFs use stable interval
           // masses and conditional quantiles. Raw parameter slices retain
           // their own logMasses; normalized slices omit that factor.
-          // Other parameterized laws use one proposal plus an indicator for
+          // Other parametric laws use one proposal plus an indicator for
           // raw truncation, or bounded rejection for normalized truncation.
           // Fixed laws retain the stdlib CDF/rejection fallback and logShift.
           //

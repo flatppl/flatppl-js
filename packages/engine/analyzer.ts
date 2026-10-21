@@ -1272,13 +1272,13 @@ function kernelTypeForPlan(plan: any, bindings: any) {
  * (`docs/04-design.md#phases`).
  *
  *  - `draw(...)` self → stochastic
- *  - `elementof(...)` self → parameterized
+ *  - `elementof(...)` self → parametric
  *  - `external(...)` self → fixed (despite being an "input")
  *  - any other binding → max of its dependencies' phases, where
- *    stochastic > parameterized > fixed
+ *    stochastic > parametric > fixed
  *
  * @param {Map} bindings
- * @returns {Map<string, 'fixed' | 'parameterized' | 'stochastic'>}
+ * @returns {Map<string, 'fixed' | 'parametric' | 'stochastic'>}
  */
 /**
  * Phase of a degenerate (zero-entropy) draw, or null if the draw
@@ -1375,7 +1375,7 @@ function phaseOfAstExpr(ast: any, bindings: any, phaseOf: any): string {
     for (const argAst of children) {
       const argPhase = phaseOfAstExpr(argAst, bindings, phaseOf);
       if (argPhase === 'stochastic') return 'stochastic';
-      if (argPhase === 'parameterized') phase = 'parameterized';
+      if (argPhase === 'parametric') phase = 'parametric';
     }
     return phase;
   }
@@ -1397,7 +1397,7 @@ function computePhases(bindings: any) {
 
   function maxPhase(a: string, b: string) {
     if (a === 'stochastic' || b === 'stochastic') return 'stochastic';
-    if (a === 'parameterized' || b === 'parameterized') return 'parameterized';
+    if (a === 'parametric' || b === 'parametric') return 'parametric';
     return 'fixed';
   }
 
@@ -1405,7 +1405,7 @@ function computePhases(bindings: any) {
   // into the reified law rather than propagating it outward"), some
   // ops *absorb* stochastic ancestors — the result is a deterministic
   // measure / function / kernel whose phase depends only on the
-  // parameterized leaves of its ancestor closure, not on whether
+  // parametric leaves of its ancestor closure, not on whether
   // those leaves are reached through a draw. Recursively walks
   // body-deps, collapsing 'stochastic' verdicts to 'fixed' along the
   // way and surfacing only the highest non-stochastic phase.
@@ -1417,7 +1417,7 @@ function computePhases(bindings: any) {
   // parameters' value-sets, not the function's result. Walking them
   // would propagate the formal's elementof phase through any
   // downstream `rand` / `lawof`, mis-classifying calls like
-  // `a = f(par = beta1); rand(lawof(a), state)` as parameterized
+  // `a = f(par = beta1); rand(lawof(a), state)` as parametric
   // even when beta1 (the call's argument) is fixed.
   const absorbedCache = new Map<string, string>();
   const absorbedVisiting = new Set<string>();
@@ -1428,7 +1428,7 @@ function computePhases(bindings: any) {
     const b = bindings.get(name);
     if (!b)                          { absorbedCache.set(name, 'fixed');         return 'fixed'; }
     const cn = calleeName(b);
-    if (cn === 'elementof')          { absorbedCache.set(name, 'parameterized'); return 'parameterized'; }
+    if (cn === 'elementof')          { absorbedCache.set(name, 'parametric'); return 'parametric'; }
     if (cn === 'external')           { absorbedCache.set(name, 'fixed');         return 'fixed'; }
     // CALLABLE bindings contribute 'fixed' — do NOT descend into the body
     // closure. A callable's parameterization is decided at its APPLICATION
@@ -1438,7 +1438,7 @@ function computePhases(bindings: any) {
     // the body instead surfaces elementof leaves BEHIND the declared cut —
     // `kernelof(zs, pars = pars)` reaches the module `pars` through body
     // refs — so an applied kernel with FIXED args (`rand(k_model(glob_pars),
-    // state)`) would mis-phase as parameterized, knocking the
+    // state)`) would mis-phase as parametric, knocking the
     // draw off the fixed pre-eval path (spec §07: rand propagates phases
     // normally). Type list mirrors ir-shared.isCallableLikeBindingType
     // (the canonical catalogue; inlined here because ir-shared imports
@@ -1453,7 +1453,7 @@ function computePhases(bindings: any) {
     let phase = 'fixed';
     for (const dep of deps) {
       phase = maxPhase(phase, absorbedPhaseOf(dep));
-      if (phase === 'parameterized') break;
+      if (phase === 'parametric') break;
     }
     absorbedCache.set(name, phase);
     absorbedVisiting.delete(name);
@@ -1467,7 +1467,7 @@ function computePhases(bindings: any) {
     const call = ast.type === 'CallExpr';
     const op = call && ast.callee?.type === 'Identifier' && ast.callee.name;
     if (op === 'lawof') return argumentPhase(ast.args, true);
-    if (op === 'elementof') return 'parameterized';
+    if (op === 'elementof') return 'parametric';
     if (op === 'draw' && !absorbed) return 'stochastic';
     if (['external', 'functionof', 'kernelof', 'fn'].includes(op)) return 'fixed';
     let phase = 'fixed';
@@ -1512,7 +1512,7 @@ function computePhases(bindings: any) {
       const sharpened = phaseOfDegenerateDraw(drawArg, bindings, phaseOf);
       phase = sharpened != null ? sharpened : 'stochastic';
     } else if (cn === 'elementof') {
-      phase = 'parameterized';
+      phase = 'parametric';
     } else if (cn === 'external') {
       phase = 'fixed';
     } else if (cn === 'lawof') {
@@ -1522,7 +1522,7 @@ function computePhases(bindings: any) {
       phase = 'fixed';
       for (const dep of b.deps) {
         phase = maxPhase(phase, absorbedPhaseOf(dep));
-        if (phase === 'parameterized') break;
+        if (phase === 'parametric') break;
       }
     } else if (cn === 'rand') {
       phase = argumentPhase(b.node.value);
@@ -1558,7 +1558,7 @@ function computePhases(bindings: any) {
  * Trace ancestors after replacing explicit boundary nodes. Every remaining
  * parameter leaf is an error when the boundary is explicit; an unabsorbed
  * draw is an error for every callable. A boundary may cut an intermediate
- * node, so tracing must follow parameterized and stochastic bindings rather
+ * node, so tracing must follow parametric and stochastic bindings rather
  * than rejecting them from their phase alone. Fixed ancestors close normally.
  *
  * Nested reifications add their own boundaries. Their bodies are also checked
@@ -1636,7 +1636,7 @@ function reificationFreeInput(node: any, bindings: any, phaseOf: any): string | 
     const key = visitKey(name, formals, absorbed);
     if (seen.has(key)) return null;
     seen.add(key);
-    // Fixed ancestors close over values. Parameterized ancestors still need
+    // Fixed ancestors close over values. Parametric ancestors still need
     // tracing: an explicit boundary may replace a descendant of their leaves.
     if (phaseOf(name) === 'fixed') return null;
     const v = b.node.value;
@@ -1683,12 +1683,12 @@ function rhsContainsInlineDraw(node: any): boolean {
 
 /**
  * Phase computation parameterised by a set of "boundary" names that
- * are treated as `parameterized` leaves regardless of their global
+ * are treated as `parametric` leaves regardless of their global
  * phase. Used to compute scope-local phases inside reified subgraphs:
  * a kernelof / functionof / lawof bubble cuts the phase chain at its
  * kwargs, because those names are *parameters* of the reification —
  * a value gets passed in for them at call time, so within the body
- * they are by definition `parameterized` rather than `stochastic`.
+ * they are by definition `parametric` rather than `stochastic`.
  *
  * Example:
  *   theta1 = draw(theta1_dist)               # globally: stochastic
@@ -1697,11 +1697,11 @@ function rhsContainsInlineDraw(node: any): boolean {
  * Inside k's body, theta1 is the kernel parameter, so:
  *   computePhasesForScope(bindings, new Set(['theta1']))
  * gives:
- *   theta1 → 'parameterized'   (overridden by boundary)
- *   beta1  → 'parameterized'   (depends only on theta1 in this scope)
+ *   theta1 → 'parametric'   (overridden by boundary)
+ *   beta1  → 'parametric'   (depends only on theta1 in this scope)
  *
  * Nested reifications: pass the union of all enclosing scopes'
- * boundary names — every "outer" parameter is also `parameterized`
+ * boundary names — every "outer" parameter is also `parametric`
  * from the inner scope's perspective (the outer hasn't been called
  * yet either).
  *
@@ -1713,7 +1713,7 @@ function rhsContainsInlineDraw(node: any): boolean {
  *
  * @param {Map} bindings
  * @param {Set<string>} boundaryNames
- * @returns {Map<string, 'fixed' | 'parameterized' | 'stochastic'>}
+ * @returns {Map<string, 'fixed' | 'parametric' | 'stochastic'>}
  */
 function computePhasesForScope(bindings: any, boundaryNames: Set<string>) {
   if (!boundaryNames || boundaryNames.size === 0) return computePhases(bindings);
@@ -1730,7 +1730,7 @@ function computePhasesForScope(bindings: any, boundaryNames: Set<string>) {
 
   function maxPhase(a: string, b: string) {
     if (a === 'stochastic' || b === 'stochastic') return 'stochastic';
-    if (a === 'parameterized' || b === 'parameterized') return 'parameterized';
+    if (a === 'parametric' || b === 'parametric') return 'parametric';
     return 'fixed';
   }
 
@@ -1740,8 +1740,8 @@ function computePhasesForScope(bindings: any, boundaryNames: Set<string>) {
     // walk stops here — the value gets supplied at call time, so by
     // construction the body sees it as a parameter.
     if (boundaryNames.has(name)) {
-      phases.set(name, 'parameterized');
-      return 'parameterized';
+      phases.set(name, 'parametric');
+      return 'parametric';
     }
     if (visiting.has(name)) return 'fixed';
     visiting.add(name);
@@ -1763,7 +1763,7 @@ function computePhasesForScope(bindings: any, boundaryNames: Set<string>) {
       const sharpened = phaseOfDegenerateDraw(drawArg, bindings, phaseOf);
       phase = sharpened != null ? sharpened : 'stochastic';
     } else if (cn === 'elementof') {
-      phase = 'parameterized';
+      phase = 'parametric';
     } else if (cn === 'external') {
       phase = 'fixed';
     } else if (rhsContainsInlineDraw(b && b.node && b.node.value)) {
@@ -1771,7 +1771,7 @@ function computePhasesForScope(bindings: any, boundaryNames: Set<string>) {
       // computePhases. The boundary cut at boundaryNames takes
       // precedence (caught at the top of phaseOf), so an inline
       // draw on a name shadowed by a boundary still resolves to
-      // 'parameterized'.
+      // 'parametric'.
       phase = 'stochastic';
     } else {
       phase = 'fixed';
@@ -3844,7 +3844,7 @@ function analyze(ast: any, source: string, opts?: any) {
     }
   }
 
-  // Fourth pass: compute phases (stochastic | parameterized | fixed) by
+  // Fourth pass: compute phases (stochastic | parametric | fixed) by
   // ancestor analysis, per spec.
   const phases = computePhases(bindings);
   for (const [name, phase] of phases) {
@@ -4245,7 +4245,7 @@ function analyze(ast: any, source: string, opts?: any) {
   // against the loaded module's inputs (spec §04 "Load-time
   // substitution"): the LHS must name an input (elementof / external) of
   // the loaded module, and the RHS phase must be compatible — external
-  // inputs take fixed values, elementof inputs take parameterized (or
+  // inputs take fixed values, elementof inputs take parametric (or
   // fixed) values, and a stochastic value is never substitutable
   // (referential transparency). Runs after type inference so the
   // dependency modules are fully compiled.
@@ -4314,9 +4314,9 @@ function _astAllSingleRelabel(priorArgs: any[], bindings: any): boolean {
   return true;
 }
 
-// Phase ordering helper: fixed < parameterized < stochastic.
+// Phase ordering helper: fixed < parametric < stochastic.
 function _maxPhase(a: string, b: any): string {
-  const rank: Record<string, number> = { fixed: 0, parameterized: 1, stochastic: 2 };
+  const rank: Record<string, number> = { fixed: 0, parametric: 1, stochastic: 2 };
   const ra = rank[a] != null ? rank[a] : 0;
   const rb = rank[b] != null ? rank[b] : 0;
   return ra >= rb ? a : (b as string);
@@ -4349,7 +4349,7 @@ function retainTableSchemas(ast: any, ir: any): void {
 function _irPhase(ir: any, loweredModule: any, modules: any): string {
   if (ir && ir.kind === 'call') {
     if (ir.op === 'draw')      return 'stochastic';
-    if (ir.op === 'elementof') return 'parameterized';
+    if (ir.op === 'elementof') return 'parametric';
     if (ir.op === 'external')  return 'fixed';
   }
   const irShared = require('./ir-shared.ts');
@@ -4412,7 +4412,7 @@ function _validateModuleSubstitutions(loweredModule: any, modules: any, diagnost
         diagnostics.push({ severity: 'error',
           message: "cannot bind a stochastic value to module input '" + a.name
             + "' of '" + name + "' — load-time substitution values must be fixed or "
-            + 'parameterized (spec §04, referential transparency)',
+            + 'parametric (spec §04, referential transparency)',
           loc });
         continue;
       }
@@ -4424,14 +4424,14 @@ function _validateModuleSubstitutions(loweredModule: any, modules: any, diagnost
           loc });
       }
       // Symmetric to the external rule: an `elementof` input may only be
-      // bound to a PARAMETERIZED value (spec §04). The stochastic case is
+      // bound to a PARAMETRIC value (spec §04). The stochastic case is
       // already rejected above, so a `fixed` value here is the violation
       // (e.g. a literal `c_scaling = 5` substituted into `c = elementof(...)`).
-      if (inputOp === 'elementof' && vphase !== 'parameterized') {
+      if (inputOp === 'elementof' && vphase !== 'parametric') {
         diagnostics.push({ severity: 'error',
           message: "elementof input '" + a.name + "' of module '" + name
-            + "' requires a parameterized-phase value, got " + vphase
-            + ' (spec §04: elementof ← parameterized)',
+            + "' requires a parametric-phase value, got " + vphase
+            + ' (spec §04: elementof ← parametric)',
           loc });
       }
     }

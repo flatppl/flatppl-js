@@ -103,14 +103,14 @@ test('property: processSource is total over small joint-record sources', () => {
 // Property 2: Phase domain
 // ---------------------------------------------------------------------
 //
-// Spec §04 §phases: every binding's phase ∈ {fixed, parameterized,
+// Spec §04 §phases: every binding's phase ∈ {fixed, parametric,
 // stochastic}. The engine must not produce any other phase tag.
 
 test('property: every binding has a valid phase tag', () => {
   fc.assert(fc.property(arbJointRecordSrc(), ({ src }: any) => {
     const { bindings } = processSource(src);
     for (const [, b] of bindings) {
-      if (!['fixed', 'parameterized', 'stochastic'].includes(b.phase)) {
+      if (!['fixed', 'parametric', 'stochastic'].includes(b.phase)) {
         return false;
       }
     }
@@ -156,9 +156,9 @@ test('property: bodyDeps and paramSourceDeps partition deps', () => {
 //              (spec §04 §sec:functionof, §sec:captured-draws)
 // ---------------------------------------------------------------------
 //
-// "FlatPPL has no closures over fixed or parameterized ancestors: a fixed
+// "FlatPPL has no closures over fixed or parametric ancestors: a fixed
 // ancestor is resolved to its value rather than retained as a binding, and a
-// parameterized ancestor of the reified sub-graph is traced back to an input."
+// parametric ancestor of the reified sub-graph is traced back to an input."
 // So a `functionof` whose boundary names every drawn ancestor is a function of
 // its inputs alone, and its value is %fixed.
 //

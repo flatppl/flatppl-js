@@ -17,8 +17,8 @@
 //      derived value bindings (`a = 5*theta2`) the density side would
 //      getMeasure → "no derivation for 'a'"; matBayesupdate now inlines them
 //      (inlineBoundaryDerivations). (b) the whole posterior was cascade-pruned
-//      because its body's parameterized internals weren't "resolvable" →
-//      "Not plottable"; derivationRefsValid now skips parameterized/stochastic
+//      because its body's parametric internals weren't "resolvable" →
+//      "Not plottable"; derivationRefsValid now skips parametric/stochastic
 //      kernel internals for bayesupdate.
 
 const test = require('node:test');
@@ -122,7 +122,7 @@ test('separate prior/likelihood: likelihood density is finite and peaks near the
 test('separate prior/likelihood: posterior classifies (not pruned) and materialises', async () => {
   const built = build();
   // Cascade-prune must NOT drop the posterior just because its body internals
-  // are parameterized (the "Not plottable" bug).
+  // are parametric (the "Not plottable" bug).
   assert.ok(built.derivations['posterior'], 'posterior must keep its derivation (else "Not plottable")');
   assert.strictEqual(built.derivations['posterior'].kind, 'bayesupdate');
 

@@ -20,9 +20,9 @@ test('phase: draw is stochastic', () => {
   assert.equal(p.x, 'stochastic');
 });
 
-test('phase: elementof is parameterized', () => {
+test('phase: elementof is parametric', () => {
   const p: any = phasesOf('x = elementof(reals)\n');
-  assert.equal(p.x, 'parameterized');
+  assert.equal(p.x, 'parametric');
 });
 
 test('phase: external is fixed', () => {
@@ -43,7 +43,7 @@ test('phase: literal is fixed', () => {
 // the post-lift bindings (_propagateLiftedPhases) so every anon gets a phase.
 
 test('phase: lift-introduced anons all carry a non-null phase', () => {
-  // A generative composite (inner draws + a parameterized record input) — the
+  // A generative composite (inner draws + a parametric record input) — the
   // shape that hoists many anons (broadcast / iid / draw pieces).
   const src = `
 sigma = 0.2
@@ -73,12 +73,12 @@ mu = elementof(reals)
 inner = lawof(draw(Normal(mu, 1.0)) + draw(Normal(0.0, 1.0)))`;
   const b = der.buildDerivations(processSource(src).bindings);
   // At least one synthetic anon should be stochastic (the inner draw piece)
-  // and at least one parameterized (a mu-dependent value) — never all fixed.
+  // and at least one parametric (a mu-dependent value) — never all fixed.
   const phases = new Set<string>();
   for (const [, bind] of b.bindings) {
     if (bind && bind.synthetic && bind.phase != null) phases.add(bind.phase);
   }
-  assert.ok(phases.has('stochastic') || phases.has('parameterized'),
+  assert.ok(phases.has('stochastic') || phases.has('parametric'),
     `expected a non-fixed anon phase, got ${JSON.stringify([...phases])}`);
 });
 
@@ -86,7 +86,7 @@ inner = lawof(draw(Normal(mu, 1.0)) + draw(Normal(0.0, 1.0)))`;
 // with the lambda's placeholder substituted. Those copies read no binding that varies,
 // only the placeholder, so they used to classify as fixed. Preparation then tried
 // to evaluate each copied measure as a constant, every time it read fixedValues.
-test('phase: closure copies made inside a lambda are parameterized by its input', async () => {
+test('phase: closure copies made inside a lambda are parametric by its input', async () => {
   const { makeMatCtx } = require('./_materialise-helpers.ts');
   const { ctx, built } = makeMatCtx(`
 theta ~ Uniform(unitinterval)
@@ -106,7 +106,7 @@ posterior = bayesupdate(L, prior)
   assert.equal(copies.length, 12);
   assert.equal(new Set(copies.map(([, b]: any) => b.closureOf)).size, 12);
   for (const [name, b] of copies as any) {
-    assert.equal(b.phase, b.ir.op === 'draw' ? 'stochastic' : 'parameterized', name);
+    assert.equal(b.phase, b.ir.op === 'draw' ? 'stochastic' : 'parametric', name);
   }
   const computed: string[] = [];
   const compute = built.fixedValues._compute;
@@ -138,18 +138,18 @@ b = a + 1
   assert.equal(p.b, 'stochastic');
 });
 
-test('phase: parameterized propagates through deterministic ops', () => {
+test('phase: parametric propagates through deterministic ops', () => {
   const p: any = phasesOf(`
 mu_p = elementof(reals)
 a = mu_p + 1
 b = a * 2
 `);
-  assert.equal(p.mu_p, 'parameterized');
-  assert.equal(p.a, 'parameterized');
-  assert.equal(p.b, 'parameterized');
+  assert.equal(p.mu_p, 'parametric');
+  assert.equal(p.a, 'parametric');
+  assert.equal(p.b, 'parametric');
 });
 
-test('phase: stochastic dominates over parameterized', () => {
+test('phase: stochastic dominates over parametric', () => {
   const p: any = phasesOf(`
 mu_p = elementof(reals)
 theta1 = draw(Normal(mu = mu_p, sigma = 1))
@@ -159,15 +159,15 @@ a = mu_p + theta1
   assert.equal(p.a, 'stochastic');
 });
 
-test('phase: parameterized dominates over fixed', () => {
+test('phase: parametric dominates over fixed', () => {
   const p: any = phasesOf(`
 n = external(integers)
 mu_p = elementof(reals)
 a = mu_p + n
 `);
   assert.equal(p.n, 'fixed');
-  assert.equal(p.mu_p, 'parameterized');
-  assert.equal(p.a, 'parameterized');
+  assert.equal(p.mu_p, 'parametric');
+  assert.equal(p.a, 'parametric');
 });
 
 // --- Bayesian inference example ---
@@ -201,12 +201,12 @@ test('phase: bayesian_inference_3 fixture has correct phases', () => {
 });
 
 // Regression: absorbedPhaseOf (the walker behind lawof / rand) must
-// not propagate `parameterized` through a function's formal-parameter
+// not propagate `parametric` through a function's formal-parameter
 // references — those have a concrete value supplied at the call site,
 // so any `elementof` declared on a kwarg is substituted out by the
 // time the call site's result is read. Pre-fix, `f = functionof(c*_par,
 // par = _par)` with `_par = elementof(reals)` made every `rand(...)`
-// of a downstream measure read as `parameterized`, which blocked
+// of a downstream measure read as `parametric`, which blocked
 // pre-evaluation and surfaced as "matEvaluate: parent X has neither
 // .value nor .samples" at plot time.
 test('phase: absorbed walk skips function formal-params (elementof under functionof)', () => {
@@ -220,13 +220,13 @@ obs_dist = Normal(mu = a, sigma = 1)
 rstate0 = rnginit([1,2,3,4])
 sample, _ = rand(obs_dist, rstate0)
 `);
-  // _par alone is parameterized — it's an elementof.
-  assert.equal(p._par, 'parameterized');
+  // _par alone is parametric — it's an elementof.
+  assert.equal(p._par, 'parametric');
   // The function value itself is fixed.
   assert.equal(p.f, 'fixed');
   // rand absorbs stochasticity; _par lives only inside f's body and
   // is bound at the call site (f(par = beta1)), so the rand result is
-  // fixed — not parameterized.
+  // fixed — not parametric.
   assert.equal(p.sample, 'fixed');
 });
 
@@ -239,7 +239,7 @@ x = draw(Normal(mu = mu, sigma = 1))
 y = 2 * x
 `);
   const phases = computePhases(bindings);
-  assert.equal(phases.get('mu'), 'parameterized');
+  assert.equal(phases.get('mu'), 'parametric');
   assert.equal(phases.get('x'), 'stochastic');
   assert.equal(phases.get('y'), 'stochastic');
 });
@@ -249,8 +249,8 @@ y = 2 * x
 test('phase: computePhasesForScope cuts the chain at boundary names', () => {
   // Globally beta1 is stochastic (depends on draw via theta1).
   // With theta1 declared as a boundary input, beta1's phase walk
-  // stops at theta1 → 'parameterized', so beta1 itself reads as
-  // 'parameterized' too.
+  // stops at theta1 → 'parametric', so beta1 itself reads as
+  // 'parametric' too.
   const { bindings } = processSource(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 beta1 = 2 * theta1
@@ -260,8 +260,8 @@ beta1 = 2 * theta1
   assert.equal(global.get('beta1'),  'stochastic');
 
   const scoped = computePhasesForScope(bindings, new Set(['theta1']));
-  assert.equal(scoped.get('theta1'), 'parameterized');
-  assert.equal(scoped.get('beta1'),  'parameterized');
+  assert.equal(scoped.get('theta1'), 'parametric');
+  assert.equal(scoped.get('beta1'),  'parametric');
 });
 
 test('phase: computePhasesForScope with empty boundaries === computePhases', () => {
@@ -280,7 +280,7 @@ y = 2 * x
 test('phase: DAG nodes inside a kernel bubble carry scope-local phase', () => {
   // forward_kernel's body has theta1/theta2 as boundary inputs.
   // Inside the bubble, both they and beta1 (= 2*theta2) read as
-  // 'parameterized'; outside, they're stochastic.
+  // 'parametric'; outside, they're stochastic.
   const { bindings } = processSource(`
 theta1 = draw(Normal(mu = 0, sigma = 1))
 theta2 = draw(Exponential(rate = 1))
@@ -291,8 +291,8 @@ fk     = functionof(obs, theta1 = theta1, theta2 = theta2)
   const dag = computeSubDAG(bindings, 'fk');
   const byId: any = new Map(dag.nodes.map((n: any) => [n.id, n]));
   // Inside the kernel: theta2 and beta1 cut by the boundary.
-  assert.equal(byId.get('theta2').phase, 'parameterized');
-  assert.equal(byId.get('beta1').phase,  'parameterized');
+  assert.equal(byId.get('theta2').phase, 'parametric');
+  assert.equal(byId.get('beta1').phase,  'parametric');
   // Global view of the same bindings still has them stochastic.
   const global = computePhases(bindings);
   assert.equal(global.get('theta2'), 'stochastic');
@@ -334,7 +334,7 @@ f = functionof(ext + 1, theta = ext)
   assert.match(diags[0].message, /references 'ext'/);
 });
 
-test('boundary-phase: parameterized binding (elementof) → no error', () => {
+test('boundary-phase: parametric binding (elementof) → no error', () => {
   const diags = diagsFor(`
 mu = elementof(reals)
 f = functionof(mu + 1, theta = mu)
@@ -409,7 +409,7 @@ test('rand of an APPLIED kernel with fixed args is fixed-phase (absorbed walk st
   // not by the elementof leaves behind the declared cut. The absorbed
   // walk (lawof/rand) must therefore stop at callable bindings: descending
   // into k_model_n's body reaches the module `pars` elementof THROUGH the
-  // cut and mis-phased `sim = rand(k(fixed), state)` as parameterized —
+  // cut and mis-phased `sim = rand(k(fixed), state)` as parametric —
   // knocking the draw off the fixed pre-eval path (the simple-transport
   // sim_data shape).
   const { bindings } = processSource(`
@@ -422,8 +422,8 @@ sim, rs2 = rand(model_dist, rstate)
 `);
   assert.equal(bindings.get('model_dist').phase, 'fixed');
   assert.equal(bindings.get('sim').phase, 'fixed');
-  // The arg path still propagates: applying with a PARAMETERIZED arg
-  // keeps the draw parameterized.
+  // The arg path still propagates: applying with a PARAMETRIC arg
+  // keeps the draw parametric.
   const p2 = processSource(`
 pars = elementof(reals)
 other = elementof(reals)
@@ -433,5 +433,5 @@ model_dist = K(other)
 rstate = rnginit([1, 2, 3])
 sim, rs2 = rand(model_dist, rstate)
 `).bindings;
-  assert.equal(p2.get('sim').phase, 'parameterized');
+  assert.equal(p2.get('sim').phase, 'parametric');
 });

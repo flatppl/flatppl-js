@@ -101,7 +101,7 @@ function meanOf(xs: ArrayLike<number>): number {
   return s / xs.length;
 }
 
-test('nested broadcasts retain parameterized vector captures', () => {
+test('nested broadcasts retain parametric vector captures', () => {
   const model = `x = elementof(reals)
 v = [x]
 y = sum(((a, b) -> a + b).([1.0, 2.0], v))

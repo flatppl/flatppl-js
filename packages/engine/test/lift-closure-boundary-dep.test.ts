@@ -3,7 +3,7 @@
 // Buffy #265 — reproduces the lift.ts fn-inline closure-duplication bug.
 //
 // `computeClosure` (lift.ts ~2616-2647), when inlining a user-function call,
-// unconditionally COPIES every reachable stochastic/parameterized free
+// unconditionally COPIES every reachable stochastic/parametric free
 // variable a fn body closes over (any var that is not the fn's own
 // parameter and not fixed-phase) into a fresh, independent synthetic
 // binding subgraph — even when that variable has no dependency on the call

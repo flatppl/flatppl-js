@@ -47,7 +47,7 @@ function unplottableReason(ctx: Ctx, bindingName: string | null): string {
     return ' A standard module is a namespace, not a measure —'
       + ' plot one of its members instead.';
   }
-  if (b.type === 'input' && b.phase === 'parameterized') {
+  if (b.type === 'input' && b.phase === 'parametric') {
     return ' A free parameter has no measure of its own —'
       + ' plot a binding that uses it.';
   }

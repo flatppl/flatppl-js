@@ -35,7 +35,7 @@
 //     axis"), and inheriting it is the reason this pass expands instead
 //     of adding a parallel handler that would have to re-derive it.
 //     `REPLICATED_ARG_OPS` (typeinfer) already lists `superpose` for the
-//     same reason, so shared ancestors — parameterized weights, family
+//     same reason, so shared ancestors — parametric weights, family
 //     entries from outer draws — stay shared while the selection freshens.
 //
 // The cost is that N must be resolvable when this pass runs. §06 says N

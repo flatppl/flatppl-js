@@ -67,7 +67,7 @@ test('domain-contract: valid parameters produce no error', () => {
   assert.ok(!violates('x = draw(Exponential(rate = 1.0))'));
 });
 
-test('domain-contract: a parameterized/unknown-sign parameter is not flagged', () => {
+test('domain-contract: a parametric/unknown-sign parameter is not flagged', () => {
   // `reals` straddles 0 — not provably outside posreals, so it passes
   // (conservative: this is a runtime concern, not a static one).
   assert.ok(!violates('s = elementof(reals)\nx = draw(Normal(mu = 0.0, sigma = s))'));

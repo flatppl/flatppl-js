@@ -159,7 +159,7 @@ test('an unreplicated mixture (no iid) draws the mixture', async () => {
 // shared. So each control asserts the COVARIANCE; the mean and variance are
 // unmoved by the distinction and are there only to catch a broken model.
 
-test('CONTROL: PARAMETERIZED weights stay shared across the coordinates',
+test('CONTROL: PARAMETRIC weights stay shared across the coordinates',
   async () => {
     // wp ~ Dirichlet(1, 1) is uniform on the 2-simplex, so wp[1] = psi with
     // psi ~ U(0,1) and X | psi ~ psi·N(−3,1) + (1−psi)·N(3,1). Closed form by
@@ -181,7 +181,7 @@ test('CONTROL: PARAMETERIZED weights stay shared across the coordinates',
     for (let i = 1; i < 3; i++) {
       assert.ok(Math.abs(cov[i] - 3.0) < COV_TOL,
         `cov[0,${i}] = ${cov[i]}, want 3 — a covariance near 0 means the `
-        + 'parameterized weights were freshened per coordinate');
+        + 'parametric weights were freshened per coordinate');
     }
   });
 

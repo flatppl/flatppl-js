@@ -130,7 +130,7 @@ test('reif/deps: non-reification bindings have empty paramSourceDeps; bodyDeps m
 // These pin the original regression: `rand(expected_obs, state)` where
 // expected_obs is the result of a kernel application — the kernel's
 // internal formal parameters (e.g. theta1/theta2 bound to user-side
-// theta1/theta2 of `draw` phase) used to leak `parameterized` through
+// theta1/theta2 of `draw` phase) used to leak `parametric` through
 // the absorbed-phase walker, preventing pre-eval. After the dep split,
 // the walker reads bodyDeps and naturally skips kwarg-RHS refs.
 
@@ -171,9 +171,9 @@ test('reif/phase: kernel-applied measure used as rand argument is fixed', () => 
     'ro = rand(forward_kernel(rp), state) is fixed end-to-end');
 });
 
-test('reif/phase: rand under elementof closure remains parameterized', () => {
+test('reif/phase: rand under elementof closure remains parametric', () => {
   // Counterpart: when there IS a non-formal elementof in the call's
-  // ancestor closure, the result IS parameterized — the bodyDeps walk
+  // ancestor closure, the result IS parametric — the bodyDeps walk
   // reaches it through the body, not the kwargs.
   const { bindings } = bindingsOf(`
     mu = elementof(reals)
@@ -181,8 +181,8 @@ test('reif/phase: rand under elementof closure remains parameterized', () => {
     rstate0 = rnginit([1,2,3,4])
     sample, _ = rand(M, rstate0)
   `);
-  assert.equal(bindings.get('sample').phase, 'parameterized',
-    'rand under elementof remains parameterized');
+  assert.equal(bindings.get('sample').phase, 'parametric',
+    'rand under elementof remains parametric');
 });
 
 test('reif/phase: forward_kernel definition is fixed even with elementof formals', () => {
@@ -251,7 +251,7 @@ test('e2e: feature-test1.flatppl variant binding phases match the spec rules', (
   const expected: Record<string, string> = {
     // Inputs / constants
     c: 'fixed',
-    _par: 'parameterized',
+    _par: 'parametric',
     // draw → stochastic
     theta1: 'stochastic',
     theta2: 'stochastic',
