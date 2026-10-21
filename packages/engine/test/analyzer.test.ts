@@ -323,10 +323,10 @@ test('analyzer: broadcast requires positional head + at least 1 more arg', () =>
 });
 
 test('analyzer: reduce / scan take their spec-mandated positional counts', () => {
-  // reduce(f, xs) — 2 positional; scan(f, init, xs) — 3 positional.
-  assert.ok(process(`y = reduce(f)\n`).diagnostics.some((d: any) => /takes exactly two/.test(d.message)));
-  assert.ok(process(`y = reduce(f, xs, init)\n`).diagnostics.some((d: any) => /takes exactly two/.test(d.message)));
-  assert.ok(process(`y = scan(f, init)\n`).diagnostics.some((d: any) => /takes exactly three/.test(d.message)));
+  // Both operations accept an optional final callback parameter object.
+  assert.ok(process(`y = reduce(f)\n`).diagnostics.some((d: any) => /takes two or three/.test(d.message)));
+  assert.ok(process(`y = reduce(f, xs, p, extra)\n`).diagnostics.some((d: any) => /takes two or three/.test(d.message)));
+  assert.ok(process(`y = scan(f, init)\n`).diagnostics.some((d: any) => /takes three or four/.test(d.message)));
 });
 
 test('analyzer: checked accepts both calling forms', () => {

@@ -490,9 +490,19 @@ law stays intact. Free constructor parameters stay in the parent context, even
 when another component absorbs a draw with the same source name. Affine
 lowerings retain their original constructor so copies preserve these scopes.
 
-Reified callables reject free draws after boundary substitution and always have
-fixed phase. Their applications can remain stochastic. `markovchain` and `kscan`
-accept an optional fourth input passed unchanged to each step.
+Reified callables replace boundary nodes before tracing ancestors. An explicit
+boundary must replace every remaining elementof leaf; free draws must be cut
+or absorbed by a law. Fixed ancestors remain available. Callables have fixed
+phase, while applications can remain stochastic. lawof and kernelof accept
+value nodes, including draws, rather than measure or kernel objects.
+
+weighted, logweighted, pushfwd, filter, reduce, scan, markovchain and kscan
+append one optional final parameter object to each callback invocation. It
+remains whole, as does the variate: array coordinates never unpack implicitly.
+Type inference specializes the callback in a temporary scope. Lift specializes
+the surface callbacks before the existing evaluation, density and sampling
+paths; collection operators also accept p in their evaluator frame. Annotated
+pushfwd maps pass p to the forward map, inverse, and callable log-volume.
 
 **Ragged-per-atom value (engine-concepts §2.3; `PoissonProcess`).** A
 `PoissonProcess` atom is a variable-length point set, so the uniform `[N,…]`

@@ -1,24 +1,8 @@
 'use strict';
 
-// =====================================================================
-// §06 `weighted` weight arity over ANY k-element-array variate.
-// =====================================================================
-//
-// Spec §06 "Weight arity": "A one-parameter weight receives the variate whole.
-// If the variate is a k-element array with k >= 2, a weight of exactly k scalar
-// parameters instead receives one component per parameter, in order; any other
-// arity is an error."
-//
-// The rule is stated over THE VARIATE, not over `Lebesgue`. The engine had it
-// implemented for a Lebesgue box alone, so over `iid(M, k)` — the same
-// k-element variate — the k-parameter spelling got no derivation at all and the
-// one-parameter spelling bound only the FIRST coordinate, which made an
-// indexing body throw "get index target is not an array (got number)".
-//
-// Both spellings denote one measure, so both are checked against the same
-// closed form here. The base `iid(Uniform(interval(0, 1)), k)` has density 1 on
-// the unit cube, so the weighted log-density at a point is log of the weight
-// there exactly.
+// §06: callbacks receive the whole variate. Coordinate extraction is explicit
+// even when composing with a function that takes several scalar arguments.
+// The iid Uniform base has density 1, so its weighted density is exactly w(x).
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -30,13 +14,13 @@ async function scoreScalar(ctx: any, name: string): Promise<number> {
   return m.value ? m.value.data[0] : m.samples[0];
 }
 
-test('both weight-arity spellings over an iid vector variate score the closed form',
+test('explicit coordinate composition and a whole-vector callback score the closed form',
   async () => {
     const { ctx } = makeMatCtx(`
 square = iid(Uniform(interval(0.0, 1.0)), 2)
 
 w2 = (x, y) -> x * y^2
-m2 = weighted(w2, square)
+m2 = weighted(v -> w2(v[1], v[2]), square)
 lp2 = logdensityof(m2, [0.5, 0.8])
 
 w1 = v -> v[1] * v[2]^2
@@ -45,38 +29,33 @@ lp1 = logdensityof(m1, [0.5, 0.8])
 `, { sampleCount: 8 });
     const want = Math.log(0.5 * 0.8 ** 2);
     assert.ok(Math.abs(await scoreScalar(ctx, 'lp1') - want) < 1e-12, 'one-parameter form');
-    assert.ok(Math.abs(await scoreScalar(ctx, 'lp2') - want) < 1e-12, 'k-parameter form');
+    assert.ok(Math.abs(await scoreScalar(ctx, 'lp2') - want) < 1e-12, 'explicit composition');
   });
 
-test('the k-parameter form classifies over an iid base', () => {
-  const { built } = makeMatCtx(`
+test('explicit coordinate composition scores all axes of an iid cube', async () => {
+  const { ctx } = makeMatCtx(`
 cube = iid(Uniform(interval(0.0, 1.0)), 3)
 w = (x, y, z) -> x + y + z
-m = weighted(w, cube)
+m = weighted(v -> w(v[1], v[2], v[3]), cube)
+lp = logdensityof(m, [0.2, 0.3, 0.4])
 `, { sampleCount: 8 });
-  const d = built.derivations.m;
-  assert.equal(d.kind, 'weighted');
-  assert.equal(d.boxAxes, 3, 'one component per parameter, in axis order');
-  assert.equal(d.isVariateWeight, true);
+  assert.ok(Math.abs(await scoreScalar(ctx, 'lp') - Math.log(0.9)) < 1e-12);
 });
 
-test('a k-parameter weight whose arity mismatches the variate is refused', () => {
-  // §06: "any other arity is an error". Three parameters over a 2-element
-  // variate has no coordinate for the third, so it must not classify.
-  const { built } = makeMatCtx(`
+test('weight callbacks never implicitly unpack array coordinates', () => {
+  for (const params of ['x, y', 'x, y, z']) assert.throws(() => makeMatCtx(`
 square = iid(Uniform(interval(0.0, 1.0)), 2)
-w = (x, y, z) -> x + y + z
+w = (${params}) -> x + y
 m = weighted(w, square)
-`, { sampleCount: 8 });
-  assert.equal(built.derivations.m, undefined);
+`, { sampleCount: 8 }), /callback receives 1 whole input/);
 });
 
-test('a k-parameter weight over an iid variate materialises as a weighted measure',
+test('a composed weight over an iid variate materialises with the analytic mass',
   async () => {
     const { ctx } = makeMatCtx(`
 square = iid(Uniform(interval(0.0, 1.0)), 2)
 w = (x, y) -> x * y^2
-m = weighted(w, square)
+m = weighted(v -> w(v[1], v[2]), square)
 `, { sampleCount: 4096 });
     const m = await ctx.getMeasure('m');
     assert.equal(m.shape, 'array', 'the vector atom shape survives reweighting');
@@ -105,7 +84,7 @@ lp = logdensityof(m, 0.5)
 test('logweighted takes the same arity rule over an iid variate', async () => {
   const { ctx } = makeMatCtx(`
 square = iid(Uniform(interval(0.0, 1.0)), 2)
-g = (x, y) -> x + y
+g = v -> v[1] + v[2]
 m = logweighted(g, square)
 lp = logdensityof(m, [0.25, 0.5])
 `, { sampleCount: 8 });

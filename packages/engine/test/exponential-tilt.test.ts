@@ -89,7 +89,7 @@ test('inferred Normal parameters and repeated tilts retain their score derivativ
 theta = elementof(reals)
 mu = elementof(reals)
 sigma = elementof(posreals)
-T = normalize(logweighted(fn(theta * _ - 740), Normal(mu, sigma)))
+T = normalize(logweighted((x, p) -> p * x - 740, Normal(mu, sigma), theta))
 U = normalize(logweighted(fn(0.2 * _), T))
 lp = logdensityof(U, 0.4)
 f = functionof(lp, theta = theta, mu = mu, sigma = sigma)
@@ -126,7 +126,7 @@ test('extreme odds retain rare-event scores, endpoints and repeated-tilt cancell
 theta = elementof(reals)
 p = elementof(unitinterval)
 y = elementof(booleans)
-T = normalize(logweighted(fn(theta * _), Bernoulli(p)))
+T = normalize(logweighted((x, q) -> q * x, Bernoulli(p), theta))
 lp = logdensityof(T, y)
 f = functionof(lp, theta = theta, p = p, y = y)
 a = f(1000, 0.2, false)
@@ -172,7 +172,7 @@ test('dynamic invalid laws and divergent Gamma-family tilts refuse before sampli
     const { ctx } = makeMatCtx(`
 rate = elementof(reals)
 theta = elementof(reals)
-T = normalize(logweighted(fn(theta * _), ${base}))
+T = normalize(logweighted((x, p) -> p * x, ${base}, theta))
 K = functionof(T, rate = rate, theta = theta)
 P = K(${rate}, ${theta})
 x, _ = rand(P, rnginit(42))
@@ -181,7 +181,7 @@ x, _ = rand(P, rnginit(42))
   }
   const { ctx } = makeMatCtx(`
 c = elementof(reals)
-T = normalize(logweighted(fn(_ + c), Normal(0,1)))
+T = normalize(logweighted((x, p) -> x + p, Normal(0,1), c))
 lp = logdensityof(T,0)
 f = functionof(lp,c=c)
 bad = f(inf)
@@ -211,9 +211,9 @@ test('log odds survive serialized worker IR, aliases and renamed boundaries', as
 theta = elementof(reals)
 p = elementof(unitinterval)
 x = elementof(booleans)
-w = functionof(theta*x, variate=x)
+w = functionof(theta*x, variate=x, slope=theta)
 wa = w
-T = normalize(logweighted(wa,Bernoulli(p)))
+T = normalize(logweighted(wa,Bernoulli(p),theta))
 lp = logdensityof(T,false)
 f = functionof(lp, slope=theta, probability=p)
 a = f(1000,0.2)
@@ -358,15 +358,15 @@ u=logdensityof(U,[0.2,0.1])
 });
 
 
-test('named callable captures expose inferred slopes before later reification', async () => {
-  for (const definition of ['fn(theta*_+710)', 'functionof(theta*x+710,variate=x)']) {
+test('named callable parameters expose inferred slopes before later reification', async () => {
+  for (const definition of ['(x,p)->p*x+710', 'functionof(theta*x+710,variate=x,slope=theta)']) {
     const { ctx } = makeMatCtx(`
 theta=elementof(reals)
 x=elementof(reals)
 w=${definition}
 wa=w
-T=normalize(logweighted(wa,Normal(0,1)))
-U=tilt(logweighted(wa,Lebesgue(reals)),Normal(0,1))
+T=normalize(logweighted(wa,Normal(0,1),theta))
+U=tilt(logweighted(wa,Lebesgue(reals),theta),Normal(0,1))
 lp=logdensityof(T,0.4)
 up=logdensityof(U,0.4)
 f=functionof(lp,theta=theta)
@@ -383,9 +383,9 @@ b=g(-0.7)
 test('named vector weights expose live inferred slopes through affine lowering', async () => {
   const { ctx } = makeMatCtx(`
 theta=elementof(cartpow(reals,2))
-w=fn(sum(theta .* _))
+w=(x,p)->sum(p .* x)
 B=MvNormal([0.4,-0.2],rowstack([[2,0.5],[0.5,1]]))
-T=normalize(logweighted(w,B))
+T=normalize(logweighted(w,B,theta))
 lp=logdensityof(T,[0.2,0.1])
 f=functionof(lp,theta=theta)
 a=f(theta=[0.3,-0.4])
@@ -448,7 +448,7 @@ b=broadcast(logdensityof,B,[-1,0.5,5,2])
 test('a dynamic nonfinite vector slope refuses before sampling', async () => {
   const { ctx } = makeMatCtx(`
 theta=elementof(cartpow(reals,2))
-T=normalize(logweighted(fn(sum(theta .* _)),MvNormal([0,0],rowstack([[1,0],[0,1]]))))
+T=normalize(logweighted((x,p)->sum(p .* x),MvNormal([0,0],rowstack([[1,0],[0,1]])),theta))
 K=functionof(T,theta=theta)
 P=K(theta=[inf,0])
 x,_=rand(P,rnginit(42))

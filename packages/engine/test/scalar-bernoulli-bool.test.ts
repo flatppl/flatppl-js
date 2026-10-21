@@ -49,9 +49,9 @@ function makeCtx(source: any) {
 }
 
 test('scalar Bernoulli logdensity consumes a boolean observation', async () => {
-  const t = await makeCtx('Y = lawof(Bernoulli(0.3))\nlp = logdensityof(Y, true)\n').getMeasure('lp');
+  const t = await makeCtx('Y = lawof(draw(Bernoulli(0.3)))\nlp = logdensityof(Y, true)\n').getMeasure('lp');
   assert.ok(Math.abs(t.samples[0] - Math.log(0.3)) < 1e-12, `true: got ${t.samples[0]}`);
-  const f = await makeCtx('Y = lawof(Bernoulli(0.3))\nlp = logdensityof(Y, false)\n').getMeasure('lp');
+  const f = await makeCtx('Y = lawof(draw(Bernoulli(0.3)))\nlp = logdensityof(Y, false)\n').getMeasure('lp');
   assert.ok(Math.abs(f.samples[0] - Math.log(0.7)) < 1e-12, `false: got ${f.samples[0]}`);
 });
 

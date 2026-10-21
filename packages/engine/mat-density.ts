@@ -1077,14 +1077,13 @@ function truncateLogMass(base: any, bounds: [number, number], ctx: any): number 
 }
 
 // Recognise a `weighted(<weight-fn>, Lebesgue(reals|interval))` base — the
-// §12 generic_dist lowering — and return its weight FUNCTION as an N-
-// parameter `functionof` IR { paramNames, body }; null for any other base.
+// §12 generic_dist lowering — and return its unary weight function;
+// null for any other base.
 // The Lebesgue density is ≡ 1, so the base density is the weight `w` itself
 // and Z = ∫_S w(x) dx. A constant-weight `weighted` (no function, just a
 // log-mass shift) is NOT this shape and returns null (it falls through to
 // the scalar-reference path, which already handles plain reference bases).
-// N ≥ 1: the 1-D callers below use paramNames[0]; the N-D cartprod path
-// (Task 4) binds paramNames[i] to axis i.
+// Its single parameter receives the variate whole on every evaluation path.
 function weightedBaseWeightFn(baseIR: any): { paramNames: string[]; body: any } | null {
   if (!baseIR || baseIR.kind !== 'call' || baseIR.op !== 'weighted'
       || !Array.isArray(baseIR.args) || baseIR.args.length !== 2) return null;
@@ -1094,7 +1093,7 @@ function weightedBaseWeightFn(baseIR: any): { paramNames: string[]; body: any } 
   if (!ref || ref.kind !== 'call' || ref.op !== 'Lebesgue') return null;
   const fn = baseIR.args[0];
   if (!fn || fn.kind !== 'call' || fn.op !== 'functionof'
-      || !Array.isArray(fn.params) || fn.params.length < 1 || !fn.body) {
+      || !Array.isArray(fn.params) || fn.params.length !== 1 || !fn.body) {
     return null;
   }
   return { paramNames: fn.params.slice(), body: fn.body };
@@ -1116,11 +1115,8 @@ function axisMap(axis: TruncAxis, u: number): { x: number; J: number } {
 }
 
 // Non-log integrand w(x(u))·∏Jᵢ on the unit box (u ∈ (0,1)^dims), suitable
-// for `adaptiveCubature` (quadrature.ts). paramNames[i] binds to axes[i]'s
-// real coordinate xᵢ(uᵢ) — the §06 k-parameter weight form, which the arity
-// rule admits only for k >= 2. A ONE-parameter weight over an ARRAY variate
-// (`arrayVariate`) instead "receives the variate whole", so its single
-// parameter binds to the whole coordinate array; the density and sampling
+// for `adaptiveCubature` (quadrature.ts). The single weight parameter binds
+// to the whole coordinate array for an array variate; the density and sampling
 // routes bind it the same way, so the normalizer integrates the function they
 // score. A bare `interval(...)` support has a scalar variate, and its
 // one-parameter weight keeps the single scalar binding
@@ -1140,14 +1136,14 @@ function makeIntegrandND(
   const base: Record<string, any> = {};
   if (ctx && ctx.moduleRegistry) base.__moduleRegistry = ctx.moduleRegistry;
   if (theta && typeof theta === 'object') for (const k in theta) base[k] = theta[k];
-  const whole = !!arrayVariate && paramNames.length === 1;
+  const whole = !!arrayVariate;
   return (u: number[]): number => {
     const env: Record<string, any> = Object.assign({}, base);
     let J = 1;
     const coords: number[] = whole ? new Array(axes.length) : (null as any);
     for (let i = 0; i < axes.length; i++) {
       const m = axisMap(axes[i], u[i]);
-      if (whole) coords[i] = m.x; else env[paramNames[i]] = m.x;
+      if (whole) coords[i] = m.x; else env[paramNames[0]] = m.x;
       J *= m.J;
     }
     if (whole) env[paramNames[0]] = coords;

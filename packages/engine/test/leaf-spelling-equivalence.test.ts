@@ -142,7 +142,7 @@ mu2 = elementof(reals)
 sigma2 = elementof(posreals)
 g1 = ${g1}
 g2 = ${g2}
-prod = normalize(logweighted(x -> logdensityof(g2, x), g1))
+prod = normalize(logweighted((x, p) -> logdensityof(p, x), g1, g2))
 L = likelihoodof(prod, 0.83)
 ld = logdensityof(L, record(mu1 = 0.0, sigma1 = 1.0, mu2 = 1.0, sigma2 = 2.0))
 `;

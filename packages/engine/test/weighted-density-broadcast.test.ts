@@ -25,7 +25,7 @@ c = logdensityof(composite, 0.3)
 test('a density log weight evaluates its score point for each input atom', () => {
   const { ctx } = makeMatCtx(`
 t = elementof(reals)
-M = logweighted(q -> logdensityof(Normal(0, 1), q + t), Normal(0, 1))
+M = logweighted((q, p) -> logdensityof(Normal(0, 1), q + p), Normal(0, 1), t)
 `, { sampleCount: 4 });
   const t = Float64Array.from([-0.5, 0, 0.5, 2]);
   const score = density.logDensityN(orchestrator.expandMeasure('M', ctx), 2, { t }, t.length, {
@@ -91,7 +91,7 @@ test('a held Normal in a zero-sum weight resolves the supplied scale', async () 
   const { ctx } = makeMatCtx(`
 s = elementof(posreals)
 N = Normal(0, s)
-M = logweighted(fn(sum(logdensityof.(N, _))), Lebesgue(zerosum(3)))
+M = logweighted((x, p) -> sum(logdensityof.(p, x)), Lebesgue(zerosum(3)), N)
 score = logdensityof(M, [-1, 0, 1])
 f = functionof(score, scale = s)
 a = f(2)

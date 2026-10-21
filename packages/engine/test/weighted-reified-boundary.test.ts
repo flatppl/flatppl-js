@@ -21,17 +21,11 @@
 //   - EXACT. The 1-D normalizer is deterministic quadrature, so
 //     `normalize(weighted(f, Lebesgue(interval)))` matches the closed-form
 //     density to ~1e-8 and is independent of the sample count.
-//   - APPROXIMATE. The N-D box normalizer estimates Z from the box's own
-//     atoms. Measured on this branch, its error on a bilinear weight is
-//     ~0.5%, is seed-independent, and does NOT shrink with the sample count
-//     (Z over [0,2]x[0,3] reads 9.0408 at N=4096 and 9.0457 at N=65536
-//     against a closed form of 9). That bias is PRE-EXISTING and unrelated to
-//     reification: a plain-lambda weight returns the identical number. The
-//     tolerances below are 1%, well inside the factor-level error a DROPPED
-//     weight would produce.
-//
-// The load-bearing assertion is the last one: the reified spelling and the
-// lambda spelling must agree BIT-FOR-BIT, since they denote the same measure.
+//   - APPROXIMATE. The N-D box normalizer estimates Z from the box's atoms.
+//     For independent U,V ~ Uniform(0,1), E[UV]=1/4 and Var[UV]=7/144.
+//     Relative SE is sqrt(7/(9N)), so 1% is 5.8 SE at N=262144.
+//     Both spellings name the same base L so they also use the same random
+//     sample when checking their equality.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -95,11 +89,13 @@ m = elementof(interval(0.0, 1.0))
 c = elementof(interval(0.0, 1.0))
 intensity = m * c
 intensity_fn = functionof(intensity, m = m, c = c)
-M = normalize(weighted(intensity_fn, Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0)))))
+L = Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0)))
+M = normalize(weighted(v -> intensity_fn(v[1], v[2]), L))
 `;
 
 const LAMBDA_2D = `
-M = normalize(weighted((a, b) -> a * b, Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0)))))
+L = Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0)))
+M = normalize(weighted(v -> v[1] * v[2], L))
 `;
 
 // =====================================================================
@@ -143,7 +139,7 @@ c = elementof(interval(0.0, 1.0))
 intensity = m * c
 intensity_fn = functionof(intensity, m = m, c = c)
 pw(mass, cost) = intensity_fn(mass, cost)
-M = normalize(weighted(pw, Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0)))))
+M = normalize(weighted(v -> pw(v[1], v[2]), Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0)))))
 `);
   assert.equal(d['M'] && d['M'].kind, 'normalize',
     'reified-call weight pruned: ' + Object.keys(d).join(', '));
@@ -190,7 +186,7 @@ test('1-D quadrature is exact — the score does not move with the sample count'
 // =====================================================================
 
 test('2-D reified weight scores the closed-form density 4xy', async () => {
-  const got = await scoreOf(REIFIED_2D + '\nld = logdensityof(M, [0.5, 0.5])\n', 'ld');
+  const got = await scoreOf(REIFIED_2D + '\nld = logdensityof(M, [0.5, 0.5])\n', 'ld', 262144);
   // 4·(0.5)·(0.5) = 1, so log density 0.
   assert.ok(Math.abs(Math.exp(got) - 1) < 0.01,
     '2-D reified at (0.5,0.5): density ' + Math.exp(got) + ' ≠ 1 within 1%');
@@ -203,8 +199,8 @@ m = elementof(interval(0.0, 2.0))
 c = elementof(interval(0.0, 3.0))
 intensity = m * c
 fn = functionof(intensity, m = m, c = c)
-Z = totalmass(weighted(fn, Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))))
-`, 'Z');
+Z = totalmass(weighted(v -> fn(v[1], v[2]), Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))))
+`, 'Z', 262144);
   assert.ok(Math.abs(got - 9) / 9 < 0.01,
     'totalmass ' + got + ' ≠ 9 within 1%');
 });
@@ -220,8 +216,8 @@ test('the reified and lambda spellings agree bit-for-bit', async () => {
   const l1 = await scoreOf(LAMBDA_1D + '\nld = logdensityof(M, 0.8)\n', 'ld');
   assert.equal(r1, l1, '1-D: reified ' + r1 + ' vs lambda ' + l1);
 
-  const r2 = await scoreOf(REIFIED_2D + '\nld = logdensityof(M, [0.5, 0.5])\n', 'ld');
-  const l2 = await scoreOf(LAMBDA_2D + '\nld = logdensityof(M, [0.5, 0.5])\n', 'ld');
+  const r2 = await scoreOf(REIFIED_2D + '\nld = logdensityof(M, [0.5, 0.5])\n', 'ld', 4096);
+  const l2 = await scoreOf(LAMBDA_2D + '\nld = logdensityof(M, [0.5, 0.5])\n', 'ld', 4096);
   assert.equal(r2, l2, '2-D: reified ' + r2 + ' vs lambda ' + l2);
 });
 

@@ -123,7 +123,7 @@ lw = logweighted(0.5, L)
 n = normalize(L)
 t = truncate(L, sq)
 nt = normalize(truncate(L, sq))
-wf(a, b) = a * b
+wf(v) = v[1] * v[2]
 wfn = weighted(wf, L)
 `);
   assert.deepEqual(errors, []);

@@ -84,16 +84,42 @@
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   }
 
+  async function archiveDownload(archive: any, bytes: Uint8Array, path: string) {
+    const entries = Object.entries(archive.entries) as [string, any][];
+    const standalone = entries.length === 1 && entries[0][0] === 'main.flatppl'
+      && !entries[0][1].directory && !entries[0][1].symlink;
+    return {
+      bytes: standalone ? await archive.read('main.flatppl') : bytes,
+      filename: basenameOf(path).replace(/\.flatppl$/i, '') + (standalone ? '.flatppl' : '.flatppl.zip'),
+      type: standalone ? 'text/plain;charset=utf-8' : 'application/zip',
+      standalone,
+    };
+  }
+
   async function downloadBundle(path: string) {
-    try { downloadBytes(await bundleBytes(path, 'deflate'), basenameOf(path).replace(/\.flatppl$/i, '') + '.flatppl.zip'); }
+    try {
+      const bytes = await bundleBytes(path, 'deflate');
+      const archive = await window.FlatPPLEngine.readArchive(bytes, { id: 'download.zip' });
+      try {
+        const file = await archiveDownload(archive, bytes, path);
+        downloadBytes(file.bytes, file.filename, file.type);
+      } finally { await archive.close(); }
+    }
     catch (error: any) { showToast('Bundle export failed: ' + error.message); }
+  }
+
+  /** Also recognizes a standalone archive's flat display path after its mount is removed. */
+  function inBundle(path: string | null | undefined, folder: string) {
+    return path === folder + '.flatppl' || !!path?.startsWith(folder + '/');
   }
 
   /** Save never runs as part of opening a share link. */
   async function saveBundle(path: string) {
     const folder = window.FlatPPLWebBundles.folder(path);
     if (bundleSaves.has(folder)) return;
-    const name = window.prompt('Save the whole bundle in this browser under folder:', basenameOf(folder || path).replace(/\.flatppl$/i, ''));
+    const standalone = window.FlatPPLWebBundles.isStandalone?.(path);
+    const name = window.prompt(standalone ? 'Save this file in this browser as:' : 'Save the whole bundle in this browser under folder:',
+      standalone ? basenameOf(path) : basenameOf(folder || path).replace(/\.flatppl$/i, ''));
     if (!name) return;
     const changedDuringSave = new Map<string, { source: string; baseline: string | null }>();
     bundleSaves.set(folder, changedDuringSave);
@@ -112,18 +138,19 @@
       // replaces the old mount. Keep navigation made during that read intact.
       do {
         current = window.FlatPPLWebRouter.parseHash();
-        if (!current.model?.startsWith(folder + '/')) { selection = null; break; }
-        selection = await window.FlatPPLWebBundles.select(savedFolder, current.model.slice(folder.length + 1)) || saved;
+        if (!inBundle(current.model, folder)) { selection = null; break; }
+        selection = standalone ? saved
+          : await window.FlatPPLWebBundles.select(savedFolder, current.model.slice(folder.length + 1)) || saved;
       } while (window.FlatPPLWebRouter.parseHash().model !== current.model);
       // Edits made while compression or storage awaited remain unsaved.
       // Track edits separately: undoing to the old baseline removes a draft,
       // but still differs from the snapshot that has just been saved.
       const latest = new Map([...drafts, ...changedDuringSave]);
-      for (const [key, draft] of latest) if (key.startsWith(folder + '/')) {
+      for (const [key, draft] of latest) if (inBundle(key, folder)) {
         drafts.delete(key);
         const baseline = snapshot[key] ?? draft.baseline;
         if (draft.source !== baseline) {
-          drafts.set(savedFolder + key.slice(folder.length),
+          drafts.set(standalone ? saved : savedFolder + key.slice(folder.length),
             { source: draft.source, baseline });
         }
       }
@@ -133,7 +160,7 @@
         window.FlatPPLWebRouter.navigateTo(next);
         if (selection === current.model) void applyState(next);
       }
-      showToast('Bundle saved in this browser.');
+      showToast((standalone ? 'File' : 'Bundle') + ' saved in this browser.');
     } catch (error: any) {
       showToast('Save failed: ' + error.message + ' The preview remains unsaved.');
     } finally { bundleSaves.delete(folder); }
@@ -181,15 +208,17 @@
       if (!dialog.open) return;
       if (download.status === 'rejected') throw download.reason;
       const archive = await window.FlatPPLEngine.readArchive(download.value, { id: 'share.zip' });
+      let file;
       try {
+        file = await archiveDownload(archive, download.value, state.model);
         const contents = document.createElement('details');
         const heading = document.createElement('summary');
-        heading.textContent = 'Included files (the whole bundle, including unused members)';
+        heading.textContent = file.standalone ? 'Included file' : 'Included files (the whole bundle, including unused members)';
         const files = document.createElement('ul');
         for (const [path, entry] of Object.entries(archive.entries) as [string, any][]) {
           if (entry.directory) continue;
           const item = document.createElement('li');
-          item.textContent = displayName(path) + ' — ' + entry.size + ' bytes';
+          item.textContent = displayName(file.standalone ? file.filename : path) + ' — ' + entry.size + ' bytes';
           files.appendChild(item);
         }
         contents.append(heading, files);
@@ -203,12 +232,12 @@
         node.onclick = action;
         actions.insertBefore(node, close);
       };
-      button('Download ZIP', () => {
+      button(file.standalone ? 'Download file' : 'Download ZIP', () => {
         // This is the same snapshot as the link, even if the editor changes later.
-        downloadBytes(download.value, basenameOf(state.model).replace(/\.flatppl$/i, '') + '.flatppl.zip');
+        downloadBytes(file.bytes, file.filename, file.type);
       });
       if (transport.status === 'rejected') {
-        status.textContent = 'Could not create a link: ' + transport.reason.message + '. Download the ZIP to share it.';
+        status.textContent = 'Could not create a link: ' + transport.reason.message + '. Use the download to share it.';
         return;
       }
       const api = await loadShare();
@@ -221,16 +250,17 @@
         status.textContent = 'This unchanged example uses a short link. Custom and edited models also support links and QR codes, including their code, imports, and data.';
       } else {
         const folder = window.FlatPPLWebBundles?.folder(state.model);
-        const model = folder ? state.model.slice(folder.length + 1) : 'main.flatppl';
+        const model = folder && !window.FlatPPLWebBundles.isStandalone?.(state.model)
+          ? state.model.slice(folder.length + 1) : 'main.flatppl';
         codec = api.createShareCodec();
         const tokens = await codec.encode(transport.value, { model, target: state.target });
         codec.dispose();
-        if (!tokens) { status.textContent = 'This bundle does not fit a share link. Download the ZIP to share it.'; return; }
+        if (!tokens) { status.textContent = 'This model does not fit a share link. Use the download to share it.'; return; }
         links = api.makeShareLinks(tokens, document.baseURI);
         status.textContent = 'The link and QR code include this model’s code, imports, and data. Opening either creates an unsaved preview.';
       }
       if (!dialog.open) return;
-      if (links.tooLong) { status.textContent = 'This bundle exceeds the share-link limit. Download the ZIP to share it.'; return; }
+      if (links.tooLong) { status.textContent = 'This model exceeds the share-link limit. Use the download to share it.'; return; }
       const field = document.createElement('textarea');
       field.className = 'share-url';
       field.readOnly = true;
@@ -253,7 +283,7 @@
         button('Download QR', () => downloadBytes(new TextEncoder().encode(qr.svg), 'flatppl-model-qr.svg', 'image/svg+xml'));
       } else {
         const note = document.createElement('p');
-        note.textContent = 'The link is too large for a practical QR code. Use the link or ZIP.';
+        note.textContent = 'The link is too large for a practical QR code. Use the link or download.';
         dialog.insertBefore(note, actions);
       }
     } catch (error: any) {
@@ -359,7 +389,16 @@
     if (shareBtn) shareBtn.hidden = !cur.model || window.FlatPPLWebSurfaces?.typeForPath(cur.model) !== 'flatppl';
     const saveBtn = document.getElementById('save-btn');
     if (saveBtn && window.FlatPPLWebBundles?.has(cur.model)) saveBtn.hidden = false;
-    if (deleteBtn) deleteBtn.hidden = !isUserFile;
+    if (deleteBtn) {
+      const bundles = window.FlatPPLWebBundles;
+      const mounted = bundles?.has(cur.model);
+      deleteBtn.hidden = !isUserFile && !mounted;
+      const label = mounted
+        ? (bundles.isSaved(cur.model) ? 'Delete ' : 'Discard ') + (bundles.isStandalone?.(cur.model) ? 'file' : 'bundle')
+        : 'Delete file';
+      deleteBtn.title = label;
+      deleteBtn.setAttribute('aria-label', label);
+    }
     // The whole-module graph view only makes sense for FlatPPL — hide it for
     // Markdown / hs3 / pyhf (and anything without a graph surface) so the
     // button doesn't promise a view those file types can't deliver.
@@ -391,8 +430,27 @@
   function onDeleteClick() {
     const cur = window.FlatPPLWebRouter.parseHash();
     if (!cur || !cur.model) return;
+    if (window.FlatPPLWebBundles?.has(cur.model)) return deleteBundle(cur.model);
     if (!window.confirm('Delete "' + cur.model + '"? This cannot be undone.')) return;
     deleteUserFile(cur.model, /* navigateTo */ null);
+  }
+
+  async function deleteBundle(path: string) {
+    const bundles = window.FlatPPLWebBundles;
+    const saved = bundles.isSaved(path);
+    const label = bundles.isStandalone?.(path) ? 'file' : 'whole bundle';
+    if (!window.confirm((saved ? 'Delete' : 'Discard') + ' this ' + label + '?')) return;
+    const folder = bundles.folder(path);
+    try {
+      await (saved ? bundles.remove(path) : bundles.discard(path));
+      shareOrigins.delete(folder);
+      archiveOrigins.delete(folder);
+      previewFolders.delete(folder);
+      for (const key of drafts.keys()) if (inBundle(key, folder)) drafts.delete(key);
+      if (inBundle(window.FlatPPLWebRouter.parseHash().model, folder)) {
+        window.FlatPPLWebRouter.navigateTo({ model: manifest?.entries?.[0]?.path });
+      }
+    } catch (error: any) { showToast('Cannot remove ' + label + ': ' + error.message); }
   }
 
   /** Rename a user/ file to a new basename. The extension/type is kept
@@ -412,7 +470,7 @@
       showToast('Keep the same file extension when renaming.');
       return;
     }
-    if (userStore.has(newPath)) {
+    if (userStore.has(newPath) || window.FlatPPLWebBundles?.has(newPath)) {
       showToast('"' + newBase + '" already exists.');
       return;
     }
@@ -624,14 +682,15 @@
 
   function onEntryRevertClick(path: string) {
     if (window.FlatPPLWebBundles?.has(path)) {
-      if (!window.confirm('Discard unsaved changes to this bundle?')) return;
+      const kind = window.FlatPPLWebBundles.isStandalone?.(path) ? 'file' : 'bundle';
+      if (!window.confirm('Discard unsaved changes to this ' + kind + '?')) return;
       const folder = window.FlatPPLWebBundles.folder(path);
-      for (const key of drafts.keys()) if (key.startsWith(folder + '/')) drafts.delete(key);
+      for (const key of drafts.keys()) if (inBundle(key, folder)) drafts.delete(key);
       void window.FlatPPLWebBundles.discard(path).then(() => {
         shareOrigins.delete(folder);
         archiveOrigins.delete(folder);
         previewFolders.delete(folder);
-        if (!window.FlatPPLWebRouter.parseHash().model?.startsWith(folder + '/')) return;
+        if (!inBundle(window.FlatPPLWebRouter.parseHash().model, folder)) return;
         lastModel = null;
         if (window.FlatPPLWebBundles.has(path)) void applyState(window.FlatPPLWebRouter.parseHash());
         else window.FlatPPLWebRouter.navigateTo({ model: manifest?.entries?.[0]?.path });
@@ -797,6 +856,10 @@
     const S = window.FlatPPLWebSurfaces;
     if (S && S.typeForPath(typed) !== S.typeForPath(origPath)) {
       window.alert('Keep the same file extension when saving a copy.');
+      return null;
+    }
+    if (window.FlatPPLWebBundles?.has(typed)) {
+      window.alert('A file or bundle already uses this name: ' + typed);
       return null;
     }
     if (userStore.has(typed)) {
@@ -1253,7 +1316,7 @@
     const t = window.FlatPPLWebSurfaces
       ? window.FlatPPLWebSurfaces.typeForPath(path) : 'unknown';
     if (t === 'flatppl' || window.FlatPPLWebBundles?.has(path)) {
-      tools.push({ label: 'Download bundle (.flatppl.zip)', action: () => { void downloadBundle(path); } });
+      tools.push({ label: 'Download with dependencies', action: () => { void downloadBundle(path); } });
     }
     if (convertAvailable && (t === 'pyhf' || t === 'hs3')) {
       tools.push({
@@ -1310,22 +1373,10 @@
     });
     const bundleMember = window.FlatPPLWebBundles?.has(info.path);
     if (bundleMember) {
-      items.push({ label: 'Save bundle', action: () => { void saveBundle(info.path); } });
+      const kind = window.FlatPPLWebBundles.isStandalone?.(info.path) ? 'file' : 'bundle';
+      items.push({ label: 'Save ' + kind, action: () => { void saveBundle(info.path); } });
       const saved = window.FlatPPLWebBundles.isSaved(info.path);
-      items.push({ label: saved ? 'Delete bundle' : 'Discard bundle', action: () => {
-        if (!window.confirm((saved ? 'Delete' : 'Discard') + ' this whole bundle?')) return;
-        const folder = window.FlatPPLWebBundles.folder(info.path);
-        const action = saved ? window.FlatPPLWebBundles.remove(info.path) : window.FlatPPLWebBundles.discard(info.path);
-        void action.then(() => {
-          shareOrigins.delete(folder);
-          archiveOrigins.delete(folder);
-          previewFolders.delete(folder);
-          for (const key of drafts.keys()) if (key.startsWith(folder + '/')) drafts.delete(key);
-          if (window.FlatPPLWebRouter.parseHash().model?.startsWith(folder + '/')) {
-            window.FlatPPLWebRouter.navigateTo({ model: manifest?.entries?.[0]?.path });
-          }
-        }).catch((error: any) => showToast('Cannot remove bundle: ' + error.message));
-      } });
+      items.push({ label: (saved ? 'Delete ' : 'Discard ') + kind, action: () => { void deleteBundle(info.path); } });
     }
     if (info.isUser && !bundleMember) {
       items.push({
@@ -1437,9 +1488,10 @@
         try {
           if (f.size > 64 * 1024 * 1024) throw new Error('ZIP exceeds the 64 MiB archive limit.');
           const opened = await window.FlatPPLWebBundles.open(new Uint8Array(await f.arrayBuffer()), f.name,
-            (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')));
+            (folder: string) => !Array.from(drafts.keys()).some(path => inBundle(path, folder)));
           accepted.push(opened.path);
-          showToast(opened.reused ? 'Opened the matching saved bundle.' : 'Bundle preview opened. Choose Save to keep it.');
+          const kind = window.FlatPPLWebBundles.isStandalone?.(opened.path) ? 'file' : 'bundle';
+          showToast(opened.reused ? 'Opened the matching saved ' + kind + '.' : 'Opened ' + kind + '. Choose Save to keep it.');
         } catch (error: any) { showToast('Cannot open ZIP: ' + error.message); }
         continue;
       }
@@ -1627,7 +1679,7 @@
     // Collision check across both the manifest and the ephemeral store.
     const collidesWithManifest = manifest && manifest.entries
       && manifest.entries.some(function (e: any) { return e.path === path; });
-    if (eph.has(path) || collidesWithManifest) {
+    if (eph.has(path) || window.FlatPPLWebBundles?.has(path) || collidesWithManifest) {
       window.alert('A file with this name already exists: ' + basenameOf(path));
       return;
     }
@@ -1657,7 +1709,7 @@
         || !window.FlatPPLWebBundles?.has(state.model))) {
       lastModel = null;
       sourceEditor?.setReadOnly?.(true);
-      showSource('# Opening shared bundle …', 'Shared model');
+      showSource('# Opening shared model …', 'Shared model');
       try {
         const api = await loadShare();
         const decoder = api.createShareCodec();
@@ -1666,7 +1718,7 @@
         finally { decoder.dispose(); }
         if (seq !== navigationSeq) return;
         const opened = await window.FlatPPLWebBundles.open(shared.archive, 'shared-model',
-          (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')),
+          (folder: string) => !Array.from(drafts.keys()).some(path => inBundle(path, folder)),
           { limits: window.FlatPPLWebBundles.LINK_LIMITS });
         if (seq !== navigationSeq) {
           if (!opened.reused) await window.FlatPPLWebBundles.discard(opened.path);
@@ -1704,7 +1756,7 @@
           window.FlatPPLWebBundles.LINK_LIMITS?.maxArchiveBytes);
         if (seq !== navigationSeq) return;
         const opened = await window.FlatPPLWebBundles.open(bytes, basenameOf(archive),
-          (folder: string) => !Array.from(drafts.keys()).some(path => path.startsWith(folder + '/')),
+          (folder: string) => !Array.from(drafts.keys()).some(path => inBundle(path, folder)),
           { limits: window.FlatPPLWebBundles.LINK_LIMITS });
         const requested = state.archive && state.model?.replace(/^(?:new|user)\/[^/]+\//, '');
         const folder = window.FlatPPLWebBundles.folder(opened.path);
@@ -1940,8 +1992,8 @@
     // Source-pane header buttons for the currently-loaded file:
     //   Download — always visible when a file is loaded; same
     //              action as the tree context-menu's Download.
-    //   Delete   — visible only for user/ files; same action as
-    //              the tree context-menu's Delete.
+    //   Delete   — user files and opened bundles; same action as
+    //              the tree context-menu's Delete or Discard.
     // Both buttons read the current model from the router on
     // click rather than holding a reference, so they stay correct
     // across navigation. Visibility is refreshed by
@@ -2029,7 +2081,7 @@
           if (!cur.model || lastModel !== cur.model) return;
           ++editRevision;
           for (const [folder, changes] of bundleSaves) {
-            if (cur.model.startsWith(folder + '/')) changes.set(cur.model, { source: text, baseline: lastSavedSource });
+            if (inBundle(cur.model, folder)) changes.set(cur.model, { source: text, baseline: lastSavedSource });
           }
           if (window.FlatPPLWebEphemeral?.has(cur.model)) {
             window.FlatPPLWebEphemeral.update(cur.model, text);

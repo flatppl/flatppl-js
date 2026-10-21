@@ -486,6 +486,7 @@ function liftInlineSubexpressions(bindings: any) {
   // never boundary-kwarg names.
   const bindingNames = new Set<string>(out.keys());
   const liftLowerCtx = { localScope: null, moduleNames, bindingNames };
+  let specializingCallback = false;
   function makeIdent(name: string, loc: any) {
     return { type: 'Identifier', name, loc: loc || null };
   }
@@ -1035,6 +1036,25 @@ function liftInlineSubexpressions(bindings: any) {
   // bottoming out on the function's body. Bodies are deep-cloned
   // per call site so different invocations don't share mutated trees.
 
+  // Resolve object projections only after the callback's inputs have been
+  // substituted. Earlier projection could cross a whole-tuple boundary.
+  function inlineTupleProjection(ast: any): any {
+    if (!specializingCallback || ast?.type !== 'IndexExpr' || ast.indices?.length !== 1) return ast;
+    const index = ast.indices[0];
+    if (index?.type !== 'NumberLiteral' || !Number.isInteger(index.value)) return ast;
+    let tuple = ast.object;
+    const seen = new Set<string>();
+    while (tuple?.type === 'Identifier' && !seen.has(tuple.name)) {
+      seen.add(tuple.name);
+      const binding = out.get(tuple.name);
+      tuple = binding?.effectiveValue || binding?.node?.value;
+    }
+    if (tuple?.type !== 'TupleLiteral' || index.value < 1 || index.value > tuple.elements.length) {
+      return ast;
+    }
+    return cloneAst(tuple.elements[index.value - 1]);
+  }
+
   function inlineUserCall(astArg: any) {
     // Iterate to a fixed point — inlined body might itself be (or
     // contain at its root) another user call (chained: f then g),
@@ -1045,6 +1065,7 @@ function liftInlineSubexpressions(bindings: any) {
     let prev = null;
     while (astArg !== prev) {
       prev = astArg;
+      astArg = inlineTupleProjection(astArg);
       astArg = inlineOnce(astArg);
       // jointchain/kchain are now a first-class derivation kind
       // (classifyJointchain + matJointchain + expandMeasureIR); the
@@ -1052,9 +1073,10 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineRelabel(astArg);
       astArg = inlineFchain(astArg);
       astArg = inlineDensityof(astArg);
+      astArg = inlineLikelihoodScore(astArg);
       astArg = inlineRecordLebesgue(astArg);
       astArg = inlineScalarLocscale(astArg);
-      astArg = inlineWeightParameters(astArg);
+      astArg = inlineCallbackParameters(astArg);
       // Recognize exponential-family laws before children are hoisted and
       // MvNormal loses its constructor head to the affine decomposition.
       astArg = inlineExponentialTilt(astArg);
@@ -1104,25 +1126,102 @@ function liftInlineSubexpressions(bindings: any) {
     return astArg;
   }
 
-  // Instantiate f(x, p) only after the analyzer validates the user's fixed
-  // callable. The private unary body reuses the existing weight machinery;
-  // p remains an explicit dependency of the measure, including its mass.
-  function inlineWeightParameters(astArg: any) {
-    if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier'
-        || !['weighted', 'logweighted'].includes(astArg.callee.name)
-        || astArg.args?.length !== 3) return astArg;
-    const param = { type: 'Placeholder', name: freshName(), loc: astArg.loc };
-    const application = {
-      type: 'CallExpr', callee: cloneAst(astArg.args[0]),
-      args: [param, liftValue(cloneAst(astArg.args[2]))], loc: astArg.loc,
+  // §04 callback inputs: specialize the fixed callable after source checks.
+  // A private body shares the existing operator machinery while p remains
+  // an explicit dependency, including inverse and volume terms.
+  function inlineCallbackParameters(astArg: any) {
+    if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier') return astArg;
+    const op = astArg.callee.name;
+    const required = op === 'scan' ? 3 : 2;
+    if (!['weighted', 'logweighted', 'pushfwd', 'filter', 'reduce', 'scan'].includes(op)
+        || astArg.args?.length !== required + 1) return astArg;
+    const parameters = liftValue(cloneAst(astArg.args[required]));
+    const specialize = (fn: any) => {
+      const params = Array.from({ length: op === 'reduce' || op === 'scan' ? 2 : 1 },
+        () => ({ type: 'Placeholder', name: freshName(), loc: astArg.loc }));
+      const saved = specializingCallback;
+      let body;
+      try {
+        specializingCallback = true;
+        body = inlineUserCall({ type: 'CallExpr', callee: cloneAst(fn),
+          args: [...params, parameters], loc: astArg.loc });
+        visit(body);
+      } finally {
+        specializingCallback = saved;
+      }
+      return {
+        type: 'CallExpr', callee: makeIdent('functionof', astArg.loc), builtin: true,
+        args: [body, ...params.map(param =>
+          ({ type: 'KeywordArg', name: param.name, value: param, loc: astArg.loc }))],
+        loc: astArg.loc,
+      };
     };
-    const body = inlineOnce(application);
-    const weight = {
-      type: 'CallExpr', callee: makeIdent('functionof', astArg.loc),
-      args: [body, { type: 'KeywordArg', name: param.name, value: param, loc: astArg.loc }],
-      loc: astArg.loc,
-    };
-    return { ...astArg, args: [weight, astArg.args[1]] };
+    let fn = astArg.args[0];
+    const seen = new Set<string>();
+    while (fn?.type === 'Identifier' && !seen.has(fn.name)) {
+      seen.add(fn.name);
+      const binding = out.get(fn.name) || bindings.get(fn.name);
+      const rhs = binding?.effectiveValue || binding?.node?.value;
+      if (!rhs) break;
+      fn = rhs;
+    }
+    const callback = astArg.callee.name === 'pushfwd' && fn?.callee?.name === 'bijection'
+      ? inlineBijectionLift({ ...fn, args: fn.args.map((part: any, i: number) =>
+        i === 2 && __knownAstType(part)?.kind === 'scalar' ? cloneAst(part) : specialize(part)) })
+      : specialize(astArg.args[0]);
+    return inlineDensityWeight({ ...astArg, args: [callback, ...astArg.args.slice(1, required)] });
+  }
+
+  // Evaluate likelihood objects through their defining density, including a
+  // likelihood supplied as an explicit callback parameter.
+  function inlineLikelihoodScore(ast: any): any {
+    if (!specializingCallback || ast?.callee?.name !== 'logdensityof' || ast.args?.length !== 2
+        || (!ast.builtin && out.has('logdensityof'))) return ast;
+    let object = inlineTupleProjection(ast.args[0]);
+    const seen = new Set<string>();
+    while (object?.type === 'Identifier' && !seen.has(object.name)) {
+      seen.add(object.name);
+      const binding = out.get(object.name);
+      object = binding?.effectiveValue || binding?.node?.value;
+    }
+    if (object?.callee?.name !== 'likelihoodof' || object.args?.length !== 2) return ast;
+    let kernel = cloneAst(object.args[0]);
+    if (__knownAstType(kernel)?.kind === 'measure') {
+      kernel = _promoteReificationBoundaries({ type: 'CallExpr',
+        callee: makeIdent('functionof', ast.loc), builtin: true,
+        args: [kernel], loc: ast.loc }, out, []);
+    }
+    const inputs = __knownAstType(kernel)?.inputs || [];
+    const args = inputs.length > 1 ? inputs.map((input: any) => ({
+      type: 'KeywordArg', name: input.name, loc: ast.loc,
+      value: { type: 'FieldAccess', object: cloneAst(ast.args[1]), field: input.name, loc: ast.loc },
+    })) : [cloneAst(ast.args[1])];
+    const measure = inlineUserCall({ type: 'CallExpr', callee: kernel, args, loc: ast.loc });
+    return { ...ast, args: [measure, cloneAst(object.args[1])] };
+  }
+
+  // densityof is exp(logdensityof). Preserve its logarithm in a variate
+  // weight so the shared density walker can evaluate object-valued inputs.
+  function inlineDensityWeight(ast: any): any {
+    if (ast?.callee?.name !== 'weighted' || ast.args?.length !== 2) return ast;
+    const fn = ast.args[0];
+    if (fn?.callee?.name !== 'functionof' || !fn.args?.length) return ast;
+    let body = fn.args[0];
+    if (body?.callee?.name === 'densityof') {
+      body = { ...body, callee: makeIdent('logdensityof', body.loc), builtin: true };
+    } else if (body?.callee?.name === 'exp' && body.args?.length === 1) {
+      let score = body.args[0];
+      const seen = new Set<string>();
+      while (score?.type === 'Identifier' && !seen.has(score.name)) {
+        seen.add(score.name);
+        const binding = out.get(score.name);
+        score = binding?.effectiveValue || binding?.node?.value;
+      }
+      if (score?.callee?.name !== 'logdensityof') return ast;
+      body = cloneAst(score);
+    } else return ast;
+    return { ...ast, callee: makeIdent('logweighted', ast.loc), builtin: true,
+      args: [{ ...fn, args: [body, ...fn.args.slice(1)] }, ast.args[1]] };
   }
 
   /** Infer an AST operand against already-typed binding cuts (§11). */
@@ -1420,7 +1519,7 @@ function liftInlineSubexpressions(bindings: any) {
     const op = head(astArg);
     if (op !== 'normalize' && op !== 'tilt') return astArg;
     if (astArg.args?.length !== (op === 'tilt' ? 2 : 1)) return astArg;
-    const weighted = inlineWeightParameters(resolve(astArg.args[0]));
+    const weighted = inlineCallbackParameters(resolve(astArg.args[0]));
     if (head(weighted) !== 'logweighted' || weighted.args?.length !== 2) return astArg;
     const base = resolve(op === 'tilt' ? astArg.args[1] : weighted.args[1]);
     const family = head(base);
@@ -3240,7 +3339,7 @@ function liftInlineSubexpressions(bindings: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'filter') return astArg;
-    if (!astArg.args || astArg.args.length !== 2) return astArg;
+    if (!astArg.args || (astArg.args.length !== 2 && astArg.args.length !== 3)) return astArg;
     let fArg = astArg.args[0];
     if (fArg.type === 'KeywordArg') return astArg;
     if (fArg.type === 'Identifier') return astArg;
@@ -3267,17 +3366,18 @@ function liftInlineSubexpressions(bindings: any) {
   function inlineDensityof(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
-    if (astArg.callee.name !== 'densityof') return astArg;
+    if (astArg.callee.name !== 'densityof'
+        || (!astArg.builtin && out.has('densityof'))) return astArg;
     const loc = astArg.loc;
     const inner = {
       type: 'CallExpr',
-      callee: { type: 'Identifier', name: 'logdensityof', loc },
+      callee: { type: 'Identifier', name: 'logdensityof', loc }, builtin: true,
       args: (astArg.args || []).map(cloneAst),
       loc,
     };
     return {
       type: 'CallExpr',
-      callee: { type: 'Identifier', name: 'exp', loc },
+      callee: { type: 'Identifier', name: 'exp', loc }, builtin: true,
       args: [inner],
       loc,
     };
@@ -3567,6 +3667,8 @@ function liftInlineSubexpressions(bindings: any) {
   function inlineOnce(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (astArg.builtin) return astArg;
+    const selected = inlineTupleProjection(astArg.callee);
+    if (selected !== astArg.callee) return inlineOnce({ ...astArg, callee: selected });
     // §04 explicit self qualification selects the same current-module callable.
     if (astArg.callee?.type === 'FieldAccess'
         && astArg.callee.object?.type === 'Identifier'
