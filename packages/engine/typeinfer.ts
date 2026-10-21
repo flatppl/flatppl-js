@@ -128,6 +128,10 @@ const TRANSPORT_OPS = new Set([
  * integer is embedded in type annotations; the source IR is left
  * intact in either case.
  */
+// Tests switch the call-result reuse in checkUserCall off, to prove it changes
+// no type or diagnostic, and count how often it applies.
+const callResultReuse = { enabled: true, hits: 0 };
+
 function inferTypes(loweredModule: any, opts?: { resolveFixed?: any; modules?: any }) {
   const ctx = createInferenceContext(loweredModule, opts);
   for (const [name] of loweredModule.bindings) ctx.inferBinding(name);
@@ -4988,6 +4992,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
         newScope.set(params[i], argT);
       }
+      // A module-binding boundary was typed by its binding at the definition.
+      // An argument of exactly that type, or of no known type, cannot make the
+      // re-inferred body more precise than the definition's result, so reuse
+      // it. Re-inferring a large kernel closure is costly. A module that has
+      // already reported an error re-infers, because re-inference repeats the
+      // body's diagnostics.
+      const uninformative = (t: any) => t?.kind === 'deferred' || t?.kind === 'any';
+      if (callResultReuse.enabled && local
+          && calleeIR.paramSources?.every((s: any) => s?.kind === 'binding')
+          && params.every((p: string, i: number) => uninformative(newScope.get(p))
+            || T.equal(newScope.get(p), inputs[i]?.type))
+          && !diagnostics.some((d: any) => d.severity === 'error')) {
+        callResultReuse.hits++;
+        return write(calleeType.result, expr);
+      }
       // Imported self references belong to the dependency, not the caller.
       const importedContext = local ? null : createInferenceContext(calleeModule, {
         modules,
@@ -7030,7 +7049,7 @@ function isWithinUnitDomain(vs: any): boolean {
 }
 
 module.exports = {
-  inferTypes, inferExprInScope,
+  inferTypes, inferExprInScope, _callResultReuse: callResultReuse,
   distributionSupport, supportArgOf, PUSHFWD_DOMAIN_GUARDS,
   isWithinPositiveDomain, isWithinGtNegOneDomain, isWithinUnitDomain,
 };
