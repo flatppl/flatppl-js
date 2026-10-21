@@ -187,11 +187,11 @@ const BOX_SHAPE_SRCS: Array<[string, string, number[]]> = [
   ['a constant-weighted box',
    'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\nM = weighted(2.0, L)\n', [2]],
   ['a function-weighted box',
-   'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\nf(x, y) = x * y\nM = weighted(f, L)\n', [2]],
+   'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\nf(v) = v[1] * v[2]\nM = weighted(f, L)\n', [2]],
   ['a log-weighted box',
-   'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\ng(x, y) = 0.5\nM = logweighted(g, L)\n', [2]],
+   'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\ng(v) = 0.5\nM = logweighted(g, L)\n', [2]],
   ['a normalized weighted box',
-   'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\nf(x, y) = x * y\nM = normalize(weighted(f, L))\n', [2]],
+   'L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))\nf(v) = v[1] * v[2]\nM = normalize(weighted(f, L))\n', [2]],
   ['a 1-axis box',
    'M = Lebesgue(support = cartprod(interval(0.0, 4.0)))\n', [1]],
   ['a 3-axis cartpow box',
@@ -290,7 +290,7 @@ test('normalize(weighted(x·y, Lebesgue([0,1]²))) has density 4xy', async () =>
   // Closed form: Z = ∫₀¹∫₀¹ xy dx dy = (1/2)(1/2) = 1/4, so the normalized
   // density is xy / (1/4) = 4xy.
   const src = `L = Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0)))
-f(x, y) = x * y
+f(v) = v[1] * v[2]
 P = normalize(weighted(f, L))
 `;
   for (const [pt, want] of [
@@ -302,15 +302,15 @@ P = normalize(weighted(f, L))
   }
 });
 
-test('a k-param weight over a k-axis box binds parameters to axes in order', async () => {
-  // Axis order must not be transposable: f(x, y) = x over a box whose axes
+test('a whole-vector weight indexes box axes in order', async () => {
+  // Axis order must not be transposable: f(v) = v[1] over a box whose axes
   // have different extents pins which coordinate feeds which parameter.
   // Z = ∫₀¹∫₀³ x dy dx = 3 · (1/2) = 3/2, so the density is x/(3/2) = 2x/3.
   // At x = 0.5 that is 1/3. Had the axes been swapped the weight would read
   // the [0,3] coordinate and the density would be a different function
   // entirely, so this assertion is the axis-order oracle.
   const src = `L = Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 3.0)))
-f(x, y) = x
+f(v) = v[1]
 P = normalize(weighted(f, L))
 `;
   assertRel(await scoreAt(src, 'P', [0.5, 2.0], MC_N), 2 * 0.5 / 3, MC_TOL, 'axis order');
@@ -541,7 +541,7 @@ test('weighted(f, Lebesgue(box)) totalmass is ∫ f over the box', async () => {
   // reports area · Ê[f], a Monte-Carlo mass whose relative standard error
   // over this box is ~0.4 % at N = 65536; 3 % is a loose ~7σ band.
   const { ctx } = makeMatCtx(`L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))
-f(x, y) = x * y
+f(v) = v[1] * v[2]
 M = weighted(f, L)
 `, { sampleCount: 65536 });
   const m: any = await ctx.getMeasure('M');
@@ -575,7 +575,7 @@ async function boxMass(weightDecl: string, N: number, seed?: number) {
 
 test('a SEPARABLE quadratic weight over a box integrates to its closed form', async () => {
   // ∫₀²∫₀³ x²y² dy dx = (2³/3)·(3³/3) = (8/3)·9 = 24.
-  const Z = await boxMass('f(x, y) = x * x * y * y\n', 65536);
+  const Z = await boxMass('f(v) = v[1] * v[1] * v[2] * v[2]\n', 65536);
   const rel = Math.abs(Z - 24) / 24;
   assert.ok(rel < 0.035, 'totalmass ' + Z + ' ≉ 24 (rel ' + rel + ')');
 });
@@ -585,7 +585,7 @@ test('a NON-SEPARABLE weight over a box integrates to its closed form', async ()
   // ∫₀² ((x+3)³ − x³)/3 dx = [(x+3)⁴ − x⁴]/12 |₀² = (625−16−81)/12 = 528/12 = 44.
   // (x+y)² is not a product of per-axis factors, so it exercises the estimator
   // rather than a per-axis rule that a tensor product would integrate exactly.
-  const Z = await boxMass('f(x, y) = (x + y) * (x + y)\n', 65536);
+  const Z = await boxMass('f(v) = (v[1] + v[2]) * (v[1] + v[2])\n', 65536);
   const rel = Math.abs(Z - 44) / 44;
   assert.ok(rel < 0.017, 'totalmass ' + Z + ' ≉ 44 (rel ' + rel + ')');
 });
@@ -601,7 +601,7 @@ test('the box mass estimator is UNBIASED — its seed ensemble mean is the close
   // zero-variance ensemble and trips the spread assertion below.
   const S = 24, N = 16384;
   const zs: number[] = [];
-  for (let s = 0; s < S; s++) zs.push(await boxMass('f(x, y) = x * y\n', N, 1000 + s * 7919));
+  for (let s = 0; s < S; s++) zs.push(await boxMass('f(v) = v[1] * v[2]\n', N, 1000 + s * 7919));
   const mean = zs.reduce((a, b) => a + b, 0) / S;
   const sd = Math.sqrt(zs.reduce((a, z) => a + (z - mean) ** 2, 0) / (S - 1));
   assert.ok(Math.abs(mean - 9) / 9 < 0.005,
@@ -619,7 +619,7 @@ test('a ctx that passes rootKey as a bare number still varies with its seed', as
   // `keyFromSeed`. Without that, two different seeds give bit-identical masses
   // and any seed-robustness claim in a ctx of this shape is vacuous — which is
   // how a plain Monte-Carlo mass got mistaken for a biased deterministic one.
-  const src = BOX_2x3 + 'f(x, y) = x * y\nM = weighted(f, L)\n';
+  const src = BOX_2x3 + 'f(v) = v[1] * v[2]\nM = weighted(f, L)\n';
   const massAt = async (seed: number) => {
     const proc = processSource(src);
     const built = orchestrator.buildDerivations(proc.bindings);
@@ -660,7 +660,7 @@ test('logweighted over a box adds the log-weight in log space', async () => {
   // dν = f · dM), so logweighted(log 2, L) and weighted(2, L) must agree
   // exactly. Oracle is the closed form log 12 either way.
   const { ctx } = makeMatCtx(`L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 3.0)))
-g(x, y) = 0.6931471805599453
+g(v) = 0.6931471805599453
 M = logweighted(g, L)
 `, { sampleCount: 4096 });
   const m: any = await ctx.getMeasure('M');
@@ -674,7 +674,7 @@ M = logweighted(g, L)
 test('a weight that goes negative over the box contributes zero mass there', async () => {
   // Spec §06 requires a NON-NEGATIVE weight. Where f goes negative the engine
   // treats the atom as zero mass (−∞ log-weight) rather than corrupting the
-  // total, and warns. f(x, y) = x − 1 over [0,2]×[0,1] is negative on exactly
+  // total, and warns. f(v) = v[1] − 1 over [0,2]×[0,1] is negative on exactly
   // half the box, so the retained mass is ∫₁²∫₀¹ (x−1) dy dx = 1/2.
   const warnings: string[] = [];
   const realWarn = console.warn;
@@ -682,7 +682,7 @@ test('a weight that goes negative over the box contributes zero mass there', asy
   let m: any;
   try {
     const { ctx } = makeMatCtx(`L = Lebesgue(support = cartprod(interval(0.0, 2.0), interval(0.0, 1.0)))
-f(x, y) = x - 1.0
+f(v) = v[1] - 1.0
 M = weighted(f, L)
 `, { sampleCount: 65536 });
     m = await ctx.getMeasure('M');
@@ -695,12 +695,11 @@ M = weighted(f, L)
     'expected a negative-weight warning, got ' + JSON.stringify(warnings));
 });
 
-test('a weight-function arity that mismatches the box dimension is refused', () => {
-  // Refuse-don't-mislower: a 3-param weight over a 2-axis box has no
-  // coordinate for its third parameter.
-  const { d } = derivOf(`L = Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0)))
+test('a box weight must receive the whole variate as one argument', () => {
+  const result = processSource(`L = Lebesgue(support = cartprod(interval(0.0, 1.0), interval(0.0, 1.0)))
 f(x, y, z) = x * y * z
 M = weighted(f, L)
-`, 'M');
-  assert.equal(d, undefined, 'arity mismatch must not classify');
+`);
+  assert.ok(result.diagnostics.some((d: any) => d.severity === 'error'
+    && /callback receives 1 whole input/.test(d.message)));
 });

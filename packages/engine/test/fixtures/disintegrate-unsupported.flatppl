@@ -21,7 +21,7 @@ fk_ok, pr_ok = disintegrate(["b"], joint_lr)
 prior_b  = lawof(record(theta = draw(Normal(mu = 0, sigma = 1))))
 # functionof for a measure body produces a kernel (§sec:functionof-measure):
 # kernelof would be a type error here per §sec:kernelof "x must not be a measure".
-kernel_b = functionof(joint(obs = Normal(mu = mu_p, sigma = 1.0)),
+kernel_b = functionof(joint(obs = Normal(mu = _theta_, sigma = 1.0)),
                       theta = _theta_)
 joint_d  = jointchain(prior_b, kernel_b)
 

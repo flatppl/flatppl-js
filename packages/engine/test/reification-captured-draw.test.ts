@@ -16,6 +16,9 @@ test('every callable construction must cut or absorb its stochastic ancestors', 
     'f = x -> lawof((y -> y+z)(x))',
     'f = functionof(draw(Normal(0, 1)))',
     'f = x -> Normal(x, exp(z))',
+    'r = rnginit(1)\nf(x) = rand(Normal(z+x, 1), r)',
+    's, r = rand(Normal(z, 1), rnginit(1))\nf(x) = x+s',
+    's, r = rand(Normal(self.z, 1), rnginit(1))\nf(x) = x+s',
   ]) {
     const { diagnostics } = processSource(prefix + body);
     assert.ok(diagnostics.some((d: any) =>
@@ -64,4 +67,57 @@ y = f(z)
   const z = (await ctx.getMeasure('z')).samples;
   const y = (await ctx.getMeasure('y')).samples;
   assert.deepEqual(Array.from(y), Array.from(z, (v: number) => v + 1));
+});
+
+test('explicit boundaries cut descendant nodes before tracing parameter leaves', async () => {
+  const source = `
+a = elementof(reals)
+b = elementof(reals)
+offset = 2
+c = a + b
+y ~ Normal(c + offset, 1)
+K = kernelof(y, c)
+lp = logdensityof(K(3), 4)
+`;
+  const { ctx } = makeMatCtx(source, { sampleCount: 1 });
+  assert.ok(Math.abs((await ctx.getMeasure('lp')).value.data[0]
+    + (Math.log(2 * Math.PI) + 1) / 2) < 1e-14);
+  const errors = processSource(source.replace('kernelof(y, c)', 'kernelof(y, a)'))
+    .diagnostics.filter((d: any) => d.severity === 'error');
+  assert.ok(errors.length > 0, 'b must not survive as a hidden parameter');
+  assert.ok(processSource(`
+s, r = rand(Normal(elementof(reals), 1), rnginit(1))
+f(x) = x+s
+`).diagnostics.some((d: any) => d.severity === 'error'));
+});
+
+test('reifying a fixed kernel application preserves its conditional law', async () => {
+  const { ctx } = makeMatCtx(`
+a = elementof(reals)
+K(x) = Normal(2*x, 3)
+y ~ K(a)
+R = kernelof(y, a)
+lp = logdensityof(R(2), 1)
+`, { sampleCount: 1 });
+  const expected = -Math.log(3) - (Math.log(2 * Math.PI) + 1) / 2;
+  assert.ok(Math.abs((await ctx.getMeasure('lp')).value.data[0] - expected) < 1e-14);
+});
+
+test('a fixed draw from a closed law remains available to a callable', async () => {
+  for (const source of [`
+z ~ Normal(0, 1)
+M = lawof(self.z)
+s, unused = rand(M, rnginit(1))
+`, `
+Normal ~ base.Normal(0, 1)
+exp ~ base.Normal(0, 1)
+s, unused = rand(base.Normal(base.exp(0), 1), rnginit(1))
+`]) {
+    const { ctx } = makeMatCtx(source + `
+f(x) = x + s
+out = f(2)
+`, { sampleCount: 1 });
+    assert.equal((await ctx.getMeasure('out')).value.data[0],
+      2 + (await ctx.getMeasure('s')).value.data[0]);
+  }
 });

@@ -1087,25 +1087,19 @@ function walkLeaf(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc
   return restOfPlate();
 }
 
-// Direct density calls and their additive folds use the density walker rather
-// than the scalar arithmetic evaluator. Their actual score arguments need not
+// Additive weights containing density calls use the density walker for those
+// terms and the scalar evaluator for other summands. Score arguments need not
 // equal the outer weight's variate.
 function _isLogdensityFold(node: any): boolean {
   if (!node || node.kind !== 'call') return false;
   if (node.op === 'add' && Array.isArray(node.args) && node.args.length === 2) {
-    return _isLogdensityFold(node.args[0]) && _isLogdensityFold(node.args[1]);
+    return _isLogdensityFold(node.args[0]) || _isLogdensityFold(node.args[1]);
   }
   return node.op === 'logdensityof' && Array.isArray(node.args) && node.args.length === 2;
 }
 
-// Bind a variate weight's parameters to the coordinates the base just consumed
-// and return the resulting body IR, or null when `wIR` is not a reification.
-//
-// §06 "Weight arity": a k-parameter weight (k >= 2) takes one component per
-// parameter in order; a one-parameter weight takes the variate whole, which is
-// the k-vector for an array variate and the scalar for a scalar one. Shared by
-// `weighted` and `logweighted` — §06 admits the k-parameter form for both, so
-// they must agree on which coordinate feeds which parameter.
+// §04 callback inputs: bind one whole consumed variate. Explicit p has
+// already specialized the fixed callback to this private unary body.
 function _bindVariateWeightBody(wIR: any, baseIR: any, value: any, rest: any): any {
   /* c8 ignore start */
   // Both call sites already test `op === 'functionof'` with params + body, so
@@ -1117,26 +1111,6 @@ function _bindVariateWeightBody(wIR: any, baseIR: any, value: any, rest: any): a
   }
   /* c8 ignore stop */
   const { mapIR } = require('./ir-walk.ts');
-  if (wIR.params.length > 1) {
-    const coords = inferConsumedVector(value, wIR.params.length);
-    /* c8 ignore start */
-    // Unreachable in practice: the base was already walked, and its own walker
-    // consumed these k coordinates off `value` — a short point throws there
-    // first, with consumeVector's own message. Kept so a future base that
-    // consumes differently fails loudly instead of scoring a partly-bound
-    // weight.
-    if (coords == null) {
-      throw new Error('density: weighted(w, M) — w takes ' + wIR.params.length
-        + ' parameters but the scored point does not supply that many '
-        + 'coordinates for the base measure');
-    }
-    /* c8 ignore stop */
-    const bound: Record<string, number> = {};
-    for (let i = 0; i < wIR.params.length; i++) bound[wIR.params[i]] = coords[i];
-    return mapIR(wIR.body, (n: any) =>
-      (n && n.kind === 'ref' && n.name in bound)
-        ? { kind: 'lit', value: bound[n.name] } : n);
-  }
   if (wIR.params.length !== 1) return null;
   // The variate whole. `_baseBoxDim` distinguishes a length-1 vector variate
   // from a scalar one; two or more consumed coordinates settle it outright.
@@ -1156,7 +1130,7 @@ function _bindVariateWeightBody(wIR: any, baseIR: any, value: any, rest: any): a
   } else if (boxK >= 1) {
     const coords = inferConsumedVector(value, boxK);
     /* c8 ignore start */
-    // Unreachable for the same reason as the k-parameter branch above.
+    // The base density walk already checked that the point supplies every axis.
     if (coords == null) {
       throw new Error('density: weighted(w, M) — the scored point does not supply '
         + 'the variate\'s ' + boxK + ' coordinates');
@@ -1179,7 +1153,7 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   // A `functionof` weight is a function of the SAME variate the base just
   // consumed — the §12 generic_dist lowering
   // `weighted(x -> w(x), Lebesgue(reals))`, where `w` is the (non-log)
-  // density of the variate. Bind the weight's parameters to the coordinates
+  // density of the variate. Bind the weight's parameter to the whole variate
   // the base consumed and evaluate the body per atom, adding log(w). Any
   // OTHER ref in the body (a model parameter fed as θ) resolves via
   // refArrays / baseEnv / overlay exactly as a leaf's kwargs do. A plain
@@ -1187,8 +1161,7 @@ function walkWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   // evaluateExprN path below.
   //
   // `_bindVariateWeightBody` owns the arity rule and is shared with
-  // walkLogWeighted, so the two spellings §06 admits cannot drift on which
-  // coordinate feeds which parameter.
+  // walkLogWeighted, so weighted and logweighted bind the same whole variate.
   if (wIR && wIR.kind === 'call' && wIR.op === 'functionof'
       && Array.isArray(wIR.params) && wIR.params.length >= 1 && wIR.body) {
     const wBody = _bindVariateWeightBody(wIR, ir.args[1], value, rest);
@@ -1310,10 +1283,8 @@ function walkLogWeighted(ir: IRNode, value: any, refArrays: any, N: any, opts: a
     const body = _bindVariateWeightBody(gIR, ir.args[1], value, rest);
     accumulateLogdensityFold(body, refArrays, N, opts, acc, baseEnv, overlay, new Float64Array(N));
   } else if (gIR && gIR.kind === 'call' && gIR.op === 'functionof') {
-    // An ordinary weighting FUNCTION, in log space. §06's arity rule admits
-    // the k-parameter form for `logweighted` too, so bind the parameters the
-    // same way `weighted` does and add the body's value directly (it is
-    // already a log-weight, so no log is taken).
+    // Bind the whole variate exactly as weighted does, then add the body's
+    // log-weight directly.
     const gBody = _bindVariateWeightBody(gIR, ir.args[1], value, rest);
     /* c8 ignore start */
     // The branch condition already established `op === 'functionof'`, which is
@@ -1374,9 +1345,8 @@ function accumulateLogdensityFold(node: any, refArrays: any, N: any, opts: any, 
     }
     return;
   }
-  throw new Error('density: unsupported logweighted functionof weight — expected an '
-    + 'add-fold of logdensityof(M, x), got op='
-    + (node && node.op));
+  applyAtomScalar(node, refArrays, N, baseEnv, overlay, acc,
+    (a: Float64Array, i: number, v: number) => { if (a[i] !== -Infinity) a[i] += v; });
 }
 
 function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {

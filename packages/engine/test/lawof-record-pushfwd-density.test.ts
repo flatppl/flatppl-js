@@ -65,7 +65,7 @@ lp = logdensityof(prior, record(sigma = 1.5))
   // must score BIT-IDENTICALLY (same invertExpr synthesis, same base law).
   const lpPushfwd = await scalarOf(`
 pf = pushfwd(fn(sqrt(_)), Exponential(1.0))
-lp = logdensityof(lawof(pf), 1.5)
+lp = logdensityof(lawof(draw(pf)), 1.5)
 `, 'lp');
   assert.equal(lp, lpPushfwd,
     'record(sigma = sqrt(sigma2)) must score identically to pushfwd(fn(sqrt(_)), Exponential(1))');
