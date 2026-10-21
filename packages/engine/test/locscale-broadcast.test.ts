@@ -36,9 +36,9 @@ r = logdensityof(K(${a}, ${b}, ${c}), record(y = [0, 0]))
 
 test('row transforms redraw the held base while sharing a supplied shift', async () => {
   const { ctx } = makeMatCtx(`
-base = Uniform(interval(0, 1))
+unit_base = Uniform(interval(0, 1))
 shift ~ Normal(0, 2)
-row(a, s, shift) = locscale(base, a + shift, s)
+row(a, s, shift) = locscale(unit_base, a + shift, s)
 y ~ row.([1, 3], [-2, 4], shift)
 `, { sampleCount: 1024, rootSeed: 117 });
   const shift = (await ctx.getMeasure('shift')).samples;

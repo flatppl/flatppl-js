@@ -4008,9 +4008,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function inferPushfwd(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 2 && args.length !== 3) return arityError('pushfwd', '2 or 3', args.length, expr.loc);
-    // arg 0 is the function; we don't statically check its type
-    // here (callable-type tracking is the orchestrator's job).
-    inferExpr(args[0], scopes);
+    // arg 0 is the function. Its result type is read by the codomain query
+    // below; only its arity is checked here, since §04 "Explicit callback
+    // parameters" fixes the application as `f(x)` for the whole variate.
+    const fT: any = inferExpr(args[0], scopes);
+    if (args.length === 2 && T.isCallable(fT) && fT.inputs?.length > 1) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: 'pushfwd: callback receives 1 whole inputs, but declares '
+          + fT.inputs.length });
+      return T.failed('pushfwd callback inputs');
+    }
     const m2 = inferExpr(args[1], scopes);
     const codomain = (domain: any) => {
       if (args.length === 2) return _pushfwdCodomain(args[0], domain, scopes);

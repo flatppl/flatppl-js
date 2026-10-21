@@ -72,9 +72,9 @@ test('a SCALAR-variate base still binds the one-parameter weight as a scalar',
     // The whole-variate rule reads the variate, so a scalar base is unchanged:
     // the weight's parameter takes the scalar, not a length-1 vector.
     const { ctx } = makeMatCtx(`
-base = Uniform(interval(0.0, 1.0))
+unit_base = Uniform(interval(0.0, 1.0))
 w = x -> x^2
-m = weighted(w, base)
+m = weighted(w, unit_base)
 lp = logdensityof(m, 0.5)
 `, { sampleCount: 8 });
     const want = Math.log(0.25);   // density 1 on [0,1], so log w(0.5)
