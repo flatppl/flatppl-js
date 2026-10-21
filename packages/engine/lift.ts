@@ -29,6 +29,7 @@ const {
   SAMPLEABLE_DISTRIBUTIONS,
   resolveCallableAlias,
   collectSelfRefs,
+  isCallableLikeBindingType,
 } = require('./ir-shared.ts');
 const { MEASURE_PRODUCING, BUILTIN_FUNCTIONS, DISTRIBUTIONS, ALL_KNOWN } = require('./builtins.ts');
 
@@ -3322,6 +3323,68 @@ function liftInlineSubexpressions(bindings: any) {
    * kernel-arg position safely contains them and hoists the whole
    * function expression as a unit.
    */
+  // `pars -> K(theta = pars.theta)`: a lambda whose body applies one named
+  // kernel K with module-binding boundaries, binding each boundary once by
+  // keyword or by position. Scoring K's own body with the boundaries replaced
+  // equals scoring the copy only if expansion inlines every boundary read.
+  // A draw inside K's closure that K's body does not expose directly stays a
+  // marginalized ref, read by name, so such a kernel keeps the copy.
+  function isSingleKernelAdapter(lambda: any): boolean {
+    if (lambda.type !== 'CallExpr' || lambda.callee?.type !== 'Identifier'
+        || lambda.callee.name !== 'functionof' || !lambda.args?.length) return false;
+    if (!lambda.args.slice(1).every((a: any) =>
+      a.type === 'KeywordArg' && a.value?.type === 'Placeholder')) return false;
+    const call = lambda.args[0];
+    if (call?.type !== 'CallExpr' || call.callee?.type !== 'Identifier' || call.builtin) return false;
+    const name = resolveCallableAlias(call.callee.name, out);
+    const kernel = out.get(name);
+    if (!kernel || (kernel.type !== 'functionof' && kernel.type !== 'kernelof')) return false;
+    const fnAst = kernel.effectiveValue || kernel.node?.value;
+    if (fnAst?.type !== 'CallExpr' || !['functionof', 'kernelof'].includes(fnAst.callee?.name)) return false;
+    const inputs = fnAst.args.slice(1);
+    // A drawn boundary keeps K's closure derived as module bindings, which the
+    // expanded body reads for normalizer masses. An `elementof` boundary
+    // leaves that closure unfed and underived.
+    const isDraw = (value: any) => value?.type === 'CallExpr' && value.callee?.name === 'draw';
+    if (!inputs.length || !inputs.every((a: any) => a.type === 'KeywordArg'
+        && a.value?.type === 'Identifier' && isDraw(out.get(a.value.name)?.node?.value))) return false;
+    const names = inputs.map((a: any) => a.name);
+    const callArgs = call.args || [];
+    if (callArgs.every((a: any) => a.type === 'KeywordArg')) {
+      const given = callArgs.map((a: any) => a.name);
+      if (new Set(given).size !== given.length || given.length !== names.length
+          || !given.every((n: string) => names.includes(n))) return false;
+    } else if (callArgs.some((a: any) => a.type === 'KeywordArg')
+        || callArgs.length !== names.length || fnAst.orderedInputs === false) {
+      return false;
+    }
+    const body = fnAst.args[0];
+    const exposed = new Set<string>();
+    if (body?.type === 'Identifier') exposed.add(body.name);
+    else if (body?.type === 'CallExpr' && body.callee?.name === 'record'
+        && body.args.every((a: any) => a.type === 'KeywordArg' && a.value?.type === 'Identifier')) {
+      for (const a of body.args) exposed.add(a.value.name);
+    } else return false;
+    // A nested draw, or a user call lift left in place (recursion), would
+    // reach the scorer as a ref that boundary substitution cannot see.
+    const blocked = (node: any): boolean => {
+      if (!node || typeof node !== 'object') return false;
+      if (Array.isArray(node)) return node.some(blocked);
+      if (node.type === 'CallExpr' && node.callee?.type === 'Identifier' && !node.builtin
+          && (node.callee.name === 'draw' || isCallableLikeBindingType(out.get(node.callee.name)?.type))) {
+        return true;
+      }
+      for (const k in node) if (k !== 'loc' && blocked(node[k])) return true;
+      return false;
+    };
+    const boundaries = new Set<string>(inputs.map((a: any) => a.value.name));
+    for (const member of computeClosure(body, boundaries)) {
+      const value = (out.get(member) || bindings.get(member))?.node?.value;
+      if (isDraw(value) ? !exposed.has(member) || blocked(value.args) : blocked(value)) return false;
+    }
+    return true;
+  }
+
   function inlineLikelihoodofLift(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
@@ -3330,7 +3393,14 @@ function liftInlineSubexpressions(bindings: any) {
     let kArg = astArg.args[0];
     if (kArg.type === 'KeywordArg') return astArg;
     if (kArg.type === 'Identifier') return astArg;
-    visit(kArg);
+    // The scorer evaluates a single kernel application against the kernel's
+    // own graph (derivations._singleKernelApplication), so keep the call and
+    // lift only its arguments. Inlining would copy the kernel's closure.
+    if (isSingleKernelAdapter(kArg)) {
+      for (const a of kArg.args[0].args) visit(a.type === 'KeywordArg' ? a.value : a);
+    } else {
+      visit(kArg);
+    }
     if (kArg.type === 'Identifier') {
       astArg.args[0] = kArg;
       return astArg;
@@ -4132,7 +4202,7 @@ function liftInlineSubexpressions(bindings: any) {
       // or a Placeholder-boundary ref is invisible to `boundaries.has(r)`
       // and every downstream member wrongly stays shared.
       if (node.type === 'Placeholder') acc.add(PLACEHOLDER_SUB_PREFIX + node.name);
-      for (const k in node) identsOf(node[k], acc);
+      for (const k in node) if (k !== 'loc') identsOf(node[k], acc);
     }
     function walk(name: string) {
       if (reachable.has(name) || visiting.has(name)) return;

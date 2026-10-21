@@ -1,0 +1,146 @@
+'use strict';
+
+// A likelihood adapter `pars -> K(theta = e(pars))` applies one kernel. It is
+// scored against K's own graph with K's boundary replaced by e(pars), so lift
+// copies none of K's closure. Each oracle below is closed form. The arguments
+// rename and transform the input, so a dropped substitution changes the number.
+
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const { makeMatCtx } = require('./_materialise-helpers.ts');
+const { buildLogPi } = require('../mcmc-density.ts');
+
+const normal = (x: number, mu: number, sigma: number) =>
+  -0.5 * Math.log(2 * Math.PI) - Math.log(sigma) - (x - mu) ** 2 / (2 * sigma * sigma);
+const close = (got: number, want: number) =>
+  assert.ok(Math.abs(got - want) < 1e-12, `${got} vs ${want}`);
+const copies = (built: any) => [...built.bindings.values()].filter((b: any) => b.closureOf);
+async function scalar(ctx: any, name: string) {
+  const m = await ctx.getMeasure(name);
+  return (m.samples || m.value.data)[0];
+}
+
+const KERNEL = `
+theta ~ Normal(0, 1)
+y ~ Normal(theta, 0.5)
+K = kernelof(record(y = y), theta = theta)
+a ~ Normal(0, 2)
+prior = lawof(record(a = a))
+`;
+
+test('a single kernel application is scored without copying the kernel closure', async () => {
+  const { ctx, built } = makeMatCtx(`
+theta ~ Uniform(unitinterval)
+counts(n, theta) = iid(Binomial(n, theta), 2)
+sizes = indicesof(zeros(3))
+w = ones(3)
+y ~ normalize(ksuperpose(counts, w)(sizes, theta))
+K = kernelof(record(y = y), theta = theta)
+L = likelihoodof(pars -> K(theta = pars.theta), record(y = [1, 2]))
+prior = lawof(record(theta = theta))
+posterior = bayesupdate(L, prior)
+s = logdensityof(L, (theta = 0.3))
+`, { sampleCount: 4 });
+  assert.deepEqual(copies(built), []);
+  assert.equal([...built.bindings.values()].filter((b: any) => b.ir?.op === 'Binomial').length, 3);
+  const theta = 0.3;
+  const expected = Math.log((2 * theta ** 3 * (1 - theta) + 9 * theta ** 3 * (1 - theta) ** 3) / 3);
+  close(await scalar(ctx, 's'), expected);
+  close((await buildLogPi(ctx, ctx.derivations.posterior)).logPi({ theta }), expected);
+});
+
+test('renamed, transformed and positional arguments bind the applied boundary', async () => {
+  for (const kernel of ['pars -> K(theta = pars.a / 2)', 'pars -> K(pars.a / 2)']) {
+    const { ctx, built } = makeMatCtx(`${KERNEL}
+L = likelihoodof(${kernel}, record(y = 1.0))
+posterior = bayesupdate(L, prior)
+s = logdensityof(L, (a = 0.6))
+p = logdensityof(posterior, (a = 0.6))
+`, { sampleCount: 4 });
+    assert.deepEqual(copies(built), [], kernel);
+    const lik = normal(1.0, 0.3, 0.5);
+    close(await scalar(ctx, 's'), lik);
+    close(await scalar(ctx, 'p'), lik + normal(0.6, 0, 2));
+    close((await buildLogPi(ctx, ctx.derivations.posterior)).logPi({ a: 0.6 }), lik + normal(0.6, 0, 2));
+  }
+});
+
+test('importance weights and joint likelihoods carry the applied boundary', async () => {
+  const { ctx } = makeMatCtx(`${KERNEL}
+L1 = likelihoodof(pars -> K(theta = pars.a / 2), record(y = 1.0))
+L2 = likelihoodof(pars -> K(theta = 3 * pars.a), record(y = -0.4))
+J = joint_likelihood(L1, L2)
+posterior = bayesupdate(L1, prior)
+s = logdensityof(J, (a = 0.6))
+`, { sampleCount: 64 });
+  close(await scalar(ctx, 's'), normal(1.0, 0.3, 0.5) + normal(-0.4, 1.8, 0.5));
+  const post = await ctx.getMeasure('posterior');
+  const atoms = post.fields.a.samples;
+  const lw = post.logWeights;
+  for (let i = 1; i < atoms.length; i++) {
+    const want = normal(1.0, atoms[i] / 2, 0.5) - normal(1.0, atoms[0] / 2, 0.5);
+    assert.ok(Math.abs((lw[i] - lw[0]) - want) < 1e-9, `atom ${i}`);
+  }
+});
+
+test('a normalizer inside the applied kernel takes its mass at the argument', async () => {
+  // Constant and transformed arguments both bind theta = 2.5. The module
+  // theta is a Gamma draw, so a mass taken at the module node would differ.
+  const { ctx, built } = makeMatCtx(`
+theta ~ Gamma(2, 1)
+y ~ normalize(truncate(Normal(theta, 1), interval(2, 4)))
+K = kernelof(record(y = y), theta = theta)
+a ~ Gamma(2, 1)
+prior = lawof(record(a = a))
+L1 = likelihoodof(pars -> K(theta = 2.5), record(y = 3))
+L2 = likelihoodof(pars -> K(theta = pars.a / 2), record(y = 3))
+posterior = bayesupdate(L2, prior)
+s1 = logdensityof(L1, (a = 1.0))
+s2 = logdensityof(L2, (a = 5.0))
+`, { sampleCount: 4 });
+  assert.deepEqual(copies(built), []);
+  // log φ(0.5) − log(Φ(1.5) − Φ(−0.5)), from the error function.
+  const expected = -0.573383167788773;
+  close(await scalar(ctx, 's1'), expected);
+  close(await scalar(ctx, 's2'), expected);
+  close((await buildLogPi(ctx, ctx.derivations.posterior)).likOf({ a: 5.0 }), expected);
+});
+
+test('a fallback normalizer mass reads the substituted inner measure, not its module name', async () => {
+  // No current shape reaches this fallback with a boundary-dependent inner,
+  // so drive it directly. The named binding has the module weight 0.5. The
+  // substituted inner has weight 0.25.
+  const { massFromMeasures } = require('../normalize-mass.ts');
+  const { ctx } = makeMatCtx('w = weighted(0.5, Normal(0, 1))\n', { sampleCount: 4 });
+  const lit = (value: number) => ({ kind: 'lit', value });
+  const ir = { kind: 'call', op: 'weighted', args: [lit(0.25),
+    { kind: 'call', op: 'Normal', args: [lit(0), lit(1)] }] };
+  const [applied, named] = await massFromMeasures(
+    [{ massFrom: { ref: 'w', ir } }, { massFrom: { ref: 'w' } }], ctx);
+  close(applied.logTotalmass, Math.log(0.25));
+  close(named.logTotalmass, Math.log(0.5));
+});
+
+test('a body with two applications keeps the copy path', async () => {
+  const { ctx, built } = makeMatCtx(`
+theta ~ Normal(0, 1)
+y ~ Normal(theta, 0.5)
+K = kernelof(y, theta = theta)
+L = likelihoodof(pars -> joint(u = K(theta = pars.a), v = K(theta = pars.b)), record(u = 0.2, v = -0.1))
+s = logdensityof(L, (a = 0.4, b = -0.3))
+`, { sampleCount: 4 });
+  assert.ok(copies(built).length >= 2);
+  close(await scalar(ctx, 's'), normal(0.2, 0.4, 0.5) + normal(-0.1, -0.3, 0.5));
+});
+
+test('a kernel closure with a latent draw keeps the copy path', () => {
+  const { built } = makeMatCtx(`
+theta ~ Uniform(interval(0.1, 0.9))
+mu ~ Normal(theta, 1)
+y ~ Normal(mu, 1)
+K = kernelof(record(y = y), theta = theta)
+L = likelihoodof(pars -> K(theta = pars.theta), record(y = 1))
+`, { sampleCount: 4 });
+  // The latent `mu` would stay a marginalized ref that substitution cannot reach.
+  assert.ok(copies(built).some((b: any) => b.closureOf === 'mu'));
+});

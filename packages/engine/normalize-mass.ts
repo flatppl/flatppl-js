@@ -376,5 +376,18 @@ function assertFixedMassFallback(inner: any, ctx: any, route: string): void {
 // which certifies a dropped structural-projection component's total mass and
 // needs the same exact CDF difference. The two callers must not diverge: one
 // arm computing M(S) means one accepted set and one refusal boundary.
+// Materialise each fallback normalizer's inner measure once. A normalizer
+// inside an applied kernel names a module binding that reads the kernel's
+// boundary, so it carries its substituted inner IR instead (clm.ts).
+function massFromMeasures(nodes: any[], ctx: any): Promise<any[]> {
+  const byName = new Map<string, Promise<any>>();
+  return Promise.all(nodes.map((node: any) => {
+    if (node.massFrom.ir) return require('./materialiser.ts').materialiseMeasureIR(node.massFrom.ir, ctx);
+    const name = node.massFrom.ref;
+    if (!byName.has(name)) byName.set(name, Promise.resolve(ctx.getMeasure(name)));
+    return byName.get(name);
+  }));
+}
+
 module.exports = { totalMassExpr, logTotalMassExpr, positiveCountLogMassExpr,
-  truncateMassLit, assertFixedMassFallback, canDeferTruncateNormalizer };
+  truncateMassLit, assertFixedMassFallback, canDeferTruncateNormalizer, massFromMeasures };
