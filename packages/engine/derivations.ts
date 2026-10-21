@@ -75,6 +75,7 @@ const { isEvaluable, liftInlineSubexpressions, classifyRandTuple } = require('./
 const { dissolveBindings } = require('./dissolver.ts');
 const { signatureOf } = require('./signatures.ts');
 const { FixedValues } = require('./fixed-values.ts');
+const { forEachIRChild } = require('./ir-walk.ts');
 const {
   collectSelfRefs,
   isCallOp,
@@ -137,6 +138,40 @@ const { engineLimitation } = require('./limitations.ts');
 // computePhases recomputes their phases identically — we apply the result ONLY
 // to the phase-less anons, leaving originals byte-identical (zero blast radius
 // on the established bindings).
+//
+// A callable application copies the callee's closure with the call's arguments
+// substituted. Inside a lambda those arguments read the lambda's placeholder
+// inputs, so a copy can depend on a free `%local` ref and on no binding at all.
+// Spec §04 treats each boundary input as an `elementof` node in the reified
+// graph. Model each free placeholder that way, so the copy is parameterized,
+// not fixed. A fixed copy would be pre-evaluated as a constant and fail.
+const _PLACEHOLDER_INPUT = 'placeholder input';
+const _placeholderLeaf = {
+  synthetic: true, deps: [],
+  node: { value: { type: 'CallExpr', callee: { type: 'Identifier', name: 'elementof' }, args: [] } },
+};
+function _hasFreeLocalRef(node: any, bound: string[]): boolean {
+  if (!node || typeof node !== 'object') return false;
+  if (node.kind === 'ref') return node.ns === '%local' && !bound.includes(node.name);
+  const inner = Array.isArray(node.params) && node.body ? bound.concat(node.params) : bound;
+  const { bijection } = node;
+  if (bijection) {
+    for (const key of ['fForward', 'fInv', 'logVolume']) {
+      const fn = bijection[key];
+      if (fn?.body && _hasFreeLocalRef(fn.body, fn.paramName ? inner.concat(fn.paramName) : inner)) {
+        return true;
+      }
+    }
+    for (const key in bijection.paramIRs || {}) {
+      if (_hasFreeLocalRef(bijection.paramIRs[key], inner)) return true;
+    }
+    node = { ...node, bijection: undefined };
+  }
+  let found = false;
+  forEachIRChild(node, (child: any) => { found = found || _hasFreeLocalRef(child, inner); });
+  return found;
+}
+
 function _propagateLiftedPhases(bindings: Map<string, any>): Map<string, any> {
   let any = false;
   const withDeps = new Map<string, any>();
@@ -145,9 +180,12 @@ function _propagateLiftedPhases(bindings: Map<string, any>): Map<string, any> {
       any = true;
       // Lowered affine measures retain explicit constructor parameters even
       // when their generated callable hides those parameters from phase flow.
-      withDeps.set(name, { ...b, deps: Array.from(new Set([
-        ...(b.deps || []), ...collectSelfRefs(b.ir),
-      ])) });
+      const deps = new Set([...(b.deps || []), ...collectSelfRefs(b.ir)]);
+      if (_hasFreeLocalRef(b.ir, [])) {
+        deps.add(_PLACEHOLDER_INPUT);
+        withDeps.set(_PLACEHOLDER_INPUT, _placeholderLeaf);
+      }
+      withDeps.set(name, { ...b, deps: Array.from(deps) });
     } else {
       withDeps.set(name, b);
     }
@@ -156,6 +194,7 @@ function _propagateLiftedPhases(bindings: Map<string, any>): Map<string, any> {
   const phases = computePhases(withDeps);
   const out = new Map<string, any>();
   for (const [name, b] of withDeps) {
+    if (b === _placeholderLeaf) continue;
     if (b && b.synthetic && b.phase == null && phases.has(name)) {
       out.set(name, { ...b, phase: phases.get(name) });
     } else {
