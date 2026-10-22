@@ -1079,7 +1079,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (op === 'densityof' || op === 'logdensityof') {
       const mT: any = args.length > 0 ? inferExpr(args[0], scopes) : T.deferred();
       if (mT && mT.kind === 'likelihood') {
-        if (args.length > 1) inferExpr(args[1], scopes);   // theta (param point)
+        if (args.length > 1) {   // theta (param point)
+          checkLikelihoodPoint(op, mT, inferExpr(args[1], scopes), args[1].loc);
+        }
         return T.REAL;
       }
       return inferGenericCall(expr, scopes);   // measure(T) signature path
@@ -1091,6 +1093,42 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return inferGenericCall(expr, scopes);
     }
     return inferGenericCall(expr, scopes);
+  }
+
+  // Spec §06 `likelihoodof`: `densityof(likelihoodof(K, obs), theta)` is
+  // `pdf(kappa(theta), x)`, so `theta` is the argument of a call to `K` and
+  // follows the §04 "Calling conventions" rule. The choice between binding
+  // the point whole and splatting it is made from the kernel's input
+  // interface, before the point's domain is checked: a kernel with explicit
+  // boundary inputs admits one positional input and receives a sole record
+  // whole, even when its domain then rejects it. Without this check such a
+  // point reached the density as a record in a real-valued slot and scored
+  // NaN or -Infinity with no diagnostic. Only that whole-binding mismatch is
+  // refused here; a splatting kernel's point is left to the runtime.
+  function checkLikelihoodPoint(op: string, lT: any, pointT: any, loc: any): void {
+    const inputs = lT.inputs;
+    // `joint_likelihood` carries no interface flag; its union of inputs has
+    // no single kernel interface to check against.
+    if (!Array.isArray(inputs) || inputs.length === 0 || typeof lT.orderedInputs !== 'boolean') return;
+    if (!pointT || pointT.kind === 'failed' || pointT.kind === 'deferred' || pointT.kind === 'any') return;
+    const iface = { inputs, orderedInputs: lT.orderedInputs };
+    if (T.acceptsPositional(iface, 1)) {
+      const first = inputs[0];
+      if (T.unify(first.type, pointT, new Map()) == null) {
+        const hint = pointT.kind === 'record' || pointT.kind === 'table'
+          ? ' The likelihood\'s kernel has explicit boundary inputs, so it takes one positional '
+            + 'input and a record is bound whole, not splatted (spec §04 "Calling conventions"). '
+            + 'Pass the value itself, or build the likelihood with an adapter such as '
+            + '`likelihoodof(pars -> K(' + first.name + ' = pars.' + first.name + '), obs)`.'
+          : '';
+        diagnostics.push({
+          severity: 'error',
+          message: op + ': the point is bound whole to likelihood input "' + first.name
+            + '", which expects ' + T.show(first.type) + ', got ' + T.show(pointT) + '.' + hint,
+          loc,
+        });
+      }
+    }
   }
 
   // -------------------------------------------------------------------

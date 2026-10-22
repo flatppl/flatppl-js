@@ -188,7 +188,7 @@ mu ~ Normal(mu = 0.0, sigma = 5.0)
 theta ~ Normal(mu = mu, sigma = 1.0)
 y ~ Normal(mu = theta, sigma = 2.0)
 L = likelihoodof(kernelof(record(y = y), mu = mu), record(y = 0.61))
-lp = logdensityof(L, record(mu = 0.3))
+lp = logdensityof(L, 0.3)
 `, 0xBA5E), (e: any) => {
     assert.match(e.message, /marginalises the stochastic ancestor\(s\) theta/);
     return true;
@@ -201,7 +201,7 @@ mu ~ Normal(mu = 0.0, sigma = 5.0)
 s ~ Exponential(rate = 1.0)
 y ~ Normal(mu = mu, sigma = s)
 L = likelihoodof(kernelof(record(y = y), mu = mu), record(y = 0.61))
-lp = logdensityof(L, record(mu = 0.3))
+lp = logdensityof(L, 0.3)
 `, 0xBA5E), (e: any) => {
     assert.match(e.message, /marginalises the stochastic ancestor\(s\) s/);
     assert.match(e.message, /not a Normal/);
