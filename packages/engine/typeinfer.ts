@@ -3573,6 +3573,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       argClassif.push(c);
     }
 
+    // Each element is an argument to the constructor, so a matrix parameter's
+    // element must be a matrix too.
+    const matrixParams = (head?.kind === 'const' || (head?.kind === 'ref' && head.ns === 'self'
+      && !loweredModule.bindings.has(head.name))) ? MATRIX_PARAMS[head.name] : undefined;
+    if (matrixParams) {
+      const names = broadcastHeadParamNames(head, scopes) || [];
+      for (const [i, c] of argClassif.entries()) {
+        if (matrixParams.includes(names[i]) && isVectorOfVectors(c.cellType)) {
+          return matrixParamError(head.name, names[i], dataArgs[i]);
+        }
+      }
+    }
+
     // Phase 3: outer-shape unification across collection args.
     // Spec §04: same OUTER rank required; per-axis sizes must be
     // equal or 1 (singleton broadcast).

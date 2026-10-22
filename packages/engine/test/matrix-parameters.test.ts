@@ -56,3 +56,16 @@ test('a rowstack or colstack matrix types', () => {
   assert.deepEqual(matrixErrors('w = Wishart(nu = 4.0, scale = rowstack([[1.0, 0.0], [0.0, 1.0]]))\n'
     + 'lp = logdensityof(w, rowstack([[1.0, 0.2], [0.2, 1.0]]))\n'), []);
 });
+
+test('a broadcast element must be a matrix too', () => {
+  // Each element of a broadcast argument is an argument to the constructor.
+  const mus = '[[0.0, 0.0], [1.0, 1.0]]';
+  assertRefuses(`m = MvNormal.(mu = ${mus}, cov = [[[1.0, 0.0], [0.0, 1.0]]])\n`, 'MvNormal', 'cov');
+  assertRefuses(`m = broadcast(MvNormal, ${mus}, [[[1.0, 0.0], [0.0, 1.0]]])\n`, 'MvNormal', 'cov');
+  assertRefuses('covs = [[[1.0, 0.0], [0.0, 1.0]], [[2.0, 0.0], [0.0, 2.0]]]\n'
+    + `m = MvNormal.(mu = ${mus}, cov = covs)\n`, 'MvNormal', 'cov');
+  assertRefuses('w = Wishart.(nu = [3.0, 4.0], scale = [[[1.0, 0.0], [0.0, 1.0]]])\n',
+    'Wishart', 'scale');
+  assert.deepEqual(matrixErrors(
+    `m = MvNormal.(mu = ${mus}, cov = [rowstack([[1.0, 0.0], [0.0, 1.0]])])\n`), []);
+});
