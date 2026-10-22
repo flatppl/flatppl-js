@@ -694,8 +694,7 @@ L = joint_likelihood(L_obs, L_constr)
 test('§10 worked example: Bayesian posterior add-on', () => {
   parsesCleanly(`
 mu_sig_prior ~ Uniform(support = interval(0, 20))
-raw_eff_syst_prior ~ Normal(mu = 0, sigma = 1)
-prior = lawof(record(mu_sig = mu_sig_prior, raw_eff_syst = raw_eff_syst_prior))
+prior = lawof(mu_sig_prior)
 L_obs = likelihoodof(functionof(Normal(mu = mu_sig_prior, sigma = 1), mu_sig = mu_sig_prior), 1.0)
 posterior = bayesupdate(L_obs, prior)
 `);

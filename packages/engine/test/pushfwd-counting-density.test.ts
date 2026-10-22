@@ -113,7 +113,7 @@ atom ~ Normal(0, 1)
 y ~ locscale(Dirac(atom + 0.0), 0.3, 1.7)
 K = kernelof(record(y = y), atom = atom)
 L = likelihoodof(K, record(y = ${0.3 + 1.7 * 1.2}))
-posterior = bayesupdate(L, lawof(record(atom = atom)))`, 3);
+posterior = bayesupdate(L, lawof(atom))`, 3);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);
   const points = [{ atom: 1.2 }, { atom: 2.3 }, { atom: 1.2 }];
@@ -145,7 +145,7 @@ atom ~ Normal(0, 1)
 y ~ locscale(Dirac(atom > 0), 0.1, 0.3)
 K = kernelof(record(y = y), atom = atom)
 L = likelihoodof(K, record(y = 0.4))
-posterior = bayesupdate(L, lawof(record(atom = atom)))`, 2);
+posterior = bayesupdate(L, lawof(atom))`, 2);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);
   assert.deepEqual(Array.from(scorer.priorLikBatch([{ atom: -1 }, { atom: 1 }]).lik), [-Infinity, 0]);

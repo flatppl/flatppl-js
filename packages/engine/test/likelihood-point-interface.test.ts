@@ -168,3 +168,33 @@ test('several unknown fields, and unknown table columns, are all named', () => {
   assert.equal(columns.length, 1);
   assert.match(columns[0].message, /has no input named "extra" for its column \(inputs: "theta"/);
 });
+
+// Spec §06 `bayesupdate`: the posterior weights the prior by
+// `densityof(L, theta)` at the prior's variate, so a record-variate prior is
+// the same whole-binding mismatch as a record point.
+test('bayesupdate: a record prior for a one-boundary kernel is refused, naming both fixes', () => {
+  const src = MODEL + 'L = likelihoodof(K, record(y = 3))\n'
+    + 'post = bayesupdate(L, lawof(record(theta = theta)))\n';
+  const errs = errors(src);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].message, new RegExp(
+    '^bayesupdate: the prior\'s variate is bound whole to likelihood input "theta", which '
+    + 'expects real, got record with fields theta: real\\.'));
+  assert.match(errs[0].message, /`lawof\(theta\)`/);
+  assert.match(errs[0].message, /`likelihoodof\(pars -> K\(theta = pars\.theta\), obs\)`/);
+  assert.equal(errs[0].loc.start.line, 5);
+});
+
+test('bayesupdate: a scalar prior and the adapter form are legal and score the closed form', async () => {
+  for (const [L, prior] of [
+    ['likelihoodof(K, record(y = 3))', 'lawof(theta)'],
+    ['likelihoodof(pars -> K(theta = pars.theta), record(y = 3))', 'lawof(record(theta = theta))'],
+  ]) {
+    const src = MODEL + `L = ${L}\nprior = ${prior}\npost = bayesupdate(L, prior)\n`;
+    assert.deepEqual(errors(src), []);
+    const { ctx } = ctxFor(src, 4);
+    const scorer = await require('../mcmc-density.ts').buildLogPi(ctx, ctx.derivations.post);
+    // The prior is Uniform(unitinterval), so the log posterior at 0.3 is the log likelihood.
+    assert.ok(Math.abs(scorer.logPi({ theta: 0.3 }) - CLOSED_FORM) < 1e-12);
+  }
+});
