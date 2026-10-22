@@ -30,6 +30,13 @@ async function value(src: string, name: string, sampleCount = 1): Promise<Float6
   return m.samples ?? m.value.data;
 }
 
+// Atoms a filtered measure keeps: an atom outside S carries weight -inf.
+async function ctx2(src: string): Promise<number[]> {
+  const { ctx } = makeMatCtx(src, { sampleCount: 4000 });
+  const m = await ctx.getMeasure('x');
+  return Array.from(m.samples as Float64Array).filter((_x, i) => m.logWeights[i] > -Infinity);
+}
+
 const close = (actual: number, expected: number, label: string) =>
   assert.ok(Math.abs(actual - expected) < 1e-12 * Math.max(1, Math.abs(expected)),
     `${label}: ${actual} vs ${expected}`);
@@ -118,9 +125,39 @@ test('filtering a superposed base keeps both closed ends', async () => {
   const m = await ctx.getMeasure('x');
   const kept = Array.from(m.samples as Float64Array).filter((_x, i) => m.logWeights[i] > -Infinity);
   assert.ok(kept.includes(2) && kept.includes(4) && kept.every((x) => x >= 2 && x <= 4));
+  const open = await ctx2('x ~ normalize(truncate(superpose(weighted(0.5, Poisson(3.0)), weighted(0.5, Poisson(3.0))), posreals))');
+  assert.ok(open.includes(1) && open.every((x) => x >= 1), 'posreals drops the atom at 0');
 });
 
 test('a reversed interval refuses to sample', async () => {
   await assert.rejects(() => value('x ~ normalize(truncate(Poisson(3.0), interval(5, 2)))', 'x', 10),
     /degenerate set bounds/);
+});
+
+test('reals, unitinterval and a lower-unbounded interval count the atoms they hold', async () => {
+  close((await value('z = totalmass(truncate(Poisson(3.0), reals))', 'z'))[0], 1, 'reals');
+  close((await value('z = totalmass(truncate(Poisson(3.0), interval(-inf, 2)))', 'z'))[0], mass(3, 0, 2), '(-inf, 2]');
+  // Binomial(3, 0.4) keeps the atoms 0 and 1 of the closed unit interval.
+  close((await value('z = totalmass(truncate(Binomial(3, 0.4), unitinterval))', 'z'))[0], 0.216 + 0.432, 'unitinterval');
+  const reals = await value(`energy = p -> normalize(truncate(Poisson(p), reals))
+l = logdensityof(energy.([3.0, 4.0]), [2, 5])`, 'l');
+  close(reals[0], logPmf(2, 3) + logPmf(5, 4), 'per-row reals');
+  const unit = await value(`energy = p -> normalize(truncate(Binomial(3, p), unitinterval))
+l = logdensityof(energy.([0.4, 0.5]), [0, 1])`, 'l');
+  close(unit[0], Math.log(0.216 / 0.648) + Math.log(0.375 / 0.5), 'per-row unitinterval');
+  // §03 integers is not a scalar interval: the per-row normalizer refuses.
+  await assert.rejects(() => value(`energy = p -> normalize(truncate(Poisson(p), integers))
+l = logdensityof(energy.([3.0, 4.0]), [2, 5])`, 'l'), /cannot resolve truncated normalizer/);
+});
+
+test('a truncate normalizer defers to the per-call path for a known scalar law only', () => {
+  const { canDeferTruncateNormalizer } = require('../normalize-mass.ts');
+  const lit = (value: number) => ({ kind: 'lit', value });
+  const set = { kind: 'call', op: 'interval', args: [lit(0), lit(5)] };
+  const truncate = (base: any) => ({ kind: 'call', op: 'truncate', args: [base, set] });
+  const poisson = { kind: 'call', op: 'Poisson', args: [lit(3)] };
+  assert.equal(canDeferTruncateNormalizer(truncate(poisson)), true, 'a discrete law');
+  assert.equal(canDeferTruncateNormalizer(truncate({ kind: 'call', op: 'Normal', args: [lit(0), lit(1)] })), true, 'a CDF row');
+  assert.equal(canDeferTruncateNormalizer(truncate({ kind: 'call', op: 'VonMises', args: [lit(0), lit(1)] })), false, 'no CDF row');
+  assert.equal(canDeferTruncateNormalizer(truncate({ kind: 'call', op: 'weighted', args: [lit(2), poisson] })), false, 'not a law');
 });

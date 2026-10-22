@@ -583,23 +583,23 @@ const VECTOR_OUTPUT_DISTRIBUTIONS = new Set([
   'MvNormal',
 ]);
 
-// Numeric bounds of a scalar set descriptor with endpoint openness (spec §03):
-// `interval(lo, hi)` and `unitinterval` are closed, `posreals` is (0, +inf],
-// `nonnegreals` is [0, +inf]. Openness matters for a discrete base, whose atoms
-// can sit exactly on an endpoint. Null for other set kinds.
-function scalarSetBounds(setDescr: any): { lo: number; hi: number; loOpen: boolean; hiOpen: boolean } | null {
+// Numeric bounds of a scalar set descriptor (spec §03): `interval(lo, hi)` is
+// closed (the parser gives `unitinterval` as one), `posreals` is (0, +inf],
+// `nonnegreals` is [0, +inf]. No scalar set has an open upper end. An open lower
+// end matters for a discrete base, whose atoms can sit exactly on it. Null for
+// other set kinds.
+function scalarSetBounds(setDescr: any): { lo: number; hi: number; loOpen: boolean } | null {
   switch (setDescr?.kind) {
-    case 'interval': return { lo: +setDescr.lo, hi: +setDescr.hi, loOpen: false, hiOpen: false };
-    case 'unitinterval': return { lo: 0, hi: 1, loOpen: false, hiOpen: false };
-    case 'reals': return { lo: -Infinity, hi: Infinity, loOpen: false, hiOpen: false };
-    case 'posreals': return { lo: 0, hi: Infinity, loOpen: true, hiOpen: false };
-    case 'nonnegreals': return { lo: 0, hi: Infinity, loOpen: false, hiOpen: false };
+    case 'interval': return { lo: +setDescr.lo, hi: +setDescr.hi, loOpen: false };
+    case 'reals': return { lo: -Infinity, hi: Infinity, loOpen: false };
+    case 'posreals': return { lo: 0, hi: Infinity, loOpen: true };
+    case 'nonnegreals': return { lo: 0, hi: Infinity, loOpen: false };
     default: return null;
   }
 }
 
-function inSetBounds(x: number, b: { lo: number; hi: number; loOpen: boolean; hiOpen: boolean }): boolean {
-  return (b.loOpen ? x > b.lo : x >= b.lo) && (b.hiOpen ? x < b.hi : x <= b.hi);
+function inSetBounds(x: number, b: { lo: number; hi: number; loOpen: boolean }): boolean {
+  return (b.loOpen ? x > b.lo : x >= b.lo) && x <= b.hi;
 }
 
 // Subset of the above whose density is over the counting reference (a
