@@ -781,8 +781,14 @@ function parse(tokensIn: any[], variant: any) {
       const arg = parseArg();
       // Parenthesized identifiers and compound expressions are not bare names.
       // Keep the written name if lambda capture rewriting changes the value.
-      if (reificationSyntax && args.length > 0 && pos === start + 1
-          && tokens[start].type === T.IDENT) arg.bareBoundary = tokens[start].value;
+      if (reificationSyntax && args.length > 0 && pos === start + 1) {
+        if (tokens[start].type === T.IDENT) arg.bareBoundary = tokens[start].value;
+        // Spec §04: a bare placeholder `_x_` declares the boundary input `x`.
+        else if (tokens[start].type === T.PLACEHOLDER) {
+          arg.bareBoundary = tokens[start].value;
+          arg.barePlaceholder = true;
+        }
+      }
       return arg;
     }
 
