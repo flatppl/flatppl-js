@@ -1858,7 +1858,7 @@ function assertRewriteTargetsPrivate(nodes: any[], measureIR: any, ctx: any) {
   }
 }
 
-function resolveNormalizeMasses(measureIR: any, ctx: any) {
+function resolveNormalizeMasses(measureIR: any, ctx: any): Promise<any> {
   // Fixed products use this direct-density route rather than likelihood theta
   // substitution. Resolve their support sums before the empirical mass fallback.
   resolveProductNormalizers(measureIR, null, ctx);
