@@ -1117,20 +1117,12 @@ function measureFromAtoms(atoms: any[], extras: any = {}) {
 }
 
 /**
- * Map a structural set descriptor (orchestrator.parseSetIR shape) to
- * numeric [lo, hi] bounds. Returns null for set kinds the materialiser
+ * Map a structural set descriptor (orchestrator.parseSetIR shape) to numeric
+ * bounds with endpoint openness. Returns null for set kinds the materialiser
  * doesn't yet support (integers / booleans).
  */
 function setBoundsForMat(setDescr: any) {
-  if (!setDescr) return null;
-  switch (setDescr.kind) {
-    case 'interval':    return [+setDescr.lo, +setDescr.hi];
-    case 'reals':       return [-Infinity, Infinity];
-    case 'posreals':    return [0, Infinity];
-    case 'nonnegreals': return [0, Infinity];
-    case 'unitinterval': return [0, 1];
-    default:            return null;
-  }
+  return require('./ir-shared.ts').scalarSetBounds(setDescr);
 }
 
 /**

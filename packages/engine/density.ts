@@ -1554,34 +1554,25 @@ function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: 
     ? { kind: 'interval', lo: +samplerLib.evaluateExpr(setIR.args[0], callEnv),
       hi: +samplerLib.evaluateExpr(setIR.args[1], callEnv) }
     : parseSet(setIR);
-  if (!setDescr) return null;
-  let lo: number, hi: number;
-  if (setDescr.kind === 'interval') {
-    lo = +setDescr.lo; hi = +setDescr.hi;
-  } else if (setDescr.kind === 'reals') {
-    lo = -Infinity; hi = Infinity;
-  } else if (setDescr.kind === 'posreals') {
-    lo = 0; hi = Infinity;
-  } else if (setDescr.kind === 'nonnegreals') {
-    lo = 0; hi = Infinity;
-  } else {
-    // Discrete / unrecognised continuous set shape — not a CDF-bounds case.
-    return null;
-  }
+  // Unrecognised set shape: not a CDF-bounds case.
+  const bounds = require('./ir-shared.ts').scalarSetBounds(setDescr);
+  if (!bounds) return null;
+  const { lo, hi } = bounds;
 
   const baseIR: any = truncateIR.args[0];
   if (!baseIR || baseIR.kind !== 'call' || typeof baseIR.op !== 'string') return null;
   const kernelName: string = baseIR.op;
   if (!samplerLib.isKnownDistribution(kernelName)) return null; // multivariate / unknown
   const entry = samplerLib.lookupDistribution(baseIR);
-  // A discrete base's truncate normalizer is Σ pmf over S, not the continuous
-  // CDF difference computed below — falling through here would leave the
-  // normalize at Z=1 (silently dropped). §06 defines no discrete-
-  // truncate normalizer; fail loud rather than score wrong.
   if (entry.discrete) {
-    throw new Error('density: normalize(truncate(' + kernelName + ', S)) — a '
-      + 'discrete base measure’s support-restricted normalizer (Σ pmf over S) '
-      + 'is not implemented; refusing to score with a dropped normalizer (spec §06)');
+    // Z is the base's mass on the atoms S contains, closed ends included.
+    const dist = samplerLib.makeAnalytical(baseIR, callEnv);
+    const Z = forwardCdf.discreteSetProbability((k: number) => dist.cdf(k), bounds);
+    if (!(Z > 0) || !Number.isFinite(Z)) {
+      throw new Error('density: normalize(truncate(' + kernelName + ', S)) — mass over the '
+        + 'truncation set is 0 (Z = 0 is undefined per spec §06)');
+    }
+    return -Math.log(Z);
   }
   if (lo === -Infinity && hi === Infinity) return 0;
 

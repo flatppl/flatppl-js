@@ -199,9 +199,8 @@ test('the arm expresses a truncated Normal and declines every unsupported base',
     decline('VonMises has no CDF row', _trunc(
       { kind: 'call', op: 'VonMises', kwargs: { mu: _lit(0), kappa: _lit(1) } },
       _interval(-1, 1)));
-    // A DISCRETE base's restricted mass is Σ pmf over S; the continuous CDF
-    // difference drops the lower endpoint, and §06 defines no discrete-truncate
-    // normalizer.
+    // A DISCRETE base's restricted mass counts the atoms in S; the continuous
+    // CDF difference drops an atom on a closed lower end.
     decline('a discrete base must not take the CDF difference', _trunc(
       { kind: 'call', op: 'Poisson', kwargs: { rate: _lit(3) } }, _interval(0, 5)));
     // §04 makes a surplus keyword a static error, raised by whichever call site

@@ -621,10 +621,10 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           if (count <= 0) throw new Error(`truncateSampleN.count must be positive integer (got ${msg.count})`);
           if (repeat <= 0) throw new Error(`truncateSampleN.repeat must be positive integer (got ${msg.repeat})`);
           if (!setDescr && !msg.setIR) throw new Error('truncateSampleN requires a set');
-          const boundsAt = (drawEnv: any): [number, number] => {
+          const boundsAt = (drawEnv: any) => {
             const bounds = setBoundsFor(setDescr || makeParseSet(drawEnv)(msg.setIR));
-            if (!(bounds[1] >= bounds[0])) {
-              throw new Error('truncateSampleN: degenerate set bounds [' + bounds.join(', ') + ']');
+            if (!(bounds.hi >= bounds.lo)) {
+              throw new Error('truncateSampleN: degenerate set bounds [' + bounds.lo + ', ' + bounds.hi + ']');
             }
             return bounds;
           };
@@ -648,7 +648,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             for (let a = 0; a < count; a++) {
               for (let k = 0; k < refKeys.length; k++) drawEnv[refKeys[k]] = accessors[k](a);
               if (a === 0 || refKeys.length > 0) {
-                [lo, hi] = boundsAt(drawEnv);
+                ({ lo, hi } = boundsAt(drawEnv));
                 const values = samplerLib.resolveParams(msg.ir, entry, drawEnv);
                 params = msg.ir.op === 'Uniform'
                   ? { lo: values[0], hi: values[1] }
@@ -678,10 +678,15 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // (static params required — refArrays not supported here),
             // pre-compute F(lo) and F(hi), then per-draw Q(F(lo) + u·Δ).
             const callEnv = msg.env ? { ...env, ...msg.env } : env;
-            const [lo, hi] = boundsAt(callEnv);
+            const bounds = boundsAt(callEnv);
+            const { lo, hi } = bounds;
             const dist = samplerLib.makeAnalytical(msg.ir, callEnv);
-            const Flo = isFinite(lo) ? dist.cdf(lo) : 0;
-            const Fhi = isFinite(hi) ? dist.cdf(hi) : 1;
+            // A discrete law counts the atoms S contains (forward-cdf.discreteSetEnds).
+            const discrete = samplerLib.lookupDistribution(msg.ir).discrete;
+            const ends = discrete
+              ? require('./forward-cdf.ts').discreteSetEnds(bounds) : { below: lo, upTo: hi };
+            const Flo = isFinite(lo) ? dist.cdf(ends.below) : 0;
+            const Fhi = isFinite(hi) ? dist.cdf(ends.upTo) : 1;
             const dF = Fhi - Flo;
             if (!(dF > 0)) {
               // Empty intersection M ∩ S: every atom NaN, mass shift = -Inf.
@@ -693,7 +698,10 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             for (let i = 0; i < total; i++) {
               const pair = rngLib.nextUniform(state);
               state = pair[1];
-              out[i] = dist.quantile(Flo + pair[0] * dF);
+              const x = dist.quantile(Flo + pair[0] * dF);
+              // u = 0, or p rounding onto F(below), returns the excluded atom
+              // below. The +0 drops the -0 stdlib returns for the atom at 0.
+              out[i] = discrete ? Math.min(Math.max(x, ends.below + 1), ends.upTo) + 0 : x;
             }
             if (seed == null) philox = state;
             return { type: 'samples', id, samples: out, logWeights: null,
@@ -709,14 +717,14 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           let totalDraws = 0;
           let n_eff = 0;
           if (refKeys.length === 0) {
-            const [lo, hi] = boundsAt(env);
+            const bounds = boundsAt(env);
             const s = samplerLib.makeSampler(state, msg.ir, env);
             for (let i = 0; i < total; i++) {
               let v = NaN;
               for (let t = 0; t < budget; t++) {
                 const draw = s.draw();
                 totalDraws++;
-                if (draw >= lo && draw <= hi) { v = draw; n_eff++; break; }
+                if (irShared.inSetBounds(draw, bounds)) { v = draw; n_eff++; break; }
               }
               if (msg.normalized && Number.isNaN(v)) {
                 throw new Error('normalize(truncate): rejection budget exhausted');
@@ -732,7 +740,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // conditional independence).
             for (let a = 0; a < count; a++) {
               for (let k = 0; k < refKeys.length; k++) drawEnv[refKeys[k]] = accessors[k](a);
-              const [lo, hi] = boundsAt(drawEnv);
+              const bounds = boundsAt(drawEnv);
               for (let r = 0; r < repeat; r++) {
                 let v = NaN;
                 // One proposal with an indicator is an unbiased restricted
@@ -740,7 +748,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
                 for (let t = 0; t < (logMasses ? 1 : budget); t++) {
                   const draw = s.drawWith(drawEnv);
                   totalDraws++;
-                  if (draw >= lo && draw <= hi) { v = draw; n_eff++; break; }
+                  if (irShared.inSetBounds(draw, bounds)) { v = draw; n_eff++; break; }
                 }
                 if (msg.normalized && Number.isNaN(v)) {
                   throw new Error('normalize(truncate): rejection budget exhausted at atom ' + a);
@@ -924,18 +932,13 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
 // CDF clipping. ±Infinity is allowed for half-open / unbounded sets.
 // Throws on shapes that don't reduce to an interval surface (e.g.
 // integer / boolean sets — those defer to a discrete-aware path).
-function setBoundsFor(setDescr: any): [number, number] {
+function setBoundsFor(setDescr: any) {
   if (!setDescr || typeof setDescr !== 'object') {
     throw new Error('setBoundsFor: missing set descriptor');
   }
-  switch (setDescr.kind) {
-    case 'interval':    return [+setDescr.lo, +setDescr.hi];
-    case 'reals':       return [-Infinity, Infinity];
-    case 'posreals':    return [0, Infinity];
-    case 'nonnegreals': return [0, Infinity];
-    default:
-      throw new Error('setBoundsFor: unsupported set kind \'' + setDescr.kind + '\'');
-  }
+  const bounds = irShared.scalarSetBounds(setDescr);
+  if (!bounds) throw new Error('setBoundsFor: unsupported set kind \'' + setDescr.kind + '\'');
+  return bounds;
 }
 
 // Helper: collect transferable buffers in a reply. The browser shim
