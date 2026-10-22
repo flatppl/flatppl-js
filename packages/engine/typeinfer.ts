@@ -893,6 +893,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const declared = iface.inputs.map((p: any) => p.name);
     // Only a record or table splats; anything else is an ordinary argument.
     const at: any = inferExpr(args[0], scopes);
+    // A tuple splats into positional arguments for ordered inputs, and a count
+    // outside the row's required..all inputs is a static error (spec §04).
+    if (at && at.kind === 'tuple') return _applyTupleSplat(expr, op, iface, at);
     const fields: any = (at && at.kind === 'record') ? at.fields
                  : (at && at.kind === 'table') ? at.columns
                  : null;
@@ -931,6 +934,45 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }));
     if (!expr.meta) expr.meta = {};
     expr.meta.splatApplied = declared.slice();
+    return null;
+  }
+
+  // The element expressions a splatted tuple supplies as positional arguments:
+  // a written `(a, b, …)` gives its own elements, any other tuple value gives the
+  // `tuple_get` projection of each slot (§11: "each a projection of the original").
+  function _tupleSplatArgs(tupleExpr: any, count: number): any[] {
+    if (tupleExpr.kind === 'call' && tupleExpr.op === 'tuple'
+        && tupleExpr.args.length === count) return tupleExpr.args.slice();
+    return Array.from({ length: count }, (_, i) => ({
+      kind: 'call', op: 'tuple_get',
+      args: [tupleExpr, { kind: 'lit', value: i, loc: tupleExpr.loc }],
+      loc: tupleExpr.loc,
+    }));
+  }
+
+  // §04 "Calling conventions": a sole tuple argument of a BUILTIN that does not
+  // accept a lone positional argument splats into positional arguments. Rewrites
+  // `expr.args` to the elements, like the record splat above. Returns a failed type
+  // when the tuple has fewer elements than the required inputs or more than all of
+  // them, else null.
+  function _applyTupleSplat(expr: any, op: string, iface: any, at: any): any {
+    const count = at.elems.length;
+    const declared = iface.inputs.map((p: any) => p.name);
+    if (!T.acceptsPositional(iface, count)) {
+      diagnostics.push({
+        severity: 'error', loc: expr.args[0].loc,
+        message: op + ': a sole positional tuple of ' + count + ' elements splats into '
+          + 'positional arguments (spec §04), but this row requires ' + iface.minArgs + ' of its '
+          + declared.length + ' inputs (' + declared.join(', ') + '): tuples with fewer elements '
+          + 'than the required inputs, or more than its inputs, are a static error',
+      });
+      return T.failed(op + ' tuple splat arity');
+    }
+    // Bare FlatPIR keeps the call as written (§11 "Normalization").
+    expr.surfaceArgs = expr.args;
+    expr.args = _tupleSplatArgs(expr.args[0], count);
+    if (!expr.meta) expr.meta = {};
+    expr.meta.splatApplied = declared.slice(0, count);
     return null;
   }
 
@@ -1180,6 +1222,21 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (!T.acceptsPositional(iface, 1)) {
       // Splatting kernel: spec §04 "Calling conventions" makes a field or
       // column that matches no input a static error.
+      // A tuple splats into positional arguments for ordered inputs; its count must
+      // lie between the required inputs and all inputs.
+      if (pointT.kind === 'tuple') {
+        const count = pointT.elems.length;
+        if (lT.orderedInputs === false || T.acceptsPositional(iface, count)) return;
+        diagnostics.push({
+          severity: 'error',
+          message: op + ': the point is a tuple of ' + count + ' elements splatted over the likelihood inputs ('
+            + inputs.map((i: any) => '"' + i.name + '"').join(', ') + '); spec §04 "Calling '
+            + 'conventions": tuples with fewer elements than the required inputs, or more '
+            + 'than its inputs, are a static error',
+          loc,
+        });
+        return;
+      }
       if (pointT.kind !== 'record' && pointT.kind !== 'table') return;
       const known = new Set(inputs.map((i: any) => i.name));
       const unknown = Object.keys(pointT.kind === 'record' ? pointT.fields : pointT.columns)
@@ -4994,6 +5051,24 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // column stays a table.
       const isRecord = splatType && splatType.kind === 'record' && splatType.fields;
       const isTable  = splatType && splatType.kind === 'table' && splatType.columns;
+      // A tuple splats into positional arguments when the inputs are ordered; the
+      // ordinary positional checks below then count and type each element.
+      if (splatType && splatType.kind === 'tuple' && calleeType.orderedInputs !== false) {
+        const count = splatType.elems.length;
+        if (!T.acceptsPositional(calleeType, count)) {
+          diagnostics.push({
+            severity: 'error', loc: args[0].loc,
+            message: 'call to "' + head.name + '" splats a sole positional tuple of ' + count
+              + ' elements into positional arguments, but ' + head.name + ' requires '
+              + inputs.filter((i: any) => !i.optional).length + ' of its ' + inputs.length
+              + ' inputs (spec §04: this callable does not admit one positional input, and tuples '
+              + 'with fewer elements than the required inputs, or more than its inputs, are '
+              + 'a static error)',
+          });
+          return write(T.failed('tuple splat arity'), expr);
+        }
+        args = _tupleSplatArgs(args[0], count);
+      }
       if (isRecord || isTable) {
         const inputNames = new Set(inputs.map((i: any) => i.name));
         const fieldNames: string[] = isRecord

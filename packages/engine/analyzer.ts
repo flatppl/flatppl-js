@@ -4088,6 +4088,16 @@ function analyze(ast: any, source: string, opts?: any) {
       }
       return null;
     };
+    // Element count of the sole argument when it is a tuple this can read
+    // statically (a written `(a, b, …)` or a binding of tuple type), else null.
+    const tupleCount = (arg: any): number | null => {
+      if (arg && arg.type === 'TupleLiteral') return arg.elements.length;
+      if (arg && arg.type === 'Identifier') {
+        const t = bindings.get(arg.name)?.inferredType;
+        if (t && t.kind === 'tuple' && t.elems) return t.elems.length;
+      }
+      return null;
+    };
     const walk = (node: any): void => {
       if (!node || typeof node !== 'object') return;
       if (Array.isArray(node)) { for (const x of node) walk(x); return; }
@@ -4097,6 +4107,19 @@ function analyze(ast: any, source: string, opts?: any) {
         if (!node.__splatApplied) {
           const sig = T2.signatureOf(op);
           const iface = T2.builtinInterface(op, sig);
+          // §04: a sole tuple splats into positional arguments, each element a
+          // projection of the original (§11), for a builtin that does not accept a
+          // lone positional argument.
+          const count = args.length === 1 && args[0].type !== 'KeywordArg'
+            ? tupleCount(args[0]) : null;
+          if (iface && count != null && !T2.acceptsPositional(iface, 1)
+              && T2.acceptsPositional(iface, count)) {
+            const agg = args[0];
+            node.args = agg.type === 'TupleLiteral' ? agg.elements.slice()
+              : Array.from({ length: count }, (_, i) => AST.IndexExpr(
+                agg, [AST.NumberLiteral(i + 1, String(i + 1), agg.loc)], agg.loc));
+            node.__splatApplied = iface.inputs.slice(0, count).map((p: any) => p.name);
+          }
           const keywords = args.length && args.every((a: any) => a.type === 'KeywordArg');
           const present = keywords ? args.map((a: any) => a.name)
             : args.length === 1 && args[0].type !== 'KeywordArg' ? aggNames(args[0]) : null;
