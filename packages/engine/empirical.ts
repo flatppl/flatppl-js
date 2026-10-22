@@ -678,8 +678,7 @@ function importanceSamplingQuality(measure: any, dof: number) {
   const D = Math.max(1, dof | 0);
   const N = measureAtomCount(measure);
   if (N === 0) {
-    return { label: 'unusable', ess: 0, ratio: 0, kHat: NaN,
-             wmax: 1, dof: D, N: 0 };
+    return qualityResult('unusable', 0, 0, NaN, 1, D, 0);
   }
   // ESS only matters when weights are present — and effectiveSampleSize
   // (designed for scalar measures) reads measure.samples.length, which
@@ -698,9 +697,9 @@ function importanceSamplingQuality(measure: any, dof: number) {
   // for such measures.
   if (!measure.logWeights) {
     if (N < 20) {
-      return { label: 'unusable', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
+      return qualityResult('unusable', ess, 1, NaN, 1 / N, D, N);
     }
-    return { label: 'good', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
+    return qualityResult('good', ess, 1, NaN, 1 / N, D, N);
   }
 
   // Walk logWeights once: max for normalisation, min/max range for
@@ -715,7 +714,7 @@ function importanceSamplingQuality(measure: any, dof: number) {
     if (lw > lwMax) lwMax = lw;
   }
   if (nonFinite) {
-    return { label: 'unusable', ess, ratio, kHat: NaN, wmax: 1, dof: D, N };
+    return qualityResult('unusable', ess, ratio, NaN, 1, D, N);
   }
   // Uniform-within-epsilon: even with explicit logWeights, if every
   // entry equals every other (within float tolerance), the measure
@@ -725,9 +724,9 @@ function importanceSamplingQuality(measure: any, dof: number) {
   // before any reweighting op was actually applied.
   if (lwMax - lwMin < 1e-12) {
     if (N < 20) {
-      return { label: 'unusable', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
+      return qualityResult('unusable', ess, 1, NaN, 1 / N, D, N);
     }
-    return { label: 'good', ess, ratio: 1, kHat: NaN, wmax: 1 / N, dof: D, N };
+    return qualityResult('good', ess, 1, NaN, 1 / N, D, N);
   }
   // Center before normalizing (spec §06): a large common log scale can
   // round away the log normalizer's small correction. Reuse the same
@@ -769,7 +768,12 @@ function importanceSamplingQuality(measure: any, dof: number) {
   if (severity === 0 && kHat > Math.min(0.5, kStar - 0.1)) severity = 1;
 
   const label = ['good', 'ok', 'bad', 'unusable'][severity];
-  return { label, ess, ratio, kHat, wmax, dof: D, N };
+  return qualityResult(label, ess, ratio, kHat, wmax, D, N);
+}
+
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function qualityResult(label: string, ess: number, ratio: number, kHat: number, wmax: number, dof: number, N: number) {
+  return { label, ess, ratio, kHat, wmax, dof, N };
 }
 
 // Internal: walk a measure to find any sub-measure's atom count.

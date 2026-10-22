@@ -63,13 +63,6 @@ function columns(m: any, prefix: string, out: [string, Float64Array][] = []) {
 
 // Self-normalised weighted mean and its Monte-Carlo standard error of one
 // column, with the weights `w` (sum `sw`, Kish ESS `ess`).
-//
-// Keep this a top-level function that returns to a plain `for` loop. The same
-// loop inside an arrow function handed to `Array.prototype.map`, returning an
-// object literal, is miscompiled by V8's on-stack replacement (Node 24's V8
-// 13.6 and Node 26's 14.6): on roughly 1 run in 25 the first columns came back
-// with the LAST column's mean and error, so `r.a` read the mean of `r.u`.
-// `--no-use-osr`, `--no-maglev` and `--no-turbofan` each removed it.
 function columnMoments(label: string, col: Float64Array, w: Float64Array,
   sw: number, ess: number) {
   const n = col.length;
@@ -79,7 +72,11 @@ function columnMoments(label: string, col: Float64Array, w: Float64Array,
   let v = 0;
   for (let i = 0; i < n; i++) v += w[i] * (col[i] - mu) * (col[i] - mu);
   v /= sw;
-  return { label, mean: mu, se: Math.sqrt(v / ess), ess };
+  return momentsResult(label, mu, Math.sqrt(v / ess), ess);
+}
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function momentsResult(label: string, mean: number, se: number, ess: number) {
+  return { label, mean, se, ess };
 }
 
 // Self-normalised weighted mean and its Monte-Carlo standard error per column.

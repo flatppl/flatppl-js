@@ -65,7 +65,12 @@ function makeProposal(mu: Float64Array, Sigma: Float64Array, dim: number) {
   }
   let logdet = 0;
   for (let d = 0; d < dim; d++) logdet += 2 * Math.log(L[d * dim + d]);
-  return { mu: Float64Array.from(mu), L, logdet };
+  return proposal(Float64Array.from(mu), L, logdet);
+}
+
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function proposal(mu: Float64Array<ArrayBuffer>, L: Float64Array<ArrayBuffer>, logdet: number) {
+  return { mu, L, logdet };
 }
 
 // log N(x; μ, Σ) using the proposal's Cholesky: solve L u = (x−μ), q = uᵀu.
@@ -106,6 +111,11 @@ function proposalKL(p: any, previous: any, dim: number): number {
   return Math.max(0, 0.5 * (trace + distance - dim + previous.logdet - p.logdet));
 }
 
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function bridgeFit(weights: Float64Array<ArrayBuffer>, ess: number, beta: number) {
+  return { weights, ess, beta };
+}
+
 /** Fit a reachable intermediate target using fresh proposal draws. The ESS
  * bound limits weight concentration; these weights are never returned as samples. */
 function bridgeWeights(logBase: number[], logTarget: ArrayLike<number>, logProposal: number[], beta: number, minEss: number) {
@@ -119,7 +129,7 @@ function bridgeWeights(logBase: number[], logTarget: ArrayLike<number>, logPropo
     const weights = Float64Array.from(lw, w => Number.isFinite(lse) ? Math.exp(w - lse) : 0);
     let sumSq = 0;
     for (const w of weights) sumSq += w * w;
-    return { weights, ess: sumSq > 0 ? 1 / sumSq : 0, beta: b };
+    return bridgeFit(weights, sumSq > 0 ? 1 / sumSq : 0, b);
   };
   const full = weightsAt(1);
   if (full.ess >= minEss) return full;

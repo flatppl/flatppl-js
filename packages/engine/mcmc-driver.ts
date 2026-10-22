@@ -160,7 +160,12 @@ function runMcmc(mv: any, kernel: any, opts: any) {
   // returns it (with the tuned adaptState) so a later sampling phase on another
   // worker can resume the warmed chains under the frozen proposal.
   const endPositions = ensemble.map((y: Float64Array) => Float64Array.from(y));
-  return { drawsByName, walkers: walkersByName, acceptRate, adaptState, endPositions, diagnostics: { acceptRate, perParam } };
+  return mcmcResult(drawsByName, walkersByName, acceptRate, adaptState, endPositions, perParam);
+}
+
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function mcmcResult(drawsByName: any, walkers: any, acceptRate: number, adaptState: any, endPositions: any, perParam: any) {
+  return { drawsByName, walkers, acceptRate, adaptState, endPositions, diagnostics: { acceptRate, perParam } };
 }
 
 module.exports = { runMcmc, gaussianNoise, fixedProposalBatchStep };

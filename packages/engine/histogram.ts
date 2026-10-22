@@ -71,6 +71,12 @@ function requireAlignedWeights(lw: any, n: number, who: string): boolean {
  * @param {number} [opts.maxBins=200]
  * @param {number} [opts.minBins=8]
  */
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function lebesgueHistogram(xs: Float64Array, ys: Float64Array, binEdges: Float64Array,
+  binWidth: number, lo: number, hi: number) {
+  return { xs, ys, binEdges, binWidth, support: [lo, hi], reference: 'lebesgue' };
+}
+
 function freedmanDiaconisHistogram(samples: ArrayLike<number>, opts: { logWeights?: any; trimQ?: number; minBins?: number; maxBins?: number; [k: string]: any } = {}) {
   const n = samples.length;
   if (n === 0) {
@@ -194,7 +200,7 @@ function freedmanDiaconisHistogram(samples: ArrayLike<number>, opts: { logWeight
     ys[i] = counts[i] * norm;
     xs[i] = binEdges[i] + binWidth / 2;
   }
-  return { xs, ys, binEdges, binWidth, support: [lo, hi], reference: 'lebesgue' };
+  return lebesgueHistogram(xs, ys, binEdges, binWidth, lo, hi);
 }
 
 /**
@@ -350,7 +356,7 @@ function quantileSorted(sorted: ArrayLike<number>, q: number) {
 
 function meanSd(samples: ArrayLike<number>) {
   const n = samples.length;
-  if (n === 0) return { mean: NaN, sd: NaN };
+  if (n === 0) return meanSdResult(NaN, NaN);
   let s = 0;
   for (let i = 0; i < n; i++) s += samples[i];
   const mean = s / n;
@@ -359,7 +365,11 @@ function meanSd(samples: ArrayLike<number>) {
     const d = samples[i] - mean;
     v += d * d;
   }
-  return { mean, sd: Math.sqrt(v / n) };
+  return meanSdResult(mean, Math.sqrt(v / n));
+}
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function meanSdResult(mean: number, sd: number) {
+  return { mean, sd };
 }
 
 module.exports = {

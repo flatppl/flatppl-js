@@ -45,7 +45,12 @@ function constrainedSlice(u0: Float64Array, dim: number, transform: any, logLik:
   }
   const rec = transform(u);
   nEval++;
-  return { u, rec, logl: logLik(rec), nEval };
+  return sliceResult(u, rec, logLik(rec), nEval);
+}
+
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function sliceResult(u: Float64Array, rec: any, logl: number, nEval: number) {
+  return { u, rec, logl, nEval };
 }
 
 function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
@@ -186,9 +191,11 @@ function runNested(transform: any, dim: number, logLik: any, opts: any = {}) {
   void logZsq;
   const logWeights = Float64Array.from(deadLogW);
   if (onProgress) onProgress(1, 'sampling');
-  return {
-    samples: deadRec, logWeights, logZ, logZerr,
-    nLive: K, nIter, efficiency: deadRec.length / Math.max(1, nEval),
-  };
+  return nestedResult(deadRec, logWeights, logZ, logZerr, K, nIter, deadRec.length / Math.max(1, nEval));
+}
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function nestedResult(samples: any[], logWeights: Float64Array, logZ: number, logZerr: number,
+  nLive: number, nIter: number, efficiency: number) {
+  return { samples, logWeights, logZ, logZerr, nLive, nIter, efficiency };
 }
 module.exports = { runNested, logaddexp };

@@ -464,6 +464,27 @@ test('importanceSamplingQuality: nearly-uniform log-weights → good', () => {
   assert.ok(q.ratio > 0.99, `ratio=${q.ratio}`);
 });
 
+test('importanceSamplingQuality: the early-return cases report their closed-form fields', () => {
+  // No atoms: nothing to weigh.
+  const empty = importanceSamplingQuality({ samples: new Float64Array(0), logWeights: null }, 3);
+  assert.deepEqual([empty.label, empty.ess, empty.ratio, empty.wmax, empty.dof, empty.N],
+    ['unusable', 0, 0, 1, 3, 0]);
+  assert.ok(Number.isNaN(empty.kHat));
+  // Ten unweighted atoms: uniform weights 1/10, too few to trust (N < 20).
+  const few = importanceSamplingQuality({ samples: new Float64Array(10), logWeights: null }, 1);
+  assert.deepEqual([few.label, few.ess, few.ratio, few.wmax, few.N], ['unusable', 10, 1, 0.1, 10]);
+  // Ten equal explicit log-weights are the same measure.
+  const flat = importanceSamplingQuality(
+    { samples: new Float64Array(10), logWeights: new Float64Array(10).fill(-Math.log(10)) }, 1);
+  assert.deepEqual([flat.label, flat.ess, flat.ratio, flat.wmax, flat.N], ['unusable', 10, 1, 0.1, 10]);
+  // A NaN log-weight cannot be normalised.
+  const lw = new Float64Array(40).fill(-Math.log(40)); lw[7] = NaN;
+  const bad = importanceSamplingQuality({ samples: new Float64Array(40), logWeights: lw }, 1);
+  assert.equal(bad.label, 'unusable');
+  assert.equal(bad.wmax, 1);
+  assert.ok(Number.isNaN(bad.kHat));
+});
+
 test('importanceSamplingQuality: heavy-tailed weights → degrades to bad/unusable', () => {
   // Build log-weights from a Pareto-α=1 sample so k̂ should be ≈ 1.0
   // (boundary between bad and unusable). 5000 atoms.
