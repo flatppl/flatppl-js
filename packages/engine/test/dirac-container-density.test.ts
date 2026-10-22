@@ -135,7 +135,7 @@ theta ~ Normal(0, 1)
 y ~ Dirac(value = record(label = "a", xs = [theta, theta + 1]))
 K = kernelof(record(y = y), theta = theta)
 L = likelihoodof(K, record(y = record(label = "a", xs = [1, 2])))
-posterior = bayesupdate(L, lawof(record(theta = theta)))`, 3);
+posterior = bayesupdate(L, lawof(theta))`, 3);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);
   const points = [{ theta: 1 }, { theta: 2 }, { theta: 1 }];
@@ -155,7 +155,7 @@ theta ~ iid(Normal(0, 1), 2)
 y ~ Dirac(value = record(xs = theta))
 K = kernelof(record(y = y), theta = theta)
 L = likelihoodof(K, record(y = record(xs = [1, 2])))
-posterior = bayesupdate(L, lawof(record(theta = theta)))`, 3);
+posterior = bayesupdate(L, lawof(theta))`, 3);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);
   const points = [{ theta: [1, 2] }, { theta: [1, 3] }, { theta: [1, 2] }];

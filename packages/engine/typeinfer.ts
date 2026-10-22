@@ -1096,7 +1096,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (lT && lT.kind === 'likelihood' && T.isMeasure(pT)) {
         // §06: the posterior weights the prior by `densityof(L, theta)` at the
         // prior's variate, so that variate is the likelihood's point.
-        checkLikelihoodPoint(op, lT, pT.domain, args[1].loc, false);
+        checkLikelihoodPoint(op, lT, pT.domain, args[1].loc);
         return pT;
       }
       return inferGenericCall(expr, scopes);
@@ -1114,7 +1114,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // point reached the density as a record in a real-valued slot and scored
   // NaN or -Infinity with no diagnostic. A splatting kernel's point must
   // name only the kernel's inputs.
-  function checkLikelihoodPoint(op: string, lT: any, pointT: any, loc: any, whole = true): void {
+  function checkLikelihoodPoint(op: string, lT: any, pointT: any, loc: any): void {
     const inputs = lT.inputs;
     // `joint_likelihood` carries no interface flag; its union of inputs has
     // no single kernel interface to check against.
@@ -1143,23 +1143,24 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       });
       return;
     }
-    if (whole) {
-      const first = inputs[0];
-      if (T.unify(first.type, pointT, new Map()) == null) {
-        const hint = pointT.kind === 'record' || pointT.kind === 'table'
-          ? ' The likelihood\'s kernel has explicit boundary inputs, so it takes one positional '
-            + 'input and a record is bound whole, not splatted (spec §04 "Calling conventions"). '
-            + 'Pass the value itself, or build the likelihood with an adapter such as '
-            + '`likelihoodof(pars -> K(' + first.name + ' = pars.' + first.name + '), obs)`.'
-          : '';
-        diagnostics.push({
-          severity: 'error',
-          message: op + ': the point is bound whole to likelihood input "' + first.name
-            + '", which expects ' + T.show(first.type) + ', got ' + T.show(pointT) + '.' + hint,
-          loc,
-        });
-      }
-    }
+    const first = inputs[0];
+    if (T.unify(first.type, pointT, new Map()) != null) return;
+    const point = op === 'bayesupdate' ? "the prior's variate" : 'the point';
+    const hint = pointT.kind === 'record' || pointT.kind === 'table'
+      ? ' The likelihood\'s kernel has explicit boundary inputs, so it takes one positional '
+        + 'input and a record is bound whole, not splatted (spec §04 "Calling conventions"). '
+        + (op === 'bayesupdate'
+          ? 'Use a prior over the input itself, such as `lawof(' + first.name + ')`, or build '
+          : 'Pass the value itself, or build ')
+        + 'the likelihood with an adapter such as `likelihoodof(pars -> K(' + first.name
+        + ' = pars.' + first.name + '), obs)`.'
+      : '';
+    diagnostics.push({
+      severity: 'error',
+      message: op + ': ' + point + ' is bound whole to likelihood input "' + first.name
+        + '", which expects ' + T.show(first.type) + ', got ' + T.show(pointT) + '.' + hint,
+      loc,
+    });
   }
 
   // -------------------------------------------------------------------
