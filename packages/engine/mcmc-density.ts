@@ -473,6 +473,27 @@ async function buildLogPi(
   }
   const likelihood = mapIRScoped(likNode.body, bindPoint);
   const likBodyIR = await resolveNormalizeMasses(likelihood, ctx, atomDep);
+  // The likelihood body may only read the point's latents, fixed values and
+  // derived bindings. A draw inside the kernel that the prior does not carry is
+  // a latent the likelihood must integrate out (spec §06 "Density of composed
+  // measures"). The scorer has no such marginal: the draw is unbound in the
+  // scoring env, `likWith` swallows that to -Infinity, and every chain starts
+  // at -Infinity without saying why.
+  {
+    const refs = new Set<string>(); collectRefNames(likBodyIR, refs);
+    const latents = [...refs].filter(nm => !drawNames.includes(nm) && !(nm in fixedEnvObj)
+      && ctx.bindings?.get(nm)?.type === 'draw');
+    if (latents.length > 0) {
+      const err: any = new Error(`buildLogPi: the likelihood marginalises the `
+        + `stochastic ancestor(s) ${latents.map(nm => ctx.bindings.get(nm).closureOf || nm).join(', ')}, `
+        + 'which the posterior does not carry as parameters, and the MCMC scorer has no exact '
+        + 'marginal for them (spec §06 "Density of composed measures": a closed form, or '
+        + 'enumeration of a finite discrete latent). Add the latent to the prior, or score the '
+        + 'likelihood with logdensityof.');
+      err.modelRefusal = true;
+      throw err;
+    }
+  }
 
   // ── SETUP: observed ───────────────────────────────────────────────────────
   const observed = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues, true);
