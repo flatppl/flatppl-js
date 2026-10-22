@@ -388,6 +388,33 @@ function _atomSlice(v: any, i: number, N: number): any {
   return sub;
 }
 
+// A matrix stack [N, m, n] carrying a transpose view has its last two axes
+// swapped only LOGICALLY, and the batched kernels below read the raw buffer.
+// Resolve the view once per call, before the per-atom loop. Canonical and
+// diagonal-stored values pass through untouched.
+function _untransposed(A: any): any {
+  return valueLib.isValue(A) && A.shape.length >= 3 && !valueLib.isDiagStored(A)
+    && valueLib.isTransposeView(A) ? valueLib._logicalDense(A) : A;
+}
+
+// The arguments of a batched kernel with the transpose view of its first one
+// resolved. An untagged first argument returns `args` itself.
+function _logicalStackArgs(args: any[]): any[] {
+  const A = args[0];
+  if (!valueLib.isValue(A) || A.t === undefined) return args;
+  return [_untransposed(A), ...args.slice(1)];
+}
+
+// One wrapper per kernel, each with its own direct call, so the kernels stay
+// monomorphic call targets instead of sharing one closure.
+const _detBatchedLogical = (args: any[], N: number): any => _detBatched(_logicalStackArgs(args), N);
+const _logabsdetBatchedLogical = (args: any[], N: number): any => _logabsdetBatched(_logicalStackArgs(args), N);
+const _invBatchedLogical = (args: any[], N: number): any => _invBatchedOrFallback(_logicalStackArgs(args), N);
+const _lowerCholeskyBatchedLogical = (args: any[], N: number): any =>
+  _lowerCholeskyBatchedOrFallback(_logicalStackArgs(args), N);
+const _rowGramBatchedLogical = (args: any[], N: number): any => _rowGramBatched(_logicalStackArgs(args), N);
+const _colGramBatchedLogical = (args: any[], N: number): any => _colGramBatched(_logicalStackArgs(args), N);
+
 // Pack N per-atom Float64Array results (each of length k) into one
 // atom-batched Value shape=[N, ...inner]. Helper for batched linalg
 // outputs.
@@ -496,7 +523,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _detLogical,
-  batched: _detBatched,
+  batched: _detBatchedLogical,
 });
 
 // =====================================================================
@@ -547,7 +574,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _logabsdetLogical,
-  batched: _logabsdetBatched,
+  batched: _logabsdetBatchedLogical,
 });
 
 // =====================================================================
@@ -647,7 +674,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _invLogical,
-  batched: _invBatchedOrFallback,
+  batched: _invBatchedLogical,
 });
 
 // =====================================================================
@@ -846,7 +873,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _lowerCholeskyLogical,
-  batched: _lowerCholeskyBatchedOrFallback,
+  batched: _lowerCholeskyBatchedLogical,
 });
 
 // =====================================================================
@@ -899,7 +926,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _rowGramLogical,
-  batched: _rowGramBatched,
+  batched: _rowGramBatchedLogical,
 });
 
 function _colGramLogical(A: any): any {
@@ -935,7 +962,7 @@ ops.register({
   },
   argRanks: [2],
   logical: _colGramLogical,
-  batched: _colGramBatched,
+  batched: _colGramBatchedLogical,
 });
 
 // =====================================================================
