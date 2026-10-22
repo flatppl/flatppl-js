@@ -39,7 +39,7 @@ test('logPosterior includes the Jacobian for a positive-support latent', () => {
   }
 });
 
-// Regression (#73 / Buffy #267): a VECTOR iid latent with a positive-support
+// Regression: a VECTOR iid latent with a positive-support
 // (non-identity, log) element transform scores correctly through the ctx-built
 // ModelView. The scorer-format API is keyed by latent NAME with the whole vector
 // value ({ B: Float64Array([...]) }) — NOT the flat per-coordinate `mv.names`

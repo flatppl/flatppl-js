@@ -456,7 +456,7 @@ function computeSubDAG(bindings: any, nodeName: string, opts?: any) {
           const depB = bindings.get(dep);
           const dp = depB && depB.phase;
           if (dp === 'stochastic') { inlinePhase = 'stochastic'; break; }
-          if (dp === 'parameterized') inlinePhase = 'parameterized';
+          if (dp === 'parametric') inlinePhase = 'parametric';
         }
         visited.set(inlineExprId, {
           id: inlineExprId,
@@ -497,7 +497,7 @@ function computeSubDAG(bindings: any, nodeName: string, opts?: any) {
                 id: synId,
                 label: varName,
                 type: 'input',
-                phase: 'parameterized',
+                phase: 'parametric',
                 expr: '',
                 line: b.line,
                 isBoundary: true,
@@ -703,13 +703,13 @@ function dissolveInternalIntermediates(nodes: any[], edges: any[]) {
  * Override each in-bubble node's `phase` field with its scope-local
  * phase. A reification cuts the phase chain at its kwargs (those names
  * are *parameters* — values get supplied at call time, so within the
- * body they're `parameterized` rather than `stochastic`).
+ * body they're `parametric` rather than `stochastic`).
  *
  * Nesting: process largest-kernel reifications first, smallest last,
  * so the innermost containing scope wins for any node that's in
  * multiple bubbles. Each scope's boundaries union with its enclosing
  * scopes' boundaries so a parameter of an outer kernel reads as
- * `parameterized` from the inner scope's perspective too (the outer
+ * `parametric` from the inner scope's perspective too (the outer
  * kernel hasn't been "called" yet either).
  *
  * Synthetic boundary nodes (placeholders, holes — IDs containing ':')

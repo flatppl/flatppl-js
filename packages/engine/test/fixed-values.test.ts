@@ -108,7 +108,7 @@ test('FixedValues: nothing is computed until demanded; get memoises', () => {
 
 test('FixedValues: phase gate rejects non-fixed bindings without computing', () => {
   const { fv, evalCalls } = makeFV({
-    p: b('parameterized', [], () => 1),
+    p: b('parametric', [], () => 1),
     s: b('stochastic', [], () => 2),
     anon: b(null, [], () => 7),      // lift-anon (phase == null) IS resolvable
   });
@@ -241,12 +241,12 @@ test('FixedValues: iteration force-resolves every fixed-phase binding', () => {
   const { fv, evalCalls } = makeFV({
     a: b('fixed', [], () => 1),
     b2: b('fixed', [], () => 2),
-    p: b('parameterized', [], () => 3),   // excluded by phase
+    p: b('parametric', [], () => 3),   // excluded by phase
   });
   assert.equal(evalCalls(), 0);
   const keys = [...fv].map(([k]: any) => k).sort();
   assert.deepEqual(keys, ['a', 'b2'], 'only fixed-phase bindings populate the cache');
-  assert.equal(evalCalls(), 2, 'iterate forced both fixed bindings (not the parameterized one)');
+  assert.equal(evalCalls(), 2, 'iterate forced both fixed bindings (not the parametric one)');
   assert.equal(fv.size, 2);
 });
 

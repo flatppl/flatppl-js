@@ -21,10 +21,10 @@
  * Inside a reification bubble, node.phase has already been
  * overridden to the scope-local phase by dag.js's
  * applyScopeLocalPhases — so the same theta1 reads stochastic in
- * the main view and parameterized inside a kernel bubble.
+ * the main view and parametric inside a kernel bubble.
  *
  * @param {Ctx} ctx
- * @param {{ kind?: string; type?: string; phase?: 'stochastic'|'parameterized'|'fixed' }} node
+ * @param {{ kind?: string; type?: string; phase?: 'stochastic'|'parametric'|'fixed' }} node
  * @returns {string}
  */
 import type { Ctx } from './types';

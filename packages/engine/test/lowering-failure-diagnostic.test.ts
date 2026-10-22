@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// lowering-failure-diagnostic.test.ts — Buffy #73(5)
+// lowering-failure-diagnostic.test.ts
 // =====================================================================
 //
 // A binding whose RHS fails to LOWER (a lowering-time error that is NOT a

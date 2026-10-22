@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// broadcast-measure-kernel-density.test.ts — Buffy #268
+// broadcast-measure-kernel-density.test.ts
 // =====================================================================
 //
 // Per spec §04, a `functionof`/lambda of a measure node IS a (Markov)

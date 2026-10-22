@@ -222,7 +222,7 @@ test('a joint term whose body needs an unresolvable ref prunes the whole score',
   const derivations = require('../derivations.ts');
   const bindings = new Map<string, any>([
     ['sigma', { phase: 'fixed', type: 'literal' }],
-    ['mu', { phase: 'parameterized', type: 'input' }],
+    ['mu', { phase: 'parametric', type: 'input' }],
   ]);
   const term = (sigmaRef: boolean) => ({
     bodyName: null,

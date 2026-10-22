@@ -379,9 +379,9 @@ b ~ Normal(mu = 0.0, sigma = 2.0)
   const out = pirSexpr.toSexpr(mod, { meta: true }).replace(/\s+/g, ' ');
   // The spec's own annotated lines, byte-for-byte (grouped 3-slot %meta
   // wrapper — the value-set third slot matches the spec example here):
-  assert.ok(out.includes('(%bind center (%meta ((%scalar real) %parameterized reals) (elementof reals)))'),
+  assert.ok(out.includes('(%bind center (%meta ((%scalar real) %parametric reals) (elementof reals)))'),
     'elementof annotation matches the spec example: ' + out);
-  assert.ok(out.includes('(%bind shifted_value (%meta ((%scalar real) %parameterized reals) (add (%ref self center) 1.0)))'),
+  assert.ok(out.includes('(%bind shifted_value (%meta ((%scalar real) %parametric reals) (add (%ref self center) 1.0)))'),
     'outermost-call annotation matches the spec example: ' + out);
   // Kernel type carries the §11 `(%mass …)` class slot; a callable's
   // value set is %unknown (not a value). The wrapper goes AROUND the

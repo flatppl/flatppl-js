@@ -459,7 +459,7 @@ function _reificationToSexpr(e: any, ind: string, mopts?: any): string {
 //   %name        — structural keyword (%module, %ref, %kwarg, %field,
 //                  %assign, %bind, %public, %meta, %axis, %local,
 //                  %specinputs, %autoinputs, %deferred, %fixed,
-//                  %parameterized, %stochastic, …)
+//                  %parametric, %stochastic, …)
 //   name         — bare symbol (built-in op name, set name, constant)
 //
 // The parser builds the same JSON-shaped IR that lower.ts emits, plus

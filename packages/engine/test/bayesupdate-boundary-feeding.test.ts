@@ -107,7 +107,7 @@ posterior = bayesupdate(L, prior)
 // carries phase == null; the cascade-prune used to treat that null-phase
 // body-internal ref as an unresolvable fixed dep and prune the WHOLE posterior
 // → "Not plottable", even though it materialises correctly. The prune now
-// skips lift-introduced (null-phase) body internals, same as parameterized /
+// skips lift-introduced (null-phase) body internals, same as parametric /
 // stochastic ones (the materialiser resolves them via the expand path).
 // ─────────────────────────────────────────────────────────────────────────
 

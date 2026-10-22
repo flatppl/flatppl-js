@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// broadcast-truncate-kernel-density.test.ts — Buffy #73(4)
+// broadcast-truncate-kernel-density.test.ts
 // =====================================================================
 //
 // A per-row `normalize(truncate(...))` KERNEL BROADCAST used to drop the

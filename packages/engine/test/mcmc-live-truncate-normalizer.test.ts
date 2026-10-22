@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// mcmc-live-truncate-normalizer.test.ts — Buffy #384
+// mcmc-live-truncate-normalizer.test.ts
 // =====================================================================
 //
 // mcmc-density.ts's buildLogPi resolves each draw's own prior measure via

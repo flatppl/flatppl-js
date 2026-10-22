@@ -248,7 +248,7 @@ export interface Ctx {
   HISTORY_CAP: number;
   MODULE_TARGET: string;
   PALETTE: Record<string, string>;
-  PHASE_COLORS: Record<'stochastic' | 'parameterized' | 'fixed', string>;
+  PHASE_COLORS: Record<'stochastic' | 'parametric' | 'fixed', string>;
   DRAW_EDGE_COLOR: string;
   TYPE_STYLE: Record<string, { color: string; shape: string; label: string }>;
   CODICON_PATHS: Record<string, string>;

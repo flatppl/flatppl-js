@@ -2,7 +2,7 @@
 
 // Spec §04 "Reification and module scope" (design commit 2a558dd):
 // `functionof` / `kernelof` reify within the current module ONLY. A
-// parameterized value reached through a loaded-module reference cannot
+// parametric value reached through a loaded-module reference cannot
 // become an input — neither by the automatic trace nor as an explicit
 // boundary node (directly or via a pure alias) — so such a reification is a
 // STATIC error. A loaded module's callables and fixed values MAY be used in
@@ -38,10 +38,10 @@ test('auto-trace reaching a cross-module elementof is a static error', () => {
   assert.ok(xmodReifErr(r), 'expected a cross-module reification error, got: ' + errs(r).join(' | '));
 });
 
-test('auto-trace reaching a cross-module DERIVED parameterized value is a static error', () => {
+test('auto-trace reaching a cross-module DERIVED parametric value is a static error', () => {
   const r = compile('m = load_module("mod.flatppl")\nf = functionof(m.shifted * 2.0)',
     { 'mod.flatppl': MOD });
-  assert.ok(xmodReifErr(r), 'shifted is parameterized (theta+1); got: ' + errs(r).join(' | '));
+  assert.ok(xmodReifErr(r), 'shifted is parametric (theta+1); got: ' + errs(r).join(' | '));
 });
 
 // NB a bare `functionof(…, p = m.theta)` FieldAccess boundary is rejected at
@@ -61,7 +61,7 @@ test('a boundary that pure-aliases a cross-module param is a static error', () =
   assert.ok(xmodReifErr(r), 'boundary p = a, a = m.theta; got: ' + errs(r).join(' | '));
 });
 
-test('kernelof with a cross-module parameterized boundary (via alias) is a static error', () => {
+test('kernelof with a cross-module parametric boundary (via alias) is a static error', () => {
   // kernelof(x, mu = mu_a) lowers to functionof(lawof(x), mu = mu_a); the
   // boundary mu_a aliases the cross-module m.theta.
   const r = compile(

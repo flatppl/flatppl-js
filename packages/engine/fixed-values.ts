@@ -171,7 +171,7 @@ class FixedValues {
     const binding = this._deps.bindings.get(name);
     // Phase gate. Only fixed-phase bindings — plus lift-synthesised
     // anonymous bindings (phase == null), which carry lifted *value*
-    // expressions — can have a fixed value. A parameterized/stochastic
+    // expressions — can have a fixed value. A parametric/stochastic
     // binding never does; reject cheaply so demand can't cascade into
     // the stochastic graph. (Mirrors the old loop's line-308 guard.)
     if (binding && binding.phase != null && binding.phase !== 'fixed') return UNRESOLVED;
@@ -251,7 +251,7 @@ class FixedValues {
         // applying op — `_broadcastApply` binds it into elemEnv) is not a
         // value to resolve globally. Skip it: an implicit-boundary body
         // like `pow(x, 2)` (from `f = functionof(y)`, `y = x^2`) references
-        // its boundary `x`, a parameterized `elementof` leaf that would
+        // its boundary `x`, a parametric `elementof` leaf that would
         // otherwise make the value-ref gate declare the whole binding
         // UNRESOLVED — silently blocking the fixed-phase fold of `f.(X)`.
         if (bound && bound.has(r)) continue;

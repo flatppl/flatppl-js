@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// normalize-mixture-mass-theta.test.ts — Buffy #67
+// normalize-mixture-mass-theta.test.ts
 // =====================================================================
 //
 // A normalize(superpose(...)) mixture whose weights do NOT sum to 1 has a

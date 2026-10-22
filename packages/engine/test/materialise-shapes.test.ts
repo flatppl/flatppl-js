@@ -662,7 +662,7 @@ val, rstate2 = rand(Normal(0, 1), rstate)
 
 test('materialise: elementof(reals) parameter', async () => {
   const { ctx } = makeMatCtx('mu = elementof(reals)');
-  // mu is a parameter — phase=parameterized — viewer plots it via
+  // mu is a parameter — phase=parametric — viewer plots it via
   // preset overrides. The default render path may not produce a
   // measure for it. Just don't crash.
   try { await ctx.getMeasure('mu'); } catch (err: any) {

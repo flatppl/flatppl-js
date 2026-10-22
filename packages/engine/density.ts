@@ -1416,7 +1416,7 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   // (walkKernelBroadcastMeasureKernel scores a fresh N=1 sub-walk of the
   // RAW functionof body per row) — a bare normalize(truncate(...)) there
   // would otherwise fall through to the "Z treated as 1" case below and
-  // silently drop the per-row truncation normalizer (Buffy #73 item 4).
+  // silently drop the per-row truncation normalizer.
   // Resolve Z = M(S) from the current atom, including observed record fields
   // in overlay. Refuse an unresolved normalizer instead of dropping it.
   const inner: any = ir.args && ir.args[0];
@@ -1576,7 +1576,7 @@ function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: 
   const entry = samplerLib.lookupDistribution(baseIR);
   // A discrete base's truncate normalizer is Σ pmf over S, not the continuous
   // CDF difference computed below — falling through here would leave the
-  // normalize at Z=1 (silently dropped, Buffy #73). §06 defines no discrete-
+  // normalize at Z=1 (silently dropped). §06 defines no discrete-
   // truncate normalizer; fail loud rather than score wrong.
   if (entry.discrete) {
     throw new Error('density: normalize(truncate(' + kernelName + ', S)) — a '
@@ -2771,7 +2771,7 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   // Kernel head must name a built-in sampleable distribution. Same
   // restriction matKernelBroadcast / classifyKernelBroadcast accept.
   const hd: any = args[0];
-  // Composite measure-valued kernel head (spec §04; Buffy #268): a
+  // Composite measure-valued kernel head (spec §04): a
   // `functionof` whose BODY is a measure expression (normalize/superpose/
   // weighted/… of sampleable leaves, or a bare distribution leaf) IS a
   // Markov kernel — broadcast(kernel, col) is then the independent product
@@ -2995,7 +2995,7 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
 // recursing the EXISTING measure-density walker (`walkAcc`) on the body at
 // that cell's datum — the same composite-measure scorer a plain (non-
 // broadcast) `normalize(superpose(weighted(...)))` binding already uses
-// (mixture-normalize-scorer.test.ts). Buffy #268.
+// (mixture-normalize-scorer.test.ts).
 //
 // Differs from the builtin-distribution path (`walkBroadcast` above) only
 // in HOW a cell's log-density is computed: instead of one primitive call

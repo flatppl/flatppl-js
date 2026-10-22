@@ -254,7 +254,7 @@ x_simplex = elementof(stdsimplex(5))
 // §04 Design — phases, reification, lambdas
 // ---------------------------------------------------------------------
 
-test('§04 phases: fixed / parameterized / stochastic ancestors', () => {
+test('§04 phases: fixed / parametric / stochastic ancestors', () => {
   parsesCleanly(`
 n_dims = external(posintegers)
 mu = elementof(reals)

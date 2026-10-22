@@ -210,7 +210,7 @@ Y = A .* B
 });
 
 test('mixed-shape .+ does NOT dissolve (scalar + vector — soundness guard)', () => {
-  // alpha is a parameterised scalar (rank-0); x_data is a fixed-phase
+  // alpha is a parametric scalar (rank-0); x_data is a fixed-phase
   // length-4 vector (rank-1). The broadcast iterates over x_data's
   // outer axis with alpha held constant per cell — semantics that
   // valueOps elementwise add can't reproduce as a direct call. The
@@ -224,9 +224,9 @@ Y = alpha .+ x_data
   assert.equal(b.ir.op, 'broadcast');
 });
 
-test('mixed-phase .+ does NOT dissolve (parameterised + fixed)', () => {
+test('mixed-phase .+ does NOT dissolve (parametric + fixed)', () => {
   // Same-shape vectors but different phase. Runtime shapes differ
-  // (parameterised carries an atom axis; fixed doesn't), so direct
+  // (parametric carries an atom axis; fixed doesn't), so direct
   // elementwise add would mismatch.
   const b = getBinding(`
 mu = elementof(reals)
@@ -324,7 +324,7 @@ test('Phase 3 multi-op body: refuses unsafe inner op (mul)', () => {
 });
 
 test('Phase 3.5 scalar-only widening: .* over scalars dissolves', () => {
-  // Both `a` and `b` are parameterized scalars; broadcast(mul, a, b)
+  // Both `a` and `b` are parametric scalars; broadcast(mul, a, b)
   // dissolves to `mul(a, b)` because `argsAreAllScalar` holds (both
   // inferredType=scalar). At runtime ARITH_OPS_N.mul routes via
   // broadcast2 (neither operand is shape-rich at rank > 1) — correct.
@@ -338,7 +338,7 @@ Y = a .* b
 });
 
 test('Phase 3.5 scalar-only widening: .exp over scalar dissolves', () => {
-  // Unary scalar op. Arg is parameterized scalar; broadcast(exp, a)
+  // Unary scalar op. Arg is parametric scalar; broadcast(exp, a)
   // dissolves to `exp(a)`. ARITH_OPS_N.exp via broadcast1 maps the
   // function elementwise across the atom axis — correct.
   const b = getBinding(`

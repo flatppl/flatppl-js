@@ -1,9 +1,9 @@
 'use strict';
 
-// Buffy #265 — reproduces the lift.ts fn-inline closure-duplication bug.
+// Reproduces the lift.ts fn-inline closure-duplication bug.
 //
 // `computeClosure` (lift.ts ~2616-2647), when inlining a user-function call,
-// unconditionally COPIES every reachable stochastic/parameterized free
+// unconditionally COPIES every reachable stochastic/parametric free
 // variable a fn body closes over (any var that is not the fn's own
 // parameter and not fixed-phase) into a fresh, independent synthetic
 // binding subgraph — even when that variable has no dependency on the call
@@ -16,8 +16,8 @@
 // one of the function's own parameters.
 //
 // Both cases below assert fn-form == direct-form (the correct, post-fix
-// target, independently oracle-verified via Distributions.jl — see Buffy
-// #265). Pre-fix they FAIL: the fn-form silently mis-scores.
+// target, independently oracle-verified via Distributions.jl).
+// Pre-fix they FAIL: the fn-form silently mis-scores.
 //
 // A third case is a must-stay-green PASSTHROUGH guard: a fn whose body uses
 // only its own formal parameter (substituted with the call argument) and a

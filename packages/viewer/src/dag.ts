@@ -468,7 +468,7 @@ export function initCy(ctx: Ctx) {
     }
     showNodeInfo(ctx, d);
     // Cross-module member node (spec §04, "Stochastic boundary": only
-    // fixed/parameterized members are reachable across the boundary, so
+    // fixed/parametric members are reachable across the boundary, so
     // this always lands on the profile or fixed-value paths, never a
     // sampled histogram). `moduleMember` is also stamped on an ORDINARY
     // top-level alias of a member (`f_b = common.f_b`, for dbltap's

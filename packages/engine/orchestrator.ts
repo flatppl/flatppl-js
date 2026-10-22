@@ -460,7 +460,7 @@ function classifyForChain(binding: any, rhsIR: IRNode | null, bindings: any) {
   }
 
   // type='input' covers both phases of boundary value:
-  //   - parameterized (elementof): supplied via env at chain-eval time.
+  //   - parametric (elementof): supplied via env at chain-eval time.
   //   - fixed (external / load_data): supplied at module-init time.
   // In neither case does the chain need a step — the value is
   // pre-bound by the caller. Phase doesn't matter for this decision,

@@ -130,7 +130,7 @@ x = draw(Normal(mu = 0, sigma = sigma))
 // =====================================================================
 // Kernel-sample path: kernel(mu = mu_val). Drives the same pipeline
 // the viewer uses — expandMeasureIR with bindings fallback (because
-// x's derivation is pruned due to depending on the parameterized mu),
+// x's derivation is pruned due to depending on the parametric mu),
 // inlineForProfile (rewrites `ref self mu` → `ref %local mu`),
 // substituteLocals (binds the env value), then materialise with
 // refArrays for the captured `sigma`.

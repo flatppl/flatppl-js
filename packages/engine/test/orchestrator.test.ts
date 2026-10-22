@@ -55,7 +55,7 @@ test('chain: single draw of Normal with literal params', () => {
 
 test('classifyForChain: both elementof and external skip (boundary inputs)', () => {
   // Per orchestrator's contract, type='input' bindings get no chain
-  // step regardless of phase: parameterized-phase elementof is
+  // step regardless of phase: parametric-phase elementof is
   // supplied via env at chain-eval time, fixed-phase external /
   // load_data is supplied at module-init time. Either way the caller
   // pre-binds the value, so the chain doesn't compute it.
@@ -70,7 +70,7 @@ ext = external("data.dat")
   const lifted = liftInlineSubexpressions(bindings);
   const muBinding = lifted.get('mu');
   const extBinding = lifted.get('ext');
-  assert.equal(muBinding.phase, 'parameterized');
+  assert.equal(muBinding.phase, 'parametric');
   assert.equal(extBinding.phase, 'fixed');
   // Both classify to null (no chain step).
   assert.equal(classifyForChain(muBinding, muBinding.ir, lifted), null,
@@ -1381,7 +1381,7 @@ z = c * y
 f = functionof(z)
 `, 'f');
   // Auto-promote walks self-refs; it only adds entries for
-  // parameterized-phase elementof leaves. Neither c (literal) nor y
+  // parametric-phase elementof leaves. Neither c (literal) nor y
   // (draw) qualifies, so inputs stays empty.
   assert.equal(sig.inputs.length, 0);
 });
@@ -2478,8 +2478,8 @@ function bindingsAndDerivationsFor(source: any) {
 
 test('implicitKernelSignature: single elementof ancestor → one input', () => {
   // The canonical case: a draw whose distIR references a
-  // parameterized leaf. buildDerivations prunes x's derivation
-  // (parameterized ancestor), so implicitKernelSignature is the
+  // parametric leaf. buildDerivations prunes x's derivation
+  // (parametric ancestor), so implicitKernelSignature is the
   // only way to surface a plottable signature.
   const { bindings, derivations } = bindingsAndDerivationsFor(`
 mu = elementof(reals)
@@ -2488,7 +2488,7 @@ x = draw(Normal(mu = mu, sigma = 1))
   // Sanity: x's derivation got pruned, otherwise we'd be testing
   // the wrong path.
   assert.ok(!derivations['x'],
-    'expected buildDerivations to prune x (parameterized ancestor)');
+    'expected buildDerivations to prune x (parametric ancestor)');
   const sig = implicitKernelSignature('x', bindings, derivations);
   assert.ok(sig, 'expected a synthesised kernel signature');
   assert.equal(sig.kind, 'kernel');
@@ -2553,7 +2553,7 @@ test('implicitKernelSignature: walks through transitive deterministic deps', () 
   // promoted as the input.
   //
   //   mu = elementof(reals)
-  //   resolution = 2.5 + 0.3 * mu      (call, parameterized)
+  //   resolution = 2.5 + 0.3 * mu      (call, parametric)
   //   x = draw(Normal(mu = 0, sigma = resolution))
   const { bindings, derivations } = bindingsAndDerivationsFor(`
 mu = elementof(reals)
@@ -2600,8 +2600,8 @@ mu2 = mu^2
   assert.equal(sig, null);
 });
 
-test('implicitKernelSignature: parameterized measure binding → kernel sig', () => {
-  // `m = iid(Normal(mu, 1), 3)` has phase='parameterized' (no draw
+test('implicitKernelSignature: parametric measure binding → kernel sig', () => {
+  // `m = iid(Normal(mu, 1), 3)` has phase='parametric' (no draw
   // anywhere) but inferredType.kind='measure'. The dispatch gate
   // must accept measure-typed bindings even when phase isn't
   // strictly stochastic — otherwise plotting a measure with open
@@ -2753,7 +2753,7 @@ mu2 = mu^2
 // expandMeasureIR — structural fallback via the `bindings` parameter
 // =====================================================================
 //
-// When buildDerivations prunes a derivation (parameterized ancestor),
+// When buildDerivations prunes a derivation (parametric ancestor),
 // the derivation-based path of expandMeasureIR returns nothing and the
 // caller wants the lifted binding.ir walked directly. The structural
 // helper handles each measure-shape op per spec §06 / §sec:kernelof.
@@ -3516,14 +3516,14 @@ test('classify: bayesupdate observation can be a dynamically-computed value', ()
   assert.equal(obsValue.obs.length, 4);
 });
 
-test('pre-eval: stops at parameterized boundary (no infinite loop)', () => {
+test('pre-eval: stops at parametric boundary (no infinite loop)', () => {
   const { bindings } = processSource(`
     a = elementof(reals)
     b = a + 1
     c = b * 2
   `);
   const { fixedValues } = buildDerivations(bindings);
-  // a / b / c are parameterized, NOT fixed-phase. Pre-eval must skip
+  // a / b / c are parametric, NOT fixed-phase. Pre-eval must skip
   // them and the iteration must terminate (this test would hang if
   // the loop didn't quit cleanly on a non-fixed phase).
   assert.equal(fixedValues.has('a'), false);
@@ -3588,7 +3588,7 @@ test('auto-splat: inline record(...) call splats fields', () => {
 // diagnostic ONLY for the unambiguous silent-failure mode: a
 // fixed-phase value computation that ends with neither a fixedValues
 // entry nor a derivation (an engine gap on a deterministic
-// expression). The cascade-prune of parameterized stochastic
+// expression). The cascade-prune of parametric stochastic
 // derivations is by-design and must NOT be flagged.
 // ---------------------------------------------------------------------
 
@@ -3608,7 +3608,7 @@ test('diagnostics: fixed-phase dead end is surfaced (named at the cause)', () =>
 });
 
 test('diagnostics: no false positives on ordinary models', () => {
-  // Parameterized variate (cascade-pruned + replotted via implicit
+  // Parametric variate (cascade-pruned + replotted via implicit
   // kernelof), callables, lawof, measure algebra, plain fixed/draw —
   // none of these is an engine gap; none must be flagged.
   for (const src of [

@@ -310,7 +310,7 @@ test('dissolveBindings annotates aggregate IR with output axes', () => {
           { kind: 'call', op: 'mul', args: [] },
         ],
       },
-      phase: 'parameterised',
+      phase: 'parametric',
     },
   });
   dissolver.dissolveBindings(bindings);

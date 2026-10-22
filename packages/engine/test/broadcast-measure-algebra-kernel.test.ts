@@ -128,7 +128,7 @@ bkg = Exponential(1.0 / lam)
 sig = Normal(${S_MU}, ${S_SIGMA})
 `;
 const THETA = 'record(lam = 40.0)';
-const MIX_PARAMETERIZED = `
+const MIX_PARAMETRIC = `
 mix(p, lam) = normalize(superpose(weighted(p, Exponential(1.0 / lam)), weighted(1.0 - p, sig)))
 `;
 
@@ -138,7 +138,7 @@ test('density: a component parameter that is a kernelof BOUNDARY resolves '
   // fixed-phase value. The cell sub-walk runs at N=1, so it needs atom i's
   // slice of every such ref — without it the walk reported "unbound self
   // reference 'lam'".
-  const src = BOUNDARY_HEAD + 'w_ev = [0.8, 0.8, 0.6]\n' + MIX_PARAMETERIZED + `
+  const src = BOUNDARY_HEAD + 'w_ev = [0.8, 0.8, 0.6]\n' + MIX_PARAMETRIC + `
 E ~ mix.(w_ev, lam)
 K = kernelof(record(E = E), lam = lam)
 L = likelihoodof(pars -> K(lam = pars.lam), record(E = [${DATA.join(', ')}]))
@@ -177,7 +177,7 @@ nu_S = [1.0, 2.0]
 w = nu_B ./ (nu_B .+ nu_S)
 dataset_of_event = cat(fill(1, 2), fill(2, 1))
 w_ev = w[dataset_of_event]
-` + MIX_PARAMETERIZED + `
+` + MIX_PARAMETRIC + `
 E ~ mix.(w_ev, lam)
 K = kernelof(record(E = E), lam = lam)
 L = likelihoodof(pars -> K(lam = pars.lam), record(E = [${DATA.join(', ')}]))

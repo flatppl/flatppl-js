@@ -143,7 +143,7 @@ const { engineLimitation } = require('./limitations.ts');
 // substituted. Inside a lambda those arguments read the lambda's placeholder
 // inputs, so a copy can depend on a free `%local` ref and on no binding at all.
 // Spec §04 treats each boundary input as an `elementof` node in the reified
-// graph. Model each free placeholder that way, so the copy is parameterized,
+// graph. Model each free placeholder that way, so the copy is parametric,
 // not fixed. A fixed copy would be pre-evaluated as a constant and fail.
 const _PLACEHOLDER_INPUT = 'placeholder input';
 const _placeholderLeaf = {
@@ -723,9 +723,9 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
 
   // Classification diagnostics. "No derivation" is a heavily
   // overloaded state — inputs (`elementof`), callables (`functionof`,
-  // `kernelof`, `bijection`), likelihood objects, and parameterized-
+  // `kernelof`, `bijection`), likelihood objects, and parametric-
   // /stochastic-phase variates all legitimately have none, and the
-  // cascade-prune below routinely (by design) drops parameterized
+  // cascade-prune below routinely (by design) drops parametric
   // stochastic derivations that the viewer then re-plots via the
   // implicit-`kernelof` escape hatch. So a "dropped derivation" is
   // NOT a failure signal — testing proved it false-positives on every
@@ -870,7 +870,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
   // `joint` prior over free `elementof` params (the spec's own
   // 06-measure-algebra.md "Posterior construction" example) otherwise vanishes
   // SILENTLY. Surface it rather than drop it (TODO-flatppl-js §06). Unlike the
-  // routinely-pruned parameterized stochastic variates, a top-level posterior
+  // routinely-pruned parametric stochastic variates, a top-level posterior
   // disappearing is never an intended modelling outcome.
   for (const [name, b] of bindings) {
     if (!b || b.type !== 'bayesupdate') continue;
@@ -2074,7 +2074,7 @@ function _recognizeDiagonalPushforwardFields(
       }
       if (stochasticAncestors.length === 0) {
         throw new Error("density: record field '" + name + "' is a deterministic "
-          + 'transform of only fixed/parameterized values, not of a stochastic '
+          + 'transform of only fixed/parametric values, not of a stochastic '
           + 'ancestor — it has no measure to push forward (refuse, not mislower)');
       }
       if (stochasticAncestors.length > 1) {
@@ -3998,7 +3998,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
 
   // ── Smell C: the canonical lowering as the plottability authority ──────
   // For the measure kinds whose ref-validity used to be a hand-rolled body
-  // walk with a drift-prone skip-list (the bayesupdate parameterized/
+  // walk with a drift-prone skip-list (the bayesupdate parametric/
   // stochastic skip — each new measure shape needed a new skip), ask the
   // materialiser's own lowering instead:
   //   lowerMeasure THROWS (the Phase-6 ⊆ check) → not self-contained →
@@ -4171,9 +4171,9 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     const heads = _collectCallableHeadRefs(sub.bodyIR);
     for (const r of collectSelfRefs(sub.bodyIR)) {
       const rb = bindings.get(r);
-      // A body's parameterized / stochastic internals are fed from the scored
+      // A body's parametric / stochastic internals are fed from the scored
       // point by the materialiser, not through a derivation.
-      if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
+      if (rb && (rb.phase === 'parametric' || rb.phase === 'stochastic')) continue;
       // Builtin distribution / op heads and callable-bound heads resolve by
       // name at dispatch, as clm `_enumerateInputs` treats them.
       if (ALL_KNOWN.has(r) || heads.has(r)) continue;
@@ -4212,25 +4212,25 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     }
     if (d.bodyIR) {
       for (const r of collectSelfRefs(d.bodyIR)) {
-        // The kernel body's PARAMETERIZED / STOCHASTIC internals — the variate
+        // The kernel body's PARAMETRIC / STOCHASTIC internals — the variate
         // draw (`obs`), the reified boundary inputs (`theta1`/`theta2`), and
         // the value bindings derived from them (`a = 5*theta2`) — are resolved
         // by the bayesupdate materialiser (fed from the prior's atoms, then
         // inlined to the boundaries), NOT via a derivation / fixedValue. Only a
         // FIXED external dependency (e.g. a constant `sigma`) must resolve here.
         // Without this skip, a prior + likelihood defined fully separately
-        // (boundaries = `elementof`, so the body's internals are parameterized)
+        // (boundaries = `elementof`, so the body's internals are parametric)
         // gets its whole posterior cascade-pruned → "Not plottable", even
         // though it materialises correctly.
         const rb = bindings.get(r);
         // Body-internal lift anons (a generative-composite measure
         // `zs = post.(transport.(…))`, an inner draw) are now carried with REAL
-        // phases by `_propagateLiftedPhases` (Smell D) — parameterized/stochastic
+        // phases by `_propagateLiftedPhases` (Smell D) — parametric/stochastic
         // exactly like the hand-written internals above — so the former
         // `|| rb.phase == null` lift-anon skip is gone. A genuinely missing dep
         // has NO binding → rb is null → still pruned below; a real fixed external
         // dep keeps phase 'fixed' → still validated.
-        if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
+        if (rb && (rb.phase === 'parametric' || rb.phase === 'stochastic')) continue;
         if (!resolvable(r)) return false;
       }
       return true;
@@ -4243,7 +4243,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     return resolvable(d.measureName);
   }
   // Standalone likelihood density: same body-ref rules as bayesupdate
-  // (the kernel body's parameterized/stochastic internals are fed by the
+  // (the kernel body's parametric/stochastic internals are fed by the
   // materialiser — here from the given point θ — not via derivations),
   // plus the point expression's own refs must be resolvable.
   if (d.kind === 'likelihood_density') {
@@ -4254,7 +4254,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     if (d.bodyIR) {
       for (const r of collectSelfRefs(d.bodyIR)) {
         const rb = bindings.get(r);
-        if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
+        if (rb && (rb.phase === 'parametric' || rb.phase === 'stochastic')) continue;
         if (!resolvable(r)) return false;
       }
       return true;
@@ -4274,7 +4274,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   }
   // Posterior density (#309): valid iff the prior is derivable, the point θ's
   // refs resolve, and the likelihood body's fixed deps resolve (its
-  // parameterized/stochastic internals are fed from θ by the materialiser, same
+  // parametric/stochastic internals are fed from θ by the materialiser, same
   // rule as likelihood_density). This kind never lowers to a single measure, so
   // _clmRefsValid returns null for it and this legacy branch is authoritative.
   if ((d as any).kind === 'posterior_density') {
@@ -4296,7 +4296,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     if ((d as any).bodyIR) {
       for (const r of collectSelfRefs((d as any).bodyIR)) {
         const rb = bindings.get(r);
-        if (rb && (rb.phase === 'parameterized' || rb.phase === 'stochastic')) continue;
+        if (rb && (rb.phase === 'parametric' || rb.phase === 'stochastic')) continue;
         if (!resolvable(r)) return false;
       }
       return true;
@@ -4680,7 +4680,7 @@ function _flattenNestedChainSteps(steps: any[], outerMarginalize: boolean, ctx: 
  *    name. Dispatch per derivation kind; if no derivation case fires,
  *    structurally walk binding.ir (the safety net for bindings that
  *    were pruned out of the derivation graph — e.g. depending on a
- *    parameterized ancestor).
+ *    parametric ancestor).
  *  - `input` is a **call node** → walk structurally: peel `draw` /
  *    `lawof`, recurse on measure-position slots (joint fields, iid
  *    inner, weighted base, jointchain fields), pass through
@@ -4855,7 +4855,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         });
         // Gate on `bindings` being present: recognition needs phase info
         // (bindings.get(name).phase) to tell a stochastic ancestor from a
-        // fixed/parameterized one. Some callers walk the derivation graph
+        // fixed/parametric one. Some callers walk the derivation graph
         // WITHOUT bindings (e.g. fixed-values.ts's demand-driven fixed-
         // phase probe, `expandMeasureIR(name, derivations)` — no
         // `bindings` arg) purely to check resolvability; that probe
@@ -5474,7 +5474,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
     }
   }
   // Structural fallback: buildDerivations prunes any derivation whose
-  // distIR depends on a parameterized binding (so top-level plot of
+  // distIR depends on a parametric binding (so top-level plot of
   // an unbound parameter says "Not plottable" cleanly). The kernel-
   // sample path substitutes those parameters via env at materialise
   // time, so it still needs the structural shape. When the caller
@@ -5511,7 +5511,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
  */
 /**
  * Resolve measure-position self-refs nested inside a kernel-broadcast
- * head's `functionof` BODY (Buffy #268) — e.g. `weighted(p, bkg)`'s `bkg`.
+ * head's `functionof` BODY — e.g. `weighted(p, bkg)`'s `bkg`.
  * Deliberately NARROWER than, and separate from, `_expandStructural`'s
  * general contract (several callers — e.g. orchestrator.test.ts "unknown
  * op is passed through unchanged" — rely on that function returning an
@@ -5665,7 +5665,7 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
     // A kernel-broadcast head that names a user-defined `functionof` whose
     // BODY is DIRECTLY a composite MEASURE (normalize/superpose/weighted/…
     // of sampleable leaves — spec §04: such a functionof IS a Markov
-    // kernel; Buffy #268) needs the SAME by-name measure expansion any
+    // kernel) needs the SAME by-name measure expansion any
     // top-level measure's components already get (the truncate/superpose/
     // PoissonProcess cases above) — e.g. `energy = p ->
     // normalize(superpose(weighted(p, bkg), weighted(1-p, sig)))`'s
@@ -5713,7 +5713,7 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
 
 /**
  * Synthesize a kernel signature for a stochastic binding whose
- * derivation was pruned because it depends on parameterized
+ * derivation was pruned because it depends on parametric
  * (elementof) ancestors. Conceptually: treat the user clicking on
  * `x` (a stochastic node with open inputs) as if they'd written
  * `kernelof(x)` with no boundary kwargs — per spec §04, that
@@ -5727,7 +5727,7 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
  *
  * Returns a signature in the same shape as signatureOf would produce
  * for an explicit `kernelof` binding, or `null` when there are no
- * parameterized ancestors (the regular plot path handles those).
+ * parametric ancestors (the regular plot path handles those).
  *
  * The body IR is recovered via expandMeasureIR with the bindings
  * fallback so it works even when the orchestrator pruned the chain.
@@ -5761,7 +5761,7 @@ function implicitKernelSignature(name: any, bindings: any, derivations: any) {
   // Fire for anything that produces samples or measures: either
   // stochastic phase (a draw / iid draw whose value varies) or a
   // measure-typed binding with open parametric inputs (e.g.
-  // `m = iid(Normal(mu, 1), 3)` — phase=parameterized but the
+  // `m = iid(Normal(mu, 1), 3)` — phase=parametric but the
   // binding itself IS a measure). Deterministic value bindings
   // (mu2 = mu^2) take the symmetric implicitFunctionSignature
   // path; without this gate, this helper would build a "kernel"
@@ -5776,7 +5776,7 @@ function implicitKernelSignature(name: any, bindings: any, derivations: any) {
   if (!body) return null;
 
   // BFS through the body's self-refs to find PARAMETRIC-phase leaves.
-  // Per spec §04 sec:functionof: only elementof leaves (parameterized
+  // Per spec §04 sec:functionof: only elementof leaves (parametric
   // phase) become kernel inputs. external(...) / load_data(...) are
   // closed over despite sharing binding.type='input' with elementof.
   // We walk transitively because the body may refer to evaluable
@@ -5791,7 +5791,7 @@ function implicitKernelSignature(name: any, bindings: any, derivations: any) {
     seen.add(refName);
     const target = bindings.get(refName);
     if (!target) continue;
-    if (target.type === 'input' && target.phase === 'parameterized') {
+    if (target.type === 'input' && target.phase === 'parametric') {
       elementofRefs.push(refName);
       continue;
     }
@@ -5846,8 +5846,8 @@ function implicitKernelSignature(name: any, bindings: any, derivations: any) {
 function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
   if (!bindings) return null;
   const subject = bindings.get(name);
-  if (!subject || subject.phase !== 'parameterized' || !subject.ir) return null;
-  // Measure-typed parameterized bindings go through implicitKernel
+  if (!subject || subject.phase !== 'parametric' || !subject.ir) return null;
+  // Measure-typed parametric bindings go through implicitKernel
   // (they sample, not evaluate). This branch is only for value-
   // typed (scalar / array / record) bindings.
   if (subject.inferredType && subject.inferredType.kind === 'measure') return null;
@@ -5855,7 +5855,7 @@ function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
   //   - Callables (functionof / kernelof / fn / likelihood) have
   //     phase='fixed', already excluded by the early phase check.
   //   - An elementof leaf (subject is `mu = elementof(reals)`) has
-  //     phase='parameterized' but its body has no parametric self-
+  //     phase='parametric' but its body has no parametric self-
   //     refs to surface, so the BFS below produces inputs.length===0
   //     and we return null naturally.
 
@@ -5876,7 +5876,7 @@ function implicitFunctionSignature(name: any, bindings: any, derivations: any) {
     seen.add(refName);
     const target = bindings.get(refName);
     if (!target) continue;
-    if (target.type === 'input' && target.phase === 'parameterized') {
+    if (target.type === 'input' && target.phase === 'parametric') {
       elementofRefs.push(refName);
       continue;
     }
@@ -6102,7 +6102,7 @@ function _resolveLikelihoodIR(Lir: any, bindings: any): {
   // Path B — point-free: K is a measure (a self-ref to a measure binding,
   // or an inline measure call) that references free `elementof` params
   // directly, with no `kernelof` wrap — the form the pyhf/HS3 importer
-  // emits. The params are the measure's parameterized (elementof) leaves;
+  // emits. The params are the measure's parametric (elementof) leaves;
   // θ feeds them through the SAME explicit-boundary contract the kernel
   // path uses (clm `_enumerateInputs` source.kind:'explicit'). Callable Ks
   // are excluded (handled by Path A or not a measure at all).
@@ -6157,13 +6157,13 @@ function _resolveJointLikelihoodTerms(Lref: any, bindings: any): any[] | null {
 
 // A point-free likelihood's measure `bodyName` is "resolvable" for cascade-
 // pruning either when it has its own derivation/fixed value (resolvable), OR
-// when it is a parameterized/stochastic MEASURE binding — its open internals
+// when it is a parametric/stochastic MEASURE binding — its open internals
 // are fed from θ by matLikelihoodDensity (via clm.lowerMeasure), so it needs
-// no derivation of its own (mirrors the bodyIR parameterized-tolerant branch).
+// no derivation of its own (mirrors the bodyIR parametric-tolerant branch).
 function _bodyNameResolvable(name: string, bindings: any, resolvable: (n: string) => boolean): boolean {
   if (resolvable(name)) return true;
   const b = bindings && bindings.get ? bindings.get(name) : null;
-  return !!(b && (b.phase === 'parameterized' || b.phase === 'stochastic'));
+  return !!(b && (b.phase === 'parametric' || b.phase === 'stochastic'));
 }
 
 // Initial reference names to seed the elementof-param walk from a measure
@@ -6175,9 +6175,9 @@ function _measureRefSeeds(binding: any): string[] {
   return binding.ir ? Array.from(collectSelfRefs(binding.ir)) : [];
 }
 
-// Collect the free `elementof` (parameterized-phase input) leaves a measure
+// Collect the free `elementof` (parametric-phase input) leaves a measure
 // transitively references — the implicit kernel inputs of a point-free
-// likelihood (spec §04 sec:functionof: only parameterized leaves become
+// likelihood (spec §04 sec:functionof: only parametric leaves become
 // inputs; fixed-phase `external`/`load_data` are closed over). Walks binding
 // `deps` (AST-derived, robust to dropped `.ir`); mirrors the leaf rule in
 // `implicitKernelSignature`. Returns names in first-seen order.
@@ -6192,7 +6192,7 @@ function _freeElementofParams(startRefs: string[], bindings: any): string[] {
     seen.add(refName);
     const target = bindings.get(refName);
     if (!target) continue;
-    if (target.type === 'input' && target.phase === 'parameterized') {
+    if (target.type === 'input' && target.phase === 'parametric') {
       out.push(refName);
       continue;
     }

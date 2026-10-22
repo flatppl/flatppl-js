@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// discrete-truncate-normalizer.test.ts — Buffy #73 (discrete-truncate)
+// discrete-truncate-normalizer.test.ts (discrete truncate)
 // =====================================================================
 //
 // `normalize(truncate(<discrete base>, S))`: the truncate normalizer

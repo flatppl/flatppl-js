@@ -375,7 +375,7 @@ function bfsImplicitElementofLeavesAst(bodyAst: any, bindings: any) {
     seen.add(name);
     const b = bindings.get(name);
     if (!b) continue;
-    if (b.type === 'input' && b.phase === 'parameterized') {
+    if (b.type === 'input' && b.phase === 'parametric') {
       leaves.push(name);
       continue;
     }
@@ -905,7 +905,7 @@ function liftInlineSubexpressions(bindings: any) {
         const b = out.get(ref) || bindings.get(ref);
         const lowered = b?.effectiveValue || b?.node?.value;
         const rhs = measureConstructors.get(lowered) || lowered;
-        if (!rhs || b.phase === 'fixed' || b.phase === 'parameterized' || b.type === 'elementof'
+        if (!rhs || b.phase === 'fixed' || b.phase === 'parametric' || b.type === 'elementof'
             || ['functionof', 'kernelof', 'fn', 'module'].includes(b.type)) return ast;
         const fresh = freshName();
         const replacement = makeIdent(fresh, ast.loc);
@@ -2814,7 +2814,7 @@ function liftInlineSubexpressions(bindings: any) {
       metricRef = makeIdent(mName, metricArg.loc);
     }
     // Spec §sec:metricsum mandates symmetric metrics. The engine can't
-    // check this statically (the metric may be sampled / parameterised
+    // check this statically (the metric may be sampled / parametric
     // / non-deterministic), so we wrap metricRef once with a runtime-
     // guard `_ms_check_symmetric(metric)` (engine-concepts §23). The
     // guard is a validating passthrough: returns the metric unchanged

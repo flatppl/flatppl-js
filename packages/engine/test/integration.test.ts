@@ -289,10 +289,10 @@ test('integration: minimal — phases line up with what the model semantics impl
   // any of these, the rest of the engine cascade breaks silently.
   const { bindings } = loadMinimal('minimal.flatppl');
   const expected = {
-    a:            'parameterized',
-    b:            'parameterized',
+    a:            'parametric',
+    b:            'parametric',
     f_sqrt:       'fixed',
-    mu:           'parameterized',
+    mu:           'parametric',
     sigma2:       'stochastic',
     sigma:        'stochastic',
     x:            'stochastic',
