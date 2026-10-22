@@ -1093,6 +1093,7 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineLikelihoodScore(astArg);
       astArg = inlineRecordLebesgue(astArg);
       astArg = inlineScalarLocscale(astArg);
+      astArg = inlineIidTruncate(astArg);
       astArg = inlineCallbackParameters(astArg);
       // Recognize exponential-family laws before children are hoisted and
       // MvNormal loses its constructor head to the affine decomposition.
@@ -1264,6 +1265,37 @@ function liftInlineSubexpressions(bindings: any) {
     // inference, including nested measure operands already replaced by refs.
     scope.bindingNames = new Set(scope.keys());
     return require('./typeinfer.ts').inferExprInScope({ bindings: lowered }, ir, scope);
+  }
+
+  /**
+   * `truncate(iid(D, n), cartpow(S, n))` is `iid(truncate(D, S), n)`: a box is a
+   * product of its sides and the base is a product of independent coordinates, so
+   * both sides give the same measure, mass included (M_D(S)^n). The product form
+   * is the one the density, sampling and total-mass routes already handle; the
+   * vector form was refused, "'iid' is not a known distribution", when its mass
+   * was resolved by sampling. Both spellings need the SAME size; a differing
+   * size is left as written.
+   */
+  function inlineIidTruncate(astArg: any) {
+    const isCall = (node: any, name: string) => node?.type === 'CallExpr'
+      && node.callee?.type === 'Identifier' && node.callee.name === name
+      && (node.builtin || !out.has(name));
+    if (!isCall(astArg, 'truncate') || astArg.args?.length !== 2
+        || astArg.args.some((a: any) => a?.type === 'KeywordArg')) return astArg;
+    const [base, set] = astArg.args;
+    if (!isCall(set, 'cartpow') || set.args?.length !== 2) return astArg;
+    // The base may be named: a binding whose own definition is the iid call.
+    const iid = base?.type === 'Identifier' ? out.get(base.name)?.node?.value : base;
+    if (!isCall(iid, 'iid')) return astArg;
+    const element = set.args[0];
+    const same = (a: any, b: any) => JSON.stringify(a, (k, v) => (k === 'loc' ? undefined : v))
+      === JSON.stringify(b, (k, v) => (k === 'loc' ? undefined : v));
+    if (!same(set.args[1], iid.args[1])) return astArg;
+    const loc = astArg.loc;
+    return { type: 'CallExpr', callee: makeIdent('iid', loc), builtin: true, loc,
+      args: [{ type: 'CallExpr', callee: makeIdent('truncate', loc), builtin: true, loc,
+        args: [cloneAst(iid.args[0]), cloneAst(element)] },
+      cloneAst(iid.args[1])] };
   }
 
   /**
