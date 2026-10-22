@@ -96,7 +96,12 @@ export function adaptiveCubature(
     cells.push({ lo: bLo, hi: bHi, I: eb.I, E: eb.E });
     totI += ea.I + eb.I; totE += ea.E + eb.E;
   }
-  return { Z: totI, err: totE, evals };
+  return cubatureResult(totI, totE, evals);
+}
+
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function cubatureResult(Z: number, err: number, evals: number) {
+  return { Z, err, evals };
 }
 
 // 5-point Gauss-Legendre nodes/weights on [0,1] (degree-9 exact).

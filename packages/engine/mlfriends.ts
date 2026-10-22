@@ -130,7 +130,19 @@ function boundingEllipsoid(pts: Float64Array[], dim: number, enlarge: number, id
   const Ls = new Float64Array(dim * dim);
   for (let k = 0; k < dim * dim; k++) Ls[k] = L[k] * scale;
   let logVol = 0; for (let i = 0; i < dim; i++) logVol += Math.log(Math.max(Ls[i * dim + i], 1e-300));
-  return { mean: m, L: Ls, logVol, size: pts.length, idx };
+  return ellipsoid(m, Ls, logVol, pts.length, idx);
+}
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function ellipsoid(mean: Float64Array, L: Float64Array, logVol: number, size: number, idx: number[]) {
+  return { mean, L, logVol, size, idx };
+}
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function clusterRegion(sample: any, contains: any, nCenters: number, clusterSizes: number[]) {
+  return { sample, contains, radius: NaN, nCenters, clusterSizes };
+}
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function ballRegion(sample: any, contains: any, radius: number, nCenters: number) {
+  return { sample, contains, radius, nCenters };
 }
 // 2-means on displacement vectors (already centered + whitened by the
 // parent's own covariance, so Euclidean distance here IS Mahalanobis
@@ -266,7 +278,7 @@ function buildClusterRegion(liveU: Float64Array[], dim: number, prng: () => numb
     if (prng() > Math.exp(logQmin - logS)) return null;         // weighted overlap correction
     return u;
   }
-  return { sample, contains, radius: NaN, nCenters: nLeaves, clusterSizes: leaves.map((e: any) => e.size) };
+  return clusterRegion(sample, contains, nLeaves, leaves.map((e: any) => e.size));
 }
 
 function buildRegion(liveU: Float64Array[], prng: () => number, opts: any = {}) {
@@ -339,6 +351,6 @@ function buildRegion(liveU: Float64Array[], prng: () => number, opts: any = {}) 
     if (prng() > 1 / n) return null;                           // overlap correction
     return u;
   }
-  return { sample, contains, radius, nCenters: K };
+  return ballRegion(sample, contains, radius, K);
 }
 module.exports = { buildRegion };

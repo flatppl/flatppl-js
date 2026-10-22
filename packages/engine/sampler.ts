@@ -759,6 +759,11 @@ function _reduceRowAxis(col: any, opName: string): any {
   return { shape: cells, data: out };
 }
 
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function complexScalar(re: number, im: number) {
+  return { re, im };
+}
+
 const ARITH_OPS = {
   add: (a: any, b: any) => _shapeAwareBinop('add', (x: any, y: any) => x + y, a, b, _cAdd),
   sub: (a: any, b: any) => _shapeAwareBinop('sub', (x: any, y: any) => x - y, a, b, _cSub),
@@ -1646,7 +1651,7 @@ const ARITH_OPS = {
       for (let i = 0; i < cplx.re.length; i++) {
         sR += cplx.re[i]; sI += cplx.im[i];
       }
-      return { re: sR, im: sI };
+      return complexScalar(sR, sI);
     }
     const arr = _arrLike(a);
     let s = 0;
@@ -1664,7 +1669,7 @@ const ARITH_OPS = {
       if (n === 0) throw new Error('mean: undefined for an empty array — the formula divides by the element count, which is 0 (spec §07)');
       let sR = 0, sI = 0;
       for (let i = 0; i < n; i++) { sR += cplx.re[i]; sI += cplx.im[i]; }
-      return { re: sR / n, im: sI / n };
+      return complexScalar(sR / n, sI / n);
     }
     const arr = _arrLike(a);
     if (arr.length === 0) throw new Error('mean: undefined for an empty array — the formula divides by the element count, which is 0 (spec §07)');
@@ -1683,7 +1688,7 @@ const ARITH_OPS = {
         const nI = pR * j + pI * r;
         pR = nR; pI = nI;
       }
-      return { re: pR, im: pI };
+      return complexScalar(pR, pI);
     }
     const arr = _arrLike(a);
     let p = 1;

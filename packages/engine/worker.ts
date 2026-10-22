@@ -189,6 +189,15 @@ function _stateFromSeed(seed: SeedLike): any {
   return rngLib.stateFromKey(seed[0], seed[1]);
 }
 
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function truncatedReply(id: any, samples: Float64Array, logMasses: any, logShift: number, n_eff: number) {
+  const reply: any = { type: 'samples', id, samples, logWeights: null };
+  if (logMasses !== undefined) reply.logMasses = logMasses;
+  reply.logShift = logShift;
+  reply.n_eff = n_eff;
+  return reply;
+}
+
 function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unknown> } = {}) {
   // Session RNG state: used by the legacy `sample` / chain primitives
   // when no explicit seed is passed. The new sampleN path takes a per-
@@ -669,9 +678,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
               }
             }
             if (seed == null) philox = state;
-            return { type: 'samples', id, samples: out, logWeights: null,
-              logMasses, logShift: !msg.normalized && refKeys.length === 0
-                ? Math.log(mass) : 0, n_eff: valid };
+            return truncatedReply(id, out, logMasses, !msg.normalized && refKeys.length === 0
+              ? Math.log(mass) : 0, valid);
           }
 
           if (mode === 'cdf') {
@@ -694,8 +702,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
               // Empty intersection M ∩ S: every atom NaN, mass shift = -Inf.
               for (let i = 0; i < total; i++) out[i] = NaN;
               if (seed == null) philox = state;
-              return { type: 'samples', id, samples: out, logWeights: null,
-                       logShift: -Infinity, n_eff: 0 };
+              return truncatedReply(id, out, undefined, -Infinity, 0);
             }
             for (let i = 0; i < total; i++) {
               const pair = rngLib.nextUniform(state);
@@ -706,8 +713,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
               out[i] = discrete ? Math.min(Math.max(x, ends.below + 1), ends.upTo) + 0 : x;
             }
             if (seed == null) philox = state;
-            return { type: 'samples', id, samples: out, logWeights: null,
-                     logShift: Math.log(dF), n_eff: total };
+            return truncatedReply(id, out, undefined, Math.log(dF), total);
           }
 
           // Rejection-redraw path. Build one sampler (static or
@@ -768,8 +774,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           const logShift = n_eff > 0
             ? Math.log(n_eff / totalDraws)
             : -Infinity;
-          return { type: 'samples', id, samples: out, logWeights: null,
-                   logMasses, logShift: logMasses || msg.normalized ? 0 : logShift, n_eff };
+          return truncatedReply(id, out, logMasses, logMasses || msg.normalized ? 0 : logShift, n_eff);
         }
         case 'profileN': {
           // Profile-plot evaluator. Sweeps a single scalar input over

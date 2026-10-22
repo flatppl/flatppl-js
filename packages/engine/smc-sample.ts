@@ -207,14 +207,12 @@ function smcSample(mv: any, opts: any) {
     X = keptX; prior = keptPrior; lik = keptLik; N = keptX.length;
   }
 
-  return {
-    samples: X,
-    logZ,
-    rungs,
-    betas,
-    acceptRate: acceptCount > 0 ? acceptSum / acceptCount : 0,
-    N,
-  };
+  return smcResult(X, logZ, rungs, betas, acceptCount > 0 ? acceptSum / acceptCount : 0, N);
+}
+
+// Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
+function smcResult(samples: any, logZ: number, rungs: any, betas: any, acceptRate: number, N: number) {
+  return { samples, logZ, rungs, betas, acceptRate, N };
 }
 
 module.exports = { smcSample };
