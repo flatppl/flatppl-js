@@ -159,3 +159,12 @@ test('a record point naming exactly the inputs still scores the closed form', as
   assert.deepEqual(errors(src), []);
   assert.ok(Math.abs(await score(src) - CLOSED_FORM) < 1e-12);
 });
+
+test('several unknown fields, and unknown table columns, are all named', () => {
+  const fields = errors(SPLAT_MODEL + 's = logdensityof(L, record(theta = 0.3, a = 1, b = 2))\n');
+  assert.equal(fields.length, 1);
+  assert.match(fields[0].message, /has no input named "a", "b" for its fields \(inputs: "theta"/);
+  const columns = errors(SPLAT_MODEL + 's = logdensityof(L, table(theta = [0.3, 0.4], extra = [1, 2]))\n');
+  assert.equal(columns.length, 1);
+  assert.match(columns[0].message, /has no input named "extra" for its column \(inputs: "theta"/);
+});

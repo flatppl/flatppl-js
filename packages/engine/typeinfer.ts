@@ -1092,7 +1092,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (lT && lT.kind === 'likelihood' && T.isMeasure(pT)) {
         // §06: the posterior weights the prior by `densityof(L, theta)` at the
         // prior's variate, so that variate is the likelihood's point.
-        checkLikelihoodPoint(op, lT, pT.domain, args[1].loc || expr.loc, false);
+        checkLikelihoodPoint(op, lT, pT.domain, args[1].loc, false);
         return pT;
       }
       return inferGenericCall(expr, scopes);
