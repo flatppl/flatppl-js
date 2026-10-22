@@ -1877,6 +1877,17 @@ function reificationBoundPlaceholders(call: any): Set<string> {
   return out;
 }
 
+// A hole `_` belongs to the nearest enclosing fn(...); a nested fn(...) (or a reification,
+// whose hole is its own error) is not searched.
+function hasOwnHole(node: any): boolean {
+  if (!node || typeof node !== 'object') return false;
+  if (Array.isArray(node)) return node.some(hasOwnHole);
+  if (node.type === 'Hole') return true;
+  if (node.type === 'CallExpr' && node.callee?.type === 'Identifier'
+      && ['fn', 'functionof', 'kernelof'].includes(node.callee.name)) return false;
+  return Object.keys(node).some(key => key !== 'loc' && hasOwnHole(node[key]));
+}
+
 /**
  * Validate hole (`_`) and placeholder (`_name_`) usage according to the spec:
  *  - `_` is only valid inside `fn(...)`.
@@ -1988,6 +1999,15 @@ function validateHolesAndPlaceholders(
         let isAggregation = false;
         if (node.callee && node.callee.type === 'Identifier') {
           if (node.callee.name === 'fn') {
+            if (!hasOwnHole(node.args)) {
+              diagnostics.push({
+                severity: 'error',
+                message: "fn(...) has no hole '_' of its own: a hole inside a nested fn(...) "
+                  + 'belongs to that fn, and a function with no input would be nullary. Spec §04: '
+                  + '"No callables may have nullary inputs"; "There is no nullary lambda."',
+                loc: node.loc,
+              });
+            }
             inner = 'fn';
             // `fn` delimits hole lowering (§04 "Holes and `fn`"); it is not a
             // placeholder binder, so its body has no enclosing reification.

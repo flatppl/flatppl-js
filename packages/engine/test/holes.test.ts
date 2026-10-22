@@ -38,6 +38,27 @@ test('hole: nested fn — inner fn redefines the hole scope', () => {
   assert.equal(errors('f = fn(fn(_ + 1)(_))\n').length, 0);
 });
 
+// --- A fn needs a hole of its own (spec §04: no nullary callables) ---
+
+const NO_HOLE = /no hole '_' of its own/;
+
+test('fn: a body without a hole is a static error', () => {
+  assert.ok(errors('x = 3.0\nf = fn(x + 1)\n').some((d: any) => NO_HOLE.test(d.message)));
+  assert.ok(errors('f = fn(2.0)\n').some((d: any) => NO_HOLE.test(d.message)));
+});
+
+test('fn: the only hole belongs to the inner fn, so the outer fn has none', () => {
+  const errs = errors('f = fn(fn(_ + 1.0))\n');
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].message, NO_HOLE);
+});
+
+test('fn: a bare hole, and a hole beside a nested fn, still parse', () => {
+  assert.equal(errors('f = fn(_)\n').length, 0);
+  assert.equal(errors('g = fn(_ + _)\nf = fn(g(_, fn(_ * 2.0)))\n').length, 0);
+  assert.equal(errors('f = fn(_ + fn(_ * 2.0)(3.0))\n').length, 0);
+});
+
 // --- Placeholder (_name_) ---
 
 test('placeholder: valid inside functionof', () => {

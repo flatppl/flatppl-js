@@ -375,7 +375,7 @@ mat ~ iid(Normal(mu = 0, sigma = 1), [3, 3])
 test('§06 kchain + jointchain with kernels', () => {
   parsesCleanly(`
 prior = joint(theta1 = Normal(0, 1), theta2 = Exponential(1))
-kernel = fn(Normal(mu = 0, sigma = 1))
+kernel = functionof(Normal(mu = _theta1_, sigma = _theta2_), theta1 = _theta1_, theta2 = _theta2_)
 marginal = kchain(prior, kernel)
 joint_dep = jointchain(prior, kernel)
 `);
