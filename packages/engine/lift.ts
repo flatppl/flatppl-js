@@ -312,13 +312,12 @@ function canonicalizeImplicitBoundaries(bindings: any) {
 function _promoteReificationBoundaries(node: any, bindings: any, promoted: string[]): any {
   if (node == null || typeof node !== 'object') return node;
   if (Array.isArray(node)) {
-    let changed = false;
-    const out = node.map((c) => {
-      const r = _promoteReificationBoundaries(c, bindings, promoted);
-      if (r !== c) changed = true;
-      return r;
-    });
-    return changed ? out : node;
+    let out: any[] | null = null;
+    for (let i = 0; i < node.length; i++) {
+      const r = _promoteReificationBoundaries(node[i], bindings, promoted);
+      if (r !== node[i]) (out || (out = node.slice()))[i] = r;
+    }
+    return out || node;
   }
   let out: any = node;
   let changed = false;
@@ -433,6 +432,14 @@ function tryFuseBroadcastOfBroadcast(callIR: any, bindings: Map<string, any>): a
   return { kind: 'call', op: 'broadcast', loc: callIR.loc,
     args: [innerHead, ...outerArgs] };
 }
+
+// Natural-parameter inputs of the families exponential tilting recognizes.
+const EXPONENTIAL_TILT_PARAMS: Record<string, string[]> = {
+  Normal: ['mu', 'sigma'], Gamma: ['shape', 'rate'], Exponential: ['rate'],
+  ChiSquared: ['k'], Bernoulli: ['p'], Binomial: ['n', 'p'],
+  Poisson: ['rate'], MvNormal: ['mu', 'cov'],
+  Geometric: ['p'], NegativeBinomial: ['alpha', 'beta'], NegativeBinomial2: ['mu', 'psi'],
+};
 
 function liftInlineSubexpressions(bindings: any) {
   // Canonicalise implicit-boundary functionof / kernelof first.
@@ -1526,14 +1533,13 @@ function liftInlineSubexpressions(bindings: any) {
    * merely because the tilt subtracts a more negative number from it.
    */
   function inlineExponentialTilt(astArg: any) {
+    // The lift runs on every node. Allocate nothing unless this is a tilt.
+    const op0 = astArg?.type === 'CallExpr' && astArg.callee?.type === 'Identifier'
+      ? astArg.callee.name : null;
+    if (op0 !== 'normalize' && op0 !== 'tilt') return astArg;
     const head = (e: any) => e?.type === 'CallExpr'
       && e.callee?.type === 'Identifier' ? e.callee.name : null;
-    const names: Record<string, string[]> = {
-      Normal: ['mu', 'sigma'], Gamma: ['shape', 'rate'], Exponential: ['rate'],
-      ChiSquared: ['k'], Bernoulli: ['p'], Binomial: ['n', 'p'],
-      Poisson: ['rate'], MvNormal: ['mu', 'cov'],
-      Geometric: ['p'], NegativeBinomial: ['alpha', 'beta'], NegativeBinomial2: ['mu', 'psi'],
-    };
+    const names = EXPONENTIAL_TILT_PARAMS;
     const resolve = (e: any, seen = new Set<string>()): any => {
       if (e?.type !== 'Identifier' || seen.has(e.name)) return e;
       const b = bindings.get(e.name) || out.get(e.name);
@@ -1548,8 +1554,7 @@ function liftInlineSubexpressions(bindings: any) {
         || (names[head(rewritten)] || head(rewritten) === 'logweighted'
           ? rewritten : original), seen);
     };
-    const op = head(astArg);
-    if (op !== 'normalize' && op !== 'tilt') return astArg;
+    const op = op0;
     if (astArg.args?.length !== (op === 'tilt' ? 2 : 1)) return astArg;
     const weighted = inlineCallbackParameters(resolve(astArg.args[0]));
     if (head(weighted) !== 'logweighted' || weighted.args?.length !== 2) return astArg;
@@ -2776,7 +2781,14 @@ function liftInlineSubexpressions(bindings: any) {
    * forbids leading underscore — so collisions with user axes are
    * structurally impossible.
    */
+  // The lift runs on every node, and the rewrite below declares nested helpers
+  // that are allocated on each call. Test the head first.
   function inlineMetricsumLift(astArg: any) {
+    return astArg?.type === 'CallExpr' && astArg.callee?.type === 'Identifier'
+      && astArg.callee.name === 'metricsum' ? liftMetricsum(astArg) : astArg;
+  }
+
+  function liftMetricsum(astArg: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'metricsum') return astArg;

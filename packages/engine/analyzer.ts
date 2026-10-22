@@ -2434,8 +2434,12 @@ function collectAxisRefsWithVariance(node: any): Map<string, { variance?: string
 /**
  * Reconstruct the RHS expression as source text from the original source.
  */
+// analyze slices one display string per statement. Split each source once.
+let slicedSource: string | null = null;
+let slicedLines: string[] = [];
 function sliceSource(source: string, loc: any) {
-  const lines = source.split('\n');
+  if (source !== slicedSource) { slicedSource = source; slicedLines = source.split('\n'); }
+  const lines = slicedLines;
   // Robustness: a synthetic loc (engine-generated node, e.g. the linked
   // combined AST) or one out of range for `source` has no slice — return
   // empty rather than indexing past the end. The rhs display string is a

@@ -245,9 +245,19 @@ function foldStochasticVectorGets(bindings: Map<string, BindingInfo>) {
   // `seen` carries the array bindings already substituted on THIS path, so a
   // self-referential array (`wp = [wp[1], …]`) cannot loop. Siblings each get a
   // fresh branch, so one array can be indexed many times in one expression.
-  function fold(ir: any, seen: Set<string>): any {
+  // Rebuild only what changes: this runs over every binding's IR, and few
+  // contain such a read. A substituted element is copied whole (`copy`), so the
+  // use site shares no node with the array's own IR.
+  function fold(ir: any, seen: Set<string>, copy = false): any {
     if (!ir || typeof ir !== 'object') return ir;
-    if (Array.isArray(ir)) return ir.map((x) => fold(x, seen));
+    if (Array.isArray(ir)) {
+      let out: any[] | null = copy ? ir.slice() : null;
+      for (let i = 0; i < ir.length; i++) {
+        const r = fold(ir[i], seen, copy);
+        if (r !== ir[i]) (out || (out = ir.slice()))[i] = r;
+      }
+      return out || ir;
+    }
     if (ir.kind === 'call' && ir.op === 'get'
         && Array.isArray(ir.args) && ir.args.length === 2) {
       const target = ir.args[0], index = ir.args[1];
@@ -260,13 +270,16 @@ function foldStochasticVectorGets(bindings: Map<string, BindingInfo>) {
         if (elem) {
           const next = new Set(seen);
           next.add(target.name);
-          return fold(elem, next);   // fold rebuilds, so the element is copied
+          return fold(elem, next, true);
         }
       }
     }
-    const out: any = {};
-    for (const k in ir) out[k] = fold(ir[k], seen);
-    return out;
+    let out: any = copy ? { ...ir } : null;
+    for (const k in ir) {
+      const r = fold(ir[k], seen, copy);
+      if (r !== ir[k]) (out || (out = { ...ir }))[k] = r;
+    }
+    return out || ir;
   }
 
   for (const [, b] of bindings) {
