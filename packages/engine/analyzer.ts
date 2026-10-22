@@ -3466,6 +3466,11 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
   return call;
 }
 
+// Spec §04: names a bare placeholder cannot derive, since they are not legal
+// argument names (§05 reserved words). `self` and `base` are barred only as
+// module bindings, so they stay legal argument names.
+const RESERVED_BOUNDARY_NAMES = new Set(['true', 'false', 'in', 'all', 'only']);
+
 /**
  * Analyze a parsed AST.
  * Returns { bindings, diagnostics, symbols }.
@@ -3509,13 +3514,31 @@ function analyze(ast: any, source: string, opts?: any) {
       const reification = node.callee?.type === 'Identifier'
         && (node.callee.name === 'functionof' || node.callee.name === 'kernelof');
       let seenKeyword = false;
+      let bareForm: boolean | undefined;
       for (let i = 0; i < node.args.length; i++) {
         const arg = node.args[i];
         const bareName = arg.bareBoundary;
+        const barePlaceholder = arg.barePlaceholder;
         delete arg.bareBoundary;
+        delete arg.barePlaceholder;
         if (reification && i > 0) {
           // Spec §05 ReificationArgs: normalize only after name resolution,
           // so a user callable named functionof/kernelof keeps ordinary args.
+          const bare = !!bareName;
+          if ((bare || arg.type === 'KeywordArg') && bareForm !== undefined && bareForm !== bare) {
+            diagnostics.push({
+              severity: 'error',
+              message: 'boundary inputs are given either all as bare names or all as keyword '
+                + 'arguments; mixing the two forms is a static error (spec §04)',
+              loc: arg.loc,
+            });
+          } else if (bare || arg.type === 'KeywordArg') bareForm = bare;
+          if (barePlaceholder && RESERVED_BOUNDARY_NAMES.has(bareName)) diagnostics.push({
+            severity: 'error',
+            message: `placeholder \`_${bareName}_\` would name its boundary input \`${bareName}\`, `
+              + `which is a reserved word; bind it with a keyword, as in \`other = _${bareName}_\` (spec §04)`,
+            loc: arg.loc,
+          });
           if (bareName) node.args[i] = AST.KeywordArg(bareName, arg, arg.loc);
           else if (arg.type !== 'KeywordArg') diagnostics.push({
             severity: 'error',
