@@ -5145,8 +5145,19 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // the prior cat; an unmatched param in a multi-param kernel is
         // unsupported (clean null).
         const recordFeed = labelled || !!base.baseFields || !!baseIR.fields;
+        // Spec §06 variate feeding: a RECORD variate splats into the next step's
+        // inputs by field name, and only a non-record variate binds whole. So the
+        // lone input of `jointchain(a = M, b = K)`'s K, named like a chain label
+        // (its variate is `relabel(M, ["a"])` = `record(a = x)`), takes the field.
+        const namedByRecord = (ke: any, priorNames: any, priorSources: any) =>
+          recordFeed && ke.params.length === 1 && ke.names[0] != null
+          && (priorNames.indexOf(ke.names[0]) >= 0
+            || (priorSources != null && priorSources.indexOf(ke.names[0]) >= 0));
         const bindKernel = (ke: any, priorNames: any, priorSources: any) => {
           let body = ke.body;
+          if (namedByRecord(ke, priorNames, priorSources)) {
+            return rewireHole(body, ke.params[0], [ke.names[0]]);
+          }
           if (require('./types.ts').acceptsPositional(ke, 1)) {
             return rewireHole(body, ke.params[0], priorNames, recordFeed);
           }
