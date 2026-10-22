@@ -121,6 +121,73 @@ test('a fallback normalizer mass reads the substituted inner measure, not its mo
   close(named.logTotalmass, Math.log(0.5));
 });
 
+test('a fixed normalizer inside the applied kernel takes the materialised mass', async () => {
+  // No symbolic mass exists for a truncated Poisson, so buildLogPi materialises
+  // it. The lower bound sits below 0 so the support is {0, …, 5}.
+  const { ctx, built } = makeMatCtx(`
+theta ~ Normal(0, 1)
+y ~ normalize(truncate(Poisson(3.0), interval(-1, 5)))
+K = kernelof(record(y = y), theta = theta)
+L = likelihoodof(pars -> K(theta = pars.theta), record(y = 2))
+posterior = bayesupdate(L, lawof(record(theta = theta)))
+`, { sampleCount: 4 });
+  assert.deepEqual(copies(built), []);
+  const logPmf = (k: number) => k * Math.log(3) - 3 - Math.log([1, 1, 2, 6, 24, 120][k]);
+  const logZ = Math.log([0, 1, 2, 3, 4, 5].reduce((s, k) => s + Math.exp(logPmf(k)), 0));
+  close((await buildLogPi(ctx, ctx.derivations.posterior)).likOf({ theta: 0.2 }), logPmf(2) - logZ);
+});
+
+test('the scored tree refuses a boundary that substitution cannot reach', () => {
+  // Lift never takes this path for a closure with a latent draw. Build the term
+  // by hand to show the assertion catches a criterion that admits one.
+  const { ctx, built } = makeMatCtx(`
+theta ~ Normal(0, 1)
+mu ~ Normal(theta, 1)
+y ~ Normal(mu, 1)
+K = kernelof(record(y = y), theta = theta)
+`, { sampleCount: 4 });
+  const K = built.bindings.get('K').ir;
+  const term = { kind: 'likelihood_density', bodyName: null, bodyIR: K.body,
+    obsIR: { kind: 'lit', value: 0.5 }, params: ['_pars_'], paramKwargs: ['pars'], orderedInputs: true,
+    boundaryArgs: { theta: { kind: 'call', op: 'get_field',
+      args: [{ kind: 'ref', ns: '%local', name: '_pars_' }, { kind: 'lit', value: 'theta' }] } } };
+  assert.throws(() => require('../clm.ts').lowerMeasure(term.bodyIR, ctx, { derivation: term }),
+    /an applied kernel's boundary still reaches its scored body through mu/);
+});
+
+test('an applied callable whose body is not its variates keeps the copy path', async () => {
+  const { ctx, built } = makeMatCtx(`${KERNEL}
+N = functionof(Normal(theta, 0.5), theta = theta)
+L = likelihoodof(pars -> N(theta = pars.a / 2), 1.0)
+s = logdensityof(L, (a = 0.6))
+`, { sampleCount: 4 });
+  assert.equal(built.derivations.s.boundaryArgs, undefined);
+  close(await scalar(ctx, 's'), normal(1.0, 0.3, 0.5));
+});
+
+test('an ill-formed adapter keeps the copy path and its diagnostic', () => {
+  const { processSource, orchestrator } = require('../index.ts');
+  const cases: Array<[string, string]> = [
+    [`${KERNEL}L = likelihoodof(pars -> K(theta = pars.a, scale = 2), record(y = 1.0))\n`,
+      'call to "K" has unknown argument "scale"'],
+    [`${KERNEL}L = likelihoodof(pars -> K(pars.a, 2), record(y = 1.0))\n`,
+      'call to "K" does not accept 2 positional arguments'],
+    // Lift leaves a recursive call in place, inside K's closure.
+    [`f(x) = f(x)
+theta ~ Normal(0, 1)
+y ~ Normal(f(theta), 0.5)
+K = kernelof(record(y = y), theta = theta)
+L = likelihoodof(pars -> K(theta = pars.a), record(y = 1.0))
+`, 'cyclic binding dependency at "f"'],
+  ];
+  for (const [source, message] of cases) {
+    const proc = processSource(source);
+    assert.ok(proc.diagnostics.some((d: any) => d.message === message), message);
+    const built = orchestrator.buildDerivations(proc.linkedBindings, { moduleRegistry: proc.linkedModuleRegistry });
+    assert.ok(copies(built).length > 0, message);
+  }
+});
+
 test('a body with two applications keeps the copy path', async () => {
   const { ctx, built } = makeMatCtx(`
 theta ~ Normal(0, 1)
