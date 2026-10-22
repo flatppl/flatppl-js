@@ -607,35 +607,6 @@ function _buildBody(input: any, deriv: any, ctx: any, opts?: any): { body: any; 
 // kernel whose closure would leave such a read, such as a marginalized latent
 // draw, so a failure here is an engine bug, never a model error.
 function _bindAppliedBoundaries(body: any, applied: Record<string, any>, mc: boolean, ctx: any): any {
-  // Refs the kernel's body keeps. Argument IRs are not walked: they read the
-  // caller's scope, where a like-named module binding is not the boundary.
-  const kept = new Set<string>();
-  const bind = (n: any, shadowed: Set<string>): any => {
-    if (n?.kind === 'ref' && n.ns === 'self' && !shadowed.has(n.name)) {
-      if (Object.prototype.hasOwnProperty.call(applied, n.name)) return applied[n.name];
-      kept.add(n.name);
-      return n;
-    }
-    // The generic mapper leaves bijection metadata untouched. Its captured
-    // parameters read the same boundaries.
-    if (n?.bijection) {
-      const bijection = { ...n.bijection };
-      if (bijection.paramIRs) {
-        bijection.paramIRs = Object.fromEntries(Object.entries(bijection.paramIRs)
-          .map(([key, value]) => [key, irWalk.mapIRScoped(value, bind, shadowed)]));
-      }
-      for (const key of ['fForward', 'fInv', 'logVolume']) {
-        const fn = bijection[key];
-        if (!fn?.body) continue;
-        const inner = new Set(shadowed);
-        if (fn.paramName) inner.add(fn.paramName);
-        bijection[key] = { ...fn, body: irWalk.mapIRScoped(fn.body, bind, inner) };
-      }
-      return { ...n, bijection };
-    }
-    return n;
-  };
-  const bound = irWalk.mapIRScoped(body, bind);
   const reads = new Map<string, boolean>();
   const readsBoundary = (name: string): boolean => {
     if (Object.prototype.hasOwnProperty.call(applied, name)) return true;
@@ -647,22 +618,48 @@ function _bindAppliedBoundaries(body: any, applied: Record<string, any>, mc: boo
     reads.set(name, result);
     return result;
   };
-  // By-name annotations sit outside the IR children the mapper visits. A
-  // normalizer whose named inner measure reads a boundary carries the
-  // substituted inner instead. Any other by-name read joins the check.
-  const seen = new Set<any>();
-  const scan = (node: any) => {
-    if (!node || typeof node !== 'object' || seen.has(node)) return;
-    seen.add(node);
-    if (Array.isArray(node)) { node.forEach(scan); return; }
-    if (node.massFrom?.ref && readsBoundary(node.massFrom.ref)) {
-      node.massFrom = { ...node.massFrom, ir: node.args[0] };
-    } else if (node.kind !== 'ref' && typeof node.ref === 'string') {
-      kept.add(node.ref);
+  // Refs the kernel's body keeps. Argument IRs are not walked: they read the
+  // caller's scope, where a like-named module binding is not the boundary.
+  const kept = new Set<string>();
+  // One structural pass over every field, not only IR children: by-name
+  // annotations such as `massFrom` and `branches[i].ref` sit outside them.
+  // A private walker also keeps the shared IR mappers' call sites monomorphic.
+  const bind = (node: any, shadowed: Set<string>): any => {
+    if (!node || typeof node !== 'object' || ArrayBuffer.isView(node)) return node;
+    if (Array.isArray(node)) {
+      let out: any[] | null = null;
+      for (let i = 0; i < node.length; i++) {
+        const r = bind(node[i], shadowed);
+        if (r !== node[i]) (out || (out = node.slice()))[i] = r;
+      }
+      return out || node;
     }
-    for (const k in node) if (k !== 'loc' && k !== 'massFrom') scan(node[k]);
+    if (node.kind === 'ref' && node.ns === 'self' && !shadowed.has(node.name)) {
+      if (Object.prototype.hasOwnProperty.call(applied, node.name)) return applied[node.name];
+      kept.add(node.name);
+      return node;
+    }
+    if (node.kind !== 'ref' && typeof node.ref === 'string') kept.add(node.ref);
+    // A reified body binds its identifier params, and a bijection function
+    // body binds its parameter, so neither reads a like-named boundary.
+    const bound = irWalk.identifierBoundParams(node);
+    const inner = bound && node.body ? new Set([...shadowed, ...bound])
+      : node.paramName && node.body ? new Set([...shadowed, node.paramName]) : shadowed;
+    let out: any = null;
+    for (const k in node) {
+      if (k === 'loc' || k === 'massFrom') continue;
+      const r = bind(node[k], k === 'body' ? inner : shadowed);
+      if (r !== node[k]) (out || (out = { ...node }))[k] = r;
+    }
+    const result = out || node;
+    // A normalizer whose named inner measure reads a boundary carries the
+    // substituted inner, so a fallback mass is taken at the argument.
+    if (node.massFrom?.ref && readsBoundary(node.massFrom.ref)) {
+      return { ...result, massFrom: { ...node.massFrom, ir: result.args[0] } };
+    }
+    return result;
   };
-  scan(bound);
+  const bound = bind(body, new Set());
   const leak = mc ? 'a Monte Carlo marginal' : [...kept].find(readsBoundary);
   if (leak) {
     throw new Error(`internal: an applied kernel's boundary still reaches its scored body through ${leak}`);
