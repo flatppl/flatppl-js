@@ -411,7 +411,8 @@ async function buildLogPi(
 
   // ── SETUP: likelihood body IR ─────────────────────────────────────────────
   // clm.lowerMeasure: same call as mat-density.ts:210 (IS path in matBayesupdate)
-  const likNode = clm.lowerMeasure(d.bodyIR || d.bodyName, ctx, { derivation: d });
+  const likInput = d.bodyIR || d.bodyName;
+  const likNode = clm.lowerMeasure(likInput, ctx, { derivation: d });
   if (!likNode) {
     throw new Error('buildLogPi: cannot expand the likelihood body into measure IR');
   }
@@ -475,23 +476,70 @@ async function buildLogPi(
   const likBodyIR = await resolveNormalizeMasses(likelihood, ctx, atomDep);
   // The likelihood body may only read the point's latents, fixed values and
   // derived bindings. A draw inside the kernel that the prior does not carry is
-  // a latent the likelihood must integrate out (spec §06 "Density of composed
-  // measures"). The scorer has no such marginal: the draw is unbound in the
+  // a latent the likelihood integrates out (spec §06 "Density of composed
+  // measures"). The density walker has no value for it: it is unbound in the
   // scoring env, `likWith` swallows that to -Infinity, and every chain starts
-  // at -Infinity without saying why.
+  // at -Infinity without saying why. So the marginal is taken in closed form
+  // (a linear-Gaussian sub-DAG, mean affine in the point), or the build refuses.
+  let marginal: { g: any; shift: number; source: Record<string, string> } | null = null;
   {
     const refs = new Set<string>(); collectRefNames(likBodyIR, refs);
-    const latents = [...refs].filter(nm => !drawNames.includes(nm) && !(nm in fixedEnvObj)
-      && ctx.bindings?.get(nm)?.type === 'draw');
+    // A draw that is itself a field of the kernel's record is an observed
+    // variate: the density walker threads its observed value, nothing to integrate.
+    const exposed = new Set<string>();
+    for (const f of (likBodyIR.fields || [])) {
+      for (const key of [f.name, f.source, f.threadAs]) if (key != null) exposed.add(key);
+    }
+    const latents = [...refs].filter(nm => !drawNames.includes(nm) && !exposed.has(nm)
+      && !(nm in fixedEnvObj) && ctx.bindings?.get(nm)?.type === 'draw');
     if (latents.length > 0) {
-      const err: any = new Error(`buildLogPi: the likelihood marginalises the `
-        + `stochastic ancestor(s) ${latents.map(nm => ctx.bindings.get(nm).closureOf || nm).join(', ')}, `
-        + 'which the posterior does not carry as parameters, and the MCMC scorer has no exact '
-        + 'marginal for them (spec §06 "Density of composed measures": a closed form, or '
-        + 'enumeration of a finite discrete latent). Add the latent to the prior, or score the '
-        + 'likelihood with logdensityof.');
-      err.modelRefusal = true;
-      throw err;
+      // The prior latents the marginal is conditioned on, by the name each is
+      // read under in the kernel: the point's own name, the kernel's boundary
+      // name, or `<boundary>.<field>` through a whole-record adapter.
+      const isScalar = (t: any) => t?.kind === 'scalar';
+      const scalarNames = drawNames.filter(nm => isScalar(ctx.bindings.get(nm)?.inferredType));
+      const source: Record<string, string> = {};
+      const inputMarginal: { scalars: string[]; fields: Record<string, string[]> } =
+        { scalars: [...scalarNames], fields: {} };
+      for (const nm of scalarNames) source[nm] = nm;
+      for (const [p, kwarg] of boundaryNames as Map<string, string>) {
+        if (whole && priorFields) {
+          const fieldNames = Object.keys(priorFields).filter(f => isScalar(priorFields[f]));
+          inputMarginal.fields[p] = fieldNames;
+          for (const f of fieldNames) source[p + '.' + f] = f;
+        } else if (!whole && scalarNames.includes(kwarg)) {
+          inputMarginal.scalars.push(p);
+          source[p] = kwarg;
+        } else if (whole && scalarNames.includes(drawNames[0])) {
+          // A single input fed the whole scalar point.
+          inputMarginal.scalars.push(p);
+          source[p] = drawNames[0];
+        }
+      }
+      const marginalNode = clm.lowerMeasure(likInput, ctx, { derivation: d, inputMarginal });
+      const r = marginalNode.reduce;
+      if (r && (r.method === 'analytic-gaussian' || r.method === 'analytic-mixture')) {
+        marginal = { g: r.gaussian, shift: r.logShift || 0, source };
+      } else {
+        // A draw written inline has a lift-made name, which says nothing to the user.
+        const describe = (nm: string): string => {
+          const name = ctx.bindings.get(nm).closureOf || nm;
+          return name.startsWith('__anon') ? 'an unnamed draw' : name;
+        };
+        /* c8 ignore start -- `r` is always a refusal here: given `inputMarginal`, clm
+           reduces every kernel body, which is a `lawof` and so absorbs its latents */
+        const why = r?.method === 'refuse' ? ': ' + r.reason : '';
+        /* c8 ignore stop */
+        const err: any = new Error(`buildLogPi: the likelihood marginalises the `
+          + `stochastic ancestor(s) ${latents.map(describe).join(', ')}, `
+          + 'which the posterior does not carry as parameters, and the MCMC scorer has no exact '
+          + 'marginal for them' + why
+          + ' (spec §06 "Density of composed measures": a closed form, or '
+          + 'enumeration of a finite discrete latent). Add the latent to the prior, or score the '
+          + 'likelihood with logdensityof.');
+        err.modelRefusal = true;
+        throw err;
+      }
     }
   }
 
@@ -551,10 +599,28 @@ async function buildLogPi(
   if (moduleReg) baseEnvConst.__moduleRegistry = moduleReg;
   // Fixed §04 data belongs to this scorer. Repeated scalar and batch calls
   // share private observation summaries, never the caller's mutable storage.
-  const scoreLikelihood = density._prepareFixedDensityN(likBodyIR, observed, baseEnvConst);
+  let scoreLikelihood = density._prepareFixedDensityN(likBodyIR, observed, baseEnvConst);
   // Which atom-dependent names the likelihood body actually references — only
   // those need a per-atom refArray (avoids replicating unused intermediates).
   const likRefSet = new Set<string>(); collectRefNames(likBodyIR, likRefSet);
+  if (marginal) {
+    // The closed-form marginal reads the point's latents through its inputs.
+    // Its mean is affine in them, evaluated per atom; the covariance is fixed.
+    const lg = require('./linear-gaussian.ts');
+    const { g, shift, source } = marginal;
+    const keys: string[] = lg.inputKeysOf(g);
+    // Every input key was registered from `source` above, so each has a latent.
+    for (const key of keys) likRefSet.add(source[key]);
+    scoreLikelihood = (refArrays: any, N: number): Float64Array => {
+      const out = new Float64Array(N);
+      const values: Record<string, number> = {};
+      for (let i = 0; i < N; i++) {
+        for (const key of keys) values[key] = refArrays[source[key]][i];
+        out[i] = lg.scoreGaussianMarginal(g, observed, values) + shift;
+      }
+      return out;
+    };
+  }
   const likPerAtom: string[] = Array.from(likRefSet).filter((n) => atomDep.has(n));
   const constParseSet = makeParseSet(baseEnvConst);
 

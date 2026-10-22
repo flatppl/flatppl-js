@@ -174,25 +174,27 @@ lp = logdensityof(L, record(mu_a = ${muA}, x = 0.3))
   assert.equal(hi, lo, 'the score must not depend on the shadowed boundary mu_a');
 });
 
-// ── an unexposed latent refuses instead of returning a prior draw ─────────
+// ── an unexposed latent is integrated out at the fed boundary ─────────────
 //
 // Here `theta` is neither a declared input nor a field of the observed record,
-// so §06's density is the marginal integral over it. The declared input `mu`
-// reaches that integral, which the linear-Gaussian recogniser cannot yet
-// thread a caller-substituted value into (its KNOWN GAP, tracked in
-// flatppl-dev/TODO-flatppl-js.md). It must REFUSE and name the latent. Before
-// the record-gate fix this shape returned a seed-dependent number instead.
-test('an unexposed stochastic ancestor under kernelof refuses, naming the latent', async () => {
-  await assert.rejects(() => score(`
+// so §06's density is the marginal integral over it, taken at the declared
+// input `mu` the caller supplies. The linear-Gaussian recogniser threads that
+// fed value into the moments: y | mu ~ Normal(mu, sqrt(1^2 + 2^2)).
+// Before the record-gate fix this shape returned a seed-dependent number, and
+// before the recogniser took inputs it refused.
+test('an unexposed stochastic ancestor under kernelof is integrated out at the fed input', async () => {
+  const src = `
 mu ~ Normal(mu = 0.0, sigma = 5.0)
 theta ~ Normal(mu = mu, sigma = 1.0)
 y ~ Normal(mu = theta, sigma = 2.0)
 L = likelihoodof(kernelof(record(y = y), mu = mu), record(y = 0.61))
 lp = logdensityof(L, 0.3)
-`, 0xBA5E), (e: any) => {
-    assert.match(e.message, /marginalises the stochastic ancestor\(s\) theta/);
-    return true;
-  });
+`;
+  const want = -0.5 * Math.log(2 * Math.PI) - 0.5 * Math.log(5) - (0.61 - 0.3) ** 2 / (2 * 5);
+  for (const seed of [1, 2, 12345]) {
+    const v = await score(src, seed);
+    assert.ok(Math.abs(v - want) < 1e-12, `seed ${seed}: got ${v}, want ${want}`);
+  }
 });
 
 test('a non-Gaussian unexposed ancestor under kernelof refuses', async () => {

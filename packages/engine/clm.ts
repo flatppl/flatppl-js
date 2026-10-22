@@ -1105,7 +1105,11 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
       if (factors.some(factor => !factor)) factors = null;
     }
   }
-  if (!repeated && !factors && !reduce && (!deriv || deriv.kind !== 'bayesupdate')
+  // A bayesupdate's likelihood is not reduced here, except for a caller that
+  // scores it at points and names the prior latents the marginal is conditioned
+  // on (`opts.inputMarginal`, from the MCMC scorer).
+  if (!repeated && !factors && !reduce
+      && (!deriv || deriv.kind !== 'bayesupdate' || opts?.inputMarginal)
       && (_isMeasureNode(body) || _isRecordOfMeasures(body))) {
     const latents = inputs.filter((i: any) => i.source.kind === 'shared'
       && _isStochastic(ctx.bindings && ctx.bindings.get(i.source.ref))
@@ -1123,7 +1127,8 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
         if (f.source != null) exposed.add(f.source);
         if (f.threadAs != null) exposed.add(f.threadAs);
       }
-      const marg = over.filter((nm: string) => !exposed.has(nm));
+      const given = new Set<string>(opts?.inputMarginal?.scalars || []);
+      const marg = over.filter((nm: string) => !exposed.has(nm) && !given.has(nm));
       // An mc-form body carries an `mcmarginal` recipe the worker integrates
       // in-batch (buildMcMarginalForm) — one of the THREE MC density sites this
       // wave leaves alone (the others: the bayesupdate/mc-generative routing
@@ -1131,7 +1136,10 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
       // marginal, which averages sampled prior atoms). All three are tracked in
       // flatppl-dev/TODO-flatppl-js.md; this branch keeps their reduction
       // untouched.
-      if (marg.length === 0 || mc) {
+      if (opts?.inputMarginal && (marg.length === 0 || mc)) {
+        // A scored likelihood with nothing of its own to integrate out, or one
+        // an MC recipe already covers, keeps the unreduced body.
+      } else if (marg.length === 0 || mc) {
         reduce = { kind: 'marginal', method: 'logsumexp-logN', over };
       } else {
         // Inputs the CALLER feeds instead of the model's own value: an explicit
@@ -1140,11 +1148,41 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
         // marginal that depends on one of these must refuse rather than answer
         // from the un-substituted value — the recogniser owns that check because
         // it is the one that knows which names the moments were built from.
+        // A fed number, or a record of numbers, enters the closed form as an
+        // input with its value (linear-gaussian.ts). Any other fed value, and a
+        // free profile axis, still refuses: the closed form cannot see it.
         const substituted = new Set<string>();
+        const lgInputs: any = { scalars: new Set<string>(), fields: new Map<string, Set<string>>(), values: {} };
+        const feed = (name: string, value: any) => {
+          if (typeof value === 'number' && Number.isFinite(value)) {
+            lgInputs.scalars.add(name);
+            lgInputs.values[name] = value;
+            return true;
+          }
+          const plain = value !== null && typeof value === 'object' && !Array.isArray(value)
+            && !ArrayBuffer.isView(value) && Object.getPrototypeOf(value) === Object.prototype;
+          const keys = plain ? Object.keys(value) : [];
+          if (!plain || keys.length === 0 || !keys.every(k => typeof value[k] === 'number' && Number.isFinite(value[k]))) {
+            return false;
+          }
+          lgInputs.fields.set(name, new Set(keys));
+          for (const k of keys) lgInputs.values[name + '.' + k] = value[k];
+          return true;
+        };
         for (const inp of inputs) {
           if (inp.source.kind !== 'explicit' && inp.source.kind !== 'free') continue;
+          if (inp.source.kind === 'explicit' && feed(inp.name, inp.source.value)) {
+            if (inp.source.localAlias) feed(inp.source.localAlias, inp.source.value);
+            continue;
+          }
           substituted.add(inp.name);
           if (inp.source.localAlias) substituted.add(inp.source.localAlias);
+        }
+        // The caller of a likelihood scorer (MCMC) names the prior latents the
+        // marginal is conditioned on; their values arrive per point.
+        for (const nm of opts?.inputMarginal?.scalars || []) lgInputs.scalars.add(nm);
+        for (const nm in opts?.inputMarginal?.fields || {}) {
+          lgInputs.fields.set(nm, new Set(opts.inputMarginal.fields[nm]));
         }
         for (const inp of free) substituted.add(inp.source.ref);
         const lg = require('./linear-gaussian.ts');
@@ -1152,7 +1190,7 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
           keyOf: (nm: string) => _aliasChain(nm, ctx, true).root,
           componentKeys: _componentKeys(body, input, ctx),
         };
-        const g = lg.recogniseGaussianMarginal(body, marg, ctx, substituted, identity);
+        const g = lg.recogniseGaussianMarginal(body, marg, ctx, substituted, identity, lgInputs);
         reduce = g.refuse
           ? { kind: 'marginal', method: 'refuse', over, marginalize: marg, reason: g.refuse }
           : {

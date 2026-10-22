@@ -371,8 +371,9 @@ ld = logdensityof(L, record(a = 0.5))
 // out of `bindings`/`fixedValues`, so a marginal that depends on a substituted
 // name must refuse — answering from the un-substituted value would be a
 // confidently wrong density, and the MC reduce this wave replaced at least fed
-// the boundary to the worker. Threading the substitution into the moments is the
-// capability fix, filed in flatppl-dev/TODO-flatppl-js.md.
+// the boundary to the worker. A fed number, or a record of numbers, is threaded
+// into the moments as an input; a free profile axis and any other fed value
+// still refuse.
 
 const OVERRIDDEN_MEAN = `
 m = 0.0
@@ -389,16 +390,38 @@ const reduceFor = (src: string, opts?: any) => {
   return clm.lowerMeasure('L', ctx, opts).reduce;
 };
 
-test('an explicit boundary the marginal depends on refuses instead of scoring '
-  + 'the un-substituted value', () => {
+test('an explicit boundary the marginal depends on is threaded into the moments', () => {
   // Baseline: with no substitution the same model closes analytically, and the
   // mean comes from the model's own `m = 0.0`.
   const plain = reduceFor(OVERRIDDEN_MEAN);
   assert.equal(plain.method, 'analytic-gaussian');
   assert.deepEqual(plain.gaussian.mean, [0, 0]);
-  // Substituting m = 5 makes the true mean [5, 5]. The closed form cannot see
-  // the fed value, so it must refuse rather than return [0, 0] again.
+  // Substituting m = 5 makes the true mean [5, 5], and the covariance, which
+  // does not depend on a location, stays the same.
   const fed = reduceFor(OVERRIDDEN_MEAN, { boundaries: { m: 5 } });
+  assert.equal(fed.method, 'analytic-gaussian');
+  assert.deepEqual(fed.gaussian.mean, [5, 5]);
+  assert.deepEqual(fed.gaussian.cov, plain.gaussian.cov);
+});
+
+test('a fed boundary that is not a number or a record of numbers still refuses', () => {
+  const fed = reduceFor(OVERRIDDEN_MEAN, { boundaries: { m: [1, 2] } });
+  assert.equal(fed.method, 'refuse');
+  assert.match(fed.reason, /depends on 'm', which the caller substitutes/);
+});
+
+test('a fed boundary reached through a derived binding still refuses', () => {
+  // `s` is computed from `m`, so the closed form would read it from the model's
+  // own `m = 0.0` and ignore the fed value. Only a direct read is threaded.
+  const fed = reduceFor(`
+m = 0.0
+s = m + 1.0
+z ~ Normal(mu = s, sigma = 1.0)
+a ~ Normal(mu = z, sigma = 1.0)
+b ~ Normal(mu = z, sigma = 1.0)
+L = lawof(record(a = a, b = b))
+ld = logdensityof(L, record(a = 0.5, b = 0.7))
+`, { boundaries: { m: 5 } });
   assert.equal(fed.method, 'refuse');
   assert.match(fed.reason, /depends on 'm', which the caller substitutes/);
 });
