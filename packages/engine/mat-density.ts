@@ -2101,7 +2101,10 @@ function matBroadcastLogdensity(d: DerivationBroadcastLogdensity, ctx: any) {
   // so it must resolve normalize-mass specs (audit M3) here as well.
   return resolveNormalizeMasses(measureIR0, ctx)
     .then((measureIR) => {
-  let batchable = !!measureIR && !isChain;
+  // The points axis is the walker's only N-axis, and its leaf/truncate/Dirac
+  // arms read one scalar per atom; an array point (an iid plate, a joint) has
+  // no such layout and would be consumed as copies instead of as points.
+  let batchable = !!measureIR && !isChain && pts.every((p: any) => typeof p === 'number');
   const fixedRefs: any[] = [];
   if (batchable) {
     for (const n of orchestrator.collectSelfRefs(measureIR)) {
