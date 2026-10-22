@@ -2256,6 +2256,9 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
       + "bijection annotation — use bijection(f, f_inv, logvolume) to enable "
       + "pushforward density");
   }
+  if (opts.pointsBatched) {
+    return walkPushfwdPoints(ir, value, refArrays, N, opts, acc, baseEnv, overlay, counting);
+  }
   // Phase 5.1 Session 5d commit 3 — registry fast path.
   //
   // When bij carries `registryName` + `paramIRs` (Sessions 5c+5d
@@ -2537,6 +2540,10 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
 
   // Atom-independent fast path (unchanged): compute x = f_inv(y) once.
   let x = _pushfwdInverseAtomIndependent(bij, y, baseEnv, overlay);
+  if (outsideImage(y, x)) {
+    for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    return rest;
+  }
   if (counting) {
     const env = Object.assign({}, baseEnv, overlay);
     x = countingCandidate(M_ir, x, env);
@@ -2553,7 +2560,7 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   // function evaluates body at x.
   if (bij.logVolume.kind === 'scalar') {
     const lv = +bij.logVolume.value;
-    if (lv !== 0) for (let i = 0; i < N; i++) acc[i] -= lv;
+    if (lv !== 0) for (let i = 0; i < N; i++) subtractLogVolume(acc, i, lv);
   } else {
     const lvEnv = Object.assign({}, baseEnv);
     if (overlay) Object.assign(lvEnv, overlay);
@@ -2563,9 +2570,61 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
     // logvolume varies with the bijection's domain point.
     if (bij.logVolume.paramName) lvEnv[bij.logVolume.paramName] = x;
     const lv = +samplerLib.evaluateExpr(bij.logVolume.body, lvEnv);
-    if (lv !== 0) for (let i = 0; i < N; i++) acc[i] -= lv;
+    if (lv !== 0) for (let i = 0; i < N; i++) subtractLogVolume(acc, i, lv);
   }
   return rest;
+}
+
+// A point y whose preimage f_inv(y) is NaN lies outside the image of f
+// (log of a non-positive number), where the pushforward has density 0.
+function outsideImage(y: number, x: number): boolean {
+  return Number.isNaN(x) && !Number.isNaN(y);
+}
+
+// A point already at -Infinity (zero base density) stays there; subtracting an
+// infinite logvolume from it would give NaN.
+function subtractLogVolume(acc: any, i: number, lv: number) {
+  if (acc[i] !== -Infinity) acc[i] -= lv;
+}
+
+// pushfwd under `pointsBatched` (broadcast(logdensityof, M, pts)): the N-axis
+// indexes scalar evaluation POINTS, not atoms, so atom i scores `points[i]`.
+// A scalar AST bijection inverts every point, scores the base once over all the
+// preimages and subtracts the logvolume per point. A registry bijection, a
+// discrete base or an atom-dependent bijection has no points layout: those score
+// each point on its own, the same numbers as the per-point reference route.
+function walkPushfwdPoints(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any,
+  baseEnv: any, overlay: any, counting: boolean) {
+  const bij = ir.bijection;
+  const ys = valueLib.isValue(value) ? value.data : value;
+  if (bij.registryName || counting || Object.keys(refArrays).length > 0) {
+    const single = { ...opts, pointsBatched: false };
+    for (let i = 0; i < N; i++) {
+      walkPushfwd(ir, ys[i], refArrays, 1, single, acc.subarray(i, i + 1), baseEnv, overlay);
+    }
+    return null;
+  }
+  const xs = new Float64Array(N);
+  const outside: number[] = [];
+  for (let i = 0; i < N; i++) {
+    xs[i] = _pushfwdInverseAtomIndependent(bij, ys[i], baseEnv, overlay);
+    if (outsideImage(ys[i], xs[i])) outside.push(i);
+  }
+  walkAcc(ir.args[1], xs, refArrays, N, opts, acc, baseEnv, overlay);
+  if (bij.logVolume.kind === 'scalar') {
+    const lv = +bij.logVolume.value;
+    if (lv !== 0) for (let i = 0; i < N; i++) subtractLogVolume(acc, i, lv);
+  } else {
+    const lvEnv = Object.assign({}, baseEnv, overlay);
+    for (let i = 0; i < N; i++) {
+      // paramName null means a 0-arg function, a closed-form constant.
+      if (bij.logVolume.paramName) lvEnv[bij.logVolume.paramName] = xs[i];
+      const lv = +samplerLib.evaluateExpr(bij.logVolume.body, lvEnv);
+      if (lv !== 0) subtractLogVolume(acc, i, lv);
+    }
+  }
+  for (const i of outside) acc[i] = -Infinity;
+  return null;
 }
 
 // ---- Marginalising pushforward: change-of-variables + MC-integration --
