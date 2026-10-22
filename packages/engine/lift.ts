@@ -22,6 +22,7 @@
 import type { IRNode } from './engine-types';
 
 const { lowerExpr } = require('./lower.ts');
+const AST = require('./ast.ts');
 const { signatureOf } = require('./signatures.ts');
 const {
   parseSetIR,
@@ -4051,7 +4052,17 @@ function liftInlineSubexpressions(bindings: any) {
         && surfaceOrder.length >= 1) {
       const arg0 = callArgs[0];
       let splatted: any = null;
-      if (arg0.type === 'CallExpr' && arg0.callee
+      // §04: a sole tuple splats into positional arguments when the inputs are
+      // ordered; each element is a projection of the original (§11).
+      const tupleT = arg0.type === 'TupleLiteral' ? null
+        : arg0.type === 'Identifier' ? out.get(arg0.name)?.inferredType : __knownAstType(arg0);
+      const tupleCount = arg0.type === 'TupleLiteral' ? arg0.elements.length
+        : (tupleT && tupleT.kind === 'tuple' && tupleT.elems) ? tupleT.elems.length : null;
+      if (tupleCount != null && fnAst.orderedInputs !== false) {
+        callArgs = arg0.type === 'TupleLiteral' ? arg0.elements.slice()
+          : Array.from({ length: tupleCount }, (_, i) => AST.IndexExpr(
+            cloneAst(arg0), [AST.NumberLiteral(i + 1, String(i + 1), arg0.loc)], arg0.loc));
+      } else if (arg0.type === 'CallExpr' && arg0.callee
           && arg0.callee.type === 'Identifier'
           && (arg0.callee.name === 'record' || arg0.callee.name === 'table')) {
         splatted = (arg0.args || []).filter((f: any) => f.type === 'KeywordArg');
