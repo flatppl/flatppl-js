@@ -651,7 +651,7 @@ export interface DerivationSelect {
    *  computed at materialise time from a runtime selector. */
   logweightIRs: IRNode[] | null;
   selectorRef?: string | null;
-  selectorBase?: number;
+  selectorBase?: number | null;
   marginalize?: boolean;
   mode?: string;
   /** CONSTANT per-branch weights for a no-external-selector mixture /
