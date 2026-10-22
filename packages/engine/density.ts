@@ -1359,10 +1359,30 @@ function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
     throw new Error('density: truncate requires parseSet opt');
   }
   const set: any = ir.args[1];
+  // In points-batched mode the N axis indexes evaluation points: atom i scores
+  // `points[i]`, so the support gate is per point. Gating every atom on the
+  // first point's membership let one out-of-support first point send every
+  // point to -Infinity, and one in-support first point let every out-of-support
+  // point keep its density.
+  const points: any = opts.pointsBatched ? (valueLib.isValue(value) ? value.data : value) : null;
   if (set.kind === 'call' && set.op === 'interval' && set.args?.length === 2) {
     const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
     const consumed = inferConsumedScalar(value, rest);
-    if (consumed != null) {
+    if (consumed != null && points) {
+      const lo = atomScalarColumn(set.args[0], refArrays, N, baseEnv, overlay);
+      const hi = atomScalarColumn(set.args[1], refArrays, N, baseEnv, overlay);
+      if (typeof lo === 'number' && typeof hi === 'number') {
+        for (let i = 0; i < N; i++) {
+          const x = points[i];
+          if (!(x >= lo && x <= hi)) acc[i] = -Infinity;
+        }
+      } else {
+        for (let i = 0; i < N; i++) {
+          const x = points[i];
+          if (!(x >= (typeof lo === 'number' ? lo : lo[i]) && x <= (typeof hi === 'number' ? hi : hi[i]))) acc[i] = -Infinity;
+        }
+      }
+    } else if (consumed != null) {
       applyAtomScalar(set.args[0], refArrays, N, baseEnv, overlay, acc,
         (a: Float64Array, i: number, lo: number) => { if (!(consumed >= lo)) a[i] = -Infinity; });
       applyAtomScalar(set.args[1], refArrays, N, baseEnv, overlay, acc,
@@ -1384,13 +1404,26 @@ function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   }
   const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
   if (setDescr.kind === 'vectorset') {
+    if (points) {
+      const n = setDescr.n;
+      const rows = valueLib.isValue(value);
+      for (let i = 0; i < N; i++) {
+        const point = rows ? valueLib._sliceRow(value, i) : points[i];
+        // A point of exactly the set's length is its own head: no slice needed.
+        const head = point.length === n ? point : consumeVector(point, n).head;
+        if (!samplerLib.inVectorSet(head, setDescr.set)) acc[i] = -Infinity;
+      }
+      return rest;
+    }
     const { head } = consumeVector(value, setDescr.n);
     if (!samplerLib.inVectorSet(head, setDescr.set)) for (let i = 0; i < N; i++) acc[i] = -Infinity;
     return rest;
   }
   const consumed = inferConsumedScalar(value, rest);
-  if (consumed != null && !inSet(consumed, setDescr)) {
-    for (let i = 0; i < N; i++) acc[i] = -Infinity;
+  if (consumed != null) {
+    for (let i = 0; i < N; i++) {
+      if (!inSet(points ? points[i] : consumed, setDescr)) acc[i] = -Infinity;
+    }
   }
   return rest;
 }
@@ -3977,15 +4010,14 @@ function _anyKwUsesPerAtom(kwargsIR: Record<string, any>, refNames: string[]): b
 // `density-prims.builtinLogdensityof`. See engine-concepts §13.6.
 // =====================================================================
 
-function applyAtomScalar(wIR: any, refArrays: any, N: any, baseEnv: any, overlay: any, acc: any, combine: any) {
+// The per-atom value of a scalar expression: one number when it is the same for
+// every atom (so a hot loop can compare against it directly), else a column of
+// N values.
+function atomScalarColumn(wIR: any, refArrays: any, N: any, baseEnv: any, overlay: any): number | ArrayLike<number> {
   const result = samplerLib.evaluateExprN(
     wIR, refArrays || null, N, baseEnv,
     overlay ? { overlay } : undefined);
-  if (typeof result === 'number' || typeof result === 'boolean') {
-    const v = +result;
-    for (let i = 0; i < N; i++) combine(acc, i, v);
-    return;
-  }
+  if (typeof result === 'number' || typeof result === 'boolean') return +result;
   // A weight expression touching complex arithmetic (e.g. `abs2(<complex
   // expr>)`, #307's particle-physics resonance amplitude) routes through
   // the shape-tagged Value evaluator instead of the plain-numeric
@@ -3999,26 +4031,30 @@ function applyAtomScalar(wIR: any, refArrays: any, N: any, baseEnv: any, overlay
   // convention: `.data` is exactly the per-atom flat array.
   if (valueLib.isValue(result)) {
     const data = result.data;
-    if (data.length === N) {
-      for (let i = 0; i < N; i++) combine(acc, i, +data[i]);
-      return;
-    }
+    if (data.length === N) return data;
     if (data.length === 1) {
       // A weight expression with no per-atom-varying ref (e.g. every
       // variate occurrence was substituted with the SAME consumed
       // literal — scoring one fixed point broadcast across N atoms,
       // #307) collapses to a single Value with no batch axis at all;
       // broadcast it, matching the plain-number branch above.
-      const v = +data[0];
-      for (let i = 0; i < N; i++) combine(acc, i, v);
-      return;
+      return +data[0];
     }
     throw new Error('applyAtomScalar: weight expression evaluated to a '
       + data.length + '-element Value for ' + N + ' atom(s) — '
       + 'a weighted()/logweighted() weight must be scalar per atom');
   }
   // Float64Array(N) or generic Array(N).
-  for (let i = 0; i < N; i++) combine(acc, i, +result[i]);
+  return result;
+}
+
+function applyAtomScalar(wIR: any, refArrays: any, N: any, baseEnv: any, overlay: any, acc: any, combine: any) {
+  const column = atomScalarColumn(wIR, refArrays, N, baseEnv, overlay);
+  if (typeof column === 'number') {
+    for (let i = 0; i < N; i++) combine(acc, i, column);
+    return;
+  }
+  for (let i = 0; i < N; i++) combine(acc, i, +column[i]);
 }
 
 // A `weighted(w, M)` weight that does NOT depend on the variate — a constant,
