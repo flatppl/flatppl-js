@@ -66,9 +66,15 @@
 // remaining nodes are integrated out by construction. Pinned against
 // Distributions.jl / scipy in test/joint-shared-ancestor-density.test.ts.
 //
-// KNOWN GAP: a caller-substituted boundary (`opts.boundaries` / `opts.freeInputs`)
-// refuses rather than threading the fed value into the moments — see
-// `_reachesBlocked`. Tracked in flatppl-dev/TODO-flatppl-js.md.
+// CALLER-SUPPLIED INPUTS. A boundary the caller feeds (`opts.boundaries`) or a
+// prior latent a likelihood is scored at is not a node of the sub-DAG: it enters
+// each location as a symbolic INPUT, `%in:<name>`, with its coefficient. Means are
+// affine in the inputs and covariances do not depend on them, since a scale is a
+// constant. With the values known (a fed boundary) the means fold to numbers. With
+// the values unknown until scoring (an MCMC point) the recognition carries
+// `meanIn` and `scoreGaussianMarginal` evaluates it at the point. A FREE profile
+// axis still refuses (`_reachesBlocked`): its values vary per grid point inside the
+// worker, which this closed form never sees.
 // ════════════════════════════════════════════════════════════════════════
 
 const orchestrator = require('./orchestrator.ts');
@@ -92,6 +98,39 @@ type Affine = { c: number; coefs: Map<string, number> };
 
 const ZERO = (): Affine => ({ c: 0, coefs: new Map() });
 const AFFINE_VARIATE = '%gaussian-affine-variate';
+// A caller-supplied input in an affine form: `{kind:'ref', ns:'%in', name}` in the
+// IR, the key `%in:<name>` in a coefficient map. Never a node of the table.
+const INPUT_NS = '%in';
+const INPUT_PREFIX = '%in:';
+
+// The inputs a recognition treats as symbolic. `scalars` are refs read as a
+// number, `fields` are record-valued refs read through `get_field`. `values`
+// holds `<name>` / `<record>.<field>` -> number when the caller knows them.
+type LgInputs = {
+  scalars: Set<string>;
+  fields: Map<string, Set<string>>;
+  values?: Record<string, number>;
+};
+
+// Rewrite every read of an input into an `%in` ref, so the analysis never sees
+// the module's own binding of that name.
+function _inputMapper(inputs: LgInputs): (ir: any) => any {
+  const { mapIR } = require('./ir-walk.ts');
+  return (ir) => mapIR(ir, (n: any) => {
+    if (n && n.kind === 'ref' && (n.ns === 'self' || n.ns === '%local')
+        && inputs.scalars.has(n.name)) {
+      return { kind: 'ref', ns: INPUT_NS, name: n.name };
+    }
+    if (n && n.kind === 'call' && n.op === 'get_field' && Array.isArray(n.args)
+        && n.args.length === 2 && n.args[0]?.kind === 'ref'
+        && (n.args[0].ns === 'self' || n.args[0].ns === '%local')
+        && n.args[1]?.kind === 'lit' && typeof n.args[1].value === 'string'
+        && inputs.fields.get(n.args[0].name)?.has(n.args[1].value)) {
+      return { kind: 'ref', ns: INPUT_NS, name: n.args[0].name + '.' + n.args[1].value };
+    }
+    return n;
+  });
+}
 
 function _addAffine(x: Affine, y: Affine, sign: number): Affine {
   const out: Affine = { c: x.c + sign * y.c, coefs: new Map(x.coefs) };
@@ -186,6 +225,10 @@ function _stochasticRefs(ir: any, ctx: any): string[] {
 // substitution. Refusing is the only sound answer available here: the previous
 // MC reduce at least fed the boundary to the worker, so an exact-looking number
 // that does not track the override would be a regression dressed as a fix.
+//
+// A stochastic binding is not followed: it is a node of the table, whose law is
+// among `irs` already, with the inputs substituted. Following its raw binding body
+// would find the substituted name there and refuse a marginal that is exact.
 function _reachesBlocked(irs: any[], blocked: Set<string>, ctx: any): string | null {
   if (blocked.size === 0) return null;
   const seen = new Set<string>();
@@ -198,7 +241,7 @@ function _reachesBlocked(irs: any[], blocked: Set<string>, ctx: any): string | n
       if (seen.has(ref)) continue;
       seen.add(ref);
       const b = ctx.bindings && ctx.bindings.get ? ctx.bindings.get(ref) : null;
-      if (b && b.ir) stack.push(b.ir);
+      if (b && b.ir && !_isStochasticBinding(b)) stack.push(b.ir);
     }
   }
   return null;
@@ -217,6 +260,7 @@ function _affine(ir: any, keyFor: (nm: string) => string | null,
       ? { c: ir.value, coefs: new Map() } : null;
   }
   if (ir.kind === 'ref') {
+    if (ir.ns === INPUT_NS) return { c: 0, coefs: new Map([[INPUT_PREFIX + ir.name, 1]]) };
     if (formal && ir.name === formal && (ir.ns === '%local' || ir.ns === 'self')) {
       return { c: 0, coefs: new Map([[AFFINE_VARIATE, 1]]) };
     }
@@ -426,7 +470,7 @@ function _discreteNode(ir: any, what: string, ctx: any): any {
  * `{ nodes, compKeys }` or `{ refuse }`.
  */
 function _buildTable(comps: any, marginalize: string[], keyOf: (nm: string) => string,
-                     ctx: any): any {
+                     ctx: any, mapIR: (ir: any) => any): any {
   const nodes = new Map<string, TableNode>();
   const compKeys: string[] = [];
 
@@ -449,7 +493,7 @@ function _buildTable(comps: any, marginalize: string[], keyOf: (nm: string) => s
       return { refuse: what + ' and ' + (nodes.get(key) as TableNode).what
         + ' are the same draw, so the joint law is singular' };
     }
-    nodes.set(key, { key, what, ir: comps.irs[i], component: i });
+    nodes.set(key, { key, what, ir: mapIR(comps.irs[i]), component: i });
     compKeys.push(key);
   }
 
@@ -474,6 +518,7 @@ function _buildTable(comps: any, marginalize: string[], keyOf: (nm: string) => s
     let law: any = null;
     try { law = orchestrator.expandMeasure(name, ctx); } catch (_) { /* refused below */ }
     if (!law) return { refuse: what + ' has no expandable law' };
+    law = mapIR(law);
     nodes.set(key, { key, what, ir: law, component: null });
     for (const ref of _stochasticRefs(law, ctx)) {
       pending.push({ name: ref, what: "the stochastic ancestor '" + ref + "'" });
@@ -551,6 +596,7 @@ function _blockMoments(nodes: Map<string, TableNode>, compKeys: string[],
     /* c8 ignore stop */
     state.set(key, 1);
     for (const p of (laws.get(key) as { loc: Affine }).loc.coefs.keys()) {
+      if (p.startsWith(INPUT_PREFIX)) continue;     // an input is not a node
       const bad = visit(p);
       if (bad) return bad;
     }
@@ -568,20 +614,30 @@ function _blockMoments(nodes: Map<string, TableNode>, compKeys: string[],
   order.forEach((key, i) => idx.set(key, i));
   const n = order.length;
   const mean = new Array(n).fill(0);
+  // The part of each mean that is affine in the inputs: input key -> coefficient.
+  const meanIn: Array<Record<string, number>> = Array.from({ length: n }, () => ({}));
   const cov: number[][] = Array.from({ length: n }, () => new Array(n).fill(0));
   for (let i = 0; i < n; i++) {
     const { loc, sd } = laws.get(order[i]) as { loc: Affine; sd: number };
     let m = loc.c;
-    loc.coefs.forEach((b, p) => { m += b * mean[idx.get(p) as number]; });
+    loc.coefs.forEach((b, p) => {
+      if (p.startsWith(INPUT_PREFIX)) {
+        meanIn[i][p] = (meanIn[i][p] || 0) + b;
+        return;
+      }
+      const j = idx.get(p) as number;
+      m += b * mean[j];
+      for (const key in meanIn[j]) meanIn[i][key] = (meanIn[i][key] || 0) + b * meanIn[j][key];
+    });
     mean[i] = m;
     for (let k = 0; k < i; k++) {
       let c = 0;
-      loc.coefs.forEach((b, p) => { c += b * cov[idx.get(p) as number][k]; });
+      loc.coefs.forEach((b, p) => { if (!p.startsWith(INPUT_PREFIX)) c += b * cov[idx.get(p) as number][k]; });
       cov[i][k] = c;
       cov[k][i] = c;
     }
     let vi = sd * sd;
-    loc.coefs.forEach((b, p) => { vi += b * cov[i][idx.get(p) as number]; });
+    loc.coefs.forEach((b, p) => { if (!p.startsWith(INPUT_PREFIX)) vi += b * cov[i][idx.get(p) as number]; });
     cov[i][i] = vi;
   }
 
@@ -590,9 +646,10 @@ function _blockMoments(nodes: Map<string, TableNode>, compKeys: string[],
   const k = compKeys.length;
   const rows = compKeys.map((key) => idx.get(key) as number);
   const cMean = rows.map((r) => mean[r]);
+  const cMeanIn = rows.map((r) => meanIn[r]);
   const cCov: number[][] = Array.from({ length: k },
     (_v, i) => Array.from({ length: k }, (_w, j) => cov[rows[i]][rows[j]]));
-  return { mean: cMean, cov: cCov };
+  return { mean: cMean, meanIn: cMeanIn, cov: cCov };
 }
 
 /**
@@ -620,6 +677,7 @@ function _blockMoments(nodes: Map<string, TableNode>, compKeys: string[],
 function recogniseGaussianMarginal(
   body: any, marginalize: string[], ctx: any, substituted: Set<string> | undefined,
   identity: { keyOf: (nm: string) => string; componentKeys?: Array<string | null> | null },
+  inputs: LgInputs = { scalars: new Set<string>(), fields: new Map<string, Set<string>>() },
 ): any {
   if (!identity || typeof identity.keyOf !== 'function') {
     throw new Error('linear-gaussian.recogniseGaussianMarginal: identity.keyOf is '
@@ -635,7 +693,8 @@ function recogniseGaussianMarginal(
     }
   }
 
-  const table = _buildTable(comps, marginalize, keyOf, ctx);
+  const mapIR = _inputMapper(inputs);
+  const table = _buildTable(comps, marginalize, keyOf, ctx, mapIR);
   if (table.refuse) return table;
   const { nodes, compKeys, discrete, keyOfName } = table as {
     nodes: Map<string, TableNode>; compKeys: string[]; discrete: TableNode[];
@@ -646,9 +705,14 @@ function recogniseGaussianMarginal(
   // every node's law, since a substituted value most often reaches the marginal
   // through an ancestor's parameters (`z ~ Normal(m, 1)` with `m` overridden)
   // rather than through a component directly.
-  const irs: any[] = [body];
+  const irs: any[] = [mapIR(body)];
   nodes.forEach((n) => irs.push(n.ir));
-  const hit = _reachesBlocked(irs, substituted || new Set<string>(), ctx);
+  // An input is read only through its `%in` ref. Any other route to its name is
+  // a binding the closed form would evaluate from the model's own value.
+  const blocked = new Set<string>(substituted);
+  inputs.scalars.forEach((nm) => blocked.add(nm));
+  inputs.fields.forEach((_f, nm) => blocked.add(nm));
+  const hit = _reachesBlocked(irs, blocked, ctx);
   if (hit) {
     return { refuse: "the marginal depends on '" + hit + "', which the caller "
       + 'substitutes (an explicit boundary value or a free profile axis). The '
@@ -660,7 +724,7 @@ function recogniseGaussianMarginal(
   if (discrete.length === 0) {
     const b = _blockMoments(nodes, compKeys, keyOfName, new Map<string, number>(), ctx);
     if (b.refuse) return b;
-    return { labels: comps.labels, mean: b.mean, cov: b.cov };
+    return { labels: comps.labels, ..._withInputs(b, inputs) };
   }
 
   // Enumeration (§06's second permitted device): one Gaussian block per atom
@@ -682,9 +746,28 @@ function recogniseGaussianMarginal(
     if (logw === -Infinity) continue;               // a zero-mass atom drops out
     const b = _blockMoments(nodes, compKeys, keyOfName, atoms, ctx);
     if (b.refuse) return b;
-    mixture.push({ logw, mean: b.mean, cov: b.cov });
+    mixture.push({ logw, ..._withInputs(b, inputs) });
   }
   return { labels: comps.labels, mixture };
+}
+
+// Fold the inputs' numeric values into a block's means when every one is known.
+// Otherwise keep the affine part (`meanIn`) for `scoreGaussianMarginal`, which
+// takes the values at the point it scores.
+function _withInputs(b: any, inputs: LgInputs): any {
+  const needed = new Set<string>();
+  b.meanIn.forEach((row: Record<string, number>) => { for (const key in row) needed.add(key); });
+  if (needed.size === 0) return { mean: b.mean, cov: b.cov };
+  const values = inputs.values;
+  if (values && [...needed].every((key) => Number.isFinite(values[key.slice(INPUT_PREFIX.length)]))) {
+    const mean = b.mean.map((m: number, k: number) => {
+      let out = m;
+      for (const key in b.meanIn[k]) out += b.meanIn[k][key] * values[key.slice(INPUT_PREFIX.length)];
+      return out;
+    });
+    return { mean, cov: b.cov };
+  }
+  return { mean: b.mean, meanIn: b.meanIn, cov: b.cov };
 }
 
 /**
@@ -693,11 +776,11 @@ function recogniseGaussianMarginal(
  * implementation of the same maths. A mixture logsumexps its mass-weighted
  * blocks (§06's enumeration device).
  */
-function scoreGaussianMarginal(g: any, observed: any): number {
-  if (!g.mixture) return _scoreBlock(g.mean, g.cov, g.labels, observed);
+function scoreGaussianMarginal(g: any, observed: any, inputValues?: Record<string, number>): number {
+  if (!g.mixture) return _scoreBlock(_meanAt(g, inputValues), g.cov, g.labels, observed);
   let max = -Infinity;
   const terms = g.mixture.map((b: any) => {
-    const t = b.logw + _scoreBlock(b.mean, b.cov, g.labels, observed);
+    const t = b.logw + _scoreBlock(_meanAt(b, inputValues), b.cov, g.labels, observed);
     if (t > max) max = t;
     return t;
   });
@@ -710,6 +793,36 @@ function scoreGaussianMarginal(g: any, observed: any): number {
   let sum = 0;
   for (const t of terms) sum += Math.exp(t - max);
   return max + Math.log(sum);
+}
+
+// The input names a recognised marginal's mean still depends on, as `scoreGaussianMarginal`
+// reads them from its `inputValues`. Empty when the means are numbers.
+function inputKeysOf(g: any): string[] {
+  const keys = new Set<string>();
+  for (const block of g.mixture || [g]) {
+    for (const row of block.meanIn || []) {
+      for (const key in row) keys.add(key.slice(INPUT_PREFIX.length));
+    }
+  }
+  return [...keys];
+}
+
+// A block's mean at the given input values: its constant part plus the affine
+// part. `inputValues` is keyed by input name, as in `LgInputs.values`.
+function _meanAt(block: any, inputValues?: Record<string, number>): number[] {
+  if (!block.meanIn) return block.mean;
+  return block.mean.map((m: number, k: number) => {
+    let out = m;
+    for (const key in block.meanIn[k]) {
+      const v = inputValues?.[key.slice(INPUT_PREFIX.length)];
+      if (typeof v !== 'number') {
+        throw new Error("linear-gaussian: the marginal's mean depends on input '"
+          + key.slice(INPUT_PREFIX.length) + "', which has no value at this point");
+      }
+      out += block.meanIn[k][key] * v;
+    }
+    return out;
+  });
 }
 
 function _scoreBlock(mean: number[], cov: number[][], labels: string[] | null,
@@ -767,5 +880,5 @@ function _flattenNumbers(v: any): number[] {
     + 'for the shared-ancestor joint law');
 }
 
-module.exports = { recogniseGaussianMarginal, scoreGaussianMarginal,
+module.exports = { recogniseGaussianMarginal, scoreGaussianMarginal, inputKeysOf,
   enumerateFiniteMeasure: (ir: any, ctx: any) => _discreteNode(ir, 'the chain latent', ctx) };
