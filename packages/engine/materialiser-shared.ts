@@ -1119,7 +1119,7 @@ function measureFromAtoms(atoms: any[], extras: any = {}) {
 /**
  * Map a structural set descriptor (orchestrator.parseSetIR shape) to numeric
  * bounds with endpoint openness. Returns null for set kinds the materialiser
- * doesn't yet support (integers / booleans).
+ * doesn't yet support (booleans).
  */
 function setBoundsForMat(setDescr: any) {
   return require('./ir-shared.ts').scalarSetBounds(setDescr);

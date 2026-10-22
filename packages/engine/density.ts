@@ -1765,6 +1765,10 @@ function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: 
     }
     return -Math.log(Z);
   }
+  if (bounds.integer) {
+    throw new Error('density: normalize(truncate(' + kernelName + ', S)) — a continuous law '
+      + 'puts no mass on an integer set (Z = 0 is undefined per spec §06)');
+  }
   if (lo === -Infinity && hi === Infinity) return 0;
 
   let positional: any[];

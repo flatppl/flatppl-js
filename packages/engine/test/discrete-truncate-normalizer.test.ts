@@ -145,9 +145,9 @@ l = logdensityof(energy.([3.0, 4.0]), [2, 5])`, 'l');
   const unit = await value(`energy = p -> normalize(truncate(Binomial(3, p), unitinterval))
 l = logdensityof(energy.([0.4, 0.5]), [0, 1])`, 'l');
   close(unit[0], Math.log(0.216 / 0.648) + Math.log(0.375 / 0.5), 'per-row unitinterval');
-  // §03 integers is not a scalar interval: the per-row normalizer refuses.
-  await assert.rejects(() => value(`energy = p -> normalize(truncate(Poisson(p), integers))
-l = logdensityof(energy.([3.0, 4.0]), [2, 5])`, 'l'), /cannot resolve truncated normalizer/);
+  // §03 booleans has no numeric bounds here: the per-row normalizer refuses.
+  await assert.rejects(() => value(`energy = p -> normalize(truncate(Poisson(p), booleans))
+l = logdensityof(energy.([3.0, 4.0]), [0, 1])`, 'l'), /cannot resolve truncated normalizer/);
 });
 
 test('a truncate normalizer defers to the per-call path for a known scalar law only', () => {
@@ -160,4 +160,31 @@ test('a truncate normalizer defers to the per-call path for a known scalar law o
   assert.equal(canDeferTruncateNormalizer(truncate({ kind: 'call', op: 'Normal', args: [lit(0), lit(1)] })), true, 'a CDF row');
   assert.equal(canDeferTruncateNormalizer(truncate({ kind: 'call', op: 'VonMises', args: [lit(0), lit(1)] })), false, 'no CDF row');
   assert.equal(canDeferTruncateNormalizer(truncate({ kind: 'call', op: 'weighted', args: [lit(2), poisson] })), false, 'not a law');
+});
+
+test('an integer set keeps the atoms of its range and no continuous mass', async () => {
+  // posintegers keeps 1, 2, ...; nonnegintegers and integers keep every atom.
+  for (const [set, first] of [['posintegers', 1], ['nonnegintegers', 0], ['integers', 0]] as const) {
+    const Z = first === 1 ? -Math.expm1(-3) : 1;
+    close((await value(`z = totalmass(truncate(Poisson(3.0), ${set}))`, 'z'))[0], Z, `${set} totalmass`);
+    close((await value(`l = logdensityof(normalize(truncate(Poisson(3.0), ${set})), 2)`, 'l'))[0],
+      logPmf(2, 3) - Math.log(Z), `${set} at 2`);
+    const atZero = (await value(`l = logdensityof(normalize(truncate(Poisson(3.0), ${set})), 0)`, 'l'))[0];
+    if (first === 1) assert.equal(atZero, -Infinity, `${set} excludes 0`);
+    else close(atZero, logPmf(0, 3), `${set} at 0`);
+    const Z4 = first === 1 ? -Math.expm1(-4) : 1;
+    close((await value(`energy = p -> normalize(truncate(Poisson(p), ${set}))
+l = logdensityof(energy.([3.0, 4.0]), [2, 5])`, 'l'))[0],
+    logPmf(2, 3) - Math.log(Z) + logPmf(5, 4) - Math.log(Z4), `${set} per row`);
+    const xs = Array.from(await value(`x ~ normalize(truncate(Poisson(3.0), ${set}))`, 'x', 2000));
+    assert.ok(xs.includes(first) && xs.every((x) => Number.isInteger(x) && x >= first), `${set} draws`);
+    const kept = await ctx2(`x ~ normalize(truncate(superpose(weighted(0.5, Poisson(3.0)), weighted(0.5, Poisson(3.0))), ${set}))`);
+    assert.ok(kept.includes(first) && kept.every((x) => x >= first), `${set} filter`);
+  }
+  // A continuous law puts no mass on the integers, so its normalizer is undefined.
+  close((await value('z = totalmass(truncate(Normal(0.0, 1.0), posintegers))', 'z'))[0], 0, 'Normal totalmass');
+  await assert.rejects(() => value('l = logdensityof(normalize(truncate(Normal(0.0, 1.0), nonnegintegers)), 1.0)', 'l'),
+    /Z = 0/);
+  await assert.rejects(() => value(`energy = m -> normalize(truncate(Normal(m, 1.0), integers))
+l = logdensityof(energy.([0.0, 1.0]), [1.0, 2.0])`, 'l'), /no mass on an integer set/);
 });

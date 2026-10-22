@@ -643,17 +643,18 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             const drawEnv = { ...env, ...(msg.env || {}) };
             const logMasses = refKeys.length > 0 && !msg.normalized
               ? new Float64Array(count) : null;
-            let params: any, mass = 0, lo = 0, hi = 0;
+            let params: any, mass = 0, lo = 0, hi = 0, integer = false;
             let valid = 0;
             for (let a = 0; a < count; a++) {
               for (let k = 0; k < refKeys.length; k++) drawEnv[refKeys[k]] = accessors[k](a);
               if (a === 0 || refKeys.length > 0) {
-                ({ lo, hi } = boundsAt(drawEnv));
+                ({ lo, hi, integer } = boundsAt(drawEnv));
                 const values = samplerLib.resolveParams(msg.ir, entry, drawEnv);
                 params = msg.ir.op === 'Uniform'
                   ? { lo: values[0], hi: values[1] }
                   : Object.fromEntries(entry.params.map((key: string, i: number) => [key, values[i]]));
-                mass = forwardCdf.intervalProbability(msg.ir.op, params, lo, hi);
+                // A CDF row is a continuous law, which puts no mass on the integers.
+                mass = integer ? 0 : forwardCdf.intervalProbability(msg.ir.op, params, lo, hi);
               }
               if (msg.normalized && !(mass > 0)) {
                 throw new Error('normalize(truncate): zero mass at atom ' + a);
@@ -687,7 +688,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
               ? require('./forward-cdf.ts').discreteSetEnds(bounds) : { below: lo, upTo: hi };
             const Flo = isFinite(lo) ? dist.cdf(ends.below) : 0;
             const Fhi = isFinite(hi) ? dist.cdf(ends.upTo) : 1;
-            const dF = Fhi - Flo;
+            // A continuous law puts no mass on the integers.
+            const dF = bounds.integer && !discrete ? 0 : Fhi - Flo;
             if (!(dF > 0)) {
               // Empty intersection M ∩ S: every atom NaN, mass shift = -Inf.
               for (let i = 0; i < total; i++) out[i] = NaN;
