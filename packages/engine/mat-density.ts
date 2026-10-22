@@ -1876,21 +1876,6 @@ function resolveNormalizeMasses(measureIR: any, ctx: any): Promise<any> {
   const samplerLib = require('./sampler.ts');
   for (const node of nodes) {
     const logMassExpr = logTotalMassExpr(node.args[0]);
-    // normalize(truncate(<discrete base>, S)): the materialised logTotalmass
-    // comes from the worker's continuous CDF-difference (F(hi)−F(lo)), which
-    // is wrong for a discrete base (drops the lower endpoint; the true mass is
-    // Σ pmf over S). §06 defines no discrete-truncate normalizer — fail loud
-    // rather than materialise a silently-wrong Z. Sampling of a
-    // truncated discrete leaf is untouched (this guards only the normalizer).
-    const innerT = node.args[0];
-    const truncBase = innerT && innerT.op === 'truncate' && innerT.args && innerT.args[0];
-    const baseOp = truncBase && typeof truncBase.op === 'string' ? truncBase.op : null;
-    if (logMassExpr == null && baseOp && samplerLib.isKnownDistribution(baseOp)
-        && samplerLib.lookupDistribution({ kind: 'call', op: baseOp }).discrete) {
-      throw new Error('density: normalize(truncate(' + baseOp + ', S)) — a '
-        + 'discrete base measure’s support-restricted normalizer (Σ pmf over S) '
-        + 'is not implemented; refusing to materialise a silently-wrong Z (spec §06)');
-    }
     // Per-θ normalizer when the inner is a recognised superpose-of-weighted
     // probability measures (Z depends on the latent weights); else materialise.
     if (logMassExpr != null) {

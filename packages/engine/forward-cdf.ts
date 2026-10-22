@@ -131,4 +131,20 @@ function truncatedQuantile(distOp: string, u: number, params: any, lo: number, h
   // An inverse can land a few ulps across an endpoint at extreme cube values.
   return Math.max(lo, Math.min(hi, result));
 }
-module.exports = { cdf, hasCdf, intervalProbability, truncatedQuantile, CDF };
+// A discrete law's mass on a scalar set counts the integer atoms the set
+// contains (§06 truncate: ν(A) = M(A ∩ S)), so a closed end keeps its atom.
+// `below` is the largest atom left out under the set, `upTo` the largest kept.
+function discreteSetEnds(b: { lo: number; hi: number; loOpen: boolean; hiOpen: boolean }) {
+  return { below: b.loOpen ? Math.floor(b.lo) : Math.ceil(b.lo) - 1,
+    upTo: b.hiOpen ? Math.ceil(b.hi) - 1 : Math.floor(b.hi) };
+}
+
+function discreteSetProbability(cdfAt: (k: number) => number,
+    b: { lo: number; hi: number; loOpen: boolean; hiOpen: boolean }): number {
+  const { below, upTo } = discreteSetEnds(b);
+  if (upTo <= below) return 0;
+  return (Number.isFinite(b.hi) ? cdfAt(upTo) : 1) - (Number.isFinite(b.lo) ? cdfAt(below) : 0);
+}
+
+module.exports = { cdf, hasCdf, intervalProbability, truncatedQuantile, CDF,
+  discreteSetEnds, discreteSetProbability };

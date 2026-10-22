@@ -501,13 +501,13 @@ function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
 
     // Filter-only fallback.
     if (!bounds) throw new Error('truncate: live interval bounds require a sampleable scalar base');
-    const [lo, hi] = bounds;
+    const { inSetBounds } = require('./ir-shared.ts');
     const parentSamples = parent.samples;
     const out = new Float64Array(parentSamples.length);
     const logMasses = new Float64Array(parentSamples.length);
     for (let i = 0; i < parentSamples.length; i++) {
       const x = parentSamples[i];
-      if (x >= lo && x <= hi) out[i] = x;
+      if (inSetBounds(x, bounds)) out[i] = x;
       else { out[i] = NaN; logMasses[i] = -Infinity; }
     }
     return shared.withSliceMasses(scalarMeasureN(out, {

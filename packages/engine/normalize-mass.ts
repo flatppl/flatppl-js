@@ -15,9 +15,10 @@ function canDeferTruncateNormalizer(inner: any): boolean {
       || !Array.isArray(inner.args) || inner.args.length !== 2) return false;
   const base = inner.args[0];
   if (!base || base.kind !== 'call' || typeof base.op !== 'string') return false;
-  if (!require('./forward-cdf.ts').hasCdf(base.op)) return false;
   const sampler = require('./sampler.ts');
-  if (!sampler.isKnownDistribution(base.op) || sampler.lookupDistribution(base).discrete) return false;
+  if (!sampler.isKnownDistribution(base.op)) return false;
+  // A discrete base's mass is a sum over the atoms in S (density.ts).
+  if (!require('./forward-cdf.ts').hasCdf(base.op) && !sampler.lookupDistribution(base).discrete) return false;
   const set = inner.args[1];
   return set?.kind === 'call' && set.op === 'interval' && set.args?.length === 2
     || (set?.kind === 'const' || set?.kind === 'ref' && set.ns === 'self')
@@ -290,11 +291,9 @@ function constantLeafParams(ir: any): { kernel: string; input: Record<string, nu
   const bound = leafParamIRs(ir);
   if (!bound) return null;
   const entry = bound.entry;
-  // A DISCRETE base's restricted mass is Σ pmf over S, which the continuous
-  // CDF difference gets wrong (it drops the lower endpoint). §06 defines no
-  // discrete-truncate normalizer, and mat-density already refuses
-  // `normalize(truncate(<discrete>, S))` loudly; decline so that refusal keeps
-  // firing rather than pre-empting it with a silently-wrong literal.
+  // A DISCRETE base's restricted mass counts the atoms in S, which the
+  // continuous CDF difference gets wrong (it drops an atom on a closed lower
+  // end). Decline: the materialised mass route counts atoms exactly.
   if (entry.discrete) return null;
   const { resolveConstant } = require('./ir-shared.ts');
   const num = (x: any) => {
