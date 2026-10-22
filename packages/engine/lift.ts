@@ -1278,7 +1278,11 @@ function liftInlineSubexpressions(bindings: any) {
     if (args.length !== 3 || args.some((a: any) => a?.type === 'KeywordArg')
         || (containsHoleOrPlaceholder(astArg) && !astArg.scalarLocscale)) return astArg;
     const base = __knownAstType(args[0]);
-    if (base?.kind !== 'measure' || base.domain?.kind !== 'scalar') return astArg;
+    // A copy of a scalar locscale made by closure substitution keeps the
+    // `scalarLocscale` mark, because the substituted base (`Dirac(pars.a > 0)`)
+    // can be untyped while the original was known scalar.
+    if (!astArg.scalarLocscale
+        && (base?.kind !== 'measure' || base.domain?.kind !== 'scalar')) return astArg;
     const shiftType = __knownAstType(args[1]);
     const scaleType = __knownAstType(args[2]);
     if (broadcast && (shiftType?.kind === 'array' || scaleType?.kind === 'array')) {
@@ -1310,8 +1314,22 @@ function liftInlineSubexpressions(bindings: any) {
         right: args[1] },
       { type: 'KeywordArg', name: 'x', value: x, loc }],
     };
+    // A closure copy re-lowers its scalar locscale with the adapter's formal
+    // substituted into the base, so the base holds a Placeholder that
+    // `liftMeasure` refuses to hoist. The base must still be its own binding:
+    // the pushforward is classified, and given its bijection, only over a
+    // named base. The original lowering hoisted it the same way.
+    let lawArg;
+    if (astArg.scalarLocscale && containsHoleOrPlaceholder(args[0])) {
+      visit(args[0]);
+      const baseName = freshName();
+      out.set(baseName, makeSyntheticBinding(baseName, args[0]));
+      lawArg = makeIdent(baseName, args[0].loc);
+    } else {
+      lawArg = liftMeasure(args[0]);
+    }
     const result = { type: 'CallExpr', callee: makeIdent('pushfwd', loc), builtin: true,
-      args: [f, liftMeasure(args[0])], loc };
+      args: [f, lawArg], loc };
     // Keep the constructor's explicit shift/scale dependencies. The generated
     // affine callable is fixed, but its resulting measure need not be.
     // Closure substitution can replace a known scalar boundary with a field
