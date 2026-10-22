@@ -82,6 +82,47 @@ inner = lawof(draw(Normal(mu, 1.0)) + draw(Normal(0.0, 1.0)))`;
     `expected a non-fixed anon phase, got ${JSON.stringify([...phases])}`);
 });
 
+// Applying a reified kernel inside a lambda copies the kernel's closure with
+// the lambda's placeholder substituted. Those copies read no binding that varies,
+// only the placeholder, so they used to classify as fixed. Preparation then tried
+// to evaluate each copied measure as a constant, every time it read fixedValues.
+test('phase: closure copies made inside a lambda are parameterized by its input', async () => {
+  const { makeMatCtx } = require('./_materialise-helpers.ts');
+  const { ctx, built } = makeMatCtx(`
+theta ~ Uniform(unitinterval)
+counts(n, theta) = iid(Binomial(n, theta), 2)
+sizes = indicesof(zeros(3))
+w = ones(3)
+y ~ normalize(ksuperpose(counts, w)(sizes, theta))
+K = kernelof(record(y = y), theta = theta)
+L = likelihoodof(pars -> K(theta = pars.theta), record(y = [1, 2]))
+prior = lawof(record(theta = theta))
+posterior = bayesupdate(L, prior)
+`, { sampleCount: 4 });
+  const copies = [...built.bindings].filter(([, b]: any) => b.closureOf);
+  // One copy of y's closure: three Binomial, iid and weighted components,
+  // the superpose, the normalize, and the draw.
+  assert.equal(copies.length, 12);
+  assert.equal(new Set(copies.map(([, b]: any) => b.closureOf)).size, 12);
+  for (const [name, b] of copies as any) {
+    assert.equal(b.phase, b.ir.op === 'draw' ? 'stochastic' : 'parameterized', name);
+  }
+  const computed: string[] = [];
+  const compute = built.fixedValues._compute;
+  built.fixedValues._compute = function (name: string, binding: any) {
+    computed.push(name);
+    return compute.call(this, name, binding);
+  };
+  built.fixedValues.forEach(() => {});
+  assert.deepEqual(computed.filter(name => built.bindings.get(name).closureOf), []);
+  // The weights normalize to 1/3. The observation [1, 2] rules out n = 1.
+  const theta = 0.3;
+  const expected = Math.log((2 * theta ** 3 * (1 - theta)
+    + 9 * theta ** 3 * (1 - theta) ** 3) / 3);
+  const scorer = await require('../mcmc-density.ts').buildLogPi(ctx, ctx.derivations.posterior);
+  assert.ok(Math.abs(scorer.logPi({ theta }) - expected) < 1e-12);
+});
+
 // --- Propagation through ancestors ---
 
 test('phase: propagates stochastic through deterministic operations', () => {
