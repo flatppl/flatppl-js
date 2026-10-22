@@ -106,11 +106,11 @@ test('mass: every distribution constructor is normalized', () => {
     ['m = Bernoulli(p = 0.5)', 'm'],
     ['m = Exponential(rate = 1.0)', 'm'],
     ['m = Dirac(value = 2.0)', 'm'],
-    ['m = MvNormal(mu = [0.0, 0.0], cov = [[1.0, 0.0], [0.0, 1.0]])', 'm'],
+    ['m = MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))', 'm'],
     ['m = Dirichlet(alpha = [1.0, 1.0, 1.0])', 'm'],
     ['m = Multinomial(n = 5, p = [0.2, 0.3, 0.5])', 'm'],
-    ['m = Wishart(nu = 3.0, scale = [[1.0, 0.0], [0.0, 1.0]])', 'm'],
-    ['m = InverseWishart(nu = 3.0, scale = [[1.0, 0.0], [0.0, 1.0]])', 'm'],
+    ['m = Wishart(nu = 3.0, scale = rowstack([[1.0, 0.0], [0.0, 1.0]]))', 'm'],
+    ['m = InverseWishart(nu = 3.0, scale = rowstack([[1.0, 0.0], [0.0, 1.0]]))', 'm'],
     ['m = LKJ(n = 2, eta = 1.0)', 'm'],
     ['m = LKJCholesky(n = 2, eta = 1.0)', 'm'],
     ['m = BinnedPoissonProcess(rates = [1.0, 2.0, 3.0])', 'm'],
@@ -127,9 +127,9 @@ test('mass: multivariate/process dists carry an array measure-domain (exact vect
   // stay %dynamic. (The precise extent also rides via the valueset.)
   const cases: [string, Array<number | string>][] = [
     ['m = Dirichlet(alpha = [1.0, 1.0, 1.0])', [3]],
-    ['m = MvNormal(mu = [0.0, 0.0], cov = [[1.0, 0.0], [0.0, 1.0]])', [2]],
+    ['m = MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))', [2]],
     ['m = Multinomial(n = 5, p = [0.2, 0.3, 0.5])', [3]],
-    ['m = Wishart(nu = 3.0, scale = [[1.0, 0.0], [0.0, 1.0]])', ['%dynamic', '%dynamic']],
+    ['m = Wishart(nu = 3.0, scale = rowstack([[1.0, 0.0], [0.0, 1.0]]))', ['%dynamic', '%dynamic']],
     ['m = PoissonProcess(intensity = weighted(5.0, Normal(0.0, 1.0)))', ['%dynamic']],
   ];
   for (const [src, shape] of cases) {

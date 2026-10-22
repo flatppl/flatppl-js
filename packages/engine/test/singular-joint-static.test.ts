@@ -671,7 +671,7 @@ ld = logdensityof(S, record(a = 0.5, b = 0.9))
     // an array-valued generator is not one coordinate.
     label: 'two coordinates of one multivariate draw',
     src: `
-v ~ MvNormal(mu = [0.0, 0.0], cov = [[1.0, 0.0], [0.0, 1.0]])
+v ~ MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))
 a = v[1]
 b = v[2]
 S = lawof(record(a = a, b = b))
