@@ -280,27 +280,33 @@ function _breakupMomentum(sigma: number, ma: number, mb: number): number {
   return Math.sqrt(lam) / (2 * Math.sqrt(sigma));
 }
 
-// Blatt-Weisskopf squared form factor F_l(p)² in the dimensionless
-// variable z = (p · d)². PDG convention; tabulated for l = 0..4.
-// Higher l values throw — extending the table is mechanical when a
-// consumer needs them.
+// Barrier polynomials χ_ℓ(z), ascending in z, for ℓ = 0..7 (spec §09
+// `blatt_weisskopf`): χ_ℓ(z) = z^{ℓ+1} (j_ℓ(√z)² + y_ℓ(√z)²). Each row
+// follows the closed form x²(j_ℓ² + y_ℓ²) = Σ_k (2ℓ−k)!(2ℓ−2k)! /
+// (k!((ℓ−k)!)²) (2x)^{2k−2ℓ}, checked exactly in the tests.
+const _BARRIER_CHI: number[][] = [
+  [1],
+  [1, 1],
+  [9, 3, 1],
+  [225, 45, 6, 1],
+  [11025, 1575, 135, 10, 1],
+  [893025, 99225, 6300, 315, 15, 1],
+  [108056025, 9823275, 496125, 18900, 630, 21, 1],
+  [18261468225, 1404728325, 58939650, 1819125, 47250, 1134, 28, 1],
+];
+
+// Blatt-Weisskopf 1/χ_ℓ(z) in the dimensionless variable z = (p · d)²,
+// the F_ℓ² factor without its z^ℓ numerator (the caller supplies it).
+// The spec defines ℓ = 0..7; any other ℓ throws.
 function _blattWeisskopfSquared(l: number, pd2: number): number {
-  switch (l) {
-    case 0: return 1;
-    case 1: return 1 / (1 + pd2);
-    case 2: return 1 / (9 + 3 * pd2 + pd2 * pd2);
-    case 3: {
-      const z2 = pd2 * pd2, z3 = z2 * pd2;
-      return 1 / (225 + 45 * pd2 + 6 * z2 + z3);
-    }
-    case 4: {
-      const z2 = pd2 * pd2, z3 = z2 * pd2, z4 = z3 * pd2;
-      return 1 / (11025 + 1575 * pd2 + 135 * z2 + 10 * z3 + z4);
-    }
-    default:
-      throw new Error('resonance_breitwigner: Blatt-Weisskopf factor for l='
-        + l + ' not implemented (supported: 0..4)');
+  const chi = _BARRIER_CHI[l];
+  if (chi === undefined) {
+    throw new Error('resonance_breitwigner: Blatt-Weisskopf factor for l='
+      + l + ' is not defined (spec §09 defines 0..7)');
   }
+  let value = chi[chi.length - 1];
+  for (let k = chi.length - 2; k >= 0; k--) value = value * pd2 + chi[k];
+  return 1 / value;
 }
 
 function _resonanceBreitwigner(

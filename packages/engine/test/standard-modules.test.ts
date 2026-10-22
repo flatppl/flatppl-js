@@ -111,6 +111,7 @@ test('particle-physics: kallen / breakup_momentum / blatt_weisskopf match spec �
     assert.ok(close(BW(l, p, d), blatt(l, p, d)), `blatt_weisskopf l=${l} = √(zˡ/χ_ℓ(z))`);
   }
   assert.ok(close(BW(0, 2, 3), 1), 'F_0 = 1');
-  // ℓ=5..7 are spec'd but not yet implemented (barrier polynomials 0..4 only).
-  assert.throws(() => BW(5, 1, 1), 'blatt_weisskopf l=5 not implemented');
+  // §09 defines the barrier for ℓ = 0..7 only (ℓ = 5..7 are pinned in
+  // blatt-weisskopf-high-l.test.ts).
+  assert.throws(() => BW(8, 1, 1), /not defined \(spec §09 defines 0\.\.7\)/);
 });
