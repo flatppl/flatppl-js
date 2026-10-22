@@ -1111,6 +1111,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (op === 'joint_likelihood') {
       const inputs: any[] = [];
       const seen = new Set<string>();
+      // The union is only an interface when every term splats: `L(θ) = ΣLᵢ(θ)`
+      // applies the same point to each term through that term's own interface,
+      // so a term taking one positional input receives a record point whole
+      // and a term of unknown interface leaves the point unconstrained.
+      let splats = args.length > 0;
       for (const arg of args) {
         const tT: any = inferExpr(arg, scopes);
         if (tT && tT.kind === 'likelihood' && Array.isArray(tT.inputs)) {
@@ -1118,9 +1123,20 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
             const key = inp && (inp.paramName || inp.name);
             if (key != null && !seen.has(key)) { seen.add(key); inputs.push(inp); }
           }
+          if (typeof tT.orderedInputs !== 'boolean'
+              || T.acceptsPositional({ inputs: tT.inputs, orderedInputs: tT.orderedInputs }, 1)) {
+            splats = false;
+          }
+        } else {
+          splats = false;
         }
       }
-      return T.likelihood(inputs.length > 0 ? inputs : undefined);
+      const out: any = T.likelihood(inputs.length > 0 ? inputs : undefined);
+      // When every term splats, the point splats over the union of their inputs
+      // (§06 `joint_likelihood` ≡ `likelihoodof(joint(K1, …, Kk), obs)`, and a
+      // `joint` of kernels takes inputs by name), and a field naming no input is
+      // a static error (checkLikelihoodPoint).
+      return splats ? { ...out, orderedInputs: false } : out;
     }
     if (op === 'densityof' || op === 'logdensityof') {
       const mT: any = args.length > 0 ? inferExpr(args[0], scopes) : T.deferred();
@@ -1158,8 +1174,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // name only the kernel's inputs.
   function checkLikelihoodPoint(op: string, lT: any, pointT: any, loc: any): void {
     const inputs = lT.inputs;
-    // `joint_likelihood` carries no interface flag; its union of inputs has
-    // no single kernel interface to check against.
     if (!Array.isArray(inputs) || inputs.length === 0 || typeof lT.orderedInputs !== 'boolean') return;
     if (!pointT || pointT.kind === 'failed' || pointT.kind === 'deferred' || pointT.kind === 'any') return;
     const iface = { inputs, orderedInputs: lT.orderedInputs };
