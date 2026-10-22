@@ -1492,6 +1492,42 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     // A named base still needs its own mass; it is not implicitly normalized.
     return walkNormalize({ ...ir, args: [resolved] }, value, refArrays, N, opts, acc, baseEnv, overlay);
   }
+  addNormalizerShift(inlineMeasureRefs(inner, opts), refArrays, N, opts, acc, baseEnv, overlay);
+  // Legacy bare normalize (no spec): Z treated as 1 — only correct when
+  // the inner is already a probability measure.
+  return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+}
+
+// Replaces the named measure operands of a reweighting / truncation / iid /
+// superposition chain with their definitions, so the closed-form mass lookups
+// below see the leaf instead of a lifted `__anon` binding. Value operands (the
+// weight, the set, the size) stay as written.
+function inlineMeasureRefs(ir: any, opts: any): any {
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    const resolved = opts.resolveMeasureRef?.(ir.name);
+    return resolved ? inlineMeasureRefs(resolved, opts) : ir;
+  }
+  if (ir.kind !== 'call' || !Array.isArray(ir.args)) return ir;
+  const measureAt = ir.op === 'weighted' || ir.op === 'logweighted' ? (i: number) => i === 1
+    : ir.op === 'truncate' || ir.op === 'iid' ? (i: number) => i === 0
+      : ir.op === 'superpose' ? () => true : null;
+  if (!measureAt) return ir;
+  const args = ir.args.map((a: any, i: number) => measureAt(i) ? inlineMeasureRefs(a, opts) : a);
+  return args.some((a: any, i: number) => a !== ir.args[i]) ? { ...ir, args } : ir;
+}
+
+// Adds the `-log Z` shift of a bare `normalize(inner)` to acc, for the inner
+// shapes whose Z this walker resolves. Any other inner is left unshifted
+// ("Z treated as 1", see walkNormalize).
+function addNormalizerShift(inner: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): void {
+  // Z(iid(M, n)) = Z(M)^n, so the shift is n copies of one copy's shift.
+  if (inner?.kind === 'call' && inner.op === 'iid' && inner.args?.length === 2) {
+    const copy = new Float64Array(N);
+    addNormalizerShift(inner.args[0], refArrays, N, opts, copy, baseEnv, overlay);
+    const total = iidCopyCount(samplerLib.evaluateExpr(inner.args[1], baseEnv));
+    for (let i = 0; i < N; i++) if (copy[i] !== 0) acc[i] += total * copy[i];
+    return;
+  }
   if (inner?.kind === 'call'
       && ['weighted', 'logweighted', 'truncate'].includes(inner.op)) {
     const logMass = require('./normalize-mass.ts').logTotalMassExpr(inner);
@@ -1500,7 +1536,7 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
       // Raw callback bodies bypass the main-thread normalizer rewrite. Use
       // its mass expression and validity check at each captured parameter.
       applyAtomScalar(shift, refArrays, N, baseEnv, overlay, acc, addNormalizeShift);
-      return walkAcc(inner, value, refArrays, N, opts, acc, baseEnv, overlay);
+      return;
     }
   }
   if (inner && inner.kind === 'call' && inner.op === 'truncate'
@@ -1537,9 +1573,6 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
       for (let i = 0; i < N; i++) acc[i] += shift;
     }
   }
-  // Legacy bare normalize (no spec): Z treated as 1 — only correct when
-  // the inner is already a probability measure.
-  return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
 }
 
 // Resolve the −log Z shift for a bare `normalize(superpose(…))` /
@@ -1861,20 +1894,7 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
   const args = ir.args || [];
   if (args.length !== 2) throw new Error('density: iid expected 2 args, got ' + args.length);
   const sizeVal: any = samplerLib.evaluateExpr(args[1], baseEnv);
-  let total = 0;
-  if (typeof sizeVal === 'number') {
-    total = sizeVal | 0;
-  } else if (sizeVal && typeof sizeVal === 'object') {
-    let arr: any = sizeVal;
-    if (arr.shape && arr.data) arr = arr.data;
-    if (arr.BYTES_PER_ELEMENT && typeof arr.length === 'number') {
-      total = 1;
-      for (let i = 0; i < arr.length; i++) total *= (arr[i] | 0);
-    } else if (Array.isArray(arr)) {
-      total = 1;
-      for (let i = 0; i < arr.length; i++) total *= (arr[i] | 0);
-    }
-  }
+  const total = iidCopyCount(sizeVal);
   if (total < 0) throw new Error('density: iid size negative: ' + total);
   if (valueLib.isValue(value) && typeof sizeVal !== 'number') {
     const axes = Array.from(valueLib.isValue(sizeVal) ? sizeVal.data : sizeVal) as number[];
@@ -1990,6 +2010,25 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
     cur = walkAcc(args[0], cur, refArrays, N, opts, acc, baseEnv, overlay);
   }
   return cur;
+}
+
+// Copies in an iid plate: a positive integer, or the product of a shape vector.
+function iidCopyCount(sizeVal: any): number {
+  let total = 0;
+  if (typeof sizeVal === 'number') {
+    total = sizeVal | 0;
+  } else if (sizeVal && typeof sizeVal === 'object') {
+    let arr: any = sizeVal;
+    if (arr.shape && arr.data) arr = arr.data;
+    if (arr.BYTES_PER_ELEMENT && typeof arr.length === 'number') {
+      total = 1;
+      for (let i = 0; i < arr.length; i++) total *= (arr[i] | 0);
+    } else if (Array.isArray(arr)) {
+      total = 1;
+      for (let i = 0; i < arr.length; i++) total *= (arr[i] | 0);
+    }
+  }
+  return total;
 }
 
 function walkJointchainStub() {
