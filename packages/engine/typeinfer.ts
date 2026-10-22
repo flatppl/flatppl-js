@@ -1093,7 +1093,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (op === 'bayesupdate') {
       const lT: any = args.length > 0 ? inferExpr(args[0], scopes) : T.deferred();
       const pT: any = args.length > 1 ? inferExpr(args[1], scopes) : T.deferred();
-      if (lT && lT.kind === 'likelihood' && T.isMeasure(pT)) return pT;
+      if (lT && lT.kind === 'likelihood' && T.isMeasure(pT)) {
+        // §06: the posterior weights the prior by `densityof(L, theta)` at the
+        // prior's variate, so that variate is the likelihood's point.
+        checkLikelihoodPoint(op, lT, pT.domain, args[1].loc, false);
+        return pT;
+      }
       return inferGenericCall(expr, scopes);
     }
     return inferGenericCall(expr, scopes);
@@ -1107,16 +1112,38 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // boundary inputs admits one positional input and receives a sole record
   // whole, even when its domain then rejects it. Without this check such a
   // point reached the density as a record in a real-valued slot and scored
-  // NaN or -Infinity with no diagnostic. Only that whole-binding mismatch is
-  // refused here; a splatting kernel's point is left to the runtime.
-  function checkLikelihoodPoint(op: string, lT: any, pointT: any, loc: any): void {
+  // NaN or -Infinity with no diagnostic. A splatting kernel's point must
+  // name only the kernel's inputs.
+  function checkLikelihoodPoint(op: string, lT: any, pointT: any, loc: any, whole = true): void {
     const inputs = lT.inputs;
     // `joint_likelihood` carries no interface flag; its union of inputs has
     // no single kernel interface to check against.
     if (!Array.isArray(inputs) || inputs.length === 0 || typeof lT.orderedInputs !== 'boolean') return;
     if (!pointT || pointT.kind === 'failed' || pointT.kind === 'deferred' || pointT.kind === 'any') return;
     const iface = { inputs, orderedInputs: lT.orderedInputs };
-    if (T.acceptsPositional(iface, 1)) {
+    if (!T.acceptsPositional(iface, 1)) {
+      // Splatting kernel: spec §04 "Calling conventions" makes a field or
+      // column that matches no input a static error.
+      if (pointT.kind !== 'record' && pointT.kind !== 'table') return;
+      const known = new Set(inputs.map((i: any) => i.name));
+      const unknown = Object.keys(pointT.kind === 'record' ? pointT.fields : pointT.columns)
+        .filter((k) => !known.has(k));
+      if (unknown.length === 0) return;
+      const what = pointT.kind === 'record' ? 'field' : 'column';
+      diagnostics.push({
+        severity: 'error',
+        message: op + ': the ' + (op === 'bayesupdate' ? "prior's variate" : 'point')
+          + ' is splatted over the likelihood inputs, but has no input named '
+          + unknown.map((k) => '"' + k + '"').join(', ') + ' for its ' + what
+          + (unknown.length > 1 ? 's' : '') + ' (inputs: '
+          + inputs.map((i: any) => '"' + i.name + '"').join(', ')
+          + '; spec §04 "Calling conventions": ' + what + ' names that do not match the '
+          + 'callable\'s argument names are a static error)',
+        loc,
+      });
+      return;
+    }
+    if (whole) {
       const first = inputs[0];
       if (T.unify(first.type, pointT, new Map()) == null) {
         const hint = pointT.kind === 'record' || pointT.kind === 'table'

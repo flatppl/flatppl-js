@@ -125,3 +125,46 @@ test('a non-record point of the wrong type is refused without the record hint', 
   assert.match(errs[0].message,
     /^logdensityof: the point is bound whole to likelihood input "theta", which expects real, got array of real \(length 1\)\.$/);
 });
+
+// Spec §04 "Calling conventions": when auto-splatting applies, "field or
+// column names that do not match the callable's argument names are a static
+// error".
+const SPLAT_MODEL = `
+theta = elementof(unitinterval)
+y ~ Binomial(10, theta)
+K = kernelof(record(y = y))
+L = likelihoodof(K, record(y = 3))
+`;
+
+for (const op of ['logdensityof', 'densityof']) {
+  test(`${op}: an extra record field for a splatting kernel is refused`, () => {
+    const errs = errors(SPLAT_MODEL + `s = ${op}(L, record(theta = 0.3, unused = 7))\n`);
+    assert.equal(errs.length, 1);
+    assert.match(errs[0].message, new RegExp(
+      `^${op}: the point is splatted over the likelihood inputs, but has no input named `
+      + '"unused" for its field \\(inputs: "theta"'));
+    assert.equal(errs[0].loc.start.line, 5);
+  });
+}
+
+test('bayesupdate: an extra prior field for a splatting kernel is refused', () => {
+  const errs = errors(SPLAT_MODEL
+    + 'prior = lawof(record(theta = theta, other = theta))\npost = bayesupdate(L, prior)\n');
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].message, /^bayesupdate: the prior's variate is splatted .* no input named "other"/);
+});
+
+test('a record point naming exactly the inputs still scores the closed form', async () => {
+  const src = SPLAT_MODEL + 's = logdensityof(L, record(theta = 0.3))\n';
+  assert.deepEqual(errors(src), []);
+  assert.ok(Math.abs(await score(src) - CLOSED_FORM) < 1e-12);
+});
+
+test('several unknown fields, and unknown table columns, are all named', () => {
+  const fields = errors(SPLAT_MODEL + 's = logdensityof(L, record(theta = 0.3, a = 1, b = 2))\n');
+  assert.equal(fields.length, 1);
+  assert.match(fields[0].message, /has no input named "a", "b" for its fields \(inputs: "theta"/);
+  const columns = errors(SPLAT_MODEL + 's = logdensityof(L, table(theta = [0.3, 0.4], extra = [1, 2]))\n');
+  assert.equal(columns.length, 1);
+  assert.match(columns[0].message, /has no input named "extra" for its column \(inputs: "theta"/);
+});
