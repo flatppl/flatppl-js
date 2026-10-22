@@ -586,20 +586,25 @@ const VECTOR_OUTPUT_DISTRIBUTIONS = new Set([
 // Numeric bounds of a scalar set descriptor (spec §03): `interval(lo, hi)` is
 // closed (the parser gives `unitinterval` as one), `posreals` is (0, +inf],
 // `nonnegreals` is [0, +inf]. No scalar set has an open upper end. An open lower
-// end matters for a discrete base, whose atoms can sit exactly on it. Null for
-// other set kinds.
-function scalarSetBounds(setDescr: any): { lo: number; hi: number; loOpen: boolean } | null {
+// end matters for a discrete base, whose atoms can sit exactly on it. The
+// integer sets also require a whole, finite value: §03 admits `inf` only in the
+// real sets. Null for other set kinds.
+type SetBounds = { lo: number; hi: number; loOpen: boolean; integer: boolean };
+function scalarSetBounds(setDescr: any): SetBounds | null {
   switch (setDescr?.kind) {
-    case 'interval': return { lo: +setDescr.lo, hi: +setDescr.hi, loOpen: false };
-    case 'reals': return { lo: -Infinity, hi: Infinity, loOpen: false };
-    case 'posreals': return { lo: 0, hi: Infinity, loOpen: true };
-    case 'nonnegreals': return { lo: 0, hi: Infinity, loOpen: false };
+    case 'interval': return { lo: +setDescr.lo, hi: +setDescr.hi, loOpen: false, integer: false };
+    case 'reals': return { lo: -Infinity, hi: Infinity, loOpen: false, integer: false };
+    case 'posreals': return { lo: 0, hi: Infinity, loOpen: true, integer: false };
+    case 'nonnegreals': return { lo: 0, hi: Infinity, loOpen: false, integer: false };
+    case 'integers': return { lo: -Infinity, hi: Infinity, loOpen: false, integer: true };
+    case 'posintegers': return { lo: 1, hi: Infinity, loOpen: false, integer: true };
+    case 'nonnegintegers': return { lo: 0, hi: Infinity, loOpen: false, integer: true };
     default: return null;
   }
 }
 
-function inSetBounds(x: number, b: { lo: number; hi: number; loOpen: boolean }): boolean {
-  return (b.loOpen ? x > b.lo : x >= b.lo) && x <= b.hi;
+function inSetBounds(x: number, b: SetBounds): boolean {
+  return (b.loOpen ? x > b.lo : x >= b.lo) && x <= b.hi && (!b.integer || Number.isInteger(x));
 }
 
 // Subset of the above whose density is over the counting reference (a
