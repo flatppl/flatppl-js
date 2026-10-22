@@ -789,7 +789,7 @@ function liftInlineSubexpressions(bindings: any) {
         const expected = op === 'rand' && i === 0 && a?.callee?.name === 'tilt'
           ? 'measure' : sig ? sig[i] : null;
         if      ((op === 'joint' || op === 'iid') && expected === 'measure') astNode.args[i] = liftJointComponent(a);
-        else if (expected === 'measure')          astNode.args[i] = liftMeasure(a);
+        else if (expected === 'measure')          astNode.args[i] = liftMeasure(a, op === 'bayesupdate' && i === 1);
         else if (expected === 'value-or-measure') astNode.args[i] = liftMeasureOrValue(a);
         else                                      astNode.args[i] = liftValue(a);
         // `broadcast(f, [lit_or_ref, …], X, …)` and dot-call /
@@ -860,9 +860,14 @@ function liftInlineSubexpressions(bindings: any) {
           || astNode.callee.name === 'kernelof');
   }
 
-  function liftMeasure(astArg: any) {
+  // `typed` keeps the operand's inferred type on the synthetic binding.
+  // `buildLogPi` reads an inline `bayesupdate` prior's record fields from it
+  // to bind a whole-record likelihood point; an untyped binding made it
+  // project the adapter's field out of a bare draw (logPi -Infinity).
+  function liftMeasure(astArg: any, typed = false) {
     if (!astArg) return astArg;
-    return finishLiftMeasure(inlineUserCall(astArg));
+    const inlined = inlineUserCall(astArg);
+    return finishLiftMeasure(inlined, typed ? __knownAstType(inlined) : undefined);
   }
 
   // Keep inline kernels visible to the fan-out lowering. Measure components

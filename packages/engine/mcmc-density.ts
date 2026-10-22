@@ -429,7 +429,12 @@ async function buildLogPi(
     [name, d.paramKwargs[i]]));
   const whole = require('./types.ts').acceptsPositional(d, 1);
   const priorType = ctx.bindings.get(priorName)?.inferredType;
-  const priorFields = priorType?.domain?.fields;
+  // The point shape comes from the prior's variate type. Guessing a bare draw
+  // for an untyped prior made a whole-record adapter score -Infinity silently.
+  if (!priorType) {
+    throw new Error(`buildLogPi: the type of prior '${priorName}' is unknown, so the likelihood point cannot be bound`);
+  }
+  const priorFields = priorType.domain?.fields;
   const wholePoint = priorFields ? { kind: 'call', op: 'record',
     fields: Object.keys(priorFields).map(name => ({ name,
       value: { kind: 'ref', ns: 'self', name } })) }
