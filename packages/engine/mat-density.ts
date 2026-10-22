@@ -642,11 +642,8 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
   // likelihoods"), so each term lowers and scores on its own and the per-atom
   // log-weight is the SUM. One term is the ordinary case, expressed the same
   // way so there is a single reweighting below.
-  const terms: any[] = Array.isArray(d.subs)
-    ? d.subs.map((sub: any) => ({ bodyIR: sub.bodyIR, bodyName: sub.bodyName,
-        obsIR: sub.obsIR, paramKwargs: sub.paramKwargs, params: sub.params, orderedInputs: sub.orderedInputs }))
-    : [{ bodyIR: d.bodyIR, bodyName: d.bodyName, obsIR: d.obsIR,
-         paramKwargs: d.paramKwargs, params: d.params, orderedInputs: d.orderedInputs }];
+  // Copy whole terms, so no resolved likelihood field is dropped on the way.
+  const terms: any[] = Array.isArray(d.subs) ? d.subs.map((sub: any) => ({ ...sub })) : [d];
   const scores = terms.map((t: any) => {
     const node = clm.lowerMeasure(t.bodyIR || t.bodyName, ctx,
       { derivation: Object.assign({}, d, t), density: true });
@@ -1688,11 +1685,7 @@ function matJointLikelihoodDensity(d: any, ctx: any) {
   // carries — e.g. an auxiliary constraint touching one nuisance).
   const N = ctx.sampleCount;
   return Promise.all((d.subs || []).map((sub: any) =>
-    matLikelihoodDensity({
-      kind: 'likelihood_density',
-      bodyName: sub.bodyName, bodyIR: sub.bodyIR, obsIR: sub.obsIR,
-      paramKwargs: sub.paramKwargs, params: sub.params, orderedInputs: sub.orderedInputs, pointIR: d.pointIR,
-    }, ctx)
+    matLikelihoodDensity({ ...sub, kind: 'likelihood_density', pointIR: d.pointIR }, ctx)
   )).then((measures: any[]) => {
     const out = new Float64Array(N);
     for (const m of measures) {
@@ -1719,17 +1712,8 @@ function matPosteriorDensity(d: any, ctx: any) {
   // extends over all of them (spec §06 "Combining likelihoods"), so a
   // multi-instrument posterior scores like a single-term one.
   const N = ctx.sampleCount;
-  const terms: any[] = Array.isArray(d.subs)
-    ? d.subs.map((sub: any) => ({
-        kind: 'likelihood_density',
-        bodyName: sub.bodyName, bodyIR: sub.bodyIR, obsIR: sub.obsIR,
-        paramKwargs: sub.paramKwargs, params: sub.params, orderedInputs: sub.orderedInputs, pointIR: d.pointIR,
-      }))
-    : [{
-        kind: 'likelihood_density',
-        bodyName: d.bodyName, bodyIR: d.bodyIR, obsIR: d.obsIR,
-        paramKwargs: d.paramKwargs, params: d.params, orderedInputs: d.orderedInputs, pointIR: d.pointIR,
-      }];
+  const terms: any[] = (Array.isArray(d.subs) ? d.subs : [d]).map((term: any) =>
+    ({ ...term, kind: 'likelihood_density', pointIR: d.pointIR }));
   return Promise.all([
     ...terms.map((t: any) => matLikelihoodDensity(t, ctx)),
     matLogdensityof({
@@ -1874,7 +1858,7 @@ function assertRewriteTargetsPrivate(nodes: any[], measureIR: any, ctx: any) {
   }
 }
 
-function resolveNormalizeMasses(measureIR: any, ctx: any) {
+function resolveNormalizeMasses(measureIR: any, ctx: any): Promise<any> {
   // Fixed products use this direct-density route rather than likelihood theta
   // substitution. Resolve their support sums before the empirical mass fallback.
   resolveProductNormalizers(measureIR, null, ctx);
@@ -1996,13 +1980,11 @@ function resolveNormalizeMasses(measureIR: any, ctx: any) {
     needMaterialise.push(node);
   }
   if (needMaterialise.length === 0) return Promise.resolve(measureIR);
-  const refNames = Array.from(new Set(needMaterialise.map((n: any) => n.massFrom.ref as string)));
-  return Promise.all(refNames.map((r) => Promise.resolve(ctx.getMeasure(r))))
+  const { massFromMeasures } = require('./normalize-mass.ts');
+  return massFromMeasures(needMaterialise, ctx)
     .then((measures: any[]) => {
-      const byName: Record<string, any> = {};
-      refNames.forEach((nm: string, i: number) => { byName[nm] = measures[i]; });
-      for (const node of needMaterialise) {
-        const M = byName[node.massFrom.ref];
+      for (const [i, node] of needMaterialise.entries()) {
+        const M = measures[i];
         const logZ = M && typeof M.logTotalmass === 'number' ? M.logTotalmass : null;
         if (logZ == null || !Number.isFinite(logZ)) {
           throw new Error('normalize density: inner measure "' + node.massFrom.ref

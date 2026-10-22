@@ -559,6 +559,14 @@ function _buildBody(input: any, deriv: any, ctx: any, opts?: any): { body: any; 
   if (opts && Array.isArray(opts.freeInputs)) {
     for (const nm of opts.freeInputs) boundarySet.add(nm);
   }
+  // A likelihood adapter that applies one kernel scores that kernel's body.
+  // Its boundaries are cut like inputs, then replaced by the adapter's
+  // argument expressions (spec §04 boundary substitution).
+  // Only the kernel body: lowering the posterior itself also reaches the prior,
+  // whose like-named refs are module nodes.
+  const applied = deriv && deriv.boundaryArgs
+    && (input === deriv.bodyIR || input === deriv.bodyName) ? deriv.boundaryArgs : null;
+  const cut = applied ? new Set([...boundarySet, ...Object.keys(applied)]) : boundarySet;
 
   // (3)+(4) Generative-composite → canonical mcmarginal form, OR closed-form
   // boundary inlining — mutually exclusive, matching the legacy
@@ -587,10 +595,76 @@ function _buildBody(input: any, deriv: any, ctx: any, opts?: any): { body: any; 
     // number for `logdensityof(lawof(record(...)), point)` whose boundary
     // set is empty). With no derived value bindings this is a no-op, so
     // body === expandMeasure(name) for the green-fixture shapes.
-    body = shared.inlineBoundaryDerivations(expanded, boundarySet, ctx);
+    body = shared.inlineBoundaryDerivations(expanded, cut, ctx);
   }
+  if (applied) body = _bindAppliedBoundaries(body, applied, mc, ctx);
 
   return { body, boundarySet, mc };
+}
+
+// Replace an applied kernel's boundary refs with the call's arguments, then
+// assert that nothing in the scored tree still reads a boundary. Lift copies a
+// kernel whose closure would leave such a read, such as a marginalized latent
+// draw, so a failure here is an engine bug, never a model error.
+function _bindAppliedBoundaries(body: any, applied: Record<string, any>, mc: boolean, ctx: any): any {
+  const reads = new Map<string, boolean>();
+  const readsBoundary = (name: string): boolean => {
+    if (Object.prototype.hasOwnProperty.call(applied, name)) return true;
+    if (reads.has(name)) return reads.get(name)!;
+    reads.set(name, false);
+    const binding = ctx?.bindings?.get(name);
+    const deps = binding?.bodyDeps || binding?.deps || [];
+    const result = deps.some(readsBoundary);
+    reads.set(name, result);
+    return result;
+  };
+  // Refs the kernel's body keeps. Argument IRs are not walked: they read the
+  // caller's scope, where a like-named module binding is not the boundary.
+  const kept = new Set<string>();
+  // One structural pass over every field, not only IR children: by-name
+  // annotations such as `massFrom` and `branches[i].ref` sit outside them.
+  // A private walker also keeps the shared IR mappers' call sites monomorphic.
+  const bind = (node: any, shadowed: Set<string>): any => {
+    if (!node || typeof node !== 'object' || ArrayBuffer.isView(node)) return node;
+    if (Array.isArray(node)) {
+      let out: any[] | null = null;
+      for (let i = 0; i < node.length; i++) {
+        const r = bind(node[i], shadowed);
+        if (r !== node[i]) (out || (out = node.slice()))[i] = r;
+      }
+      return out || node;
+    }
+    if (node.kind === 'ref' && node.ns === 'self' && !shadowed.has(node.name)) {
+      if (Object.prototype.hasOwnProperty.call(applied, node.name)) return applied[node.name];
+      kept.add(node.name);
+      return node;
+    }
+    if (node.kind !== 'ref' && typeof node.ref === 'string') kept.add(node.ref);
+    // A reified body binds its identifier params, and a bijection function
+    // body binds its parameter, so neither reads a like-named boundary.
+    const bound = irWalk.identifierBoundParams(node);
+    const inner = bound && node.body ? new Set([...shadowed, ...bound])
+      : node.paramName && node.body ? new Set([...shadowed, node.paramName]) : shadowed;
+    let out: any = null;
+    for (const k in node) {
+      if (k === 'loc' || k === 'massFrom') continue;
+      const r = bind(node[k], k === 'body' ? inner : shadowed);
+      if (r !== node[k]) (out || (out = { ...node }))[k] = r;
+    }
+    const result = out || node;
+    // A normalizer whose named inner measure reads a boundary carries the
+    // substituted inner, so a fallback mass is taken at the argument.
+    if (node.massFrom?.ref && readsBoundary(node.massFrom.ref)) {
+      return { ...result, massFrom: { ...node.massFrom, ir: result.args[0] } };
+    }
+    return result;
+  };
+  const bound = bind(body, new Set());
+  const leak = mc ? 'a Monte Carlo marginal' : [...kept].find(readsBoundary);
+  if (leak) {
+    throw new Error(`internal: an applied kernel's boundary still reaches its scored body through ${leak}`);
+  }
+  return bound;
 }
 
 // The `jointchain` a derivation IS, or the one it WRAPS through mass-only

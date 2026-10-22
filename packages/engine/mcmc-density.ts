@@ -176,12 +176,9 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
   // Fallback: a normalize whose mass we can't express symbolically. Materialise
   // the inner measure once and bake the constant −log Z (the pre-existing
   // approximation; correct only when Z is θ-independent).
-  const refNames = Array.from(new Set(needMaterialise.map((n: any) => n.massFrom.ref as string)));
-  const measures = await Promise.all(refNames.map((r) => Promise.resolve(ctx.getMeasure(r))));
-  const byName: Record<string, any> = {};
-  refNames.forEach((nm, i) => { byName[nm] = measures[i]; });
-  for (const node of needMaterialise) {
-    const M = byName[node.massFrom.ref];
+  const measures = await require('./normalize-mass.ts').massFromMeasures(needMaterialise, ctx);
+  for (const [i, node] of needMaterialise.entries()) {
+    const M = measures[i];
     const logZ = M && typeof M.logTotalmass === 'number' ? M.logTotalmass : null;
     if (logZ == null || !Number.isFinite(logZ)) {
       throw new Error('normalize density: inner measure "' + node.massFrom.ref

@@ -2329,8 +2329,8 @@ function validateMixedCalls(node: any, diagnostics: any[]) {
         message: 'ordinary calls require either positional or keyword arguments, not both (spec §05)' });
     }
   }
-  for (const [key, child] of Object.entries(node)) {
-    if (key !== 'loc') validateMixedCalls(child, diagnostics);
+  for (const key in node) {
+    if (key !== 'loc') validateMixedCalls(node[key], diagnostics);
   }
 }
 
@@ -4326,8 +4326,8 @@ function retainTableSchemas(ast: any, ir: any): void {
   function walk(node: any, visit: (node: any) => void): void {
     if (!node || typeof node !== 'object') return;
     visit(node);
-    for (const [name, child] of Object.entries(node)) {
-      if (name !== 'meta' && name !== 'inferredTableType') walk(child, visit);
+    for (const name in node) {
+      if (name !== 'meta' && name !== 'inferredTableType' && name !== 'loc') walk(node[name], visit);
     }
   }
   walk(ir, node => {

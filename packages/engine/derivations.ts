@@ -2604,16 +2604,7 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): Derivatio
   // `exp(<anon logdensityof>)`.
   const lk = _resolveLikelihood(Mref, bindings);
   if (lk) {
-    return {
-      kind: 'likelihood_density',
-      bodyName: lk.bodyName,
-      bodyIR: lk.bodyIR,
-      obsIR: lk.obsIR,
-      paramKwargs: lk.paramKwargs,
-      params: lk.params,
-      orderedInputs: lk.orderedInputs,
-      pointIR: obsIR,
-    };
+    return { kind: 'likelihood_density', ...lk, pointIR: obsIR };
   }
   // `logdensityof(bayesupdate(L, prior), θ)`: score a posterior at θ (#309).
   // Per spec §06 `bayesupdate(L, prior) ≡ logweighted(fn(logdensityof(L, _)),
@@ -2630,17 +2621,7 @@ function classifyLogdensityof(rhsIR: IRNode, ast: any, bindings: any): Derivatio
     if (isSelfRef(priorRef) && bindings.has(priorRef.name)) {
       const plk = _resolveLikelihood(Lref, bindings);
       if (plk) {
-        return {
-          kind: 'posterior_density',
-          priorName: priorRef.name,
-          bodyName: plk.bodyName,
-          bodyIR: plk.bodyIR,
-          obsIR: plk.obsIR,
-          paramKwargs: plk.paramKwargs,
-          params: plk.params,
-          orderedInputs: plk.orderedInputs,
-          pointIR: obsIR,
-        } as any;
+        return { kind: 'posterior_density', priorName: priorRef.name, ...plk, pointIR: obsIR } as any;
       }
       // The L of a bayesupdate may itself be a `joint_likelihood` (spec §06
       // "Combining likelihoods"), which `_resolveLikelihood` declines — it
@@ -6019,9 +6000,37 @@ function expandMeasureRefsInIR(ir: IRNode | null, derivations: any, visited?: an
 // paramKwargs are the kernel's parametric-input call-site names (the
 // reified boundary names) the caller feeds — bayesupdate from the
 // prior's atoms, standalone density from the given point θ.
+// A call of a named kernel whose boundaries are module bindings, with every
+// boundary bound exactly once: keywords by input name, positional arguments by
+// input order. Returns the kernel's body and the boundary → argument IR map.
+function _singleKernelApplication(callIR: any, bindings: any): {
+  body: any; boundaryArgs: Record<string, any>;
+} | null {
+  if (!callIR || callIR.kind !== 'call' || callIR.op || callIR.target?.ns !== 'self') return null;
+  const K = bindings.get(callIR.target.name)?.ir;
+  if (!K || K.kind !== 'call' || K.op !== 'functionof' || !K.body || !Array.isArray(K.params)
+      || !K.paramSources?.every((s: any) => s?.kind === 'binding')) return null;
+  const inputs: string[] = Array.isArray(K.paramKwargs) ? K.paramKwargs : K.params;
+  const boundaryArgs: Record<string, any> = Object.create(null);
+  const positional = callIR.args || [];
+  if (positional.length && K.orderedInputs === false) return null;
+  positional.forEach((arg: any, i: number) => {
+    if (i < K.params.length) boundaryArgs[K.params[i]] = arg;
+  });
+  if (positional.length > K.params.length) return null;
+  for (const [name, arg] of Object.entries(callIR.kwargs || {})) {
+    const i = inputs.indexOf(name);
+    if (i < 0 || K.params[i] in boundaryArgs) return null;
+    boundaryArgs[K.params[i]] = arg;
+  }
+  if (!K.params.every((p: string) => p in boundaryArgs)) return null;
+  return { body: K.body, boundaryArgs };
+}
+
 function _resolveLikelihood(Lref: any, bindings: any): {
   bodyName: string | null; bodyIR: any; obsIR: any;
   paramKwargs: string[]; params: string[]; orderedInputs: boolean;
+  boundaryArgs?: Record<string, any>;
 } | null {
   if (!isSelfRef(Lref)) return null;
   const Lbinding = bindings.get(Lref.name);
@@ -6036,6 +6045,7 @@ function _resolveLikelihood(Lref: any, bindings: any): {
 function _resolveLikelihoodIR(Lir: any, bindings: any): {
   bodyName: string | null; bodyIR: any; obsIR: any;
   paramKwargs: string[]; params: string[]; orderedInputs: boolean;
+  boundaryArgs?: Record<string, any>;
 } | null {
   if (!isCallOp(Lir, 'likelihoodof', 2)) return null;
   const Kref = Lir.args[0];
@@ -6048,7 +6058,11 @@ function _resolveLikelihoodIR(Lir: any, bindings: any): {
     const Kbinding = bindings.get(Kref.name);
     const Kir = Kbinding && Kbinding.ir;
     if (Kir && Kir.kind === 'call' && Kir.op === 'functionof' && Kir.body) {
-      const bodyIRArg = Kir.body;
+      // Lift leaves an adapter lambda that applies one kernel unexpanded.
+      // Score the applied kernel's own body, with its boundaries bound to the
+      // adapter's argument expressions (spec §04 boundary substitution).
+      const applied = _singleKernelApplication(Kir.body, bindings);
+      const bodyIRArg = applied ? applied.body : Kir.body;
       let bodyName = null;
       let bodyIR = null;
       if (isSelfRef(bodyIRArg)) {
@@ -6067,6 +6081,7 @@ function _resolveLikelihoodIR(Lir: any, bindings: any): {
           : (Array.isArray(Kir.params) ? Kir.params.slice() : []),
         params: Array.isArray(Kir.params) ? Kir.params.slice() : [],
         orderedInputs: Kir.orderedInputs !== false,
+        ...(applied ? { boundaryArgs: applied.boundaryArgs } : {}),
       };
     }
   }
@@ -6205,16 +6220,7 @@ function classifyBayesupdate(binding: any, bindings: any): DerivationBayesupdate
   // rather than let prepareDensityRefs re-materialise a like-named module
   // binding via getMeasure (the boundary-conflation bug, audit §3 / H1/H6).
   // paramKwargs are the call-site names the prior fields map onto.
-  return {
-    kind: 'bayesupdate',
-    from: priorRef.name,
-    bodyName: lk.bodyName,
-    bodyIR: lk.bodyIR,
-    obsIR: lk.obsIR,
-    paramKwargs: lk.paramKwargs,
-    params: lk.params,
-      orderedInputs: lk.orderedInputs,
-  };
+  return { kind: 'bayesupdate', from: priorRef.name, ...lk };
 }
 
 module.exports = {

@@ -82,8 +82,8 @@ inner = lawof(draw(Normal(mu, 1.0)) + draw(Normal(0.0, 1.0)))`;
     `expected a non-fixed anon phase, got ${JSON.stringify([...phases])}`);
 });
 
-// Applying a reified kernel inside a lambda copies the kernel's closure with
-// the lambda's placeholder substituted. Those copies read no binding that varies,
+// Applying a reified kernel inside a named lambda copies the kernel's closure
+// with the lambda's placeholder substituted. Those copies read no binding that varies,
 // only the placeholder, so they used to classify as fixed. Preparation then tried
 // to evaluate each copied measure as a constant, every time it read fixedValues.
 test('phase: closure copies made inside a lambda are parameterized by its input', async () => {
@@ -95,7 +95,8 @@ sizes = indicesof(zeros(3))
 w = ones(3)
 y ~ normalize(ksuperpose(counts, w)(sizes, theta))
 K = kernelof(record(y = y), theta = theta)
-L = likelihoodof(pars -> K(theta = pars.theta), record(y = [1, 2]))
+adapter = pars -> K(theta = pars.theta)
+L = likelihoodof(adapter, record(y = [1, 2]))
 prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 `, { sampleCount: 4 });
