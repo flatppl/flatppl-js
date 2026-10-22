@@ -113,7 +113,7 @@ test('boundary lists refuse mixing bare and keyword entries', () => {
 });
 
 test('a bare placeholder must derive a legal, distinct input name', () => {
-  for (const placeholder of ['_in_', '_all_', '_only_', '_true_', '_false_', '_self_', '_base_']) {
+  for (const placeholder of ['_in_', '_all_', '_only_', '_true_', '_false_']) {
     const result = processSource(INPUTS + `z = functionof(a + ${placeholder}, a, ${placeholder})`);
     assert.ok(result.diagnostics.some((d: any) => d.severity === 'error'
       && d.message.includes('reserved word')), placeholder);
@@ -121,4 +121,12 @@ test('a bare placeholder must derive a legal, distinct input name', () => {
   const duplicate = processSource('x = elementof(reals)\nz = functionof(x + _x_, x, _x_)');
   assert.ok(duplicate.diagnostics.some((d: any) => d.severity === 'error'
     && d.message.includes("Duplicate argument name 'x'")));
+});
+
+test('a bare placeholder may derive self or base, which are barred only as module bindings', () => {
+  const bare = 'f = functionof(_self_ + _base_, _self_, _base_)\nz = f(self = 2, base = 3)';
+  const keyword = 'f = functionof(_self_ + _base_, self = _self_, base = _base_)\nz = f(self = 2, base = 3)';
+  assert.equal(pir(bare), pir(keyword));
+  const { built } = makeMatCtx(bare, { sampleCount: 1 });
+  assert.equal(built.fixedValues.get('z'), 5);
 });

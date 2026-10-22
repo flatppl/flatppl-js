@@ -3467,8 +3467,9 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
 }
 
 // Spec §04: names a bare placeholder cannot derive, since they are not legal
-// argument names.
-const RESERVED_BOUNDARY_NAMES = new Set(['true', 'false', 'in', 'all', 'only', 'self', 'base']);
+// argument names (§05 reserved words). `self` and `base` are barred only as
+// module bindings, so they stay legal argument names.
+const RESERVED_BOUNDARY_NAMES = new Set(['true', 'false', 'in', 'all', 'only']);
 
 /**
  * Analyze a parsed AST.
