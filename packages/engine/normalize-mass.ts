@@ -113,7 +113,7 @@ function totalMassExpr(ir: any): any {
   // select{ weighted(θ, ·), logweighted(0, ·) }. mass(logweighted(logw, M)) =
   // exp(logw)·mass(M). Without this branch totalMassExpr returned null for
   // such a mixture, dropping the whole normalize to the θ-constant materialised
-  // Z bake (Buffy #67).
+  // Z bake.
   if (op === 'logweighted' && Array.isArray(ir.args) && ir.args.length === 2) {
     // A callable logweight contributes an integral, just like a callable
     // ordinary weight. It is not a scalar mass multiplier.

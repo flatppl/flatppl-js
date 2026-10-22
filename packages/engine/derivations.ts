@@ -5511,7 +5511,7 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
  */
 /**
  * Resolve measure-position self-refs nested inside a kernel-broadcast
- * head's `functionof` BODY (Buffy #268) — e.g. `weighted(p, bkg)`'s `bkg`.
+ * head's `functionof` BODY — e.g. `weighted(p, bkg)`'s `bkg`.
  * Deliberately NARROWER than, and separate from, `_expandStructural`'s
  * general contract (several callers — e.g. orchestrator.test.ts "unknown
  * op is passed through unchanged" — rely on that function returning an
@@ -5665,7 +5665,7 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
     // A kernel-broadcast head that names a user-defined `functionof` whose
     // BODY is DIRECTLY a composite MEASURE (normalize/superpose/weighted/…
     // of sampleable leaves — spec §04: such a functionof IS a Markov
-    // kernel; Buffy #268) needs the SAME by-name measure expansion any
+    // kernel) needs the SAME by-name measure expansion any
     // top-level measure's components already get (the truncate/superpose/
     // PoissonProcess cases above) — e.g. `energy = p ->
     // normalize(superpose(weighted(p, bkg), weighted(1-p, sig)))`'s

@@ -2,8 +2,8 @@
 
 // weighted(w, M) with a FUNCTION-of-variate weight — spec §06 "Density of
 // composed measures": logdensityof(weighted(w, M), x) = log w(x) +
-// logdensityof(M, x), w a constant OR a function of the variate. Buffy
-// #307: the engine dropped w entirely when it was a function (named-ref OR
+// logdensityof(M, x), w a constant OR a function of the variate. The
+// engine dropped w entirely when it was a function (named-ref OR
 // inline lambda) — the density path (numerator, mat-density's normalize-Z
 // materialisation, and the §12-style symbolic totalmass fold) all treated
 // `weighted(fn, M)` as if the weight were absent, so `normalize(weighted(fn,

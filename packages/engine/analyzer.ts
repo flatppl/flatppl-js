@@ -3942,7 +3942,7 @@ function analyze(ast: any, source: string, opts?: any) {
   // downstream passes don't crash — but nothing read it, so a binding that
   // parses and analyzes clean yet fails to LOWER (e.g. a FieldAccess in a
   // reification boundary position — not a parse error, so no earlier
-  // diagnostic exists) produced a silent null binding (Buffy #73). Emit an
+  // diagnostic exists) produced a silent null binding. Emit an
   // error diagnostic per stashed lowerError so the failure is loud and
   // located.
   for (const [name, b] of loweredModule.bindings) {

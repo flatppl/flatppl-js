@@ -1,8 +1,8 @@
 'use strict';
 
-// Sampling a superpose of IMPORTANCE-WEIGHTED density-by-formula measures
-// (Buffy #307, second bug). `normalize(weighted(fn, Lebesgue(S)))` materialises
-// as an importance-weighted empirical measure: UNIFORM sample positions whose
+// Sampling a superpose of IMPORTANCE-WEIGHTED density-by-formula measures:
+// `normalize(weighted(fn, Lebesgue(S)))` materialises as an
+// importance-weighted empirical measure: UNIFORM sample positions whose
 // density lives in the per-atom logWeights. matSuperpose used to run its
 // block-aware K=1 per-index selection directly on those parents — picking
 // between the two parents' atoms at their (uniform) positions without ever

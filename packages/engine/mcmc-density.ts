@@ -117,7 +117,7 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
       node.fromNormalize = true;
       continue;
     }
-    // Buffy #384: a θ-dependent normalize(truncate(D(θ), S)) — defer to
+    // A θ-dependent normalize(truncate(D(θ), S)) defers to
     // density.ts's per-call dynamic resolution instead of baking a stale
     // constant. Strip massFrom and leave the node as a bare
     // normalize(truncate(...)); walkNormalize resolves −log Z(θ) fresh on
@@ -360,8 +360,8 @@ async function buildLogPi(
   // { distOp, D, paramNames, sub } when nm is such a draw, else is absent.
   // ── SETUP: fixed env + derived bindings + atom-dependence (hoisted) ───────
   // Computed here, BEFORE the per-draw prior measures below, because
-  // classifying a normalize(truncate(D(θ), S)) as θ-dependent (Buffy #384 —
-  // see canDeferTruncateNormalizer) needs to know which names are
+  // classifying a normalize(truncate(D(θ), S)) as θ-dependent (see
+  // canDeferTruncateNormalizer) needs to know which names are
   // atom-dependent (a draw, or derived from one) at the point resolveNormalizeMasses
   // runs for each draw's own measure.
   const fixedEnvObj: Record<string, any> = {};
@@ -539,7 +539,7 @@ async function buildLogPi(
   // logpdfs per atom). `likBodyIR` has derived bindings inlined by clm, so the
   // names it actually references are typically just the draws.
   // (atomDep — the transitive atom-dependent-name closure — was already
-  // computed above, ahead of the per-draw prior measures, for Buffy #384's
+  // computed above, ahead of the per-draw prior measures, for the
   // θ-dependent-truncate-normalizer classification; reused here unchanged.)
   // Atom-independent base env: fixed values + derived that depend only on them,
   // evaluated ONCE. (Atom-dependent values are supplied per call via refArrays.)

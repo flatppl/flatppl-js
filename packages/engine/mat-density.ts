@@ -1035,7 +1035,7 @@ function truncateLogMass(base: any, bounds: [number, number], ctx: any): number 
   // A discrete base is never reached here: an inline normalize(truncate(...))
   // this path handles is the §12 generic_dist form (weighted(w, Lebesgue), a
   // continuous base); a discrete truncate carries a massFrom ref and is
-  // resolved (and refused) by resolveNormalizeMasses instead (Buffy #73).
+  // resolved (and refused) by resolveNormalizeMasses instead.
   const [lo, hi] = bounds;
   const forwardCdf = require('./forward-cdf.ts');
   if (forwardCdf.hasCdf(base.kernel)) {
@@ -1880,7 +1880,7 @@ function resolveNormalizeMasses(measureIR: any, ctx: any): Promise<any> {
     // comes from the worker's continuous CDF-difference (F(hi)−F(lo)), which
     // is wrong for a discrete base (drops the lower endpoint; the true mass is
     // Σ pmf over S). §06 defines no discrete-truncate normalizer — fail loud
-    // rather than materialise a silently-wrong Z (Buffy #73). Sampling of a
+    // rather than materialise a silently-wrong Z. Sampling of a
     // truncated discrete leaf is untouched (this guards only the normalizer).
     const innerT = node.args[0];
     const truncBase = innerT && innerT.op === 'truncate' && innerT.args && innerT.args[0];
