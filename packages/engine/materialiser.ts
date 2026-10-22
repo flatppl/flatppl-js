@@ -2915,6 +2915,38 @@ function _selectClosedFormMass(d: any, masses: any[], ctx: any): number | null {
   return mx + Math.log(acc);
 }
 
+// The per-atom gather of matSelect, one function per index rule so each loop
+// compiles on its own with no rule test in the body. A selector value outside
+// the branch range goes to the nearest branch.
+function _gatherBoolSelector(sel: any, out: Float64Array, branches: any[], lifted: any[],
+                             perBranch: Float64Array | null, N: number): void {
+  for (let i = 0; i < N; i++) {
+    const k = sel[i] ? 0 : 1;
+    out[i] = branches[k][i];
+    if (perBranch) perBranch[i] = lifted[k].logWeights[i];
+  }
+}
+
+// A two-value Categorical: its base picks branch 0, anything above picks branch 1.
+function _gatherTwoWayCategorical(sel: any, out: Float64Array, branches: any[], lifted: any[],
+                                  perBranch: Float64Array | null, N: number, base: number): void {
+  for (let i = 0; i < N; i++) {
+    const k = (sel[i] | 0) > base ? 1 : 0;
+    out[i] = branches[k][i];
+    if (perBranch) perBranch[i] = lifted[k].logWeights[i];
+  }
+}
+
+function _gatherCategorical(sel: any, out: Float64Array, branches: any[], lifted: any[],
+                            perBranch: Float64Array | null, N: number, K: number, base: number): void {
+  for (let i = 0; i < N; i++) {
+    let k = (sel[i] | 0) - base;
+    if (k < 0) k = 0; else if (k >= K) k = K - 1;
+    out[i] = branches[k][i];
+    if (perBranch) perBranch[i] = lifted[k].logWeights[i];
+  }
+}
+
 function matSelect(name: string, d: DerivationSelect, ctx: any) {
   // Discrete-selector mixture generation (engine-concepts §12): the SAMPLING
   // half of the ONE select sampler (density is walkSelect). Eval-all-branches-
@@ -3019,18 +3051,15 @@ function matSelect(name: string, d: DerivationSelect, ctx: any) {
       ? false
       : masses.some((x: any) => Math.abs(x - masses[0]) > 1e-12);
     const perBranch = uneven ? new Float64Array(N) : null;
+    // No selectorBase ⇒ a boolean selector (Bernoulli / ifelse condition /
+    // the synthesised K=2 selector): truthy → branch 0. A Categorical selector
+    // carries its base (1 for Categorical, 0 for Categorical0), also at K=2.
+    // This mirrors walkSelect's index, so sampling and density pick one branch.
+    const boolSelector = K === 2 && d.selectorBase == null;
     const base = (d.selectorBase != null) ? d.selectorBase : 1;
-    for (let i = 0; i < N; i++) {
-      let k;
-      if (K === 2) {
-        k = sel[i] ? 0 : 1;
-      } else {
-        k = (sel[i] | 0) - base;
-      }
-      if (k < 0) k = 0; else if (k >= K) k = K - 1;
-      out[i] = branches[k][i];
-      if (perBranch) perBranch[i] = lifted[k].logWeights[i];
-    }
+    if (boolSelector) _gatherBoolSelector(sel, out, branches, lifted, perBranch, N);
+    else if (K === 2) _gatherTwoWayCategorical(sel, out, branches, lifted, perBranch, N, base);
+    else _gatherCategorical(sel, out, branches, lifted, perBranch, N, K, base);
     if (!perBranch) {
       // Equal branch masses: the parents' own array passes through, keeping the
       // reference identity the downstream event dedupe and the independence
@@ -3729,8 +3758,10 @@ function _bridgeDerivation(ir: any, register: any, childCtx: any): any {
       branches.push((inner && inner.kind === 'ref' && inner.ns === 'self')
         ? { ref: inner.name } : { ir: inner });
     }
+    // Keep a missing base missing: it marks a boolean selector, which matSelect
+    // gathers differently from a K=2 Categorical.
     const dSel: any = { kind: 'select', branches,
-      selectorBase: (ir.selectorBase != null) ? ir.selectorBase : 1 };
+      selectorBase: (ir.selectorBase != null) ? ir.selectorBase : null };
     if (ir.selectorName) dSel.selectorRef = ir.selectorName;
     else if (allConst) dSel.synthWeights = synthWeights;
     // Carry the inline node's per-branch log-weights so the mixture's mass can
