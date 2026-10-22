@@ -1027,6 +1027,21 @@ function _cellShapeOf(s: any) {
   return null;
 }
 
+// Resolve every transposed matrix cell to its logical entries, then pack. A
+// transposed vector is a distinct type (§03) that a stacked [N, k] Value
+// cannot represent, so it refuses, as `valueLib.packUniformCells` does.
+function _packTransposedCells(out: any[], N: any): any {
+  const logical: any[] = new Array(N);
+  for (let i = 0; i < N; i++) {
+    const s = out[i];
+    if (valueLib.isValue(s) && valueLib.isTransposeView(s)) {
+      if (s.shape.length < 2) return null;
+      logical[i] = valueLib._logicalDense(s);
+    } else logical[i] = s;
+  }
+  return _packUniformCells(logical, N);
+}
+
 // Pack N per-atom results that all carry the SAME numeric cell shape into
 // one atom-major Value shape=[N, ...cell]; return null when they do not, so
 // the caller can surface the raw per-atom array instead.
@@ -1034,13 +1049,18 @@ function _cellShapeOf(s: any) {
 // The cell keeps its own rank: a rank-1 result packs to [N, k] and a rank-2
 // one to [N, r, c] — the shape the vector-atom callers already read
 // (worker.ts `evaluateN` splits `shape.slice(1)` off as `dims`).
-function _packUniformCells(out: any[], N: any) {
+function _packUniformCells(out: any[], N: any): any {
   const cell0 = _cellShapeOf(out[0]);
   if (cell0 === null) return null;
   const cellLen = cell0.reduce((a: any, b: any) => a * b, 1);
   if (cellLen === 0) return null;
   for (let i = 0; i < N; i++) {
     const s = out[i];
+    // A transposed matrix cell stores its entries unswapped, so packing `data`
+    // verbatim would drop the transpose. Rare, so it leaves the hot loop.
+    if (s != null && s.t !== undefined && valueLib.isValue(s) && valueLib.isTransposeView(s)) {
+      return _packTransposedCells(out, N);
+    }
     const cell = _cellShapeOf(s);
     if (cell === null || cell.length !== cell0.length) return null;
     for (let d = 0; d < cell0.length; d++) {
