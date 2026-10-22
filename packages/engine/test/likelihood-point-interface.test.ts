@@ -99,17 +99,98 @@ test('a point of deferred, any or failed type is not checked', () => {
   }
 });
 
-test('a joint_likelihood has no single kernel interface and is not checked', () => {
+// §06 `joint_likelihood(L1, L2)` is `L(θ) = L1(θ) + L2(θ)` and is equivalent to
+// `likelihoodof(joint(K1, K2), obs)`. A `joint` of kernels takes "the union of the
+// component kernels' inputs by name", so when every term splats a record point,
+// the point splats over the union and every field must name an input of a term.
+const JOINT = `
+mu = elementof(reals)
+a ~ Normal(mu, 1)
+b ~ Normal(mu, 2)
+K1 = kernelof(record(a = a))
+K2 = kernelof(record(b = b))
+L = joint_likelihood(likelihoodof(K1, record(a = 0.1)), likelihoodof(K2, record(b = 0.2)))
+`;
+
+test('a joint_likelihood splats its point over the union of the terms\' inputs', () => {
+  assert.deepEqual(errors(JOINT + 's = logdensityof(L, record(mu = 0.3))\n'), []);
+});
+
+for (const op of ['logdensityof', 'densityof']) {
+  test(`${op}: a joint_likelihood point with a field naming no input is refused`, () => {
+    const errs = errors(JOINT + `s = ${op}(L, record(mu = 0.3, nu = 1.0))\n`);
+    assert.equal(errs.length, 1);
+    assert.match(errs[0].message, new RegExp(
+      `^${op}: the point is splatted over the likelihood inputs, but has no input named "nu" `
+      + 'for its field \\(inputs: "mu"; '));
+    assert.equal(errs[0].loc.start.line, 7);
+  });
+}
+
+test('a joint_likelihood over terms with different inputs takes the union by name', () => {
+  const src = `
+mu = elementof(reals)
+sd = elementof(posreals)
+a ~ Normal(mu, 1)
+b ~ Normal(mu, sd)
+K1 = kernelof(record(a = a))
+K2 = kernelof(record(b = b))
+L = joint_likelihood(likelihoodof(K1, record(a = 0.1)), likelihoodof(K2, record(b = 0.2)))
+ok = logdensityof(L, record(mu = 0.3, sd = 1.5))
+bad = logdensityof(L, record(mu = 0.3, sd = 1.5, extra = 1.0))
+`;
+  const errs = errors(src);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].message, /no input named "extra"/);
+  assert.match(errs[0].message, /inputs: "mu", "sd"/);
+});
+
+test('a joint_likelihood term taking one positional input receives the point whole', () => {
+  // Each term applies the shared point through its own interface, so a record
+  // point is not checked against the union of names (`pars` here is an
+  // adapter's argument, not a field of the point).
   const src = `
 mu = elementof(reals)
 a ~ Normal(mu, 1)
 b ~ Normal(mu, 2)
 K1 = kernelof(record(a = a), mu = mu)
 K2 = kernelof(record(b = b), mu = mu)
-L = joint_likelihood(likelihoodof(K1, record(a = 0.1)), likelihoodof(K2, record(b = 0.2)))
-s = logdensityof(L, record(mu = 0.3))
+L = joint_likelihood(likelihoodof(pars -> K1(mu = pars.mu), record(a = 0.1)),
+                     likelihoodof(pars -> K2(mu = pars.mu), record(b = 0.2)))
+s = logdensityof(L, record(mu = 0.3, nu = 1.0))
+`;
+  assert.deepEqual(errors(src), []);
+});
+
+test('a joint_likelihood with a term of unknown interface is not checked', () => {
+  // `hepphys.ContinuedPoisson.(...)` types as a function, so its likelihood
+  // carries no inputs and the union of the terms' inputs would be incomplete.
+  const src = `
+hepphys = standard_module("particle-physics", "0.1")
+mu = elementof(reals)
+sb = elementof(cartpow(posreals, 2))
+tau = [1.0, 2.0]
+c1 = functionof(Normal(mu = mu, sigma = 1.0))
+c2 = functionof(hepphys.ContinuedPoisson.(sb .* tau))
+L = joint_likelihood(likelihoodof(c1, 0.1), likelihoodof(c2, [1, 2]))
+s = logdensityof(L, record(mu = 1.0, sb = [1.0, 1.0]))
+`;
+  assert.deepEqual(errors(src), []);
+});
+
+test('a joint_likelihood of terms without inputs is not checked', () => {
+  const src = `
+M = Normal(0, 1)
+L = joint_likelihood(likelihoodof(M, 0.1), likelihoodof(M, 0.2))
+s = logdensityof(L, record(x = 1.0))
 `;
   assert.deepEqual(pointErrors(src), []);
+});
+
+test('a bayesupdate prior over a joint_likelihood must name only the union of inputs', () => {
+  const errs = errors(JOINT + 'prior = joint(mu = Normal(0, 1), nu = Normal(0, 1))\npost = bayesupdate(L, prior)\n');
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].message, /^bayesupdate: the prior's variate is splatted/);
 });
 
 test('a likelihood of a kernel with unknown inputs is not checked', () => {
