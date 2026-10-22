@@ -100,6 +100,17 @@ const ELEMENTARY_OPS = new Set([
 // The elementary table plus §07's operator-equivalent `pow`, whose domain
 // column reads "scalars (real or complex; …)" — the only operator-equivalent
 // row that lists no array form.
+// Catalogue parameters §08 declares as matrices.
+const MATRIX_PARAMS: Record<string, string[]> = {
+  MvNormal: ['cov'],
+  Wishart: ['scale'],
+  InverseWishart: ['scale'],
+};
+
+function isVectorOfVectors(t: any): boolean {
+  return t?.kind === 'array' && t.rank === 1 && t.elem?.kind === 'array';
+}
+
 const SCALAR_ONLY_OPS = new Set([...ELEMENTARY_OPS, 'pow']);
 // The four FlatPDL transports (spec §07) — undefined on discrete kernels.
 const TRANSPORT_OPS = new Set([
@@ -923,6 +934,25 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return null;
   }
 
+  // §08 declares these parameters as n × n matrices, and §03 "Arrays" does not
+  // read a vector of vectors as a matrix.
+  function matrixParamError(op: string, param: string, node: any): any {
+    // An inline constructor can be inferred more than once; report it once.
+    if (!matrixParamReported.has(node)) {
+      matrixParamReported.add(node);
+      diagnostics.push({
+        severity: 'error',
+        message: '`' + op + "`'s `" + param + '` must be a matrix (spec §08), but this argument '
+          + 'is a vector of vectors, which spec §03 "Arrays" does not read as a matrix; build '
+          + 'the matrix with `rowstack(...)` (inner vectors as rows) or `colstack(...)` (inner '
+          + 'vectors as columns)',
+        loc: node.loc,
+      });
+    }
+    return T.failed(op + ' ' + param + ' is a vector of vectors');
+  }
+  const matrixParamReported = new WeakSet();
+
   function inferGenericCall(expr: any, scopes: any): any {
     const op = expr.op;
     const sig = T.signatureOf(op);
@@ -945,6 +975,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (argTypes && argTypes[1].kind === 'scalar' && argTypes[2].kind === 'scalar') {
       const joined = T.unifyArith(argTypes[1], argTypes[2], s);
       if (joined) s = T.unify(sig.result, joined.result, s);
+    }
+
+    if (sig.args === null && MATRIX_PARAMS[op]) {
+      const names = Object.keys(sig.kwargs);
+      for (let i = 0; i < args.length && i < names.length; i++) {
+        if (MATRIX_PARAMS[op].includes(names[i]) && isVectorOfVectors(inferExpr(args[i], scopes))) {
+          return matrixParamError(op, names[i], args[i]);
+        }
+      }
     }
 
     if (sig.args !== null) {
@@ -1003,6 +1042,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const k in sig.kwargs) {
       if (!(k in kwargs)) continue;   // optional/defaulted kwargs allowed missing
       const at: any = inferExpr(kwargs[k], scopes);
+      if (MATRIX_PARAMS[op]?.includes(k) && isVectorOfVectors(at)) {
+        return matrixParamError(op, k, kwargs[k]);
+      }
       const next = T.unify(sig.kwargs[k], at, s);
       if (next == null) return kwargError(op, k, T.substitute(sig.kwargs[k], s), at, kwargs[k].loc);
       s = next;
@@ -3529,6 +3571,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         ? { collection: false, cellType: t } : classifyArg(t);
       if (c == null) return T.deferred();
       argClassif.push(c);
+    }
+
+    // Each element is an argument to the constructor, so a matrix parameter's
+    // element must be a matrix too.
+    const matrixParams = (head?.kind === 'const' || (head?.kind === 'ref' && head.ns === 'self'
+      && !loweredModule.bindings.has(head.name))) ? MATRIX_PARAMS[head.name] : undefined;
+    if (matrixParams) {
+      const names = broadcastHeadParamNames(head, scopes) || [];
+      for (const [i, c] of argClassif.entries()) {
+        if (matrixParams.includes(names[i]) && isVectorOfVectors(c.cellType)) {
+          return matrixParamError(head.name, names[i], dataArgs[i]);
+        }
+      }
     }
 
     // Phase 3: outer-shape unification across collection args.

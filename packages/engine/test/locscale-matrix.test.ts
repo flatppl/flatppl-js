@@ -104,7 +104,7 @@ test('matrix locscale with named lower_cholesky scale routes the same way', () =
 test('matrix locscale over an MvNormal base gives a clean diagnostic (deferred)', () => {
   const src =
     `mu = [0.0, 0.0]\n`
-    + `cov = [[1.0, 0.0], [0.0, 1.0]]\n`
+    + `cov = rowstack([[1.0, 0.0], [0.0, 1.0]])\n`
     + `L = [[2.0, 0.0], [0.0, 1.5]]\n`
     + `shift = [1.0, -1.0]\n`
     + `X = locscale(MvNormal(mu = mu, cov = cov), shift, L)\n`;
@@ -332,7 +332,7 @@ test('dynamic iid base count routes and matches the MvNormal scipy oracle', asyn
 //     throws the clean locscale-tagged error (not a cryptic downstream crash).
 test('sample-bound vector shift: clean pre-pass + safety-net error (resolver fall-through)', () => {
   const lifted = processSource(
-    `mu ~ MvNormal(mean = [0.0, 0.0], cov = [[1.0, 0.0], [0.0, 1.0]])\n`
+    `mu ~ MvNormal(mean = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))\n`
     + `X = locscale(iid(Normal(0.0, 1.0), 2), mu, [[2.0, 0.0], [0.0, 1.5]])\n`);
   const preErrs = lifted.diagnostics.filter((d: any) => d.severity === 'error');
   assert.deepEqual(preErrs, [],
@@ -351,7 +351,7 @@ test('sample-bound vector shift: clean pre-pass + safety-net error (resolver fal
 //     MvNormal-base locscale survive.
 test('sample-bound non-iid base errors cleanly (analyzer baseIsIid fall-through)', () => {
   const lifted = processSource(
-    `base ~ MvNormal(mean = [0.0, 0.0], cov = [[1.0, 0.0], [0.0, 1.0]])\n`
+    `base ~ MvNormal(mean = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))\n`
     + `X = locscale(base, [1.0, -1.0], [[2.0, 0.0], [0.0, 1.5]])\n`);
   const msg = lifted.diagnostics
     .filter((d: any) => d.severity === 'error').map((e: any) => e.message).join(' | ');
