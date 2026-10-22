@@ -1419,6 +1419,27 @@ function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
     if (!samplerLib.inVectorSet(head, setDescr.set)) for (let i = 0; i < N; i++) acc[i] = -Infinity;
     return rest;
   }
+  // `cartpow(S, n)` reaches here as its element set S (parseSetIR), but the
+  // variate it restricts is the whole array: every coordinate must lie in S, not
+  // only the first.
+  if (set.kind === 'call' && set.op === 'cartpow') {
+    if (points) {
+      const rows = valueLib.isValue(value);
+      for (let i = 0; i < N; i++) {
+        if (!allInSet(rows ? valueLib._sliceRow(value, i) : points[i], setDescr)) acc[i] = -Infinity;
+      }
+      return rest;
+    }
+    const consumedLen = _consumedLen(value, rest);
+    const src = valueLib.isValue(value) ? value.data : value;
+    for (let j = 0; j < consumedLen; j++) {
+      if (!inSet(+src[j], setDescr)) {
+        for (let i = 0; i < N; i++) acc[i] = -Infinity;
+        break;
+      }
+    }
+    return rest;
+  }
   const consumed = inferConsumedScalar(value, rest);
   if (consumed != null) {
     for (let i = 0; i < N; i++) {
@@ -1426,6 +1447,17 @@ function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
     }
   }
   return rest;
+}
+
+// True when every scalar of `point` (a number, array, typed array, Value or any
+// nesting of them) lies in the set.
+function allInSet(point: any, setDescr: any): boolean {
+  if (typeof point === 'number') return inSet(point, setDescr);
+  const items = valueLib.isValue(point) ? point.data : point;
+  for (let j = 0; j < items.length; j++) {
+    if (!allInSet(items[j], setDescr)) return false;
+  }
+  return true;
 }
 
 function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
