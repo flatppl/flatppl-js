@@ -168,7 +168,7 @@ score = logdensityof(M, (a = 2, b = 3))
   assert.deepEqual(Array.from((await ctx.getMeasure('score')).samples), [0, 0, 0, 0]);
 });
 
-test('likelihoods feed unary records whole and project named input subsets', async () => {
+test('likelihoods feed unary records whole and splat named inputs', async () => {
   const { ctx } = makeMatCtx(`
 K(x) = Normal(x.x, 1)
 L = likelihoodof(K, 3)
@@ -178,7 +178,7 @@ Ln = likelihoodof(named, 3)
 prior = joint(x = Normal(0, 1))
 posterior = bayesupdate(L, prior)
 a = logdensityof(L, (x = 2))
-b = logdensityof(Ln, (unused = 7, x = 2))
+b = logdensityof(Ln, (x = 2))
 c = logdensityof(posterior, (x = 2))
 `, { sampleCount: 4 });
   const normal = (x: number) => -0.5*Math.log(2*Math.PI) - x*x/2;
