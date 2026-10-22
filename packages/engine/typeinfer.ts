@@ -1080,7 +1080,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       const mT: any = args.length > 0 ? inferExpr(args[0], scopes) : T.deferred();
       if (mT && mT.kind === 'likelihood') {
         if (args.length > 1) {   // theta (param point)
-          checkLikelihoodPoint(op, mT, inferExpr(args[1], scopes), args[1].loc || expr.loc);
+          checkLikelihoodPoint(op, mT, inferExpr(args[1], scopes), args[1].loc);
         }
         return T.REAL;
       }
@@ -1128,7 +1128,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           loc,
         });
       }
-      return;
     }
   }
 

@@ -83,3 +83,45 @@ s = logdensityof(L, record(a = 0.5, b = 0.25))
   const z = 0.75;
   assert.ok(Math.abs(await score(src) - (-0.5 * Math.log(2 * Math.PI) - z * z / 2)) < 1e-12);
 });
+
+// Guards: the check stays silent where the point's type, or the likelihood's
+// interface, is not known statically, and states the mismatch without the
+// record hint when the point is not a record.
+const WHOLE = 'bound whole to likelihood input';
+function pointErrors(src: string) {
+  return errors(src).filter((d: any) => d.message.includes(WHOLE));
+}
+
+test('a point of deferred, any or failed type is not checked', () => {
+  const base = MODEL + 'L = likelihoodof(K, record(y = 3))\n';
+  for (const point of ['external(reals)', 'elementof(anything)', '0.3 + nosuch']) {
+    assert.deepEqual(pointErrors(base + `pt = ${point}\ns = logdensityof(L, pt)\n`), [], point);
+  }
+});
+
+test('a joint_likelihood has no single kernel interface and is not checked', () => {
+  const src = `
+mu = elementof(reals)
+a ~ Normal(mu, 1)
+b ~ Normal(mu, 2)
+K1 = kernelof(record(a = a), mu = mu)
+K2 = kernelof(record(b = b), mu = mu)
+L = joint_likelihood(likelihoodof(K1, record(a = 0.1)), likelihoodof(K2, record(b = 0.2)))
+s = logdensityof(L, record(mu = 0.3))
+`;
+  assert.deepEqual(pointErrors(src), []);
+});
+
+test('a likelihood of a kernel with unknown inputs is not checked', () => {
+  const src = MODEL + 'M = external(reals)\nL = likelihoodof(M, record(y = 3))\n'
+    + 's = logdensityof(L, record(theta = 0.3))\n';
+  assert.deepEqual(pointErrors(src), []);
+});
+
+test('a non-record point of the wrong type is refused without the record hint', () => {
+  const src = MODEL + 'L = likelihoodof(K, record(y = 3))\ns = logdensityof(L, [0.3])\n';
+  const errs = pointErrors(src);
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].message,
+    /^logdensityof: the point is bound whole to likelihood input "theta", which expects real, got array of real \(length 1\)\.$/);
+});
