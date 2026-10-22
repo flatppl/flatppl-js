@@ -48,6 +48,9 @@ const stdlibErfcinv     = require('@stdlib/math-base-special-erfcinv');
 // Regularized lower incomplete gamma P(s, x): `gammainc(x, s)` (x = upper
 // limit of integration, s = shape). Used for the Argus normalization.
 const stdlibGammainc    = require('@stdlib/math-base-special-gammainc');
+const stdlibGammaincinv = require('@stdlib/math-base-special-gammaincinv');
+// Regularized incomplete beta I_x(a, b): the negative binomial CDF.
+const stdlibBetainc     = require('@stdlib/math-base-special-betainc');
 
 // Distribution constructors (analytical PDF/CDF/quantile/mean/etc.)
 const Normal      = require('@stdlib/stats-base-dists-normal-ctor');
@@ -418,6 +421,19 @@ GeneralizedNormalCtor.prototype.logpdf = function(this: any, x: any) {
   const z = Math.abs(x - this.mean) / a;
   return Math.log(b) - Math.log(2 * a) - stdlibGammaln(1 / b) - Math.pow(z, b);
 };
+// |X - mean|^beta / alpha^beta ~ Gamma(1/beta, 1), so each tail is half an
+// upper regularized gamma. Truncation samples by inverting this CDF.
+GeneralizedNormalCtor.prototype.cdf = function(this: any, x: any) {
+  const z = (x - this.mean) / this.alpha;
+  const tail = 0.5 * stdlibGammainc(Math.pow(Math.abs(z), this.beta), 1 / this.beta, true, true);
+  return z < 0 ? tail : 1 - tail;
+};
+GeneralizedNormalCtor.prototype.quantile = function(this: any, p: any) {
+  if (p === 0.5) return this.mean;
+  const tail = p < 0.5 ? p : 1 - p;
+  const r = Math.pow(stdlibGammaincinv(2 * tail, 1 / this.beta, true), 1 / this.beta);
+  return this.mean + (p < 0.5 ? -r : r) * this.alpha;
+};
 function logpdfGeneralizedNormal(x: any, mean: any, alpha: any, beta: any) {
   const z = Math.abs(x - mean) / alpha;
   return Math.log(beta) - Math.log(2 * alpha)
@@ -670,6 +686,34 @@ VonMisesCtor.prototype.logpdf = function(this: any, x: any) {
   return k * Math.cos(x - this.mu)
        - Math.log(2 * Math.PI) - logBesselI0(k);
 };
+// On the support [mu - pi, mu + pi], with t = x - mu,
+//   F(x) = (t + pi) / (2 pi) + sum_n (I_n(kappa) / I_0(kappa)) sin(n t) / (n pi).
+// The ratios I_n / I_{n-1} = 1 / (2n / kappa + I_{n+1} / I_n) come from a
+// backward recurrence started past the last term above 1e-17: I_n / I_0 falls
+// as exp(-n^2 / (2 kappa)) for large kappa and as (kappa / 2)^n / n! for small.
+VonMisesCtor.prototype.cdf = function(this: any, x: any) {
+  const t = x - this.mu;
+  if (!(t > -Math.PI)) return Number.isNaN(t) ? NaN : 0;
+  if (t >= Math.PI) return 1;
+  const k = this.kappa;
+  let s = 0;
+  if (k > 0) {
+    if (!this._besselRatios) {
+      const n = 30 + Math.ceil(10 * Math.sqrt(k));
+      const r = new Float64Array(n + 2);
+      for (let j = n; j >= 1; j--) r[j] = 1 / (2 * j / k + r[j + 1]);
+      for (let j = 2; j <= n; j++) r[j] *= r[j - 1];
+      this._besselRatios = r;
+    }
+    const r = this._besselRatios;
+    for (let j = 1; j < r.length - 1; j++) s += r[j] * Math.sin(j * t) / j;
+  }
+  return Math.min(1, Math.max(0, (t + Math.PI) / (2 * Math.PI) + s / Math.PI));
+};
+VonMisesCtor.prototype.quantile = function(this: any, p: any) {
+  const { numericalQuantile } = require('./inverse-cdf.ts');
+  return numericalQuantile((x: number) => this.cdf(x), p, this.mu - Math.PI, this.mu + Math.PI);
+};
 function logpdfVonMises(x: any, mu: any, kappa: any) {
   return kappa * Math.cos(x - mu)
        - Math.log(2 * Math.PI) - logBesselI0(kappa);
@@ -750,6 +794,20 @@ const randGeometric = {
   },
 };
 
+// The generalized inverse of a discrete CDF: the smallest integer k in
+// [lo, hi] with cdf(k) >= p. Doubling then bisection keeps a heavy tail cheap.
+function _discreteQuantile(cdf: (k: number) => number, p: number, lo: number, hi: number): number {
+  if (Number.isNaN(p) || p < 0 || p > 1) return NaN;
+  if (p === 1 && hi === Infinity) return Infinity;
+  let a = lo - 1, b = lo, width = 1;
+  while (b < hi && cdf(b) < p) { a = b; width *= 2; b = Math.min(hi, b + width); }
+  while (b - a > 1) {
+    const m = Math.floor((a + b) / 2);
+    if (cdf(m) < p) a = m; else b = m;
+  }
+  return b;
+}
+
 function GeometricCtor(this: any, p: any) {
   this.p = +p;
   this.mean = (1 - this.p) / this.p;
@@ -764,6 +822,13 @@ GeometricCtor.prototype.logpmf = function(this: any, k: any) {
   return logpdfGeometric(k, this.p);
 };
 GeometricCtor.prototype.pdf    = function(k: any) { return this.pmf(k); };
+// P(X <= k) = 1 - (1 - p)^(k + 1) for the failure count before a success.
+GeometricCtor.prototype.cdf = function(this: any, k: any) {
+  return k < 0 ? 0 : -Math.expm1((Math.floor(k) + 1) * Math.log1p(-this.p));
+};
+GeometricCtor.prototype.quantile = function(this: any, p: any) {
+  return _discreteQuantile((k) => this.cdf(k), p, 0, Infinity);
+};
 GeometricCtor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
 function logpdfGeometric(x: any, p: any) {
   const k = +x;
@@ -812,6 +877,14 @@ NegativeBinomialCtor.prototype.logpmf = function(this: any, k: any) {
   return _logpmfNegativeBinomial(k, this.alpha, this.beta);
 };
 NegativeBinomialCtor.prototype.pdf    = function(k: any) { return this.pmf(k); };
+// The Gamma(alpha, rate beta)-Poisson mixture has success probability
+// q = beta / (1 + beta), so P(X <= k) = I_q(alpha, k + 1).
+NegativeBinomialCtor.prototype.cdf = function(this: any, k: any) {
+  return k < 0 ? 0 : stdlibBetainc(this.beta / (1 + this.beta), this.alpha, Math.floor(k) + 1);
+};
+NegativeBinomialCtor.prototype.quantile = function(this: any, p: any) {
+  return _discreteQuantile((k) => this.cdf(k), p, 0, Infinity);
+};
 NegativeBinomialCtor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
 
 // Spec §08: C(k+shape-1,k) = 1/(k*B(k,shape)), for k >= 2.
@@ -922,6 +995,13 @@ NegativeBinomial2Ctor.prototype.logpmf = function(this: any, k: any) {
   return _logpmfNegativeBinomial2(k, this.mu, this.psi);
 };
 NegativeBinomial2Ctor.prototype.pdf    = function(k: any) { return this.pmf(k); };
+// Success probability q = psi / (psi + mu): P(X <= k) = I_q(psi, k + 1).
+NegativeBinomial2Ctor.prototype.cdf = function(this: any, k: any) {
+  return k < 0 ? 0 : stdlibBetainc(this.psi / (this.psi + this.mu), this.psi, Math.floor(k) + 1);
+};
+NegativeBinomial2Ctor.prototype.quantile = function(this: any, p: any) {
+  return _discreteQuantile((k) => this.cdf(k), p, 0, Infinity);
+};
 NegativeBinomial2Ctor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
 function _logpmfNegativeBinomial2(k: any, mu: any, psi: any) {
   const ki = +k;
@@ -1007,8 +1087,9 @@ const randCategorical0 = {
   },
 };
 
+// A probability vector arrives as a tensor value; the methods index its data.
 function CategoricalCtor(this: any, p: any) {
-  this.p = p;
+  this.p = valueLib.isValue(p) ? p.data : p;
   this.support = [1, p.length];
 }
 CategoricalCtor.prototype.pmf = function(this: any, k: any) {
@@ -1017,10 +1098,14 @@ CategoricalCtor.prototype.pmf = function(this: any, k: any) {
 };
 CategoricalCtor.prototype.logpmf = function(this: any, k: any) { return _catLogpmf(k, this.p, 1); };
 CategoricalCtor.prototype.pdf    = function (k: any) { return this.pmf(k); };
+CategoricalCtor.prototype.cdf = function(this: any, k: any) { return _catCdf(this.p, Math.floor(k)); };
+CategoricalCtor.prototype.quantile = function(this: any, p: any) {
+  return _discreteQuantile((k) => this.cdf(k), p, 1, this.p.length);
+};
 CategoricalCtor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
 
 function Categorical0Ctor(this: any, p: any) {
-  this.p = p;
+  this.p = valueLib.isValue(p) ? p.data : p;
   this.support = [0, p.length - 1];
 }
 Categorical0Ctor.prototype.pmf = function(this: any, k: any) {
@@ -1029,6 +1114,17 @@ Categorical0Ctor.prototype.pmf = function(this: any, k: any) {
 };
 Categorical0Ctor.prototype.logpmf = function(this: any, k: any) { return _catLogpmf(k, this.p, 0); };
 Categorical0Ctor.prototype.pdf    = function (k: any) { return this.pmf(k); };
+Categorical0Ctor.prototype.cdf = function(this: any, k: any) { return _catCdf(this.p, Math.floor(k) + 1); };
+Categorical0Ctor.prototype.quantile = function(this: any, p: any) {
+  return _discreteQuantile((k) => this.cdf(k), p, 0, this.p.length - 1);
+};
+
+// Mass of the first `count` categories.
+function _catCdf(p: any, count: number): number {
+  let s = 0;
+  for (let i = 0; i < Math.min(count, p.length); i++) s += p[i];
+  return s;
+}
 Categorical0Ctor.prototype.logpdf = function(this: any, k: any) { return this.logpmf(k); };
 
 function logpdfCategorical(x: any, p: any)  { return _catLogpmf(x, p, 1); }

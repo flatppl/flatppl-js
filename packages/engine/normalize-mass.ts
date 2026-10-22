@@ -261,9 +261,7 @@ function truncateMassLit(baseIR: any, setIR: any): any | null {
   const forwardCdf = require('./forward-cdf.ts');
   // Eleven registered continuous kernels have no CDF row (GeneralizedNormal,
   // VonMises, the §09 HEP densities, Dirac), so this is a real decline and not
-  // a formality. `matTruncate` needs the same CDF to sample such a component,
-  // and throws first in a whole model, which is why the unit test drives this
-  // arm directly.
+  // a formality.
   if (!forwardCdf.hasCdf(base.kernel)) return null;
   const { lo, hi } = axes[0];
   const Z = forwardCdf.intervalProbability(base.kernel, base.input, lo, hi);
