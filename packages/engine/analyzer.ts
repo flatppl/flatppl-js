@@ -2,6 +2,7 @@
 
 const { isKnownName, MEASURE_PRODUCING, DISTRIBUTIONS } = require('./builtins.ts');
 const AST = require('./ast.ts');
+const { RESERVED_WORDS } = require('./variants.ts');
 // Lazy require to avoid a circular load (disintegrate requires analyzer).
 let _disintegratePlan: ((...a: any[]) => any) | null = null;
 function disintegratePlan(...args: any[]) {
@@ -3466,11 +3467,6 @@ function _buildLocscalePushfwd(call: any, synth: any[], diagnostics: any[], body
   return call;
 }
 
-// Spec §04: names a bare placeholder cannot derive, since they are not legal
-// argument names (§05 reserved words). `self` and `base` are barred only as
-// module bindings, so they stay legal argument names.
-const RESERVED_BOUNDARY_NAMES = new Set(['true', 'false', 'in', 'all', 'only']);
-
 /**
  * Analyze a parsed AST.
  * Returns { bindings, diagnostics, symbols }.
@@ -3533,7 +3529,7 @@ function analyze(ast: any, source: string, opts?: any) {
               loc: arg.loc,
             });
           } else if (bare || arg.type === 'KeywordArg') bareForm = bare;
-          if (barePlaceholder && RESERVED_BOUNDARY_NAMES.has(bareName)) diagnostics.push({
+          if (barePlaceholder && RESERVED_WORDS.has(bareName)) diagnostics.push({
             severity: 'error',
             message: `placeholder \`_${bareName}_\` would name its boundary input \`${bareName}\`, `
               + `which is a reserved word; bind it with a keyword, as in \`other = _${bareName}_\` (spec §04)`,

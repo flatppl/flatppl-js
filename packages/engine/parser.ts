@@ -2,6 +2,7 @@
 
 const { T } = require('./tokenizer.ts');
 const AST = require('./ast.ts');
+const { RESERVED_WORDS } = require('./variants.ts');
 
 /**
  * Parse a token stream into a FlatPPL AST.
@@ -880,6 +881,16 @@ function parse(tokensIn: any[], variant: any) {
     if (at(T.IDENT) && pos + 1 < tokens.length
         && tokens[pos + 1].type === T.EQUALS) {
       const nameTok = advance();
+      // Spec §05: the reserved words are recognized before `Name`, so none
+      // names a keyword argument. `self` and `base` are barred only as module
+      // bindings (§04).
+      if (RESERVED_WORDS.has(nameTok.value)) {
+        diagnostics.push({
+          severity: 'error',
+          message: `\`${nameTok.value}\` is a reserved word and cannot be a keyword argument name (spec §05)`,
+          loc: nameTok.loc,
+        });
+      }
       advance(); // =
       const value = parseExpr();
       return AST.KeywordArg(nameTok.value, value,

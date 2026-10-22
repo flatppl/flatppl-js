@@ -40,6 +40,10 @@
 //                        (and/or/not/True/False) were removed by
 //                        flatppl-design cc81e4b.
 
+// Spec §05 "Note on reserved words": recognized before `Name`, so never a
+// binding, argument or keyword-argument name.
+const RESERVED_WORDS: ReadonlySet<string> = new Set(['in', 'true', 'false', 'all', 'only']);
+
 const FLATPPL = Object.freeze({
   id: 'flatppl',
   booleanLiterals: ['true', 'false'],
@@ -84,6 +88,7 @@ function resolveVariant(opts: any) {
 
 module.exports = {
   FLATPPL,
+  RESERVED_WORDS,
   variantForPath,
   resolveVariant,
 };
