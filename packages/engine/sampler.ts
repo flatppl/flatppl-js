@@ -2605,12 +2605,15 @@ function _broadcastApply(fn: any, inputs: any, env: any, resultType?: any, bindR
   // the materialiser's canonical measure expansion and normalizer handling.
   if (fn.body?.op === 'logdensityof') {
     const density = require('./density.ts');
+    // A measure that does not follow the point is constant over the batch, so are its normalizers.
+    let measure: any = null;
     return _broadcastApplyFrame(fn, inputs, env, {
       nextPoint() {},
       evalPoint(pointEnv: any) {
-        return density.logDensity(fn.body.args[0], evaluateExpr(fn.body.args[1], pointEnv),
-          pointEnv, { tally: 'clamped', resolveMeasureRef: pointEnv.__resolveMeasureRef,
-            parseSet: (setIR: any) => require('./ir-shared.ts').parseSetIR(setIR, null) });
+        const opts = { tally: 'clamped', resolveMeasureRef: pointEnv.__resolveMeasureRef,
+          parseSet: (setIR: any) => require('./ir-shared.ts').parseSetIR(setIR, null) };
+        measure ??= density.hoistNormalizers(fn.body.args[0], opts, pointEnv, fn.params);
+        return density.logDensity(measure, evaluateExpr(fn.body.args[1], pointEnv), pointEnv, opts);
       },
     }, resultType, bindRowByName);
   }

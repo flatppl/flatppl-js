@@ -126,7 +126,7 @@ test('a normalised weighted measure whose base cannot be resolved refuses', () =
   const normalized = { kind: 'call', op: 'normalize', args: [{ kind: 'call', op: 'weighted',
     args: [{ kind: 'lit', value: 2 }, { kind: 'ref', ns: 'self', name: 'base' }] }] };
   assert.throws(() => density.logDensity(normalized, 0.5, {},
-    { resolveMeasureRef: () => null }), /cannot resolve measure ref 'base'/);
+    { resolveMeasureRef: () => null }), /normalize\(weighted\).*total mass Z is not known/);
 });
 
 test('an iid plate counts its copies from a plain-array shape as well as a typed one', () => {

@@ -1492,87 +1492,180 @@ function walkNormalize(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     // A named base still needs its own mass; it is not implicitly normalized.
     return walkNormalize({ ...ir, args: [resolved] }, value, refArrays, N, opts, acc, baseEnv, overlay);
   }
-  addNormalizerShift(inlineMeasureRefs(inner, opts), refArrays, N, opts, acc, baseEnv, overlay);
-  // Legacy bare normalize (no spec): Z treated as 1 — only correct when
-  // the inner is already a probability measure.
+  // Z has to be known: a silent Z = 1 scores M's density, not M / Z's.
+  if (!addNormalizerShift(inlineMeasureRefs(inner, opts), refArrays, N, opts, acc, baseEnv, overlay)) {
+    throw unresolvedNormalizerError(ir, inner);
+  }
   return walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
 }
 
-// Replaces the named measure operands of a reweighting / truncation / iid /
-// superposition chain with their definitions, so the closed-form mass lookups
-// below see the leaf instead of a lifted `__anon` binding. Value operands (the
-// weight, the set, the size) stay as written.
+function unresolvedNormalizerError(ir: any, inner: any): Error {
+  const at = ir.loc ? ' at ' + (ir.loc.start.line + 1) + ':' + (ir.loc.start.col + 1) : '';
+  const base = inner.op ?? inner.target?.name;
+  const err: any = new Error('density: normalize(' + base + ')' + at + ' — its total mass Z is not known '
+    + 'here, so the normalised density (M / Z, spec §06 normalize) cannot be scored; dropping Z would '
+    + 'score M itself. Z is resolved for a probability leaf, a weighted / truncated / iid / joint / '
+    + 'record / pushfwd / locscale / superpose / select measure built from them, and a literal mass.');
+  // A property of the model, not of a proposal: the MCMC scorers must not swallow it as -Infinity.
+  err.modelRefusal = true;
+  return err;
+}
+
+// The measure-valued operands of the ops that build a measure from measures:
+// `get` lists them, `set` rebuilds the node around replacements.
+interface MeasureOperands { get: (ir: any) => any[]; set: (ir: any, list: any[]) => any }
+const operandAt = (index: number): MeasureOperands => ({
+  get: (ir) => [ir.args[index]],
+  set: (ir, [m]) => ({ ...ir, args: ir.args.map((a: any, i: number) => (i === index ? m : a)) }),
+});
+const allArgs: MeasureOperands = { get: (ir) => ir.args, set: (ir, list) => ({ ...ir, args: list }) };
+const partsOfJoint: MeasureOperands = {
+  get: (ir) => (Array.isArray(ir.fields) ? ir.fields.map((f: any) => f.value) : ir.args),
+  set: (ir, list) => (Array.isArray(ir.fields)
+    ? { ...ir, fields: ir.fields.map((f: any, i: number) => ({ ...f, value: list[i] })) }
+    : { ...ir, args: list }),
+};
+const OP_MEASURE_OPERANDS = new Map<string, MeasureOperands>(Object.entries({
+  weighted: operandAt(1), logweighted: operandAt(1), pushfwd: operandAt(1),
+  truncate: operandAt(0), iid: operandAt(0), locscale: operandAt(0),
+  relabel: operandAt(0), draw: operandAt(0), lawof: operandAt(0),
+  superpose: allArgs, joint: partsOfJoint, record: partsOfJoint,
+  select: { get: (ir: any) => ir.branches, set: (ir: any, list: any[]) => ({ ...ir, branches: list }) },
+}));
+
+// Replaces the named measure operands of a measure-building chain with their
+// definitions, so the closed-form mass lookups below see the leaf instead of a
+// lifted `__anon` binding. Value operands (the weight, the set, the size) stay
+// as written.
 function inlineMeasureRefs(ir: any, opts: any): any {
-  if (ir.kind === 'ref' && ir.ns === 'self') {
+  if (ir?.kind === 'ref' && ir.ns === 'self') {
     const resolved = opts.resolveMeasureRef?.(ir.name);
     return resolved ? inlineMeasureRefs(resolved, opts) : ir;
   }
-  if (ir.kind !== 'call' || !Array.isArray(ir.args)) return ir;
-  const measureAt = ir.op === 'weighted' || ir.op === 'logweighted' ? (i: number) => i === 1
-    : ir.op === 'truncate' || ir.op === 'iid' ? (i: number) => i === 0
-      : ir.op === 'superpose' ? () => true : null;
-  if (!measureAt) return ir;
-  const args = ir.args.map((a: any, i: number) => measureAt(i) ? inlineMeasureRefs(a, opts) : a);
-  return args.some((a: any, i: number) => a !== ir.args[i]) ? { ...ir, args } : ir;
+  const operands = OP_MEASURE_OPERANDS.get(ir?.op);
+  if (!operands) return ir;
+  const before = operands.get(ir);
+  const after = before.map((m: any) => inlineMeasureRefs(m, opts));
+  return after.every((m: any, i: number) => m === before[i]) ? ir : operands.set(ir, after);
 }
 
-// Adds the `-log Z` shift of a bare `normalize(inner)` to acc, for the inner
-// shapes whose Z this walker resolves. Any other inner is left unshifted
-// ("Z treated as 1", see walkNormalize).
-function addNormalizerShift(inner: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): void {
-  // Z(iid(M, n)) = Z(M)^n, so the shift is n copies of one copy's shift.
-  if (inner?.kind === 'call' && inner.op === 'iid' && inner.args?.length === 2) {
-    const copy = new Float64Array(N);
-    addNormalizerShift(inner.args[0], refArrays, N, opts, copy, baseEnv, overlay);
-    const total = iidCopyCount(samplerLib.evaluateExpr(inner.args[1], baseEnv));
-    for (let i = 0; i < N; i++) if (copy[i] !== 0) acc[i] += total * copy[i];
-    return;
-  }
-  if (inner?.kind === 'call'
-      && ['weighted', 'logweighted', 'truncate'].includes(inner.op)) {
-    const logMass = require('./normalize-mass.ts').logTotalMassExpr(inner);
-    if (logMass != null) {
-      const shift = { kind: 'call', op: 'neg', args: [logMass] };
-      // Raw callback bodies bypass the main-thread normalizer rewrite. Use
-      // its mass expression and validity check at each captured parameter.
-      applyAtomScalar(shift, refArrays, N, baseEnv, overlay, acc, addNormalizeShift);
-      return;
+// Distributions of this engine that are NOT probability measures: spec §09
+// "ContinuedPoisson is not normalized".
+const NON_PROBABILITY_LEAVES = new Set(['ContinuedPoisson']);
+// Walker-handled multivariate / point-process leaves; all probability measures.
+const PROBABILITY_WALKER_LEAVES = new Set(['MvNormal', 'Dirichlet', 'Multinomial',
+  'BinnedPoissonProcess', 'PoissonProcess', 'Wishart', 'InverseWishart', 'LKJ', 'LKJCholesky']);
+
+function isProbabilityLeaf(ir: any): boolean {
+  const name = ir.op;
+  if (NON_PROBABILITY_LEAVES.has(name)) return false;
+  return PROBABILITY_WALKER_LEAVES.has(name) || (!(OP_HANDLERS as any)[name] && samplerLib.isKnownDistribution(name));
+}
+
+// Adds the `-log Z` shift of `normalize(inner)` to acc and returns true, or
+// returns true with no shift when Z is exactly 1, or returns false when Z is
+// not known. Every part of a joint / record / iid / pushfwd / ... must resolve.
+function addNormalizerShift(inner: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any): boolean {
+  if (inner?.kind !== 'call') return false;
+  const { logTotalMassExpr } = require('./normalize-mass.ts');
+  const part = (m: any, into: any) => addNormalizerShift(m, refArrays, N, opts, into, baseEnv, overlay);
+  const shiftBy = (logMass: any) => applyAtomScalar({ kind: 'call', op: 'neg', args: [logMass] },
+    refArrays, N, baseEnv, overlay, acc, addNormalizeShift);
+  switch (inner.op) {
+    case 'iid': {
+      // Z(iid(M, n)) = Z(M)^n, so the shift is n copies of one copy's shift.
+      const copy = new Float64Array(N);
+      if (!part(inner.args[0], copy)) return false;
+      const total = iidCopyCount(samplerLib.evaluateExpr(inner.args[1], baseEnv));
+      for (let i = 0; i < N; i++) if (copy[i] !== 0) acc[i] += total * copy[i];
+      return true;
     }
-  }
-  if (inner && inner.kind === 'call' && inner.op === 'truncate'
-      && Array.isArray(inner.args) && inner.args.length === 2) {
-    const refs = Object.keys(refArrays || {}).filter(name =>
-      !(overlay && name in overlay) && _exprUsesAny(inner, [name]));
-    const accessors = refs.map(name => _refAtomAccessor(refArrays[name]));
-    const env = Object.assign({}, baseEnv, overlay);
-    for (let i = 0; i < (refs.length ? N : 1); i++) {
-      for (let j = 0; j < refs.length; j++) env[refs[j]] = accessors[j](i);
-      const shift = tryResolveTruncateNormalizerShift(inner, opts, env, null);
-      if (shift == null) throw new Error('density: cannot resolve truncated normalizer at current parameters');
-      if (refs.length) acc[i] += shift;
-      else for (let j = 0; j < N; j++) acc[j] += shift;
+    case 'joint': case 'record':
+      // The independent product: Z is the product of the parts' masses.
+      return OP_MEASURE_OPERANDS.get(inner.op)!.get(inner).every((m: any) => part(m, acc));
+    case 'pushfwd': case 'locscale': case 'relabel': case 'draw': case 'lawof':
+      // Coordinates and labels change; total mass does not (§06).
+      return part(OP_MEASURE_OPERANDS.get(inner.op)!.get(inner)[0], acc);
+    case 'normalize':
+      return true;
+    case 'weighted': case 'logweighted': {
+      const weight = inner.args?.[0];
+      // A function-of-variate weight needs the integral, which only the
+      // main-thread resolver computes.
+      if (!weight || (weight.kind === 'call' && weight.op === 'functionof')) return false;
+      if (!part(inner.args[1], acc)) return false;
+      shiftBy(inner.op === 'weighted' ? { kind: 'call', op: 'log', args: [weight] } : weight);
+      return true;
     }
-  }
-  // Bare normalize(superpose(weighted(w_k, M_k), …)) — §06's recommended
-  // mixture spelling, "To build a normalized mixture distribution, use
-  // normalize(superpose(weighted(w1, M1), weighted(w2, M2)))". Same
-  // situation as the truncate case above: every other scoring path resolves
-  // Z on the main thread, but the per-cell kernel-broadcast walk scores the
-  // RAW functionof body, so a bare normalize here would fall through to the
-  // "Z treated as 1" case below. That is only right when the weights
-  // happen to sum to one — the UNNORMALISED-yield spelling
-  // `normalize(superpose(weighted(nu_B, bkg), weighted(nu_S, sig)))`, the
-  // same measure written without forming `1 - w`, would silently score
-  // log(nu_B + nu_S) too high per event. Z = Σ_k w_k for probability-measure
-  // components; anything this cannot resolve exactly falls through
-  // unchanged.
-  if (inner && inner.kind === 'call'
-      && (inner.op === 'superpose' || inner.op === 'select')) {
-    const shift = tryResolveSuperposeNormalizerShift(inner, baseEnv, overlay);
-    if (shift != null) {
-      for (let i = 0; i < N; i++) acc[i] += shift;
+    case 'truncate': {
+      const logMass = logTotalMassExpr(inner);
+      if (logMass != null) { shiftBy(logMass); return true; }
+      const refs = Object.keys(refArrays || {}).filter(name =>
+        !(overlay && name in overlay) && _exprUsesAny(inner, [name]));
+      const accessors = refs.map(name => _refAtomAccessor(refArrays[name]));
+      const env = Object.assign({}, baseEnv, overlay);
+      for (let i = 0; i < (refs.length ? N : 1); i++) {
+        for (let j = 0; j < refs.length; j++) env[refs[j]] = accessors[j](i);
+        const shift = tryResolveTruncateNormalizerShift(inner, opts, env, null);
+        if (shift == null) throw new Error('density: cannot resolve truncated normalizer at current parameters');
+        if (refs.length) acc[i] += shift;
+        else for (let j = 0; j < N; j++) acc[j] += shift;
+      }
+      return true;
     }
+    case 'superpose': case 'select': {
+      // §06's recommended mixture spelling is normalize(superpose(weighted(w1, M1), ...)):
+      // Z = sum of the weights times the component masses. The unnormalised-yield
+      // spelling normalize(superpose(weighted(nu_B, bkg), weighted(nu_S, sig))) must
+      // score log(nu_B + nu_S) lower, not as if the weights summed to one.
+      const shift = tryResolveSuperposeNormalizerShift(inner, baseEnv, overlay);
+      if (shift != null) {
+        for (let i = 0; i < N; i++) acc[i] += shift;
+        return true;
+      }
+      const logMass = logTotalMassExpr(inner);
+      if (logMass == null) return false;
+      shiftBy(logMass);
+      return true;
+    }
+    default:
+      return isProbabilityLeaf(inner);
   }
+}
+
+// Resolves every normalizer of a measure held constant over a batch of points
+// ONCE, rewriting `normalize(M)` to `logweighted(-log Z, M)` (the form the
+// main-thread expansion emits), so the per-point walk does not recompute Z for
+// every point. A normalizer whose Z is not resolved here is left for the walker,
+// which refuses it.
+function hoistNormalizers(measure: any, opts: any, env: any, varying: string[]): any {
+  const resolved = inlineMeasureRefs(measure, opts);
+  // A measure built from the broadcast's own parameter (`score(rate) = logdensityof(M(rate), x)`)
+  // has a Z per point.
+  if (mentionsAny(resolved, varying)) return measure;
+  const rewrite = (node: any): any => {
+    if (node?.kind !== 'call') return node;
+    if (node.op === 'normalize' && !node.massFrom) {
+      const inner = rewrite(inlineMeasureRefs(node.args[0], opts));
+      const shift = new Float64Array(1);
+      if (!addNormalizerShift(inner, null, 1, opts, shift, env, null)) return node;
+      return { kind: 'call', op: 'logweighted', args: [{ kind: 'lit', value: shift[0] }, inner],
+        fromNormalize: true, loc: node.loc };
+    }
+    const operands = OP_MEASURE_OPERANDS.get(node.op);
+    if (!operands) return node;
+    const before = operands.get(node);
+    const after = before.map(rewrite);
+    return after.every((m: any, i: number) => m === before[i]) ? node : operands.set(node, after);
+  };
+  return rewrite(resolved);
+}
+
+// Any reference to one of `names` anywhere inside an IR node, whatever its shape.
+function mentionsAny(node: any, names: string[]): boolean {
+  if (!node || typeof node !== 'object') return false;
+  if (node.kind === 'ref' && names.includes(node.name)) return true;
+  return Object.keys(node).some(key => key !== 'loc' && mentionsAny(node[key], names));
 }
 
 // Resolve the −log Z shift for a bare `normalize(superpose(…))` /
@@ -4374,6 +4467,7 @@ function inSet(x: any, setDescr: any) {
 }
 
 module.exports = {
+  hoistNormalizers,
   // Foundation (batched, returns rest)
   logDensityConsumeN,
   // Strict batched
