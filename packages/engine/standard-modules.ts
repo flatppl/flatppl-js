@@ -257,7 +257,10 @@ function _registerPolynomials() {
 //   Γ(σ) = Γ · (m/√σ) · (p(σ)/p_0) · (F_l(p(σ)) / F_l(p_0))²
 //
 // where p(σ) is the breakup momentum, F_l is the Blatt-Weisskopf
-// barrier factor, and p_0 = p(m²). Auxiliary helpers below.
+// barrier factor, and p_0 = p(m²). F_l² = z^l / χ_l(z) with z = (d·p)²
+// (spec §09 `blatt_weisskopf`), so the squared ratio carries the
+// numerator (p/p_0)^{2l}: Γ(σ) ∝ (p/p_0)^{2l+1}, as in the PDG review
+// "Resonances". Auxiliary helpers below.
 
 // Källén function λ(x, y, z) = x² + y² + z² − 2xy − 2yz − 2xz.
 function _kaellen(x: number, y: number, z: number): number {
@@ -314,8 +317,11 @@ function _resonanceBreitwigner(
   // d appears squared in pd2; p · d has units of (energy · length).
   const pd2 = (p * d) * (p * d);
   const p0d2 = (p0 * d) * (p0 * d);
-  const F2  = _blattWeisskopfSquared(l, pd2);
-  const F02 = _blattWeisskopfSquared(l, p0d2);
+  // F_l² = z^l / χ_l(z). `_blattWeisskopfSquared` is the 1/χ_l(z) part only,
+  // so the z^l numerator is applied here; dropping it leaves the width wrong
+  // for every l ≥ 1.
+  const F2  = Math.pow(pd2, l) * _blattWeisskopfSquared(l, pd2);
+  const F02 = Math.pow(p0d2, l) * _blattWeisskopfSquared(l, p0d2);
   // Γ(σ) — guard against p0 = 0 (massless daughters at threshold);
   // in the degenerate ℓ=0, ma=mb=0 case Γ(σ) collapses to Γ as the
   // ratios cancel exactly (spec §09 closing note). The reformulation
