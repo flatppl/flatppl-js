@@ -61,6 +61,27 @@ function columns(m: any, prefix: string, out: [string, Float64Array][] = []) {
   return out;
 }
 
+// Self-normalised weighted mean and its Monte-Carlo standard error of one
+// column, with the weights `w` (sum `sw`, Kish ESS `ess`).
+//
+// Keep this a top-level function that returns to a plain `for` loop. The same
+// loop inside an arrow function handed to `Array.prototype.map`, returning an
+// object literal, is miscompiled by V8's on-stack replacement (Node 24's V8
+// 13.6 and Node 26's 14.6): on roughly 1 run in 25 the first columns came back
+// with the LAST column's mean and error, so `r.a` read the mean of `r.u`.
+// `--no-use-osr`, `--no-maglev` and `--no-turbofan` each removed it.
+function columnMoments(label: string, col: Float64Array, w: Float64Array,
+  sw: number, ess: number) {
+  const n = col.length;
+  let mu = 0;
+  for (let i = 0; i < n; i++) mu += w[i] * col[i];
+  mu /= sw;
+  let v = 0;
+  for (let i = 0; i < n; i++) v += w[i] * (col[i] - mu) * (col[i] - mu);
+  v /= sw;
+  return { label, mean: mu, se: Math.sqrt(v / ess), ess };
+}
+
 // Self-normalised weighted mean and its Monte-Carlo standard error per column.
 // The error uses Kish's ESS, since these ensembles are importance-weighted.
 function moments(m: any, prefix: string) {
@@ -78,15 +99,11 @@ function moments(m: any, prefix: string) {
     sw2 += w[i] * w[i];
   }
   const ess = (sw * sw) / sw2;
-  return cols.map(([label, col]) => {
-    let mu = 0;
-    for (let i = 0; i < n; i++) mu += w[i] * col[i];
-    mu /= sw;
-    let v = 0;
-    for (let i = 0; i < n; i++) v += w[i] * (col[i] - mu) * (col[i] - mu);
-    v /= sw;
-    return { label, mean: mu, se: Math.sqrt(v / ess), ess };
-  });
+  const out = [];
+  for (let j = 0; j < cols.length; j++) {
+    out.push(columnMoments(cols[j][0], cols[j][1], w, sw, ess));
+  }
+  return out;
 }
 
 async function measures(src: string, names: string[], n = N) {
@@ -112,6 +129,27 @@ function assertMeans(m: any, prefix: string, oracle: number[]) {
   });
   return got;
 }
+
+test('moments reads each column against the same weights', () => {
+  // Weights exp(0) : exp(log 3) = 1 : 3, so the weighted mean of [0, 4] is
+  // (0 + 3 * 4) / 4 = 3, of [10, 2] is (10 + 3 * 2) / 4 = 4, and the Kish ESS
+  // is (1 + 3)^2 / (1 + 9) = 1.6.
+  const m = {
+    shape: 'record',
+    fields: {
+      a: { samples: Float64Array.from([0, 4]) },
+      b: { samples: Float64Array.from([10, 2]) },
+    },
+    logWeights: Float64Array.from([0, Math.log(3)]),
+  };
+  const got = moments(m, 'r');
+  assert.deepEqual(got.map((g) => g.label), ['r.a', 'r.b']);
+  assert.ok(Math.abs(got[0].mean - 3) < 1e-12);
+  assert.ok(Math.abs(got[1].mean - 4) < 1e-12);
+  assert.ok(Math.abs(got[0].ess - 1.6) < 1e-12);
+  // Variance of [0, 4] under (1/4, 3/4) is 1/4 * 9 + 3/4 * 1 = 3; se = sqrt(3 / 1.6).
+  assert.ok(Math.abs(got[0].se - Math.sqrt(3 / 1.6)) < 1e-12);
+});
 
 // =====================================================================
 // The witness: a record over a draw AND the latents it was drawn from
