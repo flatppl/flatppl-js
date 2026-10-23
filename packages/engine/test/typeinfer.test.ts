@@ -247,7 +247,7 @@ test('arithmetic: array + scalar broadcasts to array', () => {
   const { bindings, errors } = infer(`
     xs = [1.0, 2.0, 3.0]
     y = 5.0
-    out = xs + y
+    out = xs .+ y
   `);
   assert.equal(errors.length, 0);
   const t = typeOf(bindings, 'out');
@@ -260,7 +260,7 @@ test('arithmetic: array + array of matching shape stays array', () => {
   const { bindings, errors } = infer(`
     xs = [1.0, 2.0, 3.0]
     ys = [4.0, 5.0, 6.0]
-    out = xs * ys
+    out = xs .* ys
   `);
   assert.equal(errors.length, 0);
   const t = typeOf(bindings, 'out');

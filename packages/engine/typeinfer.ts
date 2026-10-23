@@ -112,6 +112,7 @@ function isVectorOfVectors(t: any): boolean {
 }
 
 const SCALAR_ONLY_OPS = new Set([...ELEMENTARY_OPS, 'pow']);
+const { operatorDomainViolation, kindOf: operandKind, extentOf, asGuess, unresolved: isGuess } = require('./operator-domains.ts');
 // The four FlatPDL transports (spec §07) — undefined on discrete kernels.
 const TRANSPORT_OPS = new Set([
   'builtin_touniform', 'builtin_fromuniform',
@@ -1708,7 +1709,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (!domain || domain.kind !== 'array' || domain.rank !== 1) return null;
     const reif = _reificationWithArity(args[0]);
     if (!reif) return null;
-    const bodyT: any = _bodyTypeUnder(reif, [domain], scopes);
+    // The body is walked only to read its type, so that the refusal below can name it; the operator
+    // domains would refuse `x * x` over a vector here and hide that refusal.
+    operatorDomainsOff++;
+    let bodyT: any;
+    try { bodyT = _bodyTypeUnder(reif, [domain], scopes); } finally { operatorDomainsOff--; }
     const bad = bodyT && (bodyT.kind === 'array' || bodyT.kind === 'tvector'
       || bodyT.kind === 'record');
     if (!bad) return null;
@@ -3877,7 +3882,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (refuseCollectionDomainHead(expr, fn, cellTypes, argClassif)) {
       return T.failed('broadcast: collection-domain head over a scalar element');
     }
+    // A broadcast over nested arrays hands the head a cell this typing peels one layer short of the
+    // runtime's, so the §07 operator domains do not judge operators applied to such a cell.
+    const nestedCells = dataTypes.some((t: any) => t?.kind === 'array' && t.elem?.kind === 'array');
     let elem: any = T.deferred();
+    if (nestedCells) operatorDomainsOff++;
+    const outerSpan = broadcastSpan;
+    broadcastSpan = expr.loc || dataArgs[0]?.loc || outerSpan;
+    try {
     if (isRecordHead && kwNames.length > 0) {
       // §04: a bare record head has the same row schema as record-returning
       // functions, even when no cell runs because the broadcast is empty.
@@ -3962,6 +3974,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         { sampleShape, batchShape, eventShape });
     }
 
+    } finally {
+      broadcastSpan = outerSpan;
+      if (nestedCells) operatorDomainsOff--;
+    }
     // Phase 5: combine for the value-broadcast (non-kernel) case.
     const concrete = elem && elem.kind !== 'deferred' && elem.kind !== 'any';
     if (!hasCollection) {
@@ -4005,6 +4021,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       const refused = checkScalarOnlyOperands(expr.op, [aT, bT], args);
       if (refused) return refused;
     }
+    // §07 "Operator-equivalent functions" Domains cells, stated once in operator-domains.ts.
+    if (expr.op === 'add' || expr.op === 'sub' || expr.op === 'mul' || expr.op === 'pow') {
+      const refused = operatorDomainError(expr.op, [aT, bT], expr.loc);
+      if (refused) return refused;
+    }
     // `mod` and `div` are integer-domain (spec §07: `mod(a, b) = a − b·⌊a/b⌋`,
     // `div(a, b) = ⌊a/b⌋`, both over `integers` with `b ≠ 0`). The general
     // arith ladder (unifyArith) admits reals, so enforce the integer
@@ -4038,6 +4059,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
       }
     }
+    if (expr.op === 'mul') {
+      const products = transposedProduct(aT, bT);
+      if (products) return products;
+    }
     const r: any = T.unifyArith(aT, bT, new Map());
     if (r == null) {
       diagnostics.push({
@@ -4048,7 +4073,44 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       });
       return T.failed(expr.op + ' shape mismatch');
     }
-    return r.result;
+    // `unifyArith` takes the other operand's type when one is unresolved; that is a guess, which
+    // the §07 domains must not judge later.
+    const guess = isGuess(aT) || isGuess(bT);
+    return guess ? asGuess(r.result) : r.result;
+  }
+
+  // The result of the three `mul` pairs §07 lists with a transposed vector: the inner product
+  // (transposed vector, vector) is a scalar, the outer product (vector, transposed vector) a
+  // matrix, and (transposed vector, matrix) a transposed vector. Null for every other pair.
+  function transposedProduct(aT: any, bT: any): any {
+    const ka = operandKind(aT), kb = operandKind(bT);
+    const elem = (): any => {
+      const joined: any = T.unifyArith(leafOf(aT), leafOf(bT), new Map());
+      return joined ? joined.result : T.REAL;
+    };
+    if (ka === 'tvector' && kb === 'vector') return elem();
+    if (ka === 'vector' && kb === 'tvector') {
+      return T.array(2, [extentOf(aT, 0) ?? '%dynamic', extentOf(bT, 0) ?? '%dynamic'], elem());
+    }
+    if (ka === 'tvector' && kb === 'matrix') return T.tvector(extentOf(bT, 1) ?? '%dynamic', elem());
+    return null;
+  }
+  function leafOf(t: any): any {
+    return t && (t.kind === 'array' || t.kind === 'tvector') ? leafOf(t.elem) : t;
+  }
+
+  // A violation of an operator-equivalent function's §07 domain, reported at the call.
+  let operatorDomainsOff = 0;
+  // The span of the enclosing `broadcast`: its per-cell call of a builtin head is a synthesised
+  // body that carries no span of its own.
+  let broadcastSpan: any = null;
+  function operatorDomainError(op: string, types: any[], loc: any, scalarOnly = false): any {
+    if (operatorDomainsOff > 0) return null;
+    loc = loc || broadcastSpan;
+    const why = operatorDomainViolation(op, types);
+    if (!why) return null;
+    diagnostics.push({ severity: 'error', message: why, loc, ...(scalarOnly ? { scalarOnly: true } : {}) });
+    return T.failed(op + ' outside its domain');
   }
 
   function inferArith1(expr: any, scopes: any) {
@@ -4060,6 +4122,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // the array lift below.
     if (SCALAR_ONLY_OPS.has(expr.op)) {
       const refused = checkScalarOnlyOperands(expr.op, [aT], args);
+      if (refused) return refused;
+    }
+    if (expr.op === 'neg') {
+      const refused = operatorDomainError('neg', [aT], expr.loc);
       if (refused) return refused;
     }
     // Scalar in → scalar out; array in → array out (shape preserved).
@@ -4157,18 +4223,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const aT: any = inferExpr(args[0], scopes);
     const bT: any = inferExpr(args[1], scopes);
     if (aT.kind === 'failed' || bT.kind === 'failed') return T.failed('divide cascade');
-    if (_isNonScalarOperand(bT)) {
-      diagnostics.push({
-        severity: 'error',
-        message: 'divide: arg 2 (the divisor) expects a scalar, got '
-          + T.show(bT) + ' — spec §07 gives `divide` the domains "scalars, '
-          + 'array-scalar, transposed-vector–scalar", all with a scalar '
-          + 'divisor; the elementwise form is `divide.(a, b)`',
-        loc: args[1].loc,
-      });
-      return T.failed('divide non-scalar divisor');
+    const refused = operatorDomainError('divide', [aT, bT], expr.loc);
+    if (refused) return refused;
+    if (!_isNonScalarOperand(aT)) {
+      // Scalar quotient: real, or complex when either operand is (§07 "real or complex").
+      const joined: any = T.unifyArith(aT, bT, new Map());
+      if (joined == null || joined.result?.kind !== 'scalar') return inferGenericCall(expr, scopes);
+      return joined.result.prim === 'complex' ? T.COMPLEX : T.REAL;
     }
-    if (!_isNonScalarOperand(aT)) return inferGenericCall(expr, scopes);
     // Array-scalar / tvector-scalar: the quotient keeps the dividend's shape.
     // Element type promotes through the same numeric ladder as the scalar
     // form, so a complex operand on either side gives a complex quotient.
@@ -4225,6 +4287,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return T.failed(expr.op + ' array operand');
       }
     }
+    const refused = operatorDomainError(expr.op, [aT, bT], expr.loc);
+    if (refused) return refused;
     const r: any = T.unifyArith(aT, bT, new Map());
     if (r == null) {
       diagnostics.push({

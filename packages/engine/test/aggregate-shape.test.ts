@@ -101,7 +101,7 @@ test('aggregate-shape: nested aggregate does NOT leak its axes outward', () => {
   // axis walk).
   const ir = aggIRFromSource(`
 A = [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]
-inner = aggregate(sum, [.k], A[1, 1, .k])
+inner = aggregate(sum, [], A[1, 1, .k])
 outer[.i] := A[.i, 1, 1] + inner
 `, 'outer');
   const c = ir.meta.aggregateCanonical;
