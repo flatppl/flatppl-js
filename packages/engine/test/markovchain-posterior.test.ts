@@ -116,7 +116,7 @@ sig ~ normalize(truncate(Cauchy(0, 1), interval(0, inf)))
 step(prev, scale) = Normal(prev, scale)
 x ~ markovchain(step, 0.0, 5, sig)
 fk = kernelof(record(x = x), sig = sig)
-L = likelihoodof(pars -> fk(sig = pars.sig), record(x = x_data))
+L = likelihoodof(fk, record(x = x_data))
 lp = logdensityof(L, record(sig = ${sigma}))
 `, 1000);
     assert.deepEqual(ctx.errors, [], `no diagnostics at sigma = ${sigma}`);
@@ -183,7 +183,7 @@ prior = lawof(record(sig = sig))
 step(prev, scale) = Normal(prev, scale)
 x ~ markovchain(step, 0.0, 5, sig)
 fk = kernelof(record(x = x), sig = sig)
-L = likelihoodof(pars -> fk(sig = pars.sig), record(x = x_data))
+L = likelihoodof(fk, record(x = x_data))
 posterior = bayesupdate(L, prior)
 `, 200000);
   assert.deepEqual(ctx.errors, []);
@@ -216,28 +216,88 @@ posterior = bayesupdate(L, prior)
 
 test('markovchain: examples/ar1-noise-estimation reproduces its in-file oracle',
   async () => {
-  // The worked example's own frozen numbers (posterior mean 0.838310,
-  // sd 0.054553), computed by an external oracle and recorded in the file.
+  // The worked example estimates drift and sigma_step. Its frozen numbers come from an
+  // external two-dimensional quadrature (scipy.integrate.dblquad) of the closed-form log
+  // posterior, drift ~ Normal(0, 1) and a half-Cauchy sigma_step:
+  //   drift      mean 0.359902  sd 0.076703
+  //   sigma_step mean 0.840969  sd 0.054956
   const src = fs.readFileSync(
     path.join(__dirname, 'fixtures', 'ar1-noise-estimation.flatppl'), 'utf8');
-  const ctx = makeCtx(src, 200000);
+  const ctx = makeCtx(src, 400000);
   assert.deepEqual(ctx.errors, [], 'the example must analyse clean');
-  const post = await ctx.getMeasure('posterior');
-  const xs = post.fields.sigma_step.samples;
+  const post = await ctx.getMeasure('Pi_post');
   const lw = post.logWeights;
   let mx = -Infinity;
   for (let i = 0; i < lw.length; i++) if (lw[i] > mx) mx = lw[i];
-  let sw = 0, sx = 0, sxx = 0;
-  for (let i = 0; i < xs.length; i++) {
-    const w = Math.exp(lw[i] - mx);
-    sw += w; sx += w * xs[i]; sxx += w * xs[i] * xs[i];
+  const moments = (xs: ArrayLike<number>) => {
+    let sw = 0, sx = 0, sxx = 0;
+    for (let i = 0; i < xs.length; i++) {
+      const w = Math.exp(lw[i] - mx);
+      sw += w; sx += w * xs[i]; sxx += w * xs[i] * xs[i];
+    }
+    const mean = sx / sw;
+    return { mean, sd: Math.sqrt(sxx / sw - mean * mean) };
+  };
+  const drift = moments(post.fields.drift.samples);
+  const sigma = moments(post.fields.sigma_step.samples);
+  // Importance sampling from a prior this much wider than the posterior leaves a modest ESS, so
+  // the budget is about a tenth of a posterior sd on a mean and 15% on an sd.
+  assert.ok(Math.abs(drift.mean - 0.359902) < 0.012, `drift mean ${drift.mean}`);
+  assert.ok(Math.abs(drift.sd - 0.076703) < 0.012, `drift sd ${drift.sd}`);
+  assert.ok(Math.abs(sigma.mean - 0.840969) < 0.008, `sigma_step mean ${sigma.mean}`);
+  assert.ok(Math.abs(sigma.sd - 0.054956) < 0.008, `sigma_step sd ${sigma.sd}`);
+});
+
+test('markovchain: the example scores the closed-form log posterior at five points', async () => {
+  // Closed form (scipy, independent of the engine): log likelihood + Normal(0, 1) log density of
+  // drift + half-Cauchy log density of sigma_step, at (sigma_step, drift).
+  const src = fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'ar1-noise-estimation.flatppl'), 'utf8');
+  const points: Array<[number, number, number]> = [
+    [0.6, 0.0, -187.75432671911727], [0.8, 0.4, -150.40850935931704],
+    [1.0, 0.36, -153.89429915697878], [1.5, -0.2, -188.36240012276022],
+    [0.84, 0.3, -150.43208003099403],
+  ];
+  for (const [s, d, want] of points) {
+    const ctx = makeCtx(src + `lp = logdensityof(Pi_post, record(sigma_step = ${s}, drift = ${d}))\n`, 1);
+    assert.deepEqual(ctx.errors, []);
+    const m = await ctx.getMeasure('lp');
+    assert.ok(Math.abs(m.samples[0] - want) < 1e-9, `(${s}, ${d}): ${m.samples[0]} vs ${want}`);
   }
-  const mean = sx / sw;
-  const sd = Math.sqrt(sxx / sw - mean * mean);
-  assert.ok(Math.abs(mean - 0.838310) < 0.004,
-    `example posterior mean ${mean} vs in-file oracle 0.838310`);
-  assert.ok(Math.abs(sd - 0.054553) < 0.004,
-    `example posterior sd ${sd} vs in-file oracle 0.054553`);
+});
+
+test('markovchain and kscan: a kernel boundary input (`elementof`) feeds the trajectory density', async () => {
+  // The trajectory depends on a boundary input of the scoring kernel. The posterior density at a
+  // point is the sum of the step conditionals plus the prior; scipy, independent of the engine.
+  const walk = `
+xd = [0.1, -0.05, 0.2, 0.15, 0.3]
+s = elementof(posreals)
+step(prev, sc) = Normal(prev, sc)
+x ~ markovchain(step, 0.0, 5, s)
+K = kernelof(record(x = x), s = s)
+L = likelihoodof(K, record(x = xd))
+prior = joint(s = Gamma(shape = 2.0, rate = 0.5))
+posterior = bayesupdate(L, prior)
+lp = logdensityof(posterior, record(s = 0.7))
+`;
+  let ctx = makeCtx(walk, 1);
+  assert.deepEqual(ctx.errors, []);
+  assert.ok(Math.abs((await ctx.getMeasure('lp')).samples[0] - (-5.026736230980161)) < 1e-10);
+  const scan = `
+dts = [0.01, 0.02, 0.015, 0.018, 0.012]
+xd = [0.1, -0.05, 0.2, 0.15, 0.3]
+D = elementof(posreals)
+f_step = (x, dt, D) -> Normal(x, sqrt(2.0 * D * dt))
+traj ~ kscan(f_step, 0.0, dts, D)
+K = kernelof(record(traj = traj), D = D)
+L = likelihoodof(K, record(traj = xd))
+prior = joint(D = Gamma(shape = 2.0, rate = 0.5))
+posterior = bayesupdate(L, prior)
+lp = logdensityof(posterior, record(D = 0.9))
+`;
+  ctx = makeCtx(scan, 1);
+  assert.deepEqual(ctx.errors, []);
+  assert.ok(Math.abs((await ctx.getMeasure('lp')).samples[0] - 0.2656522392996603) < 1e-10);
 });
 
 // =====================================================================

@@ -167,7 +167,7 @@ test('constant-bijection locscale likelihood still uses the fast path (oracle un
     + `fk = kernelof(record(obs = obs), d = dummy)\n`
     + `observed_data = 1.5\n`
     + `L = likelihoodof(fk, record(obs = observed_data))\n`
-    + `ld = logdensityof(L, 0.0)\n`, 64);
+    + `ld = logdensityof(L, record(d = 0.0))\n`, 64);
   const m = await ctx.getMeasure('ld');
   assert.ok(Math.abs(m.samples[0] - (-1.8541214455305277)) < 1e-12,
     `got ${m.samples[0]}, expected -1.8541214455305277`);

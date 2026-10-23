@@ -4036,6 +4036,10 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       for (const r of collectSelfRefs(ir)) {
         // The step's own params are bound per step, never fed.
         if (r === dd.step.inputParam || dd.step.xParams.includes(r)) continue;
+        // A boundary input of the kernel that scores the trajectory (`elementof`) is fed from the
+        // scored point, as for the other measure bodies above: it is no reason to drop the
+        // derivation, which would leave the density walker with a bare `kscan`.
+        if (bindings.get(r)?.phase === 'parametric') continue;
         if (!resolvable(r)) return false;
       }
     }

@@ -744,7 +744,9 @@ test('beta-binomial-pushfwd: full fixture type-checks; measure-bodied lambdas re
 });
 
 // =====================================================================
-// Transport posteriors (simple-transport1/2) — DELIBERATELY tiny counts.
+// Transport posterior (simple-transport2) — DELIBERATELY tiny counts. simple-transport1 keeps the
+// record-valued `pars` boundary, which a likelihood point cannot name (§03 records do not nest),
+// so it has no posterior.
 // These posteriors are the most expensive shapes in the corpus (per
 // prior atom: an mcmarginal density = M marginal draws × 20 events), so
 // the smoke test pins "materialises with a well-defined n_eff" at
@@ -755,7 +757,7 @@ test('beta-binomial-pushfwd: full fixture type-checks; measure-bodied lambdas re
 // justified budget, not here.
 // =====================================================================
 
-for (const fx of ['simple-transport1.flatppl', 'simple-transport2.flatppl']) {
+for (const fx of ['simple-transport2.flatppl']) {
   test(`${fx}: posterior materialises at tiny N/M with well-defined n_eff`, async () => {
     const { errs, ctx, built } = setupCtx(readFixture(fx), 40);
     assert.equal(errs.length, 0, 'no parse/typeinfer errors');

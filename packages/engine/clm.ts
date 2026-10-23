@@ -870,7 +870,7 @@ function _structuralBoundaries(deriv: any, ctx: any): any[] {
     for (let i = 0; i < deriv.paramKwargs.length; i++) {
       const k = deriv.paramKwargs[i];
       const src: any = { kind: 'boundary', from: deriv.from };
-      if (!require('./types.ts').acceptsPositional(deriv, 1)) src.field = k;
+      src.field = k;
       if (plc[i] && plc[i] !== k) src.localAlias = plc[i];
       out.push({ name: k, source: src });
     }

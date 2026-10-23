@@ -346,7 +346,7 @@ test('invariant: every measure-algebra op classifies under inline subexpressions
     { op: 'pushfwd',      src: 'b = pushfwd(fn(_ + 1.0), Normal(0, 1))' },
     { op: 'jointchain',   src: 'b = jointchain(Normal(0, 1), fn(Normal(_, 1.0)))' },
     { op: 'kchain',       src: 'b = kchain(Normal(0, 1), fn(Normal(_, 1.0)))' },
-    { op: 'bayesupdate',  src: 'b = bayesupdate(likelihoodof(fn(Normal(_, 1.0)), 0.5), Normal(0, 1))' },
+    { op: 'bayesupdate',  src: 'b = bayesupdate(likelihoodof(fn(Normal(_, 1.0)), 0.5), joint(arg1 = Normal(0, 1)))' },
   ];
   const failures: string[] = [];
   for (const f of fixtures) {

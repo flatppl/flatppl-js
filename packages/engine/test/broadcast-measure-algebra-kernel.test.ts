@@ -141,7 +141,7 @@ test('density: a component parameter that is a kernelof BOUNDARY resolves '
   const src = BOUNDARY_HEAD + 'w_ev = [0.8, 0.8, 0.6]\n' + MIX_PARAMETRIC + `
 E ~ mix.(w_ev, lam)
 K = kernelof(record(E = E), lam = lam)
-L = likelihoodof(pars -> K(lam = pars.lam), record(E = [${DATA.join(', ')}]))
+L = likelihoodof(K, record(E = [${DATA.join(', ')}]))
 __score__ = logdensityof(L, ${THETA})
 `;
   const got = await scoreOf(src);
@@ -156,7 +156,7 @@ w = [0.8, 0.6]
 E1 ~ iid(normalize(superpose(weighted(w[1], bkg), weighted(1.0 - w[1], sig))), 2)
 E2 ~ iid(normalize(superpose(weighted(w[2], bkg), weighted(1.0 - w[2], sig))), 1)
 K = kernelof(record(E1 = E1, E2 = E2), lam = lam)
-L = likelihoodof(pars -> K(lam = pars.lam), record(E1 = [${DATA[0]}, ${DATA[1]}], E2 = [${DATA[2]}]))
+L = likelihoodof(K, record(E1 = [${DATA[0]}, ${DATA[1]}], E2 = [${DATA[2]}]))
 __score__ = logdensityof(L, ${THETA})
 `);
     assert.ok(relErr(unrolled, ORACLE_B) < 1e-12,
@@ -180,7 +180,7 @@ w_ev = w[dataset_of_event]
 ` + MIX_PARAMETRIC + `
 E ~ mix.(w_ev, lam)
 K = kernelof(record(E = E), lam = lam)
-L = likelihoodof(pars -> K(lam = pars.lam), record(E = [${DATA.join(', ')}]))
+L = likelihoodof(K, record(E = [${DATA.join(', ')}]))
 __score__ = logdensityof(L, ${THETA})
 `;
   const got = await scoreOf(src);
@@ -593,7 +593,7 @@ w_v = s .* [1.0, 2.0]
 K = a -> weighted(a, Normal(0.0, 1.0))
 X ~ K.(w_v)
 KK = kernelof(record(X = X), s = s)
-L = likelihoodof(pars -> KK(s = pars.s), record(X = [0.5, 1.5]))
+L = likelihoodof(KK, record(X = [0.5, 1.5]))
 __score__ = logdensityof(L, record(s = 0.5))
 `);
   assert.ok(relErr(got, oracle) < 1e-12,
@@ -609,7 +609,7 @@ lw_v = s .* [-1.0, -2.0]
 K = a -> logweighted(a, Normal(0.0, 1.0))
 X ~ K.(lw_v)
 KK = kernelof(record(X = X), s = s)
-L = likelihoodof(pars -> KK(s = pars.s), record(X = [0.5, 1.5]))
+L = likelihoodof(KK, record(X = [0.5, 1.5]))
 __score__ = logdensityof(L, record(s = 0.5))
 `);
   assert.ok(relErr(got, oracle) < 1e-12,

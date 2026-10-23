@@ -3497,7 +3497,7 @@ test('classify: bayesupdate observation can be a dynamically-computed value', ()
     observed_data, _ = rand(lawof(obs), rstate)
     forward_kernel = kernelof(record(obs = obs), theta1 = theta1)
     prior          = lawof(record(theta1 = theta1))
-    L              = likelihoodof(pars -> forward_kernel(theta1 = pars.theta1), record(obs = observed_data))
+    L              = likelihoodof(forward_kernel, record(obs = observed_data))
     posterior      = bayesupdate(L, prior)
   `);
   const ds = buildDerivations(bindings);

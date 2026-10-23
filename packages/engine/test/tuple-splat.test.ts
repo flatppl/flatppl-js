@@ -57,10 +57,14 @@ test('a tuple binds a kernel\'s inputs in order', async () => {
     lnNormal(0.3, 0.5, 2.0));
 });
 
-test('a tuple point splats over a likelihood\'s ordered inputs', async () => {
+test('a likelihood point binds the kernel inputs by name, a tuple point is refused', async () => {
   const src = KERNEL + 'L = likelihoodof(K, 0.3)\n';
-  close(await score(src + 's = logdensityof(L, (0.5, 2.0))\n'), lnNormal(0.3, 0.5, 2.0));
-  close(await score(src + 't = (0.5, 2.0)\ns = logdensityof(L, t)\n'), lnNormal(0.3, 0.5, 2.0));
+  close(await score(src + 's = logdensityof(L, record(a = 0.5, b = 2.0))\n'), lnNormal(0.3, 0.5, 2.0));
+  close(await score(src + 't = record(b = 2.0, a = 0.5)\ns = logdensityof(L, t)\n'),
+    lnNormal(0.3, 0.5, 2.0));
+  const found = errors(src + 's = logdensityof(L, (0.5, 2.0))\n');
+  assert.equal(found.length, 1, String(found));
+  assert.match(found[0], /the point must be a record with one field per likelihood input/);
 });
 
 test('splatting is shallow: an element that is a tuple binds whole', async () => {
@@ -91,10 +95,10 @@ test('a builtin with the wrong tuple length is a static error', () => {
   assert.match(found[0], /^add: a sole positional tuple of 3 elements splats into positional/);
 });
 
-test('a likelihood tuple point with the wrong length is a static error', () => {
-  const found = errors(KERNEL + 'L = likelihoodof(K, 0.3)\ns = logdensityof(L, (0.5, 2.0, 1.0))\n');
+test('a likelihood record point with a field that names no input is a static error', () => {
+  const found = errors(KERNEL + 'L = likelihoodof(K, 0.3)\ns = logdensityof(L, record(a = 0.5, b = 2.0, c = 1.0))\n');
   assert.equal(found.length, 1, String(found));
-  assert.match(found[0], /the point is a tuple of 3 elements splatted over the likelihood inputs/);
+  assert.match(found[0], /the point has no input named "c"/);
 });
 
 test('keyword-only inputs do not splat a tuple', () => {

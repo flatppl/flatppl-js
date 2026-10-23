@@ -70,7 +70,7 @@ obs ~ iid(Normal(mu = a, sigma = b), 10)
 forward_kernel = kernelof(record(obs = obs), theta = theta)
 L = likelihoodof(forward_kernel, record(obs = ${DATA}))
 theta_pt = [0.5, 1.5]
-__score__ = logdensityof(L, theta_pt)
+__score__ = logdensityof(L, record(theta = theta_pt))
 `);
   assert.ok(Math.abs(v - ORACLE) < 1e-9, `got ${v}`);
 });

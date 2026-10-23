@@ -27,7 +27,7 @@ mu ~ Normal(0.0, 3.0)
 prior = lawof(record(mu = mu))
 y ~ iid(Normal(mu, 1.0), 2)
 K = kernelof(record(y = y), mu = mu)
-L = likelihoodof(pars -> K(mu = pars.mu), record(y = y_data))
+L = likelihoodof(K, record(y = y_data))
 posterior = bayesupdate(L, prior)
 `;
 

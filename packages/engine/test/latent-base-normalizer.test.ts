@@ -30,7 +30,7 @@ for (const weight of ['weighted(fn(exp(_))']) {
     + `m = normalize(${weight}, Normal(theta, 1.0)))\n`
     + 'y ~ m\nK = kernelof(record(y = y), theta = theta)\n'
     + 'L = likelihoodof(K, record(y = 0.5))\n'
-    + 'lp = logdensityof(L, 0.5)\nposterior = bayesupdate(L, lawof(theta))\n';
+    + 'lp = logdensityof(L, record(theta = 0.5))\nposterior = bayesupdate(L, lawof(record(theta = theta)))\n';
 
   test(`${weight}: likelihood refuses a pooled latent-base normalizer`, async () => {
     const { proc, ctx } = ctxFor(model, 32);
@@ -56,8 +56,8 @@ m = normalize(logweighted(fn(_), Normal(theta,1)))
 y ~ m
 K = kernelof(record(y=y), theta=theta)
 L = likelihoodof(K, record(y=0.5))
-lp = logdensityof(L,0.5)
-posterior = bayesupdate(L,lawof(theta))
+lp = logdensityof(L, record(theta = 0.5))
+posterior = bayesupdate(L, lawof(record(theta = theta)))
 `, 2);
   const deriv = Object.values(ctx.derivations).find((d: any) => d.kind === 'bayesupdate');
   const { likOf } = await buildLogPi(ctx, deriv);
@@ -103,7 +103,7 @@ m = normalize(weighted((v, t) -> h(v, t), Dirichlet([2.0, 2.0]), theta))
 y ~ m
 K = kernelof(record(y = y), theta = theta)
 L = likelihoodof(K, record(y = [0.5, 0.5]))
-lp = logdensityof(L, 1.0)
+lp = logdensityof(L, record(theta = 1.0))
 `, 32);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   // The Dirichlet base is fixed. Only the helper's explicit theta changes

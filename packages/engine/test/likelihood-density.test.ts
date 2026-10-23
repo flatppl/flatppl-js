@@ -73,15 +73,15 @@ score = logdensityof(L, record(cuts = [1, 1 + log(3)], location = 1))
   assert.ok(Math.abs(actual - Math.log(3 / 16)) < 1e-12);
 });
 
-test('logdensityof(L, θ) scores the kernel at the given scalar θ (closed form)', async () => {
+test('logdensityof(L, θ) scores the kernel at the given one-field record θ (closed form)', async () => {
   const ctx = buildCtx(`
 theta ~ Normal(0, 1)
 obs ~ iid(Normal(theta, 1), 5)
 fk = kernelof(record(obs = obs), theta = theta)
 observed_data = [1.0, 1.5, 0.5, 1.2, 0.8]
 L = likelihoodof(fk, record(obs = observed_data))
-ld = logdensityof(L, 1.0)
-dd = densityof(L, 1.0)
+ld = logdensityof(L, record(theta = 1.0))
+dd = densityof(L, record(theta = 1.0))
 `, 64);
   assert.ok(ctx.derivations['ld'], 'logdensityof(L, θ) gets a derivation (H2)');
   assert.strictEqual(ctx.derivations['ld'].kind, 'likelihood_density');
@@ -132,7 +132,7 @@ obs ~ iid(Normal(theta, 1), 3)
 fk = kernelof(record(obs = obs), theta = theta)
 observed_data = [0.0, 0.5, 1.0]
 L = likelihoodof(fk, record(obs = observed_data))
-ld = logdensityof(L, 0.5)
+ld = logdensityof(L, record(theta = 0.5))
 `, 32);
   assert.ok(ctx.derivations['ld'], 'elementof-boundary likelihood density classifies');
   assert.strictEqual(ctx.derivations['ld'].kind, 'likelihood_density');

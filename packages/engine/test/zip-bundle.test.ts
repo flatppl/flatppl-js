@@ -75,11 +75,11 @@ helpers = load_module(helper_path)
 observations = load_data("data/observations.json", cartpow(reals, 2))
 theta ~ helpers.prior
 y ~ iid(Normal(theta, 1), 2)
-prior = lawof(theta)
+prior = lawof(record(theta = theta))
 K = kernelof(y, theta = theta)
 L = likelihoodof(K, observations)
 posterior = bayesupdate(L, prior)
-score = logdensityof(posterior, 0)
+score = logdensityof(posterior, record(theta = 0))
 `;
 const modelEntries: FixtureEntry[] = [
   { name: 'main.flatppl', text: model, deflate: true },

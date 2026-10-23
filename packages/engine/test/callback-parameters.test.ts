@@ -131,8 +131,8 @@ implicit = likelihoodof(Normal(mu, 2), 3)
 sigma = elementof(posreals)
 recordlikelihood = likelihoodof(Normal(mu, sigma), 3)
 a = logweighted((x, p) -> logdensityof(p[1](x), p[2]), Normal(0, 1), (K, 3))
-b = weighted((x, p) -> densityof(p, x), Normal(0, 1), L)
-c = logweighted((x, p) -> logdensityof(p, x), Normal(0, 1), L)
+b = weighted((x, p) -> densityof(p, record(x = x)), Normal(0, 1), L)
+c = logweighted((x, p) -> logdensityof(p, record(x = x)), Normal(0, 1), L)
 d = logweighted((x, p) -> logdensityof(p, (mu = x)), Normal(0, 1), implicit)
 recordweighted = weighted((x, p) -> densityof(p, x),
   joint(mu = Normal(0, 1), sigma = Dirac(2)), recordlikelihood)
@@ -177,7 +177,7 @@ test('parameter specialization preserves generated builtins under user shadowing
     const { ctx } = makeMatCtx(prefix + `
 K(x) = Normal(x, 2)
 L = likelihoodof(K, 3)
-M = weighted((x, p) -> densityof(p, x), Normal(0, 1), L)
+M = weighted((x, p) -> densityof(p, record(x = x)), Normal(0, 1), L)
 lp = base.logdensityof(M, 1)
 `, { sampleCount: 1 });
     const expected = -Math.log(2 * Math.PI) - Math.log(2) - 1;

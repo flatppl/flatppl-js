@@ -12,7 +12,7 @@ sizes = [2, 3]
 weights = [1, 1]
 y ~ normalize(ksuperpose(counts, weights)(sizes))
 K = kernelof(y, p = p)
-L = likelihoodof(pars -> K(p = pars.p), [1, 2])
+L = likelihoodof(K, [1, 2])
 score = logdensityof(L, record(p = 0.4))
 `, 1);
   // One common n: 1/2 * sum_n Binom(1 | n,p) Binom(2 | n,p).
@@ -25,7 +25,7 @@ test('normalizing an iid matrix cancels each live log mass in log space', async 
 t ~ Uniform(interval(900, 1100))
 y ~ normalize(iid(logweighted(t, Normal(0, 1)), [2, 2]))
 K = kernelof(y, t = t)
-L = likelihoodof(pars -> K(t = pars.t), rowstack([[0, 1], [2, 3]]))
+L = likelihoodof(K, rowstack([[0, 1], [2, 3]]))
 score = logdensityof(L, record(t = 1000))
 `, 1);
   const expected = -2 * Math.log(2 * Math.PI) - 7;

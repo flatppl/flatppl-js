@@ -306,7 +306,7 @@ test('§06: the all-zero refusal reaches the MCMC route too, not just the IS '
     + 'obs_dist = joint(y = mix)\n'
     + 'K = functionof(obs_dist, mu = mu)\n'
     + 'L = likelihoodof(K, record(y = 0.5))\n'
-    + 'prior = lawof(mu)\n'
+    + 'prior = lawof(record(mu = mu))\n'
     + 'posterior = bayesupdate(L, prior)\n';
   const lifted = processSource(SRC);
   assert.deepEqual(

@@ -71,7 +71,7 @@ test('the kernel and broadcast paths resolve the same discrete normalizer', asyn
 y ~ normalize(truncate(Poisson(mu), interval(0, 5)))
 K = kernelof(record(y = y), mu = mu)
 L = likelihoodof(K, record(y = 0))
-l = logdensityof(L, 3.0)`, 'l');
+l = logdensityof(L, record(mu = 3.0))`, 'l');
   close(kernel[0], logPmf(0, 3) - Math.log(mass(3, 0, 5)), 'kernelof');
   const broadcast = await value(`energy = p -> normalize(truncate(Poisson(p), interval(2, 5)))
 l = logdensityof(energy.([3.0, 4.0]), [2, 5])`, 'l');
@@ -84,7 +84,7 @@ test('MCMC likelihood re-resolves a parameter-dependent discrete normalizer', as
 y ~ iid(normalize(truncate(Poisson(r), interval(2, 4))), 2)
 K = kernelof(record(y = y), r = r)
 L = likelihoodof(K, record(y = [2, 4]))
-P = bayesupdate(L, lawof(r))`, { sampleCount: 16 });
+P = bayesupdate(L, lawof(record(r = r)))`, { sampleCount: 16 });
   const derivation = Object.values(ctx.derivations).find((d: any) => d.kind === 'bayesupdate');
   const { likOf } = await buildLogPi(ctx, derivation);
   for (const r of [1.5, 3.5]) {

@@ -713,15 +713,6 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
 // Standalone likelihood density — pdf(κ(θ), obs) (spec §06, audit H2)
 // =====================================================================
 
-/** True when the point IR is statically a tuple: a written `(a, b, …)`, or a
- *  reference to a binding of tuple type. A tuple and a vector are both plain JS
- *  arrays at run time, so the point's IR decides which reading applies. */
-function pointIsTuple(pointIR: any, ctx: any): boolean {
-  return (pointIR.kind === 'call' && pointIR.op === 'tuple')
-    || (pointIR.kind === 'ref' && pointIR.ns === 'self'
-      && ctx.bindings.get(pointIR.name)?.inferredType?.kind === 'tuple');
-}
-
 function matLikelihoodDensity(d: any, ctx: any) {
   // logdensityof(L, θ) with L = likelihoodof(K, obs): score the kernel at
   // the GIVEN θ against the FIXED obs. The body is lowered ONCE via the
@@ -737,9 +728,7 @@ function matLikelihoodDensity(d: any, ctx: any) {
     return Promise.reject(new Error(
       'logdensityof(L, θ): cannot resolve θ to a concrete value'));
   }
-  // Map θ onto the kernel's parametric inputs: a single input takes the
-  // whole value; multiple inputs require a record with one field each
-  // (the kernel's input space is the cat of its params, spec §04).
+  // Map θ onto the kernel's parametric inputs by field name.
   const kwargs: string[] = d.paramKwargs || [];
   const boundaries: Record<string, any> = {};
   // Tensor storage has a structural discriminant; `shape` and `data` alone
@@ -770,28 +759,23 @@ function matLikelihoodDensity(d: any, ctx: any) {
     for (const kk of kwargs) if (publicOf(kk) === pub) shared++;
     return shared === 1 ? pub : null;
   };
-  if (require('./types.ts').acceptsPositional({ params: kwargs, orderedInputs: d.orderedInputs }, 1)) {
-    // Single kernel input fed the whole θ value (scalar/vector point).
-    boundaries[kwargs[0]] = theta;
-  } else if (d.orderedInputs !== false && Array.isArray(theta) && pointIsTuple(d.pointIR, ctx)) {
-    // Tuple θ (spec §04 "Calling conventions"): ordered inputs bind by position.
-    // Type inference has already refused a count that does not fit the inputs.
-    kwargs.forEach((k, i) => { boundaries[k] = theta[i]; });
-  } else {
-    // Record θ: project each kernel input from its field (the multi-param
-    // case, and any single-param term whose θ is a record — e.g. a
-    // joint_likelihood sub-term declaring fewer params than θ carries).
-    for (const k of kwargs) {
-      const field = matchField(k);
-      if (field === null) {
-        const pub = publicOf(k);
-        const hint = pub !== k ? '" (public "' + pub + '")' : '"';
-        return Promise.reject(new Error(
-          'logdensityof(L, θ): θ must be a record with a "' + k
-          + hint + ' field (kernel inputs: ' + kwargs.join(', ') + ')'));
-      }
-      boundaries[k] = (theta as any)[field];
+  // Spec §06 `likelihoodof`: θ is a record with one field per kernel input, bound by name for any
+  // number of inputs (a single input `mu` is evaluated at `record(mu = 1.0)`, not at `1.0`).
+  if (!isRecord) {
+    return Promise.reject(new Error(
+      'logdensityof(L, θ): θ must be a record with one field per likelihood input (kernel inputs: '
+      + kwargs.join(', ') + ')'));
+  }
+  for (const k of kwargs) {
+    const field = matchField(k);
+    if (field === null) {
+      const pub = publicOf(k);
+      const hint = pub !== k ? '" (public "' + pub + '")' : '"';
+      return Promise.reject(new Error(
+        'logdensityof(L, θ): θ must be a record with a "' + k
+        + hint + ' field (kernel inputs: ' + kwargs.join(', ') + ')'));
     }
+    boundaries[k] = (theta as any)[field];
   }
   const node = clm.lowerMeasure(d.bodyIR || d.bodyName, ctx, { derivation: d, boundaries, density: true });
   if (!node) {

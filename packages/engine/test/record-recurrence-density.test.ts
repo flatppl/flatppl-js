@@ -16,7 +16,7 @@ s2 = step(s1.mean, mu)
 y ~ Normal.([s1.mean, s2.mean], 1)
 prior = lawof(record(mu = mu))
 K = kernelof(record(y = y), mu = mu)
-L = likelihoodof(pars -> K(mu = pars.mu), record(y = [1, 2]))
+L = likelihoodof(K, record(y = [1, 2]))
 posterior = bayesupdate(L, prior)
 `;
 

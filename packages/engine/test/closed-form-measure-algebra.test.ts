@@ -207,7 +207,7 @@ mu = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(mu = mu))
 obs_dist = joint(y = Normal(mu = mu, sigma = 1.0))
 K = functionof(obs_dist, mu = mu)
-L = likelihoodof(pars -> K(mu = pars.mu), record(y = 2.0))
+L = likelihoodof(K, record(y = 2.0))
 posterior = bayesupdate(L, prior)
 `);
   const post = await ctx.getMeasure('posterior');
@@ -1304,7 +1304,7 @@ lambda = draw(Gamma(shape = 2.0, rate = 1.0))
 prior = lawof(record(lambda = lambda))
 y_dist = joint(y = iid(Poisson(rate = lambda), n))
 K = functionof(y_dist, lambda = lambda)
-L = likelihoodof(pars -> K(lambda = pars.lambda), record(y = counts_data))
+L = likelihoodof(K, record(y = counts_data))
 posterior = bayesupdate(L, prior)
 `);
   const post = await ctx.getMeasure('posterior');
