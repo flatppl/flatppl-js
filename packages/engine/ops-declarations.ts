@@ -1354,7 +1354,14 @@ function _asSequence(raw: any, op: string): Sequence {
   if (Array.isArray(raw) || (raw && raw.BYTES_PER_ELEMENT)) {
     return { length: raw.length, at: (i) => raw[i] };
   }
-  // A scalar, record or other non-collection input is held constant at every step.
+  // A record is a static error (spec §04, as for the operands of `broadcast`); the guard serves a
+  // program run without its diagnostics.
+  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw) && raw.BYTES_PER_ELEMENT === undefined
+      && raw.__table__ !== true && !valueLib.isValue(raw) && typeof raw.kind !== 'string'
+      && typeof raw.re !== 'number') {
+    throw new Error('additional inputs of scan, kscan and filter may not be records or tuples (spec §04)');
+  }
+  // A scalar or other non-collection input is held constant at every step.
   return { length: 1, at: () => raw, constant: true };
 }
 
