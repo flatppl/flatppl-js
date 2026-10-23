@@ -97,7 +97,8 @@ test('select wrappers: a chain over a certified select is exact at every N', asy
   // separates them from an estimate.
   for (const N of [4096, 32768]) {
     const { ctx } = ctxFor(UNEVEN + `
-M = jointchain(aa = S, bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb1(r) = Normal(r.aa, 1.0)
+M = jointchain(aa = S, bb = Kbb1)
 tm = totalmass(M)
 lp = logdensityof(M, record(aa = 0.5, bb = 0.5))
 `, N);

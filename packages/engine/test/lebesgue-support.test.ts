@@ -43,9 +43,8 @@ mass = totalmass(M)
 
 test('dependent Lebesgue bounds and iid keep zero reference contribution', async () => {
   const { proc, ctx } = ctxFor(`
-a = elementof(reals)
-K = functionof(iid(Lebesgue(interval(a, a + 3)), 2), a)
-prior = jointchain(a = Normal(0, 1), b = pars -> K(a = pars.a))
+K(r) = iid(Lebesgue(interval(r.a, r.a + 3)), 2)
+prior = jointchain(a = Normal(0, 1), b = K)
 inside = logdensityof(prior, record(a = 1, b = [2, 3]))
 outside = logdensityof(prior, record(a = 1, b = [2, 5]))
 `, 1);

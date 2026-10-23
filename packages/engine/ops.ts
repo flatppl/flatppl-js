@@ -1056,7 +1056,20 @@ function dispatchVariant(name: string, args: any[], opts?: DispatchOpts): any {
   return null;
 }
 
+// Elementwise arithmetic takes numbers or arrays. A record operand reaches one when a step input of
+// unknown type is fed a record (the static check cannot see it), and used to evaluate to NaN.
+const NUMERIC_OPERAND_OPS = new Set(['add', 'sub', 'mul', 'div', 'divide', 'mod', 'neg', 'pos', 'pow']);
+
 function dispatch(name: string, args: any[], opts?: DispatchOpts): any {
+  if (NUMERIC_OPERAND_OPS.has(name)) {
+    const sampler = require('./sampler.ts');
+    for (let i = 0; i < args.length; i++) {
+      if (sampler.isRecordOperand(args[i])) {
+        sampler.refuseRecordOperand(name, args.length === 1 ? 'the operand'
+          : (i === 0 ? 'the first operand' : 'the second operand'), args[i]);
+      }
+    }
+  }
   const decl = REGISTRY.get(name);
   if (!decl) {
     throw new Error('ops.dispatch: no declaration for op \'' + name + '\'');

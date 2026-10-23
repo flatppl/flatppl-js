@@ -148,8 +148,8 @@ test('spec-coverage PASS: delegate when joint components are binding refs', () =
   const src = `
 theta = draw(Normal(mu = 0, sigma = 1))
 prior = lawof(record(theta = theta))
-kernel = functionof(joint(obs = Normal(mu = theta, sigma = 1)), theta = theta)
-J = jointchain(prior, pars -> kernel(theta = pars.theta))
+kernel(r) = joint(obs = Normal(mu = r.theta, sigma = 1))
+J = jointchain(prior, kernel)
 fk, pr = disintegrate(["obs"], J)
   `;
   const plan = planOf(src, 'J', ['obs']);
@@ -290,11 +290,11 @@ test('spec-coverage GAP: jointchain non-suffix selector (picks a middle field)',
   // declarations must therefore come from scalar draws too (§06).
   const src = `
 M = Normal(mu = 0, sigma = 1)
-K1 = functionof(Normal(mu = a, sigma = 1), a = a)
-K2 = functionof(Normal(mu = b, sigma = 1), b = b)
+K1(r) = Normal(mu = r.a, sigma = 1)
+K2(r) = Normal(mu = r.b, sigma = 1)
 a = draw(M)
-b = draw(K1(a = a))
-J = jointchain(a = M, b = pars -> K1(a = pars.a), c = pars -> K2(b = pars.b))
+b = draw(K1(record(a = a)))
+J = jointchain(a = M, b = K1, c = K2)
 fk, pr = disintegrate(["b"], J)
   `;
   // The selector ["b"] is non-suffix (picks the middle field of a

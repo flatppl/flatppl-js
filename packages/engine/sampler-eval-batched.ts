@@ -640,6 +640,24 @@ function initARITHOPSN(ARITH_OPS: any) {
     ARITH_OPS_N[op] = (args: any, N: any) => _cxBroadcast(prim, args, N);
   }
 
+  // A record operand (a step input of unknown type fed a record) is refused, not evaluated to NaN.
+  for (const op of ['add', 'sub', 'mul', 'div', 'divide', 'mod', 'neg', 'pos', 'pow']) {
+    const entry = ARITH_OPS_N[op];
+    if (typeof entry !== 'function') continue;
+    ARITH_OPS_N[op] = (args: any, N: any) => {
+      const sampler = require('./sampler.ts');
+      for (let i = 0; i < args.length; i++) {
+        // An atom-batched record is one record per atom.
+        const arg = Array.isArray(args[i]) && args[i].length > 0 ? args[i][0] : args[i];
+        if (sampler.isRecordOperand(arg)) {
+          sampler.refuseRecordOperand(op, args.length === 1 ? 'the operand'
+            : (i === 0 ? 'the first operand' : 'the second operand'), arg);
+        }
+      }
+      return entry(args, N);
+    };
+  }
+
   // Hand the fused-loop compiler the same scalar primitives + helpers
   // the interpreter uses, so compiled output is bit-identical.
   _compile.initCompiler({ ARITH_OPS, evaluateExpr, resolveConst });

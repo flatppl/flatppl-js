@@ -348,6 +348,24 @@ function pushfwdImageSupport(fnBody: any, paramName: string, baseSupport: any): 
   return { kind: 'real' };   // both ends infinite
 }
 
+// Support of a `Lebesgue(set)` measure given as IR, with the chart the sampler needs.
+function lebesgueSupportInfo(measureIR: any, ctx?: any): any {
+  const support = require('./reference-support.ts');
+  const { resolveConstant } = require('./ir-shared.ts');
+  const fixed = (n: any) => resolveConstant(n, ctx?.bindings || new Map(), new Set(), ctx?.fixedValues);
+  // Unknown interval bounds use real coordinates, preserving the shape of
+  // surrounding products. The density still enforces the original bounds.
+  const geometry = require('./ir-walk.ts').mapIR(support.supportArg(measureIR), (n: any) =>
+    n.op === 'interval' && n.args?.some((bound: any) => fixed(bound) == null)
+      ? { kind: 'const', name: 'reals' } : n);
+  const resolved = support.resolveSupport(geometry, fixed,
+    (n: any) => ctx?.bindings.get(n.name)?.ir);
+  // Dependent bounds remain density constraints. A static chart must not
+  // freeze them to a prior draw or another parameter point.
+  return resolved ? support.transformSupport(resolved)
+    : { kind: 'unsupported', distOp: 'Lebesgue with unresolved support' };
+}
+
 // Walk the derivation chain starting at `name` and return support info.
 // Returns { isIid, dims, elementBaseName } for an iid latent, or a support
 // object { kind: 'real'|'positive'|'interval'|'greaterThan'|'lessThan', … } for
@@ -374,22 +392,7 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
     if (d.kind === 'lebesguevecset' && d.set === 'cartpow') {
       return require('./reference-support.ts').transformSupport({ kind: 'power', elem: d.elem, n: d.n });
     }
-    if (d.kind === 'lebesgue') {
-      const support = require('./reference-support.ts');
-      const { resolveConstant } = require('./ir-shared.ts');
-      const fixed = (n: any) => resolveConstant(n, ctx?.bindings || new Map(), new Set(), ctx?.fixedValues);
-      // Unknown interval bounds use real coordinates, preserving the shape of
-      // surrounding products. The density still enforces the original bounds.
-      const geometry = require('./ir-walk.ts').mapIR(support.supportArg(d.measureIR), (n: any) =>
-        n.op === 'interval' && n.args?.some((bound: any) => fixed(bound) == null)
-          ? { kind: 'const', name: 'reals' } : n);
-      const resolved = support.resolveSupport(geometry, fixed,
-        (n: any) => ctx?.bindings.get(n.name)?.ir);
-      // Dependent bounds remain density constraints. A static chart must not
-      // freeze them to a prior draw or another parameter point.
-      return resolved ? support.transformSupport(resolved)
-        : { kind: 'unsupported', distOp: 'Lebesgue with unresolved support' };
-    }
+    if (d.kind === 'lebesgue') return lebesgueSupportInfo(d.measureIR, ctx);
     if (d.kind === 'iid') {
       return { isIid: true, dims: d.dims as number[], elementBaseName: d.from as string };
     }
@@ -583,8 +586,14 @@ function enumerateLatents(d: any, ctx: any): any[] {
 
   const { recognizeCompositeIidDraw } = require('./composite-prior.ts');
 
-  for (const { latentName, measureName } of sources) {
-    const info = walkDerivChain(measureName, derivations, ctx);
+  for (const { latentName, measureName, measureIR } of sources) {
+    // A chain step written inline in a function body (`K(r) = joint(b = Lebesgue(cartpow(..., 2)))`)
+    // names its field after the step's own boundary input, which has no derivation to walk: the
+    // measure IR carries the support, including its vector width.
+    const inlineLebesgue = measureIR?.kind === 'call' && measureIR.op === 'Lebesgue'
+      && derivations[measureName]?.kind !== 'lebesgue' && derivations[measureName]?.kind !== 'lebesguevecset';
+    const info = inlineLebesgue ? lebesgueSupportInfo(measureIR, ctx)
+      : walkDerivChain(measureName, derivations, ctx);
 
     if (info && info.isIid) {
       // Vector latent

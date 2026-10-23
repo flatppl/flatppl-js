@@ -175,10 +175,10 @@ pp = kchain(prior, forward_kernel)
 test('§02 tour: hierarchical joint via pushfwd-relabel', () => {
   parsesCleanly(`
 M1 = Normal(mu = 0, sigma = 1)
-K_b = a -> Normal(mu = a, sigma = 0.1)
+K_hb(r) = pushfwd(fn(relabel(_, ["b"])), Normal(mu = r.a, sigma = 0.1))
 hj = jointchain(
     pushfwd(fn(relabel(_, ["a"])), M1),
-    pars -> (pushfwd(fn(relabel(_, ["b"])), K_b))(a = pars.a))
+    K_hb)
 `);
 });
 

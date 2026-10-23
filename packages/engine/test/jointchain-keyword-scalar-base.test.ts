@@ -1,11 +1,12 @@
 'use strict';
 
 // Spec §04: `relabel(1.0, ["x"])` is `record(x = 1.0)`. Spec §06: the keyword form
-// `jointchain(a = M, b = K)` is `jointchain(relabel(M, ["a"]), relabel(K, ["b"]))`, and a
-// record variate splats into the next step's inputs by field name. So over a scalar M the
-// kernel K receives `record(a = x)` and binds its input `a` to x. The engine bound the
-// whole record to K's single input instead, so `Normal(mu = record(a = x), ...)` scored and
-// sampled NaN, while the positional form `jointchain(M, K)` was right.
+// `jointchain(a = M, b = K)` calls `K(record(a = x))` by the ordinary calling convention (§04
+// "Auto-splatting"), so over a scalar M a kernel with one input receives the record whole. A kernel
+// that takes the record reads the field, `K(r) = Normal(r.a, 0.5)`. The engine used to bind the whole
+// record to a real input, so `Normal(mu = record(a = x), ...)` scored and sampled NaN with no
+// diagnostic; that is now a located static error. The positional form `jointchain(M, K)` feeds the
+// scalar variate to K.
 //
 // ORACLE: closed form. a ~ Normal(0, 1) and b | a ~ Normal(a, 0.5) give the joint density
 // log N(a; 0, 1) + log N(b; a, 0.5), and b - a ~ Normal(0, 0.5), variance 0.25.
@@ -16,16 +17,16 @@ const { ctxFor } = require('./_ctx-factory.ts');
 
 const logN = (x: number, m = 0, s = 1) => -0.5 * Math.log(2 * Math.PI) - Math.log(s) - 0.5 * ((x - m) / s) ** 2;
 
-// The spec-valid ways to reify the kernel; flatppl-rust accepts each of them.
+// The ways to write a kernel that takes the record of the preceding variates.
 const KERNELS = [
-  'functionof(Normal(mu = _a_, sigma = 0.5), a = _a_)',
-  'kernelof(draw(Normal(mu = _a_, sigma = 0.5)), a = _a_)',
+  'K(r) = Normal(mu = r.a, sigma = 0.5)',
+  'r = elementof(cartprod(a = reals))\nK = functionof(Normal(mu = r.a, sigma = 0.5), r = r)',
 ];
 const POINTS: Array<[number, number]> = [[0.3, 0.9], [-1.2, -0.7], [2.0, 2.0]];
 
 for (const kernel of KERNELS) {
-  test(`keyword jointchain over a scalar Normal scores the product density (${kernel.split('(')[0]})`, async () => {
-    const src = `K = ${kernel}\nJ = jointchain(a = Normal(0, 1), b = K)\n`
+  test(`keyword jointchain over a scalar Normal scores the product density (${kernel.startsWith('K(') ? 'definition' : 'functionof'})`, async () => {
+    const src = `${kernel}\nJ = jointchain(a = Normal(0, 1), b = K)\n`
       + POINTS.map(([a, b], i) => `s${i} = logdensityof(J, record(a = ${a}, b = ${b}))\n`).join('');
     const { ctx } = ctxFor(src, 1);
     for (let i = 0; i < POINTS.length; i++) {
@@ -36,6 +37,19 @@ for (const kernel of KERNELS) {
   });
 }
 
+test('a one-input real kernel receiving the record is a located static error', () => {
+  const { processSource } = require('../index.ts');
+  // The input's type must be known: `elementof(reals)` declares it (a bare `_a_` placeholder is untyped).
+  for (const kernel of ['functionof(Normal(mu = a, sigma = 0.5), a = a)',
+    'kernelof(draw(Normal(mu = a, sigma = 0.5)), a = a)']) {
+    const errs = processSource(`a = elementof(reals)\nK = ${kernel}\nJ = jointchain(a = Normal(0, 1), b = K)\n`)
+      .diagnostics.filter((d: any) => d.severity === 'error');
+    assert.equal(errs.length, 1, kernel);
+    assert.match(errs[0].message, /record with fields a: real/);
+    assert.equal(errs[0].loc.start.line, 2);
+  }
+});
+
 test('the positional form scores the same joint density', async () => {
   const { ctx } = ctxFor('K = functionof(Normal(mu = _a_, sigma = 0.5), a = _a_)\n'
     + 'J = jointchain(Normal(0, 1), K)\ns = logdensityof(J, [0.3, 0.9])\n', 1);
@@ -44,7 +58,7 @@ test('the positional form scores the same joint density', async () => {
 });
 
 test('draws from the keyword jointchain follow the kernel', async () => {
-  const { ctx } = ctxFor('K = functionof(Normal(mu = _a_, sigma = 0.5), a = _a_)\n'
+  const { ctx } = ctxFor('K(r) = Normal(mu = r.a, sigma = 0.5)\n'
     + 'J = jointchain(a = Normal(0, 1), b = K)\nx ~ J\n', 20000);
   const m = await ctx.getMeasure('x');
   const a = m.fields.a.samples, b = m.fields.b.samples;
