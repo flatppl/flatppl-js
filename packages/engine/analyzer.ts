@@ -2217,7 +2217,7 @@ const DISTINGUISHED_INPUTS = new Map<string, number>([
   // (spec §04: "a keyword spelling such as `normalize(M = mu)` is a static error").
   ['normalize', 1], ['totalmass', 1], ['iid', 2], ['truncate', 2], ['pushfwd', 2],
   ['weighted', 2], ['logweighted', 2], ['likelihoodof', 2], ['bayesupdate', 2],
-  ['relabel', 2], ['locscale', 3], ['disintegrate', 2], ['restrict', 2], ['bijection', 3],
+  ['locscale', 3], ['disintegrate', 2], ['restrict', 2], ['bijection', 3],
   // `cat` takes variadic unnamed inputs (spec §04), and so do `get`'s indices.
   ['cat', Infinity],
 ]);

@@ -218,7 +218,6 @@ test('the measure combinators refuse a keyword at a nested positional input', ()
   refuses('pushfwd', MU + 't = totalmass(pushfwd(f = f, M = mu))\n');
   refuses('iid', MU + 't = totalmass(iid(M = mu, n = 3))\n');
   refuses('locscale', MU + 't = totalmass(locscale(m = mu, shift = 1.0, scale = 2.0))\n');
-  refuses('relabel', MU + 't = totalmass(relabel(M = mu, names = ["x"]))\n');
   accepts(MU + 't = totalmass(truncate(mu, interval(0.0, 1.0)))\n');
 });
 
