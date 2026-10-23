@@ -744,9 +744,7 @@ test('beta-binomial-pushfwd: full fixture type-checks; measure-bodied lambdas re
 });
 
 // =====================================================================
-// Transport posterior (simple-transport2) — DELIBERATELY tiny counts. simple-transport1 keeps the
-// record-valued `pars` boundary, which a likelihood point cannot name (§03 records do not nest),
-// so it has no posterior.
+// Transport posteriors (simple-transport1/2) — DELIBERATELY tiny counts.
 // These posteriors are the most expensive shapes in the corpus (per
 // prior atom: an mcmarginal density = M marginal draws × 20 events), so
 // the smoke test pins "materialises with a well-defined n_eff" at
@@ -757,7 +755,7 @@ test('beta-binomial-pushfwd: full fixture type-checks; measure-bodied lambdas re
 // justified budget, not here.
 // =====================================================================
 
-for (const fx of ['simple-transport2.flatppl']) {
+for (const fx of ['simple-transport1.flatppl', 'simple-transport2.flatppl']) {
   test(`${fx}: posterior materialises at tiny N/M with well-defined n_eff`, async () => {
     const { errs, ctx, built } = setupCtx(readFixture(fx), 40);
     assert.equal(errs.length, 0, 'no parse/typeinfer errors');
@@ -770,3 +768,22 @@ for (const fx of ['simple-transport2.flatppl']) {
       `n_eff well-defined (0 allowed for a zero-mass small-N run; got ${m.n_eff})`);
   });
 }
+
+// The record-valued `pars` boundary of simple-transport1 takes the nested point
+// `record(pars = record(...))` (§06 `likelihoodof`: one field per input, by name; §03 records nest).
+// At glob_pars it scores the value the same model scored before the by-name rule, and the flat
+// spelling of simple-transport2 scores the same number.
+test('simple-transport1: the nested record point scores the pre-existing value', async () => {
+  const { ctxFor } = require('./_ctx-factory.ts');
+  const score = async (fx: string, point: string) => {
+    const { ctx } = ctxFor(readFixture(fx) + `lp = logdensityof(L, ${point})\n`, 4);
+    ctx.marginalizationCount = 2000;
+    const m = await ctx.getMeasure('lp');
+    return (m.value ? m.value.data : m.samples)[0];
+  };
+  const FROZEN = -36.727522590867196;
+  assert.ok(Math.abs(await score('simple-transport1.flatppl',
+    'record(pars = record(a = 0.1, b = 0.3, mu = 1.1))') - FROZEN) < 1e-9);
+  assert.ok(Math.abs(await score('simple-transport2.flatppl',
+    'record(a = 0.1, b = 0.3, mu = 1.1)') - FROZEN) < 1e-9);
+});

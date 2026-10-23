@@ -71,8 +71,7 @@ test('deriveAppliedKernel: k_model at glob_pars matches the model_dist oracle', 
   const built = build();
   const sig = orchestrator.signatureOf('k_model', built.bindings, built.derivations);
   const env: any = {};
-  const glob: any = { a: 0.1, b: 0.3, mu: 1.1 };  // = glob_pars
-  for (const i of sig.inputs) env[i.paramName] = glob[i.kwargName];
+  for (const i of sig.inputs) env[i.paramName] = { a: 0.1, b: 0.3, mu: 1.1 };  // = glob_pars
   const applied = orchestrator.deriveAppliedKernel(rawBindings(), 'k_model', sig, env);
   assert.ok(applied.derivations[applied.name], 'applied k_model got a derivation (by-name materialisable)');
 
