@@ -1499,7 +1499,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
    */
   function additionalInputs(fExpr: any, leading: any[], extras: any[],
     keywords: Record<string, any>, scopes: any, op: string, loc: any,
-    sequences?: { lengths: any[]; strictFirst?: boolean }): any[] | null {
+    sequences?: { lengths: any[]; sizesFirst?: boolean; unresolved?: boolean }): any[] | null {
     const fail = (message: string) => {
       diagnostics.push({ severity: 'error', loc, message: op + ': ' + message + ' (spec §04 "Additional arguments")' });
       return null;
@@ -1507,28 +1507,30 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const names = Object.keys(keywords);
     const types = extras.map((e: any) => inferExpr(e, scopes));
     if (types.some((t: any) => t?.kind === 'failed')) return null;
-    // `filter` and `scan` traverse each additional input as a one-dimensional array
-    // or table: the callable sees its element or row, and its length is recorded.
+    // `filter`, `scan` and `kscan` follow broadcasting (§04 "Additional arguments"): a one-dimensional
+    // array or table is traversed, the callable seeing its element or row, and its length is
+    // recorded. A scalar, record or other non-collection input is held constant at every step.
+    // A tuple or an array of rank two or more is a static error.
     const asSequence = (t: any): any => {
       if (!sequences) return t;
       if (!t || ['any', 'deferred', 'var'].includes(t.kind)) {
         // An input whose type is not resolved yet constrains nothing, unless it is the first
         // sequence, which then leaves the length dynamic.
-        if (sequences.strictFirst && sequences.lengths.length === 0) sequences.lengths.push('%dynamic');
+        sequences.unresolved = true;
+        if (sequences.sizesFirst && sequences.lengths.length === 0) sequences.lengths.push('%dynamic');
         return T.any();
       }
       if (t.kind === 'array' && t.rank === 1) { sequences.lengths.push(t.shape[0]); return t.elem; }
-      if (t.kind === 'table') { sequences.lengths.push(t.nrows); return T.rowRecordType(t); }
-      // The first sequence of a scan or kscan is its `xs`: a scalar there is a mistake, not a
-      // sequence (`kscan(f, 0.0, 3)` is not markovchain's `n`).
-      if (sequences.strictFirst && sequences.lengths.length === 0) {
-        fail('an additional input must be a one-dimensional array or table, got ' + T.show(t));
+      if (t.kind === 'array') {
+        fail('an additional input of rank ' + t.rank + ' is a higher-dimensional array; '
+          + 'write `[A]` to supply the vector A at every step');
         return undefined;
       }
-      // Later, a value that is not a sequence (a scalar, record, tuple or function) is read as
-      // the length-one sequence `[value]`: it repeats at every step, which is what the callback
-      // parameter `p` of the earlier explicit-parameter form meant.
-      sequences.lengths.push(1);
+      if (t.kind === 'table') { sequences.lengths.push(t.nrows); return T.rowRecordType(t); }
+      if (t.kind === 'tuple') {
+        fail('an additional input is a tuple, which is neither traversed nor held constant');
+        return undefined;
+      }
       return t;
     };
     if (names.length === 0 && types.length === 0) return leading;
@@ -1619,12 +1621,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (args.length < count || args.some(a => !a)) {
       return arityError(op, 'at least ' + count, args.length, expr.loc);
     }
-    const noExtras = extraExprs.length === 0 && Object.keys(extraKeywords).length === 0;
-    if (op === 'scan' && noExtras) {
-      diagnostics.push({ severity: 'error', loc: expr.loc,
-        message: 'scan: at least one sequence input is required (spec §04 "Folds and scans")' });
-      return T.failed('scan sequences');
-    }
     // `reduce` and `filter` traverse their second input; `scan` traverses its sequences.
     const data = op === 'scan' ? null : inferExpr(args[1], scopes);
     if (data?.kind === 'failed') return data;
@@ -1641,9 +1637,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     let state = op === 'scan' ? inferExpr(args[1], scopes) : elem;
     const lengths: any[] = data ? [table ? data.nrows : data.shape?.[0] ?? '%dynamic'] : [];
     const leadingTypes = op === 'filter' ? [elem] : [state, ...(op === 'reduce' ? [elem] : [])];
+    const sequences = { lengths, sizesFirst: op === 'scan', unresolved: false };
     const bound = additionalInputs(args[0], leadingTypes, extraExprs, extraKeywords, scopes, op,
-      expr.loc, op === 'reduce' ? undefined : { lengths, strictFirst: op === 'scan' });
+      expr.loc, op === 'reduce' ? undefined : sequences);
     if (!bound) return T.failed(op + ' additional arguments');
+    if (op === 'scan' && !lengths.length && !sequences.unresolved) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: 'scan: at least one array or table input is required (spec §04 "Folds and scans")' });
+      return T.failed('scan sequences');
+    }
     const inputs = bound;
     // Their lengths must agree, except that length-one inputs repeat (spec §04).
     const known = lengths.filter(n => typeof n === 'number' && n !== 1);
@@ -4630,14 +4632,20 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const stateT: any = inferExpr(args[1], scopes);
     if (args.length === 2 && Object.keys(expr.kwargs || {}).length === 0) {
       diagnostics.push({ severity: 'error', loc: expr.loc,
-        message: 'kscan: at least one sequence input follows `init` (spec §06)' });
+        message: 'kscan: at least one array or table input follows `init` (spec §06)' });
       return T.failed('kscan sequences');
     }
-    // §04: every argument after `init` is a sequence, traversed together.
+    // §04: arrays and tables after `init` are traversed together; other inputs are held constant.
     const lengths: any[] = [];
+    const sequences = { lengths, sizesFirst: true, unresolved: false };
     const inputs = additionalInputs(args[0], [stateT], args.slice(2), expr.kwargs || {}, scopes,
-      'kscan', expr.loc, { lengths, strictFirst: true });
+      'kscan', expr.loc, sequences);
     if (!inputs) return T.failed('kscan additional arguments');
+    if (!lengths.length && !sequences.unresolved) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: 'kscan: at least one array or table input is required (spec §04 "Folds and scans")' });
+      return T.failed('kscan sequences');
+    }
     inferCallback(args[0], inputs, scopes, 'kscan', expr.loc);
     const known = lengths.filter(n => typeof n === 'number' && n !== 1);
     if (new Set(known).size > 1) {

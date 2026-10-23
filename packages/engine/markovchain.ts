@@ -213,7 +213,7 @@ function describeStepKernel(compIR: any, bindings: any, op?: string,
     return { reason: shownAs + ' has no inputs; §06 ' + opName + ' needs the state input first' };
   }
   if (opName === 'kscan' && extras.args.length + Object.keys(extras.kwargs).length === 0) {
-    return { reason: 'kscan needs at least one sequence input after `init` (§06)' };
+    return { reason: 'kscan needs at least one array or table input after `init` (§06)' };
   }
   const additional = bindAdditionalIRs(opName, ir, bindings, extras);
   if ('reason' in additional) {

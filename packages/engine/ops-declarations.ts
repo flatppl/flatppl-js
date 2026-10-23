@@ -1338,23 +1338,24 @@ function isRecordValue(value: any): boolean {
 // inputs are SEQUENCES (one-dimensional arrays or tables) traversed together, bound to
 // the callable's remaining inputs positionally or by name. A sole additional record or
 // table splats its fields or columns by name when two or more inputs remain.
-type Sequence = { length: number; at: (i: number) => any };
+type Sequence = { length: number; at: (i: number) => any; constant?: boolean };
 
-function _asSequence(raw: any, op: string, strict = false): Sequence {
+function _asSequence(raw: any, op: string): Sequence {
   if (raw && raw.__table__ === true) {
     return { length: raw.nrows, at: (i) => valueLib.tableRow(raw, i) };
   }
   if (valueLib.isValue(raw)) {
     const dense = valueLib._logicalDense(raw);
+    if (dense.shape.length === 0) return { length: 1, at: () => raw, constant: true };
+    // A vector of vectors has the runtime shape of a matrix; its rows are the elements. Static
+    // typing has already refused a true higher-dimensional array.
     return { length: dense.shape[0], at: (i) => valueLib._sliceRow(dense, i) };
   }
   if (Array.isArray(raw) || (raw && raw.BYTES_PER_ELEMENT)) {
     return { length: raw.length, at: (i) => raw[i] };
   }
-  // The first sequence of a scan is its `xs`; later, a value that is not a sequence repeats at
-  // every step as the length-one sequence `[value]` (the earlier explicit-parameter form).
-  if (strict) throw new Error(op + ': an additional input must be a one-dimensional array or table');
-  return { length: 1, at: () => raw };
+  // A scalar, record or other non-collection input is held constant at every step.
+  return { length: 1, at: () => raw, constant: true };
 }
 
 /** The callable's remaining inputs (after `leading`) paired with their sequences. */
@@ -1392,7 +1393,7 @@ function _sequenceInputs(op: string, fn: any, leading: number, ir: any, firstExt
   if (bound.length !== rest.length) {
     throw new Error(op + ': an input of the callable is not bound by the additional arguments');
   }
-  return bound.map(([param, value], i) => ({ param, sequence: _asSequence(value, op, op === 'scan' && i === 0) }));
+  return bound.map(([param, value], i) => ({ param, sequence: _asSequence(value, op) }));
 }
 
 /** Common length of sequences traversed together: length-one inputs repeat, others must agree. */
@@ -1415,7 +1416,7 @@ function _scanLogical(ir: any, ctx: any): any {
   if (!fn) throw new Error('scan: the callback does not resolve to a function');
   const init = ctx.evaluateExpr(irArgs[1], ctx.env);
   const inputs = _sequenceInputs('scan', fn, 1, ir, 2, ctx);
-  if (inputs.length === 0) throw new Error('scan: at least one sequence input is required');
+  if (!inputs.some(input => !input.sequence.constant)) throw new Error('scan: at least one array or table input is required');
   const n = _commonLength('scan', inputs.map(input => input.sequence.length));
   // §04 permits any accumulator type. Preserve records and vector states
   // instead of coercing them to NaN in a numeric buffer.

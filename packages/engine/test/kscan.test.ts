@@ -356,25 +356,25 @@ test('kscan: a non-kernel first argument is a located error', () => {
 
 test('kscan: a scalar `xs` is a located error, not a length-1 trajectory', () => {
   // §06 gives the length as `lengthof(xs)`, so a scalar third argument is
-  // markovchain's `n` spelling and belongs to that op.
+  // markovchain's `n` spelling and belongs to that op: with no array or table input
+  // there is no length.
   const msgs = errorsOf(`
 f = (x, d) -> Normal(x, d)
 traj = kscan(f, 0.0, 3)
 `);
-  assert.ok(msgs.some((m) => /kscan: an additional input must be a one-dimensional array or table/.test(m)),
+  assert.ok(msgs.some((m) => /kscan: at least one array or table input is required/.test(m)),
     'expected an xs type error, got ' + JSON.stringify(msgs));
 });
 
 test('kscan: a RANDOM `xs` is refused — exogenous inputs are data', () => {
+  // A measure is neither an array nor a table, so it is no sequence.
   const msgs = errorsOf(`
 f = (x, d) -> Normal(x, d)
 xs = iid(Normal(mu = 1.0, sigma = 0.1), 3)
 traj = kscan(f, 0.0, xs)
 `);
-  assert.ok(msgs.some((m) => /kscan: an additional input must be a one-dimensional array or table/.test(m)),
+  assert.ok(msgs.some((m) => /kscan: at least one array or table input is required/.test(m)),
     'expected an xs type error, got ' + JSON.stringify(msgs));
-  assert.ok(msgs.some((m) => /kscan: a sequence length does not resolve/.test(m)),
-    'and the length refusal names what is missing, got ' + JSON.stringify(msgs));
 });
 
 test('kscan: a non-scalar-distribution step kernel is refused, not silent', () => {

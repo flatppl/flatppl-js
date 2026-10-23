@@ -1095,7 +1095,7 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineScalarLocscale(astArg);
       astArg = inlineIidTruncate(astArg);
       astArg = inlineCallbackParameters(astArg);
-      astArg = inlineSequenceWrap(astArg);
+      astArg = inlineKscanConstants(astArg);
       // Recognize exponential-family laws before children are hoisted and
       // MvNormal loses its constructor head to the affine decomposition.
       astArg = inlineExponentialTilt(astArg);
@@ -1145,23 +1145,20 @@ function liftInlineSubexpressions(bindings: any) {
     return astArg;
   }
 
-  // §04 "Additional arguments": filter, scan and kscan traverse their additional arguments as
-  // sequences. A value that is known not to be one (a scalar, record, tuple or function after the
-  // first sequence of a scan or kscan) is the earlier explicit parameter `p`: it repeats at every
-  // step, which is the singleton sequence `[p]`, so wrap it as one.
-  function inlineSequenceWrap(astArg: any) {
-    if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier') return astArg;
-    const op = astArg.callee.name;
-    const first = op === 'filter' ? 2 : op === 'scan' || op === 'kscan' ? 3 : -1;
-    // The first sequence of a scan or kscan is its `xs` and is never wrapped.
-    if (first < 0 || (astArg.args?.length || 0) <= first
-        || (!astArg.builtin && out.has(op))) return astArg;
+  // §04 "Additional arguments": `kscan` holds a scalar, record or other non-collection input
+  // constant at every step. The trajectory lowering reads its inputs as sequences, so write the
+  // input as the length-one sequence `[value]`, which repeats at every step: the same meaning,
+  // decided here where the input's type is still known.
+  function inlineKscanConstants(astArg: any) {
+    if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier'
+        || astArg.callee.name !== 'kscan' || (astArg.args?.length || 0) <= 2
+        || (!astArg.builtin && out.has('kscan'))) return astArg;
     let changed = false;
     const args = astArg.args.map((arg: any, i: number) => {
-      if (i < first) return arg;
+      if (i < 2) return arg;
       const value = arg.type === 'KeywordArg' ? arg.value : arg;
       const kind = __knownAstType(value)?.kind;
-      if (!kind || ['array', 'table', 'any', 'deferred', 'var', 'failed'].includes(kind)) return arg;
+      if (!kind || ['array', 'table', 'any', 'deferred', 'var', 'failed', 'tuple'].includes(kind)) return arg;
       changed = true;
       const wrapped = { type: 'ArrayLiteral', elements: [value], loc: value.loc || astArg.loc };
       return arg.type === 'KeywordArg' ? { ...arg, value: wrapped } : wrapped;
