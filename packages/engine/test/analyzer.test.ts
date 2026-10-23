@@ -262,7 +262,7 @@ test('analyzer: lawof argument validation', () => {
 test('analyzer: weighting and binary measure operations validate positional args', () => {
   for (const op of ['weighted', 'logweighted', 'truncate', 'pushfwd']) {
     const wrongCount = process(`m = ${op}(1)\n`);
-    assert.ok(wrongCount.diagnostics.some((d: any) => /takes (exactly two|two or three)/.test(d.message)), op + ' wrongCount');
+    assert.ok(wrongCount.diagnostics.some((d: any) => /takes (exactly two|at least two)/.test(d.message)), op + ' wrongCount');
     const withKwarg = process(`m = ${op}(a = 1, b = 2)\n`);
     assert.ok(withKwarg.diagnostics.some((d: any) => /positional/i.test(d.message)), op + ' kwarg');
   }
@@ -323,9 +323,10 @@ test('analyzer: broadcast requires positional head + at least 1 more arg', () =>
 });
 
 test('analyzer: reduce / scan take their spec-mandated positional counts', () => {
-  // Both operations accept an optional final callback parameter object.
-  assert.ok(process(`y = reduce(f)\n`).diagnostics.some((d: any) => /takes two or three/.test(d.message)));
-  assert.ok(process(`y = reduce(f, xs, p, extra)\n`).diagnostics.some((d: any) => /takes two or three/.test(d.message)));
+  // `reduce(f, xs, ...)` takes any number of additional arguments (spec §04); scan keeps
+  // its single optional final callback parameter object.
+  assert.ok(process(`y = reduce(f)\n`).diagnostics.some((d: any) => /takes at least two/.test(d.message)));
+  assert.ok(!process(`y = reduce(f, xs, p, extra)\n`).diagnostics.some((d: any) => /takes at least two|takes two or three/.test(d.message)));
   assert.ok(process(`y = scan(f, init)\n`).diagnostics.some((d: any) => /takes three or four/.test(d.message)));
 });
 

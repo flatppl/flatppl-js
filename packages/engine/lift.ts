@@ -24,6 +24,7 @@ import type { IRNode } from './engine-types';
 const { lowerExpr } = require('./lower.ts');
 const AST = require('./ast.ts');
 const { signatureOf } = require('./signatures.ts');
+const { bindAdditionalArguments } = require('./additional-args.ts');
 const {
   parseSetIR,
   EVALUABLE_OPS,
@@ -1144,25 +1145,53 @@ function liftInlineSubexpressions(bindings: any) {
     return astArg;
   }
 
-  // §04 callback inputs: specialize the fixed callable after source checks.
-  // A private body shares the existing operator machinery while p remains
-  // an explicit dependency, including inverse and volume terms.
+  // §04 "Additional arguments": specialize the fixed callable after source checks.
+  // A private body shares the existing operator machinery while the additional
+  // arguments remain explicit dependencies, including inverse and volume terms.
+  // weighted / logweighted / pushfwd / reduce take any number of them, positional
+  // or named, passed whole; filter and scan keep their single final `p`.
   function inlineCallbackParameters(astArg: any) {
     if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier') return astArg;
     const op = astArg.callee.name;
     const required = op === 'scan' ? 3 : 2;
-    if (!['weighted', 'logweighted', 'pushfwd', 'filter', 'reduce', 'scan'].includes(op)
-        || astArg.args?.length !== required + 1) return astArg;
-    const parameters = liftValue(cloneAst(astArg.args[required]));
+    const whole = ['weighted', 'logweighted', 'pushfwd', 'reduce'].includes(op);
+    if (!whole && !['filter', 'scan'].includes(op)) return astArg;
+    if (whole ? astArg.args?.length <= required : astArg.args?.length !== required + 1) return astArg;
+    const extras = astArg.args.slice(required);
+    const lifted = extras.map((extra: any) => extra.type === 'KeywordArg'
+      ? { ...extra, value: liftValue(cloneAst(extra.value)) } : liftValue(cloneAst(extra)));
+    const leading = op === 'reduce' || op === 'scan' ? 2 : 1;
+    // The callable's input names, when its type is known.
+    const inputNames = (fn: any): string[] | null => {
+      const inputs = __knownAstType(fn)?.inputs;
+      return Array.isArray(inputs) && inputs.length ? inputs.map((input: any) => input.name) : null;
+    };
+    // Arguments of `fn(params..., extras...)`: §04 binds the additional arguments to the
+    // callable's remaining inputs (the shared rule, `bindAdditionalArguments`), so they are
+    // passed positionally in the callable's own order.
+    const callArguments = (fn: any, params: any[]): any[] => {
+      const positional = lifted.filter((extra: any) => extra.type !== 'KeywordArg');
+      const keywords = Object.fromEntries(lifted.filter((extra: any) => extra.type === 'KeywordArg')
+        .map((extra: any) => [extra.name, extra.value]));
+      const sole = positional.length === 1 ? __knownAstType(positional[0]) : null;
+      const fields = sole?.kind === 'record' ? sole.fields : sole?.kind === 'table' ? sole.columns : null;
+      const bound = bindAdditionalArguments({
+        declared: inputNames(fn), leading: params.length, positional, keywords,
+        soleFields: fields && Object.fromEntries(Object.keys(fields).map(name => [name,
+          { type: 'FieldAccess', object: cloneAst(positional[0]), field: name, loc: astArg.loc }])),
+      });
+      // Type inference has already reported a binding it refuses.
+      return 'error' in bound ? [...params, ...lifted] : [...params, ...bound.rest];
+    };
     const specialize = (fn: any) => {
-      const params = Array.from({ length: op === 'reduce' || op === 'scan' ? 2 : 1 },
+      const params = Array.from({ length: leading },
         () => ({ type: 'Placeholder', name: freshName(), loc: astArg.loc }));
       const saved = specializingCallback;
       let body;
       try {
         specializingCallback = true;
         body = inlineUserCall({ type: 'CallExpr', callee: cloneAst(fn),
-          args: [...params, parameters], loc: astArg.loc });
+          args: callArguments(fn, params), loc: astArg.loc });
         visit(body);
       } finally {
         specializingCallback = saved;
