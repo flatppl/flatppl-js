@@ -1148,18 +1148,17 @@ function liftInlineSubexpressions(bindings: any) {
   // A private body shares the existing operator machinery while the additional
   // arguments remain explicit dependencies, including inverse and volume terms.
   // weighted / logweighted / pushfwd / reduce take any number of them, positional
-  // or named, passed whole; filter and scan keep their single final `p`.
+  // or named, passed whole; filter and scan traverse them as sequences at run time.
   function inlineCallbackParameters(astArg: any) {
     if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier') return astArg;
     const op = astArg.callee.name;
-    const required = op === 'scan' ? 3 : 2;
-    const whole = ['weighted', 'logweighted', 'pushfwd', 'reduce'].includes(op);
-    if (!whole && !['filter', 'scan'].includes(op)) return astArg;
-    if (whole ? astArg.args?.length <= required : astArg.args?.length !== required + 1) return astArg;
+    const required = 2;
+    if (!['weighted', 'logweighted', 'pushfwd', 'reduce'].includes(op)) return astArg;
+    if (!(astArg.args?.length > required)) return astArg;
     const extras = astArg.args.slice(required);
     const lifted = extras.map((extra: any) => extra.type === 'KeywordArg'
       ? { ...extra, value: liftValue(cloneAst(extra.value)) } : liftValue(cloneAst(extra)));
-    const leading = op === 'reduce' || op === 'scan' ? 2 : 1;
+    const leading = op === 'reduce' ? 2 : 1;
     // The callable's input names, when its type is known.
     const inputNames = (fn: any): string[] | null => {
       const inputs = __knownAstType(fn)?.inputs;
@@ -3500,7 +3499,7 @@ function liftInlineSubexpressions(bindings: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'filter') return astArg;
-    if (!astArg.args || (astArg.args.length !== 2 && astArg.args.length !== 3)) return astArg;
+    if (!astArg.args || astArg.args.length < 2) return astArg;
     let fArg = astArg.args[0];
     if (fArg.type === 'KeywordArg') return astArg;
     if (fArg.type === 'Identifier') return astArg;

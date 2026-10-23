@@ -97,3 +97,60 @@ test('reduce: additional arguments follow the two inputs and stay fixed in every
   assert.deepEqual(await value('r = reduce(add, [7.0])\n', 'r'), [7]);
   assert.ok(errors(`${f}r = reduce(f, [1.0, 2.0], p = 2.0)\n`).some(m => /input "q" is not bound/.test(m)));
 });
+
+// ---------------------------------------------------------------------------
+// scan and filter: the additional arguments are sequences traversed together
+// ---------------------------------------------------------------------------
+
+const STEP = 'step(acc, x, w) = acc + x * w\n';
+
+test('scan: sequences are traversed together, positionally or by name', async () => {
+  // acc: 0 + 10*2 = 20, then 20 + 20*3 = 80.
+  assert.deepEqual(await value(`${STEP}r = scan(step, 0, [10, 20], [2, 3])\n`, 'r'), [20, 80]);
+  assert.deepEqual(await value(`${STEP}r = scan(step, 0, w = [2, 3], x = [10, 20])\n`, 'r'), [20, 80]);
+  assert.deepEqual(await value(`${STEP}r = scan(step, 0, record(x = [10, 20], w = [2, 3]))\n`, 'r'), [20, 80]);
+  assert.deepEqual(await value(`${STEP}r = scan(step, 0, table(x = [10, 20], w = [2, 3]))\n`, 'r'), [20, 80]);
+  // reduce over the elementwise products is the final accumulator.
+  assert.deepEqual(await value('r = reduce(add, [10, 20] .* [2, 3])\n', 'r'), [80]);
+});
+
+test('scan: a length-one sequence repeats, an empty one with length-one inputs gives no steps', async () => {
+  assert.deepEqual(await value(`${STEP}r = scan(step, 0, [10, 20], [2])\n`, 'r'), [20, 60]);
+  assert.deepEqual(await value(`${STEP}r = scan(step, 0, x = [10, 20], w = [2])\n`, 'r'), [20, 60]);
+  assert.deepEqual(await value(`${STEP}r = scan(step, 0, [10], [2])\n`, 'r'), [20]);
+  assert.deepEqual(await value(`${STEP}r = scan(step, 0, fill(0, 0), [2])\n`, 'r'), []);
+  // A one-row table supplies the same record at every step.
+  assert.deepEqual(await value('g(acc, x, row) = acc + x * row.w\nr = scan(g, 0, [10, 20], table(w = [2]))\n', 'r'), [20, 60]);
+});
+
+test('scan: one sequence keeps its meaning, unequal lengths and a missing sequence are errors', async () => {
+  assert.deepEqual(await value('s1(acc, x) = acc + x\nr = scan(s1, 0, [1, 2, 3])\n', 'r'), [1, 3, 6]);
+  assert.ok(errors(`${STEP}r = scan(step, 0, [10, 20, 30], [2, 3])\n`).some(m => /unequal lengths 3, 2/.test(m)));
+  assert.ok(errors(`${STEP}r = scan(step, 0)\n`).some(m => /at least three arguments/.test(m)));
+  assert.ok(errors(`${STEP}r = scan(step, 0, [1, 2], 5)\n`).some(m => /one-dimensional array or table/.test(m)));
+  assert.ok(errors(`${STEP}r = scan(step, 0, x = [1, 2], v = [1, 2])\n`).some(m => /no remaining input named "v"/.test(m)));
+  assert.ok(errors(`${STEP}r = scan(step, 0, [1, 2], w = [1, 2])\n`).some(m => /all positional or all named/.test(m)));
+});
+
+const WITHIN = 'within(x, low, high) = low <= x <= high\n';
+
+test('filter: additional inputs are traversed with the data, length-one inputs repeat', async () => {
+  // 1 in [0, 10], 4 below its low bound 5, 9 in [8, 10].
+  assert.deepEqual(await value(`${WITHIN}r = filter(within, [1, 4, 9], low = [0, 5, 8], high = [10])\n`, 'r'), [1, 9]);
+  assert.deepEqual(await value(`${WITHIN}r = filter(within, [1, 4, 9], [0, 5, 8], [10])\n`, 'r'), [1, 9]);
+  assert.deepEqual(await value('keep(x, p) = x > p\nr = filter(keep, [1.0, 4.0, 9.0], [3.0])\n', 'r'), [4, 9]);
+  assert.deepEqual(await value('keep(x, p) = x > p\nr = filter(keep, [1.0, 4.0, 9.0], [1.0, 5.0, 8.0])\n', 'r'), [9]);
+  assert.deepEqual(await value(`${WITHIN}r = filter(within, [1, 4, 9], table(low = [0, 5, 8], high = [10, 10, 10]))\n`, 'r'), [1, 9]);
+});
+
+test('filter: a table is filtered by rows and empty data stays empty', async () => {
+  const src = 'above(row, p) = row.value > p\nt = table(value = [1, 2, 3], other = [10, 20, 30])\n'
+    + 'kept = filter(above, t, [1])\nr = kept.other\n';
+  assert.deepEqual(await value(src, 'r'), [20, 30]);
+  assert.deepEqual(await value('keep(x, p) = x > p\nr = filter(keep, fill(1.0, 0), [3.0])\n', 'r'), []);
+});
+
+test('filter: an additional input of the wrong length is an error', async () => {
+  assert.ok(errors('keep(x, p) = x > p\nr = filter(keep, [1.0, 4.0, 9.0], [3.0, 5.0])\n').some(m => /unequal lengths 3, 2/.test(m)));
+  assert.ok(errors('keep(x, p) = x > p\nr = filter(keep, [1.0, 4.0, 9.0], 3.0)\n').some(m => /one-dimensional array or table/.test(m)));
+});

@@ -1498,7 +1498,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
    * after reporting the violation.
    */
   function additionalInputs(fExpr: any, leading: any[], extras: any[],
-    keywords: Record<string, any>, scopes: any, op: string, loc: any): any[] | null {
+    keywords: Record<string, any>, scopes: any, op: string, loc: any,
+    sequences?: { lengths: any[] }): any[] | null {
     const fail = (message: string) => {
       diagnostics.push({ severity: 'error', loc, message: op + ': ' + message + ' (spec §04 "Additional arguments")' });
       return null;
@@ -1506,6 +1507,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const names = Object.keys(keywords);
     const types = extras.map((e: any) => inferExpr(e, scopes));
     if (types.some((t: any) => t?.kind === 'failed')) return null;
+    // `filter` and `scan` traverse each additional input as a one-dimensional array
+    // or table: the callable sees its element or row, and its length is recorded.
+    const asSequence = (t: any): any => {
+      if (!sequences) return t;
+      if (!t || ['any', 'deferred', 'var'].includes(t.kind)) { sequences.lengths.push('%dynamic'); return T.any(); }
+      if (t.kind === 'array' && t.rank === 1) { sequences.lengths.push(t.shape[0]); return t.elem; }
+      if (t.kind === 'table') { sequences.lengths.push(t.nrows); return T.rowRecordType(t); }
+      fail('an additional input must be a one-dimensional array or table, got ' + T.show(t));
+      return undefined;
+    };
     if (names.length === 0 && types.length === 0) return leading;
     if (names.length && types.length) {
       return fail('additional arguments are all positional or all named, not both');
@@ -1521,7 +1532,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (sole?.kind === 'record') named = { ...sole.fields };
       else if (sole?.kind === 'table') named = { ...sole.columns };
     }
-    if (!named) return [...leading, ...types];
+    if (!named) {
+      const elems = types.map(asSequence);
+      return elems.some((t: any) => t === undefined) ? null : [...leading, ...elems];
+    }
     if (!declared) return fail('the callable\'s input names are not known, so additional arguments cannot bind by name');
     const rest = declared.slice(leading.length);
     for (const name of Object.keys(named)) {
@@ -1530,7 +1544,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const name of rest) {
       if (!(name in named)) return fail('the remaining input "' + name + '" is not bound');
     }
-    return [...leading, ...rest.map(name => named![name])];
+    const bound = rest.map(name => asSequence(named![name]));
+    return bound.some((t: any) => t === undefined) ? null : [...leading, ...bound];
   }
 
   /** §04 callback invocation binds each input whole, including final p. */
@@ -1571,45 +1586,36 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   /** §04 reductions and §07 filtering share the optional final input rule. */
   function inferCollectionCallback(expr: any, scopes: any): any {
     const op = expr.op;
-    // `reduce(f, xs, ...)` takes §04 additional arguments after its two leading
-    // inputs, positionally or by name; the others keep their single final `p`.
-    const names = op === 'scan' ? ['f', 'init', 'xs', 'p']
-      : op === 'filter' ? ['pred', 'data', 'p'] : ['f', 'xs', 'p'];
-    const required = names.length - 1;
-    let extraExprs: any[] = [];
-    let extraKeywords: Record<string, any> = {};
-    let args: any[];
-    if (op === 'reduce') {
-      const given = expr.args || [], kwargs = expr.kwargs || {};
-      const fromNames = given.length < 2 ? ['f', 'xs'].slice(given.length) : [];
-      args = [...given.slice(0, 2), ...fromNames.map(name => kwargs[name])];
-      extraExprs = given.slice(2);
-      extraKeywords = Object.fromEntries(Object.entries(kwargs).filter(([name]) =>
-        !(fromNames.includes(name))));
-      if (given.length >= 2 && ('f' in extraKeywords || 'xs' in extraKeywords)) {
-        diagnostics.push({ severity: 'error', loc: expr.loc,
-          message: op + ': unknown or duplicate named input' });
-        return T.failed(op + ' named inputs');
-      }
-      if (args.length < 2 || args.some(a => !a)) return arityError(op, 'at least 2', args.length, expr.loc);
-    } else {
-      args = names.map((name, i) => expr.kwargs?.[name] || expr.args?.[i]);
-      const positional = expr.args?.length || 0;
-      const keys = Object.keys(expr.kwargs || {});
-      if (keys.some(key => !names.includes(key) || names.indexOf(key) < positional)) {
-        diagnostics.push({ severity: 'error', loc: expr.loc,
-          message: op + ': unknown or duplicate named input' });
-        return T.failed(op + ' named inputs');
-      }
-      const count = positional + keys.length;
-      if (count < required || count > names.length || args.slice(0, required).some(a => !a)) {
-        return arityError(op, required + ' or ' + names.length, count, expr.loc);
-      }
+    // §04 "Additional arguments": the operation supplies the leading inputs and the
+    // remaining arguments bind the callable's other inputs, positionally or by name.
+    // `reduce` passes them whole; `filter` and `scan` traverse them as sequences.
+    const leadingNames = op === 'scan' ? ['f', 'init'] : op === 'filter' ? ['pred', 'data'] : ['f', 'xs'];
+    const count = leadingNames.length;
+    const given = expr.args || [], kwargs = expr.kwargs || {};
+    const fromNames = given.length < count ? leadingNames.slice(given.length) : [];
+    const args = [...given.slice(0, count), ...fromNames.map(name => kwargs[name])];
+    const extraExprs = given.slice(count);
+    const extraKeywords = Object.fromEntries(Object.entries(kwargs).filter(([name]) =>
+      !fromNames.includes(name)));
+    if (given.length >= count && leadingNames.some(name => name in extraKeywords)) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: op + ': unknown or duplicate named input' });
+      return T.failed(op + ' named inputs');
     }
-    const data = inferExpr(args[required - 1], scopes);
+    if (args.length < count || args.some(a => !a)) {
+      return arityError(op, 'at least ' + count, args.length, expr.loc);
+    }
+    const noExtras = extraExprs.length === 0 && Object.keys(extraKeywords).length === 0;
+    if (op === 'scan' && noExtras) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: 'scan: at least one sequence input is required (spec §04 "Folds and scans")' });
+      return T.failed('scan sequences');
+    }
+    // `reduce` and `filter` traverse their second input; `scan` traverses its sequences.
+    const data = op === 'scan' ? null : inferExpr(args[1], scopes);
     if (data?.kind === 'failed') return data;
     const table = op === 'filter' && data?.kind === 'table';
-    if (!table && data?.kind !== 'array' && !['any', 'deferred', 'var'].includes(data?.kind)) {
+    if (data && !table && data.kind !== 'array' && !['any', 'deferred', 'var'].includes(data.kind)) {
       diagnostics.push({ severity: 'error', loc: expr.loc, message: op + ': expected a vector' + (op === 'filter' ? ' or table' : '') });
       return T.failed(op + ' data');
     }
@@ -1617,14 +1623,22 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       diagnostics.push({ severity: 'error', loc: expr.loc, message: op + ': expected a vector' });
       return T.failed(op + ' data rank');
     }
-    const elem = table ? T.rowRecordType(data) : data?.elem || T.any();
+    const elem = data ? (table ? T.rowRecordType(data) : data.elem || T.any()) : null;
     let state = op === 'scan' ? inferExpr(args[1], scopes) : elem;
-    let inputs: any[] = op === 'filter' ? [elem] : [state, elem];
-    if (op === 'reduce') {
-      const full = additionalInputs(args[0], inputs, extraExprs, extraKeywords, scopes, op, expr.loc);
-      if (!full) return T.failed(op + ' additional arguments');
-      inputs = full;
-    } else if (args[required]) inputs.push(inferExpr(args[required], scopes));
+    const lengths: any[] = data ? [table ? data.nrows : data.shape?.[0] ?? '%dynamic'] : [];
+    const leadingTypes = op === 'filter' ? [elem] : [state, ...(op === 'reduce' ? [elem] : [])];
+    const bound = additionalInputs(args[0], leadingTypes, extraExprs, extraKeywords, scopes, op,
+      expr.loc, op === 'reduce' ? undefined : { lengths });
+    if (!bound) return T.failed(op + ' additional arguments');
+    const inputs = bound;
+    // Their lengths must agree, except that length-one inputs repeat (spec §04).
+    const known = lengths.filter(n => typeof n === 'number' && n !== 1);
+    if (new Set(known).size > 1) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: op + ': the sequence inputs have unequal lengths ' + lengths.join(', ')
+          + '; only length-one inputs repeat (spec §04 "Folds and scans")' });
+      return T.failed(op + ' sequence lengths');
+    }
     const result = inferCallback(args[0], inputs, scopes, op, expr.loc);
     if (result?.kind === 'failed') return result;
     if (op === 'filter' && T.unify(T.BOOLEAN, result, new Map()) == null) {
@@ -1648,7 +1662,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           .map(([n, col]) => [n, filtered(col)])), '%dynamic') : t;
       return filtered(data);
     }
-    return T.array(1, [op === 'scan' ? data?.shape?.[0] || '%dynamic' : '%dynamic'], state);
+    const steps = lengths.length && lengths.every(n => typeof n === 'number')
+      ? (known[0] ?? 1) : '%dynamic';
+    return T.array(1, [op === 'scan' ? steps : '%dynamic'], state);
   }
 
   // §06 `weighted`: "$f$ is a non-negative weight (a constant or a function of

@@ -695,13 +695,14 @@ function validateSpecialOperation(valueNode: any) {
     }
 
     case 'scan': {
-      // §04 callback inputs: optional p follows the ordinary scan inputs.
-      if (args.length !== 3 && args.length !== 4) {
-        diags.push({ severity: 'error', message: `scan() takes three or four arguments (f, init, xs, optional p)`, loc: valueNode.loc });
+      // §04 "Folds and scans": `scan(f, init, ...)` — f and init are positional, and at
+      // least one sequence input follows, positionally or by name.
+      if (args.length < 3) {
+        diags.push({ severity: 'error', message: `scan() takes at least three arguments (f, init, and one or more sequence inputs)`, loc: valueNode.loc });
       }
-      for (const arg of args) {
+      for (const arg of args.slice(0, 2)) {
         if (arg.type === 'KeywordArg') {
-          diags.push({ severity: 'error', message: `scan() takes positional arguments only`, loc: arg.loc });
+          diags.push({ severity: 'error', message: `scan() takes positional arguments only for its function and initial value`, loc: arg.loc });
         }
       }
       break;
@@ -2339,7 +2340,7 @@ function validateDataLoad(node: any, diagnostics: any[]) {
 
 /** Operations whose leading inputs are positional and whose further arguments bind the
  * callback's remaining inputs, positionally or by name (spec §04 "Additional arguments"). */
-const ADDITIONAL_ARGUMENT_HEADS = ['weighted', 'logweighted', 'pushfwd', 'reduce'];
+const ADDITIONAL_ARGUMENT_HEADS = ['weighted', 'logweighted', 'pushfwd', 'reduce', 'filter', 'scan'];
 
 /** §05 permits mixed arguments only at special operations with named tails.
  * The parser retains their syntax; resolved call heads decide semantics here. */
