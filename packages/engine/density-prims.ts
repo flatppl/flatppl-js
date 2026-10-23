@@ -1391,14 +1391,12 @@ function _matchChainBoundary(prevResult: any, nextInputs: any[], iface: any = {}
  * later step receiving the previous result (the fed value) whole as its first argument. A chain
  * whose first step has further inputs therefore feeds each later step the fed value as its first
  * input and the chain's own additional inputs as the rest, which must be the same inputs. Returns
- * null when the first step has a single input or the fed record splats (the ordinary boundary rule
- * then applies).
+ * null when the first step has a single input (the ordinary boundary rule then applies).
  */
 function _matchChainBoundaryWithExtras(prevResult: any, nextInputs: any[], nextType: any, first: any[]): any {
-  const prevFields = prevResult.kind === 'record' ? Object.keys(prevResult.fields) : null;
-  const splats = prevFields && prevFields.length === nextInputs.length
-    && nextInputs.every((input: any) => prevFields.includes(input.name));
-  if (first.length < 2 || splats) return null;
+  // A call with additional arguments has more than one argument, so the fed value is never
+  // auto-splatted: even a record whose fields name the step's inputs is the first input whole.
+  if (first.length < 2) return null;
   if (nextInputs.length !== first.length) {
     return { ok: false, reason: 'the step takes ' + nextInputs.length + ' inputs, but the first step takes '
       + first.length + ' and every step receives the same additional arguments' };

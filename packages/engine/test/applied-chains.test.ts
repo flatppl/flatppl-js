@@ -85,3 +85,40 @@ test('a later step with a different number of inputs than the first is a static 
   const f = errors('a1(x, p) = x + p\na2(y) = y * 2.0\nF = fchain(a1, a2)\nr = F(1.0, 2.0)\n');
   assert.ok(f.some(m => /the step takes 1 inputs, but the first step takes 2/.test(m)), String(f));
 });
+
+// A fed record whose fields name the next kernel's inputs. §06: a call with additional arguments
+// has more than one argument, so it never auto-splats: each later kernel receives the fed value
+// whole as its first input, and the additional arguments after it.
+const RECORD_STEP = 'K1(x, p) = joint(a = Normal(x + p, 1.0), b = Normal(x - p, 1.0))\n'
+  // `a` is the fed record, `b` the additional argument p.
+  + 'K2(a, b) = Normal(a.a + a.b * b, 1.0)\n';
+
+test('a fed record is not splatted when the chain call has additional arguments', async () => {
+  // a ~ N(2, 1), b ~ N(-2, 1); K2's mean a + 2 b ~ N(-2, sqrt 5), so y ~ N(-2, sqrt 6).
+  near(await value(`${RECORD_STEP}C = kchain(K1, K2)\nM = C(0.0, 2.0)\nlp = logdensityof(M, 0.3)\n`, 'lp'),
+    [logN(0.3, -2, Math.sqrt(6))]);
+  // jointchain retains the record and y; the engine names the unlabelled scalar variate `s1`.
+  near(await value(`${RECORD_STEP}C = jointchain(K1, K2)\nM = C(0.0, 2.0)\n`
+    + 'lp = logdensityof(M, record(a = 1.5, b = -2.5, s1 = 0.3))\n', 'lp'),
+  [logN(1.5, 2, 1) + logN(-2.5, -2, 1) + logN(0.3, 1.5 + -2.5 * 2, 1)]);
+});
+
+test('a fed record still splats when the chain call has no additional arguments', async () => {
+  // a ~ N(1, 1), b ~ N(-1, 1); K2 adds the splatted fields, so y ~ N(0, sqrt 3).
+  const src = 'K1(x) = joint(a = Normal(x + 1.0, 1.0), b = Normal(x - 1.0, 1.0))\n'
+    + 'K2(a, b) = Normal(a + b, 1.0)\n';
+  near(await value(`${src}C = kchain(K1, K2)\nM = C(0.0)\nlp = logdensityof(M, 0.3)\n`, 'lp'),
+    [logN(0.3, 0, Math.sqrt(3))]);
+});
+
+test('typed inputs named after the fed record fields do not accept it split when extras are given', () => {
+  // K2's inputs are reals named like the fields of K1's record variate. With additional
+  // arguments K2 would receive the record as `a`, which is a type error.
+  const src = 'x = elementof(reals)\np = elementof(reals)\n'
+    + 'K1 = functionof(joint(a = Normal(x + p, 1.0), b = Normal(x - p, 1.0)), x = x, p = p)\n'
+    + 'a = elementof(reals)\nb = elementof(reals)\nK2 = functionof(Normal(a + b, 1.0), a = a, b = b)\n';
+  for (const op of ['kchain', 'jointchain']) {
+    const found = errors(`${src}C = ${op}(K1, K2)\nM = C(0.0, 2.0)\n`);
+    assert.ok(found.some(m => /cannot unify previous step's result type record/.test(m)), op + ': ' + found);
+  }
+});

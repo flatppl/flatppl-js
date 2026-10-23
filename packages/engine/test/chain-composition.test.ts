@@ -341,8 +341,10 @@ test('inferChainComposition: chain inherits step_0\'s inputs verbatim', () => {
   const f1 = fn([{ name: 'alpha', type: T.REAL },
                  { name: 'beta',  type: T.INTEGER }],
                 T.record({ a: T.REAL, b: T.REAL }));
-  const f2 = fn([{ name: 'a', type: T.REAL },
-                 { name: 'b', type: T.REAL }], T.BOOLEAN);
+  // With a two-input first step the chain call has additional arguments (§04), so f2 gets the
+  // record whole as its first input and `beta` after it; the record is not splatted.
+  const f2 = fn([{ name: 'r', type: T.record({ a: T.REAL, b: T.REAL }) },
+                 { name: 'beta', type: T.INTEGER }], T.BOOLEAN);
   const r = inferChainComposition([step(f1), step(f2)], 'func');
   assert.equal(r.resultType.kind, 'function');
   assert.equal(r.resultType.inputs.length, 2);
