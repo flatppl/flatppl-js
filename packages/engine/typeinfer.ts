@@ -1492,8 +1492,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (types.some((t: any) => t?.kind === 'failed')) return null;
     // `filter`, `scan` and `kscan` follow broadcasting (§04 "Additional arguments"): a one-dimensional
     // array or table is traversed, the callable seeing its element or row, and its length is
-    // recorded. A scalar, record or other non-collection input is held constant at every step.
-    // A tuple or an array of rank two or more is a static error.
+    // recorded. A scalar or other non-collection input is held constant at every step.
+    // A record, a tuple or an array of rank two or more is a static error.
     const asSequence = (t: any): any => {
       if (!sequences) return t;
       if (!t || ['any', 'deferred', 'var'].includes(t.kind)) {
@@ -1510,8 +1510,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return undefined;
       }
       if (t.kind === 'table') { sequences.lengths.push(t.nrows); return T.rowRecordType(t); }
-      if (t.kind === 'tuple') {
-        fail('an additional input is a tuple, which is neither traversed nor held constant');
+      if (t.kind === 'tuple' || t.kind === 'record') {
+        fail('an additional input is ' + (t.kind === 'tuple' ? 'a tuple' : 'a record')
+          + ', which these operations neither traverse nor hold constant, as for the operands of `broadcast` '
+          + '(records, tuples and higher-dimensional arrays are a static error)');
         return undefined;
       }
       return t;
@@ -1528,6 +1530,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       named = Object.fromEntries(names.map(name => [name, inferExpr(keywords[name], scopes)]));
     } else if (declared && declared.length - leading.length >= 2) {
       const sole = types[0];
+      if (sole?.kind === 'record' && sequences) {
+        // `scan`, `kscan` and `filter` follow broadcasting, whose operands are never records.
+        asSequence(sole);
+        return null;
+      }
       if (sole?.kind === 'record') named = { ...sole.fields };
       else if (sole?.kind === 'table') named = { ...sole.columns };
     }
@@ -3622,46 +3629,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return sig ? Object.keys(sig.kwargs) : null;
   }
 
-  // §04 "Tuple inputs": all tuple operands have the same length (at least two components, so
-  // no singleton expands); the other operands are held constant. A tuple combined with an array
-  // or table operand, or a kernel broadcast over a tuple, is a static error. Component `k` is
-  // typed as the single call of the head on the k-th components, and the result is the tuple of
-  // those result types.
-  function inferTupleBroadcast(expr: any, head: any, dataArgs: any[], dataTypes: any[], scopes: any): any {
-    const refuse = (message: string) => {
-      diagnostics.push({ severity: 'error', loc: expr.loc, message: 'broadcast: ' + message + ' (spec §04 "Tuple inputs")' });
-      return T.failed('broadcast tuple operands');
-    };
-    if (dataTypes.some((t) => t?.kind === 'array' || t?.kind === 'table')) {
-      return refuse('a tuple operand cannot be combined with an array or table operand');
-    }
-    const lengths = dataTypes.filter((t) => t?.kind === 'tuple').map((t) => t.elems.length);
-    if (new Set(lengths).size > 1) {
-      return refuse('tuple operands have different lengths ' + lengths.join(', '));
-    }
-    const headType: any = inferExpr(head, scopes);
-    const isKernelHead = headType?.kind === 'kernel'
-      || (head?.kind === 'ref' && head.ns === 'self' && !loweredModule.bindings.has(head.name)
-        && inferMeasureHeadCellResult(head.name, []) != null);
-    if (isKernelHead) return refuse('a kernel cannot be broadcast over a tuple');
-    const results: any[] = [];
-    for (let k = 0; k < lengths[0]; k++) {
-      const scope = new Map<string, any>();
-      const synthetic = dataArgs.map((arg, i) => {
-        const name = '%tuple' + k + '_' + i;
-        scope.set(name, dataTypes[i]?.kind === 'tuple' ? dataTypes[i].elems[k] : dataTypes[i]);
-        return { kind: 'ref', ns: '%local', name, loc: arg.loc };
-      });
-      // A tuple component is passed to the function whole, even when it is itself an array.
-      const one: any = inferBroadcast({ kind: 'call', op: 'broadcast', args: [head, ...synthetic], loc: expr.loc },
-        scopes.concat([scope]), dataTypes.map((t) => t?.kind === 'tuple'));
-      if (one?.kind === 'failed') return T.failed('broadcast tuple component');
-      results.push(one);
-    }
-    return T.tuple(results);
-  }
-
-  function inferBroadcast(expr: any, scopes: any, heldConstant: boolean[] = []): any {
+  function inferBroadcast(expr: any, scopes: any): any {
     const args = expr.args || [];
     /* c8 ignore next 2 -- defensive: the analyzer refuses a headless
        `broadcast(a = A)` before it lowers, so args[0] is always the head */
@@ -3705,10 +3673,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       dataTypes.push(t);
     }
 
-    // §04 "Tuple inputs": a function broadcast over tuple operands iterates over their
-    // components and returns a tuple, `broadcast(f, (a, b), c)` = `(f(a, c), f(b, c))`.
-    if (dataTypes.some((t) => t?.kind === 'tuple')) {
-      return inferTupleBroadcast(expr, args[0], dataArgs, dataTypes, scopes);
+    // §04 "Disallowed inputs": records and tuples are not allowed as operands of `broadcast`; a table
+    // row reaching the callable as a record is unaffected, and auto-splatting applies to the callable at
+    // each per-element call, never to the operands of `broadcast`.
+    for (let i = 0; i < dataTypes.length; i++) {
+      const t = dataTypes[i];
+      if (t && (t.kind === 'record' || t.kind === 'tuple')) {
+        diagnostics.push({ severity: 'error', loc: dataArgs[i]?.loc || expr.loc,
+          message: 'broadcast: operand ' + (i + 1) + ' is ' + (t.kind === 'record' ? 'a record' : 'a tuple')
+            + ' (' + T.show(t) + '); records and tuples are not allowed as operands of `broadcast`, which '
+            + 'neither iterates nor holds them constant (spec §04 "Disallowed inputs"). Broadcast over '
+            + 'a table to give the function one record per row, or pass the fields as separate operands.' });
+        return T.failed('broadcast record or tuple operand');
+      }
     }
 
     // §04 holds a measure operand constant. With scalar shift/scale there
@@ -3767,8 +3744,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           cellType: T.rowRecordType(t),
         };
       }
-      if (t && (t.kind === 'scalar' || t.kind === 'record')) {
-        // §04: scalar values and records are held constant while collections are iterated.
+      if (t && t.kind === 'scalar') {
         return { collection: false, cellType: t };
       }
       if (t && (t.kind === 'any' || t.kind === 'deferred')) {
@@ -3782,7 +3758,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     const argClassif: any[] = [];
     for (const [i, t] of dataTypes.entries()) {
-      const c = (builtinLocscale && i === 0 && T.isMeasure(t)) || heldConstant[i]
+      const c = builtinLocscale && i === 0 && T.isMeasure(t)
         ? { collection: false, cellType: t } : classifyArg(t);
       if (c == null) return T.deferred();
       argClassif.push(c);

@@ -91,15 +91,13 @@ test('broadcast: NumPy- vs Julia-style alignment via addaxes', () => {
     /incompatible sizes on axis 0/);
 });
 
-// ---- records are held constant (spec §04 "Non-collection inputs") -----
+// ---- records and tuples are not broadcast operands (spec §04 "Disallowed inputs") -----
 
-test('broadcast: a record input is held constant, not iterated', () => {
+test('broadcast: a record operand is refused, not iterated or held constant', () => {
   const field = (f: string) => ({ kind: 'call', op: 'get_field', args: [ref('c'), lit(f)] });
   const g = fnOf(['a', 'c'], { kind: 'call', op: 'add', args: [ref('a'), field('y')] });
-  // a + c.y for every a, with c = { x: 1, y: 100 } passed whole.
-  assert.deepEqual(ev(bc(g, lit([1, 2, 3]), lit({ x: 1, y: 100 }))), [101, 102, 103]);
-  // With no collection argument it is a single call.
-  assert.equal(ev(bc(fnOf(['c'], field('y')), lit({ x: 1, y: 100 }))), 100);
+  assert.throws(() => ev(bc(g, lit([1, 2, 3]), lit({ x: 1, y: 100 }))), /records and tuples are not allowed as broadcast operands/);
+  assert.throws(() => ev(bc(fnOf(['c'], field('y')), lit({ x: 1, y: 100 }))), /records and tuples are not allowed as broadcast operands/);
 });
 
 // ---- 2-D elementwise (matching ranks, no singletons) -----------------
