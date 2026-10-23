@@ -1,6 +1,6 @@
 'use strict';
 
-// A likelihood adapter `pars -> K(theta = e(pars))` applies one kernel. It is
+// A likelihood adapter `a -> K(theta = e(pars))` applies one kernel. It is
 // scored against K's own graph with K's boundary replaced by e(pars), so lift
 // copies none of K's closure. Each oracle below is closed form. The arguments
 // rename and transform the input, so a dropped substitution changes the number.
@@ -36,7 +36,7 @@ sizes = indicesof(zeros(3))
 w = ones(3)
 y ~ normalize(ksuperpose(counts, w)(sizes, theta))
 K = kernelof(record(y = y), theta = theta)
-L = likelihoodof(pars -> K(theta = pars.theta), record(y = [1, 2]))
+L = likelihoodof(K, record(y = [1, 2]))
 prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 s = logdensityof(L, (theta = 0.3))
@@ -50,7 +50,7 @@ s = logdensityof(L, (theta = 0.3))
 });
 
 test('renamed, transformed and positional arguments bind the applied boundary', async () => {
-  for (const kernel of ['pars -> K(theta = pars.a / 2)', 'pars -> K(pars.a / 2)']) {
+  for (const kernel of ['a -> K(theta = a / 2)', 'a -> K(a / 2)']) {
     const { ctx, built } = makeMatCtx(`${KERNEL}
 L = likelihoodof(${kernel}, record(y = 1.0))
 posterior = bayesupdate(L, prior)
@@ -67,8 +67,8 @@ p = logdensityof(posterior, (a = 0.6))
 
 test('importance weights and joint likelihoods carry the applied boundary', async () => {
   const { ctx } = makeMatCtx(`${KERNEL}
-L1 = likelihoodof(pars -> K(theta = pars.a / 2), record(y = 1.0))
-L2 = likelihoodof(pars -> K(theta = 3 * pars.a), record(y = -0.4))
+L1 = likelihoodof(a -> K(theta = a / 2), record(y = 1.0))
+L2 = likelihoodof(a -> K(theta = 3 * a), record(y = -0.4))
 J = joint_likelihood(L1, L2)
 posterior = bayesupdate(L1, prior)
 s = logdensityof(J, (a = 0.6))
@@ -92,8 +92,8 @@ y ~ normalize(truncate(Normal(theta, 1), interval(2, 4)))
 K = kernelof(record(y = y), theta = theta)
 a ~ Gamma(2, 1)
 prior = lawof(record(a = a))
-L1 = likelihoodof(pars -> K(theta = 2.5), record(y = 3))
-L2 = likelihoodof(pars -> K(theta = pars.a / 2), record(y = 3))
+L1 = likelihoodof(a -> K(theta = 2.5), record(y = 3))
+L2 = likelihoodof(a -> K(theta = a / 2), record(y = 3))
 posterior = bayesupdate(L2, prior)
 s1 = logdensityof(L1, (a = 1.0))
 s2 = logdensityof(L2, (a = 5.0))
@@ -128,7 +128,7 @@ test('a fixed normalizer inside the applied kernel takes the materialised mass',
 theta ~ Normal(0, 1)
 y ~ normalize(truncate(Poisson(3.0), interval(-1, 5)))
 K = kernelof(record(y = y), theta = theta)
-L = likelihoodof(pars -> K(theta = pars.theta), record(y = 2))
+L = likelihoodof(K, record(y = 2))
 posterior = bayesupdate(L, lawof(record(theta = theta)))
 `, { sampleCount: 4 });
   assert.deepEqual(copies(built), []);
@@ -158,7 +158,7 @@ K = kernelof(record(y = y), theta = theta)
 test('an applied callable whose body is not its variates keeps the copy path', async () => {
   const { ctx, built } = makeMatCtx(`${KERNEL}
 N = functionof(Normal(theta, 0.5), theta = theta)
-L = likelihoodof(pars -> N(theta = pars.a / 2), 1.0)
+L = likelihoodof(a -> N(theta = a / 2), 1.0)
 s = logdensityof(L, (a = 0.6))
 `, { sampleCount: 4 });
   assert.equal(built.derivations.s.boundaryArgs, undefined);
@@ -168,16 +168,16 @@ s = logdensityof(L, (a = 0.6))
 test('an ill-formed adapter keeps the copy path and its diagnostic', () => {
   const { processSource, orchestrator } = require('../index.ts');
   const cases: Array<[string, string]> = [
-    [`${KERNEL}L = likelihoodof(pars -> K(theta = pars.a, scale = 2), record(y = 1.0))\n`,
+    [`${KERNEL}L = likelihoodof(a -> K(theta = a, scale = 2), record(y = 1.0))\n`,
       'call to "K" has unknown argument "scale"'],
-    [`${KERNEL}L = likelihoodof(pars -> K(pars.a, 2), record(y = 1.0))\n`,
+    [`${KERNEL}L = likelihoodof(a -> K(a, 2), record(y = 1.0))\n`,
       'call to "K" does not accept 2 positional arguments'],
     // Lift leaves a recursive call in place, inside K's closure.
     [`f(x) = f(x)
 theta ~ Normal(0, 1)
 y ~ Normal(f(theta), 0.5)
 K = kernelof(record(y = y), theta = theta)
-L = likelihoodof(pars -> K(theta = pars.a), record(y = 1.0))
+L = likelihoodof(a -> K(theta = a), record(y = 1.0))
 `, 'cyclic binding dependency at "f"'],
   ];
   for (const [source, message] of cases) {
@@ -193,7 +193,7 @@ test('a body with two applications keeps the copy path', async () => {
 theta ~ Normal(0, 1)
 y ~ Normal(theta, 0.5)
 K = kernelof(y, theta = theta)
-L = likelihoodof(pars -> joint(u = K(theta = pars.a), v = K(theta = pars.b)), record(u = 0.2, v = -0.1))
+L = likelihoodof((a, b) -> joint(u = K(theta = a), v = K(theta = b)), record(u = 0.2, v = -0.1))
 s = logdensityof(L, (a = 0.4, b = -0.3))
 `, { sampleCount: 4 });
   assert.ok(copies(built).length >= 2);
@@ -206,7 +206,7 @@ theta ~ Uniform(interval(0.1, 0.9))
 mu ~ Normal(theta, 1)
 y ~ Normal(mu, 1)
 K = kernelof(record(y = y), theta = theta)
-L = likelihoodof(pars -> K(theta = pars.theta), record(y = 1))
+L = likelihoodof(a -> K(theta = a), record(y = 1))
 `, { sampleCount: 4 });
   // The latent `mu` would stay a marginalized ref that substitution cannot reach.
   assert.ok(copies(built).some((b: any) => b.closureOf === 'mu'));

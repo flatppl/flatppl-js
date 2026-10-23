@@ -1264,7 +1264,8 @@ function liftInlineSubexpressions(bindings: any) {
     }
     const iface = __knownAstType(kernel);
     const inputs = iface?.inputs || [];
-    const args = inputs.length && !require('./types.ts').acceptsPositional(iface, 1) ? inputs.map((input: any) => ({
+    // §06 `likelihoodof`: the point is a record bound to the kernel's inputs by name, for any arity.
+    const args = inputs.length ? inputs.map((input: any) => ({
       type: 'KeywordArg', name: input.name, loc: ast.loc,
       value: { type: 'FieldAccess', object: cloneAst(ast.args[1]), field: input.name, loc: ast.loc },
     })) : [cloneAst(ast.args[1])];

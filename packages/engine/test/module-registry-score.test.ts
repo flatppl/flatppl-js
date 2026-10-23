@@ -32,7 +32,7 @@ obs ~ iid(cb, 3)
 fk = kernelof(record(obs = obs), alpha = alpha)
 observed_data = [2.0, 3.0, 4.0]
 L = likelihoodof(fk, record(obs = observed_data))
-ld = logdensityof(L, 0.5)
+ld = logdensityof(L, record(alpha = 0.5))
 `;
 
 test('module registry reaches the truncate-normalizer quadrature env (poly.chebyshev resolves)', async () => {

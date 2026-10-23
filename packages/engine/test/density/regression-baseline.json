@@ -272,7 +272,7 @@
       "density": [
         {
           "name": "L@alpha=0.5",
-          "score": "__score__ = logdensityof(L, 0.5)",
+          "score": "__score__ = logdensityof(L, record(alpha = 0.5))",
           "oracle_note": "T_2 non-degenerate: analytic oracle (scipy/pyROOT) = -7.7233684431028475; engine G2 (N-D adaptive cubature, replacing the fixed 8192-pt midpoint rule for normalize(truncate(weighted(w,Lebesgue),S))) now matches the analytic value to full float64 precision (was pinned to -7.723368398399364, ~4.5e-8 off, under the superseded midpoint quadrature); alpha=0.5 is a free param but cb does not depend on alpha"
         }
       ],

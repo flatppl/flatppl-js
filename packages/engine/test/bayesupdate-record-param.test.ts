@@ -58,7 +58,7 @@ ys ~ transport.(xs, [pars])
 zs = post.(ys)
 k_model_n = kernelof(zs, n = n, pars = pars)
 data = [${DATA.join(', ')}]
-k_model = pars -> k_model_n(lengthof(data), pars)
+k_model(pars) = k_model_n(lengthof(data), pars)
 L = likelihoodof(k_model, data)
 prior = record(a = Exponential(0.1), b = Exponential(0.3), mu = Exponential(1.1))
 posterior = bayesupdate(L, prior)

@@ -625,7 +625,8 @@ test('materialise: bayesupdate posterior — does not crash with undefined', asy
   // not produce a derivation for `posterior` depending on the exact
   // kernel shape; what matters here is no undefined-length crash.
   const { ctx } = makeMatCtx(`
-prior = Normal(mu = 0, sigma = 2)
+m ~ Normal(mu = 0, sigma = 2)
+prior = lawof(record(mu = m))
 obs = 1.5
 K = functionof(Normal(mu = _mu_, sigma = 0.5), mu = _mu_)
 L = likelihoodof(K, obs)

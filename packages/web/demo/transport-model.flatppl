@@ -25,10 +25,10 @@ k_model_n = kernelof(zs, n = n, pars = pars)
 
 data = [3.81359, 2.91195, 3.20085, 3.09185, 3.34005, 4.96067, 0.842412, 2.34128, 3.06224, 2.59162, 2.5017, 5.39892, 1.19806, 1.60855, 1.44647, 0.771489, 0.26153, 1.56184, 0.561171, 4.4823]
 
-k_model = pars -> k_model_n(lengthof(data), pars)
+k_model(pars) = k_model_n(lengthof(data), pars)
 
 L = likelihoodof(k_model, data)
 
-prior = joint(a = Exponential(0.1), b = Exponential(0.3), mu = Exponential(1.1))
+prior = joint(pars = joint(a = Exponential(0.1), b = Exponential(0.3), mu = Exponential(1.1)))
 
 posterior = bayesupdate(L, prior)

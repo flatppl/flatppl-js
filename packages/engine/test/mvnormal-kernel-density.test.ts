@@ -9,7 +9,7 @@ const model = `
   covariance=a^2*eye(2)
   y~MvNormal([0.,0.],covariance)
   K=kernelof(y,a=a)
-  L=likelihoodof(pars -> K(a = pars.a),[1.,2.])
+  L=likelihoodof(K,[1.,2.])
 `;
 const logLikelihood = (a: number) => -Math.log(2 * Math.PI) - 2 * Math.log(a) - 5 / (2 * a * a);
 

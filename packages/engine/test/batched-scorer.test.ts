@@ -81,7 +81,7 @@ k = (z) -> Normal(z, 1)
 y ~ k.(a_plus_b)
 prior = lawof(record(a_plus_b = a_plus_b))
 forward_kernel = kernelof(record(y = y), a_plus_b = a_plus_b)
-L = likelihoodof(pars -> forward_kernel(a_plus_b = pars.a_plus_b), record(y = [1.0, 2.0]))
+L = likelihoodof(forward_kernel, record(y = [1.0, 2.0]))
 posterior = bayesupdate(L, prior)
 `;
   const ctx = ctxFor(src, 2000).ctx;

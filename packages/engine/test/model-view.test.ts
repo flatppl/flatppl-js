@@ -54,7 +54,7 @@ B ~ iid(LogNormal(0.0, 0.5), 5)
 prior = lawof(record(B = B))
 obs ~ Normal.(B, 1.0)
 fwd = kernelof(record(obs = obs), B = B)
-L = likelihoodof(pars -> fwd(B = pars.B), record(obs = [0.9, 1.0, 1.1, 0.95, 1.05]))
+L = likelihoodof(fwd, record(obs = [0.9, 1.0, 1.1, 0.95, 1.05]))
 posterior = bayesupdate(L, prior)
 `;
   const ctx = ctxFor(src, 1).ctx;

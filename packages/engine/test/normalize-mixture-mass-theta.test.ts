@@ -47,7 +47,7 @@ theta ~ Beta(2.0, 2.0)
 mixdir = normalize(superpose(weighted(theta, Normal(0.5, 1.0)), weighted(1.0, Normal(-0.5, 1.0))))
 y ~ iid(mixdir, 5)
 forward_kernel = kernelof(record(y = y), theta = theta)
-L = likelihoodof(pars -> forward_kernel(theta = pars.theta), record(y = [${YDATA.join(', ')}]))
+L = likelihoodof(forward_kernel, record(y = [${YDATA.join(', ')}]))
 __score__ = logdensityof(L, record(theta = ${theta.toFixed(6)}))
 `;
 

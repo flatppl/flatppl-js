@@ -111,26 +111,8 @@ async function buildPosteriorPredictive(
   }
   if (!bodyIR) return null;
 
-  const whole = require('./types.ts').acceptsPositional(d, 1);
-  if (whole && posteriorMeasure?.fields) {
-    // A unary adapter receives one posterior record. Substitute its fields
-    // before sampling, so the existing per-field cache still supplies atoms.
-    const body = require('./clm.ts').lowerMeasure(bodyIR, ctx, { derivation: d })?.body;
-    if (!body) return null;
-    const names = new Set([...(d.params || []), ...d.paramKwargs]);
-    const point = { kind: 'call', op: 'record', fields: Object.keys(posteriorMeasure.fields)
-      .map(name => ({ name, value: { kind: 'ref', ns: 'self', name } })) };
-    bodyIR = require('./ir-walk.ts').mapIRScoped(body, (n: any, shadowed: Set<string>) => {
-      if (n.kind === 'ref' && !shadowed.has(n.name) && names.has(n.name)) return point;
-      if (n.op === 'get_field' && n.args?.[0]?.op === 'record' && n.args[1]?.kind === 'lit') {
-        return n.args[0].fields.find((f: any) => f.name === n.args[1].value)?.value || n;
-      }
-      return n;
-    });
-  }
-
-  if (bodyIR.kind !== 'call' || (!whole && bodyIR.op !== 'lawof')) return null;
-  const outIR = whole ? bodyIR : bodyIR.args?.[0];
+  if (bodyIR.kind !== 'call' || bodyIR.op !== 'lawof') return null;
+  const outIR = bodyIR.args?.[0];
   if (!outIR) return null;
 
   // Enumerate the forward fields to materialise.
@@ -156,8 +138,7 @@ async function buildPosteriorPredictive(
   }
 
   // Posterior atom count: all parameter columns share the same length.
-  const parameterNames = whole && posteriorMeasure?.fields
-    ? Object.keys(posteriorMeasure.fields) : d.paramKwargs;
+  const parameterNames = d.paramKwargs;
   const firstParam = parameterNames[0];
   if (!posteriorMeasure || !posteriorMeasure.fields
       || !posteriorMeasure.fields[firstParam]

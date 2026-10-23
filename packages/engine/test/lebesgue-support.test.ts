@@ -78,7 +78,7 @@ b = elementof(${support})
 prior = joint(b = Lebesgue(${support}))
 y ~ ${likelihood}
 K = kernelof(y, b = b)
-L = likelihoodof(pars -> K(b = pars.b), ${observed})
+L = likelihoodof(K, ${observed})
 posterior = bayesupdate(L, prior)
 `, 1);
     const view = await buildModelViewFromCtx(ctx, ctx.derivations.posterior);
@@ -96,7 +96,7 @@ b = elementof(posreals)
 prior = joint(b = Lebesgue(posreals))
 y ~ Normal(b, 1)
 K = kernelof(y, b = b)
-L = likelihoodof(pars -> K(b = pars.b), 0)
+L = likelihoodof(K, 0)
 posterior = bayesupdate(L, prior)
 `, 2000);
   const posterior = await materialiser.materialiseMeasure('posterior', ctx, {
@@ -117,7 +117,7 @@ b = elementof(posreals)
 prior = joint(b = Lebesgue(posreals))
 y ~ Normal(b, 1)
 K = kernelof(y, b = b)
-L = likelihoodof(pars -> K(b = pars.b), 0)
+L = likelihoodof(K, 0)
 posterior = bayesupdate(L, prior)
 `, 3200);
     const posterior = await materialiser.materialiseMeasure('posterior', ctx, {

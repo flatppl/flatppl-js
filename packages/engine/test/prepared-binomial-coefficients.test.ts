@@ -101,7 +101,7 @@ shared ~ superpose(weighted(.25, iid(A, 3)), weighted(.75, iid(B, 3)))
 P = lawof(record(p = p))
 K = kernelof(record(single = single, plate = plate, repeated = repeated, callable = callable,
   independent = independent, shared = shared), p = p)
-L = likelihoodof(pars -> K(p = pars.p), record(single = 2, plate = [0, 2, 8], repeated = [0, 2, 8],
+L = likelihoodof(K, record(single = 2, plate = [0, 2, 8], repeated = [0, 2, 8],
   callable = [0, 2, 8], independent = [0, 2, 8], shared = [0, 2, 8]))
 posterior = bayesupdate(L, P)
 `, 1);

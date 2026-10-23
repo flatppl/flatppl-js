@@ -106,7 +106,7 @@ p ~ Beta(1,1)
 y ~ iid(response(.5,1,p), 2)
 P = lawof(record(p=p))
 K = kernelof(record(y=y), p=p)
-L = likelihoodof(pars -> K(p = pars.p), record(y=[0.0,.25]))
+L = likelihoodof(K, record(y=[0.0,.25]))
 post = bayesupdate(L,P)
 score = logdensityof(post, record(p=${p}))`))[0];
   close(await score(.3), Math.log(.3*.7 / (Math.PI*Math.sqrt(.25*.75))));

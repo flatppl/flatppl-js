@@ -168,9 +168,9 @@ score = logdensityof(M, (a = 2, b = 3))
   assert.deepEqual(Array.from((await ctx.getMeasure('score')).samples), [0, 0, 0, 0]);
 });
 
-test('likelihoods feed unary records whole and splat named inputs', async () => {
+test('likelihood points bind a unary input and named inputs by name', async () => {
   const { ctx } = makeMatCtx(`
-K(x) = Normal(x.x, 1)
+K(x) = Normal(x, 1)
 L = likelihoodof(K, 3)
 x = elementof(reals)
 named = functionof(Normal(x, 1))

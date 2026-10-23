@@ -112,7 +112,7 @@ test('affine likelihood batches resolve live real-valued atom support per row', 
 atom ~ Normal(0, 1)
 y ~ locscale(Dirac(atom + 0.0), 0.3, 1.7)
 K = kernelof(record(y = y), atom = atom)
-L = likelihoodof(pars -> K(atom = pars.atom), record(y = ${0.3 + 1.7 * 1.2}))
+L = likelihoodof(K, record(y = ${0.3 + 1.7 * 1.2}))
 posterior = bayesupdate(L, lawof(record(atom = atom)))`, 3);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);
@@ -144,27 +144,24 @@ test('affine likelihood batches resolve live Boolean atom support per row', asyn
 atom ~ Normal(0, 1)
 y ~ locscale(Dirac(atom > 0), 0.1, 0.3)
 K = kernelof(record(y = y), atom = atom)
-L = likelihoodof(pars -> K(atom = pars.atom), record(y = 0.4))
+L = likelihoodof(K, record(y = 0.4))
 posterior = bayesupdate(L, lawof(record(atom = atom)))`, 2);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);
   assert.deepEqual(Array.from(scorer.priorLikBatch([{ atom: -1 }, { atom: 1 }]).lik), [-Infinity, 0]);
 });
 
-// A whole-record adapter that is not applied inline (here a named lambda)
-// copies the kernel's closure with its input substituted, so the affine
-// lowering of a scalar `locscale` runs again over a base that holds the
-// adapter's formal. The copy must keep a named base for the pushforward to be
-// classified and given its bijection. It used to throw `locscale: could not
-// statically determine the scale shape` (Dirac base) or score -Infinity /
-// `pushfwd of '<?>' requires a bijection annotation` (Normal base).
-test('a locscale under a named whole-record adapter scores the closed form', async () => {
+// A scalar `locscale` under a kernel input must keep a named base so the
+// pushforward is classified and given its bijection. It used to throw
+// `locscale: could not statically determine the scale shape` (Dirac base) or
+// score -Infinity / `pushfwd of '<?>' requires a bijection annotation`
+// (Normal base).
+test('a locscale under a kernel input scores the closed form', async () => {
   const src = `
 atom ~ Normal(0, 1)
 y ~ locscale(Normal(atom, 1), 0.1, 0.3)
 K = kernelof(record(y = y), atom = atom)
-adapter = pars -> K(atom = pars.atom)
-L = likelihoodof(adapter, record(y = 0.4))
+L = likelihoodof(K, record(y = 0.4))
 s = logdensityof(L, record(atom = 1.2))
 posterior = bayesupdate(L, lawof(record(atom = atom)))`;
   const { proc, ctx } = ctxFor(src, 2);
@@ -176,13 +173,12 @@ posterior = bayesupdate(L, lawof(record(atom = atom)))`;
   assert.ok(Math.abs(scorer.likOf({ atom: 1.2 }) - expected) < 1e-12);
 });
 
-test('a counting-measure locscale under a named whole-record adapter keeps its support', async () => {
+test('a counting-measure locscale under a kernel input keeps its support', async () => {
   const { proc, ctx } = ctxFor(`
 atom ~ Normal(0, 1)
 y ~ locscale(Dirac(atom > 0), 0.1, 0.3)
 K = kernelof(record(y = y), atom = atom)
-adapter = pars -> K(atom = pars.atom)
-L = likelihoodof(adapter, record(y = 0.4))
+L = likelihoodof(K, record(y = 0.4))
 posterior = bayesupdate(L, lawof(record(atom = atom)))`, 2);
   assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const scorer = await buildLogPi(ctx, ctx.derivations.posterior);

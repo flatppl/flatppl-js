@@ -105,7 +105,7 @@ w ~ Uniform(interval(-1001, 1001))
 y ~ normalize(logweighted(w, StudentT(4)))
 K = kernelof(y, w = w)
 L = likelihoodof(K, 2)
-P = bayesupdate(L, lawof(w))
+P = bayesupdate(L, lawof(record(w = w)))
 `, { sampleCount: 16 });
   const d = Object.values(ctx.derivations).find((d: any) => d.kind === 'bayesupdate');
   const { likOf } = await buildLogPi(ctx, d);

@@ -14,7 +14,7 @@ for (const [point, mean, count] of [
       y ~ Normal((z * [1.,2.])[1],1)
       K = kernelof(y,z=z)
       L = likelihoodof(K,8.)
-      score = logdensityof(L,${point})
+      score = logdensityof(L,record(z=${point}))
     `, count);
     assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
     const result = await ctx.getMeasure('score');

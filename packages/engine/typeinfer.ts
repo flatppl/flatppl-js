@@ -1205,74 +1205,55 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return inferGenericCall(expr, scopes);
   }
 
-  // Spec §06 `likelihoodof`: `densityof(likelihoodof(K, obs), theta)` is
-  // `pdf(kappa(theta), x)`, so `theta` is the argument of a call to `K` and
-  // follows the §04 "Calling conventions" rule. The choice between binding
-  // the point whole and splatting it is made from the kernel's input
-  // interface, before the point's domain is checked: a kernel with explicit
-  // boundary inputs admits one positional input and receives a sole record
-  // whole, even when its domain then rejects it. Without this check such a
-  // point reached the density as a record in a real-valued slot and scored
-  // NaN or -Infinity with no diagnostic. A splatting kernel's point must
-  // name only the kernel's inputs.
+  // Spec §06 `likelihoodof`: "The parameter point `theta` is a record with one field per input
+  // of `K`, bound to those inputs by name for any number of inputs, so a kernel with the single
+  // input `mu` is evaluated at `record(mu = 1.0)`, not at `1.0`." The point of
+  // `densityof(L, theta)` / `logdensityof(L, theta)` and the variate of the prior in
+  // `bayesupdate(L, prior)` are therefore records, whatever the kernel's arity. This is a rule of
+  // `likelihoodof`, not the general §04 call convention (a single-input callable still receives
+  // a sole record whole there). A point that is not a record is a static error, and so is a field
+  // that names no input.
   function checkLikelihoodPoint(op: string, lT: any, pointT: any, loc: any): void {
     const inputs = lT.inputs;
+    // A likelihood whose interface is not fully known (a joint of terms with an unresolved
+    // callable) carries no `orderedInputs`: its input list may be incomplete, so nothing is judged.
     if (!Array.isArray(inputs) || inputs.length === 0 || typeof lT.orderedInputs !== 'boolean') return;
     if (!pointT || pointT.kind === 'failed' || pointT.kind === 'deferred' || pointT.kind === 'any') return;
-    const iface = { inputs, orderedInputs: lT.orderedInputs };
-    if (!T.acceptsPositional(iface, 1)) {
-      // Splatting kernel: spec §04 "Calling conventions" makes a field or
-      // column that matches no input a static error.
-      // A tuple splats into positional arguments for ordered inputs; its count must
-      // lie between the required inputs and all inputs.
-      if (pointT.kind === 'tuple') {
-        const count = pointT.elems.length;
-        if (lT.orderedInputs === false || T.acceptsPositional(iface, count)) return;
-        diagnostics.push({
-          severity: 'error',
-          message: op + ': the point is a tuple of ' + count + ' elements splatted over the likelihood inputs ('
-            + inputs.map((i: any) => '"' + i.name + '"').join(', ') + '); spec §04 "Calling '
-            + 'conventions": tuples with fewer elements than the required inputs, or more '
-            + 'than its inputs, are a static error',
-          loc,
-        });
-        return;
-      }
-      if (pointT.kind !== 'record' && pointT.kind !== 'table') return;
-      const known = new Set(inputs.map((i: any) => i.name));
-      const unknown = Object.keys(pointT.kind === 'record' ? pointT.fields : pointT.columns)
-        .filter((k) => !known.has(k));
-      if (unknown.length === 0) return;
-      const what = pointT.kind === 'record' ? 'field' : 'column';
+    const point = op === 'bayesupdate' ? "the prior's variate" : 'the point';
+    const names = inputs.map((i: any) => '"' + i.name + '"').join(', ');
+    if (pointT.kind !== 'record') {
       diagnostics.push({
         severity: 'error',
-        message: op + ': the ' + (op === 'bayesupdate' ? "prior's variate" : 'point')
-          + ' is splatted over the likelihood inputs, but has no input named '
-          + unknown.map((k) => '"' + k + '"').join(', ') + ' for its ' + what
-          + (unknown.length > 1 ? 's' : '') + ' (inputs: '
-          + inputs.map((i: any) => '"' + i.name + '"').join(', ')
-          + '; spec §04 "Calling conventions": ' + what + ' names that do not match the '
-          + 'callable\'s argument names are a static error)',
+        message: op + ': ' + point + ' must be a record with one field per likelihood input (' + names
+          + '), bound by name for any number of inputs (spec §06 `likelihoodof`), but it is '
+          + T.show(pointT) + '. ' + (op === 'bayesupdate'
+            ? 'Write the prior over a record, such as `lawof(record(' + inputs[0].name + ' = '
+              + inputs[0].name + '))`.'
+            : 'Pass `record(' + inputs[0].name + ' = ...)`.'),
         loc,
       });
       return;
     }
-    const first = inputs[0];
-    if (T.unify(first.type, pointT, new Map()) != null) return;
-    const point = op === 'bayesupdate' ? "the prior's variate" : 'the point';
-    const hint = pointT.kind === 'record' || pointT.kind === 'table'
-      ? ' The likelihood\'s kernel has explicit boundary inputs, so it takes one positional '
-        + 'input and a record is bound whole, not splatted (spec §04 "Calling conventions"). '
-        + (op === 'bayesupdate'
-          ? 'Use a prior over the input itself, such as `lawof(' + first.name + ')`, or build '
-          : 'Pass the value itself, or build ')
-        + 'the likelihood with an adapter such as `likelihoodof(pars -> K(' + first.name
-        + ' = pars.' + first.name + '), obs)`.'
-      : '';
+    const known = new Set(inputs.map((i: any) => i.name));
+    const unknown = Object.keys(pointT.fields).filter((k) => !known.has(k));
+    const missing = inputs.map((i: any) => i.name).filter((k: string) => !(k in pointT.fields));
+    if (missing.length > 0) {
+      diagnostics.push({
+        severity: 'error',
+        message: op + ': ' + point + ' has no field for the likelihood input'
+          + (missing.length > 1 ? 's ' : ' ') + missing.map((k: string) => '"' + k + '"').join(', ')
+          + ' (inputs: ' + names + '; spec §06 `likelihoodof`: the point has one field per input)',
+        loc,
+      });
+      return;
+    }
+    if (unknown.length === 0) return;
     diagnostics.push({
       severity: 'error',
-      message: op + ': ' + point + ' is bound whole to likelihood input "' + first.name
-        + '", which expects ' + T.show(first.type) + ', got ' + T.show(pointT) + '.' + hint,
+      message: op + ': ' + point + ' has no input named '
+        + unknown.map((k) => '"' + k + '"').join(', ') + ' for its field'
+        + (unknown.length > 1 ? 's' : '') + ' (inputs: ' + names
+        + '; spec §06 `likelihoodof`: the point binds to the kernel\'s inputs by name)',
       loc,
     });
   }

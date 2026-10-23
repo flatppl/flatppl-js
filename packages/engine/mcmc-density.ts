@@ -428,30 +428,11 @@ async function buildLogPi(
   // sources. Rename simultaneously: one input may reuse another source's name.
   const boundaryNames = new Map((d.params || []).map((name: string, i: number) =>
     [name, d.paramKwargs[i]]));
-  const whole = require('./types.ts').acceptsPositional(d, 1);
-  const priorType = ctx.bindings.get(priorName)?.inferredType;
-  // The point shape comes from the prior's variate type. Guessing a bare draw
-  // for an untyped prior made a whole-record adapter score -Infinity silently.
-  if (!priorType) {
-    throw new Error(`buildLogPi: the type of prior '${priorName}' is unknown, so the likelihood point cannot be bound`);
-  }
-  const priorFields = priorType.domain?.fields;
-  const wholePoint = priorFields ? { kind: 'call', op: 'record',
-    fields: Object.keys(priorFields).map(name => ({ name,
-      value: { kind: 'ref', ns: 'self', name } })) }
-    : { kind: 'ref', ns: 'self', name: drawNames[0] };
   const { mapIRScoped } = require('./ir-walk.ts');
   function bindPoint(n: any, shadowed: Set<string>): any {
     if (n?.kind === 'ref' && (n.ns === 'self' || n.ns === '%local')
         && !shadowed.has(n.name) && boundaryNames.has(n.name)) {
-      return whole ? wholePoint : { ...n, name: boundaryNames.get(n.name), ns: 'self' };
-    }
-    // A whole-record adapter often projects a single prior field. Resolve
-    // that projection during preparation, without constructing records per score.
-    if (n?.op === 'get_field' && n.args?.[0]?.op === 'record'
-        && n.args[1]?.kind === 'lit') {
-      const field = n.args[0].fields?.find((f: any) => f.name === n.args[1].value);
-      if (field) return field.value;
+      return { ...n, name: boundaryNames.get(n.name), ns: 'self' };
     }
     // The generic mapper leaves bijection metadata untouched. Its captured
     // parameters need the same point binding as the surrounding likelihood.
@@ -494,8 +475,7 @@ async function buildLogPi(
       && !(nm in fixedEnvObj) && ctx.bindings?.get(nm)?.type === 'draw');
     if (latents.length > 0) {
       // The prior latents the marginal is conditioned on, by the name each is
-      // read under in the kernel: the point's own name, the kernel's boundary
-      // name, or `<boundary>.<field>` through a whole-record adapter.
+      // read under in the kernel: the point's own name or the kernel's boundary name.
       const isScalar = (t: any) => t?.kind === 'scalar';
       const scalarNames = drawNames.filter(nm => isScalar(ctx.bindings.get(nm)?.inferredType));
       const source: Record<string, string> = {};
@@ -503,17 +483,9 @@ async function buildLogPi(
         { scalars: [...scalarNames], fields: {} };
       for (const nm of scalarNames) source[nm] = nm;
       for (const [p, kwarg] of boundaryNames as Map<string, string>) {
-        if (whole && priorFields) {
-          const fieldNames = Object.keys(priorFields).filter(f => isScalar(priorFields[f]));
-          inputMarginal.fields[p] = fieldNames;
-          for (const f of fieldNames) source[p + '.' + f] = f;
-        } else if (!whole && scalarNames.includes(kwarg)) {
+        if (scalarNames.includes(kwarg)) {
           inputMarginal.scalars.push(p);
           source[p] = kwarg;
-        } else if (whole && scalarNames.includes(drawNames[0])) {
-          // A single input fed the whole scalar point.
-          inputMarginal.scalars.push(p);
-          source[p] = drawNames[0];
         }
       }
       const marginalNode = clm.lowerMeasure(likInput, ctx, { derivation: d, inputMarginal });

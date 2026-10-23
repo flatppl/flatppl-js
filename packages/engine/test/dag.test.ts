@@ -218,7 +218,7 @@ c = b * 2
 // Recursive reified callables must not hang the pipeline.
 // =====================================================================
 //
-// A self-referential reified callable (`k = pars -> k(...)`) is an
+// A self-referential reified callable (`k(pars) = k(...)`) is an
 // invalid FlatPPL program (the language is a static flat graph — no
 // recursion). It must NOT be beta-reduced to a fixed point: the lift
 // inliner refuses to expand a recursive callable, so liftInline-
@@ -230,7 +230,7 @@ c = b * 2
 test('dag: direct self-recursive callable terminates (no inline fixpoint blow-up)', () => {
   const src = `
 data = [1.0, 2.0, 3.0]
-k_model = pars -> k_model(length(data), pars)
+k_model(pars) = k_model(length(data), pars)
 `;
   const { bindings } = processSource(src);
   const built = orchestrator.buildDerivations(bindings);

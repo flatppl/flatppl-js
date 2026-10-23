@@ -144,7 +144,7 @@ test('MCMC refuses a latent truncated to a vector set', async () => {
 x ~ truncate(iid(Normal(0.0, 1.0), 3), ordered(3))
 prior = lawof(record(x = x))
 K = functionof(joint(z = Normal(mu = sum(x), sigma = 1.0)), x = x)
-L = likelihoodof(pars -> K(x = pars.x), record(z = 0.0))
+L = likelihoodof(K, record(z = 0.0))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC, 50);

@@ -30,7 +30,7 @@ m = normalize(${weight}, Normal(0.0, 1.0)))
 y ~ m
 K = kernelof(record(y = y), theta = theta)
 L = likelihoodof(K, record(y = 0.5))
-posterior = bayesupdate(L, lawof(theta))
+posterior = bayesupdate(L, lawof(record(theta = theta)))
 `, 1);
     assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
     const deriv = Object.values(ctx.derivations).find((d: any) => d.kind === 'bayesupdate');
@@ -52,7 +52,7 @@ lp = logdensityof(m, 0.5)
 y ~ m
 K = kernelof(record(y = y), theta = theta)
 L = likelihoodof(K, record(y = 0.5))
-posterior = bayesupdate(L, lawof(theta))
+posterior = bayesupdate(L, lawof(record(theta = theta)))
 `, 1);
     const got = (await ctx.getMeasure('lp')).samples[0];
     assert.ok(Math.abs(got - exact) < 1e-8, `${got} versus ${exact} at offset=${offset}`);
@@ -74,7 +74,7 @@ M = normalize(superpose(logweighted(theta, Normal(0,1)),
 y ~ M
 K = kernelof(record(y=y), theta=theta)
 L = likelihoodof(K, record(y=0.5))
-posterior = bayesupdate(L, lawof(theta))
+posterior = bayesupdate(L, lawof(record(theta = theta)))
 `, 8);
     const { likOf } = await buildLogPi(ctx, ctx.derivations.posterior);
     assert.ok(Math.abs(likOf({ theta: offset }) - exact) < 1e-12);

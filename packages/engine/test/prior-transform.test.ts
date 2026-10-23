@@ -106,7 +106,7 @@ z ~ iid(Normal(0.0, 1.0), 4)
 prior = lawof(record(z = z))
 y ~ Normal.(z, 1.0)
 K = kernelof(record(y = y), z = z)
-L = likelihoodof(pars -> K(z = pars.z), record(y = [0.0, 0.0, 0.0, 0.0]))
+L = likelihoodof(K, record(y = [0.0, 0.0, 0.0, 0.0]))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC_IID, 100);
@@ -207,7 +207,7 @@ z ~ normalize(truncate(Normal(0.0, 1.0), interval(-1.0, 1.0)))
 prior = lawof(record(z = z))
 y ~ Normal.(z, 1.0)
 K = kernelof(record(y = y), z = z)
-L = likelihoodof(pars -> K(z = pars.z), record(y = [0.0]))
+L = likelihoodof(K, record(y = [0.0]))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC_TRUNC, 100);
@@ -231,7 +231,7 @@ b ~ pushfwd(fn(20.0 * _), Beta(2.0, 2.0))
 prior = lawof(record(b = b))
 y ~ Normal.(b, 1.0)
 K = kernelof(record(y = y), b = b)
-L = likelihoodof(pars -> K(b = pars.b), record(y = [0.0]))
+L = likelihoodof(K, record(y = [0.0]))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC_PF, 100);
@@ -256,7 +256,7 @@ binomial_row_K = (n_row, p_row) -> Binomial.(n_row, p_row)
 r ~ binomial_row_K.(n_data, p)
 prior = lawof(record(p = p))
 forward_kernel = kernelof(record(r = r), p = p)
-L = likelihoodof(pars -> forward_kernel(p = pars.p), record(r = r_data))
+L = likelihoodof(forward_kernel, record(r = r_data))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(MODEL, 50);
@@ -279,7 +279,7 @@ n ~ Poisson(3.0)
 prior = lawof(record(n = n))
 y ~ Normal.(n, 1.0)
 K = kernelof(record(y = y), n = n)
-L = likelihoodof(pars -> K(n = pars.n), record(y = [0.0]))
+L = likelihoodof(K, record(y = [0.0]))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC_BAD, 100);

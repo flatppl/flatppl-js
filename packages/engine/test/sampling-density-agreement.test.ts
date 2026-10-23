@@ -220,7 +220,7 @@ theta ~ Normal(0.0, 2.0)
 obs ~ iid(Normal(mu = theta, sigma = 1.0), 5)
 fwd = kernelof(record(obs = obs), theta = theta)
 data = [2.0, 2.1, 1.9, 2.2, 1.8]
-L = likelihoodof(pars -> fwd(theta = pars.theta), record(obs = data))
+L = likelihoodof(fwd, record(obs = data))
 prior = lawof(record(theta = theta))
 post = bayesupdate(L, prior)
 j = joint(a = post, b = post)`, 'j', 'a', 'b', { N: 6000 });

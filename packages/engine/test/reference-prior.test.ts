@@ -12,7 +12,7 @@ b = elementof(reals)
 prior = joint(b = Lebesgue(reals))
 y ~ Normal(b, 1)
 K = kernelof(y, b = b)
-L = likelihoodof(pars -> K(b = pars.b), 2)
+L = likelihoodof(K, 2)
 posterior = bayesupdate(L, prior)
 `;
 
@@ -84,7 +84,7 @@ b = elementof(reals)
 prior = joint(b = Lebesgue(reals))
 y ~ Uniform(interval(b, b + 1))
 K = kernelof(y, b = b)
-L = likelihoodof(pars -> K(b = pars.b), 2)
+L = likelihoodof(K, 2)
 posterior = bayesupdate(L, prior)
 `;
   const opts = { backend: 'ram', chains: 4, warmup: 0, draws: 20, seed: 18 };
@@ -103,7 +103,7 @@ b = elementof(reals)
 prior = joint(b = Lebesgue(reals))
 y ~ Uniform(interval(b, b + 1))
 K = kernelof(y, b = b)
-L = likelihoodof(pars -> K(b = pars.b), 100)
+L = likelihoodof(K, 100)
 posterior = bayesupdate(L, prior)
 `, 80);
   const opts = { backend: 'ram', chains: 4, warmup: 0, draws: 20, seed: 18 };

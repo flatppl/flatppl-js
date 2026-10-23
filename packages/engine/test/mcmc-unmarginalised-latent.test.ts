@@ -32,16 +32,7 @@ const closedForm = (theta: number, y = 0.5) => logN(y, theta, Math.SQRT2);
 
 const FORMS: Record<string, { tail: string; point: string }> = {
   direct: {
-    tail: 'L = likelihoodof(K, record(y = 0.5))\nprior = lawof(theta)\nposterior = bayesupdate(L, prior)\n',
-    point: '0.3',
-  },
-  adapter: {
-    tail: 'L = likelihoodof(pars -> K(theta = pars.theta), record(y = 0.5))\n'
-      + 'prior = lawof(record(theta = theta))\nposterior = bayesupdate(L, prior)\n',
-    point: 'record(theta = 0.3)',
-  },
-  'named adapter': {
-    tail: 'A = pars -> K(theta = pars.theta)\nL = likelihoodof(A, record(y = 0.5))\n'
+    tail: 'L = likelihoodof(K, record(y = 0.5))\n'
       + 'prior = lawof(record(theta = theta))\nposterior = bayesupdate(L, prior)\n',
     point: 'record(theta = 0.3)',
   },
@@ -73,7 +64,7 @@ for (const [form, { tail, point }] of Object.entries(FORMS)) {
 test('an MH run over the latent-closure model recovers the closed-form posterior', async () => {
   // Prior Normal(0, 1), likelihood Normal(y = 0.5; theta, sqrt(2)): the posterior
   // is Normal(0.5 / 3, sqrt(2 / 3)).
-  const { ctx } = ctxFor(LATENT + FORMS.adapter.tail, 400);
+  const { ctx } = ctxFor(LATENT + FORMS.direct.tail, 400);
   const m = await materialiser.materialiseMeasure('posterior', ctx,
     { backend: 'mh', chains: 4, warmup: 500, draws: 1000, seed: 3 });
   const draws: Float64Array = m.fields?.theta?.samples ?? m.samples;
@@ -89,7 +80,7 @@ k ~ Bernoulli(0.3)
 y ~ Normal(theta + k, 1)
 K = kernelof(record(y = y), theta = theta)
 L = likelihoodof(K, record(y = 0.5))
-prior = lawof(theta)
+prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 4);
@@ -106,7 +97,7 @@ mu ~ Normal(0, 1)
 y ~ Normal(mu, 1)
 K = kernelof(record(y = y), mu = mu)
 L = likelihoodof(K, record(y = 0.5))
-prior = lawof(mu)
+prior = lawof(record(mu = mu))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 4);
@@ -121,7 +112,7 @@ z ~ Normal(1, 2)
 w ~ Normal(theta, 1)
 K = kernelof(record(w = w, z = z), theta = theta)
 L = likelihoodof(K, record(w = 0.5, z = 0.7))
-prior = lawof(theta)
+prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 4);
@@ -137,7 +128,7 @@ mu ~ Exponential(1)
 y ~ Normal(mu + theta, 1)
 K = kernelof(record(y = y), theta = theta)
 L = likelihoodof(K, record(y = 0.5))
-prior = lawof(theta)
+prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 `;
 
@@ -175,7 +166,7 @@ mu ~ Normal(theta, 1)
 y ~ Normal(mu, 1)
 K = kernelof(record(mu = mu, y = y), theta = theta)
 L = likelihoodof(K, record(mu = 0.2, y = 0.5))
-prior = lawof(theta)
+prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 4);
@@ -208,7 +199,7 @@ mu ~ Normal(theta, 1)
 y ~ Normal(mu, 1)
 K = kernelof(record(y = y), t = theta)
 L = likelihoodof(K, record(y = 0.5))
-prior = lawof(theta)
+prior = lawof(record(t = theta))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 4);
@@ -222,7 +213,7 @@ theta ~ Normal(0, 1)
 y ~ Normal(theta + draw(Uniform(interval(0, 1))), 1)
 K = kernelof(record(y = y), theta = theta)
 L = likelihoodof(K, record(y = 0.5))
-prior = lawof(theta)
+prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(src, 4);
@@ -254,7 +245,7 @@ mu ~ Normal(theta, 1)
 y ~ Normal(mu, 1)
 K = kernelof(record(mu = mu, y = y), theta = theta)
 L = likelihoodof(K, record(mu = 0.2, y = 0.5))
-prior = lawof(theta)
+prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 `, 4);
   const d = ctx.derivations.posterior;
@@ -270,7 +261,7 @@ mu ~ Normal(theta, 1)
 y ~ Normal(mu, 1)
 K = kernelof(y, theta = theta)
 L = likelihoodof(K, 0.5)
-prior = lawof(theta)
+prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(scalar, 4);

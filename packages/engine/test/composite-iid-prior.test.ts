@@ -33,7 +33,7 @@ binomial_row_K = (n_row, p_row) -> Binomial.(n_row, p_row)
 r ~ binomial_row_K.(n_data, p)
 prior = lawof(record(p = p))
 forward_kernel = kernelof(record(r = r), p = p)
-L = likelihoodof(pars -> forward_kernel(p = pars.p), record(r = r_data))
+L = likelihoodof(forward_kernel, record(r = r_data))
 posterior = bayesupdate(L, prior)
 `;
 

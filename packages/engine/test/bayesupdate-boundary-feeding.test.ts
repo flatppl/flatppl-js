@@ -81,7 +81,7 @@ theta ~ Normal(0.0, 2.0)
 obs ~ iid(Normal(mu = theta, sigma = 1.0), 5)
 fwd = kernelof(record(obs = obs), theta = theta)
 obs_data = [3.0, 3.1, 2.9, 3.2, 2.8]
-L = likelihoodof(pars -> fwd(theta = pars.theta), record(obs = obs_data))
+L = likelihoodof(fwd, record(obs = obs_data))
 prior = lawof(record(theta = theta))
 posterior = bayesupdate(L, prior)
 `;
@@ -124,7 +124,7 @@ ys = post.(xs)
 k = kernelof(ys, mu = mu, n = n)
 data = [1.0, 2.0, 3.0]
 km = mu -> k(lengthof(data), mu)
-L = likelihoodof(pars -> km(mu = pars.mu), data)
+L = likelihoodof(km, data)
 prior = joint(mu = Normal(0.0, 1.0))
 posterior = bayesupdate(L, prior)
 `;
