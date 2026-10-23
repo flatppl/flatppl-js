@@ -368,7 +368,7 @@ test('a scalar scale over a vector variate is Normal(0,2) per component', async 
 // compare against because `v / 2.0` was a static error.
 test('the batched path agrees with the atom-indep path on a literal vector', async () => {
   for (const [body, indepBody] of [
-    ['exp.(x)', 'exp.(v)'], ['2.0 * x', '2.0 * v'], ['x + 1.0', 'v + 1.0'],
+    ['exp.(x)', 'exp.(v)'], ['2.0 * x', '2.0 * v'], ['x .+ 1.0', 'v .+ 1.0'],
     ['-x', '-v'], ['x * 2.0', 'v * 2.0'], ['x / 2.0', 'v / 2.0'],
   ]) {
     const indep = await makeCtx(

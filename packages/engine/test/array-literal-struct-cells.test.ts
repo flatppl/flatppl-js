@@ -74,12 +74,12 @@ test('an array literal over diagmat cells stacks the FULL matrices', () => {
 });
 
 test('a mixed literal — one structured cell, one dense — stacks both', () => {
-  // `1.0 + diagmat([1.0, 2.0])` densifies (the implicit zeros become ones),
+  // `fill(1.0, [2, 2]) + diagmat([1.0, 2.0])` densifies (the implicit zeros become ones),
   // so this is a genuinely dense untagged [2, 2] cell next to a diag-stored
   // one: [[2, 1], [1, 3]].
   const y = valueOfY(
     'a = diagmat([1.0, 2.0])\n'
-    + 'b = 1.0 + diagmat([1.0, 2.0])\n'
+    + 'b = fill(1.0, [2, 2]) + diagmat([1.0, 2.0])\n'
     + 'y = [a, b]\n');
   assert.deepEqual(y.shape, [2, 2, 2]);
   assert.deepEqual(Array.from(y.data), [
