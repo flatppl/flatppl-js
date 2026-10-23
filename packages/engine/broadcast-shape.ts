@@ -205,10 +205,7 @@ function classifyAxisStructure(v: any): any {
       && v.body !== undefined && Array.isArray(v.params)) {
     return { coll: false, val: v };                       // fn / kernel
   }
-  if (v && typeof v === 'object') {
-    throw new Error('broadcast: records and tuples are not allowed as '
-      + 'broadcast inputs (spec §04)');
-  }
+  // A record is held constant like a scalar (spec §04 "Non-collection inputs").
   return { coll: false, val: v };
 }
 

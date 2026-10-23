@@ -2,8 +2,8 @@
 
 // broadcast realignment to spec §04 + flatppl-design commit 87c9be1:
 // same-#-axes (no implicit axis insertion), singleton expansion,
-// non-collection inputs loop-invariant (incl. the callable), records/
-// tuples disallowed, no-collection ⇒ single call. Driven through
+// non-collection inputs (scalars, records, the callable) loop-invariant,
+// no-collection ⇒ single call. Driven through
 // sampler.evaluateExpr with a functionof IR (the value-evaluator path).
 
 const { test } = require('node:test');
@@ -91,11 +91,15 @@ test('broadcast: NumPy- vs Julia-style alignment via addaxes', () => {
     /incompatible sizes on axis 0/);
 });
 
-// ---- records / tuples disallowed -------------------------------------
+// ---- records are held constant (spec §04 "Non-collection inputs") -----
 
-test('broadcast: a record input is rejected (spec §04)', () => {
-  assert.throws(() => ev(bc(dblA, lit({ x: 1, y: 2 }))),
-    /records and tuples are not allowed/);
+test('broadcast: a record input is held constant, not iterated', () => {
+  const field = (f: string) => ({ kind: 'call', op: 'get_field', args: [ref('c'), lit(f)] });
+  const g = fnOf(['a', 'c'], { kind: 'call', op: 'add', args: [ref('a'), field('y')] });
+  // a + c.y for every a, with c = { x: 1, y: 100 } passed whole.
+  assert.deepEqual(ev(bc(g, lit([1, 2, 3]), lit({ x: 1, y: 100 }))), [101, 102, 103]);
+  // With no collection argument it is a single call.
+  assert.equal(ev(bc(fnOf(['c'], field('y')), lit({ x: 1, y: 100 }))), 100);
 });
 
 // ---- 2-D elementwise (matching ranks, no singletons) -----------------
