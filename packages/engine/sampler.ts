@@ -781,6 +781,8 @@ function complexScalar(re: number, im: number) {
   return { re, im };
 }
 
+const collectionDomain = require('./collection-domain-heads.ts');
+
 const ARITH_OPS = {
   add: (a: any, b: any) => _shapeAwareBinop('add', (x: any, y: any) => x + y, a, b, _cAdd),
   sub: (a: any, b: any) => _shapeAwareBinop('sub', (x: any, y: any) => x - y, a, b, _cSub),
@@ -2343,6 +2345,16 @@ for (const _name in opsModule.ELEMWISE_OVER_ARRAY_2) {
 // (evaluateExprN / _evalN / _batchedApproximation / _perAtomFallback)
 // were destructured from sampler-eval-batched at the top of this file;
 // they close over the same ARITH_OPS_N object this call populates.
+// Every route to a table head that does not pass through `evaluateCall` — the fused-loop and profile
+// compilers call these entries directly — refuses a record or scalar first argument the same way.
+for (const head of collectionDomain.COLLECTION_DOMAIN_HEADS.keys()) {
+  const entry = (ARITH_OPS as any)[head];
+  if (typeof entry !== 'function') continue;
+  (ARITH_OPS as any)[head] = function (this: any, ...args: any[]) {
+    if (args.length > 0) collectionDomain.refuseNonCollectionArgument(head, args[0]);
+    return entry.apply(this, args);
+  };
+}
 _evalBatched.initARITHOPSN(ARITH_OPS);
 
 // =====================================================================
@@ -2908,6 +2920,9 @@ function evaluateCall(ir: any, env: any): any {
     } else {
       args = [];
       for (let i = 0; i < n; i++) args.push(evaluateExpr(rawArgs[i], env));
+    }
+    if (n > 0 && collectionDomain.COLLECTION_DOMAIN_HEADS.has(op)) {
+      collectionDomain.refuseNonCollectionArgument(op, args[0], ir.loc);
     }
     // Phase 2: declared ops dispatch through ops.ts (engine-concepts
     // §18). Both paths return the same result for the declared ops;

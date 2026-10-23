@@ -459,8 +459,19 @@ function _compileCall(node: any, S: Session): any {
   // `evaluateCall`'s arithmetic arm builds its argument list from
   // `ir.args` alone and ignores kwargs, so compile the same way.
   const declared = opsModule.isDeclared(op) === true;
+  // A §07 collection-domain head refuses a record or scalar first argument, located at its call.
+  const cdh = require('./collection-domain-heads.ts');
+  const guarded = cdh.COLLECTION_DOMAIN_HEADS.has(op);
+  const loc = node.loc;
   if (n === 1) {
     const a0 = _compileNode(rawArgs[0], S);
+    if (guarded) {
+      return function (env: any) {
+        const x = a0(env);
+        cdh.refuseNonCollectionArgument(op, x, loc);
+        return declared ? opsModule.dispatch(op, [x]) : _OPS[op](x);
+      };
+    }
     if (declared) {
       return function (env: any) { return opsModule.dispatch(op, [a0(env)]); };
     }
@@ -470,6 +481,14 @@ function _compileCall(node: any, S: Session): any {
   if (n === 2) {
     const a0 = _compileNode(rawArgs[0], S);
     const a1 = _compileNode(rawArgs[1], S);
+    if (guarded) {
+      return function (env: any) {
+        const x = a0(env);
+        cdh.refuseNonCollectionArgument(op, x, loc);
+        const y = a1(env);
+        return declared ? opsModule.dispatch(op, [x, y]) : _OPS[op](x, y);
+      };
+    }
     if (declared) {
       return function (env: any) { return opsModule.dispatch(op, [a0(env), a1(env)]); };
     }

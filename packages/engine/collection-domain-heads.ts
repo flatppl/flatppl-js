@@ -256,8 +256,46 @@ function needsNestedCell(name: any): boolean {
   return typeof name === 'string' && NESTED_CELL_HEADS.has(name);
 }
 
+// RUNTIME half. The static gates above cannot see an argument whose type is unresolved — a step
+// input of type `any` fed a record (`k(aa) = Normal(sum(aa), 1.0)` in a labelled `jointchain`), a
+// placeholder, an untyped formal. The reductions then folded the record over nothing: `sum` gave 0,
+// `prod` 1, `lany` false, `lall` true, `mean`, `var`, `maximum`, `logsumexp` null, the norms 0, the
+// scans and `transpose` an empty array, `lengthof` 0 or undefined. §07 gives every head in the table
+// a collection as its first argument, so a record or a bare scalar there is a domain violation, and
+// the evaluator refuses it at the one call site every spelling reaches (`evaluateCall`: the sampler,
+// the density walker and the per-atom fallback of the batched evaluator).
+function isPlainRecordValue(v: any): boolean {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+  if (v.BYTES_PER_ELEMENT !== undefined || v.__table__ === true) return false;
+  if (typeof v.kind === 'string' || typeof v.re === 'number') return false;
+  return !require('./value.ts').isValue(v);
+}
+
+function isBareScalarValue(v: any): boolean {
+  return typeof v === 'number' || typeof v === 'boolean'
+    || (v !== null && typeof v === 'object' && typeof v.re === 'number' && typeof v.im === 'number');
+}
+
+// Throw the located, `modelRefusal`-tagged error for a head's first argument outside its domain. The
+// tag is the scorers' contract for a property of the model rather than of a proposal point, so an
+// MCMC scorer reports it instead of scoring the point -Infinity.
+function refuseNonCollectionArgument(head: string, value: any, loc?: any): void {
+  const record = isPlainRecordValue(value);
+  if (!record && !isBareScalarValue(value)) return;
+  const cell = COLLECTION_DOMAIN_HEADS.get(head);
+  const at = loc?.start ? ' at ' + (loc.start.line + 1) + ':' + (loc.start.col + 1) : '';
+  const what = record ? 'a record with fields ' + Object.keys(value).join(', ') : 'a scalar';
+  const err: any = new Error(head + at + ': spec §07 "' + cell!.section + '" gives `' + head
+    + '` the domain ' + cell!.domains + ', but argument 1 is ' + what + '. This is reached when the '
+    + 'argument\'s type is not known statically (an input of unknown type fed a record or a scalar); '
+    + 'pass a collection.');
+  err.modelRefusal = true;
+  throw err;
+}
+
 module.exports = {
   COLLECTION_DOMAIN_HEADS,
+  refuseNonCollectionArgument,
   AGGREGATE_ELIGIBLE_HEADS,
   NESTED_CELL_HEADS,
   isCollectionDomainHead,
