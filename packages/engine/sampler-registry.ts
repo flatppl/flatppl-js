@@ -2015,7 +2015,14 @@ function resolveParams(measureIR: any, entry: any, env: any) {
         `sampler: '${measureIR.op}' missing parameter '${paramName}'`
       );
     }
-    out.push(evaluateExpr(exprIR, env));
+    const value = evaluateExpr(exprIR, env);
+    if (measureIR.op !== 'Dirac') {
+      const sampler = require('./sampler.ts');
+      if (sampler.isRecordOperand(value)) {
+        sampler.refuseRecordOperand(measureIR.op, `parameter "${paramName}"`, value, measureIR.loc);
+      }
+    }
+    out.push(value);
   }
   return out;
 }

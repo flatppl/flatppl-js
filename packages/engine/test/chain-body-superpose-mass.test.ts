@@ -41,7 +41,8 @@ test('chain body: a superposition base keeps its additive mass', async () => {
   // weights, so the superposition's total was divided away.
   const { ctx } = ctxFor(`
 S = superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0)))
-A = jointchain(aa = S, bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb1(r) = Normal(r.aa, 1.0)
+A = jointchain(aa = S, bb = Kbb1)
 tm = totalmass(A)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `, N);
@@ -59,7 +60,8 @@ test('chain body: a NORMALIZED superposition base has mass 1', async () => {
   // landed and the superposition's +log 3 never did.
   const { ctx } = ctxFor(`
 S = normalize(superpose(weighted(1.5, Normal(0.0, 1.0)), weighted(1.5, Normal(5.0, 1.0))))
-A = jointchain(aa = S, bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb2(r) = Normal(r.aa, 1.0)
+A = jointchain(aa = S, bb = Kbb2)
 tm = totalmass(A)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `, N);
@@ -75,7 +77,8 @@ lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 test('chain body: asymmetric branch weights give their sum', async () => {
   const { ctx } = ctxFor(`
 S = superpose(weighted(2.0, Normal(0.0, 1.0)), weighted(3.0, Normal(5.0, 1.0)))
-A = jointchain(aa = S, bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb3(r) = Normal(r.aa, 1.0)
+A = jointchain(aa = S, bb = Kbb3)
 tm = totalmass(A)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `, N);
@@ -114,7 +117,8 @@ test('chain body: a probability superposition base stays at mass 1', async () =>
   // this pins that the fix moved nothing where nothing was wrong.
   const { ctx } = ctxFor(`
 S = superpose(weighted(0.5, Normal(0.0, 1.0)), weighted(0.5, Normal(5.0, 1.0)))
-A = jointchain(aa = S, bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb4(r) = Normal(r.aa, 1.0)
+A = jointchain(aa = S, bb = Kbb4)
 tm = totalmass(A)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `, N);

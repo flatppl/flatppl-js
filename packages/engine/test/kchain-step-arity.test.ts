@@ -191,13 +191,13 @@ ch = kchain(Normal(0, 1), K1, K2)
   assert.ok(errs[0].loc && errs[0].loc.start, 'diagnostic must carry a location');
 });
 
-// §04: a sole record splats by field name, including a lone step input.
-test('a matching record field feeds a lone step input', async () => {
+// §04: a one-input step takes the previous record variate whole.
+test('a lone step input takes the previous record variate', async () => {
   const ctx = setupCtx(`
 flatppl_compat = "0.1"
 M0 = joint(a = Normal(0, 1))
-K1 = a -> Normal(mu = a, sigma = 1)
-ch = kchain(M0, pars -> K1(a = pars.a))
+K1(r) = Normal(mu = r.a, sigma = 1)
+ch = kchain(M0, K1)
 lp = logdensityof(ch, 0)
 `, 128, 11);
   assert.ok(Array.from((await ctx.getMeasure('ch')).samples).every(Number.isFinite));

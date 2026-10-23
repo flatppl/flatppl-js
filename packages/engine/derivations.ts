@@ -4917,10 +4917,53 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // env-threading (its leaf ref already carries that name); a
         // lone HOLE/placeholder param (the `fn(…_…)` case, single
         // param, no matching prior field) is rewired to the prior cat.
-        const kernelExpand = (kstep: any) => {
+        // §06 `joint(K1, K2, ...)` of kernels: one input fans out to every component, the inputs are
+        // the union of the components' by name, and a component receives only the inputs it declares.
+        // Expand it to one keyword-only kernel whose body is the joint of the component bodies, each
+        // component's boundary params renamed to a single symbol per public input name. Measure
+        // components ignore the input. Only record-shaped components (distinct field names) merge.
+        const kernelExpandJoint = (jir: any): any => {
+          if (!Array.isArray(jir.args) || jir.args.length < 2 || (jir.fields && jir.fields.length)) return null;
+          const params: string[] = [], names: string[] = [], fields: any[] = [];
+          for (const comp of jir.args) {
+            if (comp.kind !== 'ref' || comp.ns !== 'self') return null;
+            const cb = bindings && bindings.get(comp.name);
+            let body: any, cparams: string[] = [], cnames: string[] = [];
+            if (cb && cb.ir && cb.ir.kind === 'call' && cb.ir.op === 'functionof') {
+              const ke = kernelExpand({ ref: comp.name });
+              if (!ke) return null;
+              ({ body, params: cparams, names: cnames } = ke);
+            } else {
+              body = expandMeasureIR(comp.name, derivations, next, bindings);
+              if (!body) return null;
+            }
+            if (body.kind !== 'call' || (body.op !== 'joint' && body.op !== 'record')
+                || !Array.isArray(body.fields)) return null;
+            const rename = new Map<string, string>();
+            cparams.forEach((p: string, i: number) => {
+              let k = names.indexOf(cnames[i]);
+              if (k < 0) { params.push(p); names.push(cnames[i]); k = names.length - 1; }
+              rename.set(p, params[k]);
+            });
+            const renamed = require('./ir-walk.ts').mapIR(body, (n: any) =>
+              n.kind === 'ref' && (n.ns === '%local' || n.ns === 'self') && rename.has(n.name)
+                ? { ...n, name: rename.get(n.name) } : n);
+            for (const fl of renamed.fields) {
+              if (fields.some((g: any) => g.name === fl.name)) return null;
+              fields.push(fl);
+            }
+          }
+          if (params.length === 0) return null;
+          return { params, names, orderedInputs: false,
+            body: { kind: 'call', op: 'joint', fields } };
+        };
+        const kernelExpand = (kstep: any): any => {
           let f = kstep.kernelIR;
           if (!f && kstep.ref != null) {
             const kb = bindings && bindings.get(kstep.ref);
+            if (kb && kb.ir && kb.ir.kind === 'call' && kb.ir.op === 'joint') {
+              return kernelExpandJoint(kb.ir);
+            }
             if (kb && kb.ir && kb.ir.kind === 'call'
                 && kb.ir.op === 'functionof') f = kb.ir;
           }
@@ -4953,34 +4996,15 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // descriptors (preserving `source` for env-threading); a
         // scalar measure IR contributes one field under `fallback`.
         //
-        // LABELLED chains (spec §06 keyword form ≡ relabel(component,
-        // [label]); audit M5): a record-valued component is RENAMED to
-        // the chain label when it has exactly one field (relabel's
-        // positional rename; the original field name rides `source` so
-        // env-threading by source still resolves), and REFUSED loudly
-        // when it has more — relabel of an n-field record under one
-        // name has no spec meaning (relabel is positional, §04) and
-        // records cannot nest (§03), so the former silent label-drop
-        // produced a variate space the observation can't match.
+        // LABELLED chains (spec §06 keyword form, as in the keyword form of `joint`): each name
+        // holds its component's variate as it is, whether scalar, array or record, so a
+        // record-valued component becomes a nested record under its name.
         const labelled = !!d.labels;
         const spreadFields = (ir: any, fallback: any, src: any) => {
           if (ir && ir.kind === 'call'
               && (ir.op === 'joint' || ir.op === 'record')
               && Array.isArray(ir.fields)) {
-            if (labelled) {
-              if (ir.fields.length !== 1) {
-                throw new Error('jointchain: label "' + fallback + '" cannot '
-                  + 'relabel a ' + ir.fields.length + '-field record variate '
-                  + '(spec §04 relabel is positional; records cannot nest, '
-                  + 'spec §03) — use the positional form for a flat merged '
-                  + 'record, or single-field components');
-              }
-              const fl = ir.fields[0];
-              return [{
-                name: fallback, value: fl.value,
-                source: fl.source != null ? fl.source : fl.name,
-              }];
-            }
+            if (labelled) return [{ name: fallback, value: ir, source: src }];
             return ir.fields.map((fl: any) => ({
               name: fl.name, value: fl.value,
               source: fl.source != null ? fl.source : fl.name,
@@ -5039,19 +5063,8 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         // the prior cat; an unmatched param in a multi-param kernel is
         // unsupported (clean null).
         const recordFeed = labelled || !!base.baseFields || !!baseIR.fields;
-        // Spec §06 variate feeding: a RECORD variate splats into the next step's
-        // inputs by field name, and only a non-record variate binds whole. So the
-        // lone input of `jointchain(a = M, b = K)`'s K, named like a chain label
-        // (its variate is `relabel(M, ["a"])` = `record(a = x)`), takes the field.
-        const namedByRecord = (ke: any, priorNames: any, priorSources: any) =>
-          recordFeed && ke.params.length === 1 && ke.names[0] != null
-          && (priorNames.indexOf(ke.names[0]) >= 0
-            || (priorSources != null && priorSources.indexOf(ke.names[0]) >= 0));
         const bindKernel = (ke: any, priorNames: any, priorSources: any) => {
           let body = ke.body;
-          if (namedByRecord(ke, priorNames, priorSources)) {
-            return rewireHole(body, ke.params[0], [ke.names[0]]);
-          }
           if (require('./types.ts').acceptsPositional(ke, 1)) {
             return rewireHole(body, ke.params[0], priorNames, recordFeed);
           }

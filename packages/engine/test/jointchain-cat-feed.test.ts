@@ -207,15 +207,15 @@ test('cat-fed 3-step chain: the sampled covariance matches the closed form',
 // Unchanged: the keyword form and the 2-component chain
 // =====================================================================
 
-test('the keyword form still binds by field name, not off a cat', async () => {
-  // §06's keyword form is `jointchain(relabel(M, ["a"]), ...)`; a kernel
-  // input named `b` binds the component labelled `b` (§04 calling
-  // convention). So the third term's mean here is 0.7, not sum([0.3, 0.7]).
+test('the keyword form feeds the record of the preceding variates, not a cat', async () => {
+  // §06's keyword form calls each later kernel with `record(a = ..., ...)` by the ordinary calling
+  // convention; a step that takes the record reads its field. So the third term's mean here is
+  // 0.7, not sum([0.3, 0.7]).
   const src = `
 flatppl_compat = "0.1"
-k1 = functionof(Normal(mu = a, sigma = 1.0), a = a)
-k2 = functionof(Normal(mu = b, sigma = 1.0), b = b)
-ch = jointchain(a = Normal(mu = 0.0, sigma = 1.0), b = pars -> k1(a = pars.a), c = pars -> k2(b = pars.b))
+k1(r) = Normal(mu = r.a, sigma = 1.0)
+k2(r) = Normal(mu = r.b, sigma = 1.0)
+ch = jointchain(a = Normal(mu = 0.0, sigma = 1.0), b = k1, c = k2)
 ld = logdensityof(ch, record(a = 0.3, b = 0.7, c = 1.1))
 `;
   assert.deepEqual(errorsOf(src).map((d: any) => d.message), []);

@@ -171,7 +171,7 @@ test('inferChainComposition: kernel-first kchain ⇒ kernelType with residual in
 test('inferChainComposition: closed-first jointchain ⇒ measure of retained record/tuple', () => {
   // jointchain(M, K1) keyword form ⇒ measure<record({m: real, k: integer})>.
   const M  = T.measure(T.REAL);
-  const K1 = kernel([{ name: 'x', type: T.REAL }], T.INTEGER);
+  const K1 = kernel([{ name: 'r', type: T.record({ m: T.REAL }) }], T.INTEGER);   // keyword form: the record of the preceding labels
   const r = inferChainComposition([step(M, 'M'), step(K1, 'K1')],
                                   'jointchain-retain', { labels: ['m', 'k'] });
   assert.equal(r.resultType.kind, 'measure');
@@ -201,7 +201,7 @@ test('inferChainComposition: kernel-first jointchain ⇒ kernelType result', () 
   // K0 (theta: real → measure<real>) → K1 (real → measure<integer>)
   // ⇒ kernelType({theta: real}, measure<record(s0: real, s1: integer)>).
   const K0 = kernel([{ name: 'theta', type: T.REAL }], T.REAL);
-  const K1 = kernel([{ name: 'x', type: T.REAL }], T.INTEGER);
+  const K1 = kernel([{ name: 'r', type: T.record({ s0: T.REAL }) }], T.INTEGER);   // keyword form: the record of the preceding labels
   const r = inferChainComposition([step(K0, 'K0'), step(K1, 'K1')],
                                   'jointchain-retain', { labels: ['s0', 's1'] });
   assert.equal(r.resultType.kind, 'kernel',

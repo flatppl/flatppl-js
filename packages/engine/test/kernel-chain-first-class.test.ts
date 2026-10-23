@@ -30,9 +30,8 @@ function infer(src: string) {
 test('jointchain closed-first: inferredType is measureType', () => {
   const r = infer(`
 prior = joint(mu = Normal(0, 1))
-mu = elementof(reals)
-k_inner = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
-joint_dep = jointchain(prior, pars -> k_inner(mu = pars.mu))
+k_inner(r) = Normal(mu = r.mu, sigma = 1.0)
+joint_dep = jointchain(prior, k_inner)
 `);
   const b = r.loweredModule.bindings.get('joint_dep');
   assert.ok(b.inferredType,
@@ -193,9 +192,8 @@ test('jointchain keyword form: retained record variate has kwarg names', () => {
   // record-shaped variate per spec §06 line 230-232.
   const r = infer(`
 mu_dist = Normal(0, 1)
-mu = elementof(reals)
-K_inner = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
-chain = jointchain(mu = mu_dist, x = pars -> K_inner(mu = pars.mu))
+K_inner(r) = Normal(mu = r.mu, sigma = 1.0)
+chain = jointchain(mu = mu_dist, x = K_inner)
 `);
   const b = r.loweredModule.bindings.get('chain');
   assert.equal(b.inferredType.kind, 'measure',
@@ -441,9 +439,8 @@ test('kernel↔measure collapse: closed-first chain ⇒ measureType (not kernelT
   // measureType, not kernelType with empty inputs.
   const r = infer(`
 prior = joint(mu = Normal(0, 1))
-mu = elementof(reals)
-K1 = functionof(Normal(mu = mu, sigma = 1.0), mu = mu)
-chain = jointchain(prior, pars -> K1(mu = pars.mu))
+K1(r) = Normal(mu = r.mu, sigma = 1.0)
+chain = jointchain(prior, K1)
 `);
   const b = r.loweredModule.bindings.get('chain');
   assert.equal(b.inferredType.kind, 'measure',

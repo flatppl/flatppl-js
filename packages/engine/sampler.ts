@@ -617,6 +617,21 @@ function resolveRef(ir: any, env: any) {
 // shape-rich Value path stays real-only for now; per-atom complex
 // Values are deferred (storage decision: separate re/im Float64Arrays
 // in Value.im — lands when needed).
+/** A plain record value: not a Value, array, table, set, complex scalar or typed array. */
+function isRecordOperand(v: any): boolean {
+  return v !== null && typeof v === 'object' && !Array.isArray(v) && v.BYTES_PER_ELEMENT === undefined
+    && v.__table__ !== true && !valueLib.isValue(v) && !_isComplex(v) && typeof v.kind !== 'string';
+}
+
+/** Refuse a record where a number is required. The static check cannot see a record fed to an input
+ * of unknown type (`fn(Normal(_, 1.0))`, an unannotated `k(aa) = ...`), which used to score NaN. */
+function refuseRecordOperand(where: string, what: string, v: any, loc?: any): never {
+  const line = loc?.start?.line != null ? ` (line ${loc.start.line + 1})` : '';
+  throw new Error(`${where}${line}: ${what} is a record with fields ${Object.keys(v).join(', ')}, not a number. `
+    + 'A record reaches a numeric slot when a step input of unknown type is fed the record of the preceding '
+    + 'variates (spec §04 "Auto-splatting"); read a field, such as `r.' + (Object.keys(v)[0] ?? 'a') + '`, or declare the input type.');
+}
+
 function _shapeAwareBinop(opName: any, scalarFn: any, a: any, b: any, complexFn: any) {
   if (valueLib.isValue(a) || valueLib.isValue(b) || Array.isArray(a) || Array.isArray(b)) {
     return valueOps[opName](valueLib.asValue(a), valueLib.asValue(b));
@@ -624,6 +639,8 @@ function _shapeAwareBinop(opName: any, scalarFn: any, a: any, b: any, complexFn:
   if (_isComplex(a) || _isComplex(b)) {
     return complexFn(_toComplex(a), _toComplex(b));
   }
+  if (isRecordOperand(a)) refuseRecordOperand(opName, 'the first operand', a);
+  if (isRecordOperand(b)) refuseRecordOperand(opName, 'the second operand', b);
   return scalarFn(a, b);
 }
 
@@ -783,6 +800,8 @@ const ARITH_OPS = {
     if (_isComplex(a) || _isComplex(b)) {
       return _cDiv(_toComplex(a), _toComplex(b));
     }
+    if (isRecordOperand(a)) refuseRecordOperand('divide', 'the first operand', a);
+    if (isRecordOperand(b)) refuseRecordOperand('divide', 'the second operand', b);
     return a / b;
   },
   // spec §07: mod(a, b) = a − b·⌊a/b⌋ (floor-modulo, sign of divisor),
@@ -791,6 +810,7 @@ const ARITH_OPS = {
   neg: (a: any) => {
     if (_isComplex(a)) return _cNeg(a);
     if (valueLib.isValue(a)) return valueOps.neg(a);
+    if (isRecordOperand(a)) refuseRecordOperand('neg', 'the operand', a);
     return -a;
   },
   pos: (a: any) => _isComplex(a) ? a : +a,
@@ -4360,6 +4380,8 @@ module.exports = {
   resolveParams,
   makePhiloxPrngAdapter,
   makeBulkUniformPrngAdapter,
+  isRecordOperand,
+  refuseRecordOperand,
 
   // Introspection
   isKnownDistribution,

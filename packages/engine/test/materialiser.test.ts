@@ -618,11 +618,10 @@ test('jointchain: N-ary record-shaped (M, K1, K2) folds left-associatively', asy
 theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta1 = theta1))
 theta2 = draw(Normal(mu = theta1, sigma = 1.0))
-obs_dist1 = joint(theta2 = Normal(mu = theta1, sigma = 1.0))
 obs_dist2 = joint(y = Normal(mu = theta2, sigma = 1.0))
-K1 = functionof(obs_dist1, theta1 = theta1)
+K1(r) = joint(theta2 = Normal(mu = r.theta1, sigma = 1.0))
 K2 = functionof(obs_dist2, theta1 = theta1, theta2 = theta2)
-joint_model = jointchain(prior, pars -> K1(theta1 = pars.theta1), K2)
+joint_model = jointchain(prior, K1, K2)
 `);
   const d = ctx.derivations.joint_model;
   assert.ok(d, 'joint_model should be derivable');
@@ -647,11 +646,10 @@ test('jointchain: N-ary closed-form logdensityof with env-threading', async () =
 theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta1 = theta1))
 theta2 = draw(Normal(mu = theta1, sigma = 1.0))
-obs_dist1 = joint(theta2 = Normal(mu = theta1, sigma = 1.0))
 obs_dist2 = joint(y = Normal(mu = theta2, sigma = 1.0))
-K1 = functionof(obs_dist1, theta1 = theta1)
+K1(r) = joint(theta2 = Normal(mu = r.theta1, sigma = 1.0))
 K2 = functionof(obs_dist2, theta1 = theta1, theta2 = theta2)
-joint_model = jointchain(prior, pars -> K1(theta1 = pars.theta1), K2)
+joint_model = jointchain(prior, K1, K2)
 lp = logdensityof(joint_model, record(theta1 = 0.0, theta2 = 0.0, y = 0.0))
 `);
   const lp = await ctx.getMeasure('lp');
@@ -682,9 +680,8 @@ test('kchain: produces a measure of K\'s body fields only (no prior)', async () 
   const ctx = makeCtx(`
 theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta1 = theta1))
-obs_dist = joint(y = Normal(mu = theta1, sigma = 1.0))
-forward_kernel = functionof(obs_dist, theta1 = theta1)
-predictive = kchain(prior, pars -> forward_kernel(theta1 = pars.theta1))
+forward_kernel(r) = joint(y = Normal(mu = r.theta1, sigma = 1.0))
+predictive = kchain(prior, forward_kernel)
 `);
   const m = await ctx.getMeasure('predictive');
   // Prior marginalised away: no theta1 component anywhere.
@@ -705,9 +702,8 @@ test('kchain: logdensityof uses the exact Gaussian marginal', async () => {
   const ctx = makeCtx(`
 theta1 = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta1 = theta1))
-obs_dist = joint(y = Normal(mu = theta1, sigma = 1.0))
-forward_kernel = functionof(obs_dist, theta1 = theta1)
-predictive = kchain(prior, pars -> forward_kernel(theta1 = pars.theta1))
+forward_kernel(r) = joint(y = Normal(mu = r.theta1, sigma = 1.0))
+predictive = kchain(prior, forward_kernel)
 lp = logdensityof(predictive, record(y = 0.0))
 `);
   const lp = await ctx.getMeasure('lp');

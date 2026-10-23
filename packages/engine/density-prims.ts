@@ -483,6 +483,11 @@ function builtinLogdensityof(kernelName: string, kernelInput: any, x: any): numb
         throw new Error(`builtin_logdensityof(${kernelName}): missing param '${pName}'`);
       }
     }
+    if (kernelName !== 'Dirac') {
+      params.forEach((v, i) => {
+        if (samplerLib.isRecordOperand(v)) samplerLib.refuseRecordOperand(kernelName, `parameter "${entry.params[i]}"`, v);
+      });
+    }
     return entry.logpdfFn(kernelName === 'Dirac' ? x : _scalarOf(x, kernelName), ...params);
   }
   // Multivariate.
@@ -503,6 +508,11 @@ function builtinLogdensityofPositional(kernelName: string, params: any[], x: any
       + `REGISTRY kernel — use the record form for multivariate kernels`);
   }
   const entry = samplerLib._internal.REGISTRY[kernelName];
+  if (kernelName !== 'Dirac') {
+    params.forEach((v, i) => {
+      if (samplerLib.isRecordOperand(v)) samplerLib.refuseRecordOperand(kernelName, `parameter "${entry.params[i]}"`, v);
+    });
+  }
   return entry.logpdfFn(kernelName === 'Dirac' ? x : _scalarOf(x, kernelName), ...params);
 }
 
@@ -1609,6 +1619,28 @@ function _inferKernelChain(
     // fill-in keys on (`arrayVariate`). Both are cat-fed-chain only: the
     // LABELLED form binds by field name (§06's keyword form is `relabel`), so
     // its fed value is a field and not the variate this walk computed.
+    // Spec §06 jointchain "Keyword form": each later kernel receives the record of the preceding
+    // named variates through the ordinary calling convention (§04), so `jointchain(a = M, b = K)`
+    // calls `K(record(a = a))`. A kernel with one input takes that record whole, and a type error
+    // follows when its domain does not accept a record; a kernel with several inputs splats it.
+    if (labels && mode === 'jointchain-retain') {
+      const fields: Record<string, any> = {};
+      for (let j = 0; j <= i; j++) fields[labels[j]] = leftVariates[j];
+      const m = _matchChainBoundary(T.record(fields), nextInputs, next.type);
+      if (!m.ok) {
+        diagnostics.push({
+          severity: 'error',
+          message: mode + ' step boundary ' + i + ' → ' + (i + 1) + ': in the keyword form each later '
+            + 'kernel receives the record of the preceding named variates ('
+            + Object.keys(fields).map((k) => '"' + k + '"').join(', ') + ') as an ordinary call '
+            + '(spec §06 `jointchain`, §04 "Calling conventions"): ' + m.reason
+            + ' (from ' + _stepLabel(steps[i], i) + ' to ' + _stepLabel(next, i + 1) + ')',
+          loc: next.loc || steps[i].loc,
+        });
+        return { resultType: T.failed(mode + ' keyword-form boundary mismatch'), diagnostics };
+      }
+      continue;
+    }
     const catOfMany = catBoundary && leftVariates.length >= 2;
     const arrayVariate = (catBoundary && prevVariate.kind === 'array')
       ? prevVariate : null;

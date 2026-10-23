@@ -108,7 +108,8 @@ foo = theta1 * theta2
 
 xy_record = record(a = draw(Exponential(1)), b = draw(Exponential(1)))
 xy_array = [draw(Exponential(1)), draw(Exponential(1))]
-funnel_record = jointchain(a = Exponential(1), b = fn(Normal(1, _)))
+funnel_step(r) = Normal(1, r.a)
+funnel_record = jointchain(a = Exponential(1), b = funnel_step)
 funnel_array = jointchain(Exponential(1), fn(Normal(1, _)))
 
 

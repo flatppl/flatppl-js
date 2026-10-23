@@ -374,7 +374,7 @@ test('mass: the keyword form of jointchain classifies like the positional one', 
   // `jointchain(name = M, …)` carries its components in `fields`, so the rule
   // has to read that slot as well as `args` (§06 "Keyword form").
   assert.equal(
-    massOf(MARKOV_K + `m = jointchain(base = ${NORM_BASE}, step = K)`, 'm'),
+    massOf('K(r) = Normal(r.base, 1.0)\n' + `m = jointchain(base = ${NORM_BASE}, step = K)`, 'm'),
     'normalized');
 });
 

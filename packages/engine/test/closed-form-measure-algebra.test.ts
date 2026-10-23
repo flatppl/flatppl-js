@@ -157,9 +157,8 @@ test('jointchain 2-arg: Cov(θ, y) = Var(θ), Var(y) = Var(θ) + 1 (closed-form)
   const ctx = makeCtx(`
 theta = draw(Normal(mu = 0.0, sigma = 1.0))
 prior = lawof(record(theta = theta))
-obs_dist = joint(y = Normal(mu = theta, sigma = 1.0))
-K = functionof(obs_dist, theta = theta)
-joint_model = jointchain(prior, pars -> K(theta = pars.theta))
+K(r) = joint(y = Normal(mu = r.theta, sigma = 1.0))
+joint_model = jointchain(prior, K)
 `);
   const m = await ctx.getMeasure('joint_model');
   assert.ok(m.fields, 'joint_model materialises as record measure');
@@ -295,25 +294,24 @@ nu = pushfwd(f, M)
 });
 
 // =====================================================================
-// Labelled jointchain components (spec §06 keyword form ≡
-// relabel(component, [label]); audit M5). A single-field record
-// component is RENAMED to the chain label (relabel's positional
-// rename); a multi-field record component under one label is
-// ill-formed (relabel is positional, §04; records cannot nest, §03)
-// and refused loudly. Sampling and density agree on the renamed shape.
+// Labelled jointchain components (spec §06 keyword form, as in the keyword form of `joint`): each
+// name holds its component's variate as it is, so a record-valued component nests under its name
+// and an array stays whole (audit M5). Each later kernel receives the record of the preceding named
+// variates by the ordinary calling convention, so a kernel with one input takes that record whole
+// (`K(r) = Normal(r.a, 1.0)`). Sampling and density agree on the shape.
 // =====================================================================
 
 test('labelled jointchain: single-field components rename to the labels; density consumes the spec shape (M5)', async () => {
   const ctx = makeCtx(`
 theta = draw(Normal(mu = 0.0, sigma = 1.0))
-prior = lawof(record(theta = theta))
-K = functionof(Normal(mu = theta, sigma = 1.0), theta = theta)
-jc = jointchain(p = prior, o = pars -> K(theta = pars.p))
-lp = logdensityof(jc, record(p = 0.3, o = 0.8))
+prior = lawof(theta)
+K(r) = Normal(r.theta, 1.0)
+jc = jointchain(theta = prior, o = K)
+lp = logdensityof(jc, record(theta = 0.3, o = 0.8))
 `);
   // Sampling shape: the labels, not the source names.
   const m = await ctx.getMeasure('jc');
-  assert.deepEqual(Object.keys(m.fields).sort(), ['o', 'p']);
+  assert.deepEqual(Object.keys(m.fields).sort(), ['o', 'theta']);
   // Density consumes the SAME spec-labelled shape, closed form:
   // logp = logφ(0.3; 0, 1) + logφ(0.8; 0.3, 1).
   const lp = await ctx.getMeasure('lp');
@@ -322,18 +320,45 @@ lp = logdensityof(jc, record(p = 0.3, o = 0.8))
     `labelled jointchain density: got ${lp.samples[0]}, expected ${expected}`);
 });
 
-test('labelled jointchain: a multi-field record component is refused loudly (M5)', async () => {
+test('labelled jointchain: a record-valued component nests under its label, and the kernel takes the record (M5)', async () => {
+  // Spec §06 keyword form, as in the keyword form of `joint`: "A record-valued component becomes a
+  // nested record under its name." K receives the record `record(theta = ...)` and reads that inner record.
   const ctx = makeCtx(`
-mu = elementof(reals)
-sigma = elementof(posreals)
-prior = joint(mu = Normal(0.0, 1.0), sigma = Exponential(1.0))
-K = functionof(Normal(mu = mu, sigma = sigma), mu = mu, sigma = sigma)
-jc = jointchain(theta = prior, y = K)
+M = joint(a = Normal(0.0, 1.0), b = Normal(0.0, 2.0))
+K(r) = Normal(r.theta.a + r.theta.b, 1.0)
+jc = jointchain(theta = M, o = K)
+lp = logdensityof(jc, record(theta = record(a = 0.1, b = 0.2), o = 0.5))
 `);
-  await assert.rejects(
-    () => Promise.resolve(ctx.getMeasure('jc')),
-    /cannot relabel a 2-field record variate/,
-    'multi-field labelled component must refuse with the relabel-arity message');
+  const m = await ctx.getMeasure('jc');
+  assert.deepEqual(Object.keys(m.fields).sort(), ['o', 'theta']);
+  assert.deepEqual(Object.keys(m.fields.theta.fields).sort(), ['a', 'b']);
+  // logp = logφ(0.1; 0, 1) + logφ(0.2; 0, 2) + logφ(0.5; 0.1 + 0.2, 1).
+  const lp = await ctx.getMeasure('lp');
+  const expected = normalLogpdf(0.1, 0, 1) + normalLogpdf(0.2, 0, 2) + normalLogpdf(0.5, 0.3, 1);
+  assert.ok(Math.abs(lp.samples[0] - expected) < 1e-10,
+    `nested labelled jointchain density: got ${lp.samples[0]}, expected ${expected}`);
+});
+
+test('keyword joint and jointchain hold an array-valued component whole', async () => {
+  // "Each name holds its component's variate as it is, whether scalar, array or record, so
+  // `joint(obs = iid(Normal(0, 1), 3))` is a measure over records `record(obs = v)` with a vector `v`."
+  const v = [0.3, -0.4, 0.9];
+  const sumLogN = v.reduce((acc, x) => acc + normalLogpdf(x, 0, 1), 0);
+  const ctx = makeCtx(`
+J = joint(obs = iid(Normal(0, 1), 3))
+lj = logdensityof(J, record(obs = [0.3, -0.4, 0.9]))
+K(r) = Normal(sum(r.obs), 1.0)
+C = jointchain(obs = iid(Normal(0, 1), 3), y = K)
+lc = logdensityof(C, record(obs = [0.3, -0.4, 0.9], y = 1.0))
+`);
+  const m = await ctx.getMeasure('C');
+  assert.deepEqual(Object.keys(m.fields).sort(), ['obs', 'y']);
+  assert.equal(m.fields.obs.value.shape[m.fields.obs.value.shape.length - 1], 3, 'obs is one vector of length 3');
+  const lj = await ctx.getMeasure('lj');
+  assert.ok(Math.abs(lj.samples[0] - sumLogN) < 1e-10, `joint: ${lj.samples[0]} vs ${sumLogN}`);
+  const lc = await ctx.getMeasure('lc');
+  const wantC = sumLogN + normalLogpdf(1.0, 0.8, 1);
+  assert.ok(Math.abs(lc.samples[0] - wantC) < 1e-10, `jointchain: ${lc.samples[0]} vs ${wantC}`);
 });
 
 // =====================================================================
@@ -2013,7 +2038,8 @@ test('projection: a jointchain prefix keeps the base and carries the dropped tra
   // §06 jointchain density is p(a)*p(b|a), so integrating b out leaves
   // p(a) * totalmass(K(a)) = 3 p(a) for an unnormalized transition.
   const ctx = makeCtx(`
-M = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(weighted(3.0, Normal(_, 1.0))))(arg1 = pars.aa))
+Kbb1(r) = weighted(3.0, Normal(r.aa, 1.0))
+M = jointchain(aa = Normal(0.0, 1.0), bb = Kbb1)
 A = pushfwd(fn(get(_, "aa")), M)
 lp = logdensityof(A, 0.5)
 tm = totalmass(A)
@@ -2044,7 +2070,8 @@ test('projection: a two-step jointchain prefix over normalized transitions score
   // Keeping (aa, bb) of a three-step chain drops a normalized transition, so
   // the marginal is the two-step chain itself: p(aa) * p(bb|aa).
   const ctx = makeCtx(`
-M = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa), cc = fn(Normal(0.0, 1.0)))
+Kbb2(r) = Normal(r.aa, 1.0)
+M = jointchain(aa = Normal(0.0, 1.0), bb = Kbb2, cc = fn(Normal(0.0, 1.0)))
 A = pushfwd(fn(get(_, ["aa", "bb"])), M)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 tm = totalmass(A)
@@ -2064,7 +2091,8 @@ test('projection: a two-step chain prefix carries an unnormalized dropped factor
   // so the marginal is 3 * p(aa) * p(bb|aa). This refused while the chain had
   // no working carrier for a scalar mass; both carriers are fixed now.
   const ctx = makeCtx(`
-M = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa),
+Kbb3(r) = Normal(r.aa, 1.0)
+M = jointchain(aa = Normal(0.0, 1.0), bb = Kbb3,
                cc = fn(weighted(3.0, Normal(0.0, 1.0))))
 A = pushfwd(fn(get(_, ["aa", "bb"])), M)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
@@ -2085,7 +2113,8 @@ test('projection: a chain transition whose mass moves with the variate refuses',
   // Z * p(a) at all. The certificate reads the kernel body, where `a` is an
   // unresolvable local ref, and declines.
   const ctx = makeCtx(`
-M = jointchain(aa = Exponential(1.0), bb = pars -> (fn(weighted(_, Normal(0.0, 1.0))))(arg1 = pars.aa))
+Kbb4(r) = weighted(r.aa, Normal(0.0, 1.0))
+M = jointchain(aa = Exponential(1.0), bb = Kbb4)
 A = pushfwd(fn(get(_, "aa")), M)
 `);
   await assert.rejects(() => Promise.resolve(ctx.getMeasure('A')),
@@ -2097,7 +2126,8 @@ test('projection: a dropped chain PREFIX is not closed form and keeps the genera
   // which §06 sends to the composed-measure rules. No rewrite, so the density
   // keeps demanding a bijection annotation.
   const ctx = makeCtx(`
-M = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb5(r) = Normal(r.aa, 1.0)
+M = jointchain(aa = Normal(0.0, 1.0), bb = Kbb5)
 A = pushfwd(fn(get(_, "bb")), M)
 `);
   assert.equal(ctx.derivations.A.kind, 'pushfwd');
@@ -2107,7 +2137,8 @@ test('projection: a one-name keyword chain selector keeps a one-field record', a
   // `get(_, ["aa"])` is subset selection, so the marginal is a record over the
   // base step, where `get(_, "aa")` gives the step's own value.
   const ctx = makeCtx(`
-M = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(weighted(3.0, Normal(_, 1.0))))(arg1 = pars.aa))
+Kbb6(r) = weighted(3.0, Normal(r.aa, 1.0))
+M = jointchain(aa = Normal(0.0, 1.0), bb = Kbb6)
 A = pushfwd(fn(get(_, ["aa"])), M)
 lp = logdensityof(A, record(aa = 0.5))
 tm = totalmass(A)
@@ -2193,7 +2224,8 @@ test('chain mass: a weighted base is counted once, not once per step', async () 
   // Exact: the double integral of 3 p(a) p(b|a) over both variates is 3. The
   // engine reported 8.999999999999993.
   const ctx = makeCtx(`
-A = jointchain(aa = weighted(3.0, Normal(0.0, 1.0)), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb7(r) = Normal(r.aa, 1.0)
+A = jointchain(aa = weighted(3.0, Normal(0.0, 1.0)), bb = Kbb7)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 tm = totalmass(A)
 `);
@@ -2209,7 +2241,8 @@ test('chain mass: a weighted TRANSITION multiplies the base rather than doubling
   // The transition's own weight is a FRESH event and the base's an inherited
   // one, so the product is 2 * 5. The engine reported 20.000000000000007.
   const ctx = makeCtx(`
-A = jointchain(aa = weighted(2.0, Normal(0.0, 1.0)), bb = pars -> (fn(weighted(5.0, Normal(_, 1.0))))(arg1 = pars.aa))
+Kbb8(r) = weighted(5.0, Normal(r.aa, 1.0))
+A = jointchain(aa = weighted(2.0, Normal(0.0, 1.0)), bb = Kbb8)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 tm = totalmass(A)
 `);
@@ -2226,7 +2259,8 @@ test('chain mass: a truncate base reaches the product through the residue', asyn
   // logTotalmass, so it has no weighting event to share and arrives as the
   // factor's residue instead.
   const ctx = makeCtx(`
-A = jointchain(aa = truncate(Normal(0.0, 1.0), interval(-1.0, 1.0)), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb9(r) = Normal(r.aa, 1.0)
+A = jointchain(aa = truncate(Normal(0.0, 1.0), interval(-1.0, 1.0)), bb = Kbb9)
 tm = totalmass(A)
 `);
   const tm = await ctx.getMeasure('tm');
@@ -2236,7 +2270,8 @@ tm = totalmass(A)
 
 test('chain mass: an all-normalized chain still has mass 1', async () => {
   const ctx = makeCtx(`
-A = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb10(r) = Normal(r.aa, 1.0)
+A = jointchain(aa = Normal(0.0, 1.0), bb = Kbb10)
 tm = totalmass(A)
 `);
   const tm = await ctx.getMeasure('tm');
@@ -2292,7 +2327,8 @@ test('chain mass: a weighted OVER a chain scores instead of being pruned', async
   // an undeclared body self-ref, the lowering refused the shape as not
   // self-contained, and the density derivation was cascade-pruned.
   const ctx = makeCtx(`
-B = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb11(r) = Normal(r.aa, 1.0)
+B = jointchain(aa = Normal(0.0, 1.0), bb = Kbb11)
 A = weighted(3.0, B)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 tm = totalmass(A)
@@ -2308,7 +2344,8 @@ tm = totalmass(A)
 
 test('chain mass: an ALIAS to a chain is read through too', async () => {
   const ctx = makeCtx(`
-B = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb12(r) = Normal(r.aa, 1.0)
+B = jointchain(aa = Normal(0.0, 1.0), bb = Kbb12)
 A = B
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `);
@@ -2335,7 +2372,8 @@ tm = totalmass(A)
 
 test('chain density: a constant variate weight preserves the retained density', async () => {
   const ctx = makeCtx(`
-B = jointchain(aa = Normal(0.0, 1.0), bb = pars -> (fn(Normal(_, 1.0)))(arg1 = pars.aa))
+Kbb13(r) = Normal(r.aa, 1.0)
+B = jointchain(aa = Normal(0.0, 1.0), bb = Kbb13)
 A = weighted(fn(exp(0.0 * _.aa)), B)
 lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 `);
