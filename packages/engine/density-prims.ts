@@ -1385,6 +1385,35 @@ function _matchChainBoundary(prevResult: any, nextInputs: any[], iface: any = {}
           + T.show(prevResult) };
 }
 
+/**
+ * §04 "Additional arguments": `fchain(f1, f2, ...)(x, ...)`, `kchain(K1, K2, ...)(x, ...)` and
+ * `jointchain(K1, K2, ...)(x, ...)` pass the additional arguments unchanged to every step, each
+ * later step receiving the previous result (the fed value) whole as its first argument. A chain
+ * whose first step has further inputs therefore feeds each later step the fed value as its first
+ * input and the chain's own additional inputs as the rest, which must be the same inputs. Returns
+ * null when the first step has a single input or the fed record splats (the ordinary boundary rule
+ * then applies).
+ */
+function _matchChainBoundaryWithExtras(prevResult: any, nextInputs: any[], nextType: any, first: any[]): any {
+  const prevFields = prevResult.kind === 'record' ? Object.keys(prevResult.fields) : null;
+  const splats = prevFields && prevFields.length === nextInputs.length
+    && nextInputs.every((input: any) => prevFields.includes(input.name));
+  if (first.length < 2 || splats) return null;
+  if (nextInputs.length !== first.length) {
+    return { ok: false, reason: 'the step takes ' + nextInputs.length + ' inputs, but the first step takes '
+      + first.length + ' and every step receives the same additional arguments' };
+  }
+  let m: any = _matchChainBoundary(prevResult, [nextInputs[0]], { ...nextType, inputs: [nextInputs[0]] });
+  for (let k = 1; m.ok && k < nextInputs.length; k++) {
+    if (T.unify(nextInputs[k].type, first[k].type, new Map()) == null) {
+      m = { ok: false, reason: 'additional input "' + nextInputs[k].name + '" of type '
+        + T.show(nextInputs[k].type) + ' does not match the chain\'s input "' + first[k].name
+        + '" of type ' + T.show(first[k].type) };
+    }
+  }
+  return m;
+}
+
 function _stepLabel(step: ChainStep, index: number): string {
   if (step.name) return 'step ' + index + ' (`' + step.name + '`)';
   return 'step ' + index;
@@ -1585,10 +1614,11 @@ function _inferKernelChain(
     const catOfMany = catBoundary && leftVariates.length >= 2;
     const arrayVariate = (catBoundary && prevVariate.kind === 'array')
       ? prevVariate : null;
-    const m = _matchChainBoundary(
-      prevVariate,
-      _applyDeclaredInputTypes(nextInputs, arrayVariate || (catBoundary && prevVariate.kind === 'record'),
-                               declaredInputs && declaredInputs[i + 1]), next.type);
+    const declaredNext = _applyDeclaredInputTypes(nextInputs, arrayVariate || (catBoundary && prevVariate.kind === 'record'),
+                                                  declaredInputs && declaredInputs[i + 1]);
+    const m = _matchChainBoundaryWithExtras(prevVariate, declaredNext, next.type,
+      (steps[0].type.kind === 'kernel' && steps[0].type.inputs) || [])
+      || _matchChainBoundary(prevVariate, declaredNext, next.type);
     if (!m.ok) {
       diagnostics.push({
         severity: 'error',
@@ -1743,26 +1773,8 @@ function inferChainComposition(
       });
       return { resultType: T.failed('fchain nullary step'), diagnostics };
     }
-    // §04: `fchain(f1, f2, ...)(x, ...)` passes the additional arguments to every step, so a
-    // chain whose first step has further inputs feeds each later step the previous result as
-    // its first input and the chain's own additional inputs as the rest (the same arity).
-    const first = steps[0].type.inputs || [];
-    const prevFields = prevResult.kind === 'record' ? Object.keys(prevResult.fields) : null;
-    const splats = prevFields && prevFields.length === nextInputs.length
-      && nextInputs.every((input: any) => prevFields.includes(input.name));
-    let m: any;
-    if (first.length > 1 && nextInputs.length === first.length && !splats) {
-      m = _matchChainBoundary(prevResult, [nextInputs[0]], { ...next.type, inputs: [nextInputs[0]] });
-      for (let k = 1; m.ok && k < nextInputs.length; k++) {
-        if (T.unify(nextInputs[k].type, first[k].type, new Map()) == null) {
-          m = { ok: false, reason: 'additional input "' + nextInputs[k].name + '" of type '
-            + T.show(nextInputs[k].type) + ' does not match the chain\'s input "' + first[k].name
-            + '" of type ' + T.show(first[k].type) };
-        }
-      }
-    } else {
-      m = _matchChainBoundary(prevResult, nextInputs, next.type);
-    }
+    const m = _matchChainBoundaryWithExtras(prevResult, nextInputs, next.type, steps[0].type.inputs || [])
+      || _matchChainBoundary(prevResult, nextInputs, next.type);
     if (!m.ok) {
       diagnostics.push({
         severity: 'error',
