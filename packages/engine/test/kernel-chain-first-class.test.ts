@@ -349,9 +349,8 @@ test('applied-via-draw: y ~ chain(theta=value) materialises through kernel-first
   // kernel binds its inputs and yields a measure. Engine-concepts
   // §19: a kernel-first jointchain/kchain binding applied to its
   // residual inputs materialises as a closed measure. The classifier
-  // (derivations.ts classifyAppliedChain) substitutes the bound
-  // args into the chain's first step's kernel body and synthesises a
-  // closed-first jointchain derivation that matJointchain handles.
+  // (lift.ts inlineAppliedChain) rewrites the application to the closed-first chain
+  // `jointchain(K0(theta = 0.5), K1)` that matJointchain handles.
   const r = infer(`
 theta = elementof(reals)
 K0 = functionof(Normal(mu = theta, sigma = 1.0), theta = theta)
@@ -368,11 +367,9 @@ y ~ chain(theta = 0.5)
   // The lifted anon should classify as a jointchain (the synthesised
   // closed-first form).
   const anonNames = Object.keys(built.derivations)
-    .filter(n => n.startsWith('__'));
+    .filter(n => n.startsWith('__') && built.derivations[n].kind === 'jointchain');
   assert.ok(anonNames.length > 0,
-    'expected an anon binding for chain(theta=0.5)');
-  assert.equal(built.derivations[anonNames[0]].kind, 'jointchain',
-    'anon should classify as a jointchain (closed-first via applied-chain substitution)');
+    'expected a jointchain anon binding for chain(theta=0.5) (closed-first via applied-chain rewrite)');
   // Step 0 should be a closed base (kernel: false) — the substituted
   // K0 body. Step 1 should be the original K1.
   const anonDeriv = built.derivations[anonNames[0]];

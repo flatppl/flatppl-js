@@ -1089,6 +1089,7 @@ function liftInlineSubexpressions(bindings: any) {
       // legacy inlineChainOps AST rewrite has been retired.
       astArg = inlineRelabel(astArg);
       astArg = inlineFchain(astArg);
+      astArg = inlineAppliedChain(astArg);
       astArg = inlineDensityof(astArg);
       astArg = inlineLikelihoodScore(astArg);
       astArg = inlineRecordLebesgue(astArg);
@@ -3563,6 +3564,56 @@ function liftInlineSubexpressions(bindings: any) {
       args: [inner],
       loc,
     };
+  }
+
+  /**
+   * Rewrite an applied kernel-first chain — `kchain(K1, K2, ...)(x, p, ...)` or the same with
+   * `jointchain`, written inline or through a binding — to the closed-first chain it denotes,
+   * per spec §04 "Additional arguments" and §06: the call's arguments go unchanged to every
+   * component, each later one also receiving the fed value whole as its first argument:
+   *
+   *   kchain(K1(x, p), fed -> K2(fed, p), fed -> K3(fed, p))
+   *
+   * Without additional arguments the later components stay as written, so a record fed value
+   * still splats into a multi-input component. A closed-first chain has no inputs to bind and
+   * stays as it is. Only Identifier components can take the additional arguments.
+   */
+  function inlineAppliedChain(astArg: any) {
+    if (!astArg || astArg.type !== 'CallExpr' || !astArg.callee) return astArg;
+    const isChainCall = (node: any) => node?.type === 'CallExpr' && node.callee?.type === 'Identifier'
+      && (node.callee.name === 'kchain' || node.callee.name === 'jointchain');
+    let chain: any = null;
+    if (isChainCall(astArg.callee)) {
+      chain = astArg.callee;
+    } else if (astArg.callee.type === 'Identifier') {
+      const target = out.get(astArg.callee.name);
+      const targetAst = target && (target.effectiveValue || (target.node && target.node.value));
+      if (isChainCall(targetAst)) chain = targetAst;
+    }
+    if (!chain || (chain.args || []).length < 2) return astArg;
+    const component = (arg: any) => (arg.type === 'KeywordArg' ? arg.value : arg);
+    const first = component(chain.args[0]);
+    const firstType = __knownAstType(first);
+    if (!firstType || firstType.kind === 'measure' || !Array.isArray(firstType.inputs)
+        || firstType.inputs.length === 0) return astArg;
+    const callerArgs = (astArg.args || []).map(cloneAst);
+    const firstInput = callerArgs[0]?.type === 'KeywordArg' ? firstType.inputs[0].name : null;
+    const additional = callerArgs.length < 2 ? [] : callerArgs.filter((arg: any, i: number) =>
+      arg.type === 'KeywordArg' ? arg.name !== firstInput : i > 0);
+    const later = chain.args.slice(1);
+    if (additional.length && later.some((arg: any) => component(arg).type !== 'Identifier')) return astArg;
+    const rewrap = (arg: any, value: any) => (arg.type === 'KeywordArg' ? { ...arg, value } : value);
+    const applied = { type: 'CallExpr', callee: cloneAst(first), args: callerArgs, loc: astArg.loc };
+    const steps = later.map((arg: any) => {
+      if (!additional.length) return cloneAst(arg);
+      const fed = AST.Placeholder('chain_fed', astArg.loc);
+      const body = { type: 'CallExpr', callee: cloneAst(component(arg)),
+        args: [fed, ...additional.map(cloneAst)], loc: astArg.loc };
+      const step = AST.CallExpr(AST.Identifier('functionof', astArg.loc),
+        [body, AST.KeywordArg('chain_fed', AST.Placeholder('chain_fed', astArg.loc), astArg.loc)], astArg.loc);
+      return rewrap(arg, step);
+    });
+    return { ...cloneAst(chain), args: [rewrap(chain.args[0], applied), ...steps], loc: astArg.loc };
   }
 
   /**

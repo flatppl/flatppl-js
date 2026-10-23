@@ -1281,22 +1281,6 @@ function classifyDerivation(
         && bindings.has(rhsIR.name)) {
       return { kind: 'alias', from: rhsIR.name };
     }
-    // User-call to a kernel-first jointchain/kchain binding —
-    // `applied_chain = chain(theta = 0.5)`. lift.ts inlines the
-    // analogous case for kernelof bindings (the call's IR becomes
-    // the kernel body with args substituted into the placeholders);
-    // for chains the body isn't a single expression, it's the chain
-    // structure. We instead synthesise a fresh jointchain derivation
-    // with the chain's first step replaced by an APPLIED measure
-    // (K0's body with the chain's residual inputs substituted by the
-    // call's kwargs). Subsequent steps are inherited verbatim;
-    // matJointchain then materialises as a closed-first chain.
-    // (Engine-concepts §19; spec §06 "uniform kernel extension" —
-    // applying a kernel binds its inputs and yields a measure.)
-    {
-      const appliedChain = classifyAppliedChain(rhsIR, bindings);
-      if (appliedChain) return appliedChain;
-    }
     // `samples, _ = rand(iid(<composite M>, n), state)` destructures to
     // `tuple_get(<rand>, 0)`. The DRAW of a forward composite measure
     // (lawof of a broadcast/aggregate, a pushfwd, …) can't be sampled by
@@ -3584,106 +3568,6 @@ function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): D
   return { kind: 'jointchain', marginalize, labels, steps };
 }
 
-/**
- * Recognise a user-call whose target is a kernel-first jointchain or
- * kchain binding and synthesise an applied-chain derivation.
- *
- * Pattern: `applied = chain(theta = 0.5)` where `chain = jointchain(
- * K0, K1)` is kernel-first. Today's lift.ts inlines analogous
- * user-calls for kernelof bindings by substituting the kernel body
- * into the call site; jointchain bodies aren't a single expression
- * so the analogous inlining isn't well-defined. We instead operate
- * at the derivation level:
- *
- *   1. Look up the chain binding and re-classify it (the chain
- *      derivation may already be built, but we re-derive to keep
- *      classifier dependencies one-directional).
- *   2. The chain must be kernel-first (else the call is meaningless
- *      — closed-first chains have no inputs to bind).
- *   3. Substitute the kwargs into the first step's kernel body:
- *      walk K0's body, replace `(ref %local <param>)` for each bound
- *      param with the corresponding kwarg IR. The result is a closed
- *      measure expression (K0's body returns a measure).
- *   4. Synthesise a new jointchain derivation whose step 0 is the
- *      substituted measure (role: 'base', kernel: false) and whose
- *      steps 1..N are the original chain's remaining steps.
- *   5. matJointchain materialises the result as an ordinary closed-
- *      first chain.
- *
- * Returns null for shapes outside this pattern: non-self refs,
- * targets that aren't chains, closed-first chains (no inputs to
- * apply), or chains whose first step's kernel body isn't a
- * functionof we can substitute into (e.g. inline measure IR in the
- * base step — covered by a follow-up).
- */
-function classifyAppliedChain(rhsIR: any, bindings: any): any {
-  if (!rhsIR || rhsIR.kind !== 'call' || !rhsIR.target) return null;
-  if (rhsIR.target.ns !== 'self') return null;
-  const targetName = rhsIR.target.name;
-  if (!bindings.has(targetName)) return null;
-  const target = bindings.get(targetName);
-  if (!target || !target.ir || target.ir.kind !== 'call') return null;
-  if (target.ir.op !== 'jointchain' && target.ir.op !== 'kchain') return null;
-  // Re-classify the chain to get its step structure.
-  const chainDeriv = classifyJointchain(target.ir, target.node && target.node.value, bindings);
-  if (!chainDeriv || !Array.isArray(chainDeriv.steps) || chainDeriv.steps.length < 2) {
-    return null;
-  }
-  // Only kernel-first chains can be applied (closed-first has no
-  // inputs to bind).
-  const baseStep = chainDeriv.steps[0];
-  if (!baseStep.kernel) return null;
-  // Extract K0's body. The base must be a ref to a functionof binding;
-  // the inline `kernelIR` case is handled by a separate code path
-  // (not yet wired — follow-up).
-  if (!baseStep.ref) return null;
-  const k0bind = bindings.get(baseStep.ref);
-  if (!k0bind || !k0bind.ir || k0bind.ir.kind !== 'call'
-      || k0bind.ir.op !== 'functionof') return null;
-  const k0body = k0bind.ir.body;
-  const k0params = k0bind.ir.params || [];
-  if (!k0body || k0params.length === 0) return null;
-  // Every param must be bound by a kwarg (full application only;
-  // partial application is a follow-up that would need typeinfer
-  // residual-input bookkeeping).
-  const kwargs = rhsIR.kwargs || {};
-  for (const p of k0params) {
-    if (!Object.prototype.hasOwnProperty.call(kwargs, p)) return null;
-  }
-  // Substitute params with kwargs. Walk the body IR, replace any
-  // param ref — `(ref %local <param>)` for placeholder formals, or a
-  // `(ref self <param>)` identifier-bound boundary (spec-shaped bodies
-  // §11; the param list disambiguates from captures) — with the
-  // corresponding kwarg IR. Other refs pass through unchanged.
-  function subst(node: any): any {
-    if (node == null || typeof node !== 'object') return node;
-    if (Array.isArray(node)) return node.map(subst);
-    if (node.kind === 'ref'
-        && (node.ns === '%local' || node.ns === 'self')
-        && k0params.indexOf(node.name) !== -1) {
-      return kwargs[node.name];
-    }
-    const out: any = {};
-    for (const k in node) {
-      if (Object.prototype.hasOwnProperty.call(node, k)) out[k] = subst(node[k]);
-    }
-    return out;
-  }
-  const substitutedBody = subst(k0body);
-  // Synthesise the applied chain derivation. Step 0 is now closed
-  // (role: 'base', kernel: false). Steps 1..N are inherited verbatim.
-  const newSteps = [
-    { var: baseStep.var, role: 'base', kernel: false, measureIR: substitutedBody },
-    ...chainDeriv.steps.slice(1),
-  ];
-  return {
-    kind: 'jointchain',
-    marginalize: chainDeriv.marginalize,
-    labels: chainDeriv.labels,
-    steps: newSteps,
-  };
-}
-
 // Lebesgue(support = interval(a, b)) — the canonical continuous
 // reference measure restricted to a finite interval. Spec §06: total
 // mass equals the support's Lebesgue measure (= b − a for a 1-D
@@ -4998,13 +4882,12 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
         if (steps.length < 2) return null;
         const base = steps[0];
         if (base.kernel) return null;
-        // Base is a binding ref (the common case) OR an inline CLOSED measure
-        // (applied-chain: `chain(theta=0.5)` — classifyAppliedChain substitutes
-        // the bound args into the kernel-first chain's step 0, yielding a
-        // ref-less `measureIR`). The marginal path below rewires a hole to
-        // base.ref, so an inline base is only lowered here for the RETAIN path;
-        // a marginal applied-chain (no base binding to feed per-atom) returns
-        // null (unimplemented — a clean lowering refusal).
+        // Base is a binding ref (the common case) OR an inline CLOSED measure (a ref-less
+        // `measureIR`). The marginal path below rewires a hole to base.ref, so an inline base is
+        // only lowered here for the RETAIN path; a marginal chain with no base binding to feed
+        // per-atom returns null (unimplemented — a clean lowering refusal). An applied chain
+        // never reaches here: lift.ts inlineAppliedChain rewrites it to a closed-first chain
+        // whose base is a binding.
         let baseIR: any;
         if (base.ref != null) {
           baseIR = expandMeasureIR(base.ref, derivations, next, bindings);
