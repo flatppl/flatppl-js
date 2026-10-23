@@ -2346,13 +2346,20 @@ for (const _name in opsModule.ELEMWISE_OVER_ARRAY_2) {
 // were destructured from sampler-eval-batched at the top of this file;
 // they close over the same ARITH_OPS_N object this call populates.
 // Every route to a table head that does not pass through `evaluateCall` — the fused-loop and profile
-// compilers call these entries directly — refuses a record or scalar first argument the same way.
+// compilers call these entries directly — refuses a record or scalar in a collection slot the same way.
+// The profile compiler guards at its own, located call sites and calls the entries below unguarded.
+const ARITH_OPS_UNGUARDED: any = Object.assign({}, ARITH_OPS);
 for (const head of collectionDomain.COLLECTION_DOMAIN_HEADS.keys()) {
   const entry = (ARITH_OPS as any)[head];
   if (typeof entry !== 'function') continue;
-  (ARITH_OPS as any)[head] = function (this: any, ...args: any[]) {
-    if (args.length > 0) collectionDomain.refuseNonCollectionArgument(head, args[0]);
-    return entry.apply(this, args);
+  const second = collectionDomain.collectionSlotsFor(head).includes(1);
+  // Fixed-arity forwarding: these entries run inside the fused loops, so no rest array per call.
+  (ARITH_OPS as any)[head] = function (this: any, a: any, b: any, c: any) {
+    const n = arguments.length;
+    if (n > 0) collectionDomain.refuseNonCollectionSlot(head, 0, a);
+    if (second && n > 1) collectionDomain.refuseNonCollectionSlot(head, 1, b);
+    return n <= 1 ? entry.call(this, a) : n === 2 ? entry.call(this, a, b)
+      : n === 3 ? entry.call(this, a, b, c) : entry.apply(this, arguments);
   };
 }
 _evalBatched.initARITHOPSN(ARITH_OPS);
@@ -2366,7 +2373,7 @@ _evalBatched.initARITHOPSN(ARITH_OPS);
 // already bound here.
 const _profileCompile = require('./sampler-profile-compile.ts');
 _profileCompile.initProfileCompiler({
-  ARITH_OPS, evaluateExpr, evaluateCall, resolveConst, getField,
+  ARITH_OPS, ARITH_OPS_UNGUARDED, evaluateExpr, evaluateCall, resolveConst, getField,
 });
 
 // =====================================================================
@@ -2921,8 +2928,10 @@ function evaluateCall(ir: any, env: any): any {
       args = [];
       for (let i = 0; i < n; i++) args.push(evaluateExpr(rawArgs[i], env));
     }
-    if (n > 0 && collectionDomain.COLLECTION_DOMAIN_HEADS.has(op)) {
-      collectionDomain.refuseNonCollectionArgument(op, args[0], ir.loc);
+    if (collectionDomain.COLLECTION_DOMAIN_HEADS.has(op)) {
+      // Located here; the unguarded entry is run so the argument is judged once.
+      collectionDomain.refuseNonCollectionArgument(op, args, ir.loc);
+      if (!opsModule.isDeclared(op)) return ARITH_OPS_UNGUARDED[op](...args);
     }
     // Phase 2: declared ops dispatch through ops.ts (engine-concepts
     // §18). Both paths return the same result for the declared ops;

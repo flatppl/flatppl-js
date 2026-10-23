@@ -38,6 +38,7 @@ const opsModule = require('./ops.ts');
 const { getOptimization } = require('./perf-config.ts');
 
 let _OPS: any = null;
+let _OPS_UNGUARDED: any = null;
 let _evaluateExpr: any = null;
 let _evaluateCall: any = null;
 let _resolveConst: any = null;
@@ -45,6 +46,7 @@ let _getField: any = null;
 
 function initProfileCompiler(deps: any): void {
   _OPS = deps.ARITH_OPS;
+  _OPS_UNGUARDED = deps.ARITH_OPS_UNGUARDED;
   _evaluateExpr = deps.evaluateExpr;
   _evaluateCall = deps.evaluateCall;
   _resolveConst = deps.resolveConst;
@@ -462,14 +464,17 @@ function _compileCall(node: any, S: Session): any {
   // A §07 collection-domain head refuses a record or scalar first argument, located at its call.
   const cdh = require('./collection-domain-heads.ts');
   const guarded = cdh.COLLECTION_DOMAIN_HEADS.has(op);
+  const secondSlot = guarded && cdh.collectionSlotsFor(op).includes(1);
+  const refuse = cdh.refuseNonCollectionSlot;
+  const raw = guarded ? _OPS_UNGUARDED[op] : null;
   const loc = node.loc;
   if (n === 1) {
     const a0 = _compileNode(rawArgs[0], S);
     if (guarded) {
       return function (env: any) {
         const x = a0(env);
-        cdh.refuseNonCollectionArgument(op, x, loc);
-        return declared ? opsModule.dispatch(op, [x]) : _OPS[op](x);
+        refuse(op, 0, x, loc);
+        return declared ? opsModule.dispatch(op, [x]) : raw(x);
       };
     }
     if (declared) {
@@ -484,9 +489,10 @@ function _compileCall(node: any, S: Session): any {
     if (guarded) {
       return function (env: any) {
         const x = a0(env);
-        cdh.refuseNonCollectionArgument(op, x, loc);
+        refuse(op, 0, x, loc);
         const y = a1(env);
-        return declared ? opsModule.dispatch(op, [x, y]) : _OPS[op](x, y);
+        if (secondSlot) refuse(op, 1, y, loc);
+        return declared ? opsModule.dispatch(op, [x, y]) : raw(x, y);
       };
     }
     if (declared) {

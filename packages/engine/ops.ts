@@ -1062,7 +1062,7 @@ const NUMERIC_OPERAND_OPS = new Set(['add', 'sub', 'mul', 'div', 'divide', 'mod'
 
 function dispatch(name: string, args: any[], opts?: DispatchOpts): any {
   const cdh = require('./collection-domain-heads.ts');
-  if (args.length > 0 && cdh.COLLECTION_DOMAIN_HEADS.has(name)) cdh.refuseNonCollectionArgument(name, args[0]);
+  if (args.length > 0 && cdh.COLLECTION_DOMAIN_HEADS.has(name)) cdh.refuseNonCollectionArgument(name, args);
   if (NUMERIC_OPERAND_OPS.has(name)) {
     const sampler = require('./sampler.ts');
     for (let i = 0; i < args.length; i++) {

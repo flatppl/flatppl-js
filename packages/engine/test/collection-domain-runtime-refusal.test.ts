@@ -88,3 +88,61 @@ test('arrays still reduce to their hand-computed values', async () => {
     + 'lp = logdensityof(A, record(aa = 0.5, bb = 0.25))\n';
   assert.ok(Math.abs(scalarOf(await value(ok, 'lp')) - (logN(0.5, 0) + logN(0.25, 0.5))) < 1e-12);
 });
+
+// ---- rank-0 Value scalars and the further collection slots ---------------------------------
+
+const valueLib = require('../value.ts');
+const ev = (op: string, args: any[], env: any = {}) => sampler.evaluateExpr({ kind: 'call', op, args }, env);
+const lit = (value: any) => ({ kind: 'lit', value });
+const ref = (name: string) => ({ kind: 'ref', ns: 'self', name });
+const vec = (...xs: number[]) => ({ kind: 'call', op: 'vector', args: xs.map(lit) });
+const mat = { kind: 'call', op: 'rowstack', args: [{ kind: 'call', op: 'vector', args: [vec(2, 0), vec(0, 3)] }] };
+const rec = { kind: 'call', op: 'record', fields: [{ name: 'a', value: lit(1.5) }] };
+
+test('a rank-0 Value scalar is refused exactly as a bare scalar is', () => {
+  const zero = valueLib.asValue(2.5);
+  assert.deepEqual(zero.shape, [], 'a rank-0 Value');
+  for (const op of ['sum', 'prod', 'mean', 'l2norm', 'lany', 'cumsum', 'transpose', 'lengthof']) {
+    assert.throws(() => ev(op, [ref('s')], { s: zero }),
+      (e: any) => e.modelRefusal === true && new RegExp(`^${op}: spec §07 .*argument 1 is a scalar`).test(e.message), op);
+  }
+});
+
+test('every §07 collection slot is judged, not only the first', () => {
+  // quadform: "square A, vector x"; linsolve: "square A, vector b"; cross: "vectors".
+  const cases: Array<[string, any[], number, string]> = [
+    ['quadform', [mat, lit(2.5)], 2, 'a scalar'],
+    ['quadform', [mat, rec], 2, 'a record with fields a'],
+    ['linsolve', [mat, lit(2.5)], 2, 'a scalar'],
+    ['linsolve', [mat, rec], 2, 'a record with fields a'],
+    ['cross', [vec(1, 0, 0), lit(2.5)], 2, 'a scalar'],
+    ['cross', [vec(1, 0, 0), rec], 2, 'a record with fields a'],
+    ['quadform', [lit(2.5), vec(1, 2)], 1, 'a scalar'],
+  ];
+  for (const [op, args, argument, what] of cases) {
+    assert.throws(() => ev(op, args), (e: any) => e.modelRefusal === true
+      && new RegExp(`^${op}: spec §07 .*argument ${argument} is ${what}`).test(e.message), `${op} ${what}`);
+  }
+  // The refusal also reaches the second slot through an untyped step input, scored and sampled.
+  const src = 'M = rowstack([[2.0, 0.0], [0.0, 3.0]])\nk(aa) = Normal(quadform(M, aa), 1.0)\n'
+    + 'A = jointchain(aa = Normal(0.0, 1.0), bb = k)\n';
+  assert.deepEqual(errors(src), []);
+  const want = /quadform at \d+:\d+: spec §07 "Linear algebra" gives `quadform` the domain .*argument 2 is a record with fields aa/;
+  return Promise.all([
+    assert.rejects(value(src + 'lp = logdensityof(A, record(aa = 0.5, bb = 0.5))\n', 'lp'), want),
+    assert.rejects(value(src + 'y ~ A\n', 'y', 4), want),
+  ]);
+});
+
+test('the arguments §07 gives a scalar domain are left alone, and valid collections keep their values', () => {
+  // quantile's level, tile's repeat count and bandedmat's integer are scalars by their Domains cells.
+  assert.equal(ev('quantile', [vec(1, 2, 3, 4, 5), lit(0.5)]), 3);
+  assert.deepEqual(Array.from(ev('tile', [vec(1, 2), lit(2)]).data), [1, 2, 1, 2]);
+  // quadform(A, x) = x' A x with A = diag(2, 3), x = [1, 2]: 2 + 12.
+  assert.equal(ev('quadform', [mat, vec(1, 2)]), 14);
+  // linsolve(A, b): x = [3, 4] / diag(2, 3) = [1.5, 4/3].
+  const x = Array.from(ev('linsolve', [mat, vec(3, 4)]).data) as number[];
+  assert.ok(Math.abs(x[0] - 1.5) < 1e-14 && Math.abs(x[1] - 4 / 3) < 1e-14);
+  // cross([1, 0, 0], [0, 1, 0]) = [0, 0, 1].
+  assert.deepEqual(Array.from(ev('cross', [vec(1, 0, 0), vec(0, 1, 0)]).data), [0, 0, 1]);
+});
