@@ -196,6 +196,21 @@ const COLLECTION_DOMAIN_HEADS: Map<string, { section: string; domains: string }>
   }],
 ]);
 
+// The argument positions whose §07 Domains cell is a collection. Every head judges its FIRST argument;
+// these are the rows with a further collection slot, where the second cell is a collection too:
+//   `linsolve`  "square `A`, vector `b`"
+//   `quadform`  "square `A`, vector `x`"
+//   `cross`     "real or complex vectors with `lengthof(a) == lengthof(b) == 3`"
+// Rows whose later cell admits a scalar (the `quantile` level, the integer or integer vector of `tile`,
+// `splitblocks` and `partition`, the integer of `bandedmat`, `diag` and `addaxes`) are left alone.
+const COLLECTION_SLOTS: Map<string, number[]> = new Map([
+  ['linsolve', [0, 1]], ['quadform', [0, 1]], ['cross', [0, 1]],
+]);
+
+function collectionSlotsFor(head: string): number[] {
+  return COLLECTION_SLOTS.get(head) || [0];
+}
+
 // The four heads whose §07 Domains cell demands a collection OF COLLECTIONS,
 // so a FLAT cell — an array of scalars — is out of domain too, not only a
 // scalar one:
@@ -256,8 +271,74 @@ function needsNestedCell(name: any): boolean {
   return typeof name === 'string' && NESTED_CELL_HEADS.has(name);
 }
 
+// RUNTIME half. The static gates above cannot see an argument whose type is unresolved — a step
+// input of type `any` fed a record (`k(aa) = Normal(sum(aa), 1.0)` in a labelled `jointchain`), a
+// placeholder, an untyped formal. The reductions then folded the record over nothing: `sum` gave 0,
+// `prod` 1, `lany` false, `lall` true, `mean`, `var`, `maximum`, `logsumexp` null, the norms 0, the
+// scans and `transpose` an empty array, `lengthof` 0 or undefined. §07 gives every head in the table
+// a collection in each slot §07 gives a collection domain (the first argument, and `linsolve`,
+// `quadform` and `cross` in their second), so a record, a bare scalar or a rank-0 Value there is a
+// domain violation. The evaluator refuses it at every point a head is run: `evaluateCall` (the sampler,
+// the density walker and the per-atom fallback of the batched evaluator), the `ARITH_OPS` entries the
+// fused-loop and profile compilers call, `ops.dispatch` and the profile compiler's closures.
+const valueLib = require('./value.ts');
+
+function isPlainRecordValue(v: any): boolean {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+  if (v.BYTES_PER_ELEMENT !== undefined || v.__table__ === true) return false;
+  if (typeof v.kind === 'string' || typeof v.re === 'number') return false;
+  return !valueLib.isValue(v);
+}
+
+// A scalar: a JS number or boolean, a complex scalar, or a rank-0 Value (§03 defines no rank-0 array).
+function isBareScalarValue(v: any): boolean {
+  if (typeof v === 'number' || typeof v === 'boolean') return true;
+  if (v === null || typeof v !== 'object') return false;
+  if (typeof v.re === 'number' && typeof v.im === 'number') return true;
+  return Array.isArray(v.shape) && v.shape.length === 0 && valueLib.isValue(v);
+}
+
+// Throw the located, `modelRefusal`-tagged error for a collection-domain argument outside its domain.
+// `args` is the head's whole argument list; each slot §07 gives a collection domain is judged, and the
+// others (a `quantile` level, an integer) are left to the head. The tag is the scorers' contract for a
+// property of the model rather than of a proposal point, so an MCMC scorer reports it instead of
+// scoring the point -Infinity.
+function refuseNonCollectionSlot(head: string, index: number, value: any, loc?: any): void {
+  // Hot path (the check sits in the fused loops): an array, a typed array or a Value of rank one or
+  // more is the expected argument and returns before any other test.
+  if (typeof value === 'object' && value !== null) {
+    const shape = value.shape;
+    if (shape !== undefined) {
+      if (shape.length > 0 && value.data instanceof Float64Array) return;
+    } else if (Array.isArray(value) || value.BYTES_PER_ELEMENT !== undefined) {
+      return;
+    }
+  }
+  const record = isPlainRecordValue(value);
+  if (!record && !isBareScalarValue(value)) return;
+  const cell = COLLECTION_DOMAIN_HEADS.get(head);
+  const at = loc?.start ? ' at ' + (loc.start.line + 1) + ':' + (loc.start.col + 1) : '';
+  const what = record ? 'a record with fields ' + Object.keys(value).join(', ') : 'a scalar';
+  const err: any = new Error(head + at + ': spec §07 "' + cell!.section + '" gives `' + head
+    + '` the domain ' + cell!.domains + ', but argument ' + (index + 1) + ' is ' + what + '. This is reached when the '
+    + 'argument\'s type is not known statically (an input of unknown type fed a record or a scalar); '
+    + 'pass a collection.');
+  err.modelRefusal = true;
+  throw err;
+}
+
+function refuseNonCollectionArgument(head: string, args: any[], loc?: any): void {
+  const slots = collectionSlotsFor(head);
+  for (let k = 0; k < slots.length; k++) {
+    if (slots[k] < args.length) refuseNonCollectionSlot(head, slots[k], args[slots[k]], loc);
+  }
+}
+
 module.exports = {
   COLLECTION_DOMAIN_HEADS,
+  refuseNonCollectionArgument,
+  refuseNonCollectionSlot,
+  collectionSlotsFor,
   AGGREGATE_ELIGIBLE_HEADS,
   NESTED_CELL_HEADS,
   isCollectionDomainHead,
