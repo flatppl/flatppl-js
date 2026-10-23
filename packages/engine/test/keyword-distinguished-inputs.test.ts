@@ -198,3 +198,26 @@ test('one refusal per offending distinguished input', () => {
   assert.equal(ds.filter((d: any) => RULE.test(d.message)).length, 3,
     'three keyword arguments at three distinguished inputs give three refusals');
 });
+
+// ---------------------------------------------------------------------
+// The measure combinators (spec §04, owner ruling on flatppl-design #209:
+// "non-variadic inputs positionally")
+// ---------------------------------------------------------------------
+
+const MU = 'mu = Normal(0.0, 1.0)\nf = fn(_ + 1.0)\n';
+
+test('normalize: the keyword spelling of its input is refused, nested or not', () => {
+  refuses('normalize', MU + 'm = normalize(M = mu)\n');
+  refuses('normalize', MU + 'j = joint(a = normalize(M = mu), b = mu)\n');
+  refuses('normalize', MU + 't = totalmass(normalize(M = mu))\n');
+  accepts(MU + 'm = normalize(mu)\n');
+});
+
+test('the measure combinators refuse a keyword at a nested positional input', () => {
+  refuses('truncate', MU + 't = totalmass(truncate(M = mu, S = interval(0.0, 1.0)))\n');
+  refuses('pushfwd', MU + 't = totalmass(pushfwd(f = f, M = mu))\n');
+  refuses('iid', MU + 't = totalmass(iid(M = mu, n = 3))\n');
+  refuses('locscale', MU + 't = totalmass(locscale(m = mu, shift = 1.0, scale = 2.0))\n');
+  refuses('relabel', MU + 't = totalmass(relabel(M = mu, names = ["x"]))\n');
+  accepts(MU + 't = totalmass(truncate(mu, interval(0.0, 1.0)))\n');
+});

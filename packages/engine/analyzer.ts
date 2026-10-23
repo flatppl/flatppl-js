@@ -2213,6 +2213,11 @@ const DISTINGUISHED_INPUTS = new Map<string, number>([
   ['get', 1], ['load_module', 1],
   ['standard_module', 2], ['ksuperpose', 2], ['tilt', 2],
   ['aggregate', 3], ['metricsum', 3], ['markovchain', 3], ['kscan', 3],
+  // The measure combinators take their leading inputs positionally too
+  // (spec §04: "a keyword spelling such as `normalize(M = mu)` is a static error").
+  ['normalize', 1], ['totalmass', 1], ['iid', 2], ['truncate', 2], ['pushfwd', 2],
+  ['weighted', 2], ['logweighted', 2], ['likelihoodof', 2], ['bayesupdate', 2],
+  ['relabel', 2], ['locscale', 3],
 ]);
 
 /**

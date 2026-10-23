@@ -3288,9 +3288,11 @@ function evaluateCall(ir: any, env: any): any {
         : (sIR && sIR.kind === 'ref' && sIR.ns === 'self') ? sIR.name
         : null;
       switch (setName) {
-        case 'reals':          return Number.isFinite(p);
-        case 'posreals':       return Number.isFinite(p) && p > 0;
-        case 'nonnegreals':    return Number.isFinite(p) && p >= 0;
+        // §03: `reals` is the extended reals (+-inf admitted), `posreals` is
+        // (0, +inf] and `nonnegreals` is [0, +inf]; only NaN is in none of them.
+        case 'reals':          return !Number.isNaN(p);
+        case 'posreals':       return p > 0;
+        case 'nonnegreals':    return p >= 0;
         case 'unitinterval':   return p >= 0 && p <= 1;
         case 'integers':       return Number.isInteger(p);
         case 'posintegers':    return Number.isInteger(p) && p >= 1;

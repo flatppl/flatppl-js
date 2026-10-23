@@ -3640,6 +3640,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const [i, t] of dataTypes.entries()) {
       const c = builtinLocscale && i === 0 && T.isMeasure(t)
         ? { collection: false, cellType: t } : classifyArg(t);
+      // §04: "Records and tuples are not allowed as operands of `broadcast`";
+      // `broadcasted(f)(args...)` takes the same operands. A table is the
+      // row-wise operand (§03); a record of arrays is spelled `table(r)`.
+      if (c == null && t && (t.kind === 'record' || t.kind === 'tuple')) {
+        diagnostics.push({ severity: 'error', loc: expr.loc,
+          message: 'broadcast: a ' + t.kind + ' cannot be an operand of broadcast or of a '
+            + 'broadcasted(f) call (spec §04); pass a table, whose rows are traversed, or '
+            + 'broadcast over its fields' });
+        return T.failed('broadcast ' + t.kind + ' operand');
+      }
       if (c == null) return T.deferred();
       argClassif.push(c);
     }
