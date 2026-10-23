@@ -1224,11 +1224,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (pointT.kind !== 'record') {
       diagnostics.push({
         severity: 'error',
-        message: op + ': ' + point + ' must be a record with one field per likelihood input (' + names
-          + '), bound by name for any number of inputs (spec §06 `likelihoodof`), but it is '
-          + T.show(pointT) + '. ' + (op === 'bayesupdate'
-            ? 'Write the prior over a record, such as `lawof(record(' + inputs[0].name + ' = '
-              + inputs[0].name + '))`.'
+        message: op + ': ' + point + ' is ' + T.show(pointT) + ', but the parameter point of a likelihood is a '
+          + 'record with one field per input (' + names + '), bound by name for any number of inputs '
+          + '(spec §06 `likelihoodof`); even a kernel with one input is evaluated at record('
+          + inputs[0].name + ' = ..). ' + (op === 'bayesupdate'
+            ? 'Write the prior over a record, such as `joint(' + inputs[0].name + ' = ...)` or `lawof(record('
+              + inputs[0].name + ' = ' + inputs[0].name + '))`.'
             : 'Pass `record(' + inputs[0].name + ' = ...)`.'),
         loc,
       });

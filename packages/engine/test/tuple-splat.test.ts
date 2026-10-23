@@ -64,7 +64,7 @@ test('a likelihood point binds the kernel inputs by name, a tuple point is refus
     lnNormal(0.3, 0.5, 2.0));
   const found = errors(src + 's = logdensityof(L, (0.5, 2.0))\n');
   assert.equal(found.length, 1, String(found));
-  assert.match(found[0], /the point must be a record with one field per likelihood input/);
+  assert.match(found[0], /the parameter point of a likelihood is a record with one field per input/);
 });
 
 test('splatting is shallow: an element that is a tuple binds whole', async () => {

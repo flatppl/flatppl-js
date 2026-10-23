@@ -36,8 +36,9 @@ for (const op of ['logdensityof', 'densityof']) {
     assert.equal(errs.length, 1);
     const [d] = errs;
     assert.match(d.message, new RegExp(
-      `^${op}: the point must be a record with one field per likelihood input \\("theta"\\), `
-      + 'bound by name for any number of inputs \\(spec §06 `likelihoodof`\\), but it is real\\.'));
+      `^${op}: the point is real, but the parameter point of a likelihood is a record with one field `
+      + 'per input \\("theta"\\), bound by name for any number of inputs \\(spec §06 `likelihoodof`\\); '
+      + 'even a kernel with one input is evaluated at record\\(theta = \\.\\.\\)\\.'));
     assert.match(d.message, /`record\(theta = \.\.\.\)`/);
     // The diagnostic is located on the point argument, 0-based line 5 of this source.
     assert.equal(d.loc.start.line, 5);
@@ -80,7 +81,7 @@ s = logdensityof(L, record(a = 0.5, b = 0.25))
 // Guards: the check stays silent where the point's type, or the likelihood's
 // interface, is not known statically, and states the mismatch without the
 // record hint when the point is not a record.
-const NOT_RECORD = 'must be a record with one field per likelihood input';
+const NOT_RECORD = 'but the parameter point of a likelihood is a record with one field per input';
 function pointErrors(src: string) {
   return errors(src).filter((d: any) => d.message.includes(NOT_RECORD));
 }
@@ -180,7 +181,7 @@ test('a point that is not a record is refused whatever its type', () => {
     ['table(theta = [0.3, 0.4])', 'table']]) {
     const errs = pointErrors(base + `s = logdensityof(L, ${point})\n`);
     assert.equal(errs.length, 1, point);
-    assert.match(errs[0].message, new RegExp(`but it is ${type}`), point);
+    assert.match(errs[0].message, new RegExp(`the point is ${type}`), point);
   }
 });
 
@@ -232,8 +233,10 @@ test('bayesupdate: a scalar prior for a one-input kernel is refused, naming the 
   const errs = errors(src);
   assert.equal(errs.length, 1);
   assert.match(errs[0].message, new RegExp(
-    '^bayesupdate: the prior\'s variate must be a record with one field per likelihood input '
-    + '\\("theta"\\), bound by name for any number of inputs \\(spec §06 `likelihoodof`\\), but it is real\\.'));
+    '^bayesupdate: the prior\'s variate is real, but the parameter point of a likelihood is a record '
+    + 'with one field per input \\("theta"\\), bound by name for any number of inputs '
+    + '\\(spec §06 `likelihoodof`\\); even a kernel with one input is evaluated at record\\(theta = \\.\\.\\)\\.'));
+  assert.match(errs[0].message, /`joint\(theta = \.\.\.\)`/);
   assert.match(errs[0].message, /`lawof\(record\(theta = theta\)\)`/);
   assert.equal(errs[0].loc.start.line, 5);
 });
