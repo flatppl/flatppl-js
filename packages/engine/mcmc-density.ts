@@ -344,6 +344,18 @@ async function buildLogPi(
   const modelSpec = require('./model-spec.ts');
   const sources: Array<{ latentName: string; measureName: string; measureIR?: any }> = modelSpec.priorLatentSources(d, ctx);
   if (sources.length === 0) {
+    // A prior whose variate is not a record is the static error `bayesupdate` reports (spec §06
+    // `likelihoodof`: the parameter point is a record, even for a kernel with one input), so say so
+    // here too when the model reaches the sampler without its diagnostics.
+    const variate = ctx.bindings.get(priorName)?.inferredType?.domain;
+    if (variate && variate.kind !== 'record') {
+      const input = d.paramKwargs?.[0] ?? 'theta';
+      throw new Error(`buildLogPi: the prior's variate is ${require('./types.ts').show(variate)}, but the `
+        + 'parameter point of a likelihood is a record with one field per input '
+        + `(${(d.paramKwargs || []).map((k: string) => '"' + k + '"').join(', ')}), bound by name for any number of inputs `
+        + `(spec §06 \`likelihoodof\`); even a kernel with one input is evaluated at record(${input} = ..). `
+        + `Write the prior over a record, such as \`joint(${input} = ...)\`.`);
+    }
     throw new Error(`buildLogPi: prior '${priorName}' has no stochastic draws to sample`);
   }
   // drawNames are the point-record keys (latent names); measureOf maps each to
