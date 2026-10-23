@@ -297,13 +297,10 @@ function validateSpecialOperation(valueNode: any) {
     case 'weighted':
     case 'pushfwd':
     case 'logweighted': {
-      if (args.length !== 2 && args.length !== 3) {
-        diags.push({ severity: 'error', message: `${name}() takes two or three arguments`, loc: valueNode.loc });
-      }
-      for (const arg of args) {
-        if (arg.type === 'KeywordArg') {
-          diags.push({ severity: 'error', message: `${name}() takes positional arguments only`, loc: arg.loc });
-        }
+      // Two leading positional inputs, then additional arguments (spec §04), which
+      // may be named; a keyword at a leading input is `validateDistinguishedInputs`'s.
+      if (args.length < 2) {
+        diags.push({ severity: 'error', message: `${name}() takes at least two arguments`, loc: valueNode.loc });
       }
       break;
     }
@@ -690,14 +687,9 @@ function validateSpecialOperation(valueNode: any) {
     }
 
     case 'reduce': {
-      // §04 callback inputs: optional p follows the ordinary fold inputs.
-      if (args.length !== 2 && args.length !== 3) {
-        diags.push({ severity: 'error', message: `reduce() takes two or three arguments (f, xs, optional p)`, loc: valueNode.loc });
-      }
-      for (const arg of args) {
-        if (arg.type === 'KeywordArg') {
-          diags.push({ severity: 'error', message: `reduce() takes positional arguments only`, loc: arg.loc });
-        }
+      // §04: `reduce(f, xs, ...)` — additional arguments follow the two inputs.
+      if (args.length < 2) {
+        diags.push({ severity: 'error', message: `reduce() takes at least two arguments (f, xs, ...)`, loc: valueNode.loc });
       }
       break;
     }
@@ -2345,6 +2337,10 @@ function validateDataLoad(node: any, diagnostics: any[]) {
   walk(node);
 }
 
+/** Operations whose leading inputs are positional and whose further arguments bind the
+ * callback's remaining inputs, positionally or by name (spec §04 "Additional arguments"). */
+const ADDITIONAL_ARGUMENT_HEADS = ['weighted', 'logweighted', 'pushfwd', 'reduce'];
+
 /** §05 permits mixed arguments only at special operations with named tails.
  * The parser retains their syntax; resolved call heads decide semantics here. */
 function validateMixedCalls(node: any, diagnostics: any[]) {
@@ -2355,7 +2351,10 @@ function validateMixedCalls(node: any, diagnostics: any[]) {
     const name = node.callee?.type === 'Identifier' ? node.callee.name : null;
     if (args.some((a: any) => a.type === 'KeywordArg')
         && args.some((a: any) => a.type !== 'KeywordArg')
-        && !['functionof', 'kernelof', 'broadcast', 'load_module'].includes(name)) {
+        && !['functionof', 'kernelof', 'broadcast', 'load_module',
+          // §05 "Additional arguments": named additional arguments follow the leading
+          // positional inputs of these operations.
+          ...ADDITIONAL_ARGUMENT_HEADS].includes(name)) {
       diagnostics.push({ severity: 'error', loc: node.loc,
         message: 'ordinary calls require either positional or keyword arguments, not both (spec §05)' });
     }

@@ -1144,25 +1144,56 @@ function liftInlineSubexpressions(bindings: any) {
     return astArg;
   }
 
-  // §04 callback inputs: specialize the fixed callable after source checks.
-  // A private body shares the existing operator machinery while p remains
-  // an explicit dependency, including inverse and volume terms.
+  // §04 "Additional arguments": specialize the fixed callable after source checks.
+  // A private body shares the existing operator machinery while the additional
+  // arguments remain explicit dependencies, including inverse and volume terms.
+  // weighted / logweighted / pushfwd / reduce take any number of them, positional
+  // or named, passed whole; filter and scan keep their single final `p`.
   function inlineCallbackParameters(astArg: any) {
     if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier') return astArg;
     const op = astArg.callee.name;
     const required = op === 'scan' ? 3 : 2;
-    if (!['weighted', 'logweighted', 'pushfwd', 'filter', 'reduce', 'scan'].includes(op)
-        || astArg.args?.length !== required + 1) return astArg;
-    const parameters = liftValue(cloneAst(astArg.args[required]));
+    const whole = ['weighted', 'logweighted', 'pushfwd', 'reduce'].includes(op);
+    if (!whole && !['filter', 'scan'].includes(op)) return astArg;
+    if (whole ? astArg.args?.length <= required : astArg.args?.length !== required + 1) return astArg;
+    const extras = astArg.args.slice(required);
+    const lifted = extras.map((extra: any) => extra.type === 'KeywordArg'
+      ? { ...extra, value: liftValue(cloneAst(extra.value)) } : liftValue(cloneAst(extra)));
+    const leading = op === 'reduce' || op === 'scan' ? 2 : 1;
+    // The callable's input names, when its type is known.
+    const inputNames = (fn: any): string[] | null => {
+      const inputs = __knownAstType(fn)?.inputs;
+      return Array.isArray(inputs) && inputs.length ? inputs.map((input: any) => input.name) : null;
+    };
+    // Arguments of `fn(params..., extras...)` under the ordinary calling convention.
+    const callArguments = (fn: any, params: any[]): any[] => {
+      const named = lifted.filter((extra: any) => extra.type === 'KeywordArg');
+      const declared = inputNames(fn);
+      const byName = (name: string, value: any) => ({ type: 'KeywordArg', name, value, loc: astArg.loc });
+      if (named.length) {
+        return declared
+          ? [...params.map((param, i) => byName(declared[i], param)), ...named]
+          : [...params, ...named];
+      }
+      const sole = lifted.length === 1 ? __knownAstType(lifted[0]) : null;
+      if (declared && declared.length - leading >= 2 && (sole?.kind === 'record' || sole?.kind === 'table')) {
+        // A sole additional record or table whose fields bind the remaining inputs by name.
+        const fields = Object.keys(sole.kind === 'record' ? sole.fields : sole.columns);
+        return [...params.map((param, i) => byName(declared[i], param)),
+          ...fields.map(name => byName(name,
+            { type: 'FieldAccess', object: cloneAst(lifted[0]), field: name, loc: astArg.loc }))];
+      }
+      return [...params, ...lifted];
+    };
     const specialize = (fn: any) => {
-      const params = Array.from({ length: op === 'reduce' || op === 'scan' ? 2 : 1 },
+      const params = Array.from({ length: leading },
         () => ({ type: 'Placeholder', name: freshName(), loc: astArg.loc }));
       const saved = specializingCallback;
       let body;
       try {
         specializingCallback = true;
         body = inlineUserCall({ type: 'CallExpr', callee: cloneAst(fn),
-          args: [...params, parameters], loc: astArg.loc });
+          args: callArguments(fn, params), loc: astArg.loc });
         visit(body);
       } finally {
         specializingCallback = saved;
