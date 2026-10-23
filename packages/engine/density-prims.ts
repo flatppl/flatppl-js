@@ -1743,7 +1743,26 @@ function inferChainComposition(
       });
       return { resultType: T.failed('fchain nullary step'), diagnostics };
     }
-    const m = _matchChainBoundary(prevResult, nextInputs, next.type);
+    // §04: `fchain(f1, f2, ...)(x, ...)` passes the additional arguments to every step, so a
+    // chain whose first step has further inputs feeds each later step the previous result as
+    // its first input and the chain's own additional inputs as the rest (the same arity).
+    const first = steps[0].type.inputs || [];
+    const prevFields = prevResult.kind === 'record' ? Object.keys(prevResult.fields) : null;
+    const splats = prevFields && prevFields.length === nextInputs.length
+      && nextInputs.every((input: any) => prevFields.includes(input.name));
+    let m: any;
+    if (first.length > 1 && nextInputs.length === first.length && !splats) {
+      m = _matchChainBoundary(prevResult, [nextInputs[0]], { ...next.type, inputs: [nextInputs[0]] });
+      for (let k = 1; m.ok && k < nextInputs.length; k++) {
+        if (T.unify(nextInputs[k].type, first[k].type, new Map()) == null) {
+          m = { ok: false, reason: 'additional input "' + nextInputs[k].name + '" of type '
+            + T.show(nextInputs[k].type) + ' does not match the chain\'s input "' + first[k].name
+            + '" of type ' + T.show(first[k].type) };
+        }
+      }
+    } else {
+      m = _matchChainBoundary(prevResult, nextInputs, next.type);
+    }
     if (!m.ok) {
       diagnostics.push({
         severity: 'error',

@@ -3586,6 +3586,12 @@ function liftInlineSubexpressions(bindings: any) {
       if (!f || f.type !== 'Identifier') return astArg;
     }
     const callerArgs = (astArg.args || []).map(cloneAst);
+    // §04: `fchain(f1, f2, ...)(x, ...)` passes the additional arguments to every step,
+    // each later step receiving the previous result whole as its first argument.
+    const firstInput = callerArgs[0]?.type === 'KeywordArg'
+      ? __knownAstType(fns[0])?.inputs?.[0]?.name : null;
+    const additional = callerArgs.length < 2 ? [] : callerArgs.filter((arg: any, i: number) =>
+      arg.type === 'KeywordArg' ? arg.name !== firstInput : i > 0);
     let result: any = {
       type: 'CallExpr',
       callee: cloneAst(fns[0]),
@@ -3596,7 +3602,7 @@ function liftInlineSubexpressions(bindings: any) {
       result = {
         type: 'CallExpr',
         callee: cloneAst(fns[i]),
-        args: [result],
+        args: [result, ...additional.map(cloneAst)],
         loc: astArg.loc,
       };
     }

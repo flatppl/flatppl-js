@@ -207,3 +207,30 @@ test('kscan: unequal sequence lengths and a missing sequence are refused', () =>
   assert.ok(errors(`${KS}r ~ kscan(kd, 0.0)\n`).some(m => /at least one sequence/.test(m)));
   assert.ok(errors(`${KS}r ~ kscan(kd, 0.0, [1.0, 2.0], x = [1.0, 2.0])\n`).some(m => /all positional or all named/.test(m)));
 });
+
+// ---------------------------------------------------------------------------
+// fchain: the additional arguments reach every step
+// ---------------------------------------------------------------------------
+
+test('fchain: additional arguments are passed unchanged to every step', async () => {
+  // f3(f2(f1(x, p), p), p) with f1 = x + p, f2 = y * p, f3 = z - p at x = 1, p = 2: ((1+2)*2)-2.
+  const steps = 'a1(x, p) = x + p\na2(y, p) = y * p\na3(z, p) = z - p\n';
+  for (const call of ['F(1.0, 2.0)', 'F(x = 1.0, p = 2.0)', 'fchain(a1, a2, a3)(1.0, 2.0)']) {
+    const src = `${steps}F = fchain(a1, a2, a3)\nr = ${call}\n`;
+    assert.deepEqual(errors(src), []);
+    assert.deepEqual(await value(src, 'r'), [4]);
+  }
+  // Two additional inputs: (1 + 2 + 3) * 2 - 3 = 9.
+  const two = 'a1(x, p, q) = x + p + q\na2(y, p, q) = y * p - q\nF = fchain(a1, a2)\nr = F(1.0, 2.0, 3.0)\n';
+  assert.deepEqual(errors(two), []);
+  assert.deepEqual(await value(two, 'r'), [9]);
+});
+
+test('fchain: a single argument keeps its meaning', async () => {
+  assert.deepEqual(await value('a1(x) = x + 1.0\na2(y) = y * 2.0\nF = fchain(a1, a2)\nr = F(1.0)\n', 'r'), [4]);
+});
+
+test('fchain: a step with a different number of inputs than the chain has is still refused', () => {
+  const src = 'a1(x, p) = x + p\na2(y, p, q) = y * p * q\nF = fchain(a1, a2)\nr = F(1.0, 2.0)\n';
+  assert.ok(errors(src).some(m => /fchain step boundary 0 → 1/.test(m)));
+});
