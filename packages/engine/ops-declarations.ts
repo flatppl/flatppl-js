@@ -1340,7 +1340,7 @@ function isRecordValue(value: any): boolean {
 // table splats its fields or columns by name when two or more inputs remain.
 type Sequence = { length: number; at: (i: number) => any };
 
-function _asSequence(raw: any, op: string): Sequence {
+function _asSequence(raw: any, op: string, strict = false): Sequence {
   if (raw && raw.__table__ === true) {
     return { length: raw.nrows, at: (i) => valueLib.tableRow(raw, i) };
   }
@@ -1351,7 +1351,10 @@ function _asSequence(raw: any, op: string): Sequence {
   if (Array.isArray(raw) || (raw && raw.BYTES_PER_ELEMENT)) {
     return { length: raw.length, at: (i) => raw[i] };
   }
-  throw new Error(op + ': an additional input must be a one-dimensional array or table');
+  // The first sequence of a scan is its `xs`; later, a value that is not a sequence repeats at
+  // every step as the length-one sequence `[value]` (the earlier explicit-parameter form).
+  if (strict) throw new Error(op + ': an additional input must be a one-dimensional array or table');
+  return { length: 1, at: () => raw };
 }
 
 /** The callable's remaining inputs (after `leading`) paired with their sequences. */
@@ -1389,7 +1392,7 @@ function _sequenceInputs(op: string, fn: any, leading: number, ir: any, firstExt
   if (bound.length !== rest.length) {
     throw new Error(op + ': an input of the callable is not bound by the additional arguments');
   }
-  return bound.map(([param, value]) => ({ param, sequence: _asSequence(value, op) }));
+  return bound.map(([param, value], i) => ({ param, sequence: _asSequence(value, op, op === 'scan' && i === 0) }));
 }
 
 /** Common length of sequences traversed together: length-one inputs repeat, others must agree. */

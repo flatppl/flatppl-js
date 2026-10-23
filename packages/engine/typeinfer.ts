@@ -1499,7 +1499,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
    */
   function additionalInputs(fExpr: any, leading: any[], extras: any[],
     keywords: Record<string, any>, scopes: any, op: string, loc: any,
-    sequences?: { lengths: any[] }): any[] | null {
+    sequences?: { lengths: any[]; strictFirst?: boolean }): any[] | null {
     const fail = (message: string) => {
       diagnostics.push({ severity: 'error', loc, message: op + ': ' + message + ' (spec §04 "Additional arguments")' });
       return null;
@@ -1514,8 +1514,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (!t || ['any', 'deferred', 'var'].includes(t.kind)) { sequences.lengths.push('%dynamic'); return T.any(); }
       if (t.kind === 'array' && t.rank === 1) { sequences.lengths.push(t.shape[0]); return t.elem; }
       if (t.kind === 'table') { sequences.lengths.push(t.nrows); return T.rowRecordType(t); }
-      fail('an additional input must be a one-dimensional array or table, got ' + T.show(t));
-      return undefined;
+      // The first sequence of a scan or kscan is its `xs`: a scalar there is a mistake, not a
+      // sequence (`kscan(f, 0.0, 3)` is not markovchain's `n`).
+      if (sequences.strictFirst && sequences.lengths.length === 0) {
+        fail('an additional input must be a one-dimensional array or table, got ' + T.show(t));
+        return undefined;
+      }
+      // Later, a value that is not a sequence (a scalar, record, tuple or function) is read as
+      // the length-one sequence `[value]`: it repeats at every step, which is what the callback
+      // parameter `p` of the earlier explicit-parameter form meant.
+      sequences.lengths.push(1);
+      return t;
     };
     if (names.length === 0 && types.length === 0) return leading;
     if (names.length && types.length) {
@@ -1628,7 +1637,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const lengths: any[] = data ? [table ? data.nrows : data.shape?.[0] ?? '%dynamic'] : [];
     const leadingTypes = op === 'filter' ? [elem] : [state, ...(op === 'reduce' ? [elem] : [])];
     const bound = additionalInputs(args[0], leadingTypes, extraExprs, extraKeywords, scopes, op,
-      expr.loc, op === 'reduce' ? undefined : { lengths });
+      expr.loc, op === 'reduce' ? undefined : { lengths, strictFirst: op === 'scan' });
     if (!bound) return T.failed(op + ' additional arguments');
     const inputs = bound;
     // Their lengths must agree, except that length-one inputs repeat (spec §04).
@@ -4622,7 +4631,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // §04: every argument after `init` is a sequence, traversed together.
     const lengths: any[] = [];
     const inputs = additionalInputs(args[0], [stateT], args.slice(2), expr.kwargs || {}, scopes,
-      'kscan', expr.loc, { lengths });
+      'kscan', expr.loc, { lengths, strictFirst: true });
     if (!inputs) return T.failed('kscan additional arguments');
     inferCallback(args[0], inputs, scopes, 'kscan', expr.loc);
     const known = lengths.filter(n => typeof n === 'number' && n !== 1);

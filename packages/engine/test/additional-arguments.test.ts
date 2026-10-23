@@ -127,7 +127,8 @@ test('scan: one sequence keeps its meaning, unequal lengths and a missing sequen
   assert.deepEqual(await value('s1(acc, x) = acc + x\nr = scan(s1, 0, [1, 2, 3])\n', 'r'), [1, 3, 6]);
   assert.ok(errors(`${STEP}r = scan(step, 0, [10, 20, 30], [2, 3])\n`).some(m => /unequal lengths 3, 2/.test(m)));
   assert.ok(errors(`${STEP}r = scan(step, 0)\n`).some(m => /at least three arguments/.test(m)));
-  assert.ok(errors(`${STEP}r = scan(step, 0, [1, 2], 5)\n`).some(m => /one-dimensional array or table/.test(m)));
+  // The first sequence is `xs`: a scalar there is a mistake, not a sequence.
+  assert.ok(errors(`${STEP}r = scan(step, 0, 5, [1, 2])\n`).some(m => /one-dimensional array or table/.test(m)));
   assert.ok(errors(`${STEP}r = scan(step, 0, x = [1, 2], v = [1, 2])\n`).some(m => /no remaining input named "v"/.test(m)));
   assert.ok(errors(`${STEP}r = scan(step, 0, [1, 2], w = [1, 2])\n`).some(m => /all positional or all named/.test(m)));
 });
@@ -152,7 +153,6 @@ test('filter: a table is filtered by rows and empty data stays empty', async () 
 
 test('filter: an additional input of the wrong length is an error', async () => {
   assert.ok(errors('keep(x, p) = x > p\nr = filter(keep, [1.0, 4.0, 9.0], [3.0, 5.0])\n').some(m => /unequal lengths 3, 2/.test(m)));
-  assert.ok(errors('keep(x, p) = x > p\nr = filter(keep, [1.0, 4.0, 9.0], 3.0)\n').some(m => /one-dimensional array or table/.test(m)));
 });
 
 // ---------------------------------------------------------------------------
@@ -233,4 +233,19 @@ test('fchain: a single argument keeps its meaning', async () => {
 test('fchain: a step with a different number of inputs than the chain has is still refused', () => {
   const src = 'a1(x, p) = x + p\na2(y, p, q) = y * p * q\nF = fchain(a1, a2)\nr = F(1.0, 2.0)\n';
   assert.ok(errors(src).some(m => /fchain step boundary 0 → 1/.test(m)));
+});
+
+test('a value that is not a sequence repeats at every step, as the earlier explicit parameter did', async () => {
+  // The explicit parameter `p` of the earlier form is the singleton sequence `[p]`.
+  assert.deepEqual(await value('keep(x, p) = x > p\nr = filter(keep, [1.0, 4.0, 9.0], 3.0)\n', 'r'), [4, 9]);
+  assert.deepEqual(await value(`${STEP}r = scan(step, 0, [1, 2], 5)\n`, 'r'), [5, 15]);
+  assert.deepEqual(await value('kd(s, x, w) = Dirac(value = s + x * w)\nw = 3.0\nr ~ kscan(kd, 0.0, [1.0, 2.0], w)\n', 'r'), [3, 9]);
+  const record = 'g(acc, x, row) = acc + x * row.w\nr = scan(g, 0, [10, 20], record(w = 2))\n';
+  assert.deepEqual(await value(record, 'r'), [20, 60]);
+  // A parametric scalar stays live in a scored callable.
+  const live = 'p = elementof(reals)\nkeep(x, q) = x > q\nkept = filter(keep, [1.0, 2.0, 3.0], p)\nM = Normal(sum(kept), 1.0)\n'
+    + 'score = functionof(logdensityof(M, 0.0), p)\na = score(0.5)\nb = score(2.5)\n';
+  // p = 0.5 keeps 1, 2, 3 (sum 6); p = 2.5 keeps 3 (sum 3): log N(0; sum, 1).
+  near(await value(live, 'a'), [-0.5 * Math.log(2 * Math.PI) - 0.5 * 36]);
+  near(await value(live, 'b'), [-0.5 * Math.log(2 * Math.PI) - 0.5 * 9]);
 });
