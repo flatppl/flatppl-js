@@ -139,10 +139,10 @@ traj = kscan(f, 0.0, [0.5, 1.0])
   const built = orchestrator.buildDerivations(lifted.bindings);
   const d: any = built.derivations.traj;
   assert.equal(d.kind, 'kscan');
-  assert.equal(d.n, 2, 'the length is lengthof(xs)');
-  assert.ok(d.xsIR, 'the exogenous array rides on the derivation');
+  assert.equal(d.n, 2, 'the length is the common sequence length');
+  assert.equal(d.xs.length, 1, 'the exogenous sequence rides on the derivation');
   // The lowerer renames a lambda's params, so match the source name inside it.
-  assert.match(d.step.xParam, /dt/, 'the second kernel input is the exogenous one');
+  assert.match(d.step.xParams[0], /dt/, 'the second kernel input is the exogenous one');
 });
 
 // =====================================================================
@@ -344,7 +344,7 @@ test('kscan: a single-input kernel is a located error', () => {
 f = fn(Normal(mu = _, sigma = 1.0))
 traj = kscan(f, 0.0, [0.5, 1.0])
 `);
-  assert.ok(msgs.some((m) => /kscan: .*has 1 inputs/.test(m)),
+  assert.ok(msgs.some((m) => /kscan: .*0 inputs after its state, but 1 additional arguments/.test(m)),
     'expected a 1-input refusal, got ' + JSON.stringify(msgs));
 });
 
@@ -361,7 +361,7 @@ test('kscan: a scalar `xs` is a located error, not a length-1 trajectory', () =>
 f = (x, d) -> Normal(x, d)
 traj = kscan(f, 0.0, 3)
 `);
-  assert.ok(msgs.some((m) => /kscan: arg 3 \(`xs`\) expects an array/.test(m)),
+  assert.ok(msgs.some((m) => /kscan: an additional input must be a one-dimensional array or table/.test(m)),
     'expected an xs type error, got ' + JSON.stringify(msgs));
 });
 
@@ -371,9 +371,9 @@ f = (x, d) -> Normal(x, d)
 xs = iid(Normal(mu = 1.0, sigma = 0.1), 3)
 traj = kscan(f, 0.0, xs)
 `);
-  assert.ok(msgs.some((m) => /kscan: arg 3 \(`xs`\) expects an array/.test(m)),
+  assert.ok(msgs.some((m) => /kscan: an additional input must be a one-dimensional array or table/.test(m)),
     'expected an xs type error, got ' + JSON.stringify(msgs));
-  assert.ok(msgs.some((m) => /kscan: `xs` length does not resolve/.test(m)),
+  assert.ok(msgs.some((m) => /kscan: a sequence length does not resolve/.test(m)),
     'and the length refusal names what is missing, got ' + JSON.stringify(msgs));
 });
 

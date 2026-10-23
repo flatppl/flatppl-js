@@ -3447,8 +3447,9 @@ function classifyMarkovchain(
 ): any {
   if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'markovchain') return null;
   const args = Array.isArray(rhsIR.args) ? rhsIR.args : [];
-  if (args.length !== 3 && args.length !== 4) return null;
-  const step = require('./markovchain.ts').describeStepKernel(args[0], bindings, 'markovchain', args[3]);
+  if (args.length < 3) return null;
+  const extras = { args: args.slice(3), kwargs: rhsIR.kwargs || {} };
+  const step = require('./markovchain.ts').describeStepKernel(args[0], bindings, 'markovchain', extras);
   if (!step || step.reason) return null;
   const n = resolveConstant(args[2], bindings, new Set(), fixedValues);
   if (n == null || !Number.isInteger(n) || n <= 0) return null;
@@ -3457,20 +3458,26 @@ function classifyMarkovchain(
 
 // `kscan(kernel, init, xs)` (spec §06 dependent composition) — markovchain
 // with one exogenous column threaded through the steps. Same descriptor plus
-// `xsIR`, and the length is §06's `lengthof(xs)` rather than a literal `n`, so
-// this only resolves that length and records the two-input step kernel.
+// the sequences `xs`, and the length is the common sequence length (§04: length-one
+// inputs repeat) rather than a literal `n`.
 function classifyKscan(
   rhsIR: any, ast: any, bindings?: any, fixedValues?: any,
 ): any {
   if (!rhsIR || rhsIR.kind !== 'call' || rhsIR.op !== 'kscan') return null;
   const args = Array.isArray(rhsIR.args) ? rhsIR.args : [];
-  if (args.length !== 3 && args.length !== 4) return null;
+  if (args.length < 2) return null;
   const mc = require('./markovchain.ts');
-  const step = mc.describeStepKernel(args[0], bindings, 'kscan', args[3]);
+  const extras = { args: args.slice(2), kwargs: rhsIR.kwargs || {} };
+  const step = mc.describeStepKernel(args[0], bindings, 'kscan', extras);
   if (!step || step.reason) return null;
-  const n = mc.resolveXsLength(args[2], bindings, fixedValues);
-  if (n == null) return null;
-  return { kind: 'kscan', step, initIR: args[1], xsIR: args[2], n };
+  // §04: the sequences are traversed together; length-one inputs repeat.
+  const xs = step.xSequences.map((sequence: any) => ({ ...sequence,
+    length: mc.resolveXsLength(sequence.ir, bindings, fixedValues) }));
+  if (xs.some((sequence: any) => sequence.length == null)) return null;
+  const longer = Array.from(new Set(xs.map((sequence: any) => sequence.length).filter((m: number) => m !== 1)));
+  if (longer.length > 1) return null;
+  const n = longer.length ? longer[0] as number : 1;
+  return { kind: 'kscan', step, initIR: args[1], xs, n };
 }
 
 function classifyJointchain(rhsIR: any, ast: any, bindings?: any, opts?: any): DerivationJointchain | null {
@@ -4138,13 +4145,13 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   // expression, its `xs` (kscan) and its step parameters reach.
   if (d.kind === 'markovchain' || d.kind === 'kscan') {
     const dd: any = d;
-    const irs = [dd.initIR].concat(dd.xsIR ? [dd.xsIR] : [])
+    const irs = [dd.initIR].concat((dd.xs || []).map((sequence: any) => sequence.ir))
       .concat(Object.keys(dd.step.distKwargs)
         .map((pn: string) => dd.step.distKwargs[pn]));
     for (const ir of irs) {
       for (const r of collectSelfRefs(ir)) {
         // The step's own params are bound per step, never fed.
-        if (r === dd.step.inputParam || r === dd.step.xParam) continue;
+        if (r === dd.step.inputParam || dd.step.xParams.includes(r)) continue;
         if (!resolvable(r)) return false;
       }
     }

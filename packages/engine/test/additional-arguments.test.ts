@@ -154,3 +154,56 @@ test('filter: an additional input of the wrong length is an error', async () => 
   assert.ok(errors('keep(x, p) = x > p\nr = filter(keep, [1.0, 4.0, 9.0], [3.0, 5.0])\n').some(m => /unequal lengths 3, 2/.test(m)));
   assert.ok(errors('keep(x, p) = x > p\nr = filter(keep, [1.0, 4.0, 9.0], 3.0)\n').some(m => /one-dimensional array or table/.test(m)));
 });
+
+// ---------------------------------------------------------------------------
+// markovchain and kscan
+// ---------------------------------------------------------------------------
+
+test('markovchain: the spec spellings of the additional arguments give one trajectory law', async () => {
+  // §05: positional, named, and a sole record are the same call.
+  const step = 'step(state, drift, scale) = Normal(state + drift, scale)\ndrift = 0.1\nscale = 0.5\n';
+  const path = [0.3, 0.1, 0.9];
+  // Normal(state + drift, scale) at each step, from init 0.
+  let prev = 0, want = 0;
+  for (const x of path) {
+    const z = (x - prev - 0.1) / 0.5;
+    want += -0.5 * Math.log(2 * Math.PI) - Math.log(0.5) - 0.5 * z * z;
+    prev = x;
+  }
+  for (const extras of ['drift, scale', 'drift = drift, scale = scale', '(drift = drift, scale = scale)']) {
+    const src = `${step}M = markovchain(step, 0.0, 3, ${extras})\nlp = logdensityof(M, [${path.join(', ')}])\n`;
+    assert.deepEqual(errors(src), []);
+    near(await value(src, 'lp'), [want]);
+  }
+});
+
+test('markovchain: a kernel input left unbound or given too many arguments is refused', () => {
+  const step = 'step(state, drift, scale) = Normal(state + drift, scale)\n';
+  assert.ok(errors(`${step}M = markovchain(step, 0.0, 3, 0.1)\n`).length > 0);
+  assert.ok(errors(`${step}M = markovchain(step, 0.0, 3, drift = 0.1)\n`).some(m => /scale/.test(m)));
+  assert.ok(errors(`${step}M = markovchain(step, 0.0, 3, 0.1, 0.5, 2.0)\n`).length > 0);
+});
+
+const KS = 'kd(s, x, w) = Dirac(value = s + x * w)\n';
+
+test('kscan: sequences are traversed together, positionally or by name, and singletons repeat', async () => {
+  // s: 0 + 10*2 = 20, then 20 + 20*3 = 80.
+  assert.deepEqual(await value(`${KS}r ~ kscan(kd, 0.0, [10.0, 20.0], [2.0, 3.0])\n`, 'r'), [20, 80]);
+  assert.deepEqual(await value(`${KS}r ~ kscan(kd, 0.0, x = [10.0, 20.0], w = [2.0, 3.0])\n`, 'r'), [20, 80]);
+  assert.deepEqual(await value(`${KS}r ~ kscan(kd, 0.0, [10.0, 20.0], [2.0])\n`, 'r'), [20, 60]);
+  assert.deepEqual(await value('k1(s, x) = Dirac(value = s + x)\nr ~ kscan(k1, 0.0, [10.0, 20.0])\n', 'r'), [10, 30]);
+});
+
+test('kscan: the density is the product of the per-step transitions', async () => {
+  const src = 'k2(s, x, w) = Normal(s + x, w)\nM = kscan(k2, 0.0, [1.0, 2.0], [0.5, 0.7])\n'
+    + 'lp = logdensityof(M, [0.6, 2.9])\n';
+  const step = (x: number, mean: number, sd: number) => -0.5 * Math.log(2 * Math.PI) - Math.log(sd)
+    - 0.5 * ((x - mean) / sd) ** 2;
+  near(await value(src, 'lp'), [step(0.6, 0 + 1.0, 0.5) + step(2.9, 0.6 + 2.0, 0.7)]);
+});
+
+test('kscan: unequal sequence lengths and a missing sequence are refused', () => {
+  assert.ok(errors(`${KS}r ~ kscan(kd, 0.0, [1.0, 2.0, 3.0], [1.0, 2.0])\n`).some(m => /unequal lengths 3, 2/.test(m)));
+  assert.ok(errors(`${KS}r ~ kscan(kd, 0.0)\n`).some(m => /at least one sequence/.test(m)));
+  assert.ok(errors(`${KS}r ~ kscan(kd, 0.0, [1.0, 2.0], x = [1.0, 2.0])\n`).some(m => /all positional or all named/.test(m)));
+});

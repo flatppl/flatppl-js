@@ -74,7 +74,7 @@ test('kscan varies its exogenous input while keeping its parameter record', asyn
 drift ~ Normal(0, 1)
 sigma ~ Exponential(1)
 step(state, dt, p) = Normal(state + p.drift * dt, p.sigma)
-x ~ kscan(step, 0.0, [1.0, 2.0, 3.0], (drift=drift, sigma=sigma))
+x ~ kscan(step, 0.0, [1.0, 2.0, 3.0], table(drift = [drift], sigma = [sigma]))
 K = kernelof(x, drift=drift, sigma=sigma)
 ld = logdensityof(K(0.4, 0.75), [1.0, 1.5, 2.0])
 `, 1);
@@ -377,7 +377,7 @@ test('markovchain: a multi-input kernel is a located error', () => {
 k2 = kernelof(Normal(mu = a, sigma = b), a = a, b = b)
 traj = markovchain(k2, 0.0, 3)
 `);
-  assert.ok(msgs.some((m) => /markovchain: .*has 2 inputs/.test(m)),
+  assert.ok(msgs.some((m) => /markovchain: .*inputs after its state, but 0 additional arguments/.test(m)),
     'expected a located arity diagnostic, got ' + JSON.stringify(msgs));
 });
 

@@ -4549,7 +4549,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // an array of records this engine would then refuse to build.)
   function inferMarkovchain(expr: any, scopes: any): any {
     const args = expr.args || [];
-    if (args.length !== 3 && args.length !== 4) return arityError('markovchain', '3 or 4', args.length, expr.loc);
+    if (args.length < 3) return arityError('markovchain', 'at least 3', args.length, expr.loc);
     const kT: any = inferExpr(args[0], scopes);
     if (kT && kT.kind === 'failed') return T.failed('markovchain cascade');
     if (kT && kT.kind !== 'kernel' && kT.kind !== 'deferred' && kT.kind !== 'function') {
@@ -4563,8 +4563,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     }
     const stateT: any = inferExpr(args[1], scopes);
     const nT: any = inferExpr(args[2], scopes);
-    const inputs = [stateT];
-    if (args.length === 4) inputs.push(inferExpr(args[3], scopes));
+    const inputs = additionalInputs(args[0], [stateT], args.slice(3), expr.kwargs || {}, scopes,
+      'markovchain', expr.loc);
+    if (!inputs) return T.failed('markovchain additional arguments');
     inferCallback(args[0], inputs, scopes, 'markovchain', expr.loc);
     if (T.unify(T.INTEGER, nT, new Map()) == null) {
       diagnostics.push({
@@ -4600,36 +4601,38 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // `inferMarkovchain`.
   function inferKscan(expr: any, scopes: any): any {
     const args = expr.args || [];
-    if (args.length !== 3 && args.length !== 4) return arityError('kscan', '3 or 4', args.length, expr.loc);
+    if (args.length < 2) return arityError('kscan', 'at least 2', args.length, expr.loc);
     const kT: any = inferExpr(args[0], scopes);
     if (kT && kT.kind === 'failed') return T.failed('kscan cascade');
     if (kT && kT.kind !== 'kernel' && kT.kind !== 'deferred' && kT.kind !== 'function') {
       diagnostics.push({
         severity: 'error',
         message: 'kscan: arg 1 expects a Markov kernel '
-          + '`(state, x) -> measure_over_state`, got ' + T.show(kT) + ' (spec §06)',
+          + '`(state, ...) -> measure_over_state`, got ' + T.show(kT) + ' (spec §06)',
         loc: args[0].loc,
       });
       return T.failed('kscan bad kernel');
     }
     const stateT: any = inferExpr(args[1], scopes);
-    const xsT: any = inferExpr(args[2], scopes);
-    const inputs = [stateT, xsT?.elem || T.any()];
-    if (args.length === 4) inputs.push(inferExpr(args[3], scopes));
-    inferCallback(args[0], inputs, scopes, 'kscan', expr.loc);
-    if (xsT && xsT.kind === 'failed') return T.failed('kscan cascade');
-    if (xsT && (xsT.kind === 'scalar' || T.isMeasure(xsT))) {
-      diagnostics.push({
-        severity: 'error',
-        message: 'kscan: arg 3 (`xs`) expects an array of exogenous inputs, got '
-          + T.show(xsT) + ' — §06 gives the trajectory length `lengthof(xs)` '
-          + '(spec §06)',
-        loc: args[2].loc,
-      });
-      return T.failed('kscan bad xs');
+    if (args.length === 2 && Object.keys(expr.kwargs || {}).length === 0) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: 'kscan: at least one sequence input follows `init` (spec §06)' });
+      return T.failed('kscan sequences');
     }
-    const dim = (xsT && xsT.kind === 'array' && Array.isArray(xsT.shape)
-      && xsT.shape.length >= 1) ? xsT.shape[0] : '%dynamic';
+    // §04: every argument after `init` is a sequence, traversed together.
+    const lengths: any[] = [];
+    const inputs = additionalInputs(args[0], [stateT], args.slice(2), expr.kwargs || {}, scopes,
+      'kscan', expr.loc, { lengths });
+    if (!inputs) return T.failed('kscan additional arguments');
+    inferCallback(args[0], inputs, scopes, 'kscan', expr.loc);
+    const known = lengths.filter(n => typeof n === 'number' && n !== 1);
+    if (new Set(known).size > 1) {
+      diagnostics.push({ severity: 'error', loc: expr.loc,
+        message: 'kscan: the sequence inputs have unequal lengths ' + lengths.join(', ')
+          + '; only length-one inputs repeat (spec §04)' });
+      return T.failed('kscan sequence lengths');
+    }
+    const dim = lengths.length && lengths.every(n => typeof n === 'number') ? (known[0] ?? 1) : '%dynamic';
     const lowerable = stateT
       && (stateT.kind === 'scalar' || stateT.kind === 'array');
     const domain = lowerable ? T.array(1, [dim], stateT) : T.deferred();

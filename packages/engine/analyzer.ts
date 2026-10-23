@@ -2205,7 +2205,7 @@ const DISTINGUISHED_INPUTS = new Map<string, number>([
   ['functionof', 1], ['kernelof', 1], ['broadcast', 1],
   ['get', Infinity], ['load_module', 1],
   ['standard_module', 2], ['ksuperpose', 2], ['tilt', 2],
-  ['aggregate', 3], ['metricsum', 3], ['markovchain', 3], ['kscan', 3],
+  ['aggregate', 3], ['metricsum', 3], ['markovchain', 3], ['kscan', 2],
   // The measure combinators take their leading inputs positionally too
   // (spec §04: "a keyword spelling such as `normalize(M = mu)` is a static error").
   ['normalize', 1], ['totalmass', 1], ['iid', 2], ['truncate', 2], ['pushfwd', 2],
@@ -2241,8 +2241,7 @@ function validateDistinguishedInputs(node: any, diagnostics: any[]) {
     const name = call.callee.name;
     const distinguished = DISTINGUISHED_INPUTS.get(name)!;
     const args = call.args || [];
-    const positional = name === 'markovchain' || name === 'kscan' ? args.length : distinguished;
-    for (let i = 0; i < args.length && i < positional; i++) {
+    for (let i = 0; i < args.length && i < distinguished; i++) {
       if (!args[i] || args[i].type !== 'KeywordArg') continue;
       diagnostics.push({
         severity: 'error',
@@ -2340,7 +2339,8 @@ function validateDataLoad(node: any, diagnostics: any[]) {
 
 /** Operations whose leading inputs are positional and whose further arguments bind the
  * callback's remaining inputs, positionally or by name (spec §04 "Additional arguments"). */
-const ADDITIONAL_ARGUMENT_HEADS = ['weighted', 'logweighted', 'pushfwd', 'reduce', 'filter', 'scan'];
+const ADDITIONAL_ARGUMENT_HEADS = ['weighted', 'logweighted', 'pushfwd', 'reduce', 'filter', 'scan',
+  'markovchain', 'kscan'];
 
 /** §05 permits mixed arguments only at special operations with named tails.
  * The parser retains their syntax; resolved call heads decide semantics here. */
