@@ -1417,31 +1417,15 @@ function liftInlineSubexpressions(bindings: any) {
     if (fns.length !== 1) return astArg;
     const fArg = fns[0];
 
-    // Count user-supplied positional args; build that many holes inside
-    // the synthesized fn. Kwargs aren't supported through broadcasted
-    // today (the user would write them through plain broadcast).
+    // §04: `broadcasted(f)(args...)` is `broadcast(f, args...)`: the arguments are
+    // operands of `broadcast`, not arguments of `f`, so a table operand is
+    // traversed row-wise exactly as `broadcast(f, table)` does. A `fn(f(_, ...))`
+    // wrapper would instead call `f` once per argument slot.
     const callerArgs = astArg.args || [];
-    const posArgs = callerArgs.filter((a: any) => a && a.type !== 'KeywordArg');
-    if (posArgs.length === 0) return astArg;
-    const holes = new Array(posArgs.length);
-    for (let i = 0; i < posArgs.length; i++) {
-      holes[i] = { type: 'Hole', loc: astArg.loc };
-    }
-    const fnExpr = {
-      type: 'CallExpr',
-      callee: makeIdent('fn', astArg.loc),
-      args: [{
-        type: 'CallExpr',
-        callee: cloneAst(fArg),
-        args: holes,
-        loc: astArg.loc,
-      }],
-      loc: astArg.loc,
-    };
     return {
       type: 'CallExpr',
       callee: makeIdent('broadcast', astArg.loc),
-      args: [fnExpr].concat(posArgs.map(cloneAst)),
+      args: [cloneAst(fArg)].concat(callerArgs.map(cloneAst)),
       loc: astArg.loc,
     };
   }

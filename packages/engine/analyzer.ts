@@ -2210,9 +2210,16 @@ const DISTINGUISHED_INPUTS = new Map<string, number>([
   ['elementof', 1], ['external', 1], ['draw', 1],
   ['lawof', 1], ['fixed', 1], ['broadcasted', 1],
   ['functionof', 1], ['kernelof', 1], ['broadcast', 1],
-  ['get', 1], ['load_module', 1],
+  ['get', Infinity], ['load_module', 1],
   ['standard_module', 2], ['ksuperpose', 2], ['tilt', 2],
   ['aggregate', 3], ['metricsum', 3], ['markovchain', 3], ['kscan', 3],
+  // The measure combinators take their leading inputs positionally too
+  // (spec §04: "a keyword spelling such as `normalize(M = mu)` is a static error").
+  ['normalize', 1], ['totalmass', 1], ['iid', 2], ['truncate', 2], ['pushfwd', 2],
+  ['weighted', 2], ['logweighted', 2], ['likelihoodof', 2], ['bayesupdate', 2],
+  ['locscale', 3], ['disintegrate', 2], ['restrict', 2], ['bijection', 3],
+  // `cat` takes variadic unnamed inputs (spec §04), and so do `get`'s indices.
+  ['cat', Infinity],
 ]);
 
 /**
@@ -2246,7 +2253,10 @@ function validateDistinguishedInputs(node: any, diagnostics: any[]) {
       if (!args[i] || args[i].type !== 'KeywordArg') continue;
       diagnostics.push({
         severity: 'error',
-        message: HAS_FURTHER_INPUTS.has(name)
+        message: distinguished === Infinity
+          ? `${name}() takes positional arguments only: its inputs are variadic and `
+            + `unnamed, and ${KEYWORD_RULE}`
+          : HAS_FURTHER_INPUTS.has(name)
           ? `Argument ${i + 1} of ${name}() is a distinguished input and must `
             + `be positional: ${KEYWORD_RULE}`
           : `${name}() takes positional arguments only: its `

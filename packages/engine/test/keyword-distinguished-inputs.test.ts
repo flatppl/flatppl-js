@@ -198,3 +198,45 @@ test('one refusal per offending distinguished input', () => {
   assert.equal(ds.filter((d: any) => RULE.test(d.message)).length, 3,
     'three keyword arguments at three distinguished inputs give three refusals');
 });
+
+// ---------------------------------------------------------------------
+// The measure combinators (spec §04, owner ruling on flatppl-design #209:
+// "non-variadic inputs positionally")
+// ---------------------------------------------------------------------
+
+const MU = 'mu = Normal(0.0, 1.0)\nf = fn(_ + 1.0)\n';
+
+test('normalize: the keyword spelling of its input is refused, nested or not', () => {
+  refuses('normalize', MU + 'm = normalize(M = mu)\n');
+  refuses('normalize', MU + 'j = joint(a = normalize(M = mu), b = mu)\n');
+  refuses('normalize', MU + 't = totalmass(normalize(M = mu))\n');
+  accepts(MU + 'm = normalize(mu)\n');
+});
+
+test('the measure combinators refuse a keyword at a nested positional input', () => {
+  refuses('truncate', MU + 't = totalmass(truncate(M = mu, S = interval(0.0, 1.0)))\n');
+  refuses('pushfwd', MU + 't = totalmass(pushfwd(f = f, M = mu))\n');
+  refuses('iid', MU + 't = totalmass(iid(M = mu, n = 3))\n');
+  refuses('locscale', MU + 't = totalmass(locscale(m = mu, shift = 1.0, scale = 2.0))\n');
+  accepts(MU + 't = totalmass(truncate(mu, interval(0.0, 1.0)))\n');
+});
+
+// ---------------------------------------------------------------------
+// Variadic UNNAMED inputs (spec §04: `cat`, and `get`'s indices) and the
+// remaining fixed-arity combinators
+// ---------------------------------------------------------------------
+
+test('cat and get take unnamed inputs: a keyword spelling is refused, nested or not', () => {
+  refuses('cat', 'v = cat(a = [1.0], b = [2.0])\n');
+  refuses('cat', 'w = sum(cat(a = [1.0], [2.0]))\n');
+  accepts('v = cat([1.0], [2.0])\n');
+  refuses('get', 'A = [[1.0, 2.0], [3.0, 4.0]]\nx = get(A, i = 1, j = 2)\n');
+  refuses('get', 'A = [1.0, 2.0]\nx = get(a = A, 1)\n');
+  accepts('A = [[1.0, 2.0], [3.0, 4.0]]\nx = get(A, 1, 2)\n');
+});
+
+test('disintegrate, restrict and bijection refuse the keyword spelling of their inputs', () => {
+  refuses('restrict', MU + 'r = restrict(M = mu, S = interval(0.0, 1.0))\n');
+  refuses('bijection', 'b = bijection(f = exp, f_inv = log, logvolume = fn(_))\n');
+  refuses('disintegrate', 'j = joint(a = Normal(0.0, 1.0), b = Normal(0.0, 1.0))\nd = disintegrate(names = ["a"], M = j)\n');
+});
