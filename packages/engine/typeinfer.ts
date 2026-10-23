@@ -1511,7 +1511,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // or table: the callable sees its element or row, and its length is recorded.
     const asSequence = (t: any): any => {
       if (!sequences) return t;
-      if (!t || ['any', 'deferred', 'var'].includes(t.kind)) { sequences.lengths.push('%dynamic'); return T.any(); }
+      if (!t || ['any', 'deferred', 'var'].includes(t.kind)) {
+        // An input whose type is not resolved yet constrains nothing, unless it is the first
+        // sequence, which then leaves the length dynamic.
+        if (sequences.strictFirst && sequences.lengths.length === 0) sequences.lengths.push('%dynamic');
+        return T.any();
+      }
       if (t.kind === 'array' && t.rank === 1) { sequences.lengths.push(t.shape[0]); return t.elem; }
       if (t.kind === 'table') { sequences.lengths.push(t.nrows); return T.rowRecordType(t); }
       // The first sequence of a scan or kscan is its `xs`: a scalar there is a mistake, not a

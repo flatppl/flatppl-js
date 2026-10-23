@@ -249,3 +249,80 @@ test('a value that is not a sequence repeats at every step, as the earlier expli
   near(await value(live, 'a'), [-0.5 * Math.log(2 * Math.PI) - 0.5 * 36]);
   near(await value(live, 'b'), [-0.5 * Math.log(2 * Math.PI) - 0.5 * 9]);
 });
+
+// ---------------------------------------------------------------------------
+// Violations that static checking pre-empts are still refused when evaluated
+// ---------------------------------------------------------------------------
+
+// A model with such a violation never reaches evaluation (static checking refuses it), so build
+// the call IR by hand to reach the evaluator's own refusals.
+const irLit = (value: any) => ({ kind: 'lit', value });
+const irVec = (...values: number[]) => ({ kind: 'call', op: 'vector', args: values.map(irLit) });
+const irRef = (name: string) => ({ kind: 'ref', ns: '%local', name });
+const irFn = (params: string[], body: any) => ({ kind: 'call', op: 'functionof', params, body });
+const irAdd = (a: any, b: any) => ({ kind: 'call', op: 'add', args: [a, b] });
+const irMul = (a: any, b: any) => ({ kind: 'call', op: 'mul', args: [a, b] });
+const irStep = irFn(['acc', 'x', 'w'], irAdd(irRef('acc'), irMul(irRef('x'), irRef('w'))));
+const irKeep = irFn(['x', 'p'], { kind: 'call', op: 'gt', args: [irRef('x'), irRef('p')] });
+
+function evaluates(op: string, args: any[], kwargs?: Record<string, any>) {
+  const sampler = require('../sampler.ts');
+  return sampler.evaluateExpr({ kind: 'call', op, args, ...(kwargs ? { kwargs } : {}) }, {});
+}
+
+test('scan and filter refuse a malformed set of additional inputs when evaluated', () => {
+  const x = irVec(10, 20), w = irVec(2, 3);
+  assert.throws(() => evaluates('scan', [irStep, irLit(0), irVec(10, 20, 30), w]), /unequal lengths 3, 2/);
+  assert.throws(() => evaluates('scan', [irStep, irLit(0)], { w, x, v: x }), /no remaining input named "v"/);
+  assert.throws(() => evaluates('scan', [irStep, irLit(0), x], { w }), /all positional or all named/);
+  assert.throws(() => evaluates('scan', [irStep, irLit(0), x, w, w]), /no input for additional argument 3/);
+  assert.throws(() => evaluates('scan', [irStep, irLit(0), x]), /not bound by the additional arguments/);
+  assert.throws(() => evaluates('scan', [irStep, irLit(0), irLit(5), w]), /one-dimensional array or table/);
+  assert.throws(() => evaluates('scan', [irFn(['acc'], irRef('acc')), irLit(0)]), /at least one sequence input/);
+  assert.throws(() => evaluates('scan', [irStep]), /expected \(function, init, sequences/);
+  assert.throws(() => evaluates('filter', [irKeep, irVec(1, 4, 9), irVec(3, 5)]), /has length 2, but data has 3/);
+  assert.throws(() => evaluates('filter', [irKeep, irVec(1, 4, 9)], { q: irVec(3) }), /no remaining input named "q"/);
+  assert.throws(() => evaluates('filter', [irKeep]), /expected \(predicate, data/);
+  // An input bound twice.
+  assert.throws(() => evaluates('scan', [irStep, irLit(0)], { x, w, y: w }), /no remaining input named "y"/);
+});
+
+test('kscan and markovchain describe a malformed step as a located refusal', () => {
+  const { describeStepKernel } = require('../markovchain.ts');
+  const lit = (value: number) => ({ kind: 'lit', value });
+  const kernel = (params: string[], body: any) => ({ kind: 'call', op: 'functionof', params, body });
+  const normal = (mu: any) => ({ kind: 'call', op: 'Normal', kwargs: { mu, sigma: lit(1) } });
+  const ref = (name: string) => ({ kind: 'ref', ns: '%local', name });
+  const none = { args: [], kwargs: {} };
+  const reason = (ir: any, op: string, extras: any, bindings: any = new Map()) =>
+    describeStepKernel(ir, bindings, op, extras).reason;
+  const two = kernel(['s', 'x'], normal(ref('x')));
+  assert.match(reason(kernel([], normal(lit(0))), 'markovchain', none), /has no inputs/);
+  assert.match(reason(two, 'kscan', none), /at least one sequence input/);
+  assert.match(reason(two, 'kscan', { args: [lit(1)], kwargs: { x: lit(1) } }), /all positional or all named/);
+  assert.match(reason(two, 'kscan', { args: [], kwargs: { v: lit(1) } }), /no input named "v"/);
+  assert.match(reason(two, 'kscan', { args: [lit(1), lit(2)], kwargs: {} }), /1 inputs after its state, but 2 additional/);
+  const three = kernel(['s', 'x', 'w'], normal(ref('x')));
+  const self = (name: string) => ({ kind: 'ref', ns: 'self', name });
+  assert.match(reason(three, 'markovchain', { args: [self('rec')], kwargs: {} }), /statically visible fields/);
+  assert.match(reason(three, 'markovchain', { args: [], kwargs: { x: lit(1) } }), /not bound/);
+  // A sole record whose fields are visible, through a binding, binds by name.
+  const record = { kind: 'call', op: 'record', fields: [{ name: 'x', value: lit(1) }, { name: 'w', value: lit(2) }] };
+  const bindings = new Map([['rec', { ir: record }]]);
+  const ok = describeStepKernel(three, bindings, 'markovchain', { args: [self('rec')], kwargs: {} });
+  assert.equal(ok.reason, undefined);
+});
+
+test('checkTrajectoryKernels reports unresolved and unequal kscan sequence lengths', () => {
+  const { checkTrajectoryKernels } = require('../markovchain.ts');
+  const src = 'k2(s, x, w) = Normal(s + x, w)\nxs = [1.0, 2.0, 3.0]\nws = [1.0, 2.0]\n'
+    + 'a ~ kscan(k2, 0.0, xs, ws)\n';
+  const { bindings } = processSource(src);
+  const built = require('../orchestrator.ts').buildDerivations(bindings);
+  const messages = checkTrajectoryKernels(built.bindings).map((d: any) => d.message);
+  assert.ok(messages.some((m: string) => /unequal lengths 3, 2/.test(m)), messages.join('; '));
+  const unresolved = processSource('k2(s, x, w) = Normal(s + x, w)\nxs = iid(Normal(0, 1), 3)\n'
+    + 'a ~ kscan(k2, 0.0, xs, [1.0])\n');
+  const built2 = require('../orchestrator.ts').buildDerivations(unresolved.bindings);
+  assert.ok(checkTrajectoryKernels(built2.bindings).some((d: any) => /length does not resolve/.test(d.message)));
+});
