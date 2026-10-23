@@ -3574,7 +3574,7 @@ function evaluateCall(ir: any, env: any): any {
     const scalar = seedScalar(seedRaw);
     if (scalar !== null) return rng.seedFromBytes(seedBytesFromInteger(scalar));
     if (!isByteVector(seedRaw)) {
-      throw new Error(`evaluateExpr: rnginit seed must be a byte vector (array of integers in 0..255) or an integer in 0..2^64-1`);
+      throw new Error(`evaluateExpr: rnginit seed must be a non-empty byte vector (array of integers in 0..255) or an integer in 0..2^64-1`);
     }
     const seed = valueLib.isValue(seedRaw) ? Array.from(seedRaw.data) : seedRaw;
     return rng.seedFromBytes(seed);
@@ -3749,7 +3749,8 @@ function evaluateCall(ir: any, env: any): any {
 // integers are also accepted; shape-explicit Values are unwrapped.
 function isByteVector(x: any) {
   if (valueLib.isValue(x)) x = x.data;
-  if (!x || typeof x !== 'object' || typeof x.length !== 'number') return false;
+  // §07: "Any non-empty vector is accepted", so an empty seed is not a seed.
+  if (!x || typeof x !== 'object' || typeof x.length !== 'number' || x.length === 0) return false;
   for (let i = 0; i < x.length; i++) {
     const v = x[i];
     if (typeof v !== 'number' || !Number.isFinite(v)) return false;

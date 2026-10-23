@@ -221,3 +221,23 @@ test('the measure combinators refuse a keyword at a nested positional input', ()
   refuses('relabel', MU + 't = totalmass(relabel(M = mu, names = ["x"]))\n');
   accepts(MU + 't = totalmass(truncate(mu, interval(0.0, 1.0)))\n');
 });
+
+// ---------------------------------------------------------------------
+// Variadic UNNAMED inputs (spec §04: `cat`, and `get`'s indices) and the
+// remaining fixed-arity combinators
+// ---------------------------------------------------------------------
+
+test('cat and get take unnamed inputs: a keyword spelling is refused, nested or not', () => {
+  refuses('cat', 'v = cat(a = [1.0], b = [2.0])\n');
+  refuses('cat', 'w = sum(cat(a = [1.0], [2.0]))\n');
+  accepts('v = cat([1.0], [2.0])\n');
+  refuses('get', 'A = [[1.0, 2.0], [3.0, 4.0]]\nx = get(A, i = 1, j = 2)\n');
+  refuses('get', 'A = [1.0, 2.0]\nx = get(a = A, 1)\n');
+  accepts('A = [[1.0, 2.0], [3.0, 4.0]]\nx = get(A, 1, 2)\n');
+});
+
+test('disintegrate, restrict and bijection refuse the keyword spelling of their inputs', () => {
+  refuses('restrict', MU + 'r = restrict(M = mu, S = interval(0.0, 1.0))\n');
+  refuses('bijection', 'b = bijection(f = exp, f_inv = log, logvolume = fn(_))\n');
+  refuses('disintegrate', 'j = joint(a = Normal(0.0, 1.0), b = Normal(0.0, 1.0))\nd = disintegrate(names = ["a"], M = j)\n');
+});
