@@ -460,8 +460,10 @@ export interface DerivationMarkovchain {
   name?: string;
   step: {
     inputParam: string;
-    /** Null for markovchain; kscan's exogenous input param. */
-    xParam?: string | null;
+    /** Empty for markovchain; kscan's sequence input params. */
+    xParams: string[];
+    /** kscan's sequence inputs, each paired with the IR bound to it. */
+    xSequences: Array<{ param: string; ir: any }>;
     distOp: string;
     distParams: string[];
     distKwargs: Record<string, any>;
@@ -471,9 +473,9 @@ export interface DerivationMarkovchain {
 }
 
 /**
- * Kleisli scan: `kscan(kernel, init, xs)` (spec §06) — markovchain with one
- * exogenous column threaded per step. `n` is §06's `lengthof(xs)`, resolved at
- * classify time; `xsIR` is the exogenous array, read as `xs[j]` (1-based) by
+ * Kleisli scan: `kscan(kernel, init, ...)` (spec §06) — markovchain with
+ * exogenous sequences threaded per step. `n` is the common sequence length (§04: length-one
+ * inputs repeat), resolved at classify time; each sequence is read as `xs[j]` (1-based) by
  * both execution paths.
  */
 export interface DerivationKscan {
@@ -481,7 +483,8 @@ export interface DerivationKscan {
   name?: string;
   step: DerivationMarkovchain['step'];
   initIR: any;
-  xsIR: any;
+  /** The sequences traversed together, by the kernel input each feeds; `length` is static. */
+  xs: Array<{ param: string; ir: any; length: number }>;
   n: number;
 }
 

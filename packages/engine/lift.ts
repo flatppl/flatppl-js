@@ -1095,6 +1095,7 @@ function liftInlineSubexpressions(bindings: any) {
       astArg = inlineScalarLocscale(astArg);
       astArg = inlineIidTruncate(astArg);
       astArg = inlineCallbackParameters(astArg);
+      astArg = inlineKscanConstants(astArg);
       // Recognize exponential-family laws before children are hoisted and
       // MvNormal loses its constructor head to the affine decomposition.
       astArg = inlineExponentialTilt(astArg);
@@ -1144,25 +1145,76 @@ function liftInlineSubexpressions(bindings: any) {
     return astArg;
   }
 
-  // §04 callback inputs: specialize the fixed callable after source checks.
-  // A private body shares the existing operator machinery while p remains
-  // an explicit dependency, including inverse and volume terms.
+  // §04 "Additional arguments": `kscan` holds a scalar, record or other non-collection input
+  // constant at every step. The trajectory lowering reads its inputs as sequences, so write the
+  // input as the length-one sequence `[value]`, which repeats at every step: the same meaning,
+  // decided here where the input's type is still known.
+  function inlineKscanConstants(astArg: any) {
+    if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier'
+        || astArg.callee.name !== 'kscan' || (astArg.args?.length || 0) <= 2
+        || (!astArg.builtin && out.has('kscan'))) return astArg;
+    let changed = false;
+    const args = astArg.args.map((arg: any, i: number) => {
+      if (i < 2) return arg;
+      const value = arg.type === 'KeywordArg' ? arg.value : arg;
+      const kind = __knownAstType(value)?.kind;
+      if (!kind || ['array', 'table', 'any', 'deferred', 'var', 'failed', 'tuple'].includes(kind)) return arg;
+      changed = true;
+      const wrapped = { type: 'ArrayLiteral', elements: [value], loc: value.loc || astArg.loc };
+      return arg.type === 'KeywordArg' ? { ...arg, value: wrapped } : wrapped;
+    });
+    return changed ? { ...astArg, args } : astArg;
+  }
+
+  // §04 "Additional arguments": specialize the fixed callable after source checks.
+  // A private body shares the existing operator machinery while the additional
+  // arguments remain explicit dependencies, including inverse and volume terms.
+  // weighted / logweighted / pushfwd / reduce take any number of them, positional
+  // or named, passed whole; filter and scan traverse them as sequences at run time.
   function inlineCallbackParameters(astArg: any) {
     if (astArg?.type !== 'CallExpr' || astArg.callee?.type !== 'Identifier') return astArg;
     const op = astArg.callee.name;
-    const required = op === 'scan' ? 3 : 2;
-    if (!['weighted', 'logweighted', 'pushfwd', 'filter', 'reduce', 'scan'].includes(op)
-        || astArg.args?.length !== required + 1) return astArg;
-    const parameters = liftValue(cloneAst(astArg.args[required]));
+    const required = 2;
+    if (!['weighted', 'logweighted', 'pushfwd', 'reduce'].includes(op)) return astArg;
+    if (!(astArg.args?.length > required)) return astArg;
+    const extras = astArg.args.slice(required);
+    const lifted = extras.map((extra: any) => extra.type === 'KeywordArg'
+      ? { ...extra, value: liftValue(cloneAst(extra.value)) } : liftValue(cloneAst(extra)));
+    const leading = op === 'reduce' ? 2 : 1;
+    // The callable's input names, when its type is known.
+    const inputNames = (fn: any): string[] | null => {
+      const inputs = __knownAstType(fn)?.inputs;
+      return Array.isArray(inputs) && inputs.length ? inputs.map((input: any) => input.name) : null;
+    };
+    // Arguments of `fn(params..., extras...)` under the ordinary calling convention.
+    const callArguments = (fn: any, params: any[]): any[] => {
+      const named = lifted.filter((extra: any) => extra.type === 'KeywordArg');
+      const declared = inputNames(fn);
+      const byName = (name: string, value: any) => ({ type: 'KeywordArg', name, value, loc: astArg.loc });
+      if (named.length) {
+        return declared
+          ? [...params.map((param, i) => byName(declared[i], param)), ...named]
+          : [...params, ...named];
+      }
+      const sole = lifted.length === 1 ? __knownAstType(lifted[0]) : null;
+      if (declared && declared.length - leading >= 2 && (sole?.kind === 'record' || sole?.kind === 'table')) {
+        // A sole additional record or table whose fields bind the remaining inputs by name.
+        const fields = Object.keys(sole.kind === 'record' ? sole.fields : sole.columns);
+        return [...params.map((param, i) => byName(declared[i], param)),
+          ...fields.map(name => byName(name,
+            { type: 'FieldAccess', object: cloneAst(lifted[0]), field: name, loc: astArg.loc }))];
+      }
+      return [...params, ...lifted];
+    };
     const specialize = (fn: any) => {
-      const params = Array.from({ length: op === 'reduce' || op === 'scan' ? 2 : 1 },
+      const params = Array.from({ length: leading },
         () => ({ type: 'Placeholder', name: freshName(), loc: astArg.loc }));
       const saved = specializingCallback;
       let body;
       try {
         specializingCallback = true;
         body = inlineUserCall({ type: 'CallExpr', callee: cloneAst(fn),
-          args: [...params, parameters], loc: astArg.loc });
+          args: callArguments(fn, params), loc: astArg.loc });
         visit(body);
       } finally {
         specializingCallback = saved;
@@ -3469,7 +3521,7 @@ function liftInlineSubexpressions(bindings: any) {
     if (!astArg || astArg.type !== 'CallExpr') return astArg;
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'filter') return astArg;
-    if (!astArg.args || (astArg.args.length !== 2 && astArg.args.length !== 3)) return astArg;
+    if (!astArg.args || astArg.args.length < 2) return astArg;
     let fArg = astArg.args[0];
     if (fArg.type === 'KeywordArg') return astArg;
     if (fArg.type === 'Identifier') return astArg;
@@ -3556,6 +3608,12 @@ function liftInlineSubexpressions(bindings: any) {
       if (!f || f.type !== 'Identifier') return astArg;
     }
     const callerArgs = (astArg.args || []).map(cloneAst);
+    // §04: `fchain(f1, f2, ...)(x, ...)` passes the additional arguments to every step,
+    // each later step receiving the previous result whole as its first argument.
+    const firstInput = callerArgs[0]?.type === 'KeywordArg'
+      ? __knownAstType(fns[0])?.inputs?.[0]?.name : null;
+    const additional = callerArgs.length < 2 ? [] : callerArgs.filter((arg: any, i: number) =>
+      arg.type === 'KeywordArg' ? arg.name !== firstInput : i > 0);
     let result: any = {
       type: 'CallExpr',
       callee: cloneAst(fns[0]),
@@ -3566,7 +3624,7 @@ function liftInlineSubexpressions(bindings: any) {
       result = {
         type: 'CallExpr',
         callee: cloneAst(fns[i]),
-        args: [result],
+        args: [result, ...additional.map(cloneAst)],
         loc: astArg.loc,
       };
     }

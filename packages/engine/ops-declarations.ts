@@ -1329,23 +1329,95 @@ ops.register({
 // memo values belong to one step and must not retain its environment.
 const scanPlans = new WeakMap<object, any>();
 
-/** §04 Reductions: evaluate f(acc, next) in a fresh frame at each step. */
+function isRecordValue(value: any): boolean {
+  return value != null && typeof value === 'object' && !Array.isArray(value)
+    && !value.BYTES_PER_ELEMENT && !valueLib.isValue(value);
+}
+
+// §04 "Additional arguments" for `filter` and `scan`: the arguments after the leading
+// inputs are SEQUENCES (one-dimensional arrays or tables) traversed together, bound to
+// the callable's remaining inputs positionally or by name. A sole additional record or
+// table splats its fields or columns by name when two or more inputs remain.
+type Sequence = { length: number; at: (i: number) => any; constant?: boolean };
+
+function _asSequence(raw: any, op: string): Sequence {
+  if (raw && raw.__table__ === true) {
+    return { length: raw.nrows, at: (i) => valueLib.tableRow(raw, i) };
+  }
+  if (valueLib.isValue(raw)) {
+    const dense = valueLib._logicalDense(raw);
+    if (dense.shape.length === 0) return { length: 1, at: () => raw, constant: true };
+    // A vector of vectors has the runtime shape of a matrix; its rows are the elements. Static
+    // typing has already refused a true higher-dimensional array.
+    return { length: dense.shape[0], at: (i) => valueLib._sliceRow(dense, i) };
+  }
+  if (Array.isArray(raw) || (raw && raw.BYTES_PER_ELEMENT)) {
+    return { length: raw.length, at: (i) => raw[i] };
+  }
+  // A scalar, record or other non-collection input is held constant at every step.
+  return { length: 1, at: () => raw, constant: true };
+}
+
+/** The callable's remaining inputs (after `leading`) paired with their sequences. */
+function _sequenceInputs(op: string, fn: any, leading: number, ir: any, firstExtra: number,
+  ctx: any): Array<{ param: string; sequence: Sequence }> {
+  const rest = fn.params.slice(leading);
+  const restNames = (fn.paramKwargs || fn.params).slice(leading);
+  const positional = (ir.args || []).slice(firstExtra).map((e: any) => ctx.evaluateExpr(e, ctx.env));
+  const keywords = ir.kwargs || {};
+  const named = Object.keys(keywords);
+  let bound: Array<[string, any]> = [];
+  const byName = (entries: Array<[string, any]>) => {
+    for (const [name, value] of entries) {
+      const index = restNames.indexOf(name);
+      if (index < 0) throw new Error(op + ': the callable has no remaining input named "' + name + '"');
+      bound.push([rest[index], value]);
+    }
+  };
+  if (named.length) {
+    if (positional.length) throw new Error(op + ': additional inputs are all positional or all named, not both');
+    byName(named.map((name): [string, any] => [name, ctx.evaluateExpr(keywords[name], ctx.env)]));
+  } else if (positional.length === 1 && rest.length >= 2
+      && positional[0] && (positional[0].__table__ === true || isRecordValue(positional[0]))) {
+    const sole = positional[0];
+    byName(Object.entries(sole.__table__ === true ? sole.columns : sole));
+  } else {
+    positional.forEach((value: any, i: number) => {
+      if (i >= rest.length) throw new Error(op + ': the callable has no input for additional argument ' + (i + 1));
+      bound.push([rest[i], value]);
+    });
+  }
+  if (new Set(bound.map(([param]) => param)).size !== bound.length) {
+    throw new Error(op + ': an input is bound twice');
+  }
+  if (bound.length !== rest.length) {
+    throw new Error(op + ': an input of the callable is not bound by the additional arguments');
+  }
+  return bound.map(([param, value], i) => ({ param, sequence: _asSequence(value, op) }));
+}
+
+/** Common length of sequences traversed together: length-one inputs repeat, others must agree. */
+function _commonLength(op: string, lengths: number[]): number {
+  const longer = lengths.filter(n => n !== 1);
+  if (new Set(longer).size > 1) {
+    throw new Error(op + ': the sequence inputs have unequal lengths ' + lengths.join(', ')
+      + '; only length-one inputs repeat (spec §04)');
+  }
+  return longer.length ? longer[0] : 1;
+}
+
+/** §04 Folds and scans: evaluate f(acc, ...) in a fresh frame at each step. */
 function _scanLogical(ir: any, ctx: any): any {
   const irArgs = ir.args || [];
-  if (irArgs.length !== 3 && irArgs.length !== 4) {
-    throw new Error('scan: expected 3 or 4 args (function, init, xs, optional p), got ' + irArgs.length);
+  if (irArgs.length < 2) {
+    throw new Error('scan: expected (function, init, sequences...), got ' + irArgs.length + ' args');
   }
   const fn = ctx.resolveFn(irArgs[0], ctx.env);
-  if (!fn || fn.params.length !== irArgs.length - 1) {
-    throw new Error('scan: callback arity does not match its whole inputs');
-  }
+  if (!fn) throw new Error('scan: the callback does not resolve to a function');
   const init = ctx.evaluateExpr(irArgs[1], ctx.env);
-  const xsRaw: any = ctx.evaluateExpr(irArgs[2], ctx.env);
-  const xs: any = valueLib.isValue(xsRaw) ? xsRaw.data : xsRaw;
-  if (!Array.isArray(xs) && !(xs && xs.BYTES_PER_ELEMENT)) {
-    throw new Error('scan: xs must be a vector');
-  }
-  const n = xs.length;
+  const inputs = _sequenceInputs('scan', fn, 1, ir, 2, ctx);
+  if (!inputs.some(input => !input.sequence.constant)) throw new Error('scan: at least one array or table input is required');
+  const n = _commonLength('scan', inputs.map(input => input.sequence.length));
   // §04 permits any accumulator type. Preserve records and vector states
   // instead of coercing them to NaN in a numeric buffer.
   const out: any[] = new Array(n);
@@ -1358,12 +1430,13 @@ function _scanLogical(ir: any, ctx: any): any {
     scanPlans.set(fn.body, plan);
   }
   const elemEnv = Object.assign({}, ctx.env, { __bodyEval: plan.bodyEval });
-  if (irArgs.length === 4) elemEnv[fn.params[2]] = ctx.evaluateExpr(irArgs[3], ctx.env);
   try {
     let acc = init;
     for (let i = 0; i < n; i++) {
       elemEnv[fn.params[0]] = acc;
-      elemEnv[fn.params[1]] = xs[i];
+      for (const { param, sequence } of inputs) {
+        elemEnv[param] = sequence.at(sequence.length === 1 ? 0 : i);
+      }
       plan.nextPoint();
       acc = plan.evalPoint(elemEnv);
       out[i] = acc;
@@ -1382,13 +1455,11 @@ ops.register({
 
 function _filterLogical(ir: any, ctx: any): any {
   const irArgs = ir.args || [];
-  if (irArgs.length !== 2 && irArgs.length !== 3) {
-    throw new Error('filter: expected 2 or 3 args (predicate, data, optional p), got ' + irArgs.length);
+  if (irArgs.length < 2) {
+    throw new Error('filter: expected (predicate, data, ...), got ' + irArgs.length + ' args');
   }
   const fn = ctx.resolveFn(irArgs[0], ctx.env);
-  if (!fn || fn.params.length !== irArgs.length - 1) {
-    throw new Error('filter: callback arity does not match its whole inputs');
-  }
+  if (!fn) throw new Error('filter: the callback does not resolve to a function');
   const dataRaw = ctx.evaluateExpr(irArgs[1], ctx.env);
   const isTable = dataRaw && dataRaw.__table__ === true;
   const isValue = valueLib.isValue(dataRaw);
@@ -1397,14 +1468,24 @@ function _filterLogical(ir: any, ctx: any): any {
     throw new Error('filter: data must be a vector (got '
       + (data === null ? 'null' : typeof data) + ')');
   }
-  const elemEnv = Object.assign({}, ctx.env);
-  if (irArgs.length === 3) elemEnv[fn.params[1]] = ctx.evaluateExpr(irArgs[2], ctx.env);
-  const kept: any[] = [];
   const n = isTable ? data.nrows : isValue ? data.shape[0] : data.length;
+  // Additional inputs repeat when they have length one; `data` itself is not expanded.
+  const inputs = _sequenceInputs('filter', fn, 1, ir, 2, ctx);
+  for (const { sequence } of inputs) {
+    if (sequence.length !== 1 && sequence.length !== n) {
+      throw new Error('filter: an additional input has length ' + sequence.length
+        + ', but data has ' + n + ' elements; only length-one inputs repeat (spec §04)');
+    }
+  }
+  const elemEnv = Object.assign({}, ctx.env);
+  const kept: any[] = [];
   for (let i = 0; i < n; i++) {
     const cell = isTable ? valueLib.tableRow(data, i)
       : isValue ? valueLib._sliceRow(data, i) : data[i];
     elemEnv[fn.params[0]] = cell;
+    for (const { param, sequence } of inputs) {
+      elemEnv[param] = sequence.at(sequence.length === 1 ? 0 : i);
+    }
     const keep = ctx.evaluateExpr(fn.body, elemEnv);
     if (keep) kept.push(isTable ? i : cell);
   }

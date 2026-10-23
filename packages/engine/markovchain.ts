@@ -114,9 +114,69 @@ function _distParamsOf(distOp: string): string[] {
  * kernel: its arity, and the arrow §06 spells for it.
  */
 const TRAJECTORY_OPS: Record<string, { arity: number; arrow: string }> = {
-  markovchain: { arity: 1, arrow: '`(state) -> measure_over_state`' },
-  kscan:       { arity: 2, arrow: '`(state, x) -> measure_over_state`' },
+  markovchain: { arity: 1, arrow: '`(state, ...) -> measure_over_state`' },
+  kscan:       { arity: 1, arrow: '`(state, ...) -> measure_over_state`' },
 };
+
+/**
+ * The static field IRs of a record (or table) argument, following a binding ref:
+ * `record(a = .., b = ..)` gives `{ a, b }`. Null when the fields are not visible.
+ */
+function recordFieldIRs(ir: any, bindings: any, kind: 'record' | 'table'): Record<string, any> | null {
+  const seen = new Set<string>();
+  while (ir && ir.kind === 'ref' && ir.ns === 'self' && !seen.has(ir.name)) {
+    seen.add(ir.name);
+    ir = bindings?.get?.(ir.name)?.ir;
+  }
+  if (ir?.kind !== 'call' || ir.op !== kind || !Array.isArray(ir.fields)) return null;
+  return Object.fromEntries(ir.fields.map((f: any) => [f.name, f.value]));
+}
+
+/**
+ * §04 "Additional arguments": bind the arguments after the operation's own to the
+ * kernel's remaining inputs, positionally or by name (a sole record, or for kscan a
+ * sole table, splats its fields by name when two or more inputs remain). Returns the
+ * IR bound to each remaining input, or a `{ reason }` refusal.
+ */
+function bindAdditionalIRs(op: string, ir: any, bindings: any, extras: { args: any[]; kwargs: Record<string, any> }):
+  { bound: Record<string, any> } | { reason: string } {
+  const params: string[] = ir.params;
+  const rest = params.slice(1);
+  const restNames: string[] = (ir.paramKwargs || params).slice(1);
+  const bound: Record<string, any> = {};
+  const byName = (entries: Array<[string, any]>) => {
+    for (const [name, value] of entries) {
+      const index = restNames.indexOf(name);
+      if (index < 0) return { reason: 'the kernel has no input named "' + name + '" after its state' };
+      bound[rest[index]] = value;
+    }
+    return null;
+  };
+  const named = Object.keys(extras.kwargs);
+  let problem: { reason: string } | null = null;
+  if (named.length) {
+    if (extras.args.length) return { reason: 'additional arguments are all positional or all named, not both' };
+    problem = byName(named.map((name): [string, any] => [name, extras.kwargs[name]]));
+  } else if (extras.args.length === 1 && rest.length >= 2) {
+    const fields = recordFieldIRs(extras.args[0], bindings, op === 'kscan' ? 'table' : 'record')
+      || recordFieldIRs(extras.args[0], bindings, 'record');
+    if (!fields) {
+      return { reason: 'a sole record or table argument must have statically visible fields to bind '
+        + 'the ' + rest.length + ' remaining inputs by name' };
+    }
+    problem = byName(Object.entries(fields));
+  } else {
+    if (extras.args.length !== rest.length) {
+      return { reason: 'the kernel has ' + rest.length + ' inputs after its state, but ' + extras.args.length
+        + ' additional arguments were given' };
+    }
+    extras.args.forEach((value, i) => { bound[rest[i]] = value; });
+  }
+  if (problem) return problem;
+  const unbound = rest.filter(param => !(param in bound));
+  if (unbound.length) return { reason: 'a kernel input is not bound by the additional arguments' };
+  return { bound };
+}
 
 /**
  * The step descriptor for a `markovchain` / `kscan` kernel argument, or a
@@ -127,7 +187,8 @@ const TRAJECTORY_OPS: Record<string, { arity: number; arrow: string }> = {
  * §06 arity: one input for `markovchain`, two for `kscan`, whose second is
  * the exogenous input.
  */
-function describeStepKernel(compIR: any, bindings: any, op?: string, parameterIR?: any): any {
+function describeStepKernel(compIR: any, bindings: any, op?: string,
+  extras: { args: any[]; kwargs: Record<string, any> } = { args: [], kwargs: {} }): any {
   const opName = op || 'markovchain';
   const spec = TRAJECTORY_OPS[opName];
   const SAMPLEABLE = require('./ir-shared.ts').SAMPLEABLE_DISTRIBUTIONS;
@@ -148,12 +209,15 @@ function describeStepKernel(compIR: any, bindings: any, op?: string, parameterIR
     };
   }
   const params: string[] = Array.isArray(ir.params) ? ir.params : [];
-  const arity = spec.arity + (parameterIR === undefined ? 0 : 1);
-  if (params.length !== arity) {
-    return {
-      reason: shownAs + ' has ' + params.length + ' inputs; §06 ' + opName
-        + ' needs ' + arity + ' inputs for the supplied state, per-step input, and parameters',
-    };
+  if (params.length < 1) {
+    return { reason: shownAs + ' has no inputs; §06 ' + opName + ' needs the state input first' };
+  }
+  if (opName === 'kscan' && extras.args.length + Object.keys(extras.kwargs).length === 0) {
+    return { reason: 'kscan needs at least one array or table input after `init` (§06)' };
+  }
+  const additional = bindAdditionalIRs(opName, ir, bindings, extras);
+  if ('reason' in additional) {
+    return { reason: shownAs + ': ' + additional.reason + ' (§04 "Additional arguments")' };
   }
   const dist = _peelLawof(ir.body);
   if (!dist || dist.kind !== 'call' || !dist.op
@@ -179,25 +243,23 @@ function describeStepKernel(compIR: any, bindings: any, op?: string, parameterIR
     }
     for (let i = 0; i < positional.length; i++) distKwargs[distParams[i]] = positional[i];
   }
-  if (parameterIR !== undefined) {
-    const param = params[spec.arity];
+  const rest = params.slice(1);
+  // `markovchain` passes the additional arguments whole: substitute them now. `kscan`
+  // traverses them as sequences: its descriptor lists them for the per-step element.
+  if (opName === 'markovchain' && rest.length) {
     const substitute = require('./mat-broadcast.ts').substituteKernelParams;
     for (const name of Object.keys(distKwargs)) {
-      distKwargs[name] = substitute(distKwargs[name], [param], [param], { [param]: parameterIR });
+      distKwargs[name] = substitute(distKwargs[name], rest, rest, additional.bound);
     }
   }
   return {
     inputParam: params[0],
-    xParam: spec.arity === 2 ? params[1] : null,
+    xParams: opName === 'kscan' ? rest : [],
+    xSequences: opName === 'kscan' ? rest.map(param => ({ param, ir: additional.bound[param] })) : [],
     distOp: dist.op,
     distParams,
     distKwargs,
   };
-}
-
-/** `xs[j+1]` — §06 indexes `xs` from 1, and `get` is the 1-based IR form. */
-function xElemIR(xsIR: any, j: number): any {
-  return { kind: 'call', op: 'get', args: [xsIR, { kind: 'lit', value: j + 1 }] };
 }
 
 /**
@@ -206,21 +268,35 @@ function xElemIR(xsIR: any, j: number): any {
  * The single producer both the sampler and the density walker read, so step j
  * is the same distribution on both paths.
  */
-function stepDistIR(step: any, prevIR: any, xIR?: any): any {
+function stepDistIR(step: any, prevIR: any, xIRs?: Record<string, any>): any {
   const substituteKernelParams = require('./mat-broadcast.ts').substituteKernelParams;
   const kwargs: Record<string, any> = {};
   const params: string[] = [step.inputParam];
   const subMap: Record<string, any> = {};
   subMap[step.inputParam] = prevIR;
-  if (step.xParam) {
-    params.push(step.xParam);
-    subMap[step.xParam] = xIR;
+  for (const param of step.xParams) {
+    params.push(param);
+    subMap[param] = xIRs![param];
   }
   for (const pn of Object.keys(step.distKwargs)) {
     kwargs[pn] = substituteKernelParams(
       step.distKwargs[pn], params, params, subMap);
   }
   return { kind: 'call', op: step.distOp, kwargs };
+}
+
+/**
+ * The per-step elements of a kscan's sequences, by input: step `j` reads element
+ * `j + 1`, or element 1 of a length-one sequence, which repeats (§04). `index` is
+ * the IR of the 1-based step index.
+ */
+function sequenceElementIRs(d: any, index: any): Record<string, any> {
+  const out: Record<string, any> = {};
+  for (const sequence of d.xs || []) {
+    out[sequence.param] = { kind: 'call', op: 'get',
+      args: [sequence.ir, sequence.length === 1 ? { kind: 'lit', value: 1 } : index] };
+  }
+  return out;
 }
 
 /**
@@ -241,7 +317,7 @@ function densityIR(d: any): any {
       ? d.initIR
       : { kind: 'ref', ns: 'self', name: 's' + (j - 1) };
     if (j > 0) selfThreaded.push('s' + (j - 1));
-    args.push(stepDistIR(d.step, prevIR, d.xsIR ? xElemIR(d.xsIR, j) : undefined));
+    args.push(stepDistIR(d.step, prevIR, sequenceElementIRs(d, { kind: 'lit', value: j + 1 })));
   }
   // `selfThreaded` rides ON THE NODE, naming the refs this joint satisfies from
   // its own observed value, so clm's ⊆ check can exclude them wherever the node
@@ -303,7 +379,7 @@ function matMarkovchain(name: string, d: any, ctx: any): Promise<any> {
   // single pass.
   const aggregate: any = {
     kind: 'call', op: 'joint',
-    args: [d.initIR].concat(d.xsIR ? [d.xsIR] : []).concat(
+    args: [d.initIR].concat((d.xs || []).map((sequence: any) => sequence.ir)).concat(
       Object.keys(d.step.distKwargs).map((pn: string) => d.step.distKwargs[pn])),
   };
 
@@ -325,8 +401,7 @@ function matMarkovchain(name: string, d: any, ctx: any): Promise<any> {
     let indexName = '__mc_index';
     while (indexName in stepRefs || indexName in stepEnv) indexName += '_';
     const ir = stepDistIR(d.step, { kind: 'ref', ns: 'self', name: '__mc_prev' },
-      d.xsIR ? { kind: 'call', op: 'get', args: [d.xsIR,
-        { kind: 'ref', ns: 'self', name: indexName }] } : undefined);
+      sequenceElementIRs(d, { kind: 'ref', ns: 'self', name: indexName }));
     const cols: Float64Array[] = new Array(n);
     let acc: Promise<any> = Promise.resolve();
     for (let j = 0; j < n; j++) {
@@ -394,6 +469,10 @@ function resolveXsLength(xsIR: any, bindings: any, fixedValues?: any): number | 
   if (xsIR && xsIR.kind === 'call' && xsIR.op === 'vector' && Array.isArray(xsIR.args)) {
     return xsIR.args.length > 0 ? xsIR.args.length : null;
   }
+  // A table's length is its columns' common length; read the first column's.
+  if (xsIR?.kind === 'call' && xsIR.op === 'table' && Array.isArray(xsIR.fields) && xsIR.fields.length) {
+    return resolveXsLength(xsIR.fields[0].value, bindings, fixedValues);
+  }
   const resolveConstant = require('./ir-shared.ts').resolveConstant;
   if (xsIR?.kind === 'call' && xsIR.op === 'fill' && xsIR.args?.length === 2) {
     const size = resolveConstant(xsIR.args[1], bindings, new Set(), fixedValues);
@@ -421,11 +500,13 @@ function checkTrajectoryKernels(bindings: any, fixedValues?: any): any[] {
     if (!ir || ir.kind !== 'call' || !ir.op
         || !Object.prototype.hasOwnProperty.call(TRAJECTORY_OPS, ir.op)) continue;
     const op = ir.op;
-    // Arity is typeinfer's (it reports `markovchain expects 3`), so only the
-    // step-kernel shape and kscan's `xs` length are judged here.
+    // Arity is typeinfer's, so only the step-kernel shape and kscan's sequence lengths
+    // are judged here.
     const args = Array.isArray(ir.args) ? ir.args : [];
-    if (args.length !== 3 && args.length !== 4) continue;
-    const step = describeStepKernel(args[0], bindings, op, args[3]);
+    const leading = op === 'markovchain' ? 3 : 2;
+    if (args.length < leading) continue;
+    const extras = { args: args.slice(leading), kwargs: ir.kwargs || {} };
+    const step = describeStepKernel(args[0], bindings, op, extras);
     if (step && step.reason) {
       out.push({
         name,
@@ -435,15 +516,26 @@ function checkTrajectoryKernels(bindings: any, fixedValues?: any): any[] {
       });
       continue;
     }
-    if (op === 'kscan' && resolveXsLength(args[2], bindings, fixedValues) == null) {
-      out.push({
-        name,
-        severity: 'error',
-        message: 'kscan: `xs` length does not resolve before sampling — §06 '
-          + 'gives the trajectory length `lengthof(xs)`, so `xs` must be an '
-          + 'array literal or a fixed-phase array value',
-        loc: (args[2] && args[2].loc) || ir.loc,
-      });
+    if (op === 'kscan') {
+      const lengths = step.xSequences.map((sequence: any) => resolveXsLength(sequence.ir, bindings, fixedValues));
+      if (lengths.some((n: any) => n == null)) {
+        out.push({
+          name,
+          severity: 'error',
+          message: 'kscan: a sequence length does not resolve before sampling — §06 '
+            + 'gives the trajectory length from the sequences, so each must be an '
+            + 'array literal or a fixed-phase array value',
+          loc: ir.loc,
+        });
+      } else if (new Set(lengths.filter((n: number) => n !== 1)).size > 1) {
+        out.push({
+          name,
+          severity: 'error',
+          message: 'kscan: the sequence inputs have unequal lengths ' + lengths.join(', ')
+            + '; only length-one inputs repeat (spec §04)',
+          loc: ir.loc,
+        });
+      }
     }
   }
   return out;

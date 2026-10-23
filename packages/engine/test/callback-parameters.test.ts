@@ -7,12 +7,12 @@ const { makeMatCtx } = require('./_materialise-helpers.ts');
 test('nested imported collection callbacks keep one whole parameter object', async () => {
   const { ctx } = makeMatCtx(`
 lib = load_module("helpers.flatppl")
-calc(p) = scan(lib.step, 0, [1, 2, 3], p)
-a = calc((2, 1))
-b = calc((3, -1))
-c = calc((2, 1))
+calc(p) = scan(lib.step, 0, [1, 2, 3], [p])
+a = calc([2, 1])
+b = calc([3, -1])
+c = calc([2, 1])
 fold = reduce(lib.plus, [1, 2, 3], 4)
-kept = filter(lib.pred, table(value = [1, 2, 3], other = [10, 20, 30]), (cut = 2))
+kept = filter(lib.pred, table(value = [1, 2, 3], other = [10, 20, 30]), table(cut = [2]))
 result = kept.other
 `, { sampleCount: 1, path: '/main.flatppl', bundle: { sources: {
     '/helpers.flatppl': `
@@ -30,8 +30,8 @@ pred(row, p) = row.value > p.cut
 test('scan and filter parameters remain live inside a scored callable', async () => {
   const { ctx } = makeMatCtx(`
 p = elementof(reals)
-states = scan((a, x, q) -> a + x * q, 0, [1, 2, 3], p)
-selected = filter((x, q) -> x > q, [1, 2, 3], p)
+states = scan((a, x, q) -> a + x * q, 0, [1, 2, 3], [p])
+selected = filter((x, q) -> x > q, [1, 2, 3], [p])
 M = Normal(states[3] + sum(selected), 1)
 score = functionof(logdensityof(M, 0), p)
 a = score(1)
@@ -149,15 +149,15 @@ lr = logdensityof(recordweighted, (mu = 1, sigma = 2))
   }
 });
 
-test('collection callbacks can receive a fixed function as their parameter', async () => {
+test('a fold can receive a fixed function as its additional argument', async () => {
+  // §04: reduce passes additional arguments whole; scan and filter traverse them as sequences,
+  // so a function is not a sequence input there.
   const { ctx } = makeMatCtx(`
 double(x) = 2*x
-predicate(x) = x > 2
-states = scan((a, x, p) -> p(a+x), 0, [1, 2, 3], double)
-selected = filter((x, p) -> p(x), [1, 2, 3], predicate)
+folded = reduce((a, x, p) -> p(a + x), [1, 2, 3], double)
 `, { sampleCount: 1 });
-  assert.deepEqual(Array.from((await ctx.getMeasure('states')).value.data), [2, 8, 22]);
-  assert.deepEqual(Array.from((await ctx.getMeasure('selected')).value.data), [3]);
+  // ((1, 2) -> 2 * 3 = 6, then (6, 3) -> 2 * 9 = 18)
+  assert.deepEqual(Array.from((await ctx.getMeasure('folded')).value.data), [18]);
 });
 
 test('collection parameter forms preserve vector and accumulator domains', () => {

@@ -297,13 +297,10 @@ function validateSpecialOperation(valueNode: any) {
     case 'weighted':
     case 'pushfwd':
     case 'logweighted': {
-      if (args.length !== 2 && args.length !== 3) {
-        diags.push({ severity: 'error', message: `${name}() takes two or three arguments`, loc: valueNode.loc });
-      }
-      for (const arg of args) {
-        if (arg.type === 'KeywordArg') {
-          diags.push({ severity: 'error', message: `${name}() takes positional arguments only`, loc: arg.loc });
-        }
+      // Two leading positional inputs, then additional arguments (spec §04), which
+      // may be named; a keyword at a leading input is `validateDistinguishedInputs`'s.
+      if (args.length < 2) {
+        diags.push({ severity: 'error', message: `${name}() takes at least two arguments`, loc: valueNode.loc });
       }
       break;
     }
@@ -690,26 +687,22 @@ function validateSpecialOperation(valueNode: any) {
     }
 
     case 'reduce': {
-      // §04 callback inputs: optional p follows the ordinary fold inputs.
-      if (args.length !== 2 && args.length !== 3) {
-        diags.push({ severity: 'error', message: `reduce() takes two or three arguments (f, xs, optional p)`, loc: valueNode.loc });
-      }
-      for (const arg of args) {
-        if (arg.type === 'KeywordArg') {
-          diags.push({ severity: 'error', message: `reduce() takes positional arguments only`, loc: arg.loc });
-        }
+      // §04: `reduce(f, xs, ...)` — additional arguments follow the two inputs.
+      if (args.length < 2) {
+        diags.push({ severity: 'error', message: `reduce() takes at least two arguments (f, xs, ...)`, loc: valueNode.loc });
       }
       break;
     }
 
     case 'scan': {
-      // §04 callback inputs: optional p follows the ordinary scan inputs.
-      if (args.length !== 3 && args.length !== 4) {
-        diags.push({ severity: 'error', message: `scan() takes three or four arguments (f, init, xs, optional p)`, loc: valueNode.loc });
+      // §04 "Folds and scans": `scan(f, init, ...)` — f and init are positional, and at
+      // least one sequence input follows, positionally or by name.
+      if (args.length < 3) {
+        diags.push({ severity: 'error', message: `scan() takes at least three arguments (f, init, and one or more sequence inputs)`, loc: valueNode.loc });
       }
-      for (const arg of args) {
+      for (const arg of args.slice(0, 2)) {
         if (arg.type === 'KeywordArg') {
-          diags.push({ severity: 'error', message: `scan() takes positional arguments only`, loc: arg.loc });
+          diags.push({ severity: 'error', message: `scan() takes positional arguments only for its function and initial value`, loc: arg.loc });
         }
       }
       break;
@@ -2212,7 +2205,7 @@ const DISTINGUISHED_INPUTS = new Map<string, number>([
   ['functionof', 1], ['kernelof', 1], ['broadcast', 1],
   ['get', Infinity], ['load_module', 1],
   ['standard_module', 2], ['ksuperpose', 2], ['tilt', 2],
-  ['aggregate', 3], ['metricsum', 3], ['markovchain', 3], ['kscan', 3],
+  ['aggregate', 3], ['metricsum', 3], ['markovchain', 3], ['kscan', 2],
   // The measure combinators take their leading inputs positionally too
   // (spec §04: "a keyword spelling such as `normalize(M = mu)` is a static error").
   ['normalize', 1], ['totalmass', 1], ['iid', 2], ['truncate', 2], ['pushfwd', 2],
@@ -2248,8 +2241,7 @@ function validateDistinguishedInputs(node: any, diagnostics: any[]) {
     const name = call.callee.name;
     const distinguished = DISTINGUISHED_INPUTS.get(name)!;
     const args = call.args || [];
-    const positional = name === 'markovchain' || name === 'kscan' ? args.length : distinguished;
-    for (let i = 0; i < args.length && i < positional; i++) {
+    for (let i = 0; i < args.length && i < distinguished; i++) {
       if (!args[i] || args[i].type !== 'KeywordArg') continue;
       diagnostics.push({
         severity: 'error',
@@ -2345,6 +2337,11 @@ function validateDataLoad(node: any, diagnostics: any[]) {
   walk(node);
 }
 
+/** Operations whose leading inputs are positional and whose further arguments bind the
+ * callback's remaining inputs, positionally or by name (spec §04 "Additional arguments"). */
+const ADDITIONAL_ARGUMENT_HEADS = ['weighted', 'logweighted', 'pushfwd', 'reduce', 'filter', 'scan',
+  'markovchain', 'kscan'];
+
 /** §05 permits mixed arguments only at special operations with named tails.
  * The parser retains their syntax; resolved call heads decide semantics here. */
 function validateMixedCalls(node: any, diagnostics: any[]) {
@@ -2355,7 +2352,10 @@ function validateMixedCalls(node: any, diagnostics: any[]) {
     const name = node.callee?.type === 'Identifier' ? node.callee.name : null;
     if (args.some((a: any) => a.type === 'KeywordArg')
         && args.some((a: any) => a.type !== 'KeywordArg')
-        && !['functionof', 'kernelof', 'broadcast', 'load_module'].includes(name)) {
+        && !['functionof', 'kernelof', 'broadcast', 'load_module',
+          // §05 "Additional arguments": named additional arguments follow the leading
+          // positional inputs of these operations.
+          ...ADDITIONAL_ARGUMENT_HEADS].includes(name)) {
       diagnostics.push({ severity: 'error', loc: node.loc,
         message: 'ordinary calls require either positional or keyword arguments, not both (spec §05)' });
     }
