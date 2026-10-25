@@ -15,10 +15,15 @@
 // atomic rename, the metadata is renamed before its content object (so a
 // present object always has metadata), and trust markers are created with an
 // exclusive open (O_CREAT | O_EXCL).
+//
+// The cache is shared with flatppl-rust (crates/fileaccess), which refuses a
+// cache directory that another user could change. The same rules hold here:
+// new directories are 0700 and files 0600 whatever the umask, every cache
+// directory is checked from the root down before use, and a URL with userinfo
+// is refused, so no credentials reach the disk or a message.
 
 const crypto = require('node:crypto');
 const fs = require('node:fs/promises');
-const fssync = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 // isUrl is owned by module-resolve (the pure resolution module); re-exported
@@ -44,6 +49,150 @@ function resolveCacheDir(opts: any): string {
   const xdg = env.XDG_CACHE_HOME;
   const base = (xdg && path.isAbsolute(xdg)) ? xdg : path.join(home, '.cache');
   return path.join(base, 'flatppl');
+}
+
+// The length of the authority at the start of `rest`, the text after a
+// `scheme://`. It ends at the first `/`, `?` or `#`. Whitespace and a
+// backslash do not end it, so the refusal and the redaction see one span.
+function authorityLen(rest: string): number {
+  const m = /[/?#]/.exec(rest);
+  return m ? m.index : rest.length;
+}
+
+function hasUserinfo(url: string): boolean {
+  const at = url.indexOf('://');
+  if (at < 0) return false;
+  const rest = url.slice(at + 3);
+  return rest.slice(0, authorityLen(rest)).includes('@');
+}
+
+// Redact the authority userinfo of every URL in `text`, a display-only copy.
+// The last `@` in an authority ends its userinfo. Text that only looks like an
+// authority may be over-redacted, never under-redacted.
+function redactUrlUserinfo(text: string): string {
+  let out = '';
+  let copied = 0;
+  let from = 0;
+  for (;;) {
+    const scheme = text.indexOf('://', from);
+    if (scheme < 0) break;
+    const start = scheme + 3;
+    const end = start + authorityLen(text.slice(start));
+    const at = text.lastIndexOf('@', end - 1);
+    if (at >= start) {
+      out += text.slice(copied, start) + '<redacted>@';
+      copied = at + 1;
+    }
+    from = end;
+  }
+  return out + text.slice(copied);
+}
+
+// Refuse a URL the cache must not fetch. RFC 9110 §4.2.4 forbids userinfo in
+// http(s) URIs and WHATWG fetch rejects it, so such a URL is not portable, and
+// `_meta.json` and the trust marker would keep its credentials on disk.
+function requireFetchableUrl(url: string): void {
+  if (!isUrl(url)) throw new Error('FlatPPL cache: only http and https URLs can be cached');
+  if (hasUserinfo(url)) {
+    throw new Error('FlatPPL cache: "' + redactUrlUserinfo(url)
+      + '" has userinfo (`user:password@`) and cannot be fetched');
+  }
+}
+
+// ---- verified directories
+//
+// Every directory from the root down must belong to the effective user and
+// must not be group- or other-writable, and none below the root may be a
+// symlink. No other user can then change a verified parent, so the chain
+// cannot change between the check and the publish. A permissive directory is
+// refused, not repaired: content planted before a chmod would survive it.
+
+function unsafeDir(dir: string, problem: string): Error {
+  return new Error('FlatPPL cache: cache directory "' + dir + '" ' + problem
+    + '; only you may write the cache, so fix its ownership and mode or set '
+    + 'FLATPPL_CACHEDIR to a private directory');
+}
+
+function checkOwnedDir(dir: string, st: any): void {
+  if (!st.isDirectory()) throw unsafeDir(dir, 'is not a directory');
+  if (typeof process.geteuid !== 'function') return; // no POSIX ownership (Windows)
+  if (st.uid !== process.geteuid()) throw unsafeDir(dir, 'is owned by another user');
+  if (st.mode & 0o022) throw unsafeDir(dir, 'is writable by other users');
+}
+
+// The root's ancestors are the user's choice. A symlink root must itself
+// belong to this user or the superuser, so a link planted in a shared
+// directory such as /tmp cannot be swapped after the check.
+async function checkRoot(root: string): Promise<void> {
+  const link = await fs.lstat(root);
+  if (link.isSymbolicLink()) {
+    if (typeof process.geteuid === 'function' && link.uid !== process.geteuid() && link.uid !== 0) {
+      /* c8 ignore start -- a test cannot create a link owned by another user without root */
+      throw unsafeDir(root, 'is a symbolic link owned by another user');
+    }
+    /* c8 ignore stop */
+    checkOwnedDir(root, await fs.stat(root));
+    return;
+  }
+  checkOwnedDir(root, link);
+}
+
+function checkCacheDir(dir: string, st: any): void {
+  if (st.isSymbolicLink()) throw unsafeDir(dir, 'is a symbolic link');
+  checkOwnedDir(dir, st);
+}
+
+// mkdir's mode is masked by the umask, so set it explicitly on what we create.
+async function makePrivateDir(dir: string, recursive: boolean): Promise<void> {
+  let first: string | undefined;
+  try { first = await fs.mkdir(dir, { recursive, mode: 0o700 }); }
+  catch (e: any) { if (e && e.code === 'EEXIST') return; throw e; }
+  if (!recursive) { await fs.chmod(dir, 0o700); return; }
+  if (first === undefined) return;
+  for (let d = dir; ; d = path.dirname(d)) {
+    await fs.chmod(d, 0o700);
+    if (d === first || path.dirname(d) === d) break;
+  }
+}
+
+// `<root>/<components>`, created where missing.
+async function createdDir(root: string, components: string[]): Promise<string> {
+  await makePrivateDir(root, true);
+  await checkRoot(root);
+  let dir = root;
+  for (const c of components) {
+    dir = path.join(dir, c);
+    await makePrivateDir(dir, false);
+    checkCacheDir(dir, await fs.lstat(dir));
+  }
+  return dir;
+}
+
+// `<root>/<components>`, or null while any part of it is missing.
+async function existingDir(root: string, components: string[]): Promise<string | null> {
+  try { await checkRoot(root); }
+  catch (e: any) { if (e && e.code === 'ENOENT') return null; throw e; }
+  let dir = root;
+  for (const c of components) {
+    dir = path.join(dir, c);
+    let st: any;
+    try { st = await fs.lstat(dir); }
+    catch (e: any) { if (e && e.code === 'ENOENT') return null; throw e; }
+    checkCacheDir(dir, st);
+  }
+  return dir;
+}
+
+// A regular file, without following a final symlink.
+async function isRegularFile(p: string): Promise<boolean> {
+  try { return (await fs.lstat(p)).isFile(); } catch (_e) { return false; }
+}
+
+// Exclusively create a 0600 file whatever the umask.
+async function openPrivateFile(p: string): Promise<any> {
+  const fh = await fs.open(p, 'wx', 0o600);
+  try { await fh.chmod(0o600); } catch (e) { await fh.close(); throw e; }
+  return fh;
 }
 
 // Key derivation (spec "Layout and keys"): `key` = lowercase-hex SHA-256 of the
@@ -73,32 +222,42 @@ function cachePaths(cacheDir: string, url: string): { object: string, meta: stri
   };
 }
 
+function trustDir(url: string): string[] { return [LAYOUT_VERSION, 'trust', urlKey(url).kk]; }
+function objectDir(url: string): string[] { return [LAYOUT_VERSION, 'objects', urlKey(url).kk]; }
+
 async function isTrusted(cacheDir: string, url: string): Promise<boolean> {
-  try { await fs.access(cachePaths(cacheDir, url).trust); return true; }
+  const dir = await existingDir(cacheDir, trustDir(url));
+  if (dir === null) return false;
+  try { await fs.access(path.join(dir, urlKey(url).key)); return true; }
   catch (_e) { return false; }
 }
 
 // Create the per-URL trust marker with an exclusive open (atomic; concurrent
-// creators race harmlessly). The marker's content is the URL, for inspection.
+// creators race harmlessly). The marker's content is the URL, for inspection;
+// the caller refused userinfo before approval.
 async function markTrusted(cacheDir: string, url: string): Promise<void> {
-  const p = cachePaths(cacheDir, url).trust;
-  await fs.mkdir(path.dirname(p), { recursive: true });
+  requireFetchableUrl(url);
+  const dir = await createdDir(cacheDir, trustDir(url));
   let fh: any;
-  try { fh = await fs.open(p, 'wx'); }      // 'wx' = O_CREAT | O_EXCL
+  try { fh = await openPrivateFile(path.join(dir, urlKey(url).key)); } // 'wx' = O_CREAT | O_EXCL
   catch (e: any) { if (e && e.code === 'EEXIST') return; throw e; }
   try { await fh.writeFile(String(url)); } finally { await fh.close(); }
 }
 
 // Atomic write (spec "Atomicity"): write a temp file on the same filesystem,
-// fsync it, then rename it into place. The destination is never written in place.
+// fsync it, then rename it into place. The destination is never written in
+// place, and its directory comes from createdDir.
 async function atomicWrite(cacheDir: string, destPath: string, data: any): Promise<void> {
-  const tmpDir = path.join(cacheDir, LAYOUT_VERSION, 'tmp');
-  await fs.mkdir(tmpDir, { recursive: true });
-  await fs.mkdir(path.dirname(destPath), { recursive: true });
+  const tmpDir = await createdDir(cacheDir, [LAYOUT_VERSION, 'tmp']);
   const tmp = path.join(tmpDir, crypto.randomBytes(16).toString('hex'));
-  const fh = await fs.open(tmp, 'w');
-  try { await fh.writeFile(data); await fh.sync(); } finally { await fh.close(); }
-  await fs.rename(tmp, destPath);
+  const fh = await openPrivateFile(tmp);
+  try {
+    try { await fh.writeFile(data); await fh.sync(); } finally { await fh.close(); }
+    await fs.rename(tmp, destPath);
+  } catch (e) {
+    await fs.rm(tmp, { force: true });
+    throw e;
+  }
 }
 
 // Resolve a URL to its cached bytes, fetching and caching on a miss (spec
@@ -109,7 +268,7 @@ async function atomicWrite(cacheDir: string, destPath: string, data: any): Promi
 // FLATPPL_CACHE_OFFLINE / FLATPPL_TRUST environment variables; `force` performs
 // the spec's explicit update (re-fetch + atomic replace, ignoring a cache hit).
 async function fetchToCache(url: string, opts: any): Promise<any> {
-  if (!isUrl(url)) throw new Error('FlatPPL cache: only http and https URLs can be cached');
+  requireFetchableUrl(url);
   opts = opts || {};
   const env = opts.env || process.env;
   const cacheDir = opts.cacheDir || resolveCacheDir(opts);
@@ -117,7 +276,8 @@ async function fetchToCache(url: string, opts: any): Promise<any> {
 
   // Cache hit — never revalidated against the network, unless opts.force
   // requests an explicit update (re-fetch + atomic replace; spec "update").
-  if (!opts.force && fssync.existsSync(p.object)) {
+  // A symlink is not a hit.
+  if (!opts.force && await existingDir(cacheDir, objectDir(url)) !== null && await isRegularFile(p.object)) {
     const content = await fs.readFile(p.object);
     let meta: any = null;
     try { meta = JSON.parse(await fs.readFile(p.meta, 'utf8')); } catch (_e) { /* meta optional on read */ }
@@ -125,7 +285,7 @@ async function fetchToCache(url: string, opts: any): Promise<any> {
   }
 
   const offline = opts.offline != null ? opts.offline : !!env.FLATPPL_CACHE_OFFLINE;
-  if (offline) throw new Error('FlatPPL cache: offline and "' + url + '" is not cached (cache miss)');
+  if (offline) throw new Error('FlatPPL cache: offline and "' + redactUrlUserinfo(url) + '" is not cached (cache miss)');
 
   // Trust gate (per-URL). FLATPPL_TRUST trusts every URL without creating markers.
   const trustAll = opts.trustAll != null ? opts.trustAll : !!env.FLATPPL_TRUST;
@@ -134,6 +294,7 @@ async function fetchToCache(url: string, opts: any): Promise<any> {
   let current = url;
   for (let hop = 0; ; hop++) {
     if (!isUrl(current)) throw new Error('FlatPPL cache: redirect requires an http or https URL');
+    requireFetchableUrl(current);
     if (hop > 10) throw new Error('FlatPPL cache: too many redirects');
     if (!trustAll && !(await isTrusted(cacheDir, current))) {
       const ok = typeof opts.approve === 'function' && await opts.approve(current);
@@ -141,7 +302,10 @@ async function fetchToCache(url: string, opts: any): Promise<any> {
       await markTrusted(cacheDir, current);
     }
     try { res = await fetchImpl(current, { redirect: 'manual' }); }
-    catch (e: any) { throw new Error('FlatPPL cache: network error fetching "' + current + '": ' + (e && e.message || e)); }
+    catch (e: any) {
+      throw new Error('FlatPPL cache: network error fetching "' + current + '": '
+        + redactUrlUserinfo(String(e && e.message || e)));
+    }
     if (![301, 302, 303, 307, 308].includes(res.status)) break;
     const location = res.headers.get('location');
     await res.body?.cancel();
@@ -163,6 +327,7 @@ async function fetchToCache(url: string, opts: any): Promise<any> {
   };
 
   // Metadata first, then the content object (so a present object always has meta).
+  await createdDir(cacheDir, objectDir(url));
   await atomicWrite(cacheDir, p.meta, JSON.stringify(meta, null, 2) + '\n');
   await atomicWrite(cacheDir, p.object, content);
   return { content, meta, fromCache: false };
@@ -175,4 +340,5 @@ async function readText(url: string, opts: any): Promise<string> {
 
 module.exports = {
   isUrl, resolveCacheDir, urlKey, cachePaths, isTrusted, markTrusted, fetchToCache, readText,
+  redactUrlUserinfo,
 };
