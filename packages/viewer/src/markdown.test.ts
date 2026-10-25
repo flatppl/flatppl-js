@@ -36,6 +36,66 @@ test('Markdown drops active and obscured link and image destinations', () => {
   }
 });
 
+// Every tag the corpus below may emit: CommonMark/GFM plus Temml's MathML.
+const DOCUMENT_TAGS = new Set([
+  'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'p', 'a', 'img', 'em', 'strong', 'del',
+  'code', 'pre', 'blockquote', 'ul', 'ol', 'li', 'hr', 'br',
+  'table', 'thead', 'tbody', 'tr', 'th', 'td', 'span',
+  'math', 'mrow', 'mi', 'mo', 'mn', 'ms', 'mtext', 'mspace', 'msup', 'msub',
+  'msubsup', 'mfrac', 'msqrt', 'mroot', 'mstyle', 'mpadded', 'mphantom',
+  'menclose', 'mtable', 'mtr', 'mtd', 'munder', 'mover', 'munderover',
+  'semantics', 'annotation',
+]);
+
+/** Tags and decoded attributes of renderer output. Text escapes `<`, so each
+ *  `<` before a letter opens a tag. Refuse a tag the scan cannot read. */
+function elements(html: string) {
+  const decode = (v: string) => v.replace(/&(#x[\da-f]+|#\d+|quot|amp|lt|gt);/gi, (_, e) =>
+    e[0] === '#' ? String.fromCodePoint(e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : +e.slice(1))
+      : { quot: '"', amp: '&', lt: '<', gt: '>' }[e.toLowerCase()]);
+  const value = String.raw`(?:\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+)))?`;
+  const tags = [...html.matchAll(new RegExp(String.raw`<([a-zA-Z][\w-]*)((?:\s+[^\s=>/]+` + value + String.raw`)*)\s*/?>`, 'g'))];
+  assert.equal(tags.length, html.match(/<[a-zA-Z]/g)?.length ?? 0, 'unreadable tag in ' + html);
+  return tags.map(m => ({
+    tag: m[1].toLowerCase(),
+    attrs: [...m[2].matchAll(new RegExp(String.raw`\s+([^\s=>/]+)` + value, 'g'))]
+      .map(a => ({ name: a[1].toLowerCase(), value: decode(a[2] ?? a[3] ?? a[4] ?? '') })),
+  }));
+}
+
+test('Markdown output keeps only document tags, inert attributes, and web destinations', () => {
+  // Inert renderer probes, one per vector class. No browser executes them.
+  const corpus = {
+    'raw HTML block': '<iframe srcdoc="x"></iframe>\n\n<style>p{}</style>\n\n<form action="javascript:void 0"><button>b</button></form>',
+    'raw HTML handlers': '<details open ontoggle="void 0">x</details>\n\n<object data="x"></object><embed src="x">',
+    'nested foreign content': '<math><mtext><table><mglyph><style><img src=x onerror="void 0"></style></mglyph></table></mtext></math>',
+    'HTML in heading and table': '# h <img src=x onerror="void 0">\n\n| a |\n| - |\n| <svg onload="void 0"> |',
+    'fence info string': '```"><img src=x onerror="void 0">\ncode\n```',
+    'link title': '[t](https://example.org "q\\" onmouseover=\\"void 0")',
+    'reference definition': '[r][d]\n\n[d]: javascript:void(0)',
+    'scheme autolink': '<javascript:void(0)> <data:text/html,x>',
+    'tab in a bracketed destination': '[t](<java\tscript:void(0)>)',
+    'image destination quote': '![i](x" onerror="void 0)',
+    'math HTML commands': '$\\href{javascript:void(0)}{h}$ $\\htmlClass{c}{x}$ $\\htmlStyle{color:red}{x}$ $\\htmlId{i}{x}$ $\\htmlData{a=b}{x}$',
+    'math URL and image commands': '$\\url{javascript:void(0)}$ $\\includegraphics{javascript:void(0)}$',
+    'math color argument': '$\\color{red;background:url(x)}{c}$',
+    'math text': '$\\text{<img src=x onerror="void 0">}$ $$\\unicode{<svg onload="void 0">}$$',
+    'math fence breakout': '```math\n\\text{</math><img src=x onerror="void 0">}\n```',
+  };
+  for (const [vector, source] of Object.entries(corpus)) {
+    for (const { tag, attrs } of elements(render(source))) {
+      assert.ok(DOCUMENT_TAGS.has(tag), `${vector}: <${tag}>`);
+      for (const { name, value } of attrs) {
+        assert.doesNotMatch(name, /^on/, `${vector}: ${name} on <${tag}>`);
+        if (name === 'href' || name === 'src') {
+          const scheme = /^\s*([a-z][a-z\d+.-]*):/i.exec(value.replace(/[\t\n\r]/g, ''));
+          assert.ok(!scheme || /^(?:https?|mailto)$/i.test(scheme[1]), `${vector}: ${name}="${value}"`);
+        }
+      }
+    }
+  }
+});
+
 test('Markdown retains safe destinations, formatting, code, and math', () => {
   const html = render([
     '[**web**](https://example.org/?a=1&amp;b=2 "title")',
