@@ -10,8 +10,10 @@
   <meta charset="UTF-8">
   <!-- The engine compiles numerical loops with Function. Keep unsafe-eval for
        that path, but disallow inline scripts and event handlers. Document
-       resource consent and the HTML iframe's stricter CSP govern network use. -->
-  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-eval'; worker-src 'self' blob:">
+       resource consent and the HTML iframe's stricter CSP govern network use.
+       No plugin content and no <base>, so injected markup cannot load an
+       object or redirect the relative script and worker URLs. -->
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-eval'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, interactive-widget=resizes-content">
   <title>FlatPPL Playground</title>
   <script src="theme/shell.js"></script>
