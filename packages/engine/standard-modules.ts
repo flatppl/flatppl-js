@@ -135,7 +135,6 @@ function _clearStandardModules(): void {
 //     sampler-complex.ts's scalar convention.
 
 const T = require('./types.ts');
-const _stdlibGammaln = require('@stdlib/math-base-special-gammaln');
 
 // --- polynomials ------------------------------------------------------
 //
@@ -313,10 +312,13 @@ function _blattWeisskopfSquared(l: number, pd2: number): number {
 // Small Wigner d-function d^j_{m1 m2}(β) = <j m1| exp(-iβJ_y) |j m2> (spec
 // §09, PDG phase convention), taking cos β. The momenta come doubled
 // (tj = 2j, tm1 = 2m1, tm2 = 2m2) so half-integer spin stays integral.
-// Wigner's sum, with factorials in logs so a large j does not overflow:
-//   d = Σ_s (-1)^(m1-m2+s) √((j+m1)!(j-m1)!(j+m2)!(j-m2)!)
-//         / ((j+m2-s)! s! (m1-m2+s)! (j-m1-s)!)
-//         · cos(β/2)^(2j+m2-m1-2s) · sin(β/2)^(m1-m2+2s)
+// Wigner's alternating sum cancels catastrophically at high spin (relative
+// error 1.8e-3 at 2j = 80), so evaluate the Jacobi form instead:
+//   d = (-1)^λ √(k! (k+a+b)! / ((k+a)! (k+b)!))
+//         · sin(β/2)^a · cos(β/2)^b · P_k^(a,b)(cos β),
+// k = min(j±m1, j±m2), a = |m1-m2|, b = 2j-2k-a, λ = m1-m2 when k is j+m2
+// or j-m1 and 0 otherwise. P_k comes from the three-term recurrence in its
+// degree, which is stable on [-1, 1].
 function _wignerdDoubled(name: string, tj: number, tm1: number, tm2: number, cosbeta: number): number {
   if (![tj, tm1, tm2].every(Number.isInteger) || tj < 0
       || Math.abs(tm1) > tj || Math.abs(tm2) > tj
@@ -330,17 +332,25 @@ function _wignerdDoubled(name: string, tj: number, tm1: number, tm2: number, cos
   if (!(cosbeta >= -1 && cosbeta <= 1)) return NaN;  // outside interval(-1, 1)
   const jp1 = (tj + tm1) / 2, jm1 = (tj - tm1) / 2;
   const jp2 = (tj + tm2) / 2, jm2 = (tj - tm2) / 2;
-  const dm = (tm1 - tm2) / 2;
-  const c = Math.sqrt((1 + cosbeta) / 2), sn = Math.sqrt((1 - cosbeta) / 2);
-  const lf = (n: number) => _stdlibGammaln(n + 1);
-  const norm = 0.5 * (lf(jp1) + lf(jm1) + lf(jp2) + lf(jm2));
-  let sum = 0;
-  for (let k = Math.max(0, -dm); k <= Math.min(jp2, jm1); k++) {
-    const mag = Math.exp(norm - lf(jp2 - k) - lf(k) - lf(dm + k) - lf(jm1 - k))
-      * Math.pow(c, tj - dm - 2 * k) * Math.pow(sn, dm + 2 * k);
-    sum += (dm + k) % 2 === 0 ? mag : -mag;
+  const k = Math.min(jp1, jm1, jp2, jm2);
+  const a = Math.abs(tm1 - tm2) / 2;
+  const b = tj - 2 * k - a;
+  const odd = (k === jp2 || k === jm1) && ((tm1 - tm2) / 2) % 2 !== 0;
+  // k! (k+a+b)! / ((k+a)! (k+b)!) as a product of b ratios. It is at most
+  // binom(2j, j), about 1e23 at 2j = 80, so it needs no log-gamma.
+  let ratio = 1;
+  for (let i = 1; i <= b; i++) ratio *= (k + a + i) / (k + i);
+  const x = cosbeta;
+  let p0 = 1, p1 = k === 0 ? 1 : (a + 1) + (a + b + 2) * (x - 1) / 2;
+  for (let n = 2; n <= k; n++) {
+    const s = 2 * n + a + b;
+    const p2 = ((s - 1) * (s * (s - 2) * x + a * a - b * b) * p1
+      - 2 * (n + a - 1) * (n + b - 1) * s * p0) / (2 * n * (n + a + b) * (s - 2));
+    p0 = p1; p1 = p2;
   }
-  return sum;
+  const c = Math.sqrt((1 + cosbeta) / 2), sn = Math.sqrt((1 - cosbeta) / 2);
+  const d = Math.sqrt(ratio) * Math.pow(sn, a) * Math.pow(c, b) * p1;
+  return odd ? -d : d;
 }
 
 // Wigner D = exp(-i(m1 α + m2 γ)) d^j_{m1 m2}(β) (spec §09), doubled momenta.
