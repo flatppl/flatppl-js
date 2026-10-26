@@ -233,10 +233,12 @@ if (HAVE_CORPUS) {
     // `builtin_logdensityof(CrystalBall, …)` the determiniser emits). Recorded
     // in TODO-flatppl-js.md; pinned WITH its message so it cannot acquire a new
     // error quietly. paired_assay's table-in-record refusal is recorded there
-    // too.
+    // too. stdmod_interp_poly6 reaches the §09 `distances` module, which this
+    // engine does not provide yet (TODO-flatppl-js.md).
     const KNOWN: Record<string, RegExp> = {
       b_mass_peak: /weighted: arg 2 expects measure, got deferred/,
       paired_assay: /a table may not appear inside a record/,
+      stdmod_interp_poly6: /standard module 'distances@0.1' is not provided by this engine/,
     };
     for (const dir of dirs.sort()) {
       const modelPath = path.join(CORPUS, dir, 'model.flatppl');

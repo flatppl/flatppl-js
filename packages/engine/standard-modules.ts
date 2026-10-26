@@ -40,6 +40,8 @@ interface StandardModuleEntry {
   name: string;
   compat: string;
   bindings: Map<string, BindingDescriptor>;
+  /** Members that are REGISTRY-resident distributions, not descriptors. */
+  distributions?: ReadonlySet<string>;
 }
 
 interface BindingDescriptor {
@@ -589,6 +591,7 @@ function _registerParticlePhysics() {
     name: 'particle-physics',
     compat: '0.1',
     bindings,
+    distributions: require('./builtins.ts').PARTICLE_PHYSICS_DISTRIBUTIONS,
   });
 }
 

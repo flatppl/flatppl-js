@@ -20,16 +20,16 @@ function ir(name: string, src: string) {
 // 1. Pure single-hop alias to a module-namespaced ref
 // =====================================================================
 
-test('alias → module ref: breit_wigner = hepphys.X canonicalises', () => {
+test('alias → module ref: breit_wigner = hepphys.resonance_breitwigner canonicalises', () => {
   const { lb, errs } = ir('breit_wigner', `
 hepphys = standard_module("particle-physics", "0.1")
-breit_wigner = hepphys.breit_wigner_lineshape
+breit_wigner = hepphys.resonance_breitwigner
 `);
   assert.equal(errs.length, 0);
   assert.equal(lb.isAlias, true, 'binding is tagged as alias');
   assert.equal(lb.rhs.kind, 'ref');
   assert.equal(lb.rhs.ns, 'hepphys');
-  assert.equal(lb.rhs.name, 'breit_wigner_lineshape');
+  assert.equal(lb.rhs.name, 'resonance_breitwigner');
 });
 
 // =====================================================================
@@ -39,12 +39,12 @@ breit_wigner = hepphys.breit_wigner_lineshape
 test('alias chain: b = a; a = mod.x → b canonicalises to mod.x', () => {
   const { lb: bLb } = ir('b', `
 hepphys = standard_module("particle-physics", "0.1")
-a = hepphys.breit_wigner_lineshape
+a = hepphys.resonance_breitwigner
 b = a
 `);
   assert.equal(bLb.isAlias, true);
   assert.equal(bLb.rhs.ns, 'hepphys');
-  assert.equal(bLb.rhs.name, 'breit_wigner_lineshape');
+  assert.equal(bLb.rhs.name, 'resonance_breitwigner');
 });
 
 // =====================================================================
@@ -54,12 +54,12 @@ b = a
 test('call.target through alias rewrites to canonical', () => {
   const { lb } = ir('foo', `
 hepphys = standard_module("particle-physics", "0.1")
-breit_wigner = hepphys.breit_wigner_lineshape
+breit_wigner = hepphys.resonance_breitwigner
 foo = breit_wigner(0.5)
 `);
   assert.equal(lb.rhs.kind, 'call');
   assert.equal(lb.rhs.target.ns, 'hepphys');
-  assert.equal(lb.rhs.target.name, 'breit_wigner_lineshape');
+  assert.equal(lb.rhs.target.name, 'resonance_breitwigner');
 });
 
 // =====================================================================
@@ -70,16 +70,16 @@ foo = breit_wigner(0.5)
 test('alias inside functionof body rewrites to canonical', () => {
   const { lb } = ir('resonance', `
 hepphys = standard_module("particle-physics", "0.1")
-breit_wigner = hepphys.breit_wigner_lineshape
+breit_wigner = hepphys.resonance_breitwigner
 resonance = s -> breit_wigner(s)
 `);
   // resonance's body is a functionof body containing a call to
   // breit_wigner. After alias-resolution that call.target should
-  // be hepphys.breit_wigner_lineshape.
+  // be hepphys.resonance_breitwigner.
   const body = lb.rhs.body;
   assert.equal(body.kind, 'call');
   assert.equal(body.target.ns, 'hepphys');
-  assert.equal(body.target.name, 'breit_wigner_lineshape');
+  assert.equal(body.target.name, 'resonance_breitwigner');
 });
 
 // =====================================================================
@@ -151,7 +151,7 @@ test('non-alias-affected binding is referentially preserved', () => {
   // same IR reference between parse-and-resolve and re-resolve.
   const out = processSource(`
 hepphys = standard_module("particle-physics", "0.1")
-breit_wigner = hepphys.X
+breit_wigner = hepphys.resonance_breitwigner
 unaffected = 1 + 2 + 3
 `);
   // The `unaffected` binding's RHS contains no refs to alias names;

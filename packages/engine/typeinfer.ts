@@ -374,7 +374,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         + modAlias + "." + expr.name + ")");
     }
     if (modRhs.op === 'standard_module') {
-      return resolveStandardModuleRef(modRhs, expr.name, modAlias);
+      return resolveStandardModuleRef(modRhs, expr.name, modAlias, expr.loc);
     }
     return resolveUserModuleRef(expr, modAlias);
   }
@@ -424,7 +424,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return depBinding.inferredType || T.deferred();
   }
 
-  function resolveStandardModuleRef(stdModCall: any, bindingName: string, modAlias: string): any {
+  function resolveStandardModuleRef(stdModCall: any, bindingName: string, modAlias: string,
+      loc: any): any {
     // `standard_module(<name-lit>, <compat-lit>)`. Both args are
     // literal strings — the analyzer validates this shape upstream.
     const args = stdModCall.args || [];
@@ -437,14 +438,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const stdCompat = compatArg.value;
     const stdModules = require('./standard-modules.ts');
     const entry = stdModules.lookupStandardModule(stdName, stdCompat);
+    // §04 "Name resolution": a qualified name that resolves nowhere is a
+    // static error, as an unknown base name is.
     if (!entry) {
-      return T.failed("standard module '" + stdName + "@" + stdCompat
-        + "' is not provided by this engine");
+      return unresolvedModuleRef("standard module '" + stdName + "@" + stdCompat
+        + "' is not provided by this engine", loc);
     }
     const desc = entry.bindings.get(bindingName);
+    // The density layer resolves these by name, so they stay untyped here.
+    if (!desc && entry.distributions?.has(bindingName)) return T.deferred();
     if (!desc) {
-      return T.failed("'" + bindingName + "' is not a binding of standard module '"
-        + stdName + "@" + stdCompat + "'");
+      return unresolvedModuleRef("'" + modAlias + "." + bindingName + "': standard module '"
+        + stdName + "@" + stdCompat + "' has no binding '" + bindingName + "'", loc);
     }
     // Each descriptor kind maps to a different type signal:
     //   - 'function': a `funcType(...)` per the descriptor's sig
@@ -464,6 +469,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return desc.sig;
     }
     return T.deferred();
+  }
+
+  // A ref is inferred once per use, and a call head once more through its
+  // call, so report each located failure once.
+  const _reportedModuleRefs = new Set<string>();
+  function unresolvedModuleRef(message: string, loc: any): any {
+    const key = message + '@' + (loc ? loc.start.line + ':' + loc.start.col : '');
+    if (!_reportedModuleRefs.has(key)) {
+      _reportedModuleRefs.add(key);
+      diagnostics.push({ severity: 'error', message, loc });
+    }
+    return T.failed(message);
   }
 
   function inferCall(expr: any, scopes: any): any {
@@ -4774,13 +4791,36 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const where = (ir && ir.kind === 'ref' && typeof ir.name === 'string')
       ? `the value of '${ir.name}'`
       : 'a value';
+    // A draw is not an op gap: the resolver fails on the measure under it.
+    // Name the real cause, a stochastic size.
+    const stochastic = _stochasticDependency(ir);
     diagnostics.push({
       severity: 'error',
-      message: `could not compute ${where}, needed here for type/shape `
-        + `inference — it uses an operation not supported in fixed-phase `
-        + `(simple) evaluation`,
+      message: stochastic
+        ? `could not compute ${where}, needed here for type/shape inference — `
+          + `${stochastic} is stochastic, but a size or count must be fixed`
+        : `could not compute ${where}, needed here for type/shape `
+          + `inference — it uses an operation not supported in fixed-phase `
+          + `(simple) evaluation`,
       loc: (ir && ir.loc) || undefined,
     });
+    return null;
+  }
+
+  // The first stochastic input of `ir`, described for a diagnostic: a ref to
+  // a stochastic binding (phases are already transitive) or an inline draw.
+  function _stochasticDependency(ir: any): string | null {
+    if (ir == null || typeof ir !== 'object') return null;
+    if (ir.kind === 'ref' && ir.ns === 'self') {
+      return loweredModule.bindings.get(ir.name)?.phase === 'stochastic' ? `'${ir.name}'` : null;
+    }
+    if (ir.kind === 'call' && ir.op === 'draw') return 'an inline draw';
+    const kids = [...(ir.args || []), ...Object.values(ir.kwargs || {}),
+      ...(ir.fields || []).map((f: any) => f.value)];
+    for (const k of kids) {
+      const hit = _stochasticDependency(k);
+      if (hit) return hit;
+    }
     return null;
   }
 
@@ -5217,7 +5257,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return write(inferBroadcast(broadcastIR, scopes), expr);
     }
 
-    const calleeType: any = local ? inferBinding(head.name, scopes) : inferRef(head, scopes);
+    const calleeType: any = local ? inferBinding(head.name, scopes)
+      : inferRef({ ...head, loc: expr.loc }, scopes);
     if (!T.isCallable(calleeType)) {
       if (!local && calleeType?.kind === 'failed' && callee?.inferredType?.kind === 'failed') {
         // The caller's diagnostics do not include dependency diagnostics.
