@@ -1375,15 +1375,18 @@ function _freshAxisName(body: any, base: string): string {
   return base + i;
 }
 
-// Static type of `get(src, idx...)` or `get_field(src, "name")`, or
-// null when an index form or the source type is not known. A scalar
-// index or an axis drops its axis, `all` and an index vector keep it, and
-// unindexed trailing axes stay (`M[1]` is a row).
+// Static type of `get(src, idx...)`, `get0(src, idx...)` or
+// `get_field(src, "name")`, or null when an index form or the source type
+// is not known, or a literal index is out of range (the runtime then
+// reports the bounds error). A scalar index or an axis drops its axis,
+// `all` and an index vector keep it, and unindexed trailing axes stay
+// (`M[1]` is a row).
+const _GET_OPS: Set<string> = new Set(['get', 'get0', 'get_field']);
 function _getResultType(expr: any, bindings: any): any | null {
   const args: any[] = expr.args || [];
   if (args.length < 2) return null;
   const src = args[0];
-  const inner = src && src.kind === 'call' && (src.op === 'get' || src.op === 'get_field');
+  const inner = src && src.kind === 'call' && _GET_OPS.has(src.op);
   const litVector = src && src.kind === 'call' && src.op === 'vector' && Array.isArray(src.args)
     && src.args.every((a: any) => a && a.kind === 'lit' && typeof a.value === 'number');
   const t = inner ? _getResultType(src, bindings)
@@ -1395,20 +1398,28 @@ function _getResultType(expr: any, bindings: any): any | null {
     const f = idx.length === 1 && idx[0].kind === 'lit' ? idx[0].value : null;
     return typeof f === 'string' && t.fields && t.fields[f] ? t.fields[f] : null;
   }
-  if (expr.op !== 'get' || t.kind !== 'array' || !Array.isArray(t.shape)) return null;
-  const scalarIndex = (a: any) => a && (a.kind === 'axis'
-    || (a.kind === 'lit' && typeof a.value === 'number')
+  if (expr.op === 'get_field' || t.kind !== 'array' || !Array.isArray(t.shape)) return null;
+  const base = expr.op === 'get0' ? 0 : 1;
+  const isLitIndex = (a: any) => a && a.kind === 'lit' && typeof a.value === 'number';
+  const inRange = (a: any, n: any) => !isLitIndex(a) || typeof n !== 'number'
+    || (a.value >= base && a.value < n + base);
+  const scalarIndex = (a: any) => a && (a.kind === 'axis' || isLitIndex(a)
     || (a.kind !== 'const' && _resolveExprType(a, bindings, 0)?.type?.kind === 'scalar'));
   if (t.elem && t.elem.kind === 'array') {
-    return t.shape.length === 1 && idx.length === 1 && scalarIndex(idx[0]) ? t.elem : null;
+    return t.shape.length === 1 && idx.length === 1 && scalarIndex(idx[0])
+      && inRange(idx[0], t.shape[0]) ? t.elem : null;
   }
   if (idx.length > t.shape.length) return null;
   const shape: any[] = [];
   for (let i = 0; i < idx.length; i++) {
     const a = idx[i];
-    if (scalarIndex(a)) continue;
+    if (scalarIndex(a)) {
+      if (!inRange(a, t.shape[i])) return null;
+      continue;
+    }
     if (a && a.kind === 'const' && a.name === 'all') shape.push(t.shape[i]);
-    else if (a && a.kind === 'call' && a.op === 'vector' && Array.isArray(a.args)) shape.push(a.args.length);
+    else if (a && a.kind === 'call' && a.op === 'vector' && Array.isArray(a.args)
+      && a.args.every((e: any) => scalarIndex(e) && inRange(e, t.shape[i]))) shape.push(a.args.length);
     else return null;
   }
   shape.push(...t.shape.slice(idx.length));
@@ -1466,7 +1477,7 @@ function _wrapVectorLeaves(
     }
     return null;  // mixed vector — refuse
   }
-  if (expr.kind === 'call' && (expr.op === 'get' || expr.op === 'get_field')) {
+  if (expr.kind === 'call' && _GET_OPS.has(expr.op)) {
     // A scalar get is a finished leaf. A vector get (`m[1]`, `rec.a`)
     // still needs the `.j` axis. Any other result refuses the fusion.
     const t = _getResultType(expr, bindings);
