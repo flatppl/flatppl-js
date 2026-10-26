@@ -308,6 +308,86 @@ function _broadcastScalarN(fn: any, args: any[], N: any) {
   return wantValue ? valueLib.batchedScalar(out) : out;
 }
 
+// Per-op element loops over the plain scalar ops (SCALAR_OPS). The shared
+// loops above call ~60 different ops through one call site, so none of them
+// inlines. Each kernel here is a separate generated function for one op and
+// one batched-operand mask, so its call to the op stays monomorphic.
+//
+// Taken only when every operand is plain: a batched operand is a real typed
+// array (bare, or the data of a non-complex Value of shape [N]) and every
+// other operand is a number or boolean. Then each element the op sees is a
+// number or a boolean, where SCALAR_OPS equals ARITH_OPS bit for bit
+// (test/fused-loop-scalar-ops.test.ts). Anything else returns null and the
+// caller keeps the ARITH_OPS loop.
+type ScalarKernel = { f: (...a: any[]) => any; loops: any[] };
+
+// A host whose CSP forbids string compilation (the VS Code webview and its
+// blob worker) throws EvalError from `new Function`. The kernels are then
+// off for the session and every op keeps the ARITH_OPS loop.
+let _NO_CODEGEN = false;
+const _KERNELS: ScalarKernel[] = [];
+
+// Default ON. Off reverts every op to the ARITH_OPS loop (perf baselines).
+// Turning them on also forgets generated loops and a recorded EvalError.
+let _SCALAR_KERNELS = true;
+function _setScalarKernels(on: boolean) {
+  _SCALAR_KERNELS = !!on;
+  if (_SCALAR_KERNELS) {
+    _NO_CODEGEN = false;
+    for (const k of _KERNELS) k.loops.length = 0;
+  }
+}
+
+function _scalarKernel(f: any): ScalarKernel {
+  const k = { f, loops: [] };
+  _KERNELS.push(k);
+  return k;
+}
+
+function _kernelLoop(arity: number, mask: number) {
+  const arg = (k: number) => ((mask >> k) & 1 ? 'd' + k + '[i]' : 's' + k);
+  const call = 'f(' + Array.from({ length: arity }, (_, k) => arg(k)).join(',') + ')';
+  // eslint-disable-next-line no-new-func
+  return new Function('f', 'd0', 'd1', 'd2', 's0', 's1', 's2', 'out', 'N',
+    'for(let i=0;i<N;i++){out[i]=+' + call + ';}return out;');
+}
+
+function _plainScalarN(kernel: ScalarKernel, args: any[], N: any) {
+  const ar = args.length;
+  if (_NO_CODEGEN || ar < 1 || ar > 3) return null;
+  const d: any[] = [null, null, null], sv: any[] = [0, 0, 0];
+  let mask = 0;
+  for (let k = 0; k < ar; k++) {
+    const v = args[k];
+    if (isBatch(v, N)) {
+      if (isValueObj(v) && (v.im !== undefined || v.dtype === 'complex')) return null;
+      const data = _batchData(v);
+      if (!data || data.BYTES_PER_ELEMENT === undefined) return null;
+      d[k] = data; mask |= 1 << k;
+    } else {
+      const x = _scalarVal(v);
+      if (typeof x !== 'number' && typeof x !== 'boolean') return null;
+      sv[k] = x;
+    }
+  }
+  if (mask === 0) return null;   // no batch: the single call stays with ARITH_OPS
+  const slot = (ar - 1) * 8 + mask;
+  let loop = kernel.loops[slot];
+  if (!loop) {
+    try {
+      loop = kernel.loops[slot] = _kernelLoop(ar, mask);
+    } catch (e) {
+      // The generated source is fixed, so only a CSP EvalError can reach here.
+      /* c8 ignore next */
+      if (!(e instanceof EvalError)) throw e;
+      _NO_CODEGEN = true;
+      return null;
+    }
+  }
+  const out = loop(kernel.f, d[0], d[1], d[2], sv[0], sv[1], sv[2], new Float64Array(N), N);
+  return _anyValueArr(args) ? valueLib.batchedScalar(out) : out;
+}
+
 // Thin shims — broadcast1/2/3 delegate to broadcastN. Kept for any
 // external caller that imports them directly; internal call sites
 // (the `initARITHOPSN` initialiser below) call broadcastN directly.
@@ -606,7 +686,9 @@ function initARITHOPSN(ARITH_OPS: any) {
       throw new Error(`ARITH_OPS_N: unsupported arity ${arity} for '${op}' `
         + `(scalar primitive arity must be 1, 2, or 3 today)`);
     }
-    ARITH_OPS_N[op] = (args: any, N: any) => broadcastN(fn, args, N);
+    const kernel = _scalarKernel((_compile.SCALAR_OPS as any)[op]);
+    ARITH_OPS_N[op] = (args: any, N: any) =>
+      (_SCALAR_KERNELS ? _plainScalarN(kernel, args, N) : null) ?? broadcastN(fn, args, N);
   }
 
   // Shape-aware mul / add / sub / neg.
@@ -1311,6 +1393,7 @@ module.exports = {
   broadcast3,
   broadcastN,
   _setCompileEvalN,
+  _setScalarKernels,
   _setCompilePerAtom,
   _profileProgramFor,
 };
