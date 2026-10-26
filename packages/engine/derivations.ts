@@ -5569,6 +5569,10 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
       return { ...ir, args: [ir.args[0], expandIntensity(ir.args[1])] };
     }
   }
+  if (ir.op === 'PoissonProcess' && !ir.kwargs && Array.isArray(ir.args) && ir.args.length === 1) {
+    // The positional spelling: the same expansion, keyed as `intensity`.
+    return _expandStructural({ ...ir, args: undefined, kwargs: { intensity: ir.args[0] } }, ctx, visited);
+  }
   if (ir.op === 'PoissonProcess' && ir.kwargs && ir.kwargs.intensity) {
     // The `intensity` kwarg is a MEASURE (e.g. weighted(M, ref shape), or a
     // superpose of them). Expand it so inner shape refs resolve to leaves —

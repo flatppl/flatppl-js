@@ -41,6 +41,11 @@ function _literalIRof(val: any): any {
   if (typeof val === 'number' || typeof val === 'boolean') {
     return { kind: 'lit', value: +val };
   }
+  // A set-valued parameter (`Uniform`'s support) resolves to a set object.
+  if (val && val.kind === 'interval') {
+    return { kind: 'call', op: 'interval',
+             args: [{ kind: 'lit', value: val.a }, { kind: 'lit', value: val.b }] };
+  }
   const av = _valueLib().asValue(val);
   if (av.shape.length === 0) return { kind: 'lit', value: av.data[0] };
   if (av.shape.length === 1) {
@@ -99,6 +104,12 @@ function _resolveLeafToLiteralIR(leafIR: any, ctx: any): any {
 // sampler (mat-poisson) and the density walker (density.ts).
 function parseIntensityComponents(node: any): any {
   if (!node || node.kind !== 'call') return null;
+  // `truncate` distributes over a superposition: each component is restricted.
+  if (node.op === 'truncate' && Array.isArray(node.args) && node.args.length === 2) {
+    const inner = parseIntensityComponents(node.args[0]);
+    if (!inner || inner.some((c: any) => c.setIR)) return null;
+    return inner.map((c: any) => ({ ...c, setIR: node.args[1] }));
+  }
   if (node.op === 'superpose' && Array.isArray(node.args)) {
     return _componentsFrom(node.args);
   }
@@ -123,17 +134,96 @@ function _componentsFrom(arr: any[]): any {
   return out.length > 0 ? out : null;
 }
 
+// One component `{ weights, shapeLeafIR, setIR, normalized }`: the rate is the
+// product of `weights` (each `{ ir, isLog }`) times the shape density,
+// restricted to `setIR` when it is set, and divided by P_s(S) when `normalized`. Nested `weighted` / `logweighted` multiply, which is
+// also how an expanded `normalize` arrives (a `logweighted` by −log mass). A §06
+// `truncate(·, S)` restricts without renormalising and commutes with the
+// weights, so `truncate(weighted(w, s), S)` and `weighted(w, truncate(s, S))`
+// are the same component: rate w·s_pdf(t) on S, expected count w·P_s(S).
 function _parseComponent(node: any): any {
   if (!node || node.kind !== 'call') return null;
-  if (node.op === 'weighted' && Array.isArray(node.args) && node.args.length === 2) {
-    return { weightIR: node.args[0], isLog: false, shapeLeafIR: node.args[1] };
+  const two = Array.isArray(node.args) && node.args.length === 2;
+  if ((node.op === 'weighted' || node.op === 'logweighted') && two) {
+    const inner = _parseComponent(node.args[1]);
+    if (!inner) return null;
+    return { ...inner,
+             weights: [{ ir: node.args[0], isLog: node.op === 'logweighted' }, ...inner.weights] };
   }
-  if (node.op === 'logweighted' && Array.isArray(node.args) && node.args.length === 2) {
-    return { weightIR: node.args[0], isLog: true, shapeLeafIR: node.args[1] };
+  if (node.op === 'truncate' && two) {
+    const inner = _parseComponent(node.args[0]);
+    if (!inner || inner.setIR) return null;
+    return { ...inner, setIR: node.args[1] };
+  }
+  // `normalize` drops the weights, and on a truncated shape divides by P_s(S).
+  // The density path sees it already expanded to a `logweighted`; the sampler
+  // path sees it as written.
+  if (node.op === 'normalize' && Array.isArray(node.args) && node.args.length === 1) {
+    const inner = _parseComponent(node.args[0]);
+    if (!inner) return null;
+    return { ...inner, weights: [], normalized: !!inner.setIR };
   }
   // Bare measure ⇒ weight 1 (M contribution 1). A non-distribution op falls
   // through to the caller's isKnownDistribution check, which rejects it.
-  return { weightIR: { kind: 'lit', value: 1 }, isLog: false, shapeLeafIR: node };
+  return { weights: [], shapeLeafIR: node, setIR: null, normalized: false };
+}
+
+// log of a component's total weight, its factors evaluated with `evaluate`.
+function componentLogWeight(c: any, evaluate: (ir: any) => number): number {
+  let lw = 0;
+  for (const f of c.weights) {
+    const v = +evaluate(f.ir);
+    lw += f.isLog ? v : Math.log(v);   // log 0 = −∞ (the component drops out)
+  }
+  return lw;
+}
+
+// The interval bounds of a component's truncation set, evaluated with
+// `evaluate` (an IR → number function), or null for an untruncated component.
+function componentBounds(c: any, evaluate: (ir: any) => number): [number, number] | null {
+  if (!c.setIR) return null;
+  const S = c.setIR;
+  if (!(S.kind === 'call' && S.op === 'interval' && S.args?.length === 2)) {
+    throw new Error('PoissonProcess: a truncated intensity needs an interval set (spec §06 '
+      + "`truncate`), got '" + (S.op || S.name || S.kind) + "'");
+  }
+  return [+evaluate(S.args[0]), +evaluate(S.args[1])];
+}
+
+// The support `[a, b]` of a `Lebesgue(support = S)` shape (§06 writes the
+// homogeneous intensity as `weighted(rate, Lebesgue(support = reals))`), or null
+// for any other shape. `S` is an interval or a predefined interval set.
+function lebesgueSupport(leafIR: any, evaluate: (ir: any) => number): [number, number] | null {
+  if (!leafIR || leafIR.op !== 'Lebesgue') return null;
+  const S = (leafIR.kwargs && leafIR.kwargs.support) || (leafIR.args && leafIR.args[0]);
+  if (S && S.kind === 'const') {
+    const known: Record<string, [number, number]> = {
+      reals: [-Infinity, Infinity], posreals: [0, Infinity], nonnegreals: [0, Infinity],
+      unitinterval: [0, 1],
+    };
+    if (known[S.name]) return known[S.name];
+  }
+  if (S && S.kind === 'call' && S.op === 'interval' && S.args?.length === 2) {
+    return [+evaluate(S.args[0]), +evaluate(S.args[1])];
+  }
+  throw new Error('PoissonProcess: a Lebesgue intensity needs an interval support (reals, '
+    + 'posreals, nonnegreals, unitinterval or interval(a, b))');
+}
+
+// log of the Lebesgue length of [lo, hi] ∩ support.
+function logLebesgueMass(support: [number, number], lo: number, hi: number): number {
+  return Math.log(Math.max(0, Math.min(hi, support[1]) - Math.max(lo, support[0])));
+}
+
+// log P_s([lo, hi]) for the shape leaf with positional `params`, from its CDF.
+function logIntervalMass(kernelName: string, params: any[], lo: number, hi: number): number {
+  const entry = _sampler()._internal.REGISTRY[kernelName];
+  const dist = entry && entry.Ctor ? new entry.Ctor(...params) : null;
+  if (!dist || typeof dist.cdf !== 'function' || entry.discrete) {
+    throw new Error("PoissonProcess: a truncated intensity needs a continuous shape with a CDF, got '"
+      + kernelName + "'");
+  }
+  return Math.log(dist.cdf(hi) - dist.cdf(lo));
 }
 
 // matPoissonProcess — atom-batched draw of variable-length point sets.
@@ -166,42 +256,74 @@ function matPoissonProcess(name: string, d: any, ctx: any): Promise<any> {
   }
   const orch = _orchestrator();
   const resolved: any[] = [];
-  for (let i = 0; i < comps.length; i++) {
-    const c = comps[i];
-    let wv: any = null;
-    try { wv = orch.resolveIRToValue(c.weightIR, ctx.bindings, ctx.fixedValues); }
-    catch (_e) { wv = null; }
-    if (typeof wv !== 'number') {
-      return Promise.reject(new Error(
-        'PoissonProcess: cannot resolve an intensity weight to a constant — '
-        + 'per-atom (draw-dependent) intensity is deferred for generative sampling'));
+  const constant = (ir: any): number => {
+    let v: any = null;
+    try { v = orch.resolveIRToValue(ir, ctx.bindings, ctx.fixedValues); }
+    catch (_e) { v = null; }
+    if (typeof v !== 'number') {
+      throw new Error('PoissonProcess: cannot resolve an intensity weight or truncation bound '
+        + 'to a constant — per-atom (draw-dependent) intensity is deferred for generative sampling');
     }
-    const w = c.isLog ? Math.exp(wv) : wv;
-    if (!(w >= 0)) {
-      return Promise.reject(new Error(
-        'PoissonProcess: an intensity weight (expected count) must be ≥ 0, got ' + w));
+    return v;
+  };
+  try {
+    for (let i = 0; i < comps.length; i++) {
+      const c = comps[i];
+      const logw = componentLogWeight(c, constant);
+      if (Number.isNaN(logw)) {
+        throw new Error('PoissonProcess: an intensity weight (expected count) must be ≥ 0');
+      }
+      const bounds = componentBounds(c, constant);
+      const lebesgue = lebesgueSupport(c.shapeLeafIR, constant);
+      if (lebesgue) {
+        // Rate w on [lo, hi] ∩ support: count Poisson(w·length), points uniform.
+        const [lo, hi] = bounds || [-Infinity, Infinity];
+        const a = Math.max(lo, lebesgue[0]), b = Math.min(hi, lebesgue[1]);
+        if (!Number.isFinite(b - a)) {
+          throw new Error('PoissonProcess: a Lebesgue intensity must be truncated to a bounded '
+            + 'set to have finite mass (spec §08)');
+        }
+        const leafIR = { kind: 'call', op: 'Uniform', args: [{ kind: 'call', op: 'interval',
+          args: [{ kind: 'lit', value: a }, { kind: 'lit', value: b }] }] };
+        resolved.push({ w: Math.exp(logw + Math.log(Math.max(0, b - a))), leafIR, cdfRange: null });
+        continue;
+      }
+      if (!_sampler().isKnownDistribution(c.shapeLeafIR.op)) {
+        throw new Error("PoissonProcess: a shape must be a scalar distribution, got '"
+          + c.shapeLeafIR.op + "' (d-dim / composite point kernels are a follow-up)");
+      }
+      const leafIR = _resolveLeafToLiteralIR(c.shapeLeafIR, ctx);
+      // A truncated shape draws by inverse CDF from u ~ Uniform(F(lo), F(hi)).
+      let cdfRange: [number, number] | null = null;
+      let dist: any = null;
+      let logMass = 0;
+      if (bounds) {
+        const params = _sampler().resolveParams(leafIR, _sampler().lookupDistribution(leafIR), {});
+        logMass = logIntervalMass(leafIR.op, params, bounds[0], bounds[1]);
+        dist = new (_sampler()._internal.REGISTRY[leafIR.op].Ctor)(...params);
+        cdfRange = [dist.cdf(bounds[0]), dist.cdf(bounds[1])];
+      }
+      resolved.push({ w: Math.exp(logw + (c.normalized ? 0 : logMass)), leafIR, cdfRange, dist });
     }
-    if (!_sampler().isKnownDistribution(c.shapeLeafIR.op)) {
-      return Promise.reject(new Error(
-        "PoissonProcess: a shape must be a scalar distribution, got '"
-        + c.shapeLeafIR.op + "' (d-dim / composite point kernels are a follow-up)"));
-    }
-    let leafIR: any;
-    try { leafIR = _resolveLeafToLiteralIR(c.shapeLeafIR, ctx); }
-    catch (err) { return Promise.reject(err); }
-    resolved.push({ w, leafIR });
-  }
+  } catch (err) { return Promise.reject(err); }
   const N = ctx.sampleCount;
-  return Promise.all(resolved.map((r, i) => _sampleComponentRagged(name, i, r.w, r.leafIR, N, ctx)))
+  return Promise.all(resolved.map((r, i) => _sampleComponentRagged(name, i, r, N, ctx)))
     .then((parts: any[]) => _empirical().raggedMeasure(R.raggedMerge(parts), null));
 }
 
 // One component of the superposition (also the whole single-component case):
 // per-atom counts k ~ Poisson(M), one pooled `sampleN(leaf, Σk)` partitioned
 // by counts → a ragged value over the N atoms.
-function _sampleComponentRagged(name: string, idx: number, M: number,
-                                leafIR: any, N: number, ctx: any): Promise<any> {
+function _sampleComponentRagged(name: string, idx: number, comp: any, N: number,
+                                ctx: any): Promise<any> {
   const shared = _shared();
+  const M = comp.w;
+  const leafIR = comp.cdfRange
+    ? { kind: 'call', op: 'Uniform', args: [{ kind: 'call', op: 'interval',
+      args: [{ kind: 'lit', value: comp.cdfRange[0] }, { kind: 'lit', value: comp.cdfRange[1] }] }] }
+    : comp.leafIR;
+  const toPoint = comp.cdfRange
+    ? (pts: Float64Array) => pts.map((u) => comp.dist.quantile(u)) : (pts: Float64Array) => pts;
   // M === 0 ⇒ Poisson(0) is degenerate (every atom draws 0; stdlib disallows
   // rate 0, cf. matBinnedPoissonProcess). All-empty component, no worker calls.
   if (M === 0) {
@@ -221,7 +343,7 @@ function _sampleComponentRagged(name: string, idx: number, M: number,
     return ctx.sendWorker({
       type: 'sampleN', ir: leafIR, count: tot, refArrays: {},
       seed: shared.nameSeed(name + '|c' + idx + '|pts', ctx.rootKey),
-    }).then((ptsReply: any) => assemblePoissonRagged(counts, ptsReply.samples));
+    }).then((ptsReply: any) => assemblePoissonRagged(counts, toPoint(ptsReply.samples)));
   });
 }
 
@@ -266,6 +388,11 @@ function poissonProcessLogDensity(raggedObs: any, M: number | ArrayLike<number>,
 
 module.exports = {
   assemblePoissonRagged,
+  componentBounds,
+  componentLogWeight,
+  lebesgueSupport,
+  logIntervalMass,
+  logLebesgueMass,
   poissonProcessLogDensity,
   matPoissonProcess,
   parseIntensityComponents,
