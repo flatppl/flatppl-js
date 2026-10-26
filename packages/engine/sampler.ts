@@ -898,8 +898,8 @@ const ARITH_OPS = {
   le:      (a: any, b: any) => a <= b,
   gt:      (a: any, b: any) => a > b,
   ge:      (a: any, b: any) => a >= b,
-  equal:   (a: any, b: any) => a === b,
-  unequal: (a: any, b: any) => a !== b,
+  equal:   (a: any, b: any) => valueOps._discreteEqual(a, b),
+  unequal: (a: any, b: any) => !valueOps._discreteEqual(a, b),
   // §07 predicates inspect both components of a complex scalar.
   isfinite: (a: any) => _isComplex(a) ? Number.isFinite(a.re) && Number.isFinite(a.im) : Number.isFinite(a),
   isinf:    (a: any) => _isComplex(a) ? Math.abs(a.re) === Infinity || Math.abs(a.im) === Infinity : !Number.isNaN(a) && !Number.isFinite(a),
@@ -911,7 +911,7 @@ const ARITH_OPS = {
   // expression returning the first or second branch by cond.
   land:    (a: any, b: any) => a && b,
   lor:     (a: any, b: any) => a || b,
-  lxor:    (a: any, b: any) => a !== b,
+  lxor:    (a: any, b: any) => !a !== !b,
   lnot:    (a: any) => !a,
   ifelse:  (c: any, a: any, b: any) => c ? a : b,
   // Vector constructor — turns positional args into a JS array.
@@ -3341,7 +3341,7 @@ function evaluateCall(ir: any, env: any): any {
         case 'integers':       return Number.isInteger(p);
         case 'posintegers':    return Number.isInteger(p) && p >= 1;
         case 'nonnegintegers': return Number.isInteger(p) && p >= 0;
-        case 'booleans':       return p === 0 || p === 1;
+        case 'booleans':       return valueOps._isBooleanScalar(p);
       }
       // A set held in a BINDING (`window = interval(-3.0, 3.0)`; `x in
       // window`). §03 makes a set a value, so the name need not be one of
