@@ -156,7 +156,7 @@ test('Arrow typed columns read past every other layout, from the file and the st
     ['bool', 'booleans', [1, 0, 1, 0]],
     ['dict_f64', 'reals', [1.5, -2, 1.5, -2]], ['dict_i16', 'integers', [1, -2, 1, -2]],
   ];
-  for (const file of ['types.arrow', 'types.arrows']) {
+  for (const file of ['types.arrow', 'types.arrows', 'compressed.arrow']) {
     const domain = columns.map(([name, set]) => `${name}=${set}`).join(',');
     const { ctx } = context(`t=load_data("${file}",cartpow(cartprod(${domain}),4))\n`
       + columns.map(([name]) => `v_${name}=t.${name}`).join('\n'), [file]);
@@ -175,10 +175,10 @@ test('Arrow typed columns read past every other layout, from the file and the st
         reason, `${file} ${column}`);
     }
   }
-  for (const [file, codec] of [['compressed.arrow', 'lz4'], ['zstd.arrow', 'zstd']]) {
-    assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(f32=reals),4))\ny=t.f32`, [file]),
-      new RegExp(`${codec}-compressed Arrow IPC is not supported by this engine`));
-  }
+  const runs = context('x=load_data("lz4_runs.arrow",cartpow(cartprod(x=reals),1100)).x', ['lz4_runs.arrow']);
+  assert.deepEqual(await values(runs.ctx, 'x'), [...Array(1000).fill(1.5), ...Array.from({ length: 100 }, (_, i) => i * 0.25)]);
+  assert.match(refusal('t=load_data("zstd.arrow",cartpow(cartprod(f32=reals),4))\ny=t.f32', ['zstd.arrow']),
+    /zstd-compressed Arrow IPC is not supported by this engine/);
   assert.match(refusal('t=load_data("u64.arrow",cartpow(cartprod(x=integers),1))\ny=t.x', ['u64.arrow']),
     /outside int64/);
   const { ctx } = context(`a=load_data("mixed.arrow",cartpow(cartprod(a=reals),2)).a
@@ -190,6 +190,15 @@ test('Arrow typed columns read past every other layout, from the file and the st
 test('malformed binary sources refuse', () => {
   assert.throws(() => readArrow(new Uint8Array([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0])), /Arrow IPC: no schema/);
   assert.throws(() => readArrow(new TextEncoder().encode('ARROW1\0\0short')), /footer and magic/);
+  // Crafted lengths: a body that steps back onto its own message, a buffer at
+  // a negative offset, a footer block past the end, and 2^40 rows of nulls.
+  assert.throws(() => readArrow(fixture('negative_body.arrows')),
+    /Arrow IPC: malformed file \(a message body leaves the file\)/);
+  assert.throws(() => readArrow(fixture('negative_offset.arrows')),
+    /Arrow IPC: column `b` has a buffer outside its batch/);
+  assert.throws(() => readArrow(fixture('bad_block.arrow')), /Arrow IPC: a footer block leaves the file/);
+  assert.match(readArrow(fixture('huge_rows.arrows')).n.reason,
+    /column `n` claims 1099511627776 rows of nulls, more than the file can hold/);
   assert.throws(() => readArrow(fixture('bad_key.arrows')),
     /Arrow IPC: malformed file \(column `x` has a dictionary key outside its dictionary\)/);
   for (const bytes of [new Uint8Array(4), new Uint8Array([255, 0, 0, 0, 0, 0, 0, 0])]) {

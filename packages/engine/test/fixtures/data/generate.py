@@ -153,6 +153,11 @@ with ipc.new_stream(HERE / "types.arrows", table.schema) as writer:
 with ipc.new_file(HERE / "compressed.arrow", table.schema,
                   options=ipc.IpcWriteOptions(compression="lz4")) as writer:
     writer.write_table(table)
+# Long LZ4 matches and literal runs, which take extended length bytes.
+runs = np.concatenate([np.full(1000, 1.5), np.arange(100) * 0.25])
+with ipc.new_file(HERE / "lz4_runs.arrow", pa.schema([("x", pa.float64())]),
+                  options=ipc.IpcWriteOptions(compression="lz4")) as writer:
+    writer.write_table(pa.table({"x": runs}))
 with ipc.new_file(HERE / "zstd.arrow", table.schema,
                   options=ipc.IpcWriteOptions(compression="zstd")) as writer:
     writer.write_table(table)
@@ -160,6 +165,51 @@ with ipc.new_file(HERE / "zstd.arrow", table.schema,
 bad_key = pa.DictionaryArray.from_arrays(pa.array([0, 5], pa.int8()), pa.array([1.5]), safe=False)
 with ipc.new_stream(HERE / "bad_key.arrows", pa.schema([("x", bad_key.type)])) as writer:
     writer.write_batch(pa.record_batch({"x": bad_key}))
+# A record batch whose body length steps back onto its own message.
+sink = pa.BufferOutputStream()
+with ipc.new_stream(sink, pa.schema([("a", pa.float64()), ("b", pa.float64())])) as writer:
+    writer.write_batch(pa.record_batch({"a": [1.0, 2.0, 3.0], "b": [4.0, 5.0, 6.0]}))
+stream = bytearray(sink.getvalue().to_pybytes())
+at = 8 + struct.unpack_from("<i", stream, 4)[0]  # past the schema message
+length = struct.unpack_from("<i", stream, at + 4)[0]
+metadata = stream[at + 8:at + 8 + length]
+assert metadata.count(struct.pack("<q", 48)) == 1  # the body length
+stream[at + 8:at + 8 + length] = metadata.replace(struct.pack("<q", 48), struct.pack("<q", -(8 + length)))
+(HERE / "negative_body.arrows").write_bytes(bytes(stream))
+
+
+def patched(path, data, old, new, region=slice(None)):
+    """Write `data` with the one occurrence of `old` in `region` replaced by `new`."""
+    data = bytearray(data)
+    part = data[region]
+    assert part.count(old) == 1, path
+    data[region] = part.replace(old, new)
+    (HERE / path).write_bytes(bytes(data))
+
+
+# Column `b`'s data buffer at a negative offset.
+patched("negative_offset.arrows", sink.getvalue().to_pybytes(),
+        struct.pack("<4q", 24, 0, 24, 24), struct.pack("<4q", 24, 0, -24, 24))
+# A Null column, and its batch, claiming 2^40 rows.
+sink = pa.BufferOutputStream()
+with ipc.new_stream(sink, pa.schema([("n", pa.null())])) as writer:
+    writer.write_batch(pa.record_batch({"n": pa.nulls(3)}))
+rows = bytearray(sink.getvalue().to_pybytes())
+at = 8 + struct.unpack_from("<i", rows, 4)[0]
+end = at + 8 + struct.unpack_from("<i", rows, at + 4)[0]
+# The batch length and the node's length and null count.
+assert rows[at:end].count(struct.pack("<q", 3)) == 3
+rows[at:end] = rows[at:end].replace(struct.pack("<q", 3), struct.pack("<q", 2**40))
+(HERE / "huge_rows.arrows").write_bytes(bytes(rows))
+# A file whose record batch block points past the end.
+sink = pa.BufferOutputStream()
+with ipc.new_file(sink, pa.schema([("a", pa.float64())])) as writer:
+    writer.write_batch(pa.record_batch({"a": [1.5]}))
+data = sink.getvalue().to_pybytes()
+batch_at = 8 + 8 + struct.unpack_from("<i", data, 12)[0]
+footer = len(data) - 10 - struct.unpack_from("<i", data, len(data) - 10)[0]
+patched("bad_block.arrow", data, struct.pack("<q", batch_at), struct.pack("<q", 10**9),
+        slice(footer, len(data) - 10))
 # The out-of-range column must not spoil the readable one beside it.
 with ipc.new_file(HERE / "u64.arrow", pa.schema([("a", pa.float64()), ("x", pa.uint64())])) as writer:
     writer.write_table(pa.table({"a": pa.array([1.5], pa.float64()),

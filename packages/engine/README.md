@@ -61,8 +61,8 @@ them, as its values. A column of any other type (strings, timestamps, lists),
 or with a value outside int64, is an error only when the schema selects it.
 Safetensors keys form nested records (`enc.0.weight` is field `weight` of record
 `0` of record `enc`) under §07's key rules, with F64/F32/F16/BF16, signed and
-unsigned integer and BOOL dtypes. Compressed Arrow record batches and F8 tensors
-are not read.
+unsigned integer and BOOL dtypes. LZ4-compressed Arrow (the Feather V2 default)
+is read. ZSTD-compressed Arrow and F8 tensors are not.
 
 `anything` remains an opaque placeholder and errors when accessed. Schemas and
 their dimensions must resolve within the declaring module; dimensions supplied

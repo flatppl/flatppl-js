@@ -248,8 +248,11 @@ function bufferCount(field: ArrowField, variadic: () => number): number {
 type ColumnReader = (node: { length: number }, buffer: (i: number) => Uint8Array) => any[];
 
 const bit = (bytes: Uint8Array, i: number) => (bytes[i >> 3] >> (i & 7)) & 1;
-const cells = (length: number, validity: Uint8Array, value: (i: number) => TypedScalar) =>
-  Array.from({ length }, (_, i) => (validity.length && !bit(validity, i) ? null : value(i)));
+const cells = (length: number, validity: Uint8Array, value: (i: number) => TypedScalar) => {
+  // A short bitmap would read as nulls past its end and never stop at the data.
+  if (validity.length && validity.length * 8 < length) throw new RangeError('a validity bitmap is shorter than its column');
+  return Array.from({ length }, (_, i) => (validity.length && !bit(validity, i) ? null : value(i)));
+};
 const dataView = (bytes: Uint8Array) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
 
 /** A column's reader, or why no value set reads it. A reader throws an
@@ -279,8 +282,10 @@ function columnReader(field: ArrowField, dictionaries: Map<number, any[] | Unrea
   }
   if (name === 'Null') return (node: any) => Array.from({ length: node.length }, () => null);
   if (name === 'Bool') {
-    return (node: any, buffer: any) => cells(node.length, buffer(0),
-      i => new TypedScalar('boolean', bit(buffer(1), i) === 1));
+    return (node: any, buffer: any) => {
+      if (buffer(1).length * 8 < node.length) throw new RangeError('a boolean buffer is shorter than its column');
+      return cells(node.length, buffer(0), i => new TypedScalar('boolean', bit(buffer(1), i) === 1));
+    };
   }
   if (name === 'Int') {
     const reader = intReader(field.name, field.detail?.int(0, 4) ?? 0, field.detail?.int(1, 1) === 1);
@@ -311,6 +316,93 @@ function intReader(column: string, width: number, signed: boolean): ColumnReader
   });
 }
 
+// ---- LZ4 (the Arrow IPC LZ4_FRAME buffer codec) ----------------------------
+
+const lz4Corrupt = (what: string): never => { throw new RangeError(`LZ4 data ${what}`); };
+
+/** A length that continues in 255-valued bytes (LZ4 block format). */
+function lz4Length(src: Uint8Array, at: { ip: number }, length: number): number {
+  if (length !== 15) return length;
+  let byte;
+  do {
+    if (at.ip >= src.length) lz4Corrupt('is cut short');
+    byte = src[at.ip++];
+    length += byte;
+  } while (byte === 255);
+  return length;
+}
+
+/** Decode one LZ4 block into `out` at `op`, and return the new end. A match
+ * may reach back into earlier blocks of the frame. */
+function lz4Block(src: Uint8Array, out: Uint8Array, op: number): number {
+  const at = { ip: 0 };
+  while (at.ip < src.length) {
+    const token = src[at.ip++];
+    const literals = lz4Length(src, at, token >> 4);
+    if (at.ip + literals > src.length || op + literals > out.length) lz4Corrupt('overruns its block');
+    out.set(src.subarray(at.ip, at.ip + literals), op);
+    at.ip += literals;
+    op += literals;
+    if (at.ip === src.length) break;  // the last sequence holds only literals
+    if (at.ip + 2 > src.length) lz4Corrupt('is cut short');
+    const offset = src[at.ip] | (src[at.ip + 1] << 8);
+    at.ip += 2;
+    if (offset === 0 || offset > op) lz4Corrupt('refers before its start');
+    const match = lz4Length(src, at, token & 15) + 4;
+    if (op + match > out.length) lz4Corrupt('overruns its stated size');
+    for (const end = op + match; op < end; op++) out[op] = out[op - offset];
+  }
+  return op;
+}
+
+/** Decode LZ4 frames (the LZ4 frame format) of `size` bytes in all. */
+function lz4Frames(src: Uint8Array, size: number): Uint8Array {
+  const out = new Uint8Array(size);
+  const view = dataView(src);
+  let ip = 0, op = 0;
+  while (ip < src.length) {
+    if (ip + 7 > src.length || view.getUint32(ip, true) !== 0x184d2204) lz4Corrupt('has no frame magic number');
+    const flags = src[ip + 4];
+    if (flags >> 6 !== 1) lz4Corrupt('has an unknown frame version');
+    if (flags & 1) lz4Corrupt('needs a dictionary');
+    // Magic, FLG and BD, then the optional content size, and the header checksum.
+    ip += 6 + (flags & 8 ? 8 : 0) + 1;
+    for (;;) {
+      if (ip + 4 > src.length) lz4Corrupt('is cut short');
+      const word = view.getUint32(ip, true);
+      ip += 4;
+      if (word === 0) break;
+      const length = word & 0x7fffffff;
+      if (ip + length > src.length) lz4Corrupt('is cut short');
+      const block = src.subarray(ip, ip + length);
+      if (word & 0x80000000) {
+        if (op + length > size) lz4Corrupt('overruns its stated size');
+        out.set(block, op);
+        op += length;
+      } else {
+        op = lz4Block(block, out, op);
+      }
+      ip += length + (flags & 0x10 ? 4 : 0);  // the optional block checksum
+    }
+    ip += flags & 4 ? 4 : 0;  // the optional content checksum
+  }
+  if (op !== size) lz4Corrupt('does not hold its stated size');
+  return out;
+}
+
+/** An Arrow IPC buffer under LZ4_FRAME: an int64 decompressed length, -1 for
+ * a buffer stored as is, then the frames. */
+function lz4Buffer(raw: Uint8Array): Uint8Array {
+  if (raw.length === 0) return raw;
+  if (raw.length < 8) lz4Corrupt('has no length prefix');
+  const size = dataView(raw).getBigInt64(0, true);
+  const data = raw.subarray(8);
+  if (size === -1n) return data;
+  // LZ4 expands at most about 255 times, so a larger size is corrupt.
+  if (size < 0n || size > BigInt(256 * data.length + 64)) lz4Corrupt('states an impossible size');
+  return lz4Frames(data, Number(size));
+}
+
 /** The encapsulated messages of an IPC stream from `at`, up to its end marker. */
 function* messages(bytes: Uint8Array, at: number): Generator<{ header: Table; body: Uint8Array }> {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
@@ -322,10 +414,13 @@ function* messages(bytes: Uint8Array, at: number): Generator<{ header: Table; bo
       length = view.getInt32(at, true);
       at += 4;
     }
-    if (length <= 0) return;
+    if (length === 0) return;
+    // Every step must advance inside the file, or a crafted length loops forever.
+    if (length < 0 || at + length > bytes.length) throw new RangeError('a message length leaves the file');
     const header = Table.root(view, at);
     at += length;
     const bodyLength = header.int(3, 8);
+    if (bodyLength < 0 || at + bodyLength > bytes.length) throw new RangeError('a message body leaves the file');
     yield { header, body: bytes.subarray(at, at + bodyLength) };
     at += bodyLength;
   }
@@ -350,6 +445,7 @@ function decodeArrow(bytes: Uint8Array): any {
   if (magic(0)) {
     if (bytes.length < 18 || !magic(bytes.length - 6)) fail('a file must end with its footer and magic');
     const footerLength = view.getInt32(bytes.length - 10, true);
+    if (footerLength <= 0 || footerLength > bytes.length - 18) fail('the footer length leaves the file');
     const footer = Table.root(view, bytes.length - 10 - footerLength);
     schema = footer.table(1);
     // A file has no dictionary replacements, so every dictionary precedes the batches.
@@ -357,6 +453,7 @@ function decodeArrow(bytes: Uint8Array): any {
       const blocks = footer.vector(index);
       for (let i = 0; blocks && i < blocks[1]; i++) {
         const offset = Number(view.getBigInt64(blocks[0] + 24 * i, true));
+        if (!(offset >= 0 && offset < bytes.length)) fail('a footer block leaves the file');
         const next = messages(bytes, offset).next();
         if (!next.done) batches.push(next.value);
       }
@@ -384,9 +481,12 @@ function decodeArrow(bytes: Uint8Array): any {
   // Each field's cells, or the `Unreadable` a value in it threw.
   const decode = (batch: Table, body: Uint8Array, batchFields: ArrowField[],
     batchReaders: Array<ColumnReader | Unreadable>): Array<any[] | Unreadable | null> => {
+    // BodyCompression: codec 0 is LZ4_FRAME, 1 is ZSTD.
     const compression = batch.table(3);
-    if (compression) {
-      throw new Error(`${['lz4', 'zstd'][compression.int(0, 1)] ?? 'compressed'}-compressed Arrow IPC is not supported by this engine`);
+    const lz4 = compression !== null && compression.int(0, 1) === 0;
+    if (compression && !lz4) {
+      throw new Error(compression.int(0, 1) === 1 ? 'zstd-compressed Arrow IPC is not supported by this engine'
+        : `Arrow IPC: unknown compression codec ${compression.int(0, 1)}`);
     }
     const nodes = batch.vector(1)!;
     const buffers = batch.vector(2)!;
@@ -403,14 +503,23 @@ function decodeArrow(bytes: Uint8Array): any {
       const at = take(f);
       const reader = batchReaders[i];
       if (reader instanceof Unreadable) return null;
+      const decompressed = new Map<number, Uint8Array>();
       const slice = (k: number) => {
         const entry = buffers[0] + 16 * at.buffers[k];
         const offset = Number(view.getBigInt64(entry, true));
         const size = Number(view.getBigInt64(entry + 8, true));
-        if (offset + size > body.length) fail(`column \`${f.name}\` has a buffer outside its batch`);
-        return body.subarray(offset, offset + size);
+        if (offset < 0 || size < 0 || offset + size > body.length) fail(`column \`${f.name}\` has a buffer outside its batch`);
+        const raw = body.subarray(offset, offset + size);
+        if (!lz4) return raw;
+        if (!decompressed.has(k)) decompressed.set(k, lz4Buffer(raw));
+        return decompressed.get(k)!;
       };
       const length = Number(view.getBigInt64(nodes[0] + 16 * at.node, true));
+      if (length < 0) fail(`column \`${f.name}\` has a negative length`);
+      // No buffer bounds a Null column, and every other column needs a bit per row.
+      if (TYPE_NAMES[f.type] === 'Null' && !f.dictionary && length > 8 * bytes.length) {
+        return new Unreadable(`column \`${f.name}\` claims ${length} rows of nulls, more than the file can hold`);
+      }
       try { return reader({ length }, slice); }
       catch (e) {
         if (e instanceof Unreadable) return e;
