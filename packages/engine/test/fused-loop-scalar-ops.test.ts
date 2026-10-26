@@ -65,6 +65,24 @@ for (const [op, arity] of Object.entries(ops.REAL_SCALAR_PRIM_ARITY) as [string,
   });
 }
 
+// The generated loops splice SCALAR_INLINE bodies in place of SCALAR_OPS
+// calls, so each spliced body must equal its SCALAR_OPS entry.
+for (const op of Object.keys(compile.SCALAR_INLINE)) {
+  test(`the spliced body of ${op} equals SCALAR_OPS.${op} on edge inputs`, () => {
+    const arity = (ops.REAL_SCALAR_PRIM_ARITY as any)[op];
+    assert.ok(arity >= 1, op + ' is a compiled op');
+    const names = ['x', 'y', 'z'].slice(0, arity);
+    // eslint-disable-next-line no-new-func
+    const spliced = new Function(...names, 'return ' + compile._scalarSource(op, names, 'OPS') + ';');
+    assert.doesNotMatch(spliced.toString(), /OPS\./, op + ' is spliced, not called');
+    for (const args of tuples(arity)) {
+      const want = outcome(SCALAR_OPS[op], args);
+      const got = outcome(spliced, args);
+      assert.ok(same(got, want), `${op}(${args.map(String).join(', ')}): ${String(got.value)} vs ${String(want.value)}`);
+    }
+  });
+}
+
 // The same inputs through the generated loop (per-atom Float64Array refs)
 // and through the interpreter: equal element for element.
 test('every compiled op equals the interpreter on edge inputs', () => {

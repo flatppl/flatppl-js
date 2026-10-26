@@ -100,6 +100,45 @@ const SCALAR_OPS: Record<string, (...a: any[]) => any> = {
   _image_gate: (y: any, lo: any, hi: any) => _valueOps._imageGateScalar(y, lo, hi),
 };
 
+// The SCALAR_OPS bodies that are one expression using each operand once,
+// as source. The generated loops splice these in place of an `OPS.op(…)`
+// call, so the element doubles need not cross a call boundary that V8
+// inlines only in some processes. Each must equal its SCALAR_OPS entry bit
+// for bit (test/fused-loop-scalar-ops.test.ts). An op that repeats an
+// operand or calls a module helper keeps the call.
+const _math1 = (fn: string) => (x: string[]) => 'Math.' + fn + '(' + x[0] + ')';
+const _math2 = (fn: string) => (x: string[]) => 'Math.' + fn + '(' + x[0] + ',' + x[1] + ')';
+const _infix = (op: string) => (x: string[]) => '(' + x[0] + op + x[1] + ')';
+const SCALAR_INLINE: Record<string, (x: string[]) => string> = {
+  add: _infix('+'), sub: _infix('-'), mul: _infix('*'), divide: _infix('/'),
+  div: (x) => 'Math.floor(' + x[0] + '/' + x[1] + ')',
+  neg: (x) => '(-' + x[0] + ')', pos: (x) => '(+' + x[0] + ')',
+  pow: _math2('pow'), atan2: _math2('atan2'), min: _math2('min'), max: _math2('max'),
+  abs: _math1('abs'), exp: _math1('exp'), log: _math1('log'), log2: _math1('log2'),
+  log10: _math1('log10'), log1p: _math1('log1p'), expm1: _math1('expm1'),
+  sqrt: _math1('sqrt'), sin: _math1('sin'), cos: _math1('cos'), tan: _math1('tan'),
+  asin: _math1('asin'), acos: _math1('acos'), atan: _math1('atan'), sinh: _math1('sinh'),
+  cosh: _math1('cosh'), tanh: _math1('tanh'), asinh: _math1('asinh'),
+  acosh: _math1('acosh'), atanh: _math1('atanh'), floor: _math1('floor'),
+  ceil: _math1('ceil'),
+  invlogit: (x) => '(1/(1+Math.exp(-' + x[0] + ')))',
+  lt: _infix('<'), le: _infix('<='), gt: _infix('>'), ge: _infix('>='),
+  isfinite: (x) => 'Number.isFinite(' + x[0] + ')',
+  isnan: (x) => 'Number.isNaN(' + x[0] + ')',
+  iszero: (x) => '(' + x[0] + '===0)',
+  land: _infix('&&'), lor: _infix('||'),
+  lxor: (x) => '(!' + x[0] + '!==!' + x[1] + ')',
+  lnot: (x) => '(!' + x[0] + ')',
+  ifelse: (x) => '(' + x[0] + '?' + x[1] + ':' + x[2] + ')',
+};
+
+// Source for one op applied to operand sources: the spliced body, or a call
+// through `table` (the generated function's name for SCALAR_OPS).
+function _scalarSource(op: string, x: string[], table: string): string {
+  const inline = SCALAR_INLINE[op];
+  return inline ? inline(x) : table + '.' + op + '(' + x.join(',') + ')';
+}
+
 // Compilable scalar ops + arity — the REAL scalar-primitive set, ONE
 // source of truth in `ops.ts` (engine-concepts §18). Each has an
 // ARITH_OPS scalar entry. Structural (tuple/get_field), aggregate,
@@ -173,7 +212,7 @@ function _emit(ir: any, perAtomNames: Set<string>,
   for (let i = 0; i < args.length; i++) {
     parts.push(_emit(args[i], perAtomNames, atomRefs, atomIdx, foldIRs));
   }
-  return 'OPS.' + op + '(' + parts.join(',') + ')';
+  return _scalarSource(op, parts, 'OPS');
 }
 
 // Numeric literal → a safe JS source token. Rejects non-finite (NaN /
@@ -247,4 +286,7 @@ function runPlan(plan: Plan, refArrays: any, baseEnv: any, overlay: any, N: numb
   return plan.loopFn(SCALAR_OPS, A, Cc, out, N);
 }
 
-module.exports = { initCompiler, _hasPerAtomRef, _COMPILE_ARITY, SCALAR_OPS, compilePlan, runPlan };
+module.exports = {
+  initCompiler, _hasPerAtomRef, _COMPILE_ARITY, SCALAR_OPS, SCALAR_INLINE, _scalarSource,
+  compilePlan, runPlan,
+};
