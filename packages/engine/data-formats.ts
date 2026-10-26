@@ -218,13 +218,16 @@ interface ArrowField {
   name: string;
   type: number;
   detail: Table | null;
-  dictionary: boolean;
+  /** A dictionary-encoded field's id and key type; `type` is then the value type. */
+  dictionary: { id: number; index: Table | null } | null;
   children: ArrowField[];
 }
 
 function arrowField(t: Table): ArrowField {
+  const encoding = t.table(4);
   return { name: t.string(0), type: t.int(2, 1), detail: t.table(3),
-    dictionary: t.table(4) !== null, children: t.tables(5).map(arrowField) };
+    dictionary: encoding ? { id: encoding.int(0, 8), index: encoding.table(1) } : null,
+    children: t.tables(5).map(arrowField) };
 }
 
 /** The buffers a field occupies in a record batch, without its children
@@ -242,46 +245,70 @@ function bufferCount(field: ArrowField, variadic: () => number): number {
   }
 }
 
-/** A column's reader, or why no value set reads it. */
-function columnReader(field: ArrowField): ((nodes: any, buffer: (i: number) => Uint8Array) => any[]) | Unreadable {
+type ColumnReader = (node: { length: number }, buffer: (i: number) => Uint8Array) => any[];
+
+const bit = (bytes: Uint8Array, i: number) => (bytes[i >> 3] >> (i & 7)) & 1;
+const cells = (length: number, validity: Uint8Array, value: (i: number) => TypedScalar) =>
+  Array.from({ length }, (_, i) => (validity.length && !bit(validity, i) ? null : value(i)));
+const dataView = (bytes: Uint8Array) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+/** A column's reader, or why no value set reads it. A reader throws an
+ * `Unreadable` for a value that spoils only its own column. */
+function columnReader(field: ArrowField, dictionaries: Map<number, any[] | Unreadable>): ColumnReader | Unreadable {
   const name = TYPE_NAMES[field.type] || `type ${field.type}`;
-  if (field.dictionary || ['Utf8', 'LargeUtf8', 'Utf8View'].includes(name)) {
+  if (['Utf8', 'LargeUtf8', 'Utf8View'].includes(name)) {
     return new Unreadable(`column \`${field.name}\` holds Arrow strings, and \`load_data\` reads numbers and booleans`);
   }
-  const bit = (bytes: Uint8Array, i: number) => (bytes[i >> 3] >> (i & 7)) & 1;
-  const cells = (length: number, validity: Uint8Array, value: (i: number) => TypedScalar) =>
-    Array.from({ length }, (_, i) => (validity.length && !bit(validity, i) ? null : value(i)));
-  const view = (bytes: Uint8Array) => new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (field.dictionary) {
+    // §07 types a column by its values, so a dictionary over numbers or
+    // booleans reads as those values. Keys default to int32 (Schema.fbs).
+    const values = columnReader({ ...field, dictionary: null }, dictionaries);
+    if (values instanceof Unreadable) return values;
+    const { id, index } = field.dictionary;
+    const keys = intReader(field.name, index ? index.int(0, 4) : 32, index ? index.int(1, 1) === 1 : true)!;
+    return (node, buffer) => {
+      const dictionary = dictionaries.get(id);
+      if (dictionary instanceof Unreadable) throw dictionary;
+      return keys(node, buffer).map((key: TypedScalar | null) => {
+        if (key === null) return null;
+        const value = dictionary?.[key.value as number];
+        if (value === undefined) throw new RangeError(`column \`${field.name}\` has a dictionary key outside its dictionary`);
+        return value;
+      });
+    };
+  }
   if (name === 'Null') return (node: any) => Array.from({ length: node.length }, () => null);
   if (name === 'Bool') {
     return (node: any, buffer: any) => cells(node.length, buffer(0),
       i => new TypedScalar('boolean', bit(buffer(1), i) === 1));
   }
   if (name === 'Int') {
-    const width = field.detail?.int(0, 4) ?? 0;
-    const signed = field.detail?.int(1, 1) === 1;
-    const get: any = {
-      8: signed ? (v: DataView, i: number) => v.getInt8(i) : (v: DataView, i: number) => v.getUint8(i),
-      16: signed ? (v: DataView, i: number) => v.getInt16(2 * i, true) : (v: DataView, i: number) => v.getUint16(2 * i, true),
-      32: signed ? (v: DataView, i: number) => v.getInt32(4 * i, true) : (v: DataView, i: number) => v.getUint32(4 * i, true),
-    }[width];
-    if (get) return (node: any, buffer: any) => cells(node.length, buffer(0), i => new TypedScalar('integer', get(view(buffer(1)), i)));
-    if (width === 64) {
-      return (node: any, buffer: any) => cells(node.length, buffer(0), i => {
-        const x = signed ? view(buffer(1)).getBigInt64(8 * i, true) : view(buffer(1)).getBigUint64(8 * i, true);
-        if (x > 0x7fffffffffffffffn) throw new Error(`column \`${field.name}\` contains an integer outside int64`);
-        return integer(x);
-      });
-    }
+    const reader = intReader(field.name, field.detail?.int(0, 4) ?? 0, field.detail?.int(1, 1) === 1);
+    if (reader) return reader;
   }
   if (name === 'FloatingPoint') {
     const precision = field.detail?.int(0, 2) ?? 0;
     const read = [(v: DataView, i: number) => f16(v.getUint16(2 * i, true)),
       (v: DataView, i: number) => v.getFloat32(4 * i, true),
       (v: DataView, i: number) => v.getFloat64(8 * i, true)][precision];
-    return (node: any, buffer: any) => cells(node.length, buffer(0), i => new TypedScalar('real', read(view(buffer(1)), i)));
+    return (node: any, buffer: any) => cells(node.length, buffer(0), i => new TypedScalar('real', read(dataView(buffer(1)), i)));
   }
   return new Unreadable(`column \`${field.name}\` has unsupported Arrow type ${name}`);
+}
+
+function intReader(column: string, width: number, signed: boolean): ColumnReader | null {
+  const get: any = {
+    8: signed ? (v: DataView, i: number) => v.getInt8(i) : (v: DataView, i: number) => v.getUint8(i),
+    16: signed ? (v: DataView, i: number) => v.getInt16(2 * i, true) : (v: DataView, i: number) => v.getUint16(2 * i, true),
+    32: signed ? (v: DataView, i: number) => v.getInt32(4 * i, true) : (v: DataView, i: number) => v.getUint32(4 * i, true),
+  }[width];
+  if (get) return (node, buffer) => cells(node.length, buffer(0), i => new TypedScalar('integer', get(dataView(buffer(1)), i)));
+  if (width !== 64) return null;
+  return (node, buffer) => cells(node.length, buffer(0), i => {
+    const x = signed ? dataView(buffer(1)).getBigInt64(8 * i, true) : dataView(buffer(1)).getBigUint64(8 * i, true);
+    if (x > 0x7fffffffffffffffn) throw new Unreadable(`column \`${column}\` contains an integer outside int64`);
+    return integer(x);
+  });
 }
 
 /** The encapsulated messages of an IPC stream from `at`, up to its end marker. */
@@ -318,48 +345,64 @@ function decodeArrow(bytes: Uint8Array): any {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const magic = (at: number) => new TextDecoder().decode(bytes.subarray(at, at + 6)) === 'ARROW1';
   let schema: Table | null = null;
-  let batches: Array<{ header: Table; body: Uint8Array }> = [];
+  // Dictionary and record batches, in the order they apply.
+  const batches: Array<{ header: Table; body: Uint8Array }> = [];
   if (magic(0)) {
     if (bytes.length < 18 || !magic(bytes.length - 6)) fail('a file must end with its footer and magic');
     const footerLength = view.getInt32(bytes.length - 10, true);
     const footer = Table.root(view, bytes.length - 10 - footerLength);
     schema = footer.table(1);
-    const blocks = footer.vector(3);
-    for (let i = 0; blocks && i < blocks[1]; i++) {
-      const offset = Number(view.getBigInt64(blocks[0] + 24 * i, true));
-      const next = messages(bytes, offset).next();
-      if (!next.done) batches.push(next.value);
+    // A file has no dictionary replacements, so every dictionary precedes the batches.
+    for (const index of [2, 3]) {
+      const blocks = footer.vector(index);
+      for (let i = 0; blocks && i < blocks[1]; i++) {
+        const offset = Number(view.getBigInt64(blocks[0] + 24 * i, true));
+        const next = messages(bytes, offset).next();
+        if (!next.done) batches.push(next.value);
+      }
     }
   } else {
     for (const message of messages(bytes, 0)) {
       const kind = message.header.int(1, 1);
       if (kind === 1 && !schema) schema = message.header.table(2);
-      else if (kind === 3) batches.push(message);
+      else if (kind === 2 || kind === 3) batches.push(message);
     }
   }
   if (!schema) fail('no schema');
   if (schema!.int(0, 2) !== 0) fail('big-endian data is not read');
   const fields = schema!.tables(1).map(arrowField);
-  const readers = fields.map(columnReader);
+  const dictionaries = new Map<number, any[] | Unreadable>();
+  const readers = fields.map(f => columnReader(f, dictionaries));
   const columns: any[][] = fields.map(() => []);
-  for (const { header, body } of batches) {
-    const batch = header.table(2);
-    if (!batch) continue;
-    if (batch.table(3)) fail('compressed record batches are not read');
+  const valueFields = new Map<number, ArrowField>();
+  const collect = (f: ArrowField): void => {
+    if (f.dictionary) valueFields.set(f.dictionary.id, { ...f, dictionary: null });
+    f.children.forEach(collect);
+  };
+  fields.forEach(collect);
+
+  // Each field's cells, or the `Unreadable` a value in it threw.
+  const decode = (batch: Table, body: Uint8Array, batchFields: ArrowField[],
+    batchReaders: Array<ColumnReader | Unreadable>): Array<any[] | Unreadable | null> => {
+    const compression = batch.table(3);
+    if (compression) {
+      throw new Error(`${['lz4', 'zstd'][compression.int(0, 1)] ?? 'compressed'}-compressed Arrow IPC is not supported by this engine`);
+    }
     const nodes = batch.vector(1)!;
     const buffers = batch.vector(2)!;
     const variadic = batch.vector(4);
     let node = 0, buffer = 0, variadicAt = 0;
     const nextVariadic = () => (variadic ? Number(view.getBigInt64(variadic[0] + 8 * variadicAt++, true)) : 0);
+    // A dictionary field's children describe its values, which a dictionary batch holds.
     const take = (f: ArrowField): { node: number; buffers: number[] } => {
       const own = { node: node++, buffers: Array.from({ length: bufferCount(f, nextVariadic) }, () => buffer++) };
-      f.children.forEach(take);
+      if (!f.dictionary) f.children.forEach(take);
       return own;
     };
-    fields.forEach((f, i) => {
+    return batchFields.map((f, i) => {
       const at = take(f);
-      const reader = readers[i];
-      if (reader instanceof Unreadable) return;
+      const reader = batchReaders[i];
+      if (reader instanceof Unreadable) return null;
       const slice = (k: number) => {
         const entry = buffers[0] + 16 * at.buffers[k];
         const offset = Number(view.getBigInt64(entry, true));
@@ -368,7 +411,33 @@ function decodeArrow(bytes: Uint8Array): any {
         return body.subarray(offset, offset + size);
       };
       const length = Number(view.getBigInt64(nodes[0] + 16 * at.node, true));
-      for (const cell of reader({ length }, slice)) columns[i].push(cell);
+      try { return reader({ length }, slice); }
+      catch (e) {
+        if (e instanceof Unreadable) return e;
+        throw e;
+      }
+    });
+  };
+
+  for (const { header, body } of batches) {
+    const content = header.table(2);
+    if (!content) continue;
+    if (header.int(1, 1) === 2) {
+      const id = content.int(0, 8);
+      const field = valueFields.get(id);
+      const batch = content.table(1);
+      if (!field || !batch) fail(`dictionary batch ${id} matches no dictionary field`);
+      const [cells] = decode(batch!, body, [field!], [columnReader(field!, dictionaries)]);
+      // No reader means the dictionary column itself is already unreadable.
+      const previous = dictionaries.get(id);
+      if (cells === null || previous instanceof Unreadable) continue;
+      const delta = content.int(2, 1) === 1;
+      dictionaries.set(id, cells instanceof Unreadable || !delta || !previous ? cells : previous.concat(cells));
+      continue;
+    }
+    decode(content, body, fields, readers).forEach((cells, i) => {
+      if (cells instanceof Unreadable) readers[i] = cells;
+      else if (cells) for (const cell of cells) columns[i].push(cell);
     });
   }
   const out: any = Object.create(null);

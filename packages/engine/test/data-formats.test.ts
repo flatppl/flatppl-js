@@ -56,10 +56,17 @@ test('untyped numbers are integers when exactly integral, and true/false read as
   const { ctx } = context(`d=load_data("untyped.csv",cartpow(cartprod(i=integers,flag=reals),3))
     i=d.i
     f=d.flag
-    j=load_data("untyped.json",cartprod(i=cartpow(integers,3))).i`, ['untyped.csv', 'untyped.json']);
+    j=load_data("untyped.json",cartprod(i=cartpow(integers,3))).i
+    g=load_data("untyped.csv",cartpow(cartprod(flag=integers),3)).flag
+    h=load_data("events.json",cartpow(cartprod(flag=reals),3)).flag
+    k=load_data("events.json",cartpow(cartprod(flag=integers),3)).flag`,
+  ['untyped.csv', 'untyped.json', 'events.json']);
   assert.deepEqual(await values(ctx, 'i'), [3, 3, 1000]);
   assert.deepEqual(await values(ctx, 'f'), [1, 0, 1]);
   assert.deepEqual(await values(ctx, 'j'), [3, 3, 1000]);
+  assert.deepEqual(await values(ctx, 'g'), [1, 0, 1]);
+  assert.deepEqual(await values(ctx, 'h'), [1, 0, 1]);
+  assert.deepEqual(await values(ctx, 'k'), [1, 0, 1]);
   for (const file of ['untyped.csv', 'untyped.json']) {
     assert.match(refusal(`d=load_data("${file}",cartprod(x=cartpow(integers,3)))\ny=d.x`, [file]),
       /is not an integer/, file);
@@ -147,6 +154,7 @@ test('Arrow typed columns read past every other layout, from the file and the st
     ['u32', 'integers', [1, 2, 1, 2]], ['u64', 'integers', [1, 2, 1, 2]],
     ['f16', 'reals', [1.5, -2, 1.5, -2]], ['f32', 'reals', [1.5, -2, 1.5, -2]],
     ['bool', 'booleans', [1, 0, 1, 0]],
+    ['dict_f64', 'reals', [1.5, -2, 1.5, -2]], ['dict_i16', 'integers', [1, -2, 1, -2]],
   ];
   for (const file of ['types.arrow', 'types.arrows']) {
     const domain = columns.map(([name, set]) => `${name}=${set}`).join(',');
@@ -154,7 +162,7 @@ test('Arrow typed columns read past every other layout, from the file and the st
       + columns.map(([name]) => `v_${name}=t.${name}`).join('\n'), [file]);
     for (const [name, , want] of columns) assert.deepEqual(await values(ctx, `v_${name}`), want, `${file} ${name}`);
     for (const [column, reason] of [
-      ['f64', /is missing/], ['null', /is missing/],
+      ['f64', /is missing/], ['null', /is missing/], ['dict_null', /is missing/],
       ['utf8', /holds Arrow strings/], ['large_utf8', /holds Arrow strings/],
       ['view', /holds Arrow strings/], ['dict', /holds Arrow strings/],
       ['binary', /unsupported Arrow type/], ['list', /unsupported Arrow type/],
@@ -167,17 +175,23 @@ test('Arrow typed columns read past every other layout, from the file and the st
         reason, `${file} ${column}`);
     }
   }
-  assert.match(refusal('t=load_data("compressed.arrow",cartpow(cartprod(f64=reals),4))\ny=t.f64', ['compressed.arrow']),
-    /Arrow IPC: compressed record batches are not read/);
+  for (const [file, codec] of [['compressed.arrow', 'lz4'], ['zstd.arrow', 'zstd']]) {
+    assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(f32=reals),4))\ny=t.f32`, [file]),
+      new RegExp(`${codec}-compressed Arrow IPC is not supported by this engine`));
+  }
   assert.match(refusal('t=load_data("u64.arrow",cartpow(cartprod(x=integers),1))\ny=t.x', ['u64.arrow']),
     /outside int64/);
-  const { ctx } = context('a=load_data("mixed.arrow",cartpow(cartprod(a=reals),2)).a', ['mixed.arrow']);
+  const { ctx } = context(`a=load_data("mixed.arrow",cartpow(cartprod(a=reals),2)).a
+    b=load_data("u64.arrow",cartpow(cartprod(a=reals),1)).a`, ['mixed.arrow', 'u64.arrow']);
   assert.deepEqual(await values(ctx, 'a'), [1.5, 2.5]);
+  assert.deepEqual(await values(ctx, 'b'), [1.5]);
 });
 
 test('malformed binary sources refuse', () => {
   assert.throws(() => readArrow(new Uint8Array([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0])), /Arrow IPC: no schema/);
   assert.throws(() => readArrow(new TextEncoder().encode('ARROW1\0\0short')), /footer and magic/);
+  assert.throws(() => readArrow(fixture('bad_key.arrows')),
+    /Arrow IPC: malformed file \(column `x` has a dictionary key outside its dictionary\)/);
   for (const bytes of [new Uint8Array(4), new Uint8Array([255, 0, 0, 0, 0, 0, 0, 0])]) {
     assert.throws(() => readSafetensors(bytes), /Safetensors: (missing the header length|header length exceeds the file)/);
   }

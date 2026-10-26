@@ -137,6 +137,12 @@ typed = {
     "f16": pa.array([np.float16(1.5), np.float16(-2.0)], pa.float16()),
     "f32": pa.array([1.5, -2.0], pa.float32()), "f64": pa.array([1.5, None], pa.float64()),
     "bool": pa.array([True, False], pa.bool_()),
+    # Dictionary-encoded numbers: keys out of value order, and a null key.
+    "dict_f64": pa.array([1.5, -2.0]).dictionary_encode(),
+    "dict_i16": pa.DictionaryArray.from_arrays(pa.array([1, 0], pa.int8()),
+                                               pa.array([-2, 1], pa.int16())),
+    "dict_null": pa.DictionaryArray.from_arrays(pa.array([0, None], pa.int8()),
+                                                pa.array([1.5])),
 }
 batch = pa.record_batch({**exotic, **typed})
 table = pa.Table.from_batches([batch, batch])
@@ -147,5 +153,14 @@ with ipc.new_stream(HERE / "types.arrows", table.schema) as writer:
 with ipc.new_file(HERE / "compressed.arrow", table.schema,
                   options=ipc.IpcWriteOptions(compression="lz4")) as writer:
     writer.write_table(table)
-with ipc.new_file(HERE / "u64.arrow", pa.schema([("x", pa.uint64())])) as writer:
-    writer.write_table(pa.table({"x": pa.array([2**63], pa.uint64())}))
+with ipc.new_file(HERE / "zstd.arrow", table.schema,
+                  options=ipc.IpcWriteOptions(compression="zstd")) as writer:
+    writer.write_table(table)
+# A dictionary key outside its dictionary is a malformed file.
+bad_key = pa.DictionaryArray.from_arrays(pa.array([0, 5], pa.int8()), pa.array([1.5]), safe=False)
+with ipc.new_stream(HERE / "bad_key.arrows", pa.schema([("x", bad_key.type)])) as writer:
+    writer.write_batch(pa.record_batch({"x": bad_key}))
+# The out-of-range column must not spoil the readable one beside it.
+with ipc.new_file(HERE / "u64.arrow", pa.schema([("a", pa.float64()), ("x", pa.uint64())])) as writer:
+    writer.write_table(pa.table({"a": pa.array([1.5], pa.float64()),
+                                 "x": pa.array([2**63], pa.uint64())}))
