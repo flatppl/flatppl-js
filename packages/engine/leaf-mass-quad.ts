@@ -184,6 +184,22 @@ function cellSum(shape: LeafShape, cell: { cs: number[]; xs: number[] }): any {
 function leafMassExpr(node: any, ctx: any): any | null {
   const shape = leafRecognize(node, ctx);
   if (!shape) return null;
+  // A weight with a discontinuity: split ∫₀¹ at u = F(b(θ)) for each breakpoint
+  // b (piecewise-mass.ts), since the fixed graded nodes cannot see a window
+  // that moves with θ. Refuse a test of the variate with no breakpoint.
+  const piecewise = require('./piecewise-mass.ts');
+  const bp = piecewise.weightBreakpoints(shape.weightBody, shape.weightParams[0], false);
+  if (bp.refuse) {
+    throw new Error('normalize(weighted(w, ' + shape.kernel + ')): the weight depends on a latent '
+      + 'and has ' + bp.refuse + ', which gives no breakpoint to split Z(θ) at, and the fixed '
+      + 'graded rule could step over the region; Z(θ) is unresolved (spec §06).');
+  }
+  if (bp.exprs.length > 0) {
+    const expr = piecewise.leafMassExpr(shape.weightParams[0], shape.weightBody, shape.kernel,
+      shape.input, bp.exprs, shape.logSpace);
+    require('./crn-normalize.ts')._checkBudget(expr);
+    return expr;
+  }
   const cells = leafQuadCells(shape.kernel, shape.input);
   // The value sum, the gate's own copy of it, and the two outermost cells: the
   // IR is a tree, so a subexpression used twice is built twice.
