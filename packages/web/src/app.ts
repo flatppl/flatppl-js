@@ -2094,6 +2094,11 @@
           debouncedViewerUpdate(cur.target, cur.model, navigationSeq, editRevision);
         },
         onSave: handleSave,
+        lintBundle: function (text: string) {
+          const path = lastModel;
+          if (!path || currentBundle?.binary) return Promise.resolve(null);
+          return window.FlatPPLWebResolver.resolveBundle(path, text, { drafts: draftSnapshot() });
+        },
         onNavigate: function (name: any) {
           const cur = window.FlatPPLWebRouter.parseHash();
           if (!lastModel || cur.model !== lastModel) return;

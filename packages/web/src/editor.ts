@@ -22,6 +22,9 @@
 //   onNavigate(name) — fired when the main cursor lands on an
 //                      identifier that resolves to a defined binding,
 //                      or when the user Ctrl/Cmd-clicks one.
+//   lintBundle(text) — resolves the model's bundle with `text` as its
+//                      primary source, so the lint sees loaded modules;
+//                      null keeps the standalone parse.
 //
 // Visual differentiation between modes is the editor's natural
 // affordance: view mode has no caret, no active-line highlight,
@@ -260,11 +263,27 @@
   }
 
   // Surface engine diagnostics (tokenizer/parser/analyzer) as CM lint markers.
-  // Reuses parseCached — adds no new parse. CM debounces linter runs itself.
-  function makeLinter(bundle: any) {
-    return bundle.linter(function (view: any) {
+  // CM debounces linter runs itself. A standalone parse cannot see a loaded
+  // module, so a typo in `m.name` or a phase error across the boundary would
+  // surface only in the viewer. When the host resolves the model's bundle
+  // (`opts.lintBundle(text)`), lint that compilation; otherwise reuse
+  // parseCached.
+  async function lintProcessed(text: string, lintBundle: any): Promise<any> {
+    const FE = globalScope.FlatPPLEngine;
+    if (FE && typeof lintBundle === 'function') {
+      try {
+        const graph = await lintBundle(text);
+        if (graph) return FE.processSource(text, { path: graph.primaryPath, bundle: graph });
+      } catch (_) { /* an unresolvable bundle falls back to the standalone parse */ }
+    }
+    return parseCached(text).processed;
+  }
+
+  function makeLinter(bundle: any, lintBundle?: any) {
+    return bundle.linter(async function (view: any) {
       const text = view.state.doc.toString();
-      const { processed } = parseCached(text);
+      const processed = await lintProcessed(text, lintBundle);
+      if (view.state.doc.toString() !== text) return [];
       const diags = (processed && processed.diagnostics) || [];
       if (!diags.length) return [];
       const lineStarts = computeLineStarts(text);
@@ -545,7 +564,7 @@
         // makeHighlightPlugin's doc comment.
         fppl.push(bundle.Prec.high(makeHighlightPlugin(bundle)));
         fppl.push(makeHoverTooltip(bundle));
-        fppl.push(makeLinter(bundle));
+        fppl.push(makeLinter(bundle, opts.lintBundle));
         fppl.push(makeCompletion(bundle));
         fppl.push(bundle.lintGutter());
         fppl.push(flatpplFold(bundle));
