@@ -11,42 +11,27 @@
 // log φ(0.8) as if the window were absent. Neither can tell, so the number was
 // silently wrong.
 //
-// THE RULE. Collect the weight's breakpoints as expressions in θ: the bounds of
-// every `x in interval(a, b)` and the threshold of every comparison of `x` with
-// a value. Emitted as clamped and sorted (a min/max network), they cut the
-// support into pieces on which the weight is continuous, and each piece gets its
-// own composite Gauss-Legendre rule mapped onto it at evaluation time. An
-// indicator weight is then integrated exactly, and a smooth one to the rule's
-// accuracy. The expression carries an embedded check — a coarser rule over the
-// same pieces — and hands back +∞ when the two disagree, which the callers'
-// `fromNormalize` mark turns into a loud refusal (§06: Z = ∞ leaves normalize
-// undefined).
+// THE RULE. Collect the weight's breakpoints as expressions in θ
+// (weight-breakpoints.ts: affine tests of x, `abs(affine)`), clamp and sort
+// them (a min/max network), and cut the support into pieces. The path is taken
+// only when every occurrence of x sits inside one of those tests, so the weight
+// is CONSTANT on each piece, and Z(θ) = Σ width · w(midpoint) is exact.
 //
-// WHAT IT REFUSES. A jump weight-breakpoints.ts cannot solve (`x*x < c`, `mod`
-// of the variate) has no breakpoint to split at, a step of the variate has a
-// θ-dependent number of them, and more than MAX_BREAKPOINTS would make the
-// sorting network too large. All THROW rather than fall back to an estimator
-// that cannot see the window.
+// WHAT IT REFUSES. A weight that also varies with x between its breakpoints
+// (`ifelse(x < c, 1, 2) + exp(-x²)`): no rule with nodes fixed before θ is
+// known is exact for it, since a feature narrower than the node spacing falls
+// between nodes and every node count misses some width. A jump
+// weight-breakpoints.ts cannot solve (`x*x < c`, `mod` of the variate) has no
+// breakpoint to split at, a step of the variate has a θ-dependent number of
+// them, and more than MAX_BREAKPOINTS would make the sorting network too large.
+// All THROW rather than fall back to an estimator that cannot see the window.
 
 const { mapIR } = require('./ir-walk.ts');
 
 const MAX_BREAKPOINTS = 4;
-const LEAF_GRADE_LEVELS = 40;
-// Relative disagreement between the fine and the coarse rule above which the
-// normalizer is unresolved.
-const PIECE_GATE = 1e-6;
 
 const _lit = (v: number) => ({ kind: 'lit', value: v });
 const _call = (op: string, ...args: any[]) => ({ kind: 'call', op, args });
-
-// 5-point Gauss-Legendre on [0, 1].
-const GL5 = [
-  { x: 0.5 * (1 - 0.9061798459386640), w: 0.5 * 0.2369268850561891 },
-  { x: 0.5 * (1 - 0.5384693101056831), w: 0.5 * 0.4786286704993665 },
-  { x: 0.5, w: 0.5 * 0.5688888888888889 },
-  { x: 0.5 * (1 + 0.5384693101056831), w: 0.5 * 0.4786286704993665 },
-  { x: 0.5 * (1 + 0.9061798459386640), w: 0.5 * 0.2369268850561891 },
-];
 
 function mentions(n: any, param: string): boolean {
   if (!n || typeof n !== 'object') return false;
@@ -116,63 +101,23 @@ function balancedAdd(terms: any[]): any {
   return level[0];
 }
 
-// A composite GL5 rule on [0, 1] with `cells` equal cells.
-function uniformRule(cells: number): Array<{ x: number; w: number }> {
-  const out: Array<{ x: number; w: number }> = [];
-  for (let c = 0; c < cells; c++) for (const g of GL5) out.push({ x: (c + g.x) / cells, w: g.w / cells });
-  return out;
-}
-
-// A composite GL5 rule on [0, 1] graded geometrically towards one end, `end`:
-// cells [0, 2^-L], [2^-L, 2^-(L-1)], …, [1/2, 1], mirrored for end = 1. A tail
-// piece [0, F(b)] of a leaf reaches the leaf's tail at that end only, and its
-// cells then match those the two-sided 40-level rule had there.
-function gradedRule(levels: number, end: 0 | 1): Array<{ x: number; w: number }> {
-  const bps = [0];
-  for (let k = levels; k >= 1; k--) bps.push(Math.pow(2, -k));
-  bps.push(1);
-  const out: Array<{ x: number; w: number }> = [];
-  for (let i = 0; i + 1 < bps.length; i++) {
-    const h = bps[i + 1] - bps[i];
-    for (const g of GL5) {
-      const x = bps[i] + g.x * h;
-      out.push({ x: end === 0 ? x : 1 - x, w: g.w * h });
-    }
-  }
-  return out;
-}
-
-// Σ over pieces [cuts[i], cuts[i+1]] of `rule(i)` mapped onto the piece. `cuts`
-// are IR expressions; `integrand(t)` gives the integrand at the IR point t.
-function piecewiseRule(cuts: any[], rule: (piece: number) => Array<{ x: number; w: number }>,
-  integrand: (t: any) => any): any {
+// Σ over pieces [cuts[i], cuts[i+1]] of width · f(midpoint). Exact when the
+// integrand is constant on each piece. `cuts` are IR expressions.
+function piecewiseConstant(cuts: any[], f: (t: any) => any): any {
   const terms: any[] = [];
   for (let i = 0; i + 1 < cuts.length; i++) {
-    const a = cuts[i], width = _call('sub', cuts[i + 1], a);
-    for (const g of rule(i)) {
-      const t = _call('add', a, _call('mul', _lit(g.x), width));
-      terms.push(_call('mul', _call('mul', _lit(g.w), width), integrand(t)));
-    }
+    const width = _call('sub', cuts[i + 1], cuts[i]);
+    const mid = _call('mul', _lit(0.5), _call('add', cuts[i], cuts[i + 1]));
+    terms.push(_call('mul', width, f(mid)));
   }
   return balancedAdd(terms);
-}
-
-// fine if the coarse rule agrees with it, else +∞.
-function gated(fine: () => any, coarse: any): any {
-  const ok = _call('le', _call('abs', _call('sub', fine(), coarse)),
-    _call('mul', _lit(PIECE_GATE), _call('abs', fine())));
-  return _call('ifelse', ok, fine(), _lit(Infinity));
 }
 
 // Z(θ) = ∫_lo^hi w(x; θ) dx over a Lebesgue box of one axis.
 function boxMassExpr(param: string, body: any, lo: number, hi: number, breakpoints: any[],
   arrayVariate: boolean): any {
   const cuts = [_lit(lo), ...sortedClamped(breakpoints, _lit(lo), _lit(hi)), _lit(hi)];
-  const f = (t: any) => bindVariate(body, param, t, arrayVariate);
-  // 26 cells of 5 nodes put 130 nodes on every piece, no fewer than the
-  // 128-point sample this replaces put on the whole box.
-  return gated(() => piecewiseRule(cuts, () => uniformRule(26), f),
-    piecewiseRule(cuts, () => uniformRule(13), f));
+  return piecewiseConstant(cuts, (t: any) => bindVariate(body, param, t, arrayVariate));
 }
 
 // Z(θ) = ∫ w(x; θ) dB(x) = ∫₀¹ w(F⁻¹(u); θ) du for a probability leaf B, split
@@ -188,18 +133,37 @@ function leafMassExpr(param: string, body: any, kernel: string, input: Record<st
   const toU = (x: any) => _call('builtin_touniform', kernelLit, record, x);
   const fromU = (u: any) => _call('builtin_fromuniform', kernelLit, record, u);
   const cuts = [_lit(0), ...sortedClamped(breakpoints.map(toU), _lit(0), _lit(1)), _lit(1)];
-  const f = (u: any) => {
+  return piecewiseConstant(cuts, (u: any) => {
     const w = bindVariate(body, param, fromU(u), false);
     return logSpace ? _call('exp', w) : w;
+  });
+}
+
+// Where the weight varies with the variate outside its tests, as " at line L,
+// column C", or null when every occurrence of the variate sits inside a
+// comparison or an `in` (weightBreakpoints has solved each of those for its
+// breakpoints, so the weight is constant between them).
+function variesBetweenCuts(body: any, param: string, arrayVariate: boolean): string | null {
+  let found: any = null;
+  const visit = (n: any, near: any) => {
+    if (found || !n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach((c) => visit(c, near)); return; }
+    const here = n.loc ? n : near;
+    if (n.kind === 'call' && (n.op === 'in' || ['lt', 'le', 'gt', 'ge'].includes(n.op))) return;
+    if (isVariate(n, param, arrayVariate) || (n.kind === 'ref' && n.name === param)) { found = here || {}; return; }
+    for (const k in n) if (k !== 'loc' && k !== 'meta') visit(n[k], here);
   };
-  // The two outer pieces reach the leaf's tails, so they take the graded rule.
-  const last = cuts.length - 2;
-  // The tail pieces grade as deep as the 40-level rule this replaces.
-  const rule = (levels: number, cells: number) => (i: number) =>
-    (i === 0 ? gradedRule(levels, 0) : i === last ? gradedRule(levels, 1) : uniformRule(cells));
-  const fine = rule(LEAF_GRADE_LEVELS, 4);
-  const coarse = rule(LEAF_GRADE_LEVELS / 2, 2);
-  return gated(() => piecewiseRule(cuts, fine, f), piecewiseRule(cuts, coarse, f));
+  visit(body, null);
+  if (!found) return null;
+  const s = found.loc && found.loc.start;
+  return s ? ' at line ' + (s.line + 1) + ', column ' + (s.col + 1) : '';
+}
+
+function variesError(base: string, at: string): Error {
+  return new Error('normalize(weighted(w, ' + base + ')): the weight depends on a latent and varies '
+    + 'with the variate' + at + ' between its breakpoints. An x-varying weight inside a θ-dependent '
+    + 'window has no exact rule: nodes fixed before θ is known miss any feature narrower than their '
+    + 'spacing. Z(θ) is unresolved (spec §06).');
 }
 
 // Does the weight jump in the variate anywhere? Over an N-D variate no jump
@@ -211,5 +175,5 @@ function jumpsInVariate(body: any, param: string): boolean {
 }
 
 module.exports = {
-  weightBreakpoints, jumpsInVariate, sortedClamped, boxMassExpr, leafMassExpr, MAX_BREAKPOINTS, PIECE_GATE,
+  weightBreakpoints, variesBetweenCuts, variesError, jumpsInVariate, sortedClamped, boxMassExpr, leafMassExpr, MAX_BREAKPOINTS,
 };

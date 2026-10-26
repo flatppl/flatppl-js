@@ -360,6 +360,8 @@ function crnNormalizeMassExpr(node: any, opts?: any): any | null {
         + 'sample could step over the region; Z(θ) is unresolved (spec §06).');
     }
     if (bp.exprs.length > 0) {
+      const at = piecewise.variesBetweenCuts(shape.weightBody, param, shape.arrayVariate);
+      if (at !== null) throw piecewise.variesError('Lebesgue(box)', at);
       const expr = piecewise.boxMassExpr(param, shape.weightBody, shape.axes[0].lo, shape.axes[0].hi,
         bp.exprs, shape.arrayVariate);
       _checkBudget(expr);

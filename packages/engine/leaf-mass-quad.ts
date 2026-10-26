@@ -195,6 +195,8 @@ function leafMassExpr(node: any, ctx: any): any | null {
       + 'graded rule could step over the region; Z(θ) is unresolved (spec §06).');
   }
   if (bp.exprs.length > 0) {
+    const at = piecewise.variesBetweenCuts(shape.weightBody, shape.weightParams[0], false);
+    if (at !== null) throw piecewise.variesError(shape.kernel, at);
     const expr = piecewise.leafMassExpr(shape.weightParams[0], shape.weightBody, shape.kernel,
       shape.input, bp.exprs, shape.logSpace);
     require('./crn-normalize.ts')._checkBudget(expr);
