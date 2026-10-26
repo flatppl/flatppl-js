@@ -157,7 +157,7 @@ m = 0.0
 lp = ifelse(
   ${point} in cartpow(posreals, 3),
   builtin_logdensityof(Dirichlet, record(alpha = [2.0, 3.0, 4.0]), log.(${point}))
-  - sum((x -> x).(log.(${point}))),
+  - sum((x -> log(x)).(${point})),
   -inf,
 )
 `;

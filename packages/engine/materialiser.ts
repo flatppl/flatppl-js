@@ -3355,18 +3355,25 @@ clmRerouteStage.label = 'clmReroute';
 // The evaluator's elementwise primitives would give `sqrt(v)` a value,
 // although spec §07 makes a non-scalar operand of a scalar-only function a
 // static error. Refuse a binding that carries that error, or depends on one.
-function _scalarOnlyRefusal(name: string, bindings: any, seen: Set<string>): any {
-  if (seen.has(name)) return null;
-  seen.add(name);
+// Every transitive dependency counts, not only those whose type failed: a
+// record holding `sqrt(v)` types fine, and its field still reads the value.
+// Memoised per binding graph, since the stage runs on every materialise call.
+const _scalarOnlyMemo = new WeakMap<any, Map<string, any>>();
+function _scalarOnlyRefusal(name: string, bindings: any, visiting: Set<string>): any {
+  let memo = _scalarOnlyMemo.get(bindings);
+  if (!memo) { memo = new Map(); _scalarOnlyMemo.set(bindings, memo); }
+  if (memo.has(name)) return memo.get(name);
+  if (visiting.has(name)) return null;
+  visiting.add(name);
   const binding = bindings.get(name);
-  if (binding?.inferredType?.kind !== 'failed') return null;
-  const own = (binding.diagnostics || []).find((d: any) => d.severity === 'error' && d.scalarOnly);
-  if (own) return own;
-  for (const dep of binding.deps || []) {
-    const found = _scalarOnlyRefusal(dep, bindings, seen);
-    if (found) return found;
+  let found = (binding?.diagnostics || []).find((d: any) => d.severity === 'error' && d.scalarOnly) || null;
+  for (const dep of (found ? [] : binding?.deps || [])) {
+    found = _scalarOnlyRefusal(dep, bindings, visiting);
+    if (found) break;
   }
-  return null;
+  visiting.delete(name);
+  memo.set(name, found);
+  return found;
 }
 const staticRefusalStage: MaterialiserStage = function (name, ctx, next) {
   const d = ctx.bindings ? _scalarOnlyRefusal(name, ctx.bindings, new Set()) : null;

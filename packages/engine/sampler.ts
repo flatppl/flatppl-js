@@ -2111,6 +2111,19 @@ const ARITH_OPS = {
   },
 };
 
+// §03 counts a transposed vector as a vector, and these §07 rows map a vector
+// to a vector in place, so the result keeps the input's orientation. Only the
+// orientation: the complex unit forms already read the logical (conjugated)
+// values.
+for (const op of ['cumsum', 'cumprod', 'cummax', 'cummin', 'l1unit', 'l2unit', 'softmax', 'logsoftmax']) {
+  const f = (ARITH_OPS as any)[op];
+  (ARITH_OPS as any)[op] = (a: any) => {
+    const out = f(a);
+    if ((a?.t === 'T' || a?.t === 'A') && valueLib.isValue(a) && a.shape.length === 1 && out?.shape) out.t = 'T';
+    return out;
+  };
+}
+
 // _arrLike: unwrap Value to its underlying Float64Array data, or pass
 // through Float64Array / JS array. Used by reductions (sum, mean,
 // l1norm, etc.) so they handle Value inputs uniformly without
