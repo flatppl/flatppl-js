@@ -3352,7 +3352,36 @@ clmRerouteStage.label = 'clmReroute';
 // Tests that need a clean slate call `_resetMaterialiserPipeline()` first, then
 // re-register if they want the defaults back via
 // `_installDefaultMaterialiserStages()`.
+// The evaluator's elementwise primitives would give `sqrt(v)` a value,
+// although spec §07 makes a non-scalar operand of a scalar-only function a
+// static error. Refuse a binding that carries that error, or depends on one.
+function _scalarOnlyRefusal(name: string, bindings: any, seen: Set<string>): any {
+  if (seen.has(name)) return null;
+  seen.add(name);
+  const binding = bindings.get(name);
+  if (binding?.inferredType?.kind !== 'failed') return null;
+  const own = (binding.diagnostics || []).find((d: any) => d.severity === 'error' && d.scalarOnly);
+  if (own) return own;
+  for (const dep of binding.deps || []) {
+    const found = _scalarOnlyRefusal(dep, bindings, seen);
+    if (found) return found;
+  }
+  return null;
+}
+const staticRefusalStage: MaterialiserStage = function (name, ctx, next) {
+  const d = ctx.bindings ? _scalarOnlyRefusal(name, ctx.bindings, new Set()) : null;
+  if (d) {
+    const at = d.loc?.start ? ' at ' + (d.loc.start.line + 1) + ':' + (d.loc.start.col + 1) : '';
+    const err: any = new Error("'" + name + "' is statically invalid" + at + ': ' + d.message);
+    err.modelRefusal = true;
+    return Promise.reject(err);
+  }
+  return next(name, ctx);
+};
+staticRefusalStage.label = 'staticRefusal';
+
 function _installDefaultMaterialiserStages(): void {
+  registerMaterialiserStage(staticRefusalStage);
   registerMaterialiserStage(callableGuardStage);
   registerMaterialiserStage(fixedPhaseStage);
   registerMaterialiserStage(clmRerouteStage);

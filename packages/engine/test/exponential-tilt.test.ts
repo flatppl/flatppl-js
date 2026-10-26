@@ -165,7 +165,7 @@ test('dynamic invalid laws and divergent Gamma-family tilts refuse before sampli
     ['Geometric(rate)', '0', '0'],
     ['NegativeBinomial(2,rate)', '1', '1'],
     ['NegativeBinomial2(rate,2)', '1', '3'],
-    ['Binomial(rate,0.2)', '0', '1.5'], // count must be an integer
+    ['Binomial(integer(rate),0.2)', '0', '1.5'], // count must be an integer
     ['Normal(0,rate)', 'inf', '1'], // a nonfinite slope has no normalized law
   ];
   for (const [base, theta, rate] of laws) {
@@ -265,7 +265,7 @@ A=normalize(logweighted(fn(-1000*_),NegativeBinomial(1e308,2)))
 ax,_=rand(iid(A,128),rnginit(42))
 a=logdensityof(A,1)
 a0=logdensityof(A,0)
-C=normalize(logweighted(fn(-1000*_),Binomial(1e308,0.5)))
+C=normalize(logweighted(fn(-1000*_),Binomial(integer(1e308),0.5)))
 c=logdensityof(C,1)
 c0=logdensityof(C,0)
 Z=normalize(logweighted(fn(0*_),NegativeBinomial2(1e200,1e-200)))

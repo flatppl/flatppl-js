@@ -525,7 +525,8 @@ test('lower: standard_module (positional only)', () => {
 
 test('lower: every IR node carries a loc field', () => {
   const ir = lowerOne(`
-    x = Normal(mu = a + 1, sigma = [1, 2, 3])
+    a = 1.0
+    x = Normal(mu = a + 1, sigma = sum([1, 2, 3]))
   `);
   function check(node: any) {
     if (!node || typeof node !== 'object') return;

@@ -111,7 +111,10 @@ function isVectorOfVectors(t: any): boolean {
   return t?.kind === 'array' && t.rank === 1 && t.elem?.kind === 'array';
 }
 
-const SCALAR_ONLY_OPS = new Set([...ELEMENTARY_OPS, 'pow']);
+// §07 "Scalar restrictions and constructors" gives `boolean`, `integer` and
+// `real` the domain "any scalar numeric".
+const SCALAR_CONSTRUCTOR_OPS = new Set(['boolean', 'integer', 'real']);
+const SCALAR_ONLY_OPS = new Set([...ELEMENTARY_OPS, ...SCALAR_CONSTRUCTOR_OPS, 'pow']);
 const { operatorDomainViolation, kindOf: operandKind, extentOf, asGuess, unresolved: isGuess } = require('./operator-domains.ts');
 // The four FlatPDL transports (spec §07) — undefined on discrete kernels.
 const TRANSPORT_OPS = new Set([
@@ -835,7 +838,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // satisfies cell-wise. The scalar case stays on the signature
       // (`complex → real`, integer admitted through §03's embedding); only
       // the array form needs the shape-preserving lift.
-      case 'real':        return write(inferReal(expr, scopes), expr);
       // divide(a, b) — §07 "Operator-equivalent functions" gives it the
       // domains "scalars, array-scalar, transposed-vector–scalar (real or
       // complex)". The `[REAL, REAL]` signature admitted only the first, so
@@ -1021,6 +1023,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.failed(op + ' ' + param + ' is a vector of vectors');
   }
   const matrixParamReported = new WeakSet();
+  const surplusReported = new WeakSet();
 
   function inferGenericCall(expr: any, scopes: any): any {
     const op = expr.op;
@@ -1046,12 +1049,23 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (joined) s = T.unify(sig.result, joined.result, s);
     }
 
-    if (sig.args === null && MATRIX_PARAMS[op]) {
+    const positionOf: Record<string, number> = {};
+    // Positional arguments bind a distribution's §08 parameters in declared
+    // order (spec §04 "Calling conventions"), so check them as those kwargs.
+    // A lone record or table auto-splats instead, or for a one-parameter
+    // distribution was bound whole above.
+    if (sig.args === null && args.length > 0
+        && !(args.length === 1 && ['record', 'table'].includes(inferExpr(args[0], scopes).kind))) {
       const names = Object.keys(sig.kwargs);
-      for (let i = 0; i < args.length && i < names.length; i++) {
-        if (MATRIX_PARAMS[op].includes(names[i]) && isVectorOfVectors(inferExpr(args[i], scopes))) {
-          return matrixParamError(op, names[i], args[i]);
-        }
+      if (args.length > names.length) {
+        // An inline constructor can be inferred more than once; report it once.
+        if (surplusReported.has(expr)) return T.failed(op + ' arity');
+        surplusReported.add(expr);
+        return arityError(op, 'at most ' + names.length, args.length, expr.loc);
+      }
+      kwargs = { ...kwargs };
+      for (let i = 0; i < args.length; i++) {
+        if (!(names[i] in kwargs)) { kwargs[names[i]] = args[i]; positionOf[names[i]] = i; }
       }
     }
 
@@ -1115,7 +1129,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return matrixParamError(op, k, kwargs[k]);
       }
       const next = T.unify(sig.kwargs[k], at, s);
-      if (next == null) return kwargError(op, k, T.substitute(sig.kwargs[k], s), at, kwargs[k].loc);
+      if (next == null) {
+        return kwargError(op, k, T.substitute(sig.kwargs[k], s), at, kwargs[k].loc, positionOf[k]);
+      }
       s = next;
     }
     const result = T.substitute(sig.result, s);
@@ -1383,6 +1399,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (args.length < 2) return arityError(op, 'at least 2', args.length, expr.loc);
     const wT: any = inferExpr(args[0], scopes);
     const mT: any = inferExpr(args[1], scopes);
+    if (mT.kind === 'failed') return T.failed(op + ' arg 2 (cascade)');
+    // A standard-module distribution is not typed yet.
+    if (mT.kind === 'deferred' || mT.kind === 'any') return mT;
     // Measure check first (matches existing diagnostic style).
     if (!T.isMeasure(mT)) {
       diagnostics.push({
@@ -4161,39 +4180,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return out;
   }
 
-  // real(x) over an ARRAY. §07 "Scalar restrictions and constructors":
-  // "`real` | `x` | returns `x` for real `x`, Re(x) for complex `x`" — the
-  // restriction is per cell, so the result keeps the argument's shape with a
-  // real leaf. §03's `booleans ⊂ integers ⊂ reals` makes an integer cell
-  // already real, so the array form is value-identity there and only retypes.
-  // The determiniser's discrete lattice snap is what emits it un-dotted:
-  // `real(round.(v))` over a vector variate (flatppl-rust
-  // determinizer/src/density.rs::snap_to_lattice).
-  //
-  // A scalar (or anything non-array) falls through to the signature path, so
-  // `real(complex)` and the non-numeric refusal keep their existing rules.
-  function inferReal(expr: any, scopes: any): any {
-    const args = expr.args || [];
-    if (args.length !== 1) return arityError('real', 1, args.length, expr.loc);
-    const aT: any = inferExpr(args[0], scopes);
-    if (aT.kind !== 'array') return inferGenericCall(expr, scopes);
-    // Null propagates out of a nested leaf, so a non-numeric cell refuses the
-    // whole call instead of yielding an array with a null element type.
-    function liftElemwise(t: any): any {
-      if (t == null) return null;
-      if (t.kind === 'array') {
-        const elem = liftElemwise(t.elem);
-        return elem == null ? null : T.array(t.rank, t.shape.slice(), elem);
-      }
-      if (t.kind === 'deferred' || t.kind === 'any') return t;
-      if (t.kind === 'scalar' && t.prim !== 'string') return T.REAL;
-      return null;
-    }
-    const out = liftElemwise(aT);
-    if (out == null) return argError('real', 0, T.COMPLEX, aT, args[0].loc);
-    return out;
-  }
-
   // divide(a, b) — §07 "Operator-equivalent functions": "scalars, array-scalar,
   // transposed-vector–scalar (real or complex)". The dividend carries the
   // shape; the divisor is a scalar in all three forms, so a non-scalar arg 2
@@ -4856,6 +4842,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const sizeIR = (args.length > 0) ? args[0]
       : (kwargs.n != null ? kwargs.n : null);
     if (!sizeIR) return arityError('eye', 1, args.length, expr.loc);
+    // §07 "Array and table generation" gives `n` the domain positive integer.
+    const nT: any = inferExpr(sizeIR, scopes);
+    if (T.unify(T.INTEGER, nT, new Map()) == null) {
+      return args.length > 0 ? argError('eye', 0, T.INTEGER, nT, sizeIR.loc)
+        : kwargError('eye', 'n', T.INTEGER, nT, sizeIR.loc);
+    }
+    const lit = literalIntFromIR(sizeIR);
+    if (lit != null && lit < 1) {
+      diagnostics.push({ severity: 'error', loc: sizeIR.loc,
+        message: 'eye: spec §07 "Array and table generation" gives `n` the domain positive '
+          + 'integer, but it is written as ' + lit });
+      return T.failed('eye non-positive size');
+    }
     const n = resolveIntegerShape(sizeIR);
     if (n == null) return T.array(2, ['%dynamic', '%dynamic'], T.REAL);
     return T.array(2, [n, n], T.REAL);
@@ -5251,6 +5250,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return checkUserCall(expr, scopes, calleeType, callee, calleeModule, local, reg);
   }
 
+  const reinferring = new Set<any>();
   function checkUserCall(expr: any, scopes: any, calleeType: any, callee: any,
       calleeModule: any, local: boolean, reg: any): any {
     const head = expr.target;
@@ -5406,7 +5406,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const calleeIR = callee && callee.rhs;
     if (calleeIR && calleeIR.kind === 'call' && calleeIR.op === 'functionof'
         && calleeIR.body && Array.isArray(calleeIR.params)
-        && (!local || !visiting.has(head.name))) {
+        && (!local || !visiting.has(head.name)) && !reinferring.has(calleeIR)) {
       const params = calleeIR.params;
       const paramKwargs = calleeIR.paramKwargs || [];
       const newScope: any = new Map<string, any>();
@@ -5446,9 +5446,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         resolveFixed: require('./fixed-eval.ts').makeResolver({ loweredModule: calleeModule }),
       });
       const callBody = copyForInference(calleeIR.body);
-      const polymorphic: any = importedContext
-        ? importedContext.inferExpr(callBody, [newScope])
-        : inferExpr(callBody, [newScope]);
+      // A body that calls itself re-enters here from a binding other than its
+      // own, which `visiting` does not catch.
+      reinferring.add(calleeIR);
+      let polymorphic: any;
+      try {
+        polymorphic = importedContext
+          ? importedContext.inferExpr(callBody, [newScope])
+          : inferExpr(callBody, [newScope]);
+      } finally {
+        reinferring.delete(calleeIR);
+      }
       if (importedContext) {
         for (const diagnostic of importedContext.diagnostics) {
           diagnostics.push({ ...diagnostic, loc: expr.loc });
@@ -5642,8 +5650,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const cite = ELEMENTARY_OPS.has(op)
       ? 'spec §07 "Elementary functions": "All accept scalar arguments and '
         + 'return scalar results"'
-      : 'spec §07 "Operator-equivalent functions" gives `' + op
-        + '` the domain "scalars (real or complex)"';
+      : SCALAR_CONSTRUCTOR_OPS.has(op)
+        ? 'spec §07 "Scalar restrictions and constructors" gives `' + op
+          + '` the domain "any scalar numeric"'
+        : 'spec §07 "Operator-equivalent functions" gives `' + op
+          + '` the domain "scalars (real or complex)"';
     diagnostics.push({
       severity: 'error',
       message: op + ': arg ' + (i + 1) + ' expects a scalar, got ' + T.show(got)
@@ -5681,16 +5692,19 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     });
     return T.failed(op + ' arg type');
   }
-  function kwargError(op: any, k: any, expected: any, got: any, loc: any) {
+  function kwargError(op: any, k: any, expected: any, got: any, loc: any, position?: number) {
     if (got && got.kind === 'failed') return T.failed(op + ' kwarg type (cascade)');
-    diagnostics.push({
-      severity: 'error',
-      message: op + ': kwarg "' + k + '" expects ' + T.show(expected)
-        + ', got ' + T.show(got) + _rowstackHint(expected, got),
-      loc,
-    });
+    const message = op + ': ' + (position === undefined ? 'kwarg "' + k + '"' : 'arg ' + (position + 1) + ' ("' + k + '")')
+      + ' expects ' + T.show(expected) + ', got ' + T.show(got) + _rowstackHint(expected, got);
+    // An inline constructor can be inferred more than once; report it once.
+    const key = message + '@' + JSON.stringify(loc?.start);
+    if (!kwargReported.has(key)) {
+      kwargReported.add(key);
+      diagnostics.push({ severity: 'error', message, loc });
+    }
     return T.failed(op + ' kwarg type');
   }
+  const kwargReported = new Set<string>();
 
   // ===================================================================
   // Value-set inference (spec §11 third `%meta` slot; engine-concepts

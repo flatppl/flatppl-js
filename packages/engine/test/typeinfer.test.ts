@@ -1482,18 +1482,20 @@ test('multi-LHS preserves disintegrate semantics (no tuple_get rewrite)', () => 
 });
 
 
-test('§07 real: an ARRAY argument types cell-wise, shape preserved', () => {
-  // §07 "Scalar restrictions and constructors" gives `real(x)` as "returns `x`
-  // for real `x`, Re(x) for complex `x`" — per cell over an array, so the
-  // result keeps the shape with a real leaf. §03's `booleans ⊂ integers ⊂
-  // reals` makes an integer array a member already, so the array form only
-  // retypes it. The determiniser's discrete lattice snap emits exactly this
-  // (`real(round.(v))` — determinizer/src/density.rs::snap_to_lattice), and
-  // rejecting it blocked every vector discrete pushforward from scoring.
+test('§07 real: an array argument is refused, and the dotted form types cell-wise', () => {
+  // §07 "Scalar restrictions and constructors" gives `real` the domain "any
+  // scalar numeric", so the elementwise spelling is `real.(…)`.
+  const refused = infer(`
+    v = [1.5, -2.5, 3.5]
+    r = real(round.(v))
+  `).errors;
+  assert.ok(refused.some((d: any) =>
+    /^real: arg 1 expects a scalar, got array of integer \(length 3\) — spec §07 "Scalar restrictions and constructors"/
+      .test(d.message)), refused.map((d: any) => d.message).join('; '));
   const { bindings, errors } = infer(`
     v = [1.5, -2.5, 3.5]
     k = round.(v)
-    r = real(k)
+    r = real.(k)
     s = real(2.5)
   `);
   assert.equal(errors.length, 0, errors.map((d: any) => d.message).join('; '));

@@ -67,7 +67,7 @@ l = logdensityof(m, ${k})`, 'l');
 });
 
 test('the kernel and broadcast paths resolve the same discrete normalizer', async () => {
-  const kernel = await value(`mu ~ Uniform(1.0, 5.0)
+  const kernel = await value(`mu ~ Uniform(interval(1.0, 5.0))
 y ~ normalize(truncate(Poisson(mu), interval(0, 5)))
 K = kernelof(record(y = y), mu = mu)
 L = likelihoodof(K, record(y = 0))
@@ -80,7 +80,7 @@ l = logdensityof(energy.([3.0, 4.0]), [2, 5])`, 'l');
 });
 
 test('MCMC likelihood re-resolves a parameter-dependent discrete normalizer', async () => {
-  const { ctx } = makeMatCtx(`r ~ Uniform(1.0, 5.0)
+  const { ctx } = makeMatCtx(`r ~ Uniform(interval(1.0, 5.0))
 y ~ iid(normalize(truncate(Poisson(r), interval(2, 4))), 2)
 K = kernelof(record(y = y), r = r)
 L = likelihoodof(K, record(y = [2, 4]))

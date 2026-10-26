@@ -100,7 +100,7 @@ test('evaluateExprN: per-atom l2unit on vector(a, b)', () => {
 
 test('Phase 7c: softmax on iid(Normal, k) produces vector-atom Measure', async () => {
   const ctx = makeCtx(`
-xs = iid(Normal(mu=0.0, sigma=1.0), 4)
+xs ~ iid(Normal(mu=0.0, sigma=1.0), 4)
 sm = softmax(xs)
 `);
   const xs = await ctx.getMeasure('xs');
@@ -137,7 +137,7 @@ sm = softmax(xs)
 test('Phase 7c: l1unit on iid(...) produces vector-atom Measure summing to 1 per atom', async () => {
   // Use positive variates via exp to ensure non-zero l1 norms.
   const ctx = makeCtx(`
-xs = iid(Exponential(rate=1.0), 3)
+xs ~ iid(Exponential(rate=1.0), 3)
 u = l1unit(xs)
 `);
   const u = await ctx.getMeasure('u');

@@ -63,6 +63,8 @@ test('positional multivariate parameters stay live across density atoms', () => 
 });
 
 test('multivariate density refuses surplus positional arguments', async () => {
-  await assert.rejects(() => score('logdensityof(Dirichlet([2, 3], [4, 5]), [0.25, 0.75])'),
-    /Dirichlet: expected at most 1 positional arguments, got 2/);
+  const { proc, ctx } = ctxFor('lp = logdensityof(Dirichlet([2, 3], [4, 5]), [0.25, 0.75])', 1);
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error').map((d: any) => d.message),
+    ['Dirichlet expects at most 1 positional argument(s), got 2']);
+  await assert.rejects(() => ctx.getMeasure('lp'), /Dirichlet: expected at most 1 positional arguments, got 2/);
 });

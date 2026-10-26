@@ -46,9 +46,11 @@ for (const [head, body] of BODIES) {
   });
 }
 
-test('a scalar fed to an untyped step input is refused the same way', async () => {
+test('a scalar fed to an untyped step input is refused statically and at run time', async () => {
+  // The step's positional argument is checked as `Normal`'s `mu`, which types the call-site body.
   const src = 'k(a) = Normal(sum(a), 1.0)\nA = jointchain(Normal(0.0, 1.0), k)\n';
-  assert.deepEqual(errors(src), []);
+  assert.match(errors(src).map((d: any) => d.message).join('\n'),
+    /sum: spec §07 "Reductions" gives `sum` the domain real\/complex arrays — argument 1 here is real/);
   const want = /sum at \d+:\d+: spec §07 "Reductions" gives `sum` the domain real\/complex arrays, but argument 1 is a scalar/;
   await assert.rejects(value(src + 'lp = logdensityof(A, [0.5, 0.5])\n', 'lp'), want);
   await assert.rejects(value(src + 'y ~ A\n', 'y', 4), want);
