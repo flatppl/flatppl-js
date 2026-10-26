@@ -5,8 +5,8 @@
 // a number at that point. Otherwise it keeps its old path: `ops.dispatch` for
 // a declared op, the ARITH_OPS entry for add/sub/mul/neg. Both must give the
 // same result. These tests compare SCALAR_OPS with that reference on numeric
-// edge inputs, compiled bodies with the interpreter on numbers and on values
-// that must take the old path, and time the fast path against the old one.
+// edge inputs, and compiled bodies with the interpreter on numbers and on
+// values that must take the old path. The timing gate is in test/perf.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -81,11 +81,8 @@ test('a compiled scalar call equals the interpreter on numbers and on non-number
   }
 });
 
-// The scalar MC inverse of simple-transport as a profile body: 20000 points
-// swept over x. The fast path must beat the old dispatch path. batserv02
-// measured a 2000-point profileN sweep at 7.35 -> 3.55 ms, and this loop runs
-// 3.6-3.9x faster; the gate is lower so shared CI runners hold it.
-test('perf: the scalar fast path makes a profile of the MC inverse at least 2x faster', () => {
+// The timing gate lives in test/perf (npm run test:perf); this keeps the bits.
+test('a profile sweep of the MC inverse sums the same on the fast and the old path', () => {
   const { processSource, orchestrator } = require('../index.ts');
   const mcr = require('../mc-recipe.ts');
   const src = fs.readFileSync(path.resolve(__dirname, 'fixtures/simple-transport1.flatppl'), 'utf8');
@@ -93,7 +90,7 @@ test('perf: the scalar fast path makes a profile of the MC inverse at least 2x f
   const expand = (nm: any) => orchestrator.expandMeasure(nm, { derivations: built.derivations, bindings: built.bindings });
   const mc = mcr.buildMcMarginalForm(expand('zs'), built.bindings, expand).args[0];
   const env: any = { pars: { a: 0.1, b: 0.3, mu: 1.0 }, sigma: 0.2, [mc.outName]: 3.1 };
-  const P = 20000;
+  const P = 2000;
   const sweep = (prog: any) => {
     let acc = 0;
     for (let i = 0; i < P; i++) { env.x = env[mc.retainedRef] = 0.3 + 1.7 * i / P; prog.nextPoint(); acc += prog.evalPoint(env); }
@@ -104,11 +101,4 @@ test('perf: the scalar fast path makes a profile of the MC inverse at least 2x f
   profile._setScalarFastPath(true);
   const fast = sampler.compileProfileBody(mc.inverseIR);
   assert.ok(Object.is(sweep(fast), sweep(slow)), 'same sum');
-  const hr = () => Number(process.hrtime.bigint()) / 1e6;
-  const time = (prog: any) => { const t = hr(); sweep(prog); return hr() - t; };
-  const on: number[] = [], off: number[] = [];
-  for (let k = 0; k < 7; k++) { off.push(time(slow)); on.push(time(fast)); }
-  const med = (a: number[]) => a.slice().sort((x, y) => x - y)[a.length >> 1];
-  process.stderr.write(`  profile MC inverse x${P}: old path ${med(off).toFixed(1)}ms, fast path ${med(on).toFixed(1)}ms (${(med(off) / med(on)).toFixed(2)}x)\n`);
-  assert.ok(med(on) * 2 <= med(off), `fast path (${med(on).toFixed(1)}ms) must be ≥2x faster than the old path (${med(off).toFixed(1)}ms)`);
 });

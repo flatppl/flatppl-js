@@ -455,34 +455,30 @@ test('makeParametricSampler: matches makeSampler for static params', () => {
 });
 
 test('makeParametricSampler: factory built once across many draws', () => {
-  // Sanity perf check: 50K parametric draws of Normal with per-call
-  // params should be dramatically faster than 50K rand() calls (which
-  // rebuild the factory each time). We don't assert a hard ratio (CI
-  // jitter), just that the parametric path completes well under a
-  // second — the rand() path is the slow baseline in production.
+  // Per-call params must reuse one stdlib factory. Counted, not timed: a
+  // wall-time bound flaked under load and no longer separates the two paths.
   const ir = {
     kind: 'call', op: 'Normal', kwargs: {
       mu:    { kind: 'ref', ns: 'self', name: 'mu',    loc: synthLoc() },
       sigma: { kind: 'ref', ns: 'self', name: 'sigma', loc: synthLoc() },
     }, loc: synthLoc(),
   };
-  const N = 50_000;
-  const state = rng.stateFromKey(123);
-  const s = sampler.makeParametricSampler(state, ir);
-  const env: any = {};
-  const t0 = Date.now();
-  for (let i = 0; i < N; i++) {
-    env.mu = i * 0.001;
-    env.sigma = 1 + (i % 10) * 0.01;
-    s.drawWith(env);
+  const randFn = sampler.lookupDistribution(ir).randFn;
+  const factory = randFn.factory;
+  let built = 0;
+  randFn.factory = (...a: any[]) => { built++; return factory(...a); };
+  try {
+    const s = sampler.makeParametricSampler(rng.stateFromKey(123), ir);
+    const env: any = {};
+    for (let i = 0; i < 1000; i++) {
+      env.mu = i * 0.001;
+      env.sigma = 1 + (i % 10) * 0.01;
+      assert.ok(Number.isFinite(s.drawWith(env)));
+    }
+  } finally {
+    randFn.factory = factory;
   }
-  const elapsed = Date.now() - t0;
-  // Bound generous on purpose: the assertion discriminates "factory built
-  // once" (~0.1-4s depending on machine, tsx/c8 instrumentation, and
-  // parallel-suite load) from "rebuilt per draw" (~10x that — tens of
-  // seconds). The former 2s bound flaked on instrumented local runs while
-  // passing CI.
-  assert.ok(elapsed < 8000, `parametric path too slow: ${elapsed}ms for ${N} draws`);
+  assert.equal(built, 1);
 });
 
 // =====================================================================

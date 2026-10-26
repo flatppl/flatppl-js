@@ -118,28 +118,13 @@ test('no batched operand leaves the single call to ARITH_OPS', () => {
   assert.ok(valueLib.isValue(ARITH_OPS_N.divide([valueLib.scalar(6), 3], 4)));
 });
 
-// The kernels exist for speed: on the MC inverse the interpreter must beat its
-// ARITH_OPS loop. batserv02 measured 165 -> 122 ms (1.35x); the gate is lower
-// so shared CI runners hold it. Alternating trials, median of each.
-test('perf: the scalar kernels make the interpreter at least 1.15x faster on the MC inverse', () => {
+// The timing gate lives in test/perf (npm run test:perf); this keeps the bits.
+test('MC inverse: the scalar kernels equal the ARITH_OPS loop bit for bit', () => {
   const { mcInverseWorkload } = require('./_mc-inverse-workload.ts');
   const { ir, refArrays, count, baseEnv } = mcInverseWorkload();
-  const hr = () => Number(process.hrtime.bigint()) / 1e6;
-  const time = (on: boolean) => {
-    batched._setScalarKernels(on);
-    const t = hr();
-    for (let i = 0; i < 3; i++) sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined);
-    return hr() - t;
-  };
   batched._setCompileEvalN(false);
   const ref = (batched._setScalarKernels(false), sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined));
   const fast = (batched._setScalarKernels(true), sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined));
-  for (let i = 0; i < count; i++) assert.ok(Object.is(fast[i], ref[i]), `atom ${i}`);
-  const on: number[] = [], off: number[] = [];
-  for (let k = 0; k < 5; k++) { off.push(time(false)); on.push(time(true)); }
-  batched._setScalarKernels(true);
   batched._setCompileEvalN(true);
-  const med = (a: number[]) => a.slice().sort((x, y) => x - y)[a.length >> 1];
-  process.stderr.write(`  interpreted inverse x3: ARITH_OPS loop ${med(off).toFixed(0)}ms, kernels ${med(on).toFixed(0)}ms (${(med(off) / med(on)).toFixed(2)}x)\n`);
-  assert.ok(med(on) * 1.15 <= med(off), `kernels (${med(on).toFixed(0)}ms) must be ≥1.15x faster than the ARITH_OPS loop (${med(off).toFixed(0)}ms)`);
+  for (let i = 0; i < count; i++) assert.ok(Object.is(fast[i], ref[i]), `atom ${i}`);
 });
