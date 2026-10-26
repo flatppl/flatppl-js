@@ -17,6 +17,7 @@
   },
   "scripts": {
     "test": "node --test 'test/**/*.test.ts'",
+    "test:perf": "node --test --test-concurrency=1 'test/perf/*.perf.ts'",
     "test:coverage": "c8 --reporter=lcov --reporter=text-summary --include='*.ts' --exclude='*.d.ts' --exclude='test/**' --reports-dir=coverage node --test 'test/**/*.test.ts'",
     "typecheck": "tsc -p tsconfig.json",
     "typecheck:watch": "tsc -p tsconfig.json --watch"

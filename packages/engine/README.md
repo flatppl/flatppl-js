@@ -147,6 +147,15 @@ node --test 'test/**/*.test.ts'
 These commands require a Node version that runs the repository's TypeScript
 sources. The audit checks used Node 26.3.0.
 
+The timing gates in `test/perf` run separately, on a quiet machine:
+
+```sh
+npm run test:perf --workspace=packages/engine
+```
+
+They are not part of CI, because GitHub's virtualised runners time too
+unreliably to gate on a speed ratio.
+
 ## License
 
 [MIT](LICENSE)
