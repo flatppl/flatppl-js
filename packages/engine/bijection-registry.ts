@@ -545,6 +545,30 @@ function _powInverse(Y: any, kLit: any): any {
   if (!Number.isInteger(1 / k)) return _call('pow', [Y, _lit(1 / k)]);
   return _call('pow', [_imageGate(Y, 0, Infinity), _lit(1 / k)]);
 }
+/**
+ * A `pow` exponent §06 counts as a literal: a numeric literal, or a quotient
+ * of two (`sqrt` = `pow(_, 1/2)`), also under `neg`. A quotient folds to its
+ * value as a real (§03), so it is never an odd integer. Any other expression
+ * is `null`.
+ */
+function _literalExponent(n: any): any {
+  if (_isLit(n)) return n;
+  if (!n || n.kind !== 'call' || !Array.isArray(n.args)) return null;
+  if (n.op === 'neg' && n.args.length === 1) {
+    const k = _literalExponent(n.args[0]);
+    return k && { kind: 'lit', value: -k.value, numType: k.numType };
+  }
+  // Lowering folds a negated literal, so `-1/2` reaches here as `divide(-1, 2)`.
+  if (n.op === 'divide' && n.args.length === 2 && _isLit(n.args[0]) && _isLit(n.args[1])) {
+    return { kind: 'lit', value: n.args[0].value / n.args[1].value, numType: 'real' };
+  }
+  return null;
+}
+/** The folded exponent of a base-free `pow` when it gives an invertible map. */
+function _invertiblePowExponent(i: number, a: any[]): any {
+  const k = i === 0 ? _literalExponent(a[1]) : null;
+  return k && k.value !== 0 && Number.isFinite(k.value) ? k : null;
+}
 /** log|e| — the per-op LADJ building block for non-constant Jacobians. */
 function _logAbs(e: any): any {
   return _call('log', [_call('abs', [e])]);
@@ -621,11 +645,16 @@ const ELEMENTARY_BIJECTIONS: Record<string, {
     // pow(_, 0) is the constant 1 (not invertible — declining here makes
     // walkPushfwd refuse loudly instead of synthesising a `y^(1/0)` = NaN
     // inverse), #310.
-    invert: (i, a, Y) => (i === 0 && _isLit(a[1]) && a[1].value !== 0 && Number.isFinite(a[1].value))
-      ? _powInverse(Y, a[1]) : null,
-    ladj: (i, a, X) => (i === 0 && _isLit(a[1]) && a[1].value !== 0 && Number.isFinite(a[1].value))
-      ? _call('add', [_lit(Math.log(Math.abs(a[1].value))), _call('mul', [_lit(a[1].value - 1), _logAbs(X)])])
-      : null,
+    invert: (i, a, Y) => {
+      const k = _invertiblePowExponent(i, a);
+      return k ? _powInverse(Y, k) : null;
+    },
+    ladj: (i, a, X) => {
+      const k = _invertiblePowExponent(i, a);
+      return k
+        ? _call('add', [_lit(Math.log(Math.abs(k.value))), _call('mul', [_lit(k.value - 1), _logAbs(X)])])
+        : null;
+    },
   },
 
   // ---------------------------------------------------------------------
