@@ -66,6 +66,15 @@ function _restOfLineBlank(source: string, pos: number) {
   return p >= source.length || isNewline(source[p]);
 }
 
+// Spec §05 EBNF `DocBlock ::= HWS* "%%%" MarkupTag? HWS* Newline`: after the
+// fence only an identifier tag and horizontal whitespace may follow. Any other
+// content makes the line a `DocLine`, as `### text` is a `LineComment`.
+function _docFenceOpens(source: string, pos: number) {
+  let p = pos;
+  while (p < source.length && isIdentChar(source[p])) p++;
+  return _restOfLineBlank(source, p);
+}
+
 // Spec §05 EBNF `ContinuationOp` — every infix binary operator, the
 // lambda arrow, and the binding operators. `!` is unary only, so it is
 // absent. The dotted forms (`.+`, `.^`, …) carry the same token type as
@@ -287,7 +296,7 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
       // `###`). The closing fence is `%%%` on its own line — content
       // tag (`%%%md`, `%%%typ`) appears only at the opening fence.
       if (peek(1) === '%' && peek(2) === '%'
-          && _atLineStart(source, pos)) {
+          && _atLineStart(source, pos) && _docFenceOpens(source, pos + 3)) {
         // Consume opening fence.
         advance(); advance(); advance();
         // Optional markup tag immediately after, no whitespace.
@@ -307,7 +316,7 @@ function tokenize(source: string, variant: any) {  // eslint-disable-line no-unu
             markup = tagBuf;
           }
         }
-        // Skip rest of opening-fence line (trailing whitespace).
+        // Skip the opening fence's trailing whitespace.
         while (pos < source.length && !isNewline(at())) advance();
         if (isNewline(at())) advanceNewline();
         // Consume body lines until a closing `%%%` on its own line.

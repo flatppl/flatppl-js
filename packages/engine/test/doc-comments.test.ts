@@ -142,6 +142,33 @@ test('doc: `%%%` opener requires its own line (mid-line is not a block-form)', (
   assert.deepEqual(errors(r), []);
 });
 
+// Spec §05 EBNF `DocBlock ::= HWS* "%%%" MarkupTag? HWS* Newline`: only a tag
+// and horizontal whitespace may follow the opening fence. Any other `%%%…`
+// line is a `DocLine` (`"%" MarkupTag? {any character}`), as `### text` is a
+// `LineComment`. It must not open a block and swallow the lines below.
+test('doc: `%%% text` is not a block opener, so the block below is not swallowed', () => {
+  const r = engine.processSource('%%% junk\ntext\n%%%\nx = 1\n');
+  const errs = errors(r).map((d: any) => [d.message, d.loc.start.line]);
+  assert.deepEqual(errs, [
+    ['Unterminated doc-block: missing closing `%%%`', 2],
+    ["Expected EQUALS, got NEWLINE '\n'", 1],
+  ]);
+});
+
+test('doc: `%%% text` and `%%%md text` are single-line doc-comments', () => {
+  const r = engine.processSource('%%% Prior mean\nmu = 0.0\n%%%md note\nsigma = 1.0\n');
+  assert.deepEqual(errors(r), []);
+  assert.deepEqual(docOf(r, 'mu'), { markup: 'md', lines: ['%% Prior mean'] });
+  assert.deepEqual(docOf(r, 'sigma'), { markup: 'md', lines: ['%%md note'] });
+});
+
+test('doc: a `%%%` opener may carry a tag and trailing whitespace', () => {
+  const r = engine.processSource('%%%typ  \nline\n%%%\nx = 1\n%%%\t\nmore\n%%%\ny = 2\n');
+  assert.deepEqual(errors(r), []);
+  assert.deepEqual(docOf(r, 'x'), { markup: 'typ', lines: ['line'] });
+  assert.deepEqual(docOf(r, 'y'), { markup: 'md', lines: ['more'] });
+});
+
 // =====================================================================
 // Attachment rules
 // =====================================================================
