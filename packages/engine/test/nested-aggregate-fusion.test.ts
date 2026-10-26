@@ -28,6 +28,8 @@ const cases = [
   ['shadowed reduced axis', 'aggregate(sum, [], a[.i] * aggregate(sum, [], b[.i]))', 21],
   ['additive context', 'aggregate(sum, [], a[.i] + aggregate(sum, [], b[.j]))', 17],
   ['nonlinear context', 'aggregate(sum, [], a[.i] * (aggregate(sum, [], b[.j]))^2)', 147],
+  // sum_i a_i * sqrt(sum_j b_j^2) = 3 * 5. Fusing through the call gives 3 * (3 + 4).
+  ['call around the inner sum', 'aggregate(sum, [], a[.i] * sqrt(aggregate(sum, [], b[.j] * b[.j])))', 15],
 ] as const;
 
 for (const [name, expression, expected] of cases) {
@@ -38,3 +40,13 @@ for (const [name, expression, expected] of cases) {
     assert.equal(result.value.data[0], expected);
   });
 }
+
+// §04: metricsum axes are scoped to the metricsum, so the outer `.i` and the
+// inner `.i^`/`.i_` are different axes. With g = I: sum_i a_i * (b . b) = 3 * 25.
+test('nested aggregate: metricsum shadowing the outer axis', async () => {
+  const { ctx } = makeMatCtx(`a = [1.0, 2.0]\nb = [3.0, 4.0]
+g = rowstack([[1.0, 0.0], [0.0, 1.0]])
+result = aggregate(sum, [], a[.i] * metricsum(g, [], b[.i^] * b[.i_]))`, { sampleCount: 1 });
+  const result = await ctx.getMeasure('result');
+  assert.equal(result.value.data[0], 75);
+});
