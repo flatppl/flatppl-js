@@ -1044,6 +1044,8 @@ const SIGNATURE_FACTORIES = {
   equal:   () => ({ args: [tvar('T'), tvar('T')], kwargs: {}, result: BOOLEAN }),
   unequal: () => ({ args: [tvar('T'), tvar('T')], kwargs: {}, result: BOOLEAN }),
   lt:      () => ({ args: [REAL, REAL], kwargs: {}, result: BOOLEAN }),
+  // `x in S` and its call spelling `in(x, S)` (spec §07 "Membership").
+  in:      () => ({ args: [any(), any()], kwargs: {}, result: BOOLEAN }),
   le:      () => ({ args: [REAL, REAL], kwargs: {}, result: BOOLEAN }),
   gt:      () => ({ args: [REAL, REAL], kwargs: {}, result: BOOLEAN }),
   ge:      () => ({ args: [REAL, REAL], kwargs: {}, result: BOOLEAN }),
@@ -1090,6 +1092,8 @@ const SIGNATURE_FACTORIES = {
   // pins the canonical scalar category.
   boolean: () => ({ args: [any()], kwargs: {}, result: BOOLEAN }),
   integer: () => ({ args: [any()], kwargs: {}, result: INTEGER }),
+  // string(x): the identity on strings (spec §07 "Scalar restrictions and constructors").
+  string:  () => ({ args: [STRING], kwargs: {}, result: STRING }),
 
   // Linear algebra (spec §07). Matrices are 2-D real arrays; vectors
   // are 1-D real arrays. Most results stay deferred — the static
@@ -1129,6 +1133,11 @@ const SIGNATURE_FACTORIES = {
   lower_cholesky: () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
                            kwargs: {},
                            result: array(2, ['%dynamic', '%dynamic'], REAL) }),
+  // qr(A) → record(Q, R): Q is m×n, R is n×n (spec §07 "Linear algebra").
+  qr:             () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
+                           kwargs: {},
+                           result: record({ Q: array(2, ['%dynamic', '%dynamic'], REAL),
+                             R: array(2, ['%dynamic', '%dynamic'], REAL) }) }),
   row_gram:       () => ({ args: [array(2, ['%dynamic', '%dynamic'], REAL)],
                            kwargs: {},
                            result: array(2, ['%dynamic', '%dynamic'], REAL) }),

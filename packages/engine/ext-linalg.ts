@@ -268,16 +268,18 @@ function _qr(A: any): any {
   const v = new Float64Array(m);                 // reflector workspace
   for (let k = 0; k < n; k++) {
     // Extract column k from row k down: x = R_full[k:m, k].
-    let normX2 = 0;
-    for (let i = k; i < m; i++) {
+    // Nothing below the diagonal: no reflector, as LAPACK dlarfg (and so
+    // numpy) does, which keeps the sign of R[k, k].
+    let below2 = 0;
+    for (let i = k + 1; i < m; i++) {
       const xi = R_full[i * n + k];
-      normX2 += xi * xi;
+      below2 += xi * xi;
     }
-    if (normX2 === 0) continue;                  // column already zero
-    const normX = Math.sqrt(normX2);
+    if (below2 === 0) continue;
+    const x0 = R_full[k * n + k];
+    const normX = Math.sqrt(below2 + x0 * x0);
     // alpha = -sign(x[0]) * normX (Householder convention; flip sign
     // to avoid catastrophic cancellation in v[0]).
-    const x0 = R_full[k * n + k];
     const alpha = (x0 >= 0 ? -1 : 1) * normX;
     // v = x - alpha · e_1, then normalise so v^T v = 2 (the standard
     // convention that turns the reflector into I - v v^T instead of
@@ -311,9 +313,10 @@ function _qr(A: any): any {
   for (let i = 0; i < m; i++) {
     for (let j = 0; j < n; j++) Q[i * n + j] = Q_full[i * m + j];
   }
+  // R is the upper triangle: what the reflectors leave below it is rounding.
   const R = new Float64Array(n * n);
   for (let i = 0; i < n; i++) {
-    for (let j = 0; j < n; j++) R[i * n + j] = R_full[i * n + j];
+    for (let j = i; j < n; j++) R[i * n + j] = R_full[i * n + j];
   }
   return {
     shape: 'record',

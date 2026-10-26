@@ -757,12 +757,12 @@ const EVALUABLE_OPS = new Set([
   // takes an n-ary function and n equal-length arrays.
   'filter', 'reduce', 'scan', 'broadcast',
   // Scalar restrictors (spec §07).
-  'boolean', 'integer',
+  'boolean', 'integer', 'string',
   // Linear algebra (spec §07). All pure value ops on matrices /
   // vectors; dispatch through ARITH_OPS.
   'transpose', 'adjoint', 'trace', 'diagmat', 'self_outer', 'cross',
   'det', 'logabsdet', 'inv', 'linsolve', 'lower_cholesky',
-  'row_gram', 'col_gram', 'quadform',
+  'row_gram', 'col_gram', 'quadform', 'qr',
   // Diagonal extract / block-matrix constructors (spec §07)
   'diag', 'blockdiagmat', 'bandedmat',
   // Signal-processing 1-D ops (spec §07)
