@@ -914,9 +914,13 @@ function fixedValueToMeasure(v: any, sampleCount: any): any {
     const flat = dense.data instanceof Float64Array
       ? dense.data
       : Float64Array.from(dense.data);
-    const m: any = scalarMeasureN(flat, {
-      logWeights: null, logTotalmass: 0, n_eff: flat.length,
-    });
+    // A complex Value keeps its imaginary part: the flat measure is complex too
+    // (`dtype`, `imag`), so a consumer sees both parts. A real-only copy showed
+    // the real part of `M * 1i` as a matrix of zeros.
+    const m: any = dense.im instanceof Float64Array
+      ? measureFromValue(valueLib.complexValue(flat, dense.im, [flat.length]),
+        { logWeights: null, logTotalmass: 0, n_eff: flat.length })
+      : scalarMeasureN(flat, { logWeights: null, logTotalmass: 0, n_eff: flat.length });
     // Set `intrinsicShape` (the viewer's matrix-mode trigger) ONLY for
     // true matrices / tensors, NOT for nested-vector values. Spec §03:
     // a vec-of-vec is not a matrix; the viewer must not render it as

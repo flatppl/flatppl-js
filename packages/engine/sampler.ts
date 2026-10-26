@@ -971,17 +971,16 @@ const ARITH_OPS = {
     const firstRow = vs[0];
     const n = valueLib.isValue(firstRow) ? firstRow.shape[firstRow.shape.length - 1]
                                           : firstRow.length;
-    const data = new Float64Array(m * n);
+    const out = _stackOut(m * n);
     for (let i = 0; i < m; i++) {
       const row = vs[i];
       const rowLen = valueLib.isValue(row) ? row.shape[row.shape.length - 1] : row.length;
       if (rowLen !== n) {
         throw new Error('rowstack: row length mismatch at index ' + i);
       }
-      const rowData = valueLib.isValue(row) ? row.data : row;
-      for (let j = 0; j < n; j++) data[i * n + j] = +rowData[j];
+      for (let j = 0; j < n; j++) _stackCell(out, i * n + j, row, j);
     }
-    return { shape: [m, n], data: data };
+    return _stackResult(out, [m, n]);
   },
   colstack: (vs: any) => {
     // Symmetric to rowstack but writes the input columns into the
@@ -1007,17 +1006,16 @@ const ARITH_OPS = {
     const firstCol = vs[0];
     const m = valueLib.isValue(firstCol) ? firstCol.shape[firstCol.shape.length - 1]
                                           : firstCol.length;
-    const data = new Float64Array(m * cols);
+    const out = _stackOut(m * cols);
     for (let c = 0; c < cols; c++) {
       const col = vs[c];
       const colLen = valueLib.isValue(col) ? col.shape[col.shape.length - 1] : col.length;
       if (colLen !== m) {
         throw new Error('colstack: column length mismatch at index ' + c);
       }
-      const colData = valueLib.isValue(col) ? col.data : col;
-      for (let r = 0; r < m; r++) data[r * cols + c] = +colData[r];
+      for (let r = 0; r < m; r++) _stackCell(out, r * cols + c, col, r);
     }
-    return { shape: [m, cols], data: data };
+    return _stackResult(out, [m, cols]);
   },
   // ---- Linear algebra (spec §07) ------------------------------------
   // Ops dispatch on Value
@@ -2134,6 +2132,33 @@ for (const op of ['cumsum', 'cumprod', 'cummax', 'cummin', 'l1unit', 'l2unit', '
     if ((a?.t === 'T' || a?.t === 'A') && valueLib.isValue(a) && a.shape.length === 1 && out?.shape) out.t = 'T';
     return out;
   };
+}
+
+// rowstack / colstack cells. A complex entry — a `{re, im}` scalar in a JS row,
+// or a planar complex Value row — makes the matrix a planar complex Value; the
+// real-only copy read `+{re, im}` as NaN and dropped a planar row's `im`.
+function _stackOut(len: number): { re: Float64Array; im: Float64Array | null } {
+  return { re: new Float64Array(len), im: null };
+}
+function _stackCell(out: any, k: number, src: any, j: number) {
+  let re: number, im = 0;
+  if (valueLib.isValue(src)) {
+    re = src.data[j];
+    if (src.im instanceof Float64Array) im = src.im[j];
+  } else {
+    const x = src[j];
+    if (x && typeof x === 'object' && typeof x.re === 'number' && typeof x.im === 'number') {
+      re = x.re; im = x.im;
+    } else re = +x;
+  }
+  out.re[k] = re;
+  if (im !== 0 || out.im) {
+    if (!out.im) out.im = new Float64Array(out.re.length);
+    out.im[k] = im;
+  }
+}
+function _stackResult(out: any, shape: number[]) {
+  return out.im ? valueLib.complexValue(out.re, out.im, shape) : { shape, data: out.re };
 }
 
 // _arrLike: unwrap Value to its underlying Float64Array data, or pass
