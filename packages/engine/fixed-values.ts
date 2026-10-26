@@ -175,6 +175,11 @@ class FixedValues {
     // binding never does; reject cheaply so demand can't cascade into
     // the stochastic graph. (Mirrors the old loop's line-308 guard.)
     if (binding && binding.phase != null && binding.phase !== 'fixed') return UNRESOLVED;
+    // A callable has no fixed value. `g = f` over a function `f` types as a
+    // function but carries the producer tag of a plain call, so the tag alone
+    // let it reach evaluateExpr and report a spurious failure.
+    const k = binding?.inferredType?.kind;
+    if (k === 'function' || k === 'kernel') return UNRESOLVED;
     // Cycle gate. Return UNRESOLVED WITHOUT caching — the outer frame
     // owns the verdict (matches resolveConstant's cycle-as-non-constant,
     // and the old fixpoint's "deps not ready this round" retry).

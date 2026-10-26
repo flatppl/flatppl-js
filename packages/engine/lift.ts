@@ -205,6 +205,14 @@ function inferSyntheticType(astNode: any) {
       // skip the synthetic binding entirely, leaving binding.bijection
       // unpopulated and registryName + paramIRs unattached.
       case 'bijection':  return 'bijection';
+      // The analyzer's producer tags for the other first-class objects. A
+      // `likelihoodof` lifted out of a `restrict` expansion was tagged
+      // 'call', so the dead-end check reported a likelihood object as a
+      // fixed binding that "produced no value".
+      case 'likelihoodof':
+      case 'joint_likelihood': return 'likelihood';
+      case 'bayesupdate': return 'bayesupdate';
+      case 'fchain':     return 'fchain';
     }
     return 'call';
   }
