@@ -1237,7 +1237,6 @@ function weightedBaseLogMass(
 // window narrower than its node spacing as absent.
 const MAX_WEIGHT_STEPS = 4096;
 function weightCuts(body: any, param: string, env: Record<string, any>, lo: number, hi: number): number[] {
-  const samplerLib = require('./sampler.ts');
   const { weightDiscontinuities } = require('./weight-breakpoints.ts');
   const isX = (n: any) => !!n && n.kind === 'ref' && n.name === param;
   const mentions = (n: any): boolean => {
@@ -1247,8 +1246,14 @@ function weightCuts(body: any, param: string, env: Record<string, any>, lo: numb
     for (const k in n) if (k !== 'loc' && k !== 'meta' && mentions(n[k])) return true;
     return false;
   };
-  const d = weightDiscontinuities(body, isX, mentions);
-  const refuse = (why: string) => new Error('density: normalize(weighted(w, Lebesgue)) — the weight has '
+  return evaluateCuts(weightDiscontinuities(body, isX, mentions), env, lo, hi, 'Lebesgue');
+}
+
+// The cuts of `d` in (lo, hi) at θ, sorted. `base` names the reference in the
+// refusal.
+function evaluateCuts(d: any, env: Record<string, any>, lo: number, hi: number, base: string): number[] {
+  const samplerLib = require('./sampler.ts');
+  const refuse = (why: string) => new Error('density: normalize(weighted(w, ' + base + ')) — the weight has '
     + why + '; the normalizer cannot split there, and a quadrature rule would score a window '
     + 'narrower than its node spacing as absent (spec §06)');
   if (d.refuse) throw refuse(d.refuse);
@@ -1327,12 +1332,106 @@ function weightedLebesgueQuadLogZ(node: any, ctx: any): number | null {
   }
   if (!ref || ref.kind !== 'call' || (ref.op !== 'Lebesgue' && ref.op !== 'Uniform')) return null;
   const supp = (ref.kwargs && ref.kwargs.support) || (Array.isArray(ref.args) ? ref.args[0] : null);
-  const bounds = truncateSetBounds(supp);
-  if (!bounds) return null;    // unbounded (Lebesgue(reals)) / non-literal interval
   const weightFn = { paramNames: [fn.params[0]], body: fn.body };
+  const bounds = truncateSetBounds(supp);
+  if (!bounds) {
+    // A positional box of finite intervals: an ARRAY variate of up to three
+    // axes. Without this arm its Z came from the materialise fallback, an
+    // importance-sampling estimate over the sampled atoms — `v[1] + v[2]` over
+    // [0, 1]² scored log-density 0.402 / 0.604 / 0.583 at N = 1 / 100 / 4000
+    // against log 1.8 = 0.588.
+    if (!supportIsArrayVariate(supp)) return null;
+    const axes = parseTruncationBox(supp);
+    if (!axes || axes.some((a) => a.kind !== 'finite')) return null;
+    const envN = weightedFixedWeightEnv(weightFn, ctx);
+    if (envN == null) return null;   // θ-dependent weight → per-θ estimator
+    return weightedBoxLogMass(weightFn, axes, envN, ctx);
+  }
   const env = weightedFixedWeightEnv(weightFn, ctx);
   if (env == null) return null;   // θ-dependent weight → MC materialise
   return weightedBaseLogMass(weightFn, bounds, env, ctx);   // log ∫_a^b w dx, base density ≡ 1
+}
+
+const BOX_SEED: Record<number, number> = { 1: 8192, 2: 64, 3: 16 };
+
+// log Z = log ∫_box w(v) dv for a θ-independent weight over a finite box of an
+// ARRAY variate `v`. As in one dimension, the box is split at the weight's
+// discontinuities and each cell integrated adaptively. Only an AXIS-ALIGNED
+// discontinuity can be split at, one that depends on a single coordinate
+// (`abs(2·v[1] - 1) < c`, `floor(4·v[2])`), so a weight that jumps along
+// anything else (`v[1] + v[2] < 1`, `v in S`) is refused: the cubature's seeded
+// grid steps over a narrow feature of that kind and returns a wrong Z with a
+// small error estimate.
+function weightedBoxLogMass(
+  weightFn: { paramNames: string[]; body: any }, axes: TruncAxis[], theta: any, ctx: any,
+): number {
+  const { adaptiveCubature } = require('./quadrature.ts');
+  const d = axes.length;
+  const param = weightFn.paramNames[0];
+  const env: Record<string, any> = {};
+  if (theta && typeof theta === 'object') for (const k in theta) env[k] = theta[k];
+  const points = axisCuts(weightFn.body, param, axes, env);
+  const cuts = axes.map((a, k) => [a.lo, ...points[k], a.hi]);
+  // Seed about 4096 cells over the whole box, BOX_SEED[d] per axis, so that a
+  // narrow smooth feature is sampled before the error estimate is trusted. A
+  // cell between cuts takes its share.
+  const seedPerAxis = BOX_SEED[d] ?? 8;
+  const perCell = Math.pow(3, d) + Math.pow(2, d);
+  let Z = 0, err = 0;
+  const idx = new Array(d).fill(0);
+  for (;;) {
+    const cellAxes: TruncAxis[] = idx.map((i, k) => ({ lo: cuts[k][i], hi: cuts[k][i + 1], kind: 'finite' }));
+    const share = Math.max(...cellAxes.map((c, k) => (c.hi - c.lo) / (axes[k].hi - axes[k].lo)));
+    const minDiv = Math.max(8, Math.ceil(seedPerAxis * share));
+    const res = adaptiveCubature(makeIntegrandND(weightFn.body, weightFn.paramNames, cellAxes, theta, ctx, true),
+      d, { tol: NORMALIZE_QUAD_TOL, minDiv, maxEvals: 200000 + Math.pow(minDiv, d) * perCell });
+    Z += res.Z; err += res.err;
+    let k = 0;
+    while (k < d && ++idx[k] >= cuts[k].length - 1) { idx[k] = 0; k++; }
+    if (k === d) break;
+  }
+  if (!(Z > 0)) {
+    throw new Error('density: normalize(weighted(w, Lebesgue(box))) — normalizer Z = ∫ w dv is 0 '
+      + '(an everywhere-zero weight over the box has no normalized density per spec §06)');
+  }
+  const relErr = err / Z;
+  if (relErr > 1e-6) {
+    throw new Error('density: normalize(weighted(w, Lebesgue(box))) — adaptive quadrature did not '
+      + 'converge (rel-err ' + relErr.toExponential(2) + '), so Z = ∫ w dv is unresolved (spec §06)');
+  }
+  return Math.log(Z);
+}
+
+// Per-axis cuts of a weight over an array variate `v` on the box `axes`, at θ.
+// A jump of one coordinate `v[k]` is solved as in one dimension
+// (weight-breakpoints.ts). A jump that couples coordinates (`v[1] + v[2] < 1`)
+// or tests the whole variate (`v in S`) is not axis-aligned, so the box cannot
+// be split at it, and it refuses.
+function axisCuts(body: any, param: string, axes: TruncAxis[], env: Record<string, any>): number[][] {
+  const { weightDiscontinuities } = require('./weight-breakpoints.ts');
+  const indexOf = (n: any): number => (n && n.kind === 'call' && n.op === 'get' && n.args?.length === 2
+    && n.args[0]?.kind === 'ref' && n.args[0].name === param && n.args[1]?.kind === 'lit'
+    && Number.isInteger(n.args[1].value) ? n.args[1].value : 0);
+  // Does `n` read coordinate k (1-based), or the variate as a whole (k = 0
+  // for any coordinate)?
+  const reads = (n: any, k: number): boolean => {
+    if (!n || typeof n !== 'object') return false;
+    if (Array.isArray(n)) return n.some((c) => reads(c, k));
+    const j = indexOf(n);
+    if (j > 0) return k === 0 || j === k;
+    if (n.kind === 'ref' && n.name === param) return true;
+    for (const key in n) if (key !== 'loc' && key !== 'meta' && reads(n[key], k)) return true;
+    return false;
+  };
+  return axes.map((axis, i) => {
+    const k = i + 1;
+    const d = weightDiscontinuities(body, (n: any) => indexOf(n) === k, (n: any) => reads(n, k));
+    const coupled = [...d.cuts, ...d.steps.flatMap((st: any) => [st.a, st.b])].some((e) => reads(e, 0));
+    if (!d.refuse && coupled) {
+      d.refuse = 'a jump that couples coordinates of the variate, which is not axis-aligned';
+    }
+    return evaluateCuts(d, env, axis.lo, axis.hi, 'Lebesgue(box)');
+  });
 }
 
 // Does the endpoint contribution of `f` on [0,1] shrink as the window shrinks?
