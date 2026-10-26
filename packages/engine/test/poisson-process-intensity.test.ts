@@ -151,14 +151,14 @@ test('an intensity outside the supported forms is refused with its reason', asyn
     const { ctx } = makeMatCtx(`k = 1.0 - 2.0\nM = PoissonProcess(intensity = ${I})\ns ~ M`);
     await assert.rejects(ctx.getMeasure('s'), re, I);
   };
-  await density('truncate(weighted(2.0, Normal(0.0, 1.0)), posreals)', /needs an interval set/);
+  await density('truncate(weighted(2.0, Normal(0.0, 1.0)), integers)', /needs an interval set/);
   await density('weighted(2.0, Lebesgue(support = integers))', /needs an interval support/);
   await density('truncate(weighted(2.0, Poisson(3.0)), interval(0.0, 5.0))',
     /needs a continuous shape with a CDF, got 'Poisson'/);
   // A literal negative weight is refused statically; a computed one here.
   await draw('weighted(k, Normal(0.0, 1.0))', /must be ≥ 0/);
   await draw('weighted(2.0, Lebesgue(support = reals))', /must be truncated to a bounded set/);
-  await draw('truncate(weighted(2.0, Normal(0.0, 1.0)), posreals)', /needs an interval set/);
+  await draw('truncate(weighted(2.0, Normal(0.0, 1.0)), integers)', /needs an interval set/);
   await draw('weighted(2.0, superpose(Normal(0.0, 1.0), Normal(1.0, 1.0)))',
     /a shape must be a scalar distribution, got 'superpose'/);
 });
@@ -196,4 +196,24 @@ test('the beam_bunch posterior scores the testsuite scipy oracle', async () => {
       + `b = ${bv.toFixed(1)}))`, 'lp');
     assert.ok(Math.abs(got - want) < 1e-12, `(${sv}, ${bv}): ${got} vs ${want}`);
   }
+});
+
+// `normalize` divides by the shape's mass on its support, also for a bounded
+// Lebesgue shape: rate 3/2 on [0, 2], expected count 3, so 2·log 1.5 − 3.
+test('a normalized bounded Lebesgue shape keeps the expected count', async () => {
+  const I = 'weighted(3.0, normalize(Lebesgue(support = interval(0.0, 2.0))))';
+  close(await score(`M = PoissonProcess(${I})\nL = logdensityof(M, [0.5, 1.5])`),
+    2 * Math.log(1.5) - 3, 'density');
+  checkDraws(await draws(`M = PoissonProcess(${I})\ns ~ M`), 3, 0, 2, 1, Math.sqrt(4 / 12), 'draws');
+  close(await score('M = PoissonProcess(weighted(3.0, normalize(Normal(0.0, 1.0))))\n'
+    + 'L = logdensityof(M, [0.5])'), Math.log(3) - 0.5 * Math.log(2 * Math.PI) - 0.125 - 3, 'untruncated');
+});
+
+// §03 predefined interval sets truncate like `interval(a, b)`: posreals keeps half
+// of N(0, 1), so Λ = 1 and log λ(0.5) = log 2 + log φ(0.5).
+test('a predefined interval set truncates an intensity', async () => {
+  close(await score('M = PoissonProcess(truncate(weighted(2.0, Normal(0.0, 1.0)), posreals))\n'
+    + 'L = logdensityof(M, [0.5])'), Math.log(2) - 0.5 * Math.log(2 * Math.PI) - 0.125 - 1, 'posreals');
+  assert.equal(await score('M = PoissonProcess(truncate(weighted(2.0, Normal(0.0, 1.0)), unitinterval))\n'
+    + 'L = logdensityof(M, [1.5])'), -Infinity, 'unitinterval');
 });

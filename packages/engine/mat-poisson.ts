@@ -161,7 +161,7 @@ function _parseComponent(node: any): any {
   if (node.op === 'normalize' && Array.isArray(node.args) && node.args.length === 1) {
     const inner = _parseComponent(node.args[0]);
     if (!inner) return null;
-    return { ...inner, weights: [], normalized: !!inner.setIR };
+    return { ...inner, weights: [], normalized: true };
   }
   // Bare measure ⇒ weight 1 (M contribution 1). A non-distribution op falls
   // through to the caller's isKnownDistribution check, which rejects it.
@@ -178,11 +178,19 @@ function componentLogWeight(c: any, evaluate: (ir: any) => number): number {
   return lw;
 }
 
+// The predefined sets that are intervals (§03), as closed bounds.
+const INTERVAL_SETS: Record<string, [number, number]> = {
+  reals: [-Infinity, Infinity], posreals: [0, Infinity], nonnegreals: [0, Infinity],
+  unitinterval: [0, 1],
+};
+
 // The interval bounds of a component's truncation set, evaluated with
 // `evaluate` (an IR → number function), or null for an untruncated component.
 function componentBounds(c: any, evaluate: (ir: any) => number): [number, number] | null {
   if (!c.setIR) return null;
   const S = c.setIR;
+  const named = S.kind === 'const' ? INTERVAL_SETS[S.name] : undefined;
+  if (named) return named;
   if (!(S.kind === 'call' && S.op === 'interval' && S.args?.length === 2)) {
     throw new Error('PoissonProcess: a truncated intensity needs an interval set (spec §06 '
       + "`truncate`), got '" + (S.op || S.name || S.kind) + "'");
@@ -196,13 +204,7 @@ function componentBounds(c: any, evaluate: (ir: any) => number): [number, number
 function lebesgueSupport(leafIR: any, evaluate: (ir: any) => number): [number, number] | null {
   if (!leafIR || leafIR.op !== 'Lebesgue') return null;
   const S = (leafIR.kwargs && leafIR.kwargs.support) || (leafIR.args && leafIR.args[0]);
-  if (S && S.kind === 'const') {
-    const known: Record<string, [number, number]> = {
-      reals: [-Infinity, Infinity], posreals: [0, Infinity], nonnegreals: [0, Infinity],
-      unitinterval: [0, 1],
-    };
-    if (known[S.name]) return known[S.name];
-  }
+  if (S && S.kind === 'const' && INTERVAL_SETS[S.name]) return INTERVAL_SETS[S.name];
   if (S && S.kind === 'call' && S.op === 'interval' && S.args?.length === 2) {
     return [+evaluate(S.args[0]), +evaluate(S.args[1])];
   }
@@ -285,7 +287,8 @@ function matPoissonProcess(name: string, d: any, ctx: any): Promise<any> {
         }
         const leafIR = { kind: 'call', op: 'Uniform', args: [{ kind: 'call', op: 'interval',
           args: [{ kind: 'lit', value: a }, { kind: 'lit', value: b }] }] };
-        resolved.push({ w: Math.exp(logw + Math.log(Math.max(0, b - a))), leafIR, cdfRange: null });
+        resolved.push({ w: Math.exp(logw + (c.normalized ? 0 : Math.log(Math.max(0, b - a)))),
+          leafIR, cdfRange: null });
         continue;
       }
       if (!_sampler().isKnownDistribution(c.shapeLeafIR.op)) {
