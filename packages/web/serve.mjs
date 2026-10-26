@@ -95,8 +95,10 @@ try {
     err && err.message || err);
 }
 
-const LIVERELOAD_SNIPPET = '\n<script>\n'
-  + '// Injected by serve.mjs — local dev only. The SSE channel\n'
+// The client is a same-origin script file, not an inline one: the gallery's
+// CSP (`script-src 'self'`) blocks inline scripts.
+const LIVERELOAD_SNIPPET = '\n<script src="/__livereload.js"></script>\n';
+const LIVERELOAD_CLIENT = '// Served by serve.mjs — local dev only. The SSE channel\n'
   + '// pushes a "reload" event whenever any file under dist/ changes;\n'
   + '// we just reload the page on receipt. Not present in deployed builds.\n'
   + '(function(){\n'
@@ -104,8 +106,7 @@ const LIVERELOAD_SNIPPET = '\n<script>\n'
   + '    var es = new EventSource("/__livereload");\n'
   + '    es.addEventListener("reload", function(){ window.location.reload(); });\n'
   + '  } catch (e) { /* SSE unsupported — manual reload still works */ }\n'
-  + '})();\n'
-  + '</script>\n';
+  + '})();\n';
 
 const server = createServer(async (req, res) => {
   let urlPath;
@@ -125,6 +126,15 @@ const server = createServer(async (req, res) => {
     res.write(': livereload connected\n\n');
     sseClients.add(res);
     req.on('close', () => { sseClients.delete(res); });
+    return;
+  }
+
+  if (urlPath === '/__livereload.js') {
+    res.writeHead(200, {
+      'Content-Type': MIME['.js'],
+      'Cache-Control': 'no-store',
+    });
+    res.end(LIVERELOAD_CLIENT);
     return;
   }
 
