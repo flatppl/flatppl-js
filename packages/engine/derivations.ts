@@ -979,6 +979,11 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
   for (const [name, b] of bindings) {
     if (!b || b.phase !== 'fixed') continue;
     if (_isObjectBindingType(b.type)) continue;         // legit underived
+    // An alias of a callable (`g = f`, `f_b = common.f_b`) is consulted by
+    // name like the callable itself. Only the bare reference: a computed
+    // kernel such as `pushfwd(exp, K)` is a real classification gap.
+    if (b.ir?.kind === 'ref'
+        && (b.inferredType?.kind === 'function' || b.inferredType?.kind === 'kernel')) continue;
     // Sets are first-class metadata, not sampled values. Only builtin calls
     // qualify; a user callable shadowing a set constructor still needs a value.
     if (b.ir?.kind === 'call' && !b.ir.target && !b.ir.callee
