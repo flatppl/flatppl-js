@@ -66,7 +66,7 @@ const EXPECTED_MATERIALISES: Record<string, string[]> = {
   two_instruments:     ['obs_a', 'obs_b', 'prior'],
   censored_lifetimes:  ['t_obs', 'prior', 'posterior'],
   stdmod_interp_poly6: ['reference_point'],
-  beam_bunch:          ['s', 'b', 'sig_shape', 'bkg_shape', 'intensity', 'prior'],
+  beam_bunch:          ['s', 'b', 'sig_shape', 'bkg_shape', 'intensity', 'prior', 'posterior'],
   kscan_walk:          ['dts', 'traj_obs', 'prior', 'posterior'],
   mv_mixture_sample:   ['mus', 'cA', 'cB', 'covs', 'w', 'mix', 'y', 'y1', 'y2'],
   b_mass_peak:         ['m_obs', 'N', 'f', 'prior'],
@@ -78,7 +78,7 @@ const EXPECTED_MATERIALISES: Record<string, string[]> = {
 // binding materialises and the assertion below says so), which is the point:
 // the list cannot rot into a silencer.
 const EXPECTED_GAPS: Record<string, Record<string, string>> = {
-  beam_bunch:         { events: 'PoissonProcess', posterior: 'PoissonProcess' },
+  beam_bunch:         { events: 'per-atom (draw-dependent) intensity is deferred' },
   paired_assay:       { tab: 'iid over a record measure' },
   mv_mixture_sample:  { draws: '' },
   b_mass_peak:        { posterior: '' },

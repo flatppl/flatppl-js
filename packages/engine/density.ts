@@ -4087,12 +4087,12 @@ function walkPoissonProcess(ir: IRNode, value: any, refArrays: any, N: any, opts
   // Validate + cache each component's leaf entry.
   const entries = comps.map((c: any) => {
     const kn = c.shapeLeafIR && c.shapeLeafIR.op;
+    if (kn === 'Lebesgue') return { ...c, kernelName: kn, entry: null };
     if (!samplerLib.isKnownDistribution(kn)) {
       throw new Error("density(PoissonProcess): a shape must be a scalar distribution, got '"
         + kn + "'");
     }
-    return { weightIR: c.weightIR, isLog: c.isLog, shapeLeafIR: c.shapeLeafIR,
-             kernelName: kn, entry: samplerLib.lookupDistribution(c.shapeLeafIR) };
+    return { ...c, kernelName: kn, entry: samplerLib.lookupDistribution(c.shapeLeafIR) };
   });
 
   const pts = _consumeAllPoints(value);
@@ -4101,22 +4101,43 @@ function walkPoissonProcess(ir: IRNode, value: any, refArrays: any, N: any, opts
   const refNames = refArrays ? Object.keys(refArrays) : [];
   const overlayKeys = overlay ? Object.keys(overlay) : null;
   const anyPerAtom = entries.some((e: any) =>
-    _exprUsesAny(e.weightIR, refNames) || _exprUsesAny(e.shapeLeafIR, refNames));
+    e.weights.some((f: any) => _exprUsesAny(f.ir, refNames))
+    || _exprUsesAny(e.shapeLeafIR, refNames) || _exprUsesAny(e.setIR, refNames));
 
   // The atom's logp for the shared point set, given a resolved env:
   //   Σ_j logsumexp_c( log w_c + s_c_logpdf(t_j) ) − Σ_c w_c.
+  // A component truncated to [lo, hi] has rate 0 outside it and expected count
+  // w_c·P_c([lo, hi]); a normalized one divides its rate by P_c([lo, hi])
+  // (mat-poisson `_parseComponent`).
   const atomLogp = (env: any): number => {
     const C = entries.length;
     const logw = new Array(C);
     const params = new Array(C);
+    const bounds = new Array(C);
     let M = 0;
+    const evaluate = (ir: any) => samplerLib.evaluateExpr(ir, env);
     for (let c = 0; c < C; c++) {
       const e = entries[c];
-      const wv = +samplerLib.evaluateExpr(e.weightIR, env);
-      const w = e.isLog ? Math.exp(wv) : wv;
-      M += w;
-      logw[c] = e.isLog ? wv : Math.log(w);   // log 0 = −∞ (component drops out)
-      params[c] = samplerLib.resolveParams(e.shapeLeafIR, e.entry, env);
+      logw[c] = matPoisson.componentLogWeight(e, evaluate);
+      bounds[c] = matPoisson.componentBounds(e, evaluate);
+      // A Lebesgue shape has density 1 on its support, so the bounds become
+      // [lo, hi] ∩ support and the mass is their length.
+      const support = matPoisson.lebesgueSupport(e.shapeLeafIR, evaluate);
+      if (support) {
+        const [lo, hi] = bounds[c] || [-Infinity, Infinity];
+        bounds[c] = [Math.max(lo, support[0]), Math.min(hi, support[1])];
+        if (!Number.isFinite(bounds[c][1] - bounds[c][0])) {
+          throw new Error('density(PoissonProcess): a Lebesgue intensity must be truncated to a '
+            + 'bounded set to have finite mass (spec §08)');
+        }
+      } else {
+        params[c] = samplerLib.resolveParams(e.shapeLeafIR, e.entry, env);
+      }
+      const logMass = support
+        ? matPoisson.logLebesgueMass(support, bounds[c][0], bounds[c][1])
+        : bounds[c] ? matPoisson.logIntervalMass(e.kernelName, params[c], bounds[c][0], bounds[c][1]) : 0;
+      if (e.normalized) logw[c] -= logMass;
+      M += Math.exp(logw[c] + logMass);
     }
     let S = 0;
     for (let j = 0; j < k; j++) {
@@ -4124,7 +4145,9 @@ function walkPoissonProcess(ir: IRNode, value: any, refArrays: any, N: any, opts
       let mx = -Infinity;
       const terms = new Array(C);
       for (let c = 0; c < C; c++) {
-        const t = logw[c] + blp(entries[c].kernelName, params[c], pts[j]);
+        const b = bounds[c];
+        const t = b && !(pts[j] >= b[0] && pts[j] <= b[1]) ? -Infinity
+          : logw[c] + (params[c] ? blp(entries[c].kernelName, params[c], pts[j]) : 0);
         terms[c] = t;
         if (t > mx) mx = t;
       }
