@@ -914,6 +914,8 @@ const ARITH_OPS = {
   lxor:    (a: any, b: any) => !a !== !b,
   lnot:    (a: any) => !a,
   ifelse:  (c: any, a: any, b: any) => c ? a : b,
+  _signed_pow: valueOps._signedPowScalar,
+  _image_gate: valueOps._imageGateScalar,
   // Vector constructor — turns positional args into a JS array.
   // Lower than the typed Float64Array path used for materialised
   // measures: this is for inline `[a, b, c]` literals that surface

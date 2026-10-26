@@ -1,5 +1,5 @@
 'use strict';
-const { test } = require('node:test');
+const { test, describe, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const C = require('../sampler-eval-compile.ts');
 
@@ -36,9 +36,22 @@ const ARITH = {
   // `divide` is true division (the `/` operator).
   div: (a: any, b: any) => Math.floor(a / b), divide: (a: any, b: any) => a / b, neg: (a: any) => -a,
   pow: (a: any, b: any) => Math.pow(a, b), exp: (a: any) => Math.exp(a), log: (a: any) => Math.log(a),
+  // The engine-internal bijection inverses (an odd-power MC inverse uses `_signed_pow`).
+  _signed_pow: (y: any, e: any) => (y < 0 ? -Math.pow(-y, e) : Math.pow(y, e)),
+  _image_gate: (y: any, lo: any, hi: any) => (y >= lo && y <= hi ? y : NaN),
 };
-C.initCompiler({ ARITH_OPS: ARITH, evaluateExpr: require('../sampler.ts').evaluateExpr,
-                 resolveConst: (n: any) => { throw new Error('no const ' + n); } });
+
+// The compiler module is shared, so these cases install the mirror only for
+// their own duration. The engine's table must be back for the evaluateExprN
+// cases below, or an op the mirror lacks makes a compiled plan throw and the
+// call silently falls back to the interpreter.
+describe('compiler core over a mirror OPS table', () => {
+before(() => C.initCompiler({ ARITH_OPS: ARITH, evaluateExpr: require('../sampler.ts').evaluateExpr,
+                              resolveConst: (n: any) => { throw new Error('no const ' + n); } }));
+after(() => {
+  const { _internal, evaluateExpr } = require('../sampler.ts');
+  C.initCompiler({ ARITH_OPS: _internal.ARITH_OPS, evaluateExpr, resolveConst: _internal.resolveConst });
+});
 
 test('compilePlan + runPlan: bit-exact to hand arithmetic over a batch', () => {
   // u = ((cbrt(z*2 / exp(x - b)) - x)/a - 1)/2, with a,b folded scalars.
@@ -79,6 +92,68 @@ test('compilePlan: returns null for a non-compilable op (get_field with per-atom
 test('compilePlan: returns null for unknown op over per-atom data', () => {
   const ir = call('mystery_op', ref('x'));
   assert.equal(C.compilePlan(ir, new Set(['x'])), null);
+});
+
+// A codegen benchmark: under the mirror table the fused loop inlines its scalar
+// ops. It makes no claim about the engine's real table (see TODO-flatppl-js.md,
+// fused loop vs polymorphic ARITH_OPS).
+test('perf: fused-loop codegen is faster than interpreted under the mirror op table', () => {
+  const path = require('node:path');
+  const ENG = path.resolve(__dirname, '..') + '/';
+  const { processSource, orchestrator } = require(ENG + 'index.ts');
+  // The mcmarginal recipe comes from the live functor-law transform
+  // (mc-recipe.buildMcMarginalForm — the name-based mat-density
+  // deriveMcLikelihoodRecipe it was written against is retired); the
+  // node carries the EXACT inverse pre-derived (inverseIR), plus the
+  // out/retained/marginal descriptors this benchmark feeds.
+  const mcr = require(ENG + 'mc-recipe.ts');
+  const { createWorkerHandler } = require(ENG + 'worker.ts');
+  const fs = require('node:fs');
+  const src = fs.readFileSync('test/fixtures/simple-transport1.flatppl', 'utf8');
+  const { bindings } = processSource(src);
+  const built = orchestrator.buildDerivations(bindings);
+  const expand = (nm: any) => orchestrator.expandMeasure(
+    nm, { derivations: built.derivations, bindings: built.bindings });
+  const form = mcr.buildMcMarginalForm(expand('zs'), built.bindings, expand);
+  assert.ok(form && form.args && form.args[0] && form.args[0].op === 'mcmarginal',
+    'transport zs must re-express as iid(mcmarginal, n)');
+  const mc = form.args[0];
+  const baseEnv = { pars: { a: 0.1, b: 0.3, mu: 1.0 }, sigma: 0.2 };
+  const w = createWorkerHandler(); w.handle({ type: 'init', seed: [1, 2, 3] });
+  w.handle({ type: 'setEnv', env: baseEnv, merge: true });
+  const data = [3.8, 2.9, 3.2, 3.1, 3.3, 5.0, 0.84, 2.3, 3.1, 2.6, 2.5, 5.4, 1.2, 1.6, 1.4, 0.77, 0.26, 1.6, 0.56, 4.5];
+  const M = 6000, D = data.length, count = D * M;
+  const xs = w.handle({ type: 'sampleN', ir: mc.marginalDistIR, count: M, refArrays: {}, seed: [1, 2, 3, 4] }).samples;
+  const zcol = new Float64Array(count), xcol = new Float64Array(count);
+  for (let d = 0; d < D; d++) for (let m = 0; m < M; m++) { zcol[d * M + m] = data[d]; xcol[d * M + m] = xs[m]; }
+  const refArrays: any = { [mc.outName]: zcol, [mc.retainedRef]: xcol, x: xcol };
+  const inv = { inverseIR: mc.inverseIR };
+  const hr = () => Number(process.hrtime.bigint()) / 1e6;
+  const RUNS = 9;
+  batched._setCompileEvalN(false);
+  let off0 = sampler.evaluateExprN(inv.inverseIR, refArrays, count, baseEnv, undefined);  // warm
+  let t = hr(); for (let i = 0; i < RUNS; i++) sampler.evaluateExprN(inv.inverseIR, refArrays, count, baseEnv, undefined);
+  const tOff = hr() - t;
+  batched._setCompileEvalN(true);
+  let on0 = sampler.evaluateExprN(inv.inverseIR, refArrays, count, baseEnv, undefined);   // warm + compile
+  t = hr(); for (let i = 0; i < RUNS; i++) sampler.evaluateExprN(inv.inverseIR, refArrays, count, baseEnv, undefined);
+  const tOn = hr() - t;
+  process.stderr.write(`  evaluateExprN inverse x${RUNS}: interpreted ${tOff.toFixed(0)}ms, compiled ${tOn.toFixed(0)}ms (${(tOff / tOn).toFixed(1)}x)\n`);
+  // Bit-exact always; the ≥2x ratio assertion is skipped under the
+  // kill switch (then both paths are the interpreter → ratio ~1).
+  for (let i = 0; i < count; i++) assert.equal(on0[i], off0[i]);
+  if (process.env.FLATPPL_NO_EVALN_COMPILE !== '1') {
+    assert.ok(tOn * 2 <= tOff, `compiled (${tOn.toFixed(0)}ms) must be ≥2x faster than interpreted (${tOff.toFixed(0)}ms)`);
+  }
+  batched._setCompileEvalN(true);
+});
+});
+
+test('the engine OPS table is restored after the mirror cases', () => {
+  const sampler = require('../sampler.ts');
+  const plan = C.compilePlan(call('_signed_pow', ref('x'), lit(1 / 3)), new Set(['x']));
+  const out = C.runPlan(plan, { x: new Float64Array([-8, 27]) }, {}, null, 2);
+  assert.deepEqual(Array.from(out), [-8, 27].map((v) => sampler._internal.ARITH_OPS._signed_pow(v, 1 / 3)));
 });
 
 // --- differential: evaluateExprN with compiler ON must bit-match OFF ---
@@ -164,57 +239,6 @@ test('fuzz: compiled === interpreted bit-for-bit over random eligible IRs', () =
     for (let i = 0; i < N; i++) if (!Object.is(on[i], off[i])) return false;
     return true;
   }), { numRuns: 300 });
-  batched._setCompileEvalN(true);
-});
-
-test('perf: evaluateExprN compiled is faster than interpreted on the MC inverse', () => {
-  const path = require('node:path');
-  const ENG = path.resolve(__dirname, '..') + '/';
-  const { processSource, orchestrator } = require(ENG + 'index.ts');
-  // The mcmarginal recipe comes from the live functor-law transform
-  // (mc-recipe.buildMcMarginalForm — the name-based mat-density
-  // deriveMcLikelihoodRecipe it was written against is retired); the
-  // node carries the EXACT inverse pre-derived (inverseIR), plus the
-  // out/retained/marginal descriptors this benchmark feeds.
-  const mcr = require(ENG + 'mc-recipe.ts');
-  const { createWorkerHandler } = require(ENG + 'worker.ts');
-  const fs = require('node:fs');
-  const src = fs.readFileSync('test/fixtures/simple-transport1.flatppl', 'utf8');
-  const { bindings } = processSource(src);
-  const built = orchestrator.buildDerivations(bindings);
-  const expand = (nm: any) => orchestrator.expandMeasure(
-    nm, { derivations: built.derivations, bindings: built.bindings });
-  const form = mcr.buildMcMarginalForm(expand('zs'), built.bindings, expand);
-  assert.ok(form && form.args && form.args[0] && form.args[0].op === 'mcmarginal',
-    'transport zs must re-express as iid(mcmarginal, n)');
-  const mc = form.args[0];
-  const baseEnv = { pars: { a: 0.1, b: 0.3, mu: 1.0 }, sigma: 0.2 };
-  const w = createWorkerHandler(); w.handle({ type: 'init', seed: [1, 2, 3] });
-  w.handle({ type: 'setEnv', env: baseEnv, merge: true });
-  const data = [3.8, 2.9, 3.2, 3.1, 3.3, 5.0, 0.84, 2.3, 3.1, 2.6, 2.5, 5.4, 1.2, 1.6, 1.4, 0.77, 0.26, 1.6, 0.56, 4.5];
-  const M = 6000, D = data.length, count = D * M;
-  const xs = w.handle({ type: 'sampleN', ir: mc.marginalDistIR, count: M, refArrays: {}, seed: [1, 2, 3, 4] }).samples;
-  const zcol = new Float64Array(count), xcol = new Float64Array(count);
-  for (let d = 0; d < D; d++) for (let m = 0; m < M; m++) { zcol[d * M + m] = data[d]; xcol[d * M + m] = xs[m]; }
-  const refArrays: any = { [mc.outName]: zcol, [mc.retainedRef]: xcol, x: xcol };
-  const inv = { inverseIR: mc.inverseIR };
-  const hr = () => Number(process.hrtime.bigint()) / 1e6;
-  const RUNS = 9;
-  batched._setCompileEvalN(false);
-  let off0 = sampler.evaluateExprN(inv.inverseIR, refArrays, count, baseEnv, undefined);  // warm
-  let t = hr(); for (let i = 0; i < RUNS; i++) sampler.evaluateExprN(inv.inverseIR, refArrays, count, baseEnv, undefined);
-  const tOff = hr() - t;
-  batched._setCompileEvalN(true);
-  let on0 = sampler.evaluateExprN(inv.inverseIR, refArrays, count, baseEnv, undefined);   // warm + compile
-  t = hr(); for (let i = 0; i < RUNS; i++) sampler.evaluateExprN(inv.inverseIR, refArrays, count, baseEnv, undefined);
-  const tOn = hr() - t;
-  process.stderr.write(`  evaluateExprN inverse x${RUNS}: interpreted ${tOff.toFixed(0)}ms, compiled ${tOn.toFixed(0)}ms (${(tOff / tOn).toFixed(1)}x)\n`);
-  // Bit-exact always; the ≥2x ratio assertion is skipped under the
-  // kill switch (then both paths are the interpreter → ratio ~1).
-  for (let i = 0; i < count; i++) assert.equal(on0[i], off0[i]);
-  if (process.env.FLATPPL_NO_EVALN_COMPILE !== '1') {
-    assert.ok(tOn * 2 <= tOff, `compiled (${tOn.toFixed(0)}ms) must be ≥2x faster than interpreted (${tOff.toFixed(0)}ms)`);
-  }
   batched._setCompileEvalN(true);
 });
 

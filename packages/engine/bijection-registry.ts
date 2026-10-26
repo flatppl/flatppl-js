@@ -528,6 +528,23 @@ function _lit(v: number): any {
 function _call(op: string, args: any[]): any {
   return { kind: 'call', op, args };
 }
+/** Y on [lo, hi], else NaN: a point outside the forward image has density 0 (density.ts `outsideImage`). */
+function _imageGate(Y: any, lo: number, hi: number): any {
+  return _call('_image_gate', [Y, _lit(lo), _lit(hi)]);
+}
+/**
+ * Inverse of y = x^k for a finite nonzero literal k, chosen when the IR is
+ * built. An odd INTEGER literal (`3`, not `3.0`) is a bijection of the reals:
+ * the root of |y| keeps the sign of y. Every other power maps into [0, inf].
+ * `Math.pow` already gives NaN for y < 0 unless 1/k is an integer, so only
+ * that case needs the image gate.
+ */
+function _powInverse(Y: any, kLit: any): any {
+  const k = kLit.value;
+  if (kLit.numType === 'integer' && k % 2 !== 0) return _call('_signed_pow', [Y, _lit(1 / k)]);
+  if (!Number.isInteger(1 / k)) return _call('pow', [Y, _lit(1 / k)]);
+  return _call('pow', [_imageGate(Y, 0, Infinity), _lit(1 / k)]);
+}
 /** log|e| — the per-op LADJ building block for non-constant Jacobians. */
 function _logAbs(e: any): any {
   return _call('log', [_call('abs', [e])]);
@@ -596,18 +613,16 @@ const ELEMENTARY_BIJECTIONS: Record<string, {
       : _call('sub', [_logAbs(a[0]), _call('mul', [_lit(2), _logAbs(X)])]),
   },
   // y = x^k, k a literal exponent (the spec §06 case-1 form; base free).
-  //   inverse: x = y^(1/k).   LADJ: log|k·x^(k−1)| = log|k| + (k−1)log|x|.
-  // NOTE (v1 limitation): `pow(Y, 1/k)` is NaN for an odd-integer root of
-  // a negative output — fine for positive-support maps (transport's
-  // base x+δ > 0); a sign-preserving root / numerical fallback is the
-  // refinement. Base-frozen `a^x` (idx 1) is deferred → null.
+  //   inverse: x = y^(1/k), sign-preserving for an odd integer k (`_powInverse`).
+  //   LADJ: log|k·x^(k−1)| = log|k| + (k−1)log|x|.
+  // Base-frozen `a^x` (idx 1) is deferred → null.
   pow: {
     // Only a NON-ZERO finite literal exponent gives an invertible map:
     // pow(_, 0) is the constant 1 (not invertible — declining here makes
     // walkPushfwd refuse loudly instead of synthesising a `y^(1/0)` = NaN
     // inverse), #310.
     invert: (i, a, Y) => (i === 0 && _isLit(a[1]) && a[1].value !== 0 && Number.isFinite(a[1].value))
-      ? _call('pow', [Y, _lit(1 / a[1].value)]) : null,
+      ? _powInverse(Y, a[1]) : null,
     ladj: (i, a, X) => (i === 0 && _isLit(a[1]) && a[1].value !== 0 && Number.isFinite(a[1].value))
       ? _call('add', [_lit(Math.log(Math.abs(a[1].value))), _call('mul', [_lit(a[1].value - 1), _logAbs(X)])])
       : null,
@@ -636,7 +651,7 @@ const ELEMENTARY_BIJECTIONS: Record<string, {
   // Domain: nonnegreals (spec §07; the shared "positive-ish" guard also
   // used by log/log10/pow — see typeinfer.ts `_isWithinPositiveDomain`).
   sqrt: {
-    invert: (_i, _a, Y) => _call('pow', [Y, _lit(2)]),
+    invert: (_i, _a, Y) => _call('pow', [_imageGate(Y, 0, Infinity), _lit(2)]),
     ladj: (_i, _a, X) => _call('add', [
       _lit(Math.log(0.5)),
       _call('mul', [_lit(-0.5), _call('log', [X])]),
@@ -709,8 +724,10 @@ const ELEMENTARY_BIJECTIONS: Record<string, {
   },
   // y = atan(x) ⇒ x = tan(y) (valid on atan's range (−π/2, π/2), where tan
   // is the single-valued inverse); log|f'| = −log(1 + x²). Domain: ℝ.
+  // The image is (-pi/2, pi/2), and tan is finite outside it. The double
+  // nearest pi/2 lies below pi/2, so the closed gate keeps it inside.
   atan: {
-    invert: (_i, _a, Y) => _call('tan', [Y]),
+    invert: (_i, _a, Y) => _call('tan', [_imageGate(Y, -Math.PI / 2, Math.PI / 2)]),
     ladj: (_i, _a, X) => {
       const sq = _call('pow', [X, _lit(2)]);
       return _call('neg', [_call('log', [_call('add', [_lit(1), sq])])]);

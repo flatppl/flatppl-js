@@ -85,6 +85,8 @@ const REAL_SCALAR_PRIM_ARITY: Record<string, number> = {
   land: 2, lor: 2, lxor: 2, lnot: 1, ifelse: 3,
   // Scalar restrictors
   boolean: 1, integer: 1,
+  // Engine-internal bijection inverses (bijection-registry.ts); not source-callable.
+  _signed_pow: 2, _image_gate: 3,
 };
 // The full broadcasted-primitive set (real + complex).
 const SCALAR_PRIM_ARITY: Record<string, number> = {
