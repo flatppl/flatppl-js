@@ -1,0 +1,121 @@
+'use strict';
+
+// The interpreter's scalar ops (ARITH_OPS_N) take a per-op element loop over
+// SCALAR_OPS when every operand is plain: a batched operand is a real typed
+// array, every other operand a number or boolean. Otherwise they keep the
+// shared loop over the ARITH_OPS entry (`broadcastN`). Both must give the
+// same bits. These tests compare the dispatched result with `broadcastN` over
+// the ARITH_OPS entry for every op, every batched-operand mask, and edge
+// values; and check that non-plain operands take the old loop.
+
+const { test } = require('node:test');
+const assert = require('node:assert/strict');
+
+const batched = require('../sampler-eval-batched.ts');
+const sampler = require('../sampler.ts');
+const valueLib = require('../value.ts');
+const ops = require('../ops.ts');
+
+const ARITH_OPS = sampler._internal.ARITH_OPS;
+const ARITH_OPS_N = batched.ARITH_OPS_N;
+
+const EDGE = [
+  0, -0, 1, -1, 2, -3, 3, 7, -7, 0.5, -0.5, 2.5, -2.5, 0.25, 0.75, 1.5,
+  Number.MIN_VALUE, -Number.MIN_VALUE, 2.2250738585072014e-308,
+  Number.MAX_VALUE, -Number.MAX_VALUE, Infinity, -Infinity, NaN,
+];
+const CONSTS: any[] = [0.5, -2.5, 3, NaN, Infinity, true, false];
+
+function bits(x: any): any[] {
+  const data = x && x.data ? x.data : x;
+  return data && data.length !== undefined ? Array.from(data) : [x];
+}
+
+function sameBits(a: any, b: any, what: string) {
+  const x = bits(a), y = bits(b);
+  assert.equal(x.length, y.length, what + ': length');
+  for (let i = 0; i < x.length; i++) {
+    assert.ok(Object.is(+x[i], +y[i]), `${what}[${i}]: ${x[i]} vs ${y[i]}`);
+  }
+  assert.equal(valueLib.isValue(a), valueLib.isValue(b), what + ': Value-ness');
+}
+
+function outcome(fn: () => any) {
+  try { return { value: fn() }; } catch (e: any) { return { threw: e.message }; }
+}
+
+// Every op, every mask with at least one batched operand. Batched operands
+// cycle through EDGE (offset per operand so pairs vary); unbatched operands
+// take each of CONSTS. The batched operand is a bare Float64Array, or a Value
+// of shape [N] to check the Value-wrapped result.
+for (const [op, arity] of Object.entries(ops.REAL_SCALAR_PRIM_ARITY) as [string, number][]) {
+  test(`ARITH_OPS_N.${op} equals broadcastN over ARITH_OPS.${op} for every batched mask`, () => {
+    const N = EDGE.length * 3;
+    for (let mask = 1; mask < (1 << arity); mask++) {
+      for (const c of CONSTS) {
+        for (const wrap of [false, true]) {
+          const args: any[] = [];
+          for (let k = 0; k < arity; k++) {
+            if ((mask >> k) & 1) {
+              const col = Float64Array.from({ length: N }, (_, i) => EDGE[(i + 5 * k + Math.floor(i / EDGE.length)) % EDGE.length]);
+              args.push(wrap ? valueLib.batchedScalar(col) : col);
+            } else {
+              args.push(c);
+            }
+          }
+          const got = outcome(() => ARITH_OPS_N[op](args, N));
+          const want = outcome(() => batched.broadcastN(ARITH_OPS[op], args, N));
+          const what = `${op} mask=${mask} const=${c} value=${wrap}`;
+          if ('threw' in want || 'threw' in got) assert.equal(got.threw, want.threw, what);
+          else sameBits(got.value, want.value, what);
+        }
+      }
+    }
+  });
+}
+
+test('a complex batched operand keeps the ARITH_OPS loop', () => {
+  // The plain loop would read only the real part; the complex path must run.
+  const z = valueLib.complexValue(Float64Array.from([1, 2]), Float64Array.from([0.5, -1]), [2]);
+  const got = ARITH_OPS_N.exp([z], 2);
+  assert.ok(valueLib.isComplexValue(got), 'exp of a complex batch is complex');
+});
+
+test('a non-scalar unbatched operand keeps the ARITH_OPS loop', () => {
+  // A complex scalar beside a real batch takes the complex path.
+  const got = ARITH_OPS_N.add([Float64Array.from([1, 2]), { re: 1, im: 2 }], 2);
+  assert.ok(valueLib.isComplexValue(got), 'real batch + complex scalar is complex');
+  // A record operand is still refused.
+  assert.throws(() => ARITH_OPS_N.add([Float64Array.from([1, 2]), { a: 1 }], 2), /record/);
+});
+
+test('no batched operand leaves the single call to ARITH_OPS', () => {
+  assert.equal(ARITH_OPS_N.divide([6, 3], 4), 2);
+  assert.ok(valueLib.isValue(ARITH_OPS_N.divide([valueLib.scalar(6), 3], 4)));
+});
+
+// The kernels exist for speed: on the MC inverse the interpreter must beat its
+// ARITH_OPS loop. batserv02 measured 165 -> 122 ms (1.35x); the gate is lower
+// so shared CI runners hold it. Alternating trials, median of each.
+test('perf: the scalar kernels make the interpreter at least 1.15x faster on the MC inverse', () => {
+  const { mcInverseWorkload } = require('./_mc-inverse-workload.ts');
+  const { ir, refArrays, count, baseEnv } = mcInverseWorkload();
+  const hr = () => Number(process.hrtime.bigint()) / 1e6;
+  const time = (on: boolean) => {
+    batched._setScalarKernels(on);
+    const t = hr();
+    for (let i = 0; i < 3; i++) sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined);
+    return hr() - t;
+  };
+  batched._setCompileEvalN(false);
+  const ref = (batched._setScalarKernels(false), sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined));
+  const fast = (batched._setScalarKernels(true), sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined));
+  for (let i = 0; i < count; i++) assert.ok(Object.is(fast[i], ref[i]), `atom ${i}`);
+  const on: number[] = [], off: number[] = [];
+  for (let k = 0; k < 5; k++) { off.push(time(false)); on.push(time(true)); }
+  batched._setScalarKernels(true);
+  batched._setCompileEvalN(true);
+  const med = (a: number[]) => a.slice().sort((x, y) => x - y)[a.length >> 1];
+  process.stderr.write(`  interpreted inverse x3: ARITH_OPS loop ${med(off).toFixed(0)}ms, kernels ${med(on).toFixed(0)}ms (${(med(off) / med(on)).toFixed(2)}x)\n`);
+  assert.ok(med(on) * 1.15 <= med(off), `kernels (${med(on).toFixed(0)}ms) must be ≥1.15x faster than the ARITH_OPS loop (${med(off).toFixed(0)}ms)`);
+});
