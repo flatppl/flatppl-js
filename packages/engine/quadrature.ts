@@ -44,7 +44,7 @@ interface Cell { lo: number[]; hi: number[]; I: number; E: number; }
 export function adaptiveCubature(
   integrand: (u: number[]) => number,
   dims: number,
-  opts?: { tol?: number; maxEvals?: number },
+  opts?: { tol?: number; maxEvals?: number; minDiv?: number },
 ): { Z: number; err: number; evals: number } {
   const tol = (opts && opts.tol) ?? 1e-8;
   const maxEvals = (opts && opts.maxEvals) ?? 200000;
@@ -58,8 +58,10 @@ export function adaptiveCubature(
   // spot, and a refuse-don't-mislower hazard. The seed grid guarantees the
   // integrand is sampled at least at this resolution before the convergence
   // test is trusted; adaptive refinement then concentrates where it matters.
-  // Seed cost is bounded for dims ≤ 3 (8/64/512 cells).
-  const INIT_DIV = 8;
+  // Seed cost is bounded for dims ≤ 3 (8/64/512 cells). A caller that knows
+  // the resolution an older fixed rule had passes `minDiv`, so that no feature
+  // the fixed rule sampled falls between seed cells.
+  const INIT_DIV = Math.max(8, (opts && opts.minDiv) || 0);
   const step = 1 / INIT_DIV;
   // Simple array as a max-by-E "heap": we scan for the worst cell each step.
   // Cell counts stay small (hundreds–low thousands) for dims ≤ 3, so a linear

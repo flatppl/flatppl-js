@@ -1193,18 +1193,21 @@ function weightedBaseLogMass(
     for (const k in theta) env[k] = theta[k];
   }
   const param = weightFn.paramNames[0];
-  const cuts = [lo, ..._weightBreakpoints(weightFn.body, param, env, lo, hi), hi];
+  const cuts = [lo, ...weightCuts(weightFn.body, param, env, lo, hi), hi];
   let Z = 0, err = 0;
   let nonFinite = 0;
   for (let i = 0; i + 1 < cuts.length; i++) {
     const a = cuts[i], width = cuts[i + 1] - a;
+    // Seed every piece at least as finely as the former QUAD_POINTS-node rule,
+    // so that a narrow smooth feature it sampled is sampled here too.
+    const minDiv = Math.ceil(QUAD_POINTS * width / (hi - lo));
     const res = adaptiveCubature((u: number[]) => {
       env[param] = a + u[0] * width;
       const v = +samplerLib.evaluateExpr(weightFn.body, env);
       if (Number.isFinite(v) && v > 0) return v;
       if (v < 0 || !Number.isFinite(v)) nonFinite++;
       return 0;
-    }, 1, { tol: NORMALIZE_QUAD_TOL });
+    }, 1, { tol: NORMALIZE_QUAD_TOL, minDiv });
     Z += res.Z * width;
     err += res.err * width;
   }
@@ -1229,35 +1232,42 @@ function weightedBaseLogMass(
   return Math.log(Z);
 }
 
-// The points in (lo, hi) where `w` may jump: the bounds of `x in interval(a, b)`
-// and the threshold of a comparison of `x` with a value, each fixed at θ. A
-// bound that does not evaluate to a number contributes nothing.
-function _weightBreakpoints(body: any, param: string, env: Record<string, any>, lo: number, hi: number): number[] {
+// The points in (lo, hi) where `w` may jump, at θ. A jump this cannot solve
+// for throws (weight-breakpoints.ts), since the quadrature would then score a
+// window narrower than its node spacing as absent.
+const MAX_WEIGHT_STEPS = 4096;
+function weightCuts(body: any, param: string, env: Record<string, any>, lo: number, hi: number): number[] {
   const samplerLib = require('./sampler.ts');
-  const isX = (n: any) => n && n.kind === 'ref' && n.name === param;
-  const value = (n: any): number | null => {
-    try {
-      const v = +samplerLib.evaluateExpr(n, env);
-      return Number.isFinite(v) ? v : null;
-    } catch (_) { return null; }
+  const { weightDiscontinuities } = require('./weight-breakpoints.ts');
+  const isX = (n: any) => !!n && n.kind === 'ref' && n.name === param;
+  const mentions = (n: any): boolean => {
+    if (!n || typeof n !== 'object') return false;
+    if (Array.isArray(n)) return n.some(mentions);
+    if (isX(n)) return true;
+    for (const k in n) if (k !== 'loc' && k !== 'meta' && mentions(n[k])) return true;
+    return false;
   };
+  const d = weightDiscontinuities(body, isX, mentions);
+  const refuse = (why: string) => new Error('density: normalize(weighted(w, Lebesgue)) — the weight has '
+    + why + '; the normalizer cannot split there, and a quadrature rule would score a window '
+    + 'narrower than its node spacing as absent (spec §06)');
+  if (d.refuse) throw refuse(d.refuse);
+  const value = (n: any): number => +samplerLib.evaluateExpr(n, env);
   const found = new Set<number>();
-  const visit = (n: any) => {
-    if (!n || typeof n !== 'object') return;
-    if (Array.isArray(n)) { n.forEach(visit); return; }
-    if (n.kind === 'call' && Array.isArray(n.args) && n.args.length === 2) {
-      const [l, r] = n.args;
-      if (n.op === 'in' && isX(l) && r && r.kind === 'call' && r.op === 'interval') {
-        for (const bound of r.args || []) { const v = value(bound); if (v != null) found.add(v); }
-      } else if (['lt', 'le', 'gt', 'ge'].includes(n.op) && (isX(l) || isX(r))) {
-        const v = value(isX(l) ? r : l);
-        if (v != null) found.add(v);
-      }
+  for (const c of d.cuts) found.add(value(c));
+  for (const st of d.steps) {
+    const a = value(st.a), b = value(st.b);
+    if (!(a !== 0 && Number.isFinite(a) && Number.isFinite(b))) continue;
+    const ends = [a * lo + b, a * hi + b];
+    const shift = st.op === 'round' ? 0.5 : 0;
+    const k0 = Math.ceil(Math.min(...ends) - shift), k1 = Math.floor(Math.max(...ends) - shift);
+    if (k1 - k0 + 1 > MAX_WEIGHT_STEPS) {
+      throw refuse('`' + st.op + '` of the variate with ' + (k1 - k0 + 1) + ' steps over the support (more than '
+        + MAX_WEIGHT_STEPS + ')');
     }
-    for (const k in n) if (k !== 'loc' && k !== 'meta') visit(n[k]);
-  };
-  visit(body);
-  return [...found].filter((v) => v > lo && v < hi).sort((x, y) => x - y);
+    for (let k = k0; k <= k1; k++) found.add((k + shift - b) / a);
+  }
+  return [...found].filter((v) => Number.isFinite(v) && v > lo && v < hi).sort((x, y) => x - y);
 }
 
 // #322: for a `weighted(w, Lebesgue(interval(a,b)))` base whose weight `w` is
