@@ -75,30 +75,34 @@ test('compilePlan: returns null for unknown op over per-atom data', () => {
 
 // The engine's own path: sampler-eval-batched initialises the compiler, and
 // the loop runs on its SCALAR_OPS. With the shared, polymorphic ARITH_OPS
-// entries the loop ran SLOWER than the interpreter (0.8x on batserv02). The
-// baseline is the interpreter's ARITH_OPS loop (scalar kernels off); the
-// kernels have their own gate in interpreter-scalar-kernels.test.ts.
-test('perf: compiled evaluateExprN is at least 2x faster than the ARITH_OPS interpreter loop on the MC inverse', () => {
+// entries the loop ran SLOWER than the interpreter (0.8x on batserv02).
+// Two baselines: the interpreter's ARITH_OPS loop (scalar kernels off, the
+// long-standing 2x gate) and the interpreter users run (kernels on, 1.3x;
+// about 2x under c8 on CI and 3.6x plain), so neither path can fall behind
+// the other unseen.
+test('perf: compiled evaluateExprN beats both interpreter loops on the MC inverse', () => {
   const { mcInverseWorkload } = require('./_mc-inverse-workload.ts');
   const { ir, refArrays, count, baseEnv } = mcInverseWorkload();
   const hr = () => Number(process.hrtime.bigint()) / 1e6;
   const RUNS = 9;
-  batched._setScalarKernels(false);
+  const time = () => { const t = hr(); for (let i = 0; i < RUNS; i++) sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined); return hr() - t; };
   batched._setCompileEvalN(false);
+  batched._setScalarKernels(false);
   const off0 = sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined);  // warm
-  let t = hr(); for (let i = 0; i < RUNS; i++) sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined);
-  const tOff = hr() - t;
+  const tLoop = time();
   batched._setScalarKernels(true);
+  sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined);  // warm
+  const tKernels = time();
   batched._setCompileEvalN(true);
   const on0 = sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined);   // warm + compile
-  t = hr(); for (let i = 0; i < RUNS; i++) sampler.evaluateExprN(ir, refArrays, count, baseEnv, undefined);
-  const tOn = hr() - t;
-  process.stderr.write(`  evaluateExprN inverse x${RUNS}: interpreted ${tOff.toFixed(0)}ms, compiled ${tOn.toFixed(0)}ms (${(tOff / tOn).toFixed(1)}x)\n`);
-  // Bit-exact always; the ≥2x ratio assertion is skipped under the
+  const tOn = time();
+  process.stderr.write(`  evaluateExprN inverse x${RUNS}: ARITH_OPS loop ${tLoop.toFixed(0)}ms, kernels ${tKernels.toFixed(0)}ms, compiled ${tOn.toFixed(0)}ms (${(tLoop / tOn).toFixed(1)}x, ${(tKernels / tOn).toFixed(1)}x)\n`);
+  // Bit-exact always; the ratio assertions are skipped under the
   // kill switch (then both paths are the interpreter → ratio ~1).
   for (let i = 0; i < count; i++) assert.equal(on0[i], off0[i]);
   if (process.env.FLATPPL_NO_EVALN_COMPILE !== '1') {
-    assert.ok(tOn * 2 <= tOff, `compiled (${tOn.toFixed(0)}ms) must be ≥2x faster than interpreted (${tOff.toFixed(0)}ms)`);
+    assert.ok(tOn * 2 <= tLoop, `compiled (${tOn.toFixed(0)}ms) must be ≥2x faster than the ARITH_OPS loop (${tLoop.toFixed(0)}ms)`);
+    assert.ok(tOn * 1.3 <= tKernels, `compiled (${tOn.toFixed(0)}ms) must be ≥1.3x faster than the kernel interpreter (${tKernels.toFixed(0)}ms)`);
   }
   batched._setCompileEvalN(true);
 });

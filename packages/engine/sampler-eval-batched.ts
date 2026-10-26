@@ -321,12 +321,27 @@ function _broadcastScalarN(fn: any, args: any[], N: any) {
 // caller keeps the ARITH_OPS loop.
 type ScalarKernel = { f: (...a: any[]) => any; loops: any[] };
 
+// A host whose CSP forbids string compilation (the VS Code webview and its
+// blob worker) throws EvalError from `new Function`. The kernels are then
+// off for the session and every op keeps the ARITH_OPS loop.
+let _NO_CODEGEN = false;
+const _KERNELS: ScalarKernel[] = [];
+
 // Default ON. Off reverts every op to the ARITH_OPS loop (perf baselines).
+// Turning them on also forgets generated loops and a recorded EvalError.
 let _SCALAR_KERNELS = true;
-function _setScalarKernels(on: boolean) { _SCALAR_KERNELS = !!on; }
+function _setScalarKernels(on: boolean) {
+  _SCALAR_KERNELS = !!on;
+  if (_SCALAR_KERNELS) {
+    _NO_CODEGEN = false;
+    for (const k of _KERNELS) k.loops.length = 0;
+  }
+}
 
 function _scalarKernel(f: any): ScalarKernel {
-  return { f, loops: [] };
+  const k = { f, loops: [] };
+  _KERNELS.push(k);
+  return k;
 }
 
 function _kernelLoop(arity: number, mask: number) {
@@ -339,7 +354,7 @@ function _kernelLoop(arity: number, mask: number) {
 
 function _plainScalarN(kernel: ScalarKernel, args: any[], N: any) {
   const ar = args.length;
-  if (ar < 1 || ar > 3) return null;
+  if (_NO_CODEGEN || ar < 1 || ar > 3) return null;
   const d: any[] = [null, null, null], sv: any[] = [0, 0, 0];
   let mask = 0;
   for (let k = 0; k < ar; k++) {
@@ -357,7 +372,18 @@ function _plainScalarN(kernel: ScalarKernel, args: any[], N: any) {
   }
   if (mask === 0) return null;   // no batch: the single call stays with ARITH_OPS
   const slot = (ar - 1) * 8 + mask;
-  const loop = kernel.loops[slot] || (kernel.loops[slot] = _kernelLoop(ar, mask));
+  let loop = kernel.loops[slot];
+  if (!loop) {
+    try {
+      loop = kernel.loops[slot] = _kernelLoop(ar, mask);
+    } catch (e) {
+      // The generated source is fixed, so only a CSP EvalError can reach here.
+      /* c8 ignore next */
+      if (!(e instanceof EvalError)) throw e;
+      _NO_CODEGEN = true;
+      return null;
+    }
+  }
   const out = loop(kernel.f, d[0], d[1], d[2], sv[0], sv[1], sv[2], new Float64Array(N), N);
   return _anyValueArr(args) ? valueLib.batchedScalar(out) : out;
 }
