@@ -24,13 +24,13 @@ function expandDataBindings(bindings: Map<string, any>, loweredModule: any,
     const source = resolve(ir.kwargs?.source || ir.args?.[0]);
     if (typeof source !== 'string') throw new Error('load_data: source must be a fixed string path');
     const path = resolveBundlePath(options.modulePath || '<entry>', source, options.resolutions, 'data');
-    // Binary bytes stay opaque until a supported text format is demanded.
-    if (!dataload.detectFormat(path)) dataload.parseByExtension(path, '');
-    const text = options.sources[path] ?? (options.files?.[path]
-      ? new TextDecoder('utf-8', { fatal: true }).decode(options.files[path]) : undefined);
-    if (text === undefined) throw new Error(`load_data: data source not found in bundle: '${path}'`);
-    if (!parsed.has(path)) parsed.set(path, dataload.parseByExtension(path, text));
-    return dataload.valueExpression(parsed.get(path), schema, ir.loc, dataload.detectFormat(path) !== 'json');
+    // The extension decides the format, before any read (§07).
+    const format = dataload.requireFormat(path);
+    const bytes = options.files?.[path] ?? (options.sources[path] !== undefined
+      ? new TextEncoder().encode(options.sources[path]) : undefined);
+    if (bytes === undefined) throw new Error(`load_data: data source not found in bundle: '${path}'`);
+    if (!parsed.has(path)) parsed.set(path, dataload.parseSource(path, bytes));
+    return dataload.valueExpression(parsed.get(path), schema, ir.loc, ['csv', 'wsv', 'arrow'].includes(format));
   }
   const resolve = fixedEval.makeResolver({ loweredModule, resolveData: (ir: any, evalIR: any) => {
     const rhs = load(ir, evalIR);
