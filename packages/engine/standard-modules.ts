@@ -135,6 +135,7 @@ function _clearStandardModules(): void {
 //     sampler-complex.ts's scalar convention.
 
 const T = require('./types.ts');
+const _stdlibGammaln = require('@stdlib/math-base-special-gammaln');
 
 // --- polynomials ------------------------------------------------------
 //
@@ -307,6 +308,47 @@ function _blattWeisskopfSquared(l: number, pd2: number): number {
   let value = chi[chi.length - 1];
   for (let k = chi.length - 2; k >= 0; k--) value = value * pd2 + chi[k];
   return 1 / value;
+}
+
+// Small Wigner d-function d^j_{m1 m2}(β) = <j m1| exp(-iβJ_y) |j m2> (spec
+// §09, PDG phase convention), taking cos β. The momenta come doubled
+// (tj = 2j, tm1 = 2m1, tm2 = 2m2) so half-integer spin stays integral.
+// Wigner's sum, with factorials in logs so a large j does not overflow:
+//   d = Σ_s (-1)^(m1-m2+s) √((j+m1)!(j-m1)!(j+m2)!(j-m2)!)
+//         / ((j+m2-s)! s! (m1-m2+s)! (j-m1-s)!)
+//         · cos(β/2)^(2j+m2-m1-2s) · sin(β/2)^(m1-m2+2s)
+function _wignerdDoubled(name: string, tj: number, tm1: number, tm2: number, cosbeta: number): number {
+  if (![tj, tm1, tm2].every(Number.isInteger) || tj < 0
+      || Math.abs(tm1) > tj || Math.abs(tm2) > tj
+      || (tj - tm1) % 2 !== 0 || (tj - tm2) % 2 !== 0) {
+    const doubled = name.endsWith('_doublearg');
+    const shown = doubled ? [tj, tm1, tm2] : [tj / 2, tm1 / 2, tm2 / 2];
+    const names = doubled ? ['two_j', 'two_m1', 'two_m2'] : ['j', 'm1', 'm2'];
+    throw new Error(name + ': ' + names.map((n, i) => n + ' = ' + shown[i]).join(', ')
+      + ' is not an angular momentum with |m1|, |m2| <= j and j - m1, j - m2 integers (spec §09)');
+  }
+  if (!(cosbeta >= -1 && cosbeta <= 1)) return NaN;  // outside interval(-1, 1)
+  const jp1 = (tj + tm1) / 2, jm1 = (tj - tm1) / 2;
+  const jp2 = (tj + tm2) / 2, jm2 = (tj - tm2) / 2;
+  const dm = (tm1 - tm2) / 2;
+  const c = Math.sqrt((1 + cosbeta) / 2), sn = Math.sqrt((1 - cosbeta) / 2);
+  const lf = (n: number) => _stdlibGammaln(n + 1);
+  const norm = 0.5 * (lf(jp1) + lf(jm1) + lf(jp2) + lf(jm2));
+  let sum = 0;
+  for (let k = Math.max(0, -dm); k <= Math.min(jp2, jm1); k++) {
+    const mag = Math.exp(norm - lf(jp2 - k) - lf(k) - lf(dm + k) - lf(jm1 - k))
+      * Math.pow(c, tj - dm - 2 * k) * Math.pow(sn, dm + 2 * k);
+    sum += (dm + k) % 2 === 0 ? mag : -mag;
+  }
+  return sum;
+}
+
+// Wigner D = exp(-i(m1 α + m2 γ)) d^j_{m1 m2}(β) (spec §09), doubled momenta.
+function _wignerDDoubled(name: string, tj: number, tm1: number, tm2: number,
+  alpha: number, cosbeta: number, gamma: number): { re: number; im: number } {
+  const d = _wignerdDoubled(name, tj, tm1, tm2, cosbeta);
+  const phase = -(tm1 * alpha + tm2 * gamma) / 2;
+  return { re: d * Math.cos(phase), im: d * Math.sin(phase) };
 }
 
 function _resonanceBreitwigner(
@@ -503,10 +545,36 @@ function _registerParticlePhysics() {
     ),
     impl: _blattWeisskopf,
   });
+  // Wigner rotation functions (spec §09). The doubled forms take 2j, 2m1, 2m2.
+  const dSig = (names: string[]) => T.funcType(
+    [...names.map((name) => ({ name, type: T.INTEGER })), { name: 'cosbeta', type: T.REAL }],
+    T.REAL);
+  const DSig = (names: string[]) => T.funcType(
+    [...names.map((name) => ({ name, type: T.INTEGER })), { name: 'alpha', type: T.REAL },
+     { name: 'cosbeta', type: T.REAL }, { name: 'gamma', type: T.REAL }],
+    T.COMPLEX);
+  bindings.set('wignerd', {
+    kind: 'function', sig: dSig(['j', 'm1', 'm2']),
+    impl: (j: number, m1: number, m2: number, cb: number) =>
+      _wignerdDoubled('wignerd', 2 * j, 2 * m1, 2 * m2, cb),
+  });
+  bindings.set('wignerd_doublearg', {
+    kind: 'function', sig: dSig(['two_j', 'two_m1', 'two_m2']),
+    impl: (tj: number, tm1: number, tm2: number, cb: number) =>
+      _wignerdDoubled('wignerd_doublearg', tj, tm1, tm2, cb),
+  });
+  bindings.set('wignerD', {
+    kind: 'function', sig: DSig(['j', 'm1', 'm2']),
+    impl: (j: number, m1: number, m2: number, a: number, cb: number, g: number) =>
+      _wignerDDoubled('wignerD', 2 * j, 2 * m1, 2 * m2, a, cb, g),
+  });
+  bindings.set('wignerD_doublearg', {
+    kind: 'function', sig: DSig(['two_j', 'two_m1', 'two_m2']),
+    impl: (tj: number, tm1: number, tm2: number, a: number, cb: number, g: number) =>
+      _wignerDDoubled('wignerD_doublearg', tj, tm1, tm2, a, cb, g),
+  });
   // interp_* land here; the §09 distributions (CrystalBall, Argus, Voigtian,
   // …) live in the sampler REGISTRY (density layer) and dispatch by name.
-  // Remaining deferred bindings: wignerd, and blatt_weisskopf ℓ=5..7 (the
-  // implemented barrier polynomials cover ℓ=0..4).
   registerStandardModule({
     name: 'particle-physics',
     compat: '0.1',
