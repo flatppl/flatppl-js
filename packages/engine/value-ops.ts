@@ -1127,6 +1127,11 @@ function _booleanScalar(x: any): boolean {
   if (x === false || x === 0) return false;
   throw new Error('boolean: value ' + x + ' is not a boolean');
 }
+// A boolean is JS true/false as a scalar but 1/0 once stored in an array,
+// so equality compares its value.
+function _discreteEqual(a: any, b: any): boolean {
+  return (typeof a === 'boolean' ? +a : a) === (typeof b === 'boolean' ? +b : b);
+}
 function _integerScalar(x: any): number {
   if (Number.isInteger(x)) return x;
   throw new Error('integer: value ' + x + ' is not an integer');
@@ -1956,7 +1961,7 @@ function cisElem(theta: any): any {
 
 module.exports = {
   _roundEven: roundEven,
-  _booleanScalar, _integerScalar,
+  _booleanScalar, _integerScalar, _discreteEqual,
   mul,
   add,
   sub,
