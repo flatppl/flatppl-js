@@ -1799,7 +1799,9 @@ const ARITH_OPS = {
       throw new Error('sizeof: argument must be a vector or array (spec §07 '
         + 'domain: vectors, arrays); got a table — use lengthof for its row count');
     }
-    if (valueLib.isValue(a)) return _packDims(a.shape);
+    // An array of arrays reports its outer extents only: §03 does not read a
+    // vector of vectors as a matrix.
+    if (valueLib.isValue(a)) return _packDims(a.shape.slice(0, valueLib.outerRankOf(a)));
     if (a == null) return _packDims([0]);
     if (typeof a === 'number') return _packDims([]);
     if (a.BYTES_PER_ELEMENT && typeof a.length === 'number') {

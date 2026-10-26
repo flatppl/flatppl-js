@@ -5065,7 +5065,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (args.length !== 2) return arityError('fill', 2, args.length, expr.loc);
     const vT = inferExpr(args[0], scopes);
     const dims = resolveIntegerVectorShape(args[1]);
-    const elem = (vT && vT.kind === 'scalar') ? vT : T.REAL;
+    // A filled array keeps its cells as arrays: an array of arrays (§03).
+    const elem = (vT && (vT.kind === 'scalar' || vT.kind === 'array')) ? vT : T.REAL;
     if (dims == null) return T.deferred();
     return T.array(dims.length, dims, elem);
   }

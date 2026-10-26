@@ -7,7 +7,9 @@
 // `outerRank` axes indexing the inner arrays. joinblocks and blockdiagmat read
 // only nested JS arrays, so a nested Value failed: blockdiagmat([A, B]) and
 // joinblocks([v, w]) had no value at all, and joinblocks([[1, 2], [3, 4]])
-// refused with "outer rank (0)". fill(A, size) with an array A gave NaN cells.
+// refused with "outer rank (0)". fill(A, size) with an array A gave NaN cells
+// and was typed as a flat array, sizeof of a bound array of arrays reported
+// its inner extents too, and `+ - * / neg` accepted an array of arrays.
 //
 // ext-linear-algebra returned `{ shape: 'record', fields }`, while a record
 // value is the plain field object, so `la.lu(A).U` could not be read. lstsq
@@ -21,6 +23,7 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { processSource } = require('..');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
+const T = require('../types.ts');
 
 function fixed(src: string, name: string): any {
   const errs = (processSource(src).diagnostics || []).filter((d: any) => d.severity === 'error');
@@ -69,6 +72,40 @@ test('fill with an array fills an array of arrays', () => {
   const x = fixed('x = fill([1.0, 2.0], 3)', 'x');
   assert.deepEqual([x.shape, x.outerRank, Array.from(x.data)], [[3, 2], 1, [1, 2, 1, 2, 1, 2]]);
   assert.deepEqual(array('x = fill([1.0, 2.0], 3)\ny = x[2]', 'y'), { shape: [2], data: [1, 2] });
+});
+
+const VW = 'v = [1.0, 2.0]\nw = [3.0, 4.0]\nN = [v, w]\nF = fill(v, 3)\n';
+
+// §07 sizeof of an array of arrays: its outer extents, for the identity
+// splitblocks(tile(A, n), sizeof(A)) ≡ fill(A, n) to hold.
+test('sizeof of an array of arrays reports its outer extents', () => {
+  for (const [expr, n] of [['sizeof(fill(v, 3))', 3], ['sizeof(F)', 3], ['sizeof(N)', 2],
+    ['sizeof([[1.0, 2.0], [3.0, 4.0]])', 2], ['sizeof(splitblocks(tile(v, 3), 2))', 3]] as const) {
+    assert.deepEqual(array(`${VW}x = ${expr}`, 'x'), { shape: [1], data: [n] }, expr);
+  }
+});
+
+test('fill with an array is typed as an array of arrays', () => {
+  const types = processSource(`${VW}y = F[2]`).loweredModule.bindings;
+  assert.equal(T.show(types.get('F').inferredType), 'array of array of real (length 2) (length 3)');
+  assert.equal(T.show(types.get('y').inferredType), 'array of real (length 2)');
+});
+
+// §07 gives each arithmetic row real or complex arrays, so an array of arrays
+// refuses; the dotted form applies the row to each inner array (§04).
+test('arithmetic refuses an array of arrays and keeps the dotted forms', () => {
+  for (const expr of ['N + N', 'N - N', 'F * 2.0', '2.0 * N', 'N / 2.0', '-N', 'F + F']) {
+    const errs = processSource(`${VW}x = ${expr}`).diagnostics.filter((d: any) => d.severity === 'error');
+    assert.ok(errs.length === 1 && /is an array of arrays/.test(errs[0].message) && errs[0].loc,
+      `${expr}: ${JSON.stringify(errs.map((d: any) => d.message))}`);
+  }
+  const pow = processSource(`${VW}x = N ^ 2.0`).diagnostics.filter((d: any) => d.severity === 'error');
+  assert.match(pow[0].message, /pow: arg 1 expects a scalar/);
+  for (const [expr, data] of [['add.(N, N)', [2, 4, 6, 8]], ['sub.(N, N)', [0, 0, 0, 0]],
+    ['mul.(F, 2.0)', [2, 4, 2, 4, 2, 4]], ['divide.(F, 2.0)', [0.5, 1, 0.5, 1, 0.5, 1]],
+    ['neg.(N)', [-1, -2, -3, -4]]] as const) {
+    assert.deepEqual(array(`${VW}x = ${expr}`, 'x').data, data, expr);
+  }
 });
 
 test('a matrix is not an array of arrays for joinblocks', () => {
