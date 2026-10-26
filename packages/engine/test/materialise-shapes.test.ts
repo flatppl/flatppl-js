@@ -670,3 +670,34 @@ test('materialise: elementof(reals) parameter', async () => {
     assert.ok(!/Cannot read properties of undefined/.test(String(err.message)));
   }
 });
+
+// ---------------------------------------------------------------------
+// Fixed-phase linear-algebra results surface with their logical layout.
+// A row-vector times column-vector product (and `trace`) is a rank-0 Value,
+// which surfaced as a one-element vector instead of a scalar. A transposed
+// matrix keeps its storage order under a view tag, which the flat samples
+// dropped: the viewer's heatmap showed `transpose(M)` as `M`.
+// ---------------------------------------------------------------------
+
+test('fixed: a row·column product and trace surface as scalars', async () => {
+  const { ctx } = makeMatCtx('u = [1.0, 2.0, 3.0]\nw = [10.0, 0.0, -1.0]\nr = transpose(u) * w\n'
+    + 'M = rowstack([[1.0, 2.0], [3.0, 4.0]])\ntr = trace(M)\n');
+  for (const [name, want] of [['r', 7], ['tr', 5]] as Array<[string, number]>) {
+    const m = await ctx.getMeasure(name);
+    assert.equal(m.rank0, true, name);
+    assert.deepEqual(m.value.shape, [], name);
+    assert.equal(m.value.data[0], want, name);
+  }
+});
+
+test('fixed: a transposed matrix and an outer product surface in logical row-major order', async () => {
+  const { ctx } = makeMatCtx('u = [1.0, 2.0, 3.0]\nw = [10.0, 0.0, -1.0]\no = w * transpose(u)\n'
+    + 'M = rowstack([[1.0, 2.0], [3.0, 4.0]])\nMt = transpose(M)\n');
+  const mt = await ctx.getMeasure('Mt');
+  assert.deepEqual(mt.intrinsicShape, [2, 2]);
+  assert.deepEqual(Array.from(mt.samples), [1, 3, 2, 4]);
+  const o = await ctx.getMeasure('o');
+  assert.deepEqual(o.intrinsicShape, [3, 3]);
+  // o[i, j] = w[i] * u[j]
+  assert.deepEqual(Array.from(o.samples), [10, 20, 30, 0, 0, 0, -1, -2, -3]);
+});

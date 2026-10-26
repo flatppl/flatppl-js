@@ -871,6 +871,13 @@ function pushModuleRegistry(ctx: any) {
  * objects); the caller falls through to derivation-based dispatch.
  */
 function fixedValueToMeasure(v: any, sampleCount: any): any {
+  // A rank-0 Value is a scalar (spec §03 has no rank-0 array): a row-vector
+  // times column-vector product, or `trace`, returns one. Read it as one, so
+  // it is not surfaced as a one-element vector.
+  if (valueLib.isValue(v) && v.shape.length === 0) {
+    if (v.im instanceof Float64Array) return fixedValueToMeasure({ re: v.data[0], im: v.im[0] }, sampleCount);
+    return fixedValueToMeasure(v.data[0], sampleCount);
+  }
   // ±Infinity is a legitimate deterministic scalar — a log-density outside a
   // truncate's support is log 0 = −∞, which the determiniser emits as the
   // else-branch of `ifelse(in(v, S), density, neg(inf))`. Accept any number
@@ -901,7 +908,9 @@ function fixedValueToMeasure(v: any, sampleCount: any): any {
   // plot renders the values. A proper rank-2+ heatmap renderer would
   // preserve the matrix structure visually — tracked as a follow-up.
   if (valueLib.isValue(v)) {
-    const dense = valueLib.densify(v);
+    // Logical entries: a transposed matrix keeps its storage order under a
+    // view tag, and the flat samples below carry no tag.
+    const dense = valueLib._logicalDense(v);
     const flat = dense.data instanceof Float64Array
       ? dense.data
       : Float64Array.from(dense.data);
