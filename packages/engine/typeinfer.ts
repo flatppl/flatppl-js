@@ -430,7 +430,54 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         loc: expr.loc });
       return T.failed("'" + bindingName + "' is stochastic (module boundary)");
     }
-    return depBinding.inferredType || T.deferred();
+    const standalone = depBinding.inferredType || T.deferred();
+    if (standalone.kind !== 'deferred' && !_hasDynamicExtent(standalone)) return standalone;
+    const sharper = _retypeUnderSubstitution(modAlias, path, bindingName);
+    return sharper && sharper.kind !== 'failed' && sharper.kind !== 'deferred' ? sharper : standalone;
+  }
+
+  function _hasDynamicExtent(t: any): boolean {
+    if (!t || typeof t !== 'object') return false;
+    if (t.kind === 'array') return t.shape.includes('%dynamic') || _hasDynamicExtent(t.elem);
+    if (t.kind === 'tvector') return t.length === '%dynamic' || _hasDynamicExtent(t.elem);
+    if (t.kind === 'measure') return _hasDynamicExtent(t.domain);
+    if (t.kind === 'record') return Object.values(t.fields).some(_hasDynamicExtent);
+    if (t.kind === 'tuple') return t.elems.some(_hasDynamicExtent);
+    return false;
+  }
+
+  // A dependency is typed standalone, so a size behind one of its inputs is
+  // `%dynamic` there. When `load_module` pins that input to a constant, type
+  // the binding again in a copy of the dependency whose input is that
+  // constant, so `m.x` carries the shape the substitution fixes.
+  const substitutedContexts = new Map<string, any>();
+  function _retypeUnderSubstitution(modAlias: string, path: string, bindingName: string): any {
+    if (!substitutedContexts.has(modAlias)) substitutedContexts.set(modAlias, _substitutedContext(modAlias, path));
+    const ctx = substitutedContexts.get(modAlias);
+    return ctx ? ctx.inferBinding(bindingName) : null;
+  }
+  function _substitutedContext(modAlias: string, path: string): any {
+    const assigns = loweredModule.bindings.get(modAlias)?.rhs?.assigns;
+    const dep = modules?.get(path);
+    if (!dep || !Array.isArray(assigns) || assigns.length === 0) return null;
+    const pinned = new Map<string, any>();
+    for (const a of assigns) {
+      const v = a.value?.kind === 'lit' ? a.value.value : (resolveFixed ? resolveFixed(a.value) : undefined);
+      if (typeof v !== 'number' || !Number.isFinite(v)) continue;
+      const t: any = inferExpr(a.value, []);
+      const numType = t?.kind === 'scalar' && t.prim === 'integer' ? 'integer' : 'real';
+      pinned.set(a.name, { kind: 'lit', value: v, numType, loc: a.value.loc });
+    }
+    if (pinned.size === 0) return null;
+    const bindings = new Map<string, any>();
+    for (const [name, b] of dep.loweredModule.bindings) {
+      bindings.set(name, { ...b, inferredType: undefined,
+        rhs: pinned.has(name) ? pinned.get(name) : copyForInference(b.rhs) });
+    }
+    const copy = { ...dep.loweredModule, bindings };
+    return createInferenceContext(copy, {
+      modules, resolveFixed: require('./fixed-eval.ts').makeResolver({ loweredModule: copy }),
+    });
   }
 
   function resolveStandardModuleRef(stdModCall: any, bindingName: string, modAlias: string,
