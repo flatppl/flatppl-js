@@ -183,48 +183,10 @@ function opUsesValueKwargs(op: string) {
     && op !== 'PoissonProcess' && op !== 'BinnedPoissonProcess');
 }
 
-/**
- * Map an AST RHS to the binding `type` the analyzer would assign.
- * Mirrors classifyStatement in analyzer.js for the subset that can
- * appear after lifting; we don't redirect to the analyzer because
- * pulling it in here would create a cycle.
- */
-function inferSyntheticType(astNode: any) {
-  if (!astNode) return 'call';
-  if (astNode.type === 'CallExpr' && astNode.callee && astNode.callee.type === 'Identifier') {
-    switch (astNode.callee.name) {
-      case 'draw':       return 'draw';
-      case 'lawof':      return 'lawof';
-      case 'functionof': return 'functionof';
-      case 'kernelof':   return 'kernelof';
-      case 'fn':         return 'fn';
-      // Phase 5.1 Session 5e — recognise synthetic bijection bindings
-      // emitted by `inlineMvNormalLift`. Without this case the lift
-      // post-pass + buildDerivations' bijection-construction loop
-      // (derivations.ts:159-179, gated on binding.type === 'bijection')
-      // skip the synthetic binding entirely, leaving binding.bijection
-      // unpopulated and registryName + paramIRs unattached.
-      case 'bijection':  return 'bijection';
-      // The analyzer's producer tags for the other first-class objects. A
-      // `likelihoodof` lifted out of a `restrict` expansion was tagged
-      // 'call', so the dead-end check reported a likelihood object as a
-      // fixed binding that "produced no value".
-      case 'likelihoodof':
-      case 'joint_likelihood': return 'likelihood';
-      case 'bayesupdate': return 'bayesupdate';
-      case 'fchain':     return 'fchain';
-    }
-    return 'call';
-  }
-  switch (astNode.type) {
-    case 'NumberLiteral':
-    case 'StringLiteral':
-    case 'BoolLiteral':
-    case 'ArrayLiteral':
-    case 'TupleLiteral': return 'literal';
-  }
-  return 'call';
-}
+// The binding `type` the analyzer would assign. Synthetic bindings take it
+// too, so a lifted `bijection` reaches buildDerivations' bijection loop and a
+// lifted `likelihoodof` is not reported as a fixed binding with no value.
+const inferSyntheticType = require('./binding-type.ts').bindingTypeOf;
 
 /**
  * Walk every binding's RHS AST, lifting non-trivial subexpressions

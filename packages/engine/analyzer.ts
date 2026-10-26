@@ -142,45 +142,8 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
   }
 }
 
-/**
- * Classify a statement by examining the RHS expression.
- */
-function classifyStatement(valueNode: any) {
-  if (!valueNode) return 'call';
-
-  if (valueNode.type === 'CallExpr' && valueNode.callee.type === 'Identifier') {
-    const name = valueNode.callee.name;
-    switch (name) {
-      case 'draw': return 'draw';
-      case 'elementof': return 'input';
-      case 'external': return 'input';
-      case 'lawof': return 'lawof';
-      case 'functionof': return 'functionof';
-      case 'kernelof': return 'kernelof';
-      case 'fn': return 'fn';
-      case 'bijection': return 'bijection';
-      // fchain produces a function-valued binding (spec §04
-      // "Function composition and annotation"; engine-concepts §19).
-      // Distinct producer tag so the IR's op stays grep-able, but
-      // consumers test via the function-like predicate, not by tag.
-      case 'fchain': return 'fchain';
-      case 'likelihoodof': return 'likelihood';
-      case 'joint_likelihood': return 'likelihood';
-      case 'bayesupdate': return 'bayesupdate';
-      case 'load_module': return 'module';
-      case 'standard_module': return 'module';
-      case 'load_data': return 'data';
-    }
-  }
-
-  if (valueNode.type === 'ArrayLiteral' || valueNode.type === 'NumberLiteral'
-      || valueNode.type === 'StringLiteral' || valueNode.type === 'TupleLiteral'
-      || valueNode.type === 'BoolLiteral') {
-    return 'literal';
-  }
-
-  return 'call';
-}
+// The binding `type` of a statement, read from its RHS.
+const classifyStatement = require('./binding-type.ts').bindingTypeOf;
 
 /**
  * Spec §04 "Calling conventions" on the *distinguished inputs* of a special
