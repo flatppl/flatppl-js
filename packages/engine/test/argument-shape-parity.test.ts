@@ -21,11 +21,11 @@ const PRELUDE = 'v = [1.0, 2.0]\nM = rowstack([[1.0, 0.0], [0.0, 1.0]])\n';
 const errorsOf = (src: string) =>
   processSource(PRELUDE + src).diagnostics.filter((d: any) => d.severity === 'error');
 
-function refuses(src: string, message: RegExp, col: number) {
+function refuses(src: string, message: RegExp, col: number, line = 2) {
   const errs = errorsOf(src);
   assert.equal(errs.length, 1, src + ': ' + errs.map((d: any) => d.message).join('; '));
   assert.match(errs[0].message, message, src);
-  assert.deepEqual([errs[0].loc.start.line, errs[0].loc.start.col], [2, col], src);
+  assert.deepEqual([errs[0].loc.start.line, errs[0].loc.start.col], [line, col], src);
 }
 
 test('§08 multivariate parameters carry their declared rank', () => {
@@ -56,6 +56,11 @@ test('positional distribution arguments are checked as the parameters they bind'
   // An inline constructor is inferred more than once but reported once.
   refuses('lp = logdensityof(Dirichlet(alpha = 2.0), [0.5])\n', /^Dirichlet: kwarg "alpha" expects array of real, got real$/, 36);
   refuses('lp = logdensityof(Dirichlet(2.0), [0.5])\n', /^Dirichlet: arg 1 \("alpha"\) expects array of real, got real$/, 28);
+  // An unknown keyword binds no parameter; the sampler refused it only at run time.
+  refuses('x = Normal(mu = 0, sigma = 1, extra = 2)\n',
+    /^`Normal` has no parameter `extra` \(spec §08 parameters: `mu`, `sigma`\)$/, 38);
+  refuses('lp = logdensityof(MvNormal(mu = v, cov = M, sd = 1.0), [0.0, 0.0])\n',
+    /^`MvNormal` has no parameter `sd` \(spec §08 parameters: `mu`, `cov`\)$/, 49);
   // A surplus argument binds no parameter; it was dropped and the call scored.
   refuses('x = Normal(1.0, 2.0, 3.0)\n', /^Normal expects at most 2 positional argument\(s\), got 3$/, 4);
   // A lone record auto-splats over a multi-parameter distribution.
@@ -75,8 +80,10 @@ test('a vector step parameter written positionally is a static error', () => {
 test('§07 eye takes a positive integer', () => {
   refuses('x = eye(v)\n', /^eye: arg 1 expects integer, got array of real \(length 2\)$/, 8);
   refuses('x = eye(2.0)\n', /^eye: arg 1 expects integer, got real$/, 8);
-  refuses('x = eye(0)\n', /^eye: spec §07 "Array and table generation" gives `n` the domain positive integer, but it is written as 0$/, 8);
-  refuses('x = eye(-1)\n', /written as -1$/, 8);
+  refuses('x = eye(0)\n', /^eye: spec §07 "Array and table generation" gives `n` the domain positive integer, but it is 0$/, 8);
+  refuses('x = eye(-1)\n', /but it is -1$/, 8);
+  // A fixed size binding folds; it evaluated to an empty matrix.
+  refuses('z = 0\nx = eye(z)\n', /^eye: spec §07 "Array and table generation" gives `n` the domain positive integer, but it is 0$/, 8, 3);
   for (const ok of ['x = eye(2)\n', 'x = eye(n = 3)\n', 'x = eye(lengthof(v))\n']) {
     assert.deepEqual(errorsOf(ok).map((d: any) => d.message), [], ok);
   }
@@ -95,8 +102,10 @@ test('§07 scalar constructors refuse an array; the dotted form applies per cell
 });
 
 test('the materialiser refuses a binding with a non-scalar operand of a scalar-only function', async () => {
-  const src = 'v = [1.0, 4.0]\nx = sqrt(v)\ny = x[1] + 1.0\nr = real(v)\nz = sqrt.(v)\n';
-  for (const [name, op] of [['x', 'sqrt'], ['y', 'sqrt'], ['r', 'real']]) {
+  // `t` types fine, so the walk must pass through bindings that did not fail.
+  const src = 'v = [1.0, 4.0]\nx = sqrt(v)\ny = x[1] + 1.0\nr = real(v)\nz = sqrt.(v)\n'
+    + 't = record(a = x)\nta = t.a\n';
+  for (const [name, op] of [['x', 'sqrt'], ['y', 'sqrt'], ['r', 'real'], ['t', 'sqrt'], ['ta', 'sqrt']]) {
     const { ctx } = ctxFor(src, 1);
     await assert.rejects(ctx.getMeasure(name), (err: any) => {
       assert.match(err.message, new RegExp("^'" + name + "' is statically invalid at \\d+:\\d+: " + op
@@ -115,5 +124,74 @@ test('a self-recursive function reports its cycle instead of overflowing the sta
     const errs = processSource(src).diagnostics.filter((d: any) => d.severity === 'error');
     assert.ok(errs.some((d: any) => /^cyclic binding dependency at "[fg]"$/.test(d.message)),
       errs.map((d: any) => d.message).join('; '));
+  }
+});
+
+test('a size, count or index refuses a real-typed value, even when integral', () => {
+  const real = (op: string, slot: string, vector: boolean) => new RegExp('^' + op + ': `' + slot
+    + '` must be an integer' + (vector ? ' or an integer vector' : '') + ', got (real|array of real \\(length \\d\\)); '
+    + 'a real value is not a member of an integer set, even when integral \\(spec §03 "Scalar value categories and sets"\\)');
+  refuses('x = fill(0.0, 2.0)\n', real('fill', 'size', true), 14);
+  refuses('x = fill(0.0, [2.0, 3.0])\n', real('fill', 'size', true), 14);
+  refuses('x = fill(0.0, [2.0, 3])\n', real('fill', 'size', true), 14);
+  refuses('x = onehot(2.0, 3)\n', real('onehot', 'i', false), 11);
+  refuses('x = zeros(2.0)\n', real('zeros', 'size', true), 10);
+  refuses('x = ones([2.0])\n', real('ones', 'size', true), 9);
+  refuses('x = tile(v, 2.0)\n', real('tile', 'size', true), 12);
+  refuses('x = cartpow(reals, 2.0)\n', real('cartpow', 'size', true), 19);
+  refuses('x = elementof(cartpow(reals, 2.0))\n', real('cartpow', 'size', true), 29);
+  refuses('x = Lebesgue(support = cartpow(reals, 2.0))\n', real('cartpow', 'size', true), 38);
+  refuses('x = stdsimplex(3.0)\n', real('stdsimplex', 'n', false), 15);
+  refuses('x = onehot(1.0, 3)\n', real('onehot', 'i', false), 11);
+  refuses('x = onehot(i = 1, n = 3.0)\n', real('onehot', 'n', false), 22);
+  refuses('x = get(v, 1.0)\n', real('get', 'index 1', true), 11);
+  refuses('x = v[1.0]\n', real('get', 'index 1', true), 6);
+  refuses('x = M[1, 2.0]\n', real('get', 'index 2', true), 9);
+  refuses('x = v[[1.0, 2.0]]\n', real('get', 'index 1', true), 6);
+  refuses('x = get0(v, 0.0)\n', real('get0', 'index 1', true), 12);
+  for (const ok of ['x = fill(0.0, 2)\n', 'x = zeros([2, 2])\n', 'x = cartpow(reals, [2, 2])\n',
+    'x = onehot(1, 3)\n', 'x = v[1]\n', 'x = v[[1, 2]]\n', 'x = v[:]\n', 'x = zeros(lengthof(v))\n',
+    'x = fill(0.0, integer(2.0))\n']) {
+    assert.deepEqual(errorsOf(ok).map((d: any) => d.message), [], ok);
+  }
+});
+
+test('§07 vector rows take a transposed vector and keep its orientation', async () => {
+  // §03: "vector" covers transposed vectors unless noted otherwise, and §07's
+  // norms and scans note nothing.
+  const ops = ['softmax', 'logsoftmax', 'l1unit', 'l2unit', 'cumsum', 'cumprod', 'cummax', 'cummin',
+    'l1norm', 'l2norm', 'linfnorm', 'logsumexp'];
+  for (const op of ops) {
+    const p = processSource('v = [1.0, -2.0, 3.0]\nx = ' + op + '(transpose(v))\n');
+    assert.deepEqual(p.diagnostics.filter((d: any) => d.severity === 'error').map((d: any) => d.message), [], op);
+    const t = p.loweredModule.bindings.get('x').inferredType;
+    if (op.startsWith('l') && op.endsWith('norm') || op === 'logsumexp') assert.equal(t.kind, 'scalar', op);
+    else assert.deepEqual([t.kind, t.length], ['tvector', 3], op);
+  }
+  // A transposed result times a vector is an inner product. Hand-computed:
+  // softmax([1, -2, 3]) · [1, -2, 3], cumsum → [1, -1, 2] · v = 9, l1unit → [1/6, -1/3, 1/2] · v = 7/3.
+  const e = [Math.exp(1), Math.exp(-2), Math.exp(3)], z = e[0] + e[1] + e[2];
+  const want: Record<string, number> = { s: (e[0] - 2 * e[1] + 3 * e[2]) / z, c: 9, u: 7 / 3 };
+  const src = 'v = [1.0, -2.0, 3.0]\nt = transpose(v)\ns = softmax(t) * v\nc = cumsum(t) * v\nu = l1unit(t) * v\n';
+  assert.deepEqual(processSource(src).diagnostics.filter((d: any) => d.severity === 'error'), []);
+  for (const n of Object.keys(want)) {
+    const { ctx } = ctxFor(src, 1);
+    const m = await ctx.getMeasure(n);
+    const got = m.value ? m.value.data[0] : m.samples[0];
+    assert.ok(Math.abs(got - want[n]) < 1e-12, `${n}: ${got} vs ${want[n]}`);
+  }
+});
+
+test('§07 integer and boolean of a written number outside the set is a static error', () => {
+  const outside = (op: string, v: string) => new RegExp('^' + op + ': ' + v.replace('.', '\\.') + ' is not in `' + op
+    + 's`, and spec §07 "Scalar restrictions and constructors" makes that a static error$');
+  refuses('x = integer(2.5)\n', outside('integer', '2.5'), 12);
+  refuses('x = integer(-2.5)\n', outside('integer', '-2.5'), 12);
+  refuses('x = boolean(0.5)\n', outside('boolean', '0.5'), 12);
+  refuses('x = boolean(2)\n', outside('boolean', '2'), 12);
+  refuses('lp = logdensityof(Normal(mu = integer(2.5), sigma = 1.0), 0.5)\n', outside('integer', '2.5'), 38);
+  for (const ok of ['x = integer(2.0)\n', 'x = integer(-3)\n', 'x = boolean(1.0)\n', 'x = boolean(0)\n',
+    'x = boolean(true)\n', 'k = 3\nx = integer(k)\n']) {
+    assert.deepEqual(errorsOf(ok).map((d: any) => d.message), [], ok);
   }
 });

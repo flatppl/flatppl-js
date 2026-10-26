@@ -322,26 +322,22 @@ test('dynamic iid base count routes and matches the MvNormal scipy oracle', asyn
     `got ${lp.samples[0]}, expected -3.0232949106330103`);
 });
 
-// 6b. SAMPLE-bound (`~`) vector shift. The analyzer's 1-level resolvers only
-//     follow `=` (AssignStatement) edges; a `~`-bound name has no
-//     AssignStatement, so looksNonScalar(shift) and resolveLit(shift) each run
-//     their Identifier loop to completion and fall through (analyzer 2549,
-//     2608). The pre-pass leaves the call to lift (no diagnostic). lift can't
-//     statically pin the latent shift's dimension, so it does NOT route and
-//     the unrouted locscale reaches the buildDerivations safety net, which
-//     throws the clean locscale-tagged error (not a cryptic downstream crash).
-test('sample-bound vector shift: clean pre-pass + safety-net error (resolver fall-through)', () => {
-  const lifted = processSource(
-    `mu ~ MvNormal(mean = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))\n`
-    + `X = locscale(iid(Normal(0.0, 1.0), 2), mu, [[2.0, 0.0], [0.0, 1.5]])\n`);
-  const preErrs = lifted.diagnostics.filter((d: any) => d.severity === 'error');
-  assert.deepEqual(preErrs, [],
-    `analyzer pre-pass should not diagnose; got: ${JSON.stringify(preErrs.map((e: any) => e.message))}`);
-  let msg = '';
-  try { orchestrator.buildDerivations(lifted.bindings); }
-  catch (e: any) { msg = e.message; }
-  assert.match(msg, /locscale/i,
-    `expected a locscale-tagged safety-net error, got: ${msg || '(none)'}`);
+// 6b. SAMPLE-bound (`~`) vector shift. The shift's dimension comes from its
+//     MvNormal's `mu`, so lift pins it and routes the locscale. (This test once
+//     spelled the parameter `mean`, which left the dimension unknown and sent
+//     the call to the buildDerivations safety net; §08 has no `mean`.)
+//     Oracle: log N(mu; 0, I) + log N(y; mu, diag(2, 1.5)^2), closed form.
+test('sample-bound vector shift routes and scores the joint closed form', async () => {
+  const src = `mu ~ MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))\n`
+    + `X = locscale(iid(Normal(0.0, 1.0), 2), mu, [[2.0, 0.0], [0.0, 1.5]])\n`
+    + `y ~ X\n`
+    + `J = lawof(record(mu = mu, y = y))\n`
+    + `lp = logdensityof(J, record(mu = [0.3, -0.2], y = [1.5, -0.5]))\n`;
+  assert.deepEqual(processSource(src).diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const lg = (x: number, m: number, sd: number) => -0.5 * Math.log(2 * Math.PI) - Math.log(sd) - 0.5 * ((x - m) / sd) ** 2;
+  const want = lg(0.3, 0, 1) + lg(-0.2, 0, 1) + lg(1.5, 0.3, 2) + lg(-0.5, -0.2, 1.5);
+  const lp = await makeCtx(src).getMeasure('lp');
+  assert.ok(Math.abs(lp.samples[0] - want) < 1e-12, `got ${lp.samples[0]}, expected ${want}`);
 });
 
 // 6c. SAMPLE-bound (`~`) NON-iid base. baseIsIid(base) runs its Identifier

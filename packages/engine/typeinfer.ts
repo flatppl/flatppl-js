@@ -114,6 +114,12 @@ function isVectorOfVectors(t: any): boolean {
 // §07 "Scalar restrictions and constructors" gives `boolean`, `integer` and
 // `real` the domain "any scalar numeric".
 const SCALAR_CONSTRUCTOR_OPS = new Set(['boolean', 'integer', 'real']);
+// §07 rows whose domain reads "vectors", which §03 says covers transposed
+// vectors unless noted otherwise: the norms and normalisations and the scans.
+const VECTOR_DOMAIN_OPS = new Set([
+  'l1norm', 'l2norm', 'linfnorm', 'l1unit', 'l2unit', 'logsumexp', 'softmax', 'logsoftmax',
+  'cumsum', 'cumprod', 'cummax', 'cummin',
+]);
 const SCALAR_ONLY_OPS = new Set([...ELEMENTARY_OPS, ...SCALAR_CONSTRUCTOR_OPS, 'pow']);
 const { operatorDomainViolation, kindOf: operandKind, extentOf, asGuess, unresolved: isGuess } = require('./operator-domains.ts');
 // The four FlatPDL transports (spec §07) — undefined on discrete kernels.
@@ -540,6 +546,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // switch is the whole surface.
     const domainFailure = _refuseBareCollectionDomainCall(expr, scopes);
     if (domainFailure) return write(domainFailure, expr);
+    const slotFailure = _refuseRealIntegerSlot(expr, scopes);
+    if (slotFailure) return write(slotFailure, expr);
+    const restrictFailure = _refuseLiteralOutsideRestriction(expr);
+    if (restrictFailure) return write(restrictFailure, expr);
 
     // Special-cased ops whose result type depends on actuals or
     // structural shape in ways that don't fit the static signature
@@ -1077,7 +1087,25 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (joined) s = T.unify(sig.result, joined.result, s);
     }
 
+    // A keyword that names no parameter binds nothing; the sampler refused it
+    // only at evaluation.
+    if (sig.args === null) {
+      for (const k in kwargs) {
+        if (k in sig.kwargs) continue;
+        const loc = kwargs[k]?.loc || expr.loc;
+        const message = '`' + op + '` has no parameter `' + k + '` (spec §08 parameters: '
+          + Object.keys(sig.kwargs).map((n) => '`' + n + '`').join(', ') + ')';
+        // An inline constructor can be inferred more than once; report it once.
+        const key = message + '@' + JSON.stringify(loc?.start);
+        if (!kwargReported.has(key)) {
+          kwargReported.add(key);
+          diagnostics.push({ severity: 'error', loc, message });
+        }
+        return T.failed(op + ' unknown kwarg');
+      }
+    }
     const positionOf: Record<string, number> = {};
+    let tvectorIn: any = null;
     // Positional arguments bind a distribution's §08 parameters in declared
     // order (spec §04 "Calling conventions"), so check them as those kwargs.
     // A lone record or table auto-splats instead, or for a one-parameter
@@ -1126,7 +1154,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           if (SCALAR_ONLY_OPS.has(op) && _isNonScalarOperand(at)) {
             return scalarOnlyError(op, i, at, args[i].loc);
           }
-          const next = T.unify(sig.args[i], at, s);
+          // §03: "vector" covers a transposed vector unless noted otherwise,
+          // and these §07 rows note nothing. A scan keeps the transposition.
+          const asVector = VECTOR_DOMAIN_OPS.has(op) && at && at.kind === 'tvector';
+          if (asVector) tvectorIn = at.length;
+          const next = T.unify(sig.args[i], asVector ? T.array(1, [at.length], at.elem) : at, s);
           if (next == null) {
             // Apply the substitution accumulated from earlier args so
             // the diagnostic's "expected" type is concrete, not the
@@ -1162,7 +1194,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
       s = next;
     }
-    const result = T.substitute(sig.result, s);
+    let result = T.substitute(sig.result, s);
+    if (tvectorIn != null && result && result.kind === 'array' && result.rank === 1) {
+      result = T.tvector(result.shape[0] === '%dynamic' ? tvectorIn : result.shape[0], result.elem);
+    }
     if (op === 'BinnedPoissonProcess') {
       const bins = kwargs.bins || (args.length >= 2 ? args[0] : null);
       const binsT = bins && inferExpr(bins, scopes);
@@ -2880,6 +2915,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       const selectedShape: any[] = new Array(rank).fill(null);
       for (let k = 0; k < sels.length; k++) {
         const sel = sels[k];
+        if (sel && sel.kind !== 'const' && sel.kind !== 'axis') {
+          const selT: any = inferExpr(sel, scopes);
+          if (_isRealTyped(selT, true)) {
+            if (realSlotVerdicts.has(sel)) return realSlotVerdicts.get(sel);
+            const verdict = _realSlotError(expr.op, 'index ' + (k + 1), selT, true, sel.loc || expr.loc);
+            realSlotVerdicts.set(sel, verdict);
+            return verdict;
+          }
+        }
         const dim = shape[k];
         if (sel && sel.kind === 'const' && sel.name === 'all') {
           selectedShape[k] = dim;                    // keep dim
@@ -3583,6 +3627,72 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // collections" reading stays on the broadcast half, where the head is known
   // to be receiving a cell; a bare `rowstack(<flat vector>)` is a separate
   // pre-existing wrong answer recorded in flatppl-dev/TODO-flatppl-js.md.
+  // A size, count or index is an integer (§07 rows, §03 "Cartesian power"),
+  // and a real value is not a member of an integer set even when integral
+  // (§03 "Scalar value categories and sets"). Positional index, keyword name,
+  // and whether an integer vector is also admitted.
+  const INTEGER_SLOTS: Record<string, Array<[number, string, boolean]>> = {
+    fill: [[1, 'size', true]],
+    zeros: [[0, 'size', true]],
+    ones: [[0, 'size', true]],
+    tile: [[1, 'size', true]],
+    cartpow: [[1, 'size', true]],
+    stdsimplex: [[0, 'n', false]],
+    ordered: [[0, 'n', false]],
+    zerosum: [[0, 'n', false]],
+    onehot: [[0, 'i', false], [1, 'n', false]],
+  };
+  function _isRealTyped(t: any, allowVector: boolean): boolean {
+    if (t?.kind === 'scalar') return t.prim === 'real' || t.prim === 'complex';
+    return allowVector && t?.kind === 'array' && t.rank === 1 && _isRealTyped(t.elem, false);
+  }
+  function _realSlotError(op: string, slot: string, t: any, allowVector: boolean, loc: any): any {
+    diagnostics.push({ severity: 'error', loc,
+      message: op + ': `' + slot + '` must be an integer' + (allowVector ? ' or an integer vector' : '')
+        + ', got ' + T.show(t) + '; a real value is not a member of an integer set, even when '
+        + 'integral (spec §03 "Scalar value categories and sets"), so write an integer or use `integer(…)`' });
+    return T.failed(op + ' real ' + slot);
+  }
+  // §07 "Scalar restrictions and constructors": `integer(x)` and `boolean(x)`
+  // return `x` when it is in the set, "otherwise a static error". A written
+  // number decides that here.
+  function _refuseLiteralOutsideRestriction(expr: any): any {
+    if (expr.op !== 'integer' && expr.op !== 'boolean') return null;
+    const a = (expr.args || [])[0];
+    if (!a || a.kind !== 'lit' || typeof a.value !== 'number') return null;
+    const inSet = expr.op === 'integer' ? Number.isInteger(a.value) : a.value === 0 || a.value === 1;
+    if (inSet) return null;
+    if (realSlotVerdicts.has(expr)) return realSlotVerdicts.get(expr);
+    diagnostics.push({ severity: 'error', loc: a.loc || expr.loc,
+      message: expr.op + ': ' + a.value + ' is not in `' + expr.op + 's`, and spec §07 "Scalar '
+        + 'restrictions and constructors" makes that a static error' });
+    const verdict = T.failed(expr.op + ' literal outside its set');
+    realSlotVerdicts.set(expr, verdict);
+    return verdict;
+  }
+
+  // A call can be typed more than once (inline, and as a set); report it once.
+  const realSlotVerdicts = new WeakMap<any, any>();
+  function _refuseRealIntegerSlot(expr: any, scopes: any): any {
+    const slots = INTEGER_SLOTS[expr.op];
+    if (!slots) return null;
+    if (realSlotVerdicts.has(expr)) return realSlotVerdicts.get(expr);
+    let verdict: any = null;
+    const args = expr.args || [], kwargs = expr.kwargs || {};
+    for (const [i, name, allowVector] of slots) {
+      const ir = i < args.length ? args[i] : kwargs[name];
+      if (!ir) continue;
+      const t: any = inferExpr(ir, scopes);
+      // A stochastic size gets the phase refusal, which names the draw.
+      if (_isRealTyped(t, allowVector) && !_stochasticDependency(ir)) {
+        verdict = _realSlotError(expr.op, name, t, allowVector, ir.loc || expr.loc);
+        break;
+      }
+    }
+    realSlotVerdicts.set(expr, verdict);
+    return verdict;
+  }
+
   function _refuseBareCollectionDomainCall(expr: any, scopes: any): any {
     const head = expr.op;
     if (!collectionDomain.isCollectionDomainHead(head)) return null;
@@ -4899,11 +5009,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return args.length > 0 ? argError('eye', 0, T.INTEGER, nT, sizeIR.loc)
         : kwargError('eye', 'n', T.INTEGER, nT, sizeIR.loc);
     }
-    const lit = literalIntFromIR(sizeIR);
-    if (lit != null && lit < 1) {
+    // resolveIntegerShape folds only sizes, so read a non-positive one from the
+    // resolver directly, as for addaxes.
+    const lit = literalIntFromIR(sizeIR) ?? (resolveFixed && resolveFixed(sizeIR));
+    if (typeof lit === 'number' && lit < 1) {
       diagnostics.push({ severity: 'error', loc: sizeIR.loc,
         message: 'eye: spec §07 "Array and table generation" gives `n` the domain positive '
-          + 'integer, but it is written as ' + lit });
+          + 'integer, but it is ' + lit });
       return T.failed('eye non-positive size');
     }
     const n = resolveIntegerShape(sizeIR);
@@ -5585,6 +5697,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       finally { setRefInProgress.delete(expr.name); }
     }
     if (expr.kind !== 'call') return null;
+    // A set in a valueset position is typed here, not by inferExpr.
+    const slotFailure = _refuseRealIntegerSlot(expr, scopes);
+    if (slotFailure) return slotFailure;
     switch (expr.op) {
       case 'interval':   return T.REAL;
       case 'stdsimplex':
