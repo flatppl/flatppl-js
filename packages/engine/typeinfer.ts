@@ -597,6 +597,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (slotFailure) return write(slotFailure, expr);
     const restrictFailure = _refuseLiteralOutsideRestriction(expr);
     if (restrictFailure) return write(restrictFailure, expr);
+    const membershipFailure = _refuseMembershipType(expr, scopes);
+    if (membershipFailure) return write(membershipFailure, expr);
 
     // Special-cased ops whose result type depends on actuals or
     // structural shape in ways that don't fit the static signature
@@ -3702,18 +3704,52 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   }
   // §07 "Scalar restrictions and constructors": `integer(x)` and `boolean(x)`
   // return `x` when it is in the set, "otherwise a static error". A written
-  // number decides that here.
+  // number, or one fixed bindings and literal arithmetic fold to (`y = 2.5`,
+  // `2.5 + 0.0`, `inf`), decides that here.
   function _refuseLiteralOutsideRestriction(expr: any): any {
     if (expr.op !== 'integer' && expr.op !== 'boolean') return null;
     const a = (expr.args || [])[0];
-    if (!a || a.kind !== 'lit' || typeof a.value !== 'number') return null;
-    const inSet = expr.op === 'integer' ? Number.isInteger(a.value) : a.value === 0 || a.value === 1;
+    if (!a) return null;
+    let value: any = a.kind === 'lit' ? a.value : undefined;
+    if (value === undefined && resolveFixed) {
+      try { value = resolveFixed(a); } catch (_) { value = undefined; }
+    }
+    if (typeof value !== 'number' || Number.isNaN(value)) return null;
+    const inSet = expr.op === 'integer' ? Number.isInteger(value) : value === 0 || value === 1;
     if (inSet) return null;
     if (realSlotVerdicts.has(expr)) return realSlotVerdicts.get(expr);
+    const shown = value === Infinity ? 'inf' : value === -Infinity ? '-inf' : String(value);
     diagnostics.push({ severity: 'error', loc: a.loc || expr.loc,
-      message: expr.op + ': ' + a.value + ' is not in `' + expr.op + 's`, and spec §07 "Scalar '
+      message: expr.op + ': ' + shown + ' is not in `' + expr.op + 's`, and spec §07 "Scalar '
         + 'restrictions and constructors" makes that a static error' });
     const verdict = T.failed(expr.op + ' literal outside its set');
+    realSlotVerdicts.set(expr, verdict);
+    return verdict;
+  }
+
+  // §07 `in`: "The type of x must match the element type of set S". A value
+  // widens along §03's booleans ⊂ integers ⊂ reals (and into complexes), so
+  // `2 in reals` holds, but `2.0 in integers` and `1 in booleans` do not type:
+  // a real value is not a member of an integer set, even when integral.
+  const SCALAR_RANK: Record<string, number> = { boolean: 0, integer: 1, real: 2, complex: 3 };
+  function _leafPrim(t: any): string | null {
+    if (t?.kind === 'scalar') return t.prim in SCALAR_RANK ? t.prim : null;
+    if (t?.kind === 'array') return _leafPrim(t.elem);
+    return null;
+  }
+  function _refuseMembershipType(expr: any, scopes: any): any {
+    if (expr.op !== 'in' || (expr.args || []).length !== 2) return null;
+    const [x, set] = expr.args;
+    const xT: any = inferExpr(x, scopes);
+    const sT: any = setValueType(set, scopes);
+    const xp = _leafPrim(xT), sp = _leafPrim(sT);
+    if (!xp || !sp || SCALAR_RANK[xp] <= SCALAR_RANK[sp]) return null;
+    if (realSlotVerdicts.has(expr)) return realSlotVerdicts.get(expr);
+    diagnostics.push({ severity: 'error', loc: x.loc || expr.loc,
+      message: 'in: x is ' + T.show(xT) + ', but the set\'s element type is ' + T.show(sT)
+        + '; spec §07: "The type of x must match the element type of set S"'
+        + (sp === 'integer' || sp === 'boolean' ? ', so convert with `' + sp + '(…)` first' : '') });
+    const verdict = T.failed('in: element type mismatch');
     realSlotVerdicts.set(expr, verdict);
     return verdict;
   }

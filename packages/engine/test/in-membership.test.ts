@@ -43,16 +43,17 @@ test('`x in <named set>` membership via ifelse', async () => {
   assert.equal(await inSet('0.5', 'unitinterval'), 1.0);
   assert.equal(await inSet('1.0', 'unitinterval'), 1.0);
   assert.equal(await inSet('1.5', 'unitinterval'), 0.0);
-  // integer sets: integer-valued only; pos >= 1; nonneg >= 0.
-  assert.equal(await inSet('3.0', 'integers'), 1.0);
-  assert.equal(await inSet('3.5', 'integers'), 0.0);       // non-integer
-  assert.equal(await inSet('2.0', 'posintegers'), 1.0);
-  assert.equal(await inSet('0.0', 'posintegers'), 0.0);    // >= 1
-  assert.equal(await inSet('0.0', 'nonnegintegers'), 1.0); // >= 0
-  assert.equal(await inSet('-1.0', 'nonnegintegers'), 0.0);
-  // booleans: {0, 1}.
-  assert.equal(await inSet('1.0', 'booleans'), 1.0);
-  assert.equal(await inSet('2.0', 'booleans'), 0.0);
+  // integer sets take integer values (a real is a static error, §07 `in`
+  // "The type of x must match the element type of set S"): pos >= 1; nonneg >= 0.
+  assert.equal(await inSet('3', 'integers'), 1.0);
+  assert.equal(await inSet('integer(3.0)', 'integers'), 1.0);
+  assert.equal(await inSet('2', 'posintegers'), 1.0);
+  assert.equal(await inSet('0', 'posintegers'), 0.0);      // >= 1
+  assert.equal(await inSet('0', 'nonnegintegers'), 1.0);   // >= 0
+  assert.equal(await inSet('-1', 'nonnegintegers'), 0.0);
+  // booleans take booleans.
+  assert.equal(await inSet('true', 'booleans'), 1.0);
+  assert.equal(await inSet('false', 'booleans'), 1.0);
 });
 
 test('`v in cartpow(S, n)` is the per-cell conjunction (spec §03)', async () => {
