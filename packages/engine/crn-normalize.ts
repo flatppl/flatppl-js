@@ -340,6 +340,34 @@ function crnNormalizeNote(key: string, M: number, dims: number) {
 function crnNormalizeMassExpr(node: any, opts?: any): any | null {
   const shape = crnRecognize(node);
   if (!shape) return null;
+  // A weight with a discontinuity: the fixed sample cannot see a window that
+  // falls between its points, so split at the breakpoints instead
+  // (piecewise-mass.ts), or refuse where that is not possible.
+  const piecewise = require('./piecewise-mass.ts');
+  const param = shape.weightParams[0];
+  if (shape.axes.length > 1) {
+    if (piecewise.jumpsInVariate(shape.weightBody, param)) {
+      throw new Error('normalize(weighted(f, Lebesgue(box))): the weight depends on a latent '
+        + 'and may jump in the ' + shape.axes.length + '-D variate, so its '
+        + 'mass Z(θ) cannot be split at the region and a fixed sample could step over it; '
+        + 'Z(θ) is unresolved (spec §06)');
+    }
+  } else {
+    const bp = piecewise.weightBreakpoints(shape.weightBody, param, shape.arrayVariate);
+    if (bp.refuse) {
+      throw new Error('normalize(weighted(f, Lebesgue(box))): the weight depends on a latent '
+        + 'and has ' + bp.refuse + ', which gives no breakpoint to split Z(θ) at, and a fixed '
+        + 'sample could step over the region; Z(θ) is unresolved (spec §06).');
+    }
+    if (bp.exprs.length > 0) {
+      const at = piecewise.variesBetweenCuts(shape.weightBody, param, shape.arrayVariate);
+      if (at !== null) throw piecewise.variesError('Lebesgue(box)', at);
+      const expr = piecewise.boxMassExpr(param, shape.weightBody, shape.axes[0].lo, shape.axes[0].hi,
+        bp.exprs, shape.arrayVariate);
+      _checkBudget(expr);
+      return expr;
+    }
+  }
   const M = Math.max(1, Math.floor((opts && opts.points) || CRN_POINTS_DEFAULT));
   const key = seedString(shape.axes, M);
   const bodySize = nodeCount(shape.weightBody);
@@ -370,7 +398,20 @@ function crnNormalizeMassExpr(node: any, opts?: any): any | null {
   };
 }
 
+// The piecewise rule inlines the weight body at each node too, so it has the
+// same size limit.
+function _checkBudget(expr: any) {
+  const n = nodeCount(expr);
+  if (n > CRN_NODE_BUDGET) {
+    throw new Error('normalize(weighted(f, …)): the weight depends on a latent, so its mass Z(θ) '
+      + 'is a piecewise quadrature with the weight body inlined at each node — ' + n + ' nodes, '
+      + 'over the budget of ' + CRN_NODE_BUDGET + '. Refusing rather than falling back to an '
+      + 'estimator that cannot see the weight\'s discontinuities (spec §06).');
+  }
+}
+
 module.exports = {
+  _checkBudget,
   crnNormalizeMassExpr,
   crnRecognize,
   crnWeightIsThetaDependent,
