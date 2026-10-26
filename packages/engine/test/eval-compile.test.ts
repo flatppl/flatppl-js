@@ -1,5 +1,5 @@
 'use strict';
-const { test, describe, before, after } = require('node:test');
+const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const C = require('../sampler-eval-compile.ts');
 
@@ -27,31 +27,10 @@ test('_COMPILE_ARITY: has the scalar op set, excludes structural ops', () => {
   assert.equal(C._COMPILE_ARITY.aggregate, undefined);
 });
 
-// --- compiler core: a Normal-like inverse expression ---
-// Mirror the dependency injection sampler-eval-batched does at init.
-const ARITH = {
-  add: (a: any, b: any) => a + b, sub: (a: any, b: any) => a - b, mul: (a: any, b: any) => a * b,
-  // `div` is spec-§07 integer floor division ⌊a/b⌋ (must mirror the real
-  // ARITH_OPS.div so compiled output stays bit-exact to the interpreter);
-  // `divide` is true division (the `/` operator).
-  div: (a: any, b: any) => Math.floor(a / b), divide: (a: any, b: any) => a / b, neg: (a: any) => -a,
-  pow: (a: any, b: any) => Math.pow(a, b), exp: (a: any) => Math.exp(a), log: (a: any) => Math.log(a),
-  // The engine-internal bijection inverses (an odd-power MC inverse uses `_signed_pow`).
-  _signed_pow: (y: any, e: any) => (y < 0 ? -Math.pow(-y, e) : Math.pow(y, e)),
-  _image_gate: (y: any, lo: any, hi: any) => (y >= lo && y <= hi ? y : NaN),
-};
+const batched = require('../sampler-eval-batched.ts');
+const sampler = require('../sampler.ts');
 
-// The compiler module is shared, so these cases install the mirror only for
-// their own duration. The engine's table must be back for the evaluateExprN
-// cases below, or an op the mirror lacks makes a compiled plan throw and the
-// call silently falls back to the interpreter.
-describe('compiler core over a mirror OPS table', () => {
-before(() => C.initCompiler({ ARITH_OPS: ARITH, evaluateExpr: require('../sampler.ts').evaluateExpr,
-                              resolveConst: (n: any) => { throw new Error('no const ' + n); } }));
-after(() => {
-  const { _internal, evaluateExpr } = require('../sampler.ts');
-  C.initCompiler({ ARITH_OPS: _internal.ARITH_OPS, evaluateExpr, resolveConst: _internal.resolveConst });
-});
+// --- compiler core: a Normal-like inverse expression ---
 
 test('compilePlan + runPlan: bit-exact to hand arithmetic over a batch', () => {
   // u = ((cbrt(z*2 / exp(x - b)) - x)/a - 1)/2, with a,b folded scalars.
@@ -94,10 +73,10 @@ test('compilePlan: returns null for unknown op over per-atom data', () => {
   assert.equal(C.compilePlan(ir, new Set(['x'])), null);
 });
 
-// A codegen benchmark: under the mirror table the fused loop inlines its scalar
-// ops. It makes no claim about the engine's real table (see TODO-flatppl-js.md,
-// fused loop vs polymorphic ARITH_OPS).
-test('perf: fused-loop codegen is faster than interpreted under the mirror op table', () => {
+// The engine's own path: sampler-eval-batched initialises the compiler, and
+// the loop runs on its SCALAR_OPS. With the shared, polymorphic ARITH_OPS
+// entries the loop ran SLOWER than the interpreter (0.8x on batserv02).
+test('perf: compiled evaluateExprN is at least 2x faster than interpreted on the MC inverse', () => {
   const path = require('node:path');
   const ENG = path.resolve(__dirname, '..') + '/';
   const { processSource, orchestrator } = require(ENG + 'index.ts');
@@ -147,18 +126,8 @@ test('perf: fused-loop codegen is faster than interpreted under the mirror op ta
   }
   batched._setCompileEvalN(true);
 });
-});
-
-test('the engine OPS table is restored after the mirror cases', () => {
-  const sampler = require('../sampler.ts');
-  const plan = C.compilePlan(call('_signed_pow', ref('x'), lit(1 / 3)), new Set(['x']));
-  const out = C.runPlan(plan, { x: new Float64Array([-8, 27]) }, {}, null, 2);
-  assert.deepEqual(Array.from(out), [-8, 27].map((v) => sampler._internal.ARITH_OPS._signed_pow(v, 1 / 3)));
-});
 
 // --- differential: evaluateExprN with compiler ON must bit-match OFF ---
-const batched = require('../sampler-eval-batched.ts');
-const sampler = require('../sampler.ts');
 
 function evalBoth(ir: any, refArrays: any, N: any) {
   batched._setCompileEvalN(false);

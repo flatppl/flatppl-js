@@ -7,22 +7,98 @@
 // Compiles a scalar-elementwise IR expression to a single JS loop that
 // computes one Float64Array(N) in one pass, with NO intermediate
 // arrays. Bit-identical to the node-by-node interpreter in
-// sampler-eval-batched.ts because it calls the SAME ARITH_OPS scalar
-// primitives, in the same nesting/order, on the same scalars.
+// sampler-eval-batched.ts: each op is the scalar arm of its ARITH_OPS
+// entry, in the same nesting/order, on the same scalars
+// (`test/fused-loop-scalar-ops.test.ts` checks every op against ARITH_OPS).
 //
-// Dependencies (ARITH_OPS, evaluateExpr, resolveConst) are injected via
+// Dependencies (evaluateExpr, resolveConst) are injected via
 // initCompiler() from sampler-eval-batched.ts's initARITHOPSN — avoids a
 // require cycle and keeps those internals unexported.
 
-let _OPS: any = null;            // ARITH_OPS scalar table
 let _evaluateExpr: any = null;   // single-point evaluator (for folds)
 let _resolveConst: any = null;   // const-name resolver
 
 function initCompiler(deps: any): void {
-  _OPS = deps.ARITH_OPS;
   _evaluateExpr = deps.evaluateExpr;
   _resolveConst = deps.resolveConst;
 }
+
+const _valueOps = require('./value-ops.ts');
+const _gamma = require('@stdlib/math-base-special-gamma');
+const _gammaln = require('@stdlib/math-base-special-gammaln');
+const _erfc = require('@stdlib/math-base-special-erfc');
+const _erfcinv = require('@stdlib/math-base-special-erfcinv');
+
+// The loop's own scalar ops. Every value in the loop is a real number or a
+// boolean: per-atom inputs are real Float64Arrays (`_atomArray`), folds are
+// `+c` of a number or boolean (`runPlan`), and each op maps reals to reals.
+// So the loop needs only the scalar arm of each ARITH_OPS entry. These are
+// separate closures that only ever see scalars, so V8 can inline them;
+// ARITH_OPS entries also take Values, arrays, complex and records, and their
+// call sites in the loop stayed megamorphic.
+const SCALAR_OPS: Record<string, (...a: any[]) => any> = {
+  add: (a: any, b: any) => a + b,
+  sub: (a: any, b: any) => a - b,
+  mul: (a: any, b: any) => a * b,
+  div: (a: any, b: any) => Math.floor(a / b),
+  divide: (a: any, b: any) => a / b,
+  mod: (a: any, b: any) => a - b * Math.floor(a / b),
+  neg: (a: any) => -a,
+  pos: (a: any) => +a,
+  pow: (a: any, b: any) => Math.pow(a, b),
+  abs: (a: any) => Math.abs(a),
+  abs2: (a: any) => a * a,
+  exp: (a: any) => Math.exp(a),
+  log: (a: any) => Math.log(a),
+  log2: (a: any) => Math.log2(a),
+  log10: (a: any) => Math.log10(a),
+  log1p: (a: any) => Math.log1p(a),
+  expm1: (a: any) => Math.expm1(a),
+  sqrt: (a: any) => Math.sqrt(a),
+  sin: (a: any) => Math.sin(a),
+  cos: (a: any) => Math.cos(a),
+  tan: (a: any) => Math.tan(a),
+  asin: (a: any) => Math.asin(a),
+  acos: (a: any) => Math.acos(a),
+  atan: (a: any) => Math.atan(a),
+  atan2: (y: any, x: any) => Math.atan2(y, x),
+  sinh: (a: any) => Math.sinh(a),
+  cosh: (a: any) => Math.cosh(a),
+  tanh: (a: any) => Math.tanh(a),
+  asinh: (a: any) => Math.asinh(a),
+  acosh: (a: any) => Math.acosh(a),
+  atanh: (a: any) => Math.atanh(a),
+  floor: (a: any) => Math.floor(a),
+  ceil: (a: any) => Math.ceil(a),
+  round: (a: any) => _valueOps._roundEven(a),
+  min: (a: any, b: any) => Math.min(a, b),
+  max: (a: any, b: any) => Math.max(a, b),
+  gamma: (a: any) => _gamma(a),
+  loggamma: (a: any) => _gammaln(a),
+  logit: (p: any) => Math.log(p / (1 - p)),
+  invlogit: (x: any) => 1 / (1 + Math.exp(-x)),
+  probit: (p: any) => -Math.SQRT2 * _erfcinv(2 * p),
+  invprobit: (x: any) => 0.5 * _erfc(-x / Math.SQRT2),
+  lt: (a: any, b: any) => a < b,
+  le: (a: any, b: any) => a <= b,
+  gt: (a: any, b: any) => a > b,
+  ge: (a: any, b: any) => a >= b,
+  equal: (a: any, b: any) => _valueOps._discreteEqual(a, b),
+  unequal: (a: any, b: any) => !_valueOps._discreteEqual(a, b),
+  isfinite: (a: any) => Number.isFinite(a),
+  isinf: (a: any) => !Number.isNaN(a) && !Number.isFinite(a),
+  isnan: (a: any) => Number.isNaN(a),
+  iszero: (a: any) => a === 0,
+  land: (a: any, b: any) => a && b,
+  lor: (a: any, b: any) => a || b,
+  lxor: (a: any, b: any) => !a !== !b,
+  lnot: (a: any) => !a,
+  ifelse: (c: any, a: any, b: any) => (c ? a : b),
+  boolean: (a: any) => _valueOps._booleanScalar(a),
+  integer: (a: any) => _valueOps._integerScalar(a),
+  _signed_pow: (y: any, e: any) => _valueOps._signedPowScalar(y, e),
+  _image_gate: (y: any, lo: any, hi: any) => _valueOps._imageGateScalar(y, lo, hi),
+};
 
 // Compilable scalar ops + arity — the REAL scalar-primitive set, ONE
 // source of truth in `ops.ts` (engine-concepts §18). Each has an
@@ -54,7 +130,7 @@ function _hasPerAtomRef(ir: any, perAtomNames: Set<string>): boolean {
 }
 
 // A compiled plan: a loop fn plus the metadata to bind its inputs.
-//   loopFn(OPS, A, C, out, N): A = per-atom Float64Array[]; C = folded
+//   loopFn(OPS, A, C, out, N): OPS = SCALAR_OPS; A = per-atom Float64Array[]; C = folded
 //   scalar[]; writes out[i] for i in [0,N).
 //   atomRefs[k] is the ref name feeding A[k]; foldIRs[j] is the
 //   atom-independent sub-IR feeding C[j] (evaluated once per call).
@@ -97,7 +173,6 @@ function _emit(ir: any, perAtomNames: Set<string>,
   for (let i = 0; i < args.length; i++) {
     parts.push(_emit(args[i], perAtomNames, atomRefs, atomIdx, foldIRs));
   }
-  // Emit a call to the SAME ARITH_OPS scalar primitive (bit-exact).
   return 'OPS.' + op + '(' + parts.join(',') + ')';
 }
 
@@ -169,7 +244,7 @@ function runPlan(plan: Plan, refArrays: any, baseEnv: any, overlay: any, N: numb
     Cc[j] = +c;
   }
   const out = new Float64Array(N);
-  return plan.loopFn(_OPS, A, Cc, out, N);
+  return plan.loopFn(SCALAR_OPS, A, Cc, out, N);
 }
 
-module.exports = { initCompiler, _hasPerAtomRef, _COMPILE_ARITY, compilePlan, runPlan };
+module.exports = { initCompiler, _hasPerAtomRef, _COMPILE_ARITY, SCALAR_OPS, compilePlan, runPlan };

@@ -658,9 +658,9 @@ function initARITHOPSN(ARITH_OPS: any) {
     };
   }
 
-  // Hand the fused-loop compiler the same scalar primitives + helpers
-  // the interpreter uses, so compiled output is bit-identical.
-  _compile.initCompiler({ ARITH_OPS, evaluateExpr, resolveConst });
+  // The fused-loop compiler folds atom-independent subtrees with the
+  // single-point evaluator; its scalar ops are its own (SCALAR_OPS).
+  _compile.initCompiler({ evaluateExpr, resolveConst });
 }
 
 // =====================================================================
