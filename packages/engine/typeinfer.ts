@@ -669,6 +669,17 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
             const ty: any = inferExpr(a, scopes);
             return ty && ty.kind === 'scalar' && ty.prim === 'integer';
           };
+          // §07 counts are non-negative. resolveIntegerShape folds only those,
+          // so read a negative count from the resolver directly.
+          for (const [i, name] of [[1, 'n_leading'], [2, 'n_trailing']] as const) {
+            if (!intTyped(args[i])) continue;
+            const v = literalIntFromIR(args[i]) ?? (resolveFixed && resolveFixed(args[i]));
+            if (typeof v === 'number' && v < 0) {
+              diagnostics.push({ severity: 'error', loc: args[i].loc || expr.loc,
+                message: `addaxes: ${name} must be a non-negative integer, got ${v} (spec §07)` });
+              return write(T.failed(`addaxes: negative ${name}`), expr);
+            }
+          }
           const lead = intTyped(args[1]) ? resolveIntegerShape(args[1]) : null;
           const trail = intTyped(args[2]) ? resolveIntegerShape(args[2]) : null;
           if (t && t.kind === 'array' && Array.isArray(t.shape)

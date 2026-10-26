@@ -1,9 +1,10 @@
 'use strict';
 
-// Static diagnostics for two refusals that used to surface only at
-// evaluation, each located on the offending expression:
+// Static diagnostics for refusals that used to surface only at evaluation, or
+// not at all, each located on the offending expression:
 //   - a qualified name naming no member of its standard module;
-//   - a size or count that depends on a draw.
+//   - a size or count that depends on a draw;
+//   - a negative `addaxes` count.
 // Each refusing case has a well-formed control that analyses with no error and
 // scores against a closed form worked by hand.
 
@@ -71,6 +72,7 @@ test('a stochastic size is refused as stochastic, on the size expression', () =>
     ['n ~ Poisson(3.0)\nM = iid(Normal(0.0, 1.0), n + 1)', "'n'", 1, 26],
     ['M = iid(Normal(0.0, 1.0), draw(Poisson(3.0)))', 'an inline draw', 0, 26],
     ['n ~ Poisson(3.0)\nz = zeros(n)', "'n'", 1, 10],
+    ['n ~ Poisson(2.0)\nv = [1.0, 2.0]\nw = addaxes(v, n, 0)', "'n'", 2, 15],
   ];
   for (const [src, what, line, col] of cases) {
     const errs = errors(src);
@@ -103,4 +105,28 @@ test('a fixed size derived from a fixed binding folds and scores', async () => {
   assert.deepEqual(errors(src), []);
   const want = -1.5 * Math.log(2 * Math.PI) - 0.14 / 2;
   assert.ok(Math.abs(await scalar(src, 'L') - want) < 1e-12);
+});
+
+// §07 `addaxes(A, n_leading, n_trailing)`: both counts are non-negative integers.
+test('a negative addaxes count is refused on the count', () => {
+  const cases: Array<[string, string, number, number, number]> = [
+    ['v = [1.0, 2.0]\nw = addaxes(v, -1, 0)', 'n_leading', -1, 1, 15],
+    ['v = [1.0, 2.0]\nw = addaxes(v, 0, -2)', 'n_trailing', -2, 1, 18],
+    ['v = [1.0, 2.0]\nn = 1 - 3\nw = addaxes(v, n, 0)', 'n_leading', -2, 2, 15],
+  ];
+  for (const [src, name, v, line, col] of cases) {
+    const errs = errors(src);
+    assert.deepEqual(errs.map((e: any) => [e.message, e.loc.start.line, e.loc.start.col]), [
+      [`addaxes: ${name} must be a non-negative integer, got ${v} (spec §07)`, line, col],
+    ]);
+  }
+});
+
+test('non-negative addaxes counts add singleton axes', () => {
+  const src = 'v = [1.0, 2.0]\nw = addaxes(v, 1, 2)';
+  assert.deepEqual(errors(src), []);
+  const { built } = makeMatCtx(src);
+  const w = built.fixedValues.get('w');
+  assert.deepEqual(w.shape, [1, 2, 1, 1]);
+  assert.deepEqual(Array.from(w.data), [1, 2]);
 });
