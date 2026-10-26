@@ -53,3 +53,11 @@ test('addaxes is typed with the size-one axes around the operand shape', () => {
   assert.deepEqual(shape('p'), [1, 2]);
   assert.deepEqual(shape('B'), [1, 1, 3, 4, 5, 1, 1, 1]);
 });
+
+// §07 counts are integers; §03 makes 1.0 a real, so it is refused as on main.
+test('addaxes with a real-typed count is refused, not typed', () => {
+  const r = processSource(BASE + 'w = addaxes(v, 1.0, 0)\n');
+  const errs = r.diagnostics.filter((d: any) => d.severity === 'error').map((d: any) => d.message);
+  assert.deepEqual(errs, ['addaxes: arg 2 expects integer, got real']);
+  assert.notEqual(r.linkedBindings.get('w').inferredType.kind, 'array');
+});

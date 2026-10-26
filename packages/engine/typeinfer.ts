@@ -645,8 +645,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         const args = expr.args || [];
         if (args.length === 3) {
           const t: any = inferExpr(args[0], scopes);
-          const lead = resolveIntegerShape(args[1]);
-          const trail = resolveIntegerShape(args[2]);
+          // §07 counts are integers, and §03 makes `1.0` a real: only an
+          // integer-typed count takes this path; anything else reaches the
+          // signature check below.
+          const intTyped = (a: any) => {
+            const ty: any = inferExpr(a, scopes);
+            return ty && ty.kind === 'scalar' && ty.prim === 'integer';
+          };
+          const lead = intTyped(args[1]) ? resolveIntegerShape(args[1]) : null;
+          const trail = intTyped(args[2]) ? resolveIntegerShape(args[2]) : null;
           if (t && t.kind === 'array' && Array.isArray(t.shape)
               && !(t.elem && t.elem.kind === 'array')
               && lead != null && trail != null && lead >= 0 && trail >= 0) {
