@@ -51,7 +51,7 @@ on-disk cache that the `flatppl` CLI shares. The cache lives in
 **FlatPPL: Download Dependencies** fetches the active module's missing remote
 sources, and **FlatPPL: Update Dependencies** fetches all of them again.
 
-### Cache permissions (changed in flatppl-js #467)
+### Cache permissions
 
 The cache must be private to you, as the Rust CLI already requires. New
 directories are `0700` and new files `0600`, whatever the umask. Every cache
@@ -63,14 +63,15 @@ A cache that an older release created needs attention:
 
 - **A umask-002 cache is refused.** Its `0775` directories give
   `FlatPPL cache: cache directory "…" is writable by other users`.
-- **Old trust markers may hold credentials.** A marker stores its URL, and older
-  releases accepted URLs with userinfo.
+- **Old trust markers and object metadata may hold credentials.** A trust
+  marker and an object's `_meta.json` store the URL, and older releases
+  accepted URLs with userinfo.
 - **Old objects are `0644`.** Other users can read them, and the new release
   does not change existing files.
 
 Delete the cache directory and run **FlatPPL: Download Dependencies** again.
-This fixes all three. Alternatively, run `chmod -R go-rwx` on the cache directory
-and delete `v1/trust` inside it.
+This fixes all three. Running `chmod -R go-rwx` on the cache directory fixes
+only the permissions. If the cache ever fetched a URL with userinfo, delete it.
 
 ## Converting HS3 and pyhf workspaces
 
