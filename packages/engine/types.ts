@@ -842,23 +842,28 @@ const SIGNATURE_FACTORIES = {
   // into its args) and the JS↔Rust `%meta` divergence (Rust types these as
   // measures). The exact per-atom extent is the VALUESET
   // (typeinfer.distributionSupport: cartpow/stdsimplex with the real length);
-  // the type-domain length stays `%dynamic` here. kwargs are permissive
-  // (`any()`) — these were unchecked when deferred, and constraining
-  // matrix / measure args risks over-tight unification; precise kwarg types
-  // + eventShape are a tracked follow-up (TODO §08 / Misc).
-  MvNormal:       () => ({ args: null, kwargs: { mu: any(), cov: any() },
+  // the type-domain length stays `%dynamic` here. The kwargs carry the rank
+  // §08 declares for each parameter (distribution-param-ranks.ts), with
+  // `%dynamic` extents, so a scalar `alpha` or a vector `cov` is a static
+  // error rather than a run-time one.
+  MvNormal:       () => ({ args: null,
+                           kwargs: { mu: array(1, ['%dynamic'], REAL),
+                                     cov: array(2, ['%dynamic', '%dynamic'], REAL) },
                            result: measure(array(1, ['%dynamic'], REAL)) }),
-  Dirichlet:      () => ({ args: null, kwargs: { alpha: any() },
+  Dirichlet:      () => ({ args: null, kwargs: { alpha: array(1, ['%dynamic'], REAL) },
                            result: measure(array(1, ['%dynamic'], REAL)) }),
-  Multinomial:    () => ({ args: null, kwargs: { n: any(), p: any() },
+  Multinomial:    () => ({ args: null,
+                           kwargs: { n: INTEGER, p: array(1, ['%dynamic'], REAL) },
                            result: measure(array(1, ['%dynamic'], INTEGER)) }),
-  Wishart:        () => ({ args: null, kwargs: { nu: any(), scale: any() },
+  Wishart:        () => ({ args: null,
+                           kwargs: { nu: REAL, scale: array(2, ['%dynamic', '%dynamic'], REAL) },
                            result: measure(array(2, ['%dynamic', '%dynamic'], REAL)) }),
-  InverseWishart: () => ({ args: null, kwargs: { nu: any(), scale: any() },
+  InverseWishart: () => ({ args: null,
+                           kwargs: { nu: REAL, scale: array(2, ['%dynamic', '%dynamic'], REAL) },
                            result: measure(array(2, ['%dynamic', '%dynamic'], REAL)) }),
-  LKJ:            () => ({ args: null, kwargs: { n: any(), eta: any() },
+  LKJ:            () => ({ args: null, kwargs: { n: INTEGER, eta: REAL },
                            result: measure(array(2, ['%dynamic', '%dynamic'], REAL)) }),
-  LKJCholesky:    () => ({ args: null, kwargs: { n: any(), eta: any() },
+  LKJCholesky:    () => ({ args: null, kwargs: { n: INTEGER, eta: REAL },
                            result: measure(array(2, ['%dynamic', '%dynamic'], REAL)) }),
   // PoissonProcess: variate is an array of points from the intensity's shape
   // space (scalar points → real vector). `intensity` is a MEASURE argument.

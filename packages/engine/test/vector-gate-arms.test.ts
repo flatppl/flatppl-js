@@ -4,22 +4,17 @@
 // end-to-end from the FlatPDL the determiniser actually emits:
 //
 //   * the discrete lattice snap — `iszero(sum(abs.(...)))` over the per-cell
-//     differences, with the preimage snapped by `real(round.(v))`
+//     differences, with the preimage snapped by `real.(round.(v))`
 //     (flatppl-rust determinizer/src/density.rs::snap_to_lattice, lattice_test);
 //   * the `cartpow` image gate — `y in cartpow(posreals, n)`, the vector form of
 //     the scalar `y in S` (determinizer/src/invert.rs::Image::vector_condition).
 //
-// Both were unscoreable: `real` rejected an integer array and `in` had no
-// `cartpow` branch, so no vector discrete pushforward and no vector set-valued
+// Both were unscoreable: the snap applied `real` to an integer array, which
+// §07 refuses (it now emits `real.`), and `in` had no `cartpow` branch, so no vector discrete pushforward and no vector set-valued
 // image could be evaluated at all.
 //
-// The sources below are the emitted text with `abs` and `exp` DOTTED. §07's
-// elementary functions are scalar-only, so the un-dotted array spellings
-// flatppl-rust currently emits (`sum(abs.(v - …))` in lattice_test, `exp(…)` in
-// the round-trip through a non-affine forward) are static errors here. The
-// determiniser must emit `abs.` / `exp.`; until it does, these arms are the
-// dotted form the spec allows, not the text the determiniser produces. See
-// TODO-flatppl-js.md.
+// The sources below are the emitted text. §07's elementary functions and
+// scalar constructors are scalar-only, so every elementwise use is dotted.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -41,18 +36,18 @@ m = 0.0
 lp = ifelse(
   land(
     maximum([-1.0, -2.0, -2.0]) <= 0.0,
-    iszero(sum(abs.([-1.0, -2.0, -2.0] - -real(round.(.-[-1.0, -2.0, -2.0]))))),
+    iszero(sum(abs.([-1.0, -2.0, -2.0] - .-real.(round.(.-[-1.0, -2.0, -2.0]))))),
   ),
   builtin_logdensityof(
     Multinomial,
     record(n = 5, p = [0.2, 0.3, 0.5]),
-    real(
+    real.(
       round.(
         neg.(
           ifelse(
             land(
               maximum([-1.0, -2.0, -2.0]) <= 0.0,
-              iszero(sum(abs.([-1.0, -2.0, -2.0] - -real(round.(.-[-1.0, -2.0, -2.0]))))),
+              iszero(sum(abs.([-1.0, -2.0, -2.0] - .-real.(round.(.-[-1.0, -2.0, -2.0]))))),
             ),
             [-1.0, -2.0, -2.0],
             fill(-1.0, 3),
@@ -97,25 +92,25 @@ test('the lattice snap returns -inf off the lattice', async () => {
 //   lp = logdensityof(m, [e^1, e^2, e^2])
 //
 // The same arm through a NON-affine forward, which is where the round-trip test
-// earns its keep: `exp.(real(round.(log.(y))))` maps the whole snapped array
+// earns its keep: `exp.(real.(round.(log.(y))))` maps the whole snapped array
 // back through the forward before the per-cell difference is reduced.
 const LATTICE_SNAP_EXP_ARM = (point: string) => `
 m = 0.0
 lp = ifelse(
   land(
     minimum(${point}) >= 1.0,
-    iszero(sum(abs.(${point} - exp.(real(round.(log.(${point}))))))),
+    iszero(sum(abs.(${point} - exp.(real.(round.(log.(${point}))))))),
   ),
   builtin_logdensityof(
     Multinomial,
     record(n = 5, p = [0.2, 0.3, 0.5]),
-    real(
+    real.(
       round.(
         log.(
           ifelse(
             land(
               minimum(${point}) >= 1.0,
-              iszero(sum(abs.(${point} - exp.(real(round.(log.(${point})))))))
+              iszero(sum(abs.(${point} - exp.(real.(round.(log.(${point})))))))
             ),
             ${point},
             fill(exp(1.0), 3),

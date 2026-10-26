@@ -96,27 +96,15 @@ posterior = bayesupdate(likelihoodof(kernel, record(sigma = 0.8)), marginal)
 });
 
 test('restrict: posterior-construction example from spec parses', () => {
-  // Spec §06: posterior built from joint model + observation.
+  // Spec §06 "Posterior construction", verbatim.
   const src = `
-mu = Normal(mu = 0, sigma = 1)
-sigma = Exponential(rate = 1)
-prior = joint(mu = mu, sigma = sigma)
-likelihood_kernel = functionof(iid(Normal(mu = mu, sigma = sigma), 5), mu = mu, sigma = sigma)
-joint_model = jointchain(prior, likelihood_kernel)
-posterior = restrict(joint_model, obs = [0.9, 0.7, -1.2, 0.3, -0.5])
+prior = joint(mu = Normal(0, 1), sigma = Exponential(1))
+model_kernel = (mu, sigma) -> joint(obs = iid(Normal(mu, sigma), 5))
+obs = [0.9, 0.7, -1.2, 0.3, -0.5]
+joint_model = jointchain(prior, model_kernel)
+posterior = restrict(joint_model, (obs = obs))
 `;
-  // This one stresses disintegration too — may or may not succeed
-  // structurally depending on the joint's shape. We assert the
-  // restrict expansion itself doesn't crash; downstream
-  // disintegrate-admissibility may or may not be admissible.
-  const errs = errors(src);
-  // The expansion must run; the only acceptable errors are
-  // disintegrate-admissibility / unsupported diagnostics — NOT
-  // "restrict() ..." errors.
-  for (const e of errs) {
-    assert.ok(!/restrict\(\)/.test(e.message),
-      `unexpected restrict error: ${e.message}`);
-  }
+  assert.deepEqual(errors(src).map((e: any) => e.message), []);
 });
 
 test('restrict: missing measure arg → error', () => {

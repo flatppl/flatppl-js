@@ -121,7 +121,7 @@ test('Phase 7b: sum on vector-atom iid → per-atom scalar', async () => {
   // `s = sum(xs)` should compute per-atom sum: shape=[N], each entry
   // = sum of the corresponding 4-vector.
   const ctx = makeCtx(`
-xs = iid(Normal(mu=0.0, sigma=1.0), 4)
+xs ~ iid(Normal(mu=0.0, sigma=1.0), 4)
 s = sum(xs)
 `);
   const xsM = await ctx.getMeasure('xs');
@@ -138,7 +138,7 @@ s = sum(xs)
 
 test('Phase 7b: mean on vector-atom iid → per-atom scalar', async () => {
   const ctx = makeCtx(`
-xs = iid(Normal(mu=0.0, sigma=1.0), 4)
+xs ~ iid(Normal(mu=0.0, sigma=1.0), 4)
 m = mean(xs)
 `);
   const xsM = await ctx.getMeasure('xs');
@@ -152,7 +152,7 @@ m = mean(xs)
 
 test('Phase 7b: l2norm on vector-atom iid → per-atom scalar', async () => {
   const ctx = makeCtx(`
-xs = iid(Normal(mu=0.0, sigma=1.0), 3)
+xs ~ iid(Normal(mu=0.0, sigma=1.0), 3)
 n = l2norm(xs)
 `);
   const xsM = await ctx.getMeasure('xs');
@@ -170,7 +170,7 @@ n = l2norm(xs)
 
 test('Phase 7b: maximum on vector-atom iid → per-atom max', async () => {
   const ctx = makeCtx(`
-xs = iid(Normal(mu=0.0, sigma=1.0), 5)
+xs ~ iid(Normal(mu=0.0, sigma=1.0), 5)
 mx = maximum(xs)
 `);
   const xsM = await ctx.getMeasure('xs');
@@ -189,7 +189,7 @@ test('Phase 7b: lengthof on vector-atom returns dim per atom', async () => {
   // Each atom's intrinsic length is the dims size — 5 in this case.
   // The reduction gives a scalar per atom; broadcast to all atoms.
   const ctx = makeCtx(`
-xs = iid(Normal(mu=0.0, sigma=1.0), 5)
+xs ~ iid(Normal(mu=0.0, sigma=1.0), 5)
 n = lengthof(xs)
 `);
   const m = await ctx.getMeasure('n');
