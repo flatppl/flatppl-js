@@ -3320,6 +3320,8 @@ function evaluateCall(ir: any, env: any): any {
     const setIR = ir.args[1];
     // Membership of ONE point in a scalar-element set descriptor.
     const pointIn = (p: any, sIR: any): boolean => {
+      // §03 booleans ⊂ integers: a scalar boolean is 0/1, as it is once stored in an array.
+      if (typeof p === 'boolean') p = +p;
       if (sIR && sIR.kind === 'call' && sIR.op === 'interval'
           && Array.isArray(sIR.args) && sIR.args.length === 2) {
         const loRaw = evaluateExpr(sIR.args[0], env);
@@ -3341,7 +3343,7 @@ function evaluateCall(ir: any, env: any): any {
         case 'integers':       return Number.isInteger(p);
         case 'posintegers':    return Number.isInteger(p) && p >= 1;
         case 'nonnegintegers': return Number.isInteger(p) && p >= 0;
-        case 'booleans':       return valueOps._isBooleanScalar(p);
+        case 'booleans':       return p === 0 || p === 1;
       }
       // A set held in a BINDING (`window = interval(-3.0, 3.0)`; `x in
       // window`). §03 makes a set a value, so the name need not be one of

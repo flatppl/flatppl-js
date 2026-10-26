@@ -79,7 +79,9 @@ c = unequal(2, 2)
   }
 });
 
-test('booleans membership accepts both spellings of a boolean', () => {
+// §03: booleans ⊂ integers, so a boolean is also in integers and nonnegintegers,
+// and true (= 1) is in posintegers.
+test('set membership accepts both spellings of a boolean', () => {
   const fv = fixedValues(`
 mask = [true, false]
 a = true in booleans
@@ -87,7 +89,14 @@ b = false in booleans
 c = mask[1] in booleans
 d = 2 in booleans
 e = 0.5 in booleans
+f = true in integers
+g = true in nonnegintegers
+h = true in posintegers
+i = false in posintegers
+j = false in nonnegintegers
 `);
-  const want: Record<string, boolean> = { a: true, b: true, c: true, d: false, e: false };
+  const want: Record<string, boolean> = {
+    a: true, b: true, c: true, d: false, e: false, f: true, g: true, h: true, i: false, j: true,
+  };
   for (const [k, v] of Object.entries(want)) assert.equal(!!fv.get(k), v, k);
 });
