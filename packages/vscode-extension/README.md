@@ -41,6 +41,37 @@ folder. It refuses existing folders and archives with symbolic links, because
 VS Code's filesystem API cannot preserve links. ZIP loading works without the
 optional Rust converter artifact.
 
+## Remote sources
+
+An `http` or `https` source of `load_module` or `load_data` is fetched into an
+on-disk cache that the `flatppl` CLI shares. The cache lives in
+`~/Library/Caches/flatppl` on macOS, `$XDG_CACHE_HOME/flatppl` or
+`~/.cache/flatppl` on Linux, and `%LOCALAPPDATA%\flatppl` on Windows.
+`FLATPPL_CACHEDIR` overrides it. Each URL needs your approval once.
+**FlatPPL: Download Dependencies** fetches the active module's missing remote
+sources, and **FlatPPL: Update Dependencies** fetches all of them again.
+
+### Cache permissions (changed in flatppl-js #467)
+
+The cache must be private to you, as the Rust CLI already requires. New
+directories are `0700` and new files `0600`, whatever the umask. Every cache
+directory must belong to you and must not be writable by group or others, and
+no directory below the root may be a symbolic link. A URL with userinfo
+(`user:password@host`) is refused.
+
+A cache that an older release created needs attention:
+
+- **A umask-002 cache is refused.** Its `0775` directories give
+  `FlatPPL cache: cache directory "…" is writable by other users`.
+- **Old trust markers may hold credentials.** A marker stores its URL, and older
+  releases accepted URLs with userinfo.
+- **Old objects are `0644`.** Other users can read them, and the new release
+  does not change existing files.
+
+Delete the cache directory and run **FlatPPL: Download Dependencies** again.
+This fixes all three. Alternatively, run `chmod -R go-rwx` on the cache directory
+and delete `v1/trust` inside it.
+
 ## Converting HS3 and pyhf workspaces
 
 **FlatPPL: Convert HS3 / pyhf to FlatPPL** imports an HS3 (HEP Statistics
