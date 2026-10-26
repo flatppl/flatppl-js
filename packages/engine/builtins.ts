@@ -126,7 +126,7 @@ const BUILTIN_FUNCTIONS = new Set([
   'logit', 'invlogit', 'probit', 'invprobit',
   // Operator-equivalent functions
   'add', 'sub', 'mul', 'divide', 'neg',
-  'equal', 'unequal', 'lt', 'le', 'gt', 'ge',
+  'equal', 'unequal', 'lt', 'le', 'gt', 'ge', 'in',
   // Predicates
   'isfinite', 'isinf', 'isnan', 'iszero',
   // Linear algebra

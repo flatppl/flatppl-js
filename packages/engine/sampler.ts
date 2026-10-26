@@ -1063,6 +1063,13 @@ const ARITH_OPS = {
   linsolve: (A: any, b: any): any => opsModule.dispatch('linsolve', [A, b]),
   // Migrated to ops-declarations.ts (engine-concepts §18 Phase 2).
   lower_cholesky: (A: any): any => opsModule.dispatch('lower_cholesky', [A]),
+  // qr(A) → record(Q, R) (spec §07 "Linear algebra"), the Householder QR.
+  // ext-linalg returns its own `{ shape: 'record', fields }` form; a record
+  // value here is the plain field object `record(...)` evaluates to.
+  qr: (A: any): any => {
+    const { fields } = require('./ext-linalg.ts')._qr(A);
+    return { Q: fields.Q, R: fields.R };
+  },
   row_gram:       (A: any): any => opsModule.dispatch('row_gram',       [A]),
   col_gram:       (A: any): any => opsModule.dispatch('col_gram',       [A]),
   // quadform(A, x) — quadratic form xᵀ A x (spec §07). Implemented
@@ -1206,6 +1213,11 @@ const ARITH_OPS = {
   // discernible. The runtime versions check the obvious cases.
   boolean: valueOps._booleanScalar,
   integer: valueOps._integerScalar,
+  // string(x): the identity on strings (spec §07).
+  string: (x: any): any => {
+    if (typeof x !== 'string') throw new Error('string: argument must be a string');
+    return x;
+  },
   // linspace(from, to, n) — endpoint-inclusive range of n real numbers
   // evenly spaced from `from` to `to`. n=1 returns [from]; both endpoints
   // are included exactly (not computed via accumulating step). Spec §07.
