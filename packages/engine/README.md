@@ -24,8 +24,11 @@ example suite).
 
 ## Loading model data
 
-`load_data(source, valueset)` reads prefetched JSON, CSV or WSV text. Hosts
-use the same resolver for models and data:
+`load_data(source, valueset)` reads the formats spec §07 requires, chosen by
+extension: JSON, CSV and WSV (`.csv`, `.wsv`), Arrow IPC (`.arrow` files and
+`.arrows` streams) and Safetensors (`.safetensors`). An unknown extension is an
+error at the call, before anything is read. Hosts use the same resolver for
+models and data:
 
 ```javascript
 const bundle = await resolveBundle(modelPath, source, readText);
@@ -46,14 +49,26 @@ The schema selects scalar values, numeric tensors, nested vectors, records or
 tables. Records select named fields; vectors and tables may select a prefix.
 Selected values must satisfy the declared shape and domain. JSON records may
 contain tensors and arrays of different lengths. CSV/WSV headers name columns;
-one column can also be loaded as a vector. Empty selected cells are errors.
+one column (of a delimited or Arrow source) can also be loaded as a vector.
+Empty selected cells are errors.
+
+Untyped values (CSV/WSV cells, JSON numbers) are decided by value: an exactly
+integral value fits an integer set, and `true`/`false` read as 1/0 in a numeric
+set. Typed sources keep their type: an Arrow or Safetensors float cannot fill an
+integer set, following §03's `booleans ⊂ integers ⊂ reals`. Arrow columns of
+null, boolean, integer and float type are read; a column of any other type
+(strings, timestamps, lists) is an error only when the schema selects it.
+Safetensors keys form nested records (`enc.0.weight` is field `weight` of record
+`0` of record `enc`) under §07's key rules, with F64/F32/F16/BF16, signed and
+unsigned integer and BOOL dtypes. Compressed Arrow record batches and F8 tensors
+are not read.
 
 `anything` remains an opaque placeholder and errors when accessed. Schemas and
 their dimensions must resolve within the declaring module; dimensions supplied
 only by a later module input substitution and imported schema references are
-not supported yet. Multi-axis arrays with structured or complex elements,
-Arrow IPC and Safetensors also report unsupported loading rather than guessing
-a value or shape.
+not supported yet. Multi-axis arrays with structured or complex elements, and
+array-valued CSV/WSV columns (§07 gives them no layout), also report unsupported
+loading rather than guessing a value or shape.
 
 ## Posterior MCMC with density-only priors
 

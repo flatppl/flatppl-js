@@ -104,6 +104,8 @@ test('load_data anything stays opaque until access, including invalid source tex
   assert.equal((await ctx.getMeasure('x')).samples[0], 5);
   await assert.rejects(ctx.getMeasure('opaque'), /explicit valueset/);
   assert.throws(() => dataContext('d=load_data("data.json",reals)', { 'data.json': '{not JSON' }), /JSON/);
-  assert.throws(() => dataContext('d=load_data("data.arrow",reals)', { 'data.arrow': 'binary' }), /not implemented/);
+  assert.throws(() => dataContext('d=load_data("data.arrow",reals)', { 'data.arrow': 'binary' }), /Arrow IPC/);
+  assert.throws(() => dataContext('d=load_data("data.parquet",reals)', { 'data.parquet': 'x' }),
+    /unsupported file extension `\.parquet`.*`\.arrow`, `\.arrows` and `\.safetensors`/);
   assert.throws(() => dataContext('d=load_data("absent.json",reals)', {}), /not found in bundle/);
 });

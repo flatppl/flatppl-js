@@ -6,13 +6,25 @@
 const AST = require('./ast.ts');
 const { validateFixedVectorInput } = require('./fixed-inputs.ts');
 const { inSet } = require('./density.ts')._internal;
+const { TypedScalar, Unreadable, readArrow, readSafetensors } = require('./data-formats.ts');
 
-function detectFormat(path: string): 'json' | 'csv' | 'wsv' | null {
+type Format = 'json' | 'csv' | 'wsv' | 'arrow' | 'safetensors';
+
+/** The §07 format of `path`, from its extension, ignoring a URL query or fragment. */
+function detectFormat(path: string): Format | null {
   const lower = path.split(/[?#]/, 1)[0].toLowerCase();
-  if (lower.endsWith('.json')) return 'json';
-  if (lower.endsWith('.csv')) return 'csv';
-  if (lower.endsWith('.wsv')) return 'wsv';
-  return null;
+  const extension = /\.([^./]*)$/.exec(lower)?.[1];
+  return ({ json: 'json', csv: 'csv', wsv: 'wsv', arrow: 'arrow', arrows: 'arrow',
+    safetensors: 'safetensors' } as Record<string, Format>)[extension ?? ''] ?? null;
+}
+
+/** Refuse a path whose extension names no §07 format, before any read. */
+function requireFormat(path: string): Format {
+  const format = detectFormat(path);
+  if (format) return format;
+  const extension = /\.([^./]*)$/.exec(path.split(/[?#]/, 1)[0].toLowerCase())?.[1];
+  throw new Error(`load_data: unsupported file extension ${extension ? `\`.${extension}\`` : '(none)'} for '${path}'; `
+    + '§07 `load_data` reads `.json`, `.csv`, `.wsv`, `.arrow`, `.arrows` and `.safetensors`');
 }
 
 function parseJSON(text: string): any { return JSON.parse(text); }
@@ -59,12 +71,18 @@ function splitRow(line: string, separator: string | RegExp): string[] {
   return cells;
 }
 
-function parseByExtension(path: string, text: string): any {
-  const format = detectFormat(path);
-  if (format === 'json') return parseJSON(text);
-  if (format === 'csv') return parseCSV(text);
-  if (format === 'wsv') return parseWSV(text);
-  throw new Error(`load_data: unsupported file extension for '${path}'; this engine supports JSON, CSV and WSV text (Arrow IPC and Safetensors are not implemented)`);
+/** Decode a source by its extension. Text formats decode as UTF-8. */
+function parseSource(path: string, bytes: Uint8Array): any {
+  const format = requireFormat(path);
+  try {
+    if (format === 'arrow') return readArrow(bytes);
+    if (format === 'safetensors') return readSafetensors(bytes);
+    const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+    if (format === 'json') return parseJSON(text);
+    return format === 'csv' ? parseCSV(text) : parseWSV(text);
+  } catch (e: any) {
+    throw new Error(e.message.startsWith('load_data:') ? e.message : `load_data: '${path}': ${e.message}`);
+  }
 }
 
 // Resolve schemas separately from values: a named set is not an ordinary
@@ -114,14 +132,16 @@ function containsAnything(schema: any): boolean {
     || schema.elements?.some(containsAnything) || false;
 }
 
-/** Produce a fixed RHS without changing the original source AST. */
-function valueExpression(raw: any, schema: any, loc: any, textCells = false, at = 'value'): any {
+/** Produce a fixed RHS without changing the original source AST. `columns` marks
+ * a delimited or Arrow source, whose single column may be read as a vector. */
+function valueExpression(raw: any, schema: any, loc: any, columns = false, at = 'value'): any {
   const fail = (reason: string): never => { throw new Error(`load_data: ${at} ${reason}`); };
+  if (raw instanceof Unreadable) throw new Error(`load_data: ${raw.reason}`);
   const call = (name: string, args: any[]) => ({ ...AST.CallExpr(AST.Identifier(name, loc), args, loc), builtin: true });
   const number = (n: number, real = false) => AST.NumberLiteral(n,
     real && Number.isInteger(n) ? `${n}.0` : String(n), loc);
   const vector = (items: any[]) => AST.ArrayLiteral(items, loc);
-  const convert = (v: any, s: any, path: string) => valueExpression(v, s, loc, textCells, path);
+  const convert = (v: any, s: any, path: string) => valueExpression(v, s, loc, columns, path);
   const field = (object: any, name: string) => {
     if (!object || typeof object !== 'object' || Array.isArray(object)
         || !Object.prototype.hasOwnProperty.call(object, name)) fail(`is missing field '${name}'`);
@@ -165,12 +185,19 @@ function valueExpression(raw: any, schema: any, loc: any, textCells = false, at 
           { kind: 'array', shape: [n], element: f.schema }, `${at}.${f.name}`), loc);
       }));
     }
-    // A single delimited column may be selected as a vector, per §07.
-    if (textCells && shape.length === 1 && raw && !Array.isArray(raw)
-        && typeof raw === 'object' && Object.keys(raw).length === 1) raw = raw[Object.keys(raw)[0]];
+    // A single delimited or Arrow column may be selected as a vector, per §07.
+    if (columns && shape.length === 1 && raw && !Array.isArray(raw) && typeof raw === 'object') {
+      const names = Object.keys(raw);
+      if (names.length !== 1) fail(`reads a vector from a source with exactly one column, and this one has ${names.length}`);
+      raw = raw[names[0]];
+    }
     const leaves: any[] = [];
     function descend(value: any, axis: number, path: string): void {
       if (axis === shape.length) { leaves.push(convert(value, schema.element, path)); return; }
+      if (value instanceof Unreadable) throw new Error(`load_data: ${value.reason}`);
+      if (typeof value === 'string') {
+        fail('is a delimited cell, which holds one scalar; §07 gives an array-valued column no CSV or WSV layout');
+      }
       if (!Array.isArray(value) || value.length < shape[axis]
           || (shape.length !== 1 && value.length !== shape[axis])) fail(`does not match shape [${shape}] at ${path}`);
       for (let i = 0; i < shape[axis]; i++) descend(value[i], axis + 1, `${path}[${i + 1}]`);
@@ -195,23 +222,40 @@ function valueExpression(raw: any, schema: any, loc: any, textCells = false, at 
     catch (_) { fail(`is outside ${schema.kind}(${schema.n})`); }
     return vector(elements);
   }
-  if (textCells && typeof raw === 'string') {
+  // A typed source (Arrow, Safetensors) keeps its kind for §03's inclusion
+  // booleans ⊂ integers ⊂ reals: only a wider kind refuses.
+  if (raw instanceof TypedScalar) {
+    if (raw.kind === 'real' && ['booleans', 'integers', 'posintegers', 'nonnegintegers'].includes(schema.kind)) {
+      fail('is a real value where the declared set holds integers or booleans');
+    }
+    if (raw.kind === 'integer' && schema.kind === 'booleans') {
+      fail('is an integer value where the declared set holds booleans');
+    }
+    if (raw.inexact !== undefined) fail(`${raw.inexact} is outside the exact JavaScript integer range`);
+    raw = raw.value;
+  }
+  // An untyped delimited cell is decided by its value, as a JSON number is.
+  if (columns && typeof raw === 'string') {
     const cell = raw.trim();
-    if (schema.kind === 'booleans' && /^(true|false)$/i.test(cell)) raw = cell.toLowerCase() === 'true';
+    if (/^(true|false)$/i.test(cell)) raw = cell.toLowerCase() === 'true';
     else if (cell && /^[+-]?(?:(?:\d+\.?\d*|\.\d+)(?:[eE][+-]?\d+)?|inf(?:inity)?)$/i.test(cell)) {
       raw = /inf/i.test(cell) ? (cell.startsWith('-') ? -Infinity : Infinity) : Number(cell);
-    } else fail('is missing or is not a scalar of its declared set');
+    } else fail(cell ? `cell \`${cell}\` is not a value of its declared set` : 'is missing');
   }
+  if (raw === null || raw === undefined) fail('is missing');
   if (schema.kind === 'booleans') {
     if (typeof raw !== 'boolean') fail('is not a boolean');
     return AST.BoolLiteral(raw, loc);
   }
+  // §03 promotes `false` and `true` to 0 and 1 in a numeric set.
+  if (typeof raw === 'boolean') raw = raw ? 1 : 0;
   if (typeof raw !== 'number' || Number.isNaN(raw)) fail(`is not a number in ${schema.kind}`);
+  if (schema.kind.endsWith('integers') && !Number.isInteger(raw)) fail('is not an integer');
   if (schema.kind === 'complexes') return call('complex', [number(raw, true), number(0, true)]);
   if (!inSet(raw, schema)) fail(`is outside ${schema.kind}`);
   if (schema.kind.endsWith('integers') && !Number.isSafeInteger(raw)) fail('is outside the exact JavaScript integer range');
   return number(raw, !schema.kind.endsWith('integers'));
 }
 
-module.exports = { detectFormat, parseJSON, parseCSV, parseWSV, parseByExtension,
+module.exports = { detectFormat, requireFormat, parseJSON, parseCSV, parseWSV, parseSource,
   resolveSchema, containsAnything, valueExpression };

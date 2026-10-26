@@ -1,0 +1,4 @@
+i,flag,x
+3,true,3.5
+3.0,false,1
+1e3,TRUE,2
