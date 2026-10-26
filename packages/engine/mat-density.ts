@@ -860,9 +860,22 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
           // S, NOT a scalar reference measure. Z = ∫_S w(x) dx via adaptive
           // cubature over the unit box (makeIntegrandND applies the
           // per-axis change-of-variables + Jacobian for unbounded axes).
+          const arrayVariate = supportIsArrayVariate(inner.args[1]);
+          if (axes.length === 1 && !arrayVariate
+              && Number.isFinite(axes[0].lo) && Number.isFinite(axes[0].hi)) {
+            // One bounded axis: split at the weight's discontinuities, which the
+            // seeded cubature grid below can step over (a spike of width 1e-4
+            // inside [0, 1] scored as absent).
+            logZ = weightedBaseLogMass(weightFn, [axes[0].lo, axes[0].hi], theta, ctx);
+            node.op = 'logweighted';
+            node.args = [{ kind: 'lit', value: -logZ }, inner];
+            delete node.massFrom;
+            resolveTruncateNormalizers(inner, theta, ctx, seen);
+            return;
+          }
           const { adaptiveCubature } = require('./quadrature.ts');
           const integ = makeIntegrandND(weightFn.body, weightFn.paramNames, axes, theta, ctx,
-            supportIsArrayVariate(inner.args[1]));
+            arrayVariate);
           const res = adaptiveCubature(integ, axes.length);
           if (!(res.Z > 0)) {
             throw new Error('density: normalize(truncate(weighted(w, Lebesgue), S)) — '
@@ -1148,19 +1161,25 @@ function makeIntegrandND(
 }
 
 // log Z = log ∫_lo^hi w(x) dx for a `weighted(w, Lebesgue)` base, where `w`
-// is the (non-log) density. Composite-midpoint quadrature over S at the
-// fixed point θ, mirroring numericProductLogZ's QUAD_POINTS midpoint rule —
-// but evaluating the weight expression `w(x; θ)` per node via the sampler's
-// per-expr evaluator (the variate param bound to the node, θ's params bound
-// to their values). The weight is the density, NOT a log-density, so it is
-// summed directly (not exponentiated): Z = Σ w(x_j) · dx.
+// is the (non-log) density, evaluated at the fixed point θ (the variate param
+// bound to each node, θ's params bound to their values). The weight is the
+// density, NOT a log-density, so it is integrated directly.
+//
+// The integral is split at the weight's own discontinuities and each piece is
+// integrated adaptively. A fixed rule cannot see a narrow feature: the former
+// 8192-node midpoint rule scored the spike `100 · [x ∈ (0.5, 0.5001)]` over
+// [0, 1] at 0.0122 instead of 0.01, because one node of width 1/8192 landed in
+// it (22% off in Z's spike term, -0.012133 against log-density -0.009950). The
+// breakpoints are the bounds of every `x in interval(a, b)` and of every
+// comparison of `x` with a value fixed at θ; between them an indicator weight
+// is smooth, so the adaptive rule converges to its tolerance.
 function weightedBaseLogMass(
   weightFn: { paramNames: string[]; body: any }, bounds: [number, number], theta: any,
   ctx: any,
 ): number {
   const samplerLib = require('./sampler.ts');
+  const { adaptiveCubature } = require('./quadrature.ts');
   const [lo, hi] = bounds;
-  const dx = (hi - lo) / QUAD_POINTS;
   // env binds θ's free params (e.g. `alpha`) plus the variate param to the
   // current quadrature node; evaluateExpr resolves refs by name (ns-agnostic).
   // The weight `w(x)` may call a standard-module function (e.g. the converter's
@@ -1173,14 +1192,21 @@ function weightedBaseLogMass(
   if (theta && typeof theta === 'object') {
     for (const k in theta) env[k] = theta[k];
   }
-  let Z = 0;
+  const param = weightFn.paramNames[0];
+  const cuts = [lo, ..._weightBreakpoints(weightFn.body, param, env, lo, hi), hi];
+  let Z = 0, err = 0;
   let nonFinite = 0;
-  for (let j = 0; j < QUAD_POINTS; j++) {
-    env[weightFn.paramNames[0]] = lo + (j + 0.5) * dx;
-    const wj = samplerLib.evaluateExpr(weightFn.body, env);
-    const v = +wj;
-    if (Number.isFinite(v) && v > 0) Z += v;
-    else if (v < 0 || !Number.isFinite(v)) nonFinite++;
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const a = cuts[i], width = cuts[i + 1] - a;
+    const res = adaptiveCubature((u: number[]) => {
+      env[param] = a + u[0] * width;
+      const v = +samplerLib.evaluateExpr(weightFn.body, env);
+      if (Number.isFinite(v) && v > 0) return v;
+      if (v < 0 || !Number.isFinite(v)) nonFinite++;
+      return 0;
+    }, 1, { tol: NORMALIZE_QUAD_TOL });
+    Z += res.Z * width;
+    err += res.err * width;
   }
   if (nonFinite > 0) {
     // eslint-disable-next-line no-console
@@ -1192,7 +1218,46 @@ function weightedBaseLogMass(
       + 'normalizer Z = ∫_S w dx is 0 (an everywhere-zero weight over S has no '
       + 'normalized density per spec §06)');
   }
-  return Math.log(Z) + Math.log(dx);
+  // The request was NORMALIZE_QUAD_TOL. A relative error four orders above it
+  // means the adaptive loop hit its evaluation cap without converging.
+  const relErr = err / Z;
+  if (relErr > 1e-6) {
+    throw new Error('density: normalize(weighted(w, Lebesgue)) — adaptive quadrature did not '
+      + 'converge (rel-err ' + relErr.toExponential(2) + '); the weight may be too oscillatory '
+      + 'or singular to integrate, so Z = ∫_S w dx is unresolved (spec §06)');
+  }
+  return Math.log(Z);
+}
+
+// The points in (lo, hi) where `w` may jump: the bounds of `x in interval(a, b)`
+// and the threshold of a comparison of `x` with a value, each fixed at θ. A
+// bound that does not evaluate to a number contributes nothing.
+function _weightBreakpoints(body: any, param: string, env: Record<string, any>, lo: number, hi: number): number[] {
+  const samplerLib = require('./sampler.ts');
+  const isX = (n: any) => n && n.kind === 'ref' && n.name === param;
+  const value = (n: any): number | null => {
+    try {
+      const v = +samplerLib.evaluateExpr(n, env);
+      return Number.isFinite(v) ? v : null;
+    } catch (_) { return null; }
+  };
+  const found = new Set<number>();
+  const visit = (n: any) => {
+    if (!n || typeof n !== 'object') return;
+    if (Array.isArray(n)) { n.forEach(visit); return; }
+    if (n.kind === 'call' && Array.isArray(n.args) && n.args.length === 2) {
+      const [l, r] = n.args;
+      if (n.op === 'in' && isX(l) && r && r.kind === 'call' && r.op === 'interval') {
+        for (const bound of r.args || []) { const v = value(bound); if (v != null) found.add(v); }
+      } else if (['lt', 'le', 'gt', 'ge'].includes(n.op) && (isX(l) || isX(r))) {
+        const v = value(isX(l) ? r : l);
+        if (v != null) found.add(v);
+      }
+    }
+    for (const k in n) if (k !== 'loc' && k !== 'meta') visit(n[k]);
+  };
+  visit(body);
+  return [...found].filter((v) => v > lo && v < hi).sort((x, y) => x - y);
 }
 
 // #322: for a `weighted(w, Lebesgue(interval(a,b)))` base whose weight `w` is
