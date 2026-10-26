@@ -229,15 +229,39 @@ function _argTypeAndPhase(arg: any, bindings: any): { type: any; phase: any } | 
   return _resolveExprType(arg, bindings, 0);
 }
 
+// DISSOLVE_AT_ANY_RANK_OPS members whose result has the type of their
+// operands. The rest (transpose, diag, trace, det, tile, conv, row_gram,
+// relabel, ...) change the shape or the type, so the shape fold must not
+// read their operand's type as the result's.
+const _TYPE_PRESERVING_ANY_RANK_OPS: Set<string> = new Set([
+  'add', 'sub', 'neg', 'pos', 'identity',
+  'inv', 'lower_cholesky', 'cumsum', 'cumprod', 'cummax', 'cummin',
+]);
+// Two array operands of these ops form a matrix or inner product, not an
+// elementwise result.
+const _PRODUCT_OPS: Set<string> = new Set(['mul', 'div', 'divide', 'mod', 'pow']);
+
+// transpose / adjoint swap the last two axes of a matrix and keep a
+// vector's length.
+function _transposedType(t: any): any | null {
+  if (!t || t.kind !== 'array' || !Array.isArray(t.shape)) return null;
+  if (t.elem && t.elem.kind === 'array') return null;
+  if (t.shape.length < 2) return t;
+  const shape = t.shape.slice();
+  const n = shape.length;
+  [shape[n - 2], shape[n - 1]] = [shape[n - 1], shape[n - 2]];
+  return Object.assign({}, t, { shape });
+}
+
 // Recursively resolve an IR expression's effective (type, phase).
 //
 // Handles three IR shapes:
 //   - `ref`: looks up the binding's `inferredType` if present;
 //     otherwise descends into the binding's IR (lazy resolution for
 //     synthetic anon bindings created by lift after typeinfer).
-//   - `call` to a DISSOLVE-safe op: type is the args' common type,
-//     same-phase. Mirrors elementwise semantics — this is what
-//     dissolution would produce if it folded the inline call out.
+//   - `call` to a DISSOLVE-safe op: an elementwise op takes the args'
+//     common type, same-phase; transpose / adjoint swap the last two
+//     axes; any other shape-changing op resolves to null.
 //   - `lit` / `const`: scalar real, fixed-phase. Permitted as a
 //     constituent of a parent expression but doesn't anchor a
 //     type on its own.
@@ -270,6 +294,14 @@ function _resolveExprType(
   }
   if (expr.kind === 'call' && expr.op) {
     if (!_isSafeOp(expr.op)) return null;
+    if (expr.op === 'transpose' || expr.op === 'adjoint') {
+      if (!expr.args || expr.args.length !== 1) return null;
+      const sub = _resolveExprType(expr.args[0], bindings, depth + 1);
+      const type = sub && _transposedType(sub.type);
+      return type ? { type, phase: sub!.phase } : null;
+    }
+    if (DISSOLVE_AT_ANY_RANK_OPS.has(expr.op)
+        && !_TYPE_PRESERVING_ANY_RANK_OPS.has(expr.op)) return null;
     const argTPs: { type: any; phase: any }[] = [];
     const callArgs: any[] = expr.args || [];
     if (callArgs.length === 0) return null;
@@ -282,6 +314,8 @@ function _resolveExprType(
     }
     // Need at least one non-literal arg to anchor the result type.
     if (nonLiteralCount === 0) return argTPs[0];  // all scalars
+    if (_PRODUCT_OPS.has(expr.op) && nonLiteralCount > 1
+        && argTPs.some((tp) => tp.type.kind !== 'scalar')) return null;
     // Skip literal contributors when checking uniformity (a literal
     // is scalar/fixed and broadcasts harmlessly via valueOps).
     let anchor: { type: any; phase: any } | null = null;
@@ -1341,6 +1375,47 @@ function _freshAxisName(body: any, base: string): string {
   return base + i;
 }
 
+// Static type of `get(src, idx...)` or `get_field(src, "name")`, or
+// null when an index form or the source type is not known. A scalar
+// index or an axis drops its axis, `all` and an index vector keep it, and
+// unindexed trailing axes stay (`M[1]` is a row).
+function _getResultType(expr: any, bindings: any): any | null {
+  const args: any[] = expr.args || [];
+  if (args.length < 2) return null;
+  const src = args[0];
+  const inner = src && src.kind === 'call' && (src.op === 'get' || src.op === 'get_field');
+  const litVector = src && src.kind === 'call' && src.op === 'vector' && Array.isArray(src.args)
+    && src.args.every((a: any) => a && a.kind === 'lit' && typeof a.value === 'number');
+  const t = inner ? _getResultType(src, bindings)
+    : litVector ? { kind: 'array', rank: 1, shape: [src.args.length], elem: { kind: 'scalar', prim: 'real' } }
+    : _resolveExprType(src, bindings, 0)?.type;
+  if (!t) return null;
+  const idx = args.slice(1);
+  if (t.kind === 'record') {
+    const f = idx.length === 1 && idx[0].kind === 'lit' ? idx[0].value : null;
+    return typeof f === 'string' && t.fields && t.fields[f] ? t.fields[f] : null;
+  }
+  if (expr.op !== 'get' || t.kind !== 'array' || !Array.isArray(t.shape)) return null;
+  const scalarIndex = (a: any) => a && (a.kind === 'axis'
+    || (a.kind === 'lit' && typeof a.value === 'number')
+    || (a.kind !== 'const' && _resolveExprType(a, bindings, 0)?.type?.kind === 'scalar'));
+  if (t.elem && t.elem.kind === 'array') {
+    return t.shape.length === 1 && idx.length === 1 && scalarIndex(idx[0]) ? t.elem : null;
+  }
+  if (idx.length > t.shape.length) return null;
+  const shape: any[] = [];
+  for (let i = 0; i < idx.length; i++) {
+    const a = idx[i];
+    if (scalarIndex(a)) continue;
+    if (a && a.kind === 'const' && a.name === 'all') shape.push(t.shape[i]);
+    else if (a && a.kind === 'call' && a.op === 'vector' && Array.isArray(a.args)) shape.push(a.args.length);
+    else return null;
+  }
+  shape.push(...t.shape.slice(idx.length));
+  if (shape.length === 0) return t.elem || { kind: 'scalar', prim: 'real' };
+  return { kind: 'array', rank: shape.length, shape, elem: t.elem };
+}
+
 // Walk a substituted body and wrap rank-1 leaves in
 // `get(<leaf>, .<jName>)` so the aggregate body evaluates scalarly
 // over (.atom, .j) tuples. Returns the rewritten expression; null
@@ -1391,11 +1466,16 @@ function _wrapVectorLeaves(
     }
     return null;  // mixed vector — refuse
   }
-  if (expr.kind === 'call' && expr.op === 'get') {
-    // get(...) extracting a scalar at a fixed index / axis — already
-    // a leaf; recurse only into the SOURCE (args[0]) when it might
-    // contain nested rank-1 leaves.
-    return expr;
+  if (expr.kind === 'call' && (expr.op === 'get' || expr.op === 'get_field')) {
+    // A scalar get is a finished leaf. A vector get (`m[1]`, `rec.a`)
+    // still needs the `.j` axis. Any other result refuses the fusion.
+    const t = _getResultType(expr, bindings);
+    if (t && t.kind === 'scalar') return expr;
+    if (t && t.kind === 'array' && Array.isArray(t.shape) && t.shape.length === 1
+        && !(t.elem && t.elem.kind === 'array')) {
+      return { kind: 'call', op: 'get', args: [expr, { kind: 'axis', name: jName }] };
+    }
+    return null;
   }
   // Nested broadcast of an elementwise op (e.g. `coeffs .* x` lowers
   // to `broadcast(<synth_functionof for mul>, coeffs, x)`). In the
