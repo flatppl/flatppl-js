@@ -83,6 +83,38 @@ test('wignerd takes j, m1, m2 directly and equals the doubled form for integer s
   integral.forEach(([tj, a, b, c, want], i) => close(fv.get(`d${i}`), want, `d(${tj / 2}, ${a / 2}, ${b / 2}, ${c})`));
 });
 
+// High spin, where Wigner's alternating sum cancels (relative error 2e-4 at
+// 2j = 80). SymPy Rotation.d at 40 digits, each value cross-checked against
+// the exact sum evaluated in 80-digit mpmath.
+const D_HIGH: [number, number, number, number, number][] = [
+  [40, 0, 0, 0.3, 0.18028715947998047],
+  [40, 40, -40, -0.7, 0.038759531084514356],
+  [40, 12, -8, 0.9, 0.13808156062513945],
+  [41, 1, -1, -0.05, -0.16761816679314271],
+  [41, 41, 1, 0.3, 0.15532840634418830],
+  [60, 20, -30, 0.3, -0.16642183987876062],
+  [60, 0, 2, -0.7, 0.17053972275542101],
+  [79, -79, 3, 0.9, 1.8196076741662578e-16],
+  [79, 5, -7, 0.3, -0.12897775219950516],
+  [80, 0, 0, -0.7, 0.14834359558654803],
+  [80, 10, -6, 0.3, 0.094812606137472230],
+  [80, 80, 80, 0.3, 3.2849916177340806e-8],
+  [80, 40, -40, 0.0, -0.020852148314588703],
+  [80, -24, 36, -0.9, 0.015838313078202240],
+  [80, 2, 0, 0.99, 0.32080768085896322],
+  [80, 78, -80, -0.3, -2.1560389535525159e-7],
+];
+
+test('wignerd_doublearg keeps relative precision up to 2j = 80', () => {
+  const lines = D_HIGH.map(([tj, a, b, c], i) => `d${i} = hepphys.wignerd_doublearg(${tj}, ${a}, ${b}, ${c})`);
+  const fv = values(lines);
+  D_HIGH.forEach(([tj, a, b, c, want], i) => {
+    const got = fv.get(`d${i}`);
+    assert.ok(Math.abs(got - want) <= 1e-12 * Math.abs(want),
+      `d(${tj}/2, ${a}/2, ${b}/2, ${c}): got ${got}, want ${want}`);
+  });
+});
+
 // [2j, 2m1, 2m2, α, cos β, γ, Re D, Im D]
 const D_BIG: [number, number, number, number, number, number, number, number][] = [
   [2, 2, 0, 0.4, 0.3, -1.1, -0.6212896074911282, 0.2626770329197432],
