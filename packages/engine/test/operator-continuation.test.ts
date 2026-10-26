@@ -229,8 +229,8 @@ test('continuation: a diagnostic across a join keeps its source line', () => {
 });
 
 test('continuation: a fixed-phase diagnostic across a join keeps its line', () => {
-  // A `~` binding is random, so using it in a fixed-phase position is
-  // a phase error. The location must be the operand's own line.
+  // A `~` binding is random, so using it as a size is a phase error. The
+  // location must be the operand's own line.
   const src = 'mu ~ Normal(0.0, 1.0)\n'
     + 'n =\n'
     + '  mu\n'
@@ -238,6 +238,6 @@ test('continuation: a fixed-phase diagnostic across a join keeps its line', () =
   const errs = processSource(src).diagnostics.filter(
     (d: any) => d.severity === 'error');
   assert.equal(errs.length, 1);
-  assert.match(errs[0].message, /fixed-phase/);
+  assert.match(errs[0].message, /'mu' is stochastic, but a size or count must be fixed/);
   assert.deepEqual(errs[0].loc.start, { line: 3, col: 10 });
 });

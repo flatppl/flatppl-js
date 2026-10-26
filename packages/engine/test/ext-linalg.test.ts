@@ -470,10 +470,12 @@ test('std-module: ext-linear-algebra@0.1 is registered with the current binding 
   stdmod._registerBuiltinStandardModules();
   const mod = stdmod.lookupStandardModule('ext-linear-algebra', '0.1');
   assert.ok(mod, 'module registered');
-  for (const op of ['lu', 'kron', 'matexp', 'qr', 'lstsq',
+  for (const op of ['lu', 'kron', 'matexp', 'lstsq',
                     'eigen', 'eigmax', 'eigmin', 'svd', 'rank']) {
     assert.ok(mod.bindings.has(op), op + ' binding present');
   }
+  // §09 lists no qr here: qr is the §07 base builtin.
+  assert.ok(!mod.bindings.has('qr'), 'qr is base, not a module member');
 });
 
 test('std-module: ext-linear-algebra.lu impl reachable via registry', () => {

@@ -212,12 +212,12 @@ const DISTRIBUTIONS = new Set([
 // name below. `test/flatpdl-kernel-tags.test.ts` pins that this set covers the
 // whole REGISTRY plus `DISTRIBUTIONS`, so a newly registered density cannot
 // evaluate while still failing to lower.
-const FLATPDL_KERNEL_TAGS = new Set([
-  ...DISTRIBUTIONS,
-  // §09 `particle-physics` (spec §09 "Distributions").
+// §09 `particle-physics` (spec §09 "Distributions").
+const PARTICLE_PHYSICS_DISTRIBUTIONS: ReadonlySet<string> = new Set([
   'CrystalBall', 'DoubleSidedCrystalBall', 'Argus', 'RelativisticBreitWigner',
   'Voigtian', 'Landau', 'BifurcatedNormal', 'ContinuedPoisson',
 ]);
+const FLATPDL_KERNEL_TAGS = new Set([...DISTRIBUTIONS, ...PARTICLE_PHYSICS_DISTRIBUTIONS]);
 
 // Measure algebra operations
 const MEASURE_OPS = new Set([
@@ -310,7 +310,7 @@ function isReserved(name: string) {
 module.exports = {
   CONSTANTS, BOOL_LITERALS, SETS, SET_CONSTRUCTORS,
   RESERVED_NAMES, SPECIAL_BINDINGS, SPECIAL_OPERATIONS,
-  BUILTIN_FUNCTIONS, DISTRIBUTIONS, FLATPDL_KERNEL_TAGS,
+  BUILTIN_FUNCTIONS, DISTRIBUTIONS, FLATPDL_KERNEL_TAGS, PARTICLE_PHYSICS_DISTRIBUTIONS,
   MEASURE_OPS, MEASURE_PRODUCING, ALL_KNOWN,
   isKnownName, isConstant, isBoolLiteral, isSet, isSpecialOperation, isReserved,
 };

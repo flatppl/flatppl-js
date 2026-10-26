@@ -40,6 +40,8 @@ interface StandardModuleEntry {
   name: string;
   compat: string;
   bindings: Map<string, BindingDescriptor>;
+  /** Members that are REGISTRY-resident distributions, not descriptors. */
+  distributions?: ReadonlySet<string>;
 }
 
 interface BindingDescriptor {
@@ -589,6 +591,7 @@ function _registerParticlePhysics() {
     name: 'particle-physics',
     compat: '0.1',
     bindings,
+    distributions: require('./builtins.ts').PARTICLE_PHYSICS_DISTRIBUTIONS,
   });
 }
 
@@ -643,18 +646,6 @@ function _registerExtLinearAlgebra() {
       dynMat,
     ),
     impl: extLinalg._matexp,
-  });
-
-  // qr(A) — Householder reflections, returns record(Q, R) per spec §07.
-  // For an m×n matrix with m ≥ n, Q is m×n with orthonormal columns
-  // and R is n×n upper-triangular such that A = Q · R.
-  bindings.set('qr', {
-    kind: 'function',
-    sig: T.funcType(
-      [{ name: 'A', type: dynMat }],
-      T.record({ Q: dynMat, R: dynMat }),
-    ),
-    impl: extLinalg._qr,
   });
 
   // lstsq(A, b) — minimum-norm least-squares via QR. b is a length-m
