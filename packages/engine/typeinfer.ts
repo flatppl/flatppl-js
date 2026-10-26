@@ -4328,12 +4328,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // The span of the enclosing `broadcast`: its per-cell call of a builtin head is a synthesised
   // body that carries no span of its own.
   let broadcastSpan: any = null;
-  function operatorDomainError(op: string, types: any[], loc: any, scalarOnly = false): any {
+  function operatorDomainError(op: string, types: any[], loc: any, refusesEvaluation = false): any {
     if (operatorDomainsOff > 0) return null;
     loc = loc || broadcastSpan;
     const why = operatorDomainViolation(op, types);
     if (!why) return null;
-    diagnostics.push({ severity: 'error', message: why, loc, ...(scalarOnly ? { scalarOnly: true } : {}) });
+    diagnostics.push({ severity: 'error', message: why, loc, ...(refusesEvaluation ? { refusesEvaluation: true } : {}) });
     return T.failed(op + ' outside its domain');
   }
 
@@ -4580,7 +4580,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const savedLen = diagnostics.length;
     const bodyT: any = inferExpr(reif.body, scopes.concat([scope]));
     if (diagnostics.length > savedLen) {
-      const kept = diagnostics.slice(savedLen).filter((d: any) => d.scalarOnly);
+      const kept = diagnostics.slice(savedLen).filter((d: any) => d.refusesEvaluation);
       diagnostics.length = savedLen;
       for (const d of kept) {
         const dup = diagnostics.some((e: any) => e.message === d.message
@@ -5911,9 +5911,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         + ' — ' + cite + '; the elementwise form is the dotted spelling, `'
         + op + '.(…)`',
       loc,
-      // Read by _pushfwdCodomain, which drops the rest of a speculative
-      // body walk's diagnostics but must keep this one.
-      scalarOnly: true,
+      // The evaluator's elementwise primitives would still give a value, so
+      // the materialiser refuses the binding and its dependents, and
+      // _pushfwdCodomain keeps this one when it drops the rest of a
+      // speculative body walk's diagnostics.
+      refusesEvaluation: true,
     });
     return T.failed(op + ' non-scalar operand');
   }
@@ -5939,6 +5941,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       message: op + ': arg ' + (i + 1) + ' expects ' + T.show(expected)
         + ', got ' + T.show(got) + _rowstackHint(expected, got),
       loc,
+      // A real-only kernel (det, inv, trace, …) reads only the real part of a
+      // complex operand and returns a plausible wrong number.
+      ...(_leafPrim(expected) === 'real' && _leafPrim(got) === 'complex' ? { refusesEvaluation: true } : {}),
     });
     return T.failed(op + ' arg type');
   }

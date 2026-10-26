@@ -3352,23 +3352,26 @@ clmRerouteStage.label = 'clmReroute';
 // Tests that need a clean slate call `_resetMaterialiserPipeline()` first, then
 // re-register if they want the defaults back via
 // `_installDefaultMaterialiserStages()`.
-// The evaluator's elementwise primitives would give `sqrt(v)` a value,
-// although spec §07 makes a non-scalar operand of a scalar-only function a
-// static error. Refuse a binding that carries that error, or depends on one.
+// The evaluator would give some statically invalid calls a value: its
+// elementwise primitives evaluate `sqrt(v)`, although spec §07 makes a
+// non-scalar operand of a scalar-only function a static error, and its
+// real-only kernels evaluate `det(M)` of a complex M from the real part.
+// Refuse a binding that carries such an error (`refusesEvaluation`), or
+// depends on one.
 // Every transitive dependency counts, not only those whose type failed: a
 // record holding `sqrt(v)` types fine, and its field still reads the value.
 // Memoised per binding graph, since the stage runs on every materialise call.
-const _scalarOnlyMemo = new WeakMap<any, Map<string, any>>();
-function _scalarOnlyRefusal(name: string, bindings: any, visiting: Set<string>): any {
-  let memo = _scalarOnlyMemo.get(bindings);
-  if (!memo) { memo = new Map(); _scalarOnlyMemo.set(bindings, memo); }
+const _refusalMemo = new WeakMap<any, Map<string, any>>();
+function _staticRefusal(name: string, bindings: any, visiting: Set<string>): any {
+  let memo = _refusalMemo.get(bindings);
+  if (!memo) { memo = new Map(); _refusalMemo.set(bindings, memo); }
   if (memo.has(name)) return memo.get(name);
   if (visiting.has(name)) return null;
   visiting.add(name);
   const binding = bindings.get(name);
-  let found = (binding?.diagnostics || []).find((d: any) => d.severity === 'error' && d.scalarOnly) || null;
+  let found = (binding?.diagnostics || []).find((d: any) => d.severity === 'error' && d.refusesEvaluation) || null;
   for (const dep of (found ? [] : binding?.deps || [])) {
-    found = _scalarOnlyRefusal(dep, bindings, visiting);
+    found = _staticRefusal(dep, bindings, visiting);
     if (found) break;
   }
   visiting.delete(name);
@@ -3376,7 +3379,7 @@ function _scalarOnlyRefusal(name: string, bindings: any, visiting: Set<string>):
   return found;
 }
 const staticRefusalStage: MaterialiserStage = function (name, ctx, next) {
-  const d = ctx.bindings ? _scalarOnlyRefusal(name, ctx.bindings, new Set()) : null;
+  const d = ctx.bindings ? _staticRefusal(name, ctx.bindings, new Set()) : null;
   if (d) {
     const at = d.loc?.start ? ' at ' + (d.loc.start.line + 1) + ':' + (d.loc.start.col + 1) : '';
     const err: any = new Error("'" + name + "' is statically invalid" + at + ': ' + d.message);

@@ -39,3 +39,28 @@ test('a complex vector from a complex matrix keeps both parts', async () => {
   assert.deepEqual(await parts(`M = ${M}\nv = M * [1.0, 2.0]\n`, 'v'),
     { dtype: 'complex', shape: undefined, re: [1, 5], im: [4, -2] });
 });
+
+// det, trace, inv, logabsdet, diag and lower_cholesky take a real matrix, so a
+// complex one is a static error. Their real-only kernels would still read the
+// real part and return a plausible number (det(M) as 1, so `det(M) + 1.0` as 2
+// against the true 4 − 2i), so the binding and everything that reads it refuse.
+for (const [name, expr] of [
+  ['det', 'det(M)'], ['trace', 'trace(M)'], ['inv', 'inv(M)'], ['logabsdet', 'logabsdet(M)'],
+  ['diag', 'diag(M)'], ['lower_cholesky', 'lower_cholesky(M * adjoint(M))'],
+]) {
+  test(`${name} of a complex matrix refuses, and so does what reads it`, async () => {
+    const { ctx } = ctxFor(`M = ${M}\nd = ${expr}\ne = record(a = d)\n`, 1);
+    const why = new RegExp(`statically invalid at 2:\\d+: ${name}: arg 1 expects 2d array of real, got 2d array of complex`);
+    await assert.rejects(ctx.getMeasure('d'), why);
+    await assert.rejects(ctx.getMeasure('e'), why);
+  });
+}
+
+test('det(M) + 1.0 of a complex matrix refuses; det of a real matrix still scores', async () => {
+  const { ctx } = ctxFor(`M = ${M}\nR = rowstack([[1.0, 2.0], [3.0, 4.0]])\ne = det(M) + 1.0\n`
+    + 'e2 = det(R * complex(0.0, 1.0)) + 1.0\nok = det(R) + 1.0\n', 1);
+  await assert.rejects(ctx.getMeasure('e'), /'e' is statically invalid at 3:9: det/);
+  await assert.rejects(ctx.getMeasure('e2'), /'e2' is statically invalid at 4:10: det/);
+  const ok = await ctx.getMeasure('ok');
+  assert.deepEqual(Array.from(ok.value ? ok.value.data : ok.samples), [-1]);
+});
