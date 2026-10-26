@@ -45,6 +45,15 @@ test('an unknown standard-module member is refused statically, once per use', ()
   }
 });
 
+// §09 ext-linear-algebra has no qr: qr is the §07 base builtin.
+test('a base builtin is not a member of a standard module', () => {
+  const src = 'la = standard_module("ext-linear-algebra", "0.1")\n'
+    + 'A = rowstack([[3.0, 0.0], [4.0, 5.0]])\nq = la.qr(A)\nr = qr(A)';
+  assert.deepEqual(errors(src).map((e: any) => [e.message, e.loc.start.line, e.loc.start.col]), [
+    ["'la.qr': standard module 'ext-linear-algebra@0.1' has no binding 'qr'", 2, 4],
+  ]);
+});
+
 test('a standard module the engine does not provide is refused at each use', () => {
   const errs = errors('h = standard_module("nosuch", "0.1")\nx = h.f(1.0)\ny = h.f(2.0)');
   assert.deepEqual(errs.map((e: any) => [e.message, e.loc.start.line]), [
