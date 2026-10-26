@@ -56,9 +56,10 @@ Untyped values (CSV/WSV cells, JSON numbers) are decided by value: an exactly
 integral value fits an integer set, and `true`/`false` read as 1/0 in a numeric
 set. Typed sources keep their type: an Arrow or Safetensors float cannot fill an
 integer set, following §03's `booleans ⊂ integers ⊂ reals`. Arrow columns of
-null, boolean, integer and float type are read, and so is a dictionary over
-them, as its values. A column of any other type (strings, timestamps, lists),
-or with a value outside int64, is an error only when the schema selects it.
+boolean, integer and float type are read, and so is a dictionary over them, as
+its values. A column of any other type (Null, strings, timestamps, lists), or
+with a value outside int64, is an error only when the schema selects it: every
+value of a Null column is missing, so it is never read.
 Safetensors keys form nested records (`enc.0.weight` is field `weight` of record
 `0` of record `enc`) under §07's key rules, with F64/F32/F16/BF16, signed and
 unsigned integer and BOOL dtypes. LZ4-compressed Arrow (the Feather V2 default)
