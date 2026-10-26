@@ -36,6 +36,14 @@
 
 const opsModule = require('./ops.ts');
 const { getOptimization } = require('./perf-config.ts');
+// Plain number ops, equal bit for bit to ARITH_OPS and `ops.dispatch` on
+// numbers (test/fused-loop-scalar-ops.test.ts). A call whose arguments are
+// all numbers at a point takes them instead of the polymorphic entry or the
+// variant dispatcher.
+const { SCALAR_OPS: _SCALAR } = require('./sampler-eval-compile.ts');
+// Default ON; off compiles the old paths only (perf baselines).
+let _SCALAR_FAST = true;
+function _setScalarFastPath(on: boolean) { _SCALAR_FAST = !!on; }
 
 let _OPS: any = null;
 let _OPS_UNGUARDED: any = null;
@@ -477,10 +485,18 @@ function _compileCall(node: any, S: Session): any {
         return declared ? opsModule.dispatch(op, [x]) : raw(x);
       };
     }
+    const f = declared ? null : _OPS[op];
+    const sf = _SCALAR_FAST ? _SCALAR[op] : undefined;
+    if (sf) {
+      return function (env: any) {
+        const x = a0(env);
+        if (typeof x === 'number') return sf(x);
+        return declared ? opsModule.dispatch(op, [x]) : f(x);
+      };
+    }
     if (declared) {
       return function (env: any) { return opsModule.dispatch(op, [a0(env)]); };
     }
-    const f = _OPS[op];
     return function (env: any) { return f(a0(env)); };
   }
   if (n === 2) {
@@ -495,11 +511,31 @@ function _compileCall(node: any, S: Session): any {
         return declared ? opsModule.dispatch(op, [x, y]) : raw(x, y);
       };
     }
+    const f = declared ? null : _OPS[op];
+    const sf = _SCALAR_FAST ? _SCALAR[op] : undefined;
+    if (sf) {
+      return function (env: any) {
+        const x = a0(env), y = a1(env);
+        if (typeof x === 'number' && typeof y === 'number') return sf(x, y);
+        return declared ? opsModule.dispatch(op, [x, y]) : f(x, y);
+      };
+    }
     if (declared) {
       return function (env: any) { return opsModule.dispatch(op, [a0(env), a1(env)]); };
     }
-    const f = _OPS[op];
     return function (env: any) { return f(a0(env), a1(env)); };
+  }
+  if (n === 3 && _SCALAR_FAST && _SCALAR[op]) {
+    const a0 = _compileNode(rawArgs[0], S);
+    const a1 = _compileNode(rawArgs[1], S);
+    const a2 = _compileNode(rawArgs[2], S);
+    const f = declared ? null : _OPS[op];
+    const sf = _SCALAR[op];
+    return function (env: any) {
+      const x = a0(env), y = a1(env), z = a2(env);
+      if (typeof x === 'number' && typeof y === 'number' && typeof z === 'number') return sf(x, y, z);
+      return declared ? opsModule.dispatch(op, [x, y, z]) : f(x, y, z);
+    };
   }
   return _compileVariadic(op, rawArgs, S, declared);
 }
@@ -639,7 +675,7 @@ function compileProfileBody(ir: any): any {
 }
 
 module.exports = {
-  initProfileCompiler, compileProfileBody,
+  initProfileCompiler, compileProfileBody, _setScalarFastPath,
   // Exported for tests.
   newAnalysis, _idOf, _analyse, _cacheKind, _rewrap,
   _hashParts, _intern, _samePartsAs,
