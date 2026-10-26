@@ -313,6 +313,14 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   // vectors) keep their existing corner rendering of Re for now.
   const isComplex = measure.dtype === 'complex'
     && measure.imag instanceof Float64Array;
+  // A complex array or matrix has no plot here: the step plot and the heatmap
+  // draw one real number per entry, which would show Re alone as if it were the
+  // value. Show the entries with both parts instead, or say why not.
+  if (isComplex && (opts.mode === 'array' || opts.mode === 'matrix')) {
+    renderConstantValue(ctx, name, complexEntriesText(samples, measure.imag,
+      (measure as any).intrinsicShape), opts.toolbarControls);
+    return;
+  }
   // Array-mode: skip histogram + density entirely; the data
   // is a fixed-length sequence to plot as index→value, not
   // a sample of a distribution.
@@ -461,6 +469,28 @@ export function renderEmpiricalMeasure(ctx: Ctx, measure: any, opts: any) {
   renderSamplesAndDensity(ctx, 
     { samples: samples, histogram: hist, density: null, measure: measure },
     { mode: opts.mode, toolbarControls: resolvedToolbar });
+}
+
+const COMPLEX_ENTRIES_SHOWN = 64;
+
+// The entries of a complex array or matrix as text, both parts each, or a
+// statement that there are too many to list.
+export function complexEntriesText(re: ArrayLike<number>, im: ArrayLike<number>, shape?: number[]): string {
+  const n = re.length;
+  if (n > COMPLEX_ENTRIES_SHOWN) {
+    return 'complex-valued, ' + n + ' entries: no plot shows both parts yet, so none is drawn';
+  }
+  const entry = (k: number) => formatComplexScalar(re[k], im[k]);
+  if (Array.isArray(shape) && shape.length === 2 && shape[0] * shape[1] === n) {
+    const rows: string[] = [];
+    for (let i = 0; i < shape[0]; i++) {
+      const cells: string[] = [];
+      for (let j = 0; j < shape[1]; j++) cells.push(entry(i * shape[1] + j));
+      rows.push('[' + cells.join(', ') + ']');
+    }
+    return '[' + rows.join(', ') + ']';
+  }
+  return '[' + Array.from({ length: n }, (_, k) => entry(k)).join(', ') + ']';
 }
 
 export function renderSamplesAndDensity(ctx: Ctx, reply: any, plan: SamplesPlanHint) {
