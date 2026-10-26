@@ -783,6 +783,27 @@ function complexScalar(re: number, im: number) {
 
 const collectionDomain = require('./collection-domain-heads.ts');
 
+// A nested Value (`[v, w]` and `[[1, 2], [3, 4]]` evaluate to one, its leading
+// `outerRank` axes indexing inner arrays, §03 "Vectors of vectors are not
+// interpreted as matrices") as nested JS arrays of its inner Values. Any other
+// argument is returned as it is.
+function _nestedCells(V: any): any {
+  if (!valueLib.isNestedVectorValue(V)) return V;
+  const D = valueLib.densify(V);
+  const outer = D.shape.slice(0, V.outerRank), inner = D.shape.slice(V.outerRank);
+  const size = inner.reduce((a: number, b: number) => a * b, 1);
+  let next = 0;
+  const build = (axis: number): any => {
+    if (axis === outer.length) {
+      const cell = { shape: inner.slice(), data: D.data.slice(next * size, (next + 1) * size) };
+      next++;
+      return cell;
+    }
+    return Array.from({ length: outer[axis] }, () => build(axis + 1));
+  };
+  return build(0);
+}
+
 const ARITH_OPS = {
   add: (a: any, b: any) => _shapeAwareBinop('add', (x: any, y: any) => x + y, a, b, _cAdd),
   sub: (a: any, b: any) => _shapeAwareBinop('sub', (x: any, y: any) => x - y, a, b, _cSub),
@@ -1064,12 +1085,7 @@ const ARITH_OPS = {
   // Migrated to ops-declarations.ts (engine-concepts §18 Phase 2).
   lower_cholesky: (A: any): any => opsModule.dispatch('lower_cholesky', [A]),
   // qr(A) → record(Q, R) (spec §07 "Linear algebra"), the Householder QR.
-  // ext-linalg returns its own `{ shape: 'record', fields }` form; a record
-  // value here is the plain field object `record(...)` evaluates to.
-  qr: (A: any): any => {
-    const { fields } = require('./ext-linalg.ts')._qr(A);
-    return { Q: fields.Q, R: fields.R };
-  },
+  qr: (A: any): any => require('./ext-linalg.ts')._qr(A),
   row_gram:       (A: any): any => opsModule.dispatch('row_gram',       [A]),
   col_gram:       (A: any): any => opsModule.dispatch('col_gram',       [A]),
   // quadform(A, x) — quadratic form xᵀ A x (spec §07). Implemented
@@ -1169,6 +1185,15 @@ const ARITH_OPS = {
   fill: (x: any, size: any) => {
     const dims = _sizeAsDims(size);
     const total = dims.reduce((a, b) => a * b, 1);
+    // An array `x` fills an array of arrays (§07 "scalar or array"): every
+    // cell is a copy of x, so the result nests with x's axes inside.
+    if (valueLib.isValue(x) && x.shape.length > 0) {
+      const X = valueLib.densify(x);
+      const n = X.data.length;
+      const d = new Float64Array(total * n);
+      for (let i = 0; i < total; i++) d.set(X.data, i * n);
+      return { shape: [...dims, ...X.shape], data: d, outerRank: dims.length };
+    }
     const d = new Float64Array(total);
     const v = (x === true) ? 1 : (x === false) ? 0 : +x;
     d.fill(v);
@@ -1436,6 +1461,7 @@ const ARITH_OPS = {
   // is the ELEMENTWISE PRODUCT of outer shape and inner shape (same
   // rank required). Spec §07.
   joinblocks: (A: any) => {
+    A = _nestedCells(A);
     // Derive outer + inner shapes by walking the nested structure.
     const outerShape: number[] = [];
     let cur: any = A;
@@ -1503,9 +1529,10 @@ const ARITH_OPS = {
   // matrices. All off-diagonal blocks are zero. Result rows/cols
   // are the sums of input rows/cols. Spec §07.
   blockdiagmat: (mats: any) => {
-    // Accept a JS array of matrices (vector-of-matrices per spec §07
-    // is vector-of-Value, the post-§2.1 rep) OR an empty rank-1 Value
+    // Accept a JS array of matrices, a nested Value of them (`[A, B]`
+    // evaluates to one, §2.1 outerRank) OR an empty rank-1 Value
     // (vector(...) with no args).
+    mats = _nestedCells(mats);
     if (valueLib.isValue(mats)) {
       if (mats.shape.length === 1 && mats.shape[0] === 0) {
         return { shape: [0, 0], data: new Float64Array(0) };

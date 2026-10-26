@@ -59,12 +59,9 @@ function _lu(A: any): any {
   const P = new Float64Array(n * n);
   for (let i = 0; i < n; i++) P[i * n + piv[i]] = 1;
   return {
-    shape: 'record',
-    fields: {
-      P: _matValue(P, n, n),
-      L: _matValue(L, n, n),
-      U: _matValue(U, n, n),
-    },
+    P: _matValue(P, n, n),
+    L: _matValue(L, n, n),
+    U: _matValue(U, n, n),
   };
 }
 
@@ -319,11 +316,8 @@ function _qr(A: any): any {
     for (let j = i; j < n; j++) R[i * n + j] = R_full[i * n + j];
   }
   return {
-    shape: 'record',
-    fields: {
-      Q: _matValue(Q, m, n),
-      R: _matValue(R, n, n),
-    },
+    Q: _matValue(Q, m, n),
+    R: _matValue(R, n, n),
   };
 }
 
@@ -331,12 +325,14 @@ function _qr(A: any): any {
 // lstsq(A, b) — least-squares solve for min_x ||A·x - b||₂ (spec §09)
 // =====================================================================
 //
-// Computes the minimum-norm least-squares solution to A·x = b for
-// A of shape (m, k), b of shape (m,). Uses the QR factorisation:
-// if A = Q·R with Q orthonormal and R upper-triangular, then
-// x = R^{-1} · Q^T · b. Numerically stable; the normal-equations
-// path (x = (A^T A)^{-1} A^T b) is faster but loses precision when
-// A is poorly conditioned.
+// The minimum-norm least-squares solution for A of shape (m, k) and b of
+// shape (m,), as numpy.linalg.lstsq returns it: x = V · S⁺ · Uᵀ · b from the
+// thin SVD, where S⁺ inverts only the singular values above
+//   tol = max(m, k) · σ_max · ε_machine
+// (numpy's default rcond, and the tolerance `rank` uses). A rank-deficient
+// A, exactly or numerically, then gives the minimum-norm solution rather
+// than dividing by a rounding-level pivot. A wide A (m < k) takes the SVD of
+// Aᵀ = U·S·Vᵀ, so A = V·S·Uᵀ and x = U · S⁺ · Vᵀ · b.
 
 function _lstsq(A: any, b: any): any {
   A = valueLib._logicalDense(A);
@@ -346,24 +342,26 @@ function _lstsq(A: any, b: any): any {
     throw new Error('lstsq: b must be a length-m vector (got shape '
       + JSON.stringify(b.shape) + '; A is ' + m + 'x' + k + ')');
   }
-  if (m < k) throw new Error('lstsq: requires m >= k (got ' + m + 'x' + k + ')');
-  const { fields } = _qr(A);
-  const Q = fields.Q.data, R = fields.R.data;
-  // y = Q^T · b — shape (k,).
-  const y = new Float64Array(k);
-  for (let j = 0; j < k; j++) {
-    let s = 0;
-    for (let i = 0; i < m; i++) s += Q[i * k + j] * b.data[i];
-    y[j] = s;
+  const tall = m >= k;
+  let work = A;
+  if (!tall) {
+    const data = new Float64Array(k * m);
+    for (let i = 0; i < m; i++) for (let j = 0; j < k; j++) data[j * m + i] = A.data[i * k + j];
+    work = { shape: [k, m], data };
   }
-  // Back-substitute R · x = y.
+  const { U, S, V } = _svd(work);
+  // In the tall case A = U·S·Vᵀ (U m×r, V k×r); in the wide case A = V·S·Uᵀ.
+  const left = tall ? U : V, right = tall ? V : U;
+  const r = S.data.length, nl = left.shape[1], nr = right.shape[1];
+  const tol = Math.max(m, k) * (r > 0 ? S.data[0] : 0) * 2.220446049250313e-16;
   const x = new Float64Array(k);
-  for (let i = k - 1; i >= 0; i--) {
-    let s = y[i];
-    for (let j = i + 1; j < k; j++) s -= R[i * k + j] * x[j];
-    const diag = R[i * k + i];
-    if (diag === 0) throw new Error('lstsq: A is rank-deficient (zero on R diagonal at row ' + i + ')');
-    x[i] = s / diag;
+  for (let j = 0; j < r; j++) {
+    const s = S.data[j];
+    if (!(s > tol)) continue;
+    let c = 0;
+    for (let i = 0; i < m; i++) c += left.data[i * nl + j] * b.data[i];
+    c /= s;
+    for (let i = 0; i < k; i++) x[i] += c * right.data[i * nr + j];
   }
   return _vecValue(x, k);
 }
@@ -520,11 +518,8 @@ function _jacobiSymmetric(A: any, computeVectors = true): {
 function _eigen(A: any): any {
   const { values, vectors, n } = _jacobiSymmetric(A);
   return {
-    shape: 'record',
-    fields: {
-      values:  _vecValue(values, n),
-      vectors: _matValue(vectors!, n, n),
-    },
+    values:  _vecValue(values, n),
+    vectors: _matValue(vectors!, n, n),
   };
 }
 
@@ -657,12 +652,9 @@ function _svd(A: any): any {
     for (let i = 0; i < n; i++) Vsorted[i * n + newJ] = V[i * n + oldJ];
   }
   return {
-    shape: 'record',
-    fields: {
-      U: _matValue(Usorted, m, n),
-      S: _vecValue(Ssorted, n),
-      V: _matValue(Vsorted, n, n),
-    },
+    U: _matValue(Usorted, m, n),
+    S: _vecValue(Ssorted, n),
+    V: _matValue(Vsorted, n, n),
   };
 }
 
@@ -687,7 +679,7 @@ function _rank(A: any): number {
     }
     work = { shape: [n0, m0], data };
   }
-  const { fields } = _svd(work);
+  const fields = _svd(work);
   const S = fields.S.data;
   const sigmaMax = S[0];
   const tol = Math.max(m0, n0) * sigmaMax * 2.220446049250313e-16;
