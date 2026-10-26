@@ -472,22 +472,13 @@ function dissolveExpr(ir: any, bindings: any): any {
 
 const _SHAPE_FOLD_MAX_LEN = 4096;
 
-// Walk a (possibly nested) array type to collect every concrete dim.
-// `array(1, [m], array(1, [n], real))` → `[m, n]` (matches the
-// runtime `sizeof` behaviour on JS nested arrays, sampler.ts:1372).
-// Returns null if any dim is non-numeric (`%dynamic`, type var, …).
-function _collectAllDims(t: any): number[] | null {
-  const dims: number[] = [];
-  let cur = t;
-  while (cur && cur.kind === 'array') {
-    if (!Array.isArray(cur.shape) || cur.shape.length === 0) return null;
-    for (const d of cur.shape) {
-      if (typeof d !== 'number' || d < 0) return null;
-      dims.push(d);
-    }
-    cur = cur.elem;
-  }
-  return dims;
+// The concrete outer dims of an array type. An array of arrays reports its
+// outer extents only, `array(1, [m], array(1, [n], real))` → `[m]`: §03 does
+// not read a vector of vectors as a matrix. Returns null if any dim is
+// non-numeric (`%dynamic`, type var, …).
+function _outerDims(t: any): number[] | null {
+  if (!t.shape.every((d: any) => typeof d === 'number' && d >= 0)) return null;
+  return t.shape.slice();
 }
 
 function _foldShapeCall(ir: any, bindings: any): any | null {
@@ -527,9 +518,7 @@ function _foldShapeCall(ir: any, bindings: any): any | null {
   }
 
   if (ir.op === 'sizeof') {
-    // Walk nested array types — `array(1, [m], array(1, [n], real))`
-    // → `[m, n]`. Any non-numeric dim along the walk → refuse.
-    const dims = _collectAllDims(t);
+    const dims = _outerDims(t);
     if (!dims) return null;
     const elements: any[] = new Array(dims.length);
     for (let i = 0; i < dims.length; i++) {

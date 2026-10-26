@@ -221,8 +221,10 @@ N = lengthof(C)
 
 test('e2e: sizeof on a static rank-2 array folds to shape literal vector', () => {
   const proc = processSource(`
-M = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+M = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+N = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
 S = sizeof(M)
+SN = sizeof(N)
 `);
   const out = buildDerivations(proc.bindings);
   const s = out.bindings.get('S');
@@ -230,6 +232,8 @@ S = sizeof(M)
   assert.equal(s.ir.kind, 'call');
   assert.equal(s.ir.op, 'vector');
   assert.deepEqual(s.ir.args.map((a: any) => a.value), [2, 3]);
+  // A vector of vectors is not a matrix (§03): its outer extent only.
+  assert.deepEqual(out.bindings.get('SN').ir.args.map((a: any) => a.value), [2]);
 });
 
 test('e2e: nested fold — indicesof0 of a [3]-vector inside an add stays correct', () => {

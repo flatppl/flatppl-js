@@ -104,6 +104,15 @@ function extentOf(t: any, axis: number): number | null {
 
 const SPEC = 'spec §07 "Operator-equivalent functions"';
 
+// The arithmetic rows take real or complex arrays, and §03 does not read a vector of vectors as
+// a matrix, so an array of arrays lies outside each of them.
+const ARITHMETIC = new Set(['add', 'sub', 'mul', 'divide', 'neg', 'pow']);
+
+function isArrayOfArrays(t: any): boolean {
+  return (t?.kind === 'array' || t?.kind === 'tvector')
+    && (t.elem?.kind === 'array' || t.elem?.kind === 'tvector');
+}
+
 function describe(types: any[]): string {
   return types.map(t => T.show(t)).join(' and ');
 }
@@ -115,6 +124,12 @@ function describe(types: any[]): string {
 function operatorDomainViolation(op: string, types: any[]): string | null {
   if (!OPERATOR_DOMAIN_OPS.has(op) || types.some(unresolved)) return null;
   const [a, b] = types;
+  const nested = ARITHMETIC.has(op) ? types.find(isArrayOfArrays) : undefined;
+  if (nested) {
+    return op + ': operand ' + T.show(nested) + ' is an array of arrays, outside the domain ' + SPEC
+      + ' gives `' + op + '`; `rowstack(…)` makes a matrix of a vector of vectors (spec §03), and '
+      + 'the elementwise form `' + op + '.(…)` applies `' + op + '` to each element (spec §04)';
+  }
   switch (op) {
     case 'add':
     case 'sub': {

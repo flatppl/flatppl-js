@@ -46,7 +46,7 @@ test('lu: 2x2 with no pivot — P=I, L unit-diag, U upper-tri', () => {
   // A = [[4, 3], [2, 1]]; |4| > |2| so no row swap; L = [[1,0],[0.5,1]],
   // U = [[4,3],[0,-0.5]], P = I.
   const A = matVal(2, 2, [4, 3, 2, 1]);
-  const { fields } = extLinalg._lu(A);
+  const fields = extLinalg._lu(A);
   assertClose(fields.P.data, [1, 0, 0, 1]);
   assertClose(fields.L.data, [1, 0, 0.5, 1]);
   assertClose(fields.U.data, [4, 3, 0, -0.5]);
@@ -56,7 +56,7 @@ test('lu: 3x3 — round-trip P·A = L·U holds for arbitrary matrix', () => {
   // A = [[4, 3, 1], [2, 5, 7], [6, 8, 9]]
   const A_data = [4, 3, 1, 2, 5, 7, 6, 8, 9];
   const A = matVal(3, 3, A_data);
-  const { fields } = extLinalg._lu(A) as { fields: Record<string, { data: ArrayLike<number> }> };
+  const fields = extLinalg._lu(A) as Record<string, { data: ArrayLike<number> }>;
   const P = Array.from(fields.P.data);
   const L = Array.from(fields.L.data);
   const U = Array.from(fields.U.data);
@@ -191,7 +191,7 @@ test('qr: 2x2 — round-trip A = Q · R', () => {
   // A = [[4, 3], [2, 1]]
   const A_data = [4, 3, 2, 1];
   const A = matVal(2, 2, A_data);
-  const { fields } = extLinalg._qr(A) as { fields: Record<string, { data: ArrayLike<number>; shape: number[] }> };
+  const fields = extLinalg._qr(A) as Record<string, { data: ArrayLike<number>; shape: number[] }>;
   const Q = Array.from(fields.Q.data);
   const R = Array.from(fields.R.data);
   // Q · R should equal A.
@@ -207,7 +207,7 @@ test('qr: 4x2 thin QR — Q is 4x2 orthonormal, R is 2x2 upper', () => {
   // A = arbitrary 4x2 matrix
   const A_data = [1, 2, 3, 4, 5, 6, 7, 8];
   const A = matVal(4, 2, A_data);
-  const { fields } = extLinalg._qr(A) as { fields: Record<string, { data: ArrayLike<number>; shape: number[] }> };
+  const fields = extLinalg._qr(A) as Record<string, { data: ArrayLike<number>; shape: number[] }>;
   assert.deepEqual(fields.Q.shape, [4, 2]);
   assert.deepEqual(fields.R.shape, [2, 2]);
   const Q = Array.from(fields.Q.data);
@@ -229,7 +229,7 @@ test('qr: rejects m < n', () => {
 });
 
 // =====================================================================
-// 5. lstsq — least-squares via QR
+// 5. lstsq — minimum-norm least squares via the SVD
 // =====================================================================
 
 test('lstsq: square 2x2 — recovers exact solution (no residual)', () => {
@@ -273,14 +273,14 @@ test('lstsq: rejects b length mismatch', () => {
 
 test('eigen: diagonal — eigenvalues are diag, vectors are identity (up to ordering)', () => {
   const A = matVal(3, 3, [5, 0, 0, 0, 2, 0, 0, 0, 8]);
-  const { fields } = extLinalg._eigen(A) as { fields: Record<string, { data: ArrayLike<number> }> };
+  const fields = extLinalg._eigen(A) as Record<string, { data: ArrayLike<number> }>;
   const vals = Array.from(fields.values.data).slice().sort((a: number, b: number) => a - b);
   assertClose(vals, [2, 5, 8], 1e-12);
 });
 
 test('eigen: 2x2 symmetric — known case [[2,1],[1,2]] → eigvals 1, 3', () => {
   const A = matVal(2, 2, [2, 1, 1, 2]);
-  const { fields } = extLinalg._eigen(A) as { fields: Record<string, { data: ArrayLike<number> }> };
+  const fields = extLinalg._eigen(A) as Record<string, { data: ArrayLike<number> }>;
   const vals = Array.from(fields.values.data).slice().sort((a: number, b: number) => a - b);
   assertClose(vals, [1, 3], 1e-12);
   // Vectors should diagonalise: V^T · A · V = diag(values).
@@ -307,7 +307,7 @@ test('std-module eigen / eigmin / eigmax: zero and extreme finite scales', () =>
     const data = [a, b, b, a];
     const A = matVal(2, 2, data);
     const scale = a || 1;
-    const { fields } = eigen(A) as { fields: Record<string, { data: ArrayLike<number> }> };
+    const fields = eigen(A) as Record<string, { data: ArrayLike<number> }>;
     const values = Array.from(fields.values.data, x => x / scale);
     const expected = [(a - b) / scale, (a + b) / scale];
     assertClose(values.slice().sort((x, y) => x - y), expected, 1e-12);
@@ -321,7 +321,7 @@ test('std-module eigen / eigmin / eigmax: zero and extreme finite scales', () =>
   // Opposite large diagonals also require an overflow-safe rotation angle.
   const indefinite = matVal(2, 2, [1e308, 5e307, 5e307, -1e308]);
   const radius = Math.hypot(1e308, 5e307);
-  const values = Array.from(eigen(indefinite).fields.values.data as ArrayLike<number>, x => x / radius);
+  const values = Array.from(eigen(indefinite).values.data as ArrayLike<number>, x => x / radius);
   assertClose(values.sort((x, y) => x - y), [-1, 1], 1e-12);
 });
 
@@ -329,7 +329,7 @@ test('std-module eigen: preserves mixed-scale diagonal eigenvalues', () => {
   stdmod._registerBuiltinStandardModules();
   const mod = stdmod.lookupStandardModule('ext-linear-algebra', '0.1');
   const A = matVal(3, 3, [1e200, 0, 0, 0, 2e-200, 0, 0, 0, 3e-200]);
-  const values = mod.bindings.get('eigen').impl(A).fields.values.data;
+  const values = mod.bindings.get('eigen').impl(A).values.data;
   // The eigenvalues of a diagonal matrix are exactly its entries;
   // scaling norm arithmetic must not erase the small ones.
   assert.deepEqual(Array.from(values), [1e200, 2e-200, 3e-200]);
@@ -341,7 +341,7 @@ test('eigen: 3x3 symmetric — round-trip A = V · diag(values) · V^T', () => {
   // A = [[4, -2, 1], [-2, 4, -2], [1, -2, 4]]
   const A_data = [4, -2, 1, -2, 4, -2, 1, -2, 4];
   const A = matVal(3, 3, A_data);
-  const { fields } = extLinalg._eigen(A) as { fields: Record<string, { data: ArrayLike<number> }> };
+  const fields = extLinalg._eigen(A) as Record<string, { data: ArrayLike<number> }>;
   const V = Array.from(fields.vectors.data);
   const values = Array.from(fields.values.data);
   // V · diag(values) · V^T
@@ -362,7 +362,7 @@ test('eigmax / eigmin: matches min/max of eigen()', () => {
   const A = matVal(3, 3, [5, 1, 0, 1, 4, 1, 0, 1, 3]);
   const max = extLinalg._eigmax(A);
   const min = extLinalg._eigmin(A);
-  const { fields } = extLinalg._eigen(A);
+  const fields = extLinalg._eigen(A);
   const vals = Array.from(fields.values.data) as number[];
   assert.ok(Math.abs(max - Math.max(...vals)) < 1e-12);
   assert.ok(Math.abs(min - Math.min(...vals)) < 1e-12);
@@ -375,7 +375,7 @@ test('eigmax / eigmin: matches min/max of eigen()', () => {
 test('svd: 2x2 diagonal — singular values are |diag|, sorted descending', () => {
   // A = [[3, 0], [0, 2]] → S = [3, 2]
   const A = matVal(2, 2, [3, 0, 0, 2]);
-  const { fields } = extLinalg._svd(A);
+  const fields = extLinalg._svd(A);
   assertClose(Array.from(fields.S.data), [3, 2], 1e-12);
 });
 
@@ -383,7 +383,7 @@ test('svd: 2x2 symmetric — round-trip A = U · diag(S) · V^T', () => {
   // A = [[2, 1], [1, 2]] — symmetric, singular values 3 and 1.
   const A_data = [2, 1, 1, 2];
   const A = matVal(2, 2, A_data);
-  const { fields } = extLinalg._svd(A) as { fields: Record<string, { data: ArrayLike<number>; shape: number[] }> };
+  const fields = extLinalg._svd(A) as Record<string, { data: ArrayLike<number>; shape: number[] }>;
   const U = Array.from(fields.U.data);
   const V = Array.from(fields.V.data);
   const S = Array.from(fields.S.data);
@@ -400,7 +400,7 @@ test('svd: 4x2 thin — round-trip + singular values descending', () => {
   // A = arbitrary 4x2 matrix
   const A_data = [1, 2, 3, 4, 5, 6, 7, 8];
   const A = matVal(4, 2, A_data);
-  const { fields } = extLinalg._svd(A) as { fields: Record<string, { data: ArrayLike<number>; shape: number[] }> };
+  const fields = extLinalg._svd(A) as Record<string, { data: ArrayLike<number>; shape: number[] }>;
   assert.deepEqual(fields.U.shape, [4, 2]);
   assert.deepEqual(fields.V.shape, [2, 2]);
   assert.deepEqual(fields.S.shape, [2]);
@@ -485,8 +485,7 @@ test('std-module: ext-linear-algebra.lu impl reachable via registry', () => {
   assert.equal(luDesc.kind, 'function');
   const A = matVal(2, 2, [4, 3, 2, 1]);
   const r = luDesc.impl(A);
-  assert.equal(r.shape, 'record');
-  assert.ok(r.fields.P && r.fields.L && r.fields.U);
+  assert.ok(r.P && r.L && r.U);
 });
 
 test('std-module: ext-linear-algebra.kron impl reachable via registry', () => {
