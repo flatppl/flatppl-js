@@ -1132,12 +1132,24 @@ function _booleanScalar(x: any): boolean {
 function _discreteEqual(a: any, b: any): boolean {
   return (typeof a === 'boolean' ? +a : a) === (typeof b === 'boolean' ? +b : b);
 }
+// Engine-internal inverse helpers (bijection-registry.ts). Each reads its
+// argument once, so an inverse is one elementwise pass.
+//   _signed_pow(y, e) = sign(y) |y|^e, the inverse of an odd integer power;
+//   _image_gate(y, lo, hi) = y on [lo, hi], else NaN (a point outside the
+//   forward map's image, where the pushforward density is 0).
+function _signedPowScalar(y: any, e: any): number {
+  return y < 0 ? -Math.pow(-y, e) : Math.pow(y, e);
+}
+function _imageGateScalar(y: any, lo: any, hi: any): number {
+  return y >= lo && y <= hi ? y : NaN;
+}
 function _integerScalar(x: any): number {
   if (Number.isInteger(x)) return x;
   throw new Error('integer: value ' + x + ' is not an integer');
 }
 const booleanElem = _makeElementwiseUnop((x: any) => +_booleanScalar(x), 'booleanElem');
 const integerElem = _makeElementwiseUnop(_integerScalar, 'integerElem');
+const signedPowElem = _makeElementwiseBinop(_signedPowScalar, 'signedPowElem');
 
 // Link functions (spec §07 GLM family helpers). Implementations
 // mirror sampler.ARITH_OPS — kept in sync via the test suite.
@@ -1164,6 +1176,9 @@ const invprobitElem = _makeElementwiseUnop(
 // size-1 axes). The condition must be real-valued; the branches may
 // be complex (planar buffers picked per cell; a real branch
 // contributes im = 0 via readComplex's implicit zero buffer).
+function imageGateElem(y: any, lo: any, hi: any): any {
+  return ifelseElem(landElem(geElem(y, lo), leElem(y, hi)), y, NaN);
+}
 function ifelseElem(cond: any, thn: any, els: any): any {
   const vals = [cond, thn, els].map((v: any) => {
     if (typeof v === 'number' || typeof v === 'boolean') {
@@ -1961,7 +1976,7 @@ function cisElem(theta: any): any {
 
 module.exports = {
   _roundEven: roundEven,
-  _booleanScalar, _integerScalar, _discreteEqual,
+  _booleanScalar, _integerScalar, _discreteEqual, _signedPowScalar, _imageGateScalar,
   mul,
   add,
   sub,
@@ -2015,7 +2030,7 @@ module.exports = {
   asinhElem, acoshElem, atanhElem,
   // Closure of ARITH_OPS_N coverage (ifelse / link functions / casts).
   posElem,
-  booleanElem, integerElem,
+  booleanElem, integerElem, signedPowElem, imageGateElem,
   logitElem, invlogitElem, probitElem, invprobitElem,
   gammaElem, loggammaElem,
   ifelseElem,

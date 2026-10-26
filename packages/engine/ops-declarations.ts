@@ -1661,6 +1661,8 @@ function _registerScalarLogicals(): void {
     lxor: (a: any, b: any) => !a !== !b,
     lnot: (a: any) => !a,
     ifelse: (c: any, a: any, b: any) => c ? a : b,
+    _signed_pow: valueOps._signedPowScalar,
+    _image_gate: valueOps._imageGateScalar,
     boolean: valueOps._booleanScalar,
     integer: valueOps._integerScalar,
   };
@@ -1797,6 +1799,8 @@ function _ensureBroadcastedRegistered(): void {
     ['gamma',     1, (vs) => vo.gammaElem(vs[0])],
     ['loggamma',  1, (vs) => vo.loggammaElem(vs[0])],
     ['ifelse',  3, (vs) => vo.ifelseElem(vs[0], vs[1], vs[2])],
+    ['_signed_pow', 2, (vs) => vo.signedPowElem(vs[0], vs[1])],
+    ['_image_gate', 3, (vs) => vo.imageGateElem(vs[0], vs[1], vs[2])],
     // Phase 3.2: complex constructor / accessors elementwise.
     // `complex.(re, im)` / `real.(z)` / `imag.(z)` / `conj.(z)` /
     // `cis.(theta)` lower to `broadcast(<op>, args)` and route here.

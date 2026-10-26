@@ -780,6 +780,9 @@ const EVALUABLE_OPS = new Set([
   // `__ms_checked_metric_N = _ms_check_symmetric(metric)` flows
   // through the standard `evaluate` derivation.
   '_ms_check_symmetric',
+  // Engine-internal bijection inverses (bijection-registry.ts): pure scalar
+  // value ops, each reading its argument once.
+  '_signed_pow', '_image_gate',
 ]);
 
 // =====================================================================
