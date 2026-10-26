@@ -162,7 +162,7 @@ test('Arrow typed columns read past every other layout, from the file and the st
       + columns.map(([name]) => `v_${name}=t.${name}`).join('\n'), [file]);
     for (const [name, , want] of columns) assert.deepEqual(await values(ctx, `v_${name}`), want, `${file} ${name}`);
     for (const [column, reason] of [
-      ['f64', /is missing/], ['null', /is missing/], ['dict_null', /is missing/],
+      ['f64', /is missing/], ['null', /has the Arrow type Null, so every value is missing/], ['dict_null', /is missing/],
       ['utf8', /holds Arrow strings/], ['large_utf8', /holds Arrow strings/],
       ['view', /holds Arrow strings/], ['dict', /holds Arrow strings/],
       ['binary', /unsupported Arrow type/], ['list', /unsupported Arrow type/],
@@ -197,8 +197,17 @@ test('malformed binary sources refuse', () => {
   assert.throws(() => readArrow(fixture('negative_offset.arrows')),
     /Arrow IPC: column `b` has a buffer outside its batch/);
   assert.throws(() => readArrow(fixture('bad_block.arrow')), /Arrow IPC: a footer block leaves the file/);
-  assert.match(readArrow(fixture('huge_rows.arrows')).n.reason,
-    /column `n` claims 1099511627776 rows of nulls, more than the file can hold/);
+  // A Null column is never materialised, whatever rows it claims, in one batch or
+  // in 400 (a 38 KB file that once filled 123M cells).
+  for (const file of ['huge_rows.arrows', 'many_null_batches.arrows']) {
+    assert.match(readArrow(fixture(file)).n.reason, /column `n` has the Arrow type Null, so every value is missing/);
+  }
+  // A footer block shorter than its message, and LZ4 prefixes claiming 2^50 and 2^62 bytes.
+  assert.throws(() => readArrow(fixture('short_block.arrow')),
+    /Arrow IPC: malformed file \(a footer block disagrees with its message\)/);
+  for (const file of ['huge_lz4_2e50.arrow', 'huge_lz4_2e62.arrow']) {
+    assert.throws(() => readArrow(fixture(file)), /Arrow IPC: malformed file \(LZ4 data states an impossible size\)/);
+  }
   assert.throws(() => readArrow(fixture('bad_key.arrows')),
     /Arrow IPC: malformed file \(column `x` has a dictionary key outside its dictionary\)/);
   for (const bytes of [new Uint8Array(4), new Uint8Array([255, 0, 0, 0, 0, 0, 0, 0])]) {

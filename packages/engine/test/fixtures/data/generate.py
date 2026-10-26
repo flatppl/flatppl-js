@@ -153,6 +153,23 @@ with ipc.new_stream(HERE / "types.arrows", table.schema) as writer:
 with ipc.new_file(HERE / "compressed.arrow", table.schema,
                   options=ipc.IpcWriteOptions(compression="lz4")) as writer:
     writer.write_table(table)
+def patched(path, data, old, new, region=slice(None)):
+    """Write `data` with the one occurrence of `old` in `region` replaced by `new`."""
+    data = bytearray(data)
+    part = data[region]
+    assert part.count(old) == 1, path
+    data[region] = part.replace(old, new)
+    (HERE / path).write_bytes(bytes(data))
+
+
+# Not written here: short_block.arrow, huge_lz4_2e50.arrow and huge_lz4_2e62.arrow
+# are pyarrow files of one f64 column, byte-patched by hand. short_block's footer
+# Block.bodyLength reads 8 against its message's 32. The huge_lz4 files are LZ4
+# files whose data buffer's decompressed-length prefix reads 2^50 and 2^62.
+# 400 batches of a Null column, 308224 rows each, in a file of about 38 KB.
+with ipc.new_stream(HERE / "many_null_batches.arrows", pa.schema([("n", pa.null())])) as writer:
+    for _ in range(400):
+        writer.write_batch(pa.record_batch({"n": pa.nulls(308224)}))
 # Long LZ4 matches and literal runs, which take extended length bytes.
 runs = np.concatenate([np.full(1000, 1.5), np.arange(100) * 0.25])
 with ipc.new_file(HERE / "lz4_runs.arrow", pa.schema([("x", pa.float64())]),
@@ -176,15 +193,6 @@ metadata = stream[at + 8:at + 8 + length]
 assert metadata.count(struct.pack("<q", 48)) == 1  # the body length
 stream[at + 8:at + 8 + length] = metadata.replace(struct.pack("<q", 48), struct.pack("<q", -(8 + length)))
 (HERE / "negative_body.arrows").write_bytes(bytes(stream))
-
-
-def patched(path, data, old, new, region=slice(None)):
-    """Write `data` with the one occurrence of `old` in `region` replaced by `new`."""
-    data = bytearray(data)
-    part = data[region]
-    assert part.count(old) == 1, path
-    data[region] = part.replace(old, new)
-    (HERE / path).write_bytes(bytes(data))
 
 
 # Column `b`'s data buffer at a negative offset.

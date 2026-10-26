@@ -280,7 +280,9 @@ function columnReader(field: ArrowField, dictionaries: Map<number, any[] | Unrea
       });
     };
   }
-  if (name === 'Null') return (node: any) => Array.from({ length: node.length }, () => null);
+  // No buffer bounds a Null array's length, and every value is missing, so
+  // selecting it refuses anyway. It is never materialised.
+  if (name === 'Null') return new Unreadable(`column \`${field.name}\` has the Arrow type Null, so every value is missing`);
   if (name === 'Bool') {
     return (node: any, buffer: any) => {
       if (buffer(1).length * 8 < node.length) throw new RangeError('a boolean buffer is shorter than its column');
@@ -455,7 +457,14 @@ function decodeArrow(bytes: Uint8Array): any {
         const offset = Number(view.getBigInt64(blocks[0] + 24 * i, true));
         if (!(offset >= 0 && offset < bytes.length)) fail('a footer block leaves the file');
         const next = messages(bytes, offset).next();
-        if (!next.done) batches.push(next.value);
+        if (next.done) continue;
+        // A reader that slices by the block must find the message's own lengths there.
+        const metadata = next.value.body.byteOffset - bytes.byteOffset - offset;
+        if (view.getInt32(blocks[0] + 24 * i + 8, true) !== metadata
+            || Number(view.getBigInt64(blocks[0] + 24 * i + 16, true)) !== next.value.body.length) {
+          fail('malformed file (a footer block disagrees with its message)');
+        }
+        batches.push(next.value);
       }
     }
   } else {
@@ -516,10 +525,6 @@ function decodeArrow(bytes: Uint8Array): any {
       };
       const length = Number(view.getBigInt64(nodes[0] + 16 * at.node, true));
       if (length < 0) fail(`column \`${f.name}\` has a negative length`);
-      // No buffer bounds a Null column, and every other column needs a bit per row.
-      if (TYPE_NAMES[f.type] === 'Null' && !f.dictionary && length > 8 * bytes.length) {
-        return new Unreadable(`column \`${f.name}\` claims ${length} rows of nulls, more than the file can hold`);
-      }
       try { return reader({ length }, slice); }
       catch (e) {
         if (e instanceof Unreadable) return e;
