@@ -637,6 +637,32 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
         break;
       }
+      // §07 `addaxes(A, n_leading, n_trailing)`: A's shape with n_leading
+      // size-one axes before it and n_trailing after it. Typed here so a
+      // rank check downstream (a record-valued broadcast needs one axis,
+      // §04) sees the real rank instead of a deferred type.
+      case 'addaxes': {
+        const args = expr.args || [];
+        if (args.length === 3) {
+          const t: any = inferExpr(args[0], scopes);
+          // §07 counts are integers, and §03 makes `1.0` a real: only an
+          // integer-typed count takes this path; anything else reaches the
+          // signature check below.
+          const intTyped = (a: any) => {
+            const ty: any = inferExpr(a, scopes);
+            return ty && ty.kind === 'scalar' && ty.prim === 'integer';
+          };
+          const lead = intTyped(args[1]) ? resolveIntegerShape(args[1]) : null;
+          const trail = intTyped(args[2]) ? resolveIntegerShape(args[2]) : null;
+          if (t && t.kind === 'array' && Array.isArray(t.shape)
+              && !(t.elem && t.elem.kind === 'array')
+              && lead != null && trail != null && lead >= 0 && trail >= 0) {
+            const shape = [...new Array(lead).fill(1), ...t.shape, ...new Array(trail).fill(1)];
+            return write(T.array(shape.length, shape, t.elem), expr);
+          }
+        }
+        break;
+      }
       // §07 gives `quantile` the domains `real arrays, interval(0, 1)`. Both
       // violations are statically visible and both raise here for the same
       // reason `sizeof` does below: the runtime's throw is swallowed by
