@@ -83,7 +83,7 @@ test('wignerd takes j, m1, m2 directly and equals the doubled form for integer s
   integral.forEach(([tj, a, b, c, want], i) => close(fv.get(`d${i}`), want, `d(${tj / 2}, ${a / 2}, ${b / 2}, ${c})`));
 });
 
-// High spin, where Wigner's alternating sum cancels (relative error 2e-4 at
+// High spin, where Wigner's alternating sum cancels (relative error 1.8e-3 at
 // 2j = 80). SymPy Rotation.d at 40 digits, each value cross-checked against
 // the exact sum evaluated in 80-digit mpmath.
 const D_HIGH: [number, number, number, number, number][] = [
