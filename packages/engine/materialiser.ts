@@ -770,13 +770,13 @@ function _weightIsThetaDependent(inner: any, ctx: any): boolean {
 //
 // Three expression sources, all shared with the density routes so the sampler
 // divides by the number `logdensityof` subtracts:
-//   • crn-normalize's fixed-sample Ẑ(θ) for `weighted(f, Lebesgue(box))`.
+//   • crn-normalize's box integral log Z(θ) for `weighted(f, Lebesgue(box))`.
 //   • leaf-mass-quad's fixed graded quadrature Ẑ(θ) for `weighted(f, B)` with a
 //     continuous scalar probability leaf `B`.
 //   • normalize-mass's `logTotalMassExpr` for scalar factors, without
 //     exponentiating a logweight before taking its logarithm again.
 function _perAtomLogMassExpr(name: string, ctx: any): any | null {
-  const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
+  const { crnNormalizeLogMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
   const { logTotalMassExpr } = require('./normalize-mass.ts');
   const { expandMeasureIR } = require('./derivations.ts');
   const ir = expandMeasureIR(name, ctx.derivations, new Set(), ctx.bindings);
@@ -785,8 +785,7 @@ function _perAtomLogMassExpr(name: string, ctx: any): any | null {
     // Over the node budget this THROWS rather than returning null: the pooled
     // divisor is the wrong number under a θ-dependent weight, and it is the one
     // the caller would fall back to.
-    const mass = crnNormalizeMassExpr(ir, { points: ctx.crnNormalizePoints, ctx });
-    return mass == null ? null : { kind: 'call', op: 'log', args: [mass] };
+    return crnNormalizeLogMassExpr(ir);
   }
   // The same for a continuous scalar probability LEAF base — the shape this
   // route used to REFUSE while the density route baked a constant. Both now

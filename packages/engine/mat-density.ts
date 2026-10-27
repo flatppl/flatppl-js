@@ -29,7 +29,7 @@ const densityPrims = require('./density-prims.ts');
 const { isValue } = require('./value.ts');
 const { logTotalMassExpr, positiveCountLogMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
 const { engineLimitation } = require('./limitations.ts');
-const { crnNormalizeMassExpr, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
+const { crnNormalizeDensity, crnRecognize, crnWeightIsThetaDependent } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
 
 const {
@@ -2075,30 +2075,19 @@ function resolveNormalizeMasses(measureIR: any, ctx: any): Promise<any> {
       delete node.massFrom;
       continue;
     }
-    // A θ-DEPENDENT weight over a Lebesgue box: Z moves with θ, so the constant
-    // bake below is wrong at every θ but the materialised one. Estimate Z(θ) by
-    // reweighting ONE fixed sample of the box, emitted as an expression in θ
-    // (crn-normalize.ts explains the estimator, the fixed sample and the
-    // plug-in bias).
-    //
-    // The θ-dependence test is EXPLICIT rather than inferred from the quadrature
-    // above returning null: that function also declines an N-D box and an
-    // unbounded support, so treating its null as "θ-dependent" pulled the N-D
-    // θ-INDEPENDENT case onto this path too and moved numbers that were already
-    // right (it broke the reified-vs-lambda bit-for-bit agreement and the 4xy
-    // box oracle).
+    // Resolve the same per-θ box integral as sampling and MCMC. Gate on
+    // θ-dependence explicitly: the fixed-weight route can also decline boxes.
     const crnShape = crnRecognize(node);
     // Over the node budget this THROWS rather than returning null: the constant
     // bake below is the pooled mass, which is wrong at every θ but one.
-    const crnExpr = (crnShape && crnWeightIsThetaDependent(crnShape, ctx))
-      ? crnNormalizeMassExpr(node, { points: ctx && ctx.crnNormalizePoints, ctx })
+    const box = (crnShape && crnWeightIsThetaDependent(crnShape, ctx))
+      ? crnNormalizeDensity(node)
       : null;
-    if (crnExpr != null) {
-      const innerC = node.args[0];
+    if (box != null) {
       node.op = 'logweighted';
-      node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [crnExpr] }] }, innerC];
+      node.args = [{ kind: 'call', op: 'neg', args: [box.logMass] }, box.inner];
       delete node.massFrom;
-      // Same mark the closed-form mass rewrite carries: Ẑ = 0 makes the shift
+      // Same mark the closed-form mass rewrite carries: Z = 0 makes the shift
       // +∞ and §06 leaves normalize undefined there, so the walker must refuse
       // rather than add ±∞ to the inner log-density.
       node.fromNormalize = true;
