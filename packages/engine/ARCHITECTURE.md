@@ -145,6 +145,8 @@ use the existing broadcast shape rules so inferred parameters stay live.
 Unsupported ordered/zero-sum source laws refuse with a named diagnostic.
 Other bases expand to the defining normalize/logweighted expression and use
 its existing capabilities. Unsupported normalizers or samplers refuse queries.
+Normalizer discontinuity walks solve affine membership in `posreals`,
+`nonnegreals` and `unitinterval` at their finite endpoints, as for `interval`.
 
 Record-valued broadcasts collect into tables, including nested record columns.
 Bare `record` heads infer their fields from keyword cell types and share the
@@ -290,6 +292,8 @@ inline atoms share this path; a fixed array atom acquires a leading sample
 axis rather than becoming a scalar ensemble of its elements.
 IID products preserve complex buffers in both array atoms and table columns;
 per-atom evaluation uses logical row slices to retain complex and layout tags.
+`fill` repeats logical complex scalar/array values in both planes; `rowstack`
+and `colstack` preserve those planes when promoting nested vectors to matrices.
 Worker sessions register retained input buffers at `init`/`setEnv`. An
 `evaluateN` result borrowing that storage is copied before transfer; owned
 outputs retain their zero-copy transfer path.
