@@ -1668,12 +1668,14 @@ function _isRank0(v: any) {
 // matrix × shape=[N, n] case to _matBatchedVecMul; otherwise delegates
 // to the atom-indep `mul` (which already handles scalar broadcast,
 // matmul, matvec etc. correctly when neither operand has an atom axis).
-function mulN(a: any, b: any, N: any) {
+function mulN(a: any, b: any, N: any, atomAxes?: readonly [boolean, boolean]) {
   if (!isValue(a) || !isValue(b)) {
     throw new Error('value-ops.mulN: both operands must be Values');
   }
-  const aBatched = _hasAtomAxis(a, N);
-  const bBatched = _hasAtomAxis(b, N);
+  // IR evaluation can prove an operand is shared even when its first
+  // intrinsic dimension happens to equal N. Shape alone cannot do that.
+  const aBatched = atomAxes ? atomAxes[0] : _hasAtomAxis(a, N);
+  const bBatched = atomAxes ? atomAxes[1] : _hasAtomAxis(b, N);
   // matrix × shape=[N, n]: a is shape [m, n], b is shape [N, n].
   if (!aBatched && bBatched
       && a.shape.length === 2 && b.shape.length === 2) {
