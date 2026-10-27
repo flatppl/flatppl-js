@@ -237,8 +237,8 @@ function crnNormalizeDensity(node: any): any | null {
   };
 }
 
-// The piecewise rule inlines the weight body at each node too, so it has the
-// same size limit.
+// Exact tensor rules inline the weight at quadrature points; piecewise-constant
+// windows inline it once per piece. Both must fit the same expression budget.
 function _checkBudget(expr: any) {
   const n = nodeCount(expr);
   if (n > CRN_NODE_BUDGET) {
