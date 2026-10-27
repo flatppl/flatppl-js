@@ -801,6 +801,7 @@ export type BindingType =
   | 'kernelof'       // RHS is a kernel reification
   | 'fn'             // RHS is `fn(<expr-with-holes>)` shorthand
   | 'bijection'      // RHS is `bijection(f, f_inv, logvolume)`
+  | 'fchain'         // RHS is `fchain(f, g, ...)`, a function composition
   | 'likelihood'     // RHS is `likelihoodof(<kernel>, <obs>)`
   | 'bayesupdate'    // RHS is `bayesupdate(<likelihood>, <prior>)`
   | 'module'         // RHS is `load_module` / `standard_module`
