@@ -5,26 +5,26 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
 
-test('a per-atom transposed vector contracts with a shared vector', async () => {
+test('a shared vector stays whole when its length equals the atom count', async () => {
   const { ctx } = makeMatCtx('x~iid(Normal(0,1),3)\nw=[1.,-2.,3.]\ny=transpose(x)*w',
-    { sampleCount: 5, rootSeed: 117 });
+    { sampleCount: 3, rootSeed: 117 });
   const x = (await ctx.getMeasure('x')).samples;
   const y = (await ctx.getMeasure('y')).samples;
-  for (let k = 0; k < 5; k++) {
+  for (let k = 0; k < 3; k++) {
     assert.equal(y[k], x[3*k] - 2*x[3*k+1] + 3*x[3*k+2]);
   }
 });
 
-test('oriented cells contract with the corresponding packed vector atom', async () => {
+test('packed vector references still supply their corresponding atom at equal lengths', async () => {
   const { ctx } = makeMatCtx(`
 x~iid(Normal(0,1),2)
 z~iid(Normal(0,1),2)
 y=transpose(x)*z
-`, { sampleCount: 5, rootSeed: 117 });
+`, { sampleCount: 2, rootSeed: 117 });
   const x = (await ctx.getMeasure('x')).samples;
   const z = (await ctx.getMeasure('z')).samples;
   const y = (await ctx.getMeasure('y')).samples;
-  for (let k = 0; k < 5; k++) {
+  for (let k = 0; k < 2; k++) {
     const want = x[2*k]*z[2*k] + x[2*k+1]*z[2*k+1];
     assert.equal(y[k], want);
   }
