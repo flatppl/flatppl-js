@@ -145,6 +145,8 @@ use the existing broadcast shape rules so inferred parameters stay live.
 Unsupported ordered/zero-sum source laws refuse with a named diagnostic.
 Other bases expand to the defining normalize/logweighted expression and use
 its existing capabilities. Unsupported normalizers or samplers refuse queries.
+Normalizer discontinuity walks solve affine membership in `posreals`,
+`nonnegreals` and `unitinterval` at their finite endpoints, as for `interval`.
 
 Record-valued broadcasts collect into tables, including nested record columns.
 Bare `record` heads infer their fields from keyword cell types and share the

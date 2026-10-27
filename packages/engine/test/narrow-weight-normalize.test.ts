@@ -100,7 +100,7 @@ for (const [label, w, pt, want] of ROWS) {
 for (const [label, w, msg] of [
   ['x * x < 1e-8', '1.0 + 100.0 * ' + IND('x * x < 1.0e-8'), /`lt` test on an expression that is not affine in the variate at line 1, column 50/],
   ['mod(x, 0.1)', '1.0 + mod(x, 0.1)', /`mod` of the variate, which may jump/],
-  ['x in a set that is not an interval', '1.0 + ' + IND('x in posreals'), /`in` test/],
+  ['x in a set that is not an interval', '1.0 + ' + IND('x in integers'), /`in` test/],
   ['abs of a non-affine expression', '1.0 + 100.0 * ' + IND('abs(x * x - 0.25) < 1.0e-4'), /`lt` test on an expression that is not affine/],
   ['floor of a non-affine expression', '1.0 + floor(x * x)', /`floor` of an expression that is not affine/],
   ['a broadcast comparison', '1.0 + 100.0 * sum(ifelse.([x] .< 1.0e-4, 1.0, 0.0))', /`broadcast` of the variate through a function that may jump/],
@@ -124,4 +124,26 @@ test('a broadcast of a named function: the normalizer matches the closed form', 
   const got = await score('g(t) = 2.0 * t\nM = normalize(weighted(x -> 1.0 + sum(broadcast(g, [x])), '
     + 'Lebesgue(interval(0.0, 1.0))))\nlp = logdensityof(M, 0.8)\n', 'lp');
   assert.ok(Math.abs(got - Math.log(2.6 / 2)) < 1e-11, `${got}`);
+});
+
+// §03 named intervals supply finite cuts just like interval(...). Direct
+// integration: Z = 3 + length(S ∩ [-1,2]); endpoint inclusion affects density
+// at zero, but changes no Lebesgue mass.
+for (const [set, mass, atZero] of [
+  ['posreals', 5, 1], ['nonnegreals', 5, 2], ['unitinterval', 4, 2],
+] as Array<[string, number, number]>) {
+  test(`membership in ${set} splits the integral and retains its endpoint`, async () => {
+    const source = `M = normalize(weighted(x -> 1.0 + ifelse(x in ${set}, 1.0, 0.0), Lebesgue(interval(-1.0, 2.0))))\n`;
+    const outside = await score(source + 'lp = logdensityof(M, -0.5)\n', 'lp');
+    const zero = await score(source + 'lp = logdensityof(M, 0.0)\n', 'lp');
+    assert.ok(Math.abs(outside + Math.log(mass)) < 1e-12);
+    assert.ok(Math.abs(zero - Math.log(atZero / mass)) < 1e-12);
+  });
+}
+
+test('an affine narrow window through a named set splits at both endpoints', async () => {
+  // (x-0.3)/1e-4 ∈ [0,1] has width 1e-4; Z = 1 + 100*1e-4.
+  const got = await score('M = normalize(weighted(x -> 1.0 + 100.0 * ifelse((x - 0.3) / 1.0e-4 in unitinterval, 1.0, 0.0), '
+    + 'Lebesgue(interval(0.0, 1.0))))\nlp = logdensityof(M, 0.8)\n', 'lp');
+  assert.ok(Math.abs(got + Math.log1p(0.01)) < 1e-11);
 });
