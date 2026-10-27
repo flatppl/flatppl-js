@@ -188,15 +188,19 @@ test('Arrow typed columns read past every other layout, from the file and the st
 });
 
 test('malformed binary sources refuse', () => {
-  assert.throws(() => readArrow(new Uint8Array([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0])), /Arrow IPC: no schema/);
+  const garbage = new Uint8Array([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]);
+  const result = processSource('x=load_data("garbage.arrows",cartpow(reals,1))',
+    { path: 'model.flatppl', bundle: { sources: {}, files: { 'garbage.arrows': garbage } } });
+  assert.match(result.diagnostics.find((d: any) => d.severity === 'error').message,
+    /Arrow IPC: malformed file \(no schema\)/);
   assert.throws(() => readArrow(new TextEncoder().encode('ARROW1\0\0short')), /footer and magic/);
   // Crafted lengths: a body that steps back onto its own message, a buffer at
   // a negative offset, a footer block past the end, and 2^40 rows of nulls.
   assert.throws(() => readArrow(fixture('negative_body.arrows')),
     /Arrow IPC: malformed file \(a message body leaves the file\)/);
   assert.throws(() => readArrow(fixture('negative_offset.arrows')),
-    /Arrow IPC: column `b` has a buffer outside its batch/);
-  assert.throws(() => readArrow(fixture('bad_block.arrow')), /Arrow IPC: a footer block leaves the file/);
+    /Arrow IPC: malformed file \(column `b` has a buffer outside its batch\)/);
+  assert.throws(() => readArrow(fixture('bad_block.arrow')), /Arrow IPC: malformed file \(a footer block leaves the file\)/);
   // A Null column is never materialised, whatever rows it claims, in one batch or
   // in 400 (a 38 KB file that once filled 123M cells).
   for (const file of ['huge_rows.arrows', 'many_null_batches.arrows']) {

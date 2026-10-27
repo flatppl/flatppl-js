@@ -439,15 +439,16 @@ function readArrow(bytes: Uint8Array): any {
 
 function decodeArrow(bytes: Uint8Array): any {
   const fail = (message: string): never => { throw new Error(`Arrow IPC: ${message}`); };
+  const malformed = (message: string): never => fail(`malformed file (${message})`);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const magic = (at: number) => new TextDecoder().decode(bytes.subarray(at, at + 6)) === 'ARROW1';
   let schema: Table | null = null;
   // Dictionary and record batches, in the order they apply.
   const batches: Array<{ header: Table; body: Uint8Array }> = [];
   if (magic(0)) {
-    if (bytes.length < 18 || !magic(bytes.length - 6)) fail('a file must end with its footer and magic');
+    if (bytes.length < 18 || !magic(bytes.length - 6)) malformed('a file must end with its footer and magic');
     const footerLength = view.getInt32(bytes.length - 10, true);
-    if (footerLength <= 0 || footerLength > bytes.length - 18) fail('the footer length leaves the file');
+    if (footerLength <= 0 || footerLength > bytes.length - 18) malformed('the footer length leaves the file');
     const footer = Table.root(view, bytes.length - 10 - footerLength);
     schema = footer.table(1);
     // A file has no dictionary replacements, so every dictionary precedes the batches.
@@ -455,14 +456,14 @@ function decodeArrow(bytes: Uint8Array): any {
       const blocks = footer.vector(index);
       for (let i = 0; blocks && i < blocks[1]; i++) {
         const offset = Number(view.getBigInt64(blocks[0] + 24 * i, true));
-        if (!(offset >= 0 && offset < bytes.length)) fail('a footer block leaves the file');
+        if (!(offset >= 0 && offset < bytes.length)) malformed('a footer block leaves the file');
         const next = messages(bytes, offset).next();
         if (next.done) continue;
         // A reader that slices by the block must find the message's own lengths there.
         const metadata = next.value.body.byteOffset - bytes.byteOffset - offset;
         if (view.getInt32(blocks[0] + 24 * i + 8, true) !== metadata
             || Number(view.getBigInt64(blocks[0] + 24 * i + 16, true)) !== next.value.body.length) {
-          fail('malformed file (a footer block disagrees with its message)');
+          malformed('a footer block disagrees with its message');
         }
         batches.push(next.value);
       }
@@ -474,7 +475,7 @@ function decodeArrow(bytes: Uint8Array): any {
       else if (kind === 2 || kind === 3) batches.push(message);
     }
   }
-  if (!schema) fail('no schema');
+  if (!schema) malformed('no schema');
   if (schema!.int(0, 2) !== 0) fail('big-endian data is not read');
   const fields = schema!.tables(1).map(arrowField);
   const dictionaries = new Map<number, any[] | Unreadable>();
@@ -517,14 +518,14 @@ function decodeArrow(bytes: Uint8Array): any {
         const entry = buffers[0] + 16 * at.buffers[k];
         const offset = Number(view.getBigInt64(entry, true));
         const size = Number(view.getBigInt64(entry + 8, true));
-        if (offset < 0 || size < 0 || offset + size > body.length) fail(`column \`${f.name}\` has a buffer outside its batch`);
+        if (offset < 0 || size < 0 || offset + size > body.length) malformed(`column \`${f.name}\` has a buffer outside its batch`);
         const raw = body.subarray(offset, offset + size);
         if (!lz4) return raw;
         if (!decompressed.has(k)) decompressed.set(k, lz4Buffer(raw));
         return decompressed.get(k)!;
       };
       const length = Number(view.getBigInt64(nodes[0] + 16 * at.node, true));
-      if (length < 0) fail(`column \`${f.name}\` has a negative length`);
+      if (length < 0) malformed(`column \`${f.name}\` has a negative length`);
       try { return reader({ length }, slice); }
       catch (e) {
         if (e instanceof Unreadable) return e;
@@ -540,7 +541,7 @@ function decodeArrow(bytes: Uint8Array): any {
       const id = content.int(0, 8);
       const field = valueFields.get(id);
       const batch = content.table(1);
-      if (!field || !batch) fail(`dictionary batch ${id} matches no dictionary field`);
+      if (!field || !batch) malformed(`dictionary batch ${id} matches no dictionary field`);
       const [cells] = decode(batch!, body, [field!], [columnReader(field!, dictionaries)]);
       // No reader means the dictionary column itself is already unreadable.
       const previous = dictionaries.get(id);
