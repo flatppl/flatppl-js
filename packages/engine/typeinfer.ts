@@ -5956,7 +5956,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const key = message + '@' + JSON.stringify(loc?.start);
     if (!kwargReported.has(key)) {
       kwargReported.add(key);
-      diagnostics.push({ severity: 'error', message, loc });
+      diagnostics.push({ severity: 'error', message, loc,
+        // Named and positional parameters share the real-only kernel gate.
+        ...(_leafPrim(expected) === 'real' && _leafPrim(got) === 'complex' ? { refusesEvaluation: true } : {}),
+      });
     }
     return T.failed(op + ' kwarg type');
   }

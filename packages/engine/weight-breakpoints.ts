@@ -159,8 +159,13 @@ function weightDiscontinuities(body: any, isVariate: (n: any) => boolean,
     }
     if (n.op === 'in' && n.args?.length === 2) {
       const [v, set] = n.args;
-      const ok = set && set.kind === 'call' && set.op === 'interval' && set.args?.length === 2
-        && test(v, set.args[0]) && test(v, set.args[1]);
+      // §03's named real intervals have the same finite cuts. Open/closed
+      // endpoints remain owned by `in`; isolated points have zero Lebesgue mass.
+      const bounds = set?.kind === 'const'
+        ? set.name === 'posreals' || set.name === 'nonnegreals' ? [_lit(0)]
+          : set.name === 'unitinterval' ? [_lit(0), _lit(1)] : null
+        : set?.kind === 'call' && set.op === 'interval' && set.args?.length === 2 ? set.args : null;
+      const ok = bounds && bounds.every((bound: any) => test(v, bound));
       if (!ok) refuse = 'an `in` test on an expression that is not affine in the variate, or on a set that is not an interval' + where(n);
       return;
     }
