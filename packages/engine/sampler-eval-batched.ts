@@ -845,6 +845,12 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
       // Scalar-batched dispatch.
       if (op in ARITH_OPS_N) {
         const args = (ir.args || []).map((a: any) => _evalN(a, refArrays, N, baseEnv, overlay));
+        // Oriented cells cannot be packed as [N,k]: that would turn a
+        // per-cell row-vector tag into a matrix-transpose tag (§03/§07).
+        // Consume the existing cell list before numeric coercion drops it.
+        if (args.some((a: any) => Array.isArray(a) && a.length === N && isValueObj(a[0]))) {
+          return _arithmeticCells(_sampler()._internal.ARITH_OPS[op], args, N);
+        }
         return ARITH_OPS_N[op](args, N);
       }
       // Batched approximation functions. Each has the shape
@@ -1225,6 +1231,28 @@ function _profileProgramFor(ir: any): any {
   return prog;
 }
 
+/** Consume unpacked per-atom Values without changing their §03 orientation.
+ * Shared operands stay whole; packed operands contribute their matching atom.
+ */
+function _arithmeticCells(fn: any, args: any[], N: number) {
+  const accessors = args.map((v: any) => {
+    if (Array.isArray(v) && v.length === N && isValueObj(v[0])) return (i: number) => v[i];
+    if (isValueObj(v) && valueLib.isAtomBatched(v, N)) {
+      const dense = valueLib._logicalDense(v);
+      return (i: number) => valueLib._sliceRow(dense, i);
+    }
+    if (isBatch(v, N)) return (i: number) => _batchData(v)[i];
+    return (_i: number) => v;
+  });
+  const out = new Array(N);
+  const callArgs = new Array(args.length);
+  for (let i = 0; i < N; i++) {
+    for (let k = 0; k < accessors.length; k++) callArgs[k] = accessors[k](i);
+    out[i] = fn(...callArgs);
+  }
+  return _packAtomResults(out, N);
+}
+
 function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
   const refNames = refArrays ? Object.keys(refArrays) : [];
   const overlayKeys = overlay ? Object.keys(overlay) : null;
@@ -1317,6 +1345,11 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
       out[i] = evaluateExpr(ir, callEnv);
     }
   }
+  return _packAtomResults(out, N);
+}
+
+/** Pack scalar or uniform numeric results while retaining unrepresentable cells. */
+function _packAtomResults(out: any[], N: number) {
   // Pack to Float64Array if every result is numeric/boolean (the
   // common case for non-scalar ops whose outputs happen to be scalar,
   // e.g. polynomial / get_field returning numbers).
@@ -1346,8 +1379,16 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
   }
   if (allRank0Values) {
     const re = new Float64Array(N);
-    for (let i = 0; i < N; i++) re[i] = out[i].data[0];
-    return valueLib.batchedScalar(re);
+    let im: Float64Array | null = null;
+    for (let i = 0; i < N; i++) {
+      const parts = valueLib.isComplexValue(out[i]) ? valueLib.readComplex(out[i]) : null;
+      re[i] = parts ? parts.re[0] : out[i].data[0];
+      if (parts) {
+        if (im === null) im = new Float64Array(N);
+        im[i] = parts.im[0];
+      }
+    }
+    return im === null ? valueLib.batchedScalar(re) : valueLib.complexValue(re, im, [N]);
   }
   // Pack to a complex Value (shape=[N], dtype='complex') when every
   // result is a scalar complex `{re, im}` — the per-atom return of
