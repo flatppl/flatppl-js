@@ -105,3 +105,14 @@ for (const [label, win, base, point, why] of [
     await assert.rejects(ctx.getMeasure('lp'), why);
   });
 }
+
+for (const [set, win, mass] of [
+  ['posreals', '1.0 + ifelse(x - c0 in posreals, 1.0, 0.0)', 1.7],
+  ['unitinterval', '1.0 + 100.0 * ifelse((x - c0) / 1.0e-4 in unitinterval, 1.0, 0.0)', 1.01],
+] as Array<[string, string, number]>) {
+  test(`latent window through ${set} retains its exact conditional mass`, async () => {
+    // c=0.3: positive half-line length 0.7, or unit window width 1e-4.
+    const got = await score(model(win, unit, '0.1', 0.3));
+    assert.ok(Math.abs(got + Math.log(mass)) < 1e-12);
+  });
+}
