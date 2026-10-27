@@ -168,6 +168,9 @@ Leading slices retain complex components and view semantics; transposed matrix
 rows gather only the selected row, while contiguous slices borrow storage.
 Arithmetic consumes unpacked per-atom `Value` cells before numeric coercion,
 preserving row-vector orientation and complex scalar results across batching.
+Stochastic real scalar vector literals expose packed values for arithmetic.
+Reference-only forms retain joint derivations and component measures for laws
+and plotting; mixed or computed scalar entries use the value evaluator.
 
 Broadcast density distinguishes sample axes from collection axes through input
 references. A matrix dimension equal to the sample

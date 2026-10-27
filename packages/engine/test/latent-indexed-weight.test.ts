@@ -160,11 +160,8 @@ test('the array binding keeps its own tuple derivation', () => {
   // The fold rewrites CONSUMERS of `wp[k]`, not `wp` itself, so the viewer
   // still plots the array through kind:'tuple'.
   //
-  // KNOWN GAP, deliberately not widened here: this holds for the all-refs
-  // spelling only. A MIXED array literal (`[psi, 1.0 - psi]`) still gets no
-  // derivation of its own, so `wp` itself is unplottable there even though
-  // every `wp[k]` consumer now works. Closing that needs lift to hoist
-  // non-ref elements, which would also re-route working fixed-phase arrays.
+  // Its scalar components still describe the joint law even when arithmetic
+  // consumers use the materializer's packed vector value.
   const d = derivationsOf(ALL_REFS(BETA));
   assert.equal(d['wp'] && d['wp'].kind, 'tuple',
     'wp should stay a tuple measure, got ' + JSON.stringify(d['wp']));

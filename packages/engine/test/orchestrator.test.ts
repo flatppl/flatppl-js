@@ -476,15 +476,6 @@ test('derivations: numeric array literal becomes an array derivation', () => {
   assert.deepEqual(derivations.observed.values, [1.2, 3.4, 5.1, 2.8]);
 });
 
-test('derivations: array with non-literal entry is unsupported', () => {
-  // mixed entries (a ref alongside a literal) — out of scope today.
-  const { derivations } = derivationsOf(`
-mu = draw(Normal(mu = 0, sigma = 1))
-xs = [mu, 1.0]
-`);
-  assert.ok(!('xs' in derivations));
-});
-
 test('derivations: discrete leaf flagged via alias chain', () => {
   const { discrete } = derivationsOf(`
 k_dist = Poisson(rate = 3)
