@@ -1426,11 +1426,19 @@ function evaluateCuts(d: any, env: Record<string, any>, lo: number, hi: number, 
     const ends = [a * lo + b, a * hi + b];
     const shift = st.op === 'round' ? 0.5 : 0;
     const k0 = Math.ceil(Math.min(...ends) - shift), k1 = Math.floor(Math.max(...ends) - shift);
+    if (!Number.isSafeInteger(k0) || !Number.isSafeInteger(k1)) {
+      throw engineLimitation('exact step boundaries', 'density', 'the step indices are not representable safe integers');
+    }
     if (k1 - k0 + 1 > MAX_WEIGHT_STEPS) {
       throw refuse('`' + st.op + '` of the variate with ' + (k1 - k0 + 1) + ' steps over the support (more than '
         + MAX_WEIGHT_STEPS + ')');
     }
-    for (let k = k0; k <= k1; k++) found.add((k + shift - b) / a);
+    for (let k = k0; k <= k1; k++) {
+      if ((k + shift) - k !== shift) {
+        throw engineLimitation('exact step boundaries', 'density', 'a half-integer boundary is not representable');
+      }
+      found.add((k + shift - b) / a);
+    }
   }
   return [...found].filter((v) => Number.isFinite(v) && v > lo && v < hi).sort((x, y) => x - y);
 }

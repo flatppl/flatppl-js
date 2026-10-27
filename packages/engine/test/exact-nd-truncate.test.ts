@@ -110,3 +110,11 @@ test('constant pieces require representable interior points and a bounded piece 
   await assert.rejects(() => score(model('t + floor(500.0*v[1]) + floor(500.0*v[2])')),
     { code: 'ENGINE_LIMITATION' });
 });
+
+test('step enumeration refuses indices or half-integer boundaries it cannot represent', async () => {
+  await assert.rejects(() => score(model('t + floor(1.0e16+v[1])')), { code: 'ENGINE_LIMITATION' });
+  await assert.rejects(() => score(model('t + round(4503599627370496.0+v[1]) - 4503599627370496.0')),
+    { code: 'ENGINE_LIMITATION' });
+  // At an exactly represented half-integer, two strips have weights 1 and 2.
+  close(await score(model('t + (round(1.0e6+v[1])-1.0e6)')), Math.log(2 / 1.5));
+});
