@@ -147,7 +147,7 @@ l = logdensityof(energy.([0.4, 0.5]), [0, 1])`, 'l');
   close(unit[0], Math.log(0.216 / 0.648) + Math.log(0.375 / 0.5), 'per-row unitinterval');
   // §03 booleans has no numeric bounds here: the per-row normalizer refuses.
   await assert.rejects(() => value(`energy = p -> normalize(truncate(Poisson(p), booleans))
-l = logdensityof(energy.([3.0, 4.0]), [0, 1])`, 'l'), /cannot resolve truncated normalizer/);
+l = logdensityof(energy.([3.0, 4.0]), [0, 1])`, 'l'), /engine limitation:.*conditional truncated normalizer/);
 });
 
 test('a truncate normalizer defers to the per-call path for a known scalar law only', () => {
