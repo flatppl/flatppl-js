@@ -261,20 +261,15 @@ test('an infinite truncation bound takes the CDF limit, not an evaluation at ±�
     assert.deepEqual(
       totalMassExpr(_trunc(N01, { kind: 'call', op: 'interval', args: [_lit(0), inf] })),
       _lit(0.5), 'mass over [0, ∞) is 1 − Φ(0) = 0.5');
-    // A NEGATIVE infinite bound declines, and the reason is not this arm:
-    // `-inf` lowers to `neg(const inf)`, and `mat-density.numericBoundValue`
-    // resolves a `lit` or a `const` but not a `neg` of one, so
-    // `parseTruncationBox` returns null. The pre-existing
-    // `resolveTruncateNormalizers` route defers on the same spelling, so the two
-    // agree — pinned here because a future bound resolver that folds `neg`
-    // would silently start emitting a literal from this arm too.
-    assert.equal(
+    // The surface spelling -inf lowers to neg(const inf); both infinite
+    // limits give the full Normal mass, independently of its parameters.
+    assert.deepEqual(
       totalMassExpr(_trunc(N01, {
         kind: 'call',
         op: 'interval',
         args: [{ kind: 'call', op: 'neg', args: [inf] }, inf],
       })),
-      null, 'a neg(inf) bound is not resolvable by parseTruncationBox');
+      _lit(1), 'mass over (-∞, ∞) is 1');
   });
 
 test('the half-open spelling reaches the normalize shift end to end', async () => {

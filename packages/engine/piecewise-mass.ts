@@ -141,15 +141,15 @@ function leafMassExpr(param: string, body: any, kernel: string, input: Record<st
 
 // Where the weight varies with the variate outside its tests, as " at line L,
 // column C", or null when every occurrence of the variate sits inside a
-// comparison or an `in` (weightBreakpoints has solved each of those for its
-// breakpoints, so the weight is constant between them).
+// comparison, `in`, or step (the caller must first solve every discontinuity,
+// so each of these expressions is constant between the resulting cuts).
 function variesBetweenCuts(body: any, param: string, arrayVariate: boolean): string | null {
   let found: any = null;
   const visit = (n: any, near: any) => {
     if (found || !n || typeof n !== 'object') return;
     if (Array.isArray(n)) { n.forEach((c) => visit(c, near)); return; }
     const here = n.loc ? n : near;
-    if (n.kind === 'call' && (n.op === 'in' || ['lt', 'le', 'gt', 'ge'].includes(n.op))) return;
+    if (n.kind === 'call' && ['in', 'lt', 'le', 'gt', 'ge', 'floor', 'ceil', 'round'].includes(n.op)) return;
     if (isVariate(n, param, arrayVariate) || (n.kind === 'ref' && n.name === param)) { found = here || {}; return; }
     for (const k in n) if (k !== 'loc' && k !== 'meta') visit(n[k], here);
   };

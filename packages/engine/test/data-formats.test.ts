@@ -167,7 +167,7 @@ test('Arrow typed columns read past every other layout, from the file and the st
       ['view', /holds Arrow strings/], ['dict', /holds Arrow strings/],
       ['binary', /unsupported Arrow type/], ['list', /unsupported Arrow type/],
       ['large_list', /unsupported Arrow type/], ['list_view', /unsupported Arrow type/],
-      ['fixed_list', /unsupported Arrow type/], ['struct', /unsupported Arrow type/],
+      ['fixed_list', /unsupported Arrow type/],
       ['sparse', /unsupported Arrow type/], ['dense', /unsupported Arrow type/],
       ['ree', /unsupported Arrow type/], ['time', /unsupported Arrow type/],
     ] as const) {
@@ -185,6 +185,24 @@ test('Arrow typed columns read past every other layout, from the file and the st
     b=load_data("u64.arrow",cartpow(cartprod(a=reals),1)).a`, ['mixed.arrow', 'u64.arrow']);
   assert.deepEqual(await values(ctx, 'a'), [1.5, 2.5]);
   assert.deepEqual(await values(ctx, 'b'), [1.5]);
+});
+
+test('Arrow struct columns load as nested tables', async () => {
+  for (const file of ['types.arrow', 'types.arrows', 'compressed.arrow']) {
+    const { ctx } = context(`t=load_data("${file}",cartpow(cartprod(struct=cartprod(u=reals)),3))\nx=t.struct.u`, [file]);
+    assert.deepEqual(await values(ctx, 'x'), [1, 2, 1], file);
+    assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(struct=cartprod(u=integers)),3))\nx=t.struct.u`, [file]), /real value/);
+    assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(struct=cartprod(missing=reals)),3))\nx=t.struct.missing`, [file]), /missing field/);
+  }
+  const file = 'struct_null.arrow';
+  const { ctx } = context(`t=load_data("${file}",cartpow(cartprod(nested=cartprod(u=reals)),1))\nx=t.nested.u`, [file]);
+  assert.deepEqual(await values(ctx, 'x'), [1.5]);
+  assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(nested=cartprod(u=reals)),2))\nx=t.nested.u`, [file]), /missing/);
+  assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(nested=cartprod(text=reals)),1))\nx=t.nested.text`, [file]), /holds Arrow strings/);
+  for (const [name, field] of [['huge_struct_null.arrows', 'n'], ['huge_struct_unsupported.arrows', 's']]) {
+    assert.match(refusal(`t=load_data("${name}",cartpow(cartprod(nested=cartprod(${field}=reals)),1))\nx=t.nested.${field}`,
+      [name]), /column `nested` has no readable fields/);
+  }
 });
 
 test('malformed binary sources refuse', () => {

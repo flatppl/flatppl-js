@@ -857,14 +857,13 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
           // A generic_dist (§12) lowers to
           // `normalize(truncate(weighted(w, Lebesgue), S))`: its base is an
           // unnormalized density `w(x)` over the (possibly N-D, ≤3-axis) set
-          // S, NOT a scalar reference measure. Z = ∫_S w(x) dx via adaptive
-          // cubature over the unit box (makeIntegrandND applies the
-          // per-axis change-of-variables + Jacobian for unbounded axes).
+          // S, NOT a scalar reference measure. Array boxes need a proved
+          // integral; two agreeing grids can both miss the same narrow peak.
           const arrayVariate = supportIsArrayVariate(inner.args[1]);
           if (axes.length === 1 && !arrayVariate
               && Number.isFinite(axes[0].lo) && Number.isFinite(axes[0].hi)) {
-            // One bounded axis: split at the weight's discontinuities, which the
-            // seeded cubature grid below can step over (a spike of width 1e-4
+            // One bounded axis: split at the weight's discontinuities, which
+            // an unsplit cubature grid can step over (a spike of width 1e-4
             // inside [0, 1] scored as absent).
             logZ = weightedBaseLogMass(weightFn, [axes[0].lo, axes[0].hi], theta, ctx);
             node.op = 'logweighted';
@@ -873,27 +872,17 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
             resolveTruncateNormalizers(inner, theta, ctx, seen);
             return;
           }
-          const { adaptiveCubature } = require('./quadrature.ts');
-          const integ = makeIntegrandND(weightFn.body, weightFn.paramNames, axes, theta, ctx,
-            arrayVariate);
-          const res = adaptiveCubature(integ, axes.length);
-          if (!(res.Z > 0)) {
-            throw new Error('density: normalize(truncate(weighted(w, Lebesgue), S)) — '
-              + 'normalizer Z = ∫_S w dx is 0 (an everywhere-zero weight over S has no '
-              + 'normalized density per spec §06)');
+          const integral = exactTruncatedBoxIntegral(weightFn, axes, theta, ctx, arrayVariate, inner.args[0].args[1]);
+          logZ = integral.logMass;
+          if (integral.logWeight) {
+            // Cancel only the finite independent offset already included in Z.
+            // Keep the centered exponent, rather than evaluating exp first.
+            const weighted = inner.args[0];
+            inner.args[0] = { ...weighted, op: 'logweighted', args: [
+              { ...weighted.args[0], body: integral.logWeight }, weighted.args[1],
+            ] };
+            logZ = integral.logShift;
           }
-          const relErr = res.err / Math.abs(res.Z);
-          if (relErr > 1e-3) {
-            throw new Error('density: normalize(truncate(weighted(w, Lebesgue), S)) — '
-              + 'adaptive quadrature did not converge (rel-err ' + relErr.toExponential(2)
-              + ' after ' + res.evals + ' evals); the integrand may be non-integrable '
-              + 'or too singular for the ' + axes.length + '-D quadrature');
-          } else if (relErr > 1e-6) {
-            // eslint-disable-next-line no-console
-            console.warn('normalize(truncate(weighted(w, Lebesgue), S)): quadrature '
-              + 'converged to rel-err ' + relErr.toExponential(2) + ' (' + res.evals + ' evals)');
-          }
-          logZ = Math.log(res.Z);
         } else {
           throw new Error('density: normalize(truncate(M, cartprod)) — a '
             + 'multi-dimensional truncation requires a weighted(w, Lebesgue) base '
@@ -913,6 +902,175 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
   }
 }
 
+/** §06: a truncated box needs a proved integral, not agreement of sample grids. */
+function exactTruncatedBoxIntegral(
+  weightFn: { paramNames: string[]; body: any }, axes: TruncAxis[], theta: any, ctx: any,
+  arrayVariate: boolean, referenceIR: any,
+): { logMass: number; logWeight?: any; logShift: number } {
+  const sampler = require('./sampler.ts');
+  const { boxLogMass } = require('./box-mass.ts');
+  const { CRN_NODE_BUDGET, nodeCount } = require('./crn-normalize.ts');
+  const { variesBetweenCuts } = require('./piecewise-mass.ts');
+  const env = { ...theta, __moduleRegistry: ctx?.moduleRegistry };
+  const param = weightFn.paramNames[0], body = weightFn.body;
+  // truncate restricts the base's support: integrate the intersection, even
+  // when the declared reference box is narrower than the truncation region.
+  const support = require('./reference-support.ts');
+  const base = support.resolveSupport(support.supportArg(referenceIR), (n: any) => +sampler.evaluateExpr(n, env));
+  const parts = base?.kind === 'product' ? base.parts : base?.kind === 'power' ? Array(base.n).fill(base.elem) : [base];
+  const bounds = parts.map((s: any) => require('./ir-shared.ts').scalarSetBounds(s));
+  if (bounds.length !== axes.length || bounds.some((b: any) => !b)) {
+    throw engineLimitation('the exact truncated-box normalizer', 'density', 'the base support is not a scalar-axis box');
+  }
+  axes = axes.map((a, i) => ({ ...a, lo: Math.max(a.lo, bounds[i].lo), hi: Math.min(a.hi, bounds[i].hi) }));
+  if (axes.some((a) => !(a.lo < a.hi))) throw new Error('normalize: normalizer Z is 0 over the support intersection (spec §06)');
+  const finite = axes.every((a) => Number.isFinite(a.lo) && Number.isFinite(a.hi));
+  const exact = separableGaussianIntegral(body, param, axes, env, arrayVariate)
+    || (finite && boxLogMass(body, param, axes, arrayVariate, CRN_NODE_BUDGET));
+  let logZ: number | null = exact ? +sampler.evaluateExpr(exact.logMass, env) : null;
+  if (!exact && finite) {
+    const points = axisCuts(body, param, axes, env);
+    if (variesBetweenCuts(body, param, arrayVariate) !== null) {
+      throw engineLimitation('the exact truncated-box normalizer', 'density',
+        'the weight is neither a supported polynomial/separable exponential nor constant between axis cuts; '
+        + 'agreeing quadrature rules can miss a narrow smooth peak, so Z is unresolved (spec §06)');
+    }
+    const cuts = axes.map((a, k) => [a.lo, ...points[k], a.hi]);
+    if (cuts.reduce((n, c) => n * (c.length - 1), nodeCount(body)) > CRN_NODE_BUDGET) {
+      throw engineLimitation('the exact truncated-box normalizer', 'density', 'axis pieces exceed the expression budget');
+    }
+    const terms: number[] = [], idx = axes.map(() => 0);
+    for (;;) {
+      const point = idx.map((j, k) => cuts[k][j] + (cuts[k][j + 1] - cuts[k][j]) / 2);
+      if (point.some((x, k) => !(x > cuts[k][idx[k]] && x < cuts[k][idx[k] + 1]))) {
+        throw engineLimitation('the exact truncated-box normalizer', 'density', 'a piece has no representable interior point');
+      }
+      env[param] = arrayVariate ? point : point[0];
+      const w = +sampler.evaluateExpr(body, env);
+      if (!(w >= 0 && Number.isFinite(w))) throw new Error('normalize: a piece has negative or non-finite weight (spec §06)');
+      terms.push(Math.log(w) + idx.reduce((s, j, k) => s + Math.log(cuts[k][j + 1] - cuts[k][j]), 0));
+      let k = 0;
+      while (k < idx.length && ++idx[k] === cuts[k].length - 1) { idx[k] = 0; k++; }
+      if (k === idx.length) break;
+    }
+    logZ = empirical.logSumExp(terms);
+  }
+  if (logZ == null) throw engineLimitation('the exact truncated-box normalizer', 'density',
+    'this weight on an unbounded region has no proved integral; use a recognized scalar reference law when available');
+  if (!Number.isFinite(logZ)) throw new Error('normalize: normalizer Z is 0 or non-finite (spec §06)');
+  if (exact?.logWeight) {
+    const logShift = +sampler.evaluateExpr(exact.logShift, env);
+    if (!Number.isFinite(logShift)) throw new Error('normalize: centered normalizer Z is 0 or non-finite (spec §06)');
+    return { logMass: logZ, logWeight: exact.logWeight, logShift };
+  }
+  return { logMass: logZ, logShift: logZ };
+}
+
+/** Integrate exp(c - Σ kᵢ fᵢ(xᵢ)²), kᵢ>0, retaining each source affine fᵢ.
+ * The change u=√(2kᵢ)fᵢ(xᵢ) uses its Jacobian and Normal interval mass.
+ * No stationary center is expanded or rounded; repeated axes refuse.
+ */
+function separableGaussianIntegral(body: any, param: string, axes: TruncAxis[], env: any, arrayVariate: boolean): any | null {
+  const sampler = require('./sampler.ts');
+  const { intervalProbability } = require('./forward-cdf.ts');
+  const { walkIR } = require('./ir-walk.ts');
+  const mentions = (n: any) => {
+    let found = false;
+    walkIR(n, (x: any) => { if (x.kind === 'ref' && x.name === param) found = true; });
+    return found;
+  };
+  const lit = (value: number) => ({ kind: 'lit', value });
+  const call = (op: string, ...args: any[]) => ({ kind: 'call', op, args });
+  const scalar = (n: any) => +sampler.evaluateExpr(n, env);
+  let exponent = body, scale = 0;
+  while (exponent?.kind === 'call' && ['mul', 'divide'].includes(exponent.op)) {
+    const [a, b] = exponent.args;
+    const side = !mentions(b) ? b : exponent.op === 'mul' && !mentions(a) ? a : null;
+    if (!side) return null;
+    const factor = scalar(side);
+    if (!(factor > 0 && Number.isFinite(factor))) return null;
+    scale += (exponent.op === 'divide' ? -1 : 1) * Math.log(factor);
+    exponent = side === b ? a : b;
+  }
+  if (exponent?.op !== 'exp' || exponent.args?.length !== 1) return null;
+  const d = axes.length;
+  // Exactly one coordinate occurrence excludes cancellation between slope
+  // coefficients. Offsets remain in their source order, including x-1e16+1.
+  const affine = (n: any): { axis: number; sign: number; logSlope: number } | null => {
+    if (!n || !mentions(n)) return null;
+    const axis = arrayVariate
+      ? n?.op === 'get' && n.args?.[0]?.name === param && n.args[1]?.kind === 'lit' ? n.args[1].value - 1 : -1
+      : n?.kind === 'ref' && n.name === param ? 0 : -1;
+    if (Number.isInteger(axis) && axis >= 0 && axis < d) return { axis, sign: 1, logSlope: 0 };
+    if (n.op === 'neg' && n.args?.length === 1) {
+      const a = affine(n.args[0]);
+      return a && { ...a, sign: -a.sign };
+    }
+    if (n.args?.length !== 2) return null;
+    const [p, q] = n.args, left = mentions(p), right = mentions(q);
+    if (left === right || (n.op === 'divide' && right)) return null;
+    const a = affine(left ? p : q), k = scalar(left ? q : p);
+    if (!a || !Number.isFinite(k)) return null;
+    if (n.op === 'add' || n.op === 'sub') return { ...a, sign: n.op === 'sub' && right ? -a.sign : a.sign };
+    if (!['mul', 'divide'].includes(n.op) || k === 0) return null;
+    return { ...a, sign: a.sign * Math.sign(k), logSlope: a.logSlope + (n.op === 'divide' ? -1 : 1) * Math.log(Math.abs(k)) };
+  };
+  const leaves = new Map<number, { body: any; k: number; sign: number; logSlope: number }>();
+  const split = (n: any, coefficient: number): { body: any; offset: any } | null => {
+    if (!n || !Number.isFinite(coefficient)) return null;
+    if (!mentions(n)) return { body: lit(0), offset: n };
+    if (n.op === 'pow' && n.args?.length === 2 && n.args[1].kind === 'lit' && n.args[1].value === 2) {
+      const a = affine(n.args[0]);
+      if (!a || coefficient >= 0 || leaves.has(a.axis)) return null;
+      leaves.set(a.axis, { ...a, body: n.args[0], k: -coefficient });
+      return { body: n, offset: lit(0) };
+    }
+    if (n.op === 'neg' && n.args?.length === 1) {
+      const a = split(n.args[0], -coefficient);
+      return a && { body: call('neg', a.body), offset: call('neg', a.offset) };
+    }
+    if (n.args?.length !== 2) return null;
+    const [p, q] = n.args;
+    if (n.op === 'add' || n.op === 'sub') {
+      const a = split(p, coefficient), b = split(q, n.op === 'sub' ? -coefficient : coefficient);
+      return a && b && { body: call(n.op, a.body, b.body), offset: call(n.op, a.offset, b.offset) };
+    }
+    if (n.op === 'mul' || n.op === 'divide') {
+      const right = !mentions(q), factor = right ? q : n.op === 'mul' && !mentions(p) ? p : null;
+      if (!factor) return null;
+      const k = scalar(factor);
+      if (!Number.isFinite(k) || k === 0) return null;
+      const a = split(right ? p : q, n.op === 'divide' ? coefficient / k : coefficient * k);
+      return a && { body: call(n.op, right ? a.body : factor, right ? factor : a.body),
+        offset: call(n.op, right ? a.offset : factor, right ? factor : a.offset) };
+    }
+    return null;
+  };
+  const centered = split(exponent.args[0], 1);
+  if (!centered || leaves.size === 0) return null;
+  const offset = scalar(centered.offset);
+  if (!Number.isFinite(offset)) return null;
+  let logArea = 0;
+  for (let i = 0; i < d; i++) {
+    const leaf = leaves.get(i);
+    const width = axes[i].hi - axes[i].lo;
+    if (!leaf) {
+      if (!Number.isFinite(width)) return null;
+      logArea += Math.log(width); continue;
+    }
+    const scale = Math.sqrt(leaf.k) * Math.SQRT2;
+    const endpoint = (x: number) => {
+      if (!Number.isFinite(x)) return leaf.sign * x;
+      const point = new Array(d).fill(0); point[i] = x;
+      return scale * +sampler.evaluateExpr(leaf.body, { ...env, [param]: arrayVariate ? point : x });
+    };
+    const ends = [endpoint(axes[i].lo), endpoint(axes[i].hi)].sort((a, b) => a - b);
+    const mass = intervalProbability('Normal', { mu: 0, sigma: 1 }, ends[0], ends[1]);
+    logArea += Math.log(mass) + Math.log(2 * Math.PI) / 2 - Math.log(scale) - leaf.logSlope;
+  }
+  return { logMass: lit(scale + offset + logArea), logShift: lit(logArea), logWeight: centered.body };
+}
+
 // Resolve a bound expression to a plain number: a `lit` literal, or a spec
 // §03 numeric `const` (`pi`/`e`/`inf`/`-inf`) — `interval(0.0, inf)` lowers
 // its `inf` bound to `{kind:'const',name:'inf'}`, NOT a `lit`, so a bound
@@ -923,6 +1081,10 @@ function resolveTruncateNormalizers(node: any, theta: any, ctx: any, seen?: any)
 function numericBoundValue(node: any): number | null {
   if (!node) return null;
   if (node.kind === 'lit') return +node.value;
+  if (node.kind === 'call' && node.op === 'neg' && node.args?.length === 1) {
+    const value = numericBoundValue(node.args[0]);
+    return value == null ? null : -value;
+  }
   if (node.kind === 'const') {
     const samplerLib = require('./sampler.ts');
     const v = samplerLib._internal.resolveConst(node.name);
@@ -1064,15 +1226,13 @@ function truncateLogMass(base: any, bounds: [number, number], ctx: any): number 
   // unbounded interval gives dx = inf and a silent NaN. Refuse-don't-mislower:
   // this scalar-reference path has no CDF for a kernel forward-cdf.ts doesn't
   // carry (the branch above handles every ladder entry, incl. unbounded
-  // supports, via the CDF's 0/1 limits). A weighted(w, Lebesgue) base takes
-  // the N-D adaptive-cubature path instead, which maps unbounded axes with a
-  // Jacobian.
+  // supports, via the CDF's 0/1 limits). A generic weighted Lebesgue base
+  // instead requires a proved integral on an unbounded region.
   if (!Number.isFinite(lo) || !Number.isFinite(hi)) {
     throw new Error('density: normalize(truncate(' + base.kernel + ', S)) — '
       + 'unbounded truncation of this reference measure has no deterministic '
       + 'quadrature (no closed-form CDF is registered for this kernel in '
-      + 'forward-cdf.ts, and a weighted(w, Lebesgue) base would take the '
-      + 'adaptive-cubature path instead); refusing rather than emitting NaN');
+      + 'forward-cdf.ts); refusing rather than emitting NaN');
   }
   const dx = (hi - lo) / QUAD_POINTS;
   const logIntegrand = new Float64Array(QUAD_POINTS);
@@ -1266,11 +1426,19 @@ function evaluateCuts(d: any, env: Record<string, any>, lo: number, hi: number, 
     const ends = [a * lo + b, a * hi + b];
     const shift = st.op === 'round' ? 0.5 : 0;
     const k0 = Math.ceil(Math.min(...ends) - shift), k1 = Math.floor(Math.max(...ends) - shift);
+    if (!Number.isSafeInteger(k0) || !Number.isSafeInteger(k1)) {
+      throw engineLimitation('exact step boundaries', 'density', 'the step indices are not representable safe integers');
+    }
     if (k1 - k0 + 1 > MAX_WEIGHT_STEPS) {
       throw refuse('`' + st.op + '` of the variate with ' + (k1 - k0 + 1) + ' steps over the support (more than '
         + MAX_WEIGHT_STEPS + ')');
     }
-    for (let k = k0; k <= k1; k++) found.add((k + shift - b) / a);
+    for (let k = k0; k <= k1; k++) {
+      if ((k + shift) - k !== shift) {
+        throw engineLimitation('exact step boundaries', 'density', 'a half-integer boundary is not representable');
+      }
+      found.add((k + shift - b) / a);
+    }
   }
   return [...found].filter((v) => Number.isFinite(v) && v > lo && v < hi).sort((x, y) => x - y);
 }
