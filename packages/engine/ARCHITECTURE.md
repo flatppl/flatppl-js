@@ -290,6 +290,8 @@ inline atoms share this path; a fixed array atom acquires a leading sample
 axis rather than becoming a scalar ensemble of its elements.
 IID products preserve complex buffers in both array atoms and table columns;
 per-atom evaluation uses logical row slices to retain complex and layout tags.
+`fill` repeats logical complex scalar/array values in both planes; `rowstack`
+and `colstack` preserve those planes when promoting nested vectors to matrices.
 Worker sessions register retained input buffers at `init`/`setEnv`. An
 `evaluateN` result borrowing that storage is copied before transfer; owned
 outputs retain their zero-copy transfer path.
