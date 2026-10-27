@@ -74,6 +74,28 @@ test('an unproved smooth peak refuses instead of disappearing between grid nodes
   await assert.rejects(() => score(source), { code: 'ENGINE_LIMITATION' });
 });
 
+test('Gaussian source shifts retain an unrepresentable stationary center', async () => {
+  const whole = 'cartprod(interval(-inf, inf), interval(0.0, 1.0))';
+  // x-1e16+1 has center 1e16-1, which cannot be represented. Its whole-line
+  // integral remains √(2π); at the representable point 1e16 its exponent is -1/2.
+  close(await score(model('t*exp(-0.5*(v[1]-1.0e16+1.0)^2)', whole, whole, '[1.0e16, 0.5]')),
+    -0.5 - Math.log(2 * Math.PI) / 2);
+  // Negative affine slope reverses the CDF endpoints; exactly half the mass
+  // lies on [0,1] up to tails beyond a thousand standard deviations.
+  close(await score(model('t*exp(-0.5*((1.0-v[1])/0.001)^2)', unit, unit, '[1.0, 0.5]')),
+    Math.log(2) - Math.log(0.001 * Math.sqrt(2 * Math.PI)));
+});
+
+test('truncated exponential normalizers cancel finite offsets before scoring', async () => {
+  const wide = 'cartprod(interval(0.0, 2.0), interval(0.0, 1.0))';
+  close(await score(model('exp(710.0-1.0e308*t*v[1])', wide, wide, '[0.0, 0.5]')), Math.log(1e308));
+  const whole = 'cartprod(interval(-inf, inf), interval(0.0, 1.0))';
+  for (const offset of [1000, -1000]) {
+    close(await score(model(`t*exp(${offset}.0-0.5*v[1]^2)`, whole, whole, '[0.0, 0.5]')),
+      -Math.log(2 * Math.PI) / 2);
+  }
+});
+
 test('a generic unbounded Cauchy weight requires a recognized integral', async () => {
   const source = model('t/(pi*5.0*(1.0+(v/5.0)^2))', 'interval(0.0, inf)', undefined, '5.0');
   await assert.rejects(() => score(source), { code: 'ENGINE_LIMITATION' });

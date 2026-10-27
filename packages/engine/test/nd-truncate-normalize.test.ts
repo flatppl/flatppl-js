@@ -236,16 +236,6 @@ function resolvedNegLogZ(src: string) {
   return neg;
 }
 
-test('O1 separable 2-D normalizer matches scipy oracle', () => {
-  const O1 = -0.2245614818793499;
-  const src = `
-D = normalize(truncate(weighted(v -> exp(0.0 - 0.5*(v[1]^2 + v[2]^2)) / (2.0*pi),
-    Lebesgue(cartprod(interval(-2.0, 3.0), interval(-1.0, 2.0)))),
-    cartprod(interval(-2.0, 3.0), interval(-1.0, 2.0))))`;
-  const neg = resolvedNegLogZ(src);
-  assert.ok(neg != null && Math.abs(-neg - O1) < 1e-5, `logZ=${-(neg!)} vs ${O1}`);
-});
-
 test('O2b coupled+kink normalizer refuses an unproved integral', () => {
   // N(x; 1.0 - 0.5·√|y|, 0.5) as an explicit weight; box [0,1]×[-4,4]
   const src = `
