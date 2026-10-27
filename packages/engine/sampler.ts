@@ -1325,12 +1325,13 @@ const ARITH_OPS = {
     }
     throw new Error('partition: spec must be a positive integer or a vector of positive integers');
   },
-  // reverse(xs) — reverse element order in a vector. Tables defer for
-  // now (no canonical table runtime yet). Returns a rank-1 Value when
-  // the input is a flat numeric vector.
+  // reverse(xs) — reverse element order in a vector or rows in a table.
   reverse: (xs: any) => {
     // §07: "reverses the order of elements in a vector or rows in a table."
     if (xs && xs.__table__ === true) return _reverseTableRows(xs);
+    if (valueLib.isValue(xs) && xs.shape.length > 1 && xs.outerRank === 1) {
+      return _reverseColumnRows(xs);
+    }
     if (valueLib.isValue(xs) && xs.shape.length === 1) {
       const n = xs.shape[0];
       const out = new Float64Array(n);

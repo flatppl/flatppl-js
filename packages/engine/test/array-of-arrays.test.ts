@@ -155,3 +155,27 @@ for (const [name, { A, b, x }] of Object.entries(NUMPY)) {
       `x[${i}] ${g} vs ${x[i]}`));
   });
 }
+
+test('reverse swaps vector elements without reversing their contents', () => {
+  const src = 'v = [1.0, 2.0, 3.0]\nw = [4.0, 5.0, 6.0]\n'
+    + 'x = reverse([v, w])\nn = lengthof(x)\na = x[1]\nb = x[2]\n';
+  assert.equal(fixed(src, 'n'), 2);
+  assert.deepEqual(array(src, 'a'), { shape: [3], data: [4, 5, 6] });
+  assert.deepEqual(array(src, 'b'), { shape: [3], data: [1, 2, 3] });
+  assert.deepEqual(array(src + 's = sizeof(x)', 's'), { shape: [1], data: [2] });
+});
+
+test('reverse preserves the source and reverses any outer length', () => {
+  const src = 'a = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]\n'
+    + 'r = reverse(a)\nrr = reverse(r)\nn = lengthof(r)';
+  assert.equal(fixed(src, 'n'), 3);
+  assert.deepEqual(array(src, 'r'), { shape: [3, 2], data: [5, 6, 3, 4, 1, 2] });
+  assert.deepEqual(array(src, 'a'), { shape: [3, 2], data: [1, 2, 3, 4, 5, 6] });
+  assert.deepEqual(array(src, 'rr'), { shape: [3, 2], data: [1, 2, 3, 4, 5, 6] });
+});
+
+test('reverse still refuses a matrix', () => {
+  const src = 'M = rowstack([[1.0, 2.0], [3.0, 4.0]])\nr = reverse(M)';
+  const errors = processSource(src).diagnostics.filter((d: any) => d.severity === 'error');
+  assert.ok(errors.some((d: any) => /reverse.*expects/.test(d.message)));
+});
