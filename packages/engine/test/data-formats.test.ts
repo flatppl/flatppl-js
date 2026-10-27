@@ -199,6 +199,10 @@ test('Arrow struct columns load as nested tables', async () => {
   assert.deepEqual(await values(ctx, 'x'), [1.5]);
   assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(nested=cartprod(u=reals)),2))\nx=t.nested.u`, [file]), /missing/);
   assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(nested=cartprod(text=reals)),1))\nx=t.nested.text`, [file]), /holds Arrow strings/);
+  for (const [name, field] of [['huge_struct_null.arrows', 'n'], ['huge_struct_unsupported.arrows', 's']]) {
+    assert.match(refusal(`t=load_data("${name}",cartpow(cartprod(nested=cartprod(${field}=reals)),1))\nx=t.nested.${field}`,
+      [name]), /column `nested` has no readable fields/);
+  }
 });
 
 test('malformed binary sources refuse', () => {

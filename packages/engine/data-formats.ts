@@ -481,6 +481,7 @@ function decodeArrow(bytes: Uint8Array): any {
   const dictionaries = new Map<number, any[] | Unreadable>();
   const readers = fields.map(f => columnReader(f, dictionaries));
   const columns: any[][] = fields.map(() => []);
+  const failures: Array<Unreadable | null> = fields.map(() => null);
   const valueFields = new Map<number, ArrowField>();
   const collect = (f: ArrowField): void => {
     if (f.dictionary) valueFields.set(f.dictionary.id, { ...f, dictionary: null });
@@ -533,6 +534,11 @@ function decodeArrow(bytes: Uint8Array): any {
           if (Array.isArray(values) && values.length !== length) throw new RangeError('a struct child has a different length');
           return values ?? childReader;
         });
+        // No selectable child can bound this struct's row count: Null and
+        // unsupported children need no data buffer. Never allocate its rows.
+        if (length && children.every(child => child instanceof Unreadable)) {
+          return new Unreadable(`column \`${f.name}\` has no readable fields`);
+        }
         return Array.from({ length }, (_, i) => {
           if (validity.length && !bit(validity, i)) return null;
           const row: any = Object.create(null);
@@ -567,13 +573,13 @@ function decodeArrow(bytes: Uint8Array): any {
       continue;
     }
     decode(content, body, fields, readers).forEach((cells, i) => {
-      if (cells instanceof Unreadable) readers[i] = cells;
+      if (cells instanceof Unreadable) { readers[i] = cells; failures[i] = cells; }
       else if (cells) for (const cell of cells) columns[i].push(cell);
     });
   }
   const out: any = Object.create(null);
   fields.forEach((f, i) => {
-    out[f.name] = readers[i] instanceof Unreadable && (f.dictionary || TYPE_NAMES[f.type] !== 'Struct') ? readers[i] : columns[i];
+    out[f.name] = failures[i] ?? (readers[i] instanceof Unreadable && (f.dictionary || TYPE_NAMES[f.type] !== 'Struct') ? readers[i] : columns[i]);
   });
   return out;
 }

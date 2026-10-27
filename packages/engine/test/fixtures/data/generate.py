@@ -175,6 +175,8 @@ def patched(path, data, old, new, region=slice(None)):
 # are pyarrow files of one f64 column, byte-patched by hand. short_block's footer
 # Block.bodyLength reads 8 against its message's 32. The huge_lz4 files are LZ4
 # files whose data buffer's decompressed-length prefix reads 2^50 and 2^62.
+# huge_struct_null.arrows and huge_struct_unsupported.arrows are Arrow-rs streams
+# of three struct rows, patched to claim 2^40 rows with no struct validity bitmap.
 # 400 batches of a Null column, 308224 rows each, in a file of about 38 KB.
 with ipc.new_stream(HERE / "many_null_batches.arrows", pa.schema([("n", pa.null())])) as writer:
     for _ in range(400):
