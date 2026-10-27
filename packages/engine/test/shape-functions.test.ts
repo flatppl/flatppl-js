@@ -228,31 +228,38 @@ test('selectbins: region disjoint from all bins ⇒ empty result', () => {
   assert.deepEqual(ev(ir), []);
 });
 
-test('selectbins: bin grazing region boundary counts as intersecting', () => {
-  // Bin [1, 2] touches region [2, 3] at exactly 2 → bin is kept
-  // per the inclusive ≤/≥ semantics.
+test('selectbins: a reversed interval is empty even inside a wide bin', () => {
+  assert.deepEqual(ev(call('selectbins', {
+    edges: vec(-10, 10), region: interval(5, 3), counts: vec(7),
+  })), []);
+});
+
+test('selectbins: a bin touching the region only at its open end is excluded', () => {
+  // The half-open bin [1,2) does not intersect [2,3].
   const ir = call('selectbins', {
     edges: vec(0, 1, 2, 3),
     region: interval(2, 3),
     counts: vec(10, 20, 30),
   });
-  // Bins [0,1] [1,2] [2,3] vs region [2,3]: bin 0 misses, bins 1, 2 touch.
-  assert.deepEqual(ev(ir), [20, 30]);
+  assert.deepEqual(ev(ir), [30]);
 });
 
-test('selectbins: posreals region drops only bins entirely on the negative side', () => {
-  // edges [-2, -1, 0, 1, 2] → bins [-2,-1] [-1,0] [0,1] [1,2]
-  // region posreals ≡ [0, ∞]
-  // bin [-2,-1] strictly negative → drop
-  // bin [-1, 0] right edge at 0 → touches region → keep
-  // bin [0, 1] → keep
-  // bin [1, 2] → keep
+test('selectbins: posreals excludes bins ending at zero', () => {
   const ir = call('selectbins', {
     edges: vec(-2, -1, 0, 1, 2),
     region: constSet('posreals'),
     counts: vec(1, 2, 3, 4),
   });
-  assert.deepEqual(ev(ir), [2, 3, 4]);
+  assert.deepEqual(ev(ir), [3, 4]);
+});
+
+test('selectbins: the last bin includes its right end only when the region includes it', () => {
+  const selected = (region: any) => ev(call('selectbins', {
+    edges: vec(-1, 0), region, counts: vec(7),
+  }));
+  assert.deepEqual(selected(interval(0, 1)), [7]);
+  assert.deepEqual(selected(constSet('nonnegreals')), [7]);
+  assert.deepEqual(selected(constSet('posreals')), []);
 });
 
 test('selectbins: edges length must equal counts length + 1', () => {

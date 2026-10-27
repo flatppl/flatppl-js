@@ -3358,7 +3358,7 @@ function evaluateCall(ir: any, env: any): any {
   }
   if (op === 'selectbins') {
     // selectbins(edges, region, counts) — keep counts for bins whose
-    // interval [edges[i], edges[i+1]] intersects `region`. Returns a
+    // interval [edges[i], edges[i+1]) intersects `region` (last bin closed). Returns a
     // shorter count array per spec §07: no fractional-bin clipping,
     // bins are either fully included or fully excluded.
     //
@@ -3376,15 +3376,18 @@ function evaluateCall(ir: any, env: any): any {
     const edges  = valueLib.isValue(edgesRaw)  ? edgesRaw.data  : edgesRaw;
     const counts = valueLib.isValue(countsRaw) ? countsRaw.data : countsRaw;
     const [lo, hi] = regionBoundsFromIR(regionIR, env);
+    const includesLo = evaluateExpr({ kind: 'call', op: 'in',
+      args: [{ kind: 'lit', value: lo }, regionIR] }, env);
     const n = counts.length;
     if (edges.length !== n + 1) {
       throw new Error('selectbins: edges length must equal counts length + 1');
     }
     const out: any[] = [];
     for (let i = 0; i < n; i++) {
-      // Bin [edges[i], edges[i+1]] intersects [lo, hi] iff
-      //   edges[i] ≤ hi  AND  edges[i+1] ≥ lo
-      if (edges[i] <= hi && edges[i + 1] >= lo) {
+      // A shared endpoint belongs to both sets only for the closed last bin
+      // and a region that includes its lower bound (unlike posreals at zero).
+      const ends = edges[i + 1] > lo || (i === n - 1 && includesLo && edges[i + 1] === lo);
+      if (lo <= hi && edges[i] <= hi && ends) {
         out.push(counts[i]);
       }
     }
