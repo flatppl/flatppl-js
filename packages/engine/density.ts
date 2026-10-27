@@ -1365,6 +1365,12 @@ function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   // point to -Infinity, and one in-support first point let every out-of-support
   // point keep its density.
   const points: any = opts.pointsBatched ? (valueLib.isValue(value) ? value.data : value) : null;
+  if (set.kind === 'call' && set.op === 'cartprod' && !set.fields?.length) {
+    const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
+    // §06's indicator uses the same continuous product geometry as Lebesgue.
+    walkLebesgue({ kind: 'call', op: 'Lebesgue', args: [set] }, value, refArrays, N, opts, acc, baseEnv, overlay);
+    return rest;
+  }
   if (set.kind === 'call' && set.op === 'interval' && set.args?.length === 2) {
     const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
     const consumed = inferConsumedScalar(value, rest);

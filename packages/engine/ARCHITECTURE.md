@@ -128,6 +128,11 @@ for `ksuperpose`, or every coordinate of the same node exactly once for `superpo
 Reference measures and unnormalized components do not satisfy this proof.
 Normalization functions establish simplex membership only for provably nonempty inputs.
 
+Truncated array boxes intersect the reference support and use proved polynomial,
+affine-exponential, separable Gaussian/CDF or axis-cut constant integrals.
+Other weights refuse; agreeing cubature grids do not establish a normalizer.
+Positional-product truncation gates reuse the Lebesgue support walker.
+
 Record Lebesgue supports lower to named products of reference measures.
 Positional record joints merge fields. MCMC collects each component's free
 coordinates, including explicit improper measures alongside reified proper laws.
