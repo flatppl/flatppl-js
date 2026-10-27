@@ -19,6 +19,15 @@ import pyarrow.ipc as ipc
 
 HERE = Path(__file__).parent
 
+# A nullable struct with an unselected unreadable child.
+nested = pa.StructArray.from_arrays(
+    [pa.array([1.5, 2.5, 3.5]), pa.array(["ignored"] * 3)],
+    names=["u", "text"], mask=pa.array([False, True, False]),
+)
+struct_table = pa.table({"nested": nested})
+with ipc.new_file(HERE / "struct_null.arrow", struct_table.schema) as writer:
+    writer.write_table(struct_table)
+
 # One table in every format: a real, an integer and a boolean column, an extra
 # column a selection may omit, and three rows of which tests read two.
 events = {

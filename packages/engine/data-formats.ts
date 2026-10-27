@@ -246,6 +246,7 @@ function bufferCount(field: ArrowField, variadic: () => number): number {
 }
 
 type ColumnReader = (node: { length: number }, buffer: (i: number) => Uint8Array) => any[];
+type BatchField = { node: number; buffers: number[]; children: BatchField[] };
 
 const bit = (bytes: Uint8Array, i: number) => (bytes[i >> 3] >> (i & 7)) & 1;
 const cells = (length: number, validity: Uint8Array, value: (i: number) => TypedScalar) => {
@@ -503,15 +504,13 @@ function decodeArrow(bytes: Uint8Array): any {
     let node = 0, buffer = 0, variadicAt = 0;
     const nextVariadic = () => (variadic ? Number(view.getBigInt64(variadic[0] + 8 * variadicAt++, true)) : 0);
     // A dictionary field's children describe its values, which a dictionary batch holds.
-    const take = (f: ArrowField): { node: number; buffers: number[] } => {
-      const own = { node: node++, buffers: Array.from({ length: bufferCount(f, nextVariadic) }, () => buffer++) };
-      if (!f.dictionary) f.children.forEach(take);
-      return own;
-    };
-    return batchFields.map((f, i) => {
-      const at = take(f);
-      const reader = batchReaders[i];
-      if (reader instanceof Unreadable) return null;
+    const take = (f: ArrowField): BatchField => ({
+      node: node++, buffers: Array.from({ length: bufferCount(f, nextVariadic) }, () => buffer++),
+      children: f.dictionary ? [] : f.children.map(take),
+    });
+    const read = (f: ArrowField, at: BatchField, reader: ColumnReader | Unreadable): any[] | Unreadable | null => {
+      const isStruct = !f.dictionary && TYPE_NAMES[f.type] === 'Struct';
+      if (reader instanceof Unreadable && !isStruct) return null;
       const decompressed = new Map<number, Uint8Array>();
       const slice = (k: number) => {
         const entry = buffers[0] + 16 * at.buffers[k];
@@ -525,12 +524,30 @@ function decodeArrow(bytes: Uint8Array): any {
       };
       const length = Number(view.getBigInt64(nodes[0] + 16 * at.node, true));
       if (length < 0) fail(`column \`${f.name}\` has a negative length`);
+      if (isStruct) {
+        const validity = slice(0);
+        if (validity.length && validity.length * 8 < length) throw new RangeError('a validity bitmap is shorter than its column');
+        const children = f.children.map((child, i) => {
+          const childReader = columnReader(child, dictionaries);
+          const values = read(child, at.children[i], childReader);
+          if (Array.isArray(values) && values.length !== length) throw new RangeError('a struct child has a different length');
+          return values ?? childReader;
+        });
+        return Array.from({ length }, (_, i) => {
+          if (validity.length && !bit(validity, i)) return null;
+          const row: any = Object.create(null);
+          f.children.forEach((child, j) => { row[child.name] = Array.isArray(children[j]) ? children[j][i] : children[j]; });
+          return row;
+        });
+      }
+      if (reader instanceof Unreadable) return null;
       try { return reader({ length }, slice); }
       catch (e) {
         if (e instanceof Unreadable) return e;
         throw e;
       }
-    });
+    };
+    return batchFields.map((f, i) => read(f, take(f), batchReaders[i]));
   };
 
   for (const { header, body } of batches) {
@@ -555,7 +572,9 @@ function decodeArrow(bytes: Uint8Array): any {
     });
   }
   const out: any = Object.create(null);
-  fields.forEach((f, i) => { out[f.name] = readers[i] instanceof Unreadable ? readers[i] : columns[i]; });
+  fields.forEach((f, i) => {
+    out[f.name] = readers[i] instanceof Unreadable && (f.dictionary || TYPE_NAMES[f.type] !== 'Struct') ? readers[i] : columns[i];
+  });
   return out;
 }
 
