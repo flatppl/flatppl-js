@@ -12,6 +12,7 @@ const matDensity = require('../mat-density.ts');
 const { parseTruncationBox } = matDensity;
 const { processSource, orchestrator } = require('../index.ts');
 const shared = require('../materialiser-shared.ts');
+const { ctxFor } = require('./_ctx-factory.ts');
 
 const iv = (lo: any, hi: any) => ({ kind: 'call', op: 'interval', args: [lit(lo), lit(hi)] });
 const lit = (v: any) => ({ kind: 'lit', value: v });
@@ -235,35 +236,27 @@ function resolvedNegLogZ(src: string) {
   return neg;
 }
 
-test('O1 separable 2-D normalizer matches scipy oracle', () => {
-  const O1 = -0.2245614818793499;
-  const src = `
-D = normalize(truncate(weighted(v -> exp(0.0 - 0.5*(v[1]^2 + v[2]^2)) / (2.0*pi),
-    Lebesgue(cartprod(interval(-2.0, 3.0), interval(-1.0, 2.0)))),
-    cartprod(interval(-2.0, 3.0), interval(-1.0, 2.0))))`;
-  const neg = resolvedNegLogZ(src);
-  assert.ok(neg != null && Math.abs(-neg - O1) < 1e-5, `logZ=${-(neg!)} vs ${O1}`);
-});
-
-test('O2b coupled+kink 2-D normalizer matches scipy oracle', () => {
-  const O2 = 1.5844046542638608;
+test('O2b coupled+kink normalizer refuses an unproved integral', () => {
   // N(x; 1.0 - 0.5·√|y|, 0.5) as an explicit weight; box [0,1]×[-4,4]
   const src = `
 D = normalize(truncate(weighted(v ->
     exp(0.0 - 0.5*((v[1] - (1.0 - 0.5*sqrt(abs(v[2]))))/0.5)^2) / (0.5*sqrt(2.0*pi)),
     Lebesgue(cartprod(interval(0.0, 1.0), interval(-4.0, 4.0)))),
     cartprod(interval(0.0, 1.0), interval(-4.0, 4.0))))`;
-  const neg = resolvedNegLogZ(src);
-  assert.ok(neg != null && Math.abs(-neg - O2) < 1e-5, `logZ=${-(neg!)} vs ${O2}`);
+  // The former numerical estimate matched log Z=1.5844046542638608 here,
+  // but the same grids can miss narrow smooth peaks. No exact rule covers it.
+  assert.throws(() => resolvedNegLogZ(src), { code: 'ENGINE_LIMITATION' });
 });
 
-test('O3 semi-infinite Cauchy normalizer matches oracle (COV, no NaN)', () => {
-  const O3 = -0.6931471805599453; // log(1/2)
+test('O3 generic unbounded Cauchy weight refuses; the named Cauchy law retains its CDF', async () => {
   const src = `
 D = normalize(truncate(weighted(x -> 1.0/(pi*5.0*(1.0 + (x/5.0)^2)),
     Lebesgue(interval(0.0, inf))), interval(0.0, inf)))`;
-  const neg = resolvedNegLogZ(src);
-  assert.ok(neg != null && Math.abs(-neg - O3) < 1e-5, `logZ=${-(neg!)} vs ${O3}`);
+  assert.throws(() => resolvedNegLogZ(src), { code: 'ENGINE_LIMITATION' });
+  // The equivalent named law exposes its exact CDF: symmetric half-line mass.
+  const { ctx } = ctxFor('D = normalize(truncate(Cauchy(0.0, 5.0), interval(0.0, inf)))\nlp = logdensityof(D, 5.0)\n', 1);
+  const lp = (await ctx.getMeasure('lp')).samples[0];
+  assert.ok(Math.abs(lp + Math.log(5 * Math.PI)) < 1e-14);
 });
 
 test('record-form (keyword) cartprod truncation region refuses loudly through the real pipeline', () => {

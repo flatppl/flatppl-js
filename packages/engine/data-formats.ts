@@ -246,6 +246,7 @@ function bufferCount(field: ArrowField, variadic: () => number): number {
 }
 
 type ColumnReader = (node: { length: number }, buffer: (i: number) => Uint8Array) => any[];
+type BatchField = { node: number; buffers: number[]; children: BatchField[] };
 
 const bit = (bytes: Uint8Array, i: number) => (bytes[i >> 3] >> (i & 7)) & 1;
 const cells = (length: number, validity: Uint8Array, value: (i: number) => TypedScalar) => {
@@ -439,15 +440,16 @@ function readArrow(bytes: Uint8Array): any {
 
 function decodeArrow(bytes: Uint8Array): any {
   const fail = (message: string): never => { throw new Error(`Arrow IPC: ${message}`); };
+  const malformed = (message: string): never => fail(`malformed file (${message})`);
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const magic = (at: number) => new TextDecoder().decode(bytes.subarray(at, at + 6)) === 'ARROW1';
   let schema: Table | null = null;
   // Dictionary and record batches, in the order they apply.
   const batches: Array<{ header: Table; body: Uint8Array }> = [];
   if (magic(0)) {
-    if (bytes.length < 18 || !magic(bytes.length - 6)) fail('a file must end with its footer and magic');
+    if (bytes.length < 18 || !magic(bytes.length - 6)) malformed('a file must end with its footer and magic');
     const footerLength = view.getInt32(bytes.length - 10, true);
-    if (footerLength <= 0 || footerLength > bytes.length - 18) fail('the footer length leaves the file');
+    if (footerLength <= 0 || footerLength > bytes.length - 18) malformed('the footer length leaves the file');
     const footer = Table.root(view, bytes.length - 10 - footerLength);
     schema = footer.table(1);
     // A file has no dictionary replacements, so every dictionary precedes the batches.
@@ -455,14 +457,14 @@ function decodeArrow(bytes: Uint8Array): any {
       const blocks = footer.vector(index);
       for (let i = 0; blocks && i < blocks[1]; i++) {
         const offset = Number(view.getBigInt64(blocks[0] + 24 * i, true));
-        if (!(offset >= 0 && offset < bytes.length)) fail('a footer block leaves the file');
+        if (!(offset >= 0 && offset < bytes.length)) malformed('a footer block leaves the file');
         const next = messages(bytes, offset).next();
         if (next.done) continue;
         // A reader that slices by the block must find the message's own lengths there.
         const metadata = next.value.body.byteOffset - bytes.byteOffset - offset;
         if (view.getInt32(blocks[0] + 24 * i + 8, true) !== metadata
             || Number(view.getBigInt64(blocks[0] + 24 * i + 16, true)) !== next.value.body.length) {
-          fail('malformed file (a footer block disagrees with its message)');
+          malformed('a footer block disagrees with its message');
         }
         batches.push(next.value);
       }
@@ -474,12 +476,13 @@ function decodeArrow(bytes: Uint8Array): any {
       else if (kind === 2 || kind === 3) batches.push(message);
     }
   }
-  if (!schema) fail('no schema');
+  if (!schema) malformed('no schema');
   if (schema!.int(0, 2) !== 0) fail('big-endian data is not read');
   const fields = schema!.tables(1).map(arrowField);
   const dictionaries = new Map<number, any[] | Unreadable>();
   const readers = fields.map(f => columnReader(f, dictionaries));
   const columns: any[][] = fields.map(() => []);
+  const failures: Array<Unreadable | null> = fields.map(() => null);
   const valueFields = new Map<number, ArrowField>();
   const collect = (f: ArrowField): void => {
     if (f.dictionary) valueFields.set(f.dictionary.id, { ...f, dictionary: null });
@@ -503,34 +506,55 @@ function decodeArrow(bytes: Uint8Array): any {
     let node = 0, buffer = 0, variadicAt = 0;
     const nextVariadic = () => (variadic ? Number(view.getBigInt64(variadic[0] + 8 * variadicAt++, true)) : 0);
     // A dictionary field's children describe its values, which a dictionary batch holds.
-    const take = (f: ArrowField): { node: number; buffers: number[] } => {
-      const own = { node: node++, buffers: Array.from({ length: bufferCount(f, nextVariadic) }, () => buffer++) };
-      if (!f.dictionary) f.children.forEach(take);
-      return own;
-    };
-    return batchFields.map((f, i) => {
-      const at = take(f);
-      const reader = batchReaders[i];
-      if (reader instanceof Unreadable) return null;
+    const take = (f: ArrowField): BatchField => ({
+      node: node++, buffers: Array.from({ length: bufferCount(f, nextVariadic) }, () => buffer++),
+      children: f.dictionary ? [] : f.children.map(take),
+    });
+    const read = (f: ArrowField, at: BatchField, reader: ColumnReader | Unreadable): any[] | Unreadable | null => {
+      const isStruct = !f.dictionary && TYPE_NAMES[f.type] === 'Struct';
+      if (reader instanceof Unreadable && !isStruct) return null;
       const decompressed = new Map<number, Uint8Array>();
       const slice = (k: number) => {
         const entry = buffers[0] + 16 * at.buffers[k];
         const offset = Number(view.getBigInt64(entry, true));
         const size = Number(view.getBigInt64(entry + 8, true));
-        if (offset < 0 || size < 0 || offset + size > body.length) fail(`column \`${f.name}\` has a buffer outside its batch`);
+        if (offset < 0 || size < 0 || offset + size > body.length) malformed(`column \`${f.name}\` has a buffer outside its batch`);
         const raw = body.subarray(offset, offset + size);
         if (!lz4) return raw;
         if (!decompressed.has(k)) decompressed.set(k, lz4Buffer(raw));
         return decompressed.get(k)!;
       };
       const length = Number(view.getBigInt64(nodes[0] + 16 * at.node, true));
-      if (length < 0) fail(`column \`${f.name}\` has a negative length`);
+      if (length < 0) malformed(`column \`${f.name}\` has a negative length`);
+      if (isStruct) {
+        const validity = slice(0);
+        if (validity.length && validity.length * 8 < length) throw new RangeError('a validity bitmap is shorter than its column');
+        const children = f.children.map((child, i) => {
+          const childReader = columnReader(child, dictionaries);
+          const values = read(child, at.children[i], childReader);
+          if (Array.isArray(values) && values.length !== length) throw new RangeError('a struct child has a different length');
+          return values ?? childReader;
+        });
+        // No selectable child can bound this struct's row count: Null and
+        // unsupported children need no data buffer. Never allocate its rows.
+        if (length && children.every(child => child instanceof Unreadable)) {
+          return new Unreadable(`column \`${f.name}\` has no readable fields`);
+        }
+        return Array.from({ length }, (_, i) => {
+          if (validity.length && !bit(validity, i)) return null;
+          const row: any = Object.create(null);
+          f.children.forEach((child, j) => { row[child.name] = Array.isArray(children[j]) ? children[j][i] : children[j]; });
+          return row;
+        });
+      }
+      if (reader instanceof Unreadable) return null;
       try { return reader({ length }, slice); }
       catch (e) {
         if (e instanceof Unreadable) return e;
         throw e;
       }
-    });
+    };
+    return batchFields.map((f, i) => read(f, take(f), batchReaders[i]));
   };
 
   for (const { header, body } of batches) {
@@ -540,7 +564,7 @@ function decodeArrow(bytes: Uint8Array): any {
       const id = content.int(0, 8);
       const field = valueFields.get(id);
       const batch = content.table(1);
-      if (!field || !batch) fail(`dictionary batch ${id} matches no dictionary field`);
+      if (!field || !batch) malformed(`dictionary batch ${id} matches no dictionary field`);
       const [cells] = decode(batch!, body, [field!], [columnReader(field!, dictionaries)]);
       // No reader means the dictionary column itself is already unreadable.
       const previous = dictionaries.get(id);
@@ -550,12 +574,14 @@ function decodeArrow(bytes: Uint8Array): any {
       continue;
     }
     decode(content, body, fields, readers).forEach((cells, i) => {
-      if (cells instanceof Unreadable) readers[i] = cells;
+      if (cells instanceof Unreadable) { readers[i] = cells; failures[i] = cells; }
       else if (cells) for (const cell of cells) columns[i].push(cell);
     });
   }
   const out: any = Object.create(null);
-  fields.forEach((f, i) => { out[f.name] = readers[i] instanceof Unreadable ? readers[i] : columns[i]; });
+  fields.forEach((f, i) => {
+    out[f.name] = failures[i] ?? (readers[i] instanceof Unreadable && (f.dictionary || TYPE_NAMES[f.type] !== 'Struct') ? readers[i] : columns[i]);
+  });
   return out;
 }
 

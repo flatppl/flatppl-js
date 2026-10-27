@@ -167,7 +167,7 @@ test('Arrow typed columns read past every other layout, from the file and the st
       ['view', /holds Arrow strings/], ['dict', /holds Arrow strings/],
       ['binary', /unsupported Arrow type/], ['list', /unsupported Arrow type/],
       ['large_list', /unsupported Arrow type/], ['list_view', /unsupported Arrow type/],
-      ['fixed_list', /unsupported Arrow type/], ['struct', /unsupported Arrow type/],
+      ['fixed_list', /unsupported Arrow type/],
       ['sparse', /unsupported Arrow type/], ['dense', /unsupported Arrow type/],
       ['ree', /unsupported Arrow type/], ['time', /unsupported Arrow type/],
     ] as const) {
@@ -187,16 +187,38 @@ test('Arrow typed columns read past every other layout, from the file and the st
   assert.deepEqual(await values(ctx, 'b'), [1.5]);
 });
 
+test('Arrow struct columns load as nested tables', async () => {
+  for (const file of ['types.arrow', 'types.arrows', 'compressed.arrow']) {
+    const { ctx } = context(`t=load_data("${file}",cartpow(cartprod(struct=cartprod(u=reals)),3))\nx=t.struct.u`, [file]);
+    assert.deepEqual(await values(ctx, 'x'), [1, 2, 1], file);
+    assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(struct=cartprod(u=integers)),3))\nx=t.struct.u`, [file]), /real value/);
+    assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(struct=cartprod(missing=reals)),3))\nx=t.struct.missing`, [file]), /missing field/);
+  }
+  const file = 'struct_null.arrow';
+  const { ctx } = context(`t=load_data("${file}",cartpow(cartprod(nested=cartprod(u=reals)),1))\nx=t.nested.u`, [file]);
+  assert.deepEqual(await values(ctx, 'x'), [1.5]);
+  assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(nested=cartprod(u=reals)),2))\nx=t.nested.u`, [file]), /missing/);
+  assert.match(refusal(`t=load_data("${file}",cartpow(cartprod(nested=cartprod(text=reals)),1))\nx=t.nested.text`, [file]), /holds Arrow strings/);
+  for (const [name, field] of [['huge_struct_null.arrows', 'n'], ['huge_struct_unsupported.arrows', 's']]) {
+    assert.match(refusal(`t=load_data("${name}",cartpow(cartprod(nested=cartprod(${field}=reals)),1))\nx=t.nested.${field}`,
+      [name]), /column `nested` has no readable fields/);
+  }
+});
+
 test('malformed binary sources refuse', () => {
-  assert.throws(() => readArrow(new Uint8Array([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0])), /Arrow IPC: no schema/);
+  const garbage = new Uint8Array([0xff, 0xff, 0xff, 0xff, 0, 0, 0, 0]);
+  const result = processSource('x=load_data("garbage.arrows",cartpow(reals,1))',
+    { path: 'model.flatppl', bundle: { sources: {}, files: { 'garbage.arrows': garbage } } });
+  assert.match(result.diagnostics.find((d: any) => d.severity === 'error').message,
+    /Arrow IPC: malformed file \(no schema\)/);
   assert.throws(() => readArrow(new TextEncoder().encode('ARROW1\0\0short')), /footer and magic/);
   // Crafted lengths: a body that steps back onto its own message, a buffer at
   // a negative offset, a footer block past the end, and 2^40 rows of nulls.
   assert.throws(() => readArrow(fixture('negative_body.arrows')),
     /Arrow IPC: malformed file \(a message body leaves the file\)/);
   assert.throws(() => readArrow(fixture('negative_offset.arrows')),
-    /Arrow IPC: column `b` has a buffer outside its batch/);
-  assert.throws(() => readArrow(fixture('bad_block.arrow')), /Arrow IPC: a footer block leaves the file/);
+    /Arrow IPC: malformed file \(column `b` has a buffer outside its batch\)/);
+  assert.throws(() => readArrow(fixture('bad_block.arrow')), /Arrow IPC: malformed file \(a footer block leaves the file\)/);
   // A Null column is never materialised, whatever rows it claims, in one batch or
   // in 400 (a 38 KB file that once filled 123M cells).
   for (const file of ['huge_rows.arrows', 'many_null_batches.arrows']) {

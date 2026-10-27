@@ -852,6 +852,16 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
         if (args.some((a: any) => Array.isArray(a) && a.length === N && isValueObj(a[0]))) {
           return _perAtomFallback(ir, refArrays, N, baseEnv, overlay);
         }
+        // A shared [m,k] matrix can have m===N. Only reference provenance
+        // distinguishes it from a [N,k] batch of vectors; keep the existing
+        // real/complex matvec kernels, including their orientation checks.
+        if (op === 'mul' && valueLib.isValue(args[0]) && valueLib.isValue(args[1])
+            && args[0].shape.length === 2 && args[0].shape[0] === N
+            && args[1].shape.length === 2 && args[1].shape[0] === N
+            && !_touchesAtomRef(ir.args[0], refArrays, overlay)
+            && _touchesAtomRef(ir.args[1], refArrays, overlay)) {
+          return valueOps.mulN(args[0], args[1], N, [false, true]);
+        }
         return ARITH_OPS_N[op](args, N);
       }
       // Batched approximation functions. Each has the shape
@@ -1121,6 +1131,15 @@ function _subtreeRefNames(ir: any): Set<string> {
   })(ir);
   if (ir && typeof ir === 'object') _SUBTREE_REF_NAMES.set(ir, names);
   return names;
+}
+
+function _touchesAtomRef(ir: any, refArrays: any, overlay: any): boolean {
+  if (!refArrays) return false;
+  for (const name of _subtreeRefNames(ir)) {
+    if (overlay && Object.prototype.hasOwnProperty.call(overlay, name)) continue;
+    if (Object.prototype.hasOwnProperty.call(refArrays, name)) return true;
+  }
+  return false;
 }
 
 // Numeric cell shape of one per-atom result, or null when it is not a

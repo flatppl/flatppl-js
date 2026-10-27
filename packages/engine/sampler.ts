@@ -983,7 +983,7 @@ const ARITH_OPS = {
     if (valueLib.isNestedVectorValue(vs) && vs.shape.length === 2) {
       // Fast path: storage layout is already row-major-rows. Strip
       // the outerRank tag to expose the value AS a matrix.
-      return { shape: vs.shape.slice(), data: vs.data };
+      return valueLib.promoteNestedToMatrix(vs);
     }
     if (!Array.isArray(vs) || vs.length === 0) {
       return { shape: [0, 0], data: new Float64Array(0) };
@@ -1012,13 +1012,15 @@ const ARITH_OPS = {
     if (valueLib.isNestedVectorValue(vs) && vs.shape.length === 2) {
       const colsN = vs.shape[0];
       const m = vs.shape[1];
-      const out = new Float64Array(m * colsN);
+      const out = _stackOut(m * colsN);
+      const columns = valueLib._logicalDense(vs);
+      if (valueLib.isComplexValue(columns)) out.im = new Float64Array(m * colsN);
       for (let c = 0; c < colsN; c++) {
         for (let i = 0; i < m; i++) {
-          out[i * colsN + c] = vs.data[c * m + i];
+          _stackCell(out, i * colsN + c, columns, c * m + i);
         }
       }
-      return { shape: [m, colsN], data: out };
+      return _stackResult(out, [m, colsN]);
     }
     if (!Array.isArray(vs) || vs.length === 0) {
       return { shape: [0, 0], data: new Float64Array(0) };
@@ -1183,14 +1185,27 @@ const ARITH_OPS = {
   fill: (x: any, size: any) => {
     const dims = _sizeAsDims(size);
     const total = dims.reduce((a, b) => a * b, 1);
+    // Complex literals and scalar broadcasts can retain the JS-array form.
+    if (Array.isArray(x)) x = valueLib.asValue(x);
     // An array `x` fills an array of arrays (§07 "scalar or array"): every
     // cell is a copy of x, so the result nests with x's axes inside.
     if (valueLib.isValue(x) && x.shape.length > 0) {
-      const X = valueLib.densify(x);
+      const X = valueLib._logicalDense(x);
       const n = X.data.length;
       const d = new Float64Array(total * n);
       for (let i = 0; i < total; i++) d.set(X.data, i * n);
-      return { shape: [...dims, ...X.shape], data: d, outerRank: dims.length };
+      const out: any = { shape: [...dims, ...X.shape], data: d, outerRank: dims.length };
+      if (valueLib.isComplexValue(X)) {
+        out.im = new Float64Array(total * n);
+        for (let i = 0; i < total; i++) out.im.set(X.im, i * n);
+        out.dtype = 'complex';
+      }
+      return out;
+    }
+    if (_isComplex(x) || valueLib.isComplexValue(x)) {
+      const z = valueLib.readComplex(valueLib.asValue(x));
+      return valueLib.complexValue(new Float64Array(total).fill(z.re[0]),
+        new Float64Array(total).fill(z.im[0]), dims);
     }
     const d = new Float64Array(total);
     const v = (x === true) ? 1 : (x === false) ? 0 : +x;

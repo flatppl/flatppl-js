@@ -35,6 +35,11 @@ log I0. Static and live parameters share that normalization; sampling is separat
 
 ## Pipeline overview
 
+For shared matrix × sampled vector evaluation, IR reference provenance resolves
+the case where a matrix row count equals the sample count. The atom-aware
+`mulN` kernels accept those explicit axis facts instead of inferring them from
+equal dimensions.
+
 ```
 source → tokenizer.ts → parser.ts → analyzer.ts → pir.ts (LoweredModule)
          → typeinfer.ts (+ fixed-eval.ts) → orchestrator.ts
@@ -128,6 +133,15 @@ for `ksuperpose`, or every coordinate of the same node exactly once for `superpo
 Reference measures and unnormalized components do not satisfy this proof.
 Normalization functions establish simplex membership only for provably nonempty inputs.
 
+Truncated array boxes intersect the reference support and use proved polynomial,
+affine-exponential, separable Gaussian/CDF or axis-cut constant integrals.
+Gaussian proofs retain one source affine square per axis. Centered scoring
+cancels finite independent offsets before exponentiation.
+MCMC setup also retains proved finite truncated-box masses as live parameter
+expressions. Unresolved density limitations propagate through scoring and probes.
+Other weights refuse; agreeing cubature grids do not establish a normalizer.
+Positional-product truncation gates reuse the Lebesgue support walker.
+
 Record Lebesgue supports lower to named products of reference measures.
 Positional record joints merge fields. MCMC collects each component's free
 coordinates, including explicit improper measures alongside reified proper laws.
@@ -145,6 +159,8 @@ use the existing broadcast shape rules so inferred parameters stay live.
 Unsupported ordered/zero-sum source laws refuse with a named diagnostic.
 Other bases expand to the defining normalize/logweighted expression and use
 its existing capabilities. Unsupported normalizers or samplers refuse queries.
+Normalizer discontinuity walks solve affine membership in `posreals`,
+`nonnegreals` and `unitinterval` at their finite endpoints, as for `interval`.
 
 Record-valued broadcasts collect into tables, including nested record columns.
 Bare `record` heads infer their fields from keyword cell types and share the
@@ -157,6 +173,9 @@ Leading slices retain complex components and view semantics; transposed matrix
 rows gather only the selected row, while contiguous slices borrow storage.
 Arithmetic consumes unpacked per-atom `Value` cells before numeric coercion,
 preserving row-vector orientation and complex scalar results across batching.
+Stochastic real scalar vector literals expose packed values for arithmetic.
+Reference-only forms retain joint derivations and component measures for laws
+and plotting; mixed or computed scalar entries use the value evaluator.
 
 Broadcast density distinguishes sample axes from collection axes through input
 references. A matrix dimension equal to the sample
@@ -290,6 +309,8 @@ inline atoms share this path; a fixed array atom acquires a leading sample
 axis rather than becoming a scalar ensemble of its elements.
 IID products preserve complex buffers in both array atoms and table columns;
 per-atom evaluation uses logical row slices to retain complex and layout tags.
+`fill` repeats logical complex scalar/array values in both planes; `rowstack`
+and `colstack` preserve those planes when promoting nested vectors to matrices.
 Worker sessions register retained input buffers at `init`/`setEnv`. An
 `evaluateN` result borrowing that storage is copied before transfer; owned
 outputs retain their zero-copy transfer path.

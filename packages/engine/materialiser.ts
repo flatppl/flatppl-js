@@ -2373,10 +2373,20 @@ function matTuple(d: DerivationTuple, ctx: any, name: string) {
     for (const s of subs) {
       if (typeof s.n_eff === 'number') nEff = Math.min(nEff, s.n_eff);
     }
-    return Object.assign(
+    const result = Object.assign(
       empirical.tupleMeasure(subs, lw),
       { logTotalmass: lTM, n_eff: nEff },
     );
+    const binding = ctx.bindings?.get(name), t = binding?.inferredType;
+    if (binding?.ir?.op === 'vector' && binding.phase === 'stochastic'
+        && t?.kind === 'array' && t.rank === 1 && t.elem?.kind === 'scalar'
+        && ['boolean', 'integer', 'real'].includes(t.elem.prim)) {
+      // Keep component measures for joint-law expansion and plotting, and use
+      // the existing scalar-column bridge for deterministic value consumers.
+      result.value = shared.measureToParamValue(result, name, 'matTuple');
+      result.samples = result.value.data;
+    }
+    return result;
   });
 }
 
