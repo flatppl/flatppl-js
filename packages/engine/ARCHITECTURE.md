@@ -35,6 +35,11 @@ log I0. Static and live parameters share that normalization; sampling is separat
 
 ## Pipeline overview
 
+For shared matrix × sampled vector evaluation, IR reference provenance resolves
+the case where a matrix row count equals the sample count. The atom-aware
+`mulN` kernels accept those explicit axis facts instead of inferring them from
+equal dimensions.
+
 ```
 source → tokenizer.ts → parser.ts → analyzer.ts → pir.ts (LoweredModule)
          → typeinfer.ts (+ fixed-eval.ts) → orchestrator.ts
