@@ -1254,6 +1254,18 @@ function classifyDerivation(
       }
       if (allNumericLits) return { kind: 'array', values };
 
+      // §03/§04: mixed/computed scalar entries still make one array value.
+      // The evaluator already packs real scalar cells as [samples, length].
+      // Reference-only vectors keep their joint derivation for law expansion;
+      // the materializer supplies their packed value without changing that law.
+      const t = binding.inferredType;
+      if (binding.phase === 'stochastic' && t?.kind === 'array' && t.rank === 1
+          && t.elem?.kind === 'scalar' && ['boolean', 'integer', 'real'].includes(t.elem.prim)
+          && rhsIR.args.some((a: any) => a.kind !== 'ref' || a.ns !== 'self')
+          && rhsIR.args.every((a: any) => isEvaluable(a, bindings))) {
+        return { kind: 'evaluate', ir: rhsIR };
+      }
+
       // Array literal whose elements are all self-refs to other
       // bindings — typically the result of liftInlineSubexpressions
       // turning `[draw(M_a), draw(M_b)]` into `[__anon_a, __anon_b]`.
