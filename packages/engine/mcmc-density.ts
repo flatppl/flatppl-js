@@ -27,8 +27,9 @@ const sampler       = require('./sampler.ts');
 const lower         = require('./lower.ts');
 const { getOptimization } = require('./perf-config.ts');
 const { logTotalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
-const { crnNormalizeDensity } = require('./crn-normalize.ts');
+const { crnNormalizeDensity, crnRecognize, CRN_NODE_BUDGET } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
+const { isEngineLimitation } = require('./limitations.ts');
 
 // ---------------------------------------------------------------------------
 // parseSet — mirrors worker.ts makeParseSet (worker.ts:112-126).
@@ -53,7 +54,8 @@ function makeParseSet(env: Record<string, any>) {
 // resolveNormalizeMasses — inline version of the unexported function in
 // mat-density.ts (mat-density.ts:730).
 //
-// Walk measureIR and collect all normalize nodes with a massFrom spec.
+// Walk measureIR and collect normalize nodes with a massFrom spec, plus bare
+// weighted truncations whose conditional box mass can be proved as live IR.
 // Materialise the inner measure via ctx.getMeasure (cached in ctx), read the
 // tracked logTotalmass, and rewrite the node in-place to
 // logweighted(-logZ, inner) — the form the density walker expects
@@ -67,7 +69,8 @@ function collectNormalizeMassNodes(node: any, out: any[], seen: Set<any>) {
     for (const x of node) collectNormalizeMassNodes(x, out, seen);
     return;
   }
-  if (node.kind === 'call' && node.op === 'normalize' && node.massFrom) out.push(node);
+  if (node.kind === 'call' && node.op === 'normalize' && (node.massFrom
+      || node.args?.[0]?.op === 'truncate' && node.args[0].args?.[0]?.op === 'weighted')) out.push(node);
   for (const k in node) {
     const v = node[k];
     if (v && typeof v === 'object') collectNormalizeMassNodes(v, out, seen);
@@ -96,6 +99,14 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
   const needMaterialise: any[] = [];
   for (const node of nodes) {
     const inner = node.args[0];
+    const box = truncatedBoxDensity(node);
+    if (box) {
+      node.op = 'logweighted';
+      node.args = [{ kind: 'call', op: 'neg', args: [box.logMass] }, box.inner];
+      delete node.massFrom;
+      node.fromNormalize = true;
+      continue;
+    }
     const logMassExpr = logTotalMassExpr(inner);
     if (logMassExpr != null) {
       // normalize(inner) → logweighted(−log Z(θ), inner). walkLogWeighted
@@ -165,6 +176,9 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
       delete node.massFrom;
       continue;
     }
+    // Bare inline normalizers have no ensemble to materialize. The density
+    // walker must either resolve the current atom or report a limitation.
+    if (!node.massFrom) continue;
     assertFixedMassFallback(inner, ctx, 'MCMC');
     needMaterialise.push(node);
   }
@@ -187,6 +201,36 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
     delete node.massFrom;
   }
   return measureIR;
+}
+
+/** §06: emit the existing proved finite-box integral as an expression in θ.
+ * Inline truncate nodes can have no massFrom; they still divide by their own
+ * conditional mass. Both boxes are fixed here, while weight parameters stay live.
+ */
+function truncatedBoxDensity(node: any): any | null {
+  const inner = node.args?.[0];
+  if (inner?.op !== 'truncate' || inner.args?.length !== 2) return null;
+  // The proof integrates against density one. A shifted Uniform reference
+  // can have another constant density even when its geometry is the same.
+  if (inner.args[0]?.op !== 'weighted' || inner.args[0].args?.[1]?.op !== 'Lebesgue') return null;
+  const shape = crnRecognize({ ...node, args: [inner.args[0]] });
+  if (!shape) return null;
+  const { parseTruncationBox, supportIsArrayVariate } = require('./mat-density.ts');
+  const region = parseTruncationBox(inner.args[1]);
+  if (!region || region.length !== shape.axes.length || region.some((a: any) => a.kind !== 'finite')
+      || supportIsArrayVariate(inner.args[1]) !== shape.arrayVariate) return null;
+  const axes = region.map((a: any, i: number) => ({ lo: Math.max(a.lo, shape.axes[i].lo),
+    hi: Math.min(a.hi, shape.axes[i].hi) }));
+  if (axes.some((a: any) => !(a.lo < a.hi))) throw new Error('normalize: normalizer Z is 0 over the support intersection (spec §06)');
+  const integral = require('./box-mass.ts').boxLogMass(shape.weightBody,
+    shape.weightParams[0], axes, shape.arrayVariate, CRN_NODE_BUDGET);
+  if (!integral) return null;
+  const weighted = inner.args[0];
+  const centered = integral.logWeight ? { ...weighted, op: 'logweighted', args: [
+    { ...weighted.args[0], body: integral.logWeight }, weighted.args[1],
+  ] } : weighted;
+  return { logMass: integral.logWeight ? integral.logShift : integral.logMass,
+    inner: { ...inner, args: [centered, inner.args[1]] } };
 }
 
 // ---------------------------------------------------------------------------
@@ -686,7 +730,7 @@ async function buildLogPi(
       const r = density.logDensityN(ir, arr, {}, 1, opts);
       const v = r[0];
       return Number.isFinite(v) ? v : -Infinity;
-    } catch (_err) { return -Infinity; }
+    } catch (err) { if (isEngineLimitation(err)) throw err; return -Infinity; }
   }
 
   function priorWith(env: any, pt: Record<string, any>): number {
@@ -708,7 +752,7 @@ async function buildLogPi(
         if (!Number.isFinite(v)) return -Infinity;
         total += v;
       } catch (err: any) {
-        if (err?.undefinedNormalize || err?.modelRefusal) throw err;
+        if (err?.undefinedNormalize || err?.modelRefusal || isEngineLimitation(err)) throw err;
         return -Infinity;
       }
     }
@@ -723,7 +767,7 @@ async function buildLogPi(
       const v = logps[0];
       return Number.isFinite(v) ? v : -Infinity;
     } catch (err: any) {
-      if (err?.undefinedNormalize || err?.modelRefusal) throw err;
+      if (err?.undefinedNormalize || err?.modelRefusal || isEngineLimitation(err)) throw err;
       return -Infinity;
     }
   }
@@ -744,6 +788,7 @@ async function buildLogPi(
       try {
         density.logDensityN(drawMeasures[nm], val, refArrays, 1, opts);
       } catch (err: any) {
+        if (isEngineLimitation(err)) throw err;
         throw new Error(`prior draw '${nm}' has no tractable density: ${err && err.message ? err.message : String(err)}`);
       }
     }
@@ -765,6 +810,7 @@ async function buildLogPi(
     try {
       scoreLikelihood(refArrays, 1, opts);
     } catch (err: any) {
+      if (isEngineLimitation(err)) throw err;
       // ONLY the tagged §06-undefined-normalize refusal is a verdict on the
       // model. Everything else is swallowed on purpose: the probe point is
       // assembled from per-latent PRIOR pool atoms, which need not have the

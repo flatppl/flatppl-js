@@ -132,6 +132,8 @@ Truncated array boxes intersect the reference support and use proved polynomial,
 affine-exponential, separable Gaussian/CDF or axis-cut constant integrals.
 Gaussian proofs retain one source affine square per axis. Centered scoring
 cancels finite independent offsets before exponentiation.
+MCMC setup also retains proved finite truncated-box masses as live parameter
+expressions. Unresolved density limitations propagate through scoring and probes.
 Other weights refuse; agreeing cubature grids do not establish a normalizer.
 Positional-product truncation gates reuse the Lebesgue support walker.
 

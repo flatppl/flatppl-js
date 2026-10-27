@@ -1613,7 +1613,8 @@ function addNormalizerShift(inner: any, refArrays: any, N: any, opts: any, acc: 
       for (let i = 0; i < (refs.length ? N : 1); i++) {
         for (let j = 0; j < refs.length; j++) env[refs[j]] = accessors[j](i);
         const shift = tryResolveTruncateNormalizerShift(inner, opts, env, null);
-        if (shift == null) throw new Error('density: cannot resolve truncated normalizer at current parameters');
+        if (shift == null) throw require('./limitations.ts').engineLimitation(
+          'the conditional truncated normalizer', 'density', 'no proved integral covers this measure at the current parameters (spec §06)');
         if (refs.length) acc[i] += shift;
         else for (let j = 0; j < N; j++) acc[j] += shift;
       }
