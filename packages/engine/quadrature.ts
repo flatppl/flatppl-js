@@ -3,12 +3,12 @@
 // Gauss-Legendre nodes/weights on [0,1] (interior — never 0 or 1).
 // 3-point (degree-5 exact) is the accurate rule; 2-point (degree-3) is the
 // embedded coarse rule. The cell error estimate is |I3 - I2|.
-const GL3 = [
+export const GL3 = [
   { x: 0.5 - 0.5 * Math.sqrt(3 / 5), w: 5 / 18 },
   { x: 0.5,                          w: 8 / 18 },
   { x: 0.5 + 0.5 * Math.sqrt(3 / 5), w: 5 / 18 },
 ];
-const GL2 = [
+export const GL2 = [
   { x: 0.5 - 0.5 / Math.sqrt(3), w: 0.5 },
   { x: 0.5 + 0.5 / Math.sqrt(3), w: 0.5 },
 ];
@@ -107,7 +107,7 @@ function cubatureResult(Z: number, err: number, evals: number) {
 }
 
 // 5-point Gauss-Legendre nodes/weights on [0,1] (degree-9 exact).
-const GL5 = [
+export const GL5 = [
   { x: 0.5 * (1 - 0.9061798459386640), w: 0.5 * 0.2369268850561891 },
   { x: 0.5 * (1 - 0.5384693101056831), w: 0.5 * 0.4786286704993665 },
   { x: 0.5,                            w: 0.5 * 0.5688888888888889 },

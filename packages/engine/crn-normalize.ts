@@ -1,79 +1,10 @@
 'use strict';
-// crn-normalize — a θ-DEPENDENT normalizer for
-// `normalize(weighted(f, Lebesgue(support = S)))` built by reweighting ONE
-// FIXED base sample (common random numbers).
-//
-// WHY THIS EXISTS. Spec §06 "Density reweighting" makes this measure canonical:
-// "`normalize(weighted(f, Lebesgue(support = S)))` produces a probability
-// distribution whose density w.r.t. Lebesgue on S is proportional to f". Its
-// density needs Z = ∫_S f dx, and §06 "Density of composed measures" fixes the
-// shift: "`normalize` (from M / Z): logdensityof(normalize(M), x) =
-// logdensityof(M, x) − log Z, with Z = totalmass(M) finite and nonzero".
-//
-// When f references a LATENT, Z is a function of θ. Two exact routes already
-// cover parts of that surface: `normalize-mass.totalMassExpr` (a superpose of
-// weighted probability measures — Z is algebraic in θ) and mat-density's
-// `weightedLebesgueQuadLogZ` (a θ-INDEPENDENT weight — Z is one deterministic
-// quadrature). Everything else fell through to materialising the inner measure
-// once and baking a CONSTANT −log Z, which is correct only when Z does not move
-// with θ. For a non-bilinear parameter — a width, a mass, a slope inside an
-// exponential — it is silently wrong at every θ but the materialised one.
-//
-// THE ESTIMATOR. Draw M points x_1..x_M from the box ONCE, then
-//
-//     Ẑ(θ) = (V / M) · Σ_m f(x_m; θ),      V = ∏ (hi_i − lo_i)
-//
-// emitted as an IR EXPRESSION in θ, so the density walker evaluates it at the
-// scored point exactly as it evaluates `totalMassExpr`'s algebraic mass. Ẑ is
-// an unbiased estimator of Z. One pass over the M points per θ, and no
-// materialisation.
-//
-// WHY THE SAMPLE IS FIXED, AND WHERE IT LIVES. The point set is generated at
-// REWRITE time and BAKED INTO THE IR as literals, from a Philox key seeded by
-// the BASE MEASURE alone — the box axes and the point count, never the session
-// seed, the sample count, the weight, or a clock. Four consequences, each of
-// which is the reason for the choice rather than a side effect:
-//
-//   1. Ẑ(θ) is a DETERMINISTIC function of θ, so the engine scores an
-//      exactly-defined surrogate measure rather than a noisy one. The
-//      likelihood surface is smooth in θ (correlated estimates — the common
-//      random numbers), and MH over that surrogate is ordinary MCMC for the
-//      surrogate posterior, with no noisy-acceptance pathology.
-//   2. The IS route (mat-density) and the MH route (mcmc-density) build the
-//      SAME expression for the same model, so the two routes of one measure
-//      cannot disagree — the measure-algebra scar-zone failure class
-//      (ARCHITECTURE.md "Measure-algebra scar zones").
-//   3. Two SPELLINGS of one measure agree bit-for-bit. Seeding off the weight
-//      body instead broke exactly this: a lambda weight and the equivalent
-//      `functionof` reification differ in parameter names, so they drew
-//      different samples and scored the same measure differently.
-//   4. Spec §06 "Reproducibility" is satisfied by construction: "An engine may
-//      compute a density by any method the reductions above admit, stochastic
-//      methods included, provided the value is reproducible with respect to
-//      that engine: the same query, on the same implementation and hardware,
-//      yields the same value."
-//
-// A θ-INDEPENDENT weight never reaches here — the CALLER gates on that, so the
-// deterministic quadrature and the pre-existing N-D box estimator keep every
-// number they already produce.
-//
-// THE CAVEAT, WHICH IS A BIAS AND NOT NOISE. Ẑ is unbiased for Z, but the
-// density needs −log Ẑ, and E[−log Ẑ] > −log Z by Jensen. The plug-in density
-// is therefore biased, and a posterior sampled against it is an APPROXIMATE
-// posterior, not the exact one. Exact treatment of a normalizer that is
-// intractable per θ is the pseudo-marginal / exchange family (Andrieu & Roberts
-// 2009; Murray, Ghahramani & MacKay 2006) and is explicitly OUT OF SCOPE here:
-// those algorithms need an unbiased estimate of the target itself, whereas Z
-// sits in the DENOMINATOR, and they replace the inference kernel rather than
-// the density. `crnNormalizeNote` states the caveat once per node.
+// Per-parameter normalizers for §06 weighted Lebesgue boxes. Exact moving
+// windows, degree-checked tensor quadrature and exponential-affine integrals
+// share one expression across sampling and density routes. Unresolved shapes
+// refuse before inference; a pooled mass is not the conditional mass Z(θ).
 
-const rng = require('./rng.ts');
 const { mapIR } = require('./ir-walk.ts');
-
-// Points in the fixed base sample. The estimator's error is O(M^-1/2) with the
-// stratification below, and the emitted expression holds M copies of the weight
-// body, so this trades accuracy against IR size.
-const CRN_POINTS_DEFAULT = 128;
 
 // Refuse rather than emit an expression bigger than this. A weight body large
 // enough to blow the budget is a real feature request (a sum over the sample
@@ -151,9 +82,8 @@ function crnRecognize(node: any): CrnShape | null {
   if (!supp) return null;
   const axes = _parseAxes(supp);
   if (!axes || axes.length === 0) return null;
-  // Every axis must be bounded: the points are drawn uniformly over the box.
-  // An unbounded axis would need a change-of-variables whose Jacobian is
-  // heavy-tailed, which is a high-variance estimator this does not ship.
+  // Every axis must be bounded: the integration rules cover only finite boxes.
+  // Unbounded supports need a separate change of variables or analytic rule.
   for (const a of axes) if (a.kind !== 'finite') return null;
   const { supportIsArrayVariate } = require('./mat-density.ts');
   return {
@@ -164,7 +94,7 @@ function crnRecognize(node: any): CrnShape | null {
 
 // Does the weight actually depend on a latent? Only then is a per-θ normalizer
 // needed, and only then may this path take a node away from the deterministic
-// quadrature or the pre-existing N-D box estimator.
+// integration for a fixed weight.
 //
 // The weight's OWN parameters must come out first. mat-density's
 // `weightedFixedWeightEnv` does not remove them, which is harmless where it is
@@ -185,66 +115,6 @@ function crnWeightIsThetaDependent(shape: CrnShape, ctx: any): boolean {
     return true;
   }
   return false;
-}
-
-// =====================================================================
-// The fixed point set
-// =====================================================================
-
-// Seed string for the point set. It names the BASE MEASURE (the box axes) and
-// the point count, and DELIBERATELY NOT the weight: the sample is a sample of
-// the base, so the weight has no business choosing it. Two consequences the
-// tests pin:
-//   • Two spellings of one measure — a lambda weight and the equivalent
-//     `functionof` reification, whose bodies differ in parameter names and
-//     structure — draw the SAME points and therefore score BIT-FOR-BIT alike.
-//   • The IS and MH routes seed identically, since neither the source span nor a
-//     route-local annotation can reach this string.
-function seedString(axes: Array<{ lo: number; hi: number }>, M: number): string {
-  return 'crn|M=' + M + '|' + axes.map((a) => a.lo + ':' + a.hi).join('x');
-}
-
-// M points over the box, as a latin-hypercube sample with one jittered point
-// per stratum: axis j takes stratum perm_j[m], and axis 0 keeps the identity
-// permutation (LHS needs the permutations to be independent ACROSS axes, not
-// randomized on every one). Unbiased for the integral, and strictly lower
-// variance than an unstratified sample; in 1-D it reduces to plain
-// stratification. Deterministic in `seed` alone.
-function crnFixedPoints(
-  axes: Array<{ lo: number; hi: number }>, M: number, seed: number,
-): number[][] {
-  const k = axes.length;
-  const key = rng.keyFromSeed(seed >>> 0);
-  const state = rng.stateFromKey(key[0], key[1]);
-  // One stream for every uniform this function needs: M·k jitters first, then
-  // the (k−1)·M swap draws for the permutations.
-  const nJitter = M * k;
-  const nSwap = (k - 1) * M;
-  const { out } = rng.philoxNUniform(state, nJitter + nSwap);
-  const perms: number[][] = [];
-  for (let j = 0; j < k; j++) {
-    const p = new Array(M);
-    for (let m = 0; m < M; m++) p[m] = m;
-    if (j > 0) {
-      // Fisher-Yates over p, drawing from the swap segment of the stream.
-      const base = nJitter + (j - 1) * M;
-      for (let m = M - 1; m > 0; m--) {
-        const r = Math.min(m, Math.floor(out[base + m] * (m + 1)));
-        const t = p[m]; p[m] = p[r]; p[r] = t;
-      }
-    }
-    perms.push(p);
-  }
-  const pts: number[][] = new Array(M);
-  for (let m = 0; m < M; m++) {
-    const row = new Array(k);
-    for (let j = 0; j < k; j++) {
-      const u = (perms[j][m] + out[m * k + j]) / M;
-      row[j] = axes[j].lo + u * (axes[j].hi - axes[j].lo);
-    }
-    pts[m] = row;
-  }
-  return pts;
 }
 
 // =====================================================================
@@ -297,49 +167,15 @@ function nodeCount(n: any): number {
   return c;
 }
 
-const _noted = new Set<string>();
-
-// State the plug-in caveat once per distinct node. Not an error: the density is
-// well defined and reproducible, it is the POSTERIOR it induces that is
-// approximate, and the user is the one who can judge whether that matters.
-function crnNormalizeNote(key: string, M: number, dims: number) {
-  if (_noted.has(key)) return;
-  // The dedup set is process-global; clear it rather than grow without bound in
-  // a long-lived session that scores many models.
-  if (_noted.size > 256) _noted.clear();
-  _noted.add(key);
-  // eslint-disable-next-line no-console
-  console.warn('normalize(weighted(f, Lebesgue(box))): the weight depends on a latent, '
-    + 'so Z(θ) is estimated by reweighting one fixed ' + M + '-point sample of the '
-    + dims + '-D box (common random numbers). The estimate is deterministic in θ and '
-    + 'reproducible, but −log Ẑ is biased for −log Z (Jensen), so a posterior scored '
-    + 'against it is an APPROXIMATE posterior. Exact treatment (pseudo-marginal / '
-    + 'exchange) is out of scope for this engine.');
-}
-
-// Build the IR expression for Ẑ(θ) of a `normalize` node, or null when the node
-// is not the recognised shape (the caller keeps its existing fallback).
-// `opts.points` overrides M; `opts.ctx` is the materialisation context, read
-// only to tell a latent from a constant or a called function in the budget
-// refusal below.
-//
-// THROWS when the shape IS recognised, the weight moves with a latent, and the
-// body will not fit the node budget. Every caller's fallback there is the mass
-// POOLED over the atom ensemble — the pooled weight sum on the sampling route, a
-// baked −log Z on the two density routes — which is E[Z], not Z(θ). Returning
-// null with a `console.warn` handed that back as a number: measured on
-// `f = exp(θx)` over [0,1] with θ ~ Uniform(0, 4) at M = 400000, E[θ] = 2.8124
-// against the prior's 2.0 and the Z-tilted 2.8073. Spec §06 `normalize` makes
-// every θ-slice a probability measure, so the θ-marginal is the prior; and its
-// engine contract states the doctrine — "engines do not silently substitute
-// heuristics: … succeeds with closed-form math or fails loudly".
-//
-// A weight that is a function of the VARIATE alone keeps the null: Z is then one
-// constant, the pooled mass is exactly it, and refusing would reject a correct
-// answer. That is the only shape reachable here where the fallback is right.
-function crnNormalizeMassExpr(node: any, opts?: any): any | null {
+// Return log Z(θ). A recognized but unresolved latent-dependent weight must
+// throw: null would let callers use a pooled divisor and change the posterior.
+function boxIntegral(node: any): any | null {
   const shape = crnRecognize(node);
   if (!shape) return null;
+  if (shape.axes.length > 3) throw unresolved(shape, 'more than three integration coordinates');
+  if (shape.axes.some((a) => !Number.isFinite(a.hi - a.lo) || a.hi <= a.lo)) {
+    throw unresolved(shape, 'the box has no finite positive representable width');
+  }
   // A weight with a discontinuity: the fixed sample cannot see a window that
   // falls between its points, so split at the breakpoints instead
   // (piecewise-mass.ts), or refuse where that is not possible.
@@ -365,36 +201,39 @@ function crnNormalizeMassExpr(node: any, opts?: any): any | null {
       const expr = piecewise.boxMassExpr(param, shape.weightBody, shape.axes[0].lo, shape.axes[0].hi,
         bp.exprs, shape.arrayVariate);
       _checkBudget(expr);
-      return expr;
+      return { logMass: { kind: 'call', op: 'log', args: [expr] } };
     }
   }
-  const M = Math.max(1, Math.floor((opts && opts.points) || CRN_POINTS_DEFAULT));
-  const key = seedString(shape.axes, M);
-  const bodySize = nodeCount(shape.weightBody);
-  if (bodySize * M > CRN_NODE_BUDGET) {
-    // Without a ctx every free name reads as a latent, which refuses rather than
-    // guesses — the conservative direction for a divisor.
-    if (!crnWeightIsThetaDependent(shape, opts && opts.ctx)) return null;
-    throw new Error('normalize(weighted(f, Lebesgue(box))): the weight depends on a '
-      + 'latent, so its mass Z(θ) is estimated by inlining the weight body at each of '
-      + M + ' fixed points — ' + bodySize + ' nodes × ' + M + ' = ' + (bodySize * M)
-      + ' nodes, over the budget of ' + CRN_NODE_BUDGET + '. Falling back to the pooled '
-      + 'mass would return the prior tilted by Z(θ); spec §06 normalize makes each '
-      + 'θ-slice a probability measure, so refusing instead. Lower the point count '
-      + '(`crnNormalizePoints`) to trade estimator accuracy for expression size, or '
-      + 'rewrite the measure so its mass is closed-form in the latent.');
-  }
-  const seed = rng.xxhash32(key, 0) >>> 0;
-  const pts = crnFixedPoints(shape.axes, M, seed);
-  let volume = 1;
-  for (const a of shape.axes) volume *= (a.hi - a.lo);
-  const terms = pts.map((pt) =>
-    bindWeightAt(shape.weightParams, shape.weightBody, pt, shape.arrayVariate));
-  const sum = balancedAdd(terms);
-  crnNormalizeNote(key, M, shape.axes.length);
+  const { boxLogMass } = require('./box-mass.ts');
+  const expr = boxLogMass(shape.weightBody, param, shape.axes, shape.arrayVariate, CRN_NODE_BUDGET);
+  if (expr === null) throw unresolved(shape, 'no exact box integral covers this weight within the expression budget');
+  _checkBudget(expr);
+  return expr;
+}
+
+function unresolved(shape: CrnShape, detail: string): Error {
+  const { engineLimitation } = require('./limitations.ts');
+  const loc = shape.weightBody.loc?.start;
+  const at = loc ? ' at line ' + (loc.line + 1) + ', column ' + (loc.col + 1) : '';
+  return engineLimitation('normalize(weighted(f, Lebesgue(box)))', 'parameter-dependent integration',
+    detail + at + '; Z(θ) is unresolved (spec §06). Fixed rules can miss narrow peaks; refusing a pooled divisor');
+}
+
+function crnNormalizeLogMassExpr(node: any): any | null {
+  return boxIntegral(node)?.logMass ?? null;
+}
+
+// Density can cancel an exponential offset before evaluation, retaining small
+// normalization terms even when the original exponent is enormous.
+function crnNormalizeDensity(node: any): any | null {
+  const integral = boxIntegral(node);
+  if (!integral) return null;
+  const inner = node.args[0];
+  if (!integral.logWeight) return { logMass: integral.logMass, inner };
+  const fn = inner.args[0];
   return {
-    kind: 'call', op: 'mul',
-    args: [{ kind: 'lit', value: volume / M }, sum],
+    logMass: integral.logShift,
+    inner: { ...inner, op: 'logweighted', args: [{ ...fn, body: integral.logWeight }, inner.args[1]] },
   };
 }
 
@@ -404,7 +243,7 @@ function _checkBudget(expr: any) {
   const n = nodeCount(expr);
   if (n > CRN_NODE_BUDGET) {
     throw new Error('normalize(weighted(f, …)): the weight depends on a latent, so its mass Z(θ) '
-      + 'is a piecewise quadrature with the weight body inlined at each node — ' + n + ' nodes, '
+      + 'inlines the weight body at integration points — ' + n + ' nodes, '
       + 'over the budget of ' + CRN_NODE_BUDGET + '. Refusing rather than falling back to an '
       + 'estimator that cannot see the weight\'s discontinuities (spec §06).');
   }
@@ -412,13 +251,11 @@ function _checkBudget(expr: any) {
 
 module.exports = {
   _checkBudget,
-  crnNormalizeMassExpr,
+  crnNormalizeLogMassExpr,
+  crnNormalizeDensity,
   crnRecognize,
   crnWeightIsThetaDependent,
-  crnFixedPoints,
   lebesgueBoxSupport,
-  seedString,
-  CRN_POINTS_DEFAULT,
   CRN_NODE_BUDGET,
   // Shared with leaf-mass-quad.ts, which emits the same kind of per-θ mass
   // expression over a probability-leaf base: one binder, one reduction and one
@@ -427,5 +264,4 @@ module.exports = {
   bindWeightAt,
   nodeCount,
   balancedAdd,
-  _internal: { bindWeightAt, nodeCount, balancedAdd, _noted },
 };

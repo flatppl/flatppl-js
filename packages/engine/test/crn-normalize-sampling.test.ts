@@ -9,7 +9,7 @@
 // every atom — atom i kept the residue Z(θ_i)/E[Z]. Spec §06 "Normalization"
 // makes `normalize(M)` a probability measure, so the θ-marginal of the sampled
 // joint must be the prior unchanged; the residue tilted it towards large-Z θ
-// instead, while `logdensityof` of the same measure divided by Ẑ(θ) per θ. Two
+// instead, while `logdensityof` of the same measure divided by Z(θ) per θ. Two
 // routes, one measure, two answers — the measure-algebra scar-zone class exists
 // for.
 //
@@ -42,7 +42,7 @@ const { buildLogPi } = require('../mcmc-density.ts');
 const H = 'flatppl_compat = "0.1"\n';
 
 // A rate INSIDE an exponential: Z(θ) is not algebraic in θ, so this is the
-// shape the closed-form mass routes decline and the fixed-sample estimator owns.
+// shape the exponential-affine integral covers.
 const S1D = H
   + 'theta ~ Uniform(interval(0.0, 4.0))\n'
   + 'm = normalize(weighted((x, t) -> exp(t * x), Lebesgue(support = interval(0.0, 1.0)), theta))\n'
@@ -131,11 +131,11 @@ test('2-D: a θ-dependent normalizer over a box samples the untilted joint', asy
   assert.ok(Math.abs(m.ey[1] - 0.7152499) < 5e-3, `E[v] = ${m.ey[1]}, oracle 0.7152499`);
 });
 
-test('the sampler divides by the SAME Ẑ(θ) the density subtracts', async () => {
+test('the sampler divides by the SAME Z(θ) the density subtracts', async () => {
   // The two-routes-one-measure check, with no quadrature and no oracle in it.
-  // The sampler's weight on atom i is log f(y_i; θ_i) − log Ẑ(θ_i) − c, and the
-  // density route at a fixed y* scores log f(y*; θ) − log Ẑ(θ). Subtracting the
-  // known log f = θ·y from each leaves −log Ẑ(θ) on both sides, up to the
+  // The sampler's weight on atom i is log f(y_i; θ_i) − log Z(θ_i) − c, and the
+  // density route at a fixed y* scores log f(y*; θ) − log Z(θ). Subtracting the
+  // known log f = θ·y from each leaves −log Z(θ) on both sides, up to the
   // sampler's one constant — so the DIFFERENCES between atoms must agree. They
   // are equal to 1e-9, not merely close: the point set is seeded from the box
   // axes alone, so both routes build the same expression.
@@ -159,11 +159,11 @@ test('the sampler divides by the SAME Ẑ(θ) the density subtracts', async () =
     const sDelta = minusLogZhat(i) - minusLogZhat(0);
     const dDelta = density(i) - density(0);
     assert.ok(Math.abs(sDelta - dDelta) < 1e-9,
-      `atom ${i} (θ = ${m.ts[i]}): sampler Δ(−log Ẑ) ${sDelta} vs density Δ ${dDelta}`);
+      `atom ${i} (θ = ${m.ts[i]}): sampler Δ(−log Z) ${sDelta} vs density Δ ${dDelta}`);
   }
 });
 
-test('2-D: the sampler divides by the SAME Ẑ(θ) the density subtracts', async () => {
+test('2-D: the sampler divides by the SAME Z(θ) the density subtracts', async () => {
   // The same identity over a 2-axis box, where the weight is
   // log f(u, v; θ) = −(u + v)/θ. The 1-D case cannot see an axis-ordering or
   // volume-factor difference between the two routes; this one can.
@@ -188,13 +188,13 @@ test('2-D: the sampler divides by the SAME Ẑ(θ) the density subtracts', async
     const sDelta = sAt(i) - sAt(0);
     const dDelta = dAt(i) - dAt(0);
     assert.ok(Math.abs(sDelta - dDelta) < 1e-9,
-      `atom ${i} (θ = ${m.ts[i]}): sampler Δ(−log Ẑ) ${sDelta} vs density Δ ${dDelta}`);
+      `atom ${i} (θ = ${m.ts[i]}): sampler Δ(−log Z) ${sDelta} vs density Δ ${dDelta}`);
   }
 });
 
 test('a weight whose mass estimates to zero is refused, not sampled', async () => {
   // §06 "normalize": "If Z = 0 or Z = ∞, the result is undefined." The density
-  // route already refuses a non-finite −log Ẑ shift; the sampler must refuse the
+  // route already refuses a non-finite −log Z shift; the sampler must refuse the
   // same measure rather than divide by zero and hand back a garbage ensemble.
   const zero = H
     + 'theta ~ Uniform(interval(0.5, 2.0))\n'
@@ -204,73 +204,6 @@ test('a weight whose mass estimates to zero is refused, not sampled', async () =
   await assert.rejects(() => Promise.resolve(ctx.getMeasure('y')),
     /estimated total mass .* is 0.*spec §06/s);
 });
-
-test('over the node budget the sampler refuses rather than pooling the divisor',
-  async () => {
-    // crn-normalize.ts declines to inline a weight body M times past its node
-    // budget. It used to return null there and let the sampler reinstate the
-    // POOLED divisor behind a `console.warn`, which is the tilted measure this
-    // whole path exists to remove: measured at this point count, E[θ] = 2.8124
-    // against the prior's 2.0 and the Z-tilted 2.8073. §06 makes every θ-slice a
-    // probability measure and its engine contract says an engine "does not
-    // silently substitute heuristics", so the budget is a refusal.
-    //
-    // Deliberateness is preserved the same way the pooled pin preserved it: the
-    // assertion names the budget and the shape, so a quiet drop to a smaller M —
-    // or a quiet return of the tilted ensemble — fails here rather than passing.
-    // Forced through the point count, which multiplies the same budget.
-    const n = 20000;
-    const { proc, ctx } = ctxFor(S1D, n);
-    assert.equal(proc.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
-    ctx.crnNormalizePoints = 400000;
-    await assert.rejects(() => Promise.resolve(ctx.getMeasure('y')),
-      /the weight depends on a latent.*over the budget of 400000.*spec §06 normalize/s);
-  });
-
-test('over the node budget the density route refuses too', async () => {
-  // The same builder feeds `logdensityof`, where the fallback was a baked
-  // constant −log Z rather than a pooled weight sum — the same pooled number by
-  // another name. One measure, one verdict.
-  const src = S1D + 'K = kernelof(record(y = y))\n'
-    + 'L = likelihoodof(K, record(y = 0.5))\n'
-    + 'posterior = bayesupdate(L, lawof(theta))\n';
-  const { proc, ctx } = ctxFor(src, 64);
-  assert.equal(proc.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
-  ctx.crnNormalizePoints = 400000;
-  let post: any = null;
-  for (const [, v] of Object.entries(ctx.derivations as Record<string, any>)) {
-    if (v && (v as any).kind === 'bayesupdate') post = v;
-  }
-  assert.ok(post, 'the scoring model must produce a bayesupdate derivation');
-  await assert.rejects(() => Promise.resolve(buildLogPi(ctx, post)),
-    /the weight depends on a latent.*over the budget of 400000.*spec §06 normalize/s);
-});
-
-test('over the node budget a θ-INDEPENDENT weight still keeps the pooled divisor',
-  async () => {
-    // The gate on the refusal. Z is one constant here, so the pooled mass is
-    // exactly it and refusing would reject a correct answer. Same point count,
-    // same budget overrun, opposite verdict. Compare the same fresh draw
-    // stream with the default budget, not a historical cached-measure stream.
-    const n = 60000;
-    const control = await jointMoments(S_FIXED, 1, n);
-    const { proc, ctx } = ctxFor(S_FIXED, n);
-    assert.equal(proc.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
-    ctx.crnNormalizePoints = 400000;
-    const y = await ctx.getMeasure('y');
-    const th = await ctx.getMeasure('theta');
-    const lw = Array.from(y.logWeights) as number[];
-    const norm = logSumExp(lw);
-    let ey = 0;
-    let et = 0;
-    for (let i = 0; i < n; i++) {
-      const w = Math.exp(lw[i] - norm);
-      ey += w * y.samples[i];
-      et += w * th.samples[i];
-    }
-    assert.equal(ey, control.ey[0]);
-    assert.equal(et, control.et);
-  });
 
 test('a θ-INDEPENDENT weight keeps the pooled divisor untouched', async () => {
   // The control that pins the per-atom divisor to a θ-DEPENDENT weight. Here Z

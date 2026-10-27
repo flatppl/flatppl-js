@@ -27,7 +27,7 @@ const sampler       = require('./sampler.ts');
 const lower         = require('./lower.ts');
 const { getOptimization } = require('./perf-config.ts');
 const { logTotalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
-const { crnNormalizeMassExpr } = require('./crn-normalize.ts');
+const { crnNormalizeDensity } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
 
 // ---------------------------------------------------------------------------
@@ -127,19 +127,15 @@ async function resolveNormalizeMasses(measureIR: any, ctx: any, atomDep?: Set<st
       delete node.massFrom;
       continue;
     }
-    // A θ-dependent `normalize(weighted(f, Lebesgue(box)))`: Z moves with θ, so
-    // estimate it by reweighting one FIXED sample of the box rather than baking
-    // the constant below. The point set is seeded from the node's own content,
-    // so this route and the IS route (mat-density) build the same expression for
-    // the same model — see crn-normalize.ts. Gated on atom-dependence so a
-    // θ-INDEPENDENT weight keeps whatever this route does today.
+    // Resolve the box integral at each θ. Sampling and both density routes
+    // share this expression; an unresolved weight refuses before inference.
     if (atomDep && atomDep.size > 0 && referencesAtomDep(inner, atomDep)) {
       // Over the node budget this THROWS rather than returning null: the
       // constant −log Z baked below is the pooled mass, wrong wherever Z moves.
-      const crnExpr = crnNormalizeMassExpr(node, { points: ctx && ctx.crnNormalizePoints, ctx });
-      if (crnExpr != null) {
+      const box = crnNormalizeDensity(node);
+      if (box != null) {
         node.op = 'logweighted';
-        node.args = [{ kind: 'call', op: 'neg', args: [{ kind: 'call', op: 'log', args: [crnExpr] }] }, inner];
+        node.args = [{ kind: 'call', op: 'neg', args: [box.logMass] }, box.inner];
         delete node.massFrom;
         node.fromNormalize = true;
         continue;
@@ -711,7 +707,10 @@ async function buildLogPi(
         const v = logps[0];
         if (!Number.isFinite(v)) return -Infinity;
         total += v;
-      } catch (_err) { return -Infinity; }
+      } catch (err: any) {
+        if (err?.undefinedNormalize || err?.modelRefusal) throw err;
+        return -Infinity;
+      }
     }
     return total;
   }
@@ -723,7 +722,10 @@ async function buildLogPi(
       const logps = scoreLikelihood(refArrays, 1, opts);
       const v = logps[0];
       return Number.isFinite(v) ? v : -Infinity;
-    } catch (_err) { return -Infinity; }
+    } catch (err: any) {
+      if (err?.undefinedNormalize || err?.modelRefusal) throw err;
+      return -Infinity;
+    }
   }
 
   // One-time tractability probe at an in-support point: lets the density
@@ -851,6 +853,9 @@ async function buildLogPi(
       const env = (logL === null || priorNeedsDerived) ? buildEnv(pts[i]) : leanEnvOf(pts[i]);
       const pr = priorWith(env, pts[i]);
       prior[i] = Number.isFinite(pr) ? pr : -Infinity;
+      // Match scalar logPi: an out-of-prior proposal needs no likelihood.
+      // Its conditional normalizer may be undefined outside the prior domain.
+      if (!Number.isFinite(pr)) { lik[i] = -Infinity; continue; }
       const lk = (logL !== null) ? logL[i] : likWith(env, pts[i]);
       lik[i] = Number.isFinite(lk) ? lk : -Infinity;
     }
