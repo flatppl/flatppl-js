@@ -845,6 +845,13 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
       // Scalar-batched dispatch.
       if (op in ARITH_OPS_N) {
         const args = (ir.args || []).map((a: any) => _evalN(a, refArrays, N, baseEnv, overlay));
+        // Oriented cells cannot be packed as [N,k]: that would turn a
+        // per-cell row-vector tag into a matrix-transpose tag (§03/§07).
+        // Re-evaluate per atom using reference provenance: shared operands
+        // can have a leading dimension equal to N and must stay whole.
+        if (args.some((a: any) => Array.isArray(a) && a.length === N && isValueObj(a[0]))) {
+          return _perAtomFallback(ir, refArrays, N, baseEnv, overlay);
+        }
         return ARITH_OPS_N[op](args, N);
       }
       // Batched approximation functions. Each has the shape
@@ -1346,8 +1353,16 @@ function _perAtomFallback(ir: any, refArrays: any, N: any, baseEnv: any, overlay
   }
   if (allRank0Values) {
     const re = new Float64Array(N);
-    for (let i = 0; i < N; i++) re[i] = out[i].data[0];
-    return valueLib.batchedScalar(re);
+    let im: Float64Array | null = null;
+    for (let i = 0; i < N; i++) {
+      const parts = valueLib.isComplexValue(out[i]) ? valueLib.readComplex(out[i]) : null;
+      re[i] = parts ? parts.re[0] : out[i].data[0];
+      if (parts) {
+        if (im === null) im = new Float64Array(N);
+        im[i] = parts.im[0];
+      }
+    }
+    return im === null ? valueLib.batchedScalar(re) : valueLib.complexValue(re, im, [N]);
   }
   // Pack to a complex Value (shape=[N], dtype='complex') when every
   // result is a scalar complex `{re, im}` — the per-atom return of
