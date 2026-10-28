@@ -6,7 +6,7 @@
 const sampler = require('./sampler.ts');
 const valueLib = require('./value.ts');
 const { regionBoundsFromIR } = require('./sampler-registry.ts');
-const { cdf, hasCdf, intervalProbability } = require('./forward-cdf.ts');
+const { cdf, hasCdf, logIntervalProbability } = require('./forward-cdf.ts');
 const { logSumExp } = require('./empirical.ts');
 const { walkIR } = require('./ir-walk.ts');
 // Bound amplification of CDF input rounding by subtraction. This does not
@@ -209,7 +209,7 @@ function logBinMass(ir: any, bounds: any[], env: any): number {
   const names = ir.op === 'Uniform' ? ['lo', 'hi'] : entry.params;
   const params: Record<string, number> = {};
   for (let j = 0; j < names.length; j++) params[names[j]] = values[j];
-  return Math.log(intervalProbability(ir.op, params, lo, hi));
+  return logIntervalProbability(ir.op, params, lo, hi);
 }
 
 /** §06/§08: integrate a polynomial density over the full support/bin intersection.

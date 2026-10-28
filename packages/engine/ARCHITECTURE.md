@@ -33,6 +33,10 @@ FlatPDL bare inputs stay whole, including Dirichlet's concentration vector.
 VonMises scoring uses `bessel.ts`'s scaled, double-precision Cephes expansion for
 log I0. Static and live parameters share that normalization; sampling is separate.
 
+Binned scalar interval masses use `forward-cdf.ts`'s `logIntervalProbability`.
+Exponential and shape-one Gamma tails stay logarithmic through normalization;
+other scalar laws retain the CDF/survival difference path.
+
 ## Pipeline overview
 
 For shared matrix × sampled vector evaluation, IR reference provenance resolves
