@@ -8,6 +8,7 @@ const valueLib = require('./value.ts');
 const { regionBoundsFromIR } = require('./sampler-registry.ts');
 const { cdf, hasCdf, intervalProbability } = require('./forward-cdf.ts');
 const { logSumExp } = require('./empirical.ts');
+const { walkIR } = require('./ir-walk.ts');
 // Bound amplification of CDF input rounding by subtraction. This does not
 // certify the Beta routine's own accuracy (1e4 * epsilon is about2.2e-12).
 const MAX_NB_CDF_SUBTRACTION_CONDITION = 1e4;
@@ -62,6 +63,8 @@ function resolveBinnedRates(ir: any, env: any): { shape: number[], data: Float64
 function logBinMass(ir: any, bounds: any[], env: any): number {
   if (!ir || ir.kind !== 'call') throw new Error('BinnedPoissonProcess: unresolved intensity measure');
   if (bounds.some(b => b.lo > b.hi || (b.lo === b.hi && (!b.rightClosed || b.leftClosed === false)))) return -Infinity;
+  const polynomial = polynomialBinLogMass(ir, bounds, env);
+  if (polynomial !== null) return polynomial;
   if (ir.op === 'weighted' || ir.op === 'logweighted') {
     if (ir.args[0]?.op === 'functionof') {
       throw new Error('BinnedPoissonProcess: event-dependent intensity weights require integration not supported by the exact bin-mass path');
@@ -207,6 +210,81 @@ function logBinMass(ir: any, bounds: any[], env: any): number {
   const params: Record<string, number> = {};
   for (let j = 0; j < names.length; j++) params[names[j]] = values[j];
   return Math.log(intervalProbability(ir.op, params, lo, hi));
+}
+
+/** §06/§08: integrate a polynomial density over the full support/bin intersection.
+ * Callback specialization already expands traced aliases and binds explicit
+ * extras, leaving one coordinate and live ambient coefficient expressions.
+ * Zero mass is valid here; normalization's positive-mass helpers do not apply.
+ */
+function polynomialBinLogMass(ir: any, bounds: any[], env: any): number | null {
+  if (bounds.length !== 1 || bounds[0].name != null) return null;
+  const restrictions: any[] = [];
+  let node = ir;
+  while (node?.op === 'truncate') {
+    restrictions.push(node.args[1]);
+    node = node.args[0];
+  }
+  if (node?.op !== 'weighted') return null;
+  const fn = node.args[0], body = fn?.body;
+  if (fn?.op !== 'functionof' || fn.params?.length !== 1
+      || body?.op !== 'polynomial' || body.args?.length !== 2) return null;
+  const coordinate = body.args[1], coefficients = body.args[0];
+  if (coordinate?.kind !== 'ref' || coordinate.name !== fn.params[0]
+      || coefficients?.op !== 'vector' || !coefficients.args?.length) return null;
+  let dependent = false;
+  for (const coefficient of coefficients.args) walkIR(coefficient, (n: any) => {
+    if (n.kind === 'ref' && n.ns === coordinate.ns && n.name === coordinate.name) dependent = true;
+  });
+  if (dependent) return null;
+
+  // Bounded Lebesgue lowers to volume * Uniform. Keep those scalar factors
+  // and Uniform's reciprocal volume, rather than treating either as density1.
+  let reference = node.args[1], logScale = 0;
+  while (reference?.op === 'weighted' || reference?.op === 'logweighted') {
+    if (reference.args[0]?.op === 'functionof') return null;
+    const weight = +sampler.evaluateExpr(reference.args[0], env);
+    const shift = reference.op === 'logweighted' ? weight : Math.log(weight);
+    if (Number.isNaN(shift) || shift === Infinity) {
+      throw new Error('BinnedPoissonProcess: polynomial reference weight must be non-negative and finite');
+    }
+    logScale += shift;
+    reference = reference.args[1];
+  }
+  if (reference?.op !== 'Lebesgue' && reference?.op !== 'Uniform') return null;
+  const support = reference.kwargs?.support || reference.args?.[0];
+  let [lower, upper] = regionBoundsFromIR(support, env);
+  if (reference.op === 'Uniform') {
+    if (!Number.isFinite(lower) || !Number.isFinite(upper) || !(upper > lower)) return null;
+    logScale -= Math.log(upper - lower);
+  }
+  for (const region of restrictions) {
+    const [lo, hi] = regionBoundsFromIR(region, env);
+    lower = Math.max(lower, lo);
+    upper = Math.min(upper, hi);
+  }
+  const bin = bounds[0];
+  if (![lower, upper, bin.lo, bin.hi].every(Number.isFinite)) {
+    throw new Error('BinnedPoissonProcess: polynomial bin integration requires finite full support and bin edges');
+  }
+  const lo = Math.max(lower, bin.lo), hi = Math.min(upper, bin.hi);
+  if (lo >= hi || logScale === -Infinity) return -Infinity;
+  const values = coefficients.args.map((c: any) => +sampler.evaluateExpr(c, env));
+  if (!values.every(Number.isFinite)) {
+    throw new Error('BinnedPoissonProcess: polynomial coefficients must be finite real values');
+  }
+  // Paired Horner evaluates the antiderivative divided difference without
+  // separate endpoint powers. Power-basis conditioning near roots remains.
+  let value = values[values.length - 1] / values.length, difference = 0;
+  for (let i = values.length - 2; i >= 0; i--) {
+    difference = hi * difference + value;
+    value = lo * value + values[i] / (i + 1);
+  }
+  const mass = (hi - lo) * (hi * difference + value);
+  if (!(mass >= 0) || !Number.isFinite(mass)) {
+    throw new Error('BinnedPoissonProcess: polynomial bin mass must be non-negative and finite');
+  }
+  return mass === 0 ? -Infinity : Math.log(mass) + logScale;
 }
 
 function vector(v: any, name: string): Float64Array {
