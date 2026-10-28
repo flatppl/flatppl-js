@@ -64,15 +64,30 @@ c = score(0.6)
     assert.ok(Math.abs((await ctx.getMeasure(name)).samples[0] - expected) < 1e-12);
   }
   const parent = await ctx.getMeasure('theta'), counts = await ctx.getMeasure('M');
-  const mean = [0, 0], expectedMean = [0, 0];
+  const groups = [
+    { size: 0, total: [0, 0], expected: [0, 0] },
+    { size: 0, total: [0, 0], expected: [0, 0] },
+  ];
   for (let i = 0; i < 2048; i++) {
-    mean[0] += counts.samples[2 * i] / 2048;
-    mean[1] += counts.samples[2 * i + 1] / 2048;
-    expectedMean[0] += (0.5 + parent.samples[i] / 8) / 2048;
-    expectedMean[1] += (0.5 + 3 * parent.samples[i] / 8) / 2048;
+    const theta = parent.samples[i], group = groups[theta < 2 ? 0 : 1];
+    group.size++;
+    group.total[0] += counts.samples[2 * i];
+    group.total[1] += counts.samples[2 * i + 1];
+    group.expected[0] += 0.5 + theta / 8;
+    group.expected[1] += 0.5 + 3 * theta / 8;
   }
-  assert.ok(Math.abs(mean[0] - expectedMean[0]) < 0.12);
-  assert.ok(Math.abs(mean[1] - expectedMean[1]) < 0.15);
+  // Conditional Poisson totals have variance equal to their summed rates.
+  // The Poisson concentration bound sqrt(2*variance*t)+t gives a combined
+  // false-failure bound of 8*exp(-t)=1e-6 across these four group/bin checks.
+  const t = Math.log(8e6);
+  for (const group of groups) {
+    assert.ok(group.size >= 800);
+    for (let k = 0; k < 2; k++) {
+      const bound = Math.sqrt(2 * group.expected[k] * t) + t;
+      assert.ok(Math.abs(group.total[k] - group.expected[k]) <= bound,
+        `${group.size} atoms: mean ${group.total[k] / group.size}, expected ${group.expected[k] / group.size}`);
+    }
+  }
   const { ctx: reified } = ctxFor(`
 x ~ Uniform(interval(0.1,2))
 a = elementof(reals)
