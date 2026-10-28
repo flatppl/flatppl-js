@@ -1,7 +1,7 @@
 'use strict';
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { cdf, intervalProbability, truncatedQuantile } = require('../forward-cdf.ts');
+const { cdf, intervalProbability, logIntervalProbability, truncatedQuantile } = require('../forward-cdf.ts');
 const { quantile } = require('../inverse-cdf.ts');
 
 // distOp, params, [x...], scipy .cdf reference [F...] — fill from scipy.stats.
@@ -41,6 +41,23 @@ test('cdf∘quantile round-trips to identity', () => {
   for (const p of [0.05, 0.3, 0.7, 0.95]) {
     const x = quantile('Gamma', p, { shape: 2, rate: 1 });
     assert.ok(Math.abs(cdf('Gamma', x, { shape: 2, rate: 1 }) - p) < 1e-6);
+  }
+});
+
+test('exponential-law interval log masses survive raw underflow', () => {
+  for (const dist of ['Exponential', 'Gamma']) {
+    const params = { shape: 1, rate: 2 };
+    // Integrating 2*exp(-2*x) gives exp(-2*lo)*(1-exp(-2*(hi-lo))).
+    assert.ok(Math.abs(logIntervalProbability(dist, params, 1000, 1001)
+      - (-2000 + Math.log1p(-Math.exp(-2)))) < 1e-12);
+    assert.equal(logIntervalProbability(dist, params, 1001, Infinity), -2002);
+    assert.equal(logIntervalProbability(dist, params, 1001, 1001), -Infinity);
+    assert.equal(logIntervalProbability(dist, params, -2, -1), -Infinity);
+    assert.ok(Math.abs(logIntervalProbability(dist, params, -1, 1)
+      - Math.log1p(-Math.exp(-2))) < 1e-12);
+    for (const rate of [0, -1, Infinity, NaN]) {
+      assert.ok(Number.isNaN(logIntervalProbability(dist, { shape: 1, rate }, 1000, 1001)));
+    }
   }
 });
 test('InverseGamma cdf∘quantile round-trips to identity', () => {

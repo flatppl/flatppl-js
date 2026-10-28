@@ -193,6 +193,34 @@ lp = logdensityof(M, [0])
   }
 });
 
+test('normalized Gamma tail bins retain live bounds, rates and common log scales', async () => {
+  const { ctx } = ctxFor(`
+score(lo, rate, shift) = logdensityof(BinnedPoissonProcess([lo,lo+1,inf],
+  normalize(logweighted(shift,truncate(Gamma(1,rate),interval(lo,inf))))),[1,2])
+rows = score.([1000,1001],[1,2],[-1000,1000])
+`, 1);
+  const actual = (await ctx.getMeasure('rows')).samples;
+  [1, 2].forEach((rate, i) => {
+    // The exponential memoryless law gives bin rates 1-exp(-rate), exp(-rate).
+    const expected = Math.log1p(-Math.exp(-rate)) - 2*rate - 1 - Math.log(2);
+    assert.ok(Math.abs(actual[i] - expected) < 1e-12, `row ${i}: ${actual[i]} vs ${expected}`);
+  });
+});
+
+test('normalized finite Gamma tail windows preserve common positive scales', async () => {
+  const { ctx } = ctxFor(`
+score(lo, rate, scale) = logdensityof(BinnedPoissonProcess([lo,lo+1,lo+2],
+  normalize(weighted(scale,truncate(Gamma(1,rate),interval(lo,lo+2))))),[1,2])
+rows = score.([1000,1001],[1,2],[1e-300,1e300])
+`, 1);
+  const actual = (await ctx.getMeasure('rows')).samples;
+  [1, 2].forEach((rate, i) => {
+    // Equal-width exponential bins have odds 1:exp(-rate), normalized to sum one.
+    const expected = -3*Math.log1p(Math.exp(-rate)) - 2*rate - 1 - Math.log(2);
+    assert.ok(Math.abs(actual[i] - expected) < 1e-12, `row ${i}: ${actual[i]} vs ${expected}`);
+  });
+});
+
 test('discrete intensities respect integer atoms and half-open bin boundaries', async () => {
   const { ctx } = ctxFor(`
 P = BinnedPoissonProcess([-0.2, 0.2, 1, 2], weighted(exp(1), Poisson(1)))

@@ -109,6 +109,20 @@ function intervalProbability(distOp: string, params: any, lo: number, hi: number
     : cdf(distOp, hi, params) - Flo;
 }
 
+/** §06/§08 interval log mass. Exponential laws retain tails below raw precision;
+ * other registered laws retain the existing CDF/survival difference path. */
+function logIntervalProbability(distOp: string, params: any, lo: number, hi: number): number {
+  if (distOp === 'Exponential' || (distOp === 'Gamma' && params.shape === 1)) {
+    const rate = params.rate;
+    if (!(rate > 0) || !Number.isFinite(rate)) return NaN;
+    lo = Math.max(0, lo);
+    if (lo >= hi) return -Infinity;
+    // Integrate rate*exp(-rate*x) after factoring out exp(-rate*lo).
+    return -rate*lo + Math.log(-Math.expm1(-rate*(hi-lo)));
+  }
+  return Math.log(intervalProbability(distOp, params, lo, hi));
+}
+
 // F⁻¹(F(lo) + u·(F(hi)-F(lo))) — the quantile of D restricted to [lo,hi].
 // Prefers inverse-cdf.ts's closed-form/library quantile (rungs 1-2); falls back
 // to its numericalQuantile (rung 3, bracketed on [lo,hi]) for a distOp — e.g.
@@ -146,5 +160,5 @@ function discreteSetProbability(cdfAt: (k: number) => number,
   return (Number.isFinite(b.hi) ? cdfAt(upTo) : 1) - (Number.isFinite(b.lo) ? cdfAt(below) : 0);
 }
 
-module.exports = { cdf, hasCdf, intervalProbability, truncatedQuantile, CDF,
+module.exports = { cdf, hasCdf, intervalProbability, logIntervalProbability, truncatedQuantile, CDF,
   discreteSetEnds, discreteSetProbability };
