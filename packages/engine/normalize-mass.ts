@@ -61,6 +61,7 @@ function totalMassExpr(ir: any): any {
   const comps = (op === 'select' && ir.logweights == null && ir.selectorName == null)
     ? ir.branches
     : (op === 'superpose' ? ir.args : null);
+  if (Array.isArray(comps) && comps.length === 0) return { kind: 'lit', value: 0 };
   if (Array.isArray(comps) && comps.length > 0) {
     let acc: any = null;
     for (const c of comps) {

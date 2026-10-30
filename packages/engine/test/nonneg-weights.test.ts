@@ -8,11 +8,8 @@
 // dν = f · dM, where f is a NON-NEGATIVE weight (a constant or a function
 // of the variate x of M) and M the base measure."
 //
-// §06 `ksuperpose`: "`weights` is a distinguished input, not a member of
-// the family, and never expands. It MUST BE NON-NEGATIVE but need not be
-// normalized: the result has total mass Σᵢ wᵢ·totalmass(κ(θᵢ)) … and when
-// every weight is ZERO it is the zero measure (density 0, log-density −∞,
-// sampling undefined)."
+// §06 ksuperpose broadcasts non-negative weights with kernel parameters.
+// Zero weights give zero component mass and never select a component.
 //
 // So zero is legal and negative is not, PER WEIGHT — a non-negative total
 // is no defence. `superpose(weighted(-0.3, M₁), weighted(1.2, M₂))` is a
@@ -80,12 +77,12 @@ test('§06: a valid two-component mixture scores the closed form at three '
   ];
   for (const [x, norm, unnorm] of oracle) {
     const gotN = await score('w = [0.3, 1.2]\n' + FAMILY
-      + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'
+      + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n'
       + `__score__ = logdensityof(mix, ${x})\n`);
     assert.ok(Math.abs(gotN - norm) <= TOL,
       `normalized x = ${x}: got ${gotN}, oracle ${norm}`);
     const gotU = await score('w = [0.3, 1.2]\n' + FAMILY
-      + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'
+      + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'
       + `__score__ = logdensityof(mix, ${x})\n`);
     assert.ok(Math.abs(gotU - unnorm) <= TOL,
       `unnormalized x = ${x}: got ${gotU}, oracle ${unnorm}`);
@@ -95,19 +92,19 @@ test('§06: a valid two-component mixture scores the closed form at three '
 test('§06: a ZERO weight stays legal — it drops the component out, it is not '
   + 'a sign violation', async () => {
   const got = await score('w = [0.0, 1.2]\n' + FAMILY
-    + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'
+    + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   // log(1.2) + lpdf(0.5; 2.0, 0.5), by hand — no mixture involved.
   assert.ok(Math.abs(got - (-4.543469795850773)) <= TOL,
     `got ${got}, closed form -4.543469795850773`);
   assert.deepEqual(diagnosticsOf('w = [0.0, 1.2]\n' + FAMILY
-    + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'), []);
+    + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'), []);
 });
 
 test('§06: ALL-zero weights stay legal — the zero measure, log-density −∞',
   async () => {
     const got = await score('w = [0.0, 0.0]\n' + FAMILY
-      + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'
+      + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'
       + '__score__ = logdensityof(mix, 0.5)\n');
     assert.equal(got, -Infinity);
   });
@@ -119,7 +116,7 @@ test('§06: ALL-zero weights stay legal — the zero measure, log-density −∞
 test('§06: ONE negative weight in a ksuperpose vector is refused, even with a '
   + 'positive total', () => {
   const ds = diagnosticsOf('w = [-0.3, 1.2]\n' + FAMILY
-    + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n');
+    + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n');
   const hit = ds.find((d: any) => /non-negative/.test(d.message));
   assert.ok(hit, `want a sign refusal, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
   // It must name WHICH weight, or the reader has to guess in a long vector.
@@ -132,7 +129,7 @@ test('§06: ONE negative weight in a ksuperpose vector is refused, even with a '
 test('the offending index is the real one, not always the first', () => {
   const ds = diagnosticsOf('w = [0.3, 1.2, -0.5]\n'
     + 'means3 = [-1.0, 2.0, 4.0]\n'
-    + 'mix = ksuperpose(Normal, w)(mu = means3, sigma = 1.0)\n');
+    + 'mix = ksuperpose(Normal, w, mu = means3, sigma = 1.0)\n');
   const hit = ds.find((d: any) => /non-negative/.test(d.message));
   assert.ok(hit, `want a sign refusal, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
   assert.match(hit.message, /weight #3/);
@@ -140,7 +137,7 @@ test('the offending index is the real one, not always the first', () => {
 
 test('an INLINE weight-vector literal is checked too', () => {
   const ds = diagnosticsOf(FAMILY
-    + 'mix = ksuperpose(Normal, [-0.3, 1.2])(mu = means, sigma = sigmas)\n');
+    + 'mix = ksuperpose(Normal, [-0.3, 1.2], mu = means, sigma = sigmas)\n');
   assert.ok(ds.some((d: any) => /weight #1/.test(d.message) && /non-negative/.test(d.message)),
     `got ${JSON.stringify(ds.map((d: any) => d.message))}`);
 });
@@ -148,7 +145,7 @@ test('an INLINE weight-vector literal is checked too', () => {
 test('a NEGATIVE TOTAL is refused at the offending weight, not deferred to the '
   + 'normalizer — the diagnosis is the weight, not the mass', () => {
   const ds = diagnosticsOf('w = [-1.3, 0.2]\n' + FAMILY
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n');
+    + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n');
   assert.ok(ds.some((d: any) => /weight #1/.test(d.message) && /non-negative/.test(d.message)),
     `got ${JSON.stringify(ds.map((d: any) => d.message))}`);
 });
@@ -202,7 +199,7 @@ test('§06: a negative weight that only appears at RUNTIME is refused while '
   // message: the walker used to answer -4.543469795850773, the density of
   // the mixture with that component deleted.
   const src = 'a = 0.3\nw = [0.0 - a, 1.2]\n' + FAMILY
-    + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'
+    + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'
     + '__score__ = logdensityof(mix, 0.5)\n';
   await assert.rejects(() => score(src), (e: any) => {
     assert.match(e.message, /non-negative/);
@@ -219,7 +216,7 @@ test('a MINUS over a non-literal does not fold, so the static pass defers and '
   // negative number and be a perfectly legal positive weight). The refusal
   // therefore has to come from the walker, at the value.
   const src = 'a = 0.3\nw = [-a, 1.2]\n' + FAMILY
-    + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'
+    + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'
     + '__score__ = logdensityof(mix, 0.5)\n';
   assert.deepEqual(diagnosticsOf(src), [],
     'the static pass must not fold a minus over a name');
@@ -229,7 +226,7 @@ test('a MINUS over a non-literal does not fold, so the static pass defers and '
   // weight, and must score. This is why the static pass cannot just refuse
   // any leading minus. -(-0.3) = 0.3, so this is the valid oracle row.
   const ok = await score('a = 0.0 - 0.3\nw = [-a, 1.2]\n' + FAMILY
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(ok - (-3.411415107516122)) <= TOL,
     `got ${ok}, oracle -3.411415107516122`);
@@ -241,7 +238,7 @@ test('§06: a NaN weight gets its own message and is NOT reported as negative '
   // the normalize guard announced "NEGATIVE total mass" — a cause it could
   // not know, sending the reader to look for a minus sign that is not there.
   const src = 'w = [0.0 / 0.0, 1.2]\n' + FAMILY
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n';
   await assert.rejects(() => score(src), (e: any) => {
     assert.match(e.message, /not a number|NaN/);
@@ -319,7 +316,7 @@ test('a runtime negative weight in the LIKELIHOOD reaches the MCMC ModelView as 
   const MV = require('../model-view.ts');
   const src = 'a = 0.3\nw = [0.0 - a, 1.2]\n'
     + 'mu ~ Normal(mu = 0.0, sigma = 1.0)\n'
-    + 'mix = ksuperpose(Normal, w)(mu = [mu, 2.0], sigma = [1.0, 0.5])\n'
+    + 'mix = ksuperpose(Normal, w, mu = [mu, 2.0], sigma = [1.0, 0.5])\n'
     + 'y ~ mix\n'
     + 'prior = lawof(record(mu = mu))\n'
     + 'fk = kernelof(record(y = y), mu = mu)\n'

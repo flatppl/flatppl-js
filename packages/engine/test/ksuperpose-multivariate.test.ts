@@ -1,26 +1,12 @@
 'use strict';
 
 // =====================================================================
-// ksuperpose-multivariate.test.ts — spec §06 family axes by parameter rank
+// ksuperpose-multivariate.test.ts — spec §06 mixtures with nested vector/matrix cells
 // =====================================================================
 //
-// SPEC ANCHOR — docs/06-measure-algebra.md, "Additive superposition",
-// `ksuperpose`, quoted verbatim: "The family is passed as to `broadcast` —
-// positional collections, keyword collections, or a table, whose columns are
-// its collection arguments — with one family axis per collection argument: an
-// argument's family axes are its leading axes in excess of the rank (number of
-// axes) of the parameter it feeds, and any count other than one is a static
-// error. Within the family the same-number-of-axes requirement of *Collection
-// arguments* does not apply, so the components may be multivariate — a vector
-// parameter takes an $N \times d$ matrix while a matrix parameter takes an
-// $N \times d \times d$ array. Along the family axis each collection argument
-// has size $N$ or is singular (size one, expanded by repetition), and
-// non-collection arguments are held constant across the components."
-//
-// So `ksuperpose(MvNormal, w)(mu = mus, cov = covs)` with `mus` an N x d matrix
-// and `covs` an N-vector of d x d matrices is a legal mixture of multivariate
-// normals, and its variate is the COMPONENT variate — a vector of d, not an
-// array over the family.
+// Spec §04 iterates only outer array axes. Vector and matrix parameters
+// therefore appear as nested array cells, exactly as in ordinary broadcast.
+// The mixture's variate is the component variate.
 //
 // ORACLE — scipy `multivariate_normal` + `logsumexp`, computed before any
 // engine output was read:
@@ -96,8 +82,8 @@ const errorsOf = (src: string) => (processSource(src).diagnostics || [])
   .filter((d: any) => d.severity === 'error').map((d: any) => d.message);
 
 // The witness family: three bivariate normals, distinct means AND distinct
-// covariances, so `mu` takes a 3 x 2 matrix beside `cov`'s 3 x 2 x 2 array.
-const FAMILY = 'mus = rowstack([[0.0, 0.0], [3.0, 3.0], [-2.0, 1.0]])\n'
+// covariances, with vectors and matrices stored as nested array cells.
+const FAMILY = 'mus = [[0.0, 0.0], [3.0, 3.0], [-2.0, 1.0]]\n'
   + 'c1 = rowstack([[1.0, 0.2], [0.2, 1.0]])\n'
   + 'c2 = rowstack([[2.0, 0.0], [0.0, 0.5]])\n'
   + 'c3 = rowstack([[1.5, -0.3], [-0.3, 1.5]])\n'
@@ -108,7 +94,7 @@ const FAMILY = 'mus = rowstack([[0.0, 0.0], [3.0, 3.0], [-2.0, 1.0]])\n'
 test('the multivariate mixture is a measure over the COMPONENT variate', () => {
   const out = processSource(FAMILY
     + 'w = [0.2, 0.5, 0.3]\n'
-    + 'mix = normalize(ksuperpose(MvNormal, w)(mu = mus, cov = covs))\n');
+    + 'mix = normalize(ksuperpose(MvNormal, w, mu = mus, cov = covs))\n');
   assert.deepEqual((out.diagnostics || [])
     .filter((d: any) => d.severity === 'error').map((d: any) => d.message), []);
   const t = out.bindings.get('mix').inferredType;
@@ -127,7 +113,7 @@ for (const [x, oracle] of [
     const got = await score(FAMILY
       + 'w = [0.2, 0.5, 0.3]\n'
       + `x = ${x}\n`
-      + 'mix = normalize(ksuperpose(MvNormal, w)(mu = mus, cov = covs))\n');
+      + 'mix = normalize(ksuperpose(MvNormal, w, mu = mus, cov = covs))\n');
     assert.ok(Math.abs(got - oracle) <= TOL, `got ${got}, oracle ${oracle}`);
   });
 }
@@ -135,11 +121,11 @@ for (const [x, oracle] of [
 test('UNNORMALIZED weights divide by Z = sum w, not by 1', async () => {
   const src = FAMILY + 'w = [0.3, 1.2, 0.5]\nx = [0.5, 0.5]\n';
   const norm = await score(src
-    + 'mix = normalize(ksuperpose(MvNormal, w)(mu = mus, cov = covs))\n');
+    + 'mix = normalize(ksuperpose(MvNormal, w, mu = mus, cov = covs))\n');
   assert.ok(Math.abs(norm - (-3.763911141798897)) <= TOL,
     `got ${norm}, oracle -3.763911141798897`);
   const bare = await score(src
-    + 'mix = ksuperpose(MvNormal, w)(mu = mus, cov = covs)\n');
+    + 'mix = ksuperpose(MvNormal, w, mu = mus, cov = covs)\n');
   // Z = 2, so the two differ by exactly log 2.
   assert.ok(Math.abs((bare - norm) - 0.693147180559945) <= TOL,
     `log Z = ${bare - norm}, want 0.693147180559945`);
@@ -148,7 +134,7 @@ test('UNNORMALIZED weights divide by Z = sum w, not by 1', async () => {
 test('a ZERO weight drops its component out of the mixture', async () => {
   const got = await score(FAMILY
     + 'w = [0.0, 0.5, 0.5]\nx = [0.5, 0.5]\n'
-    + 'mix = normalize(ksuperpose(MvNormal, w)(mu = mus, cov = covs))\n');
+    + 'mix = normalize(ksuperpose(MvNormal, w, mu = mus, cov = covs))\n');
   assert.ok(Math.abs(got - (-4.994646873022405)) <= TOL,
     `got ${got}, oracle -4.994646873022405`);
 });
@@ -159,7 +145,7 @@ test('a SINGULAR matrix-parameter axis expands: one cov serves all components',
   async () => {
     const got = await score(FAMILY
       + 'w = [0.2, 0.5, 0.3]\nx = [0.5, 0.5]\nshared = [c1]\n'
-      + 'mix = normalize(ksuperpose(MvNormal, w)(mu = mus, cov = shared))\n');
+      + 'mix = normalize(ksuperpose(MvNormal, w, mu = mus, cov = shared))\n');
     assert.ok(Math.abs(got - (-3.572204030622333)) <= TOL,
       `got ${got}, oracle -3.572204030622333`);
   });
@@ -168,8 +154,8 @@ test('a SINGULAR vector-parameter axis expands: one mu serves all components',
   async () => {
     const got = await score(FAMILY
       + 'w = [0.2, 0.5, 0.3]\nx = [0.5, 0.5]\n'
-      + 'onemu = rowstack([[1.0, -1.0]])\n'
-      + 'mix = normalize(ksuperpose(MvNormal, w)(mu = onemu, cov = covs))\n');
+      + 'onemu = [[1.0, -1.0]]\n'
+      + 'mix = normalize(ksuperpose(MvNormal, w, mu = onemu, cov = covs))\n');
     assert.ok(Math.abs(got - (-3.487708424806220)) <= TOL,
       `got ${got}, oracle -3.487708424806220`);
   });
@@ -181,11 +167,11 @@ test('the multivariate mixture samples with the closed-form moments',
     const N = 40000;
     const ctx = ctxFor(
       'w = [0.3, 0.7]\n'
-      + 'mus = rowstack([[-2.0, 1.0], [3.0, -1.0]])\n'
+      + 'mus = [[-2.0, 1.0], [3.0, -1.0]]\n'
       + 'cA = rowstack([[1.0, 0.3], [0.3, 1.0]])\n'
       + 'cB = rowstack([[0.5, 0.0], [0.0, 2.0]])\n'
       + 'covs = [cA, cB]\n'
-      + 'M = normalize(ksuperpose(MvNormal, w)(mu = mus, cov = covs))\n'
+      + 'M = normalize(ksuperpose(MvNormal, w, mu = mus, cov = covs))\n'
       + 'y ~ M\n', N);
     const m = await ctx.getMeasure('y');
     const s = Array.from(m.samples as any).map(Number);
@@ -214,44 +200,11 @@ test('the multivariate mixture samples with the closed-form moments',
 
 // ── The refusals §06 still owes ──────────────────────────────────────────────
 
-test('two family axes over a SCALAR parameter stays a static error', () => {
-  const ds = errorsOf('w = [0.3, 1.2]\n'
-    + 'grid = rowstack([[0.0, 1.0], [2.0, 3.0]])\n'
-    + 'mix = ksuperpose(Normal, w)(mu = grid, sigma = 1.0)\n');
-  assert.ok(ds.some((m: string) => /exactly one family axis/.test(m)
-      && /`mu` has rank 0/.test(m) && /gives 2 family axes/.test(m)),
-  `want a family-axis refusal, got ${JSON.stringify(ds)}`);
-});
-
-test('ZERO family axes over a matrix parameter is a static error — only a '
-  + 'NON-collection is held constant', () => {
-  const ds = errorsOf('w = [0.4, 0.6]\n'
-    + 'mus = rowstack([[0.0, 0.0], [3.0, 3.0]])\n'
-    + 'cov = rowstack([[1.0, 0.2], [0.2, 1.0]])\n'
-    + 'mix = ksuperpose(MvNormal, w)(mu = mus, cov = cov)\n');
-  assert.ok(ds.some((m: string) => /exactly one family axis/.test(m)
-      && /`cov` has rank 2/.test(m) && /gives 0 family axes/.test(m)),
-  `want a family-axis refusal, got ${JSON.stringify(ds)}`);
-});
-
-test('a vector-element table column over a SCALAR parameter is a static error',
-  () => {
-    const ds = errorsOf('w = [0.4, 0.6]\n'
-      + 'pars = table(mu = [[0.0, 0.0], [3.0, 3.0]], sigma = [1.0, 0.5])\n'
-      + 'mix = ksuperpose(Normal, w)(pars)\n');
-    assert.ok(ds.some((m: string) => /exactly one family axis/.test(m)
-        && /`mu` has rank 0/.test(m)),
-    `want a family-axis refusal, got ${JSON.stringify(ds)}`);
-  });
-
-// A row-vector family argument is one axis too (§03 keeps a `%tvector` distinct
-// from a rank-1 array, but its `len` is an axis all the same), so it feeds a
-// scalar parameter with exactly one family axis.
 test('a ROW-VECTOR family argument carries one family axis', async () => {
   const got = await score('w = [0.3, 0.7]\n'
     + 'mus = adjoint([-1.0, 2.0])\n'
     + 'x = 0.5\n'
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = mus, sigma = 1.0))\n');
+    + 'mix = normalize(ksuperpose(Normal, w, mu = mus, sigma = 1.0))\n');
   // scipy: logsumexp(log([0.3, 0.7]) + norm.logpdf(0.5, [-1, 2], 1)) - log(1)
   assert.ok(Math.abs(got - (-2.043938533204673)) <= TOL,
     `got ${got}, oracle -2.043938533204673`);

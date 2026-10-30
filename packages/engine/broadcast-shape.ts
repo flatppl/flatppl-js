@@ -269,6 +269,22 @@ function classifyNestedJSArray(v: any[]): any {
   };
 }
 
+// Ordinary broadcast never inserts axes; singleton expansion is per axis.
+// Empty shapes denote held constants. Shared by evaluation and ksuperpose.
+function mergeBroadcastShapes(shapes: number[][]): number[] {
+  const collections = shapes.filter(shape => shape.length);
+  if (!collections.length) return [];
+  const result = collections[0].slice();
+  for (const shape of collections.slice(1)) {
+    if (shape.length !== result.length) throw new Error('broadcast: all collection arguments must have the same number of axes; use addaxes to align them (spec §04)');
+    for (let i = 0; i < result.length; i++) {
+      if (result[i] === 1) result[i] = shape[i];
+      else if (shape[i] !== 1 && shape[i] !== result[i]) throw new Error('broadcast: incompatible sizes on axis ' + i + ' (' + result[i] + ' vs ' + shape[i] + '); sizes must be equal or 1');
+    }
+  }
+  return result;
+}
+
 // ---------------------------------------------------------------------
 // Cell stacking
 // ---------------------------------------------------------------------
@@ -340,6 +356,7 @@ function tryCollectTableRows(rows: any[], shape: number[], schema?: any): any {
 }
 
 module.exports = {
+  mergeBroadcastShapes,
   classifyAxisStructure,
   classifyNestedJSArray,
   tryStackBroadcastCells,

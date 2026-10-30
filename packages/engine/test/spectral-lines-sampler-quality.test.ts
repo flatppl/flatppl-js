@@ -32,7 +32,7 @@ y_obs = [
 N = lengthof(y_obs)
 w ~ Dirichlet(alpha = [2.0, 2.0, 2.0])
 sigma ~ Gamma(shape = 3.0, rate = 4.0)
-line = normalize(ksuperpose(Normal, w)(mu = centers, sigma = sigma))
+line = normalize(ksuperpose(Normal, w, mu = centers, sigma = sigma))
 y ~ iid(line, N)
 prior = lawof(record(w = w, sigma = sigma))
 forward_kernel = kernelof(record(y = y), w = w, sigma = sigma)

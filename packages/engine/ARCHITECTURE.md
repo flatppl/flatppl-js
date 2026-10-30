@@ -1007,3 +1007,14 @@ arithmetic broadcasts rank-0 × rank-N via stride-0 reads. The Klein-4 + struct
 tags stay runtime-internal markers behind the IR contract (free transpose via
 tag flip; structured-storage exploitation; op-boundary handoffs materialise to
 contiguous form). Remaining phases + the cold-path audit are in the TODO.
+
+### Direct weighted superposition
+
+`ksuperpose(K, weights, parameters...)` uses ordinary broadcast outer axes,
+including singleton expansion of weights. `broadcast-bind.ts` resolves mixed
+positional/named parameter inputs; vector and matrix cells stay nested arrays.
+`ksuperpose-expand.ts` lowers known shapes to ordinary weighted superpose
+components, while `ksuperpose-runtime.ts` resolves fixed dynamic shapes at
+build time and synthesizes the same derivations. Both preserve weight
+expressions for evaluation at each parameter point. The existing superpose
+paths own density, total mass and component sampling.

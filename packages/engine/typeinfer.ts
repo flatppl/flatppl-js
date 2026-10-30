@@ -3916,10 +3916,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       // A parameter with no argument, or a keyword naming no parameter of the
       // head, is an ill-formed call the runtime binder throws on. Infer no
       // type for it rather than typing a call that cannot run.
-      if (kwNames.length !== paramNames.length) return T.deferred();
+      if (kwNames.length + args.length - 1 !== paramNames.length) return T.deferred();
       dataArgs = [];
-      for (const name of paramNames) {
-        const src = kwargs[name];
+      for (const [i, name] of paramNames.entries()) {
+        if (i < args.length - 1 && kwargs[name]) return T.failed('broadcast duplicate input');
+        const src = i < args.length - 1 ? args[i + 1] : kwargs[name];
         if (!src) return T.deferred();
         dataArgs.push(src);
       }
@@ -4913,24 +4914,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return T.measure(domain, { sampleShape: [dim], batchShape: [], eventShape: [] });
   }
 
-  // §06 `ksuperpose(kernel, weights)`: "lifts a kernel to a weighted
-  // superposition: the result is itself a kernel", so the LIFT's type is a
-  // kernel whose result is the component's own per-cell variate measure.
-  // Applying it is typed by `inferCall`'s expression-headed branch, which
-  // returns a kernel's `result` unchanged — so the family axis is
-  // CONTRACTED, which is the whole difference from `broadcast`, whose
-  // applied form is the independent product and therefore GAINS the axis.
-  // Getting that backwards would be a silent, plausible-looking type error.
-  //
-  // The mixture's mass and domain come from the expanded
-  // `superpose(weighted(w[i], K(θᵢ)), …)` (ksuperpose-expand.ts), which the
-  // analyzer produces before it infers the module a second time. This rule
-  // types the surface form and the bare unapplied lift.
+  // Direct ksuperpose contracts all broadcast axes; its result is the
+  // component measure. The expansion supplies the concrete cell arguments.
   function inferKsuperpose(expr: any, scopes: any): any {
     const args = expr.args || [];
-    if (args.length !== 2) return arityError('ksuperpose', 2, args.length, expr.loc);
+    if (args.length < 2) return arityError('ksuperpose', 2, args.length, expr.loc);
     const wT = inferExpr(args[1], scopes);
     if (wT && wT.kind === 'failed') return T.failed('ksuperpose cascade');
+    for (const arg of [...args.slice(2), ...Object.values(expr.kwargs || {})]) inferExpr(arg, scopes);
     const head = args[0];
     let result: any = T.deferred();
     if (head && head.kind === 'ref' && head.ns === 'self') {
@@ -4951,12 +4942,7 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       const headT: any = inferExpr(head, scopes);
       if (T.isCallable(headT)) result = headT.result;
     }
-    // Empty inputs, not null: `inferUserCall` iterates them for the named
-    // spelling (`lift = ksuperpose(…)` then `lift(…)`). Declaring the
-    // component's own parameter names here would type each family argument
-    // against a SCALAR parameter and reject the size-N vector §06 requires,
-    // so the family is left to the expansion, which reads the real types.
-    return T.kernelType([], result);
+    return result;
   }
 
   // Resolve a shape-position IR expression to a non-negative integer
@@ -6768,9 +6754,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
       return kernelOutputMass(ir.target.name, boundary);
     }
-    if (ir.callee && !ir.op && resolveBindingRefs(ir.callee)?.op === 'ksuperpose') {
-      return mass(resolveBindingRefs(ir.callee));
-    }
     const op = ir.op;
     const args = ir.args || [];
 
@@ -6928,6 +6911,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           && head.name !== 'Lebesgue' && head.name !== 'Counting'
           ? T.MASS_NORMALIZED : componentMass(head, mass, boundary);
         if (valuesetOfExpr(args[1])?.vs !== 'stdsimplex') return T.MASS_DEFERRED;
+        const operandType = (arg: any) => arg?.meta?.type || loweredModule.bindings.get(arg?.name)?.inferredType || inferExpr(arg, []);
+        const wt = operandType(args[1]);
+        const wshape = require('./ksuperpose-expand.ts').classifyType(wt)?.shape;
+        const operands = [...args.slice(2), ...Object.values(ir.kwargs || {})];
+        if (!wshape || operands.some((operand: any) => {
+          const shape = require('./ksuperpose-expand.ts').classifyType(operandType(operand))?.shape;
+          return !shape || (shape.length && (shape.length !== wshape.length
+            || shape.some((n: any, i: number) => n !== 1
+              && (typeof n !== 'number' || n !== wshape[i]))));
+        })) return component === T.MASS_NORMALIZED ? T.MASS_DEFERRED : T.MASS_UNKNOWN;
         return component === T.MASS_NORMALIZED ? T.MASS_NORMALIZED : T.MASS_UNKNOWN;
       }
       case 'superpose':

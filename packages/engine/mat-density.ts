@@ -2081,7 +2081,7 @@ function matTotalmass(d: DerivationTotalmass, ctx: any) {
   const exact = closedFormLogTotalmass(ir, ctx.bindings);
   let hasReference = false;
   require('./ir-walk.ts').walkIR(ir, (n: any) => { if (n.op === 'Lebesgue') hasReference = true; });
-  if (exact === Infinity || (hasReference && exact != null)) {
+  if (exact === Infinity || exact === -Infinity || (hasReference && exact != null)) {
     return Promise.resolve(scalarMeasureN(new Float64Array(ctx.sampleCount).fill(Math.exp(exact)),
       { logWeights: null, logTotalmass: 0, n_eff: ctx.sampleCount }));
   }
