@@ -536,6 +536,8 @@ Type inference specializes the callback in a temporary scope. Lift specializes
 the surface callbacks before the existing evaluation, density and sampling
 paths; collection operators also accept p in their evaluator frame. Annotated
 pushfwd maps pass p to the forward map, inverse, and callable log-volume.
+Sequence callbacks hold record parameters whole; they do not apply broadcast's
+record-operand restriction to those parameters.
 
 **Ragged-per-atom value (engine-concepts §2.3; `PoissonProcess`).** A
 `PoissonProcess` atom is a variable-length point set, so the uniform `[N,…]`

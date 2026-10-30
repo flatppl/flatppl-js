@@ -1650,7 +1650,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // `filter`, `scan` and `kscan` follow broadcasting (§04 "Additional arguments"): a one-dimensional
     // array or table is traversed, the callable seeing its element or row, and its length is
     // recorded. A scalar or other non-collection input is held constant at every step.
-    // A record, a tuple or an array of rank two or more is a static error.
+    // Records are constant callback parameters, not operands of `broadcast`.
+    // A tuple or an array of rank two or more is a static error.
     const asSequence = (t: any): any => {
       if (!sequences) return t;
       if (!t || ['any', 'deferred', 'var'].includes(t.kind)) {
@@ -1667,10 +1668,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         return undefined;
       }
       if (t.kind === 'table') { sequences.lengths.push(t.nrows); return T.rowRecordType(t); }
-      if (t.kind === 'tuple' || t.kind === 'record') {
-        fail('an additional input is ' + (t.kind === 'tuple' ? 'a tuple' : 'a record')
-          + ', which these operations neither traverse nor hold constant, as for the operands of `broadcast` '
-          + '(records, tuples and higher-dimensional arrays are a static error)');
+      if (t.kind === 'tuple') {
+        fail('an additional input is a tuple, which these operations neither traverse nor hold constant, '
+          + 'as for the operands of `broadcast` '
+          + '(tuples and higher-dimensional arrays are a static error)');
         return undefined;
       }
       return t;
@@ -1685,13 +1686,9 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     let named: Record<string, any> | null = null;
     if (names.length) {
       named = Object.fromEntries(names.map(name => [name, inferExpr(keywords[name], scopes)]));
-    } else if (declared && declared.length - leading.length >= 2) {
+    } else if (declared && declared.length - leading.length >= 2
+        && !(sequences && types[0]?.kind === 'record')) {
       const sole = types[0];
-      if (sole?.kind === 'record' && sequences) {
-        // `scan`, `kscan` and `filter` follow broadcasting, whose operands are never records.
-        asSequence(sole);
-        return null;
-      }
       if (sole?.kind === 'record') named = { ...sole.fields };
       else if (sole?.kind === 'table') named = { ...sole.columns };
     }

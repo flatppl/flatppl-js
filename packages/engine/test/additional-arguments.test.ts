@@ -268,20 +268,31 @@ test('a vector of vectors is traversed by element, and [A] supplies A at every s
   assert.deepEqual(await value('hit(x, v) = x > sum(v)\nA = [1.0, 2.0]\nr = filter(hit, [1.0, 4.0, 9.0], [A])\n', 'r'), [4, 9]);
 });
 
-test('a record, a tuple, a higher-dimensional array, or no array or table input is a static error', () => {
+test('sequence callbacks receive record parameters whole', async () => {
+  // §04 "Explicit callback parameters": p stays whole at every step.
+  for (const named of [false, true]) {
+    const p = (named ? 'p = ' : '') + 'record(w = 2)';
+    const xs = named ? 'x = ' : '';
+    for (const [source, want] of [
+      [`g(acc,x,p)=acc+x*p.w\nr=scan(g,0,${xs}[10,20],${p})`, [20, 60]],
+      [`g(s,x,p)=Dirac(s+x*p.w)\nr~kscan(g,0,${xs}[1,2],${p})`, [2, 6]],
+      [`g(x,p)=x>p.w\nr=filter(g,[1,4,9],${p})`, [4, 9]],
+    ] as Array<[string, number[]]>) {
+      assert.deepEqual(errors(source), []);
+      assert.deepEqual(await value(source, 'r'), want);
+    }
+  }
+});
+
+test('a tuple, a higher-dimensional array, or no array or table input is a static error', () => {
   const KD = 'kd(s, x, w) = Dirac(value = s + x * w)\n';
   const KEEP = 'keep(x, p) = x > p\n';
   const MATRIX = 'M = rowstack([[1.0, 2.0], [3.0, 4.0]])\n';
   const tuple = /an additional input is a tuple/;
-  const record = /an additional input is a record/;
   const rank = /higher-dimensional array/;
   const none = /at least one array or table input/;
   for (const [src, expected] of [
     [`${STEP}r = scan(step, 0, [10, 20], (1.0, 2.0))\n`, tuple],
-    ['g(acc, x, row) = acc + x * row.w\nr = scan(g, 0, [10, 20], record(w = 2))\n', record],
-    ['kd(s, x, row) = Dirac(value = s + x * row.w)\nr ~ kscan(kd, 0.0, [1.0, 2.0], record(w = 2))\n', record],
-    ['keep(x, row) = x > row.w\nr = filter(keep, [1.0, 4.0], record(w = 2))\n', record],
-    ['g(acc, x, w, b) = acc + x * w + b\nr = scan(g, 0, [10, 20], record(w = 2, b = 1))\n', record],
     [`${KD}r ~ kscan(kd, 0.0, [1.0, 2.0], (1.0, 2.0))\n`, tuple],
     [`${KEEP}r = filter(keep, [1.0, 4.0], (1.0, 2.0))\n`, tuple],
     [`${STEP}${MATRIX}r = scan(step, 0, [10, 20], M)\n`, rank],
@@ -289,7 +300,7 @@ test('a record, a tuple, a higher-dimensional array, or no array or table input 
     [`${KEEP}${MATRIX}r = filter(keep, [1.0, 4.0], M)\n`, rank],
     [`${STEP}r = scan(step, 0, 5, 2)\n`, none],
     [`${KD}r ~ kscan(kd, 0.0, 3, 2.0)\n`, none],
-    ['g(acc, row) = acc + row.w\nr = scan(g, 0, record(w = 2))\n', record],
+    ['g(acc, row) = acc + row.w\nr = scan(g, 0, record(w = 2))\n', none],
   ] as Array<[string, RegExp]>) assert.ok(errors(src).some(m => expected.test(m)), src);
 });
 
@@ -326,10 +337,6 @@ test('scan and filter refuse a malformed set of additional inputs when evaluated
   assert.throws(() => evaluates('filter', [irKeep, irVec(1, 4, 9), irVec(3, 5)]), /has length 2, but data has 3/);
   assert.throws(() => evaluates('filter', [irKeep, irVec(1, 4, 9)], { q: irVec(3) }), /no remaining input named "q"/);
   assert.throws(() => evaluates('filter', [irKeep]), /expected \(predicate, data/);
-  // A record is refused as for the operands of `broadcast`.
-  const rec = { kind: 'call', op: 'record', fields: [{ name: 'w', value: irLit(2) }] };
-  assert.throws(() => evaluates('scan', [irStep, irLit(0), x, rec]), /may not be records or tuples/);
-  assert.throws(() => evaluates('filter', [irKeep, irVec(1, 4, 9), rec]), /may not be records or tuples/);
   // An input bound twice.
   assert.throws(() => evaluates('scan', [irStep, irLit(0)], { x, w, y: w }), /no remaining input named "y"/);
 });
