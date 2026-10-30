@@ -134,12 +134,12 @@ test('standard_module: both distinguished inputs are positional', () => {
 
 test('ksuperpose: both distinguished inputs are positional', () => {
   // The idiomatic form APPLIES the resulting kernel, so the `ksuperpose` call
-  // is the callee of an enclosing call — another position the walk must reach.
+  // is inside normalize — another position the walk must reach.
   refuses('ksuperpose',
     'w = [0.5, 0.5]\n'
-    + 'mix = normalize(ksuperpose(kernel = Normal, weights = w)(mu = [0.0, 1.0], sigma = 0.5))\n');
+    + 'mix = normalize(ksuperpose(kernel = Normal, weights = w, mu = [0.0, 1.0], sigma = 0.5))\n');
   accepts('w = [0.5, 0.5]\n'
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = [0.0, 1.0], sigma = 0.5))\n');
+    + 'mix = normalize(ksuperpose(Normal, w, mu = [0.0, 1.0], sigma = 0.5))\n');
 });
 
 test('markovchain: all three distinguished inputs are positional', () => {

@@ -2800,37 +2800,8 @@ function _broadcastApplyFrame(fn: any, inputs: any, env: any, bodyPlan: any, res
     return evalBody();
   }
 
-  // Same number of OUTER axes across all collections. For flat slots
-  // that's shape.length; for nested-vector slots it's the JS-array
-  // nesting depth (any depth — `test/nested-broadcast.test.ts` covers
-  // the multi-level "v2" cases, e.g. `[[C]]` over a 2-D collection).
-  const rank = colls[0].outerRank;
-  for (let c = 1; c < colls.length; c++) {
-    if (colls[c].outerRank !== rank) {
-      throw new Error('broadcast: all collection arguments must have the '
-        + 'same number of axes (got outer ranks ' + rank + ' and '
-        + colls[c].outerRank + '); the engine does not insert axes '
-        + 'implicitly — use addaxes(...) to align them (spec §04)');
-    }
-  }
-
-  // Per-axis broadcast size: each collection's size must be that size
-  // or 1 (singleton, expanded by repetition).
-  const bshape = new Array(rank);
-  for (let a = 0; a < rank; a++) {
-    let sz = 1;
-    for (let c = 0; c < colls.length; c++) {
-      const s = colls[c].outerShape[a];
-      if (s !== 1) {
-        if (sz !== 1 && sz !== s) {
-          throw new Error('broadcast: incompatible sizes on axis ' + a
-            + ' (' + sz + ' vs ' + s + '); sizes must be equal or 1');
-        }
-        sz = s;
-      }
-    }
-    bshape[a] = sz;
-  }
+  const bshape = _broadcastShape.mergeBroadcastShapes(colls.map((c: any) => c.outerShape));
+  const rank = bshape.length;
 
   const collOf = new Array(P);
   for (let p = 0, k = 0; p < P; p++) collOf[p] = slots[p].coll ? k++ : -1;

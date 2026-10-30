@@ -4,38 +4,9 @@
 // ksuperpose-runtime-n.test.ts — spec §06 `ksuperpose` with a runtime N
 // =====================================================================
 //
-// SPEC ANCHOR — docs/06-measure-algebra.md, "Additive superposition",
-// `ksuperpose` entry, quoted verbatim:
-//
-//   "**`ksuperpose(kernel, weights)`** — lifts a kernel to a weighted
-//   superposition: the result is itself a kernel, and applying it to a
-//   parameter family yields the mixture ν = Σᵢ wᵢ κ(θᵢ), with θᵢ read from
-//   row i of the family. The number of components N is the length of
-//   `weights`, WHICH NEED NOT BE STATICALLY KNOWN. The family is passed as
-//   to broadcast — positional vectors, keyword vectors, or a table (one
-//   axis, its rows) — restricted to a single axis: each collection argument
-//   has size N or is singular (size one, expanded by repetition), more than
-//   one axis is a static error, and non-collection arguments are held
-//   constant across the components. `weights` is a distinguished input, not
-//   a member of the family, and never expands. It must be non-negative but
-//   need not be normalized: the result has total mass Σᵢ wᵢ·totalmass(κ(θᵢ))
-//   — Σᵢ wᵢ for a Markov `kernel` — and WHEN EVERY WEIGHT IS ZERO IT IS THE
-//   ZERO MEASURE (DENSITY 0, LOG-DENSITY −∞, SAMPLING UNDEFINED). Because
-//   the weights do not depend on the variate, the mixture is sampleable
-//   whenever `kernel` is."
-//
-// WHAT THIS COVERS. `ksuperpose-expand.ts` rewrites the applied lift to
-// §06's variadic `superpose(weighted(w[i], κ(θᵢ)), …)` spelling, which needs
-// N when the pass runs — so a weight vector whose length no type carries was
-// a located refusal, against §06's "need not be statically known". The
-// runtime arm (`ksuperpose-runtime.ts`) closes that: it resolves N from the
-// weight vector's VALUE and synthesises the same component graph, so density,
-// mass, `normalize` and the per-output-index component draw are the ones the
-// static spelling already uses.
-//
-// `reverse`, `linspace` and `cumsum` are the runtime-length vehicles: each
-// types as `array(rank 1, shape ["%dynamic"])`, so no static length is
-// available, and each evaluates to a real vector.
+// Dynamic outer shapes are read from fixed operand values at derivation
+// building. The resulting weighted/superpose graph uses the same density,
+// mass and per-output component selection as static expansion.
 //
 // ORACLES — Distributions.jl, computed before any engine output was read.
 //
@@ -131,12 +102,12 @@ test('§06: a runtime-N two-component mixture hits the same oracle rows as the '
   ];
   for (const [x, norm, unnorm] of oracle) {
     const gotN = await score(RT2
-      + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'
+      + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n'
       + `__score__ = logdensityof(mix, ${x})\n`);
     assert.ok(Math.abs(gotN - norm) <= TOL,
       `normalized x = ${x}: got ${gotN}, oracle ${norm}`);
     const gotU = await score(RT2
-      + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'
+      + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'
       + `__score__ = logdensityof(mix, ${x})\n`);
     assert.ok(Math.abs(gotU - unnorm) <= TOL,
       `unnormalized x = ${x}: got ${gotU}, oracle ${unnorm}`);
@@ -156,7 +127,7 @@ test('§06: N = 3 from a runtime weight vector, with a `linspace` family whose '
   ];
   for (const [x, want] of oracle) {
     const got = await score(RT3
-      + 'mix = ksuperpose(Normal, w)(mu = mus, sigma = 0.5)\n'
+      + 'mix = ksuperpose(Normal, w, mu = mus, sigma = 0.5)\n'
       + `__score__ = logdensityof(mix, ${x})\n`);
     assert.ok(Math.abs(got - want) <= TOL, `x = ${x}: got ${got}, oracle ${want}`);
   }
@@ -172,12 +143,12 @@ test('§06: an UNNORMALIZED runtime mixture carries mass Σᵢ wᵢ — the same
   ];
   for (const [x, unnorm, norm] of rows) {
     const gotU = await score(RT3
-      + 'mix = ksuperpose(Normal, w)(mu = mus, sigma = 0.5)\n'
+      + 'mix = ksuperpose(Normal, w, mu = mus, sigma = 0.5)\n'
       + `__score__ = logdensityof(mix, ${x})\n`);
     assert.ok(Math.abs(gotU - unnorm) <= TOL,
       `unnormalized x = ${x}: got ${gotU}, oracle ${unnorm}`);
     const gotN = await score(RT3
-      + 'mix = normalize(ksuperpose(Normal, w)(mu = mus, sigma = 0.5))\n'
+      + 'mix = normalize(ksuperpose(Normal, w, mu = mus, sigma = 0.5))\n'
       + `__score__ = logdensityof(mix, ${x})\n`);
     assert.ok(Math.abs(gotN - norm) <= TOL,
       `normalized x = ${x}: got ${gotN}, oracle ${norm}`);
@@ -193,7 +164,7 @@ test('§06: a non-collection family argument is held constant, and a singular '
   // sigma = 1.0 held constant across both components: the shared-scalar-sigma
   // oracle row from ksuperpose-density.test.ts, reached with a runtime N.
   const held = await score(RT2
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = 1.0))\n'
+    + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = 1.0))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(held - (-2.0439385332046727)) <= TOL,
     `held-constant sigma: got ${held}, oracle -2.0439385332046727`);
@@ -201,7 +172,7 @@ test('§06: a non-collection family argument is held constant, and a singular '
   // `mu` is the singular-mu oracle row.
   const singular = await score(RT2
     + 'mu1 = [1.0]\n'
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = mu1, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, w, mu = mu1, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(singular - (-0.7818336515543383)) <= TOL,
     `singular mu: got ${singular}, oracle -0.7818336515543383`);
@@ -210,7 +181,7 @@ test('§06: a non-collection family argument is held constant, and a singular '
 test('§06: the family may be passed POSITIONALLY under a runtime N too',
   async () => {
     const pos = await score(RT2
-      + 'mix = normalize(ksuperpose(Normal, w)(means, sigmas))\n'
+      + 'mix = normalize(ksuperpose(Normal, w, means, sigmas))\n'
       + '__score__ = logdensityof(mix, 0.5)\n');
     assert.ok(Math.abs(pos - (-3.411415107516122)) <= TOL,
       `positional: got ${pos}, oracle -3.411415107516122`);
@@ -221,7 +192,7 @@ test('§08: a categorical over arbitrary labels is a Dirac superposition with a 
   // p sums to one, so normalize is a no-op and the density at the label is
   // log pₖ, by hand: log 0.8 and log 0.2.
   const SRC = 'p = reverse([0.8, 0.2])\nlabels = reverse([1.5, 0.0])\n'
-    + 'cat = normalize(ksuperpose(Dirac, p)(value = labels))\n';
+    + 'cat = normalize(ksuperpose(Dirac, p, value = labels))\n';
   const hi = await score(SRC + '__score__ = logdensityof(cat, 1.5)\n');
   assert.ok(Math.abs(hi - Math.log(0.8)) <= TOL,
     `at label 1.5: got ${hi}, closed form ${Math.log(0.8)}`);
@@ -238,7 +209,7 @@ test('§06: a ZERO weight drops its component out EXACTLY, with a runtime N',
   async () => {
     const got = await score('w = reverse([1.2, 0.0])\n'    // [0.0, 1.2]
       + 'means = reverse([2.0, -1.0])\nsigmas = reverse([0.5, 1.0])\n'
-      + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'
+      + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'
       + '__score__ = logdensityof(mix, 0.5)\n');
     // log(1.2) + logpdf(Normal(2.0, 0.5), 0.5), by hand — no mixture involved.
     const closed = Math.log(1.2)
@@ -246,7 +217,7 @@ test('§06: a ZERO weight drops its component out EXACTLY, with a runtime N',
     assert.ok(Math.abs(got - closed) <= TOL, `got ${got}, closed form ${closed}`);
     assert.deepEqual(buildErrors('w = reverse([1.2, 0.0])\n'
       + 'means = reverse([2.0, -1.0])\nsigmas = reverse([0.5, 1.0])\n'
-      + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'), [],
+      + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'), [],
     'a zero weight is legal — it must raise nothing');
   });
 
@@ -255,7 +226,7 @@ test('§06: ALL-zero weights are the zero measure — log-density −∞ everywh
   for (const x of [0.5, -1.0, 2.0]) {
     const got = await score('w = reverse([0.0, 0.0])\n'
       + 'means = reverse([2.0, -1.0])\nsigmas = reverse([0.5, 1.0])\n'
-      + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'
+      + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'
       + `__score__ = logdensityof(mix, ${x})\n`);
     assert.equal(got, -Infinity, `x = ${x}: got ${got}`);
   }
@@ -265,7 +236,7 @@ test('§06: a NEGATIVE weight is refused while scoring a runtime-N mixture, not 
   + 'silently zeroed', async () => {
   const src = 'w = reverse([1.2, 0.0 - 0.3])\n'
     + 'means = reverse([2.0, -1.0])\nsigmas = reverse([0.5, 1.0])\n'
-    + 'mix = ksuperpose(Normal, w)(mu = means, sigma = sigmas)\n'
+    + 'mix = ksuperpose(Normal, w, mu = means, sigma = sigmas)\n'
     + '__score__ = logdensityof(mix, 0.5)\n';
   await assert.rejects(() => score(src), (e: any) => {
     assert.match(e.message, /non-negative/);
@@ -290,7 +261,7 @@ test('§06: a runtime negative weight reaches the MCMC ModelView as a refusal, '
   const src = 'w = reverse([1.2, 0.0 - 0.3])\n'
     + 'mu ~ Normal(mu = 0.0, sigma = 1.0)\n'
     + 'mus = [mu, 2.0]\n'
-    + 'mix = ksuperpose(Normal, w)(mu = mus, sigma = 1.0)\n'
+    + 'mix = ksuperpose(Normal, w, mu = mus, sigma = 1.0)\n'
     + 'y ~ mix\n'
     + 'prior = lawof(record(mu = mu))\n'
     + 'fk = kernelof(record(y = y), mu = mu)\n'
@@ -306,7 +277,7 @@ test('§06: a NaN weight in a runtime-N mixture gets the NaN message, not a '
   + 'negative-mass one', async () => {
   const src = 'w = reverse([1.2, 0.0 / 0.0])\n'
     + 'means = reverse([2.0, -1.0])\nsigmas = reverse([0.5, 1.0])\n'
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n';
   await assert.rejects(() => score(src), (e: any) => {
     assert.match(e.message, /not a number|NaN/);
@@ -344,7 +315,7 @@ test('§06: a runtime-N mixture draws each component in proportion to its '
   // are 10 sigma apart, so a draw's nearest mean IS its component.
   const src = 'w = reverse([0.3, 0.5, 0.2])\n'
     + 'mus = linspace(-4.0, 4.0, 3)\n'
-    + 'M = normalize(ksuperpose(Normal, w)(mu = mus, sigma = 0.4))\n'
+    + 'M = normalize(ksuperpose(Normal, w, mu = mus, sigma = 0.4))\n'
     + 'y ~ M\n';
   const N = 20000;
   const p = await proportions(src, 'y', [-4, 0, 4], N);
@@ -360,7 +331,7 @@ test('§06: the runtime-N mixture is sampleable and its moments match '
   + 'Distributions.jl MixtureModel', async () => {
   // MixtureModel([Normal(-3,1), Normal(3,1)], [0.5, 0.5]) — mean 0, var 10.
   const src = 'w = reverse([0.5, 0.5])\nmus = linspace(-3.0, 3.0, 2)\n'
-    + 'M = normalize(ksuperpose(Normal, w)(mu = mus, sigma = 1.0))\n'
+    + 'M = normalize(ksuperpose(Normal, w, mu = mus, sigma = 1.0))\n'
     + 'y ~ M\n';
   const N = 20000;
   const { ctx } = ctxFor(src, N);
@@ -379,7 +350,7 @@ test('§06: under iid(runtime-N mixture, k) every coordinate selects its own '
   // branch-pinning defect (engine-concepts §22.4) puts coordinate 0 at −3 and
   // coordinate 1 at +3 with covariance near the full 9.
   const src = 'w = reverse([0.5, 0.5])\nmus = linspace(-3.0, 3.0, 2)\n'
-    + 'M = normalize(ksuperpose(Normal, w)(mu = mus, sigma = 1.0))\n'
+    + 'M = normalize(ksuperpose(Normal, w, mu = mus, sigma = 1.0))\n'
     + 'b ~ iid(M, 3)\n';
   const N = 20000; const k = 3;
   const { ctx } = ctxFor(src, N);
@@ -410,7 +381,7 @@ test('§06: under iid(runtime-N mixture, k) every coordinate selects its own '
 test('§06: all-zero weights make SAMPLING undefined — a located refusal, not a '
   + 'constant repeated for every atom', async () => {
   const src = 'w = reverse([0.0, 0.0])\nmus = linspace(-3.0, 3.0, 2)\n'
-    + 'M = ksuperpose(Normal, w)(mu = mus, sigma = 1.0)\n'
+    + 'M = ksuperpose(Normal, w, mu = mus, sigma = 1.0)\n'
     + 'y ~ M\n';
   const { ctx } = ctxFor(src, 8);
   await assert.rejects(() => ctx.getMeasure('y'), (e: any) => {
@@ -428,7 +399,7 @@ test('the static-N spelling still expands to §06\'s variadic superpose — no '
   + 'runtime-arm binding appears in it, and the numbers are unmoved', async () => {
   const { processSource, orchestrator } = require('..');
   const src = 'w = [0.3, 1.2]\nmeans = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n';
   const built = orchestrator.buildDerivations(processSource(src).bindings);
   const synthesised = [...built.bindings.keys()]
@@ -444,10 +415,10 @@ test('the static-N spelling still expands to §06\'s variadic superpose — no '
 test('the runtime arm and the static rewrite agree on one measure written both '
   + 'ways', async () => {
   const dynamic = await score(RT2
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   const stat = await score('w = [0.3, 1.2]\nmeans = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.equal(dynamic, stat,
     'the two spellings denote one measure and must score bit-identically');
@@ -460,28 +431,15 @@ test('the runtime arm and the static rewrite agree on one measure written both '
 test('the ANALYZER is silent about a runtime-N mixture — the refusal that used '
   + 'to fire there is gone', () => {
   assert.deepEqual(analyzerErrors(RT2
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'), [],
+    + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n'), [],
   'no analyzer error — §06 allows a runtime N');
-});
-
-test('a family collection whose runtime size is neither N nor one is refused, '
-  + 'naming both sizes', () => {
-  const errs = buildErrors('w = reverse([1.2, 0.3])\n'
-    + 'three = reverse([1.0, 2.0, 3.0])\n'
-    + 'mix = ksuperpose(Normal, w)(mu = three, sigma = 1.0)\n');
-  assert.ok(errs.some((m) => /size 3/.test(m) && /N = 2/.test(m)),
-    `want a size refusal, got ${JSON.stringify(errs)}`);
-  assert.ok(buildDiagnostics('w = reverse([1.2, 0.3])\n'
-    + 'three = reverse([1.0, 2.0, 3.0])\n'
-    + 'mix = ksuperpose(Normal, w)(mu = three, sigma = 1.0)\n')
-    .some((d: any) => d.loc), 'the refusal is located');
 });
 
 test('a REIFIED kernel with a runtime N is refused, naming the remedy — the '
   + 'runtime arm builds a distribution call, not a kernel application', () => {
   const errs = buildErrors(RT2
     + 'K = m -> Normal(mu = m, sigma = 1.0)\n'
-    + 'mix = ksuperpose(K, w)(means)\n');
+    + 'mix = ksuperpose(K, w, means)\n');
   assert.ok(errs.some((m) => /reified|user-defined kernel/.test(m)
     && /statically-known/.test(m)),
   `want a kernel refusal, got ${JSON.stringify(errs)}`);
@@ -489,15 +447,7 @@ test('a REIFIED kernel with a runtime N is refused, naming the remedy — the '
   // refusal is about the runtime N and not about reification.
   assert.deepEqual(analyzerErrors('w = [0.3, 1.2]\nmeans = [-1.0, 2.0]\n'
     + 'K = m -> Normal(mu = m, sigma = 1.0)\n'
-    + 'mix = normalize(ksuperpose(K, w)(means))\n'), []);
-});
-
-test('a weight vector that is an INLINE expression is refused, naming the '
-  + 'remedy — the runtime arm reads a named binding\'s value', () => {
-  const errs = buildErrors('means = reverse([2.0, -1.0])\n'
-    + 'mix = ksuperpose(Normal, reverse([1.2, 0.3]))(mu = means, sigma = 1.0)\n');
-  assert.ok(errs.some((m) => /Bind it to a name/.test(m)),
-    `want a naming remedy, got ${JSON.stringify(errs)}`);
+    + 'mix = normalize(ksuperpose(K, w, means))\n'), []);
 });
 
 test('a refused runtime-N mixture yields ONE diagnostic, not a precise refusal '
@@ -509,10 +459,10 @@ test('a refused runtime-N mixture yields ONE diagnostic, not a precise refusal '
   for (const src of [
     'w = reverse([1.2, 0.3])\nmeans = reverse([2.0, -1.0])\n'
       + 'K = m -> Normal(mu = m, sigma = 1.0)\n'
-      + 'mix = normalize(ksuperpose(K, w)(means))\n'
+      + 'mix = normalize(ksuperpose(K, w, means))\n'
       + '__score__ = logdensityof(mix, 0.5)\n',
     'w = external(cartpow(nonnegreals, 2))\n'
-      + 'mix = normalize(ksuperpose(Normal, w)(mu = 0.0, sigma = 1.0))\n'
+      + 'mix = normalize(ksuperpose(Normal, w, mu = 0.0, sigma = 1.0))\n'
       + '__score__ = logdensityof(mix, 0.5)\n',
   ]) {
     const errs = buildErrors(src);
@@ -528,56 +478,4 @@ test('a chained user call is not mistaken for an applied mixture', () => {
   const errs = buildErrors('f = x -> (y -> x + y)\nz = f(1.0)(2.0)\n');
   assert.ok(!errs.some((m) => /ksuperpose/.test(m)),
     `no ksuperpose diagnostic belongs here, got ${JSON.stringify(errs)}`);
-});
-
-test('§06: two family axes over a scalar parameter is refused under a runtime '
-  + 'N too', () => {
-  const errs = buildErrors('w = reverse([1.2, 0.3])\n'
-    + 'grid = [[1.0, 2.0], [3.0, 4.0]]\n'
-    + 'mix = ksuperpose(Normal, w)(mu = grid, sigma = 1.0)\n');
-  assert.ok(errs.some((m) => /exactly one family axis/.test(m) && /`mu`/.test(m)),
-    `want a family-axis refusal, got ${JSON.stringify(errs)}`);
-});
-
-test('a TABLE family is refused under a runtime N with the keyword-vector '
-  + 'remedy', () => {
-  const errs = buildErrors('w = reverse([1.2, 0.3])\n'
-    + 'fam = table(mu = [-1.0, 2.0], sigma = [1.0, 0.5])\n'
-    + 'mix = ksuperpose(Normal, w)(fam)\n');
-  assert.ok(errs.some((m) => /TABLE parameter family/.test(m)
-    && /keyword vectors/.test(m)),
-  `want a table refusal, got ${JSON.stringify(errs)}`);
-});
-
-test('a family argument with neither a length nor a value is refused, naming '
-  + 'the argument', () => {
-  // A host-supplied `external` column: the type is %deferred and no value
-  // exists at build time, so nothing says whether it is a size-N collection.
-  const errs = buildErrors('w = reverse([1.2, 0.3])\n'
-    + 'ms = external(cartpow(reals, 2))\n'
-    + 'mix = ksuperpose(Normal, w)(mu = ms, sigma = 1.0)\n');
-  assert.ok(errs.some((m) => /`mu`/.test(m)
-    && /no statically-known length and no resolvable value/.test(m)),
-  `want a family-argument refusal, got ${JSON.stringify(errs)}`);
-});
-
-test('a family argument written as an INLINE expression is refused, naming the '
-  + 'argument and the remedy', () => {
-  const errs = buildErrors('w = reverse([1.2, 0.3])\n'
-    + 'means = reverse([2.0, -1.0])\n'
-    + 'mix = ksuperpose(Normal, w)(mu = means + 1.0, sigma = 1.0)\n');
-  assert.ok(errs.some((m) => /`mu` is an inline expression/.test(m)
-    && /Bind it to a name/.test(m)),
-  `want an inline-argument refusal, got ${JSON.stringify(errs)}`);
-});
-
-test('a weight vector whose value the engine cannot resolve at all is still '
-  + 'refused — the honest remaining limit', () => {
-  // `external(...)` is a host-supplied boundary input: no value exists at
-  // build time, so N cannot be read from it. §06 allows it; this engine
-  // says so rather than scoring a mixture whose component count it guessed.
-  const errs = buildErrors('w = external(cartpow(nonnegreals, 2))\n'
-    + 'mix = ksuperpose(Normal, w)(mu = 0.0, sigma = 1.0)\n');
-  assert.ok(errs.some((m) => /component count N/.test(m)),
-    `want an N refusal, got ${JSON.stringify(errs)}`);
 });

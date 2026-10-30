@@ -227,7 +227,7 @@ const MEASURE_OPS = new Set([
   'normalize', 'totalmass', 'tilt',
   // Composition
   'superpose', 'joint', 'iid', 'kchain', 'jointchain', 'markovchain', 'kscan',
-  // Weighted-superposition lift (spec §06 `ksuperpose`). Expanded in the
+  // Direct weighted superposition (spec §06 `ksuperpose`). Expanded in the
   // analyzer to `superpose(weighted(w[i], K(θᵢ)), …)` before derivation
   // classification, so — like `restrict` and `locscale` — it carries no
   // derivation kind of its own; listed here only to be a known name.
@@ -272,7 +272,7 @@ const MEASURE_PRODUCING = new Set([
   ...DISTRIBUTIONS,
   'lawof',
   'weighted', 'logweighted', 'bayesupdate', 'normalize', 'tilt',
-  'superpose', 'joint', 'iid', 'kchain', 'jointchain', 'markovchain', 'kscan',
+  'superpose', 'ksuperpose', 'joint', 'iid', 'kchain', 'jointchain', 'markovchain', 'kscan',
   'truncate', 'pushfwd',
 ]);
 

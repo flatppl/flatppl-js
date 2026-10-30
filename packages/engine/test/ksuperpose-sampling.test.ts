@@ -75,11 +75,11 @@ const errorsOf = (src: string) => (processSource(src).diagnostics || [])
   .filter((d: any) => d.severity === 'error').map((d: any) => d.message);
 
 // The ±3 equal-weight mixture in the ksuperpose spelling. §06's headline
-// example wraps the lift in `normalize`, and it is load-bearing: the mass is
-// Σᵢ wᵢ, which §06 says "need not be normalized", so the bare lift is
+// example wraps the mixture in `normalize`, and it is load-bearing: the mass is
+// Σᵢ wᵢ, which §06 says "need not be normalized", so the bare mixture is
 // %finite and `draw` rejects it (see the mass test below).
 const KMIX = 'w = [0.5, 0.5]\nmus = [-3.0, 3.0]\n'
-  + 'M = normalize(ksuperpose(Normal, w)(mu = mus, sigma = 1.0))\n';
+  + 'M = normalize(ksuperpose(Normal, w, mu = mus, sigma = 1.0))\n';
 
 // ── Every coordinate selects its own component ───────────────────────────────
 
@@ -118,7 +118,7 @@ test('nested iid(iid(ksuperpose(…), 2), 3) freshens all six coordinates',
 test('UNEQUAL weights select in proportion in every coordinate', async () => {
   const { mean, varr, cov } = await momentsOf(
     'w = [0.25, 0.75]\nmus = [-3.0, 3.0]\n'
-    + 'M = normalize(ksuperpose(Normal, w)(mu = mus, sigma = 1.0))\n'
+    + 'M = normalize(ksuperpose(Normal, w, mu = mus, sigma = 1.0))\n'
     + 'b ~ iid(M, 3)\n', 'b', 3);
   for (let i = 0; i < 3; i++) {
     assert.ok(Math.abs(mean[i] - 1.5) < MEAN_TOL, `mean[${i}] = ${mean[i]}`);
@@ -133,7 +133,7 @@ test('a THREE-component mixture freshens every coordinate', async () => {
   const third = '0.3333333333333333';
   const { mean, varr, cov } = await momentsOf(
     `w3 = [${third}, ${third}, ${third}]\nmus3 = [-3.0, 0.0, 3.0]\n`
-    + 'M = normalize(ksuperpose(Normal, w3)(mu = mus3, sigma = 1.0))\n'
+    + 'M = normalize(ksuperpose(Normal, w3, mu = mus3, sigma = 1.0))\n'
     + 'b ~ iid(M, 3)\n', 'b', 3);
   for (let i = 0; i < 3; i++) {
     assert.ok(Math.abs(mean[i] - 0.0) < MEAN_TOL, `mean[${i}] = ${mean[i]}`);
@@ -172,7 +172,7 @@ test('CONTROL: PARAMETRIC weights stay shared across the coordinates',
     // mean and variance untouched, so the covariance is the whole assertion.
     const { mean, varr, cov } = await momentsOf(
       'wp ~ Dirichlet(alpha = [1.0, 1.0])\nmus = [-3.0, 3.0]\n'
-      + 'M = normalize(ksuperpose(Normal, wp)(mu = mus, sigma = 1.0))\n'
+      + 'M = normalize(ksuperpose(Normal, wp, mu = mus, sigma = 1.0))\n'
       + 'b ~ iid(M, 3)\n', 'b', 3);
     for (let i = 0; i < 3; i++) {
       assert.ok(Math.abs(mean[i] - 0.0) < MEAN_TOL, `mean[${i}] = ${mean[i]}`);
@@ -206,7 +206,7 @@ test('CONTROL: a HELD-CONSTANT family argument from an outer draw stays shared '
   const { mean, varr, cov } = await momentsOf(
     'm ~ Normal(mu = 0.0, sigma = 1.0)\n'
     + 'w = [0.5, 0.5]\nsigs = [0.5, 4.0]\n'
-    + 'M = normalize(ksuperpose(Normal, w)(mu = m, sigma = sigs))\n'
+    + 'M = normalize(ksuperpose(Normal, w, mu = m, sigma = sigs))\n'
     + 'b ~ iid(M, 3)\n', 'b', 3);
   for (let i = 0; i < 3; i++) {
     assert.ok(Math.abs(mean[i] - 0.0) < MEAN_TOL, `mean[${i}] = ${mean[i]}`);
@@ -219,16 +219,16 @@ test('CONTROL: a HELD-CONSTANT family argument from an outer draw stays shared '
   }
 });
 
-// ── Mass: §06 makes the bare lift unnormalized ───────────────────────────────
+// ── Mass: §06 makes the bare mixture unnormalized ───────────────────────────────
 
 test('§06: the mixture mass is Σᵢ wᵢ and "need not be normalized", so `draw` '
-  + 'rejects the bare lift and §06\'s normalize wrapper is load-bearing', () => {
+  + 'rejects the bare mixture and §06\'s normalize wrapper is load-bearing', () => {
   const bare = errorsOf('w = [0.3, 1.2]\nmus = [-3.0, 3.0]\n'
-    + 'M = ksuperpose(Normal, w)(mu = mus, sigma = 1.0)\nb ~ M\n');
+    + 'M = ksuperpose(Normal, w, mu = mus, sigma = 1.0)\nb ~ M\n');
   assert.ok(bare.some((m: string) => /draw requires a probability measure/.test(m)),
     `want the draw mass gate, got ${JSON.stringify(bare)}`);
   const wrapped = errorsOf('w = [0.3, 1.2]\nmus = [-3.0, 3.0]\n'
-    + 'M = normalize(ksuperpose(Normal, w)(mu = mus, sigma = 1.0))\nb ~ M\n');
+    + 'M = normalize(ksuperpose(Normal, w, mu = mus, sigma = 1.0))\nb ~ M\n');
   assert.deepEqual(wrapped, [], 'the normalize wrapper clears the gate');
 });
 
@@ -248,7 +248,7 @@ test('§06: the mixture mass is Σᵢ wᵢ and "need not be normalized", so `dra
 test('§06: drawing from an all-zero-weight mixture is a located error, not a '
   + 'repeated constant', async () => {
   const src = 'wz = [0.0, 0.0]\nmus = [-3.0, 3.0]\n'
-    + 'M = normalize(ksuperpose(Normal, wz)(mu = mus, sigma = 1.0))\n'
+    + 'M = normalize(ksuperpose(Normal, wz, mu = mus, sigma = 1.0))\n'
     + 'b ~ M\n';
   const { ctx } = ctxFor(src, 6);
   await assert.rejects(() => Promise.resolve(ctx.getMeasure('b')), (e: any) => {
@@ -264,7 +264,7 @@ test('§06: drawing from an all-zero-weight mixture is a located error, not a '
 test('§06: the all-zero refusal also fires under iid, where the pinning was '
   + 'worst', async () => {
   const src = 'wz = [0.0, 0.0]\nmus = [-3.0, 3.0]\n'
-    + 'M = normalize(ksuperpose(Normal, wz)(mu = mus, sigma = 1.0))\n'
+    + 'M = normalize(ksuperpose(Normal, wz, mu = mus, sigma = 1.0))\n'
     + 'b ~ iid(M, 3)\n';
   const { ctx } = ctxFor(src, 6);
   await assert.rejects(() => Promise.resolve(ctx.getMeasure('b')),
@@ -278,7 +278,7 @@ test('CONTROL: ONE zero weight still samples — the guard tests the TOTAL mass,
   // weight rather than on Σw would break this legal model.
   const { mean, varr } = await momentsOf(
     'w1 = [0.0, 1.2]\nmus = [-3.0, 3.0]\n'
-    + 'M = normalize(ksuperpose(Normal, w1)(mu = mus, sigma = 1.0))\n'
+    + 'M = normalize(ksuperpose(Normal, w1, mu = mus, sigma = 1.0))\n'
     + 'b ~ iid(M, 3)\n', 'b', 3);
   for (let i = 0; i < 3; i++) {
     assert.ok(Math.abs(mean[i] - 3.0) < MEAN_TOL, `mean[${i}] = ${mean[i]}, want 3`);
@@ -302,7 +302,7 @@ test('§06: the all-zero refusal reaches the MCMC route too, not just the IS '
   const { createWorkerHandler } = require('../worker.ts');
   const SRC = 'wz = [0.0, 0.0]\noffs = [-1.0, 2.0]\n'
     + 'mu = draw(Normal(mu = 0.0, sigma = 10.0))\n'
-    + 'mix = normalize(ksuperpose(Normal, wz)(mu = offs, sigma = 1.0))\n'
+    + 'mix = normalize(ksuperpose(Normal, wz, mu = offs, sigma = 1.0))\n'
     + 'obs_dist = joint(y = mix)\n'
     + 'K = functionof(obs_dist, mu = mu)\n'
     + 'L = likelihoodof(K, record(y = 0.5))\n'
@@ -349,7 +349,7 @@ test('§06: an unnormalized mixture draws in proportion to the weights — the '
   // [1.0, 3.0], so the moments are MixtureModel([N(-3,1),N(3,1)],[.25,.75])'s.
   const { mean, varr } = await momentsOf(
     'w = [1.0, 3.0]\nmus = [-3.0, 3.0]\n'
-    + 'M = normalize(ksuperpose(Normal, w)(mu = mus, sigma = 1.0))\n'
+    + 'M = normalize(ksuperpose(Normal, w, mu = mus, sigma = 1.0))\n'
     + 'b ~ iid(M, 3)\n', 'b', 3);
   for (let i = 0; i < 3; i++) {
     assert.ok(Math.abs(mean[i] - 1.5) < MEAN_TOL, `mean[${i}] = ${mean[i]}`);

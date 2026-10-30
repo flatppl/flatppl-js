@@ -10,7 +10,7 @@ p ~ Uniform(unitinterval)
 counts(n) = iid(Binomial(n, p), 2)
 sizes = [2, 3]
 weights = [1, 1]
-y ~ normalize(ksuperpose(counts, weights)(sizes))
+y ~ normalize(ksuperpose(counts, weights, sizes))
 K = kernelof(y, p = p)
 L = likelihoodof(K, [1, 2])
 score = logdensityof(L, record(p = 0.4))

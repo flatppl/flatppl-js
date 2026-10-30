@@ -698,9 +698,9 @@ function _lowerBroadcast(node: any, ctx: any) {
     const T = require('./types.ts');
     const iface = T.builtinInterface(builtinName);
     const names = iface?.inputs.map((p: any) => p.name);
-    const order = hasKwargs && iface
+    const order = hasKwargs && iface && !posArgs.length
       ? require('./builtin-param-names.ts').namedDecision(iface, kwOrder).order : null;
-    const arity = hasKwargs ? kwOrder.length
+    const arity = hasKwargs ? kwOrder.length + posArgs.length
       : posArgs.length === 1 && iface && !T.acceptsPositional(iface, 1)
         ? names.length : posArgs.length;
     head = _synthOpFunctionof(builtinName, arity);

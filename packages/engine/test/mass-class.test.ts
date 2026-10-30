@@ -40,9 +40,9 @@ function errorsOf(src: string): string[] {
 
 test('simplex weights give drawable mixtures with unit mass', () => {
   for (const src of [
-    'n = external(posintegers)\np = elementof(stdsimplex(n))\nm = ksuperpose(Normal, p)(mu = 0, sigma = 1)',
+    'n = external(posintegers)\np = elementof(stdsimplex(n))\nm = ksuperpose(Normal, p, mu = 0, sigma = 1)',
     'p = elementof(stdsimplex(3))\nq = p\nm = superpose(weighted(q[3], Normal(2, 1)), weighted(p[1], Normal(0, 1)), weighted(p[2], Normal(1, 1)))',
-    'p = elementof(stdsimplex(1))\nm = ksuperpose(Dirac, p)(value = [2])',
+    'p = elementof(stdsimplex(1))\nm = ksuperpose(Dirac, p, value = [2])',
   ]) {
     assert.equal(massOf(src, 'm'), 'normalized', src);
     assert.deepEqual(errorsOf(src + '\nx ~ m'), []);
@@ -55,10 +55,10 @@ test('simplex recognition requires all coordinates of one node and probability c
     'superpose(weighted(p[1], Normal(0,1)), weighted(p[2], Normal(0,1)))',
     'superpose(weighted(p[1], Normal(0,1)), weighted(p[1], Normal(0,1)), weighted(p[3], Normal(0,1)))',
     'superpose(weighted(p[1], Normal(0,1)), weighted(p[2], Normal(0,1)), weighted(q[3], Normal(0,1)))',
-    'ksuperpose(x -> weighted(2, Dirac(x)), p)(x = [0,1,2])',
+    'ksuperpose(x -> weighted(2, Dirac(x)), p, x = [0,1,2])',
   ]) assert.notEqual(massOf(prefix + 'm = ' + rhs, 'm'), 'normalized', rhs);
   for (const [kernel, support] of [['Lebesgue', 'reals'], ['Counting', 'integers']]) {
-    const src = `n = external(posintegers)\np = elementof(stdsimplex(n))\nm = ksuperpose(${kernel}, p)(support = ${support})`;
+    const src = `n = external(posintegers)\np = elementof(stdsimplex(n))\nm = ksuperpose(${kernel}, p, support = ${support})`;
     assert.notEqual(massOf(src, 'm'), 'normalized', src);
     assert.ok(errorsOf(src + '\nx ~ m').length > 0);
   }
@@ -69,7 +69,7 @@ test('normalizer mixture proofs require a nonempty input', () => {
   for (const source of ['softmax(zeros(0))', 'softmax(reverse(zeros(0)))',
     'softmax(external(cartpow(reals, k)))',
     'l1unit(external(cartpow(nonnegreals, 0)))']) {
-    assert.notEqual(massOf(`k = external(nonnegintegers)\np = ${source}\nm = ksuperpose(Normal, p)(mu = 0, sigma = 1)`, 'm'),
+    assert.notEqual(massOf(`k = external(nonnegintegers)\np = ${source}\nm = ksuperpose(Normal, p, mu = 0, sigma = 1)`, 'm'),
       'normalized', source);
   }
   // A declared nonempty vector, or an actual simplex, still gives unit mass.
@@ -77,7 +77,7 @@ test('normalizer mixture proofs require a nonempty input', () => {
     'softmax(external(cartpow(reals, 3)))',
     'l1unit(external(cartpow(nonnegreals, 3)))',
     'softmax(elementof(stdsimplex(n)))', 'l1unit(elementof(stdsimplex(n)))']) {
-    assert.equal(massOf(`n = external(posintegers)\np = ${source}\nm = ksuperpose(Normal, p)(mu = 0, sigma = 1)`, 'm'),
+    assert.equal(massOf(`n = external(posintegers)\np = ${source}\nm = ksuperpose(Normal, p, mu = 0, sigma = 1)`, 'm'),
       'normalized', source);
   }
 });

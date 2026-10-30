@@ -47,7 +47,7 @@ sigs = [1.0, 1.0]
 
 test('ksuperpose mass: explicit unequal weights give their sum', async () => {
   const { ctx } = ctxFor(KSUP + `
-A = ksuperpose(Normal, w)(mu = mus, sigma = sigs)
+A = ksuperpose(Normal, w, mu = mus, sigma = sigs)
 tm = totalmass(A)
 lp = logdensityof(A, 0.5)
 `, 8192);
@@ -61,7 +61,7 @@ lp = logdensityof(A, 0.5)
 
 test('ksuperpose mass: under normalize it is 1', async () => {
   const { ctx } = ctxFor(KSUP + `
-A = normalize(ksuperpose(Normal, w)(mu = mus, sigma = sigs))
+A = normalize(ksuperpose(Normal, w, mu = mus, sigma = sigs))
 tm = totalmass(A)
 lp = logdensityof(A, 0.5)
 `, 8192);
@@ -75,7 +75,7 @@ lp = logdensityof(A, 0.5)
 
 test('ksuperpose mass: as a chain base it carries 5 into the chain', async () => {
   const { ctx } = ctxFor(KSUP + `
-S = ksuperpose(Normal, w)(mu = mus, sigma = sigs)
+S = ksuperpose(Normal, w, mu = mus, sigma = sigs)
 Kbb1(r) = Normal(r.aa, 1.0)
 A = jointchain(aa = S, bb = Kbb1)
 tm = totalmass(A)
@@ -91,7 +91,7 @@ lp = logdensityof(A, record(aa = 0.5, bb = 0.5))
 
 test('ksuperpose mass: as a dependent record-law field it is counted once', async () => {
   const { ctx } = ctxFor(KSUP + `
-theta ~ ksuperpose(Normal, w)(mu = mus, sigma = sigs)
+theta ~ ksuperpose(Normal, w, mu = mus, sigma = sigs)
 x ~ Normal(theta, 1.0)
 A = lawof(record(t = theta, xx = x))
 tm = totalmass(A)

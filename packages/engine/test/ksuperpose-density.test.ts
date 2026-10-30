@@ -5,7 +5,7 @@
 // =====================================================================
 //
 // §06 density rule:
-//   logdensityof(ksuperpose(κ, w)(θ), x)
+//   logdensityof(ksuperpose(κ, w, θ), x)
 //     = logsumexp_i(log wᵢ + logdensityof(κ(θᵢ), x))
 // "so a zero weight contributes −∞ and drops out. All components come
 // from one kernel and so share one reference measure — the mixture's."
@@ -85,7 +85,7 @@ test('§06: the normalized two-Normal mixture matches Distributions.jl at '
   ];
   for (const [x, want] of oracle) {
     const got = await score(PARAMS
-      + 'mix = normalize(ksuperpose(Normal, weights)(mu = means, sigma = sigmas))\n'
+      + 'mix = normalize(ksuperpose(Normal, weights, mu = means, sigma = sigmas))\n'
       + `__score__ = logdensityof(mix, ${x})\n`);
     assert.ok(Math.abs(got - want) <= TOL,
       `x = ${x}: got ${got}, oracle ${want}`);
@@ -95,7 +95,7 @@ test('§06: the normalized two-Normal mixture matches Distributions.jl at '
 test('§06: the UNnormalized mixture is the normalized one plus log Z, with '
   + 'Z = Σᵢ wᵢ for a Markov component', async () => {
   const unnorm = await score(PARAMS
-    + 'mix = ksuperpose(Normal, weights)(mu = means, sigma = sigmas)\n'
+    + 'mix = ksuperpose(Normal, weights, mu = means, sigma = sigmas)\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(unnorm - (-3.005949999407958)) <= TOL,
     `unnormalized: got ${unnorm}, oracle -3.005949999407958`);
@@ -109,7 +109,7 @@ test('§06: the UNnormalized mixture is the normalized one plus log Z, with '
 test('§06: a non-collection family argument is held constant across the '
   + 'components (shared scalar sigma)', async () => {
   const got = await score(PARAMS
-    + 'mix = normalize(ksuperpose(Normal, weights)(mu = means, sigma = 1.0))\n'
+    + 'mix = normalize(ksuperpose(Normal, weights, mu = means, sigma = 1.0))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(got - (-2.0439385332046727)) <= TOL,
     `got ${got}, oracle -2.0439385332046727`);
@@ -119,7 +119,7 @@ test('§06: a singular (size-one) family collection is expanded by repetition',
   async () => {
     const got = await score(PARAMS
       + 'mu1 = [1.0]\n'
-      + 'mix = normalize(ksuperpose(Normal, weights)(mu = mu1, sigma = sigmas))\n'
+      + 'mix = normalize(ksuperpose(Normal, weights, mu = mu1, sigma = sigmas))\n'
       + '__score__ = logdensityof(mix, 0.5)\n');
     assert.ok(Math.abs(got - (-0.7818336515543383)) <= TOL,
       `got ${got}, oracle -0.7818336515543383`);
@@ -131,7 +131,7 @@ test('§06: a zero weight drops out EXACTLY — the mixture density equals the '
     'w0 = [0.0, 1.2]\n'
     + 'means = [-1.0, 2.0]\n'
     + 'sigmas = [1.0, 0.5]\n'
-    + 'mix = ksuperpose(Normal, w0)(mu = means, sigma = sigmas)\n'
+    + 'mix = ksuperpose(Normal, w0, mu = means, sigma = sigmas)\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   // log(1.2) + logpdf(Normal(2.0, 0.5), 0.5), by hand — no mixture involved.
   const closed = Math.log(1.2)
@@ -148,7 +148,7 @@ test('§06: all-zero weights are the zero measure — log-density −∞ everywh
         'wz = [0.0, 0.0]\n'
         + 'means = [-1.0, 2.0]\n'
         + 'sigmas = [1.0, 0.5]\n'
-        + 'mix = ksuperpose(Normal, wz)(mu = means, sigma = sigmas)\n'
+        + 'mix = ksuperpose(Normal, wz, mu = means, sigma = sigmas)\n'
         + `__score__ = logdensityof(mix, ${x})\n`);
       assert.equal(got, -Infinity, `x = ${x}: got ${got}, want -Infinity`);
     }
@@ -163,7 +163,7 @@ test('§06: normalize of an all-zero mixture is refused, not scored as NaN — '
   await assert.rejects(() => score(
     'wz = [0.0, 0.0]\n'
     + 'means = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
-    + 'mix = normalize(ksuperpose(Normal, wz)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, wz, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n'),
     (e: any) => {
       assert.match(e.message, /ZERO total mass/);
@@ -178,7 +178,7 @@ test('§06: normalize of an all-zero mixture is refused, not scored as NaN — '
 test('§08: a categorical over arbitrary labels is a Dirac superposition, '
   + 'density log pₖ at the label', async () => {
   const SRC = 'p = [0.2, 0.8]\nlabels = [0.0, 1.5]\n'
-    + 'cat = normalize(ksuperpose(Dirac, p)(value = labels))\n';
+    + 'cat = normalize(ksuperpose(Dirac, p, value = labels))\n';
   const hi = await score(SRC + '__score__ = logdensityof(cat, 1.5)\n');
   assert.ok(Math.abs(hi - Math.log(0.8)) <= TOL,
     `at label 1.5: got ${hi}, closed form ${Math.log(0.8)}`);
@@ -188,13 +188,13 @@ test('§08: a categorical over arbitrary labels is a Dirac superposition, '
 });
 
 // =====================================================================
-// The lift is a kernel, and the two spellings agree
+// Direct ksuperpose and explicit weighted superpose represent the same measure
 // =====================================================================
 
 test('§06: the mixture agrees with the variadic superpose spelling §06 gives '
   + 'for the same measure', async () => {
   const lifted = await score(PARAMS
-    + 'mix = normalize(ksuperpose(Normal, weights)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, weights, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   const variadic = await score(PARAMS
     + 'mix = normalize(superpose(weighted(weights[1], Normal(means[1], sigmas[1])), '
@@ -204,26 +204,26 @@ test('§06: the mixture agrees with the variadic superpose spelling §06 gives '
     `lift ${lifted} == variadic ${variadic}`);
 });
 
-test('§04 aliasing: the two-step spelling (name the lift, then apply it) is '
+test('§04 aliasing: the two-step spelling (name the measure, then normalize it) is '
   + 'the same program as the inline one', async () => {
   const inline = await score(PARAMS
-    + 'mix = normalize(ksuperpose(Normal, weights)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, weights, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   const named = await score(PARAMS
-    + 'lift = ksuperpose(Normal, weights)\n'
-    + 'mix = normalize(lift(mu = means, sigma = sigmas))\n'
+    + 'base_mix = ksuperpose(Normal, weights, mu = means, sigma = sigmas)\n'
+    + 'mix = normalize(base_mix)\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(named - inline) <= TOL,
-    `named lift ${named} == inline ${inline}`);
+    `named mixture ${named} == inline ${inline}`);
 });
 
 test('§06: the family may be passed positionally (§05 lets a distribution '
   + 'take its parameters positionally)', async () => {
   const kw = await score(PARAMS
-    + 'mix = normalize(ksuperpose(Normal, weights)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, weights, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   const pos = await score(PARAMS
-    + 'mix = normalize(ksuperpose(Normal, weights)(means, sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, weights, means, sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(pos - kw) <= TOL, `positional ${pos} == keyword ${kw}`);
 });
@@ -235,12 +235,12 @@ test('§06: the component may be a REIFIED kernel, not only a bare constructor '
   // independent check that the reification path reads the same family.
   const named = await score(PARAMS
     + 'K = m -> Normal(mu = m, sigma = 1.0)\n'
-    + 'mix = normalize(ksuperpose(K, weights)(means))\n'
+    + 'mix = normalize(ksuperpose(K, weights, means))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(named - (-2.0439385332046727)) <= TOL,
     `named reification: got ${named}, oracle -2.0439385332046727`);
   const inline = await score(PARAMS
-    + 'mix = normalize(ksuperpose(m -> Normal(mu = m, sigma = 1.0), weights)(means))\n'
+    + 'mix = normalize(ksuperpose(m -> Normal(mu = m, sigma = 1.0), weights, means))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(inline - (-2.0439385332046727)) <= TOL,
     `inline reification: got ${inline}, oracle -2.0439385332046727`);
@@ -249,7 +249,7 @@ test('§06: the component may be a REIFIED kernel, not only a bare constructor '
 test('§06: the weights and the family may be written INLINE as array literals '
   + '— their length is read off the AST', async () => {
   const got = await score(
-    'mix = normalize(ksuperpose(Normal, [0.3, 1.2])(mu = [-1.0, 2.0], '
+    'mix = normalize(ksuperpose(Normal, [0.3, 1.2], mu = [-1.0, 2.0], '
     + 'sigma = [1.0, 0.5]))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(got - (-3.411415107516122)) <= TOL,
@@ -264,31 +264,12 @@ async () => {
   // [0.2, 0.8], giving Z = 1 and the mixture density directly.
   const got = await score(
     'raw = [0.3, 1.2]\nmeans = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
-    + 'mix = ksuperpose(Normal, l1unit(raw))(mu = means, sigma = sigmas)\n'
+    + 'mix = ksuperpose(Normal, l1unit(raw), mu = means, sigma = sigmas)\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   // Same as the normalized two-Normal row: l1unit(w) = w / Σw, so the
   // density is logsumexp(log(wᵢ/Z) + logpdf) = the normalized oracle.
   assert.ok(Math.abs(got - (-3.411415107516122)) <= TOL,
     `got ${got}, oracle -3.411415107516122`);
-});
-
-test('§06: a nested array LITERAL family over a SCALAR parameter is a static '
-  + 'error, caught on the AST without a type', () => {
-  const ds = diagnosticsOf(PARAMS
-    + 'mix = ksuperpose(Normal, weights)(mu = [[1.0, 2.0], [3.0, 4.0]], '
-    + 'sigma = sigmas)\n');
-  assert.ok(ds.some((d: any) => /exactly one family axis/.test(d.message)
-      && /`mu` has rank 0/.test(d.message)),
-    `want a family-axis error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
-});
-
-test('a family argument that is an unnamed expression is refused, naming the '
-  + 'remedy — its collection-or-scalar status cannot be read', () => {
-  const ds = diagnosticsOf(PARAMS
-    + 'mix = ksuperpose(Normal, weights)(mu = means + 1.0, sigma = sigmas)\n');
-  assert.ok(ds.some((d: any) => /cannot tell whether family argument `mu`/.test(d.message)
-      && /Bind it to a name/.test(d.message)),
-    `want a classify refusal, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
 });
 
 test('the weights may be a COMPUTED EXPRESSION — the rewrite indexes the '
@@ -303,7 +284,7 @@ test('the weights may be a COMPUTED EXPRESSION — the rewrite indexes the '
   const src = 'means = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
     + 'theta = 0.5\n'
     + 'w = [theta, 1.0 - theta]\n'
-    + 'mix = normalize(ksuperpose(Normal, w)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, w, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n';
   const got = await score(src);
   const lp1 = Math.log(0.5) + (-0.5 * Math.log(2 * Math.PI) - 0.5 * (1.5) ** 2);
@@ -320,7 +301,7 @@ test('free mixture weights remain conditional through an explicit vector input',
   for (const firstWeight of [0.2, 0.7]) {
     const src = 'wp ~ Dirichlet(alpha = [1.0, 1.0])\n'
       + 'means = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
-      + 'mix = normalize(ksuperpose(Normal, wp)(mu = means, sigma = sigmas))\n'
+      + 'mix = normalize(ksuperpose(Normal, wp, mu = means, sigma = sigmas))\n'
       + 'f = functionof(logdensityof(mix, 0.5), wp = wp)\n'
       + `__score__ = f(wp = [${firstWeight}, ${1 - firstWeight}])\n`;
     const got = await score(src);
@@ -350,23 +331,23 @@ test('indexed free weight expressions retain their explicit scalar parameter', a
 });
 
 // =====================================================================
-// §04 aliasing — the lift reached through a chain of names
+// §04 aliasing — the mixture reached through a chain of names
 // =====================================================================
 
-test('§04: an alias CHAIN to the lift is the same program — two hops and '
+test('§04: an alias CHAIN to the mixture is the same program — two hops and '
   + 'three', async () => {
   const inline = await score(PARAMS
-    + 'mix = normalize(ksuperpose(Normal, weights)(mu = means, sigma = sigmas))\n'
+    + 'mix = normalize(ksuperpose(Normal, weights, mu = means, sigma = sigmas))\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   const twoHop = await score(PARAMS
-    + 'l1 = ksuperpose(Normal, weights)\nl2 = l1\n'
-    + 'mix = normalize(l2(mu = means, sigma = sigmas))\n'
+    + 'l1 = ksuperpose(Normal, weights, mu = means, sigma = sigmas)\nl2 = l1\n'
+    + 'mix = normalize(l2)\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(twoHop - inline) <= TOL,
     `two-hop alias ${twoHop} == inline ${inline}`);
   const threeHop = await score(PARAMS
-    + 'l1 = ksuperpose(Normal, weights)\nl2 = l1\nl3 = l2\n'
-    + 'mix = normalize(l3(mu = means, sigma = sigmas))\n'
+    + 'l1 = ksuperpose(Normal, weights, mu = means, sigma = sigmas)\nl2 = l1\nl3 = l2\n'
+    + 'mix = normalize(l3)\n'
     + '__score__ = logdensityof(mix, 0.5)\n');
   assert.ok(Math.abs(threeHop - inline) <= TOL,
     `three-hop alias ${threeHop} == inline ${inline}`);
@@ -445,110 +426,3 @@ test('a disintegrated binding leaves no residual ksuperpose in EITHER AST slot',
     assert.deepEqual(residual, [],
       `lowered bindings still holding a ksuperpose op: ${residual}`);
   });
-
-// =====================================================================
-// Static errors and refusals
-// =====================================================================
-
-// §06: "an argument's family axes are its leading axes in excess of the rank
-// (number of axes) of the parameter it feeds, and any count other than one is a
-// static error". `Normal`'s `mu` has rank 0, so a two-axis argument carries two
-// family axes.
-test('§06: two family axes over a SCALAR parameter is a static error', () => {
-  const ds = diagnosticsOf(PARAMS
-    + 'grid = [[1.0, 2.0], [3.0, 4.0]]\n'
-    + 'mix = ksuperpose(Normal, weights)(mu = grid, sigma = sigmas)\n');
-  assert.ok(ds.some((d: any) => /exactly one family axis/.test(d.message)
-      && /gives 2 family axes/.test(d.message)),
-    `want a family-axis error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
-  assert.ok(ds.some((d: any) => d.loc), 'the error is located');
-});
-
-// The other direction of the same sentence: an argument AT the parameter's own
-// rank carries ZERO family axes, which "any count other than one" also refuses.
-// Only a NON-collection is held constant, so a shared covariance must be
-// spelled with a singular family axis.
-test('§06: zero family axes over a MATRIX parameter is a static error', () => {
-  const ds = diagnosticsOf(
-    'w = [0.4, 0.6]\n'
-    + 'mus = rowstack([[0.0, 0.0], [3.0, 3.0]])\n'
-    + 'cov = rowstack([[1.0, 0.2], [0.2, 1.0]])\n'
-    + 'mix = ksuperpose(MvNormal, w)(mu = mus, cov = cov)\n');
-  assert.ok(ds.some((d: any) => /exactly one family axis/.test(d.message)
-      && /`cov` has rank 2/.test(d.message) && /gives 0 family axes/.test(d.message)),
-    `want a family-axis error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
-});
-
-test('§06: a family collection whose size is neither N nor one is a static '
-  + 'error', () => {
-  const ds = diagnosticsOf(PARAMS
-    + 'three = [1.0, 2.0, 3.0]\n'
-    + 'mix = ksuperpose(Normal, weights)(mu = three, sigma = sigmas)\n');
-  assert.ok(ds.some((d: any) => /size 3/.test(d.message) && /N = 2/.test(d.message)),
-    `want a size error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
-});
-
-test('§06: `weights` must be a one-axis vector — a scalar has no components',
-  () => {
-    const ds = diagnosticsOf(
-      'means = [-1.0, 2.0]\nsigmas = [1.0, 0.5]\n'
-      + 'mix = ksuperpose(Normal, 0.5)(mu = means, sigma = sigmas)\n');
-    assert.ok(ds.some((d: any) => /one-axis vector/.test(d.message)),
-      `want a weights error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
-  });
-
-test('ksuperpose takes exactly two positional arguments', () => {
-  const ds = diagnosticsOf(PARAMS
-    + 'mix = ksuperpose(Normal)(mu = means, sigma = sigmas)\n');
-  assert.ok(ds.some((d: any) => /ksuperpose expects 2/.test(d.message)),
-    `want an arity error, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
-});
-
-test('a TABLE parameter family is refused with the keyword-vector remedy, not '
-  + 'silently mis-scored', () => {
-  const ds = diagnosticsOf(
-    'weights = [0.3, 1.2]\n'
-    + 'fam = table(mu = [-1.0, 2.0], sigma = [1.0, 0.5])\n'
-    + 'mix = ksuperpose(Normal, weights)(fam)\n');
-  assert.ok(ds.some((d: any) => /TABLE parameter family/.test(d.message)
-      && /keyword vectors/.test(d.message)),
-    `want a table refusal, got ${JSON.stringify(ds.map((d: any) => d.message))}`);
-});
-
-// The refusal messages have a POSITIONAL spelling as well as a keyword one
-// (`family argument #1` / `position` rather than `` `mu` ``). The reviewer
-// hand-verified these; pinning them keeps the whole refusal roster tested in
-// both calling conventions rather than only the keyword one.
-test('the refusals name a POSITIONAL family argument correctly too', () => {
-  const multiAxis = diagnosticsOf(PARAMS
-    + 'grid = [[1.0, 2.0], [3.0, 4.0]]\n'
-    + 'mix = ksuperpose(Normal, weights)(grid, sigmas)\n');
-  assert.ok(multiAxis.some((d: any) => /family argument #1 /.test(d.message)
-      && /exactly one family axis/.test(d.message)),
-    `want a positional family-axis error, got ${JSON.stringify(multiAxis.map((d: any) => d.message))}`);
-
-  const sizeMismatch = diagnosticsOf(PARAMS
-    + 'three = [1.0, 2.0, 3.0]\n'
-    + 'mix = ksuperpose(Normal, weights)(three, sigmas)\n');
-  assert.ok(sizeMismatch.some((d: any) => /family argument position has size 3/.test(d.message)),
-    `want a positional size error, got ${JSON.stringify(sizeMismatch.map((d: any) => d.message))}`);
-
-  const unnamed = diagnosticsOf(PARAMS
-    + 'mix = ksuperpose(Normal, weights)(means + 1.0, sigmas)\n');
-  assert.ok(unnamed.some((d: any) => /cannot tell whether family argument #1 /.test(d.message)),
-    `want a positional classify refusal, got ${JSON.stringify(unnamed.map((d: any) => d.message))}`);
-});
-
-test('a component count that is not statically known is NOT refused here — '
-  + '§06 allows a runtime N and this pass hands it on', () => {
-  // §06: N "need not be statically known". This pass rewrites the AST and so
-  // needs N while it runs; when N is unavailable it now leaves the
-  // application standing for the RUNTIME ARM (ksuperpose-runtime.ts), which
-  // reads N from the weight vector's value at derivation-build time. A
-  // diagnostic here would fire on a program the runtime arm goes on to score,
-  // so this pass must stay SILENT. What the runtime arm scores, and what it
-  // still refuses, is ksuperpose-runtime-n.test.ts.
-  assert.deepEqual(diagnosticsOf(
-    'w = external(cartpow(nonnegreals, 2))\n'
-    + 'mix = ksuperpose(Normal, w)(mu = 0.0, sigma = 1.0)\n'), []);
-});

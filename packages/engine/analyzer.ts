@@ -50,19 +50,6 @@ function isMeasureExpr(node: any, bindings: any, seen?: Set<string>): boolean {
           if (entry?.bindings.get(node.callee.field)?.kind === 'distribution') return true;
         }
       }
-      // §06 `ksuperpose(κ, w)` "is itself a kernel", so APPLYING it "yields
-      // the mixture ν = Σᵢ wᵢ κ(θᵢ)" — a measure. The applied form is an
-      // expression-headed call, so its callee is a CallExpr and the
-      // Identifier guard below declines it. `ksuperpose-expand.ts` rewrites
-      // the application away when N is statically known, but a RUNTIME N
-      // leaves it standing for the runtime arm, and without this a
-      // `normalize`/`weighted` wrapper around such a mixture fails
-      // `resolveMeasureBaseName` and goes unclassified.
-      if (node.callee && node.callee.type === 'CallExpr'
-          && node.callee.callee && node.callee.callee.type === 'Identifier'
-          && node.callee.callee.name === 'ksuperpose') {
-        return true;
-      }
       if (!node.callee || node.callee.type !== 'Identifier') return false;
       const name = node.callee.name;
       if (name === 'lawof') return true;
@@ -2184,7 +2171,7 @@ const DISTINGUISHED_INPUTS = new Map<string, number>([
  * argument list positional.
  */
 const HAS_FURTHER_INPUTS = new Set([
-  'functionof', 'kernelof', 'broadcast', 'get', 'load_module',
+  'functionof', 'kernelof', 'broadcast', 'ksuperpose', 'get', 'load_module',
 ]);
 
 /**
@@ -2192,9 +2179,8 @@ const HAS_FURTHER_INPUTS = new Set([
  * (spec §04 "Calling conventions"; see `KEYWORD_RULE`).
  *
  * The walk is structural and covers nested spellings, not just a statement's
- * outermost call: the idiomatic `ksuperpose` form is the applied
- * `ksuperpose(K, w)(mu = ..., sigma = ...)`, whose `ksuperpose` call is the
- * callee of an enclosing call, and `fixed` normally appears inside a preset
+ * outermost call: `ksuperpose(K, w, mu = ..., sigma = ...)` normally sits
+ * inside `normalize`, and `fixed` normally appears inside a preset
  * `record(...)`. A keyword at a distinguished input is otherwise reported only
  * as a positional-count mismatch by type inference, which names an arity
  * rather than the rule the call breaks.
@@ -2315,7 +2301,7 @@ function validateMixedCalls(node: any, diagnostics: any[]) {
     const name = node.callee?.type === 'Identifier' ? node.callee.name : null;
     if (args.some((a: any) => a.type === 'KeywordArg')
         && args.some((a: any) => a.type !== 'KeywordArg')
-        && !['functionof', 'kernelof', 'broadcast', 'load_module',
+        && !['functionof', 'kernelof', 'broadcast', 'ksuperpose', 'load_module',
           // §05 "Additional arguments": named additional arguments follow the leading
           // positional inputs of these operations.
           ...ADDITIONAL_ARGUMENT_HEADS].includes(name)) {
@@ -4014,7 +4000,35 @@ function analyze(ast: any, source: string, opts?: any) {
   };
   let inferDiagnostics = _resolveAndInfer();
 
-  // Pre-derivation pass: expand `ksuperpose(K, w)(family…)` into the
+  // Both broadcast spellings feed the same per-cell callable. Canonicalize
+  // MixedArgs onto named inputs before density and sampling classify them.
+  const normalizeMixedBroadcasts = (node: any): boolean => {
+    if (!node || typeof node !== 'object') return false;
+    let changed = false;
+    if (node.type === 'CallExpr' && node.callee?.name === 'broadcast'
+        && node.args.slice(1).some((a: any) => a.type === 'KeywordArg')
+        && node.args.slice(1).some((a: any) => a.type !== 'KeywordArg')) {
+      try {
+        const args = require('./broadcast-bind.ts').bindMixedArgs(node.args.slice(1), node.args[0], bindings);
+        if (args !== node.args && args.every((a: any) => a.type === 'KeywordArg')) {
+          node.args = [node.args[0], ...args];
+          changed = true;
+        }
+      } catch (e: any) {
+        diagnostics.push({ severity: 'error', loc: node.loc, message: 'broadcast: ' + e.message });
+      }
+    }
+    for (const key of Object.keys(node)) {
+      if (key !== 'loc' && normalizeMixedBroadcasts(node[key])) changed = true;
+    }
+    return changed;
+  };
+  if (normalizeMixedBroadcasts(ast)) {
+    loweredModule = pir.lowerToModule(bindings, moduleOptions);
+    inferDiagnostics = _resolveAndInfer();
+  }
+
+  // Pre-derivation pass: expand `ksuperpose(K, w, family…)` into the
   // equivalent `superpose(weighted(w[i], K(θᵢ)), …)` per spec §06
   // `ksuperpose`. Like restrict and locscale, every op it introduces is
   // already first-class, so `ksuperpose` needs no derivation kind, no
@@ -4028,7 +4042,7 @@ function analyze(ast: any, source: string, opts?: any) {
   // describes the expanded program rather than the surface one.
   const ksExpandDiagnostics: any[] = [];
   const ksExpanded = require('./ksuperpose-expand.ts')
-    .expandKsuperposeApplications(ast, bindings, ksExpandDiagnostics);
+    .expandKsuperposeApplications(ast, bindings, ksExpandDiagnostics, loweredModule);
   if (ksExpanded) {
     loweredModule = pir.lowerToModule(bindings, moduleOptions);
     inferDiagnostics = _resolveAndInfer();

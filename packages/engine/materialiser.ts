@@ -2504,6 +2504,9 @@ function _superposeCapturedParents(names: string[], ctx: any): Promise<any[][]> 
 }
 
 function matSuperpose(name: string, d: DerivationSuperpose, ctx: any) {
+  if (d.fromNames.length === 0) {
+    throw new Error('superpose: the empty superposition is the zero measure; sampling is undefined (spec §06)');
+  }
   // Add component measures by selecting a branch for each output atom.
   // Independent importance components can first be resampled; captured and
   // repeated components keep their local correction on the output weights.

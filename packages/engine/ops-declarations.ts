@@ -2721,7 +2721,10 @@ function _broadcastLogical(ir: any, ctx: any): any {
     // (paramKwargs), fall back to internal placeholder name (params).
     for (let i = 0; i < fn.params.length; i++) {
       const surface = (fn.paramKwargs && fn.paramKwargs[i]) || fn.params[i];
-      if (kwargs[surface] != null) sources[i] = kwargs[surface];
+      if (i < args.length - 1) {
+        if (kwargs[surface] != null) throw new Error('broadcast: duplicate input ' + surface);
+        sources[i] = args[i + 1];
+      } else if (kwargs[surface] != null) sources[i] = kwargs[surface];
       /* c8 ignore next 3 -- defensive: internal-placeholder-name fallback and the missing-argument guard (surface-name match is the exercised path) */
       else if (kwargs[fn.params[i]] != null) sources[i] = kwargs[fn.params[i]];
       else throw new Error('broadcast: no argument for parameter '

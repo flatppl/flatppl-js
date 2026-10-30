@@ -3822,6 +3822,21 @@ function walkSelect(ir: IRNode, value: any, refArrays: any, N: any, opts: any, a
 interface SuperposeAsSelect { branches: IRNode[]; logweights: null }
 
 function walkSuperpose(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc: any, baseEnv: any, overlay: any) {
+  if (ir.args?.length === 0) {
+    for (let i = 0; i < N; i++) acc[i] = -Infinity;
+    if (opts.pointsBatched) return null;
+    const domain = (ir as any).zeroDomain;
+    if (domain?.kind === 'scalar') return consumeScalar(value).rest;
+    if (domain?.kind === 'array' && domain.shape.every((n: any) => typeof n === 'number')) {
+      return flattenNestedVariate(value, domain.shape).rest;
+    }
+    if (domain?.kind === 'record') {
+      let rest = value;
+      for (const field of Object.keys(domain.fields)) rest = consumeField(rest, field).rest;
+      return rest;
+    }
+    return null;
+  }
   // superpose(M1, M2, ...) is measure addition (spec §06): density =
   // Σ_k density(M_k, x). The HS3 mixture lowering wraps each component in
   // weighted(c_k, M_k), so each component's density already carries log c_k
