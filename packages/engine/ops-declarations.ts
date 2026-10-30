@@ -1340,7 +1340,7 @@ function isRecordValue(value: any): boolean {
 // table splats its fields or columns by name when two or more inputs remain.
 type Sequence = { length: number; at: (i: number) => any; constant?: boolean };
 
-function _asSequence(raw: any, op: string): Sequence {
+function _asSequence(raw: any): Sequence {
   if (raw && raw.__table__ === true) {
     return { length: raw.nrows, at: (i) => valueLib.tableRow(raw, i) };
   }
@@ -1354,14 +1354,7 @@ function _asSequence(raw: any, op: string): Sequence {
   if (Array.isArray(raw) || (raw && raw.BYTES_PER_ELEMENT)) {
     return { length: raw.length, at: (i) => raw[i] };
   }
-  // A record is a static error (spec §04, as for the operands of `broadcast`); the guard serves a
-  // program run without its diagnostics.
-  if (raw !== null && typeof raw === 'object' && !Array.isArray(raw) && raw.BYTES_PER_ELEMENT === undefined
-      && raw.__table__ !== true && !valueLib.isValue(raw) && typeof raw.kind !== 'string'
-      && typeof raw.re !== 'number') {
-    throw new Error('additional inputs of scan, kscan and filter may not be records or tuples (spec §04)');
-  }
-  // A scalar or other non-collection input is held constant at every step.
+  // A scalar, record or other non-collection input is held whole at every step.
   return { length: 1, at: () => raw, constant: true };
 }
 
@@ -1400,7 +1393,7 @@ function _sequenceInputs(op: string, fn: any, leading: number, ir: any, firstExt
   if (bound.length !== rest.length) {
     throw new Error(op + ': an input of the callable is not bound by the additional arguments');
   }
-  return bound.map(([param, value], i) => ({ param, sequence: _asSequence(value, op) }));
+  return bound.map(([param, value]) => ({ param, sequence: _asSequence(value) }));
 }
 
 /** Common length of sequences traversed together: length-one inputs repeat, others must agree. */
