@@ -3,6 +3,7 @@
 const rng = require('./rng.ts');
 const sampler = require('./sampler.ts');
 const diagnostics = require('./diagnostics.ts');
+const { isParameterDomainError } = require('./param-domains.ts');
 
 // Box-Muller gaussian noise from a U(0,1) prng. Shared proposal primitive
 // (proposal noise need not match the engine's inverse-CDF sampler).
@@ -110,6 +111,32 @@ function runMcmc(mv: any, kernel: any, opts: any) {
     }
   }
 
+  // A proposal that puts a distribution parameter outside its declared value
+  // set (§08) is rejected, counted and reported, as Stan rejects a domain error
+  // in a proposal. At an initial position above, the same error is fatal. Any
+  // other error still aborts the run.
+  const rejected = { count: 0, first: null as string | null };
+  const reject = (err: any): number => {
+    if (!isParameterDomainError(err)) throw err;
+    rejected.count++;
+    rejected.first ??= err.message;
+    return -Infinity;
+  };
+  const scoreProposal = (y: Float64Array): number => {
+    try { return mv.logPosterior(y); } catch (err) { return reject(err); }
+  };
+  const proposals = Object.create(mv);
+  proposals.logPosterior = scoreProposal;
+  if (typeof mv.logPosteriorBatch === 'function') {
+    proposals.logPosteriorBatch = (ys: Float64Array[]): Float64Array => {
+      try { return mv.logPosteriorBatch(ys); } catch (err) {
+        reject(err);
+        rejected.count--;
+        return Float64Array.from(ys, scoreProposal);
+      }
+    };
+  }
+
   const adaptState = kernel.init ? kernel.init(nWalkers, dim, opts, mv) : {};
   // Frozen proposal from a prior warmup phase ({L, scale}). Running with warmup=0
   // then makes every step a fixed-proposal sampling step (no re-adaptation), so
@@ -127,7 +154,7 @@ function runMcmc(mv: any, kernel: any, opts: any) {
   const progStep = Math.max(1, Math.floor(total / 50));   // ~2% granularity
   for (let it = 0; it < total; it++) {
     const phase = it < warmup ? 'warmup' : 'sample';
-    const r = kernel.step(ensemble, logp, mv, prng, adaptState, phase);
+    const r = kernel.step(ensemble, logp, proposals, prng, adaptState, phase);
     acceptTotal += r.accepts; proposalTotal += r.proposals;
     if (onProgress && (it % progStep === 0 || it === total - 1)) onProgress((it + 1) / total, phase);
     if (it >= warmup) {
@@ -160,12 +187,16 @@ function runMcmc(mv: any, kernel: any, opts: any) {
   // returns it (with the tuned adaptState) so a later sampling phase on another
   // worker can resume the warmed chains under the frozen proposal.
   const endPositions = ensemble.map((y: Float64Array) => Float64Array.from(y));
-  return mcmcResult(drawsByName, walkersByName, acceptRate, adaptState, endPositions, perParam);
+  return mcmcResult(drawsByName, walkersByName, acceptRate, adaptState, endPositions, perParam,
+    rejected.count ? { count: rejected.count, first: rejected.first } : null);
 }
 
 // Maglev OSR miscompile, nodejs/node#66457, fixed in V8 15.2.
-function mcmcResult(drawsByName: any, walkers: any, acceptRate: number, adaptState: any, endPositions: any, perParam: any) {
-  return { drawsByName, walkers, acceptRate, adaptState, endPositions, diagnostics: { acceptRate, perParam } };
+function mcmcResult(drawsByName: any, walkers: any, acceptRate: number, adaptState: any, endPositions: any, perParam: any, parameterRejections: any) {
+  const diagnostics: any = { acceptRate, perParam };
+  // Proposals rejected because a parameter left its declared value set.
+  if (parameterRejections) diagnostics.parameterRejections = parameterRejections;
+  return { drawsByName, walkers, acceptRate, adaptState, endPositions, diagnostics };
 }
 
 module.exports = { runMcmc, gaussianNoise, fixedProposalBatchStep };

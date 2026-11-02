@@ -177,8 +177,15 @@ const SET_NAMES: Record<DomainSet, string> = {
 function checkParam(kernel: string, name: string, value: any): void {
   const set = PARAM_SETS[kernel]?.[name];
   if (!set || !violates(set, value)) return;
-  throw new Error(`${kernel}: parameter '${name}' = ${describe(value)} is outside its `
+  const err: any = new Error(`${kernel}: parameter '${name}' = ${describe(value)} is outside its `
     + `declared value set ${SET_NAMES[set]} (spec ${SECTION_09.has(kernel) ? '§09' : '§08'})`);
+  err.flatpplParameterDomain = true;
+  throw err;
+}
+
+/** Whether `err` reports a parameter outside its declared value set. */
+function isParameterDomainError(err: any): boolean {
+  return err?.flatpplParameterDomain === true;
 }
 
 /** `checkParam` over a positional list in declared order, or a record. */
@@ -200,4 +207,6 @@ function hasDeclaredSets(kernel: string): boolean {
   return Object.prototype.hasOwnProperty.call(PARAM_SETS, kernel);
 }
 
-module.exports = { checkParam, checkParams, hasDeclaredSets, simplexTolerance, PARAM_SETS };
+module.exports = {
+  checkParam, checkParams, hasDeclaredSets, isParameterDomainError, simplexTolerance, PARAM_SETS,
+};
