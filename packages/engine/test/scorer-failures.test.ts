@@ -103,7 +103,7 @@ posterior = bayesupdate(L, prior)
   });
 });
 
-test('a posterior predictive field that fails to draw names the field', async (t) => {
+test('a posterior predictive field that fails to draw names the field', async (t: any) => {
   const { ctx } = ctxFor(`
 mu ~ Normal(0.0, 2.0)
 prior = lawof(record(mu = mu))
