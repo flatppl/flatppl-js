@@ -2161,6 +2161,7 @@ const DISTINGUISHED_INPUTS = new Map<string, number>([
   ['normalize', 1], ['totalmass', 1], ['iid', 2], ['truncate', 2], ['pushfwd', 2],
   ['weighted', 2], ['logweighted', 2], ['likelihoodof', 2], ['bayesupdate', 2],
   ['locscale', 3], ['disintegrate', 2], ['restrict', 2], ['bijection', 3],
+  ['PoissonProcess', 1], ['BinnedPoissonProcess', 2],
   // `cat` takes variadic unnamed inputs (spec §04), and so do `get`'s indices.
   ['cat', Infinity],
 ]);
@@ -2215,6 +2216,76 @@ function validateDistinguishedInputs(node: any, diagnostics: any[]) {
     if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier'
         && DISTINGUISHED_INPUTS.has(n.callee.name)) {
       check(n);
+    }
+    for (const k of Object.keys(n)) {
+      if (k !== 'loc') walk(n[k]);
+    }
+  }
+  walk(node);
+}
+
+/**
+ * Refuse written bin edges that do not strictly increase (spec §07 `bincounts`:
+ * "Each edge vector must be strictly increasing"). `BinnedPoissonProcess` takes
+ * its bins in the same format. Edges that are not written out fail at run time.
+ */
+function validateBinEdges(node: any, diagnostics: any[], valueOf: Map<string, any>) {
+  const scalar = (n: any, hops = 0): number | null => {
+    if (!n || hops > 64) return null;
+    if (n.type === 'NumberLiteral') return n.value;
+    if (n.type === 'UnaryExpr' && n.op === '-') {
+      const v = scalar(n.operand, hops + 1);
+      return v == null ? null : -v;
+    }
+    if (n.type === 'ConstantRef' && n.name === 'inf') return Infinity;
+    if (n.type === 'Identifier') {
+      return valueOf.has(n.name) ? scalar(valueOf.get(n.name), hops + 1) : null;
+    }
+    return null;
+  };
+  // The written edge vector under `n` (or a record of them) that does not increase.
+  const offending = (n: any, hops = 0): any => {
+    if (!n || hops > 64) return null;
+    if (n.type === 'Identifier' && valueOf.has(n.name)) return offending(valueOf.get(n.name), hops + 1);
+    if (n.type === 'ArrayLiteral') {
+      const values = n.elements.map((e: any) => scalar(e));
+      for (let k = 1; k < values.length; k++) {
+        if (values[k - 1] != null && values[k] != null && !(values[k] > values[k - 1])) return n;
+      }
+      return null;
+    }
+    if (n.type !== 'CallExpr' || !n.callee || n.callee.type !== 'Identifier') return null;
+    const args = n.args || [];
+    if (n.callee.name === 'record') {
+      for (const a of args) {
+        const hit = a && a.type === 'KeywordArg' ? offending(a.value, hops + 1) : null;
+        if (hit) return hit;
+      }
+      return null;
+    }
+    if ((n.callee.name === 'linspace' || n.callee.name === 'extlinspace') && args.length === 3
+        && args.every((a: any) => a && a.type !== 'KeywordArg')) {
+      const [from, to, count] = args.map((a: any) => scalar(a));
+      if (from != null && to != null && count != null && count >= 2 && !(to > from)) return n;
+    }
+    return null;
+  };
+  function walk(n: any) {
+    if (n == null || typeof n !== 'object') return;
+    if (Array.isArray(n)) { for (const x of n) walk(x); return; }
+    if (n.type === 'CallExpr' && n.callee && n.callee.type === 'Identifier'
+        && (n.callee.name === 'bincounts' || n.callee.name === 'BinnedPoissonProcess')) {
+      const args = n.args || [];
+      const bins = args.find((a: any) => a && a.type === 'KeywordArg' && a.name === 'bins');
+      const hit = offending(bins ? bins.value : (args[0] && args[0].type !== 'KeywordArg' ? args[0] : null));
+      if (hit) {
+        diagnostics.push({
+          severity: 'error',
+          message: `${n.callee.name}(): the bin edges must be strictly increasing `
+            + '(spec §07 `bincounts`: "Each edge vector must be strictly increasing")',
+          loc: hit.loc,
+        });
+      }
     }
     for (const k of Object.keys(n)) {
       if (k !== 'loc') walk(n[k]);
@@ -3568,6 +3639,14 @@ function analyze(ast: any, source: string, opts?: any) {
     }
   }
 
+  // Single-name bindings, so a check can read a written value through its name.
+  const valueOf = new Map<string, any>();
+  for (const stmt of ast.body) {
+    if (stmt.type === 'AssignStatement' && stmt.names.length === 1) {
+      valueOf.set(stmt.names[0].name, stmt.value);
+    }
+  }
+
   // Second pass: classify, extract deps, build bindings
   for (const stmt of ast.body) {
     if (stmt.type !== 'AssignStatement') continue;
@@ -3575,6 +3654,7 @@ function analyze(ast: any, source: string, opts?: any) {
     const stmtType = classifyStatement(stmt.value);
     diagnostics.push(...validateSpecialOperation(stmt.value));
     validateDistinguishedInputs(stmt.value, diagnostics);
+    validateBinEdges(stmt.value, diagnostics, valueOf);
     validateDataLoad(stmt.value, diagnostics);
     const axisListsRefused = validateAxisListPositions(stmt.value, diagnostics);
     validateHolesAndPlaceholders(stmt.value, diagnostics, axisListsRefused);

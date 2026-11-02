@@ -35,7 +35,7 @@ lp = logdensityof(M, [0, 25, 75])
 test('superposed intensities add bin masses without renormalizing to the bins', async () => {
   const { ctx } = ctxFor(`
 I = superpose(logweighted(log(8), Uniform(interval(0, 2))), weighted(6, Uniform(interval(1, 3))))
-M = BinnedPoissonProcess(bins=[0, 1, 2], intensity=I)
+M = BinnedPoissonProcess([0, 1, 2], I)
 lp = logdensityof(M, [4, 7])
 `, 4096);
   const m = await ctx.getMeasure('M');

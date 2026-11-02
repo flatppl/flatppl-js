@@ -332,8 +332,8 @@ test('value-position rand(BinnedPoissonProcess(bins, intensity)) uses the bin ma
   const fv = fixed(`
 s0 = rnginit([81, 82, 83, 84])
 lam = weighted(10.0, Uniform(interval(0.0, 2.0)))
-X, s1 = rand(iid(BinnedPoissonProcess(bins = [0.0, 1.0, 2.0], intensity = lam), ${N}), s0)
-Y, _ = rand(iid(BinnedPoissonProcess(bins = [0.0, 0.5, 2.0], intensity = weighted(4.0, Exponential(rate = 1.0))), ${N}), s1)
+X, s1 = rand(iid(BinnedPoissonProcess([0.0, 1.0, 2.0], lam), ${N}), s0)
+Y, _ = rand(iid(BinnedPoissonProcess([0.0, 0.5, 2.0], weighted(4.0, Exponential(rate = 1.0))), ${N}), s1)
 `);
   const xs = atoms(fv.get('X'), 2);
   for (let k = 0; k < 2; k++) near(mean(xs, k), 5, Math.sqrt(5 / N), `X mean[${k}]`);

@@ -221,6 +221,14 @@ test('the measure combinators refuse a keyword at a nested positional input', ()
   accepts(MU + 't = totalmass(truncate(mu, interval(0.0, 1.0)))\n');
 });
 
+test('PoissonProcess and BinnedPoissonProcess take their inputs positionally', () => {
+  const I = 'I = weighted(2.0, Uniform(interval(0.0, 1.0)))\n';
+  refuses('PoissonProcess', I + 'M = PoissonProcess(intensity = I)\n');
+  refuses('BinnedPoissonProcess', I + 'M = BinnedPoissonProcess(bins = [0.0, 1.0], intensity = I)\n');
+  refuses('BinnedPoissonProcess', I + 'M = BinnedPoissonProcess([0.0, 1.0], intensity = I)\n');
+  accepts(I + 'M = PoissonProcess(I)\nB = BinnedPoissonProcess([0.0, 1.0], I)\n');
+});
+
 // ---------------------------------------------------------------------
 // Variadic UNNAMED inputs (spec §04: `cat`, and `get`'s indices) and the
 // remaining fixed-arity combinators

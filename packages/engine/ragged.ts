@@ -161,7 +161,7 @@ function raggedSegmentReduce(v: any, reduce: (acc: number, x: number) => number,
 
 // Merge n ragged values over the SAME N atoms into one: atom a becomes the
 // concatenation of each part's atom-a slice. The point-process superposition
-// union (spec §08) — by the superposition theorem a process with intensity
+// union (spec §06) — by the superposition theorem a process with intensity
 // Σ_i weighted(w_i, s_i) is the union of independent component processes, so
 // matPoissonProcess samples each component then merges by atom. Order within
 // an atom is irrelevant (point sets are unordered). All parts must share atom
