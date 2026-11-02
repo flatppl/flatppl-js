@@ -100,6 +100,27 @@ const densityLib = require('./density.ts');
 const irShared = require('./ir-shared.ts');
 const valueLib = require('./value.ts');
 const { errorReply, errorFromReply } = require('./worker-errors.ts');
+const { isEngineLimitation } = require('./limitations.ts');
+
+// A profile point that throws is a gap: the body is undefined there (spec
+// `checked`). A sweep with no defined point has no curve, so it reports the
+// first cause. An engine limitation is never a gap.
+class ProfileGaps {
+  count = 0;
+  first: any = null;
+  gap(err: any): number {
+    if (isEngineLimitation(err)) throw err;
+    this.count++;
+    if (!this.first) this.first = err;
+    return NaN;
+  }
+  check(sweepName: string, points: number): void {
+    if (points > 0 && this.count === points) {
+      throw new Error(`profile over '${sweepName}' failed at every point: `
+        + (this.first?.message ?? String(this.first)));
+    }
+  }
+}
 
 // Resolve a `truncate(M, S)` set IR to a structural descriptor for
 // density.walkTruncate (`opts.parseSet`). The dumb worker has no `bindings`
@@ -830,16 +851,18 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             // body shares the outer body's memo slots.
             evalEnv.__bodyEval = prog.bodyEval;
             evalEnv.__aggregateShapeScope = {};
+            const gaps = new ProfileGaps();
             for (let i = 0; i < count; i++) {
               const t = count === 1 ? 0 : i / (count - 1);
               evalEnv[sweepName] = lo + t * (hi - lo);
               prog.nextPoint();
               try {
                 out[i] = prog.evalPoint(evalEnv);
-              } catch (_) {
-                out[i] = NaN;
+              } catch (err) {
+                out[i] = gaps.gap(err);
               }
             }
+            gaps.check(sweepName, count);
           } else if (mode === 'logdensity' && msg.mcSeed != null) {
             // MC marginalising-pushforward profile (density.walkMcMarginal,
             // spec §06 case-3). The viewer sets mcSeed only when it rewrote
@@ -860,6 +883,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             const mcMarg = (msg.mcMarginalizationCount | 0) || 100;
             const mcSweep = msg.mcSweep || null;
             const callEnv = Object.assign({}, baseEnv);
+            const gaps = new ProfileGaps();
             for (let i = 0; i < count; i++) {
               const t = count === 1 ? 0 : i / (count - 1);
               const x = lo + t * (hi - lo);
@@ -874,10 +898,11 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
                 out[i] = densityLib.logDensityN(
                   msg.ir, msg.observed, null, 1,
                   { baseEnv: callEnv, mcRng, mcMarginalizationCount: mcMarg })[0];
-              } catch (_) {
-                out[i] = NaN;
+              } catch (err) {
+                out[i] = gaps.gap(err);
               }
             }
+            gaps.check(sweepName, count);
           } else if (mode === 'logdensity') {
             // Build a per-atom refArray for the swept axis and call
             // density.logDensityN once for the whole sweep. Per-atom
@@ -894,17 +919,20 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
               const logps = densityLib.logDensityN(
                 msg.ir, msg.observed, refArrays, count, { baseEnv });
               out.set(logps);
-            } catch (_) {
+            } catch (batchErr) {
+              if (isEngineLimitation(batchErr)) throw batchErr;
               // Per-atom fallback for NaN-gap behaviour.
               const callEnv = Object.assign({}, baseEnv);
+              const gaps = new ProfileGaps();
               for (let i = 0; i < count; i++) {
                 callEnv[sweepName] = sweepArr[i];
                 try {
                   out[i] = densityLib.logDensity(msg.ir, msg.observed, callEnv);
-                } catch (_) {
-                  out[i] = NaN;
+                } catch (err) {
+                  out[i] = gaps.gap(err);
                 }
               }
+              gaps.check(sweepName, count);
             }
           } else {
             throw new Error(`profileN.mode must be 'function' or 'logdensity' (got '${mode}')`);

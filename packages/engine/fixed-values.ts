@@ -88,6 +88,13 @@ function unresolvableRefError(message: string): Error {
   return err;
 }
 
+// A dependent records the failure of the binding whose own expression threw,
+// so a read of any binding downstream names that binding and the cause. The
+// dependent itself may be a lift anon with no source name.
+function failureMessage(name: string, cause: string): string {
+  return `Fixed-phase binding '${name}' failed to evaluate: ${cause}`;
+}
+
 interface FixedValuesDeps {
   bindings: any;            // Map<name, BindingInfo>
   derivations: any;         // name → Derivation (the in-progress table)
@@ -107,6 +114,7 @@ class FixedValues {
   _cache: Map<string, any>;
   _inProgress: Set<string>;
   _diagnosed: Set<string>;
+  _failures: Map<string, string>;
 
   constructor(deps: FixedValuesDeps) {
     this._deps = deps;
@@ -119,6 +127,9 @@ class FixedValues {
     // that happens to succeed still returns the value normally.
     this._diagnosed = new Set();
     this._inProgress = new Set();   // current resolution stack (cycle guard)
+    // name → the failure message of it or of its failed dependency. Not a negative cache: the name is
+    // still recomputed on each demand, and a success removes the entry.
+    this._failures = new Map();
   }
 
   // ---- Map-compatible public surface -------------------------------
@@ -140,6 +151,14 @@ class FixedValues {
 
   delete(name: string): boolean {
     return this._cache.delete(name);
+  }
+
+  // Why `name` has no fixed value, when the reason is a real evaluation
+  // failure of it or of a binding it depends on. `undefined` when it has a
+  // value or has none by construction.
+  failure(name: string): string | undefined {
+    if (this._resolve(name) !== UNRESOLVED) return undefined;
+    return this._failures.get(name);
   }
 
   // iterate-forces-all (see header) ----------------------------------
@@ -190,6 +209,7 @@ class FixedValues {
       if (value === UNRESOLVED) return UNRESOLVED;   // uncached → retried on next demand
       this._validateInput(name, value);
       this._cache.set(name, value);
+      this._failures.delete(name);
       return value;
     } finally {
       this._inProgress.delete(name);
@@ -232,6 +252,13 @@ class FixedValues {
         catch (_) { return null; }
       })();
     if (!ir) return UNRESOLVED;
+
+    // This evaluation is the binding's only route to a value unless it has a
+    // derivation other than `evaluate`: a measure, or a value the
+    // materialiser computes another way (a closed-form pushfwd density, a
+    // `rand` it refuses with its own message). Only a sole route fails.
+    const kind = derivations[name]?.kind;
+    const sole = kind === undefined || kind === 'evaluate';
 
     // Collect self-refs into TWO buckets based on where they're reached:
     // "value-context" refs that must resolve before we can evaluate (the
@@ -319,7 +346,11 @@ class FixedValues {
       const dep = bindings.get(r);
       if (dep && dep.phase != null && dep.phase !== 'fixed') return UNRESOLVED;
       const rv = self._resolve(r);
-      if (rv === UNRESOLVED) return UNRESOLVED;
+      if (rv === UNRESOLVED) {
+        const f = this._failures.get(r);
+        if (f && sole) this._failures.set(name, f);
+        return UNRESOLVED;
+      }
       env[r] = rv;
     }
 
@@ -340,6 +371,14 @@ class FixedValues {
       if (cached !== UNRESOLVED) {
         scope[refName] = cached;
         return [scope[refName], state];
+      }
+      // Re-evaluating a failed dependency inline below would report its
+      // cause against this binding instead of the dependency.
+      const failed = self._failures.get(refName);
+      if (failed) {
+        const err: any = new Error(failed);
+        err.flatpplFixedFailure = failed;
+        throw err;
       }
       const dep = bindings.get(refName);
       if (!dep) throw unresolvableRefError(`resolveValueRef: unknown binding '${refName}'`);
@@ -428,17 +467,23 @@ class FixedValues {
     // (e.g. var/std over one element) or a genuine internal bug — is a
     // REAL failure: surface it as a diagnostic instead of vanishing, and
     // still return UNRESOLVED (the binding still has no fixed value).
+    // A failure is also kept in `_failures`, so a later read of this
+    // binding or a dependent reports the cause, not a missing value. A
+    // dependency's failure already has its diagnostic at the root binding.
     try {
       return samplerLib.evaluateExpr(ir, env);
     } catch (err: any) {
-      if (!err || !err.flatpplUnresolvedRef) {
+      if (err && err.flatpplFixedFailure) {
+        if (sole) this._failures.set(name, err.flatpplFixedFailure);
+      } else if (sole && (!err || !err.flatpplUnresolvedRef)) {
+        const failure = failureMessage(name, err && err.message ? err.message : String(err));
+        this._failures.set(name, failure);
         const { diagnostics, bindingLoc } = this._deps;
         if (diagnostics && !this._diagnosed.has(name)) {
           this._diagnosed.add(name);
           diagnostics.push({
             severity: 'error',
-            message: `Fixed-phase binding '${name}' failed to evaluate: `
-              + `${err && err.message ? err.message : String(err)}`,
+            message: failure,
             loc: bindingLoc ? bindingLoc(name) : undefined,
           });
         }

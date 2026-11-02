@@ -595,11 +595,17 @@ function resolveRef(ir: any, env: any) {
   // Both 'self' and '%local' references look up by name in the same env.
   // Cross-module refs (ns = <module>) would require the orchestrator to
   // populate env with the appropriate scoped values; we don't distinguish.
+  // `flatpplUnresolvedRef`: a ref with no value in env (a draw read through
+  // a measure) leaves the expression without a fixed value. It is not a
+  // failure of the expression (fixed-values.ts `_compute`).
   if (env == null || !(ir.name in env)) {
-    throw new Error(
+    const unbound: any = new Error(
       `evaluateExpr: unbound ${ir.ns} reference '${ir.name}' — env must ` +
       `provide values for all upstream-resolved names`
     );
+    unbound.flatpplUnresolvedRef = true;
+    unbound.flatpplRefName = ir.name;
+    throw unbound;
   }
   return env[ir.name];
 }

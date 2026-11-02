@@ -56,17 +56,20 @@ interface PPC {
 // Extract the observed values for a field from the resolved observation object.
 // For a record observation (`record(y = y_data)`) the field is looked up by
 // name; a bare observation (scalar/vector) is returned as-is.
-function resolveObserved(obs: any, name: string): number[] {
-  try {
-    if (obs && typeof obs === 'object' && !Array.isArray(obs) && name in obs) {
-      const raw = obs[name];
-      return Array.isArray(raw) ? raw.map(Number) : [Number(raw)];
+function resolveObserved(obs: any, name: string, isRecord: boolean): number[] {
+  if (obs === null || obs === undefined) return [];
+  let raw = obs;
+  const recordValue = typeof obs === 'object' && !Array.isArray(obs)
+    && !(obs instanceof Float64Array) && !(obs.data instanceof Float64Array);
+  if (isRecord || recordValue) {
+    if (typeof obs !== 'object' || !(name in obs)) {
+      throw new Error(`posterior predictive: the observation has no field '${name}'`);
     }
-    if (obs !== null && obs !== undefined) {
-      return Array.isArray(obs) ? obs.map(Number) : [Number(obs)];
-    }
-  } catch (_) { /* fall through */ }
-  return [];
+    raw = obs[name];
+  }
+  if (raw && raw.data instanceof Float64Array) raw = raw.data;   // Value
+  if (raw instanceof Float64Array) return Array.from(raw);
+  return Array.isArray(raw) ? raw.map(Number) : [Number(raw)];
 }
 
 // ── Main export ────────────────────────────────────────────────────────────
@@ -80,12 +83,15 @@ function resolveObserved(obs: any, name: string): number[] {
  * each field may be any sampleable measure (leaf, iid, truncate, superpose,
  * composite, pushfwd) — the generic materialiser handles it.
  *
- * Returns null (never throws) when:
+ * Returns null when the check does not apply:
  *  - `d` is not a bayesupdate or lacks required fields
  *  - `d.paramKwargs` is empty
  *  - the body is not a `lawof(...)`
  *  - a posterior parameter column is missing
- *  - a field's forward variate fails to materialise
+ *  - a field's forward variate has no scalar samples
+ *
+ * Throws, naming the cause, when the body, the observation, or a field's
+ * forward variate fails to evaluate.
  */
 async function buildPosteriorPredictive(
   d: any,
@@ -105,8 +111,9 @@ async function buildPosteriorPredictive(
   if (!bodyIR && d.bodyName) {
     try {
       bodyIR = orchestrator.expandMeasureIR(d.bodyName, ctx.derivations, ctx.bindings);
-    } catch (_) {
-      return null;
+    } catch (err: any) {
+      throw new Error(`posterior predictive: the forward kernel '${d.bodyName}' failed to expand: `
+        + (err?.message ?? String(err)));
     }
   }
   if (!bodyIR) return null;
@@ -117,8 +124,9 @@ async function buildPosteriorPredictive(
 
   // Enumerate the forward fields to materialise.
   let fieldSpecs: Array<{ name: string; ir: any }>;
-  if (outIR.kind === 'call' && ['record', 'joint'].includes(outIR.op) && Array.isArray(outIR.fields)
-      && outIR.fields.length > 0) {
+  const isRecord = outIR.kind === 'call' && ['record', 'joint'].includes(outIR.op)
+    && Array.isArray(outIR.fields) && outIR.fields.length > 0;
+  if (isRecord) {
     fieldSpecs = outIR.fields.map((f: any) => ({ name: f.name, ir: f.value }));
   } else {
     // Bare variate — a single predictive field. Name it after the referenced
@@ -132,8 +140,8 @@ async function buildPosteriorPredictive(
   if (d.obsIR) {
     try {
       obs = orchestrator.resolveIRToValue(d.obsIR, ctx.bindings, ctx.fixedValues);
-    } catch (_) {
-      obs = null;
+    } catch (err: any) {
+      throw new Error(`posterior predictive: the observation failed to evaluate: ${err?.message ?? String(err)}`);
     }
   }
 
@@ -187,8 +195,8 @@ async function buildPosteriorPredictive(
       fieldMeasure = (spec.ir && spec.ir.kind === 'ref' && spec.ir.ns === 'self')
         ? await subCtx.getMeasure(spec.ir.name)
         : await materialiser.materialiseMeasureIR(spec.ir, subCtx);
-    } catch (_) {
-      return null;
+    } catch (err: any) {
+      throw new Error(`posterior predictive: field '${spec.name}' failed to draw: ${err?.message ?? String(err)}`);
     }
     if (!fieldMeasure || !(fieldMeasure.samples instanceof Float64Array)) return null;
     const yrSamples: Float64Array = fieldMeasure.samples;
@@ -213,7 +221,7 @@ async function buildPosteriorPredictive(
 
     fields[spec.name] = {
       yRep: { samples: yrSamples, logWeights },
-      observed: resolveObserved(obs, spec.name),
+      observed: resolveObserved(obs, spec.name, isRecord),
     };
   }
 

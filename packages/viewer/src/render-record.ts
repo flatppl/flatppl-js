@@ -260,6 +260,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
   let ppc: any = null;
   let ppcAvailable = false;
   let ppcBuilt = false;
+  let ppcError: string | null = null;
 
   // Build the PPC once — called when the user first selects 'ppc'
   // mode and ppcBuilt is false. Builds a matCtx mirroring the one
@@ -267,7 +268,7 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
   // fixedValues/rootKey/sendWorker shape the engine expects).
   // On success sets ppc + ppcAvailable = true and triggers a full
   // rerender so the dropdown option appears and the chart renders.
-  // On failure ppc stays null and we fall through to correlations.
+  // On failure the PPC mode shows the error message.
   async function ensurePpc() {
     if (ppcBuilt || !isCurrent()) return;
     ppcBuilt = true;
@@ -294,8 +295,12 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
         // and the chart area switches to the PPC renderer.
         rerenderAll();
       }
-    } catch (_) {
-      // Silently ignore — ppc stays null, ppcAvailable stays false.
+    } catch (err: any) {
+      // The option stays offered, so the user can read why the check failed.
+      if (!isCurrent()) return;
+      ppcError = err && err.message ? err.message : String(err);
+      ppcAvailable = true;
+      rerenderAll();
     }
   }
 
@@ -327,6 +332,11 @@ export function renderRecordMarginals(ctx: Ctx, measure: any, bindingName: strin
     if ((ctx.recordSelection!.mode as any) === 'ppc') {
       if (ppc) {
         renderRecordPpc(ctx, chartHostRef, ppc);
+      } else if (ppcError) {
+        const note = document.createElement('div');
+        note.id = 'plot-empty';
+        note.textContent = 'Posterior predictive failed: ' + ppcError;
+        chartHostRef.appendChild(note);
       } else {
         // PPC not yet available (build pending or failed) — fall back
         // to correlations so the pane is never blank. If the build

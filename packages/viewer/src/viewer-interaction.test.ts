@@ -535,6 +535,33 @@ test('late posterior predictive completion cannot repaint a replacement model', 
   assert.deepEqual(rows(), ['new_a', 'new_b', 'new_c', 'new_d']);
 });
 
+test('a failed posterior predictive check shows its cause', async (t) => {
+  const doc = mountDOM(t);
+  const previous = globalThis.FlatPPLEngine;
+  globalThis.FlatPPLEngine = engine;
+  t.after(() => { globalThis.FlatPPLEngine = previous; });
+  t.mock.method(engine.posteriorPredictive, 'buildPosteriorPredictive',
+    () => Promise.reject(new Error("posterior predictive: field 'y' failed to draw: boom")));
+  const ctx = { host: {}, SAMPLE_COUNT: 4, currentPlotBindingName: 'Pi_post',
+    currentBindings: new Map(), CODICON_PATHS: { 'save-as': '' },
+    recordSelection: { bindingName: 'Pi_post', mode: 'ppc', selected: [], marginalGroups: [] },
+    derivationsState: { derivations: { Pi_post: { kind: 'bayesupdate' } },
+      bindings: new Map(), fixedValues: new Map() },
+    measureCache: new Map(),
+  };
+  const plan = ctx.currentPlotPlan = { name: 'Pi_post', mode: 'samples' };
+  const measure = { shape: 'record', logWeights: null, diagnostics: { nSamples: 4 },
+    fields: { mu: { samples: Float64Array.of(1, 2, 3, 4) } } };
+  renderEmpiricalMeasure(ctx, measure, {
+    name: 'Pi_post', mode: 'samples', staleGuard: () => ctx.currentPlotPlan === plan,
+  });
+  await new Promise(resolve => setImmediate(resolve));
+  const content = doc.getElementById('plot-content');
+  assert.ok(content.querySelectorAll('option').some(opt => opt.value === 'ppc'), 'the option stays offered');
+  assert.ok(content.querySelectorAll('div').some(div => div.textContent
+    === "Posterior predictive failed: posterior predictive: field 'y' failed to draw: boom"), 'the cause is shown');
+});
+
 test('weighted corner scatters retain joint pairs and binary64 coordinates', (t) => {
   const doc = mountDOM(t);
   const priorEngine = globalThis.FlatPPLEngine, priorStyle = globalThis.getComputedStyle;
