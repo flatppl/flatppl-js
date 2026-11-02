@@ -402,6 +402,7 @@ function _compileByKind(node: any, S: Session): any {
             `provide values for all upstream-resolved names`
           );
           unbound.flatpplUnresolvedRef = true;
+          unbound.flatpplRefName = name;
           throw unbound;
         }
         return env[name];

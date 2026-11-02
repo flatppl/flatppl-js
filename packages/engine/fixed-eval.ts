@@ -293,7 +293,9 @@ function makeResolver(opts?: { loweredModule?: any; baseEnv?: any;
     // that's the `UNSUPPORTED` case — surface it so a shape that needs
     // this value errors clearly rather than silently degrading to
     // `%dynamic`. Any other throw (a genuinely malformed call) stays
-    // `undefined` — conservative; we only escalate the op-gap signal.
+    // `undefined` — conservative; we only escalate the op-gap signal. The
+    // throw is not lost: fixed-values.ts evaluates the same binding at run
+    // time and reports it with the binding name and cause.
     try { return samplerLib.evaluateExpr(synthIR, evalEnv); }
     catch (e: any) {
       const msg = (e && e.message) || '';

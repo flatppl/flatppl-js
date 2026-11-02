@@ -3266,6 +3266,29 @@ function _unsuppliedExternal(name: string, ctx: any): string | null {
   return null;
 }
 
+// The failure of a fixed-phase binding that `name` reads, transitively. A
+// classifier that needs that value (an `iid` size, a kernel argument)
+// declines, so `name` has no derivation for that reason.
+function _failedFixedDependency(name: string, ctx: any): string | null {
+  const failure = ctx.fixedValues?.failure;
+  if (!failure) return null;
+  const seen = new Set<string>();
+  const pending = [name];
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    const binding = ctx.bindings?.get(current);
+    if (!binding) continue;
+    if (current !== name && binding.phase === 'fixed') {
+      const f = failure.call(ctx.fixedValues, current);
+      if (f) return f;
+    }
+    pending.push(...(binding.deps || []), ...(binding.callDeps || []));
+  }
+  return null;
+}
+
 // The terminal stage: existing KIND_HANDLERS dispatch. Receives
 // `next` for symmetry but never calls it — it IS the final step.
 const kindDispatchStage: MaterialiserStage = function (name, ctx, _next) {
@@ -3278,6 +3301,8 @@ const kindDispatchStage: MaterialiserStage = function (name, ctx, _next) {
     if (external) {
       return Promise.reject(new Error(`'${external}': an external input supplied by the host is not supported by this engine`));
     }
+    const failed = _failedFixedDependency(name, ctx);
+    if (failed) return Promise.reject(new Error(failed));
     return Promise.reject(new Error("no derivation for '" + name + "'"));
   }
   try {

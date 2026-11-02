@@ -22,6 +22,7 @@ const orchestrator = require('./orchestrator.ts');
 const transforms    = require('./transforms.ts');
 const density       = require('./density.ts');
 const clm           = require('./clm.ts');
+const { isEngineLimitation } = require('./limitations.ts');
 const sampler       = require('./sampler.ts');
 
 const { lowerExpr }             = require('./lower.ts');
@@ -164,13 +165,16 @@ function buildPosteriorSpec(d: any, ctx: any): { latents: any[]; logLikelihood: 
       const val = theta[nm];
       refArrays[nm] = Float64Array.from([typeof val === 'number' ? val : 0]);
     }
+    // A throw is not a zero density, so it surfaces instead of -Infinity.
+    let logps: any;
     try {
-      const logps = density.logDensityN(node.body, observed, refArrays, 1, {});
-      const lp = logps[0];
-      return Number.isFinite(lp) ? lp : -Infinity;
-    } catch (_) {
-      return -Infinity;
+      logps = density.logDensityN(node.body, observed, refArrays, 1, {});
+    } catch (err: any) {
+      if (err?.undefinedNormalize || err?.modelRefusal || isEngineLimitation(err)) throw err;
+      throw new Error(`the likelihood failed to evaluate: ${err?.message ?? String(err)}`);
     }
+    const lp = logps[0];
+    return Number.isFinite(lp) ? lp : -Infinity;
   }
 
   return { latents, logLikelihood };
@@ -434,6 +438,9 @@ function walkDerivChain(name: string, derivations: any, ctx?: any): any {
           distIR, ctx && ctx.bindings, ctx && ctx.fixedValues);
         if (s) return s;
       }
+      // No static support (a Uniform bound that is another latent, a
+      // distribution with no chart): `real` is a superset chart, and the prior
+      // density is -Infinity outside the true support, so the target is exact.
       try {
         return transforms.supportOf(distIR.op, {});
       } catch (_) { return { kind: 'real' }; }
@@ -618,6 +625,7 @@ function enumerateLatents(d: any, ctx: any): any[] {
     const comp = recognizeCompositeIidDraw(measureName, ctx);
     if (comp) {
       let support: any;
+      // `real` is a superset chart: the density is -Infinity outside the support.
       try { support = transforms.supportOf(comp.distOp, {}); } catch (_) { support = { kind: 'real' }; }
       result.push({ name: latentName, measureName, shape: { kind: 'vector', dims: [0], fromPool: true }, support });
       continue;

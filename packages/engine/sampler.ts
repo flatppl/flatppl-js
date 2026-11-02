@@ -604,6 +604,7 @@ function resolveRef(ir: any, env: any) {
       `provide values for all upstream-resolved names`
     );
     unbound.flatpplUnresolvedRef = true;
+    unbound.flatpplRefName = ir.name;
     throw unbound;
   }
   return env[ir.name];

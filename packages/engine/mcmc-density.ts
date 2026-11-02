@@ -234,6 +234,57 @@ function truncatedBoxDensity(node: any): any | null {
 }
 
 // ---------------------------------------------------------------------------
+// Derived-binding failures. A derived binding that throws is left out of the
+// env: it may be a function or a measure, which is not a value. A scorer
+// that then reads it as a value hits an unbound ref, and must report the
+// binding's own cause instead of a missing name or -Infinity.
+// ---------------------------------------------------------------------------
+const DERIVED_FAILURES = Symbol('derivedFailures');
+
+// The message is built on read: buildEnv runs at every MCMC step, and most
+// recorded failures (function and measure bindings) are never read.
+function recordDerivedFailure(env: any, name: string, err: any): void {
+  let failures: Map<string, { name: string; err: any }> = env[DERIVED_FAILURES];
+  if (!failures) {
+    failures = new Map();
+    Object.defineProperty(env, DERIVED_FAILURES, { value: failures, enumerable: false });
+  }
+  // A failure that is an unbound read of an earlier failure keeps the root.
+  const root = err?.flatpplRefName != null ? failures.get(err.flatpplRefName) : undefined;
+  failures.set(name, root ?? { name, err });
+}
+
+// The failure behind an unbound read of a derived binding, or `null`.
+function derivedFailureOf(err: any, env: any): string | null {
+  if (!err || err.flatpplRefName == null || !env) return null;
+  const f = env[DERIVED_FAILURES]?.get(err.flatpplRefName);
+  return f ? `binding '${f.name}' failed to evaluate: ${f.err?.message ?? String(f.err)}` : null;
+}
+
+function isTaggedRefusal(err: any): boolean {
+  return !!(err?.undefinedNormalize || err?.modelRefusal || isEngineLimitation(err));
+}
+
+function scorerFailure(what: string, cause: string): Error {
+  const err: any = new Error(`${what} failed to evaluate: ${cause}`);
+  err.flatpplScorerFailure = true;
+  return err;
+}
+
+// Why a posterior field read from `evaluateDerivedBindings` has no value.
+function derivedFieldFailure(env: any, name: string): string {
+  const f = env?.[DERIVED_FAILURES]?.get(name);
+  return f ? `binding '${f.name}' failed to evaluate: ${f.err?.message ?? String(f.err)}`
+    : `binding '${name}' has no value at the posterior draws`;
+}
+
+// A scoring throw is not a zero density, so it is never -Infinity.
+function scoringError(err: any, env: any, what: string): Error {
+  if (isTaggedRefusal(err) || err?.flatpplScorerFailure) return err;
+  return scorerFailure(what, derivedFailureOf(err, env) ?? (err?.message ?? String(err)));
+}
+
+// ---------------------------------------------------------------------------
 // evaluateDerivedBindings — resolve all non-stochastic bindings in the
 // model at the given point.
 //
@@ -245,8 +296,8 @@ function truncatedBoxDensity(node: any): any | null {
 //
 // The point record provides values for the stochastic latents; lowerExpr
 // converts the AST node to IR; evaluateExpr evaluates it.  Errors (e.g. a
-// function binding whose body can't be evaluated as a plain value) are
-// silently skipped — the binding may not be needed for scoring.
+// function binding whose body can't be evaluated as a plain value) leave the
+// binding out of the env, and `derivedFailureOf` keeps the cause for a reader.
 // ---------------------------------------------------------------------------
 function evaluateDerivedBindings(
   ctx: any,
@@ -280,8 +331,8 @@ function evaluateDerivedBindings(
         const ir = lower.lowerExpr(rhsNode);
         const val = sampler.evaluateExpr(ir, env);
         env[k] = val;
-      } catch (_) {
-        // Function binding, stochastic ref, or unresolvable — skip
+      } catch (err) {
+        recordDerivedFailure(env, k, err);
       }
     });
   }
@@ -419,14 +470,18 @@ async function buildLogPi(
   const fixedEnvObj: Record<string, any> = {};
   if (ctx.fixedValues) ctx.fixedValues.forEach((v: any, k: string) => { fixedEnvObj[k] = v; });
   const derivedBindings: Array<{ name: string; ir: any }> = [];
+  const loweringFailures: Array<[string, any]> = [];
   if (ctx.bindings) {
     ctx.bindings.forEach((b: any, k: string) => {
       if (!b || b.type === 'draw' || (k in fixedEnvObj)) return;
       const rhsNode = (b.node || b).value || (b.node || b).effectiveValue;
       if (!rhsNode) return;
-      try { derivedBindings.push({ name: k, ir: lower.lowerExpr(rhsNode) }); } catch (_) { /* skip */ }
+      try { derivedBindings.push({ name: k, ir: lower.lowerExpr(rhsNode) }); } catch (err) { loweringFailures.push([k, err]); }
     });
   }
+  const recordLoweringFailures = (env: any) => {
+    for (const [k, err] of loweringFailures) recordDerivedFailure(env, k, err);
+  };
   const moduleReg = ctx.moduleRegistry;
   const NULL_REF = (_n: string) => null as any;
   // Atom-dependent derived = transitive closure of bindings whose lowered RHS
@@ -593,10 +648,11 @@ async function buildLogPi(
       const v = pt[k];
       env[k] = (v instanceof Float64Array) ? Array.from(v) : v;
     }
+    recordLoweringFailures(env);
     for (let i = 0; i < derivedBindings.length; i++) {
       const db = derivedBindings[i];
       if (db.name in env) continue;
-      try { env[db.name] = sampler.evaluateExpr(db.ir, env); } catch (_) { /* skip */ }
+      try { env[db.name] = sampler.evaluateExpr(db.ir, env); } catch (err) { recordDerivedFailure(env, db.name, err); }
     }
     if (moduleReg) env.__moduleRegistry = moduleReg;
     return env;
@@ -616,9 +672,10 @@ async function buildLogPi(
   // Atom-independent base env: fixed values + derived that depend only on them,
   // evaluated ONCE. (Atom-dependent values are supplied per call via refArrays.)
   const baseEnvConst: Record<string, any> = Object.assign({}, fixedEnvObj);
+  recordLoweringFailures(baseEnvConst);
   for (const db of derivedBindings) {
     if (atomDep.has(db.name) || db.name in baseEnvConst) continue;
-    try { baseEnvConst[db.name] = sampler.evaluateExpr(db.ir, baseEnvConst); } catch (_) { /* skip */ }
+    try { baseEnvConst[db.name] = sampler.evaluateExpr(db.ir, baseEnvConst); } catch (err) { recordDerivedFailure(baseEnvConst, db.name, err); }
   }
   if (moduleReg) baseEnvConst.__moduleRegistry = moduleReg;
   // Fixed §04 data belongs to this scorer. Repeated scalar and batch calls
@@ -701,75 +758,85 @@ async function buildLogPi(
     return null;
   }
 
-  function scoreComposite(desc: any, val: any, env: any): number {
+  // A shape mismatch or a throw is a scorer failure, not a zero density.
+  function scoreComposite(nm: string, desc: any, val: any, env: any): number {
+    const what = `prior draw '${nm}'`;
     const arr = flatData(val);
-    if (!arr) return -Infinity;
+    if (!arr) throw scorerFailure(what, 'the value is not an array');
     const K = arr.length, D = desc.D | 0;
-    if (!(D > 0) || K % D !== 0) return -Infinity;
+    if (!(D > 0) || K % D !== 0) {
+      throw scorerFailure(what, `length ${K} is not a multiple of the row length ${D}`);
+    }
     const G = K / D;
     const benv: Record<string, any> = {};
     const kwargs: Record<string, any> = {};
     for (const pn of desc.paramNames) {
-      if (!(pn in desc.sub)) return -Infinity;
+      if (!(pn in desc.sub)) throw scorerFailure(what, `no value for parameter '${pn}'`);
       let pvRaw: any;
-      try { pvRaw = sampler.evaluateExpr(desc.sub[pn], env); } catch (_) { return -Infinity; }
+      try { pvRaw = sampler.evaluateExpr(desc.sub[pn], env); } catch (err) { throw scoringError(err, env, what); }
       const pv = (typeof pvRaw === 'number') ? pvRaw : flatData(pvRaw);
       const flat = new Float64Array(K);
       if (typeof pv === 'number') { flat.fill(pv); }
       else if (pv && pv.length === G) { for (let g = 0; g < G; g++) { const x = +pv[g]; for (let j = 0; j < D; j++) flat[g * D + j] = x; } }
       else if (pv && pv.length === K) { for (let k = 0; k < K; k++) flat[k] = +pv[k]; }
       else if (pv && pv.length === D) { for (let g = 0; g < G; g++) for (let j = 0; j < D; j++) flat[g * D + j] = +pv[j]; }
-      else return -Infinity;
+      else {
+        throw scorerFailure(what, `parameter '${pn}' has length ${pv ? pv.length : 'none'}, `
+          + `expected 1, ${G}, ${D} or ${K}`);
+      }
       benv['__cb_' + pn] = { shape: [K], data: flat };
       kwargs[pn] = { kind: 'ref', ns: 'self', name: '__cb_' + pn };
     }
     if (moduleReg) benv.__moduleRegistry = moduleReg;
     const ir = { kind: 'call', op: 'broadcast', args: [{ kind: 'ref', ns: 'self', name: desc.distOp }], kwargs };
     const opts = { parseSet: makeParseSet(benv), resolveMeasureRef: NULL_REF, baseEnv: benv };
-    try {
-      const r = density.logDensityN(ir, arr, {}, 1, opts);
-      const v = r[0];
-      return Number.isFinite(v) ? v : -Infinity;
-    } catch (err) { if (isEngineLimitation(err)) throw err; return -Infinity; }
+    let r: any;
+    try { r = density.logDensityN(ir, arr, {}, 1, opts); } catch (err) { throw scoringError(err, env, what); }
+    const v = r[0];
+    return Number.isFinite(v) ? v : -Infinity;
   }
 
+  // A draw whose density throws makes the prior an error, unless another
+  // draw is outside its support: the product is then zero whatever the
+  // throwing factor is. A hierarchical child throws at a parent value
+  // outside the parent's support, and `drawNames` need not list the parent
+  // first.
   function priorWith(env: any, pt: Record<string, any>): number {
     const { refArrays } = pointToRefArrays(pt);
     const opts = { parseSet: makeParseSet(env), resolveMeasureRef: NULL_REF, baseEnv: env };
     let total = 0;
+    let failure: Error | null = null;
     for (const nm of drawNames) {
       const val = pt[nm];
-      if (val === undefined) return -Infinity;
-      if (compositeDesc[nm]) {
-        const v = scoreComposite(compositeDesc[nm], val, env);
-        if (!Number.isFinite(v)) return -Infinity;
-        total += v;
+      if (val === undefined) throw scorerFailure(`prior draw '${nm}'`, 'the point has no value for it');
+      let v: number;
+      try {
+        v = compositeDesc[nm]
+          ? scoreComposite(nm, compositeDesc[nm], val, env)
+          : density.logDensityN(drawMeasures[nm], val, refArrays, 1, opts)[0];
+      } catch (err: any) {
+        if (isTaggedRefusal(err)) throw err;
+        failure = failure ?? scoringError(err, env, `prior draw '${nm}'`);
         continue;
       }
-      try {
-        const logps = density.logDensityN(drawMeasures[nm], val, refArrays, 1, opts);
-        const v = logps[0];
-        if (!Number.isFinite(v)) return -Infinity;
-        total += v;
-      } catch (err: any) {
-        if (err?.undefinedNormalize || err?.modelRefusal || isEngineLimitation(err)) throw err;
-        return -Infinity;
-      }
+      if (!Number.isFinite(v)) return -Infinity;
+      total += v;
     }
+    if (failure) throw failure;
     return total;
   }
 
   function likWith(env: any, pt: Record<string, any>): number {
     const { refArrays } = pointToRefArrays(pt);
     const opts = { parseSet: makeParseSet(env), resolveMeasureRef: NULL_REF, baseEnv: env };
+    let logps: any;
     try {
-      const logps = scoreLikelihood(refArrays, 1, opts);
-      const v = logps[0];
-      return Number.isFinite(v) ? v : -Infinity;
+      logps = scoreLikelihood(refArrays, 1, opts);
     } catch (err: any) {
-      if (err?.undefinedNormalize || err?.modelRefusal || isEngineLimitation(err)) throw err;
-      return -Infinity;
+      throw scoringError(err, env, 'the likelihood');
     }
+    const v = logps[0];
+    return Number.isFinite(v) ? v : -Infinity;
   }
 
   // One-time tractability probe at an in-support point: lets the density
@@ -923,4 +990,4 @@ async function buildLogPi(
   return { logPi, logPiBatch, priorLikBatch, priorOf, likOf, probePrior, probeLik };
 }
 
-module.exports = { buildLogPi, evaluateDerivedBindings };
+module.exports = { buildLogPi, evaluateDerivedBindings, derivedFieldFailure };

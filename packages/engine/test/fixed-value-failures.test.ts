@@ -112,3 +112,16 @@ sx = sum(x)
   assert.deepEqual(Array.from((await ctx.getMeasure('sx')).samples), [3, 3, 3]);
   assert.deepEqual(errors(built), []);
 });
+
+// A classifier that needs a failed fixed value declines, so the draw has no
+// derivation. The draw reports the failed binding, not "no derivation".
+test('a draw whose iid size failed reports the failed size', async () => {
+  const { ctx, built } = makeMatCtx(`flatppl_compat = "0.1"
+a = [1, 2]
+n = a[5]
+y ~ iid(Normal(mu = 0.0, sigma = 1.0), n)
+`, { sampleCount: 4 });
+  const want = "Fixed-phase binding 'n' failed to evaluate: evaluateExpr: get index 5 out of bounds for length 2";
+  assert.equal(await rejection(ctx, 'y'), want);
+  assert.deepEqual(errors(built), [want]);
+});

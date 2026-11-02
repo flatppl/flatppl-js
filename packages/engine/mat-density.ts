@@ -574,6 +574,7 @@ function matBayesupdate(d: DerivationBayesupdate, ctx: any) {
             for (const a of uniq) {
               const env = mcmcDensity.evaluateDerivedBindings(ctx, drawPtAt(a));
               for (const fn of derivedFields) {
+                if (!(fn in env)) throw new Error(mcmcDensity.derivedFieldFailure(env, fn));
                 const v = env[fn];
                 if (!(fn in acc)) acc[fn] = (typeof v === 'number')
                   ? { scalar: new Float64Array(nDraws) }

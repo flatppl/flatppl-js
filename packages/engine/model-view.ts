@@ -101,9 +101,14 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
   // to the joint's independently seeded factor scopes, so read those actual
   // fields rather than looking up their distribution bindings individually.
   const drawPrior = leafLatents.every((l: any) => ctx.bindings.get(l.name)?.type === 'draw');
+  // A prior with no forward sampler (an improper reference measure) still
+  // has a density, so MH-type setup goes on without the pool. The cause is
+  // kept for the readers that need a pool.
   let priorMeasure: any = null;
-  try { priorMeasure = await ctx.getMeasure(posteriorDeriv.from); } catch (_) { /* density-only setup can still succeed */ }
+  let priorError: any = null;
+  try { priorMeasure = await ctx.getMeasure(posteriorDeriv.from); } catch (err) { priorError = err; }
   const priorPools: any[] = [];   // per latent: { samples, stride, n } or null
+  const poolErrors: any[] = [];
   const weightParents: any[] = priorMeasure ? [priorMeasure] : [];
   for (const l of leafLatents) {
     let pool: any = null;
@@ -133,9 +138,13 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
         if (stride > 1) l.shape = { kind: 'vector', dims: [stride], atomShape };
         else if (stride === 1 && l.shape.kind === 'vector' && l.support?.n == null) l.shape = { kind: 'scalar' };
       }
-    } catch (_) { /* no pool → keep the statically-inferred shape */ }
+    } catch (err) { poolErrors[priorPools.length] = err; }
     priorPools.push(pool);
   }
+  const poolCause = (li: number): string => {
+    const err = poolErrors[li] ?? priorError;
+    return err ? `: ${err.message ?? String(err)}` : '';
+  };
 
   // 3b. Build the transform BLOCKS, using the reconciled shapes.
   //
@@ -278,6 +287,16 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     }
   }
 
+  // Only a prior draw gives a composite latent its width. This runs after the
+  // probes, so a refusal of the model itself is reported first.
+  for (let li = 0; li < leafLatents.length; li++) {
+    const l = leafLatents[li];
+    if (l.shape.fromPool && !priorPools[li]) {
+      throw new Error(`model-view: latent '${l.name}' takes its shape from a prior draw, `
+        + `and the prior could not be drawn${poolCause(li)}`);
+    }
+  }
+
   // Build `nWalkers` initial unconstrained positions from prior draws.
   function initFromPrior(nWalkers: number, prng: () => number): Float64Array[] {
     // §04 reified ancestry and §06 joint composition: select the whole row,
@@ -287,8 +306,10 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
     const N = priorPools[0]?.n;
     if (!priorMeasure || !(N > 0) || priorPools.some((p: any) => !p || p.n !== N)
         || N !== ctx.sampleCount) {
+      const missing = priorPools.findIndex((p: any) => !p);
+      const cause = missing >= 0 ? poolCause(missing) : (priorError ? `: ${priorError.message ?? String(priorError)}` : '');
       throw new Error(`${caller}: prior initialization requires complete, aligned atoms from a sampleable joint prior. `
-        + 'For density-only priors, use MH, RAM, slice, emcee, DEMCz or ESS.');
+        + `For density-only priors, use MH, RAM, slice, emcee, DEMCz or ESS.${cause ? ` The prior draw failed${cause}` : ''}`);
     }
     const weights = empirical.propagateLogWeights(weightParents);
     if (weights && weights.length !== N) {
