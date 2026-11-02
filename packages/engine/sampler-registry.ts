@@ -24,6 +24,7 @@
 const rng      = require('./rng.ts');
 const valueLib = require('./value.ts');
 const transforms = require('./transforms.ts');
+const paramDomains = require('./param-domains.ts');
 const { logBesselI0 } = require('./bessel.ts');
 
 // Same primitive @stdlib's own random-base-beta/lib/validate.js uses to
@@ -1863,6 +1864,68 @@ const REGISTRY = {
     logpdfFn: logpdfDirac,
   },
 };
+
+// §08/§09: every consumer of a kernel's numeric parameters reaches them through
+// these entry functions, so one wrapper per entry checks each parameter against
+// its declared value set (`param-domains.ts`). A density or sampler outside the
+// set raises instead of returning NaN or a plausible number. A prepared
+// `logpdfFn.factory` checks once per parameter tuple.
+function _installParamChecks(registry: Record<string, any>) {
+  for (const [kernel, entry] of Object.entries(registry)) {
+    if (!paramDomains.hasDeclaredSets(kernel)) continue;
+    const names: string[] = entry.params;
+    const check = (params: any[]) => paramDomains.checkParams(kernel, names, params);
+    const logpdf = entry.logpdfFn;
+    const checkedLogpdf: any = function (x: any, ...params: any[]) {
+      check(params);
+      return logpdf(x, ...params);
+    };
+    if (typeof logpdf.factory === 'function') {
+      checkedLogpdf.factory = (...params: any[]) => {
+        check(params);
+        return logpdf.factory(...params);
+      };
+    }
+    entry.logpdfFn = checkedLogpdf;
+    const Ctor = entry.Ctor;
+    const CheckedCtor: any = function (this: any, ...params: any[]) {
+      check(params);
+      return new Ctor(...params);
+    };
+    CheckedCtor.prototype = Ctor.prototype;
+    entry.Ctor = CheckedCtor;
+    const randFn = entry.randFn;
+    if (randFn && typeof randFn.factory === 'function') {
+      // stdlib marks `factory` read-only, so the checked one is defined, not assigned.
+      const checkedRand: any = Object.create(randFn);
+      Object.defineProperty(checkedRand, 'factory', { value: (...args: any[]) => {
+        const last = args[args.length - 1];
+        const options = last && typeof last === 'object' && !Array.isArray(last)
+          && !valueLib.isValue(last) && last.BYTES_PER_ELEMENT === undefined;
+        const params = options ? args.slice(0, -1) : args;
+        if (params.length === 0) {
+          // A parametric sampler takes its parameters at each draw.
+          const draw = randFn.factory(...args);
+          return (...drawParams: any[]) => {
+            check(drawParams);
+            return draw(...drawParams);
+          };
+        }
+        check(params);
+        return randFn.factory(...args);
+      }, writable: true, configurable: true, enumerable: true });
+      entry.randFn = checkedRand;
+    }
+    const randN = entry.randNFn;
+    if (typeof randN === 'function') {
+      entry.randNFn = (state: any, params: any[], n: number, out?: Float64Array) => {
+        check(params);
+        return randN(state, params, n, out);
+      };
+    }
+  }
+}
+_installParamChecks(REGISTRY);
 
 // =====================================================================
 // Dispatch helpers

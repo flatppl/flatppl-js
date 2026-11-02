@@ -104,7 +104,8 @@ test('positive-count normalization distinguishes excluded counts from undefined 
       for (const [call, point] of [[`K(${invalid})`, '2'], [`K.([${invalid},${invalid}])`, '[2,2]']]) {
         const { ctx } = makeMatCtx(`K(v)=normalize(truncate(${base},interval(1,inf)))
 r=logdensityof(${call},${point})`, { sampleCount: 1 });
-        await assert.rejects(() => ctx.getMeasure('r'), /normaliz|undefined|mass|derivation/i);
+        await assert.rejects(() => ctx.getMeasure('r'),
+          /normaliz|undefined|mass|derivation|outside its declared value set/i);
       }
     }
   }

@@ -79,9 +79,10 @@ inAllOptModes('Binomial IID preparation retains endpoints, scalar conversion and
     }
     assert.equal(logDensity(iid, [-1, 2], { n: 4, p: .3 }), -Infinity);
     assert.ok(Number.isNaN(logDensity(iid, [1, NaN], { n: 4, p: .3 })));
-    assert.ok(Number.isNaN(logDensity(iid, [1, 2], { n: 2.5, p: .3 })));
-    assert.ok(Number.isNaN(logDensity(iid, [1, 2], { n: 4, p: 1.1 })));
-    assert.ok(Number.isNaN(logDensity(leaf, 1, { n: Infinity, p: .3 })));
+    // §08 declares n over posintegers and p over unitinterval.
+    assert.throws(() => logDensity(iid, [1, 2], { n: 2.5, p: .3 }), /Binomial: parameter 'n' = 2.5/);
+    assert.throws(() => logDensity(iid, [1, 2], { n: 4, p: 1.1 }), /Binomial: parameter 'p' = 1.1/);
+    assert.throws(() => logDensity(leaf, 1, { n: Infinity, p: .3 }), /Binomial: parameter 'n' = Infinity/);
   });
 
 inAllOptModes('Binomial plates and mixtures share normalized constrained and transformed posterior scores',

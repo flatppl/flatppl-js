@@ -196,9 +196,9 @@ test('Beta.randFn: the unaffected static path delegates args unchanged to @stdli
     /positive number/);
   assert.throws(() => BETA_RAND_FN.factory('2', '3', { prng: Math.random }),
     /positive number/);
-  // A negative/NaN static param still throws either way (unchanged).
+  // A negative static param is outside §08's posreals and throws first.
   assert.throws(() => BETA_RAND_FN.factory(-1, -1, { prng: Math.random }),
-    /positive number/);
+    /Beta: parameter 'alpha' = -1 is outside its declared value set posreals/);
   // A genuine number pair keeps drawing (the common, unaffected case).
   assert.doesNotThrow(() => BETA_RAND_FN.factory(2, 3, { prng: Math.random })());
 });

@@ -68,6 +68,7 @@ import type { IRNode } from './engine-types';
 
 const rng = require('./rng.ts');
 const valueLib = require('./value.ts');
+const paramDomains = require('./param-domains.ts');
 const valueOps = require('./value-ops.ts');
 const perfConfig = require('./perf-config.ts');
 
@@ -4193,6 +4194,7 @@ function walkMvNormal(state: any, ir: IRNode, env: any, ctx: any): any {
   state = fillEnvFromRefs(state, ir, env, ctx);
   const mu = evaluateExpr(muIR, env);
   const cov = evaluateExpr(covIR, env);
+  paramDomains.checkParams('MvNormal', [], { mu, cov });
   const muShape = valueLib.asValue(mu).shape;
   if (muShape.length !== 1) {
     throw new Error('sampler.walk: MvNormal mu must be a vector (spec §08), got shape '
@@ -4270,6 +4272,7 @@ function walkMultinomial(state: any, ir: IRNode, env: any, ctx: any): any {
   const tail = new Float64Array(K + 1);
   for (let k = K - 1; k >= 0; k--) tail[k] = tail[k + 1] + p[k];
   if (!(tail[0] > 0)) throw new Error('sampler.walk: Multinomial p must have positive sum');
+  paramDomains.checkParam('Multinomial', 'p', p);
   const x = new Float64Array(K);
   let left = n;
   for (let k = 0; k < K - 1 && left > 0; k++) {
@@ -4301,6 +4304,7 @@ function _wishartWalker(invert: boolean) {
     if (typeof nu !== 'number' || !(nu > n - 1)) {
       throw new Error(`sampler.walk: ${label} nu = ${nu} must be > n - 1 = ${n - 1} (spec §08)`);
     }
+    paramDomains.checkParam(label, 'scale', scale);
     const base = invert ? ARITH_OPS.inv(scale) : scale;
     const LS = valueLib.densify(ARITH_OPS.lower_cholesky(base)).data;
     const chi2 = new Float64Array(n);
