@@ -14,7 +14,7 @@
 //   - LKJ(n, eta): (R_ij + 1)/2 ~ Beta(b, b), b = eta - 1 + n/2, so
 //     E[R_ij²] = 1/(2b + 1) and E[R_ij⁴] = 3/((2b + 1)(2b + 3)).
 //     LKJ(2, 1) has R_12 ~ Uniform(-1, 1).
-//   - BinnedPoissonProcess: bin count ~ Poisson(intensity mass of the bin).
+//   - BinnedPoissonProcess, through rand: bin count ~ Poisson(bin intensity mass).
 // Each moment check pairs with a support check.
 
 const { test } = require('node:test');
@@ -279,22 +279,22 @@ X, _ = builtin_sample(s0, LKJCholesky, record(n = 3, eta = 2.0), ${N})
   near(e2, m2, Math.sqrt((m4 - m2 * m2) / N), 'E[R32^2]');
 });
 
-test('builtin_sample(BinnedPoissonProcess): bin counts follow the bin rates', () => {
-  const N = 20000;
-  const rates = [3.0, 0.0, 12.5];
-  const fv = fixed(`
-s0 = rnginit([71, 72, 73, 74])
-X, _ = builtin_sample(s0, BinnedPoissonProcess, record(rates = [3.0, 0.0, 12.5]), ${N})
-`);
-  const rows = atoms(fv.get('X'), 3);
-  for (const r of rows) assert.ok(r.every((v) => Number.isInteger(v) && v >= 0), 'counts');
-  for (let k = 0; k < 3; k++) {
-    if (rates[k] === 0) {
-      assert.ok(rows.every((r) => r[k] === 0), 'zero-rate bin stays empty');
-      continue;
-    }
-    near(mean(rows, k), rates[k], Math.sqrt(rates[k] / N), `mean[${k}]`);
-    near(cov(rows, k, k), rates[k], covSE(rows, k, k), `var[${k}]`);
+test('the §07 primitives refuse the measure-input kernels statically', () => {
+  // A kernel_input record cannot hold the intensity measure (spec §03
+  // "Beyond values"), so no record spells these kernels' inputs.
+  for (const [kernel, input] of [
+    ['BinnedPoissonProcess', 'record(rates = [3.0, 12.5])'],
+    ['BinnedPoissonProcess', 'record(bins = [0.0, 1.0], intensity = weighted(2.0, Uniform(interval(0.0, 1.0))))'],
+    ['PoissonProcess', 'record(intensity = weighted(2.0, Uniform(interval(0.0, 1.0))))'],
+  ]) {
+    const r = engine.processSource(`s0 = rnginit([1, 2, 3, 4])\nx, s1 = builtin_sample(s0, ${kernel}, ${input})\n`);
+    const errors = r.diagnostics.filter((d: any) => d.severity === 'error').map((d: any) => d.message);
+    assert.ok(errors.some((m: string) => m.includes(`builtin_sample: '${kernel}' takes a measure input`)),
+      `${kernel} ${input}: ${JSON.stringify(errors)}`);
+    const lp = engine.processSource(`lp = builtin_logdensityof(${kernel}, ${input}, [1, 2])\n`);
+    assert.ok(lp.diagnostics.some((d: any) => d.severity === 'error'
+      && d.message.includes(`builtin_logdensityof: '${kernel}' takes a measure input`)),
+      `logdensityof ${kernel} ${input}`);
   }
 });
 
@@ -307,7 +307,6 @@ test('builtin_sample: every multivariate kernel threads and chains the RNG state
     ['InverseWishart', 'record(nu = 5.0, scale = rowstack([[1.0, 0.0], [0.0, 1.0]]))'],
     ['LKJ', 'record(n = 3, eta = 1.5)'],
     ['LKJCholesky', 'record(n = 3, eta = 1.5)'],
-    ['BinnedPoissonProcess', 'record(rates = [4.0, 9.0])'],
   ];
   for (const [kernel, input] of cases) stateAdvancesAndChains(kernel, input);
 });

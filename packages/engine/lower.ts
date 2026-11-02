@@ -732,6 +732,17 @@ function _lowerBroadcast(node: any, ctx: any) {
 // the surface kwarg name (used by callers at callsites). They differ for
 // placeholder-form params and coincide for identifier-form params.
 
+// Kernels whose input includes a measure. The §07 primitives take a record
+// kernel_input, and a record cannot hold a measure.
+const MEASURE_INPUT_KERNELS = new Set(['PoissonProcess', 'BinnedPoissonProcess']);
+
+function _refuseMeasureInputKernel(op: string, name: string): void {
+  if (!MEASURE_INPUT_KERNELS.has(name)) return;
+  throw new Error(`lower: ${op}: '${name}' takes a measure input (its intensity), `
+    + 'and kernel_input is a record, which cannot hold a measure '
+    + '(spec §03 "Beyond values")');
+}
+
 // builtin_logdensityof(kernel, kernel_input, x) — FlatPDL primitive,
 // spec §07 §sec:measure-eval-prims. The first arg must be a bare
 // Identifier naming a kernel constructor — a §08 base one (`Normal`,
@@ -758,6 +769,7 @@ function _lowerBuiltinLogdensityof(node: any, ctx: any): any {
       + 'or standard-module distribution name (e.g. Normal, MvNormal, CrystalBall); got '
       + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
   }
+  _refuseMeasureInputKernel('builtin_logdensityof', kernelArg.name);
   return {
     kind: 'call', op: 'builtin_logdensityof',
     args: [
@@ -791,6 +803,7 @@ function _lowerBuiltinTransport(op: string, node: any, ctx: any): any {
       + 'or standard-module distribution name (e.g. Normal, MvNormal, CrystalBall); got '
       + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
   }
+  _refuseMeasureInputKernel(op, kernelArg.name);
   return {
     kind: 'call', op,
     args: [
@@ -826,6 +839,7 @@ function _lowerBuiltinSample(node: any, ctx: any): any {
       + 'or standard-module distribution name (e.g. Normal, MvNormal, CrystalBall); got '
       + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
   }
+  _refuseMeasureInputKernel('builtin_sample', kernelArg.name);
   const lowered: any[] = [
     _lowerExpr(args[0], ctx),
     { kind: 'lit', value: kernelArg.name, loc: kernelArg.loc },
