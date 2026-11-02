@@ -453,6 +453,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
       fName: string; fInvName: string; logVolume: any;
       registryName?: string;
       paramIRs?: Record<string, any>;
+      stubForward?: boolean;
     };
     // Phase 5.1 Session 5e — synthetic MvNormal-lowering marker.
     //
@@ -481,6 +482,8 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
       const fixedFactor = factor && factor.phase === 'fixed';
       if (factor && !fixedFactor) bindings.delete(m.factorName);
       binding.bijection.registryName = 'affine';
+      // The fn(_) forward is a placeholder: only the registry map is real.
+      binding.bijection.stubForward = true;
       binding.bijection.paramIRs = {
         L: fixedFactor
           ? { kind: 'ref', ns: 'self', name: m.factorName }
@@ -500,6 +503,7 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
       || (binding as any).__pushfwdAffineLowering;
     if (affineLowering) {
       binding.bijection.registryName = 'affine';
+      binding.bijection.stubForward = true;
       binding.bijection.paramIRs = { L: affineLowering.LIR, b: affineLowering.bIR };
     }
     // Keep a coordinatewise affine map outside its base measure's trace.
@@ -4382,6 +4386,9 @@ function resolveBijectionMeta(bij: any, bindings: any) {
   // binding regardless of registryName presence. This eliminates the
   // "degenerate binding" risk surface: callers that don't opt into the
   // registry path continue to work identically to pre-§22.
+  // Exception: the lifted MvNormal and affine bijections set `stubForward`.
+  // Their fn(_) forward, fn(_) inverse and zero logvolume are placeholders,
+  // so every consumer must take the registry path for them or refuse.
   //
   // Producer contract (Session 5e+): when `registryName` is set,
   // `paramIRs` MUST also be set. Consumers reject loudly if registryName

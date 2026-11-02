@@ -82,16 +82,17 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
     : null;
   return ctx.getMeasure(d.from).then((M: any) => {
     const parameterMeasures: any[] = [];
-    // Registry fast path. Activates only when ALL three conditions
-    // hold: (a) bijection-binding marks registryName, (b) paramIRs is
-    // attached (additive-invariant pair), (c) M is vector-atom
-    // (M.value.shape=[N,D] with outerRank===1 — the iid-of-scalar
-    // shape). Otherwise fall through to the scalar AST path; this
-    // matches the §22.5 doctrine that the registry path is an
-    // OPTIMISATION, not a REPLACEMENT.
-    if (bijMeta && bijMeta.registryName
-        && M.value && M.value.outerRank === 1
-        && Array.isArray(M.value.shape) && M.value.shape.length === 2) {
+    // Registry path for any vector-atom base, M.value of shape [N, D].
+    // A Dirichlet or Multinomial base has no iid outerRank marker. The
+    // lifted MvNormal and affine bijections have a placeholder fn(_)
+    // forward, so the AST path below must never apply it.
+    const vectorBase = !!M.value && Array.isArray(M.value.shape) && M.value.shape.length === 2;
+    if (fBinding.bijection && fBinding.bijection.stubForward && !vectorBase) {
+      return Promise.reject(new Error(
+        `pushfwd: bijection binding '${d.fnRef}' (registry '${fBinding.bijection.registryName}') `
+        + `needs a vector-valued base, but '${d.from}' has no [N, D] atoms`));
+    }
+    if (bijMeta && bijMeta.registryName && vectorBase) {
       if (!bijMeta.paramIRs) {
         return Promise.reject(new Error(
           `pushfwd: bijection binding '${d.fnRef}' has registryName=`

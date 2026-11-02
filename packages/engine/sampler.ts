@@ -4444,6 +4444,73 @@ function walkTilt(state: any, ir: any, env: any, ctx: any): any {
   return { value: data, state: draw.state };
 }
 
+// §06 pushfwd(f, M): draw x ~ M, return f(x). A lifted MvNormal or matrix
+// locscale arrives here as pushfwd(<registry bijection>, iid(Normal(0, 1), n)).
+function walkPushfwd(state: any, ir: IRNode, env: any, ctx: any): any {
+  const args = ir.args || [];
+  if (args.length !== 2) {
+    throw new Error(`sampler.walk: pushfwd expected 2 args (f, measure), got ${args.length}`);
+  }
+  const [fIR, mIR] = args;
+  const base = walkInner(state, mIR, env, ctx);
+  state = base.state;
+  if (fIR && fIR.kind === 'ref' && fIR.ns === 'self') {
+    const bij = typeof env?.__resolveBijection === 'function' ? env.__resolveBijection(fIR.name) : null;
+    if (bij && bij.registryName) {
+      state = fillEnvFromRefs(state, { args: Object.values(bij.paramIRs || {}) }, env, ctx);
+      return { value: _registryForward(bij, fIR.name, base.value, env), state };
+    }
+    if (bij) {
+      return { value: _applyUnary({ kind: 'ref', ns: 'self', name: bij.fName }, base.value, env), state };
+    }
+    const target = ctx.resolveRef ? ctx.resolveRef(fIR.name) : null;
+    if (target && target.kind === 'call' && target.op === 'bijection') {
+      throw new Error(`sampler.walk: pushfwd through bijection '${fIR.name}' needs its `
+        + 'bijection metadata, which this evaluation context does not supply');
+    }
+  }
+  return { value: _applyUnary(fIR, base.value, env), state };
+}
+
+function _registryForward(bij: any, name: string, x: any, env: any): any {
+  if (!bij.paramIRs) {
+    throw new Error(`sampler.walk: bijection '${name}' has registryName='${bij.registryName}' `
+      + 'but no paramIRs');
+  }
+  const entry = require('./bijection-registry.ts').getBijection(bij.registryName);
+  if (!entry || !entry.atomBatchedForward) {
+    throw new Error(`sampler.walk: bijection registry entry '${bij.registryName}' has no forward map`);
+  }
+  const params: any = {};
+  for (const k in bij.paramIRs) {
+    const v = evaluateExpr(bij.paramIRs[k], env);
+    params[k] = (Array.isArray(v) && v.length > 0 && Array.isArray(v[0]))
+      ? require('./value-ops.ts')._nestedToValue(v)
+      : (typeof v === 'number' ? v : valueLib.asValue(v));
+  }
+  const scalar = typeof x === 'number';
+  const z = scalar ? { shape: [1], data: Float64Array.of(x) } : valueLib.densify(valueLib.asValue(x));
+  const batched = { shape: [1, ...(scalar ? [1] : z.shape)], data: z.data };
+  const y = valueLib.densify(entry.atomBatchedForward(batched, params, 1));
+  if (scalar) return y.data[0];
+  return { shape: y.shape.slice(1), data: Float64Array.from(y.data) };
+}
+
+// Apply a unary FlatPPL function (inline functionof, function binding, or
+// builtin function name) to one value.
+function _applyUnary(fIR: any, x: any, env: any): any {
+  const fn = _resolveFn(fIR, env);
+  if (!fn || !fn.body) {
+    throw new Error('sampler.walk: pushfwd cannot resolve its function argument '
+      + JSON.stringify(fIR && (fIR.name || fIR.op)));
+  }
+  const params: string[] = fn.params || [];
+  if (params.length !== 1) {
+    throw new Error(`sampler.walk: pushfwd function must take one input, got ${params.length}`);
+  }
+  return evaluateExpr(fn.body, { ...env, [params[0]]: x });
+}
+
 const MEASURE_OP_WALKERS = {
   joint:       walkJoint,
   record:      walkRecord,
@@ -4452,6 +4519,7 @@ const MEASURE_OP_WALKERS = {
   logweighted: walkWeightedRefuse,
   normalize:   walkNormalizeRefuse,
   tilt:        walkTilt,
+  pushfwd:     walkPushfwd,
   lawof:       walkUnwrap,
   draw:        walkUnwrap,
   MvNormal:    walkMvNormal,

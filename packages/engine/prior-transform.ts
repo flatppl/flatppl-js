@@ -234,6 +234,12 @@ function planLatent(measureIR: any, ctx: any): LatentPlan {
     // forward `functionof` (args[1] is the inverse). Unwrap that one hop.
     const fb = ctx.bindings && ctx.bindings.get && ctx.bindings.get(fnRef && fnRef.name);
     let fir = fb && (fb.ir || fb.node || fb);
+    // A lifted MvNormal or matrix-scale bijection carries an identity fn(_)
+    // stub as its forward; only the registry map is real.
+    if (fb && fb.bijection && fb.bijection.stubForward) {
+      throw new Error(`prior-transform: pushfwd through the '${fb.bijection.registryName}' `
+        + 'registry bijection (MvNormal or a matrix-scale locscale) is not supported');
+    }
     if (fir && fir.op === 'bijection' && fir.args && fir.args[0] && fir.args[0].name) {
       const fwd = ctx.bindings.get(fir.args[0].name);
       fir = fwd && (fwd.ir || fwd.node || fwd);

@@ -833,7 +833,8 @@ export interface BindingInfo {
   phase?: 'fixed' | 'parametric' | 'stochastic';
   /** Bijection metadata for bijection-typed bindings. */
   bijection?: { fName: string; fInvName: string; logVolume: any;
-                registryName?: string; paramIRs?: Record<string, any> };
+                registryName?: string; paramIRs?: Record<string, any>;
+                stubForward?: boolean };
   [extra: string]: any;
 }
 
