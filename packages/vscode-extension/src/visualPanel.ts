@@ -43,6 +43,7 @@ class FlatPPLPanel {
   // surface is reworked.
   _panel: any;
   _context: any;
+  _bundleHost: any;
   _sourceUri: any;
   _navUri: any;
   _navBaseLine: any;
@@ -60,7 +61,7 @@ class FlatPPLPanel {
   _flashTimer: any;
   _flashEditor: any;
 
-  static createOrShow(context: any) {
+  static createOrShow(context: any, bundleHost: any) {
     const column = vscode.ViewColumn.Beside;
     if (FlatPPLPanel.currentPanel) {
       // Don't steal focus from the editor when the panel updates.
@@ -79,12 +80,15 @@ class FlatPPLPanel {
         ],
       }
     );
-    FlatPPLPanel.currentPanel = new FlatPPLPanel(panel, context);
+    FlatPPLPanel.currentPanel = new FlatPPLPanel(panel, context, bundleHost);
   }
 
-  constructor(panel: any, context: any) {
+  constructor(panel: any, context: any, bundleHost: any) {
     this._panel = panel;
+    // VS Code's ExtensionContext is not extensible, so the bundle host is
+    // passed explicitly rather than attached to it.
     this._context = context;
+    this._bundleHost = bundleHost;
     this._sourceUri = null;
     // Webview-ready handshake: messages posted before the webview's
     // script attaches its `message` listener are dropped silently
@@ -157,10 +161,10 @@ class FlatPPLPanel {
       // module path (URI path component); resolve it against the current
       // document's URI to keep the scheme/authority.
       if (msg.type === 'openModule' && msg.path && this._sourceUri) {
-        if (this._context.bundleHost?.graphFor(msg.path)) {
-          const graph = this._context.bundleHost.graphFor(msg.path);
+        if (this._bundleHost?.graphFor(msg.path)) {
+          const graph = this._bundleHost.graphFor(msg.path);
           if (msg.path in graph.sources && msg.path.startsWith('flatppl-zip:')) {
-            const uri = this._context.bundleHost.uriFor(msg.path);
+            const uri = this._bundleHost.uriFor(msg.path);
             vscode.window.showTextDocument(uri, { viewColumn: vscode.ViewColumn.One }).then((editor: any) => {
               this.updateSource(editor.document.getText(), msg.member || null, uri, false);
             }, (error: any) => vscode.window.showErrorMessage('FlatPPL: ' + error.message));
@@ -393,7 +397,7 @@ class FlatPPLPanel {
     // posted synchronously meanwhile, say — must not be clobbered by this
     // older one landing late, so a stale resolution is dropped.
     const stale = () => seq !== this._postSeq;
-    this._context.bundleHost.resolve(this._sourceUri, source).then((bundle: any) => {
+    this._bundleHost.resolve(this._sourceUri, source).then((bundle: any) => {
       if (stale()) return;
       base.bundleSources = bundle.sources;   // base.path already == bundle.primaryPath
       base.path = bundle.primaryPath;
