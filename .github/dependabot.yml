@@ -10,6 +10,9 @@ updates:
       interval: monthly
     commit-message:
       prefix: build
+    ignore:
+      # Must match the minimum engines.vscode, so it moves only with that.
+      - dependency-name: "@types/vscode"
     groups:
       npm:
         patterns:
