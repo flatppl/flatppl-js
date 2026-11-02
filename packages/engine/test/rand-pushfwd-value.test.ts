@@ -109,3 +109,48 @@ Q, _ = rand(iid(pushfwd(exp, Normal(0.0, 1.0)), ${N}), s1)
   const { mean: mq } = moments(q.map((v) => [v]));
   assert.ok(Math.abs(mq[0] - Math.sqrt(Math.E)) < 5 * Math.sqrt(vq / N), `LogNormal mean ${mq[0]}`);
 });
+
+// The lifted MvNormal and matrix-scale locscale bijections carry identity
+// fn(_) stubs as their AST forward map. Paths that apply the AST forward
+// instead of the registry map would return the base draws unchanged.
+
+test('materialised locscale over a Dirichlet or Multinomial base applies the matrix scale', async () => {
+  // E[Dirichlet(1, 1)] = (0.5, 0.5), Var = 1/12; E[Multinomial(4, (½, ½))] = (2, 2), Var = 1.
+  // locscale(M, b, diag(2, 1)) has mean 2·E[x₁] + b₁, E[x₂] + b₂.
+  const { ctxFor } = require('./_ctx-factory.ts');
+  const n = 4000;
+  const cases: [string, number[], number[]][] = [
+    ['Dirichlet([1.0, 1.0])', [6, 1.5], [4 / 12, 1 / 12]],
+    ['Multinomial(4, [0.5, 0.5])', [9, 3], [4, 1]],
+  ];
+  for (const [base, mean, variance] of cases) {
+    const { ctx } = ctxFor(`
+Y = locscale(${base}, [5.0, 1.0], rowstack([[2.0, 0.0], [0.0, 1.0]]))
+y ~ Y
+`, n);
+    const m = await ctx.getMeasure('y');
+    assert.deepEqual(m.value.shape, [n, 2]);
+    for (let j = 0; j < 2; j++) {
+      let s = 0;
+      for (let i = 0; i < n; i++) s += m.value.data[i * 2 + j];
+      const est = s / n;
+      assert.ok(Math.abs(est - mean[j]) < 5 * Math.sqrt(variance[j] / n),
+        `${base} coordinate ${j}: mean ${est}, want ${mean[j]}`);
+    }
+  }
+});
+
+test('prior transform refuses a lifted MvNormal rather than applying the identity stub', () => {
+  const { ctxFor } = require('./_ctx-factory.ts');
+  const { buildPriorTransform } = require('../prior-transform.ts');
+  const { ctx } = ctxFor(`
+x ~ MvNormal([5.0], rowstack([[4.0]]))
+prior = lawof(record(x = x))
+y ~ Normal(x[1], 1.0)
+K = kernelof(record(y = y), x = x)
+L = likelihoodof(K, record(y = 0.0))
+posterior = bayesupdate(L, prior)
+`, 100);
+  assert.throws(() => buildPriorTransform(ctx, ctx.derivations['posterior'])
+    .transform(new Float64Array([0.5])), /registry bijection/);
+});
