@@ -107,6 +107,12 @@ const MATRIX_PARAMS: Record<string, string[]> = {
   InverseWishart: ['scale'],
 };
 
+// The kernel argument index of each measure-evaluation primitive (spec §07).
+const KERNEL_SLOT: Record<string, number> = {
+  builtin_logdensityof: 0, builtin_touniform: 0, builtin_fromuniform: 0,
+  builtin_tonormal: 0, builtin_fromnormal: 0, builtin_sample: 1,
+};
+
 function isVectorOfVectors(t: any): boolean {
   return t?.kind === 'array' && t.rank === 1 && t.elem?.kind === 'array';
 }
@@ -938,6 +944,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     // time so the diagnostic points at the source. Type is unchanged
     // (the generic `any`-result signature still applies below).
     if (TRANSPORT_OPS.has(expr.op)) checkTransportKernelContinuous(expr);
+    if (KERNEL_SLOT[expr.op] !== undefined) {
+      const failed = checkKernelInputMatrices(expr, scopes);
+      if (failed) return write(failed, expr);
+    }
     // Numeric arithmetic with shape polymorphism: both scalars,
     // both arrays of matching shape, or scalar/array broadcast.
     if (BINARY_ARITH_OPS.has(expr.op)) return write(inferArith2(expr, scopes), expr);
@@ -1452,6 +1462,27 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (k.kind === 'lit' && typeof k.value === 'string') return k.value;
     if (k.kind === 'call' && typeof k.op === 'string')   return k.op;
     if (k.kind === 'ref'  && typeof k.name === 'string')  return k.name;
+    return null;
+  }
+
+  // The kernel form of a primitive takes the constructor's parameters as a
+  // record, so a vector-of-vectors matrix parameter is refused there too.
+  function checkKernelInputMatrices(expr: any, scopes: any): any {
+    const args = expr.args || [];
+    const slot = KERNEL_SLOT[expr.op];
+    const kernel = args[slot];
+    const input = args[slot + 1];
+    const params = kernel && kernel.kind === 'lit' ? MATRIX_PARAMS[kernel.value] : undefined;
+    if (!params || !input) return null;
+    const inline = input.kind === 'call' && input.op === 'record' && Array.isArray(input.fields)
+      ? new Map(input.fields.map((f: any) => [f.name, f.value])) : null;
+    const it: any = inferExpr(input, scopes);
+    if (it?.kind !== 'record') return null;
+    for (const param of params) {
+      if (isVectorOfVectors(it.fields[param])) {
+        return matrixParamError(kernel.value, param, inline?.get(param) || input);
+      }
+    }
     return null;
   }
 
