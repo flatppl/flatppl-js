@@ -280,6 +280,9 @@ class FixedValues {
           }
           continue;
         }
+        // A bijection is applied by the measure walker (pushfwd) through
+        // env.__resolveBijection. It never has a value.
+        if (dep && dep.type === 'bijection') continue;
         // A binding classified as a measure derivation: recurse through
         // the canonical sampleable expansion (what the measure walker
         // sampler.walk walks at runtime) and mark everything beyond it as
@@ -403,6 +406,14 @@ class FixedValues {
         orderedInputs: fIR.orderedInputs,
         paramName:   fIR.params[0],
       };
+    };
+
+    // pushfwd(<bijection binding>, M) in the measure walker needs the
+    // forward map. A registry bijection's fn(_) stubs are placeholders, so
+    // the walker reads `registryName` + `paramIRs` from this metadata.
+    env.__resolveBijection = function (bname: any) {
+      const bb = bindings.get(bname);
+      return (bb && bb.bijection) || null;
     };
 
     // The synthesised disintegrate effectiveValue can be a measure
