@@ -4197,6 +4197,200 @@ function walkMvNormal(state: any, ir: IRNode, env: any, ctx: any): any {
   return { value: densityPrims.builtinFromnormal('MvNormal', { mu, cov }, z.value), state: z.state };
 }
 
+// The remaining §08 multivariate kernels have no scalar leaf sampler either.
+// Each walker draws scalar leaves through sampleLeafN, so the RNG state
+// threads exactly as for a leaf, and maps them with multivariate-draws.ts.
+function _kernelParam(ir: any, label: string, name: string, pos: number, env: any): any {
+  const argIR = (ir.kwargs && ir.kwargs[name]) || (ir.args && ir.args[pos]);
+  if (!argIR) throw new Error(`sampler.walk: ${label} requires '${name}' (spec §08)`);
+  return evaluateExpr(argIR, env);
+}
+
+function _litCall(op: string, kw: Record<string, number>): any {
+  const kwargs: Record<string, any> = {};
+  for (const k in kw) kwargs[k] = { kind: 'lit', value: kw[k] };
+  return { kind: 'call', op, kwargs };
+}
+
+function _vectorParam(v: any, label: string, name: string): Float64Array {
+  const val = valueLib.asValue(v);
+  if (val.shape.length !== 1 || val.shape[0] === 0) {
+    throw new Error(`sampler.walk: ${label} '${name}' must be a non-empty vector (spec §08), got shape `
+      + JSON.stringify(val.shape));
+  }
+  return Float64Array.from(valueLib.densify(val).data);
+}
+
+function _countParam(v: any, label: string, name: string, min: number): number {
+  if (typeof v !== 'number' || !Number.isInteger(v) || v < min) {
+    throw new Error(`sampler.walk: ${label} '${name}' must be an integer >= ${min} (spec §08), got ${v}`);
+  }
+  return v;
+}
+
+function walkDirichlet(state: any, ir: IRNode, env: any, ctx: any): any {
+  state = fillEnvFromRefs(state, ir, env, ctx);
+  const alpha = _vectorParam(_kernelParam(ir, 'Dirichlet', 'alpha', 0, env), 'Dirichlet', 'alpha');
+  const K = alpha.length;
+  const x = new Float64Array(K);
+  let sum = 0;
+  // §08 Dirichlet: normalized independent Gamma(alpha_k, 1) draws.
+  for (let k = 0; k < K; k++) {
+    if (!(alpha[k] > 0) || !Number.isFinite(alpha[k])) {
+      throw new Error(`sampler.walk: Dirichlet alpha[${k + 1}] = ${alpha[k]} must be positive and finite`);
+    }
+    const g = sampleLeafN(state, _litCall('Gamma', { shape: alpha[k], rate: 1 }), env, []);
+    x[k] = g.value;
+    sum += g.value;
+    state = g.state;
+  }
+  if (!(sum > 0)) throw new Error('sampler.walk: Dirichlet gamma draws all underflowed to zero');
+  for (let k = 0; k < K; k++) x[k] /= sum;
+  return { value: { shape: [K], data: x }, state };
+}
+
+function walkMultinomial(state: any, ir: IRNode, env: any, ctx: any): any {
+  state = fillEnvFromRefs(state, ir, env, ctx);
+  const n = _countParam(_kernelParam(ir, 'Multinomial', 'n', 0, env), 'Multinomial', 'n', 0);
+  const p = _vectorParam(_kernelParam(ir, 'Multinomial', 'p', 1, env), 'Multinomial', 'p');
+  const K = p.length;
+  for (let k = 0; k < K; k++) {
+    if (!(p[k] >= 0) || !Number.isFinite(p[k])) {
+      throw new Error(`sampler.walk: Multinomial p[${k + 1}] = ${p[k]} must be non-negative and finite`);
+    }
+  }
+  // Sequential conditional binomials: x_k ~ Binomial(n - Σ_{j<k} x_j,
+  // p_k / Σ_{j>=k} p_j). The last category takes the remainder.
+  const tail = new Float64Array(K + 1);
+  for (let k = K - 1; k >= 0; k--) tail[k] = tail[k + 1] + p[k];
+  if (!(tail[0] > 0)) throw new Error('sampler.walk: Multinomial p must have positive sum');
+  const x = new Float64Array(K);
+  let left = n;
+  for (let k = 0; k < K - 1 && left > 0; k++) {
+    const q = Math.min(1, p[k] / tail[k]);
+    if (q <= 0) continue;
+    if (q >= 1) { x[k] = left; left = 0; break; }
+    const b = sampleLeafN(state, _litCall('Binomial', { n: left, p: q }), env, []);
+    x[k] = b.value;
+    left -= b.value;
+    state = b.state;
+  }
+  x[K - 1] += left;
+  return { value: { shape: [K], data: x }, state };
+}
+
+function _wishartWalker(invert: boolean) {
+  const label = invert ? 'InverseWishart' : 'Wishart';
+  return function (state: any, ir: IRNode, env: any, ctx: any): any {
+    state = fillEnvFromRefs(state, ir, env, ctx);
+    const nu = _kernelParam(ir, label, 'nu', 0, env);
+    const raw = _kernelParam(ir, label, 'scale', 1, env);
+    const scale = Array.isArray(raw) && raw.length > 0 && Array.isArray(raw[0])
+      ? require('./value-ops.ts')._nestedToValue(raw) : valueLib.asValue(raw);
+    if (scale.shape.length !== 2 || scale.shape[0] !== scale.shape[1]) {
+      throw new Error(`sampler.walk: ${label} scale must be a square matrix (spec §08), got shape `
+        + JSON.stringify(scale.shape));
+    }
+    const n = scale.shape[0];
+    if (typeof nu !== 'number' || !(nu > n - 1)) {
+      throw new Error(`sampler.walk: ${label} nu = ${nu} must be > n - 1 = ${n - 1} (spec §08)`);
+    }
+    const base = invert ? ARITH_OPS.inv(scale) : scale;
+    const LS = valueLib.densify(ARITH_OPS.lower_cholesky(base)).data;
+    const chi2 = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const c = sampleLeafN(state, _litCall('Gamma', { shape: (nu - i) / 2, rate: 0.5 }), env, []);
+      chi2[i] = c.value;
+      state = c.state;
+    }
+    let normals: ArrayLike<number> = [];
+    if (n > 1) {
+      const z = sampleLeafN(state, STD_NORMAL_IR, env, [n * (n - 1) / 2]);
+      normals = z.value;
+      state = z.state;
+    }
+    const data = new Float64Array(n * n);
+    require('./multivariate-draws.ts').bartlettAtom(LS, n, chi2, normals, invert, data, 0);
+    return { value: { shape: [n, n], data }, state };
+  };
+}
+
+function _lkjWalker(cholesky: boolean) {
+  const label = cholesky ? 'LKJCholesky' : 'LKJ';
+  return function (state: any, ir: IRNode, env: any, ctx: any): any {
+    state = fillEnvFromRefs(state, ir, env, ctx);
+    const n = _countParam(_kernelParam(ir, label, 'n', 0, env), label, 'n', 1);
+    const eta = _kernelParam(ir, label, 'eta', 1, env);
+    if (typeof eta !== 'number' || !(eta > 0) || !Number.isFinite(eta)) {
+      throw new Error(`sampler.walk: ${label} eta = ${eta} must be positive and finite (spec §08)`);
+    }
+    const draws = require('./multivariate-draws.ts');
+    const betas = new Float64Array(Math.max(0, n - 1));
+    for (let i = 1; i < n; i++) {
+      const b = sampleLeafN(state, _litCall('Beta', draws.onionBetaParams(n, eta, i)), env, []);
+      betas[i - 1] = b.value;
+      state = b.state;
+    }
+    let normals: ArrayLike<number> = [];
+    if (n > 1) {
+      const z = sampleLeafN(state, STD_NORMAL_IR, env, [n * (n - 1) / 2]);
+      normals = z.value;
+      state = z.state;
+    }
+    const L = new Float64Array(n * n);
+    draws.onionCholeskyAtom(n, betas, normals, L, 0);
+    if (cholesky) return { value: { shape: [n, n], data: L }, state };
+    const C = new Float64Array(n * n);
+    draws.rowGramAtom(L, 0, n, C, 0);
+    return { value: { shape: [n, n], data: C }, state };
+  };
+}
+
+const _INTENSITY_MEASURE_OPS = new Set([
+  'weighted', 'logweighted', 'superpose', 'select', 'normalize', 'truncate',
+]);
+
+function _inlineMeasureRefs(ir: any, ctx: any, seen: Set<string>): any {
+  if (!ir || typeof ir !== 'object') return ir;
+  if (ir.kind === 'ref' && ir.ns === 'self') {
+    if (!ctx.resolveRef || seen.has(ir.name)) return ir;
+    const m = ctx.resolveRef(ir.name);
+    const isMeasure = m && m.kind === 'call'
+      && (isKnownDistribution(m.op) || _INTENSITY_MEASURE_OPS.has(m.op));
+    return isMeasure ? _inlineMeasureRefs(m, ctx, new Set([...seen, ir.name])) : ir;
+  }
+  if (ir.kind !== 'call' || !_INTENSITY_MEASURE_OPS.has(ir.op)) return ir;
+  const out: any = { ...ir };
+  if (Array.isArray(ir.args)) out.args = ir.args.map((a: any) => _inlineMeasureRefs(a, ctx, seen));
+  if (Array.isArray(ir.branches)) out.branches = ir.branches.map((a: any) => _inlineMeasureRefs(a, ctx, seen));
+  return out;
+}
+
+// §08: BinnedPoissonProcess(bins, intensity) has independent Poisson bin
+// counts whose means are the intensity masses of the bins.
+function walkBinnedPoissonProcess(state: any, ir: any, env: any, ctx: any): any {
+  const kw = ir.kwargs || {};
+  const args = ir.args || [];
+  // resolveBinnedRates reads the intensity as measure IR, so inline its
+  // measure refs. Its value refs (weights, edges) resolve through env.
+  let expanded = ir;
+  if (kw.intensity) {
+    expanded = { ...ir, kwargs: { ...kw, intensity: _inlineMeasureRefs(kw.intensity, ctx, new Set()) } };
+  } else if (args.length >= 2) {
+    expanded = { ...ir, args: [args[0], _inlineMeasureRefs(args[1], ctx, new Set()), ...args.slice(2)] };
+  }
+  state = fillEnvFromRefs(state, expanded, env, ctx);
+  const rates = require('./binned-poisson.ts').resolveBinnedRates(expanded, env);
+  const data = new Float64Array(rates.data.length);
+  for (let k = 0; k < data.length; k++) {
+    if (rates.data[k] === 0) continue;
+    const c = sampleLeafN(state, _litCall('Poisson', { rate: rates.data[k] }), env, []);
+    data[k] = c.value;
+    state = c.state;
+  }
+  return { value: { shape: rates.shape.slice(), data }, state };
+}
+
 function walkJoint(state: any, ir: IRNode, env: any, ctx: any) {
   // kwarg-joint / record → record keyed by field name; positional joint →
   // array of per-component samples. Sequential per-component recursion
@@ -4455,6 +4649,13 @@ const MEASURE_OP_WALKERS = {
   lawof:       walkUnwrap,
   draw:        walkUnwrap,
   MvNormal:    walkMvNormal,
+  Dirichlet:   walkDirichlet,
+  Multinomial: walkMultinomial,
+  Wishart:     _wishartWalker(false),
+  InverseWishart: _wishartWalker(true),
+  LKJ:         _lkjWalker(false),
+  LKJCholesky: _lkjWalker(true),
+  BinnedPoissonProcess: walkBinnedPoissonProcess,
 };
 
 // Walk a value-position IR collecting every `(ref self <name>)` env doesn't
