@@ -4401,7 +4401,9 @@ function resolveBijectionMeta(bij: any, bindings: any) {
   // site in the pushfwd case, search the file for
   // `out.bijection = bijMeta`) and become visible to density.walkPushfwd.
   const out: any = { fInv, logVolume };
-  const fForward = fnBodyOf(bij.fName, false);
+  // A placeholder forward never reaches IR consumers such as the
+  // linear-Gaussian recogniser, which read fForward without the registry.
+  const fForward = bij.stubForward ? null : fnBodyOf(bij.fName, false);
   if (fForward) out.fForward = fForward;
   if (bij.registryName) out.registryName = bij.registryName;
   if (bij.paramIRs)     out.paramIRs    = bij.paramIRs;
