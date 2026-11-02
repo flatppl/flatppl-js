@@ -29,6 +29,7 @@ import type {
 const orchestrator = require('./orchestrator.ts');
 const valueLib     = require('./value.ts');
 const shared       = require('./materialiser-shared.ts');
+const draws        = require('./multivariate-draws.ts');
 
 const { nameSeed, measureFromValue } = shared;
 
@@ -320,59 +321,12 @@ function wishartCore(name: string, distIR: any, ctx: any, invert: boolean): Prom
   }) : Promise.resolve({ samples: new Float64Array(0) });
   return Promise.all([Promise.all(diagPromises), offDiagP]).then(([diagReplies, offDiagReply]: any[]) => {
     const data = new Float64Array(N * n * n);
-    const A = new Float64Array(n * n);
-    const T = new Float64Array(n * n);
-    const W = new Float64Array(n * n);
-    const offDiagData = offDiagReply.samples;
-    const LSdata = LS.data;
+    const chi2 = new Float64Array(n);
+    const LSdata = valueLib.densify(LS).data;
     for (let atom = 0; atom < N; atom++) {
-      for (let i = 0; i < n * n; i++) A[i] = 0;
-      for (let i = 0; i < n; i++) {
-        A[i * n + i] = Math.sqrt(diagReplies[i].samples[atom]);
-      }
-      let oIdx = atom * offDiagPerAtom;
-      for (let i = 1; i < n; i++) {
-        for (let j = 0; j < i; j++) A[i * n + j] = offDiagData[oIdx++];
-      }
-      // T = LS * A.
-      for (let i = 0; i < n; i++) {
-        for (let j = 0; j < n; j++) {
-          let s = 0;
-          for (let k = 0; k < n; k++) s += LSdata[i * n + k] * A[k * n + j];
-          T[i * n + j] = s;
-        }
-      }
-      // W = T * T^T.
-      for (let i = 0; i < n; i++) {
-        for (let j = 0; j < n; j++) {
-          let s = 0;
-          for (let k = 0; k < n; k++) s += T[i * n + k] * T[j * n + k];
-          W[i * n + j] = s;
-        }
-      }
-      const wBase = atom * n * n;
-      if (invert) {
-        const tinv = new Float64Array(n * n);
-        for (let j = 0; j < n; j++) {
-          for (let i = 0; i < n; i++) {
-            if (i < j) { tinv[i * n + j] = 0; continue; }
-            let s = (i === j) ? 1 : 0;
-            for (let k = j; k < i; k++) s -= T[i * n + k] * tinv[k * n + j];
-            tinv[i * n + j] = s / T[i * n + i];
-          }
-        }
-        for (let i = 0; i < n; i++) {
-          for (let j = 0; j < n; j++) {
-            let s = 0;
-            for (let k = 0; k < n; k++) s += tinv[k * n + i] * tinv[k * n + j];
-            data[wBase + i * n + j] = s;
-          }
-        }
-      } else {
-        for (let i = 0; i < n; i++) {
-          for (let j = 0; j < n; j++) data[wBase + i * n + j] = W[i * n + j];
-        }
-      }
+      for (let i = 0; i < n; i++) chi2[i] = diagReplies[i].samples[atom];
+      const normals = offDiagReply.samples.subarray(atom * offDiagPerAtom, (atom + 1) * offDiagPerAtom);
+      draws.bartlettAtom(LSdata, n, chi2, normals, invert, data, atom * n * n);
     }
     const result: any = { shape: [N, n, n], data };
     return measureFromValue(result, {
@@ -415,8 +369,7 @@ function matLKJCholesky(name: string, d: DerivationLKJCholesky, ctx: any): Promi
   }
   const betaPromises: Promise<any>[] = [];
   for (let i = 1; i < n; i++) {
-    const a = i / 2;
-    const b = eta + (n - i - 1) / 2;
+    const { alpha: a, beta: b } = draws.onionBetaParams(n, eta, i);
     const betaIR = {
       kind: 'call', op: 'Beta',
       kwargs: { alpha: { kind: 'lit', value: a },
@@ -439,28 +392,12 @@ function matLKJCholesky(name: string, d: DerivationLKJCholesky, ctx: any): Promi
   });
   return Promise.all([Promise.all(betaPromises), normalP]).then(([betaReplies, normalReply]: any[]) => {
     const data = new Float64Array(N * n * n);
-    const normals = normalReply.samples;
-    let nIdx = 0;
+    const perAtom = n * (n - 1) / 2;
+    const betas = new Float64Array(n - 1);
     for (let atom = 0; atom < N; atom++) {
-      const base = atom * n * n;
-      data[base] = 1;
-      for (let i = 1; i < n; i++) {
-        const Bi = betaReplies[i - 1].samples[atom];
-        const ri = Math.sqrt(Bi);
-        const diag = Math.sqrt(1 - Bi);
-        let zsq = 0;
-        const z = new Float64Array(i);
-        for (let k = 0; k < i; k++) {
-          const v = normals[nIdx++];
-          z[k] = v;
-          zsq += v * v;
-        }
-        const invNorm = zsq > 0 ? 1 / Math.sqrt(zsq) : 0;
-        for (let k = 0; k < i; k++) {
-          data[base + i * n + k] = ri * z[k] * invNorm;
-        }
-        data[base + i * n + i] = diag;
-      }
+      for (let i = 1; i < n; i++) betas[i - 1] = betaReplies[i - 1].samples[atom];
+      const normals = normalReply.samples.subarray(atom * perAtom, (atom + 1) * perAtom);
+      draws.onionCholeskyAtom(n, betas, normals, data, atom * n * n);
     }
     return measureFromValue(
       { shape: [N, n, n], data } as any,
@@ -482,17 +419,7 @@ function matLKJ(name: string, d: DerivationLKJ, ctx: any): Promise<EmpiricalMeas
     const N = Lmeasure.samples.length / (n * n);
     const data = new Float64Array(N * n * n);
     const L = Lmeasure.samples;
-    for (let atom = 0; atom < N; atom++) {
-      const base = atom * n * n;
-      for (let i = 0; i < n; i++) {
-        for (let j = 0; j < n; j++) {
-          let s = 0;
-          const maxK = Math.min(i, j);
-          for (let k = 0; k <= maxK; k++) s += L[base + i * n + k] * L[base + j * n + k];
-          data[base + i * n + j] = s;
-        }
-      }
-    }
+    for (let atom = 0; atom < N; atom++) draws.rowGramAtom(L, atom * n * n, n, data, atom * n * n);
     return measureFromValue(
       { shape: [N, n, n], data } as any,
       { logWeights: null, logTotalmass: 0, n_eff: N });
