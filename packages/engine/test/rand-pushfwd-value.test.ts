@@ -154,3 +154,16 @@ posterior = bayesupdate(L, prior)
   assert.throws(() => buildPriorTransform(ctx, ctx.derivations['posterior'])
     .transform(new Float64Array([0.5])), /registry bijection/);
 });
+
+test('expanded registry pushfwd IR carries no placeholder forward map', () => {
+  // IR consumers that read bijection.fForward without the registry (the
+  // linear-Gaussian recogniser) must not see the identity stub.
+  const { ctxFor } = require('./_ctx-factory.ts');
+  const { ctx } = ctxFor(`
+Y = MvNormal([5.0, 1.0], rowstack([[4.0, 0.0], [0.0, 1.0]]))
+`, 10);
+  const expanded = orchestrator.expandMeasure('Y', { derivations: ctx.derivations, bindings: ctx.bindings });
+  assert.equal(expanded.op, 'pushfwd');
+  assert.equal(expanded.bijection.registryName, 'affine');
+  assert.equal(expanded.bijection.fForward, undefined);
+});
