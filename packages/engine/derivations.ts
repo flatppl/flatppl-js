@@ -997,6 +997,8 @@ function buildDerivations(bindings: Map<string, BindingInfo>,
     if (malformedPushfwdNames.has(name)) continue;      // already flagged as reversed pushfwd args
     if (ksRefusedNames.has(name)) continue;             // already flagged as a refused runtime-N mixture
     if (fixedValues.has(name)) continue;
+    // The failed binding at the root already carries the located cause.
+    if (fixedValues.failure(name)) continue;
     diagnostics.push({
       severity: 'error',
       message: `Fixed-phase binding '${name}' produced no value: the engine `

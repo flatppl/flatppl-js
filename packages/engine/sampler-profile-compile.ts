@@ -395,11 +395,14 @@ function _compileByKind(node: any, S: Session): any {
       const name = node.name;
       const ns = node.ns;
       return function (env: any) {
+        // Flagged like sampler.ts `resolveRef`: no value here, not a failure.
         if (env == null || !(name in env)) {
-          throw new Error(
+          const unbound: any = new Error(
             `evaluateExpr: unbound ${ns} reference '${name}' — env must ` +
             `provide values for all upstream-resolved names`
           );
+          unbound.flatpplUnresolvedRef = true;
+          throw unbound;
         }
         return env[name];
       };

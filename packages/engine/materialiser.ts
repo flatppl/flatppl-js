@@ -3341,12 +3341,16 @@ callableGuardStage.label = 'callableGuard';
 // measure record directly; the worker never has to see fixed-phase
 // values. Opaque fixed values (rngstate) fall through to the next
 // stage — if the binding has no derivation either, the kindDispatch
-// stage rejects cleanly.
+// stage rejects cleanly. A fixed value whose evaluation threw rejects with
+// that cause, instead of a later stage's "no derivation".
 const fixedPhaseStage: MaterialiserStage = function (name, ctx, next) {
   if (ctx.fixedValues && ctx.fixedValues.has(name)) {
     const fxm = fixedValueToMeasure(ctx.fixedValues.get(name), ctx.sampleCount);
     if (fxm) return Promise.resolve(fxm);
   }
+  // A plain Map (test contexts) carries no failure record.
+  const failure = ctx.fixedValues?.failure?.(name);
+  if (failure) return Promise.reject(new Error(failure));
   return next(name, ctx);
 };
 fixedPhaseStage.label = 'fixedPhaseShortCircuit';
