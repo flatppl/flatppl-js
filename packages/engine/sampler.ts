@@ -4166,6 +4166,37 @@ function walkLeaf(state: any, ir: IRNode, env: any, ctx: any) {
   return sampleLeafN(state, ir, env, []);
 }
 
+// MvNormal has no scalar leaf sampler. Spec §08 defines it as
+// `locscale(iid(Normal(0, 1), n), mu, lower_cholesky(cov))`, so draw z from
+// the batched Normal leaf and apply the spec's canonical `builtin_fromnormal`
+// transport `mu + lower_cholesky(cov) * z`. The lift pass lowers a native
+// MvNormal draw to the same decomposition.
+const STD_NORMAL_IR = {
+  kind: 'call', op: 'Normal',
+  kwargs: { mu: { kind: 'lit', value: 0 }, sigma: { kind: 'lit', value: 1 } },
+};
+
+function walkMvNormal(state: any, ir: IRNode, env: any, ctx: any): any {
+  const kw: any = ir.kwargs || {};
+  const args = ir.args || [];
+  const muIR = kw.mu || args[0];
+  const covIR = kw.cov || args[1];
+  if (!muIR || !covIR) {
+    throw new Error('sampler.walk: MvNormal requires mu and cov (spec §08)');
+  }
+  state = fillEnvFromRefs(state, ir, env, ctx);
+  const mu = evaluateExpr(muIR, env);
+  const cov = evaluateExpr(covIR, env);
+  const muShape = valueLib.asValue(mu).shape;
+  if (muShape.length !== 1) {
+    throw new Error('sampler.walk: MvNormal mu must be a vector (spec §08), got shape '
+      + JSON.stringify(muShape));
+  }
+  const z = sampleLeafN(state, STD_NORMAL_IR, env, [muShape[0]]);
+  const densityPrims = require('./density-prims.ts');
+  return { value: densityPrims.builtinFromnormal('MvNormal', { mu, cov }, z.value), state: z.state };
+}
+
 function walkJoint(state: any, ir: IRNode, env: any, ctx: any) {
   // kwarg-joint / record → record keyed by field name; positional joint →
   // array of per-component samples. Sequential per-component recursion
@@ -4423,6 +4454,7 @@ const MEASURE_OP_WALKERS = {
   tilt:        walkTilt,
   lawof:       walkUnwrap,
   draw:        walkUnwrap,
+  MvNormal:    walkMvNormal,
 };
 
 // Walk a value-position IR collecting every `(ref self <name>)` env doesn't

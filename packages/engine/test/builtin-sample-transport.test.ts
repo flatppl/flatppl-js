@@ -159,6 +159,65 @@ A, _ = builtin_sample(s0, Normal, record(mu = 0.0, sigma = 1.0), 3, 4)
   assert.equal(A.data.length, 12);
 });
 
+// The determinizer emits `builtin_sample(s, MvNormal, record(mu, cov), ...)`
+// for an MvNormal draw, so the walker must sample a multivariate kernel.
+function vecOf(v: any): number[] {
+  return Array.from(Array.isArray(v) ? v : v.data);
+}
+
+test('builtin_sample(MvNormal, ..., n) has the spec mean and covariance', () => {
+  // Oracle: spec §08, MvNormal(mu, cov) has mean mu and covariance cov.
+  const N = 4000;
+  const mu = [1.0, -2.0];
+  const cov = [[2.0, -0.6], [-0.6, 0.5]];
+  const r = engine.processSource(`
+s0 = rnginit([9, 8, 7, 6])
+X, s1 = builtin_sample(s0, MvNormal, record(mu = [1.0, -2.0], cov = rowstack([[2.0, -0.6], [-0.6, 0.5]])), ${N})
+`);
+  assert.deepEqual(r.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const orchestrator = require('../orchestrator.ts');
+  const { fixedValues } = orchestrator.buildDerivations(r.bindings, r.loweredModule);
+  const X = fixedValues.get('X');
+  assert.equal(X.length, N);
+  const rows = X.map(vecOf);
+  for (const row of rows) assert.equal(row.length, 2);
+  const mean = [0, 1].map((j) => rows.reduce((a: number, x: number[]) => a + x[j], 0) / N);
+  for (let j = 0; j < 2; j++) {
+    const se = Math.sqrt(cov[j][j] / N);
+    assert.ok(Math.abs(mean[j] - mu[j]) < 5 * se, `mean[${j}] = ${mean[j]}, want ${mu[j]}`);
+  }
+  for (let i = 0; i < 2; i++) {
+    for (let j = 0; j < 2; j++) {
+      const c = rows.reduce((a: number, x: number[]) =>
+        a + (x[i] - mean[i]) * (x[j] - mean[j]), 0) / (N - 1);
+      const se = Math.sqrt((cov[i][i] * cov[j][j] + cov[i][j] ** 2) / N);
+      assert.ok(Math.abs(c - cov[i][j]) < 5 * se, `cov[${i}][${j}] = ${c}, want ${cov[i][j]}`);
+    }
+  }
+  assert.notDeepEqual(fixedValues.get('s1'), fixedValues.get('s0'));
+});
+
+test('builtin_sample(MvNormal) without dims returns one indexable vector', () => {
+  // The determinizer's mixture lowering selects mu and cov by index.
+  const r = engine.processSource(`
+s0 = rnginit([9, 8, 7, 6])
+mus = [[-2.0, 1.0], [3.0, -1.0]]
+covs = [rowstack([[1.0, 0.3], [0.3, 1.0]]), rowstack([[0.5, 0.0], [0.0, 2.0]])]
+x, s1 = builtin_sample(s0, MvNormal, record(mu = mus[2], cov = covs[2]))
+x2 = x[2]
+X, _ = builtin_sample(s0, MvNormal, record(mu = mus[2], cov = covs[2]), 3)
+`);
+  assert.deepEqual(r.diagnostics.filter((d: any) => d.severity === 'error'), []);
+  const orchestrator = require('../orchestrator.ts');
+  const { fixedValues } = orchestrator.buildDerivations(r.bindings, r.loweredModule);
+  const x = vecOf(fixedValues.get('x'));
+  assert.equal(x.length, 2);
+  assert.equal(fixedValues.get('x2'), x[1]);
+  // One draw from s0 is the first atom of the iid draw from s0.
+  assert.deepEqual(vecOf(fixedValues.get('X')[0]), x);
+  assert.notDeepEqual(fixedValues.get('s1'), fixedValues.get('s0'));
+});
+
 // =====================================================================
 // Transports — univariate continuous round-trips and consistency
 // =====================================================================
