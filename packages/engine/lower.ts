@@ -743,6 +743,16 @@ function _refuseMeasureInputKernel(op: string, name: string): void {
     + '(spec §03 "Beyond values")');
 }
 
+// The kernel argument is neither a kernel name nor a closed built-in measure,
+// which `nullary-primitives.ts` has already split into a name and its input.
+function _kernelArgError(op: string, kernelArg: any): Error {
+  return new Error(`lower: ${op}: kernel argument must be a built-in `
+    + 'or standard-module distribution name (e.g. Normal, MvNormal, CrystalBall) '
+    + 'with its kernel input, or a closed built-in measure such as Normal(0, 1) '
+    + '(spec §07); got '
+    + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
+}
+
 // builtin_logdensityof(kernel, kernel_input, x) — FlatPDL primitive,
 // spec §07 §sec:measure-eval-prims. The first arg must be a bare
 // Identifier naming a kernel constructor — a §08 base one (`Normal`,
@@ -754,6 +764,9 @@ function _refuseMeasureInputKernel(op: string, name: string): void {
 // without resolving a ref. The other two args lower normally.
 function _lowerBuiltinLogdensityof(node: any, ctx: any): any {
   const args = node.args || [];
+  if (args.length === 2 && args[0].type !== 'KeywordArg') {
+    throw _kernelArgError('builtin_logdensityof', args[0]);
+  }
   if (args.length !== 3) {
     throw new Error(`lower: builtin_logdensityof expects 3 positional `
       + `arguments (kernel, kernel_input, x), got ${args.length}`);
@@ -765,9 +778,7 @@ function _lowerBuiltinLogdensityof(node: any, ctx: any): any {
   }
   const kernelArg = args[0];
   if (kernelArg.type !== 'Identifier' || !FLATPDL_KERNEL_TAGS.has(kernelArg.name)) {
-    throw new Error('lower: builtin_logdensityof: kernel argument must be a built-in '
-      + 'or standard-module distribution name (e.g. Normal, MvNormal, CrystalBall); got '
-      + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
+    throw _kernelArgError('builtin_logdensityof', kernelArg);
   }
   _refuseMeasureInputKernel('builtin_logdensityof', kernelArg.name);
   return {
@@ -788,6 +799,7 @@ function _lowerBuiltinLogdensityof(node: any, ctx: any): any {
 // four functions differ only in their op name.
 function _lowerBuiltinTransport(op: string, node: any, ctx: any): any {
   const args = node.args || [];
+  if (args.length === 2 && args[0].type !== 'KeywordArg') throw _kernelArgError(op, args[0]);
   if (args.length !== 3) {
     throw new Error(`lower: ${op} expects 3 positional arguments `
       + `(kernel, kernel_input, point), got ${args.length}`);
@@ -799,9 +811,7 @@ function _lowerBuiltinTransport(op: string, node: any, ctx: any): any {
   }
   const kernelArg = args[0];
   if (kernelArg.type !== 'Identifier' || !FLATPDL_KERNEL_TAGS.has(kernelArg.name)) {
-    throw new Error(`lower: ${op}: kernel argument must be a built-in `
-      + 'or standard-module distribution name (e.g. Normal, MvNormal, CrystalBall); got '
-      + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
+    throw _kernelArgError(op, kernelArg);
   }
   _refuseMeasureInputKernel(op, kernelArg.name);
   return {
@@ -823,6 +833,9 @@ function _lowerBuiltinTransport(op: string, node: any, ctx: any): any {
 // time — the evaluator enforces shape constraints with clearer errors).
 function _lowerBuiltinSample(node: any, ctx: any): any {
   const args = node.args || [];
+  if (args.length === 2 && args[1].type !== 'KeywordArg') {
+    throw _kernelArgError('builtin_sample', args[1]);
+  }
   if (args.length < 3) {
     throw new Error('lower: builtin_sample expects at least 3 positional '
       + 'arguments (rngstate, kernel, kernel_input, [n, m, ...]); got '
@@ -835,9 +848,7 @@ function _lowerBuiltinSample(node: any, ctx: any): any {
   }
   const kernelArg = args[1];
   if (kernelArg.type !== 'Identifier' || !FLATPDL_KERNEL_TAGS.has(kernelArg.name)) {
-    throw new Error('lower: builtin_sample: kernel argument must be a built-in '
-      + 'or standard-module distribution name (e.g. Normal, MvNormal, CrystalBall); got '
-      + (kernelArg.type === 'Identifier' ? `'${kernelArg.name}'` : kernelArg.type));
+    throw _kernelArgError('builtin_sample', kernelArg);
   }
   _refuseMeasureInputKernel('builtin_sample', kernelArg.name);
   const lowered: any[] = [
