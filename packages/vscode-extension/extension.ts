@@ -327,7 +327,6 @@ let lspManager: import('./src/lspClient').LspManager | undefined;
 
 function activate(context: any) {
   const bundleHost = createBundleHost(vscode, bundleApi, urlCache, (url: string) => approveUrl(url));
-  context.bundleHost = bundleHost;
   context.subscriptions.push(bundleHost,
     vscode.workspace.registerFileSystemProvider(BUNDLE_SCHEME, bundleHost.provider,
       { isReadonly: true, isCaseSensitive: true }));
@@ -367,7 +366,7 @@ function activate(context: any) {
     lastBundle = graph.primaryPath;
     const memberUri = bundleHost.uriFor(graph.primaryPath);
     const editor = await vscode.window.showTextDocument(memberUri, { preview: false });
-    FlatPPLPanel.createOrShow(context);
+    FlatPPLPanel.createOrShow(context, bundleHost);
     FlatPPLPanel.currentPanel.showModule(editor.document.getText(), memberUri, false, false, null);
   });
   bundleCommand('flatppl.browseBundle', async () => {
@@ -577,7 +576,7 @@ function activate(context: any) {
   //         readOnly?, navOrigin?, pushHistory? }
   function renderToPanel(opts: any) {
     const wasNew = !FlatPPLPanel.currentPanel;
-    FlatPPLPanel.createOrShow(context);
+    FlatPPLPanel.createOrShow(context, bundleHost);
     if (wasNew) {
       // Push initial config alongside source so the webview's sample
       // cache and SAMPLE_COUNT are correct on the first plot request.

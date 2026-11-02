@@ -36,11 +36,12 @@ function panelHost() {
       onDidReceiveMessage(fn) { receive = fn; }, postMessage(msg) { messages.push(msg); },
     },
     onDidDispose(fn) { dispose = fn; },
-  }, { extensionUri: {}, bundleHost: {
+  // A frozen context mirrors VS Code's non-extensible ExtensionContext.
+  }, Object.freeze({ extensionUri: {} }), {
     resolve(uri, source) {
       return engine.resolveBundleBytes(uri.path, Buffer.from(source), () => vscode.workspace.fs.readFile(), { strict: false });
     },
-  } });
+  });
   receive({ type: 'webviewReady' });
   return { panel, messages, pending, started, dispose: () => dispose() };
 }
@@ -72,4 +73,9 @@ test('a data-only model reaches the webview with its dependency', async () => {
   assert.equal(h.messages[0].bundleSources['/data.json'], undefined);
   assert.deepEqual(Array.from(h.messages[0].bundleFiles['/data.json']), [55]);
   assert.equal(h.messages[0].bundleResolutions['/model.flatppl'].data['data.json'], '/data.json');
+});
+
+test('extension.ts writes no properties onto the ExtensionContext', () => {
+  const src = readFileSync(path.join(__dirname, '../extension.ts'), 'utf8');
+  assert.doesNotMatch(src, /\bcontext\.(?!subscriptions\b)\w+\s*=[^=]/);
 });
