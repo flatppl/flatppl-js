@@ -430,22 +430,6 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         loc: expr.loc });
       return T.failed("'" + bindingName + "' is stochastic (module boundary)");
     }
-    // A black-box interface member (flatppl-bridge) is `external(anything)`.
-    // Only a host that binds the interface to a box can query it, and this
-    // engine is not a box client. A load-time substitution makes it a value.
-    const substituted = (loweredModule.bindings.get(modAlias)?.rhs?.assigns || [])
-      .some((a: any) => a.name === bindingName);
-    const rhs = depBinding.rhs;
-    if (!substituted && rhs?.op === 'external' && rhs.args?.length === 1
-        && rhs.args[0].kind === 'const' && rhs.args[0].name === 'anything') {
-      diagnostics.push({ severity: 'error',
-        message: "'" + modAlias + "." + bindingName + "' is a black-box member "
-          + "(declared external(anything) in '" + path + "'). The JS engine does not "
-          + "query black boxes: compile the model with flatppl-python and bind '"
-          + modAlias + "' to a box.",
-        loc: expr.loc });
-      return T.failed("'" + modAlias + "." + bindingName + "' is a black-box member");
-    }
     const standalone = depBinding.inferredType || T.deferred();
     if (standalone.kind !== 'deferred' && !_hasDynamicExtent(standalone)) return standalone;
     const sharper = _retypeUnderSubstitution(modAlias, path, bindingName);

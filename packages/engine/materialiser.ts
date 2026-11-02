@@ -3248,6 +3248,24 @@ function _clearMaterialiserPipeline(): void {
   _MATERIALISER_PIPELINE.length = 0;
 }
 
+// The `external(...)` input, in source spelling, that leaves `name` without a
+// derivation: the binding itself or one it reads. Linking writes a module
+// member `m.c` as `m$c`.
+function _unsuppliedExternal(name: string, ctx: any): string | null {
+  const seen = new Set<string>();
+  const pending = [name];
+  while (pending.length) {
+    const current = pending.pop()!;
+    if (seen.has(current)) continue;
+    seen.add(current);
+    const binding = ctx.bindings?.get(current);
+    if (!binding) continue;
+    if (binding.ir?.op === 'external' && !ctx.derivations[current]) return current.split('$').join('.');
+    pending.push(...(binding.deps || []), ...(binding.callDeps || []));
+  }
+  return null;
+}
+
 // The terminal stage: existing KIND_HANDLERS dispatch. Receives
 // `next` for symmetry but never calls it — it IS the final step.
 const kindDispatchStage: MaterialiserStage = function (name, ctx, _next) {
@@ -3255,7 +3273,13 @@ const kindDispatchStage: MaterialiserStage = function (name, ctx, _next) {
   if (!d && ctx.bindings?.get(name)?.type === 'data') {
     return Promise.reject(new Error(`load_data '${name}' cannot be accessed: supply an explicit valueset instead of anything and prefetch the source in the module bundle`));
   }
-  if (!d) return Promise.reject(new Error("no derivation for '" + name + "'"));
+  if (!d) {
+    const external = _unsuppliedExternal(name, ctx);
+    if (external) {
+      return Promise.reject(new Error(`'${external}': an external input supplied by the host is not supported by this engine`));
+    }
+    return Promise.reject(new Error("no derivation for '" + name + "'"));
+  }
   try {
     orchestrator.assertProjectionMassCertified(name, d);
   } catch (e) {
