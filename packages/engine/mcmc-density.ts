@@ -528,9 +528,8 @@ async function buildLogPi(
   // bayesupdate"). A normalize(...) in the body (e.g. a normalized mixture
   // `normalize(superpose(weighted(theta, …), weighted(1-theta, …)))`) lowers to
   // a node carrying massFrom; left unresolved it reaches walkNormalize, which
-  // refuses an unresolved spec — swallowed to −∞ by likWith, making logπ = −∞
-  // everywhere (every sampler stuck at init; SMC's 0·(−∞)=NaN at β=0 wipes all
-  // weights). Mirrors the per-draw prior resolution above.
+  // refuses an unresolved spec, so every point fails. Mirrors the per-draw
+  // prior resolution above.
   // The point uses public input names, while the reified body uses boundary
   // sources. Rename simultaneously: one input may reuse another source's name.
   const boundaryNames = new Map((d.params || []).map((name: string, i: number) =>
@@ -566,8 +565,7 @@ async function buildLogPi(
   // derived bindings. A draw inside the kernel that the prior does not carry is
   // a latent the likelihood integrates out (spec §06 "Density of composed
   // measures"). The density walker has no value for it: it is unbound in the
-  // scoring env, `likWith` swallows that to -Infinity, and every chain starts
-  // at -Infinity without saying why. So the marginal is taken in closed form
+  // scoring env, and every point fails. So the marginal is taken in closed form
   // (a linear-Gaussian sub-DAG, mean affine in the point), or the build refuses.
   let marginal: { g: any; shift: number; source: Record<string, string> } | null = null;
   {
@@ -839,11 +837,10 @@ async function buildLogPi(
     return Number.isFinite(v) ? v : -Infinity;
   }
 
-  // One-time tractability probe at an in-support point: lets the density
-  // walker's errors propagate (annotated with the draw name) instead of being
-  // swallowed to −∞ as priorWith does at runtime. A prior whose density is a
-  // static error (e.g. an unannotated pushfwd, spec §06) makes MCMC/AMIS
-  // impossible — the backend must refuse with the reason, not run stuck chains.
+  // One-time tractability probe at an in-support point. A prior whose density
+  // is a static error (e.g. an unannotated pushfwd, spec §06) makes MCMC/AMIS
+  // impossible, so the backend refuses at setup with the reason, before any
+  // chain starts.
   function probePrior(pt: Record<string, any>): void {
     const env = buildEnv(pt);
     const { refArrays } = pointToRefArrays(pt);
@@ -861,15 +858,10 @@ async function buildLogPi(
     }
   }
 
-  // The likelihood companion to `probePrior`, and for the same reason: at
-  // runtime `likWith` swallows every density throw to −∞, which is right for a
-  // proposal that lands outside support but wrong for a likelihood whose
-  // density is a STATIC refusal — MH then rejects every proposal and returns a
-  // constant chain with no diagnostic at all. `normalize` of a zero-mass
-  // mixture is exactly that case (spec §06 leaves it undefined), and the IS
-  // route refuses it, so without this probe the two backends disagreed on the
-  // same model. Only THROWS propagate; a legitimately −∞ likelihood is a
-  // normal in-support answer and stays one.
+  // The likelihood companion to `probePrior`: a likelihood whose density is a
+  // STATIC refusal is refused at setup. `normalize` of a zero-mass mixture is
+  // that case (spec §06 leaves it undefined), and the IS route refuses it too.
+  // A legitimately −∞ likelihood is a normal in-support answer and stays one.
   function probeLik(pt: Record<string, any>): void {
     const env = buildEnv(pt);
     const { refArrays } = pointToRefArrays(pt);

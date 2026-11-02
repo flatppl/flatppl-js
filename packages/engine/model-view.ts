@@ -268,15 +268,11 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
           + `backend 'is' (which forward-samples the prior rather than scoring it), `
           + `or annotate the offending transform with bijection(f, f_inv, logvolume).`);
       }
-      // 4b. LIKELIHOOD-tractability probe, for the same reason as 4a. At
-      //     runtime `likWith` swallows a density throw to −∞, which is right
-      //     for a proposal outside support and wrong for a STATIC refusal:
-      //     MH then rejects every proposal and reports a constant chain with
-      //     no diagnostic. `normalize` of a zero-mass mixture is that case
-      //     (spec §06 leaves it undefined) and the IS route already refuses
-      //     it, so probing here keeps the two backends from disagreeing on
-      //     the same model. A legitimately −∞ likelihood does not throw and
-      //     so does not trip this.
+      // 4b. LIKELIHOOD-tractability probe, for the same reason as 4a: a
+      //     STATIC refusal is reported at setup. `normalize` of a zero-mass
+      //     mixture is that case (spec §06 leaves it undefined), and the IS
+      //     route refuses it too. A legitimately −∞ likelihood does not throw
+      //     and so does not trip this.
       try {
         probeLik(probePt);
       } catch (err: any) {
