@@ -2569,7 +2569,9 @@ function collectIdentRefs(
         const tagIdx = builtinKernelTagIndex(node);
         for (let i = 0; i < node.args.length; i++) {
           const a = node.args[i];
-          if (i === tagIdx && a && a.type === 'Identifier') continue;
+          // A binding name in the slot is a measure, so a reference (§07 nullary form).
+          if (i === tagIdx && a && a.type === 'Identifier'
+              && !(definedNames && definedNames.has(a.name))) continue;
           walk(a);
         }
       }
@@ -3546,6 +3548,10 @@ function analyze(ast: any, source: string, opts?: any) {
   // ops it introduces (bijection, functionof, pushfwd) are already
   // first-class, so locscale needs no derivation kind of its own.
   expandLocscaleStatements(ast, diagnostics);
+
+  // Pre-pass: a closed built-in measure in a primitive's kernel slot becomes
+  // its kernel and input record (spec §07: a measure is a nullary kernel).
+  require('./nullary-primitives.ts').expandNullaryPrimitives(ast);
 
   // First pass: collect all defined names
   for (const stmt of ast.body) {
