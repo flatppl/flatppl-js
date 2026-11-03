@@ -18,7 +18,7 @@
 //
 // The session id and the detached panels live in sessionStorage, so a reload
 // of this window finds its replicas again; replicas that do not answer within
-// 3 s are re-docked.
+// 10 s are re-docked.
 //
 // Loaded as a plain <script> installing window.FlatPPLPaneOwner.
 
@@ -31,7 +31,10 @@
   const LABEL: Record<Pane, string> = { graph: 'Graph', plot: 'Plots', math: 'Math' };
   const PANEL_ID: Record<Pane, string> = { graph: 'graph-panel', plot: 'plot-panel', math: 'math-panel' };
   const START_TIMEOUT_MS = 10000;
-  const RECONNECT_TIMEOUT_MS = 3000;
+  // After a reload, how long recorded panel windows have to say hello. Longer
+  // than their slow hello (5 s), which is the only way they reach this window
+  // on the postMessage fallback after their closed banner shows.
+  const RECONNECT_TIMEOUT_MS = 10000;
   const BYE_GRACE_MS = 1500;
   const REDOCK_TIMEOUT_MS = 2000;
   const PING_MS = 5000;

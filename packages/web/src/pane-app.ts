@@ -15,6 +15,9 @@
   const HELLO_RETRY_MS = 1000;
   const HELLO_GIVE_UP_MS = 10000;
   const OWNER_RETURN_MS = 3000;
+  // After the closed banner shows, a main window that comes back late (a
+  // slow reload) can still find this window on the postMessage fallback.
+  const SLOW_HELLO_MS = 5000;
   const PING_MS = 5000;
   const LOST_MS = 15000;
 
@@ -59,7 +62,9 @@
     let settings: any = { editEnabled: false };
     let parkedMeasures: any = null;
     let helloTimer: any = null;
+    let slowHelloTimer: any = null;
     let ownerTimer: any = null;
+    let adoptedEpoch: string | null = null;
 
     const host = {
       setTarget(name: string | null): void {
@@ -135,6 +140,11 @@
     }
 
     function welcome(env: any): void {
+      // Two hellos in flight bring two welcomes from one owner page load.
+      // Only the first applies: a second would re-import (and so drop) the
+      // samples parked for the first.
+      if (welcomed && env.epoch === adoptedEpoch) return;
+      adoptedEpoch = env.epoch;
       const body = env.body || {};
       const snap = body.snapshot || {};
       tracker.reset();
@@ -155,6 +165,7 @@
       banner.hidden = true;
       say('Connected to the main window.');
       if (helloTimer) { globalScope.clearInterval(helloTimer); helloTimer = null; }
+      stopSlowHello();
       session.watch('owner', PING_MS, LOST_MS);
     }
 
@@ -205,6 +216,7 @@
     function leave(): void {
       if (leaving) return;
       leaving = true;
+      stopSlowHello();
       if (pane === 'plot') session.send('pane.measures', view.exportMeasures(null), 'owner');
       session.send('pane.panelState', { pane, state: view.snapshotPanel(pane) }, 'owner');
       globalScope.close();
@@ -256,6 +268,12 @@
         run: () => { globalScope.location.href = 'index.html' + (path ? '#/files/' + encodeURI(path) + target : ''); },
       });
       say('The main playground window is closed.');
+      stopSlowHello();
+      slowHelloTimer = globalScope.setInterval(sayHello, SLOW_HELLO_MS);
+    }
+
+    function stopSlowHello(): void {
+      if (slowHelloTimer) { globalScope.clearInterval(slowHelloTimer); slowHelloTimer = null; }
     }
 
     $('pane-dock').addEventListener('click', () => session.send('intent.redock', {}, 'owner'));
@@ -263,6 +281,7 @@
       try { if (globalScope.opener) globalScope.opener.focus(); } catch (_) { /* the browser decides */ }
     });
     globalScope.addEventListener('pagehide', () => {
+      stopSlowHello();
       if (leaving) return;
       if (pane === 'plot') session.send('pane.measures', view.exportMeasures(null), 'owner');
       session.send('pane.bye', { reason: 'close', state: view.snapshotPanel(pane) }, 'owner');

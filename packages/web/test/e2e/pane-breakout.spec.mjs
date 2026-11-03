@@ -277,6 +277,24 @@ test('without BroadcastChannel a reload of the main window finds the panel windo
   await expect(popup.locator('#math-content mtr.focused[data-flatppl-binding="sigma_sq"]')).toBeAttached();
 });
 
+test('without BroadcastChannel a main window that reloads slowly still finds the panel window', async ({ page }) => {
+  await page.context().addInitScript(() => { delete window.BroadcastChannel; });
+  await openModel(page);
+  const popup = await popOut(page, 'math');
+  // Hold the owner script past the panel window's 3 s reconnect wait.
+  await page.route('**/pane-owner.js', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+    await route.continue();
+  });
+  await page.reload();
+  await expect(popup.locator('#pane-banner-text')).toHaveText('The main playground window is closed.', { timeout: 10000 });
+  await expect(popup.locator('#pane-status')).toHaveText('Connected to the main window.', { timeout: 20000 });
+  await expect(popup.locator('#pane-banner')).toBeHidden();
+  await expectDetached(page, 'math');
+  await clickNode(page, 'sigma_sq');
+  await expect(popup.locator('#math-content mtr.focused[data-flatppl-binding="sigma_sq"]')).toBeAttached();
+});
+
 test('a panel window ignores owner state older than what it applied', async ({ page }) => {
   await openModel(page);
   const popup = await popOut(page, 'plot');
