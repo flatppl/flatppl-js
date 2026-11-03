@@ -189,6 +189,10 @@
       switch (env.type) {
         case 'state.model': applyModel(body.model, body.focus ?? null); lastSelect = null; return;
         case 'state.focus':
+          // The owner echoes a focus this window set itself (a double-click
+          // here). Re-rendering would re-fit the graph over the user's zoom
+          // and pan, and nothing changed.
+          if ((body.target ?? null) === lastFocus) return;
           if (lastModel) applyModel(lastModel, body.target ?? null, !!body.pushHistory);
           lastSelect = null;
           return;

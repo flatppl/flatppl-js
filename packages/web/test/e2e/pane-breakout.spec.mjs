@@ -317,6 +317,32 @@ test('without BroadcastChannel a main window that reloads slowly still finds the
   await expect(popup.locator('#math-content mtr.focused[data-flatppl-binding="sigma_sq"]')).toBeAttached();
 });
 
+test('the owner repeating the graph window\'s focus keeps the user\'s zoom and pan', async ({ page }) => {
+  await openModel(page);
+  const popup = await popOut(page, 'graph');
+  const sid = new URL(popup.url()).hash.match(/sid=([0-9a-f]{32})/)[1];
+  await page.evaluate((s) => {
+    window.__seen = [];
+    const ch = new BroadcastChannel('flatppl-pane:' + s);
+    ch.onmessage = (e) => { if (e.data && e.data.from === 'owner') window.__seen.push(e.data); };
+    window.__forge = ch;
+  }, sid);
+  // Any owner message (its liveness ping comes within 5 s) gives the epoch to forge with.
+  await expect.poll(() => page.evaluate(() => window.__seen.length), { timeout: 15000 }).toBeGreaterThan(0);
+  const last = await page.evaluate(() => window.__seen[window.__seen.length - 1]);
+  const focus = (n, target) => page.evaluate(([e, k, t]) => window.__forge.postMessage({ ...e, seq: e.seq + 1000 + k,
+    type: 'state.focus', body: { rev: 1000000 + k, target: t, pushHistory: true } }), [last, n, target]);
+  await popup.evaluate(() => { const cy = document.getElementById('cy')._cyreg.cy; cy.zoom(1.6); cy.pan({ x: 30, y: 20 }); });
+  // The focus the window already shows, as the owner echoes a double-click made here.
+  await focus(1, 'sigma');
+  await popup.waitForTimeout(500);
+  expect((await snapshotOf(popup, PANE, 'graph')).graph.viewport).toEqual({ zoom: 1.6, pan: { x: 30, y: 20 } });
+  // A different focus still applies: the path works.
+  await focus(2, 'sigma_sq');
+  await expect.poll(async () => (await snapshotOf(popup, PANE, 'graph')).graph.history.map((h) => h.targetName))
+    .toContain('sigma');
+});
+
 test('a panel window ignores owner state older than what it applied', async ({ page }) => {
   await openModel(page);
   const popup = await popOut(page, 'plot');
