@@ -26,6 +26,19 @@ async function popOut(page, pane) {
   return popup;
 }
 
+/** Click Dock in a panel window and wait for the window to close. Docking
+ *  can close the window before Playwright's click returns; only that error
+ *  is expected. */
+async function dockFrom(popup) {
+  const closed = popup.waitForEvent('close');
+  try {
+    await popup.click('#pane-dock');
+  } catch (err) {
+    if (!popup.isClosed()) throw err;
+  }
+  await closed;
+}
+
 async function expectDetached(page, pane) {
   await expect(page.locator('#' + PANEL[pane])).toHaveClass(/hidden/);
   await expect(page.locator('#' + TOGGLE[pane])).toHaveClass(/detached/);
@@ -75,9 +88,7 @@ test('the Dock button returns the plots with their samples', async ({ page }) =>
   const popup = await popOut(page, 'plot');
   expect(await paneHandover(popup)).toBe('adopted');
   expect(await panePlotted(popup)).toBe('sigma');
-  const closed = popup.waitForEvent('close');
-  await popup.click('#pane-dock');
-  await closed;
+  await dockFrom(popup);
   await expectDocked(page, 'plot');
   await expect.poll(() => page.evaluate(() => window.FlatPPLWeb.viewer.viewerHandle().measureHandoverStatus()))
     .toBe('adopted');
@@ -188,9 +199,7 @@ test('without BroadcastChannel the window fallback carries the session', async (
   const popup = await popOut(page, 'graph');
   await clickNode(popup, 'sigma_sq');
   await expect.poll(() => mainPlotted(page)).toBe('sigma_sq');
-  const closed = popup.waitForEvent('close');
-  await popup.click('#pane-dock');
-  await closed;
+  await dockFrom(popup);
   await expectDocked(page, 'graph');
 });
 
@@ -251,9 +260,7 @@ test('the main window keeps its plot settings through a panel reload and Dock', 
   expect(plotSettings(await snapshotOf(popup, PANE, 'plot'))).toEqual([2000, 5]);
   await popup.reload();
   await expect(popup.locator('#pane-status')).toHaveText('Connected to the main window.');
-  const closed = popup.waitForEvent('close');
-  await popup.click('#pane-dock');
-  await closed;
+  await dockFrom(popup);
   await expectDocked(page, 'plot');
   expect(plotSettings(await snapshotOf(page, MAIN, 'plot'))).toEqual([2000, 5]);
 });
