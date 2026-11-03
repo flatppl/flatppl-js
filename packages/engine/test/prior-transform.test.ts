@@ -425,3 +425,32 @@ test('prior transform: hierarchical-logistic (kwargs Gamma + locscale StudentT p
   assert.ok(rec.a instanceof Float64Array && rec.a.length === 3);
   for (const v of rec.a) assert.ok(Math.abs(v) < 1e-9, `a elem ${v}`);
 });
+
+// The nested prior transform once dropped a derived binding that threw and
+// reported only "cannot resolve param 'sigma' of Normal". Oracle for the valid
+// sibling: the Exponential(1) median is ln 2, and Phi(1) maps to one sigma.
+test('a failing derived binding in the prior transform names the binding and the cause', () => {
+  const build = (index: number) => {
+    const { proc, ctx } = ctxFor(`
+x ~ Exponential(1)
+v = [x, x, x]
+s = v[${index}]
+y ~ Normal(0, s)
+prior = lawof(record(a = x, b = y))
+a = elementof(reals)
+b = elementof(reals)
+K = functionof(Normal(a + b, 1), a, b)
+posterior = bayesupdate(likelihoodof(K, 0), prior)
+`, 16);
+    assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error'), []);
+    return buildPriorTransform(ctx, ctx.derivations.posterior);
+  };
+  const u = Float64Array.of(0.5, 0.8413447460685429);
+  assert.throws(() => build(5).transform(u), {
+    message: "prior-transform: cannot resolve param 'sigma' of Normal: binding 's' failed to evaluate: "
+      + 'evaluateExpr: get index 5 out of bounds for length 3',
+  });
+  const point = build(2).transform(u);
+  assert.ok(Math.abs(point.x - Math.LN2) < 1e-10, String(point.x));
+  assert.ok(Math.abs(point.y - Math.LN2) < 1e-10, String(point.y));
+});

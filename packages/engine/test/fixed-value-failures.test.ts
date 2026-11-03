@@ -8,6 +8,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 
+const engine = require('../index.ts');
+const orchestrator = require('../orchestrator.ts');
 const { FixedValues } = require('../fixed-values.ts');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
 
@@ -75,7 +77,7 @@ test('a failure read through the measure-context resolver keeps the root binding
     expandMeasureIR: () => null, collectSelfRefs: (ir: any) => new Set(ir.refs), lowerExpr: (x: any) => x,
     diagnostics, bindingLoc: () => undefined,
   });
-  assert.equal(fv.get('dep'), undefined);
+  assert.throws(() => fv.get('dep'), { message: "Fixed-phase binding 'bad' failed to evaluate: boom" });
   assert.equal(fv.failure('dep'), "Fixed-phase binding 'bad' failed to evaluate: boom");
   assert.deepEqual(diagnostics.map((d: any) => d.message), ["Fixed-phase binding 'bad' failed to evaluate: boom"]);
 });
@@ -125,4 +127,50 @@ y ~ iid(Normal(mu = 0.0, sigma = 1.0), n)
   const want = "Fixed-phase binding 'n' failed to evaluate: evaluateExpr: get index 5 out of bounds for length 2";
   assert.equal(await rejection(ctx, 'y'), want);
   assert.deepEqual(errors(built), [want]);
+});
+
+// A direct `fixedValues.get` of a failed binding once returned `undefined`.
+// The analyzer now refuses this vector-of-vectors `cov` (#532). The build runs
+// anyway here, so the run-time failure still reaches the reader. Oracle for
+// the matrix case: scipy.stats.multivariate_normal([0, 1], [[2, .5], [.5, 1]])
+// .logpdf([0.3, 0.7]) = -2.2205421032341994.
+test('fixedValues.get of a failed binding throws the named cause', () => {
+  const build = (cov: string) => {
+    const r = engine.processSource(`flatppl_compat = "0.1"
+lp = builtin_logdensityof(MvNormal, record(mu = [0.0, 1.0], cov = ${cov}), [0.3, 0.7])
+y = lp + 1.0
+`);
+    return orchestrator.buildDerivations(r.bindings, r.loweredModule).fixedValues;
+  };
+  const failed = build('[[2.0, 0.5], [0.5, 1.0]]');
+  const cause = /^Error: Fixed-phase binding 'lp' failed to evaluate: builtin_logdensityof\(MvNormal\): param 'cov': argument is a vector-of-vectors/;
+  for (const name of ['lp', 'y']) {
+    assert.equal(failed.has(name), false, name);
+    assert.throws(() => failed.get(name), cause, name);
+  }
+  const valid = build('rowstack([[2.0, 0.5], [0.5, 1.0]])');
+  assert.ok(Math.abs(valid.get('lp') - -2.2205421032341994) < 1e-12, String(valid.get('lp')));
+  assert.ok(Math.abs(valid.get('y') - -1.2205421032341994) < 1e-12, String(valid.get('y')));
+});
+
+test('resolveIRToValue of a failed binding reports its recorded cause', () => {
+  const r = engine.processSource(`flatppl_compat = "0.1"
+a = [1.0, 2.0]
+b = a[5]
+c = a[2]
+`);
+  const built = orchestrator.buildDerivations(r.bindings, r.loweredModule);
+  const ref = (name: string) => ({ kind: 'ref', ns: 'self', name });
+  assert.throws(() => orchestrator.resolveIRToValue(ref('b'), built.bindings, built.fixedValues),
+    { message: OUT_OF_BOUNDS });
+  assert.equal(orchestrator.resolveIRToValue(ref('c'), built.bindings, built.fixedValues), 2);
+});
+
+test('a latent whose law fails to lower is refused, not dropped', () => {
+  const { collectLatents } = require('../model-spec.ts');
+  const bindings = new Map<string, any>([
+    ['x', { type: 'draw', deps: [], node: { value: { type: 'NoSuchNode' } } }],
+  ]);
+  assert.throws(() => collectLatents('x', { bindings }),
+    { message: "latent 'x' could not be lowered: lower: unsupported AST node type 'NoSuchNode'" });
 });

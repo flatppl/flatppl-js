@@ -54,7 +54,9 @@ function collectLatents(rootName: string, ctx: any): any[] {
       let rhsIR: IRNode | null = null;
       try {
         rhsIR = lowerExpr(b.effectiveValue || b.node.value);
-      } catch (_) { return; }
+      } catch (err: any) {
+        throw new Error(`latent '${name}' could not be lowered: ${err?.message ?? String(err)}`);
+      }
 
       // Classify to extract distIR (same call as orchestrator.ts:244).
       const orc = require('./orchestrator.ts');

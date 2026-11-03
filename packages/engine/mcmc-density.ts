@@ -30,6 +30,7 @@ const { logTotalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } 
 const { crnNormalizeDensity, crnRecognize, CRN_NODE_BUDGET } = require('./crn-normalize.ts');
 const { leafMassExpr } = require('./leaf-mass-quad.ts');
 const { isEngineLimitation } = require('./limitations.ts');
+const { recordDerivedFailure, derivedFailureOf, derivedFieldFailure } = require('./derived-failures.ts');
 
 // ---------------------------------------------------------------------------
 // parseSet — mirrors worker.ts makeParseSet (worker.ts:112-126).
@@ -233,34 +234,6 @@ function truncatedBoxDensity(node: any): any | null {
     inner: { ...inner, args: [centered, inner.args[1]] } };
 }
 
-// ---------------------------------------------------------------------------
-// Derived-binding failures. A derived binding that throws is left out of the
-// env: it may be a function or a measure, which is not a value. A scorer
-// that then reads it as a value hits an unbound ref, and must report the
-// binding's own cause instead of a missing name or -Infinity.
-// ---------------------------------------------------------------------------
-const DERIVED_FAILURES = Symbol('derivedFailures');
-
-// The message is built on read: buildEnv runs at every MCMC step, and most
-// recorded failures (function and measure bindings) are never read.
-function recordDerivedFailure(env: any, name: string, err: any): void {
-  let failures: Map<string, { name: string; err: any }> = env[DERIVED_FAILURES];
-  if (!failures) {
-    failures = new Map();
-    Object.defineProperty(env, DERIVED_FAILURES, { value: failures, enumerable: false });
-  }
-  // A failure that is an unbound read of an earlier failure keeps the root.
-  const root = err?.flatpplRefName != null ? failures.get(err.flatpplRefName) : undefined;
-  failures.set(name, root ?? { name, err });
-}
-
-// The failure behind an unbound read of a derived binding, or `null`.
-function derivedFailureOf(err: any, env: any): string | null {
-  if (!err || err.flatpplRefName == null || !env) return null;
-  const f = env[DERIVED_FAILURES]?.get(err.flatpplRefName);
-  return f ? `binding '${f.name}' failed to evaluate: ${f.err?.message ?? String(f.err)}` : null;
-}
-
 function isTaggedRefusal(err: any): boolean {
   return !!(err?.undefinedNormalize || err?.modelRefusal || isEngineLimitation(err));
 }
@@ -269,13 +242,6 @@ function scorerFailure(what: string, cause: string): Error {
   const err: any = new Error(`${what} failed to evaluate: ${cause}`);
   err.flatpplScorerFailure = true;
   return err;
-}
-
-// Why a posterior field read from `evaluateDerivedBindings` has no value.
-function derivedFieldFailure(env: any, name: string): string {
-  const f = env?.[DERIVED_FAILURES]?.get(name);
-  return f ? `binding '${f.name}' failed to evaluate: ${f.err?.message ?? String(f.err)}`
-    : `binding '${name}' has no value at the posterior draws`;
 }
 
 // A scoring throw is not a zero density, so it is never -Infinity.

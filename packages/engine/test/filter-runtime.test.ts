@@ -135,8 +135,8 @@ test('reduce: empty vector ⇒ runtime error', () => {
 data = []
 total = reduce(fn(_ + _), data)
 `);
-  // pre-eval silently skips on throws — total stays unevaluated.
-  assert.equal(r.fixedValues.get('total'), undefined);
+  assert.throws(() => r.fixedValues.get('total'),
+    { message: "Fixed-phase binding 'total' failed to evaluate: reduce: empty vector has no initial value" });
 });
 
 test('scan(fn(_ + _), 0, [1, 2, 3, 4]) ⇒ [1, 3, 6, 10]', () => {
@@ -223,14 +223,14 @@ expected = vadd(vmul([mu, mu, mu], sig), bkg)
   assert.deepEqual(toJS(r.fixedValues.get('expected')), [12, 24, 36]);
 });
 
-test('broadcast: length mismatch ⇒ pre-eval silently skips on throw', () => {
+test('broadcast: length mismatch ⇒ a reader gets the runtime error', () => {
   const r = buildFixed(`
 xs = [1.0, 2.0, 3.0]
 ys = [10.0, 20.0]
 sums = broadcast(fn(_ + _), xs, ys)
 `);
-  // pre-eval silently swallows the throw → sums stays unevaluated.
-  assert.equal(r.fixedValues.get('sums'), undefined);
+  assert.throws(() => r.fixedValues.get('sums'),
+    /^Error: Fixed-phase binding 'sums' failed to evaluate: broadcast: incompatible sizes on axis 0 \(3 vs 2\)/);
 });
 
 test('filter: integrates with bincounts (region-restricted observation)', () => {

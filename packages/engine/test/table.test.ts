@@ -404,10 +404,9 @@ f = (x) -> x + 1.0
 out = f.(r)
 `);
   // The error surfaces at the runtime broadcast call — record is
-  // detected and rejected. The binding `out` doesn't make it to
-  // fixedValues.
+  // detected and rejected, and a reader of `out` gets it.
   const ds = buildDerivations(r.bindings);
-  assert.ok(!ds.fixedValues.has('out'),
-    'broadcast over a plain record must not produce a value; '
-    + 'got ' + JSON.stringify(ds.fixedValues.get('out')));
+  assert.ok(!ds.fixedValues.has('out'));
+  assert.throws(() => ds.fixedValues.get('out'),
+    { message: "Fixed-phase binding 'out' failed to evaluate: broadcast: first arg must be a function" });
 });

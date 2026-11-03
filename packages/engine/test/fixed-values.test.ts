@@ -146,7 +146,8 @@ test('FixedValues: a binding whose evaluator throws is UNRESOLVED (no negative c
     expandMeasureIR: () => null, collectSelfRefs: () => new Set(), lowerExpr: (x: any) => x,
     diagnostics, bindingLoc: () => undefined,
   });
-  assert.equal(fv.get('t'), undefined, 'throw → UNRESOLVED');
+  assert.equal(fv.has('t'), false, 'throw → UNRESOLVED');
+  assert.throws(() => fv.get('t'), { message: "Fixed-phase binding 't' failed to evaluate: boom" });
   // No negative cache: a later demand re-attempts and now succeeds.
   throwIt = false;
   assert.equal(fv.get('t'), 42, 'retried on next demand (no negative cache)');
@@ -164,14 +165,15 @@ test('FixedValues: an unmarked throw (real evaluation failure) becomes a diagnos
     expandMeasureIR: () => null, collectSelfRefs: () => new Set(), lowerExpr: (x: any) => x,
     diagnostics, bindingLoc: (name: any) => ({ line: 1, name }),
   });
-  assert.equal(fv.get('v'), undefined, 'still UNRESOLVED — the binding has no value');
+  assert.equal(fv.has('v'), false, 'still UNRESOLVED — the binding has no value');
+  assert.throws(() => fv.get('v'), /var: undefined over a single element/);
   assert.equal(diagnostics.length, 1, 'a real evaluation failure is diagnosed, not swallowed');
   assert.match(diagnostics[0].message, /'v'/);
   assert.match(diagnostics[0].message, /var: undefined over a single element/);
   assert.deepEqual(diagnostics[0].loc, { line: 1, name: 'v' });
   // No-negative-cache still retries on every demand — but the diagnostic
   // is not re-pushed for the same still-failing binding.
-  fv.get('v');
+  assert.throws(() => fv.get('v'));
   assert.equal(diagnostics.length, 1, 'repeat demand of the same failing binding does not duplicate the diagnostic');
 });
 
