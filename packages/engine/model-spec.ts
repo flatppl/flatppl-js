@@ -251,25 +251,10 @@ function uniformSupportFromDistIR(distIR: any, bindings: any, fixedValues: any):
 // heuristic multi-point probe) and finite base bounds yield exact closed image
 // bounds via direct f evaluation. The numeric magnitude-probe is kept as the
 // fallback for infinite base ends and for functions invertExpr cannot handle.
-//
-// A throw from f is not a value, so it never reads as an infinite limit. It
-// ends the derivation, and the caller keeps `real`. NaN stays a value.
-const PROBE_THREW = Symbol('pushfwdImageSupport: f threw');
-
 function pushfwdImageSupport(fnBody: any, paramName: string, baseSupport: any): any {
-  try {
-    return imageSupportByProbes(fnBody, paramName, baseSupport);
-  } catch (err) {
-    if (err === PROBE_THREW) return null;
-    throw err;
-  }
-}
-
-function imageSupportByProbes(fnBody: any, paramName: string, baseSupport: any): any {
   const f = (x: number): number => {
-    let v: any;
-    try { v = sampler.evaluateExpr(fnBody, { [paramName]: x }); } catch (_) { throw PROBE_THREW; }
-    return typeof v === 'number' ? v : NaN;
+    try { const v = sampler.evaluateExpr(fnBody, { [paramName]: x }); return typeof v === 'number' ? v : NaN; }
+    catch (_) { return NaN; }
   };
   let blo: number, bhi: number;
   if (baseSupport.kind === 'positive') { blo = 0; bhi = Infinity; }
@@ -697,4 +682,4 @@ function detectGaussianPrior(d: any, ctx: any): Record<string, { mu: number; sig
   return Object.keys(out).length > 0 ? out : null;
 }
 
-module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents, collectDrawNames, priorLatentSources, detectGaussianPrior, uniformSupportFromDistIR, pushfwdImageSupport };
+module.exports = { buildPosteriorSpec, collectLatents, enumerateLatents, collectDrawNames, priorLatentSources, detectGaussianPrior, uniformSupportFromDistIR };
