@@ -45,7 +45,7 @@ for (const [model, name, input, sources] of [
   test(`an unsupplied external refuses by name: ${model.trim().split('\n').pop()}`, async () => {
     await assert.rejects(
       materialise(model, name, sources),
-      { message: `'${input}': an external input supplied by the host is not supported by this engine` },
+      { message: `Binding '${name}' failed to evaluate: '${input}': an external input supplied by the host is not supported by this engine` },
     );
   });
 }
