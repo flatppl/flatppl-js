@@ -9,7 +9,7 @@
 // info-bar helpers (showNodeInfo, updateHeader, updateBackBtn) live
 // here too — they're only called from the DAG event handlers.
 
-import { updatePlotForBinding } from './render-plot.js';
+import { selectFromGesture, updatePlotForBinding } from './render-plot.js';
 import { $, bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
 import { renderDoc } from './markdown.js';
 import { resolveNodeColor } from './palette.js';
@@ -480,7 +480,9 @@ export function initCy(ctx: Ctx) {
     // `module$field` name (module-link.ts), via a shallow ctx clone. The
     // clone's writes (currentPlotPlan etc.) don't touch the real ctx, so
     // the DAG's own selection/back-stack state is untouched — this is a
-    // one-off side-plot, not a navigation.
+    // one-off side-plot, not a navigation. It is not reported through
+    // host.onSelect: the linked name is no binding of the model another
+    // window holds.
     const mm = d.moduleMember;
     if (mm && mm.module && d.id === mm.module + '.' + mm.field && ctx.currentLinkedBindings) {
       const linkedName = mm.module + '$' + mm.field;
@@ -493,7 +495,7 @@ export function initCy(ctx: Ctx) {
     // sample, so updatePlotForBinding ends up rendering a
     // "Not plottable" placeholder. Either way the plot reflects
     // the current selection rather than a stale earlier focus.
-    updatePlotForBinding(ctx, d.id);
+    selectFromGesture(ctx, d.id);
   });
 
   ctx.cy.on('tap', function(evt: any) {

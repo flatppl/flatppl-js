@@ -322,12 +322,19 @@ export function applyPanelLayout(ctx: Ctx) {
     // A lone panel fills the area without overwriting stored divider sizes.
     el.style.flex = !p.visible || p.full ? p.flex : ctx.panelSizes?.[p.id] || p.flex;
     const btn = $(dom.toggle);
-    btn.classList.toggle('on', enabled[p.id]);
+    // A detached panel is still shown, in another window (design §8).
+    const detached = ctx.panelPlacement?.[p.id] === 'detached';
+    const pressed = enabled[p.id] || detached;
+    btn.classList.toggle('on', pressed);
     // The face is just the label; the on/off state is the button's
     // filled/outlined rendering (templates.ts `.on`) plus aria-pressed —
     // a ": on"/": off" suffix crowded the header's binding line.
-    btn.setAttribute('aria-pressed', String(enabled[p.id]));
+    btn.setAttribute('aria-pressed', String(pressed));
     btn.textContent = dom.label;
+    // Hosts without the pane breakout (VS Code) never set either field, so
+    // their toggles keep exactly the markup above.
+    if (ctx.panelAllowed) btn.hidden = !ctx.panelAllowed.has(p.id);
+    if (ctx.panelPlacement) applyPlacementFace(btn, p.id, detached);
   }
   for (const d of layout.dividers) {
     const id = PANEL_DOM[d.after].dividerAfter;
@@ -338,6 +345,30 @@ export function applyPanelLayout(ctx: Ctx) {
   }
   $('panels-hidden').hidden = layout.visibleCount > 0;
   ($('collapse-all-btn') as HTMLButtonElement).disabled = !ctx.graphEnabled || !ctx.currentState?.data.reifications?.length;
+}
+
+const dockedTitles = new WeakMap<HTMLElement, string | null>();
+
+/** Mark a toggle whose panel lives in another window. The arrow is
+ *  decoration; screen readers hear "Plots (in a separate window)". */
+function applyPlacementFace(btn: HTMLElement, id: PanelId, detached: boolean): void {
+  if (!dockedTitles.has(btn)) dockedTitles.set(btn, btn.getAttribute('title'));
+  btn.classList.toggle('detached', detached);
+  if (!detached) {
+    const title = dockedTitles.get(btn);
+    if (title != null) btn.setAttribute('title', title);
+    return;
+  }
+  const arrow = document.createElement('span');
+  arrow.className = 'detached-mark';
+  arrow.setAttribute('aria-hidden', 'true');
+  arrow.textContent = ' ↗';
+  const note = document.createElement('span');
+  note.className = 'viewer-sr-only';
+  note.textContent = ' (in a separate window)';
+  btn.appendChild(arrow);
+  btn.appendChild(note);
+  btn.setAttribute('title', PANEL_DOM[id].label + ' is in a separate window. Select to return it here.');
 }
 
 function updateDividerLabel(ctx: Ctx, after: PanelId): void {

@@ -30,7 +30,7 @@ realCytoscape.use(dagre);
 const { installTestDom } = await import('./test-dom.ts');
 const { mount } = await import('./main.ts');
 const { defaultVscodeHost } = await import('./host-adapter.ts');
-const { createWorkerHandler } = require('../../engine/worker.ts');
+const { InProcessWorker, settle } = await import('./test-worker.ts');
 
 const GOLDEN = new URL('./fixtures/vscode-view.golden.json', import.meta.url);
 
@@ -52,28 +52,6 @@ const MODEL = [
   '',
 ].join('\n');
 
-/** Run the engine's worker handler in-process behind the Worker interface,
- *  with structured cloning at the boundary as in a browser. */
-class InProcessWorker {
-  constructor() {
-    this.handler = createWorkerHandler();
-    this.listeners = [];
-    this.handler.setProgressSink?.((m) => this.emit(m));
-  }
-  addEventListener(type, fn) { if (type === 'message') this.listeners.push(fn); }
-  removeEventListener() {}
-  emit(reply) { const data = structuredClone(reply); this.listeners.forEach((fn) => fn({ data })); }
-  postMessage(msg) {
-    const copy = structuredClone(msg);
-    setImmediate(() => Promise.resolve(this.handler.handle(copy)).then((r) => { if (r) this.emit(r); }));
-  }
-  terminate() {}
-}
-
-async function settle() {
-  for (let i = 0; i < 200; i++) await new Promise((resolve) => setImmediate(resolve));
-}
-
 /** Install the browser surface the webview provides. */
 function webview() {
   const dom = installTestDom();
@@ -81,7 +59,12 @@ function webview() {
     .map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
   const define = (k, v) => Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
   // The webview renders into a canvas; headless cytoscape keeps the same model.
-  const cytoscape = (opts) => realCytoscape({ ...opts, container: undefined, headless: true, styleEnabled: true });
+  const graphs = [];
+  const cytoscape = (opts) => {
+    const cy = realCytoscape({ ...opts, container: undefined, headless: true, styleEnabled: true });
+    graphs.push(cy);
+    return cy;
+  };
   cytoscape.use = () => {};
   define('cytoscape', cytoscape);
   define('echarts', { getInstanceByDom: () => null, init: () => { throw new Error('no chart expected'); } });
@@ -90,6 +73,7 @@ function webview() {
   dom.window.__FLATPPL_CONFIG__ = { samplerWorkerUrl: 'sampler-worker.min.js', wasmApiUrl: null };
   return {
     dom,
+    graphs,
     sink: resetSink(),
     restore() {
       for (const [k, d] of Object.entries(saved)) {
@@ -199,4 +183,34 @@ test('the default VS Code host adapter keeps its methods and message shapes', (t
     'editSource:newText,range,type',
   ]);
   assert.equal(host.canPersist(), true);
+});
+
+test('VS Code graph gestures post only the existing message types', async () => {
+  const env = webview();
+  const { dom } = env;
+  let view = null;
+  try {
+    dom.document.body.innerHTML = '<div id="flatppl-viewer-root"></div>';
+    view = mount(dom.document.getElementById('flatppl-viewer-root'));
+    deliver(dom, { type: 'sourceUpdate', source: MODEL, targetName: 'x' });
+    await settle();
+    const cy = env.graphs[0];
+    const mark = env.sink.posted.length;
+    const tap = (id, originalEvent) => cy.$id(id).emit({ type: 'tap', originalEvent, position: { x: -1e9, y: -1e9 } });
+    tap('mu', { ctrlKey: false, metaKey: false, shiftKey: false });
+    await settle();
+    assert.deepEqual(env.sink.posted.slice(mark), [], 'a plain tap stays inside the webview');
+    tap('mu', { ctrlKey: true, metaKey: false, shiftKey: false });
+    cy.$id('mu').emit({ type: 'dbltap' });
+    await settle();
+    const types = env.sink.posted.slice(mark).map((m) => m.type);
+    assert.deepEqual(types, ['navigateTo', 'updateTitle']);
+    const known = new Set(['webviewReady', 'navigateTo', 'updateTitle', 'openModule', 'promptForName', 'editSource']);
+    for (const m of env.sink.posted) assert.ok(known.has(m.type), 'unexpected message ' + m.type);
+    assert.equal(dom.document.getElementById('detach-btn'), null, 'no Pop out control in VS Code');
+  } finally {
+    view?.dispose();
+    await settle();
+    env.restore();
+  }
 });

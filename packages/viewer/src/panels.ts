@@ -69,6 +69,17 @@ export function computePanelLayout(enabled: Record<PanelId, boolean>, options: {
   return { panels, dividers, visibleCount: visibleIds.length };
 }
 
+/** The panels a mount may show (MountOpts.panels), or null for all three.
+ *  Unknown names are dropped; an empty or all-unknown list is refused,
+ *  because a mount with no panel would show nothing. */
+export function resolveAllowedPanels(panels: unknown): Set<PanelId> | null {
+  if (panels == null) return null;
+  if (!Array.isArray(panels)) throw new TypeError('FlatPPLViewer.mount: opts.panels must be an array');
+  const allowed = new Set(PANEL_ORDER.filter((id) => panels.includes(id)));
+  if (allowed.size === 0) throw new RangeError('FlatPPLViewer.mount: opts.panels names no panel (graph, plot, math)');
+  return allowed;
+}
+
 /** The panel a divider resizes against: the next visible panel after
  *  `after`, or null when there is none (the divider is then hidden). */
 export function dividerPartner(layout: PanelLayout, after: PanelId): PanelId | null {

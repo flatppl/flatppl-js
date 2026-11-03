@@ -399,6 +399,15 @@ export interface HostAdapter {
    *  double-clicking a `load_module` node (whole module) or a member /
    *  member-alias node (that member). */
   openModule?(path: string, member?: string): void;
+  /** Move a panel into its own window. Its presence is the capability: the
+   *  viewer shows the Pop out control only when the host defines it, so a
+   *  host without it (VS Code) renders exactly as before. */
+  detachPanel?(panel: import('./panels').PanelId): void;
+  /** Bring a detached panel back; called when its toggle is clicked. */
+  redockPanel?(panel: import('./panels').PanelId): void;
+  /** A user gesture (graph tap, math click) changed the plotted binding.
+   *  Not called for host-initiated `select`. */
+  onSelect?(name: string | null): void;
   [extra: string]: any;
 }
 
@@ -410,7 +419,43 @@ export interface MountOpts {
   /** First-use default for the math pane (off unless the host says
    *  otherwise); a persisted user choice from loadState() wins. */
   defaultMathEnabled?: boolean;
+  /** Panels this mount may show; the others lose their toggles. Absent
+   *  means all three. Listed panels start enabled. */
+  panels?: import('./panels').PanelId[];
   [extra: string]: any;
+}
+
+/** Plain-data state that travels with a panel between windows. */
+export interface PanelSnapshot {
+  graph?: {
+    collapsedReifications: string[];
+    viewport: { zoom: number; pan: { x: number; y: number } } | null;
+    history: { targetName: string; path: string | null }[];
+  };
+  plot?: {
+    sampleCount: number;
+    marginalizationCount: number;
+    rejectionBudget: number;
+    rootSeed: number;
+    inferenceOpts: Record<string, any>;
+    recordSelection: Record<string, any> | null;
+    presetOverrides: [string, any][];
+    domainOverrides: [string, any][];
+    planMemory: [string, any][];
+  };
+  math?: { scrollTop: number };
+}
+
+/** What FlatPPLViewer.mount() returns. */
+export interface ViewerHandle {
+  update(source: any, target: any, opts?: any): void;
+  dispose(): void;
+  /** Plot and highlight a binding on the host's behalf (no onSelect). */
+  select(name: string | null): void;
+  /** Mark a panel as shown in another window, or shown here again. */
+  setPanelPlacement(panel: import('./panels').PanelId, placement: 'docked' | 'detached'): void;
+  snapshotPanel(panel: import('./panels').PanelId): PanelSnapshot;
+  restorePanel(panel: import('./panels').PanelId, snapshot: PanelSnapshot): void;
 }
 
 // Module — must export something for TS to treat as a module file

@@ -197,6 +197,11 @@ import {
 import { VIEWER_BODY_HTML, VIEWER_HINT, ensureCssInjected } from './templates.js';
 import { defaultVscodeHost, hostMessageListener } from './host-adapter.js';
 import { observeChartTheme } from './chart-theme.js';
+import { resolveAllowedPanels } from './panels.js';
+import {
+  installDetachControl, redockFromToggle, restorePanel, setPanelPlacement, snapshotPanel,
+} from './panel-breakout.js';
+import type { PanelId } from './panels.js';
 
 
 
@@ -426,6 +431,11 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     // keeps the existing extension wrapper working without any
     // host-side changes.
     ctx.host = opts.host || defaultVscodeHost();
+    // Pane breakout (web playground only): which panels this mount may show,
+    // and which of them live in another window. Null means the full viewer.
+    ctx.panelAllowed = resolveAllowedPanels(opts.panels);
+    ctx.panelPlacement = null;
+    ctx.refreshDetachControl = null;
 
     // Host-supplied configuration. The vscode-extension host writes
     // window.__FLATPPL_CONFIG__ via a small inline bootstrap <script>
@@ -1357,18 +1367,28 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // Call after every focusNode() to update the Plot tab's enabled
   // state and (if visible) re-render its content.
 
+  // A toggle outside this mount's panels does nothing; a detached panel's
+  // toggle asks the host to bring the panel back (pane breakout).
+  function toggleIntercepted(id: PanelId): boolean {
+    if (ctx.panelAllowed && !ctx.panelAllowed.has(id)) return true;
+    return redockFromToggle(ctx, id);
+  }
   // Plot toggle click handler. Restores from VS Code webview state on
   // first paint (see initial setPlotEnabled call below) so the user's
   // preference survives reloads.
   $('plot-toggle').addEventListener('click', function() {
+    if (toggleIntercepted('plot')) return;
     setPlotEnabled(ctx, !ctx.plotEnabled);
   });
   $('graph-toggle').addEventListener('click', function() {
+    if (toggleIntercepted('graph')) return;
     setGraphEnabled(ctx, !ctx.graphEnabled);
   });
   $('math-toggle').addEventListener('click', function() {
+    if (toggleIntercepted('math')) return;
     setMathEnabled(ctx, !ctx.mathEnabled);
   });
+  const detachCleanup = installDetachControl(ctx);
 
   // Graph-view compactor toolbar: collapse/expand every reification
   // bubble in the currently focused sub-DAG (shift+click on a single
@@ -1625,8 +1645,15 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // setMathEnabled call below then (re)renders its content.
   ctx.mathEnabled = typeof prevState?.mathEnabled === 'boolean'
     ? prevState.mathEnabled : opts.defaultMathEnabled === true;
-  setPlotEnabled(ctx, typeof prevState?.plotEnabled === 'boolean'
-    ? prevState.plotEnabled : opts.defaultPlotEnabled === true);
+  let plotOn = typeof prevState?.plotEnabled === 'boolean'
+    ? prevState.plotEnabled : opts.defaultPlotEnabled === true;
+  // A mount restricted to some panels shows exactly those.
+  if (ctx.panelAllowed) {
+    ctx.graphEnabled = ctx.panelAllowed.has('graph');
+    ctx.mathEnabled = ctx.panelAllowed.has('math');
+    plotOn = ctx.panelAllowed.has('plot');
+  }
+  setPlotEnabled(ctx, plotOn);
   setMathEnabled(ctx, ctx.mathEnabled);
   // Restore which reification bubbles were collapsed last session. A
   // restored anchor is marked "seen" so the >=3-member default in
@@ -1667,7 +1694,7 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
   // (e.g. the gallery's hash-based router) set this on user-driven
   // navigations so the in-viewer back button stays usable for
   // target-only steps within one model.
-  return {
+  const handle: import('./types').ViewerHandle = {
     update: function(source: any, target: any, opts: any) {
       applySourceUpdate(ctx, {
         source: source,
@@ -1684,12 +1711,21 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
         path: opts && opts.path,
       });
     },
+    // Pane breakout (design §7): host-initiated, so select never calls
+    // host.onSelect, and nothing here runs for a host that never calls it.
+    select: function(name: string | null) { updatePlotForBinding(ctx, name); },
+    setPanelPlacement: function(panel: PanelId, placement: 'docked' | 'detached') {
+      setPanelPlacement(ctx, panel, placement);
+    },
+    snapshotPanel: function(panel: PanelId) { return snapshotPanel(ctx, panel); },
+    restorePanel: function(panel: PanelId, snapshot: any) { restorePanel(ctx, panel, snapshot); },
     // Release every resource mount() acquired, so a host can swap this
     // surface out (the gallery's per-file-type right-pane dispatch)
     // without leaking a sampler worker, a cytoscape/echarts instance, or
     // the window 'message' listener. Idempotent and exception-safe — each
     // teardown is independent so one failure never blocks the rest.
     dispose: function() {
+      detachCleanup();
       stopObservingTheme();
       ctx.closeInferenceSettings?.();
       dividerCleanup.forEach((cleanup) => cleanup());
@@ -1708,4 +1744,5 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
       if (container) { try { container.innerHTML = ''; } catch (_) {} }
     },
   };
+  return handle;
   }

@@ -32,7 +32,35 @@ export function installTestDom(): TestDom {
     _text = ''; _html: string | null = null; _id = '';
     hidden = false; disabled = false; title = ''; scrollTop = 0; tabIndex = -1;
     ownerDocument: any;
+    _listeners = new Map<string, any[]>();
     constructor(tag: string) { super(); this.tagName = tag.toUpperCase(); this.ownerDocument = doc; }
+    // Own listener registry so events bubble through the element tree with
+    // the original target, as in a browser.
+    addEventListener(type: string, fn: any) {
+      if (!fn) return;
+      const list = this._listeners.get(type) || [];
+      if (!list.includes(fn)) list.push(fn);
+      this._listeners.set(type, list);
+    }
+    removeEventListener(type: string, fn: any) {
+      const list = this._listeners.get(type);
+      if (list) this._listeners.set(type, list.filter((f) => f !== fn));
+    }
+    dispatchEvent(ev: any) {
+      let stopped = false;
+      const stop = ev.stopPropagation.bind(ev);
+      Object.defineProperty(ev, 'stopPropagation', { value: () => { stopped = true; stop(); }, configurable: true });
+      Object.defineProperty(ev, 'target', { value: this, configurable: true });
+      for (let node: any = this; node && node._listeners; node = node.parentNode) {
+        if (node !== this && !ev.bubbles) break;
+        Object.defineProperty(ev, 'currentTarget', { value: node, configurable: true });
+        for (const fn of (node._listeners.get(ev.type) || []).slice()) {
+          if (typeof fn === 'function') fn.call(node, ev); else fn.handleEvent(ev);
+        }
+        if (stopped) break;
+      }
+      return !ev.defaultPrevented;
+    }
     get id() { return this._id; }
     set id(v) { this._id = v; ids.set(v, this); }
     get className() { return Array.from(this.classes).join(' '); }

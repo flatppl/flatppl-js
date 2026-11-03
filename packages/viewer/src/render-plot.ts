@@ -249,6 +249,15 @@ export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean })
     .then(function () { ctx.onSamplingProgress = null; }, function () { ctx.onSamplingProgress = null; });
 }
 
+/** A user gesture (graph tap, math click) selected a binding: plot it and
+ *  tell the host, which may show the plot in another window. */
+export function selectFromGesture(ctx: Ctx, bindingName: string | null) {
+  updatePlotForBinding(ctx, bindingName);
+  if (ctx.host && typeof ctx.host.onSelect === 'function') {
+    try { ctx.host.onSelect(ctx.currentPlotBindingName); } catch (_) {}
+  }
+}
+
 export function updatePlotForBinding(ctx: Ctx, bindingName: string | null, opts?: { autoTrigger?: boolean }) {
   // Snapshot the outgoing plan first — the user may have
   // mutated it since it was first built (selected a different
