@@ -201,7 +201,7 @@ import { resolveAllowedPanels } from './panels.js';
 import {
   installDetachControl, redockFromToggle, restorePanel, setPanelPlacement, snapshotPanel,
 } from './panel-breakout.js';
-import type { PanelId } from './panels.js';
+import type { PanelId, PanelPlacement } from './panels.js';
 
 
 
@@ -1711,10 +1711,10 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
         path: opts && opts.path,
       });
     },
-    // Pane breakout (design §7): host-initiated, so select never calls
-    // host.onSelect, and nothing here runs for a host that never calls it.
+    // Pane breakout: host-initiated, so select never calls host.onSelect,
+    // and nothing here runs for a host that never calls it.
     select: function(name: string | null) { updatePlotForBinding(ctx, name); },
-    setPanelPlacement: function(panel: PanelId, placement: 'docked' | 'detached') {
+    setPanelPlacement: function(panel: PanelId, placement: PanelPlacement) {
       setPanelPlacement(ctx, panel, placement);
     },
     snapshotPanel: function(panel: PanelId) { return snapshotPanel(ctx, panel); },

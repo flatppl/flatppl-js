@@ -253,9 +253,7 @@ export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean })
  *  tell the host, which may show the plot in another window. */
 export function selectFromGesture(ctx: Ctx, bindingName: string | null) {
   updatePlotForBinding(ctx, bindingName);
-  if (ctx.host && typeof ctx.host.onSelect === 'function') {
-    try { ctx.host.onSelect(ctx.currentPlotBindingName); } catch (_) {}
-  }
+  if (ctx.host && typeof ctx.host.onSelect === 'function') ctx.host.onSelect(ctx.currentPlotBindingName);
 }
 
 export function updatePlotForBinding(ctx: Ctx, bindingName: string | null, opts?: { autoTrigger?: boolean }) {

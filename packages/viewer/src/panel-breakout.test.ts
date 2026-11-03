@@ -1,7 +1,7 @@
-// @ts-nocheck — whole-mount tests of the pane-breakout seams for the web host.
-// Design: flatppl-dev/playground-pane-breakout-design.md §5, §7, §8.
+// @ts-nocheck — whole-mount tests of the pane-breakout seams for the web host,
+// which will show graph, plots and math in separate browser windows.
 
-import { registerHooks, createRequire } from 'node:module';
+import { registerHooks } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -14,13 +14,8 @@ registerHooks({
   },
 });
 
-const require = createRequire(import.meta.url);
-const engine = require('../../engine/index.ts');
-const { default: realCytoscape } = await import('cytoscape');
-const { default: dagre } = await import('cytoscape-dagre');
-realCytoscape.use(dagre);
-const { installTestDom } = await import('./test-dom.ts');
-const { InProcessWorker, settle } = await import('./test-worker.ts');
+const { installViewerEnv } = await import('./test-viewer-env.ts');
+const { settle } = await import('./test-worker.ts');
 const { mount } = await import('./main.ts');
 
 const MODEL = [
@@ -30,29 +25,12 @@ const MODEL = [
   '',
 ].join('\n');
 
-/** Mount the viewer as the web playground would, with a recording host. */
+/** Mount the viewer as the web playground would, with a recording host.
+ *  close() tears it down at once, so a test can mount a second window;
+ *  otherwise it is torn down after the test. */
 async function webMount(t, opts = {}) {
-  const dom = installTestDom();
-  const saved = Object.fromEntries(['cytoscape', 'echarts', 'FlatPPLEngine', 'Worker']
-    .map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
-  const define = (k, v) => Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
-  const graphs = [];
-  const cytoscape = (o) => {
-    const cy = realCytoscape({ ...o, container: undefined, headless: true, styleEnabled: true });
-    graphs.push(cy);
-    return cy;
-  };
-  cytoscape.use = () => {};
-  define('cytoscape', cytoscape);
-  // Plots render into ECharts; these tests read plot state, not pixels.
-  define('echarts', { getInstanceByDom: () => null, init: () => ({
-    setOption() {}, resize() {}, dispose() {}, isDisposed: () => false, on() {}, off() {},
-    getModel: () => ({ eachComponent() {}, eachSeries() {} }), getDom: () => null,
-    getZr: () => ({ on() {}, off() {} }), dispatchAction() {}, getWidth: () => 400, getHeight: () => 300,
-  }) });
-  define('FlatPPLEngine', engine);
-  define('Worker', InProcessWorker);
-  dom.window.__FLATPPL_CONFIG__ = { samplerWorkerUrl: 'sampler-worker.min.js', wasmApiUrl: null };
+  const env = installViewerEnv();
+  const { dom } = env;
   const calls = [];
   const host = opts.host === undefined ? {
     detachPanel: (p) => calls.push(['detachPanel', p]),
@@ -60,29 +38,29 @@ async function webMount(t, opts = {}) {
     onSelect: (n) => calls.push(['onSelect', n]),
     setTarget: () => {},
   } : opts.host;
-  function restore() {
-    for (const [k, d] of Object.entries(saved)) {
-      if (d) Object.defineProperty(globalThis, k, d); else delete globalThis[k];
-    }
-    dom.restore();
-  }
   dom.document.body.innerHTML = '<div id="surface-root"></div>';
   let view;
   try {
     view = mount(dom.document.getElementById('surface-root'), { host, ...(opts.mount || {}) });
   } catch (err) {
-    restore();
+    env.restore();
     throw err;
   }
-  view.update(MODEL, 'x', {});
-  await settle();
-  t.after(async () => {
+  if (opts.update !== false) {
+    view.update(MODEL, opts.target || 'x', {});
+    await settle();
+  }
+  let open = true;
+  async function close() {
+    if (!open) return;
+    open = false;
     view.dispose();
     await settle();
-    restore();
-  });
+    env.restore();
+  }
+  t.after(close);
   const $ = (id) => dom.document.getElementById(id);
-  return { dom, view, calls, cy: () => graphs[0], $ };
+  return { dom, view, calls, cy: () => env.graphs[0], $, close };
 }
 
 function key(el, k) {
@@ -174,38 +152,80 @@ test('a graph tap reports the selection; a host select does not echo', async (t)
   assert.deepEqual(calls, [['onSelect', 'mu']]);
 });
 
-test('a plot snapshot is plain data and carries settings to another mount', async (t) => {
+test('a plot snapshot carries every setting to a mount in another window', async (t) => {
   const a = await webMount(t);
-  const plot = a.view.snapshotPanel('plot').plot;
-  assert.equal(plot.sampleCount, 50000);
-  const changed = { plot: { ...plot, sampleCount: 1234, marginalizationCount: 33, rejectionBudget: 77,
-    rootSeed: 9, inferenceOpts: { ...plot.inferenceOpts, backend: 'mh', chains: 3 },
-    presetOverrides: [['p', { values: { a: 1 } }]], domainOverrides: [['d', { ranges: { a: { lo: 0, hi: 1 } } }]] } };
-  a.view.restorePanel('plot', structuredClone(changed));
-  const back = a.view.snapshotPanel('plot');
-  assert.deepEqual(structuredClone(back), back, 'a snapshot survives structured cloning');
-  for (const k of ['sampleCount', 'marginalizationCount', 'rejectionBudget', 'rootSeed', 'inferenceOpts',
-    'presetOverrides', 'domainOverrides']) {
-    assert.deepEqual(back.plot[k], changed.plot[k], k);
+  const base = a.view.snapshotPanel('plot').plot;
+  const crafted = { plot: { ...base, sampleCount: 1234, marginalizationCount: 33, rejectionBudget: 77,
+    rootSeed: 9, inferenceOpts: { ...base.inferenceOpts, backend: 'mh', chains: 3 },
+    recordSelection: { bindingName: 'x', mode: 'marginals', selected: ['x'], marginalGroups: ['x'], genQuantities: [] },
+    presetOverrides: [['p', { values: { a: 1 } }]],
+    domainOverrides: [['d', { ranges: { a: { lo: 0, hi: 1 } } }]],
+    planMemory: [['mu', { sweepKey: null, gridKey: null, mode: 'samples', outputKey: null, presetName: null,
+      domainName: null, autoOverride: null, domainAutoOverride: null }]] } };
+  a.view.restorePanel('plot', structuredClone(crafted));
+  const fromA = a.view.snapshotPanel('plot');
+  await a.close();
+
+  const b = await webMount(t);
+  b.view.restorePanel('plot', structuredClone(fromA));
+  const fromB = b.view.snapshotPanel('plot');
+  assert.deepEqual(fromB, fromA);
+  for (const k of Object.keys(crafted.plot)) {
+    if (k === 'planMemory') continue;
+    assert.deepEqual(fromB.plot[k], crafted.plot[k], k);
   }
+  const memory = new Map(fromB.plot.planMemory);
+  assert.deepEqual(memory.get('mu'), crafted.plot.planMemory[0][1]);
 });
 
-test('a graph snapshot restores collapsed groups, history and viewport', async (t) => {
-  const { view, cy } = await webMount(t);
-  view.update(MODEL, 'mu', { pushHistory: true });
+test('a graph snapshot carries collapsed groups, history and viewport to another window', async (t) => {
+  const a = await webMount(t);
+  a.view.update(MODEL, 'mu', { pushHistory: true });
   await settle();
-  cy().zoom(1.7);
-  cy().pan({ x: 12, y: -4 });
-  const snap = view.snapshotPanel('graph');
-  assert.deepEqual(structuredClone(snap), snap);
-  assert.deepEqual(snap.graph.history.map((h) => h.targetName), ['x']);
-  assert.deepEqual(snap.graph.viewport, { zoom: 1.7, pan: { x: 12, y: -4 } });
-  cy().zoom(1);
-  cy().pan({ x: 0, y: 0 });
-  view.restorePanel('graph', snap);
-  assert.equal(cy().zoom(), 1.7);
-  assert.deepEqual(cy().pan(), { x: 12, y: -4 });
-  assert.deepEqual(view.snapshotPanel('graph').graph.history, snap.graph.history);
+  a.view.restorePanel('graph', { graph: { collapsedReifications: ['grp'], viewport: null,
+    history: a.view.snapshotPanel('graph').graph.history } });
+  a.cy().zoom(1.7);
+  a.cy().pan({ x: 12, y: -4 });
+  const fromA = a.view.snapshotPanel('graph');
+  assert.deepEqual(fromA.graph.history.map((h) => h.targetName), ['x']);
+  await a.close();
+
+  const b = await webMount(t, { target: 'mu' });
+  b.view.restorePanel('graph', structuredClone(fromA));
+  assert.deepEqual(b.view.snapshotPanel('graph'), fromA);
+  assert.equal(b.cy().zoom(), 1.7);
+  // Back works from the restored history: it returns to x's sub-DAG.
+  const visible = () => b.cy().nodes().map((n) => n.id()).filter((id) => !id.includes(':')).sort();
+  assert.deepEqual(visible(), ['mu']);
+  b.$('back-btn').click();
+  await settle();
+  assert.deepEqual(b.view.snapshotPanel('graph').graph.history, []);
+  assert.deepEqual(visible(), ['mu', 'sigma', 'x']);
+});
+
+test('restoring the graph before the first update is refused', async (t) => {
+  const { view } = await webMount(t, { update: false });
+  assert.throws(() => view.restorePanel('graph', { graph: { collapsedReifications: [], viewport: null,
+    history: [{ targetName: 'x', path: null }] } }), /needs a model: call update\(\) first/);
+});
+
+test('restricted and detached mounts keep the stored panel flags', async (t) => {
+  const store = { plotEnabled: true, graphEnabled: true, mathEnabled: true };
+  const saved = [];
+  const host = { saveState: (s) => saved.push(s), loadState: () => store, setTarget: () => {},
+    detachPanel: () => {}, redockPanel: () => {} };
+  const plots = await webMount(t, { host, mount: { panels: ['plot'] } });
+  assert.ok(saved.length > 0);
+  for (const s of saved) {
+    assert.deepEqual([s.plotEnabled, s.graphEnabled, s.mathEnabled], [true, true, true]);
+  }
+  await plots.close();
+
+  saved.length = 0;
+  const main = await webMount(t, { host });
+  main.view.setPanelPlacement('plot', 'detached');
+  const last = saved[saved.length - 1];
+  assert.equal(last.plotEnabled, true, 'the detached panel is not stored as off');
 });
 
 test('restorePanel refuses a snapshot for another panel', async (t) => {

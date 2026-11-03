@@ -23,6 +23,9 @@
 
 export type PanelId = 'graph' | 'plot' | 'math';
 
+/** Where a panel is shown: in this mount, or in another window. */
+export type PanelPlacement = 'docked' | 'detached';
+
 export const PANEL_ORDER: PanelId[] = ['graph', 'plot', 'math'];
 
 export const PANEL_WEIGHTS: Record<PanelId, number> = { graph: 3, plot: 2, math: 2 };

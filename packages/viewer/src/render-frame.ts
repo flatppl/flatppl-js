@@ -38,11 +38,18 @@ import type { Ctx } from './types';
  */
 export function saveViewState(ctx: Ctx): void {
   if (!ctx.host || typeof ctx.host.saveState !== 'function') return;
+  // A mount restricted to some panels, or with a panel in another window,
+  // has flags that describe this window only. Keep the stored flags, so a
+  // host that shares saved state between windows reopens the full view.
+  const partial = !!(ctx.panelAllowed || ctx.panelPlacement);
   try {
+    const stored = partial && typeof ctx.host.loadState === 'function' ? ctx.host.loadState() : null;
+    const flag = (key: 'plotEnabled' | 'graphEnabled' | 'mathEnabled') =>
+      partial ? stored?.[key] : ctx[key];
     ctx.host.saveState({
-      plotEnabled: ctx.plotEnabled,
-      graphEnabled: ctx.graphEnabled,
-      mathEnabled: ctx.mathEnabled,
+      plotEnabled: flag('plotEnabled'),
+      graphEnabled: flag('graphEnabled'),
+      mathEnabled: flag('mathEnabled'),
       inferenceOpts: ctx.inferenceOpts,
       collapsedReifications: Array.from(ctx.collapsedReifications || []),
     });
@@ -322,7 +329,7 @@ export function applyPanelLayout(ctx: Ctx) {
     // A lone panel fills the area without overwriting stored divider sizes.
     el.style.flex = !p.visible || p.full ? p.flex : ctx.panelSizes?.[p.id] || p.flex;
     const btn = $(dom.toggle);
-    // A detached panel is still shown, in another window (design §8).
+    // A detached panel is still shown, in another window.
     const detached = ctx.panelPlacement?.[p.id] === 'detached';
     const pressed = enabled[p.id] || detached;
     btn.classList.toggle('on', pressed);
@@ -360,7 +367,6 @@ function applyPlacementFace(btn: HTMLElement, id: PanelId, detached: boolean): v
     return;
   }
   const arrow = document.createElement('span');
-  arrow.className = 'detached-mark';
   arrow.setAttribute('aria-hidden', 'true');
   arrow.textContent = ' ↗';
   const note = document.createElement('span');

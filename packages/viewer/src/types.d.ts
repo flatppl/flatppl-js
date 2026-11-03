@@ -280,6 +280,12 @@ export interface Ctx {
   plotEnabled: boolean;
   graphEnabled: boolean;
   panelSizes?: Partial<Record<import('./panels').PanelId, string>>;
+  /** Pane breakout: the panels this mount may show (null: all three). */
+  panelAllowed: Set<import('./panels').PanelId> | null;
+  /** Pane breakout: where each panel is shown (null: never set, all docked). */
+  panelPlacement: Partial<Record<import('./panels').PanelId, import('./panels').PanelPlacement>> | null;
+  /** Pane breakout: re-evaluates the Pop out button; null without one. */
+  refreshDetachControl: (() => void) | null;
   graphAutoFit?: boolean;
   sourceErrors?: import('./diagnostics').SourceDiagnostic[];
   /** Math pane (render-math.ts) visibility — the third panel of the
@@ -453,7 +459,7 @@ export interface ViewerHandle {
   /** Plot and highlight a binding on the host's behalf (no onSelect). */
   select(name: string | null): void;
   /** Mark a panel as shown in another window, or shown here again. */
-  setPanelPlacement(panel: import('./panels').PanelId, placement: 'docked' | 'detached'): void;
+  setPanelPlacement(panel: import('./panels').PanelId, placement: import('./panels').PanelPlacement): void;
   snapshotPanel(panel: import('./panels').PanelId): PanelSnapshot;
   restorePanel(panel: import('./panels').PanelId, snapshot: PanelSnapshot): void;
 }

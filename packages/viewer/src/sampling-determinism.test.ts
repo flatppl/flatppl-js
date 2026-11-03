@@ -1,13 +1,14 @@
-// @ts-nocheck — browser globals and the worker transport are controlled here.
+// @ts-nocheck — whole-mount determinism tests.
 //
-// The pane breakout renders a fresh copy of a panel in each window
-// (flatppl-dev/playground-pane-breakout-design.md §2.2, §4.1). That is
+// The pane breakout renders a fresh copy of a panel in each window. That is
 // sound only if two viewer mounts with the same model and the same plot
-// settings draw the same samples, each with its own sampler worker. These
-// tests check it for a forward measure and for an MH posterior, and check
-// that a changed seed changes the draws, so equality is not vacuous.
+// settings draw the same samples, each with its own sampler worker. Each mount
+// here takes its settings through restorePanel('plot', …), as a detached
+// window will, and the tests compare what the plot pane hands to its charts,
+// for a forward measure and for an MH posterior. A changed seed must change
+// the draws, so equality is not vacuous.
 
-import { registerHooks, createRequire } from 'node:module';
+import { registerHooks } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
@@ -20,11 +21,9 @@ registerHooks({
   },
 });
 
-const require = createRequire(import.meta.url);
-const engine = require('../../engine/index.ts');
-const { getMeasure } = await import('./engine-facade.ts');
-const { cancelAllSampling } = await import('./worker.ts');
-const { InProcessWorker } = await import('./test-worker.ts');
+const { installViewerEnv } = await import('./test-viewer-env.ts');
+const { InProcessWorker, settle } = await import('./test-worker.ts');
+const { mount } = await import('./main.ts');
 
 const FORWARD = [
   'mu = draw(Normal(mu = 0.0, sigma = 1.0))',
@@ -40,70 +39,53 @@ const POSTERIOR = [
   'post = bayesupdate(L, prior)',
 ].join('\n');
 
-function withWorkers(t) {
-  const saved = { Worker: globalThis.Worker, FlatPPLEngine: globalThis.FlatPPLEngine };
-  globalThis.Worker = InProcessWorker;
-  globalThis.FlatPPLEngine = engine;
-  t.after(() => Object.assign(globalThis, saved));
-}
+const MH = { backend: 'mh', chains: 2, warmup: 200, draws: 300, seed: null };
 
-/** A viewer mount's sampling state, as mount() and a restored plot snapshot leave it. */
-function mountState(source, settings) {
-  const result = engine.processSource(source);
-  assert.deepEqual(result.diagnostics.filter((d) => d.severity === 'error'), []);
-  return {
-    SAMPLER_WORKER_URL: 'sampler-worker.min.js', samplerWorker: null, samplerWorkerPromise: null,
-    samplerReqId: 0, pendingRequests: new Map(), mcmcPool: [], measureCache: new Map(),
-    SAMPLE_COUNT: settings.sampleCount, rootSeed: settings.rootSeed,
-    REJECTION_BUDGET: 1000, MARGINALIZATION_COUNT: 100,
-    inferenceOpts: { ...settings.inferenceOpts },
-    currentSource: source,
-    derivationsState: engine.orchestrator.buildDerivations(result.linkedBindings,
-      { moduleRegistry: result.linkedModuleRegistry }),
-  };
-}
-
-function leaf(measure, field) {
-  const m = field ? measure.fields[field] : measure;
-  return Array.from(m.samples);
-}
-
-async function draw(source, name, settings, field) {
-  const ctx = mountState(source, settings);
+/** Mount a plots-only window, apply plot settings through restorePanel, and
+ *  return what its charts received once sampling finished. */
+async function plotInWindow(source, target, settings) {
+  const env = installViewerEnv();
+  const { dom } = env;
+  let view = null;
   try {
-    const measure = await getMeasure(ctx, name);
-    return Object.assign(leaf(measure, field), { diagnostics: measure.diagnostics || null });
+    dom.document.body.innerHTML = '<div id="surface-root"></div>';
+    view = mount(dom.document.getElementById('surface-root'), { host: { setTarget() {} }, panels: ['plot'] });
+    view.update(source, target, {});
+    await settle();
+    const before = env.charts.length;
+    const sent = InProcessWorker.posted.length;
+    const plot = view.snapshotPanel('plot').plot;
+    view.restorePanel('plot', { plot: { ...plot, sampleCount: settings.sampleCount, rootSeed: settings.rootSeed,
+      inferenceOpts: { ...plot.inferenceOpts, ...settings.inferenceOpts } } });
+    for (let i = 0; i < 100 && env.charts.length === before; i++) await settle();
+    await settle();
+    const charts = env.charts.slice(before).map((c) => c.options);
+    assert.ok(charts.length > 0, 'the plot pane drew no chart');
+    return { charts, workerMessages: InProcessWorker.posted.slice(sent) };
   } finally {
-    cancelAllSampling(ctx);
+    view?.dispose();
+    await settle();
+    env.restore();
   }
 }
 
-const IS = { backend: 'is' };
-const MH = { backend: 'mh', chains: 2, warmup: 200, draws: 300, seed: null };
-
-test('two mounts draw identical forward samples, and another seed draws others', async (t) => {
-  withWorkers(t);
-  const settings = { sampleCount: 2000, rootSeed: 1, inferenceOpts: IS };
-  const a = await draw(FORWARD, 'x', settings);
-  const b = await draw(FORWARD, 'x', settings);
-  assert.equal(a.length, 2000);
-  assert.ok(a.every(Number.isFinite));
-  assert.deepEqual([...b], [...a]);
-  const other = await draw(FORWARD, 'x', { ...settings, rootSeed: 2 });
-  assert.notDeepEqual([...other], [...a]);
+test('two windows plot identical forward samples, and another seed plots others', async () => {
+  const settings = { sampleCount: 2000, rootSeed: 1, inferenceOpts: { backend: 'is' } };
+  const a = await plotInWindow(FORWARD, 'x', settings);
+  const b = await plotInWindow(FORWARD, 'x', settings);
+  assert.ok(a.charts.flat().some((o) => o.series?.length), 'the forward plot has series data');
+  assert.deepEqual(b.charts, a.charts);
+  const other = await plotInWindow(FORWARD, 'x', { ...settings, rootSeed: 2 });
+  assert.notDeepEqual(other.charts, a.charts);
 });
 
-test('two mounts draw an identical MH posterior, and another seed draws another', async (t) => {
-  withWorkers(t);
+test('two windows plot an identical MH posterior, and another seed plots another', async () => {
   const settings = { sampleCount: 2000, rootSeed: 1, inferenceOpts: MH };
-  const a = await draw(POSTERIOR, 'post', settings, 'theta');
-  const b = await draw(POSTERIOR, 'post', settings, 'theta');
-  // MH diagnostics: the pooled MH path ran, not importance sampling.
-  assert.equal(typeof a.diagnostics?.acceptRate, 'number');
-  assert.equal(a.length, settings.sampleCount);
-  assert.ok(a.every(Number.isFinite));
-  assert.deepEqual([...b], [...a]);
-  assert.deepEqual(b.diagnostics, a.diagnostics);
-  const other = await draw(POSTERIOR, 'post', { ...settings, rootSeed: 2 }, 'theta');
-  assert.notDeepEqual([...other], [...a]);
+  const a = await plotInWindow(POSTERIOR, 'post', settings);
+  assert.ok(a.workerMessages.includes('mcmcRun'), 'the pooled MH path ran');
+  const b = await plotInWindow(POSTERIOR, 'post', settings);
+  assert.ok(a.charts.flat().some((o) => o.series?.length), 'the posterior plot has series data');
+  assert.deepEqual(b.charts, a.charts);
+  const other = await plotInWindow(POSTERIOR, 'post', { ...settings, rootSeed: 2 });
+  assert.notDeepEqual(other.charts, a.charts);
 });

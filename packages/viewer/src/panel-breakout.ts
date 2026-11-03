@@ -1,7 +1,6 @@
 // @ts-check
 // @flatppl/viewer — seams for the web playground's pane breakout —
 //
-// Design: flatppl-dev/playground-pane-breakout-design.md (§5, §7, §8).
 // Everything here is inert unless the host asks for it: the Pop out control
 // exists only when the host adapter defines detachPanel, a placement changes
 // only through the handle's setPanelPlacement, and snapshots are taken only
@@ -9,7 +8,7 @@
 // pinned by vscode-view-unchanged.test.ts.
 
 import { PANEL_DOM, PANEL_ORDER } from './panels.js';
-import type { PanelId } from './panels.js';
+import type { PanelId, PanelPlacement } from './panels.js';
 import { applyPanelLayout, setGraphEnabled, setMathEnabled, setPlotEnabled } from './render-frame.js';
 import { updatePlotForBinding } from './render-plot.js';
 import { renderDAG, updateBackBtn } from './dag.js';
@@ -17,8 +16,6 @@ import { rememberPlanSelections } from './overrides.js';
 import { clearForwardCaches, setMarginalizationCount, setSampleCount } from './forward-draws.js';
 import { $ } from './util.js';
 import type { Ctx, PanelSnapshot } from './types';
-
-export type Placement = 'docked' | 'detached';
 
 const BREAKOUT_CSS = `
 #view-controls { position: relative; }
@@ -73,7 +70,7 @@ function allowed(ctx: Ctx, id: PanelId): boolean {
   return !ctx.panelAllowed || ctx.panelAllowed.has(id);
 }
 
-function placementOf(ctx: Ctx, id: PanelId): Placement {
+function placementOf(ctx: Ctx, id: PanelId): PanelPlacement {
   return ctx.panelPlacement?.[id] === 'detached' ? 'detached' : 'docked';
 }
 
@@ -143,7 +140,7 @@ export function installDetachControl(ctx: Ctx): () => void {
   }
   function choose(id: PanelId): void {
     close(false);
-    // The panel leaves this window, so focus goes to its toggle (§8).
+    // The panel leaves this window, so focus goes to its toggle.
     try { ctx.host.detachPanel!(id); } finally { $(PANEL_DOM[id].toggle).focus(); }
   }
   function onButtonClick(): void { if (menu.hidden) open(); else close(true); }
@@ -192,7 +189,7 @@ const SETTERS: Record<PanelId, (ctx: Ctx, on: boolean) => void> = {
 
 /** Show a panel here again, or mark it as shown in another window. A
  *  detached panel is off in this mount, so it costs nothing here. */
-export function setPanelPlacement(ctx: Ctx, id: PanelId, placement: Placement): void {
+export function setPanelPlacement(ctx: Ctx, id: PanelId, placement: PanelPlacement): void {
   if (!PANEL_DOM[id]) throw new RangeError('unknown panel: ' + id);
   if (placement !== 'docked' && placement !== 'detached') throw new RangeError('unknown placement: ' + placement);
   if (!allowed(ctx, id)) throw new RangeError('panel ' + id + ' is not part of this mount');
@@ -203,8 +200,8 @@ export function setPanelPlacement(ctx: Ctx, id: PanelId, placement: Placement): 
   if (ctx.refreshDetachControl) ctx.refreshDetachControl();
 }
 
-/** The toggle click of a detached panel asks the host to bring it back
- *  (owner ruling R1). Returns true when it handled the click. */
+/** The toggle of a detached panel asks the host to bring it back.
+ *  Returns true when it handled the click. */
 export function redockFromToggle(ctx: Ctx, id: PanelId): boolean {
   if (placementOf(ctx, id) !== 'detached') return false;
   if (ctx.host && typeof ctx.host.redockPanel === 'function') ctx.host.redockPanel(id);
@@ -260,13 +257,18 @@ export function restorePanel(ctx: Ctx, id: PanelId, snapshot: PanelSnapshot): vo
 }
 
 function restoreGraph(ctx: Ctx, g: NonNullable<PanelSnapshot['graph']>): void {
+  // History entries need the model to rebuild their sub-DAGs; without it
+  // Back would render an entry with no data.
+  if (!ctx.currentBindings) {
+    throw new RangeError('restorePanel(\'graph\') needs a model: call update() first');
+  }
   ctx.collapsedReifications = new Set(g.collapsedReifications);
   g.collapsedReifications.forEach((name) => ctx._reifSeen.add(name));
   // Same-model entries get their sub-DAG back; a cross-module entry keeps
   // data null, and Back sends it through host.openModule as before.
   ctx.history = g.history.map(function (h) {
     let data = null;
-    if (ctx.currentBindings && h.path === (ctx.currentPath ?? null)) {
+    if (h.path === (ctx.currentPath ?? null)) {
       data = h.targetName === ctx.MODULE_TARGET
         ? FlatPPLEngine.computeFullDAG(ctx.currentBindings, { linkedBindings: ctx.currentLinkedBindings })
         : FlatPPLEngine.computeSubDAG(ctx.currentBindings, h.targetName, { linkedBindings: ctx.currentLinkedBindings });
