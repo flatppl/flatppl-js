@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<!--
+  @flatppl/web — one playground panel (graph, plots or math) in its own
+  window. The playground window opens this page with ?pane=<panel>#sid=<id>
+  and keeps the model; pane-app.js renders the panel from what it sends.
+-->
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <!-- The same policy as index.html: no inline scripts, so every script is
+       a same-origin file. -->
+  <meta http-equiv="Content-Security-Policy" content="script-src 'self' 'unsafe-eval'; worker-src 'self' blob:; object-src 'none'; base-uri 'none'">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlatPPL panel</title>
+  <script src="theme/shell.js"></script>
+  <link rel="icon" href="theme/assets/favicon.ico" sizes="any">
+  <link rel="icon" type="image/svg+xml" href="theme/assets/favicon.svg">
+  <link rel="stylesheet" href="theme/tokens.css">
+  <link rel="stylesheet" href="theme/components.css">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="pane.css">
+  <link rel="stylesheet" href="vendor/temml.css">
+</head>
+<body class="pane-window">
+  <header id="pane-toolbar">
+    <h1 id="pane-title" tabindex="-1">FlatPPL panel</h1>
+    <span id="pane-status" role="status" aria-live="polite"></span>
+    <div role="toolbar" aria-label="Panel window">
+      <button class="fp-btn" id="pane-dock" type="button" title="Return this panel to the main window">Dock</button>
+      <button class="fp-btn" id="pane-main" type="button" title="Show the main playground window">Main window</button>
+    </div>
+  </header>
+  <div id="pane-banner" role="alert" hidden>
+    <span id="pane-banner-text"></span>
+    <button class="fp-btn" id="pane-banner-action" type="button" hidden></button>
+  </div>
+  <main id="pane-main-area" aria-labelledby="pane-title">
+    <div id="surface-root"></div>
+  </main>
+
+  <script src="vendor/cytoscape.min.js"></script>
+  <script src="vendor/dagre.min.js"></script>
+  <script src="vendor/cytoscape-dagre.js"></script>
+  <script src="vendor/cytoscape-layers.min.js"></script>
+  <script src="vendor/cytoscape-bubblesets.min.js"></script>
+  <script src="vendor/echarts.min.js"></script>
+  <script src="vendor/engine.min.js"></script>
+  <script src="config.js"></script>
+  <script src="build-flags.js"></script>
+  <script src="vendor/viewer.js"></script>
+  <script src="pane-session.js"></script>
+  <script src="pane-app.js"></script>
+</body>
+</html>

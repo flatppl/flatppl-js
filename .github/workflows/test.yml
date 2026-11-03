@@ -142,3 +142,91 @@ jobs:
         # Extension tests import generated .js files from build:vendor.
         # These packages have test scripts but no test:coverage scripts.
         run: npm test --workspace=packages/viewer --workspace=packages/vscode-extension --workspace=packages/web
+
+  e2e:
+    # Multi-window browser tests of the playground (packages/web/test/e2e):
+    # panels moved into their own windows, kept in sync, and docked again.
+    # Popup activation, BroadcastChannel and timer behaviour differ between
+    # engines, so every pull request runs all three.
+    name: e2e (${{ matrix.browser }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chromium, firefox, webkit]
+    env:
+      GRAMMARS_DIR: ${{ github.workspace }}/.grammars
+      FLATPPL_RUST_DIR: ${{ github.workspace }}/.flatppl-rust
+      WASM_PACK_VERSION: '0.15.0'
+      CARGO_NET_RETRY: '10'
+      CARGO_HTTP_MULTIPLEXING: 'false'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Check out flatppl-grammars
+        uses: actions/checkout@v7
+        with:
+          repository: flatppl/flatppl-grammars
+          ref: main
+          path: .grammars
+
+      - name: Check out flatppl-rust (wasm-api for the math panel)
+        uses: actions/checkout@v7
+        with:
+          repository: flatppl/flatppl-rust
+          ref: main
+          path: .flatppl-rust
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install workspace dependencies
+        run: npm ci
+
+      - name: Install Rust toolchain (+ wasm32 target)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Cache cargo registry and build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: .flatppl-rust
+
+      - name: Install wasm-pack
+        uses: taiki-e/install-action@v2.88.1
+        with:
+          tool: wasm-pack@${{ env.WASM_PACK_VERSION }}
+
+      - name: Build web package
+        run: npm run build --workspace=packages/web
+
+      - name: Cache Playwright browsers
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ matrix.browser }}-${{ hashFiles('package-lock.json') }}
+
+      - name: Install the browser and its system libraries
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+        working-directory: packages/web
+
+      - name: Run the multi-window tests
+        run: npx playwright test --project=${{ matrix.browser }}
+        working-directory: packages/web
+        env:
+          CI: '1'
+
+      - name: Upload the Playwright report on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-${{ matrix.browser }}
+          path: |
+            packages/web/playwright-report
+            packages/web/test-results
+          retention-days: 7

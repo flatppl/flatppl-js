@@ -61,6 +61,8 @@
       defaultPlotEnabled: true,
     });
     return {
+      // The viewer's own handle, for the pane breakout (pane-owner.ts).
+      viewer: handle,
       update: function (input: any) {
         handle.update(input.source, input.target || null, input.opts || {});
       },
@@ -253,6 +255,8 @@
       },
       // Exposed for tests / diagnostics — the active surface type.
       currentType: function () { return currentType; },
+      // The FlatPPL viewer's handle while that surface is active, else null.
+      viewerHandle: function () { return handle && handle.viewer ? handle.viewer : null; },
     };
   }
 

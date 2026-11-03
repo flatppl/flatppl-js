@@ -286,6 +286,9 @@ export interface Ctx {
   panelPlacement: Partial<Record<import('./panels').PanelId, import('./panels').PanelPlacement>> | null;
   /** Pane breakout: re-evaluates the Pop out button; null without one. */
   refreshDetachControl: (() => void) | null;
+  /** Pane breakout: samples from another window, adopted on the next plot render. */
+  pendingHandover?: import('./measure-handover').MeasureHandover | null;
+  handoverStatus?: import('./measure-handover').HandoverStatus;
   graphAutoFit?: boolean;
   sourceErrors?: import('./diagnostics').SourceDiagnostic[];
   /** Math pane (render-math.ts) visibility — the third panel of the
@@ -462,6 +465,13 @@ export interface ViewerHandle {
   setPanelPlacement(panel: import('./panels').PanelId, placement: import('./panels').PanelPlacement): void;
   snapshotPanel(panel: import('./panels').PanelId): PanelSnapshot;
   restorePanel(panel: import('./panels').PanelId, snapshot: PanelSnapshot): void;
+  /** Take the cached samples of a binding out of this mount, for another window. */
+  exportMeasures(binding?: string | null, capBytes?: number): import('./measure-handover').MeasureHandover | null;
+  /** The binding the plot panel shows, or null. */
+  plottedBinding(): string | null;
+  /** Park samples from another window; the next plot render adopts them if they match. */
+  importMeasures(handover: import('./measure-handover').MeasureHandover | null): void;
+  measureHandoverStatus(): import('./measure-handover').HandoverStatus;
 }
 
 // Module — must export something for TS to treat as a module file
