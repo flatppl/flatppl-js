@@ -18,6 +18,9 @@
   // After the closed banner shows, a main window that comes back late (a
   // slow reload) can still find this window on the postMessage fallback.
   const SLOW_HELLO_MS = 5000;
+  // The main window's goodbye can be lost when it closes (Chromium may tear
+  // the page down before pagehide's message leaves), so also watch its window.
+  const OPENER_POLL_MS = 1000;
   const PING_MS = 5000;
   const LOST_MS = 15000;
 
@@ -286,6 +289,17 @@
       if (pane === 'plot') session.send('pane.measures', view.exportMeasures(null), 'owner');
       session.send('pane.bye', { reason: 'close', state: view.snapshotPanel(pane) }, 'owner');
     });
+
+    // Chromium sets window.opener to null once the opener closes, so keep the
+    // reference taken at boot: its `closed` stays readable.
+    const openerAtBoot = globalScope.opener;
+    if (openerAtBoot) {
+      globalScope.setInterval(() => {
+        let closed = false;
+        try { closed = !!openerAtBoot.closed || !globalScope.opener; } catch (_) { closed = false; }
+        if (closed && !leaving && banner.hidden) ownerGone();
+      }, OPENER_POLL_MS);
+    }
 
     say('Connecting to the main window…');
     startHello(HELLO_GIVE_UP_MS);
