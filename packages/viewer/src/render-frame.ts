@@ -38,18 +38,20 @@ import type { Ctx } from './types';
  */
 export function saveViewState(ctx: Ctx): void {
   if (!ctx.host || typeof ctx.host.saveState !== 'function') return;
-  // A mount restricted to some panels, or with a panel in another window,
-  // has flags that describe this window only. Keep the stored flags, so a
-  // host that shares saved state between windows reopens the full view.
-  const partial = !!(ctx.panelAllowed || ctx.panelPlacement);
+  // A panel this mount may not show, or one shown in another window, has a
+  // flag that says nothing about the user's choice. Keep its stored flag, so
+  // a host that shares saved state between windows reopens the full view.
+  const foreign = (id: PanelId) =>
+    (!!ctx.panelAllowed && !ctx.panelAllowed.has(id)) || ctx.panelPlacement?.[id] === 'detached';
   try {
-    const stored = partial && typeof ctx.host.loadState === 'function' ? ctx.host.loadState() : null;
-    const flag = (key: 'plotEnabled' | 'graphEnabled' | 'mathEnabled') =>
-      partial ? stored?.[key] : ctx[key];
+    const anyForeign = foreign('plot') || foreign('graph') || foreign('math');
+    const stored = anyForeign && typeof ctx.host.loadState === 'function' ? ctx.host.loadState() : null;
+    const flag = (id: PanelId, key: 'plotEnabled' | 'graphEnabled' | 'mathEnabled') =>
+      foreign(id) ? stored?.[key] : ctx[key];
     ctx.host.saveState({
-      plotEnabled: flag('plotEnabled'),
-      graphEnabled: flag('graphEnabled'),
-      mathEnabled: flag('mathEnabled'),
+      plotEnabled: flag('plot', 'plotEnabled'),
+      graphEnabled: flag('graph', 'graphEnabled'),
+      mathEnabled: flag('math', 'mathEnabled'),
       inferenceOpts: ctx.inferenceOpts,
       collapsedReifications: Array.from(ctx.collapsedReifications || []),
     });

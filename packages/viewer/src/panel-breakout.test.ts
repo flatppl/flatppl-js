@@ -224,8 +224,13 @@ test('restricted and detached mounts keep the stored panel flags', async (t) => 
   saved.length = 0;
   const main = await webMount(t, { host });
   main.view.setPanelPlacement('plot', 'detached');
+  assert.equal(saved[saved.length - 1].plotEnabled, true, 'the detached panel is not stored as off');
+  // After a re-dock the window owns its flags again.
+  main.view.setPanelPlacement('plot', 'docked');
+  main.$('graph-toggle').click();
   const last = saved[saved.length - 1];
-  assert.equal(last.plotEnabled, true, 'the detached panel is not stored as off');
+  assert.equal(last.graphEnabled, false, 'a re-docked window saves its own Graph choice');
+  assert.equal(last.plotEnabled, true);
 });
 
 test('restorePanel refuses a snapshot for another panel', async (t) => {
