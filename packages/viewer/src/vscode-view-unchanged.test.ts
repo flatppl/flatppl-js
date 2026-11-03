@@ -1,14 +1,17 @@
 // @ts-nocheck — whole-mount contract tests for the VS Code webview host.
 //
-// The playground's pane breakout (flatppl-dev/playground-pane-breakout-design.md
-// §7) must leave the VS Code view unchanged. These tests mount the viewer the
-// way the webview does (no opts.host, acquireVsCodeApi defined) and compare
-// the DOM it builds, the listeners it installs and the messages it posts with
-// a golden copy. The golden was captured on origin/main before the breakout
-// seams existed. Regenerate it (FLATPPL_UPDATE_GOLDEN=1) only when the VS Code
-// view is meant to change, and say so in the pull request.
+// The web playground's pane breakout must leave the VS Code view unchanged.
+// These tests mount the viewer the way the webview does (no opts.host,
+// acquireVsCodeApi defined) and compare what it builds with a golden copy:
+// the DOM, the injected stylesheet, the listeners, the graph model, what each
+// chart was given, the posted messages and the saved state. The session
+// covers the gestures the breakout touches: Plots on, a graph tap and a math
+// row click. The golden was captured with this harness on the viewer source
+// from before the breakout seams existed. Regenerate it
+// (FLATPPL_UPDATE_GOLDEN=1) only when the VS Code view is meant to change,
+// and say so in the pull request.
 
-import { registerHooks, createRequire } from 'node:module';
+import { registerHooks } from 'node:module';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, writeFileSync } from 'node:fs';
@@ -22,15 +25,10 @@ registerHooks({
   },
 });
 
-const require = createRequire(import.meta.url);
-const engine = require('../../engine/index.ts');
-const { default: realCytoscape } = await import('cytoscape');
-const { default: dagre } = await import('cytoscape-dagre');
-realCytoscape.use(dagre);
-const { installTestDom } = await import('./test-dom.ts');
+const { installViewerEnv, graphModel } = await import('./test-viewer-env.ts');
+const { settle } = await import('./test-worker.ts');
 const { mount } = await import('./main.ts');
 const { defaultVscodeHost } = await import('./host-adapter.ts');
-const { InProcessWorker, settle } = await import('./test-worker.ts');
 
 const GOLDEN = new URL('./fixtures/vscode-view.golden.json', import.meta.url);
 
@@ -52,77 +50,86 @@ const MODEL = [
   '',
 ].join('\n');
 
-/** Install the browser surface the webview provides. */
-function webview() {
-  const dom = installTestDom();
-  const saved = Object.fromEntries(['cytoscape', 'echarts', 'FlatPPLEngine', 'Worker']
-    .map((k) => [k, Object.getOwnPropertyDescriptor(globalThis, k)]));
-  const define = (k, v) => Object.defineProperty(globalThis, k, { value: v, configurable: true, writable: true });
-  // The webview renders into a canvas; headless cytoscape keeps the same model.
-  const graphs = [];
-  const cytoscape = (opts) => {
-    const cy = realCytoscape({ ...opts, container: undefined, headless: true, styleEnabled: true });
-    graphs.push(cy);
-    return cy;
-  };
-  cytoscape.use = () => {};
-  define('cytoscape', cytoscape);
-  define('echarts', { getInstanceByDom: () => null, init: () => { throw new Error('no chart expected'); } });
-  define('FlatPPLEngine', engine);
-  define('Worker', InProcessWorker);
-  dom.window.__FLATPPL_CONFIG__ = { samplerWorkerUrl: 'sampler-worker.min.js', wasmApiUrl: null };
-  return {
-    dom,
-    graphs,
-    sink: resetSink(),
-    restore() {
-      for (const [k, d] of Object.entries(saved)) {
-        if (d) Object.defineProperty(globalThis, k, d); else delete globalThis[k];
-      }
-      dom.restore();
-    },
-  };
-}
-
 function deliver(dom, data) {
   dom.window.dispatchEvent(new MessageEvent('message', { data, source: null, origin: 'vscode-webview://panel' }));
 }
 
-/** The VS Code session: boot, config push, a model, then panel toggles. */
+/** Settle until sampling finished: no "Sampling…" left in the plot pane. */
+async function settlePlots(dom) {
+  for (let i = 0; i < 50; i++) {
+    await settle();
+    const plot = dom.document.getElementById('plot-content');
+    if (!plot || !/Sampling/.test(JSON.stringify(dom.serialize(plot)))) return;
+  }
+  throw new Error('sampling did not finish');
+}
+
+/** A graph tap as cytoscape reports one; the position misses every glyph. */
+function tap(cy, id, keys = {}) {
+  cy.$id(id).emit({ type: 'tap', position: { x: -1e9, y: -1e9 },
+    originalEvent: { ctrlKey: false, metaKey: false, shiftKey: false, ...keys } });
+}
+
+/** A click on a rendered math row. Node has no wasm renderer, so the row is
+ *  the markup render_math emits for a binding. */
+function clickMathRow(dom, binding) {
+  const content = dom.document.getElementById('math-content');
+  const row = dom.document.createElement('mtr');
+  row.setAttribute('data-flatppl-binding', binding);
+  content.appendChild(row);
+  row.dispatchEvent(Object.assign(new Event('click', { bubbles: true, cancelable: true }),
+    { ctrlKey: false, metaKey: false }));
+  row.remove();
+}
+
+/** The VS Code session: boot, config push, a model, panel toggles, Plots on,
+ *  a graph tap, a math row click, then a whole-module update. */
 async function runSession() {
-  const env = webview();
+  const env = installViewerEnv();
   const { dom } = env;
+  const posted = resetSink();
   let view = null;
   try {
     dom.document.body.innerHTML = '<div id="flatppl-viewer-root"></div>';
     const root = dom.document.getElementById('flatppl-viewer-root');
     view = mount(root);
-    const snapshots = {};
+    const steps = {};
+    const take = (name) => { steps[name] = { dom: dom.serialize(root), graph: graphModel(env.graphs[0]) }; };
     await settle();
-    snapshots.boot = dom.serialize(root);
+    take('boot');
     deliver(dom, { type: 'configUpdate', config: { sampleCount: 1000, marginalizationSampleCount: 50,
       dagNavigationHistoryCap: 20, truncateRejectionBudget: 500 } });
     deliver(dom, { type: 'sourceUpdate', source: MODEL, targetName: 'x' });
     await settle();
-    snapshots.model = dom.serialize(root);
+    take('model');
     dom.document.getElementById('math-toggle').click();
     await settle();
-    snapshots.mathOn = dom.serialize(root);
+    take('mathOn');
     dom.document.getElementById('graph-toggle').click();
     dom.document.getElementById('graph-toggle').click();
     dom.document.getElementById('math-toggle').click();
     await settle();
-    snapshots.mathOff = dom.serialize(root);
+    take('mathOff');
+    dom.document.getElementById('plot-toggle').click();
+    await settlePlots(dom);
+    take('plotOn');
+    tap(env.graphs[0], 'mu');
+    await settlePlots(dom);
+    take('tapMu');
+    clickMathRow(dom, 'x');
+    await settlePlots(dom);
+    take('mathRowX');
     deliver(dom, { type: 'showModule', source: MODEL });
-    await settle();
-    snapshots.module = dom.serialize(root);
+    await settlePlots(dom);
+    take('module');
     return {
-      snapshots,
+      steps,
+      charts: env.charts.map((c) => c.options),
       head: dom.serialize(dom.document.head),
       rootStyle: dom.serialize(dom.document.documentElement).style || null,
       listeners: { window: [...dom.listeners.window].sort(), document: [...dom.listeners.document].sort() },
-      posted: env.sink.posted,
-      states: env.sink.states,
+      posted: posted.posted,
+      states: posted.states,
     };
   } finally {
     view?.dispose();
@@ -139,7 +146,11 @@ test('the VS Code webview mount matches the golden copy from before the pane bre
     return;
   }
   const golden = JSON.parse(readFileSync(GOLDEN, 'utf8'));
-  assert.deepEqual(actual.snapshots, golden.snapshots, 'webview DOM changed');
+  for (const step of Object.keys(golden.steps)) {
+    assert.deepEqual(actual.steps[step], golden.steps[step], 'webview changed at step ' + step);
+  }
+  assert.deepEqual(Object.keys(actual.steps), Object.keys(golden.steps));
+  assert.deepEqual(actual.charts, golden.charts, 'chart input changed');
   assert.deepEqual(actual.head, golden.head, 'injected stylesheet changed');
   assert.deepEqual(actual.rootStyle, golden.rootStyle, 'root CSS properties changed');
   assert.deepEqual(actual.listeners, golden.listeners, 'installed listeners changed');
@@ -152,9 +163,8 @@ test('the default VS Code host adapter keeps its methods and message shapes', (t
   t.after(() => {
     if (savedWindow) Object.defineProperty(globalThis, 'window', savedWindow); else delete globalThis.window;
   });
-  const listeners = [];
   Object.defineProperty(globalThis, 'window', { value: {
-    addEventListener: (type, fn) => listeners.push(fn), removeEventListener: () => {},
+    addEventListener: () => {}, removeEventListener: () => {},
   }, configurable: true, writable: true });
   const { posted } = resetSink();
   const host = defaultVscodeHost();
@@ -186,8 +196,9 @@ test('the default VS Code host adapter keeps its methods and message shapes', (t
 });
 
 test('VS Code graph gestures post only the existing message types', async () => {
-  const env = webview();
+  const env = installViewerEnv();
   const { dom } = env;
+  const posted = resetSink();
   let view = null;
   try {
     dom.document.body.innerHTML = '<div id="flatppl-viewer-root"></div>';
@@ -195,18 +206,17 @@ test('VS Code graph gestures post only the existing message types', async () => 
     deliver(dom, { type: 'sourceUpdate', source: MODEL, targetName: 'x' });
     await settle();
     const cy = env.graphs[0];
-    const mark = env.sink.posted.length;
-    const tap = (id, originalEvent) => cy.$id(id).emit({ type: 'tap', originalEvent, position: { x: -1e9, y: -1e9 } });
-    tap('mu', { ctrlKey: false, metaKey: false, shiftKey: false });
+    const mark = posted.posted.length;
+    tap(cy, 'mu');
     await settle();
-    assert.deepEqual(env.sink.posted.slice(mark), [], 'a plain tap stays inside the webview');
-    tap('mu', { ctrlKey: true, metaKey: false, shiftKey: false });
+    assert.deepEqual(posted.posted.slice(mark), [], 'a plain tap stays inside the webview');
+    tap(cy, 'mu', { ctrlKey: true });
     cy.$id('mu').emit({ type: 'dbltap' });
     await settle();
-    const types = env.sink.posted.slice(mark).map((m) => m.type);
+    const types = posted.posted.slice(mark).map((m) => m.type);
     assert.deepEqual(types, ['navigateTo', 'updateTitle']);
     const known = new Set(['webviewReady', 'navigateTo', 'updateTitle', 'openModule', 'promptForName', 'editSource']);
-    for (const m of env.sink.posted) assert.ok(known.has(m.type), 'unexpected message ' + m.type);
+    for (const m of posted.posted) assert.ok(known.has(m.type), 'unexpected message ' + m.type);
     assert.equal(dom.document.getElementById('detach-btn'), null, 'no Pop out control in VS Code');
   } finally {
     view?.dispose();

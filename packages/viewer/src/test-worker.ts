@@ -9,6 +9,8 @@ const require = createRequire(import.meta.url);
 const { createWorkerHandler } = require('../../engine/worker.ts');
 
 export class InProcessWorker {
+  /** Message types posted to any instance, for tests that check which path ran. */
+  static posted = [];
   constructor() {
     this.handler = createWorkerHandler();
     this.listeners = [];
@@ -23,6 +25,7 @@ export class InProcessWorker {
     this.listeners.forEach((fn) => fn({ data }));
   }
   postMessage(msg) {
+    InProcessWorker.posted.push(msg && msg.type);
     const copy = structuredClone(msg);
     setImmediate(() => Promise.resolve(this.handler.handle(copy)).then((r) => { if (r) this.emit(r); }));
   }
