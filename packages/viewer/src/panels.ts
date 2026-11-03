@@ -23,6 +23,9 @@
 
 export type PanelId = 'graph' | 'plot' | 'math';
 
+/** Where a panel is shown: in this mount, or in another window. */
+export type PanelPlacement = 'docked' | 'detached';
+
 export const PANEL_ORDER: PanelId[] = ['graph', 'plot', 'math'];
 
 export const PANEL_WEIGHTS: Record<PanelId, number> = { graph: 3, plot: 2, math: 2 };
@@ -67,6 +70,17 @@ export function computePanelLayout(enabled: Record<PanelId, boolean>, options: {
     visible: visibleIds.includes(id) && PANEL_ORDER.slice(i + 1).some((later) => visibleIds.includes(later)),
   }));
   return { panels, dividers, visibleCount: visibleIds.length };
+}
+
+/** The panels a mount may show (MountOpts.panels), or null for all three.
+ *  Unknown names are dropped; an empty or all-unknown list is refused,
+ *  because a mount with no panel would show nothing. */
+export function resolveAllowedPanels(panels: unknown): Set<PanelId> | null {
+  if (panels == null) return null;
+  if (!Array.isArray(panels)) throw new TypeError('FlatPPLViewer.mount: opts.panels must be an array');
+  const allowed = new Set(PANEL_ORDER.filter((id) => panels.includes(id)));
+  if (allowed.size === 0) throw new RangeError('FlatPPLViewer.mount: opts.panels names no panel (graph, plot, math)');
+  return allowed;
 }
 
 /** The panel a divider resizes against: the next visible panel after

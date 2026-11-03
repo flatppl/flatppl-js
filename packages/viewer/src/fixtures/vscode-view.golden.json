@@ -1,0 +1,4714 @@
+{
+ "steps": {
+  "boot": {
+   "dom": {
+    "tag": "div",
+    "id": "flatppl-viewer-root",
+    "html": {
+     "length": 2239,
+     "sha256": "9f80796414fd44e9"
+    },
+    "children": [
+     {
+      "tag": "div",
+      "id": "header"
+     },
+     {
+      "tag": "button",
+      "id": "back-btn"
+     },
+     {
+      "tag": "span",
+      "id": "header-expr"
+     },
+     {
+      "tag": "span",
+      "id": "inference-controls"
+     },
+     {
+      "tag": "span",
+      "id": "view-controls"
+     },
+     {
+      "tag": "button",
+      "id": "graph-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the graph panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Graph"
+     },
+     {
+      "tag": "button",
+      "id": "plot-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the plot panel",
+       "type": "button"
+      },
+      "text": "Plots"
+     },
+     {
+      "tag": "button",
+      "id": "math-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the math panel",
+       "type": "button"
+      },
+      "text": "Math"
+     },
+     {
+      "tag": "div",
+      "id": "main"
+     },
+     {
+      "tag": "div",
+      "id": "graph-panel",
+      "classes": [
+       "first",
+       "full",
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 100%"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "graph-actions",
+      "classes": [
+       "graph-actions"
+      ],
+      "hidden": true
+     },
+     {
+      "tag": "button",
+      "id": "graph-fit",
+      "attrs": {
+       "aria-label": "Fit graph",
+       "title": "Fit graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-out",
+      "attrs": {
+       "aria-label": "Zoom out graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-in",
+      "attrs": {
+       "aria-label": "Zoom in graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "collapse-all-btn",
+      "attrs": {
+       "title": "Collapse every reification bubble in view",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ],
+      "hidden": true,
+      "disabled": true
+     },
+     {
+      "tag": "p",
+      "id": "graph-source-notice",
+      "attrs": {
+       "role": "status"
+      },
+      "classes": [
+       "viewer-source-notice"
+      ],
+      "hidden": true
+     },
+     {
+      "tag": "div",
+      "id": "cy"
+     },
+     {
+      "tag": "div",
+      "id": "plot-divider",
+      "attrs": {
+       "aria-label": "Resize graph and plots",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "60",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-content"
+     },
+     {
+      "tag": "div",
+      "id": "math-divider",
+      "attrs": {
+       "aria-label": "Resize plots and math",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-content"
+     },
+     {
+      "tag": "p",
+      "id": "panels-hidden",
+      "hidden": true
+     },
+     {
+      "tag": "div",
+      "id": "tooltip"
+     },
+     {
+      "tag": "div",
+      "id": "info"
+     }
+    ]
+   },
+   "graph": {
+    "nodes": [],
+    "edges": [],
+    "selected": []
+   }
+  },
+  "model": {
+   "dom": {
+    "tag": "div",
+    "id": "flatppl-viewer-root",
+    "html": {
+     "length": 2239,
+     "sha256": "9f80796414fd44e9"
+    },
+    "children": [
+     {
+      "tag": "div",
+      "id": "header"
+     },
+     {
+      "tag": "button",
+      "id": "back-btn",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "header-expr",
+      "html": {
+       "length": 102,
+       "sha256": "3ece2be362c955de"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "inference-controls"
+     },
+     {
+      "tag": "span",
+      "id": "view-controls"
+     },
+     {
+      "tag": "button",
+      "id": "graph-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the graph panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Graph"
+     },
+     {
+      "tag": "button",
+      "id": "plot-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the plot panel",
+       "type": "button"
+      },
+      "text": "Plots"
+     },
+     {
+      "tag": "button",
+      "id": "math-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the math panel",
+       "type": "button"
+      },
+      "text": "Math"
+     },
+     {
+      "tag": "div",
+      "id": "main"
+     },
+     {
+      "tag": "div",
+      "id": "graph-panel",
+      "classes": [
+       "first",
+       "full",
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 100%"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "graph-actions",
+      "classes": [
+       "graph-actions"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-fit",
+      "attrs": {
+       "aria-label": "Fit graph",
+       "title": "Fit graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-out",
+      "attrs": {
+       "aria-label": "Zoom out graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-in",
+      "attrs": {
+       "aria-label": "Zoom in graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "collapse-all-btn",
+      "attrs": {
+       "title": "Collapse every reification bubble in view",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ],
+      "hidden": true,
+      "disabled": true,
+      "title": "Collapse every reification bubble in view",
+      "text": "Collapse all"
+     },
+     {
+      "tag": "p",
+      "id": "graph-source-notice",
+      "attrs": {
+       "role": "status"
+      },
+      "classes": [
+       "viewer-source-notice"
+      ],
+      "hidden": true,
+      "text": "Source needs attention."
+     },
+     {
+      "tag": "div",
+      "id": "cy"
+     },
+     {
+      "tag": "div",
+      "id": "plot-divider",
+      "attrs": {
+       "aria-label": "Resize graph and plots",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "60",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-content"
+     },
+     {
+      "tag": "div",
+      "id": "math-divider",
+      "attrs": {
+       "aria-label": "Resize plots and math",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-content"
+     },
+     {
+      "tag": "p",
+      "id": "panels-hidden",
+      "hidden": true
+     },
+     {
+      "tag": "div",
+      "id": "tooltip",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "info",
+      "html": {
+       "length": 170,
+       "sha256": "ad70662f295e4dd9"
+      }
+     }
+    ]
+   },
+   "graph": {
+    "nodes": [
+     {
+      "id": "mu"
+     },
+     {
+      "id": "sigma"
+     },
+     {
+      "id": "x"
+     }
+    ],
+    "edges": [
+     "mu->x",
+     "sigma->x"
+    ],
+    "selected": []
+   }
+  },
+  "mathOn": {
+   "dom": {
+    "tag": "div",
+    "id": "flatppl-viewer-root",
+    "html": {
+     "length": 2239,
+     "sha256": "9f80796414fd44e9"
+    },
+    "children": [
+     {
+      "tag": "div",
+      "id": "header"
+     },
+     {
+      "tag": "button",
+      "id": "back-btn",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "header-expr",
+      "html": {
+       "length": 102,
+       "sha256": "3ece2be362c955de"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "inference-controls"
+     },
+     {
+      "tag": "span",
+      "id": "view-controls"
+     },
+     {
+      "tag": "button",
+      "id": "graph-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the graph panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Graph"
+     },
+     {
+      "tag": "button",
+      "id": "plot-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the plot panel",
+       "type": "button"
+      },
+      "text": "Plots"
+     },
+     {
+      "tag": "button",
+      "id": "math-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the math panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Math"
+     },
+     {
+      "tag": "div",
+      "id": "main"
+     },
+     {
+      "tag": "div",
+      "id": "graph-panel",
+      "classes": [
+       "first",
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 33.333333333333336%"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "graph-actions",
+      "classes": [
+       "graph-actions"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-fit",
+      "attrs": {
+       "aria-label": "Fit graph",
+       "title": "Fit graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-out",
+      "attrs": {
+       "aria-label": "Zoom out graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-in",
+      "attrs": {
+       "aria-label": "Zoom in graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "collapse-all-btn",
+      "attrs": {
+       "title": "Collapse every reification bubble in view",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ],
+      "hidden": true,
+      "disabled": true,
+      "title": "Collapse every reification bubble in view",
+      "text": "Collapse all"
+     },
+     {
+      "tag": "p",
+      "id": "graph-source-notice",
+      "attrs": {
+       "role": "status"
+      },
+      "classes": [
+       "viewer-source-notice"
+      ],
+      "hidden": true,
+      "text": "Source needs attention."
+     },
+     {
+      "tag": "div",
+      "id": "cy"
+     },
+     {
+      "tag": "div",
+      "id": "plot-divider",
+      "attrs": {
+       "aria-controls": "graph-panel math-panel",
+       "aria-label": "Resize graph and math",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "aria-valuetext": "Graph 50%",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-content"
+     },
+     {
+      "tag": "div",
+      "id": "math-divider",
+      "attrs": {
+       "aria-label": "Resize plots and math",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-panel",
+      "classes": [
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 66.66666666666667%"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "math-content",
+      "html": {
+       "length": 71,
+       "sha256": "1d2992ead7fbd3a9"
+      }
+     },
+     {
+      "tag": "p",
+      "id": "panels-hidden",
+      "hidden": true
+     },
+     {
+      "tag": "div",
+      "id": "tooltip",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "info",
+      "html": {
+       "length": 170,
+       "sha256": "ad70662f295e4dd9"
+      }
+     }
+    ]
+   },
+   "graph": {
+    "nodes": [
+     {
+      "id": "mu"
+     },
+     {
+      "id": "sigma"
+     },
+     {
+      "id": "x"
+     }
+    ],
+    "edges": [
+     "mu->x",
+     "sigma->x"
+    ],
+    "selected": []
+   }
+  },
+  "mathOff": {
+   "dom": {
+    "tag": "div",
+    "id": "flatppl-viewer-root",
+    "html": {
+     "length": 2239,
+     "sha256": "9f80796414fd44e9"
+    },
+    "children": [
+     {
+      "tag": "div",
+      "id": "header"
+     },
+     {
+      "tag": "button",
+      "id": "back-btn",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "header-expr",
+      "html": {
+       "length": 102,
+       "sha256": "3ece2be362c955de"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "inference-controls"
+     },
+     {
+      "tag": "span",
+      "id": "view-controls"
+     },
+     {
+      "tag": "button",
+      "id": "graph-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the graph panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Graph"
+     },
+     {
+      "tag": "button",
+      "id": "plot-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the plot panel",
+       "type": "button"
+      },
+      "text": "Plots"
+     },
+     {
+      "tag": "button",
+      "id": "math-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the math panel",
+       "type": "button"
+      },
+      "text": "Math"
+     },
+     {
+      "tag": "div",
+      "id": "main"
+     },
+     {
+      "tag": "div",
+      "id": "graph-panel",
+      "classes": [
+       "first",
+       "full",
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 100%"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "graph-actions",
+      "classes": [
+       "graph-actions"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-fit",
+      "attrs": {
+       "aria-label": "Fit graph",
+       "title": "Fit graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-out",
+      "attrs": {
+       "aria-label": "Zoom out graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-in",
+      "attrs": {
+       "aria-label": "Zoom in graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "collapse-all-btn",
+      "attrs": {
+       "title": "Collapse every reification bubble in view",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ],
+      "hidden": true,
+      "disabled": true,
+      "title": "Collapse every reification bubble in view",
+      "text": "Collapse all"
+     },
+     {
+      "tag": "p",
+      "id": "graph-source-notice",
+      "attrs": {
+       "role": "status"
+      },
+      "classes": [
+       "viewer-source-notice"
+      ],
+      "hidden": true,
+      "text": "Source needs attention."
+     },
+     {
+      "tag": "div",
+      "id": "cy"
+     },
+     {
+      "tag": "div",
+      "id": "plot-divider",
+      "attrs": {
+       "aria-controls": "graph-panel math-panel",
+       "aria-label": "Resize graph and math",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "aria-valuetext": "Graph 50%",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-content"
+     },
+     {
+      "tag": "div",
+      "id": "math-divider",
+      "attrs": {
+       "aria-label": "Resize plots and math",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-content",
+      "html": {
+       "length": 71,
+       "sha256": "1d2992ead7fbd3a9"
+      }
+     },
+     {
+      "tag": "p",
+      "id": "panels-hidden",
+      "hidden": true
+     },
+     {
+      "tag": "div",
+      "id": "tooltip",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "info",
+      "html": {
+       "length": 170,
+       "sha256": "ad70662f295e4dd9"
+      }
+     }
+    ]
+   },
+   "graph": {
+    "nodes": [
+     {
+      "id": "mu"
+     },
+     {
+      "id": "sigma"
+     },
+     {
+      "id": "x"
+     }
+    ],
+    "edges": [
+     "mu->x",
+     "sigma->x"
+    ],
+    "selected": []
+   }
+  },
+  "plotOn": {
+   "dom": {
+    "tag": "div",
+    "id": "flatppl-viewer-root",
+    "html": {
+     "length": 2239,
+     "sha256": "9f80796414fd44e9"
+    },
+    "children": [
+     {
+      "tag": "div",
+      "id": "header"
+     },
+     {
+      "tag": "button",
+      "id": "back-btn",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "header-expr",
+      "html": {
+       "length": 102,
+       "sha256": "3ece2be362c955de"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "inference-controls"
+     },
+     {
+      "tag": "span",
+      "id": "view-controls"
+     },
+     {
+      "tag": "button",
+      "id": "graph-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the graph panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Graph"
+     },
+     {
+      "tag": "button",
+      "id": "plot-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the plot panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Plots"
+     },
+     {
+      "tag": "button",
+      "id": "math-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the math panel",
+       "type": "button"
+      },
+      "text": "Math"
+     },
+     {
+      "tag": "div",
+      "id": "main"
+     },
+     {
+      "tag": "div",
+      "id": "graph-panel",
+      "classes": [
+       "first",
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 33.333333333333336%"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "graph-actions",
+      "classes": [
+       "graph-actions"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-fit",
+      "attrs": {
+       "aria-label": "Fit graph",
+       "title": "Fit graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-out",
+      "attrs": {
+       "aria-label": "Zoom out graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-in",
+      "attrs": {
+       "aria-label": "Zoom in graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "collapse-all-btn",
+      "attrs": {
+       "title": "Collapse every reification bubble in view",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ],
+      "hidden": true,
+      "disabled": true,
+      "title": "Collapse every reification bubble in view",
+      "text": "Collapse all"
+     },
+     {
+      "tag": "p",
+      "id": "graph-source-notice",
+      "attrs": {
+       "role": "status"
+      },
+      "classes": [
+       "viewer-source-notice"
+      ],
+      "hidden": true,
+      "text": "Source needs attention."
+     },
+     {
+      "tag": "div",
+      "id": "cy"
+     },
+     {
+      "tag": "div",
+      "id": "plot-divider",
+      "attrs": {
+       "aria-controls": "graph-panel plot-panel",
+       "aria-label": "Resize graph and plots",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "aria-valuetext": "Graph 50%",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-panel",
+      "classes": [
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 66.66666666666667%"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "plot-content",
+      "style": {
+       "boxSizing": "border-box",
+       "display": "flex",
+       "flexDirection": "column",
+       "gap": "8px",
+       "padding": "10px"
+      },
+      "html": {
+       "length": 0,
+       "sha256": "e3b0c44298fc1c14"
+      },
+      "children": [
+       {
+        "tag": "div",
+        "classes": [
+         "plot-frame-toolbar"
+        ],
+        "style": {
+         "alignItems": "center",
+         "background": "rgba(255,255,255,0.02)",
+         "border": "1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))",
+         "borderRadius": "3px",
+         "display": "flex",
+         "flexShrink": "0",
+         "flexWrap": "wrap",
+         "fontFamily": "var(--vscode-font-family, sans-serif)",
+         "fontSize": "0.92em",
+         "gap": "0.75em",
+         "padding": "0.4em 0.6em"
+        },
+        "children": [
+         {
+          "tag": "span",
+          "style": {
+           "alignItems": "center",
+           "display": "inline-flex",
+           "gap": "0.5em"
+          },
+          "children": [
+           {
+            "tag": "span",
+            "style": {
+             "alignItems": "center",
+             "display": "inline-flex",
+             "gap": "0.3em",
+             "position": "relative"
+            },
+            "children": [
+             {
+              "tag": "label",
+              "style": {
+               "opacity": "0.6"
+              },
+              "text": "Sampler:"
+             },
+             {
+              "tag": "select",
+              "id": "sampler-settings-1-backend",
+              "classes": [
+               "viewer-control"
+              ],
+              "disabled": true,
+              "title": "Prior / tractable plots draw directly (no sampler backend). Use the gear to set the forward draw count + seed.",
+              "style": {
+               "background": "var(--vscode-dropdown-background, #3c3c3c)",
+               "border": "1px solid var(--vscode-dropdown-border, #555)",
+               "borderRadius": "2px",
+               "color": "var(--vscode-dropdown-foreground, #cccccc)",
+               "cursor": "default",
+               "fontFamily": "var(--vscode-font-family, sans-serif)",
+               "fontSize": "1em",
+               "opacity": "0.5",
+               "padding": "1px 4px"
+              },
+              "children": [
+               {
+                "tag": "option",
+                "text": "—"
+               },
+               {
+                "tag": "option",
+                "text": "IS"
+               },
+               {
+                "tag": "option",
+                "text": "MH"
+               },
+               {
+                "tag": "option",
+                "text": "RAM"
+               },
+               {
+                "tag": "option",
+                "text": "slice"
+               },
+               {
+                "tag": "option",
+                "text": "emcee"
+               },
+               {
+                "tag": "option",
+                "text": "DEMCz"
+               },
+               {
+                "tag": "option",
+                "text": "AMIS"
+               },
+               {
+                "tag": "option",
+                "text": "SMC"
+               },
+               {
+                "tag": "option",
+                "text": "nested"
+               },
+               {
+                "tag": "option",
+                "text": "ESS"
+               }
+              ]
+             },
+             {
+              "tag": "button",
+              "attrs": {
+               "aria-controls": "sampler-settings-1",
+               "aria-expanded": "false",
+               "aria-haspopup": "dialog",
+               "aria-label": "Sampler settings"
+              },
+              "classes": [
+               "viewer-control"
+              ],
+              "title": "Sampler settings",
+              "style": {
+               "background": "var(--vscode-dropdown-background, #3c3c3c)",
+               "border": "1px solid var(--vscode-dropdown-border, #555)",
+               "borderRadius": "2px",
+               "color": "var(--vscode-dropdown-foreground, #cccccc)",
+               "cursor": "pointer",
+               "fontFamily": "var(--vscode-font-family, sans-serif)",
+               "fontSize": "1em",
+               "opacity": "1",
+               "padding": "1px 4px"
+              },
+              "text": "⚙"
+             },
+             {
+              "tag": "button",
+              "classes": [
+               "viewer-control"
+              ],
+              "title": "Re-run the sampler with the current settings (re-draw)",
+              "style": {
+               "background": "var(--vscode-dropdown-background, #3c3c3c)",
+               "border": "1px solid var(--vscode-dropdown-border, #555)",
+               "borderColor": "var(--vscode-dropdown-border, #555)",
+               "borderRadius": "2px",
+               "color": "var(--vscode-dropdown-foreground, #cccccc)",
+               "cursor": "pointer",
+               "fontFamily": "var(--vscode-font-family, sans-serif)",
+               "fontSize": "1em",
+               "fontWeight": "600",
+               "padding": "1px 4px"
+              },
+              "text": "Sample"
+             },
+             {
+              "tag": "div",
+              "id": "sampler-settings-1",
+              "attrs": {
+               "aria-label": "Sampler settings",
+               "role": "dialog"
+              },
+              "style": {
+               "background": "var(--vscode-editorWidget-background, #252526)",
+               "border": "1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))",
+               "borderRadius": "3px",
+               "boxShadow": "0 2px 8px rgba(0,0,0,0.4)",
+               "display": "none",
+               "fontSize": "0.9em",
+               "maxHeight": "calc(100dvh - 16px)",
+               "maxWidth": "calc(100vw - 16px)",
+               "minWidth": "12em",
+               "overflowY": "auto",
+               "padding": "0.5em",
+               "position": "fixed",
+               "zIndex": "9999"
+              },
+              "children": [
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "draws"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-1",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "warmup"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-2",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "chains"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-count",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "iterations"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-3",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "samples/iter"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-4",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "particles"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-5",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "chain"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-6",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "CESS ratio"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-7",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "live points"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-8",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "dlogz"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-9",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "region"
+                 },
+                 {
+                  "tag": "select",
+                  "id": "sampler-settings-1-10",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "title": "Constrained-draw region for nested sampling. region-free (default) is the most reliable for the evidence logZ; whitened = global MLFriends ellipsoid; RadFriends = raw-cube-metric balls; cluster = per-cluster local ellipsoids — fastest sampling, but trades away logZ accuracy (use for exploration, not evidence).",
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px"
+                  },
+                  "children": [
+                   {
+                    "tag": "option",
+                    "text": "region-free"
+                   },
+                   {
+                    "tag": "option",
+                    "text": "whitened"
+                   },
+                   {
+                    "tag": "option",
+                    "text": "RadFriends"
+                   },
+                   {
+                    "tag": "option",
+                    "text": "cluster"
+                   }
+                  ]
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "seed"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-11",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "flex",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "draws"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-12",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "flex",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "seed"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-1-13",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "tag": "div",
+          "style": {
+           "marginLeft": "auto"
+          }
+         },
+         {
+          "tag": "span",
+          "style": {
+           "alignItems": "center",
+           "display": "inline-flex",
+           "fontFamily": "var(--vscode-editor-font-family, monospace)",
+           "fontSize": "0.92em",
+           "gap": "0.4em",
+           "opacity": "0.85"
+          },
+          "children": [
+           {
+            "tag": "span",
+            "title": "Total draw count in the empirical measure (1,000)",
+            "text": "10³ draws"
+           }
+          ]
+         },
+         {
+          "tag": "button",
+          "attrs": {
+           "aria-label": "Download draws (gzipped CSV or JSON)"
+          },
+          "title": "Download draws (gzipped CSV or JSON)",
+          "style": {
+           "alignItems": "center",
+           "background": "transparent",
+           "border": "1px solid var(--vscode-button-border, rgba(255,255,255,0.15))",
+           "borderRadius": "3px",
+           "color": "var(--vscode-foreground, #cccccc)",
+           "cursor": "pointer",
+           "display": "inline-flex",
+           "justifyContent": "center",
+           "opacity": "0.75",
+           "padding": "2px 4px"
+          },
+          "html": {
+           "length": 1294,
+           "sha256": "62301a371b307b85"
+          }
+         }
+        ]
+       },
+       {
+        "tag": "div",
+        "style": {
+         "flex": "1 1 auto",
+         "minHeight": "0",
+         "minWidth": "0",
+         "position": "relative"
+        }
+       }
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-divider",
+      "attrs": {
+       "aria-label": "Resize plots and math",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-content",
+      "html": {
+       "length": 71,
+       "sha256": "1d2992ead7fbd3a9"
+      }
+     },
+     {
+      "tag": "p",
+      "id": "panels-hidden",
+      "hidden": true
+     },
+     {
+      "tag": "div",
+      "id": "tooltip",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "info",
+      "html": {
+       "length": 170,
+       "sha256": "ad70662f295e4dd9"
+      }
+     }
+    ]
+   },
+   "graph": {
+    "nodes": [
+     {
+      "id": "mu"
+     },
+     {
+      "id": "sigma"
+     },
+     {
+      "id": "x"
+     }
+    ],
+    "edges": [
+     "mu->x",
+     "sigma->x"
+    ],
+    "selected": []
+   }
+  },
+  "tapMu": {
+   "dom": {
+    "tag": "div",
+    "id": "flatppl-viewer-root",
+    "html": {
+     "length": 2239,
+     "sha256": "9f80796414fd44e9"
+    },
+    "children": [
+     {
+      "tag": "div",
+      "id": "header"
+     },
+     {
+      "tag": "button",
+      "id": "back-btn",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "header-expr",
+      "html": {
+       "length": 102,
+       "sha256": "3ece2be362c955de"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "inference-controls"
+     },
+     {
+      "tag": "span",
+      "id": "view-controls"
+     },
+     {
+      "tag": "button",
+      "id": "graph-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the graph panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Graph"
+     },
+     {
+      "tag": "button",
+      "id": "plot-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the plot panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Plots"
+     },
+     {
+      "tag": "button",
+      "id": "math-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the math panel",
+       "type": "button"
+      },
+      "text": "Math"
+     },
+     {
+      "tag": "div",
+      "id": "main"
+     },
+     {
+      "tag": "div",
+      "id": "graph-panel",
+      "classes": [
+       "first",
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 33.333333333333336%"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "graph-actions",
+      "classes": [
+       "graph-actions"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-fit",
+      "attrs": {
+       "aria-label": "Fit graph",
+       "title": "Fit graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-out",
+      "attrs": {
+       "aria-label": "Zoom out graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-in",
+      "attrs": {
+       "aria-label": "Zoom in graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "collapse-all-btn",
+      "attrs": {
+       "title": "Collapse every reification bubble in view",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ],
+      "hidden": true,
+      "disabled": true,
+      "title": "Collapse every reification bubble in view",
+      "text": "Collapse all"
+     },
+     {
+      "tag": "p",
+      "id": "graph-source-notice",
+      "attrs": {
+       "role": "status"
+      },
+      "classes": [
+       "viewer-source-notice"
+      ],
+      "hidden": true,
+      "text": "Source needs attention."
+     },
+     {
+      "tag": "div",
+      "id": "cy"
+     },
+     {
+      "tag": "div",
+      "id": "plot-divider",
+      "attrs": {
+       "aria-controls": "graph-panel plot-panel",
+       "aria-label": "Resize graph and plots",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "aria-valuetext": "Graph 50%",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-panel",
+      "classes": [
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 66.66666666666667%"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "plot-content",
+      "style": {
+       "boxSizing": "border-box",
+       "display": "flex",
+       "flexDirection": "column",
+       "gap": "8px",
+       "padding": "10px"
+      },
+      "html": {
+       "length": 0,
+       "sha256": "e3b0c44298fc1c14"
+      },
+      "children": [
+       {
+        "tag": "div",
+        "classes": [
+         "plot-frame-toolbar"
+        ],
+        "style": {
+         "alignItems": "center",
+         "background": "rgba(255,255,255,0.02)",
+         "border": "1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))",
+         "borderRadius": "3px",
+         "display": "flex",
+         "flexShrink": "0",
+         "flexWrap": "wrap",
+         "fontFamily": "var(--vscode-font-family, sans-serif)",
+         "fontSize": "0.92em",
+         "gap": "0.75em",
+         "padding": "0.4em 0.6em"
+        },
+        "children": [
+         {
+          "tag": "span",
+          "style": {
+           "alignItems": "center",
+           "display": "inline-flex",
+           "gap": "0.5em"
+          },
+          "children": [
+           {
+            "tag": "span",
+            "style": {
+             "alignItems": "center",
+             "display": "inline-flex",
+             "gap": "0.3em",
+             "position": "relative"
+            },
+            "children": [
+             {
+              "tag": "label",
+              "style": {
+               "opacity": "0.6"
+              },
+              "text": "Sampler:"
+             },
+             {
+              "tag": "select",
+              "id": "sampler-settings-2-backend",
+              "classes": [
+               "viewer-control"
+              ],
+              "disabled": true,
+              "title": "Prior / tractable plots draw directly (no sampler backend). Use the gear to set the forward draw count + seed.",
+              "style": {
+               "background": "var(--vscode-dropdown-background, #3c3c3c)",
+               "border": "1px solid var(--vscode-dropdown-border, #555)",
+               "borderRadius": "2px",
+               "color": "var(--vscode-dropdown-foreground, #cccccc)",
+               "cursor": "default",
+               "fontFamily": "var(--vscode-font-family, sans-serif)",
+               "fontSize": "1em",
+               "opacity": "0.5",
+               "padding": "1px 4px"
+              },
+              "children": [
+               {
+                "tag": "option",
+                "text": "—"
+               },
+               {
+                "tag": "option",
+                "text": "IS"
+               },
+               {
+                "tag": "option",
+                "text": "MH"
+               },
+               {
+                "tag": "option",
+                "text": "RAM"
+               },
+               {
+                "tag": "option",
+                "text": "slice"
+               },
+               {
+                "tag": "option",
+                "text": "emcee"
+               },
+               {
+                "tag": "option",
+                "text": "DEMCz"
+               },
+               {
+                "tag": "option",
+                "text": "AMIS"
+               },
+               {
+                "tag": "option",
+                "text": "SMC"
+               },
+               {
+                "tag": "option",
+                "text": "nested"
+               },
+               {
+                "tag": "option",
+                "text": "ESS"
+               }
+              ]
+             },
+             {
+              "tag": "button",
+              "attrs": {
+               "aria-controls": "sampler-settings-2",
+               "aria-expanded": "false",
+               "aria-haspopup": "dialog",
+               "aria-label": "Sampler settings"
+              },
+              "classes": [
+               "viewer-control"
+              ],
+              "title": "Sampler settings",
+              "style": {
+               "background": "var(--vscode-dropdown-background, #3c3c3c)",
+               "border": "1px solid var(--vscode-dropdown-border, #555)",
+               "borderRadius": "2px",
+               "color": "var(--vscode-dropdown-foreground, #cccccc)",
+               "cursor": "pointer",
+               "fontFamily": "var(--vscode-font-family, sans-serif)",
+               "fontSize": "1em",
+               "opacity": "1",
+               "padding": "1px 4px"
+              },
+              "text": "⚙"
+             },
+             {
+              "tag": "button",
+              "classes": [
+               "viewer-control"
+              ],
+              "title": "Re-run the sampler with the current settings (re-draw)",
+              "style": {
+               "background": "var(--vscode-dropdown-background, #3c3c3c)",
+               "border": "1px solid var(--vscode-dropdown-border, #555)",
+               "borderColor": "var(--vscode-dropdown-border, #555)",
+               "borderRadius": "2px",
+               "color": "var(--vscode-dropdown-foreground, #cccccc)",
+               "cursor": "pointer",
+               "fontFamily": "var(--vscode-font-family, sans-serif)",
+               "fontSize": "1em",
+               "fontWeight": "600",
+               "padding": "1px 4px"
+              },
+              "text": "Sample"
+             },
+             {
+              "tag": "div",
+              "id": "sampler-settings-2",
+              "attrs": {
+               "aria-label": "Sampler settings",
+               "role": "dialog"
+              },
+              "style": {
+               "background": "var(--vscode-editorWidget-background, #252526)",
+               "border": "1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))",
+               "borderRadius": "3px",
+               "boxShadow": "0 2px 8px rgba(0,0,0,0.4)",
+               "display": "none",
+               "fontSize": "0.9em",
+               "maxHeight": "calc(100dvh - 16px)",
+               "maxWidth": "calc(100vw - 16px)",
+               "minWidth": "12em",
+               "overflowY": "auto",
+               "padding": "0.5em",
+               "position": "fixed",
+               "zIndex": "9999"
+              },
+              "children": [
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "draws"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-1",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "warmup"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-2",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "chains"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-count",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "iterations"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-3",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "samples/iter"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-4",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "particles"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-5",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "chain"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-6",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "CESS ratio"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-7",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "live points"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-8",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "dlogz"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-9",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "region"
+                 },
+                 {
+                  "tag": "select",
+                  "id": "sampler-settings-2-10",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "title": "Constrained-draw region for nested sampling. region-free (default) is the most reliable for the evidence logZ; whitened = global MLFriends ellipsoid; RadFriends = raw-cube-metric balls; cluster = per-cluster local ellipsoids — fastest sampling, but trades away logZ accuracy (use for exploration, not evidence).",
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px"
+                  },
+                  "children": [
+                   {
+                    "tag": "option",
+                    "text": "region-free"
+                   },
+                   {
+                    "tag": "option",
+                    "text": "whitened"
+                   },
+                   {
+                    "tag": "option",
+                    "text": "RadFriends"
+                   },
+                   {
+                    "tag": "option",
+                    "text": "cluster"
+                   }
+                  ]
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "seed"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-11",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "flex",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "draws"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-12",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "flex",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "seed"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-2-13",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "tag": "div",
+          "style": {
+           "marginLeft": "auto"
+          }
+         },
+         {
+          "tag": "span",
+          "style": {
+           "alignItems": "center",
+           "display": "inline-flex",
+           "fontFamily": "var(--vscode-editor-font-family, monospace)",
+           "fontSize": "0.92em",
+           "gap": "0.4em",
+           "opacity": "0.85"
+          },
+          "children": [
+           {
+            "tag": "span",
+            "title": "Total draw count in the empirical measure (1,000)",
+            "text": "10³ draws"
+           }
+          ]
+         },
+         {
+          "tag": "button",
+          "attrs": {
+           "aria-label": "Download draws (gzipped CSV or JSON)"
+          },
+          "title": "Download draws (gzipped CSV or JSON)",
+          "style": {
+           "alignItems": "center",
+           "background": "transparent",
+           "border": "1px solid var(--vscode-button-border, rgba(255,255,255,0.15))",
+           "borderRadius": "3px",
+           "color": "var(--vscode-foreground, #cccccc)",
+           "cursor": "pointer",
+           "display": "inline-flex",
+           "justifyContent": "center",
+           "opacity": "0.75",
+           "padding": "2px 4px"
+          },
+          "html": {
+           "length": 1294,
+           "sha256": "62301a371b307b85"
+          }
+         }
+        ]
+       },
+       {
+        "tag": "div",
+        "style": {
+         "flex": "1 1 auto",
+         "minHeight": "0",
+         "minWidth": "0",
+         "position": "relative"
+        }
+       }
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-divider",
+      "attrs": {
+       "aria-label": "Resize plots and math",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-content",
+      "html": {
+       "length": 71,
+       "sha256": "1d2992ead7fbd3a9"
+      }
+     },
+     {
+      "tag": "p",
+      "id": "panels-hidden",
+      "hidden": true
+     },
+     {
+      "tag": "div",
+      "id": "tooltip",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "info",
+      "html": {
+       "length": 201,
+       "sha256": "8c3c704277208028"
+      }
+     }
+    ]
+   },
+   "graph": {
+    "nodes": [
+     {
+      "id": "mu"
+     },
+     {
+      "id": "sigma"
+     },
+     {
+      "id": "x"
+     }
+    ],
+    "edges": [
+     "mu->x",
+     "sigma->x"
+    ],
+    "selected": []
+   }
+  },
+  "mathRowX": {
+   "dom": {
+    "tag": "div",
+    "id": "flatppl-viewer-root",
+    "html": {
+     "length": 2239,
+     "sha256": "9f80796414fd44e9"
+    },
+    "children": [
+     {
+      "tag": "div",
+      "id": "header"
+     },
+     {
+      "tag": "button",
+      "id": "back-btn",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "header-expr",
+      "html": {
+       "length": 102,
+       "sha256": "3ece2be362c955de"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "inference-controls"
+     },
+     {
+      "tag": "span",
+      "id": "view-controls"
+     },
+     {
+      "tag": "button",
+      "id": "graph-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the graph panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Graph"
+     },
+     {
+      "tag": "button",
+      "id": "plot-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the plot panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Plots"
+     },
+     {
+      "tag": "button",
+      "id": "math-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the math panel",
+       "type": "button"
+      },
+      "text": "Math"
+     },
+     {
+      "tag": "div",
+      "id": "main"
+     },
+     {
+      "tag": "div",
+      "id": "graph-panel",
+      "classes": [
+       "first",
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 33.333333333333336%"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "graph-actions",
+      "classes": [
+       "graph-actions"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-fit",
+      "attrs": {
+       "aria-label": "Fit graph",
+       "title": "Fit graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-out",
+      "attrs": {
+       "aria-label": "Zoom out graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-in",
+      "attrs": {
+       "aria-label": "Zoom in graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "collapse-all-btn",
+      "attrs": {
+       "title": "Collapse every reification bubble in view",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ],
+      "hidden": true,
+      "disabled": true,
+      "title": "Collapse every reification bubble in view",
+      "text": "Collapse all"
+     },
+     {
+      "tag": "p",
+      "id": "graph-source-notice",
+      "attrs": {
+       "role": "status"
+      },
+      "classes": [
+       "viewer-source-notice"
+      ],
+      "hidden": true,
+      "text": "Source needs attention."
+     },
+     {
+      "tag": "div",
+      "id": "cy"
+     },
+     {
+      "tag": "div",
+      "id": "plot-divider",
+      "attrs": {
+       "aria-controls": "graph-panel plot-panel",
+       "aria-label": "Resize graph and plots",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "aria-valuetext": "Graph 50%",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-panel",
+      "classes": [
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 66.66666666666667%"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "plot-content",
+      "style": {
+       "boxSizing": "border-box",
+       "display": "flex",
+       "flexDirection": "column",
+       "gap": "8px",
+       "padding": "10px"
+      },
+      "html": {
+       "length": 0,
+       "sha256": "e3b0c44298fc1c14"
+      },
+      "children": [
+       {
+        "tag": "div",
+        "classes": [
+         "plot-frame-toolbar"
+        ],
+        "style": {
+         "alignItems": "center",
+         "background": "rgba(255,255,255,0.02)",
+         "border": "1px solid var(--vscode-panel-border, rgba(255,255,255,0.08))",
+         "borderRadius": "3px",
+         "display": "flex",
+         "flexShrink": "0",
+         "flexWrap": "wrap",
+         "fontFamily": "var(--vscode-font-family, sans-serif)",
+         "fontSize": "0.92em",
+         "gap": "0.75em",
+         "padding": "0.4em 0.6em"
+        },
+        "children": [
+         {
+          "tag": "span",
+          "style": {
+           "alignItems": "center",
+           "display": "inline-flex",
+           "gap": "0.5em"
+          },
+          "children": [
+           {
+            "tag": "span",
+            "style": {
+             "alignItems": "center",
+             "display": "inline-flex",
+             "gap": "0.3em",
+             "position": "relative"
+            },
+            "children": [
+             {
+              "tag": "label",
+              "style": {
+               "opacity": "0.6"
+              },
+              "text": "Sampler:"
+             },
+             {
+              "tag": "select",
+              "id": "sampler-settings-3-backend",
+              "classes": [
+               "viewer-control"
+              ],
+              "disabled": true,
+              "title": "Prior / tractable plots draw directly (no sampler backend). Use the gear to set the forward draw count + seed.",
+              "style": {
+               "background": "var(--vscode-dropdown-background, #3c3c3c)",
+               "border": "1px solid var(--vscode-dropdown-border, #555)",
+               "borderRadius": "2px",
+               "color": "var(--vscode-dropdown-foreground, #cccccc)",
+               "cursor": "default",
+               "fontFamily": "var(--vscode-font-family, sans-serif)",
+               "fontSize": "1em",
+               "opacity": "0.5",
+               "padding": "1px 4px"
+              },
+              "children": [
+               {
+                "tag": "option",
+                "text": "—"
+               },
+               {
+                "tag": "option",
+                "text": "IS"
+               },
+               {
+                "tag": "option",
+                "text": "MH"
+               },
+               {
+                "tag": "option",
+                "text": "RAM"
+               },
+               {
+                "tag": "option",
+                "text": "slice"
+               },
+               {
+                "tag": "option",
+                "text": "emcee"
+               },
+               {
+                "tag": "option",
+                "text": "DEMCz"
+               },
+               {
+                "tag": "option",
+                "text": "AMIS"
+               },
+               {
+                "tag": "option",
+                "text": "SMC"
+               },
+               {
+                "tag": "option",
+                "text": "nested"
+               },
+               {
+                "tag": "option",
+                "text": "ESS"
+               }
+              ]
+             },
+             {
+              "tag": "button",
+              "attrs": {
+               "aria-controls": "sampler-settings-3",
+               "aria-expanded": "false",
+               "aria-haspopup": "dialog",
+               "aria-label": "Sampler settings"
+              },
+              "classes": [
+               "viewer-control"
+              ],
+              "title": "Sampler settings",
+              "style": {
+               "background": "var(--vscode-dropdown-background, #3c3c3c)",
+               "border": "1px solid var(--vscode-dropdown-border, #555)",
+               "borderRadius": "2px",
+               "color": "var(--vscode-dropdown-foreground, #cccccc)",
+               "cursor": "pointer",
+               "fontFamily": "var(--vscode-font-family, sans-serif)",
+               "fontSize": "1em",
+               "opacity": "1",
+               "padding": "1px 4px"
+              },
+              "text": "⚙"
+             },
+             {
+              "tag": "button",
+              "classes": [
+               "viewer-control"
+              ],
+              "title": "Re-run the sampler with the current settings (re-draw)",
+              "style": {
+               "background": "var(--vscode-dropdown-background, #3c3c3c)",
+               "border": "1px solid var(--vscode-dropdown-border, #555)",
+               "borderColor": "var(--vscode-dropdown-border, #555)",
+               "borderRadius": "2px",
+               "color": "var(--vscode-dropdown-foreground, #cccccc)",
+               "cursor": "pointer",
+               "fontFamily": "var(--vscode-font-family, sans-serif)",
+               "fontSize": "1em",
+               "fontWeight": "600",
+               "padding": "1px 4px"
+              },
+              "text": "Sample"
+             },
+             {
+              "tag": "div",
+              "id": "sampler-settings-3",
+              "attrs": {
+               "aria-label": "Sampler settings",
+               "role": "dialog"
+              },
+              "style": {
+               "background": "var(--vscode-editorWidget-background, #252526)",
+               "border": "1px solid var(--vscode-panel-border, rgba(255,255,255,0.15))",
+               "borderRadius": "3px",
+               "boxShadow": "0 2px 8px rgba(0,0,0,0.4)",
+               "display": "none",
+               "fontSize": "0.9em",
+               "maxHeight": "calc(100dvh - 16px)",
+               "maxWidth": "calc(100vw - 16px)",
+               "minWidth": "12em",
+               "overflowY": "auto",
+               "padding": "0.5em",
+               "position": "fixed",
+               "zIndex": "9999"
+              },
+              "children": [
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "draws"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-1",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "warmup"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-2",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "chains"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-count",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "iterations"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-3",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "samples/iter"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-4",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "particles"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-5",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "chain"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-6",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "CESS ratio"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-7",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "live points"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-8",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "dlogz"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-9",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "region"
+                 },
+                 {
+                  "tag": "select",
+                  "id": "sampler-settings-3-10",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "title": "Constrained-draw region for nested sampling. region-free (default) is the most reliable for the evidence logZ; whitened = global MLFriends ellipsoid; RadFriends = raw-cube-metric balls; cluster = per-cluster local ellipsoids — fastest sampling, but trades away logZ accuracy (use for exploration, not evidence).",
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px"
+                  },
+                  "children": [
+                   {
+                    "tag": "option",
+                    "text": "region-free"
+                   },
+                   {
+                    "tag": "option",
+                    "text": "whitened"
+                   },
+                   {
+                    "tag": "option",
+                    "text": "RadFriends"
+                   },
+                   {
+                    "tag": "option",
+                    "text": "cluster"
+                   }
+                  ]
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "none",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "seed"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-11",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "flex",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "draws"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-12",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               },
+               {
+                "tag": "div",
+                "style": {
+                 "alignItems": "center",
+                 "display": "flex",
+                 "gap": "0.6em",
+                 "justifyContent": "space-between",
+                 "margin": "0.15em 0"
+                },
+                "children": [
+                 {
+                  "tag": "label",
+                  "style": {
+                   "opacity": "0.7"
+                  },
+                  "text": "seed"
+                 },
+                 {
+                  "tag": "input",
+                  "id": "sampler-settings-3-13",
+                  "classes": [
+                   "viewer-control"
+                  ],
+                  "style": {
+                   "background": "var(--vscode-dropdown-background, #3c3c3c)",
+                   "border": "1px solid var(--vscode-dropdown-border, #555)",
+                   "borderRadius": "2px",
+                   "color": "var(--vscode-dropdown-foreground, #cccccc)",
+                   "cursor": "pointer",
+                   "fontFamily": "var(--vscode-font-family, sans-serif)",
+                   "fontSize": "1em",
+                   "padding": "1px 4px",
+                   "width": "5.5em"
+                  }
+                 }
+                ]
+               }
+              ]
+             }
+            ]
+           }
+          ]
+         },
+         {
+          "tag": "div",
+          "style": {
+           "marginLeft": "auto"
+          }
+         },
+         {
+          "tag": "span",
+          "style": {
+           "alignItems": "center",
+           "display": "inline-flex",
+           "fontFamily": "var(--vscode-editor-font-family, monospace)",
+           "fontSize": "0.92em",
+           "gap": "0.4em",
+           "opacity": "0.85"
+          },
+          "children": [
+           {
+            "tag": "span",
+            "title": "Total draw count in the empirical measure (1,000)",
+            "text": "10³ draws"
+           }
+          ]
+         },
+         {
+          "tag": "button",
+          "attrs": {
+           "aria-label": "Download draws (gzipped CSV or JSON)"
+          },
+          "title": "Download draws (gzipped CSV or JSON)",
+          "style": {
+           "alignItems": "center",
+           "background": "transparent",
+           "border": "1px solid var(--vscode-button-border, rgba(255,255,255,0.15))",
+           "borderRadius": "3px",
+           "color": "var(--vscode-foreground, #cccccc)",
+           "cursor": "pointer",
+           "display": "inline-flex",
+           "justifyContent": "center",
+           "opacity": "0.75",
+           "padding": "2px 4px"
+          },
+          "html": {
+           "length": 1294,
+           "sha256": "62301a371b307b85"
+          }
+         }
+        ]
+       },
+       {
+        "tag": "div",
+        "style": {
+         "flex": "1 1 auto",
+         "minHeight": "0",
+         "minWidth": "0",
+         "position": "relative"
+        }
+       }
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-divider",
+      "attrs": {
+       "aria-label": "Resize plots and math",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-content",
+      "html": {
+       "length": 71,
+       "sha256": "1d2992ead7fbd3a9"
+      }
+     },
+     {
+      "tag": "p",
+      "id": "panels-hidden",
+      "hidden": true
+     },
+     {
+      "tag": "div",
+      "id": "tooltip",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "info",
+      "html": {
+       "length": 201,
+       "sha256": "8c3c704277208028"
+      }
+     }
+    ]
+   },
+   "graph": {
+    "nodes": [
+     {
+      "id": "mu"
+     },
+     {
+      "id": "sigma"
+     },
+     {
+      "id": "x"
+     }
+    ],
+    "edges": [
+     "mu->x",
+     "sigma->x"
+    ],
+    "selected": []
+   }
+  },
+  "module": {
+   "dom": {
+    "tag": "div",
+    "id": "flatppl-viewer-root",
+    "html": {
+     "length": 2239,
+     "sha256": "9f80796414fd44e9"
+    },
+    "children": [
+     {
+      "tag": "div",
+      "id": "header"
+     },
+     {
+      "tag": "button",
+      "id": "back-btn",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "header-expr",
+      "html": {
+       "length": 39,
+       "sha256": "7dfb6085f39ff105"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "inference-controls"
+     },
+     {
+      "tag": "span",
+      "id": "view-controls"
+     },
+     {
+      "tag": "button",
+      "id": "graph-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the graph panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Graph"
+     },
+     {
+      "tag": "button",
+      "id": "plot-toggle",
+      "attrs": {
+       "aria-pressed": "true",
+       "title": "Toggle the plot panel",
+       "type": "button"
+      },
+      "classes": [
+       "on"
+      ],
+      "text": "Plots"
+     },
+     {
+      "tag": "button",
+      "id": "math-toggle",
+      "attrs": {
+       "aria-pressed": "false",
+       "title": "Toggle the math panel",
+       "type": "button"
+      },
+      "text": "Math"
+     },
+     {
+      "tag": "div",
+      "id": "main"
+     },
+     {
+      "tag": "div",
+      "id": "graph-panel",
+      "classes": [
+       "first",
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 33.333333333333336%"
+      }
+     },
+     {
+      "tag": "span",
+      "id": "graph-actions",
+      "classes": [
+       "graph-actions"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-fit",
+      "attrs": {
+       "aria-label": "Fit graph",
+       "title": "Fit graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-out",
+      "attrs": {
+       "aria-label": "Zoom out graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "graph-zoom-in",
+      "attrs": {
+       "aria-label": "Zoom in graph",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ]
+     },
+     {
+      "tag": "button",
+      "id": "collapse-all-btn",
+      "attrs": {
+       "title": "Collapse every reification bubble in view",
+       "type": "button"
+      },
+      "classes": [
+       "viewer-action"
+      ],
+      "hidden": true,
+      "disabled": true,
+      "title": "Collapse every reification bubble in view",
+      "text": "Collapse all"
+     },
+     {
+      "tag": "p",
+      "id": "graph-source-notice",
+      "attrs": {
+       "role": "status"
+      },
+      "classes": [
+       "viewer-source-notice"
+      ],
+      "hidden": true,
+      "text": "Source needs attention."
+     },
+     {
+      "tag": "div",
+      "id": "cy"
+     },
+     {
+      "tag": "div",
+      "id": "plot-divider",
+      "attrs": {
+       "aria-controls": "graph-panel plot-panel",
+       "aria-label": "Resize graph and plots",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "aria-valuetext": "Graph 50%",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "plot-panel",
+      "classes": [
+       "viewer-panel"
+      ],
+      "style": {
+       "flex": "1 1 66.66666666666667%"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "plot-content",
+      "html": {
+       "length": 80,
+       "sha256": "c0f99d55a47c78fd"
+      },
+      "children": [
+       {
+        "tag": "div",
+        "id": "plot-empty",
+        "classes": [
+         "hint"
+        ]
+       }
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-divider",
+      "attrs": {
+       "aria-label": "Resize plots and math",
+       "aria-orientation": "horizontal",
+       "aria-valuemax": "100",
+       "aria-valuemin": "0",
+       "aria-valuenow": "50",
+       "role": "separator",
+       "tabindex": "0",
+       "title": "Drag or use arrow keys to resize"
+      },
+      "classes": [
+       "hidden",
+       "viewer-divider"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-panel",
+      "classes": [
+       "hidden",
+       "viewer-panel"
+      ]
+     },
+     {
+      "tag": "div",
+      "id": "math-content",
+      "html": {
+       "length": 71,
+       "sha256": "1d2992ead7fbd3a9"
+      }
+     },
+     {
+      "tag": "p",
+      "id": "panels-hidden",
+      "hidden": true
+     },
+     {
+      "tag": "div",
+      "id": "tooltip",
+      "style": {
+       "display": "none"
+      }
+     },
+     {
+      "tag": "div",
+      "id": "info",
+      "html": {
+       "length": 167,
+       "sha256": "ebc6951e3c004dfa"
+      }
+     }
+    ]
+   },
+   "graph": {
+    "nodes": [
+     {
+      "id": "mu"
+     },
+     {
+      "id": "sigma"
+     },
+     {
+      "id": "x"
+     }
+    ],
+    "edges": [
+     "mu->x",
+     "sigma->x"
+    ],
+    "selected": []
+   }
+  }
+ },
+ "charts": [
+  [
+   {
+    "titles": [
+     "x"
+    ],
+    "series": [
+     {
+      "type": "custom",
+      "name": "samples",
+      "length": 18,
+      "data": "bc126a22f0f9cf22"
+     }
+    ]
+   }
+  ],
+  [
+   {
+    "titles": [
+     "mu"
+    ],
+    "series": [
+     {
+      "type": "custom",
+      "name": "samples",
+      "length": 20,
+      "data": "478f3c38d865ae85"
+     }
+    ]
+   }
+  ],
+  [
+   {
+    "titles": [
+     "x"
+    ],
+    "series": [
+     {
+      "type": "custom",
+      "name": "samples",
+      "length": 18,
+      "data": "bc126a22f0f9cf22"
+     }
+    ]
+   }
+  ]
+ ],
+ "head": {
+  "tag": "head",
+  "children": [
+   {
+    "tag": "style",
+    "attrs": {
+     "data-flatppl-viewer-css": ""
+    },
+    "text": {
+     "length": 18606,
+     "sha256": "f5441978161e64d1"
+    }
+   }
+  ]
+ },
+ "rootStyle": {
+  "--phase-fixed": "#90A4AE",
+  "--phase-parametric": "#4DD0E1",
+  "--phase-stochastic": "#B39DDB"
+ },
+ "listeners": {
+  "window": [
+   "message",
+   "resize",
+   "resize"
+  ],
+  "document": []
+ },
+ "posted": [
+  {
+   "type": "webviewReady"
+  },
+  {
+   "type": "navigateTo",
+   "line": 2,
+   "preserveFocus": true
+  }
+ ],
+ "states": [
+  {
+   "plotEnabled": false,
+   "graphEnabled": true,
+   "mathEnabled": false,
+   "inferenceOpts": {
+    "backend": "is",
+    "chains": 4,
+    "walkers": null,
+    "warmup": 1000,
+    "draws": 4000,
+    "seed": null,
+    "amisIters": 30,
+    "amisSamples": 300,
+    "smcParticles": 2000,
+    "smcSteps": 12,
+    "smcCESS": 0.7,
+    "nLive": 400,
+    "dlogz": 0.5,
+    "regionMetric": "off"
+   },
+   "collapsedReifications": []
+  },
+  {
+   "plotEnabled": false,
+   "graphEnabled": true,
+   "mathEnabled": false,
+   "inferenceOpts": {
+    "backend": "is",
+    "chains": 4,
+    "walkers": null,
+    "warmup": 1000,
+    "draws": 4000,
+    "seed": null,
+    "amisIters": 30,
+    "amisSamples": 300,
+    "smcParticles": 2000,
+    "smcSteps": 12,
+    "smcCESS": 0.7,
+    "nLive": 400,
+    "dlogz": 0.5,
+    "regionMetric": "off"
+   },
+   "collapsedReifications": []
+  },
+  {
+   "plotEnabled": false,
+   "graphEnabled": true,
+   "mathEnabled": true,
+   "inferenceOpts": {
+    "backend": "is",
+    "chains": 4,
+    "walkers": null,
+    "warmup": 1000,
+    "draws": 4000,
+    "seed": null,
+    "amisIters": 30,
+    "amisSamples": 300,
+    "smcParticles": 2000,
+    "smcSteps": 12,
+    "smcCESS": 0.7,
+    "nLive": 400,
+    "dlogz": 0.5,
+    "regionMetric": "off"
+   },
+   "collapsedReifications": []
+  },
+  {
+   "plotEnabled": false,
+   "graphEnabled": false,
+   "mathEnabled": true,
+   "inferenceOpts": {
+    "backend": "is",
+    "chains": 4,
+    "walkers": null,
+    "warmup": 1000,
+    "draws": 4000,
+    "seed": null,
+    "amisIters": 30,
+    "amisSamples": 300,
+    "smcParticles": 2000,
+    "smcSteps": 12,
+    "smcCESS": 0.7,
+    "nLive": 400,
+    "dlogz": 0.5,
+    "regionMetric": "off"
+   },
+   "collapsedReifications": []
+  },
+  {
+   "plotEnabled": false,
+   "graphEnabled": true,
+   "mathEnabled": true,
+   "inferenceOpts": {
+    "backend": "is",
+    "chains": 4,
+    "walkers": null,
+    "warmup": 1000,
+    "draws": 4000,
+    "seed": null,
+    "amisIters": 30,
+    "amisSamples": 300,
+    "smcParticles": 2000,
+    "smcSteps": 12,
+    "smcCESS": 0.7,
+    "nLive": 400,
+    "dlogz": 0.5,
+    "regionMetric": "off"
+   },
+   "collapsedReifications": []
+  },
+  {
+   "plotEnabled": false,
+   "graphEnabled": true,
+   "mathEnabled": false,
+   "inferenceOpts": {
+    "backend": "is",
+    "chains": 4,
+    "walkers": null,
+    "warmup": 1000,
+    "draws": 4000,
+    "seed": null,
+    "amisIters": 30,
+    "amisSamples": 300,
+    "smcParticles": 2000,
+    "smcSteps": 12,
+    "smcCESS": 0.7,
+    "nLive": 400,
+    "dlogz": 0.5,
+    "regionMetric": "off"
+   },
+   "collapsedReifications": []
+  },
+  {
+   "plotEnabled": true,
+   "graphEnabled": true,
+   "mathEnabled": false,
+   "inferenceOpts": {
+    "backend": "is",
+    "chains": 4,
+    "walkers": null,
+    "warmup": 1000,
+    "draws": 4000,
+    "seed": null,
+    "amisIters": 30,
+    "amisSamples": 300,
+    "smcParticles": 2000,
+    "smcSteps": 12,
+    "smcCESS": 0.7,
+    "nLive": 400,
+    "dlogz": 0.5,
+    "regionMetric": "off"
+   },
+   "collapsedReifications": []
+  }
+ ]
+}

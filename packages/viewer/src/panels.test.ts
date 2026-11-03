@@ -12,7 +12,7 @@ registerHooks({
   }
 });
 
-const { PANEL_ORDER, PANEL_DOM, computePanelLayout, clampSplit, dividerPartner } = await import('./panels.ts');
+const { PANEL_ORDER, PANEL_DOM, computePanelLayout, clampSplit, dividerPartner, resolveAllowedPanels } = await import('./panels.ts');
 
 // The viewer's content area is a vertical split of up to three panels —
 // graph, plots, math (top to bottom). Which ones show is three independent
@@ -135,4 +135,13 @@ test('VIEWER_CSS hides each panel with an id-qualified .hidden rule (ids outrank
     const rule = new RegExp('#' + id + '\\.hidden[^{]*\\{[^}]*display:\\s*none');
     assert.ok(rule.test(VIEWER_CSS), `no id-qualified hidden rule for #${id}`);
   }
+});
+
+test('resolveAllowedPanels: absent means all, unknown names drop, an empty result is refused', () => {
+  assert.equal(resolveAllowedPanels(undefined), null);
+  assert.equal(resolveAllowedPanels(null), null);
+  assert.deepEqual([...resolveAllowedPanels(['math', 'plot', 'source'])], ['plot', 'math']);
+  assert.throws(() => resolveAllowedPanels([]), RangeError);
+  assert.throws(() => resolveAllowedPanels(['source']), RangeError);
+  assert.throws(() => resolveAllowedPanels('plot'), TypeError);
 });

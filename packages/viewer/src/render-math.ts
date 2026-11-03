@@ -32,7 +32,7 @@
 import { esc } from './util.js';
 import { documentHtml } from './markdown.js';
 import { focusNode } from './dag.js';
-import { updatePlotForBinding } from './render-plot.js';
+import { selectFromGesture } from './render-plot.js';
 import {
   buildMathRequest, focusedBindingName, mathModelKey, mathWasmUrl,
 } from './math-view.js';
@@ -272,7 +272,7 @@ export function installMathPaneNavigation(ctx: Ctx) {
     }
     // Reveal first, so following the source never waits on the plot.
     if (reveal && line !== null) reveal(line, name, { preserveFocus: true });
-    updatePlotForBinding(ctx, name);
+    selectFromGesture(ctx, name);
   });
   el.addEventListener('dblclick', function (ev: MouseEvent) {
     const name = bindingAt(ev);
