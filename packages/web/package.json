@@ -23,9 +23,11 @@
     "typecheck": "tsc -p tsconfig.json",
     "typecheck:watch": "tsc -p tsconfig.json --watch",
     "fetch:theme": "node ./scripts/fetch-theme.mjs",
-    "verify:theme": "npm run fetch:theme && node ./scripts/verify-theme.mjs"
+    "verify:theme": "npm run fetch:theme && node ./scripts/verify-theme.mjs",
+    "test:e2e": "playwright test"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.14.0",
     "@codemirror/autocomplete": "^6.20.4",
     "@codemirror/commands": "^6.11.1",
     "@codemirror/lang-json": "^6.0.2",
@@ -38,6 +40,7 @@
     "@dagrejs/dagre": "^3.1.3",
     "@flatppl/engine": "*",
     "@flatppl/viewer": "*",
+    "@playwright/test": "1.64.1",
     "@types/qrcode": "^1.5.6",
     "cytoscape": "^3.34.4",
     "cytoscape-bubblesets": "^4.1.0",

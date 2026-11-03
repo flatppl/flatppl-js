@@ -832,3 +832,7 @@ html, body {
   .tree-ctx-item { display: flex; align-items: center; }
   .resize-handle::after { content: ''; position: absolute; inset: 0 -6px; }
 }
+
+/* A second window cannot sit beside the first on a narrow screen, so the
+   pane breakout's Pop out control is hidden in the compact layout. */
+#app[data-layout="compact"] #detach-btn { display: none; }

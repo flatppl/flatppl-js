@@ -202,6 +202,7 @@ import {
   installDetachControl, redockFromToggle, restorePanel, setPanelPlacement, snapshotPanel,
 } from './panel-breakout.js';
 import type { PanelId, PanelPlacement } from './panels.js';
+import { exportMeasures, importMeasures } from './measure-handover.js';
 
 
 
@@ -1719,6 +1720,10 @@ export function mount(container: HTMLElement, opts?: import('./types').MountOpts
     },
     snapshotPanel: function(panel: PanelId) { return snapshotPanel(ctx, panel); },
     restorePanel: function(panel: PanelId, snapshot: any) { restorePanel(ctx, panel, snapshot); },
+    exportMeasures: function(binding?: string | null, capBytes?: number) { return exportMeasures(ctx, binding, capBytes); },
+    plottedBinding: function() { return ctx.currentPlotBindingName || null; },
+    importMeasures: function(handover: any) { importMeasures(ctx, handover); },
+    measureHandoverStatus: function() { return ctx.handoverStatus || 'none'; },
     // Release every resource mount() acquired, so a host can swap this
     // surface out (the gallery's per-file-type right-pane dispatch)
     // without leaking a sampler worker, a cytoscape/echarts instance, or

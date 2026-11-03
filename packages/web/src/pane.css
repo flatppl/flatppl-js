@@ -1,0 +1,45 @@
+/* @flatppl/web — a panel in its own window (pane.html). */
+
+body.pane-window {
+  display: flex;
+  flex-direction: column;
+}
+#pane-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-header);
+}
+#pane-title {
+  margin: 0;
+  font-size: 15px;
+  font-weight: 600;
+}
+#pane-status {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fg-muted);
+  font-size: 13px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#pane-banner {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--fp-surface-2);
+}
+#pane-banner[hidden], #pane-banner-action[hidden] { display: none; }
+#pane-main-area {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+/* One panel per window: its show/hide toggles would only empty the window. */
+body.pane-window #view-controls { display: none; }

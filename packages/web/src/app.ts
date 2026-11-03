@@ -32,6 +32,8 @@
   let sourceHeader: any = null;
   let fileTree:     any = null;
   let viewer:       any = null;
+  // Pane breakout owner (pane-owner.ts): panels moved into other windows.
+  let paneOwner:    any = null;
   let manifest:     any = null;
   let layout:       any = null;
   let fileFilter: HTMLInputElement | null = null;
@@ -2218,6 +2220,11 @@
           router uses); `member`, when present, is the binding inside the
           module to focus the DAG on. The router change also swaps the source
           editor to the module file (source-sync, spec §04). */
+      // Pane breakout: graph, plots and math can move into their own
+      // windows (pane-owner.ts). The viewer shows Pop out because these exist.
+      detachPanel: function (panel: any) { paneOwner?.detach(panel); },
+      redockPanel: function (panel: any) { paneOwner?.redock(panel); },
+      onSelect: function (name: any) { paneOwner?.selected(name); },
       openModule: function (path: any, member?: any) {
         if (!path) return;
         path = window.FlatPPLWebBundles?.displayPath(path) || path;
@@ -2301,6 +2308,17 @@
         return (cur && cur.model) || null;
       }
     );
+    const paneStatus = document.getElementById('pane-status');
+    paneOwner = window.FlatPPLPaneOwner ? window.FlatPPLPaneOwner.install({
+      controller: viewer,
+      activePath: () => window.FlatPPLWebRouter.parseHash().model || null,
+      navigate: (model: string, target: string | null) => window.FlatPPLWebRouter.navigateTo({ model, target }),
+      host: webHost,
+      announce: (msg: string, visible?: boolean) => {
+        if (visible) showToast(msg);
+        else if (paneStatus) paneStatus.textContent = msg;
+      },
+    }) : null;
 
     // The source editor handles its own click navigation:
     //   - Plain click: caret placement → cursor-driven onNavigate

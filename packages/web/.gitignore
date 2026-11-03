@@ -1,2 +1,4 @@
 dist/
 src/vendor/
+test-results/
+playwright-report/

@@ -18,6 +18,7 @@ import { buildInferenceControl, shouldDeferAutoSample } from './render-controls.
 import { esc } from './util.js';
 import { errorsForBinding } from './render-frame.js';
 import { renderEmpiricalMeasure } from './render-samples.js';
+import { adoptPendingMeasures } from './measure-handover.js';
 import type { Ctx } from './types';
 /**
  * Render the plot pane for the currently-focused binding.
@@ -59,6 +60,9 @@ function unplottableReason(ctx: Ctx, bindingName: string | null): string {
 }
 
 export function renderPlotForCurrent(ctx: Ctx, opts?: { autoTrigger?: boolean }) {
+  // Samples handed over from another window (pane breakout) are adopted
+  // before anything samples.
+  if (ctx.pendingHandover) adoptPendingMeasures(ctx);
   // The plot panel stays mounted whenever plotEnabled is true. When
   // the focused binding isn't plottable (lawof, modules, etc.) we
   // still show *something* — a "Not plottable" message — so the
