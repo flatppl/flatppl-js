@@ -1,6 +1,6 @@
 'use strict';
 
-// PoissonProcess core (spec §08; engine-concepts §2.3) — the ragged
+// PoissonProcess core (spec §06; engine-concepts §2.3) — the ragged
 // sampling assembly + per-atom density math, oracle-pinned. Oracle
 // values cross-checked in Julia against the spec density
 // `(∏ λ(tᵢ))·exp(−M)`, λ(t)=M·shape_pdf(t) — NOT the engine's own output.

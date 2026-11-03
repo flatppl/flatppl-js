@@ -1,7 +1,7 @@
 'use strict';
 
 // =====================================================================
-// mat-poisson.ts — PoissonProcess core (spec §08; engine-concepts §2.3)
+// mat-poisson.ts — PoissonProcess core (spec §06; engine-concepts §2.3)
 // =====================================================================
 //
 // The mathematically load-bearing core of `PoissonProcess(intensity)`,
@@ -10,7 +10,7 @@
 // handlers wrap the worker draws + the consume/rest density contract
 // around these.
 //
-// Spec §08: variates are arrays of points (permutation-invariant). For
+// Spec §06: variates are arrays of points (permutation-invariant). For
 // the canonical construction `intensity = weighted(M, shape)` (M = the
 // expected count = `totalmass(intensity)`, `shape = normalize(intensity)`
 // a normalized distribution):
@@ -70,7 +70,7 @@ function _resolveLeafToLiteralIR(leafIR: any, ctx: any): any {
     if (v == null) {
       throw new Error('PoissonProcess: cannot resolve a shape-leaf parameter to a '
         + 'constant — per-atom (draw-dependent) shape parameters are deferred for '
-        + 'generative sampling; the density/likelihood path handles them (spec §08)');
+        + 'generative sampling; the density/likelihood path handles them (spec §06)');
     }
     return _literalIRof(v);
   };
@@ -230,7 +230,7 @@ function logIntervalMass(kernelName: string, params: any[], lo: number, hi: numb
 
 // matPoissonProcess — atom-batched draw of variable-length point sets.
 //
-// Spec §08; engine-concepts §2.3. intensity = a SUPERPOSITION of weighted
+// Spec §06; engine-concepts §2.3. intensity = a SUPERPOSITION of weighted
 // scalar shapes `superpose(weighted(w_1, s_1), …)` (a single `weighted(M, s)`
 // is the one-component case). All weights and shape params must be ATOM-
 // INDEPENDENT (per-atom-varying generative params are a documented follow-up;
@@ -254,7 +254,7 @@ function matPoissonProcess(name: string, d: any, ctx: any): Promise<any> {
   if (!comps) {
     return Promise.reject(new Error(
       'PoissonProcess: intensity must be weighted(<expected count>, <scalar '
-      + 'distribution>) or a superpose of such components (spec §08)'));
+      + 'distribution>) or a superpose of such components (spec §06)'));
   }
   const orch = _orchestrator();
   const resolved: any[] = [];
@@ -283,7 +283,7 @@ function matPoissonProcess(name: string, d: any, ctx: any): Promise<any> {
         const a = Math.max(lo, lebesgue[0]), b = Math.min(hi, lebesgue[1]);
         if (!Number.isFinite(b - a)) {
           throw new Error('PoissonProcess: a Lebesgue intensity must be truncated to a bounded '
-            + 'set to have finite mass (spec §08)');
+            + 'set to have finite mass (spec §06)');
         }
         const leafIR = { kind: 'call', op: 'Uniform', args: [{ kind: 'call', op: 'interval',
           args: [{ kind: 'lit', value: a }, { kind: 'lit', value: b }] }] };
@@ -292,8 +292,11 @@ function matPoissonProcess(name: string, d: any, ctx: any): Promise<any> {
         continue;
       }
       if (!_sampler().isKnownDistribution(c.shapeLeafIR.op)) {
+        // The expansion canonicalises a written superpose to an unweighted select.
+        const op = c.shapeLeafIR.op === 'select' && c.shapeLeafIR.logweights == null
+          ? 'superpose' : c.shapeLeafIR.op;
         throw new Error("PoissonProcess: a shape must be a scalar distribution, got '"
-          + c.shapeLeafIR.op + "' (d-dim / composite point kernels are a follow-up)");
+          + op + "' (d-dim / composite point kernels are a follow-up)");
       }
       const leafIR = _resolveLeafToLiteralIR(c.shapeLeafIR, ctx);
       // A truncated shape draws by inverse CDF from u ~ Uniform(F(lo), F(hi)).

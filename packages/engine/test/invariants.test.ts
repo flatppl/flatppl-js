@@ -434,8 +434,8 @@ test('invariant 9c: every distribution constructor classifies to a handled kind'
     'LKJ(n = 2, eta = 1.0)',
     'LKJCholesky(n = 2, eta = 1.0)',
     'MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))',
-    'BinnedPoissonProcess(rates = [1.0, 2.0, 3.0])',
-    'PoissonProcess(intensity = weighted(5.0, Normal(0.0, 1.0)))',
+    'BinnedPoissonProcess([0.0, 1.0, 2.0], weighted(3.0, Normal(1.0, 0.5)))',
+    'PoissonProcess(weighted(5.0, Normal(0.0, 1.0)))',
   ];
   const failures: string[] = [];
   for (const call of dists) {

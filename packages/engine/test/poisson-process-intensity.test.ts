@@ -1,9 +1,9 @@
 'use strict';
 
-// §08 PoissonProcess(intensity): with Λ = totalmass(intensity) and
+// §06 PoissonProcess(intensity): with Λ = totalmass(intensity) and
 // λ(t) = densityof(intensity, t), the density is e^{-Λ} ∏ λ(t_i). §06 makes
 // `truncate(M, S)` a restriction that does NOT renormalise, and writes the
-// sideband model as `PoissonProcess(intensity = truncate(intensity, R))`
+// sideband model as `PoissonProcess(truncate(intensity, R))`
 // (§02, §06, §10). These intensities did not score or draw:
 //   - a truncated intensity, `truncate(weighted(w, s), S)` or `truncate` of a
 //     superpose, refused with "a shape must be a scalar distribution";
@@ -32,17 +32,17 @@ const close = (got: number, want: number, what: string) =>
 const TRUNC = 'truncate(weighted(2.0, Normal(0.0, 1.0)), interval(0.0, 1.0))';
 
 test('a truncated intensity scores e^{-Λ} ∏ λ(t_i) with Λ = w·P(S)', async () => {
-  close(await score(`M = PoissonProcess(intensity = ${TRUNC})\nL = logdensityof(M, [0.2, 0.7])`),
+  close(await score(`M = PoissonProcess(${TRUNC})\nL = logdensityof(M, [0.2, 0.7])`),
     -1.3992721974265407, 'two points');
-  close(await score(`M = PoissonProcess(intensity = ${TRUNC})\nL = logdensityof(M, [0.2])`),
+  close(await score(`M = PoissonProcess(${TRUNC})\nL = logdensityof(M, [0.2])`),
     -0.6826894921370859 + Math.log(2) - 0.5 * Math.log(2 * Math.PI) - 0.02, 'one point');
-  assert.equal(await score(`M = PoissonProcess(intensity = ${TRUNC})\nL = logdensityof(M, [0.2, 1.5])`),
+  assert.equal(await score(`M = PoissonProcess(${TRUNC})\nL = logdensityof(M, [0.2, 1.5])`),
     -Infinity, 'a point outside S');
   // The commuted spelling and a named intensity are the same component.
-  close(await score('M = PoissonProcess(intensity = weighted(2.0, truncate(Normal(0.0, 1.0), '
+  close(await score('M = PoissonProcess(weighted(2.0, truncate(Normal(0.0, 1.0), '
     + 'interval(0.0, 1.0))))\nL = logdensityof(M, [0.2, 0.7])'), -1.3992721974265407, 'commuted');
   close(await score('intensity = weighted(2.0, Normal(0.0, 1.0))\nR = interval(0.0, 1.0)\n'
-    + 'M = PoissonProcess(intensity = truncate(intensity, R))\nL = logdensityof(M, [0.2, 0.7])'),
+    + 'M = PoissonProcess(truncate(intensity, R))\nL = logdensityof(M, [0.2, 0.7])'),
   -1.3992721974265407, 'named');
 });
 
@@ -54,7 +54,7 @@ test('a normalized truncated shape keeps the expected count', async () => {
 test('truncate distributes over a superposed intensity (the §10 sideband form)', async () => {
   const src = 'rate = superpose(weighted(1.5, Normal(2.0, 0.5)), weighted(5.0, Exponential(0.5)))\n'
     + 'sideband = interval(0.0, 3.0)\n'
-    + 'M = PoissonProcess(intensity = truncate(rate, sideband))\nL = logdensityof(M, [0.5, 2.4, 2.9])';
+    + 'M = PoissonProcess(truncate(rate, sideband))\nL = logdensityof(M, [0.5, 2.4, 2.9])';
   close(await score(src), -4.3878467222831885, 'sideband');
 });
 
@@ -64,7 +64,7 @@ test('the §06 Lebesgue intensity scores 3·log(lambda_bar) − 6·lambda_bar', 
   const model = 'intensity = weighted(lambda_bar, Lebesgue(support = reals))\n'
     + 'obs_events = [1.2, 3.4, 5.1, -1.5, 2.8]\nR = interval(-3.0, 3.0)\n'
     + 'obs_R = filter(fn(_ in R), obs_events)\n'
-    + 'model_R = PoissonProcess(intensity = truncate(intensity, R))\n';
+    + 'model_R = PoissonProcess(truncate(intensity, R))\n';
   close(await score(`lambda_bar = 2.0\n${model}L = logdensityof(model_R, obs_R)`),
     3 * Math.log(2) - 12, 'fixed rate');
   close(await score(`lambda_bar = elementof(posreals)\n${model}`
@@ -78,13 +78,7 @@ test('an untruncated Lebesgue intensity is refused as infinite mass', async () =
   await assert.rejects(ctx.getMeasure('L'), /must be truncated to a bounded set to have finite mass/);
 });
 
-test('positional and keyword intensities score identically', async () => {
-  for (const I of ['weighted(2.0, Uniform(interval(0.0, 1.0)))', TRUNC,
-    'superpose(weighted(1.5, Normal(2.0, 0.5)), weighted(5.0, Exponential(0.5)))']) {
-    const pos = await score(`M = PoissonProcess(${I})\nL = logdensityof(M, [0.2, 0.7])`);
-    const kw = await score(`M = PoissonProcess(intensity = ${I})\nL = logdensityof(M, [0.2, 0.7])`);
-    assert.equal(pos, kw, I);
-  }
+test('a uniform intensity scores in closed form', async () => {
   close(await score('M = PoissonProcess(weighted(2.0, Uniform(interval(0.0, 1.0))))\n'
     + 'L = logdensityof(M, [0.2, 0.7])'), -0.6137056388801094, 'uniform');
 });
@@ -112,7 +106,7 @@ function checkDraws(d: { countMean: number, pts: Float64Array }, lambda: number,
 
 test('draws: counts have mean Λ and points follow the restricted shape', async () => {
   // Truncated N(0, 1) on [0, 1]: mean 0.4598622292864266, sd 0.2822265488016873.
-  checkDraws(await draws(`M = PoissonProcess(intensity = ${TRUNC})\ns ~ M`),
+  checkDraws(await draws(`M = PoissonProcess(${TRUNC})\ns ~ M`),
     0.6826894921370859, 0, 1, 0.4598622292864266, 0.2822265488016873, 'truncated');
   checkDraws(await draws('M = PoissonProcess(weighted(3.0, normalize(truncate(Normal(0.0, 1.0), '
     + 'interval(0.0, 1.0)))))\ns ~ M'), 3, 0, 1, 0.4598622292864266, 0.2822265488016873, 'normalized');
@@ -121,7 +115,7 @@ test('draws: counts have mean Λ and points follow the restricted shape', async 
   checkDraws(await draws('M = PoissonProcess(truncate(weighted(2.0, Lebesgue(support = reals)), '
     + 'interval(-1.0, 2.0)))\ns ~ M'), 6, -1, 2, 0.5, Math.sqrt(9 / 12), 'lebesgue');
   checkDraws(await draws('rate = superpose(weighted(1.5, Normal(2.0, 0.5)), weighted(5.0, Exponential(0.5)))\n'
-    + 'M = PoissonProcess(intensity = truncate(rate, interval(0.0, 3.0)))\ns ~ M'),
+    + 'M = PoissonProcess(truncate(rate, interval(0.0, 3.0)))\ns ~ M'),
   5.350176494472833, 0, 3, 1.3668722409547762, 0.8290923775913214, 'sideband');
 });
 
@@ -144,11 +138,11 @@ test('a draw-dependent weight scores per atom', async () => {
 // Shapes and sets this engine cannot score are refused, each with its reason.
 test('an intensity outside the supported forms is refused with its reason', async () => {
   const density = async (I: string, re: RegExp) => {
-    const { ctx } = makeMatCtx(`M = PoissonProcess(intensity = ${I})\nL = logdensityof(M, [0.5])`);
+    const { ctx } = makeMatCtx(`M = PoissonProcess(${I})\nL = logdensityof(M, [0.5])`);
     await assert.rejects(ctx.getMeasure('L'), re, I);
   };
   const draw = async (I: string, re: RegExp) => {
-    const { ctx } = makeMatCtx(`k = 1.0 - 2.0\nM = PoissonProcess(intensity = ${I})\ns ~ M`);
+    const { ctx } = makeMatCtx(`k = 1.0 - 2.0\nM = PoissonProcess(${I})\ns ~ M`);
     await assert.rejects(ctx.getMeasure('s'), re, I);
   };
   await density('truncate(weighted(2.0, Normal(0.0, 1.0)), integers)', /needs an interval set/);
@@ -185,7 +179,7 @@ test('the beam_bunch posterior scores the testsuite scipy oracle', async () => {
     + 'sig_shape = normalize(truncate(Normal(mu = 5.0, sigma = 0.8), window))\n'
     + 'bkg_shape = weighted(0.1, Lebesgue(support = window))\n'
     + 'intensity = superpose(weighted(s, sig_shape), weighted(b, bkg_shape))\n'
-    + 'events ~ PoissonProcess(intensity = intensity)\n'
+    + 'events ~ PoissonProcess(intensity)\n'
     + 'prior = lawof(record(s = s, b = b))\n'
     + 'forward_kernel = kernelof(record(events = events), s = s, b = b)\n'
     + 'L = likelihoodof(forward_kernel, record(events = events_obs))\n'

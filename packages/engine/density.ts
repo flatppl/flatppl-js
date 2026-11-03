@@ -4065,7 +4065,7 @@ function walkMultivariate(ir: IRNode, value: any, refArrays: any, N: any, opts: 
 }
 
 // =====================================================================
-// walkPoissonProcess — RAGGED point-process density (spec §08, §2.3)
+// walkPoissonProcess — RAGGED point-process density (spec §06, §2.3)
 // =====================================================================
 //
 // Scores ONE shared observed point set {t_1..t_k} against N parameter atoms

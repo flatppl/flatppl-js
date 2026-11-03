@@ -1,6 +1,6 @@
 'use strict';
 
-// §08: disjoint bin counts have rates equal to their intensity masses.
+// §06: disjoint bin counts have rates equal to their intensity masses.
 // Share exact scalar interval and independent-record rectangle masses between
 // sampling and density. Stochastic record ancestry needs joint integration.
 const sampler = require('./sampler.ts');
@@ -34,7 +34,7 @@ function resolveBinnedRates(ir: any, env: any): { shape: number[], data: Float64
     for (const axis of edges) {
       if (axis.length < 2) throw new Error('BinnedPoissonProcess: requires at least two bin edges');
       for (let k = 1; k < axis.length; k++) {
-        if (!(axis[k] > axis[k - 1])) throw new Error('BinnedPoissonProcess: bin edges must increase');
+        if (!(axis[k] > axis[k - 1])) throw new Error('BinnedPoissonProcess: the bin edges must be strictly increasing (spec §07 bincounts)');
       }
     }
     shape = edges.map(axis => axis.length - 1);

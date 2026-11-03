@@ -3520,6 +3520,11 @@ function evaluateCall(ir: any, env: any): any {
     }
     const n: any = bins.length - 1;
     if (n < 0) throw new Error('bincounts: bins must have at least 1 edge');
+    for (let k = 1; k < bins.length; k++) {
+      if (!(bins[k] > bins[k - 1])) {
+        throw new Error('bincounts: the bin edges must be strictly increasing (spec §07)');
+      }
+    }
     // Spec §07 result: rank-1 integer count vector. Returned as a
     // shape-explicit Value (engine-concepts §2.1).
     const counts = new Float64Array(n);
@@ -4376,7 +4381,7 @@ function _inlineMeasureRefs(ir: any, ctx: any, seen: Set<string>): any {
   return out;
 }
 
-// §08: BinnedPoissonProcess(bins, intensity) has independent Poisson bin
+// §06: BinnedPoissonProcess(bins, intensity) has independent Poisson bin
 // counts whose means are the intensity masses of the bins.
 function walkBinnedPoissonProcess(state: any, ir: any, env: any, ctx: any): any {
   const kw = ir.kwargs || {};

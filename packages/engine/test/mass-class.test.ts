@@ -114,7 +114,7 @@ test('mass: every distribution constructor is normalized', () => {
     ['m = LKJ(n = 2, eta = 1.0)', 'm'],
     ['m = LKJCholesky(n = 2, eta = 1.0)', 'm'],
     ['m = BinnedPoissonProcess(rates = [1.0, 2.0, 3.0])', 'm'],
-    ['m = PoissonProcess(intensity = weighted(5.0, Normal(0.0, 1.0)))', 'm'],
+    ['m = PoissonProcess(weighted(5.0, Normal(0.0, 1.0)))', 'm'],
   ] as [string, string][]) {
     assert.equal(massOf(src, name), 'normalized', src);
   }
@@ -130,7 +130,7 @@ test('mass: multivariate/process dists carry an array measure-domain (exact vect
     ['m = MvNormal(mu = [0.0, 0.0], cov = rowstack([[1.0, 0.0], [0.0, 1.0]]))', [2]],
     ['m = Multinomial(n = 5, p = [0.2, 0.3, 0.5])', [3]],
     ['m = Wishart(nu = 3.0, scale = rowstack([[1.0, 0.0], [0.0, 1.0]]))', ['%dynamic', '%dynamic']],
-    ['m = PoissonProcess(intensity = weighted(5.0, Normal(0.0, 1.0)))', ['%dynamic']],
+    ['m = PoissonProcess(weighted(5.0, Normal(0.0, 1.0)))', ['%dynamic']],
   ];
   for (const [src, shape] of cases) {
     const r = processSource(src);

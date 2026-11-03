@@ -1,6 +1,6 @@
 'use strict';
 
-// PoissonProcess end-to-end (spec §08; engine-concepts §2.3) — the ragged
+// PoissonProcess end-to-end (spec §06; engine-concepts §2.3) — the ragged
 // per-atom point-set distribution. Pins the materialiser pipeline
 // (classifier → matPoissonProcess → ragged EmpiricalMeasure) and the MVP
 // boundary rejections. The load-bearing sampling assembly + density MATH is
@@ -66,7 +66,7 @@ function makeCtx(source: any, sampleCount: any) {
 test('PoissonProcess: classifier recognises and materialises a ragged measure', async () => {
   const ctx = makeCtx(`
 shape = Normal(mu = 0.0, sigma = 1.0)
-m ~ PoissonProcess(intensity = weighted(5.0, shape))
+m ~ PoissonProcess(weighted(5.0, shape))
 `, 256);
   const mm = await ctx.getMeasure('m');
   assert.equal(mm.shape, 'ragged');
@@ -83,7 +83,7 @@ m ~ PoissonProcess(intensity = weighted(5.0, shape))
 
 test('PoissonProcess: inline shape (no intervening binding) also works', async () => {
   const ctx = makeCtx(`
-m ~ PoissonProcess(intensity = weighted(3.0, Normal(mu = 10.0, sigma = 2.0)))
+m ~ PoissonProcess(weighted(3.0, Normal(mu = 10.0, sigma = 2.0)))
 `, 256);
   const mm = await ctx.getMeasure('m');
   assert.equal(mm.shape, 'ragged');
@@ -98,7 +98,7 @@ test('PoissonProcess: per-atom counts ~ Poisson(M), pooled points ~ shape', asyn
   const M = 5.0;
   const ctx = makeCtx(`
 shape = Normal(mu = 2.0, sigma = 3.0)
-m ~ PoissonProcess(intensity = weighted(${M}, shape))
+m ~ PoissonProcess(weighted(${M}, shape))
 `, 40000);
   const mm = await ctx.getMeasure('m');
   const N = R.raggedCount(mm.ragged);
@@ -117,7 +117,7 @@ m ~ PoissonProcess(intensity = weighted(${M}, shape))
 
 test('PoissonProcess: M = 0 ⇒ every atom is empty (all-zero offsets)', async () => {
   const ctx = makeCtx(`
-m ~ PoissonProcess(intensity = weighted(0.0, Normal(mu = 0.0, sigma = 1.0)))
+m ~ PoissonProcess(weighted(0.0, Normal(mu = 0.0, sigma = 1.0)))
 `, 64);
   const mm = await ctx.getMeasure('m');
   assert.equal(mm.shape, 'ragged');
@@ -138,7 +138,7 @@ test('PoissonProcess: a superpose intensity materialises (superposition union)',
   const ctx = makeCtx(`
 sig = Normal(mu = 0.0, sigma = 1.0)
 bkg = Exponential(rate = 0.5)
-m ~ PoissonProcess(intensity = superpose(weighted(3.0, sig), weighted(2.0, bkg)))
+m ~ PoissonProcess(superpose(weighted(3.0, sig), weighted(2.0, bkg)))
 `, 40000);
   const mm = await ctx.getMeasure('m');
   assert.equal(mm.shape, 'ragged');
@@ -155,7 +155,7 @@ test('PoissonProcess: a draw-dependent (per-atom) shape param is refused for sam
   const ctx = makeCtx(`
 raw ~ Normal(mu = 0.0, sigma = 1.0)
 res = 2.5 + 0.3 * raw
-m ~ PoissonProcess(intensity = weighted(5.0, Normal(mu = 0.0, sigma = res)))
+m ~ PoissonProcess(weighted(5.0, Normal(mu = 0.0, sigma = res)))
 `, 64);
   await assert.rejects(() => ctx.getMeasure('m'), /per-atom|cannot resolve/);
 });
@@ -256,7 +256,7 @@ test('e2e: matLogdensityof(events @ observed) through the full pipeline = −4.1
   const { matLogdensityof } = require('../mat-density.ts');
   const lifted = processSource(`
 shape = Normal(mu = 0.0, sigma = 1.0)
-events ~ PoissonProcess(intensity = weighted(5.0, shape))
+events ~ PoissonProcess(weighted(5.0, shape))
 observed = [0.0, 1.0]
 `);
   const built = orchestrator.buildDerivations(lifted.bindings);
@@ -289,7 +289,7 @@ test('e2e: the spec-flagship superpose (separate intensity binding → select pa
 sig = Normal(mu = 0.0, sigma = 1.0)
 bkg = Exponential(rate = 0.5)
 intensity = superpose(weighted(3.0, sig), weighted(2.0, bkg))
-events ~ PoissonProcess(intensity = intensity)
+events ~ PoissonProcess(intensity)
 observed = [0.5, 1.5]
 `);
   const built = orchestrator.buildDerivations(lifted.bindings);

@@ -51,7 +51,7 @@ intensity = superpose(
     weighted(n_sig, signal_shape),
     weighted(n_bkg, background_shape)
 )
-events ~ PoissonProcess(intensity = intensity)
+events ~ PoissonProcess(intensity)
 L = likelihoodof(kernelof(events), observed_data)
 `);
 });
@@ -411,7 +411,7 @@ intensity = weighted(lambda_bar, Lebesgue(support = reals))
 obs_events = [1.2, 3.4, 5.1, 2.8]
 R = interval(-3.0, 3.0)
 obs_R = filter(fn(_ in R), obs_events)
-model_R = PoissonProcess(intensity = truncate(intensity, R))
+model_R = PoissonProcess(truncate(intensity, R))
 L_R = likelihoodof(functionof(model_R), obs_R)
 `);
 });
@@ -650,12 +650,12 @@ d7 = Multinomial(n = 10, p = [0.3, 0.5, 0.2])
 `);
 });
 
-test('§08 composite distributions: PoissonProcess + BinnedPoissonProcess', () => {
+test('§06 Poisson processes: PoissonProcess + BinnedPoissonProcess', () => {
   parsesCleanly(`
 edges = linspace(0.0, 10.0, 5)
 intensity = weighted(5.0, Normal(mu = 5, sigma = 2))
-pp = PoissonProcess(intensity = intensity)
-bpp = BinnedPoissonProcess(bins = edges, intensity = intensity)
+pp = PoissonProcess(intensity)
+bpp = BinnedPoissonProcess(edges, intensity)
 `);
 });
 
@@ -681,7 +681,7 @@ rate = superpose(
     weighted(mu_sig * efficiency, signal_template),
     bkg_template
 )
-events ~ PoissonProcess(intensity = rate)
+events ~ PoissonProcess(rate)
 L_obs = likelihoodof(
     kernelof(events, mu_sig = mu_sig, raw_eff_syst = raw_eff_syst),
     [3.1, 5.7, 2.4, 8.9, 4.2])
