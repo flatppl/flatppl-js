@@ -121,6 +121,11 @@
       globalScope.addEventListener('pageshow', (event: any) => {
         if (!event.persisted || !session) return;
         unloading = false;
+        // The last-seen times froze with the page; counted from now, they
+        // would declare every live window lost on the next ping.
+        for (const e of entries.values()) {
+          if (e.state === 'live') session.watch('pane:' + e.pane, PING_MS, LOST_MS);
+        }
         session.send('owner.hello', {});
       });
       new MutationObserver(() => sendState('state.settings', settings()))
@@ -185,7 +190,8 @@
         session.send('pane.redock', {}, 'pane:' + pane);
         setTimer(e, REDOCK_TIMEOUT_MS, () => finishRedock(pane, null));
       } else {
-        finishRedock(pane, null);
+        // A reloading window ('leaving') already sent its state with its goodbye.
+        finishRedock(pane, e.leavingState);
       }
     }
 

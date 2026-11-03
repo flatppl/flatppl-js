@@ -247,3 +247,23 @@ test('ids are 128-bit hex', () => {
   assert.notEqual(S.randomId(), a);
   assert.equal(S.channelName('abc'), 'flatppl-pane:abc');
 });
+
+test('watching a peer again restarts its silence count', () => {
+  const S = loadSession();
+  let now = 0;
+  let tick = null;
+  const clock = { now: () => now, setInterval: (fn) => { tick = fn; return 1; }, clearInterval() {} };
+  const lost = [];
+  const t = testTransport();
+  const owner = S.createSession({ sid: 's', id: 'owner', transport: t, clock, isVisible: () => true,
+    onMessage() {}, onLost: (p) => lost.push(p) });
+  owner.watch('pane:plot', 5000, 15000);
+  // Timers frozen (a cached page) while the clock moved on.
+  now = 60000;
+  owner.watch('pane:plot', 5000, 15000);
+  tick();
+  assert.deepEqual(lost, []);
+  now = 76000;
+  tick();
+  assert.deepEqual(lost, ['pane:plot']);
+});
