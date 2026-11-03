@@ -127,6 +127,21 @@ test('a reload of the panel window keeps the panel detached', async ({ page }) =
   await expectDetached(page, 'graph');
 });
 
+test('a panel window that reloads slowly stays open and detached', async ({ page }) => {
+  await openModel(page);
+  const popup = await popOut(page, 'plot');
+  // Past the owner's 1.5 s goodbye grace: the window must not be closed as gone.
+  await popup.route('**/pane-app.js', async (route) => {
+    await new Promise((resolve) => setTimeout(resolve, 3000));
+    await route.continue();
+  });
+  await popup.reload();
+  await expect(popup.locator('#pane-status')).toHaveText('Connected to the main window.', { timeout: 20000 });
+  expect(popup.isClosed()).toBe(false);
+  await expectDetached(page, 'plot');
+  expect(await paneHandover(popup)).toBe('adopted');
+});
+
 test('a reload of the main window finds the panel window again', async ({ page }) => {
   await openModel(page);
   const popup = await popOut(page, 'math');

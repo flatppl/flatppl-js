@@ -68,6 +68,9 @@
     let rev = 0;
     let placedHandle: any = null;
     let closedPoll: any = null;
+    // Set from pagehide: a page that is going away must not answer a panel
+    // window's hello, or that window takes the dying page for its owner.
+    let unloading = false;
     const last: any = { model: null, focus: null, select: null };
 
     function view(): any { return opts.controller.viewerHandle ? opts.controller.viewerHandle() : null; }
@@ -96,7 +99,7 @@
     }
 
     function sendState(type: string, body: any): void {
-      if (session) session.send(type, { ...body, rev: ++rev });
+      if (session && !unloading) session.send(type, { ...body, rev: ++rev });
     }
 
     function ensureSession(): void {
@@ -109,7 +112,17 @@
         onVersion() { opts.announce('A detached panel runs another playground version. Reload that window.', true); },
         onLost(from: string) { finishRedock(from.slice(5) as Pane, null); },
       });
-      globalScope.addEventListener('pagehide', () => { if (session) session.send('pane.bye', { reason: 'owner-unload' }); });
+      globalScope.addEventListener('pagehide', () => {
+        if (session) session.send('pane.bye', { reason: 'owner-unload' });
+        unloading = true;
+      });
+      // Back from the back/forward cache: the page lives again, so its panel
+      // windows may say hello to it.
+      globalScope.addEventListener('pageshow', (event: any) => {
+        if (!event.persisted || !session) return;
+        unloading = false;
+        session.send('owner.hello', {});
+      });
       new MutationObserver(() => sendState('state.settings', settings()))
         .observe(doc.documentElement, { attributes: true, attributeFilter: ['data-theme'] });
       session.send('owner.hello', {});
@@ -210,6 +223,7 @@
     }
 
     function onMessage(env: any, source: any): void {
+      if (unloading) return;
       const pane = paneOf(env.from);
       if (!pane) return;
       const e = entries.get(pane);
@@ -241,7 +255,15 @@
           // A reload also sends bye; wait for its hello before re-docking.
           e.state = 'leaving';
           e.leavingState = body.state || null;
-          setTimer(e, BYE_GRACE_MS, () => finishRedock(pane, e.leavingState));
+          setTimer(e, BYE_GRACE_MS, () => {
+            // Still open: the window is reloading slowly, not closing. It gets
+            // the start timeout; the closed poll docks it if it does close.
+            if (e.win && !e.win.closed) {
+              setTimer(e, START_TIMEOUT_MS, () => finishRedock(pane, e.leavingState));
+              return;
+            }
+            finishRedock(pane, e.leavingState);
+          });
           return;
         case 'intent.redock': redock(pane); return;
         case 'intent.focus': {

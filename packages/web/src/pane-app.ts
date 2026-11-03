@@ -235,18 +235,21 @@
       welcomed = false;
       if (ownerTimer) globalScope.clearTimeout(ownerTimer);
       ownerTimer = globalScope.setTimeout(ownerGone, OWNER_RETURN_MS);
-      startHello(OWNER_RETURN_MS);
+      // The first hello waits one retry, so it reaches the next page load,
+      // not the one that just said goodbye.
+      startHello(OWNER_RETURN_MS, HELLO_RETRY_MS);
     }
 
     function ownerReturned(): void {
       if (ownerTimer) { globalScope.clearTimeout(ownerTimer); ownerTimer = null; }
     }
 
-    /** Say hello every second until welcomed; give up after `limit` ms. */
-    function startHello(limit: number): void {
+    /** Say hello every second until welcomed; give up after `limit` ms.
+     *  `delay` holds back the first hello. */
+    function startHello(limit: number, delay = 0): void {
       if (helloTimer) globalScope.clearInterval(helloTimer);
       const started = Date.now();
-      sayHello();
+      if (!delay) sayHello();
       helloTimer = globalScope.setInterval(() => {
         if (welcomed) { globalScope.clearInterval(helloTimer); helloTimer = null; return; }
         if (Date.now() - started > limit) {
