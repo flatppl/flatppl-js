@@ -255,8 +255,8 @@ test('§06: drawing from an all-zero-weight mixture is a located error, not a '
     assert.match(e.message, /every component has zero mass/);
     assert.match(e.message, /spec §06/);
     assert.match(e.message, /sampling undefined/);
-    // Names the binding, so the error is located in the model.
-    assert.match(e.message, /^superpose '/);
+    // Names the user binding, not the lift anon of the superposition.
+    assert.match(e.message, /^Binding 'M' failed to evaluate: superpose '/);
     return true;
   });
 });

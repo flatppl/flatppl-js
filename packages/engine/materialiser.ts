@@ -60,6 +60,7 @@ import type {
 const empirical    = require('./empirical.ts');
 const lineage      = require('./weight-lineage.ts');
 const valueLib     = require('./value.ts');
+const { fixedFailureError } = require('./fixed-values.ts');
 const orchestrator = require('./orchestrator.ts');
 const rng          = require('./rng.ts');
 const shared       = require('./materialiser-shared.ts');
@@ -3302,7 +3303,7 @@ const kindDispatchStage: MaterialiserStage = function (name, ctx, _next) {
       return Promise.reject(new Error(`'${external}': an external input supplied by the host is not supported by this engine`));
     }
     const failed = _failedFixedDependency(name, ctx);
-    if (failed) return Promise.reject(new Error(failed));
+    if (failed) return Promise.reject(fixedFailureError(failed));
     return Promise.reject(new Error("no derivation for '" + name + "'"));
   }
   try {
@@ -3375,10 +3376,36 @@ const fixedPhaseStage: MaterialiserStage = function (name, ctx, next) {
   }
   // A plain Map (test contexts) carries no failure record.
   const failure = ctx.fixedValues?.failure?.(name);
-  if (failure) return Promise.reject(new Error(failure));
+  if (failure) return Promise.reject(fixedFailureError(failure));
   return next(name, ctx);
 };
 fixedPhaseStage.label = 'fixedPhaseShortCircuit';
+
+// A rejection names the innermost user binding that failed, so a reader of a
+// dependent still learns where the failure is. A synthetic binding (a lift
+// anon) is not the user's, so the binding that reads it is named instead. The
+// message is rewritten in place to keep the error's class and its tags.
+function _nameFailure(err: any, name: string, ctx: any): any {
+  const binding = ctx.bindings?.get(name);
+  if (!binding || binding.synthetic) return err;
+  const e: any = err instanceof Error ? err : new Error(String(err));
+  if (e.flatpplBinding != null || e.flatpplFixedFailure) return e;
+  e.flatpplBinding = name;
+  const shown = name.split('$').join('.');
+  if (!e.message.includes(`'${shown}'`)) e.message = `Binding '${shown}' failed to evaluate: ${e.message}`;
+  return e;
+}
+
+const bindingNameStage: MaterialiserStage = function (name, ctx, next) {
+  let result: Promise<EmpiricalMeasure>;
+  try {
+    result = next(name, ctx);
+  } catch (err) {
+    return Promise.reject(_nameFailure(err, name, ctx));
+  }
+  return result.catch((err: any) => { throw _nameFailure(err, name, ctx); });
+};
+bindingNameStage.label = 'bindingName';
 
 // CLM reroute stage (measure-lowering unification Phase 4 — live reroute).
 // A binding whose derivation kind is one CLM canonicalises (`jointchain` — the
@@ -3456,6 +3483,7 @@ const staticRefusalStage: MaterialiserStage = function (name, ctx, next) {
 staticRefusalStage.label = 'staticRefusal';
 
 function _installDefaultMaterialiserStages(): void {
+  registerMaterialiserStage(bindingNameStage);
   registerMaterialiserStage(staticRefusalStage);
   registerMaterialiserStage(callableGuardStage);
   registerMaterialiserStage(fixedPhaseStage);

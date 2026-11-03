@@ -98,6 +98,18 @@ function failureMessage(name: string, cause: string): string {
   return `Fixed-phase binding '${name}' failed to evaluate: ${cause}`;
 }
 
+// The binding whose expression threw, and the cause. A lift anon is not the
+// user's binding, so the first user binding that reads it becomes the root.
+interface Failure { root: string; cause: string }
+
+// A read of a failed binding rejects with this. The message names the root
+// binding, so the materialiser does not name the binding again.
+function fixedFailureError(message: string): Error {
+  const err: any = new Error(message);
+  err.flatpplFixedFailure = message;
+  return err;
+}
+
 interface FixedValuesDeps {
   bindings: any;            // Map<name, BindingInfo>
   derivations: any;         // name → Derivation (the in-progress table)
@@ -117,7 +129,8 @@ class FixedValues {
   _cache: Map<string, any>;
   _inProgress: Set<string>;
   _diagnosed: Set<string>;
-  _failures: Map<string, string>;
+  _failures: Map<string, Failure>;
+  _anonDiagnostics: Map<string, any>;
 
   constructor(deps: FixedValuesDeps) {
     this._deps = deps;
@@ -130,9 +143,11 @@ class FixedValues {
     // that happens to succeed still returns the value normally.
     this._diagnosed = new Set();
     this._inProgress = new Set();   // current resolution stack (cycle guard)
-    // name → the failure message of it or of its failed dependency. Not a negative cache: the name is
+    // name → the failure of it or of its failed dependency. Not a negative cache: the name is
     // still recomputed on each demand, and a success removes the entry.
     this._failures = new Map();
+    // anon root → its diagnostic, moved to the first user binding that reads it.
+    this._anonDiagnostics = new Map();
   }
 
   // ---- Map-compatible public surface -------------------------------
@@ -141,7 +156,7 @@ class FixedValues {
     const v = this._resolve(name);
     if (v !== UNRESOLVED) return v;
     const failure = this._failures.get(name);
-    if (failure) throw new Error(failure);
+    if (failure) throw fixedFailureError(failureMessage(failure.root, failure.cause));
     return undefined;
   }
 
@@ -164,7 +179,30 @@ class FixedValues {
   // value or has none by construction.
   failure(name: string): string | undefined {
     if (this._resolve(name) !== UNRESOLVED) return undefined;
-    return this._failures.get(name);
+    const f = this._failures.get(name);
+    return f && failureMessage(f.root, f.cause);
+  }
+
+  _isSynthetic(name: string): boolean {
+    return !!this._deps.bindings.get(name)?.synthetic;
+  }
+
+  // `name` reads a failed binding. A failure rooted at an anon is re-rooted
+  // at `name`, and the anon's diagnostic moves with it.
+  _inherit(name: string, f: Failure): void {
+    if (!this._isSynthetic(f.root) || this._isSynthetic(name)) {
+      this._failures.set(name, f);
+      return;
+    }
+    this._failures.set(name, { root: name, cause: f.cause });
+    const diag = this._anonDiagnostics.get(f.root);
+    if (diag && !this._diagnosed.has(name)) {
+      this._anonDiagnostics.delete(f.root);
+      this._diagnosed.add(name);
+      const { bindingLoc } = this._deps;
+      diag.message = failureMessage(name, f.cause);
+      diag.loc = bindingLoc ? bindingLoc(name) : undefined;
+    }
   }
 
   // iterate-forces-all (see header) ----------------------------------
@@ -354,7 +392,7 @@ class FixedValues {
       const rv = self._resolve(r);
       if (rv === UNRESOLVED) {
         const f = this._failures.get(r);
-        if (f && sole) this._failures.set(name, f);
+        if (f && sole) this._inherit(name, f);
         return UNRESOLVED;
       }
       env[r] = rv;
@@ -382,8 +420,8 @@ class FixedValues {
       // cause against this binding instead of the dependency.
       const failed = self._failures.get(refName);
       if (failed) {
-        const err: any = new Error(failed);
-        err.flatpplFixedFailure = failed;
+        const err: any = new Error(failureMessage(failed.root, failed.cause));
+        err.flatpplFixedRecord = failed;
         throw err;
       }
       const dep = bindings.get(refName);
@@ -479,19 +517,21 @@ class FixedValues {
     try {
       return samplerLib.evaluateExpr(ir, env);
     } catch (err: any) {
-      if (err && err.flatpplFixedFailure) {
-        if (sole) this._failures.set(name, err.flatpplFixedFailure);
+      if (err && err.flatpplFixedRecord) {
+        if (sole) this._inherit(name, err.flatpplFixedRecord);
       } else if (sole && (!err || !err.flatpplUnresolvedRef)) {
-        const failure = failureMessage(name, err && err.message ? err.message : String(err));
-        this._failures.set(name, failure);
+        const cause = err && err.message ? err.message : String(err);
+        this._failures.set(name, { root: name, cause });
         const { diagnostics, bindingLoc } = this._deps;
         if (diagnostics && !this._diagnosed.has(name)) {
           this._diagnosed.add(name);
-          diagnostics.push({
+          const diag = {
             severity: 'error',
-            message: failure,
+            message: failureMessage(name, cause),
             loc: bindingLoc ? bindingLoc(name) : undefined,
-          });
+          };
+          diagnostics.push(diag);
+          if (this._isSynthetic(name)) this._anonDiagnostics.set(name, diag);
         }
       }
       return UNRESOLVED;
@@ -499,4 +539,4 @@ class FixedValues {
   }
 }
 
-module.exports = { FixedValues, UNRESOLVED };
+module.exports = { FixedValues, UNRESOLVED, fixedFailureError };
