@@ -150,17 +150,25 @@ inBothModes('fixed likelihoods keep boundary, invalid-parameter and empty-produc
     { law: 'Binomial(4, a)', data: [3, 4], point: { a: 1, b: 1 }, expected: -Infinity },
     { law: 'Binomial(4, a)', data: [0, 5], point: { a: .5, b: 1 }, expected: -Infinity },
     { law: 'Binomial(4, a)', data: [true, false], point: { a: .5, b: 1 }, expected: -Math.log(64) },
-    { law: 'Normal(a, b)', data: [0, 1], point: { a: 0, b: -1 }, expected: -Infinity },
-    { law: 'Gamma(a, b)', data: [1, 2], point: { a: -1, b: 2 }, expected: -Infinity },
-    { law: 'Beta(a, b)', data: [.2, .5], point: { a: 2, b: -1 }, expected: -Infinity },
-    { law: 'Poisson(a)', data: [0, 1], point: { a: -1, b: 1 }, expected: -Infinity },
-    { law: 'Binomial(4, a)', data: [0, 1], point: { a: 1.1, b: 1 }, expected: -Infinity },
-    { law: 'Exponential(a)', data: [0, 1], point: { a: -1, b: 1 }, expected: -Infinity },
     { law: 'Normal(a, b)', data: [], point: { a: 0, b: 1 }, expected: 0 },
   ];
   for (const c of cases) {
     const { scorer } = await model(c.law, c.data);
     near(scorer.likOf(c.point), c.expected);
+  }
+  // §08 declares each parameter's value set. Outside it the likelihood is
+  // undefined, not zero, so it raises and names the parameter.
+  const invalid = [
+    { law: 'Normal(a, b)', data: [0, 1], point: { a: 0, b: -1 }, name: /Normal: parameter 'sigma' = -1/ },
+    { law: 'Gamma(a, b)', data: [1, 2], point: { a: -1, b: 2 }, name: /Gamma: parameter 'shape' = -1/ },
+    { law: 'Beta(a, b)', data: [.2, .5], point: { a: 2, b: -1 }, name: /Beta: parameter 'beta' = -1/ },
+    { law: 'Poisson(a)', data: [0, 1], point: { a: -1, b: 1 }, name: /Poisson: parameter 'rate' = -1/ },
+    { law: 'Binomial(4, a)', data: [0, 1], point: { a: 1.1, b: 1 }, name: /Binomial: parameter 'p' = 1.1/ },
+    { law: 'Exponential(a)', data: [0, 1], point: { a: -1, b: 1 }, name: /Exponential: parameter 'rate' = -1/ },
+  ];
+  for (const c of invalid) {
+    const { scorer } = await model(c.law, c.data);
+    assert.throws(() => scorer.likOf(c.point), c.name, c.law);
   }
 });
 

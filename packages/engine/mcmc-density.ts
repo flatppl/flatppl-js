@@ -281,7 +281,10 @@ function derivedFieldFailure(env: any, name: string): string {
 // A scoring throw is not a zero density, so it is never -Infinity.
 function scoringError(err: any, env: any, what: string): Error {
   if (isTaggedRefusal(err) || err?.flatpplScorerFailure) return err;
-  return scorerFailure(what, derivedFailureOf(err, env) ?? (err?.message ?? String(err)));
+  const failure: any = scorerFailure(what, derivedFailureOf(err, env) ?? (err?.message ?? String(err)));
+  // The MCMC driver rejects a proposal that puts a parameter outside its set.
+  if (err?.flatpplParameterDomain) failure.flatpplParameterDomain = true;
+  return failure;
 }
 
 // ---------------------------------------------------------------------------

@@ -46,6 +46,7 @@
 import type { Value as _Value } from './engine-types';
 
 const valueLib  = require('./value.ts');
+const paramDomains = require('./param-domains.ts');
 const valueOps  = require('./value-ops.ts');
 const samplerLib = require('./sampler.ts');
 const T = require('./types.ts');
@@ -362,6 +363,16 @@ const MV_DENSITY_FNS: Record<string, (x: any, kw: any) => number> = {
   },
 };
 
+// §08: check each multivariate kernel's parameters against their declared value
+// sets before its density reads them (see `param-domains.ts`).
+for (const kernel of Object.keys(MV_DENSITY_FNS)) {
+  const density = MV_DENSITY_FNS[kernel];
+  MV_DENSITY_FNS[kernel] = (x: any, kw: any) => {
+    paramDomains.checkParams(kernel, [], kw);
+    return density(x, kw);
+  };
+}
+
 function _wishart(x: any, kw: any, invert: boolean): number {
   const label = invert ? 'InverseWishart' : 'Wishart';
   if (kw == null || !('nu' in kw) || !('scale' in kw)) {
@@ -629,6 +640,7 @@ function _mvNormalTonormal(x: any, kernelInput: any): any {
   const muArr = _paramAsNumberArray(kernelInput.mu, 'MvNormal', 'mu');
   const n = muArr.length;
   const cov = _paramAsMatrix(kernelInput.cov, 'MvNormal', 'cov');
+  paramDomains.checkParam('MvNormal', 'cov', cov);
   if (cov.shape[0] !== n) {
     throw new Error(`builtin_tonormal(MvNormal): cov is ${cov.shape[0]}x${cov.shape[1]} `
       + `but mu has length ${n}`);
@@ -651,6 +663,7 @@ function _mvNormalFromnormal(z: any, kernelInput: any): any {
   const muArr = _paramAsNumberArray(kernelInput.mu, 'MvNormal', 'mu');
   const n = muArr.length;
   const cov = _paramAsMatrix(kernelInput.cov, 'MvNormal', 'cov');
+  paramDomains.checkParam('MvNormal', 'cov', cov);
   if (cov.shape[0] !== n) {
     throw new Error(`builtin_fromnormal(MvNormal): cov is ${cov.shape[0]}x${cov.shape[1]} `
       + `but mu has length ${n}`);

@@ -28,6 +28,7 @@ import type {
 
 const orchestrator = require('./orchestrator.ts');
 const valueLib     = require('./value.ts');
+const paramDomains = require('./param-domains.ts');
 const shared       = require('./materialiser-shared.ts');
 const draws        = require('./multivariate-draws.ts');
 
@@ -187,6 +188,11 @@ function matMultinomial(name: string, d: DerivationMultinomial, ctx: any): Promi
   if (!(pSum > 0)) {
     return Promise.reject(new Error('Multinomial: p must sum to > 0'));
   }
+  try {
+    paramDomains.checkParam('Multinomial', 'p', pValue);
+  } catch (error) {
+    return Promise.reject(error);
+  }
   const N = ctx.sampleCount;
   const n = nVal | 0;
   const catIR: any = {
@@ -280,6 +286,11 @@ function wishartCore(name: string, distIR: any, ctx: any, invert: boolean): Prom
   if (!(nuVal > n - 1)) {
     return Promise.reject(new Error(
       `${opLabel}: nu (${nuVal}) must be > n - 1 = ${n - 1}`));
+  }
+  try {
+    paramDomains.checkParam(opLabel, 'scale', scaleValue);
+  } catch (error) {
+    return Promise.reject(error);
   }
   let scaleForBartlett: any;
   let LS: any;

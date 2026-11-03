@@ -121,14 +121,16 @@ test('VonMises: fixed and live concentration scores retain double precision', as
   }
 });
 
-test('VonMises: kappa=0 reduces to uniform density 1/(2π) at any x', () => {
+test('VonMises: kappa=0 is outside §08 posreals; a small kappa approaches the uniform density', () => {
   const sampler = require('../sampler.ts');
   const reg = sampler._internal.REGISTRY.VonMises;
+  assert.throws(() => reg.logpdfFn(0.5, 0, 0),
+    /VonMises: parameter 'kappa' = 0 is outside its declared value set posreals/);
   const expected = -Math.log(2 * Math.PI);
   for (const x of [-1.0, 0.0, 0.5, 2.0]) {
-    const lp = reg.logpdfFn(x, 0, 0);
+    const lp = reg.logpdfFn(x, 0, 1e-12);
     assert.ok(Math.abs(lp - expected) < 1e-9,
-      `VonMises logpdf at kappa=0 should be uniform ${expected}, got ${lp}`);
+      `VonMises logpdf at kappa=1e-12 should be uniform ${expected}, got ${lp}`);
   }
 });
 

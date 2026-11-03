@@ -11,7 +11,8 @@ const assert = require('node:assert/strict');
 const { FixedValues } = require('../fixed-values.ts');
 const { makeMatCtx } = require('./_materialise-helpers.ts');
 
-const NOT_PD = "Fixed-phase binding 'lp' failed to evaluate: lower_cholesky: matrix is not positive definite";
+const NOT_PD = "Fixed-phase binding 'lp' failed to evaluate: MvNormal: parameter 'cov' = [1, 2, 2, 1] "
+  + 'is outside its declared value set positive definite matrices (spec §08)';
 const OUT_OF_BOUNDS = "Fixed-phase binding 'b' failed to evaluate: evaluateExpr: get index 5 out of bounds for length 2";
 
 async function rejection(ctx: any, name: string): Promise<string> {
