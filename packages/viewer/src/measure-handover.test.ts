@@ -16,6 +16,7 @@ registerHooks({
 const { installViewerEnv } = await import('./test-viewer-env.ts');
 const { InProcessWorker, settle } = await import('./test-worker.ts');
 const { mount } = await import('./main.ts');
+const { sampleBytes } = await import('./measure-handover.ts');
 
 const MODEL = [
   'mu = draw(Normal(mu = 0.0, sigma = 1.0))',
@@ -32,9 +33,10 @@ const POSTERIOR = [
 ].join('\n');
 
 /** A plots window: mount, optional handover and settings, then the model. */
-async function plotsWindow({ source = MODEL, target = 'x', handover = null, plot = null } = {}) {
+async function plotsWindow({ source = MODEL, target = 'x', handover = null, plot = null, config = {} } = {}) {
   const env = installViewerEnv();
   const { dom } = env;
+  Object.assign(dom.window.__FLATPPL_CONFIG__, config);
   dom.document.body.innerHTML = '<div id="surface-root"></div>';
   const view = mount(dom.document.getElementById('surface-root'), { host: { setTarget() {} }, panels: ['plot'] });
   if (handover) view.importMeasures(handover);
@@ -147,5 +149,36 @@ test('a window that already holds the samples keeps its own', async () => {
   await settle();
   assert.equal(b.view.measureHandoverStatus(), 'adopted');
   assert.deepEqual(b.env.charts.map((c) => c.options).slice(-1), own.slice(-1));
+  await b.close();
+});
+
+test('sampleBytes counts typed buffers once and plain-array numbers at 8 bytes, nested too', () => {
+  const shared = new Float64Array(10);
+  assert.equal(sampleBytes({ samples: shared, value: { data: shared.subarray(2) } }), 80);
+  assert.equal(sampleBytes({ samples: [1, 2, 3], fields: { a: { samples: [[1, 2], [3, 4]] } } }), 56);
+  assert.equal(sampleBytes({ n_eff: 5, logTotalmass: 0, logWeights: null }), 0);
+});
+
+test('a large plain-array measure counts toward the cap', async () => {
+  const a = await plotsWindow();
+  const real = a.view.exportMeasures('x');
+  const plain = { ...real.entries[0][1], samples: Array.from(real.entries[0][1].samples), value: undefined };
+  plain.samples = plain.samples.concat(plain.samples, plain.samples, plain.samples);
+  a.view.importMeasures({ ...real, entries: [['x', plain]] });
+  a.view.update(MODEL, 'x', {});
+  await settle();
+  const handover = a.view.exportMeasures('x', 1000);
+  assert.equal(handover.omitted, 'cap');
+  assert.ok(handover.bytes >= plain.samples.length * 8, 'plain numbers are counted');
+  await a.close();
+});
+
+test('the host sets the cap through __FLATPPL_CONFIG__.handoverCapBytes', async () => {
+  const a = await plotsWindow({ config: { handoverCapBytes: 16 } });
+  const handover = a.view.exportMeasures('x');
+  assert.equal(handover.omitted, 'cap');
+  await a.close();
+  const b = await plotsWindow();
+  assert.equal(b.view.exportMeasures('x').omitted, undefined, 'the default cap admits the default draws');
   await b.close();
 });

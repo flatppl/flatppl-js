@@ -17,7 +17,6 @@
   const OWNER_RETURN_MS = 3000;
   const PING_MS = 5000;
   const LOST_MS = 15000;
-  const DEFAULT_CAP = 64 * 1024 * 1024;
 
   const doc = globalScope.document;
   const $ = (id: string) => doc.getElementById(id);
@@ -206,30 +205,49 @@
     function leave(): void {
       if (leaving) return;
       leaving = true;
-      if (pane === 'plot') session.send('pane.measures', view.exportMeasures(null, capBytes()), 'owner');
+      if (pane === 'plot') session.send('pane.measures', view.exportMeasures(null), 'owner');
       session.send('pane.panelState', { pane, state: view.snapshotPanel(pane) }, 'owner');
       globalScope.close();
       // A window the user opened by hand cannot close itself.
       globalScope.setTimeout(() => showBanner(label + ' is back in the main window. You can close this window.'), 500);
     }
 
-    function capBytes(): number {
-      const testCap = globalScope.__FLATPPL_TEST_HANDOVER_CAP__;
-      return typeof testCap === 'number' ? testCap : DEFAULT_CAP;
-    }
-
+    /** The main window unloaded: it may be reloading. Say hello until it
+     *  welcomes this window again; without BroadcastChannel the reloaded
+     *  owner learns of this window only from such a hello. */
     function ownerLeft(): void {
       say('Reconnecting to the main window…');
+      welcomed = false;
       if (ownerTimer) globalScope.clearTimeout(ownerTimer);
       ownerTimer = globalScope.setTimeout(ownerGone, OWNER_RETURN_MS);
+      startHello(OWNER_RETURN_MS);
     }
 
     function ownerReturned(): void {
       if (ownerTimer) { globalScope.clearTimeout(ownerTimer); ownerTimer = null; }
     }
 
+    /** Say hello every second until welcomed; give up after `limit` ms. */
+    function startHello(limit: number): void {
+      if (helloTimer) globalScope.clearInterval(helloTimer);
+      const started = Date.now();
+      sayHello();
+      helloTimer = globalScope.setInterval(() => {
+        if (welcomed) { globalScope.clearInterval(helloTimer); helloTimer = null; return; }
+        if (Date.now() - started > limit) {
+          globalScope.clearInterval(helloTimer);
+          helloTimer = null;
+          ownerGone();
+          return;
+        }
+        sayHello();
+      }, HELLO_RETRY_MS);
+    }
+
     function ownerGone(): void {
       if (leaving) return;
+      if (helloTimer) { globalScope.clearInterval(helloTimer); helloTimer = null; }
+      if (ownerTimer) { globalScope.clearTimeout(ownerTimer); ownerTimer = null; }
       session.unwatch('owner');
       const path = lastModel && lastModel.path;
       const target = lastFocus ? '?target=' + encodeURIComponent(lastFocus) : '';
@@ -246,23 +264,12 @@
     });
     globalScope.addEventListener('pagehide', () => {
       if (leaving) return;
-      if (pane === 'plot') session.send('pane.measures', view.exportMeasures(null, capBytes()), 'owner');
+      if (pane === 'plot') session.send('pane.measures', view.exportMeasures(null), 'owner');
       session.send('pane.bye', { reason: 'close', state: view.snapshotPanel(pane) }, 'owner');
     });
 
     say('Connecting to the main window…');
-    sayHello();
-    const started = Date.now();
-    helloTimer = globalScope.setInterval(() => {
-      if (welcomed) return;
-      if (Date.now() - started > HELLO_GIVE_UP_MS) {
-        globalScope.clearInterval(helloTimer);
-        helloTimer = null;
-        ownerGone();
-        return;
-      }
-      sayHello();
-    }, HELLO_RETRY_MS);
+    startHello(HELLO_GIVE_UP_MS);
     heading.focus();
 
     globalScope.FlatPPLPane = { pane, view, session };

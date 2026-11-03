@@ -31,6 +31,20 @@ function channelBus() {
 
 const turn = () => new Promise((resolve) => setImmediate(resolve));
 
+/** A transport the test drives: deliver(raw) is a message arriving. */
+function testTransport() {
+  const sent = [];
+  let handler = null;
+  return {
+    sent,
+    deliver: (raw, source = null) => handler(raw, source),
+    post: (e) => sent.push(e),
+    listen: (h) => { handler = h; },
+    close() {},
+  };
+}
+
+
 /** A clock the test advances by hand. */
 function manualClock() {
   let now = 0;
@@ -86,38 +100,47 @@ test('a session pair exchanges addressed envelopes over a broadcast channel', as
 test('another session id and foreign traffic are ignored', async () => {
   const S = loadSession();
   const Channel = channelBus();
-  const { owner, got } = pair(S, Channel);
+  const { got } = pair(S, Channel);
   const stranger = S.createSession({ sid: 'sid2', id: 'pane:plot', transport: S.broadcastTransport('sid1', Channel),
     onMessage: () => {} });
   stranger.send('pane.hello', {});
-  owner.receive({ hello: 'world' });
-  owner.receive({ p: 'flatppl-pane', v: 1, sid: 'sid1', from: 'pane:plot', epoch: 'e', seq: 'x', type: 't', body: {} });
   await turn(); await turn();
   assert.deepEqual(got.owner, []);
+  const t = testTransport();
+  const seen = [];
+  S.createSession({ sid: 'sid1', id: 'owner', transport: t, onMessage: (e) => seen.push(e) });
+  t.deliver({ hello: 'world' });
+  t.deliver({ p: 'flatppl-pane', v: 1, sid: 'sid1', from: 'pane:plot', epoch: 'e', seq: 'x', type: 't', body: {} });
+  assert.deepEqual(seen, []);
 });
 
 test('a duplicate or older seq is dropped; a new epoch starts over', () => {
   const S = loadSession();
   const Channel = channelBus();
   const epochs = [];
-  const { owner, got } = pair(S, Channel, { owner: { onPeerEpoch: (from, e, prev) => epochs.push([from, e, prev ?? null]) } });
+  const t = testTransport();
+  const got = [];
+  S.createSession({ sid: 'sid1', id: 'owner', transport: t, onMessage: (e) => got.push(e),
+    onPeerEpoch: (from, e, prev) => epochs.push([from, e, prev ?? null]) });
   const env = (epoch, seq) => ({ p: 'flatppl-pane', v: 1, sid: 'sid1', from: 'pane:plot', epoch, seq, type: 'intent.select', body: { seq } });
-  owner.receive(env('a', 1));
-  owner.receive(env('a', 1));
-  owner.receive(env('a', 3));
-  owner.receive(env('a', 2));
-  owner.receive(env('b', 1));
-  assert.deepEqual(got.owner.map((e) => e.epoch + e.body.seq), ['a1', 'a3', 'b1']);
+  t.deliver(env('a', 1));
+  t.deliver(env('a', 1));
+  t.deliver(env('a', 3));
+  t.deliver(env('a', 2));
+  t.deliver(env('b', 1));
+  assert.deepEqual(got.map((e) => e.epoch + e.body.seq), ['a1', 'a3', 'b1']);
   assert.deepEqual(epochs, [['pane:plot', 'a', null], ['pane:plot', 'b', 'a']]);
 });
 
 test('an unknown protocol version is reported and dropped', () => {
   const S = loadSession();
   const versions = [];
-  const { owner, got } = pair(S, channelBus(), { owner: { onVersion: (v) => versions.push(v) } });
-  owner.receive({ p: 'flatppl-pane', v: 2, sid: 'sid1', from: 'pane:plot', epoch: 'a', seq: 1, type: 'pane.hello', body: {} });
+  const t = testTransport();
+  const got = [];
+  S.createSession({ sid: 'sid1', id: 'owner', transport: t, onMessage: (e) => got.push(e), onVersion: (v) => versions.push(v) });
+  t.deliver({ p: 'flatppl-pane', v: 2, sid: 'sid1', from: 'pane:plot', epoch: 'a', seq: 1, type: 'pane.hello', body: {} });
   assert.deepEqual(versions, [2]);
-  assert.deepEqual(got.owner, []);
+  assert.deepEqual(got, []);
 });
 
 test('the revision tracker applies newer state, drops stale state and reports a new owner epoch', () => {
@@ -173,12 +196,12 @@ test('a silent peer is lost after the timeout only while both sides are visible'
   const clock = manualClock();
   let ownerVisible = true;
   const lost = [];
-  const sent = [];
-  const transport = { post: (e) => sent.push(e.type), listen() {}, close() {} };
-  const owner = S.createSession({ sid: 's', id: 'owner', transport, clock, isVisible: () => ownerVisible,
+  const t = testTransport();
+  const sent = { filter: (f) => t.sent.map((e) => e.type).filter(f) };
+  const owner = S.createSession({ sid: 's', id: 'owner', transport: t, clock, isVisible: () => ownerVisible,
     onMessage() {}, onLost: (p) => lost.push(p) });
   owner.watch('pane:plot', 5000, 15000);
-  const pong = (seq, visible) => owner.receive({ p: 'flatppl-pane', v: 1, sid: 's', from: 'pane:plot', epoch: 'e', seq, type: 'pong', body: { visible } });
+  const pong = (seq, visible) => t.deliver({ p: 'flatppl-pane', v: 1, sid: 's', from: 'pane:plot', epoch: 'e', seq, type: 'pong', body: { visible } });
 
   clock.advance(10000);
   pong(1, true);
@@ -207,14 +230,13 @@ test('a silent peer is lost after the timeout only while both sides are visible'
 
 test('a ping is answered with a pong and never reaches the handler', () => {
   const S = loadSession();
-  const sent = [];
   const handled = [];
-  const transport = { post: (e) => sent.push([e.type, e.to, e.body.visible]), listen() {}, close() {} };
-  const replica = S.createSession({ sid: 's', id: 'pane:graph', transport, isVisible: () => true,
+  const t = testTransport();
+  S.createSession({ sid: 's', id: 'pane:graph', transport: t, isVisible: () => true,
     onMessage: (e) => handled.push(e.type) });
-  replica.receive({ p: 'flatppl-pane', v: 1, sid: 's', from: 'owner', epoch: 'o', seq: 1, type: 'ping', body: { visible: true } });
-  replica.receive({ p: 'flatppl-pane', v: 1, sid: 's', from: 'owner', epoch: 'o', seq: 2, type: 'pong', body: {} });
-  assert.deepEqual(sent, [['pong', 'owner', true]]);
+  t.deliver({ p: 'flatppl-pane', v: 1, sid: 's', from: 'owner', epoch: 'o', seq: 1, type: 'ping', body: { visible: true } });
+  t.deliver({ p: 'flatppl-pane', v: 1, sid: 's', from: 'owner', epoch: 'o', seq: 2, type: 'pong', body: {} });
+  assert.deepEqual(t.sent.map((e) => [e.type, e.to, e.body.visible]), [['pong', 'owner', true]]);
   assert.deepEqual(handled, []);
 });
 

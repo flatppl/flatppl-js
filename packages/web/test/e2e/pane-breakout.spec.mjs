@@ -101,8 +101,17 @@ test('a tap in the main graph replots in the plots window', async ({ page }) => 
   await expect.poll(() => panePlotted(popup)).toBe('sigma_sq');
 });
 
+/** Serve config.js with extra host settings, as a deployment would. */
+async function configure(context, settings) {
+  await context.route('**/config.js', async (route) => {
+    const response = await route.fetch();
+    const body = (await response.text()) + '\nObject.assign(window.__FLATPPL_CONFIG__, ' + JSON.stringify(settings) + ');\n';
+    await route.fulfill({ response, body });
+  });
+}
+
 test('above the size cap the plots window samples again', async ({ page }) => {
-  await page.context().addInitScript(() => { window.__FLATPPL_TEST_HANDOVER_CAP__ = 1; });
+  await configure(page.context(), { handoverCapBytes: 1 });
   await openModel(page);
   const popup = await popOut(page, 'plot');
   expect(await paneHandover(popup)).toBe('rejected:cap');
@@ -191,4 +200,127 @@ test('the panel window chrome and the Pop out menu pass axe checks', async ({ pa
   const menuResults = await new AxeBuilder({ page })
     .include('#detach-btn').include('#detach-menu').withTags(['wcag2a', 'wcag2aa']).analyze();
   expect(describe(menuResults)).toEqual([]);
+});
+
+const plotSettings = (snap) => [snap.plot.sampleCount, snap.plot.rootSeed];
+
+/** Change the plot settings in a mount, as the plot controls do. */
+async function setPlotSettings(page, getView, sampleCount, rootSeed) {
+  await page.evaluate(([expr, n, seed]) => {
+    const view = new Function('return ' + expr)();
+    const plot = view.snapshotPanel('plot').plot;
+    view.restorePanel('plot', { plot: { ...plot, sampleCount: n, rootSeed: seed } });
+  }, [getView, sampleCount, rootSeed]);
+}
+const MAIN = 'window.FlatPPLWeb.viewer.viewerHandle()';
+const PANE = 'window.FlatPPLPane.view';
+const snapshotOf = (page, expr, panel) => page.evaluate(([e, p]) => new Function('return ' + e)().snapshotPanel(p), [expr, panel]);
+
+test('plot settings and samples survive a reload of the plots window', async ({ page }) => {
+  await openModel(page);
+  const popup = await popOut(page, 'plot');
+  await setPlotSettings(popup, PANE, 1234, 77);
+  await expect(popup.locator('#plot-content canvas').first()).toBeAttached();
+  await expect.poll(async () => (await snapshotOf(popup, PANE, 'plot')).plot.sampleCount).toBe(1234);
+  await popup.reload();
+  await expect(popup.locator('#pane-status')).toHaveText('Connected to the main window.');
+  expect(plotSettings(await snapshotOf(popup, PANE, 'plot'))).toEqual([1234, 77]);
+  expect(await paneHandover(popup)).toBe('adopted');
+});
+
+test('the main window keeps its plot settings through a panel reload and Dock', async ({ page }) => {
+  await openModel(page);
+  await setPlotSettings(page, MAIN, 2000, 5);
+  await expect(page.locator('#plot-content canvas').first()).toBeAttached();
+  const popup = await popOut(page, 'plot');
+  expect(plotSettings(await snapshotOf(popup, PANE, 'plot'))).toEqual([2000, 5]);
+  await popup.reload();
+  await expect(popup.locator('#pane-status')).toHaveText('Connected to the main window.');
+  const closed = popup.waitForEvent('close');
+  await popup.click('#pane-dock');
+  await closed;
+  await expectDocked(page, 'plot');
+  expect(plotSettings(await snapshotOf(page, MAIN, 'plot'))).toEqual([2000, 5]);
+});
+
+test('graph history and viewport survive a reload of the graph window', async ({ page }) => {
+  await openModel(page);
+  const popup = await popOut(page, 'graph');
+  await expect(popup.locator('#cy canvas').first()).toBeAttached();
+  const point = await popup.evaluate(() => {
+    const el = document.getElementById('cy');
+    const p = el._cyreg.cy.$id('sigma_sq').renderedPosition();
+    const r = el.getBoundingClientRect();
+    return { x: r.left + p.x, y: r.top + p.y };
+  });
+  await popup.mouse.dblclick(point.x, point.y);
+  await expect.poll(async () => (await snapshotOf(popup, PANE, 'graph')).graph.history.map((h) => h.targetName))
+    .toEqual(['sigma']);
+  await popup.evaluate(() => { const cy = document.getElementById('cy')._cyreg.cy; cy.zoom(1.6); cy.pan({ x: 30, y: 20 }); });
+  const before = await snapshotOf(popup, PANE, 'graph');
+  await popup.reload();
+  await expect(popup.locator('#pane-status')).toHaveText('Connected to the main window.');
+  const after = await snapshotOf(popup, PANE, 'graph');
+  expect(after.graph.history).toEqual(before.graph.history);
+  expect(after.graph.viewport).toEqual(before.graph.viewport);
+});
+
+test('without BroadcastChannel a reload of the main window finds the panel window again', async ({ page }) => {
+  await page.context().addInitScript(() => { delete window.BroadcastChannel; });
+  await openModel(page);
+  const popup = await popOut(page, 'math');
+  await page.reload();
+  await expect(page.locator('#cy canvas').first()).toBeAttached();
+  await expectDetached(page, 'math');
+  await expect(popup.locator('#pane-status')).toHaveText('Connected to the main window.');
+  await clickNode(page, 'sigma_sq');
+  await expect(popup.locator('#math-content mtr.focused[data-flatppl-binding="sigma_sq"]')).toBeAttached();
+});
+
+test('a panel window ignores owner state older than what it applied', async ({ page }) => {
+  await openModel(page);
+  const popup = await popOut(page, 'plot');
+  const sid = new URL(popup.url()).hash.match(/sid=([0-9a-f]{32})/)[1];
+  // Listen on the session's channel in the main page to learn the owner's epoch, seq and rev.
+  await page.evaluate((s) => {
+    window.__seen = [];
+    const ch = new BroadcastChannel('flatppl-pane:' + s);
+    ch.onmessage = (e) => { if (e.data && e.data.from === 'owner') window.__seen.push(e.data); };
+    window.__forge = ch;
+  }, sid);
+  await clickNode(page, 'sigma_sq');
+  await expect.poll(() => panePlotted(popup)).toBe('sigma_sq');
+  const last = await page.evaluate(() => window.__seen.filter((e) => e.type === 'state.select').pop());
+  const forge = (seq, rev, binding) => page.evaluate(([e, sq, r, b]) => window.__forge.postMessage({
+    ...e, seq: sq, type: 'state.select', body: { rev: r, binding: b } }), [last, seq, rev, binding]);
+  await forge(last.seq + 100, last.body.rev - 1, 'sigma');
+  await popup.waitForTimeout(500);
+  expect(await panePlotted(popup)).toBe('sigma_sq');
+  // A newer revision through the same path is applied: the path works.
+  await forge(last.seq + 101, last.body.rev + 100, 'alpha');
+  await expect.poll(() => panePlotted(popup)).toBe('alpha');
+});
+
+test('a window closed before its hello is found by the closed poll', async ({ page }) => {
+  await page.context().route('**/pane-app.js', (route) => route.abort());
+  await openModel(page);
+  await page.click('#detach-btn');
+  const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('#detach-menu [data-panel="graph"]')]);
+  await expectDetached(page, 'graph');
+  await popup.close();
+  // The 10 s start timeout would be too late: only the poll docks it this soon.
+  await expect(page.locator('#graph-panel')).not.toHaveClass(/hidden/, { timeout: 4000 });
+});
+
+test('a window that never starts docks the plots back with their samples', async ({ page }) => {
+  await page.context().route('**/pane-app.js', (route) => route.abort());
+  await openModel(page);
+  await page.click('#detach-btn');
+  const [popup] = await Promise.all([page.waitForEvent('popup'), page.click('#detach-menu [data-panel="plot"]')]);
+  await expectDetached(page, 'plot');
+  await expect(page.locator('#plot-panel')).not.toHaveClass(/hidden/, { timeout: 15000 });
+  await expect(page.locator('#gallery-toast')).toContainText('The new window did not start');
+  await expect.poll(() => page.evaluate(() => window.FlatPPLWeb.viewer.viewerHandle().measureHandoverStatus()))
+    .toBe('adopted');
+  await popup.close();
 });

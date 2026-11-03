@@ -24,8 +24,15 @@ export interface MeasureHandover {
 export type HandoverStatus = 'none' | 'pending' | 'adopted' | 'rejected:cap' | 'rejected:clone'
   | 'rejected:model' | 'rejected:settings' | 'rejected:empty';
 
-/** 64 MiB: about 160 scalar leaves at the default 50 000 draws. */
+/** 64 MiB: about 160 scalar leaves at the default 50 000 draws. A host can
+ *  set another cap with __FLATPPL_CONFIG__.handoverCapBytes. */
 export const DEFAULT_HANDOVER_CAP = 64 * 1024 * 1024;
+
+/** The cap this mount applies: the host's configured one, else the default. */
+export function handoverCap(ctx: Ctx): number {
+  const configured = ctx.CONFIG && ctx.CONFIG.handoverCapBytes;
+  return typeof configured === 'number' && configured >= 0 ? configured : DEFAULT_HANDOVER_CAP;
+}
 
 /** FNV-1a over bytes or text: a content digest that is the same in every
  *  window, unlike a per-mount counter. */
@@ -57,8 +64,10 @@ export function handoverSettingsKey(ctx: Ctx): string {
     ctx.REJECTION_BUDGET, ctx.inferenceOpts]);
 }
 
-/** Bytes held by the typed arrays of the entries, each buffer once. */
-function typedBytes(value: unknown, seen: Set<ArrayBufferLike>): number {
+/** Bytes the entries' samples take when cloned: each typed-array buffer
+ *  once, and 8 bytes per number in plain arrays (record and array leaves
+ *  can hold plain arrays), nested arrays included. */
+export function sampleBytes(value: unknown, seen: Set<ArrayBufferLike> = new Set()): number {
   if (!value || typeof value !== 'object') return 0;
   if (ArrayBuffer.isView(value)) {
     if (seen.has(value.buffer)) return 0;
@@ -66,19 +75,23 @@ function typedBytes(value: unknown, seen: Set<ArrayBufferLike>): number {
     return value.buffer.byteLength;
   }
   let n = 0;
-  for (const v of Array.isArray(value) ? value : Object.values(value)) n += typedBytes(v, seen);
+  if (Array.isArray(value)) {
+    for (const v of value) n += typeof v === 'number' ? 8 : sampleBytes(v, seen);
+    return n;
+  }
+  for (const v of Object.values(value)) n += sampleBytes(v, seen);
   return n;
 }
 
 /** Take the cached samples of `binding` (default: the plotted binding) out
  *  of this mount's cache. Null when nothing is plotted. */
-export function exportMeasures(ctx: Ctx, binding?: string | null, capBytes = DEFAULT_HANDOVER_CAP): MeasureHandover | null {
+export function exportMeasures(ctx: Ctx, binding?: string | null, capBytes = handoverCap(ctx)): MeasureHandover | null {
   if (binding == null) binding = ctx.currentPlotBindingName;
   if (!binding) return null;
   const validity = { modelKey: handoverModelKey(ctx), settingsKey: handoverSettingsKey(ctx) };
   const keys = Array.from(ctx.measureCache.keys()).filter((k) => k === binding || k.startsWith(binding + '|'));
   const entries: [string, any][] = keys.map((k) => [k, ctx.measureCache.get(k)]);
-  const bytes = typedBytes(entries, new Set());
+  const bytes = sampleBytes(entries);
   if (bytes > capBytes) return { binding, validity, entries: [], bytes, omitted: 'cap' };
   let copy: [string, any][];
   try {

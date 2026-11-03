@@ -194,8 +194,6 @@
 
     return {
       epoch, send, watch, unwatch,
-      /** Test and diagnostics hook: feed one raw message as if received. */
-      receive,
       close(): void {
         if (closed) return;
         closed = true;

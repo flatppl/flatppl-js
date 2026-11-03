@@ -22,7 +22,7 @@ export default defineConfig({
     command: `node serve.mjs`,
     env: { PORT: String(port) },
     url: `http://127.0.0.1:${port}/index.html`,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
   },
   projects: [
     { name: 'chromium', use: { ...devices['Desktop Chrome'], viewport: { width: 1400, height: 900 } } },

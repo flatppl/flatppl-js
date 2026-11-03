@@ -36,7 +36,6 @@
   const REDOCK_TIMEOUT_MS = 2000;
   const PING_MS = 5000;
   const LOST_MS = 15000;
-  const DEFAULT_CAP = 64 * 1024 * 1024;
 
   interface Entry {
     pane: Pane;
@@ -67,11 +66,6 @@
     let placedHandle: any = null;
     let closedPoll: any = null;
     const last: any = { model: null, focus: null, select: null };
-
-    function capBytes(): number {
-      const testCap = globalScope.__FLATPPL_TEST_HANDOVER_CAP__;
-      return typeof testCap === 'number' ? testCap : DEFAULT_CAP;
-    }
 
     function view(): any { return opts.controller.viewerHandle ? opts.controller.viewerHandle() : null; }
 
@@ -153,7 +147,7 @@
       }
       ensureSession();
       const entry: Entry = { pane, state: 'starting', win, timer: null, panelState: v.snapshotPanel(pane),
-        handover: pane === 'plot' ? v.exportMeasures(null, capBytes()) : null, incoming: null, leavingState: null };
+        handover: pane === 'plot' ? v.exportMeasures(null) : null, incoming: null, leavingState: null };
       entries.set(pane, entry);
       v.setPanelPlacement(pane, 'detached');
       persist();
@@ -188,7 +182,9 @@
       if (session) session.unwatch('pane:' + pane);
       const v = view();
       if (v) {
-        if (pane === 'plot') v.importMeasures(e.incoming || null);
+        // The window's samples if it sent them back, else the ones that
+        // never left (a window that did not start).
+        if (pane === 'plot') v.importMeasures(e.incoming || e.handover || null);
         if (state && state[pane]) {
           try { v.restorePanel(pane, state); } catch (err) { console.warn('FlatPPL: could not restore ' + pane, err); }
         }
@@ -220,12 +216,17 @@
         if (source) e.win = source;
         if (e.timer) { globalScope.clearTimeout(e.timer); e.timer = null; }
         e.state = 'live';
-        e.leavingState = null;
+        // A first hello gets the state taken at detach; a hello after a
+        // reload gets what the window sent with its goodbye.
+        const handover = e.handover || e.incoming;
+        const panelState = e.panelState || e.leavingState;
         // Samples first: the replica parks them before the welcome renders.
-        if (e.handover) session.send('pane.measures', e.handover, env.from);
-        session.send('pane.welcome', { snapshot: snapshot(), panelState: e.panelState }, env.from);
+        if (handover) session.send('pane.measures', handover, env.from);
+        session.send('pane.welcome', { snapshot: snapshot(), panelState }, env.from);
         e.handover = null;
+        e.incoming = null;
         e.panelState = null;
+        e.leavingState = null;
         session.watch(env.from, PING_MS, LOST_MS);
         return;
       }
