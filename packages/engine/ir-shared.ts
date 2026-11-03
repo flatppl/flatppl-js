@@ -308,6 +308,9 @@ function resolveIRToValue(ir: any, bindings: any, fixedValues: any, preserveShap
         // migration of producers to Values is invisible here.
         return preserveShape ? fixedValues.get(ir.name) : valueToPlain(fixedValues.get(ir.name));
       }
+      // A failed binding reports its own cause, not the walk's re-evaluation.
+      const failure = fixedValues?.failure?.(ir.name);
+      if (failure) throw new Error(failure);
       if (seen.has(ir.name)) {
         throw new Error(`resolveIRToValue: cycle through '${ir.name}'`);
       }

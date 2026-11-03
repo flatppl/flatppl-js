@@ -29,7 +29,10 @@
 //                    resolves (and memoises) en route, so a following
 //                    `get` is free.
 //   - `get(name)`  → the value, or `undefined` when not resolvable
-//                    (matching `Map.get` for an absent key).
+//                    (matching `Map.get` for an absent key). A binding
+//                    whose evaluation failed is not absent: `get` throws
+//                    the failure, which names the binding and the cause.
+//                    `has` stays a probe and returns false.
 //   - `set(name,v)`→ writes the cache (kept for parity with the plain
 //                    Map some tests inject, and for any warm-cache path).
 //
@@ -136,7 +139,10 @@ class FixedValues {
 
   get(name: string): any {
     const v = this._resolve(name);
-    return v === UNRESOLVED ? undefined : v;
+    if (v !== UNRESOLVED) return v;
+    const failure = this._failures.get(name);
+    if (failure) throw new Error(failure);
+    return undefined;
   }
 
   has(name: string): boolean {

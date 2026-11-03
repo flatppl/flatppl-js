@@ -443,10 +443,8 @@ g: norm[] := p[.i^] * p[.i_]
 
 test('metricsum: runtime symmetry guard prevents asymmetric-metric evaluation (e2e)', () => {
   // E2E negative: an asymmetric metric reaches the runtime guard via
-  // the lift's `_ms_check_symmetric(g)` wrapper. fixed-eval catches
-  // the throw and leaves the dependent binding undefined; the binding
-  // graph never produces a (wrong) numerical answer. Pin the
-  // undefined-on-asymmetric behaviour.
+  // the lift's `_ms_check_symmetric(g)` wrapper. A reader of the
+  // dependent binding gets the guard's error, never a (wrong) number.
   const src = `
 g = rowstack([[1.0, 0.5], [0.7, -1.0]])
 p = [3.0, 2.0]
@@ -455,12 +453,8 @@ g: norm[] := p[.i^] * p[.i_]
   const ctx = processSource(src);
   assert.equal(ctx.diagnostics.filter((d: any) => d.severity === 'error').length, 0);
   const built = orchestrator.buildDerivations(ctx.bindings);
-  // The asymmetric metric makes _ms_check_symmetric throw; fixed-eval
-  // catches it, so norm stays undefined (no incorrect numeric value
-  // surfaces).
-  const v = built.fixedValues.get('norm');
-  assert.equal(v, undefined,
-    'asymmetric metric should leave dependent bindings undefined');
+  assert.throws(() => built.fixedValues.get('norm'),
+    /failed to evaluate: metricsum: metric is not symmetric: A\[0,1\] = 0.5 but A\[1,0\] = 0.7/);
 });
 
 test('metricsum: scalar-bodied + array-of-scalars tensors pass the type check', () => {

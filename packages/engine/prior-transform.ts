@@ -13,10 +13,18 @@ const modelSpec    = require('./model-spec.ts');
 const { quantile, hasQuantile } = require('./inverse-cdf.ts');
 const { truncatedQuantile } = require('./forward-cdf.ts');
 const { recognizeCompositeIidDraw } = require('./composite-prior.ts');
+const { recordDerivedFailure, derivedFailureOf } = require('./derived-failures.ts');
 
-// Evaluate a param IR to a number in env; null on failure.
-function evalParam(ir: any, env: Record<string, any>): number | null {
-  try { const v = sampler.evaluateExpr(ir, env); return typeof v === 'number' ? v : +v; } catch (_) { return null; }
+// Evaluate a param IR to a number in env. A failure names `what` and the
+// cause, or the derived binding whose failure left a ref unbound.
+function evalParam(ir: any, env: Record<string, any>, what: string): number {
+  try {
+    const v = sampler.evaluateExpr(ir, env);
+    return typeof v === 'number' ? v : +v;
+  } catch (err: any) {
+    const cause = derivedFailureOf(err, env) ?? (err?.message ?? String(err));
+    throw new Error(`prior-transform: cannot resolve ${what}: ${cause}`);
+  }
 }
 
 // Evaluate a truncation bound IR — handles the ±inf sentinel that a plain
@@ -29,8 +37,8 @@ function evalParam(ir: any, env: Record<string, any>): number | null {
 function evalBound(ir: any, env: Record<string, any>): number {
   if (ir && ir.kind === 'const' && ir.name === 'inf') return Infinity;
   if (ir && ir.kind === 'call' && ir.op === 'neg' && ir.args && ir.args[0] && ir.args[0].kind === 'const' && ir.args[0].name === 'inf') return -Infinity;
-  const v = evalParam(ir, env);
-  if (v == null || Number.isNaN(v)) throw new Error('prior-transform: cannot resolve truncate bound');
+  const v = evalParam(ir, env, 'truncate bound');
+  if (Number.isNaN(v)) throw new Error('prior-transform: cannot resolve truncate bound: it is not a number');
   return v;
 }
 
@@ -64,9 +72,7 @@ function resolveParams(distOp: string, node: any, env: Record<string, any>): any
   const q: any = {};
   for (let i = 0; i < names.length; i++) {
     const ir = (kwargs && kwargs[names[i]] != null) ? kwargs[names[i]] : args[i];
-    const v = evalParam(ir, env);
-    if (v == null) throw new Error(`prior-transform: cannot resolve param '${names[i]}' of ${distOp}`);
-    q[names[i]] = v;
+    q[names[i]] = evalParam(ir, env, `param '${names[i]}' of ${distOp}`);
   }
   return q;
 }
@@ -114,7 +120,8 @@ function planLatent(measureIR: any, ctx: any): LatentPlan {
       sizeVec: () => ({ coords: set === 'ordered' ? n : n - 1, width: n }),
       realise: () => { throw new Error('prior-transform: tilt is a vector plan'); },
       realiseVec: (u, off, env) => {
-        const mu = evalParam(law.mu, env), sigma = evalParam(law.sigma, env);
+        const mu = evalParam(law.mu, env, "param 'mu' of Normal");
+        const sigma = evalParam(law.sigma, env, "param 'sigma' of Normal");
         // The zero-sum law loses its common mean, but an invalid source Normal
         // remains invalid. Resolve both parameters after the parent cube draws.
         tilt.checkParameters(mu, sigma);
@@ -291,7 +298,8 @@ function buildPriorTransform(ctx: any, d: any) {
   // once after seeding `fixedEnv` and again after every realised latent, so a
   // derived binding that depends on a just-realised parent becomes visible to
   // the next latent's params. A binding not yet resolvable (still missing a
-  // later parent) is silently skipped — it will resolve on a later call.
+  // later parent) resolves on a later call. Its last failure stays recorded,
+  // so a param that reads a binding that never resolves reports the cause.
   const derivedBindings: Array<{ name: string; ir: any }> = [];
   if (ctx.bindings) {
     ctx.bindings.forEach((b: any, k: string) => {
@@ -301,7 +309,7 @@ function buildPriorTransform(ctx: any, d: any) {
   }
   function refreshDerived(env: Record<string, any>): void {
     for (const db of derivedBindings) {
-      try { env[db.name] = sampler.evaluateExpr(db.ir, env); } catch (_) { /* not yet resolvable */ }
+      try { env[db.name] = sampler.evaluateExpr(db.ir, env); } catch (err) { recordDerivedFailure(env, db.name, err); }
     }
   }
 

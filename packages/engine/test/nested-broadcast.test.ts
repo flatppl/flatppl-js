@@ -212,12 +212,7 @@ Y = matvec.([M], [V1, V2, V3])
 test('nested-broadcast: outer-size mismatch is rejected', () => {
   // Both args have outer rank 1, but sizes 2 vs 3 (neither is 1) —
   // singleton expansion does not apply, so this must NOT produce a
-  // valid Y value. buildDerivations currently silently skips bindings
-  // whose evaluator throws (orchestrator pattern at derivations.ts:
-  // `try { ... } catch (_) { continue }`), so the runtime signal we
-  // can observe is "Y didn't land in fixedValues". (Surfacing it as
-  // an analyzer diagnostic would need static outer-shape inference —
-  // a separate follow-up; v1 pins runtime detection.)
+  // valid Y value. The runtime refusal reaches a reader of Y.
   const r = processSource(`
 dot = (a, b) -> sum(a .* b)
 V1 = [1.0, 2.0]
@@ -229,9 +224,9 @@ Y = dot.([V1, V2], [W1, W2, W3])
 `);
   const ds = buildDerivations(r.bindings);
   const fv = ds.fixedValues || new Map();
-  assert.ok(!fv.has('Y'),
-    'Y must not land in fixedValues when broadcast outer sizes are '
-    + 'incompatible; got ' + JSON.stringify(fv.get('Y')));
+  assert.ok(!fv.has('Y'));
+  assert.throws(() => fv.get('Y'),
+    /^Error: Fixed-phase binding 'Y' failed to evaluate: broadcast: incompatible sizes on axis 0 \(2 vs 3\)/);
 });
 
 test('nested-broadcast: ragged Ref-wrap arg is rejected', () => {
@@ -376,8 +371,7 @@ Y = dot.([[C]], [[V1, V2], [V3, V4]])
 
 test('nested-broadcast (v2): outer-rank mismatch ([C] vs X_2D) is rejected', () => {
   // Ref-wrap depth-1 vs flat 2-D ⇒ outerRanks 1 vs 2 — same-#-axes
-  // rule fires (spec §04). Runtime detection ⇒ binding absent from
-  // fixedValues (same convention as the v1 outer-size-mismatch case).
+  // rule fires (spec §04). The runtime refusal reaches a reader of Y.
   const r = processSource(`
 polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
 C = [2.3, 1.5, 0.7]
@@ -386,9 +380,9 @@ Y = polyeval.([C], X_2D)
 `);
   const ds = buildDerivations(r.bindings);
   const fv = ds.fixedValues || new Map();
-  assert.ok(!fv.has('Y'),
-    'outer-rank-1 [C] paired with outer-rank-2 X_2D must not produce '
-    + 'a fixedValues entry; got ' + JSON.stringify(fv.get('Y')));
+  assert.ok(!fv.has('Y'));
+  assert.throws(() => fv.get('Y'),
+    /^Error: Fixed-phase binding 'Y' failed to evaluate: broadcast: all collection arguments must have the same number of axes/);
 });
 
 test('nested-broadcast (v2): rectangularity is enforced at every depth', () => {
@@ -405,7 +399,6 @@ Y = dot.([[C]], [[V1, V2], [V3]])
 `);
   const ds = buildDerivations(r.bindings);
   const fv = ds.fixedValues || new Map();
-  assert.ok(!fv.has('Y'),
-    'ragged inner level must not produce a Y entry; got '
-    + JSON.stringify(fv.get('Y')));
+  assert.ok(!fv.has('Y'));
+  assert.throws(() => fv.get('Y'), /^Error: Fixed-phase binding 'Y' failed to evaluate: broadcast:/);
 });
