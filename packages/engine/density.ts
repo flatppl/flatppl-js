@@ -2174,17 +2174,96 @@ function _bijBodyRefsAny(body: any, refArrays: any): boolean {
 // threading — the SAME computation, whether the caller then recurses
 // into the base measure at x (walkPushfwd) or threads x into the overlay
 // for a sibling field's law to consume (the hierarchical record case).
-function _pushfwdInverseAtomIndependent(bij: any, y: number, baseEnv: any, overlay: any): number {
+function _pushfwdInverseAtomIndependent(bij: any, y: any, baseEnv: any, overlay: any): any {
   const finvEnv = Object.assign({}, baseEnv);
   if (overlay) Object.assign(finvEnv, overlay);
   finvEnv[bij.fInv.paramName] = y;
-  const x = samplerLib.evaluateExpr(bij.fInv.body, finvEnv);
-  if (typeof x !== 'number') {
+  return pushfwdPreimage(y, samplerLib.evaluateExpr(bij.fInv.body, finvEnv));
+}
+
+// A bijection maps its variate space onto itself (§06), so f_inv(y) has the
+// shape of y: a scalar for a scalar variate, a dense array otherwise.
+function pushfwdPreimage(y: any, x: any): any {
+  if (!valueLib.isValue(y)) {
+    if (typeof x === 'number') return x;
     throw new Error('density: pushfwd f_inv returned non-scalar (got '
-      + (typeof x) + '); per-atom or vector-valued bijections not yet '
-      + 'supported here');
+      + (typeof x) + ') for a scalar variate');
   }
-  return x;
+  const value = Array.isArray(x) ? valueLib.asValue(x) : x;
+  if (!valueLib.isValue(value) || value.data.length !== y.data.length) {
+    throw new Error('density: pushfwd f_inv must return a variate of shape ['
+      + y.shape.join(',') + ']');
+  }
+  return valueLib._logicalDense(value);
+}
+
+// Array variate shape of a pushforward base, or null for a scalar or an
+// unproven footprint (the scalar consume path keeps those).
+function arrayVariateShape(ir: any, env: any): number[] | null {
+  if (!ir || ir.kind !== 'call') return null;
+  const args = ir.args || [];
+  switch (ir.op) {
+    case 'iid': {
+      const size: any = samplerLib.evaluateExpr(args[1], env);
+      const axes = typeof size === 'number' ? [size | 0]
+        : Array.from(valueLib.isValue(size) ? size.data : size, (n: any) => n | 0);
+      if (hasScalarDensityFootprint(args[0])) return axes;
+      const inner = arrayVariateShape(args[0], env);
+      return inner ? [...axes, ...inner] : null;
+    }
+    case 'pushfwd': return arrayVariateShape(args[1], env);
+    case 'normalize': case 'truncate': return arrayVariateShape(args[0], env);
+    case 'weighted': case 'logweighted': return arrayVariateShape(args[1], env);
+    default: return null;
+  }
+}
+
+// Take the pushforward's variate off the head of `value`: a scalar, or one
+// whole array of the base's shape.
+function consumePushfwdVariate(baseIR: any, value: any, env: any): { head: any; rest: any } {
+  const shape = arrayVariateShape(baseIR, env);
+  if (!shape) return consumeScalar(value);
+  if (valueLib.isValue(value) && value.shape.length === shape.length
+      && value.shape.every((n: number, i: number) => n === shape[i])) {
+    return { head: valueLib._logicalDense(value), rest: null };
+  }
+  if (shape.length !== 1) {
+    throw new Error('density: pushfwd over a base of shape [' + shape.join(',')
+      + '] needs an observation of that shape');
+  }
+  const { head, rest } = consumeVector(value, shape[0]);
+  return { head: { shape: [shape[0]], data: Float64Array.from(head) }, rest };
+}
+
+// §06 logvolume is the log-volume element of the whole map: one scalar. The
+// LADJ synthesised for an unannotated map is per element (bijection-registry
+// invertExpr works on scalars), so it sums over an array preimage.
+function pushfwdLogVolume(logVolume: any, x: any, env: any): number {
+  if (logVolume.kind === 'scalar') return +logVolume.value;
+  const at = (point: any) => {
+    // paramName null means a 0-arg function, a closed-form constant.
+    if (logVolume.paramName) env[logVolume.paramName] = point;
+    return samplerLib.evaluateExpr(logVolume.body, env);
+  };
+  if (logVolume.elementwise && typeof x !== 'number') {
+    let sum = 0;
+    for (const xi of x.data) sum += scalarLogVolume(at(xi));
+    return sum;
+  }
+  return scalarLogVolume(at(x));
+}
+
+function scalarLogVolume(lv: any): number {
+  if (typeof lv === 'number') return lv;
+  if (valueLib.isValue(lv) && lv.data.length === 1 && lv.shape.length === 0) return lv.data[0];
+  throw new Error('density: bijection logvolume must return a scalar (§06: the '
+    + 'log-volume element of the whole map)');
+}
+
+function preimageFullyConsumed(rest: any) {
+  if (!isEmptyRest(rest)) {
+    throw new Error('density: pushfwd base did not consume the whole preimage');
+  }
 }
 
 /** §06 counting densities score atoms, even when inversion rounds off their coordinates.
@@ -2253,10 +2332,12 @@ function countingCandidate(ir: any, x: any, env: any): any {
 
 function sameCountingPoint(a: any, b: any): boolean {
   if (typeof a === 'number' && typeof b === 'number') return a === b;
+  if (valueLib.isValue(a)) a = valueLib._logicalDense(a).data;
+  if (valueLib.isValue(b)) b = valueLib._logicalDense(b).data;
   return a.length === b.length && Array.from(a).every((v, i) => v === b[i]);
 }
 
-function countingRoundtrip(bij: any, x: number, y: number, env: any): boolean {
+function countingRoundtrip(bij: any, x: any, y: any, env: any): boolean {
   if (!bij.fForward) throw new Error('density: counting pushfwd requires its forward map');
   const at = Object.assign({}, env, { [bij.fForward.paramName]: x });
   return sameCountingPoint(samplerLib.evaluateExpr(bij.fForward.body, at), y);
@@ -2540,7 +2621,7 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
     return yRest;
   }
   // Consume the head — pushfwd's variate footprint matches M's.
-  const { head: y, rest } = consumeScalar(value);
+  const { head: y, rest } = consumePushfwdVariate(M_ir, value, Object.assign({}, baseEnv, overlay));
 
   // Latent (kernel-fed) bijection params: when f_inv's or logvolume's body
   // references a per-atom refArrays name (the affine shift/scale ARE the
@@ -2573,18 +2654,7 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
         }
       }
       envI[bij.fInv.paramName] = y;
-      let xi = samplerLib.evaluateExpr(bij.fInv.body, envI);
-      // Defensive: a scalar bijection's f_inv always returns a number here;
-      // mirrors the identical (also-unreached) guard on the atom-independent
-      // fast path below. Vector-valued bijections are rejected upstream, so
-      // this throw is not reachable from a valid model.
-      /* c8 ignore start */
-      if (typeof xi !== 'number') {
-        throw new Error('density: pushfwd f_inv returned non-scalar (got '
-          + (typeof xi) + '); per-atom or vector-valued bijections not yet '
-          + 'supported here');
-      }
-      /* c8 ignore stop */
+      let xi = pushfwdPreimage(y, samplerLib.evaluateExpr(bij.fInv.body, envI));
       if (counting) {
         xi = countingCandidate(M_ir, xi, envI);
         if (!countingRoundtrip(bij, xi, y, envI)) {
@@ -2626,17 +2696,11 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
         }
       }
       const accI = new Float64Array(1);
-      walkAcc(M_ir, xi, refArraysI, 1, opts, accI, baseEnv, overlay);
+      const restI = walkAcc(M_ir, xi, refArraysI, 1, opts, accI, baseEnv, overlay);
+      if (typeof xi !== 'number') preimageFullyConsumed(restI);
       acc[i] += accI[0];
       if (counting) continue;
-      // Subtract logvolume at xi for this atom.
-      let lv: number;
-      if (bij.logVolume.kind === 'scalar') {
-        lv = +bij.logVolume.value;
-      } else {
-        if (bij.logVolume.paramName) envI[bij.logVolume.paramName] = xi;
-        lv = +samplerLib.evaluateExpr(bij.logVolume.body, envI);
-      }
+      const lv = pushfwdLogVolume(bij.logVolume, xi, envI);
       if (lv !== 0) acc[i] -= lv;
     }
     return rest;
@@ -2658,31 +2722,19 @@ function walkPushfwd(ir: IRNode, value: any, refArrays: any, N: any, opts: any, 
   }
   // Recurse on M scoring at x. x is atom-independent → walks through
   // M's structure with the standard consume/rest semantics.
-  walkAcc(M_ir, x, refArrays, N, opts, acc, baseEnv, overlay);
+  const baseRest = walkAcc(M_ir, x, refArrays, N, opts, acc, baseEnv, overlay);
+  if (typeof x !== 'number') preimageFullyConsumed(baseRest);
   if (counting) return rest;
-  // Subtract logvolume(x). Scalar logvolume is a uniform shift; a
-  // function evaluates body at x.
-  if (bij.logVolume.kind === 'scalar') {
-    const lv = +bij.logVolume.value;
-    if (lv !== 0) for (let i = 0; i < N; i++) subtractLogVolume(acc, i, lv);
-  } else {
-    const lvEnv = Object.assign({}, baseEnv);
-    if (overlay) Object.assign(lvEnv, overlay);
-    // paramName null means a 0-arg function — a closed-form constant
-    // like `fn(log(2.0))`. We still evaluate the body, just without
-    // binding x into env. paramName non-null is the 1-arg case where
-    // logvolume varies with the bijection's domain point.
-    if (bij.logVolume.paramName) lvEnv[bij.logVolume.paramName] = x;
-    const lv = +samplerLib.evaluateExpr(bij.logVolume.body, lvEnv);
-    if (lv !== 0) for (let i = 0; i < N; i++) subtractLogVolume(acc, i, lv);
-  }
+  const lv = pushfwdLogVolume(bij.logVolume, x, Object.assign({}, baseEnv, overlay));
+  if (lv !== 0) for (let i = 0; i < N; i++) subtractLogVolume(acc, i, lv);
   return rest;
 }
 
 // A point y whose preimage f_inv(y) is NaN lies outside the image of f
 // (log of a non-positive number), where the pushforward has density 0.
-function outsideImage(y: number, x: number): boolean {
-  return Number.isNaN(x) && !Number.isNaN(y);
+function outsideImage(y: any, x: any): boolean {
+  if (typeof x === 'number') return Number.isNaN(x) && !Number.isNaN(y);
+  return x.data.some(Number.isNaN) && !y.data.some(Number.isNaN);
 }
 
 // A point already at -Infinity (zero base density) stays there; subtracting an

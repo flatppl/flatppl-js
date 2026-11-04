@@ -5390,11 +5390,13 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
             });
             if (inv) {
               // fInv body is in terms of FINV_PARAM (= y); logVolume (forward
-              // LADJ) is in terms of holeName (= the preimage x).
+              // LADJ) is in terms of holeName (= the preimage x). invertExpr
+              // derives a scalar LADJ, so over an array variate it applies
+              // per element (density.pushfwdLogVolume sums it).
               bijMeta = {
                 fForward: { body: fBinding.ir.body, paramName: holeName },
                 fInv: { body: inv.inverseIR, paramName: FINV_PARAM },
-                logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName },
+                logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName, elementwise: true },
               };
             }
           }
