@@ -74,6 +74,12 @@ function placementOf(ctx: Ctx, id: PanelId): PanelPlacement {
   return ctx.panelPlacement?.[id] === 'detached' ? 'detached' : 'docked';
 }
 
+/** Panes of the host that the Pop out menu also offers (none in VS Code). */
+function extraTargets(ctx: Ctx): { id: string; label: string }[] {
+  const hook = ctx.host && ctx.host.extraDetachTargets;
+  return typeof hook === 'function' ? hook() || [] : [];
+}
+
 /** Panels the Pop out menu offers: allowed here and shown here. */
 function detachable(ctx: Ctx): PanelId[] {
   return PANEL_ORDER.filter((id) => allowed(ctx, id) && placementOf(ctx, id) === 'docked');
@@ -118,6 +124,16 @@ export function installDetachControl(ctx: Ctx): () => void {
   }
   function open(): void {
     menu.replaceChildren();
+    // Host panes outside the viewer (the web playground's source editor) come first.
+    for (const extra of extraTargets(ctx)) {
+      const item = document.createElement('button');
+      item.type = 'button';
+      item.setAttribute('role', 'menuitem');
+      item.setAttribute('tabindex', '-1');
+      item.setAttribute('data-host-pane', extra.id);
+      item.textContent = 'Open ' + extra.label + ' in a new window';
+      menu.appendChild(item);
+    }
     for (const id of detachable(ctx)) {
       const item = document.createElement('button');
       item.type = 'button';
@@ -138,6 +154,11 @@ export function installDetachControl(ctx: Ctx): () => void {
     if (t && (menu.contains(t) || button.contains(t))) return;
     close(false);
   }
+  function chooseHostPane(id: string): void {
+    // Focus stays on Pop out: the host's pane is not part of this viewer.
+    close(true);
+    ctx.host.detachPanel!(id);
+  }
   function choose(id: PanelId): void {
     close(false);
     // The panel leaves this window, so focus goes to its toggle.
@@ -149,6 +170,8 @@ export function installDetachControl(ctx: Ctx): () => void {
   }
   function onMenuClick(ev: Event): void {
     const item = (ev.target as HTMLElement | null)?.closest('[role="menuitem"]') as HTMLElement | null;
+    const hostPane = item && item.getAttribute('data-host-pane');
+    if (hostPane) { chooseHostPane(hostPane); return; }
     const id = item && item.getAttribute('data-panel');
     if (id) choose(id as PanelId);
   }
@@ -169,7 +192,7 @@ export function installDetachControl(ctx: Ctx): () => void {
   menu.addEventListener('click', onMenuClick);
   menu.addEventListener('keydown', onMenuKey);
   ctx.refreshDetachControl = function () {
-    (button as HTMLButtonElement).disabled = detachable(ctx).length === 0;
+    (button as HTMLButtonElement).disabled = detachable(ctx).length === 0 && extraTargets(ctx).length === 0;
     if ((button as HTMLButtonElement).disabled) close(false);
   };
   ctx.refreshDetachControl();

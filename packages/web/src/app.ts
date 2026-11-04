@@ -300,6 +300,11 @@
   // CodeMirror) so syntax highlighting, hover, find, decorations,
   // and virtual scrolling work uniformly at any file size.
   let sourceEditor: any = null;
+  // The CodeMirror editor in this window. While the source pane lives in
+  // another window, sourceEditor is a stand-in (remote-editor.ts) instead.
+  let localEditor: any = null;
+  let remoteEditor: any = null;
+  let editorCallbacks: any = null;
   // Whether the editor is currently in writable mode. Mirrors the
   // toggle button's aria-pressed state and is the gate for the
   // viewer host's `canPersist` / `editSource` hooks (persist is
@@ -2044,6 +2049,7 @@
     if (window.FlatPPLWebLayout) {
       layout = window.FlatPPLWebLayout.install({
         toggleButton: document.getElementById('toggle-files'),
+        onDockSource: () => paneOwner?.redock('source'),
       });
     }
 
@@ -2073,9 +2079,8 @@
           viewer.update(bundle.primarySource, target || null, bundleOptions(bundle));
         } catch (error: any) { if (!stale()) showToast('Cannot resolve model: ' + error.message); }
       }, 250);
-      sourceEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
-        initialSource: '',
-        initialReadOnly: true,
+      // Named, because the source window (pane breakout) calls them too.
+      editorCallbacks = {
         onChange: function (text: any) {
           // Retain edits in memory. Only an explicit Save writes browser storage.
           if (!editEnabled) return;
@@ -2106,7 +2111,13 @@
           if (!lastModel || cur.model !== lastModel) return;
           window.FlatPPLWebRouter.navigateTo({ model: cur.model, target: name });
         },
+      };
+      localEditor = window.FlatPPLWebEditor.mountEditor(editorContainer, {
+        initialSource: '',
+        initialReadOnly: true,
+        ...editorCallbacks,
       });
+      sourceEditor = localEditor;
     }
 
     // Wire the edit-toggle button (visible only when allowEdit is
@@ -2225,6 +2236,10 @@
       detachPanel: function (panel: any) { paneOwner?.detach(panel); },
       redockPanel: function (panel: any) { paneOwner?.redock(panel); },
       onSelect: function (name: any) { paneOwner?.selected(name); },
+      // Source sits beside the viewer panels in the Pop out menu while it is here.
+      extraDetachTargets: function () {
+        return localEditor && paneOwner && !remoteEditor ? [{ id: 'source', label: 'Source' }] : [];
+      },
       openModule: function (path: any, member?: any) {
         if (!path) return;
         path = window.FlatPPLWebBundles?.displayPath(path) || path;
@@ -2308,6 +2323,53 @@
         return (cur && cur.model) || null;
       }
     );
+    // The source editor in another window (pane breakout). The playground
+    // keeps calling sourceEditor; while the pane is away that is a stand-in
+    // forwarding to the source window, whose edits come back through the
+    // same callbacks the local editor uses.
+    const sourceWindow = {
+      detach(send: (type: string, body: any) => void) {
+        if (remoteEditor) return remoteEditor.state();
+        const path = window.FlatPPLWebRouter.parseHash().model || null;
+        const S = window.FlatPPLWebSurfaces;
+        const initial = {
+          text: localEditor.getSource(),
+          readOnly: !editEnabled || !lastModel || !!currentBundle?.binary,
+          language: S ? S.typeForPath(path) : 'flatppl',
+        };
+        const view = localEditor.getViewState ? localEditor.getViewState() : null;
+        remoteEditor = window.FlatPPLWebRemoteEditor.create({
+          send, initial, path: () => window.FlatPPLWebRouter.parseHash().model || null,
+        });
+        sourceEditor = remoteEditor;
+        localEditor.setReadOnly(true);
+        layout?.setSourceDetached(true);
+        return { ...remoteEditor.state(), view };
+      },
+      state() { return remoteEditor ? remoteEditor.state() : null; },
+      /** at: the window's revision of `text` ({ epoch, rev }). */
+      receiveEdit(text: string, path: string | null, at: any) {
+        // An edit typed for a file the playground no longer shows is dropped.
+        if (path && path !== window.FlatPPLWebRouter.parseHash().model) return;
+        if (remoteEditor && remoteEditor.receiveEdit(text, at)) editorCallbacks.onChange(text);
+      },
+      save() { handleSave(); },
+      setEdit(on: boolean) { setEditMode(on); },
+      resolve(text: string) { return editorCallbacks.lintBundle(text); },
+      redock(state: any) {
+        if (!remoteEditor) return;
+        // The window's last text, if it sent one; else what the stand-in holds.
+        if (state && typeof state.text === 'string') sourceWindow.receiveEdit(state.text, state.path ?? null, state);
+        const text = remoteEditor.getSource();
+        remoteEditor.destroy();
+        remoteEditor = null;
+        sourceEditor = localEditor;
+        localEditor.setSource(text);
+        if (state && state.view && localEditor.setViewState) localEditor.setViewState(state.view);
+        setEditMode(editEnabled);
+        layout?.setSourceDetached(false);
+      },
+    };
     const paneStatus = document.getElementById('pane-status');
     paneOwner = window.FlatPPLPaneOwner ? window.FlatPPLPaneOwner.install({
       controller: viewer,
@@ -2318,6 +2380,7 @@
         if (visible) showToast(msg);
         else if (paneStatus) paneStatus.textContent = msg;
       },
+      source: localEditor && window.FlatPPLWebRemoteEditor ? sourceWindow : undefined,
     }) : null;
 
     // The source editor handles its own click navigation:

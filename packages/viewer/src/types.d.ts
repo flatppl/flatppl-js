@@ -411,7 +411,10 @@ export interface HostAdapter {
   /** Move a panel into its own window. Its presence is the capability: the
    *  viewer shows the Pop out control only when the host defines it, so a
    *  host without it (VS Code) renders exactly as before. */
-  detachPanel?(panel: import('./panels').PanelId): void;
+  detachPanel?(panel: import('./panels').PanelId | string): void;
+  /** Host panes outside the viewer that the Pop out menu also lists, such
+   *  as the web playground's source editor. */
+  extraDetachTargets?(): { id: string; label: string }[];
   /** Bring a detached panel back; called when its toggle is clicked. */
   redockPanel?(panel: import('./panels').PanelId): void;
   /** A user gesture (graph tap, math click) changed the plotted binding.
