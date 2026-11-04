@@ -4338,7 +4338,18 @@ function resolveBijectionMeta(bij: any, bindings: any) {
   // closed-form constant — `fn(log(2.0))` is the canonical example).
   function fnBodyOf(bindingName: any, allowConst: any) {
     const b = bindings.get(bindingName);
-    if (!b || !b.ir || b.ir.kind !== 'call' || b.ir.op !== 'functionof') return null;
+    if (!b || !b.ir) return null;
+    // A fixed scalar value such as `log(2.0)` (§06: "a function or a
+    // scalar value") is the constant body itself.
+    // A lifted anon has no inferredType yet, so test the kinds it must not be.
+    const kind = b.inferredType?.kind;
+    if (allowConst && b.phase === 'fixed'
+        && !['fn', 'functionof', 'kernelof', 'bijection'].includes(b.type)
+        && kind !== 'function' && kind !== 'kernel' && kind !== 'measure'
+        && !(b.ir.kind === 'call' && b.ir.op === 'functionof')) {
+      return { body: b.ir, paramName: null };
+    }
+    if (b.ir.kind !== 'call' || b.ir.op !== 'functionof') return null;
     const params = b.ir.params || [];
     if (!b.ir.body) return null;
     if (params.length === 1) return { body: b.ir.body, paramName: params[0] };

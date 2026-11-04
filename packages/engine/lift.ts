@@ -1487,22 +1487,12 @@ function liftInlineSubexpressions(bindings: any) {
       // alone (undefined-variable diagnostics are the analyzer's job).
       if (!BUILTIN_FUNCTIONS.has(fArg.name)) return astArg;
       builtinSourceName = fArg.name;
-      fArg = {
-        type: 'CallExpr',
-        callee: makeIdent('fn', fArg.loc),
-        args: [{
-          type: 'CallExpr',
-          callee: makeIdent(fArg.name, fArg.loc),
-          args: [makeHole(fArg.loc)],
-          loc: fArg.loc,
-        }],
-        loc: fArg.loc,
-      };
+      fArg = builtinAsFn(fArg);
     } else {
-      // No further lifting for a non-Identifier, non-KeywordArg fArg
-      // beyond recursing into it — `visit` mutates in place and can
-      // never turn a CallExpr into a bare Identifier, so there is no
-      // shape left to special-case here.
+      // The hoisted callable becomes its own binding, so it takes the
+      // same rewrites as any binding RHS. An inline `bijection(...)`
+      // needs inlineBijectionLift to name its parts for the metadata.
+      fArg = inlineUserCall(fArg);
       visit(fArg);
     }
     const n = freshName();
@@ -1532,6 +1522,12 @@ function liftInlineSubexpressions(bindings: any) {
     for (let i = 0; i < 3; i++) {
       let a = astArg.args[i];
       if (a.type === 'KeywordArg') return astArg;
+      // Spec §06 writes `bijection(exp, log, identity)`: a bare builtin
+      // has no binding to resolve, so it takes the pushfwd desugaring.
+      if (a.type === 'Identifier' && !bindings.has(a.name) && !out.has(a.name)
+          && BUILTIN_FUNCTIONS.has(a.name)) {
+        a = builtinAsFn(a);
+      }
       if (a.type === 'Identifier') continue;
       // Scalar literal for logvolume slot is fine to keep inline.
       if (i === 2 && (a.type === 'NumberLiteral' || a.type === 'BoolLiteral')) continue;
@@ -3250,6 +3246,20 @@ function liftInlineSubexpressions(bindings: any) {
   }
   function makeHole(loc: any) {
     return { type: 'Hole', loc: loc || null };
+  }
+  // A bare builtin name `f` in callable position, as `fn(f(_))`.
+  function builtinAsFn(ident: any) {
+    return {
+      type: 'CallExpr',
+      callee: makeIdent('fn', ident.loc),
+      args: [{
+        type: 'CallExpr',
+        callee: makeIdent(ident.name, ident.loc),
+        args: [makeHole(ident.loc)],
+        loc: ident.loc,
+      }],
+      loc: ident.loc,
+    };
   }
   function makeFnHole(loc: any) {
     // `fn(_)` — identity-stub used as the bijection's forward / inverse.
