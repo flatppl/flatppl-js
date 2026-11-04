@@ -211,7 +211,9 @@ function planLatent(measureIR: any, ctx: any): LatentPlan {
     const n = (nVal && nVal.kind === 'lit') ? nVal.value : null;
     if (!Number.isInteger(n) || n <= 0) throw new Error('prior-transform: iid size must be a positive integer literal');
     const innerPlan = planLatent(inner, ctx);     // recurse — inner is a base dist (or truncate/pushfwd via later tasks)
-    if (innerPlan.count !== 1) throw new Error('prior-transform: iid inner measure must be scalar per element');
+    if (innerPlan.count !== 1 || typeof innerPlan.realiseVec === 'function') {
+      throw new Error('prior-transform: iid inner measure must be scalar per element');
+    }
     // A vector plan even at n = 1: iid(D, 1) is a length-1 vector (spec §06).
     return {
       count: n,

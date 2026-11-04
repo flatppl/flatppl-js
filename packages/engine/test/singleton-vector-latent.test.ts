@@ -69,6 +69,12 @@ test('prior transform realises iid(D, 3) and a pushfwd of it as 3-vectors', () =
   }
 });
 
+test('prior transform refuses iid of a length-1 vector measure as a non-scalar element', () => {
+  const { ctx } = ctxFor(model('iid(iid(Normal(0.0, 1.0), 1), 3)'), 10);
+  assert.throws(() => buildPriorTransform(ctx, ctx.derivations.posterior),
+    /iid inner measure must be scalar per element/);
+});
+
 test('mh and nested posteriors of a length-1 vector latent match the conjugate Normal', async () => {
   // Prior N(m, s²), one unit-variance observation at 0: posterior variance
   // v = 1/(1/s² + 1), mean v·m/s². IID: m = 1, s = 2. PUSH: m = 2, s = 4.
