@@ -50,7 +50,13 @@ function manualTimers() {
 
 /** Boot the real gallery over an inert editor and pane, then drive its router. */
 async function gallery({ editable = false, store, bundles, ephemeral, initial = { model: null }, sidebar = false,
-  manifest = { entries: [] }, localStorage = storage(), loadManifest, loadBundle, readBytes, decodeShare, encodeShare, timers } = {}) {
+  manifest = { entries: [] }, localStorage = storage(), loadManifest, loadBundle, readBytes, decodeShare, encodeShare, timers,
+  remoteSource = false } = {}) {
+  // remoteSource: the pane-breakout seam. A stand-in pane owner captures the
+  // app's source-window side, and detachSource() swaps the editor for the
+  // real remote-editor proxy; edits, Save and source() then go through it.
+  let sourceWindow = null, detached = false;
+  const sourceMessages = [];
   let boot, onChange, editorOptions, beforeUnload, source = '', download, readOnly = true, language, downloadName;
   let route = initial;
   const requests = [];
@@ -118,7 +124,15 @@ async function gallery({ editable = false, store, bundles, ephemeral, initial = 
     FlatPPLWebSurfaces: { typeForPath: fileTypes.typeForPath, createPaneController: () => ({
       update(text, target, opts) { renders.push({ text, target, path: opts?.path, opts }); },
     }) },
+    queueMicrotask,
   };
+  if (remoteSource) {
+    runSource('remote-editor', { window });
+    window.FlatPPLPaneOwner = { install(opts) {
+      sourceWindow = opts.source;
+      return { detach() {}, redock() {}, selected() {}, detached: () => [] };
+    } };
+  }
   const globals = { window, document, console: { error() {}, warn() {} },
     setTimeout: timers?.setTimeout || setTimeout, clearTimeout: timers?.clearTimeout || clearTimeout, Blob, TextDecoder, TextEncoder,
     URL: { createObjectURL(blob) { download = blob; return 'blob:test'; }, revokeObjectURL() {} },
@@ -128,16 +142,33 @@ async function gallery({ editable = false, store, bundles, ephemeral, initial = 
   if (decodeShare || encodeShare) vm.runInNewContext(await appWithShareCodec(), globals);
   else runSource('app', globals);
   await boot();
+  /** The revision a window in step with the stand-in gives its next edit. */
+  function nextRevision() { const { epoch, textRev } = sourceWindow.state(); return { epoch, textRev: textRev + 1 }; }
   return {
     requests, renders, document, elements,
-    source: () => source,
+    source: () => (detached ? sourceWindow.state().text : source),
     route: () => ({ ...route }),
     flush: () => new Promise(resolve => setImmediate(resolve)),
     readOnly: () => readOnly,
     language: () => language,
-    edit(text) { source = text; editorOptions.onChange(text); },
+    edit(text, path = route.model, at = detached ? nextRevision() : null) {
+      if (detached) { sourceWindow.receiveEdit(text, path, at); return; }
+      source = text; editorOptions.onChange(text);
+    },
     toggleEdit() { elements.get('edit-toggle').handlers.click(); },
-    save() { editorOptions.onSave(); },
+    save() { if (detached) sourceWindow.save(); else editorOptions.onSave(); },
+    /** Move the source editor to its own window; returns the handover. */
+    detachSource() {
+      assert.ok(sourceWindow, 'the app passed its source-window side to the pane owner');
+      detached = true;
+      return sourceWindow.detach((type, body) => sourceMessages.push([type, structuredClone(body)]));
+    },
+    nextRevision,
+    /** Bring the source editor back with the window's last text and view. */
+    redockSource(state) { detached = false; sourceWindow.redock(state); },
+    localSource: () => source,
+    status: () => elements.get('source-status').textContent,
+    sourceMessages,
     async download() { await elements.get('download-btn').handlers.click(); return download.text(); },
     async downloadBytes() { await elements.get('download-btn').handlers.click(); return new Uint8Array(await download.arrayBuffer()); },
     downloaded: async () => ({ name: downloadName, bytes: new Uint8Array(await download.arrayBuffer()) }),
@@ -506,6 +537,99 @@ test('a link remains inert through edits and target changes until Run', async ()
   assert.equal(resolutions, 1);
   assert.equal(g.renders.at(-1).text, 'x = 3');
   assert.equal(g.renders.at(-1).opts.preview, undefined);
+});
+
+// The source pane in its own window: the playground drives a stand-in editor
+// and the window's edits come back through receiveEdit. Every single-editor
+// contract (drafts, dirty marker, Save, the Run gate) must hold unchanged.
+test('a popped-out source keeps drafts and the dirty marker across navigation', async () => {
+  const g = await gallery({ editable: true, remoteSource: true, timers: manualTimers() });
+  const first = g.navigate({ model: 'example.flatppl' });
+  g.requests[0].resolve({ primarySource: 'x = 1', sources: {} });
+  await first;
+  g.toggleEdit();
+  const handover = g.detachSource();
+  assert.deepEqual([handover.text, handover.readOnly, handover.path], ['x = 1', false, 'example.flatppl']);
+  assert.equal(g.readOnly(), true, 'the hidden local editor takes no typing while the window owns the text');
+  g.edit('x = 42');
+  assert.equal(g.status(), 'Unsaved draft');
+  assert.equal(g.warnsOnUnload(), true);
+  const typedBeforeReload = g.nextRevision();
+  const away = g.navigate({ model: 'away.flatppl' });
+  g.requests[1].resolve({ primarySource: 'y = 2', sources: {} });
+  await away;
+  // An edit the window typed for the file it showed before is dropped.
+  g.edit('y = stale', 'example.flatppl');
+  assert.equal(g.source(), 'y = 2');
+  const back = g.navigate({ model: 'example.flatppl' });
+  g.requests[2].resolve({ primarySource: 'x = 1', sources: {} });
+  await back;
+  await g.flush();
+  assert.equal(g.source(), 'x = 42');
+  // An edit typed against the text the playground has since loaded again is dropped.
+  g.edit('x = stale', 'example.flatppl', typedBeforeReload);
+  assert.equal(g.source(), 'x = 42');
+  const sent = g.sourceMessages.filter(([type]) => type === 'state.source').at(-1)[1];
+  assert.deepEqual([sent.text, sent.path, sent.readOnly], ['x = 42', 'example.flatppl', false]);
+  g.edit('x = 1');
+  assert.equal(g.warnsOnUnload(), false);
+});
+
+test('Save from a popped-out source writes its text and clears the dirty marker', async () => {
+  const path = 'user/model.flatppl';
+  const bundles = bundleBoundary(true);
+  bundles.set(path, 'x = 1');
+  bundles.api.save = async bytes => { bundles.set(path, new TextDecoder().decode(bytes)); return path; };
+  const g = await gallery({ editable: true, remoteSource: true, bundles: bundles.api,
+    loadBundle: bundles.loadBundle, initial: { model: path }, timers: manualTimers() });
+  await g.navigate({ model: path });
+  g.toggleEdit();
+  g.detachSource();
+  g.edit('x = 2');
+  assert.equal(g.warnsOnUnload(), true);
+  g.save();
+  await g.flush();
+  assert.equal(bundles.source(path), 'x = 2');
+  assert.equal(g.warnsOnUnload(), false);
+  assert.equal(g.status(), 'Saved in this browser');
+});
+
+test('docking the source returns the window text to the local editor', async () => {
+  const g = await gallery({ editable: true, remoteSource: true, timers: manualTimers() });
+  const first = g.navigate({ model: 'example.flatppl' });
+  g.requests[0].resolve({ primarySource: 'x = 1', sources: {} });
+  await first;
+  g.toggleEdit();
+  g.detachSource();
+  g.edit('x = 5');
+  // The window's last text arrives with the dock, after its final keystroke.
+  g.redockSource({ text: 'x = 7', path: 'example.flatppl', view: null, ...g.nextRevision() });
+  assert.equal(g.localSource(), 'x = 7');
+  assert.equal(g.readOnly(), false);
+  assert.equal(g.warnsOnUnload(), true);
+});
+
+test('a popped-out source keeps a shared link inert until Run', async () => {
+  const bundles = bundleBoundary();
+  const timers = manualTimers();
+  let resolutions = 0;
+  const g = await gallery({ editable: true, remoteSource: true, bundles: bundles.api, timers,
+    decodeShare: async () => ({ archive: new TextEncoder().encode('x = ones(1000000000)'),
+      model: 'main.flatppl', target: 'x', link: 'snapshot' }),
+    readBytes: async (path, drafts = {}) => new TextEncoder().encode(drafts[path] ?? bundles.source(path)),
+    loadBundle: (...args) => { resolutions++; return bundles.loadBundle(...args); },
+  });
+  await g.navigate({ share: '~123' });
+  await g.flush();
+  g.toggleEdit();
+  g.detachSource();
+  g.edit('x = 3');
+  await timers.debounce();
+  assert.equal(resolutions, 0);
+  g.renders.at(-1).opts.run();
+  await g.flush();
+  assert.equal(resolutions, 1);
+  assert.equal(g.renders.at(-1).text, 'x = 3');
 });
 
 test('saving a shared preview preserves the Run gate', async () => {

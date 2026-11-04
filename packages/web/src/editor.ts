@@ -8,8 +8,8 @@
 // via Compartment reconfiguration.
 //
 // Exposes window.FlatPPLWebEditor.mountEditor(container, opts) →
-//   { setSource, getSource, setReadOnly, revealLine, replaceRange,
-//     destroy }
+//   { setSource, getSource, setReadOnly, setLanguage, revealLine,
+//     replaceRange, getViewState, setViewState, destroy }
 //
 // opts:
 //   initialSource (string, '')
@@ -17,8 +17,9 @@
 //                                     the gallery toggles to edit mode
 //                                     when the user flips the source-
 //                                     pane edit button.
-//   onChange(text) — fired on every doc change; gallery debounces
-//                    and re-renders the viewer.
+//   onChange(text, changes) — fired on every doc change but setSource;
+//                    gallery debounces and re-renders the viewer.
+//                    `changes` is the CodeMirror ChangeSet.
 //   onNavigate(name) — fired when the main cursor lands on an
 //                      identifier that resolves to a defined binding,
 //                      or when the user Ctrl/Cmd-clicks one.
@@ -468,7 +469,7 @@
     const docChangeListener = bundle.EditorView.updateListener.of(function (u: any) {
       if (suppressOnChange) return;
       if (u.docChanged && typeof opts.onChange === 'function') {
-        opts.onChange(u.state.doc.toString());
+        opts.onChange(u.state.doc.toString(), u.changes);
       }
       if ((u.selectionSet || u.docChanged)
           && !suppressNavigate
@@ -825,6 +826,25 @@
         } finally {
           suppressNavigate = false;
         }
+      },
+      /** Selection and scroll position, for moving the buffer to another
+       *  window (pane breakout). Undo history does not travel. */
+      getViewState: function () {
+        const sel = view.state.selection.main;
+        return { anchor: sel.anchor, head: sel.head, scrollTop: view.scrollDOM.scrollTop };
+      },
+      setViewState: function (state: any) {
+        if (!state) return;
+        const length = view.state.doc.length;
+        const clamp = (n: any) => Math.max(0, Math.min(length, n | 0));
+        suppressNavigate = true;
+        try {
+          view.dispatch({ selection: { anchor: clamp(state.anchor), head: clamp(state.head) } });
+        } finally {
+          suppressNavigate = false;
+        }
+        lastCursorBinding = bindingAtCursor();
+        if (typeof state.scrollTop === 'number') view.scrollDOM.scrollTop = state.scrollTop;
       },
       destroy: function () {
         if (themeObserver) themeObserver.disconnect();

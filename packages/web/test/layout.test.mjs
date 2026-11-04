@@ -5,7 +5,7 @@ import { stripTypeScriptTypes } from 'node:module';
 import vm from 'node:vm';
 
 /** Drive the real layout through its controls. Browser QA owns CSS and native input. */
-function workspace(compact = false) {
+function workspace(compact = false, opts = {}) {
   const elements = new Map();
   const saved = new Map();
   const document = {
@@ -18,6 +18,8 @@ function workspace(compact = false) {
   function element(id = '') {
     const el = {
       id, children: [], dataset: {}, style: {}, attributes: {}, handlers: {}, hidden: false, isConnected: true,
+      classList: { names: new Set(), toggle(name, on) { if (on) this.names.add(name); else this.names.delete(name); },
+        contains(name) { return this.names.has(name); } },
       clientWidth: 1200,
       addEventListener(name, fn) { this.handlers[name] = fn; },
       setAttribute(name, value) { this.attributes[name] = value; },
@@ -47,7 +49,7 @@ function workspace(compact = false) {
   };
   const file = new URL('../src/layout.ts', import.meta.url);
   vm.runInNewContext(stripTypeScriptTypes(readFileSync(file, 'utf8')), { window, document, console });
-  const layout = window.FlatPPLWebLayout.install({ toggleButton: elements.get('toggle-files') });
+  const layout = window.FlatPPLWebLayout.install({ toggleButton: elements.get('toggle-files'), ...opts });
   return {
     app, layout, document,
     get: id => elements.get(id),
@@ -116,4 +118,20 @@ test('compact controls preserve pane choices through the drawer, navigation, and
   w.layout.showPane('viewer');
   panes(w, false, true);
   assert.equal(w.document.activeElement, w.get('show-viewer-btn'));
+});
+
+test('a source pane in another window leaves the visualization, and the Source button docks it', () => {
+  let docks = 0;
+  const w = workspace(false, { onDockSource: () => docks++ });
+  w.layout.setSourceDetached(true);
+  assert.equal(w.get('source-pane').hidden, true);
+  assert.equal(w.get('viewer-pane').hidden, false);
+  assert.equal(w.get('show-source-btn').classList.contains('detached'), true);
+  w.layout.showPane('source');
+  assert.equal(w.get('source-pane').hidden, true);
+  w.click('show-source-btn');
+  assert.equal(docks, 1);
+  w.layout.setSourceDetached(false);
+  panes(w, true, true);
+  assert.equal(w.get('show-source-btn').classList.contains('detached'), false);
 });

@@ -54,6 +54,7 @@ interface Window {
   // Pane breakout: the session between the playground and detached panels.
   FlatPPLPaneSession?: any;
   FlatPPLPaneOwner?: any;
+  FlatPPLWebRemoteEditor?: any;
 }
 
 // Share-link dictionaries, embedded in the share worker by esbuild's binary loader.

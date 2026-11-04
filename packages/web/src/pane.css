@@ -43,3 +43,8 @@ body.pane-window {
 }
 /* One panel per window: its show/hide toggles would only empty the window. */
 body.pane-window #view-controls { display: none; }
+#pane-source-actions { display: inline-flex; gap: 8px; }
+#pane-source-actions[hidden], #pane-banner-download[hidden] { display: none; }
+#pane-edit[aria-pressed="true"] { background: var(--fp-active-bg); }
+/* The editor fills the window below the header. */
+body.pane-window #source-editor { flex: 1 1 auto; min-height: 0; height: auto; }

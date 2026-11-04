@@ -1,7 +1,7 @@
 // @flatppl/web — the playground window's side of the pane breakout.
 //
-// The user can move the graph, plots or math panel into its own browser
-// window and back. This window stays the owner: it holds the model, the
+// The user can move the source editor, or the graph, plots or math panel,
+// into its own browser window and back. This window stays the owner: it holds the model, the
 // router and the editor, and every other window is a replica that renders
 // one panel from the state sent here (pane-app.ts). Messages travel through
 // pane-session.ts.
@@ -26,10 +26,10 @@
 
 (function (globalScope: any) {
   const STORAGE_KEY = 'flatppl-pane-session-v1';
-  const PANES = ['graph', 'plot', 'math'] as const;
+  const PANES = ['source', 'graph', 'plot', 'math'] as const;
   type Pane = typeof PANES[number];
-  const LABEL: Record<Pane, string> = { graph: 'Graph', plot: 'Plots', math: 'Math' };
-  const PANEL_ID: Record<Pane, string> = { graph: 'graph-panel', plot: 'plot-panel', math: 'math-panel' };
+  const LABEL: Record<Pane, string> = { source: 'Source', graph: 'Graph', plot: 'Plots', math: 'Math' };
+  const PANEL_ID: Record<Pane, string> = { source: 'source-pane', graph: 'graph-panel', plot: 'plot-panel', math: 'math-panel' };
   const START_TIMEOUT_MS = 10000;
   // After a reload, how long recorded panel windows have to say hello. Longer
   // than their slow hello (5 s), which is the only way they reach this window
@@ -58,6 +58,10 @@
    *   navigate(model, target) — the router's navigateTo
    *   host          — the web host adapter (revealSourceLine, openModule, editSource, canPersist)
    *   announce(msg, visible?) — status for screen readers, visible when asked
+   *   source        — the source editor's side (app.ts): detach(send) swaps
+   *                   in a stand-in and returns the handover; redock(state),
+   *                   state(), receiveEdit(text, path, at), save(), setEdit(on),
+   *                   resolve(text) for the lint
    */
   function install(opts: any) {
     const S = globalScope.FlatPPLPaneSession;
@@ -100,6 +104,11 @@
 
     function sendState(type: string, body: any): void {
       if (session && !unloading) session.send(type, { ...body, rev: ++rev });
+    }
+
+    /** The source stand-in's channel to the source window. */
+    function sendSource(type: string, body: any): void {
+      if (entries.has('source')) sendState(type, body);
     }
 
     function ensureSession(): void {
@@ -151,7 +160,8 @@
     /** Open `pane` in a new window. Runs inside the user's click. */
     function detach(pane: Pane): void {
       const v = view();
-      if (!v || entries.has(pane)) return;
+      if (entries.has(pane)) return;
+      if (pane === 'source' ? !opts.source : !v) return;
       if (!sid) sid = S.randomId();
       const panel = doc.getElementById(PANEL_ID[pane]);
       const rect = panel ? panel.getBoundingClientRect() : { width: 640, height: 480 };
@@ -167,10 +177,13 @@
         return;
       }
       ensureSession();
-      const entry: Entry = { pane, state: 'starting', win, timer: null, panelState: v.snapshotPanel(pane),
+      // The source editor hands over its text and view; the playground keeps
+      // calling a stand-in that forwards to the new window.
+      const panelState = pane === 'source' ? { source: opts.source.detach(sendSource) } : v.snapshotPanel(pane);
+      const entry: Entry = { pane, state: 'starting', win, timer: null, panelState,
         handover: pane === 'plot' ? v.exportMeasures(null) : null, incoming: null, leavingState: null };
       entries.set(pane, entry);
-      v.setPanelPlacement(pane, 'detached');
+      if (pane !== 'source') v.setPanelPlacement(pane, 'detached');
       persist();
       sendState('state.placement', { placement: placement() });
       setTimer(entry, START_TIMEOUT_MS, () => {
@@ -203,7 +216,9 @@
       entries.delete(pane);
       if (session) session.unwatch('pane:' + pane);
       const v = view();
-      if (v) {
+      if (pane === 'source') {
+        opts.source.redock(state && state.source ? state.source : null);
+      } else if (v) {
         // The window's samples if it sent them back, else the ones that
         // never left (a window that did not start).
         if (pane === 'plot') v.importMeasures(e.incoming || e.handover || null);
@@ -242,7 +257,11 @@
         // A first hello gets the state taken at detach; a hello after a
         // reload gets what the window sent with its goodbye.
         const handover = e.handover || e.incoming;
-        const panelState = e.panelState || e.leavingState;
+        // The source window gets the stand-in's current text and revision,
+        // which may have moved since detach, and the last view it knows.
+        const panelState = pane === 'source'
+          ? { source: { ...opts.source.state(), view: (e.panelState || e.leavingState)?.source?.view ?? null } }
+          : e.panelState || e.leavingState;
         // Samples first: the replica parks them before the welcome renders.
         if (handover) session.send('pane.measures', handover, env.from);
         session.send('pane.welcome', { snapshot: snapshot(), panelState }, env.from);
@@ -290,6 +309,27 @@
           if (!body.silent) { try { globalScope.focus(); } catch (_) { /* the browser decides */ } }
           return;
         case 'intent.replaceRange': opts.host.editSource({ range: body.range || null, newText: body.newText }); return;
+        // The source window: typing, Save, the edit toggle, and the lint's
+        // bundle resolution all run here, where the drafts and stores live.
+        case 'intent.edit':
+          if (pane === 'source' && typeof body.text === 'string') opts.source.receiveEdit(body.text, body.path ?? null, body);
+          return;
+        case 'intent.save': if (pane === 'source') opts.source.save(); return;
+        case 'intent.setEdit':
+          if (pane !== 'source') return;
+          opts.source.setEdit(!!body.on);
+          sendState('state.settings', settings());
+          return;
+        case 'rpc.resolve': {
+          if (pane !== 'source') return;
+          const reply = (result: any) => { if (session && !unloading) session.send('rpc.result', { id: body.id, ...result }, env.from); };
+          Promise.resolve().then(() => opts.source.resolve(String(body.text ?? ''))).then(
+            (value: any) => {
+              try { reply({ ok: true, value: structuredClone(value) }); } catch (err: any) { reply({ ok: false, error: String(err && err.message || err) }); }
+            },
+            (err: any) => reply({ ok: false, error: String(err && err.message || err) }));
+          return;
+        }
         default: return;
       }
     }
@@ -302,7 +342,7 @@
       if (v && v !== placedHandle) {
         // A new viewer mount (first model, or back from another file type).
         placedHandle = v;
-        for (const p of entries.keys()) v.setPanelPlacement(p, 'detached');
+        for (const p of entries.keys()) if (p !== 'source') v.setPanelPlacement(p, 'detached');
       }
       o = o || {};
       const model = {
@@ -338,6 +378,7 @@
         setTimer(entry, RECONNECT_TIMEOUT_MS, () => finishRedock(p, null));
       }
       if (entries.size) ensureSession();
+      if (entries.has('source') && opts.source) opts.source.detach(sendSource);
     }
 
     restore();

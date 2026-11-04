@@ -1,17 +1,27 @@
 // @flatppl/web — a playground panel in its own window (pane.html).
 //
 // The playground window (pane-owner.ts) opened this window for one panel:
-// graph, plots or math. It renders that panel from the state the owner
-// sends, and turns its own gestures into requests to the owner, which keeps
-// the model, the router and the editor. Messages travel through
-// pane-session.ts.
+// the source editor, graph, plots or math. It renders that panel from the
+// state the owner sends, and turns its own gestures into requests to the
+// owner, which keeps the model, the router, the drafts and the stores.
+// Messages travel through pane-session.ts.
 //
-// Loaded as a plain <script> after the viewer bundle and pane-session.js.
+// The source window is where the user types while the editor is away: each
+// edit goes back to the owner, which runs it through the same change handler
+// as its own editor. If the owner reloads, the text typed here is kept and
+// sent back as a draft; if the owner closes, it can be downloaded.
+//
+// Loaded as a plain <script> after the viewer bundle, the editor and
+// pane-session.js.
 
 'use strict';
 
 (function (globalScope: any) {
-  const PANES: Record<string, string> = { graph: 'Graph', plot: 'Plots', math: 'Math' };
+  const PANES: Record<string, string> = { source: 'Source', graph: 'Graph', plot: 'Plots', math: 'Math' };
+  // An edit is sent at most this often; the last one always goes.
+  const EDIT_FLUSH_MS = 16;
+  // The lint waits this long for the owner to resolve the bundle.
+  const RPC_TIMEOUT_MS = 10000;
   const HELLO_RETRY_MS = 1000;
   const HELLO_GIVE_UP_MS = 10000;
   const OWNER_RETURN_MS = 3000;
@@ -37,11 +47,14 @@
     const heading = $('pane-title');
     const root = $('surface-root');
     function say(text: string): void { status.textContent = text; }
-    function showBanner(text: string, action?: { label: string; run: () => void }): void {
+    function showBanner(text: string, action?: { label: string; run: () => void }, download?: () => void): void {
       bannerText.textContent = text;
       const button = $('pane-banner-action');
       button.hidden = !action;
       if (action) { button.textContent = action.label; button.onclick = action.run; }
+      const save = $('pane-banner-download');
+      save.hidden = !download;
+      save.onclick = download || null;
       banner.hidden = false;
     }
 
@@ -108,10 +121,167 @@
       },
     };
 
-    const view = globalScope.FlatPPLViewer.mount(root, { host, panels: [pane] });
+    const isSource = pane === 'source';
+    const view = isSource ? null : globalScope.FlatPPLViewer.mount(root, { host, panels: [pane] });
+
+    // ---- the source editor (pane=source) ----
+    let editor: any = null;
+    let sourcePath: string | null = null;
+    let sourceLanguage: string | null = null;
+    let pendingEdit: { text: string; path: string | null } | null = null;
+    let editTimer: any = null;
+    // Text typed here when the owner unloads: kept until the reloaded owner
+    // shows the same file in edit mode, then sent back as a draft.
+    let pendingDraft: { path: string | null; text: string } | null = null;
+    // Revisions (see remote-editor.ts): the owner's epoch, the last revision
+    // sent, and each change made here since the owner's last ack, tagged with
+    // the revision that sends it.
+    let srcEpoch: string | null = null;
+    let srcRev = 0;
+    let changeLog: { rev: number; changes: any }[] = [];
+    let rpcId = 0;
+    const rpcs = new Map<number, { resolve: (v: any) => void; reject: (e: any) => void; timer: any }>();
+
+    function flushEdit(): void {
+      if (editTimer) { globalScope.clearTimeout(editTimer); editTimer = null; }
+      if (!pendingEdit) return;
+      const edit = pendingEdit;
+      pendingEdit = null;
+      srcRev++;
+      session.send('intent.edit', { ...edit, epoch: srcEpoch, textRev: srcRev }, 'owner');
+    }
+
+    function dropPendingEdit(): void {
+      pendingEdit = null;
+      if (editTimer) { globalScope.clearTimeout(editTimer); editTimer = null; }
+    }
+
+    /** Take the owner's text as the base of its epoch; what was typed
+     *  against an older epoch is gone. */
+    function adoptEpoch(st: any): void {
+      srcEpoch = st.epoch;
+      srcRev = st.textRev | 0;
+      changeLog = [];
+      dropPendingEdit();
+    }
+
+    /** Apply an owner edit whose range is relative to revision `textRev`. */
+    function applyReplace(body: any): void {
+      if (body.epoch !== srcEpoch) { console.warn('FlatPPL: source edit for another text dropped'); return; }
+      // Text typed at either end of the range stays outside it.
+      const insert = body.from === body.to;
+      let from = body.from, to = body.to;
+      for (const entry of changeLog) {
+        if (entry.rev <= body.textRev) continue;
+        from = entry.changes.mapPos(from, 1);
+        to = entry.changes.mapPos(to, insert ? 1 : -1);
+      }
+      editor.replaceRange(from, Math.max(from, to), body.text);
+    }
+
+    function rpcResolve(text: string): Promise<any> {
+      const id = ++rpcId;
+      return new Promise((resolve, reject) => {
+        // Without an answer the lint falls back to the standalone parse.
+        const timer = globalScope.setTimeout(() => { rpcs.delete(id); resolve(null); }, RPC_TIMEOUT_MS);
+        rpcs.set(id, { resolve, reject, timer });
+        session.send('rpc.resolve', { id, text }, 'owner');
+      });
+    }
+
+    if (isSource) {
+      // The same id as the playground's editor, so its stylesheet applies.
+      const editorHost = doc.createElement('div');
+      editorHost.id = 'source-editor';
+      root.appendChild(editorHost);
+      editor = globalScope.FlatPPLWebEditor.mountEditor(editorHost, {
+        initialSource: '',
+        initialReadOnly: true,
+        onChange(text: string, changes: any) {
+          changeLog.push({ rev: srcRev + 1, changes });
+          pendingEdit = { text, path: sourcePath };
+          if (!editTimer) editTimer = globalScope.setTimeout(flushEdit, EDIT_FLUSH_MS);
+        },
+        onSave() { flushEdit(); session.send('intent.save', {}, 'owner'); },
+        lintBundle: rpcResolve,
+        onNavigate(name: string) {
+          lastFocus = name || null;
+          session.send('intent.focus', { target: lastFocus }, 'owner');
+        },
+      });
+      $('pane-source-actions').hidden = false;
+      $('pane-edit').addEventListener('click', () => {
+        session.send('intent.setEdit', { on: !settings.editEnabled }, 'owner');
+      });
+      $('pane-save').addEventListener('click', () => { flushEdit(); session.send('intent.save', {}, 'owner'); });
+    }
+
+    function updateSourceActions(): void {
+      if (!isSource) return;
+      $('pane-edit').setAttribute('aria-pressed', settings.editEnabled ? 'true' : 'false');
+      $('pane-save').hidden = !settings.editEnabled;
+    }
+
+    /** Show what the owner's editor holds, unless this window keeps typed text
+     *  across an owner reload (see pendingDraft). */
+    function applySourceState(st: any): void {
+      if (!editor || !st) return;
+      if (pendingDraft && st.path === pendingDraft.path) {
+        // Still loading, or in view mode: keep showing what was typed here.
+        if (st.readOnly) { editor.setReadOnly(true); return; }
+        const own = pendingDraft.text;
+        pendingDraft = null;
+        setLanguage(st.language);
+        editor.setReadOnly(false);
+        if (editor.getSource() !== own) editor.setSource(own);
+        sourcePath = st.path;
+        adoptEpoch(st);
+        if (st.text !== own) {
+          // The draft is one edit on top of the owner's text.
+          const base = globalScope.FlatPPLEditorBundle.EditorState.create({ doc: st.text });
+          changeLog.push({ rev: srcRev + 1, changes: base.changes({ from: 0, to: st.text.length, insert: own }) });
+          pendingEdit = { text: own, path: st.path };
+          flushEdit();
+        }
+        return;
+      }
+      if (pendingDraft && st.path && st.path !== pendingDraft.path) pendingDraft = null;
+      sourcePath = st.path ?? sourcePath;
+      // Within an epoch this window's text is newer than the owner's mirror.
+      if (st.epoch !== srcEpoch) {
+        adoptEpoch(st);
+        if (st.text !== editor.getSource()) editor.setSource(st.text);
+      }
+      setLanguage(st.language);
+      editor.setReadOnly(!!st.readOnly);
+      retitle(null);
+    }
+
+    function setLanguage(language: string | null | undefined): void {
+      if (!language || language === sourceLanguage) return;
+      sourceLanguage = language;
+      editor.setLanguage(language);
+    }
+
+    function sourceSnapshot(): any {
+      return { source: { text: editor.getSource(), view: editor.getViewState(), path: sourcePath, epoch: srcEpoch, textRev: srcRev } };
+    }
+
+    function downloadSource(): void {
+      const name = (sourcePath || 'model.flatppl').split('/').pop() || 'model.flatppl';
+      const url = globalScope.URL.createObjectURL(new globalScope.Blob([editor.getSource()], { type: 'text/plain' }));
+      const a = doc.createElement('a');
+      a.href = url;
+      a.download = name;
+      doc.body.appendChild(a);
+      a.click();
+      a.remove();
+      globalScope.setTimeout(() => globalScope.URL.revokeObjectURL(url), 1000);
+    }
 
     function retitle(binding?: string | null): void {
-      const model = lastModel && lastModel.path ? lastModel.path.split('/').pop() : null;
+      const path = isSource ? sourcePath : lastModel && lastModel.path;
+      const model = path ? path.split('/').pop() : null;
       doc.title = [label, model && (model + (binding ? ' / ' + binding : ''))].filter(Boolean).join(' — ') + ' — FlatPPL';
     }
 
@@ -126,6 +296,8 @@
     function applyModel(model: any, focus: string | null, pushHistory = false): void {
       lastModel = model;
       lastFocus = focus;
+      // The source window follows the owner's editor (state.source), not the model.
+      if (isSource) return;
       if (!model || model.type !== 'flatppl' || model.preview) {
         say(model && model.preview
           ? 'Run the shared preview in the main window to see it here.'
@@ -140,6 +312,7 @@
     function applySettings(next: any): void {
       settings = next || settings;
       if (settings.theme) doc.documentElement.dataset.theme = settings.theme;
+      updateSourceActions();
     }
 
     function welcome(env: any): void {
@@ -153,17 +326,24 @@
       tracker.reset();
       tracker.accept({ epoch: env.epoch, body: { rev: snap.rev || 0 } });
       applySettings(snap.settings);
+      if (isSource) {
+        lastModel = snap.model || lastModel;
+        lastFocus = snap.focus ?? null;
+        const st = body.panelState && body.panelState.source;
+        applySourceState(st);
+        if (st && st.view) editor.setViewState(st.view);
+      }
       // Plot settings apply before the model renders, so parked samples match.
       if (pane === 'plot') {
         view.importMeasures(parkedMeasures);
         parkedMeasures = null;
         if (body.panelState) view.restorePanel('plot', body.panelState);
       }
-      if (snap.model) applyModel(snap.model, snap.focus ?? null);
-      if (pane !== 'plot' && body.panelState && snap.model) {
+      if (snap.model && !isSource) applyModel(snap.model, snap.focus ?? null);
+      if (!isSource && pane !== 'plot' && body.panelState && snap.model) {
         try { view.restorePanel(pane, body.panelState); } catch (err) { console.warn('FlatPPL: panel state not restored', err); }
       }
-      if (snap.select) { lastSelect = snap.select; view.select(snap.select); }
+      if (snap.select && view) { lastSelect = snap.select; view.select(snap.select); }
       welcomed = true;
       banner.hidden = true;
       say('Connected to the main window.');
@@ -177,7 +357,16 @@
       if (env.type === 'owner.hello') { ownerReturned(); sayHello(); return; }
       if (env.type === 'pane.welcome') { ownerReturned(); welcome(env); return; }
       if (env.type === 'pane.measures') {
+        if (!view) return;
         if (welcomed) view.importMeasures(body); else parkedMeasures = body;
+        return;
+      }
+      if (env.type === 'rpc.result') {
+        const call = rpcs.get(body.id);
+        if (!call) return;
+        rpcs.delete(body.id);
+        globalScope.clearTimeout(call.timer);
+        if (body.ok) call.resolve(body.value); else call.reject(new Error(body.error || 'bundle resolution failed'));
         return;
       }
       if (env.type === 'pane.redock') { leave(); return; }
@@ -197,9 +386,15 @@
           lastSelect = null;
           return;
         case 'state.select':
-          if ((body.binding ?? null) !== lastSelect) { lastSelect = body.binding ?? null; view.select(lastSelect); }
+          if (view && (body.binding ?? null) !== lastSelect) { lastSelect = body.binding ?? null; view.select(lastSelect); }
           return;
         case 'state.settings': applySettings(body); return;
+        case 'state.source': applySourceState(body); return;
+        case 'state.sourceReveal': if (editor) editor.revealLine(body.line, { silent: !!body.silent }); return;
+        case 'state.sourceReplace': if (editor) applyReplace(body); return;
+        case 'state.sourceAck':
+          if (body.epoch === srcEpoch) changeLog = changeLog.filter((entry) => entry.rev > body.textRev);
+          return;
         default: return;
       }
     }
@@ -224,8 +419,9 @@
       if (leaving) return;
       leaving = true;
       stopSlowHello();
+      if (isSource) flushEdit();
       if (pane === 'plot') session.send('pane.measures', view.exportMeasures(null), 'owner');
-      session.send('pane.panelState', { pane, state: view.snapshotPanel(pane) }, 'owner');
+      session.send('pane.panelState', { pane, state: isSource ? sourceSnapshot() : view.snapshotPanel(pane) }, 'owner');
       globalScope.close();
       // A window the user opened by hand cannot close itself.
       globalScope.setTimeout(() => showBanner(label + ' is back in the main window. You can close this window.'), 500);
@@ -237,6 +433,11 @@
     function ownerLeft(): void {
       say('Reconnecting to the main window…');
       welcomed = false;
+      // Keep what was typed here; the reloaded owner gets it back as a draft.
+      if (editor && settings.editEnabled && !pendingDraft) {
+        flushEdit();
+        pendingDraft = { path: sourcePath, text: editor.getSource() };
+      }
       if (ownerTimer) globalScope.clearTimeout(ownerTimer);
       ownerTimer = globalScope.setTimeout(ownerGone, OWNER_RETURN_MS);
       // The first hello waits one retry, so it reaches the next page load,
@@ -276,7 +477,7 @@
       showBanner('The main playground window is closed.', {
         label: 'Open playground here',
         run: () => { globalScope.location.href = 'index.html' + (path ? '#/files/' + encodeURI(path) + target : ''); },
-      });
+      }, isSource ? downloadSource : undefined);
       say('The main playground window is closed.');
       stopSlowHello();
       slowHelloTimer = globalScope.setInterval(sayHello, SLOW_HELLO_MS);
@@ -293,8 +494,9 @@
     globalScope.addEventListener('pagehide', () => {
       stopSlowHello();
       if (leaving) return;
+      if (isSource) flushEdit();
       if (pane === 'plot') session.send('pane.measures', view.exportMeasures(null), 'owner');
-      session.send('pane.bye', { reason: 'close', state: view.snapshotPanel(pane) }, 'owner');
+      session.send('pane.bye', { reason: 'close', state: isSource ? sourceSnapshot() : view.snapshotPanel(pane) }, 'owner');
     });
 
     // Chromium sets window.opener to null once the opener closes, so keep the
@@ -312,7 +514,7 @@
     startHello(HELLO_GIVE_UP_MS);
     heading.focus();
 
-    globalScope.FlatPPLPane = { pane, view, session };
+    globalScope.FlatPPLPane = { pane, view, editor, session };
   }
 
   if (doc.readyState === 'loading') doc.addEventListener('DOMContentLoaded', boot);

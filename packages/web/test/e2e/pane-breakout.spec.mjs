@@ -390,3 +390,142 @@ test('a window that never starts docks the plots back with their samples', async
     .toBe('adopted');
   await popup.close();
 });
+
+// ---- the source editor in its own window ----
+
+/** Turn on edit mode in the main window, then pop the source editor out. */
+async function popOutSource(page) {
+  if ((await page.locator('#edit-toggle').getAttribute('aria-pressed')) !== 'true') await page.click('#edit-toggle');
+  await expect(page.locator('#edit-toggle')).toHaveAttribute('aria-pressed', 'true');
+  await page.click('#detach-btn');
+  const [popup] = await Promise.all([
+    page.waitForEvent('popup'),
+    page.click('#detach-menu [data-host-pane="source"]'),
+  ]);
+  await popup.waitForLoadState();
+  await expect(popup.locator('#pane-status')).toHaveText('Connected to the main window.');
+  await expect(popup.locator('#source-editor .cm-content')).toContainText('sigma_sq ~ InverseGamma');
+  return popup;
+}
+
+const editorText = (popup) => popup.evaluate(() => window.FlatPPLPane.editor.getSource());
+/** The main window's text, as Export writes it. The button sits in the
+ *  closed file panel. */
+async function mainText(page) {
+  const [download] = await Promise.all([page.waitForEvent('download'),
+    page.evaluate(() => document.getElementById('download-btn').click())]);
+  const { readFile } = await import('node:fs/promises');
+  return readFile(await download.path(), 'utf8');
+}
+const mainStatus = (page) => page.evaluate(() => document.getElementById('source-status').textContent);
+const mainGraphNodes = (page) => page.evaluate(() =>
+  document.getElementById('cy')._cyreg.cy.nodes().map((n) => n.id()).filter((id) => !id.includes(':')).sort());
+
+/** Replace the whole buffer by typing, as a user does. Focus, not a click:
+ *  a click would put the caret on a binding and refocus the graph. */
+async function typeSource(popup, text) {
+  await popup.locator('#source-editor .cm-content').focus();
+  await popup.keyboard.press('ControlOrMeta+a');
+  await popup.keyboard.insertText(text);
+}
+
+test('the source editor pops out, and typing there updates the main window', async ({ page }) => {
+  await openModel(page);
+  const popup = await popOutSource(page);
+  await expect(page.locator('#source-pane')).toBeHidden();
+  await expect(page.locator('#show-source-btn')).toHaveClass(/detached/);
+  await typeSource(popup, 'a = 1.5\nsigma = a + 1\n');
+  await expect.poll(() => mainGraphNodes(page)).toEqual(['a', 'sigma']);
+  await expect.poll(() => mainStatus(page)).toBe('Unsaved draft');
+});
+
+test('Save in the source window saves the draft in the main window', async ({ page }) => {
+  // Saving an example asks for a name for the copy; take the suggestion.
+  page.on('dialog', (dialog) => dialog.accept(dialog.type() === 'prompt' ? dialog.defaultValue() : undefined));
+  await openModel(page);
+  const popup = await popOutSource(page);
+  await typeSource(popup, 'a = 2\nsigma = a\n');
+  await expect.poll(() => mainStatus(page)).toBe('Unsaved draft');
+  await popup.keyboard.press('ControlOrMeta+s');
+  await expect.poll(() => page.evaluate(() => location.hash)).toContain('user/');
+  await expect.poll(() => mainStatus(page)).toBe('Saved in this browser');
+  expect(await editorText(popup)).toBe('a = 2\nsigma = a\n');
+});
+
+test('docking the source editor brings back its text and caret', async ({ page }) => {
+  await openModel(page);
+  const popup = await popOutSource(page);
+  await typeSource(popup, 'a = 3\nsigma = a\n');
+  await popup.evaluate(() => window.FlatPPLPane.editor.setViewState({ anchor: 4, head: 4, scrollTop: 0 }));
+  await dockFrom(popup);
+  await expect(page.locator('#source-pane')).toBeVisible();
+  await expect(page.locator('#source-editor .cm-content')).toContainText('a = 3');
+  // Typing in the docked editor lands at the caret the source window had.
+  await page.locator('#source-editor .cm-content').focus();
+  await page.keyboard.insertText('X');
+  await expect(page.locator('#source-editor .cm-content')).toContainText('a = X3');
+  await expect.poll(() => mainStatus(page)).toBe('Unsaved draft');
+});
+
+test('a reload of the main window turns the source window\'s text into a draft', async ({ page }) => {
+  page.on('dialog', (dialog) => dialog.accept());
+  await openModel(page);
+  const popup = await popOutSource(page);
+  await typeSource(popup, 'a = 4\nsigma = a\n');
+  await expect.poll(() => mainStatus(page)).toBe('Unsaved draft');
+  await page.reload();
+  await expect(page.locator('#cy canvas').first()).toBeAttached();
+  await expect(popup.locator('#pane-status')).toHaveText('Connected to the main window.');
+  await expect.poll(() => mainStatus(page)).toBe('Unsaved draft');
+  expect(await editorText(popup)).toBe('a = 4\nsigma = a\n');
+  await expect.poll(() => mainGraphNodes(page)).toEqual(['a', 'sigma']);
+});
+
+test('when the main window closes, the source window offers its text as a download', async ({ page }) => {
+  page.on('dialog', (dialog) => dialog.accept());
+  await openModel(page);
+  const popup = await popOutSource(page);
+  await typeSource(popup, 'a = 5\nsigma = a\n');
+  await expect.poll(() => mainStatus(page)).toBe('Unsaved draft');
+  await page.close({ runBeforeUnload: false });
+  await expect(popup.locator('#pane-banner-text')).toHaveText('The main playground window is closed.');
+  const [download] = await Promise.all([popup.waitForEvent('download'), popup.click('#pane-banner-download')]);
+  expect(download.suggestedFilename()).toBe('linear-regression.flatppl');
+  const path = await download.path();
+  const { readFile } = await import('node:fs/promises');
+  expect(await readFile(path, 'utf8')).toBe('a = 5\nsigma = a\n');
+});
+
+test('an owner edit lands where it was aimed while typing in the source window is in flight', async ({ page }) => {
+  await openModel(page);
+  const popup = await popOutSource(page);
+  const original = await editorText(popup);
+  const lines = original.split('\n');
+  const line = lines.findIndex((l) => l.startsWith('L_input = '));
+  const preset = 'L_input = (alpha = 0.6, beta = 2.34, sigma = 0.11)';
+  // Hold the source window's edits, so the main window's text lags it.
+  await popup.evaluate(() => {
+    const session = window.FlatPPLPane.session;
+    const send = session.send.bind(session);
+    const held = [];
+    session.send = (type, body, to) => (type === 'intent.edit' ? held.push([type, body, to]) : send(type, body, to));
+    window.heldEdits = held;
+    window.releaseEdits = () => { session.send = send; for (const message of held) send(...message); };
+  });
+  await popup.locator('#source-editor .cm-content').focus();
+  await popup.keyboard.press('ControlOrMeta+Home');
+  await popup.keyboard.insertText('% note\n');
+  await expect.poll(() => popup.evaluate(() => window.heldEdits.length)).toBeGreaterThan(0);
+  // A preset persist: the same message a plots window sends, and the main
+  // window turns it into editSource against the text it has.
+  await popup.evaluate(({ line, length, newText }) => window.FlatPPLPane.session.send('intent.replaceRange',
+    { range: { start: { line, col: 0 }, end: { line, col: length } }, newText }, 'owner'),
+  { line, length: lines[line].length, newText: preset });
+  await expect.poll(() => editorText(popup)).toContain(preset);
+  await popup.evaluate(() => window.releaseEdits());
+  lines[line] = preset;
+  const expected = '% note\n' + lines.join('\n');
+  await expect.poll(() => editorText(popup)).toBe(expected);
+  await expect.poll(() => mainText(page)).toBe(expected);
+  await expect.poll(() => mainStatus(page)).toBe('Unsaved draft');
+});

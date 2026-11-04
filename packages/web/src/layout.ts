@@ -52,7 +52,7 @@
   }
 
   /** Own the workspace geometry and focus lifecycle, independent of file routing. */
-  function install(opts?: { toggleButton?: HTMLElement | null }) {
+  function install(opts?: { toggleButton?: HTMLElement | null; onDockSource?: () => void }) {
     const app = document.getElementById('app');
     const filesPane = document.getElementById('files-pane');
     const sourcePane = document.getElementById('source-pane');
@@ -72,6 +72,10 @@
     const state = loadState();
     let compact = media.matches;
     let focusedPane: MainPane | null = compact ? 'source' : null;
+    // Pane breakout: the source editor lives in another window, so only the
+    // visualization shows here, and the Source button brings the editor back.
+    let sourceDetached = false;
+    const effective = (): MainPane | null => (sourceDetached ? 'viewer' : focusedPane);
     let drawerOpen = false;
     let drawerOpener: HTMLElement | null = null;
     let finishResize: (() => void) | null = null;
@@ -94,7 +98,7 @@
       el.title = 'Drag or use Left and Right arrow keys to resize';
       el.addEventListener('pointerdown', (ev) => startResize(el, which, ev));
       el.addEventListener('keydown', (ev) => {
-        if (compact || (which === 'source-viewer' && focusedPane)) return;
+        if (compact || (which === 'source-viewer' && effective())) return;
         const { filesWidth, area, maxFiles } = measure();
         const current = which === 'files-source' ? filesWidth : sourceWidth(area);
         const min = which === 'files-source' ? MIN_FILES_WIDTH : MIN_PANE_PX;
@@ -117,10 +121,10 @@
     function measure() {
       const style = globalScope.getComputedStyle(app);
       const width = app!.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-      const mainMinimum = focusedPane ? MIN_PANE_PX : MIN_PANE_PX * 2 + HANDLE_PX;
+      const mainMinimum = effective() ? MIN_PANE_PX : MIN_PANE_PX * 2 + HANDLE_PX;
       const maxFiles = Math.max(MIN_FILES_WIDTH, Math.min(MAX_FILES_WIDTH, width - mainMinimum - HANDLE_PX));
       const filesWidth = state.collapsed ? 0 : clamp(state.filesWidth, MIN_FILES_WIDTH, maxFiles);
-      const area = width - (state.collapsed ? 0 : filesWidth + HANDLE_PX) - (focusedPane ? 0 : HANDLE_PX);
+      const area = width - (state.collapsed ? 0 : filesWidth + HANDLE_PX) - (effective() ? 0 : HANDLE_PX);
       return { filesWidth, area, maxFiles };
     }
 
@@ -132,18 +136,18 @@
     function applyGrid() {
       const { filesWidth, area, maxFiles } = measure();
       const sourcePx = sourceWidth(area);
-      const sourcePart = focusedPane === 'viewer' ? '0px' : focusedPane === 'source' ? '1fr' : sourcePx + 'fr';
-      const viewerPart = focusedPane === 'source' ? '0px' : focusedPane === 'viewer' ? '1fr' : (area - sourcePx) + 'fr';
+      const sourcePart = effective() === 'viewer' ? '0px' : effective() === 'source' ? '1fr' : sourcePx + 'fr';
+      const viewerPart = effective() === 'source' ? '0px' : effective() === 'viewer' ? '1fr' : (area - sourcePx) + 'fr';
       app!.style.gridTemplateColumns = compact ? 'minmax(0, 1fr)'
-        : `${filesWidth}px ${state.collapsed ? 0 : HANDLE_PX}px minmax(0, ${sourcePart}) ${focusedPane ? 0 : HANDLE_PX}px minmax(0, ${viewerPart})`;
+        : `${filesWidth}px ${state.collapsed ? 0 : HANDLE_PX}px minmax(0, ${sourcePart}) ${effective() ? 0 : HANDLE_PX}px minmax(0, ${viewerPart})`;
       app!.dataset.layout = compact ? 'compact' : 'wide';
-      app!.dataset.mainPane = focusedPane || 'split';
+      app!.dataset.mainPane = effective() || 'split';
       filesPane!.hidden = compact ? !drawerOpen : state.collapsed;
-      sourcePane!.hidden = focusedPane === 'viewer';
+      sourcePane!.hidden = effective() === 'viewer';
       if (sourceToolbar) sourceToolbar.hidden = sourcePane!.hidden;
-      viewerPane!.hidden = focusedPane === 'source';
+      viewerPane!.hidden = effective() === 'source';
       handleFS.hidden = compact || state.collapsed;
-      handleSV.hidden = compact || focusedPane !== null;
+      handleSV.hidden = compact || effective() !== null;
       if (backdrop) backdrop.hidden = !compact || !drawerOpen;
       if (compact && drawerOpen) {
         filesPane!.setAttribute('role', 'dialog');
@@ -161,10 +165,14 @@
       if (toggleButton) toggleButton.title = filesVisible ? 'Hide file list' : 'Show file list';
       sourceButton?.setAttribute('aria-pressed', String(!sourcePane!.hidden));
       viewerButton?.setAttribute('aria-pressed', String(!viewerPane!.hidden));
-      if (sourceButton) sourceButton.title = sourcePane!.hidden ? 'Show Source'
-        : focusedPane ? 'Switch to Visualization' : 'Hide Source';
+      if (sourceButton) sourceButton.title = sourceDetached ? 'Source is in a separate window. Select to return it here.'
+        : sourcePane!.hidden ? 'Show Source'
+        : effective() ? 'Switch to Visualization' : 'Hide Source';
+      // Shown, in another window.
+      if (sourceDetached) sourceButton?.setAttribute('aria-pressed', 'true');
+      sourceButton?.classList.toggle('detached', sourceDetached);
       if (viewerButton) viewerButton.title = viewerPane!.hidden ? 'Show Visualization'
-        : focusedPane ? 'Switch to Source' : 'Hide Visualization';
+        : effective() ? 'Switch to Source' : 'Hide Visualization';
       if (!handleFS.hidden) setRange(handleFS, MIN_FILES_WIDTH, maxFiles, filesWidth, 'Files');
       if (!handleSV.hidden) setRange(handleSV, MIN_PANE_PX, area - MIN_PANE_PX, sourcePx, 'Source');
     }
@@ -261,6 +269,7 @@
 
     /** Reveal cross-pane navigation targets without changing an existing split view. */
     function showPane(pane: MainPane) {
+      if (sourceDetached && pane === 'source') return;
       const otherPane = pane === 'source' ? viewerPane : sourcePane;
       const moveFocus = focusedPane !== null && (otherPane!.contains(document.activeElement)
         || (pane === 'viewer' && sourceToolbar?.contains(document.activeElement)));
@@ -272,6 +281,10 @@
 
     /** Hiding the sole visible pane switches to its peer, so the workspace stays usable. */
     function togglePane(pane: MainPane) {
+      if (sourceDetached) {
+        if (pane === 'source') opts?.onDockSource?.();
+        return;
+      }
       finishResize?.();
       const other = pane === 'source' ? 'viewer' : 'source';
       focusedPane = focusedPane === other ? null : other;
@@ -312,6 +325,7 @@
 
     return {
       toggleFiles, revealFiles, closeFiles, showPane,
+      setSourceDetached(on: boolean) { sourceDetached = !!on; finishResize?.(); applyGrid(); },
       isCollapsed: () => compact ? !drawerOpen : state.collapsed,
     };
   }
