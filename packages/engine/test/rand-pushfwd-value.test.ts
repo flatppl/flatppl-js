@@ -140,19 +140,37 @@ y ~ Y
   }
 });
 
-test('prior transform refuses a lifted MvNormal rather than applying the identity stub', () => {
+test('prior transform applies the registry map of a lifted MvNormal, not the identity stub', () => {
+  // T(u) = mu + cholesky(C)·Φ⁻¹(u); scipy 1.18 at u = (Φ(1), 0.3).
   const { ctxFor } = require('./_ctx-factory.ts');
   const { buildPriorTransform } = require('../prior-transform.ts');
   const { ctx } = ctxFor(`
-x ~ MvNormal([5.0], rowstack([[4.0]]))
+x ~ MvNormal([1.0, -2.0], rowstack([[2.0, -0.6], [-0.6, 0.5]]))
 prior = lawof(record(x = x))
 y ~ Normal(x[1], 1.0)
 K = kernelof(record(y = y), x = x)
 L = likelihoodof(K, record(y = 0.0))
 posterior = bayesupdate(L, prior)
 `, 100);
-  assert.throws(() => buildPriorTransform(ctx, ctx.derivations['posterior'])
-    .transform(new Float64Array([0.5])), /registry bijection/);
+  const x = buildPriorTransform(ctx, ctx.derivations['posterior'])
+    .transform(Float64Array.of(0.8413447460685429, 0.3)).x;
+  const want = [2.41421356, -2.7209098];
+  for (let i = 0; i < 2; i++) assert.ok(Math.abs(x[i] - want[i]) < 1e-7, `x[${i}] = ${x[i]}`);
+
+  // A covariance that reads an earlier latent: s = ln 2 at u = ½, x = 1 + √(ln 2).
+  const { ctx: ctx1 } = ctxFor(`
+s ~ Exponential(1.0)
+x ~ MvNormal([1.0], rowstack([[s]]))
+prior = lawof(record(s = s, x = x))
+y ~ Normal(x[1], 1.0)
+K = kernelof(record(y = y), s = s, x = x)
+L = likelihoodof(K, record(y = 0.0))
+posterior = bayesupdate(L, prior)
+`, 100);
+  const x1 = buildPriorTransform(ctx1, ctx1.derivations['posterior'])
+    .transform(Float64Array.of(0.5, 0.8413447460685429)).x;
+  assert.equal(x1.length, 1);
+  assert.ok(Math.abs(x1[0] - (1 + Math.sqrt(Math.LN2))) < 1e-12, `x[0] = ${x1[0]}`);
 });
 
 test('expanded registry pushfwd IR carries no placeholder forward map', () => {
