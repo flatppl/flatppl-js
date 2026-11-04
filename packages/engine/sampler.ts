@@ -4814,5 +4814,6 @@ module.exports = {
     lookupDistribution,
     resolveConst,
     _broadcastApply,
+    registryForward: _registryForward,
   },
 };

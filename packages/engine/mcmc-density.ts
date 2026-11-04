@@ -314,7 +314,7 @@ function evaluateDerivedBindings(
 // Scalar latents go into refArrays as Float64Array([v]) — the density walker
 // does refArrays[k][i] at atom i=0 and puts it in callEnv[k].
 //
-// Vector latents (Float64Array or Array with length > 1) CANNOT go into
+// Vector latents (Float64Array or Array, of any length) CANNOT go into
 // refArrays: the walker would do refArrays[k][0] and get a single scalar,
 // losing the vector.  Instead they are injected directly into baseEnv
 // (additionalEnv) by buildEnv so the walker finds the full array for indexing
@@ -328,14 +328,9 @@ function pointToRefArrays(
   for (const [k, v] of Object.entries(pt)) {
     if (typeof v === 'number') {
       refArrays[k] = new Float64Array([v]);
-    } else if (v instanceof Float64Array) {
-      if (v.length === 1) {
-        refArrays[k] = v;
-      }
-    } else if (Array.isArray(v)) {
-      if (v.length === 1) {
-        refArrays[k] = new Float64Array([+(v as any)[0]]);
-      }
+    } else if (v instanceof Float64Array || Array.isArray(v)) {
+      // A vector of any length, a length-1 one included (spec §03): it stays in env.
+      continue;
     } else if (v && (v as any).data instanceof Float64Array && Array.isArray((v as any).shape)) {
       // Multi-axis (matrix) latent — a Value {shape,data}, e.g. a [G,N] block
       // `p ~ beta_row_K.(a,b)`. It must reach the density walker with its FULL

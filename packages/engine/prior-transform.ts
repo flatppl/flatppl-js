@@ -42,6 +42,15 @@ function evalBound(ir: any, env: Record<string, any>): number {
   return v;
 }
 
+// A vector plan's realised value as flat storage. A pushfwd that changes the
+// variate's rank has no plan here, so it refuses.
+function asVector(y: any): Float64Array {
+  if (y instanceof Float64Array) return y;
+  if (Array.isArray(y) && y.every((v) => typeof v === 'number')) return Float64Array.from(y);
+  if (y && Array.isArray(y.shape) && y.shape.length === 1 && y.data) return Float64Array.from(y.data);
+  throw new Error('prior-transform: a pushfwd of a vector base must return a vector');
+}
+
 // Map a base distribution's arg IRs → the params object the ladder expects.
 // Positional-arg convention per dist (matches inverse-cdf.ts param field names).
 const ARG_NAMES: Record<string, string[]> = {
@@ -203,9 +212,15 @@ function planLatent(measureIR: any, ctx: any): LatentPlan {
     if (!Number.isInteger(n) || n <= 0) throw new Error('prior-transform: iid size must be a positive integer literal');
     const innerPlan = planLatent(inner, ctx);     // recurse — inner is a base dist (or truncate/pushfwd via later tasks)
     if (innerPlan.count !== 1) throw new Error('prior-transform: iid inner measure must be scalar per element');
+    // A vector plan even at n = 1: iid(D, 1) is a length-1 vector (spec §06).
     return {
       count: n,
-      realise: (u, off, env) => innerPlan.realise(u, off, env),  // each coord independently through the inner F⁻¹
+      realise: () => { throw new Error('prior-transform: iid is a vector plan'); },
+      realiseVec: (u, off, env) => {
+        const x = new Float64Array(n);
+        for (let i = 0; i < n; i++) x[i] = innerPlan.realise(u, off + i, env);
+        return x;
+      },
     };
   }
 
@@ -233,7 +248,8 @@ function planLatent(measureIR: any, ctx: any): LatentPlan {
     const fnRef = measureIR.args[0];
     const base = measureIR.args[1];
     const basePlan = planLatent(base, ctx);
-    if (basePlan.count !== 1) throw new Error('prior-transform: pushfwd base must be scalar');
+    const vectorBase = typeof basePlan.realiseVec === 'function';
+    if (!vectorBase && basePlan.count !== 1) throw new Error('prior-transform: pushfwd base must be scalar');
     // The forward function is a `functionof` binding referenced by name — for a
     // bare `pushfwd(fn(...), D)`, args[0] IS that binding. For `locscale(D, loc,
     // scale)` (the non-centered reparameterisation, ubiquitous in hierarchical
@@ -244,8 +260,17 @@ function planLatent(measureIR: any, ctx: any): LatentPlan {
     // A lifted MvNormal or matrix-scale bijection carries an identity fn(_)
     // stub as its forward; only the registry map is real.
     if (fb && fb.bijection && fb.bijection.stubForward) {
-      throw new Error(`prior-transform: pushfwd through the '${fb.bijection.registryName}' `
-        + 'registry bijection (MvNormal or a matrix-scale locscale) is not supported');
+      if (!vectorBase) {
+        throw new Error(`prior-transform: the '${fb.bijection.registryName}' registry bijection `
+          + `needs a vector base`);
+      }
+      const bij = fb.bijection;
+      return {
+        count: basePlan.count,
+        realise: () => { throw new Error('prior-transform: registry pushfwd is a vector plan'); },
+        realiseVec: (u, off, env) => asVector(
+          sampler._internal.registryForward(bij, fnRef.name, basePlan.realiseVec!(u, off, env), env)),
+      };
     }
     if (fir && fir.op === 'bijection' && fir.args && fir.args[0] && fir.args[0].name) {
       const fwd = ctx.bindings.get(fir.args[0].name);
@@ -256,6 +281,14 @@ function planLatent(measureIR: any, ctx: any): LatentPlan {
     }
     const placeholder = fir.params[0];
     const body = fir.body;
+    if (vectorBase) {
+      return {
+        count: basePlan.count,
+        realise: () => { throw new Error('prior-transform: pushfwd of a vector base is a vector plan'); },
+        realiseVec: (u, off, env) => asVector(sampler.evaluateExpr(body, Object.assign({}, env,
+          { [placeholder]: Array.from(basePlan.realiseVec!(u, off, env)) }))),
+      };
+    }
     return {
       count: 1,
       realise: (u, off, env) => {

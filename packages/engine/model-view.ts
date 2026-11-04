@@ -135,8 +135,10 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
         // likelihood that indexes p[g][j].
         const atomShape = (m.value && Array.isArray(m.value.shape) && m.value.shape.length > 1)
           ? m.value.shape.slice(1) : (stride > 1 ? [stride] : null);
-        if (stride > 1) l.shape = { kind: 'vector', dims: [stride], atomShape };
-        else if (stride === 1 && l.shape.kind === 'vector' && l.support?.n == null) l.shape = { kind: 'scalar' };
+        // The pool's rank, not its per-atom size, decides vector versus scalar:
+        // a [N, 1] pool is a length-1 vector latent (spec §03), not a scalar.
+        if (atomShape) l.shape = { kind: 'vector', dims: [stride], atomShape };
+        else if (l.shape.kind === 'vector' && l.support?.n == null) l.shape = { kind: 'scalar' };
       }
     } catch (err) { poolErrors[priorPools.length] = err; }
     priorPools.push(pool);
@@ -343,10 +345,9 @@ async function buildModelViewFromCtx(ctx: any, posteriorDeriv: any): Promise<any
         const d = shp.dims[0];
         const vec = new Float64Array(d);
         for (let j = 0; j < d; j++) vec[j] = flatPt[`${nm}[${j}]`];
-        // Preserve a matrix's axes and a singleton vector's rank: the scorer
-        // otherwise interprets a one-element bare array as a scalar atom.
-        rec[nm] = d === 1 || (shp.atomShape && shp.atomShape.length > 1)
-          ? { shape: shp.atomShape ? shp.atomShape.slice() : [d], data: vec }
+        // Preserve a matrix's axes.
+        rec[nm] = (shp.atomShape && shp.atomShape.length > 1)
+          ? { shape: shp.atomShape.slice(), data: vec }
           : vec;
       }
     }
