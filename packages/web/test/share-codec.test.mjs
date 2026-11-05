@@ -14,17 +14,18 @@ import {
   createShareCodec, makeShareLinks, createShareQr, MAX_SHARE_URL_LENGTH, SHARE_ARCHIVE_LIMITS,
 } from '../src/share-codec.ts';
 import {
-  MAX_SHARE_CONTENT_BYTES, MAX_SHARE_DIGITS, ShareLimitError, decodeContainer, encodeContainer, framePayload,
-  linkToken, qrToken,
-} from '../src/share-format.ts';
-import { loadZstd } from '../src/zstd.ts';
+  LINK_LIMITS, MAX_SHARE_CONTENT_BYTES, MAX_SHARE_DIGITS, ShareLimitError, decodeContainer, encodeContainer, framePayload,
+  linkToken, qrToken, shareAddress,
+} from '../../share/src/format.ts';
+import { GOLDEN } from '../../share/test/golden.mjs';
+import { loadZstd } from '../../share/src/zstd.ts';
 
 const require = createRequire(import.meta.url);
 const engine = require('../../engine/index.ts');
 const encode = text => new TextEncoder().encode(text);
 // The package exports no path to its binary. The build reads the same file.
 const wasmPath = new URL('../../../node_modules/@bokuweb/zstd-wasm/dist/web/zstd.wasm', import.meta.url);
-const dictionaryUrl = new URL('../src/share-dictionaries/v1.zdict', import.meta.url);
+const dictionaryUrl = new URL('../../share/src/dictionaries/v1.zdict', import.meta.url);
 let temporary, bridge, zstd, dictionary;
 const originalWorker = globalThis.Worker;
 
@@ -349,4 +350,107 @@ test('the browser ESM build renders a QR for the selected complete share', async
   const shared = await codec.decode(tokenOf(qr.url));
   assert.equal(shared.target, 'Pi_post');
   assert.deepEqual(await members(shared.archive), await members(zip));
+});
+
+/** The extension's share service, built from its source as build-vendor.mjs builds it. */
+async function extensionShares() {
+  const outfile = join(temporary, 'shareLinks.cjs');
+  await build({ entryPoints: [new URL('../../vscode-extension/src/shareLinks.ts', import.meta.url).pathname],
+    bundle: true, platform: 'node', format: 'cjs', outfile, loader: { '.zdict': 'binary' } });
+  const { createShareService } = require(outfile);
+  return createShareService(require('../../engine/bundle.ts'), () => readFile(wasmPath));
+}
+
+test('golden tokens open in the playground and the playground makes them', async (t) => {
+  const codec = codecFor(t);
+  for (const golden of GOLDEN) {
+    const files = Object.fromEntries(golden.members.map(m => [m.kind === 'directory' ? m.name + '/' : m.name, m.bytes]));
+    const zip = await engine.writeArchive(files, { symlinks: golden.members.filter(m => m.kind === 'symlink').map(m => m.name) });
+    for (const token of [golden.link, golden.qr]) {
+      const shared = await codec.decode(token);
+      assert.deepEqual(await members(shared.archive), await members(zip), golden.name);
+      assert.equal(shared.model, golden.view.model || null);
+      assert.equal(shared.target, golden.view.target || null);
+    }
+    assert.deepEqual(await codec.encode(zip, golden.view), { link: golden.link, qr: golden.qr }, golden.name);
+  }
+});
+
+test('links made by the extension open in the playground, and the reverse', async (t) => {
+  const codec = codecFor(t);
+  const shares = await extensionShares();
+  const zip = await fixtureBundle();
+  const view = { model: 'modules/prior.flatppl', target: 'mu' };
+  const links = await shares.create(await shares.members(zip), view, 'https://live.flatppl.org/');
+  for (const url of [links.url, links.qrUrl]) {
+    const shared = await codec.decode(tokenOf(url));
+    assert.deepEqual(await members(shared.archive), await members(zip));
+    assert.deepEqual([shared.model, shared.target], [view.model, view.target]);
+  }
+  const playground = makeShareLinks(await codec.encode(zip, view), 'https://live.flatppl.org/');
+  assert.equal(playground.url, links.url);
+  for (const url of [playground.url, playground.qrUrl]) {
+    const opened = await shares.open(url);
+    assert.deepEqual(await members(opened.archive), await members(zip));
+    assert.deepEqual([opened.model, opened.target], [view.model, view.target]);
+  }
+});
+
+test('the extension refuses links exactly where the playground does', async (t) => {
+  const codec = codecFor(t);
+  const shares = await extensionShares();
+  const directory = n => engine.writeArchive({ 'main.flatppl': encode('x = 1\n'), ['d'.repeat(n) + '/']: new Uint8Array() });
+  const many = n => engine.writeArchive(Object.fromEntries(Array.from({ length: n },
+    (_, i) => [i ? `m${i}.flatppl` : 'main.flatppl', encode('x = 1\n')])));
+  const nested = async (main, inner) => engine.writeArchive({ 'main.flatppl': encode(main), 'inner.zip': inner });
+  const cases = {
+    'path at the limit': directory(SHARE_ARCHIVE_LIMITS.maxPathBytes - 1),
+    'path over the limit': directory(SHARE_ARCHIVE_LIMITS.maxPathBytes),
+    'imported bundle over the entry limit': nested('m = load_module("inner.zip")\n', await many(SHARE_ARCHIVE_LIMITS.maxEntries)),
+    'unimported bundle': nested('x = 1\n', await many(SHARE_ARCHIVE_LIMITS.maxEntries)),
+    'member over 2 MiB': engine.writeArchive({ 'main.flatppl': encode('x = 1\n'), 'data.bin': new Uint8Array(2 * 1024 ** 2 + 1) }),
+    'missing dependency': engine.writeArchive({ 'main.flatppl': encode('m = load_module("missing.flatppl")\n') }),
+    'nested bundle opened twice': engine.writeArchive({
+      'main.flatppl': encode('a = load_module("sub/inner.zip")\nb = load_module("sub")\n'),
+      'sub/main.flatppl': encode('c = load_module("inner.zip")\n'), 'sub/inner.zip': await many(600),
+    }),
+    'fixture': fixtureBundle(),
+  };
+  const verdicts = {};
+  for (const [name, pending] of Object.entries(cases)) {
+    const zip = await pending;
+    const web = await codec.encode(zip) !== null;
+    const extension = await shares.create(await shares.members(zip), { model: '', target: '' }, 'https://live.flatppl.org/')
+      .then(() => true, () => false);
+    verdicts[name] = [web, extension];
+  }
+  assert.deepEqual(verdicts, {
+    'path at the limit': [true, true], 'path over the limit': [false, false],
+    'imported bundle over the entry limit': [false, false], 'unimported bundle': [true, true],
+    'member over 2 MiB': [false, false], 'missing dependency': [false, false],
+    'nested bundle opened twice': [false, false], 'fixture': [true, true],
+  });
+});
+
+test('the share format module holds the playground link limits and reads its routes', async () => {
+  const host = pageHost();
+  assert.deepEqual({ ...host.FlatPPLWebBundles.LINK_LIMITS }, { ...LINK_LIMITS });
+  const location = { hash: '' };
+  const window = { location };
+  vm.runInNewContext(stripTypeScriptTypes(readFileSync(new URL('../src/router.ts', import.meta.url), 'utf8')),
+    { window, globalThis: window, URLSearchParams, console });
+  const token = GOLDEN[2].link;
+  for (const hash of [`#share=${token}`, `#${GOLDEN[2].qr}`, `#${GOLDEN[2].qr}&target=x`, `#share=${token}&target=x`,
+    `#/files/new/shared-model/modules/prior.flatppl?target=mu&share=${token}`,
+    `#/files/user/kept/main.flatppl?share=${token}`, '#/files/examples/x.flatppl?target=y', '#model=examples/x.flatppl',
+    '#archive=https%3A%2F%2Fexample.org%2Fm.zip', '']) {
+    location.hash = hash;
+    const state = window.FlatPPLWebRouter.parseHash();
+    const address = shareAddress('https://live.flatppl.org/' + hash);
+    if (!state.share || state.archive) { assert.equal(address, null, hash); continue; }
+    // As app.ts applies a share: a route member replaces the payload view.
+    const view = state.model ? { model: state.model.replace(/^(?:new|user)\/[^/]+\//, ''), target: state.target }
+      : state.target !== null ? { target: state.target } : {};
+    assert.deepEqual(address, { token: state.share, ...view }, hash);
+  }
 });

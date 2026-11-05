@@ -42,6 +42,7 @@ import { fileURLToPath } from 'node:url';
 import * as esbuild from 'esbuild';
 import { hostTripleForNode, chooseLspSource } from './build-lsp-source.cjs';
 import { provisionWasmApi } from '../web/provision-wasm-api.mjs';
+import { readZstdWasm } from '../share/zstd-wasm.mjs';
 import { createRequire } from 'node:module';
 const _require = createRequire(import.meta.url);
 const { stubStdlibPlugin } = _require('./build-stdlib-stub.cjs');
@@ -341,6 +342,9 @@ const EXTENSION_TS_SOURCES = [
   // enough and the unit tests require it directly.
   { in: 'src/remoteModule.ts',  out: 'src/remoteModule.js' },
   { in: 'src/bundleHost.ts',    out: 'src/bundleHost.js' },
+  // Share-link commands (host deps injected). They require src/shareLinks.js,
+  // which is bundled below.
+  { in: 'src/shareCommands.ts', out: 'src/shareCommands.js' },
   // "Export math as …" core (host deps injected; requires lib/math-view.cjs
   // built below). No vscode import, so type-stripping is enough and the
   // unit tests require it directly.
@@ -526,6 +530,23 @@ const lspClientBuildOpts = {
   legalComments: 'inline',
 };
 
+// Share links: the playground's codec (packages/share) for the extension
+// host, with qrcode and the dictionary bundled. src/zstd.ts in that package
+// drives lib/zstd.wasm, whose hash the shared reader checks.
+const shareLinksBuildOpts = {
+  entryPoints: [join(here, 'src', 'shareLinks.ts')],
+  outfile: join(here, 'src', 'shareLinks.js'),
+  bundle: true,
+  minify: true,
+  format: 'cjs',
+  platform: 'node',
+  target: ['node16'],
+  loader: { '.zdict': 'binary' },
+  legalComments: 'inline',
+};
+await writeFile(join(libDir, 'zstd.wasm'), await readZstdWasm(nm));
+console.log('  copied @bokuweb/zstd-wasm -> lib/zstd.wasm');
+
 if (WATCH) {
   // Watch mode: rebuild both bundles on every change under packages/engine/.
   // The process keeps running until killed (Ctrl+C). Reload the VS Code
@@ -539,20 +560,24 @@ if (WATCH) {
   const urlCacheCtx = await esbuild.context(urlCacheBuildOpts);
   const mathViewCtx = await esbuild.context(mathViewBuildOpts);
   const bundleCtx = await esbuild.context(bundleBuildOpts);
+  const shareCtx = await esbuild.context(shareLinksBuildOpts);
   await Promise.all([engineCtx.rebuild(), workerCtx.rebuild(),
                      viewerCtx.rebuild(), mathCtx.rebuild(), lspCtx.rebuild(),
-                     echartsCtx.rebuild(), urlCacheCtx.rebuild(), mathViewCtx.rebuild(), bundleCtx.rebuild()]);
+                     echartsCtx.rebuild(), urlCacheCtx.rebuild(), mathViewCtx.rebuild(), bundleCtx.rebuild(),
+                     shareCtx.rebuild()]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
   console.log('  bundled math          -> lib/math.cjs');
   console.log('  bundled lsp-client    -> src/lspClient.js');
+  console.log('  bundled share-links   -> src/shareLinks.js');
   console.log('  bundled echarts       -> lib/echarts.min.js');
   console.log('  bundled url-cache     -> lib/url-cache.cjs');
   console.log('  bundled math-view     -> lib/math-view.cjs');
   await Promise.all([engineCtx.watch(), workerCtx.watch(),
                      viewerCtx.watch(), mathCtx.watch(), lspCtx.watch(),
-                     echartsCtx.watch(), urlCacheCtx.watch(), mathViewCtx.watch(), bundleCtx.watch()]);
+                     echartsCtx.watch(), urlCacheCtx.watch(), mathViewCtx.watch(), bundleCtx.watch(),
+                     shareCtx.watch()]);
   console.log('  watching packages/engine/ + packages/viewer/ for changes (Ctrl+C to exit)…');
 } else {
   await Promise.all([
@@ -565,12 +590,14 @@ if (WATCH) {
     esbuild.build(urlCacheBuildOpts),
     esbuild.build(mathViewBuildOpts),
     esbuild.build(bundleBuildOpts),
+    esbuild.build(shareLinksBuildOpts),
   ]);
   console.log('  bundled engine        -> lib/engine.min.js');
   console.log('  bundled sampler-worker -> lib/sampler-worker.min.js');
   console.log('  bundled viewer        -> lib/viewer.js');
   console.log('  bundled math          -> lib/math.cjs');
   console.log('  bundled lsp-client    -> src/lspClient.js');
+  console.log('  bundled share-links   -> src/shareLinks.js');
   console.log('  bundled echarts       -> lib/echarts.min.js');
   console.log('  bundled url-cache     -> lib/url-cache.cjs');
   console.log('  bundled math-view     -> lib/math-view.cjs');
@@ -587,6 +614,9 @@ const bundledNames = new Set(COPY_LIBS.map(c => c.pkg));
 // echarts is now bundled via esbuild (not copied), so add it explicitly.
 bundledNames.add('echarts');
 bundledNames.add('@zip.js/zip.js');
+// Share links: src/shareLinks.js bundles qrcode and its Node renderers, and
+// lib/zstd.wasm is the libzstd build of @bokuweb/zstd-wasm.
+for (const name of ['qrcode', 'dijkstrajs', 'pngjs', '@bokuweb/zstd-wasm']) bundledNames.add(name);
 
 let out = '# Third-Party Licenses\n\n';
 out += 'This extension bundles the following third-party libraries into the\n';

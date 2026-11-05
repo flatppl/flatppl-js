@@ -30,6 +30,7 @@
   },
   "devDependencies": {
     "@flatppl/engine": "*",
+    "@flatppl/share": "*",
     "@types/vscode": "~1.91.0",
     "@vscode/vsce": "^4.0.0",
     "esbuild": "^0.28.0",
@@ -45,7 +46,8 @@
   "activationEvents": [
     "onLanguage:flatppl",
     "onCommand:flatppl.convert",
-    "onCommand:flatppl.openBundle"
+    "onCommand:flatppl.openBundle",
+    "onCommand:flatppl.openShareLink"
   ],
   "categories": [
     "Programming Languages",
@@ -57,6 +59,9 @@
       { "command": "flatppl.browseBundle", "title": "FlatPPL: Browse Bundle Files" },
       { "command": "flatppl.extractBundle", "title": "FlatPPL: Extract Bundle" },
       { "command": "flatppl.exportBundle", "title": "FlatPPL: Export Bundle" },
+      { "command": "flatppl.copyShareLink", "title": "FlatPPL: Copy Share Link" },
+      { "command": "flatppl.showShareQr", "title": "FlatPPL: Show Share QR Code" },
+      { "command": "flatppl.openShareLink", "title": "FlatPPL: Open Share Link" },
       {
         "command": "flatppl.visualize",
         "title": "FlatPPL: Visualize Binding",
@@ -117,6 +122,8 @@
       ],
       "commandPalette": [
         { "command": "flatppl.exportBundle", "when": "editorLangId == flatppl" },
+        { "command": "flatppl.copyShareLink", "when": "editorLangId == flatppl" },
+        { "command": "flatppl.showShareQr", "when": "editorLangId == flatppl" },
         {
           "command": "flatppl.visualize",
           "when": "editorLangId == flatppl || editorLangId == python || editorLangId == julia"
@@ -185,7 +192,9 @@
           "command": "flatppl.toggleInference",
           "when": "editorLangId == flatppl || ((editorLangId == python || editorLangId == julia) && flatppl.embeddedActive)",
           "group": "navigation@3"
-        }
+        },
+        { "command": "flatppl.copyShareLink", "when": "editorLangId == flatppl", "group": "flatppl-share@1" },
+        { "command": "flatppl.showShareQr", "when": "editorLangId == flatppl", "group": "flatppl-share@2" }
       ]
     },
     "languages": [
@@ -268,6 +277,12 @@
           "minimum": 1,
           "maximum": 1000000,
           "markdownDescription": "Per-atom rejection-redraw budget for `truncate(M, S)` when the parent measure isn't CDF-invertible. The visualizer redraws from the underlying distribution up to this many times per atom before giving up and emitting `NaN`. Higher values trade compute for less ESS loss on tightly-truncated measures; lower values keep large-N plots responsive. Changing this clears the visualizer's sample cache."
+        },
+        "flatppl.shareBaseUrl": {
+          "type": "string",
+          "default": "https://live.flatppl.org/",
+          "format": "uri",
+          "markdownDescription": "Playground URL that **Copy Share Link** and **Show Share QR Code** put in front of the share token. The link carries the whole model, so any playground with the same share-link format opens it."
         },
         "flatppl.server.path": {
           "type": "string",

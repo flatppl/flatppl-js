@@ -50,6 +50,8 @@ class FlatPPLPanel {
   _readOnly: any;
   _remote: any;
   _localBaseUri: any;
+  // The binding the panel centres on, for share links. Null in module view.
+  _targetName: string | null = null;
   _webviewReady: any;
   _pendingMessages: any;
   // Sequence of the latest model post (see _postWithBundle): a bundle
@@ -152,6 +154,8 @@ class FlatPPLPanel {
       }
       if (msg.type === 'updateTitle') {
         this._panel.title = `FlatPPL: ${msg.name}`;
+        // The viewer names its module view 'module'.
+        this._targetName = msg.name === 'module' ? null : msg.name;
       }
       // Cross-module navigation (spec §04 load_module): a double-click on a
       // load_module node (whole module) or a member / member-alias node
@@ -342,6 +346,7 @@ class FlatPPLPanel {
     // A remote (URL) module is read-only cached content; a native model is
     // writable. `opts.remote` distinguishes them — the editSource refusal and
     // the read-only DAG both read these flags.
+    this._targetName = targetName || null;
     this._readOnly = !!(opts && opts.remote) || sourceUri?.scheme === REMOTE_SCHEME || sourceUri?.scheme === BUNDLE_SCHEME;
     this._remote = sourceUri?.scheme === REMOTE_SCHEME || !!(opts && opts.remote);
     this._navUri = null;                // not an embedded snapshot
@@ -415,6 +420,11 @@ class FlatPPLPanel {
     });
   }
 
+  /** The binding shown for `uri`, if the panel shows that document. */
+  shownTarget(uri: any): string | null {
+    return this._sourceUri && uri && this._sourceUri.toString() === uri.toString() ? this._targetName : null;
+  }
+
   /** Highlight `line` in `editor` for a moment (whole line, the theme's
    *  find-match colour), replacing any flash still showing. */
   _flashLine(editor: any, line: number) {
@@ -479,6 +489,7 @@ class FlatPPLPanel {
       if (sourceUri) this._sourceUri = sourceUri;
       if (sourceUri && sourceUri.scheme !== REMOTE_SCHEME && sourceUri.scheme !== BUNDLE_SCHEME) this._localBaseUri = sourceUri;
     }
+    this._targetName = null;
     this._panel.title = 'FlatPPL: module';
     this._postWithBundle({
       type: 'showModule',

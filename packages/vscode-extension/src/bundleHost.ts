@@ -104,6 +104,17 @@ function createBundleHost(vscode: any, api: any, cache: any, approve: (url: stri
     return remember(graph, origins.get(id) || (member && origins.get(member.archiveId)) || uri);
   }
 
+  /**
+   * Mount a ZIP held in memory, such as a decoded share link. Reads stay
+   * offline, so no dependency is fetched or approved until a later resolve.
+   */
+  async function mount(id: string, bytes: Uint8Array, origin: any, limits?: object) {
+    const offline = reader(origin, { offline: true });
+    const graph = await api.resolveBundleBytes(id, bytes,
+      async (path: string) => path === id ? bytes : offline(path), { strict: false, limits });
+    return remember(graph, origin);
+  }
+
   /** List a mounted archive independently of which members its main imports. */
   function members(id: string): Array<{ id: string; path: string; directory: boolean }> {
     const member = api.parseArchiveMemberId(id);
@@ -177,7 +188,7 @@ function createBundleHost(vscode: any, api: any, cache: any, approve: (url: stri
     rename() { throw vscode.FileSystemError.NoPermissions(); },
   };
 
-  return { resolve, reader, uriFor, readMember, members, extract, provider,
+  return { resolve, mount, reader, uriFor, readMember, members, extract, provider,
     graphFor: (id: string) => graphs.get(id),
     pack: (graph: any) => api.packBundle(graph, { compression: 'deflate' }),
     onMount(fn: (graph: any) => void) { onMount = fn; },

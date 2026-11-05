@@ -1,3 +1,5 @@
+/// <reference lib="dom" />
+// WebAssembly and BufferSource types, also for the extension host, whose tsconfig has no DOM lib.
 /**
  * One-shot Zstandard (RFC 8878) with a dictionary. Runs the libzstd 1.5.6
  * WebAssembly build of @bokuweb/zstd-wasm 0.0.27 without that package's

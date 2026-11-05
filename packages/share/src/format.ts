@@ -1,6 +1,6 @@
 /**
- * Share-link wire format, specified in ../share-links.md: token text, payload
- * versions and the member container. Pure functions for the share worker.
+ * Share-link wire format, specified in ../../web/share-links.md: token text,
+ * payload versions and the member container. Pure functions for the codec.
  */
 
 export const MAX_SHARE_URL_LENGTH = 64 * 1024;
@@ -25,6 +25,15 @@ export const SHARE_ARCHIVE_LIMITS = Object.freeze({
   maxPathBytes: 1024,
 });
 
+/**
+ * The browser limits for opening a share, in the playground and in VS Code.
+ * Outgoing links must open under them too.
+ */
+export const LINK_LIMITS = Object.freeze({
+  maxArchiveBytes: 9 * 1024 ** 2, maxMemberBytes: 2 * 1024 ** 2,
+  maxTotalBytes: 8 * 1024 ** 2, maxEntries: 256, maxDepth: 4, maxPathBytes: 1024,
+});
+
 export const ZSTD_MAGIC = Uint8Array.of(0x28, 0xb5, 0x2f, 0xfd);
 const KINDS = ['file', 'directory', 'symlink'] as const;
 
@@ -44,7 +53,7 @@ const invalid = () => new Error('Invalid share link.');
 
 /** The bundle is well-formed but exceeds what a share may hold. */
 export class ShareLimitError extends Error {
-  constructor() { super('The shared bundle exceeds the share-link limits. Open the ZIP bundle instead.'); }
+  constructor(message = 'The shared bundle exceeds the share-link limits. Open the ZIP bundle instead.') { super(message); }
 }
 
 /** RFC 4648 base64url without padding. */
@@ -203,4 +212,56 @@ export function framePayload(version: number, frame: Uint8Array): Uint8Array {
   payload[0] = version;
   payload.set(frame.subarray(ZSTD_MAGIC.length), 1);
   return payload;
+}
+
+/**
+ * A share to open. A route member replaces the payload's view, and a route
+ * binding replaces its binding. Undefined fields keep the payload's view.
+ */
+export interface ShareAddress {
+  token: string;
+  model?: string;
+  target?: string | null;
+}
+
+/**
+ * Read a share link, a fragment or a bare token, as the playground router
+ * reads `location.hash`. Null when the input carries no share, such as an
+ * example or gallery link, which names a model on the website.
+ */
+export function shareAddress(input: string): ShareAddress | null {
+  let raw = input.trim();
+  if (/^[a-z][a-z0-9+.-]*:/i.test(raw)) {
+    let url: URL;
+    try { url = new URL(raw); } catch (_) { return null; }
+    raw = url.hash;
+  } else if (!raw.startsWith('#') && /^~?[A-Za-z0-9_-]+$/.test(raw)) {
+    return { token: raw };
+  }
+  if (raw.startsWith('#')) raw = raw.slice(1);
+  if (raw.length > MAX_SHARE_URL_LENGTH) throw new Error('This link is too long. Open the ZIP bundle instead.');
+  const found: Record<string, string> = {};
+  if (raw.startsWith(QR_MARKER)) {
+    const end = raw.indexOf('&');
+    found.share = raw.slice(0, end < 0 ? undefined : end);
+    raw = end < 0 ? '' : raw.slice(end + 1);
+  }
+  if (raw.startsWith('/files/')) {
+    const end = raw.indexOf('?');
+    try { found.model = decodeURIComponent(raw.slice(7, end < 0 ? undefined : end)); }
+    catch (_) { throw new Error('Invalid file path in link.'); }
+    raw = end < 0 ? '' : raw.slice(end + 1);
+  }
+  for (const part of raw.split('&')) {
+    const eq = part.indexOf('=');
+    const key = part.slice(0, eq);
+    if (eq <= 0 || !['model', 'target', 'share', 'archive'].includes(key)) continue;
+    if (key in found) throw new Error('Duplicate parameter in link: ' + key);
+    try { found[key] = decodeURIComponent(part.slice(eq + 1).replace(/\+/g, ' ')); }
+    catch (_) { throw new Error('Invalid encoding in link.'); }
+  }
+  if (!found.share || 'archive' in found) return null;
+  // The playground names members of an opened bundle under its own folder.
+  if (found.model) return { token: found.share, model: found.model.replace(/^(?:new|user)\/[^/]+\//, ''), target: found.target ?? null };
+  return 'target' in found ? { token: found.share, target: found.target } : { token: found.share };
 }

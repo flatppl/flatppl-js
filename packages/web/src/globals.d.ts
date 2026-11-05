@@ -57,7 +57,7 @@ interface Window {
   FlatPPLWebRemoteEditor?: any;
 }
 
-// Share-link dictionaries, embedded in the share worker by esbuild's binary loader.
+// Share-link dictionaries (packages/share), embedded in the share worker by esbuild's binary loader.
 declare module '*.zdict' {
   const bytes: Uint8Array;
   export default bytes;

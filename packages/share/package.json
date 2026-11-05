@@ -1,0 +1,28 @@
+{
+  "name": "@flatppl/share",
+  "version": "0.1.0",
+  "description": "FlatPPL share-link codec, shared by the web playground and the VS Code extension. Format: ../web/share-links.md.",
+  "license": "MIT",
+  "private": true,
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/flatppl/flatppl-js",
+    "directory": "packages/share"
+  },
+  "scripts": {
+    "test": "node --test 'test/**/*.test.mjs'",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@bokuweb/zstd-wasm": "0.0.27",
+    "qrcode": "1.5.4"
+  },
+  "devDependencies": {
+    "@flatppl/engine": "*",
+    "@types/qrcode": "^1.5.6",
+    "esbuild": "^0.28.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
