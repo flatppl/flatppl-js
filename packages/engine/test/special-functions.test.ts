@@ -92,6 +92,29 @@ test('erfcx stays finite where erfc underflows', async () => {
   close((await value(src, 'a'))[0], 0.02088160799042094, 1e-15, 'a');
 });
 
+// Oracle: mpmath at 50 digits.
+test('digamma and polygamma match the oracle', async () => {
+  const digamma: Array<[number, number]> = [
+    [-2.5, 1.103156640645243], [0.3, -3.502524222200133], [1.0, -0.5772156649015329],
+    [1.7, 0.2085478748734939], [100, 4.600161852738087], [1e4, 9.210290371142849],
+  ];
+  for (const [x, want] of digamma) close(impl('digamma')(x), want, 1e-14, `digamma(${x})`);
+  // digamma(-0.5) = 0.036 cancels in the reflection, so it gets an absolute bound.
+  assert.ok(Math.abs(impl('digamma')(-0.5) - 0.03648997397857652) < 1e-15);
+  const polygamma: Array<[number, number, number]> = [
+    [0, 1.7, 0.2085478748734939], [1, -0.5, 8.934802200544679], [1, 0.3, 12.245364546107732],
+    [2, 1.7, -0.6040890841034591], [3, 1.7, 0.8895620066243164], [1, 100, 0.010050166663333571],
+    [4, 0.7, -144.70825364302465],
+  ];
+  for (const [n, x, want] of polygamma) close(impl('polygamma')(n, x), want, 1e-14, `polygamma(${n}, ${x})`);
+  const src = SF + 'a = sf.polygamma(n = 2, x = 1.7)\nb = sf.digamma.([1.0, 1.7])\n';
+  assert.deepEqual(processSource(src).diagnostics, []);
+  close((await value(src, 'a'))[0], -0.6040890841034591, 1e-14, 'a');
+  const b = await value(src, 'b');
+  close(b[0], -0.5772156649015329, 1e-14, 'b[0]');
+  close(b[1], 0.2085478748734939, 1e-14, 'b[1]');
+});
+
 test('an unimplemented §09 member refuses by name', () => {
   const { diagnostics } = processSource(SF + 'a = sf.bessel_j(1.0, 2.0)\n');
   assert.equal(diagnostics.length, 1);
