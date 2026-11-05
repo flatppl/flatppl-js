@@ -42,6 +42,8 @@ interface StandardModuleEntry {
   bindings: Map<string, BindingDescriptor>;
   /** Members that are REGISTRY-resident distributions, not descriptors. */
   distributions?: ReadonlySet<string>;
+  /** Spec §09 members of this module that this engine does not implement. */
+  unimplemented?: ReadonlySet<string>;
 }
 
 interface BindingDescriptor {
@@ -715,6 +717,31 @@ function _registerExtLinearAlgebra() {
   });
 }
 
+// --- special-functions ----------------------------------------------
+//
+// Spec §09. Only erf and erfc are implemented. A call to another §09
+// member refuses at type inference.
+
+const _erf = require('@stdlib/math-base-special-erf');
+// erfc keeps its own implementation: 1 - erf(x) cancels to 0 in the upper tail.
+const _erfc = require('@stdlib/math-base-special-erfc');
+
+function _registerSpecialFunctions() {
+  const bindings = new Map<string, BindingDescriptor>();
+  const unarySig = () => T.funcType([{ name: 'x', type: T.REAL }], T.REAL);
+  bindings.set('erf',  { kind: 'function', sig: unarySig(), impl: _erf });
+  bindings.set('erfc', { kind: 'function', sig: unarySig(), impl: _erfc });
+  registerStandardModule({
+    name: 'special-functions',
+    compat: '0.1',
+    bindings,
+    unimplemented: new Set([
+      'bessel_j', 'bessel_y', 'bessel_i', 'bessel_k',
+      'digamma', 'polygamma', 'gammainc', 'betainc', 'airy',
+    ]),
+  });
+}
+
 // Engine-startup registration: runs once on module require so the
 // registry is populated before typeinfer / orchestrator / sampler
 // consult it. Tests that need a clean slate (cross-test isolation)
@@ -726,6 +753,7 @@ function _registerBuiltinStandardModules() {
   _registerParticlePhysics();
   registerStandardModule(require('./standard-pyhf.ts').pyhfModule(_interpPoly6Exp, _interpPoly6Lin));
   _registerExtLinearAlgebra();
+  _registerSpecialFunctions();
 }
 
 _registerBuiltinStandardModules();
