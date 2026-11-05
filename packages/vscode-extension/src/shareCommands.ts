@@ -82,7 +82,7 @@ function createShareCommands(vscode: any, host: ShareHost) {
       });
     },
 
-    /** Opening a link is offline. Dependencies load, after approval, when the model is visualized. */
+    /** Opening a link is offline. Every dependency comes from the bundle, so nothing is fetched or approved. */
     async openShareLink() {
       const input = await vscode.window.showInputBox({ title: 'Open Share Link', ignoreFocusOut: true,
         prompt: 'Paste a FlatPPL share link, a QR code link or a share token.' });
