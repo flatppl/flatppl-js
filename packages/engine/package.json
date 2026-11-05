@@ -30,6 +30,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "@stdlib/math-base-special-erf": "^0.2.6",
     "@stdlib/random-base-bernoulli": "^0.2.1",
     "@stdlib/random-base-beta": "^0.2.1",
     "@stdlib/random-base-binomial": "^0.2.1",

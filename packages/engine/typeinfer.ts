@@ -509,6 +509,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     const desc = entry.bindings.get(bindingName);
     // The density layer resolves these by name, so they stay untyped here.
     if (!desc && entry.distributions?.has(bindingName)) return T.deferred();
+    if (!desc && entry.unimplemented?.has(bindingName)) {
+      return unresolvedModuleRef("'" + modAlias + "." + bindingName + "': §09 member '"
+        + stdName + "." + bindingName + "' is not implemented by this engine", loc);
+    }
     if (!desc) {
       return unresolvedModuleRef("'" + modAlias + "." + bindingName + "': standard module '"
         + stdName + "@" + stdCompat + "' has no binding '" + bindingName + "'", loc);
