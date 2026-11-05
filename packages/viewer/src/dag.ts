@@ -12,6 +12,7 @@
 import { selectFromGesture, updatePlotForBinding } from './render-plot.js';
 import { $, bubbleMemberIds, esc, hexToRgba, truncateExpr } from './util.js';
 import { renderDoc } from './markdown.js';
+import { paintCode } from './code-highlight.js';
 import { resolveNodeColor } from './palette.js';
 import { errorsForBinding, saveViewState, applyPanelLayout } from './render-frame.js';
 import { formatDiagnosticMessage } from './diagnostics.js';
@@ -175,14 +176,15 @@ export function showNodeInfo(ctx: Ctx, d: any) {
     moduleRow = '<div class="expr" style="color:#80CBC4;">↳ loaded module — '
       + 'double-click to open ' + esc(modEntry.path) + '</div>';
   }
-  $('info').innerHTML =
-    '<div class="row"><span class="name">' + esc(d.label) + '</span>'
+  const info = $('info');
+  info.innerHTML = '<div class="row"><span class="name">' + esc(d.label) + '</span>'
     + phaseTag
-    + inferTag + '</div>'
-    + '<div class="expr">' + esc(d.expr) + '</div>'
-    + moduleRow
-    + unsupportedRow
-    + errorRow;
+    + inferTag + '</div>';
+  const exprRow = document.createElement('div');
+  exprRow.className = 'expr';
+  info.appendChild(exprRow);
+  paintCode(exprRow, d.expr || '');
+  info.insertAdjacentHTML('beforeend', moduleRow + unsupportedRow + errorRow);
 }
 
 export function updateHeader(ctx: Ctx, data: any) {
@@ -199,8 +201,19 @@ export function updateHeader(ctx: Ctx, data: any) {
   if (!target) { el.innerHTML = ''; return; }
   const name = target.label || target.id;
   const expr = truncateExpr(target.expr);
-  el.innerHTML = '<span class="target-name">' + esc(name) + '</span>'
-    + (expr ? '<span class="target-eq">=</span>' + esc(expr) : '');
+  el.textContent = '';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'target-name';
+  nameEl.textContent = name;
+  el.appendChild(nameEl);
+  if (!expr) return;
+  const eq = document.createElement('span');
+  eq.className = 'target-eq';
+  eq.textContent = '=';
+  el.appendChild(eq);
+  const exprEl = document.createElement('span');
+  el.appendChild(exprEl);
+  paintCode(exprEl, expr);
 }
 
 export function updateBackBtn(ctx: Ctx) {
@@ -574,14 +587,14 @@ export function initCy(ctx: Ctx) {
       // doc-comment renders below in dimmer styling (spec §04
       // §sec:documentation). The doc body goes through marked + Temml (see
       // markdown.ts) so `**bold**`, lists, code, and math render as
-      // HTML/MathML. The `label = expr` line stays plain-text (textContent) —
-      // no markup expected there, and textContent dodges accidental HTML in
-      // identifier-derived strings.
+      // HTML/MathML. The `label = expr` line is FlatPPL source: paintCode
+      // highlights it with text nodes only, so identifier-derived strings
+      // cannot smuggle HTML.
       tip.textContent = '';
       if (expr) {
         const exprLine = document.createElement('div');
         exprLine.className = 'tooltip-expr';
-        exprLine.textContent = d.label ? (d.label + ' = ' + expr) : expr;
+        paintCode(exprLine, d.label ? (d.label + ' = ' + expr) : expr);
         tip.appendChild(exprLine);
       }
       if (hasDoc) {
