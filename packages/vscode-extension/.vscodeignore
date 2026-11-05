@@ -28,6 +28,8 @@ build-stdlib-stub.cjs
 # Test suites + grammar test harness: run via `node --test`/CI, not by VSCode.
 test/
 grammars/textmate/test/
+# The highlighter source; lib/textmate-highlight.js ships instead.
+grammars/codemirror/
 
 # Release-asset install scripts — attached to the GitHub release, not shipped in the vsix.
 install.sh

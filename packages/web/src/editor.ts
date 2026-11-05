@@ -213,9 +213,9 @@
         if ((pos === from && side < 0) || (pos === to && side > 0)) continue;
         const binding = processed.bindings.get(name);
         if (!binding) return null;
-        // Build the tooltip body. The `name = expr` line uses
-        // textContent (set via the dom callback's element below)
-        // so identifier-derived strings can't smuggle HTML; the
+        // Build the tooltip body. The `name = expr` line is built
+        // from text nodes only (the viewer's paintCode, else
+        // textContent), so identifier-derived strings can't smuggle HTML; the
         // doc-comment HTML comes from the viewer's renderDoc which
         // owns its own escaping pipeline (marked + temml).
         return {
@@ -227,7 +227,10 @@
             dom.className = 'cm-source-hover';
             const exprLine = document.createElement('div');
             exprLine.className = 'cm-source-hover-expr';
-            exprLine.textContent = name + ' = ' + (binding.rhs || '');
+            const line = name + ' = ' + (binding.rhs || '');
+            const viewer = globalScope.FlatPPLViewer || {};
+            if (typeof viewer.paintCode === 'function') viewer.paintCode(exprLine, line);
+            else exprLine.textContent = line;
             dom.appendChild(exprLine);
             if (binding.node && binding.node.doc
                 && binding.node.doc.lines

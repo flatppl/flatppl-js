@@ -574,6 +574,18 @@ class FlatPPLPanel {
     const wasmApiUrl = fs.existsSync(wasmGluePath.fsPath)
       ? webview.asWebviewUri(wasmGluePath).toString()
       : null;
+    // Source highlighter for the header, info bar and tooltip (flatppl-grammars'
+    // TextMate highlighter, built into lib/ by build-vendor.mjs). The viewer
+    // fetches the grammar and onig.wasm on the first expression it paints,
+    // through connect-src; 'wasm-unsafe-eval' covers the instantiation.
+    const libUri = (name: string) => vscode.Uri.joinPath(this._context.extensionUri, 'lib', name);
+    const textmate = fs.existsSync(libUri('textmate-highlight.js').fsPath)
+      ? {
+          script: webview.asWebviewUri(libUri('textmate-highlight.js')),
+          grammarUrl: webview.asWebviewUri(libUri('flatppl.tmLanguage.json')).toString(),
+          wasmUrl: webview.asWebviewUri(libUri('onig.wasm')).toString(),
+        }
+      : null;
 
     return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -595,6 +607,7 @@ class FlatPPLPanel {
   <script nonce="${nonce}" src="${cytoscapeBubblesetsUri}"></script>
   <script nonce="${nonce}" src="${echartsUri}"></script>
   <script nonce="${nonce}" src="${engineUri}"></script>
+  ${textmate ? `<script nonce="${nonce}" src="${textmate.script}"></script>` : ''}
   <script nonce="${nonce}">
     // Host-supplied configuration for the viewer. The viewer reads
     // window.__FLATPPL_CONFIG__ at startup; setting it here before
@@ -604,6 +617,8 @@ class FlatPPLPanel {
       samplerWorkerUrl: ${JSON.stringify(samplerWorkerUri.toString())},
       // Math pane renderer (see wasmApiUrl above); null when not shipped.
       wasmApiUrl: ${JSON.stringify(wasmApiUrl)},
+      textmateGrammarUrl: ${JSON.stringify(textmate && textmate.grammarUrl)},
+      textmateWasmUrl: ${JSON.stringify(textmate && textmate.wasmUrl)},
     };
   </script>
   <script nonce="${nonce}" src="${viewerUri}"></script>
