@@ -719,14 +719,16 @@ function _registerExtLinearAlgebra() {
 
 // --- special-functions ----------------------------------------------
 //
-// Spec §09. Only erf, erfc and erfcx are implemented. A call to another
-// §09 member refuses at type inference.
+// Spec §09. erf, erfc, erfcx, digamma and polygamma are implemented. A call
+// to another §09 member refuses at type inference.
 
 const _erf = require('@stdlib/math-base-special-erf');
 // erfc keeps its own implementation: 1 - erf(x) cancels to 0 in the upper tail.
 const _erfc = require('@stdlib/math-base-special-erfc');
 // erfcx(x) = exp(x²)·erfc(x) stays finite where erfc underflows.
 const _erfcx = require('@stdlib/math-base-special-erfcx');
+const _digamma = require('@stdlib/math-base-special-digamma');
+const _polygamma = require('@stdlib/math-base-special-polygamma');
 
 function _registerSpecialFunctions() {
   const bindings = new Map<string, BindingDescriptor>();
@@ -734,13 +736,19 @@ function _registerSpecialFunctions() {
   bindings.set('erf',  { kind: 'function', sig: unarySig(), impl: _erf });
   bindings.set('erfc', { kind: 'function', sig: unarySig(), impl: _erfc });
   bindings.set('erfcx', { kind: 'function', sig: unarySig(), impl: _erfcx });
+  bindings.set('digamma', { kind: 'function', sig: unarySig(), impl: _digamma });
+  bindings.set('polygamma', {
+    kind: 'function',
+    sig: T.funcType([{ name: 'n', type: T.INTEGER }, { name: 'x', type: T.REAL }], T.REAL),
+    impl: _polygamma,
+  });
   registerStandardModule({
     name: 'special-functions',
     compat: '0.1',
     bindings,
     unimplemented: new Set([
       'bessel_j', 'bessel_y', 'bessel_i', 'bessel_k',
-      'digamma', 'polygamma', 'gammainc', 'betainc', 'airy',
+      'gammainc', 'betainc', 'airy',
     ]),
   });
 }
