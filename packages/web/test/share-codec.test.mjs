@@ -328,7 +328,7 @@ test('the browser ESM build renders a QR for the selected complete share', async
   const links = makeShareLinks(await codec.encode(zip, { target: 'Pi_post' }), 'https://live.flatppl.org/');
   await build({
     entryPoints: [new URL('../src/share-codec.ts', import.meta.url).pathname],
-    bundle: true, platform: 'browser', format: 'esm', splitting: true,
+    bundle: true, platform: 'browser', format: 'esm', splitting: true, target: 'es2020',
     outdir: join(temporary, 'browser'), outExtension: { '.js': '.mjs' },
   });
   const browser = await import(pathToFileURL(join(temporary, 'browser/share-codec.mjs')).href);
@@ -356,7 +356,7 @@ test('the browser ESM build renders a QR for the selected complete share', async
 async function extensionShares() {
   const outfile = join(temporary, 'shareLinks.cjs');
   await build({ entryPoints: [new URL('../../vscode-extension/src/shareLinks.ts', import.meta.url).pathname],
-    bundle: true, platform: 'node', format: 'cjs', outfile, loader: { '.zdict': 'binary' } });
+    bundle: true, platform: 'node', format: 'cjs', outfile, target: 'node16', loader: { '.zdict': 'binary' } });
   const { createShareService } = require(outfile);
   return createShareService(require('../../engine/bundle.ts'), () => readFile(wasmPath), engine.moduleDeps);
 }

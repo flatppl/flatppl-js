@@ -103,7 +103,7 @@ function host() {
 async function rawCore() {
   const outfile = path.join(fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'flatppl-share-core-')), 'core.cjs');
   await require('esbuild').build({ entryPoints: [path.join(__dirname, '../../share/src/core.ts')], bundle: true,
-    platform: 'node', format: 'cjs', outfile, loader: { '.zdict': 'binary' } });
+    platform: 'node', format: 'cjs', outfile, target: 'node16', loader: { '.zdict': 'binary' } });
   return require(outfile).createShareCore(wasm);
 }
 

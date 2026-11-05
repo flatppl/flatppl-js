@@ -17,7 +17,7 @@ before(async () => {
   temporary = await mkdtemp(join(tmpdir(), 'flatppl-share-'));
   // Hosts bundle the core with the dictionary, as here.
   await build({ entryPoints: [new URL('../src/core.ts', import.meta.url).pathname], bundle: true, platform: 'node',
-    format: 'esm', outfile: join(temporary, 'core.mjs'), loader: { '.zdict': 'binary' } });
+    format: 'esm', outfile: join(temporary, 'core.mjs'), target: 'node16', loader: { '.zdict': 'binary' } });
   const { createShareCore } = await import(pathToFileURL(join(temporary, 'core.mjs')).href);
   core = createShareCore(() => readZstdWasm(nodeModules));
 });
