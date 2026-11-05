@@ -339,6 +339,35 @@ body {
   font-size: 1em;
 }
 #info .hint { opacity: 0.5; font-style: italic; font-size: 1em; }
+#info .expr.fp-highlight { opacity: 1; font-family: var(--vscode-editor-font-family, monospace); }
+/* Source text painted by code-highlight.ts with the grammar's tok-* classes,
+   in the playground editor's palette. The playground defines --fp-syn-*; a
+   VS Code webview has no token colours, so it takes the same values, picked
+   by VS Code's theme class on <body>. Copied from flatppl-theme tokens.css;
+   WCAG AA (>= 4.9) on the Light/Dark Modern and high-contrast editor and hover
+   backgrounds. */
+.fp-highlight {
+  --hl-comment: var(--fp-syn-comment, #6f5a4d); --hl-string: var(--fp-syn-red, #a31515);
+  --hl-number: var(--fp-syn-green, #397900);   --hl-keyword: var(--fp-syn-purple, #6f42c1);
+  --hl-dist: var(--fp-syn-cyan, #007181);      --hl-set: var(--fp-syn-blue, #1c4d9a);
+  --hl-func: var(--fp-syn-yellow, #8c5c00);
+}
+body.vscode-dark .fp-highlight,
+body.vscode-high-contrast:not(.vscode-high-contrast-light) .fp-highlight {
+  --hl-comment: var(--fp-syn-comment, #8fb39c); --hl-string: var(--fp-syn-red, #fe8019);
+  --hl-number: var(--fp-syn-green, #ebdbb2);   --hl-keyword: var(--fp-syn-purple, #fb6a8a);
+  --hl-dist: var(--fp-syn-cyan, #8ec5f0);      --hl-set: var(--fp-syn-blue, #d3869b);
+  --hl-func: var(--fp-syn-yellow, #fabd2f);
+}
+.fp-highlight .tok-comment { color: var(--hl-comment); font-style: italic; }
+.fp-highlight .tok-string  { color: var(--hl-string); }
+.fp-highlight .tok-number  { color: var(--hl-number); }
+.fp-highlight .tok-keyword, .fp-highlight .tok-special, .fp-highlight .tok-mop,
+.fp-highlight .tok-reserved { color: var(--hl-keyword); }
+.fp-highlight .tok-dist, .fp-highlight .tok-placeholder,
+.fp-highlight .tok-hole    { color: var(--hl-dist); }
+.fp-highlight .tok-set, .fp-highlight .tok-const { color: var(--hl-set); }
+.fp-highlight .tok-func    { color: var(--hl-func); }
 #tooltip {
   position: absolute;
   display: none;

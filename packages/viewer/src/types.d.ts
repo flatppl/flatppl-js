@@ -63,6 +63,10 @@ declare global {
     /** URL of the flatppl_wasm_api wasm-pack `--target web` glue
      *  (its .wasm next to it); unset ⇒ the math pane is unavailable. */
     wasmApiUrl?: string;
+    /** Where window.FlatPPLTextmate fetches its grammar and onig.wasm;
+     *  unset ⇒ its page-relative `vendor/` defaults. */
+    textmateGrammarUrl?: string;
+    textmateWasmUrl?: string;
     playground?: boolean;
     [extra: string]: any;
   }

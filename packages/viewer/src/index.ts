@@ -13,6 +13,7 @@
 
 import { mount } from './main.js';
 import { renderDoc } from './markdown.js';
+import { paintCode } from './code-highlight.js';
 import { formatDiagnosticMessage } from './diagnostics.js';
 import {
   MATH_DOCUMENT_FORMATS, buildMathExportRequest, mathExportFileName,
@@ -38,6 +39,9 @@ FlatPPLViewer.mount = mount;
 // styling stays consistent across surfaces, and the gallery
 // doesn't have to bundle marked + temml itself.
 (FlatPPLViewer as any).renderDoc = renderDoc;
+// The same source highlighting as the header and the tooltip, for a host's
+// own source hover.
+(FlatPPLViewer as any).paintCode = paintCode;
 FlatPPLViewer.formatDiagnosticMessage = formatDiagnosticMessage;
 // The math document contract (flatppl-dev/math-view-design.md §4, "Whole
 // documents") for hosts that save a model's mathematics as a file through

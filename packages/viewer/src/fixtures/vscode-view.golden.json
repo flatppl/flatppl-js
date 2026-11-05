@@ -252,10 +252,29 @@
      {
       "tag": "span",
       "id": "header-expr",
-      "html": {
-       "length": 102,
-       "sha256": "3ece2be362c955de"
-      }
+      "children": [
+       {
+        "tag": "span",
+        "classes": [
+         "target-name"
+        ],
+        "text": "x"
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "target-eq"
+        ],
+        "text": "="
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = mu, sigma = sigma))"
+       }
+      ]
      },
      {
       "tag": "span",
@@ -462,9 +481,19 @@
       "tag": "div",
       "id": "info",
       "html": {
-       "length": 170,
-       "sha256": "ad70662f295e4dd9"
-      }
+       "length": 110,
+       "sha256": "ed1d46f4033d128b"
+      },
+      "children": [
+       {
+        "tag": "div",
+        "classes": [
+         "expr",
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = mu, sigma = sigma))"
+       }
+      ]
      }
     ]
    },
@@ -510,10 +539,29 @@
      {
       "tag": "span",
       "id": "header-expr",
-      "html": {
-       "length": 102,
-       "sha256": "3ece2be362c955de"
-      }
+      "children": [
+       {
+        "tag": "span",
+        "classes": [
+         "target-name"
+        ],
+        "text": "x"
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "target-eq"
+        ],
+        "text": "="
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = mu, sigma = sigma))"
+       }
+      ]
      },
      {
       "tag": "span",
@@ -729,9 +777,19 @@
       "tag": "div",
       "id": "info",
       "html": {
-       "length": 170,
-       "sha256": "ad70662f295e4dd9"
-      }
+       "length": 110,
+       "sha256": "ed1d46f4033d128b"
+      },
+      "children": [
+       {
+        "tag": "div",
+        "classes": [
+         "expr",
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = mu, sigma = sigma))"
+       }
+      ]
      }
     ]
    },
@@ -777,10 +835,29 @@
      {
       "tag": "span",
       "id": "header-expr",
-      "html": {
-       "length": 102,
-       "sha256": "3ece2be362c955de"
-      }
+      "children": [
+       {
+        "tag": "span",
+        "classes": [
+         "target-name"
+        ],
+        "text": "x"
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "target-eq"
+        ],
+        "text": "="
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = mu, sigma = sigma))"
+       }
+      ]
      },
      {
       "tag": "span",
@@ -993,9 +1070,19 @@
       "tag": "div",
       "id": "info",
       "html": {
-       "length": 170,
-       "sha256": "ad70662f295e4dd9"
-      }
+       "length": 110,
+       "sha256": "ed1d46f4033d128b"
+      },
+      "children": [
+       {
+        "tag": "div",
+        "classes": [
+         "expr",
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = mu, sigma = sigma))"
+       }
+      ]
      }
     ]
    },
@@ -1041,10 +1128,29 @@
      {
       "tag": "span",
       "id": "header-expr",
-      "html": {
-       "length": 102,
-       "sha256": "3ece2be362c955de"
-      }
+      "children": [
+       {
+        "tag": "span",
+        "classes": [
+         "target-name"
+        ],
+        "text": "x"
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "target-eq"
+        ],
+        "text": "="
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = mu, sigma = sigma))"
+       }
+      ]
      },
      {
       "tag": "span",
@@ -2050,9 +2156,19 @@
       "tag": "div",
       "id": "info",
       "html": {
-       "length": 170,
-       "sha256": "ad70662f295e4dd9"
-      }
+       "length": 110,
+       "sha256": "ed1d46f4033d128b"
+      },
+      "children": [
+       {
+        "tag": "div",
+        "classes": [
+         "expr",
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = mu, sigma = sigma))"
+       }
+      ]
      }
     ]
    },
@@ -2098,10 +2214,29 @@
      {
       "tag": "span",
       "id": "header-expr",
-      "html": {
-       "length": 102,
-       "sha256": "3ece2be362c955de"
-      }
+      "children": [
+       {
+        "tag": "span",
+        "classes": [
+         "target-name"
+        ],
+        "text": "x"
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "target-eq"
+        ],
+        "text": "="
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = mu, sigma = sigma))"
+       }
+      ]
      },
      {
       "tag": "span",
@@ -3107,9 +3242,19 @@
       "tag": "div",
       "id": "info",
       "html": {
-       "length": 201,
-       "sha256": "8c3c704277208028"
-      }
+       "length": 142,
+       "sha256": "d345e590ae8973dc"
+      },
+      "children": [
+       {
+        "tag": "div",
+        "classes": [
+         "expr",
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = 0.0, sigma = 1.0))"
+       }
+      ]
      }
     ]
    },
@@ -3155,10 +3300,29 @@
      {
       "tag": "span",
       "id": "header-expr",
-      "html": {
-       "length": 102,
-       "sha256": "3ece2be362c955de"
-      }
+      "children": [
+       {
+        "tag": "span",
+        "classes": [
+         "target-name"
+        ],
+        "text": "x"
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "target-eq"
+        ],
+        "text": "="
+       },
+       {
+        "tag": "span",
+        "classes": [
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = mu, sigma = sigma))"
+       }
+      ]
      },
      {
       "tag": "span",
@@ -4164,9 +4328,19 @@
       "tag": "div",
       "id": "info",
       "html": {
-       "length": 201,
-       "sha256": "8c3c704277208028"
-      }
+       "length": 142,
+       "sha256": "d345e590ae8973dc"
+      },
+      "children": [
+       {
+        "tag": "div",
+        "classes": [
+         "expr",
+         "fp-highlight"
+        ],
+        "text": "draw(Normal(mu = 0.0, sigma = 1.0))"
+       }
+      ]
      }
     ]
    },
@@ -4526,8 +4700,8 @@
      "data-flatppl-viewer-css": ""
     },
     "text": {
-     "length": 18606,
-     "sha256": "f5441978161e64d1"
+     "length": 20428,
+     "sha256": "a1c055cf1502a9b5"
     }
    }
   ]

@@ -93,6 +93,9 @@ const COPY_LIBS = [
   // appears. ~16 KB total.
   { pkg: 'temml',                src: 'temml/dist/Temml-Local.css',                  dst: 'temml.css' },
   { pkg: 'temml',                src: 'temml/dist/Temml.woff2',                      dst: 'Temml.woff2' },
+  // Oniguruma for the TextMate highlighter (lib/textmate-highlight.js, built
+  // in 2b). The webview fetches it on the first highlighted expression.
+  { pkg: 'vscode-oniguruma',     src: 'vscode-oniguruma/release/onig.wasm',          dst: 'onig.wasm' },
 ];
 
 for (const { pkg, src, dst } of COPY_LIBS) {
@@ -161,6 +164,34 @@ const viewerPkg = join(here, '..', 'viewer');
 //    Sibling-clone first (fastest dev loop), GitHub fetch otherwise.
 
 await syncGrammars();
+
+// ---------------------------------------------------------------------
+// 2b. The webview's source highlighter: flatppl-grammars'
+//     codemirror/textmate-highlight.ts (the playground editor's highlighter)
+//     as an IIFE publishing window.FlatPPLTextmate, plus the grammar it
+//     fetches. The viewer paints the header, info bar and tooltip with it.
+//     A grammars source without the module ships none; the text stays plain.
+
+const textmateModule = join(gramDir, 'codemirror', 'textmate-highlight.ts');
+const textmateBundle = join(libDir, 'textmate-highlight.js');
+if (existsSync(textmateModule)) {
+  await copyFile(join(gramDir, 'textmate', 'flatppl.tmLanguage.json'), join(libDir, 'flatppl.tmLanguage.json'));
+  await esbuild.build({
+    entryPoints: [textmateModule],
+    outfile: textmateBundle,
+    bundle: true,
+    minify: true,
+    format: 'iife',
+    platform: 'browser',
+    target: ['es2020'],
+    legalComments: 'inline',
+  });
+  console.log('  bundled textmate-highlight -> lib/textmate-highlight.js');
+} else {
+  await rm(textmateBundle, { force: true });
+  await rm(join(libDir, 'flatppl.tmLanguage.json'), { force: true });
+  console.warn('  grammars: codemirror/textmate-highlight.ts absent; the webview shows source unhighlighted');
+}
 
 // ---------------------------------------------------------------------
 // 2c. Provision the flatppl-lsp binary into ./bin. Source is chosen by
@@ -614,6 +645,8 @@ const bundledNames = new Set(COPY_LIBS.map(c => c.pkg));
 // echarts is now bundled via esbuild (not copied), so add it explicitly.
 bundledNames.add('echarts');
 bundledNames.add('@zip.js/zip.js');
+// lib/textmate-highlight.js bundles vscode-textmate (onig.wasm is in COPY_LIBS).
+bundledNames.add('vscode-textmate');
 // Share links: src/shareLinks.js bundles qrcode and its Node renderers, and
 // lib/zstd.wasm is the libzstd build of @bokuweb/zstd-wasm.
 for (const name of ['qrcode', 'dijkstrajs', 'pngjs', '@bokuweb/zstd-wasm']) bundledNames.add(name);
@@ -655,6 +688,7 @@ async function syncGrammars() {
   if (existsSync(grammarsSibling)) {
     console.log(`  grammars: using sibling clone at ${grammarsSibling}`);
     await copyDirRecursive(join(grammarsSibling, 'textmate'), join(gramDir, 'textmate'));
+    await copyDirRecursive(join(grammarsSibling, 'codemirror'), join(gramDir, 'codemirror'));
     // cSpell vocabulary (FlatPPL builtins/keywords) — same canonical
     // source as the grammars; contributed to the Code Spell Checker
     // via the package.json `cspell` block.
@@ -730,6 +764,7 @@ async function fetchAndExtractGrammars(url, dstDir) {
     }
     const topLevel = join(tmpExtract, entries[0]);
     await copyDirRecursive(join(topLevel, 'textmate'), join(dstDir, 'textmate'));
+    await copyDirRecursive(join(topLevel, 'codemirror'), join(dstDir, 'codemirror'));
     if (existsSync(join(topLevel, 'cspell'))) {
       await copyDirRecursive(join(topLevel, 'cspell'), join(dstDir, 'cspell'));
     }
