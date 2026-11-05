@@ -1478,7 +1478,14 @@ function liftInlineSubexpressions(bindings: any) {
     if (fArg.type === 'KeywordArg') return astArg;
     let builtinSourceName: string | null = null;
     if (fArg.type === 'Identifier') {
-      if (bindings.has(fArg.name)) return astArg;
+      // §04: an alias names the same callable, so f names its target.
+      const target = resolveCallableAlias(fArg.name,
+        { get: (n: string) => out.get(n) || bindings.get(n) });
+      if (target !== fArg.name) {
+        fArg = makeIdent(target, fArg.loc);
+        astArg.args[0] = fArg;
+      }
+      if (bindings.has(fArg.name) || out.has(fArg.name)) return astArg;
       // Spec §06's own example, `pushfwd(exp, mu)`: a bare BUILTIN
       // function name at f-position desugars to `fn(exp(_))`, the
       // same shape the explicit-fn spelling below produces —
@@ -1519,16 +1526,22 @@ function liftInlineSubexpressions(bindings: any) {
     if (!astArg.callee || astArg.callee.type !== 'Identifier') return astArg;
     if (astArg.callee.name !== 'bijection') return astArg;
     if (!astArg.args || astArg.args.length !== 3) return astArg;
+    const lookup = { get: (n: string) => out.get(n) || bindings.get(n) };
     for (let i = 0; i < 3; i++) {
       let a = astArg.args[i];
       if (a.type === 'KeywordArg') return astArg;
+      // §04: an alias names the same callable, so a part names its target.
+      if (a.type === 'Identifier') {
+        const target = resolveCallableAlias(a.name, lookup);
+        if (target !== a.name) a = makeIdent(target, a.loc);
+      }
       // Spec §06 writes `bijection(exp, log, identity)`: a bare builtin
       // has no binding to resolve, so it takes the pushfwd desugaring.
       if (a.type === 'Identifier' && !bindings.has(a.name) && !out.has(a.name)
           && BUILTIN_FUNCTIONS.has(a.name)) {
         a = builtinAsFn(a);
       }
-      if (a.type === 'Identifier') continue;
+      if (a.type === 'Identifier') { astArg.args[i] = a; continue; }
       // Scalar literal for logvolume slot is fine to keep inline.
       if (i === 2 && (a.type === 'NumberLiteral' || a.type === 'BoolLiteral')) continue;
       visit(a);

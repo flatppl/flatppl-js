@@ -4332,6 +4332,60 @@ function leafSampleIR(name: any, derivations: any, visited: any) {
  * (missing binding, non-functionof IR) — callers treat null as "not
  * available, density not tractable for this binding".
  */
+/**
+ * The density metadata of `pushfwd(f, M)` for the function binding `fnRef`:
+ * its `bijection(...)` annotation, else a §06 case-1 inversion of a plain
+ * `fn`. Null when neither applies. Both the by-name `pushfwd` derivation and
+ * an inline `pushfwd` in a kernel body attach it.
+ */
+function pushfwdBijectionMeta(fnRef: string, bindings: any): any {
+  const fBinding = bindings.get(fnRef);
+  let bijMeta = fBinding && fBinding.bijection
+    ? resolveBijectionMeta(fBinding.bijection, bindings) : null;
+  // Spec §06 "Engine contract for pushfwd density evaluation", case 1
+  // (known-bijection registry): exp/log, affine from add/sub/neg/mul/
+  // divide (positive scaling), pow with literal exponent — a conforming
+  // engine MUST evaluate these analytically WITHOUT a bijection(...)
+  // annotation. When f is a plain `fn` (no annotation), try to invert
+  // its straight-line body symbolically (bijection-registry.invertExpr,
+  // the same machinery mc-recipe uses). Success → synthesise the same
+  // { fInv, logVolume } metadata an explicit annotation would produce,
+  // so density.walkPushfwd scores it; failure (non-elementary, or the
+  // free var appears more than once) leaves bijMeta null → walkPushfwd
+  // raises the case-3 "requires a bijection annotation" static error.
+  if (!bijMeta && fBinding && fBinding.ir && fBinding.ir.kind === 'call'
+      && fBinding.ir.op === 'functionof'
+      && Array.isArray(fBinding.ir.params) && fBinding.ir.params.length === 1
+      && fBinding.ir.body) {
+    const holeName = fBinding.ir.params[0];
+    const FINV_PARAM = '__pf_y';
+    const bijReg = require('./bijection-registry.ts');
+    const inv = bijReg.invertExpr({
+      outputExpr: fBinding.ir.body,
+      freeRef: { name: holeName },
+      // FINV_PARAM is the synthesized inverse's formal parameter (= y).
+      // It MUST be ns:'%local' — the CLM subset invariant (ir-walk.ts,
+      // .bijection descent) treats formal-parameter refs as '%local';
+      // an ns:'self' ref reads as an unresolved module binding, trips
+      // CLM_SUBSET_VIOLATION, and the logdensityof derivation is then
+      // silently cascade-pruned ("no derivation") — #260.
+      outputValue: { kind: 'ref', ns: '%local', name: FINV_PARAM },
+    });
+    if (inv) {
+      // fInv body is in terms of FINV_PARAM (= y); logVolume (forward
+      // LADJ) is in terms of holeName (= the preimage x). invertExpr
+      // derives a scalar LADJ, so over an array variate it applies
+      // per element (density.pushfwdLogVolume sums it).
+      bijMeta = {
+        fForward: { body: fBinding.ir.body, paramName: holeName },
+        fInv: { body: inv.inverseIR, paramName: FINV_PARAM },
+        logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName, elementwise: true },
+      };
+    }
+  }
+  return bijMeta;
+}
+
 function resolveBijectionMeta(bij: any, bindings: any) {
   // Read body + paramName from a functionof binding. arity=1 returns
   // a fn-with-param; arity=0 returns a fn-with-null-paramName (a
@@ -5355,53 +5409,8 @@ function _expandByName(name: string, ctx: any, visited: Set<string>): IRNode | n
           kind: 'call', op: 'pushfwd',
           args: [{ kind: 'ref', ns: 'self', name: d.fnRef }, inner],
         };
-        if (bindings) {
-          const fBinding = bindings.get(d.fnRef);
-          let bijMeta = fBinding && fBinding.bijection
-            ? resolveBijectionMeta(fBinding.bijection, bindings) : null;
-          // Spec §06 "Engine contract for pushfwd density evaluation", case 1
-          // (known-bijection registry): exp/log, affine from add/sub/neg/mul/
-          // divide (positive scaling), pow with literal exponent — a conforming
-          // engine MUST evaluate these analytically WITHOUT a bijection(...)
-          // annotation. When f is a plain `fn` (no annotation), try to invert
-          // its straight-line body symbolically (bijection-registry.invertExpr,
-          // the same machinery mc-recipe uses). Success → synthesise the same
-          // { fInv, logVolume } metadata an explicit annotation would produce,
-          // so density.walkPushfwd scores it; failure (non-elementary, or the
-          // free var appears more than once) leaves bijMeta null → walkPushfwd
-          // raises the case-3 "requires a bijection annotation" static error.
-          if (!bijMeta && fBinding && fBinding.ir && fBinding.ir.kind === 'call'
-              && fBinding.ir.op === 'functionof'
-              && Array.isArray(fBinding.ir.params) && fBinding.ir.params.length === 1
-              && fBinding.ir.body) {
-            const holeName = fBinding.ir.params[0];
-            const FINV_PARAM = '__pf_y';
-            const bijReg = require('./bijection-registry.ts');
-            const inv = bijReg.invertExpr({
-              outputExpr: fBinding.ir.body,
-              freeRef: { name: holeName },
-              // FINV_PARAM is the synthesized inverse's formal parameter (= y).
-              // It MUST be ns:'%local' — the CLM subset invariant (ir-walk.ts,
-              // .bijection descent) treats formal-parameter refs as '%local';
-              // an ns:'self' ref reads as an unresolved module binding, trips
-              // CLM_SUBSET_VIOLATION, and the logdensityof derivation is then
-              // silently cascade-pruned ("no derivation") — #260.
-              outputValue: { kind: 'ref', ns: '%local', name: FINV_PARAM },
-            });
-            if (inv) {
-              // fInv body is in terms of FINV_PARAM (= y); logVolume (forward
-              // LADJ) is in terms of holeName (= the preimage x). invertExpr
-              // derives a scalar LADJ, so over an array variate it applies
-              // per element (density.pushfwdLogVolume sums it).
-              bijMeta = {
-                fForward: { body: fBinding.ir.body, paramName: holeName },
-                fInv: { body: inv.inverseIR, paramName: FINV_PARAM },
-                logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName, elementwise: true },
-              };
-            }
-          }
-          if (bijMeta) out.bijection = bijMeta;
-        }
+        const bijMeta = bindings ? pushfwdBijectionMeta(d.fnRef, bindings) : null;
+        if (bijMeta) out.bijection = bijMeta;
         return out;
       }
       case 'kernelbroadcast': {
@@ -5548,6 +5557,19 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
     const inner: any = _expandStructural(ir.args[0], ctx, visited);
     if (!inner) return null;
     return { ...ir, args: [inner].concat(ir.args.slice(1)) };
+  }
+  if (ir.op === 'pushfwd' && Array.isArray(ir.args) && ir.args.length === 2) {
+    // A pushfwd inside a kernel body has no derivation of its own, so it
+    // needs the same metadata the by-name `pushfwd` case attaches.
+    const inner: any = _expandStructural(ir.args[1], ctx, visited);
+    if (!inner) return null;
+    const out: any = { ...ir, args: [ir.args[0], inner] };
+    const f = ir.args[0];
+    if (!ir.bijection && ctx.bindings && f?.kind === 'ref' && f.ns === 'self') {
+      const bijMeta = pushfwdBijectionMeta(f.name, ctx.bindings);
+      if (bijMeta) out.bijection = bijMeta;
+    }
+    return out;
   }
   if ((ir.op === 'record' || ir.op === 'joint' || ir.op === 'jointchain')
       && Array.isArray(ir.fields)) {
