@@ -511,6 +511,13 @@ html, body {
 #source-editor .cm-gutter-lint .cm-gutterElement { padding: 0; }
 #source-editor .cm-lint-marker { width: 0.8em; height: 0.8em; }
 
+/* Binding colour. The theme has no free syntax colour: cyan is the
+   distributions' (`tok-dist`), so a binding next to `Normal` read as one
+   colour. Contrast on --fp-bg / --fp-surface-2: light 6.4 / 5.5, dark
+   6.8 / 6.1 (WCAG AA). */
+:root { --fp-syn-binding: #a8196f; }
+:root[data-theme="dark"] { --fp-syn-binding: #c3a6ff; }
+
 /* Token palette. Roughly tracks VS Code's Dark+ for familiarity, with
    one FlatPPL-specific addition — `tok-ident-binding` (identifiers
    that resolve to a binding in the current module) is rendered with
@@ -526,7 +533,7 @@ html, body {
 .tok-placeholder    { color: var(--fp-syn-cyan); }
 .tok-hole           { color: var(--fp-syn-cyan); }
 .tok-ident          { color: var(--fp-text); }
-.tok-ident-binding  { color: var(--fp-syn-cyan); }
+.tok-ident-binding  { color: var(--fp-syn-binding); }
 .tok-ident-binding:hover {
   text-decoration: underline;
   cursor: pointer;
