@@ -121,9 +121,10 @@ lp = logdensityof(M, [[3.0, 1.0, -2.0], [0.5, 0.0, 4.0]])
 
 test('a vector-base pushfwd(bijection) inside a positional joint consumes its whole variate', async () => {
   // scipy: stats.norm(0, 1).logpdf(0.5) + stats.norm(2, 4).logpdf([3, 1, -2]).sum()
+  // §06 forbids mixing shape classes in a positional joint, so both parts are vectors.
   await assertScores(`
 b = bijection(fn(2.0 * _), fn(_ / 2.0), 2.0794415416798357)
-M = joint(Normal(0.0, 1.0), pushfwd(b, ${IID_BASE}))
+M = joint(iid(Normal(0.0, 1.0), 1), pushfwd(b, ${IID_BASE}))
 lp = logdensityof(M, [0.5, 3.0, 1.0, -2.0])
 `, -8.522137216178363);
 });
