@@ -719,18 +719,21 @@ function _registerExtLinearAlgebra() {
 
 // --- special-functions ----------------------------------------------
 //
-// Spec §09. Only erf and erfc are implemented. A call to another §09
-// member refuses at type inference.
+// Spec §09. Only erf, erfc and erfcx are implemented. A call to another
+// §09 member refuses at type inference.
 
 const _erf = require('@stdlib/math-base-special-erf');
 // erfc keeps its own implementation: 1 - erf(x) cancels to 0 in the upper tail.
 const _erfc = require('@stdlib/math-base-special-erfc');
+// erfcx(x) = exp(x²)·erfc(x) stays finite where erfc underflows.
+const _erfcx = require('@stdlib/math-base-special-erfcx');
 
 function _registerSpecialFunctions() {
   const bindings = new Map<string, BindingDescriptor>();
   const unarySig = () => T.funcType([{ name: 'x', type: T.REAL }], T.REAL);
   bindings.set('erf',  { kind: 'function', sig: unarySig(), impl: _erf });
   bindings.set('erfc', { kind: 'function', sig: unarySig(), impl: _erfc });
+  bindings.set('erfcx', { kind: 'function', sig: unarySig(), impl: _erfcx });
   registerStandardModule({
     name: 'special-functions',
     compat: '0.1',
