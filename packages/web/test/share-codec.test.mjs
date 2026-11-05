@@ -358,7 +358,7 @@ async function extensionShares() {
   await build({ entryPoints: [new URL('../../vscode-extension/src/shareLinks.ts', import.meta.url).pathname],
     bundle: true, platform: 'node', format: 'cjs', outfile, loader: { '.zdict': 'binary' } });
   const { createShareService } = require(outfile);
-  return createShareService(require('../../engine/bundle.ts'), () => readFile(wasmPath));
+  return createShareService(require('../../engine/bundle.ts'), () => readFile(wasmPath), engine.moduleDeps);
 }
 
 test('golden tokens open in the playground and the playground makes them', async (t) => {

@@ -6,6 +6,7 @@ const path = require('node:path');
 const { createShareService, shareQrHtml, LINK_LIMITS, NOT_A_SHARE } = require('../src/shareLinks.js');
 const { createBundleHost } = require('../src/bundleHost.js');
 const api = require('../../engine/bundle.ts');
+const { moduleDeps } = require('../../engine/index.ts');
 
 const wasm = async () => fs.readFileSync(path.join(__dirname, '..', 'lib', 'zstd.wasm'));
 const encode = text => new TextEncoder().encode(text);
@@ -35,12 +36,13 @@ function noNetwork(t) {
 }
 
 test('golden tokens open in the extension and the extension makes them', async () => {
-  const shares = createShareService(api, wasm);
+  const shares = createShareService(api, wasm, moduleDeps);
   for (const g of (await golden).GOLDEN) {
     for (const token of [g.link, g.qr, BASE + '#share=' + g.link, BASE + '#' + g.qr]) {
       const opened = await shares.open(token);
       assert.deepEqual(await listing(opened.archive), await membersListing(shares, g.members), g.name);
-      assert.deepEqual([opened.model, opened.target, opened.link], [g.view.model || null, g.view.target || null, g.link]);
+      assert.deepEqual([opened.model, opened.target, opened.link, opened.problem],
+        [g.view.model || null, g.view.target || null, g.link, null]);
     }
     const links = await shares.create(g.members, g.view, BASE);
     assert.deepEqual(links, { url: BASE + '#share=' + g.link, qrUrl: BASE + '#' + g.qr, tooLong: false });
@@ -48,7 +50,7 @@ test('golden tokens open in the extension and the extension makes them', async (
 });
 
 test('a playground route keeps its member and binding', async () => {
-  const shares = createShareService(api, wasm);
+  const shares = createShareService(api, wasm, moduleDeps);
   const { link } = (await golden).GOLDEN[2];
   const route = await shares.open(`${BASE}#/files/new/shared-model/main.flatppl?share=${link}`);
   assert.deepEqual([route.model, route.target], ['main.flatppl', null]);
@@ -57,7 +59,7 @@ test('a playground route keeps its member and binding', async () => {
 });
 
 test('links that would not open get no link, and the message names the reason', async () => {
-  const shares = createShareService(api, wasm);
+  const shares = createShareService(api, wasm, moduleDeps);
   const view = { model: '', target: '' };
   const main = text => ({ name: 'main.flatppl', kind: 'file', bytes: encode(text) });
   await assert.rejects(shares.create([main('x = 1\n'), { name: 'data.bin', kind: 'file', bytes: new Uint8Array(2 * 2 ** 20 + 1) }],
@@ -70,7 +72,7 @@ test('links that would not open get no link, and the message names the reason', 
 
 test('example and gallery links are refused offline', async (t) => {
   noNetwork(t);
-  const shares = createShareService(api, wasm);
+  const shares = createShareService(api, wasm, moduleDeps);
   for (const input of [BASE, `${BASE}#/files/examples/eight-schools.flatppl?target=theta`,
     `${BASE}#model=examples/eight-schools.flatppl`, `${BASE}#archive=https%3A%2F%2Fexample.org%2Fm.zip`,
     'https://example.org/models/eight-schools.flatppl', 'examples/eight-schools.flatppl']) {
@@ -105,18 +107,26 @@ async function rawCore() {
   return require(outfile).createShareCore(wasm);
 }
 
-test('opening a share with a remote load_module fetches and approves nothing', async (t) => {
+/** A bundle whose member imports a module by URL. Export vendors such modules, so only a hand-made token holds one. */
+const REMOTE = 'https://example.org/r.flatppl';
+const remoteMembers = () => [
+  { name: 'main.flatppl', kind: 'file', bytes: encode('m = load_module("modules/remote.flatppl")\nx = m.r.y\n') },
+  { name: 'modules/remote.flatppl', kind: 'file', bytes: encode(`r = load_module("${REMOTE}")\n`) },
+];
+const REMOTE_PROBLEM = `modules/remote.flatppl: Bundle paths must be relative: '${REMOTE}'`;
+
+test('a remote load_module in a decoded bundle fails with the engine message, and nothing is fetched or approved', async (t) => {
   noNetwork(t);
-  const shares = createShareService(api, wasm);
-  const main = { name: 'main.flatppl', kind: 'file', bytes: encode('r = load_module("https://example.org/r.flatppl")\nx = r.y\n') };
-  // Bundle export vendors remote modules, so only a hand-made token holds one, and no host makes a link for it.
-  await assert.rejects(shares.create([main], { model: '', target: '' }, BASE), /Bundle paths must be relative/);
-  const { link } = await (await rawCore()).encode({ model: '', target: '' }, [main]);
+  const shares = createShareService(api, wasm, moduleDeps);
+  await assert.rejects(shares.create(remoteMembers(), { model: '', target: '' }, BASE),
+    error => error.message === `The playground would not open this link: ${REMOTE_PROBLEM}.`);
+  const { link } = await (await rawCore()).encode({ model: '', target: '' }, remoteMembers());
   const opened = await shares.open(BASE + '#share=' + link);
+  assert.equal(opened.problem, REMOTE_PROBLEM);
   const h = host();
   const id = '/flatppl-share/remote.flatppl.zip';
   const graph = await h.bundles.mount(id, opened.archive, h.uri({ scheme: 'flatppl-share', path: '/remote' }), LINK_LIMITS);
-  // Visualize resolves the member as the panel does. The engine keeps bundle paths relative (spec section 04).
+  // Visualize resolves the member as the panel does, which is not strict.
   const member = h.bundles.uriFor(graph.primaryPath);
   await assert.rejects(h.bundles.resolve(member, undefined, true), /Bundle paths must be relative/);
   await h.bundles.resolve(member, undefined, false);
@@ -124,7 +134,7 @@ test('opening a share with a remote load_module fetches and approves nothing', a
 });
 
 test('the QR webview shows the symbol and the escaped link', async () => {
-  const shares = createShareService(api, wasm);
+  const shares = createShareService(api, wasm, moduleDeps);
   const g = (await golden).GOLDEN[1];
   const links = await shares.create(g.members, g.view, BASE);
   const qr = await shares.qr(links);
@@ -142,7 +152,7 @@ function commandHarness(t, { files = {}, target = null, baseUrl } = {}) {
   noNetwork(t);
   const h = host();
   const { createShareCommands } = require('../src/shareCommands.js');
-  const shown = [], clipboard = [], saved = [], panels = [], opened = [];
+  const shown = [], clipboard = [], saved = [], panels = [], opened = [], warnings = [];
   const fsFiles = new Map(Object.entries(files).map(([name, text]) => [`file:///models/${name}`, encode(text)]));
   const uri = (fields) => h.uri(fields);
   const vscode = {
@@ -162,7 +172,7 @@ function commandHarness(t, { files = {}, target = null, baseUrl } = {}) {
       async withProgress(_, task) { return task(); },
       async showInputBox() { return vscode.window.input; },
       showInformationMessage() {}, showErrorMessage(message) { throw new Error(message); },
-      async showWarningMessage() { return 'Copy Link'; },
+      async showWarningMessage(message) { warnings.push(message); return 'Copy Link'; },
       async showSaveDialog({ defaultUri }) { return defaultUri; },
       async showTextDocument(value) {
         const bytes = await h.bundles.provider.readFile(value);
@@ -192,7 +202,7 @@ function commandHarness(t, { files = {}, target = null, baseUrl } = {}) {
   const lines = (document, name) => Buffer.from(document.getText()).toString().split('\n')
     .findIndex(line => line.startsWith(name + ' '));
   const commands = createShareCommands(vscode, {
-    bundleHost: h.bundles, bundleApi: api, shares: () => createShareService(api, wasm),
+    bundleHost: h.bundles, bundleApi: api, shares: () => createShareService(api, wasm, moduleDeps),
     shownTarget: () => target, bindingLine: (document, name) => { const i = lines(document, name); return i < 0 ? undefined : i; },
     opened: primaryPath => opened.push(primaryPath),
   });
@@ -201,7 +211,7 @@ function commandHarness(t, { files = {}, target = null, baseUrl } = {}) {
       getText: () => Buffer.from(fsFiles.get('file:///models/' + name)).toString('utf8') };
     vscode.window.activeTextEditor = { document };
   };
-  return { vscode, commands, shown, clipboard, saved, panels, opened, edit, calls: h.calls };
+  return { vscode, commands, shown, clipboard, saved, panels, opened, warnings, edit, calls: h.calls };
 }
 
 test('Open Share Link mounts the bundle read-only and shows the route member at its binding', async (t) => {
@@ -219,6 +229,15 @@ test('Open Share Link mounts the bundle read-only and shows the route member at 
   assert.equal(c.clipboard[0], `${BASE}#share=${GOLDEN[2].link}`);
 });
 
+test('Open Share Link shows the source of a bundle with a remote load_module and names the member', async (t) => {
+  const c = commandHarness(t);
+  c.vscode.window.input = BASE + '#share=' + (await (await rawCore()).encode({ model: '', target: '' }, remoteMembers())).link;
+  await c.commands.openShareLink();
+  assert.equal(c.shown[0].document.uri.path, '/main.flatppl');
+  assert.deepEqual(c.warnings, [`FlatPPL: this shared model will not resolve. ${REMOTE_PROBLEM}`]);
+  assert.deepEqual(c.calls, { approve: [], cache: [], reads: [] });
+});
+
 test('Open Share Link refuses gallery links before any network access', async (t) => {
   const c = commandHarness(t);
   c.vscode.window.input = `${BASE}#/files/examples/eight-schools.flatppl?target=theta`;
@@ -232,7 +251,7 @@ test('Copy Share Link packs a workspace model with the shown binding and the con
   c.edit('main.flatppl');
   await c.commands.copyShareLink();
   assert.match(c.clipboard[0], /^https:\/\/playground\.example\/sub\/#share=A[A-Za-z0-9_-]+$/);
-  const opened = await createShareService(api, wasm).open(c.clipboard[0]);
+  const opened = await createShareService(api, wasm, moduleDeps).open(c.clipboard[0]);
   assert.deepEqual([opened.model, opened.target], [null, 'y']);
   const listed = await listing(opened.archive);
   assert.deepEqual(Object.keys(listed).sort(), ['main.flatppl', 'modules/helper.flatppl']);

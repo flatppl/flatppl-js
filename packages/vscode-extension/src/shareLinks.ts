@@ -24,24 +24,35 @@ export interface OpenedShare {
   model: string | null;
   target: string | null;
   link: string;
+  /** Why the view would not resolve, such as a remote `load_module`, or null. */
+  problem: string | null;
 }
 
 const CHECK_ID = '/flatppl-share/check.flatppl.zip';
 
-export function createShareService(api: BundleApi, wasm: () => Promise<BufferSource>) {
+/** `moduleDeps` lists a source's `load_module` paths. It names the member behind a path error. */
+export function createShareService(api: BundleApi, wasm: () => Promise<BufferSource>,
+  moduleDeps: (source: string) => string[] = () => []) {
   const core = createShareCore(wasm);
 
   /**
-   * Open a link as a playground visitor does: rebuild its ZIP, open it under
-   * the browser limits, select its view and resolve the view's dependencies.
+   * Open a bundle as a playground visitor does: open the rebuilt ZIP under the
+   * browser limits, select the view and resolve the view's dependencies.
+   * Reads stay inside the ZIP, so nothing is fetched or approved.
    */
-  async function check(token: string): Promise<void> {
-    const { view, members } = await core.decode(token);
-    const zip = await membersArchive(members, api);
-    const primary = view.model ? api.archiveMemberId(CHECK_ID, view.model) : CHECK_ID;
-    const selected = members.find(member => member.name === view.model && member.kind === 'file');
-    await api.resolveBundleBytes(primary, view.model ? selected?.bytes ?? new Uint8Array() : zip,
-      async path => path === CHECK_ID ? zip : null, { strict: true, limits: LINK_LIMITS });
+  async function check(zip: Uint8Array, model: string, members: ShareMember[]): Promise<void> {
+    const primary = model ? api.archiveMemberId(CHECK_ID, model) : CHECK_ID;
+    const selected = members.find(member => member.name === model && member.kind === 'file');
+    try {
+      await api.resolveBundleBytes(primary, model ? selected?.bytes ?? new Uint8Array() : zip,
+        async path => path === CHECK_ID ? zip : null, { strict: true, limits: LINK_LIMITS });
+    } catch (error: any) {
+      // Bundles keep load_module paths relative (spec section 04), so a URL import fails here.
+      const path = /^Bundle paths must be relative: '(.*)'$/.exec(error.message)?.[1];
+      const importer = path && members.find(member => member.kind === 'file' && member.name.endsWith('.flatppl')
+        && moduleDeps(new TextDecoder().decode(member.bytes)).includes(path));
+      throw new Error(importer ? `${importer.name}: ${error.message}` : error.message);
+    }
   }
 
   return {
@@ -49,7 +60,9 @@ export function createShareService(api: BundleApi, wasm: () => Promise<BufferSou
     async create(members: ShareMember[], view: ShareView, baseUrl: string): Promise<ShareLinks> {
       const links = makeShareLinks(await core.encode(view, members), baseUrl);
       if (links.tooLong) throw new ShareLimitError('The link exceeds 65,536 characters.');
-      try { await check(links.url.slice(links.url.indexOf('#share=') + 7)); }
+      // Check the link as decoded, not the input members.
+      const decoded = await core.decode(links.url.slice(links.url.indexOf('#share=') + 7));
+      try { await check(await membersArchive(decoded.members, api), decoded.view.model, decoded.members); }
       catch (error: any) {
         const { maxMemberBytes, maxTotalBytes, maxEntries, maxDepth } = LINK_LIMITS;
         const limits = /limit/i.test(error.message) ? ` The playground opens links with at most ${maxMemberBytes / 2 ** 20} MiB`
@@ -66,9 +79,12 @@ export function createShareService(api: BundleApi, wasm: () => Promise<BufferSou
       const address = shareAddress(input);
       if (!address) throw new Error(NOT_A_SHARE);
       const { link, view, members } = await core.decode(address.token);
+      const model = (address.model ?? view.model) || null;
       const target = address.target === undefined ? view.target : address.target;
-      return { archive: await membersArchive(members, api), model: (address.model ?? view.model) || null,
-        target: target || null, link };
+      const archive = await membersArchive(members, api);
+      const shown = model && members.some(member => member.name === model && member.kind === 'file') ? model : '';
+      const problem = await check(archive, shown, members).then(() => null, (error: any) => error.message as string);
+      return { archive, model, target: target || null, link, problem };
     },
   };
 }

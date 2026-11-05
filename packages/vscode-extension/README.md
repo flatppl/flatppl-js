@@ -57,7 +57,9 @@ bundle, so nothing is uploaded.
   read-only bundle, at its member and binding. It accepts only links that
   carry the bundle. It refuses example and gallery links, which name a model
   on the website. Opening needs no network access, and the visualizer runs
-  only when you start it.
+  only when you start it. Bundles keep module paths relative, so a shared
+  model that loads a module by URL does not resolve. Opening it shows the
+  source and names the member that loads the URL.
 
 Before it hands out a link, the extension opens it under the playground's
 limits. A model that would not open gets no link, and the message names the

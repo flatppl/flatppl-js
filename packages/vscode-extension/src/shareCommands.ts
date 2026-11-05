@@ -103,6 +103,7 @@ function createShareCommands(vscode: any, host: ShareHost) {
         editor.selection = new vscode.Selection(at, at);
         editor.revealRange(new vscode.Range(at, at), vscode.TextEditorRevealType.InCenter);
       }
+      if (shared.problem) vscode.window.showWarningMessage('FlatPPL: this shared model will not resolve. ' + shared.problem);
     },
   };
 }

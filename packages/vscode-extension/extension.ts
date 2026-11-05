@@ -411,7 +411,8 @@ function activate(context: any) {
   const shareCommands = createShareCommands(vscode, {
     bundleHost, bundleApi,
     shares: () => shareService ||= require('./src/shareLinks').createShareService(bundleApi,
-      () => fs.promises.readFile(path.join(context.extensionPath, 'lib', 'zstd.wasm'))),
+      () => fs.promises.readFile(path.join(context.extensionPath, 'lib', 'zstd.wasm')),
+      require('./lib/engine.min.js').moduleDeps),
     shownTarget: (uri: any) => FlatPPLPanel.currentPanel?.shownTarget(uri) ?? null,
     bindingLine: (document: any, name: string) => getParsed(document).bindings.get(name)?.line,
     opened: (primaryPath: string) => { lastBundle = primaryPath; },
