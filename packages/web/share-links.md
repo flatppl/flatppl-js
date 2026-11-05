@@ -75,11 +75,18 @@ source until the visitor chooses **Run preview**.
 A container holding only the regular `main.flatppl` opens as one file. This
 changes its presentation, not the archive rules or version-1 wire format.
 
+## Hosts
+
+The playground and the VS Code extension make and open links with the same
+codec, `packages/share`, and the same limits. The extension runs the same check
+before it hands out a link. It opens only links that carry the bundle, and
+refuses example and gallery links.
+
 ## Versions
 
 | Version | Dictionary | Bytes | SHA-256 |
 |---|---|---|---|
-| 1 | `src/share-dictionaries/v1.zdict` | 65,533 | `25808cf2f2261b2012104ef3677bc7d70b38fdee3205c1b5f7ff9a89fb8d216e` |
+| 1 | `../share/src/dictionaries/v1.zdict` | 65,533 | `25808cf2f2261b2012104ef3677bc7d70b38fdee3205c1b5f7ff9a89fb8d216e` |
 
 Add a version only for a gain measured on models the dictionary was not
 trained on. Version 1 used leave-one-out over the gallery: each example

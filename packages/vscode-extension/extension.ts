@@ -32,6 +32,7 @@ const { prefetchDependencies } = require('./src/dependencyPrefetch');
 const { REMOTE_SCHEME, BUNDLE_SCHEME, urlFromRemoteUri, enginePathOf, localSourceUri } = require('./src/remoteModule');
 const bundleApi = require('./lib/bundle.cjs');
 const { createBundleHost } = require('./src/bundleHost');
+const { createShareCommands } = require('./src/shareCommands');
 // "Export math as HTML / LaTeX / Typst": the host-agnostic core (bundle
 // walk → flatppl-rust `export_math` → write beside the source). The wasm
 // API runs here in the extension host from lib/flatppl_wasm_api.cjs (the
@@ -404,6 +405,21 @@ function activate(context: any) {
     await vscode.workspace.fs.writeFile(target, bytes);
     vscode.window.showInformationMessage('FlatPPL: bundle exported.');
   });
+
+  // Playground share links. The codec and the QR library load on the first share command.
+  let shareService: any;
+  const shareCommands = createShareCommands(vscode, {
+    bundleHost, bundleApi,
+    shares: () => shareService ||= require('./src/shareLinks').createShareService(bundleApi,
+      () => fs.promises.readFile(path.join(context.extensionPath, 'lib', 'zstd.wasm')),
+      require('./lib/engine.min.js').moduleDeps),
+    shownTarget: (uri: any) => FlatPPLPanel.currentPanel?.shownTarget(uri) ?? null,
+    bindingLine: (document: any, name: string) => getParsed(document).bindings.get(name)?.line,
+    opened: (primaryPath: string) => { lastBundle = primaryPath; },
+  });
+  bundleCommand('flatppl.copyShareLink', shareCommands.copyShareLink);
+  bundleCommand('flatppl.showShareQr', shareCommands.showShareQr);
+  bundleCommand('flatppl.openShareLink', shareCommands.openShareLink);
   // Cache parsed results to avoid re-parsing on every cursor move
   let cachedUri = '';
   let cachedVersion = -1;

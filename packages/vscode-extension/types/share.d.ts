@@ -1,0 +1,5 @@
+// Share-link dictionaries (packages/share), embedded by esbuild's binary loader.
+declare module '*.zdict' {
+  const bytes: Uint8Array;
+  export default bytes;
+}

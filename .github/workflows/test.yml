@@ -138,10 +138,10 @@ jobs:
         # third-party-licenses generator finds every dep.
         run: npm run build:vendor
 
-      - name: Run viewer, extension, and web tests
+      - name: Run viewer, share, extension, and web tests
         # Extension tests import generated .js files from build:vendor.
         # These packages have test scripts but no test:coverage scripts.
-        run: npm test --workspace=packages/viewer --workspace=packages/vscode-extension --workspace=packages/web
+        run: npm test --workspace=packages/viewer --workspace=packages/share --workspace=packages/vscode-extension --workspace=packages/web
 
   e2e-build:
     # Builds the playground once (with the flatppl-rust wasm for the math

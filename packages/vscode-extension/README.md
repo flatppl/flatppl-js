@@ -41,6 +41,31 @@ folder. It refuses existing folders and archives with symbolic links, because
 VS Code's filesystem API cannot preserve links. ZIP loading works without the
 optional Rust converter artifact.
 
+## Share links
+
+The extension makes and opens the playground's share links, in the same
+format ([share-links.md](../web/share-links.md)). A link carries the whole
+bundle, so nothing is uploaded.
+
+- **FlatPPL: Copy Share Link** puts a link to the active model on the
+  clipboard. A model in an opened bundle shares the whole bundle and opens at
+  that member. Any other model is packed as **Export Bundle** packs it. The
+  link also opens the binding that the visualizer shows.
+- **FlatPPL: Show Share QR Code** shows the same link as a QR code, which you
+  can save as SVG or PNG.
+- **FlatPPL: Open Share Link** opens a pasted link, QR code link or token as a
+  read-only bundle, at its member and binding. It accepts only links that
+  carry the bundle. It refuses example and gallery links, which name a model
+  on the website. Opening needs no network access, and the visualizer runs
+  only when you start it. Bundles keep module paths relative, so a shared
+  model that loads a module by URL does not resolve. Opening it shows the
+  source and names the member that loads the URL.
+
+Before it hands out a link, the extension opens it under the playground's
+limits. A model that would not open gets no link, and the message names the
+limit or the missing dependency. The setting `flatppl.shareBaseUrl` sets the
+playground URL in front of the token (default `https://live.flatppl.org/`).
+
 ## Remote sources
 
 An `http` or `https` source of `load_module` or `load_data` is fetched into an
