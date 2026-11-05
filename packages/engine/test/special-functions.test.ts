@@ -80,6 +80,18 @@ test('determinised output scores the kept module call', async () => {
   close((await value(src, 'lp'))[0], PROBIT_LD, 1e-14, 'lp');
 });
 
+// Oracle: mpmath at 60 digits, exp(x²)·erfc(x).
+test('erfcx stays finite where erfc underflows', async () => {
+  const cases: Array<[number, number]> = [
+    [-1.3, 10.481318741176324], [0.0, 1.0], [0.7, 0.525930337349441],
+    [10, 0.05614099274382259], [27, 0.02088160799042094], [1e4, 5.641895807268084e-05],
+  ];
+  for (const [x, want] of cases) close(impl('erfcx')(x), want, 1e-15, `erfcx(${x})`);
+  const src = SF + 'a = sf.erfcx(x = 27.0)\n';
+  assert.deepEqual(processSource(src).diagnostics, []);
+  close((await value(src, 'a'))[0], 0.02088160799042094, 1e-15, 'a');
+});
+
 test('an unimplemented §09 member refuses by name', () => {
   const { diagnostics } = processSource(SF + 'a = sf.bessel_j(1.0, 2.0)\n');
   assert.equal(diagnostics.length, 1);
