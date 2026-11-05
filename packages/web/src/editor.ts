@@ -38,25 +38,59 @@
 (function (globalScope: any) {
   // One-entry parse memo. Every per-keystroke consumer (binding overlay,
   // hover, cursor-binding, go-to-def) shares this so a single document
-  // version is parsed + tokenized once, not once per consumer. Keyed by
-  // exact text; replaced when the text changes. processed may be null
-  // (parse failure) — callers already guard for that.
+  // version is parsed once, not once per consumer. Keyed by exact text;
+  // replaced when the text changes. processed may be null (parse
+  // failure) — callers already guard for that.
+  interface BindingRef { from: number; to: number; name: string }
   let _memoText: string | null = null;
   let _memoProcessed: any = null;
-  let _memoTokens: any[] | null = null;
-  function parseCached(text: string): { processed: any; tokens: any[] } {
-    if (text === _memoText && _memoTokens !== null) {
-      return { processed: _memoProcessed, tokens: _memoTokens };
+  let _memoRefs: BindingRef[] | null = null;
+  function parseCached(text: string): { processed: any; refs: BindingRef[] } {
+    if (text === _memoText && _memoRefs !== null) {
+      return { processed: _memoProcessed, refs: _memoRefs };
     }
     const FE = globalScope.FlatPPLEngine;
     let processed: any = null;
-    let tokens: any[] = [];
     if (FE) {
       try { processed = FE.processSource(text); } catch (_) { processed = null; }
-      try { tokens = (FE.tokenize(text).tokens) || []; } catch (_) { tokens = []; }
     }
-    _memoText = text; _memoProcessed = processed; _memoTokens = tokens;
-    return { processed, tokens };
+    const refs = bindingRefs(processed, text);
+    _memoText = text; _memoProcessed = processed; _memoRefs = refs;
+    return { processed, refs };
+  }
+
+  /** Source ranges of the names that denote a module binding: binding
+      targets and Identifier references in the parsed AST. A token-name
+      match also hits keyword-argument names, record fields, member names
+      and function or lambda parameters that shadow a binding. The parser
+      keeps those out of Identifier nodes, so the AST is the authority.
+      Parser-made callees (`pow` for `^`, `broadcast` for `f.(…)`) carry
+      the location of other text, so a range must spell the name. */
+  function bindingRefs(processed: any, text: string): BindingRef[] {
+    const refs: BindingRef[] = [];
+    if (!processed || !processed.bindings || !processed.ast) return refs;
+    const bindings = processed.bindings;
+    const lineStarts = computeLineStarts(text);
+    const seen = new Set<number>();
+    const visited = new WeakSet<object>();
+    const walk = (node: any): void => {
+      if (!node || typeof node !== 'object' || visited.has(node)) return;
+      visited.add(node);
+      if (Array.isArray(node)) { for (const child of node) walk(child); return; }
+      if (node.type === 'Identifier' && node.loc && bindings.has(node.name)) {
+        const from = offsetOf(node.loc.start, lineStarts);
+        const to = offsetOf(node.loc.end, lineStarts);
+        if (to > from && !seen.has(from) && text.slice(from, to) === node.name) {
+          seen.add(from);
+          refs.push({ from, to, name: node.name });
+        }
+      }
+      for (const key in node) {
+        if (key !== 'loc') walk(node[key]);
+      }
+    };
+    walk(processed.ast);
+    return refs.sort((a, b) => a.from - b.from);
   }
 
   // Fold multi-line `[ … ]` regions. FlatPPL's `{ }` are measure/record
@@ -122,29 +156,15 @@
     const FE = globalScope.FlatPPLEngine;
 
     function bindingOverlay(view: any) {
-      const B = FE && FE.builtins;
-      if (!FE || !B) return Decoration.none;
-      const text = view.state.doc.toString();
-      const { processed, tokens } = parseCached(text);
-      let bindings: Set<unknown> | null = null;
-      if (processed && processed.bindings) bindings = new Set(processed.bindings.keys());
-      if (!bindings) return Decoration.none;
-      const lineStarts = computeLineStarts(text);
-      const ranges: any[] = [];
-      for (let i = 0; i < tokens.length; i++) {
-        const tok = tokens[i];
-        if (tok.type !== 'IDENT' || !bindings.has(tok.value)) continue;
-        const from = offsetOf(tok.loc.start, lineStarts);
-        const to   = offsetOf(tok.loc.end,   lineStarts);
-        if (to <= from) continue;
-        ranges.push(
-          Decoration.mark({
-            class: 'tok-ident-binding',
-            attributes: { 'data-binding': tok.value },
-          }).range(from, to)
-        );
-      }
-      return Decoration.set(ranges, true);
+      if (!FE) return Decoration.none;
+      const { refs } = parseCached(view.state.doc.toString());
+      if (refs.length === 0) return Decoration.none;
+      return Decoration.set(refs.map((ref) =>
+        Decoration.mark({
+          class: 'tok-ident-binding',
+          attributes: { 'data-binding': ref.name },
+        }).range(ref.from, ref.to)
+      ), true);
     }
 
     return ViewPlugin.fromClass(
@@ -181,23 +201,16 @@
     }
 
     return hoverTooltip(function (view: any, pos: number, side: number) {
-      const text = view.state.doc.toString();
-      const { processed, tokens } = parseCached(text);
+      const { processed, refs } = parseCached(view.state.doc.toString());
       if (!processed || !processed.bindings) return null;
-      const lineStarts = computeLineStarts(text);
-      // Locate the IDENT token under `pos`. CodeMirror's hover API
+      // Locate the binding reference under `pos`. CodeMirror's hover API
       // gives us a `side`: -1 means the caret is on the left edge
-      // of `pos`, +1 the right edge. We accept any IDENT whose
+      // of `pos`, +1 the right edge. We accept any reference whose
       // range [from, to] contains pos in the half-open sense
       // [from, to), with the side handling the boundary case.
-      for (let i = 0; i < tokens.length; i++) {
-        const tok = tokens[i];
-        if (tok.type !== 'IDENT') continue;
-        const from = offsetOf(tok.loc.start, lineStarts);
-        const to   = offsetOf(tok.loc.end,   lineStarts);
+      for (const { from, to, name } of refs) {
         if (pos < from || pos > to) continue;
         if ((pos === from && side < 0) || (pos === to && side > 0)) continue;
-        const name = tok.value;
         const binding = processed.bindings.get(name);
         if (!binding) return null;
         // Build the tooltip body. The `name = expr` line uses
@@ -450,18 +463,9 @@
       if (!FE) return null;
       const head = view.state.selection.main.head;
       const doc = view.state.doc.toString();
-      const { processed, tokens } = parseCached(doc);
-      if (!processed || !processed.bindings) return null;
-      const bindings = new Set(processed.bindings.keys());
-      const lineStarts = computeLineStarts(doc);
-      for (let i = 0; i < tokens.length; i++) {
-        const tok = tokens[i];
-        if (tok.type !== 'IDENT') continue;
-        const from = offsetOf(tok.loc.start, lineStarts);
-        const to   = offsetOf(tok.loc.end,   lineStarts);
-        if (head >= from && head <= to && bindings.has(tok.value)) {
-          return tok.value;
-        }
+      const { refs } = parseCached(doc);
+      for (const { from, to, name } of refs) {
+        if (head >= from && head <= to) return name;
       }
       return null;
     }
@@ -855,5 +859,6 @@
 
   globalScope.FlatPPLWebEditor = {
     mountEditor: mountEditor,
+    bindingRefs: (text: string) => parseCached(text).refs,
   };
 })(typeof window !== 'undefined' ? window : globalThis);
