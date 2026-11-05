@@ -1624,13 +1624,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // reification node: an inline `fn(...)` / `functionof(...)`, or a self-ref
   // binding to one. null for anything else.
   function _reificationWithArity(fExpr: any, arity = 1): any {
-    let reif: any = null;
-    if (fExpr && fExpr.op === 'functionof') reif = fExpr;
-    else if (fExpr && fExpr.kind === 'ref' && fExpr.ns === 'self') {
-      const b = loweredModule.bindings.get(fExpr.name);
-      if (b && b.rhs && b.rhs.op === 'functionof') reif = b.rhs;
-    }
-    if (!reif || !Array.isArray(reif.params) || reif.params.length !== arity || !reif.body) {
+    let reif: any = resolveBindingRefs(fExpr);
+    // §06: a bijection "is semantically `f`".
+    for (let i = 0; i < 16 && reif?.op === 'bijection'; i++) reif = resolveBindingRefs(reif.args?.[0]);
+    if (!reif || reif.op !== 'functionof' || !Array.isArray(reif.params)
+        || reif.params.length !== arity || !reif.body) {
       return null;
     }
     return reif;
