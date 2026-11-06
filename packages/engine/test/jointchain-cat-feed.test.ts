@@ -87,7 +87,7 @@ function normLogpdf(x: number, mu: number, sigma: number) {
 // was a silent NaN in the third variate for every one of them.
 const PREV_ONLY_SPELLINGS: Array<[string, string]> = [
   ['fn placeholder', 'fn(Normal(mu = _, sigma = 1.0))'],
-  ['functionof named', 'functionof(Normal(mu = prev, sigma = 1.0), prev = prev)'],
+  ['functionof named', 'functionof(Normal(mu = _prev_, sigma = 1.0), prev = _prev_)'],
   ['lambda',         'p -> Normal(mu = p, sigma = 1.0)'],
 ];
 
@@ -114,7 +114,7 @@ test('a 4-component prev-only chain names its first bad step', () => {
   // Step 2 is fed 2 variates and step 3 is fed 3, so both report.
   const errs = errorsOf(`
 flatppl_compat = "0.1"
-K = functionof(Normal(mu = prev, sigma = 0.5), prev = prev)
+K = functionof(Normal(mu = _prev_, sigma = 0.5), prev = _prev_)
 ch = jointchain(Normal(0, 0.1), K, K, K)
 `);
   assert.equal(errs.length, 2, JSON.stringify(errs.map((d: any) => d.message)));
