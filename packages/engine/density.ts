@@ -1756,13 +1756,25 @@ function tryResolveTruncateNormalizerShift(truncateIR: any, opts: any, baseEnv: 
   // Unrecognised set shape: not a CDF-bounds case.
   const bounds = require('./ir-shared.ts').scalarSetBounds(setDescr);
   if (!bounds) return null;
-  const { lo, hi } = bounds;
+  let { lo, hi } = bounds;
 
-  const baseIR: any = truncateIR.args[0];
+  let baseIR: any = truncateIR.args[0];
+  const { scalarAffinePushfwd, affinePreimage } = require('./normalize-mass.ts');
+  const affine = scalarAffinePushfwd(baseIR);
+  if (affine) {
+    // A run-time scale picks the orientation of the preimage by its sign.
+    const preimage = affinePreimage(lo, hi, +samplerLib.evaluateExpr(affine.shift, callEnv),
+      +samplerLib.evaluateExpr(affine.scale, callEnv));
+    if (!preimage) return null;
+    [lo, hi] = preimage;
+    baseIR = affine.leaf;
+  }
   if (!baseIR || baseIR.kind !== 'call' || typeof baseIR.op !== 'string') return null;
   const kernelName: string = baseIR.op;
   if (!samplerLib.isKnownDistribution(kernelName)) return null; // multivariate / unknown
   const entry = samplerLib.lookupDistribution(baseIR);
+  // The atoms of an affine image of a discrete law are not integers.
+  if (affine && entry.discrete) return null;
   if (entry.discrete) {
     // Z is the base's mass on the atoms S contains, closed ends included.
     const dist = samplerLib.makeAnalytical(baseIR, callEnv);
