@@ -987,14 +987,16 @@ const ARITH_OPS = {
     // Both denote the same vec-of-vecs; output is always a flat
     // rank-2 matrix Value (no outerRank tag — every axis is a
     // loop axis at the matrix level).
-    if (valueLib.isNestedVectorValue(vs) && vs.shape.length === 2) {
-      // Fast path: storage layout is already row-major-rows. Strip
-      // the outerRank tag to expose the value AS a matrix.
-      return valueLib.promoteNestedToMatrix(vs);
+    // Type inference proves the argument is a vector of vectors, so a rank-2
+    // Value is one whatever its outerRank tag. Variate binding in the
+    // density path drops the tag.
+    if (valueLib.isValue(vs) && vs.shape.length === 2) {
+      return valueLib.promoteNestedToMatrix(valueLib._logicalDense(vs));
     }
-    if (!Array.isArray(vs) || vs.length === 0) {
+    if (valueLib.isValue(vs) ? valueLib.numel(vs.shape) === 0 : Array.isArray(vs) && vs.length === 0) {
       return { shape: [0, 0], data: new Float64Array(0) };
     }
+    if (!Array.isArray(vs)) _refuseStackInput('rowstack', vs);
     const m = vs.length;
     const firstRow = vs[0];
     const n = valueLib.isValue(firstRow) ? firstRow.shape[firstRow.shape.length - 1]
@@ -1016,7 +1018,7 @@ const ARITH_OPS = {
     // For a tagged nested-vector Value the row-major storage holds
     // each "column" contiguously, so we must walk it explicitly
     // rather than just stripping the tag.
-    if (valueLib.isNestedVectorValue(vs) && vs.shape.length === 2) {
+    if (valueLib.isValue(vs) && vs.shape.length === 2) {
       const colsN = vs.shape[0];
       const m = vs.shape[1];
       const out = _stackOut(m * colsN);
@@ -1029,9 +1031,10 @@ const ARITH_OPS = {
       }
       return _stackResult(out, [m, colsN]);
     }
-    if (!Array.isArray(vs) || vs.length === 0) {
+    if (valueLib.isValue(vs) ? valueLib.numel(vs.shape) === 0 : Array.isArray(vs) && vs.length === 0) {
       return { shape: [0, 0], data: new Float64Array(0) };
     }
+    if (!Array.isArray(vs)) _refuseStackInput('colstack', vs);
     const cols = vs.length;
     const firstCol = vs[0];
     const m = valueLib.isValue(firstCol) ? firstCol.shape[firstCol.shape.length - 1]
@@ -2184,6 +2187,11 @@ for (const op of ['cumsum', 'cumprod', 'cummax', 'cummin', 'l1unit', 'l2unit', '
     if ((a?.t === 'T' || a?.t === 'A') && valueLib.isValue(a) && a.shape.length === 1 && out?.shape) out.t = 'T';
     return out;
   };
+}
+
+function _refuseStackInput(op: string, vs: any): never {
+  const shape = valueLib.isValue(vs) ? JSON.stringify(vs.shape) : typeof vs;
+  throw new Error(op + ': expects a vector of vectors, got ' + shape);
 }
 
 // rowstack / colstack cells. A complex entry — a `{re, im}` scalar in a JS row,
