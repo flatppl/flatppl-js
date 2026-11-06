@@ -1206,6 +1206,12 @@ function _packUniformCells(out: any[], N: any): any {
     const base = i * cellLen;
     for (let j = 0; j < cellLen; j++) data[base + j] = +src[j];
   }
+  // A nested-vector cell (§03 vector of vectors, or a splitblocks outer
+  // array) keeps its outer axes behind the atom axis.
+  const outerRank = out[0]?.outerRank;
+  if (typeof outerRank === 'number' && out.every((s: any) => s?.outerRank === outerRank)) {
+    return { shape: [N, ...cell0], data, outerRank: outerRank + 1 };
+  }
   return { shape: [N, ...cell0], data };
 }
 
