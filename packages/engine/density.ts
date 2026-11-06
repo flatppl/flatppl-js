@@ -2199,6 +2199,13 @@ function _pushfwdInverseAtomIndependent(bij: any, y: any, baseEnv: any, overlay:
 function pushfwdPreimage(y: any, x: any): any {
   if (!valueLib.isValue(y)) {
     if (typeof x === 'number') return x;
+    if (valueLib.isValue(x) && x.shape.length === 0) {
+      // The whole-map LADJ of a broadcast sums over cells, and §07 gives
+      // `sum` no scalar, so a dotted map over a scalar base has none.
+      throw new Error('density: pushfwd over a scalar base needs an undotted '
+        + 'forward map: a dotted operator or f.(x) broadcasts over arrays (§04), '
+        + 'so write fn(_ * a) for fn(_ .* a)');
+    }
     throw new Error('density: pushfwd f_inv returned non-scalar (got '
       + (typeof x) + ') for a scalar variate');
   }
