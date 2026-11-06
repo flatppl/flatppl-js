@@ -4349,6 +4349,10 @@ function analyze(ast: any, source: string, opts?: any) {
       // form (record variate, splats by name) — C1 reclassifies it as
       // such. Skip so C3 doesn't block a correct, working path.
       if (_astAllSingleRelabel(priorArgs, bindings)) continue;
+      // §06 joint: record-valued components merge into one record, which
+      // splats by name like the named form.
+      const priorType = priorInfo.inferredType;
+      if (priorType?.kind === 'measure' && priorType.domain?.kind === 'record') continue;
 
       const Linfo = bindings.get(Larg.name);
       const LCall = Linfo && Linfo.node && Linfo.node.value;
