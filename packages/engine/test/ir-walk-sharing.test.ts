@@ -296,6 +296,15 @@ function bits(v: number) {
 // (8, 3) and (256, 7), so it pins the number rather than a schedule.
 const DALITZ_LD_BITS = 'c0378bb4e32c0e40';   // 3.7719186882959264
 
+test('Dalitz amplitude: logdensityof accepts the box point without a diagnostic', () => {
+  // amplitude_measure is weighted over a 2-D Lebesgue box, so its variate is
+  // a 2-vector. typeinfer once typed the point as real and raised an error.
+  const proc = processSource(DALITZ + '\nld_probe = logdensityof(amplitude_measure, [1.0, 0.35])\n');
+  assert.deepEqual(proc.diagnostics.filter((d: any) => d.severity === 'error').map((d: any) => d.message), []);
+  assert.deepEqual(proc.bindings.get('amplitude_measure').inferredType.domain,
+    { kind: 'array', rank: 1, shape: [2], elem: { kind: 'scalar', prim: 'real' } });
+});
+
 test('Dalitz amplitude: the density is bit-identical to the pre-fix value', async () => {
   const ctx = buildCtx(DALITZ
     + '\nprobe_weight = phase_weight(1.0, 0.35)\n'
