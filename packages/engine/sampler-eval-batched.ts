@@ -862,6 +862,13 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
             && _touchesAtomRef(ir.args[1], refArrays, overlay)) {
           return valueOps.mulN(args[0], args[1], N, [false, true]);
         }
+        // Neither operand reads a per-atom ref, so neither has an atom axis,
+        // even when a leading dimension equals N.
+        if (op === 'mul' && valueLib.isValue(args[0]) && valueLib.isValue(args[1])
+            && !_touchesAtomRef(ir.args[0], refArrays, overlay)
+            && !_touchesAtomRef(ir.args[1], refArrays, overlay)) {
+          return valueOps.mulN(args[0], args[1], N, [false, false]);
+        }
         return ARITH_OPS_N[op](args, N);
       }
       // Batched approximation functions. Each has the shape
