@@ -312,60 +312,57 @@ M = rowstack([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
 });
 
 // =====================================================================
-// F. Deeper nesting (v2 — multi-axis nested-vector outer loops)
+// F. Deeper nesting: a broadcast iterates the outermost array only
 // =====================================================================
 //
-// The v1 classifier walks the full JS-array nesting depth and treats
-// every level as an outer loop axis. So `[[C]]` is outerRank=2 with
-// outerShape=[1, 1] (two singleton outer axes wrapping the rank-1
-// vector C), and composes naturally with a flat 2-D collection arg.
-//
-// These tests pin the spec-relevant behaviour for >1 nesting levels.
+// §04 broadcasting maps over the elements of each collection argument, and
+// §03 keeps a vector of vectors distinct from a matrix. So `[[C]]` is a
+// length-1 vector whose element is the vector of vectors `[C]`: one outer
+// axis, not two. A 2-D outer array of vectors is spelled `fill(C, [1, 1])`,
+// and a second level of iteration is a nested broadcast.
 
-test('nested-broadcast (v2): polyeval.([[C]], X_2D) — double Ref over 2-D X', () => {
-  // Hold C across BOTH outer axes of a 2-D X. `[[C]]` has nesting
-  // depth 2 (outer + inner JS-array layer) and innermost = C; its
-  // outerShape is [1, 1]. X_2D has shape [2, 3] (a flat 2-D Value)
-  // with outerRank=2 and outerShape=[2, 3]. Both have outerRank 2;
-  // singleton expansion broadcasts [1, 1] → [2, 3]. Per cell:
-  // polyeval(C, X_2D[i, j]).
+test('nested-broadcast: polyeval.(fill(C, [1, 1]), X_2D) holds C over both axes of X', () => {
   const v = run(`
 polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
 C = [2.3, 1.5, 0.7]
 X_2D = array([1.0, 2.0, 3.0,  4.0, 5.0, 6.0], [2, 3], [1, 2])
-Y = polyeval.([[C]], X_2D)
+Y = polyeval.(fill(C, [1, 1]), X_2D)
 `);
   const Y = get(v, 'Y');
-  // Expected: Y[i, j] = 2.3 + 1.5*X[i,j] + 0.7*X[i,j]^2.
   const xs = [[1, 2, 3], [4, 5, 6]];
   for (let i = 0; i < 2; i++) {
     for (let j = 0; j < 3; j++) {
       const x = xs[i][j];
       const expected = 2.3 + 1.5 * x + 0.7 * x * x;
-      const got = Y[i][j];
-      assert.ok(Math.abs(got - expected) < 1e-9,
-        'Y[' + i + ',' + j + '] = ' + got + ', expected ' + expected);
+      assert.ok(Math.abs(Y[i][j] - expected) < 1e-9, 'Y[' + i + ',' + j + '] = ' + Y[i][j] + ', expected ' + expected);
     }
   }
 });
 
-test('nested-broadcast (v2): dot.([[C]], [[V1, V2], [V3, V4]]) — Ref over 2-D nest', () => {
-  // Hold C across a 2-D nested-vector of inner vectors. Both args
-  // have outerRank=2; the LHS has outerShape=[1, 1] (singleton in
-  // both axes); the RHS has outerShape=[2, 2] with innermost rank-1
-  // Values. Per cell: dot(C, V_ij).
+test('nested-broadcast: [[C]] has one outer axis, so it does not align with a 2-D X', () => {
+  const r = processSource(`
+polyeval = (coeffs, x) -> sum(coeffs .* x .^ indicesof0(coeffs))
+C = [2.3, 1.5, 0.7]
+X_2D = array([1.0, 2.0, 3.0,  4.0, 5.0, 6.0], [2, 3], [1, 2])
+Y = polyeval.([[C]], X_2D)
+`);
+  const fv = buildDerivations(r.bindings).fixedValues || new Map();
+  assert.throws(() => fv.get('Y'),
+    /^Error: Fixed-phase binding 'Y' failed to evaluate: broadcast: all collection arguments must have the same number of axes/);
+});
+
+test('nested-broadcast: a nested broadcast iterates both levels of a vector of vectors', () => {
   const v = run(`
 dot = (a, b) -> sum(a .* b)
+dotrow(c, row) = dot.([c], row)
 C = [1.0, 1.0, 1.0]
 V1 = [1.0, 2.0, 3.0]
 V2 = [4.0, 5.0, 6.0]
 V3 = [7.0, 8.0, 9.0]
 V4 = [10.0, 11.0, 12.0]
-Y = dot.([[C]], [[V1, V2], [V3, V4]])
+Y = dotrow.([C], [[V1, V2], [V3, V4]])
 `);
-  // dot(C=ones, V) = sum(V); expected matrix:
-  //   [[ sum(V1), sum(V2) ], [ sum(V3), sum(V4) ]]
-  //   = [[ 6, 15 ], [ 24, 33 ]]
+  // dot(ones, V) = sum(V).
   assert.deepEqual(get(v, 'Y'), [[6, 15], [24, 33]]);
 });
 
@@ -385,20 +382,15 @@ Y = polyeval.([C], X_2D)
     /^Error: Fixed-phase binding 'Y' failed to evaluate: broadcast: all collection arguments must have the same number of axes/);
 });
 
-test('nested-broadcast (v2): rectangularity is enforced at every depth', () => {
-  // `[[V1, V2], [V3]]` — rectangularity break at the inner level
-  // (row 0 has length 2, row 1 has length 1). Must be rejected by
-  // the classifier rather than producing a silently wrong result.
+test('nested-broadcast: a ragged vector of vectors is a static error', () => {
+  // `[[V1, V2], [V3]]` mixes a length-2 and a length-1 vector of vectors.
   const r = processSource(`
-dot = (a, b) -> sum(a .* b)
-C = [1.0, 1.0, 1.0]
 V1 = [1.0, 2.0, 3.0]
 V2 = [4.0, 5.0, 6.0]
 V3 = [7.0, 8.0, 9.0]
-Y = dot.([[C]], [[V1, V2], [V3]])
+Y = [[V1, V2], [V3]]
 `);
-  const ds = buildDerivations(r.bindings);
-  const fv = ds.fixedValues || new Map();
-  assert.ok(!fv.has('Y'));
-  assert.throws(() => fv.get('Y'), /^Error: Fixed-phase binding 'Y' failed to evaluate: broadcast:/);
+  const errs = r.diagnostics.filter((d: any) => d.severity === 'error');
+  assert.equal(errs.length, 1);
+  assert.match(errs[0].message, /^array element type mismatch/);
 });
