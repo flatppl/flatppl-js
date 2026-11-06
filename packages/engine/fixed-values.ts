@@ -470,26 +470,7 @@ class FixedValues {
     // sampler's evaluateCall uses this hook to resolve a binding name to
     // its (body IR + parameter name) when the binding is a unary
     // fn / functionof / kernelof.
-    env.__resolveFnBody = function (bname: any) {
-      const fb = bindings.get(bname);
-      if (!fb || (fb.type !== 'fn' && fb.type !== 'functionof'
-                  && fb.type !== 'kernelof')) {
-        return null;
-      }
-      const fIR = fb.ir;
-      if (!fIR || fIR.kind !== 'call' || fIR.op !== 'functionof'
-          || !Array.isArray(fIR.params) || !fIR.body) {
-        return null;
-      }
-      return {
-        body:        fIR.body,
-        resultType:  fb.inferredType?.result,
-        params:      fIR.params,
-        paramKwargs: fIR.paramKwargs,
-        orderedInputs: fIR.orderedInputs,
-        paramName:   fIR.params[0],
-      };
-    };
+    env.__resolveFnBody = require('./ir-shared.ts').fnBodyResolver(bindings);
 
     // pushfwd(<bijection binding>, M) in the measure walker needs the
     // forward map. A registry bijection's fn(_) stubs are placeholders, so
