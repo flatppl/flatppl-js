@@ -172,7 +172,9 @@ const ELEMWISE_OVER_ARRAY_2: Record<string, string> = {
 //                           batching such ops. `argRanks` is unused.
 //   - 'variadic'          — arg count varies per-call (e.g. cat,
 //                           vector). The dispatcher calls `logical`
-//                           with all args spread; no atom-batch
+//                           with the argument ARRAY, because a spread
+//                           of a data-sized literal exceeds the JS
+//                           call-stack limit; no atom-batch
 //                           detection. `argRanks` is unused.
 //   - 'higher-order'      — at least one arg is a callable; the op
 //                           threads body-inference / function-call
@@ -1108,9 +1110,8 @@ function dispatch(name: string, args: any[], opts?: DispatchOpts): any {
   // want atom-batched semantics over a rank-polymorphic op wrap
   // with explicit `broadcast(fn(op(_)), atom_batched)` —
   // engine-concepts §18.
-  if (kind === 'rank-polymorphic' || kind === 'variadic') {
-    return decl.logical(...args);
-  }
+  if (kind === 'variadic') return decl.logical(args);
+  if (kind === 'rank-polymorphic') return decl.logical(...args);
 
   // Higher-order ops use `dispatchHigherOrder(name, irArgs, ctx)`.
   // Reaching `dispatch` (value-domain entry) means the caller routed
