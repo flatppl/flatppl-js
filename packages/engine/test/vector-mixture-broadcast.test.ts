@@ -74,3 +74,18 @@ test('a nested zero-inflated kernel resolves the inner normalizer of each cell',
   const want = Math.log(0.5 * site(0.3, 0) * site(0.3, 2)) + Math.log(0.5 * site(0.6, 0) ** 2 + 0.5);
   near(await value(src), want);
 });
+
+test('a per-atom vector of vectors keeps its inner vectors as kernel cells', async () => {
+  // rows = [[a, 0.3], [0.4, a]] depends on a latent, so it is evaluated per atom.
+  const src = [
+    'a ~ Uniform(unitinterval)',
+    'rows = [[a, 0.3], [0.4, a]]',
+    'cap(p) = normalize(superpose(weighted(0.5, Bernoulli.(p)), weighted(0.5, Dirac(fill(false, 2)))))',
+    'y ~ cap.(rows)',
+    'L = likelihoodof(kernelof(record(y = y), a = a), record(y = [[true, false], [false, false]]))',
+    'lp = logdensityof(L, record(a = 0.2))',
+  ].join('\n') + '\n';
+  const want = Math.log(0.5 * 0.2 * 0.7) + Math.log(0.5 * 0.6 * 0.8 + 0.5);
+  near(await value(src), want);
+  near(await value(src, 2), want);
+});
