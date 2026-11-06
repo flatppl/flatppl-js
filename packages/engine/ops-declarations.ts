@@ -1688,6 +1688,8 @@ function _registerScalarLogicals(): void {
 function _withArrayCase(name: string, scalarImpl: (...a: any[]) => any): (...a: any[]) => any {
   const impl = (ops.ELEMWISE_OVER_ARRAY as any)[name];
   const impl2 = (ops.ELEMWISE_OVER_ARRAY_2 as any)[name];
+  const only = (ops.SCALAR_ONLY_OVER_VALUE as any)[name];
+  if (only) return ops.scalarOnlyOverValue(name, (valueOps as any)[only], scalarImpl);
   if (!impl && !impl2) return scalarImpl;
   const cellwise = (valueOps as any)[impl || impl2];
   /* c8 ignore start */

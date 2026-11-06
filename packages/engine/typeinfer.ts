@@ -2137,8 +2137,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _maybeTableReduction(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 1) return null;
+    // The generic path infers a non-table argument again, so drop this probe's
+    // diagnostics then, or each is reported twice.
+    const mark = diagnostics.length;
     const t: any = inferExpr(args[0], scopes);
-    if (!t || t.kind !== 'table') return null;
+    if (!t || t.kind !== 'table') {
+      diagnostics.length = mark;
+      return null;
+    }
     return _reduceTableType(t, expr.op);
   }
   // The result type of a column-wise reduction over a table: a record of
