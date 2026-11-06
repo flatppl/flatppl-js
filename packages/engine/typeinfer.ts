@@ -1322,21 +1322,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (op === 'joint_likelihood') {
       const inputs: any[] = [];
       const seen = new Set<string>();
-      // The union is only an interface when every term splats: `L(θ) = ΣLᵢ(θ)`
-      // applies the same point to each term through that term's own interface,
-      // so a term taking one positional input receives a record point whole
-      // and a term of unknown interface leaves the point unconstrained.
+      // §06 `likelihoodof` binds a likelihood's point to its inputs by name for
+      // any number of inputs, whether the kernel declares them positionally or
+      // not. So the union is the joint's interface whenever every term's
+      // interface is known. A term of unknown interface leaves it open.
       let splats = args.length > 0;
       for (const arg of args) {
         const tT: any = inferExpr(arg, scopes);
-        if (tT && tT.kind === 'likelihood' && Array.isArray(tT.inputs)) {
+        if (tT && tT.kind === 'likelihood' && Array.isArray(tT.inputs)
+            && typeof tT.orderedInputs === 'boolean') {
           for (const inp of tT.inputs) {
             const key = inp && (inp.paramName || inp.name);
             if (key != null && !seen.has(key)) { seen.add(key); inputs.push(inp); }
-          }
-          if (typeof tT.orderedInputs !== 'boolean'
-              || T.acceptsPositional({ inputs: tT.inputs, orderedInputs: tT.orderedInputs }, 1)) {
-            splats = false;
           }
         } else {
           splats = false;
