@@ -529,7 +529,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           if (count <= 0) throw new Error(`evaluateN.count must be positive integer (got ${msg.count})`);
           const refArrays = msg.refArrays || null;
           const result = samplerLib.evaluateExprN(msg.ir, refArrays, count, env);
-          let out, dims, imag;
+          let out, dims, imag, levels;
           if (result && result.BYTES_PER_ELEMENT !== undefined
               && result.length === count) {
             out = result;  // Float64Array(count) — happy path
@@ -565,6 +565,8 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
             } else if (result.shape.length >= 2 && result.shape[0] === count) {
               out = result.data;
               dims = result.shape.slice(1);
+              // A nested cell (§03 an array of arrays) keeps its levels.
+              levels = valueLib.levelAxesOf(result);
             } else {
               throw new Error('evaluateN: Value result has unexpected shape ['
                 + result.shape.join(',') + '] for count=' + count);
@@ -584,6 +586,7 @@ function createWorkerHandler(opts: { seed?: SeedLike; env?: Record<string, unkno
           if (retainedBuffers.has(out.buffer)) out = out.slice();
           const reply: any = { type: 'samples', id, samples: out, logWeights: null };
           if (dims) reply.dims = dims;
+          if (levels && levels.length > 0) reply.levels = levels;
           if (imag) reply.imag = imag;
           return reply;
         }

@@ -1567,9 +1567,13 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       const innerElemShape = (innerM.value && Array.isArray(innerM.value.shape)
         && innerM.value.shape.length > 1) ? innerM.value.shape.slice(1) : [];
       const perAtomDims = d.dims.concat(innerElemShape);
-      const value: any = {
-        shape: [N | 0].concat(perAtomDims), data: samples, outerRank: 1,
-      };
+      const value: any = { shape: [N | 0].concat(perAtomDims), data: samples };
+      // §03: iid of an array-valued measure is an array OF those arrays, not
+      // one bigger array, so its own axes form a nesting level above the
+      // element's levels. A scalar element leaves the atom axis alone.
+      valueLib.setLevels(value, innerElemShape.length > 0
+        ? [1, d.dims.length, ...valueLib.levelsAfterSlice(innerM.value)]
+        : [1]);
       if (valueLib.isComplexValue(innerM.value)) {
         value.im = innerM.value.im;
         value.dtype = 'complex';
@@ -2049,7 +2053,11 @@ function matRandSample(name: string, d: any, ctx: any) {
     const innerShape = (innerM.value && innerM.value.shape) || [count];
     const variateDims = innerShape.slice(1);
     const value: any = { shape: [count].concat(variateDims), data: data };
-    if (variateDims.length > 0) value.outerRank = 1;
+    // The draw keeps the inner measure's own nesting below the sample axis.
+    if (variateDims.length > 0) {
+      const levels = valueLib.levelAxesOf(innerM.value);
+      valueLib.setLevels(value, levels.length > 0 ? levels : [1]);
+    }
     return Object.assign(
       empirical.arrayMeasure(data, variateDims, null),
       { value: value, logTotalmass: 0, n_eff: count });

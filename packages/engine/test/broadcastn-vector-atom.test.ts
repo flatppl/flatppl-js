@@ -156,8 +156,9 @@ for (const [body, f] of EXACT) {
 // single dot reaches scalars and types clean. `iid(iid(M, 2), 3)` is a vector
 // OF vectors (§03 keeps the two distinct), so the same single dot hands `exp` a
 // 2-vector and the scalar-only rule refuses it — the admissible spelling nests
-// one dot per array level, and that is not on the batched evaluator. The engine
-// represents both as one flat [N,3,2] Value, so only inference tells them apart.
+// one dot per array level. Both are one flat [N,3,2] Value, and the nested one
+// carries its outer level in `outerRank`, so each atom's cell is a vector of
+// 2-vectors that the nested broadcast walks level by level.
 
 const RANK2_MULTI_AXIS = 'iid(Normal(0.0, 1.0), [3, 2])';
 const RANK2_NESTED = 'iid(iid(Normal(0.0, 1.0), 2), 3)';
@@ -204,6 +205,30 @@ test('dotted `exp` over an iid-of-iid variate is refused: one broadcast level',
       (e: any) => e.message.includes(
         'exp: arg 1 expects a scalar, got array of real (length 2)'));
   });
+
+// The nested spelling maps every cell and keeps the nesting, so a second
+// nested map over the image reads the same levels.
+for (const [label, base, levels] of [
+  ['an iid-of-iid', RANK2_NESTED, [1, 1]],
+  ['a multi-axis iid of vectors', 'iid(iid(Normal(0.0, 1.0), 2), [3, 4])', [1, 2]],
+] as [string, string, number[]][]) {
+  test(`nested dotted \`exp\` maps cell-for-cell over ${label} variate`, async () => {
+    const N = 8;
+    const ctx = makeCtx(`Z = ${base}\nX = pushfwd(x -> (y -> exp.(y)).(x), Z)\n`
+      + 'Y = pushfwd(x -> (y -> log.(y)).(x), X)\n', { sampleCount: N });
+    const Z = await ctx.getMeasure('Z');
+    const X = await ctx.getMeasure('X');
+    const Y = await ctx.getMeasure('Y');
+    for (const m of [Z, X, Y]) {
+      assert.deepEqual(m.value.shape, Z.value.shape);
+      assert.deepEqual(valueLib.levelAxesOf(m.value), levels, 'atom axis, then the iid level');
+    }
+    for (let i = 0; i < Z.value.data.length; i++) {
+      assert.equal(X.value.data[i], Math.exp(Z.value.data[i]), `cell ${i}`);
+      assert.ok(Math.abs(Y.value.data[i] - Z.value.data[i]) < 1e-12, `round trip, cell ${i}`);
+    }
+  });
+}
 
 test('dotted `exp` over a matrix variate is a LogNormal(0,1) in every cell',
   async () => {
