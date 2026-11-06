@@ -582,6 +582,12 @@ function _logAbs(e: any): any {
 function _irContainsRef(ir: any, matches: (n: any) => boolean): boolean {
   if (!ir || typeof ir !== 'object') return false;
   if (matches(ir)) return true;
+  // A lambda parameter of the same name shadows the free variable in its body,
+  // as in the `_arg1_` of a dotted operator's lifted function.
+  if (ir.kind === 'call' && ir.op === 'functionof' && Array.isArray(ir.params)
+      && ir.params.some((p: string) => matches({ kind: 'ref', ns: '%local', name: p }))) {
+    return false;
+  }
   if (Array.isArray(ir.args)) {
     for (const a of ir.args) if (_irContainsRef(a, matches)) return true;
   }
@@ -804,9 +810,10 @@ const ELEMENTARY_BIJECTIONS: Record<string, {
  * the path has no rule). `inverseIR` is in terms of `outputValue` +
  * the frozen leaves; `ladjIR` (FORWARD LADJ, see CONVENTION above) is in
  * terms of `freeRef` + the frozen leaves — the caller evaluates it at
- * the inverted free value.
+ * the inverted free value. `ladjIR` is per cell, except that `wholeMap`
+ * marks the LADJ of the whole map, which a broadcast on the path gives.
  */
-function invertExpr(spec: { outputExpr: any, freeRef: any, outputValue: any }): { inverseIR: any, ladjIR: any } | null {
+function invertExpr(spec: { outputExpr: any, freeRef: any, outputValue: any }): { inverseIR: any, ladjIR: any, wholeMap: boolean } | null {
   const { outputExpr, freeRef, outputValue } = spec;
   const matches: (n: any) => boolean = typeof freeRef === 'function'
     ? freeRef
@@ -818,7 +825,7 @@ function invertExpr(spec: { outputExpr: any, freeRef: any, outputValue: any }): 
   //    one argument may contain the free variable (the on-path arg);
   //    the rest are frozen. More than one → not single-input straight-
   //    line (e.g. `u * u`) → refuse.
-  const path: Array<{ node: any, onPathIdx: number }> = [];
+  const path: Array<{ node: any, onPathIdx: number, cell: any }> = [];
   let cur = outputExpr;
   while (!(cur.kind === 'ref' && matches(cur))) {
     if (cur.kind !== 'call' || !Array.isArray(cur.args)) return null;
@@ -830,32 +837,82 @@ function invertExpr(spec: { outputExpr: any, freeRef: any, outputValue: any }): 
       }
     }
     if (onPathIdx === -1) return null;
-    if (!ELEMENTARY_BIJECTIONS[cur.op]) return null;   // op not invertible
-    path.push({ node: cur, onPathIdx });
+    const cell = cur.op === 'broadcast' ? _invertBroadcastCell(cur, onPathIdx) : null;
+    if (!cell && !ELEMENTARY_BIJECTIONS[cur.op]) return null;   // op not invertible
+    path.push({ node: cur, onPathIdx, cell });
     cur = cur.args[onPathIdx];
   }
   // Identity: outputExpr IS the free ref.
-  if (path.length === 0) return { inverseIR: outputValue, ladjIR: _lit(0) };
+  if (path.length === 0) return { inverseIR: outputValue, ladjIR: _lit(0), wholeMap: false };
 
   // 2. inverseIR: fold output→input, applying each op's inverse rule.
   let Y = outputValue;
-  for (const { node, onPathIdx } of path) {
-    const inv = ELEMENTARY_BIJECTIONS[node.op].invert(onPathIdx, node.args, Y);
+  for (const { node, onPathIdx, cell } of path) {
+    const inv = cell ? cell.invert(Y) : ELEMENTARY_BIJECTIONS[node.op].invert(onPathIdx, node.args, Y);
     if (inv == null) return null;
     Y = inv;
   }
 
   // 3. ladjIR: sum the per-op forward LADJ, each evaluated at the op's
   //    on-path INPUT subexpression (already in terms of the free var).
+  //    A scalar op's LADJ is per cell. Once a broadcast is on the path,
+  //    the free input is an array, so every term becomes the sum of its
+  //    cells over that op's input, and ladjIR is the LADJ of the whole map.
+  const wholeMap = path.some((step) => step.cell);
   const terms: any[] = [];
-  for (const { node, onPathIdx } of path) {
-    const lj = ELEMENTARY_BIJECTIONS[node.op].ladj(onPathIdx, node.args, node.args[onPathIdx]);
+  for (const { node, onPathIdx, cell } of path) {
+    let lj;
+    if (cell) {
+      lj = cell.ladj;
+    } else if (wholeMap) {
+      const t = _freshLocal('__bij_t');
+      const perCell = ELEMENTARY_BIJECTIONS[node.op].ladj(onPathIdx, node.args, t);
+      lj = perCell && _call('sum', [_call('broadcast', [_lambda([t.name], perCell), node.args[onPathIdx]])]);
+    } else {
+      lj = ELEMENTARY_BIJECTIONS[node.op].ladj(onPathIdx, node.args, node.args[onPathIdx]);
+    }
     if (lj == null) return null;
     terms.push(lj);
   }
   const ladjIR = terms.reduce((acc: any, t: any) => acc == null ? t : _call('add', [acc, t]), null);
 
-  return { inverseIR: Y, ladjIR };
+  return { inverseIR: Y, ladjIR, wholeMap };
+}
+
+let _freshCounter = 0;
+function _freshLocal(stem: string): any {
+  return { kind: 'ref', ns: '%local', name: stem + (_freshCounter++) };
+}
+function _lambda(params: string[], body: any): any {
+  return {
+    kind: 'call', op: 'functionof', params, paramKwargs: params.slice(),
+    paramSources: params.map((name) => ({ kind: 'placeholder', name })), body,
+  };
+}
+
+/**
+ * The inverse and LADJ of `broadcast(g, ...)` when argument `idx` carries the
+ * free variable (§04 broadcasting, §06 case 1). `g` must be a lambda that is
+ * a bijection in that parameter, so each cell inverts on its own:
+ * `x = broadcast(g⁻¹, y, ...frozen)`, and the LADJ is the sum of the cell LADJs.
+ */
+function _invertBroadcastCell(node: any, idx: number): { invert: (Y: any) => any, ladj: any } | null {
+  const g = node.args[0];
+  if (idx < 1 || (node.kwargs && Object.keys(node.kwargs).length > 0)) return null;
+  if (!g || g.kind !== 'call' || g.op !== 'functionof' || !g.body || !Array.isArray(g.params)
+      || g.params.length !== node.args.length - 1) return null;
+  const free = g.params[idx - 1];
+  const y = _freshLocal('__bij_y');
+  const inner = invertExpr({ outputExpr: g.body, freeRef: { ns: '%local', name: free }, outputValue: y });
+  if (!inner) return null;
+  const invParams = g.params.map((p: string, i: number) => i === idx - 1 ? y.name : p);
+  const invG = { ...g, params: invParams, paramKwargs: invParams.slice(),
+    paramSources: invParams.map((name: string) => ({ kind: 'placeholder', name })), body: inner.inverseIR };
+  const ladjG = { ...g, body: inner.ladjIR };
+  return {
+    invert: (Y: any) => _call('broadcast', [invG, ...node.args.slice(1).map((a: any, i: number) => i === idx - 1 ? Y : a)]),
+    ladj: _call('sum', [_call('broadcast', [ladjG, ...node.args.slice(1)])]),
+  };
 }
 
 module.exports = {
