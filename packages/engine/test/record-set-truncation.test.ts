@@ -34,7 +34,7 @@ test('a record joint truncated by a record set', async () => {
   assert.deepEqual(await value(head + 'lp = logdensityof(M, record(a = -0.5, b = -0.3))\n'), [-Infinity]);
 });
 
-test('sampling a truncation to a product set refuses as an engine limitation', async () => {
+test('sampling a truncation to a record set refuses as an engine limitation', async () => {
   const { ctx } = ctxFor('M = truncate(joint(a = Normal(0, 1), b = Normal(0, 1)), cartprod(a = posreals, b = reals))\n', 4);
-  await assert.rejects(ctx.getMeasure('M'), /engine limitation: a truncation to a product set/);
+  await assert.rejects(ctx.getMeasure('M'), /engine limitation: a truncation to a record set/);
 });

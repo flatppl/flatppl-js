@@ -419,9 +419,10 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
  */
 function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
   if ((d.setIR as any)?.op === 'cartprod') {
-    // Density reads a product set through the Lebesgue support check.
+    // Density reads a record set through the Lebesgue support check; drawing
+    // from the restriction, or estimating its mass, has no route yet.
     return Promise.reject(require('./limitations.ts').engineLimitation(
-      'a truncation to a product set', 'sampling'));
+      'a truncation to a record set', 'materialise'));
   }
   return ctx.getMeasure(d.from).then((parent: any) => {
     const N = ctx.sampleCount;

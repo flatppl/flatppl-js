@@ -2717,8 +2717,10 @@ function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: 
   const setDescr = parseSetIR(rhsIR.args[1], bindings, fixedValues);
   if (setDescr == null) {
     const setIR = rhsIR.args[1];
-    // A cartprod, positional or record, restricts each component to its own set.
-    if (!isCallOp(setIR, 'interval', 2) && !(setIR?.kind === 'call' && setIR.op === 'cartprod')) return null;
+    // A record set restricts each field to its own set. A positional cartprod
+    // stays inline, where the normalize box machinery reads it.
+    const recordSet = setIR?.kind === 'call' && setIR.op === 'cartprod' && setIR.fields?.length > 0;
+    if (!isCallOp(setIR, 'interval', 2) && !recordSet) return null;
     return { kind: 'truncate', from: baseName, setDescr: null, setIR };
   }
   return { kind: 'truncate', from: baseName, setDescr };
