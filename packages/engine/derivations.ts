@@ -1555,8 +1555,8 @@ function _classifyWeightedByFunction(
   // Inline lambdas do not pass through the named-function self-containment
   // pass. Expose formals behind derived reification clones before replacing
   // them, or those clones keep references to the lambda's unbound parameter.
-  const body = _inlineFormalCarryingRefs(fnIR.body, bindings,
-    _makeMentionsFormal(new Set(fnIR.params), bindings));
+  const body = _inlineUserCalls(_inlineFormalCarryingRefs(fnIR.body, bindings,
+    _makeMentionsFormal(new Set(fnIR.params), bindings)), bindings);
   // Replace every `(ref %local <paramName>)` in the body with
   // `(ref self <baseName>)`. mapIR's identity-preserving rebuild
   // means any sub-tree that doesn't mention the parameter shares
@@ -1576,6 +1576,36 @@ function _classifyWeightedByFunction(
     kind: 'weighted', from: baseName, weightIR: synth,
     isLog: !!isLog, isVariateWeight: true,
   };
+}
+
+// Beta-reduce calls of user functions in a weight body. The worker has no
+// function bindings, so `row_max(X)[.t]` inside an aggregate, or a helper
+// called on aggregate cells, must reach it as the function's body.
+function _inlineUserCalls(ir: any, bindings: any, active = new Set<string>()): any {
+  const { mapIR } = require('./ir-walk.ts');
+  return mapIR(ir, (n: any) => {
+    if (n?.kind !== 'call' || n.op || n.target?.ns !== 'self' || active.has(n.target.name)) return n;
+    const fnIR = bindings.get(n.target.name)?.ir;
+    if (fnIR?.kind !== 'call' || fnIR.op !== 'functionof' || !fnIR.body
+        || !Array.isArray(fnIR.params)) return n;
+    const params: string[] = fnIR.params;
+    const surface: string[] = fnIR.paramKwargs || params;
+    const positional = n.args || [];
+    const kwargs = n.kwargs || {};
+    // A sole record argument may splat by name (§04); leave that call whole.
+    if (positional.length + Object.keys(kwargs).length !== params.length) return n;
+    const argFor = new Map<string, any>();
+    for (let i = 0; i < params.length; i++) {
+      const arg = i < positional.length ? positional[i] : kwargs[surface[i]] ?? kwargs[params[i]];
+      if (arg === undefined) return n;
+      argFor.set(params[i], arg);
+    }
+    active.add(n.target.name);
+    const body = _inlineUserCalls(fnIR.body, bindings, active);
+    active.delete(n.target.name);
+    return mapIR(body, (m: any) => (m?.kind === 'ref' && (m.ns === '%local' || m.ns === 'self')
+      && argFor.has(m.name) ? argFor.get(m.name) : m));
+  });
 }
 
 function classifyLogWeighted(
@@ -3813,6 +3843,9 @@ function isMeasureBinding(b: any): boolean {
   return false;
 }
 
+// §04 / §07 higher-order operations whose first argument is a callable.
+const CALLABLE_HEAD_OPS = new Set(['broadcast', 'aggregate', 'scan', 'reduce', 'filter']);
+
 function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<string, BindingInfo>, fixedValues: any, name?: string) {
   // A name is "resolvable downstream" if there's a derivation for it
   // (the materialiser knows how to compute samples) OR it is a
@@ -3875,8 +3908,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     // visit, so scan it once per query without caching across binding edits.
     if (visited.has(ir)) return seen;
     visited.add(ir);
-    if (ir.kind === 'call' && ir.op
-        && (ir.op === 'broadcast' || ir.op === 'aggregate')
+    if (ir.kind === 'call' && ir.op && CALLABLE_HEAD_OPS.has(ir.op)
         && Array.isArray(ir.args) && ir.args.length > 0) {
       const head = ir.args[0];
       if (head && head.kind === 'ref' && head.ns === 'self') {
