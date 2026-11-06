@@ -1439,10 +1439,6 @@ const ARITH_OPS = {
       }
       outerShape.push(aV.shape[i] / bs[i]);
     }
-    // Build nested-array structure: outer is rank=outerShape.length;
-    // each leaf is a Value of shape `bs`. Outer is a JS array of
-    // JS arrays of Values (matching the spec's "nested array of
-    // arrays" wording — true vector-of-vectors per §03).
     const aStrides = new Array(aV.shape.length);
     let acc = 1;
     for (let i = aV.shape.length - 1; i >= 0; i--) {
@@ -1469,16 +1465,22 @@ const ARITH_OPS = {
       }
       return { shape: bs.slice(), data };
     }
-    function buildOuter(axis: number, blockCoord: number[]): any {
-      if (axis === outerShape.length) return buildBlock(blockCoord);
-      const out: any[] = [];
-      for (let i = 0; i < outerShape[axis]; i++) {
-        blockCoord[axis] = i;
-        out.push(buildOuter(axis + 1, blockCoord));
+    // §07: the outer array has rank(A) axes, each cell a block. Keep both in
+    // one Value whose outerRank tag marks the outer axes, so a broadcast
+    // iterates every outer axis and hands each block whole.
+    const blockSize = bs.reduce((a: number, b: number) => a * b, 1);
+    const blocks = outerShape.reduce((a: number, b: number) => a * b, 1);
+    const data = new Float64Array(blocks * blockSize);
+    const blockCoord = new Array(outerShape.length).fill(0);
+    for (let k = 0; k < blocks; k++) {
+      data.set(buildBlock(blockCoord).data, k * blockSize);
+      for (let ax = outerShape.length - 1; ax >= 0; ax--) {
+        blockCoord[ax]++;
+        if (blockCoord[ax] < outerShape[ax]) break;
+        blockCoord[ax] = 0;
       }
-      return out;
     }
-    return buildOuter(0, new Array(outerShape.length).fill(0));
+    return { shape: outerShape.concat(bs), data, outerRank: outerShape.length };
   },
   // joinblocks(A) — inverse of splitblocks. A is a nested array of
   // equal-shape inner Values; result is a single Value whose shape
