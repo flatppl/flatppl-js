@@ -58,3 +58,20 @@ test('a shared matrix whose row count equals the atom count is not atom-batched'
     + 'record(lambda = [0.2, -0.1], theta = [0.3, 0.0, -0.2]))\n';
   near(await values(src, 3), PRIOR);
 });
+
+test('a log weight over the joint keeps the record fields observed', async () => {
+  // covid19imperial's shape: logweighted(w, joint(lawof(record(...)), Lebesgue(...))).
+  const src = HEAD + [
+    'b = elementof(reals)',
+    'y ~ Normal.(theta .+ b, 1)',
+    'bw(p) = logdensityof(Normal(0, 2), p.b)',
+    'Pi_prior = logweighted(bw, joint(lawof(record(lambda = lambda, theta = theta)), Lebesgue(cartprod(b = reals))))',
+    'K = kernelof(record(y = y), lambda = lambda, theta = theta, b = b)',
+    'L = likelihoodof(K, record(y = [0.5, -0.5, 1.0]))',
+    'P = bayesupdate(L, Pi_prior)',
+    'lp = logdensityof(P, record(lambda = [0.2, -0.1], theta = [0.3, 0.0, -0.2], b = 0.4))',
+  ].join('\n') + '\n';
+  const y = [0.5, -0.5, 1.0];
+  const want = PRIOR + logN(0.4, 0, 2) + y.reduce((s, v, i) => s + logN(v, THETA[i] + 0.4), 0);
+  near(await values(src, 1), want);
+});
