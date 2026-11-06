@@ -175,11 +175,20 @@ function totalMassExpr(ir: any): any {
     if (m == null) return null;
     return m;
   }
-  // A probability-measure leaf has total mass 1.
+  // A probability-measure leaf has total mass 1, and so does a §04 kernel
+  // broadcast of one: an independent product of probability measures.
   if (orchestrator.SAMPLEABLE_DISTRIBUTIONS && orchestrator.SAMPLEABLE_DISTRIBUTIONS.has(op)) {
     return { kind: 'lit', value: 1 };
   }
+  if (isProbabilityBroadcast(ir)) return { kind: 'lit', value: 1 };
+  // §06 normalize returns a probability measure.
+  if (op === 'normalize') return { kind: 'lit', value: 1 };
   return null;
+}
+
+function isProbabilityBroadcast(ir: any): boolean {
+  const head = ir?.op === 'broadcast' ? ir.args?.[0] : null;
+  return head?.kind === 'ref' && !!orchestrator.SAMPLEABLE_DISTRIBUTIONS?.has(head.name);
 }
 
 // Keep scalar factors in log space: exp(±1000) is not representable, but
@@ -430,4 +439,4 @@ function massFromMeasures(nodes: any[], ctx: any): Promise<any[]> {
 
 module.exports = { totalMassExpr, logTotalMassExpr, positiveCountLogMassExpr,
   truncateMassLit, assertFixedMassFallback, canDeferTruncateNormalizer, massFromMeasures,
-  scalarAffinePushfwd, affinePreimage };
+  scalarAffinePushfwd, affinePreimage, isProbabilityBroadcast };

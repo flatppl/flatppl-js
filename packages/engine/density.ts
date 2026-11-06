@@ -240,9 +240,9 @@ function flattenNestedVariate(value: any, axes: number[]): { cells: Float64Array
 
   function peel(node: any, depth: number): any {
     if (depth === axes.length) {
-      // leaf: consume one scalar
-      if (typeof node === 'number') {
-        cells[idx++] = node;
+      // leaf: consume one scalar. A §08 Bernoulli variate is a boolean.
+      if (typeof node === 'number' || typeof node === 'boolean') {
+        cells[idx++] = +node;
         return null;
       }
       if (valueLib.isValue(node) && node.shape.length === 0) {
@@ -3356,6 +3356,82 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
   return rest;
 }
 
+// The collection axes of one broadcast argument and an accessor for its cell
+// at atom i, row-major offset j. §03 keeps a vector of vectors (a JS array or
+// an outerRank-tagged Value) distinct from a matrix: only its outer axes
+// iterate, and each cell is a whole inner array.
+function _broadcastCellAccessor(v: any, usesAtom: boolean, N: number): {
+  axes: number[]; accessor: (i: number, j: number) => any;
+} {
+  const batched = usesAtom && (valueLib.isAtomBatched(v, N) || (Array.isArray(v) && v.length === N));
+  const atom = (i: number) => (!batched ? v : valueLib.isValue(v) ? valueLib._sliceRow(v, i) : v[i]);
+  const first = atom(0);
+  const axesOf = (x: any): number[] => {
+    if (valueLib.isValue(x)) {
+      return typeof x.outerRank === 'number' ? x.shape.slice(0, x.outerRank) : x.shape.slice();
+    }
+    return Array.isArray(x) || x?.BYTES_PER_ELEMENT !== undefined ? [x.length] : [];
+  };
+  const axes = axesOf(first);
+  if (axes.length === 0) return { axes, accessor: (i) => atom(i) };
+  const cellOf = (x: any, j: number) => {
+    // Size-1 axes repeat (stride 0), so j already folds them away.
+    if (Array.isArray(x) || x?.BYTES_PER_ELEMENT !== undefined) return x[j];
+    const dense = valueLib._logicalDense(x);
+    const cellShape = dense.shape.slice(axes.length);
+    const size = cellShape.reduce((a: number, b: number) => a * b, 1);
+    if (cellShape.length === 0) return dense.data[j];
+    const cell: any = { shape: cellShape, data: dense.data.subarray(j * size, (j + 1) * size) };
+    if (dense.outerRank > axes.length) cell.outerRank = dense.outerRank - axes.length;
+    return cell;
+  };
+  if (!batched) return { axes, accessor: (_i, j) => cellOf(first, j) };
+  return { axes, accessor: (i, j) => cellOf(atom(i), j) };
+}
+
+// Split a broadcast variate into its cells along `axes`, row-major, leaving
+// each cell whole. Returns the cells and the unconsumed tail of the outer axis.
+function peelBroadcastCells(value: any, axes: number[]): { cells: any[]; rest: any } {
+  if (axes.length === 0) return { cells: [value], rest: null };
+  const cells: any[] = [];
+  const length = (node: any): number => Array.isArray(node) || node?.BYTES_PER_ELEMENT !== undefined
+    ? node.length : valueLib.isValue(node) && node.shape.length > 0 ? node.shape[0] : -1;
+  const at = (node: any, k: number, depth: number): any => {
+    if (valueLib.isValue(node)) return valueLib._sliceRow(node, k);
+    if (node.BYTES_PER_ELEMENT !== undefined && depth + 1 < axes.length) {
+      // A flat typed array holds the remaining axes row-major.
+      const block = axes.slice(depth + 1).reduce((a: number, b: number) => a * b, 1);
+      return node.subarray(k * block, (k + 1) * block);
+    }
+    return node[k];
+  };
+  const peel = (node: any, depth: number): void => {
+    if (depth === axes.length) { cells.push(node); return; }
+    const n = node?.BYTES_PER_ELEMENT !== undefined && depth + 1 < axes.length
+      ? node.length / axes.slice(depth + 1).reduce((a: number, b: number) => a * b, 1) : length(node);
+    if (!(n >= axes[depth])) {
+      throw new Error('density: broadcast variate axis ' + depth + ' wants ' + axes[depth]
+        + ' entries, got ' + (n < 0 ? (node == null ? 'null' : typeof node) : n));
+    }
+    for (let k = 0; k < axes[depth]; k++) peel(at(node, k, depth), depth + 1);
+  };
+  peel(value, 0);
+  const total = length(value), first = axes[0];
+  if (value?.BYTES_PER_ELEMENT !== undefined && axes.length > 1) {
+    const used = axes.reduce((a: number, b: number) => a * b, 1);
+    return { cells, rest: value.length > used ? value.subarray(used) : null };
+  }
+  if (total <= first) return { cells, rest: null };
+  if (Array.isArray(value) || value.BYTES_PER_ELEMENT !== undefined) {
+    return { cells, rest: Array.isArray(value) ? value.slice(first) : value.subarray(first) };
+  }
+  const dense = valueLib._logicalDense(value);
+  const row = dense.shape.slice(1).reduce((a: number, b: number) => a * b, 1);
+  const tail: any = { shape: [total - first, ...dense.shape.slice(1)], data: dense.data.subarray(first * row) };
+  if (dense.outerRank !== undefined) tail.outerRank = dense.outerRank;
+  return { cells, rest: tail };
+}
+
 // ---- Kernel-broadcast: composite MEASURE-valued user kernel head ----
 //
 // broadcast(kernel, col) where `kernel` is a `functionof` whose BODY is a
@@ -3405,19 +3481,17 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
   const refNames: string[] = refArrays ? Object.keys(refArrays).filter(
     name => !overlay || !Object.prototype.hasOwnProperty.call(overlay, name)) : [];
   const evalOpts = overlay ? { overlay } : undefined;
-  const accessors: Array<(i: number, j: number) => number> = new Array(P);
-  const paramVals: any[] = new Array(P);
-  const paramUsesAtom: boolean[] = new Array(P);
+  const accessors: Array<(i: number, j: number) => any> = new Array(P);
+  const paramAxes: number[][] = new Array(P);
   let anyAtomDep = false;
   for (let pi = 0; pi < P; pi++) {
     const pIR = paramIRs[pi];
     const v: any = samplerLib.evaluateExprN(pIR, refArrays, N, baseEnv, evalOpts);
-    paramVals[pi] = v;
     const usesAtom = _preparedExprUsesAny(pIR, refNames, opts);
-    paramUsesAtom[pi] = usesAtom;
     if (usesAtom) anyAtomDep = true;
-    accessors[pi] = _broadcastParamAccessor(v, usesAtom, N,
-      "broadcast kernel parameter '" + surfaceNames[pi] + "'");
+    const cell = _broadcastCellAccessor(v, usesAtom, N);
+    accessors[pi] = cell.accessor;
+    paramAxes[pi] = cell.axes;
   }
 
   // A per-atom ref reachable from the BODY (not just from a broadcast
@@ -3427,15 +3501,13 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
   if (_preparedExprUsesAny(fnHead.body, refNames, opts)) anyAtomDep = true;
 
   const resolved = bcAxes.resolveBroadcastAxes(
-    internalNames.map((nm: string, pi: number) => ({
-      name: nm,
-      collectionAxes: shared.collectionAxesOf(paramVals[pi], N, paramUsesAtom[pi]) || [],
-    })));
+    internalNames.map((nm: string, pi: number) => ({ name: nm, collectionAxes: paramAxes[pi] })));
   const axes: number[] = resolved.axes;
   const Ktot: number = axes.reduce((a: number, b: number) => a * b, 1);
 
-  // Consume the nested [d1]...[dm] variate into a flat row-major scalar buffer.
-  const { cells, rest } = flattenNestedVariate(value, axes);
+  // §04 broadcast iterates only the collection axes. A cell may itself be an
+  // array or record (a joint or iid body), so peel the axes, not the leaves.
+  const { cells, rest } = peelBroadcastCells(value, axes);
 
   // Score one atom across all cells: bind the kernel's declared param(s) to
   // each cell's input value(s), then recurse the EXISTING measure-density
@@ -3473,7 +3545,10 @@ function walkKernelBroadcastMeasureKernel(ir: IRNode, fnHead: any, value: any, r
         cellEnv[internalNames[pi]] = accessors[pi](i, bcAxes.coordToOffset(coord, resolved.strides[internalNames[pi]]));
       }
       cellAcc[0] = 0;
-      walkAcc(fnHead.body, cells[cell], {}, 1, opts, cellAcc, cellEnv, undefined);
+      const cellRest = walkAcc(fnHead.body, cells[cell], {}, 1, opts, cellAcc, cellEnv, undefined);
+      if (!isEmptyRest(cellRest)) {
+        throw new Error('density: broadcast kernel cell ' + cell + ' did not fully consume its value');
+      }
       total += cellAcc[0];
     }
     return total;
