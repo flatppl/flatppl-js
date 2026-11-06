@@ -418,6 +418,11 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
  * to 1000). Configurable per host.
  */
 function matTruncate(d: DerivationTruncate, ctx: any, normalized = false) {
+  if ((d.setIR as any)?.op === 'cartprod') {
+    // Density reads a product set through the Lebesgue support check.
+    return Promise.reject(require('./limitations.ts').engineLimitation(
+      'a truncation to a product set', 'sampling'));
+  }
   return ctx.getMeasure(d.from).then((parent: any) => {
     const N = ctx.sampleCount;
     const parentLTM = shared.massOf(parent);
