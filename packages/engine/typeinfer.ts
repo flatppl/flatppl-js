@@ -1322,21 +1322,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (op === 'joint_likelihood') {
       const inputs: any[] = [];
       const seen = new Set<string>();
-      // The union is only an interface when every term splats: `L(θ) = ΣLᵢ(θ)`
-      // applies the same point to each term through that term's own interface,
-      // so a term taking one positional input receives a record point whole
-      // and a term of unknown interface leaves the point unconstrained.
+      // §06 `likelihoodof` binds a likelihood's point to its inputs by name for
+      // any number of inputs, whether the kernel declares them positionally or
+      // not. So the union is the joint's interface whenever every term's
+      // interface is known. A term of unknown interface leaves it open.
       let splats = args.length > 0;
       for (const arg of args) {
         const tT: any = inferExpr(arg, scopes);
-        if (tT && tT.kind === 'likelihood' && Array.isArray(tT.inputs)) {
+        if (tT && tT.kind === 'likelihood' && Array.isArray(tT.inputs)
+            && typeof tT.orderedInputs === 'boolean') {
           for (const inp of tT.inputs) {
             const key = inp && (inp.paramName || inp.name);
             if (key != null && !seen.has(key)) { seen.add(key); inputs.push(inp); }
-          }
-          if (typeof tT.orderedInputs !== 'boolean'
-              || T.acceptsPositional({ inputs: tT.inputs, orderedInputs: tT.orderedInputs }, 1)) {
-            splats = false;
           }
         } else {
           splats = false;
@@ -2140,8 +2137,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _maybeTableReduction(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 1) return null;
+    // The generic path infers a non-table argument again, so drop this probe's
+    // diagnostics then, or each is reported twice.
+    const mark = diagnostics.length;
     const t: any = inferExpr(args[0], scopes);
-    if (!t || t.kind !== 'table') return null;
+    if (!t || t.kind !== 'table') {
+      diagnostics.length = mark;
+      return null;
+    }
     return _reduceTableType(t, expr.op);
   }
   // The result type of a column-wise reduction over a table: a record of
@@ -6369,6 +6372,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _irContainsName(ir: any, freeName: string, irWalk: any): boolean {
     if (!ir || typeof ir !== 'object') return false;
     if (ir.kind === 'ref' && ir.name === freeName) return true;
+    // A lambda parameter of the same name shadows the free variable.
+    if (ir.op === 'functionof' && Array.isArray(ir.params) && ir.params.includes(freeName)) return false;
     let found = false;
     irWalk.forEachIRChild(ir, (c: any) => { if (!found) found = _irContainsName(c, freeName, irWalk); });
     return found;
@@ -6401,7 +6406,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
       }
       if (onPathIdx === -1) return;       // free var absent below here (shouldn't happen once entered)
-      if (cur.op === 'pow') {
+      const cellFn = _broadcastCellFn(cur, onPathIdx);
+      if (cellFn) {
+        // invertExpr inverts a broadcast cell by cell, so the cell's own ops are on the path.
+        _collectPathOps(cellFn.body, cellFn.params[onPathIdx - 1], into, irWalk);
+      } else if (cur.op === 'pow') {
         // pow(base, k): only guard (nonnegreals) when the free var is in the
         // BASE (onPathIdx 0) and the exponent is not an odd positive integer.
         // pow(const, x) (free var in the exponent) is a different bijection and
@@ -6412,6 +6421,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
       cur = cur.args[onPathIdx];
     }
+  }
+
+  function _broadcastCellFn(node: any, onPathIdx: number): any {
+    const g = node.op === 'broadcast' && onPathIdx >= 1 ? node.args[0] : null;
+    return g && g.op === 'functionof' && Array.isArray(g.params) && g.body ? g : null;
   }
 
   function checkPushfwdDomainContracts() {
@@ -6463,7 +6477,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const op of ops) {
       const guard = PUSHFWD_DOMAIN_GUARDS[op];
       if (!guard) continue;
-      if (support == null) support = valuesetOfExpr(mIR);
+      if (support == null) {
+        support = valuesetOfExpr(mIR);
+        // The guarded ops are §07 scalar-only, so over an array base they reach
+        // it through a broadcast, and act on its cells.
+        while (support && support.vs === 'cartpow') support = support.elem;
+      }
       if (support === vsLib.UNKNOWN || support === vsLib.DEFERRED || support === vsLib.ANYTHING) continue;
       if (guard.isWithin(support)) continue;
       diagnostics.push({

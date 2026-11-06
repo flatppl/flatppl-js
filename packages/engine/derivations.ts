@@ -2075,7 +2075,13 @@ function _collectFieldPathOps(body: any, freeName: string, into: Set<string>): v
       }
     }
     if (onPathIdx === -1) return;
-    if (typeof cur.op === 'string') into.add(cur.op);
+    const g = cur.op === 'broadcast' && onPathIdx >= 1 ? cur.args[0] : null;
+    if (g && g.op === 'functionof' && Array.isArray(g.params) && g.body) {
+      // invertExpr inverts a broadcast cell by cell, so the cell's own ops are on the path.
+      _collectFieldPathOps(g.body, g.params[onPathIdx - 1], into);
+    } else if (typeof cur.op === 'string') {
+      into.add(cur.op);
+    }
     cur = cur.args[onPathIdx];
   }
 }
@@ -2151,7 +2157,9 @@ function _recognizeDiagonalPushforwardFields(
       if (pathOps.size > 0) {
         const typeinfer = require('./typeinfer.ts');
         const vsLib = require('./value-set.ts');
-        const ancestorIR = expandMeasureIR(ancestor, derivations, new Set(visited), bindings);
+        let ancestorIR = expandMeasureIR(ancestor, derivations, new Set(visited), bindings);
+        // A guarded op inside a broadcast acts on each cell of an iid ancestor.
+        while (ancestorIR && ancestorIR.kind === 'call' && ancestorIR.op === 'iid') ancestorIR = ancestorIR.args?.[0] ?? null;
         const support = (ancestorIR && ancestorIR.kind === 'call' && DISTRIBUTIONS.has(ancestorIR.op))
           ? typeinfer.distributionSupport(ancestorIR) : vsLib.UNKNOWN;
         if (support !== vsLib.UNKNOWN && support !== vsLib.DEFERRED && support !== vsLib.ANYTHING) {
@@ -2747,7 +2755,10 @@ function classifyTruncate(rhsIR: IRNode, ast: any, bindings: any, fixedValues?: 
   const setDescr = parseSetIR(rhsIR.args[1], bindings, fixedValues);
   if (setDescr == null) {
     const setIR = rhsIR.args[1];
-    if (!isCallOp(setIR, 'interval', 2)) return null;
+    // A record set restricts each field to its own set. A positional cartprod
+    // stays inline, where the normalize box machinery reads it.
+    const recordSet = setIR?.kind === 'call' && setIR.op === 'cartprod' && setIR.fields?.length > 0;
+    if (!isCallOp(setIR, 'interval', 2) && !recordSet) return null;
     return { kind: 'truncate', from: baseName, setDescr: null, setIR };
   }
   return { kind: 'truncate', from: baseName, setDescr };
@@ -2849,7 +2860,15 @@ function _detectStructuralProjection(
   const fb = bindings.get(fnRef);
   const sel = fieldProjectionSelector(fb && fb.ir);
   if (!sel) return null;
-  let comp = _namedProductComponents(baseRef, bindings, new Set<string>());
+  return _projectNamedProduct(sel, _namedProductComponents(baseRef, bindings, new Set<string>()), bindings);
+}
+
+// The projection of a named product with component map `comp` onto the fields
+// `sel` selects, or null when `sel` does not name its fields.
+function _projectNamedProduct(
+  sel: { prefix: string[]; names: string[]; bare: boolean },
+  comp: Record<string, string> | null, bindings: any,
+): DerivationRecord | DerivationAlias | null {
   const dropped: string[] = [];
   // Each `prefix` step descends one level into a nested named product, so a
   // record of records projects field-by-field (`fn(_.a.x)`). The siblings
@@ -3101,21 +3120,25 @@ function _kernelFunctionIR(ref: any, bindings: any): any {
 // with the retained variates. The certificate reads the kernel BODY, where
 // those variates appear as `%local` refs that `resolveConstant` cannot resolve,
 // so a mass that depends on them declines and the projection refuses.
-function _chainPrefixProjection(fIR: any, base: any, bindings: any): any {
+function _chainPrefixProjection(fIR: any, base: any, bindings: any, derivations: any): any {
   // `kchain` marginalizes the intermediate variate, so its variate is the last
   // step alone and a prefix selector does not name a factor of it.
   if (base.marginalize) return null;
   const steps: any[] = Array.isArray(base.steps) ? base.steps : [];
   if (steps.length < 2) return null;
   const labels: string[] | null = base.labels || null;
+  const sel = fieldProjectionSelector(fIR);
   let keep: number;
   let bare: boolean;
   if (labels) {
-    const sel = fieldProjectionSelector(fIR);
     if (!sel || sel.prefix.length > 0) return null;
     keep = sel.names.length;
     for (let i = 0; i < keep; i++) if (sel.names[i] !== labels[i]) return null;
     bare = sel.bare;
+  } else if (sel) {
+    // A chain of record-valued steps has the merged record as its variate
+    // (§06 `cat`), so a name selector keeps the steps whose fields it lists.
+    return _recordChainPrefixProjection(sel, steps, bindings, derivations);
   } else {
     const sel = _indexProjectionSelector(fIR);
     if (!sel) return null;
@@ -3125,11 +3148,7 @@ function _chainPrefixProjection(fIR: any, base: any, bindings: any): any {
   }
   // Nothing dropped is the identity map, which needs no rewrite.
   if (keep < 1 || keep >= steps.length) return null;
-  const droppedIR: { label: string; ir: any }[] = [];
-  for (let j = keep; j < steps.length; j++) {
-    const f = steps[j].kernelIR || _kernelFunctionIR(steps[j].ref, bindings);
-    droppedIR.push({ label: steps[j].var, ir: (f && f.body) || null });
-  }
+  const droppedIR = _droppedChainSteps(steps, keep, bindings);
   if (keep > 1) {
     return {
       kind: 'jointchain',
@@ -3154,8 +3173,82 @@ function _chainPrefixProjection(fIR: any, base: any, bindings: any): any {
   };
 }
 
-// Spec §06 case-2 for the two product bases `_namedProductComponents` cannot
-// reach: a positional `iid` and a `jointchain`. Both were classified as a
+// The dropped transitions of a chain prefix that keeps `keep` steps.
+function _droppedChainSteps(steps: any[], keep: number, bindings: any): { label: string; ir: any }[] {
+  const droppedIR: { label: string; ir: any }[] = [];
+  for (let j = keep; j < steps.length; j++) {
+    const f = steps[j].kernelIR || _kernelFunctionIR(steps[j].ref, bindings);
+    droppedIR.push({ label: steps[j].var, ir: (f && f.body) || null });
+  }
+  return droppedIR;
+}
+
+// The prefix projection of a chain of record-valued steps. The selector must
+// list the fields of the first `keep` steps in chain order: those fields are
+// the prefix's own variate. A bare one-name selector also needs the first
+// step to be a record of draws, so the kept field has its own component.
+function _recordChainPrefixProjection(
+  sel: { prefix: string[]; names: string[]; bare: boolean },
+  steps: any[], bindings: any, derivations: any,
+): any {
+  if (sel.prefix.length > 0) return null;
+  const fields: string[] = [];
+  let keep = 0;
+  while (keep < steps.length && fields.length < sel.names.length) {
+    const own = _chainStepFields(steps[keep], bindings, derivations);
+    if (!own) return null;
+    fields.push(...own);
+    keep++;
+  }
+  if (keep >= steps.length || fields.length !== sel.names.length) return null;
+  for (let i = 0; i < fields.length; i++) if (fields[i] !== sel.names[i]) return null;
+  const droppedIR = _droppedChainSteps(steps, keep, bindings);
+  if (keep > 1) {
+    if (sel.bare) return null;
+    return {
+      kind: 'jointchain', marginalize: false, labels: null,
+      steps: steps.slice(0, keep), projectionDroppedIR: droppedIR,
+    };
+  }
+  const b0 = steps[0];
+  if (b0.kernel || b0.ref == null) return null;
+  if (!sel.bare) return { kind: 'alias', from: b0.ref, projectionDroppedIR: droppedIR };
+  const d0 = derivations[_aliasRoot(b0.ref, derivations)];
+  const from = d0 && d0.kind === 'record' && d0.fields[sel.names[0]];
+  return from ? { kind: 'alias', from, projectionDroppedIR: droppedIR } : null;
+}
+
+function _aliasRoot(name: string, derivations: any): string {
+  let n = name;
+  for (let guard = 0; guard < 64 && derivations[n] && derivations[n].kind === 'alias'; guard++) {
+    n = derivations[n].from;
+  }
+  return n;
+}
+
+// The field names a record-valued chain step adds to the chain's variate, in
+// order, or null when the step's variate is not a record of known fields.
+function _chainStepFields(step: any, bindings: any, derivations: any): string[] | null {
+  let ref: string | null = step.ref == null ? null : step.ref;
+  const body = step.kernelIR && step.kernelIR.body;
+  if (body) {
+    // An inline step's body is `lawof(<record value>)`.
+    if (body.kind !== 'call' || body.op !== 'lawof' || !isSelfRef(body.args && body.args[0])) return null;
+    ref = body.args[0].name;
+  }
+  if (ref == null) return null;
+  const d = derivations[_aliasRoot(ref, derivations)];
+  if (d && d.kind === 'record' && d.fields) return Object.keys(d.fields);
+  // A named kernel or measure carries its variate in its inferred type.
+  const t = bindings.get(ref)?.inferredType;
+  const m = t && t.kind === 'kernel' ? t.result : t;
+  const dom = m && m.kind === 'measure' ? m.domain : null;
+  return dom && dom.kind === 'record' && dom.fields ? Object.keys(dom.fields) : null;
+}
+
+// Spec §06 case-2 for the product bases `_namedProductComponents` cannot
+// reach: a positional `iid`, a `jointchain`, and a `record` reached through
+// `relabel`. Both were classified as a
 // general `pushfwd`, whose density then demanded a bijection annotation for a
 // marginal §06 requires an engine to support.
 //
@@ -3176,9 +3269,13 @@ function _projectProductBases(bindings: any, derivations: any): void {
     if (base.projectionDropped || base.projectionDroppedIR) continue;
     const fb = bindings.get(d.fnRef);
     const fIR = fb && fb.ir;
+    // A `record` base reached here through a shape the classifier's own
+    // product reader does not follow, such as `relabel(joint(...), names)`.
+    const sel = base.kind === 'record' ? fieldProjectionSelector(fIR) : null;
     const marginal = base.kind === 'iid' ? _iidFactorProjection(fIR, base)
-      : base.kind === 'jointchain' ? _chainPrefixProjection(fIR, base, bindings)
-        : null;
+      : base.kind === 'jointchain' ? _chainPrefixProjection(fIR, base, bindings, derivations)
+        : sel ? _projectNamedProduct(sel, base.fields, bindings)
+          : null;
     if (marginal) derivations[name] = marginal;
   }
 }
@@ -4405,13 +4502,14 @@ function pushfwdBijectionMeta(fnRef: string, bindings: any): any {
     });
     if (inv) {
       // fInv body is in terms of FINV_PARAM (= y); logVolume (forward
-      // LADJ) is in terms of holeName (= the preimage x). invertExpr
-      // derives a scalar LADJ, so over an array variate it applies
-      // per element (density.pushfwdLogVolume sums it).
+      // LADJ) is in terms of holeName (= the preimage x). A chain of
+      // scalar ops gives a per-cell LADJ, which density.pushfwdLogVolume
+      // sums over an array variate. A broadcast on the path gives the
+      // LADJ of the whole map.
       bijMeta = {
         fForward: { body: fBinding.ir.body, paramName: holeName },
         fInv: { body: inv.inverseIR, paramName: FINV_PARAM },
-        logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName, elementwise: true },
+        logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName, elementwise: !inv.wholeMap },
       };
     }
   }

@@ -1366,7 +1366,7 @@ function walkTruncate(ir: IRNode, value: any, refArrays: any, N: any, opts: any,
   // point to -Infinity, and one in-support first point let every out-of-support
   // point keep its density.
   const points: any = opts.pointsBatched ? (valueLib.isValue(value) ? value.data : value) : null;
-  if (set.kind === 'call' && set.op === 'cartprod' && !set.fields?.length) {
+  if (set.kind === 'call' && set.op === 'cartprod') {
     const rest = walkAcc(ir.args[0], value, refArrays, N, opts, acc, baseEnv, overlay);
     // §06's indicator uses the same continuous product geometry as Lebesgue.
     walkLebesgue({ kind: 'call', op: 'Lebesgue', args: [set] }, value, refArrays, N, opts, acc, baseEnv, overlay);
@@ -2199,6 +2199,13 @@ function _pushfwdInverseAtomIndependent(bij: any, y: any, baseEnv: any, overlay:
 function pushfwdPreimage(y: any, x: any): any {
   if (!valueLib.isValue(y)) {
     if (typeof x === 'number') return x;
+    if (valueLib.isValue(x) && x.shape.length === 0) {
+      // The whole-map LADJ of a broadcast sums over cells, and §07 gives
+      // `sum` no scalar, so a dotted map over a scalar base has none.
+      throw new Error('density: pushfwd over a scalar base needs an undotted '
+        + 'forward map: a dotted operator or f.(x) broadcasts over arrays (§04), '
+        + 'so write fn(_ * a) for fn(_ .* a)');
+    }
     throw new Error('density: pushfwd f_inv returned non-scalar (got '
       + (typeof x) + ') for a scalar variate');
   }
