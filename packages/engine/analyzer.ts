@@ -2528,11 +2528,11 @@ function sliceSource(source: string, loc: any) {
  * reading (never a formal), mirroring `lower.ts`'s
  * `!ctx.bindingNames` fallback (`lower.ts:849`).
  *
- * `offSpecBoundaries`, when given, collects the RHS node of every
+ * `offSpecBoundaries`, when given, collects `{ node, op }` for the RHS node of every
  * self-referential identifier-form kwarg (`mu = mu`) whose name has no
  * real binding — the bare-name boundary-input shorthand that spec §04
  * §sec:functionof only spells with a placeholder (`_mu_`). Callers use
- * this to surface the off-spec idiom as a non-error diagnostic.
+ * this to raise the §04 unresolved-name error.
  */
 // The argument index holding the kernel TAG of a FlatPDL `builtin_*` primitive
 // (spec §07 §sec:measure-eval-prims), or `-1` when this call has none. The same
@@ -2621,7 +2621,10 @@ function collectIdentRefs(
           // genuinely different name (`p = a`) always needs `a` to
           // resolve, per spec §04 §sec:functionof.
           if (isSelfRef && (!definedNames || !definedNames.has(arg.value.name))) {
-            if (offSpecBoundaries) offSpecBoundaries.push(arg.value);
+            // An enclosing callable's formal resolves; anything else does not.
+            if (offSpecBoundaries && !isLocal(arg.value.name)) {
+              offSpecBoundaries.push({ node: arg.value, op: callee.name });
+            }
             continue;
           }
           walk(arg.value);
@@ -3688,17 +3691,16 @@ function analyze(ast: any, source: string, opts?: any) {
         });
       }
     }
-    // Bare-name boundary-input shorthand (`mu = mu` with no module `mu`)
-    // is off-spec per §04 §sec:functionof, which only spells a pure local
-    // formal with a placeholder (`_mu_`). The engine treats it as
-    // canonical (lower.ts:842-855) so it is not an error, but it still
-    // gets a diagnostic so the idiom stays discoverable.
-    for (const b of offSpecBoundaries) {
+    // A bare boundary name (`mu = mu` with no module `mu`) names no node:
+    // §04 "Name resolution" makes it a static error. A pure local formal is
+    // spelled with a placeholder (`_mu_`).
+    for (const { node, op } of offSpecBoundaries) {
       diagnostics.push({
-        severity: 'info',
-        message: `Bare-name boundary input '${b.name}' has no module binding; `
-          + `off-spec shorthand for the placeholder form '_${b.name}_' (spec §04 §sec:functionof)`,
-        loc: b.loc,
+        severity: 'error',
+        message: `\`${op}\` boundary input \`${node.name}\` must be a module binding or a `
+          + `placeholder such as \`_${node.name}_\` (spec §04 "Name resolution": unresolvable `
+          + 'names are static errors)',
+        loc: node.loc,
       });
     }
 
