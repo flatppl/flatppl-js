@@ -294,6 +294,26 @@ function resolveCallableAlias(name: string, bindings: any): string {
  * Density observations opt into `preserveShape`: keep evaluated Values so
  * matrix/view/outerRank metadata survives point-mass support comparison.
  */
+// The evaluator's `__resolveFnBody` hook over a binding table: the body and
+// parameters of a fn / functionof / kernelof binding, or null.
+function fnBodyResolver(bindings: any) {
+  return function (name: any) {
+    const b = bindings && bindings.get(name);
+    if (!b || (b.type !== 'fn' && b.type !== 'functionof' && b.type !== 'kernelof')) return null;
+    const fIR = b.ir;
+    if (!fIR || fIR.kind !== 'call' || fIR.op !== 'functionof'
+        || !Array.isArray(fIR.params) || !fIR.body) return null;
+    return {
+      body: fIR.body,
+      resultType: b.inferredType?.result,
+      params: fIR.params,
+      paramKwargs: fIR.paramKwargs,
+      orderedInputs: fIR.orderedInputs,
+      paramName: fIR.params[0],
+    };
+  };
+}
+
 function resolveIRToValue(ir: any, bindings: any, fixedValues: any, preserveShape = false) {
   return walk(ir, new Set());
   function walk(ir: any, seen: Set<any>): any {
@@ -346,17 +366,31 @@ function resolveIRToValue(ir: any, bindings: any, fixedValues: any, preserveShap
     // verbatim. A Proxy gives evaluateExpr's `name in env` / `env[name]`
     // access without eagerly snapshotting the (possibly large)
     // fixedValues map.
-    const env = new Proxy(Object.create(null), {
-      has(_t, name) {
-        if (typeof name !== 'string') return false;
-        if (fixedValues && fixedValues.has(name)) return true;
-        return !!(bindings && bindings.get(name) && bindings.get(name).ir);
-      },
-      get(_t, name) {
-        if (typeof name !== 'string') return undefined;
-        return walk({ kind: 'ref', ns: 'self', name }, seen);
-      },
+    // Callables copy the env into a plain object per call, which keeps only
+    // own properties. So the env lists every value a reachable function body
+    // reads, as a lazy getter that resolves on first use.
+    const env: any = { __resolveFnBody: fnBodyResolver(bindings) };
+    const { walkIR } = require('./ir-walk.ts');
+    const visited = new Set<string>();
+    const memo = new Map<string, any>();
+    const reach = (node: any) => walkIR(node, (n: any) => {
+      const name = n.kind === 'ref' && n.ns === 'self' ? n.name
+        : n.kind === 'call' && n.target?.ns === 'self' ? n.target.name : null;
+      if (!name || visited.has(name)) return;
+      visited.add(name);
+      const b = bindings && bindings.get(name);
+      const fn = fnBodyResolver(bindings)(name);
+      if (fn) { reach(fn.body); return; }
+      if (!(fixedValues && fixedValues.has(name)) && !(b && b.ir)) return;
+      Object.defineProperty(env, name, {
+        enumerable: true,
+        get() {
+          if (!memo.has(name)) memo.set(name, walk({ kind: 'ref', ns: 'self', name }, seen));
+          return memo.get(name);
+        },
+      });
     });
+    reach(ir);
     const samplerLib = require('./sampler.ts');
     const value = samplerLib.evaluateExpr(ir, env);
     return preserveShape ? value : valueToPlain(value);
@@ -888,6 +922,7 @@ function scalarLocscalePushfwd(ir: IRNode): IRNode {
 }
 
 module.exports = {
+  fnBodyResolver,
   scalarSetBounds,
   inSetBounds,
   scalarLocscalePushfwd,
