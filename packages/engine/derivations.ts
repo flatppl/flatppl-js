@@ -4506,6 +4506,7 @@ function closedFormLogTotalmass(ir: any, bindings: any, opts?: any): any {
   }
   if (op === 'superpose' && ir.args?.length === 0) return -Infinity;
   if (op === 'MvNormal' || SAMPLEABLE_DISTRIBUTIONS.has(op)) return 0;
+  if (require('./normalize-mass.ts').isProbabilityBroadcast(ir)) return 0;
   if (op === 'normalize' || op === 'tilt') return 0;
   // The image of the whole target space has the base measure's mass,
   // regardless of whether the forward map is injective or has a density.
@@ -5507,7 +5508,7 @@ function _expandKernelBodyMeasureRefs(ir: any, ctx: any, visited: Set<string>): 
     return expanded || ir;
   }
   if (ir.kind !== 'call') return ir;
-  if ((ir.op === 'normalize' || ir.op === 'truncate' || ir.op === 'locscale')
+  if ((ir.op === 'normalize' || ir.op === 'truncate' || ir.op === 'locscale' || ir.op === 'iid')
       && Array.isArray(ir.args) && ir.args.length >= 1) {
     const inner = _expandKernelBodyMeasureRefs(ir.args[0], ctx, visited);
     return { ...ir, args: [inner, ...ir.args.slice(1)] };
@@ -5519,6 +5520,11 @@ function _expandKernelBodyMeasureRefs(ir: any, ctx: any, visited: Set<string>): 
   }
   if (ir.op === 'superpose' && Array.isArray(ir.args)) {
     return { ...ir, args: ir.args.map((a: any) => _expandKernelBodyMeasureRefs(a, ctx, visited)) };
+  }
+  if (ir.op === 'joint') {
+    return Array.isArray(ir.fields)
+      ? { ...ir, fields: ir.fields.map((f: any) => ({ ...f, value: _expandKernelBodyMeasureRefs(f.value, ctx, visited) })) }
+      : { ...ir, args: (ir.args || []).map((a: any) => _expandKernelBodyMeasureRefs(a, ctx, visited)) };
   }
   return ir;
 }
