@@ -206,18 +206,20 @@ k = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)
   assert.equal(diagnostics.filter((d: any) => /Undefined/.test(d.message)).length, 0);
 });
 
-test('analyzer: bare-name boundary shorthand with no module binding gets an info diagnostic', () => {
-  // Spec §04 §sec:functionof only spells a pure local formal with a
-  // placeholder (`_mu_`); the bare `mu = mu` shorthand for it is off-spec.
-  // The engine keeps accepting it (lower.ts:842-855) but it must stay
-  // discoverable — a non-error diagnostic, not silence.
-  const { diagnostics } = process(`
-k = kernelof(Normal(mu = mu, sigma = 1.0), mu = mu)
-`);
-  const info = diagnostics.filter((d: any) => d.severity === 'info' && /bare-name boundary/i.test(d.message));
-  assert.equal(info.length, 1);
-  assert.ok(/'mu'/.test(info[0].message));
-  assert.ok(info[0].loc, 'diagnostic carries a source location');
+test('analyzer: a bare boundary name with no module binding is a static error', () => {
+  // §04 "Name resolution": "Unresolvable names are static errors". A pure
+  // local formal is spelled with a placeholder (`_mu_`).
+  for (const [op, body] of [['functionof', 'Normal(mu = mu, sigma = 1.0)'], ['kernelof', '2.0 * mu']]) {
+    const { diagnostics } = process(`k = ${op}(${body}, mu = mu)\n`);
+    const errs = diagnostics.filter((d: any) => d.severity === 'error');
+    assert.equal(errs.length, 1, JSON.stringify(errs.map((d: any) => d.message)));
+    assert.equal(errs[0].message, '`' + op + '` boundary input `mu` must be a module binding or a placeholder '
+      + 'such as `_mu_` (spec §04 "Name resolution": unresolvable names are static errors)');
+    assert.ok(errs[0].loc, 'diagnostic carries a source location');
+  }
+  // The placeholder form is the local formal.
+  const ok = process('k = functionof(Normal(mu = _mu_, sigma = 1.0), mu = _mu_)\n').diagnostics;
+  assert.deepEqual(ok.filter((d: any) => d.severity === 'error'), []);
 });
 
 test('analyzer: identifier-form boundary to a real binding gets no off-spec diagnostic', () => {

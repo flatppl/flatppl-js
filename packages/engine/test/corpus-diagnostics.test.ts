@@ -67,16 +67,15 @@ for (const file of FIXTURE_FILES) {
 
 // Spec §11 "Reified callables" admits two spellings for a boundary input: a
 // ref into the ancestor subgraph, or a placeholder within the reified output.
-// A bare unbound name is neither, and `lower.ts` still accepts it as an
-// off-spec shorthand behind an `info` diagnostic. The corpus carries no
-// remaining instance, so pin that — a new fixture must not reintroduce one.
+// A bare unbound name is neither, and the analyzer refuses it (§04 "Name
+// resolution"). Pin that no fixture spells one.
 test('no fixture spells a kernel boundary input as a bare unbound name', () => {
   const offenders: string[] = [];
   for (const file of FIXTURE_FILES) {
     const src = fs.readFileSync(path.join(FIXTURES, file), 'utf8');
     const { diagnostics } = processSource(src);
     for (const d of diagnostics || []) {
-      if (/Bare-name boundary input/.test(String(d.message))) {
+      if (/boundary input `\w+` must be a module binding/.test(String(d.message))) {
         offenders.push(`${file}: ${d.message}`);
       }
     }

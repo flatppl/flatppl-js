@@ -278,8 +278,8 @@ test('a generative-bodied broadcast carries the parameter weights',
 // a second weighting event: cov(a_j, b_j) = Var[theta] like every other pair.
 test('a joint-bodied broadcast carries the parameter weights', async () => {
   await assertSharedTheta('joint', H + TILT + OFFS
-    + 'obs = functionof(joint(a = Normal(mu = am, sigma = 1.0), '
-    + 'b = Normal(mu = am, sigma = 1.0)), am = am)\n'
+    + 'obs = functionof(joint(a = Normal(mu = _am_, sigma = 1.0), '
+    + 'b = Normal(mu = _am_, sigma = 1.0)), am = _am_)\n'
     + 'y = broadcast(obs, am = theta .+ offs)\n',
     {
       mean: [1, 1, 2, 2],
