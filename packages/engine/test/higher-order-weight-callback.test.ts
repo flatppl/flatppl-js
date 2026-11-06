@@ -67,3 +67,23 @@ test('ifelse and comparisons in an aggregate body', async () => {
     + 'ifelse([1.0, 2.0, 3.0][.i] >= [1.5, 2.5][.s], 1.0, 0.0)))';
   near(await value(body), logN(A) + 3 * A);
 });
+
+test('a guessed product shape does not conflict with an aggregate axis', () => {
+  // `array(...)` has no static shape, so `u * W` is only a guess. A determinized
+  // model inlines its data this way; the axis .t still has one length, 6.
+  const { processSource, orchestrator } = require('../index.ts');
+  const src = 'u = array([1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0, 10.0, 11.0, 12.0], [6, 2], [1, 2])\n'
+    + 'w = [[1.0, 2.0], [3.0, 4.0], [5.0, 6.0]]\n'
+    + 'q = aggregate(sum, [.t, .k], [1.0, 2.0, 3.0, 4.0, 5.0, 6.0][.t] - (u * transpose(rowstack(w)))[.t, .k])\n';
+  const r = processSource(src);
+  assert.deepEqual(r.diagnostics.filter((d: any) => d.severity === 'error').map((d: any) => d.message), []);
+  const q = orchestrator.buildDerivations(r.bindings).fixedValues.get('q');
+  assert.deepEqual(q.shape, [6, 3]);
+  // Row t of u is [2t - 1, 2t]; column k of W' is row k of w.
+  for (let t = 0; t < 6; t++) {
+    for (let k = 0; k < 3; k++) {
+      const want = (t + 1) - ((2 * t + 1) * (2 * k + 1) + (2 * t + 2) * (2 * k + 2));
+      assert.equal(q.data[t * 3 + k], want);
+    }
+  }
+});
