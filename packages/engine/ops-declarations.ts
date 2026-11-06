@@ -1105,7 +1105,7 @@ ops.registerVariant('linsolve', {
 // no atom-batch detection (variadic + batching is a Phase 5c+
 // problem). Same delegation pattern as the rank-polymorphic ops.
 
-function _vectorLogical(...xs: any[]): any {
+function _vectorLogical(xs: any[]): any {
   return _vectorFromElements(xs);
 }
 
@@ -1207,7 +1207,7 @@ ops.register({
   logical: _vectorLogical,
 });
 
-function _catLogical(...xs: any[]): any {
+function _catLogical(xs: any[]): any {
   if (xs.length === 0) return { shape: [0], data: new Float64Array(0) };
   const first = xs[0];
   // cat(scalar, scalar, ...) → rank-1 Value (spec §07).
