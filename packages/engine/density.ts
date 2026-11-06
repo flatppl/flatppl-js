@@ -3358,8 +3358,8 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
 
 // The collection axes of one broadcast argument and an accessor for its cell
 // at atom i, row-major offset j. §03 keeps a vector of vectors (a JS array or
-// an outerRank-tagged Value) distinct from a matrix: only its outer axes
-// iterate, and each cell is a whole inner array.
+// an outerRank-tagged Value) distinct from a matrix: only the axes of its
+// first nesting level iterate, and each cell is a whole inner array.
 function _broadcastCellAccessor(v: any, usesAtom: boolean, N: number): {
   axes: number[]; accessor: (i: number, j: number) => any;
 } {
@@ -3368,7 +3368,8 @@ function _broadcastCellAccessor(v: any, usesAtom: boolean, N: number): {
   const first = atom(0);
   const axesOf = (x: any): number[] => {
     if (valueLib.isValue(x)) {
-      return typeof x.outerRank === 'number' ? x.shape.slice(0, x.outerRank) : x.shape.slice();
+      const levels = valueLib.levelAxesOf(x);
+      return levels.length ? x.shape.slice(0, levels[0]) : x.shape.slice();
     }
     return Array.isArray(x) || x?.BYTES_PER_ELEMENT !== undefined ? [x.length] : [];
   };
@@ -3382,8 +3383,7 @@ function _broadcastCellAccessor(v: any, usesAtom: boolean, N: number): {
     const size = cellShape.reduce((a: number, b: number) => a * b, 1);
     if (cellShape.length === 0) return dense.data[j];
     const cell: any = { shape: cellShape, data: dense.data.subarray(j * size, (j + 1) * size) };
-    if (dense.outerRank > axes.length) cell.outerRank = dense.outerRank - axes.length;
-    return cell;
+    return valueLib.setLevels(cell, valueLib.levelAxesOf(dense).slice(1));
   };
   if (!batched) return { axes, accessor: (_i, j) => cellOf(first, j) };
   return { axes, accessor: (i, j) => cellOf(atom(i), j) };
@@ -3428,7 +3428,7 @@ function peelBroadcastCells(value: any, axes: number[]): { cells: any[]; rest: a
   const dense = valueLib._logicalDense(value);
   const row = dense.shape.slice(1).reduce((a: number, b: number) => a * b, 1);
   const tail: any = { shape: [total - first, ...dense.shape.slice(1)], data: dense.data.subarray(first * row) };
-  if (dense.outerRank !== undefined) tail.outerRank = dense.outerRank;
+  valueLib.setLevels(tail, valueLib.levelAxesOf(dense));
   return { cells, rest: tail };
 }
 
