@@ -76,6 +76,7 @@ const forwardCdf = require('./forward-cdf.ts');
 const bcAxes = require('./kernel-broadcast-axes.ts');
 const shared  = require('./materialiser-shared.ts');
 const fixedLikelihood = require('./fixed-likelihood.ts');
+const { DISTRIBUTION_PARAM_RANKS } = require('./distribution-param-ranks.ts');
 const { getOptimization } = require('./perf-config.ts');
 const FIXED_OBSERVATIONS = Symbol('fixed observations');
 
@@ -2956,6 +2957,50 @@ function _asFloatColumn(r: any, M: number): Float64Array {
     + 'unexpected shape (expected length-' + M + ' column)');
 }
 
+// Pack a parameter value into one row-major buffer. Evaluation yields a
+// Value, a JS array of Values (`rows[idx]`), or per-atom arrays of either.
+function _packNestedParam(v: any): { shape: number[]; data: Float64Array } | null {
+  if (typeof v === 'number' || typeof v === 'boolean') return { shape: [], data: Float64Array.of(+v) };
+  if (valueLib.isValue(v)) {
+    if (valueLib.isComplexValue(v)) return null;
+    const d = valueLib._logicalDense(v);
+    return { shape: d.shape, data: d.data };
+  }
+  if (v && v.BYTES_PER_ELEMENT !== undefined) return { shape: [v.length], data: Float64Array.from(v) };
+  if (!Array.isArray(v) || v.length === 0) return null;
+  const parts = v.map(_packNestedParam);
+  const inner = parts[0]?.shape;
+  if (!inner || parts.some((q: any) => !q || q.shape.length !== inner.length
+      || q.shape.some((d: number, k: number) => d !== inner[k]))) return null;
+  const size = parts[0]!.data.length;
+  const data = new Float64Array(parts.length * size);
+  parts.forEach((q: any, k: number) => data.set(q.data, k * size));
+  return { shape: [parts.length, ...inner], data };
+}
+
+// §08 declares some parameters as vectors or matrices (Categorical's p). §04
+// broadcasting iterates only the outer axes, so the trailing `rank` axes form
+// one cell, which the accessor returns as a subarray.
+function _broadcastCellParam(v: any, usesAtom: boolean, N: number, rank: number, errCtx: string): {
+  axes: number[]; accessor: (i: number, j: number) => Float64Array;
+} {
+  const packed = _packNestedParam(v);
+  if (!packed || packed.shape.length < rank) {
+    throw new Error('density: ' + errCtx + ' needs an array of rank ' + rank
+      + ' in each broadcast cell');
+  }
+  const atomBatched = usesAtom && packed.shape.length > rank && packed.shape[0] === N;
+  const shape = atomBatched ? packed.shape.slice(1) : packed.shape;
+  const axes = shape.slice(0, shape.length - rank);
+  const cellSize = shape.slice(shape.length - rank).reduce((a: number, b: number) => a * b, 1);
+  const atomStride = atomBatched ? axes.reduce((a: number, b: number) => a * b, 1) * cellSize : 0;
+  const data = packed.data;
+  return {
+    axes,
+    accessor: (i, j) => data.subarray(i * atomStride + j * cellSize, i * atomStride + (j + 1) * cellSize),
+  };
+}
+
 // ---- Kernel-broadcast: array-valued independent product measure ----
 //
 // `broadcast(Dist, c1, c2, …)` (spec §04 sec:higher-order) — independent
@@ -3185,10 +3230,11 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     name => !overlay || !Object.prototype.hasOwnProperty.call(overlay, name)) : [];
   const evalOpts = overlay ? { overlay } : undefined;
   const overlayNames = overlay ? Object.keys(overlay) : [];
-  const accessors: Array<(i: number, j: number) => number> = new Array(paramNames.length);
+  const accessors: Array<(i: number, j: number) => any> = new Array(paramNames.length);
+  const paramAxes: number[][] = new Array(paramNames.length);
+  const paramRanks: Record<string, number> = DISTRIBUTION_PARAM_RANKS[kernelName] || {};
   const perAtomFlags: boolean[] = new Array(paramNames.length);
   const paramVals: any[] = new Array(paramNames.length);
-  const paramUsesAtom: boolean[] = new Array(paramNames.length);
   const reduction = getOptimization('density.fixedLikelihood') ? opts[FIXED_OBSERVATIONS] : null;
   const sharedParams: boolean[] | null = reduction ? new Array(paramNames.length) : null;
   let anyAtomDep = false;
@@ -3203,19 +3249,23 @@ function walkBroadcast(ir: IRNode, value: any, refArrays: any, N: any, opts: any
     // to N is not evidence of an atom axis; only per-atom references are.
     const usesAtom = !fixed && _preparedExprUsesAny(pIR, refNames, opts);
     perAtomFlags[pi] = usesAtom;
-    paramUsesAtom[pi] = usesAtom;
-    if (sharedParams) sharedParams[pi] = fixed?.scalar !== undefined
-      || (shared.collectionAxesOf(v, N, usesAtom) || []).every((dim: number) => dim === 1);
+    const errCtx = "broadcast(" + kernelName + ") parameter '" + paramNames[pi] + "'";
+    const rank = paramRanks[paramNames[pi]] || 0;
+    if (rank > 0) {
+      const cell = _broadcastCellParam(v, usesAtom, N, rank, errCtx);
+      accessors[pi] = cell.accessor;
+      paramAxes[pi] = cell.axes;
+    } else {
+      accessors[pi] = _broadcastParamAccessor(v, usesAtom, N, errCtx);
+      paramAxes[pi] = shared.collectionAxesOf(v, N, usesAtom) || [];
+    }
+    if (sharedParams) sharedParams[pi] = (rank === 0 && fixed?.scalar !== undefined)
+      || paramAxes[pi].every((dim: number) => dim === 1);
     if (usesAtom) anyAtomDep = true;
-    accessors[pi] = _broadcastParamAccessor(v, usesAtom, N,
-      "broadcast(" + kernelName + ") parameter '" + paramNames[pi] + "'");
   }
   // Build collection axes per param, resolve broadcast axes, get output axes + strides.
   const resolved = bcAxes.resolveBroadcastAxes(
-    paramNames.map((p: string, pi: number) => ({
-      name: p,
-      collectionAxes: shared.collectionAxesOf(paramVals[pi], N, paramUsesAtom[pi]) || [],
-    })));
+    paramNames.map((p: string, pi: number) => ({ name: p, collectionAxes: paramAxes[pi] })));
   const axes: number[] = resolved.axes;
   const Ktot: number = axes.reduce((a: number, b: number) => a * b, 1);
 
