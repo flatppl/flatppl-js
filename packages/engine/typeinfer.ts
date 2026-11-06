@@ -6372,6 +6372,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _irContainsName(ir: any, freeName: string, irWalk: any): boolean {
     if (!ir || typeof ir !== 'object') return false;
     if (ir.kind === 'ref' && ir.name === freeName) return true;
+    // A lambda parameter of the same name shadows the free variable.
+    if (ir.op === 'functionof' && Array.isArray(ir.params) && ir.params.includes(freeName)) return false;
     let found = false;
     irWalk.forEachIRChild(ir, (c: any) => { if (!found) found = _irContainsName(c, freeName, irWalk); });
     return found;
@@ -6404,7 +6406,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
         }
       }
       if (onPathIdx === -1) return;       // free var absent below here (shouldn't happen once entered)
-      if (cur.op === 'pow') {
+      const cellFn = _broadcastCellFn(cur, onPathIdx);
+      if (cellFn) {
+        // invertExpr inverts a broadcast cell by cell, so the cell's own ops are on the path.
+        _collectPathOps(cellFn.body, cellFn.params[onPathIdx - 1], into, irWalk);
+      } else if (cur.op === 'pow') {
         // pow(base, k): only guard (nonnegreals) when the free var is in the
         // BASE (onPathIdx 0) and the exponent is not an odd positive integer.
         // pow(const, x) (free var in the exponent) is a different bijection and
@@ -6415,6 +6421,11 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       }
       cur = cur.args[onPathIdx];
     }
+  }
+
+  function _broadcastCellFn(node: any, onPathIdx: number): any {
+    const g = node.op === 'broadcast' && onPathIdx >= 1 ? node.args[0] : null;
+    return g && g.op === 'functionof' && Array.isArray(g.params) && g.body ? g : null;
   }
 
   function checkPushfwdDomainContracts() {
@@ -6466,7 +6477,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const op of ops) {
       const guard = PUSHFWD_DOMAIN_GUARDS[op];
       if (!guard) continue;
-      if (support == null) support = valuesetOfExpr(mIR);
+      if (support == null) {
+        support = valuesetOfExpr(mIR);
+        // The guarded ops are §07 scalar-only, so over an array base they reach
+        // it through a broadcast, and act on its cells.
+        while (support && support.vs === 'cartpow') support = support.elem;
+      }
       if (support === vsLib.UNKNOWN || support === vsLib.DEFERRED || support === vsLib.ANYTHING) continue;
       if (guard.isWithin(support)) continue;
       diagnostics.push({
