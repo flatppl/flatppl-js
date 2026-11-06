@@ -1121,12 +1121,23 @@ function lowerMeasure(input: any, ctx: any, opts?: any): any {
       // value into the overlay by name/source (the hierarchical record law
       // p(a)·p(b|a)), making the per-atom scores constant and the reduction a
       // no-op. Only genuinely unexposed ancestors need a marginal.
+      // §06 joint merges record components, so the fields of a record law
+      // inside a positional joint are observed too.
       const exposed = new Set<string>();
-      for (const f of (body.fields || [])) {
-        exposed.add(f.name);
-        if (f.source != null) exposed.add(f.source);
-        if (f.threadAs != null) exposed.add(f.threadAs);
-      }
+      const expose = (node: any) => {
+        if (node?.kind !== 'call') return;
+        // A weight or a support restriction keeps the variate.
+        if (node.op === 'weighted' || node.op === 'logweighted') return expose(node.args?.[1]);
+        if (node.op === 'normalize' || node.op === 'truncate') return expose(node.args?.[0]);
+        if (node.op !== 'joint' && node.op !== 'record') return;
+        for (const f of (node.fields || [])) {
+          exposed.add(f.name);
+          if (f.source != null) exposed.add(f.source);
+          if (f.threadAs != null) exposed.add(f.threadAs);
+        }
+        if (!node.fields) (node.args || []).forEach(expose);
+      };
+      expose(body);
       const given = new Set<string>(opts?.inputMarginal?.scalars || []);
       const marg = over.filter((nm: string) => !exposed.has(nm) && !given.has(nm));
       // An mc-form body carries an `mcmarginal` recipe the worker integrates

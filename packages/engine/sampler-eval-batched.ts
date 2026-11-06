@@ -862,6 +862,20 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
             && _touchesAtomRef(ir.args[1], refArrays, overlay)) {
           return valueOps.mulN(args[0], args[1], N, [false, true]);
         }
+        // An operand built only from fixed values has no atom axis, even when
+        // its leading dimension equals N. Only the other operand's shape can
+        // still say whether it is a batch.
+        if (op === 'mul' && valueLib.isValue(args[0]) && valueLib.isValue(args[1])) {
+          const fixed = [0, 1].map(i => !_touchesAnyRef(ir.args[i], refArrays, overlay));
+          const ambiguous = (i: number) => fixed[i] && args[i].shape.length >= 2 && args[i].shape[0] === N;
+          const other = (i: number) => args[1 - i];
+          const i = ambiguous(0) ? 0 : ambiguous(1) ? 1 : -1;
+          // A per-atom scalar column keeps the scalar-broadcast route.
+          if (i >= 0 && (fixed[1 - i] || other(i).shape.length >= 2 || !valueLib.isAtomBatched(other(i), N))) {
+            const batched = !fixed[1 - i] && other(i).shape.length >= 2 && valueLib.isAtomBatched(other(i), N);
+            return valueOps.mulN(args[0], args[1], N, i === 0 ? [false, batched] : [batched, false]);
+          }
+        }
         return ARITH_OPS_N[op](args, N);
       }
       // Batched approximation functions. Each has the shape
@@ -1131,6 +1145,15 @@ function _subtreeRefNames(ir: any): Set<string> {
   })(ir);
   if (ir && typeof ir === 'object') _SUBTREE_REF_NAMES.set(ir, names);
   return names;
+}
+
+// True when the subtree reads a per-atom ref or an observed overlay value.
+function _touchesAnyRef(ir: any, refArrays: any, overlay: any): boolean {
+  for (const name of _subtreeRefNames(ir)) {
+    if (overlay && Object.prototype.hasOwnProperty.call(overlay, name)) return true;
+    if (refArrays && Object.prototype.hasOwnProperty.call(refArrays, name)) return true;
+  }
+  return false;
 }
 
 function _touchesAtomRef(ir: any, refArrays: any, overlay: any): boolean {
