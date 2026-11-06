@@ -116,24 +116,21 @@ test('real(array) dispatches cell-wise UN-dotted (spec §07 `real`)', () => {
   assert.equal(ops.dispatch('real', [{ re: 7, im: 9 }]), 7);
 });
 
-test('abs(array) dispatches cell-wise UN-dotted (spec §07)', () => {
-  // §07 gives the vector norms their own names (`l1norm` / `l2norm`), so `abs`
-  // over an array is the cell-wise magnitude and nothing else — which is what
-  // typeinfer already assigns it (shape-preserving). The determiniser's vector
-  // lattice test emits it un-dotted, `sum(abs(v - back))`
-  // (flatppl-rust determinizer/src/density.rs::lattice_test). Before this the
-  // container coerced to NaN and `sum` of that read 0, so the lattice gate
-  // silently admitted off-lattice points instead of returning -inf.
+test('abs(array) un-dotted is refused at run time (spec §07)', () => {
+  // §07 gives `abs` scalars only (the vector norms are `l1norm` / `l2norm`),
+  // and typeinfer refuses an array operand in source. Internally built IR
+  // gets the same refusal, never a NaN read of the container. The
+  // determiniser's lattice test spells it `broadcast(abs, ...)` since rust
+  // e875171.
   const v = vl.vector([0, -0.5, 2]);
-  assert.deepEqual(Array.from(ops.dispatch('abs', [v]).data), [0, 0.5, 2]);
-  // Complex cells give the modulus, a real Value.
+  assert.throws(() => ops.dispatch('abs', [v]),
+    /^Error: abs: §07 gives abs scalars only, got an array of shape \[3\]; write abs\.\(x\)/);
   const c = vo.complexElem(vl.vector([3, 0]), vl.vector([4, 5]));
-  const r = ops.dispatch('abs', [c]);
-  assert.equal(r.dtype, undefined);
-  assert.deepEqual(Array.from(r.data), [5, 5]);
-  // The scalar branch is unchanged.
+  assert.throws(() => ops.dispatch('abs', [c]), /abs scalars only/);
+  // Scalars, including a rank-0 Value, are unchanged.
   assert.equal(ops.dispatch('abs', [-2.5]), 2.5);
   assert.equal(ops.dispatch('abs', [{ re: 3, im: 4 }]), 5);
+  assert.deepEqual(Array.from(ops.dispatch('abs', [vl.scalar(-2.5)]).data), [2.5]);
 });
 
 test('imagElem: real Value → zero Value of same shape', () => {

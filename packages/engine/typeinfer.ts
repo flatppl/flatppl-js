@@ -1322,21 +1322,18 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (op === 'joint_likelihood') {
       const inputs: any[] = [];
       const seen = new Set<string>();
-      // The union is only an interface when every term splats: `L(θ) = ΣLᵢ(θ)`
-      // applies the same point to each term through that term's own interface,
-      // so a term taking one positional input receives a record point whole
-      // and a term of unknown interface leaves the point unconstrained.
+      // §06 `likelihoodof` binds a likelihood's point to its inputs by name for
+      // any number of inputs, whether the kernel declares them positionally or
+      // not. So the union is the joint's interface whenever every term's
+      // interface is known. A term of unknown interface leaves it open.
       let splats = args.length > 0;
       for (const arg of args) {
         const tT: any = inferExpr(arg, scopes);
-        if (tT && tT.kind === 'likelihood' && Array.isArray(tT.inputs)) {
+        if (tT && tT.kind === 'likelihood' && Array.isArray(tT.inputs)
+            && typeof tT.orderedInputs === 'boolean') {
           for (const inp of tT.inputs) {
             const key = inp && (inp.paramName || inp.name);
             if (key != null && !seen.has(key)) { seen.add(key); inputs.push(inp); }
-          }
-          if (typeof tT.orderedInputs !== 'boolean'
-              || T.acceptsPositional({ inputs: tT.inputs, orderedInputs: tT.orderedInputs }, 1)) {
-            splats = false;
           }
         } else {
           splats = false;
@@ -2140,8 +2137,14 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   function _maybeTableReduction(expr: any, scopes: any): any {
     const args = expr.args || [];
     if (args.length !== 1) return null;
+    // The generic path infers a non-table argument again, so drop this probe's
+    // diagnostics then, or each is reported twice.
+    const mark = diagnostics.length;
     const t: any = inferExpr(args[0], scopes);
-    if (!t || t.kind !== 'table') return null;
+    if (!t || t.kind !== 'table') {
+      diagnostics.length = mark;
+      return null;
+    }
     return _reduceTableType(t, expr.op);
   }
   // The result type of a column-wise reduction over a table: a record of
