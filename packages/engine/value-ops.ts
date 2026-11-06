@@ -1730,11 +1730,14 @@ function mulN(a: any, b: any, N: any, atomAxes?: readonly [boolean, boolean]) {
   // swaps the last two shape entries), not that each per-atom cell is
   // transposed, so slicing atom-major cells out of it would read the wrong
   // numbers.
-  if (aBatched && bBatched && N > 0 && _sameShape(a.shape, b.shape)
-      && !isTransposeView(a) && !isTransposeView(b)
-      && !isComplexValue(a) && !isComplexValue(b)
-      && !valueLib.isDiagStored(a) && !valueLib.isDiagStored(b)) {
-    return _perAtomMul(a, b, N);
+  //
+  // One batched operand times a shared one (a per-atom `rowstack(x) * w`) is
+  // the same per-atom `mul`, with the shared operand whole in every atom.
+  const sliceable = (v: any) => !isTransposeView(v) && !isComplexValue(v)
+    && !valueLib.isDiagStored(v);
+  if (N > 0 && (!aBatched || sliceable(a)) && (!bBatched || sliceable(b))
+      && (!aBatched || !bBatched || _sameShape(a.shape, b.shape))) {
+    return _perAtomMul(a, b, N, aBatched, bBatched);
   }
   // Other atom-batched cases land when needed.
   throw new Error(
@@ -1760,13 +1763,16 @@ function _atomCell(v: any, i: number, cellShape: any[], stride: number) {
 // combination, so the result cells are uniform and the pack is a straight
 // copy. Atom 0 runs first and alone: when the cells are a combination §07 does
 // not define, its throw is the whole answer and the other N−1 atoms never run.
-function _perAtomMul(a: any, b: any, N: any) {
-  const cellShape = a.shape.slice(1);
-  const stride = cellShape.reduce((x: number, y: number) => x * y, 1);
+function _perAtomMul(a: any, b: any, N: any, aBatched = true, bBatched = true) {
+  const cellOf = (v: any, batched: boolean) => {
+    if (!batched) return () => v;
+    const cellShape = v.shape.slice(1);
+    const stride = cellShape.reduce((x: number, y: number) => x * y, 1);
+    return (i: number) => _atomCell(v, i, cellShape, stride);
+  };
+  const aCell = cellOf(a, aBatched), bCell = cellOf(b, bBatched);
   const cells: any[] = new Array(N);
-  for (let i = 0; i < N; i++) {
-    cells[i] = mul(_atomCell(a, i, cellShape, stride), _atomCell(b, i, cellShape, stride));
-  }
+  for (let i = 0; i < N; i++) cells[i] = mul(aCell(i), bCell(i));
   const outCell = cells[0].shape;
   const outStride = outCell.reduce((x: number, y: number) => x * y, 1);
   const out = new Float64Array(N * outStride);
