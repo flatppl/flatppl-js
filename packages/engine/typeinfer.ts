@@ -3177,13 +3177,15 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
           catch (_) { containerT = null; }
           if (containerT && containerT.kind === 'array') {
             const flat = _flattenArrayType(containerT);
+            // A guessed shape (an operand was unresolved) is no evidence of a length.
+            const guessed = isGuess(containerT);
             const sels = innerArgs.slice(1);
             for (let k = 0; k < sels.length; k++) {
               const s = sels[k];
               if (!s || s.kind !== 'axis') continue;
               const dim = flat.shape[k];
               const thisLen: number | '%dynamic' =
-                (typeof dim === 'number') ? dim : '%dynamic';
+                (typeof dim === 'number' && !guessed) ? dim : '%dynamic';
               if (!(s.name in lengths)) {
                 lengths[s.name] = thisLen;
                 continue;

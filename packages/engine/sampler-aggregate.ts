@@ -1092,10 +1092,15 @@ const _AGG_BIN: Record<string, (x: number, y: number) => number> = {
     return Math.pow(x, y);
   },
   mod:    (x, y) => x - y * Math.floor(x / y),   // spec §07 a − b·⌊a/b⌋ (floor-mod)
+  // §07 comparisons and boolean operators; a boolean cell is 1 or 0.
+  lt: (x, y) => +(x < y),  le: (x, y) => +(x <= y),
+  gt: (x, y) => +(x > y),  ge: (x, y) => +(x >= y),
+  eq: (x, y) => +(x === y), ne: (x, y) => +(x !== y),
+  land: (x, y) => +(!!x && !!y), lor: (x, y) => +(!!x || !!y), lxor: (x, y) => +(!!x !== !!y),
 };
 
 const _AGG_UN: Record<string, (x: number) => number> = {
-  neg: (x) => -x,    pos: (x) => +x,
+  neg: (x) => -x,    pos: (x) => +x,    lnot: (x) => +!x,
   exp:   Math.exp,    log:   Math.log,    log2:  Math.log2,    log10: Math.log10,
   log1p: Math.log1p,  expm1: Math.expm1,
   sqrt:  Math.sqrt,   abs:   Math.abs,    abs2: (x) => x * x,
@@ -1185,6 +1190,33 @@ function _broadcastBinary(
   return { data: out, shape: outShape };
 }
 
+function _broadcastSelect(
+  c: { data: Float64Array; shape: number[] },
+  a: { data: Float64Array; shape: number[] },
+  b: { data: Float64Array; shape: number[] },
+): { data: Float64Array; shape: number[] } {
+  const N = c.shape.length;
+  const outShape = c.shape.map((d, i) => Math.max(d, a.shape[i], b.shape[i]));
+  const outSize = _shapeProd(outShape);
+  const cS = _broadcastStrides(c.shape, outShape);
+  const aS = _broadcastStrides(a.shape, outShape);
+  const bS = _broadcastStrides(b.shape, outShape);
+  const out = new Float64Array(outSize);
+  const coord = new Array(N).fill(0);
+  let cOff = 0, aOff = 0, bOff = 0;
+  for (let linear = 0; linear < outSize; linear++) {
+    out[linear] = c.data[cOff] ? a.data[aOff] : b.data[bOff];
+    for (let i = N - 1; i >= 0; i--) {
+      coord[i]++;
+      cOff += cS[i]; aOff += aS[i]; bOff += bS[i];
+      if (coord[i] < outShape[i]) break;
+      cOff -= cS[i] * outShape[i]; aOff -= aS[i] * outShape[i]; bOff -= bS[i] * outShape[i];
+      coord[i] = 0;
+    }
+  }
+  return { data: out, shape: outShape };
+}
+
 function _broadcastUnary(
   a: { data: Float64Array; shape: number[] },
   fn: (x: number) => number,
@@ -1228,6 +1260,12 @@ function _liftAggregateExpr(
       const b = _liftAggregateExpr(node.args[1], canonicalAxes, axisLengths, env, atomCfg, axisRefs);
       return _broadcastBinary(a, b, fn);
     }
+  }
+  // §07 ifelse is elementwise: select a or b per cell by the condition.
+  if (node.kind === 'call' && node.op === 'ifelse' && node.args?.length === 3) {
+    const [c, a, b] = node.args.map((arg: any) =>
+      _liftAggregateExpr(arg, canonicalAxes, axisLengths, env, atomCfg, axisRefs));
+    return _broadcastSelect(c, a, b);
   }
   // Unary scalar math.
   if (node.kind === 'call' && node.args && node.args.length === 1) {
