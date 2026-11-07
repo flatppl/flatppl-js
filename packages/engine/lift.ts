@@ -3931,9 +3931,16 @@ function liftInlineSubexpressions(bindings: any) {
     // CallExprs), `fn(2*_)(3.0)`. Treat the callee AST as fnAst with a
     // synthetic binding-type from its head — the entire named-callable
     // substitution machinery below applies unchanged (no name ⇒ no
-    // recursion possible). Other expression callees (chained `f(x)(y)`
-    // where f(x) yields a callable) are left un-inlined — they lower to
-    // the callee-form IR and surface a clean classification refusal.
+    // recursion possible). A chained call `f(x)(y)` first applies `f`: a
+    // function whose result is a callable reduces to that reification (no
+    // closures, so it does not depend on `x`), which this path then applies.
+    if (astArg.callee && astArg.callee.type === 'CallExpr'
+        && !_isReificationCall(astArg.callee)) {
+      const head = inlineOnce(astArg.callee);
+      if (head !== astArg.callee && _isReificationCall(head)) {
+        return inlineOnce({ ...astArg, callee: head });
+      }
+    }
     if (astArg.callee && astArg.callee.type === 'CallExpr'
         && astArg.callee.callee && astArg.callee.callee.type === 'Identifier'
         && (astArg.callee.callee.name === 'functionof'
@@ -4433,9 +4440,41 @@ function liftInlineSubexpressions(bindings: any) {
       // Identifier substitutions when both shapes appear in the body.
       return cloneAst(sub[PLACEHOLDER_SUB_PREFIX + ast.name]);
     }
+    // A nested reification binds its own boundary nodes (§04 "Placeholders and
+    // holes": a placeholder's scope is the nearest enclosing reification), so
+    // the applied function's inputs are not substituted where it rebinds them.
+    const inner = _reificationBoundaryNames(ast);
+    if (inner) {
+      const narrowed = Object.assign({}, sub);
+      for (const name of inner.identifiers) delete narrowed[name];
+      for (const name of inner.placeholders) delete narrowed[PLACEHOLDER_SUB_PREFIX + name];
+      sub = narrowed;
+    }
     const out: Record<string, any> = {};
     for (const k in ast) out[k] = substituteIdents(ast[k], sub);
     return out;
+  }
+
+  // The identifier and placeholder names a `functionof` / `kernelof` call
+  // binds as boundary nodes, from its keyword values and bare boundary
+  // arguments, or null for any other node.
+  function _isReificationCall(ast: any): boolean {
+    return !!(ast && ast.type === 'CallExpr' && ast.callee?.type === 'Identifier'
+      && ['functionof', 'kernelof', 'fn'].includes(ast.callee.name));
+  }
+
+  function _reificationBoundaryNames(ast: any): { identifiers: string[], placeholders: string[] } | null {
+    if (ast.type !== 'CallExpr' || ast.callee?.type !== 'Identifier') return null;
+    const head = ast.callee.name;
+    if (head !== 'functionof' && head !== 'kernelof') return null;
+    if (!ast.builtin && out.has(head)) return null;
+    const identifiers: string[] = [], placeholders: string[] = [];
+    for (const a of (ast.args || []).slice(1)) {
+      const node = a && a.type === 'KeywordArg' ? a.value : a;
+      if (node?.type === 'Identifier') identifiers.push(node.name);
+      else if (node?.type === 'Placeholder') placeholders.push(node.name);
+    }
+    return { identifiers, placeholders };
   }
 
   // Walk the AST in reading order, replacing each Hole with the
