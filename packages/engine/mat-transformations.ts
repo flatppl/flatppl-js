@@ -202,15 +202,8 @@ function matPushfwd(name: string, d: DerivationPushfwd, ctx: any) {
             + `${bijMeta.registryName}'.atomBatchedForward failed: `
             + (err as any).message));
         }
-        // Preserve the outerRank=1 marker from the base. Iid measures
-        // carry outerRank=1 (materialiser.ts:459); a pushfwd of an
-        // iid base preserves that structure — the result is still an
-        // atom-batched stack of D-vectors. Downstream consumers
-        // (kernel-broadcast classifier, density walker) read outerRank
-        // to distinguish iid output from a per-atom k-vector.
-        if (M.value.outerRank === 1 && result && !('outerRank' in result)) {
-          result.outerRank = 1;
-        }
+        // The result is a batch of D-vectors, as the base is; measureFromValue
+        // gives it the atom level.
         // Mass / weights propagate through unchanged — pushfwd preserves
         // total mass regardless of the bijection.
         return shared.withParameterWeights(measureFromValue(result, {

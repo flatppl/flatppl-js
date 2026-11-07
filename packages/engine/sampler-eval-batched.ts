@@ -1229,13 +1229,12 @@ function _packUniformCells(out: any[], N: any): any {
     const base = i * cellLen;
     for (let j = 0; j < cellLen; j++) data[base + j] = +src[j];
   }
-  // A nested-vector cell (§03 vector of vectors, or a splitblocks outer
-  // array) keeps its outer axes behind the atom axis.
+  // The cells keep their levels (§03 vector of vectors, a splitblocks outer
+  // array) below the atom level, when every cell has the same levels.
   const levels = valueLib.levelAxesOf(out[0]).join(',');
-  if (levels && out.every((s: any) => valueLib.levelAxesOf(s).join(',') === levels)) {
-    return valueLib.setLevels({ shape: [N, ...cell0], data }, [1, ...valueLib.levelAxesOf(out[0])]);
-  }
-  return { shape: [N, ...cell0], data };
+  const same = out.every((s: any) => valueLib.levelAxesOf(s).join(',') === levels);
+  return valueLib.batchOf({ shape: [N, ...cell0], data },
+    same ? valueLib.cellLevelsOf(valueLib.isValue(out[0]) ? out[0] : cell0) : []);
 }
 
 // Default ON; FLATPPL_NO_PERATOM_COMPILE=1 forces the interpreter loop

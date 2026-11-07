@@ -736,7 +736,7 @@ function _matWeightedOverBox(d: any, parent: any, ctx: any, massOnly: boolean) {
   // Preserve the per-atom vector shape instead of treating N*k coordinates
   // as scalar atoms when feeding the callback's whole variate.
   const overlay = Object.assign({}, ctx._extraRefArrays);
-  overlay[d.from] = { shape: [N, k], data: parent.samples, outerRank: 1 };
+  overlay[d.from] = valueLib.batchOf({ shape: [N, k], data: parent.samples }, []);
   const evalCtx = Object.assign({}, ctx, { _extraRefArrays: overlay });
 
   const parameterMeasures: any[] = [];
@@ -1266,8 +1266,7 @@ function _emptyRecordIid(name: string, ctx: any) {
     const shape = [0];
     let elem = type;
     for (; elem && elem.kind === 'array'; elem = elem.elem) shape.push(...elem.shape);
-    const value: any = { shape, data: new Float64Array(0) };
-    if (shape.length > 1) value.outerRank = 1;
+    const value: any = valueLib.batchOf({ shape, data: new Float64Array(0) }, shape.length > 1 ? [] : null);
     if (elem?.prim === 'complex') {
       value.dtype = 'complex';
       value.im = new Float64Array(0);
@@ -1571,9 +1570,9 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       // §03: iid of an array-valued measure is an array OF those arrays, not
       // one bigger array, so its own axes form a nesting level above the
       // element's levels. A scalar element leaves the atom axis alone.
-      valueLib.setLevels(value, innerElemShape.length > 0
-        ? [1, d.dims.length, ...valueLib.levelsAfterSlice(innerM.value)]
-        : [1]);
+      valueLib.batchOf(value, innerElemShape.length > 0
+        ? [d.dims.length, ...valueLib.levelsAfterSlice(innerM.value)]
+        : []);
       if (valueLib.isComplexValue(innerM.value)) {
         value.im = innerM.value.im;
         value.dtype = 'complex';
@@ -1620,10 +1619,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
         normalized: resolved.normalized,
       }))
       .then((reply: any) => {
-        // outerRank=1 per the locked decision (see fallback above).
-        const value = {
-          shape: [N | 0].concat(d.dims), data: reply.samples, outerRank: 1,
-        };
+        const value = valueLib.batchOf({ shape: [N | 0].concat(d.dims), data: reply.samples }, []);
         const pw = _iidLeafParentOverlay(leafParents, N);
         return shared.withSliceMasses(Object.assign(
           empirical.arrayMeasure(reply.samples, d.dims, pw.logWeights),
@@ -1647,13 +1643,7 @@ function matIid(name: string, d: DerivationIid, ctx: any) {
       seed: nameSeed(name, ctx.rootKey),
     }))
     .then((reply: any) => {
-      // outerRank=1: iid output is a nested vector (N outer atoms ×
-      // k inner samples from the inner measure). Per locked TODO P3
-      // decision (2026-05-30), set the tag so downstream consumers
-      // distinguish iid's sample axis from a per-atom k-vector.
-      const value = {
-        shape: [N | 0].concat(d.dims), data: reply.samples, outerRank: 1,
-      };
+      const value = valueLib.batchOf({ shape: [N | 0].concat(d.dims), data: reply.samples }, []);
       const pw = _iidLeafParentOverlay(leafParents, N);
       return Object.assign(
         empirical.arrayMeasure(reply.samples, d.dims, pw.logWeights),
@@ -2061,10 +2051,7 @@ function matRandSample(name: string, d: any, ctx: any) {
     const variateDims = innerShape.slice(1);
     const value: any = { shape: [count].concat(variateDims), data: data };
     // The draw keeps the inner measure's own nesting below the sample axis.
-    if (variateDims.length > 0) {
-      const levels = valueLib.levelAxesOf(innerM.value);
-      valueLib.setLevels(value, levels.length > 0 ? levels : [1]);
-    }
+    if (variateDims.length > 0) valueLib.batchOf(value, valueLib.levelsAfterSlice(valueLib.withBatchLevel(innerM.value)));
     return Object.assign(
       empirical.arrayMeasure(data, variateDims, null),
       { value: value, logTotalmass: 0, n_eff: count });
@@ -4102,15 +4089,8 @@ function materialiseMeasureIR(ir: any, ctx: any): Promise<any> {
         })
       ).then((reply: any) => {
         const m = empirical.arrayMeasure(reply.samples, dims, null);
-        // outerRank=1: nested-vector tag for iid output (TODO P3).
         if (m && !m.value) {
-          m.value = {
-            shape: [ctx.sampleCount | 0].concat(dims),
-            data: reply.samples,
-            outerRank: 1,
-          };
-        } else if (m && m.value) {
-          (m.value as any).outerRank = 1;
+          m.value = valueLib.batchOf({ shape: [ctx.sampleCount | 0].concat(dims), data: reply.samples }, []);
         }
         return m;
       });

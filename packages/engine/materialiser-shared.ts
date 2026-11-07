@@ -166,7 +166,7 @@ function measureToParamValue(m: any, name: string, label: string) {
       }
       for (let n = 0; n < N; n++) data[n * D + d] = s[n];
     }
-    return { shape: [N, D], data, outerRank: 1 };
+    return valueLib.batchOf({ shape: [N, D], data }, []);
   }
   if (m.samples && m.samples.BYTES_PER_ELEMENT !== undefined) {
     return valueLib.batchedScalar(m.samples);
@@ -1062,6 +1062,8 @@ function measureFromValue(v: any, extras: any) {
       'measureFromValue: scalar Value (shape=[]) has no atom axis; ' +
       'wrap into a batched scalar (shape=[N]) first');
   }
+  // Every measure's batch carries its atom level (valueLib.batchOf).
+  v = valueLib.withBatchLevel(v);
   const N = v.shape[0];
   const dims = v.shape.length > 1 ? v.shape.slice(1) : undefined;
   extras = extras || {};
@@ -1113,8 +1115,7 @@ function measureFromAtoms(atoms: any[], extras: any = {}) {
   });
   const packed = require('./broadcast-shape.ts').tryStackBroadcastCells(cells, [atoms.length]);
   if (packed) {
-    if (cells[0]?.outerRank) packed.outerRank = cells[0].outerRank + 1;
-    return measureFromValue(packed, extras);
+    return measureFromValue(valueLib.batchOf(packed, valueLib.cellLevelsOf(cells[0])), extras);
   }
   const first = atoms[0];
   if (first && typeof first === 'object' && !Array.isArray(first)

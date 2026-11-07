@@ -83,7 +83,12 @@ test('withAtomAxis puts the atom axis above the cell levels', () => {
   const grid = valueLib.withAtomAxis({ shape: [4, 2, 3, 5], data: new Float64Array(120) },
     { shape: [2, 3, 5], data: new Float64Array(30), outerRank: 2, levelAxes: [2] });
   assert.deepEqual(valueLib.levelAxesOf(grid), [1, 2]);
+  // A plain array cell still gets the atom level, so a slice returns the cell.
   const flat = valueLib.withAtomAxis({ shape: [4, 3, 2], data: new Float64Array(24) },
     { shape: [3, 2], data: new Float64Array(6) });
-  assert.equal(flat.outerRank, undefined);
+  assert.deepEqual(valueLib.levelAxesOf(flat), [1]);
+  assert.equal(valueLib._sliceRow(flat, 1).outerRank, undefined);
+  // Scalar cells leave the batch untagged.
+  const scalars = valueLib.withAtomAxis({ shape: [4], data: new Float64Array(4) }, 2.0);
+  assert.equal(scalars.outerRank, undefined);
 });
