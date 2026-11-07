@@ -110,6 +110,31 @@ test('lambda: a lambda argument is unreachable from any nested reification', () 
     'a lambda argument read inside an explicit functionof');
 });
 
+test('lambda: a nested reification that binds the argument itself captures nothing', () => {
+  // §04 "Lambda notation" rewrites "every free occurrence" of the argument, and
+  // a nested functionof/kernelof binds no names: its keyword names label inputs.
+  // So `g(mu) = functionof(Normal(mu, 1.0), mu = mu)` is
+  // `functionof(functionof(Normal(_mu_, 1.0), mu = _mu_), mu = _mu_)`, and the
+  // inner reification binds the `_mu_` it reads. It used to keep the body's
+  // `mu` as a module name and report "Undefined variable 'mu'".
+  for (const src of [
+    'g(mu) = functionof(Normal(mu, 1.0), mu = mu)\n',
+    'f(x) = functionof(2.0 * x, y = x)\n',
+    'g(mu) = kernelof(draw(Normal(mu, 1.0)), mu = mu)\n',
+  ]) {
+    assert.deepEqual(errors(src).map((d: any) => d.message), [], src);
+  }
+  const g = processSource('g(mu) = functionof(Normal(mu, 1.0), mu = mu)\n').bindings.get('g');
+  const inner = g.node.value.args[0];
+  assert.equal(inner.callee.name, 'functionof');
+  const read = inner.args[0].args[0];
+  assert.equal(read.type, 'Placeholder');
+  assert.equal(read.name, 'mu');
+  assert.equal(inner.args[1].name, 'mu');
+  assert.equal(inner.args[1].value.type, 'Placeholder');
+  assert.equal(inner.args[1].value.name, 'mu');
+});
+
 test('lambda: nested lambda — inner shadows outer arg, so nothing is captured', () => {
   // Outer binds `a`; inner re-binds `a`. The inner body's `a` references the
   // inner binding, so there is no capture and no closure — this stays legal.
