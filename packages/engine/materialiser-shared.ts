@@ -1096,6 +1096,7 @@ function measureFromReply(reply: any, count: any, extras: any) {
   const v = reply.imag
     ? valueLib.complexValue(reply.samples, reply.imag, shape)
     : { shape: shape, data: reply.samples };
+  if (Array.isArray(reply.levels)) valueLib.setLevels(v, reply.levels);
   return measureFromValue(v, extras);
 }
 
