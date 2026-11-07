@@ -2024,7 +2024,7 @@ function walkIid(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
       // Collapse only the iid axes. An array-valued base keeps its inner
       // shape and is consumed one whole value at a time by the path below.
       const dense = valueLib._logicalDense(value);
-      value = { ...dense, shape: [total, ...dense.shape.slice(axes.length)], outerRank: 1 };
+      value = valueLib.batchOf({ ...dense, shape: [total, ...dense.shape.slice(axes.length)] }, []);
     }
   }
   // G1 (spec §06 iid + §03 tables): a record-valued M observed as a TABLE —

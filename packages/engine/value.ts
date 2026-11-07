@@ -438,13 +438,31 @@ function levelsAfterSlice(v: any): number[] {
   return levels;
 }
 
-// Tag `out`, a batch [N, ...cell.shape] of copies or draws of `cell`, with the
-// levels of a new atom axis above the cell's own. A cell without levels
-// leaves `out` untagged, as before.
+// The one owner of the atom level. A batch [N, ...cell] holds one cell per
+// atom. When the cells are arrays, the atom axis is a nesting level of its
+// own above the cells' levels (`cellLevels`), so a slice returns the cell.
+// Scalar cells (`cellLevels` null) leave the batch, shape [N], untagged.
+function batchOf(out: any, cellLevels: number[] | null): any {
+  return setLevels(out, cellLevels == null ? [] : [1, ...cellLevels]);
+}
+
+// The levels of one cell, or null for a scalar cell.
+function cellLevelsOf(cell: any): number[] | null {
+  if (isValue(cell)) return cell.shape.length > 0 ? levelAxesOf(cell) : null;
+  return Array.isArray(cell) || ArrayBuffer.isView(cell) ? [] : null;
+}
+
+// Tag `out`, a batch of copies or draws of `cell`.
 function withAtomAxis(out: any, cell: any): any {
-  const levels = levelAxesOf(cell);
-  if (levels.length > 0) setLevels(out, [1, ...levels]);
-  return out;
+  return batchOf(out, cellLevelsOf(cell));
+}
+
+// Give a batch Value its atom level: an untagged batch of array cells gets
+// the atom level, and a tagged batch already has it. Tags `v` in place, as
+// its leading axis is the atom axis by the caller's contract.
+function withBatchLevel(v: any): any {
+  if (!isValue(v) || v.shape.length < 2 || typeof v.outerRank === 'number') return v;
+  return batchOf(v, []);
 }
 
 function outerRankOf(v: any): number {
@@ -1139,6 +1157,9 @@ module.exports = {
   setLevels,
   levelsAfterSlice,
   withAtomAxis,
+  batchOf,
+  cellLevelsOf,
+  withBatchLevel,
   isNestedVectorValue: isNestedVectorValue,
   requireMatrix: requireMatrix,
   innerShapeOf: innerShapeOf,
