@@ -298,12 +298,12 @@ function parse(tokensIn: any[], variant: any) {
   }
 
   // Replace every free `Identifier(name)` whose name is in `argSet`
-  // with `Placeholder(name)`. Skip into nested binders:
-  //   - functionof/kernelof: the kwarg LHS names are local-scope
-  //     binders for the body (args[0]); kwarg VALUES are outer-scope
-  //     refs so we still rewrite them. The body shrinks the argSet
-  //     by any kwarg name it shadows.
-  //   - fn: doesn't bind names (only `_` holes), so we descend normally.
+  // with `Placeholder(name)` (spec §04 "Lambda notation": "every free
+  // occurrence of each arg_i"). A nested functionof/kernelof binds no
+  // names: its keyword names label inputs, and its body and boundary
+  // values refer to the same nodes, so both are rewritten alike. A nested
+  // lambda's own arguments are placeholders already, because finishLambdas
+  // rewrites the inner lambda first.
   function rewriteFreeIdsToPlaceholders(node: any, argSet: Set<string>): any {
     if (node == null || typeof node !== 'object') return node;
     if (Array.isArray(node)) {
@@ -314,36 +314,6 @@ function parse(tokensIn: any[], variant: any) {
       const placeholder = AST.Placeholder(node.name, node.loc);
       if (node.bareBoundary) placeholder.bareBoundary = node.bareBoundary;
       return placeholder;
-    }
-    if (node.type === 'CallExpr' && isReificationHead(node.callee)
-        && (node.fromLambda || node.builtin || node.callee.type === 'FieldAccess'
-          || !sourceNames.has(node.callee.name))
-        && node.args && node.args.length > 0) {
-      // Collect shadowing names from kwarg LHS (positions 1..n).
-      const shadow = new Set<string>();
-      for (let i = 1; i < node.args.length; i++) {
-        const a = node.args[i];
-        if (a && a.type === 'KeywordArg') shadow.add(a.name);
-        else if (a?.bareBoundary) shadow.add(a.bareBoundary);
-      }
-      // Inner body gets the reduced argSet; kwarg values stay full.
-      const bodyArg = node.args[0];
-      const innerSet = new Set<string>();
-      for (const n of argSet) if (!shadow.has(n)) innerSet.add(n);
-      const newArgs: any[] = [];
-      newArgs.push(rewriteFreeIdsToPlaceholders(bodyArg, innerSet));
-      for (let i = 1; i < node.args.length; i++) {
-        const a = node.args[i];
-        if (a && a.type === 'KeywordArg') {
-          newArgs.push({
-            ...a,
-            value: rewriteFreeIdsToPlaceholders(a.value, argSet),
-          });
-        } else {
-          newArgs.push(rewriteFreeIdsToPlaceholders(a, argSet));
-        }
-      }
-      return { ...node, args: newArgs };
     }
     const out: Record<string, any> = {};
     for (const k in node) out[k] = k === 'callee' && (node.builtin || node.fromLambda)

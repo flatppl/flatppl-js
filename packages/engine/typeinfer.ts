@@ -4339,9 +4339,10 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return guess ? asGuess(r.result) : r.result;
   }
 
-  // The result of the three `mul` pairs §07 lists with a transposed vector: the inner product
+  // The result of the `mul` pairs §07 lists with a transposed vector: the inner product
   // (transposed vector, vector) is a scalar, the outer product (vector, transposed vector) a
-  // matrix, and (transposed vector, matrix) a transposed vector. Null for every other pair.
+  // matrix, and (transposed vector, matrix) or a scalar on either side a transposed vector.
+  // Null for every other pair.
   function transposedProduct(aT: any, bT: any): any {
     const ka = operandKind(aT), kb = operandKind(bT);
     const elem = (): any => {
@@ -4353,6 +4354,8 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       return T.array(2, [extentOf(aT, 0) ?? '%dynamic', extentOf(bT, 0) ?? '%dynamic'], elem());
     }
     if (ka === 'tvector' && kb === 'matrix') return T.tvector(extentOf(bT, 1) ?? '%dynamic', elem());
+    if (ka === 'scalar' && kb === 'tvector') return T.tvector(extentOf(bT, 0) ?? '%dynamic', elem());
+    if (ka === 'tvector' && kb === 'scalar') return T.tvector(extentOf(aT, 0) ?? '%dynamic', elem());
     return null;
   }
   function leafOf(t: any): any {

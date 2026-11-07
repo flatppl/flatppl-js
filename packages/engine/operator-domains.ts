@@ -8,9 +8,10 @@
 // comparison function a Domains cell:
 //
 //   add, sub : scalars or arrays of same shape (real or complex)
-//   mul      : scalars, matrix-matrix, matrix-vector, scalar-matrix, scalar-vector,
-//              transposed-vector–vector, vector–transposed-vector,
-//              transposed-vector–matrix
+//   mul      : scalars, matrix-matrix, matrix-vector, scalar-matrix, matrix-scalar,
+//              scalar-vector, vector-scalar, scalar–transposed-vector,
+//              transposed-vector–scalar, transposed-vector–vector,
+//              vector–transposed-vector, transposed-vector–matrix
 //   divide   : scalars, array-scalar, transposed-vector–scalar (real or complex)
 //   neg      : scalars or arrays (real or complex)
 //   pow      : scalars (real or complex)
@@ -145,14 +146,15 @@ function operatorDomainViolation(op: string, types: any[]): string | null {
     }
     case 'mul': {
       const ka = kindOf(a), kb = kindOf(b);
-      const ok = (ka === 'scalar' && kb !== 'other' && kb !== 'tvector')
-        || (kb === 'scalar' && (ka === 'vector' || ka === 'matrix'))
+      const ok = (ka === 'scalar' && kb !== 'other')
+        || (kb === 'scalar' && (ka === 'vector' || ka === 'matrix' || ka === 'tvector'))
         || (ka === 'matrix' && (kb === 'matrix' || kb === 'vector'))
         || (ka === 'tvector' && (kb === 'vector' || kb === 'matrix'))
         || (ka === 'vector' && kb === 'tvector');
       if (!ok) {
         return 'mul: operand types ' + describe(types) + ' are not numerically compatible — mul takes '
-          + 'scalars, matrix-matrix, matrix-vector, scalar-matrix, scalar-vector, '
+          + 'scalars, matrix-matrix, matrix-vector, scalar-matrix, matrix-scalar, scalar-vector, '
+          + 'vector-scalar, scalar–transposed-vector, transposed-vector–scalar, '
           + 'transposed-vector–vector, vector–transposed-vector or transposed-vector–matrix ('
           + SPEC + '); the elementwise form is `mul.(a, b)`';
       }
