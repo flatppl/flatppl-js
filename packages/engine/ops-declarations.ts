@@ -1105,7 +1105,7 @@ ops.registerVariant('linsolve', {
 // no atom-batch detection (variadic + batching is a Phase 5c+
 // problem). Same delegation pattern as the rank-polymorphic ops.
 
-function _vectorLogical(...xs: any[]): any {
+function _vectorLogical(xs: any[]): any {
   return _vectorFromElements(xs);
 }
 
@@ -1149,7 +1149,7 @@ function _vectorFromElements(xs: any[]): any {
   // typed-arrays, JS arrays) are treated as a SINGLE cell. New
   // outerRank = 1, cell = arg.shape. The user's `[C]` lifts C
   // into a length-1 nested vector with C as the sole cell.
-  let stackOuterRank: number | null = null;
+  let stackLevels: string | null = null;
   // Normalize each element to a rank-explicit Value so the shared cell packer
   // can read it. A typed array or a flat numeric JS array becomes a rank-1
   // Value; anything else (scalar, record, tuple, kernel, deeper JS nesting)
@@ -1158,11 +1158,11 @@ function _vectorFromElements(xs: any[]): any {
   for (let i = 0; i < xs.length; i++) {
     const v = xs[i];
     let cell: any;
-    let nestedTag: number = 0;
+    let nestedTag: string = '';
     if (valueLib.isValue(v)) {
       cell = v;
       // Only an EXPLICIT tag stacks; untagged Values are cells.
-      nestedTag = (typeof v.outerRank === 'number') ? v.outerRank : 0;
+      nestedTag = valueLib.levelAxesOf(v).join(',');
     } else if ((v && v.BYTES_PER_ELEMENT !== undefined && typeof v.length === 'number')
                || Array.isArray(v)) {
       const flat = new Float64Array(v.length);
@@ -1177,10 +1177,10 @@ function _vectorFromElements(xs: any[]): any {
       return xs;
     }
     cells[i] = cell;
-    if (innerShape === null) { innerShape = cell.shape; stackOuterRank = nestedTag; }
+    if (innerShape === null) { innerShape = cell.shape; stackLevels = nestedTag; }
     // Ragged stacking across args ⇒ fall back to JS-array form. The shape
     // agreement itself is the packer's call; only the tag check is ours.
-    else if (nestedTag !== stackOuterRank) return xs;
+    else if (nestedTag !== stackLevels) return xs;
   }
   // `packUniformCells` owns the per-cell contract — densify a structured
   // cell, refuse a short buffer, refuse a Klein-4 tag, keep `im`
@@ -1189,11 +1189,10 @@ function _vectorFromElements(xs: any[]): any {
   // are not one Value, and the JS-array form carries them instead.
   const packed = valueLib.packUniformCells(cells);
   if (packed === null) return xs;
-  const out: any = {
+  const out: any = valueLib.setLevels({
     shape: [xs.length].concat(packed.innerShape),
     data: packed.data,
-    outerRank: 1 + (stackOuterRank || 0),
-  };
+  }, [1, ...(stackLevels ? stackLevels.split(',').map(Number) : [])]);
   if (packed.im !== undefined) {
     out.im = packed.im;
     out.dtype = 'complex';
@@ -1207,7 +1206,7 @@ ops.register({
   logical: _vectorLogical,
 });
 
-function _catLogical(...xs: any[]): any {
+function _catLogical(xs: any[]): any {
   if (xs.length === 0) return { shape: [0], data: new Float64Array(0) };
   const first = xs[0];
   // cat(scalar, scalar, ...) → rank-1 Value (spec §07).
@@ -1688,6 +1687,8 @@ function _registerScalarLogicals(): void {
 function _withArrayCase(name: string, scalarImpl: (...a: any[]) => any): (...a: any[]) => any {
   const impl = (ops.ELEMWISE_OVER_ARRAY as any)[name];
   const impl2 = (ops.ELEMWISE_OVER_ARRAY_2 as any)[name];
+  const only = (ops.SCALAR_ONLY_OVER_VALUE as any)[name];
+  if (only) return ops.scalarOnlyOverValue(name, (valueOps as any)[only], scalarImpl);
   if (!impl && !impl2) return scalarImpl;
   const cellwise = (valueOps as any)[impl || impl2];
   /* c8 ignore start */

@@ -98,8 +98,8 @@ test('functionof: the first input is positional, the boundary inputs stay keywor
 });
 
 test('kernelof: the first input is positional, the boundary inputs stay keyword', () => {
-  refuses('kernelof', 'k = kernelof(expr = prev + 1.0, prev = prev)\n');
-  accepts('k = kernelof(prev + 1.0, prev = prev)\n');
+  refuses('kernelof', 'k = kernelof(expr = _prev_ + 1.0, prev = _prev_)\n');
+  accepts('k = kernelof(_prev_ + 1.0, prev = _prev_)\n');
 });
 
 test('broadcast: the head is positional, the collection arguments stay keyword', () => {

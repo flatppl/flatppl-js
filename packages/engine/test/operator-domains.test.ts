@@ -61,6 +61,22 @@ test('mul takes only the §07 pairs', async () => {
   assert.deepEqual(await value('s * v'), [2, 4]);
 });
 
+test('mul scales a transposed vector by a scalar on either side', async () => {
+  // flatppl-design #231 adds scalar–transposed-vector and transposed-vector–scalar to §07's
+  // mul row, which divide already had as transposed-vector–scalar.
+  accepted(['s * tv', 'tv * s', 'n * tv', 'tv * n', 'z * tv', 'mul(tv, s)']);
+  const product = processSource(PRE + 'r = s * tv\n').bindings.get('r').inferredType;
+  assert.equal(product.kind, 'tvector');
+  assert.equal(product.length, 2);
+  assert.deepEqual(await value('s * tv'), [2, 4]);
+  assert.deepEqual(await value('tv * 0.5'), [0.5, 1]);
+  // The scaled row vector stays transposed: (2 [1 2]) [3 4]' = 22.
+  assert.deepEqual(await value('(s * tv) * w'), [22]);
+  // (1 + 2i) [1 2] = [1 + 2i, 2 + 4i].
+  assert.deepEqual(await value('real.(z * tv)'), [1, 2]);
+  assert.deepEqual(await value('imag.(z * tv)'), [2, 4]);
+});
+
 test('divide takes a scalar divisor, real or complex', async () => {
   refused(['s / v', 'v / w', 'm / m2', 'str / s'], /divide/);
   accepted(['s / t', 'z / s', 'v / s', 'm / s', 'tv / s', 's / z']);

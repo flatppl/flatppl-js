@@ -68,6 +68,8 @@ export interface Value {
    * `valueLib.requireMatrix(v, opName)`.
    */
   outerRank?: number;
+  /** Axis count of each nesting level, outside in; absent means all ones. */
+  levelAxes?: number[];
 }
 
 /**

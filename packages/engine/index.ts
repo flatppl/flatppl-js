@@ -222,7 +222,7 @@ function _compileModuleGraph(
   // (a cycle).
   function compile(path: string, src: string, stack: Set<string>): any {
     const { tokens, diagnostics: tokenDiags } = tokenize(src, variant);
-    const { ast, diagnostics: parseDiags } = parse(tokens, variant);
+    const { ast, diagnostics: parseDiags } = _parseWithinDepth(tokens, variant);
 
     const depDiags: any[] = [];
     for (const dep of _collectLoadModuleDeps(ast)) {
@@ -281,6 +281,65 @@ function _compileModuleGraph(
   return { primary, modules };
 }
 
+// The engine's passes recurse over expressions, so a nesting deeper than
+// this exhausts the JS stack: about 600 levels of `t + t + ...` already
+// overflow while scoring. Surface models nest about 15 levels, and a
+// determinized module balances its sums. Refuse a deeper statement up front
+// instead of crashing in some later pass.
+const MAX_EXPRESSION_DEPTH = 256;
+
+function _expressionDepth(node: any): number {
+  let max = 0;
+  const stack: Array<[any, number]> = [[node, 1]];
+  while (stack.length > 0) {
+    const [n, d] = stack.pop()!;
+    if (d > max) max = d;
+    for (const key in n) {
+      if (key === 'loc') continue;
+      const child = n[key];
+      if (child === null || typeof child !== 'object') continue;
+      if (Array.isArray(child)) {
+        for (const c of child) if (c !== null && typeof c === 'object') stack.push([c, d + 1]);
+      } else {
+        stack.push([child, d + 1]);
+      }
+    }
+  }
+  return max;
+}
+
+function _depthDiagnostic(loc: any, depth?: number): any {
+  return {
+    severity: 'error',
+    message: 'engine limitation: this expression nests '
+      + (depth ? depth + ' levels deep' : 'too deeply to parse') + '; this engine handles up to '
+      + MAX_EXPRESSION_DEPTH + ' levels. The model is not invalid. Split the '
+      + 'expression into intermediate bindings.',
+    loc,
+  };
+}
+
+// Parse, then drop each statement nested deeper than the engine's passes can
+// recurse, with a located error. A parse that itself overflows yields an empty
+// module with one error.
+function _parseWithinDepth(tokens: any, variant: any): { ast: any; diagnostics: any[] } {
+  let parsed: any;
+  try {
+    parsed = parse(tokens, variant);
+  } catch (e) {
+    if (!(e instanceof RangeError)) throw e;
+    return { ast: { type: 'Program', body: [], comments: [] }, diagnostics: [_depthDiagnostic(undefined)] };
+  }
+  const diagnostics = [...parsed.diagnostics];
+  const body = parsed.ast.body.filter((stmt: any) => {
+    const depth = _expressionDepth(stmt);
+    if (depth <= MAX_EXPRESSION_DEPTH) return true;
+    diagnostics.push(_depthDiagnostic(stmt.loc, depth));
+    return false;
+  });
+  return { ast: { ...parsed.ast, body }, diagnostics };
+}
+
 // Host helper (spec §04): the relative module paths a source loads via
 // `load_module("path")`, in source order, deduplicated. The host's
 // resolver uses this (with `moduleResolve.resolveModulePath`) to walk the
@@ -291,7 +350,7 @@ function _compileModuleGraph(
 function moduleDeps(source: string, opts?: any): string[] {
   const variant = variants.resolveVariant(opts);
   const { tokens } = tokenize(source, variant);
-  const { ast } = parse(tokens, variant);
+  const { ast } = _parseWithinDepth(tokens, variant);
   const seen = new Set<string>();
   const out: string[] = [];
   for (const d of _collectLoadModuleDeps(ast)) {

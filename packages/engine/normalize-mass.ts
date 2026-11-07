@@ -13,16 +13,48 @@ const { engineLimitation } = require('./limitations.ts');
 function canDeferTruncateNormalizer(inner: any): boolean {
   if (!inner || inner.kind !== 'call' || inner.op !== 'truncate'
       || !Array.isArray(inner.args) || inner.args.length !== 2) return false;
-  const base = inner.args[0];
+  const affine = scalarAffinePushfwd(inner.args[0]);
+  const base = affine ? affine.leaf : inner.args[0];
   if (!base || base.kind !== 'call' || typeof base.op !== 'string') return false;
   const sampler = require('./sampler.ts');
   if (!sampler.isKnownDistribution(base.op)) return false;
+  const hasCdf = require('./forward-cdf.ts').hasCdf(base.op);
+  if (affine && !hasCdf) return false;
   // A discrete base's mass is a sum over the atoms in S (density.ts).
-  if (!require('./forward-cdf.ts').hasCdf(base.op) && !sampler.lookupDistribution(base).discrete) return false;
+  if (!hasCdf && !sampler.lookupDistribution(base).discrete) return false;
   const set = inner.args[1];
   return set?.kind === 'call' && set.op === 'interval' && set.args?.length === 2
     || (set?.kind === 'const' || set?.kind === 'ref' && set.ns === 'self')
       && ['reals', 'posreals', 'nonnegreals'].includes(set.name);
+}
+
+// §06 locscale is the pushforward under x -> scale * x + shift, and its
+// lowering keeps that forward map. Returns the leaf, shift and scale, or null.
+// The mass of truncate(locscale(D, shift, scale), I) is D((I - shift) / scale).
+function scalarAffinePushfwd(ir: any): { leaf: any; shift: any; scale: any } | null {
+  if (ir?.kind !== 'call' || ir.args?.length !== (ir.op === 'locscale' ? 3 : 2)) return null;
+  if (ir.op === 'locscale') return { leaf: ir.args[0], shift: ir.args[1], scale: ir.args[2] };
+  const forward = ir.op === 'pushfwd' ? ir.bijection?.fForward : null;
+  const body = forward?.body;
+  if (body?.kind !== 'call' || body.op !== 'add' || body.args?.length !== 2) return null;
+  const [product, shift] = body.args;
+  if (product?.kind !== 'call' || product.op !== 'mul' || product.args?.length !== 2) return null;
+  const [scale, point] = product.args;
+  const { walkIR } = require('./ir-walk.ts');
+  let usesPoint = false;
+  walkIR({ args: [scale, shift] }, (n: any) => {
+    if (n.kind === 'ref' && n.name === forward.paramName) usesPoint = true;
+  });
+  if (point?.kind !== 'ref' || point.name !== forward.paramName || usesPoint) return null;
+  return { leaf: ir.args[1], shift, scale };
+}
+
+// The preimage of [lo, hi] under x -> scale * x + shift. A negative scale
+// swaps the bounds. Null for a zero or non-finite scale or shift.
+function affinePreimage(lo: number, hi: number, shift: number, scale: number): [number, number] | null {
+  if (!Number.isFinite(shift) || !Number.isFinite(scale) || scale === 0) return null;
+  const a = (lo - shift) / scale, b = (hi - shift) / scale;
+  return scale > 0 ? [a, b] : [b, a];
 }
 
 // Build an IR EXPRESSION for the total mass Z of a measure IR, as a function of
@@ -143,11 +175,20 @@ function totalMassExpr(ir: any): any {
     if (m == null) return null;
     return m;
   }
-  // A probability-measure leaf has total mass 1.
+  // A probability-measure leaf has total mass 1, and so does a §04 kernel
+  // broadcast of one: an independent product of probability measures.
   if (orchestrator.SAMPLEABLE_DISTRIBUTIONS && orchestrator.SAMPLEABLE_DISTRIBUTIONS.has(op)) {
     return { kind: 'lit', value: 1 };
   }
+  if (isProbabilityBroadcast(ir)) return { kind: 'lit', value: 1 };
+  // §06 normalize returns a probability measure.
+  if (op === 'normalize') return { kind: 'lit', value: 1 };
   return null;
+}
+
+function isProbabilityBroadcast(ir: any): boolean {
+  const head = ir?.op === 'broadcast' ? ir.args?.[0] : null;
+  return head?.kind === 'ref' && !!orchestrator.SAMPLEABLE_DISTRIBUTIONS?.has(head.name);
 }
 
 // Keep scalar factors in log space: exp(±1000) is not representable, but
@@ -257,6 +298,16 @@ function truncateMassLit(baseIR: any, setIR: any): any | null {
   const { parseTruncationBox } = require('./mat-density.ts');
   const axes = parseTruncationBox(setIR);
   if (!axes || axes.length !== 1) return null;
+  let { lo, hi } = axes[0];
+  const affine = scalarAffinePushfwd(baseIR);
+  if (affine) {
+    const { resolveConstant } = require('./ir-shared.ts');
+    const num = (x: any) => resolveConstant(x, new Map(), new Set());
+    const preimage = affinePreimage(lo, hi, num(affine.shift), num(affine.scale));
+    if (!preimage) return null;
+    [lo, hi] = preimage;
+    baseIR = affine.leaf;
+  }
   const base = constantLeafParams(baseIR);
   if (!base) return null;
   const forwardCdf = require('./forward-cdf.ts');
@@ -264,7 +315,6 @@ function truncateMassLit(baseIR: any, setIR: any): any | null {
   // VonMises, the §09 HEP densities, Dirac), so this is a real decline and not
   // a formality.
   if (!forwardCdf.hasCdf(base.kernel)) return null;
-  const { lo, hi } = axes[0];
   const Z = forwardCdf.intervalProbability(base.kernel, base.input, lo, hi);
   // §06 normalize leaves the result undefined at Z = 0, and the callers all
   // have their own loud refusal for a non-finite −log Z; decline rather than
@@ -388,4 +438,5 @@ function massFromMeasures(nodes: any[], ctx: any): Promise<any[]> {
 }
 
 module.exports = { totalMassExpr, logTotalMassExpr, positiveCountLogMassExpr,
-  truncateMassLit, assertFixedMassFallback, canDeferTruncateNormalizer, massFromMeasures };
+  truncateMassLit, assertFixedMassFallback, canDeferTruncateNormalizer, massFromMeasures,
+  scalarAffinePushfwd, affinePreimage, isProbabilityBroadcast };

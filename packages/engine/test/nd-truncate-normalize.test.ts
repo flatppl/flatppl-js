@@ -259,7 +259,7 @@ D = normalize(truncate(weighted(x -> 1.0/(pi*5.0*(1.0 + (x/5.0)^2)),
   assert.ok(Math.abs(lp + Math.log(5 * Math.PI)) < 1e-14);
 });
 
-test('record-form (keyword) cartprod truncation region refuses loudly through the real pipeline', () => {
+test('record-form (keyword) cartprod truncation region refuses loudly through the real pipeline', async () => {
   // Same model as O1's shape, region re-spelled record-form. Pre-fix (see
   // parseTruncationBox's history), a hand-built `args: []` stub for this
   // spelling reached `resolveTruncateNormalizers` as a truthy empty axis
@@ -270,11 +270,16 @@ test('record-form (keyword) cartprod truncation region refuses loudly through th
   // "record-form … refuses loudly" unit test above), so the concrete
   // observable outcome on genuine IR is: the node is refused here rather
   // than silently deferred into a generic downstream classification error.
+  // The record-form truncate now has its own derivation, so the box rewrite
+  // no longer sees it inline; the mass is refused where it would be estimated.
   const src = `
 D = normalize(truncate(weighted(v -> 2.0,
     Lebesgue(cartprod(x = interval(-5.0, 5.0), y = interval(-5.0, 5.0)))),
-    cartprod(x = interval(-5.0, 5.0), y = interval(-5.0, 5.0))))`;
-  assert.throws(() => resolvedNegLogZ(src), /engine gap.*record-form.*cartprod/i);
+    cartprod(x = interval(-5.0, 5.0), y = interval(-5.0, 5.0))))
+lp = logdensityof(D, record(x = 1.0, y = 2.0))`;
+  assert.equal(resolvedNegLogZ(src), null);
+  const { ctx } = ctxFor(src, 1);
+  await assert.rejects(ctx.getMeasure('lp'), /engine limitation: a truncation to a record set/);
 });
 
 test('over-cap 4-D cartprod truncation refuses loudly', () => {

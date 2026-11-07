@@ -564,17 +564,11 @@ test('a FLAT cell refuses under the four collection-of-collections heads', () =>
   }
 });
 
-test('rowstack over an IN-DOMAIN nested cell still answers with empties', () => {
-  // The gate refuses an out-of-domain FLAT cell; it does not fix `rowstack`
-  // under a broadcast. `vvv`'s cells ARE vectors of vectors, so this is in
-  // domain and legal, and it returns empty 0x0 blocks where the bare
-  // `rowstack(vv)` returns the correct `[2, 3]`. Pre-existing and unchanged;
-  // pinned so it is honest rather than silent, and carded.
-  const legal = valueOfY('vvv = [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]\n'
-    + 'y = rowstack.(vvv)\n');
-  assert.deepEqual(Array.from(legal.data), [], 'still empty — if this changes, drop the card');
-  // The bare call on the same shape of input is correct, which is what makes
-  // the broadcast path the defect.
+test('rowstack over an IN-DOMAIN nested cell stacks each vector of vectors', () => {
+  // `vvv`'s cells ARE vectors of vectors (§04 broadcast iterates the outer
+  // array only), so each cell stacks into a 2 x 2 matrix.
+  assertClose(valueOfY('vvv = [[[1.0, 2.0], [3.0, 4.0]], [[5.0, 6.0], [7.0, 8.0]]]\n'
+    + 'y = rowstack.(vvv)\n'), [1, 2, 3, 4, 5, 6, 7, 8], 'rowstack.(vvv)');
   assertClose(valueOfY(`${VV}\ny = rowstack(vv)\n`), [1, 2, 3, 4, 5, 6], 'rowstack(vv)');
 });
 

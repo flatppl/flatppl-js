@@ -98,11 +98,9 @@ const SCALAR_PRIM_ARITY: Record<string, number> = {
 // the scalar logical, coerces to NaN, and the wrong number propagates silently.
 //
 // §07's elementary functions are scalar-only, so typeinfer refuses an array
-// operand at every one of them and no un-dotted source spelling reaches these
-// entries any more. They stay as the runtime backstop for internally
-// constructed IR (`real`, `pos`, and the discrete-lattice gate's snap), which
-// no source-level check gates. Removing the elementary entries is a separate
-// pass — see TODO-flatppl-js.md.
+// operand at every one of them. Only internally constructed IR still reads
+// these three cell-wise: `real`, `pos`, and the discrete-lattice gate's snap
+// (`round`).
 //
 // `neg` is absent because its Value case is already served by its own
 // registered variants. The predicates, casts, link and gamma functions are
@@ -111,12 +109,18 @@ const SCALAR_PRIM_ARITY: Record<string, number> = {
 // Values only, never the string names of impls that do not exist: the map is
 // asserted against `value-ops`' exports where it is consumed.
 const ELEMWISE_OVER_ARRAY: Record<string, string> = {
-  pos: 'posElem', abs: 'absElem', abs2: 'abs2Elem',
+  pos: 'posElem', round: 'roundElem', real: 'realElem',
+};
+
+// §07 elementary functions with no internal array reader. A rank-0 Value is a
+// scalar and reads through the value-ops impl. A shaped Value is refused at run
+// time, as typeinfer refuses it in source: the scalar impl would read the
+// container as NaN.
+const SCALAR_ONLY_OVER_VALUE: Record<string, string> = {
+  abs: 'absElem', abs2: 'abs2Elem',
   exp: 'expElem', log: 'logElem', log2: 'log2Elem', log10: 'log10Elem',
-  sqrt: 'sqrtElem',
-  sin: 'sinElem', cos: 'cosElem',
-  floor: 'floorElem', ceil: 'ceilElem', round: 'roundElem',
-  real: 'realElem',
+  sqrt: 'sqrtElem', sin: 'sinElem', cos: 'cosElem',
+  floor: 'floorElem', ceil: 'ceilElem',
 };
 
 // The BINARY counterpart, for ops whose §07 domain admits a shaped operand
@@ -132,6 +136,17 @@ const ELEMWISE_OVER_ARRAY: Record<string, string> = {
 const ELEMWISE_OVER_ARRAY_2: Record<string, string> = {
   divide: 'divElem',
 };
+
+// Wrap a scalar impl from SCALAR_ONLY_OVER_VALUE: a rank-0 Value reads through
+// `cellwise`, and a shaped Value is refused with the dotted spelling.
+function scalarOnlyOverValue(name: string, cellwise: (a: any) => any, scalarImpl: (a: any) => any) {
+  return (a: any) => {
+    if (a === null || typeof a !== 'object' || !Array.isArray(a.shape)) return scalarImpl(a);
+    if (a.shape.length === 0) return cellwise(a);
+    throw new Error(name + ': §07 gives ' + name + ' scalars only, got an array of shape ['
+      + a.shape.join(', ') + ']; write ' + name + '.(x) for the elementwise application');
+  };
+}
 
 // ---------------------------------------------------------------------
 // Op declaration shape
@@ -172,7 +187,9 @@ const ELEMWISE_OVER_ARRAY_2: Record<string, string> = {
 //                           batching such ops. `argRanks` is unused.
 //   - 'variadic'          — arg count varies per-call (e.g. cat,
 //                           vector). The dispatcher calls `logical`
-//                           with all args spread; no atom-batch
+//                           with the argument ARRAY, because a spread
+//                           of a data-sized literal exceeds the JS
+//                           call-stack limit; no atom-batch
 //                           detection. `argRanks` is unused.
 //   - 'higher-order'      — at least one arg is a callable; the op
 //                           threads body-inference / function-call
@@ -1108,9 +1125,8 @@ function dispatch(name: string, args: any[], opts?: DispatchOpts): any {
   // want atom-batched semantics over a rank-polymorphic op wrap
   // with explicit `broadcast(fn(op(_)), atom_batched)` —
   // engine-concepts §18.
-  if (kind === 'rank-polymorphic' || kind === 'variadic') {
-    return decl.logical(...args);
-  }
+  if (kind === 'variadic') return decl.logical(args);
+  if (kind === 'rank-polymorphic') return decl.logical(...args);
 
   // Higher-order ops use `dispatchHigherOrder(name, irArgs, ctx)`.
   // Reaching `dispatch` (value-domain entry) means the caller routed
@@ -1245,6 +1261,8 @@ module.exports = {
   COMPLEX_SCALAR_PRIMS,
   ELEMWISE_OVER_ARRAY,
   ELEMWISE_OVER_ARRAY_2,
+  SCALAR_ONLY_OVER_VALUE,
+  scalarOnlyOverValue,
   // ArgInfo constructors for typed dispatch (P2 / P3a integration):
   argInfoFromValue,
   argInfoFromMeasure,

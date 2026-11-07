@@ -987,14 +987,16 @@ const ARITH_OPS = {
     // Both denote the same vec-of-vecs; output is always a flat
     // rank-2 matrix Value (no outerRank tag — every axis is a
     // loop axis at the matrix level).
-    if (valueLib.isNestedVectorValue(vs) && vs.shape.length === 2) {
-      // Fast path: storage layout is already row-major-rows. Strip
-      // the outerRank tag to expose the value AS a matrix.
-      return valueLib.promoteNestedToMatrix(vs);
+    // Type inference proves the argument is a vector of vectors, so a rank-2
+    // Value is one whatever its outerRank tag. Variate binding in the
+    // density path drops the tag.
+    if (valueLib.isValue(vs) && vs.shape.length === 2) {
+      return valueLib.promoteNestedToMatrix(valueLib._logicalDense(vs));
     }
-    if (!Array.isArray(vs) || vs.length === 0) {
+    if (valueLib.isValue(vs) ? valueLib.numel(vs.shape) === 0 : Array.isArray(vs) && vs.length === 0) {
       return { shape: [0, 0], data: new Float64Array(0) };
     }
+    if (!Array.isArray(vs)) _refuseStackInput('rowstack', vs);
     const m = vs.length;
     const firstRow = vs[0];
     const n = valueLib.isValue(firstRow) ? firstRow.shape[firstRow.shape.length - 1]
@@ -1016,7 +1018,7 @@ const ARITH_OPS = {
     // For a tagged nested-vector Value the row-major storage holds
     // each "column" contiguously, so we must walk it explicitly
     // rather than just stripping the tag.
-    if (valueLib.isNestedVectorValue(vs) && vs.shape.length === 2) {
+    if (valueLib.isValue(vs) && vs.shape.length === 2) {
       const colsN = vs.shape[0];
       const m = vs.shape[1];
       const out = _stackOut(m * colsN);
@@ -1029,9 +1031,10 @@ const ARITH_OPS = {
       }
       return _stackResult(out, [m, colsN]);
     }
-    if (!Array.isArray(vs) || vs.length === 0) {
+    if (valueLib.isValue(vs) ? valueLib.numel(vs.shape) === 0 : Array.isArray(vs) && vs.length === 0) {
       return { shape: [0, 0], data: new Float64Array(0) };
     }
+    if (!Array.isArray(vs)) _refuseStackInput('colstack', vs);
     const cols = vs.length;
     const firstCol = vs[0];
     const m = valueLib.isValue(firstCol) ? firstCol.shape[firstCol.shape.length - 1]
@@ -1201,7 +1204,7 @@ const ARITH_OPS = {
       const n = X.data.length;
       const d = new Float64Array(total * n);
       for (let i = 0; i < total; i++) d.set(X.data, i * n);
-      const out: any = { shape: [...dims, ...X.shape], data: d, outerRank: dims.length };
+      const out: any = valueLib.setLevels({ shape: [...dims, ...X.shape], data: d }, [dims.length]);
       if (valueLib.isComplexValue(X)) {
         out.im = new Float64Array(total * n);
         for (let i = 0; i < total; i++) out.im.set(X.im, i * n);
@@ -1436,10 +1439,6 @@ const ARITH_OPS = {
       }
       outerShape.push(aV.shape[i] / bs[i]);
     }
-    // Build nested-array structure: outer is rank=outerShape.length;
-    // each leaf is a Value of shape `bs`. Outer is a JS array of
-    // JS arrays of Values (matching the spec's "nested array of
-    // arrays" wording — true vector-of-vectors per §03).
     const aStrides = new Array(aV.shape.length);
     let acc = 1;
     for (let i = aV.shape.length - 1; i >= 0; i--) {
@@ -1466,16 +1465,22 @@ const ARITH_OPS = {
       }
       return { shape: bs.slice(), data };
     }
-    function buildOuter(axis: number, blockCoord: number[]): any {
-      if (axis === outerShape.length) return buildBlock(blockCoord);
-      const out: any[] = [];
-      for (let i = 0; i < outerShape[axis]; i++) {
-        blockCoord[axis] = i;
-        out.push(buildOuter(axis + 1, blockCoord));
+    // §07: the outer array has rank(A) axes, each cell a block. Keep both in
+    // one Value whose outerRank tag marks the outer axes, so a broadcast
+    // iterates every outer axis and hands each block whole.
+    const blockSize = bs.reduce((a: number, b: number) => a * b, 1);
+    const blocks = outerShape.reduce((a: number, b: number) => a * b, 1);
+    const data = new Float64Array(blocks * blockSize);
+    const blockCoord = new Array(outerShape.length).fill(0);
+    for (let k = 0; k < blocks; k++) {
+      data.set(buildBlock(blockCoord).data, k * blockSize);
+      for (let ax = outerShape.length - 1; ax >= 0; ax--) {
+        blockCoord[ax]++;
+        if (blockCoord[ax] < outerShape[ax]) break;
+        blockCoord[ax] = 0;
       }
-      return out;
     }
-    return buildOuter(0, new Array(outerShape.length).fill(0));
+    return valueLib.setLevels({ shape: outerShape.concat(bs), data }, [outerShape.length]);
   },
   // joinblocks(A) — inverse of splitblocks. A is a nested array of
   // equal-shape inner Values; result is a single Value whose shape
@@ -2186,6 +2191,11 @@ for (const op of ['cumsum', 'cumprod', 'cummax', 'cummin', 'l1unit', 'l2unit', '
   };
 }
 
+function _refuseStackInput(op: string, vs: any): never {
+  const shape = valueLib.isValue(vs) ? JSON.stringify(vs.shape) : typeof vs;
+  throw new Error(op + ': expects a vector of vectors, got ' + shape);
+}
+
 // rowstack / colstack cells. A complex entry — a `{re, im}` scalar in a JS row,
 // or a planar complex Value row — makes the matrix a planar complex Value; the
 // real-only copy read `+{re, im}` as NaN and dropped a planar row's `im`.
@@ -2427,6 +2437,10 @@ for (const _name in opsModule.ELEMWISE_OVER_ARRAY) {
   const _scalar = (ARITH_OPS as any)[_name];
   (ARITH_OPS as any)[_name] = (a: any) =>
     valueLib.isValue(a) ? _cellwise(a) : _scalar(a);
+}
+for (const _name in opsModule.SCALAR_ONLY_OVER_VALUE) {
+  (ARITH_OPS as any)[_name] = opsModule.scalarOnlyOverValue(_name,
+    (valueOps as any)[opsModule.SCALAR_ONLY_OVER_VALUE[_name]], (ARITH_OPS as any)[_name]);
 }
 // The binary counterpart (`ops.ELEMWISE_OVER_ARRAY_2`) — `divide` over §07's
 // "array-scalar" and "transposed-vector–scalar" domains. The value-ops
@@ -3140,7 +3154,7 @@ function evaluateCall(ir: any, env: any): any {
         return data.subarray(idx * tailLen, (idx + 1) * tailLen);
       }
       const result: any = { shape: tail, data: slice(dense.data) };
-      if (dense.outerRank > 1) result.outerRank = dense.outerRank - 1;
+      valueLib.setLevels(result, valueLib.levelsAfterSlice(dense));
       if (dense.dtype) result.dtype = dense.dtype;
       if (dense.im) result.im = slice(dense.im);
       if (transposed && shape.length > 2) result.t = v.t;
