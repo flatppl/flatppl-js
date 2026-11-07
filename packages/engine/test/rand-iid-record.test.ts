@@ -19,9 +19,8 @@ r, s2 = rand(iid(M, ${N}), s)
 `;
 
 function columnsOf(m: any): { a: number[], b: number[] } {
-  // A fixed table materialises as a record measure over its columns.
-  const cols = m.fields.columns;
-  const col = (name: string) => Array.from(cols.fields[name].value.data) as number[];
+  // A table measure carries one field measure per column.
+  const col = (name: string) => Array.from(m.fields[name].value.data) as number[];
   return { a: col('a'), b: col('b') };
 }
 

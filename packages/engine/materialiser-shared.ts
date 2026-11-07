@@ -971,6 +971,21 @@ function fixedValueToMeasure(v: any, sampleCount: any): any {
     for (let ei = 0; ei < v.length; ei++) elems[ei] = fixedValueToMeasure(v[ei], sampleCount);
     return { elems: elems, logTotalmass: 0, n_eff: sampleCount };
   }
+  // §03: a table is a value of its own, not a record of its internal
+  // `columns` and `nrows`. Its law is the point mass at it (§06 Dirac): the
+  // atom-independent table measure an iid of a record measure builds, whose
+  // fields are the table's own columns.
+  if (v && v.__table__ === true) {
+    const fields: any = {};
+    for (const k of Object.keys(v.columns)) {
+      const sub = fixedValueToMeasure(v.columns[k], sampleCount);
+      if (sub) fields[k] = sub;
+    }
+    return {
+      shape: 'table', __table__: true, columns: v.columns, nrows: v.nrows,
+      fields, value: v, logTotalmass: 0, n_eff: sampleCount,
+    };
+  }
   if (v && typeof v === 'object') {
     if (v.key && Array.isArray(v.key) && v.counter) return null;   // rngstate
     const fields: any = {};
