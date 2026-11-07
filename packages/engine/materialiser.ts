@@ -2030,6 +2030,13 @@ function matRandSample(name: string, d: any, ctx: any) {
     return p;
   };
   return childCtx.getMeasure(d.from).then(function (innerM: any) {
+    // §06/§03: an iid of a record-valued measure is a table with one row per
+    // draw, the value the sampler's iid walk builds for the fixed path.
+    if (innerM.fields) {
+      const rows = Array.from({ length: count }, (_, i) => _recordAtom(innerM, i));
+      const table = require('./broadcast-shape.ts').tryCollectTableRows(rows, [count]);
+      return fixedValueToMeasure(table, ctx.sampleCount);
+    }
     const data = (innerM.value && innerM.value.data) || innerM.samples;
     if (!data) {
       return Promise.reject(new Error(
@@ -2049,6 +2056,20 @@ function matRandSample(name: string, d: any, ctx: any) {
       empirical.arrayMeasure(data, variateDims, null),
       { value: value, logTotalmass: 0, n_eff: count });
   });
+}
+
+// Atom i of a record measure as a record value: each field's atom, a scalar,
+// an array cell or a nested record.
+function _recordAtom(m: any, i: number): any {
+  if (m.fields) {
+    const out: Record<string, any> = {};
+    for (const k of Object.keys(m.fields)) out[k] = _recordAtom(m.fields[k], i);
+    return out;
+  }
+  if (m.value && valueLib.isValue(m.value) && m.value.shape.length > 1) {
+    return valueLib._sliceRow(valueLib._logicalDense(m.value), i);
+  }
+  return m.samples[i];
 }
 
 // A joint owns measure-valued descendants, but never a draw/value binding.
