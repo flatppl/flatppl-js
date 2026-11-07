@@ -89,9 +89,19 @@ function _parentWeightOverlay(parents: any[], N: number) {
   };
 }
 
-function matKernelBroadcast(name: string, d: DerivationKernelBroadcast, ctx: any) {
+function matKernelBroadcast(name: string, d0: DerivationKernelBroadcast, ctx: any) {
   const sampler = require('./sampler.ts');
   const irShared = require('./ir-shared.ts');
+  // A parameter may broadcast a user function (`Normal.(g.(z), 1.0)`). The
+  // evaluators below resolve a function head only inline, so splice each
+  // callable binding in once, as matEvaluate does for a value binding.
+  const inline = (ir: any) => shared.inlineCallableRefs(ir, ctx.bindings);
+  const d: DerivationKernelBroadcast = {
+    ...d0,
+    argIRs: Array.isArray(d0.argIRs) ? d0.argIRs.map(inline) : d0.argIRs,
+    kwargIRs: d0.kwargIRs
+      ? Object.fromEntries(Object.entries(d0.kwargIRs).map(([k, ir]) => [k, inline(ir)])) : d0.kwargIRs,
+  };
   // Phase 5.1 Session 4: bare vector-output dist case (MvNormal etc.).
   // These distributions sit OUTSIDE the worker's scalar-only sampleN
   // REGISTRY (engine-concepts §22.2(a)); we per-cell dispatch through
