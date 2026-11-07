@@ -3408,7 +3408,6 @@ function evaluateCall(ir: any, env: any): any {
     // determiniser's truncate gate emits: `ifelse(in(v, S), density, neg(inf))`.
     // Named real/integer sets are also handled so a general `x in S` evaluates.
     const xRaw = evaluateExpr(ir.args[0], env);
-    const x = valueLib.isValue(xRaw) ? xRaw.data : xRaw;
     const setIR = ir.args[1];
     // Membership of ONE point in a scalar-element set descriptor.
     const pointIn = (p: any, sIR: any): boolean => {
@@ -3465,6 +3464,80 @@ function evaluateCall(ir: any, env: any): any {
     // determiniser's set-valued image over a vector variate emits exactly this
     // (flatppl-rust determinizer/src/invert.rs::Image::vector_condition, e.g.
     // `y in cartpow(posreals, 3)` for `pushfwd(exp, ·)`).
+    // The number of scalars one element of a set occupies in a positional
+    // product's `cat` (§03 "Cartesian product").
+    const sizeOf = (sIR: any) => {
+      const raw = evaluateExpr(sIR, env);
+      return Number(valueLib.isValue(raw) ? raw.data[0] : raw);
+    };
+    const widthOf = (sIR: any): number => {
+      if (sIR && sIR.kind === 'call' && sIR.op === 'cartpow' && sIR.args?.length === 2) {
+        return sizeOf(sIR.args[1]) * widthOf(sIR.args[0]);
+      }
+      if (sIR && sIR.kind === 'call' && VECTOR_SET_OPS.has(sIR.op) && sIR.args?.length === 1) {
+        return sizeOf(sIR.args[0]);
+      }
+      if (sIR && sIR.kind === 'call' && sIR.op === 'cartprod') {
+        if (Array.isArray(sIR.fields) && sIR.fields.length > 0) {
+          throw new Error('evaluateCall: `in` over a positional cartprod with a record '
+            + 'component: a record does not concatenate (spec §03 "Cartesian product")');
+        }
+        return (sIR.args || []).reduce((a: number, c: any) => a + widthOf(c), 0);
+      }
+      return 1;
+    };
+    const _isScalarSet = (sIR: any) => !(sIR && sIR.kind === 'call'
+      && (sIR.op === 'cartpow' || sIR.op === 'cartprod' || VECTOR_SET_OPS.has(sIR.op)));
+    // Membership of a value in a set descriptor, recursing through product sets.
+    const memberOf = (xv: any, setIR: any): boolean => {
+    const x = valueLib.isValue(xv) ? xv.data : xv;
+    // §03 "Cartesian product": a record lies in `cartprod(name = S, …)` when
+    // each field lies in the set of the same name, whatever the field order,
+    // and a positional point lies in `cartprod(S1, S2, …)` when each component
+    // lies in its set. The determiniser's record truncation emits the record
+    // form (`record(s = p) in cartprod(s = cartpow(posreals, 2))`).
+    if (setIR && setIR.kind === 'call' && setIR.op === 'cartprod') {
+      const named = Array.isArray(setIR.fields) && setIR.fields.length > 0;
+      if (named) {
+        const names = setIR.fields.map((f: any) => f.name);
+        const isRecord = xv && typeof xv === 'object' && !Array.isArray(xv)
+          && !ArrayBuffer.isView(xv) && !valueLib.isValue(xv) && !xv.__table__;
+        const keys = isRecord ? Object.keys(xv) : [];
+        if (!isRecord || keys.length !== names.length
+            || !names.every((n: string) => Object.prototype.hasOwnProperty.call(xv, n))) {
+          throw new Error('evaluateCall: `in` over cartprod(' + names.join(', ')
+            + ') expects a record with exactly those fields, got '
+            + (isRecord ? 'fields ' + keys.join(', ') : typeof xv));
+        }
+        return setIR.fields.every((f: any) => memberOf(xv[f.name], f.value));
+      }
+      const parts = Array.isArray(setIR.args) ? setIR.args : [];
+      // A positional product of record sets is the record set of all their
+      // fields, so each component checks its own fields of the record.
+      const recordSet = (sp: any) => sp && sp.kind === 'call' && sp.op === 'cartprod'
+        && Array.isArray(sp.fields) && sp.fields.length > 0;
+      if (parts.length > 0 && parts.every(recordSet)) {
+        return memberOf(xv, { kind: 'call', op: 'cartprod',
+          fields: parts.flatMap((sp: any) => sp.fields) });
+      }
+      // A member is the `cat` of one element per component set, so a vector
+      // component spans its own width of the point.
+      const widths = parts.map(widthOf);
+      const total = widths.reduce((a: number, b: number) => a + b, 0);
+      const comps = valueLib.isValue(xv) ? Array.from(xv.data)
+        : (xv && typeof xv !== 'string' && typeof xv.length === 'number') ? Array.from(xv) : null;
+      if (comps == null || comps.length !== total) {
+        throw new Error('evaluateCall: `in` over a positional cartprod expects a length-'
+          + total + ' 1-D point, got ' + (comps == null ? typeof xv : 'length ' + comps.length));
+      }
+      let at = 0;
+      return parts.every((sp: any, i: number) => {
+        const w = widths[i];
+        const part = _isScalarSet(sp) ? comps[at] : comps.slice(at, at + w);
+        at += w;
+        return memberOf(part, sp);
+      });
+    }
     // §03 `stdsimplex(n)`, `ordered(n)`, `zerosum(n)`: sets of whole n-vectors.
     if (setIR && setIR.kind === 'call' && VECTOR_SET_OPS.has(setIR.op)
         && Array.isArray(setIR.args) && setIR.args.length === 1) {
@@ -3497,6 +3570,8 @@ function evaluateCall(ir: any, env: any): any {
       return true;
     }
     return pointIn(x, setIR);
+    };
+    return memberOf(xRaw, setIR);
   }
   // Higher-order value-domain ops (engine-concepts §18.1 Phase 5c):
   // broadcast / reduce / scan / filter migrated to ops-declarations.ts
