@@ -378,8 +378,8 @@ export function persistNamedDomain(ctx: Ctx, plan: any): void {
   try {
     ctx.host.editSource({
       range: {
-        start: { line: b.node.loc.start.line - 1, col: 0 },
-        end:   { line: b.node.loc.end.line   - 1, col: 1000000 },
+        start: { line: b.node.loc.start.line, col: b.node.loc.start.col },
+        end:   { line: b.node.loc.end.line,   col: b.node.loc.end.col },
       },
       newText: newText,
     });
