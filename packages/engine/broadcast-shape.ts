@@ -109,8 +109,11 @@ function classifyAxisStructure(v: any): any {
     // of the inner shape, not a scalar. Default `outerRank ===
     // shape.length` (flat tensor — every axis is a loop axis,
     // cell = scalar).
-    const outerRank = (typeof V.outerRank === 'number') ? V.outerRank : rank;
-    if (outerRank < rank) {
+    // §04 broadcasting iterates the outermost array: its axes are the first
+    // nesting level. Deeper levels stay inside each cell.
+    const levels = valueLib.levelAxesOf(V);
+    const outerRank = levels.length ? levels[0] : rank;
+    if (levels.length && valueLib.outerRankOf(V) < rank || levels.length > 1) {
       // Nested-vector path: cell is a sub-Value of the inner shape.
       // Per cell we copy out the inner block into a fresh Float64Array
       // — the callable may otherwise see overlapping subarray views
@@ -134,7 +137,7 @@ function classifyAxisStructure(v: any): any {
           for (let a = 0; a < outerRank; a++) off += idx[a] * outerStrides[a];
           const sub = new Float64Array(innerLen);
           for (let k = 0; k < innerLen; k++) sub[k] = V.data[off + k];
-          const cell: any = { shape: innerShape.slice(), data: sub };
+          const cell: any = valueLib.setLevels({ shape: innerShape.slice(), data: sub }, levels.slice(1));
           // A complex operand's cell keeps its imaginary half. Copying only
           // `data` handed the body the real parts as the whole cell, so
           // `adjoint.(zz)` over a complex nested vector answered with real
@@ -329,7 +332,7 @@ function tryStackBroadcastCells(cells: any[], bshape: number[]): any {
   };
   // §03: an array of array-valued cells is not a matrix. Keep the loop/cell
   // split when this packed result becomes another broadcast's input (§04).
-  if (packed.innerShape.length) stacked.outerRank = bshape.length;
+  if (packed.innerShape.length) valueLib.setLevels(stacked, [bshape.length]);
   if (packed.im !== undefined) {
     stacked.im = packed.im;
     stacked.dtype = 'complex';

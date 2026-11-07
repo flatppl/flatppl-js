@@ -408,6 +408,36 @@ function isAtomBatchedScalar(v: any, N: number): boolean {
 // (outerRank=1, length-N collection of length-k vectors). Operations
 // that care about the distinction (broadcast, type inference, matrix
 // linear algebra) consult the tag.
+// Optional `Value.levelAxes`: the axis count of each nesting level, from the
+// outside in, summing to outerRank. Absent means one axis per level, as a
+// nested literal has. splitblocks of a rank-r array has a rank-r outer array,
+// so its levels are [r] (§07 "the outer-array shape is the elementwise
+// quotient").
+function levelAxesOf(v: any): number[] {
+  if (!v || typeof v.outerRank !== 'number') return [];
+  return Array.isArray(v.levelAxes) ? v.levelAxes.slice() : new Array(v.outerRank).fill(1);
+}
+
+// Write the nesting tags for `levels` onto `out`: outerRank is their sum, and
+// levelAxes is kept only when some level has more than one axis.
+function setLevels(out: any, levels: number[]): any {
+  delete out.outerRank;
+  delete out.levelAxes;
+  const rank = levels.reduce((a, b) => a + b, 0);
+  if (rank > 0) out.outerRank = rank;
+  if (levels.some(n => n !== 1)) out.levelAxes = levels.slice();
+  return out;
+}
+
+// The levels left after slicing one leading axis off `v`.
+function levelsAfterSlice(v: any): number[] {
+  const levels = levelAxesOf(v);
+  if (levels.length === 0) return levels;
+  levels[0]--;
+  if (levels[0] === 0) levels.shift();
+  return levels;
+}
+
 function outerRankOf(v: any): number {
   if (!v || !Array.isArray(v.shape)) return 0;
   return (typeof v.outerRank === 'number') ? v.outerRank : v.shape.length;
@@ -668,6 +698,7 @@ function densify(v: any) {
   // (diag etc.) but the nested-vs-flat semantic distinction must
   // survive the round-trip.
   if (typeof v.outerRank === 'number') out.outerRank = v.outerRank;
+  if (Array.isArray(v.levelAxes)) out.levelAxes = v.levelAxes;
   return out;
 }
 
@@ -1052,7 +1083,7 @@ function _sliceRow(v: any, idx: number) {
   const row: any = { shape: tail, data: dense.data.subarray(idx * tailLen, (idx + 1) * tailLen) };
   if (dense.im instanceof Float64Array) row.im = dense.im.subarray(idx * tailLen, (idx + 1) * tailLen);
   if (dense.dtype) row.dtype = dense.dtype;
-  if (dense.outerRank > 1) row.outerRank = dense.outerRank - 1;
+  setLevels(row, levelsAfterSlice(dense));
   return row;
 }
 
@@ -1095,6 +1126,9 @@ module.exports = {
   numel: numel,
   // outerRank / nested-vector tag (engine-concepts §2.1)
   outerRankOf: outerRankOf,
+  levelAxesOf,
+  setLevels,
+  levelsAfterSlice,
   isNestedVectorValue: isNestedVectorValue,
   requireMatrix: requireMatrix,
   innerShapeOf: innerShapeOf,

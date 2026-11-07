@@ -2075,7 +2075,13 @@ function _collectFieldPathOps(body: any, freeName: string, into: Set<string>): v
       }
     }
     if (onPathIdx === -1) return;
-    if (typeof cur.op === 'string') into.add(cur.op);
+    const g = cur.op === 'broadcast' && onPathIdx >= 1 ? cur.args[0] : null;
+    if (g && g.op === 'functionof' && Array.isArray(g.params) && g.body) {
+      // invertExpr inverts a broadcast cell by cell, so the cell's own ops are on the path.
+      _collectFieldPathOps(g.body, g.params[onPathIdx - 1], into);
+    } else if (typeof cur.op === 'string') {
+      into.add(cur.op);
+    }
     cur = cur.args[onPathIdx];
   }
 }
@@ -2151,7 +2157,9 @@ function _recognizeDiagonalPushforwardFields(
       if (pathOps.size > 0) {
         const typeinfer = require('./typeinfer.ts');
         const vsLib = require('./value-set.ts');
-        const ancestorIR = expandMeasureIR(ancestor, derivations, new Set(visited), bindings);
+        let ancestorIR = expandMeasureIR(ancestor, derivations, new Set(visited), bindings);
+        // A guarded op inside a broadcast acts on each cell of an iid ancestor.
+        while (ancestorIR && ancestorIR.kind === 'call' && ancestorIR.op === 'iid') ancestorIR = ancestorIR.args?.[0] ?? null;
         const support = (ancestorIR && ancestorIR.kind === 'call' && DISTRIBUTIONS.has(ancestorIR.op))
           ? typeinfer.distributionSupport(ancestorIR) : vsLib.UNKNOWN;
         if (support !== vsLib.UNKNOWN && support !== vsLib.DEFERRED && support !== vsLib.ANYTHING) {
@@ -4494,13 +4502,14 @@ function pushfwdBijectionMeta(fnRef: string, bindings: any): any {
     });
     if (inv) {
       // fInv body is in terms of FINV_PARAM (= y); logVolume (forward
-      // LADJ) is in terms of holeName (= the preimage x). invertExpr
-      // derives a scalar LADJ, so over an array variate it applies
-      // per element (density.pushfwdLogVolume sums it).
+      // LADJ) is in terms of holeName (= the preimage x). A chain of
+      // scalar ops gives a per-cell LADJ, which density.pushfwdLogVolume
+      // sums over an array variate. A broadcast on the path gives the
+      // LADJ of the whole map.
       bijMeta = {
         fForward: { body: fBinding.ir.body, paramName: holeName },
         fInv: { body: inv.inverseIR, paramName: FINV_PARAM },
-        logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName, elementwise: true },
+        logVolume: { kind: 'fn', body: inv.ladjIR, paramName: holeName, elementwise: !inv.wholeMap },
       };
     }
   }

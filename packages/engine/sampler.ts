@@ -1204,7 +1204,7 @@ const ARITH_OPS = {
       const n = X.data.length;
       const d = new Float64Array(total * n);
       for (let i = 0; i < total; i++) d.set(X.data, i * n);
-      const out: any = { shape: [...dims, ...X.shape], data: d, outerRank: dims.length };
+      const out: any = valueLib.setLevels({ shape: [...dims, ...X.shape], data: d }, [dims.length]);
       if (valueLib.isComplexValue(X)) {
         out.im = new Float64Array(total * n);
         for (let i = 0; i < total; i++) out.im.set(X.im, i * n);
@@ -1480,7 +1480,7 @@ const ARITH_OPS = {
         blockCoord[ax] = 0;
       }
     }
-    return { shape: outerShape.concat(bs), data, outerRank: outerShape.length };
+    return valueLib.setLevels({ shape: outerShape.concat(bs), data }, [outerShape.length]);
   },
   // joinblocks(A) — inverse of splitblocks. A is a nested array of
   // equal-shape inner Values; result is a single Value whose shape
@@ -2438,6 +2438,10 @@ for (const _name in opsModule.ELEMWISE_OVER_ARRAY) {
   (ARITH_OPS as any)[_name] = (a: any) =>
     valueLib.isValue(a) ? _cellwise(a) : _scalar(a);
 }
+for (const _name in opsModule.SCALAR_ONLY_OVER_VALUE) {
+  (ARITH_OPS as any)[_name] = opsModule.scalarOnlyOverValue(_name,
+    (valueOps as any)[opsModule.SCALAR_ONLY_OVER_VALUE[_name]], (ARITH_OPS as any)[_name]);
+}
 // The binary counterpart (`ops.ELEMWISE_OVER_ARRAY_2`) — `divide` over §07's
 // "array-scalar" and "transposed-vector–scalar" domains. The value-ops
 // elementwise binops require both operands to be Values, so the scalar partner
@@ -3150,7 +3154,7 @@ function evaluateCall(ir: any, env: any): any {
         return data.subarray(idx * tailLen, (idx + 1) * tailLen);
       }
       const result: any = { shape: tail, data: slice(dense.data) };
-      if (dense.outerRank > 1) result.outerRank = dense.outerRank - 1;
+      valueLib.setLevels(result, valueLib.levelsAfterSlice(dense));
       if (dense.dtype) result.dtype = dense.dtype;
       if (dense.im) result.im = slice(dense.im);
       if (transposed && shape.length > 2) result.t = v.t;

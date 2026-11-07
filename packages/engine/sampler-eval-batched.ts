@@ -1231,9 +1231,9 @@ function _packUniformCells(out: any[], N: any): any {
   }
   // A nested-vector cell (§03 vector of vectors, or a splitblocks outer
   // array) keeps its outer axes behind the atom axis.
-  const outerRank = out[0]?.outerRank;
-  if (typeof outerRank === 'number' && out.every((s: any) => s?.outerRank === outerRank)) {
-    return { shape: [N, ...cell0], data, outerRank: outerRank + 1 };
+  const levels = valueLib.levelAxesOf(out[0]).join(',');
+  if (levels && out.every((s: any) => valueLib.levelAxesOf(s).join(',') === levels)) {
+    return valueLib.setLevels({ shape: [N, ...cell0], data }, [1, ...valueLib.levelAxesOf(out[0])]);
   }
   return { shape: [N, ...cell0], data };
 }
