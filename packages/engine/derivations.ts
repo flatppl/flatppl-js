@@ -4039,6 +4039,14 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     return seen;
   }
 
+  // The self-refs an IR depends on. A callable binding in a callable-head
+  // position (`broadcast(g, z)`) is dispatched by name at evaluation, not
+  // computed, so it is no dependency. Every arm below uses this one rule.
+  function dependencyRefs(ir: any): string[] {
+    const heads = _collectCallableHeadRefs(ir);
+    return Array.from(collectSelfRefs(ir) as Set<string>).filter((r: string) => !heads.has(r));
+  }
+
   // ── Smell C: the canonical lowering as the plottability authority ──────
   // For the measure kinds whose ref-validity used to be a hand-rolled body
   // walk with a drift-prone skip-list (the bayesupdate parametric/
@@ -4107,7 +4115,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     // resolveIRToValue — their own refs still need values/derivations.
     for (const ir of [(d as any).obsIR, (d as any).pointIR]) {
       if (!ir) continue;
-      for (const r of collectSelfRefs(ir)) {
+      for (const r of dependencyRefs(ir)) {
         if (!resolvable(r)) return false;
       }
     }
@@ -4127,16 +4135,11 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     if (!resolvable(d.from)) return false;
     // Per-atom path also depends on every binding referenced by its
     // weight expression — those need derivations of their own so the
-    // visualPanel can build refArrays for evaluateN. Callable heads are
-    // exempt for the same reason as in the generic walk below: an
-    // aggregate's reducer (`sum`) is a builtin with no binding at all, and
-    // a broadcast head resolves through `__resolveFnBody` at eval time. A
-    // reified weight body that contracts an index carries such a head, so
-    // without this the reduction alone pruned the measure.
+    // visualPanel can build refArrays for evaluateN. An aggregate's reducer
+    // (`sum`) and a broadcast head are callable heads, which `dependencyRefs`
+    // leaves out: a reified weight body that contracts an index carries one.
     if (d.weightIR) {
-      const heads = _collectCallableHeadRefs(d.weightIR);
-      for (const r of collectSelfRefs(d.weightIR)) {
-        if (heads.has(r)) continue;
+      for (const r of dependencyRefs(d.weightIR)) {
         if (!resolvable(r)) return false;
       }
     }
@@ -4185,7 +4188,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       .concat(Object.keys(dd.step.distKwargs)
         .map((pn: string) => dd.step.distKwargs[pn]));
     for (const ir of irs) {
-      for (const r of collectSelfRefs(ir)) {
+      for (const r of dependencyRefs(ir)) {
         // The step's own params are bound per step, never fed.
         if (r === dd.step.inputParam || dd.step.xParams.includes(r)) continue;
         // A boundary input of the kernel that scores the trajectory (`elementof`) is fed from the
@@ -4203,7 +4206,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     const irs = (d.argIRs || []).concat(
       d.kwargIRs ? Object.keys(d.kwargIRs).map((k) => d.kwargIRs[k]) : []);
     for (const ir of irs) {
-      for (const r of collectSelfRefs(ir)) {
+      for (const r of dependencyRefs(ir)) {
         if (!resolvable(r)) return false;
       }
     }
@@ -4215,15 +4218,14 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   function _likelihoodBodyRefsValid(sub: any): boolean {
     if (sub.bodyName) return _bodyNameResolvable(sub.bodyName, bindings, resolvable);
     if (!sub.bodyIR) return false;
-    const heads = _collectCallableHeadRefs(sub.bodyIR);
-    for (const r of collectSelfRefs(sub.bodyIR)) {
+    for (const r of dependencyRefs(sub.bodyIR)) {
       const rb = bindings.get(r);
       // A body's parametric / stochastic internals are fed from the scored
       // point by the materialiser, not through a derivation.
       if (rb && (rb.phase === 'parametric' || rb.phase === 'stochastic')) continue;
-      // Builtin distribution / op heads and callable-bound heads resolve by
-      // name at dispatch, as clm `_enumerateInputs` treats them.
-      if (ALL_KNOWN.has(r) || heads.has(r)) continue;
+      // Builtin distribution / op heads resolve by name at dispatch, as clm
+      // `_enumerateInputs` treats them.
+      if (ALL_KNOWN.has(r)) continue;
       if (!resolvable(r)) return false;
     }
     return true;
@@ -4258,7 +4260,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       return true;
     }
     if (d.bodyIR) {
-      for (const r of collectSelfRefs(d.bodyIR)) {
+      for (const r of dependencyRefs(d.bodyIR)) {
         // The kernel body's PARAMETRIC / STOCHASTIC internals — the variate
         // draw (`obs`), the reified boundary inputs (`theta1`/`theta2`), and
         // the value bindings derived from them (`a = 5*theta2`) — are resolved
@@ -4294,12 +4296,12 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   // materialiser — here from the given point θ — not via derivations),
   // plus the point expression's own refs must be resolvable.
   if (d.kind === 'likelihood_density') {
-    for (const r of collectSelfRefs(d.pointIR)) {
+    for (const r of dependencyRefs(d.pointIR)) {
       if (!resolvable(r)) return false;
     }
     if (d.bodyName) return _bodyNameResolvable(d.bodyName, bindings, resolvable);
     if (d.bodyIR) {
-      for (const r of collectSelfRefs(d.bodyIR)) {
+      for (const r of dependencyRefs(d.bodyIR)) {
         const rb = bindings.get(r);
         if (rb && (rb.phase === 'parametric' || rb.phase === 'stochastic')) continue;
         if (!resolvable(r)) return false;
@@ -4311,7 +4313,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   // Joint likelihood density: valid iff every sub-term is (same body-ref
   // rules as the standalone case) and the point θ's refs are resolvable.
   if ((d as any).kind === 'joint_likelihood_density') {
-    for (const r of collectSelfRefs((d as any).pointIR)) {
+    for (const r of dependencyRefs((d as any).pointIR)) {
       if (!resolvable(r)) return false;
     }
     for (const sub of ((d as any).subs || [])) {
@@ -4326,7 +4328,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
   // _clmRefsValid returns null for it and this legacy branch is authoritative.
   if ((d as any).kind === 'posterior_density') {
     if (!resolvable((d as any).priorName)) return false;
-    for (const r of collectSelfRefs((d as any).pointIR)) {
+    for (const r of dependencyRefs((d as any).pointIR)) {
       if (!resolvable(r)) return false;
     }
     // A joint_likelihood L carries per-term bodies in `subs`; each obeys the
@@ -4341,7 +4343,7 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
       return _bodyNameResolvable((d as any).bodyName, bindings, resolvable);
     }
     if ((d as any).bodyIR) {
-      for (const r of collectSelfRefs((d as any).bodyIR)) {
+      for (const r of dependencyRefs((d as any).bodyIR)) {
         const rb = bindings.get(r);
         if (rb && (rb.phase === 'parametric' || rb.phase === 'stochastic')) continue;
         if (!resolvable(r)) return false;
@@ -4354,17 +4356,10 @@ function derivationRefsValid(d: DerivationBase, derivations: any, bindings: Map<
     return resolvable(d.measureName);
   }
   if (d.kind === 'truncate') {
-    return resolvable(d.from) && Array.from(collectSelfRefs(d.setIR)).every(resolvable);
+    return resolvable(d.from) && Array.from(dependencyRefs(d.setIR)).every(resolvable);
   }
   const ir = d.kind === 'sample' ? d.distIR : d.ir;
-  const refs = collectSelfRefs(ir);
-  const callableHeads = _collectCallableHeadRefs(ir);
-  for (const r of refs) {
-    // Callable-head refs (broadcast / aggregate heads bound to a
-    // callable binding) resolve via __resolveFnBody at eval time,
-    // not via derivations / fixedValues. Skip them in the cascade-
-    // prune check.
-    if (callableHeads.has(r)) continue;
+  for (const r of dependencyRefs(ir)) {
     if (!resolvable(r)) return false;
   }
   return true;
