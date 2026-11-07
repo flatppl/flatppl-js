@@ -24,6 +24,7 @@ const clm           = require('./clm.ts');
 const density       = require('./density.ts');
 const irShared      = require('./ir-shared.ts');
 const sampler       = require('./sampler.ts');
+const valueLib      = require('./value.ts');
 const lower         = require('./lower.ts');
 const { getOptimization } = require('./perf-config.ts');
 const { logTotalMassExpr, assertFixedMassFallback, canDeferTruncateNormalizer } = require('./normalize-mass.ts');
@@ -890,7 +891,7 @@ async function buildLogPi(
           if (!vi || vi.length !== D) return null;
           for (let j = 0; j < D; j++) data[i * D + j] = +vi[j];
         }
-        refArrays[nm] = { shape: [N, ...atomShape], data };
+        refArrays[nm] = valueLib.withAtomAxis({ shape: [N, ...atomShape], data }, v0);
       }
     }
     try {

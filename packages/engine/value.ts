@@ -438,6 +438,15 @@ function levelsAfterSlice(v: any): number[] {
   return levels;
 }
 
+// Tag `out`, a batch [N, ...cell.shape] of copies or draws of `cell`, with the
+// levels of a new atom axis above the cell's own. A cell without levels
+// leaves `out` untagged, as before.
+function withAtomAxis(out: any, cell: any): any {
+  const levels = levelAxesOf(cell);
+  if (levels.length > 0) setLevels(out, [1, ...levels]);
+  return out;
+}
+
 function outerRankOf(v: any): number {
   if (!v || !Array.isArray(v.shape)) return 0;
   return (typeof v.outerRank === 'number') ? v.outerRank : v.shape.length;
@@ -1129,6 +1138,7 @@ module.exports = {
   levelAxesOf,
   setLevels,
   levelsAfterSlice,
+  withAtomAxis,
   isNestedVectorValue: isNestedVectorValue,
   requireMatrix: requireMatrix,
   innerShapeOf: innerShapeOf,
