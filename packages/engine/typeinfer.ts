@@ -6463,6 +6463,117 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     return op;
   }
 
+  // The support of one cell of a pushfwd base, for the domain guard. The
+  // guarded ops are §07 scalar-only, so over an array base they reach it
+  // through a broadcast and act on its cells. `exact` marks a support that is
+  // the true one, which alone can prove a refusal. An upper bound can only
+  // admit. `valuesetOfExpr` is not used here: it widens an unknown support to
+  // the type's extent, which would read `pushfwd(exp, Normal(0, 1))` as reals.
+  function _baseCellSupport(mIR: any, seen: Set<string>): { set: any, exact: boolean } {
+    const unknown = { set: vsLib.UNKNOWN, exact: false };
+    if (!mIR) return unknown;
+    if (mIR.kind === 'ref' && mIR.ns === 'self') {
+      const b = loweredModule.bindings.get(mIR.name);
+      if (!b || !b.rhs || seen.has(mIR.name)) return unknown;
+      seen.add(mIR.name);
+      return _baseCellSupport(b.rhs, seen);
+    }
+    if (mIR.kind !== 'call') return unknown;
+    const args = mIR.args || [];
+    switch (mIR.op) {
+      case 'iid': case 'normalize': case 'lawof': case 'draw':
+        return _baseCellSupport(args[0], seen);
+      case 'weighted': case 'logweighted':
+        return _baseCellSupport(args[1], seen);
+      case 'truncate': {
+        const inner = _baseCellSupport(args[0], seen);
+        const s = _cellOf(vsLib.setExprValueset(args[1], _resolveDim, _resolveSetRef));
+        if (s === vsLib.UNKNOWN) return inner;
+        if (inner.set === vsLib.UNKNOWN) return { set: s, exact: false };
+        // The support is the intersection, exact when one set contains the other.
+        if (vsLib.subsetOf(s, inner.set)) return { set: s, exact: inner.exact };
+        if (vsLib.subsetOf(inner.set, s)) return inner;
+        return { set: s, exact: false };
+      }
+      case 'pushfwd': {
+        const reif = _resolveForwardReif(args[0]);
+        const body = reif && Array.isArray(reif.params) && reif.params.length === 1 ? reif.body : null;
+        // §06's bare-builtin spelling `pushfwd(exp, M)`.
+        const bare = !reif && args[0] && args[0].kind === 'ref'
+          && !loweredModule.bindings.has(args[0].name) ? FIXED_IMAGE_OPS[args[0].name] : null;
+        const image = body ? _fixedImageOfCell(body) : (bare || vsLib.UNKNOWN);
+        if (image !== vsLib.UNKNOWN) return { set: image, exact: false };
+        // An affine map of a real line is onto the real line.
+        if (body && _isAffineCell(body, reif.params[0])) {
+          const inner = _baseCellSupport(args[1], seen);
+          if (inner.exact && inner.set === vsLib.REALS) return inner;
+        }
+        return unknown;
+      }
+      default:
+        if (builtins.DISTRIBUTIONS.has(mIR.op)) {
+          const set = _cellOf(distributionSupport(mIR, {
+            paramDim: _paramDim, resolveDim: _resolveDim, resolveSetRef: _resolveSetRef,
+          }));
+          return { set, exact: set !== vsLib.UNKNOWN };
+        }
+        return unknown;
+    }
+  }
+
+  // Is `body` an affine map of its parameter `free` per cell: a chain of
+  // add, sub, mul, divide and neg with the parameter in one operand and a
+  // scale that is a nonzero literal? A broadcast of such a lambda counts too.
+  function _isAffineCell(body: any, free: string, frozen: Record<string, any> = {}): boolean {
+    const irWalk = require('./ir-walk.ts');
+    const has = (n: any) => _irContainsName(n, free, irWalk);
+    let cur = body;
+    for (;;) {
+      if (cur && cur.kind === 'ref' && cur.name === free) return true;
+      if (!cur || cur.kind !== 'call' || !Array.isArray(cur.args)) return false;
+      if (cur.op === 'broadcast') {
+        const g = cur.args[0];
+        const on = cur.args.slice(1).findIndex(has);
+        if (!g || g.op !== 'functionof' || !g.body || on < 0
+            || cur.args.slice(1).some((a: any, i: number) => i !== on && has(a))) return false;
+        // The lambda's other parameters stand for the broadcast's frozen arguments.
+        const inner: Record<string, any> = {};
+        g.params.forEach((q: string, i: number) => { if (i !== on) inner[q] = cur.args[i + 1]; });
+        if (!_isAffineCell(g.body, g.params[on], inner)) return false;
+        cur = cur.args[on + 1];
+        continue;
+      }
+      const on = cur.args.findIndex(has);
+      if (on < 0 || cur.args.some((a: any, i: number) => i !== on && has(a))) return false;
+      if (cur.op === 'mul' || cur.op === 'divide') {
+        let scale = cur.args[1 - on];
+        if (scale && scale.kind === 'ref' && frozen[scale.name]) scale = frozen[scale.name];
+        if (cur.op === 'divide' && on !== 0) return false;
+        if (!scale || scale.kind !== 'lit' || typeof scale.value !== 'number' || scale.value === 0) return false;
+      } else if (!['add', 'sub', 'neg'].includes(cur.op)) {
+        return false;
+      }
+      cur = cur.args[on];
+    }
+  }
+
+  function _cellOf(set: any): any {
+    while (set && set.vs === 'cartpow') set = set.elem;
+    return set;
+  }
+
+  // A set that contains every cell of a forward body's result, when its
+  // outermost op has a fixed image whatever its input. A broadcast of a
+  // single-parameter lambda reads that lambda's body, at any nesting depth.
+  function _fixedImageOfCell(body: any): any {
+    if (!body || body.kind !== 'call') return vsLib.UNKNOWN;
+    if (body.op === 'broadcast') {
+      const g = (body.args || [])[0];
+      return g && g.op === 'functionof' && g.body ? _fixedImageOfCell(g.body) : vsLib.UNKNOWN;
+    }
+    return FIXED_IMAGE_OPS[body.op] || vsLib.UNKNOWN;
+  }
+
   function _checkOnePushfwdDomain(ir: any, irWalk: any) {
     const ops = new Set<string>();
     const reif = _resolveForwardReif(ir.args[0]);
@@ -6480,14 +6591,12 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     for (const op of ops) {
       const guard = PUSHFWD_DOMAIN_GUARDS[op];
       if (!guard) continue;
-      if (support == null) {
-        support = valuesetOfExpr(mIR);
-        // The guarded ops are §07 scalar-only, so over an array base they reach
-        // it through a broadcast, and act on its cells.
-        while (support && support.vs === 'cartpow') support = support.elem;
-      }
-      if (support === vsLib.UNKNOWN || support === vsLib.DEFERRED || support === vsLib.ANYTHING) continue;
-      if (guard.isWithin(support)) continue;
+      if (support == null) support = _baseCellSupport(mIR, new Set());
+      const set = support.set;
+      if (set === vsLib.UNKNOWN || set === vsLib.DEFERRED || set === vsLib.ANYTHING) continue;
+      if (guard.isWithin(set)) continue;
+      // Only an exact support proves that some of it lies outside the domain.
+      if (!support.exact) continue;
       diagnostics.push({
         severity: 'error',
         message: `pushfwd: forward function uses '${op}', which requires the base measure's `
@@ -7751,6 +7860,13 @@ function distributionSupport(
 // pairs `pow` with `sqrt` under nonnegreals. `_collectPathOps` adds `pow` to the
 // guarded set ONLY for a non-odd-positive-integer exponent (see there); the
 // guard below then requires nonnegreals, else refuses (refuse-don't-mislower).
+// §07 elementary functions whose result lies in one set whatever the input.
+const FIXED_IMAGE_OPS: Record<string, any> = {
+  exp: vsLib.POSREALS,
+  sqrt: vsLib.NONNEGREALS, abs: vsLib.NONNEGREALS, abs2: vsLib.NONNEGREALS,
+  invlogit: vsLib.UNITINTERVAL, invprobit: vsLib.UNITINTERVAL,
+};
+
 const PUSHFWD_DOMAIN_GUARDS: Record<string, { isWithin: (vs: any) => boolean, label: string }> = {
   log:    { isWithin: isWithinPositiveDomain, label: 'positive (posreals; spec §07 log domain)' },
   log2:   { isWithin: isWithinPositiveDomain, label: 'positive (posreals; spec §07 log2 domain)' },
