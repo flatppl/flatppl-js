@@ -4495,6 +4495,11 @@ function walkIid(state: any, ir: IRNode, env: any, ctx: any) {
     if (t !== 'number' && t !== 'boolean') allNumeric = false;
     st = r.state;
   }
+  // §06/§03: an iid of a record-valued measure is a table, one row per draw.
+  if (dims.length <= 1 && !allNumeric) {
+    const table = _broadcastShape.tryCollectTableRows(flat, [total]);
+    if (table) return { value: table, state: st };
+  }
   if (dims.length <= 1) return { value: flat, state: st };
   // Multi-axis scalar atoms → shape-explicit rank-≥2 Value (spec §03:
   // vectors of vectors are not matrices; downstream value-ops need the tag).
