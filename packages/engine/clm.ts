@@ -1364,8 +1364,9 @@ function _explicitToRefValue(value: any, shape: any, ctx: any): any {
   const out: any = { shape: [N, ...v.shape], data: repeat(v.data) };
   if (v.im) out.im = repeat(v.im);
   if (v.dtype) out.dtype = v.dtype;
-  if (v.outerRank != null) out.outerRank = v.outerRank;
-  return out;
+  // The atom axis is a new outermost level, so an atom of a vector of vectors
+  // slices back to a vector of vectors.
+  return valueLib.withAtomAxis(out, v);
 }
 
 function feedInputs(
