@@ -480,7 +480,7 @@ function arrayMeasure(samples: any, dims: any, logWeights: any) {
       && samples.BYTES_PER_ELEMENT !== undefined) {
     const total = dims.reduce(function (p: number, n: number) { return p * n; }, 1);
     const N = total > 0 ? (samples.length / total) : 0;
-    m.value = { shape: [N | 0].concat(dims), data: samples };
+    m.value = require('./value.ts').batchOf({ shape: [N | 0].concat(dims), data: samples }, []);
   }
   return m;
 }

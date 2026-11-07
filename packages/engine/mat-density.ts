@@ -160,7 +160,7 @@ function matScore(node: any, ctx: any, opts?: any): Promise<any> {
     }
     if (isValue(point) && dims.length > 1) {
       const dense = values._logicalDense(point);
-      point = { ...dense, shape: [count, ...dense.shape.slice(dims.length)], outerRank: 1 };
+      point = values.batchOf({ ...dense, shape: [count, ...dense.shape.slice(dims.length)] }, []);
     }
     return Promise.all(Array.from({ length: count }, (_, i) => {
       const observed = point?.__table__ ? values.tableRow(point, i)
