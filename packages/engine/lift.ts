@@ -4547,6 +4547,11 @@ function _isLiteralNumericVector(ir: any): boolean {
  * not 100% sure the evaluator handles, so the orchestrator can short-
  * circuit before involving the worker.
  */
+function _isEvaluableArrayArg(ir: any, bindings: any): boolean {
+  return !!ir && ir.kind === 'call' && ir.op === 'vector' && Array.isArray(ir.args) && ir.args.length > 0
+    && ir.args.every((e: any) => isEvaluable(e, bindings) || _isEvaluableArrayArg(e, bindings));
+}
+
 function isEvaluable(ir: IRNode | null | undefined, bindings?: any): boolean {
   if (!ir) return false;
   switch (ir.kind) {
@@ -4650,11 +4655,16 @@ function isEvaluable(ir: IRNode | null | undefined, bindings?: any): boolean {
       // record IR uses `fields: [{name, value}, ...]` instead of args,
       // so we walk that shape too — a record(a=x, b=y) is evaluable
       // only if every field value is.
+      // An array literal ARGUMENT (`rowstack([v, v])`) is a value operand;
+      // only a binding whose whole RHS is an array literal takes the array
+      // / tuple derivation path.
       if (ir.args) {
-        for (const a of ir.args) if (!isEvaluable(a, bindings)) return false;
+        for (const a of ir.args) if (!isEvaluable(a, bindings) && !_isEvaluableArrayArg(a, bindings)) return false;
       }
       if (ir.kwargs) {
-        for (const k in ir.kwargs) if (!isEvaluable(ir.kwargs[k], bindings)) return false;
+        for (const k in ir.kwargs) {
+          if (!isEvaluable(ir.kwargs[k], bindings) && !_isEvaluableArrayArg(ir.kwargs[k], bindings)) return false;
+        }
       }
       if (Array.isArray(ir.fields)) {
         for (const f of ir.fields) if (!isEvaluable(f && f.value, bindings)) return false;
