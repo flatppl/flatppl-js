@@ -862,6 +862,15 @@ function _evalN(ir: any, refArrays: any, N: any, baseEnv: any, overlay: any) {
             && _touchesAtomRef(ir.args[1], refArrays, overlay)) {
           return valueOps.mulN(args[0], args[1], N, [false, true]);
         }
+        // Both operands read per-atom names: both are batches, whatever their
+        // cell shapes (`lower_cholesky(cov) * Z`, [N,m,m] × [N,m,k]).
+        if (op === 'mul' && valueLib.isValue(args[0]) && valueLib.isValue(args[1])
+            && args[0].shape.length >= 3 && args[1].shape.length >= 3
+            && args[0].shape[0] === N && args[1].shape[0] === N
+            && _touchesAtomRef(ir.args[0], refArrays, overlay)
+            && _touchesAtomRef(ir.args[1], refArrays, overlay)) {
+          return valueOps.mulN(args[0], args[1], N, [true, true]);
+        }
         // An operand built only from fixed values has no atom axis, even when
         // its leading dimension equals N. Only the other operand's shape can
         // still say whether it is a batch.
