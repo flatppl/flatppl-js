@@ -298,8 +298,15 @@ function flattenNestedVariate(value: any, axes: number[]): { cells: Float64Array
           + ' wants dim=' + dim + ' but got Array of length ' + node.length);
       }
       for (let k = 0; k < dim; k++) {
-        // intermediate-depth residual is not surfaced — only the top-level rest threads out (grid shape is param-driven; the resolver rejects ragged).
-        peel(node[k], depth + 1);
+        // Only the top-level rest threads out. Static typing refuses a point
+        // whose inner extent exceeds the grid, so a residual here would mean
+        // data dropped silently.
+        if (peel(node[k], depth + 1) != null) {
+          throw new Error('density: flattenNestedVariate: axis ' + (depth + 1)
+            + ' of the point is longer than the grid extent '
+            + (depth + 1 < axes.length ? axes[depth + 1] : 'of a scalar cell')
+            + '; every inner entry must be consumed');
+        }
       }
       return node.length > dim ? node.slice(dim) : null;
     }

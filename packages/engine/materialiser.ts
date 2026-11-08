@@ -3465,15 +3465,29 @@ callableGuardStage.label = 'callableGuard';
 // stage rejects cleanly. A fixed value whose evaluation threw rejects with
 // that cause, instead of a later stage's "no derivation".
 const fixedPhaseStage: MaterialiserStage = function (name, ctx, next) {
+  let nan = false;
   if (ctx.fixedValues && ctx.fixedValues.has(name)) {
-    const fxm = fixedValueToMeasure(ctx.fixedValues.get(name), ctx.sampleCount);
+    const value = ctx.fixedValues.get(name);
+    const fxm = fixedValueToMeasure(value, ctx.sampleCount);
     if (fxm) return Promise.resolve(fxm);
+    nan = _isNaNScalar(value);
   }
   // A plain Map (test contexts) carries no failure record.
   const failure = ctx.fixedValues?.failure?.(name);
   if (failure) return Promise.reject(fixedFailureError(failure));
-  return next(name, ctx);
+  // A NaN fixed value defers to a derivation that may compute the binding
+  // properly. When none exists, name the NaN rather than a missing derivation.
+  if (!nan) return next(name, ctx);
+  return next(name, ctx).catch((e: any) => {
+    if (!/no derivation/.test(String(e && e.message))) throw e;
+    throw new Error(`fixed binding '${name}' evaluated to NaN, and no derivation computes it`);
+  });
 };
+
+function _isNaNScalar(v: any): boolean {
+  if (typeof v === 'number') return Number.isNaN(v);
+  return valueLib.isValue(v) && v.shape.length === 0 && Number.isNaN(v.data[0]);
+}
 fixedPhaseStage.label = 'fixedPhaseShortCircuit';
 
 // A rejection names the innermost user binding that failed, so a reader of a
