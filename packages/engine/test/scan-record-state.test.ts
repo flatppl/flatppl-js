@@ -19,9 +19,12 @@ totals = total.(states)
   const lifted = processSource(source);
   assert.deepEqual(lifted.diagnostics.filter((d: any) => d.severity === 'error'), []);
   const built = orchestrator.buildDerivations(lifted.linkedBindings);
-  assert.deepEqual(toJS(built.fixedValues.get('states')), [
-    { total: 2, count: 1 }, { total: 1, count: 2 }, { total: 5, count: 3 },
-  ]);
+  // §06: a record trajectory is a table, so the record states collect into one.
+  const states = built.fixedValues.get('states');
+  assert.equal(states.__table__, true);
+  assert.equal(states.nrows, 3);
+  assert.deepEqual(toJS(states.columns.total), [2, 1, 5]);
+  assert.deepEqual(toJS(states.columns.count), [1, 2, 3]);
   assert.deepEqual(toJS(built.fixedValues.get('totals')), [2, 1, 5]);
 });
 
