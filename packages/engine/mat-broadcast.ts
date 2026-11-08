@@ -147,20 +147,20 @@ function matKernelBroadcast(name: string, d0: DerivationKernelBroadcast, ctx: an
     // paramIRs since joint's component model differs from iid's single
     // inner-dist model.
     if (compositeBody.kind === 'joint') {
-      return _executeJointComposite(name, d, ctx, compositeBody);
+      return _executeJointComposite(name, _withPositionalAsKwargs(d, compositeBody), ctx, compositeBody);
     }
     // Phase 4.3: jointchain-bodied composite — execute via the per-cell
     // state-threaded chain walker. Step k's sampleN consumes step k-1's
     // per-atom column as a refArray, so the inner loop is sequential
     // (within a cell). See `_executeJointChainComposite`.
     if (compositeBody.kind === 'jointchain') {
-      return _executeJointChainComposite(name, d, ctx, compositeBody);
+      return _executeJointChainComposite(name, _withPositionalAsKwargs(d, compositeBody), ctx, compositeBody);
     }
     // Phase 4.4: nested-broadcast-bodied composite — outer body is
     // itself `broadcast(<bare_dist>, kw)`. Executor walks two per-cell
     // axes (outer j × inner k); see `_executeNestedBroadcastComposite`.
     if (compositeBody.kind === 'nested_broadcast') {
-      return _executeNestedBroadcastComposite(name, d, ctx, compositeBody);
+      return _executeNestedBroadcastComposite(name, _withPositionalAsKwargs(d, compositeBody), ctx, compositeBody);
     }
     // Phase 8 batch-flatten: an iid-bodied composite folds the
     // (atom N, cell K, inner-iid D) axes into ONE count = N·K·D batch
@@ -169,7 +169,7 @@ function matKernelBroadcast(name: string, d0: DerivationKernelBroadcast, ctx: an
     // K·D (vector-per-cell) per-cell calls. This subsumes both the old
     // scalar-iid `repeat` loop below and `_executeIidCompositeVecPerCell`.
     if (compositeBody.kind === 'iid') {
-      return _executeIidCompositeBatchFlatten(name, d, ctx, compositeBody);
+      return _executeIidCompositeBatchFlatten(name, _withPositionalAsKwargs(d, compositeBody), ctx, compositeBody);
     }
     // engine-concepts §21 5th kind: generative-bodied composite — the
     // body is `lawof(<value-expr-with-internal-draw>)`. Sample each
@@ -588,6 +588,24 @@ function _resolveBatchFlattenParam(
   return null;
 }
 
+// A dot-call `K.(a, b)` passes its args POSITIONALLY (`d.argIRs`), the
+// kwarg form `K.(a = a, b = b)` fills `d.kwargIRs`. The composite executors
+// key everything off the kernel's surface param names, so map positional
+// args onto `paramKwargs` in order (kwargs win on overlap).
+function _withPositionalAsKwargs(d: any, compositeBody: any): any {
+  if (!Array.isArray(d.argIRs) || d.argIRs.length === 0) return d;
+  const kw: Record<string, any> = Object.assign({}, d.kwargIRs || {});
+  const pk: string[] = compositeBody.paramKwargs || [];
+  if (d.argIRs.length > pk.length) {
+    throw new Error('broadcast: kernel ' + d.distOp + ' takes ' + pk.length
+      + ' argument(s) (' + pk.join(', ') + '), got ' + d.argIRs.length);
+  }
+  for (let i = 0; i < d.argIRs.length; i++) {
+    if (!Object.prototype.hasOwnProperty.call(kw, pk[i])) kw[pk[i]] = d.argIRs[i];
+  }
+  return Object.assign({}, d, { kwargIRs: kw });
+}
+
 function _executeIidCompositeBatchFlatten(
   name: string, d: any, ctx: any, compositeBody: any,
 ): Promise<any> {
@@ -596,20 +614,7 @@ function _executeIidCompositeBatchFlatten(
   const D = compositeBody.n;          // inner iid axis size
   const distOp = compositeBody.distOp;
 
-  // Effective broadcast kwargs: a dot-call `K.(a, b)` passes its args
-  // POSITIONALLY (`d.argIRs`), whereas the kwarg form `K.(a_g = a, b_g =
-  // b)` fills `d.kwargIRs`. The substitution + layout below key off the
-  // kernel's surface param names, so map any positional args onto
-  // `paramKwargs` in order (kwargs win on overlap).
-  const effBcKwargs: Record<string, any> = Object.assign({}, d.kwargIRs || {});
-  if (Array.isArray(d.argIRs)) {
-    const _pk: string[] = compositeBody.paramKwargs || [];
-    for (let i = 0; i < d.argIRs.length && i < _pk.length; i++) {
-      if (!Object.prototype.hasOwnProperty.call(effBcKwargs, _pk[i])) {
-        effBcKwargs[_pk[i]] = d.argIRs[i];
-      }
-    }
-  }
+  const effBcKwargs: Record<string, any> = d.kwargIRs || {};
 
   // Surface every free name (broadcast args + closed-over self-refs) to
   // prepareDensityRefs in one pass via the body kwargs with kernel
@@ -2068,6 +2073,27 @@ function _executeNestedBroadcastComposite(
     + 'per-atom lengths are not yet supported).'));
 }
 
+// An inner broadcast arg written as an array literal of K_inner entries
+// (`Normal.([a, 2 * a], 0.1)`, entries over the outer formals): the inner
+// cell k takes entry k. Each entry is evaluated over the count batch and
+// gathered by the inner index, which is the fastest axis of the
+// row-major [N, K_outer, K_inner] layout. Null when `ir` is not such a
+// literal.
+function _innerLiteralParam(ir: any, Kin: number, flatRefs: any, count: number, baseEnv: any): any {
+  if (!ir || ir.kind !== 'call' || ir.op !== 'vector' || !Array.isArray(ir.args)
+      || ir.args.length !== Kin) return null;
+  const sampler = require('./sampler.ts');
+  const cols = ir.args.map((e: any) => _resolveBatchFlattenParam(
+    sampler.evaluateExprN(e, flatRefs, count, baseEnv, undefined), count));
+  if (cols.some((c: any) => !c)) return null;
+  const data = new Float64Array(count);
+  for (let i = 0; i < count; i++) {
+    const c = cols[i % Kin];
+    data[i] = c.kind === 'col' ? c.data[i] : c.value;
+  }
+  return { kind: 'col', data };
+}
+
 function _executeNestedBroadcastBatchFlatten(
   name: string, d: any, ctx: any, compositeBody: any, Kout: number, Kin: number,
 ): Promise<any> {
@@ -2174,13 +2200,13 @@ function _executeNestedBroadcastBatchFlatten(
     const distKwargs: Record<string, any> = {};
     const sampleRefs: Record<string, any> = {};
     for (const pn of Object.keys(subKwargs)) {
-      let pv: any;
+      let r: any;
       try {
-        pv = sampler.evaluateExprN(subKwargs[pn], flatRefs, count, baseEnv, undefined);
+        r = _innerLiteralParam(subKwargs[pn], Kin, flatRefs, count, baseEnv)
+          || _resolveBatchFlattenParam(sampler.evaluateExprN(subKwargs[pn], flatRefs, count, baseEnv, undefined), count);
       } catch (err) {
         return Promise.reject(err instanceof Error ? err : new Error(String(err)));
       }
-      const r = _resolveBatchFlattenParam(pv, count);
       if (!r) {
         return unfoldable('inner-dist param \'' + pn + '\' did not resolve to '
           + 'a constant or a length-' + count + ' column over the count batch');

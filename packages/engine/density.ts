@@ -4200,15 +4200,18 @@ function walkMultivariate(ir: IRNode, value: any, refArrays: any, N: any, opts: 
   // the per-atom kwargs against atom 0's env into a shape-probe record.
   let kwForSize: Record<string, any> = kwInit;
   if (anyKwUsesPerAtom) {
+    // Precedence overlay > refArrays > baseEnv, as in the per-atom loop:
+    // an observed field threaded through the overlay wins over the prior
+    // draw of the same name.
     const probeEnv = Object.assign({}, baseEnv);
+    for (let j = 0; j < refNames.length; j++) {
+      const v = refArrays[refNames[j]];
+      probeEnv[refNames[j]] = valueLib.isValue(v) ? _atomSlice(v, 0) : v[0];
+    }
     if (overlayKeys) {
       for (let j = 0; j < overlayKeys.length; j++) {
         probeEnv[overlayKeys[j]] = overlay[overlayKeys[j]];
       }
-    }
-    for (let j = 0; j < refNames.length; j++) {
-      const v = refArrays[refNames[j]];
-      probeEnv[refNames[j]] = valueLib.isValue(v) ? _atomSlice(v, 0) : v[0];
     }
     kwForSize = Object.assign({}, kwInit);
     for (let j = 0; j < perAtomKwKeys.length; j++) {

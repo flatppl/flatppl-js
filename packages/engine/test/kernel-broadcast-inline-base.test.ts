@@ -306,77 +306,58 @@ test('collector and substituter agree on every formal in one expression', () => 
 });
 
 // ---------------------------------------------------------------------
-// Located refusal for an inline jointchain step past the base
+// An inline jointchain step past the base
 // ---------------------------------------------------------------------
 
-test('checkJointChainKernelSteps refuses an inline step past the base', () => {
-  const inlineStep = {
+test('checkJointChainKernelSteps passes an inline functionof step and refuses an inline measure step', () => {
+  const loc = { start: { line: 5, col: 3 }, end: { line: 5, col: 40 } };
+  const inlineKernel = {
     kind: 'call', op: 'functionof', params: ['_a_'], paramKwargs: ['a'],
-    body: normal(local('_a_')),
-    loc: { start: { line: 5, col: 3 }, end: { line: 5, col: 40 } },
+    body: normal(local('_a_')), loc,
   };
-  const bindings = bindingsOf({
-    chain: chainKernel([normal(local('_m_')), inlineStep]),
-    y: {
-      ir: {
-        kind: 'call', op: 'broadcast',
-        args: [selfRef('chain')],
-        kwargs: { m: selfRef('ms') },
-      },
-    },
-  });
-  (bindings as any).entries = () => Object.entries({
-    chain: bindings.get('chain'), y: bindings.get('y'),
-  });
-  const out = kbShape.checkJointChainKernelSteps(bindings);
-  assert.equal(out.length, 1);
-  assert.equal(out[0].name, 'y');
-  assert.equal(out[0].severity, 'error');
-  assert.match(out[0].message, /jointchain argument 2 \(step kernel 1\)/);
-  assert.match(out[0].message, /Reified callables/);
-  assert.deepEqual(out[0].loc, inlineStep.loc, 'located at the inline step');
+  const inlineMeasure = Object.assign(normal(local('_m_')), { loc });
+  for (const [step, refused] of [[inlineKernel, false], [inlineMeasure, true]] as Array<[any, boolean]>) {
+    const bindings = bindingsOf({
+      chain: chainKernel([normal(local('_m_')), step]),
+      y: { ir: { kind: 'call', op: 'broadcast', args: [selfRef('chain')], kwargs: { m: selfRef('ms') } } },
+    });
+    (bindings as any).entries = () => Object.entries({ chain: bindings.get('chain'), y: bindings.get('y') });
+    const out = kbShape.checkJointChainKernelSteps(bindings);
+    assert.equal(out.length, refused ? 1 : 0, step.op);
+    if (refused) {
+      assert.match(out[0].message, /jointchain argument 2 \(step kernel 1\)/);
+      assert.deepEqual(out[0].loc, loc, 'located at the inline step');
+    }
+  }
 });
 
-test('an inline jointchain step reaches the user as a located refusal', async () => {
-  // End to end from source: before the refusal this shape carried no
-  // diagnostic, kept an `evaluate` derivation, and threw
-  // `TypeError: Cannot read properties of undefined (reading 'length')`
-  // out of the materialiser.
-  const { processSource } = require('../index.ts');
-  const orchestrator = require('../orchestrator.ts');
-  const materialiser = require('../materialiser.ts');
-  const { createWorkerHandler } = require('../worker.ts');
-  const src = 'flatppl_compat = "0.1"\n'
-    + 'm_per_group = [0.0, 1.0, 2.0]\n'
+test('an inline functionof jointchain step samples the chain it denotes', async () => {
+  // Before, this spec-legal program was refused (and before that it threw a
+  // TypeError). Oracle: y[k] = (s0, s1) with s0 ~ Normal(m_k, 1) and
+  // s1 | s0 ~ Normal(s0, 1), so E = (m_k, m_k), Var = (1, 2), Cov = 1.
+  const { makeMatCtx } = require('./_materialise-helpers.ts');
+  const src = 'm_per_group = [0.0, 1.0, 2.0]\n'
     + 'group_chain = functionof(\n'
     + '  jointchain(Normal(mu = _m_, sigma = 1.0),\n'
     + '             functionof(Normal(mu = _a_, sigma = 1.0), a = _a_)),\n'
     + '  m = _m_)\n'
     + 'y = broadcast(group_chain, m = m_per_group)\n';
-  const lifted = processSource(src);
-  assert.deepEqual(lifted.diagnostics, [], 'the program is spec-legal');
-  const built = orchestrator.buildDerivations(lifted.bindings);
-  const errs = (built.diagnostics || []).filter((d: any) => d.severity === 'error');
-  assert.equal(errs.length, 1);
-  assert.match(errs[0].message, /jointchain argument 2 \(step kernel 1\)/);
-  // Lines are 0-based here; the inline step sits on source line 5.
-  assert.equal(errs[0].loc.start.line, 4, 'located at the inline step, not the binding');
-  assert.equal(built.derivations.y, undefined,
-    'the crashing value-evaluation derivation is dropped');
-
-  const worker = createWorkerHandler();
-  worker.handle({ type: 'init', seed: 9 });
-  const ctx: any = {
-    derivations: built.derivations, bindings: built.bindings,
-    fixedValues: built.fixedValues || new Map(),
-    getMeasure: (n: string) => materialiser.materialiseMeasure(n, ctx),
-    sendWorker: (m: any) => Promise.resolve(worker.handle(m)),
-    sampleCount: 8, rootKey: [9, 0],
-  };
-  await assert.rejects(ctx.getMeasure('y'), (err: any) => {
-    assert.ok(!(err instanceof TypeError), 'no internal TypeError: ' + err.message);
-    return true;
-  });
+  const N = 20000;
+  const { ctx } = makeMatCtx(src, { sampleCount: N });
+  const v = (await ctx.getMeasure('y')).value;
+  assert.deepEqual(v.shape, [N, 3, 2]);
+  for (let k = 0; k < 3; k++) {
+    let s0 = 0, s1 = 0, q0 = 0, q1 = 0, c = 0;
+    for (let i = 0; i < N; i++) {
+      const a = v.data[i * 6 + 2 * k], b = v.data[i * 6 + 2 * k + 1];
+      s0 += a; s1 += b; q0 += a * a; q1 += b * b; c += a * b;
+    }
+    const m0 = s0 / N, m1 = s1 / N;
+    // Standard errors at N = 20000: mean 0.007 / 0.010, var 0.010 / 0.020, cov 0.012.
+    assert.ok(Math.abs(m0 - k) < 0.05 && Math.abs(m1 - k) < 0.06, 'means ' + m0 + ', ' + m1);
+    assert.ok(Math.abs(q0 / N - m0 * m0 - 1) < 0.06 && Math.abs(q1 / N - m1 * m1 - 2) < 0.12, 'variances');
+    assert.ok(Math.abs(c / N - m0 * m1 - 1) < 0.07, 'covariance');
+  }
 });
 
 // An `entries()`-bearing bindings map, which `checkJointChainKernelSteps`
