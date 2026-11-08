@@ -5744,6 +5744,12 @@ function _expandStructural(ir: any, ctx: any, visited: Set<string>): any {
       && Array.isArray(ir.args) && ir.args.length === 1) {
     return _expandStructural(ir.args[0], ctx, visited);
   }
+  if (ir.op === 'bayesupdate' && ir.args?.length === 2) {
+    // The prior is a measure the density walker scores under the posterior's
+    // logweighted rule, so it needs the same expansion as any measure operand.
+    // The likelihood keeps its form for that rule to apply.
+    return { ...ir, args: [ir.args[0], _expandStructural(ir.args[1], ctx, visited) || ir.args[1]] };
+  }
   if (ir.op === 'tilt' && ir.args?.length === 2) {
     const expanded = { ...ir, args: ir.args.map((a: any) => _expandStructural(a, ctx, visited)) };
     // Dependency probes have no bindings for unresolved composite operands.
