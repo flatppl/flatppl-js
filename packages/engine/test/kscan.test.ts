@@ -344,7 +344,7 @@ test('kscan: a single-input kernel is a located error', () => {
 f = fn(Normal(mu = _, sigma = 1.0))
 traj = kscan(f, 0.0, [0.5, 1.0])
 `);
-  assert.ok(msgs.some((m) => /kscan: .*0 inputs after its state, but 1 additional arguments/.test(m)),
+  assert.ok(msgs.some((m) => /kscan: `f` takes 1 input\(s\); §06 kscan supplies 2/.test(m)),
     'expected a 1-input refusal, got ' + JSON.stringify(msgs));
 });
 
@@ -362,7 +362,7 @@ test('kscan: a scalar `xs` is a located error, not a length-1 trajectory', () =>
 f = (x, d) -> Normal(x, d)
 traj = kscan(f, 0.0, 3)
 `);
-  assert.ok(msgs.some((m) => /kscan: at least one array or table input is required/.test(m)),
+  assert.ok(msgs.some((m) => /`kscan`: traverses one sequence `xs`, which must be a one-dimensional array or a table/.test(m)),
     'expected an xs type error, got ' + JSON.stringify(msgs));
 });
 
@@ -373,7 +373,7 @@ f = (x, d) -> Normal(x, d)
 xs = iid(Normal(mu = 1.0, sigma = 0.1), 3)
 traj = kscan(f, 0.0, xs)
 `);
-  assert.ok(msgs.some((m) => /kscan: at least one array or table input is required/.test(m)),
+  assert.ok(msgs.some((m) => /`kscan`: traverses one sequence `xs`, which must be a one-dimensional array or a table/.test(m)),
     'expected an xs type error, got ' + JSON.stringify(msgs));
 });
 
