@@ -45,9 +45,9 @@ flatppl_compat = "0.1"
 mu ~ Normal(1.0, 2.0)
 lam ~ Exponential(0.5)
 prior = lawof(record(mu = mu, lam = lam))
-y ~ Normal.(mu, lam)
+y ~ Normal(mu, lam)
 K = kernelof(record(y = y), mu = mu, lam = lam)
-L = likelihoodof(K, record(y = [0.0]))
+L = likelihoodof(K, record(y = 0.0))
 posterior = bayesupdate(L, prior)
 `;
 
@@ -178,9 +178,9 @@ m ~ Exponential(1.0)
 logm = log(m)
 b ~ LogNormal(logm, 0.5)
 prior = lawof(record(m = m, b = b))
-y ~ Normal.(b, 1.0)
+y ~ Normal(b, 1.0)
 K = kernelof(record(y = y), m = m, b = b)
-L = likelihoodof(K, record(y = [0.0]))
+L = likelihoodof(K, record(y = 0.0))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC_DERIVED, 100);
@@ -205,9 +205,9 @@ test('prior transform: finite two-sided truncation — z at u=0.5 is the symmetr
 flatppl_compat = "0.1"
 z ~ normalize(truncate(Normal(0.0, 1.0), interval(-1.0, 1.0)))
 prior = lawof(record(z = z))
-y ~ Normal.(z, 1.0)
+y ~ Normal(z, 1.0)
 K = kernelof(record(y = y), z = z)
-L = likelihoodof(K, record(y = [0.0]))
+L = likelihoodof(K, record(y = 0.0))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC_TRUNC, 100);
@@ -229,9 +229,9 @@ test('prior transform: pushfwd applies fn forward to the base quantile', () => {
 flatppl_compat = "0.1"
 b ~ pushfwd(fn(20.0 * _), Beta(2.0, 2.0))
 prior = lawof(record(b = b))
-y ~ Normal.(b, 1.0)
+y ~ Normal(b, 1.0)
 K = kernelof(record(y = y), b = b)
-L = likelihoodof(K, record(y = [0.0]))
+L = likelihoodof(K, record(y = 0.0))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC_PF, 100);
@@ -277,9 +277,9 @@ test('prior transform: unsupported (discrete) prior form refuses loudly', () => 
 flatppl_compat = "0.1"
 n ~ Poisson(3.0)
 prior = lawof(record(n = n))
-y ~ Normal.(n, 1.0)
+y ~ Normal(n, 1.0)
 K = kernelof(record(y = y), n = n)
-L = likelihoodof(K, record(y = [0.0]))
+L = likelihoodof(K, record(y = 0.0))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC_BAD, 100);
@@ -367,9 +367,9 @@ t ~ StudentT(3.0)
 c ~ Cauchy(0.0, 1.0)
 x ~ ChiSquared(4.0)
 prior = lawof(record(t = t, c = c, x = x))
-y ~ Normal.(t, 1.0)
+y ~ Normal(t, 1.0)
 K = kernelof(record(y = y), t = t, c = c, x = x)
-L = likelihoodof(K, record(y = [0.0]))
+L = likelihoodof(K, record(y = 0.0))
 posterior = bayesupdate(L, prior)
 `;
   const { ctx } = ctxFor(SRC_TCC, 100);
