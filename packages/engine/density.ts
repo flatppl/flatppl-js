@@ -693,8 +693,9 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
         const { head, rest } = consumeField(cur, names[0]);
         const innerRest = walkAcc(ir.args[0], head, refArrays, N, opts, acc, baseEnv, overlay);
         if (!isEmptyRest(innerRest)) {
-          throw new Error('density: relabel axis \'' + names[0]
-            + '\' did not fully consume its record field');
+          throw new Error('relabel(M, [' + names[0] + ']): the name does not match the '
+            + 'components of M one to one; give one name per array element or record field '
+            + '(spec §04 "Interface adaptation")');
         }
         return rest;
       }
@@ -706,8 +707,9 @@ function walkAcc(ir: IRNode, value: any, refArrays: any, N: any, opts: any, acc:
       }
       const innerRest = walkAcc(ir.args[0], heads, refArrays, N, opts, acc, baseEnv, overlay);
       if (!isEmptyRest(innerRest)) {
-        throw new Error('density: relabel axes [' + names.join(', ')
-          + '] did not fully consume their record fields');
+        throw new Error('relabel(M, [' + names.join(', ') + ']): the names do not match the '
+          + 'components of M one to one; give one name per array element or record field '
+          + '(spec §04 "Interface adaptation")');
       }
       return cur;
     }

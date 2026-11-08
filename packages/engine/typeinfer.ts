@@ -1332,12 +1332,74 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
   // accept either a measure (→ existing signature path) OR a likelihood
   // (→ a real density/log-density value). `bayesupdate(L, prior)` is the
   // unnormalized posterior measure over the prior's domain.
+  // The type a density point must have (§08 "Domain", §03 booleans ⊂
+  // integers ⊂ reals): a boolean-support distribution (Bernoulli) has domain
+  // `integers`, so its point may be any integer and the support decides the
+  // density. Every other row's domain is its variate's own element type.
+  function densityPointType(t: any): any {
+    if (!t || typeof t !== 'object') return t;
+    if (t.kind === 'scalar') return t.prim === 'boolean' ? T.INTEGER : t;
+    if (t.kind === 'array') return { ...t, elem: densityPointType(t.elem) };
+    if (t.kind === 'record') {
+      const fields: Record<string, any> = {};
+      for (const k of Object.keys(t.fields || {})) fields[k] = densityPointType(t.fields[k]);
+      return { ...t, fields };
+    }
+    if (t.kind === 'table') {
+      const columns: Record<string, any> = {};
+      for (const k of Object.keys(t.columns || {})) columns[k] = densityPointType(t.columns[k]);
+      return { ...t, columns };
+    }
+    return t;
+  }
+  // Whether a point of type `xT` lies in the domain of variates of type `vT`.
+  // A failed, deferred or any part never refuses (T.unify accepts them).
+  function pointInDomain(vT: any, xT: any): boolean {
+    if (!vT || !xT || vT.kind === 'failed' || xT.kind === 'failed') return true;
+    return T.unify(densityPointType(vT), xT, new Map()) != null;
+  }
+  // likelihoodof checks shape and structure only, for now. Its element-kind
+  // half stays off until the pyhf / HS3 converters stop observing a Poisson at
+  // real-typed counts (TODO-flatppl-js); set this to true to enable it.
+  const LIKELIHOOD_ELEMENT_KINDS = false;
+  function withoutElementKinds(t: any): any {
+    if (!t || typeof t !== 'object') return t;
+    if (t.kind === 'scalar') return T.REAL;   // every scalar kind alike; shape still counts
+    if (t.kind === 'array') return { ...t, elem: withoutElementKinds(t.elem) };
+    if (t.kind === 'record') {
+      const fields: Record<string, any> = {};
+      for (const k of Object.keys(t.fields || {})) fields[k] = withoutElementKinds(t.fields[k]);
+      return { ...t, fields };
+    }
+    if (t.kind === 'table') {
+      const columns: Record<string, any> = {};
+      for (const k of Object.keys(t.columns || {})) columns[k] = withoutElementKinds(t.columns[k]);
+      return { ...t, columns };
+    }
+    return t;
+  }
+
   function inferLikelihoodOps(expr: any, scopes: any): any {
     const op = expr.op;
     const args = expr.args || [];
     if (op === 'likelihoodof') {
       const kT: any = args.length > 0 ? inferExpr(args[0], scopes) : T.deferred();
-      if (args.length > 1) inferExpr(args[1], scopes);   // keep obs typed/written
+      const oT: any = args.length > 1 ? inferExpr(args[1], scopes) : null;
+      // §06: the observed data is one variate of the kernel's measures. The
+      // check is logdensityof's arg-2 rule (unify the measure's domain with
+      // the point), so a deferred or any part never refuses.
+      const mT: any = kT && kT.kind === 'kernel' ? kT.result : kT;
+      const shapeOnly = (t: any) => (LIKELIHOOD_ELEMENT_KINDS ? t : withoutElementKinds(t));
+      if (oT && mT && T.isMeasure(mT) && !pointInDomain(shapeOnly(mT.domain), shapeOnly(oT))) {
+        diagnostics.push({
+          severity: 'error',
+          message: '`likelihoodof`: the observed data is ' + T.show(oT)
+            + ', but the measures of the kernel have variates of type ' + T.show(mT.domain)
+            + '; the shape of the observed data must match the shape of the variates, and '
+            + 'several IID observations need an explicit `iid` (spec §06 `likelihoodof`)',
+          loc: args[1].loc,
+        });
+      }
       // K is a kernel; a measure (nullary kernel) has no parameter
       // interface. Carry the kernel's inputs as the likelihood's params.
       const inputs = (kT && kT.kind === 'kernel') ? kT.inputs : undefined;
@@ -1381,6 +1443,16 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
       if (mT && mT.kind === 'likelihood') {
         if (args.length > 1) {   // theta (param point)
           checkLikelihoodPoint(op, mT, inferExpr(args[1], scopes), args[1].loc);
+        }
+        return T.REAL;
+      }
+      // A measure and its point: the point must lie in the variates' §08
+      // domain, the rule likelihoodof shares. Other shapes keep the generic
+      // signature path and its diagnostics.
+      if (T.isMeasure(mT) && args.length === 2) {
+        const xT: any = inferExpr(args[1], scopes);
+        if (!pointInDomain(mT.domain, xT)) {
+          return argError(op, 1, densityPointType(mT.domain), xT, args[1].loc);
         }
         return T.REAL;
       }
@@ -4744,7 +4816,35 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (args.length !== 2) return arityError('relabel', '2', args.length, expr.loc);
     const baseT: any = inferExpr(args[0], scopes);
     inferExpr(args[1], scopes);  // names — infer so any refs resolve
-    return relabelType(baseT, literalStringVector(args[1]));
+    const names = literalStringVector(args[1]);
+    const counted = relabelCountError(baseT, names, expr.loc);
+    if (counted) return counted;
+    return relabelType(baseT, names);
+  }
+
+  // §04: relabel gives one name per array element or record field (one name
+  // wraps a scalar). A static count that differs has no reading, so refuse it
+  // here rather than let a density walk fail on the leftover components.
+  function relabelCountError(baseT: any, names: string[] | null, loc: any): any {
+    if (names == null) return null;
+    let t: any = baseT;
+    if (T.isMeasure(t)) t = t.domain;
+    else if (t && (t.kind === 'function' || t.kind === 'kernel')) t = T.isMeasure(t.result) ? t.result.domain : t.result;
+    if (!t) return null;
+    let count: any = null;
+    if (t.kind === 'array' && t.rank === 1 && typeof t.shape[0] === 'number') count = t.shape[0];
+    else if (t.kind === 'record') count = Object.keys(t.fields || {}).length;
+    else if (t.kind === 'table') count = Object.keys(t.columns || {}).length;
+    else if (t.kind === 'scalar') count = 1;
+    if (count == null || count === names.length) return null;
+    diagnostics.push({
+      severity: 'error',
+      message: 'relabel: ' + names.length + ' name' + (names.length === 1 ? '' : 's') + ' for '
+        + T.show(t) + ', which has ' + count + ' component' + (count === 1 ? '' : 's')
+        + '; give one name per array element or record field (spec §04 "Interface adaptation")',
+      loc,
+    });
+    return T.failed('relabel name count');
   }
 
   function relabelType(baseT: any, names: string[] | null): any {
@@ -5838,6 +5938,13 @@ function createInferenceContext(loweredModule: any, opts?: { resolveFixed?: any;
     if (slotFailure) return slotFailure;
     switch (expr.op) {
       case 'interval':   return T.REAL;
+      // §04: relabel lifts to sets, so its members are the relabelled values.
+      case 'relabel': {
+        const inner: any = setValueType(expr.args && expr.args[0], scopes);
+        if (inner == null || inner.kind === 'failed') return inner;
+        const names = literalStringVector(expr.args[1]);
+        return relabelCountError(inner, names, expr.loc) || relabelType(inner, names);
+      }
       case 'stdsimplex':
       case 'ordered':
       case 'zerosum': {
