@@ -1,24 +1,22 @@
 'use strict';
 
 // =====================================================================
-// relabel is type-kind-transparent: iid (and the other measure-algebra
-// ops) must accept a relabel'd measure.
+// iid (and the other measure-algebra ops) accept a relabel'd measure.
 // =====================================================================
 //
 // Spec basis (flatppl-design/docs/04-design.md "Interface adaptation"):
 // the output-side renaming `relabel(M, names)` "lifts directly to sets,
 // functions, measures, and kernels" and "for measures it is equivalent
-// to pushfwd(fn(relabel(_, names)), M)". So relabel(M) IS a measure and
-// iid(relabel(M), n) must type-check. Density evaluation already treats
-// relabel as transparent (density.ts walkAcc peels it), so inference
-// is the only inconsistent layer.
+// to pushfwd(fn(relabel(_, names)), M)". So relabel(M) IS a measure over
+// record(name) variates, and iid(relabel(M), n) is a measure over a table
+// with that column.
 //
 // Two checks:
-//   1. Type-check: iid(relabel(Normal, [name]), n) yields NO error
-//      diagnostics, both inline and via a named binding g = relabel(...).
-//   2. Numeric equivalence: scoring logdensityof(likelihoodof(iid(
-//      relabel(Normal(...)), n), obs), θ) EQUALS the same with a plain
-//      Normal (relabel is density-transparent) to ~1e-12.
+//   1. Type-check: iid(relabel(Normal, [name]), n) observed at a table
+//      yields NO error diagnostics, inline and via a named binding.
+//   2. Numeric equivalence: the likelihood of iid(relabel(Normal)) at
+//      table(x = obs) EQUALS that of iid(Normal) at obs, to ~1e-12 —
+//      relabel renames the variate and leaves the density unchanged.
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -76,7 +74,7 @@ m = elementof(reals)
 s = elementof(posreals)
 o = [0.0, 1.0]
 g = relabel(Normal(mu = m, sigma = s), ["x"])
-L = likelihoodof(iid(g, lengthof(o)), o)
+L = likelihoodof(iid(g, lengthof(o)), table(x = o))
 ld = logdensityof(L, record(m = 0.4, s = 1.3))
 `;
 
@@ -84,7 +82,7 @@ const INLINE_SRC = `
 m = elementof(reals)
 s = elementof(posreals)
 o = [0.0, 1.0]
-L = likelihoodof(iid(relabel(Normal(mu = m, sigma = s), ["x"]), lengthof(o)), o)
+L = likelihoodof(iid(relabel(Normal(mu = m, sigma = s), ["x"]), lengthof(o)), table(x = o))
 ld = logdensityof(L, record(m = 0.4, s = 1.3))
 `;
 
@@ -100,7 +98,7 @@ test('plain iid still type-checks (baseline)', () => {
   assert.deepEqual(errorMessages(PLAIN_SRC), []);
 });
 
-test('relabel is density-transparent: iid(relabel(Normal)) logp == iid(Normal) logp', async () => {
+test('iid(relabel(Normal)) at a table scores as iid(Normal) at its column', async () => {
   const plain = await makeCtx(PLAIN_SRC).getMeasure('ld');
   const named = await makeCtx(NAMED_SRC).getMeasure('ld');
   const inline = await makeCtx(INLINE_SRC).getMeasure('ld');
