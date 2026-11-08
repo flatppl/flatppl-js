@@ -905,6 +905,9 @@ type AtomConfig = {
   N: number;
   atomBatchedNames: Set<string>;
   atomAxis: string;     // typically '__atom_N'
+  // Evaluates an axis-free subtree that reads a per-atom name with the
+  // atom-batched evaluator: one value per atom.
+  evalPerAtom: (node: any) => any;
 } | null;
 
 function _alignedTensorFromGet(
@@ -1245,7 +1248,11 @@ function _liftAggregateExpr(
 ): { data: Float64Array; shape: number[] } {
   // Constant-hoist: subtree with no axis refs evaluates once.
   if (!_containsAxisRef(node, axisRefs)) {
-    const v = evaluateExpr(node, env);
+    // A subtree reading a per-atom name (`exp(mu)`) holds one value per
+    // atom: the single-point evaluator would apply `exp` to the whole
+    // [N] column. A bare per-atom ref is its own column already.
+    const perAtom = atomCfg && node.kind !== 'ref' && _readsAtomBatched(node, atomCfg.atomBatchedNames);
+    const v = perAtom ? atomCfg!.evalPerAtom(node) : evaluateExpr(node, env);
     return _alignedConstTensor(v, node, canonicalAxes, atomCfg);
   }
   // `get` / `get0`: produces an aligned tensor at this leaf.
@@ -1286,14 +1293,20 @@ function _liftAggregateExpr(
 //   - When atomCfg != null and `node` is a direct ref to an atom-
 //     batched name, AND v is a per-atom rank-1 [N] value → broadcast
 //     across non-atom axes (atom axis takes the per-atom data).
+function _readsAtomBatched(node: any, names: Set<string>): boolean {
+  if (!node || typeof node !== 'object') return false;
+  if (node.kind === 'ref') return node.ns === 'self' && names.has(node.name);
+  if (Array.isArray(node.args) && node.args.some((a: any) => _readsAtomBatched(a, names))) return true;
+  if (node.kwargs) for (const k of Object.keys(node.kwargs)) if (_readsAtomBatched(node.kwargs[k], names)) return true;
+  return false;
+}
+
 function _alignedConstTensor(
   v: any, node: any, canonicalAxes: string[], atomCfg: AtomConfig,
 ): { data: Float64Array; shape: number[] } {
   const shape = canonicalAxes.map(() => 1);
   if (atomCfg) {
-    const isDirectAtomRef = node && node.kind === 'ref'
-      && node.ns === 'self' && atomCfg.atomBatchedNames.has(node.name);
-    if (isDirectAtomRef) {
+    if (_readsAtomBatched(node, atomCfg.atomBatchedNames)) {
       let perAtom: Float64Array | null = null;
       if (v && v.BYTES_PER_ELEMENT !== undefined && v.length === atomCfg.N) {
         perAtom = v as Float64Array;
@@ -1402,7 +1415,11 @@ function _evalAggregateGeneric(
         atomBatchedNames.delete(k);
       }
     }
-    liftCfg = { N, atomBatchedNames, atomAxis };
+    const evalOpts = overlay ? { overlay } : undefined;
+    liftCfg = {
+      N, atomBatchedNames, atomAxis,
+      evalPerAtom: (node: any) => require('./sampler-eval-batched.ts').evaluateExprN(node, refArrays, N, baseEnv, evalOpts),
+    };
   } else {
     runEnv = env;
     liftCfg = null;
