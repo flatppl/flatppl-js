@@ -9,6 +9,7 @@
 import { sendWorkerNow } from './worker.js';
 import { ensureSamplerWorker } from './worker.js';
 import type { Ctx } from './types';
+import { literalNumberValue } from './util.js';
 export function rebuildDerivations(ctx: Ctx) {
   if (!ctx.currentBindings) {
     ctx.derivationsState = null;
@@ -88,9 +89,8 @@ export function rebuildDerivations(ctx: Ctx) {
             && Array.isArray(v.args) && v.args.length === 1) {
           v = v.args[0];
         }
-        if (v && v.type === 'NumberLiteral') {
-          curValues[arg.name] = v.value;
-        }
+        const n = literalNumberValue(v);
+        if (n != null) curValues[arg.name] = n;
       }
     }
     if (!curValues) {
@@ -143,10 +143,10 @@ export function rebuildDerivations(ctx: Ctx) {
         if (ic.type === 'CallExpr' && ic.callee
             && ic.callee.name === 'interval'
             && Array.isArray(ic.args) && ic.args.length === 2
-            && ic.args[0].type === 'NumberLiteral'
-            && ic.args[1].type === 'NumberLiteral') {
+            && literalNumberValue(ic.args[0]) != null
+            && literalNumberValue(ic.args[1]) != null) {
           sourceIntervals[arg.name] = {
-            lo: ic.args[0].value, hi: ic.args[1].value,
+            lo: literalNumberValue(ic.args[0]), hi: literalNumberValue(ic.args[1]),
           };
         }
       }

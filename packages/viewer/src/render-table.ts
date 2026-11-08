@@ -127,13 +127,20 @@ function measureEss(measure: any, n: number): number {
   } catch (_) { return n; }
 }
 
+// Table labels index array slots from 1 (FlatPPL convention, util.ts
+// listScalarAxes). The samplers key perParam by the model view's 0-based
+// coordinate names (`p[0]`). Translate the trailing slot index.
+function perParamKey(label: string): string {
+  return label.replace(/\[(\d+)\]$/, (_m, k) => '[' + (Number(k) - 1) + ']');
+}
+
 /** Per-variate ESS + R̂ for the Table. MCMC backends carry per-parameter
  *  diagnostics (diagnostics.perParam[name] = { rHat, essBulk }); IS / AMIS /
  *  SMC / IID priors do not. ESS falls back to the measure-level Kish ESS
  *  (fallbackEss); R̂ is NaN (rendered as —) when no per-parameter value exists. */
 export function tableDiagnostics(measure: any, label: string, fallbackEss: number): { ess: number; rhat: number } {
   const pp = measure && measure.diagnostics && measure.diagnostics.perParam;
-  const e = pp && pp[label];
+  const e = pp && pp[perParamKey(label)];
   const ess = e && Number.isFinite(e.essBulk) ? e.essBulk : fallbackEss;
   const rhat = e && Number.isFinite(e.rHat) ? e.rHat : NaN;
   return { ess, rhat };
