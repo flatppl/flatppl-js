@@ -2,11 +2,10 @@
 // share one catalog, copy, and manifest path. File helpers also serve demo,
 // grammar, and theme assets in build.mjs.
 
-import { copyFile, mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { tmpdir } from 'node:os';
-import { spawn } from 'node:child_process';
+import { fetchArchiveTree } from './scripts/github-download.mjs';
 import { DATA_EXTENSIONS, MODEL_EXTENSIONS, isCollectionPath, normalizeCollections, typeForPath } from './src/file-types.mjs';
 
 /** Include the source path in malformed JSON diagnostics as well as I/O errors. */
@@ -18,14 +17,14 @@ async function readJson(path) {
 /** Publish only catalog roots, after validating the whole catalog. Full builds
  * prune previously published roots too, so a removed collection cannot survive
  * in a reused dist. Watch startup preserves directories held by serve.mjs. */
-export async function syncExampleCollections({ siblingDir, archiveURL, distDir, clean = true, log = console.log }) {
+export async function syncExampleCollections({ siblingDir, archive, distDir, clean = true, log = console.log, fetchImpl = globalThis.fetch, env = process.env }) {
   let sourceDir = siblingDir;
   let cleanup = async () => {};
   if (existsSync(siblingDir)) {
     log(`  examples: using sibling clone at ${siblingDir}`);
   } else {
-    log(`  examples: fetching ${archiveURL}`);
-    ({ topLevel: sourceDir, cleanup } = await fetchAndExtractTarball(archiveURL, 'flatppl-examples-'));
+    log(`  examples: fetching ${archive.owner}/${archive.repo}@${archive.ref} from GitHub`);
+    ({ topLevel: sourceDir, cleanup } = await fetchArchiveTree({ ...archive, prefix: 'flatppl-examples-', fetchImpl, env, log }));
   }
   try {
     const catalog = join(sourceDir, 'collections.json');
@@ -91,46 +90,6 @@ export async function copyDirRecursive(srcDir, dstDir) {
     } else {
       await copyFile(src, dst);
     }
-  }
-}
-
-// Fetch a .tar.gz, extract the whole archive into a fresh temp dir, and
-// return its single top-level directory (GitHub archives unpack into one
-// `<repo>-<ref>/` dir) plus a cleanup() to remove the temp tree. The
-// caller copies whatever subdir it needs out of `topLevel`, then awaits
-// cleanup() in a finally. Two-step "extract then copy" (vs a tar wildcard)
-// avoids portability issues across GNU tar / bsdtar / macOS / Windows
-// MSYS / CI ubuntu-latest. Shared by collection and grammar publication.
-export async function fetchAndExtractTarball(url, prefix) {
-  const res = await fetch(url, { redirect: 'follow' });
-  if (!res.ok) {
-    throw new Error(`failed to fetch ${url}: ${res.status} ${res.statusText}`);
-  }
-  const tmpRoot = await mkdtemp(join(tmpdir(), prefix));
-  const tmpFile = join(tmpRoot, 'archive.tar.gz');
-  const tmpExtract = join(tmpRoot, 'extract');
-  const cleanup = () => rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
-  try {
-    await writeFile(tmpFile, Buffer.from(await res.arrayBuffer()));
-    await mkdir(tmpExtract, { recursive: true });
-    await new Promise((resolve, reject) => {
-      const tar = spawn('tar', ['-xzf', tmpFile, '-C', tmpExtract], {
-        stdio: ['ignore', 'inherit', 'inherit'],
-      });
-      tar.on('error', reject);
-      tar.on('exit', code =>
-        code === 0 ? resolve() : reject(new Error(`tar exit ${code}`))
-      );
-    });
-    const entries = await readdir(tmpExtract, { withFileTypes: true });
-    const topDir = entries.find(e => e.isDirectory());
-    if (!topDir) {
-      throw new Error(`archive extracted no top-level directory: ${url}`);
-    }
-    return { topLevel: join(tmpExtract, topDir.name), cleanup };
-  } catch (err) {
-    await cleanup();
-    throw err;
   }
 }
 
