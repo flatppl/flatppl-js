@@ -177,6 +177,9 @@ jobs:
         run: npm ci
 
       - name: Build vendor bundle (stages the LSP binary from FLATPPL_LSP_BIN_DIR and the wasm-api from FLATPPL_WASM_DIR)
+        env:
+          # Sent to api.github.com when a github.com download fails.
+          GITHUB_TOKEN: ${{ github.token }}
         run: npm run build:vendor --workspace=flatppl
 
       - name: Package platform-specific VSIX

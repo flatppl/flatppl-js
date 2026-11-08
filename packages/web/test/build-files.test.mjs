@@ -27,7 +27,7 @@ async function corpus(t) {
   await put(join(siblingDir, 'posteriordb/group/data.json'), '[1, 2, 3]');
   await put(join(siblingDir, 'private/model.flatppl'), 'x = 99');
   await put(join(distDir, 'vendor/engine.js'), 'web asset');
-  return { root, siblingDir, distDir, archiveURL: 'https://example.invalid/examples.tar.gz', log() {} };
+  return { root, siblingDir, distDir, archive: { owner: 'flatppl', repo: 'flatppl-examples', ref: 'main' }, env: {}, log() {} };
 }
 
 test('sibling and archive builds publish the same listed models and support files', async t => {
@@ -51,7 +51,7 @@ test('sibling and archive builds publish the same listed models and support file
   const remoteDir = join(options.root, 'remote-dist');
   const remote = await syncExampleCollections({ ...options, siblingDir: join(options.root, 'absent'), distDir: remoteDir });
   assert.deepEqual(remote, local);
-  assert.deepEqual(requests, [options.archiveURL]);
+  assert.deepEqual(requests, ['https://github.com/flatppl/flatppl-examples/archive/refs/heads/main.tar.gz']);
   for (const root of [options.distDir, remoteDir]) {
     assert.equal(await readFile(join(root, 'posteriordb/group/data.json'), 'utf8'), '[1, 2, 3]');
     assert.equal(await readFile(join(root, 'posteriordb/group/model.flatppl'), 'utf8'), 'm = load_module("shared.flatppl")\nx = m.x');
@@ -110,4 +110,31 @@ test('invalid catalogs cannot overwrite assets or partially publish a collection
     assert.equal(await readFile(join(options.distDir, 'vendor/engine.js'), 'utf8'), 'web asset');
     assert.equal(existsSync(join(options.distDir, 'posteriordb')), false);
   }
+});
+
+test('an archive the github.com URL cannot serve comes from the REST API tarball', async t => {
+  const options = await corpus(t);
+  // The API tarball's top directory is <owner>-<repo>-<sha>, not <repo>-<ref>.
+  const top = join(options.root, 'flatppl-flatppl-examples-0123abc');
+  execFileSync('cp', ['-R', options.siblingDir, top]);
+  const archive = join(options.root, 'api.tar.gz');
+  execFileSync('tar', ['-czf', archive, '-C', options.root, 'flatppl-flatppl-examples-0123abc']);
+  const bytes = await readFile(archive);
+  const requests = [];
+  const fetchImpl = async (url, init) => {
+    requests.push([url, init.headers?.Authorization ?? null]);
+    if (url.startsWith('https://github.com/')) return new Response('bad gateway', { status: 502, statusText: 'Bad Gateway' });
+    return new Response(bytes);
+  };
+  const local = await syncExampleCollections(options);
+  const remote = await syncExampleCollections({
+    ...options, siblingDir: join(options.root, 'absent'), distDir: join(options.root, 'api-dist'),
+    env: { GITHUB_TOKEN: 'tok' }, fetchImpl,
+  });
+  assert.deepEqual(remote, local);
+  const web = 'https://github.com/flatppl/flatppl-examples/archive/refs/heads/main.tar.gz';
+  assert.deepEqual(requests, [
+    [web, null], [web, null], [web, null],
+    ['https://api.github.com/repos/flatppl/flatppl-examples/tarball/main', 'Bearer tok'],
+  ]);
 });

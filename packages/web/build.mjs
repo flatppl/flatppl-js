@@ -45,7 +45,8 @@ import * as esbuild from 'esbuild';
 import { typeForPath, hideTestExamplesEnv } from './src/file-types.mjs';
 // Deploy-specific site overlay (legal notice etc. + the footer links).
 import { buildSite } from './build-site.mjs';
-import { copyDirRecursive, fetchAndExtractTarball, listModelFiles, syncExampleCollections } from './build-files.mjs';
+import { copyDirRecursive, listModelFiles, syncExampleCollections } from './build-files.mjs';
+import { fetchArchiveTree } from './scripts/github-download.mjs';
 import { provisionWasmApi, WASM_GLUE } from './provision-wasm-api.mjs';
 import { insertThemeShell } from './theme-shell.mjs';
 import { readZstdWasm } from '../share/zstd-wasm.mjs';
@@ -81,7 +82,7 @@ const examplesSibling = process.env.EXAMPLES_DIR || join(dirname(repoRoot), 'fla
 // Pin to a branch (`main`) during dev; switch to a commit SHA or release
 // tag for stable nightly deploys.
 const examplesPin = 'main';
-const examplesRemote = `https://github.com/flatppl/flatppl-examples/archive/refs/heads/${examplesPin}.tar.gz`;
+const examplesArchive = { owner: 'flatppl', repo: 'flatppl-examples', ref: examplesPin };
 
 // flatppl-grammars sibling: same sibling-first / GitHub-tarball pattern as the
 // examples sync. Provides the canonical TextMate grammar AND the CodeMirror
@@ -90,7 +91,7 @@ const examplesRemote = `https://github.com/flatppl/flatppl-examples/archive/refs
 // otherwise the natural sibling layout for local dev. Tarball fallback if neither.
 const grammarsSibling = process.env.GRAMMARS_DIR || join(dirname(repoRoot), 'flatppl-grammars');
 const grammarsPin = 'main';
-const grammarsRemote = `https://github.com/flatppl/flatppl-grammars/archive/refs/heads/${grammarsPin}.tar.gz`;
+const grammarsArchive = { owner: 'flatppl', repo: 'flatppl-grammars', ref: grammarsPin };
 const srcVendorDir = join(here, 'src', 'vendor');
 
 // Site overlay: the deployment's own pages (legal notice, …) and, derived
@@ -277,7 +278,7 @@ await syncDemoTree({ clean: !WATCH });
 //    fetches flatppl-js, so the sibling is absent there).
 
 const exampleManifest = await syncExampleCollections({
-  siblingDir: examplesSibling, archiveURL: examplesRemote, distDir, clean: !WATCH,
+  siblingDir: examplesSibling, archive: examplesArchive, distDir, clean: !WATCH,
 });
 const hasCmHighlighter = await syncGrammars();
 
@@ -590,7 +591,7 @@ async function syncGrammars() {
     console.log(`  grammars: using ${process.env.GRAMMARS_DIR ? 'GRAMMARS_DIR' : 'sibling'} at ${grammarsSibling}`);
   } else {
     console.log(`  grammars: fetching pinned ref '${grammarsPin}' from GitHub`);
-    ({ topLevel: top, cleanup } = await fetchAndExtractTarball(grammarsRemote, 'flatppl-grammars-'));
+    ({ topLevel: top, cleanup } = await fetchArchiveTree({ ...grammarsArchive, prefix: 'flatppl-grammars-', log: (m) => console.log('  ' + m) }));
   }
 
   try {
