@@ -124,7 +124,7 @@ export function _cTanh(z: any) {
 //   acos(z)   = -i · log(z + i·sqrt(1 - z²))   = π/2 - asin(z)
 //   atan(z)   =  i/2 · log((i + z) / (i - z))
 //   asinh(z)  =  log(z + sqrt(z² + 1))
-//   acosh(z)  =  log(z + sqrt(z² - 1))
+//   acosh(z)  =  log(z + sqrt(z - 1)·sqrt(z + 1))
 //   atanh(z)  =  0.5 · log((1 + z) / (1 - z))
 function _cReal(x: number) { return { re: x, im: 0 }; }
 
@@ -135,9 +135,9 @@ export function _cAsinh(z: any) {
   return _cLog(_cAdd(z, s));
 }
 export function _cAcosh(z: any) {
-  // log(z + sqrt(z² - 1)) — principal branch as spec §07.
-  const z2 = _cMul(z, z);
-  const s = _cSqrt(_cSub(z2, _cReal(1)));
+  // log(z + sqrt(z - 1)·sqrt(z + 1)), the principal branch (spec §07).
+  // sqrt(z² - 1) is the other root for Re(z) < 0 and gives -acosh(z).
+  const s = _cMul(_cSqrt(_cSub(z, _cReal(1))), _cSqrt(_cAdd(z, _cReal(1))));
   return _cLog(_cAdd(z, s));
 }
 export function _cAtanh(z: any) {
