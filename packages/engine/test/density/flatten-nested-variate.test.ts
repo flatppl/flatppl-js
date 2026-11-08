@@ -58,10 +58,22 @@ test('rank-0 Value leaves inside a nested array', () => {
   assert.deepEqual(arr(cells), [1.5, 2.5]);
 });
 
-test('rank-1 Value leaf (first element consumed)', () => {
-  const v = [valueLib.withShape(new Float64Array([9, 8]), [2])];
-  const { cells } = fnv(v, [1]);
+test('rank-1 Value leaf of one cell is consumed', () => {
+  const v = [valueLib.withShape(new Float64Array([9]), [1])];
+  const { cells, rest } = fnv(v, [1]);
   assert.deepEqual(arr(cells), [9]);
+  assert.equal(rest, null);
+});
+
+// Only the top-level rest threads out, so a residual below it would be data
+// dropped silently. Static shape checks refuse such a point first.
+test('an inner residual refuses instead of dropping data', () => {
+  assert.throws(() => fnv([valueLib.withShape(new Float64Array([9, 8]), [2])], [1]),
+    /axis 1 of the point is longer than the grid extent of a scalar cell; every inner entry must be consumed/);
+  assert.throws(() => fnv([new Float64Array([1, 2]), new Float64Array([3, 4])], [2]),
+    /axis 1 of the point is longer than the grid extent of a scalar cell/);
+  assert.throws(() => fnv([[1, 2, 3], [4, 5, 6]], [2, 2]),
+    /axis 1 of the point is longer than the grid extent 2; every inner entry must be consumed/);
 });
 
 test('Float64Array leaves inside a nested array', () => {
